@@ -1,8 +1,11 @@
 /*
- * Jellyfin WebGPU bounded libdcadec bridge.
+ * Bounded libdcadec bridge for the WebGPU player engine.
  *
- * This file is GPL-2.0-or-later as part of jellyfin-web. libdcadec remains
- * LGPL-2.1-or-later and is built as a replaceable WebAssembly module.
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 iZack
+ *
+ * libdcadec remains LGPL-2.1-or-later and is built as a replaceable
+ * WebAssembly module.
  */
 
 #include <emscripten.h>

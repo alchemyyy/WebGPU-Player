@@ -1,7 +1,8 @@
 /*
- * Focused FFmpeg TrueHD/MLP decoder bridge for jellyfin-web.
+ * Focused FFmpeg TrueHD/MLP decoder bridge for the WebGPU player engine.
  *
- * This file is part of jellyfin-web and is licensed under GPL-2.0-or-later.
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 iZack
  */
 
 #include <emscripten.h>

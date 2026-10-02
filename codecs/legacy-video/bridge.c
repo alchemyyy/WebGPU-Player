@@ -1,7 +1,8 @@
 /*
  * Focused FFmpeg decoder bridge for progressive MPEG-2 Video and VC-1.
  *
- * This file is part of jellyfin-web and is licensed under GPL-2.0-or-later.
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 iZack
  */
 
 #include <emscripten.h>

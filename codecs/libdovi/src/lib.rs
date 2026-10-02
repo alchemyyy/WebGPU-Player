@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 iZack
+
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::array;
 use std::ffi::c_void;

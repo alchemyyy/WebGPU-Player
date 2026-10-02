@@ -3,7 +3,7 @@ name = "jellyfin-webgpu-dolby-vision-parser"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95.0"
-license = "GPL-2.0-or-later"
+license = "MIT"
 publish = false
 
 [lib]
