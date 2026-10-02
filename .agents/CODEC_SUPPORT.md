@@ -2,8 +2,8 @@
 
 This table is derived from static analysis of the current source plus unit
 tests; it is not playback evidence. The host's
-`test/plugins/webGPUPlayer/custom/HEVCDirectPlaySupportMatrix.test.ts` asserts
-every row: negotiation (`isSameSessionNativePlaybackCompatible`, a
+`webgpu-integ-test/plugins/webGPUPlayer/custom/HEVCDirectPlaySupportMatrix.test.ts`
+asserts every row: negotiation (`isSameSessionNativePlaybackCompatible`, a
 conservative client model of Jellyfin codec-profile evaluation, against the
 `augmentDeviceProfileForCustomDecode` profile), runtime eligibility
 (`getCustomPlaybackEligibility`), their conjunction (DirectPlay), and the exact
@@ -192,5 +192,5 @@ Engine paths are relative to this repository; host paths are marked.
      color pipeline.
 5. **Tests.**
    - Add the row, with its expected route and fallbacks, to the host's
-     `test/plugins/webGPUPlayer/custom/HEVCDirectPlaySupportMatrix.test.ts`.
+     `webgpu-integ-test/plugins/webGPUPlayer/custom/HEVCDirectPlaySupportMatrix.test.ts`.
    - Then update this file.
