@@ -133,14 +133,20 @@ Web fork's `webgpu-player` branch, where the engine was developed until the
   - The WebGPU/WebCodecs engine lives in
     [WebGPU Player](https://github.com/alchemyyy/WebGPU-Player). It is MIT;
     vendored decoders keep their own licenses.
-  - The fork checks it out as the `webgpu-player/` submodule and imports it as
-    `webgpu-player/*`. The fork keeps only the Jellyfin integration in
+  - The fork checks it out as the `src/webgpu-player/` submodule and imports it
+    as `webgpu-player/*`. The fork keeps only the Jellyfin integration in
     `src/plugins/webGPUPlayer/`.
   - Engine code cannot live under the host's `src/plugins`. The plugin
     loader's `` import(`../plugins/${pluginSpec}`) `` context makes webpack
     bundle every file there.
   - This project map moved with the engine, from the fork's `.agents_webgpu/`.
     It keeps documenting the host side, marked (host).
+- **The engine is an npm workspace of the fork (10-02).** npm installs the
+  engine's dependencies, so the fork lists only what it uses directly. Inside
+  the fork the engine has no `node_modules` of its own, so its tooling finds
+  packages by walking up from the engine root. The fork's `tsconfig.json`
+  excludes the engine's tests and tooling, and its Vitest config excludes the
+  engine, which runs its own suites with `npm test -w webgpu-player`.
 - **`WebGPUPlayer.ts` stays in the fork (10-02).** It implements jellyfin-web's
   player contract: events, `PLAYBACK_SUPERSEDED`, device profiles, the HTML
   delegate, and user settings. Moving it would make the engine Jellyfin-aware,

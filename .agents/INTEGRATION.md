@@ -1,8 +1,8 @@
 # Integration, Build, and Tooling
 
 Engine paths are relative to this repository. Host paths are relative to the
-Jellyfin Web fork's root, where this repository is the `webgpu-player/`
-submodule.
+Jellyfin Web fork's root, where this repository is the `src/webgpu-player/`
+submodule and an npm workspace.
 
 ## Engine build and checks
 
@@ -18,6 +18,11 @@ From the engine root, after `npm ci`:
   in `tools/README.md`.
 - Decoder rebuilds use `make -C codecs` (Git Bash on Windows); see
   `codecs/README.md`.
+
+Inside the fork, the engine is an npm workspace without a `node_modules` of its
+own. Run the same scripts from the fork root with `-w webgpu-player`, for
+example `npm test -w webgpu-player`. `npm ci` inside the engine folder would act
+on the fork's workspace, not on the engine alone.
 
 ## Served assets
 
@@ -44,8 +49,8 @@ From the engine root, after `npm ci`:
 
 ### Submodule workflow
 
-`webgpu-player/` in the fork is this repository at a pinned commit. Commit an
-engine change here first, then commit the new pointer in the fork. Push the
+`src/webgpu-player/` in the fork is this repository at a pinned commit. Commit
+an engine change here first, then commit the new pointer in the fork. Push the
 engine before the fork, so the fork never pins an unpublished commit.
 
 ### Footprint outside the plugin
@@ -64,13 +69,14 @@ Diff base: `git merge-base HEAD upstream/master` in the fork.
 | `src/plugins/syncPlay/ui/players/HtmlVideoPlayer.js`, `src/apps/legacy/.../playback/*` | `PlaybackRate` support check; OSD listener leak fix; `PlayerEvent.SourceRenegotiationRequired` |
 | `src/components/playbackSettings/*`, `src/scripts/settings/userSettings.js` | Preferred video player and downmix algorithm settings, stored locally only |
 | `src/scripts/settings/webSettings.js`, `src/types/webConfig.ts`, `src/config.json` | `enableWebGPU*` flags; `getPlugins()` always places `webGPUPlayer/plugin` before `htmlVideoPlayer/plugin` |
-| `webgpu-player/`, `.gitmodules` | This engine as a submodule, imported as `webgpu-player/*` |
-| `tsconfig.json`, `webpack.common.js` | Resolve `webgpu-player/*` to `webgpu-player/src/*` (Vitest follows the tsconfig paths); `tsc` also checks `webgpu-player/src` |
-| `webpack.common.js` | Runs `webgpu-player/scripts/build.mjs` at config load (`--production` for production builds), copies `webgpu-player/dist/libraries` to `dist/libraries/`, and defines `__WEBGPU_PLAYER_ASSET_KEY__` from `webgpu-player/dist/build-info.json`; keeps `new URL()` module assets out of babel so the libbitsub worker can import its verbatim glue (`dist/libbitsub.*.js`) |
-| `eslint.config.mjs` | Also lints `webgpu-player/src` and `webgpu-player/test` with the app rules |
+| `src/webgpu-player/`, `.gitmodules` | This engine as a submodule, imported as `webgpu-player/*`. It sits outside `src/plugins`, so the plugin loader's import context does not bundle it |
+| `tsconfig.json`, `webpack.common.js` | Resolve `webgpu-player/*` to `src/webgpu-player/src/*` (Vitest follows the tsconfig paths). `tsconfig.json` excludes the engine's tests, tools, codecs, and build output, so `tsc` checks only its `src` |
+| `vite.config.ts` | Excludes `src/webgpu-player/**`; the engine runs its own suites with its own configuration |
+| `webpack.common.js` | Runs `src/webgpu-player/scripts/build.mjs` at config load (`--production` for production builds), copies `src/webgpu-player/dist/libraries` to `dist/libraries/`, and defines `__WEBGPU_PLAYER_ASSET_KEY__` from `src/webgpu-player/dist/build-info.json`; keeps `new URL()` module assets out of babel so the libbitsub worker can import its verbatim glue (`dist/libbitsub.*.js`) |
+| `eslint.config.mjs` | Lints the engine's `src` and `test` with the app rules, and ignores its tooling, codecs, and build output |
 | `.escheckrc` | Excludes the engine-served `dist/libraries/` subtrees, which run only in WebGPU-capable browsers |
 | `src/global.d.ts`, `src/types/webgpu.d.ts` | Declare `__WEBGPU_PLAYER_ASSET_KEY__` and load the `@webgpu/types` declarations |
-| `package.json` | Engine dependencies (`mediabunny` / `@mediabunny/ac3` 1.52.2, `@hevcjs/core` 1.3.2, `@cornerstonejs/codec-openjpeg` 1.3.0, `@webgpu/types`) and `esbuild` for the engine asset build; `"hls.js": "file:../hls.js"` plus an `overrides` entry that resolves libbitsub's optional `hls.js` peer to the same link |
+| `package.json` | `"workspaces": ["src/webgpu-player"]`, so npm installs the engine's dependencies, including `esbuild` for its asset build; `@webgpu/types` for the fork's own type check; `"hls.js": "file:../hls.js"` plus an `overrides` entry that resolves libbitsub's optional `hls.js` peer to the same link |
 
 Enhancements unrelated to the WebGPU player live on the fork's `master` branch,
 not here: the About section, client-side HDR tone mapping for HLS, the detected
@@ -103,15 +109,15 @@ aspect ratio option, and the HLS resume, startup timeout, and worker path fixes.
 From the fork root:
 
 - `npm test`: Vitest (jsdom). Fork integration tests live under
-  `webgpu-player-integ-tests`, upstream tests under `src`.
+  `src/webgpu-player-integ-tests`, upstream tests beside their sources in `src`.
 - `npm test -- <files>`: focused test run.
-- `npx vitest run --root webgpu-player`: the engine's suites against the fork's
-  `node_modules`.
-- `npm run build:check`: `tsc --noEmit`. Covers `src`,
-  `webgpu-player-integ-tests`, and `webgpu-player/src`. `npx tsc --noEmit -p webgpu-player/tsconfig.json` also
-  checks the engine's tests.
+- `npm test -w webgpu-player`, `npm run typecheck -w webgpu-player`, and
+  `npm run lint -w webgpu-player`: the engine's own checks, run in its folder
+  against the fork's `node_modules`.
+- `npm run build:check`: `tsc --noEmit` over `src`, including the engine's
+  `src` but not its tests.
 - `npm run lint` (whole repo) or `npm run lint -- <files>`. Engine sources and
-  tests must pass both this and the engine's own `npm run lint`.
+  tests must pass both this and the engine's own lint.
 - `npm run build:development`, `npm run build:production` (production adds
   `serviceworker.js`), and `npm run build:es-check`.
 
@@ -146,7 +152,12 @@ so read `quality_status`.
 - Fully reload the browser after a web-only deploy. Open pages keep their old
   bundles; engine workers and decoders change their `?v=` key with each build.
 - Clone the fork with submodules (`git submodule update --init`). Without
-  `webgpu-player/`, the webpack config fails at load.
+  `src/webgpu-player/`, the webpack config fails at load.
+- `node_modules/webgpu-player` is npm's workspace junction to
+  `src/webgpu-player`, and `node_modules/hls.js` is a junction to `../hls.js`.
+  Remove junctions alone (`rmdir`) before deleting `node_modules` with a tool
+  that might follow them, or it deletes the engine checkout or the hls.js
+  repository.
 - `webpack serve` builds the engine assets only at config load. Restart it
   after editing an engine worker.
 - WebGPU needs a secure context. Over LAN HTTP the WebGPU player is still
@@ -155,6 +166,8 @@ so read `quality_status`.
   `degraded`. Deploy `--mode production` or compare like with like.
 - The host's `../hls.js` (branch `fix/cals2`) must be built with
   `build_hls.bat`. `npm ci` only links it, so a stale `dist` ships silently.
+  The workspace's `build_jellyfin_web.bat` builds it when its `dist` is
+  missing and replaces the junction with a copy before building.
   Clean clones and CI cannot resolve the dependency. Its `package.json` has no
   `version`, so without the `overrides` entry `npm install` fails with ERESOLVE
   on libbitsub's optional `hls.js >=1.0.0` peer.

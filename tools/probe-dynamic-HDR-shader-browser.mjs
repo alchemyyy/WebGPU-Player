@@ -1,15 +1,33 @@
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const COMMAND_TIMEOUT_MILLISECONDS = 30_000;
 const REPOSITORY_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SCRIPT_PATH = fileURLToPath(new URL('emit_dynamic_HDR_shader.ts', import.meta.url));
-const VITE_NODE_PATH = fileURLToPath(new URL(
-    '../node_modules/vite-node/vite-node.mjs',
-    import.meta.url
-));
+const VITE_NODE_PATH = findInstalledFile(join('vite-node', 'vite-node.mjs'));
 const debugURL = process.argv[2] || 'http://localhost:9224';
+
+/**
+ * Finds a file in the nearest node_modules above the engine.
+ * A host that adds the engine as an npm workspace installs its dependencies in the host's node_modules.
+ */
+function findInstalledFile(relativePath) {
+    let directory = REPOSITORY_ROOT;
+    for (;;) {
+        const candidate = join(directory, 'node_modules', relativePath);
+        if (existsSync(candidate)) {
+            return candidate;
+        }
+        const parentDirectory = dirname(directory);
+        if (parentDirectory === directory) {
+            throw new Error(`${relativePath} is not installed above ${REPOSITORY_ROOT}`);
+        }
+        directory = parentDirectory;
+    }
+}
 
 class CDPClient {
     constructor(socket) {

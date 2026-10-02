@@ -46,8 +46,9 @@ player plugin, device profile, settings UI, and same-session HTML fallback.
    - in the host's TypeScript `paths`;
    - in the host's bundler alias.
 
-   Install the engine's `dependencies` in the host, plus `esbuild` for the
-   asset build.
+   Add the engine to the host's npm `workspaces`, so npm installs its
+   dependencies, including `esbuild` for the asset build. Without a workspace,
+   install the engine's `dependencies` and `esbuild` in the host.
 2. **Build the served assets** before bundling, with
    `node <engine>/scripts/build.mjs [--production]`:
    - It bundles the workers with esbuild and copies decoders, licenses, and
@@ -82,10 +83,10 @@ npm run lint
 npm run build
 ```
 
-When the engine is checked out as a submodule, its tests can also run from the
-host's root against the host's `node_modules`:
-`npx vitest run --root webgpu-player`. The host's ESLint configuration lints
-`src/` and `test/` too, so changes must pass both configurations.
+When a host adds the engine as an npm workspace, run these scripts from the
+host's root with `-w webgpu-player`, for example `npm test -w webgpu-player`.
+The host's ESLint configuration lints `src/` and `test/` too, so changes must
+pass both configurations.
 
 The codec builds are committed, so nothing above needs Emscripten. Rebuilding a
 decoder needs Emscripten 4.0.13, GNU Make, and cargo, without Docker. See
