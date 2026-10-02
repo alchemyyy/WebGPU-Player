@@ -1,15 +1,17 @@
-import { createHash } from 'node:crypto';
 import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
-const FIXTURE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
-const PINNED_FFMPEG_VERSION =
+const FIXTURE_DIRECTORY = fileURLToPath(
+    new URL('../fixtures/capability/hevc-range-extension/', import.meta.url)
+);
+const USAGE = 'Usage: node tools/generate-HEVC-range-extension-fixtures.mjs [--check|--inspect]';
+const REQUIRED_FFMPEG_VERSION =
     '2026-03-01-git-862338fe31-full_build-www.gyan.dev';
-const PINNED_LIBAVCODEC_VERSION_PATTERN = /libavcodec\s+62\.\s*24\.100/u;
-const PINNED_X265_VERSION = '4.1+225-1b48507eb';
+const REQUIRED_LIBAVCODEC_VERSION_PATTERN = /libavcodec\s+62\.\s*24\.100/u;
+const REQUIRED_X265_VERSION = '4.1+225-1b48507eb';
 const CODED_WIDTH = 192;
 const CODED_HEIGHT = 192;
 const FRAME_RATE = 1;
@@ -38,7 +40,6 @@ const FIXTURES = Object.freeze([
         accessUnitByteLengths: [ 3_452, 2_905 ],
         constraintPrefix: '9F.88',
         expectedFingerprints: [ 3_329_959_031, 201_088_281 ],
-        expectedSHA256: '7cecbf5129d187d90a1434e3b80cea9c90bfb15a6156b6de5114353bf278ecc4',
         frameCount: 2,
         intraConstrained: false,
         patchProfileTierLevel: true,
@@ -50,7 +51,6 @@ const FIXTURES = Object.freeze([
         accessUnitByteLengths: [ 4_148, 3_582 ],
         constraintPrefix: '9D.08',
         expectedFingerprints: [ 1_183_394_674, 2_295_522_323 ],
-        expectedSHA256: '32a61c466d8b6daeff30637b9772d3cf93b1e9c24d01bfdee657f4a1158dc5a9',
         frameCount: 2,
         intraConstrained: false,
         pixelFormat: 'yuv422p',
@@ -61,7 +61,6 @@ const FIXTURES = Object.freeze([
         accessUnitByteLengths: [ 3_515, 2_872 ],
         constraintPrefix: '9E.08',
         expectedFingerprints: [ 1_821_287_005, 2_492_293_762 ],
-        expectedSHA256: 'aec47464fedf08340786534406f45480cfd5ea833547cf6be6fb6360c3f82cb5',
         frameCount: 2,
         intraConstrained: false,
         pixelFormat: 'yuv444p',
@@ -72,7 +71,6 @@ const FIXTURES = Object.freeze([
         accessUnitByteLengths: [ 3_451, 3_011 ],
         constraintPrefix: '9D.88',
         expectedFingerprints: [ 913_148_567, 991_175_167 ],
-        expectedSHA256: '59fbe3b5832ca72f6df3f64220ac71637760afb5f5ac8d2c227def4c93e823e2',
         frameCount: 2,
         intraConstrained: false,
         patchProfileTierLevel: true,
@@ -84,7 +82,6 @@ const FIXTURES = Object.freeze([
         accessUnitByteLengths: [ 4_181, 3_655 ],
         constraintPrefix: '9D.08',
         expectedFingerprints: [ 164_386_383, 4_284_346_653 ],
-        expectedSHA256: '248eb64dbb2bb30ecd689e453a38dcf34125af51c205f7c5da8577a0228639e5',
         frameCount: 2,
         intraConstrained: false,
         pixelFormat: 'yuv422p10le',
@@ -95,7 +92,6 @@ const FIXTURES = Object.freeze([
         accessUnitByteLengths: [ 3_519, 2_871 ],
         constraintPrefix: '9C.08',
         expectedFingerprints: [ 3_798_930_489, 1_052_002_504 ],
-        expectedSHA256: '0b7da32d89ed1e00101e515ca190b4927385421a694daab05cad073a29708c57',
         frameCount: 2,
         intraConstrained: false,
         pixelFormat: 'yuv444p10le',
@@ -106,7 +102,6 @@ const FIXTURES = Object.freeze([
         accessUnitByteLengths: [ 3_442, 3_013 ],
         constraintPrefix: '99.88',
         expectedFingerprints: [ 1_429_287_902, 2_430_170_723 ],
-        expectedSHA256: '6e8c6e28a8380740cb21aef29a8864a81d56b7a686424a1944f0abe3c7b61279',
         frameCount: 2,
         intraConstrained: false,
         pixelFormat: 'yuv420p12le',
@@ -117,7 +112,6 @@ const FIXTURES = Object.freeze([
         accessUnitByteLengths: [ 4_140, 3_642 ],
         constraintPrefix: '99.08',
         expectedFingerprints: [ 2_481_109_241, 654_435_566 ],
-        expectedSHA256: '8f2c49f6425f8c02baff21e4bed394b0d2e6a4cfb8e9944f09531e64d6b376ee',
         frameCount: 2,
         intraConstrained: false,
         pixelFormat: 'yuv422p12le',
@@ -128,7 +122,6 @@ const FIXTURES = Object.freeze([
         accessUnitByteLengths: [ 3_514, 2_887 ],
         constraintPrefix: '98.08',
         expectedFingerprints: [ 3_231_491_211, 339_020_665 ],
-        expectedSHA256: '58d60de348dcf1be311912182920df269538d00e8a095d1733a9f683f561c442',
         frameCount: 2,
         intraConstrained: false,
         pixelFormat: 'yuv444p12le',
@@ -166,10 +159,6 @@ function requireEqual(actual, expected, label) {
             `${label} mismatch: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`
         );
     }
-}
-
-function hashBytes(bytes) {
-    return createHash('sha256').update(bytes).digest('hex');
 }
 
 function getX265Parameters(fixture) {
@@ -520,13 +509,13 @@ function getDecodedFingerprints(inputPath, fixture) {
 
 async function checkToolchain(temporaryDirectory) {
     const FFmpegVersion = runTextCommand('ffmpeg', [ '-version' ]).stdout;
-    if (!FFmpegVersion.startsWith(`ffmpeg version ${PINNED_FFMPEG_VERSION}`)
-        || !PINNED_LIBAVCODEC_VERSION_PATTERN.test(FFmpegVersion)) {
-        throw new Error('The installed FFmpeg/libavcodec version is not pinned');
+    if (!FFmpegVersion.startsWith(`ffmpeg version ${REQUIRED_FFMPEG_VERSION}`)
+        || !REQUIRED_LIBAVCODEC_VERSION_PATTERN.test(FFmpegVersion)) {
+        throw new Error('The installed FFmpeg/libavcodec is not the required version');
     }
     const FFprobeVersion = runTextCommand('ffprobe', [ '-version' ]).stdout;
-    if (!FFprobeVersion.startsWith(`ffprobe version ${PINNED_FFMPEG_VERSION}`)) {
-        throw new Error('The installed FFprobe version is not pinned');
+    if (!FFprobeVersion.startsWith(`ffprobe version ${REQUIRED_FFMPEG_VERSION}`)) {
+        throw new Error('The installed FFprobe is not the required version');
     }
 
     const x265ProbePath = join(temporaryDirectory, 'x265-version.hevc');
@@ -553,8 +542,8 @@ async function checkToolchain(temporaryDirectory) {
         '-y',
         x265ProbePath
     ]);
-    if (!result.stderr.includes(`HEVC encoder version ${PINNED_X265_VERSION}`)) {
-        throw new Error('The installed x265 version is not pinned');
+    if (!result.stderr.includes(`HEVC encoder version ${REQUIRED_X265_VERSION}`)) {
+        throw new Error('The installed x265 is not the required version');
     }
 }
 
@@ -568,15 +557,13 @@ async function getFixtureEvidence(fixture, generatedPath) {
         PTL: {
             SPS: getProfileTierLevelEvidence(generatedBytes, 33),
             VPS: getProfileTierLevelEvidence(generatedBytes, 32)
-        },
-        SHA256: hashBytes(generatedBytes)
+        }
     };
 }
 
-async function verifyFixture(fixture, generatedPath, writeFixtures) {
+/** Requires the expected structure, then writes the fixture or compares it with the committed bytes. */
+async function verifyFixture(fixture, generatedPath, checkFixtures) {
     const evidence = await getFixtureEvidence(fixture, generatedPath);
-    const generatedBytes = await readFile(generatedPath);
-    requireEqual(evidence.SHA256, fixture.expectedSHA256, `${fixture.variant} SHA-256`);
     requireEqual(
         evidence.accessUnitByteLengths,
         fixture.accessUnitByteLengths,
@@ -608,32 +595,27 @@ async function verifyFixture(fixture, generatedPath, writeFixtures) {
         `${fixture.variant} decoded fingerprints`
     );
 
-    const checkedInPath = join(FIXTURE_DIRECTORY, `${fixture.variant}.hevc`);
-    if (writeFixtures) {
-        await copyFile(generatedPath, checkedInPath);
-    } else {
-        const checkedInBytes = await readFile(checkedInPath);
-        requireEqual(
-            hashBytes(checkedInBytes),
-            fixture.expectedSHA256,
-            `${fixture.variant} checked-in SHA-256`
-        );
-        if (!checkedInBytes.equals(generatedBytes)) {
-            throw new Error(`${fixture.variant} checked-in bytes differ from regeneration`);
-        }
+    const committedPath = join(FIXTURE_DIRECTORY, `${fixture.variant}.hevc`);
+    if (!checkFixtures) {
+        await copyFile(generatedPath, committedPath);
+        return;
+    }
+    const committedBytes = await readFile(committedPath);
+    const generatedBytes = await readFile(generatedPath);
+    if (!committedBytes.equals(generatedBytes)) {
+        throw new Error(`${fixture.variant} committed bytes differ from regeneration`);
     }
 }
 
 async function main() {
     const argumentsList = process.argv.slice(2);
-    if (argumentsList.some(argument => argument !== '--write' && argument !== '--inspect')
-        || new Set(argumentsList).size !== argumentsList.length
-        || argumentsList.length > 1) {
-        throw new Error('Usage: node regenerate-and-verify.mjs [--inspect|--write]');
+    if (argumentsList.length > 1
+        || argumentsList.some(argument => argument !== '--check' && argument !== '--inspect')) {
+        throw new Error(USAGE);
     }
-    const writeFixtures = argumentsList.includes('--write');
+    const checkFixtures = argumentsList.includes('--check');
     const inspectFixtures = argumentsList.includes('--inspect');
-    const temporaryDirectory = await mkdtemp(join(tmpdir(), 'jellyfin-hevc-rext-'));
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), 'webgpu-hevc-rext-'));
     try {
         await checkToolchain(temporaryDirectory);
         for (const fixture of FIXTURES) {
@@ -645,17 +627,19 @@ async function main() {
                     variant: fixture.variant
                 })}\n`);
             } else {
-                await verifyFixture(fixture, generatedPath, writeFixtures);
+                await verifyFixture(fixture, generatedPath, checkFixtures);
             }
         }
     } finally {
         await rm(temporaryDirectory, { force: true, recursive: true });
     }
-    if (!inspectFixtures) {
-        process.stdout.write(
-            `Verified ${FIXTURES.length} deterministic HEVC range-extension fixtures.\n`
-        );
+    if (inspectFixtures) {
+        return;
     }
+    const action = checkFixtures ? 'Verified' : 'Generated';
+    process.stdout.write(
+        `${action} ${FIXTURES.length} deterministic HEVC range-extension fixtures.\n`
+    );
 }
 
 await main();

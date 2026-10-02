@@ -10,3 +10,9 @@ from Mediabunny's bounded container input.
 
 core_51_24_48_768_0.mka is a deterministic, metadata-free Matroska remux of
 the Core fixture and verifies Mediabunny's A_DTS unknown-codec packet route.
+The recorded remux command is:
+
+  ffmpeg -fflags +bitexact -i core_51_24_48_768_0.dtshd -c:a copy -f matroska core_51_24_48_768_0.mka
+
+Current FFmpeg builds write slightly different container bytes, so the
+committed file is the reference.

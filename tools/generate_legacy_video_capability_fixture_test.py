@@ -1,4 +1,4 @@
-"""Tests FFmpeg resolution and fixture installation for the legacy video generator."""
+"""Tests FFmpeg resolution, checking, and installation for the legacy video generator."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIRECTORY))
 
 import generate_legacy_video_capability_fixture as legacy_fixture  # noqa: E402
+from generated_output import GeneratedOutputError  # noqa: E402
 
 
 class FFmpegResolutionTests(unittest.TestCase):
@@ -58,9 +59,15 @@ class FFmpegResolutionTests(unittest.TestCase):
 
 
 class FixtureGenerationTests(unittest.TestCase):
-    """Covers installing regenerated output only when it matches the pin."""
+    """Covers checking regenerated output against the committed fixture and installing it."""
 
-    def generate_with_output(self, generated_bytes: bytes, installed_path: Path) -> str:
+    def generate_with_output(
+        self,
+        generated_bytes: bytes,
+        installed_path: Path,
+        *,
+        check: bool,
+    ) -> None:
         """Runs generate_fixture with FFmpeg replaced by a writer of fixed bytes."""
 
         def write_generated_output(
@@ -78,28 +85,41 @@ class FixtureGenerationTests(unittest.TestCase):
                 side_effect=write_generated_output,
             ),
         ):
-            return legacy_fixture.generate_fixture(Path("ffmpeg.exe"))
+            legacy_fixture.generate_fixture(Path("ffmpeg.exe"), check=check)
 
-    def test_keeps_the_committed_fixture_when_output_differs(self) -> None:
+    def test_check_keeps_the_committed_fixture_when_output_differs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             installed_path = Path(temporary_directory) / "fixture.mkv"
             installed_path.write_bytes(b"committed fixture")
-            with self.assertRaisesRegex(RuntimeError, "differs from the pinned fixture"):
-                self.generate_with_output(b"other FFmpeg output", installed_path)
+            with self.assertRaisesRegex(
+                GeneratedOutputError,
+                "differs from the committed bytes",
+            ):
+                self.generate_with_output(
+                    b"other FFmpeg output",
+                    installed_path,
+                    check=True,
+                )
 
             self.assertEqual(installed_path.read_bytes(), b"committed fixture")
 
-    def test_installs_output_that_matches_the_pin(self) -> None:
-        pinned_bytes = legacy_fixture.OUTPUT_PATH.read_bytes()
+    def test_check_accepts_output_identical_to_the_committed_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            installed_path = Path(temporary_directory) / "fixture.mkv"
+            installed_path.write_bytes(b"committed fixture")
+
+            self.generate_with_output(b"committed fixture", installed_path, check=True)
+
+            self.assertEqual(installed_path.read_bytes(), b"committed fixture")
+
+    def test_generation_installs_the_regenerated_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             installed_path = Path(temporary_directory) / "fixture.mkv"
             installed_path.write_bytes(b"stale fixture")
 
-            self.assertEqual(
-                self.generate_with_output(pinned_bytes, installed_path),
-                legacy_fixture.EXPECTED_SHA256,
-            )
-            self.assertEqual(installed_path.read_bytes(), pinned_bytes)
+            self.generate_with_output(b"regenerated fixture", installed_path, check=False)
+
+            self.assertEqual(installed_path.read_bytes(), b"regenerated fixture")
 
 
 if __name__ == "__main__":

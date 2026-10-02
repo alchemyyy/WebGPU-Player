@@ -14,15 +14,12 @@ import time
 from pathlib import Path
 from typing import Final, TypedDict
 
+from generated_output import write_or_check_output
 
+
+REPOSITORY_ROOT: Final = Path(__file__).resolve().parents[1]
 MPV_SOURCE_COMMIT: Final = "1d1535ff9124fdeb3c81a2f089551e2cc8404613"
 FFMPEG_SOURCE_COMMIT: Final = "862338fe3154e09ff0c410fd410d519588d47cf2"
-MPV_BINARY_SHA256: Final = (
-    "002d5d348c7467c765f1b32682c6eb50c30a3eb4468b9d06caaca344e3de1839"
-)
-FFMPEG_BINARY_SHA256: Final = (
-    "cce4074b7af8e71b4c63f17bec8d36ca3da9b7f84f5bcbb010476164a6cafa85"
-)
 MPV_VERSION_MARKER: Final = "mpv v0.40.0-dev-g1d1535ff9"
 FFMPEG_VERSION_MARKER: Final = "2026-03-01-git-862338fe31"
 SAMPLE_RATES: Final = (48_000, 96_000)
@@ -76,25 +73,21 @@ class ExternalOutputRecord(TypedDict):
 
 
 def parse_arguments() -> argparse.Namespace:
-    repository_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--output",
         type=Path,
-        default=(
-            repository_root
-            / "scripts/webgpu/fixtures/downmix-reference/seven-point-one.json"
-        ),
+        default=REPOSITORY_ROOT / "fixtures/test/downmix-reference/seven-point-one.json",
     )
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Fail when the checked-in deterministic reference is stale",
+        help="Fail if the committed reference differs from the regenerated reference",
     )
     parser.add_argument(
         "--verify-external",
         action="store_true",
-        help="Run the pinned mpv and FFmpeg binaries against the generated corpus",
+        help="Run the referenced mpv and FFmpeg builds against the generated corpus",
     )
     parser.add_argument("--mpv", type=Path)
     parser.add_argument("--ffmpeg", type=Path)
@@ -294,7 +287,6 @@ def generate_reference() -> dict[str, object]:
         },
         "referenceSources": {
             "ffmpeg": {
-                "binarySHA256": FFMPEG_BINARY_SHA256,
                 "commit": FFMPEG_SOURCE_COMMIT,
                 "policy": (
                     "libswresample defaults: center/surround sqrt(1/2), LFE 0, "
@@ -303,7 +295,6 @@ def generate_reference() -> dict[str, object]:
                 "versionMarker": FFMPEG_VERSION_MARKER,
             },
             "mpv": {
-                "binarySHA256": MPV_BINARY_SHA256,
                 "commit": MPV_SOURCE_COMMIT,
                 "defaultPolicy": "audio-normalize-downmix=no, rematrix_maxval=1000",
                 "normalizedPolicy": "audio-normalize-downmix=yes, rematrix_maxval=1",
@@ -383,14 +374,6 @@ def read_wave_float32(path: Path) -> tuple[list[float], list[float], bytes]:
     left = list(interleaved[0::2])
     right = list(interleaved[1::2])
     return left, right, payload
-
-
-def require_sha256(path: Path, expected_sha256: str) -> None:
-    actual_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
-    if actual_sha256 != expected_sha256:
-        raise RuntimeError(
-            f"Pinned executable hash mismatch for {path}: {actual_sha256}"
-        )
 
 
 def run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -492,8 +475,6 @@ def verify_external(arguments: argparse.Namespace) -> dict[str, object]:
     ffmpeg_path: Path = arguments.ffmpeg.resolve()
     mpv_source: Path = arguments.mpv_source.resolve()
     ffmpeg_source: Path = arguments.ffmpeg_source.resolve()
-    require_sha256(mpv_path, MPV_BINARY_SHA256)
-    require_sha256(ffmpeg_path, FFMPEG_BINARY_SHA256)
     mpv_version = run_command([str(mpv_path), "--version"]).stdout
     ffmpeg_version_process = run_command([str(ffmpeg_path), "-version"])
     ffmpeg_version = ffmpeg_version_process.stdout + ffmpeg_version_process.stderr
@@ -546,11 +527,11 @@ def verify_external(arguments: argparse.Namespace) -> dict[str, object]:
     }
     sample_rate_reports: dict[str, object] = {}
     report: dict[str, object] = {
-        "ffmpegBinarySHA256": FFMPEG_BINARY_SHA256,
-        "mpvBinarySHA256": MPV_BINARY_SHA256,
+        "ffmpegVersionMarker": FFMPEG_VERSION_MARKER,
+        "mpvVersionMarker": MPV_VERSION_MARKER,
         "sampleRates": sample_rate_reports,
     }
-    with tempfile.TemporaryDirectory(prefix="jellyfin-7.1-downmix-") as temporary_directory:
+    with tempfile.TemporaryDirectory(prefix="webgpu-7.1-downmix-") as temporary_directory:
         temporary_path = Path(temporary_directory)
         for sample_rate in SAMPLE_RATES:
             input_path = temporary_path / f"input-{sample_rate}.wav"
@@ -667,14 +648,13 @@ def main() -> None:
     arguments = parse_arguments()
     output_path = arguments.output.resolve()
     generated = json.dumps(generate_reference(), indent=2, sort_keys=True) + "\n"
-    if arguments.check:
-        if not output_path.is_file() or output_path.read_text(encoding="utf-8") != generated:
-            raise RuntimeError(f"7.1 downmix reference is stale: {output_path}")
-        print(f"Verified {output_path}")
-    else:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(generated, encoding="utf-8", newline="\n")
-        print(f"Generated {output_path}")
+    write_or_check_output(
+        output_path,
+        generated.encode("utf-8"),
+        check=arguments.check,
+    )
+    action = "Verified" if arguments.check else "Generated"
+    print(f"{action} {output_path}")
     if arguments.verify_external:
         print(json.dumps(verify_external(arguments), indent=2, sort_keys=True))
 

@@ -3,7 +3,7 @@
 These Annex B HEVC files are deterministic WebCodecs capability probes. They
 are 192x192 because common NVIDIA HEVC decoders reject smaller coded sizes.
 They prove only that the exact codec configuration decodes, copies to the
-expected WebCodecs raw format, and produces the pinned fingerprints. They do
+expected WebCodecs raw format, and produces the expected fingerprints. They do
 not prove playback performance, resolution/level limits, seeking, or media
 transport behavior.
 
@@ -17,28 +17,26 @@ The synthetic source is FFmpeg `testsrc2` at 192x192, one frame per second.
 All nine fixtures contain one IDR access unit followed by one P access unit,
 which qualifies general inter decode for the exact range-extension tuple. x265
 does not directly emit general Profile-IDC 4 for 4:2:0 8/10, so the
-regeneration script starts with conforming Main/Main10 syntax and rewrites the
-VPS and SPS profile-tier-level fields to Profile-IDC 4, compatibility flag 4,
-and exact general constraints `9F.88`/`9D.88`. It removes and reinserts Annex B
+generator starts with conforming Main/Main10 syntax and rewrites the VPS and
+SPS profile-tier-level fields to Profile-IDC 4, compatibility flag 4, and
+exact general constraints `9F.88`/`9D.88`. It removes and reinserts Annex B
 emulation-prevention bytes around the rewritten RBSP.
 
 ## Regeneration
 
-The checked-in script runs the pinned commands in a temporary directory and
-verifies byte-for-byte output, SHA-256, FFprobe access-unit lengths and I/P
-types, VPS profile-tier-level constraint flags, and production-equivalent raw
-plane fingerprints. It does not run in normal unit tests:
+`tools/generate-HEVC-range-extension-fixtures.mjs` runs the commands below in a
+temporary directory with the toolchain above on PATH. For every fixture it
+verifies FFprobe access-unit lengths and I/P types, VPS profile-tier-level
+constraint flags, and production-equivalent raw plane fingerprints. It does
+not run in normal unit tests. From the engine root:
 
 ```powershell
-node .\vendor\webgpu\capability-fixtures\hevc-range-extension\regenerate-and-verify.mjs
+node tools/generate-HEVC-range-extension-fixtures.mjs --check
 ```
 
-Pass `--write` only to replace the nine checked-in files after every pinned
-result has matched:
-
-```powershell
-node .\vendor\webgpu\capability-fixtures\hevc-range-extension\regenerate-and-verify.mjs --write
-```
+`--check` fails when a regenerated file differs from the committed bytes.
+Without `--check`, the generator replaces each committed file once its checks
+pass. `--inspect` prints the measured evidence without comparing or writing.
 
 Use the following common x265 settings:
 
@@ -75,12 +73,12 @@ ffmpeg -f lavfi -i "testsrc2=size=192x192:rate=1:duration=2" `
 ```
 
 `info=0` prevents the x265 user-data SEI; there is no post-encode SEI
-stripping step. `HEVCRangeExtensionCapabilities.test.ts` verifies each SHA-256,
+stripping step. `test/custom/HEVCRangeExtensionCapabilities.test.ts` verifies
 the VPS constraint bytes, intra/one-picture flags, access-unit lengths, and the
 expected I/P slice sequence. Fingerprints use the production 32-bit FNV-1a
-sampler in `CustomDecodeCapabilities.ts`: plane dimensions followed by a 64 by
-36 uniform sample grid over each native output plane.
+sampler in `src/custom/CustomDecodeCapabilities.ts`: plane dimensions followed
+by a 64 by 36 uniform sample grid over each native output plane.
 
-Re-encoding with another toolchain may not be byte-identical. Do not update a
-hash, access-unit length, constraint string, or fingerprint until the static
-fixture tests and decoded raw output have been inspected together.
+Re-encoding with another toolchain may not be byte-identical. Do not update an
+access-unit length, constraint string, or fingerprint until the static fixture
+tests and decoded raw output have been inspected together.

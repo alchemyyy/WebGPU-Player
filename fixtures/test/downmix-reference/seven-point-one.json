@@ -135,13 +135,11 @@
   },
   "referenceSources": {
     "ffmpeg": {
-      "binarySHA256": "cce4074b7af8e71b4c63f17bec8d36ca3da9b7f84f5bcbb010476164a6cafa85",
       "commit": "862338fe3154e09ff0c410fd410d519588d47cf2",
       "policy": "libswresample defaults: center/surround sqrt(1/2), LFE 0, floating output unnormalized",
       "versionMarker": "2026-03-01-git-862338fe31"
     },
     "mpv": {
-      "binarySHA256": "002d5d348c7467c765f1b32682c6eb50c30a3eb4468b9d06caaca344e3de1839",
       "commit": "1d1535ff9124fdeb3c81a2f089551e2cc8404613",
       "defaultPolicy": "audio-normalize-downmix=no, rematrix_maxval=1000",
       "normalizedPolicy": "audio-normalize-downmix=yes, rematrix_maxval=1",
