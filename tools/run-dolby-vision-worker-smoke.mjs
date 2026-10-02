@@ -1,27 +1,23 @@
-/* eslint-disable compat/compat -- This validation harness requires Node 24 */
-
-import { readdir } from 'node:fs/promises';
-
-import { selectCustomDecodeWorkerAssetName } from './worker-artifact-name.mjs';
-
 const DEFAULT_DEBUG_URL = 'http://127.0.0.1:9226';
 const DEFAULT_FRONTEND_URL = 'http://localhost:8096/web/';
 const DEFAULT_TIMEOUT_MILLISECONDS = 120_000;
 const DEFAULT_EXPECTED_BASE_HEIGHT = 2_160;
 const DEFAULT_EXPECTED_BASE_WIDTH = 3_840;
+// The prebuilt worker resolves the other engine assets relative to its own URL
+const DEFAULT_WORKER_PATH = 'libraries/webgpu-player/CustomDecode.worker.js';
 const DOLBY_VISION_ENHANCEMENT_FULL_RESOLUTION_MAXIMUM_WIDTH = 1_920;
 const EXPECTED_METADATA_SCHEMA_VERSION = 4;
-const LOCAL_DIST_DIRECTORY_URL = new URL('../../dist/', import.meta.url);
 const WEBSOCKET_OPEN_STATE = 1;
 
 const USAGE = `Usage:
-  node scripts/webgpu/run-dolby-vision-worker-smoke.mjs [options]
+  node tools/run-dolby-vision-worker-smoke.mjs [options]
 
 Options:
   --debug-url <url>      Chromium remote-debugging HTTP endpoint
-  --frontend-url <url>   Built Jellyfin Web frontend URL
+  --frontend-url <url>   Frontend URL that serves the engine assets under libraries/
   --media-url <url>      Same-origin Profile 7 FEL fixture URL
-  --worker-url <url>     Exact worker URL; defaults to the emitted dist artifact
+  --worker-url <url>     Worker URL, absolute or relative to the frontend URL;
+                         defaults to ${DEFAULT_WORKER_PATH}
   --expected-base-width <number>
                          Expected decoded BL width; defaults to 3840
   --expected-base-height <number>
@@ -199,10 +195,8 @@ function parseConfiguration(argumentsList) {
             'The fixture must share the frontend origin'
         );
     }
-    const workerURL = configuration.workerURL === null ?
-        null :
-        new URL(configuration.workerURL, frontendURL);
-    if (workerURL && frontendURL.origin !== workerURL.origin) {
+    const workerURL = new URL(configuration.workerURL ?? DEFAULT_WORKER_PATH, frontendURL);
+    if (frontendURL.origin !== workerURL.origin) {
         throw new ValidationError(
             'configuration-invalid',
             'The worker must share the frontend origin'
@@ -213,32 +207,8 @@ function parseConfiguration(argumentsList) {
         debugURL: new URL(configuration.debugURL).href.replace(/\/$/u, ''),
         frontendURL: frontendURL.href,
         mediaURL: mediaURL.href,
-        workerURL: workerURL?.href ?? null
+        workerURL: workerURL.href
     };
-}
-
-async function resolveWorkerURL(configuration) {
-    if (configuration.workerURL) {
-        return configuration.workerURL;
-    }
-    let fileNames;
-    try {
-        fileNames = await readdir(LOCAL_DIST_DIRECTORY_URL);
-    } catch (error) {
-        throw new ValidationError(
-            'worker-artifact-unavailable',
-            'Unable to inspect the local dist worker artifacts',
-            error instanceof Error ? error.message : String(error)
-        );
-    }
-    const workerAssetName = selectCustomDecodeWorkerAssetName(fileNames);
-    if (!workerAssetName) {
-        throw new ValidationError(
-            'worker-artifact-unavailable',
-            'The local dist must contain exactly one custom decode worker artifact'
-        );
-    }
-    return new URL(workerAssetName, configuration.frontendURL).href;
 }
 
 function getExpectedEnhancementDimensions(configuration) {
@@ -505,15 +475,11 @@ function validateResult(result, configuration) {
 }
 
 async function main() {
-    const parsedConfiguration = parseConfiguration(process.argv.slice(2));
-    if (parsedConfiguration.help) {
+    const configuration = parseConfiguration(process.argv.slice(2));
+    if (configuration.help) {
         process.stdout.write(`${USAGE}\n`);
         return;
     }
-    const configuration = {
-        ...parsedConfiguration,
-        workerURL: await resolveWorkerURL(parsedConfiguration)
-    };
     const pageTarget = await getPageTarget(configuration);
     const client = await CDPClient.connect(
         pageTarget.webSocketDebuggerUrl,
@@ -571,5 +537,3 @@ try {
     process.stderr.write(`${JSON.stringify(report, null, 2)}\n`);
     process.exitCode = 1;
 }
-
-/* eslint-enable compat/compat */
