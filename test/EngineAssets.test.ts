@@ -18,8 +18,8 @@ import { ENGINE_ROOT } from './helpers/enginePaths';
 type AssetTable = readonly (readonly [ string, string ])[];
 
 type LibraryAssetsModule = Readonly<{
-    WORKER_ENTRY_POINTS: AssetTable
     getLibraryAssets: () => AssetTable
+    getWorkerEntryPoints: () => AssetTable
 }>;
 
 async function loadLibraryAssets(): Promise<LibraryAssetsModule> {
@@ -35,9 +35,10 @@ afterEach(() => {
 
 describe('engine asset manifest', () => {
     it('names exactly the workers the build bundles', async () => {
-        const { WORKER_ENTRY_POINTS } = await loadLibraryAssets();
-        const bundledWorkers = WORKER_ENTRY_POINTS.map(([ destination ]) => destination);
-        expect(bundledWorkers.sort()).toEqual([ ...ENGINE_WORKER_PATHS ].sort());
+        const { getWorkerEntryPoints } = await loadLibraryAssets();
+        const bundledWorkers = getWorkerEntryPoints().map(([ destination ]) => destination);
+        expect(bundledWorkers).toHaveLength(ENGINE_WORKER_PATHS.length);
+        expect(new Set(bundledWorkers)).toEqual(new Set(ENGINE_WORKER_PATHS));
     });
 
     it('names only libraries the build copies', async () => {

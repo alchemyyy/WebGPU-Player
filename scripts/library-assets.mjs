@@ -28,8 +28,7 @@ function engineFile(relativePath) {
     return join(ENGINE_ROOT, relativePath);
 }
 
-/** Worker bundles, as destination relative to libraries/ mapped to the esbuild entry point. */
-export const WORKER_ENTRY_POINTS = Object.freeze([
+const WORKER_ENTRY_POINTS = Object.freeze([
     [ 'webgpu-player/CustomDecode.worker.js', engineFile('src/custom/CustomDecode.worker.ts') ],
     [ 'webgpu-player/DTSExactCapabilityProbe.worker.js', engineFile('src/custom/DTSExactCapabilityProbe.worker.ts') ],
     [ 'webgpu-player/HEVCExactCapabilityProbe.worker.js', engineFile('src/custom/HEVCExactCapabilityProbe.worker.ts') ],
@@ -46,6 +45,11 @@ export const WORKER_ENTRY_POINTS = Object.freeze([
         engineFile('src/custom/TrueHDExactCapabilityProbe.worker.ts')
     ]
 ]);
+
+/** Worker bundles, as destination relative to libraries/ mapped to the esbuild entry point. */
+export function getWorkerEntryPoints() {
+    return WORKER_ENTRY_POINTS;
+}
 
 /** Copied files, as destination relative to libraries/ mapped to the source file. */
 export function getLibraryAssets() {

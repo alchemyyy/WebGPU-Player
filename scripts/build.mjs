@@ -8,7 +8,7 @@ import { dirname, join, relative, sep } from 'node:path';
 
 import { build } from 'esbuild';
 
-import { ENGINE_ROOT, getLibraryAssets, WORKER_ENTRY_POINTS } from './library-assets.mjs';
+import { ENGINE_ROOT, getLibraryAssets, getWorkerEntryPoints } from './library-assets.mjs';
 
 const DIST_OUTPUT = join(ENGINE_ROOT, 'dist');
 const LIBRARIES_OUTPUT = join(DIST_OUTPUT, 'libraries');
@@ -55,7 +55,7 @@ for (const [ destination, source ] of getLibraryAssets()) {
 await build({
     absWorkingDir: ENGINE_ROOT,
     bundle: true,
-    entryPoints: WORKER_ENTRY_POINTS.map(([ destination, source ]) => ({
+    entryPoints: getWorkerEntryPoints().map(([ destination, source ]) => ({
         in: source,
         out: destination.replace(/\.js$/u, '')
     })),

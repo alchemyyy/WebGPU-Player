@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "lint": "eslint",
     "test": "vitest --watch=false",
     "typecheck": "tsc --noEmit"
   },
@@ -19,13 +20,39 @@
     "mediabunny": "1.52.2"
   },
   "devDependencies": {
+    "@eslint-community/eslint-plugin-eslint-comments": "4.7.2",
+    "@eslint/js": "9.39.5",
+    "@stylistic/eslint-plugin": "4.4.1",
     "@types/node": "20.11.4",
     "@webgpu/types": "0.1.71",
+    "confusing-browser-globals": "1.0.11",
     "esbuild": "0.25.2",
+    "eslint": "9.39.5",
+    "eslint-plugin-compat": "6.2.1",
+    "eslint-plugin-import": "2.32.0",
+    "eslint-plugin-sonarjs": "3.0.7",
+    "globals": "17.7.0",
     "jsdom": "29.1.1",
     "typescript": "5.9.3",
+    "typescript-eslint": "8.65.0",
     "vite": "6.3.5",
     "vite-tsconfig-paths": "6.1.1",
     "vitest": "3.2.7"
-  }
+  },
+  "browserslist": [
+    "last 2 Firefox versions",
+    "last 2 Chrome versions",
+    "last 2 ChromeAndroid versions",
+    "last 2 Safari versions",
+    "iOS > 10",
+    "last 2 Edge versions",
+    "Chrome 27",
+    "Chrome 38",
+    "Chrome 47",
+    "Chrome 53",
+    "Chrome 56",
+    "Chrome 63",
+    "Edge 18",
+    "Firefox ESR"
+  ]
 }
