@@ -149,7 +149,3 @@ async function handleRequest(value: unknown): Promise<void> {
 workerScope.addEventListener('message', (event: MessageEvent<unknown>): void => {
     void handleRequest(event.data);
 });
-
-// worker-loader replaces this module export with its Worker constructor.
-const WorkerConstructor = null as unknown as { new(): Worker };
-export default WorkerConstructor;

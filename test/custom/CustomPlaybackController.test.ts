@@ -37,10 +37,6 @@ import type {
     CustomVideoDecodeSession
 } from 'webgpu-player/custom/CustomPlaybackControllerTypes';
 
-vi.mock('webgpu-player/custom/CustomDecode.worker', () => ({
-    default: class MockBundledWorker {}
-}));
-
 type ControllerDecodeWorkerMessageHandler = (event: MessageEvent<unknown>) => void;
 
 class ControllerDecodeWorker {

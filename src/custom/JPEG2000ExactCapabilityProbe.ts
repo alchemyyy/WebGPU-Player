@@ -1,4 +1,8 @@
-import JPEG2000ExactCapabilityProbeWorkerConstructor from './JPEG2000ExactCapabilityProbe.worker';
+import {
+    createEngineWorker,
+    resolveEngineAssetURL,
+    type EngineAssetPath
+} from '../EngineAssets';
 import {
     isJPEG2000ExactCapabilityWorkerResponse,
     JPEG2000_EXACT_CAPABILITY_REQUEST_ID,
@@ -23,10 +27,9 @@ export {
 } from './JPEG2000ExactCapabilityProtocol';
 export const JPEG2000_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS = 2_000;
 
-const JPEG2000_DECODER_GLUE_ASSET = 'libraries/openjpeg/openjpeg-decode.js';
-const JPEG2000_DECODER_WASM_ASSET = 'libraries/openjpeg/openjpeg-decode.wasm';
-const JPEG2000_QUALIFICATION_ASSET =
-    'libraries/openjpeg/jpeg2000-960x540-qualification.bin';
+const JPEG2000_DECODER_GLUE_ASSET: EngineAssetPath = 'openjpeg/openjpeg-decode.js';
+const JPEG2000_DECODER_WASM_ASSET: EngineAssetPath = 'openjpeg/openjpeg-decode.wasm';
+const JPEG2000_QUALIFICATION_ASSET: EngineAssetPath = 'openjpeg/jpeg2000-960x540-qualification.bin';
 
 export type JPEG2000ExactCapabilityReason =
     | 'api-unavailable'
@@ -67,7 +70,7 @@ export type JPEG2000ExactCapabilityProbeEnvironment = Readonly<{
     clearTimeout: (timeout: ReturnType<typeof globalThis.setTimeout>) => void
     createWorker: (() => JPEG2000ExactCapabilityProbeWorker) | null
     loadFixture: (url: string) => Promise<ArrayBuffer>
-    resolveAssetURL: (path: string) => string
+    resolveAssetURL: (path: EngineAssetPath) => string
     runtimeAvailable: boolean
     setTimeout: (
         callback: () => void,
@@ -75,16 +78,8 @@ export type JPEG2000ExactCapabilityProbeEnvironment = Readonly<{
     ) => ReturnType<typeof globalThis.setTimeout>
 }>;
 
-function resolveDefaultAssetURL(path: string): string {
-    const locationHref = globalThis.location?.href;
-    if (typeof locationHref !== 'string' || locationHref.length === 0) {
-        return path;
-    }
-    return new URL(path, locationHref).href;
-}
-
 function createDefaultWorker(): JPEG2000ExactCapabilityProbeWorker {
-    const worker = new JPEG2000ExactCapabilityProbeWorkerConstructor();
+    const worker = createEngineWorker('webgpu-player/JPEG2000ExactCapabilityProbe.worker.js');
     return worker as unknown as JPEG2000ExactCapabilityProbeWorker;
 }
 
@@ -111,7 +106,7 @@ function createDefaultEnvironment(): JPEG2000ExactCapabilityProbeEnvironment {
         clearTimeout: (timeout): void => globalThis.clearTimeout(timeout),
         createWorker: runtimeAvailable ? createDefaultWorker : null,
         loadFixture: loadDefaultFixture,
-        resolveAssetURL: resolveDefaultAssetURL,
+        resolveAssetURL: resolveEngineAssetURL,
         runtimeAvailable,
         setTimeout: (callback, milliseconds): ReturnType<typeof globalThis.setTimeout> => (
             globalThis.setTimeout(callback, milliseconds)

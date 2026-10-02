@@ -1,11 +1,12 @@
 import type { EncodedPacket } from 'mediabunny';
 
+import { resolveEngineAssetURL, type EngineAssetPath } from '../EngineAssets';
 import { type Microseconds } from '../MediaTime';
 import { type RawVideoFrameGeometry } from './RawVideoFrameCopy';
 import { requireMicroseconds } from './TimeMath';
 
-const JPEG2000_DECODER_GLUE_ASSET = 'libraries/openjpeg/openjpeg-decode.js';
-const JPEG2000_DECODER_WASM_ASSET = 'libraries/openjpeg/openjpeg-decode.wasm';
+const JPEG2000_DECODER_GLUE_ASSET: EngineAssetPath = 'openjpeg/openjpeg-decode.js';
+const JPEG2000_DECODER_WASM_ASSET: EngineAssetPath = 'openjpeg/openjpeg-decode.wasm';
 const JPEG2000_MAXIMUM_CODED_HEIGHT = 2_160;
 const JPEG2000_MAXIMUM_CODED_WIDTH = 3_840;
 const JPEG2000_MAXIMUM_COMPRESSED_PACKET_BYTE_LENGTH = 64 * 1024 * 1024;
@@ -70,7 +71,7 @@ export type JPEG2000SoftwareVideoDecoderDependencies = {
         init: VideoFrameBufferInit
     ) => VideoFrame
     loadDecoderGlue: (url: string) => void
-    resolveAssetURL: (path: string) => string
+    resolveAssetURL: (path: EngineAssetPath) => string
 };
 
 function isPositiveSafeInteger(value: number): boolean {
@@ -151,15 +152,6 @@ function copyGrayToRGBA(
     return rgba;
 }
 
-function resolveDefaultAssetURL(path: string): string {
-    const workerGlobal = globalThis as ClassicWorkerGlobal;
-    const locationHref = workerGlobal.location?.href;
-    if (typeof locationHref !== 'string' || locationHref.length === 0) {
-        return path;
-    }
-    return new URL(path, locationHref).href;
-}
-
 function loadDefaultDecoderGlue(url: string): void {
     const workerGlobal = globalThis as ClassicWorkerGlobal;
     if (typeof workerGlobal.OpenJPEGWASM === 'function') {
@@ -200,7 +192,7 @@ const DEFAULT_DEPENDENCIES: JPEG2000SoftwareVideoDecoderDependencies = {
     createModule: createDefaultModule,
     createVideoFrame: createDefaultVideoFrame,
     loadDecoderGlue: loadDefaultDecoderGlue,
-    resolveAssetURL: resolveDefaultAssetURL
+    resolveAssetURL: resolveEngineAssetURL
 };
 
 /** Calculates a stable FNV-1a fingerprint over an exact decoded RGBA frame. */

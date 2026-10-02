@@ -4031,7 +4031,4 @@ workerScope.addEventListener('message', event => {
     handleRequest(event.data);
 });
 
-// worker-loader replaces this module export with its Worker constructor.
-const WorkerConstructor = null as unknown as { new(): Worker };
-export default WorkerConstructor;
 /* eslint-enable no-restricted-globals */

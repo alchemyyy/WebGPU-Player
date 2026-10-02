@@ -1,4 +1,8 @@
-import HEVCExactCapabilityProbeWorkerConstructor from './HEVCExactCapabilityProbe.worker';
+import {
+    createEngineWorker,
+    resolveEngineAssetURL,
+    type EngineAssetPath
+} from '../EngineAssets';
 import {
     createHEVCExactCapabilityWorkerQualificationRequests
 } from './HEVCExactCapabilityFixtures';
@@ -16,10 +20,9 @@ import {
     type HEVCExactCapabilityWorkerResponse
 } from './HEVCExactCapabilityProtocol';
 
-const HEVC_DECODER_GLUE_ASSET = 'libraries/hevcjs/hevc-decode.js';
-const HEVC_DECODER_WASM_ASSET = 'libraries/hevcjs/hevc-decode.wasm';
-const HEVC_MAIN10_4K_QUALIFICATION_ASSET =
-    'libraries/hevcjs/main10-4k-qualification.bin';
+const HEVC_DECODER_GLUE_ASSET: EngineAssetPath = 'hevcjs/hevc-decode.js';
+const HEVC_DECODER_WASM_ASSET: EngineAssetPath = 'hevcjs/hevc-decode.wasm';
+const HEVC_MAIN10_4K_QUALIFICATION_ASSET: EngineAssetPath = 'hevcjs/main10-4k-qualification.bin';
 
 export type BundledHEVCExactCapabilityStatus = 'supported' | 'unsupported';
 export type BundledHEVCExactCapabilityReason =
@@ -71,7 +74,7 @@ export type HEVCExactCapabilityProbeEnvironment = Readonly<{
     clearTimeout: (timeout: ReturnType<typeof globalThis.setTimeout>) => void
     createWorker: (() => HEVCExactCapabilityProbeWorker) | null
     loadQualificationBitstream: (url: string) => Promise<ArrayBuffer>
-    resolveAssetURL: (path: string) => string
+    resolveAssetURL: (path: EngineAssetPath) => string
     runtimeAvailable: boolean
     setTimeout: (
         callback: () => void,
@@ -79,16 +82,8 @@ export type HEVCExactCapabilityProbeEnvironment = Readonly<{
     ) => ReturnType<typeof globalThis.setTimeout>
 }>;
 
-function resolveDefaultAssetURL(path: string): string {
-    const locationHref = globalThis.location?.href;
-    if (typeof locationHref !== 'string' || locationHref.length === 0) {
-        return path;
-    }
-    return new URL(path, locationHref).href;
-}
-
 function createDefaultWorker(): HEVCExactCapabilityProbeWorker {
-    const worker = new HEVCExactCapabilityProbeWorkerConstructor();
+    const worker = createEngineWorker('webgpu-player/HEVCExactCapabilityProbe.worker.js');
     return worker as unknown as HEVCExactCapabilityProbeWorker;
 }
 
@@ -113,7 +108,7 @@ function createDefaultEnvironment(): HEVCExactCapabilityProbeEnvironment {
         clearTimeout: (timeout): void => globalThis.clearTimeout(timeout),
         createWorker: runtimeAvailable ? createDefaultWorker : null,
         loadQualificationBitstream: loadDefaultQualificationBitstream,
-        resolveAssetURL: resolveDefaultAssetURL,
+        resolveAssetURL: resolveEngineAssetURL,
         runtimeAvailable,
         setTimeout: (callback, milliseconds): ReturnType<typeof globalThis.setTimeout> => (
             globalThis.setTimeout(callback, milliseconds)

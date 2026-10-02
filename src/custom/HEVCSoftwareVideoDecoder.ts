@@ -20,12 +20,13 @@ import {
     type HEVCSPSColorSpace,
     type HEVCSPSConfiguration
 } from './HEVCSPSParser';
+import { resolveEngineAssetURL, type EngineAssetPath } from '../EngineAssets';
 import { microsecondsToSeconds, type Microseconds } from '../MediaTime';
 import { requireMicroseconds } from './TimeMath';
 
 const ANNEX_B_START_CODE = new Uint8Array([ 0, 0, 0, 1 ]);
-const HEVC_DECODER_GLUE_ASSET = 'libraries/hevcjs/hevc-decode.js';
-const HEVC_DECODER_WASM_ASSET = 'libraries/hevcjs/hevc-decode.wasm';
+const HEVC_DECODER_GLUE_ASSET: EngineAssetPath = 'hevcjs/hevc-decode.js';
+const HEVC_DECODER_WASM_ASSET: EngineAssetPath = 'hevcjs/hevc-decode.wasm';
 const HEVC_MAIN_PROFILE_IDC = 1;
 const HEVC_MAIN_10_PROFILE_IDC = 2;
 const HEVC_VPS_NAL_UNIT_TYPE = 32;
@@ -59,7 +60,7 @@ type HEVCTiming = {
 export type HEVCSoftwareVideoDecoderDependencies = {
     createDecoder: (options: DecoderOptions) => Promise<HEVCDecoderBackend>
     loadDecoderGlue: (url: string) => void
-    resolveAssetURL: (path: string) => string
+    resolveAssetURL: (path: EngineAssetPath) => string
 };
 
 export type HEVCDecoderConfiguration = {
@@ -544,15 +545,6 @@ function supportsHEVCConfiguration(codec: VideoCodec, config: VideoDecoderConfig
     }
 }
 
-function resolveDefaultAssetURL(path: string): string {
-    const workerGlobal = globalThis as ClassicWorkerGlobal;
-    const locationHref = workerGlobal.location?.href;
-    if (typeof locationHref !== 'string' || !locationHref) {
-        return path;
-    }
-    return new URL(path, locationHref).href;
-}
-
 function loadDefaultDecoderGlue(url: string): void {
     const workerGlobal = globalThis as ClassicWorkerGlobal;
     if (typeof workerGlobal.HEVCDecoderModule === 'function') {
@@ -571,7 +563,7 @@ function loadDefaultDecoderGlue(url: string): void {
 const DEFAULT_DEPENDENCIES: HEVCSoftwareVideoDecoderDependencies = {
     createDecoder: createHEVCDecoderBackend,
     loadDecoderGlue: loadDefaultDecoderGlue,
-    resolveAssetURL: resolveDefaultAssetURL
+    resolveAssetURL: resolveEngineAssetURL
 };
 
 function insertTiming(timings: HEVCTiming[], timing: HEVCTiming): void {

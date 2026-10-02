@@ -1,4 +1,4 @@
-import CustomDecodeWorker from './CustomDecode.worker';
+import { createEngineWorker } from '../EngineAssets';
 import type { Microseconds } from '../MediaTime';
 import type { DecodedPresentationFrame } from '../WebGPUPresenter';
 import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
@@ -256,7 +256,7 @@ function createTelemetry(): CustomDecodeSessionTelemetry {
 }
 
 function createDefaultWorker(): Worker {
-    return new CustomDecodeWorker();
+    return createEngineWorker('webgpu-player/CustomDecode.worker.js');
 }
 
 function isValidGeneration(generation: number): boolean {

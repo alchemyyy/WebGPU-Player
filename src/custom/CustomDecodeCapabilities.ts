@@ -60,6 +60,7 @@ import type {
     CustomAudioCodec,
     CustomBundledAudioCodec
 } from './CustomAudioCodec';
+import { resolveEngineAssetURL, type EngineLibraryPath } from '../EngineAssets';
 
 export {
     CUSTOM_AUDIO_CODECS,
@@ -304,7 +305,7 @@ type RawHDRVideoFrameCopyToOptions = Omit<VideoFrameCopyToOptions, 'format'> & {
 };
 
 export type HEVCRangeExtensionFixtureLoader = (
-    assetPath: string
+    assetPath: EngineLibraryPath
 ) => Promise<ArrayBuffer>;
 
 export type WebCodecsCapabilityEnvironment = {
@@ -1387,12 +1388,8 @@ export function createNativeHDRVideoOutputProbe(): NativeDolbyVisionVideoOutputP
     return createNativeDolbyVisionVideoOutputProbe();
 }
 
-async function loadHEVCRangeExtensionFixture(assetPath: string): Promise<ArrayBuffer> {
-    const locationHref = globalThis.location?.href;
-    const assetURL = typeof locationHref === 'string' && locationHref.length > 0 ?
-        new URL(assetPath, locationHref).href :
-        assetPath;
-    const response = await fetch(assetURL, {
+async function loadHEVCRangeExtensionFixture(assetPath: EngineLibraryPath): Promise<ArrayBuffer> {
+    const response = await fetch(resolveEngineAssetURL(assetPath), {
         cache: 'force-cache',
         credentials: 'same-origin',
         redirect: 'error'

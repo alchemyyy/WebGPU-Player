@@ -11,9 +11,9 @@ import {
     MAXIMUM_DOLBY_VISION_RPU_PIVOT_COUNT,
     MAXIMUM_DOLBY_VISION_RPU_SEGMENT_COUNT
 } from './DolbyVisionRPUDataLayout';
+import { resolveEngineAssetURL, type EngineAssetPath } from '../EngineAssets';
 
-export const DOLBY_VISION_RPU_PARSER_WASM_ASSET =
-    'libraries/libdovi/dovi-rpu-parser.wasm';
+export const DOLBY_VISION_RPU_PARSER_WASM_ASSET: EngineAssetPath = 'libdovi/dovi-rpu-parser.wasm';
 export const DOLBY_VISION_RPU_SCHEMA_VERSION = 1;
 export const DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH = 3_232;
 export const DOLBY_VISION_RPU_PARSER_REVISION_PREFIX = 0x38AD_EC04;
@@ -137,13 +137,9 @@ const DEFAULT_DEPENDENCIES: DolbyVisionRPUParserDependencies = {
     loadInstance: loadDefaultInstance
 };
 
-/** Resolves the copied parser artifact against the active Jellyfin frontend. */
-export function resolveDolbyVisionRPUParserWASMURL(
-    baseURL: string | undefined = globalThis.location?.href
-): string {
-    return baseURL ?
-        new URL(DOLBY_VISION_RPU_PARSER_WASM_ASSET, baseURL).href :
-        DOLBY_VISION_RPU_PARSER_WASM_ASSET;
+/** Resolves the parser module against the engine asset base. */
+export function resolveDolbyVisionRPUParserWASMURL(): string {
+    return resolveEngineAssetURL(DOLBY_VISION_RPU_PARSER_WASM_ASSET);
 }
 
 function getWASMFunction(

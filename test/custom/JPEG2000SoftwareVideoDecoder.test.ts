@@ -82,7 +82,7 @@ function createHarness(options: FakeDecoderOptions = {}): DecoderHarness {
     );
     const loadDecoderGlue = vi.fn<(url: string) => void>();
     const resolveAssetURL = vi.fn<(path: string) => string>(
-        (path: string): string => `https://example.test/${path}`
+        (path: string): string => `https://example.test/libraries/${path}`
     );
     return {
         createModule,
@@ -110,11 +110,11 @@ describe('JPEG2000SoftwareVideoDecoder', () => {
 
         expect(harness.resolveAssetURL).toHaveBeenNthCalledWith(
             1,
-            'libraries/openjpeg/openjpeg-decode.js'
+            'openjpeg/openjpeg-decode.js'
         );
         expect(harness.resolveAssetURL).toHaveBeenNthCalledWith(
             2,
-            'libraries/openjpeg/openjpeg-decode.wasm'
+            'openjpeg/openjpeg-decode.wasm'
         );
         expect(harness.loadDecoderGlue).toHaveBeenCalledOnce();
         expect(harness.createModule).toHaveBeenCalledWith(

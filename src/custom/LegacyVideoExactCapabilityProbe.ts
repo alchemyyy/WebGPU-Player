@@ -1,5 +1,8 @@
-import LegacyVideoExactCapabilityProbeWorkerConstructor from
-    './LegacyVideoExactCapabilityProbe.worker';
+import {
+    createEngineWorker,
+    resolveEngineAssetURL,
+    type EngineAssetPath
+} from '../EngineAssets';
 import {
     getLegacyVideoQualification,
     isLegacyVideoExactCapabilityWorkerResponse,
@@ -32,14 +35,12 @@ export {
 
 export const LEGACY_VIDEO_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS = 5_000;
 
-const LEGACY_VIDEO_DECODER_GLUE_ASSET =
-    'libraries/legacy-video/legacy-video-decode.js';
-const LEGACY_VIDEO_DECODER_WASM_ASSET =
-    'libraries/legacy-video/legacy-video-decode.wasm';
-const LEGACY_VIDEO_QUALIFICATION_ASSET =
-    'libraries/legacy-video/mpeg2-progressive-1920x1080-qualification.bin';
-const VC1_VIDEO_QUALIFICATION_ASSET =
-    'libraries/legacy-video/vc1-advanced-progressive-1920x1080-qualification.bin';
+const LEGACY_VIDEO_DECODER_GLUE_ASSET: EngineAssetPath = 'legacy-video/legacy-video-decode.js';
+const LEGACY_VIDEO_DECODER_WASM_ASSET: EngineAssetPath = 'legacy-video/legacy-video-decode.wasm';
+const LEGACY_VIDEO_QUALIFICATION_ASSET: EngineAssetPath =
+    'legacy-video/mpeg2-progressive-1920x1080-qualification.bin';
+const VC1_VIDEO_QUALIFICATION_ASSET: EngineAssetPath =
+    'legacy-video/vc1-advanced-progressive-1920x1080-qualification.bin';
 
 export type LegacyVideoExactCapabilityReason =
     | 'api-unavailable'
@@ -80,7 +81,7 @@ export type LegacyVideoExactCapabilityProbeEnvironment = Readonly<{
     clearTimeout: (timeout: ReturnType<typeof globalThis.setTimeout>) => void
     createWorker: (() => LegacyVideoExactCapabilityProbeWorker) | null
     loadFixture: (url: string) => Promise<ArrayBuffer>
-    resolveAssetURL: (path: string) => string
+    resolveAssetURL: (path: EngineAssetPath) => string
     runtimeAvailable: boolean
     setTimeout: (
         callback: () => void,
@@ -88,16 +89,8 @@ export type LegacyVideoExactCapabilityProbeEnvironment = Readonly<{
     ) => ReturnType<typeof globalThis.setTimeout>
 }>;
 
-function resolveDefaultAssetURL(path: string): string {
-    const locationHref = globalThis.location?.href;
-    if (typeof locationHref !== 'string' || locationHref.length === 0) {
-        return path;
-    }
-    return new URL(path, locationHref).href;
-}
-
 function createDefaultWorker(): LegacyVideoExactCapabilityProbeWorker {
-    const worker = new LegacyVideoExactCapabilityProbeWorkerConstructor();
+    const worker = createEngineWorker('webgpu-player/LegacyVideoExactCapabilityProbe.worker.js');
     return worker as unknown as LegacyVideoExactCapabilityProbeWorker;
 }
 
@@ -121,7 +114,7 @@ function createDefaultEnvironment(): LegacyVideoExactCapabilityProbeEnvironment 
         clearTimeout: (timeout): void => globalThis.clearTimeout(timeout),
         createWorker: runtimeAvailable ? createDefaultWorker : null,
         loadFixture: loadDefaultFixture,
-        resolveAssetURL: resolveDefaultAssetURL,
+        resolveAssetURL: resolveEngineAssetURL,
         runtimeAvailable,
         setTimeout: (callback, milliseconds): ReturnType<typeof globalThis.setTimeout> => (
             globalThis.setTimeout(callback, milliseconds)
