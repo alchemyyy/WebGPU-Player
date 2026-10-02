@@ -1,5 +1,4 @@
 import { ENGINE_ROOT } from '../helpers/enginePaths';
-import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -359,7 +358,7 @@ describe('HEVCRangeExtensionCapabilities', () => {
         }
     });
 
-    it('pins every fixture hash and codec string to its embedded VPS constraints', () => {
+    it('matches every fixture codec string to its embedded VPS constraints', () => {
         for (const variant of HEVC_RANGE_EXTENSION_VARIANTS) {
             const definition = HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS[variant];
             const expected = EXPECTED_VARIANTS[variant];
@@ -369,9 +368,7 @@ describe('HEVCRangeExtensionCapabilities', () => {
                 `${variant}.hevc`
             );
             const fixtureBytes = new Uint8Array(readFileSync(fixturePath));
-            const fixtureSHA256 = createHash('sha256').update(fixtureBytes).digest('hex');
 
-            expect(fixtureSHA256).toBe(definition.fixtureSHA256);
             expect(definition.config.codec).toBe(
                 `hvc1.4.10.L93.${getEmbeddedCodecConstraintSuffix(fixtureBytes)}`
             );

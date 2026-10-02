@@ -5,20 +5,6 @@ import {
     type HEVCExactCapabilityWorkerQualificationRequest
 } from './HEVCExactCapabilityProtocol';
 
-const MAIN_1080P_ACCESS_UNIT_SHA256 =
-    '55a926204c9eb76a1b36be2332fc2195bda8f78c9d3bda869b9abbcc367832d4';
-const MAIN10_1080P_ACCESS_UNIT_SHA256 =
-    '67c3c7a788c076a9e71c82ad8204d1403bee29e99f7ad37b59be25da6fad398e';
-const MAIN10_4K_ACCESS_UNIT_SHA256 =
-    '05d0c0c34602949c95be9974c3b62275f1de0f803fa84cd8eb42806c6fa09a0d';
-
-const MAIN_1080P_QUALIFICATION_BITSTREAM_SHA256 =
-    '2166e4c47e4285cae391d360b7fb794c2364c528ee6db1860ed957d09e3f61c7';
-const MAIN10_1080P_QUALIFICATION_BITSTREAM_SHA256 =
-    '2e08094f02875d4e2855771120013f9688a3105e719588ce7f51121ef67eca21';
-const MAIN10_4K_QUALIFICATION_BITSTREAM_SHA256 =
-    '0b320b24dbecb054276fcf4412c8ad24f9f3478d2f406f86410ad46869acce7b';
-
 // Regeneration recipe using FFmpeg git-862338fe31 and x265 4.1+225-1b48507eb
 // PowerShell: $common = 'high-tier=0:keyint=30:min-keyint=1:scenecut=0:bframes=0:' +
 // 'repeat-headers=1:annexb=1:info=0:pools=1:frame-threads=1:wpp=0'
@@ -62,24 +48,6 @@ const INLINE_QUALIFICATION_BITSTREAM_BASE64: Readonly<Partial<Record<
 >>> = Object.freeze({
     'main-1080p': MAIN_1080P_QUALIFICATION_BITSTREAM_BASE64,
     'main10-1080p': MAIN10_1080P_QUALIFICATION_BITSTREAM_BASE64
-});
-
-export const HEVC_EXACT_CAPABILITY_ACCESS_UNIT_SHA256: Readonly<Record<
-    HEVCExactCapabilityFixture,
-    string
->> = Object.freeze({
-    'main-1080p': MAIN_1080P_ACCESS_UNIT_SHA256,
-    'main10-1080p': MAIN10_1080P_ACCESS_UNIT_SHA256,
-    'main10-4k': MAIN10_4K_ACCESS_UNIT_SHA256
-});
-
-export const HEVC_EXACT_CAPABILITY_QUALIFICATION_BITSTREAM_SHA256: Readonly<Record<
-    HEVCExactCapabilityFixture,
-    string
->> = Object.freeze({
-    'main-1080p': MAIN_1080P_QUALIFICATION_BITSTREAM_SHA256,
-    'main10-1080p': MAIN10_1080P_QUALIFICATION_BITSTREAM_SHA256,
-    'main10-4k': MAIN10_4K_QUALIFICATION_BITSTREAM_SHA256
 });
 
 function decodeBase64(value: string): Uint8Array {

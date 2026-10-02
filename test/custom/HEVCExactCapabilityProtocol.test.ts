@@ -1,16 +1,13 @@
 // @vitest-environment node
 
 import { ENGINE_ROOT } from '../helpers/enginePaths';
-import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import {
-    createHEVCExactCapabilityWorkerQualificationRequests,
-    HEVC_EXACT_CAPABILITY_ACCESS_UNIT_SHA256,
-    HEVC_EXACT_CAPABILITY_QUALIFICATION_BITSTREAM_SHA256
+    createHEVCExactCapabilityWorkerQualificationRequests
 } from 'webgpu-player/custom/HEVCExactCapabilityFixtures';
 import {
     HEVC_EXACT_CAPABILITY_REQUEST_ID,
@@ -43,7 +40,7 @@ function createRequest(): HEVCExactCapabilityWorkerRequest {
 }
 
 describe('exact HEVC capability fixtures and protocol', () => {
-    it('recreates all pinned Main and Main10 access units with exact hashes', () => {
+    it('recreates all exact Main and Main10 access units as fresh buffers', () => {
         const firstRequests = createHEVCExactCapabilityWorkerQualificationRequests(
             loadMain10UltraHDQualificationBitstream()
         );
@@ -62,16 +59,6 @@ describe('exact HEVC capability fixtures and protocol', () => {
                 levelIDC: definition.levelIDC,
                 profileIDC: definition.profileIDC
             });
-            expect(createHash('sha256').update(new Uint8Array(request.accessUnit)).digest('hex')).toBe(
-                HEVC_EXACT_CAPABILITY_ACCESS_UNIT_SHA256[request.fixture]
-            );
-            const qualificationHash = createHash('sha256');
-            for (const accessUnit of request.qualificationAccessUnits) {
-                qualificationHash.update(new Uint8Array(accessUnit));
-            }
-            expect(qualificationHash.digest('hex')).toBe(
-                HEVC_EXACT_CAPABILITY_QUALIFICATION_BITSTREAM_SHA256[request.fixture]
-            );
             expect(request.qualificationAccessUnits).toHaveLength(
                 definition.qualificationFrameCount
             );

@@ -76,7 +76,6 @@ export type HEVCRangeExtensionProbeDefinition = Readonly<{
     bitDepth: HEVCRangeExtensionBitDepth
     chromaFormat: HEVCRangeExtensionChromaFormat
     config: VideoDecoderConfig
-    fixtureSHA256: string
     format: HEVCRangeExtensionRawFormat
     jellyfinProfile: string
     pixelFormat: HEVCRangeExtensionPixelFormat
@@ -89,7 +88,6 @@ const FIXTURE_CODED_WIDTH = 192;
 type HEVCRangeExtensionFixtureEvidence = Readonly<{
     accessUnits: readonly HEVCRangeExtensionProbeAccessUnit[]
     codecString: string
-    fixtureSHA256: string
 }>;
 
 function parseOptionalBitDepth(value: unknown): number | null {
@@ -123,7 +121,6 @@ function createDefinition(
             hardwareAcceleration: getCustomDecodeHardwareAcceleration('raw-planes', 'native'),
             optimizeForLatency: true
         },
-        fixtureSHA256: evidence.fixtureSHA256,
         format,
         jellyfinProfile,
         pixelFormat,
@@ -158,8 +155,7 @@ export const HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS: Readonly<Record<
                     type: 'delta'
                 }
             ],
-            codecString: 'hvc1.4.10.L93.9F.88',
-            fixtureSHA256: '7cecbf5129d187d90a1434e3b80cea9c90bfb15a6156b6de5114353bf278ecc4'
+            codecString: 'hvc1.4.10.L93.9F.88'
         }
     ),
     'rext420-10': createDefinition(
@@ -184,8 +180,7 @@ export const HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS: Readonly<Record<
                     type: 'delta'
                 }
             ],
-            codecString: 'hvc1.4.10.L93.9D.88',
-            fixtureSHA256: '59fbe3b5832ca72f6df3f64220ac71637760afb5f5ac8d2c227def4c93e823e2'
+            codecString: 'hvc1.4.10.L93.9D.88'
         }
     ),
     'main12-420': createDefinition(
@@ -210,8 +205,7 @@ export const HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS: Readonly<Record<
                     type: 'delta'
                 }
             ],
-            codecString: 'hvc1.4.10.L93.99.88',
-            fixtureSHA256: '6e8c6e28a8380740cb21aef29a8864a81d56b7a686424a1944f0abe3c7b61279'
+            codecString: 'hvc1.4.10.L93.99.88'
         }
     ),
     'main422-8': createDefinition(
@@ -236,8 +230,7 @@ export const HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS: Readonly<Record<
                     type: 'delta'
                 }
             ],
-            codecString: 'hvc1.4.10.L93.9D.08',
-            fixtureSHA256: '32a61c466d8b6daeff30637b9772d3cf93b1e9c24d01bfdee657f4a1158dc5a9'
+            codecString: 'hvc1.4.10.L93.9D.08'
         }
     ),
     'main422-10': createDefinition(
@@ -262,8 +255,7 @@ export const HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS: Readonly<Record<
                     type: 'delta'
                 }
             ],
-            codecString: 'hvc1.4.10.L93.9D.08',
-            fixtureSHA256: '248eb64dbb2bb30ecd689e453a38dcf34125af51c205f7c5da8577a0228639e5'
+            codecString: 'hvc1.4.10.L93.9D.08'
         }
     ),
     'main422-12': createDefinition(
@@ -288,8 +280,7 @@ export const HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS: Readonly<Record<
                     type: 'delta'
                 }
             ],
-            codecString: 'hvc1.4.10.L93.99.08',
-            fixtureSHA256: '8f2c49f6425f8c02baff21e4bed394b0d2e6a4cfb8e9944f09531e64d6b376ee'
+            codecString: 'hvc1.4.10.L93.99.08'
         }
     ),
     'main444-8': createDefinition(
@@ -314,8 +305,7 @@ export const HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS: Readonly<Record<
                     type: 'delta'
                 }
             ],
-            codecString: 'hvc1.4.10.L93.9E.08',
-            fixtureSHA256: 'aec47464fedf08340786534406f45480cfd5ea833547cf6be6fb6360c3f82cb5'
+            codecString: 'hvc1.4.10.L93.9E.08'
         }
     ),
     'main444-10': createDefinition(
@@ -340,8 +330,7 @@ export const HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS: Readonly<Record<
                     type: 'delta'
                 }
             ],
-            codecString: 'hvc1.4.10.L93.9C.08',
-            fixtureSHA256: '0b7da32d89ed1e00101e515ca190b4927385421a694daab05cad073a29708c57'
+            codecString: 'hvc1.4.10.L93.9C.08'
         }
     ),
     'main444-12': createDefinition(
@@ -366,8 +355,7 @@ export const HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS: Readonly<Record<
                     type: 'delta'
                 }
             ],
-            codecString: 'hvc1.4.10.L93.98.08',
-            fixtureSHA256: '58d60de348dcf1be311912182920df269538d00e8a095d1733a9f683f561c442'
+            codecString: 'hvc1.4.10.L93.98.08'
         }
     )
 });

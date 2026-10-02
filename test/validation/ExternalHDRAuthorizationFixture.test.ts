@@ -40,9 +40,7 @@ describe('ExternalHDRAuthorizationFixture', () => {
         const configuration = parseHEVCSPS(findAnnexBNALUnit(accessUnit, 33));
 
         expect(accessUnit).toHaveLength(4_471);
-        expect(createHash('sha256').update(accessUnit).digest('hex')).toBe(
-            '9d887b9cf249f44a283b92c466791cbad357bea11f3eb9b246b01338304cd098'
-        );
+        // The runtime shader signature embeds this digest, so it must describe the embedded bytes
         expect(EXTERNAL_HDR_AUTHORIZATION_FIXTURE_SHA256).toBe(
             createHash('sha256').update(accessUnit).digest('hex')
         );
