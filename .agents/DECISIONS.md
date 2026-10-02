@@ -133,9 +133,10 @@ Web fork's `webgpu-player` branch, where the engine was developed until the
   - The WebGPU/WebCodecs engine lives in
     [WebGPU Player](https://github.com/alchemyyy/WebGPU-Player). It is MIT;
     vendored decoders keep their own licenses.
-  - The fork checks it out as the `src/webgpu-player/` submodule and imports it
-    as `webgpu-player/*`. The fork keeps only the Jellyfin integration in
-    `src/plugins/webGPUPlayer/`.
+  - The fork checks it out as the `vendor/webgpu-player/` submodule and
+    imports it as `webgpu-player/*`. The fork keeps only the Jellyfin
+    integration in `src/plugins/webGPUPlayer/`. Its integration tests live in
+    `vendor/webgpu-player-integ-tests/`.
   - Engine code cannot live under the host's `src/plugins`. The plugin
     loader's `` import(`../plugins/${pluginSpec}`) `` context makes webpack
     bundle every file there.
@@ -145,8 +146,8 @@ Web fork's `webgpu-player` branch, where the engine was developed until the
   engine's dependencies, so the fork lists only what it uses directly. Inside
   the fork the engine has no `node_modules` of its own, so its tooling finds
   packages by walking up from the engine root. The fork's `tsconfig.json`
-  excludes the engine's tests and tooling, and its Vitest config excludes the
-  engine, which runs its own suites with `npm test -w webgpu-player`.
+  includes only the engine's `src`, and its Vitest config excludes the engine,
+  which runs its own suites with `npm test -w webgpu-player`.
 - **`WebGPUPlayer.ts` stays in the fork (10-02).** It implements jellyfin-web's
   player contract: events, `PLAYBACK_SUPERSEDED`, device profiles, the HTML
   delegate, and user settings. Moving it would make the engine Jellyfin-aware,
@@ -180,9 +181,14 @@ Web fork's `webgpu-player` branch, where the engine was developed until the
 
 ## Transport
 
-- **hls.js is a local fork (08-09, host).** The host's `package.json` uses
-  `"hls.js": "file:../hls.js"` (sibling repository, branch `fix/cals2`). The
-  fork streams partial `mdat` after a complete `moof` plus `mdat` header to
-  stay under the MSE quota on very high bitrate fMP4. The `hls.js-webgpu` alias
-  was removed. Build `../hls.js` first (`build_hls.bat`). This dependency does
-  not resolve on a clean clone.
+- **hls.js is a local fork (08-09, host).** The hls.js fork streams partial
+  `mdat` after a complete `moof` plus `mdat` header to stay under the MSE
+  quota on very high bitrate fMP4. The `hls.js-webgpu` alias was removed.
+- **hls.js is vendored as a submodule (10-02, host).** The fork checks
+  `alchemyyy/hls.js` (branch `fix/cals2`) out at `vendor/webgpu-player-hls/`
+  and depends on it with `"hls.js": "file:vendor/webgpu-player-hls"`, so a
+  clean clone resolves it once the submodule is built. It replaced a sibling
+  checkout, whose `dist` had silently gone stale. `.npmrc` sets
+  `install-links=true`: npm copies the package instead of linking it, because a
+  link to a folder inside the project makes npm install hls.js's dev
+  dependencies into the fork.

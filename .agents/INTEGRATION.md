@@ -1,7 +1,7 @@
 # Integration, Build, and Tooling
 
 Engine paths are relative to this repository. Host paths are relative to the
-Jellyfin Web fork's root, where this repository is the `src/webgpu-player/`
+Jellyfin Web fork's root, where this repository is the `vendor/webgpu-player/`
 submodule and an npm workspace.
 
 ## Engine build and checks
@@ -49,8 +49,8 @@ on the fork's workspace, not on the engine alone.
 
 ### Submodule workflow
 
-`src/webgpu-player/` in the fork is this repository at a pinned commit. Commit
-an engine change here first, then commit the new pointer in the fork. Push the
+`vendor/webgpu-player/` in the fork is this repository at a pinned commit.
+Commit an engine change here first, then commit the new pointer in the fork. Push the
 engine before the fork, so the fork never pins an unpublished commit.
 
 ### Footprint outside the plugin
@@ -69,14 +69,16 @@ Diff base: `git merge-base HEAD upstream/master` in the fork.
 | `src/plugins/syncPlay/ui/players/HtmlVideoPlayer.js`, `src/apps/legacy/.../playback/*` | `PlaybackRate` support check; OSD listener leak fix; `PlayerEvent.SourceRenegotiationRequired` |
 | `src/components/playbackSettings/*`, `src/scripts/settings/userSettings.js` | Preferred video player and downmix algorithm settings, stored locally only |
 | `src/scripts/settings/webSettings.js`, `src/types/webConfig.ts`, `src/config.json` | `enableWebGPU*` flags; `getPlugins()` always places `webGPUPlayer/plugin` before `htmlVideoPlayer/plugin` |
-| `src/webgpu-player/`, `.gitmodules` | This engine as a submodule, imported as `webgpu-player/*`. It sits outside `src/plugins`, so the plugin loader's import context does not bundle it |
-| `tsconfig.json`, `webpack.common.js` | Resolve `webgpu-player/*` to `src/webgpu-player/src/*` (Vitest follows the tsconfig paths). `tsconfig.json` excludes the engine's tests, tools, codecs, and build output, so `tsc` checks only its `src` |
-| `vite.config.ts` | Excludes `src/webgpu-player/**`; the engine runs its own suites with its own configuration |
-| `webpack.common.js` | Runs `src/webgpu-player/scripts/build.mjs` at config load (`--production` for production builds), copies `src/webgpu-player/dist/libraries` to `dist/libraries/`, and defines `__WEBGPU_PLAYER_ASSET_KEY__` from `src/webgpu-player/dist/build-info.json`; keeps `new URL()` module assets out of babel so the libbitsub worker can import its verbatim glue (`dist/libbitsub.*.js`) |
-| `eslint.config.mjs` | Lints the engine's `src` and `test` with the app rules, and ignores its tooling, codecs, and build output |
+| `vendor/webgpu-player/`, `vendor/webgpu-player-hls/`, `.gitmodules` | Two submodules: this engine, imported as `webgpu-player/*`, and the patched hls.js (`alchemyyy/hls.js`, branch `fix/cals2`) |
+| `vendor/webgpu-player-integ-tests/` | The fork's integration tests; upstream keeps its tests beside the sources in `src` |
+| `tsconfig.json`, `webpack.common.js` | Resolve `webgpu-player/*` to `vendor/webgpu-player/src/*` (Vitest follows the tsconfig paths). `tsc` checks `src`, the engine's `src`, and the integration tests |
+| `vite.config.ts` | Excludes both submodules; the engine and hls.js run their own suites |
+| `webpack.common.js` | Runs `vendor/webgpu-player/scripts/build.mjs` at config load (`--production` for production builds), copies `vendor/webgpu-player/dist/libraries` to `dist/libraries/`, and defines `__WEBGPU_PLAYER_ASSET_KEY__` from `vendor/webgpu-player/dist/build-info.json`; keeps `new URL()` module assets out of babel so the libbitsub worker can import its verbatim glue (`dist/libbitsub.*.js`) |
+| `eslint.config.mjs` | Lints the integration tests and the engine's `src` and `test` with the app rules; ignores the engine's tooling, codecs, and build output, and all of hls.js |
+| `.npmrc` | `install-links=true`, so npm copies the vendored hls.js into `node_modules` instead of linking it. A link to a folder inside the project would also install hls.js's dev dependencies |
 | `.escheckrc` | Excludes the engine-served `dist/libraries/` subtrees, which run only in WebGPU-capable browsers |
 | `src/global.d.ts`, `src/types/webgpu.d.ts` | Declare `__WEBGPU_PLAYER_ASSET_KEY__` and load the `@webgpu/types` declarations |
-| `package.json` | `"workspaces": ["src/webgpu-player"]`, so npm installs the engine's dependencies, including `esbuild` for its asset build; `@webgpu/types` for the fork's own type check; `"hls.js": "file:../hls.js"` plus an `overrides` entry that resolves libbitsub's optional `hls.js` peer to the same link |
+| `package.json` | `"workspaces": ["vendor/webgpu-player"]`, so npm installs the engine's dependencies, including `esbuild` for its asset build; `@webgpu/types` for the fork's own type check; `"hls.js": "file:vendor/webgpu-player-hls"` plus an `overrides` entry that resolves libbitsub's optional `hls.js` peer to the same package |
 
 Enhancements unrelated to the WebGPU player live on the fork's `master` branch,
 not here: the About section, client-side HDR tone mapping for HLS, the detected
@@ -109,13 +111,14 @@ aspect ratio option, and the HLS resume, startup timeout, and worker path fixes.
 From the fork root:
 
 - `npm test`: Vitest (jsdom). Fork integration tests live under
-  `src/webgpu-player-integ-tests`, upstream tests beside their sources in `src`.
+  `vendor/webgpu-player-integ-tests`, upstream tests beside their sources in
+  `src`.
 - `npm test -- <files>`: focused test run.
 - `npm test -w webgpu-player`, `npm run typecheck -w webgpu-player`, and
   `npm run lint -w webgpu-player`: the engine's own checks, run in its folder
   against the fork's `node_modules`.
-- `npm run build:check`: `tsc --noEmit` over `src`, including the engine's
-  `src` but not its tests.
+- `npm run build:check`: `tsc --noEmit` over `src`, the integration tests, and
+  the engine's `src`, but not the engine's tests.
 - `npm run lint` (whole repo) or `npm run lint -- <files>`. Engine sources and
   tests must pass both this and the engine's own lint.
 - `npm run build:development`, `npm run build:production` (production adds
@@ -126,7 +129,7 @@ From the fork root:
 From the workspace's `@jellyfin_local_testing_server/`:
 
 ```bat
-..\build_hls.bat                        :: first, and after every ../hls.js change
+..\build_hls.bat                        :: first, and after every vendored hls.js change
 build_all.bat webgpu                    :: backend publish + web build/deploy (server stopped)
 launch_server.bat                       :: Jellyfin 127.0.0.1:8096 + Caddy HTTPS localhost:8920 (/web/)
 build_web.bat webgpu                    :: incremental dev build + deploy, no restart
@@ -152,25 +155,29 @@ so read `quality_status`.
 - Fully reload the browser after a web-only deploy. Open pages keep their old
   bundles; engine workers and decoders change their `?v=` key with each build.
 - Clone the fork with submodules (`git submodule update --init`). Without
-  `src/webgpu-player/`, the webpack config fails at load.
+  `vendor/webgpu-player/`, the webpack config fails at load.
 - `node_modules/webgpu-player` is npm's workspace junction to
-  `src/webgpu-player`, and `node_modules/hls.js` is a junction to `../hls.js`.
-  Remove junctions alone (`rmdir`) before deleting `node_modules` with a tool
-  that might follow them, or it deletes the engine checkout or the hls.js
-  repository.
+  `vendor/webgpu-player`. Remove it alone (`rmdir`) before deleting
+  `node_modules` with a tool that might follow it, or it deletes the engine
+  checkout.
 - `webpack serve` builds the engine assets only at config load. Restart it
   after editing an engine worker.
 - WebGPU needs a secure context. Over LAN HTTP the WebGPU player is still
   selected but plays as HTML pass-through, which proves nothing.
 - Development builds lack `serviceworker.js`. The 404 marks every tester item
   `degraded`. Deploy `--mode production` or compare like with like.
-- The host's `../hls.js` (branch `fix/cals2`) must be built with
-  `build_hls.bat`. `npm ci` only links it, so a stale `dist` ships silently.
-  The workspace's `build_jellyfin_web.bat` builds it when its `dist` is
-  missing and replaces the junction with a copy before building.
-  Clean clones and CI cannot resolve the dependency. Its `package.json` has no
-  `version`, so without the `overrides` entry `npm install` fails with ERESOLVE
-  on libbitsub's optional `hls.js >=1.0.0` peer.
+- Build `vendor/webgpu-player-hls` (`npm ci`, then `npm run build` or the
+  workspace's `build_hls.bat`) before the first `npm ci` of the fork. npm
+  copies its `dist` at install time, so a stale or missing `dist` ships
+  silently. The workspace's `build_jellyfin_web.bat` builds it when `dist` is
+  missing and refreshes the copy in `node_modules` before every build.
+- Inside the fork, hls.js's own type build fails: TypeScript's automatic
+  `@types` lookup walks up into the fork's `node_modules` and finds a
+  conflicting `@types/dom-webcodecs`. The fork needs only the JavaScript
+  bundles, so `build_hls.bat` runs `rollup --config` alone.
+- hls.js's `package.json` has no `version`, so without the `overrides` entry
+  `npm install` fails with ERESOLVE on libbitsub's optional `hls.js >=1.0.0`
+  peer.
 - `scripts/build.mjs` fails when an asset it maps is missing, which also stops
   the host's webpack build.
 - The tester parses the `getStats()` labels `Playback pipeline`,

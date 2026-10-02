@@ -15,7 +15,7 @@ The engine adds two playback layers to a browser host:
 
 Its host is the
 [Jellyfin Web fork](https://github.com/alchemyyy/jellyfin-web). The fork checks
-the engine out as its `src/webgpu-player/` submodule, installs it as an npm
+the engine out as its `vendor/webgpu-player/` submodule, installs it as an npm
 workspace, and imports it as `webgpu-player/*`. It registers a `WebGPU Player` that wraps an owned Jellyfin
 HTML video player. The device profile sent to Jellyfin is augmented with
 exactly the routes this browser has proven it can decode and present. The HTML
