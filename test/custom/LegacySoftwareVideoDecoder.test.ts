@@ -170,7 +170,7 @@ function createHarness(): DecoderHarness {
     );
     const loadDecoderGlue = vi.fn<(url: string) => void>();
     const resolveAssetURL = vi.fn<(path: string) => string>(
-        (path: string): string => `https://example.test/web/${path}`
+        (path: string): string => `https://example.test/web/libraries/${path}`
     );
     return {
         createModule,
@@ -225,11 +225,11 @@ describe('LegacySoftwareVideoDecoder', () => {
 
         expect(harness.resolveAssetURL).toHaveBeenNthCalledWith(
             1,
-            'libraries/legacy-video/legacy-video-decode.js'
+            'legacy-video/legacy-video-decode.js'
         );
         expect(harness.resolveAssetURL).toHaveBeenNthCalledWith(
             2,
-            'libraries/legacy-video/legacy-video-decode.wasm'
+            'legacy-video/legacy-video-decode.wasm'
         );
         expect(harness.loadDecoderGlue).toHaveBeenCalledWith(
             'https://example.test/web/libraries/legacy-video/legacy-video-decode.js'

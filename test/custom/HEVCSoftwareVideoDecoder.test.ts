@@ -198,7 +198,7 @@ function createDependencies(backend: HEVCDecoderBackend): {
         async (): Promise<HEVCDecoderBackend> => backend
     );
     const loadDecoderGlue = vi.fn<(url: string) => void>();
-    const resolveAssetURL = vi.fn((path: string): string => `https://example.test/web/${path}`);
+    const resolveAssetURL = vi.fn((path: string): string => `https://example.test/web/libraries/${path}`);
     return {
         createDecoder,
         dependencies: { createDecoder, loadDecoderGlue, resolveAssetURL },
@@ -478,7 +478,7 @@ describe('HEVCSoftwareVideoDecoder', () => {
                 throw initializationError;
             }),
             loadDecoderGlue: vi.fn<(url: string) => void>(),
-            resolveAssetURL: vi.fn((path: string): string => `https://example.test/web/${path}`)
+            resolveAssetURL: vi.fn((path: string): string => `https://example.test/web/libraries/${path}`)
         };
         const onError = vi.fn((): never => {
             throw callbackError;

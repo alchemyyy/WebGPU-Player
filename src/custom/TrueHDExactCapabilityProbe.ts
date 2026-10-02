@@ -1,4 +1,4 @@
-import TrueHDExactCapabilityProbeWorkerConstructor from './TrueHDExactCapabilityProbe.worker';
+import { createEngineWorker } from '../EngineAssets';
 import {
     TRUEHD_EXACT_CAPABILITY_REQUEST_ID,
     TRUEHD_QUALIFICATION_CHANNEL_COUNT_MASK,
@@ -70,7 +70,7 @@ export type TrueHDExactCapabilityProbeEnvironment = Readonly<{
 }>;
 
 function createDefaultWorker(): TrueHDExactCapabilityProbeWorker {
-    const worker = new TrueHDExactCapabilityProbeWorkerConstructor();
+    const worker = createEngineWorker('webgpu-player/TrueHDExactCapabilityProbe.worker.js');
     return worker as unknown as TrueHDExactCapabilityProbeWorker;
 }
 

@@ -3,13 +3,12 @@ import {
     VideoSample
 } from 'mediabunny';
 
+import { resolveEngineAssetURL, type EngineAssetPath } from '../EngineAssets';
 import { microsecondsToSeconds, type Microseconds } from '../MediaTime';
 import { requireMicroseconds } from './TimeMath';
 
-const LEGACY_VIDEO_DECODER_GLUE_ASSET =
-    'libraries/legacy-video/legacy-video-decode.js';
-const LEGACY_VIDEO_DECODER_WASM_ASSET =
-    'libraries/legacy-video/legacy-video-decode.wasm';
+const LEGACY_VIDEO_DECODER_GLUE_ASSET: EngineAssetPath = 'legacy-video/legacy-video-decode.js';
+const LEGACY_VIDEO_DECODER_WASM_ASSET: EngineAssetPath = 'legacy-video/legacy-video-decode.wasm';
 const MAXIMUM_CODED_HEIGHT = 1_080;
 const MAXIMUM_CODED_WIDTH = 1_920;
 const MAXIMUM_COMPRESSED_PACKET_BYTE_LENGTH = 64 * 1024 * 1024;
@@ -99,7 +98,7 @@ type LegacyVideoDecoderWorkerGlobal = typeof globalThis & {
 export type LegacySoftwareVideoDecoderDependencies = {
     createModule: (wasmURL: string) => Promise<LegacyVideoDecoderModule>
     loadDecoderGlue: (url: string) => void
-    resolveAssetURL: (path: string) => string
+    resolveAssetURL: (path: EngineAssetPath) => string
 };
 
 type PackedI420Frame = {
@@ -121,15 +120,6 @@ export class LegacyVideoInterlacedFrameError extends Error {
 
 function isPositiveSafeInteger(value: number | undefined): value is number {
     return Number.isSafeInteger(value) && (value ?? 0) > 0;
-}
-
-function resolveDefaultAssetURL(path: string): string {
-    const workerGlobal = globalThis as LegacyVideoDecoderWorkerGlobal;
-    const locationHref = workerGlobal.location?.href;
-    if (typeof locationHref !== 'string' || !locationHref) {
-        return path;
-    }
-    return new URL(path, locationHref).href;
 }
 
 function loadDefaultDecoderGlue(url: string): void {
@@ -158,7 +148,7 @@ async function createDefaultModule(wasmURL: string): Promise<LegacyVideoDecoderM
 const DEFAULT_DEPENDENCIES: LegacySoftwareVideoDecoderDependencies = {
     createModule: createDefaultModule,
     loadDecoderGlue: loadDefaultDecoderGlue,
-    resolveAssetURL: resolveDefaultAssetURL
+    resolveAssetURL: resolveEngineAssetURL
 };
 
 function getColorPrimaries(value: number): VideoColorPrimaries | undefined {

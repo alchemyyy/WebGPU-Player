@@ -1,3 +1,4 @@
+import type { EngineLibraryPath } from '../EngineAssets';
 import {
     getCustomDecodeHardwareAcceleration,
     type CustomDecodeRawVideoFrameFormat
@@ -71,7 +72,7 @@ export type HEVCRangeExtensionProbeAccessUnit = Readonly<{
 
 export type HEVCRangeExtensionProbeDefinition = Readonly<{
     accessUnits: readonly HEVCRangeExtensionProbeAccessUnit[]
-    assetPath: string
+    assetPath: EngineLibraryPath
     bitDepth: HEVCRangeExtensionBitDepth
     chromaFormat: HEVCRangeExtensionChromaFormat
     config: VideoDecoderConfig
@@ -112,7 +113,7 @@ function createDefinition(
         accessUnits: Object.freeze(evidence.accessUnits.map(
             accessUnit => Object.freeze({ ...accessUnit })
         )),
-        assetPath: `libraries/webgpu/hevc-rext/${variant}.bin`,
+        assetPath: `webgpu-player/hevc-rext/${variant}.bin`,
         bitDepth,
         chromaFormat,
         config: {

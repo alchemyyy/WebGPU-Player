@@ -1,4 +1,4 @@
-import DTSExactCapabilityProbeWorkerConstructor from './DTSExactCapabilityProbe.worker';
+import { createEngineWorker } from '../EngineAssets';
 import {
     DTS_EXACT_CAPABILITY_REQUEST_ID,
     DTS_QUALIFICATION_FIXTURE_COUNT,
@@ -70,7 +70,7 @@ export type DTSExactCapabilityProbeEnvironment = Readonly<{
 }>;
 
 function createDefaultWorker(): DTSExactCapabilityProbeWorker {
-    const worker = new DTSExactCapabilityProbeWorkerConstructor();
+    const worker = createEngineWorker('webgpu-player/DTSExactCapabilityProbe.worker.js');
     return worker as unknown as DTSExactCapabilityProbeWorker;
 }
 

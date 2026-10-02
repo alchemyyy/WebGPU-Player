@@ -32,10 +32,15 @@ const PARSER_WASM_BYTES = new Uint8Array(readFileSync(PARSER_WASM_PATH));
 const WASM_PAGE_BYTE_LENGTH = 64 * 1_024;
 
 describe('Dolby Vision parser asset URL', () => {
-    it('resolves the copied artifact against the active frontend directory', () => {
-        expect(resolveDolbyVisionRPUParserWASMURL(
-            'https://example.test/web/index.html#!/details'
-        )).toBe('https://example.test/web/libraries/libdovi/dovi-rpu-parser.wasm');
+    it('resolves the parser against the engine asset base', () => {
+        vi.stubGlobal('location', { href: 'https://example.test/web/index.html#!/details' });
+        try {
+            expect(resolveDolbyVisionRPUParserWASMURL()).toBe(
+                'https://example.test/web/libraries/libdovi/dovi-rpu-parser.wasm'
+            );
+        } finally {
+            vi.unstubAllGlobals();
+        }
     });
 });
 

@@ -39,10 +39,6 @@ import { parseHEVCHDR10PlusMetadata } from 'webgpu-player/custom/HDR10PlusMetada
 
 import { createHDR10PlusHEVCFixture } from '../helpers/HDR10PlusFixture';
 
-vi.mock('webgpu-player/custom/CustomDecode.worker', () => ({
-    default: class MockBundledWorker {}
-}));
-
 type MessageHandler = (event: MessageEvent<unknown>) => void;
 type ErrorHandler = (event: ErrorEvent) => void;
 

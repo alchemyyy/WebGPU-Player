@@ -130,7 +130,7 @@ function createEnvironment(
         loadQualificationBitstream: async (): Promise<ArrayBuffer> => (
             new ArrayBuffer(qualificationByteLength)
         ),
-        resolveAssetURL: (path: string): string => `https://example.test/web/${path}`,
+        resolveAssetURL: (path: string): string => `https://example.test/web/libraries/${path}`,
         runtimeAvailable: true,
         setTimeout: (callback, milliseconds): ReturnType<typeof globalThis.setTimeout> => (
             globalThis.setTimeout(callback, milliseconds)
