@@ -1,11 +1,12 @@
 import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
-const FIXTURE_DIRECTORY = fileURLToPath(
-    new URL('../fixtures/capability/hevc-range-extension/', import.meta.url)
+const FIXTURE_DIRECTORY = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '../fixtures/capability/hevc-range-extension'
 );
 const USAGE = 'Usage: node tools/generate-HEVC-range-extension-fixtures.mjs [--check|--inspect]';
 const REQUIRED_FFMPEG_VERSION =

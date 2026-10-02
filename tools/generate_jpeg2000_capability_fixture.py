@@ -7,7 +7,7 @@ import pathlib
 import subprocess
 import tempfile
 
-from generated_output import write_or_check_output
+from generated_output import install_or_check_output
 
 
 REPOSITORY_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -22,12 +22,19 @@ DEFAULT_OUTPUT = (
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ffmpeg", default="ffmpeg", help="FFmpeg executable")
+    parser.add_argument(
+        "--ffmpeg",
+        default="ffmpeg",
+        help=(
+            "FFmpeg executable. The committed picture was encoded by FFmpeg "
+            "2026-03-01-git-862338fe31; other builds write different bytes"
+        ),
+    )
     parser.add_argument("--output", type=pathlib.Path, default=DEFAULT_OUTPUT)
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Fail if the committed fixture differs from the regenerated picture",
+        help="Fail if the committed picture is missing or differs from the regenerated picture",
     )
     return parser.parse_args()
 
@@ -69,12 +76,13 @@ def main() -> int:
         # A failed encode never touches the committed fixture
         generated_path = pathlib.Path(temporary_directory) / output_path.name
         encode_fixture(arguments.ffmpeg, generated_path)
-        write_or_check_output(
+        # Another FFmpeg build writes a different codestream, which never replaces the committed one
+        installed = install_or_check_output(
             output_path,
             generated_path.read_bytes(),
             check=arguments.check,
         )
-    action = "Verified" if arguments.check else "Generated"
+    action = "Generated" if installed else "Verified"
     print(f"{action} {output_path}")
     return 0
 

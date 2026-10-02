@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import tempfile
 
-from generated_output import write_or_check_output
+from generated_output import install_or_check_output
 
 
 SCRIPT_DIRECTORY = pathlib.Path(__file__).resolve().parent
@@ -28,12 +28,15 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--ffmpeg",
         type=pathlib.Path,
-        help="FFmpeg executable; defaults to ffmpeg on PATH",
+        help=(
+            "FFmpeg executable; defaults to ffmpeg on PATH. The committed fixture "
+            "was encoded by Jellyfin FFmpeg 8.1.2"
+        ),
     )
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Fail if the committed fixture differs from the regenerated fixture",
+        help="Fail if the committed fixture is missing or differs from the regenerated fixture",
     )
     return parser.parse_args()
 
@@ -52,8 +55,13 @@ def resolve_ffmpeg_path(explicit_path: pathlib.Path | None) -> pathlib.Path:
     return pathlib.Path(path_resolution).resolve()
 
 
-def generate_fixture(ffmpeg_path: pathlib.Path, *, check: bool) -> None:
-    """Encodes the MPEG-2 fixture, then installs it or compares it with the committed bytes."""
+def generate_fixture(ffmpeg_path: pathlib.Path, *, check: bool) -> bool:
+    """Encodes the MPEG-2 fixture and compares it with the committed bytes.
+
+    Output that differs from the committed fixture is never installed, so
+    another FFmpeg build cannot replace it. Returns whether a missing fixture
+    was written.
+    """
 
     with tempfile.TemporaryDirectory(
         prefix="webgpu-legacy-video-fixture-"
@@ -92,13 +100,20 @@ def generate_fixture(ffmpeg_path: pathlib.Path, *, check: bool) -> None:
             str(generated_path),
         ]
         subprocess.run(command, check=True, cwd=REPOSITORY_ROOT)
-        write_or_check_output(OUTPUT_PATH, generated_path.read_bytes(), check=check)
+        return install_or_check_output(
+            OUTPUT_PATH,
+            generated_path.read_bytes(),
+            check=check,
+        )
 
 
 def main() -> None:
     arguments = parse_arguments()
-    generate_fixture(resolve_ffmpeg_path(arguments.ffmpeg), check=arguments.check)
-    action = "Verified" if arguments.check else "Generated"
+    installed = generate_fixture(
+        resolve_ffmpeg_path(arguments.ffmpeg),
+        check=arguments.check,
+    )
+    action = "Generated" if installed else "Verified"
     print(f"{action} {OUTPUT_PATH}")
 
 

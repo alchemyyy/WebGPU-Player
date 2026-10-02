@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { Microseconds } from '../src/MediaTime';
@@ -30,7 +30,7 @@ type StereoMetrics = {
     rmsDBFS: number
 };
 
-const FIXTURE_DIRECTORY = fileURLToPath(new URL('../fixtures/test/dts/', import.meta.url));
+const FIXTURE_DIRECTORY = resolve(dirname(fileURLToPath(import.meta.url)), '../fixtures/test/dts');
 const FIXTURE_DEFINITIONS = JSON.parse(readFileSync(
     resolve(FIXTURE_DIRECTORY, 'packets.json'),
     'utf8'
