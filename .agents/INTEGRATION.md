@@ -64,8 +64,7 @@ Diff base: `git merge-base HEAD upstream/master` in the fork.
 | `src/components/playback/playersettingsmenu.js` | Generic `player.getSettingsMenuItems()` seam (adds "WebGPU Settings") |
 | `src/components/playerstats/playerstats.js` | Session matched by playback identity, generation-guarded requests, rows from the active player's `getStats()` |
 | `src/plugins/htmlVideoPlayer/plugin.js` | Usable as an owned backend: `getPresentationSurface`, `prepareCustomPlayback`, `notifyCustomPlayback*` event bridge, play and subtitle generations, ASS canvas and libbitsub bitmap subtitles driven by the custom clock through `timeOffset`. `useWebGPUHLSRuntime` now only selects the 6 s / 30 s buffers |
-| `src/plugins/htmlVideoPlayer/HLSRenditionPreference.ts` | HDR rendition preference; `plugin.js` imports the one hls.js runtime (`hls.js/dist/hls.js`) directly |
-| `src/components/htmlMediaHelper.js`, `HLSAppendFailurePolicy.ts`, `HLSRecoveryPosition.ts`, `src/plugins/htmlAudioPlayer/plugin.js` | Per-instance HLS recovery that replaces the global `window.Hls` |
+| `src/components/htmlMediaHelper.js`, `src/plugins/htmlAudioPlayer/plugin.js` | Each player passes its own hls.js runtime to `bindEventsToHlsPlayer` instead of the global `window.Hls`; session hooks (`isCurrent`, `onEstablishedError`) let the owned backend ignore retired sessions and route terminal errors once |
 | `src/plugins/syncPlay/ui/players/HtmlVideoPlayer.js`, `src/apps/legacy/.../playback/*` | `PlaybackRate` support check; OSD listener leak fix; `PlayerEvent.SourceRenegotiationRequired` |
 | `src/components/playbackSettings/*`, `src/scripts/settings/userSettings.js` | Preferred video player and downmix algorithm settings, stored locally only |
 | `src/scripts/settings/webSettings.js`, `src/types/webConfig.ts`, `src/config.json` | `enableWebGPU*` flags; `getPlugins()` always places `webGPUPlayer/plugin` before `htmlVideoPlayer/plugin` |
@@ -81,8 +80,12 @@ Diff base: `git merge-base HEAD upstream/master` in the fork.
 | `package.json` | `"workspaces": ["vendor/webgpu-player"]`, so npm installs the engine's dependencies, including `esbuild` for its asset build; `@webgpu/types` for the fork's own type check; `"hls.js": "file:vendor/webgpu-player-hls"` plus an `overrides` entry that resolves libbitsub's optional `hls.js` peer to the same package |
 
 Enhancements unrelated to the WebGPU player live on the fork's `master` branch,
-not here: the About section, client-side HDR tone mapping for HLS, the detected
-aspect ratio option, and the HLS resume, startup timeout, and worker path fixes.
+not here: the About section, client-side HDR tone mapping for HLS, and the
+detected aspect ratio option. HLS fixes are on the `fix/hls-improvements`
+branch: the resume offset, startup timeout, and worker path fixes, plus
+recovery at the last valid position, bounded append failures, and the SDR
+rendition preference. Its first commit is the same per-instance runtime and
+session hooks as this branch's `htmlMediaHelper.js`.
 
 ### Registration and selection
 
