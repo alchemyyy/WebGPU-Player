@@ -5,10 +5,10 @@ import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 
 const COMMAND_TIMEOUT_MILLISECONDS = 30_000;
-const REPOSITORY_ROOT = fileURLToPath(new URL('../..', import.meta.url));
+const REPOSITORY_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SCRIPT_PATH = fileURLToPath(new URL('emit_dynamic_HDR_shader.ts', import.meta.url));
 const VITE_NODE_PATH = fileURLToPath(new URL(
-    '../../node_modules/vite-node/vite-node.mjs',
+    '../node_modules/vite-node/vite-node.mjs',
     import.meta.url
 ));
 const debugURL = process.argv[2] || 'http://localhost:9224';

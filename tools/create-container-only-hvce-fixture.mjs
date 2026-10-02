@@ -10,7 +10,7 @@ const MAXIMUM_FIXTURE_BYTE_LENGTH = 64 * 1_024 * 1_024;
 const MINIMUM_WRAPPED_NAL_UNIT_BYTE_LENGTH = 4;
 
 const USAGE = `Usage:
-  node scripts/webgpu/create-container-only-hvce-fixture.mjs <input.mkv> <output.mkv>
+  node tools/create-container-only-hvce-fixture.mjs <input.mkv> <output.mkv>
 
 Creates a validation-only Matroska copy whose wrapped enhancement-layer
 VPS/SPS/PPS NAL units are replaced by same-size filler NAL units. The copy can

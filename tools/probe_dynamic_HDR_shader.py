@@ -13,7 +13,7 @@ from typing import Sequence
 
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-REPOSITORY_ROOT = SCRIPT_DIRECTORY.parent.parent
+REPOSITORY_ROOT = SCRIPT_DIRECTORY.parent
 BROWSER_PROBE_PATH = SCRIPT_DIRECTORY / "probe-dynamic-HDR-shader-browser.mjs"
 DEFAULT_TIMEOUT_SECONDS = 60
 WINDOWS_CHROME_CANDIDATES = (

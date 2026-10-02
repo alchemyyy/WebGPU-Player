@@ -1,16 +1,17 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import type { Microseconds } from '../../src/plugins/webGPUPlayer/MediaTime';
+import type { Microseconds } from '../src/MediaTime';
 import {
     CUSTOM_SEVEN_POINT_ONE_DOWNMIX_POLICY,
     getStereoChannelDataFingerprint,
     type StereoChannelData
-} from '../../src/plugins/webGPUPlayer/custom/CustomAudioDownmix';
-import { mixCustomAudioToStereo } from '../../src/plugins/webGPUPlayer/custom/CustomAudioChannelLayout';
+} from '../src/custom/CustomAudioDownmix';
+import { mixCustomAudioToStereo } from '../src/custom/CustomAudioChannelLayout';
 import DTSSoftwareAudioDecoder, {
     type DTSDecodedAudioOutput
-} from '../../src/plugins/webGPUPlayer/custom/DTSSoftwareAudioDecoder';
+} from '../src/custom/DTSSoftwareAudioDecoder';
 
 type DTSFixtureDefinition = {
     expectedChannelMask: number
@@ -29,10 +30,7 @@ type StereoMetrics = {
     rmsDBFS: number
 };
 
-const FIXTURE_DIRECTORY = resolve(
-    process.cwd(),
-    'scripts/webgpu/fixtures/dts'
-);
+const FIXTURE_DIRECTORY = fileURLToPath(new URL('../fixtures/test/dts/', import.meta.url));
 const FIXTURE_DEFINITIONS = JSON.parse(readFileSync(
     resolve(FIXTURE_DIRECTORY, 'packets.json'),
     'utf8'

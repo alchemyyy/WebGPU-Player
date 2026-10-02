@@ -19,7 +19,7 @@ const MAXIMUM_TOOL_OUTPUT_BYTE_LENGTH = 16 * 1_024 * 1_024;
 const DETERMINISTIC_MUX_SEED = 'webgpu-dolby-vision-separate-track-v1';
 
 const USAGE = `Usage:
-  node scripts/webgpu/create-separate-track-dolby-vision-fixture.mjs \\
+  node tools/create-separate-track-dolby-vision-fixture.mjs \\
       <interleaved-profile7.mkv> <output.mkv> \\
       [--mkvtoolnix-directory <directory>]
 

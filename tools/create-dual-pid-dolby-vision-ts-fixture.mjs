@@ -20,7 +20,7 @@ const MAXIMUM_TRANSPORT_STREAM_BYTE_LENGTH = 256 * 1_024 * 1_024;
 const MAXIMUM_TOOL_OUTPUT_BYTE_LENGTH = 16 * 1_024 * 1_024;
 
 const USAGE = `Usage:
-  node scripts/webgpu/create-dual-pid-dolby-vision-ts-fixture.mjs \\
+  node tools/create-dual-pid-dolby-vision-ts-fixture.mjs \\
       <two-track-profile7-input> <output.ts> [--ffmpeg <path>]
 
 Creates a validation-only dual-PID MPEG-TS fixture. Both HEVC PIDs remain

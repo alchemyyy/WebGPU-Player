@@ -19,7 +19,7 @@ const DOLBY_VISION_SAMPLE_ENTRY_TYPE_BY_HEVC_TYPE = new Map([
 ]);
 
 const USAGE = `Usage:
-  node scripts/webgpu/create-dual-track-dolby-vision-mp4-fixture.mjs \\
+  node tools/create-dual-track-dolby-vision-mp4-fixture.mjs \\
       <separate-profile7.mkv> <output.mp4> [--ffmpeg <path>]
 
 Creates a validation-only MP4 with a base HEVC track and a dependent dvh1/dvhe

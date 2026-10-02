@@ -16,7 +16,7 @@ const TIMESTAMP_FILTER = 'setts=pts=N*1001:dts=N*1001:duration=1001:time_base=1/
 const X265_PARAMETERS = 'repeat-headers=1:aud=1:bframes=0:keyint=24:min-keyint=24:scenecut=0';
 
 const USAGE = `Usage:
-  node scripts/webgpu/create-profile7-playback-fixture.mjs \\
+  node tools/create-profile7-playback-fixture.mjs \\
       <separate-profile7.mkv> <output.mp4> \\
       [--ffmpeg <path>] [--mkvtoolnix-directory <path>]
 
