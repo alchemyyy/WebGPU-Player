@@ -7,8 +7,8 @@ not obvious.
   relative path under `test/`.
 - The last section is the host's integration in `wgp/` (the fork's
   `src/plugins/webGPUPlayer/`), with tests in the fork's
-  `webgpu-integ-test/plugins/webGPUPlayer/`. Host files outside the plugin are
-  in [INTEGRATION.md](INTEGRATION.md).
+  `webgpu-player-integ-tests/plugins/webGPUPlayer/`. Host files outside the
+  plugin are in [INTEGRATION.md](INTEGRATION.md).
 
 ## src/
 

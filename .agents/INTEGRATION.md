@@ -103,12 +103,12 @@ aspect ratio option, and the HLS resume, startup timeout, and worker path fixes.
 From the fork root:
 
 - `npm test`: Vitest (jsdom). Fork integration tests live under
-  `webgpu-integ-test`, upstream tests under `src`.
+  `webgpu-player-integ-tests`, upstream tests under `src`.
 - `npm test -- <files>`: focused test run.
 - `npx vitest run --root webgpu-player`: the engine's suites against the fork's
   `node_modules`.
-- `npm run build:check`: `tsc --noEmit`. Covers `src`, `webgpu-integ-test`,
-  and `webgpu-player/src`. `npx tsc --noEmit -p webgpu-player/tsconfig.json` also
+- `npm run build:check`: `tsc --noEmit`. Covers `src`,
+  `webgpu-player-integ-tests`, and `webgpu-player/src`. `npx tsc --noEmit -p webgpu-player/tsconfig.json` also
   checks the engine's tests.
 - `npm run lint` (whole repo) or `npm run lint -- <files>`. Engine sources and
   tests must pass both this and the engine's own `npm run lint`.
