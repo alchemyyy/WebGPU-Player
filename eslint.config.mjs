@@ -132,13 +132,17 @@ export default tseslint.config(
         }
     },
 
-    // Build scripts and tools use node globals
+    // Build scripts and tools run on Node, so browser compatibility does not apply
+    // NOTE: Directory patterns need /** here, because ignores beside other keys match file paths
     {
-        ignores: [ 'src', 'test' ],
+        ignores: [ 'src/**', 'test/**' ],
         languageOptions: {
             globals: {
                 ...globals.node
             }
+        },
+        rules: {
+            'compat/compat': 'off'
         }
     },
 
@@ -168,6 +172,8 @@ export default tseslint.config(
             },
             // Jellyfin Web's polyfills, which hosts are expected to provide
             polyfills: [
+                // Hosts transpile and polyfill ES APIs; inside Jellyfin Web the plugin infers this from its babel config
+                'es:all',
                 'Promise',
                 'fetch',
                 'Response',

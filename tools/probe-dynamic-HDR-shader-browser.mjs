@@ -1,5 +1,3 @@
-/* eslint-disable compat/compat -- This local probe targets Node 24 and current Chromium */
-
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
@@ -250,5 +248,3 @@ try {
     server.closeAllConnections();
     await closeServer(server);
 }
-
-/* eslint-enable compat/compat */

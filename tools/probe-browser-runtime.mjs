@@ -1,5 +1,3 @@
-/* eslint-disable compat/compat -- This Node.js diagnostic targets Node 24 and a current browser */
-
 const DEFAULT_DEBUGGING_URL = 'http://localhost:9224';
 const DEFAULT_TARGET_URL = 'http://localhost:8080';
 
@@ -210,5 +208,3 @@ if (evaluation.exceptionDetails) {
     throw new Error(evaluation.exceptionDetails.text);
 }
 process.stdout.write(`${JSON.stringify(evaluation.result.value, null, 2)}\n`);
-
-/* eslint-enable compat/compat */
