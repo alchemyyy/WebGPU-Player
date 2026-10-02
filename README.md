@@ -28,6 +28,7 @@ player plugin, device profile, settings UI, and same-session HTML fallback.
 
 | Path | Contents |
 | --- | --- |
+| `.agents/` | Project map for contributors and coding agents: architecture, negotiation, codec support, module map, host integration, and settled decisions. Start with [.agents/README.md](.agents/README.md) |
 | `src/` | Engine TypeScript: presenter and color pipeline, the custom decode pipeline in `custom/`, and presentation validation in `validation/` |
 | `src/EngineAssets.ts` | Typed names of every file the engine fetches at runtime, and their URL resolution |
 | `src/EngineConfiguration.ts` | Feature flags a host can set |
