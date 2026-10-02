@@ -1,0 +1,623 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+    getDolbyVisionPresentationDescriptor,
+    getDolbyVisionPresentationSelection,
+    getDolbyVisionProfile7HDR10BaseColorMetadata,
+    getDolbyVisionProfile8HDR10BaseColorMetadata,
+    getDolbyVisionProfile8HLGBaseColorMetadata,
+    getPresentationInputColorMetadata,
+    isDolbyVisionProfile7HDR10BaseLayerDescriptor,
+    isDolbyVisionProfile8HDR10BaseLayerDescriptor,
+    isDolbyVisionProfile8HLGBaseLayerDescriptor,
+    isKnownSDRPresentationInput,
+    parseVideoStreamColorMetadata
+} from 'webgpu-player/PresentationInput';
+
+function createSeparateProfile7Streams(
+    baseLayerOverrides: Record<string, unknown> = {},
+    enhancementLayerOverrides: Record<string, unknown> = {}
+): Array<Record<string, unknown>> {
+    return [
+        {
+            AverageFrameRate: 23.976025,
+            BitDepth: 10,
+            Codec: 'hevc',
+            ColorPrimaries: 'bt2020',
+            ColorSpace: 'bt2020nc',
+            ColorTransfer: 'smpte2084',
+            Height: 2_160,
+            IsInterlaced: false,
+            RealFrameRate: 23.976025,
+            Type: 'Video',
+            VideoRange: 'HDR',
+            VideoRangeType: 'HDR10',
+            Width: 3_840,
+            ...baseLayerOverrides
+        },
+        {
+            AverageFrameRate: 23.976025,
+            BitDepth: 10,
+            BlPresentFlag: 0,
+            Codec: 'hevc',
+            DvBlSignalCompatibilityId: 6,
+            DvProfile: 7,
+            ElPresentFlag: 1,
+            Height: 1_080,
+            IsInterlaced: false,
+            RealFrameRate: 23.976025,
+            RpuPresentFlag: 1,
+            Type: 'Video',
+            VideoRange: 'HDR',
+            VideoRangeType: 'DOVIWithEL',
+            Width: 1_920,
+            ...enhancementLayerOverrides
+        }
+    ];
+}
+
+describe('getDolbyVisionPresentationDescriptor', () => {
+    it('accepts exact single-layer Profile 5 metadata', () => {
+        expect(getDolbyVisionPresentationDescriptor({
+            mediaSource: {
+                MediaStreams: [{
+                    BitDepth: 10,
+                    BlPresentFlag: true,
+                    DvBlSignalCompatibilityId: 0,
+                    DvProfile: 5,
+                    ElPresentFlag: false,
+                    RpuPresentFlag: true,
+                    Type: 'Video'
+                }]
+            }
+        })).toEqual({
+            baseLayerBitDepth: 10,
+            baseLayerSignalCompatibilityID: 0,
+            enhancementLayerPresent: false,
+            profile: 5
+        });
+    });
+
+    it.each([ 1, 2, 4 ])('accepts Profile 8 compatibility ID %i', compatibilityID => {
+        const descriptor = getDolbyVisionPresentationDescriptor({
+            mediaSource: {
+                MediaStreams: [{
+                    BitDepth: 10,
+                    BlPresentFlag: '1',
+                    DvBlSignalCompatibilityId: compatibilityID,
+                    DvProfile: '8',
+                    RpuPresentFlag: 1,
+                    Type: 'Video'
+                }]
+            }
+        });
+        expect(descriptor).toMatchObject({
+            baseLayerSignalCompatibilityID: compatibilityID,
+            enhancementLayerPresent: false,
+            profile: 8
+        });
+        expect(descriptor).not.toBeNull();
+        if (descriptor) {
+            expect(isDolbyVisionProfile8HDR10BaseLayerDescriptor(descriptor)).toBe(
+                compatibilityID === 1
+            );
+            expect(isDolbyVisionProfile8HLGBaseLayerDescriptor(descriptor)).toBe(
+                compatibilityID === 4
+            );
+        }
+    });
+
+    it('accepts exact dual-layer Profile 7 metadata', () => {
+        const descriptor = getDolbyVisionPresentationDescriptor({
+            mediaSource: {
+                MediaStreams: [{
+                    BitDepth: 10,
+                    BlPresentFlag: true,
+                    DvBlSignalCompatibilityId: 6,
+                    DvProfile: 7,
+                    ElPresentFlag: true,
+                    RpuPresentFlag: true,
+                    Type: 'Video'
+                }]
+            }
+        });
+        expect(descriptor).toEqual({
+            baseLayerBitDepth: 10,
+            baseLayerSignalCompatibilityID: 6,
+            enhancementLayerPresent: true,
+            profile: 7
+        });
+        expect(descriptor).not.toBeNull();
+        if (descriptor) {
+            expect(isDolbyVisionProfile7HDR10BaseLayerDescriptor(descriptor)).toBe(true);
+        }
+    });
+
+    it.each([ 0, 1 ])(
+        'accepts Jellyfin separate-track Profile 7 metadata with enhancement BL flag %i',
+        baseLayerPresentFlag => {
+            const mediaStreams = createSeparateProfile7Streams(
+                {},
+                { BlPresentFlag: baseLayerPresentFlag }
+            );
+            const expectedDescriptor = {
+                baseLayerBitDepth: 10,
+                baseLayerSignalCompatibilityID: 6,
+                enhancementLayerPresent: true,
+                profile: 7
+            };
+
+            expect(getDolbyVisionPresentationDescriptor({
+                mediaSource: { MediaStreams: mediaStreams }
+            })).toEqual(expectedDescriptor);
+            expect(getDolbyVisionPresentationSelection({
+                mediaSource: { MediaStreams: mediaStreams }
+            })).toEqual({
+                baseLayerVideoTrackOrdinal: 0,
+                descriptor: expectedDescriptor
+            });
+        }
+    );
+
+    it('accepts the HDR10 range label Jellyfin assigns to an MPEG-TS enhancement stream', () => {
+        const mediaStreams = createSeparateProfile7Streams({}, {
+            ColorPrimaries: 'bt2020',
+            ColorSpace: 'bt2020nc',
+            ColorTransfer: 'smpte2084',
+            VideoRangeType: 'HDR10'
+        });
+
+        expect(getDolbyVisionPresentationSelection({
+            mediaSource: { MediaStreams: mediaStreams }
+        })).toMatchObject({
+            baseLayerVideoTrackOrdinal: 0,
+            descriptor: {
+                enhancementLayerPresent: true,
+                profile: 7
+            }
+        });
+    });
+
+    it('selects a reversed separate Profile 7 base-layer ordinal', () => {
+        const mediaStreams = createSeparateProfile7Streams().reverse();
+
+        expect(getDolbyVisionPresentationSelection({
+            mediaSource: { MediaStreams: mediaStreams }
+        })).toMatchObject({
+            baseLayerVideoTrackOrdinal: 1,
+            descriptor: { profile: 7 }
+        });
+    });
+
+    it.each([
+        [ 'non-HEVC base', { Codec: 'h264' }, {} ],
+        [ 'non-PQ base', { ColorTransfer: 'bt709', VideoRange: 'SDR', VideoRangeType: 'SDR' }, {} ],
+        [ 'mismatched average frame rate', {}, { AverageFrameRate: 24 } ],
+        [ 'mismatched real frame rate', {}, { RealFrameRate: 24 } ],
+        [ 'mismatched geometry', {}, { Width: 1_918 } ],
+        [ 'missing enhancement BL flag', {}, { BlPresentFlag: undefined } ],
+        [ 'non-HDR enhancement', {}, {
+            ColorTransfer: 'bt709',
+            VideoRange: 'SDR',
+            VideoRangeType: 'SDR'
+        } ],
+        [ 'wrong enhancement compatibility ID', {}, { DvBlSignalCompatibilityId: 1 } ]
+    ])('rejects ambiguous separate-track Profile 7 metadata: %s', (
+        _label,
+        baseLayerOverrides,
+        enhancementLayerOverrides
+    ) => {
+        expect(getDolbyVisionPresentationDescriptor({
+            mediaSource: {
+                MediaStreams: createSeparateProfile7Streams(
+                    baseLayerOverrides,
+                    enhancementLayerOverrides
+                )
+            }
+        })).toBeNull();
+    });
+
+    it.each([
+        { DvBlSignalCompatibilityId: 6, DvProfile: 7, ElPresentFlag: false },
+        { DvBlSignalCompatibilityId: 1, DvProfile: 7, ElPresentFlag: true },
+        { DvProfile: 5, ElPresentFlag: true },
+        { DvProfile: 5, RpuPresentFlag: false },
+        { BlPresentFlag: false, DvProfile: 5 },
+        { BitDepth: 12, DvProfile: 5 },
+        { DvBlSignalCompatibilityId: 3, DvProfile: 8 },
+        { DvBlSignalCompatibilityId: 'invalid', DvProfile: 5 }
+    ])('rejects an unsupported Dolby Vision descriptor: %o', metadata => {
+        expect(getDolbyVisionPresentationDescriptor({
+            mediaSource: {
+                MediaStreams: [{
+                    BitDepth: 10,
+                    BlPresentFlag: true,
+                    ElPresentFlag: false,
+                    RpuPresentFlag: true,
+                    Type: 'Video',
+                    ...metadata
+                }]
+            }
+        })).toBeNull();
+    });
+});
+
+describe('getDolbyVisionProfile7HDR10BaseColorMetadata', () => {
+    const createProfile7Options = (
+        overrides: Record<string, unknown> = {}
+    ): Record<string, unknown> => ({
+        mediaSource: {
+            MediaStreams: [{
+                BitDepth: 10,
+                BlPresentFlag: true,
+                Codec: 'hevc',
+                ColorPrimaries: 'bt2020',
+                ColorSpace: 'bt2020nc',
+                ColorTransfer: 'smpte2084',
+                DvBlSignalCompatibilityId: 6,
+                DvProfile: 7,
+                ElPresentFlag: true,
+                RpuPresentFlag: true,
+                Type: 'Video',
+                VideoRange: 'HDR',
+                VideoRangeType: 'DOVIWithEL',
+                ...overrides
+            }]
+        }
+    });
+
+    it('derives the exact limited BT.2020 PQ base-layer contract', () => {
+        expect(getDolbyVisionProfile7HDR10BaseColorMetadata(
+            createProfile7Options()
+        )).toMatchObject({
+            bitDepth: 10,
+            matrix: 'bt2020-ncl',
+            primaries: 'bt2020',
+            range: 'limited',
+            transfer: 'pq'
+        });
+    });
+
+    it.each([
+        { ColorPrimaries: 'bt709' },
+        { ColorRange: 'full' },
+        { ColorSpace: 'bt709' },
+        { ColorTransfer: 'hlg' },
+        { DvBlSignalCompatibilityId: 1 },
+        { VideoRange: 'SDR' }
+    ])('rejects an inexact Profile 7 HDR10 base contract: %o', overrides => {
+        expect(getDolbyVisionProfile7HDR10BaseColorMetadata(
+            createProfile7Options(overrides)
+        )).toBeNull();
+    });
+});
+
+describe('getDolbyVisionProfile8HDR10BaseColorMetadata', () => {
+    const createProfile8Options = (
+        overrides: Record<string, unknown> = {}
+    ): Record<string, unknown> => ({
+        mediaSource: {
+            MediaStreams: [{
+                BitDepth: 10,
+                BlPresentFlag: true,
+                Codec: 'hevc',
+                ColorPrimaries: 'bt2020',
+                ColorSpace: 'bt2020nc',
+                ColorTransfer: 'smpte2084',
+                DvBlSignalCompatibilityId: 1,
+                DvProfile: 8,
+                ElPresentFlag: false,
+                RpuPresentFlag: true,
+                Type: 'Video',
+                VideoRange: 'HDR',
+                VideoRangeType: 'DOVIWithHDR10',
+                ...overrides
+            }]
+        }
+    });
+
+    it('derives the exact limited BT.2020 PQ Profile 8.1 base contract', () => {
+        expect(getDolbyVisionProfile8HDR10BaseColorMetadata(
+            createProfile8Options()
+        )).toMatchObject({
+            bitDepth: 10,
+            matrix: 'bt2020-ncl',
+            primaries: 'bt2020',
+            range: 'limited',
+            transfer: 'pq'
+        });
+    });
+
+    it.each([
+        { ColorPrimaries: 'bt709' },
+        { ColorRange: 'full' },
+        { ColorSpace: 'bt709' },
+        { ColorTransfer: 'hlg' },
+        { DvBlSignalCompatibilityId: 4 },
+        { ElPresentFlag: true },
+        { VideoRange: 'SDR' }
+    ])('rejects an inexact Profile 8.1 HDR10 base contract: %o', overrides => {
+        expect(getDolbyVisionProfile8HDR10BaseColorMetadata(
+            createProfile8Options(overrides)
+        )).toBeNull();
+    });
+});
+
+describe('getDolbyVisionProfile8HLGBaseColorMetadata', () => {
+    const createProfile8Options = (
+        overrides: Record<string, unknown> = {}
+    ): Record<string, unknown> => ({
+        mediaSource: {
+            MediaStreams: [{
+                BitDepth: 10,
+                BlPresentFlag: true,
+                Codec: 'hevc',
+                ColorPrimaries: 'bt2020',
+                ColorRange: 'limited',
+                ColorSpace: 'bt2020nc',
+                ColorTransfer: 'hlg',
+                DvBlSignalCompatibilityId: 4,
+                DvProfile: 8,
+                ElPresentFlag: false,
+                RpuPresentFlag: true,
+                Type: 'Video',
+                VideoRange: 'HDR',
+                VideoRangeType: 'DOVIWithHLG',
+                ...overrides
+            }]
+        }
+    });
+
+    it('derives the exact limited BT.2020 HLG Profile 8.4 base contract', () => {
+        expect(getDolbyVisionProfile8HLGBaseColorMetadata(
+            createProfile8Options()
+        )).toMatchObject({
+            bitDepth: 10,
+            matrix: 'bt2020-ncl',
+            primaries: 'bt2020',
+            range: 'limited',
+            transfer: 'hlg'
+        });
+    });
+
+    it.each([
+        { BitDepth: undefined },
+        { BitDepth: 8 },
+        { ColorPrimaries: 'bt709' },
+        { ColorRange: undefined },
+        { ColorRange: 'full' },
+        { ColorSpace: 'bt2020c' },
+        { ColorTransfer: 'smpte2084' },
+        { DvBlSignalCompatibilityId: 1 },
+        { ElPresentFlag: undefined },
+        { ElPresentFlag: true },
+        { VideoRange: 'SDR' }
+    ])('rejects an inexact Profile 8.4 HLG base contract: %o', overrides => {
+        expect(getDolbyVisionProfile8HLGBaseColorMetadata(
+            createProfile8Options(overrides)
+        )).toBeNull();
+    });
+});
+
+describe('isKnownSDRPresentationInput', () => {
+    it('accepts explicitly identified SDR video input', () => {
+        expect(isKnownSDRPresentationInput({
+            mediaSource: {
+                MediaStreams: [
+                    { Type: 'Audio' },
+                    { Type: 'Video', VideoRangeType: 'SDR' }
+                ]
+            }
+        })).toBe(true);
+    });
+
+    it('accepts the legacy SDR video range field', () => {
+        expect(isKnownSDRPresentationInput({
+            mediaSource: {
+                MediaStreams: [
+                    { Type: 'video', VideoRange: 'sdr' }
+                ]
+            }
+        })).toBe(true);
+    });
+
+    it('uses Jellyfin\'s first independent video track for SDR presentation', () => {
+        expect(isKnownSDRPresentationInput({
+            mediaSource: {
+                MediaStreams: [
+                    { Type: 'Video', VideoRangeType: 'SDR' },
+                    { Type: 'Video', VideoRangeType: 'HDR10' }
+                ]
+            }
+        })).toBe(true);
+    });
+
+    it.each([
+        undefined,
+        {},
+        { mediaSource: {} },
+        { mediaSource: { MediaStreams: [] } },
+        { mediaSource: { MediaStreams: [{ Type: 'Video' }] } }
+    ])('rejects input without positive SDR metadata', options => {
+        expect(isKnownSDRPresentationInput(options)).toBe(false);
+    });
+
+    it.each([
+        { VideoRangeType: 'HDR10' },
+        { VideoRangeType: 'DOVIWithSDR' },
+        { VideoRange: 'HLG' },
+        { VideoRangeType: 'HDR10', VideoRange: 'SDR' },
+        { VideoRangeType: 'SDR', ColorTransfer: 'SMPTE2084' },
+        { VideoRange: 'SDR', ColorTransfer: 'ARIB-STD-B67' },
+        { VideoRangeType: 'SDR', Hdr10PlusPresentFlag: true },
+        { VideoRangeType: 'SDR', Hdr10PlusPresentFlag: 1 },
+        { VideoRangeType: 'SDR', DvProfile: 8 },
+        { VideoRangeType: 'SDR', DvVersionMajor: 1 },
+        { VideoRangeType: 'SDR', DvVersionMinor: 0 },
+        { VideoRangeType: 'SDR', DvLevel: 6 },
+        { VideoRangeType: 'SDR', DvBlSignalCompatibilityId: 1 },
+        { VideoRangeType: 'SDR', VideoDoViTitle: 'Dolby Vision' },
+        { VideoRangeType: 'SDR', BlPresentFlag: true },
+        { VideoRangeType: 'SDR', ElPresentFlag: true },
+        { VideoRangeType: 'SDR', RpuPresentFlag: '1' }
+    ])('rejects non-SDR or contradictory video metadata: %o', videoMetadata => {
+        expect(isKnownSDRPresentationInput({
+            mediaSource: {
+                MediaStreams: [{ Type: 'Video', ...videoMetadata }]
+            }
+        })).toBe(false);
+    });
+
+    it('does not substitute a later SDR track for the first HDR track', () => {
+        expect(isKnownSDRPresentationInput({
+            mediaSource: {
+                MediaStreams: [
+                    { Type: 'Video', VideoRangeType: 'HDR10' },
+                    { Type: 'Video', VideoRangeType: 'SDR' }
+                ]
+            }
+        })).toBe(false);
+    });
+});
+
+describe('parseVideoStreamColorMetadata', () => {
+    it('creates default BT.709 metadata for an explicit SDR stream', () => {
+        expect(parseVideoStreamColorMetadata({
+            Type: 'Video',
+            VideoRangeType: 'SDR'
+        })).toMatchObject({
+            bitDepth: 8,
+            matrix: 'bt709',
+            nominalPeakNits: 100,
+            primaries: 'bt709',
+            range: 'limited',
+            transfer: 'sdr'
+        });
+    });
+
+    it('maps Jellyfin HDR10 metadata into an explicit PQ input description', () => {
+        expect(parseVideoStreamColorMetadata({
+            BitDepth: 12,
+            ColorPrimaries: 'bt2020',
+            ColorRange: 'tv',
+            ColorSpace: 'bt2020nc',
+            ColorTransfer: 'smpte2084',
+            Type: 'Video',
+            VideoRange: 'HDR',
+            VideoRangeType: 'HDR10'
+        })).toEqual({
+            bitDepth: 12,
+            matrix: 'bt2020-ncl',
+            nominalPeakNits: 1_000,
+            primaries: 'bt2020',
+            range: 'limited',
+            sdrReferenceWhiteNits: 100,
+            transfer: 'pq',
+            version: 1
+        });
+    });
+
+    it('maps HLG aliases and full range without inventing floating timestamps', () => {
+        expect(parseVideoStreamColorMetadata({
+            ColorRange: 'pc',
+            ColorTransfer: 'ARIB-STD-B67',
+            Type: 'Video',
+            VideoRangeType: 'HLG'
+        })).toMatchObject({
+            bitDepth: 10,
+            matrix: 'bt2020-ncl',
+            primaries: 'bt2020',
+            range: 'full',
+            transfer: 'hlg'
+        });
+    });
+
+    it.each([
+        { Hdr10PlusPresentFlag: true, VideoRangeType: 'HDR10' },
+        { VideoRangeType: 'HDR10Plus' }
+    ])('accepts a PQ-compatible HDR10+ base for dynamic metadata: %o', stream => {
+        expect(parseVideoStreamColorMetadata({
+            ...stream,
+            Type: 'Video'
+        })).toMatchObject({
+            bitDepth: 10,
+            matrix: 'bt2020-ncl',
+            primaries: 'bt2020',
+            range: 'limited',
+            transfer: 'pq'
+        });
+    });
+
+    it.each([
+        { Type: 'Video' },
+        { Type: 'Video', VideoRange: 'HDR' },
+        { Type: 'Video', VideoRangeType: 'Unknown' },
+        { Type: 'Video', VideoRangeType: 'DOVIWithHDR10' },
+        { DvProfile: 8, Type: 'Video', VideoRangeType: 'HDR10' },
+        { RpuPresentFlag: 1, Type: 'Video', VideoRangeType: 'HDR10' },
+        { Type: 'Video', VideoRange: 'SDR', VideoRangeType: 'HDR10' },
+        { ColorTransfer: 'smpte2084', Type: 'Video', VideoRangeType: 'HLG' },
+        { BitDepth: 8, Type: 'Video', VideoRangeType: 'HDR10' },
+        { ColorSpace: 'smpte170m', Type: 'Video', VideoRangeType: 'SDR' },
+        { ColorPrimaries: 'display-p3', Type: 'Video', VideoRangeType: 'SDR' },
+        { ColorRange: 'unknown', Type: 'Video', VideoRangeType: 'SDR' },
+        { Hdr10PlusPresentFlag: true, Type: 'Video', VideoRangeType: 'SDR' }
+    ])('rejects unknown, Dolby Vision, or contradictory metadata: %o', stream => {
+        expect(parseVideoStreamColorMetadata(stream)).toBeNull();
+    });
+});
+
+describe('getPresentationInputColorMetadata', () => {
+    it('extracts the only video stream while ignoring audio streams', () => {
+        expect(getPresentationInputColorMetadata({
+            mediaSource: {
+                MediaStreams: [
+                    { Type: 'Audio' },
+                    { Type: 'Video', VideoRangeType: 'SDR' }
+                ]
+            }
+        })?.transfer).toBe('sdr');
+    });
+
+    it('rejects missing video streams', () => {
+        expect(getPresentationInputColorMetadata({ mediaSource: { MediaStreams: [] } }))
+            .toBeNull();
+    });
+
+    it('extracts metadata from Jellyfin\'s first independent video track', () => {
+        expect(getPresentationInputColorMetadata({
+            mediaSource: {
+                MediaStreams: [
+                    {
+                        BitDepth: 10,
+                        ColorPrimaries: 'bt2020',
+                        ColorSpace: 'bt2020nc',
+                        ColorTransfer: 'smpte2084',
+                        Height: 2_160,
+                        Type: 'Video',
+                        VideoRange: 'HDR',
+                        VideoRangeType: 'HDR10',
+                        Width: 3_840
+                    },
+                    {
+                        Height: 1_080,
+                        Type: 'Video',
+                        VideoRangeType: 'SDR',
+                        Width: 1_920
+                    }
+                ]
+            }
+        })).toMatchObject({
+            bitDepth: 10,
+            transfer: 'pq'
+        });
+    });
+
+    it('rejects unrecognized multi-track Dolby Vision topology', () => {
+        expect(getPresentationInputColorMetadata({
+            mediaSource: {
+                MediaStreams: createSeparateProfile7Streams({}, { Width: 1_918 })
+            }
+        })).toBeNull();
+    });
+});

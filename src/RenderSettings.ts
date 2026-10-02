@@ -1,0 +1,313 @@
+export const RENDER_SETTINGS_VERSION = 7;
+export const RENDER_SETTINGS_UNIFORM_BYTE_LENGTH = 144;
+
+export const HDR_RENDER_SETTING_RANGES = Object.freeze({
+    brightness: Object.freeze({ maximum: 1, minimum: -1, step: 0.01 }),
+    contrast: Object.freeze({ maximum: 4, minimum: 0, step: 0.01 }),
+    desaturationStrength: Object.freeze({ maximum: 1, minimum: 0, step: 0.01 }),
+    exposure: Object.freeze({ maximum: 16, minimum: -16, step: 0.1 }),
+    inputPeakNits: Object.freeze({ maximum: 10_000, minimum: 1, step: 1 }),
+    outputPeakNits: Object.freeze({ maximum: 10_000, minimum: 1, step: 1 }),
+    paperWhiteNits: Object.freeze({ maximum: 10_000, minimum: 1, step: 1 }),
+    saturation: Object.freeze({ maximum: 4, minimum: 0, step: 0.01 })
+});
+
+export type RenderMode = 'hdr-to-sdr' | 'identity-sdr';
+// The configured WebGPU canvas uses the sRGB output color space
+export type OutputTransfer = 'srgb';
+export type ToneMapOperator = 'aces' | 'reinhard' | 'spline';
+
+export type ToneMappingSettings = {
+    desaturationStrength: number
+    exposure: number
+    inputPeakNits: number
+    operator: ToneMapOperator
+    outputPeakNits: number
+    paperWhiteNits: number
+};
+
+export type DisplaySettings = {
+    brightness: number
+    contrast: number
+    saturation: number
+};
+
+export type IdentitySDRRenderSettings = {
+    mode: 'identity-sdr'
+    version: typeof RENDER_SETTINGS_VERSION
+};
+
+export type HDRToSDRRenderSettings = {
+    display: DisplaySettings
+    mode: 'hdr-to-sdr'
+    outputTransfer: OutputTransfer
+    toneMapping: ToneMappingSettings
+    version: typeof RENDER_SETTINGS_VERSION
+};
+
+export type RenderSettings = HDRToSDRRenderSettings | IdentitySDRRenderSettings;
+
+export type HDRToSDRRenderSettingsOverrides = {
+    display?: Partial<DisplaySettings>
+    outputTransfer?: OutputTransfer
+    toneMapping?: Partial<ToneMappingSettings>
+};
+
+export type HDR10PlusFrameRenderSettings = Readonly<{
+    averageNits: number
+    inputPeakNits: number
+    targetedSystemDisplayMaximumLuminanceNits: number
+    toneMapping: Readonly<{
+        bezierCurveAnchors: readonly number[]
+        kneePointX: number
+        kneePointY: number
+    }> | null
+}>;
+
+const DEFAULT_TONE_MAPPING_SETTINGS: ToneMappingSettings = {
+    desaturationStrength: 0.25,
+    exposure: 0,
+    inputPeakNits: 1_000,
+    operator: 'spline',
+    outputPeakNits: 100,
+    paperWhiteNits: 203
+};
+
+const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
+    brightness: 0,
+    contrast: 1,
+    saturation: 1
+};
+
+const ACES_OPERATOR_CODE = 0;
+const REINHARD_OPERATOR_CODE = 1;
+const SPLINE_OPERATOR_CODE = 2;
+const SRGB_OUTPUT_TRANSFER_CODE = 1;
+
+const UNIFORM_VERSION_INDEX = 0;
+const UNIFORM_OPERATOR_INDEX = 1;
+const UNIFORM_OUTPUT_TRANSFER_INDEX = 2;
+const UNIFORM_DYNAMIC_MODE_INDEX = 3;
+const UNIFORM_DESATURATION_INDEX = 4;
+const UNIFORM_EXPOSURE_INDEX = 5;
+const UNIFORM_INPUT_PEAK_INDEX = 6;
+const UNIFORM_OUTPUT_PEAK_INDEX = 7;
+const UNIFORM_PAPER_WHITE_INDEX = 8;
+const UNIFORM_BRIGHTNESS_INDEX = 9;
+const UNIFORM_CONTRAST_INDEX = 10;
+const UNIFORM_SATURATION_INDEX = 11;
+const UNIFORM_DYNAMIC_SCENE_AVERAGE_INDEX = 12;
+const UNIFORM_DYNAMIC_TARGET_PEAK_INDEX = 13;
+const UNIFORM_DYNAMIC_KNEE_X_INDEX = 14;
+const UNIFORM_DYNAMIC_KNEE_Y_INDEX = 15;
+const UNIFORM_DYNAMIC_ANCHOR_COUNT_INDEX = 16;
+const UNIFORM_DYNAMIC_ANCHOR_START_INDEX = 20;
+const MAXIMUM_DYNAMIC_ANCHOR_COUNT = 15;
+
+/** Throws when renderer settings cannot produce a deterministic color transform. */
+export function assertValidRenderSettings(settings: RenderSettings): void {
+    if (settings.version !== RENDER_SETTINGS_VERSION) {
+        throw new RangeError('Unsupported render settings version');
+    }
+
+    switch (settings.mode) {
+        case 'identity-sdr':
+            return;
+        case 'hdr-to-sdr':
+            break;
+        default:
+            throw new RangeError('Unsupported render mode');
+    }
+
+    if (settings.outputTransfer !== 'srgb') {
+        throw new RangeError('Unsupported output transfer');
+    }
+    switch (settings.toneMapping.operator) {
+        case 'aces':
+        case 'reinhard':
+        case 'spline':
+            break;
+        default:
+            throw new RangeError('Unsupported tone map operator');
+    }
+
+    const toneMapping = settings.toneMapping;
+    const numericSettings: number[] = [];
+    numericSettings.push(
+        toneMapping.desaturationStrength,
+        toneMapping.exposure,
+        toneMapping.inputPeakNits,
+        toneMapping.outputPeakNits,
+        toneMapping.paperWhiteNits
+    );
+    numericSettings.push(
+        settings.display.brightness,
+        settings.display.contrast,
+        settings.display.saturation
+    );
+    if (!numericSettings.every(Number.isFinite)) {
+        throw new RangeError('Tone mapping settings must be finite');
+    }
+    if (
+        toneMapping.inputPeakNits < HDR_RENDER_SETTING_RANGES.inputPeakNits.minimum
+        || toneMapping.inputPeakNits > HDR_RENDER_SETTING_RANGES.inputPeakNits.maximum
+        || toneMapping.outputPeakNits < HDR_RENDER_SETTING_RANGES.outputPeakNits.minimum
+        || toneMapping.outputPeakNits > HDR_RENDER_SETTING_RANGES.outputPeakNits.maximum
+    ) {
+        throw new RangeError('Tone mapping peak luminance must be from 1 through 10000 nits');
+    }
+    if (toneMapping.paperWhiteNits < HDR_RENDER_SETTING_RANGES.paperWhiteNits.minimum
+        || toneMapping.paperWhiteNits > HDR_RENDER_SETTING_RANGES.paperWhiteNits.maximum
+        || toneMapping.paperWhiteNits > toneMapping.inputPeakNits) {
+        throw new RangeError('Paper white must be within the input luminance range');
+    }
+    if (
+        toneMapping.exposure < HDR_RENDER_SETTING_RANGES.exposure.minimum
+        || toneMapping.exposure > HDR_RENDER_SETTING_RANGES.exposure.maximum
+    ) {
+        throw new RangeError('Exposure must be from negative 16 through 16 stops');
+    }
+    if (toneMapping.desaturationStrength < HDR_RENDER_SETTING_RANGES.desaturationStrength.minimum
+        || toneMapping.desaturationStrength
+            > HDR_RENDER_SETTING_RANGES.desaturationStrength.maximum) {
+        throw new RangeError('Desaturation strength must be between zero and one');
+    }
+    if (settings.display.brightness < HDR_RENDER_SETTING_RANGES.brightness.minimum
+        || settings.display.brightness > HDR_RENDER_SETTING_RANGES.brightness.maximum) {
+        throw new RangeError('Display brightness must be between negative one and one');
+    }
+    if (settings.display.contrast < HDR_RENDER_SETTING_RANGES.contrast.minimum
+        || settings.display.contrast > HDR_RENDER_SETTING_RANGES.contrast.maximum) {
+        throw new RangeError('Display contrast must be between zero and four');
+    }
+    if (settings.display.saturation < HDR_RENDER_SETTING_RANGES.saturation.minimum
+        || settings.display.saturation > HDR_RENDER_SETTING_RANGES.saturation.maximum) {
+        throw new RangeError('Display saturation must be between zero and four');
+    }
+}
+
+/** Returns independent identity settings for a new presentation session. */
+export function createDefaultRenderSettings(): IdentitySDRRenderSettings {
+    return {
+        mode: 'identity-sdr',
+        version: RENDER_SETTINGS_VERSION
+    };
+}
+
+/** Returns independent HDR-to-SDR settings with validated overrides. */
+export function createHDRToSDRRenderSettings(
+    overrides: HDRToSDRRenderSettingsOverrides = {}
+): HDRToSDRRenderSettings {
+    const display: DisplaySettings = {
+        ...DEFAULT_DISPLAY_SETTINGS,
+        ...overrides.display
+    };
+    const toneMapping: ToneMappingSettings = {
+        ...DEFAULT_TONE_MAPPING_SETTINGS,
+        ...overrides.toneMapping
+    };
+    const settings: HDRToSDRRenderSettings = {
+        display,
+        mode: 'hdr-to-sdr',
+        outputTransfer: overrides.outputTransfer ?? 'srgb',
+        toneMapping,
+        version: RENDER_SETTINGS_VERSION
+    };
+    assertValidRenderSettings(settings);
+    return settings;
+}
+
+function getToneMapOperatorCode(operator: ToneMapOperator): number {
+    switch (operator) {
+        case 'aces':
+            return ACES_OPERATOR_CODE;
+        case 'reinhard':
+            return REINHARD_OPERATOR_CODE;
+        case 'spline':
+            return SPLINE_OPERATOR_CODE;
+    }
+}
+
+function getOutputTransferCode(outputTransfer: OutputTransfer): number {
+    if (outputTransfer !== 'srgb') {
+        throw new RangeError('Unsupported output transfer');
+    }
+    return SRGB_OUTPUT_TRANSFER_CODE;
+}
+
+/** Serializes adjustable renderer controls into the versioned WGSL layout. */
+export function createRenderSettingsUniformData(
+    settings: HDRToSDRRenderSettings,
+    dynamicFrameSettings: HDR10PlusFrameRenderSettings | null = null
+): Uint8Array<ArrayBuffer> {
+    assertValidRenderSettings(settings);
+
+    const buffer = new ArrayBuffer(RENDER_SETTINGS_UNIFORM_BYTE_LENGTH);
+    const integerValues = new Uint32Array(buffer);
+    const floatValues = new Float32Array(buffer);
+    integerValues[UNIFORM_VERSION_INDEX] = settings.version;
+    integerValues[UNIFORM_OPERATOR_INDEX] = getToneMapOperatorCode(
+        settings.toneMapping.operator
+    );
+    integerValues[UNIFORM_OUTPUT_TRANSFER_INDEX] = getOutputTransferCode(
+        settings.outputTransfer
+    );
+    floatValues[UNIFORM_DESATURATION_INDEX] = settings.toneMapping.desaturationStrength;
+    floatValues[UNIFORM_EXPOSURE_INDEX] = settings.toneMapping.exposure;
+    floatValues[UNIFORM_INPUT_PEAK_INDEX] = settings.toneMapping.inputPeakNits;
+    floatValues[UNIFORM_OUTPUT_PEAK_INDEX] = settings.toneMapping.outputPeakNits;
+    floatValues[UNIFORM_PAPER_WHITE_INDEX] = settings.toneMapping.paperWhiteNits;
+    floatValues[UNIFORM_BRIGHTNESS_INDEX] = settings.display.brightness;
+    floatValues[UNIFORM_CONTRAST_INDEX] = settings.display.contrast;
+    floatValues[UNIFORM_SATURATION_INDEX] = settings.display.saturation;
+    if (dynamicFrameSettings) {
+        const toneMapping = dynamicFrameSettings.toneMapping;
+        const anchors = toneMapping?.bezierCurveAnchors ?? [];
+        if (
+            !Number.isFinite(dynamicFrameSettings.averageNits)
+            || dynamicFrameSettings.averageNits < 0
+            || dynamicFrameSettings.averageNits > dynamicFrameSettings.inputPeakNits
+            || !Number.isFinite(dynamicFrameSettings.inputPeakNits)
+            || dynamicFrameSettings.inputPeakNits < settings.toneMapping.paperWhiteNits
+            || dynamicFrameSettings.inputPeakNits
+                > HDR_RENDER_SETTING_RANGES.inputPeakNits.maximum
+            || !Number.isFinite(
+                dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits
+            )
+            || dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits
+                < HDR_RENDER_SETTING_RANGES.outputPeakNits.minimum
+            || dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits
+                > HDR_RENDER_SETTING_RANGES.outputPeakNits.maximum
+            || anchors.length > MAXIMUM_DYNAMIC_ANCHOR_COUNT
+            || anchors.some((anchor: number): boolean => (
+                !Number.isFinite(anchor) || anchor < 0 || anchor > 1
+            ))
+            || (toneMapping !== null && (
+                !Number.isFinite(toneMapping.kneePointX)
+                || toneMapping.kneePointX < 0
+                || toneMapping.kneePointX > 1
+                || !Number.isFinite(toneMapping.kneePointY)
+                || toneMapping.kneePointY < 0
+                || toneMapping.kneePointY > 1
+                || anchors.length === 0
+            ))
+        ) {
+            throw new RangeError('Dynamic HDR10+ render settings are invalid');
+        }
+
+        integerValues[UNIFORM_DYNAMIC_MODE_INDEX] = toneMapping ? 2 : 1;
+        floatValues[UNIFORM_INPUT_PEAK_INDEX] = dynamicFrameSettings.inputPeakNits;
+        floatValues[UNIFORM_DYNAMIC_SCENE_AVERAGE_INDEX] =
+            dynamicFrameSettings.averageNits;
+        floatValues[UNIFORM_DYNAMIC_TARGET_PEAK_INDEX] =
+            dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits;
+        floatValues[UNIFORM_DYNAMIC_KNEE_X_INDEX] = toneMapping?.kneePointX ?? 0;
+        floatValues[UNIFORM_DYNAMIC_KNEE_Y_INDEX] = toneMapping?.kneePointY ?? 0;
+        integerValues[UNIFORM_DYNAMIC_ANCHOR_COUNT_INDEX] = anchors.length;
+        for (let anchorIndex = 0; anchorIndex < anchors.length; anchorIndex += 1) {
+            floatValues[UNIFORM_DYNAMIC_ANCHOR_START_INDEX + anchorIndex] =
+                anchors[anchorIndex];
+        }
+    }
+    return new Uint8Array(buffer);
+}

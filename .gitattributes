@@ -1,0 +1,4 @@
+* text=auto eol=lf
+
+# Generated decoder builds are single-line modules; diffs are noise
+codecs/dist/** -diff linguist-generated

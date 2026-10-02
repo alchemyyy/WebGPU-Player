@@ -1,0 +1,11 @@
+node_modules/
+/dist/
+coverage/
+__pycache__/
+
+# Codec build trees and the Rust target directory
+codecs/build/
+codecs/libdovi/target/
+
+# Generated local playback media
+tools/playback-smoke-media/

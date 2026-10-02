@@ -1,0 +1,31 @@
+{
+  "name": "webgpu-player",
+  "version": "0.1.0",
+  "description": "WebGPU and WebCodecs media playback engine",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "vitest --watch=false",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cornerstonejs/codec-openjpeg": "1.3.0",
+    "@hevcjs/core": "1.3.2",
+    "@mediabunny/ac3": "1.52.2",
+    "mediabunny": "1.52.2"
+  },
+  "devDependencies": {
+    "@types/node": "20.11.4",
+    "@webgpu/types": "0.1.71",
+    "esbuild": "0.25.2",
+    "jsdom": "29.1.1",
+    "typescript": "5.9.3",
+    "vite": "6.3.5",
+    "vite-tsconfig-paths": "6.1.1",
+    "vitest": "3.2.7"
+  }
+}
