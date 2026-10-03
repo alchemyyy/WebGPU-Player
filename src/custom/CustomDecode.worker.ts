@@ -69,6 +69,7 @@ import {
 import { getTrackByOrdinal } from './CustomDecodeTrackSelection';
 import {
     DecodedVideoGeometryError,
+    exceedsNegotiatedCodedSize,
     requireConsistentDecodedVideoGeometry
 } from './DecodedVideoGeometry';
 import DolbyVisionEncodedMetadataQueue, {
@@ -775,10 +776,12 @@ async function prepareVideoTrack(
     if (dimensions.some(dimension => !Number.isSafeInteger(dimension) || dimension <= 0)) {
         throw new UnsupportedCustomDecodeSourceError('The selected video dimensions are invalid');
     }
-    if (
-        codedWidth > request.maximumCodedWidth
-        || codedHeight > request.maximumCodedHeight
-    ) {
+    if (exceedsNegotiatedCodedSize(
+        codedWidth,
+        codedHeight,
+        request.maximumCodedWidth,
+        request.maximumCodedHeight
+    )) {
         throw new UnsupportedCustomDecodeSourceError(
             'The selected video track exceeds its negotiated decode route'
         );

@@ -1,5 +1,6 @@
 import type { RawVideoFrameGeometry } from './RawVideoFrameCopy';
 
+// Covers codec block alignment and decoder surface padding; HEVC coding blocks reach 64 px
 const MAXIMUM_DECODER_CODED_PADDING = 64;
 
 /** Describes a decoded frame geometry violation at the worker boundary. */
@@ -22,6 +23,20 @@ function geometriesMatch(
         && firstGeometry.codedWidth === secondGeometry.codedWidth
         && firstGeometry.displayHeight === secondGeometry.displayHeight
         && firstGeometry.displayWidth === secondGeometry.displayWidth;
+}
+
+/**
+ * Returns whether a coded size exceeds its negotiated decode route.
+ * Routes are negotiated from the server's cropped picture size, while containers and decoders report the block-aligned coded size, such as 2080 lines for a 2076-line HEVC picture.
+ */
+export function exceedsNegotiatedCodedSize(
+    codedWidth: number,
+    codedHeight: number,
+    maximumCodedWidth: number,
+    maximumCodedHeight: number
+): boolean {
+    return codedWidth - maximumCodedWidth > MAXIMUM_DECODER_CODED_PADDING
+        || codedHeight - maximumCodedHeight > MAXIMUM_DECODER_CODED_PADDING;
 }
 
 /**
@@ -61,8 +76,12 @@ export function requireConsistentDecodedVideoGeometry(
         );
     }
     if (
-        selectedTrackGeometry.codedWidth > maximumCodedWidth
-        || selectedTrackGeometry.codedHeight > maximumCodedHeight
+        exceedsNegotiatedCodedSize(
+            selectedTrackGeometry.codedWidth,
+            selectedTrackGeometry.codedHeight,
+            maximumCodedWidth,
+            maximumCodedHeight
+        )
         || candidateGeometry.codedWidth - selectedTrackGeometry.codedWidth
             > MAXIMUM_DECODER_CODED_PADDING
         || candidateGeometry.codedHeight - selectedTrackGeometry.codedHeight

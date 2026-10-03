@@ -224,6 +224,10 @@ capped by `maxTextureDimension2D`.
   limiter, so boosts can clip; clipping is counted. Native-media caps gain at 1.
 - `DecodedVideoGeometry` locks the first decoded size per run (64 px
   tolerance). A later size change fails the session.
+- Negotiated `maximumCoded*` is Jellyfin's cropped `Width`/`Height`, but
+  containers and decoders report block-aligned coded sizes (mkvmerge HEVC can
+  declare 2080 lines for a 2076-line picture). Route checks allow the same
+  64 px through `exceedsNegotiatedCodedSize`.
 - Jellyfin's cross-origin 206 hides `Content-Range`. It is accepted only for
   `/Videos/{id}/stream` with a bounded `Content-Length` (`HTTPRangeResponse.ts`).
 - The player preference (Auto/WebGPU/HTML) is the host's

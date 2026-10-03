@@ -1326,6 +1326,49 @@ describe('CustomDecodeSession', () => {
         expect(worker.postedMessages.at(-1)).toEqual({ generation: 18, type: 'stop' });
     });
 
+    it('accepts a configured track coded within block alignment of the negotiated route', () => {
+        const worker = new MockWorker();
+        const events: CustomDecodeSessionEvent[] = [];
+        const session = new CustomDecodeSession(
+            event => events.push(event),
+            () => worker as unknown as Worker
+        );
+        session.start({
+            dolbyVisionProfile: null,
+            generation: 18,
+            maximumCodedHeight: 2_076,
+            maximumCodedWidth: 3_840,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: null,
+            startTimeMicroseconds: secondsToMicroseconds(1),
+            url: 'http://localhost/video.mkv',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        });
+
+        // Matroska stores the 2080-line coded size of a 2076-line letterboxed HEVC picture
+        worker.emitMessage({
+            audio: null,
+            codec: 'hvc1.2.4.L153.B0',
+            codedHeight: 2_080,
+            codedWidth: 3_840,
+            displayHeight: 2_080,
+            displayWidth: 3_840,
+            generation: 18,
+            type: 'ready'
+        });
+
+        expect(session.getTelemetry().state).toBe('configured');
+        expect(events).toEqual([ {
+            audio: null,
+            codec: 'hvc1.2.4.L153.B0',
+            generation: 18,
+            type: 'configured'
+        } ]);
+    });
+
     it('accepts first-frame coded padding and locks the actual raw geometry', () => {
         const worker = new MockWorker();
         const session = new CustomDecodeSession(

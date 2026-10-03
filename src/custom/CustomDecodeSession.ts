@@ -14,6 +14,7 @@ import {
 } from './CustomAudioDownmixAlgorithm';
 import {
     DecodedVideoGeometryError,
+    exceedsNegotiatedCodedSize,
     requireConsistentDecodedVideoGeometry
 } from './DecodedVideoGeometry';
 import { resolveDolbyVisionRPUParserWASMURL } from './DolbyVisionRPUParser';
@@ -992,10 +993,12 @@ export default class CustomDecodeSession {
             this.handleDecodeProtocolFailure(workerRecord, 'The custom decode worker sent duplicate readiness');
             return;
         }
-        if (
-            message.codedWidth > workerRecord.maximumCodedWidth
-            || message.codedHeight > workerRecord.maximumCodedHeight
-        ) {
+        if (exceedsNegotiatedCodedSize(
+            message.codedWidth,
+            message.codedHeight,
+            workerRecord.maximumCodedWidth,
+            workerRecord.maximumCodedHeight
+        )) {
             this.handleDecodeProtocolFailure(
                 workerRecord,
                 'The selected video track exceeds its negotiated decode route'

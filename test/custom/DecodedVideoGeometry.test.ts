@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
     DecodedVideoGeometryError,
+    exceedsNegotiatedCodedSize,
     requireConsistentDecodedVideoGeometry
 } from 'webgpu-player/custom/DecodedVideoGeometry';
 import type { RawVideoFrameGeometry } from 'webgpu-player/custom/RawVideoFrameCopy';
@@ -12,6 +13,21 @@ const SELECTED_TRACK_GEOMETRY: RawVideoFrameGeometry = {
     displayHeight: 180,
     displayWidth: 320
 };
+
+describe('exceedsNegotiatedCodedSize', () => {
+    it('accepts block-aligned coded sizes above a cropped route', () => {
+        // A 2076-line letterboxed HEVC picture is coded as 2080 lines
+        expect(exceedsNegotiatedCodedSize(3_840, 2_080, 3_840, 2_076)).toBe(false);
+        expect(exceedsNegotiatedCodedSize(1_920, 1_088, 1_920, 1_080)).toBe(false);
+        expect(exceedsNegotiatedCodedSize(1_984, 1_144, 1_920, 1_080)).toBe(false);
+    });
+
+    it('rejects coded sizes beyond the alignment tolerance in either dimension', () => {
+        expect(exceedsNegotiatedCodedSize(1_985, 1_080, 1_920, 1_080)).toBe(true);
+        expect(exceedsNegotiatedCodedSize(1_920, 1_145, 1_920, 1_080)).toBe(true);
+        expect(exceedsNegotiatedCodedSize(3_840, 2_160, 3_840, 2_076)).toBe(true);
+    });
+});
 
 describe('requireConsistentDecodedVideoGeometry', () => {
     it('accepts bounded coded-frame padding and locks the actual geometry', () => {
@@ -113,6 +129,48 @@ describe('requireConsistentDecodedVideoGeometry', () => {
             1_080,
             null
         )).toEqual(decodedGeometry);
+    });
+
+    it('accepts a block-aligned selected track above a cropped route', () => {
+        const selectedTrackGeometry: RawVideoFrameGeometry = {
+            codedHeight: 2_080,
+            codedWidth: 3_840,
+            displayHeight: 2_080,
+            displayWidth: 3_840
+        };
+        const decodedGeometry: RawVideoFrameGeometry = {
+            codedHeight: 2_080,
+            codedWidth: 3_840,
+            displayHeight: 2_076,
+            displayWidth: 3_840
+        };
+
+        expect(requireConsistentDecodedVideoGeometry(
+            decodedGeometry,
+            selectedTrackGeometry,
+            3_840,
+            2_076,
+            null
+        )).toEqual(decodedGeometry);
+    });
+
+    it('rejects a selected track coded beyond the cropped route tolerance', () => {
+        const oversizedGeometry: RawVideoFrameGeometry = {
+            codedHeight: 2_160,
+            codedWidth: 3_840,
+            displayHeight: 2_160,
+            displayWidth: 3_840
+        };
+
+        expect(() => requireConsistentDecodedVideoGeometry(
+            oversizedGeometry,
+            oversizedGeometry,
+            3_840,
+            2_076,
+            null
+        )).toThrowError(new DecodedVideoGeometryError(
+            'Decoded frame coded geometry exceeds its negotiated decode route'
+        ));
     });
 
     it('rejects geometry changes after the first decoded frame', () => {
