@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     createDefaultRenderSettings,
     createHDRToSDRRenderSettings
-} from 'webgpu-player/RenderSettings';
+} from 'webgpu-player/presentation/RenderSettings';
 import {
     createHLGColorMetadata,
     createPQColorMetadata,
@@ -14,9 +14,13 @@ import {
     createExternalDolbyVisionInputProbeWGSL,
     createExternalHDRColorPipelineWGSL,
     createRawDolbyVisionColorPipelineWGSL,
+    createRawDolbyVisionProfile4ColorPipelineWGSL,
+    createRawDolbyVisionProfile4FELColorPipelineWGSL,
     createRawDolbyVisionProfile7ColorPipelineWGSL,
     createRawDolbyVisionProfile7FELColorPipelineWGSL,
-    createRawYUVColorPipelineWGSL
+    createRawYUVColorPipelineWGSL,
+    getRawFormatBitDepth,
+    isRawDolbyVisionVideoFrameFormat
 } from 'webgpu-player/color/ColorPipelineShader';
 
 function getRawTestBitDepth(format: string): 8 | 10 | 12 {
@@ -130,7 +134,9 @@ describe('shared color stages', () => {
             createExternalDolbyVisionColorPipelineWGSL(settings),
             createRawDolbyVisionColorPipelineWGSL(settings, 'I420P10'),
             createRawDolbyVisionProfile7ColorPipelineWGSL(settings, 'I420P10'),
-            createRawDolbyVisionProfile7FELColorPipelineWGSL(settings, 'I420P10')
+            createRawDolbyVisionProfile7FELColorPipelineWGSL(settings, 'I420P10'),
+            createRawDolbyVisionProfile4ColorPipelineWGSL(settings, 'I420P10'),
+            createRawDolbyVisionProfile4FELColorPipelineWGSL(settings, 'I420P10')
         ];
 
         for (const shader of shaders) {
@@ -436,6 +442,62 @@ describe('createRawDolbyVisionProfile7ColorPipelineWGSL', () => {
         );
 
         expect(secondShader).toBe(firstShader);
+    });
+});
+
+describe('raw Dolby Vision frame formats', () => {
+    it.each([
+        'I420',
+        'I420P10',
+        'I420P12',
+        'I422',
+        'I422P10',
+        'I422P12',
+        'I444',
+        'I444P10',
+        'I444P12'
+    ] as const)('reconstructs single-layer %s planes by the RPU base-layer depth', format => {
+        expect(isRawDolbyVisionVideoFrameFormat(format)).toBe(true);
+        const shader = createRawDolbyVisionColorPipelineWGSL(createHDRToSDRRenderSettings(), format);
+
+        expect(shader).toContain('rawBaseSignal / (codeValueCount - 1.0)');
+        expect(getRawFormatBitDepth(format)).toBe(getRawTestBitDepth(format));
+    });
+
+    it('excludes semi-planar NV12, which no RPU route decodes into', () => {
+        expect(isRawDolbyVisionVideoFrameFormat('NV12')).toBe(false);
+    });
+});
+
+describe('createRawDolbyVisionProfile4ColorPipelineWGSL', () => {
+    it.each([
+        [ 'base', createRawDolbyVisionProfile4ColorPipelineWGSL ],
+        [ 'FEL', createRawDolbyVisionProfile4FELColorPipelineWGSL ]
+    ] as const)(
+        'presents the SDR base of an FEL frame without its EL from the %s shader, bypassing tone mapping',
+        (_label, createShader) => {
+            const shader = createShader(createHDRToSDRRenderSettings(), 'I420P10');
+            const fragmentFunction = shader.slice(shader.indexOf('@fragment'));
+
+            expect(shader).toContain('fn presentSDRBaseLayer(rawBaseSignal: vec3f) -> vec4f');
+            // The SDR base uses BT.709 limited range at 10 bits
+            expect(shader).toContain('normalizedYUV.x + 1.5748 * normalizedYUV.z');
+            expect(shader).toContain(`(rawYUV.x - ${(64).toFixed(9)}) / ${(876).toFixed(9)}`);
+            expect(fragmentFunction).toContain('return presentSDRBaseLayer(rawBaseSignal);');
+            expect(fragmentFunction).toContain(
+                'encodedBT2020PQ = reconstructDolbyVisionBT2020PQ(rawBaseSignal)'
+            );
+        }
+    );
+
+    it('keeps the Profile 7 HDR10-base fallback out of the Profile 4 shader', () => {
+        const profile7Shader = createRawDolbyVisionProfile7ColorPipelineWGSL(
+            createHDRToSDRRenderSettings(),
+            'I420P10'
+        );
+
+        expect(profile7Shader).not.toContain('presentSDRBaseLayer');
+        expect(profile7Shader).toContain('normalizedYUV.x + 1.4746 * normalizedYUV.z');
     });
 });
 

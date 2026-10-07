@@ -2,7 +2,7 @@ import {
     createHDRToSDRRenderSettings,
     RENDER_SETTINGS_VERSION,
     type HDRToSDRRenderSettings
-} from '../RenderSettings';
+} from '../presentation/RenderSettings';
 import {
     createHLGColorMetadata,
     createPQColorMetadata,
@@ -13,21 +13,21 @@ import {
     type ColorTriplet
 } from '../color/ColorPipeline';
 import { createExternalHDRColorPipelineWGSL } from '../color/ColorPipelineShader';
-import { rewriteHEVCAccessUnitColorDescriptionToBT709 } from '../custom/DolbyVisionHEVCSplitter';
+import { rewriteHEVCAccessUnitColorDescriptionToBT709 } from '../video/dolby-vision/DolbyVisionHEVCSplitter';
 import {
     createRawYUVRenderSettingsUniformBuffer,
     writeRawYUVRenderSettingsUniform
-} from '../RawYUVGPURenderer';
+} from '../presentation/RawYUVGPURenderer';
 import {
     createExternalHDRAuthorizationAccessUnit,
     EXTERNAL_HDR_AUTHORIZATION_CODED_HEIGHT,
     EXTERNAL_HDR_AUTHORIZATION_CODED_WIDTH,
     EXTERNAL_HDR_AUTHORIZATION_DISPLAY_HEIGHT,
     EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH,
-    EXTERNAL_HDR_AUTHORIZATION_FIXTURE_SAMPLES,
-    EXTERNAL_HDR_AUTHORIZATION_FIXTURE_SHA256,
-    EXTERNAL_HDR_AUTHORIZATION_FIXTURE_VERSION
-} from './ExternalHDRAuthorizationFixture';
+    EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES,
+    EXTERNAL_HDR_AUTHORIZATION_VECTOR_SHA256,
+    EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION
+} from '../capability/vectors/ExternalHDRAuthorizationVector';
 import GPUAuthorizationDeadline from './GPUAuthorizationDeadline';
 import {
     GPUCanvasPixelReader,
@@ -35,8 +35,8 @@ import {
 } from './GPUCanvasReadback';
 import {
     calculateRawHDRAuthorizationOutputDither,
-    evaluateRawHDRFixtureObservations,
-    type RawHDRFixtureObservation
+    evaluateRawHDRVectorObservations,
+    type RawHDRVectorObservation
 } from './RawHDRPresentationAuthorization';
 
 const EXTERNAL_HDR_CODEC = 'hvc1.2.4.L120.B0';
@@ -79,7 +79,7 @@ export type ExternalHDRRouteAuthorizationDecision = {
     authorizedRouteKeys: readonly ExternalHDRAuthorizationRouteKey[]
     device: GPUDevice
     failureReason: ExternalHDRAuthorizationFailureReason | null
-    fixtureVersion: typeof EXTERNAL_HDR_AUTHORIZATION_FIXTURE_VERSION
+    vectorVersion: typeof EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION
     maximumChannelError: number | null
     renderSettingsVersion: typeof RENDER_SETTINGS_VERSION
     routeKey: ExternalHDRAuthorizationRouteKey
@@ -95,7 +95,7 @@ export type ExternalHDRAuthorizationTelemetry = {
         ExternalHDRAuthorizationRouteKey,
         ExternalHDRAuthorizationFailureReason
     >>>
-    fixtureVersion: typeof EXTERNAL_HDR_AUTHORIZATION_FIXTURE_VERSION
+    vectorVersion: typeof EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION
     maximumChannelErrors: Readonly<Partial<Record<
         ExternalHDRAuthorizationRouteKey,
         number
@@ -187,8 +187,8 @@ export function createExternalHDRShaderSignature(
     shaderCode: string
 ): string {
     const signatureInput = [
-        `fixture=${EXTERNAL_HDR_AUTHORIZATION_FIXTURE_VERSION}`,
-        `fixture-sha256=${EXTERNAL_HDR_AUTHORIZATION_FIXTURE_SHA256}`,
+        `vector=${EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION}`,
+        `vector-sha256=${EXTERNAL_HDR_AUTHORIZATION_VECTOR_SHA256}`,
         `uniform=${RENDER_SETTINGS_VERSION}`,
         `route=${routeKey}`,
         `codec=${EXTERNAL_HDR_CODEC}`,
@@ -258,7 +258,7 @@ async function flushVideoDecoderUntilAbort(
     }
 }
 
-/** Decodes one neutralized Main10 fixture and requires Chromium's opaque hardware output. */
+/** Decodes one neutralized Main10 vector and requires Chromium's opaque hardware output. */
 export async function createExternalHDRAuthorizationFrame(
     signal?: AbortSignal
 ): Promise<VideoFrame> {
@@ -357,13 +357,13 @@ export async function createExternalHDRAuthorizationFrame(
     }
 }
 
-/** Computes CPU-reference samples from the fixture's exact decoded YUV codes. */
+/** Computes CPU-reference samples from the vector's exact decoded YUV codes. */
 export function createExpectedExternalHDRAuthorizationObservations(
     routeKey: ExternalHDRAuthorizationRouteKey,
     settings: HDRToSDRRenderSettings
-): readonly RawHDRFixtureObservation[] {
+): readonly RawHDRVectorObservation[] {
     const metadata = createMetadata(routeKey);
-    return EXTERNAL_HDR_AUTHORIZATION_FIXTURE_SAMPLES.map(sample => {
+    return EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES.map(sample => {
         const encodedYUV: ColorTriplet = [
             sample.rawYUVCode[0] / MAXIMUM_10_BIT_CODE,
             sample.rawYUVCode[1] / MAXIMUM_10_BIT_CODE,
@@ -429,7 +429,7 @@ function createRejectedDecision(
         authorizedRouteKeys: [],
         device,
         failureReason,
-        fixtureVersion: EXTERNAL_HDR_AUTHORIZATION_FIXTURE_VERSION,
+        vectorVersion: EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION,
         maximumChannelError,
         renderSettingsVersion: RENDER_SETTINGS_VERSION,
         routeKey,
@@ -646,11 +646,11 @@ export class ExternalHDRPresentationAuthorizationRunner {
             pixelReader = new GPUCanvasPixelReader({
                 device,
                 format: targetFormat,
-                maximumReadbacks: EXTERNAL_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length
+                maximumReadbacks: EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES.length
             });
             const readback = await deadline.wait(
                 pixelReader.readPixels(
-                    EXTERNAL_HDR_AUTHORIZATION_FIXTURE_SAMPLES,
+                    EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES,
                     targetTexture
                 ),
                 (): void => pixelReader?.destroy()
@@ -664,11 +664,11 @@ export class ExternalHDRPresentationAuthorizationRunner {
                     'readback-failed'
                 );
             }
-            const actualObservations: RawHDRFixtureObservation[] = [];
+            const actualObservations: RawHDRVectorObservation[] = [];
             for (let sampleIndex = 0;
-                sampleIndex < EXTERNAL_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length;
+                sampleIndex < EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES.length;
                 sampleIndex += 1) {
-                const sample = EXTERNAL_HDR_AUTHORIZATION_FIXTURE_SAMPLES[sampleIndex];
+                const sample = EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES[sampleIndex];
                 actualObservations.push({
                     linearRGB: readback.linearRGB[sampleIndex],
                     sampleX: sample.sampleX,
@@ -679,7 +679,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
                 routeKey,
                 settings
             );
-            const comparison = evaluateRawHDRFixtureObservations(
+            const comparison = evaluateRawHDRVectorObservations(
                 expectedObservations,
                 actualObservations,
                 EXTERNAL_HDR_AUTHORIZATION_TOLERANCE
@@ -699,7 +699,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
                 authorizedRouteKeys: [ routeKey ],
                 device,
                 failureReason: null,
-                fixtureVersion: EXTERNAL_HDR_AUTHORIZATION_FIXTURE_VERSION,
+                vectorVersion: EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION,
                 maximumChannelError: comparison.maximumChannelError,
                 renderSettingsVersion: RENDER_SETTINGS_VERSION,
                 routeKey,
@@ -859,7 +859,7 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         if (!device || !targetFormat) {
             return {
                 ...accumulator,
-                fixtureVersion: EXTERNAL_HDR_AUTHORIZATION_FIXTURE_VERSION,
+                vectorVersion: EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION,
                 renderSettingsVersion: RENDER_SETTINGS_VERSION,
                 status: 'unavailable',
                 targetFormat
@@ -891,7 +891,7 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         }
         return {
             ...accumulator,
-            fixtureVersion: EXTERNAL_HDR_AUTHORIZATION_FIXTURE_VERSION,
+            vectorVersion: EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION,
             renderSettingsVersion: RENDER_SETTINGS_VERSION,
             status: getAuthorizationTelemetryStatus(accumulator),
             targetFormat

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     createDefaultRenderSettings,
     createHDRToSDRRenderSettings
-} from 'webgpu-player/RenderSettings';
+} from 'webgpu-player/presentation/RenderSettings';
 import {
     createHLGColorMetadata,
     createPQColorMetadata,

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createHDRToSDRRenderSettings } from 'webgpu-player/RenderSettings';
+import { createHDRToSDRRenderSettings } from 'webgpu-player/presentation/RenderSettings';
 import type { ColorTriplet } from 'webgpu-player/color/ColorPipeline';
-import { createDolbyVisionAuthorizationRPUFixture } from 'webgpu-player/validation/DolbyVisionAuthorizationFixture';
+import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 import {
     createExpectedExternalDolbyVisionAuthorizationObservations,
     createExpectedExternalDolbyVisionAuthorizationObservationsFromInput,
@@ -13,7 +13,7 @@ import {
     ExternalDolbyVisionPresentationAuthorizationRunner,
     type ExternalDolbyVisionAuthorizationDecision
 } from 'webgpu-player/validation/ExternalDolbyVisionPresentationAuthorization';
-import type { RawHDRFixtureObservation } from 'webgpu-player/validation/RawHDRPresentationAuthorization';
+import type { RawHDRVectorObservation } from 'webgpu-player/validation/RawHDRPresentationAuthorization';
 
 type MockFunction = ReturnType<typeof vi.fn>;
 
@@ -54,27 +54,27 @@ function restoreProperty(
     }
 }
 
-function createExpectedObservations(): readonly RawHDRFixtureObservation[] {
+function createExpectedObservations(): readonly RawHDRVectorObservation[] {
     return createExpectedExternalDolbyVisionAuthorizationObservations(
-        createDolbyVisionAuthorizationRPUFixture(5),
+        createDolbyVisionAuthorizationRPUVector(5),
         createHDRToSDRRenderSettings({
             toneMapping: { inputPeakNits: 4_000 }
         })
     );
 }
 
-function createExpectedInputObservations(): readonly RawHDRFixtureObservation[] {
+function createExpectedInputObservations(): readonly RawHDRVectorObservation[] {
     return createExpectedExternalDolbyVisionInputObservations();
 }
 
 function createExpectedObservationsFromInput(
-    inputObservations: readonly RawHDRFixtureObservation[]
-): readonly RawHDRFixtureObservation[] {
+    inputObservations: readonly RawHDRVectorObservation[]
+): readonly RawHDRVectorObservation[] {
     return createExpectedExternalDolbyVisionAuthorizationObservationsFromInput(
         inputObservations.map(
-            (observation: RawHDRFixtureObservation): ColorTriplet => observation.linearRGB
+            (observation: RawHDRVectorObservation): ColorTriplet => observation.linearRGB
         ),
-        createDolbyVisionAuthorizationRPUFixture(5),
+        createDolbyVisionAuthorizationRPUVector(5),
         createHDRToSDRRenderSettings({
             toneMapping: { inputPeakNits: 4_000 }
         })
@@ -90,8 +90,8 @@ function createFrame(close: MockFunction): VideoFrame {
 }
 
 function createDeviceHarness(
-    observations: readonly RawHDRFixtureObservation[],
-    inputObservations: readonly RawHDRFixtureObservation[] = createExpectedInputObservations()
+    observations: readonly RawHDRVectorObservation[],
+    inputObservations: readonly RawHDRVectorObservation[] = createExpectedInputObservations()
 ): DeviceHarness {
     const observationMap = new Map<string, ColorTriplet>();
     for (const observation of observations) {
@@ -213,8 +213,8 @@ function createDeviceHarness(
 }
 
 function mutateFirstObservation(
-    observations: readonly RawHDRFixtureObservation[]
-): readonly RawHDRFixtureObservation[] {
+    observations: readonly RawHDRVectorObservation[]
+): readonly RawHDRVectorObservation[] {
     return observations.map((observation, observationIndex) => observationIndex === 0 ? {
         ...observation,
         linearRGB: [
@@ -226,9 +226,9 @@ function mutateFirstObservation(
 }
 
 function offsetFirstObservation(
-    observations: readonly RawHDRFixtureObservation[],
+    observations: readonly RawHDRVectorObservation[],
     offset: number
-): readonly RawHDRFixtureObservation[] {
+): readonly RawHDRVectorObservation[] {
     return observations.map((observation, observationIndex) => observationIndex === 0 ? {
         ...observation,
         linearRGB: [

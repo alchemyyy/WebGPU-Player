@@ -1,9 +1,10 @@
 import {
+    createDefaultRenderSettings,
     createHDRToSDRRenderSettings,
     RENDER_SETTINGS_VERSION,
     type HDRToSDRRenderSettings
-} from '../RenderSettings';
-import { createPQColorMetadata } from '../color/ColorMetadata';
+} from '../presentation/RenderSettings';
+import { createPQColorMetadata, createSDRColorMetadata } from '../color/ColorMetadata';
 import {
     processEncodedYUV,
     processEncodedRGB,
@@ -11,20 +12,24 @@ import {
 } from '../color/ColorPipeline';
 import {
     createRawDolbyVisionColorPipelineWGSL,
+    createRawDolbyVisionProfile4ColorPipelineWGSL,
+    createRawDolbyVisionProfile4FELColorPipelineWGSL,
     createRawDolbyVisionProfile7ColorPipelineWGSL,
-    createRawDolbyVisionProfile7FELColorPipelineWGSL
+    createRawDolbyVisionProfile7FELColorPipelineWGSL,
+    getRawFormatBitDepth,
+    type RawDolbyVisionVideoFrameFormat
 } from '../color/ColorPipelineShader';
 import {
     reconstructDolbyVisionBT2020PQ,
     reconstructDolbyVisionBT2020PQWithEnhancement
 } from '../color/DolbyVisionColorTransform';
-import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../custom/DolbyVisionRPUParser';
+import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../video/dolby-vision/DolbyVisionRPUParser';
 import {
     RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
     type RawVideoPlaneDescriptor,
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
-} from '../custom/RawVideoFrameCopy';
+} from '../video/RawVideoFrameCopy';
 import {
     createRawYUVEnhancementUniformBuffer,
     createRawYUVRenderPipeline,
@@ -33,8 +38,8 @@ import {
     renderRawYUVFrame,
     type RawPlaneTextureSet,
     type RawYUVTexturePresentation
-} from '../RawYUVGPURenderer';
-import { createDolbyVisionAuthorizationRPUFixture } from './DolbyVisionAuthorizationFixture';
+} from '../presentation/RawYUVGPURenderer';
+import { createDolbyVisionAuthorizationRPUVector } from '../capability/vectors/DolbyVisionAuthorizationVector';
 import GPUAuthorizationDeadline from './GPUAuthorizationDeadline';
 import {
     GPUCanvasPixelReader,
@@ -42,30 +47,40 @@ import {
 } from './GPUCanvasReadback';
 import {
     calculateRawHDRAuthorizationOutputDither,
-    createRawHDRAuthorizationFixture,
-    evaluateRawHDRFixtureObservations,
-    RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES,
+    createRawHDRAuthorizationVector,
+    evaluateRawHDRVectorObservations,
+    RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES,
     sampleRawI420P10Frame,
-    type RawHDRFixtureObservation
+    type RawHDRAuthorizationRouteKey,
+    type RawHDRVectorObservation
 } from './RawHDRPresentationAuthorization';
 
-export const DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION = 4;
+export const DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION = 4;
 export const DOLBY_VISION_AUTHORIZATION_ROUTE_KEY = 'I420P10:dovi-rpu-v1';
+export const DOLBY_VISION_PROFILE4_AUTHORIZATION_ROUTE_KEY =
+    'I420P10:dovi-profile4-base-v1';
+export const DOLBY_VISION_PROFILE4_FEL_AUTHORIZATION_ROUTE_KEY =
+    'I420P10:dovi-profile4-fel-v1';
 export const DOLBY_VISION_PROFILE7_AUTHORIZATION_ROUTE_KEY =
     'I420P10:dovi-profile7-base-v1';
 export const DOLBY_VISION_PROFILE7_FEL_AUTHORIZATION_ROUTE_KEY =
     'I420P10:dovi-profile7-fel-v1';
 
 export type DolbyVisionAuthorizationRoute =
+    | 'profile4-base'
+    | 'profile4-fel'
     | 'profile7-base'
     | 'profile7-fel'
     | 'single-layer';
 export type DolbyVisionAuthorizationRouteKey =
-    | typeof DOLBY_VISION_AUTHORIZATION_ROUTE_KEY
+    | `${RawDolbyVisionVideoFrameFormat}:dovi-rpu-v1`
+    | typeof DOLBY_VISION_PROFILE4_AUTHORIZATION_ROUTE_KEY
+    | typeof DOLBY_VISION_PROFILE4_FEL_AUTHORIZATION_ROUTE_KEY
     | typeof DOLBY_VISION_PROFILE7_AUTHORIZATION_ROUTE_KEY
     | typeof DOLBY_VISION_PROFILE7_FEL_AUTHORIZATION_ROUTE_KEY;
 
-const MAXIMUM_10_BIT_CODE = 1_023;
+// Profile 4 declares an SDR base, which an FEL frame without its EL presents unmodified
+const DOLBY_VISION_PROFILE4_BASE_METADATA = createSDRColorMetadata({ bitDepth: 10 });
 const AUTHORIZED_TARGET_FORMATS = new Set<GPUTextureFormat>([
     'bgra8unorm',
     'rgba8unorm'
@@ -85,7 +100,7 @@ export type DolbyVisionAuthorizationFailureReason =
 export type DolbyVisionAuthorizationDecision = {
     device: GPUDevice
     failureReason: DolbyVisionAuthorizationFailureReason | null
-    fixtureVersion: typeof DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION
+    vectorVersion: typeof DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION
     maximumChannelError: number | null
     renderSettingsVersion: typeof RENDER_SETTINGS_VERSION
     routeKey: DolbyVisionAuthorizationRouteKey
@@ -97,7 +112,7 @@ export type DolbyVisionAuthorizationDecision = {
 
 export type DolbyVisionAuthorizationTelemetry = {
     failureReason: DolbyVisionAuthorizationFailureReason | null
-    fixtureVersion: typeof DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION
+    vectorVersion: typeof DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION
     maximumChannelError: number | null
     renderSettingsVersion: typeof RENDER_SETTINGS_VERSION
     routeKey: DolbyVisionAuthorizationRouteKey
@@ -117,7 +132,7 @@ type DeviceProbeCache = {
 
 type DolbyVisionAuthorizationScenario = {
     enhancementFrame: TransferableRawVideoFrame | null
-    expectedObservations: readonly RawHDRFixtureObservation[]
+    expectedObservations: readonly RawHDRVectorObservation[]
     frame: TransferableRawVideoFrame
     packedRPUData: ArrayBuffer
 };
@@ -125,6 +140,7 @@ type DolbyVisionAuthorizationScenario = {
 export type DolbyVisionAuthorizationObservationMode =
     | 'fel-hdr10-base'
     | 'fel-residual'
+    | 'fel-sdr-base'
     | 'reconstruct';
 
 const FULL_FRAME_PRESENTATION: RawYUVTexturePresentation = {
@@ -198,7 +214,7 @@ function createFELAuthorizationFrames(): {
     baseFrame: TransferableRawVideoFrame
     enhancementFrame: TransferableRawVideoFrame
 } {
-    const baseFrame = createRawHDRAuthorizationFixture(
+    const baseFrame = createRawHDRAuthorizationVector(
         'I420P10:bt2020-ncl:bt2020:limited:pq'
     );
     const codedWidth = baseFrame.codedWidth / 2;
@@ -380,13 +396,13 @@ function sampleFELAuthorizationFrame(
     ];
 }
 
-/** Creates a stable identity for the exact DV fixture, shader, and target. */
+/** Creates a stable identity for the exact DV vector, shader, and target. */
 export function createDolbyVisionShaderSignature(
     targetFormat: GPUTextureFormat,
     shaderCode: string
 ): string {
     const signatureInput = [
-        `fixture=${DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION}`,
+        `vector=${DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION}`,
         `uniform=${RENDER_SETTINGS_VERSION}`,
         `schema=${DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH}`,
         `target=${targetFormat}`,
@@ -400,24 +416,25 @@ export function createDolbyVisionShaderSignature(
     return `fnv1a32-${hash.toString(16).padStart(8, '0')}`;
 }
 
-/** Computes CPU-reference samples for the exact synthetic authorization fixture. */
+/** Computes CPU-reference samples for the exact synthetic authorization vector. */
 export function createExpectedDolbyVisionAuthorizationObservations(
     packedRPUData: ArrayBuffer,
     settings: HDRToSDRRenderSettings,
     mode: DolbyVisionAuthorizationObservationMode = 'reconstruct',
     frameValue?: TransferableRawVideoFrame,
     enhancementFrame: TransferableRawVideoFrame | null = null
-): readonly RawHDRFixtureObservation[] {
-    const frame = frameValue ?? createRawHDRAuthorizationFixture(
+): readonly RawHDRVectorObservation[] {
+    const frame = frameValue ?? createRawHDRAuthorizationVector(
         'I420P10:bt2020-ncl:bt2020:limited:pq'
     );
     const outputMetadata = createPQColorMetadata({ range: 'full' });
-    return RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.map(sample => {
+    const maximumBaseLayerCode = (2 ** frame.bitDepth) - 1;
+    return RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.map(sample => {
         const rawSignal = sampleRawI420P10Frame(frame, sample.sampleX, sample.sampleY);
         const normalizedSignal: ColorTriplet = [
-            rawSignal[0] / MAXIMUM_10_BIT_CODE,
-            rawSignal[1] / MAXIMUM_10_BIT_CODE,
-            rawSignal[2] / MAXIMUM_10_BIT_CODE
+            rawSignal[0] / maximumBaseLayerCode,
+            rawSignal[1] / maximumBaseLayerCode,
+            rawSignal[2] / maximumBaseLayerCode
         ];
         let reconstructedSignal: ColorTriplet;
         switch (mode) {
@@ -428,6 +445,23 @@ export function createExpectedDolbyVisionAuthorizationObservations(
                     settings
                 );
                 break;
+            case 'fel-sdr-base': {
+                // The SDR base bypasses tone mapping and output dither, exactly like identity SDR
+                const encodedRGB = processEncodedYUV(
+                    normalizedSignal,
+                    DOLBY_VISION_PROFILE4_BASE_METADATA,
+                    createDefaultRenderSettings()
+                );
+                return {
+                    linearRGB: [
+                        clamp(encodedRGB[0], 0, 1),
+                        clamp(encodedRGB[1], 0, 1),
+                        clamp(encodedRGB[2], 0, 1)
+                    ],
+                    sampleX: sample.sampleX,
+                    sampleY: sample.sampleY
+                };
+            }
             case 'fel-residual': {
                 if (!enhancementFrame) {
                     throw new TypeError('FEL authorization requires an enhancement frame');
@@ -439,10 +473,11 @@ export function createExpectedDolbyVisionAuthorizationObservations(
                     frame.displayWidth,
                     frame.displayHeight
                 );
+                const maximumEnhancementLayerCode = (2 ** enhancementFrame.bitDepth) - 1;
                 const normalizedEnhancementSignal: ColorTriplet = [
-                    rawEnhancementSignal[0] / MAXIMUM_10_BIT_CODE,
-                    rawEnhancementSignal[1] / MAXIMUM_10_BIT_CODE,
-                    rawEnhancementSignal[2] / MAXIMUM_10_BIT_CODE
+                    rawEnhancementSignal[0] / maximumEnhancementLayerCode,
+                    rawEnhancementSignal[1] / maximumEnhancementLayerCode,
+                    rawEnhancementSignal[2] / maximumEnhancementLayerCode
                 ];
                 reconstructedSignal = processEncodedRGB(
                     reconstructDolbyVisionBT2020PQWithEnhancement(
@@ -482,11 +517,12 @@ export function createExpectedDolbyVisionAuthorizationObservations(
     });
 }
 
-/** Returns the exact CPU reference for the reduced-resolution FEL probe. */
+/** Returns the exact CPU reference for the reduced-resolution FEL probe of one dual-layer profile. */
 export function createExpectedDolbyVisionFELAuthorizationObservations(
-    settings: HDRToSDRRenderSettings
-): readonly RawHDRFixtureObservation[] {
-    const packedRPUData = createDolbyVisionAuthorizationRPUFixture(7, 'fel');
+    settings: HDRToSDRRenderSettings,
+    profile: 4 | 7 = 7
+): readonly RawHDRVectorObservation[] {
+    const packedRPUData = createDolbyVisionAuthorizationRPUVector(profile, 'fel');
     const { baseFrame, enhancementFrame } = createFELAuthorizationFrames();
     return createExpectedDolbyVisionAuthorizationObservations(
         packedRPUData,
@@ -497,59 +533,69 @@ export function createExpectedDolbyVisionFELAuthorizationObservations(
     );
 }
 
+function isDualLayerAuthorizationRoute(route: DolbyVisionAuthorizationRoute): boolean {
+    return route !== 'single-layer';
+}
+
 function getAuthorizationRouteKey(
-    route: DolbyVisionAuthorizationRoute
+    route: DolbyVisionAuthorizationRoute,
+    format: RawDolbyVisionVideoFrameFormat
 ): DolbyVisionAuthorizationRouteKey {
     switch (route) {
+        case 'profile4-base':
+            return DOLBY_VISION_PROFILE4_AUTHORIZATION_ROUTE_KEY;
+        case 'profile4-fel':
+            return DOLBY_VISION_PROFILE4_FEL_AUTHORIZATION_ROUTE_KEY;
         case 'profile7-base':
             return DOLBY_VISION_PROFILE7_AUTHORIZATION_ROUTE_KEY;
         case 'profile7-fel':
             return DOLBY_VISION_PROFILE7_FEL_AUTHORIZATION_ROUTE_KEY;
         case 'single-layer':
-            return DOLBY_VISION_AUTHORIZATION_ROUTE_KEY;
+            return `${format}:dovi-rpu-v1`;
     }
 }
 
 function createAuthorizationShader(
     route: DolbyVisionAuthorizationRoute,
+    format: RawDolbyVisionVideoFrameFormat,
     settings: HDRToSDRRenderSettings
 ): string {
+    if (route === 'single-layer') {
+        return createRawDolbyVisionColorPipelineWGSL(settings, format);
+    }
+    if (format !== 'I420P10') {
+        throw new RangeError('Dual-layer Dolby Vision authorization requires I420P10 planes');
+    }
     switch (route) {
+        case 'profile4-base':
+            return createRawDolbyVisionProfile4ColorPipelineWGSL(settings, format);
+        case 'profile4-fel':
+            return createRawDolbyVisionProfile4FELColorPipelineWGSL(settings, format);
         case 'profile7-base':
-            return createRawDolbyVisionProfile7ColorPipelineWGSL(settings, 'I420P10');
+            return createRawDolbyVisionProfile7ColorPipelineWGSL(settings, format);
         case 'profile7-fel':
-            return createRawDolbyVisionProfile7FELColorPipelineWGSL(settings, 'I420P10');
-        case 'single-layer':
-            return createRawDolbyVisionColorPipelineWGSL(settings, 'I420P10');
+            return createRawDolbyVisionProfile7FELColorPipelineWGSL(settings, format);
     }
 }
 
-function createAuthorizationScenarios(
-    route: DolbyVisionAuthorizationRoute,
+/** Returns the raw HDR vector key whose luma ramp and chroma blocks cover one raw frame format. */
+function getAuthorizationVectorKey(
+    format: RawDolbyVisionVideoFrameFormat
+): RawHDRAuthorizationRouteKey {
+    // 8-bit formats have no PQ vector; the reconstruction ignores the vector's color tags either way
+    return getRawFormatBitDepth(format) === 8 ?
+        `${format as 'I420' | 'I422' | 'I444'}:bt709:bt709:limited:sdr` :
+        `${format as Exclude<RawDolbyVisionVideoFrameFormat, 'I420' | 'I422' | 'I444'>}:bt2020-ncl:bt2020:limited:pq`;
+}
+
+function createDualLayerAuthorizationScenarios(
+    profile: 4 | 7,
+    reconstructsFEL: boolean,
     settings: HDRToSDRRenderSettings
 ): DolbyVisionAuthorizationScenario[] {
     const scenarios: DolbyVisionAuthorizationScenario[] = [];
-    if (route === 'single-layer') {
-        const packedRPUData = createDolbyVisionAuthorizationRPUFixture();
-        const frame = createRawHDRAuthorizationFixture(
-            'I420P10:bt2020-ncl:bt2020:limited:pq'
-        );
-        scenarios.push({
-            enhancementFrame: null,
-            expectedObservations: createExpectedDolbyVisionAuthorizationObservations(
-                packedRPUData,
-                settings,
-                'reconstruct',
-                frame
-            ),
-            frame,
-            packedRPUData
-        });
-        return scenarios;
-    }
-
-    if (route === 'profile7-fel') {
-        const packedRPUData = createDolbyVisionAuthorizationRPUFixture(7, 'fel');
+    if (reconstructsFEL) {
+        const packedRPUData = createDolbyVisionAuthorizationRPUVector(profile, 'fel');
         const { baseFrame, enhancementFrame } = createFELAuthorizationFrames();
         scenarios.push({
             enhancementFrame,
@@ -566,10 +612,10 @@ function createAuthorizationScenarios(
         return scenarios;
     }
 
-    const frame = createRawHDRAuthorizationFixture(
+    const frame = createRawHDRAuthorizationVector(
         'I420P10:bt2020-ncl:bt2020:limited:pq'
     );
-    const melRPUData = createDolbyVisionAuthorizationRPUFixture(7, 'mel');
+    const melRPUData = createDolbyVisionAuthorizationRPUVector(profile, 'mel');
     scenarios.push({
         enhancementFrame: null,
         expectedObservations: createExpectedDolbyVisionAuthorizationObservations(
@@ -581,19 +627,55 @@ function createAuthorizationScenarios(
         frame,
         packedRPUData: melRPUData
     });
-    const felRPUData = createDolbyVisionAuthorizationRPUFixture(7, 'fel');
+    const felRPUData = createDolbyVisionAuthorizationRPUVector(profile, 'fel');
     scenarios.push({
         enhancementFrame: null,
         expectedObservations: createExpectedDolbyVisionAuthorizationObservations(
             felRPUData,
             settings,
-            'fel-hdr10-base',
+            profile === 4 ? 'fel-sdr-base' : 'fel-hdr10-base',
             frame
         ),
         frame,
         packedRPUData: felRPUData
     });
     return scenarios;
+}
+
+function createAuthorizationScenarios(
+    route: DolbyVisionAuthorizationRoute,
+    format: RawDolbyVisionVideoFrameFormat,
+    settings: HDRToSDRRenderSettings
+): DolbyVisionAuthorizationScenario[] {
+    switch (route) {
+        case 'profile4-base':
+            return createDualLayerAuthorizationScenarios(4, false, settings);
+        case 'profile4-fel':
+            return createDualLayerAuthorizationScenarios(4, true, settings);
+        case 'profile7-base':
+            return createDualLayerAuthorizationScenarios(7, false, settings);
+        case 'profile7-fel':
+            return createDualLayerAuthorizationScenarios(7, true, settings);
+        case 'single-layer': {
+            const frame = createRawHDRAuthorizationVector(getAuthorizationVectorKey(format));
+            const packedRPUData = createDolbyVisionAuthorizationRPUVector(
+                8,
+                'single-layer',
+                frame.bitDepth
+            );
+            return [ {
+                enhancementFrame: null,
+                expectedObservations: createExpectedDolbyVisionAuthorizationObservations(
+                    packedRPUData,
+                    settings,
+                    'reconstruct',
+                    frame
+                ),
+                frame,
+                packedRPUData
+            } ];
+        }
+    }
 }
 
 function classifyFailure(error: unknown): DolbyVisionAuthorizationFailureReason {
@@ -619,7 +701,7 @@ function createRejectedDecision(
     return {
         device,
         failureReason,
-        fixtureVersion: DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION,
+        vectorVersion: DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION,
         maximumChannelError,
         renderSettingsVersion: RENDER_SETTINGS_VERSION,
         routeKey,
@@ -645,14 +727,18 @@ export class DolbyVisionPresentationAuthorizationRunner {
     public readonly routeKey: DolbyVisionAuthorizationRouteKey;
 
     public constructor(
-        public readonly route: DolbyVisionAuthorizationRoute = 'single-layer'
+        public readonly route: DolbyVisionAuthorizationRoute = 'single-layer',
+        public readonly format: RawDolbyVisionVideoFrameFormat = 'I420P10'
     ) {
-        this.routeKey = getAuthorizationRouteKey(route);
+        if (isDualLayerAuthorizationRoute(route) && format !== 'I420P10') {
+            throw new RangeError('Dual-layer Dolby Vision authorization requires I420P10 planes');
+        }
+        this.routeKey = getAuthorizationRouteKey(route, format);
     }
 
     /** Returns the exact production shader covered by this runner. */
     public createShader(settings: HDRToSDRRenderSettings): string {
-        return createAuthorizationShader(this.route, settings);
+        return createAuthorizationShader(this.route, this.format, settings);
     }
 
     public async validate(
@@ -700,7 +786,7 @@ export class DolbyVisionPresentationAuthorizationRunner {
         let errorScopePushed = false;
         const deadline = new GPUAuthorizationDeadline(device);
         try {
-            const scenarios = createAuthorizationScenarios(this.route, settings);
+            const scenarios = createAuthorizationScenarios(this.route, this.format, settings);
             const pipeline = await deadline.wait(
                 createRawYUVRenderPipeline(device, targetFormat, shaderCode)
             );
@@ -712,7 +798,7 @@ export class DolbyVisionPresentationAuthorizationRunner {
                 size: DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
                 usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE
             });
-            if (this.route === 'profile7-fel') {
+            if (this.route === 'profile4-fel' || this.route === 'profile7-fel') {
                 enhancementUniformBuffer = createRawYUVEnhancementUniformBuffer(device);
             }
             const frame = scenarios[0].frame;
@@ -730,7 +816,7 @@ export class DolbyVisionPresentationAuthorizationRunner {
             pixelReader = new GPUCanvasPixelReader({
                 device,
                 format: targetFormat,
-                maximumReadbacks: RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length
+                maximumReadbacks: RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.length
                     * scenarios.length
             });
             let maximumChannelError = 0;
@@ -769,10 +855,10 @@ export class DolbyVisionPresentationAuthorizationRunner {
                 }
 
                 const readback = await deadline.wait(
-                    pixelReader.readPixels(RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES, targetTexture),
+                    pixelReader.readPixels(RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES, targetTexture),
                     (): void => pixelReader?.destroy()
                 );
-                const actualObservations: RawHDRFixtureObservation[] = [];
+                const actualObservations: RawHDRVectorObservation[] = [];
                 if (readback.failure || !readback.linearRGB) {
                     return createRejectedDecision(
                         device,
@@ -783,16 +869,16 @@ export class DolbyVisionPresentationAuthorizationRunner {
                     );
                 }
                 for (let sampleIndex = 0;
-                    sampleIndex < RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length;
+                    sampleIndex < RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.length;
                     sampleIndex += 1) {
-                    const sample = RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES[sampleIndex];
+                    const sample = RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES[sampleIndex];
                     actualObservations.push({
                         linearRGB: readback.linearRGB[sampleIndex],
                         sampleX: sample.sampleX,
                         sampleY: sample.sampleY
                     });
                 }
-                const comparison = evaluateRawHDRFixtureObservations(
+                const comparison = evaluateRawHDRVectorObservations(
                     scenario.expectedObservations,
                     actualObservations
                 );
@@ -816,7 +902,7 @@ export class DolbyVisionPresentationAuthorizationRunner {
             return {
                 device,
                 failureReason: null,
-                fixtureVersion: DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION,
+                vectorVersion: DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION,
                 maximumChannelError,
                 renderSettingsVersion: RENDER_SETTINGS_VERSION,
                 routeKey: this.routeKey,
@@ -857,10 +943,11 @@ export class DolbyVisionPresentationAuthorizationRegistry {
 
     public constructor(
         runnerOrRoute: DolbyVisionPresentationAuthorizationRunner | DolbyVisionAuthorizationRoute =
-        'single-layer'
+        'single-layer',
+        format: RawDolbyVisionVideoFrameFormat = 'I420P10'
     ) {
         this.runner = typeof runnerOrRoute === 'string' ?
-            new DolbyVisionPresentationAuthorizationRunner(runnerOrRoute) :
+            new DolbyVisionPresentationAuthorizationRunner(runnerOrRoute, format) :
             runnerOrRoute;
     }
 
@@ -924,7 +1011,7 @@ export class DolbyVisionPresentationAuthorizationRegistry {
         settings: HDRToSDRRenderSettings,
         format: SupportedRawVideoFrameFormat
     ): boolean {
-        if (format !== 'I420P10') {
+        if (format !== this.runner.format) {
             return false;
         }
         const shaderCode = this.runner.createShader(settings);
@@ -943,7 +1030,7 @@ export class DolbyVisionPresentationAuthorizationRegistry {
     ): DolbyVisionAuthorizationTelemetry {
         const unavailable: DolbyVisionAuthorizationTelemetry = {
             failureReason: null,
-            fixtureVersion: DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION,
+            vectorVersion: DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION,
             maximumChannelError: null,
             renderSettingsVersion: RENDER_SETTINGS_VERSION,
             routeKey: this.runner.routeKey,
@@ -963,7 +1050,7 @@ export class DolbyVisionPresentationAuthorizationRegistry {
         }
         return {
             failureReason: probe.decision.failureReason,
-            fixtureVersion: probe.decision.fixtureVersion,
+            vectorVersion: probe.decision.vectorVersion,
             maximumChannelError: probe.decision.maximumChannelError,
             renderSettingsVersion: probe.decision.renderSettingsVersion,
             routeKey: probe.decision.routeKey,

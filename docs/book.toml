@@ -1,0 +1,11 @@
+[book]
+title = "WebGPU Player"
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/alchemyyy/WebGPU-Player"

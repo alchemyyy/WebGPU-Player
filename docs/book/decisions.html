@@ -1,0 +1,559 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Decisions - WebGPU Player</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-e96d0476.css">
+        <link rel="stylesheet" href="css/chrome-d279d366.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex-ca695dd2.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-130df29e.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">WebGPU Player</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/alchemyyy/WebGPU-Player" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="decisions"><a class="header" href="#decisions">Decisions</a></h1>
+<p>Each entry is a conclusion that cost real investigation. Do not reopen one
+without new evidence. Dates are 2026, UTC. Commit hashes refer to the Jellyfin
+Web fork’s <code>webgpu-player</code> branch, where the engine was developed until it
+became its own repository on 10-02.</p>
+<h2 id="negotiation"><a class="header" href="#negotiation">Negotiation</a></h2>
+<ul>
+<li>No static performance gates (08-06). Width, Height, VideoLevel,
+VideoFramerate, startup throughput benchmarks, and FPS or headroom tiers were
+removed from every custom route (<code>db8dbc7622</code>). A capability means the path
+implements the codec, profile, and output contract, and vector geometry is
+output evidence only. The real limits stay: codec and profile, bit depth,
+interlacing, container, exact decoder acceptance, transfer byte bounds, and
+GPU texture limits.</li>
+<li>Bitrate is telemetry only. The first PlaybackInfo request omits bitrate. Only
+a bounded second request may carry it, to size a transcode that was already
+decided.</li>
+<li>Live performance adaptation is deferred, to a separate runtime controller
+(sustained drops, queue starvation, underruns, A/V drift, with warm-up,
+hysteresis, and cooldown). It must never change the device profile during a
+session.</li>
+<li>One composition matrix (08-05, <code>9a1c3f2922</code>).
+<code>capability/CustomContainerCodecSupport.ts</code> decides only whether a container
+carries a codec. Each track is qualified on its own. Never add decoder pair
+blacklists.</li>
+<li>Retries use the stock HTML profile, with no custom widening. A custom failure
+that asks for renegotiation can therefore get <code>AudioCodecNotSupported</code> (for
+example E-AC-3) on the retry. Fix the trigger, not the retry profile.</li>
+<li>Dolby Vision is never stream-copied into HLS (08-05). The augmented profile
+had let Jellyfin copy Dolby Vision HEVC into HLS, which Chromium MSE rejects.
+<code>WebGPUPlayer.supportsVideoStreamCopy()</code> (host) returns false for Dolby
+Vision sources, and the host sends <code>AllowVideoStreamCopy=false</code>.</li>
+<li>The Jellyfin integration is a server plugin with a client add-on (10-04; the
+fork was abandoned 10-05). Stock Jellyfin Web stays unmodified. The add-on
+loads through Jellyfin Web’s window plugin path, and stand-ins replace the
+PlaybackManager seams the fork had added (see
+<a href="jellyfin-host.html#host-compatible-mode">The Jellyfin host</a>).</li>
+<li>A Dolby Vision item advertises its own exact route (10-06, host). Jellyfin
+labels P4 and P20 by transfer, and labels Dolby Vision over Rext, Main 12, or
+8-bit Main in ranges the generic routes do not pair with that profile and
+depth. Widening the generic ranges would advertise those pairs for every
+item, so the profile asks the engine whether this item has a runtime route
+and adds exactly its VideoProfile, VideoBitDepth, and VideoRangeType.</li>
+<li>A declared HDR base also waits for the static HDR probes (10-06, host). A
+Dolby Vision item whose declared PQ or HLG base is not an exact native P7 or
+P8 base probes Dolby Vision in parallel with the static HDR routes (external
+first, raw only when no external key is authorized), so its base fallback can
+be advertised. Any other Dolby Vision item waits only for Dolby Vision.</li>
+</ul>
+<h2 id="video-decode-and-dolby-vision"><a class="header" href="#video-decode-and-dolby-vision">Video decode and Dolby Vision</a></h2>
+<p>These were settled on stock Chrome on Windows, with a Chromium 153 source
+audit.</p>
+<ul>
+<li>Hardware decode output is opaque. WebCodecs HEVC Main 10 hardware frames are
+P010 surfaces with <code>VideoFrame.format === null</code>, so <code>copyTo()</code> and
+<code>allocationSize()</code> cannot expose planes. Exact planes come only from the
+bundled software HEVC decoder (WASM, CPU).</li>
+<li>The software raw path is too slow for 4K. The bundled HEVC decoder ran at
+about 15.3 fps on a 23.976 fps 4K source, and plane extraction plus upload
+cost about 2.4 ms per frame: low frame rate, then a freeze.</li>
+<li>The GPUExternalTexture path is 8 bits per channel in stock Chrome.
+High-bit-depth frames go through an N32 (8 bpc) surface before page shaders
+see them (<code>third_party/blink/renderer/modules/webgpu/external_texture_helper.cc</code>).
+<code>copyExternalImageToTexture</code>, an F16 canvas, ImageBitmap, and WebGL RGBA16F
+take the same path, and no flag avoids it. Native external HDR and Dolby
+Vision routes therefore tone-map 8-bit-quantized input.</li>
+<li>Native-base-first Dolby Vision (08-08, accepted by the owner). P8.1 (HDR10
+base), P7 with CCID 6 (HDR10 base), and P8.4 (HLG base) prefer native
+<code>VideoFrame</code> presentation of the compatible base layer; the RPU and FEL are
+discarded, and raw reconstruction is the fallback. P5 has no compatible base,
+so it keeps RPU processing, natively through the external P5 route.</li>
+<li>Every Dolby Vision compatibility ID is supported (10-06). The owner’s goal is
+to support everything, so no 4-bit CCID is rejected. RPU reconstruction never
+reads the CCID. The CCID only declares a base layer that can be shown on its
+own: HDR10 (1) and Ultra HD Blu-ray (6) declare PQ, HLG (4) HLG, and SDR (2)
+SDR. The native base route takes the PQ and HLG bases of P7 and P8, and any
+declared base is the last fallback after reconstruction. Other IDs (0,
+reserved, none) declare nothing, so those streams need their RPU. The raw
+Dolby Vision route advertises DOVIInvalid for the same reason, and the
+MPEG-TS dual-PID dependency accepts any CCID.</li>
+<li>Every Dolby Vision profile gets a route (10-06). P4, P20, P7 without its EL,
+P8 with an EL flag, Dolby Vision over Rext, Main 12, or 8-bit Main, MPEG-TS
+descriptor version 2, and compressed display metadata all play. Routes are
+tried as native P5, the native compatible base (P7, P8), RPU reconstruction,
+then the declared base through the ordinary routes, and a stream fails closed
+only when none applies. Reconstruction comes before the declared base, apart
+from the native-base-first case, because a base without its RPU is not the
+graded picture. P20 reconstructs its MV-HEVC base view as P5 (CCID 0 or none)
+or as P8. P9 (AVC) and P10 (AV1) have no RPU route; P9 plays its declared
+base, and P10 is deferred.</li>
+<li>Single-layer profiles discard a signaled EL (10-06). P5, P8, and P20 have no
+EL composition, so their EL flag is ignored and in-band EL NAL units are
+dropped. A P4 or P7 frame without a paired EL presents MEL exactly, because a
+MEL carries no residual, and FEL as its base layer: the HDR10 base for P7,
+and the SDR base exactly for P4, with no tone mapping or dither.</li>
+<li>The <code>dolby_vision</code> crate is vendored and patched (10-06). It is copied from
+dovi_tool rev <code>38adec0</code> into <code>wasm/libdovi/vendor/dolby_vision/</code>, and its
+<code>PATCHES.md</code> lists every deviation. Upstream rejected syntax that FFmpeg’s
+<code>dovi_rpudec.c</code> accepts, so the patches follow FFmpeg: header limits widened
+to FFmpeg’s (8 to 16-bit layers, coefficient precision up to 32 bits, no
+mapping color space or chroma check), unsupported syntax as a typed error,
+panics returned as errors, and display-metadata extension blocks skipped as
+<code>parse_ext_blocks</code> does. Only a block whose coded length runs past the
+payload rejects the RPU. The bridge in <code>wasm/libdovi/src/lib.rs</code> adds the
+rest: a reuse cache for compressed display metadata, Profile 4’s 2^30 YCC
+offset scale, and mapping chroma formats up to 4:4:4.</li>
+<li>Mediabunny’s Dolby Vision sample entries are mapped in the engine (10-06).
+Mediabunny 1.52.2 parses <code>dvh1</code>, <code>dvhe</code>, <code>dva1</code>, <code>dvav</code>, and <code>dav1</code> but gives
+them no codec. <code>ISOBaseMediaDolbyVisionSampleEntry.ts</code> writes the wrapped
+codec into the track’s internal info, contained the way
+<code>MatroskaVFWVideoConfiguration.ts</code> is, so Mediabunny itself stays unmodified.</li>
+<li>Decoder surfaces must not starve (08-08, <code>ecb5a4ec09</code>). Native frame credits
+return after <code>queue.onSubmittedWorkDone()</code>, not after <code>submit()</code>, because
+Chromium holds the decoder mailbox until the GPU completes and the D3D
+surface pool is finite.</li>
+<li>Rejected alternatives. <code>ffmpeg.wasm</code> has no GPU decode. <code>libmpv-wasm</code> is CPU
+FFmpeg plus WebGL. mpv’s D3D11VA P010 path is the reference design but cannot
+be reached from a page. Threaded WASM needs COOP and COEP isolation, which
+was not pursued. An FFmpeg HEVC WASM benchmark (the gate: at least 28.8 fps
+sustained, exact YUV420P10 hashes) was dropped when the native base route
+landed.</li>
+<li>If exact 10-bit is ever required, the Chromium patch options are: (1) a P010
+to RGBA16F GPU copy, the narrowest patch, which fixes the N32 TODO; (2) a
+zero-copy P010 external texture; (3) raw R16 and RG16 plane import, the only
+route to bit-exact P010 and exact P7 FEL.</li>
+<li>Native HDR neutralization. The native external HDR route rewrites the SPS
+color to limited BT.709 so Chrome does not tone-map, and the shader recovers
+the YUV codes. An <code>hvcC</code> without an SPS defers validation to the first key
+access unit (08-05).</li>
+<li>Native decode hints match their probes (10-07). The SDR probes qualify with
+<code>no-preference</code>, but the runtime used to request <code>prefer-hardware</code> for every
+native <code>VideoFrame</code> route. Chromium on Windows has no hardware VP8 decoder
+and rejects that configuration, so VP8 sources failed after their probe
+passed. Only the routes that present opaque hardware output (native external
+HDR, the native Dolby Vision base, and external P5) prefer hardware, as
+their probes and authorizations do.</li>
+</ul>
+<h2 id="firefox"><a class="header" href="#firefox">Firefox</a></h2>
+<p>These were settled on Firefox 157 on Windows.</p>
+<ul>
+<li>WebCodecs has no HEVC on Windows (10-07). <code>IsSupportedVideoCodec</code> in
+Firefox’s <code>dom/media/webcodecs/WebCodecsUtils.cpp</code> accepts HEVC only on macOS
+and Linux, and only with both <code>dom.media.webcodecs.h265.enabled</code> (on by
+default only in Nightly) and <code>media.hevc.enabled</code>. That second pref, on by
+default, lets <code>&lt;video&gt;</code> and MSE play HEVC through the Windows HEVC
+extension. HEVC therefore decodes in the bundled decoder, and the native
+HEVC, external HDR, and native Dolby Vision routes never qualify on Windows.
+The hardware decoder behind <code>&lt;video&gt;</code> cannot feed the custom pipeline, whose
+frames must reach WebGPU unconverted, while a <code>&lt;video&gt;</code> external texture
+arrives as SDR sRGB. The bundled decoder runs on one core, about 20 fps at
+4K on a fast CPU, so 4K plays below real time. This is left as is until
+Firefox enables WebCodecs HEVC on Windows.</li>
+<li>A <code>VideoFrame</code> cannot be constructed in a high-bit-depth format (10-07): the
+constructor rejects <code>I420P10</code>. The worker copies the bundled decoders’ sample
+planes straight into the raw buffer instead of through
+<code>VideoSample.toVideoFrame()</code>, which also saves a copy in Chromium. The
+external P5 authorization builds an <code>I420P10</code> frame and fails, but it needs
+WebCodecs HEVC regardless.</li>
+<li>10-bit AV1 decodes to 8-bit <code>BGRX</code>, and the 4K VP9 Profile 2 vector fails to
+decode (10-07), so raw HDR AV1 and VP9 do not qualify.</li>
+<li>The Vorbis decoder emits an empty <code>AudioData</code> for the priming packet before
+the decoded one (10-07). Mediabunny skips it at runtime, and the audio probe
+skips empty outputs too.</li>
+</ul>
+<h2 id="playback-robustness"><a class="header" href="#playback-robustness">Playback robustness</a></h2>
+<ul>
+<li>Decode-clock guard (08-07, <code>cde9dba045</code>). One stale or seek-preroll frame
+more than 2 s behind the clock is discarded and re-credited, with no
+immediate renegotiation. Sustained starvation still falls back after the
+bounded timeout.</li>
+<li>Hidden-page video follows Chromium (10-01). A hidden page used to stall
+video at exhausted credits while audio ran on, and on return the lag guard
+replayed the backlog (frozen, then fast-forward) or tripped
+<code>playback-stalled</code>. The fix mirrors Chromium’s background video track
+optimization: drain while hidden, release the decoder after 10 s, and on
+return restart video alone from the preceding keyframe. Audio is never
+touched. Only <code>native</code> decode is suspended; software backends keep draining,
+because a keyframe resync costs up to a GOP of CPU decode. A full seek was
+rejected because it restarts audio too.</li>
+<li>Presenter geometry (08-07). Layout is invalidated on seek, resize, style and
+class mutations, and CSS motion events. Nothing reads layout per frame during
+an animation.</li>
+<li>No asynchronous work before an ordinary HTML start (08-05, host). With custom
+decode off, <code>HtmlVideoPlayer.play()</code> starts synchronously. Normalization gain
+moves only on a fallback from the custom path to HTML. Seek completions are
+revision-guarded, and retired native audio is muted before its asynchronous
+cleanup.</li>
+<li>Parallel probe sessions cause false failures. Three concurrent sessions
+produced spurious <code>DirectPlayError</code>s. Diagnose one session at a time.</li>
+</ul>
+<h2 id="audio"><a class="header" href="#audio">Audio</a></h2>
+<ul>
+<li>Output routing (08-07, <code>cde9dba045</code>). <code>WebGPUAudioOutputManager.ts</code> owns the
+sinks. “Default” is <code>setSinkId('')</code>. A suspended AudioContext that should be
+playing is resumed. Decode, worklet, and PCM queues never restart for a sink
+change. A chosen device is stored by its opaque ID, falls back to the
+default, and is restored when it reconnects.</li>
+<li>Output device recovery (10-06). Re-applying an unchanged sink ID does
+nothing: the Web Audio and Audio Output Devices specs, and Chromium, resolve
+a same-ID <code>setSinkId</code> without touching the output. An AudioContext created
+while Windows has no output device gets Chromium’s placeholder <code>AUDIO_FAKE</code>
+parameters, and the audio service rebuilds its stream with them on every
+device change, so it never reaches a device that appears later. Only a new
+destination escapes: a real <code>setSinkId</code> change or a new context. Media
+elements request low-latency streams and follow the new default on their
+own. Chromium 134 and later send <code>devicechange</code> only to pages with microphone
+permission. Without permission, <code>enumerateDevices()</code> lists one blank
+<code>audiooutput</code> entry while any output exists and none when there is none.
+Engines without <code>AudioContext.setSinkId</code> hide outputs, so an empty list
+proves nothing there; Firefox instead gives such a context zero output
+channels. Hence the pool never reuses a context created without an output
+device, and the router polls enumeration and rebuilds the sink through
+<code>{ type: 'none' }</code>. Retries are unlimited but run only while the page is
+visible, which bounds their cost to when someone is watching; audio that
+plays in a hidden tab recovers when the tab is shown again.</li>
+<li>Live output layout switch (10-07). Only the output stage depends on the
+decoded layout: the audio decoder always produces the source layout, and the
+2, 6, or 8 channel count configures the downmix, resampler, and limiter, the
+worklet, and <code>destination.channelCount</code>. A layout change therefore restarts
+only the audio attempt in the worker (<code>resync-audio</code>, epoch-tagged like
+<code>resync-video</code>) and swaps the worklet on the same context and sink. It never
+goes through the seek path, which would restart video. The new audio starts
+250 ms ahead of the clock, so the clock keeps running and video does not
+stall; sound pauses for that lead. The page learns of a new device through
+<code>sinkchange</code> after a real <code>setSinkId</code> change (the recovery rebuild or a
+chosen device). Chromium does not report a default device that moves on its
+own, which is why the settings offer a manual re-detect.</li>
+<li>Downmix (08-06, <code>ca5ac91a5c</code>, <code>8239010d93</code>). The default is Lo/Ro (front 1.0,
+center and surrounds 0.707, LFE omitted) with a linked lookahead limiter: a
+100 ms analysis horizon, an adaptive 3 to 10 ms attack with quintic
+smoothstep, a 100 ms exponential release, and a -1 dBFS sample peak. The
+limiter drains at the end of stream and resets per seek and generation. The
+alternatives are peak-normalized Lo/Ro, AC-4, RFC 7845, Dave750, and night
+mode. Downmix applies only to a stereo destination; otherwise 5.1 and 7.1
+pass through when <code>AudioContext.destination.maxChannelCount</code> allows.</li>
+<li>E-AC-3 7.1 needs the layout, not just the channel count: the decoder must
+report the decoded channel layout (<code>9ca70e11ad</code>).</li>
+<li>The DTS envelope. DTS-HD HRA is valid at 48 and 96 kHz only. Above 96 kHz
+only 5.1 MA (or MA with a DTS:X bed) is admitted. Stereo DTS-HD MA is
+admitted up to 96 kHz. The Matroska lace timestamp tolerance is 3 ms plus one
+sample, for DTS only.</li>
+<li>Normalization follows the metadata. Jellyfin fills track and album gain for
+audio libraries, not movies, so video sessions normally use unity gain.</li>
+</ul>
+<h2 id="repository"><a class="header" href="#repository">Repository</a></h2>
+<ul>
+<li>The engine is its own repository (10-02):
+<a href="https://github.com/alchemyyy/WebGPU-Player">WebGPU Player</a>, MIT, with each
+vendored decoder under its own license. Hosts check it out as a git submodule
+and import it as <code>webgpu-player/*</code>; today that host is the Jellyfin plugin’s
+add-on.</li>
+<li>The engine is an npm workspace of its host (10-02). npm installs the
+engine’s dependencies, so the host lists only what it uses directly. Inside
+the host the engine has no <code>node_modules</code> of its own, and its tooling finds
+packages by walking up from the engine root.</li>
+<li><code>WebGPUPlayer.ts</code> stays in the host (10-02). It implements Jellyfin Web’s
+player contract: events, superseded starts, device profiles, the HTML
+delegate, and user settings. Moving it would make the engine Jellyfin-aware,
+or need a wide host-injection layer. A later refactor may move its
+host-neutral orchestration into an engine session class.</li>
+<li>Engine workers are prebuilt (10-02). esbuild bundles them as classic
+workers, because the decoder glue loads through <code>importScripts</code>. They are
+served at stable URLs under <code>libraries/webgpu-player/</code> with a per-build <code>?v=</code>
+key, not as host bundler chunks.</li>
+<li>Typed asset names replace hash pins (10-02). <code>src/EngineAssets.ts</code> is the
+typed manifest of runtime assets. The SHA-256 pins, verify scripts, vector
+registry, and per-file byte pins are gone; committed bytes and output oracle
+tests remain.</li>
+<li>Decoders build with make (10-02). <code>wasm/Makefile</code> (GNU Make) replaced the
+Python builders. FFmpeg and dcadec are pinned, shallow, <code>update = none</code>
+submodules. There is no Docker and no Python of our own in the build.
+<code>make check</code> verifies byte-reproducible outputs, and each release attaches
+the LGPL corresponding source from <code>make source-archives</code>.</li>
+<li>Decoder builds are not committed (10-05). <code>bin/</code> holds only build outputs, so
+<code>bin/wasm/</code> is ignored like the rest. Each checkout builds the decoders with
+<code>make -C wasm sources all</code> before the tests and the asset build. Their
+hand-written declarations live in <code>wasm/&lt;kit&gt;/</code>, and the <code>types</code> condition of
+the <code>#wasm/*</code> import resolves TypeScript to them, so type checks and lint
+need no build.</li>
+<li>Codec vectors are generated into a committed <code>bin/</code> folder (10-05).
+<code>bin/codec_vector_assets/</code> is the one committed folder in <code>bin/</code>, so every
+change to a qualification stream, generated module, or reference shows in
+review. The generators are all Python, in <code>scripts/codec_vector_assets/</code>.
+<code>.gitattributes</code> stores the folder without line-ending conversion. Hand-made
+vectors stay in <code>src/capability/vectors/</code>, and local playback media goes to
+the ignored <code>bin/playback_smoke_media/</code>.</li>
+<li>Known-answer media is a “vector”, never a “fixture” (10-05): qualification
+vectors ship to the browser, test vectors feed only tests.</li>
+<li>Folder names live in <code>tools/constants.json</code> (10-05). Scripts, tests, the
+Makefile, and the host read paths from it instead of restating them.</li>
+<li>x265 gets no level-idc for the range-extension vectors (10-06). With CRF,
+x265 enforces a requested level through VBV, which it reports as
+non-deterministic. The generator encodes without a level and writes
+<code>general_level_idc</code> 93 (Level 3.1) into the VPS and SPS itself. The slices
+were byte-identical either way.</li>
+<li>Decoder kits are named for their library and codecs (10-06): <code>ffmpeg-eac3</code>,
+<code>ffmpeg-truehd</code>, <code>ffmpeg-mpeg2-vc1</code>, <code>libdcadec-dts</code>, and <code>libdovi</code>. Their
+classes follow the codecs too, as in <code>MPEG2VC1SoftwareVideoDecoder</code>, and a
+name that covers one codec only says so, as in <code>bundledMPEG2</code> beside
+<code>bundledVC1</code>.</li>
+<li>Our sources in <code>wasm/</code> carry no license headers (10-06). The repository’s
+<code>LICENSE</code> covers them.</li>
+<li>Both repositories lint the engine (10-02). The engine has its own ESLint
+config adapted from Jellyfin Web’s, and the host’s lint also covers the
+engine’s <code>src/</code> and <code>test/</code>, so the engine stays clean under both.</li>
+<li>The documentation is this book (10-06): one mdBook in <code>docs/</code>, for people
+and coding agents alike, with no READMEs nested in other folders and no
+separate agent map.</li>
+<li>libbitsub replaces libpgs (10-02, host). This follows upstream and adds
+VobSub support. The custom path drives it through <code>timeOffset</code>, measured
+against the source-less video.</li>
+</ul>
+<h2 id="transport"><a class="header" href="#transport">Transport</a></h2>
+<ul>
+<li>hls.js is a local fork (08-09, host). The fork streams a partial <code>mdat</code> after
+a complete <code>moof</code> and <code>mdat</code> header, to stay under the MSE quota on very high
+bitrate fMP4.</li>
+<li>hls.js is vendored as a submodule (10-02, host): <code>alchemyyy/hls.js</code>, branch
+<code>fix/cals2</code>, at <code>jellyfin-webgpu-client/vendor/webgpu-player-hls/</code>. The
+add-on aliases <code>hls.js</code> to it, and builds its <code>dist</code> when it is missing. It
+replaced a sibling checkout whose <code>dist</code> had silently gone stale.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="recipes.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="maintaining.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="recipes.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="maintaining.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-09f2665d.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

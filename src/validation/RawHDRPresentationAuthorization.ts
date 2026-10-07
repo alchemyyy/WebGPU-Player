@@ -3,7 +3,7 @@ import {
     createHDRToSDRRenderSettings,
     RENDER_SETTINGS_VERSION,
     type RenderSettings
-} from '../RenderSettings';
+} from '../presentation/RenderSettings';
 import {
     createHLGColorMetadata,
     createPQColorMetadata,
@@ -25,14 +25,14 @@ import {
     renderRawYUVFrame,
     type RawPlaneTextureSet,
     type RawYUVTexturePresentation
-} from '../RawYUVGPURenderer';
+} from '../presentation/RawYUVGPURenderer';
 import {
     RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
     type RawVideoFrameColorSpace,
     type RawVideoPlaneDescriptor,
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
-} from '../custom/RawVideoFrameCopy';
+} from '../video/RawVideoFrameCopy';
 import {
     GPUCanvasPixelReader,
     getValidationTextureUsage
@@ -41,12 +41,12 @@ import GPUAuthorizationDeadline, {
     GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS
 } from './GPUAuthorizationDeadline';
 
-export const RAW_HDR_AUTHORIZATION_FIXTURE_VERSION = 2;
+export const RAW_HDR_AUTHORIZATION_VECTOR_VERSION = 2;
 export const RAW_HDR_AUTHORIZATION_TIMEOUT_MICROSECONDS =
     GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS;
 
-const FIXTURE_HEIGHT = 8;
-const FIXTURE_WIDTH = 16;
+const VECTOR_HEIGHT = 8;
+const VECTOR_WIDTH = 16;
 const AUTHORIZATION_TOLERANCE = 3 / 255;
 const AUTHORIZED_TARGET_FORMATS = new Set<GPUTextureFormat>([
     'bgra8unorm',
@@ -123,7 +123,7 @@ export type RawHDRRouteAuthorizationDecision = {
     authorizedRouteKeys: readonly RawHDRAuthorizationRouteKey[]
     device: GPUDevice
     failureReason: RawHDRAuthorizationFailureReason | null
-    fixtureVersion: typeof RAW_HDR_AUTHORIZATION_FIXTURE_VERSION
+    vectorVersion: typeof RAW_HDR_AUTHORIZATION_VECTOR_VERSION
     maximumChannelError: number | null
     renderSettingsVersion: typeof RENDER_SETTINGS_VERSION
     routeKey: RawHDRAuthorizationRouteKey
@@ -136,7 +136,7 @@ export type RawHDRRouteAuthorizationDecision = {
 export type RawHDRAuthorizationTelemetry = {
     authorizedRouteKeys: readonly RawHDRAuthorizationRouteKey[]
     failureReasons: Readonly<Partial<Record<RawHDRAuthorizationRouteKey, RawHDRAuthorizationFailureReason>>>
-    fixtureVersion: typeof RAW_HDR_AUTHORIZATION_FIXTURE_VERSION
+    vectorVersion: typeof RAW_HDR_AUTHORIZATION_VECTOR_VERSION
     pendingRouteKeys: readonly RawHDRAuthorizationRouteKey[]
     rejectedRouteKeys: readonly RawHDRAuthorizationRouteKey[]
     renderSettingsVersion: typeof RENDER_SETTINGS_VERSION
@@ -144,13 +144,13 @@ export type RawHDRAuthorizationTelemetry = {
     targetFormat: GPUTextureFormat | null
 };
 
-export type RawHDRFixtureObservation = {
+export type RawHDRVectorObservation = {
     linearRGB: ColorTriplet
     sampleX: number
     sampleY: number
 };
 
-type FixtureSample = {
+type VectorSample = {
     sampleX: number
     sampleY: number
 };
@@ -175,7 +175,7 @@ type TelemetryAccumulator = {
     rejectedRouteKeys: RawHDRAuthorizationRouteKey[]
 };
 
-export const RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES: readonly FixtureSample[] = [
+export const RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES: readonly VectorSample[] = [
     { sampleX: 0, sampleY: 0 },
     { sampleX: 3, sampleY: 0 },
     { sampleX: 7, sampleY: 0 },
@@ -192,8 +192,8 @@ const FULL_FRAME_PRESENTATION: RawYUVTexturePresentation = {
     textureOffsetY: 0,
     textureScaleX: 1,
     textureScaleY: 1,
-    viewportHeight: FIXTURE_HEIGHT,
-    viewportWidth: FIXTURE_WIDTH,
+    viewportHeight: VECTOR_HEIGHT,
+    viewportWidth: VECTOR_WIDTH,
     viewportX: 0,
     viewportY: 0
 };
@@ -307,7 +307,7 @@ export function createRawHDRShaderSignature(
     shaderCode: string
 ): string {
     const signatureInput = [
-        `fixture=${RAW_HDR_AUTHORIZATION_FIXTURE_VERSION}`,
+        `vector=${RAW_HDR_AUTHORIZATION_VECTOR_VERSION}`,
         `uniform=${RENDER_SETTINGS_VERSION}`,
         `target=${targetFormat}`,
         shaderCode
@@ -360,17 +360,17 @@ function setPlaneCode(
     view.setUint16(byteOffset, code, true);
 }
 
-function populateFixtureLuma(
+function populateVectorLuma(
     data: ArrayBuffer,
     lumaPlane: RawVideoPlaneDescriptor,
     bitDepth: RawVideoBitDepth
 ): void {
     const codeScale = 2 ** (bitDepth - 8);
-    for (let y = 0; y < FIXTURE_HEIGHT; y += 1) {
-        for (let x = 0; x < FIXTURE_WIDTH; x += 1) {
+    for (let y = 0; y < VECTOR_HEIGHT; y += 1) {
+        for (let x = 0; x < VECTOR_WIDTH; x += 1) {
             const rampCode = (16 * codeScale)
-                + Math.round((219 * codeScale * x) / (FIXTURE_WIDTH - 1));
-            const lumaCode = y < FIXTURE_HEIGHT / 2 ?
+                + Math.round((219 * codeScale * x) / (VECTOR_WIDTH - 1));
+            const lumaCode = y < VECTOR_HEIGHT / 2 ?
                 rampCode :
                 Math.round((120 + (x * 4.5)) * codeScale);
             setPlaneCode(data, lumaPlane, x, y, lumaCode);
@@ -378,21 +378,21 @@ function populateFixtureLuma(
     }
 }
 
-function getFixtureChromaCodes(
+function getVectorChromaCodes(
     x: number,
     y: number,
     bitDepth: RawVideoBitDepth
 ): readonly [number, number] {
     const codeScale = 2 ** (bitDepth - 8);
-    if (y < FIXTURE_HEIGHT / 4) {
+    if (y < VECTOR_HEIGHT / 4) {
         return [ 128 * codeScale, 128 * codeScale ];
     }
-    return x < FIXTURE_WIDTH / 4 ?
+    return x < VECTOR_WIDTH / 4 ?
         [ 153 * codeScale, 103 * codeScale ] :
         [ 103 * codeScale, 153 * codeScale ];
 }
 
-function populateFixtureChroma(
+function populateVectorChroma(
     data: ArrayBuffer,
     chromaUPlane: RawVideoPlaneDescriptor,
     chromaVPlane: RawVideoPlaneDescriptor,
@@ -400,15 +400,15 @@ function populateFixtureChroma(
 ): void {
     for (let y = 0; y < chromaUPlane.height; y += 1) {
         for (let x = 0; x < chromaUPlane.width; x += 1) {
-            const [ chromaUCode, chromaVCode ] = getFixtureChromaCodes(x, y, bitDepth);
+            const [ chromaUCode, chromaVCode ] = getVectorChromaCodes(x, y, bitDepth);
             setPlaneCode(data, chromaUPlane, x, y, chromaUCode);
             setPlaneCode(data, chromaVPlane, x, y, chromaVCode);
         }
     }
 }
 
-/** Builds one padded planar luma-ramp and chromatic-macroblock fixture. */
-export function createRawHDRAuthorizationFixture(
+/** Builds one padded planar luma-ramp and chromatic-macroblock vector. */
+export function createRawHDRAuthorizationVector(
     routeKey: RawHDRAuthorizationRouteKey
 ): TransferableRawVideoFrame {
     const metadata = createMetadata(routeKey);
@@ -416,12 +416,12 @@ export function createRawHDRAuthorizationFixture(
     const bytesPerComponent: 1 | 2 = metadata.bitDepth === 8 ? 1 : 2;
     const chromaWidthDivisor = format.startsWith('I444') ? 1 : 2;
     const chromaHeightDivisor = format.startsWith('I420') ? 2 : 1;
-    const chromaWidth = FIXTURE_WIDTH / chromaWidthDivisor;
-    const chromaHeight = FIXTURE_HEIGHT / chromaHeightDivisor;
+    const chromaWidth = VECTOR_WIDTH / chromaWidthDivisor;
+    const chromaHeight = VECTOR_HEIGHT / chromaHeightDivisor;
     const lumaPlane = createPlaneDescriptor(
         'y',
-        FIXTURE_WIDTH,
-        FIXTURE_HEIGHT,
+        VECTOR_WIDTH,
+        VECTOR_HEIGHT,
         0,
         bytesPerComponent
     );
@@ -442,8 +442,8 @@ export function createRawHDRAuthorizationFixture(
     const data = new ArrayBuffer(
         lumaPlane.byteLength + chromaUPlane.byteLength + chromaVPlane.byteLength
     );
-    populateFixtureLuma(data, lumaPlane, metadata.bitDepth as RawVideoBitDepth);
-    populateFixtureChroma(
+    populateVectorLuma(data, lumaPlane, metadata.bitDepth as RawVideoBitDepth);
+    populateVectorChroma(
         data,
         chromaUPlane,
         chromaVPlane,
@@ -452,8 +452,8 @@ export function createRawHDRAuthorizationFixture(
 
     return {
         bitDepth: metadata.bitDepth as RawVideoBitDepth,
-        codedHeight: FIXTURE_HEIGHT,
-        codedWidth: FIXTURE_WIDTH,
+        codedHeight: VECTOR_HEIGHT,
+        codedWidth: VECTOR_WIDTH,
         colorSpace: {
             fullRange: metadata.range === 'full',
             matrix: metadata.matrix,
@@ -461,15 +461,15 @@ export function createRawHDRAuthorizationFixture(
             transfer: getRawFrameTransfer(metadata)
         },
         data,
-        displayHeight: FIXTURE_HEIGHT,
-        displayWidth: FIXTURE_WIDTH,
+        displayHeight: VECTOR_HEIGHT,
+        displayWidth: VECTOR_WIDTH,
         durationMicroseconds: null,
         format,
         planes: [ lumaPlane, chromaUPlane, chromaVPlane ],
         timestampMicroseconds: millisecondsToMicroseconds(0),
         visibleRectangle: {
-            height: FIXTURE_HEIGHT,
-            width: FIXTURE_WIDTH,
+            height: VECTOR_HEIGHT,
+            width: VECTOR_WIDTH,
             x: 0,
             y: 0
         }
@@ -528,7 +528,7 @@ function getPlane(
 ): RawVideoPlaneDescriptor {
     const plane = frame.planes.find(candidate => candidate.kind === kind);
     if (!plane) {
-        throw new Error(`Fixture does not contain a ${kind} plane`);
+        throw new Error(`Vector does not contain a ${kind} plane`);
     }
     return plane;
 }
@@ -546,7 +546,7 @@ export function calculateRawHDRAuthorizationOutputDither(
     return ((noiseValue - Math.floor(noiseValue)) - 0.5) / 255;
 }
 
-/** Samples one padded planar fixture through the production bilinear filter. */
+/** Samples one padded planar vector through the production bilinear filter. */
 export function sampleRawI420P10Frame(
     frame: TransferableRawVideoFrame,
     sampleX: number,
@@ -565,14 +565,14 @@ export function sampleRawI420P10Frame(
 }
 
 /** Computes CPU-reference observations independently from the GPU render. */
-export function createExpectedRawHDRFixtureObservations(
+export function createExpectedRawHDRVectorObservations(
     frame: TransferableRawVideoFrame,
     metadata: InputColorMetadata,
     settings: RenderSettings
-): readonly RawHDRFixtureObservation[] {
-    return RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.map((
-        sample: FixtureSample
-    ): RawHDRFixtureObservation => {
+): readonly RawHDRVectorObservation[] {
+    return RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.map((
+        sample: VectorSample
+    ): RawHDRVectorObservation => {
         const rawYUV = sampleRawI420P10Frame(frame, sample.sampleX, sample.sampleY);
         const maximumCode = (2 ** metadata.bitDepth) - 1;
         const encodedYUV: ColorTriplet = [
@@ -597,9 +597,9 @@ export function createExpectedRawHDRFixtureObservations(
 }
 
 /** Compares bounded readbacks with quantization and shader arithmetic tolerance. */
-export function evaluateRawHDRFixtureObservations(
-    expectedObservations: readonly RawHDRFixtureObservation[],
-    actualObservations: readonly RawHDRFixtureObservation[],
+export function evaluateRawHDRVectorObservations(
+    expectedObservations: readonly RawHDRVectorObservation[],
+    actualObservations: readonly RawHDRVectorObservation[],
     tolerance = AUTHORIZATION_TOLERANCE
 ): { accepted: boolean, maximumChannelError: number } {
     if (actualObservations.length !== expectedObservations.length) {
@@ -654,7 +654,7 @@ function createRejectedDecision(
         authorizedRouteKeys: [],
         device,
         failureReason,
-        fixtureVersion: RAW_HDR_AUTHORIZATION_FIXTURE_VERSION,
+        vectorVersion: RAW_HDR_AUTHORIZATION_VECTOR_VERSION,
         maximumChannelError,
         renderSettingsVersion: RENDER_SETTINGS_VERSION,
         routeKey,
@@ -770,15 +770,15 @@ export class RawHDRPresentationAuthorizationRunner {
             const resources = createRawYUVRenderResources(device, pipeline, settings);
             presentationUniformBuffer = resources.presentationUniformBuffer;
             renderSettingsUniformBuffer = resources.renderSettingsUniformBuffer;
-            const frame = createRawHDRAuthorizationFixture(routeKey);
+            const frame = createRawHDRAuthorizationVector(routeKey);
             targetTexture = device.createTexture({
                 dimension: '2d',
                 format: targetFormat,
                 label: 'WebGPU raw HDR authorization target',
                 size: {
                     depthOrArrayLayers: 1,
-                    height: FIXTURE_HEIGHT,
-                    width: FIXTURE_WIDTH
+                    height: VECTOR_HEIGHT,
+                    width: VECTOR_WIDTH
                 },
                 usage: targetUsage
             });
@@ -810,13 +810,13 @@ export class RawHDRPresentationAuthorizationRunner {
             pixelReader = new GPUCanvasPixelReader({
                 device,
                 format: targetFormat,
-                maximumReadbacks: RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length
+                maximumReadbacks: RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.length
             });
             const readback = await deadline.wait(
-                pixelReader.readPixels(RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES, targetTexture),
+                pixelReader.readPixels(RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES, targetTexture),
                 (): void => pixelReader?.destroy()
             );
-            const actualObservations: RawHDRFixtureObservation[] = [];
+            const actualObservations: RawHDRVectorObservation[] = [];
             if (readback.failure || !readback.linearRGB) {
                 return createRejectedDecision(
                     device,
@@ -827,21 +827,21 @@ export class RawHDRPresentationAuthorizationRunner {
                 );
             }
             for (let sampleIndex = 0;
-                sampleIndex < RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length;
+                sampleIndex < RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.length;
                 sampleIndex += 1) {
-                const sample = RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES[sampleIndex];
+                const sample = RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES[sampleIndex];
                 actualObservations.push({
                     linearRGB: readback.linearRGB[sampleIndex],
                     sampleX: sample.sampleX,
                     sampleY: sample.sampleY
                 });
             }
-            const expectedObservations = createExpectedRawHDRFixtureObservations(
+            const expectedObservations = createExpectedRawHDRVectorObservations(
                 frame,
                 metadata,
                 settings
             );
-            const comparison = evaluateRawHDRFixtureObservations(
+            const comparison = evaluateRawHDRVectorObservations(
                 expectedObservations,
                 actualObservations
             );
@@ -860,7 +860,7 @@ export class RawHDRPresentationAuthorizationRunner {
                 authorizedRouteKeys: [ routeKey ],
                 device,
                 failureReason: null,
-                fixtureVersion: RAW_HDR_AUTHORIZATION_FIXTURE_VERSION,
+                vectorVersion: RAW_HDR_AUTHORIZATION_VECTOR_VERSION,
                 maximumChannelError: comparison.maximumChannelError,
                 renderSettingsVersion: RENDER_SETTINGS_VERSION,
                 routeKey,
@@ -1016,7 +1016,7 @@ export class RawHDRPresentationAuthorizationRegistry {
             return {
                 authorizedRouteKeys: [],
                 failureReasons: {},
-                fixtureVersion: RAW_HDR_AUTHORIZATION_FIXTURE_VERSION,
+                vectorVersion: RAW_HDR_AUTHORIZATION_VECTOR_VERSION,
                 pendingRouteKeys: [],
                 rejectedRouteKeys: [],
                 renderSettingsVersion: RENDER_SETTINGS_VERSION,
@@ -1043,7 +1043,7 @@ export class RawHDRPresentationAuthorizationRegistry {
         return {
             authorizedRouteKeys: accumulator.authorizedRouteKeys,
             failureReasons: accumulator.failureReasons,
-            fixtureVersion: RAW_HDR_AUTHORIZATION_FIXTURE_VERSION,
+            vectorVersion: RAW_HDR_AUTHORIZATION_VECTOR_VERSION,
             pendingRouteKeys: accumulator.pendingRouteKeys,
             rejectedRouteKeys: accumulator.rejectedRouteKeys,
             renderSettingsVersion: RENDER_SETTINGS_VERSION,

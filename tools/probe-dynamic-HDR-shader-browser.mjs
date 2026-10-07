@@ -4,8 +4,9 @@ import { createServer } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { ENGINE_ROOT } from './constants.mjs';
+
 const COMMAND_TIMEOUT_MILLISECONDS = 30_000;
-const REPOSITORY_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SCRIPT_PATH = fileURLToPath(new URL('emit_dynamic_HDR_shader.ts', import.meta.url));
 const VITE_NODE_PATH = findInstalledFile(join('vite-node', 'vite-node.mjs'));
 const debugURL = process.argv[2] || 'http://localhost:9224';
@@ -15,7 +16,7 @@ const debugURL = process.argv[2] || 'http://localhost:9224';
  * A host that adds the engine as an npm workspace installs its dependencies in the host's node_modules.
  */
 function findInstalledFile(relativePath) {
-    let directory = REPOSITORY_ROOT;
+    let directory = ENGINE_ROOT;
     for (;;) {
         const candidate = join(directory, 'node_modules', relativePath);
         if (existsSync(candidate)) {
@@ -23,7 +24,7 @@ function findInstalledFile(relativePath) {
         }
         const parentDirectory = dirname(directory);
         if (parentDirectory === directory) {
-            throw new Error(`${relativePath} is not installed above ${REPOSITORY_ROOT}`);
+            throw new Error(`${relativePath} is not installed above ${ENGINE_ROOT}`);
         }
         directory = parentDirectory;
     }
@@ -127,7 +128,7 @@ function emitProductionShader() {
         process.execPath,
         [ VITE_NODE_PATH, SCRIPT_PATH ],
         {
-            cwd: REPOSITORY_ROOT,
+            cwd: ENGINE_ROOT,
             encoding: 'utf8',
             timeout: COMMAND_TIMEOUT_MILLISECONDS
         }

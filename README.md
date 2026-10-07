@@ -1,108 +1,70 @@
 # WebGPU Player
 
-A WebGPU and WebCodecs media playback engine for the browser. It plays formats
-that browsers cannot play natively:
+A WebGPU and WebCodecs media playback engine for the browser. It plays sources
+that browsers cannot play natively, and presents HDR10, HDR10+, HLG, and Dolby
+Vision through its own color pipeline. Every route is qualified in the running
+browser before a host may offer it.
 
-- **Demux:** [Mediabunny](https://github.com/Vanilagy/mediabunny), in a worker.
-- **Decode:** WebCodecs, or bundled WebAssembly decoders built from FFmpeg,
-  libdcadec, hevc.js, and OpenJPEG.
-- **Present:** WebGPU, including HDR10, HDR10+, HLG, and Dolby Vision profiles
-  5, 7, and 8 tone mapping.
-- **Audio:** an AudioWorklet output with a client-owned clock.
+The documentation is a book in [docs/](docs/src/SUMMARY.md), written for
+[mdBook](https://github.com/rust-lang/mdBook). Read the Markdown in place, or
+build and serve it:
 
-Every route is qualified in the running browser, by decoding a known stream and
-checking the exact output, before a host may advertise it.
-
-The engine is host-agnostic.
-[Jellyfin Web with WebGPU Player](https://github.com/alchemyyy/jellyfin-web)
-embeds it as a git submodule. That fork adds the Jellyfin integration: the
-player plugin, device profile, settings UI, and same-session HTML fallback.
+```sh
+cargo install mdbook --version 0.5.4 --locked
+mdbook serve docs --open
+```
 
 ## Requirements
 
-- **Browser:** Chrome or Edge with WebGPU and WebCodecs.
-- **Secure context:** HTTPS or `localhost`.
-- **Development:** Node.js 24 and npm 11.
+Required:
 
-## Layout
+- Node.js 24 or later and npm 11 or later.
+- Git, GNU Make, and a POSIX shell (Git Bash on Windows).
+- Emscripten 4.0.13, activated with `emsdk_env` or named by `EMSDK`, and
+  rustup.
+  * They build the WebAssembly decoders, once per checkout.
+  The repository pins Rust 1.96.1 with the `wasm32-unknown-unknown` target.
+- On Windows, long path support. 
+  * The decoder build's FFmpeg and cargo trees pass 260 characters in a nested checkout,
+  so enable `LongPathsEnabled` and Git's `core.longpaths`. GNU Make and
+  the MSVC linker that cargo uses must accept long paths too.
 
-| Path | Contents |
-| --- | --- |
-| `.agents/` | Project map for contributors and coding agents: architecture, negotiation, codec support, module map, host integration, and settled decisions. Start with [.agents/README.md](.agents/README.md) |
-| `src/` | Engine TypeScript: presenter and color pipeline, the custom decode pipeline in `custom/`, and presentation validation in `validation/` |
-| `src/EngineAssets.ts` | Typed names of every file the engine fetches at runtime, and their URL resolution |
-| `src/EngineConfiguration.ts` | Feature flags a host can set |
-| `test/` | Vitest suites. Decoder integration tests run the committed WebAssembly in Node |
-| `codecs/` | C bridges, the libdovi crate, licenses, the codec Makefile, and the committed build outputs in `codecs/dist/`. See [codecs/README.md](codecs/README.md) |
-| `fixtures/capability/` | Qualification streams that browsers fetch at runtime |
-| `fixtures/test/` | Inputs used only by tests |
-| `scripts/` | `build.mjs` assembles `dist/libraries/`. `library-assets.mjs` maps every served file to its source |
-| `tools/` | Development and validation tooling, never shipped. See [tools/README.md](tools/README.md) |
+Only for specific tasks:
 
-## Embedding the engine
+- Python 3.10 or later and the pinned FFmpeg and FFprobe build
+  (`2026-03-01-git-862338fe31-full_build-www.gyan.dev`), to generate or check
+  the codec vectors.
+- MKVToolNix, for the Dolby Vision smoke media scripts.
+- mdBook 0.5.4, to build the documentation.
+- Chrome, Edge, or Firefox with WebGPU and WebCodecs, on a secure context
+  (HTTPS or `localhost`), to run the engine. Firefox on Windows decodes HEVC
+  in software only, which is below real time at 4K.
 
-1. **Make the sources resolvable.** Add this repository as a git submodule.
-   Then map `webgpu-player/*` to its `src/*`:
-   - in the host's TypeScript `paths`;
-   - in the host's bundler alias.
-
-   Add the engine to the host's npm `workspaces`, so npm installs its
-   dependencies, including `esbuild` for the asset build. Without a workspace,
-   install the engine's `dependencies` and `esbuild` in the host.
-2. **Build the served assets** before bundling, with
-   `node <engine>/scripts/build.mjs [--production]`:
-   - It bundles the workers with esbuild and copies decoders, licenses, and
-     qualification streams into `<engine>/dist/libraries/`.
-   - Serve that directory unmodified, and do not minify it again.
-   - The default asset base is `libraries/` beside the page.
-   - Workers live in its `webgpu-player/` subdirectory and resolve the other
-     assets relative to their own URL, so keep the layout intact.
-3. **Configure the engine at startup:**
-
-   ```ts
-   import { configureEngineAssets } from 'webgpu-player/EngineAssets';
-   import { configureEngineFeatureFlags } from 'webgpu-player/EngineConfiguration';
-   import 'webgpu-player/style.scss';
-
-   // assetKey comes from <engine>/dist/build-info.json, written by the asset build
-   configureEngineAssets({ cacheKey: assetKey });
-   configureEngineFeatureFlags({ isHDRToneMappingEnabled: () => Promise.resolve(true) });
-   ```
-
-   The asset URLs are stable. The cache key, a hash of every served file, is
-   appended as `?v=` so a browser never mixes files from two builds. Pass
-   `baseURL` to serve the assets from somewhere else.
-
-## Development
+## Quick start
 
 ```sh
 npm ci
+make -C wasm sources all   # The WebAssembly decoders, once per checkout
 npm run typecheck
-npm test
 npm run lint
+npm test
 npm run build
 ```
 
-When a host adds the engine as an npm workspace, run these scripts from the
-host's root with `-w webgpu-player`, for example `npm test -w webgpu-player`.
-The host's ESLint configuration lints `src/` and `test/` too, so changes must
-pass both configurations.
-
-The codec builds are committed, so nothing above needs Emscripten. Rebuilding a
-decoder needs Emscripten 4.0.13, GNU Make, and cargo, without Docker. See
-[codecs/README.md](codecs/README.md).
+[Set up a checkout](docs/src/setup.md) lists the toolchain, and
+[Embedding the engine](docs/src/embedding.md) shows how a host uses it.
 
 ## Credits
 
 - [Mediabunny](https://github.com/Vanilagy/mediabunny) (MPL-2.0) demuxes media
-  and remuxes audio to fragmented MP4 for native playback. Its
+  and remuxes audio to fragmented MP4. Its
   [`@mediabunny/ac3`](https://www.npmjs.com/package/@mediabunny/ac3) extension
   supplies the AC-3 decoder.
 - [FFmpeg](https://ffmpeg.org/) (LGPL-2.1-or-later) supplies the E-AC-3,
-  TrueHD/MLP, MPEG-2 Video, and VC-1 decoders, compiled to WebAssembly from a
-  pinned revision.
-- [libdcadec](https://github.com/foo86/dcadec) (LGPL-2.1-or-later) supplies
-  the DTS decoder, including DTS-HD MA.
+  TrueHD and MLP, MPEG-2 Video, and VC-1 decoders, built from a pinned
+  revision.
+- [libdcadec](https://github.com/foo86/dcadec) (LGPL-2.1-or-later) supplies the
+  DTS decoder, DTS-HD MA included.
 - [hevc.js](https://github.com/privaloops/hevc.js) (MIT) supplies the software
   HEVC decoder.
 - [OpenJPEG](https://www.openjpeg.org/) (BSD-2-Clause), through
@@ -114,6 +76,7 @@ decoder needs Emscripten 4.0.13, GNU Make, and cargo, without Docker. See
 ## License
 
 The engine's own code is MIT; see [LICENSE](LICENSE). Bundled third-party
-decoders keep their own licenses, and the license texts ship beside each
-decoder in `dist/libraries/`. The corresponding source for the LGPL decoders is
-published with each release; see [codecs/README.md](codecs/README.md).
+decoders keep their own licenses, and their license texts ship beside each
+decoder in the served assets. The corresponding source of the LGPL decoders is
+published with each release; see
+[WebAssembly decoders](docs/src/decoders.md#licenses).

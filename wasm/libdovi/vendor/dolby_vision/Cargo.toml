@@ -1,0 +1,32 @@
+[package]
+name = "dolby_vision"
+version = "3.4.0"
+authors = ["quietvoid"]
+edition = "2024"
+rust-version = "1.88.0"
+license = "MIT"
+description = "Dolby Vision metadata parsing and writing"
+repository = "https://github.com/quietvoid/dovi_tool/tree/main/dolby_vision"
+
+[dependencies]
+bitvec_helpers = { version = "4.0.2", default-features = false, features = ["bitstream-io"] }
+anyhow = "1.0.103"
+bitvec = "1.1.1"
+crc = "3.4.0"
+roxmltree = { version = "0.21.1", optional = true }
+serde = { version = "1.0.228", features = ["derive"], "optional" = true }
+serde_json = { version = "1.0.150", features = ["preserve_order"], "optional" = true }
+tinyvec = { version = "1.12.0", features = ["rustc_1_55"] }
+
+libc = { version = "0.2", optional = true }
+
+[features]
+xml = ["dep:roxmltree"]
+serde = ["dep:serde", "dep:serde_json", "tinyvec/serde"]
+capi = ["libc", "serde"]
+
+[lib]
+doctest = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(cargo_c)'] }

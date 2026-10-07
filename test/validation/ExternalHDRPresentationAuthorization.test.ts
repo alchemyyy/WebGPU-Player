@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createHDRToSDRRenderSettings } from 'webgpu-player/RenderSettings';
+import { createHDRToSDRRenderSettings } from 'webgpu-player/presentation/RenderSettings';
 import { createPQColorMetadata } from 'webgpu-player/color/ColorMetadata';
 import type { ColorTriplet } from 'webgpu-player/color/ColorPipeline';
-import { parseHEVCSPS } from 'webgpu-player/custom/HEVCSPSParser';
+import { parseHEVCSPS } from 'webgpu-player/video/hevc/HEVCSPSParser';
 import {
     createExpectedExternalHDRAuthorizationObservations,
     createExternalHDRAuthorizationFrame,
@@ -13,7 +13,7 @@ import {
     type ExternalHDRAuthorizationRouteKey,
     type ExternalHDRRouteAuthorizationDecision
 } from 'webgpu-player/validation/ExternalHDRPresentationAuthorization';
-import type { RawHDRFixtureObservation } from 'webgpu-player/validation/RawHDRPresentationAuthorization';
+import type { RawHDRVectorObservation } from 'webgpu-player/validation/RawHDRPresentationAuthorization';
 
 type MockFunction = ReturnType<typeof vi.fn>;
 
@@ -57,7 +57,7 @@ function createSettings() {
 
 function createExpectedObservations(
     routeKey: ExternalHDRAuthorizationRouteKey
-): readonly RawHDRFixtureObservation[] {
+): readonly RawHDRVectorObservation[] {
     return createExpectedExternalHDRAuthorizationObservations(
         routeKey,
         createSettings()
@@ -73,7 +73,7 @@ function createFrame(close: MockFunction): VideoFrame {
 }
 
 function createDeviceHarness(
-    observations: readonly RawHDRFixtureObservation[]
+    observations: readonly RawHDRVectorObservation[]
 ): DeviceHarness {
     const observationMap = new Map<string, ColorTriplet>();
     for (const observation of observations) {
@@ -168,8 +168,8 @@ function createDeviceHarness(
 }
 
 function mutateFirstObservation(
-    observations: readonly RawHDRFixtureObservation[]
-): readonly RawHDRFixtureObservation[] {
+    observations: readonly RawHDRVectorObservation[]
+): readonly RawHDRVectorObservation[] {
     return observations.map((observation, observationIndex) => observationIndex === 0 ? {
         ...observation,
         linearRGB: [
@@ -574,7 +574,7 @@ describe('External HDR presentation authorization', () => {
             }
 
             public decode(): void {
-                decoderInit?.error(new DOMException('fixture decode failed'));
+                decoderInit?.error(new DOMException('vector decode failed'));
             }
 
             public async flush(): Promise<void> {
@@ -585,7 +585,7 @@ describe('External HDR presentation authorization', () => {
         vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
 
         await expect(createExternalHDRAuthorizationFrame())
-            .rejects.toThrow('fixture decode failed');
+            .rejects.toThrow('vector decode failed');
         expect(closed).toHaveBeenCalledOnce();
     });
 

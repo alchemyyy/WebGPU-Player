@@ -1,0 +1,20 @@
+TrueHD and MLP capability vector provenance
+
+The TrueHD and MLP streams contain only deterministic, mathematically generated
+sine tones. They contain no copied media content.
+scripts/codec_vector_assets/generate_truehd_capability_vectors.py encodes them
+with FFmpeg into bin/codec_vector_assets/truehd/ and embeds complete access
+units plus reference PCM fingerprints in
+bin/codec_vector_assets/truehd/TrueHDExactCapabilityVectors.ts. Its
+--regenerate-sources mode re-encodes the streams and fails unless they match
+the committed bytes.
+
+truehd_51_side_24_96000.mka, in this folder, is a deterministic, metadata-free
+Matroska remux of bin/codec_vector_assets/truehd/truehd_51_side_24_96000.truehd
+and validates Mediabunny A_TRUEHD packet extraction. The recorded remux command
+is:
+
+  ffmpeg -fflags +bitexact -f truehd -i truehd_51_side_24_96000.truehd -c:a copy -f matroska truehd_51_side_24_96000.mka
+
+Current FFmpeg builds write slightly different container bytes, so no script
+regenerates it and the committed file is the reference.

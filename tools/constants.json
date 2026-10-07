@@ -1,0 +1,22 @@
+{
+  "sourceDirectory": "src",
+  "vectorsDirectory": "src/capability/vectors",
+  "qualificationVectorsDirectory": "src/capability/vectors/qualification",
+  "testVectorsDirectory": "src/capability/vectors/test",
+  "testDirectory": "test",
+  "scriptsDirectory": "scripts",
+  "codecVectorScriptsDirectory": "scripts/codec_vector_assets",
+  "wasmDirectory": "wasm",
+  "wasmLicensesDirectory": "wasm/licenses",
+  "outputDirectory": "bin",
+  "wasmOutputDirectory": "bin/wasm",
+  "libraryOutputDirectory": "bin/libraries",
+  "codecVectorAssetsDirectory": "bin/codec_vector_assets",
+  "playbackSmokeMediaDirectory": "bin/playback_smoke_media",
+  "buildInfoFile": "bin/build-info.json",
+  "documentationDirectory": "docs",
+  "documentationOutputDirectory": "docs/book",
+  "vendorDirectory": "vendor",
+  "ffmpegSourceDirectory": "vendor/ffmpeg",
+  "dcadecSourceDirectory": "vendor/dcadec"
+}

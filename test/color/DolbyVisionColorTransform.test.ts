@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { ENGINE_ROOT } from '../helpers/enginePaths';
+import { TEST_VECTORS_DIRECTORY, WASM_OUTPUT_DIRECTORY } from '../helpers/enginePaths';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -12,14 +12,14 @@ import {
     DOLBY_VISION_RPU_PACKED_COMPONENT_MMR_OFFSET,
     DOLBY_VISION_RPU_PACKED_COMPONENT_PIVOT_OFFSET,
     DOLBY_VISION_RPU_PACKED_COMPONENT_SEGMENT_OFFSET
-} from 'webgpu-player/custom/DolbyVisionRPUDataLayout';
+} from 'webgpu-player/video/dolby-vision/DolbyVisionRPUDataLayout';
 import DolbyVisionRPUParser, {
     DOLBY_VISION_RPU_PARSER_REVISION_PREFIX,
     DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
     DOLBY_VISION_RPU_SCHEMA_MAGIC,
     DOLBY_VISION_RPU_SCHEMA_VERSION,
     type DolbyVisionRPUParserDependencies
-} from 'webgpu-player/custom/DolbyVisionRPUParser';
+} from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParser';
 import type { ColorTriplet } from 'webgpu-player/color/ColorPipeline';
 import {
     composeDolbyVisionEnhancementSignal,
@@ -28,16 +28,10 @@ import {
     reconstructDolbyVisionBT2020PQWithEnhancement,
     reshapeDolbyVisionSignal
 } from 'webgpu-player/color/DolbyVisionColorTransform';
-import { createDolbyVisionAuthorizationRPUFixture } from 'webgpu-player/validation/DolbyVisionAuthorizationFixture';
+import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 
-const PARSER_WASM_PATH = resolve(
-    ENGINE_ROOT,
-    'codecs/dist/libdovi/dovi-rpu-parser.wasm'
-);
-const RPU_FIXTURE_DIRECTORY = resolve(
-    ENGINE_ROOT,
-    'fixtures/test/dolby-vision-rpu'
-);
+const PARSER_WASM_PATH = resolve(WASM_OUTPUT_DIRECTORY, 'libdovi', 'dovi-rpu-parser.wasm');
+const RPU_VECTOR_DIRECTORY = resolve(TEST_VECTORS_DIRECTORY, 'dolby-vision-rpu');
 const PARSER_WASM_BYTES = new Uint8Array(readFileSync(PARSER_WASM_PATH));
 const REFERENCE_DECIMAL_PRECISION = 6;
 const LIBPLACEBO_REFERENCE_MAXIMUM_ABSOLUTE_ERROR = 0.000_01;
@@ -87,20 +81,20 @@ const ACTUAL_PARSER_DEPENDENCIES: DolbyVisionRPUParserDependencies = {
     loadInstance: instantiateParserModule
 };
 
-function readFixture(fileName: string): Uint8Array {
+function readVector(fileName: string): Uint8Array {
     return new Uint8Array(readFileSync(resolve(
-        RPU_FIXTURE_DIRECTORY,
+        RPU_VECTOR_DIRECTORY,
         fileName
     )));
 }
 
-async function parseFixture(fileName: string): Promise<ArrayBuffer> {
+async function parseVector(fileName: string): Promise<ArrayBuffer> {
     const parser = await DolbyVisionRPUParser.create(
         'local-parser.wasm',
         ACTUAL_PARSER_DEPENDENCIES
     );
     try {
-        return parser.parse(readFixture(fileName)).packedData;
+        return parser.parse(readVector(fileName)).packedData;
     } finally {
         parser.close();
     }
@@ -126,8 +120,8 @@ function expectColorWithinAbsoluteError(
     }
 }
 
-function createMultiSegmentMMRFixture(): ArrayBuffer {
-    const packedRPUData = createDolbyVisionAuthorizationRPUFixture();
+function createMultiSegmentMMRVector(): ArrayBuffer {
+    const packedRPUData = createDolbyVisionAuthorizationRPUVector();
     const view = new DataView(packedRPUData);
     const componentWordOffset = DOLBY_VISION_RPU_COMPONENT_WORD_OFFSET
         + DOLBY_VISION_RPU_COMPONENT_WORD_STRIDE;
@@ -154,7 +148,7 @@ function createMultiSegmentMMRFixture(): ArrayBuffer {
 
 describe('Dolby Vision CPU color reconstruction', () => {
     it('applies the Profile 8 polynomial reshape and color matrices', async () => {
-        const packedRPUData = await parseFixture('profile8.bin');
+        const packedRPUData = await parseVector('profile8.bin');
         const sourceSignal: ColorTriplet = [ 0.18, 0.4, 0.7 ];
 
         expectColorClose(
@@ -168,7 +162,7 @@ describe('Dolby Vision CPU color reconstruction', () => {
     });
 
     it('applies the Profile 8.4 piecewise polynomial and order-three MMR curves', async () => {
-        const packedRPUData = await parseFixture('profile84.bin');
+        const packedRPUData = await parseVector('profile84.bin');
 
         expectColorClose(
             reshapeDolbyVisionSignal([ 0.18, 0.4, 0.7 ], packedRPUData),
@@ -184,7 +178,7 @@ describe('Dolby Vision CPU color reconstruction', () => {
     });
 
     it('matches the pinned libplacebo Profile 8.4 decode-color boundary', async () => {
-        const packedRPUData = await parseFixture('profile84.bin');
+        const packedRPUData = await parseVector('profile84.bin');
 
         for (const referenceSample of LIBPLACEBO_PROFILE_8_4_REFERENCE_SAMPLES) {
             expectColorWithinAbsoluteError(
@@ -196,7 +190,7 @@ describe('Dolby Vision CPU color reconstruction', () => {
     });
 
     it('honors the Profile 5 nonlinear chroma offsets', async () => {
-        const packedRPUData = await parseFixture('profile5.bin');
+        const packedRPUData = await parseVector('profile5.bin');
 
         expectColorClose(
             reshapeDolbyVisionSignal([ 0.2, 0.4, 0.7 ], packedRPUData),
@@ -209,7 +203,7 @@ describe('Dolby Vision CPU color reconstruction', () => {
     });
 
     it('indexes later MMR segments in packed vec4 units', () => {
-        const packedRPUData = createMultiSegmentMMRFixture();
+        const packedRPUData = createMultiSegmentMMRVector();
 
         expect(reshapeDolbyVisionSignal(
             [ 0.2, 0.75, 0.4 ],
@@ -218,7 +212,7 @@ describe('Dolby Vision CPU color reconstruction', () => {
     });
 
     it('composes Profile 7 FEL LINEAR_DZ residuals after BL reshape', () => {
-        const packedRPUData = createDolbyVisionAuthorizationRPUFixture(7, 'fel');
+        const packedRPUData = createDolbyVisionAuthorizationRPUVector(7, 'fel');
         const baseSignal: ColorTriplet = [ 0.2, 0.4, 0.7 ];
         const enhancementSignal: ColorTriplet = [ 0.5, 0.25, 0 ];
         const reshapedSignal = reshapeDolbyVisionSignal(baseSignal, packedRPUData);

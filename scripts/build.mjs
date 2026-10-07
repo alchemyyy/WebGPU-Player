@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Assembles every asset the engine serves under libraries/, in the layout the player requests at runtime.
-// Usage: node scripts/build.mjs [--production]
+// Assembles every asset the engine serves, in the layout the player requests at runtime.
+// The output locations come from tools/constants.json. Usage: node scripts/build.mjs [--production]
 
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -8,12 +8,9 @@ import { dirname, join, relative, sep } from 'node:path';
 
 import { build } from 'esbuild';
 
-import { ENGINE_ROOT, getLibraryAssets, getWorkerEntryPoints } from './library-assets.mjs';
+import { BUILD_INFO_FILE, ENGINE_ROOT, LIBRARY_OUTPUT_DIRECTORY, WASM_OUTPUT_DIRECTORY } from '../tools/constants.mjs';
+import { getLibraryAssets, getWorkerEntryPoints } from './library-assets.mjs';
 
-const DIST_OUTPUT = join(ENGINE_ROOT, 'dist');
-const LIBRARIES_OUTPUT = join(DIST_OUTPUT, 'libraries');
-// Hosts read the asset key from here to bust caches of the stable asset URLs
-const BUILD_INFO_OUTPUT = join(DIST_OUTPUT, 'build-info.json');
 const ASSET_KEY_LENGTH = 16;
 const PRODUCTION = process.argv.includes('--production');
 // Workers only run in WebGPU-capable browsers, so they keep modern syntax
@@ -23,7 +20,7 @@ function copyAsset(destination, source) {
     if (!existsSync(source)) {
         throw new Error(`Missing engine asset for libraries/${destination}: ${source}`);
     }
-    const target = join(LIBRARIES_OUTPUT, destination);
+    const target = join(LIBRARY_OUTPUT_DIRECTORY, destination);
     mkdirSync(dirname(target), { recursive: true });
     copyFileSync(source, target);
 }
@@ -31,9 +28,9 @@ function copyAsset(destination, source) {
 /** Hashes every served file, so each distinct build gets a distinct cache key. */
 function computeAssetKey() {
     const files = [];
-    for (const entry of readdirSync(LIBRARIES_OUTPUT, { recursive: true, withFileTypes: true })) {
+    for (const entry of readdirSync(LIBRARY_OUTPUT_DIRECTORY, { recursive: true, withFileTypes: true })) {
         if (entry.isFile()) {
-            files.push(relative(LIBRARIES_OUTPUT, join(entry.parentPath, entry.name)).split(sep).join('/'));
+            files.push(relative(LIBRARY_OUTPUT_DIRECTORY, join(entry.parentPath, entry.name)).split(sep).join('/'));
         }
     }
     files.sort();
@@ -41,12 +38,18 @@ function computeAssetKey() {
     for (const file of files) {
         hash.update(file);
         hash.update('\0');
-        hash.update(readFileSync(join(LIBRARIES_OUTPUT, file)));
+        hash.update(readFileSync(join(LIBRARY_OUTPUT_DIRECTORY, file)));
     }
     return hash.digest('hex').slice(0, ASSET_KEY_LENGTH);
 }
 
-rmSync(LIBRARIES_OUTPUT, { force: true, recursive: true });
+// The decoders are build outputs too, from a separate toolchain, so a fresh checkout builds them once
+if (!existsSync(WASM_OUTPUT_DIRECTORY)) {
+    throw new Error(`The WebAssembly decoders are not built in ${WASM_OUTPUT_DIRECTORY}. `
+        + 'Run make -C wasm sources all from the engine root; docs/src/decoders.md lists the toolchain.');
+}
+
+rmSync(LIBRARY_OUTPUT_DIRECTORY, { force: true, recursive: true });
 for (const [ destination, source ] of getLibraryAssets()) {
     copyAsset(destination, source);
 }
@@ -64,12 +67,13 @@ await build({
     // The single-file decoder glue reads import.meta.url only to derive a script directory it never uses
     logOverride: { 'empty-import-meta': 'silent' },
     minify: PRODUCTION,
-    outdir: LIBRARIES_OUTPUT,
+    outdir: LIBRARY_OUTPUT_DIRECTORY,
     platform: 'browser',
     sourcemap: PRODUCTION ? false : 'linked',
     target: WORKER_TARGET
 });
 
 const assetKey = computeAssetKey();
-writeFileSync(BUILD_INFO_OUTPUT, `${JSON.stringify({ assetKey }, null, 2)}\n`);
-console.log(`webgpu-player: assembled ${LIBRARIES_OUTPUT} (${PRODUCTION ? 'production' : 'development'}, key ${assetKey})`);
+mkdirSync(dirname(BUILD_INFO_FILE), { recursive: true });
+writeFileSync(BUILD_INFO_FILE, `${JSON.stringify({ assetKey }, null, 2)}\n`);
+console.log(`webgpu-player: assembled ${LIBRARY_OUTPUT_DIRECTORY} (${PRODUCTION ? 'production' : 'development'}, key ${assetKey})`);

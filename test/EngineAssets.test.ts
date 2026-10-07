@@ -11,9 +11,9 @@ import {
     ENGINE_WORKER_PATHS,
     resolveEngineAssetURL
 } from 'webgpu-player/EngineAssets';
-import { HEVC_RANGE_EXTENSION_VARIANTS } from 'webgpu-player/custom/HEVCRangeExtensionCapabilities';
+import { HEVC_RANGE_EXTENSION_VARIANTS } from 'webgpu-player/capability/HEVCRangeExtensionCapabilities';
 
-import { ENGINE_ROOT } from './helpers/enginePaths';
+import { SCRIPTS_DIRECTORY } from './helpers/enginePaths';
 
 type AssetTable = readonly (readonly [ string, string ])[];
 
@@ -24,7 +24,7 @@ type LibraryAssetsModule = Readonly<{
 
 async function loadLibraryAssets(): Promise<LibraryAssetsModule> {
     // Imported by URL, because the build tables are plain JavaScript without declarations
-    const moduleURL = pathToFileURL(resolve(ENGINE_ROOT, 'scripts/library-assets.mjs')).href;
+    const moduleURL = pathToFileURL(resolve(SCRIPTS_DIRECTORY, 'library-assets.mjs')).href;
     return await import(/* @vite-ignore */ moduleURL) as LibraryAssetsModule;
 }
 

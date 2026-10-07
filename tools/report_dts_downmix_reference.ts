@@ -1,19 +1,19 @@
 import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
 
+import { TEST_VECTORS_DIRECTORY } from './constants.mjs';
 import type { Microseconds } from '../src/MediaTime';
 import {
     CUSTOM_SEVEN_POINT_ONE_DOWNMIX_POLICY,
     getStereoChannelDataFingerprint,
     type StereoChannelData
-} from '../src/custom/CustomAudioDownmix';
-import { mixCustomAudioToStereo } from '../src/custom/CustomAudioChannelLayout';
+} from '../src/audio/processing/CustomAudioDownmix';
+import { mixCustomAudioToStereo } from '../src/audio/processing/CustomAudioChannelLayout';
 import DTSSoftwareAudioDecoder, {
     type DTSDecodedAudioOutput
-} from '../src/custom/DTSSoftwareAudioDecoder';
+} from '../src/audio/decoders/DTSSoftwareAudioDecoder';
 
-type DTSFixtureDefinition = {
+type DTSVectorDefinition = {
     expectedChannelMask: number
     expectedProfile: number
     expectedSampleRate: number
@@ -30,11 +30,11 @@ type StereoMetrics = {
     rmsDBFS: number
 };
 
-const FIXTURE_DIRECTORY = resolve(dirname(fileURLToPath(import.meta.url)), '../fixtures/test/dts');
-const FIXTURE_DEFINITIONS = JSON.parse(readFileSync(
-    resolve(FIXTURE_DIRECTORY, 'packets.json'),
+const VECTOR_DIRECTORY = join(TEST_VECTORS_DIRECTORY, 'dts');
+const VECTOR_DEFINITIONS = JSON.parse(readFileSync(
+    resolve(VECTOR_DIRECTORY, 'packets.json'),
     'utf8'
-)) as Record<string, DTSFixtureDefinition>;
+)) as Record<string, DTSVectorDefinition>;
 const DTS_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE = 0x63f;
 
 function computeStereoMetrics(channelData: StereoChannelData): StereoMetrics {
@@ -87,9 +87,9 @@ function applyMpvDefaultSevenPointOneMatrix(
 
 async function decodeQualificationOutput(
     fileName: string,
-    definition: DTSFixtureDefinition
+    definition: DTSVectorDefinition
 ): Promise<DTSDecodedAudioOutput> {
-    const fixture = new Uint8Array(readFileSync(resolve(FIXTURE_DIRECTORY, fileName)));
+    const vector = new Uint8Array(readFileSync(resolve(VECTOR_DIRECTORY, fileName)));
     const decoder = await DTSSoftwareAudioDecoder.create();
     try {
         let output: DTSDecodedAudioOutput | null = null;
@@ -98,12 +98,12 @@ async function decodeQualificationOutput(
             packetIndex += 1) {
             const [ byteOffset, byteLength ] = definition.packets[packetIndex];
             output = decoder.decode(
-                fixture.subarray(byteOffset, byteOffset + byteLength),
+                vector.subarray(byteOffset, byteOffset + byteLength),
                 0 as Microseconds
             );
         }
         if (!output) {
-            throw new Error(`DTS fixture has no qualification output: ${fileName}`);
+            throw new Error(`DTS vector has no qualification output: ${fileName}`);
         }
         return output;
     } finally {
@@ -114,7 +114,7 @@ async function decodeQualificationOutput(
 async function main(): Promise<void> {
     const check = process.argv.includes('--check');
     const report: Record<string, object> = {};
-    for (const [ fileName, definition ] of Object.entries(FIXTURE_DEFINITIONS)) {
+    for (const [ fileName, definition ] of Object.entries(VECTOR_DEFINITIONS)) {
         if (definition.expectedChannelMask !== DTS_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE
             || (definition.expectedSampleRate !== 48_000
                 && definition.expectedSampleRate !== 96_000)) {

@@ -1,10 +1,10 @@
-[submodule "codecs/external/ffmpeg"]
-	path = codecs/external/ffmpeg
+[submodule "vendor/ffmpeg"]
+	path = vendor/ffmpeg
 	url = https://github.com/FFmpeg/FFmpeg.git
 	shallow = true
 	update = none
-[submodule "codecs/external/dcadec"]
-	path = codecs/external/dcadec
+[submodule "vendor/dcadec"]
+	path = vendor/dcadec
 	url = https://github.com/foo86/dcadec.git
 	shallow = true
 	update = none

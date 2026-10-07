@@ -1,10 +1,14 @@
 # Agent Guide
 
-Start with [.agents/README.md](.agents/README.md). It maps the engine and its
-Jellyfin Web host: architecture, negotiation, codec support, modules,
-integration, and settled decisions.
+The documentation is the mdBook in `docs/`. Start with
+[docs/src/SUMMARY.md](docs/src/SUMMARY.md) and the
+[Introduction](docs/src/introduction.md): they map the engine and its Jellyfin
+host, covering architecture, negotiation, codec support, modules, the build,
+and settled decisions.
 
 - Run `npm run typecheck`, `npm test`, and `npm run lint` before committing.
-  When the engine is checked out inside the host, the host checks in
-  [.agents/INTEGRATION.md](.agents/INTEGRATION.md) apply too.
-- Update `.agents/` when a route, module boundary, or decision changes.
+  When the engine is checked out inside its host, the host checks in
+  [The Jellyfin host](docs/src/jellyfin-host.md#build-and-check) apply too.
+- Update the book in the same change when a route, a module boundary, a build
+  step, or a decision changes; see
+  [Maintaining this book](docs/src/maintaining.md).

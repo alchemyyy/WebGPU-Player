@@ -2,7 +2,7 @@ import {
     createHDRToSDRRenderSettings,
     RENDER_SETTINGS_VERSION,
     type HDRToSDRRenderSettings
-} from '../RenderSettings';
+} from '../presentation/RenderSettings';
 import { createPQColorMetadata } from '../color/ColorMetadata';
 import {
     processEncodedRGB,
@@ -13,16 +13,16 @@ import {
     createExternalDolbyVisionInputProbeWGSL
 } from '../color/ColorPipelineShader';
 import { reconstructDolbyVisionBT2020PQ } from '../color/DolbyVisionColorTransform';
-import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../custom/DolbyVisionRPUParser';
+import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../video/dolby-vision/DolbyVisionRPUParser';
 import type {
     RawVideoPlaneDescriptor,
     TransferableRawVideoFrame
-} from '../custom/RawVideoFrameCopy';
+} from '../video/RawVideoFrameCopy';
 import {
     createRawYUVRenderSettingsUniformBuffer,
     writeRawYUVRenderSettingsUniform
-} from '../RawYUVGPURenderer';
-import { createDolbyVisionAuthorizationRPUFixture } from './DolbyVisionAuthorizationFixture';
+} from '../presentation/RawYUVGPURenderer';
+import { createDolbyVisionAuthorizationRPUVector } from '../capability/vectors/DolbyVisionAuthorizationVector';
 import GPUAuthorizationDeadline from './GPUAuthorizationDeadline';
 import {
     GPUCanvasPixelReader,
@@ -31,13 +31,13 @@ import {
 } from './GPUCanvasReadback';
 import {
     calculateRawHDRAuthorizationOutputDither,
-    createRawHDRAuthorizationFixture,
-    evaluateRawHDRFixtureObservations,
-    RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES,
-    type RawHDRFixtureObservation
+    createRawHDRAuthorizationVector,
+    evaluateRawHDRVectorObservations,
+    RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES,
+    type RawHDRVectorObservation
 } from './RawHDRPresentationAuthorization';
 
-export const EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION = 2;
+export const EXTERNAL_DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION = 2;
 export const EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY =
     'external-I420P10-bt709-limited:dovi-p5-rpu-v1';
 
@@ -86,7 +86,7 @@ export type ExternalDolbyVisionAuthorizationFailureReason =
 export type ExternalDolbyVisionAuthorizationDecision = {
     device: GPUDevice
     failureReason: ExternalDolbyVisionAuthorizationFailureReason | null
-    fixtureVersion: typeof EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION
+    vectorVersion: typeof EXTERNAL_DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION
     maximumChannelError: number | null
     maximumInputChannelError: number | null
     renderSettingsVersion: typeof RENDER_SETTINGS_VERSION
@@ -99,7 +99,7 @@ export type ExternalDolbyVisionAuthorizationDecision = {
 
 export type ExternalDolbyVisionAuthorizationTelemetry = {
     failureReason: ExternalDolbyVisionAuthorizationFailureReason | null
-    fixtureVersion: typeof EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION
+    vectorVersion: typeof EXTERNAL_DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION
     maximumChannelError: number | null
     maximumInputChannelError: number | null
     renderSettingsVersion: typeof RENDER_SETTINGS_VERSION
@@ -131,7 +131,7 @@ function getPlane(
 ): RawVideoPlaneDescriptor {
     const plane = frame.planes.find(candidate => candidate.kind === kind);
     if (!plane) {
-        throw new Error(`External authorization fixture has no ${kind} plane`);
+        throw new Error(`External authorization vector has no ${kind} plane`);
     }
     return plane;
 }
@@ -150,7 +150,7 @@ function readPlaneCode(
     );
 }
 
-function sampleExternalI420P10Fixture(
+function sampleExternalI420P10Vector(
     frame: TransferableRawVideoFrame,
     sampleX: number,
     sampleY: number
@@ -164,14 +164,14 @@ function sampleExternalI420P10Fixture(
     ];
 }
 
-/** Returns the ideal normalized base signal at each bounded fixture coordinate. */
+/** Returns the ideal normalized base signal at each bounded vector coordinate. */
 export function createExpectedExternalDolbyVisionInputObservations():
-readonly RawHDRFixtureObservation[] {
-    const frame = createRawHDRAuthorizationFixture(
+readonly RawHDRVectorObservation[] {
+    const frame = createRawHDRAuthorizationVector(
         'I420P10:bt2020-ncl:bt2020:limited:pq'
     );
-    return RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.map(sample => {
-        const rawSignal = sampleExternalI420P10Fixture(
+    return RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.map(sample => {
+        const rawSignal = sampleExternalI420P10Vector(
             frame,
             sample.sampleX,
             sample.sampleY
@@ -194,12 +194,12 @@ export function createExpectedExternalDolbyVisionAuthorizationObservationsFromIn
     recoveredInput: readonly ColorTriplet[],
     packedRPUData: ArrayBuffer,
     settings: HDRToSDRRenderSettings
-): readonly RawHDRFixtureObservation[] {
-    if (recoveredInput.length !== RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length) {
+): readonly RawHDRVectorObservation[] {
+    if (recoveredInput.length !== RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.length) {
         throw new RangeError('Recovered external Dolby Vision input sample count is invalid');
     }
     const outputMetadata = createPQColorMetadata({ range: 'full' });
-    return RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.map((sample, sampleIndex) => {
+    return RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.map((sample, sampleIndex) => {
         const encodedBT2020PQ = reconstructDolbyVisionBT2020PQ(
             recoveredInput[sampleIndex],
             packedRPUData
@@ -229,9 +229,9 @@ export function createExpectedExternalDolbyVisionAuthorizationObservationsFromIn
 export function createExpectedExternalDolbyVisionAuthorizationObservations(
     packedRPUData: ArrayBuffer,
     settings: HDRToSDRRenderSettings
-): readonly RawHDRFixtureObservation[] {
+): readonly RawHDRVectorObservation[] {
     const idealInput = createExpectedExternalDolbyVisionInputObservations().map(
-        (observation: RawHDRFixtureObservation): ColorTriplet => observation.linearRGB
+        (observation: RawHDRVectorObservation): ColorTriplet => observation.linearRGB
     );
     return createExpectedExternalDolbyVisionAuthorizationObservationsFromInput(
         idealInput,
@@ -247,7 +247,7 @@ export function createExternalDolbyVisionShaderSignature(
     inputProbeShaderCode = createExternalDolbyVisionInputProbeWGSL()
 ): string {
     const signatureInput = [
-        `fixture=${EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION}`,
+        `vector=${EXTERNAL_DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION}`,
         `uniform=${RENDER_SETTINGS_VERSION}`,
         `schema=${DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH}`,
         'frame=I420P10:bt709:bt709:bt709:limited',
@@ -271,7 +271,7 @@ export function createExternalDolbyVisionAuthorizationFrame(): VideoFrame {
     if (typeof VideoFrame === 'undefined') {
         throw new Error('video-frame-api-unavailable');
     }
-    const sourceFrame = createRawHDRAuthorizationFixture(
+    const sourceFrame = createRawHDRAuthorizationVector(
         'I420P10:bt2020-ncl:bt2020:limited:pq'
     );
     const frameInit: ExtendedVideoFrameBufferInit = {
@@ -336,7 +336,7 @@ function createRejectedDecision(
     return {
         device,
         failureReason,
-        fixtureVersion: EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION,
+        vectorVersion: EXTERNAL_DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION,
         maximumChannelError,
         maximumInputChannelError,
         renderSettingsVersion: RENDER_SETTINGS_VERSION,
@@ -475,7 +475,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
             );
             renderSettingsUniformBuffer = createRawYUVRenderSettingsUniformBuffer(device);
             writeRawYUVRenderSettingsUniform(device, renderSettingsUniformBuffer, settings);
-            const packedRPUData = createDolbyVisionAuthorizationRPUFixture(5);
+            const packedRPUData = createDolbyVisionAuthorizationRPUVector(5);
             RPUStorageBuffer = device.createBuffer({
                 label: 'WebGPU external Dolby Vision authorization RPU',
                 size: packedRPUData.byteLength,
@@ -610,11 +610,11 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
             inputPixelReader = new GPUCanvasPixelReader({
                 device,
                 format: EXTERNAL_INPUT_PROBE_TARGET_FORMAT,
-                maximumReadbacks: RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length
+                maximumReadbacks: RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.length
             });
             const inputReadback: GPUCanvasPixelsReadbackResult = await deadline.wait(
                 inputPixelReader.readPixels(
-                    RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES,
+                    RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES,
                     inputProbeTexture
                 ),
                 (): void => inputPixelReader?.destroy()
@@ -627,11 +627,11 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
                     'readback-failed'
                 );
             }
-            const recoveredInputObservations: RawHDRFixtureObservation[] = [];
+            const recoveredInputObservations: RawHDRVectorObservation[] = [];
             for (let sampleIndex = 0;
-                sampleIndex < RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length;
+                sampleIndex < RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.length;
                 sampleIndex += 1) {
-                const sample = RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES[sampleIndex];
+                const sample = RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES[sampleIndex];
                 recoveredInputObservations.push({
                     linearRGB: inputReadback.linearRGB[sampleIndex],
                     sampleX: sample.sampleX,
@@ -640,7 +640,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
             }
             const expectedInputObservations =
                 createExpectedExternalDolbyVisionInputObservations();
-            const inputComparison = evaluateRawHDRFixtureObservations(
+            const inputComparison = evaluateRawHDRVectorObservations(
                 expectedInputObservations,
                 recoveredInputObservations,
                 EXTERNAL_INPUT_SIGNAL_TOLERANCE
@@ -660,10 +660,10 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
             pixelReader = new GPUCanvasPixelReader({
                 device,
                 format: targetFormat,
-                maximumReadbacks: RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length
+                maximumReadbacks: RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.length
             });
             const readback = await deadline.wait(
-                pixelReader.readPixels(RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES, targetTexture),
+                pixelReader.readPixels(RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES, targetTexture),
                 (): void => pixelReader?.destroy()
             );
             if (readback.failure || !readback.linearRGB) {
@@ -674,11 +674,11 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
                     'readback-failed'
                 );
             }
-            const actualObservations: RawHDRFixtureObservation[] = [];
+            const actualObservations: RawHDRVectorObservation[] = [];
             for (let sampleIndex = 0;
-                sampleIndex < RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length;
+                sampleIndex < RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.length;
                 sampleIndex += 1) {
-                const sample = RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES[sampleIndex];
+                const sample = RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES[sampleIndex];
                 actualObservations.push({
                     linearRGB: readback.linearRGB[sampleIndex],
                     sampleX: sample.sampleX,
@@ -691,7 +691,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
                     packedRPUData,
                     settings
                 );
-            const comparison = evaluateRawHDRFixtureObservations(
+            const comparison = evaluateRawHDRVectorObservations(
                 expectedObservations,
                 actualObservations,
                 EXTERNAL_AUTHORIZATION_TOLERANCE
@@ -710,7 +710,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
             return {
                 device,
                 failureReason: null,
-                fixtureVersion: EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION,
+                vectorVersion: EXTERNAL_DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION,
                 maximumChannelError: comparison.maximumChannelError,
                 maximumInputChannelError: inputComparison.maximumChannelError,
                 renderSettingsVersion: RENDER_SETTINGS_VERSION,
@@ -829,7 +829,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRegistry {
     ): ExternalDolbyVisionAuthorizationTelemetry {
         const unavailable: ExternalDolbyVisionAuthorizationTelemetry = {
             failureReason: null,
-            fixtureVersion: EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION,
+            vectorVersion: EXTERNAL_DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION,
             maximumChannelError: null,
             maximumInputChannelError: null,
             renderSettingsVersion: RENDER_SETTINGS_VERSION,
@@ -850,7 +850,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRegistry {
         }
         return {
             failureReason: probe.decision.failureReason,
-            fixtureVersion: probe.decision.fixtureVersion,
+            vectorVersion: probe.decision.vectorVersion,
             maximumChannelError: probe.decision.maximumChannelError,
             maximumInputChannelError: probe.decision.maximumInputChannelError,
             renderSettingsVersion: probe.decision.renderSettingsVersion,

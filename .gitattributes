@@ -1,4 +1,4 @@
 * text=auto eol=lf
 
-# Generated decoder builds are single-line modules; diffs are noise
-codecs/dist/** -diff linguist-generated
+# The codec vector assets must match their generators byte for byte, so git never converts their line endings
+/bin/codec_vector_assets/** -text

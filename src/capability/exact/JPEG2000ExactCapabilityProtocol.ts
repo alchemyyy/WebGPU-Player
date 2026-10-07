@@ -1,0 +1,88 @@
+export const JPEG2000_QUALIFICATION_CODED_HEIGHT = 540;
+export const JPEG2000_QUALIFICATION_CODED_WIDTH = 960;
+export const JPEG2000_QUALIFICATION_RGBA_BYTE_LENGTH = 2_073_600;
+export const JPEG2000_QUALIFICATION_RGBA_FINGERPRINT = 1_076_220_778;
+export const JPEG2000_EXACT_CAPABILITY_REQUEST_ID = 'jpeg2000-srgb-960x540-v1';
+
+export type JPEG2000ExactCapabilityWorkerRequest = {
+    decoderGlueURL: string
+    decoderWASMURL: string
+    vector: ArrayBuffer
+    requestID: typeof JPEG2000_EXACT_CAPABILITY_REQUEST_ID
+    type: 'probe'
+};
+
+export type JPEG2000ExactCapabilityWorkerResponse = {
+    codedHeight: number | null
+    codedWidth: number | null
+    decodedRGBAByteLength: number | null
+    decodedRGBAFingerprint: number | null
+    reason: 'decode-error' | 'decode-output-verified' | 'output-mismatch'
+    requestID: typeof JPEG2000_EXACT_CAPABILITY_REQUEST_ID
+    supported: boolean
+    type: 'result'
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === 'object';
+}
+
+function isSafeNullableInteger(value: unknown): value is number | null {
+    return value === null || (Number.isSafeInteger(value) && Number(value) >= 0);
+}
+
+function isWorkerReason(
+    value: unknown
+): value is JPEG2000ExactCapabilityWorkerResponse['reason'] {
+    switch (value) {
+        case 'decode-error':
+        case 'decode-output-verified':
+        case 'output-mismatch':
+            return true;
+        default:
+            return false;
+    }
+}
+
+function isCodecAssetURL(value: unknown): value is string {
+    if (typeof value !== 'string' || value.length === 0 || value.length > 2_048) {
+        return false;
+    }
+    try {
+        const parsedURL = new URL(value);
+        return (parsedURL.protocol === 'http:' || parsedURL.protocol === 'https:')
+            && parsedURL.username.length === 0
+            && parsedURL.password.length === 0;
+    } catch {
+        return false;
+    }
+}
+
+/** Rejects malformed probe requests before loading executable codec assets. */
+export function isJPEG2000ExactCapabilityWorkerRequest(
+    value: unknown
+): value is JPEG2000ExactCapabilityWorkerRequest {
+    return isRecord(value)
+        && value.type === 'probe'
+        && value.requestID === JPEG2000_EXACT_CAPABILITY_REQUEST_ID
+        && value.vector instanceof ArrayBuffer
+        && value.vector.byteLength > 0
+        && value.vector.byteLength <= 64 * 1024 * 1024
+        && isCodecAssetURL(value.decoderGlueURL)
+        && isCodecAssetURL(value.decoderWASMURL);
+}
+
+/** Validates every exact-output field returned by the probe worker. */
+export function isJPEG2000ExactCapabilityWorkerResponse(
+    value: unknown
+): value is JPEG2000ExactCapabilityWorkerResponse {
+    return isRecord(value)
+        && value.type === 'result'
+        && value.requestID === JPEG2000_EXACT_CAPABILITY_REQUEST_ID
+        && typeof value.supported === 'boolean'
+        && isWorkerReason(value.reason)
+        && isSafeNullableInteger(value.codedHeight)
+        && isSafeNullableInteger(value.codedWidth)
+        && isSafeNullableInteger(value.decodedRGBAByteLength)
+        && isSafeNullableInteger(value.decodedRGBAFingerprint);
+}

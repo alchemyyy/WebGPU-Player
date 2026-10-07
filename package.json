@@ -7,6 +7,13 @@
   "engines": {
     "node": ">=24"
   },
+  "imports": {
+    "#wasm/*": {
+      "types": "./wasm/*",
+      "default": "./bin/wasm/*"
+    },
+    "#codec_vector_assets/*": "./bin/codec_vector_assets/*.ts"
+  },
   "scripts": {
     "build": "node scripts/build.mjs",
     "lint": "eslint",

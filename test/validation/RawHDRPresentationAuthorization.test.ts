@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     createDefaultRenderSettings,
     createHDRToSDRRenderSettings
-} from 'webgpu-player/RenderSettings';
+} from 'webgpu-player/presentation/RenderSettings';
 import {
     createHLGColorMetadata,
     createPQColorMetadata,
@@ -12,19 +12,19 @@ import {
 } from 'webgpu-player/color/ColorMetadata';
 import type { ColorTriplet } from 'webgpu-player/color/ColorPipeline';
 import { createRawYUVColorPipelineWGSL } from 'webgpu-player/color/ColorPipelineShader';
-import type { TransferableRawVideoFrame } from 'webgpu-player/custom/RawVideoFrameCopy';
+import type { TransferableRawVideoFrame } from 'webgpu-player/video/RawVideoFrameCopy';
 import {
-    createExpectedRawHDRFixtureObservations,
-    createRawHDRAuthorizationFixture,
+    createExpectedRawHDRVectorObservations,
+    createRawHDRAuthorizationVector,
     createRawHDRShaderSignature,
-    evaluateRawHDRFixtureObservations,
+    evaluateRawHDRVectorObservations,
     getRawHDRAuthorizationRouteKey,
     RAW_HDR_AUTHORIZATION_ROUTE_KEYS,
-    RAW_HDR_AUTHORIZATION_FIXTURE_VERSION,
+    RAW_HDR_AUTHORIZATION_VECTOR_VERSION,
     RawHDRPresentationAuthorizationRegistry,
     RawHDRPresentationAuthorizationRunner,
     type RawHDRAuthorizationRouteKey,
-    type RawHDRFixtureObservation,
+    type RawHDRVectorObservation,
     type RawHDRRouteAuthorizationDecision
 } from 'webgpu-player/validation/RawHDRPresentationAuthorization';
 
@@ -83,14 +83,14 @@ function getRouteMetadata(routeKey: RawHDRAuthorizationRouteKey): InputColorMeta
 function createRouteObservations(
     routeKey: RawHDRAuthorizationRouteKey,
     metadata = getRouteMetadata(routeKey),
-    frame = createRawHDRAuthorizationFixture(routeKey)
-): readonly RawHDRFixtureObservation[] {
+    frame = createRawHDRAuthorizationVector(routeKey)
+): readonly RawHDRVectorObservation[] {
     const settings = metadata.transfer === 'sdr' ?
         createDefaultRenderSettings() :
         createHDRToSDRRenderSettings({
             toneMapping: { inputPeakNits: metadata.nominalPeakNits }
         });
-    return createExpectedRawHDRFixtureObservations(
+    return createExpectedRawHDRVectorObservations(
         frame,
         metadata,
         settings
@@ -98,7 +98,7 @@ function createRouteObservations(
 }
 
 function createDeviceHarness(
-    observations: readonly RawHDRFixtureObservation[],
+    observations: readonly RawHDRVectorObservation[],
     pipelinePromise?: Promise<GPURenderPipeline>,
     mapAsyncFactory?: () => Promise<void>
 ): DeviceHarness {
@@ -200,7 +200,7 @@ function createDeviceHarness(
     };
 }
 
-function swapFixtureChroma(frame: TransferableRawVideoFrame): TransferableRawVideoFrame {
+function swapVectorChroma(frame: TransferableRawVideoFrame): TransferableRawVideoFrame {
     const swappedData = frame.data.slice(0);
     const chromaUPlane = frame.planes[1];
     const chromaVPlane = frame.planes[2];
@@ -224,8 +224,8 @@ function swapFixtureChroma(frame: TransferableRawVideoFrame): TransferableRawVid
 }
 
 function mutateFirstPixel(
-    observations: readonly RawHDRFixtureObservation[]
-): readonly RawHDRFixtureObservation[] {
+    observations: readonly RawHDRVectorObservation[]
+): readonly RawHDRVectorObservation[] {
     return observations.map((observation, observationIndex) => observationIndex === 0 ? {
         ...observation,
         linearRGB: [
@@ -252,7 +252,7 @@ function createAuthorizedDecision(
         authorizedRouteKeys: [ routeKey ],
         device,
         failureReason: null,
-        fixtureVersion: RAW_HDR_AUTHORIZATION_FIXTURE_VERSION,
+        vectorVersion: RAW_HDR_AUTHORIZATION_VECTOR_VERSION,
         maximumChannelError: 0,
         renderSettingsVersion: settings.version,
         routeKey,
@@ -393,38 +393,38 @@ describe('RawHDRPresentationAuthorization', () => {
     it.each([
         {
             label: 'U/V swap',
-            observations: (): readonly RawHDRFixtureObservation[] => createRouteObservations(
+            observations: (): readonly RawHDRVectorObservation[] => createRouteObservations(
                 'I420P10:bt2020-ncl:bt2020:limited:pq',
                 createPQColorMetadata(),
-                swapFixtureChroma(createRawHDRAuthorizationFixture(
+                swapVectorChroma(createRawHDRAuthorizationVector(
                     'I420P10:bt2020-ncl:bt2020:limited:pq'
                 ))
             )
         },
         {
             label: 'full range',
-            observations: (): readonly RawHDRFixtureObservation[] => createRouteObservations(
+            observations: (): readonly RawHDRVectorObservation[] => createRouteObservations(
                 'I420P10:bt2020-ncl:bt2020:limited:pq',
                 createPQColorMetadata({ range: 'full' })
             )
         },
         {
             label: 'BT.709 matrix',
-            observations: (): readonly RawHDRFixtureObservation[] => createRouteObservations(
+            observations: (): readonly RawHDRVectorObservation[] => createRouteObservations(
                 'I420P10:bt2020-ncl:bt2020:limited:pq',
                 createPQColorMetadata({ matrix: 'bt709' })
             )
         },
         {
             label: 'HLG transfer',
-            observations: (): readonly RawHDRFixtureObservation[] => createRouteObservations(
+            observations: (): readonly RawHDRVectorObservation[] => createRouteObservations(
                 'I420P10:bt2020-ncl:bt2020:limited:pq',
                 createHLGColorMetadata()
             )
         },
         {
             label: 'expected pixel',
-            observations: (): readonly RawHDRFixtureObservation[] => mutateFirstPixel(
+            observations: (): readonly RawHDRVectorObservation[] => mutateFirstPixel(
                 createRouteObservations('I420P10:bt2020-ncl:bt2020:limited:pq')
             )
         }
@@ -564,10 +564,10 @@ describe('RawHDRPresentationAuthorization', () => {
         const expected = createRouteObservations(
             'I420P10:bt2020-ncl:bt2020:limited:pq'
         );
-        expect(evaluateRawHDRFixtureObservations(expected, expected)).toMatchObject({
+        expect(evaluateRawHDRVectorObservations(expected, expected)).toMatchObject({
             accepted: true
         });
-        expect(evaluateRawHDRFixtureObservations(
+        expect(evaluateRawHDRVectorObservations(
             expected,
             mutateFirstPixel(expected)
         )).toMatchObject({ accepted: false });

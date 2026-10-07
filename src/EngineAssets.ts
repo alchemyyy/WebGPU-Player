@@ -1,5 +1,5 @@
 // Every file the engine fetches at runtime, named by its path under the engine asset base.
-// Hosts serve the engine's dist/libraries directory at that base, which defaults to libraries/ beside the page.
+// Hosts serve the engine's bin/libraries directory at that base, which defaults to libraries/ beside the page.
 
 /** Prebuilt engine workers. They live one directory below the asset base. */
 export const ENGINE_WORKER_PATHS = Object.freeze([
@@ -7,19 +7,19 @@ export const ENGINE_WORKER_PATHS = Object.freeze([
     'webgpu-player/DTSExactCapabilityProbe.worker.js',
     'webgpu-player/HEVCExactCapabilityProbe.worker.js',
     'webgpu-player/JPEG2000ExactCapabilityProbe.worker.js',
-    'webgpu-player/LegacyVideoExactCapabilityProbe.worker.js',
+    'webgpu-player/MPEG2VC1ExactCapabilityProbe.worker.js',
     'webgpu-player/TrueHDExactCapabilityProbe.worker.js'
 ] as const);
 
 /** Decoders and qualification streams, relative to the asset base. */
 export const ENGINE_LIBRARY_PATHS = Object.freeze([
+    'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.js',
+    'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.wasm',
+    'ffmpeg-mpeg2-vc1/mpeg2-progressive-1920x1080-qualification.bin',
+    'ffmpeg-mpeg2-vc1/vc1-advanced-progressive-1920x1080-qualification.bin',
     'hevcjs/hevc-decode.js',
     'hevcjs/hevc-decode.wasm',
     'hevcjs/main10-4k-qualification.bin',
-    'legacy-video/legacy-video-decode.js',
-    'legacy-video/legacy-video-decode.wasm',
-    'legacy-video/mpeg2-progressive-1920x1080-qualification.bin',
-    'legacy-video/vc1-advanced-progressive-1920x1080-qualification.bin',
     'libdovi/dovi-rpu-parser.wasm',
     'openjpeg/jpeg2000-960x540-qualification.bin',
     'openjpeg/openjpeg-decode.js',
@@ -40,7 +40,7 @@ export type EngineLibraryPath = typeof ENGINE_LIBRARY_PATHS[number];
 export type EngineAssetPath = EngineWorkerPath | EngineLibraryPath;
 
 export type EngineAssetConfiguration = Readonly<{
-    // Absolute or page-relative URL of the served dist/libraries directory
+    // Absolute or page-relative URL of the served bin/libraries directory
     baseURL?: string
     // Appended as a query parameter so a new build never reuses stale cached workers or decoders
     cacheKey?: string

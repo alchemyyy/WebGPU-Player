@@ -1,11 +1,12 @@
 node_modules/
-/dist/
 coverage/
 __pycache__/
 
-# Codec build trees and the Rust target directory
-codecs/build/
-codecs/libdovi/target/
+# Build outputs, including the decoder builds in bin/wasm/ and the local playback media in bin/playback_smoke_media/
+/bin/*
+# The generated codec vector assets are committed, so every change to them shows in review
+!/bin/codec_vector_assets/
 
-# Generated local playback media
-tools/playback-smoke-media/
+# Codec build trees and the Rust target directory
+wasm/build/
+wasm/libdovi/target/

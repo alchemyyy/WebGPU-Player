@@ -15,6 +15,8 @@ import stylistic from '@stylistic/eslint-plugin';
 // eslint-disable-next-line import/no-unresolved
 import tseslint from 'typescript-eslint';
 
+import { LAYOUT } from './tools/constants.mjs';
+
 export default tseslint.config(
     eslint.configs.recommended,
     tseslint.configs.recommended,
@@ -24,17 +26,18 @@ export default tseslint.config(
     importPlugin.flatConfigs.errors,
     sonarjs.configs.recommended,
 
-    // Global ignores
+    // Global ignores; the engine's folders come from tools/constants.json
     {
         ignores: [
             'node_modules',
             'coverage',
-            'dist',
-            'codecs/build',
-            'codecs/dist',
-            'codecs/external',
-            'codecs/libdovi/target',
-            'tools/playback-smoke-media'
+            LAYOUT.outputDirectory,
+            // The WebAssembly build has no JavaScript of its own, only generated glue in its build trees
+            LAYOUT.wasmDirectory,
+            LAYOUT.playbackSmokeMediaDirectory,
+            LAYOUT.vendorDirectory,
+            // The built book carries mdBook's own scripts
+            LAYOUT.documentationOutputDirectory
         ]
     },
 
@@ -48,8 +51,9 @@ export default tseslint.config(
             'array-callback-return': ['error', { 'checkForEach': true }],
             'curly': ['error', 'multi-line', 'consistent'],
             'default-case-last': 'error',
-            // Tests import engine modules through the tsconfig path alias, which tsc checks
-            'import/no-unresolved': ['error', { 'ignore': ['^webgpu-player/'] }],
+            // Specifiers the node resolver cannot read, which tsc checks: the tsconfig path alias that tests import
+            // engine modules through, and package.json imports such as #wasm/
+            'import/no-unresolved': ['error', { 'ignore': ['^webgpu-player/', '^#'] }],
             'max-params': ['error', 7],
             'new-cap': [
                 'error',
@@ -135,7 +139,7 @@ export default tseslint.config(
     // Build scripts and tools run on Node, so browser compatibility does not apply
     // NOTE: Directory patterns need /** here, because ignores beside other keys match file paths
     {
-        ignores: [ 'src/**', 'test/**' ],
+        ignores: [ `${LAYOUT.sourceDirectory}/**`, `${LAYOUT.testDirectory}/**` ],
         languageOptions: {
             globals: {
                 ...globals.node
@@ -149,8 +153,8 @@ export default tseslint.config(
     // Engine sources and tests
     {
         files: [
-            'src/**/*.ts',
-            'test/**/*.ts'
+            `${LAYOUT.sourceDirectory}/**/*.ts`,
+            `${LAYOUT.testDirectory}/**/*.ts`
         ],
         languageOptions: {
             parserOptions: {

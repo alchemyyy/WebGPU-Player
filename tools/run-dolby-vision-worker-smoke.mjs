@@ -15,7 +15,7 @@ const USAGE = `Usage:
 Options:
   --debug-url <url>      Chromium remote-debugging HTTP endpoint
   --frontend-url <url>   Frontend URL that serves the engine assets under libraries/
-  --media-url <url>      Same-origin Profile 7 FEL fixture URL
+  --media-url <url>      Same-origin Profile 7 FEL vector URL
   --worker-url <url>     Worker URL, absolute or relative to the frontend URL;
                          defaults to ${DEFAULT_WORKER_PATH}
   --expected-base-width <number>
@@ -192,7 +192,7 @@ function parseConfiguration(argumentsList) {
     if (frontendURL.origin !== mediaURL.origin) {
         throw new ValidationError(
             'configuration-invalid',
-            'The fixture must share the frontend origin'
+            'The vector must share the frontend origin'
         );
     }
     const workerURL = new URL(configuration.workerURL ?? DEFAULT_WORKER_PATH, frontendURL);

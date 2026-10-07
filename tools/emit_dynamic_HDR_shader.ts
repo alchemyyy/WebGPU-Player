@@ -1,6 +1,6 @@
 import { createPQColorMetadata } from '../src/color/ColorMetadata';
 import { createRawYUVColorPipelineWGSL } from '../src/color/ColorPipelineShader';
-import { createHDRToSDRRenderSettings } from '../src/RenderSettings';
+import { createHDRToSDRRenderSettings } from '../src/presentation/RenderSettings';
 
 const shaderCode = createRawYUVColorPipelineWGSL(
     createPQColorMetadata(),

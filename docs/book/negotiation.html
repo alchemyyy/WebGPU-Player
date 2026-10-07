@@ -1,0 +1,536 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Negotiation and routes - WebGPU Player</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-e96d0476.css">
+        <link rel="stylesheet" href="css/chrome-d279d366.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex-ca695dd2.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-130df29e.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">WebGPU Player</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/alchemyyy/WebGPU-Player" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="negotiation-and-routes"><a class="header" href="#negotiation-and-routes">Negotiation and routes</a></h1>
+<p>How a playback goes from player selection to a Jellyfin decision and then to a
+concrete decode and presentation route. Player selection, the device profile,
+and the PlaybackInfo requests are host code. Eligibility, the probes, and the
+route catalog are engine code. The stock profile is the one the add-on’s HTML
+backend returns from <code>getDeviceProfile</code>.</p>
+<h2 id="flow"><a class="header" href="#flow">Flow</a></h2>
+<ol>
+<li>Select a player (host). PlaybackManager offers the item to players in
+priority order, and <code>WebGPUPlayer</code> (priority 0) comes first.
+<code>HostCompatibleWebGPUPlayer.canPlayItem</code> declines when the user prefers the
+HTML player or inside a native app shell. With custom decode enabled,
+<code>WebGPUPlayer.canPlayItem</code> also requires the engine’s metadata-only
+prefilter, <code>CustomPlaybackEligibility.hasPotentialCustomPlaybackVideoRoute</code>.
+When it declines, PlaybackManager picks the plain HTML player, which
+negotiates with the stock profile.</li>
+<li>Build the device profile (host), in <code>WebGPUPlayer.getDeviceProfile(item, options)</code>:
+<ul>
+<li>A retry (<code>options.isRetry === true</code>) returns the stock profile unchanged.</li>
+<li>Otherwise it adopts the stored playback preferences, keeps the stock
+profile as a per-item proof (<code>rememberNativeDeviceProfile</code>), and strips
+every bitrate field and condition (<code>createBitrateIndependentDeviceProfile</code>).</li>
+<li>It stops there when custom decode is off or the engine’s
+<code>CustomPlaybackRuntime.getCustomPlaybackRuntimeAvailability</code> fails (secure
+context, Worker, <code>navigator.gpu</code>, <code>VideoFrame</code>).</li>
+<li>It awaits the engine’s <code>probeCustomDecodeCapabilities</code> and the native-media
+audio probe. The first call on a page blocks PlaybackInfo until the probes
+settle.</li>
+<li><code>getHDRDeviceProfileOptions</code> waits for the GPU authorizations the item’s
+HDR scope needs (5 s each; see <a href="#probe-scopes">Probe scopes</a>) and returns
+the flags and route keys.</li>
+<li><code>CustomDeviceProfile.augmentDeviceProfileForCustomDecode</code> builds the
+profile, and <code>HostCompatibleWebGPUPlayer</code> marks it so the PlaybackInfo
+interceptor recognizes the request.</li>
+</ul>
+</li>
+<li>Request PlaybackInfo (host). The add-on’s axios interceptor
+(<code>compat/PlaybackInfoInterceptor.ts</code>) applies the player’s request rules
+(<code>compat/PlaybackInfoPolicy.ts</code>) to the body that stock PlaybackManager
+built:
+<ul>
+<li>The selection request carries no <code>MaxStreamingBitrate</code>.</li>
+<li><code>AllowVideoStreamCopy</code> becomes false when <code>WebGPUPlayer.supportsVideoStreamCopy</code>
+vetoes the source, which it does for any Dolby Vision descriptor.</li>
+<li>When the selected source will transcode, a second request sizes the
+transcode with the detected bitrate.</li>
+</ul>
+</li>
+<li>Start the session (host). <code>WebGPUPlayer.play</code> consumes the stock-profile
+proof. It sets <code>currentPlaybackRequiresSourceRenegotiation</code> when the profile
+was augmented, the method is DirectPlay or DirectStream, and
+<code>NativeDirectPlayCompatibility.isSameSessionNativePlaybackCompatible</code> fails
+for the stock profile.</li>
+<li>Check eligibility (engine). The host’s <code>startCustomPlaybackBounded</code> (25 s)
+calls <code>getCustomPlaybackEligibility</code>, which checks in order:
+<ol>
+<li><code>parsePlaybackSource</code>: DirectPlay, not live, a custom container, a
+duration, and an http(s) URL.</li>
+<li><code>selectVideoStream</code>.</li>
+<li>Rotation 0 and <code>IsInterlaced === false</code>.</li>
+<li><code>selectVideoOutput</code> (below).</li>
+<li><code>selectPlaybackAudio</code>.</li>
+<li><code>supportsCustomContainerCodecCombination</code>.</li>
+<li>The runtime budget.</li>
+</ol>
+</li>
+<li>Fall back (host). An ineligible, timed-out, or failed start falls back.
+Without the renegotiation flag, the add-on’s HTML player plays the same
+source in the same session. With it, the player asks for a renegotiation;
+on stock Jellyfin Web that is the error retry ladder, whose <code>changeStream</code>
+passes <code>isRetry</code>, so the retry negotiates with the stock profile and is
+never widened.</li>
+</ol>
+<h2 id="how-the-profile-is-augmented"><a class="header" href="#how-the-profile-is-augmented">How the profile is augmented</a></h2>
+<p><code>augmentDeviceProfileForCustomDecode</code> (host), in order:</p>
+<ol>
+<li>Strip bitrate.</li>
+<li>Find the supported video and audio codecs.</li>
+<li>Add one DirectPlayProfile per rule in the engine’s
+<code>CUSTOM_CONTAINER_CODEC_RULES</code>.</li>
+<li>Add the custom subtitle profiles (vtt, ass/ssa, pgssub).</li>
+<li>Scope the stock video and container conditions to non-custom containers.</li>
+<li><code>widenAuthorizedHDRCodecProfiles</code>.</li>
+<li><code>appendMeasuredVideoRouteProfiles</code>. Each route profile requires
+VideoRangeType, VideoBitDepth, <code>IsInterlaced=false</code>, and VideoProfile. A
+codec with several routes is split with ApplyConditions.</li>
+<li><code>appendMeasuredAudioRouteProfiles</code>.</li>
+<li><code>splitOriginalAudioRouteProfiles</code>.</li>
+</ol>
+<h2 id="probes-and-caching"><a class="header" href="#probes-and-caching">Probes and caching</a></h2>
+<ul>
+<li>Main thread: WebCodecs configuration and decoded-output probes, raw <code>copyTo</code>
+fingerprints, the per-profile H.264 probe, and the MSE AC-3/E-AC-3 probe.</li>
+<li>Dedicated workers: bundled HEVC (<code>@hevcjs/core</code>), DTS (libdcadec),
+TrueHD/MLP (FFmpeg), JPEG 2000 (OpenJPEG), and MPEG-2/VC-1 (FFmpeg).</li>
+<li>GPU: presentation authorization reads back renders of the production
+shaders. Results are cached per <code>GPUDevice</code>, canvas format, and shader
+signature, and dropped on device loss.</li>
+<li>Each probe is one module-level promise for the page’s lifetime and is never
+invalidated. <code>SerializedHeavyCapabilityProbeScheduler</code> runs the heavy probes
+one at a time; after one times out, later heavy probes report a timeout until
+the page reloads.</li>
+</ul>
+<h2 id="route-catalog"><a class="header" href="#route-catalog">Route catalog</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Backend literal</th><th>Output</th><th>Qualifying evidence</th><th>Gate</th></tr>
+</thead>
+<tbody>
+<tr><td><code>native</code> SDR</td><td><code>video-frame</code></td><td>H.264 per-profile keyframes; HEVC 1080p access unit; VP8, VP9, AV1 64x64; 4K variants</td><td><code>getOrdinarySDRVideoSelection</code></td></tr>
+<tr><td><code>native</code> HEVC Main 10 HDR, Dolby Vision base</td><td><code>video-frame</code>, with <code>nativeHDRTransfer</code> pq or hlg, neutralized</td><td>4K Main 10 access unit decode, plus external HDR or Dolby Vision GPU authorization</td><td><code>supportsNativeMain10HEVC</code>, <code>selectNativeDolbyVisionBaseOutput</code></td></tr>
+<tr><td><code>native</code> raw</td><td><code>raw-planes</code>: I420P10 for HDR and Dolby Vision, I420 to I444P12 for range extensions</td><td><code>copyTo</code> plane fingerprints; nine 192x192 two-access-unit range-extension probes; raw GPU authorization</td><td><code>supportsRawHDRVideo</code>, <code>selectHEVCRangeExtensionVideoOutput</code></td></tr>
+<tr><td><code>bundled-hevc</code></td><td><code>video-frame</code> (Main SDR), <code>raw-planes</code> I420P10</td><td>A worker probe: 8-frame fingerprints for main-1080p, main10-1080p, main10-4k</td><td><code>hasSupportedBundledHEVCProfile</code>; native wins</td></tr>
+<tr><td><code>ffmpeg-mpeg2-vc1</code></td><td><code>video-frame</code> I420</td><td>MPEG-2 Main and VC-1 Advanced, 12 frames, Matroska only</td><td><code>getMPEG2VC1SDRSelection</code></td></tr>
+<tr><td><code>openjpeg</code></td><td><code>video-frame</code> RGBA</td><td>A 960x540 sRGB vector, MOV/MJ2</td><td><code>getJPEG2000SDRVideoSelection</code></td></tr>
+<tr><td>DTS, libdcadec</td><td><code>decoded-pcm</code></td><td>7 vectors, downmix fingerprints, real-time factor of at least 2</td><td><code>isSupportedDTSInputRoute</code></td></tr>
+<tr><td>TrueHD/MLP, FFmpeg</td><td><code>decoded-pcm</code></td><td>4 vectors, major-sync recovery, real-time factor of at least 2</td><td><code>isSupportedTrueHDMetadataRoute</code></td></tr>
+<tr><td>E-AC-3 (FFmpeg), AC-3 (Mediabunny), PCM</td><td><code>decoded-pcm</code></td><td>None at runtime; always marked supported</td><td><code>isSupportedEAC3InputRoute</code></td></tr>
+<tr><td>MSE AC-3/E-AC-3 bridge</td><td><code>native-media</code></td><td><code>isTypeSupported</code>, an fMP4 append, playback advancing; 2 or 6 channels at 48 kHz</td><td><code>getSupportedNativeMediaAudioRoute</code>, checked first</td></tr>
+<tr><td>WebCodecs aac, opus, flac, mp3, vorbis</td><td><code>decoded-pcm</code></td><td>Stereo 48 kHz silence vectors; separate 5.1 vectors</td><td><code>capabilities.audio[codec]</code></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="video-route-selection"><a class="header" href="#video-route-selection">Video route selection</a></h2>
+<p><code>selectVideoOutput</code> tries these in order.</p>
+<ol>
+<li>A Dolby Vision descriptor.
+<code>PresentationInput.getDolbyVisionPresentationSelection</code> accepts any integer
+profile with the base layer flag set, a valid bit depth, and any 4-bit
+compatibility ID (CCID) or none; the EL flag never rejects. The descriptor
+names the RPU route (<code>reconstructionProfile</code>): Profiles 4, 5, 7, and 8 as
+signaled; Profile 20 as 5 with CCID 0 or none and as 8 otherwise; none for
+Profiles 9 and 10, the retired profiles, or a stream without an RPU. RPU
+reconstruction ignores the CCID, which only declares a base layer that can
+be shown on its own. The Dolby Vision routes, in order:
+<ol>
+<li>Native external Profile 5: a 10-bit P5, or a P20 that reconstructs as P5.</li>
+<li>The native compatible base, when the CCID declares one: HDR10 (1) or
+Ultra HD Blu-ray (6) for P7 and P8, and HLG (4) for P8. The RPU and EL
+are ignored. This needs exact BT.2020 limited base metadata with explicit
+transfer, primaries, and matrix. A separate-track P7 base is a
+standalone HDR10 track, so it qualifies whatever CCID the EL track
+reports.</li>
+<li>Raw RPU reconstruction. Single-layer routes (P5, P8, P20) decode
+<code>raw-planes</code> I420P10 for Main 10, or the exact format of any
+range-extension variant, and discard a signaled EL. Dual-layer routes
+(P4, P7) decode I420P10 within the two-layer budget, and run the FEL
+shader only when their FEL key is authorized. Without a paired EL frame,
+MEL is still exact and FEL presents its base layer.</li>
+<li>The declared base layer (<code>getDolbyVisionBaseColorMetadata</code>), through the
+ordinary steps below. CCID 1 or 6 declares PQ, 4 HLG, and 2 SDR, never
+for P5 or a P20 that reconstructs as P5. An explicit ColorTransfer must
+agree with the CCID; VideoRange and VideoRangeType are ignored.</li>
+<li>Otherwise the source is ineligible, with the reason from the
+reconstruction step.</li>
+</ol>
+</li>
+<li>No color metadata: <code>metadata-unsupported</code>.</li>
+<li>An HEVC range extension needs its exact variant capability and raw key. A
+range extension never falls through to the steps below.</li>
+<li>SDR: <code>native</code>, native Main 10 SDR, <code>bundled-hevc</code> Main, <code>ffmpeg-mpeg2-vc1</code>,
+or <code>openjpeg</code>.</li>
+<li>PQ or HLG: native external
+(<code>external-hevc-main10-bt709-limited:&lt;pq|hlg&gt;-v1</code>) first, then raw
+(<code>&lt;I420P10|I420P12&gt;:bt2020-ncl:bt2020:limited:&lt;pq|hlg&gt;</code>).</li>
+</ol>
+<p>Every HDR and Dolby Vision flag also requires the user’s HDR tone mapping
+setting. <code>allowRawSDR</code> needs only a settled <code>:sdr</code> raw key.</p>
+<h2 id="what-the-profile-advertises"><a class="header" href="#what-the-profile-advertises">What the profile advertises</a></h2>
+<p>The profile advertises ranges per item HDR scope. A known-SDR item gets no HDR
+routes, and an item with missing metadata is scoped <code>unknown</code> and gets all of
+them. The raw Dolby Vision route also advertises DOVIInvalid, Jellyfin’s label
+for P8 outside CCIDs 1, 2, and 4 (and, on Jellyfin 12, for a base whose color
+contradicts its CCID), because RPU reconstruction presents any CCID. The full
+HEVC matrix is in <a href="codec-support.html">HEVC and Dolby Vision support</a>.</p>
+<p>Jellyfin labels many Dolby Vision streams the engine can present outside the
+generic Dolby Vision ranges: P4 and P20 by transfer (SDR under a <code>dvhe</code> or
+<code>dvh1</code> sample entry), and DV over Rext, Main 12, or 8-bit Main under a profile
+and depth the generic ranges do not pair with that label. For a non-retry
+Dolby Vision item, <code>getHDRDeviceProfileOptions</code> (host) passes the item’s
+streams as <code>itemMediaSource</code>. <code>CustomDeviceProfile</code> asks the engine’s
+<code>hasEligibleCustomVideoRoute</code> whether the runtime would present the item with
+the measured capabilities and authorizations, and if it would, advertises the
+item’s exact VideoProfile (as the existing route token), VideoBitDepth, and
+VideoRangeType as one more HEVC route.</p>
+<h2 id="probe-scopes"><a class="header" href="#probe-scopes">Probe scopes</a></h2>
+<p><code>getHDRDeviceProfileProbeScope</code> (host) picks the GPU authorizations an item
+waits for:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Scope</th><th>Waits for</th></tr>
+</thead>
+<tbody>
+<tr><td><code>none</code></td><td>Nothing: a known-SDR item</td></tr>
+<tr><td><code>static-hdr</code></td><td>Native external HDR, and raw HDR only when no external key is authorized</td></tr>
+<tr><td><code>dolby-vision</code></td><td>Dolby Vision only; the item declares no HDR base</td></tr>
+<tr><td><code>dolby-vision-profile7</code>, <code>dolby-vision-profile8-hdr10-base</code>, <code>dolby-vision-profile8-hlg-base</code></td><td>Dolby Vision and native external HDR, for the exact native base</td></tr>
+<tr><td><code>dolby-vision-hdr-base</code></td><td>Dolby Vision, in parallel with the <code>static-hdr</code> waits, for a declared PQ or HLG base outside those exact shapes</td></tr>
+<tr><td><code>unknown</code></td><td>Native external HDR, raw HDR, and Dolby Vision</td></tr>
+</tbody>
+</table>
+</div>
+<p>The Dolby Vision wait also settles the item’s first-use key: Profile 4, or
+single-layer reconstruction in a format other than I420P10. Every non-retry
+profile also waits for the raw SDR authorization, whatever the scope, and an
+HDR range-extension item waits for raw HDR as well.</p>
+<h2 id="route-keys"><a class="header" href="#route-keys">Route keys</a></h2>
+<ul>
+<li>Raw: <code>&lt;I420P10..I444P12&gt;:bt2020-ncl:bt2020:limited:&lt;pq|hlg&gt;</code> and
+<code>&lt;I420..I444P12&gt;:bt709:bt709:&lt;full|limited&gt;:sdr</code>.</li>
+<li>External HDR: <code>external-hevc-main10-bt709-limited:&lt;pq|hlg&gt;-v1</code>.</li>
+<li>Dolby Vision raw: <code>&lt;I420..I444P12&gt;:dovi-rpu-v1</code>,
+<code>I420P10:dovi-profile4-base-v1</code>, <code>I420P10:dovi-profile4-fel-v1</code>,
+<code>I420P10:dovi-profile7-base-v1</code>, <code>I420P10:dovi-profile7-fel-v1</code>.</li>
+<li>Dolby Vision external: <code>external-I420P10-bt709-limited:dovi-p5-rpu-v1</code>.</li>
+</ul>
+<h2 id="audio-routes"><a class="header" href="#audio-routes">Audio routes</a></h2>
+<ul>
+<li>
+<p>Track: <code>DefaultAudioStreamIndex</code>, else the first audio stream. Codec aliases:
+DCA is dts, EC-3 is eac3, TRUE-HD is truehd.</p>
+</li>
+<li>
+<p>Order: the native-media MSE bridge for AC-3 and E-AC-3 (2 or 6 channels,
+exactly 48 kHz) comes first. Otherwise <code>decoded-pcm</code>, when the codec
+capability and the input layout qualify.</p>
+</li>
+<li>
+<p>Input channels:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Codec</th><th>Channels</th></tr>
+</thead>
+<tbody>
+<tr><td>PCM</td><td>1, 2, 6</td></tr>
+<tr><td>aac, flac, opus, vorbis</td><td>2, 6 (6 needs the 5.1 probe)</td></tr>
+<tr><td>ac3</td><td>2, 6</td></tr>
+<tr><td>eac3</td><td>2, 6, 8 (8 needs a <code>7.1</code> layout)</td></tr>
+<tr><td>mp3</td><td>2</td></tr>
+<tr><td>dts</td><td>2, 6, 8</td></tr>
+<tr><td>truehd</td><td>2, 6, 8 (8 only at 48 kHz with a <code>7.1</code> layout)</td></tr>
+<tr><td>mlp</td><td>2</td></tr>
+</tbody>
+</table>
+</div>
+</li>
+<li>
+<p>DTS by profile: Core 6; 96/24 6; HRA 6 or 8; MA and MA+X 2, 6, or 8. DTS-ES
+is excluded, and above 96 kHz only 6-channel MA is allowed. DTS, TrueHD, and
+MLP play only from Matroska.</p>
+</li>
+<li>
+<p>Rates: any integer from 3000 to 192000 Hz, resampled to 48 kHz. The profile
+uses <code>AudioSampleRate NotEquals 0</code>, because Jellyfin reuses conditions as
+transcode targets.</p>
+</li>
+<li>
+<p>Output channels: <code>WebGPUPlayer.selectDecodedAudioOutputChannelCount</code> (host)
+returns 2 when stereo is forced. It returns 6 or 8 when the source has that
+many channels and <code>destination.maxChannelCount</code> allows it, and otherwise
+downmixes to 2 with the user’s algorithm.</p>
+</li>
+</ul>
+<h2 id="gotchas"><a class="header" href="#gotchas">Gotchas</a></h2>
+<ul>
+<li>Jellyfin ANDs the conditions of every matching CodecProfile
+(<code>StreamBuilder</code>). A looser added profile cannot override a stricter one, so
+stock profiles are split by container, and codecs with several routes use
+ApplyConditions.</li>
+<li>Width, Height, VideoLevel, and VideoFramerate are removed only for custom
+containers. Bitrate is stripped everywhere on non-retry profiles.</li>
+<li>HEVC routes expand to every (VideoProfile, VideoRangeType) pair, with
+<code>VideoBitDepth Equals 0</code> as the value that always fails. VP9, AV1, and H.264
+are not expanded.</li>
+<li>Generic <code>Rext</code> advertises a bit depth only when 4:2:0, 4:2:2, and 4:4:4 at
+that depth are all authorized (<code>hasCompleteRextBitDepthEnvelope</code>, host).</li>
+<li>The native external route needs explicit color fields that a profile cannot
+express. Such a source can negotiate DirectPlay and then take the raw route
+or fall back.</li>
+<li>Native decode uses the hint its probes measured
+(<code>getCustomDecodeHardwareAcceleration</code>). Only the routes that present the
+decoder’s opaque hardware output (native external HDR, the native Dolby
+Vision base, and external Profile 5) prefer hardware. Every other native
+route uses <code>no-preference</code>, so a codec without a hardware decoder, such as
+VP8 in Chromium on Windows, decodes in software.</li>
+<li>AC-3, E-AC-3, and PCM have no runtime probe, so the host’s
+<code>appendMeasuredNativeAudioRouteProfiles</code> never emits its 48 kHz profile.</li>
+<li>These composed routes have no probe vector: DTS 2-channel MA, DTS 6-channel
+HRA, and TrueHD 7.1 at 48 kHz.</li>
+<li>The raw-planes budget (128 MiB per frame or Dolby Vision pair, 2 in flight)
+is enforced only at eligibility and is never advertised.</li>
+<li><code>customProfileAugmentationAvailable</code> (host) stays set for the lifetime of the
+player instance.</li>
+<li>Dolby Vision sources always disable HLS video stream copy, so an HLS fallback
+re-encodes the video.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="architecture.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="codec-support.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="architecture.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="codec-support.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-09f2665d.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

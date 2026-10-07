@@ -10,14 +10,14 @@ import {
     DOLBY_VISION_RPU_NLQ_WORD_OFFSET,
     MAXIMUM_DOLBY_VISION_RPU_MMR_VECTOR_COUNT,
     MAXIMUM_DOLBY_VISION_RPU_PIVOT_COUNT
-} from '../custom/DolbyVisionRPUDataLayout';
+} from '../video/dolby-vision/DolbyVisionRPUDataLayout';
 import {
     decodeDolbyVisionRPUSnapshot,
     DOLBY_VISION_RPU_PARSER_REVISION_PREFIX,
     DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
     DOLBY_VISION_RPU_SCHEMA_MAGIC,
     DOLBY_VISION_RPU_SCHEMA_VERSION
-} from '../custom/DolbyVisionRPUParser';
+} from '../video/dolby-vision/DolbyVisionRPUParser';
 import type { ColorTriplet } from './ColorPipeline';
 
 const BYTES_PER_PACKED_WORD = Uint32Array.BYTES_PER_ELEMENT;

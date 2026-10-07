@@ -11,9 +11,10 @@ import time
 from pathlib import Path
 from typing import Sequence
 
+from constants import ENGINE_ROOT
+
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-REPOSITORY_ROOT = SCRIPT_DIRECTORY.parent
 BROWSER_PROBE_PATH = SCRIPT_DIRECTORY / "probe-dynamic-HDR-shader-browser.mjs"
 DEFAULT_TIMEOUT_SECONDS = 60
 WINDOWS_CHROME_CANDIDATES = (
@@ -107,7 +108,7 @@ def run_probe(
                     str(BROWSER_PROBE_PATH),
                     f"http://localhost:{debugging_port}",
                 ],
-                cwd=REPOSITORY_ROOT,
+                cwd=ENGINE_ROOT,
                 capture_output=True,
                 check=False,
                 text=True,

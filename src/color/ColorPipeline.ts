@@ -5,7 +5,7 @@ import {
     type HDRToSDRRenderSettings,
     type RenderSettings,
     type ToneMappingSettings
-} from '../RenderSettings';
+} from '../presentation/RenderSettings';
 import {
     assertValidInputColorMetadata,
     type ColorPrimaries,

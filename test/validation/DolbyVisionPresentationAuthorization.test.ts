@@ -1,21 +1,33 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createHDRToSDRRenderSettings } from 'webgpu-player/RenderSettings';
-import type { ColorTriplet } from 'webgpu-player/color/ColorPipeline';
-import { decodeDolbyVisionRPUSnapshot } from 'webgpu-player/custom/DolbyVisionRPUParser';
-import { createDolbyVisionAuthorizationRPUFixture } from 'webgpu-player/validation/DolbyVisionAuthorizationFixture';
+import {
+    createDefaultRenderSettings,
+    createHDRToSDRRenderSettings
+} from 'webgpu-player/presentation/RenderSettings';
+import { processEncodedYUV, type ColorTriplet } from 'webgpu-player/color/ColorPipeline';
+import { decodeDolbyVisionRPUSnapshot } from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParser';
+import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 import {
     createDolbyVisionShaderSignature,
     createExpectedDolbyVisionAuthorizationObservations,
     createExpectedDolbyVisionFELAuthorizationObservations,
     DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
+    DOLBY_VISION_PROFILE4_AUTHORIZATION_ROUTE_KEY,
+    DOLBY_VISION_PROFILE4_FEL_AUTHORIZATION_ROUTE_KEY,
     DOLBY_VISION_PROFILE7_AUTHORIZATION_ROUTE_KEY,
     DOLBY_VISION_PROFILE7_FEL_AUTHORIZATION_ROUTE_KEY,
     DolbyVisionPresentationAuthorizationRegistry,
     DolbyVisionPresentationAuthorizationRunner,
     type DolbyVisionAuthorizationDecision
 } from 'webgpu-player/validation/DolbyVisionPresentationAuthorization';
-import type { RawHDRFixtureObservation } from 'webgpu-player/validation/RawHDRPresentationAuthorization';
+import {
+    createRawHDRAuthorizationVector,
+    sampleRawI420P10Frame,
+    type RawHDRAuthorizationRouteKey,
+    type RawHDRVectorObservation
+} from 'webgpu-player/validation/RawHDRPresentationAuthorization';
+import { createSDRColorMetadata } from 'webgpu-player/color/ColorMetadata';
+import type { RawDolbyVisionVideoFrameFormat } from 'webgpu-player/color/ColorPipelineShader';
 
 type MockFunction = ReturnType<typeof vi.fn>;
 
@@ -48,9 +60,9 @@ function restoreProperty(
     }
 }
 
-function createExpectedObservations(): readonly RawHDRFixtureObservation[] {
+function createExpectedObservations(): readonly RawHDRVectorObservation[] {
     return createExpectedDolbyVisionAuthorizationObservations(
-        createDolbyVisionAuthorizationRPUFixture(),
+        createDolbyVisionAuthorizationRPUVector(),
         createHDRToSDRRenderSettings({
             toneMapping: { inputPeakNits: 4_000 }
         })
@@ -58,7 +70,7 @@ function createExpectedObservations(): readonly RawHDRFixtureObservation[] {
 }
 
 function createDeviceHarness(
-    ...observationSets: Array<readonly RawHDRFixtureObservation[]>
+    ...observationSets: Array<readonly RawHDRVectorObservation[]>
 ): DeviceHarness {
     const observationMaps: Array<Map<string, ColorTriplet>> = [];
     for (const observations of observationSets) {
@@ -164,8 +176,8 @@ function createDeviceHarness(
 }
 
 function mutateFirstObservation(
-    observations: readonly RawHDRFixtureObservation[]
-): readonly RawHDRFixtureObservation[] {
+    observations: readonly RawHDRVectorObservation[]
+): readonly RawHDRVectorObservation[] {
     return observations.map((observation, observationIndex) => observationIndex === 0 ? {
         ...observation,
         linearRGB: [
@@ -203,10 +215,10 @@ describe('Dolby Vision presentation authorization', () => {
         vi.restoreAllMocks();
     });
 
-    it('builds a schema-valid fixture covering polynomial and MMR mapping', () => {
-        const firstFixture = createDolbyVisionAuthorizationRPUFixture();
-        const secondFixture = createDolbyVisionAuthorizationRPUFixture();
-        const snapshot = decodeDolbyVisionRPUSnapshot(firstFixture);
+    it('builds a schema-valid vector covering polynomial and MMR mapping', () => {
+        const firstVector = createDolbyVisionAuthorizationRPUVector();
+        const secondVector = createDolbyVisionAuthorizationRPUVector();
+        const snapshot = decodeDolbyVisionRPUSnapshot(firstVector);
 
         expect(snapshot).toMatchObject({
             baseLayerBitDepth: 10,
@@ -224,16 +236,16 @@ describe('Dolby Vision presentation authorization', () => {
             6,
             6
         ]);
-        expect(secondFixture).not.toBe(firstFixture);
-        expect(new Uint8Array(secondFixture)).toEqual(new Uint8Array(firstFixture));
+        expect(secondVector).not.toBe(firstVector);
+        expect(new Uint8Array(secondVector)).toEqual(new Uint8Array(firstVector));
     });
 
-    it('builds distinct schema-valid Profile 7 MEL and FEL fixtures', () => {
+    it('builds distinct schema-valid Profile 7 MEL and FEL vectors', () => {
         const melSnapshot = decodeDolbyVisionRPUSnapshot(
-            createDolbyVisionAuthorizationRPUFixture(7, 'mel')
+            createDolbyVisionAuthorizationRPUVector(7, 'mel')
         );
         const felSnapshot = decodeDolbyVisionRPUSnapshot(
-            createDolbyVisionAuthorizationRPUFixture(7, 'fel')
+            createDolbyVisionAuthorizationRPUVector(7, 'fel')
         );
 
         expect(melSnapshot).toMatchObject({
@@ -278,8 +290,8 @@ describe('Dolby Vision presentation authorization', () => {
         const settings = createHDRToSDRRenderSettings({
             toneMapping: { inputPeakNits: 4_000 }
         });
-        const melRPUData = createDolbyVisionAuthorizationRPUFixture(7, 'mel');
-        const felRPUData = createDolbyVisionAuthorizationRPUFixture(7, 'fel');
+        const melRPUData = createDolbyVisionAuthorizationRPUVector(7, 'mel');
+        const felRPUData = createDolbyVisionAuthorizationRPUVector(7, 'fel');
         const harness = createDeviceHarness(
             createExpectedDolbyVisionAuthorizationObservations(melRPUData, settings),
             createExpectedDolbyVisionAuthorizationObservations(
@@ -379,7 +391,129 @@ describe('Dolby Vision presentation authorization', () => {
         });
     });
 
-    it('includes the fixture and target in the stable signature', () => {
+    it.each([ 8, 10, 12 ])('builds dual-layer Profile 4 MEL and FEL vectors at %i bits', bitDepth => {
+        const melSnapshot = decodeDolbyVisionRPUSnapshot(
+            createDolbyVisionAuthorizationRPUVector(4, 'mel', bitDepth)
+        );
+        const felSnapshot = decodeDolbyVisionRPUSnapshot(
+            createDolbyVisionAuthorizationRPUVector(4, 'fel', bitDepth)
+        );
+
+        expect(melSnapshot).toMatchObject({ baseLayerBitDepth: bitDepth, layerMode: 'mel', profile: 4 });
+        expect(felSnapshot).toMatchObject({ baseLayerBitDepth: bitDepth, layerMode: 'fel', profile: 4 });
+        expect(() => createDolbyVisionAuthorizationRPUVector(4, 'single-layer')).toThrow(TypeError);
+    });
+
+    it('authorizes Profile 4 MEL reconstruction and its FEL SDR-base fallback', async () => {
+        const settings = createHDRToSDRRenderSettings({
+            toneMapping: { inputPeakNits: 4_000 }
+        });
+        const harness = createDeviceHarness(
+            createExpectedDolbyVisionAuthorizationObservations(
+                createDolbyVisionAuthorizationRPUVector(4, 'mel'),
+                settings
+            ),
+            createExpectedDolbyVisionAuthorizationObservations(
+                createDolbyVisionAuthorizationRPUVector(4, 'fel'),
+                settings,
+                'fel-sdr-base'
+            )
+        );
+        const runner = new DolbyVisionPresentationAuthorizationRunner('profile4-base');
+
+        await expect(runner.validate(harness.device, 'bgra8unorm')).resolves.toMatchObject({
+            failureReason: null,
+            routeKey: DOLBY_VISION_PROFILE4_AUTHORIZATION_ROUTE_KEY,
+            sampleCount: 18,
+            status: 'authorized'
+        });
+        expect(runner.createShader(settings)).toContain('return presentSDRBaseLayer(rawBaseSignal);');
+    });
+
+    it('separately authorizes Profile 4 FEL composition', async () => {
+        const settings = createHDRToSDRRenderSettings({
+            toneMapping: { inputPeakNits: 4_000 }
+        });
+        const harness = createDeviceHarness(
+            createExpectedDolbyVisionFELAuthorizationObservations(settings, 4)
+        );
+        const runner = new DolbyVisionPresentationAuthorizationRunner('profile4-fel');
+
+        await expect(runner.validate(harness.device, 'bgra8unorm')).resolves.toMatchObject({
+            failureReason: null,
+            routeKey: DOLBY_VISION_PROFILE4_FEL_AUTHORIZATION_ROUTE_KEY,
+            status: 'authorized'
+        });
+        expect(harness.bindGroupEntries.map(entry => entry.binding)).toEqual(
+            expect.arrayContaining([ 5, 6, 7, 8, 9 ])
+        );
+    });
+
+    it('presents the Profile 4 SDR base exactly, without tone mapping or dither', () => {
+        const frame = createRawHDRAuthorizationVector('I420P10:bt2020-ncl:bt2020:limited:pq');
+        const observations = createExpectedDolbyVisionAuthorizationObservations(
+            createDolbyVisionAuthorizationRPUVector(4, 'fel'),
+            createHDRToSDRRenderSettings(),
+            'fel-sdr-base',
+            frame
+        );
+
+        for (const observation of observations) {
+            const rawSignal = sampleRawI420P10Frame(frame, observation.sampleX, observation.sampleY);
+            const encodedRGB = processEncodedYUV(
+                [ rawSignal[0] / 1_023, rawSignal[1] / 1_023, rawSignal[2] / 1_023 ],
+                createSDRColorMetadata({ bitDepth: 10 }),
+                createDefaultRenderSettings()
+            );
+            for (let componentIndex = 0; componentIndex < 3; componentIndex += 1) {
+                expect(observation.linearRGB[componentIndex]).toBeCloseTo(
+                    Math.min(Math.max(encodedRGB[componentIndex], 0), 1),
+                    12
+                );
+            }
+        }
+    });
+
+    it.each([
+        [ 'I420', 'I420:bt709:bt709:limited:sdr' ],
+        [ 'I422', 'I422:bt709:bt709:limited:sdr' ],
+        [ 'I420P12', 'I420P12:bt2020-ncl:bt2020:limited:pq' ],
+        [ 'I422P10', 'I422P10:bt2020-ncl:bt2020:limited:pq' ],
+        [ 'I444P12', 'I444P12:bt2020-ncl:bt2020:limited:pq' ]
+    ] as const)('authorizes single-layer reconstruction over %s planes', async (format, vectorKey) => {
+        const settings = createHDRToSDRRenderSettings({
+            toneMapping: { inputPeakNits: 4_000 }
+        });
+        const frame = createRawHDRAuthorizationVector(vectorKey as RawHDRAuthorizationRouteKey);
+        const harness = createDeviceHarness(createExpectedDolbyVisionAuthorizationObservations(
+            createDolbyVisionAuthorizationRPUVector(8, 'single-layer', frame.bitDepth),
+            settings,
+            'reconstruct',
+            frame
+        ));
+        const runner = new DolbyVisionPresentationAuthorizationRunner(
+            'single-layer',
+            format as RawDolbyVisionVideoFrameFormat
+        );
+        const registry = new DolbyVisionPresentationAuthorizationRegistry(runner);
+
+        await expect(registry.authorize(harness.device, 'bgra8unorm')).resolves.toMatchObject({
+            routeKey: `${format}:dovi-rpu-v1`,
+            status: 'authorized'
+        });
+        expect(registry.isAuthorized(harness.device, 'bgra8unorm', settings, format)).toBe(true);
+        expect(registry.isAuthorized(harness.device, 'bgra8unorm', settings, 'I420P10')).toBe(false);
+    });
+
+    it.each([ 'profile4-base', 'profile4-fel', 'profile7-base', 'profile7-fel' ] as const)(
+        'keeps the dual-layer %s route on I420P10 planes',
+        route => {
+            expect(() => new DolbyVisionPresentationAuthorizationRunner(route, 'I420P12'))
+                .toThrow(RangeError);
+        }
+    );
+
+    it('includes the vector and target in the stable signature', () => {
         expect(createDolbyVisionShaderSignature('bgra8unorm', 'shader')).toBe(
             createDolbyVisionShaderSignature('bgra8unorm', 'shader')
         );
