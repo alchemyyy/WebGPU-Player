@@ -15,7 +15,7 @@ import {
     type VideoSample
 } from 'mediabunny';
 
-import { microsecondsToSeconds, type Microseconds } from '../MediaTime';
+import { microsecondsToSeconds, secondsToMicroseconds, type Microseconds } from '../MediaTime';
 import { getDolbyVisionEnhancementDimensions } from '../video/dolby-vision/DolbyVisionGeometry';
 import { isDolbyVisionDualLayerProfile } from '../video/dolby-vision/DolbyVisionProfiles';
 import { getAudioSampleWindow } from '../audio/AudioSampleWindow';
@@ -26,7 +26,6 @@ import {
     type CustomAudioDownmixAlgorithm
 } from '../audio/processing/CustomAudioDownmixAlgorithm';
 import {
-    assertCustomAudioOutputChannelLayout,
     getCustomAudioChannelLayout,
     prepareCustomAudioOutputChannelData,
     type CustomAudioChannelLayout,
@@ -37,14 +36,24 @@ import {
     type AudioDownmixSettings
 } from '../audio/processing/CustomAudioDownmix';
 import {
+    CUSTOM_AUDIO_OUTPUT_BUFFERED_SECONDS,
     CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
     CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
     isSupportedCustomAudioInputLayout
 } from '../audio/CustomAudioOutputPolicy';
 import { isSupportedCustomAudioSampleRate } from '../audio/CustomAudioSampleRate';
-import StreamingAudioOutputPipeline, {
-    type StreamingAudioResamplerOutput
-} from '../audio/processing/StreamingAudioOutputPipeline';
+import { getAudioStartPacket } from '../audio/AudioStartPacket';
+import {
+    getAudioTimestampToleranceMicroseconds,
+    getBundledAudioDecoderCodec,
+    getDeclaredAudioSampleRate
+} from '../audio/CustomAudioTrackMetadata';
+import DecodedAudioOutputStage, {
+    UnsupportedDecodedAudioFormatError,
+    type DecodedAudioSourceFormat
+} from '../audio/processing/DecodedAudioOutputStage';
+import type { StreamingAudioResamplerOutput } from '../audio/processing/StreamingAudioOutputPipeline';
+import type { StreamingAudioTimelineCorrection } from '../audio/processing/StreamingAudioResampler';
 import StreamingAudioDownmixSettings from '../audio/processing/StreamingAudioDownmixSettings';
 import {
     getCustomDecodeRequestHardwareAcceleration,
@@ -78,6 +87,7 @@ import DolbyVisionEncodedMetadataQueue, {
     type ProcessedDolbyVisionHEVCPacket
 } from '../video/dolby-vision/DolbyVisionEncodedMetadata';
 import DolbyVisionFramePairQueue, {
+    MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH,
     type DolbyVisionFramePair
 } from '../video/dolby-vision/DolbyVisionFramePairQueue';
 import DolbyVisionEncodedPacketPairer from '../video/dolby-vision/DolbyVisionEncodedPacketPairer';
@@ -141,11 +151,8 @@ import DTSSoftwareAudioDecoder, {
     type DTSDecodedAudioOutput
 } from '../audio/decoders/DTSSoftwareAudioDecoder';
 import DTSSeekRecovery from '../audio/decoders/DTSSeekRecovery';
-import EAC3SoftwareAudioDecoder, {
-    type EAC3DecodedAudioOutput
-} from '../audio/decoders/EAC3SoftwareAudioDecoder';
+import EAC3SoftwareAudioDecoder from '../audio/decoders/EAC3SoftwareAudioDecoder';
 import TrueHDSoftwareAudioDecoder, {
-    type TrueHDDecodedAudioOutput,
     type TrueHDDecoderCodec
 } from '../audio/decoders/TrueHDSoftwareAudioDecoder';
 import MPEG2VC1SoftwareVideoDecoder, {
@@ -162,6 +169,9 @@ const URL_SOURCE_PARALLELISM = 2;
 const MAX_NETWORK_RETRY_ATTEMPTS = 2;
 const NETWORK_RETRY_BASE_SECONDS = 0.25;
 const OWNED_VIDEO_DECODER_QUEUE_HIGH_WATER_MARK = 16;
+// Every queued HEVC packet becomes a frame that may wait in the pair queue for a credit, so the decode
+// queue plus the decodes in flight must fit under that queue's bound
+const OWNED_HEVC_DECODE_QUEUE_HIGH_WATER_MARK = MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH / 2;
 const DOLBY_VISION_ENHANCEMENT_CODEC = 'hev1.2.4.L153.B0';
 const ANNEX_B_HEVC_NAL_FORMAT: HEVCNALFormat = { kind: 'annex-b' };
 const OWNED_HEVC_PACKET_OPTIONS = {
@@ -177,14 +187,31 @@ const MPEG2_VC1_PACKET_OPTIONS = {
 const STATIC_HDR_METADATA_SCAN_MAXIMUM_BYTE_LENGTH = 8 * 1024 * 1024;
 const TRUEHD_MAJOR_SYNC_PREROLL_MICROSECONDS = 1_000_000;
 const MICROSECONDS_PER_SECOND = 1_000_000;
+// Codec floors of the decoded audio timestamp tolerance; DTS lace phases wander further
 const DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS = 1_000;
 const DTS_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS = 3_000;
+const TRUEHD_ACCESS_UNITS_PER_SECOND = 1_200;
+// One TrueHD or MLP access unit can decode to no PCM
+const TRUEHD_ACCESS_UNIT_ALLOWANCE_MICROSECONDS = Math.ceil(
+    MICROSECONDS_PER_SECOND / TRUEHD_ACCESS_UNITS_PER_SECOND
+);
+const NO_ACCESS_UNIT_ALLOWANCE_MICROSECONDS = 0;
+// Mediabunny's dec3 parse can declare a 7.1 E-AC-3 track as 6 or 7 channels
+const EAC3_UNDER_DECLARED_SEVEN_POINT_ONE_CHANNEL_COUNT = 7;
 const MINIMUM_AUDIO_OUTPUT_CHUNK_DURATION_MICROSECONDS = 40_000;
 const MINIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT = Math.ceil(
     CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
         * MINIMUM_AUDIO_OUTPUT_CHUNK_DURATION_MICROSECONDS
         / MICROSECONDS_PER_SECOND
 );
+// Every credit holding a largest chunk at most fills the worklet ring, so filled silence never overflows it
+const MAXIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT = requireAudioOutputChunkFrameBound(Math.floor(
+    CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
+        * CUSTOM_AUDIO_OUTPUT_BUFFERED_SECONDS
+        / MAX_DECODED_AUDIO_SAMPLE_CREDITS
+));
+// Smaller fills and trims are routine container jitter and stay out of the console
+const LOGGED_AUDIO_TIMELINE_CORRECTION_MICROSECONDS = 100_000;
 
 type MediaSampleIterator<Sample> = {
     next: () => Promise<IteratorResult<Sample>>
@@ -220,7 +247,7 @@ type DecodeRun = {
     audioEpoch: number
     audioIterator: MediaSampleIterator<AudioSample> | MediaSampleIterator<EncodedPacket> | null
     audioSampleCredits: number
-    /** Set once the audio stream completes so a suspended video stream can end the run */
+    /** Set once the audio stream completes so a video stream that reached its end can end the run */
     audioStreamFinished: boolean
     cancelled: boolean
     decodedVideoGeometry: RawVideoFrameGeometry | null
@@ -254,6 +281,8 @@ type DecodeRun = {
     videoIterator: MediaSampleIterator<EncodedPacket> | MediaSampleIterator<VideoSample> | null
     /** Set once the video stream unwinds so finished audio stops waiting for a resync */
     videoStreamFinished: boolean
+    /** The latest video attempt reached the end of its track; a suspended or interrupted one did not */
+    videoTrackEnded: boolean
     wakeAudioControlWaiters: Array<() => void>
     wakeAudioCreditWaiters: Array<() => void>
     wakeFrameCreditWaiters: Array<() => void>
@@ -301,11 +330,17 @@ type PreparedAudioTrack = {
     audioTrack: InputAudioTrack
     decoderBackend: 'dts' | 'eac3' | 'mediabunny' | TrueHDDecoderCodec
     decoderConfig: AudioDecoderConfig | null
+    /** Declared by the container; the decoded layout is authoritative */
     inputChannelCount: number
     inputChannelLayout: CustomAudioChannelLayout
     outputMode: CustomDecodeAudioOutputMode
     outputChannelCount: CustomAudioOutputChannelCount
+    /** The codec name the decoded PCM route tables qualify */
+    routeCodec: string
+    /** Declared by the container; the decoded rate is authoritative */
     sourceSampleRate: number
+    /** All packet timestamps are integer multiples of its reciprocal */
+    timeResolution: number
 };
 
 type SelectedAudioTrackMetadata = {
@@ -316,8 +351,14 @@ type SelectedAudioTrackMetadata = {
     inputChannelLayout: CustomAudioChannelLayout
     isDTS: boolean
     sampleRate: number
+    timeResolution: number
     trueHDDecoderCodec: TrueHDDecoderCodec | null
 };
+
+type BundledDecodedAudioOutput = Pick<
+    DTSDecodedAudioOutput,
+    'channelData' | 'channelLayout' | 'frameCount' | 'mediaTimeMicroseconds' | 'sampleRate'
+>;
 
 type WorkerScope = {
     addEventListener: (
@@ -499,8 +540,10 @@ function requestVideoAttemptControl(run: DecodeRun, control: VideoAttemptControl
 }
 
 /**
- * Waits for the resync that starts the next video attempt.
- * Returns null when the run stops or audio finished while video was suspended.
+ * Waits for the resync that starts the next video attempt. Returns null when
+ * the run stops, or when audio has finished after the video track ended. A
+ * suspended or interrupted video still has frames left, so it waits for its
+ * resync even after audio finished.
  */
 async function waitForVideoAttemptResync(
     run: DecodeRun
@@ -515,7 +558,7 @@ async function waitForVideoAttemptResync(
             }
             continue;
         }
-        if (run.audioStreamFinished) {
+        if (run.audioStreamFinished && run.videoTrackEnded) {
             return null;
         }
         await new Promise<void>(resolve => {
@@ -650,6 +693,9 @@ function classifyFailure(error: unknown): CustomDecodeFailureKind {
     if (error instanceof UnsupportedCustomDecodeSourceError) {
         return 'source-unsupported';
     }
+    if (error instanceof UnsupportedDecodedAudioFormatError) {
+        return 'source-unsupported';
+    }
     if (error instanceof DolbyVisionRPUParseError) {
         return 'source-unsupported';
     }
@@ -658,6 +704,48 @@ function classifyFailure(error: unknown): CustomDecodeFailureKind {
     }
 
     return 'decode-failed';
+}
+
+/** Checks the largest decoded audio chunk against the minimum chunk and the protocol frame limit. */
+function requireAudioOutputChunkFrameBound(frameCount: number): number {
+    if (!Number.isSafeInteger(frameCount)
+        || frameCount < MINIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT
+        || frameCount > MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE) {
+        throw new RangeError(
+            'The largest decoded audio chunk must hold at least the minimum chunk '
+            + 'and at most the protocol frame limit'
+        );
+    }
+    return frameCount;
+}
+
+/** Logs a large timeline correction or a rejection so field logs show where audio moved. */
+function logAudioTimelineCorrection(correction: StreamingAudioTimelineCorrection): void {
+    if (correction.kind !== 'reject'
+        && Math.abs(correction.correctionMicroseconds)
+            <= LOGGED_AUDIO_TIMELINE_CORRECTION_MICROSECONDS) {
+        return;
+    }
+    let description: string;
+    switch (correction.kind) {
+        case 'drop':
+            description = 'Decoded audio input dropped as an overlap';
+            break;
+        case 'fill':
+            description = 'Decoded audio timeline gap filled with silence';
+            break;
+        case 'reject':
+            description = 'Decoded audio timeline discontinuity exceeded the correction bound';
+            break;
+        case 'trim':
+            description = 'Decoded audio timeline overlap trimmed';
+            break;
+    }
+    console.warn(
+        `${description}: input ${correction.inputMediaTimeMicroseconds} microseconds, `
+        + `expected ${correction.expectedMediaTimeMicroseconds} microseconds, `
+        + `correction ${correction.correctionMicroseconds} microseconds`
+    );
 }
 
 type FocusedSoftwareVideoRoute = Readonly<{
@@ -1131,24 +1219,27 @@ async function getSelectedAudioTrackMetadata(
         );
     }
 
-    const [ codec, decoderConfig, internalCodecID, channelCount, sampleRate ] = await Promise.all([
+    const [
+        codec,
+        decoderConfig,
+        internalCodecID,
+        channelCount,
+        declaredSampleRate,
+        timeResolution
+    ] = await Promise.all([
         audioTrack.getCodec(),
         audioTrack.getDecoderConfig(),
         audioTrack.getInternalCodecId(),
         audioTrack.getNumberOfChannels(),
-        audioTrack.getSampleRate()
+        audioTrack.getSampleRate(),
+        audioTrack.getTimeResolution()
     ]);
-    const isDTS = codec === null && internalCodecID === 'A_DTS';
-    let trueHDDecoderCodec: TrueHDDecoderCodec | null = null;
-    switch (internalCodecID) {
-        case 'A_MLP':
-            trueHDDecoderCodec = 'mlp';
-            break;
-        case 'A_TRUEHD':
-            trueHDDecoderCodec = 'truehd';
-            break;
-    }
-    if ((!codec || !decoderConfig) && !isDTS && trueHDDecoderCodec === null) {
+    // Matroska and ISO BMFF DTS and TrueHD tracks have no Mediabunny codec
+    const bundledDecoderCodec = getBundledAudioDecoderCodec(codec, internalCodecID);
+    const isDTS = bundledDecoderCodec === 'dts';
+    const trueHDDecoderCodec = bundledDecoderCodec === 'dts' ? null : bundledDecoderCodec;
+    const sampleRate = getDeclaredAudioSampleRate(internalCodecID, declaredSampleRate);
+    if ((!codec || !decoderConfig) && bundledDecoderCodec === null) {
         throw new UnsupportedCustomDecodeSourceError('The selected audio codec configuration is unavailable');
     }
     if (!Number.isSafeInteger(channelCount) || channelCount <= 0 || channelCount > MAX_DECODED_AUDIO_CHANNELS) {
@@ -1174,6 +1265,7 @@ async function getSelectedAudioTrackMetadata(
         inputChannelLayout,
         isDTS,
         sampleRate,
+        timeResolution,
         trueHDDecoderCodec
     };
 }
@@ -1187,7 +1279,8 @@ function prepareNativeMediaAudioTrack(
         codec,
         decoderConfig,
         inputChannelLayout,
-        sampleRate
+        sampleRate,
+        timeResolution
     } = metadata;
     if (!codec || !decoderConfig) {
         throw new UnsupportedCustomDecodeSourceError(
@@ -1222,21 +1315,29 @@ function prepareNativeMediaAudioTrack(
         inputChannelLayout,
         outputMode: 'native-media',
         outputChannelCount: channelCount as 2 | 6,
-        sourceSampleRate: sampleRate
+        routeCodec: codec,
+        sourceSampleRate: sampleRate,
+        timeResolution
     };
 }
 
+// The declared layout only screens the track early; the decoded one is bound at the first output
 function prepareDTSAudioTrack(
     metadata: SelectedAudioTrackMetadata,
     outputChannelCount: CustomAudioOutputChannelCount
 ): PreparedAudioTrack {
-    const { audioTrack, channelCount, inputChannelLayout, sampleRate } = metadata;
+    const {
+        audioTrack,
+        channelCount,
+        inputChannelLayout,
+        sampleRate,
+        timeResolution
+    } = metadata;
     if (!isSupportedCustomAudioInputLayout('dts', channelCount, sampleRate)) {
         throw new UnsupportedCustomDecodeSourceError(
             'The selected audio track does not match a qualified decoded PCM route'
         );
     }
-    assertCustomAudioOutputChannelLayout(inputChannelLayout, outputChannelCount);
 
     return {
         audioConfiguration: {
@@ -1253,8 +1354,17 @@ function prepareDTSAudioTrack(
         inputChannelLayout,
         outputMode: 'decoded-pcm',
         outputChannelCount,
-        sourceSampleRate: sampleRate
+        routeCodec: 'dts',
+        sourceSampleRate: sampleRate,
+        timeResolution
     };
+}
+
+/** Accepts E-AC-3 declarations, including the 7.1 tracks Mediabunny under-declares. */
+function isDeclaredEAC3InputLayout(channelCount: number, sampleRate: number): boolean {
+    return isSupportedCustomAudioInputLayout('eac3', channelCount, sampleRate)
+        || (channelCount === EAC3_UNDER_DECLARED_SEVEN_POINT_ONE_CHANNEL_COUNT
+            && isSupportedCustomAudioSampleRate(sampleRate));
 }
 
 function prepareEAC3AudioTrack(
@@ -1267,16 +1377,16 @@ function prepareEAC3AudioTrack(
         codec,
         decoderConfig,
         inputChannelLayout,
-        sampleRate
+        sampleRate,
+        timeResolution
     } = metadata;
     if (codec !== 'eac3'
         || decoderConfig?.codec !== 'ec-3'
-        || !isSupportedCustomAudioInputLayout(codec, channelCount, sampleRate)) {
+        || !isDeclaredEAC3InputLayout(channelCount, sampleRate)) {
         throw new UnsupportedCustomDecodeSourceError(
             'The selected E-AC-3 track does not match a qualified decoded PCM route'
         );
     }
-    assertCustomAudioOutputChannelLayout(inputChannelLayout, outputChannelCount);
 
     return {
         audioConfiguration: {
@@ -1293,7 +1403,9 @@ function prepareEAC3AudioTrack(
         inputChannelLayout,
         outputMode: 'decoded-pcm',
         outputChannelCount,
-        sourceSampleRate: sampleRate
+        routeCodec: codec,
+        sourceSampleRate: sampleRate,
+        timeResolution
     };
 }
 
@@ -1306,6 +1418,7 @@ function prepareTrueHDAudioTrack(
         channelCount,
         inputChannelLayout,
         sampleRate,
+        timeResolution,
         trueHDDecoderCodec
     } = metadata;
     if (!trueHDDecoderCodec
@@ -1314,7 +1427,6 @@ function prepareTrueHDAudioTrack(
             'The selected TrueHD track does not match a qualified decoded PCM route'
         );
     }
-    assertCustomAudioOutputChannelLayout(inputChannelLayout, outputChannelCount);
 
     return {
         audioConfiguration: {
@@ -1331,7 +1443,9 @@ function prepareTrueHDAudioTrack(
         inputChannelLayout,
         outputMode: 'decoded-pcm',
         outputChannelCount,
-        sourceSampleRate: sampleRate
+        routeCodec: trueHDDecoderCodec,
+        sourceSampleRate: sampleRate,
+        timeResolution
     };
 }
 
@@ -1346,19 +1460,20 @@ async function prepareMediabunnyDecodedAudioTrack(
         codec,
         decoderConfig,
         inputChannelLayout,
-        sampleRate
+        sampleRate,
+        timeResolution
     } = metadata;
     if (!codec || !decoderConfig) {
         throw new UnsupportedCustomDecodeSourceError(
             'The decoded PCM audio configuration is unavailable'
         );
     }
+    // HE-AAC with Parametric Stereo declares its mono core; the decoder reports stereo
     if (!isSupportedCustomAudioInputLayout(codec, channelCount, sampleRate)) {
         throw new UnsupportedCustomDecodeSourceError(
             'The selected audio track does not match a qualified decoded PCM route'
         );
     }
-    assertCustomAudioOutputChannelLayout(inputChannelLayout, outputChannelCount);
     await registerRequiredCustomAudioDecoder(codec);
     if (run.cancelled) {
         throw new UnsupportedCustomDecodeSourceError('Custom decode was cancelled');
@@ -1385,7 +1500,9 @@ async function prepareMediabunnyDecodedAudioTrack(
         inputChannelLayout,
         outputMode: 'decoded-pcm',
         outputChannelCount,
-        sourceSampleRate: sampleRate
+        routeCodec: codec,
+        sourceSampleRate: sampleRate,
+        timeResolution
     };
 }
 
@@ -1417,10 +1534,31 @@ async function prepareAudioTrack(
     }
 }
 
+/**
+ * Reads the duration from the container's metadata for a source the server never probed. Only the presented
+ * video track is asked: a late-starting audio track would make Mediabunny scan for its first packet.
+ */
+async function readContainerDurationMicroseconds(
+    input: Input,
+    videoTrack: InputVideoTrack
+): Promise<Microseconds | null> {
+    try {
+        const durationSeconds = await input.getDurationFromMetadata([ videoTrack ]);
+        if (durationSeconds === null || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+            return null;
+        }
+        return secondsToMicroseconds(durationSeconds);
+    } catch {
+        // A missing duration only disables seeking; it never fails startup
+        return null;
+    }
+}
+
 function postReadyResponse(
     run: DecodeRun,
     preparedVideoTrack: PreparedVideoTrack,
-    preparedAudioTrack: PreparedAudioTrack | null
+    preparedAudioTrack: PreparedAudioTrack | null,
+    containerDurationMicroseconds: Microseconds | null
 ): void {
     const geometry = preparedVideoTrack.geometry;
     postResponse({
@@ -1428,6 +1566,7 @@ function postReadyResponse(
         codec: preparedVideoTrack.decoderConfig.codec,
         codedHeight: geometry.codedHeight,
         codedWidth: geometry.codedWidth,
+        ...(containerDurationMicroseconds !== null ? { containerDurationMicroseconds } : {}),
         displayHeight: geometry.displayHeight,
         displayWidth: geometry.displayWidth,
         generation: run.generation,
@@ -1950,11 +2089,57 @@ function prepareDecodedAudioOutputChannelData(
     );
 }
 
+/** Reports the decoded format an audio attempt bound, which the session prefers over the declared one */
+function postDecodedAudioSourceFormat(
+    run: DecodeRun,
+    audioEpoch: number,
+    sourceFormat: DecodedAudioSourceFormat
+): void {
+    if (isAudioAttemptStopped(run) || run.audioEpoch !== audioEpoch) {
+        return;
+    }
+    postResponse({
+        audioEpoch,
+        channelCount: sourceFormat.channelCount,
+        generation: run.generation,
+        sampleRate: sourceFormat.sampleRate,
+        type: 'audio-source-format'
+    });
+}
+
+/**
+ * Creates an attempt's output stage with the tolerance its codec and container
+ * timestamps need. The stage binds to the first decoded format.
+ */
+function createDecodedAudioOutputStage(
+    run: DecodeRun,
+    preparedAudioTrack: PreparedAudioTrack,
+    codecFloorMicroseconds: number,
+    accessUnitAllowanceMicroseconds: number
+): DecodedAudioOutputStage {
+    const audioEpoch = run.audioEpoch;
+    return new DecodedAudioOutputStage({
+        maximumOutputFrameCount: MAXIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT,
+        minimumOutputFrameCount: MINIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT,
+        onSourceFormat: sourceFormat => {
+            postDecodedAudioSourceFormat(run, audioEpoch, sourceFormat);
+        },
+        onTimelineCorrection: logAudioTimelineCorrection,
+        outputChannelCount: preparedAudioTrack.outputChannelCount,
+        routeCodec: preparedAudioTrack.routeCodec,
+        timestampToleranceMicroseconds: getAudioTimestampToleranceMicroseconds(
+            preparedAudioTrack.timeResolution,
+            codecFloorMicroseconds,
+            accessUnitAllowanceMicroseconds
+        )
+    });
+}
+
 function normalizeAudioSample(
     sample: AudioSample,
     preparedAudioTrack: PreparedAudioTrack,
     startTimeMicroseconds: Microseconds,
-    outputPipeline: StreamingAudioOutputPipeline,
+    outputStage: DecodedAudioOutputStage,
     audioDownmixAlgorithm: CustomAudioDownmixAlgorithm,
     downmixSettings: AudioDownmixSettings,
     streamingDownmixSettings: StreamingAudioDownmixSettings | null
@@ -1965,18 +2150,17 @@ function normalizeAudioSample(
             'Decoded audio timestamp'
         );
         if (
-            sample.numberOfChannels !== preparedAudioTrack.inputChannelCount
-            || sample.sampleRate !== preparedAudioTrack.sourceSampleRate
-        ) {
-            throw new UnsupportedCustomDecodeSourceError('Decoded audio format changed during playback');
-        }
-        if (
             !Number.isSafeInteger(sample.numberOfFrames)
             || sample.numberOfFrames <= 0
             || sample.numberOfFrames > MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE
         ) {
             throw new UnsupportedCustomDecodeSourceError('A decoded audio sample exceeded the supported size');
         }
+        const boundInput = outputStage.bind({
+            channelCount: sample.numberOfChannels,
+            layout: null,
+            sampleRate: sample.sampleRate
+        }, streamingDownmixSettings);
         const sampleWindow = getAudioSampleWindow(
             sampleTimeMicroseconds,
             sample.numberOfFrames,
@@ -1984,7 +2168,7 @@ function normalizeAudioSample(
             startTimeMicroseconds
         );
         if (!sampleWindow) {
-            return [];
+            return boundInput.outputs;
         }
 
         const inputChannelData: Float32Array[] = [];
@@ -2002,40 +2186,38 @@ function normalizeAudioSample(
         const channelData = prepareDecodedAudioOutputChannelData(
             inputChannelData,
             preparedAudioTrack,
-            preparedAudioTrack.inputChannelLayout,
+            boundInput.layout,
             audioDownmixAlgorithm,
             downmixSettings,
             streamingDownmixSettings
         );
-        return outputPipeline.push({
-            channelData,
-            mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds
-        });
+        return [
+            ...boundInput.outputs,
+            ...boundInput.pipeline.push({
+                channelData,
+                mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds
+            })
+        ];
     } finally {
         sample.close();
     }
 }
 
-function normalizeDTSAudioOutput(
-    output: DTSDecodedAudioOutput,
+/** Normalizes one DTS, E-AC-3, or TrueHD output, whose decoder reports its speaker layout. */
+function normalizeBundledAudioOutput(
+    output: BundledDecodedAudioOutput,
     preparedAudioTrack: PreparedAudioTrack,
     startTimeMicroseconds: Microseconds,
-    outputPipeline: StreamingAudioOutputPipeline,
+    outputStage: DecodedAudioOutputStage,
     audioDownmixAlgorithm: CustomAudioDownmixAlgorithm,
     downmixSettings: AudioDownmixSettings,
     streamingDownmixSettings: StreamingAudioDownmixSettings | null
 ): StreamingAudioResamplerOutput[] {
-    if (output.channelData.length !== preparedAudioTrack.inputChannelCount
-        || output.sampleRate !== preparedAudioTrack.sourceSampleRate
-        || !isSupportedCustomAudioInputLayout(
-            'dts',
-            output.channelData.length,
-            output.sampleRate
-        )) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'Decoded DTS audio format changed during playback'
-        );
-    }
+    const boundInput = outputStage.bind({
+        channelCount: output.channelData.length,
+        layout: output.channelLayout,
+        sampleRate: output.sampleRate
+    }, streamingDownmixSettings);
     const sampleWindow = getAudioSampleWindow(
         output.mediaTimeMicroseconds,
         output.frameCount,
@@ -2043,7 +2225,7 @@ function normalizeDTSAudioOutput(
         startTimeMicroseconds
     );
     if (!sampleWindow) {
-        return [];
+        return boundInput.outputs;
     }
 
     const inputChannelData: Float32Array[] = [];
@@ -2054,115 +2236,18 @@ function normalizeDTSAudioOutput(
     const channelData = prepareDecodedAudioOutputChannelData(
         inputChannelData,
         preparedAudioTrack,
-        output.channelLayout,
+        boundInput.layout,
         audioDownmixAlgorithm,
         downmixSettings,
         streamingDownmixSettings
     );
-    return outputPipeline.push({
-        channelData,
-        mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds
-    });
-}
-
-function normalizeEAC3AudioOutput(
-    output: EAC3DecodedAudioOutput,
-    preparedAudioTrack: PreparedAudioTrack,
-    startTimeMicroseconds: Microseconds,
-    outputPipeline: StreamingAudioOutputPipeline,
-    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm,
-    downmixSettings: AudioDownmixSettings,
-    streamingDownmixSettings: StreamingAudioDownmixSettings | null
-): StreamingAudioResamplerOutput[] {
-    if (preparedAudioTrack.decoderBackend !== 'eac3'
-        || output.channelData.length !== preparedAudioTrack.inputChannelCount
-        || output.sampleRate !== preparedAudioTrack.sourceSampleRate
-        || !isSupportedCustomAudioInputLayout(
-            'eac3',
-            output.channelData.length,
-            output.sampleRate
-        )) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'Decoded E-AC-3 audio format changed during playback'
-        );
-    }
-    const sampleWindow = getAudioSampleWindow(
-        output.mediaTimeMicroseconds,
-        output.frameCount,
-        output.sampleRate,
-        startTimeMicroseconds
-    );
-    if (!sampleWindow) {
-        return [];
-    }
-
-    const inputChannelData: Float32Array[] = [];
-    const endFrame = sampleWindow.frameOffset + sampleWindow.frameCount;
-    for (const channel of output.channelData) {
-        inputChannelData.push(channel.slice(sampleWindow.frameOffset, endFrame));
-    }
-    const channelData = prepareDecodedAudioOutputChannelData(
-        inputChannelData,
-        preparedAudioTrack,
-        output.channelLayout,
-        audioDownmixAlgorithm,
-        downmixSettings,
-        streamingDownmixSettings
-    );
-    return outputPipeline.push({
-        channelData,
-        mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds
-    });
-}
-
-function normalizeTrueHDAudioOutput(
-    output: TrueHDDecodedAudioOutput,
-    preparedAudioTrack: PreparedAudioTrack,
-    startTimeMicroseconds: Microseconds,
-    outputPipeline: StreamingAudioOutputPipeline,
-    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm,
-    downmixSettings: AudioDownmixSettings,
-    streamingDownmixSettings: StreamingAudioDownmixSettings | null
-): StreamingAudioResamplerOutput[] {
-    if (output.codec !== preparedAudioTrack.decoderBackend
-        || output.channelData.length !== preparedAudioTrack.inputChannelCount
-        || output.sampleRate !== preparedAudioTrack.sourceSampleRate
-        || !isSupportedCustomAudioInputLayout(
-            output.codec,
-            output.channelData.length,
-            output.sampleRate
-        )) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'Decoded TrueHD audio format changed during playback'
-        );
-    }
-    const sampleWindow = getAudioSampleWindow(
-        output.mediaTimeMicroseconds,
-        output.frameCount,
-        output.sampleRate,
-        startTimeMicroseconds
-    );
-    if (!sampleWindow) {
-        return [];
-    }
-
-    const inputChannelData: Float32Array[] = [];
-    const endFrame = sampleWindow.frameOffset + sampleWindow.frameCount;
-    for (const channel of output.channelData) {
-        inputChannelData.push(channel.slice(sampleWindow.frameOffset, endFrame));
-    }
-    const channelData = prepareDecodedAudioOutputChannelData(
-        inputChannelData,
-        preparedAudioTrack,
-        output.channelLayout,
-        audioDownmixAlgorithm,
-        downmixSettings,
-        streamingDownmixSettings
-    );
-    return outputPipeline.push({
-        channelData,
-        mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds
-    });
+    return [
+        ...boundInput.outputs,
+        ...boundInput.pipeline.push({
+            channelData,
+            mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds
+        })
+    ];
 }
 
 async function postNormalizedAudioOutput(
@@ -2546,6 +2631,8 @@ class OwnedHEVCStreamState {
         decoder: OwnedHEVCVideoDecoderPort,
         enhancementDecoder: OwnedHEVCVideoDecoderPort | null
     ): Promise<void> {
+        // The flush releases frames the decoders hold beyond the intake bound, such as reorder-held pictures
+        this.framePairs.beginFinalDrain();
         await decoder.flush();
         this.throwDecoderFailure();
         if (enhancementDecoder && this.canDecodeEnhancement()) {
@@ -2568,6 +2655,8 @@ class OwnedHEVCStreamState {
         run: DecodeRun,
         expectedGeometry: RawVideoFrameGeometry
     ): Promise<OwnedOutputPostResult> {
+        // A recorded failure surfaces before any further frame is posted
+        this.throwDecoderFailure();
         if (!this.framePairs.hasReadyPair()) {
             return 'none';
         }
@@ -2725,12 +2814,12 @@ function isOwnedHEVCDecoderBackpressured(
     enhancementDecoder: OwnedHEVCVideoDecoderPort | null,
     state: OwnedHEVCStreamState
 ): boolean {
-    if (decoder.getDecodeQueueSize() > OWNED_VIDEO_DECODER_QUEUE_HIGH_WATER_MARK) {
+    if (decoder.getDecodeQueueSize() >= OWNED_HEVC_DECODE_QUEUE_HIGH_WATER_MARK) {
         return true;
     }
     return state.canDecodeEnhancement()
         && enhancementDecoder !== null
-        && enhancementDecoder.getDecodeQueueSize() > OWNED_VIDEO_DECODER_QUEUE_HIGH_WATER_MARK;
+        && enhancementDecoder.getDecodeQueueSize() >= OWNED_HEVC_DECODE_QUEUE_HIGH_WATER_MARK;
 }
 
 async function pumpOwnedHEVCFrames(
@@ -3102,6 +3191,10 @@ async function streamOwnedHEVCFrames(
             preparedVideoTrack.geometry
         );
     } finally {
+        // Close the decoders first: an output arriving during the awaits below would otherwise land in the
+        // cleared queue and leak its frame
+        decoder.close();
+        enhancementDecoder?.close();
         state.close();
         rpuParser.close();
         try {
@@ -3110,8 +3203,6 @@ async function streamOwnedHEVCFrames(
             // Input disposal is the authoritative cancellation signal
         }
         await separateEnhancementStream?.pairer.retire();
-        decoder.close();
-        enhancementDecoder?.close();
     }
 }
 
@@ -3508,6 +3599,7 @@ async function runVideoAttempt(
     startTimeMicroseconds: Microseconds
 ): Promise<void> {
     run.videoAttemptCancelled = false;
+    run.videoTrackEnded = false;
     try {
         await streamVideoFrames(
             run,
@@ -3515,6 +3607,7 @@ async function runVideoAttempt(
             preparedVideoTrack
         );
         if (!isVideoAttemptStopped(run)) {
+            run.videoTrackEnded = true;
             // Audio can outlast the video track, so its end is reported separately
             postResponse({
                 generation: run.generation,
@@ -3569,26 +3662,10 @@ async function streamVideoAttempts(
     }
 }
 
-function createStreamingAudioOutputPipeline(
-    preparedAudioTrack: PreparedAudioTrack,
-    maximumTimestampQuantizationMicroseconds: number
-): StreamingAudioOutputPipeline {
-    const multichannelDownmixRequired = preparedAudioTrack.outputChannelCount === 2
-        && preparedAudioTrack.inputChannelLayout.channels.length > 2;
-    // Retain lookahead state so a later live boost never creates an unprotected interval
-    const peakLimiterEnabled = preparedAudioTrack.outputMode === 'decoded-pcm'
-        && multichannelDownmixRequired;
-    return new StreamingAudioOutputPipeline({
-        channelCount: preparedAudioTrack.outputChannelCount,
-        maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
-        maximumTimestampQuantizationMicroseconds,
-        minimumOutputFrameCount: MINIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT,
-        peakLimiterEnabled,
-        sourceSampleRate: preparedAudioTrack.sourceSampleRate,
-        targetSampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
-    });
-}
-
+/**
+ * Gives every stereo decoded PCM output live downmix gains, since any declared
+ * layout can decode to a multichannel bed that folds down.
+ */
 function createStreamingAudioDownmixSettings(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
@@ -3596,8 +3673,7 @@ function createStreamingAudioDownmixSettings(
 ): StreamingAudioDownmixSettings | null {
     if (!preparedAudioTrack
         || preparedAudioTrack.outputMode !== 'decoded-pcm'
-        || preparedAudioTrack.outputChannelCount !== 2
-        || preparedAudioTrack.inputChannelCount <= 2) {
+        || preparedAudioTrack.outputChannelCount !== 2) {
         return null;
     }
 
@@ -3618,9 +3694,11 @@ async function streamAudioSamples(
     const downmixSettings = request.audioDownmixSettings
         ?? createDefaultAudioDownmixSettings();
     const sampleSink = new AudioSampleSink(preparedAudioTrack.audioTrack);
-    const audioOutputPipeline = createStreamingAudioOutputPipeline(
+    const outputStage = createDecodedAudioOutputStage(
+        run,
         preparedAudioTrack,
-        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS
+        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+        NO_ACCESS_UNIT_ALLOWANCE_MICROSECONDS
     );
     const iterator = sampleSink.samples(
         microsecondsToSeconds(request.startTimeMicroseconds)
@@ -3634,7 +3712,7 @@ async function streamAudioSamples(
             return;
         }
         if (iteratorResult.done) {
-            await postNormalizedAudioOutput(run, audioOutputPipeline.finalize(), true);
+            await postNormalizedAudioOutput(run, outputStage.finalize(), true);
             return;
         }
 
@@ -3642,7 +3720,7 @@ async function streamAudioSamples(
             iteratorResult.value,
             preparedAudioTrack,
             request.startTimeMicroseconds,
-            audioOutputPipeline,
+            outputStage,
             audioDownmixAlgorithm,
             downmixSettings,
             run.audioDownmixSettings
@@ -3664,16 +3742,19 @@ async function streamDTSAudioPackets(
         ?? createDefaultAudioDownmixSettings();
     const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
     const seekRecovery = new DTSSeekRecovery(request.startTimeMicroseconds);
-    const startPacket = await packetSink.getPacket(
-        microsecondsToSeconds(seekRecovery.prerollTimeMicroseconds)
+    const startPacket = await getAudioStartPacket(
+        packetSink,
+        seekRecovery.prerollTimeMicroseconds
     );
     const iterator = packetSink.packets(startPacket ?? undefined) as unknown as
         MediaSampleIterator<EncodedPacket>;
     run.audioIterator = iterator;
     const decoder = await DTSSoftwareAudioDecoder.create();
-    const audioOutputPipeline = createStreamingAudioOutputPipeline(
+    const outputStage = createDecodedAudioOutputStage(
+        run,
         preparedAudioTrack,
-        DTS_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS
+        DTS_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+        NO_ACCESS_UNIT_ALLOWANCE_MICROSECONDS
     );
 
     try {
@@ -3684,7 +3765,7 @@ async function streamDTSAudioPackets(
             }
             if (iteratorResult.done) {
                 seekRecovery.requireSynchronizationRecovered();
-                await postNormalizedAudioOutput(run, audioOutputPipeline.finalize(), true);
+                await postNormalizedAudioOutput(run, outputStage.finalize(), true);
                 return;
             }
             const packet = iteratorResult.value;
@@ -3706,11 +3787,11 @@ async function streamDTSAudioPackets(
                 continue;
             }
             seekRecovery.markDecodeSucceeded();
-            const normalizedOutput = normalizeDTSAudioOutput(
+            const normalizedOutput = normalizeBundledAudioOutput(
                 output,
                 preparedAudioTrack,
                 request.startTimeMicroseconds,
-                audioOutputPipeline,
+                outputStage,
                 audioDownmixAlgorithm,
                 downmixSettings,
                 run.audioDownmixSettings
@@ -3734,16 +3815,16 @@ async function streamEAC3AudioPackets(
     const downmixSettings = request.audioDownmixSettings
         ?? createDefaultAudioDownmixSettings();
     const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
-    const startPacket = await packetSink.getPacket(
-        microsecondsToSeconds(request.startTimeMicroseconds)
-    );
+    const startPacket = await getAudioStartPacket(packetSink, request.startTimeMicroseconds);
     const iterator = packetSink.packets(startPacket ?? undefined) as unknown as
         MediaSampleIterator<EncodedPacket>;
     run.audioIterator = iterator;
     const decoder = await EAC3SoftwareAudioDecoder.create();
-    const audioOutputPipeline = createStreamingAudioOutputPipeline(
+    const outputStage = createDecodedAudioOutputStage(
+        run,
         preparedAudioTrack,
-        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS
+        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+        NO_ACCESS_UNIT_ALLOWANCE_MICROSECONDS
     );
 
     try {
@@ -3753,7 +3834,7 @@ async function streamEAC3AudioPackets(
                 return;
             }
             if (iteratorResult.done) {
-                await postNormalizedAudioOutput(run, audioOutputPipeline.finalize(), true);
+                await postNormalizedAudioOutput(run, outputStage.finalize(), true);
                 return;
             }
             const packet = iteratorResult.value;
@@ -3766,11 +3847,11 @@ async function streamEAC3AudioPackets(
             );
             const normalizedOutputs: StreamingAudioResamplerOutput[] = [];
             for (const output of decodedOutputs) {
-                normalizedOutputs.push(...normalizeEAC3AudioOutput(
+                normalizedOutputs.push(...normalizeBundledAudioOutput(
                     output,
                     preparedAudioTrack,
                     request.startTimeMicroseconds,
-                    audioOutputPipeline,
+                    outputStage,
                     audioDownmixAlgorithm,
                     downmixSettings,
                     run.audioDownmixSettings
@@ -3803,16 +3884,16 @@ async function streamTrueHDAudioPackets(
         0,
         request.startTimeMicroseconds - TRUEHD_MAJOR_SYNC_PREROLL_MICROSECONDS
     ) as Microseconds;
-    const startPacket = await packetSink.getPacket(
-        microsecondsToSeconds(prerollTimeMicroseconds)
-    );
+    const startPacket = await getAudioStartPacket(packetSink, prerollTimeMicroseconds);
     const iterator = packetSink.packets(startPacket ?? undefined) as unknown as
         MediaSampleIterator<EncodedPacket>;
     run.audioIterator = iterator;
     const decoder = await TrueHDSoftwareAudioDecoder.create(decoderCodec);
-    const audioOutputPipeline = createStreamingAudioOutputPipeline(
+    const outputStage = createDecodedAudioOutputStage(
+        run,
         preparedAudioTrack,
-        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS
+        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+        TRUEHD_ACCESS_UNIT_ALLOWANCE_MICROSECONDS
     );
 
     try {
@@ -3822,7 +3903,7 @@ async function streamTrueHDAudioPackets(
                 return;
             }
             if (iteratorResult.done) {
-                await postNormalizedAudioOutput(run, audioOutputPipeline.finalize(), true);
+                await postNormalizedAudioOutput(run, outputStage.finalize(), true);
                 return;
             }
             const packet = iteratorResult.value;
@@ -3835,11 +3916,11 @@ async function streamTrueHDAudioPackets(
             );
             const normalizedOutputs: StreamingAudioResamplerOutput[] = [];
             for (const output of decodedOutputs) {
-                normalizedOutputs.push(...normalizeTrueHDAudioOutput(
+                normalizedOutputs.push(...normalizeBundledAudioOutput(
                     output,
                     preparedAudioTrack,
                     request.startTimeMicroseconds,
-                    audioOutputPipeline,
+                    outputStage,
                     audioDownmixAlgorithm,
                     downmixSettings,
                     run.audioDownmixSettings
@@ -3918,9 +3999,7 @@ async function streamNativeAudioPackets(
         );
     }
     const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
-    const startPacket = await packetSink.getPacket(
-        microsecondsToSeconds(request.startTimeMicroseconds)
-    );
+    const startPacket = await getAudioStartPacket(packetSink, request.startTimeMicroseconds);
     const iterator = packetSink.packets(startPacket ?? undefined) as unknown as
         MediaSampleIterator<EncodedPacket>;
     run.audioIterator = iterator;
@@ -4005,7 +4084,6 @@ function createAudioAttemptTrack(
             'Only decoded PCM audio can change its output layout'
         );
     }
-    assertCustomAudioOutputChannelLayout(preparedAudioTrack.inputChannelLayout, outputChannelCount);
     return {
         ...preparedAudioTrack,
         audioConfiguration: {
@@ -4073,9 +4151,15 @@ async function streamAudioAttempts(
             continue;
         }
 
-        // A suspended or ended video stream no longer waits for a resync
+        // A video stream that reached its end no longer waits for a resync
         run.audioStreamFinished = true;
         wakeWaiters(run.wakeVideoControlWaiters);
+        // The final underflow is the end of the track, not starvation, while video plays on
+        postResponse({
+            audioEpoch: run.audioEpoch,
+            generation: run.generation,
+            type: 'audio-ended'
+        });
         if (!await waitForAudioAttemptResync(run)) {
             return;
         }
@@ -4116,12 +4200,19 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
             return;
         }
 
+        const containerDurationMicroseconds = request.reportContainerDuration === true ?
+            await readContainerDurationMicroseconds(input, preparedVideoTrack.videoTrack) :
+            null;
+        if (run.cancelled) {
+            return;
+        }
+
         run.audioDownmixSettings = createStreamingAudioDownmixSettings(
             run,
             request,
             preparedAudioTrack
         );
-        postReadyResponse(run, preparedVideoTrack, preparedAudioTrack);
+        postReadyResponse(run, preparedVideoTrack, preparedAudioTrack, containerDurationMicroseconds);
         run.audioStreamFinished = preparedAudioTrack === null;
         const streamPromises: Array<Promise<void>> = [];
         streamPromises.push(
@@ -4253,6 +4344,7 @@ function handleRequest(requestValue: unknown): void {
                 videoOutputMode: requestValue.videoOutputMode,
                 videoIterator: null,
                 videoStreamFinished: false,
+                videoTrackEnded: false,
                 wakeAudioControlWaiters: [],
                 wakeAudioCreditWaiters: [],
                 wakeFrameCreditWaiters: [],

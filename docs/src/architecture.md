@@ -41,9 +41,15 @@ in the diagram is engine code.
 
 - Decoded PCM: the worklet's render time, corrected to physical output time by
   `BrowserCustomAudioOutput` through `getOutputTimestamp`, re-anchors a
-  `performance.now` `MediaClock`.
-- Native-media audio: `<audio>.currentTime`.
-- No audio: `MediaClock` alone, held while video starves.
+  `performance.now` `MediaClock`. After each flush the worklet renders silence
+  from the flush position up to the first chunk's timestamp, so an audio track
+  that starts later than the video still clocks from the start position.
+- Native-media audio: `<audio>.currentTime`. A first fragment more than 40 ms
+  after the start position parks the element at the fragment, and `play()`
+  waits out the gap while the `MediaClock` runs alone.
+- No audio: `MediaClock` alone, held while video starves. An audio track that
+  ends before the video hands the clock to the `MediaClock` once its tail has
+  played out.
 
 Video is pulled: each rAF draws the newest frame at or before the clock.
 
@@ -53,7 +59,9 @@ Video is pulled: each rAF draws the newest frame at or before the clock.
    the stock-profile proof, runs `prewarmBrowserAudioContext(48000)`
    synchronously inside `play()` (the user-activation window), calls
    `presenter.startSession`, and queues `startBackendPlayback`.
-2. `startCustomPlaybackBounded` (host, 25 s) runs eligibility, described in
+2. `startCustomPlaybackBounded` (host, 25 s until the controller starts; the
+   controller's own startup bound applies after that) runs eligibility,
+   described in
    [Negotiation and routes](negotiation.md). It waits for the raw SDR prewarm.
    An HDR range-extension source also waits for the raw HDR prewarm, and a
    Dolby Vision source waits for its first-use key (Profile 4, or single-layer
@@ -65,7 +73,10 @@ Video is pulled: each rAF draws the newest frame at or before the clock.
    `configurePresentationColorPipeline` (host) installs the shaders and
    authorizes the exact route.
 4. `controller.play` creates a generation, resets the clock, emits `waiting`,
-   and starts a 20 s startup timer. `CustomDecodeSession.start` creates the
+   and starts the startup bound. It samples the decode counters every second
+   and fails after 20 s without progress, or at 60 s regardless. The fallback
+   message names the counters it reached, so a timeout shows where startup
+   stalled. `CustomDecodeSession.start` creates the
    prebuilt worker `libraries/webgpu-player/CustomDecode.worker.js`, keyed per
    build with `?v=`. Video gets 4 frame credits, or 2 for raw planes.
 5. The worker prepares its tracks (`canDecode`), scans static HDR SEI on the
@@ -99,9 +110,12 @@ Video credits:
 
 Audio credits:
 
-- PCM chunks are 40 ms to 65536 frames, with 8 credits. One credit returns per
-  chunk the worklet consumes. A gap, an overlap, or an overflow raises
-  `audio-output-failed`.
+- PCM chunks are 40 ms to 12000 frames, with 8 credits, so the credits can
+  never hold more than the 2 s worklet ring. One credit returns per chunk the
+  worklet consumes. The worker reconciles decoder timestamps within 2 s before
+  the resampler (see [Decisions](decisions.md#audio)) and fails the attempt as
+  `decode-failed` beyond that, so a gap, an overlap, or an overflow reaching
+  the bridge is an engine fault and raises `audio-output-failed`.
 - Native-media audio uses 2 MiB or 2 s segments, 2 credits, and appends at
   most 6 s ahead.
 
@@ -118,7 +132,9 @@ Hidden page, through `setPageVisibility` and `drainBackgroundVideo`:
   (host) takes and discards due frames against the clock. Credits keep flowing
   and audio stays the master.
 - After 10 s hidden, audio-clocked `native` decode sends `suspend-video`. The
-  worker unwinds only its video attempt and releases the decoder.
+  worker unwinds only its video attempt and releases the decoder. Once the
+  audio track has ended, only video can reach the end of the stream, so video
+  is no longer suspended and `audio-ended` resyncs a suspended decoder at once.
 - On return, a suspended video, or one more than 2 s behind, gets
   `resync-video` at the clock. The worker restarts video alone at the
   preceding keyframe and skips frames before the target. Waits restart, so
@@ -149,10 +165,12 @@ times the device pixel ratio, capped by `maxTextureDimension2D`.
   current time. Downmix gain changes apply live with a 20 ms ramp.
 - Audio output layout switch (`controller.reconfigureAudioOutput`): a new
   device layout, force stereo, or a new downmix algorithm restarts only decoded
-  audio while video keeps playing. The requested channel count is a ceiling:
-  the source's own speaker layout when it fits, else stereo. A request that
-  keeps the layout only records its downmix for later restarts, and a newer
-  request replaces a pending switch.
+  audio while video keeps playing. The requested channel count is a ceiling
+  applied to the decoded source layout, which the worker reports with
+  `audio-source-format`: three channels and 5.1 take 5.1, 6.1 and 7.1 take 7.1
+  or fold into 5.1, and anything else mixes to stereo. A request that keeps
+  the layout only records its downmix for later restarts, and a newer request
+  replaces a pending switch.
   1. The controller stops the output and picks a target 250 ms ahead of the
      clock (the current time when paused or waiting on an audio underflow).
   2. `session.resyncAudio` stops the old bridge and advances the audio epoch.
@@ -203,6 +221,16 @@ times the device pixel ratio, capped by `maxTextureDimension2D`.
 - End of stream: the worker flushes the resampler and limiter tails and posts
   `ended`. The controller emits `ended` once the bridge and worklet queues are
   empty, the output time has reached the end, and the video queues are empty.
+- Audio ends first: the worker posts `audio-ended` (epoch-tagged) when an audio
+  attempt finishes while video continues, and ends the run only once the video
+  track itself ended. The worklet's final underflow releases the audio tail
+  instead of starting an audio wait that would end in `playback-stalled`.
+  Unlike the end of stream drain, video waits stay in force and an
+  uncorrelated output does not pause the clock; once the tail is out, video
+  starvation holds the clock. The end also completes a start or audio resync
+  that has no PCM left to wait for. A native-media session sends
+  `endOfStream`, so `<audio>` plays out, and the clock then runs without the
+  element.
 - Stop: `controller.destroy` stops the worker (terminated after 1 s), releases
   the worklet and the sink lease (1.5 s cap), and ends the presenter session.
   The delegate stops the backend synchronously, so `stopped` stays in order.
@@ -247,6 +275,9 @@ Every stale callback is dropped by a generation or revision check:
 - The native external HDR route rewrites the SPS color to limited BT.709, and
   the shader recovers the 10-bit codes (Y*876+64, C*896+512). A frame with a
   colorSpace that is not neutral latches `decoded-frame-color-mismatch`.
+- The raw route checks each frame's colorSpace against the metadata, and a
+  null member is unspecified, so it never contradicts. SDR also matches a
+  `smpte170m` transfer, and HLG a `bt709` transfer on BT.2020 primaries.
 - WebGPU presentation on the HTML path is SDR only: a `<video>` external
   texture is browser-converted sRGB.
 - The add-on's `HtmlVideoPlayer.play()` (host) runs synchronously only when

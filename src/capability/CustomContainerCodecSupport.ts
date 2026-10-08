@@ -18,6 +18,12 @@ const CUSTOM_COMPRESSED_AUDIO_CODECS: readonly CustomAudioCodec[] = Object.freez
     'ac3',
     'eac3'
 ]);
+// The worker maps the dtsc, dtsh, dtsl, and mlpa sample entries Mediabunny leaves without a codec
+const CUSTOM_ISO_BASE_MEDIA_AUDIO_CODECS: readonly CustomAudioCodec[] = Object.freeze([
+    ...CUSTOM_COMPRESSED_AUDIO_CODECS,
+    'dts',
+    'truehd'
+]);
 const CUSTOM_ISO_BASE_MEDIA_PCM_AUDIO_CODECS: readonly CustomAudioCodec[] = Object.freeze([
     'pcm_s16le',
     'pcm_s16be',
@@ -65,7 +71,7 @@ export const CUSTOM_MATROSKA_PROFILE_CONTAINER = 'mkv';
 export const CUSTOM_CONTAINER_CODEC_RULES: readonly CustomContainerCodecRule[] =
     Object.freeze([
         Object.freeze({
-            audioCodecs: CUSTOM_COMPRESSED_AUDIO_CODECS,
+            audioCodecs: CUSTOM_ISO_BASE_MEDIA_AUDIO_CODECS,
             containerAliases: Object.freeze([ '3gp', '3g2', 'mj2' ]),
             profileContainers: Object.freeze([ 'mp4', 'm4v', 'mov' ]),
             videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
@@ -140,6 +146,24 @@ export function isCustomPlaybackContainer(container: string): boolean {
     return CUSTOM_CONTAINER_CODEC_RULES.some(rule => (
         ruleContainsContainer(rule, normalizedContainer)
     ));
+}
+
+/** Returns every profile container whose rules carry the audio codec, in rule order. */
+export function getCustomAudioCodecProfileContainers(
+    audioCodec: CustomAudioCodec
+): readonly string[] {
+    const containers: string[] = [];
+    for (const rule of CUSTOM_CONTAINER_CODEC_RULES) {
+        if (!rule.audioCodecs.includes(audioCodec)) {
+            continue;
+        }
+        for (const container of rule.profileContainers) {
+            if (!containers.includes(container)) {
+                containers.push(container);
+            }
+        }
+    }
+    return containers;
 }
 
 /** Composes independently supported tracks only when their container permits both. */

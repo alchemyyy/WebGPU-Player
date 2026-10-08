@@ -31,6 +31,12 @@ export const DEFAULT_NATIVE_AUDIO_RETAINED_BEHIND_MICROSECONDS =
     millisecondsToMicroseconds(5_000);
 export const DEFAULT_NATIVE_AUDIO_OPERATION_TIMEOUT_MICROSECONDS =
     millisecondsToMicroseconds(3_000);
+/** A first fragment starting later than this after the requested start parks the element on it */
+export const NATIVE_AUDIO_LATE_START_THRESHOLD_MICROSECONDS =
+    millisecondsToMicroseconds(40);
+/** A deferred play() timer that overshoots its gap by more than this advances the parked element */
+export const NATIVE_AUDIO_LATE_START_OVERSHOOT_THRESHOLD_MICROSECONDS =
+    millisecondsToMicroseconds(20);
 export type OwnedNativeMediaAudioState =
     | 'destroyed'
     | 'idle'
@@ -91,13 +97,28 @@ export type OwnedNativeMediaAudioBackendOptions = {
     revokeObjectURL?: (objectURL: string) => void
 };
 
-type AppendRoomWaiter = {
+type SegmentTimeRange = {
     endTimeMicroseconds: Microseconds
+    startTimeMicroseconds: Microseconds
+};
+
+type AppendRoomWaiter = {
     generation: number
     resolve: (available: boolean) => void
+    timeRange: SegmentTimeRange
+};
+
+type LateStartTimer = {
+    handle: ReturnType<typeof globalThis.setTimeout>
+    playbackRate: number
+    startedAtMicroseconds: Microseconds
 };
 
 const ZERO_MICROSECONDS = millisecondsToMicroseconds(0);
+const PLAY_INTERRUPTED_ERROR_NAME = 'AbortError';
+const DEFAULT_PLAY_FAILURE_MESSAGE = 'Native audio playback could not start';
+// Timestamp quantization can start the parked fragment's buffered range just after the parked point
+const PARKED_BUFFERED_RANGE_TOLERANCE_MICROSECONDS = millisecondsToMicroseconds(1);
 
 function requireGeneration(generation: number): number {
     if (!Number.isSafeInteger(generation) || generation <= 0) {
@@ -135,6 +156,56 @@ function revokeDefaultObjectURL(objectURL: string): void {
     globalThis.URL.revokeObjectURL(objectURL);
 }
 
+/** Reports whether a first fragment starts too far past the requested start to seek onto */
+function isLateStart(
+    requestedStartTimeMicroseconds: Microseconds,
+    firstSegmentStartMicroseconds: Microseconds
+): boolean {
+    return firstSegmentStartMicroseconds - requestedStartTimeMicroseconds
+        > NATIVE_AUDIO_LATE_START_THRESHOLD_MICROSECONDS;
+}
+
+/**
+ * Returns the end of the buffered range holding the parked point, or null when none holds it.
+ * A range may start up to the quantization tolerance after the point.
+ */
+function findParkedBufferedRangeEndMicroseconds(
+    bufferedRanges: TimeRanges,
+    parkedMicroseconds: Microseconds
+): Microseconds | null {
+    for (let rangeIndex = 0; rangeIndex < bufferedRanges.length; rangeIndex += 1) {
+        const rangeStartMicroseconds = secondsToMicroseconds(bufferedRanges.start(rangeIndex));
+        const rangeEndMicroseconds = secondsToMicroseconds(bufferedRanges.end(rangeIndex));
+        if (parkedMicroseconds < rangeEndMicroseconds
+            && rangeStartMicroseconds - parkedMicroseconds
+                <= PARKED_BUFFERED_RANGE_TOLERANCE_MICROSECONDS) {
+            return rangeEndMicroseconds;
+        }
+    }
+    return null;
+}
+
+function readMonotonicTimeMicroseconds(): Microseconds {
+    return millisecondsToMicroseconds(globalThis.performance.now());
+}
+
+/** Returns the media time a deferred play() timer has covered, advancing at its playback rate */
+function measureLateStartCoverageMicroseconds(lateStartTimer: LateStartTimer): Microseconds {
+    return Math.round(
+        (readMonotonicTimeMicroseconds() - lateStartTimer.startedAtMicroseconds)
+            * lateStartTimer.playbackRate
+    ) as Microseconds;
+}
+
+function getErrorName(error: unknown): string {
+    return error instanceof DOMException || error instanceof Error ? error.name : '';
+}
+
+function getPlayFailureMessage(error: unknown): string {
+    const message = error instanceof DOMException || error instanceof Error ? error.message : '';
+    return message || DEFAULT_PLAY_FAILURE_MESSAGE;
+}
+
 /** Owns one bounded audio-only MSE element without Jellyfin reporting behavior. */
 export default class OwnedNativeMediaAudioBackend {
     private activeGeneration: number | null = null;
@@ -145,6 +216,8 @@ export default class OwnedNativeMediaAudioBackend {
     private audioElement: HTMLAudioElement | null = null;
     private clockBaselineMicroseconds: Microseconds | null = null;
     private clockQualified = false;
+    // Deferred play() requests issued so far, which also numbers the latest one
+    private deferredPlayRequestCount = 0;
     private destroyed = false;
     private readonly appendElement: (audioElement: HTMLAudioElement) => void;
     private readonly audioOutputManager: WebGPUAudioOutputManager;
@@ -154,6 +227,11 @@ export default class OwnedNativeMediaAudioBackend {
     private readonly createObjectURL: (mediaSource: MediaSource) => string;
     private readonly eventHandler: OwnedNativeMediaAudioEventHandler;
     private initializationAppended = false;
+    // Deferred play() requests numbered up to this were interrupted by the backend's own pause, seek, or teardown
+    private interruptedDeferredPlayRequestCount = 0;
+    // Media time the parked element still waits before play(), negative once overdue, null without a late start
+    private lateStartGapMicroseconds: Microseconds | null = null;
+    private lateStartTimer: LateStartTimer | null = null;
     private readonly maximumAppendedAheadMicroseconds: Microseconds;
     private mediaSource: MediaSource | null = null;
     private readonly operationTimeoutMicroseconds: Microseconds;
@@ -285,10 +363,16 @@ export default class OwnedNativeMediaAudioBackend {
             || segment.data.byteLength > MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH) {
             return Promise.reject(new RangeError('Native audio segment byte length is outside bounds'));
         }
-        return this.enqueueAppend(generation, segment.data, segment.endTimeMicroseconds);
+        return this.enqueueAppend(generation, segment.data, {
+            endTimeMicroseconds: segment.endTimeMicroseconds,
+            startTimeMicroseconds: segment.startTimeMicroseconds
+        });
     }
 
-    /** Starts or pauses native output. Play failures remain visible to the caller. */
+    /**
+     * Starts or pauses native output. Play failures remain visible to the caller.
+     * A late start defers play() and reports its failure as an error event instead.
+     */
     public async setPlaying(generation: number, playing: boolean): Promise<boolean> {
         const audioElement = this.getCurrentAudioElement(generation);
         if (!audioElement) {
@@ -297,11 +381,23 @@ export default class OwnedNativeMediaAudioBackend {
         }
         if (!playing) {
             await this.audioOutputTargetLease?.setIntendedRunning(false);
+            if (this.isSessionCurrent(generation, audioElement, this.mediaSource)) {
+                this.suspendLateStartTimer();
+                // The pause() below aborts a deferred play() still in flight
+                this.markDeferredPlayInterrupted();
+            }
             audioElement.pause();
             this.state = 'paused';
             return true;
         }
         await this.audioOutputTargetLease?.setIntendedRunning(true);
+        if (this.lateStartGapMicroseconds !== null
+            && this.isSessionCurrent(generation, audioElement, this.mediaSource)) {
+            // The parked element stays silent until the clock reaches its first fragment
+            this.startLateStartTimer(generation, audioElement);
+            this.state = 'playing';
+            return true;
+        }
         try {
             await audioElement.play();
         } catch (error) {
@@ -332,7 +428,10 @@ export default class OwnedNativeMediaAudioBackend {
         return true;
     }
 
-    /** Seeks the native clock within currently appended media. */
+    /**
+     * Seeks the native clock within currently appended media.
+     * A pending late start is dropped, and a play() it was deferring starts at once.
+     */
     public seek(generation: number, mediaTimeMicroseconds: Microseconds): boolean {
         requireMicroseconds(mediaTimeMicroseconds, 'Native audio seek time');
         const audioElement = this.getCurrentAudioElement(generation);
@@ -340,11 +439,18 @@ export default class OwnedNativeMediaAudioBackend {
             this.staleOperationCount += 1;
             return false;
         }
+        const deferredPlayPending = this.lateStartTimer !== null;
+        this.clearLateStart();
+        // A deferred play() still in flight is interrupted here, unlike the one this seek may start
+        this.markDeferredPlayInterrupted();
         this.clockBaselineMicroseconds = mediaTimeMicroseconds;
         this.requestedStartTimeMicroseconds = mediaTimeMicroseconds;
         this.clockQualified = false;
         audioElement.currentTime = microsecondsToSeconds(mediaTimeMicroseconds);
         this.resolveAppendRoomWaiters();
+        if (deferredPlayPending) {
+            void this.playParkedElement(generation, audioElement);
+        }
         return true;
     }
 
@@ -370,6 +476,7 @@ export default class OwnedNativeMediaAudioBackend {
         if (this.audioElement) {
             this.audioElement.playbackRate = playbackRate;
         }
+        this.retimeLateStartTimer();
     }
 
     /** Returns native time only after decoded playback has physically advanced. */
@@ -471,7 +578,7 @@ export default class OwnedNativeMediaAudioBackend {
     private enqueueAppend(
         generation: number,
         data: Uint8Array,
-        endTimeMicroseconds: Microseconds | null
+        timeRange: SegmentTimeRange | null
     ): Promise<boolean> {
         requireGeneration(generation);
         const dataCopy = data.slice();
@@ -487,8 +594,8 @@ export default class OwnedNativeMediaAudioBackend {
                 this.staleOperationCount += 1;
                 return false;
             }
-            if (endTimeMicroseconds !== null
-                && !await this.waitForAppendRoom(generation, endTimeMicroseconds)) {
+            if (timeRange !== null
+                && !await this.waitForAppendRoom(generation, timeRange)) {
                 return false;
             }
             const appended = await this.appendBuffer(generation, dataCopy);
@@ -496,11 +603,11 @@ export default class OwnedNativeMediaAudioBackend {
                 return false;
             }
             this.appendedByteLength += dataCopy.byteLength;
-            if (endTimeMicroseconds === null) {
+            if (timeRange === null) {
                 this.initializationAppended = true;
             } else {
                 if (this.appendedSegmentCount === 0) {
-                    this.applyRequestedStartTime();
+                    this.applyRequestedStartTime(timeRange.startTimeMicroseconds);
                 }
                 this.appendedSegmentCount += 1;
                 await this.trimBufferedHistory(generation);
@@ -516,32 +623,39 @@ export default class OwnedNativeMediaAudioBackend {
 
     private waitForAppendRoom(
         generation: number,
-        endTimeMicroseconds: Microseconds
+        timeRange: SegmentTimeRange
     ): Promise<boolean> {
         if (!this.initializationAppended) {
             return Promise.reject(new Error('Native audio initialization segment is required'));
         }
-        if (this.hasAppendRoom(endTimeMicroseconds)) {
+        if (this.hasAppendRoom(timeRange)) {
             return Promise.resolve(true);
         }
         return new Promise<boolean>(resolve => {
             this.appendRoomWaiters.add({
-                endTimeMicroseconds,
                 generation,
-                resolve
+                resolve,
+                timeRange
             });
         });
     }
 
-    private hasAppendRoom(endTimeMicroseconds: Microseconds): boolean {
+    private hasAppendRoom(timeRange: SegmentTimeRange): boolean {
         let currentTimeMicroseconds = ZERO_MICROSECONDS;
-        if (this.appendedSegmentCount === 0
-            && this.requestedStartTimeMicroseconds !== null) {
-            currentTimeMicroseconds = this.requestedStartTimeMicroseconds;
+        const requestedStartTimeMicroseconds = this.requestedStartTimeMicroseconds;
+        if (this.appendedSegmentCount === 0 && requestedStartTimeMicroseconds !== null) {
+            // A late first fragment is measured from where the element will park on it
+            const lateStart = isLateStart(
+                requestedStartTimeMicroseconds,
+                timeRange.startTimeMicroseconds
+            );
+            currentTimeMicroseconds = lateStart ?
+                timeRange.startTimeMicroseconds :
+                requestedStartTimeMicroseconds;
         } else if (this.audioElement) {
             currentTimeMicroseconds = secondsToMicroseconds(this.audioElement.currentTime);
         }
-        return endTimeMicroseconds - currentTimeMicroseconds
+        return timeRange.endTimeMicroseconds - currentTimeMicroseconds
             <= this.maximumAppendedAheadMicroseconds;
     }
 
@@ -552,7 +666,7 @@ export default class OwnedNativeMediaAudioBackend {
                 waiter.resolve(false);
                 continue;
             }
-            if (!this.hasAppendRoom(waiter.endTimeMicroseconds)) {
+            if (!this.hasAppendRoom(waiter.timeRange)) {
                 continue;
             }
             this.appendRoomWaiters.delete(waiter);
@@ -682,7 +796,11 @@ export default class OwnedNativeMediaAudioBackend {
     private qualifyClockIfAdvanced(): void {
         const audioElement = this.audioElement;
         const baselineMicroseconds = this.clockBaselineMicroseconds;
-        if (this.clockQualified || !audioElement || baselineMicroseconds === null) {
+        // A parked late start is no clock, whatever position it reports, until play() begins
+        if (this.clockQualified
+            || !audioElement
+            || baselineMicroseconds === null
+            || this.lateStartGapMicroseconds !== null) {
             return;
         }
         const currentTimeMicroseconds = secondsToMicroseconds(audioElement.currentTime);
@@ -696,13 +814,160 @@ export default class OwnedNativeMediaAudioBackend {
         }
     }
 
-    private applyRequestedStartTime(): void {
+    /** Seeks to the requested start, or parks on a first fragment that starts late */
+    private applyRequestedStartTime(firstSegmentStartMicroseconds: Microseconds): void {
         const audioElement = this.audioElement;
         const requestedStartTimeMicroseconds = this.requestedStartTimeMicroseconds;
         if (!audioElement || requestedStartTimeMicroseconds === null) {
             return;
         }
-        audioElement.currentTime = microsecondsToSeconds(requestedStartTimeMicroseconds);
+        if (!isLateStart(requestedStartTimeMicroseconds, firstSegmentStartMicroseconds)) {
+            audioElement.currentTime = microsecondsToSeconds(requestedStartTimeMicroseconds);
+            return;
+        }
+        // Chromium only snaps a seek onto buffered media starting within one second, so park on it
+        audioElement.currentTime = microsecondsToSeconds(firstSegmentStartMicroseconds);
+        this.clockBaselineMicroseconds = firstSegmentStartMicroseconds;
+        // A play() requested before any media arrived starts at the fragment at once
+        if (!audioElement.paused) {
+            return;
+        }
+        this.lateStartGapMicroseconds = (
+            firstSegmentStartMicroseconds - requestedStartTimeMicroseconds
+        ) as Microseconds;
+    }
+
+    /** Defers play() until the media clock has covered the remaining late-start gap */
+    private startLateStartTimer(generation: number, audioElement: HTMLAudioElement): void {
+        const lateStartGapMicroseconds = this.lateStartGapMicroseconds;
+        if (lateStartGapMicroseconds === null || this.lateStartTimer) {
+            return;
+        }
+        const mediaSource = this.mediaSource;
+        const playbackRate = audioElement.playbackRate;
+        // An overdue gap left by a suspended timer plays at once
+        const delayMilliseconds = Math.max(
+            Math.ceil(microsecondsToMilliseconds(lateStartGapMicroseconds) / playbackRate),
+            0
+        );
+        const lateStartTimer: LateStartTimer = {
+            handle: globalThis.setTimeout((): void => {
+                // A stale timer must never play a replaced element
+                if (this.lateStartTimer !== lateStartTimer
+                    || !this.isSessionCurrent(generation, audioElement, mediaSource)) {
+                    return;
+                }
+                // Hidden tabs fire throttled timers late while the page clock keeps running
+                const overshootMicroseconds = (
+                    measureLateStartCoverageMicroseconds(lateStartTimer) - lateStartGapMicroseconds
+                ) as Microseconds;
+                this.clearLateStart();
+                this.advanceParkedElement(audioElement, overshootMicroseconds);
+                void this.playParkedElement(generation, audioElement);
+            }, delayMilliseconds),
+            playbackRate,
+            startedAtMicroseconds: readMonotonicTimeMicroseconds()
+        };
+        this.lateStartTimer = lateStartTimer;
+    }
+
+    /** Stops the deferred play() timer and keeps the gap it has not covered, negative once overdue */
+    private suspendLateStartTimer(): void {
+        const lateStartTimer = this.lateStartTimer;
+        const lateStartGapMicroseconds = this.lateStartGapMicroseconds;
+        if (!lateStartTimer || lateStartGapMicroseconds === null) {
+            return;
+        }
+        globalThis.clearTimeout(lateStartTimer.handle);
+        this.lateStartTimer = null;
+        // An overdue timer keeps its overshoot as a negative gap, so the resumed play() still catches up
+        this.lateStartGapMicroseconds = (
+            lateStartGapMicroseconds - measureLateStartCoverageMicroseconds(lateStartTimer)
+        ) as Microseconds;
+    }
+
+    /** Restarts a running deferred play() timer at the current element rate */
+    private retimeLateStartTimer(): void {
+        const generation = this.activeGeneration;
+        const audioElement = this.audioElement;
+        if (!this.lateStartTimer || generation === null || !audioElement) {
+            return;
+        }
+        this.suspendLateStartTimer();
+        this.startLateStartTimer(generation, audioElement);
+    }
+
+    /** Drops a pending late start together with its deferred play() timer */
+    private clearLateStart(): void {
+        if (this.lateStartTimer) {
+            globalThis.clearTimeout(this.lateStartTimer.handle);
+        }
+        this.lateStartTimer = null;
+        this.lateStartGapMicroseconds = null;
+    }
+
+    /**
+     * Moves the parked element and its clock baseline on by a late timer's overshoot before play().
+     * The move stops at the end of the buffered range holding the parked point and is skipped without one.
+     */
+    private advanceParkedElement(
+        audioElement: HTMLAudioElement,
+        overshootMicroseconds: Microseconds
+    ): void {
+        const parkedMicroseconds = this.clockBaselineMicroseconds;
+        if (overshootMicroseconds <= NATIVE_AUDIO_LATE_START_OVERSHOOT_THRESHOLD_MICROSECONDS
+            || parkedMicroseconds === null) {
+            return;
+        }
+        const bufferedEndMicroseconds = findParkedBufferedRangeEndMicroseconds(
+            audioElement.buffered,
+            parkedMicroseconds
+        );
+        if (bufferedEndMicroseconds === null) {
+            return;
+        }
+        const advancedMicroseconds = Math.min(
+            parkedMicroseconds + overshootMicroseconds,
+            bufferedEndMicroseconds
+        ) as Microseconds;
+        // The baseline moves first, so the moved position never counts as playback progress
+        this.clockBaselineMicroseconds = advancedMicroseconds;
+        audioElement.currentTime = microsecondsToSeconds(advancedMicroseconds);
+        this.resolveAppendRoomWaiters();
+    }
+
+    /** Records every deferred play() issued so far as interrupted by the backend itself */
+    private markDeferredPlayInterrupted(): void {
+        this.interruptedDeferredPlayRequestCount = this.deferredPlayRequestCount;
+    }
+
+    /**
+     * Plays the parked element and reports a rejected play() as an error event.
+     * Only an abort the backend caused through a pause, seek, or teardown stays silent.
+     */
+    private async playParkedElement(
+        generation: number,
+        audioElement: HTMLAudioElement
+    ): Promise<void> {
+        this.deferredPlayRequestCount += 1;
+        const playRequestNumber = this.deferredPlayRequestCount;
+        try {
+            await audioElement.play();
+        } catch (error) {
+            const interruptedByBackend = getErrorName(error) === PLAY_INTERRUPTED_ERROR_NAME
+                && playRequestNumber <= this.interruptedDeferredPlayRequestCount;
+            // A replaced session or the backend's own interruption is not a playback failure
+            if (interruptedByBackend
+                || !this.isSessionCurrent(generation, audioElement, this.mediaSource)) {
+                return;
+            }
+            this.state = 'paused';
+            await this.audioOutputTargetLease?.setIntendedRunning(false);
+            if (!this.isSessionCurrent(generation, audioElement, this.mediaSource)) {
+                return;
+            }
+            this.emitEvent({ generation, message: getPlayFailureMessage(error), type: 'error' });
+        }
     }
 
     private async teardownActiveSession(): Promise<void> {
@@ -711,6 +976,8 @@ export default class OwnedNativeMediaAudioBackend {
         const audioOutputTargetLease = this.audioOutputTargetLease;
         this.activeGeneration = null;
         this.audioOutputTargetLease = null;
+        this.clearLateStart();
+        this.markDeferredPlayInterrupted();
         if (audioElement) {
             // Silence the retired sink before asynchronous SourceBuffer cleanup can block
             audioElement.muted = true;

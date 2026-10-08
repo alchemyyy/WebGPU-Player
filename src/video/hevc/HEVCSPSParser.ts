@@ -31,11 +31,50 @@ const HEVC_LEVEL_MAXIMUM_LUMA_PICTURE_SAMPLE_COUNTS: Readonly<Partial<Record<num
         186: 35_651_584
     });
 
+// ITU-T H.273 colour_primaries code points
+const BT709_COLOR_PRIMARIES = 1;
+const BT470BG_COLOR_PRIMARIES = 5;
+const SMPTE170M_COLOR_PRIMARIES = 6;
+const SMPTE240M_COLOR_PRIMARIES = 7;
+const BT2020_COLOR_PRIMARIES = 9;
+const SMPTE432_COLOR_PRIMARIES = 12;
+// ITU-T H.273 transfer_characteristics code points
+const BT709_TRANSFER_CHARACTERISTICS = 1;
+const SMPTE170M_TRANSFER_CHARACTERISTICS = 6;
+const LINEAR_TRANSFER_CHARACTERISTICS = 8;
+const IEC61966_2_1_TRANSFER_CHARACTERISTICS = 13;
+const BT2020_10_BIT_TRANSFER_CHARACTERISTICS = 14;
+const BT2020_12_BIT_TRANSFER_CHARACTERISTICS = 15;
+const PQ_TRANSFER_CHARACTERISTICS = 16;
+const HLG_TRANSFER_CHARACTERISTICS = 18;
+// ITU-T H.273 matrix_coeffs code points
+const BT709_MATRIX_COEFFICIENTS = 1;
+const BT470BG_MATRIX_COEFFICIENTS = 5;
+const SMPTE170M_MATRIX_COEFFICIENTS = 6;
+const BT2020_NCL_MATRIX_COEFFICIENTS = 9;
+
+/** The WebCodecs and Mediabunny names an SPS VUI colour_primaries value maps to. */
+export type HEVCSPSColorPrimaries = 'bt2020' | 'bt470bg' | 'bt709' | 'smpte170m' | 'smpte432';
+/** The WebCodecs and Mediabunny names an SPS VUI transfer_characteristics value maps to. */
+export type HEVCSPSTransferCharacteristics =
+    | 'bt709'
+    | 'hlg'
+    | 'iec61966-2-1'
+    | 'linear'
+    | 'pq'
+    | 'smpte170m';
+/** The WebCodecs and Mediabunny names an SPS VUI matrix_coeffs value maps to. */
+export type HEVCSPSMatrixCoefficients = 'bt2020-ncl' | 'bt470bg' | 'bt709' | 'smpte170m';
+
+/**
+ * An SPS VUI color description in WebCodecs names.
+ * A null member is unspecified, reserved, or without a WebCodecs name, like the BT.2020 transfers of HLG-compatible streams.
+ */
 export type HEVCSPSColorSpace = {
     fullRange: boolean
-    matrix: 'bt2020-ncl' | 'bt709'
-    primaries: 'bt2020' | 'bt709'
-    transfer: 'bt709' | 'hlg' | 'pq'
+    matrix: HEVCSPSMatrixCoefficients | null
+    primaries: HEVCSPSColorPrimaries | null
+    transfer: HEVCSPSTransferCharacteristics | null
 };
 
 export type HEVCSPSConfiguration = {
@@ -121,9 +160,18 @@ type ProfileTierLevel = {
 };
 
 type ParsedVUI = {
+    colorDescriptionCodes: VUIColorDescriptionCodes | null
     colorDescriptionOffsets: VUIColorDescriptionOffsets | null
     colorSpace: HEVCSPSColorSpace | null
     fieldSequence: boolean
+};
+
+/** The raw H.273 code points of a VUI color description. */
+type VUIColorDescriptionCodes = {
+    fullRange: boolean
+    matrix: number
+    primaries: number
+    transfer: number
 };
 
 type VUIColorDescriptionOffsets = {
@@ -293,39 +341,77 @@ function parseShortTermReferencePictureSets(
     }
 }
 
-function mapColorSpace(
-    primariesValue: number,
-    transferValue: number,
-    matrixValue: number,
-    fullRange: boolean
-): HEVCSPSColorSpace {
-    if (primariesValue === 1 && transferValue === 1 && matrixValue === 1) {
-        return {
-            fullRange,
-            matrix: 'bt709',
-            primaries: 'bt709',
-            transfer: 'bt709'
-        };
+function mapColorPrimaries(primariesValue: number): HEVCSPSColorPrimaries | null {
+    switch (primariesValue) {
+        case BT709_COLOR_PRIMARIES:
+            return 'bt709';
+        case BT470BG_COLOR_PRIMARIES:
+            return 'bt470bg';
+        // SMPTE 240M has the SMPTE 170M chromaticities
+        case SMPTE170M_COLOR_PRIMARIES:
+        case SMPTE240M_COLOR_PRIMARIES:
+            return 'smpte170m';
+        case BT2020_COLOR_PRIMARIES:
+            return 'bt2020';
+        case SMPTE432_COLOR_PRIMARIES:
+            return 'smpte432';
+        default:
+            return null;
     }
-    if (primariesValue === 9 && matrixValue === 9) {
-        switch (transferValue) {
-            case 16:
-                return {
-                    fullRange,
-                    matrix: 'bt2020-ncl',
-                    primaries: 'bt2020',
-                    transfer: 'pq'
-                };
-            case 18:
-                return {
-                    fullRange,
-                    matrix: 'bt2020-ncl',
-                    primaries: 'bt2020',
-                    transfer: 'hlg'
-                };
-        }
+}
+
+function mapTransferCharacteristics(transferValue: number): HEVCSPSTransferCharacteristics | null {
+    switch (transferValue) {
+        case BT709_TRANSFER_CHARACTERISTICS:
+            return 'bt709';
+        case SMPTE170M_TRANSFER_CHARACTERISTICS:
+            return 'smpte170m';
+        case LINEAR_TRANSFER_CHARACTERISTICS:
+            return 'linear';
+        case IEC61966_2_1_TRANSFER_CHARACTERISTICS:
+            return 'iec61966-2-1';
+        case PQ_TRANSFER_CHARACTERISTICS:
+            return 'pq';
+        case HLG_TRANSFER_CHARACTERISTICS:
+            return 'hlg';
+        // NOTE: The BT.2020 10 and 12-bit transfers have no WebCodecs name, so they are unspecified here too
+        default:
+            return null;
     }
-    throw new TypeError('The HEVC SPS VUI color description is unsupported');
+}
+
+function mapMatrixCoefficients(matrixValue: number): HEVCSPSMatrixCoefficients | null {
+    switch (matrixValue) {
+        case BT709_MATRIX_COEFFICIENTS:
+            return 'bt709';
+        case BT470BG_MATRIX_COEFFICIENTS:
+            return 'bt470bg';
+        case SMPTE170M_MATRIX_COEFFICIENTS:
+            return 'smpte170m';
+        case BT2020_NCL_MATRIX_COEFFICIENTS:
+            return 'bt2020-ncl';
+        default:
+            return null;
+    }
+}
+
+/**
+ * Maps a VUI color description to WebCodecs names without rejecting any value.
+ * Unspecified, reserved, and unnamed values become null members, and a description with no named member is null.
+ */
+function mapColorSpace(codes: VUIColorDescriptionCodes): HEVCSPSColorSpace | null {
+    const primaries = mapColorPrimaries(codes.primaries);
+    const transfer = mapTransferCharacteristics(codes.transfer);
+    const matrix = mapMatrixCoefficients(codes.matrix);
+    if (primaries === null && transfer === null && matrix === null) {
+        return null;
+    }
+    return {
+        fullRange: codes.fullRange,
+        matrix,
+        primaries,
+        transfer
+    };
 }
 
 function parseVUI(reader: BoundedBitReader): ParsedVUI {
@@ -338,12 +424,14 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
     if (reader.readFlag('overscan_info_present_flag')) {
         reader.skipBits(1, 'overscan_appropriate_flag');
     }
+    let colorDescriptionCodes: VUIColorDescriptionCodes | null = null;
     let colorDescriptionOffsets: VUIColorDescriptionOffsets | null = null;
-    let colorSpace: HEVCSPSColorSpace | null = null;
+    let signaledFullRange = false;
     if (reader.readFlag('video_signal_type_present_flag')) {
         reader.skipBits(3, 'video_format');
         const fullRangeOffset = reader.getBitOffset();
         const fullRange = reader.readFlag('video_full_range_flag');
+        signaledFullRange = fullRange;
         if (reader.readFlag('colour_description_present_flag')) {
             const primariesOffset = reader.getBitOffset();
             const primariesValue = reader.readBits(8, 'colour_primaries');
@@ -351,18 +439,18 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
             const transferValue = reader.readBits(8, 'transfer_characteristics');
             const matrixOffset = reader.getBitOffset();
             const matrixValue = reader.readBits(8, 'matrix_coeffs');
+            colorDescriptionCodes = {
+                fullRange,
+                matrix: matrixValue,
+                primaries: primariesValue,
+                transfer: transferValue
+            };
             colorDescriptionOffsets = {
                 fullRange: fullRangeOffset,
                 matrix: matrixOffset,
                 primaries: primariesOffset,
                 transfer: transferOffset
             };
-            colorSpace = mapColorSpace(
-                primariesValue,
-                transferValue,
-                matrixValue,
-                fullRange
-            );
         }
     }
 
@@ -380,10 +468,23 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
     const fieldSequence = reader.readFlag('field_seq_flag');
     reader.skipBits(1, 'frame_field_info_present_flag');
 
+    const describedColorSpace = colorDescriptionCodes === null ? null : mapColorSpace(colorDescriptionCodes);
     return {
+        colorDescriptionCodes,
         colorDescriptionOffsets,
-        colorSpace,
+        // Full range survives an absent or wholly unspecified colour description; limited is the default anyway
+        colorSpace: describedColorSpace ?? (signaledFullRange ? createFullRangeOnlyColorSpace() : null),
         fieldSequence
+    };
+}
+
+/** A full-range signal with no named primaries, transfer, or matrix */
+function createFullRangeOnlyColorSpace(): HEVCSPSColorSpace {
+    return {
+        fullRange: true,
+        matrix: null,
+        primaries: null,
+        transfer: null
     };
 }
 
@@ -656,10 +757,15 @@ function parseHEVCSPSSyntax(nalUnit: Uint8Array): ParsedHEVCSPS {
     );
     reader.skipBits(1, 'sps_temporal_mvp_enabled_flag');
     reader.skipBits(1, 'strong_intra_smoothing_enabled_flag');
-    if (!reader.readFlag('vui_parameters_present_flag')) {
-        throw new TypeError('The HEVC SPS has no VUI parameters');
-    }
-    const vui = parseVUI(reader);
+    // An SPS without VUI leaves its color unspecified and field_seq_flag inferred as 0
+    const vui: ParsedVUI = reader.readFlag('vui_parameters_present_flag') ?
+        parseVUI(reader) :
+        {
+            colorDescriptionCodes: null,
+            colorDescriptionOffsets: null,
+            colorSpace: null,
+            fieldSequence: false
+        };
     if (vui.fieldSequence) {
         throw new TypeError('The HEVC SPS describes an interlaced field sequence');
     }
@@ -717,40 +823,77 @@ export function parseHEVCSPS(nalUnit: Uint8Array): HEVCSPSConfiguration {
     return parseHEVCSPSSyntax(nalUnit).configuration;
 }
 
-/** Rewrites an existing VUI color description without changing coded video syntax. */
+/**
+ * Returns whether a VUI transfer proves an HDR route.
+ * An alternative transfer characteristics SEI value overrides the VUI.
+ * Without one, an HLG route also accepts the BT.2020 10 and 12-bit transfers that HLG-compatible streams signal.
+ */
+function provesHDRTransfer(
+    transferValue: number,
+    expectedHDRTransfer: HEVCHDRTransfer,
+    preferredTransferCharacteristics: number | null
+): boolean {
+    const effectiveTransferValue = preferredTransferCharacteristics ?? transferValue;
+    switch (expectedHDRTransfer) {
+        case 'pq':
+            // A PQ VUI proves PQ whatever the SEI suggests; the SEI only matters for a compatible-signaled VUI
+            return transferValue === PQ_TRANSFER_CHARACTERISTICS
+                || effectiveTransferValue === PQ_TRANSFER_CHARACTERISTICS;
+        case 'hlg':
+            return effectiveTransferValue === HLG_TRANSFER_CHARACTERISTICS
+                || (
+                    preferredTransferCharacteristics === null
+                    && (
+                        transferValue === BT2020_10_BIT_TRANSFER_CHARACTERISTICS
+                        || transferValue === BT2020_12_BIT_TRANSFER_CHARACTERISTICS
+                    )
+                );
+    }
+}
+
+/**
+ * Rewrites an existing VUI color description without changing coded video syntax.
+ * An expected HDR route requires limited range, BT.2020 primaries, the BT.2020 non-constant-luminance matrix, and the route's transfer.
+ * The access unit's preferred_transfer_characteristics, from an alternative transfer characteristics SEI, overrides the VUI transfer.
+ */
 export function rewriteHEVCSPSColorDescriptionToBT709(
     nalUnit: Uint8Array,
-    expectedHDRTransfer?: HEVCHDRTransfer
+    expectedHDRTransfer?: HEVCHDRTransfer,
+    preferredTransferCharacteristics: number | null = null
 ): Uint8Array {
     const parsedSPS = parseHEVCSPSSyntax(nalUnit);
     const offsets = parsedSPS.VUI.colorDescriptionOffsets;
-    if (!offsets) {
+    const codes = parsedSPS.VUI.colorDescriptionCodes;
+    if (!offsets || !codes) {
         throw new TypeError('The HEVC SPS has no VUI color description to rewrite');
     }
-    const colorSpace = parsedSPS.configuration.colorSpace;
     if (expectedHDRTransfer !== undefined && (
-        colorSpace?.fullRange !== false
-        || colorSpace.matrix !== 'bt2020-ncl'
-        || colorSpace.primaries !== 'bt2020'
-        || colorSpace.transfer !== expectedHDRTransfer
+        codes.fullRange
+        || codes.primaries !== BT2020_COLOR_PRIMARIES
+        || codes.matrix !== BT2020_NCL_MATRIX_COEFFICIENTS
+        || !provesHDRTransfer(
+            codes.transfer,
+            expectedHDRTransfer,
+            preferredTransferCharacteristics
+        )
     )) {
         throw new TypeError(
             'The HEVC SPS does not match the expected limited-range BT.2020 HDR route'
         );
     }
     if (
-        colorSpace?.fullRange === false
-        && colorSpace.matrix === 'bt709'
-        && colorSpace.primaries === 'bt709'
-        && colorSpace.transfer === 'bt709'
+        !codes.fullRange
+        && codes.matrix === BT709_MATRIX_COEFFICIENTS
+        && codes.primaries === BT709_COLOR_PRIMARIES
+        && codes.transfer === BT709_TRANSFER_CHARACTERISTICS
     ) {
         return nalUnit.slice();
     }
 
     const rewrittenRBSP = parsedSPS.RBSP.slice();
     writeBits(rewrittenRBSP, offsets.fullRange, 1, 0);
-    writeBits(rewrittenRBSP, offsets.primaries, 8, 1);
-    writeBits(rewrittenRBSP, offsets.transfer, 8, 1);
-    writeBits(rewrittenRBSP, offsets.matrix, 8, 1);
+    writeBits(rewrittenRBSP, offsets.primaries, 8, BT709_COLOR_PRIMARIES);
+    writeBits(rewrittenRBSP, offsets.transfer, 8, BT709_TRANSFER_CHARACTERISTICS);
+    writeBits(rewrittenRBSP, offsets.matrix, 8, BT709_MATRIX_COEFFICIENTS);
     return createNALUnitFromRBSP(nalUnit, rewrittenRBSP);
 }

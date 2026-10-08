@@ -5,7 +5,11 @@ import {
     getQualifiedCustomWaveChannelLayout,
     type QualifiedCustomWaveChannelLayout
 } from '../processing/CustomWaveChannelLayout';
-import { requireMicroseconds } from '../../TimeMath';
+import {
+    addMicroseconds,
+    audioFramesToMicroseconds,
+    requireMicroseconds
+} from '../../TimeMath';
 
 const TRUEHD_MAXIMUM_PACKET_SIZE = 2 * 1024 * 1024;
 const TRUEHD_MAXIMUM_DECODED_FRAME_COUNT = 16_384;
@@ -19,7 +23,6 @@ const TRUEHD_AV_SAMPLE_FORMAT_S32 = 2;
 const TRUEHD_ATMOS_PROFILE = 30;
 const TRUEHD_FNV1A_OFFSET_BASIS = 2_166_136_261;
 const TRUEHD_FNV1A_PRIME = 16_777_619;
-const TRUEHD_QUALIFIED_CHANNEL_COUNTS = new Set<number>([ 2, 6, 8 ]);
 const TRUEHD_SUPPORTED_BITS_PER_SAMPLE = new Set<number>([ 16, 20, 24 ]);
 
 export const TRUEHD_CODEC_MLP = 0;
@@ -217,6 +220,7 @@ export default class TrueHDSoftwareAudioDecoder {
         }
 
         const outputs: TrueHDDecodedAudioOutput[] = [];
+        let emittedFrameCount = 0;
         for (let outputIndex = 0;
             outputIndex < TRUEHD_MAXIMUM_OUTPUT_COUNT_PER_PACKET;
             outputIndex += 1) {
@@ -229,7 +233,9 @@ export default class TrueHDSoftwareAudioDecoder {
                     `Bundled TrueHD frame receive failed with status ${receiveStatus}`
                 );
             }
-            outputs.push(this.copyCurrentOutput(mediaTimeMicroseconds));
+            const output = this.copyCurrentOutput(mediaTimeMicroseconds, emittedFrameCount);
+            outputs.push(output);
+            emittedFrameCount += output.frameCount;
         }
         throw new RangeError('Bundled TrueHD output exceeded the per-packet bound');
     }
@@ -249,8 +255,14 @@ export default class TrueHDSoftwareAudioDecoder {
         this.functions.destroy(this.decoder);
     }
 
+    /**
+     * Copies the received frame. FFmpeg resets the packet timestamp after a
+     * partial consume, so a later frame of the same packet without one starts
+     * where the packet's earlier frames ended.
+     */
     private copyCurrentOutput(
-        fallbackMediaTimeMicroseconds: Microseconds
+        packetMediaTimeMicroseconds: Microseconds,
+        precedingPacketFrameCount: number
     ): TrueHDDecodedAudioOutput {
         const frameCount = this.functions.getSampleCount(this.decoder);
         if (!Number.isSafeInteger(frameCount)
@@ -273,9 +285,7 @@ export default class TrueHDSoftwareAudioDecoder {
         const channelCount = this.functions.getChannelCount(this.decoder);
         const channelMask = this.functions.getChannelMask(this.decoder) >>> 0;
         const qualifiedLayout = getQualifiedCustomWaveChannelLayout(channelMask);
-        if (!qualifiedLayout
-            || qualifiedLayout.channelCount !== channelCount
-            || !TRUEHD_QUALIFIED_CHANNEL_COUNTS.has(channelCount)) {
+        if (!qualifiedLayout || qualifiedLayout.channelCount !== channelCount) {
             throw new RangeError(
                 `Bundled TrueHD channel mask 0x${channelMask.toString(16)} is unqualified`
             );
@@ -334,7 +344,10 @@ export default class TrueHDSoftwareAudioDecoder {
         const mediaTimeMicroseconds = Number.isSafeInteger(decodedPTS)
             && decodedPTS >= 0 ?
             requireMicroseconds(decodedPTS, 'Decoded TrueHD timestamp') :
-            fallbackMediaTimeMicroseconds;
+            addMicroseconds(
+                packetMediaTimeMicroseconds,
+                audioFramesToMicroseconds(precedingPacketFrameCount, sampleRate)
+            );
         return {
             bitsPerSample: bitsPerSample as 16 | 20 | 24,
             channelData,

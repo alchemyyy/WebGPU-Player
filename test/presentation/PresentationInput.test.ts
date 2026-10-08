@@ -707,9 +707,24 @@ describe('getDolbyVisionBaseColorMetadata', () => {
         })).toMatchObject({ transfer: 'pq' });
     });
 
+    it('treats an unknown ColorTransfer as absent, so the compatibility ID declares the base', () => {
+        expect(getDolbyVisionBaseColorMetadata(createOptions({
+            BitDepth: 10,
+            ColorTransfer: 'unknown',
+            DvBlSignalCompatibilityId: 1,
+            DvProfile: 8
+        }))).toMatchObject({
+            bitDepth: 10,
+            matrix: 'bt2020-ncl',
+            primaries: 'bt2020',
+            range: 'limited',
+            transfer: 'pq'
+        });
+    });
+
     it.each([
         { BitDepth: 10, ColorTransfer: 'smpte2084', DvBlSignalCompatibilityId: 2, DvProfile: 8 },
-        { BitDepth: 10, ColorTransfer: 'unknown', DvBlSignalCompatibilityId: 1, DvProfile: 8 },
+        { BitDepth: 10, ColorTransfer: 'arib-std-b67', DvBlSignalCompatibilityId: 1, DvProfile: 8 },
         { BitDepth: 8, DvBlSignalCompatibilityId: 1, DvProfile: 8 },
         { BitDepth: 10, DvBlSignalCompatibilityId: 0, DvProfile: 8 },
         { BitDepth: 10, DvBlSignalCompatibilityId: 1, DvProfile: 5 },
@@ -890,13 +905,133 @@ describe('parseVideoStreamColorMetadata', () => {
         { Type: 'Video', VideoRange: 'SDR', VideoRangeType: 'HDR10' },
         { ColorTransfer: 'smpte2084', Type: 'Video', VideoRangeType: 'HLG' },
         { BitDepth: 8, Type: 'Video', VideoRangeType: 'HDR10' },
-        { ColorSpace: 'smpte170m', Type: 'Video', VideoRangeType: 'SDR' },
+        { ColorSpace: 'smpte240m', Type: 'Video', VideoRangeType: 'SDR' },
         { ColorPrimaries: 'display-p3', Type: 'Video', VideoRangeType: 'SDR' },
-        { ColorRange: 'unknown', Type: 'Video', VideoRangeType: 'SDR' },
+        { ColorRange: 'studio', Type: 'Video', VideoRangeType: 'SDR' },
+        { ColorTransfer: 'bt470bg', Type: 'Video', VideoRangeType: 'SDR' },
         { Hdr10PlusPresentFlag: true, Type: 'Video', VideoRangeType: 'SDR' }
     ])('rejects unknown, Dolby Vision, or contradictory metadata: %o', stream => {
         expect(parseVideoStreamColorMetadata(stream)).toBeNull();
     });
+
+    it.each([
+        {
+            expected: { bitDepth: 8, matrix: 'smpte170m', primaries: 'smpte170m', transfer: 'sdr' },
+            stream: {
+                BitDepth: 8,
+                ColorPrimaries: 'smpte170m',
+                ColorSpace: 'smpte170m',
+                ColorTransfer: 'bt709',
+                Type: 'Video',
+                VideoRange: 'SDR',
+                VideoRangeType: 'SDR'
+            }
+        },
+        {
+            expected: { bitDepth: 8, matrix: 'smpte170m', primaries: 'smpte170m', transfer: 'sdr' },
+            stream: {
+                BitDepth: 8,
+                ColorPrimaries: 'smpte170m',
+                ColorSpace: 'smpte170m',
+                ColorTransfer: 'smpte170m',
+                Type: 'Video',
+                VideoRange: 'SDR',
+                VideoRangeType: 'SDR'
+            }
+        },
+        {
+            expected: { bitDepth: 10, matrix: 'smpte170m', primaries: 'smpte170m', transfer: 'sdr' },
+            stream: {
+                BitDepth: 10,
+                ColorPrimaries: 'smpte170m',
+                ColorSpace: 'smpte170m',
+                ColorTransfer: 'smpte170m',
+                Type: 'Video',
+                VideoRange: 'SDR',
+                VideoRangeType: 'SDR'
+            }
+        },
+        {
+            expected: { bitDepth: 10, matrix: 'bt2020-ncl', primaries: 'bt2020', transfer: 'sdr' },
+            stream: {
+                BitDepth: 10,
+                ColorPrimaries: 'bt2020',
+                ColorSpace: 'bt2020nc',
+                ColorTransfer: 'bt2020-10',
+                Type: 'Video',
+                VideoRange: 'SDR',
+                VideoRangeType: 'SDR'
+            }
+        },
+        {
+            expected: { bitDepth: 12, matrix: 'bt2020-ncl', primaries: 'bt2020', transfer: 'sdr' },
+            stream: {
+                BitDepth: 12,
+                ColorPrimaries: 'bt2020',
+                ColorSpace: 'bt2020nc',
+                ColorTransfer: 'bt2020-12',
+                Type: 'Video',
+                VideoRangeType: 'SDR'
+            }
+        },
+        {
+            expected: { bitDepth: 8, matrix: 'bt470bg', primaries: 'bt470bg', transfer: 'sdr' },
+            stream: {
+                ColorPrimaries: 'bt470bg',
+                ColorSpace: 'bt470bg',
+                ColorTransfer: 'bt709',
+                Type: 'Video',
+                VideoRangeType: 'SDR'
+            }
+        },
+        {
+            // SMPTE 240M primaries share the SMPTE 170M chromaticities
+            expected: { bitDepth: 8, matrix: 'smpte170m', primaries: 'smpte170m', transfer: 'sdr' },
+            stream: {
+                ColorPrimaries: 'smpte240m',
+                ColorSpace: 'smpte170m',
+                Type: 'Video',
+                VideoRangeType: 'SDR'
+            }
+        }
+    ])('accepts BT.601 and BT.2020 SDR color: $stream', ({ expected, stream }) => {
+        expect(parseVideoStreamColorMetadata(stream)).toMatchObject({
+            ...expected,
+            range: 'limited'
+        });
+    });
+
+    it('defaults the primaries of an SDR stream that names only a BT.601 matrix', () => {
+        expect(parseVideoStreamColorMetadata({
+            ColorSpace: 'smpte170m',
+            Type: 'Video',
+            VideoRangeType: 'SDR'
+        })).toMatchObject({
+            matrix: 'smpte170m',
+            primaries: 'bt709',
+            transfer: 'sdr'
+        });
+    });
+
+    it.each([ 'unknown', 'reserved', 'unspecified' ])(
+        'treats a %s color field as absent so the SDR defaults apply',
+        absentValue => {
+            expect(parseVideoStreamColorMetadata({
+                ColorPrimaries: absentValue,
+                ColorRange: absentValue,
+                ColorSpace: absentValue,
+                ColorTransfer: absentValue,
+                Type: 'Video',
+                VideoRangeType: 'SDR'
+            })).toMatchObject({
+                bitDepth: 8,
+                matrix: 'bt709',
+                primaries: 'bt709',
+                range: 'limited',
+                transfer: 'sdr'
+            });
+        }
+    );
 });
 
 describe('getPresentationInputColorMetadata', () => {

@@ -141,6 +141,8 @@ export type DecodeWorkerStartRequest = {
     nativeHDRTransfer: CustomDecodeNativeHDRTransfer
     neutralizeHDRColorMetadata: boolean
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
+    /** Asks for the container's duration in the ready response, because the server reported none */
+    reportContainerDuration?: boolean
     startTimeMicroseconds: Microseconds
     type: 'start'
     url: string
@@ -247,6 +249,8 @@ export type DecodeWorkerReadyResponse = {
     codec: string
     codedHeight: number
     codedWidth: number
+    /** The duration in the container's metadata, sent only when the start request asked for it */
+    containerDurationMicroseconds?: Microseconds
     displayHeight: number
     displayWidth: number
     generation: number
@@ -349,7 +353,25 @@ export type DecodeWorkerVideoEndedResponse = {
     videoEpoch: number
 };
 
+/** Reports the audio track's end while video may still continue. */
+export type DecodeWorkerAudioEndedResponse = {
+    audioEpoch: number
+    generation: number
+    type: 'audio-ended'
+};
+
+/** Reports the format the audio decoder actually produces, which can differ from the declared one. */
+export type DecodeWorkerAudioSourceFormatResponse = {
+    audioEpoch: number
+    channelCount: number
+    generation: number
+    sampleRate: number
+    type: 'audio-source-format'
+};
+
 export type DecodeWorkerResponse =
+    | DecodeWorkerAudioEndedResponse
+    | DecodeWorkerAudioSourceFormatResponse
     | DecodeWorkerAudioResponse
     | DecodeWorkerEndedResponse
     | DecodeWorkerErrorResponse
@@ -626,6 +648,10 @@ function getRawVideoFormatValidation(
         default:
             return null;
     }
+}
+
+function isOptionalBoolean(value: unknown): value is boolean | undefined {
+    return value === undefined || typeof value === 'boolean';
 }
 
 function isNullableString(value: unknown): value is string | null {
@@ -984,6 +1010,7 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                     && value.nativeHDRTransfer === null);
             return typeof value.url === 'string'
                 && value.url.length > 0
+                && isOptionalBoolean(value.reportContainerDuration)
                 && isDolbyVisionProfile(value.dolbyVisionProfile)
                 && isCodecAssetURL(value.dolbyVisionRPUParserWASMURL)
                 && isMicroseconds(value.startTimeMicroseconds)
@@ -1087,6 +1114,9 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
                 && isPositiveInteger(value.displayHeight)
                 && isPositiveInteger(value.displayWidth)
                 && (value.audio === null || isAudioConfiguration(value.audio))
+                && (!Object.prototype.hasOwnProperty.call(value, 'containerDurationMicroseconds')
+                    || (isMicroseconds(value.containerDurationMicroseconds)
+                        && Number(value.containerDurationMicroseconds) > 0))
                 && (!Object.prototype.hasOwnProperty.call(value, 'staticHDRMetadataScan')
                     || isStaticHDRMetadataScanResult(value.staticHDRMetadataScan));
         case 'frame':
@@ -1132,6 +1162,13 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
             return true;
         case 'error':
             return isFailureKind(value.failureKind) && typeof value.message === 'string';
+        case 'audio-ended':
+            return isAudioEpoch(value.audioEpoch, true);
+        case 'audio-source-format':
+            return isAudioEpoch(value.audioEpoch, true)
+                && isPositiveInteger(value.channelCount)
+                && Number(value.channelCount) <= MAX_DECODED_AUDIO_CHANNELS
+                && isSupportedCustomAudioSampleRate(value.sampleRate);
         case 'video-ended':
             return isVideoEpoch(value.videoEpoch, true);
         case 'video-interrupted':

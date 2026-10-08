@@ -200,6 +200,140 @@ describe('DolbyVisionFramePairQueue', () => {
         })).toThrow('frame pair queue exceeded its bound');
     });
 
+    it('never retains a rejected frame that the caller closes', () => {
+        const closeBaseFrame = vi.fn();
+        const queue = new DolbyVisionFramePairQueue<TestFrame, TestFrame>(
+            closeBaseFrame,
+            (): void => undefined
+        );
+        queue.finishEnhancement();
+        for (
+            let frameIndex = 0;
+            frameIndex < MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH;
+            frameIndex += 1
+        ) {
+            queue.enqueueBaseFrame({
+                frame: createFrame(`base-${frameIndex}`),
+                mediaTimeMicroseconds: requireMicroseconds(frameIndex * 1_000)
+            });
+        }
+        const rejected = createFrame('rejected');
+        expect(() => queue.enqueueBaseFrame({
+            frame: rejected,
+            mediaTimeMicroseconds: requireMicroseconds(
+                MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH * 1_000
+            )
+        })).toThrow('frame pair queue exceeded its bound');
+
+        // The freed slot belongs to the next frame, not to the frame the caller already closed
+        expect(queue.takeReadyPair()?.baseFrame.id).toBe('base-0');
+        const next = createFrame('next');
+        queue.enqueueBaseFrame({
+            frame: next,
+            mediaTimeMicroseconds: requireMicroseconds(
+                (MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH + 1) * 1_000
+            )
+        });
+        const drainedIds: string[] = [];
+        for (let framePair = queue.takeReadyPair(); framePair; framePair = queue.takeReadyPair()) {
+            drainedIds.push(framePair.baseFrame.id);
+        }
+        expect(drainedIds).not.toContain('rejected');
+        expect(drainedIds.at(-1)).toBe('next');
+        queue.close();
+        expect(closeBaseFrame).not.toHaveBeenCalledWith(rejected);
+    });
+
+    it('releases frames held back by a full ready queue when a pair is taken', () => {
+        const queue = new DolbyVisionFramePairQueue<TestFrame, TestFrame>(
+            (): void => undefined,
+            (): void => undefined
+        );
+        for (
+            let frameIndex = 0;
+            frameIndex < MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH;
+            frameIndex += 1
+        ) {
+            const mediaTimeMicroseconds = requireMicroseconds(frameIndex * 1_000);
+            queue.enqueueBaseFrame({ frame: createFrame(`base-${frameIndex}`), mediaTimeMicroseconds });
+            queue.enqueueEnhancementFrame({
+                frame: createFrame(`enhancement-${frameIndex}`),
+                mediaTimeMicroseconds
+            });
+        }
+        // The ready queue is full; this base frame waits for its enhancement layer
+        queue.takeReadyPair();
+        const waitingTime = requireMicroseconds(MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH * 1_000);
+        queue.enqueueBaseFrame({ frame: createFrame('waiting'), mediaTimeMicroseconds: waitingTime });
+        queue.enqueueEnhancementFrame({ frame: createFrame('waiting-enhancement'), mediaTimeMicroseconds: waitingTime });
+
+        const drainedIds: string[] = [];
+        for (let framePair = queue.takeReadyPair(); framePair; framePair = queue.takeReadyPair()) {
+            drainedIds.push(framePair.baseFrame.id);
+        }
+        expect(drainedIds.at(-1)).toBe('waiting');
+    });
+
+    it('accepts the decoders\' last frames past the bound during the final drain', () => {
+        const queue = new DolbyVisionFramePairQueue<TestFrame, TestFrame>(
+            (): void => undefined,
+            (): void => undefined
+        );
+        queue.finishEnhancement();
+        queue.beginFinalDrain();
+        const overflowCount = MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH + 3;
+        for (let frameIndex = 0; frameIndex < overflowCount; frameIndex += 1) {
+            queue.enqueueBaseFrame({
+                frame: createFrame(`base-${frameIndex}`),
+                mediaTimeMicroseconds: requireMicroseconds(frameIndex * 1_000)
+            });
+        }
+
+        const drainedIds: string[] = [];
+        for (let framePair = queue.takeReadyPair(); framePair; framePair = queue.takeReadyPair()) {
+            drainedIds.push(framePair.baseFrame.id);
+        }
+        expect(drainedIds).toHaveLength(overflowCount);
+        expect(drainedIds.at(-1)).toBe(`base-${overflowCount - 1}`);
+    });
+
+    it('keeps enhancement frames that still match when the layer ends with a full ready queue', () => {
+        const closeEnhancementFrame = vi.fn();
+        const queue = new DolbyVisionFramePairQueue<TestFrame, TestFrame>(
+            (): void => undefined,
+            closeEnhancementFrame
+        );
+        const pairedCount = MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH - 2;
+        for (let frameIndex = 0; frameIndex < pairedCount; frameIndex += 1) {
+            const mediaTimeMicroseconds = requireMicroseconds(frameIndex * 1_000);
+            queue.enqueueBaseFrame({ frame: createFrame(`base-${frameIndex}`), mediaTimeMicroseconds });
+            queue.enqueueEnhancementFrame({ frame: createFrame(`enhancement-${frameIndex}`), mediaTimeMicroseconds });
+        }
+        // Three base frames wait for their layer; two pairs fill the ready queue and the third waits
+        for (let frameIndex = pairedCount; frameIndex < pairedCount + 3; frameIndex += 1) {
+            queue.enqueueBaseFrame({
+                frame: createFrame(`base-${frameIndex}`),
+                mediaTimeMicroseconds: requireMicroseconds(frameIndex * 1_000)
+            });
+        }
+        for (let frameIndex = pairedCount; frameIndex < pairedCount + 3; frameIndex += 1) {
+            queue.enqueueEnhancementFrame({
+                frame: createFrame(`enhancement-${frameIndex}`),
+                mediaTimeMicroseconds: requireMicroseconds(frameIndex * 1_000)
+            });
+        }
+        queue.finishEnhancement();
+
+        const lastEnhancementId = `enhancement-${pairedCount + 2}`;
+        expect(closeEnhancementFrame).not.toHaveBeenCalledWith(expect.objectContaining({ id: lastEnhancementId }));
+        let lastPair = queue.takeReadyPair();
+        for (let framePair = lastPair; framePair; framePair = queue.takeReadyPair()) {
+            lastPair = framePair;
+        }
+        expect(lastPair?.baseFrame.id).toBe(`base-${pairedCount + 2}`);
+        expect(lastPair?.enhancementFrame?.id).toBe(lastEnhancementId);
+    });
+
     it('closes every retained ownership unit exactly once', () => {
         const closeBaseFrame = vi.fn();
         const closeEnhancementFrame = vi.fn();

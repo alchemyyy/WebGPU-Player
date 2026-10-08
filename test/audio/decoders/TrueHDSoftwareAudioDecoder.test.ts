@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { FFmpegTrueHDModule } from '#wasm/ffmpeg-truehd/ffmpeg-truehd.mjs';
 import {
     CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_SIDE,
+    CUSTOM_WAVE_CHANNEL_MASK_MONO,
     CUSTOM_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE,
     CUSTOM_WAVE_CHANNEL_MASK_STEREO
 } from 'webgpu-player/audio/processing/CustomWaveChannelLayout';
@@ -18,12 +19,19 @@ const PACKET_POINTER = 128;
 const OUTPUT_POINTER = 512;
 const LIBAVCODEC_VERSION = 4_064_612;
 const TRUEHD_ATMOS_PROFILE = 30;
+// AV_NOPTS_VALUE as the bridge returns it, a double far outside the safe integer range
+const FFMPEG_NO_PRESENTATION_TIMESTAMP = -(2 ** 63);
+const DEFAULT_PRESENTATION_TIMESTAMP = 1_250_000;
+// One 1/1200 s access unit at 48 kHz
+const TRUEHD_ACCESS_UNIT_FRAME_COUNT = 40;
 
 type FakeDecoderOptions = Readonly<{
     bitsPerSample?: number
     channelCount?: number
     channelMask?: number
+    presentationTimestamps?: readonly number[]
     receiveStatuses?: readonly number[]
+    sampleCount?: number
     sampleFormat?: number
     sampleRate?: number
     sendStatus?: number
@@ -47,6 +55,7 @@ function createFakeTrueHDDecoder(
     const createCodecIDs: number[] = [];
     const destroyCalls: number[] = [];
     const receiveStatuses = [ ...(options.receiveStatuses ?? [ 1, 0 ]) ];
+    const presentationTimestamps = [ ...(options.presentationTimestamps ?? []) ];
     const functions = new Map<string, (...arguments_: number[]) => number | void>([
         [ 'jellyfin_truehd_clear', (decoder: number): void => {
             clearCalls.push(decoder);
@@ -69,8 +78,9 @@ function createFakeTrueHDDecoder(
             options.channelMask ?? CUSTOM_WAVE_CHANNEL_MASK_STEREO ],
         [ 'jellyfin_truehd_get_interleaved_data', (): number => OUTPUT_POINTER ],
         [ 'jellyfin_truehd_get_profile', (): number => TRUEHD_ATMOS_PROFILE ],
-        [ 'jellyfin_truehd_get_pts', (): number => 1_250_000 ],
-        [ 'jellyfin_truehd_get_sample_count', (): number => 2 ],
+        [ 'jellyfin_truehd_get_pts', (): number =>
+            presentationTimestamps.shift() ?? DEFAULT_PRESENTATION_TIMESTAMP ],
+        [ 'jellyfin_truehd_get_sample_count', (): number => options.sampleCount ?? 2 ],
         [ 'jellyfin_truehd_get_sample_format', (): number => options.sampleFormat ?? 2 ],
         [ 'jellyfin_truehd_get_sample_rate', (): number => options.sampleRate ?? 48_000 ],
         [ 'jellyfin_truehd_library_version', (): number => LIBAVCODEC_VERSION ],
@@ -158,7 +168,36 @@ describe('TrueHDSoftwareAudioDecoder', () => {
         expect(Array.from(outputs[0].channelData[1])).toEqual([ 0.5, 0.25 ]);
     });
 
+    it('stamps later access units of one packet after the frames that packet already produced', async () => {
+        // FFmpeg resets the packet timestamp after the first partial consume
+        const fakeDecoder = createFakeTrueHDDecoder({
+            presentationTimestamps: [
+                3_000_000,
+                FFMPEG_NO_PRESENTATION_TIMESTAMP,
+                FFMPEG_NO_PRESENTATION_TIMESTAMP
+            ],
+            receiveStatuses: [ 1, 1, 1, 0 ],
+            sampleCount: TRUEHD_ACCESS_UNIT_FRAME_COUNT
+        });
+        const decoder = await TrueHDSoftwareAudioDecoder.create(
+            'truehd',
+            fakeDecoder.moduleFactory
+        );
+
+        const outputs = decoder.decode(
+            new Uint8Array([ 1 ]),
+            requireMicroseconds(3_000_000, 'Test packet timestamp')
+        );
+
+        expect(outputs.map(output => output.mediaTimeMicroseconds)).toEqual([
+            3_000_000,
+            3_000_833,
+            3_001_667
+        ]);
+    });
+
     it.each([
+        [ 1, CUSTOM_WAVE_CHANNEL_MASK_MONO, 48_000 ],
         [ 2, CUSTOM_WAVE_CHANNEL_MASK_STEREO, 48_000 ],
         [ 2, CUSTOM_WAVE_CHANNEL_MASK_STEREO, 44_100 ],
         [ 6, CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_SIDE, 96_000 ],

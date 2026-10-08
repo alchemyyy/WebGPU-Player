@@ -24,9 +24,45 @@ function createBytesFromHex(hex: string): Uint8Array {
 const MAIN10_PQ_SPS = createBytesFromHex(
     '4201010220000003009000000300000300ffa005020169365959a4932bc05a848804820000030002000003000210'
 );
+// A Main10 SPS whose VUI signals BT.2020 primaries and matrix with the BT.2020 10-bit transfer, as HLG-compatible streams do
+const MAIN10_BT2020_10_SPS = createBytesFromHex(
+    '42010102200000030090000003000003003fa005020171f2b6595952930bc05a848704820000030002000003003010'
+);
+const ALTERNATIVE_TRANSFER_CHARACTERISTICS_PAYLOAD_TYPE = 147;
+const HLG_TRANSFER_CHARACTERISTICS = 18;
+const PQ_TRANSFER_CHARACTERISTICS = 16;
+const NEUTRAL_COLOR_SPACE = {
+    fullRange: false,
+    matrix: 'bt709',
+    primaries: 'bt709',
+    transfer: 'bt709'
+};
 
 function createNALUnit(type: number, payload: readonly number[]): Uint8Array {
     return new Uint8Array([ (type & 0x3F) << 1, 1, ...payload ]);
+}
+
+/** Creates a prefix SEI NAL unit with one alternative transfer characteristics message. */
+function createAlternativeTransferSEI(preferredTransferCharacteristics: number): Uint8Array {
+    return createNALUnit(39, [
+        ALTERNATIVE_TRANSFER_CHARACTERISTICS_PAYLOAD_TYPE,
+        1,
+        preferredTransferCharacteristics,
+        0x80
+    ]);
+}
+
+function createNeutralizingDecoder(
+    harness: DecoderHarness,
+    nativeHDRTransfer: 'hlg' | 'pq'
+): OwnedNativeHEVCVideoDecoder {
+    return new OwnedNativeHEVCVideoDecoder(
+        { codec: 'hvc1.2.4.L120.B0', codedHeight: 1_080, codedWidth: 1_920 },
+        { kind: 'annex-b' },
+        { onError: vi.fn(), onFrame: vi.fn(), onProgress: vi.fn() },
+        harness.dependencies,
+        { nativeHDRTransfer, neutralizeHDRColorMetadata: true }
+    );
 }
 
 function encodeAnnexBNALUnits(nalUnits: readonly Uint8Array[]): Uint8Array {
@@ -126,9 +162,18 @@ class FakeVideoFrame {
     public readonly close = vi.fn();
 }
 
+// Mirrors Chromium: close() on a closed codec throws, and an error callback arrives after the codec closed itself
 class FakeNativeVideoDecoder implements NativeVideoDecoderPort {
-    public readonly close = vi.fn();
-    public readonly configure = vi.fn();
+    public state: CodecState = 'unconfigured';
+    public readonly close = vi.fn((): void => {
+        if (this.state === 'closed') {
+            throw new DOMException('Cannot call \'close\' on a closed codec.', 'InvalidStateError');
+        }
+        this.state = 'closed';
+    });
+    public readonly configure = vi.fn((): void => {
+        this.state = 'configured';
+    });
     public readonly decode = vi.fn();
     public decodeQueueSize = 0;
     public readonly flush = vi.fn(async (): Promise<void> => undefined);
@@ -187,6 +232,55 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
         decoder.close();
         decoder.close();
         expect(harness.decoder.close).toHaveBeenCalledOnce();
+    });
+
+    it('surfaces a codec error and never closes a codec WebCodecs already closed', async () => {
+        const harness = createHarness();
+        const onError = vi.fn();
+        const decoder = new OwnedNativeHEVCVideoDecoder(
+            { codec: 'hvc1.2.4.L153.B0' },
+            { kind: 'annex-b' },
+            { onError, onFrame: vi.fn(), onProgress: vi.fn() },
+            harness.dependencies
+        );
+        await decoder.init();
+        const codecError = new DOMException('Decoding error.', 'EncodingError');
+        harness.decoder.state = 'closed';
+        harness.init?.error(codecError);
+
+        expect(onError).toHaveBeenCalledWith(codecError);
+        let thrownError: unknown = null;
+        try {
+            decoder.decode(createPacket(new Uint8Array([0, 0, 1, 0x26, 0x01]), 0));
+        } catch (error) {
+            thrownError = error;
+        }
+        expect(thrownError).toBe(codecError);
+        expect(harness.decoder.decode).not.toHaveBeenCalled();
+        await expect(decoder.flush()).rejects.toBe(codecError);
+        expect(() => decoder.close()).not.toThrow();
+        expect(harness.decoder.close).not.toHaveBeenCalled();
+    });
+
+    it('keeps codec reclamation identifiable by its error name', async () => {
+        const harness = createHarness();
+        const decoder = new OwnedNativeHEVCVideoDecoder(
+            { codec: 'hvc1.2.4.L153.B0' },
+            { kind: 'annex-b' },
+            { onError: vi.fn(), onFrame: vi.fn(), onProgress: vi.fn() },
+            harness.dependencies
+        );
+        await decoder.init();
+        harness.decoder.state = 'closed';
+        harness.init?.error(new DOMException('Codec reclaimed due to inactivity.', 'QuotaExceededError'));
+
+        let thrownError: unknown = null;
+        try {
+            decoder.decode(createPacket(new Uint8Array([0, 0, 1, 0x26, 0x01]), 0));
+        } catch (error) {
+            thrownError = error;
+        }
+        expect((thrownError as DOMException).name).toBe('QuotaExceededError');
     });
 
     it('sanitizes the first access unit and drops leading RASL pictures', async () => {
@@ -363,6 +457,71 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
         ))).toThrow('expected limited-range BT.2020 HDR route');
         expect(mismatchedTransferHarness.packets).toHaveLength(0);
         mismatchedTransferDecoder.close();
+    });
+
+    it('proves an HLG-compatible key SPS on the HLG route with or without its SEI', async () => {
+        const accessUnits = [
+            encodeAnnexBNALUnits([
+                MAIN10_BT2020_10_SPS,
+                createAlternativeTransferSEI(HLG_TRANSFER_CHARACTERISTICS),
+                createNALUnit(19, [ 1 ])
+            ]),
+            encodeAnnexBNALUnits([ MAIN10_BT2020_10_SPS, createNALUnit(19, [ 1 ]) ])
+        ];
+        for (const accessUnit of accessUnits) {
+            const harness = createHarness();
+            const decoder = createNeutralizingDecoder(harness, 'hlg');
+            await decoder.init();
+
+            expect(decoder.decode(createPacket(accessUnit, 0))).toBe(true);
+            expect(parseHEVCSPS(getFirstAnnexBNALUnit(harness.packets[0].data)).colorSpace)
+                .toEqual(NEUTRAL_COLOR_SPACE);
+            decoder.close();
+        }
+    });
+
+    it('routes an HLG-compatible key SPS by the transfer its SEI names', async () => {
+        const accessUnit = encodeAnnexBNALUnits([
+            MAIN10_BT2020_10_SPS,
+            createAlternativeTransferSEI(PQ_TRANSFER_CHARACTERISTICS),
+            createNALUnit(19, [ 1 ])
+        ]);
+        const hlgHarness = createHarness();
+        const hlgDecoder = createNeutralizingDecoder(hlgHarness, 'hlg');
+        await hlgDecoder.init();
+        const pqHarness = createHarness();
+        const pqDecoder = createNeutralizingDecoder(pqHarness, 'pq');
+        await pqDecoder.init();
+
+        expect(() => hlgDecoder.decode(createPacket(accessUnit, 0)))
+            .toThrow('expected limited-range BT.2020 HDR route');
+        expect(hlgHarness.packets).toHaveLength(0);
+        expect(pqDecoder.decode(createPacket(accessUnit, 0))).toBe(true);
+        expect(pqHarness.packets).toHaveLength(1);
+        hlgDecoder.close();
+        pqDecoder.close();
+    });
+
+    it('treats a malformed key SEI as absent, so the SPS VUI alone must prove the route', async () => {
+        // The message declares a one-byte payload that the NAL unit does not carry
+        const malformedSEI = createNALUnit(39, [ ALTERNATIVE_TRANSFER_CHARACTERISTICS_PAYLOAD_TYPE, 1 ]);
+        const accessUnit = encodeAnnexBNALUnits([
+            MAIN10_BT2020_10_SPS,
+            malformedSEI,
+            createNALUnit(19, [ 1 ])
+        ]);
+        const hlgHarness = createHarness();
+        const hlgDecoder = createNeutralizingDecoder(hlgHarness, 'hlg');
+        await hlgDecoder.init();
+        const pqHarness = createHarness();
+        const pqDecoder = createNeutralizingDecoder(pqHarness, 'pq');
+        await pqDecoder.init();
+
+        expect(hlgDecoder.decode(createPacket(accessUnit, 0))).toBe(true);
+        expect(() => pqDecoder.decode(createPacket(accessUnit, 0)))
+            .toThrow('expected limited-range BT.2020 HDR route');
+        hlgDecoder.close();
+        pqDecoder.close();
     });
 
     it('transfers native frame ownership directly and closes stale callbacks', async () => {

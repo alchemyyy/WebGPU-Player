@@ -97,6 +97,34 @@ describe('StreamingAudioDownmixSettings', () => {
         });
     });
 
+    it('rescales a ramp in progress and later ramps to the decoded source rate', () => {
+        const streamingSettings = new StreamingAudioDownmixSettings(
+            10,
+            1_000,
+            createSettings(1, 1, 1)
+        );
+        streamingSettings.update(10, createSettings(0, 1, 1));
+        expect(streamingSettings.takeBlock(10).ramp?.frameCount).toBe(10);
+
+        // Ten frames remain at 1 kHz, which is twenty at 2 kHz
+        streamingSettings.setSampleRate(2_000);
+        const rescaledBlock = streamingSettings.takeBlock(25);
+        expect(rescaledBlock.ramp).toMatchObject({
+            centerLevelStep: -0.025,
+            frameCount: 20,
+            initialCenterLevel: 0.5
+        });
+        expect(rescaledBlock.settings).toEqual(createSettings(0, 1, 1));
+
+        // A new 20 ms ramp at 2 kHz spans 40 frames
+        streamingSettings.update(10, createSettings(1, 1, 1));
+        expect(streamingSettings.takeBlock(64).ramp?.frameCount).toBe(40);
+        streamingSettings.setSampleRate(2_000);
+        expect(() => streamingSettings.setSampleRate(0)).toThrow(
+            'Audio downmix sample rate must be a positive safe integer'
+        );
+    });
+
     it('applies the transition per frame instead of stepping one PCM block', () => {
         const frameCount = 20;
         const inputChannelData: Float32Array[] = [];

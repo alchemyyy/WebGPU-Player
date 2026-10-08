@@ -4,8 +4,10 @@ import type { FFmpegEAC3Module } from '#wasm/ffmpeg-eac3/ffmpeg-eac3.mjs';
 import {
     CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_BACK,
     CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_SIDE,
+    CUSTOM_WAVE_CHANNEL_MASK_MONO,
     CUSTOM_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE,
-    CUSTOM_WAVE_CHANNEL_MASK_STEREO
+    CUSTOM_WAVE_CHANNEL_MASK_STEREO,
+    CUSTOM_WAVE_CHANNEL_MASK_THREE_POINT_ZERO
 } from 'webgpu-player/audio/processing/CustomWaveChannelLayout';
 import EAC3SoftwareAudioDecoder, {
     type EAC3DecoderModuleFactory
@@ -19,11 +21,16 @@ const PLANE_BYTE_STRIDE = 256;
 const LIBAVCODEC_VERSION = 4_064_612;
 const EAC3_AV_SAMPLE_FORMAT_F32_PLANAR = 8;
 const EAC3_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE_WIDE = 0x06cf;
+// AV_NOPTS_VALUE as the bridge returns it, a double far outside the safe integer range
+const FFMPEG_NO_PRESENTATION_TIMESTAMP = -(2 ** 63);
+const DEFAULT_PRESENTATION_TIMESTAMP = 1_250_000;
 
 type FakeDecoderOptions = Readonly<{
     channelCount?: number
     channelMask?: number
+    presentationTimestamps?: readonly number[]
     receiveStatuses?: readonly number[]
+    sampleCount?: number
     sampleFormat?: number
     sampleRate?: number
     sendStatus?: number
@@ -45,6 +52,7 @@ function createFakeEAC3Decoder(
     const destroyCalls: number[] = [];
     const channelCount = options.channelCount ?? 8;
     const receiveStatuses = [ ...(options.receiveStatuses ?? [ 1, 0 ]) ];
+    const presentationTimestamps = [ ...(options.presentationTimestamps ?? []) ];
     const functions = new Map<string, (...arguments_: number[]) => number | void>([
         [ 'jellyfin_eac3_clear', (decoder: number): void => {
             clearCalls.push(decoder);
@@ -59,8 +67,9 @@ function createFakeEAC3Decoder(
             options.channelMask ?? CUSTOM_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE ],
         [ 'jellyfin_eac3_get_plane', (_decoder: number, channelIndex: number): number =>
             FIRST_PLANE_POINTER + channelIndex * PLANE_BYTE_STRIDE ],
-        [ 'jellyfin_eac3_get_pts', (): number => 1_250_000 ],
-        [ 'jellyfin_eac3_get_sample_count', (): number => 2 ],
+        [ 'jellyfin_eac3_get_pts', (): number =>
+            presentationTimestamps.shift() ?? DEFAULT_PRESENTATION_TIMESTAMP ],
+        [ 'jellyfin_eac3_get_sample_count', (): number => options.sampleCount ?? 2 ],
         [ 'jellyfin_eac3_get_sample_format', (): number =>
             options.sampleFormat ?? EAC3_AV_SAMPLE_FORMAT_F32_PLANAR ],
         [ 'jellyfin_eac3_get_sample_rate', (): number => options.sampleRate ?? 48_000 ],
@@ -134,8 +143,37 @@ describe('EAC3SoftwareAudioDecoder', () => {
         expect(Array.from(outputs[0].channelData[7])).toEqual([ 7.25, -7.5 ]);
     });
 
+    it('stamps later outputs of one packet after the frames that packet already produced', async () => {
+        // FFmpeg resets the packet timestamp after the first partial consume
+        const fakeDecoder = createFakeEAC3Decoder({
+            channelCount: 2,
+            channelMask: CUSTOM_WAVE_CHANNEL_MASK_STEREO,
+            presentationTimestamps: [
+                5_000_000,
+                FFMPEG_NO_PRESENTATION_TIMESTAMP,
+                FFMPEG_NO_PRESENTATION_TIMESTAMP
+            ],
+            receiveStatuses: [ 1, 1, 1, 0 ],
+            sampleCount: 48
+        });
+        const decoder = await EAC3SoftwareAudioDecoder.create(fakeDecoder.moduleFactory);
+
+        const outputs = decoder.decode(
+            new Uint8Array([ 1 ]),
+            requireMicroseconds(5_000_000, 'Test packet timestamp')
+        );
+
+        expect(outputs.map(output => output.mediaTimeMicroseconds)).toEqual([
+            5_000_000,
+            5_001_000,
+            5_002_000
+        ]);
+    });
+
     it.each([
+        [ 1, CUSTOM_WAVE_CHANNEL_MASK_MONO ],
         [ 2, CUSTOM_WAVE_CHANNEL_MASK_STEREO ],
+        [ 3, CUSTOM_WAVE_CHANNEL_MASK_THREE_POINT_ZERO ],
         [ 6, CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_BACK ],
         [ 6, CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_SIDE ],
         [ 8, CUSTOM_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE ]

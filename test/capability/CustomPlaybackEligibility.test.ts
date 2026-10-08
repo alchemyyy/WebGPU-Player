@@ -1176,6 +1176,47 @@ describe('CustomPlaybackEligibility', () => {
         )).toEqual({ eligible: false, reason: 'codec-unsupported' });
     });
 
+    it.each([
+        { colorPrimaries: 'smpte170m', colorSpace: 'smpte170m', colorTransfer: 'bt709' },
+        { colorPrimaries: 'smpte170m', colorSpace: 'smpte170m', colorTransfer: 'smpte170m' }
+    ])(
+        'selects native H.264 SDR tagged with SMPTE 170M color and $colorTransfer transfer',
+        ({ colorPrimaries, colorSpace, colorTransfer }) => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.MediaStreams[0] = {
+                BitDepth: 8,
+                Codec: 'h264',
+                ColorPrimaries: colorPrimaries,
+                ColorSpace: colorSpace,
+                ColorTransfer: colorTransfer,
+                Height: 528,
+                Index: 0,
+                IsInterlaced: false,
+                Profile: 'High',
+                Type: 'Video',
+                VideoRangeType: 'SDR',
+                Width: 704
+            };
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toMatchObject({
+                eligible: true,
+                hdr: false,
+                maximumCodedHeight: 528,
+                maximumCodedWidth: 704,
+                rawVideoFrameFormat: null,
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'video-frame'
+            });
+        }
+    );
+
     it('selects typed video and audio ordinals with integer-microsecond timing', () => {
         expect(getCustomPlaybackEligibility(
             createOptions(),
@@ -1655,6 +1696,50 @@ describe('CustomPlaybackEligibility', () => {
                 runtimeAvailability: AVAILABLE_RUNTIME
             }
         ).eligible).toBe(false);
+    });
+
+    it('never takes the native HDR route on defaulted reserved or unknown color fields', () => {
+        for (const colorDescription of [
+            { ColorPrimaries: 'reserved', ColorSpace: 'bt2020nc', ColorTransfer: 'smpte2084' },
+            { ColorPrimaries: 'bt2020', ColorSpace: 'unknown', ColorTransfer: 'smpte2084' },
+            { ColorPrimaries: 'bt2020', ColorSpace: 'bt2020nc', ColorTransfer: 'unspecified' }
+        ]) {
+            const options = createOptions({
+                mediaSource: {
+                    Container: 'mkv',
+                    MediaStreams: [ {
+                        BitDepth: 10,
+                        BitRate: 24_000_000,
+                        Codec: 'hevc',
+                        ...colorDescription,
+                        Height: 2_160,
+                        Index: 0,
+                        IsInterlaced: false,
+                        Level: 153,
+                        Profile: 'Main 10',
+                        RealFrameRate: 24,
+                        Type: 'Video',
+                        VideoRangeType: 'HDR10',
+                        Width: 3_840
+                    } ],
+                    RunTimeTicks: 60_000_000
+                }
+            });
+
+            const eligibility = getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                {
+                    allowNativeHDR: true,
+                    allowRawHDR: false,
+                    authorizedExternalHDRRouteKeys: [
+                        'external-hevc-main10-bt709-limited:pq-v1'
+                    ],
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
+            );
+            expect(eligibility.eligible && eligibility.neutralizeHDRColorMetadata).toBe(false);
+        }
     });
 
     it('keeps native and raw Dolby Vision authorization routes separate', () => {
@@ -3122,6 +3207,91 @@ describe('CustomPlaybackEligibility', () => {
         }
     );
 
+    // SMPTE 170M and BT.2020 10-bit transfers are the BT.709 OETF, so both sources stay on the SDR route
+    it.each([
+        {
+            colorPrimaries: 'smpte170m',
+            colorSpace: 'smpte170m',
+            colorTransfer: 'smpte170m',
+            height: 478,
+            width: 712
+        },
+        {
+            colorPrimaries: 'bt2020',
+            colorSpace: 'bt2020nc',
+            colorTransfer: 'bt2020-10',
+            height: 2_160,
+            width: 3_840
+        }
+    ])(
+        'selects native HEVC Main 10 SDR tagged with BT.601 or BT.2020-10 color at $width x $height',
+        ({ colorPrimaries, colorSpace, colorTransfer, height, width }) => {
+            const capabilities: CustomDecodeCapabilities = createCapabilities();
+            const options = createOptions({
+                mediaSource: {
+                    Container: 'mkv',
+                    DefaultAudioStreamIndex: 3,
+                    MediaStreams: [
+                        {
+                            Codec: 'subrip',
+                            Index: 1,
+                            IsExternal: true,
+                            Type: 'Subtitle'
+                        },
+                        {
+                            AverageFrameRate: 23.98,
+                            BitDepth: 10,
+                            BitRate: 9_124_431,
+                            Codec: 'hevc',
+                            ColorPrimaries: colorPrimaries,
+                            ColorSpace: colorSpace,
+                            ColorTransfer: colorTransfer,
+                            Height: height,
+                            Index: 2,
+                            IsInterlaced: false,
+                            Level: 150,
+                            Profile: 'Main 10',
+                            RealFrameRate: 23.98,
+                            Type: 'Video',
+                            VideoRangeType: 'SDR',
+                            Width: width
+                        },
+                        {
+                            BitRate: 256_000,
+                            Channels: 6,
+                            Codec: 'eac3',
+                            Index: 3,
+                            Profile: null,
+                            SampleRate: 48_000,
+                            Type: 'Audio'
+                        }
+                    ],
+                    RunTimeTicks: 36_000_000_000
+                },
+                url: '/Videos/item/stream.mkv'
+            });
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                capabilities,
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toMatchObject({
+                audioOutputMode: 'decoded-pcm',
+                audioSourceChannelCount: 6,
+                audioTrackIndex: 0,
+                eligible: true,
+                hdr: false,
+                maximumCodedHeight: height,
+                maximumCodedWidth: width,
+                neutralizeHDRColorMetadata: false,
+                rawVideoFrameFormat: null,
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'video-frame',
+                videoTrackIndex: 0
+            });
+        }
+    );
+
     it('rejects HEVC Main 10 SDR without exact native decoded-output evidence', () => {
         const capabilities: CustomDecodeCapabilities = createCapabilities();
         const nativeMain10Capability = capabilities.nativeHDRHEVC;
@@ -3357,6 +3527,42 @@ describe('CustomPlaybackEligibility', () => {
         })).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
     });
 
+    it('plays a source whose runtime the server never probed', () => {
+        for (const runTimeTicks of [ undefined, null, 0 ]) {
+            const options = createOptions();
+            (options.mediaSource as Record<string, unknown>).RunTimeTicks = runTimeTicks;
+
+            expect(getCustomPlaybackEligibility(options, createCapabilities(), {
+                allowRawHDR: false,
+                runtimeAvailability: AVAILABLE_RUNTIME
+            })).toMatchObject({
+                durationMicroseconds: null,
+                eligible: true
+            });
+        }
+    });
+
+    it('uses decoded PCM instead of native media when the duration is unknown', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as Record<string, unknown> & {
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.MediaStreams[1].Codec = 'ac3';
+        delete mediaSource.RunTimeTicks;
+
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), {
+            allowRawHDR: false,
+            nativeMediaAudioCapabilities: createNativeMediaAudioCapabilities(
+                new Set([ 'ac3:2:48000' ])
+            ),
+            runtimeAvailability: AVAILABLE_RUNTIME
+        })).toMatchObject({
+            audioOutputMode: 'decoded-pcm',
+            durationMicroseconds: null,
+            eligible: true
+        });
+    });
+
     it('prefers qualified native media over bundled PCM for the same layout', () => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
@@ -3419,7 +3625,8 @@ describe('CustomPlaybackEligibility', () => {
         });
     });
 
-    it.each([ undefined, '7.1(wide)', '7.1(wide-side)', '5.1' ] as const)(
+    // Jellyfin cuts 7.1(wide) to 7.1, so the decoder's speaker mask screens wide beds
+    it.each([ undefined, '8 channels', '5.1' ] as const)(
         'rejects ambiguous eight-channel E-AC-3 metadata layout %s',
         channelLayout => {
             const options = createOptions();
@@ -3675,7 +3882,7 @@ describe('CustomPlaybackEligibility', () => {
             { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
         )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
 
-        mediaSource.MediaStreams[1].ChannelLayout = '7.1(wide)';
+        mediaSource.MediaStreams[1].ChannelLayout = '8 channels';
         expect(getCustomPlaybackEligibility(
             options,
             createCapabilities(),
@@ -3715,7 +3922,134 @@ describe('CustomPlaybackEligibility', () => {
         )).toEqual({ eligible: false, reason: 'audio-codec-unsupported' });
     });
 
-    it.each([ 'mp4', 'm2ts', 'mts', 'ts' ] as const)(
+    it.each([
+        [ 'mov,mp4,m4a,3gp,3g2,mj2', 'dts', 'DTS-HD MA', 8, 48_000, undefined ],
+        [ 'mp4', 'dts', 'DTS', 6, 48_000, undefined ],
+        [ 'mov', 'dts', 'DTS-HD MA', 1, 96_000, undefined ],
+        [ 'mov,mp4,m4a,3gp,3g2,mj2', 'truehd', 'Dolby TrueHD', 6, 96_000, undefined ],
+        [ 'm4v', 'truehd', 'Dolby TrueHD + Dolby Atmos', 8, 48_000, '7.1' ]
+    ] as const)(
+        'selects the %s %s route through the mapped ISO BMFF sample entry',
+        (container, codec, profile, channelCount, sampleRate, channelLayout) => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = container;
+            mediaSource.MediaStreams[1].ChannelLayout = channelLayout;
+            mediaSource.MediaStreams[1].Channels = channelCount;
+            mediaSource.MediaStreams[1].Codec = codec;
+            mediaSource.MediaStreams[1].Profile = profile;
+            mediaSource.MediaStreams[1].SampleRate = sampleRate;
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toMatchObject({
+                audioOutputMode: 'decoded-pcm',
+                audioSourceChannelCount: channelCount,
+                audioTrackIndex: 0,
+                eligible: true
+            });
+        }
+    );
+
+    it('keeps MLP Matroska-only', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.MediaStreams[1].Codec = 'mlp';
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'container-unsupported' });
+    });
+
+    it.each([
+        [ 'mkv', 'dts', 'DTS' ],
+        [ 'mkv', 'dts', 'DTS-HD MA' ],
+        [ 'mkv', 'flac', undefined ],
+        [ 'mkv', 'ac3', undefined ],
+        [ 'mkv', 'eac3', undefined ],
+        [ 'mkv', 'truehd', 'Dolby TrueHD' ],
+        [ 'mov,mp4,m4a,3gp,3g2,mj2', 'aac', 'HE-AACv2' ],
+        [ 'mov,mp4,m4a,3gp,3g2,mj2', 'mp3', undefined ]
+    ] as const)(
+        'selects decoded PCM for mono %s %s, which the mixer centers or duplicates',
+        (container, codec, profile) => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = container;
+            mediaSource.MediaStreams[1].Channels = 1;
+            mediaSource.MediaStreams[1].Codec = codec;
+            mediaSource.MediaStreams[1].Profile = profile;
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toMatchObject({
+                audioOutputMode: 'decoded-pcm',
+                audioSourceChannelCount: 1,
+                eligible: true
+            });
+        }
+    );
+
+    // Jellyfin cuts 3.0(back) to 3.0, which only a decoder speaker mask can tell apart
+    it.each([
+        [ 'dts', 'DTS-HD MA', '2.1', true ],
+        [ 'dts', 'DTS-HD MA', '3.0', true ],
+        [ 'dts', 'DTS-HD MA + DTS:X', '3.0', true ],
+        [ 'dts', 'DTS-HD MA', '3 channels', false ],
+        [ 'dts', 'DTS-HD MA', undefined, false ],
+        [ 'dts', 'DTS', '3.0', false ],
+        [ 'flac', undefined, '3.0', true ],
+        [ 'aac', undefined, '3.0', true ],
+        [ 'opus', undefined, '3.0', true ],
+        [ 'vorbis', undefined, '3.0', true ],
+        [ 'pcm_s16le', undefined, '3.0', true ],
+        [ 'aac', undefined, '2.1', false ],
+        [ 'ac3', undefined, '2.1', false ],
+        [ 'ac3', undefined, '3.0', false ],
+        [ 'opus', undefined, undefined, false ],
+        [ 'eac3', undefined, '3.0', false ]
+    ] as const)(
+        'qualifies three-channel %s %s with layout %s: %s',
+        (codec, profile, channelLayout, eligible) => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = 'mkv';
+            mediaSource.MediaStreams[1].ChannelLayout = channelLayout;
+            mediaSource.MediaStreams[1].Channels = 3;
+            mediaSource.MediaStreams[1].Codec = codec;
+            mediaSource.MediaStreams[1].Profile = profile;
+
+            const eligibility = getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            );
+
+            expect(eligibility).toEqual(eligible ?
+                expect.objectContaining({ audioSourceChannelCount: 3, eligible: true }) :
+                { eligible: false, reason: 'audio-layout-unsupported' });
+        }
+    );
+
+    it.each([ 'm2ts', 'mts', 'ts' ] as const)(
         'does not advertise TrueHD in the unsupported Mediabunny %s demux route',
         container => {
             const options = createOptions();

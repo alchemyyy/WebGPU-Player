@@ -10,6 +10,7 @@ import {
     getDolbyVisionRawFrameLayerCount,
     isDecodeWorkerRequest,
     isDecodeWorkerResponse,
+    MAX_DECODED_AUDIO_CHANNELS,
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
@@ -219,6 +220,46 @@ describe('DecodeWorkerProtocol', () => {
         }
     ] as const)('selects $expected for a start request route', ({ expected, request }) => {
         expect(getCustomDecodeRequestHardwareAcceleration(request)).toBe(expected);
+    });
+
+    it('validates the container duration request and its positive report', () => {
+        const request = {
+            audioSampleCredits: 0,
+            audioTrackIndex: null,
+            dolbyVisionProfile: null,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
+            frameCredits: MAX_DECODED_FRAME_CREDITS,
+            generation: 1,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: null,
+            reportContainerDuration: true,
+            startTimeMicroseconds: 0,
+            type: 'start',
+            url: 'http://localhost/video.mkv',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        } as const;
+        const readyResponse = {
+            audio: null,
+            codec: 'avc1.640028',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            containerDurationMicroseconds: 5_400_000_000,
+            displayHeight: 1_080,
+            displayWidth: 1_920,
+            generation: 1,
+            type: 'ready'
+        } as const;
+
+        expect(isDecodeWorkerRequest(request)).toBe(true);
+        expect(isDecodeWorkerRequest({ ...request, reportContainerDuration: 'yes' })).toBe(false);
+        expect(isDecodeWorkerResponse(readyResponse)).toBe(true);
+        expect(isDecodeWorkerResponse({ ...readyResponse, containerDurationMicroseconds: 0 })).toBe(false);
+        expect(isDecodeWorkerResponse({ ...readyResponse, containerDurationMicroseconds: -1 })).toBe(false);
     });
 
     it('accepts only the SDR VideoFrame shape for FFmpeg MPEG-2/VC-1 video', () => {
@@ -1376,6 +1417,93 @@ describe('DecodeWorkerProtocol', () => {
             expect(isDecodeWorkerResponse({
                 ...videoEndedResponse,
                 videoEpoch: invalidVideoEpoch
+            })).toBe(false);
+        }
+    });
+
+    it('accepts an audio track end only with a valid audio epoch', () => {
+        const audioEndedResponse = {
+            audioEpoch: 0,
+            generation: 2,
+            type: 'audio-ended'
+        } as const;
+        const invalidAudioEpochs: readonly unknown[] = [ -1, 1.5, '0', null, undefined ];
+
+        expect(isDecodeWorkerResponse(audioEndedResponse)).toBe(true);
+        expect(isDecodeWorkerResponse({
+            ...audioEndedResponse,
+            audioEpoch: 4
+        })).toBe(true);
+        expect(isDecodeWorkerResponse({
+            ...audioEndedResponse,
+            generation: 0
+        })).toBe(false);
+        for (const invalidAudioEpoch of invalidAudioEpochs) {
+            expect(isDecodeWorkerResponse({
+                ...audioEndedResponse,
+                audioEpoch: invalidAudioEpoch
+            })).toBe(false);
+        }
+    });
+
+    it('accepts a decoded audio source format only with a valid epoch, channel count, and rate', () => {
+        const sourceFormatResponse = {
+            audioEpoch: 0,
+            channelCount: 8,
+            generation: 2,
+            sampleRate: 48_000,
+            type: 'audio-source-format'
+        } as const;
+        const invalidAudioEpochs: readonly unknown[] = [ -1, 1.5, '0', null, undefined ];
+        const invalidChannelCounts: readonly unknown[] = [
+            0,
+            -1,
+            2.5,
+            '2',
+            null,
+            undefined,
+            MAX_DECODED_AUDIO_CHANNELS + 1
+        ];
+        const invalidSampleRates: readonly unknown[] = [
+            MINIMUM_CUSTOM_AUDIO_SAMPLE_RATE - 1,
+            MAXIMUM_CUSTOM_AUDIO_SAMPLE_RATE + 1,
+            48_000.5,
+            '48000',
+            null,
+            undefined
+        ];
+
+        expect(isDecodeWorkerResponse(sourceFormatResponse)).toBe(true);
+        expect(isDecodeWorkerResponse({
+            ...sourceFormatResponse,
+            audioEpoch: 3,
+            channelCount: 1,
+            sampleRate: 22_050
+        })).toBe(true);
+        expect(isDecodeWorkerResponse({
+            ...sourceFormatResponse,
+            channelCount: MAX_DECODED_AUDIO_CHANNELS
+        })).toBe(true);
+        expect(isDecodeWorkerResponse({
+            ...sourceFormatResponse,
+            generation: 0
+        })).toBe(false);
+        for (const invalidAudioEpoch of invalidAudioEpochs) {
+            expect(isDecodeWorkerResponse({
+                ...sourceFormatResponse,
+                audioEpoch: invalidAudioEpoch
+            })).toBe(false);
+        }
+        for (const invalidChannelCount of invalidChannelCounts) {
+            expect(isDecodeWorkerResponse({
+                ...sourceFormatResponse,
+                channelCount: invalidChannelCount
+            })).toBe(false);
+        }
+        for (const invalidSampleRate of invalidSampleRates) {
+            expect(isDecodeWorkerResponse({
+                ...sourceFormatResponse,
+                sampleRate: invalidSampleRate
             })).toBe(false);
         }
     });

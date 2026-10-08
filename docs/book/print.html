@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ca695dd2.js";
+            window.path_to_searchindex_js = "searchindex-c8b0fdbf.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -634,6 +634,9 @@ external HDR 10/255, external Dolby Vision 8/255, raw 3/255.</li>
 <li>The native external HDR route rewrites the SPS color to limited BT.709, and
 the shader recovers the 10-bit codes (Y<em>876+64, C</em>896+512). A frame with a
 colorSpace that is not neutral latches <code>decoded-frame-color-mismatch</code>.</li>
+<li>The raw route checks each frame’s colorSpace against the metadata, and a
+null member is unspecified, so it never contradicts. SDR also matches a
+<code>smpte170m</code> transfer, and HLG a <code>bt709</code> transfer on BT.2020 primaries.</li>
 <li>WebGPU presentation on the HTML path is SDR only: a <code>&lt;video&gt;</code> external
 texture is browser-converted sRGB.</li>
 <li>The add-on’s <code>HtmlVideoPlayer.play()</code> (host) runs synchronously only when
@@ -713,8 +716,10 @@ for the stock profile.</li>
 <li>Check eligibility (engine). The host’s <code>startCustomPlaybackBounded</code> (25 s)
 calls <code>getCustomPlaybackEligibility</code>, which checks in order:
 <ol>
-<li><code>parsePlaybackSource</code>: DirectPlay, not live, a custom container, a
-duration, and an http(s) URL.</li>
+<li><code>parsePlaybackSource</code>: DirectPlay, not live, a custom container, and an
+http(s) URL. A missing or zero <code>RunTimeTicks</code> is an unknown duration,
+not a rejection: playback ends with the streams, and audio takes the
+decoded-PCM route because the native media backend needs a duration.</li>
 <li><code>selectVideoStream</code>.</li>
 <li>Rotation 0 and <code>IsInterlaced === false</code>.</li>
 <li><code>selectVideoOutput</code> (below).</li>
@@ -728,7 +733,8 @@ Without the renegotiation flag, the add-on’s HTML player plays the same
 source in the same session. With it, the player asks for a renegotiation;
 on stock Jellyfin Web that is the error retry ladder, whose <code>changeStream</code>
 passes <code>isRetry</code>, so the retry negotiates with the stock profile and is
-never widened.</li>
+never widened. An ineligible start logs its eligibility reason with
+<code>console.warn</code> first, since it raises no error of its own.</li>
 </ol>
 <h2 id="how-the-profile-is-augmented"><a class="header" href="#how-the-profile-is-augmented">How the profile is augmented</a></h2>
 <p><code>augmentDeviceProfileForCustomDecode</code> (host), in order:</p>
@@ -815,7 +821,14 @@ agree with the CCID; VideoRange and VideoRangeType are ignored.</li>
 reconstruction step.</li>
 </ol>
 </li>
-<li>No color metadata: <code>metadata-unsupported</code>.</li>
+<li>No color metadata: <code>metadata-unsupported</code>.
+<code>PresentationInput.parseVideoStreamColorMetadata</code> reads ColorTransfer,
+ColorPrimaries, ColorSpace, and ColorRange. A field that is <code>unknown</code>,
+<code>unspecified</code>, or <code>reserved</code> is absent and takes its transfer’s default:
+BT.709 for SDR, BT.2020 for PQ and HLG, and limited range. The BT.2020 10
+and 12-bit transfers read as SDR, SMPTE 170M and SMPTE 240M primaries as
+<code>smpte170m</code>, BT.470 BG primaries as <code>bt470bg</code>, and the SMPTE 170M and
+BT.470 BG matrices as BT.601. Any other value is unrecognized and fails.</li>
 <li>An HEVC range extension needs its exact variant capability and raw key. A
 range extension never falls through to the steps below.</li>
 <li>SDR: <code>native</code>, native Main 10 SDR, <code>bundled-hevc</code> Main, <code>ffmpeg-mpeg2-vc1</code>,
@@ -929,6 +942,11 @@ downmixes to 2 with the user’s algorithm.</p>
 (<code>StreamBuilder</code>). A looser added profile cannot override a stricter one, so
 stock profiles are split by container, and codecs with several routes use
 ApplyConditions.</li>
+<li>The server matches a profile container against any token of the probed
+container. Every MP4/MOV file probes as <code>mov,mp4,m4a,3gp,3g2,mj2</code>, so a stock
+split never names an alias of a codec’s route containers
+(<code>getCustomContainerFamilyForVideoCodec</code>, host). A stock HEVC split scoped to
+<code>mj2,webm</code> once rejected every Dolby Vision range in MP4 files.</li>
 <li>Width, Height, VideoLevel, and VideoFramerate are removed only for custom
 containers. Bitrate is stripped everywhere on non-retry profiles.</li>
 <li>HEVC routes expand to every (VideoProfile, VideoRangeType) pair, with
@@ -944,7 +962,10 @@ or fall back.</li>
 decoder’s opaque hardware output (native external HDR, the native Dolby
 Vision base, and external Profile 5) prefer hardware. Every other native
 route uses <code>no-preference</code>, so a codec without a hardware decoder, such as
-VP8 in Chromium on Windows, decodes in software.</li>
+VP8 in Chromium on Windows, decodes in software. One exception: 10-bit SDR
+HEVC has no probe of its own. The native HDR HEVC probe gates it with
+<code>prefer-hardware</code>, while the SDR route requests <code>no-preference</code>. Chromium
+decodes HEVC only in hardware, so both resolve to the same decoder.</li>
 <li>AC-3, E-AC-3, and PCM have no runtime probe, so the host’s
 <code>appendMeasuredNativeAudioRouteProfiles</code> never emits its 48 kHz profile.</li>
 <li>These composed routes have no probe vector: DTS 2-channel MA, DTS 6-channel
@@ -1001,6 +1022,14 @@ renegotiation.</p>
 </tbody>
 </table>
 </div>
+<p>The SDR rows cover every transfer the engine reads as SDR: BT.709, SMPTE 170M,
+sRGB, and the BT.2020 10 and 12-bit transfers, which use the BT.709 curve. They
+take BT.709, BT.601 (SMPTE 170M, SMPTE 240M, or BT.470 BG), or BT.2020 primaries
+and matrix. The VF-SDR routes leave the color conversion to Chrome, while the
+raw SDR keys stay BT.709 only.</p>
+<p>The HLG row includes HLG-compatible streams, whose VUI signals the BT.2020
+10-bit transfer and whose alternative transfer characteristics SEI names HLG
+(see <a href="#evidence">Other conditions</a>).</p>
 <h2 id="range-extensions"><a class="header" href="#range-extensions">Range extensions</a></h2>
 <div class="table-wrapper">
 <table>
@@ -1157,6 +1186,17 @@ on an unsettled probe.</p>
 <ul>
 <li>Native VideoFrame HDR and the DV base routes also need explicit
 ColorTransfer, ColorPrimaries, and ColorSpace values.</li>
+<li>The SPS parser never rejects a VUI color description. It maps each code to a
+WebCodecs name or to unspecified (null), and an SPS without VUI has
+unspecified color. Only the native HDR route check is strict: limited range,
+BT.2020 primaries, the BT.2020 non-constant-luminance matrix, and the route’s
+transfer.</li>
+<li>The transfer that check reads is the key access unit’s alternative transfer
+characteristics SEI value (payload type 147) when one is present, and the
+VUI transfer otherwise. Without the SEI, VF-HLG and DV base HLG also accept
+the BT.2020 10 and 12-bit VUI transfers (14 and 15) of HLG-compatible
+streams. An SEI naming another transfer rejects the HLG route, and a
+malformed SEI counts as absent, as in FFmpeg.</li>
 <li>The DV base ranges are negotiated per item. Without an exact item match,
 those ranges are advertised only through RAW-DV.</li>
 <li>P20 is MV-HEVC. NAL units with a <code>nuh_layer_id</code> above 0, the second view, are
@@ -1250,7 +1290,8 @@ uniform, HDR10+ fields included.</li>
 <li><code>ColorMetadata.ts</code>: the input color schema, validation, and SDR, PQ, and HLG
 factories.</li>
 <li><code>ColorPipeline.ts</code>: the CPU reference of range, matrix, transfer, gamut,
-tone mapping, and display controls.</li>
+tone mapping, and display controls, and the luminance, YUV matrix, gamut,
+and IPT tables for BT.709, BT.2020, and BT.601 that the shaders share.</li>
 <li><code>ColorPipelineShader.ts</code>: WGSL generators for raw YUV, external HDR code
 recovery, and external and raw Dolby Vision (FEL included), plus the shared
 <code>processColor</code>.</li>
@@ -1396,8 +1437,9 @@ tone mapping source peak.</li>
 </ul>
 <h3 id="videohevc"><a class="header" href="#videohevc">video/hevc/</a></h3>
 <ul>
-<li><code>HEVCSEI.ts</code>, <code>HEVCSPSParser.ts</code>: SEI extraction, SPS parsing, and the VUI
-rewrite.</li>
+<li><code>HEVCSEI.ts</code>, <code>HEVCSPSParser.ts</code>: SEI extraction and the alternative
+transfer characteristics value; SPS parsing, the VUI color mapping to
+WebCodecs names, and the VUI rewrite with its native HDR route check.</li>
 <li><code>NativeHDRHEVCColorNeutralizer.ts</code>: rewrites the <code>hvcC</code> SPS and the decoder
 colorSpace to limited BT.709 for the native external HDR route.</li>
 </ul>
@@ -2357,6 +2399,11 @@ route to bit-exact P010 and exact P7 FEL.</li>
 color to limited BT.709 so Chrome does not tone-map, and the shader recovers
 the YUV codes. An <code>hvcC</code> without an SPS defers validation to the first key
 access unit (08-05).</li>
+<li>An unknown duration does not block custom playback (10-07). Eligibility
+used to require <code>RunTimeTicks</code>, so a source the server never probed played
+through the HTML backend although the controller and session already accept
+a null duration. The decoded streams define the end; only the native media
+audio backend needs a duration, so such a source takes decoded PCM.</li>
 <li>Native decode hints match their probes (10-07). The SDR probes qualify with
 <code>no-preference</code>, but the runtime used to request <code>prefer-hardware</code> for every
 native <code>VideoFrame</code> route. Chromium on Windows has no hardware VP8 decoder
@@ -2364,6 +2411,45 @@ and rejects that configuration, so VP8 sources failed after their probe
 passed. Only the routes that present opaque hardware output (native external
 HDR, the native Dolby Vision base, and external P5) prefer hardware, as
 their probes and authorizations do.</li>
+<li>Unspecified color is absent, not unknown (10-07). FFmpeg names an
+unspecified or reserved color field <code>unknown</code> or <code>reserved</code>, which used to
+null the metadata and decline the item as <code>metadata-unsupported</code>. Such a
+field is now absent, so the transfer’s defaults apply: an SDR stream with
+ColorRange <code>unknown</code> is limited BT.709, and a Dolby Vision base with
+ColorTransfer <code>unknown</code> presents the transfer its CCID declares, both
+deliberately asserted in <code>test/presentation/PresentationInput.test.ts</code>.
+Unspecified SD color still defaults to BT.709; no resolution-based default
+is applied.</li>
+<li>BT.601 and BT.2020 SDR play natively (10-07). Field tests declined H.264 and
+HEVC SDR tagged SMPTE 170M, and HEVC SDR tagged with the BT.2020 10-bit
+transfer, without logging anything. SMPTE 170M and SMPTE 240M primaries now
+read as <code>smpte170m</code>, BT.470 BG as <code>bt470bg</code>, both matrices as BT.601, and
+the BT.2020 10 and 12-bit transfers, which use the BT.709 curve, as SDR. The
+VF-SDR route does no color math: it imports the frame with
+<code>colorSpace: 'srgb'</code> through the identity shader, so Chrome converts it. The
+CPU reference and the shaders stay exact for all four primaries sets
+regardless: luminance comes from the primaries, YUV coefficients from the
+matrix (BT.601 is Kr 0.299, Kb 0.114), and gamut and IPT conversions go
+through BT.709 tables derived from the H.273 chromaticities under D65. The
+raw SDR keys stay BT.709 only, so BT.601 and BT.2020 SDR never reach the raw
+shaders.</li>
+<li>The SPS VUI never rejects color (10-07). An HLG broadcast whose VUI signals
+the BT.2020 10-bit transfer (14) and whose alternative transfer
+characteristics SEI (payload type 147) names HLG (18) failed the native HLG
+route, because the SPS parser accepted only BT.709 and BT.2020 PQ or HLG.
+The parser now maps every code to a WebCodecs name or to null, and only the
+native HDR route check is strict (limited range, BT.2020 primaries and
+non-constant-luminance matrix). Its transfer is the SEI value when the key
+access unit carries one and the VUI value otherwise; an HLG route also
+accepts VUI 14 or 15 without an SEI. SEI errors are not fatal, as in FFmpeg,
+so a malformed SEI counts as absent and the VUI alone must prove the route.
+The bundled HEVC decoder compares the container and SPS color only where
+both specify it (BT.470 BG equals SMPTE 170M as a matrix, and SMPTE 170M
+equals BT.709 as a transfer) and fills SPS gaps from the container, so a
+container’s HLG survives a VUI 14 SPS. Chrome is assumed to report a null
+<code>VideoFrame.colorSpace.transfer</code> for VUI 14 and 15; the raw HLG frame check
+also accepts <code>bt709</code> on a BT.2020 frame in case it does not, and a null
+frame color member never contradicts the metadata.</li>
 </ul>
 <h2 id="firefox"><a class="header" href="#firefox">Firefox</a></h2>
 <p>These were settled on Firefox 157 on Windows.</p>

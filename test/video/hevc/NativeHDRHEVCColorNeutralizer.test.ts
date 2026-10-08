@@ -21,6 +21,18 @@ function createBytesFromHex(hex: string): Uint8Array {
 const MAIN10_PQ_SPS = createBytesFromHex(
     '4201010220000003009000000300000300ffa005020169365959a4932bc05a848804820000030002000003000210'
 );
+// A Main10 SPS whose VUI signals BT.2020 primaries and matrix with the BT.2020 10-bit transfer, as HLG-compatible streams do
+const MAIN10_BT2020_10_SPS = createBytesFromHex(
+    '42010102200000030090000003000003003fa005020171f2b6595952930bc05a848704820000030002000003003010'
+);
+const HLG_PREFERRED_TRANSFER_CHARACTERISTICS = 18;
+const PQ_PREFERRED_TRANSFER_CHARACTERISTICS = 16;
+const NEUTRAL_COLOR_SPACE = {
+    fullRange: false,
+    matrix: 'bt709',
+    primaries: 'bt709',
+    transfer: 'bt709'
+};
 const VPS = new Uint8Array([ 64, 1, 1 ]);
 const PPS = new Uint8Array([ 68, 1, 2 ]);
 const IDR = new Uint8Array([ 38, 1, 3 ]);
@@ -241,6 +253,54 @@ describe('NativeHDRHEVCColorNeutralizer', () => {
                     transfer: 'bt709'
                 });
         }
+    });
+
+    it('accepts an HLG-compatible hvcC SPS on the HLG route unless an SEI value names another transfer', () => {
+        const configuration = createDecoderConfig(
+            createHVCCDescriptionWithSPS([ MAIN10_BT2020_10_SPS ])
+        );
+        const neutralized = neutralizeNativeHDRHEVCDecoderConfigWithValidation(configuration, 'hlg');
+        const rewrittenConfiguration = parseHEVCDecoderConfiguration(
+            neutralized.configuration.description as Uint8Array
+        );
+
+        expect(neutralized.decoderDescriptionValidated).toBe(true);
+        expect(parseHEVCSPS(rewrittenConfiguration.sequenceParameterSets[0]).colorSpace)
+            .toEqual(NEUTRAL_COLOR_SPACE);
+        expect(() => neutralizeNativeHDRHEVCDecoderConfigWithValidation(
+            configuration,
+            'hlg',
+            PQ_PREFERRED_TRANSFER_CHARACTERISTICS
+        )).toThrow('expected limited-range BT.2020 HDR route');
+        expect(() => neutralizeNativeHDRHEVCDecoderConfigWithValidation(configuration, 'pq'))
+            .toThrow('expected limited-range BT.2020 HDR route');
+        expect(neutralizeNativeHDRHEVCDecoderConfigWithValidation(
+            configuration,
+            'pq',
+            PQ_PREFERRED_TRANSFER_CHARACTERISTICS
+        ).decoderDescriptionValidated).toBe(true);
+    });
+
+    it('checks an in-band HLG-compatible SPS against its access unit SEI value', () => {
+        const format: HEVCNALFormat = { kind: 'annex-b' };
+        const accessUnit = encodeAccessUnit([ MAIN10_BT2020_10_SPS, IDR ], format);
+
+        for (const preferredTransferCharacteristics of [ null, HLG_PREFERRED_TRANSFER_CHARACTERISTICS ]) {
+            const rewritten = rewriteHEVCAccessUnitColorDescriptionToBT709(
+                accessUnit,
+                format,
+                'hlg',
+                preferredTransferCharacteristics
+            );
+            expect(parseHEVCSPS(getFirstNALUnit(rewritten as Uint8Array, format)).colorSpace)
+                .toEqual(NEUTRAL_COLOR_SPACE);
+        }
+        expect(() => rewriteHEVCAccessUnitColorDescriptionToBT709(
+            accessUnit,
+            format,
+            'hlg',
+            PQ_PREFERRED_TRANSFER_CHARACTERISTICS
+        )).toThrow('expected limited-range BT.2020 HDR route');
     });
 
     it('reports absent SPS records and access units without rewriting unrelated data', () => {

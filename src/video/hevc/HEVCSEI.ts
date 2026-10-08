@@ -8,10 +8,18 @@ import {
 const HEVC_PREFIX_SEI_NAL_UNIT_TYPE = 39;
 const HEVC_SUFFIX_SEI_NAL_UNIT_TYPE = 40;
 const MAXIMUM_HEVC_SEI_MESSAGE_COUNT = 256;
+// A prefix SEI payload of one u(8) preferred_transfer_characteristics, coded like VUI transfer_characteristics
+const ALTERNATIVE_TRANSFER_CHARACTERISTICS_PAYLOAD_TYPE = 147;
+// H.273 transfer_characteristics: 1 is BT.709, 2 unspecified, 0 and 3 reserved, 4 through 18 named, 19 and up reserved
+const BT709_TRANSFER_CHARACTERISTICS = 1;
+const FIRST_NAMED_TRANSFER_CHARACTERISTICS_AFTER_RESERVED = 4;
+const LAST_NAMED_TRANSFER_CHARACTERISTICS = 18;
 
 export type HEVCSEIMessage = Readonly<{
     payload: Uint8Array
     payloadType: number
+    /** Whether a prefix SEI NAL unit carried the message; payload types differ between prefix and suffix SEI */
+    prefix: boolean
 }>;
 
 function removeEmulationPreventionBytes(data: Uint8Array): Uint8Array {
@@ -71,6 +79,7 @@ function parseSEINALUnit(nalUnit: HEVCNALUnit): HEVCSEIMessage[] {
         throw new TypeError('The HEVC SEI NAL unit is truncated');
     }
     const RBSP = removeEmulationPreventionBytes(nalUnit.data.subarray(2));
+    const prefix = nalUnit.type === HEVC_PREFIX_SEI_NAL_UNIT_TYPE;
     const messages: HEVCSEIMessage[] = [];
     let offset = 0;
     while (offset < RBSP.byteLength) {
@@ -85,7 +94,8 @@ function parseSEINALUnit(nalUnit: HEVCNALUnit): HEVCSEIMessage[] {
         }
         messages.push({
             payload: RBSP.subarray(offset, offset + payloadSize.value),
-            payloadType: payloadType.value
+            payloadType: payloadType.value,
+            prefix
         });
         if (messages.length > MAXIMUM_HEVC_SEI_MESSAGE_COUNT) {
             throw new TypeError('The HEVC SEI message count exceeds its bound');
@@ -120,4 +130,47 @@ export function parseHEVCSEIMessages(
         }
     }
     return messages;
+}
+
+/**
+ * Returns the preferred_transfer_characteristics of an access unit's alternative transfer characteristics SEI.
+ * Returns null when the access unit carries none or names the unspecified value 2.
+ * Throws on a malformed SEI, an empty payload, or two messages that name different transfers.
+ */
+/** H.273 names transfer characteristics 1 and 4 through 18; 0 and 3 are reserved, 2 is unspecified. */
+function isNamedTransferCharacteristics(value: number): boolean {
+    return value === BT709_TRANSFER_CHARACTERISTICS
+        || (value >= FIRST_NAMED_TRANSFER_CHARACTERISTICS_AFTER_RESERVED
+            && value <= LAST_NAMED_TRANSFER_CHARACTERISTICS);
+}
+
+export function findHEVCPreferredTransferCharacteristics(
+    accessUnit: Uint8Array,
+    format: HEVCNALFormat
+): number | null {
+    let preferredTransferCharacteristics: number | null = null;
+    for (const message of parseHEVCSEIMessages(accessUnit, format)) {
+        // Payload type 147 is reserved in suffix SEI
+        if (!message.prefix || message.payloadType !== ALTERNATIVE_TRANSFER_CHARACTERISTICS_PAYLOAD_TYPE) {
+            continue;
+        }
+        if (message.payload.byteLength === 0) {
+            throw new TypeError('The HEVC alternative transfer characteristics SEI payload is empty');
+        }
+        const transferCharacteristics = message.payload[0];
+        // Unspecified, reserved, and unnamed values carry no preference; FFmpeg ignores them too
+        if (!isNamedTransferCharacteristics(transferCharacteristics)) {
+            continue;
+        }
+        if (
+            preferredTransferCharacteristics !== null
+            && preferredTransferCharacteristics !== transferCharacteristics
+        ) {
+            throw new TypeError(
+                'The HEVC access unit contains conflicting alternative transfer characteristics'
+            );
+        }
+        preferredTransferCharacteristics = transferCharacteristics;
+    }
+    return preferredTransferCharacteristics;
 }

@@ -50,8 +50,11 @@ backend returns from `getDeviceProfile`.
    for the stock profile.
 5. Check eligibility (engine). The host's `startCustomPlaybackBounded` (25 s)
    calls `getCustomPlaybackEligibility`, which checks in order:
-   1. `parsePlaybackSource`: DirectPlay, not live, a custom container, a
-      duration, and an http(s) URL.
+   1. `parsePlaybackSource`: DirectPlay, not live, a custom container, and an
+      http(s) URL. A missing or zero `RunTimeTicks` is an unknown duration,
+      not a rejection: playback ends with the streams, audio takes the
+      decoded-PCM route because the native media backend needs a duration,
+      and the worker reports the container's duration on `ready`.
    2. `selectVideoStream`.
    3. Rotation 0 and `IsInterlaced === false`.
    4. `selectVideoOutput` (below).
@@ -63,7 +66,8 @@ backend returns from `getDeviceProfile`.
    source in the same session. With it, the player asks for a renegotiation;
    on stock Jellyfin Web that is the error retry ladder, whose `changeStream`
    passes `isRetry`, so the retry negotiates with the stock profile and is
-   never widened.
+   never widened. An ineligible start logs its eligibility reason with
+   `console.warn` first, since it raises no error of its own.
 
 ## How the profile is augmented
 
@@ -145,6 +149,13 @@ backend returns from `getDeviceProfile`.
    5. Otherwise the source is ineligible, with the reason from the
       reconstruction step.
 2. No color metadata: `metadata-unsupported`.
+   `PresentationInput.parseVideoStreamColorMetadata` reads ColorTransfer,
+   ColorPrimaries, ColorSpace, and ColorRange. A field that is `unknown`,
+   `unspecified`, or `reserved` is absent and takes its transfer's default:
+   BT.709 for SDR, BT.2020 for PQ and HLG, and limited range. The BT.2020 10
+   and 12-bit transfers read as SDR, SMPTE 170M and SMPTE 240M primaries as
+   `smpte170m`, BT.470 BG primaries as `bt470bg`, and the SMPTE 170M and
+   BT.470 BG matrices as BT.601. Any other value is unrecognized and fails.
 3. An HEVC range extension needs its exact variant capability and raw key. A
    range extension never falls through to the steps below.
 4. SDR: `native`, native Main 10 SDR, `bundled-hevc` Main, `ffmpeg-mpeg2-vc1`,
@@ -212,29 +223,41 @@ HDR range-extension item waits for raw HDR as well.
 - Order: the native-media MSE bridge for AC-3 and E-AC-3 (2 or 6 channels,
   exactly 48 kHz) comes first. Otherwise `decoded-pcm`, when the codec
   capability and the input layout qualify.
-- Input channels:
+- Input channels, as declared by Jellyfin. The decoded format is
+  authoritative at runtime, and any decoded layout maps to the output by
+  channel name:
 
   | Codec | Channels |
   | --- | --- |
-  | PCM | 1, 2, 6 |
-  | aac, flac, opus, vorbis | 2, 6 (6 needs the 5.1 probe) |
-  | ac3 | 2, 6 |
-  | eac3 | 2, 6, 8 (8 needs a `7.1` layout) |
-  | mp3 | 2 |
-  | dts | 2, 6, 8 |
-  | truehd | 2, 6, 8 (8 only at 48 kHz with a `7.1` layout) |
-  | mlp | 2 |
+  | PCM | 1, 2, 3, 6 (3 needs a `3.0` layout) |
+  | aac, flac, opus, vorbis | 1, 2, 3, 6 (3 needs a `3.0` layout; 3 and 6 are advertised only with the 5.1 probe, and 6 needs it) |
+  | ac3 | 1, 2, 6 (2/1 and 3/0 both arrive as `3.0`, and the decoder reports no speaker mask) |
+  | eac3 | 1, 2, 6, 8 (8 needs a `7.1` layout) |
+  | mp3 | 1, 2 |
+  | dts | 1, 2, 3, 6, 8 (3 needs a `2.1` or `3.0` layout) |
+  | truehd | 1, 2, 6, 8 (8 only at 48 kHz with a `7.1` layout) |
+  | mlp | 1, 2 |
 
-- DTS by profile: Core 6; 96/24 6; HRA 6 or 8; MA and MA+X 2, 6, or 8. DTS-ES
-  is excluded, and above 96 kHz only 6-channel MA is allowed. DTS, TrueHD, and
-  MLP play only from Matroska.
+  Jellyfin keeps only the part of FFmpeg's layout name before `(`, so
+  `3.0(back)` arrives as `3.0` and `7.1(wide)` as `7.1`. Only decoders that
+  report a speaker mask (DTS, E-AC-3, TrueHD) tell them apart, at runtime: a
+  DTS 3.0(back) plays with its back center on the surrounds, and a mask with no
+  layout fails the attempt as `decode-failed`, which renegotiates.
+
+- DTS by profile: Core 1 or 6; 96/24 1 or 6; HRA 1, 6, or 8; MA and MA+X 1,
+  2, 3, 6, or 8. DTS-ES is excluded, and above 96 kHz only 6-channel MA is
+  allowed. DTS and TrueHD play from Matroska and from MP4, M4V, and MOV (the
+  `DTS `, `dtsc`, `dtsh`, `dtsl`, and `mlpa` sample entries); MLP plays only
+  from Matroska.
 - Rates: any integer from 3000 to 192000 Hz, resampled to 48 kHz. The profile
   uses `AudioSampleRate NotEquals 0`, because Jellyfin reuses conditions as
   transcode targets.
 - Output channels: `WebGPUPlayer.selectDecodedAudioOutputChannelCount` (host)
-  returns 2 when stereo is forced. It returns 6 or 8 when the source has that
-  many channels and `destination.maxChannelCount` allows it, and otherwise
-  downmixes to 2 with the user's algorithm.
+  returns 2 when stereo is forced. Otherwise a three-channel or 5.1 source
+  gets 6 when `destination.maxChannelCount` is at least 6, and a 6.1 or 7.1
+  source gets 8 when it is at least 8, else 6 when it is at least 6.
+  Everything else downmixes to 2 with the user's algorithm. A live layout
+  switch applies the same rule to the decoded layout.
 
 ## Gotchas
 
@@ -242,6 +265,11 @@ HDR range-extension item waits for raw HDR as well.
   (`StreamBuilder`). A looser added profile cannot override a stricter one, so
   stock profiles are split by container, and codecs with several routes use
   ApplyConditions.
+- The server matches a profile container against any token of the probed
+  container. Every MP4/MOV file probes as `mov,mp4,m4a,3gp,3g2,mj2`, so a stock
+  split never names an alias of a codec's route containers
+  (`getCustomContainerFamilyForVideoCodec`, host). A stock HEVC split scoped to
+  `mj2,webm` once rejected every Dolby Vision range in MP4 files.
 - Width, Height, VideoLevel, and VideoFramerate are removed only for custom
   containers. Bitrate is stripped everywhere on non-retry profiles.
 - HEVC routes expand to every (VideoProfile, VideoRangeType) pair, with
@@ -257,11 +285,18 @@ HDR range-extension item waits for raw HDR as well.
   decoder's opaque hardware output (native external HDR, the native Dolby
   Vision base, and external Profile 5) prefer hardware. Every other native
   route uses `no-preference`, so a codec without a hardware decoder, such as
-  VP8 in Chromium on Windows, decodes in software.
+  VP8 in Chromium on Windows, decodes in software. One exception: 10-bit SDR
+  HEVC has no probe of its own. The native HDR HEVC probe gates it with
+  `prefer-hardware`, while the SDR route requests `no-preference`. Chromium
+  decodes HEVC only in hardware, so both resolve to the same decoder.
 - AC-3, E-AC-3, and PCM have no runtime probe, so the host's
   `appendMeasuredNativeAudioRouteProfiles` never emits its 48 kHz profile.
-- These composed routes have no probe vector: DTS 2-channel MA, DTS 6-channel
-  HRA, and TrueHD 7.1 at 48 kHz.
+- These composed routes have no probe vector: DTS mono, DTS 2-channel MA, DTS
+  3-channel MA, DTS 6-channel HRA, TrueHD and MLP mono, and TrueHD 7.1 at
+  48 kHz.
+- A profile condition cannot express ChannelLayout, so three-channel routes
+  and E-AC-3 and TrueHD 7.1 are advertised by channel count and qualified by
+  layout only at eligibility.
 - The raw-planes budget (128 MiB per frame or Dolby Vision pair, 2 in flight)
   is enforced only at eligibility and is never advertised.
 - `customProfileAugmentationAvailable` (host) stays set for the lifetime of the

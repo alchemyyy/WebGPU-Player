@@ -352,7 +352,10 @@ export async function createExternalHDRAuthorizationFrame(
         decodeState.decodedFrame = null;
         return authorizedFrame;
     } finally {
-        decoder.close();
+        // NOTE: close() throws on a codec its own error already closed, which would hide that error
+        if (decoder.state !== 'closed') {
+            decoder.close();
+        }
         decodeState.decodedFrame?.close();
     }
 }

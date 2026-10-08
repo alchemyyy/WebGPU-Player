@@ -17,7 +17,10 @@ import {
     isCustomAudioDownmixAlgorithm,
     type CustomAudioDownmixAlgorithm
 } from '../audio/processing/CustomAudioDownmixAlgorithm';
-import { CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT } from '../audio/processing/CustomAudioChannelLayout';
+import {
+    CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT,
+    type CustomAudioOutputChannelCount
+} from '../audio/processing/CustomAudioChannelLayout';
 import CustomDecodeAudioBridge from '../audio/output/CustomDecodeAudioBridge';
 import CustomDecodeSession, {
     type CustomDecodeAudioBridgeFactory,
@@ -55,8 +58,15 @@ import type {
     CustomVideoDecodeSessionFactory
 } from './CustomPlaybackControllerTypes';
 
+// The longest startup period without progress
 export const DEFAULT_CUSTOM_PLAYBACK_STARTUP_TIMEOUT_MICROSECONDS =
     millisecondsToMicroseconds(20_000);
+// The longest startup overall, even while it keeps progressing
+export const DEFAULT_CUSTOM_PLAYBACK_STARTUP_CEILING_MICROSECONDS =
+    millisecondsToMicroseconds(60_000);
+// Startup progress is sampled this often, or at the quiet bound when that is shorter
+const STARTUP_PROGRESS_SAMPLE_INTERVAL_MICROSECONDS = millisecondsToMicroseconds(1_000);
+const MILLISECONDS_PER_SECOND = 1_000;
 export const DEFAULT_CUSTOM_PLAYBACK_STOP_TIMEOUT_MICROSECONDS =
     millisecondsToMicroseconds(1_500);
 export const DEFAULT_CUSTOM_PLAYBACK_TIME_UPDATE_INTERVAL_MICROSECONDS =
@@ -92,11 +102,17 @@ type PendingStartup = {
     desiredPlaying: boolean
     generation: number
     phase: 'seeking' | 'starting'
+    /** Decode counters at the last progress sample; any change counts as progress */
+    progressSignature: string
     promise: Promise<CustomPlaybackStartResult>
+    /** Time sampled since the counters last changed */
+    quietElapsedMilliseconds: number
     resolve: (result: CustomPlaybackStartResult) => void
     settled: boolean
     startedAtMicroseconds: Microseconds
     timer: ReturnType<typeof globalThis.setTimeout>
+    /** Time sampled since the startup began; measured by the samples, not a clock */
+    totalElapsedMilliseconds: number
     mediaReady: boolean
 };
 
@@ -226,6 +242,34 @@ function validateAudioPlayOptions(options: CustomPlaybackPlayOptions): void {
 /** Resolves the algorithm the decode worker applies when none was chosen */
 function getAudioDownmixAlgorithm(options: CustomPlaybackPlayOptions): CustomAudioDownmixAlgorithm {
     return options.audioDownmixAlgorithm ?? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM;
+}
+
+/**
+ * Applies a live switch's channel ceiling to the decoded source layout, which
+ * outranks the declared one that can under-declare E-AC-3 7.1. Before any PCM
+ * decodes, the request already reflects the server's channel count.
+ */
+function selectLiveAudioOutputChannelCount(
+    requestedChannelCount: CustomAudioOutputChannelCount,
+    decodedSourceChannelCount: number | null
+): CustomAudioOutputChannelCount {
+    if (decodedSourceChannelCount === null) {
+        return requestedChannelCount;
+    }
+    return selectCustomAudioOutputChannelCountForMaximum(
+        requestedChannelCount,
+        decodedSourceChannelCount
+    );
+}
+
+/** Reports whether a source that may be multichannel mixes down to a stereo output. */
+function isStereoDownmix(
+    outputChannelCount: CustomAudioOutputChannelCount,
+    decodedSourceChannelCount: number | null
+): boolean {
+    return outputChannelCount === CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT
+        && (decodedSourceChannelCount === null
+            || decodedSourceChannelCount > CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT);
 }
 
 function validateAudioOutputOptions(options: CustomPlaybackAudioOutputOptions): void {
@@ -476,6 +520,7 @@ export default class CustomPlaybackController {
     private playbackStarvationStartedAtMicroseconds: Microseconds | null = null;
     private playCount = 0;
     private readonly startupTimeoutMicroseconds: Microseconds;
+    private readonly startupCeilingMicroseconds: Microseconds;
     private startupDurationMicroseconds: Microseconds | null = null;
     private staleEventCount = 0;
     private state: CustomPlaybackState = 'idle';
@@ -517,6 +562,15 @@ export default class CustomPlaybackController {
                 ?? DEFAULT_CUSTOM_PLAYBACK_STARTUP_TIMEOUT_MICROSECONDS,
             'Playback startup timeout'
         );
+        const startupCeilingMicroseconds = requirePositiveTimeout(
+            options.startupCeilingMicroseconds
+                ?? DEFAULT_CUSTOM_PLAYBACK_STARTUP_CEILING_MICROSECONDS,
+            'Playback startup ceiling'
+        );
+        // The ceiling never cuts the quiet bound short
+        this.startupCeilingMicroseconds = startupCeilingMicroseconds < this.startupTimeoutMicroseconds ?
+            this.startupTimeoutMicroseconds :
+            startupCeilingMicroseconds;
         this.playbackStallTimeoutMicroseconds = requirePositiveTimeout(
             options.playbackStallTimeoutMicroseconds
                 ?? DEFAULT_CUSTOM_PLAYBACK_STALL_TIMEOUT_MICROSECONDS,
@@ -554,6 +608,10 @@ export default class CustomPlaybackController {
             this.nativeAudioClockTimeMicroseconds = nativeAudioTimeMicroseconds;
             this.clock.synchronize(nativeAudioTimeMicroseconds);
             return nativeAudioTimeMicroseconds;
+        }
+        // An element that played out a track ending before video leaves the clock to run on
+        if (this.hasNativeAudioEnded()) {
+            return this.clock.mediaTimeMicroseconds;
         }
         if (this.nativeAudioClockGeneration === generation
             && this.nativeAudioClockTimeMicroseconds !== null) {
@@ -776,8 +834,9 @@ export default class CustomPlaybackController {
     /**
      * Switches decoded audio to a new output layout and downmix while video keeps
      * playing. Audio rests briefly while the new layout fills, and the clock keeps
-     * running. The channel count is a ceiling: output keeps the source's own speaker
-     * layout when it fits and is mixed down to stereo otherwise. Resolves false when
+     * running. The channel count is a ceiling applied to the decoded source layout:
+     * three channels and 5.1 use a 5.1 output, 6.1 and 7.1 use a 7.1 output or fold
+     * into a 5.1 one, and anything else mixes down to stereo. Resolves false when
      * the live switch is unavailable or did not start.
      */
     public async reconfigureAudioOutput(
@@ -802,12 +861,11 @@ export default class CustomPlaybackController {
             return false;
         }
 
-        const sourceChannelCount = binding.configuration.sourceChannelCount
-            ?? binding.configuration.channelCount;
-        // Only stereo converts layouts, so a speaker bed the source cannot fill mixes down
-        const outputChannelCount = selectCustomAudioOutputChannelCountForMaximum(
+        const decodedSourceChannelCount =
+            this.videoDecodeSession.getTelemetry().decodedAudioSourceChannelCount;
+        const outputChannelCount = selectLiveAudioOutputChannelCount(
             options.decodedAudioOutputChannelCount,
-            sourceChannelCount
+            decodedSourceChannelCount
         );
         // Later seeks and track switches start with the newest requested downmix
         const requestedSource: CustomPlaybackPlayOptions = {
@@ -821,9 +879,8 @@ export default class CustomPlaybackController {
         // A pending switch already moved the source to the layout it is filling
         const currentOutputChannelCount = previousSource.decodedAudioOutputChannelCount
             ?? CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT;
-        // The algorithm only matters when surround is mixed down to stereo
-        const algorithmChanged = outputChannelCount === CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT
-            && sourceChannelCount > CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT
+        // The algorithm only matters when the source is mixed down to stereo
+        const algorithmChanged = isStereoDownmix(outputChannelCount, decodedSourceChannelCount)
             && getAudioDownmixAlgorithm(requestedSource) !== getAudioDownmixAlgorithm(previousSource);
         if (outputChannelCount === currentOutputChannelCount && !algorithmChanged) {
             this.currentSource = requestedSource;
@@ -1248,25 +1305,100 @@ export default class CustomPlaybackController {
         const promise = new Promise<CustomPlaybackStartResult>(resolve => {
             resolveStartup = resolve;
         });
-        const timer = globalThis.setTimeout(() => {
-            this.activateFallback(
-                generation,
-                'startup-timeout',
-                'Custom playback preparation exceeded its bounded timeout'
-            );
-        }, microsecondsToMilliseconds(this.startupTimeoutMicroseconds));
+        const timer = globalThis.setTimeout(
+            () => this.checkStartupProgress(generation),
+            this.getStartupProgressSampleIntervalMilliseconds()
+        );
         return {
             completing: false,
             desiredPlaying,
             generation,
             phase,
+            progressSignature: this.readStartupProgressSignature(),
             promise,
+            quietElapsedMilliseconds: 0,
             resolve: resolveStartup,
             settled: false,
             startedAtMicroseconds: this.readMonotonicTime(),
             timer,
+            totalElapsedMilliseconds: 0,
             mediaReady: false
         };
+    }
+
+    /**
+     * Samples startup progress. A large or remote source may need longer than the quiet bound to start, so
+     * startup fails only after the quiet bound passes without progress, or at the ceiling regardless.
+     */
+    private checkStartupProgress(generation: number): void {
+        const pendingStartup = this.pendingStartup;
+        if (!pendingStartup
+            || pendingStartup.generation !== generation
+            || !this.isPendingStartupActive(pendingStartup)) {
+            return;
+        }
+
+        const sampleIntervalMilliseconds = this.getStartupProgressSampleIntervalMilliseconds();
+        pendingStartup.totalElapsedMilliseconds += sampleIntervalMilliseconds;
+        const progressSignature = this.readStartupProgressSignature();
+        if (progressSignature === pendingStartup.progressSignature) {
+            pendingStartup.quietElapsedMilliseconds += sampleIntervalMilliseconds;
+        } else {
+            pendingStartup.progressSignature = progressSignature;
+            pendingStartup.quietElapsedMilliseconds = 0;
+        }
+
+        const quietBoundMilliseconds = microsecondsToMilliseconds(this.startupTimeoutMicroseconds);
+        const ceilingMilliseconds = microsecondsToMilliseconds(this.startupCeilingMicroseconds);
+        const quietBoundExpired = pendingStartup.quietElapsedMilliseconds >= quietBoundMilliseconds;
+        if (!quietBoundExpired && pendingStartup.totalElapsedMilliseconds < ceilingMilliseconds) {
+            pendingStartup.timer = globalThis.setTimeout(
+                () => this.checkStartupProgress(generation),
+                sampleIntervalMilliseconds
+            );
+            return;
+        }
+
+        const boundDescription = quietBoundExpired ?
+            `no progress for ${quietBoundMilliseconds / MILLISECONDS_PER_SECOND} s` :
+            `still incomplete after ${ceilingMilliseconds / MILLISECONDS_PER_SECOND} s`;
+        this.activateFallback(
+            generation,
+            'startup-timeout',
+            `Custom playback preparation exceeded its bounded timeout (${boundDescription}; `
+                + `${this.describeStartupProgress()})`
+        );
+    }
+
+    private getStartupProgressSampleIntervalMilliseconds(): number {
+        return microsecondsToMilliseconds(
+            this.startupTimeoutMicroseconds < STARTUP_PROGRESS_SAMPLE_INTERVAL_MICROSECONDS ?
+                this.startupTimeoutMicroseconds :
+                STARTUP_PROGRESS_SAMPLE_INTERVAL_MICROSECONDS
+        );
+    }
+
+    /** Joins the decode counters that grow while startup makes progress */
+    private readStartupProgressSignature(): string {
+        const telemetry = this.videoDecodeSession.getTelemetry();
+        return [
+            telemetry.submittedVideoPacketCount,
+            telemetry.receivedFrameCount,
+            telemetry.receivedAudioFrameCount,
+            telemetry.videoProgressPhase ?? 'none',
+            this.audioPath,
+            this.audioBinding !== null
+        ].join(':');
+    }
+
+    /** Names how far startup got, so a timeout reports the stage that stalled */
+    private describeStartupProgress(): string {
+        const telemetry = this.videoDecodeSession.getTelemetry();
+        return `video packets ${telemetry.submittedVideoPacketCount}, `
+            + `decoded frames ${telemetry.receivedFrameCount}, `
+            + `audio frames ${telemetry.receivedAudioFrameCount}, `
+            + `video phase ${telemetry.videoProgressPhase ?? 'none'}, `
+            + `audio path ${this.audioPath}`;
     }
 
     private async prepareGeneration(
@@ -1366,6 +1498,9 @@ export default class CustomPlaybackController {
         }
 
         switch (event.type) {
+            case 'audio-ended':
+                this.handleAudioEnded(event.generation);
+                break;
             case 'audio-resynced':
                 this.handleAudioResynced(event);
                 break;
@@ -1409,6 +1544,22 @@ export default class CustomPlaybackController {
         }
     };
 
+    /**
+     * Lets video carry playback past the end of the current audio epoch. A video
+     * decoder released for a hidden page restarts at the clock, since only video
+     * can reach the end of the stream now.
+     */
+    private handleAudioEnded(generation: number): void {
+        // Startup completes through the ready event the ended track releases
+        if (this.pendingStartup?.generation === generation) {
+            return;
+        }
+        if (this.videoSuspended) {
+            this.requestVideoResync(this.getCurrentPresentationTargetTime());
+        }
+        this.completeEndedAudioTrackDrain(generation);
+    }
+
     /** Recovers a reclaimed video decoder now, or on return when the page is hidden. */
     private handleVideoInterrupted(): void {
         if (this.pageHidden && this.canSuspendBackgroundVideo() && !this.pendingStartup) {
@@ -1447,6 +1598,15 @@ export default class CustomPlaybackController {
         if (this.currentSource?.audioOutputMode === 'native-media') {
             this.videoDecodeSession.setNativeAudioVolume?.(this.getNativeOutputGain());
             this.videoDecodeSession.setNativeAudioMuted?.(this.muted);
+        }
+        // A source the server never probed takes its duration from the container, which makes it seekable
+        if (this.currentSource
+            && this.currentSource.durationMicroseconds === null
+            && event.containerDurationMicroseconds !== undefined) {
+            this.currentSource = {
+                ...this.currentSource,
+                durationMicroseconds: event.containerDurationMicroseconds
+            };
         }
         this.pendingStartup.mediaReady = true;
         void this.completeStartupIfReady(event.generation);
@@ -2195,6 +2355,7 @@ export default class CustomPlaybackController {
 
         if (telemetryMatchesActiveAudio) {
             this.handleActiveAudioTelemetry(telemetry, generation);
+            this.completeEndedAudioTrackDrain(generation);
             this.completeEndedPlaybackIfDrained(generation);
         } else if (audioOutput && telemetry.generation !== audioOutput.generation) {
             this.staleEventCount += 1;
@@ -2215,7 +2376,8 @@ export default class CustomPlaybackController {
         }
 
         const setNativeAudioPlaying = this.videoDecodeSession.setNativeAudioPlaying;
-        if (setNativeAudioPlaying) {
+        // play() on an element that played out its stream would restart it from the earliest position
+        if (setNativeAudioPlaying && !(playing && this.hasNativeAudioEnded())) {
             try {
                 operations.push(Promise.resolve(setNativeAudioPlaying.call(
                     this.videoDecodeSession,
@@ -2257,8 +2419,7 @@ export default class CustomPlaybackController {
                     telemetry.hasPhysicalOutputTimeCorrelation
                     && this.state === 'playing'
                     && this.clockStarvation === null
-                    && !(this.pendingEndedGeneration === generation
-                        && this.terminalAudioTailReleased)
+                    && !this.isTerminalAudioTailReleased(generation)
                 ) {
                     this.clock.synchronize(telemetry.mediaTimeMicroseconds);
                     this.emitTimeUpdateIfDue();
@@ -2280,6 +2441,15 @@ export default class CustomPlaybackController {
             return;
         }
 
+        // The final underflow of a track that ended before video is its end, not starvation
+        if (this.pendingEndedGeneration !== generation && this.hasAudioTrackEnded()) {
+            const drainedAudioTail = this.getDrainedAudioTail(generation);
+            if (drainedAudioTail) {
+                this.updateEndedAudioTrackDrain(generation, drainedAudioTail);
+                this.emitTimeUpdateIfDue();
+                return;
+            }
+        }
         const terminalAudioTail = this.getTerminalAudioTailFromUnderflow(
             telemetry,
             generation
@@ -2453,6 +2623,96 @@ export default class CustomPlaybackController {
             && this.videoDecodeSession.getTelemetry().videoEnded;
     }
 
+    /** Video can outlast the audio track, whose final underflow then ends audio instead of starving. */
+    private hasAudioTrackEnded(): boolean {
+        return typeof this.currentSource?.audioTrackIndex === 'number'
+            && this.videoDecodeSession.getTelemetry().audioEnded;
+    }
+
+    /** Reports that the owned native element played out an audio track that ended. */
+    private hasNativeAudioEnded(): boolean {
+        return this.currentSource?.audioOutputMode === 'native-media'
+            && this.videoDecodeSession.getTelemetry().nativeAudioEnded;
+    }
+
+    /** Reports that this generation's audio tail played out, so audio no longer moves the clock. */
+    private isTerminalAudioTailReleased(generation: number): boolean {
+        return this.terminalAudioTailReleased
+            && this.terminalAudioDrainGeneration === generation
+            && (this.pendingEndedGeneration === generation || this.hasAudioTrackEnded());
+    }
+
+    /** Reports that no audio moves the clock: the source has none, or its track ended and played out. */
+    private isAudioClockReleased(): boolean {
+        const generation = this.activeGeneration;
+        if (typeof this.currentSource?.audioTrackIndex !== 'number') {
+            return true;
+        }
+        if (this.currentSource.audioOutputMode === 'native-media') {
+            return this.hasNativeAudioEnded();
+        }
+        return generation !== null && this.isTerminalAudioTailReleased(generation);
+    }
+
+    /**
+     * Drains the tail of an audio track that ended before video, so the clock
+     * then runs on without audio.
+     */
+    private completeEndedAudioTrackDrain(generation: number): void {
+        if (this.state !== 'playing'
+            || this.pendingEndedGeneration === generation
+            || !this.hasAudioTrackEnded()
+            || this.isTerminalAudioTailReleased(generation)) {
+            return;
+        }
+        const drainedAudioTail = this.getDrainedAudioTail(generation);
+        if (drainedAudioTail) {
+            this.updateEndedAudioTrackDrain(generation, drainedAudioTail);
+        }
+    }
+
+    /**
+     * Plays out the tail of an audio track that ended before video. Unlike the end
+     * of stream drain, video waits stay in force and the clock never pauses for an
+     * uncorrelated output, since video carries playback past the tail. Returns
+     * whether the tail was released.
+     */
+    private updateEndedAudioTrackDrain(
+        generation: number,
+        drainedAudioTail: DrainedAudioTail
+    ): boolean {
+        if (this.terminalAudioDrainGeneration !== generation) {
+            this.terminalAudioDrainDeadlineMicroseconds = null;
+            this.terminalAudioDrainGeneration = generation;
+            this.terminalAudioTailReleased = false;
+        }
+        if (this.terminalAudioTailReleased) {
+            return true;
+        }
+
+        const audioEndTimeMicroseconds = drainedAudioTail.endMediaTimeMicroseconds;
+        const outputTelemetry = drainedAudioTail.outputTelemetry;
+        if (audioEndTimeMicroseconds !== null
+            && outputTelemetry.hasPhysicalOutputTimeCorrelation
+            && outputTelemetry.mediaTimeMicroseconds < audioEndTimeMicroseconds) {
+            // The speakers still play the tail, so they keep the clock
+            if (this.state === 'playing' && this.clockStarvation === null) {
+                this.clock.synchronize(outputTelemetry.mediaTimeMicroseconds);
+            }
+            return false;
+        }
+
+        this.terminalAudioDrainDeadlineMicroseconds = null;
+        this.terminalAudioTailReleased = true;
+        // An underflow already holding the clock was the end of the track
+        this.releaseRetiredAudioStarvation(generation);
+        // A video wait in force now holds the clock, as it does without audio
+        if (this.waitingForVideoFrame && this.state === 'playing') {
+            this.beginVideoStarvationIfNeeded();
+        }
+        return true;
+    }
+
     private hasActivePlaybackWait(): boolean {
         return this.clockStarvation !== null || this.waitingForVideoFrame;
     }
@@ -2552,12 +2812,14 @@ export default class CustomPlaybackController {
     /**
      * Only audio-clocked native decode is released while hidden.
      * Software decoders keep draining because a keyframe resync is costly for them.
-     * An ended video track has already released its decoder.
+     * An ended video track has already released its decoder, and once the audio
+     * track ended only video can reach the end of the stream.
      */
     private canSuspendBackgroundVideo(): boolean {
         return typeof this.currentSource?.audioTrackIndex === 'number'
             && this.currentSource.videoDecoderBackend === 'native'
-            && !this.videoDecodeSession.getTelemetry().videoEnded;
+            && !this.videoDecodeSession.getTelemetry().videoEnded
+            && !this.hasAudioTrackEnded();
     }
 
     /** Reports whether the newest decoded frame ends more than the tolerance before the target. */
@@ -2628,9 +2890,9 @@ export default class CustomPlaybackController {
         return true;
     }
 
+    /** Holds the clock for missing video once no audio moves it, so frames are not skipped. */
     private beginVideoStarvationIfNeeded(): void {
-        if (this.clockStarvation !== null
-            || typeof this.currentSource?.audioTrackIndex === 'number') {
+        if (this.clockStarvation !== null || !this.isAudioClockReleased()) {
             return;
         }
 

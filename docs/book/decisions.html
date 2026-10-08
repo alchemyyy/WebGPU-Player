@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ca695dd2.js";
+            window.path_to_searchindex_js = "searchindex-c8b0fdbf.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -306,6 +306,11 @@ route to bit-exact P010 and exact P7 FEL.</li>
 color to limited BT.709 so Chrome does not tone-map, and the shader recovers
 the YUV codes. An <code>hvcC</code> without an SPS defers validation to the first key
 access unit (08-05).</li>
+<li>An unknown duration does not block custom playback (10-07). Eligibility
+used to require <code>RunTimeTicks</code>, so a source the server never probed played
+through the HTML backend although the controller and session already accept
+a null duration. The decoded streams define the end; only the native media
+audio backend needs a duration, so such a source takes decoded PCM.</li>
 <li>Native decode hints match their probes (10-07). The SDR probes qualify with
 <code>no-preference</code>, but the runtime used to request <code>prefer-hardware</code> for every
 native <code>VideoFrame</code> route. Chromium on Windows has no hardware VP8 decoder
@@ -313,6 +318,45 @@ and rejects that configuration, so VP8 sources failed after their probe
 passed. Only the routes that present opaque hardware output (native external
 HDR, the native Dolby Vision base, and external P5) prefer hardware, as
 their probes and authorizations do.</li>
+<li>Unspecified color is absent, not unknown (10-07). FFmpeg names an
+unspecified or reserved color field <code>unknown</code> or <code>reserved</code>, which used to
+null the metadata and decline the item as <code>metadata-unsupported</code>. Such a
+field is now absent, so the transfer’s defaults apply: an SDR stream with
+ColorRange <code>unknown</code> is limited BT.709, and a Dolby Vision base with
+ColorTransfer <code>unknown</code> presents the transfer its CCID declares, both
+deliberately asserted in <code>test/presentation/PresentationInput.test.ts</code>.
+Unspecified SD color still defaults to BT.709; no resolution-based default
+is applied.</li>
+<li>BT.601 and BT.2020 SDR play natively (10-07). Field tests declined H.264 and
+HEVC SDR tagged SMPTE 170M, and HEVC SDR tagged with the BT.2020 10-bit
+transfer, without logging anything. SMPTE 170M and SMPTE 240M primaries now
+read as <code>smpte170m</code>, BT.470 BG as <code>bt470bg</code>, both matrices as BT.601, and
+the BT.2020 10 and 12-bit transfers, which use the BT.709 curve, as SDR. The
+VF-SDR route does no color math: it imports the frame with
+<code>colorSpace: 'srgb'</code> through the identity shader, so Chrome converts it. The
+CPU reference and the shaders stay exact for all four primaries sets
+regardless: luminance comes from the primaries, YUV coefficients from the
+matrix (BT.601 is Kr 0.299, Kb 0.114), and gamut and IPT conversions go
+through BT.709 tables derived from the H.273 chromaticities under D65. The
+raw SDR keys stay BT.709 only, so BT.601 and BT.2020 SDR never reach the raw
+shaders.</li>
+<li>The SPS VUI never rejects color (10-07). An HLG broadcast whose VUI signals
+the BT.2020 10-bit transfer (14) and whose alternative transfer
+characteristics SEI (payload type 147) names HLG (18) failed the native HLG
+route, because the SPS parser accepted only BT.709 and BT.2020 PQ or HLG.
+The parser now maps every code to a WebCodecs name or to null, and only the
+native HDR route check is strict (limited range, BT.2020 primaries and
+non-constant-luminance matrix). Its transfer is the SEI value when the key
+access unit carries one and the VUI value otherwise; an HLG route also
+accepts VUI 14 or 15 without an SEI. SEI errors are not fatal, as in FFmpeg,
+so a malformed SEI counts as absent and the VUI alone must prove the route.
+The bundled HEVC decoder compares the container and SPS color only where
+both specify it (BT.470 BG equals SMPTE 170M as a matrix, and SMPTE 170M
+equals BT.709 as a transfer) and fills SPS gaps from the container, so a
+container’s HLG survives a VUI 14 SPS. Chrome is assumed to report a null
+<code>VideoFrame.colorSpace.transfer</code> for VUI 14 and 15; the raw HLG frame check
+also accepts <code>bt709</code> on a BT.2020 frame in case it does not, and a null
+frame color member never contradicts the metadata.</li>
 </ul>
 <h2 id="firefox"><a class="header" href="#firefox">Firefox</a></h2>
 <p>These were settled on Firefox 157 on Windows.</p>

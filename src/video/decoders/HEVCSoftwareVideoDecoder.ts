@@ -17,8 +17,11 @@ import {
 } from './HEVCDecoderBackend';
 import {
     parseHEVCSPS,
+    type HEVCSPSColorPrimaries,
     type HEVCSPSColorSpace,
-    type HEVCSPSConfiguration
+    type HEVCSPSConfiguration,
+    type HEVCSPSMatrixCoefficients,
+    type HEVCSPSTransferCharacteristics
 } from '../hevc/HEVCSPSParser';
 import {
     getHEVCNALUnitLayerID,
@@ -54,6 +57,30 @@ const MAXIMUM_DECODED_FRAME_BYTE_LENGTH = (
     )
 ) * Uint16Array.BYTES_PER_ELEMENT;
 export const MAXIMUM_HEVC_PENDING_PICTURE_COUNT = 64;
+// The color names a VideoSample accepts, keyed by the WebCodecs name or the alias a container may report
+const SAMPLE_COLOR_PRIMARIES: ReadonlyMap<string, HEVCSPSColorPrimaries> = new Map([
+    [ 'bt2020', 'bt2020' ],
+    [ 'bt470bg', 'bt470bg' ],
+    [ 'bt709', 'bt709' ],
+    [ 'smpte170m', 'smpte170m' ],
+    [ 'smpte432', 'smpte432' ]
+]);
+const SAMPLE_TRANSFER_CHARACTERISTICS: ReadonlyMap<string, HEVCSPSTransferCharacteristics> = new Map([
+    [ 'arib-std-b67', 'hlg' ],
+    [ 'bt709', 'bt709' ],
+    [ 'hlg', 'hlg' ],
+    [ 'iec61966-2-1', 'iec61966-2-1' ],
+    [ 'linear', 'linear' ],
+    [ 'pq', 'pq' ],
+    [ 'smpte170m', 'smpte170m' ],
+    [ 'smpte2084', 'pq' ]
+]);
+const SAMPLE_MATRIX_COEFFICIENTS: ReadonlyMap<string, HEVCSPSMatrixCoefficients> = new Map([
+    [ 'bt2020-ncl', 'bt2020-ncl' ],
+    [ 'bt470bg', 'bt470bg' ],
+    [ 'bt709', 'bt709' ],
+    [ 'smpte170m', 'smpte170m' ]
+]);
 
 type HEVCTiming = {
     durationMicroseconds: Microseconds
@@ -386,19 +413,53 @@ function getConfigurationProfileIDC(config: VideoDecoderConfig): number | null {
     return getProfileIDCFromCodecString(config.codec);
 }
 
-function normalizeTransfer(value: unknown): HEVCSPSColorSpace['transfer'] | null {
-    switch (String(value)) {
-        case 'bt709':
-            return 'bt709';
-        case 'arib-std-b67':
-        case 'hlg':
-            return 'hlg';
-        case 'pq':
-        case 'smpte2084':
-            return 'pq';
-        default:
-            return null;
+/** Maps a configured primaries name to its WebCodecs name, or null when it has none. */
+function normalizePrimaries(value: unknown): HEVCSPSColorPrimaries | null {
+    return SAMPLE_COLOR_PRIMARIES.get(String(value)) ?? null;
+}
+
+/** Maps a configured transfer name or alias to its WebCodecs name, or null when it has none. */
+function normalizeTransfer(value: unknown): HEVCSPSTransferCharacteristics | null {
+    return SAMPLE_TRANSFER_CHARACTERISTICS.get(String(value)) ?? null;
+}
+
+/** Maps a configured matrix name to its WebCodecs name, or null when it has none. */
+function normalizeMatrix(value: unknown): HEVCSPSMatrixCoefficients | null {
+    return SAMPLE_MATRIX_COEFFICIENTS.get(String(value)) ?? null;
+}
+
+/** Returns primaries unchanged: every primaries set has its own chromaticities. */
+function getPrimariesEquivalent(primaries: HEVCSPSColorPrimaries): HEVCSPSColorPrimaries {
+    return primaries;
+}
+
+/** Returns the transfer whose curve a transfer uses: SMPTE 170M uses the BT.709 OETF. */
+function getTransferEquivalent(
+    transfer: HEVCSPSTransferCharacteristics
+): HEVCSPSTransferCharacteristics {
+    return transfer === 'smpte170m' ? 'bt709' : transfer;
+}
+
+/** Returns the matrix whose coefficients a matrix uses: BT.470 BG and SMPTE 170M are both BT.601. */
+function getMatrixEquivalent(matrix: HEVCSPSMatrixCoefficients): HEVCSPSMatrixCoefficients {
+    return matrix === 'smpte170m' ? 'bt470bg' : matrix;
+}
+
+/**
+ * Returns whether a configured and an SPS color member contradict.
+ * Only members both sides specify are compared, and a configured value without a WebCodecs name cannot be proven equal.
+ */
+function colorMembersContradict<Member extends string>(
+    configuredValue: unknown,
+    spsValue: Member | null,
+    normalize: (value: unknown) => Member | null,
+    getEquivalent: (value: Member) => Member
+): boolean {
+    if (configuredValue == null || spsValue === null) {
+        return false;
     }
+    const configuredMember = normalize(configuredValue);
+    return configuredMember === null || getEquivalent(configuredMember) !== getEquivalent(spsValue);
 }
 
 function configuredColorSpaceContradictsSPS(
@@ -410,12 +471,45 @@ function configuredColorSpaceContradictsSPS(
     }
     return (configuredColorSpace.fullRange != null
             && configuredColorSpace.fullRange !== spsColorSpace.fullRange)
-        || (configuredColorSpace.matrix != null
-            && String(configuredColorSpace.matrix) !== spsColorSpace.matrix)
-        || (configuredColorSpace.primaries != null
-            && String(configuredColorSpace.primaries) !== spsColorSpace.primaries)
-        || (configuredColorSpace.transfer != null
-            && normalizeTransfer(configuredColorSpace.transfer) !== spsColorSpace.transfer);
+        || colorMembersContradict(
+            configuredColorSpace.matrix,
+            spsColorSpace.matrix,
+            normalizeMatrix,
+            getMatrixEquivalent
+        )
+        || colorMembersContradict(
+            configuredColorSpace.primaries,
+            spsColorSpace.primaries,
+            normalizePrimaries,
+            getPrimariesEquivalent
+        )
+        || colorMembersContradict(
+            configuredColorSpace.transfer,
+            spsColorSpace.transfer,
+            normalizeTransfer,
+            getTransferEquivalent
+        );
+}
+
+/**
+ * Merges the SPS and configured color descriptions member by member, preferring the SPS.
+ * A configured member fills one the SPS leaves unspecified, so a container's HLG survives a VUI with a BT.2020 transfer.
+ */
+function mergeSampleColorSpace(
+    spsColorSpace: HEVCSPSColorSpace | null,
+    configuredColorSpace: VideoColorSpaceInit | undefined
+): VideoColorSpaceInit | undefined {
+    // Without either description, VideoSample applies its own Rec.709 default
+    if (!spsColorSpace && !configuredColorSpace) {
+        return undefined;
+    }
+    // NOTE: The DOM typings list only the original WebCodecs names, while Mediabunny accepts every member used here
+    return {
+        fullRange: spsColorSpace?.fullRange ?? configuredColorSpace?.fullRange ?? null,
+        matrix: spsColorSpace?.matrix ?? normalizeMatrix(configuredColorSpace?.matrix),
+        primaries: spsColorSpace?.primaries ?? normalizePrimaries(configuredColorSpace?.primaries),
+        transfer: spsColorSpace?.transfer ?? normalizeTransfer(configuredColorSpace?.transfer)
+    } as VideoColorSpaceInit;
 }
 
 function spsConfigurationsMatch(
@@ -967,8 +1061,7 @@ export default class HEVCSoftwareVideoDecoder {
         return new VideoSample(sampleData, {
             codedHeight: frame.height,
             codedWidth: frame.width,
-            colorSpace: (spsConfiguration.colorSpace
-                ?? this.config.colorSpace) as VideoColorSpaceInit | undefined,
+            colorSpace: mergeSampleColorSpace(spsConfiguration.colorSpace, this.config.colorSpace),
             displayHeight: displayDimensions.displayHeight,
             displayWidth: displayDimensions.displayWidth,
             duration: microsecondsToSeconds(timing.durationMicroseconds),

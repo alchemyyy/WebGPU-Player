@@ -3,7 +3,11 @@ import type { FFmpegEAC3Module } from '#wasm/ffmpeg-eac3/ffmpeg-eac3.mjs';
 import type { CustomAudioChannelLayout } from '../processing/CustomAudioChannelLayout';
 import { isSupportedCustomAudioSampleRate } from '../CustomAudioSampleRate';
 import { getQualifiedCustomWaveChannelLayout } from '../processing/CustomWaveChannelLayout';
-import { requireMicroseconds } from '../../TimeMath';
+import {
+    addMicroseconds,
+    audioFramesToMicroseconds,
+    requireMicroseconds
+} from '../../TimeMath';
 
 const EAC3_MAXIMUM_PACKET_SIZE = 2 * 1024 * 1024;
 const EAC3_MAXIMUM_DECODED_FRAME_COUNT = 16_384;
@@ -11,7 +15,6 @@ const EAC3_MAXIMUM_OUTPUT_COUNT_PER_PACKET = 4;
 const EAC3_STATUS_FATAL = -1;
 const EAC3_STATUS_NO_OUTPUT = 0;
 const EAC3_AV_SAMPLE_FORMAT_F32_PLANAR = 8;
-const EAC3_QUALIFIED_CHANNEL_COUNTS = new Set<number>([ 2, 6, 8 ]);
 
 export type EAC3DecodedAudioOutput = Readonly<{
     channelData: readonly Float32Array[]
@@ -160,6 +163,7 @@ export default class EAC3SoftwareAudioDecoder {
         }
 
         const outputs: EAC3DecodedAudioOutput[] = [];
+        let emittedFrameCount = 0;
         for (let outputIndex = 0;
             outputIndex < EAC3_MAXIMUM_OUTPUT_COUNT_PER_PACKET;
             outputIndex += 1) {
@@ -172,7 +176,9 @@ export default class EAC3SoftwareAudioDecoder {
                     `Bundled E-AC-3 frame receive failed with status ${receiveStatus}`
                 );
             }
-            outputs.push(this.copyCurrentOutput(mediaTimeMicroseconds));
+            const output = this.copyCurrentOutput(mediaTimeMicroseconds, emittedFrameCount);
+            outputs.push(output);
+            emittedFrameCount += output.frameCount;
         }
         throw new RangeError('Bundled E-AC-3 output exceeded the per-packet bound');
     }
@@ -192,8 +198,14 @@ export default class EAC3SoftwareAudioDecoder {
         this.functions.destroy(this.decoder);
     }
 
+    /**
+     * Copies the received frame. FFmpeg resets the packet timestamp after a
+     * partial consume, so a later frame of the same packet without one starts
+     * where the packet's earlier frames ended.
+     */
     private copyCurrentOutput(
-        fallbackMediaTimeMicroseconds: Microseconds
+        packetMediaTimeMicroseconds: Microseconds,
+        precedingPacketFrameCount: number
     ): EAC3DecodedAudioOutput {
         const frameCount = this.functions.getSampleCount(this.decoder);
         if (!Number.isSafeInteger(frameCount)
@@ -217,9 +229,7 @@ export default class EAC3SoftwareAudioDecoder {
         const channelCount = this.functions.getChannelCount(this.decoder);
         const channelMask = this.functions.getChannelMask(this.decoder) >>> 0;
         const qualifiedLayout = getQualifiedCustomWaveChannelLayout(channelMask);
-        if (!qualifiedLayout
-            || qualifiedLayout.channelCount !== channelCount
-            || !EAC3_QUALIFIED_CHANNEL_COUNTS.has(channelCount)) {
+        if (!qualifiedLayout || qualifiedLayout.channelCount !== channelCount) {
             throw new RangeError(
                 `Bundled E-AC-3 channel mask 0x${channelMask.toString(16)} is unqualified`
             );
@@ -246,7 +256,10 @@ export default class EAC3SoftwareAudioDecoder {
         const mediaTimeMicroseconds = Number.isSafeInteger(decodedPTS)
             && decodedPTS >= 0 ?
             requireMicroseconds(decodedPTS, 'Decoded E-AC-3 timestamp') :
-            fallbackMediaTimeMicroseconds;
+            addMicroseconds(
+                packetMediaTimeMicroseconds,
+                audioFramesToMicroseconds(precedingPacketFrameCount, sampleRate)
+            );
         return {
             channelData,
             channelLayout: qualifiedLayout.layout,

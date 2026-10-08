@@ -444,11 +444,15 @@ export function sanitizeHEVCAccessUnitForChromium(
     return encodeNALUnits(retainedNALUnits, format) ?? new Uint8Array();
 }
 
-/** Rewrites every in-band SPS to the neutral color descriptor used by external HDR. */
+/**
+ * Rewrites every in-band SPS to the neutral color descriptor used by external HDR.
+ * The access unit's alternative transfer characteristics SEI value, when known, overrides each VUI transfer in the route check.
+ */
 export function rewriteHEVCAccessUnitColorDescriptionToBT709(
     data: Uint8Array,
     format: HEVCNALFormat,
-    expectedHDRTransfer?: HEVCHDRTransfer
+    expectedHDRTransfer?: HEVCHDRTransfer,
+    preferredTransferCharacteristics: number | null = null
 ): Uint8Array | null {
     requireAccessUnit(data);
     const nalUnits = parseHEVCNALUnits(data, format);
@@ -461,7 +465,8 @@ export function rewriteHEVCAccessUnitColorDescriptionToBT709(
         }
         rewrittenNALUnits.push(rewriteHEVCSPSColorDescriptionToBT709(
             nalUnit.data,
-            expectedHDRTransfer
+            expectedHDRTransfer,
+            preferredTransferCharacteristics
         ));
         rewritten = true;
     }

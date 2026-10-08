@@ -150,7 +150,12 @@ vi.mock('webgpu-player/validation/DolbyVisionPresentationAuthorization', () => (
     }
 }));
 
-import { createPQColorMetadata, type InputColorMetadata } from 'webgpu-player/color/ColorMetadata';
+import {
+    createHLGColorMetadata,
+    createPQColorMetadata,
+    createSDRColorMetadata,
+    type InputColorMetadata
+} from 'webgpu-player/color/ColorMetadata';
 import type { RawDolbyVisionVideoFrameFormat } from 'webgpu-player/color/ColorPipelineShader';
 import {
     type SupportedRawVideoFrameFormat,
@@ -164,8 +169,10 @@ import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from 'webgpu-player/video/dolby-v
 import { parseHEVCHDR10PlusMetadata } from 'webgpu-player/video/hdr/HDR10PlusMetadata';
 import { microsecondsToMilliseconds, secondsToMicroseconds } from 'webgpu-player/MediaTime';
 import {
+    createDefaultRenderSettings,
     createHDRToSDRRenderSettings,
-    RENDER_SETTINGS_UNIFORM_BYTE_LENGTH
+    RENDER_SETTINGS_UNIFORM_BYTE_LENGTH,
+    type RenderSettings
 } from 'webgpu-player/presentation/RenderSettings';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 import WebGPUPresenter, {
@@ -733,6 +740,45 @@ function restoreProperty(
 }
 
 const VIDEO_READY_STATE_CURRENT_DATA = 2;
+
+/** Starts a pushed-frame session with a configured raw route and returns the presenter and its fallback handler. */
+async function startRawRoutePresentation(
+    metadata: InputColorMetadata,
+    rawFrameFormat: SupportedRawVideoFrameFormat,
+    settings: RenderSettings
+): Promise<{ fallbackHandler: MockFunction, presenter: WebGPUPresenter }> {
+    webSettingsMockState.hdrToneMappingEnabled = true;
+    const gpuHarness = createGPUHarness();
+    const contextHarness = createCanvasContextHarness();
+    const surfaceHarness = createSurfaceHarness();
+    installGPU(gpuHarness.gpu);
+    installCanvasContext(contextHarness.context);
+    const fallbackHandler = vi.fn();
+    const presenter = new WebGPUPresenter(fallbackHandler);
+
+    presenter.startSession(1);
+    presenter.setDecodedFramePushMode(true, 1);
+    presenter.attach(surfaceHarness.surface, 1);
+    await vi.waitFor(() => expect(
+        surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+    ).toBeInstanceOf(HTMLCanvasElement));
+    await expect(presenter.configureColorPipeline({
+        inputMode: 'raw-yuv',
+        metadata,
+        rawFrameFormat,
+        settings
+    }, 1)).resolves.toBe(true);
+    return { fallbackHandler, presenter };
+}
+
+function presentRawFrame(presenter: WebGPUPresenter, frame: TransferableRawVideoFrame): boolean {
+    return presenter.presentDecodedFrame({
+        durationMicroseconds: frame.durationMicroseconds ?? secondsToMicroseconds(0),
+        frame,
+        mediaTimeMicroseconds: frame.timestampMicroseconds,
+        outputMode: 'raw-planes'
+    }, 1);
+}
 
 describe('WebGPUPresenter', () => {
     beforeEach(() => {
@@ -3124,6 +3170,56 @@ describe('WebGPUPresenter', () => {
         expect(gpuHarness.devices[0].queueWriteTexture).not.toHaveBeenCalled();
         expect(fallbackHandler).toHaveBeenCalledWith(1, 'decoded-frame-color-mismatch');
     });
+
+    it.each([
+        // A VUI with the BT.2020 10-bit transfer of an HLG-compatible stream has no WebCodecs transfer name
+        { accepted: true, primaries: 'bt2020', transfer: null },
+        { accepted: true, primaries: 'bt2020', transfer: 'bt709' },
+        { accepted: true, primaries: null, transfer: 'arib-std-b67' },
+        { accepted: false, primaries: null, transfer: 'bt709' },
+        { accepted: false, primaries: 'bt2020', transfer: 'smpte2084' }
+    ])('matches raw HLG frame color with unspecified members: %o', async ({
+        accepted,
+        primaries,
+        transfer
+    }) => {
+        const metadata = createHLGColorMetadata();
+        const { fallbackHandler, presenter } = await startRawRoutePresentation(
+            metadata,
+            'I420P10',
+            createHDRToSDRRenderSettings()
+        );
+        const frame = createRawFrame('I420P10', metadata);
+        frame.colorSpace.primaries = primaries;
+        frame.colorSpace.transfer = transfer;
+
+        expect(presentRawFrame(presenter, frame)).toBe(accepted);
+        if (accepted) {
+            await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+            expect(fallbackHandler).not.toHaveBeenCalled();
+        } else {
+            expect(fallbackHandler).toHaveBeenCalledWith(1, 'decoded-frame-color-mismatch');
+        }
+    });
+
+    it.each([ 'bt709', 'smpte170m', null ])(
+        'accepts a raw BT.709 SDR frame whose transfer is %s',
+        async transfer => {
+            const metadata = createSDRColorMetadata();
+            const { fallbackHandler, presenter } = await startRawRoutePresentation(
+                metadata,
+                'I420',
+                createDefaultRenderSettings()
+            );
+            const frame = createRawFrame('I420', metadata);
+            frame.colorSpace.fullRange = null;
+            frame.colorSpace.transfer = transfer;
+
+            expect(presentRawFrame(presenter, frame)).toBe(true);
+            await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+            expect(fallbackHandler).not.toHaveBeenCalled();
+        }
+    );
 
     it('rejects live renderer updates from stale generations without a GPU write', async () => {
         webSettingsMockState.hdrToneMappingEnabled = true;

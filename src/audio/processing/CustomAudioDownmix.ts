@@ -5,6 +5,7 @@ import {
 } from './CustomAudioDownmixAlgorithm';
 import type { AudioDownmixSettingsRamp } from './StreamingAudioDownmixSettings';
 
+const THREE_CHANNEL_COUNT = 3;
 const FIVE_POINT_ONE_CHANNEL_COUNT = 6;
 const SIX_POINT_ONE_CHANNEL_COUNT = 7;
 const SEVEN_POINT_ONE_CHANNEL_COUNT = 8;
@@ -21,6 +22,8 @@ const SEVEN_POINT_ONE_SIDE_LEFT_CHANNEL_INDEX = 6;
 const SEVEN_POINT_ONE_SIDE_RIGHT_CHANNEL_INDEX = 7;
 const SIX_POINT_ONE_SIDE_LEFT_CHANNEL_INDEX = 5;
 const SIX_POINT_ONE_SIDE_RIGHT_CHANNEL_INDEX = 6;
+// The third channel of a WAVE-order FL, FR bed: front center, LFE, or back center
+const THREE_CHANNEL_SHARED_CHANNEL_INDEX = 2;
 
 const SIX_POINT_ONE_DIRECT_CHANNEL_GAIN = 1 / (1 + 3 / Math.SQRT2);
 const SIX_POINT_ONE_MIXED_CHANNEL_GAIN =
@@ -29,6 +32,12 @@ const MAXIMUM_CHANNEL_LEVEL = 2;
 const MAXIMUM_OUTPUT_GAIN = 10;
 const STEREO_FINGERPRINT_OFFSET_BASIS = 0x811c9dc5;
 const STEREO_FINGERPRINT_PRIME = 0x01000193;
+
+// Each stereo output takes its own front channel and the shared channel
+type ThreeChannelDownmixCoefficients = Readonly<{
+    direct: number
+    shared: number
+}>;
 
 type FivePointOneDownmixCoefficients = Readonly<{
     center: number
@@ -55,6 +64,10 @@ const SEVEN_POINT_ONE_NORMALIZATION_GAIN =
     1 / (1 + 3 * STANDARD_MIXED_CHANNEL_GAIN);
 const AC4_FOLDED_SURROUND_GAIN = 0.5;
 const NIGHT_MODE_FOLDED_SURROUND_GAIN = 0.3 * Math.SQRT1_2;
+// A back center is both surrounds at sqrt(1/2) each, as swresample folds it into stereo
+const BACK_CENTER_SURROUND_GAIN = Math.SQRT1_2;
+// The 5.1 matrices never scale LFE by a user level
+const LOW_FREQUENCY_EFFECTS_LEVEL = 1;
 
 const FIVE_POINT_ONE_STANDARD_COEFFICIENTS: FivePointOneDownmixCoefficients =
     Object.freeze({
@@ -180,6 +193,12 @@ export const AUDIO_DOWNMIX_SETTING_RANGES = Object.freeze({
 
 export type StereoChannelData = [ Float32Array, Float32Array ];
 
+/** The third channel of a three-channel bed, which feeds both stereo outputs. */
+export type ThreeChannelDownmixSharedChannel =
+    | 'back-center'
+    | 'front-center'
+    | 'low-frequency-effects';
+
 function getFivePointOneDownmixCoefficients(
     algorithm: CustomAudioDownmixAlgorithmValue
 ): FivePointOneDownmixCoefficients {
@@ -262,6 +281,149 @@ export function assertValidAudioDownmixSettings(
         || settings.outputGain > AUDIO_DOWNMIX_SETTING_RANGES.outputGain.maximum) {
         throw new RangeError('Audio downmix output gain must be between zero and ten');
     }
+}
+
+/** Takes a three-channel bed's weights from the 5.1 coefficients for its shared channel. */
+function getThreeChannelBaseCoefficients(
+    coefficients: FivePointOneDownmixCoefficients,
+    sharedChannel: ThreeChannelDownmixSharedChannel
+): ThreeChannelDownmixCoefficients {
+    switch (sharedChannel) {
+        case 'back-center':
+            return {
+                direct: coefficients.direct,
+                shared: (coefficients.surround + coefficients.oppositeSurround)
+                    * BACK_CENTER_SURROUND_GAIN
+            };
+        case 'front-center':
+            return { direct: coefficients.direct, shared: coefficients.center };
+        case 'low-frequency-effects':
+            return { direct: coefficients.direct, shared: coefficients.lfe };
+    }
+}
+
+/** Scales the weights so each output's direct and shared weights sum to one. */
+function normalizeThreeChannelCoefficients(
+    coefficients: ThreeChannelDownmixCoefficients
+): ThreeChannelDownmixCoefficients {
+    const weightSum = coefficients.direct + coefficients.shared;
+    return {
+        direct: coefficients.direct / weightSum,
+        shared: coefficients.shared / weightSum
+    };
+}
+
+/**
+ * Selects a three-channel bed's weights for the algorithm. The peak-normalized
+ * and RFC 7845 5.1 matrices are normalized for six channels, so the bed
+ * renormalizes its own base weights instead.
+ */
+function getThreeChannelDownmixCoefficients(
+    algorithm: CustomAudioDownmixAlgorithmValue,
+    sharedChannel: ThreeChannelDownmixSharedChannel
+): ThreeChannelDownmixCoefficients {
+    switch (algorithm) {
+        case CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.PeakNormalizedLORO:
+            return normalizeThreeChannelCoefficients(getThreeChannelBaseCoefficients(
+                FIVE_POINT_ONE_STANDARD_COEFFICIENTS,
+                sharedChannel
+            ));
+        case CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845:
+            return normalizeThreeChannelCoefficients(getThreeChannelBaseCoefficients(
+                FIVE_POINT_ONE_RFC7845_COEFFICIENTS,
+                sharedChannel
+            ));
+        case CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.AC4:
+        case CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.Dave750:
+        case CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.NightModeDialogue:
+        case CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.StandardLORO:
+            return getThreeChannelBaseCoefficients(
+                getFivePointOneDownmixCoefficients(algorithm),
+                sharedChannel
+            );
+    }
+}
+
+/** Returns the user level that scales the shared channel of a three-channel bed. */
+function getThreeChannelSharedLevel(
+    sharedChannel: ThreeChannelDownmixSharedChannel,
+    centerLevel: number,
+    surroundLevel: number
+): number {
+    switch (sharedChannel) {
+        case 'back-center':
+            return surroundLevel;
+        case 'front-center':
+            return centerLevel;
+        case 'low-frequency-effects':
+            return LOW_FREQUENCY_EFFECTS_LEVEL;
+    }
+}
+
+function requireThreeChannelPlanarInput(
+    channelData: readonly Float32Array[]
+): number {
+    if (channelData.length !== THREE_CHANNEL_COUNT) {
+        throw new RangeError('Three-channel downmix requires exactly 3 input channels');
+    }
+
+    const frameCount = channelData[FRONT_LEFT_CHANNEL_INDEX].length;
+    for (const channel of channelData) {
+        if (channel.length !== frameCount) {
+            throw new RangeError('Three-channel downmix requires equal-length input channels');
+        }
+    }
+    return frameCount;
+}
+
+/**
+ * Downmixes WAVE-order three-channel planar PCM (FL, FR, shared) to stereo with
+ * the selected matrix. The shared channel feeds both outputs: a 3.0 front center
+ * follows the center level, a 3.0(back) back center the surround level, and a
+ * 2.1 LFE no user level.
+ */
+export function downmixThreeChannelToStereo(
+    channelData: readonly Float32Array[],
+    sharedChannel: ThreeChannelDownmixSharedChannel,
+    algorithm: CustomAudioDownmixAlgorithmValue =
+    DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
+    settings: AudioDownmixSettings = createDefaultAudioDownmixSettings(),
+    settingsRamp: AudioDownmixSettingsRamp | null = null
+): StereoChannelData {
+    assertValidAudioDownmixSettings(settings);
+    const frameCount = requireThreeChannelPlanarInput(channelData);
+    const coefficients = getThreeChannelDownmixCoefficients(algorithm, sharedChannel);
+    const frontLeft = channelData[FRONT_LEFT_CHANNEL_INDEX];
+    const frontRight = channelData[FRONT_RIGHT_CHANNEL_INDEX];
+    const sharedInput = channelData[THREE_CHANNEL_SHARED_CHANNEL_INDEX];
+    const outputLeft = new Float32Array(frameCount);
+    const outputRight = new Float32Array(frameCount);
+    const settingsRampFrameCount = settingsRamp?.frameCount ?? 0;
+    let centerLevel = settingsRamp?.initialCenterLevel ?? settings.centerLevel;
+    let outputGain = settingsRamp?.initialOutputGain ?? settings.outputGain;
+    let surroundLevel = settingsRamp?.initialSurroundLevel ?? settings.surroundLevel;
+
+    for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+        if (settingsRamp && frameIndex < settingsRampFrameCount) {
+            if (frameIndex + 1 === settingsRampFrameCount) {
+                centerLevel = settings.centerLevel;
+                outputGain = settings.outputGain;
+                surroundLevel = settings.surroundLevel;
+            } else {
+                centerLevel += settingsRamp.centerLevelStep;
+                outputGain += settingsRamp.outputGainStep;
+                surroundLevel += settingsRamp.surroundLevelStep;
+            }
+        }
+        const sharedContribution = sharedInput[frameIndex] * coefficients.shared
+            * getThreeChannelSharedLevel(sharedChannel, centerLevel, surroundLevel);
+        outputLeft[frameIndex] =
+            (frontLeft[frameIndex] * coefficients.direct + sharedContribution) * outputGain;
+        outputRight[frameIndex] =
+            (frontRight[frameIndex] * coefficients.direct + sharedContribution) * outputGain;
+    }
+
+    return [ outputLeft, outputRight ];
 }
 
 function requireFivePointOnePlanarInput(

@@ -39,7 +39,9 @@ import {
     type CustomDecodeVideoDecoderBackend,
     type CustomDecodeVideoOutputMode,
     type DecodeWorkerAudioConfiguration,
+    type DecodeWorkerAudioEndedResponse,
     type DecodeWorkerAudioResponse,
+    type DecodeWorkerAudioSourceFormatResponse,
     type DecodeWorkerFrameResponse,
     type DecodeWorkerReadyResponse,
     type DecodeWorkerNativeAudioInitializationResponse,
@@ -98,6 +100,10 @@ export type CustomDecodeAudioResyncOptions = {
 
 export type CustomDecodeSessionEvent =
     | {
+        generation: number
+        type: 'audio-ended'
+    }
+    | {
         audioEpoch: number
         generation: number
         type: 'audio-resynced'
@@ -112,6 +118,8 @@ export type CustomDecodeSessionEvent =
     | {
         audio: DecodeWorkerReadyAudioConfiguration | null
         codec: string
+        /** The container's duration, present only when the server reported none */
+        containerDurationMicroseconds?: Microseconds
         generation: number
         staticHDRMetadata?: StaticHDRMetadata
         type: 'ready'
@@ -137,14 +145,20 @@ export type CustomDecodeSessionTelemetry = {
     abandonedRawFrameCount: number
     audioChannelCount: number | null
     audioCodec: string | null
+    /** The current audio epoch reached the end of its track; video may still continue */
+    audioEnded: boolean
     /** The current decoded audio attempt; samples from earlier epochs are stale */
     audioEpoch: number
     audioResyncCount: number
     /** A resynced audio epoch has not yet buffered its startup minimum */
     audioResyncPending: boolean
     audioSampleRate: number | null
+    /** The decoded channel count once audio binds, else the declared one */
     audioSourceChannelCount: number | null
+    /** The decoded rate once audio binds, else the declared one */
     audioSourceSampleRate: number | null
+    /** The channel count the audio decoder produces, null until the first decoded output */
+    decodedAudioSourceChannelCount: number | null
     droppedFrameCount: number
     failureKind: CustomDecodeFailureKind | null
     firstFrameMediaTimeMicroseconds: Microseconds | null
@@ -152,6 +166,8 @@ export type CustomDecodeSessionTelemetry = {
     lastFrameEndMediaTimeMicroseconds: Microseconds | null
     lastFrameMediaTimeMicroseconds: Microseconds | null
     nativeAudioClockReady: boolean
+    /** The native audio element played to the end of its media and no longer drives the clock */
+    nativeAudioEnded: boolean
     peakFrameCount: number
     pendingFrameCount: number
     queuedFrameCount: number
@@ -207,7 +223,11 @@ type WorkerRecord = {
     audioResyncPending: boolean
     audioOutputMode: CustomDecodeAudioOutputMode
     audioRequested: boolean
+    /** The current audio epoch reached the end of its track */
+    audioTrackEnded: boolean
     configurationReceived: boolean
+    /** The worker posted 'ended': both streams finished */
+    decodeEnded: boolean
     decodedAudioOutputChannelCount: CustomAudioOutputChannelCount | null
     decodedVideoGeometry: RawVideoFrameGeometry | null
     errorHandler: (event: ErrorEvent) => void
@@ -215,8 +235,10 @@ type WorkerRecord = {
     maximumCodedHeight: number
     maximumCodedWidth: number
     messageHandler: (event: MessageEvent<unknown>) => void
+    nativeAudioBridgeStarted: boolean
     nativeAudioElementEnded: boolean
     nativeAudioEndOfStreamAccepted: boolean
+    nativeAudioEndOfStreamRequested: boolean
     resolveRetirement: (() => void) | null
     retirementPromise: Promise<void> | null
     retirementTimer: ReturnType<typeof globalThis.setTimeout> | null
@@ -229,6 +251,8 @@ type WorkerRecord = {
     videoMediaReady: boolean
     videoOutputMode: CustomDecodeVideoOutputMode
     staticHDRMetadata: StaticHDRMetadata | null
+    /** The container's duration, reported only for a source the server never probed */
+    containerDurationMicroseconds: Microseconds | null
     worker: Worker
 };
 
@@ -238,12 +262,14 @@ function createTelemetry(): CustomDecodeSessionTelemetry {
         abandonedRawFrameCount: 0,
         audioChannelCount: null,
         audioCodec: null,
+        audioEnded: false,
         audioEpoch: 0,
         audioResyncCount: 0,
         audioResyncPending: false,
         audioSampleRate: null,
         audioSourceChannelCount: null,
         audioSourceSampleRate: null,
+        decodedAudioSourceChannelCount: null,
         droppedFrameCount: 0,
         failureKind: null,
         firstFrameMediaTimeMicroseconds: null,
@@ -251,6 +277,7 @@ function createTelemetry(): CustomDecodeSessionTelemetry {
         lastFrameEndMediaTimeMicroseconds: null,
         lastFrameMediaTimeMicroseconds: null,
         nativeAudioClockReady: false,
+        nativeAudioEnded: false,
         peakFrameCount: 0,
         pendingFrameCount: 0,
         queuedFrameCount: 0,
@@ -575,6 +602,7 @@ export default class CustomDecodeSession {
                 nativeHDRTransfer: options.nativeHDRTransfer,
                 neutralizeHDRColorMetadata: options.neutralizeHDRColorMetadata,
                 rawVideoFrameFormat: options.rawVideoFrameFormat,
+                ...(options.durationMicroseconds == null ? { reportContainerDuration: true } : {}),
                 startTimeMicroseconds: options.startTimeMicroseconds,
                 type: 'start',
                 url: options.url,
@@ -643,7 +671,10 @@ export default class CustomDecodeSession {
         };
     }
 
-    /** Posts a live gain snapshot only after a multichannel stereo worker is configured. */
+    /**
+     * Posts a live gain snapshot only after a stereo decoded PCM worker is
+     * configured. Any declared source can decode to a bed that folds down.
+     */
     public updateAudioDownmixSettings(settings: AudioDownmixSettings): boolean {
         assertValidAudioDownmixSettings(settings);
         const workerRecord = this.activeWorker;
@@ -659,8 +690,7 @@ export default class CustomDecodeSession {
         const audioConfiguration = workerRecord.audioConfiguration;
         if (!audioConfiguration
             || isNativeMediaAudioConfiguration(audioConfiguration)
-            || audioConfiguration.channelCount !== 2
-            || (audioConfiguration.sourceChannelCount ?? 0) <= 2) {
+            || audioConfiguration.channelCount !== 2) {
             return false;
         }
 
@@ -676,8 +706,14 @@ export default class CustomDecodeSession {
         }
     }
 
-    /** Returns native audio time only after decoded element progress qualified it. */
+    /**
+     * Returns native audio time only after decoded element progress qualified it,
+     * and never once the element played to the end of its media.
+     */
     public getNativeAudioTimeMicroseconds(): Microseconds | null {
+        if (this.telemetry.nativeAudioEnded) {
+            return null;
+        }
         return this.activeNativeAudioBridge?.getAuthoritativeTimeMicroseconds() ?? null;
     }
 
@@ -860,6 +896,8 @@ export default class CustomDecodeSession {
         workerRecord.audioEpoch = audioEpoch;
         workerRecord.audioEpochSubmittedFrameCount = 0;
         workerRecord.audioResyncPending = true;
+        workerRecord.audioTrackEnded = false;
+        this.telemetry.audioEnded = false;
         this.telemetry.audioEpoch = audioEpoch;
         this.telemetry.audioResyncPending = true;
         // PCM queued for the old layout is discarded with its bridge
@@ -1016,7 +1054,9 @@ export default class CustomDecodeSession {
             audioResyncPending: false,
             audioOutputMode: options.audioOutputMode ?? 'decoded-pcm',
             audioRequested: options.audioTrackIndex != null,
+            audioTrackEnded: false,
             configurationReceived: false,
+            decodeEnded: false,
             decodedAudioOutputChannelCount:
                 (options.audioOutputMode ?? 'decoded-pcm') === 'decoded-pcm'
                     && options.audioTrackIndex != null ?
@@ -1028,8 +1068,10 @@ export default class CustomDecodeSession {
             maximumCodedHeight: options.maximumCodedHeight,
             maximumCodedWidth: options.maximumCodedWidth,
             messageHandler: (): void => undefined,
+            nativeAudioBridgeStarted: false,
             nativeAudioElementEnded: false,
             nativeAudioEndOfStreamAccepted: false,
+            nativeAudioEndOfStreamRequested: false,
             resolveRetirement: null,
             retirementPromise: null,
             retirementTimer: null,
@@ -1041,6 +1083,7 @@ export default class CustomDecodeSession {
             videoMediaReady: false,
             videoOutputMode: options.videoOutputMode,
             staticHDRMetadata: null,
+            containerDurationMicroseconds: null,
             worker
         };
 
@@ -1106,6 +1149,12 @@ export default class CustomDecodeSession {
                 break;
             case 'video-ended':
                 this.handleVideoEndedResponse(workerRecord, messageValue);
+                break;
+            case 'audio-ended':
+                this.handleAudioEndedResponse(workerRecord, messageValue);
+                break;
+            case 'audio-source-format':
+                this.handleAudioSourceFormatResponse(workerRecord, messageValue);
                 break;
             case 'video-interrupted':
                 this.handleVideoInterruptedResponse(workerRecord, messageValue);
@@ -1177,6 +1226,7 @@ export default class CustomDecodeSession {
         }
 
         workerRecord.videoCodec = videoCodec;
+        workerRecord.containerDurationMicroseconds = message.containerDurationMicroseconds ?? null;
         const staticHDRMetadataScan = message.staticHDRMetadataScan ?? null;
         workerRecord.staticHDRMetadata = staticHDRMetadataScan?.metadata ?? null;
         this.telemetry.staticHDRMetadataFirstAccessUnitIndex =
@@ -1307,7 +1357,9 @@ export default class CustomDecodeSession {
                             && this.isWorkerCurrent(workerRecord)
                             && this.activeNativeAudioBridge === nativeAudioBridge
                             && event.generation === workerRecord.generation) {
+                            // Only an ended stream reaches the end of its media
                             workerRecord.nativeAudioElementEnded = true;
+                            this.telemetry.nativeAudioEnded = true;
                             this.completeNativeAudioWorkerEndedIfReady(workerRecord);
                         }
                     }
@@ -1321,10 +1373,13 @@ export default class CustomDecodeSession {
                 || this.activeNativeAudioBridge !== nativeAudioBridge) {
                 return;
             }
+            workerRecord.nativeAudioBridgeStarted = true;
             this.requestReplacementAudioSamples(
                 workerRecord,
                 nativeAudioBridge.initialAudioSegmentCredits
             );
+            // An audio track that ended while the output was opening completes now
+            this.completeEndedAudioTrack(workerRecord);
         } catch {
             if (this.isWorkerCurrent(workerRecord)
                 && this.activeNativeAudioBridge === nativeAudioBridge) {
@@ -1397,12 +1452,18 @@ export default class CustomDecodeSession {
         this.telemetry.audioChannelCount = audioConfiguration?.channelCount ?? null;
         this.telemetry.audioCodec = audioConfiguration?.codec ?? null;
         this.telemetry.audioSampleRate = audioConfiguration?.sampleRate ?? null;
-        this.telemetry.audioSourceChannelCount = audioConfiguration?.sourceChannelCount ?? null;
-        this.telemetry.audioSourceSampleRate = audioConfiguration?.sourceSampleRate ?? null;
+        // A decoded source format reported before readiness outranks the declared one
+        if (this.telemetry.decodedAudioSourceChannelCount === null) {
+            this.telemetry.audioSourceChannelCount = audioConfiguration?.sourceChannelCount ?? null;
+            this.telemetry.audioSourceSampleRate = audioConfiguration?.sourceSampleRate ?? null;
+        }
         this.telemetry.state = 'ready';
         this.emitEvent({
             audio: workerRecord.audioConfiguration,
             codec: videoCodec,
+            ...(workerRecord.containerDurationMicroseconds !== null ? {
+                containerDurationMicroseconds: workerRecord.containerDurationMicroseconds
+            } : {}),
             generation: workerRecord.generation,
             ...(workerRecord.staticHDRMetadata ? {
                 staticHDRMetadata: workerRecord.staticHDRMetadata
@@ -1476,6 +1537,94 @@ export default class CustomDecodeSession {
         if (message.videoEpoch === workerRecord.videoEpoch) {
             this.telemetry.videoEnded = true;
         }
+    }
+
+    private handleAudioEndedResponse(
+        workerRecord: WorkerRecord,
+        message: DecodeWorkerAudioEndedResponse
+    ): void {
+        // A replaced epoch's end says nothing about the restarted audio
+        if (message.audioEpoch !== workerRecord.audioEpoch) {
+            return;
+        }
+        workerRecord.audioTrackEnded = true;
+        this.telemetry.audioEnded = true;
+        this.completeEndedAudioTrack(workerRecord);
+        if (this.isWorkerCurrent(workerRecord)) {
+            this.emitEvent({ generation: workerRecord.generation, type: 'audio-ended' });
+        }
+    }
+
+    /**
+     * Lets an audio track that ended stand in for the PCM a start, a seek, or a
+     * resync waits for, since none will arrive past its end, and ends a
+     * native-media stream so its element plays out instead of stalling. Waits
+     * until the epoch's output exists.
+     */
+    private completeEndedAudioTrack(workerRecord: WorkerRecord): void {
+        if (!workerRecord.audioTrackEnded || !this.isWorkerCurrent(workerRecord)) {
+            return;
+        }
+        if (workerRecord.audioOutputMode === 'native-media') {
+            const nativeAudioBridge = this.activeNativeAudioBridge;
+            if (!workerRecord.nativeAudioBridgeStarted || !nativeAudioBridge) {
+                return;
+            }
+            this.requestNativeAudioEndOfStream(workerRecord, nativeAudioBridge);
+        } else if (!this.activeAudioBridge) {
+            return;
+        }
+        if (workerRecord.audioResyncPending) {
+            workerRecord.audioResyncPending = false;
+            this.telemetry.audioResyncPending = false;
+            this.emitEvent({
+                audioEpoch: workerRecord.audioEpoch,
+                generation: workerRecord.generation,
+                type: 'audio-resynced'
+            });
+            return;
+        }
+        workerRecord.audioMediaReady = true;
+        this.emitReadyEventIfMediaReady(workerRecord);
+    }
+
+    /** Records the decoded source format of the current audio epoch, which outranks the declared one. */
+    private handleAudioSourceFormatResponse(
+        workerRecord: WorkerRecord,
+        message: DecodeWorkerAudioSourceFormatResponse
+    ): void {
+        if (message.audioEpoch !== workerRecord.audioEpoch) {
+            return;
+        }
+        this.telemetry.decodedAudioSourceChannelCount = message.channelCount;
+        this.telemetry.audioSourceChannelCount = message.channelCount;
+        this.telemetry.audioSourceSampleRate = message.sampleRate;
+    }
+
+    /** Marks the native media stream complete once, so its element plays to the end of its media. */
+    private requestNativeAudioEndOfStream(
+        workerRecord: WorkerRecord,
+        nativeAudioBridge: CustomDecodeNativeAudioBridge
+    ): void {
+        if (workerRecord.nativeAudioEndOfStreamRequested) {
+            return;
+        }
+        workerRecord.nativeAudioEndOfStreamRequested = true;
+        void nativeAudioBridge.endOfStream(workerRecord.generation).then(ended => {
+            if (!this.isWorkerCurrent(workerRecord)
+                || this.activeNativeAudioBridge !== nativeAudioBridge) {
+                return;
+            }
+            if (!ended) {
+                this.handleAudioOutputFailure(
+                    workerRecord,
+                    'Native audio output rejected end of stream'
+                );
+                return;
+            }
+            workerRecord.nativeAudioEndOfStreamAccepted = true;
+            this.completeNativeAudioWorkerEndedIfReady(workerRecord);
+        });
     }
 
     private handleVideoInterruptedResponse(
@@ -1822,11 +1971,12 @@ export default class CustomDecodeSession {
     }
 
     private handleWorkerEnded(workerRecord: WorkerRecord): void {
-        const nativeAudioBridge = this.activeNativeAudioBridge;
+        workerRecord.decodeEnded = true;
         if (workerRecord.audioOutputMode !== 'native-media' || !workerRecord.audioRequested) {
             this.completeWorkerEnded(workerRecord);
             return;
         }
+        const nativeAudioBridge = this.activeNativeAudioBridge;
         if (!nativeAudioBridge) {
             this.handleAudioOutputFailure(
                 workerRecord,
@@ -1834,21 +1984,18 @@ export default class CustomDecodeSession {
             );
             return;
         }
-        void nativeAudioBridge.endOfStream(workerRecord.generation).then(ended => {
-            if (ended && this.isWorkerCurrent(workerRecord)) {
-                workerRecord.nativeAudioEndOfStreamAccepted = true;
-                this.completeNativeAudioWorkerEndedIfReady(workerRecord);
-            } else if (this.isWorkerCurrent(workerRecord)) {
-                this.handleAudioOutputFailure(
-                    workerRecord,
-                    'Native audio output rejected end of stream'
-                );
-            }
-        });
+        // The audio end usually requested end of stream already; a bridge still opening requests it once started
+        if (workerRecord.nativeAudioBridgeStarted) {
+            this.requestNativeAudioEndOfStream(workerRecord, nativeAudioBridge);
+        }
+        this.completeNativeAudioWorkerEndedIfReady(workerRecord);
     }
 
+    /** Ends a native-media session once decode ended and the element played out its completed stream. */
     private completeNativeAudioWorkerEndedIfReady(workerRecord: WorkerRecord): void {
-        if (!workerRecord.nativeAudioElementEnded
+        // Audio that ended before video ends its element first; video still plays on
+        if (!workerRecord.decodeEnded
+            || !workerRecord.nativeAudioElementEnded
             || !workerRecord.nativeAudioEndOfStreamAccepted) {
             return;
         }

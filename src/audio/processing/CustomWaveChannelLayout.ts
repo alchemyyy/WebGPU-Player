@@ -1,20 +1,29 @@
 import {
     CUSTOM_FIVE_POINT_ONE_BACK_CHANNEL_LAYOUT,
     CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT,
+    CUSTOM_MONO_CHANNEL_LAYOUT,
     CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT,
     CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT,
     CUSTOM_STEREO_CHANNEL_LAYOUT,
+    CUSTOM_THREE_POINT_ZERO_BACK_CHANNEL_LAYOUT,
+    CUSTOM_THREE_POINT_ZERO_CHANNEL_LAYOUT,
+    CUSTOM_TWO_POINT_ONE_CHANNEL_LAYOUT,
     type CustomAudioChannelLayout
 } from './CustomAudioChannelLayout';
 
+export const CUSTOM_WAVE_CHANNEL_MASK_MONO = 0x0004;
 export const CUSTOM_WAVE_CHANNEL_MASK_STEREO = 0x0003;
+export const CUSTOM_WAVE_CHANNEL_MASK_THREE_POINT_ZERO = 0x0007;
+export const CUSTOM_WAVE_CHANNEL_MASK_TWO_POINT_ONE = 0x000b;
+// FL, FR, and back center
+export const CUSTOM_WAVE_CHANNEL_MASK_THREE_POINT_ZERO_BACK = 0x0103;
 export const CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_BACK = 0x003f;
 export const CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_SIDE = 0x060f;
 export const CUSTOM_WAVE_CHANNEL_MASK_SIX_POINT_ONE = 0x070f;
 export const CUSTOM_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE = 0x063f;
 
 export type QualifiedCustomWaveChannelLayout = Readonly<{
-    channelCount: 2 | 6 | 7 | 8
+    channelCount: 1 | 2 | 3 | 6 | 7 | 8
     layout: CustomAudioChannelLayout
 }>;
 
@@ -23,8 +32,24 @@ const CUSTOM_WAVE_CHANNEL_LAYOUTS = new Map<
     QualifiedCustomWaveChannelLayout
 >([
     [
+        CUSTOM_WAVE_CHANNEL_MASK_MONO,
+        { channelCount: 1, layout: CUSTOM_MONO_CHANNEL_LAYOUT }
+    ],
+    [
         CUSTOM_WAVE_CHANNEL_MASK_STEREO,
         { channelCount: 2, layout: CUSTOM_STEREO_CHANNEL_LAYOUT }
+    ],
+    [
+        CUSTOM_WAVE_CHANNEL_MASK_THREE_POINT_ZERO,
+        { channelCount: 3, layout: CUSTOM_THREE_POINT_ZERO_CHANNEL_LAYOUT }
+    ],
+    [
+        CUSTOM_WAVE_CHANNEL_MASK_TWO_POINT_ONE,
+        { channelCount: 3, layout: CUSTOM_TWO_POINT_ONE_CHANNEL_LAYOUT }
+    ],
+    [
+        CUSTOM_WAVE_CHANNEL_MASK_THREE_POINT_ZERO_BACK,
+        { channelCount: 3, layout: CUSTOM_THREE_POINT_ZERO_BACK_CHANNEL_LAYOUT }
     ],
     [
         CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_BACK,

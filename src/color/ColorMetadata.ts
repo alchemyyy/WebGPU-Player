@@ -3,10 +3,12 @@ export const COLOR_METADATA_VERSION = 1;
 const MAXIMUM_LUMINANCE_NITS = 10_000;
 const MINIMUM_LUMINANCE_NITS = 1;
 
-export type ColorPrimaries = 'bt2020' | 'bt709';
+// The BT.601 members use the WebCodecs names (SMPTE 170M for 525-line, BT.470 BG for 625-line), so they compare
+// directly with VideoFrame.colorSpace
+export type ColorPrimaries = 'bt2020' | 'bt470bg' | 'bt709' | 'smpte170m';
 export type ColorRange = 'full' | 'limited';
 export type ColorTransfer = 'hlg' | 'pq' | 'sdr';
-export type YUVMatrix = 'bt2020-ncl' | 'bt709';
+export type YUVMatrix = 'bt2020-ncl' | 'bt470bg' | 'bt709' | 'smpte170m';
 
 export type InputColorMetadata = {
     bitDepth: number
@@ -28,14 +30,18 @@ export function assertValidInputColorMetadata(metadata: InputColorMetadata): voi
     }
     switch (metadata.matrix) {
         case 'bt2020-ncl':
+        case 'bt470bg':
         case 'bt709':
+        case 'smpte170m':
             break;
         default:
             throw new RangeError('Unsupported YUV matrix');
     }
     switch (metadata.primaries) {
         case 'bt2020':
+        case 'bt470bg':
         case 'bt709':
+        case 'smpte170m':
             break;
         default:
             throw new RangeError('Unsupported color primaries');

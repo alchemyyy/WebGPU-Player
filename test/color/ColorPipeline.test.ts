@@ -7,7 +7,8 @@ import {
 import {
     createHLGColorMetadata,
     createPQColorMetadata,
-    createSDRColorMetadata
+    createSDRColorMetadata,
+    type ColorPrimaries
 } from 'webgpu-player/color/ColorMetadata';
 import {
     applyPQEOTF,
@@ -21,10 +22,14 @@ import {
     encodeSDROutput,
     evaluateSplineToneMapPQ,
     expandYUVRange,
+    getLuminanceCoefficients,
+    getYUVMatrixCoefficients,
     processEncodedRGB,
     toneMapToSDR,
     type ColorTriplet
 } from 'webgpu-player/color/ColorPipeline';
+
+const EVERY_COLOR_PRIMARIES: readonly ColorPrimaries[] = [ 'bt2020', 'bt470bg', 'bt709', 'smpte170m' ];
 
 describe('ColorPipeline', () => {
     it('expands exact 10-bit limited-range code points without clipping overshoot', () => {
@@ -108,6 +113,92 @@ describe('ColorPipeline', () => {
             .toEqual([ 1.660491, -0.12455, -0.018151 ]);
         expect(convertLinearRGBGamut([ 0.2, 0.3, 0.4 ], 'bt709', 'bt709'))
             .toEqual([ 0.2, 0.3, 0.4 ]);
+    });
+
+    it('selects YUV coefficients by matrix, sharing BT.601 between SMPTE 170M and BT.470 BG', () => {
+        const expandedYUV: ColorTriplet = [ 0.5, 0, 0.5 ];
+        for (const matrix of [ 'smpte170m', 'bt470bg' ] as const) {
+            const encodedRGB = convertYUVToEncodedRGB(expandedYUV, matrix);
+            expect(encodedRGB[0]).toBeCloseTo(0.5 + (1.402 * 0.5), 12);
+            expect(encodedRGB[1]).toBeCloseTo(0.5 - (0.714136 * 0.5), 6);
+            expect(encodedRGB[2]).toBeCloseTo(0.5, 12);
+            expect(getYUVMatrixCoefficients(matrix)).toEqual({ blue: 0.114, green: 0.587, red: 0.299 });
+        }
+        expect(convertYUVToEncodedRGB(expandedYUV, 'bt709')[0]).toBeCloseTo(0.5 + (1.5748 * 0.5), 12);
+        expect(convertYUVToEncodedRGB(expandedYUV, 'bt2020-ncl')[0]).toBeCloseTo(0.5 + (1.4746 * 0.5), 12);
+    });
+
+    it('derives luminance from the primaries, with every set summing to unit white', () => {
+        expect(getLuminanceCoefficients('smpte170m'))
+            .toEqual({ blue: 0.086564, green: 0.701060, red: 0.212376 });
+        expect(getLuminanceCoefficients('bt470bg'))
+            .toEqual({ blue: 0.071341, green: 0.706655, red: 0.222004 });
+        for (const primaries of EVERY_COLOR_PRIMARIES) {
+            const coefficients = getLuminanceCoefficients(primaries);
+            expect(coefficients.red + coefficients.green + coefficients.blue).toBeCloseTo(1, 5);
+        }
+    });
+
+    it('converts BT.601 linear primaries through the BT.709 gamut tables and keeps white neutral', () => {
+        const linearRGB: ColorTriplet = [ 0.2, 0.5, 0.8 ];
+
+        expect(convertLinearRGBGamut([ 1, 0, 0 ], 'smpte170m', 'bt709'))
+            .toEqual([ 0.939542, 0.017772, -0.001622 ]);
+        expect(convertLinearRGBGamut([ 1, 0, 0 ], 'bt470bg', 'bt709'))
+            .toEqual([ 1.044043, 0, 0 ]);
+        expect(convertLinearRGBGamut(linearRGB, 'smpte170m', 'bt2020')).toEqual(
+            convertLinearRGBGamut(
+                convertLinearRGBGamut(linearRGB, 'smpte170m', 'bt709'),
+                'bt709',
+                'bt2020'
+            )
+        );
+        for (const primaries of EVERY_COLOR_PRIMARIES) {
+            const roundTripRGB = convertLinearRGBGamut(
+                convertLinearRGBGamut(linearRGB, primaries, 'bt709'),
+                'bt709',
+                primaries
+            );
+            for (let componentIndex = 0; componentIndex < 3; componentIndex++) {
+                expect(roundTripRGB[componentIndex]).toBeCloseTo(linearRGB[componentIndex], 5);
+            }
+            for (const component of convertLinearRGBGamut([ 1, 1, 1 ], primaries, 'bt709')) {
+                expect(component).toBeCloseTo(1, 5);
+            }
+        }
+    });
+
+    it('round trips BT.601 primaries through IPTPQc4 consistently with the BT.709 path', () => {
+        const linearRGBNits: ColorTriplet = [ 100, 50, 25 ];
+        for (const primaries of [ 'smpte170m', 'bt470bg' ] as const) {
+            const perceptualColor = convertLinearRGBNitsToIPTPQ(linearRGBNits, primaries);
+            const roundTripRGB = convertIPTPQToLinearRGBNits(perceptualColor, primaries);
+            const bt709PerceptualColor = convertLinearRGBNitsToIPTPQ(
+                convertLinearRGBGamut(linearRGBNits, primaries, 'bt709'),
+                'bt709'
+            );
+            for (let componentIndex = 0; componentIndex < 3; componentIndex++) {
+                // NOTE: The rounded IPT and LMS stage matrices limit every primaries set to about 2e-6 relative error
+                expect(roundTripRGB[componentIndex]).toBeCloseTo(linearRGBNits[componentIndex], 3);
+                expect(perceptualColor[componentIndex])
+                    .toBeCloseTo(bt709PerceptualColor[componentIndex], 5);
+            }
+        }
+    });
+
+    it('scales HLG by the luminance of its own primaries', () => {
+        const encodedGreen: ColorTriplet = [ 0, 0.75, 0 ];
+        const smpte170mOutput = decodeEncodedRGBToNits(
+            encodedGreen,
+            createHLGColorMetadata({ matrix: 'smpte170m', primaries: 'smpte170m' })
+        );
+        const bt709Output = decodeEncodedRGBToNits(
+            encodedGreen,
+            createHLGColorMetadata({ matrix: 'bt709', primaries: 'bt709' })
+        );
+
+        // At a 1000-nit peak the system gamma is 1.2, so the output scales with luminance to the 0.2 power
+        expect(smpte170mOutput[1] / bt709Output[1]).toBeCloseTo((0.701060 / 0.7152) ** 0.2, 10);
     });
 
     it('tone maps into the configured peak and preserves achromatic samples', () => {

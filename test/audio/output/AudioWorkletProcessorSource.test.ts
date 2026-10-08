@@ -36,6 +36,7 @@ type ProcessorHarness = MockAudioWorkletProcessor & {
 };
 
 type ProcessorStateHarness = ProcessorHarness & {
+    channelCount: number
     chunkCount: number
     chunks: readonly unknown[]
     consumedFrames: number
@@ -43,6 +44,10 @@ type ProcessorStateHarness = ProcessorHarness & {
     framesSinceTelemetry: number
     generation: number
     headChunkIndex: number
+    leadingGapFrames: number
+    leadingGapPending: boolean
+    leadingGapRenderedFrames: number
+    leadingGapStartMicroseconds: number
     mediaTimeContextTimeMicroseconds: number | null
     mediaTimeMicroseconds: number
     muted: boolean
@@ -98,6 +103,70 @@ function requireProcessorConstructor(
         throw new Error('Worklet processor was not registered');
     }
     return constructor;
+}
+
+type ProcessorOptions = ConstructorParameters<ProcessorConstructor>[0]['processorOptions'];
+
+// At 1 kHz one frame is one millisecond
+const LEADING_GAP_SAMPLE_RATE = 1_000;
+const LEADING_GAP_CURRENT_FRAME = 40_000;
+const LEADING_GAP_RENDER_FRAME_COUNT = 4;
+// The processor only echoes enqueue sequences in telemetry
+const LEADING_GAP_CHUNK_SEQUENCE = 1;
+const LEADING_GAP_PROCESSOR_OPTIONS: ProcessorOptions = {
+    channelCount: 1,
+    maxBufferedFrames: 8,
+    maxChunks: 2,
+    // One periodic telemetry message closes every render quantum
+    telemetryIntervalFrames: LEADING_GAP_RENDER_FRAME_COUNT
+};
+
+function createLeadingGapProcessor(
+    processorOptions: ProcessorOptions = LEADING_GAP_PROCESSOR_OPTIONS
+): ProcessorStateHarness {
+    let registeredConstructor: ProcessorConstructor | null = null;
+    evaluateWorkletModule((_name, constructor): void => {
+        registeredConstructor = constructor;
+    }, LEADING_GAP_SAMPLE_RATE, LEADING_GAP_CURRENT_FRAME);
+    const processorConstructor = requireProcessorConstructor(registeredConstructor);
+    return Reflect.construct(processorConstructor, [ { processorOptions } ]) as ProcessorStateHarness;
+}
+
+function deliverFlush(
+    processor: ProcessorHarness,
+    generation: number,
+    mediaTimeMicroseconds: number
+): void {
+    processor.port.deliver({ generation, mediaTimeMicroseconds, type: 'flush' });
+}
+
+function deliverChunk(
+    processor: ProcessorHarness,
+    generation: number,
+    timestampMicroseconds: number,
+    ...channelSamples: number[][]
+): void {
+    processor.port.deliver({
+        channelData: channelSamples.map(samples => new Float32Array(samples)),
+        generation,
+        sequence: LEADING_GAP_CHUNK_SEQUENCE,
+        timestampMicroseconds,
+        type: 'enqueue'
+    });
+}
+
+function setPlaying(processor: ProcessorHarness, playing: boolean): void {
+    processor.port.deliver({ playing, type: 'playback' });
+}
+
+/** Renders one quantum on every processor channel and returns the samples. */
+function renderQuantum(processor: ProcessorStateHarness): number[][] {
+    const outputChannels: Float32Array[] = [];
+    for (let channelIndex = 0; channelIndex < processor.channelCount; channelIndex += 1) {
+        outputChannels.push(new Float32Array(LEADING_GAP_RENDER_FRAME_COUNT));
+    }
+    processor.process([], [ outputChannels ]);
+    return outputChannels.map(outputChannel => Array.from(outputChannel));
 }
 
 describe('AudioWorkletProcessorSource', () => {
@@ -421,5 +490,200 @@ describe('AudioWorkletProcessorSource', () => {
         ])).toBe(false);
         expect(processor.port.postedMessages).toContainEqual({ type: 'retired' });
         expect(processor.port.closeCount).toBe(1);
+    });
+
+    describe('leading gap', () => {
+        it('renders silence from the flush position to the first chunk timestamp', () => {
+            const processor = createLeadingGapProcessor();
+            deliverFlush(processor, 2, 0);
+            deliverChunk(processor, 2, 6_000, [ 1, 2, 3, 4 ]);
+            deliverChunk(processor, 2, 10_000, [ 5, 6 ]);
+            setPlaying(processor, true);
+
+            expect(renderQuantum(processor)).toEqual([ [ 0, 0, 0, 0 ] ]);
+            expect(processor.port.postedMessages.at(-1)).toMatchObject({
+                consumedFrames: 0,
+                mediaTimeContextTimeMicroseconds: 40_004_000,
+                mediaTimeMicroseconds: 4_000,
+                queuedFrames: 6,
+                reason: 'periodic',
+                underflowEvents: 0,
+                underflowFrames: 0
+            });
+
+            expect(renderQuantum(processor)).toEqual([ [ 0, 0, 1, 2 ] ]);
+            expect(processor.port.postedMessages.at(-1)).toMatchObject({
+                consumedFrames: 2,
+                mediaTimeContextTimeMicroseconds: 40_004_000,
+                mediaTimeMicroseconds: 8_000,
+                queuedFrames: 4,
+                reason: 'periodic',
+                underflowFrames: 0
+            });
+
+            // The contiguous second chunk follows without a gap of its own
+            expect(renderQuantum(processor)).toEqual([ [ 3, 4, 5, 6 ] ]);
+            expect(processor.port.postedMessages.at(-1)).toMatchObject({
+                consumedFrames: 6,
+                mediaTimeMicroseconds: 12_000,
+                queuedFrames: 0,
+                reason: 'periodic',
+                underflowFrames: 0
+            });
+            expect(processor.port.postedMessages).not.toContainEqual(expect.objectContaining({
+                reason: 'underflow'
+            }));
+        });
+
+        it('holds the leading gap while playback is paused', () => {
+            const processor = createLeadingGapProcessor();
+            deliverFlush(processor, 2, 0);
+            deliverChunk(processor, 2, 6_000, [ 1, 2, 3, 4 ]);
+            setPlaying(processor, true);
+            expect(renderQuantum(processor)).toEqual([ [ 0, 0, 0, 0 ] ]);
+
+            setPlaying(processor, false);
+            expect(renderQuantum(processor)).toEqual([ [ 0, 0, 0, 0 ] ]);
+            expect(processor).toMatchObject({
+                consumedFrames: 0,
+                leadingGapFrames: 2,
+                leadingGapRenderedFrames: 4,
+                mediaTimeMicroseconds: 4_000,
+                outputFrames: 4
+            });
+
+            setPlaying(processor, true);
+            expect(renderQuantum(processor)).toEqual([ [ 0, 0, 1, 2 ] ]);
+            expect(processor.port.postedMessages.at(-1)).toMatchObject({
+                consumedFrames: 2,
+                mediaTimeMicroseconds: 8_000,
+                outputFrames: 8,
+                reason: 'periodic'
+            });
+        });
+
+        it('plays a first chunk at or before the flush position without a gap', () => {
+            const processor = createLeadingGapProcessor();
+            setPlaying(processor, true);
+
+            deliverFlush(processor, 2, 6_000);
+            deliverChunk(processor, 2, 5_000, [ 1, 2, 3, 4 ]);
+            expect(renderQuantum(processor)).toEqual([ [ 1, 2, 3, 4 ] ]);
+            expect(processor.port.postedMessages.at(-1)).toMatchObject({
+                consumedFrames: 4,
+                mediaTimeMicroseconds: 9_000,
+                reason: 'periodic'
+            });
+
+            deliverFlush(processor, 3, 20_000);
+            deliverChunk(processor, 3, 20_000, [ 5, 6, 7, 8 ]);
+            expect(renderQuantum(processor)).toEqual([ [ 5, 6, 7, 8 ] ]);
+            expect(processor.port.postedMessages.at(-1)).toMatchObject({
+                consumedFrames: 8,
+                mediaTimeMicroseconds: 24_000,
+                reason: 'periodic'
+            });
+
+            // Less than half a frame after the flush position rounds to no gap
+            deliverFlush(processor, 4, 30_000);
+            deliverChunk(processor, 4, 30_400, [ 9, 10, 11, 12 ]);
+            expect(renderQuantum(processor)).toEqual([ [ 9, 10, 11, 12 ] ]);
+            expect(processor.port.postedMessages).not.toContainEqual(expect.objectContaining({
+                reason: 'underflow'
+            }));
+        });
+
+        it('discards an unfinished leading gap on the next flush', () => {
+            const processor = createLeadingGapProcessor();
+            deliverFlush(processor, 2, 0);
+            deliverChunk(processor, 2, 6_000, [ 1, 2, 3, 4 ]);
+            setPlaying(processor, true);
+            expect(renderQuantum(processor)).toEqual([ [ 0, 0, 0, 0 ] ]);
+
+            deliverFlush(processor, 3, 10_000);
+            expect(processor).toMatchObject({
+                chunkCount: 0,
+                leadingGapFrames: 0,
+                leadingGapPending: true,
+                leadingGapRenderedFrames: 0,
+                leadingGapStartMicroseconds: 10_000,
+                mediaTimeMicroseconds: 10_000
+            });
+
+            // The new gap is measured from the new flush position
+            deliverChunk(processor, 3, 12_000, [ 5, 6, 7, 8 ]);
+            expect(renderQuantum(processor)).toEqual([ [ 0, 0, 5, 6 ] ]);
+            expect(processor.port.postedMessages.at(-1)).toMatchObject({
+                consumedFrames: 2,
+                mediaTimeMicroseconds: 14_000,
+                reason: 'periodic'
+            });
+        });
+
+        it('clears an active or pending leading gap on deactivate', () => {
+            const processor = createLeadingGapProcessor();
+            deliverFlush(processor, 2, 0);
+            deliverChunk(processor, 2, 6_000, [ 1, 2, 3, 4 ]);
+            setPlaying(processor, true);
+            expect(renderQuantum(processor)).toEqual([ [ 0, 0, 0, 0 ] ]);
+
+            processor.port.deliver({ generation: 3, leaseId: 1, type: 'deactivate' });
+            expect(processor).toMatchObject({
+                leadingGapFrames: 0,
+                leadingGapPending: false,
+                leadingGapRenderedFrames: 0,
+                leadingGapStartMicroseconds: 0
+            });
+
+            deliverFlush(processor, 4, 0);
+            processor.port.deliver({ generation: 5, leaseId: 2, type: 'deactivate' });
+            expect(processor.leadingGapPending).toBe(false);
+
+            deliverChunk(processor, 5, 50_000, [ 5, 6, 7, 8 ]);
+            setPlaying(processor, true);
+            expect(renderQuantum(processor)).toEqual([ [ 5, 6, 7, 8 ] ]);
+            expect(processor.port.postedMessages.at(-1)).toMatchObject({
+                consumedFrames: 4,
+                mediaTimeMicroseconds: 54_000,
+                reason: 'periodic'
+            });
+        });
+
+        it('excludes the silent prefix from signal statistics', () => {
+            const processor = createLeadingGapProcessor({
+                ...LEADING_GAP_PROCESSOR_OPTIONS,
+                channelCount: 2
+            });
+            deliverFlush(processor, 2, 0);
+            deliverChunk(processor, 2, 6_000, [ 0.5, -0.25 ], [ 0.75, 0.125 ]);
+            setPlaying(processor, true);
+
+            expect(renderQuantum(processor)).toEqual([ [ 0, 0, 0, 0 ], [ 0, 0, 0, 0 ] ]);
+            expect(processor.port.postedMessages.at(-1)).toMatchObject({
+                reason: 'periodic',
+                signal: {
+                    analyzedFrameCount: 0,
+                    analyzedSampleCount: 0,
+                    clippedSampleCount: 0,
+                    nonFiniteSampleCount: 0,
+                    samplePeak: 0,
+                    sampleSquareSum: 0
+                }
+            });
+
+            expect(renderQuantum(processor)).toEqual([ [ 0, 0, 0.5, -0.25 ], [ 0, 0, 0.75, 0.125 ] ]);
+            expect(processor.port.postedMessages.at(-1)).toMatchObject({
+                reason: 'periodic',
+                signal: {
+                    analyzedFrameCount: 2,
+                    analyzedSampleCount: 4,
+                    clippedSampleCount: 0,
+                    nonFiniteSampleCount: 0,
+                    samplePeak: 0.75,
+                    sampleSquareSum: 0.890625
+                },
+                underflowFrames: 0
+            });
+        });
     });
 });

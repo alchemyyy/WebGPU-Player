@@ -12,11 +12,47 @@ const FILTER_RADIUS = 32;
 const FILTER_TAP_COUNT = FILTER_RADIUS * 2;
 const MICROSECONDS_PER_SECOND = 1_000_000;
 
+/**
+ * The largest gap filled with silence or overlap trimmed. A larger discontinuity
+ * fails the input instead, because no correction keeps audio and video aligned.
+ */
+export const MAXIMUM_AUDIO_TIMELINE_CORRECTION_MICROSECONDS = 2_000_000;
+
+/** The timeline state a resampler for a new source rate continues from */
+export type StreamingAudioResamplerContinuation = Readonly<{
+    expectedInputMediaTimeMicroseconds: Microseconds
+    outputMediaTimeMicroseconds: Microseconds
+    previousInputMediaTimeMicroseconds: Microseconds
+}>;
+
+/** One input timestamp the resampler corrected, or rejected beyond the correction bound */
+export type StreamingAudioTimelineCorrection = Readonly<{
+    /** Silence inserted when positive and source audio discarded when negative; the unapplied deviation for a rejection */
+    correctionMicroseconds: number
+    expectedMediaTimeMicroseconds: Microseconds
+    inputMediaTimeMicroseconds: Microseconds
+    kind: 'drop' | 'fill' | 'reject' | 'trim'
+}>;
+
+export type StreamingAudioTimelineCorrectionListener = (
+    correction: StreamingAudioTimelineCorrection
+) => void;
+
 export type StreamingAudioResamplerOptions = {
     channelCount: number
+    /** Continues a predecessor's output timeline and input expectation */
+    continuation?: StreamingAudioResamplerContinuation | null
     maximumOutputFrameCount: number
+    /** Defaults to MAXIMUM_AUDIO_TIMELINE_CORRECTION_MICROSECONDS */
+    maximumTimelineCorrectionMicroseconds?: number
+    /**
+     * The timestamp jitter absorbed without correction, before one source
+     * sample is added: container quantization plus any codec allowance.
+     */
     maximumTimestampQuantizationMicroseconds: number
     minimumOutputFrameCount: number
+    /** Observes every fill, trim, drop, and rejection, for diagnostics */
+    onTimelineCorrection?: StreamingAudioTimelineCorrectionListener
     sourceSampleRate: number
     targetSampleRate: number
 };
@@ -35,14 +71,31 @@ export type StreamingAudioResamplerOutput = {
 };
 
 export type StreamingAudioResamplerTelemetry = {
+    /** Inputs accepted as contiguous despite jitter within tolerance or a non-advancing timestamp */
+    absorbedInputCount: number
     bufferedSourceFrameCount: number
-    correctedInputTimestampCount: number
+    /** Inputs discarded entirely because they overlapped audio already accepted */
+    droppedInputCount: number
+    /** Inputs preceded by inserted silence for a timeline gap */
+    filledInputCount: number
     filterLatencySourceFrames: number
     finalized: boolean
     maximumInputTimestampDeviationMicroseconds: number
     outputFrameCount: number
     sourceFrameCount: number
+    /** Inputs whose overlapping head was discarded */
+    trimmedInputCount: number
 };
+
+type InputTimestampReconciliation = Readonly<{
+    discardedFrameCount: number
+    silenceFrameCount: number
+}>;
+
+const CONTIGUOUS_INPUT: InputTimestampReconciliation = Object.freeze({
+    discardedFrameCount: 0,
+    silenceFrameCount: 0
+});
 
 function requirePositiveSafeInteger(value: number, name: string): number {
     if (!Number.isSafeInteger(value) || value <= 0) {
@@ -102,35 +155,54 @@ function createFilterTable(sourceSampleRate: number, targetSampleRate: number): 
 }
 
 /**
- * Converts contiguous planar PCM with one bounded, windowed-sinc streaming
- * stage. Symmetric lookahead preserves media timestamps instead of adding A/V
- * delay, while finalization edge-extends only the terminal filter tail.
+ * Converts planar PCM with one bounded, windowed-sinc streaming stage.
+ * Symmetric lookahead preserves media timestamps instead of adding A/V delay,
+ * while finalization edge-extends only the terminal filter tail. Input
+ * timestamps are reconciled against the accepted timeline: jitter is absorbed,
+ * and gaps and overlaps up to the correction bound are filled with silence or
+ * trimmed, so the output timeline stays contiguous. A larger discontinuity
+ * throws.
  */
 export default class StreamingAudioResampler {
     public readonly channelCount: number;
     public readonly maximumOutputFrameCount: number;
+    public readonly maximumTimelineCorrectionMicroseconds: number;
     public readonly maximumTimestampQuantizationMicroseconds: number;
     public readonly minimumOutputFrameCount: number;
     public readonly sourceSampleRate: number;
     public readonly targetSampleRate: number;
 
-    private anchorMediaTimeMicroseconds: Microseconds | null = null;
+    private absorbedInputCount = 0;
     private bufferStartSourceFrame = 0;
     private readonly channelBuffers: Float32Array[] = [];
-    private correctedInputTimestampCount = 0;
+    private droppedInputCount = 0;
+    private filledInputCount = 0;
     private readonly filterTable: Float64Array | null;
     private finalized = false;
     private readonly firstSourceValues: number[] = [];
+    /** Anchors the input expectation in exact source frames, which a continuation carries over */
+    private inputAnchorMediaTimeMicroseconds: Microseconds | null = null;
     private readonly lastSourceValues: number[] = [];
     private maximumInputTimestampDeviationMicroseconds = 0;
     private nextOutputFrame = 0;
+    private readonly onTimelineCorrection: StreamingAudioTimelineCorrectionListener | null;
+    /** Anchors output time in whole output frames, so output stays contiguous through every correction */
+    private outputAnchorMediaTimeMicroseconds: Microseconds | null = null;
+    private previousInputMediaTimeMicroseconds: Microseconds | null = null;
+    private readonly timestampToleranceMicroseconds: number;
     private totalSourceFrames = 0;
+    private trimmedInputCount = 0;
 
     public constructor(options: StreamingAudioResamplerOptions) {
         this.channelCount = requirePositiveSafeInteger(options.channelCount, 'Channel count');
         this.maximumOutputFrameCount = requirePositiveSafeInteger(
             options.maximumOutputFrameCount,
             'Maximum output frame count'
+        );
+        this.maximumTimelineCorrectionMicroseconds = requirePositiveSafeInteger(
+            options.maximumTimelineCorrectionMicroseconds
+                ?? MAXIMUM_AUDIO_TIMELINE_CORRECTION_MICROSECONDS,
+            'Maximum timeline correction'
         );
         this.maximumTimestampQuantizationMicroseconds = requireNonNegativeSafeInteger(
             options.maximumTimestampQuantizationMicroseconds,
@@ -153,6 +225,25 @@ export default class StreamingAudioResampler {
             options.targetSampleRate,
             'Target sample rate'
         );
+        this.timestampToleranceMicroseconds = this.maximumTimestampQuantizationMicroseconds
+            + Math.ceil(MICROSECONDS_PER_SECOND / this.sourceSampleRate);
+        this.onTimelineCorrection = options.onTimelineCorrection ?? null;
+
+        const continuation = options.continuation ?? null;
+        if (continuation) {
+            this.inputAnchorMediaTimeMicroseconds = requireMicroseconds(
+                continuation.expectedInputMediaTimeMicroseconds,
+                'Resampler continuation input time'
+            );
+            this.outputAnchorMediaTimeMicroseconds = requireMicroseconds(
+                continuation.outputMediaTimeMicroseconds,
+                'Resampler continuation output time'
+            );
+            this.previousInputMediaTimeMicroseconds = requireMicroseconds(
+                continuation.previousInputMediaTimeMicroseconds,
+                'Resampler continuation previous input time'
+            );
+        }
 
         for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
             this.channelBuffers.push(new Float32Array(0));
@@ -164,29 +255,32 @@ export default class StreamingAudioResampler {
             createFilterTable(this.sourceSampleRate, this.targetSampleRate);
     }
 
-    /** Adds one contiguous source chunk and returns every newly available output chunk. */
+    /** Adds one source chunk and returns every newly available output chunk. */
     public push(input: StreamingAudioResamplerInput): StreamingAudioResamplerOutput[] {
         if (this.finalized) {
             throw new Error('Cannot add audio after resampler finalization');
         }
         const frameCount = this.validateInput(input);
-        this.validateAndSetTimestamp(input.mediaTimeMicroseconds);
+        const reconciliation = this.reconcileInputTimestamp(
+            input.mediaTimeMicroseconds,
+            frameCount
+        );
 
-        if (this.totalSourceFrames === 0) {
-            for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
-                this.firstSourceValues[channelIndex] = input.channelData[channelIndex][0];
-            }
+        const output: StreamingAudioResamplerOutput[] = [];
+        if (reconciliation.silenceFrameCount > 0) {
+            output.push(...this.appendSilence(reconciliation.silenceFrameCount));
         }
-        for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
-            this.lastSourceValues[channelIndex] = input.channelData[channelIndex][frameCount - 1];
+        const acceptedFrameCount = frameCount - reconciliation.discardedFrameCount;
+        if (acceptedFrameCount <= 0) {
+            return output;
         }
-
-        this.appendInput(input.channelData, frameCount);
-        this.totalSourceFrames += frameCount;
-        if (this.filterTable === null) {
-            return this.renderPassthroughAvailable(false);
-        }
-        return this.renderAvailable(false);
+        const acceptedChannelData = reconciliation.discardedFrameCount === 0 ?
+            input.channelData :
+            input.channelData.map(channel => (
+                channel.subarray(reconciliation.discardedFrameCount)
+            ));
+        output.push(...this.appendSource(acceptedChannelData, acceptedFrameCount));
+        return output;
     }
 
     /** Flushes the symmetric filter tail exactly once. */
@@ -208,17 +302,50 @@ export default class StreamingAudioResampler {
         return output;
     }
 
+    /**
+     * Returns where a successor resumes after finalization: the output end, the
+     * next expected input time, and the last raw input timestamp. Null when no
+     * timeline was ever established.
+     */
+    public getContinuation(): StreamingAudioResamplerContinuation | null {
+        if (!this.finalized) {
+            throw new Error('Resampler continuation requires finalization');
+        }
+        const inputAnchorMediaTimeMicroseconds = this.inputAnchorMediaTimeMicroseconds;
+        const outputAnchorMediaTimeMicroseconds = this.outputAnchorMediaTimeMicroseconds;
+        const previousInputMediaTimeMicroseconds = this.previousInputMediaTimeMicroseconds;
+        if (inputAnchorMediaTimeMicroseconds === null
+            || outputAnchorMediaTimeMicroseconds === null
+            || previousInputMediaTimeMicroseconds === null) {
+            return null;
+        }
+        return {
+            expectedInputMediaTimeMicroseconds: addMicroseconds(
+                inputAnchorMediaTimeMicroseconds,
+                audioFramesToMicroseconds(this.totalSourceFrames, this.sourceSampleRate)
+            ),
+            outputMediaTimeMicroseconds: addMicroseconds(
+                outputAnchorMediaTimeMicroseconds,
+                audioFramesToMicroseconds(this.nextOutputFrame, this.targetSampleRate)
+            ),
+            previousInputMediaTimeMicroseconds
+        };
+    }
+
     /** Returns bounded history and exact frame accounting for diagnostics. */
     public getTelemetry(): StreamingAudioResamplerTelemetry {
         return {
+            absorbedInputCount: this.absorbedInputCount,
             bufferedSourceFrameCount: this.channelBuffers[0]?.length ?? 0,
-            correctedInputTimestampCount: this.correctedInputTimestampCount,
+            droppedInputCount: this.droppedInputCount,
+            filledInputCount: this.filledInputCount,
             filterLatencySourceFrames: this.filterTable === null ? 0 : FILTER_RADIUS,
             finalized: this.finalized,
             maximumInputTimestampDeviationMicroseconds:
                 this.maximumInputTimestampDeviationMicroseconds,
             outputFrameCount: this.nextOutputFrame,
-            sourceFrameCount: this.totalSourceFrames
+            sourceFrameCount: this.totalSourceFrames,
+            trimmedInputCount: this.trimmedInputCount
         };
     }
 
@@ -239,41 +366,155 @@ export default class StreamingAudioResampler {
         return frameCount;
     }
 
-    private validateAndSetTimestamp(mediaTimeMicroseconds: Microseconds): void {
-        if (this.anchorMediaTimeMicroseconds === null) {
-            this.anchorMediaTimeMicroseconds = mediaTimeMicroseconds;
-            return;
+    /**
+     * Places one input on the accepted timeline. In order: the first input
+     * anchors; jitter within tolerance is absorbed; a timestamp at or before
+     * the previous raw one is absorbed as non-advancing (Matroska lace frames
+     * without a block duration share one timestamp); a deviation beyond the
+     * correction bound throws; a gap is filled with silence; an overlap is
+     * trimmed, or dropped when the remainder is within tolerance.
+     */
+    private reconcileInputTimestamp(
+        mediaTimeMicroseconds: Microseconds,
+        frameCount: number
+    ): InputTimestampReconciliation {
+        const previousInputMediaTimeMicroseconds = this.previousInputMediaTimeMicroseconds;
+        this.previousInputMediaTimeMicroseconds = mediaTimeMicroseconds;
+        const inputAnchorMediaTimeMicroseconds = this.inputAnchorMediaTimeMicroseconds;
+        if (inputAnchorMediaTimeMicroseconds === null) {
+            this.inputAnchorMediaTimeMicroseconds = mediaTimeMicroseconds;
+            this.outputAnchorMediaTimeMicroseconds ??= mediaTimeMicroseconds;
+            return CONTIGUOUS_INPUT;
         }
+
         const expectedMediaTimeMicroseconds = addMicroseconds(
-            this.anchorMediaTimeMicroseconds,
+            inputAnchorMediaTimeMicroseconds,
             audioFramesToMicroseconds(this.totalSourceFrames, this.sourceSampleRate)
         );
-        const signedTimestampDeviationMicroseconds =
-            mediaTimeMicroseconds - expectedMediaTimeMicroseconds;
-        const timestampDeviationMicroseconds = Math.abs(
-            signedTimestampDeviationMicroseconds
-        );
-        const timestampToleranceMicroseconds =
-            this.maximumTimestampQuantizationMicroseconds
-            + Math.ceil(MICROSECONDS_PER_SECOND / this.sourceSampleRate);
-        if (timestampDeviationMicroseconds > timestampToleranceMicroseconds) {
+        const timestampDeviationMicroseconds = mediaTimeMicroseconds
+            - expectedMediaTimeMicroseconds;
+        const absoluteDeviationMicroseconds = Math.abs(timestampDeviationMicroseconds);
+        if (absoluteDeviationMicroseconds <= this.timestampToleranceMicroseconds) {
+            if (absoluteDeviationMicroseconds > 0) {
+                // The anchor and current container timestamps are independently quantized
+                this.absorbedInputCount += 1;
+                this.maximumInputTimestampDeviationMicroseconds = Math.max(
+                    this.maximumInputTimestampDeviationMicroseconds,
+                    absoluteDeviationMicroseconds
+                );
+            }
+            return CONTIGUOUS_INPUT;
+        }
+        if (previousInputMediaTimeMicroseconds !== null
+            && mediaTimeMicroseconds <= previousInputMediaTimeMicroseconds) {
+            this.absorbedInputCount += 1;
+            return CONTIGUOUS_INPUT;
+        }
+        if (absoluteDeviationMicroseconds > this.maximumTimelineCorrectionMicroseconds) {
+            // Moving the timeline would leave audio permanently offset from video
+            this.reportTimelineCorrection(
+                'reject',
+                mediaTimeMicroseconds,
+                expectedMediaTimeMicroseconds,
+                timestampDeviationMicroseconds
+            );
             throw new RangeError(
-                'Resampler input timestamps contain a gap or overlap: '
+                'Resampler input timestamps contain a gap or overlap beyond the correction bound: '
                 + `expected ${expectedMediaTimeMicroseconds} microseconds, `
                 + `received ${mediaTimeMicroseconds} microseconds, `
-                + `deviation ${signedTimestampDeviationMicroseconds} microseconds, `
-                + `tolerance ${timestampToleranceMicroseconds} microseconds, `
+                + `deviation ${timestampDeviationMicroseconds} microseconds, `
+                + `bound ${this.maximumTimelineCorrectionMicroseconds} microseconds, `
                 + `after ${this.totalSourceFrames} source frames`
             );
         }
+
+        const correctionFrameCount = Math.round(
+            (absoluteDeviationMicroseconds * this.sourceSampleRate) / MICROSECONDS_PER_SECOND
+        );
         if (timestampDeviationMicroseconds > 0) {
-            // The anchor and current Matroska timestamps are independently quantized
-            this.correctedInputTimestampCount += 1;
-            this.maximumInputTimestampDeviationMicroseconds = Math.max(
-                this.maximumInputTimestampDeviationMicroseconds,
-                timestampDeviationMicroseconds
+            this.filledInputCount += 1;
+            this.reportTimelineCorrection(
+                'fill',
+                mediaTimeMicroseconds,
+                expectedMediaTimeMicroseconds,
+                audioFramesToMicroseconds(correctionFrameCount, this.sourceSampleRate)
             );
+            return { discardedFrameCount: 0, silenceFrameCount: correctionFrameCount };
         }
+
+        const remainingFrameCount = frameCount - correctionFrameCount;
+        if (remainingFrameCount <= 0
+            || audioFramesToMicroseconds(remainingFrameCount, this.sourceSampleRate)
+                <= this.timestampToleranceMicroseconds) {
+            this.droppedInputCount += 1;
+            this.reportTimelineCorrection(
+                'drop',
+                mediaTimeMicroseconds,
+                expectedMediaTimeMicroseconds,
+                -audioFramesToMicroseconds(frameCount, this.sourceSampleRate)
+            );
+            return { discardedFrameCount: frameCount, silenceFrameCount: 0 };
+        }
+        this.trimmedInputCount += 1;
+        this.reportTimelineCorrection(
+            'trim',
+            mediaTimeMicroseconds,
+            expectedMediaTimeMicroseconds,
+            -audioFramesToMicroseconds(correctionFrameCount, this.sourceSampleRate)
+        );
+        return { discardedFrameCount: correctionFrameCount, silenceFrameCount: 0 };
+    }
+
+    private reportTimelineCorrection(
+        kind: StreamingAudioTimelineCorrection['kind'],
+        inputMediaTimeMicroseconds: Microseconds,
+        expectedMediaTimeMicroseconds: Microseconds,
+        correctionMicroseconds: number
+    ): void {
+        this.onTimelineCorrection?.({
+            correctionMicroseconds,
+            expectedMediaTimeMicroseconds,
+            inputMediaTimeMicroseconds,
+            kind
+        });
+    }
+
+    /** Inserts silence in bounded slices so buffered history never grows with the gap. */
+    private appendSilence(frameCount: number): StreamingAudioResamplerOutput[] {
+        const output: StreamingAudioResamplerOutput[] = [];
+        let remainingFrameCount = frameCount;
+        while (remainingFrameCount > 0) {
+            const sliceFrameCount = Math.min(remainingFrameCount, this.maximumOutputFrameCount);
+            const silence = new Float32Array(sliceFrameCount);
+            const silentChannelData: Float32Array[] = [];
+            for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
+                silentChannelData.push(silence);
+            }
+            output.push(...this.appendSource(silentChannelData, sliceFrameCount));
+            remainingFrameCount -= sliceFrameCount;
+        }
+        return output;
+    }
+
+    private appendSource(
+        channelData: readonly Float32Array[],
+        frameCount: number
+    ): StreamingAudioResamplerOutput[] {
+        if (this.totalSourceFrames === 0) {
+            for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
+                this.firstSourceValues[channelIndex] = channelData[channelIndex][0];
+            }
+        }
+        for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
+            this.lastSourceValues[channelIndex] = channelData[channelIndex][frameCount - 1];
+        }
+
+        this.appendInput(channelData, frameCount);
+        this.totalSourceFrames += frameCount;
+        if (this.filterTable === null) {
+            return this.renderPassthroughAvailable(false);
+        }
+        return this.renderAvailable(false);
     }
 
     private appendInput(channelData: readonly Float32Array[], frameCount: number): void {
@@ -454,8 +695,8 @@ export default class StreamingAudioResampler {
         outputStartFrame: number,
         frameCount: number
     ): StreamingAudioResamplerOutput {
-        const anchorMediaTimeMicroseconds = this.anchorMediaTimeMicroseconds;
-        if (anchorMediaTimeMicroseconds === null) {
+        const outputAnchorMediaTimeMicroseconds = this.outputAnchorMediaTimeMicroseconds;
+        if (outputAnchorMediaTimeMicroseconds === null) {
             throw new Error('Resampler output has no media-time anchor');
         }
         return {
@@ -466,7 +707,7 @@ export default class StreamingAudioResampler {
             ),
             frameCount,
             mediaTimeMicroseconds: addMicroseconds(
-                anchorMediaTimeMicroseconds,
+                outputAnchorMediaTimeMicroseconds,
                 audioFramesToMicroseconds(outputStartFrame, this.targetSampleRate)
             ),
             sampleRate: this.targetSampleRate

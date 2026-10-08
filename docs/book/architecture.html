@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ca695dd2.js";
+            window.path_to_searchindex_js = "searchindex-c8b0fdbf.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -450,6 +450,9 @@ external HDR 10/255, external Dolby Vision 8/255, raw 3/255.</li>
 <li>The native external HDR route rewrites the SPS color to limited BT.709, and
 the shader recovers the 10-bit codes (Y<em>876+64, C</em>896+512). A frame with a
 colorSpace that is not neutral latches <code>decoded-frame-color-mismatch</code>.</li>
+<li>The raw route checks each frame’s colorSpace against the metadata, and a
+null member is unspecified, so it never contradicts. SDR also matches a
+<code>smpte170m</code> transfer, and HLG a <code>bt709</code> transfer on BT.2020 primaries.</li>
 <li>WebGPU presentation on the HTML path is SDR only: a <code>&lt;video&gt;</code> external
 texture is browser-converted sRGB.</li>
 <li>The add-on’s <code>HtmlVideoPlayer.play()</code> (host) runs synchronously only when

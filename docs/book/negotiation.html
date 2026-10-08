@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ca695dd2.js";
+            window.path_to_searchindex_js = "searchindex-c8b0fdbf.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -233,8 +233,10 @@ for the stock profile.</li>
 <li>Check eligibility (engine). The host’s <code>startCustomPlaybackBounded</code> (25 s)
 calls <code>getCustomPlaybackEligibility</code>, which checks in order:
 <ol>
-<li><code>parsePlaybackSource</code>: DirectPlay, not live, a custom container, a
-duration, and an http(s) URL.</li>
+<li><code>parsePlaybackSource</code>: DirectPlay, not live, a custom container, and an
+http(s) URL. A missing or zero <code>RunTimeTicks</code> is an unknown duration,
+not a rejection: playback ends with the streams, and audio takes the
+decoded-PCM route because the native media backend needs a duration.</li>
 <li><code>selectVideoStream</code>.</li>
 <li>Rotation 0 and <code>IsInterlaced === false</code>.</li>
 <li><code>selectVideoOutput</code> (below).</li>
@@ -248,7 +250,8 @@ Without the renegotiation flag, the add-on’s HTML player plays the same
 source in the same session. With it, the player asks for a renegotiation;
 on stock Jellyfin Web that is the error retry ladder, whose <code>changeStream</code>
 passes <code>isRetry</code>, so the retry negotiates with the stock profile and is
-never widened.</li>
+never widened. An ineligible start logs its eligibility reason with
+<code>console.warn</code> first, since it raises no error of its own.</li>
 </ol>
 <h2 id="how-the-profile-is-augmented"><a class="header" href="#how-the-profile-is-augmented">How the profile is augmented</a></h2>
 <p><code>augmentDeviceProfileForCustomDecode</code> (host), in order:</p>
@@ -335,7 +338,14 @@ agree with the CCID; VideoRange and VideoRangeType are ignored.</li>
 reconstruction step.</li>
 </ol>
 </li>
-<li>No color metadata: <code>metadata-unsupported</code>.</li>
+<li>No color metadata: <code>metadata-unsupported</code>.
+<code>PresentationInput.parseVideoStreamColorMetadata</code> reads ColorTransfer,
+ColorPrimaries, ColorSpace, and ColorRange. A field that is <code>unknown</code>,
+<code>unspecified</code>, or <code>reserved</code> is absent and takes its transfer’s default:
+BT.709 for SDR, BT.2020 for PQ and HLG, and limited range. The BT.2020 10
+and 12-bit transfers read as SDR, SMPTE 170M and SMPTE 240M primaries as
+<code>smpte170m</code>, BT.470 BG primaries as <code>bt470bg</code>, and the SMPTE 170M and
+BT.470 BG matrices as BT.601. Any other value is unrecognized and fails.</li>
 <li>An HEVC range extension needs its exact variant capability and raw key. A
 range extension never falls through to the steps below.</li>
 <li>SDR: <code>native</code>, native Main 10 SDR, <code>bundled-hevc</code> Main, <code>ffmpeg-mpeg2-vc1</code>,
@@ -449,6 +459,11 @@ downmixes to 2 with the user’s algorithm.</p>
 (<code>StreamBuilder</code>). A looser added profile cannot override a stricter one, so
 stock profiles are split by container, and codecs with several routes use
 ApplyConditions.</li>
+<li>The server matches a profile container against any token of the probed
+container. Every MP4/MOV file probes as <code>mov,mp4,m4a,3gp,3g2,mj2</code>, so a stock
+split never names an alias of a codec’s route containers
+(<code>getCustomContainerFamilyForVideoCodec</code>, host). A stock HEVC split scoped to
+<code>mj2,webm</code> once rejected every Dolby Vision range in MP4 files.</li>
 <li>Width, Height, VideoLevel, and VideoFramerate are removed only for custom
 containers. Bitrate is stripped everywhere on non-retry profiles.</li>
 <li>HEVC routes expand to every (VideoProfile, VideoRangeType) pair, with
@@ -464,7 +479,10 @@ or fall back.</li>
 decoder’s opaque hardware output (native external HDR, the native Dolby
 Vision base, and external Profile 5) prefer hardware. Every other native
 route uses <code>no-preference</code>, so a codec without a hardware decoder, such as
-VP8 in Chromium on Windows, decodes in software.</li>
+VP8 in Chromium on Windows, decodes in software. One exception: 10-bit SDR
+HEVC has no probe of its own. The native HDR HEVC probe gates it with
+<code>prefer-hardware</code>, while the SDR route requests <code>no-preference</code>. Chromium
+decodes HEVC only in hardware, so both resolve to the same decoder.</li>
 <li>AC-3, E-AC-3, and PCM have no runtime probe, so the host’s
 <code>appendMeasuredNativeAudioRouteProfiles</code> never emits its 48 kHz profile.</li>
 <li>These composed routes have no probe vector: DTS 2-channel MA, DTS 6-channel

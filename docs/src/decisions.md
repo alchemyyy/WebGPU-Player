@@ -130,6 +130,22 @@ audit.
   color to limited BT.709 so Chrome does not tone-map, and the shader recovers
   the YUV codes. An `hvcC` without an SPS defers validation to the first key
   access unit (08-05).
+- Startup is bounded by progress, not by a fixed timer (10-07). A 72 Mbps 4K
+  TrueHD source under six concurrent players produced no audio within the
+  fixed 20 s and fell back to a server transcode that also stalled; the stage
+  that stalled was not recorded. The controller now fails after 20 s without
+  decode progress, or at 60 s regardless, and the fallback message names the
+  counters it reached. The host's 25 s setup bound ends where the controller
+  starts, so the two bounds cannot disagree.
+- An unknown duration does not block custom playback (10-07). Eligibility
+  used to require `RunTimeTicks`, so a source the server never probed played
+  through the HTML backend although the controller and session already accept
+  a null duration. The decoded streams define the end; only the native media
+  audio backend needs a duration, so such a source takes decoded PCM. The
+  worker reports the duration from the container's metadata (the presented
+  video track only, so a late audio track is never scanned) and the controller
+  adopts it. Until a duration is known the player is not seekable, because
+  Jellyfin Web seeks by percent of duration and would land at zero.
 - Native decode hints match their probes (10-07). The SDR probes qualify with
   `no-preference`, but the runtime used to request `prefer-hardware` for every
   native `VideoFrame` route. Chromium on Windows has no hardware VP8 decoder
@@ -137,6 +153,45 @@ audit.
   passed. Only the routes that present opaque hardware output (native external
   HDR, the native Dolby Vision base, and external P5) prefer hardware, as
   their probes and authorizations do.
+- Unspecified color is absent, not unknown (10-07). FFmpeg names an
+  unspecified or reserved color field `unknown` or `reserved`, which used to
+  null the metadata and decline the item as `metadata-unsupported`. Such a
+  field is now absent, so the transfer's defaults apply: an SDR stream with
+  ColorRange `unknown` is limited BT.709, and a Dolby Vision base with
+  ColorTransfer `unknown` presents the transfer its CCID declares, both
+  deliberately asserted in `test/presentation/PresentationInput.test.ts`.
+  Unspecified SD color still defaults to BT.709; no resolution-based default
+  is applied.
+- BT.601 and BT.2020 SDR play natively (10-07). Field tests declined H.264 and
+  HEVC SDR tagged SMPTE 170M, and HEVC SDR tagged with the BT.2020 10-bit
+  transfer, without logging anything. SMPTE 170M and SMPTE 240M primaries now
+  read as `smpte170m`, BT.470 BG as `bt470bg`, both matrices as BT.601, and
+  the BT.2020 10 and 12-bit transfers, which use the BT.709 curve, as SDR. The
+  VF-SDR route does no color math: it imports the frame with
+  `colorSpace: 'srgb'` through the identity shader, so Chrome converts it. The
+  CPU reference and the shaders stay exact for all four primaries sets
+  regardless: luminance comes from the primaries, YUV coefficients from the
+  matrix (BT.601 is Kr 0.299, Kb 0.114), and gamut and IPT conversions go
+  through BT.709 tables derived from the H.273 chromaticities under D65. The
+  raw SDR keys stay BT.709 only, so BT.601 and BT.2020 SDR never reach the raw
+  shaders.
+- The SPS VUI never rejects color (10-07). An HLG broadcast whose VUI signals
+  the BT.2020 10-bit transfer (14) and whose alternative transfer
+  characteristics SEI (payload type 147) names HLG (18) failed the native HLG
+  route, because the SPS parser accepted only BT.709 and BT.2020 PQ or HLG.
+  The parser now maps every code to a WebCodecs name or to null, and only the
+  native HDR route check is strict (limited range, BT.2020 primaries and
+  non-constant-luminance matrix). Its transfer is the SEI value when the key
+  access unit carries one and the VUI value otherwise; an HLG route also
+  accepts VUI 14 or 15 without an SEI. SEI errors are not fatal, as in FFmpeg,
+  so a malformed SEI counts as absent and the VUI alone must prove the route.
+  The bundled HEVC decoder compares the container and SPS color only where
+  both specify it (BT.470 BG equals SMPTE 170M as a matrix, and SMPTE 170M
+  equals BT.709 as a transfer) and fills SPS gaps from the container, so a
+  container's HLG survives a VUI 14 SPS. Chrome is assumed to report a null
+  `VideoFrame.colorSpace.transfer` for VUI 14 and 15; the raw HLG frame check
+  also accepts `bt709` on a BT.2020 frame in case it does not, and a null
+  frame color member never contradicts the metadata.
 
 ## Firefox
 
@@ -235,14 +290,130 @@ These were settled on Firefox 157 on Windows.
   smoothstep, a 100 ms exponential release, and a -1 dBFS sample peak. The
   limiter drains at the end of stream and resets per seek and generation. The
   alternatives are peak-normalized Lo/Ro, AC-4, RFC 7845, Dave750, and night
-  mode. Downmix applies only to a stereo destination; otherwise 5.1 and 7.1
-  pass through when `AudioContext.destination.maxChannelCount` allows.
+  mode. Downmix applies only to a stereo destination; a 5.1 or 7.1 destination
+  takes the source by channel name (next entry), when
+  `AudioContext.destination.maxChannelCount` allows.
+- Layouts map by channel name (10-07). This reverses the rejection of a
+  decoded layout that differs from the output layout, because the decoded
+  layout can differ from the declared one the output was sized for (E-AC-3
+  7.1 declared as 5.1, for example). Mono goes to the center speaker, or to
+  both channels of a stereo output; stereo to the front pair; 5.1 to 7.1
+  fills its sides or backs and leaves the other pair silent; 7.1 to 5.1 folds
+  each surround as sqrt(1/2) times side plus back; a 6.1 or 3.0(back) back
+  center splits across the surround or back pair at sqrt(1/2). 2.1, 3.0, and
+  3.0(back) mix to stereo through three-channel matrices taken from each
+  algorithm's 5.1 weights, where a back center enters through both surrounds
+  at sqrt(1/2). Peak-normalized Lo/Ro and RFC 7845 renormalize those weights
+  to sum to one, because the six-channel normalization left a full-scale 3.0
+  bed 3 dB and 0.88 dB low; RFC 7845 3.0 then equals opusfile's matrix. Every
+  fold-down, a source with more channels than the output, runs the limiter.
+- The output follows the source layout (10-07). Three channels and 5.1 use a
+  5.1 output when the device has six channels; 6.1 and 7.1 use a 7.1 output
+  with eight, or fold into 5.1 with six; anything else mixes to stereo.
+  Before, a three-channel source, and 7.1 on a six-channel device, mixed to
+  stereo. A live switch applies the rule to the layout the decoder reported
+  (`audio-source-format`), not to the container's declaration, which can
+  under-declare E-AC-3 7.1. Until a track decodes PCM, the host's request,
+  which follows Jellyfin's count, stands.
+- Mono and three-channel sources play (10-07). The mixer already duplicated
+  mono, but the route tables rejected it, so the server transcoded every mono
+  or three-channel track. Every decoded PCM route now admits mono. Decoders
+  without a speaker mask (AAC, FLAC, Opus, Vorbis, and PCM) deliver three
+  channels as 3.0, so their three-channel routes need Jellyfin's 3.0 layout.
+  Jellyfin keeps only the part of FFmpeg's layout name before `(`
+  (`ProbeResultNormalizer.ParseChannelLayout`), so 3.0(back) arrives as 3.0
+  and 7.1(wide) as 7.1. AC-3 2/1 and 3/0 are therefore indistinguishable, and
+  the browser's AC-3 decoder reports no mask, so three-channel AC-3 is neither
+  advertised nor admitted and transcodes; AC-3 mono plays. A profile condition
+  cannot express ChannelLayout, so any other three-channel layout, a 2.1 FLAC
+  or WAV for example, is negotiated, fails eligibility when playback starts,
+  and plays through the HTML player or renegotiates to a transcode. E-AC-3 and
+  TrueHD admit mono only.
 - E-AC-3 7.1 needs the layout, not just the channel count: the decoder must
   report the decoded channel layout (`9ca70e11ad`).
 - The DTS envelope. DTS-HD HRA is valid at 48 and 96 kHz only. Above 96 kHz
   only 5.1 MA (or MA with a DTS:X bed) is admitted. Stereo DTS-HD MA is
-  admitted up to 96 kHz. The Matroska lace timestamp tolerance is 3 ms plus one
-  sample, for DTS only.
+  admitted up to 96 kHz. Mono is admitted for every direct-play profile, and
+  three channels for MA and MA with DTS:X when Jellyfin reports a 2.1 or 3.0
+  layout, because libdcadec reports their speaker masks (0x4, 0xB, 0x7, and
+  0x103 for 3.0(back), which Jellyfin also reports as 3.0).
+- Decoded format is authoritative (10-07). Declared formats were wrong in the
+  field: Mediabunny reports the Matroska SamplingFrequency, which for HE-AAC is
+  the 24 kHz core, and never reads OutputSamplingFrequency or detects implicit
+  SBR; in MP4 the AudioSpecificConfig overwrites the sample entry, so HE-AAC
+  declares 24 kHz and, with Parametric Stereo, mono; and the dec3 parse can
+  declare a 7.1 E-AC-3 track as 6 or 7 channels. So the declared format only
+  screens a track at preparation. The output stage binds to the first decoded
+  rate and layout and rebinds on a later change: the old resampler's tail goes
+  through the still-running limiter, and a new resampler continues its output
+  timeline and input expectation. The worklet format and the output timeline
+  never change, and the route tables are checked against the decoded values.
+  The worker reports each bound format with `audio-source-format`, which the
+  session's telemetry and ready event prefer over the declaration.
+- Timestamps are reconciled within 2 s (10-07). Two field failures came
+  from containers, not from audio: a TrueHD access unit that decoded to no PCM
+  (833 us) plus 1 ms of Matroska rounding, and a Mediabunny lace artifact where
+  a laced block that is last in its cluster keeps duration 0, so every frame of
+  the lace gets the block's timestamp although the PCM is correct. The
+  tolerance is max(codec floor, one container tick) plus an access-unit
+  allowance plus one source sample: the floor is 3 ms for DTS and 1 ms
+  otherwise, and the allowance is 834 us for TrueHD and MLP. Within tolerance
+  an input is absorbed; a timestamp at or before the previous one is absorbed
+  as non-advancing; a gap up to 2 s is filled with silence; an overlap up to
+  2 s is trimmed, or dropped when the remainder is within tolerance. A larger
+  deviation fails the audio attempt as `decode-failed`, so playback
+  renegotiates: the first design rebased the expectation instead, which
+  shifted all later audio against video. The worker logs every correction
+  over 100 ms and every failure with the input timestamp, the expected
+  timestamp, and the correction. Output time stays the anchor plus output
+  frames at 48 kHz, so the bridge, limiter, worklet, and clock see one
+  contiguous stream. Output chunks are capped at 12000 frames, the 2 s ring
+  divided among the 8 credits, so even a filled burst fits the worklet ring.
+- The FFmpeg wrappers stamp later frames of one packet themselves (10-07).
+  FFmpeg resets the packet timestamp after a partial consume, so the E-AC-3
+  and TrueHD wrappers stamp a frame without one at the packet time plus the
+  frames the packet already produced.
+- A late first audio sample is padded, not followed (10-07). In two MKV files
+  the video started at 0 s and the first audio block at 6.006 s or about
+  25.9 s. The worklet set its media time to the first chunk it rendered, so the
+  clock jumped to the audio start and the earlier video was dropped (631
+  frames for 26.3 s at 23.976 fps). The worklet now renders silence from the
+  flush position to the first chunk's timestamp. The native-media route parks
+  `<audio>` at its first fragment and delays `play()` by the remaining gap,
+  because Chromium snaps a seek only to buffered data that starts within 1 s,
+  and otherwise `play()` stays pending until startup times out. Hidden tabs
+  fire that timer late, so a timer more than 20 ms late first moves the parked
+  element and its clock baseline forward by the overshoot, within the
+  buffered range, and audio does not trail the clock. Only an `AbortError`
+  caused by the backend's own pause, seek, or teardown stays silent; any
+  other `play()` rejection is reported. Mediabunny proves that a track starts
+  after a lookup time only after two scans, so an audio start at or before
+  zero, or after no earlier packet, takes the first packet directly.
+- Audio that ends before video is not starvation (10-07). The worker posts
+  `audio-ended` for the epoch. The final underflow releases the tail without
+  the end-of-stream steps: video waits stay in force, and an uncorrelated
+  output releases at once instead of pausing the clock for its latency grace,
+  because video carries playback past the tail. Once the tail is out, video
+  starvation holds the clock as it does without audio. The ended track also
+  stands in for the PCM a start, seek, or resync waits for, so a seek past the
+  end of the audio starts. A native-media track ends its MSE stream, so
+  `<audio>` plays out instead of stalling at its last fragment with the clock
+  frozen; once the element has ended, the clock runs on and `play()` is not
+  called again, because it would restart the element from its earliest
+  position. A hidden page keeps decoding video once the audio ended, and a
+  released decoder restarts at the clock, because the worker ends the run
+  only after the video track itself ended, not when it was suspended or
+  interrupted. Before, the underflow started an audio wait that fell back
+  with `playback-stalled` after 10 s.
+- DTS and TrueHD play from ISO BMFF too (10-07). Mediabunny maps no MP4 DTS or
+  TrueHD sample entry but records it as the internal codec ID, so the worker
+  treats `DTS ` (QuickTime's core entry, with a trailing space), `dtsc`,
+  `dtsh`, and `dtsl` like `A_DTS` and `mlpa` like `A_TRUEHD`.
+  `dtse` (LBR) and `dtsx` (DTS-UHD) stay unsupported because libdcadec cannot
+  decode them. Two sample-rate fields need recovery: TrueHD writes the rate as
+  a 32-bit integer, which reads back as 16.16, and a DTS rate above 65535 Hz
+  does not fit the 16-bit integer part, so muxers write zero and the worker
+  declares the 48 kHz core until the decoder reports the real rate.
 - Normalization follows the metadata. Jellyfin fills track and album gain for
   audio libraries, not movies, so video sessions normally use unity gain.
 

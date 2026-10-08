@@ -176,6 +176,12 @@ const PQ_VIDEO_RANGE_TYPES = new Set([ 'HDR10', 'HDR10PLUS' ]);
 const HLG_VIDEO_RANGE_TYPES = new Set([ 'HLG' ]);
 const SDR_VIDEO_RANGE_TYPES = new Set([ SDR_VIDEO_RANGE ]);
 const DOLBY_VISION_PREFIX = 'DOVI';
+// FFmpeg's names for an unspecified or reserved color value, which the color parsers treat as absent
+const ABSENT_COLOR_METADATA_TOKENS: ReadonlySet<string> = new Set([
+    'RESERVED',
+    'UNKNOWN',
+    'UNSPECIFIED'
+]);
 const DEFAULT_SDR_BIT_DEPTH = 8;
 const DEFAULT_HDR_BIT_DEPTH = 10;
 const HEVC_CODEC_NAMES = new Set([ 'H265', 'HEVC' ]);
@@ -194,6 +200,15 @@ function normalizeMetadataValue(value: unknown): string | null {
 function normalizeMetadataToken(value: unknown): string | null {
     const normalizedValue = normalizeMetadataValue(value);
     return normalizedValue?.replace(/[^A-Z0-9]/g, '') ?? null;
+}
+
+/** Normalizes a color field token, mapping an unspecified or reserved value to absent so defaults apply. */
+function normalizeColorMetadataToken(value: unknown): string | null {
+    const normalizedValue = normalizeMetadataToken(value);
+    if (normalizedValue === null || ABSENT_COLOR_METADATA_TOKENS.has(normalizedValue)) {
+        return null;
+    }
+    return normalizedValue;
 }
 
 function parseRangeType(value: unknown): ParsedTransfer | null {
@@ -218,7 +233,7 @@ function parseRangeType(value: unknown): ParsedTransfer | null {
 }
 
 function parseTransfer(value: unknown): ParsedTransfer | null {
-    const normalizedValue = normalizeMetadataToken(value);
+    const normalizedValue = normalizeColorMetadataToken(value);
     if (!normalizedValue) {
         return null;
     }
@@ -231,6 +246,9 @@ function parseTransfer(value: unknown): ParsedTransfer | null {
         case 'SMPTE2084':
         case 'SMPTEST2084':
             return 'pq';
+        // The BT.2020 10 and 12-bit transfers are the BT.709 OETF, as is SMPTE 170M
+        case 'BT202010':
+        case 'BT202012':
         case 'BT709':
         case 'IEC6196621':
         case 'SMPTE170M':
@@ -257,7 +275,7 @@ function parseVideoRange(value: unknown): 'hdr' | 'sdr' | 'unknown' | null {
 }
 
 function parseColorRange(value: unknown): ColorRange | 'unknown' | null {
-    const normalizedValue = normalizeMetadataToken(value);
+    const normalizedValue = normalizeColorMetadataToken(value);
     if (!normalizedValue) {
         return null;
     }
@@ -277,7 +295,7 @@ function parseColorRange(value: unknown): ColorRange | 'unknown' | null {
 }
 
 function parseColorPrimaries(value: unknown): ColorPrimaries | 'unknown' | null {
-    const normalizedValue = normalizeMetadataToken(value);
+    const normalizedValue = normalizeColorMetadataToken(value);
     if (!normalizedValue) {
         return null;
     }
@@ -285,15 +303,21 @@ function parseColorPrimaries(value: unknown): ColorPrimaries | 'unknown' | null 
     switch (normalizedValue) {
         case 'BT2020':
             return 'bt2020';
+        case 'BT470BG':
+            return 'bt470bg';
         case 'BT709':
             return 'bt709';
+        // SMPTE 240M has the SMPTE 170M chromaticities
+        case 'SMPTE170M':
+        case 'SMPTE240M':
+            return 'smpte170m';
         default:
             return 'unknown';
     }
 }
 
 function parseYUVMatrix(value: unknown): YUVMatrix | 'unknown' | null {
-    const normalizedValue = normalizeMetadataToken(value);
+    const normalizedValue = normalizeColorMetadataToken(value);
     if (!normalizedValue) {
         return null;
     }
@@ -302,8 +326,12 @@ function parseYUVMatrix(value: unknown): YUVMatrix | 'unknown' | null {
         case 'BT2020NC':
         case 'BT2020NCL':
             return 'bt2020-ncl';
+        case 'BT470BG':
+            return 'bt470bg';
         case 'BT709':
             return 'bt709';
+        case 'SMPTE170M':
+            return 'smpte170m';
         default:
             return 'unknown';
     }
@@ -753,8 +781,9 @@ export function getDolbyVisionProfile8HLGBaseColorMetadata(
 }
 
 /**
- * Converts one Jellyfin video stream into renderer metadata. Unsupported,
- * contradictory, unknown, and Dolby Vision descriptions return null.
+ * Converts one Jellyfin video stream into renderer metadata.
+ * Unsupported, contradictory, unrecognized, and Dolby Vision descriptions return null.
+ * An unspecified or reserved color field is absent and takes its transfer's default.
  */
 export function parseVideoStreamColorMetadata(stream: unknown): InputColorMetadata | null {
     if (!stream || typeof stream !== 'object') {
@@ -877,6 +906,22 @@ function isKnownSDRVideoStream(videoStream: MediaStreamMetadata): boolean {
 
     return videoRanges.length > 0
         && videoRanges.every((range: string): boolean => range === SDR_VIDEO_RANGE);
+}
+
+/**
+ * Returns whether a stream names an HDR transfer, BT.2020 primaries, and the BT.2020 non-constant-luminance
+ * matrix. Absent, unknown, unspecified, and reserved values do not count, so a defaulted description never
+ * selects a route that rewrites the bitstream as BT.2020.
+ */
+export function hasExplicitBT2020HDRColorDescription(stream: unknown): boolean {
+    if (!stream || typeof stream !== 'object') {
+        return false;
+    }
+    const colorDescription = stream as MediaStreamMetadata;
+    const transfer = parseTransfer(colorDescription.ColorTransfer);
+    return (transfer === 'pq' || transfer === 'hlg')
+        && parseColorPrimaries(colorDescription.ColorPrimaries) === 'bt2020'
+        && parseYUVMatrix(colorDescription.ColorSpace) === 'bt2020-ncl';
 }
 
 /**

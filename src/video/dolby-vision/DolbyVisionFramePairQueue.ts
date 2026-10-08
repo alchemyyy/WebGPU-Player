@@ -29,6 +29,7 @@ export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
     private readonly baseFrames: Array<DolbyVisionTimedFrame<BaseFrame>> = [];
     private readonly enhancementFrames: Array<DolbyVisionTimedFrame<EnhancementFrame>> = [];
     private enhancementEnded = false;
+    private finalDrain = false;
     private readonly readyPairs: Array<DolbyVisionFramePair<BaseFrame, EnhancementFrame>> = [];
 
     public constructor(
@@ -36,10 +37,14 @@ export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
         private readonly closeEnhancementFrame: FrameCloser<EnhancementFrame>
     ) {}
 
-    /** Adds one owned BL output and resolves every pair now proven ready. */
+    /**
+     * Adds one owned BL output and resolves every pair now proven ready.
+     * Every check runs before the queue takes ownership, because the caller closes a rejected frame.
+     */
     public enqueueBaseFrame(frame: DolbyVisionTimedFrame<BaseFrame>): void {
         requireTimestamp(frame.mediaTimeMicroseconds);
         this.requireMonotonicTimestamp(this.baseFrames, frame.mediaTimeMicroseconds, 'base');
+        this.requireReadyPairCapacity();
         this.baseFrames.push(frame);
         this.resolvePairs();
     }
@@ -69,19 +74,33 @@ export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
         this.resolvePairs();
     }
 
-    /** Marks the EL decoder exhausted or degraded and releases waiting BL frames. */
+    /**
+     * Marks the EL decoder exhausted or degraded and releases waiting BL frames. Queued EL frames stay until a
+     * BL frame pairs with them or passes them, so a full ready queue cannot strip the layer from matching frames.
+     */
     public finishEnhancement(): void {
         if (this.enhancementEnded) {
             return;
         }
         this.enhancementEnded = true;
         this.resolvePairs();
-        this.closeUnmatchedEnhancementFrames();
+    }
+
+    /**
+     * Lets the ready queue exceed its bound while the decoders flush their last frames. No further packet is
+     * submitted, so the frames the decoders still hold are the whole remainder and must not fail the stream.
+     */
+    public beginFinalDrain(): void {
+        this.finalDrain = true;
+        this.resolvePairs();
     }
 
     /** Takes the oldest resolved compound ownership unit. */
     public takeReadyPair(): DolbyVisionFramePair<BaseFrame, EnhancementFrame> | null {
-        return this.readyPairs.shift() ?? null;
+        const framePair = this.readyPairs.shift() ?? null;
+        // A full ready queue can leave resolvable frames waiting
+        this.resolvePairs();
+        return framePair;
     }
 
     /** Returns whether a resolved compound ownership unit can be consumed. */
@@ -108,13 +127,6 @@ export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
         this.readyPairs.length = 0;
     }
 
-    private closeUnmatchedEnhancementFrames(): void {
-        for (const frame of this.enhancementFrames) {
-            this.closeEnhancementFrame(frame.frame);
-        }
-        this.enhancementFrames.length = 0;
-    }
-
     private requireMonotonicTimestamp<Frame>(
         frames: Array<DolbyVisionTimedFrame<Frame>>,
         timestampMicroseconds: Microseconds,
@@ -127,8 +139,9 @@ export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
         }
     }
 
+    /** Moves resolvable frames into ready pairs, stopping (never throwing) when the ready queue is full. */
     private resolvePairs(): void {
-        while (this.baseFrames.length > 0) {
+        while (this.baseFrames.length > 0 && this.hasReadyPairCapacity()) {
             const baseFrame = this.baseFrames[0];
             this.discardOlderEnhancementFrames(baseFrame.mediaTimeMicroseconds);
             const enhancementFrame = this.enhancementFrames[0];
@@ -137,7 +150,6 @@ export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
                     - baseFrame.mediaTimeMicroseconds;
                 if (Math.abs(timestampDelta)
                     <= DOLBY_VISION_FRAME_PAIR_TOLERANCE_MICROSECONDS) {
-                    this.requireReadyPairCapacity();
                     this.baseFrames.shift();
                     this.enhancementFrames.shift();
                     this.readyPairs.push({
@@ -178,7 +190,6 @@ export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
     }
 
     private queueBaseOnlyPair(): void {
-        this.requireReadyPairCapacity();
         const baseFrame = this.baseFrames.shift();
         if (!baseFrame) {
             return;
@@ -189,8 +200,12 @@ export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
         });
     }
 
+    private hasReadyPairCapacity(): boolean {
+        return this.finalDrain || this.readyPairs.length < MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH;
+    }
+
     private requireReadyPairCapacity(): void {
-        if (this.readyPairs.length >= MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH) {
+        if (!this.hasReadyPairCapacity()) {
             throw new RangeError('Decoded Dolby Vision frame pair queue exceeded its bound');
         }
     }

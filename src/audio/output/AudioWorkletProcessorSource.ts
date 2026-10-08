@@ -42,6 +42,11 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         this.mediaTimeContextTimeMicroseconds = null;
         this.mediaTimeMicroseconds = 0;
         this.underflowActive = false;
+        // Silence from a flush position to the first chunk keeps the clock on audio time
+        this.leadingGapPending = false;
+        this.leadingGapFrames = 0;
+        this.leadingGapRenderedFrames = 0;
+        this.leadingGapStartMicroseconds = 0;
         this.port.onmessage = messageEvent => this.handleMessage(messageEvent.data);
     }
 
@@ -99,6 +104,10 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         this.mediaTimeContextTimeMicroseconds = null;
         this.mediaTimeMicroseconds = 0;
         this.underflowActive = false;
+        this.leadingGapPending = false;
+        this.leadingGapFrames = 0;
+        this.leadingGapRenderedFrames = 0;
+        this.leadingGapStartMicroseconds = 0;
         this.port.postMessage({leaseId, type: 'deactivated'});
     }
 
@@ -139,6 +148,17 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             return;
         }
 
+        if (this.leadingGapPending) {
+            // Only the first accepted chunk after a flush defines the gap, since later chunks continue it
+            this.leadingGapPending = false;
+            const leadingGapFrames = Math.round(
+                ((message.timestampMicroseconds - this.leadingGapStartMicroseconds) * sampleRate)
+                    / MICROSECONDS_PER_SECOND
+            );
+            // A chunk at or before the flush position plays at once
+            this.leadingGapFrames = leadingGapFrames > 0 ? leadingGapFrames : 0;
+        }
+
         this.chunks[this.tailChunkIndex] = {
             channelData: message.channelData,
             frameOffset: 0,
@@ -172,6 +192,10 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         this.mediaTimeContextTimeMicroseconds = null;
         this.mediaTimeMicroseconds = mediaTimeMicroseconds;
         this.underflowActive = false;
+        this.leadingGapPending = true;
+        this.leadingGapFrames = 0;
+        this.leadingGapRenderedFrames = 0;
+        this.leadingGapStartMicroseconds = mediaTimeMicroseconds;
         this.postTelemetry('flush', null);
     }
 
@@ -210,7 +234,8 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             return true;
         }
 
-        let outputOffset = 0;
+        const silentPrefixFrameCount = this.renderLeadingGap(renderFrameCount);
+        let outputOffset = silentPrefixFrameCount;
         const gain = this.muted ? 0 : this.volume;
         while (outputOffset < renderFrameCount && this.chunkCount > 0) {
             const chunk = this.chunks[this.headChunkIndex];
@@ -252,7 +277,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         }
 
         const underflowFrameCount = renderFrameCount - outputOffset;
-        this.analyzeOutput(outputChannels, outputOffset);
+        this.analyzeOutput(outputChannels, silentPrefixFrameCount, outputOffset);
         if (underflowFrameCount > 0) {
             this.underflowFrames += underflowFrameCount;
             if (!this.underflowActive) {
@@ -274,13 +299,31 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         return true;
     }
 
-    analyzeOutput(outputChannels, frameCount) {
-        if (frameCount <= 0) {
+    // Advances the leading gap over the zero-filled output and returns its frame count.
+    // Gap frames are rendered output, so they are neither underflow nor consumed PCM.
+    renderLeadingGap(renderFrameCount) {
+        if (this.leadingGapFrames <= 0 || this.chunkCount === 0) {
+            return 0;
+        }
+
+        const silentFrameCount = Math.min(this.leadingGapFrames, renderFrameCount);
+        this.leadingGapFrames -= silentFrameCount;
+        this.leadingGapRenderedFrames += silentFrameCount;
+        this.mediaTimeMicroseconds = this.leadingGapStartMicroseconds
+            + this.framesToMicroseconds(this.leadingGapRenderedFrames);
+        this.mediaTimeContextTimeMicroseconds = this.framesToMicroseconds(
+            currentFrame + silentFrameCount
+        );
+        return silentFrameCount;
+    }
+
+    analyzeOutput(outputChannels, startFrameIndex, endFrameIndex) {
+        if (endFrameIndex <= startFrameIndex) {
             return;
         }
-        this.analyzedFrameCount += frameCount;
+        this.analyzedFrameCount += endFrameIndex - startFrameIndex;
         for (const outputChannel of outputChannels) {
-            for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+            for (let frameIndex = startFrameIndex; frameIndex < endFrameIndex; frameIndex += 1) {
                 const sample = outputChannel[frameIndex];
                 if (!Number.isFinite(sample)) {
                     this.nonFiniteSampleCount += 1;

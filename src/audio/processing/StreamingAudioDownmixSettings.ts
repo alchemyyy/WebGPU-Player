@@ -5,6 +5,8 @@ import {
 
 export const AUDIO_DOWNMIX_SETTINGS_RAMP_DURATION_MILLISECONDS = 20;
 
+const MILLISECONDS_PER_SECOND = 1_000;
+
 export type AudioDownmixSettingsRamp = Readonly<{
     centerLevelStep: number
     frameCount: number
@@ -34,14 +36,30 @@ function hasSameSettings(
         && left.version === right.version;
 }
 
+function requireSourceSampleRate(sourceSampleRate: number): number {
+    if (!Number.isSafeInteger(sourceSampleRate) || sourceSampleRate <= 0) {
+        throw new RangeError('Audio downmix sample rate must be a positive safe integer');
+    }
+    return sourceSampleRate;
+}
+
+function getRampFrameCount(sourceSampleRate: number): number {
+    return Math.max(1, Math.ceil(
+        sourceSampleRate
+            * AUDIO_DOWNMIX_SETTINGS_RAMP_DURATION_MILLISECONDS
+            / MILLISECONDS_PER_SECOND
+    ));
+}
+
 /** Owns one decode generation's click-safe live downmix gain transition. */
 export default class StreamingAudioDownmixSettings {
     private currentSettings: AudioDownmixSettings;
+    private rampFrameCount: number;
     private remainingRampFrameCount = 0;
+    private sourceSampleRate: number;
     private targetSettings: AudioDownmixSettings;
 
     private readonly generation: number;
-    private readonly rampFrameCount: number;
 
     public constructor(
         generation: number,
@@ -51,18 +69,13 @@ export default class StreamingAudioDownmixSettings {
         if (!Number.isSafeInteger(generation) || generation <= 0) {
             throw new RangeError('Audio downmix generation must be a positive safe integer');
         }
-        if (!Number.isSafeInteger(sourceSampleRate) || sourceSampleRate <= 0) {
-            throw new RangeError('Audio downmix sample rate must be a positive safe integer');
-        }
+        requireSourceSampleRate(sourceSampleRate);
         assertValidAudioDownmixSettings(initialSettings);
 
         this.currentSettings = cloneSettings(initialSettings);
         this.generation = generation;
-        this.rampFrameCount = Math.max(1, Math.ceil(
-            sourceSampleRate
-                * AUDIO_DOWNMIX_SETTINGS_RAMP_DURATION_MILLISECONDS
-                / 1_000
-        ));
+        this.rampFrameCount = getRampFrameCount(sourceSampleRate);
+        this.sourceSampleRate = sourceSampleRate;
         this.targetSettings = cloneSettings(initialSettings);
     }
 
@@ -85,6 +98,25 @@ export default class StreamingAudioDownmixSettings {
         }
         this.remainingRampFrameCount = this.rampFrameCount;
         return true;
+    }
+
+    /**
+     * Follows the decoded source rate, which is authoritative over the declared
+     * one, so ramps keep their 20 ms duration. A ramp in progress keeps its
+     * remaining duration.
+     */
+    public setSampleRate(sourceSampleRate: number): void {
+        requireSourceSampleRate(sourceSampleRate);
+        if (sourceSampleRate === this.sourceSampleRate) {
+            return;
+        }
+        if (this.remainingRampFrameCount > 0) {
+            this.remainingRampFrameCount = Math.max(1, Math.round(
+                this.remainingRampFrameCount * sourceSampleRate / this.sourceSampleRate
+            ));
+        }
+        this.rampFrameCount = getRampFrameCount(sourceSampleRate);
+        this.sourceSampleRate = sourceSampleRate;
     }
 
     /** Returns and consumes the gain transition for one contiguous PCM block. */

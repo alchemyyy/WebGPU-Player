@@ -7,6 +7,7 @@ import {
     getDolbyVisionProfile8HLGBaseColorMetadata,
     getPresentationInputColorMetadata,
     getPresentationVideoTrackOrdinal,
+    hasExplicitBT2020HDRColorDescription,
     isDolbyVisionDualLayerProfile,
     type DolbyVisionPresentationDescriptor,
     type DolbyVisionReconstructionProfile
@@ -39,7 +40,8 @@ import {
 } from './CustomPlaybackRuntime';
 import {
     isCustomMediabunnyPCMAudioCodec,
-    isSupportedCustomAudioInputLayout
+    isSupportedCustomAudioInputLayout,
+    isSupportedCustomAudioInputMetadataLayout
 } from '../audio/CustomAudioOutputPolicy';
 import {
     isCustomPlaybackContainer,
@@ -181,7 +183,8 @@ type PlaybackSelectionOptions = {
 
 type ParsedPlaybackSource = {
     containerTokens: string[]
-    durationMicroseconds: Microseconds
+    /** Null when the server never probed a runtime; the decoded stream still defines its own end */
+    durationMicroseconds: Microseconds | null
     mediaSource: MediaSource
     parsed: true
     startTimeMicroseconds: Microseconds
@@ -261,7 +264,6 @@ export type CustomPlaybackIneligibilityReason =
     | 'audio-track-invalid'
     | 'codec-unsupported'
     | 'container-unsupported'
-    | 'duration-unavailable'
     | 'hdr-codec-unsupported'
     | 'hdr-presentation-unavailable'
     | 'invalid-options'
@@ -297,7 +299,8 @@ export type EligibleCustomPlayback = {
     audioSourceChannelCount: number | null
     /** Zero-based ordinal within container audio tracks, not MediaStream.Index. */
     audioTrackIndex: number | null
-    durationMicroseconds: Microseconds
+    /** Null when the server has no runtime for the source */
+    durationMicroseconds: Microseconds | null
     dolbyVisionProfile: DolbyVisionReconstructionProfile | null
     eligible: true
     hdr: boolean
@@ -499,9 +502,6 @@ function hasQualifiedDecodedPCMInputLayout(
     if (!isSupportedCustomAudioInputLayout(codec, stream.Channels, stream.SampleRate)) {
         return false;
     }
-    if (isCustomMediabunnyPCMAudioCodec(codec)) {
-        return true;
-    }
     if (codec === 'eac3') {
         return isSupportedEAC3InputRoute(
             stream.Channels,
@@ -514,7 +514,12 @@ function hasQualifiedDecodedPCMInputLayout(
         if (capabilities.bundledDTS?.status !== 'supported') {
             return false;
         }
-        return isSupportedDTSInputRoute(stream.Channels, stream.SampleRate, profile);
+        return isSupportedDTSInputRoute(
+            stream.Channels,
+            stream.SampleRate,
+            profile,
+            stream.ChannelLayout
+        );
     }
     if (codec === 'mlp' || codec === 'truehd') {
         const exactCapability = capabilities.bundledTrueHD;
@@ -529,6 +534,18 @@ function hasQualifiedDecodedPCMInputLayout(
                 stream.SampleRate,
                 stream.ChannelLayout
             );
+    }
+    // These decoders report no speaker mask, so three channels need Jellyfin's 3.0 layout
+    if (!isSupportedCustomAudioInputMetadataLayout(
+        codec,
+        stream.Channels,
+        stream.SampleRate,
+        stream.ChannelLayout
+    )) {
+        return false;
+    }
+    if (isCustomMediabunnyPCMAudioCodec(codec)) {
+        return true;
     }
     if (stream.Channels !== 6) {
         return true;
@@ -555,10 +572,12 @@ function selectAudioOutput(
     codec: CustomAudioCodec,
     stream: MediaStream,
     capabilities: CustomDecodeCapabilities,
-    nativeMediaAudioCapabilities: NativeMediaAudioCapabilities | null | undefined
+    nativeMediaAudioCapabilities: NativeMediaAudioCapabilities | null | undefined,
+    durationKnown: boolean
 ): AudioOutputSelection {
     const nativeCodec = getNativeMediaAudioCodec(codec);
-    if (nativeCodec && nativeMediaAudioCapabilities) {
+    // The native media backend sizes its MediaSource from the duration
+    if (nativeCodec && nativeMediaAudioCapabilities && durationKnown) {
         const nativeRoute = getSupportedNativeMediaAudioRoute(
             nativeMediaAudioCapabilities,
             nativeCodec,
@@ -877,33 +896,9 @@ function supportsNativeMain10HEVC(
         && isPositiveSafeInteger(stream.Height);
 }
 
-type NativeHDRColorDescriptionStream = MediaStream & {
-    ColorPrimaries?: unknown
-    ColorSpace?: unknown
-    ColorTransfer?: unknown
-};
-
+/** The native HDR route rewrites the bitstream as BT.2020, so it needs a named BT.2020 HDR description */
 function hasExplicitNativeHDRChromaticity(stream: MediaStream): boolean {
-    const colorDescription = stream as NativeHDRColorDescriptionStream;
-    if (
-        typeof colorDescription.ColorTransfer !== 'string'
-        || colorDescription.ColorTransfer.trim().length === 0
-    ) {
-        return false;
-    }
-    if (
-        typeof colorDescription.ColorPrimaries !== 'string'
-        || colorDescription.ColorPrimaries.trim().length === 0
-    ) {
-        return false;
-    }
-    if (
-        typeof colorDescription.ColorSpace !== 'string'
-        || colorDescription.ColorSpace.trim().length === 0
-    ) {
-        return false;
-    }
-    return true;
+    return hasExplicitBT2020HDRColorDescription(stream);
 }
 
 function getAuthorizedDolbyVisionNativeBaseMetadata(
@@ -1424,14 +1419,15 @@ function parsePlaybackSource(
         return { eligible: false, parsed: false, reason: 'container-unsupported' };
     }
 
-    const durationMicroseconds = ticksToMicroseconds(mediaSource.RunTimeTicks, null);
+    const reportedDurationMicroseconds = ticksToMicroseconds(mediaSource.RunTimeTicks, null);
+    // A missing or zero runtime only means the server never probed one; playback ends when the streams do
+    const durationMicroseconds = reportedDurationMicroseconds !== null && reportedDurationMicroseconds > 0 ?
+        reportedDurationMicroseconds :
+        null;
     const startTimeMicroseconds = ticksToMicroseconds(
         playbackOptions.playerStartPositionTicks,
         0
     );
-    if (durationMicroseconds === null || durationMicroseconds <= 0) {
-        return { eligible: false, parsed: false, reason: 'duration-unavailable' };
-    }
     if (startTimeMicroseconds === null) {
         return { eligible: false, parsed: false, reason: 'invalid-options' };
     }
@@ -1488,7 +1484,8 @@ function selectPlaybackAudio(
     mediaSource: MediaSource,
     streams: readonly MediaStream[],
     capabilities: CustomDecodeCapabilities,
-    nativeMediaAudioCapabilities: NativeMediaAudioCapabilities | null | undefined
+    nativeMediaAudioCapabilities: NativeMediaAudioCapabilities | null | undefined,
+    durationKnown: boolean
 ): PlaybackAudioSelection {
     const selectedAudio = getSelectedAudioStream(mediaSource, streams);
     if (selectedAudio.status === 'invalid') {
@@ -1514,7 +1511,8 @@ function selectPlaybackAudio(
         audioCodec,
         selectedAudio.stream,
         capabilities,
-        nativeMediaAudioCapabilities
+        nativeMediaAudioCapabilities,
+        durationKnown
     );
     if (audioOutput.status === 'invalid') {
         return audioOutput;
@@ -1897,7 +1895,8 @@ export function getCustomPlaybackEligibility(
         parsedSource.mediaSource,
         parsedSource.streams,
         capabilities,
-        eligibilityOptions.nativeMediaAudioCapabilities
+        eligibilityOptions.nativeMediaAudioCapabilities,
+        parsedSource.durationMicroseconds !== null
     );
     if (audioSelection.status === 'invalid') {
         return { eligible: false, reason: audioSelection.reason };

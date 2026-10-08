@@ -91,6 +91,14 @@ const OVERSIZED_MAIN10_SPS = createBytesFromHex(
 const OVERSIZED_DPB_MAIN10_SPS = createBytesFromHex(
     '4201010200000000800000000000b4a001e020021c4d967ff089a848804800'
 );
+// MAIN10_SPS with its VUI color description replaced by BT.2020 primaries and matrix with the BT.2020 10-bit transfer
+const MAIN10_BT2020_10_SPS = createBytesFromHex(
+    '4201010220000003009000000300000300ffa005020169365959a4932bc05a848704820000030002000003000210'
+);
+// MAIN10_SPS with SMPTE 170M primaries, transfer, and matrix
+const MAIN10_SMPTE170M_SPS = createBytesFromHex(
+    '4201010220000003009000000300000300ffa005020169365959a4932bc05a830303020000030002000003000210'
+);
 
 function createHVCCDescription(
     profileIDC = 2,
@@ -211,31 +219,43 @@ function configureDecoder(
     decoder: HEVCSoftwareVideoDecoder | MediabunnyHEVCSoftwareVideoDecoder,
     options: {
         bitDepth?: 8 | 10
+        /** Replaces the configured container color */
+        colorSpace?: Record<string, unknown>
         onError?: (error: unknown) => undefined
         onSample?: (sample: VideoSample) => unknown
+        /** Replaces the Main10 HVCC SPS */
+        sequenceParameterSet?: Uint8Array
     } = {}
 ): void {
     const bitDepth = options.bitDepth ?? 10;
     const mutableDecoder = decoder as unknown as MutableDecoderContract;
+    const profileIDC = bitDepth === 8 ? 1 : 2;
+    const defaultColorSpace = bitDepth === 8 ?
+        {
+            fullRange: false,
+            matrix: 'bt709',
+            primaries: 'bt709',
+            transfer: 'bt709'
+        } :
+        {
+            fullRange: false,
+            matrix: 'bt2020-ncl',
+            primaries: 'bt2020',
+            transfer: 'pq'
+        };
     mutableDecoder.codec = 'hevc';
     mutableDecoder.config = {
         codec: bitDepth === 8 ? 'hvc1.1.6.L120.B0' : 'hvc1.2.4.L120.B0',
         codedHeight: bitDepth === 8 ? 64 : 360,
         codedWidth: bitDepth === 8 ? 64 : 640,
-        colorSpace: (bitDepth === 8 ?
-            {
-                fullRange: false,
-                matrix: 'bt709',
-                primaries: 'bt709',
-                transfer: 'bt709'
-            } :
-            {
-                fullRange: false,
-                matrix: 'bt2020-ncl',
-                primaries: 'bt2020',
-                transfer: 'pq'
-            }) as unknown as VideoColorSpaceInit,
-        description: createHVCCDescription(bitDepth === 8 ? 1 : 2, bitDepth),
+        colorSpace: (options.colorSpace ?? defaultColorSpace) as unknown as VideoColorSpaceInit,
+        description: options.sequenceParameterSet ?
+            createHVCCDescription(2, 10, 4, [
+                createNALUnit(32, [ 1 ]),
+                options.sequenceParameterSet,
+                createNALUnit(34, [ 3 ])
+            ]) :
+            createHVCCDescription(profileIDC, bitDepth),
         displayAspectHeight: 9,
         displayAspectWidth: 16,
         hardwareAcceleration: 'prefer-software'
@@ -738,6 +758,98 @@ describe('HEVCSoftwareVideoDecoder', () => {
         expect(Array.from(planarSamples.subarray(230_400, 230_402))).toEqual([ 5, 6 ]);
         expect(Array.from(planarSamples.subarray(288_000, 288_002))).toEqual([ 7, 8 ]);
         sample.close();
+        decoder.close();
+    });
+
+    it('keeps a container HLG transfer over an SPS that signals the BT.2020 10-bit transfer', async () => {
+        const backend = new FakeHEVCDecoderBackend({
+            drainBatches: [ [ createFrame(10) ] ]
+        });
+        const dependencyHarness = createDependencies(backend);
+        const samples: VideoSample[] = [];
+        const decoder = new HEVCSoftwareVideoDecoder(dependencyHarness.dependencies);
+        configureDecoder(decoder, {
+            colorSpace: {
+                fullRange: false,
+                matrix: 'bt2020-ncl',
+                primaries: 'bt2020',
+                transfer: 'hlg'
+            },
+            onSample: (sample: VideoSample): void => {
+                samples.push(sample);
+            },
+            sequenceParameterSet: MAIN10_BT2020_10_SPS
+        });
+        const configuration = (decoder as unknown as MutableDecoderContract).config;
+        await decoder.init();
+
+        decoder.decode(createEncodedPacket(0, 0.04, 0));
+
+        expect(HEVCSoftwareVideoDecoder.supports('hevc', configuration)).toBe(true);
+        expect(samples).toHaveLength(1);
+        expect(samples[0].colorSpace.toJSON()).toEqual({
+            fullRange: false,
+            matrix: 'bt2020-ncl',
+            primaries: 'bt2020',
+            transfer: 'hlg'
+        });
+        samples[0].close();
+        decoder.close();
+    });
+
+    it('treats BT.470 BG and SMPTE 170M as one BT.601 matrix and keeps the SPS names', async () => {
+        const backend = new FakeHEVCDecoderBackend({
+            drainBatches: [ [ createFrame(10) ] ]
+        });
+        const dependencyHarness = createDependencies(backend);
+        const samples: VideoSample[] = [];
+        const decoder = new HEVCSoftwareVideoDecoder(dependencyHarness.dependencies);
+        // SMPTE 170M uses the BT.709 transfer curve, so a container bt709 transfer agrees with it too
+        configureDecoder(decoder, {
+            colorSpace: {
+                fullRange: false,
+                matrix: 'bt470bg',
+                primaries: 'smpte170m',
+                transfer: 'bt709'
+            },
+            onSample: (sample: VideoSample): void => {
+                samples.push(sample);
+            },
+            sequenceParameterSet: MAIN10_SMPTE170M_SPS
+        });
+        const configuration = (decoder as unknown as MutableDecoderContract).config;
+        await decoder.init();
+
+        decoder.decode(createEncodedPacket(0, 0.04, 0));
+
+        expect(HEVCSoftwareVideoDecoder.supports('hevc', configuration)).toBe(true);
+        expect(samples[0].colorSpace.toJSON()).toEqual({
+            fullRange: false,
+            matrix: 'smpte170m',
+            primaries: 'smpte170m',
+            transfer: 'smpte170m'
+        });
+        samples[0].close();
+        decoder.close();
+    });
+
+    it.each([
+        { matrix: 'bt470bg', primaries: 'bt470bg', transfer: 'smpte170m' },
+        { matrix: 'bt709', primaries: 'smpte170m', transfer: 'smpte170m' },
+        { matrix: 'smpte170m', primaries: 'smpte170m', transfer: 'pq' }
+    ])('rejects a container color that contradicts a SMPTE 170M SPS: %o', containerColor => {
+        const decoder = new HEVCSoftwareVideoDecoder(
+            createDependencies(new FakeHEVCDecoderBackend()).dependencies
+        );
+        configureDecoder(decoder, {
+            colorSpace: { fullRange: false, ...containerColor },
+            sequenceParameterSet: MAIN10_SMPTE170M_SPS
+        });
+
+        expect(HEVCSoftwareVideoDecoder.supports(
+            'hevc',
+            (decoder as unknown as MutableDecoderContract).config
+        )).toBe(false);
         decoder.close();
     });
 

@@ -149,6 +149,91 @@ describe('StreamingAudioOutputPipeline', () => {
         expect(replacementOutput[0].channelData[0][0]).toBe(0.5);
     });
 
+    it.each([ false, true ])(
+        'keeps output contiguous across a 24 kHz to 48 kHz source change with limiter %s',
+        peakLimiterEnabled => {
+            const pipeline = createPipeline(peakLimiterEnabled, 24_000);
+            const halfRateInput = new Float32Array(2_400).fill(0.25);
+            const fullRateInput = new Float32Array(4_800).fill(0.25);
+            const outputs = pipeline.push({
+                channelData: [ halfRateInput, halfRateInput ],
+                mediaTimeMicroseconds: requireMicroseconds(1_000_000)
+            });
+            outputs.push(...pipeline.changeSourceSampleRate(48_000));
+            outputs.push(...pipeline.push({
+                channelData: [ fullRateInput, fullRateInput ],
+                mediaTimeMicroseconds: requireMicroseconds(1_100_000)
+            }));
+            outputs.push(...pipeline.finalize());
+
+            expect(getOutputFrameCount(outputs)).toBe(9_600);
+            expect(outputs[0].mediaTimeMicroseconds).toBe(1_000_000);
+            for (let outputIndex = 1; outputIndex < outputs.length; outputIndex += 1) {
+                const previousOutput = outputs[outputIndex - 1];
+                expect(Math.abs(
+                    outputs[outputIndex].mediaTimeMicroseconds
+                    - (previousOutput.mediaTimeMicroseconds + previousOutput.durationMicroseconds)
+                )).toBeLessThanOrEqual(1);
+            }
+            expect(pipeline.getTelemetry()).toMatchObject({
+                peakLimiterEnabled,
+                resampler: {
+                    absorbedInputCount: 0,
+                    filledInputCount: 0,
+                    finalized: true,
+                    sourceFrameCount: 4_800
+                },
+                sourceSampleRateChangeCount: 1
+            });
+        }
+    );
+
+    it('ignores a source change to the bound rate', () => {
+        const pipeline = createPipeline(false);
+        pipeline.push({
+            channelData: [ new Float32Array(480), new Float32Array(480) ],
+            mediaTimeMicroseconds: requireMicroseconds(0)
+        });
+
+        expect(pipeline.changeSourceSampleRate(SAMPLE_RATE)).toEqual([]);
+        expect(pipeline.getTelemetry().sourceSampleRateChangeCount).toBe(0);
+        expect(() => pipeline.changeSourceSampleRate(2_999)).toThrow(
+            'Source sample rate must be between 3000 and 192000 Hz'
+        );
+    });
+
+    it('routes later output through a lazily enabled limiter anchored at its first input', () => {
+        const pipeline = createPipeline(false);
+        const safe = new Float32Array(4_800).fill(0.25);
+        const outputs = pipeline.push({
+            channelData: [ safe, safe ],
+            mediaTimeMicroseconds: requireMicroseconds(0)
+        });
+        expect(pipeline.getTelemetry().peakLimiterEnabled).toBe(false);
+
+        pipeline.enablePeakLimiter();
+        pipeline.enablePeakLimiter();
+        const overloaded = new Float32Array(9_600).fill(2);
+        outputs.push(...pipeline.push({
+            channelData: [ overloaded, overloaded ],
+            mediaTimeMicroseconds: requireMicroseconds(100_000)
+        }));
+        outputs.push(...pipeline.finalize());
+
+        expect(pipeline.getTelemetry().peakLimiterEnabled).toBe(true);
+        expect(getOutputFrameCount(outputs)).toBe(14_400);
+        expect(outputs[0].channelData[0][0]).toBe(0.25);
+        expect(getMaximumPeak(outputs.slice(1)))
+            .toBeLessThanOrEqual(CUSTOM_AUDIO_LIMITER_CEILING_GAIN + 1e-6);
+        for (let outputIndex = 1; outputIndex < outputs.length; outputIndex += 1) {
+            const previousOutput = outputs[outputIndex - 1];
+            expect(Math.abs(
+                outputs[outputIndex].mediaTimeMicroseconds
+                - (previousOutput.mediaTimeMicroseconds + previousOutput.durationMicroseconds)
+            )).toBeLessThanOrEqual(1);
+        }
+    });
+
     it('keeps the limiter active before a later live gain boost', () => {
         const pipeline = createPipeline(true);
         const safe = new Float32Array(6_000);

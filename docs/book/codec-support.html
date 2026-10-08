@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ca695dd2.js";
+            window.path_to_searchindex_js = "searchindex-c8b0fdbf.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -221,6 +221,14 @@ renegotiation.</p>
 </tbody>
 </table>
 </div>
+<p>The SDR rows cover every transfer the engine reads as SDR: BT.709, SMPTE 170M,
+sRGB, and the BT.2020 10 and 12-bit transfers, which use the BT.709 curve. They
+take BT.709, BT.601 (SMPTE 170M, SMPTE 240M, or BT.470 BG), or BT.2020 primaries
+and matrix. The VF-SDR routes leave the color conversion to Chrome, while the
+raw SDR keys stay BT.709 only.</p>
+<p>The HLG row includes HLG-compatible streams, whose VUI signals the BT.2020
+10-bit transfer and whose alternative transfer characteristics SEI names HLG
+(see <a href="#evidence">Other conditions</a>).</p>
 <h2 id="range-extensions"><a class="header" href="#range-extensions">Range extensions</a></h2>
 <div class="table-wrapper">
 <table>
@@ -377,6 +385,17 @@ on an unsettled probe.</p>
 <ul>
 <li>Native VideoFrame HDR and the DV base routes also need explicit
 ColorTransfer, ColorPrimaries, and ColorSpace values.</li>
+<li>The SPS parser never rejects a VUI color description. It maps each code to a
+WebCodecs name or to unspecified (null), and an SPS without VUI has
+unspecified color. Only the native HDR route check is strict: limited range,
+BT.2020 primaries, the BT.2020 non-constant-luminance matrix, and the route’s
+transfer.</li>
+<li>The transfer that check reads is the key access unit’s alternative transfer
+characteristics SEI value (payload type 147) when one is present, and the
+VUI transfer otherwise. Without the SEI, VF-HLG and DV base HLG also accept
+the BT.2020 10 and 12-bit VUI transfers (14 and 15) of HLG-compatible
+streams. An SEI naming another transfer rejects the HLG route, and a
+malformed SEI counts as absent, as in FFmpeg.</li>
 <li>The DV base ranges are negotiated per item. Without an exact item match,
 those ranges are advertised only through RAW-DV.</li>
 <li>P20 is MV-HEVC. NAL units with a <code>nuh_layer_id</code> above 0, the second view, are

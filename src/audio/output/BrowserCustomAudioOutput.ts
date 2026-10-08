@@ -25,7 +25,10 @@ import {
     type SharedBrowserAudioWorkletLease
 } from './BrowserAudioWorkletPool';
 import { waitForBrowserAudioOperation } from './BrowserAudioOperation';
-import { assertSupportedCustomAudioOutputLayout } from '../CustomAudioOutputPolicy';
+import {
+    assertSupportedCustomAudioOutputLayout,
+    CUSTOM_AUDIO_OUTPUT_BUFFERED_SECONDS
+} from '../CustomAudioOutputPolicy';
 import CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import type {
     CustomAudioOutput,
@@ -36,7 +39,7 @@ import type { DecodeWorkerAudioConfiguration } from '../../pipeline/DecodeWorker
 import { configureCustomAudioDestination } from '../NativeMultichannelAudioOutput';
 import { requireMicroseconds } from '../../TimeMath';
 
-const MAX_BUFFERED_AUDIO_SECONDS = 2;
+const MAX_BUFFERED_AUDIO_SECONDS = CUSTOM_AUDIO_OUTPUT_BUFFERED_SECONDS;
 const MAX_OUTPUT_TIMESTAMP_CORRECTION_MICROSECONDS = secondsToMicroseconds(
     MAX_BUFFERED_AUDIO_SECONDS
 );

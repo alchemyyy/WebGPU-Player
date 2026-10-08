@@ -277,6 +277,9 @@ export type CustomPlaybackControllerOptions = {
     maximumVideoDecodeLagMicroseconds?: Microseconds
     pipelineStopTimeoutMicroseconds?: Microseconds
     playbackStallTimeoutMicroseconds?: Microseconds
+    /** Longest startup overall, even while it progresses; never shorter than startupTimeoutMicroseconds */
+    startupCeilingMicroseconds?: Microseconds
+    /** Longest startup period without progress */
     startupTimeoutMicroseconds?: Microseconds
     timeUpdateIntervalMicroseconds?: Microseconds
     videoDecodeSessionFactory?: CustomVideoDecodeSessionFactory

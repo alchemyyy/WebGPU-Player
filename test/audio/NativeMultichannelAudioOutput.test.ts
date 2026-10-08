@@ -25,9 +25,10 @@ describe('native multichannel audio output', () => {
         { expected: 2, maximum: 2, source: 6 },
         { expected: 6, maximum: 6, source: 6 },
         { expected: 6, maximum: 8, source: 6 },
-        { expected: 2, maximum: 6, source: 8 },
+        { expected: 6, maximum: 6, source: 3 },
+        { expected: 6, maximum: 6, source: 8 },
         { expected: 8, maximum: 8, source: 8 },
-        { expected: 2, maximum: 8, source: 7 },
+        { expected: 8, maximum: 8, source: 7 },
         { expected: 2, maximum: 8, source: 2 }
     ])('selects $expected channels for source $source with hardware max $maximum', ({
         expected,
@@ -60,17 +61,35 @@ describe('native multichannel audio output', () => {
     });
 
     it.each([
+        // An unknown sink mixes every source to stereo
+        { expected: 2, maximum: null, source: 3 },
         { expected: 2, maximum: null, source: 6 },
+        { expected: 2, maximum: null, source: 7 },
         { expected: 2, maximum: null, source: 8 },
+        // Three-channel and 5.1 sources use a 5.1 sink
+        { expected: 2, maximum: 2, source: 3 },
+        { expected: 2, maximum: 5, source: 3 },
+        { expected: 6, maximum: 6, source: 3 },
+        { expected: 6, maximum: 8, source: 3 },
         { expected: 2, maximum: 5, source: 6 },
         { expected: 6, maximum: 6, source: 6 },
         { expected: 6, maximum: 8, source: 6 },
-        { expected: 2, maximum: 7, source: 8 },
+        // 6.1 and 7.1 sources use a 7.1 sink or fold into a 5.1 one
+        { expected: 2, maximum: 5, source: 7 },
+        { expected: 6, maximum: 6, source: 7 },
+        { expected: 6, maximum: 7, source: 7 },
+        { expected: 8, maximum: 8, source: 7 },
+        { expected: 2, maximum: 2, source: 8 },
+        { expected: 2, maximum: 5, source: 8 },
+        { expected: 6, maximum: 6, source: 8 },
+        { expected: 6, maximum: 7, source: 8 },
         { expected: 8, maximum: 8, source: 8 },
         { expected: 8, maximum: 32, source: 8 },
-        { expected: 2, maximum: 8, source: 7 },
-        { expected: 2, maximum: 8, source: 2 },
+        // Every other source mixes to stereo
         { expected: 2, maximum: 8, source: 1 },
+        { expected: 2, maximum: 8, source: 2 },
+        { expected: 2, maximum: 8, source: 4 },
+        { expected: 2, maximum: 8, source: 5 },
         { expected: 2, maximum: 8, source: null }
     ])('selects $expected channels for source $source with a reported sink maximum of $maximum', ({
         expected,
@@ -82,7 +101,7 @@ describe('native multichannel audio output', () => {
 
     it('selects the same layout from an AudioContext as from its reported maximum', () => {
         const maximumChannelCounts = [ 1, 2, 5, 6, 7, 8, 32 ];
-        const sourceChannelCounts = [ null, 1, 2, 6, 7, 8 ];
+        const sourceChannelCounts = [ null, 1, 2, 3, 6, 7, 8 ];
         for (const maximumChannelCount of maximumChannelCounts) {
             for (const sourceChannelCount of sourceChannelCounts) {
                 expect(selectCustomAudioOutputChannelCount(

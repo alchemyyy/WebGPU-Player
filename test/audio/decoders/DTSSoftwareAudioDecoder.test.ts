@@ -12,8 +12,12 @@ import DTSSoftwareAudioDecoder, {
 } from 'webgpu-player/audio/decoders/DTSSoftwareAudioDecoder';
 import {
     CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_SIDE,
+    CUSTOM_WAVE_CHANNEL_MASK_MONO,
     CUSTOM_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE,
-    CUSTOM_WAVE_CHANNEL_MASK_STEREO
+    CUSTOM_WAVE_CHANNEL_MASK_STEREO,
+    CUSTOM_WAVE_CHANNEL_MASK_THREE_POINT_ZERO,
+    CUSTOM_WAVE_CHANNEL_MASK_THREE_POINT_ZERO_BACK,
+    CUSTOM_WAVE_CHANNEL_MASK_TWO_POINT_ONE
 } from 'webgpu-player/audio/processing/CustomWaveChannelLayout';
 import type { LibDCADECModule } from '#wasm/libdcadec-dts/libdcadec-dts.mjs';
 
@@ -253,6 +257,31 @@ describe('DTSSoftwareAudioDecoder', () => {
         expect(output.profile).toBe(DTS_PROFILE_HD_HIGH_RESOLUTION);
         decoder.close();
     });
+
+    it.each([
+        [ CUSTOM_WAVE_CHANNEL_MASK_MONO, 'mono', 1 ],
+        [ CUSTOM_WAVE_CHANNEL_MASK_TWO_POINT_ONE, '2.1', 3 ],
+        [ CUSTOM_WAVE_CHANNEL_MASK_THREE_POINT_ZERO, '3.0', 3 ],
+        // DTS-HD MA 2/1 decodes to FL, FR, and back center
+        [ CUSTOM_WAVE_CHANNEL_MASK_THREE_POINT_ZERO_BACK, '3.0-back', 3 ]
+    ] as const)(
+        'accepts decoded speaker mask %i as the %s layout',
+        async (channelMask, layoutID, channelCount) => {
+            const fakeDecoder = createFakeDTSDecoder({
+                jellyfin_dts_get_channel_mask: () => channelMask
+            });
+            const decoder = await DTSSoftwareAudioDecoder.create(fakeDecoder.moduleFactory);
+
+            const output = decoder.decode(
+                new Uint8Array([ 1 ]),
+                millisecondsToMicroseconds(0)
+            );
+
+            expect(output.channelLayout.id).toBe(layoutID);
+            expect(output.channelData).toHaveLength(channelCount);
+            decoder.close();
+        }
+    );
 
     it.each([
         [ DTS_PROFILE_HD_HIGH_RESOLUTION, CUSTOM_WAVE_CHANNEL_MASK_STEREO ],

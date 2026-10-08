@@ -10,6 +10,13 @@ import {
     createSDRColorMetadata,
     type InputColorMetadata
 } from './ColorMetadata';
+import {
+    getGamutToBT709Matrix,
+    getLuminanceCoefficients,
+    getRGBToIPTLMSMatrix,
+    type ColorMatrix,
+    type ColorTriplet
+} from './ColorPipeline';
 import { createDolbyVisionColorTransformWGSL } from './DolbyVisionColorTransform';
 
 function toWGSLFloat(value: number): string {
@@ -18,6 +25,18 @@ function toWGSLFloat(value: number): string {
     }
 
     return value.toFixed(9);
+}
+
+/** Formats a 3x3 matrix times a vec3f expression as three WGSL dot products, one per matrix row. */
+function createColorMatrixProductWGSL(matrix: ColorMatrix, vectorExpression: string): string {
+    const rowProducts = matrix.map((row: ColorTriplet): string => `        dot(${vectorExpression}, vec3f(
+            ${toWGSLFloat(row[0])},
+            ${toWGSLFloat(row[1])},
+            ${toWGSLFloat(row[2])}
+        ))`);
+    return `vec3f(
+${rowProducts.join(',\n')}
+    )`;
 }
 
 function createTransferDecodeWGSL(metadata: InputColorMetadata): string {
@@ -56,9 +75,7 @@ fn decodeInputTransfer(encodedRGB: vec3f) -> vec3f {
     );
 }`;
         case 'hlg': {
-            const redCoefficient = metadata.primaries === 'bt709' ? 0.2126 : 0.2627;
-            const greenCoefficient = metadata.primaries === 'bt709' ? 0.7152 : 0.6780;
-            const blueCoefficient = metadata.primaries === 'bt709' ? 0.0722 : 0.0593;
+            const luminanceCoefficients = getLuminanceCoefficients(metadata.primaries);
             const systemGamma = 1.2
                 + (0.42 * Math.log10(metadata.nominalPeakNits / 1_000));
             return `
@@ -82,9 +99,9 @@ fn decodeInputTransfer(encodedRGB: vec3f) -> vec3f {
     let sceneLuminance = max(dot(
         sceneRGB,
         vec3f(
-            ${toWGSLFloat(redCoefficient)},
-            ${toWGSLFloat(greenCoefficient)},
-            ${toWGSLFloat(blueCoefficient)}
+            ${toWGSLFloat(luminanceCoefficients.red)},
+            ${toWGSLFloat(luminanceCoefficients.green)},
+            ${toWGSLFloat(luminanceCoefficients.blue)}
         )
     ), 0.0);
     if (sceneLuminance == 0.0) {
@@ -99,7 +116,8 @@ fn decodeInputTransfer(encodedRGB: vec3f) -> vec3f {
 }
 
 function createGamutConversionWGSL(metadata: InputColorMetadata): string {
-    if (metadata.primaries === 'bt709') {
+    const toBT709Matrix = getGamutToBT709Matrix(metadata.primaries);
+    if (!toBT709Matrix) {
         return `
 fn convertToBT709(linearRGB: vec3f) -> vec3f {
     return linearRGB;
@@ -108,44 +126,14 @@ fn convertToBT709(linearRGB: vec3f) -> vec3f {
 
     return `
 fn convertToBT709(linearRGB: vec3f) -> vec3f {
-    return vec3f(
-        1.660491 * linearRGB.r - 0.587641 * linearRGB.g - 0.072850 * linearRGB.b,
-        -0.124550 * linearRGB.r + 1.132900 * linearRGB.g - 0.008349 * linearRGB.b,
-        -0.018151 * linearRGB.r - 0.100579 * linearRGB.g + 1.118730 * linearRGB.b
-    );
+    return ${createColorMatrixProductWGSL(toBT709Matrix, 'linearRGB')};
 }`;
 }
 
 function createIPTSourceConversionWGSL(metadata: InputColorMetadata): string {
-    const sourceRows = metadata.primaries === 'bt2020' ? [
-        [ 0.412036386719, 0.523911912035, 0.064054981611 ],
-        [ 0.166660218723, 0.720395213485, 0.112946122929 ],
-        [ 0.024112358560, 0.075474962757, 0.900407937406 ]
-    ] : [
-        [ 0.295764080594, 0.623072450736, 0.081166749035 ],
-        [ 0.156191976513, 0.727251644307, 0.116557934317 ],
-        [ 0.035102284710, 0.156589948771, 0.808303025242 ]
-    ];
-
     return `
 fn convertSourceRGBToIPTLMS(linearRGBNits: vec3f) -> vec3f {
-    return vec3f(
-        dot(linearRGBNits, vec3f(
-            ${toWGSLFloat(sourceRows[0][0])},
-            ${toWGSLFloat(sourceRows[0][1])},
-            ${toWGSLFloat(sourceRows[0][2])}
-        )),
-        dot(linearRGBNits, vec3f(
-            ${toWGSLFloat(sourceRows[1][0])},
-            ${toWGSLFloat(sourceRows[1][1])},
-            ${toWGSLFloat(sourceRows[1][2])}
-        )),
-        dot(linearRGBNits, vec3f(
-            ${toWGSLFloat(sourceRows[2][0])},
-            ${toWGSLFloat(sourceRows[2][1])},
-            ${toWGSLFloat(sourceRows[2][2])}
-        ))
-    );
+    return ${createColorMatrixProductWGSL(getRGBToIPTLMSMatrix(metadata.primaries), 'linearRGBNits')};
 }`;
 }
 
@@ -771,6 +759,17 @@ fn convertRawYUVToEncodedRGB(normalizedYUV: vec3f) -> vec3f {
         normalizedYUV.x + 1.4746 * normalizedYUV.z,
         normalizedYUV.x - 0.164553 * normalizedYUV.y - 0.571353 * normalizedYUV.z,
         normalizedYUV.x + 1.8814 * normalizedYUV.y
+    );
+}`;
+        // BT.601 uses Kr 0.299 and Kb 0.114 for both its 525 and 625-line systems
+        case 'bt470bg':
+        case 'smpte170m':
+            return `
+fn convertRawYUVToEncodedRGB(normalizedYUV: vec3f) -> vec3f {
+    return vec3f(
+        normalizedYUV.x + 1.402 * normalizedYUV.z,
+        normalizedYUV.x - 0.344136 * normalizedYUV.y - 0.714136 * normalizedYUV.z,
+        normalizedYUV.x + 1.772 * normalizedYUV.y
     );
 }`;
     }

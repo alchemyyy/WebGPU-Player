@@ -41,6 +41,16 @@ renegotiation.
 | HLG, Main 10, 10-bit | Yes | Yes | VF-HLG, then RAW I420P10 HLG | VF: `nativeHDRHEVC` and `ext-hlg`. RAW: `rawHDRVideo.hevc` and `I420P10:bt2020-ncl:bt2020:limited:hlg` |
 | Unknown range | No | No | None | None |
 
+The SDR rows cover every transfer the engine reads as SDR: BT.709, SMPTE 170M,
+sRGB, and the BT.2020 10 and 12-bit transfers, which use the BT.709 curve. They
+take BT.709, BT.601 (SMPTE 170M, SMPTE 240M, or BT.470 BG), or BT.2020 primaries
+and matrix. The VF-SDR routes leave the color conversion to Chrome, while the
+raw SDR keys stay BT.709 only.
+
+The HLG row includes HLG-compatible streams, whose VUI signals the BT.2020
+10-bit transfer and whose alternative transfer characteristics SEI names HLG
+(see [Other conditions](#evidence)).
+
 ## Range extensions
 
 | Variant | Negotiated | Eligible | Route | Evidence |
@@ -167,6 +177,17 @@ Other conditions:
 
 - Native VideoFrame HDR and the DV base routes also need explicit
   ColorTransfer, ColorPrimaries, and ColorSpace values.
+- The SPS parser never rejects a VUI color description. It maps each code to a
+  WebCodecs name or to unspecified (null), and an SPS without VUI has
+  unspecified color. Only the native HDR route check is strict: limited range,
+  BT.2020 primaries, the BT.2020 non-constant-luminance matrix, and the route's
+  transfer.
+- The transfer that check reads is the key access unit's alternative transfer
+  characteristics SEI value (payload type 147) when one is present, and the
+  VUI transfer otherwise. Without the SEI, VF-HLG and DV base HLG also accept
+  the BT.2020 10 and 12-bit VUI transfers (14 and 15) of HLG-compatible
+  streams. An SEI naming another transfer rejects the HLG route, and a
+  malformed SEI counts as absent, as in FFmpeg.
 - The DV base ranges are negotiated per item. Without an exact item match,
   those ranges are advertised only through RAW-DV.
 - P20 is MV-HEVC. NAL units with a `nuh_layer_id` above 0, the second view, are

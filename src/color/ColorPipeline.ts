@@ -40,8 +40,63 @@ const SPLINE_SLOPE_OFFSET = 0.2;
 const SPLINE_SLOPE_TUNING = 1.5;
 const SPLINE_CONTRAST = 0.5;
 
-type ColorMatrix = readonly [ColorTriplet, ColorTriplet, ColorTriplet];
+export type ColorMatrix = readonly [ColorTriplet, ColorTriplet, ColorTriplet];
 type LegacyToneMapOperator = Exclude<ToneMappingSettings['operator'], 'spline'>;
+
+/** Red, green, and blue weights of a luminance or luma sum. */
+export type RGBCoefficients = Readonly<{
+    blue: number
+    green: number
+    red: number
+}>;
+
+// Relative luminance, the Y row of RGB to XYZ, of each primaries set from its H.273 chromaticities under D65
+const BT709_LUMINANCE_COEFFICIENTS: RGBCoefficients = { blue: 0.0722, green: 0.7152, red: 0.2126 };
+const BT2020_LUMINANCE_COEFFICIENTS: RGBCoefficients = { blue: 0.0593, green: 0.6780, red: 0.2627 };
+const SMPTE170M_LUMINANCE_COEFFICIENTS: RGBCoefficients = {
+    blue: 0.086564,
+    green: 0.701060,
+    red: 0.212376
+};
+const BT470BG_LUMINANCE_COEFFICIENTS: RGBCoefficients = {
+    blue: 0.071341,
+    green: 0.706655,
+    red: 0.222004
+};
+// BT.601 fixes Kr and Kb for both its 525 and 625-line primaries, so its matrix is not their luminance
+const BT601_MATRIX_COEFFICIENTS: RGBCoefficients = { blue: 0.114, green: 0.587, red: 0.299 };
+
+// Linear-light conversions between each primaries set and BT.709, from the H.273 chromaticities under D65
+const BT2020_TO_BT709_GAMUT: ColorMatrix = [
+    [ 1.660491, -0.587641, -0.072850 ],
+    [ -0.124550, 1.132900, -0.008349 ],
+    [ -0.018151, -0.100579, 1.118730 ]
+];
+const SMPTE170M_TO_BT709_GAMUT: ColorMatrix = [
+    [ 0.939542, 0.050181, 0.010277 ],
+    [ 0.017772, 0.965793, 0.016435 ],
+    [ -0.001622, -0.004370, 1.005991 ]
+];
+const BT470BG_TO_BT709_GAMUT: ColorMatrix = [
+    [ 1.044043, -0.044043, 0 ],
+    [ 0, 1, 0 ],
+    [ 0, 0.011793, 0.988207 ]
+];
+const BT709_TO_BT2020_GAMUT: ColorMatrix = [
+    [ 0.627404, 0.329283, 0.043313 ],
+    [ 0.069097, 0.919540, 0.011362 ],
+    [ 0.016391, 0.088013, 0.895595 ]
+];
+const BT709_TO_SMPTE170M_GAMUT: ColorMatrix = [
+    [ 1.065379, -0.055401, -0.009978 ],
+    [ -0.019633, 1.036363, -0.016731 ],
+    [ 0.001632, 0.004412, 0.993956 ]
+];
+const BT709_TO_BT470BG_GAMUT: ColorMatrix = [
+    [ 0.957815, 0.042185, 0 ],
+    [ 0, 1, 0 ],
+    [ 0, -0.011934, 1.011934 ]
+];
 
 // libplacebo IPTPQc4 HPE matrices with four percent cone crosstalk
 const BT709_RGB_TO_IPT_LMS: ColorMatrix = [
@@ -54,6 +109,17 @@ const BT2020_RGB_TO_IPT_LMS: ColorMatrix = [
     [ 0.166660218723, 0.720395213485, 0.112946122929 ],
     [ 0.024112358560, 0.075474962757, 0.900407937406 ]
 ];
+// BT709_RGB_TO_IPT_LMS times the exact BT.601 to BT.709 gamut conversion
+const SMPTE170M_RGB_TO_IPT_LMS: ColorMatrix = [
+    [ 0.288824557305, 0.616246090240, 0.094932632820 ],
+    [ 0.159484800122, 0.709703043629, 0.130813711386 ],
+    [ 0.034452280391, 0.149462853268, 0.816080125064 ]
+];
+const BT470BG_RGB_TO_IPT_LMS: ColorMatrix = [
+    [ 0.308790479740, 0.611003281765, 0.080209518860 ],
+    [ 0.163071172342, 0.721747060290, 0.115183322506 ],
+    [ 0.036648301964, 0.164576554862, 0.798770401897 ]
+];
 const IPT_LMS_TO_BT709_RGB: ColorMatrix = [
     [ 6.173532657683, -5.320898820809, 0.147354885063 ],
     [ -1.324031910094, 2.560269770177, -0.236238618417 ],
@@ -63,6 +129,17 @@ const IPT_LMS_TO_BT2020_RGB: ColorMatrix = [
     [ 3.436814829107, -2.506773801082, 0.069951928006 ],
     [ -0.791058237834, 1.983601669423, -0.192544834310 ],
     [ -0.025726806109, -0.099141766410, 1.124874144431 ]
+];
+// The exact BT.709 to BT.601 gamut conversion times IPT_LMS_TO_BT709_RGB
+const IPT_LMS_TO_SMPTE170M_RGB: ColorMatrix = [
+    [ 6.650620511838, -5.807971795602, 0.157339245483 ],
+    [ -1.493185948114, 2.762264193554, -0.269078918721 ],
+    [ -0.007294884663, -0.260707262076, 1.268008588083 ]
+];
+const IPT_LMS_TO_BT470BG_RGB: ColorMatrix = [
+    [ 5.857246129788, -4.988429866809, 0.131172902735 ],
+    [ -1.324031910094, 2.560269770177, -0.236238618417 ],
+    [ 0.004064353714, -0.298637623081, 1.294579858417 ]
 ];
 const IPT_LMS_TO_IPT: ColorMatrix = [
     [ 0.4, 0.4, 0.2 ],
@@ -74,12 +151,6 @@ const IPT_TO_IPT_LMS: ColorMatrix = [
     [ 1, -0.113876, 0.133217 ],
     [ 1, 0.0326151, -0.676887 ]
 ];
-
-type LumaCoefficients = {
-    blue: number
-    green: number
-    red: number
-};
 
 function clamp(value: number, minimum: number, maximum: number): number {
     return Math.min(Math.max(value, minimum), maximum);
@@ -113,17 +184,64 @@ function smoothstep(edge0: number, edge1: number, value: number): number {
     return normalizedValue * normalizedValue * (3 - (2 * normalizedValue));
 }
 
-function getLumaCoefficients(primaries: ColorPrimaries): LumaCoefficients {
+/** Returns the relative luminance weights of linear RGB in a primaries set. */
+export function getLuminanceCoefficients(primaries: ColorPrimaries): RGBCoefficients {
     switch (primaries) {
         case 'bt2020':
-            return { blue: 0.0593, green: 0.6780, red: 0.2627 };
+            return BT2020_LUMINANCE_COEFFICIENTS;
+        case 'bt470bg':
+            return BT470BG_LUMINANCE_COEFFICIENTS;
         case 'bt709':
-            return { blue: 0.0722, green: 0.7152, red: 0.2126 };
+            return BT709_LUMINANCE_COEFFICIENTS;
+        case 'smpte170m':
+            return SMPTE170M_LUMINANCE_COEFFICIENTS;
+    }
+}
+
+/** Returns the Kr, Kg, and Kb weights of a YUV matrix; the matrix selects them, not the primaries. */
+export function getYUVMatrixCoefficients(matrix: YUVMatrix): RGBCoefficients {
+    switch (matrix) {
+        // BT.709 and BT.2020 define their matrices from their own primaries' luminance
+        case 'bt2020-ncl':
+            return BT2020_LUMINANCE_COEFFICIENTS;
+        case 'bt709':
+            return BT709_LUMINANCE_COEFFICIENTS;
+        case 'bt470bg':
+        case 'smpte170m':
+            return BT601_MATRIX_COEFFICIENTS;
+    }
+}
+
+/** Returns the linear-light conversion from a primaries set to BT.709, or null for BT.709 itself. */
+export function getGamutToBT709Matrix(primaries: ColorPrimaries): ColorMatrix | null {
+    switch (primaries) {
+        case 'bt2020':
+            return BT2020_TO_BT709_GAMUT;
+        case 'bt470bg':
+            return BT470BG_TO_BT709_GAMUT;
+        case 'bt709':
+            return null;
+        case 'smpte170m':
+            return SMPTE170M_TO_BT709_GAMUT;
+    }
+}
+
+/** Returns the linear-light conversion from BT.709 to a primaries set, or null for BT.709 itself. */
+export function getGamutFromBT709Matrix(primaries: ColorPrimaries): ColorMatrix | null {
+    switch (primaries) {
+        case 'bt2020':
+            return BT709_TO_BT2020_GAMUT;
+        case 'bt470bg':
+            return BT709_TO_BT470BG_GAMUT;
+        case 'bt709':
+            return null;
+        case 'smpte170m':
+            return BT709_TO_SMPTE170M_GAMUT;
     }
 }
 
 function calculateLuminance(linearRGB: ColorTriplet, primaries: ColorPrimaries): number {
-    const coefficients = getLumaCoefficients(primaries);
+    const coefficients = getLuminanceCoefficients(primaries);
     return (linearRGB[0] * coefficients.red)
         + (linearRGB[1] * coefficients.green)
         + (linearRGB[2] * coefficients.blue);
@@ -188,15 +306,15 @@ export function convertYUVToEncodedRGB(
     expandedYUV: ColorTriplet,
     matrix: YUVMatrix
 ): ColorTriplet {
-    const lumaCoefficients = getLumaCoefficients(matrix === 'bt709' ? 'bt709' : 'bt2020');
+    const matrixCoefficients = getYUVMatrixCoefficients(matrix);
     const luma = expandedYUV[0];
     const blueDifference = expandedYUV[1];
     const redDifference = expandedYUV[2];
-    const red = luma + (2 * (1 - lumaCoefficients.red) * redDifference);
-    const blue = luma + (2 * (1 - lumaCoefficients.blue) * blueDifference);
+    const red = luma + (2 * (1 - matrixCoefficients.red) * redDifference);
+    const blue = luma + (2 * (1 - matrixCoefficients.blue) * blueDifference);
     const green = (
-        luma - (lumaCoefficients.red * red) - (lumaCoefficients.blue * blue)
-    ) / lumaCoefficients.green;
+        luma - (matrixCoefficients.red * red) - (matrixCoefficients.blue * blue)
+    ) / matrixCoefficients.green;
     return [ red, green, blue ];
 }
 
@@ -222,12 +340,17 @@ export function applyPQOETF(luminanceNits: number): number {
     return encodedValue ** PQ_M2;
 }
 
-function getRGBToIPTLMSMatrix(primaries: ColorPrimaries): ColorMatrix {
+/** Returns the conversion from linear RGB in a primaries set to IPTPQc4 LMS. */
+export function getRGBToIPTLMSMatrix(primaries: ColorPrimaries): ColorMatrix {
     switch (primaries) {
         case 'bt2020':
             return BT2020_RGB_TO_IPT_LMS;
+        case 'bt470bg':
+            return BT470BG_RGB_TO_IPT_LMS;
         case 'bt709':
             return BT709_RGB_TO_IPT_LMS;
+        case 'smpte170m':
+            return SMPTE170M_RGB_TO_IPT_LMS;
     }
 }
 
@@ -235,8 +358,12 @@ function getIPTLMSToRGBMatrix(primaries: ColorPrimaries): ColorMatrix {
     switch (primaries) {
         case 'bt2020':
             return IPT_LMS_TO_BT2020_RGB;
+        case 'bt470bg':
+            return IPT_LMS_TO_BT470BG_RGB;
         case 'bt709':
             return IPT_LMS_TO_BT709_RGB;
+        case 'smpte170m':
+            return IPT_LMS_TO_SMPTE170M_RGB;
     }
 }
 
@@ -391,19 +518,15 @@ export function convertLinearRGBGamut(
         return [ linearRGB[0], linearRGB[1], linearRGB[2] ];
     }
 
-    if (sourcePrimaries === 'bt2020') {
-        return [
-            (1.660491 * linearRGB[0]) - (0.587641 * linearRGB[1]) - (0.072850 * linearRGB[2]),
-            (-0.124550 * linearRGB[0]) + (1.132900 * linearRGB[1]) - (0.008349 * linearRGB[2]),
-            (-0.018151 * linearRGB[0]) - (0.100579 * linearRGB[1]) + (1.118730 * linearRGB[2])
-        ];
-    }
-
-    return [
-        (0.627404 * linearRGB[0]) + (0.329283 * linearRGB[1]) + (0.043313 * linearRGB[2]),
-        (0.069097 * linearRGB[0]) + (0.919540 * linearRGB[1]) + (0.011362 * linearRGB[2]),
-        (0.016391 * linearRGB[0]) + (0.088013 * linearRGB[1]) + (0.895595 * linearRGB[2])
-    ];
+    // Every conversion passes through BT.709, so each primaries set needs only its two BT.709 matrices
+    const toBT709Matrix = getGamutToBT709Matrix(sourcePrimaries);
+    const linearBT709RGB = toBT709Matrix ?
+        multiplyColorMatrix(toBT709Matrix, linearRGB) :
+        linearRGB;
+    const fromBT709Matrix = getGamutFromBT709Matrix(destinationPrimaries);
+    return fromBT709Matrix ?
+        multiplyColorMatrix(fromBT709Matrix, linearBT709RGB) :
+        [ linearBT709RGB[0], linearBT709RGB[1], linearBT709RGB[2] ];
 }
 
 function calculateIPTChromaHull(intensity: number): number {

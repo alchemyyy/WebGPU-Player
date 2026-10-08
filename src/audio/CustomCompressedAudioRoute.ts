@@ -11,12 +11,14 @@ export type DTSProfileToken =
 export type DTSDirectPlayProfileToken = Exclude<DTSProfileToken, 'DTSES'>;
 
 export type EAC3InputRoute = Readonly<{
-    channelCount: 2 | 6 | 8
+    channelCount: 1 | 2 | 6 | 8
     metadataLayouts: readonly string[] | null
 }>;
 
 export type DTSInputRoute = Readonly<{
-    channelCount: 2 | 6 | 7 | 8
+    channelCount: 1 | 2 | 3 | 6 | 7 | 8
+    /** Jellyfin ChannelLayout values the route requires, or null for any */
+    metadataLayouts: readonly string[] | null
     profileTokens: readonly DTSProfileToken[]
     sampleRate: 48_000 | 96_000 | 192_000
 }>;
@@ -30,7 +32,7 @@ export type TrueHDCapabilityVectorRoute = Readonly<{
 }>;
 
 export type TrueHDInputRoute = Readonly<{
-    channelCount: 2 | 6 | 8
+    channelCount: 1 | 2 | 6 | 8
     codec: 'mlp' | 'truehd'
     metadataLayouts: readonly string[] | null
     sampleRate: 48_000 | 96_000 | 192_000
@@ -38,6 +40,8 @@ export type TrueHDInputRoute = Readonly<{
 }>;
 
 export const EAC3_SUPPORTED_INPUT_ROUTES = Object.freeze([
+    // The decoder reports mono's speaker mask, so the shared mixer places it
+    Object.freeze({ channelCount: 1, metadataLayouts: null }),
     Object.freeze({ channelCount: 2, metadataLayouts: null }),
     Object.freeze({ channelCount: 6, metadataLayouts: null }),
     Object.freeze({
@@ -69,49 +73,78 @@ export const DTS_DIRECT_PLAY_PROFILE_TOKENS: readonly DTSDirectPlayProfileToken[
 export const DTS_CAPABILITY_VECTOR_ROUTES = Object.freeze([
     Object.freeze({
         channelCount: 6,
+        metadataLayouts: null,
         profileTokens: Object.freeze([ 'DTS' ] as const),
         sampleRate: 48_000
     }),
     Object.freeze({
         channelCount: 6,
+        metadataLayouts: null,
         profileTokens: Object.freeze([ 'DTS9624' ] as const),
         sampleRate: 96_000
     }),
     Object.freeze({
         channelCount: 7,
+        metadataLayouts: null,
         profileTokens: Object.freeze([ 'DTSES' ] as const),
         sampleRate: 48_000
     }),
     Object.freeze({
         channelCount: 8,
+        metadataLayouts: null,
         profileTokens: Object.freeze([ 'DTSHDHRA' ] as const),
         sampleRate: 48_000
     }),
     Object.freeze({
         channelCount: 8,
+        metadataLayouts: null,
         profileTokens: Object.freeze([ 'DTSHDMA', 'DTSHDMADTSX' ] as const),
         sampleRate: 48_000
     }),
     Object.freeze({
         channelCount: 8,
+        metadataLayouts: null,
         profileTokens: Object.freeze([ 'DTSHDMA', 'DTSHDMADTSX' ] as const),
         sampleRate: 96_000
     }),
     Object.freeze({
         channelCount: 6,
+        metadataLayouts: null,
         profileTokens: Object.freeze([ 'DTSHDMA', 'DTSHDMADTSX' ] as const),
         sampleRate: 192_000
     })
 ] as const) satisfies readonly DTSInputRoute[];
 
 const DTS_COMPOSED_INPUT_ROUTES = Object.freeze([
+    // libdcadec reports mono's speaker mask for every profile, so the shared mixer places it
+    Object.freeze({
+        channelCount: 1,
+        metadataLayouts: null,
+        profileTokens: Object.freeze([
+            'DTS',
+            'DTS9624',
+            'DTSHDHRA',
+            'DTSHDMA',
+            'DTSHDMADTSX'
+        ] as const),
+        sampleRate: 48_000
+    }),
     Object.freeze({
         channelCount: 2,
+        metadataLayouts: null,
         profileTokens: Object.freeze([ 'DTSHDMA' ] as const),
+        sampleRate: 48_000
+    }),
+    // Three-channel lossless beds decode to the 2.1 or 3.0 speaker mask
+    Object.freeze({
+        channelCount: 3,
+        metadataLayouts: Object.freeze([ '2.1', '3.0' ] as const),
+        profileTokens: Object.freeze([ 'DTSHDMA', 'DTSHDMADTSX' ] as const),
         sampleRate: 48_000
     }),
     Object.freeze({
         channelCount: 6,
+        metadataLayouts: null,
         profileTokens: Object.freeze([ 'DTSHDHRA' ] as const),
         sampleRate: 48_000
     })
@@ -155,6 +188,21 @@ export const TRUEHD_CAPABILITY_VECTOR_ROUTES = Object.freeze([
 ] as const) satisfies readonly TrueHDCapabilityVectorRoute[];
 
 const TRUEHD_COMPOSED_INPUT_ROUTES = Object.freeze([
+    // FFmpeg reports mono's speaker mask, so the shared mixer places it
+    Object.freeze({
+        channelCount: 1,
+        codec: 'truehd',
+        metadataLayouts: null,
+        sampleRate: 48_000,
+        sampleRateConstraint: 'bounded'
+    }),
+    Object.freeze({
+        channelCount: 1,
+        codec: 'mlp',
+        metadataLayouts: null,
+        sampleRate: 48_000,
+        sampleRateConstraint: 'bounded'
+    }),
     Object.freeze({
         channelCount: 8,
         codec: 'truehd',
@@ -179,11 +227,30 @@ export function isDTSDirectPlayProfileToken(
     );
 }
 
-/** Accepts production-qualified DTS profile/layout pairs at any bounded source rate. */
+/** Matches Jellyfin ChannelLayout metadata against a route's required layouts. */
+export function hasCustomAudioMetadataLayout(
+    channelLayout: unknown,
+    metadataLayouts: readonly string[] | null
+): boolean {
+    if (metadataLayouts === null) {
+        return true;
+    }
+    if (typeof channelLayout !== 'string') {
+        return false;
+    }
+    return metadataLayouts.includes(channelLayout.trim().toLowerCase());
+}
+
+/**
+ * Accepts production-qualified DTS profile/layout pairs at any bounded source
+ * rate. A three-channel route also needs Jellyfin's 2.1 or 3.0 layout, the
+ * beds whose decoded speaker masks the shared mixer implements.
+ */
 export function isSupportedDTSInputRoute(
     channelCount: unknown,
     sampleRate: unknown,
-    profileToken: string | null
+    profileToken: string | null,
+    channelLayout?: unknown
 ): boolean {
     if (profileToken === null || !isSupportedCustomAudioSampleRate(sampleRate)) {
         return false;
@@ -200,7 +267,8 @@ export function isSupportedDTSInputRoute(
     for (const route of DTS_SUPPORTED_INPUT_ROUTES) {
         const routeProfileTokens: readonly DTSProfileToken[] = route.profileTokens;
         if (route.channelCount === channelCount
-            && routeProfileTokens.includes(profileToken as DTSProfileToken)) {
+            && routeProfileTokens.includes(profileToken as DTSProfileToken)
+            && hasCustomAudioMetadataLayout(channelLayout, route.metadataLayouts)) {
             return true;
         }
     }
@@ -220,15 +288,7 @@ export function isSupportedEAC3InputRoute(
         if (route.channelCount !== channelCount) {
             continue;
         }
-        if (route.metadataLayouts === null) {
-            return true;
-        }
-        if (typeof channelLayout !== 'string') {
-            return false;
-        }
-        const normalizedLayout = channelLayout.trim().toLowerCase();
-        const metadataLayouts: readonly string[] = route.metadataLayouts;
-        return metadataLayouts.includes(normalizedLayout);
+        return hasCustomAudioMetadataLayout(channelLayout, route.metadataLayouts);
     }
     return false;
 }
@@ -281,15 +341,7 @@ export function isSupportedTrueHDMetadataRoute(
         if (!doesTrueHDInputRouteMatch(route, codec, channelCount, sampleRate)) {
             continue;
         }
-        if (route.metadataLayouts === null) {
-            return true;
-        }
-        if (typeof channelLayout !== 'string') {
-            return false;
-        }
-        const normalizedLayout = channelLayout.trim().toLowerCase();
-        const metadataLayouts: readonly string[] = route.metadataLayouts;
-        return metadataLayouts.includes(normalizedLayout);
+        return hasCustomAudioMetadataLayout(channelLayout, route.metadataLayouts);
     }
     return false;
 }

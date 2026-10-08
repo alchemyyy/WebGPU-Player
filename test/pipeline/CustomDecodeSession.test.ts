@@ -436,6 +436,122 @@ async function expectAudioResyncDeclined(
     });
 }
 
+type NativeAudioSessionHarness = {
+    emitBackendEvent: OwnedNativeMediaAudioEventHandler
+    endOfStream: ReturnType<typeof vi.fn>
+    events: CustomDecodeSessionEvent[]
+    session: CustomDecodeSession
+    setAuthoritativeTimeMicroseconds: (timeMicroseconds: Microseconds | null) => void
+    worker: MockWorker
+};
+
+/** Starts a native-media E-AC-3 session whose owned backend opens once the given promise settles. */
+function startNativeAudioSession(
+    generation: number,
+    backendOpened: Promise<void> = Promise.resolve()
+): NativeAudioSessionHarness {
+    const worker = new MockWorker();
+    const events: CustomDecodeSessionEvent[] = [];
+    let activeBackendGeneration: number | null = null;
+    let authoritativeTimeMicroseconds: Microseconds | null = null;
+    let backendEventHandler: OwnedNativeMediaAudioEventHandler | null = null;
+    const endOfStream = vi.fn(async (): Promise<boolean> => true);
+    const backend: OwnedNativeMediaAudioBackendPort = {
+        appendInitializationSegment: vi.fn(async (): Promise<boolean> => true),
+        appendMediaSegment: vi.fn(async (): Promise<boolean> => true),
+        destroy: vi.fn(async (): Promise<void> => undefined),
+        endOfStream,
+        getAuthoritativeTimeMicroseconds: (): Microseconds | null => authoritativeTimeMicroseconds,
+        getTelemetry: (): OwnedNativeMediaAudioTelemetry => ({
+            activeGeneration: activeBackendGeneration,
+            appendedByteLength: 0,
+            appendedSegmentCount: 0,
+            clockQualified: authoritativeTimeMicroseconds !== null,
+            currentTimeMicroseconds: authoritativeTimeMicroseconds,
+            pendingAppendByteLength: 0,
+            pendingAppendCount: 0,
+            removedRangeCount: 0,
+            staleOperationCount: 0,
+            state: activeBackendGeneration === null ? 'idle' : 'open'
+        }),
+        seek: (): boolean => true,
+        setMuted: (): void => undefined,
+        setPlaybackRate: (): void => undefined,
+        setPlaying: async (): Promise<boolean> => true,
+        setVolume: (): void => undefined,
+        start: async (options): Promise<void> => {
+            await backendOpened;
+            activeBackendGeneration = options.generation;
+        },
+        stop: vi.fn(async (stoppedGeneration: number): Promise<boolean> => {
+            if (activeBackendGeneration !== stoppedGeneration) {
+                return false;
+            }
+            activeBackendGeneration = null;
+            return true;
+        })
+    };
+    const nativeAudioBridge = new CustomDecodeNativeAudioBridge(eventHandler => {
+        backendEventHandler = eventHandler;
+        return backend;
+    });
+    const session = new CustomDecodeSession(
+        event => events.push(event),
+        () => worker as unknown as Worker,
+        null,
+        null,
+        () => nativeAudioBridge
+    );
+    session.start({
+        audioOutputMode: 'native-media',
+        audioTrackIndex: 0,
+        dolbyVisionProfile: null,
+        durationMicroseconds: secondsToMicroseconds(10),
+        generation,
+        maximumCodedHeight: 1_080,
+        maximumCodedWidth: 1_920,
+        nativeHDRTransfer: null,
+        neutralizeHDRColorMetadata: false,
+        rawVideoFrameFormat: null,
+        startTimeMicroseconds: secondsToMicroseconds(1),
+        url: 'http://localhost/video.mp4?ApiKey=secret',
+        videoDecoderBackend: 'native',
+        videoOutputMode: 'video-frame',
+        videoTrackIndex: 0
+    });
+    worker.emitMessage({
+        audio: {
+            channelCount: 6,
+            codec: 'ec-3',
+            mimeType: 'audio/mp4; codecs="ec-3"',
+            outputMode: 'native-media',
+            sampleRate: 48_000
+        },
+        codec: 'hev1.2.4.L153.B0',
+        codedHeight: 1_080,
+        codedWidth: 1_920,
+        displayHeight: 1_080,
+        displayWidth: 1_920,
+        generation,
+        type: 'ready'
+    });
+    return {
+        emitBackendEvent: (event): void => {
+            if (!backendEventHandler) {
+                throw new Error('The native audio backend has no event handler');
+            }
+            backendEventHandler(event);
+        },
+        endOfStream,
+        events,
+        session,
+        setAuthoritativeTimeMicroseconds: (timeMicroseconds: Microseconds | null): void => {
+            authoritativeTimeMicroseconds = timeMicroseconds;
+        },
+        worker
+    };
+}
+
 describe('CustomDecodeSession', () => {
     it('forwards the qualified FFmpeg MPEG-2/VC-1 backend to the worker', () => {
         const worker = new MockWorker();
@@ -727,6 +843,56 @@ describe('CustomDecodeSession', () => {
         }
     });
 
+    it('asks for the container duration only without a server duration and forwards it on ready', () => {
+        const knownDurationWorker = new MockWorker();
+        const knownDurationSession = new CustomDecodeSession(
+            () => undefined,
+            () => knownDurationWorker as unknown as Worker
+        );
+        knownDurationSession.start({
+            dolbyVisionProfile: null,
+            durationMicroseconds: secondsToMicroseconds(60),
+            generation: 3,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: null,
+            startTimeMicroseconds: secondsToMicroseconds(1),
+            url: 'http://localhost/video.mp4?ApiKey=secret',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        });
+        expect(knownDurationWorker.postedMessages[0]).not.toHaveProperty('reportContainerDuration');
+
+        const worker = new MockWorker();
+        const events: CustomDecodeSessionEvent[] = [];
+        const session = new CustomDecodeSession(
+            event => events.push(event),
+            () => worker as unknown as Worker
+        );
+        startSession(session, 4);
+        expect(worker.postedMessages[0]).toMatchObject({ reportContainerDuration: true });
+        worker.emitMessage({
+            audio: null,
+            codec: 'avc1.640028',
+            codedHeight: 1080,
+            codedWidth: 1920,
+            containerDurationMicroseconds: secondsToMicroseconds(5_400),
+            displayHeight: 1080,
+            displayWidth: 1920,
+            generation: 4,
+            type: 'ready'
+        });
+        emitFrame(worker, 4, 1_100_000);
+
+        expect(events.at(-1)).toMatchObject({
+            containerDurationMicroseconds: secondsToMicroseconds(5_400),
+            type: 'ready'
+        });
+    });
+
     it('starts with four credits and replenishes only consumed queue entries', () => {
         const worker = new MockWorker();
         const events: CustomDecodeSessionEvent[] = [];
@@ -748,6 +914,8 @@ describe('CustomDecodeSession', () => {
             nativeHDRTransfer: null,
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
+            // This session starts without a server duration
+            reportContainerDuration: true,
             startTimeMicroseconds: 1_000_000,
             type: 'start',
             url: 'http://localhost/video.mp4?ApiKey=secret',
@@ -1042,21 +1210,24 @@ describe('CustomDecodeSession', () => {
         })).toThrow(RangeError);
     });
 
-    it('declines live downmix changes for direct stereo and multichannel output', () => {
+    it('accepts live downmix changes for stereo output and declines multichannel output', () => {
         const settings: AudioDownmixSettings = {
             centerLevel: 1,
             outputGain: 2,
             surroundLevel: 1,
             version: 1
         };
+        // A declared stereo source can still decode to a bed that folds down
         const configurations = [
             {
+                accepted: true,
                 channelCount: 2,
                 decodedAudioOutputChannelCount: 2 as const,
                 generation: 40,
                 sourceChannelCount: 2
             },
             {
+                accepted: false,
                 channelCount: 8,
                 decodedAudioOutputChannelCount: 8 as const,
                 generation: 41,
@@ -1111,13 +1282,13 @@ describe('CustomDecodeSession', () => {
                 type: 'ready'
             });
 
-            expect(session.updateAudioDownmixSettings(settings)).toBe(false);
+            expect(session.updateAudioDownmixSettings(settings)).toBe(configuration.accepted);
             expect(worker.postedMessages.some(message => (
                 typeof message === 'object'
                 && message !== null
                 && 'type' in message
                 && message.type === 'update-audio-downmix-settings'
-            ))).toBe(false);
+            ))).toBe(configuration.accepted);
         }
     });
 
@@ -3183,6 +3354,236 @@ describe('CustomDecodeSession', () => {
         })).resolves.toBe(2);
         expect(session.updateAudioDownmixSettings(settings)).toBe(true);
         expect(countPostedMessages(worker, 'update-audio-downmix-settings')).toBe(2);
+    });
+
+    it('reports the audio track end only for the current audio epoch', async () => {
+        const { session, worker } = startReadyDecodedAudioSession(90);
+        const emitAudioEnded = (audioEpoch: number): void => {
+            worker.emitMessage({ audioEpoch, generation: 90, type: 'audio-ended' });
+        };
+        expect(session.getTelemetry().audioEnded).toBe(false);
+
+        emitAudioEnded(0);
+        // Video plays on, so the session stays ready rather than ended
+        expect(session.getTelemetry()).toMatchObject({
+            audioEnded: true,
+            state: 'ready'
+        });
+
+        // A resync restarts audio, so the previous track end no longer applies
+        await expect(session.resyncAudio({
+            createAudioBridge: async (): Promise<CustomDecodeAudioBridge> => createSubmittingAudioBridge(4),
+            decodedAudioOutputChannelCount: 2,
+            targetTimeMicroseconds: secondsToMicroseconds(5)
+        })).resolves.toBe(1);
+        expect(session.getTelemetry().audioEnded).toBe(false);
+        emitAudioEnded(0);
+        expect(session.getTelemetry().audioEnded).toBe(false);
+
+        emitAudioEnded(1);
+        expect(session.getTelemetry().audioEnded).toBe(true);
+    });
+
+    it('completes startup when the audio track ends before its first PCM', () => {
+        const worker = new MockWorker();
+        const events: CustomDecodeSessionEvent[] = [];
+        const session = new CustomDecodeSession(
+            (event: CustomDecodeSessionEvent): void => {
+                events.push(event);
+            },
+            (): Worker => worker as unknown as Worker,
+            createSubmittingAudioBridge(3)
+        );
+        startSession(session, 99, 0);
+        worker.emitMessage({
+            audio: { channelCount: 2, codec: 'opus', sampleRate: DECODED_AUDIO_SAMPLE_RATE },
+            codec: 'avc1.640028',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920,
+            generation: 99,
+            type: 'ready'
+        });
+        emitFrame(worker, 99, 1_000_000);
+        expect(session.getTelemetry().state).toBe('configured');
+
+        // A start past the end of the track has no PCM to wait for
+        worker.emitMessage({ audioEpoch: 0, generation: 99, type: 'audio-ended' });
+
+        expect(session.getTelemetry()).toMatchObject({ audioEnded: true, state: 'ready' });
+        expect(events.slice(-2)).toEqual([
+            expect.objectContaining({ generation: 99, type: 'ready' }),
+            { generation: 99, type: 'audio-ended' }
+        ]);
+    });
+
+    it('completes a pending audio resync whose epoch ends before its first PCM', async () => {
+        const { events, session, worker } = startReadyDecodedAudioSession(100);
+        await expect(session.resyncAudio({
+            createAudioBridge: async (): Promise<CustomDecodeAudioBridge> => createSubmittingAudioBridge(4),
+            decodedAudioOutputChannelCount: 6,
+            targetTimeMicroseconds: secondsToMicroseconds(9)
+        })).resolves.toBe(1);
+        expect(session.getTelemetry().audioResyncPending).toBe(true);
+
+        worker.emitMessage({ audioEpoch: 1, generation: 100, type: 'audio-ended' });
+
+        expect(session.getTelemetry()).toMatchObject({
+            audioEnded: true,
+            audioResyncPending: false,
+            state: 'ready'
+        });
+        expect(events.slice(-2)).toEqual([
+            { audioEpoch: 1, generation: 100, type: 'audio-resynced' },
+            { generation: 100, type: 'audio-ended' }
+        ]);
+    });
+
+    it('records the decoded audio source format of the current epoch over the declared one', async () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            () => undefined,
+            (): Worker => worker as unknown as Worker,
+            createSubmittingAudioBridge(3)
+        );
+        startSession(session, 104, 0);
+        worker.emitMessage({
+            audio: {
+                channelCount: 2,
+                codec: 'opus',
+                sampleRate: DECODED_AUDIO_SAMPLE_RATE,
+                sourceChannelCount: 6,
+                sourceSampleRate: DECODED_AUDIO_SAMPLE_RATE
+            },
+            codec: 'avc1.640028',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920,
+            generation: 104,
+            type: 'ready'
+        });
+        // The decoder reports the layout it produces before its first PCM
+        worker.emitMessage({
+            audioEpoch: 0,
+            channelCount: 8,
+            generation: 104,
+            sampleRate: DECODED_AUDIO_SAMPLE_RATE,
+            type: 'audio-source-format'
+        });
+        emitFrame(worker, 104, 1_000_000);
+        for (let sampleIndex = 0; sampleIndex < 3; sampleIndex += 1) {
+            emitAudioSample(
+                worker,
+                104,
+                2,
+                1_000_000 + sampleIndex * DECODED_AUDIO_SAMPLE_DURATION_MICROSECONDS
+            );
+        }
+        expect(session.getTelemetry()).toMatchObject({
+            audioSourceChannelCount: 8,
+            audioSourceSampleRate: DECODED_AUDIO_SAMPLE_RATE,
+            decodedAudioSourceChannelCount: 8,
+            state: 'ready'
+        });
+
+        await expect(session.resyncAudio({
+            createAudioBridge: async (): Promise<CustomDecodeAudioBridge> => createSubmittingAudioBridge(4),
+            decodedAudioOutputChannelCount: 6,
+            targetTimeMicroseconds: secondsToMicroseconds(5)
+        })).resolves.toBe(1);
+        // A replaced epoch's report no longer applies
+        worker.emitMessage({
+            audioEpoch: 0,
+            channelCount: 6,
+            generation: 104,
+            sampleRate: 44_100,
+            type: 'audio-source-format'
+        });
+        expect(session.getTelemetry().decodedAudioSourceChannelCount).toBe(8);
+        worker.emitMessage({
+            audioEpoch: 1,
+            channelCount: 6,
+            generation: 104,
+            sampleRate: 44_100,
+            type: 'audio-source-format'
+        });
+        expect(session.getTelemetry()).toMatchObject({
+            audioSourceChannelCount: 6,
+            audioSourceSampleRate: 44_100,
+            decodedAudioSourceChannelCount: 6
+        });
+    });
+
+    it('ends the native stream when audio ends before video and ends the session after decode', async () => {
+        const harness = startNativeAudioSession(101);
+        await vi.waitFor((): void => {
+            expect(countPostedMessages(harness.worker, 'pull-audio')).toBe(1);
+        });
+        emitFrame(harness.worker, 101, 1_000_000);
+        harness.worker.emitMessage({
+            data: new Uint8Array([ 1, 2 ]).buffer,
+            generation: 101,
+            type: 'native-audio-init'
+        });
+        harness.worker.emitMessage({
+            data: new Uint8Array([ 3, 4 ]).buffer,
+            endTimeMicroseconds: 1_500_000,
+            generation: 101,
+            startTimeMicroseconds: 1_000_000,
+            type: 'native-audio-media'
+        });
+        await vi.waitFor((): void => {
+            expect(harness.session.getTelemetry().state).toBe('ready');
+        });
+        harness.setAuthoritativeTimeMicroseconds(secondsToMicroseconds(1.2));
+        expect(harness.session.getNativeAudioTimeMicroseconds()).toBe(secondsToMicroseconds(1.2));
+
+        harness.worker.emitMessage({ audioEpoch: 0, generation: 101, type: 'audio-ended' });
+
+        // Without end of stream the element would stall at its last fragment
+        await vi.waitFor((): void => {
+            expect(harness.endOfStream).toHaveBeenCalledWith(101);
+        });
+        expect(harness.events.at(-1)).toEqual({ generation: 101, type: 'audio-ended' });
+        harness.emitBackendEvent({ generation: 101, type: 'ended' });
+        expect(harness.session.getTelemetry()).toMatchObject({
+            audioEnded: true,
+            nativeAudioEnded: true,
+            state: 'ready'
+        });
+        // The played-out element no longer clocks the video that plays on
+        expect(harness.session.getNativeAudioTimeMicroseconds()).toBeNull();
+        expect(harness.events.filter(event => event.type === 'ended')).toHaveLength(0);
+
+        harness.worker.emitMessage({ generation: 101, type: 'ended' });
+
+        await vi.waitFor((): void => {
+            expect(harness.session.getTelemetry().state).toBe('ended');
+        });
+        expect(harness.endOfStream).toHaveBeenCalledOnce();
+        expect(harness.events.at(-1)).toEqual({ generation: 101, type: 'ended' });
+    });
+
+    it('defers the native end of stream until the native output opens', async () => {
+        const backendOpened = createDeferred<undefined>();
+        const harness = startNativeAudioSession(102, backendOpened.promise);
+        emitFrame(harness.worker, 102, 1_000_000);
+
+        // The worker can finish a track with nothing left before the output opens
+        harness.worker.emitMessage({ audioEpoch: 0, generation: 102, type: 'audio-ended' });
+        await Promise.resolve();
+        expect(harness.endOfStream).not.toHaveBeenCalled();
+        expect(harness.session.getTelemetry().state).toBe('configured');
+
+        backendOpened.resolve(undefined);
+        await vi.waitFor((): void => {
+            expect(harness.endOfStream).toHaveBeenCalledWith(102);
+        });
+        // The ended track stands in for the media the start waits for
+        expect(harness.session.getTelemetry().state).toBe('ready');
+        expect(harness.events.filter(event => event.type === 'ready')).toHaveLength(1);
     });
 
     it('declines an audio resync without a ready decoded PCM output', async () => {

@@ -23,6 +23,15 @@ import {
     isRawDolbyVisionVideoFrameFormat
 } from 'webgpu-player/color/ColorPipelineShader';
 
+/** Returns one generated WGSL function, from its signature to its closing brace. */
+function getWGSLFunction(shader: string, functionName: string): string {
+    const functionStart = shader.indexOf(`fn ${functionName}(`);
+    if (functionStart < 0) {
+        throw new Error(`The shader has no ${functionName} function`);
+    }
+    return shader.slice(functionStart, shader.indexOf('\n}', functionStart) + 2);
+}
+
 function getRawTestBitDepth(format: string): 8 | 10 | 12 {
     if (format.endsWith('P10')) {
         return 10;
@@ -358,6 +367,90 @@ describe('createRawYUVColorPipelineWGSL', () => {
         );
 
         expect(secondShader).toBe(firstShader);
+    });
+
+    it('generates the BT.601 YUV matrix for both SMPTE 170M and BT.470 BG', () => {
+        for (const matrix of [ 'smpte170m', 'bt470bg' ] as const) {
+            const shader = createRawYUVColorPipelineWGSL(
+                createSDRColorMetadata({ matrix, primaries: matrix }),
+                createDefaultRenderSettings(),
+                'I420'
+            );
+            const matrixFunction = getWGSLFunction(shader, 'convertRawYUVToEncodedRGB');
+
+            expect(matrixFunction).toContain('normalizedYUV.x + 1.402 * normalizedYUV.z');
+            expect(matrixFunction).toContain(
+                'normalizedYUV.x - 0.344136 * normalizedYUV.y - 0.714136 * normalizedYUV.z'
+            );
+            expect(matrixFunction).toContain('normalizedYUV.x + 1.772 * normalizedYUV.y');
+        }
+    });
+
+    it.each([
+        {
+            gamutValues: [],
+            iptValues: [ '0.295764081', '0.623072451', '0.081166749' ],
+            primaries: 'bt709'
+        },
+        {
+            gamutValues: [ '1.660491000', '-0.587641000', '-0.072850000' ],
+            iptValues: [ '0.412036387', '0.523911912', '0.064054982' ],
+            primaries: 'bt2020'
+        },
+        {
+            gamutValues: [ '0.939542000', '0.050181000', '0.010277000', '-0.001622000' ],
+            iptValues: [ '0.288824557', '0.616246090', '0.094932633' ],
+            primaries: 'smpte170m'
+        },
+        {
+            gamutValues: [ '1.044043000', '-0.044043000', '0.988207000' ],
+            iptValues: [ '0.308790480', '0.611003282', '0.080209519' ],
+            primaries: 'bt470bg'
+        }
+    ] as const)('converts $primaries linear light through its gamut and IPT tables', ({
+        gamutValues,
+        iptValues,
+        primaries
+    }) => {
+        const shader = createRawYUVColorPipelineWGSL(
+            createSDRColorMetadata({ primaries }),
+            createHDRToSDRRenderSettings(),
+            'I420'
+        );
+        const gamutFunction = getWGSLFunction(shader, 'convertToBT709');
+        const iptFunction = getWGSLFunction(shader, 'convertSourceRGBToIPTLMS');
+
+        if (gamutValues.length === 0) {
+            expect(gamutFunction).toContain('return linearRGB;');
+        }
+        for (const gamutValue of gamutValues) {
+            expect(gamutFunction).toContain(gamutValue);
+        }
+        for (const iptValue of iptValues) {
+            expect(iptFunction).toContain(iptValue);
+        }
+    });
+
+    it('weights HLG scene luminance by the luminance of its primaries', () => {
+        const smpte170mShader = createRawYUVColorPipelineWGSL(
+            createHLGColorMetadata({ matrix: 'smpte170m', primaries: 'smpte170m' }),
+            createHDRToSDRRenderSettings(),
+            'I420P10'
+        );
+        const bt2020Shader = createRawYUVColorPipelineWGSL(
+            createHLGColorMetadata(),
+            createHDRToSDRRenderSettings(),
+            'I420P10'
+        );
+        const smpte170mTransfer = getWGSLFunction(smpte170mShader, 'decodeInputTransfer');
+        const bt2020Transfer = getWGSLFunction(bt2020Shader, 'decodeInputTransfer');
+
+        for (const coefficient of [ '0.212376000', '0.701060000', '0.086564000' ]) {
+            expect(smpte170mTransfer).toContain(coefficient);
+        }
+        for (const coefficient of [ '0.262700000', '0.678000000', '0.059300000' ]) {
+            expect(bt2020Transfer).toContain(coefficient);
+        }
     });
 });
 

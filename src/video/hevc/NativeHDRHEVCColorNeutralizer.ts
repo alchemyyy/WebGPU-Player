@@ -60,7 +60,8 @@ function rewriteHEVCConfigurationNALUnitArray(
     description: Uint8Array,
     arrayOffset: number,
     outputBytes: number[],
-    expectedHDRTransfer: HEVCHDRTransfer
+    expectedHDRTransfer: HEVCHDRTransfer,
+    preferredTransferCharacteristics: number | null
 ): RewrittenNALUnitArray {
     if (arrayOffset + HEVC_CONFIGURATION_ARRAY_HEADER_BYTE_LENGTH > description.byteLength) {
         throw new TypeError('The HEVC decoder description ends inside a NAL array header');
@@ -96,7 +97,11 @@ function rewriteHEVCConfigurationNALUnitArray(
         const isBaseLayerSPS = actualNALUnitType === HEVC_SPS_NAL_UNIT_TYPE
             && getHEVCNALUnitLayerID(nalUnit) === HEVC_BASE_LAYER_ID;
         const rewrittenNALUnit = isBaseLayerSPS ?
-            rewriteHEVCSPSColorDescriptionToBT709(nalUnit, expectedHDRTransfer) :
+            rewriteHEVCSPSColorDescriptionToBT709(
+                nalUnit,
+                expectedHDRTransfer,
+                preferredTransferCharacteristics
+            ) :
             nalUnit;
         if (rewrittenNALUnit.byteLength > MAXIMUM_HEVC_NAL_UNIT_BYTE_LENGTH) {
             throw new TypeError('The rewritten HEVC NAL unit exceeds its HVCC length field');
@@ -111,7 +116,8 @@ function rewriteHEVCConfigurationNALUnitArray(
 
 function rewriteHEVCDecoderDescription(
     descriptionSource: AllowSharedBufferSource,
-    expectedHDRTransfer: HEVCHDRTransfer
+    expectedHDRTransfer: HEVCHDRTransfer,
+    preferredTransferCharacteristics: number | null
 ): RewrittenHEVCDecoderDescription {
     const description = toUint8Array(descriptionSource);
     if (
@@ -135,7 +141,8 @@ function rewriteHEVCDecoderDescription(
             description,
             offset,
             outputBytes,
-            expectedHDRTransfer
+            expectedHDRTransfer,
+            preferredTransferCharacteristics
         );
         offset = rewrittenArray.nextOffset;
         rewrittenSPSCount += rewrittenArray.rewrittenSPSCount;
@@ -156,14 +163,20 @@ function rewriteHEVCDecoderDescription(
  * Neutralizes decoder metadata while reporting whether HVCC proved and rewrote
  * the source SPS. An SPS-free HVCC remains usable when the first key packet
  * carries the required in-band SPS.
+ * A known alternative transfer characteristics SEI value overrides the VUI transfer in the SPS check.
  */
 export function neutralizeNativeHDRHEVCDecoderConfigWithValidation(
     configuration: VideoDecoderConfig,
-    expectedHDRTransfer: HEVCHDRTransfer
+    expectedHDRTransfer: HEVCHDRTransfer,
+    preferredTransferCharacteristics: number | null = null
 ): NeutralizedNativeHDRHEVCDecoderConfig {
     const rewrittenDescription = configuration.description === undefined ?
         null :
-        rewriteHEVCDecoderDescription(configuration.description, expectedHDRTransfer);
+        rewriteHEVCDecoderDescription(
+            configuration.description,
+            expectedHDRTransfer,
+            preferredTransferCharacteristics
+        );
     return {
         configuration: {
             ...configuration,

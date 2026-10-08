@@ -1,7 +1,11 @@
 import {
+    CUSTOM_FIVE_POINT_ONE_INPUT_CHANNEL_COUNT,
     CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT,
+    CUSTOM_SEVEN_POINT_ONE_INPUT_CHANNEL_COUNT,
     CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT,
+    CUSTOM_SIX_POINT_ONE_INPUT_CHANNEL_COUNT,
     CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT,
+    CUSTOM_THREE_CHANNEL_INPUT_CHANNEL_COUNT,
     type CustomAudioOutputChannelCount
 } from './processing/CustomAudioChannelLayout';
 
@@ -17,8 +21,8 @@ function getMaximumDestinationChannelCount(audioContext: AudioContext): number {
 }
 
 /**
- * Selects native speaker output only when the current AudioContext destination
- * reports enough physical channels for the complete source layout.
+ * Selects the output layout for the source from the channel count the current
+ * AudioContext destination reports, as selectCustomAudioOutputChannelCountForMaximum does.
  */
 export function selectCustomAudioOutputChannelCount(
     audioContext: AudioContext | null,
@@ -33,7 +37,12 @@ export function selectCustomAudioOutputChannelCount(
     );
 }
 
-/** Selects native speaker output when a sink with the given channel count fits the source. */
+/**
+ * Selects the speaker output for a source on a sink with the given channel count.
+ * Three-channel and 5.1 sources use a 5.1 sink; 6.1 and 7.1 sources use a 7.1
+ * sink or fold into a 5.1 one. Other sources, unknown sinks, and sinks too small
+ * for those layouts mix to stereo.
+ */
 export function selectCustomAudioOutputChannelCountForMaximum(
     maximumChannelCount: number | null,
     sourceChannelCount: number | null
@@ -42,13 +51,18 @@ export function selectCustomAudioOutputChannelCountForMaximum(
         return CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT;
     }
     switch (sourceChannelCount) {
-        case CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT:
+        case CUSTOM_THREE_CHANNEL_INPUT_CHANNEL_COUNT:
+        case CUSTOM_FIVE_POINT_ONE_INPUT_CHANNEL_COUNT:
             return maximumChannelCount >= CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT ?
                 CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT :
                 CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT;
-        case CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT:
-            return maximumChannelCount >= CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT ?
-                CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT :
+        case CUSTOM_SIX_POINT_ONE_INPUT_CHANNEL_COUNT:
+        case CUSTOM_SEVEN_POINT_ONE_INPUT_CHANNEL_COUNT:
+            if (maximumChannelCount >= CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT) {
+                return CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT;
+            }
+            return maximumChannelCount >= CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT ?
+                CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT :
                 CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT;
         default:
             return CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT;

@@ -6,6 +6,7 @@ import {
     sanitizeHEVCAccessUnitForChromium,
     type HEVCNALFormat
 } from '../dolby-vision/DolbyVisionHEVCSplitter';
+import { findHEVCPreferredTransferCharacteristics } from '../hevc/HEVCSEI';
 import {
     neutralizeNativeHDRHEVCDecoderConfigWithValidation
 } from '../hevc/NativeHDRHEVCColorNeutralizer';
@@ -24,6 +25,7 @@ export type NativeVideoDecoderPort = {
     readonly decodeQueueSize: number
     flush: () => Promise<void>
     ondequeue: ((event: Event) => unknown) | null
+    readonly state: CodecState
 };
 
 export type OwnedNativeHEVCVideoDecoderDependencies = {
@@ -44,9 +46,37 @@ const DEFAULT_DEPENDENCIES: OwnedNativeHEVCVideoDecoderDependencies = {
     )
 };
 
+/** Closes a codec unless WebCodecs already closed it after an error or reclamation. */
+function closeCodec(decoder: NativeVideoDecoderPort): void {
+    decoder.ondequeue = null;
+    // NOTE: close() throws InvalidStateError on a closed codec, which would hide the codec's own error
+    if (decoder.state !== 'closed') {
+        decoder.close();
+    }
+}
+
+/**
+ * Returns a key access unit's alternative transfer characteristics SEI value.
+ * As in FFmpeg, SEI errors are not fatal: a malformed SEI counts as absent, so the SPS VUI alone must prove the route.
+ */
+function findKeyPacketPreferredTransferCharacteristics(
+    accessUnit: Uint8Array,
+    format: HEVCNALFormat
+): number | null {
+    try {
+        return findHEVCPreferredTransferCharacteristics(accessUnit, format);
+    } catch (error) {
+        if (error instanceof TypeError || error instanceof RangeError) {
+            return null;
+        }
+        throw error;
+    }
+}
+
 /** Owns one native HEVC VideoDecoder and its packet-to-frame lifecycle. */
 export default class OwnedNativeHEVCVideoDecoder {
     private closed = false;
+    private codecError: unknown = null;
     private currentPacketIndex = 0;
     private decoder: NativeVideoDecoderPort | null = null;
     private nativeHDRColorDescriptionValidated = false;
@@ -70,7 +100,11 @@ export default class OwnedNativeHEVCVideoDecoder {
         }
 
         const decoder = this.dependencies.createDecoder({
-            error: (error: DOMException): void => this.callbacks.onError(error),
+            error: (error: DOMException): void => {
+                // WebCodecs has already closed the codec when it reports an error
+                this.codecError ??= error;
+                this.callbacks.onError(error);
+            },
             output: (frame: VideoFrame): void => this.handleOutput(frame)
         });
         decoder.ondequeue = (): void => this.callbacks.onProgress();
@@ -91,13 +125,11 @@ export default class OwnedNativeHEVCVideoDecoder {
                 this.nativeHDRColorDescriptionValidated = false;
             }
         } catch (error) {
-            decoder.ondequeue = null;
-            decoder.close();
+            closeCodec(decoder);
             throw error;
         }
         if (this.closed) {
-            decoder.ondequeue = null;
-            decoder.close();
+            closeCodec(decoder);
             return;
         }
         this.decoder = decoder;
@@ -165,10 +197,12 @@ export default class OwnedNativeHEVCVideoDecoder {
             return packetData;
         }
         if (packet.type === 'key') {
+            // The SEI that names an HLG-compatible stream's transfer travels in the access unit of its SPS
             const neutralizedData = rewriteHEVCAccessUnitColorDescriptionToBT709(
                 packetData,
                 this.inputFormat,
-                this.requireNativeHDRTransfer()
+                this.requireNativeHDRTransfer(),
+                findKeyPacketPreferredTransferCharacteristics(packetData, this.inputFormat)
             );
             if (neutralizedData) {
                 this.nativeHDRColorDescriptionValidated = true;
@@ -194,8 +228,7 @@ export default class OwnedNativeHEVCVideoDecoder {
         if (!decoder) {
             return;
         }
-        decoder.ondequeue = null;
-        decoder.close();
+        closeCodec(decoder);
     }
 
     private handleOutput(frame: VideoFrame): void {
@@ -219,6 +252,10 @@ export default class OwnedNativeHEVCVideoDecoder {
     private requireDecoder(): NativeVideoDecoderPort {
         if (this.closed) {
             throw new Error('The owned native HEVC decoder is closed');
+        }
+        // Surface the codec's own error, so reclamation (QuotaExceededError) stays recoverable
+        if (this.codecError !== null) {
+            throw this.codecError;
         }
         if (!this.decoder) {
             throw new Error('The owned native HEVC decoder is not initialized');

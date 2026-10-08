@@ -41,6 +41,7 @@ import {
     DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH
 } from '../video/dolby-vision/DolbyVisionRPUParser';
 import {
+    type RawVideoFrameColorSpace,
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
 } from '../video/RawVideoFrameCopy';
@@ -416,29 +417,45 @@ function isDolbyVisionInputMode(inputMode: PresentationInputMode): boolean {
         || inputMode === 'external-dolby-vision';
 }
 
+/** Returns whether a raw frame's transfer agrees with the metadata; a null transfer is unspecified. */
 function rawFrameTransferMatches(
-    transfer: string | null,
+    colorSpace: RawVideoFrameColorSpace,
     metadata: InputColorMetadata
 ): boolean {
+    const transfer = colorSpace.transfer;
+    if (transfer === null) {
+        return true;
+    }
     switch (metadata.transfer) {
         case 'hlg':
-            return transfer === 'arib-std-b67' || transfer === 'hlg';
+            // NOTE: An HLG-compatible VUI signals a BT.2020 transfer, which uses the BT.709 curve
+            // A decoder may report that transfer as bt709 instead of null
+            return transfer === 'arib-std-b67'
+                || transfer === 'hlg'
+                || (transfer === 'bt709' && colorSpace.primaries === 'bt2020');
         case 'pq':
             return transfer === 'pq' || transfer === 'smpte2084';
         case 'sdr':
-            return transfer === 'bt709';
+            // SMPTE 170M uses the BT.709 OETF
+            return transfer === 'bt709' || transfer === 'smpte170m';
     }
+}
+
+/** Returns whether a raw frame color member agrees with the metadata; a null member is unspecified. */
+function rawFrameColorMemberMatches(frameValue: string | null, metadataValue: string): boolean {
+    return frameValue === null || frameValue === metadataValue;
 }
 
 function rawFrameColorMatches(
     frame: TransferableRawVideoFrame,
     metadata: InputColorMetadata
 ): boolean {
+    const colorSpace = frame.colorSpace;
     return frame.bitDepth === metadata.bitDepth
-        && frame.colorSpace.fullRange === (metadata.range === 'full')
-        && frame.colorSpace.matrix === metadata.matrix
-        && frame.colorSpace.primaries === metadata.primaries
-        && rawFrameTransferMatches(frame.colorSpace.transfer, metadata);
+        && (colorSpace.fullRange === null || colorSpace.fullRange === (metadata.range === 'full'))
+        && rawFrameColorMemberMatches(colorSpace.matrix, metadata.matrix)
+        && rawFrameColorMemberMatches(colorSpace.primaries, metadata.primaries)
+        && rawFrameTransferMatches(colorSpace, metadata);
 }
 
 function rawFrameDescriptorMatches(

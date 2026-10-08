@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ca695dd2.js";
+            window.path_to_searchindex_js = "searchindex-c8b0fdbf.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -214,7 +214,8 @@ uniform, HDR10+ fields included.</li>
 <li><code>ColorMetadata.ts</code>: the input color schema, validation, and SDR, PQ, and HLG
 factories.</li>
 <li><code>ColorPipeline.ts</code>: the CPU reference of range, matrix, transfer, gamut,
-tone mapping, and display controls.</li>
+tone mapping, and display controls, and the luminance, YUV matrix, gamut,
+and IPT tables for BT.709, BT.2020, and BT.601 that the shaders share.</li>
 <li><code>ColorPipelineShader.ts</code>: WGSL generators for raw YUV, external HDR code
 recovery, and external and raw Dolby Vision (FEL included), plus the shared
 <code>processColor</code>.</li>
@@ -360,8 +361,9 @@ tone mapping source peak.</li>
 </ul>
 <h3 id="videohevc"><a class="header" href="#videohevc">video/hevc/</a></h3>
 <ul>
-<li><code>HEVCSEI.ts</code>, <code>HEVCSPSParser.ts</code>: SEI extraction, SPS parsing, and the VUI
-rewrite.</li>
+<li><code>HEVCSEI.ts</code>, <code>HEVCSPSParser.ts</code>: SEI extraction and the alternative
+transfer characteristics value; SPS parsing, the VUI color mapping to
+WebCodecs names, and the VUI rewrite with its native HDR route check.</li>
 <li><code>NativeHDRHEVCColorNeutralizer.ts</code>: rewrites the <code>hvcC</code> SPS and the decoder
 colorSpace to limited BT.709 for the native external HDR route.</li>
 </ul>

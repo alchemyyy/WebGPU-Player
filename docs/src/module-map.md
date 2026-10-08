@@ -37,7 +37,8 @@ sit beside their main module.
 - `ColorMetadata.ts`: the input color schema, validation, and SDR, PQ, and HLG
   factories.
 - `ColorPipeline.ts`: the CPU reference of range, matrix, transfer, gamut,
-  tone mapping, and display controls.
+  tone mapping, and display controls, and the luminance, YUV matrix, gamut,
+  and IPT tables for BT.709, BT.2020, and BT.601 that the shaders share.
 - `ColorPipelineShader.ts`: WGSL generators for raw YUV, external HDR code
   recovery, and external and raw Dolby Vision (FEL included), plus the shared
   `processColor`.
@@ -110,12 +111,16 @@ are served or read as files.
 ## pipeline/
 
 - `CustomPlaybackController.ts` [main]: lifecycle, generations, the clock, the
-  startup (20 s), stall (10 s), and lag (2 s) policy, the live audio output
-  layout switch, the end-of-stream drain, and the fallback disposition.
+  startup (20 s without progress, 60 s ceiling), stall (10 s), and lag (2 s)
+  policy, the live audio output
+  layout switch, the end-of-stream and ended-track drains, and the fallback
+  disposition.
 - `CustomPlaybackControllerTypes.ts`: states, events, fallback reasons, and
   dispositions.
 - `CustomDecodeSession.ts` [main]: one worker per generation, the frame queue,
-  credits, raw buffer recycling, readiness, and audio-only resync epochs.
+  credits, raw buffer recycling, readiness, audio-only resync epochs, the
+  decoded source format, and an ended audio track completing a start, a
+  resync, or a native-media stream.
 - `CustomDecode.worker.ts` [worker]: demux, decoder dispatch, raw copy, Dolby
   Vision and HDR metadata, the PCM pipeline as restartable audio attempts, fMP4
   remux, and credit waits.
@@ -186,8 +191,9 @@ All worker code unless marked.
 
 ### video/hevc/
 
-- `HEVCSEI.ts`, `HEVCSPSParser.ts`: SEI extraction, SPS parsing, and the VUI
-  rewrite.
+- `HEVCSEI.ts`, `HEVCSPSParser.ts`: SEI extraction and the alternative
+  transfer characteristics value; SPS parsing, the VUI color mapping to
+  WebCodecs names, and the VUI rewrite with its native HDR route check.
 - `NativeHDRHEVCColorNeutralizer.ts`: rewrites the `hvcC` SPS and the decoder
   colorSpace to limited BT.709 for the native external HDR route.
 
@@ -197,10 +203,18 @@ All worker code unless marked.
   lists.
 - `CustomAudioSampleRate.ts`: the 3000 to 192000 Hz integer contract.
 - `CustomCompressedAudioRoute.ts`: the E-AC-3, DTS, and TrueHD route tables and
-  predicates.
-- `CustomAudioOutputPolicy.ts`: input channels per codec, and the 48 kHz 2, 6,
-  and 8-channel output contract.
-- `NativeMultichannelAudioOutput.ts`: `selectCustomAudioOutputChannelCount`.
+  predicates, with their Jellyfin ChannelLayout requirements.
+- `CustomAudioOutputPolicy.ts`: input channels per codec, the 3.0 layout
+  requirement for decoders without a speaker mask, and the 48 kHz 2, 6, and
+  8-channel output contract with its 2 s ring.
+- `CustomAudioTrackMetadata.ts` [worker]: the Matroska and ISO BMFF DTS and
+  TrueHD tracks the bundled decoders own, declared-rate recovery for their
+  sample entries, and the decoded audio timestamp tolerance.
+- `AudioStartPacket.ts` [worker]: the packet an audio attempt starts from,
+  without Mediabunny's proof scans when the track starts late.
+- `NativeMultichannelAudioOutput.ts`: `selectCustomAudioOutputChannelCount`,
+  the output layout rule (three channels and 5.1 to 5.1, 6.1 and 7.1 to 7.1 or
+  5.1, otherwise stereo).
 - `AudioNormalization.ts`: TrackGain and AlbumGain decibels to linear gain.
 - `AudioSampleWindow.ts`: PCM windowing at a seek.
 
@@ -208,8 +222,9 @@ All worker code unless marked.
 
 - `AC3SoftwareAudioDecoder.ts`, `EAC3SoftwareAudioDecoder.ts`,
   `DTSSoftwareAudioDecoder.ts`, `TrueHDSoftwareAudioDecoder.ts` [worker]: the
-  `@mediabunny/ac3` registration and the lazily loaded WASM decoders. E-AC-3
-  reports its channel layout.
+  `@mediabunny/ac3` registration and the lazily loaded WASM decoders. E-AC-3,
+  DTS, and TrueHD report their channel layout, and the FFmpeg wrappers stamp
+  later frames of one packet after its earlier ones.
 - `DTSSeekRecovery.ts`: the 1 s DTS preroll and a bounded tolerance for XLL
   sync errors.
 - `CustomAudioDecoderRegistration.ts`,
@@ -220,17 +235,25 @@ All worker code unless marked.
 
 - `StreamingAudioResampler.ts`, `StreamingAudioLookaheadLimiter.ts`,
   `StreamingAudioOutputPipeline.ts`, `StreamingAudioDownmixSettings.ts`
-  [worker]: the 48 kHz resampler, the 100 ms lookahead limiter, the pipeline,
-  and generation-scoped live gains.
+  [worker]: the 48 kHz resampler with input timestamp reconciliation within
+  2 s (larger deviations throw, and a listener sees every correction) and a
+  continuation across source rate changes, the 100 ms lookahead limiter, the
+  pipeline that rebinds its source rate and enables the limiter late, and
+  generation-scoped live gains that follow the decoded rate.
+- `DecodedAudioOutputStage.ts` [worker]: binds one audio attempt's output
+  stage to the decoded rate and layout, checks them against the decoded PCM
+  routes, and reports each bound format.
 - `CustomAudioDownmix.ts`, `CustomAudioDownmixAlgorithm.ts`,
   `CustomAudioChannelLayout.ts`, `CustomWaveChannelLayout.ts`: downmix matrices
-  per algorithm, algorithm IDs, layout tables, and WAVE mask mapping.
+  per algorithm (three-channel beds have their own), algorithm IDs, layout
+  tables with by-name mapping to 5.1 and 7.1 outputs, and WAVE mask mapping.
 
 ### audio/output/
 
 - `AudioWorkletController.ts` [main], `AudioWorkletProcessorSource.ts`
-  [worklet], `AudioWorkletProtocol.ts`: the worklet node, the inline processor,
-  and their messages.
+  [worklet], `AudioWorkletProtocol.ts`: the worklet node, the inline processor
+  (which renders silence from a flush up to the first chunk), and their
+  messages.
 - `AudioOutputDevicePresence.ts` [main]: whether `enumerateDevices()` lists any
   audio output.
 - `BrowserAudioContextPool.ts`, `BrowserAudioContextPrewarm.ts`,
@@ -251,7 +274,9 @@ All worker code unless marked.
 AC-3 and E-AC-3 through a hidden `<audio>` and MSE.
 
 - `CustomDecodeNativeAudioBridge.ts`, `OwnedNativeMediaAudioBackend.ts`
-  [main]: the bridge and the owned media element.
+  [main]: the bridge and the owned media element, which parks at a late first
+  fragment, delays `play()` by the gap, and advances by a late timer's
+  overshoot.
 - `NativeMediaAudioFMP4Remuxer.ts` [worker]: the fMP4 remux of the selected
   audio track.
 - `NativeMediaAudioLimits.ts`: native-media limits.
