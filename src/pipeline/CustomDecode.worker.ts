@@ -2671,12 +2671,14 @@ async function streamOwnedHEVCFrames(
         await separateEnhancementStream?.pairer.retire();
         return;
     }
-    const rpuParser = DolbyVisionRPUParserSession.create(request.dolbyVisionRPUParserWASMURL);
+    // Only a Dolby Vision route parses RPUs, so any other route never loads the parser
+    const rpuParser = request.dolbyVisionProfile === null ?
+        null :
+        DolbyVisionRPUParserSession.create(request.dolbyVisionRPUParserWASMURL);
     const metadataQueue = new DolbyVisionEncodedMetadataQueue(
         inputFormat,
         rpuParser,
-        enhancementConfiguration?.packetFormat ?? inputFormat,
-        request.dolbyVisionProfile !== null
+        enhancementConfiguration?.packetFormat ?? inputFormat
     );
     const dynamicHDRMetadataQueue = new HEVCDynamicHDRMetadataQueue(inputFormat);
     const streamRun = createOwnedVideoStreamRun(
@@ -2762,7 +2764,7 @@ async function streamOwnedHEVCFrames(
         decoder.close();
         enhancementDecoder?.close();
         state.close();
-        rpuParser.close();
+        rpuParser?.close();
         try {
             await packetIterator.return?.();
         } catch {

@@ -1,15 +1,17 @@
 // The browser around the playback worker: its global scope, which plays the session's part, range requests for the media it plays, and a WebCodecs video decoder
 
-import { expect, vi } from 'vitest';
+import { expect, vi, type MockInstance } from 'vitest';
 
 import type { Microseconds } from 'webgpu-player/MediaTime';
 import {
     isDecodeWorkerRequest,
     isDecodeWorkerResponse,
     MAX_DECODED_FRAME_CREDITS,
+    MAX_DECODED_RAW_FRAME_CREDITS,
     type DecodeWorkerResponse,
     type DecodeWorkerStartRequest
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
+import type DolbyVisionRPUParserSession from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParserSession';
 
 export type DecodeWorkerFrameResponse = Extract<DecodeWorkerResponse, { type: 'frame' }>;
 export type DecodeWorkerReadyResponse = Extract<DecodeWorkerResponse, { type: 'ready' }>;
@@ -17,6 +19,12 @@ export type DecodeWorkerReadyResponse = Extract<DecodeWorkerResponse, { type: 'r
 const WORKER_URL = 'https://example.test/web/libraries/webgpu-player/CustomDecode.worker.js';
 const MEDIA_URL_PREFIX = 'https://example.test/media/';
 export const DOLBY_VISION_RPU_PARSER_WASM_URL = 'https://example.test/web/libraries/webgpu-player/dovi-rpu-parser.wasm';
+// A raw-plane route in I420P10, whose frame credits are its raw buffers
+export const RAW_I420P10_ROUTE: Partial<DecodeWorkerStartRequest> = {
+    frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
+    rawVideoFrameFormat: 'I420P10',
+    videoOutputMode: 'raw-planes'
+};
 const GENERATION = 7;
 const MAXIMUM_CODED_DIMENSION = 3_840;
 // The session returns one credit for each VideoFrame it receives
@@ -197,6 +205,15 @@ function createMediaFetch(files: ReadonlyMap<string, Uint8Array>): typeof fetch 
             status: 206
         });
     };
+}
+
+/**
+ * Spies on the RPU parser sessions of the worker module that the next startDecodeWorker() loads.
+ * Call it after vi.resetModules().
+ */
+export async function spyOnRPUParserSessions(): Promise<MockInstance<typeof DolbyVisionRPUParserSession.create>> {
+    const { default: RPUParserSession } = await import('webgpu-player/video/dolby-vision/DolbyVisionRPUParserSession');
+    return vi.spyOn(RPUParserSession, 'create');
 }
 
 /**

@@ -9,14 +9,9 @@ import {
     describe,
     expect,
     it,
-    vi,
-    type MockInstance
+    vi
 } from 'vitest';
 
-import {
-    MAX_DECODED_RAW_FRAME_CREDITS,
-    type DecodeWorkerStartRequest
-} from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 import type DolbyVisionRPUParserSession from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParserSession';
 
@@ -28,10 +23,12 @@ import {
 import {
     DOLBY_VISION_RPU_PARSER_WASM_URL,
     FakeVideoDecoder,
+    RAW_I420P10_ROUTE,
     createWorkerStartRequest,
     decodeToEnd,
     getFrameResponses,
     getReadyResponse,
+    spyOnRPUParserSessions,
     startDecodeWorker
 } from '../helpers/decodeWorkerHarness';
 import { CODEC_VECTOR_ASSETS_DIRECTORY } from '../helpers/enginePaths';
@@ -45,12 +42,6 @@ const DOLBY_VISION_VECTOR_FRAME_COUNT = 4;
 const DOLBY_VISION_RPU_PROFILE = 8;
 // metadata_type 4 and the Dolby Vision ITU-T T.35 header, which start every RPU metadata OBU payload
 const DOLBY_VISION_METADATA_PREFIX: readonly number[] = [ 0x04, 0xB5, 0x00, 0x3B, 0x00, 0x00, 0x08, 0x00 ];
-// A raw-plane route in I420P10, whose frame credits are its raw buffers
-const RAW_I420P10_ROUTE: Partial<DecodeWorkerStartRequest> = {
-    frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
-    rawVideoFrameFormat: 'I420P10',
-    videoOutputMode: 'raw-planes'
-};
 const FRAMES = AV1_HDR10_PLUS_EXPECTATIONS.frames;
 const MEDIA_FILES = new Map<string, Uint8Array>([
     [ HDR10_PLUS_MATROSKA_FILE_NAME, readAV1HDR10PlusVector(HDR10_PLUS_MATROSKA_FILE_NAME) ],
@@ -73,12 +64,6 @@ function containsBytes(data: Uint8Array, bytes: readonly number[]): boolean {
 function getDecodedChunks(): readonly Uint8Array[] {
     expect(FakeVideoDecoder.instances).toHaveLength(1);
     return FakeVideoDecoder.instances[0].chunks.map(chunk => chunk.data);
-}
-
-/** Spies on the RPU parser sessions of the worker module that the next import loads. */
-async function spyOnRPUParserSessions(): Promise<MockInstance<typeof DolbyVisionRPUParserSession.create>> {
-    const { default: RPUParserSession } = await import('webgpu-player/video/dolby-vision/DolbyVisionRPUParserSession');
-    return vi.spyOn(RPUParserSession, 'create');
 }
 
 beforeEach(() => {

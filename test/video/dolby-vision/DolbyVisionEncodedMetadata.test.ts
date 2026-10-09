@@ -97,14 +97,7 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
         const rpu = createNALUnit(62, [ 4, 5, 6 ]);
         const enhancementPicture = createNALUnit(1, [ 7, 8, 9 ]);
         const enhancementWrapper = createNALUnit(63, Array.from(enhancementPicture));
-        const rpuParser = createRPUParser();
-        rpuParser.parse.mockRejectedValue(new Error('must not parse discarded RPU data'));
-        const queue = new DolbyVisionEncodedMetadataQueue(
-            { kind: 'annex-b' },
-            rpuParser,
-            { kind: 'annex-b' },
-            false
-        );
+        const queue = new DolbyVisionEncodedMetadataQueue({ kind: 'annex-b' }, null);
 
         const processedPacket = await queue.processPacket(createPacket(
             encodeAnnexBNALUnits([ rpu, basePicture, enhancementWrapper ]),
@@ -115,7 +108,6 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
             processedPacket.baseLayerPacket?.data ?? new Uint8Array()
         )).toEqual([ 19 ]);
         expect(processedPacket.hasEnhancementLayerVCL).toBe(true);
-        expect(rpuParser.parse).not.toHaveBeenCalled();
         expect(queue.takeFrameMetadata(1_375_000)).toBeNull();
         queue.requireDrained();
     });

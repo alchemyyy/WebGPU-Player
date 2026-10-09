@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0cf27179.js";
+            window.path_to_searchindex_js = "searchindex-5adc3150.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -1656,7 +1656,7 @@ Copy another machine’s <code>bin/wasm/</code> in first to check that two machi
 <p><code>wasm/libdovi/</code> is our crate.
 <code>src/lib.rs</code> wraps the <code>dolby_vision</code> crate and packs each RPU into the fixed snapshot layout the engine reads (<code>video/dolby-vision/DolbyVisionRPUDataLayout.ts</code>, schema 2).
 It has two entry points over one parser state: <code>dovi_parser_parse</code> reads an HEVC RPU NAL unit (type 62), and <code>dovi_parser_parse_av1_t35</code> reads an AV1 ITU-T T.35 metadata message, from the country code to the end of its OBU payload.
-The playback worker loads <code>dovi-rpu-parser.wasm</code> for every owned HEVC attempt, and for an owned AV1 attempt only on a Dolby Vision route.</p>
+The playback worker loads <code>dovi-rpu-parser.wasm</code> only for an owned HEVC or AV1 attempt on a Dolby Vision route; any other route removes the RPUs without parsing them.</p>
 <p>The <code>dolby_vision</code> crate is not fetched from GitHub.
 It is copied from dovi_tool rev <code>38adec0</code> into <code>wasm/libdovi/vendor/dolby_vision/</code> and built as a path dependency, because the parser follows FFmpeg’s <code>libavcodec/dovi_rpudec.c</code> where upstream is stricter.
 <code>vendor/dolby_vision/PATCHES.md</code> lists every deviation from upstream; update it with any change to the copy.

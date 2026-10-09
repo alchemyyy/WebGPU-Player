@@ -197,15 +197,17 @@ class DolbyVisionFrameMetadataWindow {
     }
 }
 
-/** Owns split HEVC metadata until the decoder emits the matching frame PTS. */
+/**
+ * Owns split HEVC metadata until the decoder emits the matching frame PTS.
+ * Without an RPU parser, as on a route that presents no Dolby Vision, RPU and EL NAL units are still removed but RPUs are never parsed, and every entry is null.
+ */
 export default class DolbyVisionEncodedMetadataQueue {
     private readonly frameMetadataWindow = new DolbyVisionFrameMetadataWindow('HEVC');
 
     public constructor(
         private readonly inputFormat: HEVCNALFormat,
-        private readonly rpuParser: DolbyVisionRPUDataParser,
-        private readonly enhancementOutputFormat: HEVCNALFormat = inputFormat,
-        private readonly retainDolbyVisionMetadata = true
+        private readonly rpuParser: DolbyVisionRPUDataParser | null,
+        private readonly enhancementOutputFormat: HEVCNALFormat = inputFormat
     ) {}
 
     /**
@@ -307,10 +309,10 @@ export default class DolbyVisionEncodedMetadataQueue {
             null :
             enhancementSplit.baseLayerData;
         const hasEnhancementLayerVCL = enhancementLayerData !== null;
-        const metadataByteLength = this.retainDolbyVisionMetadata ?
+        const metadataByteLength = this.rpuParser ?
             getMetadataByteLength(rpuNALUnits, parsedRPUData) :
             0;
-        const enhancementLayerDisposition = this.retainDolbyVisionMetadata ?
+        const enhancementLayerDisposition = this.rpuParser ?
             getEnhancementLayerDisposition(enhancementLayerData, parsedRPUData) :
             'absent';
         const processedPacket: ProcessedDolbyVisionHEVCPacket = {
@@ -325,7 +327,7 @@ export default class DolbyVisionEncodedMetadataQueue {
         };
         this.frameMetadataWindow.enqueue(baseTimestampMicroseconds, {
             byteLength: metadataByteLength,
-            metadata: this.retainDolbyVisionMetadata ? {
+            metadata: this.rpuParser ? {
                 encodedRPUs: rpuNALUnits,
                 enhancementLayerDisposition,
                 hasEnhancementLayerVCL,
@@ -353,7 +355,7 @@ export default class DolbyVisionEncodedMetadataQueue {
 
     private async parseRPUData(rpuNALUnits: readonly Uint8Array[]): Promise<ArrayBuffer[]> {
         const parsedRPUData: ArrayBuffer[] = [];
-        if (!this.retainDolbyVisionMetadata) {
+        if (!this.rpuParser) {
             return parsedRPUData;
         }
         for (const rpuNALUnit of rpuNALUnits) {
@@ -367,7 +369,7 @@ export default class DolbyVisionEncodedMetadataQueue {
         parsedRPUData: readonly ArrayBuffer[],
         hasDolbyVisionFrameData: boolean
     ): PendingFrameMetadata {
-        if (!this.retainDolbyVisionMetadata) {
+        if (!this.rpuParser) {
             return { byteLength: 0, metadata: null };
         }
         const enhancementLayerDisposition = splitResult.hasEnhancementLayerVCL ?
