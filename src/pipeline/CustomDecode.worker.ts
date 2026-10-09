@@ -108,6 +108,10 @@ import {
 } from '../video/decoders/HEVCSoftwareVideoDecoder';
 import { parseHEVCSPS } from '../video/hevc/HEVCSPSParser';
 import { scanHEVCStaticHDRMetadata } from '../video/hdr/HEVCStaticHDRMetadata';
+import {
+    hasAV1PQSequenceHeader,
+    scanAV1StaticHDRMetadata
+} from '../video/hdr/AV1StaticHDRMetadata';
 import HEVCDynamicHDRMetadataQueue from '../video/hdr/HEVCDynamicHDRMetadataQueue';
 import type { HDR10PlusFrameMetadata } from '../video/hdr/HDR10PlusMetadata';
 import {
@@ -137,8 +141,10 @@ import NativeMediaAudioFMP4Remuxer, {
 import OwnedNativeHEVCVideoDecoder from '../video/decoders/OwnedNativeHEVCVideoDecoder';
 import OwnedNativeVideoDecoder from '../video/decoders/OwnedNativeVideoDecoder';
 import { runOwnedAV1VideoStream } from '../video/decoders/OwnedAV1VideoStream';
+import { runOwnedVP9VideoStream } from '../video/decoders/OwnedVP9VideoStream';
 import {
     closeOwnedDecodedVideoOutput,
+    createOwnedVideoFrameMetadataSource,
     getOwnedDecodedVideoTiming,
     OwnedVideoStreamState,
     pumpOwnedVideoFrames,
@@ -146,8 +152,7 @@ import {
     type OwnedDecodedVideoSource,
     type OwnedVideoDecoderCallbacks,
     type OwnedVideoDecoderPort,
-    type OwnedVideoFrameMetadata,
-    type OwnedVideoFrameMetadataSource,
+    type OwnedVideoPacketIterator,
     type OwnedVideoStreamRun
 } from '../video/decoders/OwnedVideoDecodeStream';
 import { assignAV1SequenceHeaderCodecString } from '../video/av1/AV1DecoderConfiguration';
@@ -173,6 +178,11 @@ import MPEG2VC1SoftwareVideoDecoder, {
 } from '../video/decoders/MPEG2VC1SoftwareVideoDecoder';
 import { getMatroskaVC1DecoderDescription } from '../video/MatroskaVFWVideoConfiguration';
 import {
+    createMatroskaBlockAdditionReader,
+    withMatroskaBlockAdditions,
+    type MatroskaBlockAddition
+} from '../video/MatroskaBlockAdditions';
+import {
     MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT,
     type StaticHDRMetadataScanResult
 } from '../video/hdr/StaticHDRMetadata';
@@ -188,7 +198,7 @@ const OWNED_HEVC_PACKET_OPTIONS = {
     metadataOnly: false,
     verifyKeyPackets: true
 } as const;
-const OWNED_AV1_PACKET_OPTIONS = {
+const OWNED_NATIVE_PACKET_OPTIONS = {
     metadataOnly: false,
     verifyKeyPackets: true
 } as const;
@@ -832,6 +842,30 @@ async function prepareFocusedSoftwareVideoTrack(input: FocusedSoftwareVideoTrack
     };
 }
 
+/** Reads the packets of a static HDR scan from the first one, within the scan's unit and byte bounds. */
+async function readStaticHDRMetadataScanUnits(
+    packetSink: EncodedPacketSink,
+    firstPacket: EncodedPacket | null,
+    run: DecodeRun
+): Promise<Uint8Array[]> {
+    const units: Uint8Array[] = [];
+    let scannedByteLength = 0;
+    let packet = firstPacket;
+    while (packet && !run.cancelled && units.length < MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT) {
+        const nextByteLength = scannedByteLength + packet.data.byteLength;
+        if (units.length > 0 && nextByteLength > STATIC_HDR_METADATA_SCAN_MAXIMUM_BYTE_LENGTH) {
+            break;
+        }
+        units.push(packet.data);
+        scannedByteLength = nextByteLength;
+        if (scannedByteLength >= STATIC_HDR_METADATA_SCAN_MAXIMUM_BYTE_LENGTH) {
+            break;
+        }
+        packet = await packetSink.getNextPacket(packet, STATIC_HDR_METADATA_PACKET_OPTIONS);
+    }
+    return units;
+}
+
 async function readHEVCStaticHDRMetadata(
     videoTrack: InputVideoTrack,
     decoderConfig: VideoDecoderConfig,
@@ -843,22 +877,51 @@ async function readHEVCStaticHDRMetadata(
     }
 
     const packetSink = new EncodedPacketSink(videoTrack);
-    const accessUnits: Uint8Array[] = [];
-    let scannedByteLength = 0;
-    let packet = await packetSink.getFirstPacket(STATIC_HDR_METADATA_PACKET_OPTIONS);
-    while (packet && !run.cancelled && accessUnits.length < MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT) {
-        const nextByteLength = scannedByteLength + packet.data.byteLength;
-        if (accessUnits.length > 0 && nextByteLength > STATIC_HDR_METADATA_SCAN_MAXIMUM_BYTE_LENGTH) {
-            break;
-        }
-        accessUnits.push(packet.data);
-        scannedByteLength = nextByteLength;
-        if (scannedByteLength >= STATIC_HDR_METADATA_SCAN_MAXIMUM_BYTE_LENGTH) {
-            break;
-        }
-        packet = await packetSink.getNextPacket(packet, STATIC_HDR_METADATA_PACKET_OPTIONS);
-    }
+    const accessUnits = await readStaticHDRMetadataScanUnits(
+        packetSink,
+        await packetSink.getFirstPacket(STATIC_HDR_METADATA_PACKET_OPTIONS),
+        run
+    );
     return scanHEVCStaticHDRMetadata(accessUnits, getHEVCNALFormat(decoderConfig));
+}
+
+/**
+ * Scans the MDCV and CLL metadata OBUs of an AV1 track that presents PQ without an RPU.
+ * AV1 has no native PQ route, so the request names no transfer, and the first temporal unit's sequence header decides instead.
+ */
+async function readAV1StaticHDRMetadata(
+    videoTrack: InputVideoTrack,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    run: DecodeRun
+): Promise<StaticHDRMetadataScanResult | null> {
+    if (request.dolbyVisionProfile !== null) {
+        return null;
+    }
+
+    const packetSink = new EncodedPacketSink(videoTrack);
+    const firstPacket = await packetSink.getFirstPacket(STATIC_HDR_METADATA_PACKET_OPTIONS);
+    if (!firstPacket || !hasAV1PQSequenceHeader(firstPacket.data)) {
+        return null;
+    }
+    return scanAV1StaticHDRMetadata(await readStaticHDRMetadataScanUnits(packetSink, firstPacket, run));
+}
+
+/** Scans the static HDR metadata a codec carries in band, on the routes whose presentation applies it. */
+function readStaticHDRMetadata(
+    codec: VideoCodec,
+    videoTrack: InputVideoTrack,
+    decoderConfig: VideoDecoderConfig,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    run: DecodeRun
+): Promise<StaticHDRMetadataScanResult | null> {
+    switch (codec) {
+        case 'hevc':
+            return readHEVCStaticHDRMetadata(videoTrack, decoderConfig, request, run);
+        case 'av1':
+            return readAV1StaticHDRMetadata(videoTrack, request, run);
+        default:
+            return Promise.resolve(null);
+    }
 }
 
 /**
@@ -900,7 +963,7 @@ async function prepareVideoTrack(
         throw new UnsupportedCustomDecodeSourceError('The selected video track ordinal is unavailable');
     }
     await assignISOBaseMediaDolbyVisionSampleEntryCodec(videoTrack);
-    // Both the owned AV1 path and the sample sink decode with the corrected codec string
+    // canDecode() and the owned AV1 path use the corrected codec string
     await assignAV1SequenceHeaderCodecString(videoTrack);
 
     const [
@@ -966,9 +1029,7 @@ async function prepareVideoTrack(
     }
     requireDolbyVisionRPUTrack(codec, request.dolbyVisionProfile);
 
-    const staticHDRMetadataScan = codec === 'hevc' ?
-        await readHEVCStaticHDRMetadata(videoTrack, decoderConfig, request, run) :
-        null;
+    const staticHDRMetadataScan = await readStaticHDRMetadata(codec, videoTrack, decoderConfig, request, run);
     if (run.cancelled) {
         throw new UnsupportedCustomDecodeSourceError('Custom decode was cancelled');
     }
@@ -2303,27 +2364,6 @@ function createOwnedVideoStreamRun(
     };
 }
 
-/** Matches each decoded HEVC frame with its Dolby Vision entry, then with its HDR10+ entry. */
-function createOwnedHEVCFrameMetadataSource(
-    metadataQueue: DolbyVisionEncodedMetadataQueue,
-    dynamicHDRMetadataQueue: HEVCDynamicHDRMetadataQueue
-): OwnedVideoFrameMetadataSource {
-    return {
-        clear: (): void => {
-            metadataQueue.clear();
-            dynamicHDRMetadataQueue.clear();
-        },
-        requireDrained: (): void => {
-            metadataQueue.requireDrained();
-            dynamicHDRMetadataQueue.requireDrained();
-        },
-        takeFrameMetadata: (timestampMicroseconds: number): OwnedVideoFrameMetadata => ({
-            encodedDolbyVisionMetadata: metadataQueue.takeFrameMetadata(timestampMicroseconds),
-            HDR10PlusMetadata: dynamicHDRMetadataQueue.takeFrameMetadata(timestampMicroseconds)
-        })
-    };
-}
-
 /** The decoders, queues, and state that each packet of one owned HEVC attempt passes through. */
 type OwnedHEVCStream = {
     decoder: OwnedVideoDecoderPort
@@ -2646,7 +2686,7 @@ async function streamOwnedHEVCFrames(
     );
     const state = new OwnedVideoStreamState(
         streamRun,
-        createOwnedHEVCFrameMetadataSource(metadataQueue, dynamicHDRMetadataQueue),
+        createOwnedVideoFrameMetadataSource(metadataQueue, dynamicHDRMetadataQueue),
         request.startTimeMicroseconds,
         enhancementConfiguration?.geometry ?? null
     );
@@ -2732,10 +2772,68 @@ async function streamOwnedHEVCFrames(
     }
 }
 
+/** The codec's part of an owned native attempt, which reads each packet's metadata as the packets decode. */
+type OwnedNativeVideoAttempt = (
+    stream: OwnedVideoStreamRun,
+    packetIterator: OwnedVideoPacketIterator,
+    createDecoder: (callbacks: OwnedVideoDecoderCallbacks) => OwnedVideoDecoderPort,
+    keyPacketMediaTimeMicroseconds: Microseconds
+) => Promise<void>;
+
 /**
- * Decodes a Dolby Vision AV1 track in the engine's own decoder.
- * Mediabunny's sample sink hides the metadata OBUs that carry the RPUs.
+ * Streams one attempt of an owned path whose packets decode unchanged in a native WebCodecs decoder.
  * Each attempt starts at the key packet preceding its start time.
+ */
+async function streamOwnedNativeFrames(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    preparedVideoTrack: PreparedVideoTrack,
+    codecName: 'AV1' | 'VP9',
+    runAttempt: OwnedNativeVideoAttempt
+): Promise<void> {
+    const packetSink = new EncodedPacketSink(preparedVideoTrack.videoTrack);
+    const startTimeSeconds = microsecondsToSeconds(request.startTimeMicroseconds);
+    const keyPacket = await packetSink.getKeyPacket(
+        startTimeSeconds,
+        OWNED_NATIVE_PACKET_OPTIONS
+    ) ?? await packetSink.getFirstKeyPacket(OWNED_NATIVE_PACKET_OPTIONS);
+    if (!keyPacket || isVideoAttemptStopped(run)) {
+        return;
+    }
+    const keyPacketMediaTimeMicroseconds = requireMicroseconds(
+        keyPacket.microsecondTimestamp,
+        `Owned ${codecName} key packet timestamp`
+    );
+    postVideoStartupProgress(run, 'video-key-packet-ready', 0, keyPacketMediaTimeMicroseconds);
+
+    const packetIterator = packetSink.packets(keyPacket, undefined, OWNED_NATIVE_PACKET_OPTIONS);
+    run.videoIterator = packetIterator;
+    const decoderConfig: VideoDecoderConfig = {
+        ...preparedVideoTrack.decoderConfig,
+        hardwareAcceleration: preparedVideoTrack.videoHardwareAcceleration,
+        optimizeForLatency: true
+    };
+    try {
+        await runAttempt(
+            createOwnedVideoStreamRun(run, preparedVideoTrack.geometry, null),
+            packetIterator,
+            (callbacks: OwnedVideoDecoderCallbacks): OwnedVideoDecoderPort => (
+                new OwnedNativeVideoDecoder(decoderConfig, callbacks)
+            ),
+            keyPacketMediaTimeMicroseconds
+        );
+    } finally {
+        try {
+            await packetIterator.return?.();
+        } catch {
+            // Input disposal is the authoritative cancellation signal
+        }
+    }
+}
+
+/**
+ * Decodes an AV1 track in the engine's own decoder, because Mediabunny's sample sink hides the metadata OBUs that carry Dolby Vision RPUs and HDR10+ metadata.
+ * Only a Dolby Vision route loads the RPU parser; any other route strips the RPUs unparsed.
  */
 async function streamOwnedAV1Frames(
     run: DecodeRun,
@@ -2748,48 +2846,62 @@ async function streamOwnedAV1Frames(
         );
     }
 
-    const packetSink = new EncodedPacketSink(preparedVideoTrack.videoTrack);
-    const startTimeSeconds = microsecondsToSeconds(request.startTimeMicroseconds);
-    const keyPacket = await packetSink.getKeyPacket(
-        startTimeSeconds,
-        OWNED_AV1_PACKET_OPTIONS
-    ) ?? await packetSink.getFirstKeyPacket(OWNED_AV1_PACKET_OPTIONS);
-    if (!keyPacket || isVideoAttemptStopped(run)) {
-        return;
-    }
-    const keyPacketMediaTimeMicroseconds = requireMicroseconds(
-        keyPacket.microsecondTimestamp,
-        'Owned AV1 key packet timestamp'
-    );
-    postVideoStartupProgress(run, 'video-key-packet-ready', 0, keyPacketMediaTimeMicroseconds);
+    await streamOwnedNativeFrames(run, request, preparedVideoTrack, 'AV1', async (
+        stream: OwnedVideoStreamRun,
+        packetIterator: OwnedVideoPacketIterator,
+        createDecoder: (callbacks: OwnedVideoDecoderCallbacks) => OwnedVideoDecoderPort,
+        keyPacketMediaTimeMicroseconds: Microseconds
+    ): Promise<void> => {
+        const rpuParser = request.dolbyVisionProfile === null ?
+            null :
+            DolbyVisionRPUParserSession.create(request.dolbyVisionRPUParserWASMURL);
+        try {
+            await runOwnedAV1VideoStream(
+                stream,
+                packetIterator,
+                rpuParser,
+                createDecoder,
+                request.startTimeMicroseconds,
+                keyPacketMediaTimeMicroseconds
+            );
+        } finally {
+            rpuParser?.close();
+        }
+    });
+}
 
-    const packetIterator = packetSink.packets(keyPacket, undefined, OWNED_AV1_PACKET_OPTIONS);
-    run.videoIterator = packetIterator;
-    const rpuParser = DolbyVisionRPUParserSession.create(request.dolbyVisionRPUParserWASMURL);
-    const decoderConfig: VideoDecoderConfig = {
-        ...preparedVideoTrack.decoderConfig,
-        hardwareAcceleration: preparedVideoTrack.videoHardwareAcceleration,
-        optimizeForLatency: true
-    };
-    try {
-        await runOwnedAV1VideoStream(
-            createOwnedVideoStreamRun(run, preparedVideoTrack.geometry, null),
+/**
+ * Decodes a VP9 track in the engine's own decoder, because only a demuxed packet's container side data carries VP9 HDR10+, and Mediabunny's sample sink never reads it.
+ */
+async function streamOwnedVP9Frames(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    preparedVideoTrack: PreparedVideoTrack
+): Promise<void> {
+    if (preparedVideoTrack.codec !== 'vp9' || run.videoDecoderBackend !== 'native') {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The owned VP9 decoder requires a VP9 track on the native decoder'
+        );
+    }
+
+    await streamOwnedNativeFrames(run, request, preparedVideoTrack, 'VP9', (
+        stream: OwnedVideoStreamRun,
+        packetIterator: OwnedVideoPacketIterator,
+        createDecoder: (callbacks: OwnedVideoDecoderCallbacks) => OwnedVideoDecoderPort,
+        keyPacketMediaTimeMicroseconds: Microseconds
+    ): Promise<void> => {
+        const readBlockAdditions = createMatroskaBlockAdditionReader(preparedVideoTrack.videoTrack);
+        return runOwnedVP9VideoStream(
+            stream,
             packetIterator,
-            rpuParser,
-            (callbacks: OwnedVideoDecoderCallbacks): OwnedVideoDecoderPort => (
-                new OwnedNativeVideoDecoder(decoderConfig, callbacks)
+            (packet: EncodedPacket): Uint8Array[] => readBlockAdditions(packet).map(
+                (addition: MatroskaBlockAddition): Uint8Array => addition.data
             ),
+            createDecoder,
             request.startTimeMicroseconds,
             keyPacketMediaTimeMicroseconds
         );
-    } finally {
-        rpuParser.close();
-        try {
-            await packetIterator.return?.();
-        } catch {
-            // Input disposal is the authoritative cancellation signal
-        }
-    }
+    });
 }
 
 async function streamJPEG2000Frames(
@@ -3065,9 +3177,13 @@ async function streamVideoFrames(
     if (preparedVideoTrack.codec === 'hevc') {
         return streamOwnedHEVCFrames(run, request, preparedVideoTrack);
     }
-    // The sample sink hides the metadata OBUs, so only the owned path sees an AV1 RPU
-    if (preparedVideoTrack.codec === 'av1' && request.dolbyVisionProfile !== null) {
+    // The sample sink hides the metadata OBUs, so only the owned path sees an AV1 RPU or HDR10+ metadata
+    if (preparedVideoTrack.codec === 'av1') {
         return streamOwnedAV1Frames(run, request, preparedVideoTrack);
+    }
+    // The sample sink never reads a packet's BlockAdditionals, so only the owned path sees VP9 HDR10+
+    if (preparedVideoTrack.codec === 'vp9' && run.videoDecoderBackend === 'native') {
+        return streamOwnedVP9Frames(run, request, preparedVideoTrack);
     }
 
     const sampleSink = new VideoSampleSink(preparedVideoTrack.videoTrack, {
@@ -3657,7 +3773,7 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
     let reportDecodeStreamFailure = false;
     try {
         const input = new Input({
-            formats: ALL_FORMATS,
+            formats: withMatroskaBlockAdditions(ALL_FORMATS),
             source: new UrlSource(request.url, {
                 fetchFn: validatedRangeFetch,
                 getRetryDelay,

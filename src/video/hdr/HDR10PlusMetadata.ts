@@ -1,8 +1,5 @@
 import type { HEVCNALFormat } from '../dolby-vision/DolbyVisionHEVCSplitter';
-import {
-    parseHEVCSEIMessages,
-    type HEVCSEIMessage
-} from '../hevc/HEVCSEI';
+import { parseHEVCSEIMessages } from '../hevc/HEVCSEI';
 
 export const HDR10_PLUS_METADATA_SCHEMA_VERSION = 1;
 export const MAXIMUM_HDR10_PLUS_PAYLOAD_BYTE_LENGTH = 907;
@@ -11,9 +8,13 @@ export const MAXIMUM_HDR10_PLUS_BEZIER_ANCHOR_COUNT = 15;
 const USER_DATA_REGISTERED_ITU_T_T35_PAYLOAD_TYPE = 4;
 const ITU_T_T35_COUNTRY_CODE_US = 0xB5;
 const SAMSUNG_PROVIDER_CODE = 0x003C;
+// itu_t_t35_country_code, then the two bytes of itu_t_t35_terminal_provider_code
+const ITU_T_T35_PROVIDER_PREFIX_BYTE_LENGTH = 3;
 const HDR10_PLUS_PROVIDER_ORIENTED_CODE = 0x0001;
 const HDR10_PLUS_APPLICATION_IDENTIFIER = 4;
 const HDR10_PLUS_MAXIMUM_LUMINANCE_NITS = 10_000;
+// The least targeted display a tone-mapping curve can adapt from; the uniform write holds a curve's target to the same floor
+const MINIMUM_CURVE_TARGET_LUMINANCE_NITS = 1;
 const HDR10_PLUS_LINEAR_RGB_SCALE = 10;
 const HDR10_PLUS_KNEE_SCALE = 4_095;
 const HDR10_PLUS_BEZIER_ANCHOR_SCALE = 1_023;
@@ -49,6 +50,11 @@ export type HDR10PlusFrameMetadataStatus =
     | 'unsupported'
     | 'valid';
 
+/**
+ * One frame's HDR10+ state.
+ * The status describes the frame's own payload, and the metadata is what applies to the frame.
+ * The parser gives metadata only to a valid frame; `HDR10PlusFrameMetadataQueue` also gives an absent or malformed frame the last metadata of its run.
+ */
 export type HDR10PlusFrameMetadata = Readonly<{
     metadata: HDR10PlusMetadata | null
     status: HDR10PlusFrameMetadataStatus
@@ -221,6 +227,14 @@ function parseWindowToneMapping(reader: BitReader, window: HDR10PlusWindowMetada
     return !hasReservedSaturationMapping;
 }
 
+/**
+ * Returns false for a tone-mapping curve without a targeted display to adapt from.
+ * HDR10+ profile A has no curve and a targeted display of 0, and profile B has a curve and a nonzero target, as hdr10plus_tool validates them; a curve with a target of 0 is neither.
+ */
+function hasCurveTarget(toneMapping: HDR10PlusToneMapping | null, targetedSystemDisplayMaximumLuminanceNits: number): boolean {
+    return toneMapping === null || targetedSystemDisplayMaximumLuminanceNits >= MINIMUM_CURVE_TARGET_LUMINANCE_NITS;
+}
+
 function parseHDR10PlusPayload(payload: Uint8Array): ParsedHDR10PlusPayload {
     if (payload.byteLength === 0 || payload.byteLength > MAXIMUM_HDR10_PLUS_PAYLOAD_BYTE_LENGTH) {
         throw new TypeError('The HDR10+ payload size is unsupported');
@@ -236,7 +250,7 @@ function parseHDR10PlusPayload(payload: Uint8Array): ParsedHDR10PlusPayload {
     }
 
     const targetedSystemDisplayMaximumLuminanceNits = reader.readBits(27);
-    if (targetedSystemDisplayMaximumLuminanceNits < 1 || targetedSystemDisplayMaximumLuminanceNits > HDR10_PLUS_MAXIMUM_LUMINANCE_NITS) {
+    if (targetedSystemDisplayMaximumLuminanceNits > HDR10_PLUS_MAXIMUM_LUMINANCE_NITS) {
         throw new TypeError('The HDR10+ targeted display luminance is invalid');
     }
     const hasTargetedPeakLuminanceGrid = reader.readBits(1) === 1;
@@ -275,14 +289,20 @@ function parseHDR10PlusPayload(payload: Uint8Array): ParsedHDR10PlusPayload {
             && !hasTargetedPeakLuminanceGrid
             && !hasMasteringPeakLuminanceGrid
             && usesSupportedToneMapping
+            // A curve without a targeted display has nothing to adapt from, so its frame tone-maps statically
+            && hasCurveTarget(primaryWindow.toneMapping, targetedSystemDisplayMaximumLuminanceNits)
     };
 }
 
+/** Returns whether an ITU-T T.35 message starts with the country code (United States) and the terminal provider code (Samsung) of HDR10+. */
+export function isHDR10PlusITUTT35Message(message: Uint8Array): boolean {
+    return message.byteLength >= ITU_T_T35_PROVIDER_PREFIX_BYTE_LENGTH
+        && message[0] === ITU_T_T35_COUNTRY_CODE_US
+        && readUnsigned16(message, 1) === SAMSUNG_PROVIDER_CODE;
+}
+
 function tryParseRegisteredHDR10PlusPayload(payload: Uint8Array): ParsedHDR10PlusPayload | null {
-    if (payload.byteLength < 3 || payload[0] !== ITU_T_T35_COUNTRY_CODE_US) {
-        return null;
-    }
-    if (readUnsigned16(payload, 1) !== SAMSUNG_PROVIDER_CODE) {
+    if (!isHDR10PlusITUTT35Message(payload)) {
         return null;
     }
     if (payload.byteLength < 6) {
@@ -302,12 +322,9 @@ function isMetadataSyntaxError(error: unknown): error is RangeError | TypeError 
     return error instanceof TypeError || error instanceof RangeError;
 }
 
-function parseHDR10PlusSEIMessage(message: HEVCSEIMessage): HDR10PlusMessageParseResult {
-    if (message.payloadType !== USER_DATA_REGISTERED_ITU_T_T35_PAYLOAD_TYPE) {
-        return { kind: 'ignored' };
-    }
+function parseHDR10PlusITUTT35Message(message: Uint8Array): HDR10PlusMessageParseResult {
     try {
-        const payload = tryParseRegisteredHDR10PlusPayload(message.payload);
+        const payload = tryParseRegisteredHDR10PlusPayload(message);
         return payload ? { kind: 'parsed', payload } : { kind: 'ignored' };
     } catch (error) {
         if (isMetadataSyntaxError(error)) {
@@ -317,29 +334,26 @@ function parseHDR10PlusSEIMessage(message: HEVCSEIMessage): HDR10PlusMessagePars
     }
 }
 
-/** Parses one frame's ST 2094-40 metadata without retaining access-unit views. */
-export function parseHEVCHDR10PlusMetadata(accessUnit: Uint8Array, format: HEVCNALFormat): HDR10PlusFrameMetadata {
+/**
+ * Parses the ITU-T T.35 messages of one frame into its HDR10+ result.
+ * Each message runs from itu_t_t35_country_code to the end of its payload, without any codec's trailing bits.
+ * Messages of other providers are ignored, so a frame without HDR10+ is absent.
+ */
+export function parseHDR10PlusITUTT35Messages(messages: readonly Uint8Array[]): HDR10PlusFrameMetadata {
     const parsedPayloads: ParsedHDR10PlusPayload[] = [];
     let malformed = false;
-    try {
-        for (const message of parseHEVCSEIMessages(accessUnit, format)) {
-            const result = parseHDR10PlusSEIMessage(message);
-            switch (result.kind) {
-                case 'ignored':
-                    break;
-                case 'malformed':
-                    malformed = true;
-                    break;
-                case 'parsed':
-                    parsedPayloads.push(result.payload);
-                    break;
-            }
+    for (const message of messages) {
+        const result = parseHDR10PlusITUTT35Message(message);
+        switch (result.kind) {
+            case 'ignored':
+                break;
+            case 'malformed':
+                malformed = true;
+                break;
+            case 'parsed':
+                parsedPayloads.push(result.payload);
+                break;
         }
-    } catch (error) {
-        if (isMetadataSyntaxError(error)) {
-            return { metadata: null, status: 'malformed' };
-        }
-        throw error;
     }
 
     if (malformed) {
@@ -356,6 +370,24 @@ export function parseHEVCHDR10PlusMetadata(accessUnit: Uint8Array, format: HEVCN
         return { metadata: null, status: 'unsupported' };
     }
     return { metadata: firstPayload.metadata, status: 'valid' };
+}
+
+/** Parses one HEVC access unit's ST 2094-40 metadata without retaining access-unit views. */
+export function parseHEVCHDR10PlusMetadata(accessUnit: Uint8Array, format: HEVCNALFormat): HDR10PlusFrameMetadata {
+    const messages: Uint8Array[] = [];
+    try {
+        for (const message of parseHEVCSEIMessages(accessUnit, format)) {
+            if (message.payloadType === USER_DATA_REGISTERED_ITU_T_T35_PAYLOAD_TYPE) {
+                messages.push(message.payload);
+            }
+        }
+    } catch (error) {
+        if (isMetadataSyntaxError(error)) {
+            return { metadata: null, status: 'malformed' };
+        }
+        throw error;
+    }
+    return parseHDR10PlusITUTT35Messages(messages);
 }
 
 function isFiniteRange(value: unknown, minimum: number, maximum: number): value is number {
@@ -415,7 +447,7 @@ export function isHDR10PlusMetadata(value: unknown): value is HDR10PlusMetadata 
         || !Number.isSafeInteger(metadata.applicationVersion)
         || !isFiniteRange(metadata.applicationVersion, 0, 1)
         || !isFiniteRange(metadata.averageMaxRGBNits, 0, HDR10_PLUS_MAXIMUM_LUMINANCE_NITS)
-        || !isFiniteRange(metadata.targetedSystemDisplayMaximumLuminanceNits, 1, HDR10_PLUS_MAXIMUM_LUMINANCE_NITS)
+        || !isFiniteRange(metadata.targetedSystemDisplayMaximumLuminanceNits, 0, HDR10_PLUS_MAXIMUM_LUMINANCE_NITS)
         || !Array.isArray(metadata.maximumSCLNits)
         || metadata.maximumSCLNits.length !== 3
         || !metadata.maximumSCLNits.every((entry: unknown): boolean => isFiniteRange(entry, 0, HDR10_PLUS_MAXIMUM_LUMINANCE_NITS))
@@ -424,10 +456,13 @@ export function isHDR10PlusMetadata(value: unknown): value is HDR10PlusMetadata 
     ) {
         return false;
     }
-    return true;
+    return hasCurveTarget(metadata.toneMapping, metadata.targetedSystemDisplayMaximumLuminanceNits);
 }
 
-/** Validates a per-frame HDR10+ parser result received across a worker boundary. */
+/**
+ * Validates a frame's HDR10+ state received across a worker boundary.
+ * A valid frame has its own metadata, an absent or malformed frame may carry its run's last metadata, and a conflicting or unsupported frame has none.
+ */
 export function isHDR10PlusFrameMetadata(value: unknown): value is HDR10PlusFrameMetadata {
     if (!value || typeof value !== 'object') {
         return false;
@@ -437,8 +472,9 @@ export function isHDR10PlusFrameMetadata(value: unknown): value is HDR10PlusFram
         case 'valid':
             return isHDR10PlusMetadata(frameMetadata.metadata);
         case 'absent':
-        case 'conflicting':
         case 'malformed':
+            return frameMetadata.metadata === null || isHDR10PlusMetadata(frameMetadata.metadata);
+        case 'conflicting':
         case 'unsupported':
             return frameMetadata.metadata === null;
         default:

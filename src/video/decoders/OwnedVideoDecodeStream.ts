@@ -5,7 +5,10 @@ import { requireMicroseconds } from '../../TimeMath';
 import DolbyVisionFramePairQueue, {
     MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH
 } from '../dolby-vision/DolbyVisionFramePairQueue';
+import type DolbyVisionEncodedMetadataQueue from '../dolby-vision/DolbyVisionEncodedMetadata';
+import type { DolbyVisionAV1EncodedMetadataQueue } from '../dolby-vision/DolbyVisionEncodedMetadata';
 import type { DolbyVisionEncodedFrameMetadata } from '../dolby-vision/DolbyVisionEncodedMetadataProtocol';
+import type HDR10PlusFrameMetadataQueue from '../hdr/HDR10PlusFrameMetadataQueue';
 import type { HDR10PlusFrameMetadata } from '../hdr/HDR10PlusMetadata';
 import {
     RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT,
@@ -100,6 +103,17 @@ export type OwnedVideoStreamRun = {
 
 export type OwnedVideoPacketDecoder = (packet: EncodedPacket, packetMediaTimeMicroseconds: Microseconds) => Promise<boolean>;
 
+/** One packet after its metadata was recorded in decode order. */
+export type ProcessedOwnedVideoPacket = {
+    /** The packet without the metadata the decoder must not see; the input packet when it carried none */
+    decoderPacket: EncodedPacket
+    /** Whether the decoder outputs a frame, which takes the packet's metadata entry */
+    hasFrame: boolean
+};
+
+/** Records one packet's metadata for its frame and returns what the decoder takes. */
+export type OwnedVideoPacketProcessor = (packet: EncodedPacket) => Promise<ProcessedOwnedVideoPacket>;
+
 type OwnedOutputPostResult = 'none' | 'posted' | 'stopped';
 
 /** Reads a decoded source's integer microsecond timestamp and duration. */
@@ -137,6 +151,30 @@ export function closeOwnedDecodedVideoSource(source: OwnedDecodedVideoSource | n
 
 export function closeOwnedDecodedVideoOutput(output: OwnedDecodedVideoOutput | null): void {
     closeOwnedDecodedVideoSource(output?.source ?? null);
+}
+
+/**
+ * Matches each decoded frame with its Dolby Vision entry, then with its HDR10+ entry.
+ * A path without a Dolby Vision queue gives every frame none.
+ */
+export function createOwnedVideoFrameMetadataSource(
+    dolbyVisionMetadataQueue: DolbyVisionEncodedMetadataQueue | DolbyVisionAV1EncodedMetadataQueue | null,
+    dynamicHDRMetadataQueue: HDR10PlusFrameMetadataQueue
+): OwnedVideoFrameMetadataSource {
+    return {
+        clear: (): void => {
+            dolbyVisionMetadataQueue?.clear();
+            dynamicHDRMetadataQueue.clear();
+        },
+        requireDrained: (): void => {
+            dolbyVisionMetadataQueue?.requireDrained();
+            dynamicHDRMetadataQueue.requireDrained();
+        },
+        takeFrameMetadata: (timestampMicroseconds: number): OwnedVideoFrameMetadata => ({
+            encodedDolbyVisionMetadata: dolbyVisionMetadataQueue?.takeFrameMetadata(timestampMicroseconds) ?? null,
+            HDR10PlusMetadata: dynamicHDRMetadataQueue.takeFrameMetadata(timestampMicroseconds)
+        })
+    };
 }
 
 /** Returns whether a decoded EL has the format and geometry the compound raw copy requires of it. */
@@ -468,5 +506,49 @@ export async function pumpOwnedVideoFrames(
             return;
         }
         stream.postStartupProgress('video-packet-decoded', packetCount, packetMediaTimeMicroseconds);
+    }
+}
+
+/**
+ * Runs one attempt of a single-layer owned decode path, from the key packet the iterator starts at.
+ * Each packet's metadata is recorded in decode order before decode and travels with the packet's frame.
+ * The caller owns the packet iterator.
+ */
+export async function runOwnedSingleLayerVideoStream(
+    stream: OwnedVideoStreamRun,
+    packetIterator: OwnedVideoPacketIterator,
+    frameMetadata: OwnedVideoFrameMetadataSource,
+    processPacket: OwnedVideoPacketProcessor,
+    createDecoder: (callbacks: OwnedVideoDecoderCallbacks) => OwnedVideoDecoderPort,
+    startTimeMicroseconds: Microseconds,
+    keyPacketMediaTimeMicroseconds: Microseconds
+): Promise<void> {
+    const state = new OwnedVideoStreamState(stream, frameMetadata, startTimeMicroseconds, null);
+    const decoder = createDecoder({
+        onError: (error: unknown): void => {
+            state.recordDecoderFailure(error);
+            stream.notifyDecoderProgress();
+        },
+        onOutput: (output: OwnedDecodedVideoSource): void => {
+            state.enqueueDecodedOutput(output);
+        },
+        onProgress: (): void => {
+            stream.notifyDecoderProgress();
+        }
+    });
+    const decodePacket = async (packet: EncodedPacket): Promise<boolean> => {
+        const processedPacket = await processPacket(packet);
+        state.decodeBasePacket(packet, processedPacket.decoderPacket, processedPacket.hasFrame, decoder);
+        state.throwDecoderFailure();
+        return true;
+    };
+    try {
+        await decoder.init();
+        stream.postStartupProgress('video-decoder-ready', 0, keyPacketMediaTimeMicroseconds);
+        await pumpOwnedVideoFrames(stream, packetIterator, decoder, null, state, decodePacket);
+    } finally {
+        // Close the decoder first: an output arriving later would otherwise land in the cleared queue and leak
+        decoder.close();
+        state.close();
     }
 }

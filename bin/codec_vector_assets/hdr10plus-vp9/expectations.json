@@ -1,0 +1,356 @@
+{
+  "blockAdditionID": 4,
+  "colorPrimaries": 9,
+  "frameCount": 8,
+  "frameRate": 24,
+  "frames": [
+    {
+      "HDR10Plus": {
+        "applicationVersion": 1,
+        "averageMaxRGB": 1000,
+        "bezierCurve": {
+          "anchors": [
+            102,
+            205,
+            307,
+            410,
+            512,
+            614,
+            717,
+            819,
+            922
+          ],
+          "kneePointX": 0,
+          "kneePointY": 0
+        },
+        "distributionMaxRGB": [
+          {
+            "percentage": 1,
+            "percentile": 100
+          },
+          {
+            "percentage": 5,
+            "percentile": 200
+          },
+          {
+            "percentage": 10,
+            "percentile": 300
+          },
+          {
+            "percentage": 25,
+            "percentile": 400
+          },
+          {
+            "percentage": 50,
+            "percentile": 500
+          },
+          {
+            "percentage": 75,
+            "percentile": 600
+          },
+          {
+            "percentage": 90,
+            "percentile": 700
+          },
+          {
+            "percentage": 95,
+            "percentile": 800
+          },
+          {
+            "percentage": 99,
+            "percentile": 900
+          }
+        ],
+        "fractionBrightPixels": 0,
+        "maxSCL": [
+          40000,
+          35000,
+          30000
+        ],
+        "targetedSystemDisplayMaximumLuminance": 400,
+        "windowCount": 1
+      },
+      "ITUTT35Message": "b5003c0001040140000c81388088b83a9800fa240801902803205004b0c806419007d2580962d00af2f80c83180e100040000024663353366a0099acdccf9a00",
+      "keyFrame": true
+    },
+    {
+      "HDR10Plus": {
+        "applicationVersion": 1,
+        "averageMaxRGB": 2500,
+        "bezierCurve": {
+          "anchors": [
+            256,
+            512,
+            768
+          ],
+          "kneePointX": 2048,
+          "kneePointY": 1024
+        },
+        "distributionMaxRGB": [
+          {
+            "percentage": 1,
+            "percentile": 5
+          },
+          {
+            "percentage": 50,
+            "percentile": 600
+          },
+          {
+            "percentage": 99,
+            "percentile": 9000
+          }
+        ],
+        "fractionBrightPixels": 0,
+        "maxSCL": [
+          12000,
+          10000,
+          8000
+        ],
+        "targetedSystemDisplayMaximumLuminance": 1000,
+        "windowCount": 1
+      },
+      "ITUTT35Message": "b5003c0001040140001f405dc027100fa002710c080015900963188ca0006001000d00803000",
+      "keyFrame": false
+    },
+    {
+      "HDR10Plus": null,
+      "ITUTT35Message": null,
+      "keyFrame": false
+    },
+    {
+      "HDR10Plus": {
+        "applicationVersion": 1,
+        "averageMaxRGB": 800,
+        "bezierCurve": null,
+        "distributionMaxRGB": [
+          {
+            "percentage": 1,
+            "percentile": 50
+          },
+          {
+            "percentage": 5,
+            "percentile": 100
+          },
+          {
+            "percentage": 10,
+            "percentile": 150
+          },
+          {
+            "percentage": 25,
+            "percentile": 200
+          },
+          {
+            "percentage": 50,
+            "percentile": 250
+          },
+          {
+            "percentage": 75,
+            "percentile": 300
+          },
+          {
+            "percentage": 90,
+            "percentile": 350
+          },
+          {
+            "percentage": 95,
+            "percentile": 400
+          },
+          {
+            "percentage": 99,
+            "percentile": 450
+          }
+        ],
+        "fractionBrightPixels": 0,
+        "maxSCL": [
+          6000,
+          5000,
+          4000
+        ],
+        "targetedSystemDisplayMaximumLuminance": 0,
+        "windowCount": 1
+      },
+      "ITUTT35Message": "b5003c00010401400000002ee0138807d000c8240800c8280190500258c803219003ea5804b2d0057af806431807080000",
+      "keyFrame": false
+    },
+    {
+      "HDR10Plus": null,
+      "ITUTT35Message": null,
+      "keyFrame": true
+    },
+    {
+      "HDR10Plus": {
+        "applicationVersion": 1,
+        "averageMaxRGB": 1,
+        "bezierCurve": {
+          "anchors": [
+            68,
+            136,
+            204,
+            272,
+            340,
+            408,
+            476,
+            544,
+            612,
+            680,
+            748,
+            816,
+            884,
+            952,
+            1020
+          ],
+          "kneePointX": 4095,
+          "kneePointY": 4095
+        },
+        "distributionMaxRGB": [
+          {
+            "percentage": 1,
+            "percentile": 1000
+          },
+          {
+            "percentage": 5,
+            "percentile": 5000
+          },
+          {
+            "percentage": 10,
+            "percentile": 10000
+          },
+          {
+            "percentage": 20,
+            "percentile": 20000
+          },
+          {
+            "percentage": 30,
+            "percentile": 30000
+          },
+          {
+            "percentage": 40,
+            "percentile": 40000
+          },
+          {
+            "percentage": 50,
+            "percentile": 50000
+          },
+          {
+            "percentage": 60,
+            "percentile": 60000
+          },
+          {
+            "percentage": 70,
+            "percentile": 70000
+          },
+          {
+            "percentage": 80,
+            "percentile": 80000
+          },
+          {
+            "percentage": 90,
+            "percentile": 90000
+          },
+          {
+            "percentage": 95,
+            "percentile": 95000
+          },
+          {
+            "percentage": 98,
+            "percentile": 98000
+          },
+          {
+            "percentage": 99,
+            "percentile": 99000
+          },
+          {
+            "percentage": 100,
+            "percentile": 100000
+          }
+        ],
+        "fractionBrightPixels": 0,
+        "maxSCL": [
+          100000,
+          0,
+          1
+        ],
+        "targetedSystemDisplayMaximumLuminance": 10000,
+        "windowCount": 1
+      },
+      "ITUTT35Message": "b5003c00010401400138830d400000000080007c080fa0284e20509c40a13880f1d4c1427101930d41e3a9823445c284e202d57e42fdcc6315fb431e0ae3261a80007ffffffc44220cc44154661dc88264aa2eccc374ee3fc0",
+      "keyFrame": false
+    },
+    {
+      "HDR10Plus": {
+        "applicationVersion": 1,
+        "averageMaxRGB": 3000,
+        "bezierCurve": {
+          "anchors": [
+            512
+          ],
+          "kneePointX": 1000,
+          "kneePointY": 2000
+        },
+        "distributionMaxRGB": [
+          {
+            "percentage": 50,
+            "percentile": 1500
+          }
+        ],
+        "fractionBrightPixels": 0,
+        "maxSCL": [
+          25000,
+          20000,
+          15000
+        ],
+        "targetedSystemDisplayMaximumLuminance": 4000,
+        "windowCount": 1
+      },
+      "ITUTT35Message": "b5003c0001040140007d00c3504e201d4c02ee05901770004fa1f4060000",
+      "keyFrame": false
+    },
+    {
+      "HDR10Plus": {
+        "applicationVersion": 1,
+        "averageMaxRGB": 3000,
+        "bezierCurve": {
+          "anchors": [
+            512
+          ],
+          "kneePointX": 1000,
+          "kneePointY": 2000
+        },
+        "distributionMaxRGB": [
+          {
+            "percentage": 50,
+            "percentile": 1500
+          }
+        ],
+        "fractionBrightPixels": 0,
+        "maxSCL": [
+          25000,
+          20000,
+          15000
+        ],
+        "targetedSystemDisplayMaximumLuminance": 4000,
+        "windowCount": 1
+      },
+      "ITUTT35Message": "b5003c0001040140007d00c3504e201d4c02ee05901770004fa1f4060000",
+      "keyFrame": false
+    }
+  ],
+  "fullRange": false,
+  "generator": "scripts/codec_vector_assets/generate_HDR10_plus_VP9_vectors.py",
+  "height": 192,
+  "matrixCoefficients": 9,
+  "transferCharacteristics": 16,
+  "vectors": [
+    {
+      "blockAdditionMapping": false,
+      "container": "webm",
+      "fileName": "hdr10plus.webm"
+    },
+    {
+      "blockAdditionMapping": true,
+      "container": "matroska",
+      "fileName": "hdr10plus.mkv"
+    }
+  ],
+  "width": 192
+}

@@ -1,0 +1,18 @@
+hdr10plus_tool test vector provenance
+
+dhdr10-opt.hevc and metadata-dhdr10-opt.json are copied unmodified from assets/hevc_tests/ of https://github.com/quietvoid/hdr10plus_tool at commit 82cb01ba387184476dbf5fa3bddebf0a345693d7.
+LICENSE is the license file of that commit: the MIT License, Copyright (c) 2026 quietvoid.
+
+SHA-256, which test/video/hdr/HDR10PlusToolVector.test.ts checks:
+
+  49ea7d65d3972f98be01b03616f38c7ba660151bd5147a0ed0e07b816daaeb45  dhdr10-opt.hevc
+  264b837e42d0c3405d357166e3cca66a88b9b41767eab812bce8bd05ae027124  metadata-dhdr10-opt.json
+  e9d76c149b1176de4aa0202cfb6a4a266a0c4cb71959f429d670c3a857f95e52  LICENSE
+
+dhdr10-opt.hevc is an Annex B HEVC Main 10 stream of 30 pictures that x265 encoded with --dhdr10-opt.
+Its HDR10+ metadata is profile A: one window, scene statistics, no Bezier curve, and a targeted display of 0.
+x265 writes the ST 2094-40 SEI only on the IDR picture and on a picture whose metadata differs from the picture encoded before it, so 18 of the 30 access units carry none.
+
+metadata-dhdr10-opt.json is what hdr10plus_tool extract writes for that stream, and the known answer of the tool's own dhdr10_opt_gaps test.
+It lists every picture in display order.
+A picture without an SEI takes the metadata of the last SEI before it in decode order, as in FFmpeg.

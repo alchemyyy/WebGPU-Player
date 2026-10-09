@@ -22,7 +22,7 @@ WebGPUPlayer (host): the only player PlaybackManager sees
           CustomDecodeSession [main]: one worker per generation, frame queue, credits
            CustomDecode.worker [worker]: Mediabunny demux, range-validated fetch
              video: WebCodecs | OwnedNativeHEVCVideoDecoder | hevc.js WASM (+ Dolby Vision EL)
-                    | OwnedNativeVideoDecoder (AV1 Dolby Vision) | OpenJPEG
+                    | OwnedNativeVideoDecoder (AV1, VP9) | OpenJPEG
                     | FFmpeg MPEG-2 and VC-1 WASM
              audio: WebCodecs | @mediabunny/ac3 | E-AC-3, DTS, TrueHD WASM
                     -> downmix -> resample to 48 kHz -> limiter; or AC-3/E-AC-3 fMP4 remux
@@ -65,7 +65,8 @@ Video is pulled: each rAF draws the newest frame at or before the clock.
    The fallback message names the counters it reached, so a timeout shows where startup stalled.
    `CustomDecodeSession.start` creates the prebuilt worker `libraries/webgpu-player/CustomDecode.worker.js`, keyed per build with `?v=`.
    Video gets 4 frame credits, or 2 for raw planes.
-5. The worker prepares its tracks (`canDecode`), scans static HDR SEI on the native PQ route (16 access units or 8 MiB), and posts `ready`.
+5. The worker prepares its tracks (`canDecode`), scans the static HDR metadata of the first 16 access units or 8 MiB, and posts `ready`.
+   It scans HEVC SEI on the native PQ route, and AV1 MDCV and CLL metadata OBUs when the first sequence header signals PQ and no RPU route is selected.
    Video and audio then stream concurrently.
 6. The session is ready when the first frame is queued and at least 100 ms of PCM has been submitted, or, on the native-media audio route, when the first segment is appended.
 7. `completeStartupIfReady` starts audio, resumes the clock, and emits `ready` and `playing`.
@@ -86,7 +87,7 @@ Video credits:
 - A presented `VideoFrame` closes after `submit()`, but its credit returns only after `queue.onSubmittedWorkDone()`.
   This keeps the decoder's surfaces from starving.
 - In raw mode the pooled buffer is the credit, and it returns through `recycle-frame`.
-- The owned HEVC and AV1 paths read a packet only while they hold a credit.
+- The owned HEVC, AV1, and VP9 paths read a packet only while they hold a credit.
 
 Audio credits:
 
@@ -124,7 +125,7 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
 ## Transitions
 
 - Seek: a new presentation generation, then `controller.seek`, then a new generation and a new worker at the target.
-  The owned HEVC and AV1 paths start at the preceding key packet.
+  The owned HEVC, AV1, and VP9 paths start at the preceding key packet.
   DTS and TrueHD use a 1 s preroll.
   Stale results are dropped by `customPlaybackSeekRevision` (host).
 - Audio track switch: eligibility runs again.

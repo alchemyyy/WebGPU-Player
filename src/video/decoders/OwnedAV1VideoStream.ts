@@ -1,77 +1,55 @@
 import type { EncodedPacket } from 'mediabunny';
 
 import type { Microseconds } from '../../MediaTime';
+import { parseAV1OBUs } from '../av1/AV1OBUParser';
 import {
     DolbyVisionAV1EncodedMetadataQueue,
     type DolbyVisionAV1RPUDataParser
 } from '../dolby-vision/DolbyVisionEncodedMetadata';
+import { parseAV1HDR10PlusMetadata } from '../hdr/AV1HDR10PlusMetadata';
+import HDR10PlusFrameMetadataQueue from '../hdr/HDR10PlusFrameMetadataQueue';
 import {
-    OwnedVideoStreamState,
-    pumpOwnedVideoFrames,
-    type OwnedDecodedVideoSource,
+    createOwnedVideoFrameMetadataSource,
+    runOwnedSingleLayerVideoStream,
     type OwnedVideoDecoderCallbacks,
     type OwnedVideoDecoderPort,
-    type OwnedVideoFrameMetadata,
-    type OwnedVideoFrameMetadataSource,
     type OwnedVideoPacketIterator,
-    type OwnedVideoStreamRun
+    type OwnedVideoStreamRun,
+    type ProcessedOwnedVideoPacket
 } from './OwnedVideoDecodeStream';
-
-function createAV1FrameMetadataSource(metadataQueue: DolbyVisionAV1EncodedMetadataQueue): OwnedVideoFrameMetadataSource {
-    return {
-        clear: (): void => {
-            metadataQueue.clear();
-        },
-        requireDrained: (): void => {
-            metadataQueue.requireDrained();
-        },
-        takeFrameMetadata: (timestampMicroseconds: number): OwnedVideoFrameMetadata => ({
-            encodedDolbyVisionMetadata: metadataQueue.takeFrameMetadata(timestampMicroseconds)
-        })
-    };
-}
 
 /**
  * Runs one attempt of the engine's own AV1 decode path, from the key packet the iterator starts at.
- * Each temporal unit's Dolby Vision RPU is parsed in decode order and stripped before decode.
- * The RPU travels with the unit's one shown frame.
+ * Each temporal unit's OBUs are walked once, in decode order.
+ * Its Dolby Vision RPU is stripped before decode and parsed when an RPU parser is given, and its HDR10+ metadata is parsed in place.
+ * Both travel with the unit's one shown frame.
  * The caller owns the packet iterator and the RPU parser.
  */
 export async function runOwnedAV1VideoStream(
     stream: OwnedVideoStreamRun,
     packetIterator: OwnedVideoPacketIterator,
-    rpuParser: DolbyVisionAV1RPUDataParser,
+    rpuParser: DolbyVisionAV1RPUDataParser | null,
     createDecoder: (callbacks: OwnedVideoDecoderCallbacks) => OwnedVideoDecoderPort,
     startTimeMicroseconds: Microseconds,
     keyPacketMediaTimeMicroseconds: Microseconds
 ): Promise<void> {
-    const metadataQueue = new DolbyVisionAV1EncodedMetadataQueue(rpuParser);
-    const state = new OwnedVideoStreamState(stream, createAV1FrameMetadataSource(metadataQueue), startTimeMicroseconds, null);
-    const decoder = createDecoder({
-        onError: (error: unknown): void => {
-            state.recordDecoderFailure(error);
-            stream.notifyDecoderProgress();
-        },
-        onOutput: (output: OwnedDecodedVideoSource): void => {
-            state.enqueueDecodedOutput(output);
-        },
-        onProgress: (): void => {
-            stream.notifyDecoderProgress();
+    const dolbyVisionMetadataQueue = new DolbyVisionAV1EncodedMetadataQueue(rpuParser);
+    const dynamicHDRMetadataQueue = new HDR10PlusFrameMetadataQueue('AV1');
+    const processTemporalUnit = async (packet: EncodedPacket): Promise<ProcessedOwnedVideoPacket> => {
+        const obus = parseAV1OBUs(packet.data);
+        const processedUnit = await dolbyVisionMetadataQueue.processTemporalUnit(packet, obus);
+        if (processedUnit.hasFrame) {
+            dynamicHDRMetadataQueue.enqueue(packet.microsecondTimestamp, parseAV1HDR10PlusMetadata(obus));
         }
-    });
-    const decodeTemporalUnit = async (packet: EncodedPacket): Promise<boolean> => {
-        const processedUnit = await metadataQueue.processTemporalUnit(packet);
-        state.decodeBasePacket(packet, processedUnit.decoderPacket, processedUnit.hasFrame, decoder);
-        state.throwDecoderFailure();
-        return true;
+        return processedUnit;
     };
-    try {
-        await decoder.init();
-        stream.postStartupProgress('video-decoder-ready', 0, keyPacketMediaTimeMicroseconds);
-        await pumpOwnedVideoFrames(stream, packetIterator, decoder, null, state, decodeTemporalUnit);
-    } finally {
-        // Close the decoder first: an output arriving later would otherwise land in the cleared queue and leak
-        decoder.close();
-        state.close();
-    }
+    await runOwnedSingleLayerVideoStream(
+        stream,
+        packetIterator,
+        createOwnedVideoFrameMetadataSource(dolbyVisionMetadataQueue, dynamicHDRMetadataQueue),
+        processTemporalUnit,
+        createDecoder,
+        startTimeMicroseconds,
+        keyPacketMediaTimeMicroseconds
+    );
 }

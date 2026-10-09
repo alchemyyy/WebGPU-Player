@@ -19,6 +19,7 @@ import {
 } from './DolbyVisionHEVCSplitter';
 import { splitDolbyVisionAV1TemporalUnit } from './DolbyVisionAV1Splitter';
 import { parseHEVCDecoderConfiguration } from '../decoders/HEVCSoftwareVideoDecoder';
+import { parseAV1OBUs, type AV1OBU } from '../av1/AV1OBUParser';
 
 export const MAXIMUM_DOLBY_VISION_PENDING_FRAME_COUNT = 64;
 export const MAXIMUM_DOLBY_VISION_PENDING_METADATA_BYTE_LENGTH = 64 * 1_024 * 1_024;
@@ -391,23 +392,28 @@ export default class DolbyVisionEncodedMetadataQueue {
 /**
  * Owns AV1 Dolby Vision metadata until the decoder emits the frame of its temporal unit.
  * Each unit has exactly one shown frame, whose timestamp is the unit's, so the unit's timestamp keys its entry.
+ * Without an RPU parser, as on a route that presents no Dolby Vision, RPUs are still removed but never parsed, and every entry is null.
  */
 export class DolbyVisionAV1EncodedMetadataQueue {
     private readonly frameMetadataWindow = new DolbyVisionFrameMetadataWindow('AV1');
 
-    public constructor(private readonly rpuParser: DolbyVisionAV1RPUDataParser) {}
+    public constructor(private readonly rpuParser: DolbyVisionAV1RPUDataParser | null) {}
 
     /**
      * Removes the Dolby Vision metadata OBUs of one temporal unit and parses its RPU in decode order.
      * It records the entry the unit's frame takes.
      * Profile 10 is single-layer: there is never an EL, and a unit carries at most one RPU, beside its frame.
+     * A caller that already walked the unit's OBUs passes them.
      */
-    public async processTemporalUnit(packet: EncodedPacket): Promise<ProcessedDolbyVisionAV1TemporalUnit> {
+    public async processTemporalUnit(
+        packet: EncodedPacket,
+        obus: readonly AV1OBU[] = parseAV1OBUs(packet.data)
+    ): Promise<ProcessedDolbyVisionAV1TemporalUnit> {
         const timestampMicroseconds = requireMicroseconds(
             packet.microsecondTimestamp,
             'Encoded AV1 packet timestamp'
         );
-        const splitResult = splitDolbyVisionAV1TemporalUnit(packet.data);
+        const splitResult = splitDolbyVisionAV1TemporalUnit(packet.data, obus);
         if (splitResult.rpuPayloads.length > MAXIMUM_DOLBY_VISION_AV1_TEMPORAL_UNIT_RPU_COUNT) {
             throw new TypeError('An AV1 temporal unit carries more than one Dolby Vision RPU');
         }
@@ -416,20 +422,22 @@ export class DolbyVisionAV1EncodedMetadataQueue {
         }
 
         const parsedRPUData: ArrayBuffer[] = [];
-        for (const rpuPayload of splitResult.rpuPayloads) {
-            parsedRPUData.push(await this.rpuParser.parseAV1ITUTT35(rpuPayload));
+        if (this.rpuParser) {
+            for (const rpuPayload of splitResult.rpuPayloads) {
+                parsedRPUData.push(await this.rpuParser.parseAV1ITUTT35(rpuPayload));
+            }
         }
         if (splitResult.hasFrame) {
-            this.frameMetadataWindow.enqueue(timestampMicroseconds, {
+            this.frameMetadataWindow.enqueue(timestampMicroseconds, parsedRPUData.length > 0 ? {
                 byteLength: getMetadataByteLength(splitResult.rpuPayloads, parsedRPUData),
-                metadata: parsedRPUData.length > 0 ? {
+                metadata: {
                     encodedRPUs: splitResult.rpuPayloads,
                     enhancementLayerDisposition: 'absent',
                     hasEnhancementLayerVCL: false,
                     parsedRPUData,
                     schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
-                } : null
-            });
+                }
+            } : { byteLength: 0, metadata: null });
         }
 
         return {

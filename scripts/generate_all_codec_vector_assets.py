@@ -35,6 +35,8 @@ GENERATOR_STEPS: Final = (
     GeneratorStep("generate_mpeg2_capability_vector.py"),
     GeneratorStep("generate_HEVC_range_extension_vectors.py"),
     GeneratorStep("generate_dolby_vision_AV1_vectors.py"),
+    GeneratorStep("generate_HDR10_plus_AV1_vectors.py"),
+    GeneratorStep("generate_HDR10_plus_VP9_vectors.py"),
 )
 
 

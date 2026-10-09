@@ -1,289 +1,102 @@
-import { EncodedPacket } from 'mediabunny';
+import type { EncodedPacket } from 'mediabunny';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Microseconds } from 'webgpu-player/MediaTime';
 import { runOwnedAV1VideoStream } from 'webgpu-player/video/decoders/OwnedAV1VideoStream';
-import type {
-    OwnedDecodedVideoOutput,
-    OwnedVideoDecoderCallbacks,
-    OwnedVideoDecoderPort,
-    OwnedVideoPacketIterator,
-    OwnedVideoStreamProgressPhase,
-    OwnedVideoStreamRun
-} from 'webgpu-player/video/decoders/OwnedVideoDecodeStream';
-import type { DolbyVisionEncodedFrameMetadata } from 'webgpu-player/video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
+import type { DolbyVisionAV1RPUDataParser } from 'webgpu-player/video/dolby-vision/DolbyVisionEncodedMetadata';
+import { parseHDR10PlusITUTT35Messages } from 'webgpu-player/video/hdr/HDR10PlusMetadata';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 
+import { createAV1MetadataOBU, createAV1OBU } from '../../helpers/av1MetadataOBUs';
 import { DOLBY_VISION_ITUT_T35_PAYLOAD_PREFIX } from '../../helpers/dolbyVisionAV1ITUTT35Payload';
+import { getHDR10PlusITUTT35Messages } from '../../helpers/hdr10PlusVectors';
+import {
+    AMPLE_FRAME_CREDITS,
+    FRAME_DURATION_MICROSECONDS,
+    KEY_PACKET_MEDIA_TIME_MICROSECONDS,
+    createFramePacket,
+    createOwnedVideoStreamFakes,
+    settle,
+    type FakeDecoderOutputMode,
+    type FakeOwnedVideoDecoder,
+    type OwnedVideoStreamFakes
+} from '../../helpers/ownedVideoStreamFakes';
 
-const OBU_HAS_SIZE_FIELD_FLAG = 0x02;
 const OBU_TYPE_SEQUENCE_HEADER = 1;
-const OBU_TYPE_METADATA = 5;
 const OBU_TYPE_FRAME = 6;
 const METADATA_TYPE_ITUT_T35 = 4;
-// A power-of-two frame rate keeps every timestamp exact in seconds and in microseconds
-const FRAMES_PER_SECOND = 32;
-const FRAME_DURATION_MICROSECONDS = 31_250 as Microseconds;
-const KEY_PACKET_MEDIA_TIME_MICROSECONDS = 0 as Microseconds;
-const AMPLE_FRAME_CREDITS = 64;
+// Two valid HDR10+ messages whose MaxSCL differs, from the deterministic HEVC vectors
+const [ FIRST_HDR10_PLUS_MESSAGE, SECOND_HDR10_PLUS_MESSAGE ] = getHDR10PlusITUTT35Messages('conflicting');
+const [ UNSUPPORTED_HDR10_PLUS_MESSAGE ] = getHDR10PlusITUTT35Messages('unsupported');
 // Half the pair queue's bound of 16 frames
 const DECODE_QUEUE_HIGH_WATER_MARK = 8;
 
-type PostedFrame = {
-    frame: FakeVideoFrame
-    mediaTimeMicroseconds: number
-    metadata: DolbyVisionEncodedFrameMetadata | null
-};
-
-type DecoderOutputMode = 'immediate' | 'held';
-
-class FakeVideoFrame {
-    public readonly close = vi.fn();
-    public readonly codedHeight = 2_160;
-    public readonly codedWidth = 3_840;
-    public readonly displayHeight = 2_160;
-    public readonly displayWidth = 3_840;
-
-    public constructor(
-        public readonly timestamp: number,
-        public readonly duration: number
-    ) {}
-}
-
-function wakeWaiters(waiters: Array<() => void>): void {
-    for (const waiter of waiters.splice(0)) {
-        waiter();
-    }
-}
-
-class FakeStreamRun implements OwnedVideoStreamRun {
-    public readonly postedFrames: PostedFrame[] = [];
-    public readonly progress: Array<[OwnedVideoStreamProgressPhase, number, number]> = [];
-    public stopped = false;
-    private readonly creditWaiters: Array<() => void> = [];
-    private readonly progressWaiters: Array<() => void> = [];
-
-    public constructor(private credits: number) {}
-
-    public readonly isStopped = (): boolean => this.stopped;
-
-    public readonly notifyDecoderProgress = (): void => {
-        wakeWaiters(this.progressWaiters);
-    };
-
-    // Like the worker, posting consumes the frame
-    public readonly postFrame = async (
-        output: OwnedDecodedVideoOutput,
-        enhancementOutput: OwnedDecodedVideoOutput | null
-    ): Promise<void> => {
-        expect(enhancementOutput).toBeNull();
-        if (output.source.kind !== 'native-frame') {
-            throw new TypeError('The owned AV1 stream posts native frames');
-        }
-        const frame = output.source.frame as unknown as FakeVideoFrame;
-        this.postedFrames.push({
-            frame,
-            mediaTimeMicroseconds: output.mediaTimeMicroseconds,
-            metadata: output.encodedDolbyVisionMetadata
-        });
-        frame.close();
-    };
-
-    public readonly postStartupProgress = (
-        phase: OwnedVideoStreamProgressPhase,
-        packetCount: number,
-        mediaTimeMicroseconds: number
-    ): void => {
-        this.progress.push([ phase, packetCount, mediaTimeMicroseconds ]);
-    };
-
-    public readonly waitForDecoderProgress = (): Promise<void> => new Promise<void>(resolve => {
-        this.progressWaiters.push(resolve);
-    });
-
-    public readonly waitForFrameCredit = async (): Promise<boolean> => {
-        while (!this.stopped && this.credits === 0) {
-            await new Promise<void>(resolve => {
-                this.creditWaiters.push(resolve);
-            });
-        }
-        if (this.stopped) {
-            return false;
-        }
-        this.credits -= 1;
-        return true;
-    };
-
-    public grantCredits(creditCount: number): void {
-        this.credits += creditCount;
-        wakeWaiters(this.creditWaiters);
-    }
-
-    public stop(): void {
-        this.stopped = true;
-        wakeWaiters(this.creditWaiters);
-        wakeWaiters(this.progressWaiters);
-    }
-}
-
-class FakePacketIterator implements OwnedVideoPacketIterator {
-    public nextCallCount = 0;
-
-    public constructor(private readonly packets: readonly EncodedPacket[]) {}
-
-    public readonly next = async (): Promise<IteratorResult<EncodedPacket>> => {
-        const packet = this.packets[this.nextCallCount];
-        this.nextCallCount += 1;
-        return packet ? { done: false, value: packet } : { done: true, value: undefined };
-    };
-}
-
-class FakeAV1Decoder implements OwnedVideoDecoderPort {
-    public readonly close = vi.fn();
-    public readonly decodedPackets: EncodedPacket[] = [];
-    public readonly droppedTimestamps = new Set<number>();
-    public readonly failures = new Map<number, DOMException>();
-    public readonly frames: FakeVideoFrame[] = [];
-    public readonly init = vi.fn(async (): Promise<void> => undefined);
-    private readonly heldPackets: EncodedPacket[] = [];
-
-    public constructor(
-        private readonly callbacks: OwnedVideoDecoderCallbacks,
-        private readonly outputMode: DecoderOutputMode
-    ) {}
-
-    // Like a native decoder, it never drops a picture on its own
-    public readonly decode = (packet: EncodedPacket): boolean => {
-        this.decodedPackets.push(packet);
-        this.receivePacket(packet);
-        return true;
-    };
-
-    public readonly flush = vi.fn(async (): Promise<void> => {
-        this.releaseHeldFrames();
-    });
-
-    // Held packets are the chunks the codec has not consumed yet
-    public readonly getDecodeQueueSize = (): number => this.heldPackets.length;
-
-    public releaseHeldFrames(): void {
-        for (const packet of this.heldPackets.splice(0)) {
-            this.output(packet);
-        }
-    }
-
-    private receivePacket(packet: EncodedPacket): void {
-        const failure = this.failures.get(packet.microsecondTimestamp);
-        if (failure) {
-            this.callbacks.onError(failure);
-            return;
-        }
-        if (this.outputMode === 'immediate') {
-            this.output(packet);
-            return;
-        }
-        this.heldPackets.push(packet);
-    }
-
-    private output(packet: EncodedPacket): void {
-        if (this.droppedTimestamps.has(packet.microsecondTimestamp)) {
-            return;
-        }
-        const frame = new FakeVideoFrame(packet.microsecondTimestamp, packet.microsecondDuration);
-        this.frames.push(frame);
-        this.callbacks.onOutput({
-            frame: frame as unknown as VideoFrame,
-            geometry: {
-                codedHeight: frame.codedHeight,
-                codedWidth: frame.codedWidth,
-                displayHeight: frame.displayHeight,
-                displayWidth: frame.displayWidth
-            },
-            kind: 'native-frame'
-        });
-        this.callbacks.onProgress();
-    }
-}
-
-type StreamHarness = {
-    decoder: FakeAV1Decoder | null
-    packetIterator: FakePacketIterator
+type StreamHarness = OwnedVideoStreamFakes & {
     parsedRPUData: Map<number, ArrayBuffer>
     rpuParser: { parseAV1ITUTT35: ReturnType<typeof vi.fn> }
-    run: FakeStreamRun
-    start: (startTimeMicroseconds?: Microseconds) => Promise<void>
+    start: (startTimeMicroseconds?: Microseconds, rpuParser?: DolbyVisionAV1RPUDataParser | null) => Promise<void>
 };
 
+// The decoded packets are compared as plain byte arrays
 function createOBU(type: number, payload: readonly number[]): number[] {
-    return [ (type << 3) | OBU_HAS_SIZE_FIELD_FLAG, payload.length, ...payload ];
+    return Array.from(createAV1OBU(type, payload));
 }
 
-/** Creates a temporal unit with a frame, or a sequence header instead, after an optional RPU carrying a tag byte. */
-function createTemporalUnit(frameIndex: number, rpuTag: number | null, hasFrame = true): EncodedPacket {
+/**
+ * Creates a temporal unit with a frame, or a sequence header instead, after an optional RPU carrying a tag byte and any HDR10+ messages.
+ * The frame index sets the unit's timestamp, so units given out of index order arrive in decode order with reordered timestamps.
+ */
+function createTemporalUnit(
+    frameIndex: number,
+    rpuTag: number | null,
+    hasFrame = true,
+    HDR10PlusMessages: readonly Uint8Array[] = []
+): EncodedPacket {
     const data = [
         ...(rpuTag === null ?
             [] :
-            createOBU(OBU_TYPE_METADATA, [ METADATA_TYPE_ITUT_T35, ...DOLBY_VISION_ITUT_T35_PAYLOAD_PREFIX, rpuTag, 0x80 ])),
+            Array.from(createAV1MetadataOBU(METADATA_TYPE_ITUT_T35, [ ...DOLBY_VISION_ITUT_T35_PAYLOAD_PREFIX, rpuTag ]))),
+        ...HDR10PlusMessages.flatMap((message: Uint8Array): number[] => Array.from(
+            createAV1MetadataOBU(METADATA_TYPE_ITUT_T35, message)
+        )),
         ...(hasFrame ? createOBU(OBU_TYPE_FRAME, [ frameIndex ]) : createOBU(OBU_TYPE_SEQUENCE_HEADER, [ 1 ]))
     ];
-    return new EncodedPacket(
-        new Uint8Array(data),
-        frameIndex === 0 ? 'key' : 'delta',
-        frameIndex / FRAMES_PER_SECOND,
-        1 / FRAMES_PER_SECOND,
-        frameIndex
-    );
+    return createFramePacket(frameIndex, data);
 }
 
+/** Runs the stream over the packets, with an RPU parser unless a start passes none. */
 function createHarness(
     packets: readonly EncodedPacket[],
     credits: number,
-    outputMode: DecoderOutputMode = 'immediate',
-    configureDecoder: (decoder: FakeAV1Decoder) => void = (): void => undefined
+    outputMode: FakeDecoderOutputMode = 'immediate',
+    configureDecoder: (decoder: FakeOwnedVideoDecoder) => void = (): void => undefined
 ): StreamHarness {
+    const fakes = createOwnedVideoStreamFakes(packets, credits, outputMode, configureDecoder);
     const parsedRPUData = new Map<number, ArrayBuffer>();
-    const harness: StreamHarness = {
-        decoder: null,
-        packetIterator: new FakePacketIterator(packets),
+    const rpuParser = {
+        // Each RPU parses to its own buffer, so a test can tell which frame received which RPU
+        parseAV1ITUTT35: vi.fn(async (payload: Uint8Array): Promise<ArrayBuffer> => {
+            const packedRPUData = createDolbyVisionAuthorizationRPUVector(8);
+            parsedRPUData.set(payload[DOLBY_VISION_ITUT_T35_PAYLOAD_PREFIX.length], packedRPUData);
+            return packedRPUData;
+        })
+    };
+    return {
+        ...fakes,
         parsedRPUData,
-        rpuParser: {
-            // Each RPU parses to its own buffer, so a test can tell which frame received which RPU
-            parseAV1ITUTT35: vi.fn(async (payload: Uint8Array): Promise<ArrayBuffer> => {
-                const packedRPUData = createDolbyVisionAuthorizationRPUVector(8);
-                parsedRPUData.set(payload[DOLBY_VISION_ITUT_T35_PAYLOAD_PREFIX.length], packedRPUData);
-                return packedRPUData;
-            })
-        },
-        run: new FakeStreamRun(credits),
-        start: (startTimeMicroseconds = KEY_PACKET_MEDIA_TIME_MICROSECONDS): Promise<void> => runOwnedAV1VideoStream(
-            harness.run,
-            harness.packetIterator,
-            harness.rpuParser,
-            (callbacks: OwnedVideoDecoderCallbacks): OwnedVideoDecoderPort => {
-                const decoder = new FakeAV1Decoder(callbacks, outputMode);
-                configureDecoder(decoder);
-                harness.decoder = decoder;
-                return decoder;
-            },
+        rpuParser,
+        start: (
+            startTimeMicroseconds = KEY_PACKET_MEDIA_TIME_MICROSECONDS,
+            startRPUParser: DolbyVisionAV1RPUDataParser | null = rpuParser
+        ): Promise<void> => runOwnedAV1VideoStream(
+            fakes.run,
+            fakes.packetIterator,
+            startRPUParser,
+            fakes.createDecoder,
             startTimeMicroseconds,
             KEY_PACKET_MEDIA_TIME_MICROSECONDS
         )
     };
-    return harness;
-}
-
-function requireDecoder(harness: StreamHarness): FakeAV1Decoder {
-    if (!harness.decoder) {
-        throw new Error('The stream has not created its decoder');
-    }
-    return harness.decoder;
-}
-
-/** Lets every pending promise continuation run. */
-async function settle(): Promise<void> {
-    await new Promise<void>(resolve => {
-        setTimeout(resolve, 0);
-    });
 }
 
 describe('runOwnedAV1VideoStream', () => {
@@ -298,7 +111,7 @@ describe('runOwnedAV1VideoStream', () => {
 
         await harness.start();
 
-        const decoder = requireDecoder(harness);
+        const decoder = harness.requireDecoder();
         expect(harness.run.postedFrames.map(postedFrame => postedFrame.mediaTimeMicroseconds)).toEqual([
             0,
             FRAME_DURATION_MICROSECONDS,
@@ -306,7 +119,7 @@ describe('runOwnedAV1VideoStream', () => {
             3 * FRAME_DURATION_MICROSECONDS
         ]);
         const postedRPUData = harness.run.postedFrames.map(postedFrame => (
-            postedFrame.metadata?.parsedRPUData[0] ?? null
+            postedFrame.encodedDolbyVisionMetadata?.parsedRPUData[0] ?? null
         ));
         expect(postedRPUData[0]).toBe(harness.parsedRPUData.get(0x10));
         expect(postedRPUData[1]).toBe(harness.parsedRPUData.get(0x11));
@@ -360,7 +173,7 @@ describe('runOwnedAV1VideoStream', () => {
 
         expect(harness.packetIterator.nextCallCount).toBe(4);
         expect(harness.run.postedFrames.map(postedFrame => (
-            postedFrame.metadata?.parsedRPUData[0]
+            postedFrame.encodedDolbyVisionMetadata?.parsedRPUData[0]
         ))).toEqual([
             harness.parsedRPUData.get(0x20),
             harness.parsedRPUData.get(0x21),
@@ -396,9 +209,9 @@ describe('runOwnedAV1VideoStream', () => {
             postedFrame.mediaTimeMicroseconds / FRAME_DURATION_MICROSECONDS
         ))).toEqual(expectedFrameIndices);
         expect(harness.run.postedFrames.map(postedFrame => (
-            postedFrame.metadata?.parsedRPUData[0]
+            postedFrame.encodedDolbyVisionMetadata?.parsedRPUData[0]
         ))).toEqual(expectedFrameIndices.map(frameIndex => harness.parsedRPUData.get(0x30 + frameIndex)));
-        for (const frame of requireDecoder(harness).frames) {
+        for (const frame of harness.requireDecoder().frames) {
             expect(frame.close).toHaveBeenCalledOnce();
         }
     });
@@ -412,9 +225,9 @@ describe('runOwnedAV1VideoStream', () => {
 
         await harness.start();
 
-        expect(requireDecoder(harness).flush).toHaveBeenCalledOnce();
+        expect(harness.requireDecoder().flush).toHaveBeenCalledOnce();
         expect(harness.run.postedFrames.map(postedFrame => (
-            postedFrame.metadata?.parsedRPUData[0]
+            postedFrame.encodedDolbyVisionMetadata?.parsedRPUData[0]
         ))).toEqual([
             harness.parsedRPUData.get(0x40),
             harness.parsedRPUData.get(0x41),
@@ -432,7 +245,7 @@ describe('runOwnedAV1VideoStream', () => {
 
         await settle();
         expect(harness.packetIterator.nextCallCount).toBe(DECODE_QUEUE_HIGH_WATER_MARK);
-        requireDecoder(harness).releaseHeldFrames();
+        harness.requireDecoder().releaseHeldFrames();
         await streamPromise;
 
         expect(harness.packetIterator.nextCallCount).toBe(packets.length + 1);
@@ -447,7 +260,7 @@ describe('runOwnedAV1VideoStream', () => {
             createTemporalUnit(0, 0x50),
             createTemporalUnit(1, 0x51),
             createTemporalUnit(2, 0x52)
-        ], AMPLE_FRAME_CREDITS, 'immediate', (decoder: FakeAV1Decoder): void => {
+        ], AMPLE_FRAME_CREDITS, 'immediate', (decoder: FakeOwnedVideoDecoder): void => {
             decoder.failures.set(FRAME_DURATION_MICROSECONDS, codecError);
         });
 
@@ -460,7 +273,7 @@ describe('runOwnedAV1VideoStream', () => {
 
         // The worker resyncs a reclaimed decoder by the error's name, so the codec's own error must surface
         expect(streamError).toBe(codecError);
-        const decoder = requireDecoder(harness);
+        const decoder = harness.requireDecoder();
         expect(decoder.close).toHaveBeenCalledOnce();
         expect(harness.run.postedFrames).toHaveLength(1);
         for (const frame of decoder.frames) {
@@ -473,7 +286,7 @@ describe('runOwnedAV1VideoStream', () => {
             createTemporalUnit(0, 0x60),
             createTemporalUnit(1, 0x61),
             createTemporalUnit(2, 0x62)
-        ], AMPLE_FRAME_CREDITS, 'immediate', (decoder: FakeAV1Decoder): void => {
+        ], AMPLE_FRAME_CREDITS, 'immediate', (decoder: FakeOwnedVideoDecoder): void => {
             decoder.droppedTimestamps.add(FRAME_DURATION_MICROSECONDS);
         });
 
@@ -481,12 +294,12 @@ describe('runOwnedAV1VideoStream', () => {
             'The AV1 decoder ended before every metadata entry was matched'
         );
         expect(harness.run.postedFrames.map(postedFrame => (
-            postedFrame.metadata?.parsedRPUData[0]
+            postedFrame.encodedDolbyVisionMetadata?.parsedRPUData[0]
         ))).toEqual([
             harness.parsedRPUData.get(0x60),
             harness.parsedRPUData.get(0x62)
         ]);
-        expect(requireDecoder(harness).close).toHaveBeenCalledOnce();
+        expect(harness.requireDecoder().close).toHaveBeenCalledOnce();
     });
 
     it('rejects an RPU whose temporal unit has no frame', async () => {
@@ -496,8 +309,104 @@ describe('runOwnedAV1VideoStream', () => {
         ], AMPLE_FRAME_CREDITS);
 
         await expect(harness.start()).rejects.toThrow('not paired with an AV1 frame');
-        expect(requireDecoder(harness).decodedPackets).toHaveLength(1);
-        expect(requireDecoder(harness).close).toHaveBeenCalledOnce();
+        expect(harness.requireDecoder().decodedPackets).toHaveLength(1);
+        expect(harness.requireDecoder().close).toHaveBeenCalledOnce();
+    });
+
+    it('attaches each unit\'s HDR10+ result to its own frame when the decoder reorders frames', async () => {
+        // Decode order 0, 2, 1, 3: the unit of frame 2 precedes the unit of frame 1
+        const harness = createHarness([
+            createTemporalUnit(0, null, true, [ FIRST_HDR10_PLUS_MESSAGE ]),
+            createTemporalUnit(2, null, true, [ SECOND_HDR10_PLUS_MESSAGE ]),
+            createTemporalUnit(1, null),
+            createTemporalUnit(3, null, true, [ UNSUPPORTED_HDR10_PLUS_MESSAGE ])
+        ], AMPLE_FRAME_CREDITS, 'presentation-order');
+
+        await harness.start();
+
+        const postedFrames = harness.run.postedFrames;
+        expect(postedFrames.map(postedFrame => postedFrame.mediaTimeMicroseconds / FRAME_DURATION_MICROSECONDS)).toEqual([
+            0,
+            1,
+            2,
+            3
+        ]);
+        expect(postedFrames.map(postedFrame => postedFrame.HDR10PlusMetadata?.status)).toEqual([
+            'valid',
+            'absent',
+            'valid',
+            'unsupported'
+        ]);
+        expect(postedFrames[0].HDR10PlusMetadata).toEqual(parseHDR10PlusITUTT35Messages([ FIRST_HDR10_PLUS_MESSAGE ]));
+        expect(postedFrames[2].HDR10PlusMetadata).toEqual(parseHDR10PlusITUTT35Messages([ SECOND_HDR10_PLUS_MESSAGE ]));
+        expect(postedFrames[3].HDR10PlusMetadata?.metadata).toBeNull();
+        expect(postedFrames[0].HDR10PlusMetadata?.metadata).not.toEqual(postedFrames[2].HDR10PlusMetadata?.metadata);
+        expect(postedFrames.map(postedFrame => postedFrame.encodedDolbyVisionMetadata)).toEqual([ null, null, null, null ]);
+    });
+
+    it('carries the Dolby Vision RPU and the HDR10+ metadata of one unit to its frame together', async () => {
+        const packets = [
+            createTemporalUnit(0, 0x90, true, [ FIRST_HDR10_PLUS_MESSAGE ]),
+            createTemporalUnit(1, 0x91, true, [ SECOND_HDR10_PLUS_MESSAGE ])
+        ];
+        const harness = createHarness(packets, AMPLE_FRAME_CREDITS, 'held');
+
+        await harness.start();
+
+        const postedFrames = harness.run.postedFrames;
+        expect(postedFrames.map(postedFrame => postedFrame.encodedDolbyVisionMetadata?.parsedRPUData[0])).toEqual([
+            harness.parsedRPUData.get(0x90),
+            harness.parsedRPUData.get(0x91)
+        ]);
+        expect(postedFrames.map(postedFrame => postedFrame.HDR10PlusMetadata)).toEqual([
+            parseHDR10PlusITUTT35Messages([ FIRST_HDR10_PLUS_MESSAGE ]),
+            parseHDR10PlusITUTT35Messages([ SECOND_HDR10_PLUS_MESSAGE ])
+        ]);
+        // Only the RPU leaves the unit; the HDR10+ OBU reaches the decoder untouched
+        expect(harness.requireDecoder().decodedPackets.map(packet => Array.from(packet.data))).toEqual([
+            [ ...createAV1MetadataOBU(METADATA_TYPE_ITUT_T35, FIRST_HDR10_PLUS_MESSAGE), ...createOBU(OBU_TYPE_FRAME, [ 0 ]) ],
+            [ ...createAV1MetadataOBU(METADATA_TYPE_ITUT_T35, SECOND_HDR10_PLUS_MESSAGE), ...createOBU(OBU_TYPE_FRAME, [ 1 ]) ]
+        ]);
+    });
+
+    it('strips RPUs without parsing them when no RPU parser is given, and still reads HDR10+', async () => {
+        const harness = createHarness([
+            createTemporalUnit(0, 0xA0, true, [ FIRST_HDR10_PLUS_MESSAGE ]),
+            createTemporalUnit(1, 0xA1)
+        ], AMPLE_FRAME_CREDITS);
+
+        await harness.start(KEY_PACKET_MEDIA_TIME_MICROSECONDS, null);
+
+        expect(harness.rpuParser.parseAV1ITUTT35).not.toHaveBeenCalled();
+        expect(harness.run.postedFrames.map(postedFrame => postedFrame.encodedDolbyVisionMetadata)).toEqual([ null, null ]);
+        expect(harness.run.postedFrames.map(postedFrame => postedFrame.HDR10PlusMetadata?.status)).toEqual([ 'valid', 'absent' ]);
+        expect(harness.run.postedFrames[0].HDR10PlusMetadata).toEqual(parseHDR10PlusITUTT35Messages([ FIRST_HDR10_PLUS_MESSAGE ]));
+        expect(harness.requireDecoder().decodedPackets.map(packet => Array.from(packet.data))).toEqual([
+            [ ...createAV1MetadataOBU(METADATA_TYPE_ITUT_T35, FIRST_HDR10_PLUS_MESSAGE), ...createOBU(OBU_TYPE_FRAME, [ 0 ]) ],
+            createOBU(OBU_TYPE_FRAME, [ 1 ])
+        ]);
+    });
+
+    it('records no HDR10+ entry for a unit without a frame', async () => {
+        const harness = createHarness([
+            createTemporalUnit(0, null, true, [ FIRST_HDR10_PLUS_MESSAGE ]),
+            createTemporalUnit(1, null, false, [ SECOND_HDR10_PLUS_MESSAGE ]),
+            createTemporalUnit(2, null, true, [ SECOND_HDR10_PLUS_MESSAGE ])
+        ], AMPLE_FRAME_CREDITS, 'immediate', (decoder: FakeOwnedVideoDecoder): void => {
+            // The unit without a frame decodes to no frame
+            decoder.droppedTimestamps.add(FRAME_DURATION_MICROSECONDS);
+        });
+
+        await harness.start();
+
+        expect(harness.run.postedFrames.map(postedFrame => postedFrame.mediaTimeMicroseconds)).toEqual([
+            0,
+            2 * FRAME_DURATION_MICROSECONDS
+        ]);
+        expect(harness.run.postedFrames.map(postedFrame => postedFrame.HDR10PlusMetadata)).toEqual([
+            parseHDR10PlusITUTT35Messages([ FIRST_HDR10_PLUS_MESSAGE ]),
+            parseHDR10PlusITUTT35Messages([ SECOND_HDR10_PLUS_MESSAGE ])
+        ]);
     });
 
     it('closes the frames it still holds when the attempt stops', async () => {
@@ -513,7 +422,7 @@ describe('runOwnedAV1VideoStream', () => {
         harness.run.stop();
         await streamPromise;
 
-        const decoder = requireDecoder(harness);
+        const decoder = harness.requireDecoder();
         expect(decoder.frames).toHaveLength(3);
         for (const frame of decoder.frames) {
             expect(frame.close).toHaveBeenCalledOnce();

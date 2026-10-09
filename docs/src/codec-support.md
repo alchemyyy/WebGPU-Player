@@ -94,6 +94,8 @@ Main 10 at 10 bits unless stated.
 
 Profile 10 is single-layer: the RPU travels in an ITU-T T.35 metadata OBU of each temporal unit, and the base layer is AV1 Main at 10 bits.
 RAW-DV here decodes through the engine's own AV1 path, natively in software, into I420P10.
+Every AV1 track takes that path, whatever its route, so the declared base of a DOVIWithHDR10Plus stream applies its HDR10+ metadata OBUs too (see [Decisions](decisions.md#video-decode-and-dolby-vision)).
+Only an RPU route loads the RPU parser; any other route removes the RPU OBUs without parsing them.
 
 | Variant | Negotiated | Eligible | Route, then fallback | Evidence |
 | --- | --- | --- | --- | --- |
@@ -135,11 +137,18 @@ A route is the eligibility output: `videoOutputMode`, `videoDecoderBackend`, `ra
 | DV base PQ, DV base HLG | As VF-PQ or VF-HLG, with `dolbyVisionProfile` null | `external-hdr` | P7 and P8 only. RPU and EL discarded. Preferred over RAW-DV whenever authorized |
 | Declared base | An ordinary route, with `dolbyVisionProfile` null | As that route | Used only when no RPU route is selected. RPU and EL discarded |
 | VF-DV5 | `video-frame`; `native`; `dolbyVisionProfile` 5 | `external-dolby-vision` | Per-frame Profile 5 RPU, also for a P20 with CCID 0 or none |
-| RAW | `raw-planes` in the exact format; `native` (WebCodecs `copyTo`), or `bundled-hevc` for Main 10 I420P10 only | `raw-yuv` | Also 10-bit SDR, through the BT.709 raw SDR keys |
+| RAW | `raw-planes` in the exact format; `native` (WebCodecs `copyTo`), or `bundled-hevc` for Main 10 I420P10 only | `raw-yuv` | Also 10-bit SDR, through the BT.709 raw SDR keys. AV1 PQ also applies the static mastering metadata of its MDCV and CLL metadata OBUs |
 | RAW-DV | `raw-planes` in I420P10 for HEVC Main 10 and AV1, I420 for HEVC Main through `bundled-hevc`, or a range-extension variant's exact format; `dolbyVisionProfile` 5 or 8 | `raw-dolby-vision` | RPU reconstruction. A P10 or P20 reports the profile it reconstructs as. A signaled EL is discarded |
 | RAW-DV7, RAW-DV4 | `raw-planes` with the BL in I420P10, in I420 through `bundled-hevc`, or in a range-extension variant's exact format, and an I420P10 EL; `dolbyVisionProfile` 7 or 4 | `raw-dolby-vision`, Profile 7 or 4 | The EL is always decoded by the bundled WASM decoder; without its Main 10 qualification the route discards the EL. MEL reshapes; the FEL residual needs the FEL key and a paired EL frame. Without a paired EL, MEL is still exact and FEL presents its base at the BL's depth: the HDR10 base for P7, and the SDR base exactly for P4 (limited BT.709, no tone mapping or dither) |
 
 HDR10+ dynamic metadata is applied on VF-PQ, DV base PQ, and RAW PQ, and ignored on VF-DV5 and the RAW-DV routes.
+HEVC carries it in SEI, and AV1 in ITU-T T.35 metadata OBUs, whose trailing bits the engine removes as dav1d does: it drops the trailing zero bytes, then the byte holding the trailing one bit, which must be 0x80, or the frame's metadata is malformed.
+VP9 has no metadata of its own, so Matroska and WebM carry each frame's ITU-T T.35 message beside it in a BlockAdditional, and VP9 in MP4 carries none.
+The engine recognizes the message by its T.35 header whatever its BlockAddID, so WebM, which has no BlockAdditionMapping, reads like Matroska, which maps FFmpeg's BlockAddID 4 to the ITU-T T.35 type.
+A frame with a Bezier curve follows the curve; a frame without one, such as every profile A frame, tone-maps from its scene peak and average and never reads the targeted display.
+A frame without HDR10+ metadata of its own, or whose payload fails to parse, takes the last metadata before it in decode order, as in FFmpeg (see [Decisions](decisions.md#video-decode-and-dolby-vision)).
+Conflicting metadata, unsupported metadata, and a curve with a targeted display of 0 tone-map their frame statically and end the carried metadata until the next valid payload.
+Each decode attempt and each seek starts without carried metadata.
 
 ## Evidence
 

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d5fe2f8e.js";
+            window.path_to_searchindex_js = "searchindex-0cf27179.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -284,7 +284,9 @@ Main 10 at 10 bits unless stated.
 </div>
 <h2 id="dolby-vision-over-av1"><a class="header" href="#dolby-vision-over-av1">Dolby Vision over AV1</a></h2>
 <p>Profile 10 is single-layer: the RPU travels in an ITU-T T.35 metadata OBU of each temporal unit, and the base layer is AV1 Main at 10 bits.
-RAW-DV here decodes through the engine’s own AV1 path, natively in software, into I420P10.</p>
+RAW-DV here decodes through the engine’s own AV1 path, natively in software, into I420P10.
+Every AV1 track takes that path, whatever its route, so the declared base of a DOVIWithHDR10Plus stream applies its HDR10+ metadata OBUs too (see <a href="decisions.html#video-decode-and-dolby-vision">Decisions</a>).
+Only an RPU route loads the RPU parser; any other route removes the RPU OBUs without parsing them.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -337,13 +339,20 @@ Jellyfin labels it by transfer, or SDR under a <code>dvav</code> or <code>dva1</
 <tr><td>DV base PQ, DV base HLG</td><td>As VF-PQ or VF-HLG, with <code>dolbyVisionProfile</code> null</td><td><code>external-hdr</code></td><td>P7 and P8 only. RPU and EL discarded. Preferred over RAW-DV whenever authorized</td></tr>
 <tr><td>Declared base</td><td>An ordinary route, with <code>dolbyVisionProfile</code> null</td><td>As that route</td><td>Used only when no RPU route is selected. RPU and EL discarded</td></tr>
 <tr><td>VF-DV5</td><td><code>video-frame</code>; <code>native</code>; <code>dolbyVisionProfile</code> 5</td><td><code>external-dolby-vision</code></td><td>Per-frame Profile 5 RPU, also for a P20 with CCID 0 or none</td></tr>
-<tr><td>RAW</td><td><code>raw-planes</code> in the exact format; <code>native</code> (WebCodecs <code>copyTo</code>), or <code>bundled-hevc</code> for Main 10 I420P10 only</td><td><code>raw-yuv</code></td><td>Also 10-bit SDR, through the BT.709 raw SDR keys</td></tr>
+<tr><td>RAW</td><td><code>raw-planes</code> in the exact format; <code>native</code> (WebCodecs <code>copyTo</code>), or <code>bundled-hevc</code> for Main 10 I420P10 only</td><td><code>raw-yuv</code></td><td>Also 10-bit SDR, through the BT.709 raw SDR keys. AV1 PQ also applies the static mastering metadata of its MDCV and CLL metadata OBUs</td></tr>
 <tr><td>RAW-DV</td><td><code>raw-planes</code> in I420P10 for HEVC Main 10 and AV1, I420 for HEVC Main through <code>bundled-hevc</code>, or a range-extension variant’s exact format; <code>dolbyVisionProfile</code> 5 or 8</td><td><code>raw-dolby-vision</code></td><td>RPU reconstruction. A P10 or P20 reports the profile it reconstructs as. A signaled EL is discarded</td></tr>
 <tr><td>RAW-DV7, RAW-DV4</td><td><code>raw-planes</code> with the BL in I420P10, in I420 through <code>bundled-hevc</code>, or in a range-extension variant’s exact format, and an I420P10 EL; <code>dolbyVisionProfile</code> 7 or 4</td><td><code>raw-dolby-vision</code>, Profile 7 or 4</td><td>The EL is always decoded by the bundled WASM decoder; without its Main 10 qualification the route discards the EL. MEL reshapes; the FEL residual needs the FEL key and a paired EL frame. Without a paired EL, MEL is still exact and FEL presents its base at the BL’s depth: the HDR10 base for P7, and the SDR base exactly for P4 (limited BT.709, no tone mapping or dither)</td></tr>
 </tbody>
 </table>
 </div>
-<p>HDR10+ dynamic metadata is applied on VF-PQ, DV base PQ, and RAW PQ, and ignored on VF-DV5 and the RAW-DV routes.</p>
+<p>HDR10+ dynamic metadata is applied on VF-PQ, DV base PQ, and RAW PQ, and ignored on VF-DV5 and the RAW-DV routes.
+HEVC carries it in SEI, and AV1 in ITU-T T.35 metadata OBUs, whose trailing bits the engine removes as dav1d does: it drops the trailing zero bytes, then the byte holding the trailing one bit, which must be 0x80, or the frame’s metadata is malformed.
+VP9 has no metadata of its own, so Matroska and WebM carry each frame’s ITU-T T.35 message beside it in a BlockAdditional, and VP9 in MP4 carries none.
+The engine recognizes the message by its T.35 header whatever its BlockAddID, so WebM, which has no BlockAdditionMapping, reads like Matroska, which maps FFmpeg’s BlockAddID 4 to the ITU-T T.35 type.
+A frame with a Bezier curve follows the curve; a frame without one, such as every profile A frame, tone-maps from its scene peak and average and never reads the targeted display.
+A frame without HDR10+ metadata of its own, or whose payload fails to parse, takes the last metadata before it in decode order, as in FFmpeg (see <a href="decisions.html#video-decode-and-dolby-vision">Decisions</a>).
+Conflicting metadata, unsupported metadata, and a curve with a targeted display of 0 tone-map their frame statically and end the carried metadata until the next valid payload.
+Each decode attempt and each seek starts without carried metadata.</p>
 <h2 id="evidence"><a class="header" href="#evidence">Evidence</a></h2>
 <p>Probes, all in <code>capability/CustomDecodeCapabilities.ts</code>:</p>
 <div class="table-wrapper">

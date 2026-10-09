@@ -1,4 +1,4 @@
-"""Tests FFmpeg and MKVToolNix resolution and the bounded tool runner shared by the Dolby Vision scripts."""
+"""Tests the tool resolution, the bounded tool runner, the pinned FFmpeg check, and the JSON and bit-packing helpers the vector scripts share."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Sequence
 from unittest.mock import patch
 
 
@@ -15,6 +16,16 @@ SCRIPTS_DIRECTORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS_DIRECTORY))
 
 import media_tools  # noqa: E402
+
+
+# The version output of the pinned build, with the library lines the check reads
+PINNED_FFMPEG_VERSION_OUTPUT = (
+    "ffmpeg version 2026-03-01-git-862338fe31-full_build-www.gyan.dev Copyright (c) 2000-2026\n"
+    "libavcodec     62. 24.100 / 62. 24.100\n"
+    "libavformat    62. 10.101 / 62. 10.101\n"
+    "libavfilter    11. 12.100 / 11. 12.100\n"
+)
+PINNED_FFPROBE_VERSION_OUTPUT = "ffprobe version 2026-03-01-git-862338fe31-full_build-www.gyan.dev\n"
 
 
 def create_empty_file(path: Path) -> Path:
@@ -192,6 +203,61 @@ class ToolExecutionTests(unittest.TestCase):
         bounded_process = subprocess.CompletedProcess(["ffmpeg"], 0, stdout=b"x" * bound, stderr=b"")
         with patch.object(subprocess, "run", return_value=bounded_process):
             self.assertEqual(len(media_tools.execute_tool("ffmpeg", [])), bound)
+
+
+class ToolchainTests(unittest.TestCase):
+    """Covers the pinned FFmpeg and FFprobe builds the encoding generators require."""
+
+    def check_toolchain_with(self, FFmpeg_output: str, FFprobe_output: str) -> None:
+        """Runs the toolchain check against fixed version output."""
+
+        def execute_tool(executable: str, arguments: Sequence[str]) -> str:
+            return FFmpeg_output if executable == "ffmpeg" else FFprobe_output
+
+        with patch.object(media_tools, "execute_tool", side_effect=execute_tool):
+            media_tools.check_toolchain(media_tools.MediaTools(FFmpeg_path="ffmpeg", FFprobe_path="ffprobe"))
+
+    def test_accepts_only_the_pinned_build(self) -> None:
+        self.check_toolchain_with(PINNED_FFMPEG_VERSION_OUTPUT, PINNED_FFPROBE_VERSION_OUTPUT)
+        cases = (
+            (PINNED_FFMPEG_VERSION_OUTPUT.replace("862338fe31", "0123456789"), PINNED_FFPROBE_VERSION_OUTPUT, "FFmpeg must be"),
+            (PINNED_FFMPEG_VERSION_OUTPUT.replace("62. 10.101", "62. 11.100"), PINNED_FFPROBE_VERSION_OUTPUT, "FFmpeg must be"),
+            (PINNED_FFMPEG_VERSION_OUTPUT.replace("11. 12.100", "11. 13.100"), PINNED_FFPROBE_VERSION_OUTPUT, "FFmpeg must be"),
+            (PINNED_FFMPEG_VERSION_OUTPUT, PINNED_FFPROBE_VERSION_OUTPUT.replace("2026-03-01", "2026-03-02"), "FFprobe must be"),
+        )
+        for FFmpeg_output, FFprobe_output, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(media_tools.VectorGenerationError, message):
+                    self.check_toolchain_with(FFmpeg_output, FFprobe_output)
+
+
+class JSONCheckTests(unittest.TestCase):
+    """Covers the compact JSON diagnostics and the equality check that compares JSON text."""
+
+    def test_formats_compact_JSON(self) -> None:
+        self.assertEqual(media_tools.format_JSON({"frames": [1, None, "K"]}), '{"frames":[1,null,"K"]}')
+
+    def test_tells_true_from_1_and_reports_both_values(self) -> None:
+        # A tuple and a list write the same JSON text
+        media_tools.require_equal((1, "K"), [1, "K"], "packet")
+        with self.assertRaisesRegex(media_tools.VectorGenerationError, "^key frame mismatch: expected 1, got true$"):
+            media_tools.require_equal(True, 1, "key frame")
+
+
+class BitPackingTests(unittest.TestCase):
+    """Covers packing fields most significant bit first and padding the last byte."""
+
+    def test_packs_fields_and_pads_with_the_requested_bit(self) -> None:
+        self.assertEqual(media_tools.pack_bit_fields(((0b101, 3),), padding_bit=1), bytes((0b1011_1111,)))
+        self.assertEqual(media_tools.pack_bit_fields(((0b101, 3),), padding_bit=0), bytes((0b1010_0000,)))
+        self.assertEqual(media_tools.pack_bit_fields(((0x3B, 16), (1, 1)), padding_bit=0), bytes((0x00, 0x3B, 0x80)))
+        self.assertEqual(media_tools.pack_bit_fields(((0xAB, 8),), padding_bit=1), bytes((0xAB,)))
+
+    def test_rejects_a_value_wider_than_its_field(self) -> None:
+        for field in ((2, 1), (-1, 8), (256, 8)):
+            with self.subTest(field=field):
+                with self.assertRaises(ValueError):
+                    media_tools.pack_bit_fields((field,), padding_bit=0)
 
 
 if __name__ == "__main__":

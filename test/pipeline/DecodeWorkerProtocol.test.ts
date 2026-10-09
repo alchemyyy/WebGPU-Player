@@ -59,6 +59,9 @@ const ZERO_SAMPLE_RATE = 0;
 const NEGATIVE_SAMPLE_RATE = -1;
 const FRACTIONAL_SAMPLE_RATE = 48_000.5;
 
+// HDR10+ profile A leaves the targeted display at 0, which a tone-mapping curve cannot adapt from
+const UNTARGETED_DISPLAY_LUMINANCE_NITS = 0;
+
 function createPackedRPUData(): ArrayBuffer {
     return createDolbyVisionAuthorizationRPUVector();
 }
@@ -801,9 +804,32 @@ describe('DecodeWorkerProtocol', () => {
                 status: 'valid'
             }
         })).toBe(false);
+        // A frame without valid metadata of its own carries its run's last metadata, but a conflicting or unsupported one ends it
         expect(isDecodeWorkerResponse({
             ...baseFrame,
             HDR10PlusMetadata: { metadata: validMetadata.metadata, status: 'absent' }
+        })).toBe(true);
+        expect(isDecodeWorkerResponse({
+            ...baseFrame,
+            HDR10PlusMetadata: { metadata: validMetadata.metadata, status: 'malformed' }
+        })).toBe(true);
+        expect(isDecodeWorkerResponse({
+            ...baseFrame,
+            HDR10PlusMetadata: { metadata: validMetadata.metadata, status: 'conflicting' }
+        })).toBe(false);
+        expect(isDecodeWorkerResponse({
+            ...baseFrame,
+            HDR10PlusMetadata: parseHEVCHDR10PlusMetadata(createHDR10PlusHEVCVector('profile-a'), { kind: 'annex-b' })
+        })).toBe(true);
+        expect(isDecodeWorkerResponse({
+            ...baseFrame,
+            HDR10PlusMetadata: {
+                metadata: {
+                    ...validMetadata.metadata,
+                    targetedSystemDisplayMaximumLuminanceNits: UNTARGETED_DISPLAY_LUMINANCE_NITS
+                },
+                status: 'valid'
+            }
         })).toBe(false);
     });
 

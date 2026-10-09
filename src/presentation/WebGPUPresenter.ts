@@ -171,6 +171,8 @@ export type PresentationFallbackReason =
 
 export type PresentationTelemetry = {
     appliedHDR10PlusFrameCount: number
+    /** Applied HDR10+ frames whose metadata was carried from an earlier frame, because they had no valid metadata of their own. */
+    carriedHDR10PlusFrameCount: number
     decodedFrameCount: number
     deviceRecoveryCount: number
     /** Dual-layer (Profile 4 or 7) FEL frames that presented their compatible base without the EL. */
@@ -352,6 +354,7 @@ function getMonotonicMicroseconds(): Microseconds {
 function createTelemetry(settings: RenderSettings): PresentationTelemetry {
     return {
         appliedHDR10PlusFrameCount: 0,
+        carriedHDR10PlusFrameCount: 0,
         decodedFrameCount: 0,
         deviceRecoveryCount: 0,
         dolbyVisionDualLayerFELBaseFallbackPresentedFrameCount: 0,
@@ -1224,9 +1227,9 @@ export default class WebGPUPresenter {
             this.activeInputMode === 'external-hdr'
             || this.activeInputMode === 'raw-yuv'
         ) && this.activeInputColorMetadata?.transfer === 'pq';
+        // An absent or malformed frame may carry its run's last metadata, which applies as a valid frame's own does
         if (
-            status === 'valid'
-            && supportsHDR10Plus
+            supportsHDR10Plus
             && isHDR10PlusFrameMetadata(frameMetadata)
             && frameMetadata.metadata
         ) {
@@ -1256,6 +1259,9 @@ export default class WebGPUPresenter {
         }
         if (dynamicFrameSettings) {
             this.telemetry.appliedHDR10PlusFrameCount += 1;
+            if (status !== 'valid') {
+                this.telemetry.carriedHDR10PlusFrameCount += 1;
+            }
             this.telemetry.lastHDR10PlusInputPeakNits = dynamicFrameSettings.inputPeakNits;
         } else {
             this.telemetry.staticFallbackHDR10PlusFrameCount += 1;

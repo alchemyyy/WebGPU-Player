@@ -1,7 +1,8 @@
 import {
     getAV1ITUTT35Message,
     hasAV1FrameHeader,
-    parseAV1OBUs
+    parseAV1OBUs,
+    type AV1OBU
 } from '../av1/AV1OBUParser';
 
 // itu_t_t35_country_code (United States), terminal provider code (Dolby), and terminal provider oriented code
@@ -37,13 +38,17 @@ function concatenateOBUs(obus: readonly Uint8Array[], byteLength: number): Uint8
  * Removes the Dolby Vision RPU metadata OBUs of one AV1 temporal unit and returns owned copies of their T.35 messages.
  * Every other OBU stays in order and untouched, other T.35 metadata such as HDR10+ included.
  * A unit without an RPU is returned without a copy.
+ * A caller that already walked the unit's OBUs passes them, so the unit is walked once.
  */
-export function splitDolbyVisionAV1TemporalUnit(data: Uint8Array): DolbyVisionAV1SplitResult {
+export function splitDolbyVisionAV1TemporalUnit(
+    data: Uint8Array,
+    obus: readonly AV1OBU[] = parseAV1OBUs(data)
+): DolbyVisionAV1SplitResult {
     const retainedOBUs: Uint8Array[] = [];
     const rpuPayloads: Uint8Array[] = [];
     let retainedByteLength = 0;
     let hasFrame = false;
-    for (const obu of parseAV1OBUs(data)) {
+    for (const obu of obus) {
         hasFrame ||= hasAV1FrameHeader(obu);
         const message = getAV1ITUTT35Message(obu);
         if (message && isDolbyVisionITUTT35Message(message)) {

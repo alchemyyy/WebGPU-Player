@@ -68,6 +68,7 @@ A full `check` takes several minutes.
 `wasm/libdovi/` is our crate.
 `src/lib.rs` wraps the `dolby_vision` crate and packs each RPU into the fixed snapshot layout the engine reads (`video/dolby-vision/DolbyVisionRPUDataLayout.ts`, schema 2).
 It has two entry points over one parser state: `dovi_parser_parse` reads an HEVC RPU NAL unit (type 62), and `dovi_parser_parse_av1_t35` reads an AV1 ITU-T T.35 metadata message, from the country code to the end of its OBU payload.
+The playback worker loads `dovi-rpu-parser.wasm` for every owned HEVC attempt, and for an owned AV1 attempt only on a Dolby Vision route.
 
 The `dolby_vision` crate is not fetched from GitHub.
 It is copied from dovi_tool rev `38adec0` into `wasm/libdovi/vendor/dolby_vision/` and built as a path dependency, because the parser follows FFmpeg's `libavcodec/dovi_rpudec.c` where upstream is stricter.

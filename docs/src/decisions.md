@@ -53,6 +53,9 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
 - An identical play request joins the pending start (10-08, host).
   A second click on the same item while its start is pending used to supersede a healthy session and repeat the item fetch, PlaybackInfo, and worker setup.
   The PlaybackManager hook returns the pending request's promise for a request with the same items and options, and any other request still supersedes it.
+- Every raw HDR route that advertises HDR10 also advertises HDR10Plus (10-09, host).
+  HDR10+ always carries a static HDR10 base, which raw PQ presents, so AV1 and VP9 advertise the label as HEVC does.
+  Jellyfin labels a stream HDR10Plus whenever it carries HDR10+ metadata, so a route without the label never direct-plays such a stream.
 
 ## Video decode and Dolby Vision
 
@@ -91,6 +94,19 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   A temporal unit has exactly one shown frame, so its timestamp keys its RPU, as a PTS keys an HEVC RPU.
   The route profile comes from the container descriptor; the profile the crate infers from the RPU header (5 for 10.0, 8 otherwise) only validates the snapshot.
   AV1 has no native external Dolby Vision or HDR route, because nothing neutralizes an AV1 sequence header's color, so P10 reconstructs from raw I420P10 only.
+- Every AV1 track decodes through the engine's own AV1 path (10-09).
+  HDR10+ and the MDCV and CLL travel in metadata OBUs, which `VideoSampleSink` hides as it hides the RPU, and Jellyfin's HDR10Plus label is not a reliable sign of them, so the route does not depend on any label.
+  Each temporal unit's OBUs are walked once: its Dolby Vision RPU OBUs are removed before decode on every route, and parsed only on a Dolby Vision route, the one route that loads the RPU parser.
+  Its HDR10+ T.35 messages lose their OBU trailing bits as dav1d removes them, then parse as HEVC SEI payloads do, and their OBUs stay in the unit.
+  Mediabunny's decoder wrapper has no AV1 workaround, and a unit's one shown frame keeps the unit's timestamp, so frames need no timestamp reassignment.
+  The one sample sink feature the owned path drops is the merge of a Matroska alpha channel (BlockAddID 1) into each frame.
+  AV1 has no native PQ route, so no request names a PQ transfer for it; an AV1 track without an RPU route scans its MDCV and CLL OBUs at startup when its first sequence header signals PQ.
+- Every VP9 track on the native backend decodes through the engine's own VP9 path (10-09).
+  VP9 has no metadata of its own, so its HDR10+ travels beside each frame in a Matroska or WebM BlockAdditional, which `VideoSampleSink` never reads, and Jellyfin's HDR10Plus label is not a reliable sign of it, so the route does not depend on any label.
+  Packets decode unchanged, and each packet's BlockAdditionals parse as the ITU-T T.35 messages of HEVC SEI do.
+  WebM and MP4 put one shown frame in each packet, a superframe holding any hidden frames before it, and a `show_existing_frame` header shows a frame too, so a packet's timestamp keys its frame's metadata.
+  A packet of hidden frames alone, which those containers forbid, records nothing, because the decoder outputs no frame for it.
+  The sample sink's alpha merge is the one VP9 feature the owned path drops: Mediabunny decodes a BlockAddID 1 alpha channel with a second decoder and merges it into each frame, while the owned path decodes the color frames only, and the presenter's canvas is opaque.
 - Raw AV1 and VP9 planes prefer software (10-08).
   Chromium's hardware AV1 and VP9 decoders return opaque 10-bit surfaces whose planes `copyTo` cannot expose, while its software decoders (dav1d, libvpx) return copyable I420P10.
   Raw-plane decode of AV1 and VP9 therefore requests `prefer-software`, in the raw probes and at runtime alike, so the raw HDR, raw SDR, and P10 routes qualify on GPUs with AV1 or VP9 hardware decode.
@@ -142,8 +158,16 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Without an `av1C` record, as in every Matroska track, Mediabunny 1.52.2 reads the first packet's sequence header, but it reads `decoder_model_info_present_flag` without timing info and the initial display delay flag once per operating point.
   Its `color_config` also skips the color description and range, and takes the Professional profile below 12 bits as 4:2:0.
   Every field after the operating points comes out wrong: a 10-bit Profile 10 Matroska vector reads as 8-bit and monochrome.
-  `AV1DecoderConfiguration.ts` parses the first packet's sequence header as the specification defines it and replaces the cached decoder configuration's codec string before the first `getDecoderConfig()` or `canDecode()`, so both the sample sink and the owned AV1 path decode with the stream's own string.
+  `AV1DecoderConfiguration.ts` parses the first packet's sequence header as the specification defines it and replaces the cached decoder configuration's codec string before the first `getDecoderConfig()` or `canDecode()`, so `canDecode()` and the owned AV1 path use the stream's own string.
   It is contained the same way, and leaves a track whose first packet has no sequence header untouched.
+- Mediabunny's dropped BlockAdditionals are recovered in the engine (10-09).
+  Mediabunny 1.52.2 parses every BlockMore but keeps only BlockAddID 1, the alpha channel, so VP9 HDR10+ never reaches a packet's side data.
+  An upstream change would wait for a release, and a patch to the installed package is lost on every install, so `MatroskaBlockAdditions.ts` contains the fix, as `ISOBaseMediaDolbyVisionSampleEntry.ts` and `AV1DecoderConfiguration.ts` contain theirs.
+  The worker's `Input` wraps its Matroska and WebM formats in place, and each demuxer they create records every finished BlockMore against its block, before it reads any cluster, at the point where Mediabunny resets its `currentBlockAdditional` field.
+  A packet finds its block through the track backing's packet-to-cluster map, which Mediabunny keeps for its own navigation.
+  Each internal is shape-checked: when one differs, demuxing proceeds untouched and reads no additions, with one console warning, and `test/video/MatroskaBlockAdditions.test.ts` fails on the committed vectors.
+  HDR10+ is recognized by its ITU-T T.35 header, not by BlockAddID, so no BlockAdditionMapping is needed: FFmpeg writes BlockAddID 4 with a mapping in Matroska and without one in WebM, and reads it either way.
+  A laced block keeps no additions, because Mediabunny replaces it with one new block per frame; Matroska muxers lace audio, not video.
 - Decoder surfaces must not starve (08-08, `ecb5a4ec09`).
   Native frame credits return after `queue.onSubmittedWorkDone()`, not after `submit()`, because Chromium holds the decoder mailbox until the GPU completes and the D3D surface pool is finite.
 - Rejected alternatives.
@@ -191,6 +215,17 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   SEI errors are not fatal, as in FFmpeg, so a malformed SEI counts as absent and the VUI alone must prove the route.
   The bundled HEVC decoder compares the container and SPS color only where both specify it (BT.470 BG equals SMPTE 170M as a matrix, and SMPTE 170M equals BT.709 as a transfer) and fills SPS gaps from the container, so a container's HLG survives a VUI 14 SPS.
   Chrome is assumed to report a null `VideoFrame.colorSpace.transfer` for VUI 14 and 15; the raw HLG frame check also accepts `bt709` on a BT.2020 frame in case it does not, and a null frame color member never contradicts the metadata.
+- HDR10+ metadata carries forward in decode order, as in FFmpeg (10-09).
+  FFmpeg keeps the last HDR10+ metadata until new metadata replaces it or the decoder flushes, also when a payload fails to parse, and hdr10plus_tool's extract fills its gaps the same way.
+  x265's `--dhdr10-opt` relies on it: it writes the SEI only on IDR pictures and where the metadata differs from the picture encoded before, so 18 of the 30 access units of hdr10plus_tool's sample carry none.
+  `HDR10PlusFrameMetadataQueue.enqueue` gives an absent or malformed frame the last metadata of its decode run, and a frame's status still describes its own payload.
+  Conflicting or unsupported metadata ends the carry until the next valid payload, and each decode attempt and seek starts a new queue.
+  Carrying in display order would be wrong: the B pictures that open a scene are shown before the scene's first decoded picture, so they would take the previous scene's metadata.
+- HDR10+ profile A plays (10-09).
+  Profile A has scene statistics without a Bezier curve and a targeted display of 0, and is the common shape.
+  Its frames tone-map from the scene peak and average alone, a mode that never reads the targeted display.
+  A curve whose targeted display is 0 is neither profile: hdr10plus_tool's validation rejects it, FFmpeg exports it unchecked, and libplacebo clamps the target into the input range before following the curve.
+  With no target to adapt the curve from, such a frame is `unsupported` and tone-maps statically.
 
 ## Firefox
 

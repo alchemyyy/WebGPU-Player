@@ -1,9 +1,8 @@
 import { EncodedPacket } from 'mediabunny';
 import { describe, expect, it } from 'vitest';
 
-import HEVCDynamicHDRMetadataQueue, {
-    MAXIMUM_PENDING_DYNAMIC_HDR_FRAME_COUNT
-} from 'webgpu-player/video/hdr/HEVCDynamicHDRMetadataQueue';
+import HEVCDynamicHDRMetadataQueue from 'webgpu-player/video/hdr/HEVCDynamicHDRMetadataQueue';
+import { MAXIMUM_PENDING_DYNAMIC_HDR_FRAME_COUNT } from 'webgpu-player/video/hdr/HDR10PlusFrameMetadataQueue';
 import {
     parseHEVCNALUnits,
     type HEVCNALUnit

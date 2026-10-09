@@ -149,13 +149,15 @@ Per codec, the routes are:
 
 - AV1 (VideoProfile `main`):
   - native SDR at 8 bits;
-  - raw HDR10 and HLG at 10 bits;
+  - raw HDR10, HDR10Plus, and HLG at 10 bits;
   - raw Dolby Vision Profile 10 at 10 bits (DOVI, DOVIWithHDR10, DOVIWithHDR10Plus, DOVIWithSDR, DOVIWithHLG, and DOVIInvalid, never DOVIWithEL), when `rawHDRVideo.av1` passes and the `I420P10:dovi-rpu-v1` key is authorized;
   - raw SDR at 10 bits.
 - VP9:
   - native SDR at 8 bits (`profile 0`);
-  - raw HDR10 and HLG, and raw SDR, at 10 bits (`profile 2`).
+  - raw HDR10, HDR10Plus, and HLG, and raw SDR, at 10 bits (`profile 2`).
 - HEVC: as [HEVC and Dolby Vision support](codec-support.md) lists, with raw SDR at 10 bits (`main 10`) beside the native Main 10 SDR route.
+
+Every raw HDR route that advertises HDR10 also advertises HDR10Plus, because HDR10+ always carries a static HDR10 base that raw PQ presents (`getRawHDRRouteVideoRangeTypes`, host).
 
 Raw SDR at 10 bits needs `allowRawSDR` with both I420P10 BT.709 SDR keys, limited and full, because a profile condition cannot express color range.
 

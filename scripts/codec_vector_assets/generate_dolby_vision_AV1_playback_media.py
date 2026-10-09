@@ -33,14 +33,12 @@ from generate_dolby_vision_AV1_vectors import (
     AudioTone,
     AV1EncodeSettings,
     DolbyVisionAV1Build,
-    MediaTools,
     SubProfile,
-    VectorGenerationError,
     build_dolby_vision_AV1_files,
     read_source_RPU,
 )
 from generate_playback_smoke_media import format_generated_files
-from media_tools import ToolError, resolve_FFmpeg_tool
+from media_tools import MediaTools, ToolError, VectorGenerationError, resolve_FFmpeg_tool
 
 
 DEFAULT_OUTPUT_DIRECTORY: Final = PLAYBACK_SMOKE_MEDIA_DIRECTORY

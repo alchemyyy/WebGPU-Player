@@ -191,7 +191,10 @@ import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from 'webgpu-player/video/dolby-v
 import {
     DOLBY_VISION_RPU_ENHANCEMENT_LAYER_BIT_DEPTH_WORD_OFFSET
 } from 'webgpu-player/video/dolby-vision/DolbyVisionRPUDataLayout';
-import { parseHEVCHDR10PlusMetadata } from 'webgpu-player/video/hdr/HDR10PlusMetadata';
+import {
+    parseHEVCHDR10PlusMetadata,
+    type HDR10PlusFrameMetadata
+} from 'webgpu-player/video/hdr/HDR10PlusMetadata';
 import { microsecondsToMilliseconds, secondsToMicroseconds } from 'webgpu-player/MediaTime';
 import {
     createDefaultRenderSettings,
@@ -213,6 +216,17 @@ type MockFunction = ReturnType<typeof vi.fn>;
 const ADAPTER_MAXIMUM_TEXTURE_DIMENSION = 16_384;
 // An RPU EL bit depth other than the 10 bits a decoded EL holds
 const MISMATCHED_ENHANCEMENT_LAYER_BIT_DEPTH = 12;
+
+// The HDR10+ uniform fields and dynamic modes: 0 is static, 1 tone-maps from the scene statistics, 2 follows the curve
+const UNIFORM_DYNAMIC_MODE_INDEX = 3;
+const UNIFORM_INPUT_PEAK_INDEX = 6;
+const UNIFORM_DYNAMIC_TARGET_PEAK_INDEX = 13;
+const STATIC_DYNAMIC_MODE = 0;
+const SCENE_STATISTICS_DYNAMIC_MODE = 1;
+const CURVE_DYNAMIC_MODE = 2;
+// The scene peak and curve target of the HDR10+ vectors
+const HDR10_PLUS_VECTOR_SCENE_PEAK_NITS = 834.75;
+const HDR10_PLUS_VECTOR_CURVE_TARGET_NITS = 1_000;
 
 type Deferred<Value> = {
     promise: Promise<Value>
@@ -2000,6 +2014,100 @@ describe('WebGPUPresenter', () => {
             lastHDR10PlusInputPeakNits: 4_000,
             lastHDR10PlusMetadataStatus: 'valid',
             staticFallbackHDR10PlusFrameCount: 0
+        });
+    });
+
+    it('applies carried and profile A HDR10+ metadata and counts the carried frames', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+        const metadata = createPQColorMetadata();
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await expect(presenter.configureColorPipeline({
+            inputMode: 'raw-yuv',
+            metadata,
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
+        }, 1)).resolves.toBe(true);
+        const deviceHarness = gpuHarness.devices[0];
+        const validMetadata = parseHEVCHDR10PlusMetadata(createHDR10PlusHEVCVector('valid'), { kind: 'annex-b' }).metadata;
+        const profileAMetadata = parseHEVCHDR10PlusMetadata(createHDR10PlusHEVCVector('profile-a'), { kind: 'annex-b' });
+        let presentedFrameCount = 0;
+        const presentFrame = async (frameMetadata: HDR10PlusFrameMetadata): Promise<{
+            floatValues: Float32Array
+            integerValues: Uint32Array
+        }> => {
+            deviceHarness.queueWriteBuffer.mockClear();
+            const frame = createRawFrame('I420P10', metadata);
+            expect(presenter.presentDecodedFrame({
+                HDR10PlusMetadata: frameMetadata,
+                durationMicroseconds: frame.durationMicroseconds ?? secondsToMicroseconds(0),
+                frame,
+                mediaTimeMicroseconds: frame.timestampMicroseconds,
+                outputMode: 'raw-planes'
+            }, 1)).toBe(true);
+            presentedFrameCount += 1;
+            await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(presentedFrameCount));
+            const renderSettingsWrite = deviceHarness.queueWriteBuffer.mock.calls
+                .map((call: unknown[]): unknown => call[2])
+                .filter((value: unknown): value is Uint8Array<ArrayBuffer> => (
+                    value instanceof Uint8Array
+                    && value.byteLength === RENDER_SETTINGS_UNIFORM_BYTE_LENGTH
+                ))
+                .at(-1);
+            expect(renderSettingsWrite).toBeDefined();
+            const uniformBuffer = (renderSettingsWrite as Uint8Array<ArrayBuffer>).buffer;
+            return { floatValues: new Float32Array(uniformBuffer), integerValues: new Uint32Array(uniformBuffer) };
+        };
+
+        // A frame without metadata of its own renders with the metadata its run carried to it
+        let uniform = await presentFrame({ metadata: validMetadata, status: 'absent' });
+        expect(uniform.integerValues[UNIFORM_DYNAMIC_MODE_INDEX]).toBe(CURVE_DYNAMIC_MODE);
+        expect(uniform.floatValues[UNIFORM_DYNAMIC_TARGET_PEAK_INDEX]).toBe(HDR10_PLUS_VECTOR_CURVE_TARGET_NITS);
+        expect(presenter.getTelemetry()).toMatchObject({
+            appliedHDR10PlusFrameCount: 1,
+            carriedHDR10PlusFrameCount: 1,
+            lastHDR10PlusMetadataStatus: 'absent',
+            staticFallbackHDR10PlusFrameCount: 0
+        });
+
+        // Profile A has no curve, so its targeted display of 0 is never read
+        uniform = await presentFrame(profileAMetadata);
+        expect(uniform.integerValues[UNIFORM_DYNAMIC_MODE_INDEX]).toBe(SCENE_STATISTICS_DYNAMIC_MODE);
+        expect(uniform.floatValues[UNIFORM_INPUT_PEAK_INDEX]).toBeCloseTo(HDR10_PLUS_VECTOR_SCENE_PEAK_NITS);
+        expect(uniform.floatValues[UNIFORM_DYNAMIC_TARGET_PEAK_INDEX]).toBe(0);
+        expect(presenter.getTelemetry()).toMatchObject({
+            appliedHDR10PlusFrameCount: 2,
+            carriedHDR10PlusFrameCount: 1,
+            lastHDR10PlusMetadataStatus: 'valid'
+        });
+
+        uniform = await presentFrame({ metadata: profileAMetadata.metadata, status: 'malformed' });
+        expect(uniform.integerValues[UNIFORM_DYNAMIC_MODE_INDEX]).toBe(SCENE_STATISTICS_DYNAMIC_MODE);
+        expect(presenter.getTelemetry()).toMatchObject({
+            appliedHDR10PlusFrameCount: 3,
+            carriedHDR10PlusFrameCount: 2,
+            lastHDR10PlusMetadataStatus: 'malformed'
+        });
+
+        uniform = await presentFrame({ metadata: null, status: 'unsupported' });
+        expect(uniform.integerValues[UNIFORM_DYNAMIC_MODE_INDEX]).toBe(STATIC_DYNAMIC_MODE);
+        expect(presenter.getTelemetry()).toMatchObject({
+            appliedHDR10PlusFrameCount: 3,
+            carriedHDR10PlusFrameCount: 2,
+            lastHDR10PlusInputPeakNits: null,
+            lastHDR10PlusMetadataStatus: 'unsupported',
+            staticFallbackHDR10PlusFrameCount: 1
         });
     });
 

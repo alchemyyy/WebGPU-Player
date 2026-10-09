@@ -10,8 +10,10 @@ import {
     AV1_OBU_TYPE_TILE_GROUP,
     AV1OBUParseError,
     getAV1ITUTT35Message,
+    getAV1Metadata,
     hasAV1FrameHeader,
-    parseAV1OBUs
+    parseAV1OBUs,
+    stripAV1TrailingBits
 } from 'webgpu-player/video/av1/AV1OBUParser';
 import { createNativeVideoCapabilityVector } from 'webgpu-player/capability/vectors/NativeVideoCapabilityVectors';
 
@@ -21,6 +23,9 @@ const OBU_EXTENSION_FLAG = 0x04;
 const OBU_HAS_SIZE_FIELD_FLAG = 0x02;
 const METADATA_TYPE_HDR_CLL = 1;
 const METADATA_TYPE_ITUT_T35 = 4;
+const METADATA_TYPE_TWO_BYTE_LEB128 = 128;
+// trailing_bits() after a byte-aligned payload
+const TRAILING_ONE_BIT_BYTE = 0x80;
 
 const EMPTY_TEMPORAL_UNIT_ERROR = 'temporal unit is empty';
 const TRUNCATED_OBU_SIZE_ERROR = 'obu_size is truncated';
@@ -218,5 +223,57 @@ describe('AV1OBUParser', () => {
 
         expect(() => getAV1ITUTT35Message(obus[0])).toThrow(AV1OBUParseError);
         expect(() => getAV1ITUTT35Message(obus[0])).toThrow(TRUNCATED_METADATA_TYPE_ERROR);
+        expect(() => getAV1Metadata(obus[0])).toThrow(TRUNCATED_METADATA_TYPE_ERROR);
+    });
+
+    it('returns the metadata_type and body of every metadata OBU and nothing for other OBUs', () => {
+        const contentLightLevel = [ 0x03, 0xAC, 0x01, 0x9A, 0x80 ];
+        const obus = parseAV1OBUs(concatenate([
+            createOBU(AV1_OBU_TYPE_METADATA, [ METADATA_TYPE_HDR_CLL, ...contentLightLevel ]),
+            // metadata_type 128 takes two leb128 bytes
+            createOBU(AV1_OBU_TYPE_METADATA, [ 0x80, 0x01, 1, 2 ]),
+            createOBU(AV1_OBU_TYPE_FRAME, [ METADATA_TYPE_HDR_CLL, ...contentLightLevel ])
+        ]));
+
+        expect(getAV1Metadata(obus[0])?.metadataType).toBe(METADATA_TYPE_HDR_CLL);
+        expect(Array.from(getAV1Metadata(obus[0])?.body ?? [])).toEqual(contentLightLevel);
+        expect(getAV1Metadata(obus[0])?.body.buffer).toBe(obus[0].data.buffer);
+        expect(getAV1Metadata(obus[1])?.metadataType).toBe(METADATA_TYPE_TWO_BYTE_LEB128);
+        expect(Array.from(getAV1Metadata(obus[1])?.body ?? [])).toEqual([ 1, 2 ]);
+        expect(getAV1Metadata(obus[2])).toBeNull();
+    });
+
+    it.each([
+        {
+            description: 'one trailing bits byte',
+            expected: [ 0x12, 0x00 ],
+            payload: [ 0x12, 0x00, TRAILING_ONE_BIT_BYTE ]
+        },
+        {
+            description: 'zero bytes after the trailing one bit',
+            expected: [ 0x12 ],
+            payload: [ 0x12, TRAILING_ONE_BIT_BYTE, 0x00, 0x00 ]
+        },
+        {
+            description: 'nothing but trailing bits',
+            expected: [],
+            payload: [ TRAILING_ONE_BIT_BYTE ]
+        }
+    ])('strips $description as dav1d does', ({ expected, payload }) => {
+        const data = new Uint8Array(payload);
+
+        const stripped = stripAV1TrailingBits(data);
+
+        expect(Array.from(stripped ?? [ -1 ])).toEqual(expected);
+        expect(stripped?.buffer).toBe(data.buffer);
+    });
+
+    it.each([
+        { description: 'an empty payload', payload: [] },
+        { description: 'only zero bytes', payload: [ 0x00, 0x00 ] },
+        { description: 'a last nonzero byte other than 0x80', payload: [ 0x12, 0x81 ] },
+        { description: 'a payload without trailing bits', payload: [ 0x80, 0x12 ] }
+    ])('finds no trailing one bit in $description', ({ payload }) => {
+        expect(stripAV1TrailingBits(new Uint8Array(payload))).toBeNull();
     });
 });

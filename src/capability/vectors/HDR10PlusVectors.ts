@@ -7,8 +7,30 @@ export type HDR10PlusVectorKind =
     | 'absent'
     | 'conflicting'
     | 'malformed'
+    | 'profile-a'
     | 'unsupported'
-    | 'valid';
+    | 'valid'
+    | 'zero-target-curve';
+
+type ApplicationPayloadShape = Readonly<{
+    hasToneMappingCurve: boolean
+    targetedDisplayMaximumLuminanceNits: number
+    windowCount: number
+}>;
+
+// HDR10+ profile B: a Bezier curve and the display it targets
+const PROFILE_B_SHAPE: ApplicationPayloadShape = {
+    hasToneMappingCurve: true,
+    targetedDisplayMaximumLuminanceNits: 1_000,
+    windowCount: 1
+};
+
+// HDR10+ profile A: scene statistics only, without a curve or a targeted display
+const PROFILE_A_SHAPE: ApplicationPayloadShape = {
+    hasToneMappingCurve: false,
+    targetedDisplayMaximumLuminanceNits: 0,
+    windowCount: 1
+};
 
 class BitWriter {
     private readonly bits: number[] = [];
@@ -37,7 +59,8 @@ class BitWriter {
     }
 }
 
-function createApplicationPayload(maximumRedSCLNits: number, windowCount = 1): Uint8Array {
+function createApplicationPayload(maximumRedSCLNits: number, shape: ApplicationPayloadShape): Uint8Array {
+    const windowCount = shape.windowCount;
     const writer = new BitWriter();
     writer.writeBits(1, 8);
     writer.writeBits(windowCount, 2);
@@ -54,7 +77,7 @@ function createApplicationPayload(maximumRedSCLNits: number, windowCount = 1): U
         writer.writeBits(100, 16);
         writer.writeBits(0, 1);
     }
-    writer.writeBits(1_000, 27);
+    writer.writeBits(shape.targetedDisplayMaximumLuminanceNits, 27);
     writer.writeBits(0, 1);
     for (let windowIndex = 0; windowIndex < windowCount; windowIndex += 1) {
         writer.writeBits(Math.round(maximumRedSCLNits * 10), 17);
@@ -70,19 +93,21 @@ function createApplicationPayload(maximumRedSCLNits: number, windowCount = 1): U
     }
     writer.writeBits(0, 1);
     for (let windowIndex = 0; windowIndex < windowCount; windowIndex += 1) {
-        writer.writeBits(1, 1);
-        writer.writeBits(2_048, 12);
-        writer.writeBits(1_024, 12);
-        writer.writeBits(2, 4);
-        writer.writeBits(256, 10);
-        writer.writeBits(768, 10);
+        writer.writeBits(shape.hasToneMappingCurve ? 1 : 0, 1);
+        if (shape.hasToneMappingCurve) {
+            writer.writeBits(2_048, 12);
+            writer.writeBits(1_024, 12);
+            writer.writeBits(2, 4);
+            writer.writeBits(256, 10);
+            writer.writeBits(768, 10);
+        }
         writer.writeBits(0, 1);
     }
     return writer.finish();
 }
 
-function createRegisteredPayload(maximumRedSCLNits: number, windowCount = 1): Uint8Array {
-    const applicationPayload = createApplicationPayload(maximumRedSCLNits, windowCount);
+function createRegisteredPayload(maximumRedSCLNits: number, shape: ApplicationPayloadShape = PROFILE_B_SHAPE): Uint8Array {
+    const applicationPayload = createApplicationPayload(maximumRedSCLNits, shape);
     const payload = new Uint8Array(6 + applicationPayload.byteLength);
     payload.set([ 0xB5, 0x00, 0x3C, 0x00, 0x01, 0x04 ]);
     payload.set(applicationPayload, 6);
@@ -148,7 +173,11 @@ function encodeAnnexBNALUnits(nalUnits: readonly Uint8Array[]): Uint8Array {
     return output;
 }
 
-/** Creates a deterministic Annex B HEVC access unit whose HDR10+ SEI is absent, conflicting, malformed, unsupported, or valid. */
+/**
+ * Creates a deterministic Annex B HEVC access unit whose HDR10+ SEI is absent, conflicting, malformed, unsupported, or valid.
+ * `valid` is profile B, and `profile-a` is the same statistics without a curve or a targeted display.
+ * `zero-target-curve` keeps the curve without its targeted display, which is neither profile.
+ */
 export function createHDR10PlusHEVCVector(kind: HDR10PlusVectorKind): Uint8Array {
     const payloads: Uint8Array[] = [];
     switch (kind) {
@@ -161,11 +190,17 @@ export function createHDR10PlusHEVCVector(kind: HDR10PlusVectorKind): Uint8Array
         case 'malformed':
             payloads.push(new Uint8Array([ 0xB5, 0x00, 0x3C, 0x00, 0x01, 0x04 ]));
             break;
+        case 'profile-a':
+            payloads.push(createRegisteredPayload(1_000, PROFILE_A_SHAPE));
+            break;
         case 'unsupported':
-            payloads.push(createRegisteredPayload(1_000, 2));
+            payloads.push(createRegisteredPayload(1_000, { ...PROFILE_B_SHAPE, windowCount: 2 }));
             break;
         case 'valid':
             payloads.push(createRegisteredPayload(1_000));
+            break;
+        case 'zero-target-curve':
+            payloads.push(createRegisteredPayload(1_000, { ...PROFILE_B_SHAPE, targetedDisplayMaximumLuminanceNits: 0 }));
             break;
     }
     const nalUnits: Uint8Array[] = [];

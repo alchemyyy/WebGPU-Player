@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d5fe2f8e.js";
+            window.path_to_searchindex_js = "searchindex-0cf27179.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -198,7 +198,7 @@ WebGPUPlayer (host): the only player PlaybackManager sees
           CustomDecodeSession [main]: one worker per generation, frame queue, credits
            CustomDecode.worker [worker]: Mediabunny demux, range-validated fetch
              video: WebCodecs | OwnedNativeHEVCVideoDecoder | hevc.js WASM (+ Dolby Vision EL)
-                    | OwnedNativeVideoDecoder (AV1 Dolby Vision) | OpenJPEG
+                    | OwnedNativeVideoDecoder (AV1, VP9) | OpenJPEG
                     | FFmpeg MPEG-2 and VC-1 WASM
              audio: WebCodecs | @mediabunny/ac3 | E-AC-3, DTS, TrueHD WASM
                     -&gt; downmix -&gt; resample to 48 kHz -&gt; limiter; or AC-3/E-AC-3 fMP4 remux
@@ -238,7 +238,8 @@ It samples the decode counters every second and fails after 20 s without progres
 The fallback message names the counters it reached, so a timeout shows where startup stalled.
 <code>CustomDecodeSession.start</code> creates the prebuilt worker <code>libraries/webgpu-player/CustomDecode.worker.js</code>, keyed per build with <code>?v=</code>.
 Video gets 4 frame credits, or 2 for raw planes.</li>
-<li>The worker prepares its tracks (<code>canDecode</code>), scans static HDR SEI on the native PQ route (16 access units or 8 MiB), and posts <code>ready</code>.
+<li>The worker prepares its tracks (<code>canDecode</code>), scans the static HDR metadata of the first 16 access units or 8 MiB, and posts <code>ready</code>.
+It scans HEVC SEI on the native PQ route, and AV1 MDCV and CLL metadata OBUs when the first sequence header signals PQ and no RPU route is selected.
 Video and audio then stream concurrently.</li>
 <li>The session is ready when the first frame is queued and at least 100 ms of PCM has been submitted, or, on the native-media audio route, when the first segment is appended.</li>
 <li><code>completeStartupIfReady</code> starts audio, resumes the clock, and emits <code>ready</code> and <code>playing</code>.
@@ -264,7 +265,7 @@ The rAF loop starts, <code>play()</code> resolves, and PlaybackManager emits <co
 <li>A presented <code>VideoFrame</code> closes after <code>submit()</code>, but its credit returns only after <code>queue.onSubmittedWorkDone()</code>.
 This keeps the decoder’s surfaces from starving.</li>
 <li>In raw mode the pooled buffer is the credit, and it returns through <code>recycle-frame</code>.</li>
-<li>The owned HEVC and AV1 paths read a packet only while they hold a credit.</li>
+<li>The owned HEVC, AV1, and VP9 paths read a packet only while they hold a credit.</li>
 </ul>
 <p>Audio credits:</p>
 <ul>
@@ -302,7 +303,7 @@ The backing size is the CSS size times the device pixel ratio, capped by <code>m
 <ul>
 <li>
 <p>Seek: a new presentation generation, then <code>controller.seek</code>, then a new generation and a new worker at the target.
-The owned HEVC and AV1 paths start at the preceding key packet.
+The owned HEVC, AV1, and VP9 paths start at the preceding key packet.
 DTS and TrueHD use a 1 s preroll.
 Stale results are dropped by <code>customPlaybackSeekRevision</code> (host).</p>
 </li>

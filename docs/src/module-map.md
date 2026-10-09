@@ -71,7 +71,7 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 - `HDR10PlusVectors.ts`: deterministic HDR10+ HEVC access units for the dynamic HDR tests.
 - `Base64.ts`: the base64 decoder the inline vectors share.
 - `qualification/`: streams served at runtime that no script generates: the HEVC Main 10 4K stream (`hevc/`) and the VC-1 stream (`vc1/`).
-- `test/`: inputs only tests and generators read: DTS samples, a TrueHD Matroska remux, and Dolby Vision RPU payloads.
+- `test/`: inputs only tests and generators read: DTS samples, a TrueHD Matroska remux, Dolby Vision RPU payloads, and an hdr10plus_tool HDR10+ stream.
 
 ## pipeline/
 
@@ -94,18 +94,22 @@ All worker code unless marked.
   A Dolby Vision pair is a BL in any format from I420 to I444P12 and an I420P10 EL, in one compound buffer.
 - `RawFrameBufferPool.ts`: reusable raw buffers, bounded by the raw credits (2).
 - `MatroskaVFWVideoConfiguration.ts`: extracts the VC-1 `WVC1` extradata.
+- `MatroskaBlockAdditions.ts`: wraps Mediabunny's Matroska and WebM formats so their demuxers keep every BlockAdditional but alpha, and reads a packet's additions, such as VP9 HDR10+.
 
 ### video/av1/
 
-- `AV1OBUParser.ts`: the OBU walk of one temporal unit (headers, extension headers, leb128 sizes, a last OBU without a size field), frame header detection, and ITU-T T.35 metadata messages.
+- `AV1OBUParser.ts`: the OBU walk of one temporal unit (headers, extension headers, leb128 sizes, a last OBU without a size field), frame header detection, metadata types and ITU-T T.35 messages, and the removal of a payload's trailing bits.
 - `AV1SequenceHeaderParser.ts`, `AV1CodecParameterString.ts`: the sequence header, parsed as the AV1 specification defines it, and the `av01` codec string it declares.
 - `AV1DecoderConfiguration.ts`: replaces the codec string Mediabunny derives for an AV1 track with the one its first packet's sequence header declares.
 
 ### video/decoders/
 
 - `OwnedVideoDecodeStream.ts`: the codec-neutral state of one owned decode attempt: decoded outputs matched with their packets' metadata, the pre-start rule, BL and EL pairing, frame credits, and the packet pump.
-- `OwnedNativeVideoDecoder.ts`: an owned WebCodecs decoder for packets that decode unchanged, used for AV1.
-- `OwnedAV1VideoStream.ts`: one attempt of the owned AV1 Dolby Vision path.
+  It pairs a path's Dolby Vision and HDR10+ queues into the metadata its frames take (`createOwnedVideoFrameMetadataSource`).
+  It also runs a single-layer attempt (`runOwnedSingleLayerVideoStream`), given a per-packet metadata step.
+- `OwnedNativeVideoDecoder.ts`: an owned WebCodecs decoder for packets that decode unchanged, used for AV1 and VP9.
+- `OwnedAV1VideoStream.ts`: one attempt of the owned AV1 path, which every AV1 track takes: each temporal unit's Dolby Vision RPU and HDR10+ metadata, paired with its frame.
+- `OwnedVP9VideoStream.ts`: one attempt of the owned VP9 path, which every VP9 track takes: the HDR10+ in each packet's container side data, paired with its frame.
 - `OwnedNativeHEVCVideoDecoder.ts`: the engine's own WebCodecs HEVC decoder, built on `OwnedNativeVideoDecoder`: NAL order fix, leading RASL drop, optional SPS neutralization.
 - `HEVCSoftwareVideoDecoder.ts`: the `@hevcjs/core` decoder (I420 and I420P10) with a shutdown registry.
 - `HEVCDecoderBackend.ts`: the low-level `@hevcjs/core` WASM binding.
@@ -117,7 +121,7 @@ All worker code unless marked.
 - `DolbyVisionProfiles.ts` [main and worker]: the dual-layer profile set (P4, P7).
 - `DolbyVisionHEVCSplitter.ts`: NAL parsing; the BL, RPU (62), and EL (63) split; RASL handling; in-band SPS neutralization; drops NAL units of layers above 0, the MV-HEVC second view.
 - `DolbyVisionAV1Splitter.ts`: removes the Dolby Vision T.35 metadata OBUs from an AV1 temporal unit and returns their messages; other metadata, HDR10+ included, stays.
-- `DolbyVisionEncodedMetadata.ts`, `DolbyVisionEncodedMetadataProtocol.ts`: per-packet RPU parsing for HEVC and per-temporal-unit parsing for AV1, over one PTS-keyed window, and the transferable schema.
+- `DolbyVisionEncodedMetadata.ts`, `DolbyVisionEncodedMetadataProtocol.ts`: per-packet RPU parsing for HEVC and per-temporal-unit parsing for AV1, which removes the RPUs unparsed on a route without Dolby Vision, over one PTS-keyed window, and the transferable schema.
 - `DolbyVisionEncodedPacketPairer.ts`, `DolbyVisionFramePairQueue.ts`: BL and EL packet and frame pairing (1 us tolerance).
 - `DolbyVisionRPUParser.ts`, `DolbyVisionRPUParserSession.ts`, `DolbyVisionRPUDataLayout.ts`: the libdovi WASM parser with its HEVC and AV1 T.35 entry points, its per-run session, and the packed 3232-byte snapshot layout (schema 2: a mapping method per segment).
 - `ISOBaseMediaDolbyVisionSampleEntry.ts`: gives Mediabunny's unmapped `dvh1`, `dvhe`, `dva1`, `dvav`, and `dav1` tracks their wrapped codec.
@@ -126,14 +130,20 @@ All worker code unless marked.
 
 ### video/hdr/
 
-- `HDR10PlusMetadata.ts`, `HEVCDynamicHDRMetadataQueue.ts`: ST 2094-40 parsing and PTS matching to decoded frames.
-- `HEVCStaticHDRMetadata.ts`: the MDCV and CLL startup scan.
-- `StaticHDRMetadata.ts` [main and worker]: the MDCV and CLL luminance schema, the scan-result validators shared across the worker boundary, and the static tone mapping source peak.
+- `HDR10PlusMetadata.ts`: ST 2094-40 parsing from a frame's ITU-T T.35 messages, and from an HEVC access unit's SEI.
+- `HDR10PlusFrameMetadataQueue.ts`, `HEVCDynamicHDRMetadataQueue.ts`: PTS matching of each packet's HDR10+ result to its decoded frame, for any codec, with the last metadata carried in decode order to frames without their own, and the HEVC packet step that feeds it.
+- `AV1HDR10PlusMetadata.ts`: the HDR10+ messages of an AV1 temporal unit's T.35 metadata OBUs, without their trailing bits, parsed by `HDR10PlusMetadata.ts`.
+- `HEVCStaticHDRMetadata.ts`, `AV1StaticHDRMetadata.ts`: the MDCV and CLL of an HEVC access unit's SEI and of an AV1 temporal unit's metadata OBUs, and the AV1 PQ sequence header check that gates its scan.
+- `StaticHDRMetadata.ts` [main and worker]: the MDCV and CLL luminance schema, the codec-neutral startup scan, the scan-result validators shared across the worker boundary, and the static tone mapping source peak.
 
 ### video/hevc/
 
 - `HEVCSEI.ts`, `HEVCSPSParser.ts`: SEI extraction and the alternative transfer characteristics value; SPS parsing, the VUI color mapping to WebCodecs names, and the VUI rewrite with its native HDR route check.
 - `NativeHDRHEVCColorNeutralizer.ts`: rewrites the `hvcC` SPS and the decoder colorSpace to limited BT.709 for the native external HDR route.
+
+### video/vp9/
+
+- `VP9FrameParser.ts`: splits a packet at its superframe index and tells from the frame headers whether it shows a frame.
 
 ## audio/
 
@@ -195,6 +205,11 @@ The authorization vectors are in `capability/vectors/`.
 - `test/helpers/enginePaths.ts`: the engine root and the `node_modules` location, independent of the test runner's working directory, and the folders from `tools/constants.json`.
 - `test/helpers/dolbyVisionAV1ITUTT35Payload.ts`, `test/helpers/dolbyVisionMixedRPUVector.ts`: wrap an HEVC RPU in the AV1 EMDF T.35 container, and build RPUs with mixed and linear pieces.
 - `test/helpers/libraryAssets.ts`: the asset build's tables from `scripts/library-assets.mjs`, and a served decoder binary read as bytes from the file the build copies, since tests have no server for its URL.
+- `test/helpers/av1MetadataOBUs.ts`: AV1 OBUs, metadata OBUs included, that the AV1 tests build temporal units from.
+- `test/helpers/hdr10PlusVectors.ts`: the HDR10+ messages of `HDR10PlusVectors.ts`, and what the HDR10+ AV1 and VP9 vectors share: the `expectations.json` reader, the coded values in the engine's units, and the check of a posted frame's HDR10+ result.
+- `test/helpers/av1HDR10PlusVectors.ts`, `test/helpers/vp9HDR10PlusVectors.ts`: each set's files and its codec's known answers, such as the AV1 static HDR metadata and the VP9 BlockAddID.
+- `test/helpers/ownedVideoStreamFakes.ts`: a stream run, a packet iterator, and a decoder that outputs each frame at once or holds its frames until a flush, in decode or presentation order, for the owned decode path tests.
+- `test/helpers/decodeWorkerHarness.ts`: loads a fresh playback worker in a stand-in browser: a global scope that plays the session's part, range responses for the media it plays, and a WebCodecs video decoder.
 - `wasm/`: the decoder sources and build.
   See [WebAssembly decoders](decoders.md).
 - `vendor/`: the FFmpeg and dcadec submodules (`update = none`), which `make -C wasm sources` fetches.
@@ -213,6 +228,8 @@ The authorization vectors are in `capability/vectors/`.
     `truehd/` also holds the synthetic TrueHD and MLP streams the module embeds.
   - `hevc-range-extension/`, `jpeg2000/`, `mpeg2/`: qualification streams served at runtime from `bin/libraries/`.
   - `dolby-vision-av1/`: the Profile 10 test vectors and their `expectations.json`.
+  - `hdr10plus-av1/`: the HDR10+ AV1 test vectors and their `expectations.json`.
+  - `hdr10plus-vp9/`: the HDR10+ VP9 test vectors, in WebM and Matroska, and their `expectations.json`.
   - `downmix-reference/`: the deterministic 7.1-to-stereo reference.
 
 ## Host: the Jellyfin add-on

@@ -7,6 +7,8 @@ export const AV1_OBU_TYPE_METADATA = 5;
 export const AV1_OBU_TYPE_FRAME = 6;
 export const AV1_OBU_TYPE_REDUNDANT_FRAME_HEADER = 7;
 export const AV1_OBU_TYPE_PADDING = 15;
+export const AV1_METADATA_TYPE_HDR_CLL = 1;
+export const AV1_METADATA_TYPE_HDR_MDCV = 2;
 export const AV1_METADATA_TYPE_ITUT_T35 = 4;
 
 // Four spatial layers of 4096 tile groups, the most tiles one frame can have
@@ -23,6 +25,8 @@ const OBU_TYPE_SHIFT = 3;
 const OBU_TYPE_MASK = 0x0F;
 const OBU_EXTENSION_FLAG_MASK = 0x04;
 const OBU_HAS_SIZE_FIELD_MASK = 0x02;
+// trailing_bits() after a byte-aligned payload: the trailing one bit, then zero bits to the byte boundary
+const TRAILING_ONE_BIT_BYTE = 0x80;
 
 /** One OBU of a temporal unit, as views of the unit's bytes. */
 export type AV1OBU = {
@@ -31,6 +35,13 @@ export type AV1OBU = {
     /** The payload; an OBU without a size field runs to the end of its temporal unit */
     payload: Uint8Array
     type: number
+};
+
+/** The metadata of one metadata OBU, as a view of its temporal unit. */
+export type AV1Metadata = {
+    /** Everything after metadata_type, trailing bits included */
+    body: Uint8Array
+    metadataType: number
 };
 
 type LEB128Value = {
@@ -129,15 +140,39 @@ export function hasAV1FrameHeader(obu: AV1OBU): boolean {
     }
 }
 
+/** Returns the metadata_type and the body of a metadata OBU, or null for any other OBU. */
+export function getAV1Metadata(obu: AV1OBU): AV1Metadata | null {
+    if (obu.type !== AV1_OBU_TYPE_METADATA) {
+        return null;
+    }
+    const metadataType = readLEB128(obu.payload, 0, 'metadata_type');
+    return {
+        body: obu.payload.subarray(metadataType.byteLength),
+        metadataType: metadataType.value
+    };
+}
+
 /**
  * Returns the ITU-T T.35 message of a metadata OBU, or null for any other OBU.
  * The message runs from itu_t_t35_country_code to the end of the payload, trailing bits included.
  * A 0xFF country code is followed by an extension byte, so readers match a provider's whole header.
  */
 export function getAV1ITUTT35Message(obu: AV1OBU): Uint8Array | null {
-    if (obu.type !== AV1_OBU_TYPE_METADATA) {
+    const metadata = getAV1Metadata(obu);
+    return metadata?.metadataType === AV1_METADATA_TYPE_ITUT_T35 ? metadata.body : null;
+}
+
+/**
+ * Returns a byte-aligned OBU payload without its trailing_bits(), which dav1d finds by dropping the trailing zero bytes, then the byte that holds the trailing one bit.
+ * Returns null when that byte is not 0x80, so the payload has no valid trailing one bit.
+ */
+export function stripAV1TrailingBits(payload: Uint8Array): Uint8Array | null {
+    let payloadEnd = payload.byteLength;
+    while (payloadEnd > 0 && payload[payloadEnd - 1] === 0) {
+        payloadEnd -= 1;
+    }
+    if (payloadEnd === 0 || payload[payloadEnd - 1] !== TRAILING_ONE_BIT_BYTE) {
         return null;
     }
-    const metadataType = readLEB128(obu.payload, 0, 'metadata_type');
-    return metadataType.value === AV1_METADATA_TYPE_ITUT_T35 ? obu.payload.subarray(metadataType.byteLength) : null;
+    return payload.subarray(0, payloadEnd - 1);
 }

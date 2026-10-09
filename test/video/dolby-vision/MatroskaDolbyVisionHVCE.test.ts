@@ -6,6 +6,12 @@ import {
 } from 'webgpu-player/video/dolby-vision/MatroskaDolbyVisionHVCE';
 
 import { concatenate } from '../../helpers/byteArrays';
+import {
+    createASCIIElement,
+    createElement,
+    createUnsignedIntegerElement,
+    encodeElementID
+} from '../../helpers/matroskaElements';
 
 const EBML_ID = 0x1A45_DFA3;
 const SEGMENT_ID = 0x1853_8067;
@@ -23,62 +29,6 @@ const AUDIO_TRACK_TYPE = 2;
 const DVCC_BLOCK_ADD_ID_TYPE = 0x6476_6343;
 const DVVC_BLOCK_ADD_ID_TYPE = 0x6476_7643;
 const HVCE_BLOCK_ADD_ID_TYPE = 0x6876_6345;
-
-function encodeElementID(id: number): Uint8Array {
-    let byteLength = 1;
-    while (id >= 256 ** byteLength) {
-        byteLength += 1;
-    }
-    const output = new Uint8Array(byteLength);
-    let remainingValue = id;
-    for (let byteIndex = byteLength - 1; byteIndex >= 0; byteIndex -= 1) {
-        output[byteIndex] = remainingValue % 256;
-        remainingValue = Math.floor(remainingValue / 256);
-    }
-    return output;
-}
-
-function encodeElementSize(byteLength: number): Uint8Array {
-    for (let encodedByteLength = 1; encodedByteLength <= 8; encodedByteLength += 1) {
-        const maximumValue = (2 ** (7 * encodedByteLength)) - 2;
-        if (byteLength > maximumValue) {
-            continue;
-        }
-        let encodedValue = byteLength + (2 ** (7 * encodedByteLength));
-        const output = new Uint8Array(encodedByteLength);
-        for (let byteIndex = encodedByteLength - 1; byteIndex >= 0; byteIndex -= 1) {
-            output[byteIndex] = encodedValue % 256;
-            encodedValue = Math.floor(encodedValue / 256);
-        }
-        return output;
-    }
-    throw new RangeError('The synthetic EBML element is too large');
-}
-
-function createElement(id: number, payload: Uint8Array): Uint8Array {
-    return concatenate([
-        encodeElementID(id),
-        encodeElementSize(payload.byteLength),
-        payload
-    ]);
-}
-
-function createUnsignedIntegerElement(id: number, value: number): Uint8Array {
-    const bytes: number[] = [];
-    let remainingValue = value;
-    do {
-        bytes.unshift(remainingValue % 256);
-        remainingValue = Math.floor(remainingValue / 256);
-    } while (remainingValue > 0);
-    return createElement(id, new Uint8Array(bytes));
-}
-
-function createASCIIElement(id: number, value: string): Uint8Array {
-    return createElement(
-        id,
-        new Uint8Array(Array.from(value, (character: string): number => character.charCodeAt(0)))
-    );
-}
 
 function createBlockAdditionMapping(type: number, extraData: Uint8Array): Uint8Array {
     return createElement(BLOCK_ADDITION_MAPPING_ID, concatenate([

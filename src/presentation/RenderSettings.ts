@@ -56,6 +56,7 @@ export type HDRToSDRRenderSettingsOverrides = {
 export type HDR10PlusFrameRenderSettings = Readonly<{
     averageNits: number
     inputPeakNits: number
+    /** Read only with a curve; HDR10+ profile A, which has none, leaves it 0. */
     targetedSystemDisplayMaximumLuminanceNits: number
     toneMapping: Readonly<{
         bezierCurveAnchors: readonly number[]
@@ -259,13 +260,14 @@ export function createRenderSettingsUniformData(
             || !Number.isFinite(dynamicFrameSettings.inputPeakNits)
             || dynamicFrameSettings.inputPeakNits < settings.toneMapping.paperWhiteNits
             || dynamicFrameSettings.inputPeakNits > HDR_RENDER_SETTING_RANGES.inputPeakNits.maximum
-            || !Number.isFinite(dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits)
-            || dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits < HDR_RENDER_SETTING_RANGES.outputPeakNits.minimum
-            || dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits > HDR_RENDER_SETTING_RANGES.outputPeakNits.maximum
             || anchors.length > MAXIMUM_DYNAMIC_ANCHOR_COUNT
             || anchors.some((anchor: number): boolean => !Number.isFinite(anchor) || anchor < 0 || anchor > 1)
+            // Only the curve adapts from the targeted display; the scene statistics mode never reads it
             || (toneMapping !== null && (
-                !Number.isFinite(toneMapping.kneePointX)
+                !Number.isFinite(dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits)
+                || dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits < HDR_RENDER_SETTING_RANGES.outputPeakNits.minimum
+                || dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits > HDR_RENDER_SETTING_RANGES.outputPeakNits.maximum
+                || !Number.isFinite(toneMapping.kneePointX)
                 || toneMapping.kneePointX < 0
                 || toneMapping.kneePointX > 1
                 || !Number.isFinite(toneMapping.kneePointY)
@@ -280,7 +282,7 @@ export function createRenderSettingsUniformData(
         integerValues[UNIFORM_DYNAMIC_MODE_INDEX] = toneMapping ? 2 : 1;
         floatValues[UNIFORM_INPUT_PEAK_INDEX] = dynamicFrameSettings.inputPeakNits;
         floatValues[UNIFORM_DYNAMIC_SCENE_AVERAGE_INDEX] = dynamicFrameSettings.averageNits;
-        floatValues[UNIFORM_DYNAMIC_TARGET_PEAK_INDEX] = dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits;
+        floatValues[UNIFORM_DYNAMIC_TARGET_PEAK_INDEX] = toneMapping ? dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits : 0;
         floatValues[UNIFORM_DYNAMIC_KNEE_X_INDEX] = toneMapping?.kneePointX ?? 0;
         floatValues[UNIFORM_DYNAMIC_KNEE_Y_INDEX] = toneMapping?.kneePointY ?? 0;
         integerValues[UNIFORM_DYNAMIC_ANCHOR_COUNT_INDEX] = anchors.length;

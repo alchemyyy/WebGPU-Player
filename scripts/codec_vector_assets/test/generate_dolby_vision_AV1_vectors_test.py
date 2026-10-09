@@ -228,19 +228,7 @@ def create_vector_build(sub_profile: generator.SubProfile) -> generator.DolbyVis
 
 
 class BitFieldTests(unittest.TestCase):
-    """Covers bit packing, variable_bits() coding, and bit reading."""
-
-    def test_packs_fields_and_pads_with_the_requested_bit(self) -> None:
-        self.assertEqual(generator.pack_bit_fields(((0b101, 3),), padding_bit=1), bytes((0b1011_1111,)))
-        self.assertEqual(generator.pack_bit_fields(((0b101, 3),), padding_bit=0), bytes((0b1010_0000,)))
-        self.assertEqual(generator.pack_bit_fields(((0x3B, 16), (1, 1)), padding_bit=0), bytes((0x00, 0x3B, 0x80)))
-        self.assertEqual(generator.pack_bit_fields(((0xAB, 8),), padding_bit=1), bytes((0xAB,)))
-
-    def test_rejects_a_value_wider_than_its_field(self) -> None:
-        for field in ((2, 1), (-1, 8), (256, 8)):
-            with self.subTest(field=field):
-                with self.assertRaises(ValueError):
-                    generator.pack_bit_fields((field,), padding_bit=0)
+    """Covers variable_bits() coding and bit reading."""
 
     def test_codes_the_EMDF_payload_ID_extension_as_the_crate_and_FFmpeg_do(self) -> None:
         # 225 = ((6 + 1) << 5) + 1: chunk 6 with read_more, then chunk 1
@@ -924,33 +912,6 @@ class ToolTests(unittest.TestCase):
             "-strict",
             generator.create_remux_arguments(Path("configured.mp4"), "matroska", Path("vector.mkv")),
         )
-
-    def check_toolchain_with(self, FFmpeg_version: str, FFprobe_version: str) -> None:
-        """Runs the toolchain check against fixed version output."""
-
-        def execute_tool(executable: str, arguments: Sequence[str]) -> str:
-            return FFmpeg_version if executable == "ffmpeg" else FFprobe_version
-
-        with patch.object(generator, "execute_tool", side_effect=execute_tool):
-            generator.check_toolchain(generator.MediaTools(FFmpeg_path="ffmpeg", FFprobe_path="ffprobe"))
-
-    def test_accepts_only_the_pinned_build(self) -> None:
-        FFmpeg_version = (
-            "ffmpeg version 2026-03-01-git-862338fe31-full_build-www.gyan.dev Copyright (c) 2000-2026\n"
-            "libavcodec     62. 24.100 / 62. 24.100\n"
-            "libavformat    62. 10.101 / 62. 10.101\n"
-        )
-        FFprobe_version = "ffprobe version 2026-03-01-git-862338fe31-full_build-www.gyan.dev\n"
-        self.check_toolchain_with(FFmpeg_version, FFprobe_version)
-        cases = (
-            (FFmpeg_version.replace("862338fe31", "0123456789"), FFprobe_version, "FFmpeg must be"),
-            (FFmpeg_version.replace("62. 10.101", "62. 11.100"), FFprobe_version, "FFmpeg must be"),
-            (FFmpeg_version, FFprobe_version.replace("2026-03-01", "2026-03-02"), "FFprobe must be"),
-        )
-        for FFmpeg_output, FFprobe_output, message in cases:
-            with self.subTest(message=message):
-                with self.assertRaisesRegex(generator.VectorGenerationError, message):
-                    self.check_toolchain_with(FFmpeg_output, FFprobe_output)
 
 
 class CommittedVectorTests(unittest.TestCase):

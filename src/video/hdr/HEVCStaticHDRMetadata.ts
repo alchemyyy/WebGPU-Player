@@ -1,8 +1,11 @@
 import type { HEVCNALFormat } from '../dolby-vision/DolbyVisionHEVCSplitter';
 import { parseHEVCSEIMessages } from '../hevc/HEVCSEI';
 import {
-    MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT,
-    isStaticHDRMetadata,
+    completeStaticHDRMetadata,
+    createEmptyStaticHDRMetadata,
+    mergeContentLightLevels,
+    mergeMasteringDisplayLuminance,
+    scanStaticHDRMetadata,
     type StaticHDRMetadata,
     type StaticHDRMetadataScanResult
 } from './StaticHDRMetadata';
@@ -12,29 +15,6 @@ const CONTENT_LIGHT_LEVEL_INFORMATION_PAYLOAD_TYPE = 144;
 const MASTERING_DISPLAY_PAYLOAD_BYTE_LENGTH = 24;
 const CONTENT_LIGHT_PAYLOAD_BYTE_LENGTH = 4;
 const MASTERING_LUMINANCE_SCALE = 10_000;
-
-const STATIC_HDR_METADATA_PROPERTIES: readonly (keyof StaticHDRMetadata)[] = [
-    'masteringDisplayMaximumLuminanceNits',
-    'masteringDisplayMinimumLuminanceNits',
-    'maximumContentLightLevelNits',
-    'maximumFrameAverageLightLevelNits'
-];
-
-class HEVCStaticHDRMetadataConflictError extends TypeError {
-    public constructor() {
-        super('The HEVC access units contain conflicting static HDR metadata');
-        this.name = 'HEVCStaticHDRMetadataConflictError';
-    }
-}
-
-function createEmptyStaticHDRMetadata(): StaticHDRMetadata {
-    return {
-        masteringDisplayMaximumLuminanceNits: null,
-        masteringDisplayMinimumLuminanceNits: null,
-        maximumContentLightLevelNits: null,
-        maximumFrameAverageLightLevelNits: null
-    };
-}
 
 function readUnsigned16(data: Uint8Array, offset: number): number {
     return (data[offset] * 256) + data[offset + 1];
@@ -49,53 +29,22 @@ function readUnsigned32(data: Uint8Array, offset: number): number {
     );
 }
 
-function mergeMetadataValue(
-    metadata: StaticHDRMetadata,
-    property: keyof StaticHDRMetadata,
-    value: number | null
-): void {
-    if (value === null) {
-        return;
-    }
-    const previousValue = metadata[property];
-    if (previousValue !== null && previousValue !== value) {
-        throw new HEVCStaticHDRMetadataConflictError();
-    }
-    metadata[property] = value;
-}
-
-function mergeStaticHDRMetadata(destination: StaticHDRMetadata, source: StaticHDRMetadata): void {
-    for (const property of STATIC_HDR_METADATA_PROPERTIES) {
-        mergeMetadataValue(destination, property, source[property]);
-    }
-}
-
 function parseMasteringDisplayPayload(payload: Uint8Array, metadata: StaticHDRMetadata): void {
     if (payload.byteLength !== MASTERING_DISPLAY_PAYLOAD_BYTE_LENGTH) {
         throw new TypeError('The HEVC mastering-display SEI payload size is invalid');
     }
-    const maximumLuminanceNits = readUnsigned32(payload, 16) / MASTERING_LUMINANCE_SCALE;
-    const minimumLuminanceNits = readUnsigned32(payload, 20) / MASTERING_LUMINANCE_SCALE;
-    mergeMetadataValue(metadata, 'masteringDisplayMaximumLuminanceNits', maximumLuminanceNits);
-    mergeMetadataValue(metadata, 'masteringDisplayMinimumLuminanceNits', minimumLuminanceNits);
+    mergeMasteringDisplayLuminance(
+        metadata,
+        readUnsigned32(payload, 16) / MASTERING_LUMINANCE_SCALE,
+        readUnsigned32(payload, 20) / MASTERING_LUMINANCE_SCALE
+    );
 }
 
 function parseContentLightPayload(payload: Uint8Array, metadata: StaticHDRMetadata): void {
     if (payload.byteLength !== CONTENT_LIGHT_PAYLOAD_BYTE_LENGTH) {
         throw new TypeError('The HEVC content-light SEI payload size is invalid');
     }
-    const maximumContentLightLevelNits = readUnsigned16(payload, 0);
-    const maximumFrameAverageLightLevelNits = readUnsigned16(payload, 2);
-    mergeMetadataValue(
-        metadata,
-        'maximumContentLightLevelNits',
-        maximumContentLightLevelNits > 0 ? maximumContentLightLevelNits : null
-    );
-    mergeMetadataValue(
-        metadata,
-        'maximumFrameAverageLightLevelNits',
-        maximumFrameAverageLightLevelNits > 0 ? maximumFrameAverageLightLevelNits : null
-    );
+    mergeContentLightLevels(metadata, readUnsigned16(payload, 0), readUnsigned16(payload, 2));
 }
 
 /** Extracts bounded HDR10 static luminance metadata from one HEVC access unit. */
@@ -112,73 +61,13 @@ export function parseHEVCStaticHDRMetadata(accessUnit: Uint8Array, format: HEVCN
                 break;
         }
     }
-    const hasMetadata = Object.values(metadata).some((value: number | null): boolean => value !== null);
-    if (!hasMetadata) {
-        return null;
-    }
-    if (!isStaticHDRMetadata(metadata)) {
-        throw new TypeError('The HEVC access unit contains invalid static HDR metadata');
-    }
-    return metadata;
+    return completeStaticHDRMetadata(metadata);
 }
 
 /** Scans a bounded startup prefix and rejects malformed or conflicting metadata. */
 export function scanHEVCStaticHDRMetadata(accessUnits: readonly Uint8Array[], format: HEVCNALFormat): StaticHDRMetadataScanResult {
-    if (accessUnits.length > MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT) {
-        throw new RangeError('The HEVC static HDR metadata scan exceeds its access-unit bound');
-    }
-
-    const metadata = createEmptyStaticHDRMetadata();
-    let firstMetadataAccessUnitIndex: number | null = null;
-    for (let accessUnitIndex = 0; accessUnitIndex < accessUnits.length; accessUnitIndex += 1) {
-        try {
-            const parsedMetadata = parseHEVCStaticHDRMetadata(accessUnits[accessUnitIndex], format);
-            if (!parsedMetadata) {
-                continue;
-            }
-            mergeStaticHDRMetadata(metadata, parsedMetadata);
-        } catch (error) {
-            if (error instanceof HEVCStaticHDRMetadataConflictError) {
-                return {
-                    accessUnitCount: accessUnits.length,
-                    firstMetadataAccessUnitIndex: null,
-                    metadata: null,
-                    status: 'conflicting'
-                };
-            }
-            if (error instanceof TypeError) {
-                return {
-                    accessUnitCount: accessUnits.length,
-                    firstMetadataAccessUnitIndex: null,
-                    metadata: null,
-                    status: 'malformed'
-                };
-            }
-            throw error;
-        }
-        firstMetadataAccessUnitIndex ??= accessUnitIndex;
-    }
-
-    if (firstMetadataAccessUnitIndex === null) {
-        return {
-            accessUnitCount: accessUnits.length,
-            firstMetadataAccessUnitIndex: null,
-            metadata: null,
-            status: 'absent'
-        };
-    }
-    if (!isStaticHDRMetadata(metadata)) {
-        return {
-            accessUnitCount: accessUnits.length,
-            firstMetadataAccessUnitIndex: null,
-            metadata: null,
-            status: 'malformed'
-        };
-    }
-    return {
-        accessUnitCount: accessUnits.length,
-        firstMetadataAccessUnitIndex,
-        metadata,
-        status: 'valid'
-    };
+    return scanStaticHDRMetadata(
+        accessUnits,
+        (accessUnit: Uint8Array): StaticHDRMetadata | null => parseHEVCStaticHDRMetadata(accessUnit, format)
+    );
 }

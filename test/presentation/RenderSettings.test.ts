@@ -8,6 +8,18 @@ import {
     RENDER_SETTINGS_VERSION
 } from 'webgpu-player/presentation/RenderSettings';
 
+// HDR10+ profile A has no curve and leaves the targeted display at 0
+const PROFILE_A_TARGETED_DISPLAY_NITS = 0;
+const DYNAMIC_SCENE_PEAK_NITS = 834.75;
+const DYNAMIC_SCENE_AVERAGE_NITS = 166.95;
+// The uniform's dynamic mode: 1 tone-maps from the scene statistics, 2 follows the curve
+const SCENE_STATISTICS_DYNAMIC_MODE = 1;
+const UNIFORM_DYNAMIC_MODE_INDEX = 3;
+const UNIFORM_INPUT_PEAK_INDEX = 6;
+const UNIFORM_DYNAMIC_SCENE_AVERAGE_INDEX = 12;
+const UNIFORM_DYNAMIC_TARGET_PEAK_INDEX = 13;
+const UNIFORM_DYNAMIC_ANCHOR_COUNT_INDEX = 16;
+
 describe('RenderSettings', () => {
     it('keeps identity SDR as the safe default', () => {
         expect(createDefaultRenderSettings()).toEqual({
@@ -169,6 +181,23 @@ describe('RenderSettings', () => {
         expect(new Float32Array(restored.buffer)[6]).toBe(4_000);
     });
 
+    it('serializes profile A HDR10+ statistics without a targeted display', () => {
+        const data = createRenderSettingsUniformData(createHDRToSDRRenderSettings(), {
+            averageNits: DYNAMIC_SCENE_AVERAGE_NITS,
+            inputPeakNits: DYNAMIC_SCENE_PEAK_NITS,
+            targetedSystemDisplayMaximumLuminanceNits: PROFILE_A_TARGETED_DISPLAY_NITS,
+            toneMapping: null
+        });
+        const integerValues = new Uint32Array(data.buffer);
+        const floatValues = new Float32Array(data.buffer);
+
+        expect(integerValues[UNIFORM_DYNAMIC_MODE_INDEX]).toBe(SCENE_STATISTICS_DYNAMIC_MODE);
+        expect(floatValues[UNIFORM_INPUT_PEAK_INDEX]).toBeCloseTo(DYNAMIC_SCENE_PEAK_NITS);
+        expect(floatValues[UNIFORM_DYNAMIC_SCENE_AVERAGE_INDEX]).toBeCloseTo(DYNAMIC_SCENE_AVERAGE_NITS);
+        expect(floatValues[UNIFORM_DYNAMIC_TARGET_PEAK_INDEX]).toBe(0);
+        expect(integerValues[UNIFORM_DYNAMIC_ANCHOR_COUNT_INDEX]).toBe(0);
+    });
+
     it('rejects unsafe per-frame HDR10+ uniforms', () => {
         const settings = createHDRToSDRRenderSettings();
         expect(() => createRenderSettingsUniformData(settings, {
@@ -185,6 +214,17 @@ describe('RenderSettings', () => {
                 bezierCurveAnchors: [],
                 kneePointX: 0.5,
                 kneePointY: 0.5
+            }
+        })).toThrow('Dynamic HDR10+');
+        // A curve adapts from its targeted display, so it needs one
+        expect(() => createRenderSettingsUniformData(settings, {
+            averageNits: 100,
+            inputPeakNits: 1_000,
+            targetedSystemDisplayMaximumLuminanceNits: PROFILE_A_TARGETED_DISPLAY_NITS,
+            toneMapping: {
+                bezierCurveAnchors: [ 0.25, 0.75 ],
+                kneePointX: 0.5,
+                kneePointY: 0.25
             }
         })).toThrow('Dynamic HDR10+');
     });

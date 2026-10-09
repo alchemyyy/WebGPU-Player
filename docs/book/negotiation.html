@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d5fe2f8e.js";
+            window.path_to_searchindex_js = "searchindex-0cf27179.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -339,7 +339,7 @@ The full HEVC matrix is in <a href="codec-support.html">HEVC and Dolby Vision su
 <li>AV1 (VideoProfile <code>main</code>):
 <ul>
 <li>native SDR at 8 bits;</li>
-<li>raw HDR10 and HLG at 10 bits;</li>
+<li>raw HDR10, HDR10Plus, and HLG at 10 bits;</li>
 <li>raw Dolby Vision Profile 10 at 10 bits (DOVI, DOVIWithHDR10, DOVIWithHDR10Plus, DOVIWithSDR, DOVIWithHLG, and DOVIInvalid, never DOVIWithEL), when <code>rawHDRVideo.av1</code> passes and the <code>I420P10:dovi-rpu-v1</code> key is authorized;</li>
 <li>raw SDR at 10 bits.</li>
 </ul>
@@ -347,11 +347,12 @@ The full HEVC matrix is in <a href="codec-support.html">HEVC and Dolby Vision su
 <li>VP9:
 <ul>
 <li>native SDR at 8 bits (<code>profile 0</code>);</li>
-<li>raw HDR10 and HLG, and raw SDR, at 10 bits (<code>profile 2</code>).</li>
+<li>raw HDR10, HDR10Plus, and HLG, and raw SDR, at 10 bits (<code>profile 2</code>).</li>
 </ul>
 </li>
 <li>HEVC: as <a href="codec-support.html">HEVC and Dolby Vision support</a> lists, with raw SDR at 10 bits (<code>main 10</code>) beside the native Main 10 SDR route.</li>
 </ul>
+<p>Every raw HDR route that advertises HDR10 also advertises HDR10Plus, because HDR10+ always carries a static HDR10 base that raw PQ presents (<code>getRawHDRRouteVideoRangeTypes</code>, host).</p>
 <p>Raw SDR at 10 bits needs <code>allowRawSDR</code> with both I420P10 BT.709 SDR keys, limited and full, because a profile condition cannot express color range.</p>
 <p>Jellyfin labels many Dolby Vision streams the engine can present outside the generic Dolby Vision ranges:</p>
 <ul>
