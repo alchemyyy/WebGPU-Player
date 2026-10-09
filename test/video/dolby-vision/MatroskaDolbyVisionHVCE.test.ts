@@ -5,6 +5,8 @@ import {
     type MatroskaByteRangeReader
 } from 'webgpu-player/video/dolby-vision/MatroskaDolbyVisionHVCE';
 
+import { concatenate } from '../../helpers/byteArrays';
+
 const EBML_ID = 0x1A45_DFA3;
 const SEGMENT_ID = 0x1853_8067;
 const TRACKS_ID = 0x1654_AE6B;
@@ -21,20 +23,6 @@ const AUDIO_TRACK_TYPE = 2;
 const DVCC_BLOCK_ADD_ID_TYPE = 0x6476_6343;
 const DVVC_BLOCK_ADD_ID_TYPE = 0x6476_7643;
 const HVCE_BLOCK_ADD_ID_TYPE = 0x6876_6345;
-
-function concatenate(parts: readonly Uint8Array[]): Uint8Array {
-    const byteLength = parts.reduce(
-        (totalByteLength: number, part: Uint8Array): number => totalByteLength + part.byteLength,
-        0
-    );
-    const output = new Uint8Array(byteLength);
-    let offset = 0;
-    for (const part of parts) {
-        output.set(part, offset);
-        offset += part.byteLength;
-    }
-    return output;
-}
 
 function encodeElementID(id: number): Uint8Array {
     let byteLength = 1;

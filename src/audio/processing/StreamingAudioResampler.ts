@@ -1,10 +1,11 @@
-import type { Microseconds } from '../../MediaTime';
+import { MICROSECONDS_PER_SECOND, type Microseconds } from '../../MediaTime';
 import {
     addMicroseconds,
     audioFramesToMicroseconds,
     requireMicroseconds
 } from '../../TimeMath';
 import { requireSupportedCustomAudioSampleRate } from '../CustomAudioSampleRate';
+import { requirePositiveSafeInteger } from '../SafeIntegerValidation';
 
 const FILTER_CUTOFF_HEADROOM = 0.94;
 const FILTER_PHASE_COUNT = 2_048;
@@ -12,7 +13,6 @@ const FILTER_RADIUS = 32;
 // The kernel was qualified for sources up to this rate.
 // A faster source widens it in proportion, which keeps the band edge as sharp as it is for this rate
 const FILTER_QUALIFIED_SOURCE_SAMPLE_RATE = 192_000;
-const MICROSECONDS_PER_SECOND = 1_000_000;
 
 /**
  * The largest gap filled with silence or overlap trimmed.
@@ -95,13 +95,6 @@ const CONTIGUOUS_INPUT: InputTimestampReconciliation = Object.freeze({
     discardedFrameCount: 0,
     silenceFrameCount: 0
 });
-
-function requirePositiveSafeInteger(value: number, name: string): number {
-    if (!Number.isSafeInteger(value) || value <= 0) {
-        throw new RangeError(`${name} must be a positive safe integer`);
-    }
-    return value;
-}
 
 function requireNonNegativeSafeInteger(value: number, name: string): number {
     if (!Number.isSafeInteger(value) || value < 0) {

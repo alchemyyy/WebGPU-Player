@@ -18,19 +18,10 @@ sys.path.insert(0, str(SCRIPTS_DIRECTORY))
 
 import create_profile7_playback_vector as generator  # noqa: E402
 from create_dual_track_dolby_vision_MP4_vector import DualTrackVectorConfiguration  # noqa: E402
+from vector_test_support import run_main  # noqa: E402
 
 
 MKV_MERGE_EXECUTABLE_NAME = "mkvmerge.exe" if sys.platform == "win32" else "mkvmerge"
-
-
-def run_main(command_arguments: list[str]) -> tuple[int, str, str]:
-    """Runs the CLI and returns its exit status, stdout, and stderr."""
-
-    stdout = io.StringIO()
-    stderr = io.StringIO()
-    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-        status = generator.main(command_arguments)
-    return status, stdout.getvalue(), stderr.getvalue()
 
 
 def create_empty_file(path: str) -> str:
@@ -213,11 +204,11 @@ class CommandLineTests(unittest.TestCase):
             ("--mkvtoolnix-directory", "--mkvtoolnix-directory requires a path\n"),
         ):
             with self.subTest(option=option):
-                status, _, stderr = run_main(["input.mkv", "output.mp4", option, ""])
+                status, _, stderr = run_main(generator.main, ["input.mkv", "output.mp4", option, ""])
                 self.assertEqual((status, stderr), (1, message))
 
     def test_rejects_an_output_path_that_resolves_to_the_input_path(self) -> None:
-        status, stdout, stderr = run_main(["vector.mkv", os.path.join(".", "vector.mkv")])
+        status, stdout, stderr = run_main(generator.main, ["vector.mkv", os.path.join(".", "vector.mkv")])
 
         self.assertEqual((status, stdout), (1, ""))
         self.assertEqual(stderr, "The output path must differ from the input path\n")
@@ -225,7 +216,7 @@ class CommandLineTests(unittest.TestCase):
     def test_fails_with_status_1_for_a_missing_input(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             missing_path = os.path.join(temporary_directory, "missing.mkv")
-            status, stdout, stderr = run_main([missing_path, os.path.join(temporary_directory, "playback.mp4")])
+            status, stdout, stderr = run_main(generator.main, [missing_path, os.path.join(temporary_directory, "playback.mp4")])
 
         self.assertEqual((status, stdout), (1, ""))
         self.assertIn("missing.mkv", stderr)

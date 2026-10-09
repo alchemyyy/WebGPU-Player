@@ -13,13 +13,9 @@ import OwnedNativeHEVCVideoDecoder, {
 import type { NativeVideoDecoderPort } from 'webgpu-player/video/decoders/OwnedNativeVideoDecoder';
 import { parseHEVCSPS } from 'webgpu-player/video/hevc/HEVCSPSParser';
 
-function createBytesFromHex(hex: string): Uint8Array {
-    const bytes = new Uint8Array(hex.length / 2);
-    for (let byteIndex = 0; byteIndex < bytes.length; byteIndex += 1) {
-        bytes[byteIndex] = Number.parseInt(hex.slice(byteIndex * 2, (byteIndex * 2) + 2), 16);
-    }
-    return bytes;
-}
+import { createBytesFromHex } from '../../helpers/byteArrays';
+import { FakeNativeVideoDecoder } from '../../helpers/fakeNativeVideoDecoder';
+import { createNALUnit, encodeAnnexBNALUnits } from '../../helpers/hevcNALUnits';
 
 const MAIN10_PQ_SPS = createBytesFromHex(
     '4201010220000003009000000300000300ffa005020169365959a4932bc05a848804820000030002000003000210'
@@ -37,10 +33,6 @@ const NEUTRAL_COLOR_SPACE = {
     primaries: 'bt709',
     transfer: 'bt709'
 };
-
-function createNALUnit(type: number, payload: readonly number[]): Uint8Array {
-    return new Uint8Array([ (type & 0x3F) << 1, 1, ...payload ]);
-}
 
 /** Creates a prefix SEI NAL unit with one alternative transfer characteristics message. */
 function createAlternativeTransferSEI(preferredTransferCharacteristics: number): Uint8Array {
@@ -63,25 +55,6 @@ function createNeutralizingDecoder(
         harness.dependencies,
         { nativeHDRTransfer, neutralizeHDRColorMetadata: true }
     );
-}
-
-function encodeAnnexBNALUnits(nalUnits: readonly Uint8Array[]): Uint8Array {
-    const startCode = new Uint8Array([ 0, 0, 0, 1 ]);
-    const byteLength = nalUnits.reduce(
-        (totalByteLength: number, nalUnit: Uint8Array): number => (
-            totalByteLength + startCode.byteLength + nalUnit.byteLength
-        ),
-        0
-    );
-    const output = new Uint8Array(byteLength);
-    let offset = 0;
-    for (const nalUnit of nalUnits) {
-        output.set(startCode, offset);
-        offset += startCode.byteLength;
-        output.set(nalUnit, offset);
-        offset += nalUnit.byteLength;
-    }
-    return output;
 }
 
 function encodeLengthPrefixedNALUnits(nalUnits: readonly Uint8Array[]): Uint8Array {
@@ -160,24 +133,6 @@ class FakeVideoFrame {
     public readonly timestamp = 1_000_000;
     public readonly visibleRect = { height: 1_080, width: 1_920, x: 0, y: 0 };
     public readonly close = vi.fn();
-}
-
-// Mirrors Chromium: close() on a closed codec throws, and an error callback arrives after the codec closed itself
-class FakeNativeVideoDecoder implements NativeVideoDecoderPort {
-    public state: CodecState = 'unconfigured';
-    public readonly close = vi.fn((): void => {
-        if (this.state === 'closed') {
-            throw new DOMException('Cannot call \'close\' on a closed codec.', 'InvalidStateError');
-        }
-        this.state = 'closed';
-    });
-    public readonly configure = vi.fn((): void => {
-        this.state = 'configured';
-    });
-    public readonly decode = vi.fn();
-    public decodeQueueSize = 0;
-    public readonly flush = vi.fn(async (): Promise<void> => undefined);
-    public ondequeue: ((event: Event) => unknown) | null = null;
 }
 
 type DecoderHarness = {

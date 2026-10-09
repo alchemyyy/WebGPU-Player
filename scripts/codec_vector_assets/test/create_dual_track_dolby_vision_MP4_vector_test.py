@@ -12,7 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable
 from unittest.mock import patch
 
 
@@ -20,6 +20,7 @@ SCRIPTS_DIRECTORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS_DIRECTORY))
 
 import create_dual_track_dolby_vision_MP4_vector as generator  # noqa: E402
+from vector_test_support import box, run_main  # noqa: E402
 
 
 VISUAL_SAMPLE_ENTRY_FIELD_BYTE_LENGTH = 78
@@ -37,28 +38,16 @@ SUMMARY_KEYS = [
 ]
 
 
-def concatenate(parts: Sequence[bytes]) -> bytes:
-    """Joins byte strings in order."""
-
-    return b"".join(parts)
-
-
 def unsigned_32(value: int) -> bytes:
     """Encodes one big-endian unsigned 32-bit integer."""
 
     return value.to_bytes(4, "big")
 
 
-def box(box_type: str, payload: bytes = b"") -> bytes:
-    """Creates one compact box around a payload."""
-
-    return unsigned_32(len(payload) + 8) + box_type.encode("ascii") + payload
-
-
 def full_box(box_type: str, payload: bytes, version: int = 0) -> bytes:
     """Creates one full box with the given version and zero flags."""
 
-    return box(box_type, concatenate([bytes((version, 0, 0, 0)), payload]))
+    return box(box_type, b"".join([bytes((version, 0, 0, 0)), payload]))
 
 
 def create_HEVC_configuration(seed: int = 0x20) -> bytes:
@@ -118,23 +107,23 @@ def create_track(
     time_byte_length = 16 if track_header_version == 1 else 8
     track_header = full_box(
         "tkhd",
-        concatenate([bytes(time_byte_length), unsigned_32(track_ID)]),
+        b"".join([bytes(time_byte_length), unsigned_32(track_ID)]),
         track_header_version,
     )
-    handler = full_box("hdlr", concatenate([bytes(4), b"vide"]))
+    handler = full_box("hdlr", b"".join([bytes(4), b"vide"]))
     sample_children = [box("hvcC", create_HEVC_configuration(track_ID * 16))]
     if dolby_vision_configuration is not None:
         sample_children.append(box("dvcC", dolby_vision_configuration))
     sample_entry = box(
         "hvc1" if sample_entry_type is None else sample_entry_type,
-        concatenate([create_visual_sample_entry_fields(picture_size), *sample_children]),
+        b"".join([create_visual_sample_entry_fields(picture_size), *sample_children]),
     )
-    sample_description = full_box("stsd", concatenate([unsigned_32(1), sample_entry]))
+    sample_description = full_box("stsd", b"".join([unsigned_32(1), sample_entry]))
     track_children = [track_header]
     if track_reference is not None:
         track_children.append(track_reference)
-    track_children.append(box("mdia", concatenate([handler, box("minf", box("stbl", sample_description))])))
-    return box("trak", concatenate(track_children))
+    track_children.append(box("mdia", b"".join([handler, box("minf", box("stbl", sample_description))])))
+    return box("trak", b"".join(track_children))
 
 
 def create_MP4(
@@ -169,11 +158,11 @@ def create_MP4(
         track_header_version=track_header_version,
         picture_size=enhancement_picture_size,
     )
-    movie = box("moov", concatenate([base_track, enhancement_track]))
+    movie = box("moov", b"".join([base_track, enhancement_track]))
     media_data = box("mdat", bytes((1,)))
     if movie_before_media_data:
-        return concatenate([box("ftyp"), movie, media_data])
-    return concatenate([box("ftyp"), media_data, movie])
+        return b"".join([box("ftyp"), movie, media_data])
+    return b"".join([box("ftyp"), media_data, movie])
 
 
 def find_marker(data: bytes, marker: str) -> int:
@@ -197,16 +186,6 @@ def create_FFmpeg_runner(
         return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
 
     return run_FFmpeg
-
-
-def run_main(command_arguments: list[str]) -> tuple[int, str, str]:
-    """Runs the CLI and returns its exit status, stdout, and stderr."""
-
-    stdout = io.StringIO()
-    stderr = io.StringIO()
-    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-        status = generator.main(command_arguments)
-    return status, stdout.getvalue(), stderr.getvalue()
 
 
 class DualTrackPatchTests(unittest.TestCase):
@@ -285,8 +264,8 @@ class DualTrackPatchTests(unittest.TestCase):
         compact_source = create_MP4()
         # ftyp and the one-byte mdat occupy the first 17 bytes
         movie = compact_source[17:]
-        extended_media_data = concatenate([unsigned_32(1), b"mdat", (17).to_bytes(8, "big"), bytes((1,))])
-        source = concatenate([box("ftyp"), extended_media_data, movie])
+        extended_media_data = b"".join([unsigned_32(1), b"mdat", (17).to_bytes(8, "big"), bytes((1,))])
+        source = b"".join([box("ftyp"), extended_media_data, movie])
 
         result = generator.patch_dual_track_dolby_vision_MP4(source)
         compact_result = generator.patch_dual_track_dolby_vision_MP4(compact_source)
@@ -302,7 +281,7 @@ class DualTrackPatchTests(unittest.TestCase):
         ):
             with self.subTest(box_byte_length=box_byte_length):
                 self.assert_vector_error(
-                    concatenate([unsigned_32(1), b"mdat", box_byte_length.to_bytes(8, "big")]),
+                    b"".join([unsigned_32(1), b"mdat", box_byte_length.to_bytes(8, "big")]),
                     message,
                 )
 
@@ -424,7 +403,7 @@ class CommandLineTests(unittest.TestCase):
                 "run",
                 side_effect=create_FFmpeg_runner(create_MP4(), commands),
             ):
-                status, stdout, stderr = run_main([input_path, output_path])
+                status, stdout, stderr = run_main(generator.main, [input_path, output_path])
 
         self.assertEqual((status, stderr), (0, ""))
         summary = json.loads(stdout)
@@ -433,20 +412,20 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(summary["outputPath"], output_path)
 
     def test_rejects_an_output_path_that_resolves_to_the_input_path(self) -> None:
-        status, stdout, stderr = run_main(["vector.mkv", os.path.join(".", "vector.mkv")])
+        status, stdout, stderr = run_main(generator.main, ["vector.mkv", os.path.join(".", "vector.mkv")])
 
         self.assertEqual((status, stdout), (1, ""))
         self.assertEqual(stderr, "The output path must differ from the input path\n")
 
     def test_rejects_an_empty_FFmpeg_path(self) -> None:
-        status, _, stderr = run_main(["input.mkv", "output.mp4", "--ffmpeg", ""])
+        status, _, stderr = run_main(generator.main, ["input.mkv", "output.mp4", "--ffmpeg", ""])
 
         self.assertEqual((status, stderr), (1, "--ffmpeg requires a path\n"))
 
     def test_fails_with_status_1_for_a_missing_input(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             missing_path = os.path.join(temporary_directory, "missing.mkv")
-            status, stdout, stderr = run_main([missing_path, os.path.join(temporary_directory, "output.mp4")])
+            status, stdout, stderr = run_main(generator.main, [missing_path, os.path.join(temporary_directory, "output.mp4")])
 
         self.assertEqual((status, stdout), (1, ""))
         self.assertIn("missing.mkv", stderr)

@@ -2038,7 +2038,7 @@ describe('CustomDecodeSession', () => {
         expect(destroyStopPromise).toBe(fallbackStopPromise);
         expect(fallbackStopSettled).toBe(false);
         expect(destroyStopSettled).toBe(false);
-        expect(worker.postedMessages.filter(message => (message as { type?: string }).type === 'stop')).toHaveLength(1);
+        expect(countPostedMessages(worker, 'stop')).toBe(1);
         expect(worker.terminate).not.toHaveBeenCalled();
 
         worker.emitMessage({ generation: 11, type: 'stopped' });

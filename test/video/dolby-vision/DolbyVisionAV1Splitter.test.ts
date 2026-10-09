@@ -12,6 +12,7 @@ import {
 import { splitDolbyVisionAV1TemporalUnit } from 'webgpu-player/video/dolby-vision/DolbyVisionAV1Splitter';
 import { createNativeVideoCapabilityVector } from 'webgpu-player/capability/vectors/NativeVideoCapabilityVectors';
 
+import { concatenate } from '../../helpers/byteArrays';
 import { DOLBY_VISION_ITUT_T35_PAYLOAD_PREFIX } from '../../helpers/dolbyVisionAV1ITUTT35Payload';
 
 const OBU_EXTENSION_FLAG = 0x04;
@@ -49,19 +50,6 @@ function createDolbyVisionMetadataOBU(rpuByte: number, extension: number | null 
         [ METADATA_TYPE_ITUT_T35, ...DOLBY_VISION_T35_MESSAGE, rpuByte, 0x80 ],
         extension
     );
-}
-
-function concatenate(parts: readonly Uint8Array[]): Uint8Array {
-    const output = new Uint8Array(parts.reduce(
-        (byteLength: number, part: Uint8Array): number => byteLength + part.byteLength,
-        0
-    ));
-    let offset = 0;
-    for (const part of parts) {
-        output.set(part, offset);
-        offset += part.byteLength;
-    }
-    return output;
 }
 
 describe('DolbyVisionAV1Splitter', () => {

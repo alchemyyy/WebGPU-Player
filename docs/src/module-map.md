@@ -69,6 +69,7 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 - `ExternalHDRAuthorizationVector.ts`: the neutralized Main 10 access unit and its expected samples, for external HDR authorization.
 - `DolbyVisionAuthorizationVector.ts`: synthetic RPU snapshots for Dolby Vision authorization.
 - `HDR10PlusVectors.ts`: deterministic HDR10+ HEVC access units for the dynamic HDR tests.
+- `Base64.ts`: the base64 decoder the inline vectors share.
 - `qualification/`: streams served at runtime that no script generates: the HEVC Main 10 4K stream (`hevc/`) and the VC-1 stream (`vc1/`).
 - `test/`: inputs only tests and generators read: DTS samples, a TrueHD Matroska remux, and Dolby Vision RPU payloads.
 
@@ -105,7 +106,7 @@ All worker code unless marked.
 - `OwnedVideoDecodeStream.ts`: the codec-neutral state of one owned decode attempt: decoded outputs matched with their packets' metadata, the pre-start rule, BL and EL pairing, frame credits, and the packet pump.
 - `OwnedNativeVideoDecoder.ts`: an owned WebCodecs decoder for packets that decode unchanged, used for AV1.
 - `OwnedAV1VideoStream.ts`: one attempt of the owned AV1 Dolby Vision path.
-- `OwnedNativeHEVCVideoDecoder.ts`: the engine's own WebCodecs HEVC decoder: NAL order fix, leading RASL drop, optional SPS neutralization.
+- `OwnedNativeHEVCVideoDecoder.ts`: the engine's own WebCodecs HEVC decoder, built on `OwnedNativeVideoDecoder`: NAL order fix, leading RASL drop, optional SPS neutralization.
 - `HEVCSoftwareVideoDecoder.ts`: the `@hevcjs/core` decoder (I420 and I420P10) with a shutdown registry.
 - `HEVCDecoderBackend.ts`: the low-level `@hevcjs/core` WASM binding.
 - `JPEG2000SoftwareVideoDecoder.ts`: OpenJPEG WASM to an RGBA `VideoFrame`.
@@ -145,6 +146,7 @@ All worker code unless marked.
 - `NativeMultichannelAudioOutput.ts`: `selectCustomAudioOutputChannelCount`, the output layout rule (three channels and 5.1 to 5.1, 6.1 and 7.1 to 7.1 or 5.1, otherwise stereo).
 - `AudioNormalization.ts`: TrackGain and AlbumGain decibels to linear gain.
 - `AudioSampleWindow.ts`: PCM windowing at a seek.
+- `SafeIntegerValidation.ts`: the positive safe integer check the audio modules share.
 
 ### audio/decoders/
 
@@ -186,6 +188,7 @@ The authorization vectors are in `capability/vectors/`.
 - `DolbyVisionPresentationAuthorization.ts`, `ExternalDolbyVisionPresentationAuthorization.ts`: raw Dolby Vision keys (per raw format: single-layer, the P4 and P7 bases, and the P4 and P7 FEL) and the external P5 key, checked with synthetic RPU vectors.
 - `GPUAuthorizationDeadline.ts`: the shared 5 s timeout, cancelled on device loss.
 - `GPUCanvasReadback.ts`: bounded GPU canvas pixel readback (5 s).
+- `GPUErrorScope.ts`: the error-scope cleanup the authorizations share.
 
 ## Outside src/
 

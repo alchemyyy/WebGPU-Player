@@ -10,13 +10,7 @@ import {
     neutralizeNativeHDRHEVCDecoderConfigWithValidation
 } from 'webgpu-player/video/hevc/NativeHDRHEVCColorNeutralizer';
 
-function createBytesFromHex(hex: string): Uint8Array {
-    const bytes = new Uint8Array(hex.length / 2);
-    for (let byteIndex = 0; byteIndex < bytes.length; byteIndex += 1) {
-        bytes[byteIndex] = Number.parseInt(hex.slice(byteIndex * 2, (byteIndex * 2) + 2), 16);
-    }
-    return bytes;
-}
+import { createBytesFromHex } from '../../helpers/byteArrays';
 
 const MAIN10_PQ_SPS = createBytesFromHex(
     '4201010220000003009000000300000300ffa005020169365959a4932bc05a848804820000030002000003000210'

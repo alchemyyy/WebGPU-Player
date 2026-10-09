@@ -13,6 +13,7 @@ import { AV1OBUParseError } from 'webgpu-player/video/av1/AV1OBUParser';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 
 import { DOLBY_VISION_ITUT_T35_PAYLOAD_PREFIX } from '../../helpers/dolbyVisionAV1ITUTT35Payload';
+import { createNALUnit, encodeAnnexBNALUnits } from '../../helpers/hevcNALUnits';
 
 function createRPUParser(
     packedRPUData: ArrayBuffer = createDolbyVisionAuthorizationRPUVector()
@@ -24,29 +25,6 @@ function createRPUParser(
             packedRPUData.slice(0)
         ))
     };
-}
-
-function createNALUnit(type: number, payload: readonly number[]): Uint8Array {
-    return new Uint8Array([ (type & 0x3F) << 1, 1, ...payload ]);
-}
-
-function encodeAnnexBNALUnits(nalUnits: readonly Uint8Array[]): Uint8Array {
-    const startCode = new Uint8Array([ 0, 0, 0, 1 ]);
-    const byteLength = nalUnits.reduce(
-        (totalByteLength: number, nalUnit: Uint8Array): number => (
-            totalByteLength + startCode.byteLength + nalUnit.byteLength
-        ),
-        0
-    );
-    const output = new Uint8Array(byteLength);
-    let offset = 0;
-    for (const nalUnit of nalUnits) {
-        output.set(startCode, offset);
-        offset += startCode.byteLength;
-        output.set(nalUnit, offset);
-        offset += nalUnit.byteLength;
-    }
-    return output;
 }
 
 function getAnnexBNALUnitTypes(data: Uint8Array): number[] {
@@ -357,11 +335,11 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
                 enhancementWrapper
             ]),
             1.96
-        ))).rejects.toThrow('requires one exact RPU');
+        ))).rejects.toThrow('requires exactly one RPU');
         await expect(queue.processPacket(createPacket(
             encodeAnnexBNALUnits([ basePicture, enhancementWrapper ]),
             1.97
-        ))).rejects.toThrow('requires one exact RPU');
+        ))).rejects.toThrow('requires exactly one RPU');
         queue.requireDrained();
     });
 

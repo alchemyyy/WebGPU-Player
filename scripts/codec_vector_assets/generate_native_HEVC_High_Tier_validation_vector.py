@@ -23,8 +23,8 @@ from generate_static_HDR_validation_vectors import (
     inject_prefix_SEI_NAL_units,
     mux_vector,
     remove_emulation_prevention_bytes,
-    require_exact_stream_metadata,
     require_executable,
+    require_stream_metadata,
     run_command,
     scan_static_HDR_metadata,
 )
@@ -221,7 +221,7 @@ def execute(arguments: argparse.Namespace) -> dict[str, object]:
             frame_rate=EXPECTED_FRAME_RATE,
             duration_seconds=arguments.duration_seconds,
         )
-        stream_metadata = require_exact_stream_metadata(
+        stream_metadata = require_stream_metadata(
             ffprobe_path,
             staged_vector_path,
             width=EXPECTED_WIDTH,

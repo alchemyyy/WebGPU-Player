@@ -16,6 +16,7 @@ import {
     waitForBrowserAudioOperation
 } from './BrowserAudioOperation';
 import { CUSTOM_AUDIO_OUTPUT_CHANNEL_INTERPRETATION } from '../CustomAudioOutputPolicy';
+import { requirePositiveSafeInteger } from '../SafeIntegerValidation';
 import { requireMicroseconds } from '../../TimeMath';
 
 export const DEFAULT_AUDIO_TELEMETRY_INTERVAL_FRAMES = 4_096;
@@ -59,13 +60,6 @@ export interface AudioWorkletOutputController {
 const INITIAL_GENERATION = 1;
 const moduleLoadPromises = new WeakMap<AudioContext, Promise<void>>();
 
-function requirePositiveInteger(value: number, label: string): number {
-    if (!Number.isSafeInteger(value) || value <= 0) {
-        throw new RangeError(`${label} must be a positive safe integer`);
-    }
-    return value;
-}
-
 function isNonNegativeSafeInteger(value: unknown): value is number {
     return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
@@ -86,22 +80,22 @@ function isTelemetryReason(value: unknown): value is AudioWorkletTelemetryReason
 }
 
 function createConfiguration(audioContext: AudioContext, options: AudioWorkletControllerOptions): AudioWorkletControllerConfiguration {
-    const channelCount = requirePositiveInteger(options.channelCount, 'Channel count');
+    const channelCount = requirePositiveSafeInteger(options.channelCount, 'Channel count');
     if (channelCount > MAX_AUDIO_CHANNEL_COUNT) {
         throw new RangeError(`Channel count cannot exceed ${MAX_AUDIO_CHANNEL_COUNT}`);
     }
 
-    const maxChunks = requirePositiveInteger(options.maxChunks ?? DEFAULT_MAX_WORKLET_CHUNKS, 'Maximum audio chunks');
+    const maxChunks = requirePositiveSafeInteger(options.maxChunks ?? DEFAULT_MAX_WORKLET_CHUNKS, 'Maximum audio chunks');
     if (maxChunks > MAX_AUDIO_WORKLET_CHUNKS) {
         throw new RangeError(`Maximum audio chunks cannot exceed ${MAX_AUDIO_WORKLET_CHUNKS}`);
     }
 
     return {
         channelCount,
-        maxBufferedFrames: requirePositiveInteger(options.maxBufferedFrames, 'Maximum buffered frames'),
+        maxBufferedFrames: requirePositiveSafeInteger(options.maxBufferedFrames, 'Maximum buffered frames'),
         maxChunks,
-        sampleRate: requirePositiveInteger(audioContext.sampleRate, 'Audio context sample rate'),
-        telemetryIntervalFrames: requirePositiveInteger(
+        sampleRate: requirePositiveSafeInteger(audioContext.sampleRate, 'Audio context sample rate'),
+        telemetryIntervalFrames: requirePositiveSafeInteger(
             options.telemetryIntervalFrames ?? DEFAULT_AUDIO_TELEMETRY_INTERVAL_FRAMES,
             'Telemetry interval frames'
         )
@@ -150,11 +144,11 @@ export default class AudioWorkletController implements AudioWorkletOutputControl
     public constructor(node: AudioWorkletNode, configuration: AudioWorkletControllerConfiguration) {
         this.node = node;
         this.configuration = {
-            channelCount: requirePositiveInteger(configuration.channelCount, 'Channel count'),
-            maxBufferedFrames: requirePositiveInteger(configuration.maxBufferedFrames, 'Maximum buffered frames'),
-            maxChunks: requirePositiveInteger(configuration.maxChunks, 'Maximum audio chunks'),
-            sampleRate: requirePositiveInteger(configuration.sampleRate, 'Sample rate'),
-            telemetryIntervalFrames: requirePositiveInteger(configuration.telemetryIntervalFrames, 'Telemetry interval frames')
+            channelCount: requirePositiveSafeInteger(configuration.channelCount, 'Channel count'),
+            maxBufferedFrames: requirePositiveSafeInteger(configuration.maxBufferedFrames, 'Maximum buffered frames'),
+            maxChunks: requirePositiveSafeInteger(configuration.maxChunks, 'Maximum audio chunks'),
+            sampleRate: requirePositiveSafeInteger(configuration.sampleRate, 'Sample rate'),
+            telemetryIntervalFrames: requirePositiveSafeInteger(configuration.telemetryIntervalFrames, 'Telemetry interval frames')
         };
         if (this.configuration.channelCount > MAX_AUDIO_CHANNEL_COUNT) {
             throw new RangeError(`Channel count cannot exceed ${MAX_AUDIO_CHANNEL_COUNT}`);
@@ -289,7 +283,7 @@ export default class AudioWorkletController implements AudioWorkletOutputControl
 
     /** Resets one completed lease without retiring the reusable processor. */
     public deactivate(leaseId: number): Promise<void> {
-        const validatedLeaseId = requirePositiveInteger(leaseId, 'Audio worklet lease ID');
+        const validatedLeaseId = requirePositiveSafeInteger(leaseId, 'Audio worklet lease ID');
         if (this.deactivationPromise) {
             if (this.deactivationLeaseId === validatedLeaseId) {
                 return this.deactivationPromise;

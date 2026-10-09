@@ -4,6 +4,7 @@ import { EAC3_DECODER_WASM_ASSET } from '../../EngineAssets';
 import type { FFmpegEAC3Module } from '#wasm/ffmpeg-eac3/ffmpeg-eac3.mjs';
 import type { CustomAudioChannelLayout } from '../processing/CustomAudioChannelLayout';
 import { isSupportedCustomAudioSampleRate } from '../CustomAudioSampleRate';
+import { requirePositiveSafeInteger } from '../SafeIntegerValidation';
 import { getQualifiedCustomWaveChannelLayout } from '../processing/CustomWaveChannelLayout';
 import {
     addMicroseconds,
@@ -87,13 +88,6 @@ function createFunctionTable(module: FFmpegEAC3Module): FFmpegEAC3FunctionTable 
         receiveFrame: requireFunction(module, 'jellyfin_eac3_receive_frame', 1),
         sendPacket: requireFunction(module, 'jellyfin_eac3_send_packet', 2)
     };
-}
-
-function requirePositiveSafeInteger(value: number, name: string): number {
-    if (!Number.isSafeInteger(value) || value <= 0) {
-        throw new RangeError(`${name} must be a positive safe integer`);
-    }
-    return value;
 }
 
 /** Owns one bounded FFmpeg E-AC-3 decoder in the custom decode worker. */

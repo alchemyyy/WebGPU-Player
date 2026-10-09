@@ -3,6 +3,7 @@ import { createEmscriptenModuleLoader } from '../../DecoderWASMSource';
 import { TRUEHD_DECODER_WASM_ASSET } from '../../EngineAssets';
 import type { FFmpegTrueHDModule } from '#wasm/ffmpeg-truehd/ffmpeg-truehd.mjs';
 import { isSupportedCustomAudioSampleRate } from '../CustomAudioSampleRate';
+import { requirePositiveSafeInteger } from '../SafeIntegerValidation';
 import {
     getQualifiedCustomWaveChannelLayout,
     type QualifiedCustomWaveChannelLayout
@@ -112,13 +113,6 @@ function createFunctionTable(module: FFmpegTrueHDModule): FFmpegTrueHDFunctionTa
         receiveFrame: requireFunction(module, 'jellyfin_truehd_receive_frame', 1),
         sendPacket: requireFunction(module, 'jellyfin_truehd_send_packet', 2)
     };
-}
-
-function requirePositiveSafeInteger(value: number, name: string): number {
-    if (!Number.isSafeInteger(value) || value <= 0) {
-        throw new RangeError(`${name} must be a positive safe integer`);
-    }
-    return value;
 }
 
 function getCodecID(codec: TrueHDDecoderCodec): number {

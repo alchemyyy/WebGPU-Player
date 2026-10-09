@@ -1,3 +1,5 @@
+import { decodeBase64 } from './Base64';
+
 export const EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION = 2;
 export const EXTERNAL_HDR_AUTHORIZATION_CODED_WIDTH = 1_920;
 export const EXTERNAL_HDR_AUTHORIZATION_CODED_HEIGHT = 1_088;
@@ -108,15 +110,6 @@ const EXTERNAL_HDR_AUTHORIZATION_ACCESS_UNIT_BASE64 = [
     'ALGAAEHVYhn8D6E4SToCTgAHwAAAAwAAAwACAgAMIAALQALAABQXONUZmVAAAAMCIgCIyLRgAABSAAADAABMQAAAAwAPoAFjAACD',
     'qsQz+B9CcJJ0BJwAD4AAAAMAAAMABAQAGEAAFoAFgAAoLnGqMzKgAAAERAERsA=='
 ].join('');
-
-function decodeBase64(base64: string): Uint8Array {
-    const decoded = globalThis.atob(base64);
-    const bytes = new Uint8Array(decoded.length);
-    for (let byteIndex = 0; byteIndex < decoded.length; byteIndex += 1) {
-        bytes[byteIndex] = decoded.charCodeAt(byteIndex);
-    }
-    return bytes;
-}
 
 /** Returns a new copy of the Annex B access unit for native HDR transport authorization. */
 export function createExternalHDRAuthorizationAccessUnit(): Uint8Array {

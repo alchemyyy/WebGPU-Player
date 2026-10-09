@@ -44,20 +44,14 @@ import {
     waitForBrowserAudioOperation
 } from 'webgpu-player/audio/output/BrowserAudioOperation';
 
+import { isSameAudioSink } from '../../helpers/audioSink';
+
 // Keeps the output manager's recovery poll from firing during a test
 const OUTPUT_RECOVERY_POLL_INTERVAL_MILLISECONDS = 3_600_000;
 
 let fakeMaximumChannelCount = 2;
 
 type AudioSinkId = string | Readonly<{ type: 'none' }>;
-
-// AudioContext.setSinkId settles a request for the current sink without touching the output
-function isSameAudioSink(currentSinkId: AudioSinkId, requestedSinkId: AudioSinkId): boolean {
-    if (typeof currentSinkId === 'string' || typeof requestedSinkId === 'string') {
-        return currentSinkId === requestedSinkId;
-    }
-    return currentSinkId.type === requestedSinkId.type;
-}
 
 class FakeAudioContext extends EventTarget {
     public static readonly instances: FakeAudioContext[] = [];

@@ -1,3 +1,5 @@
+import { decodeBase64 } from './Base64';
+
 export const NATIVE_ULTRA_HD_VIDEO_CAPABILITY_CODED_HEIGHT = 2_160;
 export const NATIVE_ULTRA_HD_VIDEO_CAPABILITY_CODED_WIDTH = 3_840;
 
@@ -63,15 +65,6 @@ const VP9_PROFILE_0_KEY_FRAME_BASE64 = [
     'n8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/BcgA='
 ].join('');
 const AV1_MAIN_KEY_FRAME_BASE64 = 'EgAKCBsu+/4b+gCAMiMT/AAAFgAAA60ZzuMJVv9/1iP4UzljTt+FOfqhrdS/wJlKIA==';
-
-function decodeBase64(base64: string): Uint8Array {
-    const decoded: string = globalThis.atob(base64);
-    const bytes: Uint8Array = new Uint8Array(decoded.length);
-    for (let byteIndex = 0; byteIndex < decoded.length; byteIndex += 1) {
-        bytes[byteIndex] = decoded.charCodeAt(byteIndex);
-    }
-    return bytes;
-}
 
 /** Returns a new copy of the codec's 3840x2160 native SDR output vector. */
 export function createNativeUltraHDVideoCapabilityVector(

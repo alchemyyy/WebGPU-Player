@@ -5,30 +5,9 @@ import {
     parseHEVCSEIMessages
 } from 'webgpu-player/video/hevc/HEVCSEI';
 
+import { addEmulationPreventionBytes, appendExtendedValue } from '../../helpers/hevcNALUnits';
+
 const ANNEX_B_START_CODE = [ 0, 0, 0, 1 ];
-
-function appendExtendedValue(bytes: number[], value: number): void {
-    let remainingValue = value;
-    while (remainingValue >= 0xFF) {
-        bytes.push(0xFF);
-        remainingValue -= 0xFF;
-    }
-    bytes.push(remainingValue);
-}
-
-function addEmulationPreventionBytes(bytes: readonly number[]): number[] {
-    const output: number[] = [];
-    let zeroCount = 0;
-    for (const byteValue of bytes) {
-        if (zeroCount >= 2 && byteValue <= 3) {
-            output.push(3);
-            zeroCount = 0;
-        }
-        output.push(byteValue);
-        zeroCount = byteValue === 0 ? zeroCount + 1 : 0;
-    }
-    return output;
-}
 
 function createSEIAccessUnit(
     nalUnitType: 39 | 40,

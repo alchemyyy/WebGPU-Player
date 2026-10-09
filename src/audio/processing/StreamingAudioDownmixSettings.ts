@@ -82,7 +82,7 @@ export default class StreamingAudioDownmixSettings {
         const settingsSnapshot = cloneSettings(settings);
         this.targetSettings = settingsSnapshot;
         if (hasSameSettings(this.currentSettings, settingsSnapshot)) {
-            this.currentSettings = cloneSettings(settingsSnapshot);
+            this.currentSettings = settingsSnapshot;
             this.remainingRampFrameCount = 0;
             return true;
         }

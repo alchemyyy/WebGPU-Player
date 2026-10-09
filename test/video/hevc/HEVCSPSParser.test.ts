@@ -5,13 +5,7 @@ import {
     rewriteHEVCSPSColorDescriptionToBT709
 } from 'webgpu-player/video/hevc/HEVCSPSParser';
 
-function createBytesFromHex(hex: string): Uint8Array {
-    const bytes = new Uint8Array(hex.length / 2);
-    for (let byteIndex = 0; byteIndex < bytes.length; byteIndex += 1) {
-        bytes[byteIndex] = Number.parseInt(hex.slice(byteIndex * 2, (byteIndex * 2) + 2), 16);
-    }
-    return bytes;
-}
+import { createBytesFromHex } from '../../helpers/byteArrays';
 
 const MAIN_SPS = createBytesFromHex(
     '42010101600000030090000003000003001ea020810596566924caf016a020202080000003008000000c04'

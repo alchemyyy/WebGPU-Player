@@ -9,6 +9,7 @@ import random
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
 from fractions import Fraction
 from pathlib import Path
@@ -20,6 +21,7 @@ SCRIPTS_DIRECTORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS_DIRECTORY))
 
 import generate_dolby_vision_AV1_vectors as generator  # noqa: E402
+from vector_test_support import box  # noqa: E402
 
 
 # Saved before any test replaces generator.VECTOR_DIRECTORY
@@ -75,12 +77,6 @@ def create_frame(first_header_byte: int, OBU_type: int = generator.OBUType.FRAME
 SEQUENCE_HEADER = create_OBU(generator.OBUType.SEQUENCE_HEADER, SEQUENCE_HEADER_PAYLOAD)
 KEY_FRAME = create_frame(SHOWN_KEY_FRAME_HEADER)
 INTER_FRAME = create_frame(SHOWN_INTER_FRAME_HEADER)
-
-
-def box(box_type: str, payload: bytes = b"") -> bytes:
-    """Creates one compact box around a payload."""
-
-    return (len(payload) + 8).to_bytes(4, "big") + box_type.encode("ascii") + payload
 
 
 def create_colr_box(color: generator.BaseLayerColor) -> bytes:
@@ -1001,9 +997,7 @@ class CommittedVectorTests(unittest.TestCase):
         for sub_profile in generator.SUB_PROFILES:
             for container_format in generator.CONTAINER_FORMATS:
                 data = read_committed_vector(generator.get_vector_file_name(sub_profile, container_format))
-                expected_counts: dict[str, int] = {}
-                for file_name in sub_profile.source_RPU_file_names:
-                    expected_counts[file_name] = expected_counts.get(file_name, 0) + 1
+                expected_counts: Counter[str] = Counter(sub_profile.source_RPU_file_names)
                 with self.subTest(sub_profile=sub_profile.name, container_format=container_format):
                     for file_name, expected_count in expected_counts.items():
                         metadata_OBU = generator.create_dolby_vision_metadata_OBU(generator.read_source_RPU(file_name).RPU)

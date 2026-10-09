@@ -25,7 +25,6 @@ const FULL_BOX_HEADER_BYTE_LENGTH = 4;
 const MAXIMUM_TOP_LEVEL_BOX_COUNT = 128;
 const MAXIMUM_CHILD_BOX_COUNT = 4_096;
 const MAXIMUM_TRACK_COUNT = 1_024;
-const MAXIMUM_SAMPLE_ENTRY_COUNT = 16;
 const MINIMUM_HEVC_CONFIGURATION_BYTE_LENGTH = 23;
 const MAXIMUM_HEVC_CONFIGURATION_BYTE_LENGTH = 1_024 * 1_024;
 const MINIMUM_DOLBY_VISION_CONFIGURATION_BYTE_LENGTH = 4;
@@ -270,7 +269,7 @@ function parseVideoSampleDescription(data: Uint8Array, trackBox: ISOBaseMediaBox
         sampleDescriptionBox.dataOffset + FULL_BOX_HEADER_BYTE_LENGTH,
         sampleDescriptionBox.endOffset
     );
-    if (entryCount !== 1 || entryCount > MAXIMUM_SAMPLE_ENTRY_COUNT) {
+    if (entryCount !== 1) {
         return null;
     }
     const sampleEntryOffset = sampleDescriptionBox.dataOffset + 8;

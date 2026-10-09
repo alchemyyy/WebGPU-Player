@@ -46,6 +46,7 @@ import {
     GPUCanvasPixelReader,
     getValidationTextureUsage
 } from './GPUCanvasReadback';
+import { discardErrorScope } from './GPUErrorScope';
 import {
     calculateRawHDRAuthorizationOutputDither,
     createRawHDRAuthorizationVector,
@@ -619,16 +620,6 @@ function createRejectedDecision(
         status: 'rejected',
         targetFormat
     };
-}
-
-function discardErrorScope(device: GPUDevice): void {
-    // popErrorScope can throw synchronously after device loss
-    // eslint-disable-next-line sonarjs/no-try-promise
-    try {
-        void device.popErrorScope().catch((): void => undefined);
-    } catch {
-        // Device loss can synchronously invalidate the scope stack
-    }
 }
 
 /** Runs the production raw upload, RPU binding, shader, and draw path. */

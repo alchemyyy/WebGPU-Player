@@ -5,6 +5,8 @@ import {
     type WebGPUAudioOutputManagerOptions
 } from 'webgpu-player/audio/output/WebGPUAudioOutputManager';
 
+import { isSameAudioSink } from '../../helpers/audioSink';
+
 type Deferred = {
     promise: Promise<void>
     resolve: () => void
@@ -18,17 +20,6 @@ type AudioSinkRequest = string | SilentAudioSink;
 const IDLE_OUTPUT_RECOVERY_POLL_INTERVAL_MILLISECONDS = 3_600_000;
 const OUTPUT_RECOVERY_POLL_INTERVAL_MILLISECONDS = 250;
 const SILENT_AUDIO_SINK: SilentAudioSink = { type: 'none' };
-
-/** Compares sinks the way browsers short-circuit a request for the current sink. */
-function isSameAudioSink(
-    currentSink: AudioSinkRequest,
-    requestedSink: AudioSinkRequest
-): boolean {
-    if (typeof currentSink === 'string' || typeof requestedSink === 'string') {
-        return currentSink === requestedSink;
-    }
-    return currentSink.type === requestedSink.type;
-}
 
 class FakeMediaDevices extends EventTarget {
     public devices: MediaDeviceInfo[] = [];

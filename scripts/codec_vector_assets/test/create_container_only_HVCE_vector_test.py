@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import os
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Sequence
 
@@ -18,6 +16,7 @@ SCRIPTS_DIRECTORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS_DIRECTORY))
 
 import create_container_only_HVCE_vector as generator  # noqa: E402
+from vector_test_support import run_main  # noqa: E402
 
 
 HVCE_BLOCK_ADD_ID_TYPE_BYTES = b"hvcE"
@@ -46,16 +45,6 @@ def create_source(parameter_set_types: Sequence[int] = (32, 33, 34)) -> bytes:
             *(create_wrapped_NAL_unit(NAL_unit_type) for NAL_unit_type in parameter_set_types),
         )
     )
-
-
-def run_main(command_arguments: Sequence[str]) -> tuple[int, str, str]:
-    """Runs the CLI and returns its exit status, standard output, and standard error."""
-
-    standard_output = io.StringIO()
-    standard_error = io.StringIO()
-    with redirect_stdout(standard_output), redirect_stderr(standard_error):
-        status = generator.main(command_arguments)
-    return status, standard_output.getvalue(), standard_error.getvalue()
 
 
 class ContainerOnlyHVCEVectorTests(unittest.TestCase):
@@ -127,7 +116,7 @@ class ContainerOnlyHVCEVectorTests(unittest.TestCase):
             output_path = Path(temporary_directory) / "container-only.mkv"
             input_path.write_bytes(create_source())
 
-            status, standard_output, standard_error = run_main([str(input_path), str(output_path)])
+            status, standard_output, standard_error = run_main(generator.main, [str(input_path), str(output_path)])
 
             self.assertEqual((status, standard_error), (0, ""))
             vector = generator.create_container_only_HVCE_vector(create_source())
@@ -154,11 +143,12 @@ class ContainerOnlyHVCEVectorTests(unittest.TestCase):
             )
             for command_arguments, expected_message in failures:
                 with self.subTest(command_arguments=command_arguments):
-                    self.assertEqual(run_main(command_arguments), (1, "", expected_message))
+                    self.assertEqual(run_main(generator.main, command_arguments), (1, "", expected_message))
             self.assertFalse(output_path.exists())
 
             missing_status, _standard_output, _standard_error = run_main(
-                [str(Path(temporary_directory) / "missing.mkv"), str(output_path)]
+                generator.main,
+                [str(Path(temporary_directory) / "missing.mkv"), str(output_path)],
             )
             self.assertEqual(missing_status, 1)
 
@@ -171,7 +161,7 @@ class ContainerOnlyHVCEVectorTests(unittest.TestCase):
             os.link(input_path, link_path)
 
             self.assertEqual(
-                run_main([str(input_path), str(link_path)]),
+                run_main(generator.main, [str(input_path), str(link_path)]),
                 (1, "", "The output path must differ from the input path\n"),
             )
             self.assertEqual(input_path.read_bytes(), source)

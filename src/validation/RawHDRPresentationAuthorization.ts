@@ -36,6 +36,7 @@ import {
     getValidationTextureUsage
 } from './GPUCanvasReadback';
 import GPUAuthorizationDeadline, { GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS } from './GPUAuthorizationDeadline';
+import { discardErrorScope } from './GPUErrorScope';
 
 export const RAW_HDR_AUTHORIZATION_VECTOR_VERSION = 2;
 export const RAW_HDR_AUTHORIZATION_TIMEOUT_MICROSECONDS = GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS;
@@ -791,13 +792,7 @@ export class RawHDRPresentationAuthorizationRunner {
         } finally {
             deadline.destroy();
             if (errorScopePushed) {
-                // popErrorScope can throw synchronously after device loss
-                // eslint-disable-next-line sonarjs/no-try-promise
-                try {
-                    void device.popErrorScope().catch((): void => undefined);
-                } catch {
-                    // Device loss can synchronously invalidate the scope stack
-                }
+                discardErrorScope(device);
             }
             pixelReader?.destroy();
             destroyRawPlaneTextureSet(textureSet);

@@ -22,6 +22,8 @@ import HEVCSoftwareVideoDecoder, {
     waitForHEVCSoftwareVideoDecoderShutdown
 } from 'webgpu-player/video/decoders/HEVCSoftwareVideoDecoder';
 
+import { createBytesFromHex } from '../../helpers/byteArrays';
+
 type MutableDecoderContract = {
     codec: VideoCodec
     config: VideoDecoderConfig
@@ -63,14 +65,6 @@ class FakeHEVCDecoderBackend implements HEVCDecoderBackend {
 
 function createNALUnit(nalUnitType: number, payload: readonly number[] = []): Uint8Array {
     return new Uint8Array([ nalUnitType << 1, 1, ...payload ]);
-}
-
-function createBytesFromHex(hex: string): Uint8Array {
-    const bytes = new Uint8Array(hex.length / 2);
-    for (let byteIndex = 0; byteIndex < bytes.length; byteIndex += 1) {
-        bytes[byteIndex] = Number.parseInt(hex.slice(byteIndex * 2, (byteIndex * 2) + 2), 16);
-    }
-    return bytes;
 }
 
 const MAIN_SPS = createBytesFromHex(

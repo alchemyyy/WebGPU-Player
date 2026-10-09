@@ -55,27 +55,13 @@ type PendingFrameMetadata = {
     metadata: DolbyVisionEncodedFrameMetadata | null
 };
 
-function toUint8Array(data: AllowSharedBufferSource): Uint8Array {
-    if (data instanceof ArrayBuffer) {
-        return new Uint8Array(data);
-    }
-    if (typeof SharedArrayBuffer !== 'undefined' && data instanceof SharedArrayBuffer) {
-        return new Uint8Array(data);
-    }
-    if (ArrayBuffer.isView(data)) {
-        return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    }
-
-    throw new TypeError('The HEVC decoder description is not a buffer source');
-}
-
 /** Resolves whether encoded HEVC access units use HVCC lengths or Annex B. */
 export function getHEVCNALFormat(decoderConfig: VideoDecoderConfig): HEVCNALFormat {
     if (decoderConfig.description === undefined) {
         return { kind: 'annex-b' };
     }
 
-    const decoderConfiguration = parseHEVCDecoderConfiguration(toUint8Array(decoderConfig.description));
+    const decoderConfiguration = parseHEVCDecoderConfiguration(decoderConfig.description);
     return {
         kind: 'length-prefixed',
         lengthSize: decoderConfiguration.lengthSize
@@ -133,7 +119,7 @@ function getEnhancementLayerDisposition(
         return 'absent';
     }
     if (parsedRPUData.length !== 1) {
-        throw new TypeError('A Dolby Vision enhancement access unit requires one exact RPU');
+        throw new TypeError('A Dolby Vision enhancement access unit requires exactly one RPU');
     }
 
     const snapshot = decodeDolbyVisionRPUSnapshot(parsedRPUData[0]);

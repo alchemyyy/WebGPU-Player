@@ -2,6 +2,7 @@
 
 import { createDolbyVisionAV1ITUTT35Payload } from '../../helpers/dolbyVisionAV1ITUTT35Payload';
 import { TEST_VECTORS_DIRECTORY, WASM_OUTPUT_DIRECTORY } from '../../helpers/enginePaths';
+import { encodeAnnexBNALUnits } from '../../helpers/hevcNALUnits';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -22,25 +23,6 @@ import DolbyVisionRPUParserSession from 'webgpu-player/video/dolby-vision/DolbyV
 const PARSER_WASM_PATH = resolve(WASM_OUTPUT_DIRECTORY, 'libdovi', 'dovi-rpu-parser.wasm');
 const RPU_VECTOR_DIRECTORY = resolve(TEST_VECTORS_DIRECTORY, 'dolby-vision-rpu');
 const PARSER_WASM_BYTES = new Uint8Array(readFileSync(PARSER_WASM_PATH));
-
-function encodeAnnexBNALUnits(nalUnits: readonly Uint8Array[]): Uint8Array {
-    const startCode = new Uint8Array([ 0, 0, 0, 1 ]);
-    const byteLength = nalUnits.reduce(
-        (totalByteLength: number, nalUnit: Uint8Array): number => (
-            totalByteLength + startCode.byteLength + nalUnit.byteLength
-        ),
-        0
-    );
-    const output = new Uint8Array(byteLength);
-    let byteOffset = 0;
-    for (const nalUnit of nalUnits) {
-        output.set(startCode, byteOffset);
-        byteOffset += startCode.byteLength;
-        output.set(nalUnit, byteOffset);
-        byteOffset += nalUnit.byteLength;
-    }
-    return output;
-}
 
 async function createActualParser(): Promise<DolbyVisionRPUParser> {
     return DolbyVisionRPUParser.create('local-parser.wasm', {

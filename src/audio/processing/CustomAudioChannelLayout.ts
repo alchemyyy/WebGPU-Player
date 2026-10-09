@@ -249,6 +249,7 @@ export function mixCustomAudioToStereo(
             return [ left, right ];
         }
         case 'stereo':
+            // NOTE: The caller's buffers pass through uncopied, so callers must treat the result as read-only
             return [ channelData[0], channelData[1] ];
         case '2.1':
             return downmixThreeChannelToStereo(

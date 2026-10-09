@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-bd09b325.js";
+            window.path_to_searchindex_js = "searchindex-d5fe2f8e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -1211,6 +1211,7 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 <li><code>ExternalHDRAuthorizationVector.ts</code>: the neutralized Main 10 access unit and its expected samples, for external HDR authorization.</li>
 <li><code>DolbyVisionAuthorizationVector.ts</code>: synthetic RPU snapshots for Dolby Vision authorization.</li>
 <li><code>HDR10PlusVectors.ts</code>: deterministic HDR10+ HEVC access units for the dynamic HDR tests.</li>
+<li><code>Base64.ts</code>: the base64 decoder the inline vectors share.</li>
 <li><code>qualification/</code>: streams served at runtime that no script generates: the HEVC Main 10 4K stream (<code>hevc/</code>) and the VC-1 stream (<code>vc1/</code>).</li>
 <li><code>test/</code>: inputs only tests and generators read: DTS samples, a TrueHD Matroska remux, and Dolby Vision RPU payloads.</li>
 </ul>
@@ -1246,7 +1247,7 @@ A Dolby Vision pair is a BL in any format from I420 to I444P12 and an I420P10 EL
 <li><code>OwnedVideoDecodeStream.ts</code>: the codec-neutral state of one owned decode attempt: decoded outputs matched with their packets’ metadata, the pre-start rule, BL and EL pairing, frame credits, and the packet pump.</li>
 <li><code>OwnedNativeVideoDecoder.ts</code>: an owned WebCodecs decoder for packets that decode unchanged, used for AV1.</li>
 <li><code>OwnedAV1VideoStream.ts</code>: one attempt of the owned AV1 Dolby Vision path.</li>
-<li><code>OwnedNativeHEVCVideoDecoder.ts</code>: the engine’s own WebCodecs HEVC decoder: NAL order fix, leading RASL drop, optional SPS neutralization.</li>
+<li><code>OwnedNativeHEVCVideoDecoder.ts</code>: the engine’s own WebCodecs HEVC decoder, built on <code>OwnedNativeVideoDecoder</code>: NAL order fix, leading RASL drop, optional SPS neutralization.</li>
 <li><code>HEVCSoftwareVideoDecoder.ts</code>: the <code>@hevcjs/core</code> decoder (I420 and I420P10) with a shutdown registry.</li>
 <li><code>HEVCDecoderBackend.ts</code>: the low-level <code>@hevcjs/core</code> WASM binding.</li>
 <li><code>JPEG2000SoftwareVideoDecoder.ts</code>: OpenJPEG WASM to an RGBA <code>VideoFrame</code>.</li>
@@ -1286,6 +1287,7 @@ A Dolby Vision pair is a BL in any format from I420 to I444P12 and an I420P10 EL
 <li><code>NativeMultichannelAudioOutput.ts</code>: <code>selectCustomAudioOutputChannelCount</code>, the output layout rule (three channels and 5.1 to 5.1, 6.1 and 7.1 to 7.1 or 5.1, otherwise stereo).</li>
 <li><code>AudioNormalization.ts</code>: TrackGain and AlbumGain decibels to linear gain.</li>
 <li><code>AudioSampleWindow.ts</code>: PCM windowing at a seek.</li>
+<li><code>SafeIntegerValidation.ts</code>: the positive safe integer check the audio modules share.</li>
 </ul>
 <h3 id="audiodecoders"><a class="header" href="#audiodecoders">audio/decoders/</a></h3>
 <ul>
@@ -1325,6 +1327,7 @@ E-AC-3, DTS, and TrueHD report their channel layout, and the FFmpeg wrappers sta
 <li><code>DolbyVisionPresentationAuthorization.ts</code>, <code>ExternalDolbyVisionPresentationAuthorization.ts</code>: raw Dolby Vision keys (per raw format: single-layer, the P4 and P7 bases, and the P4 and P7 FEL) and the external P5 key, checked with synthetic RPU vectors.</li>
 <li><code>GPUAuthorizationDeadline.ts</code>: the shared 5 s timeout, cancelled on device loss.</li>
 <li><code>GPUCanvasReadback.ts</code>: bounded GPU canvas pixel readback (5 s).</li>
+<li><code>GPUErrorScope.ts</code>: the error-scope cleanup the authorizations share.</li>
 </ul>
 <h2 id="outside-src"><a class="header" href="#outside-src">Outside src/</a></h2>
 <ul>

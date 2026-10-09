@@ -1,7 +1,7 @@
 import type { EncodedPacket } from 'mediabunny';
 
 import type {
-    OwnedVideoDecoderCallbacks,
+    OwnedDecodedVideoSource,
     OwnedVideoDecoderPort
 } from './OwnedVideoDecodeStream';
 
@@ -19,6 +19,17 @@ export type NativeVideoDecoderPort = {
 export type OwnedNativeVideoDecoderDependencies = {
     createDecoder: (init: VideoDecoderInit) => NativeVideoDecoderPort
     createEncodedVideoChunk: (packet: EncodedPacket) => EncodedVideoChunk
+};
+
+/** The one decoded source kind a native decoder outputs */
+export type OwnedNativeFrameSource = Extract<OwnedDecodedVideoSource, { kind: 'native-frame' }>;
+
+/** The stream callbacks of a native decoder, whose output is always a native frame */
+export type OwnedNativeVideoDecoderCallbacks = {
+    onError: (error: unknown) => void
+    /** Owns the frame from the call on, even when it throws. */
+    onOutput: (output: OwnedNativeFrameSource) => void
+    onProgress: () => void
 };
 
 export const DEFAULT_NATIVE_VIDEO_DECODER_DEPENDENCIES: OwnedNativeVideoDecoderDependencies = {
@@ -39,27 +50,29 @@ export function closeCodec(decoder: NativeVideoDecoderPort): void {
 }
 
 /**
- * Owns one native WebCodecs VideoDecoder for a codec whose packets decode unchanged, such as AV1.
- * It hands each decoded frame to its stream.
+ * Owns one native WebCodecs VideoDecoder and hands each decoded frame to its stream.
+ * Packets decode unchanged, as AV1 needs; OwnedNativeHEVCVideoDecoder rewrites HEVC packets before they reach this owner.
  */
 export default class OwnedNativeVideoDecoder implements OwnedVideoDecoderPort {
+    // Names the decoder in its lifecycle errors
+    protected readonly decoderName: string = 'video decoder';
     private closed = false;
     private codecError: unknown = null;
     private decoder: NativeVideoDecoderPort | null = null;
 
     public constructor(
-        private readonly config: VideoDecoderConfig,
-        private readonly callbacks: OwnedVideoDecoderCallbacks,
+        protected readonly config: VideoDecoderConfig,
+        private readonly callbacks: OwnedNativeVideoDecoderCallbacks,
         private readonly dependencies: OwnedNativeVideoDecoderDependencies = DEFAULT_NATIVE_VIDEO_DECODER_DEPENDENCIES
     ) {}
 
     /** Creates and configures the native decoder. A second call, or a call after close(), throws. */
     public async init(): Promise<void> {
         if (this.closed) {
-            throw new Error('The owned native video decoder is closed');
+            throw new Error(`The owned native ${this.decoderName} is closed`);
         }
         if (this.decoder) {
-            throw new Error('The owned native video decoder is already initialized');
+            throw new Error(`The owned native ${this.decoderName} is already initialized`);
         }
 
         const decoder = this.dependencies.createDecoder({
@@ -72,7 +85,7 @@ export default class OwnedNativeVideoDecoder implements OwnedVideoDecoderPort {
         });
         decoder.ondequeue = (): void => this.callbacks.onProgress();
         try {
-            decoder.configure(this.config);
+            this.configureDecoder(decoder);
         } catch (error) {
             closeCodec(decoder);
             throw error;
@@ -113,6 +126,11 @@ export default class OwnedNativeVideoDecoder implements OwnedVideoDecoderPort {
         closeCodec(decoder);
     }
 
+    /** Configures a new codec; a subclass may configure it differently. */
+    protected configureDecoder(decoder: NativeVideoDecoderPort): void {
+        decoder.configure(this.config);
+    }
+
     private handleOutput(frame: VideoFrame): void {
         if (this.closed) {
             frame.close();
@@ -138,16 +156,16 @@ export default class OwnedNativeVideoDecoder implements OwnedVideoDecoderPort {
         }
     }
 
-    private requireDecoder(): NativeVideoDecoderPort {
+    protected requireDecoder(): NativeVideoDecoderPort {
         if (this.closed) {
-            throw new Error('The owned native video decoder is closed');
+            throw new Error(`The owned native ${this.decoderName} is closed`);
         }
         // Surface the codec's own error, so reclamation (QuotaExceededError) stays recoverable
         if (this.codecError !== null) {
             throw this.codecError;
         }
         if (!this.decoder) {
-            throw new Error('The owned native video decoder is not initialized');
+            throw new Error(`The owned native ${this.decoderName} is not initialized`);
         }
         return this.decoder;
     }

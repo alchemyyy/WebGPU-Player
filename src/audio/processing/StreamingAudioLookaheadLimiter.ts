@@ -1,5 +1,6 @@
-import type { Microseconds } from '../../MediaTime';
+import { MICROSECONDS_PER_SECOND, type Microseconds } from '../../MediaTime';
 import { requireSupportedCustomAudioSampleRate } from '../CustomAudioSampleRate';
+import { requirePositiveSafeInteger } from '../SafeIntegerValidation';
 import type { StreamingAudioResamplerOutput } from './StreamingAudioResampler';
 import {
     addMicroseconds,
@@ -7,7 +8,6 @@ import {
     requireMicroseconds
 } from '../../TimeMath';
 
-const MICROSECONDS_PER_SECOND = 1_000_000;
 const MILLISECONDS_PER_SECOND = 1_000;
 const MAXIMUM_ATTACK_ATTENUATION_DB = 12;
 const UNITY_GAIN = 1;
@@ -38,13 +38,6 @@ export type StreamingAudioLookaheadLimiterTelemetry = Readonly<{
     outputFrameCount: number
     sourceFrameCount: number
 }>;
-
-function requirePositiveSafeInteger(value: number, name: string): number {
-    if (!Number.isSafeInteger(value) || value <= 0) {
-        throw new RangeError(`${name} must be a positive safe integer`);
-    }
-    return value;
-}
 
 function millisecondsToFrames(milliseconds: number, sampleRate: number): number {
     return Math.max(1, Math.ceil(milliseconds * sampleRate / MILLISECONDS_PER_SECOND));

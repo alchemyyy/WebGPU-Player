@@ -1,9 +1,9 @@
 import type { AudioCodec } from 'mediabunny';
 
+import { MICROSECONDS_PER_SECOND } from '../MediaTime';
 import type { TrueHDDecoderCodec } from './decoders/TrueHDSoftwareAudioDecoder';
 import { isSupportedCustomAudioSampleRate } from './CustomAudioSampleRate';
 
-const MICROSECONDS_PER_SECOND = 1_000_000;
 // ISO BMFF audio sample entries store their rate as 16.16 fixed point
 const ISO_BASE_MEDIA_SAMPLE_RATE_SCALE = 0x1_0000;
 // The DTS core always runs at 48 kHz, whatever rate its extensions reach

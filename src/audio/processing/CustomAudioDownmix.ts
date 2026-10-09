@@ -347,18 +347,54 @@ function getThreeChannelSharedLevel(
     }
 }
 
-function requireThreeChannelPlanarInput(channelData: readonly Float32Array[]): number {
-    if (channelData.length !== THREE_CHANNEL_COUNT) {
-        throw new RangeError('Three-channel downmix requires exactly 3 input channels');
+/** Returns the frame count of planar input that has the channel count the labeled downmix requires. */
+function requirePlanarInput(channelData: readonly Float32Array[], channelCount: number, downmixLabel: string): number {
+    if (channelData.length !== channelCount) {
+        throw new RangeError(`${downmixLabel} downmix requires exactly ${channelCount} input channels`);
     }
 
     const frameCount = channelData[FRONT_LEFT_CHANNEL_INDEX].length;
     for (const channel of channelData) {
         if (channel.length !== frameCount) {
-            throw new RangeError('Three-channel downmix requires equal-length input channels');
+            throw new RangeError(`${downmixLabel} downmix requires equal-length input channels`);
         }
     }
     return frameCount;
+}
+
+/** The user levels of one downmix block, stepped frame by frame along the block's settings ramp. */
+class DownmixLevels {
+    public centerLevel: number;
+    public outputGain: number;
+    public surroundLevel: number;
+
+    public constructor(
+        private readonly settings: AudioDownmixSettings,
+        private readonly settingsRamp: AudioDownmixSettingsRamp | null
+    ) {
+        this.centerLevel = settingsRamp?.initialCenterLevel ?? settings.centerLevel;
+        this.outputGain = settingsRamp?.initialOutputGain ?? settings.outputGain;
+        this.surroundLevel = settingsRamp?.initialSurroundLevel ?? settings.surroundLevel;
+    }
+
+    /** Moves the levels to one frame; the ramp's last frame lands exactly on the target settings. */
+    public step(frameIndex: number): void {
+        const settingsRamp = this.settingsRamp;
+        if (!settingsRamp) {
+            return;
+        }
+        if (frameIndex + 1 === settingsRamp.frameCount) {
+            this.centerLevel = this.settings.centerLevel;
+            this.outputGain = this.settings.outputGain;
+            this.surroundLevel = this.settings.surroundLevel;
+            return;
+        }
+        if (frameIndex < settingsRamp.frameCount) {
+            this.centerLevel += settingsRamp.centerLevelStep;
+            this.outputGain += settingsRamp.outputGainStep;
+            this.surroundLevel += settingsRamp.surroundLevelStep;
+        }
+    }
 }
 
 /**
@@ -373,51 +409,24 @@ export function downmixThreeChannelToStereo(
     settingsRamp: AudioDownmixSettingsRamp | null = null
 ): StereoChannelData {
     assertValidAudioDownmixSettings(settings);
-    const frameCount = requireThreeChannelPlanarInput(channelData);
+    const frameCount = requirePlanarInput(channelData, THREE_CHANNEL_COUNT, 'Three-channel');
     const coefficients = getThreeChannelDownmixCoefficients(algorithm, sharedChannel);
     const frontLeft = channelData[FRONT_LEFT_CHANNEL_INDEX];
     const frontRight = channelData[FRONT_RIGHT_CHANNEL_INDEX];
     const sharedInput = channelData[THREE_CHANNEL_SHARED_CHANNEL_INDEX];
     const outputLeft = new Float32Array(frameCount);
     const outputRight = new Float32Array(frameCount);
-    const settingsRampFrameCount = settingsRamp?.frameCount ?? 0;
-    let centerLevel = settingsRamp?.initialCenterLevel ?? settings.centerLevel;
-    let outputGain = settingsRamp?.initialOutputGain ?? settings.outputGain;
-    let surroundLevel = settingsRamp?.initialSurroundLevel ?? settings.surroundLevel;
+    const levels = new DownmixLevels(settings, settingsRamp);
 
     for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
-        if (settingsRamp && frameIndex < settingsRampFrameCount) {
-            if (frameIndex + 1 === settingsRampFrameCount) {
-                centerLevel = settings.centerLevel;
-                outputGain = settings.outputGain;
-                surroundLevel = settings.surroundLevel;
-            } else {
-                centerLevel += settingsRamp.centerLevelStep;
-                outputGain += settingsRamp.outputGainStep;
-                surroundLevel += settingsRamp.surroundLevelStep;
-            }
-        }
+        levels.step(frameIndex);
         const sharedContribution = sharedInput[frameIndex] * coefficients.shared
-            * getThreeChannelSharedLevel(sharedChannel, centerLevel, surroundLevel);
-        outputLeft[frameIndex] = (frontLeft[frameIndex] * coefficients.direct + sharedContribution) * outputGain;
-        outputRight[frameIndex] = (frontRight[frameIndex] * coefficients.direct + sharedContribution) * outputGain;
+            * getThreeChannelSharedLevel(sharedChannel, levels.centerLevel, levels.surroundLevel);
+        outputLeft[frameIndex] = (frontLeft[frameIndex] * coefficients.direct + sharedContribution) * levels.outputGain;
+        outputRight[frameIndex] = (frontRight[frameIndex] * coefficients.direct + sharedContribution) * levels.outputGain;
     }
 
     return [ outputLeft, outputRight ];
-}
-
-function requireFivePointOnePlanarInput(channelData: readonly Float32Array[]): number {
-    if (channelData.length !== FIVE_POINT_ONE_CHANNEL_COUNT) {
-        throw new RangeError('5.1 downmix requires exactly 6 input channels');
-    }
-
-    const frameCount = channelData[FRONT_LEFT_CHANNEL_INDEX].length;
-    for (const channel of channelData) {
-        if (channel.length !== frameCount) {
-            throw new RangeError('5.1 downmix requires equal-length input channels');
-        }
-    }
-    return frameCount;
 }
 
 /**
@@ -431,7 +440,7 @@ export function downmixFivePointOneToStereo(
     settingsRamp: AudioDownmixSettingsRamp | null = null
 ): StereoChannelData {
     assertValidAudioDownmixSettings(settings);
-    const frameCount = requireFivePointOnePlanarInput(channelData);
+    const frameCount = requirePlanarInput(channelData, FIVE_POINT_ONE_CHANNEL_COUNT, '5.1');
     const coefficients = getFivePointOneDownmixCoefficients(algorithm);
     const frontLeft = channelData[FRONT_LEFT_CHANNEL_INDEX];
     const frontRight = channelData[FRONT_RIGHT_CHANNEL_INDEX];
@@ -441,52 +450,25 @@ export function downmixFivePointOneToStereo(
     const surroundRight = channelData[SURROUND_RIGHT_CHANNEL_INDEX];
     const outputLeft = new Float32Array(frameCount);
     const outputRight = new Float32Array(frameCount);
-    const settingsRampFrameCount = settingsRamp?.frameCount ?? 0;
-    let centerLevel = settingsRamp?.initialCenterLevel ?? settings.centerLevel;
-    let outputGain = settingsRamp?.initialOutputGain ?? settings.outputGain;
-    let surroundLevel = settingsRamp?.initialSurroundLevel ?? settings.surroundLevel;
+    const levels = new DownmixLevels(settings, settingsRamp);
 
     for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
-        if (settingsRamp && frameIndex < settingsRampFrameCount) {
-            if (frameIndex + 1 === settingsRampFrameCount) {
-                centerLevel = settings.centerLevel;
-                outputGain = settings.outputGain;
-                surroundLevel = settings.surroundLevel;
-            } else {
-                centerLevel += settingsRamp.centerLevelStep;
-                outputGain += settingsRamp.outputGainStep;
-                surroundLevel += settingsRamp.surroundLevelStep;
-            }
-        }
+        levels.step(frameIndex);
         outputLeft[frameIndex] =
             (frontLeft[frameIndex] * coefficients.direct
-            + frontCenter[frameIndex] * coefficients.center * centerLevel
+            + frontCenter[frameIndex] * coefficients.center * levels.centerLevel
             + lfe[frameIndex] * coefficients.lfe
-            + surroundLeft[frameIndex] * coefficients.surround * surroundLevel
-            + surroundRight[frameIndex] * coefficients.oppositeSurround * surroundLevel) * outputGain;
+            + surroundLeft[frameIndex] * coefficients.surround * levels.surroundLevel
+            + surroundRight[frameIndex] * coefficients.oppositeSurround * levels.surroundLevel) * levels.outputGain;
         outputRight[frameIndex] =
             (frontRight[frameIndex] * coefficients.direct
-            + frontCenter[frameIndex] * coefficients.center * centerLevel
+            + frontCenter[frameIndex] * coefficients.center * levels.centerLevel
             + lfe[frameIndex] * coefficients.lfe
-            + surroundRight[frameIndex] * coefficients.surround * surroundLevel
-            + surroundLeft[frameIndex] * coefficients.oppositeSurround * surroundLevel) * outputGain;
+            + surroundRight[frameIndex] * coefficients.surround * levels.surroundLevel
+            + surroundLeft[frameIndex] * coefficients.oppositeSurround * levels.surroundLevel) * levels.outputGain;
     }
 
     return [ outputLeft, outputRight ];
-}
-
-function requireSixPointOnePlanarInput(channelData: readonly Float32Array[]): number {
-    if (channelData.length !== SIX_POINT_ONE_CHANNEL_COUNT) {
-        throw new RangeError('6.1 downmix requires exactly 7 input channels');
-    }
-
-    const frameCount = channelData[FRONT_LEFT_CHANNEL_INDEX].length;
-    for (const channel of channelData) {
-        if (channel.length !== frameCount) {
-            throw new RangeError('6.1 downmix requires equal-length input channels');
-        }
-    }
-    return frameCount;
 }
 
 /**
@@ -499,7 +481,7 @@ export function downmixSixPointOneToStereo(
     settingsRamp: AudioDownmixSettingsRamp | null = null
 ): StereoChannelData {
     assertValidAudioDownmixSettings(settings);
-    const frameCount = requireSixPointOnePlanarInput(channelData);
+    const frameCount = requirePlanarInput(channelData, SIX_POINT_ONE_CHANNEL_COUNT, '6.1');
     const frontLeft = channelData[FRONT_LEFT_CHANNEL_INDEX];
     const frontRight = channelData[FRONT_RIGHT_CHANNEL_INDEX];
     const frontCenter = channelData[FRONT_CENTER_CHANNEL_INDEX];
@@ -508,33 +490,20 @@ export function downmixSixPointOneToStereo(
     const sideRight = channelData[SIX_POINT_ONE_SIDE_RIGHT_CHANNEL_INDEX];
     const outputLeft = new Float32Array(frameCount);
     const outputRight = new Float32Array(frameCount);
-    const settingsRampFrameCount = settingsRamp?.frameCount ?? 0;
-    let centerLevel = settingsRamp?.initialCenterLevel ?? settings.centerLevel;
-    let outputGain = settingsRamp?.initialOutputGain ?? settings.outputGain;
-    let surroundLevel = settingsRamp?.initialSurroundLevel ?? settings.surroundLevel;
+    const levels = new DownmixLevels(settings, settingsRamp);
 
     for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
-        if (settingsRamp && frameIndex < settingsRampFrameCount) {
-            if (frameIndex + 1 === settingsRampFrameCount) {
-                centerLevel = settings.centerLevel;
-                outputGain = settings.outputGain;
-                surroundLevel = settings.surroundLevel;
-            } else {
-                centerLevel += settingsRamp.centerLevelStep;
-                outputGain += settingsRamp.outputGainStep;
-                surroundLevel += settingsRamp.surroundLevelStep;
-            }
-        }
+        levels.step(frameIndex);
         outputLeft[frameIndex] =
             (frontLeft[frameIndex] * SIX_POINT_ONE_DIRECT_CHANNEL_GAIN
-            + frontCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * centerLevel
-            + backCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * surroundLevel
-            + sideLeft[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * surroundLevel) * outputGain;
+            + frontCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * levels.centerLevel
+            + backCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * levels.surroundLevel
+            + sideLeft[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * levels.surroundLevel) * levels.outputGain;
         outputRight[frameIndex] =
             (frontRight[frameIndex] * SIX_POINT_ONE_DIRECT_CHANNEL_GAIN
-            + frontCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * centerLevel
-            + backCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * surroundLevel
-            + sideRight[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * surroundLevel) * outputGain;
+            + frontCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * levels.centerLevel
+            + backCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * levels.surroundLevel
+            + sideRight[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * levels.surroundLevel) * levels.outputGain;
     }
 
     return [ outputLeft, outputRight ];
@@ -559,20 +528,6 @@ export function getStereoChannelDataFingerprint(channelData: StereoChannelData):
     return fingerprint;
 }
 
-function requireSevenPointOnePlanarInput(channelData: readonly Float32Array[]): number {
-    if (channelData.length !== SEVEN_POINT_ONE_CHANNEL_COUNT) {
-        throw new RangeError('7.1 downmix requires exactly 8 input channels');
-    }
-
-    const frameCount = channelData[FRONT_LEFT_CHANNEL_INDEX].length;
-    for (const channel of channelData) {
-        if (channel.length !== frameCount) {
-            throw new RangeError('7.1 downmix requires equal-length input channels');
-        }
-    }
-    return frameCount;
-}
-
 /**
  * Downmixes WAVE-order 7.1 planar PCM (FL, FR, FC, LFE, BL, BR, SL, SR) to stereo with the selected matrix.
  * Standard Lo/Ro uses mpv's default libswresample coefficients and omits LFE; the output limiter handles peaks.
@@ -584,7 +539,7 @@ export function downmixSevenPointOneToStereo(
     settingsRamp: AudioDownmixSettingsRamp | null = null
 ): StereoChannelData {
     assertValidAudioDownmixSettings(settings);
-    const frameCount = requireSevenPointOnePlanarInput(channelData);
+    const frameCount = requirePlanarInput(channelData, SEVEN_POINT_ONE_CHANNEL_COUNT, '7.1');
     const coefficients = getSevenPointOneDownmixCoefficients(algorithm);
     const frontLeft = channelData[FRONT_LEFT_CHANNEL_INDEX];
     const frontRight = channelData[FRONT_RIGHT_CHANNEL_INDEX];
@@ -596,39 +551,26 @@ export function downmixSevenPointOneToStereo(
     const sideRight = channelData[SEVEN_POINT_ONE_SIDE_RIGHT_CHANNEL_INDEX];
     const outputLeft = new Float32Array(frameCount);
     const outputRight = new Float32Array(frameCount);
-    const settingsRampFrameCount = settingsRamp?.frameCount ?? 0;
-    let centerLevel = settingsRamp?.initialCenterLevel ?? settings.centerLevel;
-    let outputGain = settingsRamp?.initialOutputGain ?? settings.outputGain;
-    let surroundLevel = settingsRamp?.initialSurroundLevel ?? settings.surroundLevel;
+    const levels = new DownmixLevels(settings, settingsRamp);
 
     for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
-        if (settingsRamp && frameIndex < settingsRampFrameCount) {
-            if (frameIndex + 1 === settingsRampFrameCount) {
-                centerLevel = settings.centerLevel;
-                outputGain = settings.outputGain;
-                surroundLevel = settings.surroundLevel;
-            } else {
-                centerLevel += settingsRamp.centerLevelStep;
-                outputGain += settingsRamp.outputGainStep;
-                surroundLevel += settingsRamp.surroundLevelStep;
-            }
-        }
+        levels.step(frameIndex);
         outputLeft[frameIndex] =
             (frontLeft[frameIndex] * coefficients.direct
-            + frontCenter[frameIndex] * coefficients.center * centerLevel
+            + frontCenter[frameIndex] * coefficients.center * levels.centerLevel
             + lfe[frameIndex] * coefficients.lfe
-            + backLeft[frameIndex] * coefficients.back * surroundLevel
-            + backRight[frameIndex] * coefficients.oppositeBack * surroundLevel
-            + sideLeft[frameIndex] * coefficients.side * surroundLevel
-            + sideRight[frameIndex] * coefficients.oppositeSide * surroundLevel) * outputGain;
+            + backLeft[frameIndex] * coefficients.back * levels.surroundLevel
+            + backRight[frameIndex] * coefficients.oppositeBack * levels.surroundLevel
+            + sideLeft[frameIndex] * coefficients.side * levels.surroundLevel
+            + sideRight[frameIndex] * coefficients.oppositeSide * levels.surroundLevel) * levels.outputGain;
         outputRight[frameIndex] =
             (frontRight[frameIndex] * coefficients.direct
-            + frontCenter[frameIndex] * coefficients.center * centerLevel
+            + frontCenter[frameIndex] * coefficients.center * levels.centerLevel
             + lfe[frameIndex] * coefficients.lfe
-            + backRight[frameIndex] * coefficients.back * surroundLevel
-            + backLeft[frameIndex] * coefficients.oppositeBack * surroundLevel
-            + sideRight[frameIndex] * coefficients.side * surroundLevel
-            + sideLeft[frameIndex] * coefficients.oppositeSide * surroundLevel) * outputGain;
+            + backRight[frameIndex] * coefficients.back * levels.surroundLevel
+            + backLeft[frameIndex] * coefficients.oppositeBack * levels.surroundLevel
+            + sideRight[frameIndex] * coefficients.side * levels.surroundLevel
+            + sideLeft[frameIndex] * coefficients.oppositeSide * levels.surroundLevel) * levels.outputGain;
     }
 
     return [ outputLeft, outputRight ];

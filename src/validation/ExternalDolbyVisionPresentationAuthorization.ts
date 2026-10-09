@@ -29,6 +29,7 @@ import {
     getValidationTextureUsage,
     type GPUCanvasPixelsReadbackResult
 } from './GPUCanvasReadback';
+import { discardErrorScope } from './GPUErrorScope';
 import {
     calculateRawHDRAuthorizationOutputDither,
     createRawHDRAuthorizationVector,
@@ -334,16 +335,6 @@ function createAuthorizationShaderSignature(
         createExternalDolbyVisionColorPipelineWGSL(settings),
         createExternalDolbyVisionInputProbeWGSL()
     );
-}
-
-function discardErrorScope(device: GPUDevice): void {
-    // popErrorScope can throw synchronously after device loss
-    // eslint-disable-next-line sonarjs/no-try-promise
-    try {
-        void device.popErrorScope().catch((): void => undefined);
-    } catch {
-        // Device loss can synchronously invalidate the scope stack
-    }
 }
 
 function createRenderPipeline(

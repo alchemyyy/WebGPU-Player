@@ -15,6 +15,8 @@ import {
 } from 'webgpu-player/video/av1/AV1OBUParser';
 import { createNativeVideoCapabilityVector } from 'webgpu-player/capability/vectors/NativeVideoCapabilityVectors';
 
+import { concatenate } from '../../helpers/byteArrays';
+
 const OBU_EXTENSION_FLAG = 0x04;
 const OBU_HAS_SIZE_FIELD_FLAG = 0x02;
 const METADATA_TYPE_HDR_CLL = 1;
@@ -55,19 +57,6 @@ function createOBU(
         ...(hasSizeField ? encodeLEB128(payload.length) : []),
         ...payload
     ]);
-}
-
-function concatenate(parts: readonly Uint8Array[]): Uint8Array {
-    const output = new Uint8Array(parts.reduce(
-        (byteLength: number, part: Uint8Array): number => byteLength + part.byteLength,
-        0
-    ));
-    let offset = 0;
-    for (const part of parts) {
-        output.set(part, offset);
-        offset += part.byteLength;
-    }
-    return output;
 }
 
 describe('AV1OBUParser', () => {

@@ -26,19 +26,25 @@ from engine_layout import PLAYBACK_SMOKE_MEDIA_DIRECTORY
 
 DEFAULT_OUTPUT_DIRECTORY = PLAYBACK_SMOKE_MEDIA_DIRECTORY
 MANIFEST_FILE_NAME = "static-HDR-validation-manifest.json"
+MAXIMUM_VCL_NAL_UNIT_TYPE = 31
 PREFIX_SEI_NAL_UNIT_TYPE = 39
 SUFFIX_SEI_NAL_UNIT_TYPE = 40
 MASTERING_DISPLAY_PAYLOAD_TYPE = 137
 CONTENT_LIGHT_PAYLOAD_TYPE = 144
 MASTERING_DISPLAY_PAYLOAD_BYTE_LENGTH = 24
 CONTENT_LIGHT_PAYLOAD_BYTE_LENGTH = 4
+# Display P3 primaries in SEI order (green, blue, red), then the D65 white point, as x, y pairs in units of 0.00002
+P3_D65_MASTERING_DISPLAY_CHROMATICITIES = (13_250, 34_500, 7_500, 3_000, 34_000, 16_000, 15_635, 16_450)
 MASTERING_LUMINANCE_SCALE = 10_000
 DEFAULT_TONE_MAPPING_PEAK_NITS = 1_000
 VALID_TONE_MAPPING_PEAK_NITS = 4_000
+VALID_MAXIMUM_CONTENT_LIGHT_LEVEL_NITS = 500
+VALID_MAXIMUM_FRAME_AVERAGE_LIGHT_LEVEL_NITS = 200
 MINIMUM_LUMINANCE_NITS = 0.005
 MAXIMUM_HDR_LUMINANCE_NITS = 10_000
 VECTOR_REVISION = "v1"
 START_CODE = b"\x00\x00\x00\x01"
+THREE_BYTE_START_CODE = b"\x00\x00\x01"
 
 StaticHDRStatus = Literal["absent", "conflicting", "malformed", "valid"]
 
@@ -150,14 +156,7 @@ def create_mastering_display_payload(
     minimum_luminance_code = round(minimum_luminance_nits * MASTERING_LUMINANCE_SCALE)
     return struct.pack(
         ">HHHHHHHHII",
-        13_250,
-        34_500,
-        7_500,
-        3_000,
-        34_000,
-        16_000,
-        15_635,
-        16_450,
+        *P3_D65_MASTERING_DISPLAY_CHROMATICITIES,
         maximum_luminance_code,
         minimum_luminance_code,
     )
@@ -190,7 +189,7 @@ def create_prefix_SEI_NAL_unit(payloads: Sequence[tuple[int, bytes]]) -> bytes:
 
 
 def create_valid_static_HDR_SEI_NAL_unit(maximum_luminance_nits: int) -> bytes:
-    """Returns a prefix SEI NAL unit with a mastering display payload of the given peak and a content light payload of MaxCLL 500 and MaxFALL 200."""
+    """Returns a prefix SEI NAL unit with a mastering display payload of the given peak and a content light payload of the valid MaxCLL and MaxFALL."""
 
     return create_prefix_SEI_NAL_unit(
         (
@@ -200,7 +199,10 @@ def create_valid_static_HDR_SEI_NAL_unit(maximum_luminance_nits: int) -> bytes:
             ),
             (
                 CONTENT_LIGHT_PAYLOAD_TYPE,
-                create_content_light_payload(500, 200),
+                create_content_light_payload(
+                    VALID_MAXIMUM_CONTENT_LIGHT_LEVEL_NITS,
+                    VALID_MAXIMUM_FRAME_AVERAGE_LIGHT_LEVEL_NITS,
+                ),
             ),
         )
     )
@@ -273,7 +275,7 @@ def find_annex_B_NAL_units(data: bytes) -> tuple[AnnexBNALUnit, ...]:
             start_codes.append((byte_index, 4))
             byte_index += 4
             continue
-        if data[byte_index : byte_index + 3] == b"\x00\x00\x01":
+        if data[byte_index : byte_index + 3] == THREE_BYTE_START_CODE:
             start_codes.append((byte_index, 3))
             byte_index += 3
             continue
@@ -310,7 +312,7 @@ def inject_prefix_SEI_NAL_units(
     if not injected_NAL_units:
         return source
     first_VCL_unit = next(
-        (NAL_unit for NAL_unit in find_annex_B_NAL_units(source) if NAL_unit.nal_type <= 31),
+        (NAL_unit for NAL_unit in find_annex_B_NAL_units(source) if NAL_unit.nal_type <= MAXIMUM_VCL_NAL_UNIT_TYPE),
         None,
     )
     if first_VCL_unit is None:
@@ -622,7 +624,7 @@ def mux_vector(
     )
 
 
-def require_exact_stream_metadata(
+def require_stream_metadata(
     ffprobe_path: str,
     vector_path: Path,
     *,
@@ -812,7 +814,7 @@ def execute(arguments: argparse.Namespace) -> dict[str, object]:
                 frame_rate=arguments.frame_rate,
                 duration_seconds=arguments.duration_seconds,
             )
-            stream_metadata = require_exact_stream_metadata(
+            stream_metadata = require_stream_metadata(
                 ffprobe_path,
                 staged_path,
                 width=arguments.width,

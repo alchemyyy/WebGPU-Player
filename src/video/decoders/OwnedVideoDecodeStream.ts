@@ -3,8 +3,7 @@ import type { EncodedPacket, VideoSample } from 'mediabunny';
 import type { Microseconds } from '../../MediaTime';
 import { requireMicroseconds } from '../../TimeMath';
 import DolbyVisionFramePairQueue, {
-    MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH,
-    type DolbyVisionFramePair
+    MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH
 } from '../dolby-vision/DolbyVisionFramePairQueue';
 import type { DolbyVisionEncodedFrameMetadata } from '../dolby-vision/DolbyVisionEncodedMetadataProtocol';
 import type { HDR10PlusFrameMetadata } from '../hdr/HDR10PlusMetadata';
@@ -344,7 +343,10 @@ export class OwnedVideoStreamState {
             return 'stopped';
         }
 
-        const framePair = this.framePairs.takeReadyPair() as DolbyVisionFramePair<OwnedDecodedVideoOutput, OwnedDecodedVideoOutput>;
+        const framePair = this.framePairs.takeReadyPair();
+        if (!framePair) {
+            throw new Error('A ready frame pair must stay queued while its frame credit is acquired');
+        }
         await this.stream.postFrame(framePair.baseFrame, framePair.enhancementFrame);
         this.frameCreditHeld = false;
         return 'posted';

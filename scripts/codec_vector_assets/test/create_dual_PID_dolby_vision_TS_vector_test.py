@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import io
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Callable, Sequence
 from unittest.mock import patch
@@ -18,6 +16,7 @@ SCRIPTS_DIRECTORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS_DIRECTORY))
 
 import create_dual_PID_dolby_vision_TS_vector as generator  # noqa: E402
+from vector_test_support import run_main  # noqa: E402
 
 
 MPEG_TS_PACKET_BYTE_LENGTH = 188
@@ -153,16 +152,6 @@ def create_fake_tools(
     return run
 
 
-def run_main(command_arguments: Sequence[str]) -> tuple[int, str, str]:
-    """Runs the CLI and returns its exit status, standard output, and standard error."""
-
-    standard_output = io.StringIO()
-    standard_error = io.StringIO()
-    with redirect_stdout(standard_output), redirect_stderr(standard_error):
-        status = generator.main(command_arguments)
-    return status, standard_output.getvalue(), standard_error.getvalue()
-
-
 class DualPIDTransportStreamTests(unittest.TestCase):
     """Covers the FFmpeg arguments and the PMT descriptor patch."""
 
@@ -195,7 +184,7 @@ class DualPIDTransportStreamTests(unittest.TestCase):
             ],
         )
 
-    def test_patches_every_compatible_PMT_with_an_exact_dependency_descriptor(self) -> None:
+    def test_patches_every_compatible_PMT_with_a_dependency_descriptor(self) -> None:
         source_data = bytearray(create_transport_stream(True, True))
         result = generator.patch_dolby_vision_program_maps(source_data, LEVEL_3_CONFIGURATION)
 
@@ -338,6 +327,7 @@ class DualPIDVectorCLITests(unittest.TestCase):
                 side_effect=create_fake_tools(commands, generated_data),
             ):
                 status, standard_output, standard_error = run_main(
+                    generator.main,
                     [
                         str(input_path),
                         str(output_path),
@@ -402,7 +392,7 @@ class DualPIDVectorCLITests(unittest.TestCase):
                     probe_output=create_probe_output([]),
                 ),
             ):
-                result = run_main([str(input_path), str(output_path)])
+                result = run_main(generator.main, [str(input_path), str(output_path)])
 
             self.assertEqual(
                 result,
@@ -426,7 +416,7 @@ class DualPIDVectorCLITests(unittest.TestCase):
                 "run",
                 side_effect=create_fake_tools(commands, b"", exit_code=1),
             ):
-                status, standard_output, standard_error = run_main(vector_arguments)
+                status, standard_output, standard_error = run_main(generator.main, vector_arguments)
             self.assertEqual(
                 (status, standard_output, standard_error),
                 (1, "", f"Command failed: {' '.join(commands[-1])}\nInvalid argument\n\n"),
@@ -448,7 +438,7 @@ class DualPIDVectorCLITests(unittest.TestCase):
                         side_effect=create_fake_tools([], generated_data),
                     ):
                         self.assertEqual(
-                            run_main(vector_arguments),
+                            run_main(generator.main, vector_arguments),
                             (1, "", expected_message + "\n"),
                         )
             self.assertFalse(output_path.exists())
@@ -469,14 +459,14 @@ class DualPIDVectorCLITests(unittest.TestCase):
             )
             for command_arguments, expected_message in invalid_arguments:
                 with self.subTest(command_arguments=command_arguments):
-                    self.assertEqual(run_main(command_arguments), (1, "", expected_message))
+                    self.assertEqual(run_main(generator.main, command_arguments), (1, "", expected_message))
 
             for command_arguments in (
                 [str(Path(temporary_directory) / "missing.mkv"), str(output_path)],
                 [str(input_path), str(output_path), "--ffmpeg", str(FFmpeg_path) + ".missing"],
             ):
                 with self.subTest(command_arguments=command_arguments):
-                    status, _standard_output, _standard_error = run_main(command_arguments)
+                    status, _standard_output, _standard_error = run_main(generator.main, command_arguments)
                     self.assertEqual(status, 1)
 
 

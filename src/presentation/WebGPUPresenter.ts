@@ -970,39 +970,15 @@ export default class WebGPUPresenter {
         return this.rawHDRAuthorization.getTelemetry(this.device, this.canvasFormat);
     }
 
-    /** Returns bounded single-layer Dolby Vision authorization state without GPU objects. */
+    /**
+     * Returns one raw Dolby Vision route's authorization state for one BL format, without GPU objects.
+     * The Profile 4 and 7 base routes cover MEL and the base-layer fallback; their FEL routes cover the FEL residual.
+     */
     getDolbyVisionAuthorizationTelemetry(
+        route: DolbyVisionAuthorizationRoute,
         format: RawDolbyVisionVideoFrameFormat = PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT
     ): DolbyVisionAuthorizationTelemetry {
-        return this.getRawDolbyVisionAuthorization('single-layer', format).getTelemetry(this.device, this.canvasFormat);
-    }
-
-    /** Returns exact Profile 4 MEL/SDR-base-fallback authorization state for one BL format. */
-    getProfile4DolbyVisionAuthorizationTelemetry(
-        format: RawDolbyVisionVideoFrameFormat = PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT
-    ): DolbyVisionAuthorizationTelemetry {
-        return this.getRawDolbyVisionAuthorization('profile4-base', format).getTelemetry(this.device, this.canvasFormat);
-    }
-
-    /** Returns exact Profile 4 FEL residual authorization state for one BL format. */
-    getProfile4FELDolbyVisionAuthorizationTelemetry(
-        format: RawDolbyVisionVideoFrameFormat = PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT
-    ): DolbyVisionAuthorizationTelemetry {
-        return this.getRawDolbyVisionAuthorization('profile4-fel', format).getTelemetry(this.device, this.canvasFormat);
-    }
-
-    /** Returns exact Profile 7 MEL/base-fallback authorization state for one BL format. */
-    getProfile7DolbyVisionAuthorizationTelemetry(
-        format: RawDolbyVisionVideoFrameFormat = PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT
-    ): DolbyVisionAuthorizationTelemetry {
-        return this.getRawDolbyVisionAuthorization('profile7-base', format).getTelemetry(this.device, this.canvasFormat);
-    }
-
-    /** Returns exact Profile 7 FEL residual authorization state for one BL format. */
-    getProfile7FELDolbyVisionAuthorizationTelemetry(
-        format: RawDolbyVisionVideoFrameFormat = PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT
-    ): DolbyVisionAuthorizationTelemetry {
-        return this.getRawDolbyVisionAuthorization('profile7-fel', format).getTelemetry(this.device, this.canvasFormat);
+        return this.getRawDolbyVisionAuthorization(route, format).getTelemetry(this.device, this.canvasFormat);
     }
 
     /** Returns exact external Profile 5 authorization state without GPU objects. */

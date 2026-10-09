@@ -2511,11 +2511,11 @@ describe('WebGPUPresenter', () => {
         expect(presenter.isRawDolbyVisionProfile4PresentationAuthorized('I420')).toBe(true);
         // The base key gates the route; a missing FEL key only withholds the residual
         expect(presenter.isRawDolbyVisionProfile4PresentationAuthorized('I444P12')).toBe(true);
-        expect(presenter.getProfile7DolbyVisionAuthorizationTelemetry().status).toBe('authorized');
-        expect(presenter.getProfile7DolbyVisionAuthorizationTelemetry('I422P10').status).toBe('rejected');
-        expect(presenter.getProfile7FELDolbyVisionAuthorizationTelemetry('I422P10').status).toBe('authorized');
-        expect(presenter.getProfile4DolbyVisionAuthorizationTelemetry('I444P12').status).toBe('authorized');
-        expect(presenter.getProfile4FELDolbyVisionAuthorizationTelemetry('I444P12').status).toBe('rejected');
+        expect(presenter.getDolbyVisionAuthorizationTelemetry('profile7-base').status).toBe('authorized');
+        expect(presenter.getDolbyVisionAuthorizationTelemetry('profile7-base', 'I422P10').status).toBe('rejected');
+        expect(presenter.getDolbyVisionAuthorizationTelemetry('profile7-fel', 'I422P10').status).toBe('authorized');
+        expect(presenter.getDolbyVisionAuthorizationTelemetry('profile4-base', 'I444P12').status).toBe('authorized');
+        expect(presenter.getDolbyVisionAuthorizationTelemetry('profile4-fel', 'I444P12').status).toBe('rejected');
     });
 
     it.each([

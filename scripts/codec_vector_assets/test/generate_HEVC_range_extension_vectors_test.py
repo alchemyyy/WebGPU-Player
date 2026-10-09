@@ -163,7 +163,7 @@ class EmulationPreventionTests(unittest.TestCase):
             with self.subTest(RBSP=RBSP.hex()):
                 self.assertEqual(generator.add_emulation_prevention_bytes(RBSP), NAL_unit)
 
-    def test_insertion_keeps_the_original_edge_behavior(self) -> None:
+    def test_insertion_handles_header_and_trailing_zero_edge_cases(self) -> None:
         cases = (
             # The two header bytes are copied and never counted as zeros
             (b"\x00\x00\x01", b"\x00\x00\x01"),
@@ -638,7 +638,7 @@ class EvidenceRequirementTests(unittest.TestCase):
             with self.subTest(variant=vector.variant):
                 generator.require_vector_evidence(vector, create_matching_evidence(vector))
 
-    def test_reports_each_mismatch_with_the_original_message(self) -> None:
+    def test_reports_each_mismatch_with_its_message(self) -> None:
         vector = generator.VECTORS[0]
         matching_evidence = create_matching_evidence(vector)
         matching_PTL_evidence = create_matching_PTL_evidence(vector)
@@ -752,7 +752,7 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(generator.split_output_lines(output.standard_output), ["I", "P"])
         self.assertEqual(generator.split_output_lines(""), [""])
 
-    def test_reports_failed_commands_like_the_original(self) -> None:
+    def test_reports_failed_commands_with_their_output(self) -> None:
         cases = (
             (generator.run_text_command, b"output", b"error", "ffmpeg failed:\nerror"),
             (generator.run_text_command, b"output", b"", "ffmpeg failed:\noutput"),
@@ -944,7 +944,7 @@ class ToolInvocationTests(unittest.TestCase):
             ],
         )
 
-    def test_reads_empty_FFprobe_output_like_the_original(self) -> None:
+    def test_reads_empty_FFprobe_output_as_one_empty_line(self) -> None:
         # Empty output splits into one empty line, which reads as 0
         empty_output = generator.CommandOutput(standard_error="", standard_output="")
         with patch.object(generator, "run_text_command", return_value=empty_output):
@@ -1036,7 +1036,7 @@ class MainTests(unittest.TestCase):
             exit_status = generator.main(arguments)
         return exit_status, standard_output.buffer.getvalue(), standard_error.getvalue()
 
-    def test_inspect_prints_the_original_JSON_lines(self) -> None:
+    def test_inspect_prints_one_JSON_line_per_vector(self) -> None:
         exit_status, output, errors = self.run_main(["--inspect"])
         self.assertEqual((exit_status, errors), (0, ""))
         self.assertNotIn(b"\r", output)

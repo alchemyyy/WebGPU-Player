@@ -10,6 +10,8 @@ import type {
     OwnedVideoDecoderCallbacks
 } from 'webgpu-player/video/decoders/OwnedVideoDecodeStream';
 
+import { FakeNativeVideoDecoder } from '../../helpers/fakeNativeVideoDecoder';
+
 const AV1_CONFIG: VideoDecoderConfig = {
     codec: 'av01.0.08M.10',
     hardwareAcceleration: 'prefer-software',
@@ -22,24 +24,6 @@ class FakeVideoFrame {
     public readonly codedWidth = 3_840;
     public readonly displayHeight = 2_160;
     public readonly displayWidth = 3_840;
-}
-
-// Mirrors Chromium: close() on a closed codec throws, and an error callback arrives after the codec closed itself
-class FakeNativeVideoDecoder implements NativeVideoDecoderPort {
-    public state: CodecState = 'unconfigured';
-    public readonly close = vi.fn((): void => {
-        if (this.state === 'closed') {
-            throw new DOMException('Cannot call \'close\' on a closed codec.', 'InvalidStateError');
-        }
-        this.state = 'closed';
-    });
-    public readonly configure = vi.fn((): void => {
-        this.state = 'configured';
-    });
-    public readonly decode = vi.fn();
-    public decodeQueueSize = 0;
-    public readonly flush = vi.fn(async (): Promise<void> => undefined);
-    public ondequeue: ((event: Event) => unknown) | null = null;
 }
 
 type DecoderHarness = {

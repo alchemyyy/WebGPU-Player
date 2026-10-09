@@ -1,4 +1,4 @@
-import type { Microseconds } from '../../MediaTime';
+import { MICROSECONDS_PER_SECOND, type Microseconds } from '../../MediaTime';
 import type {
     AudioEnqueueSubmission,
     AudioWorkletOutputController
@@ -99,15 +99,10 @@ export default class CustomDecodeAudioBridge {
         const startTimeMicroseconds = requireMicroseconds(options.startTimeMicroseconds, 'Audio bridge start time');
         this.validateAudioConfiguration(options.audioConfiguration);
 
-        this.unsubscribeTelemetry?.();
-        this.unsubscribeTelemetry = null;
-        this.pendingSamples.length = 0;
-        this.pendingFrameCount = 0;
+        this.resetGenerationState();
         this.activeDecodeGeneration = decodeGeneration;
         this.callbacks = options.callbacks;
-        this.consumptionBaselineReady = false;
         this.failed = false;
-        this.expectedNextMediaTimeMicroseconds = null;
         this.lastConsumedFrameCount = 0;
         this.lastMediaTimeMicroseconds = startTimeMicroseconds;
         this.releasedSampleCredits = 0;
@@ -179,14 +174,9 @@ export default class CustomDecodeAudioBridge {
             return;
         }
 
-        this.unsubscribeTelemetry?.();
-        this.unsubscribeTelemetry = null;
-        this.pendingSamples.length = 0;
-        this.pendingFrameCount = 0;
+        this.resetGenerationState();
         this.activeDecodeGeneration = null;
         this.callbacks = null;
-        this.consumptionBaselineReady = false;
-        this.expectedNextMediaTimeMicroseconds = null;
         this.workletGeneration = null;
         try {
             this.controller.setPlaying(false);
@@ -257,6 +247,16 @@ export default class CustomDecodeAudioBridge {
         }
     };
 
+    /** Unsubscribes from worklet telemetry and drops the queue accounting of the current generation. */
+    private resetGenerationState(): void {
+        this.unsubscribeTelemetry?.();
+        this.unsubscribeTelemetry = null;
+        this.pendingSamples.length = 0;
+        this.pendingFrameCount = 0;
+        this.consumptionBaselineReady = false;
+        this.expectedNextMediaTimeMicroseconds = null;
+    }
+
     private releaseConsumedSamples(consumedFrameCount: number): void {
         let remainingConsumedFrames = consumedFrameCount;
         let releasedSampleCount = 0;
@@ -309,7 +309,7 @@ export default class CustomDecodeAudioBridge {
         if (message.sampleRate !== this.controller.configuration.sampleRate) {
             return null;
         }
-        const timestampToleranceMicroseconds = Math.ceil(1_000_000 / message.sampleRate);
+        const timestampToleranceMicroseconds = Math.ceil(MICROSECONDS_PER_SECOND / message.sampleRate);
         if (expectedMediaTimeMicroseconds !== null && Math.abs(
             message.mediaTimeMicroseconds - expectedMediaTimeMicroseconds
         ) > timestampToleranceMicroseconds) {

@@ -1,6 +1,7 @@
 import type { Microseconds } from '../../MediaTime';
 import type { CustomAudioChannelLayout } from '../processing/CustomAudioChannelLayout';
 import { isSupportedCustomAudioSampleRate } from '../CustomAudioSampleRate';
+import { requirePositiveSafeInteger } from '../SafeIntegerValidation';
 import { getQualifiedCustomWaveChannelLayout } from '../processing/CustomWaveChannelLayout';
 import { requireMicroseconds } from '../../TimeMath';
 import { createEmscriptenModuleLoader } from '../../DecoderWASMSource';
@@ -138,13 +139,6 @@ function isQualifiedDTSOutputEnvelope(
         return true;
     }
     return profile === DTS_PROFILE_HD_MASTER_AUDIO && DTS_HIGH_SAMPLE_RATE_SUPPORTED_CHANNEL_COUNTS.has(channelCount);
-}
-
-function requirePositiveSafeInteger(value: number, name: string): number {
-    if (!Number.isSafeInteger(value) || value <= 0) {
-        throw new RangeError(`${name} must be a positive safe integer`);
-    }
-    return value;
 }
 
 function requireSuccessfulDTSDecodeStatus(decodeStatus: number): void {

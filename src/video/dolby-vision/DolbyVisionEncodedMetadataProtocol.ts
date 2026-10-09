@@ -1,6 +1,5 @@
 import {
     decodeDolbyVisionRPUSnapshot,
-    hasCompatibleDolbyVisionRPUSnapshotHeader,
     MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH
 } from './DolbyVisionRPUParser';
 
@@ -94,9 +93,6 @@ export function isTransferableDolbyVisionEncodedFrameMetadata(value: unknown): v
 
     const layerModes: string[] = [];
     for (const packedRPUData of metadata.parsedRPUData) {
-        if (!hasCompatibleDolbyVisionRPUSnapshotHeader(packedRPUData)) {
-            return false;
-        }
         try {
             const snapshot = decodeDolbyVisionRPUSnapshot(packedRPUData);
             layerModes.push(snapshot.layerMode);

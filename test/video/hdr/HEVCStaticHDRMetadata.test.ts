@@ -9,32 +9,11 @@ import {
     MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT
 } from 'webgpu-player/video/hdr/StaticHDRMetadata';
 
+import { addEmulationPreventionBytes, appendExtendedValue } from '../../helpers/hevcNALUnits';
+
 const PREFIX_SEI_NAL_UNIT_TYPE = 39;
 const MASTERING_DISPLAY_PAYLOAD_TYPE = 137;
 const CONTENT_LIGHT_PAYLOAD_TYPE = 144;
-
-function appendExtendedValue(output: number[], value: number): void {
-    let remainingValue = value;
-    while (remainingValue >= 0xFF) {
-        output.push(0xFF);
-        remainingValue -= 0xFF;
-    }
-    output.push(remainingValue);
-}
-
-function addEmulationPreventionBytes(data: readonly number[]): number[] {
-    const output: number[] = [];
-    let zeroCount = 0;
-    for (const byteValue of data) {
-        if (zeroCount >= 2 && byteValue <= 3) {
-            output.push(3);
-            zeroCount = 0;
-        }
-        output.push(byteValue);
-        zeroCount = byteValue === 0 ? zeroCount + 1 : 0;
-    }
-    return output;
-}
 
 function createMasteringDisplayPayload(maximumLuminanceNits: number): Uint8Array {
     const payload = new Uint8Array(24);

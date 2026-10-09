@@ -318,7 +318,7 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         if (sendResult < 0) {
             throw new Error(`The MPEG-2/VC-1 software decoder rejected a packet: ${sendResult}`);
         }
-        this.emitAvailableFrames(false);
+        this.emitAvailableFrames(module, decoder, false);
     }
 
     /** Drains every delayed picture and fails if any packet produced no output. */
@@ -328,7 +328,7 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         if (drainResult < 0 && drainResult !== module._mpeg2_vc1_decoder_error_eof()) {
             throw new Error(`The MPEG-2/VC-1 software decoder drain failed: ${drainResult}`);
         }
-        this.emitAvailableFrames(true);
+        this.emitAvailableFrames(module, decoder, true);
         if (this.durationsByTimestamp.size > 0) {
             throw new Error('The MPEG-2/VC-1 software decoder ended before every packet was output');
         }
@@ -390,8 +390,7 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         return { decoder: this.decoder, module: this.module };
     }
 
-    private emitAvailableFrames(draining: boolean): void {
-        const { decoder, module } = this.requireDecoder();
+    private emitAvailableFrames(module: MPEG2VC1DecoderModule, decoder: number, draining: boolean): void {
         const againError = module._mpeg2_vc1_decoder_error_again();
         const eofError = module._mpeg2_vc1_decoder_error_eof();
         while (true) {
@@ -533,7 +532,7 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         return { height, left, top, width };
     }
 
-    private getOutputColorSpace(module: MPEG2VC1DecoderModule, decoder: number): VideoColorSpaceInit | undefined {
+    private getOutputColorSpace(module: MPEG2VC1DecoderModule, decoder: number): VideoColorSpaceInit {
         const configuredColorSpace = this.configuration.colorSpace;
         const colorRange = module._mpeg2_vc1_decoder_get_color_range(decoder);
         return {

@@ -1063,7 +1063,7 @@ describe('CustomPlaybackController', () => {
     });
 
     it('owns native media audio controls and hands clock authority over once', async () => {
-        const nativeAudioBridgeFactory = (vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory);
+        const nativeAudioBridgeFactory = vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory;
         const harness = createControllerHarness(false, { nativeAudioBridgeFactory });
         const playOptions: CustomPlaybackPlayOptions = {
             ...createPlayOptions(0),
@@ -1136,7 +1136,7 @@ describe('CustomPlaybackController', () => {
     });
 
     it('runs the clock on once native audio played out a track that ended before video', async () => {
-        const nativeAudioBridgeFactory = (vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory);
+        const nativeAudioBridgeFactory = vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory;
         const harness = createControllerHarness(false, { nativeAudioBridgeFactory });
         const startPromise = harness.controller.play({
             ...createPlayOptions(0),
@@ -1189,7 +1189,7 @@ describe('CustomPlaybackController', () => {
     });
 
     it('falls back in the same session when owned native audio play is rejected', async () => {
-        const nativeAudioBridgeFactory = (vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory);
+        const nativeAudioBridgeFactory = vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory;
         const harness = createControllerHarness(false, { nativeAudioBridgeFactory });
         const startPromise = harness.controller.play({
             ...createPlayOptions(0),
@@ -2312,7 +2312,7 @@ describe('CustomPlaybackController', () => {
     });
 
     it('switches between decoded PCM and owned native media audio routes', async () => {
-        const nativeAudioBridgeFactory = (vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory);
+        const nativeAudioBridgeFactory = vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory;
         const harness = createControllerHarness(true, { nativeAudioBridgeFactory });
         const firstGeneration = await startReadyPlayback(harness, true);
         harness.audioOutput?.emitTelemetry(secondsToMicroseconds(33));
@@ -3819,7 +3819,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
     });
 
     it('declines a live switch for native media audio or a source without audio', async () => {
-        const nativeAudioBridgeFactory = (vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory);
+        const nativeAudioBridgeFactory = vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory;
         const harness = createControllerHarness(true, { nativeAudioBridgeFactory });
         await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);

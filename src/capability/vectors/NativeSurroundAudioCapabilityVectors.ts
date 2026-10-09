@@ -1,3 +1,5 @@
+import { decodeBase64 } from './Base64';
+
 export const NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_CHANNEL_COUNT = 6;
 export const NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_SAMPLE_RATE = 48_000;
 
@@ -145,15 +147,6 @@ const VORBIS_DESCRIPTION_BASE64 = [
 const VORBIS_PACKET_1_BASE64 = 'AA==';
 
 const VORBIS_PACKET_2_BASE64 = 'CgA=';
-
-function decodeBase64(base64: string): Uint8Array {
-    const decoded: string = globalThis.atob(base64);
-    const bytes: Uint8Array = new Uint8Array(decoded.length);
-    for (let byteIndex = 0; byteIndex < decoded.length; byteIndex += 1) {
-        bytes[byteIndex] = decoded.charCodeAt(byteIndex);
-    }
-    return bytes;
-}
 
 function createChunk(base64: string, duration: number): NativeSurroundAudioCapabilityVectorChunk {
     return {

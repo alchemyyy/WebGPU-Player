@@ -10,11 +10,9 @@ import {
     splitDolbyVisionHEVCAccessUnit
 } from 'webgpu-player/video/dolby-vision/DolbyVisionHEVCSplitter';
 
-const EMPTY_ACCESS_UNIT_ERROR = 'access unit is empty';
+import { createNALUnit, encodeAnnexBNALUnits } from '../../helpers/hevcNALUnits';
 
-function createNALUnit(type: number, payload: readonly number[]): Uint8Array {
-    return new Uint8Array([ (type & 0x3F) << 1, 1, ...payload ]);
-}
+const EMPTY_ACCESS_UNIT_ERROR = 'access unit is empty';
 
 function createLayerNALUnit(
     type: number,
@@ -48,25 +46,6 @@ function encodeLengthPrefixedNALUnits(
             remainingLength = Math.floor(remainingLength / 256);
         }
         offset += lengthSize;
-        output.set(nalUnit, offset);
-        offset += nalUnit.byteLength;
-    }
-    return output;
-}
-
-function encodeAnnexBNALUnits(nalUnits: readonly Uint8Array[]): Uint8Array {
-    const startCode = new Uint8Array([ 0, 0, 0, 1 ]);
-    const byteLength = nalUnits.reduce(
-        (totalByteLength: number, nalUnit: Uint8Array): number => (
-            totalByteLength + startCode.byteLength + nalUnit.byteLength
-        ),
-        0
-    );
-    const output = new Uint8Array(byteLength);
-    let offset = 0;
-    for (const nalUnit of nalUnits) {
-        output.set(startCode, offset);
-        offset += startCode.byteLength;
         output.set(nalUnit, offset);
         offset += nalUnit.byteLength;
     }

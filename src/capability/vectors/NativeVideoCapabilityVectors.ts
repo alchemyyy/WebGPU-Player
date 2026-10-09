@@ -1,3 +1,5 @@
+import { decodeBase64 } from './Base64';
+
 export const NATIVE_VIDEO_CAPABILITY_VECTOR_CODED_HEIGHT = 64;
 export const NATIVE_VIDEO_CAPABILITY_VECTOR_CODED_WIDTH = 64;
 
@@ -19,15 +21,6 @@ export type NativeVideoCapabilityVector = Readonly<{
 const AV1_MAIN_KEY_FRAME_BASE64 = 'EgAKBhgVf/+wCDIMEAAAAEsXxj38v/+g';
 const VP8_KEY_FRAME_BASE64 = '8AIAnQEqQABAAABHCIWFiIWEiAICAAZwPEJgCrIg9zAA/v+rUIA=';
 const VP9_PROFILE_0_KEY_FRAME_BASE64 = 'gkmDQgAD8AP2ADgkHBgAAAAgAAB4uf///tk/AAVicz2A';
-
-function decodeBase64(base64: string): Uint8Array {
-    const decoded = globalThis.atob(base64);
-    const bytes = new Uint8Array(decoded.length);
-    for (let byteIndex = 0; byteIndex < decoded.length; byteIndex += 1) {
-        bytes[byteIndex] = decoded.charCodeAt(byteIndex);
-    }
-    return bytes;
-}
 
 /** Returns a new exact native SDR codec keyframe for output qualification. */
 export function createNativeVideoCapabilityVector(codec: NativeVideoCapabilityVectorCodec): NativeVideoCapabilityVector {

@@ -28,7 +28,7 @@ def create_SPS(*, high_tier: bool) -> bytes:
 class NativeHEVCHighTierVectorTests(unittest.TestCase):
     """Covers the profile, tier, and level parse and the duration limits."""
 
-    def test_parses_exact_high_tier_profile_level(self) -> None:
+    def test_parses_high_tier_profile_level(self) -> None:
         profile_tier_level = generator.parse_HEVC_profile_tier_level(
             create_SPS(high_tier=True)
         )

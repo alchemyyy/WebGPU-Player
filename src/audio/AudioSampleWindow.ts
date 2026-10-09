@@ -1,7 +1,5 @@
-import type { Microseconds } from '../MediaTime';
+import { MICROSECONDS_PER_SECOND, type Microseconds } from '../MediaTime';
 import { addMicroseconds, audioFramesToMicroseconds, requireMicroseconds } from '../TimeMath';
-
-const MICROSECONDS_PER_SECOND = 1_000_000;
 
 export type AudioSampleWindow = {
     durationMicroseconds: Microseconds

@@ -179,7 +179,6 @@ export function getJPEG2000RGBAFingerprint(rgba: Uint8Array): number {
 export default class JPEG2000SoftwareVideoDecoder {
     private closed = false;
     private decoder: OpenJPEGDecoder | null = null;
-    private module: OpenJPEGModule | null = null;
 
     public constructor(
         private readonly dependencies: JPEG2000SoftwareVideoDecoderDependencies = DEFAULT_DEPENDENCIES
@@ -200,7 +199,6 @@ export default class JPEG2000SoftwareVideoDecoder {
         if (this.closed) {
             return;
         }
-        this.module = module;
         this.decoder = new module.J2KDecoder();
     }
 
@@ -309,7 +307,6 @@ export default class JPEG2000SoftwareVideoDecoder {
         this.closed = true;
         const decoder = this.decoder;
         this.decoder = null;
-        this.module = null;
         decoder?.delete();
     }
 
@@ -317,7 +314,7 @@ export default class JPEG2000SoftwareVideoDecoder {
         if (this.closed) {
             throw new Error('The JPEG 2000 decoder is closed');
         }
-        if (!this.decoder || !this.module) {
+        if (!this.decoder) {
             throw new Error('The JPEG 2000 decoder is not initialized');
         }
         return this.decoder;

@@ -11,10 +11,11 @@ import {
     neutralizeNativeHDRHEVCDecoderConfigWithValidation
 } from '../hevc/NativeHDRHEVCColorNeutralizer';
 import type { HEVCHDRTransfer } from '../hevc/HEVCSPSParser';
-import {
-    closeCodec,
+import OwnedNativeVideoDecoder, {
     DEFAULT_NATIVE_VIDEO_DECODER_DEPENDENCIES,
     type NativeVideoDecoderPort,
+    type OwnedNativeFrameSource,
+    type OwnedNativeVideoDecoderCallbacks,
     type OwnedNativeVideoDecoderDependencies
 } from './OwnedNativeVideoDecoder';
 
@@ -46,68 +47,46 @@ function findKeyPacketPreferredTransferCharacteristics(accessUnit: Uint8Array, f
     }
 }
 
-/** Owns one native HEVC VideoDecoder and its packet-to-frame lifecycle. */
-export default class OwnedNativeHEVCVideoDecoder {
-    private closed = false;
-    private codecError: unknown = null;
+/** Hands each decoded frame to onFrame, and closes a frame that onFrame refuses. */
+function createNativeFrameCallbacks(callbacks: OwnedNativeHEVCVideoDecoderCallbacks): OwnedNativeVideoDecoderCallbacks {
+    return {
+        onError: (error: unknown): void => callbacks.onError(error),
+        onOutput: (output: OwnedNativeFrameSource): void => {
+            try {
+                callbacks.onFrame(output.frame);
+            } catch (error) {
+                output.frame.close();
+                throw error;
+            }
+        },
+        onProgress: (): void => callbacks.onProgress()
+    };
+}
+
+/**
+ * Owns one native HEVC VideoDecoder.
+ * It drops leading RASL pictures, sanitizes the first access unit for Chromium, and neutralizes HDR color metadata when asked; the generic owner does the rest.
+ */
+export default class OwnedNativeHEVCVideoDecoder extends OwnedNativeVideoDecoder {
+    protected override readonly decoderName: string = 'HEVC decoder';
     private currentPacketIndex = 0;
-    private decoder: NativeVideoDecoderPort | null = null;
     private nativeHDRColorDescriptionValidated = false;
     private raslSkipped = false;
 
     public constructor(
-        private readonly config: VideoDecoderConfig,
+        config: VideoDecoderConfig,
         private readonly inputFormat: HEVCNALFormat,
-        private readonly callbacks: OwnedNativeHEVCVideoDecoderCallbacks,
-        private readonly dependencies: OwnedNativeHEVCVideoDecoderDependencies = DEFAULT_NATIVE_VIDEO_DECODER_DEPENDENCIES,
+        callbacks: OwnedNativeHEVCVideoDecoderCallbacks,
+        dependencies: OwnedNativeHEVCVideoDecoderDependencies = DEFAULT_NATIVE_VIDEO_DECODER_DEPENDENCIES,
         private readonly options: OwnedNativeHEVCVideoDecoderOptions = {}
-    ) {}
-
-    /** Creates and configures the native decoder. A second call, or a call after close(), throws. */
-    public async init(): Promise<void> {
-        if (this.closed) {
-            throw new Error('The owned native HEVC decoder is closed');
-        }
-        if (this.decoder) {
-            throw new Error('The owned native HEVC decoder is already initialized');
-        }
-
-        const decoder = this.dependencies.createDecoder({
-            error: (error: DOMException): void => {
-                // WebCodecs has already closed the codec when it reports an error
-                this.codecError ??= error;
-                this.callbacks.onError(error);
-            },
-            output: (frame: VideoFrame): void => this.handleOutput(frame)
-        });
-        decoder.ondequeue = (): void => this.callbacks.onProgress();
-        try {
-            const neutralizeHDRColorMetadata = this.options.neutralizeHDRColorMetadata === true;
-            if (neutralizeHDRColorMetadata) {
-                const neutralizedConfiguration = neutralizeNativeHDRHEVCDecoderConfigWithValidation(
-                    this.config,
-                    this.requireNativeHDRTransfer()
-                );
-                decoder.configure(neutralizedConfiguration.configuration);
-                this.nativeHDRColorDescriptionValidated = neutralizedConfiguration.decoderDescriptionValidated;
-            } else {
-                decoder.configure(this.config);
-                this.nativeHDRColorDescriptionValidated = false;
-            }
-        } catch (error) {
-            closeCodec(decoder);
-            throw error;
-        }
-        if (this.closed) {
-            closeCodec(decoder);
-            return;
-        }
-        this.decoder = decoder;
+    ) {
+        super(config, createNativeFrameCallbacks(callbacks), dependencies);
     }
 
     /** Queues one cleaned base-layer packet, or drops a leading RASL picture and returns false. */
-    public decode(packet: EncodedPacket): boolean {
-        const decoder = this.requireDecoder();
+    public override decode(packet: EncodedPacket): boolean {
+        // A closed or failed decoder throws before the packet state below changes
+        this.requireDecoder();
         if (this.currentPacketIndex > 0 && !this.raslSkipped) {
             if (hasHEVCRASLPicture(packet.data, this.inputFormat)) {
                 return false;
@@ -130,20 +109,30 @@ export default class OwnedNativeHEVCVideoDecoder {
 
         const decodedPacket = decodedPacketData === packet.data ? packet : packet.clone({ data: decodedPacketData });
 
-        decoder.decode(this.dependencies.createEncodedVideoChunk(decodedPacket));
+        super.decode(decodedPacket);
         this.currentPacketIndex += 1;
         return true;
     }
 
     /** Flushes all native output and resets random-access packet state. */
-    public async flush(): Promise<void> {
-        await this.requireDecoder().flush();
+    public override async flush(): Promise<void> {
+        await super.flush();
         this.currentPacketIndex = 0;
         this.raslSkipped = false;
     }
 
-    public getDecodeQueueSize(): number {
-        return this.decoder?.decodeQueueSize ?? 0;
+    protected override configureDecoder(decoder: NativeVideoDecoderPort): void {
+        if (this.options.neutralizeHDRColorMetadata !== true) {
+            super.configureDecoder(decoder);
+            this.nativeHDRColorDescriptionValidated = false;
+            return;
+        }
+        const neutralizedConfiguration = neutralizeNativeHDRHEVCDecoderConfigWithValidation(
+            this.config,
+            this.requireNativeHDRTransfer()
+        );
+        decoder.configure(neutralizedConfiguration.configuration);
+        this.nativeHDRColorDescriptionValidated = neutralizedConfiguration.decoderDescriptionValidated;
     }
 
     private requireNativeHDRTransfer(): HEVCHDRTransfer {
@@ -175,51 +164,5 @@ export default class OwnedNativeHEVCVideoDecoder {
             throw new TypeError('Native HDR color neutralization requires a validated HEVC SPS');
         }
         return packetData;
-    }
-
-    /** Closes the decoder and any frame it outputs afterwards. Later calls do nothing. */
-    public close(): void {
-        if (this.closed) {
-            return;
-        }
-        this.closed = true;
-        const decoder = this.decoder;
-        this.decoder = null;
-        if (!decoder) {
-            return;
-        }
-        closeCodec(decoder);
-    }
-
-    private handleOutput(frame: VideoFrame): void {
-        if (this.closed) {
-            frame.close();
-            return;
-        }
-
-        let ownedFrame: VideoFrame | null = frame;
-        try {
-            this.callbacks.onFrame(ownedFrame);
-            ownedFrame = null;
-        } catch (error) {
-            ownedFrame?.close();
-            this.callbacks.onError(error);
-        } finally {
-            this.callbacks.onProgress();
-        }
-    }
-
-    private requireDecoder(): NativeVideoDecoderPort {
-        if (this.closed) {
-            throw new Error('The owned native HEVC decoder is closed');
-        }
-        // Surface the codec's own error, so reclamation (QuotaExceededError) stays recoverable
-        if (this.codecError !== null) {
-            throw this.codecError;
-        }
-        if (!this.decoder) {
-            throw new Error('The owned native HEVC decoder is not initialized');
-        }
-        return this.decoder;
     }
 }

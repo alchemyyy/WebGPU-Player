@@ -68,6 +68,10 @@ export type DolbyVisionPresentationSelection = {
     descriptor: DolbyVisionPresentationDescriptor
 };
 
+type DolbyVisionBaseLayerSelection = DolbyVisionPresentationSelection & {
+    baseLayerStream: MediaStreamMetadata
+};
+
 // dv_bl_signal_compatibility_id is a 4-bit field; IDs outside the standard set are reserved but still supported
 const MAXIMUM_BL_SIGNAL_COMPATIBILITY_ID = 15;
 // The compatibility IDs that declare a base layer displayable on its own: HDR10, SDR, HLG, and Ultra HD Blu-ray
@@ -630,17 +634,28 @@ function getPlaybackVideoStreams(options: unknown): MediaStreamMetadata[] | null
     return videoStreams;
 }
 
-/** Returns one exact supported single-stream or separate-track Dolby Vision selection. */
-export function getDolbyVisionPresentationSelection(options: unknown): DolbyVisionPresentationSelection | null {
-    const videoStreams = getPlaybackVideoStreams(options);
-    if (!videoStreams) {
-        return null;
-    }
+function selectDolbyVisionPresentation(videoStreams: readonly MediaStreamMetadata[]): DolbyVisionPresentationSelection | null {
     if (videoStreams.length === 1) {
         const descriptor = parseDolbyVisionDescriptor(videoStreams[0]);
         return descriptor ? { baseLayerVideoTrackOrdinal: 0, descriptor } : null;
     }
     return parseSeparateProfile7Selection(videoStreams);
+}
+
+/** Returns one exact supported single-stream or separate-track Dolby Vision selection. */
+export function getDolbyVisionPresentationSelection(options: unknown): DolbyVisionPresentationSelection | null {
+    const videoStreams = getPlaybackVideoStreams(options);
+    return videoStreams ? selectDolbyVisionPresentation(videoStreams) : null;
+}
+
+/** Returns the Dolby Vision selection with the stream its base-layer ordinal names. */
+function getDolbyVisionBaseLayerSelection(options: unknown): DolbyVisionBaseLayerSelection | null {
+    const videoStreams = getPlaybackVideoStreams(options);
+    if (!videoStreams) {
+        return null;
+    }
+    const selection = selectDolbyVisionPresentation(videoStreams);
+    return selection ? { ...selection, baseLayerStream: videoStreams[selection.baseLayerVideoTrackOrdinal] } : null;
 }
 
 /** Returns the parsed Dolby Vision descriptor of the presented stream. */
@@ -658,7 +673,7 @@ export function getPresentationVideoTrackOrdinal(options: unknown): number | nul
         return null;
     }
 
-    const dolbyVisionSelection = getDolbyVisionPresentationSelection(options);
+    const dolbyVisionSelection = selectDolbyVisionPresentation(videoStreams);
     if (dolbyVisionSelection) {
         return dolbyVisionSelection.baseLayerVideoTrackOrdinal;
     }
@@ -673,13 +688,12 @@ function getDolbyVisionHDR10BaseColorMetadata(
     options: unknown,
     acceptsDescriptor: (descriptor: DolbyVisionPresentationDescriptor) => boolean
 ): InputColorMetadata | null {
-    const selection = getDolbyVisionPresentationSelection(options);
+    const selection = getDolbyVisionBaseLayerSelection(options);
     if (!selection || !acceptsDescriptor(selection.descriptor)) {
         return null;
     }
-    const videoStream = getPlaybackVideoStreams(options)?.[selection.baseLayerVideoTrackOrdinal];
-    if (!videoStream
-        || parseColorPrimaries(videoStream.ColorPrimaries) !== 'bt2020'
+    const videoStream = selection.baseLayerStream;
+    if (parseColorPrimaries(videoStream.ColorPrimaries) !== 'bt2020'
         || parseYUVMatrix(videoStream.ColorSpace) !== 'bt2020-ncl'
         || parseTransfer(videoStream.ColorTransfer) !== 'pq') {
         return null;
@@ -707,13 +721,12 @@ export function getDolbyVisionProfile8HDR10BaseColorMetadata(options: unknown): 
 
 /** Returns exact BT.2020 HLG metadata for a Profile 8.4 HLG-compatible base. */
 export function getDolbyVisionProfile8HLGBaseColorMetadata(options: unknown): InputColorMetadata | null {
-    const selection = getDolbyVisionPresentationSelection(options);
+    const selection = getDolbyVisionBaseLayerSelection(options);
     if (!selection || !isDolbyVisionProfile8HLGBaseLayerDescriptor(selection.descriptor)) {
         return null;
     }
-    const videoStream = getPlaybackVideoStreams(options)?.[selection.baseLayerVideoTrackOrdinal];
-    if (!videoStream
-        || videoStream.BitDepth !== DEFAULT_HDR_BIT_DEPTH
+    const videoStream = selection.baseLayerStream;
+    if (videoStream.BitDepth !== DEFAULT_HDR_BIT_DEPTH
         || parseColorRange(videoStream.ColorRange) !== 'limited'
         || parseColorPrimaries(videoStream.ColorPrimaries) !== 'bt2020'
         || parseYUVMatrix(videoStream.ColorSpace) !== 'bt2020-ncl'
@@ -797,20 +810,19 @@ function createVideoStreamColorMetadata(videoStream: MediaStreamMetadata, transf
  * Jellyfin derives VideoRange and VideoRangeType from the Dolby Vision configuration and mislabels some profiles, so only an explicit ColorTransfer may contradict the declaration.
  */
 export function getDolbyVisionBaseColorMetadata(options: unknown): InputColorMetadata | null {
-    const selection = getDolbyVisionPresentationSelection(options);
+    const selection = getDolbyVisionBaseLayerSelection(options);
     if (!selection) {
         return null;
     }
     const declaredTransfer = getDolbyVisionDeclaredBaseTransfer(selection.descriptor);
-    const videoStream = getPlaybackVideoStreams(options)?.[selection.baseLayerVideoTrackOrdinal];
-    if (!declaredTransfer || !videoStream) {
+    if (!declaredTransfer) {
         return null;
     }
-    const explicitTransfer = parseTransfer(videoStream.ColorTransfer);
+    const explicitTransfer = parseTransfer(selection.baseLayerStream.ColorTransfer);
     if (explicitTransfer !== null && explicitTransfer !== declaredTransfer) {
         return null;
     }
-    return createVideoStreamColorMetadata(videoStream, declaredTransfer);
+    return createVideoStreamColorMetadata(selection.baseLayerStream, declaredTransfer);
 }
 
 /** Returns renderer metadata for Jellyfin's selected presentation video track. */

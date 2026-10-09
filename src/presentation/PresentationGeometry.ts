@@ -12,6 +12,12 @@ type ObjectPosition = {
     y: ObjectPositionCoordinate
 };
 
+// An edge position while its tokens are parsed; an axis stays null until a token sets it
+type PendingObjectPosition = {
+    x: ObjectPositionCoordinate | null
+    y: ObjectPositionCoordinate | null
+};
+
 export type TexturePresentationGeometry = {
     textureOffsetX: number
     textureOffsetY: number
@@ -157,8 +163,6 @@ function createEdgeCoordinate(edge: string, offsetPixels: number): ObjectPositio
         case 'right':
         case 'bottom':
             return { lengthPixels: -offsetPixels, percentage: 1 };
-        case 'left':
-        case 'top':
         default:
             return { lengthPixels: offsetPixels, percentage: 0 };
     }
@@ -178,7 +182,7 @@ function getEdgeAxis(value: string): 'x' | 'y' | null {
 }
 
 function setEdgeCoordinate(
-    position: { x: ObjectPositionCoordinate | null, y: ObjectPositionCoordinate | null },
+    position: PendingObjectPosition,
     axis: 'x' | 'y',
     coordinate: ObjectPositionCoordinate
 ): boolean {
@@ -214,10 +218,7 @@ function parseEdgeToken(tokens: readonly string[], tokenIndex: number): ParsedEd
     };
 }
 
-function completeEdgePosition(
-    position: { x: ObjectPositionCoordinate | null, y: ObjectPositionCoordinate | null },
-    pendingCenterCount: number
-): ObjectPosition | null {
+function completeEdgePosition(position: PendingObjectPosition, pendingCenterCount: number): ObjectPosition | null {
     let remainingCenterCount = pendingCenterCount;
     if (!position.x && remainingCenterCount > 0) {
         position.x = CENTER_POSITION_COORDINATE;
@@ -238,10 +239,7 @@ function parseEdgeObjectPosition(tokens: readonly string[]): ObjectPosition | nu
         return null;
     }
 
-    const position: {
-        x: ObjectPositionCoordinate | null
-        y: ObjectPositionCoordinate | null
-    } = { x: null, y: null };
+    const position: PendingObjectPosition = { x: null, y: null };
     let pendingCenterCount = 0;
     let tokenIndex = 0;
     while (tokenIndex < tokens.length) {

@@ -5,6 +5,8 @@ import {
     type MPEGTransportStreamByteRangeReader
 } from 'webgpu-player/video/dolby-vision/MPEGTransportStreamDolbyVisionConfiguration';
 
+import { concatenate } from '../../helpers/byteArrays';
+
 const MPEG_TS_PACKET_BYTE_LENGTH = 188;
 const M2TS_PACKET_BYTE_LENGTH = 192;
 const MAXIMUM_PROBE_BYTE_LENGTH = 1 * 1_024 * 1_024;
@@ -34,22 +36,6 @@ type ProgramMapOptions = {
     programDescriptors?: Uint8Array
     descriptorOptions?: DolbyVisionDescriptorOptions
 };
-
-function concatenate(parts: readonly Uint8Array[]): Uint8Array {
-    const byteLength = parts.reduce(
-        (totalByteLength: number, part: Uint8Array): number => (
-            totalByteLength + part.byteLength
-        ),
-        0
-    );
-    const output = new Uint8Array(byteLength);
-    let offset = 0;
-    for (const part of parts) {
-        output.set(part, offset);
-        offset += part.byteLength;
-    }
-    return output;
-}
 
 function getMPEG2CRC32(data: Uint8Array): number {
     let crc = 0xFFFF_FFFF;

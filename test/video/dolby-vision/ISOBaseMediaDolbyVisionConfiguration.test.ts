@@ -5,6 +5,8 @@ import {
     type ISOBaseMediaByteRangeReader
 } from 'webgpu-player/video/dolby-vision/ISOBaseMediaDolbyVisionConfiguration';
 
+import { concatenate } from '../../helpers/byteArrays';
+
 const BASE_TRACK_ID = 1;
 const ENHANCEMENT_TRACK_ID = 2;
 const VISUAL_SAMPLE_ENTRY_FIELD_BYTE_LENGTH = 78;
@@ -13,20 +15,6 @@ const ENHANCEMENT_HEVC_CONFIGURATION_SEED = 0x70;
 const LARGE_SAMPLE_TABLE_BYTE_LENGTH = 17 * 1_024 * 1_024;
 // A moov size that runs past the end of its file
 const TRUNCATED_MOVIE_BOX_BYTE_LENGTH = (16 * 1_024 * 1_024) + 9;
-
-function concatenate(parts: readonly Uint8Array[]): Uint8Array {
-    const byteLength = parts.reduce(
-        (totalByteLength: number, part: Uint8Array): number => totalByteLength + part.byteLength,
-        0
-    );
-    const output = new Uint8Array(byteLength);
-    let offset = 0;
-    for (const part of parts) {
-        output.set(part, offset);
-        offset += part.byteLength;
-    }
-    return output;
-}
 
 function encodeUnsigned32(value: number): Uint8Array {
     return new Uint8Array([

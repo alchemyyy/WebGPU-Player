@@ -1,3 +1,5 @@
+import { decodeBase64 } from './Base64';
+
 const AC3_PROBE_BASE64 = [
     'AAAAIGZ0eXBpc281AAACAGlzbzVpc282ZGJ5MW1wNDEAAAK2bW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAAAAAAQAAAQAA',
     'AAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAA',
@@ -310,15 +312,6 @@ const EAC3_SURROUND_PROBE_BASE64 = [
 
 export type NativeMediaAudioProbeVectorCodec = 'ac3' | 'eac3';
 export type NativeMediaAudioProbeVectorChannelCount = 2 | 6;
-
-function decodeBase64(base64: string): Uint8Array {
-    const decoded = globalThis.atob(base64);
-    const bytes = new Uint8Array(decoded.length);
-    for (let byteIndex = 0; byteIndex < decoded.length; byteIndex += 1) {
-        bytes[byteIndex] = decoded.charCodeAt(byteIndex);
-    }
-    return bytes;
-}
 
 /** Returns a new copy of the fMP4 vector that qualifies native MSE decoding of one codec and channel count. */
 export function createNativeMediaAudioProbeVector(

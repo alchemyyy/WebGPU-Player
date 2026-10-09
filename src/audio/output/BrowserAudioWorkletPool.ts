@@ -14,6 +14,7 @@ import type {
     AudioWorkletTelemetry,
     TransferablePlanarPCM
 } from './AudioWorkletProtocol';
+import { requirePositiveSafeInteger } from '../SafeIntegerValidation';
 
 type PooledBrowserAudioWorkletState = {
     configuration: AudioWorkletControllerConfiguration
@@ -34,13 +35,6 @@ export type SharedBrowserAudioWorkletLease = {
 const pooledStates = new WeakMap<AudioContext, PooledBrowserAudioWorkletState>();
 const retirementPromises = new WeakMap<AudioContext, Promise<void>>();
 let nextLeaseId = 1;
-
-function requirePositiveSafeInteger(value: number, label: string): number {
-    if (!Number.isSafeInteger(value) || value <= 0) {
-        throw new RangeError(`${label} must be a positive safe integer`);
-    }
-    return value;
-}
 
 function takeLeaseId(): number {
     if (nextLeaseId === Number.MAX_SAFE_INTEGER) {

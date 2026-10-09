@@ -1,3 +1,5 @@
+import { decodeBase64 } from './Base64';
+
 export const RAW_HDR_CAPABILITY_VECTOR_CODED_HEIGHT = 2_160;
 export const RAW_HDR_CAPABILITY_VECTOR_CODED_WIDTH = 3_840;
 
@@ -104,15 +106,6 @@ const VP9_PROFILE_2_KEY_FRAME_BASE64 = [
 
 // Sparse 64x36 FNV-1a samples from the decoded 10-bit Y, U, and V planes
 const GRAY_10_BIT_DECODED_FRAME_FINGERPRINT = 4_080_076_472;
-
-function decodeBase64(base64: string): Uint8Array {
-    const binary = globalThis.atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let byteIndex = 0; byteIndex < binary.length; byteIndex += 1) {
-        bytes[byteIndex] = binary.charCodeAt(byteIndex);
-    }
-    return bytes;
-}
 
 /** Returns a new copy of the codec's 4K keyframe vector for a raw HDR capability probe. */
 export function createRawHDRCapabilityVector(codec: RawHDRCapabilityVectorCodec): RawHDRCapabilityVector {

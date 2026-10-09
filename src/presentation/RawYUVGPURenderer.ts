@@ -133,38 +133,20 @@ function createExpectedRawPlanes(
     codedHeight: number
 ): readonly ExpectedRawPlane[] {
     const geometry = getRawPlanarFormatGeometry(format);
+    const bytesPerComponent = geometry.bytesPerComponent;
     const chromaWidth = Math.ceil(codedWidth / geometry.chromaWidthDivisor);
     const chromaHeight = Math.ceil(codedHeight / geometry.chromaHeightDivisor);
     const expectedPlanes: ExpectedRawPlane[] = [];
-    switch (format) {
-        case 'I420':
-        case 'I422':
-        case 'I444':
-            expectedPlanes.push(
-                { bytesPerComponent: 1, componentsPerTexel: 1, height: codedHeight, kind: 'y', width: codedWidth },
-                { bytesPerComponent: 1, componentsPerTexel: 1, height: chromaHeight, kind: 'u', width: chromaWidth },
-                { bytesPerComponent: 1, componentsPerTexel: 1, height: chromaHeight, kind: 'v', width: chromaWidth }
-            );
-            break;
-        case 'I420P10':
-        case 'I420P12':
-        case 'I422P10':
-        case 'I422P12':
-        case 'I444P10':
-        case 'I444P12':
-            expectedPlanes.push(
-                { bytesPerComponent: 2, componentsPerTexel: 1, height: codedHeight, kind: 'y', width: codedWidth },
-                { bytesPerComponent: 2, componentsPerTexel: 1, height: chromaHeight, kind: 'u', width: chromaWidth },
-                { bytesPerComponent: 2, componentsPerTexel: 1, height: chromaHeight, kind: 'v', width: chromaWidth }
-            );
-            break;
-        case 'NV12':
-            expectedPlanes.push(
-                { bytesPerComponent: 1, componentsPerTexel: 1, height: codedHeight, kind: 'y', width: codedWidth },
-                { bytesPerComponent: 1, componentsPerTexel: 2, height: chromaHeight, kind: 'uv', width: chromaWidth }
-            );
-            break;
+    expectedPlanes.push({ bytesPerComponent, componentsPerTexel: 1, height: codedHeight, kind: 'y', width: codedWidth });
+    // NV12 interleaves U and V in one two-component plane
+    if (format === 'NV12') {
+        expectedPlanes.push({ bytesPerComponent, componentsPerTexel: 2, height: chromaHeight, kind: 'uv', width: chromaWidth });
+        return expectedPlanes;
     }
+    expectedPlanes.push(
+        { bytesPerComponent, componentsPerTexel: 1, height: chromaHeight, kind: 'u', width: chromaWidth },
+        { bytesPerComponent, componentsPerTexel: 1, height: chromaHeight, kind: 'v', width: chromaWidth }
+    );
     return expectedPlanes;
 }
 

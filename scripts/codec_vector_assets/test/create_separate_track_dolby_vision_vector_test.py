@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Callable, Sequence
 from unittest.mock import patch
@@ -21,6 +19,7 @@ sys.path.insert(0, str(SCRIPTS_DIRECTORY))
 
 import create_separate_track_dolby_vision_vector as generator  # noqa: E402
 import media_tools  # noqa: E402
+from vector_test_support import run_main  # noqa: E402
 
 
 START_CODE = b"\x00\x00\x00\x01"
@@ -107,16 +106,6 @@ def create_tool_directory(directory: Path) -> Path:
         (directory / tool_name).write_bytes(b"")
         (directory / f"{tool_name}.exe").write_bytes(b"")
     return directory
-
-
-def run_main(command_arguments: Sequence[str]) -> tuple[int, str, str]:
-    """Runs the CLI and returns its exit status, standard output, and standard error."""
-
-    standard_output = io.StringIO()
-    standard_error = io.StringIO()
-    with redirect_stdout(standard_output), redirect_stderr(standard_error):
-        status = generator.main(command_arguments)
-    return status, standard_output.getvalue(), standard_error.getvalue()
 
 
 class SplitInterleavedDolbyVisionTests(unittest.TestCase):
@@ -236,7 +225,7 @@ class MatroskaIdentificationTests(unittest.TestCase):
 class SeparateTrackVectorTests(unittest.TestCase):
     """Covers the MKVToolNix commands, the summary, and CLI failures."""
 
-    def test_creates_the_exact_MKVToolNix_arguments(self) -> None:
+    def test_creates_the_MKVToolNix_arguments(self) -> None:
         self.assertEqual(
             generator.create_track_extraction_arguments("input.mkv", 0, "interleaved.hevc"),
             ["tracks", "input.mkv", "0:interleaved.hevc"],
@@ -274,6 +263,7 @@ class SeparateTrackVectorTests(unittest.TestCase):
                 side_effect=create_fake_MKVToolNix(commands, interleaved_data),
             ):
                 status, standard_output, standard_error = run_main(
+                    generator.main,
                     [
                         str(input_path),
                         str(output_path),
@@ -353,7 +343,7 @@ class SeparateTrackVectorTests(unittest.TestCase):
                     failing_tool="mkvextract",
                 ),
             ):
-                status, standard_output, standard_error = run_main(vector_arguments)
+                status, standard_output, standard_error = run_main(generator.main, vector_arguments)
             self.assertEqual((status, standard_output), (1, ""))
             self.assertEqual(
                 standard_error,
@@ -365,7 +355,7 @@ class SeparateTrackVectorTests(unittest.TestCase):
                 "run",
                 side_effect=create_fake_MKVToolNix([], interleaved_data, mux_marker=b"dvvC"),
             ):
-                status, standard_output, standard_error = run_main(vector_arguments)
+                status, standard_output, standard_error = run_main(generator.main, vector_arguments)
             self.assertEqual(
                 (status, standard_output, standard_error),
                 (1, "", "The separate enhancement track has no dvcC mapping\n"),
@@ -383,11 +373,12 @@ class SeparateTrackVectorTests(unittest.TestCase):
             )
             for command_arguments, expected_message in invalid_arguments:
                 with self.subTest(command_arguments=command_arguments):
-                    status, _standard_output, standard_error = run_main(command_arguments)
+                    status, _standard_output, standard_error = run_main(generator.main, command_arguments)
                     self.assertEqual((status, standard_error), (1, expected_message + "\n"))
 
             missing_status, _standard_output, _standard_error = run_main(
-                [str(Path(temporary_directory) / "missing.mkv"), str(output_path)]
+                generator.main,
+                [str(Path(temporary_directory) / "missing.mkv"), str(output_path)],
             )
             self.assertEqual(missing_status, 1)
 
