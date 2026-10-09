@@ -92,9 +92,7 @@ export type CustomPlaybackFallbackRequest = {
     reason: CustomPlaybackFallbackReason
 };
 
-export type CustomPlaybackHTMLFallbackHook = (
-    request: CustomPlaybackFallbackRequest
-) => Promise<void> | void;
+export type CustomPlaybackHTMLFallbackHook = (request: CustomPlaybackFallbackRequest) => Promise<void> | void;
 
 export type CustomAudioOutput = {
     readonly generation: number
@@ -107,9 +105,7 @@ export type CustomAudioOutput = {
     onOutputDeviceChange?: (listener: () => void) => () => void
     onTelemetry: (listener: AudioTelemetryListener) => () => void
     /** Rebuilds the output stage for a new layout on the same device and returns its bridge */
-    reconfigure?: (
-        configuration: DecodeWorkerAudioConfiguration
-    ) => Promise<CustomDecodeAudioBridge>
+    reconfigure?: (configuration: DecodeWorkerAudioConfiguration) => Promise<CustomDecodeAudioBridge>
     setMuted: (muted: boolean) => void
     setPlaying: (playing: boolean) => Promise<void> | void
     setVolume: (volume: number) => void
@@ -263,9 +259,7 @@ export type CustomPlaybackControllerEvent =
         type: 'telemetry'
     };
 
-export type CustomPlaybackControllerEventHandler = (
-    event: CustomPlaybackControllerEvent
-) => void;
+export type CustomPlaybackControllerEventHandler = (event: CustomPlaybackControllerEvent) => void;
 
 export type CustomPlaybackControllerOptions = {
     audioContext?: AudioContext

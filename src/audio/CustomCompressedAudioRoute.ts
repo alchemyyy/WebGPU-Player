@@ -50,25 +50,23 @@ export const EAC3_SUPPORTED_INPUT_ROUTES = Object.freeze([
     })
 ] as const) satisfies readonly EAC3InputRoute[];
 
-export const DTS_PROFILE_VALUE_BY_TOKEN: Readonly<Record<DTSProfileToken, string>> =
-    Object.freeze({
-        DTS: 'DTS',
-        DTS9624: 'DTS 96/24',
-        DTSES: 'DTS-ES',
-        DTSHDHRA: 'DTS-HD HRA',
-        DTSHDMA: 'DTS-HD MA',
-        DTSHDMADTSX: 'DTS-HD MA + DTS:X'
-    });
+export const DTS_PROFILE_VALUE_BY_TOKEN: Readonly<Record<DTSProfileToken, string>> = Object.freeze({
+    DTS: 'DTS',
+    DTS9624: 'DTS 96/24',
+    DTSES: 'DTS-ES',
+    DTSHDHRA: 'DTS-HD HRA',
+    DTSHDMA: 'DTS-HD MA',
+    DTSHDMADTSX: 'DTS-HD MA + DTS:X'
+});
 
 /** DTS profiles retained for production direct play. */
-export const DTS_DIRECT_PLAY_PROFILE_TOKENS: readonly DTSDirectPlayProfileToken[] =
-    Object.freeze([
-        'DTS',
-        'DTS9624',
-        'DTSHDHRA',
-        'DTSHDMA',
-        'DTSHDMADTSX'
-    ]);
+export const DTS_DIRECT_PLAY_PROFILE_TOKENS: readonly DTSDirectPlayProfileToken[] = Object.freeze([
+    'DTS',
+    'DTS9624',
+    'DTSHDHRA',
+    'DTSHDMA',
+    'DTSHDMADTSX'
+]);
 
 export const DTS_CAPABILITY_VECTOR_ROUTES = Object.freeze([
     Object.freeze({
@@ -219,19 +217,12 @@ export const TRUEHD_SUPPORTED_INPUT_ROUTES = Object.freeze([
 ] as const) satisfies readonly TrueHDInputRoute[];
 
 /** Returns whether a DTS profile is stable enough for production direct play. */
-export function isDTSDirectPlayProfileToken(
-    profileToken: string
-): profileToken is DTSDirectPlayProfileToken {
-    return DTS_DIRECT_PLAY_PROFILE_TOKENS.includes(
-        profileToken as DTSDirectPlayProfileToken
-    );
+export function isDTSDirectPlayProfileToken(profileToken: string): profileToken is DTSDirectPlayProfileToken {
+    return DTS_DIRECT_PLAY_PROFILE_TOKENS.includes(profileToken as DTSDirectPlayProfileToken);
 }
 
 /** Matches Jellyfin ChannelLayout metadata against a route's required layouts. */
-export function hasCustomAudioMetadataLayout(
-    channelLayout: unknown,
-    metadataLayouts: readonly string[] | null
-): boolean {
+export function hasCustomAudioMetadataLayout(channelLayout: unknown, metadataLayouts: readonly string[] | null): boolean {
     if (metadataLayouts === null) {
         return true;
     }
@@ -242,9 +233,8 @@ export function hasCustomAudioMetadataLayout(
 }
 
 /**
- * Accepts production-qualified DTS profile/layout pairs at any bounded source
- * rate. A three-channel route also needs Jellyfin's 2.1 or 3.0 layout, the
- * beds whose decoded speaker masks the shared mixer implements.
+ * Accepts production-qualified DTS profile/layout pairs at any bounded source rate.
+ * A three-channel route also needs Jellyfin's 2.1 or 3.0 layout, the beds whose decoded speaker masks the shared mixer implements.
  */
 export function isSupportedDTSInputRoute(
     channelCount: unknown,
@@ -267,7 +257,7 @@ export function isSupportedDTSInputRoute(
     for (const route of DTS_SUPPORTED_INPUT_ROUTES) {
         const routeProfileTokens: readonly DTSProfileToken[] = route.profileTokens;
         if (route.channelCount === channelCount
-            && routeProfileTokens.includes(profileToken as DTSProfileToken)
+            && routeProfileTokens.includes(profileToken)
             && hasCustomAudioMetadataLayout(channelLayout, route.metadataLayouts)) {
             return true;
         }

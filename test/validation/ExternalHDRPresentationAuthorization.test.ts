@@ -29,10 +29,8 @@ type DeviceHarness = {
     textureDestroy: MockFunction
 };
 
-const PQ_ROUTE_KEY: ExternalHDRAuthorizationRouteKey =
-    'external-hevc-main10-bt709-limited:pq-v1';
-const HLG_ROUTE_KEY: ExternalHDRAuthorizationRouteKey =
-    'external-hevc-main10-bt709-limited:hlg-v1';
+const PQ_ROUTE_KEY: ExternalHDRAuthorizationRouteKey = 'external-hevc-main10-bt709-limited:pq-v1';
+const HLG_ROUTE_KEY: ExternalHDRAuthorizationRouteKey = 'external-hevc-main10-bt709-limited:hlg-v1';
 const originalGPUBufferUsage = Object.getOwnPropertyDescriptor(globalThis, 'GPUBufferUsage');
 const originalGPUMapMode = Object.getOwnPropertyDescriptor(globalThis, 'GPUMapMode');
 const originalGPUTextureUsage = Object.getOwnPropertyDescriptor(globalThis, 'GPUTextureUsage');
@@ -55,13 +53,8 @@ function createSettings() {
     });
 }
 
-function createExpectedObservations(
-    routeKey: ExternalHDRAuthorizationRouteKey
-): readonly RawHDRVectorObservation[] {
-    return createExpectedExternalHDRAuthorizationObservations(
-        routeKey,
-        createSettings()
-    );
+function createExpectedObservations(routeKey: ExternalHDRAuthorizationRouteKey): readonly RawHDRVectorObservation[] {
+    return createExpectedExternalHDRAuthorizationObservations(routeKey, createSettings());
 }
 
 function createFrame(close: MockFunction): VideoFrame {
@@ -72,15 +65,10 @@ function createFrame(close: MockFunction): VideoFrame {
     } as unknown as VideoFrame;
 }
 
-function createDeviceHarness(
-    observations: readonly RawHDRVectorObservation[]
-): DeviceHarness {
+function createDeviceHarness(observations: readonly RawHDRVectorObservation[]): DeviceHarness {
     const observationMap = new Map<string, ColorTriplet>();
     for (const observation of observations) {
-        observationMap.set(
-            `${observation.sampleX}:${observation.sampleY}`,
-            observation.linearRGB
-        );
+        observationMap.set(`${observation.sampleX}:${observation.sampleY}`, observation.linearRGB);
     }
     const draw = vi.fn();
     const renderPass = {
@@ -106,19 +94,14 @@ function createDeviceHarness(
             return {
                 bytes,
                 destroy: vi.fn(),
-                getMappedRange: vi.fn((offset = 0, size = bytes.byteLength) => (
-                    bytes.buffer.slice(offset, offset + size)
-                )),
+                getMappedRange: vi.fn((offset = 0, size = bytes.byteLength) => bytes.buffer.slice(offset, offset + size)),
                 mapAsync: vi.fn(() => Promise.resolve()),
                 unmap: vi.fn()
             } as unknown as MockBuffer;
         }),
         createCommandEncoder: vi.fn(() => ({
             beginRenderPass: vi.fn(() => renderPass),
-            copyTextureToBuffer: vi.fn((
-                source: GPUTexelCopyTextureInfo,
-                destination: GPUTexelCopyBufferInfo
-            ) => {
+            copyTextureToBuffer: vi.fn((source: GPUTexelCopyTextureInfo, destination: GPUTexelCopyBufferInfo) => {
                 const origin = source.origin as GPUOrigin3DDict;
                 const sampleX = Number(origin.x ?? 0);
                 const sampleY = Number(origin.y ?? 0);
@@ -167,9 +150,7 @@ function createDeviceHarness(
     };
 }
 
-function mutateFirstObservation(
-    observations: readonly RawHDRVectorObservation[]
-): readonly RawHDRVectorObservation[] {
+function mutateFirstObservation(observations: readonly RawHDRVectorObservation[]): readonly RawHDRVectorObservation[] {
     return observations.map((observation, observationIndex) => observationIndex === 0 ? {
         ...observation,
         linearRGB: [
@@ -238,9 +219,7 @@ describe('External HDR presentation authorization', () => {
             const harness = createDeviceHarness(createExpectedObservations(routeKey));
             const close = vi.fn();
             const frame = createFrame(close);
-            const runner = new ExternalHDRPresentationAuthorizationRunner(
-                async (): Promise<VideoFrame> => frame
-            );
+            const runner = new ExternalHDRPresentationAuthorizationRunner(async (): Promise<VideoFrame> => frame);
 
             const decision = await runner.validate(harness.device, 'bgra8unorm', routeKey);
 
@@ -265,19 +244,14 @@ describe('External HDR presentation authorization', () => {
     );
 
     it('rejects a bounded pixel mismatch and still closes the frame', async () => {
-        const harness = createDeviceHarness(mutateFirstObservation(
-            createExpectedObservations(PQ_ROUTE_KEY)
-        ));
+        const harness = createDeviceHarness(mutateFirstObservation(createExpectedObservations(PQ_ROUTE_KEY)));
         const close = vi.fn();
-        const runner = new ExternalHDRPresentationAuthorizationRunner(
-            async (): Promise<VideoFrame> => createFrame(close)
-        );
+        const runner = new ExternalHDRPresentationAuthorizationRunner(async (): Promise<VideoFrame> => createFrame(close));
 
-        await expect(runner.validate(harness.device, 'bgra8unorm', PQ_ROUTE_KEY))
-            .resolves.toMatchObject({
-                failureReason: 'pixel-mismatch',
-                status: 'rejected'
-            });
+        await expect(runner.validate(harness.device, 'bgra8unorm', PQ_ROUTE_KEY)).resolves.toMatchObject({
+            failureReason: 'pixel-mismatch',
+            status: 'rejected'
+        });
         expect(close).toHaveBeenCalledOnce();
     });
 
@@ -287,15 +261,12 @@ describe('External HDR presentation authorization', () => {
             throw new Error('simulated import failure');
         });
         const close = vi.fn();
-        const runner = new ExternalHDRPresentationAuthorizationRunner(
-            async (): Promise<VideoFrame> => createFrame(close)
-        );
+        const runner = new ExternalHDRPresentationAuthorizationRunner(async (): Promise<VideoFrame> => createFrame(close));
 
-        await expect(runner.validate(harness.device, 'bgra8unorm', PQ_ROUTE_KEY))
-            .resolves.toMatchObject({
-                failureReason: 'frame-import-failed',
-                status: 'rejected'
-            });
+        await expect(runner.validate(harness.device, 'bgra8unorm', PQ_ROUTE_KEY)).resolves.toMatchObject({
+            failureReason: 'frame-import-failed',
+            status: 'rejected'
+        });
         expect(close).toHaveBeenCalledOnce();
     });
 
@@ -333,9 +304,7 @@ describe('External HDR presentation authorization', () => {
 
     it('deduplicates route authorization and exposes settled telemetry', async () => {
         const harness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
-        const runner = new ExternalHDRPresentationAuthorizationRunner(
-            async (): Promise<VideoFrame> => createFrame(vi.fn())
-        );
+        const runner = new ExternalHDRPresentationAuthorizationRunner(async (): Promise<VideoFrame> => createFrame(vi.fn()));
         const validate = vi.spyOn(runner, 'validate');
         const registry = new ExternalHDRPresentationAuthorizationRegistry(runner);
 
@@ -371,9 +340,7 @@ describe('External HDR presentation authorization', () => {
     it('scopes authorization to exact GPUDevice identity', async () => {
         const firstHarness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
         const secondHarness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
-        const runner = new ExternalHDRPresentationAuthorizationRunner(
-            async (): Promise<VideoFrame> => createFrame(vi.fn())
-        );
+        const runner = new ExternalHDRPresentationAuthorizationRunner(async (): Promise<VideoFrame> => createFrame(vi.fn()));
         const validate = vi.spyOn(runner, 'validate');
         const registry = new ExternalHDRPresentationAuthorizationRegistry(runner);
 
@@ -397,16 +364,13 @@ describe('External HDR presentation authorization', () => {
 
     it('rejects unsupported targets before constructing a frame', async () => {
         const harness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
-        const createFrameFactory = vi.fn(async (): Promise<VideoFrame> => (
-            createFrame(vi.fn())
-        ));
+        const createFrameFactory = vi.fn(async (): Promise<VideoFrame> => createFrame(vi.fn()));
         const runner = new ExternalHDRPresentationAuthorizationRunner(createFrameFactory);
 
-        await expect(runner.validate(harness.device, 'rgba16float', PQ_ROUTE_KEY))
-            .resolves.toMatchObject({
-                failureReason: 'target-format-unsupported',
-                status: 'rejected'
-            });
+        await expect(runner.validate(harness.device, 'rgba16float', PQ_ROUTE_KEY)).resolves.toMatchObject({
+            failureReason: 'target-format-unsupported',
+            status: 'rejected'
+        });
         expect(createFrameFactory).not.toHaveBeenCalled();
     });
 
@@ -511,10 +475,7 @@ describe('External HDR presentation authorization', () => {
             hardwareAcceleration: 'prefer-hardware'
         }));
         expect(decodedAccessUnit).not.toBeNull();
-        expect(parseHEVCSPS(findAnnexBNALUnit(
-            decodedAccessUnit as unknown as Uint8Array,
-            33
-        )).colorSpace).toEqual({
+        expect(parseHEVCSPS(findAnnexBNALUnit(decodedAccessUnit as unknown as Uint8Array, 33)).colorSpace).toEqual({
             fullRange: false,
             matrix: 'bt709',
             primaries: 'bt709',
@@ -544,8 +505,7 @@ describe('External HDR presentation authorization', () => {
         vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
         vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
 
-        await expect(createExternalHDRAuthorizationFrame())
-            .rejects.toThrow('decoder-config-unsupported');
+        await expect(createExternalHDRAuthorizationFrame()).rejects.toThrow('decoder-config-unsupported');
         expect(constructed).not.toHaveBeenCalled();
     });
 
@@ -584,8 +544,7 @@ describe('External HDR presentation authorization', () => {
         vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
         vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
 
-        await expect(createExternalHDRAuthorizationFrame())
-            .rejects.toThrow('vector decode failed');
+        await expect(createExternalHDRAuthorizationFrame()).rejects.toThrow('vector decode failed');
         expect(closed).toHaveBeenCalledOnce();
     });
 

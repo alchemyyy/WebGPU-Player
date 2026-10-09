@@ -39,5 +39,4 @@ export const CUSTOM_AUDIO_CODECS = [
 
 export type CustomAudioCodec = typeof CUSTOM_AUDIO_CODECS[number];
 export type CustomBundledAudioCodec = typeof CUSTOM_BUNDLED_AUDIO_CODECS[number];
-export type CustomMediabunnyPCMAudioCodec =
-    typeof CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS[number];
+export type CustomMediabunnyPCMAudioCodec = typeof CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS[number];

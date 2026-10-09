@@ -85,18 +85,14 @@ function closeSharedState(state: SharedBrowserAudioContextState): Promise<void> 
     return state.closePromise;
 }
 
-function closeInvalidatedStateWhenIdle(
-    state: SharedBrowserAudioContextState
-): Promise<void> {
+function closeInvalidatedStateWhenIdle(state: SharedBrowserAudioContextState): Promise<void> {
     if (!state.invalidated || state.referenceCount > 0) {
         return Promise.resolve();
     }
     return closeSharedState(state);
 }
 
-function suspendSharedStateWhenIdle(
-    state: SharedBrowserAudioContextState
-): Promise<void> {
+function suspendSharedStateWhenIdle(state: SharedBrowserAudioContextState): Promise<void> {
     if (state.createdWithoutOutputDevice && state.referenceCount === 0) {
         // A context created without an output device is closed instead of pooled
         state.invalidated = true;
@@ -105,16 +101,14 @@ function suspendSharedStateWhenIdle(
     if (state.invalidated) {
         return closeInvalidatedStateWhenIdle(state);
     }
-    if (state.referenceCount > 0
-        || state.audioContext.state === 'closed') {
+    if (state.referenceCount > 0 || state.audioContext.state === 'closed') {
         return Promise.resolve();
     }
 
     let suspendPromise: Promise<void>;
     // eslint-disable-next-line sonarjs/no-try-promise -- AudioContext suspend may throw synchronously
     try {
-        // Suspend even while the public state is still "suspended": a resume
-        // control message may already be pending behind that stale state
+        // Suspend even while the public state is still "suspended": a resume control message may already be pending behind that stale state
         suspendPromise = waitForBrowserAudioOperation(
             state.audioContext.suspend(),
             'Idle shared AudioContext suspend',
@@ -154,9 +148,8 @@ function getDestinationMaximumChannelCount(audioContext: AudioContext): number |
 }
 
 /**
- * Resolves true when a new context can reach no output device for its
- * lifetime. Chromium bakes fake-output parameters into a context created
- * without an output device, and Firefox gives it zero output channels.
+ * Resolves true when a new context can reach no output device for its lifetime.
+ * Chromium bakes fake-output parameters into a context created without an output device, and Firefox gives it zero output channels.
  */
 function detectCreationWithoutOutputDevice(
     audioContext: AudioContext,
@@ -169,9 +162,7 @@ function detectCreationWithoutOutputDevice(
     if (typeof (audioContext as AudioContextWithSinkSelection).setSinkId !== 'function') {
         return Promise.resolve(false);
     }
-    return outputDevicePresence.then(
-        (presence: AudioOutputDevicePresence): boolean => presence === 'absent'
-    );
+    return outputDevicePresence.then((presence: AudioOutputDevicePresence): boolean => presence === 'absent');
 }
 
 function markCreatedWithoutOutputDevice(state: SharedBrowserAudioContextState): void {
@@ -187,8 +178,7 @@ function markCreatedWithoutOutputDevice(state: SharedBrowserAudioContextState): 
 
 function createSharedState(sampleRate: number): SharedBrowserAudioContextState {
     const AudioContextClass = getAudioContextConstructor();
-    // Enumerating before construction turns a racing device change into a
-    // spare sink rebuild instead of a missed context that renders nowhere
+    // Enumerating before construction turns a racing device change into a spare sink rebuild instead of a missed context that renders nowhere
     const outputDevicePresence = probeDefaultAudioOutputDevicePresence();
     const audioContext = new AudioContextClass({
         latencyHint: 'playback',
@@ -233,8 +223,7 @@ function createSharedState(sampleRate: number): SharedBrowserAudioContextState {
 
 function getSharedState(sampleRate: number): SharedBrowserAudioContextState {
     const existingState = sharedStatesBySampleRate.get(sampleRate);
-    // A context created without an output device stays with its current
-    // references, and the next acquisition gets a fresh context
+    // A context created without an output device stays with its current references, and the next acquisition gets a fresh context
     if (existingState
         && !existingState.invalidated
         && !existingState.createdWithoutOutputDevice
@@ -250,15 +239,11 @@ function getSharedState(sampleRate: number): SharedBrowserAudioContextState {
 }
 
 /**
- * Acquires the shared exact-rate context used by custom audio outputs. Session
- * teardown suspends its destination but keeps the context and worklet module
- * warm, avoiding Chromium retention of one closed wrapper per item. A context
- * created without an output device is closed instead, because it never reaches
- * a device that appears later.
+ * Acquires the shared exact-rate context used by custom audio outputs.
+ * Session teardown suspends its destination but keeps the context and worklet module warm, avoiding Chromium retention of one closed wrapper per item.
+ * A context created without an output device is closed instead, because it never reaches a device that appears later.
  */
-export function acquireSharedBrowserAudioContext(
-    sampleRate: number
-): SharedBrowserAudioContextReference {
+export function acquireSharedBrowserAudioContext(sampleRate: number): SharedBrowserAudioContextReference {
     validateSampleRate(sampleRate);
     const state = getSharedState(sampleRate);
     state.referenceCount += 1;
@@ -266,8 +251,7 @@ export function acquireSharedBrowserAudioContext(
     let resumePromise: Promise<void>;
     // eslint-disable-next-line sonarjs/no-try-promise -- Resume must run in this activation task
     try {
-        // Calling resume while Chromium has an asynchronous suspend pending
-        // cancels that transition before the destination stops rendering
+        // Calling resume while Chromium has an asynchronous suspend pending cancels that transition before the destination stops rendering
         resumePromise = state.audioContext.resume();
     } catch (error) {
         state.referenceCount -= 1;

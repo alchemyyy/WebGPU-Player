@@ -5,25 +5,16 @@ import {
 } from '../../MediaTime';
 import { requireMicroseconds } from '../../TimeMath';
 
-export const DEFAULT_BROWSER_AUDIO_OPERATION_TIMEOUT_MICROSECONDS =
-    millisecondsToMicroseconds(5_000);
-export const AUDIO_WORKLET_RETIREMENT_TIMEOUT_MICROSECONDS =
-    millisecondsToMicroseconds(500);
-export const SHARED_AUDIO_CONTEXT_RELEASE_TIMEOUT_MICROSECONDS =
-    millisecondsToMicroseconds(250);
+export const DEFAULT_BROWSER_AUDIO_OPERATION_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(5_000);
+export const AUDIO_WORKLET_RETIREMENT_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(500);
+export const SHARED_AUDIO_CONTEXT_RELEASE_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(250);
 
-const MAXIMUM_BROWSER_AUDIO_OPERATION_TIMEOUT_MICROSECONDS =
-    millisecondsToMicroseconds(60_000);
+const MAXIMUM_BROWSER_AUDIO_OPERATION_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(60_000);
 
 function requireAudioOperationTimeout(timeoutMicroseconds: Microseconds): Microseconds {
     requireMicroseconds(timeoutMicroseconds, 'Browser audio operation timeout');
-    if (
-        timeoutMicroseconds <= 0
-        || timeoutMicroseconds > MAXIMUM_BROWSER_AUDIO_OPERATION_TIMEOUT_MICROSECONDS
-    ) {
-        throw new RangeError(
-            'Browser audio operation timeout must be from 1 through 60000000 microseconds'
-        );
+    if (timeoutMicroseconds <= 0 || timeoutMicroseconds > MAXIMUM_BROWSER_AUDIO_OPERATION_TIMEOUT_MICROSECONDS) {
+        throw new RangeError('Browser audio operation timeout must be from 1 through 60000000 microseconds');
     }
     return timeoutMicroseconds;
 }

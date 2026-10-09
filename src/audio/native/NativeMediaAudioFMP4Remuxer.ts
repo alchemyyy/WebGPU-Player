@@ -14,17 +14,14 @@ import {
     secondsToMicroseconds,
     type Microseconds
 } from '../../MediaTime';
-import {
-    type OwnedNativeMediaAudioSegment
-} from './OwnedNativeMediaAudioBackend';
+import { type OwnedNativeMediaAudioSegment } from './OwnedNativeMediaAudioBackend';
 import {
     MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH,
     MAXIMUM_NATIVE_AUDIO_SEGMENT_DURATION_MICROSECONDS
 } from './NativeMediaAudioLimits';
 import { addMicroseconds, requireMicroseconds } from '../../TimeMath';
 
-export const DEFAULT_NATIVE_AUDIO_FRAGMENT_DURATION_MICROSECONDS =
-    millisecondsToMicroseconds(500);
+export const DEFAULT_NATIVE_AUDIO_FRAGMENT_DURATION_MICROSECONDS = millisecondsToMicroseconds(500);
 export const MAXIMUM_NATIVE_AUDIO_ENCODED_PACKET_BYTE_LENGTH = 1_024 * 1_024;
 export const MAXIMUM_PENDING_NATIVE_AUDIO_REMUX_SEGMENTS = 2;
 
@@ -108,8 +105,7 @@ function requireConfiguration(
         throw new TypeError('Native audio decoder configuration layout does not match the remux route');
     }
     const fragmentDurationMicroseconds = requirePositiveMicroseconds(
-        configuration.fragmentDurationMicroseconds
-            ?? DEFAULT_NATIVE_AUDIO_FRAGMENT_DURATION_MICROSECONDS,
+        configuration.fragmentDurationMicroseconds ?? DEFAULT_NATIVE_AUDIO_FRAGMENT_DURATION_MICROSECONDS,
         'Native audio fragment duration'
     );
     if (fragmentDurationMicroseconds > MAXIMUM_NATIVE_AUDIO_SEGMENT_DURATION_MICROSECONDS) {
@@ -118,7 +114,7 @@ function requireConfiguration(
     return { ...configuration, fragmentDurationMicroseconds };
 }
 
-/** Repackages one exact compressed audio track into bounded fragmented MP4. */
+/** Repackages one compressed audio track into bounded fragmented MP4. */
 export default class NativeMediaAudioFMP4Remuxer {
     private readonly audioSource: EncodedAudioPacketSource;
     private canceled = false;
@@ -143,9 +139,7 @@ export default class NativeMediaAudioFMP4Remuxer {
         const configuration = requireConfiguration(configurationValue);
         const format = new Mp4OutputFormat({
             fastStart: 'fragmented',
-            minimumFragmentDuration: microsecondsToSeconds(
-                configuration.fragmentDurationMicroseconds
-            ),
+            minimumFragmentDuration: microsecondsToSeconds(configuration.fragmentDurationMicroseconds),
             onFtyp: (data: Uint8Array): void => {
                 this.fileTypeBox = data.slice();
                 this.tryCreateInitializationSegment();
@@ -208,20 +202,15 @@ export default class NativeMediaAudioFMP4Remuxer {
         if (packet.type !== 'key' && packet.type !== 'delta') {
             throw new TypeError('Native audio packet type is invalid');
         }
-        if (packet.data.byteLength <= 0
-            || packet.data.byteLength > MAXIMUM_NATIVE_AUDIO_ENCODED_PACKET_BYTE_LENGTH) {
+        if (packet.data.byteLength <= 0 || packet.data.byteLength > MAXIMUM_NATIVE_AUDIO_ENCODED_PACKET_BYTE_LENGTH) {
             throw new RangeError('Native audio encoded packet byte length is outside bounds');
         }
         if (this.pendingMediaSegments.length >= MAXIMUM_PENDING_NATIVE_AUDIO_REMUX_SEGMENTS) {
             throw new Error('Native audio remux output was not drained');
         }
 
-        const validatedPacketEndTimeMicroseconds = addMicroseconds(
-            packet.timestampMicroseconds,
-            packet.durationMicroseconds
-        );
-        if (this.lastPacketTimeMicroseconds !== null
-            && packet.timestampMicroseconds < this.lastPacketTimeMicroseconds) {
+        const validatedPacketEndTimeMicroseconds = addMicroseconds(packet.timestampMicroseconds, packet.durationMicroseconds);
+        if (this.lastPacketTimeMicroseconds !== null && packet.timestampMicroseconds < this.lastPacketTimeMicroseconds) {
             throw new RangeError('Native audio packet timestamps must not move backward');
         }
 
@@ -232,10 +221,7 @@ export default class NativeMediaAudioFMP4Remuxer {
             microsecondsToSeconds(packet.durationMicroseconds),
             packet.sequenceNumber
         );
-        await this.audioSource.add(
-            encodedPacket,
-            this.encodedPacketCount === 0 ? { decoderConfig: this.decoderConfig } : undefined
-        );
+        await this.audioSource.add(encodedPacket, this.encodedPacketCount === 0 ? { decoderConfig: this.decoderConfig } : undefined);
         this.lastPacketEndTimeMicroseconds = validatedPacketEndTimeMicroseconds;
         this.lastPacketTimeMicroseconds = packet.timestampMicroseconds;
         this.encodedPacketCount += 1;
@@ -253,9 +239,7 @@ export default class NativeMediaAudioFMP4Remuxer {
         }
         await this.output.finalize();
         this.finalized = true;
-        if (this.initializationSegmentByteLength === 0
-            || this.pendingMovieFragment
-            || this.pendingMediaDataBox) {
+        if (this.initializationSegmentByteLength === 0 || this.pendingMovieFragment || this.pendingMediaDataBox) {
             throw new Error('Native audio remuxer emitted an incomplete fragmented MP4 stream');
         }
     }
@@ -319,12 +303,8 @@ export default class NativeMediaAudioFMP4Remuxer {
             return;
         }
         const pendingMovieFragment = this.pendingMovieFragment;
-        const data = concatenateBoxes(
-            pendingMovieFragment.data,
-            this.pendingMediaDataBox
-        );
-        if (pendingMovieFragment.endTimeMicroseconds
-            <= pendingMovieFragment.startTimeMicroseconds) {
+        const data = concatenateBoxes(pendingMovieFragment.data, this.pendingMediaDataBox);
+        if (pendingMovieFragment.endTimeMicroseconds <= pendingMovieFragment.startTimeMicroseconds) {
             throw new RangeError('Native audio fMP4 fragment has an invalid time range');
         }
         if (pendingMovieFragment.endTimeMicroseconds

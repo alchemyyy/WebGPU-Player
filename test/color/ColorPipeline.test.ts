@@ -36,20 +36,16 @@ describe('ColorPipeline', () => {
         const metadata = createPQColorMetadata();
         const maximumCode = 1_023;
 
-        expect(expandYUVRange([ 64 / maximumCode, 512 / maximumCode, 512 / maximumCode ], metadata))
-            .toEqual([ 0, 0, 0 ]);
-        expect(expandYUVRange([ 940 / maximumCode, 64 / maximumCode, 960 / maximumCode ], metadata))
-            .toEqual([ 1, -0.5, 0.5 ]);
-        expect(expandYUVRange([ 0, 512 / maximumCode, 512 / maximumCode ], metadata)[0])
-            .toBeLessThan(0);
+        expect(expandYUVRange([ 64 / maximumCode, 512 / maximumCode, 512 / maximumCode ], metadata)).toEqual([ 0, 0, 0 ]);
+        expect(expandYUVRange([ 940 / maximumCode, 64 / maximumCode, 960 / maximumCode ], metadata)).toEqual([ 1, -0.5, 0.5 ]);
+        expect(expandYUVRange([ 0, 512 / maximumCode, 512 / maximumCode ], metadata)[0]).toBeLessThan(0);
     });
 
     it('uses the exact digital center for full-range chroma', () => {
         const metadata = createPQColorMetadata({ range: 'full' });
         const chromaCenter = 512 / 1_023;
 
-        expect(expandYUVRange([ 0.5, chromaCenter, chromaCenter ], metadata))
-            .toEqual([ 0.5, 0, 0 ]);
+        expect(expandYUVRange([ 0.5, chromaCenter, chromaCenter ], metadata)).toEqual([ 0.5, 0, 0 ]);
     });
 
     it('converts neutral YUV to neutral nonlinear RGB for both matrices', () => {
@@ -77,10 +73,7 @@ describe('ColorPipeline', () => {
         expect(applyPQOETF(100)).toBeCloseTo(0.5080784215, 9);
         expect(applyPQEOTF(applyPQOETF(1_000))).toBeCloseTo(1_000, 7);
 
-        const perceptualColor = convertLinearRGBNitsToIPTPQ(
-            [ 100, 100, 100 ],
-            'bt2020'
-        );
+        const perceptualColor = convertLinearRGBNitsToIPTPQ([ 100, 100, 100 ], 'bt2020');
         const roundTripRGB = convertIPTPQToLinearRGBNits(perceptualColor, 'bt2020');
         expect(perceptualColor[0]).toBeCloseTo(applyPQOETF(100), 6);
         expect(perceptualColor[1]).toBeCloseTo(0, 5);
@@ -102,17 +95,13 @@ describe('ColorPipeline', () => {
         expect(mappedIntensities[3]).toBeCloseTo(0.4475811788, 9);
         expect(mappedIntensities.at(-1)).toBeCloseTo(applyPQOETF(100), 12);
         for (let intensityIndex = 1; intensityIndex < mappedIntensities.length; intensityIndex++) {
-            expect(mappedIntensities[intensityIndex]).toBeGreaterThan(
-                mappedIntensities[intensityIndex - 1]
-            );
+            expect(mappedIntensities[intensityIndex]).toBeGreaterThan(mappedIntensities[intensityIndex - 1]);
         }
     });
 
     it('converts BT.2020 linear primaries into BT.709', () => {
-        expect(convertLinearRGBGamut([ 1, 0, 0 ], 'bt2020', 'bt709'))
-            .toEqual([ 1.660491, -0.12455, -0.018151 ]);
-        expect(convertLinearRGBGamut([ 0.2, 0.3, 0.4 ], 'bt709', 'bt709'))
-            .toEqual([ 0.2, 0.3, 0.4 ]);
+        expect(convertLinearRGBGamut([ 1, 0, 0 ], 'bt2020', 'bt709')).toEqual([ 1.660491, -0.12455, -0.018151 ]);
+        expect(convertLinearRGBGamut([ 0.2, 0.3, 0.4 ], 'bt709', 'bt709')).toEqual([ 0.2, 0.3, 0.4 ]);
     });
 
     it('selects YUV coefficients by matrix, sharing BT.601 between SMPTE 170M and BT.470 BG', () => {
@@ -129,10 +118,8 @@ describe('ColorPipeline', () => {
     });
 
     it('derives luminance from the primaries, with every set summing to unit white', () => {
-        expect(getLuminanceCoefficients('smpte170m'))
-            .toEqual({ blue: 0.086564, green: 0.701060, red: 0.212376 });
-        expect(getLuminanceCoefficients('bt470bg'))
-            .toEqual({ blue: 0.071341, green: 0.706655, red: 0.222004 });
+        expect(getLuminanceCoefficients('smpte170m')).toEqual({ blue: 0.086564, green: 0.701060, red: 0.212376 });
+        expect(getLuminanceCoefficients('bt470bg')).toEqual({ blue: 0.071341, green: 0.706655, red: 0.222004 });
         for (const primaries of EVERY_COLOR_PRIMARIES) {
             const coefficients = getLuminanceCoefficients(primaries);
             expect(coefficients.red + coefficients.green + coefficients.blue).toBeCloseTo(1, 5);
@@ -142,10 +129,8 @@ describe('ColorPipeline', () => {
     it('converts BT.601 linear primaries through the BT.709 gamut tables and keeps white neutral', () => {
         const linearRGB: ColorTriplet = [ 0.2, 0.5, 0.8 ];
 
-        expect(convertLinearRGBGamut([ 1, 0, 0 ], 'smpte170m', 'bt709'))
-            .toEqual([ 0.939542, 0.017772, -0.001622 ]);
-        expect(convertLinearRGBGamut([ 1, 0, 0 ], 'bt470bg', 'bt709'))
-            .toEqual([ 1.044043, 0, 0 ]);
+        expect(convertLinearRGBGamut([ 1, 0, 0 ], 'smpte170m', 'bt709')).toEqual([ 0.939542, 0.017772, -0.001622 ]);
+        expect(convertLinearRGBGamut([ 1, 0, 0 ], 'bt470bg', 'bt709')).toEqual([ 1.044043, 0, 0 ]);
         expect(convertLinearRGBGamut(linearRGB, 'smpte170m', 'bt2020')).toEqual(
             convertLinearRGBGamut(
                 convertLinearRGBGamut(linearRGB, 'smpte170m', 'bt709'),
@@ -180,8 +165,7 @@ describe('ColorPipeline', () => {
             for (let componentIndex = 0; componentIndex < 3; componentIndex++) {
                 // NOTE: The rounded IPT and LMS stage matrices limit every primaries set to about 2e-6 relative error
                 expect(roundTripRGB[componentIndex]).toBeCloseTo(linearRGBNits[componentIndex], 3);
-                expect(perceptualColor[componentIndex])
-                    .toBeCloseTo(bt709PerceptualColor[componentIndex], 5);
+                expect(perceptualColor[componentIndex]).toBeCloseTo(bt709PerceptualColor[componentIndex], 5);
             }
         }
     });

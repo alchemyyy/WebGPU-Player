@@ -156,10 +156,7 @@ function clamp(value: number, minimum: number, maximum: number): number {
     return Math.min(Math.max(value, minimum), maximum);
 }
 
-function mapTriplet(
-    value: ColorTriplet,
-    transform: (component: number) => number
-): ColorTriplet {
+function mapTriplet(value: ColorTriplet, transform: (component: number) => number): ColorTriplet {
     return [ transform(value[0]), transform(value[1]), transform(value[2]) ];
 }
 
@@ -242,9 +239,7 @@ export function getGamutFromBT709Matrix(primaries: ColorPrimaries): ColorMatrix 
 
 function calculateLuminance(linearRGB: ColorTriplet, primaries: ColorPrimaries): number {
     const coefficients = getLuminanceCoefficients(primaries);
-    return (linearRGB[0] * coefficients.red)
-        + (linearRGB[1] * coefficients.green)
-        + (linearRGB[2] * coefficients.blue);
+    return (linearRGB[0] * coefficients.red) + (linearRGB[1] * coefficients.green) + (linearRGB[2] * coefficients.blue);
 }
 
 function applyHLGInverseOETF(encodedValue: number): number {
@@ -256,10 +251,7 @@ function applyHLGInverseOETF(encodedValue: number): number {
     return (Math.exp((clampedValue - HLG_C) / HLG_A) + HLG_B) / 12;
 }
 
-function evaluateToneMapCurve(
-    normalizedLuminance: number,
-    operator: LegacyToneMapOperator
-): number {
+function evaluateToneMapCurve(normalizedLuminance: number, operator: LegacyToneMapOperator): number {
     const nonNegativeLuminance = Math.max(normalizedLuminance, 0);
     switch (operator) {
         case 'aces':
@@ -275,10 +267,7 @@ function evaluateToneMapCurve(
 }
 
 /** Expands normalized digital YUV codes into full-range luma and centered chroma. */
-export function expandYUVRange(
-    encodedYUV: ColorTriplet,
-    metadata: InputColorMetadata
-): ColorTriplet {
+export function expandYUVRange(encodedYUV: ColorTriplet, metadata: InputColorMetadata): ColorTriplet {
     assertValidInputColorMetadata(metadata);
     const maximumCode = (2 ** metadata.bitDepth) - 1;
     const chromaCenterCode = 2 ** (metadata.bitDepth - 1);
@@ -302,19 +291,14 @@ export function expandYUVRange(
 }
 
 /** Converts full-range YUV into nonlinear RGB without clipping legal overshoot. */
-export function convertYUVToEncodedRGB(
-    expandedYUV: ColorTriplet,
-    matrix: YUVMatrix
-): ColorTriplet {
+export function convertYUVToEncodedRGB(expandedYUV: ColorTriplet, matrix: YUVMatrix): ColorTriplet {
     const matrixCoefficients = getYUVMatrixCoefficients(matrix);
     const luma = expandedYUV[0];
     const blueDifference = expandedYUV[1];
     const redDifference = expandedYUV[2];
     const red = luma + (2 * (1 - matrixCoefficients.red) * redDifference);
     const blue = luma + (2 * (1 - matrixCoefficients.blue) * blueDifference);
-    const green = (
-        luma - (matrixCoefficients.red * red) - (matrixCoefficients.blue * blue)
-    ) / matrixCoefficients.green;
+    const green = (luma - (matrixCoefficients.red * red) - (matrixCoefficients.blue * blue)) / matrixCoefficients.green;
     return [ red, green, blue ];
 }
 
@@ -335,8 +319,7 @@ export function applyPQOETF(luminanceNits: number): number {
 
     const normalizedLuminance = clamp(luminanceNits / PQ_PEAK_NITS, 0, 1);
     const poweredLuminance = normalizedLuminance ** PQ_M1;
-    const encodedValue = (PQ_C1 + (PQ_C2 * poweredLuminance))
-        / (1 + (PQ_C3 * poweredLuminance));
+    const encodedValue = (PQ_C1 + (PQ_C2 * poweredLuminance)) / (1 + (PQ_C3 * poweredLuminance));
     return encodedValue ** PQ_M2;
 }
 
@@ -368,30 +351,21 @@ function getIPTLMSToRGBMatrix(primaries: ColorPrimaries): ColorMatrix {
 }
 
 /** Converts absolute linear RGB into libplacebo-compatible IPTPQc4 coordinates. */
-export function convertLinearRGBNitsToIPTPQ(
-    linearRGBNits: ColorTriplet,
-    primaries: ColorPrimaries
-): ColorTriplet {
-    const nonNegativeRGB = mapTriplet(
-        linearRGBNits,
-        (component: number): number => Math.max(component, 0)
-    );
+export function convertLinearRGBNitsToIPTPQ(linearRGBNits: ColorTriplet, primaries: ColorPrimaries): ColorTriplet {
+    const nonNegativeRGB = mapTriplet(linearRGBNits, (component: number): number => Math.max(component, 0));
     const linearLMS = multiplyColorMatrix(getRGBToIPTLMSMatrix(primaries), nonNegativeRGB);
     const encodedLMS = mapTriplet(linearLMS, applyPQOETF);
     return multiplyColorMatrix(IPT_LMS_TO_IPT, encodedLMS);
 }
 
 /** Converts IPTPQc4 coordinates into absolute linear RGB for the selected gamut. */
-export function convertIPTPQToLinearRGBNits(
-    perceptualColor: ColorTriplet,
-    primaries: ColorPrimaries
-): ColorTriplet {
+export function convertIPTPQToLinearRGBNits(perceptualColor: ColorTriplet, primaries: ColorPrimaries): ColorTriplet {
     const encodedLMS = multiplyColorMatrix(IPT_TO_IPT_LMS, perceptualColor);
     const linearLMS = mapTriplet(encodedLMS, applyPQEOTF);
     return multiplyColorMatrix(getIPTLMSToRGBMatrix(primaries), linearLMS);
 }
 
-/** Evaluates libplacebo's static single-pivot spline directly in PQ space. */
+/** Evaluates libplacebo's static single-pivot spline in PQ space. */
 export function evaluateSplineToneMapPQ(
     inputIntensityPQ: number,
     inputPeakNits: number,
@@ -405,8 +379,8 @@ export function evaluateSplineToneMapPQ(
         throw new RangeError('Spline tone-map values must be positive and finite');
     }
 
-    // Match libplacebo's nominal PQ and SDR black points before constructing
-    // the spline. These offsets are significant because the curve is in PQ.
+    // Match libplacebo's nominal PQ and SDR black points before constructing the spline.
+    // These offsets are significant because the curve is in PQ
     const inputMinimum = applyPQOETF(HDR_BLACK_NITS);
     const inputMaximum = applyPQOETF(inputPeakNits);
     const outputMinimum = applyPQOETF(outputPeakNits / SDR_CONTRAST);
@@ -424,35 +398,23 @@ export function evaluateSplineToneMapPQ(
         mix(outputMinimum, outputMaximum, SPLINE_KNEE_MINIMUM),
         mix(outputMinimum, outputMaximum, SPLINE_KNEE_MAXIMUM)
     );
-    const linearSlope = (destinationPivot - outputMinimum)
-        / (sourcePivot - inputMinimum);
+    const linearSlope = (destinationPivot - outputMinimum) / (sourcePivot - inputMinimum);
     const peakRatio = (inputMaximum / outputMaximum) - 1;
-    const slopeRatio = clamp(
-        SPLINE_SLOPE_TUNING * peakRatio,
-        SPLINE_SLOPE_OFFSET,
-        1 + SPLINE_SLOPE_OFFSET
-    );
+    const slopeRatio = clamp(SPLINE_SLOPE_TUNING * peakRatio, SPLINE_SLOPE_OFFSET, 1 + SPLINE_SLOPE_OFFSET);
     const pivotSlope = linearSlope ** ((1 - SPLINE_CONTRAST) * slopeRatio);
 
     const inputMinimumOffset = inputMinimum - sourcePivot;
     const inputMaximumOffset = inputMaximum - sourcePivot;
     const outputMinimumOffset = outputMinimum - destinationPivot;
     const outputMaximumOffset = outputMaximum - destinationPivot;
-    const lowerQuadratic = (
-        outputMinimumOffset - (pivotSlope * inputMinimumOffset)
-    ) / (inputMinimumOffset * inputMinimumOffset);
+    const lowerQuadratic = (outputMinimumOffset - (pivotSlope * inputMinimumOffset)) / (inputMinimumOffset * inputMinimumOffset);
     const upperDenominator = 2 * inputMaximumOffset * inputMaximumOffset;
-    const upperCubic = (
-        (pivotSlope * inputMaximumOffset) - outputMaximumOffset
-    ) / (inputMaximumOffset * upperDenominator);
-    const upperQuadratic = -3 * (
-        (pivotSlope * inputMaximumOffset) - outputMaximumOffset
-    ) / upperDenominator;
+    const upperCubic = ((pivotSlope * inputMaximumOffset) - outputMaximumOffset) / (inputMaximumOffset * upperDenominator);
+    const upperQuadratic = -3 * ((pivotSlope * inputMaximumOffset) - outputMaximumOffset) / upperDenominator;
 
     const inputOffset = clamp(inputIntensityPQ, inputMinimum, inputMaximum) - sourcePivot;
     const mappedOffset = inputOffset > 0 ?
-        (((upperCubic * inputOffset) + upperQuadratic) * inputOffset + pivotSlope)
-            * inputOffset :
+        (((upperCubic * inputOffset) + upperQuadratic) * inputOffset + pivotSlope) * inputOffset :
         ((lowerQuadratic * inputOffset) + pivotSlope) * inputOffset;
     return clamp(mappedOffset + destinationPivot, outputMinimum, outputMaximum);
 }
@@ -470,40 +432,23 @@ export function applySDREOTF(encodedValue: number, referenceWhiteNits: number): 
 }
 
 /** Decodes nonlinear RGB into absolute linear-light RGB in nits. */
-export function decodeEncodedRGBToNits(
-    encodedRGB: ColorTriplet,
-    metadata: InputColorMetadata
-): ColorTriplet {
+export function decodeEncodedRGBToNits(encodedRGB: ColorTriplet, metadata: InputColorMetadata): ColorTriplet {
     assertValidInputColorMetadata(metadata);
     switch (metadata.transfer) {
         case 'pq':
             return mapTriplet(encodedRGB, applyPQEOTF);
         case 'sdr':
-            return mapTriplet(
-                encodedRGB,
-                (component: number): number => applySDREOTF(
-                    component,
-                    metadata.sdrReferenceWhiteNits
-                )
-            );
+            return mapTriplet(encodedRGB, (component: number): number => applySDREOTF(component, metadata.sdrReferenceWhiteNits));
         case 'hlg': {
             const sceneLinearRGB = mapTriplet(encodedRGB, applyHLGInverseOETF);
-            const sceneLuminance = Math.max(
-                calculateLuminance(sceneLinearRGB, metadata.primaries),
-                0
-            );
+            const sceneLuminance = Math.max(calculateLuminance(sceneLinearRGB, metadata.primaries), 0);
             if (sceneLuminance === 0) {
                 return [ 0, 0, 0 ];
             }
 
-            const systemGamma = 1.2
-                + (0.42 * Math.log10(metadata.nominalPeakNits / 1_000));
-            const luminanceScale = metadata.nominalPeakNits
-                * (sceneLuminance ** (systemGamma - 1));
-            return mapTriplet(
-                sceneLinearRGB,
-                (component: number): number => component * luminanceScale
-            );
+            const systemGamma = 1.2 + (0.42 * Math.log10(metadata.nominalPeakNits / 1_000));
+            const luminanceScale = metadata.nominalPeakNits * (sceneLuminance ** (systemGamma - 1));
+            return mapTriplet(sceneLinearRGB, (component: number): number => component * luminanceScale);
         }
     }
 }
@@ -548,15 +493,9 @@ function calculateComponentGamutScale(
     return 1;
 }
 
-function perceptuallyMapIPTPQToBT709(
-    perceptualColor: ColorTriplet,
-    settings: ToneMappingSettings
-): ColorTriplet {
+function perceptuallyMapIPTPQToBT709(perceptualColor: ColorTriplet, settings: ToneMappingSettings): ColorTriplet {
     const targetRGB = convertIPTPQToLinearRGBNits(perceptualColor, 'bt709');
-    const neutralRGB = convertIPTPQToLinearRGBNits(
-        [ perceptualColor[0], 0, 0 ],
-        'bt709'
-    );
+    const neutralRGB = convertIPTPQToLinearRGBNits([ perceptualColor[0], 0, 0 ], 'bt709');
     let hardChromaScale = 1;
     for (let componentIndex = 0; componentIndex < 3; componentIndex++) {
         hardChromaScale = Math.min(
@@ -572,29 +511,11 @@ function perceptuallyMapIPTPQToBT709(
 
     // Preserve in-gamut colors and progressively compress extreme chroma
     const outOfGamutAmount = 1 - hardChromaScale;
-    const perceptualChromaScale = hardChromaScale * (
-        1 - (
-            settings.desaturationStrength
-            * outOfGamutAmount
-            * outOfGamutAmount
-        )
-    );
+    const perceptualChromaScale = hardChromaScale * (1 - (settings.desaturationStrength * outOfGamutAmount * outOfGamutAmount));
     return [
-        clamp(
-            neutralRGB[0] + ((targetRGB[0] - neutralRGB[0]) * perceptualChromaScale),
-            0,
-            settings.outputPeakNits
-        ),
-        clamp(
-            neutralRGB[1] + ((targetRGB[1] - neutralRGB[1]) * perceptualChromaScale),
-            0,
-            settings.outputPeakNits
-        ),
-        clamp(
-            neutralRGB[2] + ((targetRGB[2] - neutralRGB[2]) * perceptualChromaScale),
-            0,
-            settings.outputPeakNits
-        )
+        clamp(neutralRGB[0] + ((targetRGB[0] - neutralRGB[0]) * perceptualChromaScale), 0, settings.outputPeakNits),
+        clamp(neutralRGB[1] + ((targetRGB[1] - neutralRGB[1]) * perceptualChromaScale), 0, settings.outputPeakNits),
+        clamp(neutralRGB[2] + ((targetRGB[2] - neutralRGB[2]) * perceptualChromaScale), 0, settings.outputPeakNits)
     ];
 }
 
@@ -604,27 +525,17 @@ function toneMapSplinePerceptualToSDR(
     settings: ToneMappingSettings
 ): ColorTriplet {
     const exposureScale = 2 ** settings.exposure;
-    const exposedRGB = mapTriplet(
-        linearInputNits,
-        (component: number): number => Math.max(component * exposureScale, 0)
-    );
+    const exposedRGB = mapTriplet(linearInputNits, (component: number): number => Math.max(component * exposureScale, 0));
     const sourceIPT = convertLinearRGBNitsToIPTPQ(exposedRGB, sourcePrimaries);
     const originalIntensity = sourceIPT[0];
-    const mappedIntensity = evaluateSplineToneMapPQ(
-        originalIntensity,
-        settings.inputPeakNits,
-        settings.outputPeakNits
-    );
+    const mappedIntensity = evaluateSplineToneMapPQ(originalIntensity, settings.inputPeakNits, settings.outputPeakNits);
     if (originalIntensity <= Number.EPSILON || mappedIntensity <= Number.EPSILON) {
         return [ 0, 0, 0 ];
     }
 
     const originalHull = Math.max(calculateIPTChromaHull(originalIntensity), Number.EPSILON);
     const mappedHull = calculateIPTChromaHull(mappedIntensity);
-    const chromaScale = clamp(Math.min(
-        originalIntensity / mappedIntensity,
-        mappedHull / originalHull
-    ), 0, 1);
+    const chromaScale = clamp(Math.min(originalIntensity / mappedIntensity, mappedHull / originalHull), 0, 1);
     return perceptuallyMapIPTPQToBT709([
         mappedIntensity,
         sourceIPT[1] * chromaScale,
@@ -633,10 +544,7 @@ function toneMapSplinePerceptualToSDR(
 }
 
 /** Compresses absolute BT.709 linear light into the configured SDR luminance range. */
-export function toneMapToSDR(
-    linearBT709Nits: ColorTriplet,
-    settings: ToneMappingSettings
-): ColorTriplet {
+export function toneMapToSDR(linearBT709Nits: ColorTriplet, settings: ToneMappingSettings): ColorTriplet {
     const temporarySettings: HDRToSDRRenderSettings = {
         display: {
             brightness: 0,
@@ -655,39 +563,19 @@ export function toneMapToSDR(
     }
 
     const exposureScale = 2 ** settings.exposure;
-    const exposedRGB = mapTriplet(
-        linearBT709Nits,
-        (component: number): number => Math.max(component * exposureScale, 0)
-    );
+    const exposedRGB = mapTriplet(linearBT709Nits, (component: number): number => Math.max(component * exposureScale, 0));
     const inputLuminance = calculateLuminance(exposedRGB, 'bt709');
     if (inputLuminance <= 0) {
         return [ 0, 0, 0 ];
     }
 
-    const peakCurveValue = evaluateToneMapCurve(
-        settings.inputPeakNits / settings.paperWhiteNits,
-        settings.operator
-    );
-    const inputCurveValue = evaluateToneMapCurve(
-        inputLuminance / settings.paperWhiteNits,
-        settings.operator
-    );
-    const mappedLuminance = settings.outputPeakNits
-        * clamp(inputCurveValue / peakCurveValue, 0, 1);
+    const peakCurveValue = evaluateToneMapCurve(settings.inputPeakNits / settings.paperWhiteNits, settings.operator);
+    const inputCurveValue = evaluateToneMapCurve(inputLuminance / settings.paperWhiteNits, settings.operator);
+    const mappedLuminance = settings.outputPeakNits * clamp(inputCurveValue / peakCurveValue, 0, 1);
     const luminanceScale = mappedLuminance / inputLuminance;
-    const mappedRGB = mapTriplet(
-        exposedRGB,
-        (component: number): number => component * luminanceScale
-    );
-    const highlightRange = Math.max(
-        settings.inputPeakNits - settings.paperWhiteNits,
-        Number.EPSILON
-    );
-    const highlightAmount = settings.desaturationStrength * clamp(
-        (inputLuminance - settings.paperWhiteNits) / highlightRange,
-        0,
-        1
-    );
+    const mappedRGB = mapTriplet(exposedRGB, (component: number): number => component * luminanceScale);
+    const highlightRange = Math.max(settings.inputPeakNits - settings.paperWhiteNits, Number.EPSILON);
+    const highlightAmount = settings.desaturationStrength * clamp((inputLuminance - settings.paperWhiteNits) / highlightRange, 0, 1);
     return mapTriplet(mappedRGB, (component: number): number => clamp(
         component + ((mappedLuminance - component) * highlightAmount),
         0,
@@ -695,21 +583,10 @@ export function toneMapToSDR(
     ));
 }
 
-function applyDisplayControls(
-    encodedRGB: ColorTriplet,
-    settings: DisplaySettings
-): ColorTriplet {
+function applyDisplayControls(encodedRGB: ColorTriplet, settings: DisplaySettings): ColorTriplet {
     const luminance = calculateLuminance(encodedRGB, 'bt709');
-    const saturatedRGB = mapTriplet(
-        encodedRGB,
-        (component: number): number => luminance
-            + ((component - luminance) * settings.saturation)
-    );
-    return mapTriplet(saturatedRGB, (component: number): number => clamp(
-        ((component - 0.5) * settings.contrast) + 0.5 + settings.brightness,
-        0,
-        1
-    ));
+    const saturatedRGB = mapTriplet(encodedRGB, (component: number): number => luminance + ((component - luminance) * settings.saturation));
+    return mapTriplet(saturatedRGB, (component: number): number => clamp(((component - 0.5) * settings.contrast) + 0.5 + settings.brightness, 0, 1));
 }
 
 /** Encodes absolute linear-light RGB for an SDR swap-chain target. */
@@ -728,11 +605,7 @@ export function encodeSDROutput(
     }
 
     return mapTriplet(linearRGBNits, (component: number): number => {
-        const linearValue = clamp(
-            (component - outputMinimumNits) / (outputPeakNits - outputMinimumNits),
-            0,
-            1
-        );
+        const linearValue = clamp((component - outputMinimumNits) / (outputPeakNits - outputMinimumNits), 0, 1);
         switch (transfer) {
             case 'bt709':
                 return linearValue < 0.018 ?
@@ -760,15 +633,8 @@ export function processEncodedRGB(
 
     const decodedRGB = decodeEncodedRGBToNits(encodedRGB, metadata);
     const toneMappedRGB = settings.toneMapping.operator === 'spline' ?
-        toneMapSplinePerceptualToSDR(
-            decodedRGB,
-            metadata.primaries,
-            settings.toneMapping
-        ) :
-        toneMapToSDR(
-            convertLinearRGBGamut(decodedRGB, metadata.primaries, 'bt709'),
-            settings.toneMapping
-        );
+        toneMapSplinePerceptualToSDR(decodedRGB, metadata.primaries, settings.toneMapping) :
+        toneMapToSDR(convertLinearRGBGamut(decodedRGB, metadata.primaries, 'bt709'), settings.toneMapping);
     const encodedOutputRGB = encodeSDROutput(
         toneMappedRGB,
         settings.toneMapping.outputPeakNits,

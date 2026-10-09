@@ -17,10 +17,7 @@ const BASE_INPUT: TexturePresentationGeometryInput = {
     targetPixelWidth: 1_000
 };
 
-function expectGeometry(
-    actual: TexturePresentationGeometry,
-    expected: TexturePresentationGeometry
-): void {
+function expectGeometry(actual: TexturePresentationGeometry, expected: TexturePresentationGeometry): void {
     for (const propertyName of Object.keys(expected) as Array<keyof TexturePresentationGeometry>) {
         expect(actual[propertyName]).toBeCloseTo(expected[propertyName], 8);
     }

@@ -91,7 +91,6 @@ export function resolveEngineAssetURL(path: EngineAssetPath): string {
     return addCacheKey(new URL(path, assetBaseURL), assetConfiguration.cacheKey);
 }
 
-/** Starts a prebuilt engine worker. */
 export function createEngineWorker(path: EngineWorkerPath): Worker {
     return new Worker(resolveEngineAssetURL(path));
 }

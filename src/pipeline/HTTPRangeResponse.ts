@@ -147,10 +147,7 @@ function parseByteContentLength(value: string | null): number | null {
     return contentLength !== null && contentLength > 0 ? contentLength : null;
 }
 
-function isMatchingByteRange(
-    requestedRange: RequestedByteRange,
-    contentRange: ByteContentRange
-): boolean {
+function isMatchingByteRange(requestedRange: RequestedByteRange, contentRange: ByteContentRange): boolean {
     switch (requestedRange.kind) {
         case 'bounded': {
             if (contentRange.firstByte !== requestedRange.firstByte) {
@@ -165,50 +162,33 @@ function isMatchingByteRange(
             if (contentRange.firstByte !== requestedRange.firstByte) {
                 return false;
             }
-            return contentRange.totalLength === null
-                || contentRange.lastByte === contentRange.totalLength - 1;
+            return contentRange.totalLength === null || contentRange.lastByte === contentRange.totalLength - 1;
         case 'suffix': {
             if (contentRange.totalLength === null) {
                 return false;
             }
-            const expectedFirstByte = Math.max(
-                0,
-                contentRange.totalLength - requestedRange.length
-            );
-            return contentRange.firstByte === expectedFirstByte
-                && contentRange.lastByte === contentRange.totalLength - 1;
+            const expectedFirstByte = Math.max(0, contentRange.totalLength - requestedRange.length);
+            return contentRange.firstByte === expectedFirstByte && contentRange.lastByte === contentRange.totalLength - 1;
         }
     }
 }
 
-function isSafeCORSByteRangeResponse(
-    requestedRange: RequestedByteRange,
-    response: Response
-): boolean {
-    // Content-Range is not CORS-safelisted. Jellyfin returns a valid 206 but
-    // does not expose that header to a cross-origin web client. In that exact
-    // case, status 206 plus the safelisted Content-Length is the browser-visible
-    // proof that the server did not return an unbounded 200 response.
-    if (
-        response.status !== 206
-        || response.type !== 'cors'
-        || !isJellyfinMediaStreamResponse(response.url)
-    ) {
+function isSafeCORSByteRangeResponse(requestedRange: RequestedByteRange, response: Response): boolean {
+    // Content-Range is not CORS-safelisted.
+    // Jellyfin returns a valid 206 but does not expose that header to a cross-origin web client.
+    // In that case, status 206 plus the safelisted Content-Length is the browser-visible proof that the server did not return an unbounded 200 response
+    if (response.status !== 206 || response.type !== 'cors' || !isJellyfinMediaStreamResponse(response.url)) {
         return false;
     }
 
-    const contentLength = parseByteContentLength(
-        response.headers.get('Content-Length')
-    );
+    const contentLength = parseByteContentLength(response.headers.get('Content-Length'));
     if (contentLength === null) {
         return false;
     }
 
     switch (requestedRange.kind) {
         case 'bounded': {
-            const maximumLength = requestedRange.lastByte
-                - requestedRange.firstByte
-                + 1;
+            const maximumLength = requestedRange.lastByte - requestedRange.firstByte + 1;
             return contentLength <= maximumLength;
         }
         case 'open-ended':
@@ -236,24 +216,18 @@ function rejectRangeResponse(response: Response): never {
 }
 
 /** Requires a partial response to describe exactly the requested byte interval. */
-export function requireValidByteRangeResponse(
-    requestedRangeHeader: string | null,
-    response: Response
-): void {
+export function requireValidByteRangeResponse(requestedRangeHeader: string | null, response: Response): void {
     if (requestedRangeHeader === null) {
         return;
     }
 
     const requestedRange = parseRequestedByteRange(requestedRangeHeader);
-    const contentRange = response.status === 206 ?
-        parseByteContentRange(response.headers.get('Content-Range')) :
-        null;
+    const contentRange = response.status === 206 ? parseByteContentRange(response.headers.get('Content-Range')) : null;
     if (requestedRange) {
         if (contentRange && isMatchingByteRange(requestedRange, contentRange)) {
             return;
         }
-        if (!response.headers.has('Content-Range')
-            && isSafeCORSByteRangeResponse(requestedRange, response)) {
+        if (!response.headers.has('Content-Range') && isSafeCORSByteRangeResponse(requestedRange, response)) {
             return;
         }
     }

@@ -54,10 +54,7 @@ function isRBSPTrailingBits(data: Uint8Array, offset: number): boolean {
     return true;
 }
 
-function readExtendedSEIValue(
-    data: Uint8Array,
-    startOffset: number
-): { nextOffset: number, value: number } {
+function readExtendedSEIValue(data: Uint8Array, startOffset: number): { nextOffset: number, value: number } {
     let offset = startOffset;
     let value = 0;
     while (offset < data.byteLength && data[offset] === 0xFF) {
@@ -106,48 +103,39 @@ function parseSEINALUnit(nalUnit: HEVCNALUnit): HEVCSEIMessage[] {
 }
 
 /**
- * Extracts bounded prefix and suffix SEI messages from one HEVC access unit. Only base-layer SEI NAL units are
- * read: SEI with nuh_layer_id above zero describes another layer, such as an MV-HEVC second view.
+ * Extracts bounded prefix and suffix SEI messages from one HEVC access unit.
+ * Only base-layer SEI NAL units are read: SEI with nuh_layer_id above zero describes another layer, such as an MV-HEVC second view.
  */
-export function parseHEVCSEIMessages(
-    accessUnit: Uint8Array,
-    format: HEVCNALFormat
-): HEVCSEIMessage[] {
+export function parseHEVCSEIMessages(accessUnit: Uint8Array, format: HEVCNALFormat): HEVCSEIMessage[] {
     const messages: HEVCSEIMessage[] = [];
     const nalUnits = parseHEVCNALUnits(accessUnit, format);
     for (const nalUnit of nalUnits) {
         if (nalUnit.layerID !== HEVC_BASE_LAYER_ID) {
             continue;
         }
-        if (nalUnit.type === HEVC_PREFIX_SEI_NAL_UNIT_TYPE
-            || nalUnit.type === HEVC_SUFFIX_SEI_NAL_UNIT_TYPE) {
-            const nalUnitMessages = parseSEINALUnit(nalUnit);
-            if (messages.length + nalUnitMessages.length
-                > MAXIMUM_HEVC_SEI_MESSAGE_COUNT) {
-                throw new TypeError('The HEVC SEI message count exceeds its bound');
-            }
-            messages.push(...nalUnitMessages);
+        if (nalUnit.type !== HEVC_PREFIX_SEI_NAL_UNIT_TYPE && nalUnit.type !== HEVC_SUFFIX_SEI_NAL_UNIT_TYPE) {
+            continue;
         }
+        const nalUnitMessages = parseSEINALUnit(nalUnit);
+        if (messages.length + nalUnitMessages.length > MAXIMUM_HEVC_SEI_MESSAGE_COUNT) {
+            throw new TypeError('The HEVC SEI message count exceeds its bound');
+        }
+        messages.push(...nalUnitMessages);
     }
     return messages;
 }
 
-/**
- * Returns the preferred_transfer_characteristics of an access unit's alternative transfer characteristics SEI.
- * Returns null when the access unit carries none or names the unspecified value 2.
- * Throws on a malformed SEI, an empty payload, or two messages that name different transfers.
- */
-/** H.273 names transfer characteristics 1 and 4 through 18; 0 and 3 are reserved, 2 is unspecified. */
 function isNamedTransferCharacteristics(value: number): boolean {
     return value === BT709_TRANSFER_CHARACTERISTICS
-        || (value >= FIRST_NAMED_TRANSFER_CHARACTERISTICS_AFTER_RESERVED
-            && value <= LAST_NAMED_TRANSFER_CHARACTERISTICS);
+        || (value >= FIRST_NAMED_TRANSFER_CHARACTERISTICS_AFTER_RESERVED && value <= LAST_NAMED_TRANSFER_CHARACTERISTICS);
 }
 
-export function findHEVCPreferredTransferCharacteristics(
-    accessUnit: Uint8Array,
-    format: HEVCNALFormat
-): number | null {
+/**
+ * Returns the preferred_transfer_characteristics of an access unit's alternative transfer characteristics SEI.
+ * Returns null when the access unit carries none, or only unspecified, reserved, or unnamed values.
+ * Throws on a malformed SEI, an empty payload, or two messages that name different transfers.
+ */
+export function findHEVCPreferredTransferCharacteristics(accessUnit: Uint8Array, format: HEVCNALFormat): number | null {
     let preferredTransferCharacteristics: number | null = null;
     for (const message of parseHEVCSEIMessages(accessUnit, format)) {
         // Payload type 147 is reserved in suffix SEI
@@ -162,13 +150,8 @@ export function findHEVCPreferredTransferCharacteristics(
         if (!isNamedTransferCharacteristics(transferCharacteristics)) {
             continue;
         }
-        if (
-            preferredTransferCharacteristics !== null
-            && preferredTransferCharacteristics !== transferCharacteristics
-        ) {
-            throw new TypeError(
-                'The HEVC access unit contains conflicting alternative transfer characteristics'
-            );
+        if (preferredTransferCharacteristics !== null && preferredTransferCharacteristics !== transferCharacteristics) {
+            throw new TypeError('The HEVC access unit contains conflicting alternative transfer characteristics');
         }
         preferredTransferCharacteristics = transferCharacteristics;
     }

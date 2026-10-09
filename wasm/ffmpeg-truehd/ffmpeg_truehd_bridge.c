@@ -1,5 +1,5 @@
 /*
- * Focused FFmpeg TrueHD/MLP decoder bridge for the WebGPU player engine.
+ * FFmpeg TrueHD/MLP decoder bridge for the WebGPU player engine.
  */
 
 #include <emscripten.h>

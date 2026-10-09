@@ -15,10 +15,7 @@ function isPositiveSafeInteger(value: number): boolean {
     return Number.isSafeInteger(value) && value > 0;
 }
 
-function geometriesMatch(
-    firstGeometry: RawVideoFrameGeometry,
-    secondGeometry: RawVideoFrameGeometry
-): boolean {
+function geometriesMatch(firstGeometry: RawVideoFrameGeometry, secondGeometry: RawVideoFrameGeometry): boolean {
     return firstGeometry.codedHeight === secondGeometry.codedHeight
         && firstGeometry.codedWidth === secondGeometry.codedWidth
         && firstGeometry.displayHeight === secondGeometry.displayHeight
@@ -40,8 +37,7 @@ export function exceedsNegotiatedCodedSize(
 }
 
 /**
- * Accepts decoder padding while locking the first actual decoded geometry for
- * the remainder of a playback generation.
+ * Accepts decoder padding while locking the first decoded geometry for the remainder of a playback generation.
  */
 export function requireConsistentDecodedVideoGeometry(
     candidateGeometry: RawVideoFrameGeometry,
@@ -66,36 +62,21 @@ export function requireConsistentDecodedVideoGeometry(
         throw new DecodedVideoGeometryError('Decoded frame geometry is invalid');
     }
     if (
-        Math.abs(candidateGeometry.displayWidth - selectedTrackGeometry.displayWidth)
-            > MAXIMUM_DECODER_CODED_PADDING
-        || Math.abs(candidateGeometry.displayHeight - selectedTrackGeometry.displayHeight)
-            > MAXIMUM_DECODER_CODED_PADDING
+        Math.abs(candidateGeometry.displayWidth - selectedTrackGeometry.displayWidth) > MAXIMUM_DECODER_CODED_PADDING
+        || Math.abs(candidateGeometry.displayHeight - selectedTrackGeometry.displayHeight) > MAXIMUM_DECODER_CODED_PADDING
     ) {
-        throw new DecodedVideoGeometryError(
-            'Decoded frame display geometry exceeds the selected video track tolerance'
-        );
+        throw new DecodedVideoGeometryError('Decoded frame display geometry exceeds the selected video track tolerance');
     }
     if (
-        exceedsNegotiatedCodedSize(
-            selectedTrackGeometry.codedWidth,
-            selectedTrackGeometry.codedHeight,
-            maximumCodedWidth,
-            maximumCodedHeight
-        )
-        || candidateGeometry.codedWidth - selectedTrackGeometry.codedWidth
-            > MAXIMUM_DECODER_CODED_PADDING
-        || candidateGeometry.codedHeight - selectedTrackGeometry.codedHeight
-            > MAXIMUM_DECODER_CODED_PADDING
+        exceedsNegotiatedCodedSize(selectedTrackGeometry.codedWidth, selectedTrackGeometry.codedHeight, maximumCodedWidth, maximumCodedHeight)
+        || candidateGeometry.codedWidth - selectedTrackGeometry.codedWidth > MAXIMUM_DECODER_CODED_PADDING
+        || candidateGeometry.codedHeight - selectedTrackGeometry.codedHeight > MAXIMUM_DECODER_CODED_PADDING
     ) {
-        throw new DecodedVideoGeometryError(
-            'Decoded frame coded geometry exceeds its negotiated decode route'
-        );
+        throw new DecodedVideoGeometryError('Decoded frame coded geometry exceeds its negotiated decode route');
     }
     if (lockedGeometry !== null) {
         if (!geometriesMatch(candidateGeometry, lockedGeometry)) {
-            throw new DecodedVideoGeometryError(
-                'Decoded frame geometry changed after the first decoded frame'
-            );
+            throw new DecodedVideoGeometryError('Decoded frame geometry changed after the first decoded frame');
         }
         return lockedGeometry;
     }

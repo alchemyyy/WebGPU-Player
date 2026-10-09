@@ -46,9 +46,7 @@ def resolve_MKVToolNix_tool(tool_name: str, configured_directory: str | None) ->
         candidate_directories.append(configured_directory)
     program_files_directory = os.environ.get("ProgramFiles")
     if sys.platform == "win32" and program_files_directory:
-        candidate_directories.append(
-            os.path.join(program_files_directory, MKVTOOLNIX_PROGRAM_DIRECTORY_NAME)
-        )
+        candidate_directories.append(os.path.join(program_files_directory, MKVTOOLNIX_PROGRAM_DIRECTORY_NAME))
     for candidate_directory in candidate_directories:
         # Normalized, so the command names a canonical path
         candidate_path = os.path.normpath(os.path.join(candidate_directory, executable_name))

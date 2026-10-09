@@ -21,10 +21,7 @@ export type StaticHDRMetadataScanResult = {
     status: StaticHDRMetadataScanStatus
 };
 
-function isNullableLuminance(
-    value: unknown,
-    allowZero: boolean
-): value is number | null {
+function isNullableLuminance(value: unknown, allowZero: boolean): value is number | null {
     return value === null || (
         typeof value === 'number'
         && Number.isFinite(value)
@@ -48,14 +45,11 @@ export function isStaticHDRMetadata(value: unknown): value is StaticHDRMetadata 
     }
     return metadata.masteringDisplayMaximumLuminanceNits === null
         || metadata.masteringDisplayMinimumLuminanceNits === null
-        || metadata.masteringDisplayMinimumLuminanceNits
-            < metadata.masteringDisplayMaximumLuminanceNits;
+        || metadata.masteringDisplayMinimumLuminanceNits < metadata.masteringDisplayMaximumLuminanceNits;
 }
 
 /** Validates the bounded startup scan result received across a worker boundary. */
-export function isStaticHDRMetadataScanResult(
-    value: unknown
-): value is StaticHDRMetadataScanResult {
+export function isStaticHDRMetadataScanResult(value: unknown): value is StaticHDRMetadataScanResult {
     if (!value || typeof value !== 'object') {
         return false;
     }
@@ -69,29 +63,23 @@ export function isStaticHDRMetadataScanResult(
     switch (result.status) {
         case 'valid':
             return isStaticHDRMetadata(result.metadata)
-                && Object.values(result.metadata).some((luminanceNits: number | null): boolean => (
-                    luminanceNits !== null
-                ))
+                && Object.values(result.metadata).some((luminanceNits: number | null): boolean => luminanceNits !== null)
                 && Number.isSafeInteger(result.firstMetadataAccessUnitIndex)
                 && Number(result.firstMetadataAccessUnitIndex) >= 0
                 && Number(result.firstMetadataAccessUnitIndex) < Number(result.accessUnitCount);
         case 'absent':
         case 'conflicting':
         case 'malformed':
-            return result.metadata === null
-                && result.firstMetadataAccessUnitIndex === null;
+            return result.metadata === null && result.firstMetadataAccessUnitIndex === null;
         default:
             return false;
     }
 }
 
 /** Chooses the static source peak used by the bounded SDR tone-mapping curve. */
-export function getStaticHDRToneMappingPeakNits(
-    metadata: StaticHDRMetadata
-): number | null {
+export function getStaticHDRToneMappingPeakNits(metadata: StaticHDRMetadata): number | null {
     if (!isStaticHDRMetadata(metadata)) {
         throw new TypeError('Static HDR metadata is invalid');
     }
-    return metadata.masteringDisplayMaximumLuminanceNits
-        ?? metadata.maximumContentLightLevelNits;
+    return metadata.masteringDisplayMaximumLuminanceNits ?? metadata.maximumContentLightLevelNits;
 }

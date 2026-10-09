@@ -16,16 +16,7 @@ type AudioNormalizationPlaybackOptions = {
 const DECIBELS_PER_POWER_OF_TEN = 20;
 const UNITY_GAIN = 1;
 
-function getPlaybackOptions(value: unknown): AudioNormalizationPlaybackOptions | null {
-    return value !== null && typeof value === 'object' ?
-        value as AudioNormalizationPlaybackOptions :
-        null;
-}
-
-function getSelectedGainDecibels(
-    options: AudioNormalizationPlaybackOptions,
-    mode: AudioNormalizationMode
-): unknown {
+function getSelectedGainDecibels(options: AudioNormalizationPlaybackOptions, mode: AudioNormalizationMode): unknown {
     const trackGain = options.item?.NormalizationGain;
     const albumGain = options.mediaSource?.albumNormalizationGain;
     switch (mode) {
@@ -43,16 +34,12 @@ function isAudioNormalizationMode(value: unknown): value is AudioNormalizationMo
 }
 
 /** Resolves Jellyfin's selected decibel gain metadata into a linear multiplier. */
-export function getAudioNormalizationLinearGain(
-    playbackOptions: unknown,
-    requestedMode: unknown
-): number {
-    const options = getPlaybackOptions(playbackOptions);
-    if (!options || !isAudioNormalizationMode(requestedMode) || requestedMode === 'Off') {
+export function getAudioNormalizationLinearGain(playbackOptions: unknown, requestedMode: unknown): number {
+    if (playbackOptions === null || typeof playbackOptions !== 'object' || !isAudioNormalizationMode(requestedMode) || requestedMode === 'Off') {
         return UNITY_GAIN;
     }
 
-    const gainDecibels = getSelectedGainDecibels(options, requestedMode);
+    const gainDecibels = getSelectedGainDecibels(playbackOptions as AudioNormalizationPlaybackOptions, requestedMode);
     if (typeof gainDecibels !== 'number' || !Number.isFinite(gainDecibels)) {
         return UNITY_GAIN;
     }

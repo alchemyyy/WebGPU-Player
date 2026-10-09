@@ -25,17 +25,12 @@ export default class HEVCDynamicHDRMetadataQueue {
     public processPacket(packet: EncodedPacket): boolean {
         // Only base-layer pictures are decoded, as the Dolby Vision splitter drops other layers
         const hasBaseLayerVCL = parseHEVCNALUnits(packet.data, this.inputFormat).some(
-            (nalUnit: HEVCNALUnit): boolean => (
-                nalUnit.layerID === HEVC_BASE_LAYER_ID && nalUnit.type <= 31
-            )
+            (nalUnit: HEVCNALUnit): boolean => nalUnit.layerID === HEVC_BASE_LAYER_ID && nalUnit.type <= 31
         );
         if (!hasBaseLayerVCL) {
             return false;
         }
-        const timestampMicroseconds = requireMicroseconds(
-            packet.microsecondTimestamp,
-            'Encoded HEVC dynamic HDR packet timestamp'
-        );
+        const timestampMicroseconds = requireMicroseconds(packet.microsecondTimestamp, 'Encoded HEVC dynamic HDR packet timestamp');
         if (this.pendingFrameCount >= MAXIMUM_PENDING_DYNAMIC_HDR_FRAME_COUNT) {
             throw new Error('The dynamic HDR metadata frame window exceeded its bound');
         }
@@ -48,12 +43,9 @@ export default class HEVCDynamicHDRMetadataQueue {
         return true;
     }
 
-    /** Takes the unique dynamic metadata state for one decoded frame timestamp. */
+    /** Takes the oldest pending dynamic metadata for one decoded frame timestamp. */
     public takeFrameMetadata(timestampMicrosecondsValue: number): HDR10PlusFrameMetadata {
-        const timestampMicroseconds = requireMicroseconds(
-            timestampMicrosecondsValue,
-            'Decoded HEVC dynamic HDR frame timestamp'
-        );
+        const timestampMicroseconds = requireMicroseconds(timestampMicrosecondsValue, 'Decoded HEVC dynamic HDR frame timestamp');
         const frames = this.pendingFrames.get(timestampMicroseconds);
         if (!frames || frames.length === 0) {
             throw new Error('A decoded HEVC frame has no matching dynamic HDR metadata state');

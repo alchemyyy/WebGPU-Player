@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate bounded DTS capability access units from public-domain vectors."""
+"""Generate the DTS capability vector module from access units of the public-domain DTS test vectors."""
 
 from __future__ import annotations
 
@@ -28,51 +28,28 @@ VECTOR_FILE_NAMES: Final = (
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--vector-directory",
-        type=Path,
-        default=TEST_VECTORS_DIRECTORY / "dts",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=OUTPUT_FILE,
-    )
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="Fail if the committed output differs from the regenerated output",
-    )
+    parser.add_argument("--vector-directory", type=Path, default=TEST_VECTORS_DIRECTORY / "dts")
+    parser.add_argument("--output", type=Path, default=OUTPUT_FILE)
+    parser.add_argument("--check", action="store_true", help="Fail if the committed output differs from the regenerated output")
     return parser.parse_args()
 
 
 def generate_typescript(vector_directory: Path) -> str:
-    packet_definitions = json.loads(
-        (vector_directory / "packets.json").read_text(encoding="utf-8")
-    )
+    packet_definitions = json.loads((vector_directory / "packets.json").read_text(encoding="utf-8"))
     generated_definitions: list[str] = []
     for file_name in VECTOR_FILE_NAMES:
         vector_data = (vector_directory / file_name).read_bytes()
         definition = packet_definitions[file_name]
         packet_index = int(definition["qualificationPacketIndex"])
         stereo_fingerprint = definition.get("qualificationStereoFingerprint")
-        stereo_fingerprint_typescript = (
-            str(int(stereo_fingerprint))
-            if stereo_fingerprint is not None
-            else "null"
-        )
+        stereo_fingerprint_typescript = str(int(stereo_fingerprint)) if stereo_fingerprint is not None else "null"
         encoded_access_units: list[str] = []
         for packet_offset, packet_length in definition["packets"][: packet_index + 1]:
             access_unit = vector_data[packet_offset : packet_offset + packet_length]
             if len(access_unit) != packet_length:
                 raise RuntimeError(f"DTS qualification packet is truncated: {file_name}")
-            encoded_access_units.append(
-                base64.b64encode(access_unit).decode("ascii")
-            )
-        access_units_typescript = ", ".join(
-            f"'{encoded_access_unit}'"
-            for encoded_access_unit in encoded_access_units
-        )
+            encoded_access_units.append(base64.b64encode(access_unit).decode("ascii"))
+        access_units_typescript = ", ".join(f"'{encoded_access_unit}'" for encoded_access_unit in encoded_access_units)
         generated_definitions.append(
             "    Object.freeze({\n"
             f"        accessUnitsBase64: Object.freeze([{access_units_typescript}]),\n"
@@ -151,11 +128,7 @@ def main() -> None:
     arguments = parse_arguments()
     output_path = arguments.output.resolve()
     generated_typescript = generate_typescript(arguments.vector_directory.resolve())
-    write_or_check_output(
-        output_path,
-        generated_typescript.encode("utf-8"),
-        check=arguments.check,
-    )
+    write_or_check_output(output_path, generated_typescript.encode("utf-8"), check=arguments.check)
     action = "Verified" if arguments.check else "Generated"
     print(f"{action} {output_path}")
 

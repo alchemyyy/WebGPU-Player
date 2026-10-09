@@ -212,8 +212,7 @@ impl ParserContext {
     }
 
     /// Selects the display metadata to present, following FFmpeg's DM state semantics.
-    /// Compressed metadata reuses the last uncompressed metadata with this RPU's dynamic fields,
-    /// and an RPU without metadata presents the defaults while the stored metadata survives
+    /// Compressed metadata reuses the last uncompressed metadata with this RPU's dynamic fields, and an RPU without metadata presents the defaults while the stored metadata survives
     fn resolve_color_metadata(&self, rpu: &DoviRpu) -> ParserResult<ColorMetadataResolution> {
         let Some(rpu_color) = &rpu.vdr_dm_data else {
             return Ok(ColorMetadataResolution {
@@ -410,9 +409,9 @@ impl PackedSnapshot {
         output.fill(0);
         let mut writer = PackedWriter::new(output);
         let header = &self.rpu_header;
-        let level1 =
-            self.level1
-                .unwrap_or([MISSING_U32 as u16, MISSING_U32 as u16, MISSING_U32 as u16]);
+        let level1 = self
+            .level1
+            .map_or([MISSING_U32; 3], |values| values.map(u32::from));
         let previous_mapping_id = if header.use_prev_vdr_rpu_flag {
             header.prev_vdr_rpu_id as u32
         } else {
@@ -462,21 +461,9 @@ impl PackedSnapshot {
         writer.write_u32(self.color.source_min_pq as u32);
         writer.write_u32(self.color.source_max_pq as u32);
         writer.write_u32(self.color.source_diagonal as u32);
-        writer.write_u32(if self.level1.is_some() {
-            level1[0] as u32
-        } else {
-            MISSING_U32
-        });
-        writer.write_u32(if self.level1.is_some() {
-            level1[1] as u32
-        } else {
-            MISSING_U32
-        });
-        writer.write_u32(if self.level1.is_some() {
-            level1[2] as u32
-        } else {
-            MISSING_U32
-        });
+        writer.write_u32(level1[0]);
+        writer.write_u32(level1[1]);
+        writer.write_u32(level1[2]);
         writer.write_u32(self.color.scene_refresh_flag as u32);
         writer.write_u32(self.color.affected_dm_metadata_id as u32);
         writer.write_u32(self.color.current_dm_metadata_id as u32);
@@ -705,8 +692,8 @@ fn validate_rpu_header(
     Ok(())
 }
 
-// These defaults match the decoder state used by the pinned FFmpeg reference
-// when an RPU omits explicit display metadata. FFmpeg defines their offsets in 2^28 units for every profile.
+// These defaults match the decoder state used by the pinned FFmpeg reference when an RPU omits explicit display metadata.
+// FFmpeg defines their offsets in 2^28 units for every profile
 fn default_color_metadata() -> VdrDmData {
     VdrDmData {
         ycc_to_rgb_coef0: 9_575,
@@ -1370,8 +1357,7 @@ pub unsafe extern "C" fn dovi_parser_deallocate(pointer: *mut u8, byte_length: u
 /// Parses one HEVC UNSPEC62 NAL unit RPU into the fixed schema output buffer.
 ///
 /// # Safety
-/// The context and both buffers must be live, non-overlapping allocations from
-/// this module with at least the supplied lengths.
+/// The context and both buffers must be live, non-overlapping allocations from this module with at least the supplied lengths.
 pub unsafe extern "C" fn dovi_parser_parse(
     context_pointer: *mut c_void,
     input_pointer: *const u8,
@@ -1458,7 +1444,7 @@ unsafe fn parse_exported_input(
 
     // SAFETY: The caller allocated both bounded regions from this module.
     let input = unsafe { slice::from_raw_parts(input_pointer, input_byte_length) };
-    // SAFETY: The exact fixed output length was checked above.
+    // SAFETY: The output length was checked against OUTPUT_BYTE_LENGTH above.
     let output = unsafe { slice::from_raw_parts_mut(output_pointer, OUTPUT_BYTE_LENGTH) };
     match context.parse(input, framing, output) {
         Ok(()) => 0,
@@ -1628,8 +1614,7 @@ mod tests {
         }
     }
 
-    /// One extension block as an encoder codes it: leading payload fields, then padding up to
-    /// the coded byte length
+    /// One extension block as an encoder codes it: leading payload fields, then padding up to the coded byte length
     struct CodedBlock {
         level: u8,
         length: u64,
@@ -1893,8 +1878,7 @@ mod tests {
         assert!(header.disable_residual_flag && !header.use_prev_vdr_rpu_flag);
         let mapping = rpu.rpu_data_mapping.as_ref().unwrap();
         let bl_bit_depth = (header.bl_bit_depth_minus8 + 8) as usize;
-        // dm_compression, el_spatial_resampling_filter_flag, disable_residual_flag,
-        // vdr_dm_metadata_present_flag, and use_prev_vdr_rpu_flag
+        // dm_compression, el_spatial_resampling_filter_flag, disable_residual_flag, vdr_dm_metadata_present_flag, and use_prev_vdr_rpu_flag
         let mut bit_offset = dm_compression_bit_offset(header) + DM_COMPRESSION_BIT_LENGTH + 4;
         bit_offset += exp_golomb_bit_length(mapping.vdr_rpu_id)
             + exp_golomb_bit_length(mapping.mapping_color_space)
@@ -1927,8 +1911,7 @@ mod tests {
         })
     }
 
-    /// Encodes syntax the crate's writer refuses to emit by overwriting raw RPU bits,
-    /// then restores the CRC, emulation prevention, and NAL header a real stream carries
+    /// Encodes syntax the crate's writer refuses to emit by overwriting raw RPU bits, then restores the CRC, emulation prevention, and NAL header a real stream carries
     fn encode_with_bits(rpu: &DoviRpu, bit_offset: usize, bit_count: usize, value: u64) -> Vec<u8> {
         let mut unescaped = rpu.write_rpu().unwrap();
         let crc_offset = unescaped.len() - RPU_TRAILER_BYTE_LENGTH;
@@ -2643,8 +2626,7 @@ mod tests {
 
     #[test]
     fn misplaced_levels_are_skipped() {
-        // CM v4.0 levels in the CM v2.9 section, and CM v2.9 levels, a decoy L1 among them,
-        // in the CM v4.0 section
+        // CM v4.0 levels in the CM v2.9 section, and CM v2.9 levels, a decoy L1 among them, in the CM v4.0 section
         let input = encode_with_extension_sections(|writer| {
             let cm_v29_blocks = [
                 opaque_block(3, 5),

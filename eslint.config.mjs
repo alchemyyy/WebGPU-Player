@@ -51,8 +51,7 @@ export default tseslint.config(
             'array-callback-return': ['error', { 'checkForEach': true }],
             'curly': ['error', 'multi-line', 'consistent'],
             'default-case-last': 'error',
-            // Specifiers the node resolver cannot read, which tsc checks: the tsconfig path alias that tests import
-            // engine modules through, and package.json imports such as #wasm/
+            // Specifiers the node resolver cannot read, which tsc checks: the tsconfig path alias that tests import engine modules through, and package.json imports such as #wasm/
             'import/no-unresolved': ['error', { 'ignore': ['^webgpu-player/', '^#'] }],
             'max-params': ['error', 7],
             'new-cap': [

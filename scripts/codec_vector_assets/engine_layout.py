@@ -1,8 +1,7 @@
 """The engine's layout for the codec vector asset scripts.
 
-tools/constants.py reads tools/constants.json, the one place that names the
-engine's folders. This module puts tools/ on the import path and re-exports the
-names these scripts use, so each script imports its paths from here.
+tools/constants.py reads tools/constants.json, the one place that names the engine's folders.
+This module puts tools/ on the import path and re-exports the names these scripts use, so each script imports its paths from here.
 """
 
 import sys

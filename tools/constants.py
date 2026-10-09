@@ -1,7 +1,6 @@
 """The engine's repository layout as absolute paths.
 
-constants.json is the only place that names these paths; the Python tools read
-them from here instead of spelling them out.
+constants.json is the only place that names these paths; the Python tools read them from here instead of spelling them out.
 """
 
 import json
@@ -13,9 +12,7 @@ TOOLS_DIRECTORY: Final = Path(__file__).resolve().parent
 ENGINE_ROOT: Final = TOOLS_DIRECTORY.parent
 
 # The layout from constants.json, as POSIX paths relative to the engine root
-LAYOUT: Final[dict[str, str]] = json.loads(
-    (TOOLS_DIRECTORY / "constants.json").read_text(encoding="utf-8")
-)
+LAYOUT: Final[dict[str, str]] = json.loads((TOOLS_DIRECTORY / "constants.json").read_text(encoding="utf-8"))
 
 SOURCE_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["sourceDirectory"]
 VECTORS_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["vectorsDirectory"]

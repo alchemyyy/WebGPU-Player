@@ -1,5 +1,5 @@
-// The engine's repository layout as absolute paths. constants.json is the only place that names these paths;
-// tools, build scripts, the ESLint config, and hosts read them from here instead of spelling them out.
+// The engine's repository layout as absolute paths.
+// constants.json is the only place that names these paths; tools, build scripts, the ESLint config, and hosts read them from here instead of spelling them out
 
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';

@@ -19,10 +19,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--ffmpeg",
         default="ffmpeg",
-        help=(
-            "FFmpeg executable. The committed picture was encoded by FFmpeg "
-            "2026-03-01-git-862338fe31; other builds write different bytes"
-        ),
+        help="FFmpeg executable. The committed picture was encoded by FFmpeg 2026-03-01-git-862338fe31; other builds write different bytes",
     )
     parser.add_argument("--output", type=pathlib.Path, default=DEFAULT_OUTPUT)
     parser.add_argument(
@@ -64,18 +61,12 @@ def encode_vector(ffmpeg: str, output_path: pathlib.Path) -> None:
 def main() -> int:
     arguments = parse_arguments()
     output_path = arguments.output.resolve()
-    with tempfile.TemporaryDirectory(
-        prefix="webgpu-jpeg2000-vector-"
-    ) as temporary_directory:
+    with tempfile.TemporaryDirectory(prefix="webgpu-jpeg2000-vector-") as temporary_directory:
         # A failed encode never touches the committed vector
         generated_path = pathlib.Path(temporary_directory) / output_path.name
         encode_vector(arguments.ffmpeg, generated_path)
         # Another FFmpeg build writes a different codestream, which never replaces the committed one
-        installed = install_or_check_output(
-            output_path,
-            generated_path.read_bytes(),
-            check=arguments.check,
-        )
+        installed = install_or_check_output(output_path, generated_path.read_bytes(), check=arguments.check)
     action = "Generated" if installed else "Verified"
     print(f"{action} {output_path}")
     return 0

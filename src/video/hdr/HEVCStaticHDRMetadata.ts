@@ -13,10 +13,6 @@ const MASTERING_DISPLAY_PAYLOAD_BYTE_LENGTH = 24;
 const CONTENT_LIGHT_PAYLOAD_BYTE_LENGTH = 4;
 const MASTERING_LUMINANCE_SCALE = 10_000;
 
-type MutableStaticHDRMetadata = {
-    -readonly [Property in keyof StaticHDRMetadata]: StaticHDRMetadata[Property]
-};
-
 const STATIC_HDR_METADATA_PROPERTIES: readonly (keyof StaticHDRMetadata)[] = [
     'masteringDisplayMaximumLuminanceNits',
     'masteringDisplayMinimumLuminanceNits',
@@ -33,7 +29,7 @@ class HEVCStaticHDRMetadataConflictError extends TypeError {
     }
 }
 
-function createEmptyStaticHDRMetadata(): MutableStaticHDRMetadata {
+function createEmptyStaticHDRMetadata(): StaticHDRMetadata {
     return {
         masteringDisplayMaximumLuminanceNits: null,
         masteringDisplayMinimumLuminanceNits: null,
@@ -56,7 +52,7 @@ function readUnsigned32(data: Uint8Array, offset: number): number {
 }
 
 function mergeMetadataValue(
-    metadata: MutableStaticHDRMetadata,
+    metadata: StaticHDRMetadata,
     property: keyof StaticHDRMetadata,
     value: number | null
 ): void {
@@ -70,40 +66,23 @@ function mergeMetadataValue(
     metadata[property] = value;
 }
 
-function mergeStaticHDRMetadata(
-    destination: MutableStaticHDRMetadata,
-    source: StaticHDRMetadata
-): void {
+function mergeStaticHDRMetadata(destination: StaticHDRMetadata, source: StaticHDRMetadata): void {
     for (const property of STATIC_HDR_METADATA_PROPERTIES) {
         mergeMetadataValue(destination, property, source[property]);
     }
 }
 
-function parseMasteringDisplayPayload(
-    payload: Uint8Array,
-    metadata: MutableStaticHDRMetadata
-): void {
+function parseMasteringDisplayPayload(payload: Uint8Array, metadata: StaticHDRMetadata): void {
     if (payload.byteLength !== MASTERING_DISPLAY_PAYLOAD_BYTE_LENGTH) {
         throw new TypeError('The HEVC mastering-display SEI payload size is invalid');
     }
     const maximumLuminanceNits = readUnsigned32(payload, 16) / MASTERING_LUMINANCE_SCALE;
     const minimumLuminanceNits = readUnsigned32(payload, 20) / MASTERING_LUMINANCE_SCALE;
-    mergeMetadataValue(
-        metadata,
-        'masteringDisplayMaximumLuminanceNits',
-        maximumLuminanceNits
-    );
-    mergeMetadataValue(
-        metadata,
-        'masteringDisplayMinimumLuminanceNits',
-        minimumLuminanceNits
-    );
+    mergeMetadataValue(metadata, 'masteringDisplayMaximumLuminanceNits', maximumLuminanceNits);
+    mergeMetadataValue(metadata, 'masteringDisplayMinimumLuminanceNits', minimumLuminanceNits);
 }
 
-function parseContentLightPayload(
-    payload: Uint8Array,
-    metadata: MutableStaticHDRMetadata
-): void {
+function parseContentLightPayload(payload: Uint8Array, metadata: StaticHDRMetadata): void {
     if (payload.byteLength !== CONTENT_LIGHT_PAYLOAD_BYTE_LENGTH) {
         throw new TypeError('The HEVC content-light SEI payload size is invalid');
     }
@@ -122,10 +101,7 @@ function parseContentLightPayload(
 }
 
 /** Extracts bounded HDR10 static luminance metadata from one HEVC access unit. */
-export function parseHEVCStaticHDRMetadata(
-    accessUnit: Uint8Array,
-    format: HEVCNALFormat
-): StaticHDRMetadata | null {
+export function parseHEVCStaticHDRMetadata(accessUnit: Uint8Array, format: HEVCNALFormat): StaticHDRMetadata | null {
     const metadata = createEmptyStaticHDRMetadata();
     const messages = parseHEVCSEIMessages(accessUnit, format);
     for (const message of messages) {
@@ -138,9 +114,7 @@ export function parseHEVCStaticHDRMetadata(
                 break;
         }
     }
-    const hasMetadata = Object.values(metadata).some((value: number | null): boolean => (
-        value !== null
-    ));
+    const hasMetadata = Object.values(metadata).some((value: number | null): boolean => value !== null);
     if (!hasMetadata) {
         return null;
     }
@@ -151,10 +125,7 @@ export function parseHEVCStaticHDRMetadata(
 }
 
 /** Scans a bounded startup prefix and rejects malformed or conflicting metadata. */
-export function scanHEVCStaticHDRMetadata(
-    accessUnits: readonly Uint8Array[],
-    format: HEVCNALFormat
-): StaticHDRMetadataScanResult {
+export function scanHEVCStaticHDRMetadata(accessUnits: readonly Uint8Array[], format: HEVCNALFormat): StaticHDRMetadataScanResult {
     if (accessUnits.length > MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT) {
         throw new RangeError('The HEVC static HDR metadata scan exceeds its access-unit bound');
     }
@@ -162,9 +133,8 @@ export function scanHEVCStaticHDRMetadata(
     const metadata = createEmptyStaticHDRMetadata();
     let firstMetadataAccessUnitIndex: number | null = null;
     for (let accessUnitIndex = 0; accessUnitIndex < accessUnits.length; accessUnitIndex += 1) {
-        let parsedMetadata: StaticHDRMetadata | null;
         try {
-            parsedMetadata = parseHEVCStaticHDRMetadata(accessUnits[accessUnitIndex], format);
+            const parsedMetadata = parseHEVCStaticHDRMetadata(accessUnits[accessUnitIndex], format);
             if (!parsedMetadata) {
                 continue;
             }

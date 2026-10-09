@@ -97,9 +97,7 @@ try {
         previousStatus = frameMetadata.status;
         if (frameMetadata.status === 'valid' && frameMetadata.metadata) {
             firstValidMetadata ??= frameMetadata.metadata;
-            const peakNits = getHDR10PlusSceneLuminance(
-                frameMetadata.metadata
-            ).peakNits;
+            const peakNits = getHDR10PlusSceneLuminance(frameMetadata.metadata).peakNits;
             if (peakNits !== null) {
                 minimumValidPeakNits = Math.min(minimumValidPeakNits ?? peakNits, peakNits);
                 maximumValidPeakNits = Math.max(maximumValidPeakNits ?? peakNits, peakNits);

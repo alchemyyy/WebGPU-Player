@@ -24,10 +24,7 @@ type BrowserAudioContextPrewarmState = {
     transferred: boolean
 };
 
-const prewarmStates = new WeakMap<
-    BrowserAudioContextPrewarmLease,
-    BrowserAudioContextPrewarmState
->();
+const prewarmStates = new WeakMap<BrowserAudioContextPrewarmLease, BrowserAudioContextPrewarmState>();
 
 function validateSampleRate(sampleRate: number): void {
     if (!Number.isSafeInteger(sampleRate) || sampleRate <= 0) {
@@ -43,11 +40,8 @@ function closeLease(state: BrowserAudioContextPrewarmState): Promise<void> {
     return state.reference.release();
 }
 
-/** Creates an exact-rate AudioContext and requests resume in the current user-activation task. */
-export function prewarmBrowserAudioContext(
-    sampleRate: number
-): BrowserAudioContextPrewarmLease {
-    validateSampleRate(sampleRate);
+/** Acquires the shared exact-rate AudioContext and requests resume in the current user-activation task. */
+export function prewarmBrowserAudioContext(sampleRate: number): BrowserAudioContextPrewarmLease {
     const reference = acquireSharedBrowserAudioContext(sampleRate);
 
     const state: BrowserAudioContextPrewarmState = {

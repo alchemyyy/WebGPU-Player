@@ -88,11 +88,7 @@ def create_channel_expression(channel_count: int) -> str:
     return "|".join(expressions)
 
 
-def generate_source(
-    ffmpeg: str,
-    definition: VectorDefinition,
-    destination: Path,
-) -> None:
+def generate_source(ffmpeg: str, definition: VectorDefinition, destination: Path) -> None:
     filter_expression = (
         f"aevalsrc={create_channel_expression(definition.channel_count)}:"
         f"s={definition.sample_rate}:d={VECTOR_DURATION_SECONDS}:"
@@ -249,15 +245,11 @@ def create_vector_record(
 def format_typescript(vectors: list[dict[str, Any]]) -> str:
     definitions: list[str] = []
     for vector in vectors:
-        access_units = ",\n".join(
-            f"            '{access_unit}'"
-            for access_unit in vector["accessUnitsBase64"]
-        )
+        access_units = ",\n".join(f"            '{access_unit}'" for access_unit in vector["accessUnitsBase64"])
         expected_outputs = ",\n".join(
             "            Object.freeze({\n"
             f"                frameCount: {output['frameCount']},\n"
-            "                mediaTimeMicroseconds: "
-            f"{output['mediaTimeMicroseconds']},\n"
+            f"                mediaTimeMicroseconds: {output['mediaTimeMicroseconds']},\n"
             f"                pcmFingerprint: {output['pcmFingerprint']}\n"
             "            })"
             for output in vector["expectedOutputs"]
@@ -274,8 +266,7 @@ def format_typescript(vectors: list[dict[str, Any]]) -> str:
             "        expectedOutputs: Object.freeze([\n"
             f"{expected_outputs}\n"
             "        ]),\n"
-            "        majorSyncRecoveryStartIndex: "
-            f"{vector['majorSyncRecoveryStartIndex']},\n"
+            f"        majorSyncRecoveryStartIndex: {vector['majorSyncRecoveryStartIndex']},\n"
             f"        sampleRate: {vector['sampleRate']},\n"
             f"        source: '{vector['source']}'\n"
             "    })"
@@ -364,21 +355,10 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--regenerate-sources",
         action="store_true",
-        help=(
-            "Re-encode the source streams with FFmpeg and fail unless they match "
-            "the committed sources; a missing source is installed, except with --check"
-        ),
+        help="Re-encode the source streams with FFmpeg and fail unless they match the committed sources; a missing source is installed, except with --check",
     )
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="Fail if any committed output differs from the regenerated output",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=OUTPUT_FILE,
-    )
+    parser.add_argument("--check", action="store_true", help="Fail if any committed output differs from the regenerated output")
+    parser.add_argument("--output", type=Path, default=OUTPUT_FILE)
     return parser.parse_args()
 
 
@@ -396,30 +376,15 @@ def main() -> int:
                 generated_source = temporary_root / source.name
                 generate_source(ffmpeg, definition, generated_source)
                 # Another FFmpeg build may encode different bytes, so a re-encode never replaces a committed source
-                install_or_check_output(
-                    source,
-                    generated_source.read_bytes(),
-                    check=arguments.check,
-                )
+                install_or_check_output(source, generated_source.read_bytes(), check=arguments.check)
             if not source.is_file():
-                raise RuntimeError(
-                    f"Missing {source}; rerun with --regenerate-sources"
-                )
-            vector_records.append(
-                create_vector_record(ffmpeg, ffprobe, definition, source)
-            )
+                raise RuntimeError(f"Missing {source}; rerun with --regenerate-sources")
+            vector_records.append(create_vector_record(ffmpeg, ffprobe, definition, source))
 
     output_path = arguments.output.resolve()
-    write_or_check_output(
-        output_path,
-        format_typescript(vector_records).encode("ascii"),
-        check=arguments.check,
-    )
+    write_or_check_output(output_path, format_typescript(vector_records).encode("ascii"), check=arguments.check)
     action = "Verified" if arguments.check else "Generated"
-    print(
-        f"{action} {len(vector_records)} TrueHD/MLP exact capability vectors "
-        f"in {output_path}"
-    )
+    print(f"{action} {len(vector_records)} TrueHD/MLP exact capability vectors in {output_path}")
     return 0
 
 

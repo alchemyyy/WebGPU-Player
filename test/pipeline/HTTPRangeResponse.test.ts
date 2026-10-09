@@ -174,8 +174,7 @@ describe('requireValidByteRangeResponse', () => {
             bodyCancelled = true;
         }, contentLength, type, url);
 
-        expect(() => requireValidByteRangeResponse(range, response))
-            .toThrow(UnsupportedRangeResponseError);
+        expect(() => requireValidByteRangeResponse(range, response)).toThrow(UnsupportedRangeResponseError);
         expect(bodyCancelled).toBe(true);
     });
 

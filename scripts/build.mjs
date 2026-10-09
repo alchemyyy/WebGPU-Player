@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Assembles every asset the engine serves, in the layout the player requests at runtime.
-// The output locations come from tools/constants.json. Usage: node scripts/build.mjs [--production]
+// The output locations come from tools/constants.json.
+// Usage: node scripts/build.mjs [--production]
 
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

@@ -22,24 +22,16 @@ const ISO_BASE_MEDIA_DTS_SAMPLE_ENTRIES: ReadonlySet<unknown> = new Set<unknown>
 ]);
 
 /** Matroska codec IDs and ISO BMFF sample entries that Mediabunny leaves without a codec */
-const BUNDLED_AUDIO_DECODER_CODECS: ReadonlyMap<unknown, BundledAudioDecoderCodec> = new Map<
-    unknown,
-    BundledAudioDecoderCodec
->([
+const BUNDLED_AUDIO_DECODER_CODECS: ReadonlyMap<unknown, BundledAudioDecoderCodec> = new Map<unknown, BundledAudioDecoderCodec>([
     [ 'A_DTS', 'dts' ],
-    ...[ ...ISO_BASE_MEDIA_DTS_SAMPLE_ENTRIES ].map(
-        (sampleEntry): [ unknown, BundledAudioDecoderCodec ] => [ sampleEntry, 'dts' ]
-    ),
+    ...[ ...ISO_BASE_MEDIA_DTS_SAMPLE_ENTRIES ].map((sampleEntry): [ unknown, BundledAudioDecoderCodec ] => [ sampleEntry, 'dts' ]),
     [ 'A_MLP', 'mlp' ],
     [ 'A_TRUEHD', 'truehd' ],
     [ ISO_BASE_MEDIA_TRUEHD_SAMPLE_ENTRY, 'truehd' ]
 ]);
 
 /** Identifies a track the bundled DTS or TrueHD decoders own, since Mediabunny maps neither codec. */
-export function getBundledAudioDecoderCodec(
-    codec: AudioCodec | null,
-    internalCodecID: unknown
-): BundledAudioDecoderCodec | null {
+export function getBundledAudioDecoderCodec(codec: AudioCodec | null, internalCodecID: unknown): BundledAudioDecoderCodec | null {
     if (codec !== null) {
         return null;
     }
@@ -47,13 +39,10 @@ export function getBundledAudioDecoderCodec(
 }
 
 /**
- * Returns a track's declared rate, recovering the ISO BMFF sample entries whose
- * rate field Mediabunny cannot read. The decoder's own rate stays authoritative.
+ * Returns a track's declared rate, recovering the ISO BMFF sample entries whose rate field Mediabunny cannot read.
+ * The decoder's own rate stays authoritative.
  */
-export function getDeclaredAudioSampleRate(
-    internalCodecID: unknown,
-    sampleRate: number
-): number {
+export function getDeclaredAudioSampleRate(internalCodecID: unknown, sampleRate: number): number {
     if (isSupportedCustomAudioSampleRate(sampleRate)) {
         return sampleRate;
     }
@@ -69,9 +58,7 @@ export function getDeclaredAudioSampleRate(
 }
 
 /**
- * Returns the timestamp jitter an audio route absorbs before one source sample:
- * the larger of the codec floor and one container timestamp tick, plus an
- * allowance for access units that decode to no PCM.
+ * Returns the timestamp jitter an audio route absorbs before one source sample: the larger of the codec floor and one container timestamp tick, plus an allowance for access units that decode to no PCM.
  */
 export function getAudioTimestampToleranceMicroseconds(
     timeResolution: number,
@@ -81,6 +68,5 @@ export function getAudioTimestampToleranceMicroseconds(
     const timestampTickMicroseconds = Number.isFinite(timeResolution) && timeResolution > 0 ?
         Math.ceil(MICROSECONDS_PER_SECOND / timeResolution) :
         0;
-    return Math.max(codecFloorMicroseconds, timestampTickMicroseconds)
-        + accessUnitAllowanceMicroseconds;
+    return Math.max(codecFloorMicroseconds, timestampTickMicroseconds) + accessUnitAllowanceMicroseconds;
 }

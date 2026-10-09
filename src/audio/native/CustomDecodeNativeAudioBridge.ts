@@ -42,10 +42,7 @@ export type CustomDecodeNativeAudioBridgeTelemetry = {
 
 export type OwnedNativeMediaAudioBackendPort = {
     appendInitializationSegment: (generation: number, data: Uint8Array) => Promise<boolean>
-    appendMediaSegment: (
-        generation: number,
-        segment: OwnedNativeMediaAudioSegment
-    ) => Promise<boolean>
+    appendMediaSegment: (generation: number, segment: OwnedNativeMediaAudioSegment) => Promise<boolean>
     destroy: () => Promise<void>
     endOfStream: (generation: number) => Promise<boolean>
     getAuthoritativeTimeMicroseconds: () => Microseconds | null
@@ -59,13 +56,9 @@ export type OwnedNativeMediaAudioBackendPort = {
     stop: (generation: number) => Promise<boolean>
 };
 
-export type OwnedNativeMediaAudioBackendFactory = (
-    eventHandler: OwnedNativeMediaAudioEventHandler
-) => OwnedNativeMediaAudioBackendPort;
+export type OwnedNativeMediaAudioBackendFactory = (eventHandler: OwnedNativeMediaAudioEventHandler) => OwnedNativeMediaAudioBackendPort;
 
-function createDefaultBackend(
-    eventHandler: OwnedNativeMediaAudioEventHandler
-): OwnedNativeMediaAudioBackend {
+function createDefaultBackend(eventHandler: OwnedNativeMediaAudioEventHandler): OwnedNativeMediaAudioBackend {
     return new OwnedNativeMediaAudioBackend({ eventHandler });
 }
 
@@ -91,9 +84,7 @@ export default class CustomDecodeNativeAudioBridge {
     private staleMessageCount = 0;
     private state: CustomDecodeNativeAudioBridgeTelemetry['state'] = 'idle';
 
-    public constructor(
-        backendFactory: OwnedNativeMediaAudioBackendFactory = createDefaultBackend
-    ) {
+    public constructor(backendFactory: OwnedNativeMediaAudioBackendFactory = createDefaultBackend) {
         this.backend = backendFactory(this.handleBackendEvent);
     }
 
@@ -101,7 +92,7 @@ export default class CustomDecodeNativeAudioBridge {
         return INITIAL_NATIVE_AUDIO_SEGMENT_CREDITS;
     }
 
-    /** Starts a new exact native-media route after serially retiring its predecessor. */
+    /** Starts a native-media route after serially retiring its predecessor. */
     public start(options: CustomDecodeNativeAudioBridgeStartOptions): Promise<boolean> {
         this.requireUsable();
         requireMicroseconds(options.startTimeMicroseconds, 'Native audio bridge start time');
@@ -159,9 +150,7 @@ export default class CustomDecodeNativeAudioBridge {
     }
 
     /** Appends the one initialization segment emitted for this generation. */
-    public async enqueueInitialization(
-        message: DecodeWorkerNativeAudioInitializationResponse
-    ): Promise<boolean> {
+    public async enqueueInitialization(message: DecodeWorkerNativeAudioInitializationResponse): Promise<boolean> {
         if (!this.isCurrent(message.generation)) {
             this.staleMessageCount += 1;
             return false;
@@ -172,10 +161,7 @@ export default class CustomDecodeNativeAudioBridge {
         }
         this.initializationReceived = true;
         try {
-            const appended = await this.backend.appendInitializationSegment(
-                message.generation,
-                new Uint8Array(message.data)
-            );
+            const appended = await this.backend.appendInitializationSegment(message.generation, new Uint8Array(message.data));
             if (!appended || !this.isCurrent(message.generation)) {
                 this.staleMessageCount += 1;
                 return false;
@@ -189,9 +175,7 @@ export default class CustomDecodeNativeAudioBridge {
     }
 
     /** Appends one bounded media fragment and releases exactly one producer credit. */
-    public async enqueueMedia(
-        message: DecodeWorkerNativeAudioMediaResponse
-    ): Promise<boolean> {
+    public async enqueueMedia(message: DecodeWorkerNativeAudioMediaResponse): Promise<boolean> {
         if (!this.isCurrent(message.generation)) {
             this.staleMessageCount += 1;
             return false;
@@ -200,8 +184,7 @@ export default class CustomDecodeNativeAudioBridge {
             this.fail(message.generation, 'Native audio media arrived before initialization');
             return false;
         }
-        if (this.lastMediaEndTimeMicroseconds !== null
-            && message.startTimeMicroseconds < this.lastMediaEndTimeMicroseconds) {
+        if (this.lastMediaEndTimeMicroseconds !== null && message.startTimeMicroseconds < this.lastMediaEndTimeMicroseconds) {
             this.fail(message.generation, 'Native audio media fragments overlapped or moved backward');
             return false;
         }
@@ -247,9 +230,7 @@ export default class CustomDecodeNativeAudioBridge {
 
     public setPlaying(playing: boolean): Promise<boolean> {
         const generation = this.activeGeneration;
-        return generation === null ?
-            Promise.resolve(false) :
-            this.backend.setPlaying(generation, playing);
+        return generation === null ? Promise.resolve(false) : this.backend.setPlaying(generation, playing);
     }
 
     public seek(mediaTimeMicroseconds: Microseconds): boolean {
@@ -275,11 +256,8 @@ export default class CustomDecodeNativeAudioBridge {
     }
 
     /** Invalidates callbacks before retiring the active backend generation. */
-    public stop(
-        generation: number | null = this.activeGeneration ?? this.pendingGeneration
-    ): Promise<boolean> {
-        if (generation === null
-            || (generation !== this.activeGeneration && generation !== this.pendingGeneration)) {
+    public stop(generation: number | null = this.activeGeneration ?? this.pendingGeneration): Promise<boolean> {
+        if (generation === null || (generation !== this.activeGeneration && generation !== this.pendingGeneration)) {
             this.staleMessageCount += generation === null ? 0 : 1;
             return Promise.resolve(false);
         }
@@ -372,9 +350,7 @@ export default class CustomDecodeNativeAudioBridge {
     }
 
     private isCurrent(generation: number): boolean {
-        return !this.destroyed
-            && this.state === 'ready'
-            && this.activeGeneration === generation;
+        return !this.destroyed && this.state === 'ready' && this.activeGeneration === generation;
     }
 
     private advanceLifecycleRevision(): number {

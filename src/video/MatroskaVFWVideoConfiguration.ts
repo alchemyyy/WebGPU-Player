@@ -1,8 +1,7 @@
 import type { InputVideoTrack } from 'mediabunny';
 
 const BITMAP_INFO_HEADER_BYTE_LENGTH = 40;
-const MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH = 1024 * 1024
-    + BITMAP_INFO_HEADER_BYTE_LENGTH;
+const MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH = 1024 * 1024 + BITMAP_INFO_HEADER_BYTE_LENGTH;
 const WVC1_FOURCC = Object.freeze([ 0x57, 0x56, 0x43, 0x31 ]);
 
 type MatroskaVFWInternalTrack = {
@@ -14,9 +13,7 @@ type MatroskaVFWTrackBacking = {
 };
 
 function hasWVC1FourCC(codecPrivate: Uint8Array): boolean {
-    return WVC1_FOURCC.every((value: number, index: number): boolean => (
-        codecPrivate[16 + index] === value
-    ));
+    return WVC1_FOURCC.every((value: number, index: number): boolean => codecPrivate[16 + index] === value);
 }
 
 /** Extracts the FFmpeg VC-1 extradata from a Matroska VFW CodecPrivate value. */
@@ -25,11 +22,8 @@ export function getMatroskaVC1DecoderDescription(
     codedWidth: number,
     codedHeight: number
 ): Uint8Array | null {
-    // Mediabunny preserves unsupported Matroska codecs but does not expose
-    // CodecPrivate through getDecoderConfig(), so contain the backing access here
-    const backing = (track as unknown as {
-        _backing: MatroskaVFWTrackBacking
-    })._backing;
+    // Mediabunny preserves unsupported Matroska codecs but does not expose CodecPrivate through getDecoderConfig(), so contain the backing access here
+    const backing = (track as unknown as { _backing: MatroskaVFWTrackBacking })._backing;
     const codecPrivate = backing.internalTrack?.codecPrivate;
     if (
         !(codecPrivate instanceof Uint8Array)
@@ -39,11 +33,7 @@ export function getMatroskaVC1DecoderDescription(
         return null;
     }
 
-    const header = new DataView(
-        codecPrivate.buffer,
-        codecPrivate.byteOffset,
-        codecPrivate.byteLength
-    );
+    const header = new DataView(codecPrivate.buffer, codecPrivate.byteOffset, codecPrivate.byteLength);
     const declaredHeaderByteLength = header.getUint32(0, true);
     const bitmapWidth = header.getInt32(4, true);
     const bitmapHeight = Math.abs(header.getInt32(8, true));
@@ -71,9 +61,6 @@ export function getMatroskaVC1DecoderDescription(
         descriptionEnd = declaredHeaderByteLength;
     }
 
-    const description = codecPrivate.slice(
-        BITMAP_INFO_HEADER_BYTE_LENGTH,
-        descriptionEnd
-    );
+    const description = codecPrivate.slice(BITMAP_INFO_HEADER_BYTE_LENGTH, descriptionEnd);
     return description.byteLength > 0 ? description : null;
 }

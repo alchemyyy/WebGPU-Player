@@ -1,7 +1,7 @@
 export const CUSTOM_AUDIO_WORKLET_PROCESSOR_NAME = 'jellyfin-custom-audio-output-v1';
 
-// This self-contained module is loaded through AudioWorklet.addModule(). It uses
-// transferable ArrayBuffers today and leaves the message protocol open for SAB.
+// This self-contained module is loaded through AudioWorklet.addModule().
+// It receives PCM in transferable ArrayBuffers, so it needs no shared memory
 const CUSTOM_AUDIO_WORKLET_SOURCE = `'use strict';
 
 const MICROSECONDS_PER_SECOND = 1000000;
@@ -264,9 +264,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             this.consumedFrames += copiedFrames;
             this.mediaTimeMicroseconds = chunk.timestampMicroseconds
                 + Math.round((chunk.frameOffset * MICROSECONDS_PER_SECOND) / sampleRate);
-            this.mediaTimeContextTimeMicroseconds = this.framesToMicroseconds(
-                currentFrame + outputOffset
-            );
+            this.mediaTimeContextTimeMicroseconds = this.framesToMicroseconds(currentFrame + outputOffset);
 
             if (chunk.frameOffset === chunkFrameCount) {
                 this.chunks[this.headChunkIndex] = undefined;
@@ -300,7 +298,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
     }
 
     // Advances the leading gap over the zero-filled output and returns its frame count.
-    // Gap frames are rendered output, so they are neither underflow nor consumed PCM.
+    // Gap frames are rendered output, so they are neither underflow nor consumed PCM
     renderLeadingGap(renderFrameCount) {
         if (this.leadingGapFrames <= 0 || this.chunkCount === 0) {
             return 0;
@@ -309,11 +307,8 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         const silentFrameCount = Math.min(this.leadingGapFrames, renderFrameCount);
         this.leadingGapFrames -= silentFrameCount;
         this.leadingGapRenderedFrames += silentFrameCount;
-        this.mediaTimeMicroseconds = this.leadingGapStartMicroseconds
-            + this.framesToMicroseconds(this.leadingGapRenderedFrames);
-        this.mediaTimeContextTimeMicroseconds = this.framesToMicroseconds(
-            currentFrame + silentFrameCount
-        );
+        this.mediaTimeMicroseconds = this.leadingGapStartMicroseconds + this.framesToMicroseconds(this.leadingGapRenderedFrames);
+        this.mediaTimeContextTimeMicroseconds = this.framesToMicroseconds(currentFrame + silentFrameCount);
         return silentFrameCount;
     }
 
@@ -372,11 +367,10 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             return;
         }
         try {
-            // Move consumed PCM backing stores out of the persistent worklet
-            // realm so page garbage collection can reclaim them after receipt.
+            // Move consumed PCM backing stores out of the persistent worklet realm so page garbage collection can reclaim them after receipt
             this.port.postMessage({channelBuffers, type: 'recycle'}, channelBuffers);
         } catch {
-            // Audio output must continue if the diagnostic recycling path fails.
+            // Audio output must continue if the diagnostic recycling path fails
         }
     }
 
@@ -413,7 +407,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
     }
 }
 
-registerProcessor('jellyfin-custom-audio-output-v1', JellyfinCustomAudioOutputProcessor);
+registerProcessor('${CUSTOM_AUDIO_WORKLET_PROCESSOR_NAME}', JellyfinCustomAudioOutputProcessor);
 `;
 
 /** Creates an object URL for the self-contained transferable-PCM worklet. */
@@ -422,7 +416,7 @@ export function createCustomAudioWorkletModuleURL(): string {
     return URL.createObjectURL(sourceBlob);
 }
 
-/** Exposes the source for deterministic validation without evaluating it. */
+/** Returns the processor source so tests can evaluate it outside an AudioWorklet. */
 export function getCustomAudioWorkletSource(): string {
     return CUSTOM_AUDIO_WORKLET_SOURCE;
 }

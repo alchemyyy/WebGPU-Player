@@ -1,4 +1,4 @@
-import type { Microseconds } from './MediaTime';
+import { MICROSECONDS_PER_SECOND, type Microseconds } from './MediaTime';
 
 /** Validates a value at a custom playback microsecond boundary. */
 export function requireMicroseconds(value: number, label = 'Media time'): Microseconds {
@@ -24,5 +24,5 @@ export function audioFramesToMicroseconds(frameCount: number, sampleRate: number
         throw new RangeError('Audio sample rate must be a positive safe integer');
     }
 
-    return requireMicroseconds(Math.round((frameCount * 1_000_000) / sampleRate));
+    return requireMicroseconds(Math.round((frameCount * MICROSECONDS_PER_SECOND) / sampleRate));
 }

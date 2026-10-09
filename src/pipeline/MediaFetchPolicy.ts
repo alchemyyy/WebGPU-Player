@@ -32,23 +32,18 @@ export class MediaHTTPError extends MediaNetworkError {
         this.status = status;
         this.retryable = status === HTTP_REQUEST_TIMEOUT_STATUS
             || status === HTTP_TOO_MANY_REQUESTS_STATUS
-            || (
-                status >= HTTP_SERVER_ERROR_MINIMUM_STATUS
-                && status <= HTTP_SERVER_ERROR_MAXIMUM_STATUS
-            );
+            || (status >= HTTP_SERVER_ERROR_MINIMUM_STATUS && status <= HTTP_SERVER_ERROR_MAXIMUM_STATUS);
     }
 }
 
 /** Throws a status-aware error before Mediabunny converts it to a generic decode error. */
-export function requireSuccessfulMediaHTTPResponse(
-    response: Pick<Response, 'ok' | 'status'>
-): void {
+export function requireSuccessfulMediaHTTPResponse(response: Pick<Response, 'ok' | 'status'>): void {
     if (!response.ok) {
         throw new MediaHTTPError(response.status);
     }
 }
 
-/** Retries transport errors and transient HTTP statuses, never permanent HTTP failures. */
+/** Treats transport errors and transient HTTP statuses as retryable, never permanent HTTP failures. */
 export function isRetryableMediaFetchError(error: unknown): boolean {
     if (error instanceof MediaHTTPError) {
         return error.retryable;

@@ -104,10 +104,7 @@ function createDeviceHarness(
 ): DeviceHarness {
     const observationMap = new Map<string, ColorTriplet>();
     for (const observation of observations) {
-        observationMap.set(
-            `${observation.sampleX}:${observation.sampleY}`,
-            observation.linearRGB
-        );
+        observationMap.set(`${observation.sampleX}:${observation.sampleY}`, observation.linearRGB);
     }
 
     let lostResolve: (info: GPUDeviceLostInfo) => void = (): void => undefined;
@@ -137,19 +134,14 @@ function createDeviceHarness(
             return {
                 bytes,
                 destroy: bufferDestroy,
-                getMappedRange: vi.fn((offset = 0, size = bytes.byteLength) => (
-                    bytes.buffer.slice(offset, offset + size)
-                )),
+                getMappedRange: vi.fn((offset = 0, size = bytes.byteLength) => bytes.buffer.slice(offset, offset + size)),
                 mapAsync: vi.fn(() => mapAsyncFactory?.() ?? Promise.resolve()),
                 unmap: vi.fn()
             } as unknown as MockBuffer;
         }),
         createCommandEncoder: vi.fn(() => ({
             beginRenderPass: vi.fn(() => renderPass),
-            copyTextureToBuffer: vi.fn((
-                source: GPUTexelCopyTextureInfo,
-                destination: GPUTexelCopyBufferInfo
-            ) => {
+            copyTextureToBuffer: vi.fn((source: GPUTexelCopyTextureInfo, destination: GPUTexelCopyBufferInfo) => {
                 const origin = source.origin as GPUOrigin3DDict;
                 const sampleX = Number(origin.x ?? 0);
                 const sampleY = Number(origin.y ?? 0);
@@ -207,25 +199,17 @@ function swapVectorChroma(frame: TransferableRawVideoFrame): TransferableRawVide
     const sourceData = new Uint8Array(frame.data);
     const destinationData = new Uint8Array(swappedData);
     destinationData.set(
-        sourceData.slice(
-            chromaVPlane.byteOffset,
-            chromaVPlane.byteOffset + chromaVPlane.byteLength
-        ),
+        sourceData.slice(chromaVPlane.byteOffset, chromaVPlane.byteOffset + chromaVPlane.byteLength),
         chromaUPlane.byteOffset
     );
     destinationData.set(
-        sourceData.slice(
-            chromaUPlane.byteOffset,
-            chromaUPlane.byteOffset + chromaUPlane.byteLength
-        ),
+        sourceData.slice(chromaUPlane.byteOffset, chromaUPlane.byteOffset + chromaUPlane.byteLength),
         chromaVPlane.byteOffset
     );
     return { ...frame, data: swappedData };
 }
 
-function mutateFirstPixel(
-    observations: readonly RawHDRVectorObservation[]
-): readonly RawHDRVectorObservation[] {
+function mutateFirstPixel(observations: readonly RawHDRVectorObservation[]): readonly RawHDRVectorObservation[] {
     return observations.map((observation, observationIndex) => observationIndex === 0 ? {
         ...observation,
         linearRGB: [
@@ -280,7 +264,6 @@ describe('RawHDRPresentationAuthorization', () => {
         });
         Object.defineProperty(globalThis, 'GPUMapMode', {
             configurable: true,
-            // WebGPU defines this external name
             value: { READ: 1 }
         });
         Object.defineProperty(globalThis, 'GPUTextureUsage', {
@@ -334,12 +317,8 @@ describe('RawHDRPresentationAuthorization', () => {
 
         expect(SDR_AUTHORIZATION_ROUTE_KEYS).toHaveLength(formats.length * 2);
         for (const format of formats) {
-            expect(SDR_AUTHORIZATION_ROUTE_KEYS).toContain(
-                `${format}:bt709:bt709:limited:sdr`
-            );
-            expect(SDR_AUTHORIZATION_ROUTE_KEYS).toContain(
-                `${format}:bt709:bt709:full:sdr`
-            );
+            expect(SDR_AUTHORIZATION_ROUTE_KEYS).toContain(`${format}:bt709:bt709:limited:sdr`);
+            expect(SDR_AUTHORIZATION_ROUTE_KEYS).toContain(`${format}:bt709:bt709:full:sdr`);
         }
     });
 
@@ -396,9 +375,7 @@ describe('RawHDRPresentationAuthorization', () => {
             observations: (): readonly RawHDRVectorObservation[] => createRouteObservations(
                 'I420P10:bt2020-ncl:bt2020:limited:pq',
                 createPQColorMetadata(),
-                swapVectorChroma(createRawHDRAuthorizationVector(
-                    'I420P10:bt2020-ncl:bt2020:limited:pq'
-                ))
+                swapVectorChroma(createRawHDRAuthorizationVector('I420P10:bt2020-ncl:bt2020:limited:pq'))
             )
         },
         {
@@ -464,9 +441,7 @@ describe('RawHDRPresentationAuthorization', () => {
     });
 
     it('rejects a GPU validation error and releases every created resource', async () => {
-        const observations = createRouteObservations(
-            'I420P10:bt2020-ncl:bt2020:limited:pq'
-        );
+        const observations = createRouteObservations('I420P10:bt2020-ncl:bt2020:limited:pq');
         const harness = createDeviceHarness(observations);
         harness.popErrorScope.mockResolvedValueOnce(new Error('invalid bind group'));
         const runner = new RawHDRPresentationAuthorizationRunner();
@@ -485,13 +460,8 @@ describe('RawHDRPresentationAuthorization', () => {
 
     it('rejects a bounded pipeline timeout', async () => {
         vi.useFakeTimers();
-        const observations = createRouteObservations(
-            'I420P10:bt2020-ncl:bt2020:limited:pq'
-        );
-        const harness = createDeviceHarness(
-            observations,
-            new Promise<GPURenderPipeline>(() => undefined)
-        );
+        const observations = createRouteObservations('I420P10:bt2020-ncl:bt2020:limited:pq');
+        const harness = createDeviceHarness(observations, new Promise<GPURenderPipeline>(() => undefined));
         const runner = new RawHDRPresentationAuthorizationRunner();
         const decisionPromise = runner.validate(
             harness.device,
@@ -509,9 +479,7 @@ describe('RawHDRPresentationAuthorization', () => {
 
     it('applies the whole-route deadline to a batched readback', async () => {
         vi.useFakeTimers();
-        const observations = createRouteObservations(
-            'I420P10:bt2020-ncl:bt2020:limited:pq'
-        );
+        const observations = createRouteObservations('I420P10:bt2020-ncl:bt2020:limited:pq');
         const harness = createDeviceHarness(
             observations,
             undefined,
@@ -535,13 +503,8 @@ describe('RawHDRPresentationAuthorization', () => {
     });
 
     it('rejects device loss without waiting for the timeout', async () => {
-        const observations = createRouteObservations(
-            'I420P10:bt2020-ncl:bt2020:limited:pq'
-        );
-        const harness = createDeviceHarness(
-            observations,
-            new Promise<GPURenderPipeline>(() => undefined)
-        );
+        const observations = createRouteObservations('I420P10:bt2020-ncl:bt2020:limited:pq');
+        const harness = createDeviceHarness(observations, new Promise<GPURenderPipeline>(() => undefined));
         const runner = new RawHDRPresentationAuthorizationRunner();
         const decisionPromise = runner.validate(
             harness.device,
@@ -561,16 +524,11 @@ describe('RawHDRPresentationAuthorization', () => {
     });
 
     it('detects independently corrupted expected observations', () => {
-        const expected = createRouteObservations(
-            'I420P10:bt2020-ncl:bt2020:limited:pq'
-        );
+        const expected = createRouteObservations('I420P10:bt2020-ncl:bt2020:limited:pq');
         expect(evaluateRawHDRVectorObservations(expected, expected)).toMatchObject({
             accepted: true
         });
-        expect(evaluateRawHDRVectorObservations(
-            expected,
-            mutateFirstPixel(expected)
-        )).toMatchObject({ accepted: false });
+        expect(evaluateRawHDRVectorObservations(expected, mutateFirstPixel(expected))).toMatchObject({ accepted: false });
     });
 
     it('deduplicates probes and never authorizes a stale device identity', async () => {
@@ -588,7 +546,7 @@ describe('RawHDRPresentationAuthorization', () => {
         });
         const runner = {
             validate: vi.fn(() => pendingDecision)
-        } as unknown as RawHDRPresentationAuthorizationRunner;
+        } as RawHDRPresentationAuthorizationRunner;
         const registry = new RawHDRPresentationAuthorizationRegistry(runner);
 
         const firstPromise = registry.authorize(firstHarness.device, targetFormat, routeKey);

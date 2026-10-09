@@ -1,5 +1,5 @@
 /*
- * Focused FFmpeg decoder bridge for progressive MPEG-2 Video and VC-1.
+ * FFmpeg decoder bridge for progressive MPEG-2 Video and VC-1.
  */
 
 #include <emscripten.h>

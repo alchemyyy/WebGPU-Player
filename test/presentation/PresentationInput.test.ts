@@ -107,12 +107,8 @@ describe('getDolbyVisionPresentationDescriptor', () => {
         expect(descriptor).not.toBeNull();
         if (descriptor) {
             // Only IDs that declare an HDR10 (1), Ultra HD Blu-ray (6), or HLG (4) base allow a native base route
-            expect(isDolbyVisionProfile8HDR10BaseLayerDescriptor(descriptor)).toBe(
-                compatibilityID === 1 || compatibilityID === 6
-            );
-            expect(isDolbyVisionProfile8HLGBaseLayerDescriptor(descriptor)).toBe(
-                compatibilityID === 4
-            );
+            expect(isDolbyVisionProfile8HDR10BaseLayerDescriptor(descriptor)).toBe(compatibilityID === 1 || compatibilityID === 6);
+            expect(isDolbyVisionProfile8HLGBaseLayerDescriptor(descriptor)).toBe(compatibilityID === 4);
         }
     });
 
@@ -138,9 +134,7 @@ describe('getDolbyVisionPresentationDescriptor', () => {
             reconstructionProfile: 7
         });
         if (descriptor) {
-            expect(isDolbyVisionProfile7HDR10BaseLayerDescriptor(descriptor)).toBe(
-                compatibilityID === 1 || compatibilityID === 6
-            );
+            expect(isDolbyVisionProfile7HDR10BaseLayerDescriptor(descriptor)).toBe(compatibilityID === 1 || compatibilityID === 6);
         }
     });
 
@@ -196,10 +190,7 @@ describe('getDolbyVisionPresentationDescriptor', () => {
     it.each([ 0, 1 ])(
         'accepts Jellyfin separate-track Profile 7 metadata with enhancement BL flag %i',
         baseLayerPresentFlag => {
-            const mediaStreams = createSeparateProfile7Streams(
-                {},
-                { BlPresentFlag: baseLayerPresentFlag }
-            );
+            const mediaStreams = createSeparateProfile7Streams({}, { BlPresentFlag: baseLayerPresentFlag });
             const expectedDescriptor = {
                 baseLayerBitDepth: 10,
                 baseLayerSignalCompatibilityID: 6,
@@ -290,10 +281,7 @@ describe('getDolbyVisionPresentationDescriptor', () => {
     ) => {
         expect(getDolbyVisionPresentationDescriptor({
             mediaSource: {
-                MediaStreams: createSeparateProfile7Streams(
-                    baseLayerOverrides,
-                    enhancementLayerOverrides
-                )
+                MediaStreams: createSeparateProfile7Streams(baseLayerOverrides, enhancementLayerOverrides)
             }
         })).toBeNull();
     });
@@ -422,9 +410,7 @@ describe('getDolbyVisionPresentationDescriptor', () => {
 });
 
 describe('getDolbyVisionProfile7HDR10BaseColorMetadata', () => {
-    const createProfile7Options = (
-        overrides: Record<string, unknown> = {}
-    ): Record<string, unknown> => ({
+    const createProfile7Options = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
         mediaSource: {
             MediaStreams: [{
                 BitDepth: 10,
@@ -479,16 +465,12 @@ describe('getDolbyVisionProfile7HDR10BaseColorMetadata', () => {
         { DvBlSignalCompatibilityId: undefined },
         { VideoRange: 'SDR' }
     ])('rejects an inexact Profile 7 HDR10 base contract: %o', overrides => {
-        expect(getDolbyVisionProfile7HDR10BaseColorMetadata(
-            createProfile7Options(overrides)
-        )).toBeNull();
+        expect(getDolbyVisionProfile7HDR10BaseColorMetadata(createProfile7Options(overrides))).toBeNull();
     });
 });
 
 describe('getDolbyVisionProfile8HDR10BaseColorMetadata', () => {
-    const createProfile8Options = (
-        overrides: Record<string, unknown> = {}
-    ): Record<string, unknown> => ({
+    const createProfile8Options = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
         mediaSource: {
             MediaStreams: [{
                 BitDepth: 10,
@@ -510,9 +492,7 @@ describe('getDolbyVisionProfile8HDR10BaseColorMetadata', () => {
     });
 
     it('derives the exact limited BT.2020 PQ Profile 8.1 base contract', () => {
-        expect(getDolbyVisionProfile8HDR10BaseColorMetadata(
-            createProfile8Options()
-        )).toMatchObject({
+        expect(getDolbyVisionProfile8HDR10BaseColorMetadata(createProfile8Options())).toMatchObject({
             bitDepth: 10,
             matrix: 'bt2020-ncl',
             primaries: 'bt2020',
@@ -535,16 +515,12 @@ describe('getDolbyVisionProfile8HDR10BaseColorMetadata', () => {
         { DvBlSignalCompatibilityId: 4 },
         { VideoRange: 'SDR' }
     ])('rejects an inexact Profile 8.1 HDR10 base contract: %o', overrides => {
-        expect(getDolbyVisionProfile8HDR10BaseColorMetadata(
-            createProfile8Options(overrides)
-        )).toBeNull();
+        expect(getDolbyVisionProfile8HDR10BaseColorMetadata(createProfile8Options(overrides))).toBeNull();
     });
 });
 
 describe('getDolbyVisionProfile8HLGBaseColorMetadata', () => {
-    const createProfile8Options = (
-        overrides: Record<string, unknown> = {}
-    ): Record<string, unknown> => ({
+    const createProfile8Options = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
         mediaSource: {
             MediaStreams: [{
                 BitDepth: 10,
@@ -567,9 +543,7 @@ describe('getDolbyVisionProfile8HLGBaseColorMetadata', () => {
     });
 
     it('derives the exact limited BT.2020 HLG Profile 8.4 base contract', () => {
-        expect(getDolbyVisionProfile8HLGBaseColorMetadata(
-            createProfile8Options()
-        )).toMatchObject({
+        expect(getDolbyVisionProfile8HLGBaseColorMetadata(createProfile8Options())).toMatchObject({
             bitDepth: 10,
             matrix: 'bt2020-ncl',
             primaries: 'bt2020',
@@ -582,9 +556,7 @@ describe('getDolbyVisionProfile8HLGBaseColorMetadata', () => {
         { ElPresentFlag: undefined },
         { ElPresentFlag: true }
     ])('ignores the EL flag of a single-layer Profile 8.4 base: %o', overrides => {
-        expect(getDolbyVisionProfile8HLGBaseColorMetadata(
-            createProfile8Options(overrides)
-        )).toMatchObject({ transfer: 'hlg' });
+        expect(getDolbyVisionProfile8HLGBaseColorMetadata(createProfile8Options(overrides))).toMatchObject({ transfer: 'hlg' });
     });
 
     it.each([
@@ -598,9 +570,7 @@ describe('getDolbyVisionProfile8HLGBaseColorMetadata', () => {
         { DvBlSignalCompatibilityId: 1 },
         { VideoRange: 'SDR' }
     ])('rejects an inexact Profile 8.4 HLG base contract: %o', overrides => {
-        expect(getDolbyVisionProfile8HLGBaseColorMetadata(
-            createProfile8Options(overrides)
-        )).toBeNull();
+        expect(getDolbyVisionProfile8HLGBaseColorMetadata(createProfile8Options(overrides))).toBeNull();
     });
 });
 
@@ -627,9 +597,7 @@ describe('getDolbyVisionDeclaredBaseTransfer', () => {
         [ 15, null ],
         [ null, null ]
     ])('declares compatibility ID %s as a %s base', (compatibilityID, transfer) => {
-        expect(getDolbyVisionDeclaredBaseTransfer(
-            createDescriptor(8, compatibilityID, 8)
-        )).toBe(transfer);
+        expect(getDolbyVisionDeclaredBaseTransfer(createDescriptor(8, compatibilityID, 8))).toBe(transfer);
     });
 
     it.each([
@@ -1107,8 +1075,7 @@ describe('getPresentationInputColorMetadata', () => {
     });
 
     it('rejects missing video streams', () => {
-        expect(getPresentationInputColorMetadata({ mediaSource: { MediaStreams: [] } }))
-            .toBeNull();
+        expect(getPresentationInputColorMetadata({ mediaSource: { MediaStreams: [] } })).toBeNull();
     });
 
     it('extracts metadata from Jellyfin\'s first independent video track', () => {

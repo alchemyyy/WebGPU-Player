@@ -35,16 +35,10 @@ MIXED_CHANNEL_GAIN: Final = math.sqrt(0.5)
 DEFAULT_DIRECT_CHANNEL_GAIN: Final = 1.0
 DEFAULT_MIXED_CHANNEL_GAIN: Final = MIXED_CHANNEL_GAIN
 NORMALIZED_DIRECT_CHANNEL_GAIN: Final = 1 / (1 + 3 * MIXED_CHANNEL_GAIN)
-NORMALIZED_MIXED_CHANNEL_GAIN: Final = (
-    NORMALIZED_DIRECT_CHANNEL_GAIN * MIXED_CHANNEL_GAIN
-)
+NORMALIZED_MIXED_CHANNEL_GAIN: Final = NORMALIZED_DIRECT_CHANNEL_GAIN * MIXED_CHANNEL_GAIN
 MAXIMUM_EXTERNAL_SAMPLE_ERROR: Final = 1e-6
-DEFAULT_EXTERNAL_PCM_SHA256: Final = (
-    "9b44d35903a5cbf01af55e20ebe8231cdb935026306d1e8a52a58059233f4981"
-)
-NORMALIZED_EXTERNAL_PCM_SHA256: Final = (
-    "db63a6e65629b96e2fc183bbf29bee4ff36ac7a2d5344c6ec58a860631ed0805"
-)
+DEFAULT_EXTERNAL_PCM_SHA256: Final = "9b44d35903a5cbf01af55e20ebe8231cdb935026306d1e8a52a58059233f4981"
+NORMALIZED_EXTERNAL_PCM_SHA256: Final = "db63a6e65629b96e2fc183bbf29bee4ff36ac7a2d5344c6ec58a860631ed0805"
 CHANNEL_ORDER: Final = (
     "front-left",
     "front-right",
@@ -74,11 +68,7 @@ class ExternalOutputRecord(TypedDict):
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=CODEC_VECTOR_ASSETS_DIRECTORY / "downmix-reference" / "seven-point-one.json",
-    )
+    parser.add_argument("--output", type=Path, default=CODEC_VECTOR_ASSETS_DIRECTORY / "downmix-reference" / "seven-point-one.json")
     parser.add_argument(
         "--check",
         action="store_true",
@@ -119,19 +109,11 @@ def create_corpus() -> list[list[float]]:
         signed_value = ((correlated_state >> 16) & 0xFFFF) - 0x8000
         sample = as_float32(signed_value / 131_072)
         for channel_index in range(CHANNEL_COUNT):
-            channel_data[channel_index][frame_index] = (
-                as_float32(sample * 3)
-                if channel_index == LFE_CHANNEL_INDEX
-                else sample
-            )
+            channel_data[channel_index][frame_index] = as_float32(sample * 3) if channel_index == LFE_CHANNEL_INDEX else sample
 
     for channel_index in range(CHANNEL_COUNT):
-        channel_data[channel_index][CORRELATED_FULL_SCALE_FRAME] = (
-            100.0 if channel_index == LFE_CHANNEL_INDEX else 1.0
-        )
-        channel_data[channel_index][CORRELATED_NEGATIVE_FULL_SCALE_FRAME] = (
-            -100.0 if channel_index == LFE_CHANNEL_INDEX else -1.0
-        )
+        channel_data[channel_index][CORRELATED_FULL_SCALE_FRAME] = 100.0 if channel_index == LFE_CHANNEL_INDEX else 1.0
+        channel_data[channel_index][CORRELATED_NEGATIVE_FULL_SCALE_FRAME] = -100.0 if channel_index == LFE_CHANNEL_INDEX else -1.0
     channel_data[LFE_CHANNEL_INDEX][LFE_ONLY_FRAME] = 100.0
 
     channel_states = [0xD75A_0001 + channel_index for channel_index in range(CHANNEL_COUNT)]
@@ -140,9 +122,7 @@ def create_corpus() -> list[list[float]]:
             channel_states[channel_index] = next_lcg_value(channel_states[channel_index])
             signed_value = ((channel_states[channel_index] >> 16) & 0xFFFF) - 0x8000
             scale = 3 if channel_index == LFE_CHANNEL_INDEX else 1
-            channel_data[channel_index][frame_index] = as_float32(
-                signed_value * scale / 131_072
-            )
+            channel_data[channel_index][frame_index] = as_float32(signed_value * scale / 131_072)
     return channel_data
 
 
@@ -153,10 +133,7 @@ def get_matrix(direct_gain: float, mixed_gain: float) -> tuple[tuple[float, ...]
     )
 
 
-def apply_matrix(
-    channel_data: list[list[float]],
-    matrix: tuple[tuple[float, ...], ...],
-) -> tuple[list[float], list[float]]:
+def apply_matrix(channel_data: list[list[float]], matrix: tuple[tuple[float, ...], ...]) -> tuple[list[float], list[float]]:
     output_channels: list[list[float]] = [[], []]
     for output_channel_index in range(2):
         coefficients = matrix[output_channel_index]
@@ -164,10 +141,7 @@ def apply_matrix(
         for frame_index in range(FRAME_COUNT):
             sample = 0.0
             for input_channel_index in range(CHANNEL_COUNT):
-                sample += (
-                    channel_data[input_channel_index][frame_index]
-                    * coefficients[input_channel_index]
-                )
+                sample += channel_data[input_channel_index][frame_index] * coefficients[input_channel_index]
             output_channel.append(as_float32(sample))
     return output_channels[0], output_channels[1]
 
@@ -216,9 +190,7 @@ def compute_metrics(channel_data: tuple[list[float], list[float]]) -> StereoMetr
 def matrix_record(direct_gain: float, mixed_gain: float) -> dict[str, object]:
     matrix = get_matrix(direct_gain, mixed_gain)
     absolute_row_sum = sum(abs(coefficient) for coefficient in matrix[0])
-    uncorrelated_rms_gain = math.sqrt(
-        sum(coefficient * coefficient for coefficient in matrix[0])
-    )
+    uncorrelated_rms_gain = math.sqrt(sum(coefficient * coefficient for coefficient in matrix[0]))
     return {
         "absoluteRowSum": absolute_row_sum,
         "centerBackSideGain": mixed_gain,
@@ -236,14 +208,8 @@ def matrix_record(direct_gain: float, mixed_gain: float) -> dict[str, object]:
 
 def generate_reference() -> dict[str, object]:
     corpus = create_corpus()
-    default_matrix = get_matrix(
-        DEFAULT_DIRECT_CHANNEL_GAIN,
-        DEFAULT_MIXED_CHANNEL_GAIN,
-    )
-    normalized_matrix = get_matrix(
-        NORMALIZED_DIRECT_CHANNEL_GAIN,
-        NORMALIZED_MIXED_CHANNEL_GAIN,
-    )
+    default_matrix = get_matrix(DEFAULT_DIRECT_CHANNEL_GAIN, DEFAULT_MIXED_CHANNEL_GAIN)
+    normalized_matrix = get_matrix(NORMALIZED_DIRECT_CHANNEL_GAIN, NORMALIZED_MIXED_CHANNEL_GAIN)
     default_output = apply_matrix(corpus, default_matrix)
     normalized_output = apply_matrix(corpus, normalized_matrix)
     input_sha256 = hashlib.sha256(interleave_float32(corpus)).hexdigest()
@@ -271,17 +237,11 @@ def generate_reference() -> dict[str, object]:
         "measurements": measurements,
         "policies": {
             "mpvDefault": {
-                **matrix_record(
-                    DEFAULT_DIRECT_CHANNEL_GAIN,
-                    DEFAULT_MIXED_CHANNEL_GAIN,
-                ),
+                **matrix_record(DEFAULT_DIRECT_CHANNEL_GAIN, DEFAULT_MIXED_CHANNEL_GAIN),
                 "externalPCMReferenceSHA256": DEFAULT_EXTERNAL_PCM_SHA256,
             },
             "mpvNormalized": {
-                **matrix_record(
-                    NORMALIZED_DIRECT_CHANNEL_GAIN,
-                    NORMALIZED_MIXED_CHANNEL_GAIN,
-                ),
+                **matrix_record(NORMALIZED_DIRECT_CHANNEL_GAIN, NORMALIZED_MIXED_CHANNEL_GAIN),
                 "externalPCMReferenceSHA256": NORMALIZED_EXTERNAL_PCM_SHA256,
             },
         },
@@ -325,13 +285,7 @@ def write_wave_extensible(
         32,
         WAVE_CHANNEL_MASK_SEVEN_POINT_ONE,
     )
-    format_data += struct.pack(
-        "<IHH8s",
-        3,
-        0,
-        0x0010,
-        bytes.fromhex("800000aa00389b71"),
-    )
+    format_data += struct.pack("<IHH8s", 3, 0, 0x0010, bytes.fromhex("800000aa00389b71"))
     chunks = (
         b"fmt "
         + struct.pack("<I", len(format_data))
@@ -340,9 +294,7 @@ def write_wave_extensible(
         + struct.pack("<I", len(payload))
         + payload
     )
-    path.write_bytes(
-        b"RIFF" + struct.pack("<I", 4 + len(chunks)) + b"WAVE" + chunks
-    )
+    path.write_bytes(b"RIFF" + struct.pack("<I", 4 + len(chunks)) + b"WAVE" + chunks)
 
 
 def read_wave_float32(path: Path) -> tuple[list[float], list[float], bytes]:
@@ -364,10 +316,7 @@ def read_wave_float32(path: Path) -> tuple[list[float], list[float], bytes]:
         byte_offset = chunk_start + chunk_size + (chunk_size & 1)
     if format_data is None or payload is None:
         raise RuntimeError(f"External downmix output is missing WAVE chunks: {path}")
-    _format_tag, channel_count, _sample_rate, _, _, bits_per_sample = struct.unpack_from(
-        "<HHIIHH",
-        format_data,
-    )
+    _format_tag, channel_count, _sample_rate, _, _, bits_per_sample = struct.unpack_from("<HHIIHH", format_data)
     if channel_count != 2 or bits_per_sample != 32 or len(payload) % 8 != 0:
         raise RuntimeError(f"External downmix output is not stereo float32: {path}")
     interleaved = struct.unpack(f"<{len(payload) // 4}f", payload)
@@ -377,33 +326,18 @@ def read_wave_float32(path: Path) -> tuple[list[float], list[float], bytes]:
 
 
 def run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command,
-        check=True,
-        capture_output=True,
-        stdin=subprocess.DEVNULL,
-        text=True,
-    )
+    return subprocess.run(command, check=True, capture_output=True, stdin=subprocess.DEVNULL, text=True)
 
 
 def run_external_media_command(command: list[str]) -> None:
-    subprocess.run(
-        command,
-        check=True,
-        stdin=subprocess.DEVNULL,
-    )
+    subprocess.run(command, check=True, stdin=subprocess.DEVNULL)
 
 
 def run_mpv_command(command: list[str]) -> None:
     maximum_attempt_count = 3
     for attempt_index in range(maximum_attempt_count):
         try:
-            subprocess.run(
-                command,
-                check=True,
-                stdin=subprocess.DEVNULL,
-                timeout=5,
-            )
+            subprocess.run(command, check=True, stdin=subprocess.DEVNULL, timeout=5)
             return
         except subprocess.TimeoutExpired:
             if attempt_index + 1 >= maximum_attempt_count:
@@ -417,14 +351,10 @@ def require_source_behavior(
     file_name: str,
     required_fragments: tuple[str, ...],
 ) -> None:
-    source = run_command(
-        ["git", "-C", str(repository), "show", f"{commit}:{file_name}"]
-    ).stdout
+    source = run_command(["git", "-C", str(repository), "show", f"{commit}:{file_name}"]).stdout
     for required_fragment in required_fragments:
         if required_fragment not in source:
-            raise RuntimeError(
-                f"Pinned source behavior changed in {commit}:{file_name}"
-            )
+            raise RuntimeError(f"Pinned source behavior changed in {commit}:{file_name}")
 
 
 def compare_output(
@@ -446,14 +376,10 @@ def compare_output(
                 ),
             )
     if maximum_absolute_error > MAXIMUM_EXTERNAL_SAMPLE_ERROR:
-        raise RuntimeError(
-            f"External downmix differs from the pinned matrix by {maximum_absolute_error}"
-        )
+        raise RuntimeError(f"External downmix differs from the pinned matrix by {maximum_absolute_error}")
     actual_sha256 = hashlib.sha256(payload).hexdigest()
     if actual_sha256 != expected_sha256:
-        raise RuntimeError(
-            f"External downmix PCM hash mismatch: {actual_sha256}"
-        )
+        raise RuntimeError(f"External downmix PCM hash mismatch: {actual_sha256}")
     return {
         "maximumAbsoluteError": maximum_absolute_error,
         "pcmSHA256": actual_sha256,
@@ -516,14 +442,8 @@ def verify_external(arguments: argparse.Namespace) -> dict[str, object]:
 
     corpus = create_corpus()
     expected_outputs = {
-        "mpvDefault": apply_matrix(
-            corpus,
-            get_matrix(DEFAULT_DIRECT_CHANNEL_GAIN, DEFAULT_MIXED_CHANNEL_GAIN),
-        ),
-        "mpvNormalized": apply_matrix(
-            corpus,
-            get_matrix(NORMALIZED_DIRECT_CHANNEL_GAIN, NORMALIZED_MIXED_CHANNEL_GAIN),
-        ),
+        "mpvDefault": apply_matrix(corpus, get_matrix(DEFAULT_DIRECT_CHANNEL_GAIN, DEFAULT_MIXED_CHANNEL_GAIN)),
+        "mpvNormalized": apply_matrix(corpus, get_matrix(NORMALIZED_DIRECT_CHANNEL_GAIN, NORMALIZED_MIXED_CHANNEL_GAIN)),
     }
     sample_rate_reports: dict[str, object] = {}
     report: dict[str, object] = {
@@ -648,11 +568,7 @@ def main() -> None:
     arguments = parse_arguments()
     output_path = arguments.output.resolve()
     generated = json.dumps(generate_reference(), indent=2, sort_keys=True) + "\n"
-    write_or_check_output(
-        output_path,
-        generated.encode("utf-8"),
-        check=arguments.check,
-    )
+    write_or_check_output(output_path, generated.encode("utf-8"), check=arguments.check)
     action = "Verified" if arguments.check else "Generated"
     print(f"{action} {output_path}")
     if arguments.verify_external:

@@ -17,8 +17,7 @@ function defaultMonotonicTimeSource(): Microseconds {
 }
 
 /**
- * Tracks media time against a monotonic clock while invalidating asynchronous
- * work whenever playback state changes.
+ * Tracks media time against a monotonic clock while invalidating asynchronous work whenever playback state changes.
  */
 export default class MediaClock {
     private anchorMediaTimeMicroseconds: Microseconds;

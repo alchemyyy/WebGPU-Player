@@ -1,5 +1,5 @@
 /*
- * Bounded libdcadec bridge for the WebGPU player engine.
+ * libdcadec DTS decoder bridge for the WebGPU player engine.
  */
 
 #include <emscripten.h>

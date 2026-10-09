@@ -85,10 +85,7 @@ function isTelemetryReason(value: unknown): value is AudioWorkletTelemetryReason
     }
 }
 
-function createConfiguration(
-    audioContext: AudioContext,
-    options: AudioWorkletControllerOptions
-): AudioWorkletControllerConfiguration {
+function createConfiguration(audioContext: AudioContext, options: AudioWorkletControllerOptions): AudioWorkletControllerConfiguration {
     const channelCount = requirePositiveInteger(options.channelCount, 'Channel count');
     if (channelCount > MAX_AUDIO_CHANNEL_COUNT) {
         throw new RangeError(`Channel count cannot exceed ${MAX_AUDIO_CHANNEL_COUNT}`);
@@ -119,8 +116,7 @@ async function loadAudioWorkletModule(audioContext: AudioContext): Promise<void>
     }
 
     const moduleURL = createCustomAudioWorkletModuleURL();
-    const loadPromise = audioContext.audioWorklet.addModule(moduleURL)
-        .finally(() => URL.revokeObjectURL(moduleURL));
+    const loadPromise = audioContext.audioWorklet.addModule(moduleURL).finally(() => URL.revokeObjectURL(moduleURL));
     moduleLoadPromises.set(audioContext, loadPromise);
     try {
         await waitForBrowserAudioOperation(loadPromise, 'AudioWorklet module load');
@@ -155,16 +151,10 @@ export default class AudioWorkletController implements AudioWorkletOutputControl
         this.node = node;
         this.configuration = {
             channelCount: requirePositiveInteger(configuration.channelCount, 'Channel count'),
-            maxBufferedFrames: requirePositiveInteger(
-                configuration.maxBufferedFrames,
-                'Maximum buffered frames'
-            ),
+            maxBufferedFrames: requirePositiveInteger(configuration.maxBufferedFrames, 'Maximum buffered frames'),
             maxChunks: requirePositiveInteger(configuration.maxChunks, 'Maximum audio chunks'),
             sampleRate: requirePositiveInteger(configuration.sampleRate, 'Sample rate'),
-            telemetryIntervalFrames: requirePositiveInteger(
-                configuration.telemetryIntervalFrames,
-                'Telemetry interval frames'
-            )
+            telemetryIntervalFrames: requirePositiveInteger(configuration.telemetryIntervalFrames, 'Telemetry interval frames')
         };
         if (this.configuration.channelCount > MAX_AUDIO_CHANNEL_COUNT) {
             throw new RangeError(`Channel count cannot exceed ${MAX_AUDIO_CHANNEL_COUNT}`);
@@ -177,10 +167,7 @@ export default class AudioWorkletController implements AudioWorkletOutputControl
     }
 
     /** Loads the generated worklet module and connects it to the context output. */
-    public static async create(
-        audioContext: AudioContext,
-        options: AudioWorkletControllerOptions
-    ): Promise<AudioWorkletController> {
+    public static async create(audioContext: AudioContext, options: AudioWorkletControllerOptions): Promise<AudioWorkletController> {
         if (typeof AudioWorkletNode === 'undefined') {
             throw new Error('AudioWorkletNode is unavailable');
         }
@@ -365,9 +352,7 @@ export default class AudioWorkletController implements AudioWorkletOutputControl
         if (this.destroyPromise) {
             return this.destroyPromise;
         }
-        this.deactivationRejecter?.(
-            new Error('Audio worklet controller was destroyed during deactivation')
-        );
+        this.deactivationRejecter?.(new Error('Audio worklet controller was destroyed during deactivation'));
         this.deactivationRejecter = null;
         const message: CustomAudioWorkletMessage = { type: 'destroy' };
         this.destroyed = true;
@@ -518,9 +503,7 @@ export default class AudioWorkletController implements AudioWorkletOutputControl
             && candidate.volume >= 0;
     }
 
-    private isSignalTelemetry(
-        value: AudioWorkletTelemetry['signal'] | undefined
-    ): boolean {
+    private isSignalTelemetry(value: AudioWorkletTelemetry['signal'] | undefined): boolean {
         if (value === undefined) {
             return true;
         }

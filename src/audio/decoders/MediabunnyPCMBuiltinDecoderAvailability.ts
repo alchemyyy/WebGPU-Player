@@ -7,14 +7,12 @@ import {
 let registered = false;
 
 /**
- * Makes Mediabunny 1.52's input-track probe recognize its own mu-law and A-law
- * decoders. AudioSampleSink still selects Mediabunny's private PCM decoder
- * before it could instantiate this compatibility marker.
+ * Makes Mediabunny 1.52's input-track probe recognize its own mu-law and A-law decoders.
+ * AudioSampleSink still selects Mediabunny's private PCM decoder before it could instantiate this compatibility marker.
  */
 class MediabunnyPCMBuiltinDecoderAvailability extends CustomAudioDecoder {
     public static supports(codec: AudioCodec, configuration: AudioDecoderConfig): boolean {
-        return (codec === 'ulaw' || codec === 'alaw')
-            && configuration.codec === codec;
+        return (codec === 'ulaw' || codec === 'alaw') && configuration.codec === codec;
     }
 
     public close(): void {

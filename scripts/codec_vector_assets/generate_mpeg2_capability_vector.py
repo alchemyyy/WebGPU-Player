@@ -21,10 +21,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--ffmpeg",
         type=pathlib.Path,
-        help=(
-            "FFmpeg executable; defaults to ffmpeg on PATH. The committed vector "
-            "was encoded by Jellyfin FFmpeg 8.1.2"
-        ),
+        help="FFmpeg executable; defaults to ffmpeg on PATH. The committed vector was encoded by Jellyfin FFmpeg 8.1.2",
     )
     parser.add_argument(
         "--check",
@@ -51,14 +48,11 @@ def resolve_ffmpeg_path(explicit_path: pathlib.Path | None) -> pathlib.Path:
 def generate_vector(ffmpeg_path: pathlib.Path, *, check: bool) -> bool:
     """Encodes the MPEG-2 vector and compares it with the committed bytes.
 
-    Output that differs from the committed vector is never installed, so
-    another FFmpeg build cannot replace it. Returns whether a missing vector
-    was written.
+    Output that differs from the committed vector is never installed, so another FFmpeg build cannot replace it.
+    Returns whether a missing vector was written.
     """
 
-    with tempfile.TemporaryDirectory(
-        prefix="webgpu-mpeg2-vector-"
-    ) as temporary_directory:
+    with tempfile.TemporaryDirectory(prefix="webgpu-mpeg2-vector-") as temporary_directory:
         # A failed encode never touches the committed vector
         generated_path = pathlib.Path(temporary_directory) / OUTPUT_PATH.name
         command = [
@@ -93,19 +87,12 @@ def generate_vector(ffmpeg_path: pathlib.Path, *, check: bool) -> bool:
             str(generated_path),
         ]
         subprocess.run(command, check=True, cwd=ENGINE_ROOT)
-        return install_or_check_output(
-            OUTPUT_PATH,
-            generated_path.read_bytes(),
-            check=check,
-        )
+        return install_or_check_output(OUTPUT_PATH, generated_path.read_bytes(), check=check)
 
 
 def main() -> None:
     arguments = parse_arguments()
-    installed = generate_vector(
-        resolve_ffmpeg_path(arguments.ffmpeg),
-        check=arguments.check,
-    )
+    installed = generate_vector(resolve_ffmpeg_path(arguments.ffmpeg), check=arguments.check)
     action = "Generated" if installed else "Verified"
     print(f"{action} {OUTPUT_PATH}")
 

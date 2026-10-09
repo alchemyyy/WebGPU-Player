@@ -28,7 +28,8 @@ comma := ,
 # Emscripten settings take comma-separated lists
 comma_list = $(subst $(space),$(comma),$(strip $(1)))
 
-# Layout. The engine's folders come from tools/constants.json, the one place that names them
+# Layout
+# The engine's folders come from tools/constants.json, the one place that names them
 WASM := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 ENGINE := $(patsubst %/,%,$(dir $(WASM)))
 engine_layout = $(shell node -p "require('$(ENGINE)/tools/constants.json').$(1)")
@@ -164,9 +165,9 @@ LIBDOVI_TARGET := $(BUILD)/libdovi/target
 LIBDOVI_MODULE := $(LIBDOVI_TARGET)/wasm32-unknown-unknown/release/jellyfin_webgpu_dolby_vision_parser.wasm
 CARGO_HOME_DIRECTORY := $(or $(CARGO_HOME),$(HOME)/.cargo)
 native_path = $(shell cygpath -m '$(1)' 2>/dev/null || printf '%s' '$(1)')
-# With the rust-src component installed, rustc rewrites the standard library's /rustc/<commit> paths to that local
-# copy, so it maps back. The trailing slash keeps the original separators. Deferred, so only this build runs rustc,
-# from the crate, whose rust-toolchain.toml selects the toolchain
+# With the rust-src component installed, rustc rewrites the standard library's /rustc/<commit> paths to that local copy, so it maps back.
+# The trailing slash keeps the original separators.
+# These expand only when build-libdovi runs, so rustc runs only for that build, inside the crate, where rust-toolchain.toml selects the toolchain
 LIBDOVI_RUST_SOURCE = $(call native_path,$(shell cd $(WASM)/libdovi && rustc --print sysroot))/lib/rustlib/src/rust
 LIBDOVI_RUSTC_COMMIT = $(shell cd $(WASM)/libdovi && rustc -vV | sed -n 's/^commit-hash: //p')
 LIBDOVI_REMAPS = '--remap-path-prefix=$(call native_path,$(CARGO_HOME_DIRECTORY))=/cargo',\
@@ -243,7 +244,7 @@ define require_commit
 	@test "$$(git -C $(1) rev-parse HEAD)" = "$(2)" || { echo "$(1) is not at $(2); run make sources" >&2; exit 1; }
 endef
 
-# Extracts a fresh copy of the pinned FFmpeg tree, which FFmpeg is then configured and built in
+# Extracts a fresh copy of the pinned FFmpeg tree, then configures and builds FFmpeg in it.
 # Building outside a git checkout keeps the embedded version string and source paths stable
 # $(1): kit, $(2): configure components, $(3): compile flags, $(4): link flags, $(5): decoders
 define build_ffmpeg

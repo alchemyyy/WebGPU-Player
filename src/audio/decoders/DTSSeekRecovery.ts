@@ -30,10 +30,7 @@ export default class DTSSeekRecovery {
     }
 
     /** Returns true only for a bounded pre-target XLL synchronization wait. */
-    public shouldIgnore(
-        error: unknown,
-        packetTimeMicroseconds: Microseconds
-    ): boolean {
+    public shouldIgnore(error: unknown, packetTimeMicroseconds: Microseconds): boolean {
         requireMicroseconds(packetTimeMicroseconds, 'DTS recovery packet timestamp');
         if (!(error instanceof DTSDecoderSynchronizationError)
             || this.targetTimeMicroseconds === 0
@@ -49,9 +46,7 @@ export default class DTSSeekRecovery {
     }
 
     /** Fails before decoding a target packet when recovery is already late. */
-    public requireSynchronizationRecoveredBefore(
-        packetTimeMicroseconds: Microseconds
-    ): void {
+    public requireSynchronizationRecoveredBefore(packetTimeMicroseconds: Microseconds): void {
         requireMicroseconds(packetTimeMicroseconds, 'DTS recovery packet timestamp');
         if (this.synchronizationWaitObserved
             && !this.decodeSucceeded

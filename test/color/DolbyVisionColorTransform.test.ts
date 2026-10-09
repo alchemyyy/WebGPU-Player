@@ -49,8 +49,7 @@ interface LibplaceboReferenceSample {
     output: ColorTriplet;
 }
 
-// Generated through pl_shader_decode_color_ex at libplacebo
-// 4d82c6898551068d4ae6a6b5538efcddc2c7cf64 into a Vulkan float target
+// Generated through pl_shader_decode_color_ex at libplacebo 4d82c6898551068d4ae6a6b5538efcddc2c7cf64 into a Vulkan float target
 const LIBPLACEBO_PROFILE_8_4_REFERENCE_SAMPLES: readonly LibplaceboReferenceSample[] = [
     {
         input: [ 0.180000007, 0.400000006, 0.699999988 ],
@@ -87,20 +86,10 @@ const ACTUAL_PARSER_DEPENDENCIES: DolbyVisionRPUParserDependencies = {
     loadInstance: instantiateParserModule
 };
 
-function readVector(fileName: string): Uint8Array {
-    return new Uint8Array(readFileSync(resolve(
-        RPU_VECTOR_DIRECTORY,
-        fileName
-    )));
-}
-
 async function parseVector(fileName: string): Promise<ArrayBuffer> {
-    const parser = await DolbyVisionRPUParser.create(
-        'local-parser.wasm',
-        ACTUAL_PARSER_DEPENDENCIES
-    );
+    const parser = await DolbyVisionRPUParser.create('local-parser.wasm', ACTUAL_PARSER_DEPENDENCIES);
     try {
-        return parser.parse(readVector(fileName)).packedData;
+        return parser.parse(new Uint8Array(readFileSync(resolve(RPU_VECTOR_DIRECTORY, fileName)))).packedData;
     } finally {
         parser.close();
     }
@@ -108,10 +97,7 @@ async function parseVector(fileName: string): Promise<ArrayBuffer> {
 
 function expectColorClose(actual: ColorTriplet, expected: ColorTriplet): void {
     for (let componentIndex = 0; componentIndex < actual.length; componentIndex += 1) {
-        expect(actual[componentIndex]).toBeCloseTo(
-            expected[componentIndex],
-            REFERENCE_DECIMAL_PRECISION
-        );
+        expect(actual[componentIndex]).toBeCloseTo(expected[componentIndex], REFERENCE_DECIMAL_PRECISION);
     }
 }
 
@@ -121,21 +107,18 @@ function expectColorWithinAbsoluteError(
     maximumAbsoluteError: number
 ): void {
     for (let componentIndex = 0; componentIndex < actual.length; componentIndex += 1) {
-        expect(Math.abs(actual[componentIndex] - expected[componentIndex]))
-            .toBeLessThanOrEqual(maximumAbsoluteError);
+        expect(Math.abs(actual[componentIndex] - expected[componentIndex])).toBeLessThanOrEqual(maximumAbsoluteError);
     }
 }
 
 function createMultiSegmentMMRVector(): ArrayBuffer {
     const packedRPUData = createDolbyVisionAuthorizationRPUVector();
     const view = new DataView(packedRPUData);
-    const componentWordOffset = DOLBY_VISION_RPU_COMPONENT_WORD_OFFSET
-        + DOLBY_VISION_RPU_COMPONENT_WORD_STRIDE;
+    const componentWordOffset = DOLBY_VISION_RPU_COMPONENT_WORD_OFFSET + DOLBY_VISION_RPU_COMPONENT_WORD_STRIDE;
     const componentByteOffset = componentWordOffset * BYTES_PER_PACKED_WORD;
     view.setUint32(componentByteOffset, 3, true);
     view.setUint32(componentByteOffset + BYTES_PER_PACKED_WORD, 8, true);
-    const pivotByteOffset = componentByteOffset
-        + DOLBY_VISION_RPU_PACKED_COMPONENT_PIVOT_OFFSET;
+    const pivotByteOffset = componentByteOffset + DOLBY_VISION_RPU_PACKED_COMPONENT_PIVOT_OFFSET;
     view.setFloat32(pivotByteOffset, 0, true);
     view.setFloat32(pivotByteOffset + BYTES_PER_PACKED_WORD, 0.5, true);
     view.setFloat32(pivotByteOffset + (2 * BYTES_PER_PACKED_WORD), 1, true);
@@ -175,10 +158,7 @@ describe('Dolby Vision CPU color reconstruction', () => {
             [ 0.227399177, 0.376367672, 0.649622879 ]
         );
         expectColorClose(
-            reconstructDolbyVisionBT2020PQ(
-                [ 0.75, 0.25, 0.9 ],
-                packedRPUData
-            ),
+            reconstructDolbyVisionBT2020PQ([ 0.75, 0.25, 0.9 ], packedRPUData),
             [ 0.936491165, 0.521081246, 0.306211186 ]
         );
     });
@@ -211,10 +191,7 @@ describe('Dolby Vision CPU color reconstruction', () => {
     it('indexes later MMR segments in packed vec4 units', () => {
         const packedRPUData = createMultiSegmentMMRVector();
 
-        expect(reshapeDolbyVisionSignal(
-            [ 0.2, 0.75, 0.4 ],
-            packedRPUData
-        )[1]).toBeCloseTo(0.4, REFERENCE_DECIMAL_PRECISION);
+        expect(reshapeDolbyVisionSignal([ 0.2, 0.75, 0.4 ], packedRPUData)[1]).toBeCloseTo(0.4, REFERENCE_DECIMAL_PRECISION);
     });
 
     it('evaluates each segment of a mixed component by its own method', () => {
@@ -263,19 +240,14 @@ describe('Dolby Vision CPU color reconstruction', () => {
             baseSignal,
             enhancementSignal,
             packedRPUData
-        )).not.toEqual(reconstructDolbyVisionBT2020PQ(
-            baseSignal,
-            packedRPUData
-        ));
+        )).not.toEqual(reconstructDolbyVisionBT2020PQ(baseSignal, packedRPUData));
     });
 });
 
 describe('createDolbyVisionColorTransformWGSL', () => {
     it('generates the fixed-schema libplacebo-equivalent reconstruction order', () => {
         const shader = createDolbyVisionColorTransformWGSL(5);
-        const reconstruction = shader.slice(
-            shader.indexOf('fn reconstructDolbyVisionBT2020PQ')
-        );
+        const reconstruction = shader.slice(shader.indexOf('fn reconstructDolbyVisionBT2020PQ'));
 
         expect(shader).toContain('@binding(5) var<storage, read> dolbyVisionRPU');
         expect(shader).toContain(`array<u32, ${DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH / 4}>`);
@@ -330,11 +302,7 @@ describe('createDolbyVisionColorTransformWGSL', () => {
     });
 
     it('rejects invalid storage bindings', () => {
-        expect(() => createDolbyVisionColorTransformWGSL(-1)).toThrow(
-            'Dolby Vision RPU binding must be a non-negative integer'
-        );
-        expect(() => createDolbyVisionColorTransformWGSL(1.5)).toThrow(
-            'Dolby Vision RPU binding must be a non-negative integer'
-        );
+        expect(() => createDolbyVisionColorTransformWGSL(-1)).toThrow('Dolby Vision RPU binding must be a non-negative integer');
+        expect(() => createDolbyVisionColorTransformWGSL(1.5)).toThrow('Dolby Vision RPU binding must be a non-negative integer');
     });
 });

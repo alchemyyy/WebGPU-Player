@@ -64,58 +64,56 @@ const CUSTOM_MATROSKA_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.freeze(
 export const CUSTOM_MATROSKA_PROFILE_CONTAINER = 'mkv';
 
 /**
- * Defines container compatibility independently of the selected decoder
- * backends. Exact codec and layout probes decide whether each track is
- * supported; these rules only decide whether the container can carry them.
+ * Defines container compatibility independently of the selected decoder backends.
+ * Exact codec and layout probes decide whether each track is supported; these rules only decide whether the container can carry them.
  */
-export const CUSTOM_CONTAINER_CODEC_RULES: readonly CustomContainerCodecRule[] =
-    Object.freeze([
-        Object.freeze({
-            audioCodecs: CUSTOM_ISO_BASE_MEDIA_AUDIO_CODECS,
-            containerAliases: Object.freeze([ '3gp', '3g2', 'mj2' ]),
-            profileContainers: Object.freeze([ 'mp4', 'm4v', 'mov' ]),
-            videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
-        }),
-        Object.freeze({
-            audioCodecs: CUSTOM_ISO_BASE_MEDIA_PCM_AUDIO_CODECS,
-            containerAliases: Object.freeze([]),
-            profileContainers: Object.freeze([ 'mp4', 'm4v', 'mov' ]),
-            videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
-        }),
-        Object.freeze({
-            audioCodecs: CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS,
-            containerAliases: Object.freeze([]),
-            profileContainers: Object.freeze([ 'mov' ]),
-            videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
-        }),
-        Object.freeze({
-            audioCodecs: Object.freeze([
-                ...CUSTOM_COMPRESSED_AUDIO_CODECS,
-                ...CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS
-            ] as const),
-            containerAliases: Object.freeze([]),
-            profileContainers: Object.freeze([ 'mov', 'mj2' ]),
-            videoCodecs: Object.freeze([ 'jpeg2000' ] as const)
-        }),
-        Object.freeze({
-            audioCodecs: CUSTOM_MATROSKA_AUDIO_CODECS,
-            containerAliases: Object.freeze([ 'matroska' ]),
-            profileContainers: Object.freeze([ CUSTOM_MATROSKA_PROFILE_CONTAINER ]),
-            videoCodecs: CUSTOM_MATROSKA_VIDEO_CODECS
-        }),
-        Object.freeze({
-            audioCodecs: Object.freeze([ 'opus', 'vorbis' ] as const),
-            containerAliases: Object.freeze([]),
-            profileContainers: Object.freeze([ 'webm' ]),
-            videoCodecs: Object.freeze([ 'vp8', 'vp9', 'av1' ] as const)
-        }),
-        Object.freeze({
-            audioCodecs: Object.freeze([ 'aac', 'mp3', 'ac3', 'eac3' ] as const),
-            containerAliases: Object.freeze([]),
-            profileContainers: Object.freeze([ 'ts', 'm2ts', 'mts' ]),
-            videoCodecs: Object.freeze([ 'h264', 'hevc' ] as const)
-        })
-    ]);
+export const CUSTOM_CONTAINER_CODEC_RULES: readonly CustomContainerCodecRule[] = Object.freeze([
+    Object.freeze({
+        audioCodecs: CUSTOM_ISO_BASE_MEDIA_AUDIO_CODECS,
+        containerAliases: Object.freeze([ '3gp', '3g2', 'mj2' ]),
+        profileContainers: Object.freeze([ 'mp4', 'm4v', 'mov' ]),
+        videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
+    }),
+    Object.freeze({
+        audioCodecs: CUSTOM_ISO_BASE_MEDIA_PCM_AUDIO_CODECS,
+        containerAliases: Object.freeze([]),
+        profileContainers: Object.freeze([ 'mp4', 'm4v', 'mov' ]),
+        videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
+    }),
+    Object.freeze({
+        audioCodecs: CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS,
+        containerAliases: Object.freeze([]),
+        profileContainers: Object.freeze([ 'mov' ]),
+        videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
+    }),
+    Object.freeze({
+        audioCodecs: Object.freeze([
+            ...CUSTOM_COMPRESSED_AUDIO_CODECS,
+            ...CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS
+        ] as const),
+        containerAliases: Object.freeze([]),
+        profileContainers: Object.freeze([ 'mov', 'mj2' ]),
+        videoCodecs: Object.freeze([ 'jpeg2000' ] as const)
+    }),
+    Object.freeze({
+        audioCodecs: CUSTOM_MATROSKA_AUDIO_CODECS,
+        containerAliases: Object.freeze([ 'matroska' ]),
+        profileContainers: Object.freeze([ CUSTOM_MATROSKA_PROFILE_CONTAINER ]),
+        videoCodecs: CUSTOM_MATROSKA_VIDEO_CODECS
+    }),
+    Object.freeze({
+        audioCodecs: Object.freeze([ 'opus', 'vorbis' ] as const),
+        containerAliases: Object.freeze([]),
+        profileContainers: Object.freeze([ 'webm' ]),
+        videoCodecs: Object.freeze([ 'vp8', 'vp9', 'av1' ] as const)
+    }),
+    Object.freeze({
+        audioCodecs: Object.freeze([ 'aac', 'mp3', 'ac3', 'eac3' ] as const),
+        containerAliases: Object.freeze([]),
+        profileContainers: Object.freeze([ 'ts', 'm2ts', 'mts' ]),
+        videoCodecs: Object.freeze([ 'h264', 'hevc' ] as const)
+    })
+]);
 
 const customProfileVideoContainers: string[] = [];
 for (const rule of CUSTOM_CONTAINER_CODEC_RULES) {
@@ -126,32 +124,21 @@ for (const rule of CUSTOM_CONTAINER_CODEC_RULES) {
     }
 }
 
-export const CUSTOM_PROFILE_VIDEO_CONTAINERS: readonly string[] =
-    Object.freeze(customProfileVideoContainers);
+export const CUSTOM_PROFILE_VIDEO_CONTAINERS: readonly string[] = Object.freeze(customProfileVideoContainers);
 
-function ruleContainsContainer(
-    rule: CustomContainerCodecRule,
-    normalizedContainer: string
-): boolean {
-    return rule.profileContainers.some(container => (
-        container.toUpperCase() === normalizedContainer
-    )) || rule.containerAliases.some(container => (
-        container.toUpperCase() === normalizedContainer
-    ));
+function ruleContainsContainer(rule: CustomContainerCodecRule, normalizedContainer: string): boolean {
+    return rule.profileContainers.some(container => container.toUpperCase() === normalizedContainer)
+        || rule.containerAliases.some(container => container.toUpperCase() === normalizedContainer);
 }
 
-/** Returns whether any custom route owns the normalized container token. */
+/** Returns whether any custom route owns the container token, ignoring case and surrounding whitespace. */
 export function isCustomPlaybackContainer(container: string): boolean {
     const normalizedContainer: string = container.trim().toUpperCase();
-    return CUSTOM_CONTAINER_CODEC_RULES.some(rule => (
-        ruleContainsContainer(rule, normalizedContainer)
-    ));
+    return CUSTOM_CONTAINER_CODEC_RULES.some(rule => ruleContainsContainer(rule, normalizedContainer));
 }
 
 /** Returns every profile container whose rules carry the audio codec, in rule order. */
-export function getCustomAudioCodecProfileContainers(
-    audioCodec: CustomAudioCodec
-): readonly string[] {
+export function getCustomAudioCodecProfileContainers(audioCodec: CustomAudioCodec): readonly string[] {
     const containers: string[] = [];
     for (const rule of CUSTOM_CONTAINER_CODEC_RULES) {
         if (!rule.audioCodecs.includes(audioCodec)) {
@@ -173,9 +160,7 @@ export function supportsCustomContainerCodecCombination(
     audioCodec: CustomAudioCodec | null
 ): boolean {
     for (const rule of CUSTOM_CONTAINER_CODEC_RULES) {
-        const containerSupported: boolean = containers.some(container => (
-            ruleContainsContainer(rule, container.trim().toUpperCase())
-        ));
+        const containerSupported: boolean = containers.some(container => ruleContainsContainer(rule, container.trim().toUpperCase()));
         if (!containerSupported
             || !rule.videoCodecs.includes(videoCodec)
             || (audioCodec !== null && !rule.audioCodecs.includes(audioCodec))) {

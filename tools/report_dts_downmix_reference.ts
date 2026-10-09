@@ -31,10 +31,7 @@ type StereoMetrics = {
 };
 
 const VECTOR_DIRECTORY = join(TEST_VECTORS_DIRECTORY, 'dts');
-const VECTOR_DEFINITIONS = JSON.parse(readFileSync(
-    resolve(VECTOR_DIRECTORY, 'packets.json'),
-    'utf8'
-)) as Record<string, DTSVectorDefinition>;
+const VECTOR_DEFINITIONS = JSON.parse(readFileSync(resolve(VECTOR_DIRECTORY, 'packets.json'), 'utf8')) as Record<string, DTSVectorDefinition>;
 const DTS_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE = 0x63f;
 
 function computeStereoMetrics(channelData: StereoChannelData): StereoMetrics {
@@ -66,9 +63,7 @@ function computeStereoMetrics(channelData: StereoChannelData): StereoMetrics {
     };
 }
 
-function applyMpvDefaultSevenPointOneMatrix(
-    channelData: readonly Float32Array[]
-): StereoChannelData {
+function applyMpvDefaultSevenPointOneMatrix(channelData: readonly Float32Array[]): StereoChannelData {
     const frameCount = channelData[0].length;
     const left = new Float32Array(frameCount);
     const right = new Float32Array(frameCount);
@@ -85,22 +80,14 @@ function applyMpvDefaultSevenPointOneMatrix(
     return [ left, right ];
 }
 
-async function decodeQualificationOutput(
-    fileName: string,
-    definition: DTSVectorDefinition
-): Promise<DTSDecodedAudioOutput> {
+async function decodeQualificationOutput(fileName: string, definition: DTSVectorDefinition): Promise<DTSDecodedAudioOutput> {
     const vector = new Uint8Array(readFileSync(resolve(VECTOR_DIRECTORY, fileName)));
     const decoder = await DTSSoftwareAudioDecoder.create();
     try {
         let output: DTSDecodedAudioOutput | null = null;
-        for (let packetIndex = 0;
-            packetIndex <= definition.qualificationPacketIndex;
-            packetIndex += 1) {
+        for (let packetIndex = 0; packetIndex <= definition.qualificationPacketIndex; packetIndex += 1) {
             const [ byteOffset, byteLength ] = definition.packets[packetIndex];
-            output = decoder.decode(
-                vector.subarray(byteOffset, byteOffset + byteLength),
-                0 as Microseconds
-            );
+            output = decoder.decode(vector.subarray(byteOffset, byteOffset + byteLength), 0 as Microseconds);
         }
         if (!output) {
             throw new Error(`DTS vector has no qualification output: ${fileName}`);
@@ -122,14 +109,10 @@ async function main(): Promise<void> {
         }
         const output = await decodeQualificationOutput(fileName, definition);
         const stereo = mixCustomAudioToStereo(output.channelData, output.channelLayout);
-        const mpvDefaultStereo = applyMpvDefaultSevenPointOneMatrix(
-            output.channelData
-        );
+        const mpvDefaultStereo = applyMpvDefaultSevenPointOneMatrix(output.channelData);
         const fingerprint = getStereoChannelDataFingerprint(stereo);
         if (check && fingerprint !== definition.qualificationStereoFingerprint) {
-            throw new Error(
-                `DTS stereo fingerprint mismatch for ${fileName}: ${fingerprint}`
-            );
+            throw new Error(`DTS stereo fingerprint mismatch for ${fileName}: ${fingerprint}`);
         }
         report[fileName] = {
             channelMask: output.channelMask,

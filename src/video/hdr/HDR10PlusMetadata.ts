@@ -162,9 +162,7 @@ function parseWindowStatistics(reader: BitReader): HDR10PlusWindowMetadata {
         reader.readBits(17) / HDR10_PLUS_LINEAR_RGB_SCALE,
         reader.readBits(17) / HDR10_PLUS_LINEAR_RGB_SCALE
     ];
-    if (maximumSCLNits.some((value: number): boolean => (
-        value > HDR10_PLUS_MAXIMUM_LUMINANCE_NITS
-    ))) {
+    if (maximumSCLNits.some((value: number): boolean => value > HDR10_PLUS_MAXIMUM_LUMINANCE_NITS)) {
         throw new TypeError('The HDR10+ MaxSCL value exceeds its range');
     }
 
@@ -200,19 +198,14 @@ function parseWindowStatistics(reader: BitReader): HDR10PlusWindowMetadata {
     };
 }
 
-function parseWindowToneMapping(
-    reader: BitReader,
-    window: HDR10PlusWindowMetadata
-): boolean {
+function parseWindowToneMapping(reader: BitReader, window: HDR10PlusWindowMetadata): boolean {
     if (reader.readBits(1) === 1) {
         const kneePointXValue = reader.readBits(12);
         const kneePointYValue = reader.readBits(12);
         const anchorCount = reader.readBits(4);
         const bezierCurveAnchors: number[] = [];
         for (let anchorIndex = 0; anchorIndex < anchorCount; anchorIndex += 1) {
-            bezierCurveAnchors.push(
-                reader.readBits(10) / HDR10_PLUS_BEZIER_ANCHOR_SCALE
-            );
+            bezierCurveAnchors.push(reader.readBits(10) / HDR10_PLUS_BEZIER_ANCHOR_SCALE);
         }
         window.toneMapping = anchorCount > 0 ? {
             bezierCurveAnchors,
@@ -229,10 +222,7 @@ function parseWindowToneMapping(
 }
 
 function parseHDR10PlusPayload(payload: Uint8Array): ParsedHDR10PlusPayload {
-    if (
-        payload.byteLength === 0
-        || payload.byteLength > MAXIMUM_HDR10_PLUS_PAYLOAD_BYTE_LENGTH
-    ) {
+    if (payload.byteLength === 0 || payload.byteLength > MAXIMUM_HDR10_PLUS_PAYLOAD_BYTE_LENGTH) {
         throw new TypeError('The HDR10+ payload size is unsupported');
     }
     const reader = new BitReader(payload);
@@ -246,11 +236,7 @@ function parseHDR10PlusPayload(payload: Uint8Array): ParsedHDR10PlusPayload {
     }
 
     const targetedSystemDisplayMaximumLuminanceNits = reader.readBits(27);
-    if (
-        targetedSystemDisplayMaximumLuminanceNits < 1
-        || targetedSystemDisplayMaximumLuminanceNits
-            > HDR10_PLUS_MAXIMUM_LUMINANCE_NITS
-    ) {
+    if (targetedSystemDisplayMaximumLuminanceNits < 1 || targetedSystemDisplayMaximumLuminanceNits > HDR10_PLUS_MAXIMUM_LUMINANCE_NITS) {
         throw new TypeError('The HDR10+ targeted display luminance is invalid');
     }
     const hasTargetedPeakLuminanceGrid = reader.readBits(1) === 1;
@@ -292,9 +278,7 @@ function parseHDR10PlusPayload(payload: Uint8Array): ParsedHDR10PlusPayload {
     };
 }
 
-function tryParseRegisteredHDR10PlusPayload(
-    payload: Uint8Array
-): ParsedHDR10PlusPayload | null {
+function tryParseRegisteredHDR10PlusPayload(payload: Uint8Array): ParsedHDR10PlusPayload | null {
     if (payload.byteLength < 3 || payload[0] !== ITU_T_T35_COUNTRY_CODE_US) {
         return null;
     }
@@ -304,10 +288,7 @@ function tryParseRegisteredHDR10PlusPayload(
     if (payload.byteLength < 6) {
         throw new TypeError('The HDR10+ ITU-T T.35 header is truncated');
     }
-    if (
-        readUnsigned16(payload, 3) !== HDR10_PLUS_PROVIDER_ORIENTED_CODE
-        || payload[5] !== HDR10_PLUS_APPLICATION_IDENTIFIER
-    ) {
+    if (readUnsigned16(payload, 3) !== HDR10_PLUS_PROVIDER_ORIENTED_CODE || payload[5] !== HDR10_PLUS_APPLICATION_IDENTIFIER) {
         return null;
     }
     return parseHDR10PlusPayload(payload.subarray(6));
@@ -337,10 +318,7 @@ function parseHDR10PlusSEIMessage(message: HEVCSEIMessage): HDR10PlusMessagePars
 }
 
 /** Parses one frame's ST 2094-40 metadata without retaining access-unit views. */
-export function parseHEVCHDR10PlusMetadata(
-    accessUnit: Uint8Array,
-    format: HEVCNALFormat
-): HDR10PlusFrameMetadata {
+export function parseHEVCHDR10PlusMetadata(accessUnit: Uint8Array, format: HEVCNALFormat): HDR10PlusFrameMetadata {
     const parsedPayloads: ParsedHDR10PlusPayload[] = [];
     let malformed = false;
     try {
@@ -371,14 +349,10 @@ export function parseHEVCHDR10PlusMetadata(
         return { metadata: null, status: 'absent' };
     }
     const firstPayload = parsedPayloads[0];
-    if (parsedPayloads.some((payload: ParsedHDR10PlusPayload): boolean => (
-        !metadataEqual(firstPayload.metadata, payload.metadata)
-    ))) {
+    if (parsedPayloads.some((payload: ParsedHDR10PlusPayload): boolean => !metadataEqual(firstPayload.metadata, payload.metadata))) {
         return { metadata: null, status: 'conflicting' };
     }
-    if (parsedPayloads.some((payload: ParsedHDR10PlusPayload): boolean => (
-        !payload.supported
-    ))) {
+    if (parsedPayloads.some((payload: ParsedHDR10PlusPayload): boolean => !payload.supported)) {
         return { metadata: null, status: 'unsupported' };
     }
     return { metadata: firstPayload.metadata, status: 'valid' };
@@ -391,9 +365,7 @@ function isFiniteRange(value: unknown, minimum: number, maximum: number): value 
         && value <= maximum;
 }
 
-function isHDR10PlusDistribution(
-    value: unknown
-): value is readonly HDR10PlusDistributionPercentile[] {
+function isHDR10PlusDistribution(value: unknown): value is readonly HDR10PlusDistributionPercentile[] {
     if (!Array.isArray(value) || value.length > 15) {
         return false;
     }
@@ -428,11 +400,8 @@ function isHDR10PlusToneMapping(value: unknown): value is HDR10PlusToneMapping |
         && isFiniteRange(toneMapping.kneePointY, 0, 1)
         && Array.isArray(toneMapping.bezierCurveAnchors)
         && toneMapping.bezierCurveAnchors.length > 0
-        && toneMapping.bezierCurveAnchors.length
-            <= MAXIMUM_HDR10_PLUS_BEZIER_ANCHOR_COUNT
-        && toneMapping.bezierCurveAnchors.every((anchor: unknown): boolean => (
-            isFiniteRange(anchor, 0, 1)
-        ));
+        && toneMapping.bezierCurveAnchors.length <= MAXIMUM_HDR10_PLUS_BEZIER_ANCHOR_COUNT
+        && toneMapping.bezierCurveAnchors.every((anchor: unknown): boolean => isFiniteRange(anchor, 0, 1));
 }
 
 /** Validates dynamic HDR10+ metadata received across a worker boundary. */
@@ -446,16 +415,10 @@ export function isHDR10PlusMetadata(value: unknown): value is HDR10PlusMetadata 
         || !Number.isSafeInteger(metadata.applicationVersion)
         || !isFiniteRange(metadata.applicationVersion, 0, 1)
         || !isFiniteRange(metadata.averageMaxRGBNits, 0, HDR10_PLUS_MAXIMUM_LUMINANCE_NITS)
-        || !isFiniteRange(
-            metadata.targetedSystemDisplayMaximumLuminanceNits,
-            1,
-            HDR10_PLUS_MAXIMUM_LUMINANCE_NITS
-        )
+        || !isFiniteRange(metadata.targetedSystemDisplayMaximumLuminanceNits, 1, HDR10_PLUS_MAXIMUM_LUMINANCE_NITS)
         || !Array.isArray(metadata.maximumSCLNits)
         || metadata.maximumSCLNits.length !== 3
-        || !metadata.maximumSCLNits.every((entry: unknown): boolean => (
-            isFiniteRange(entry, 0, HDR10_PLUS_MAXIMUM_LUMINANCE_NITS)
-        ))
+        || !metadata.maximumSCLNits.every((entry: unknown): boolean => isFiniteRange(entry, 0, HDR10_PLUS_MAXIMUM_LUMINANCE_NITS))
         || !isHDR10PlusDistribution(metadata.distributionMaxRGB)
         || !isHDR10PlusToneMapping(metadata.toneMapping)
     ) {

@@ -168,8 +168,7 @@ export function assertValidRenderSettings(settings: RenderSettings): void {
         throw new RangeError('Exposure must be from negative 16 through 16 stops');
     }
     if (toneMapping.desaturationStrength < HDR_RENDER_SETTING_RANGES.desaturationStrength.minimum
-        || toneMapping.desaturationStrength
-            > HDR_RENDER_SETTING_RANGES.desaturationStrength.maximum) {
+        || toneMapping.desaturationStrength > HDR_RENDER_SETTING_RANGES.desaturationStrength.maximum) {
         throw new RangeError('Desaturation strength must be between zero and one');
     }
     if (settings.display.brightness < HDR_RENDER_SETTING_RANGES.brightness.minimum
@@ -195,9 +194,7 @@ export function createDefaultRenderSettings(): IdentitySDRRenderSettings {
 }
 
 /** Returns independent HDR-to-SDR settings with validated overrides. */
-export function createHDRToSDRRenderSettings(
-    overrides: HDRToSDRRenderSettingsOverrides = {}
-): HDRToSDRRenderSettings {
+export function createHDRToSDRRenderSettings(overrides: HDRToSDRRenderSettingsOverrides = {}): HDRToSDRRenderSettings {
     const display: DisplaySettings = {
         ...DEFAULT_DISPLAY_SETTINGS,
         ...overrides.display
@@ -246,12 +243,8 @@ export function createRenderSettingsUniformData(
     const integerValues = new Uint32Array(buffer);
     const floatValues = new Float32Array(buffer);
     integerValues[UNIFORM_VERSION_INDEX] = settings.version;
-    integerValues[UNIFORM_OPERATOR_INDEX] = getToneMapOperatorCode(
-        settings.toneMapping.operator
-    );
-    integerValues[UNIFORM_OUTPUT_TRANSFER_INDEX] = getOutputTransferCode(
-        settings.outputTransfer
-    );
+    integerValues[UNIFORM_OPERATOR_INDEX] = getToneMapOperatorCode(settings.toneMapping.operator);
+    integerValues[UNIFORM_OUTPUT_TRANSFER_INDEX] = getOutputTransferCode(settings.outputTransfer);
     floatValues[UNIFORM_DESATURATION_INDEX] = settings.toneMapping.desaturationStrength;
     floatValues[UNIFORM_EXPOSURE_INDEX] = settings.toneMapping.exposure;
     floatValues[UNIFORM_INPUT_PEAK_INDEX] = settings.toneMapping.inputPeakNits;
@@ -269,19 +262,12 @@ export function createRenderSettingsUniformData(
             || dynamicFrameSettings.averageNits > dynamicFrameSettings.inputPeakNits
             || !Number.isFinite(dynamicFrameSettings.inputPeakNits)
             || dynamicFrameSettings.inputPeakNits < settings.toneMapping.paperWhiteNits
-            || dynamicFrameSettings.inputPeakNits
-                > HDR_RENDER_SETTING_RANGES.inputPeakNits.maximum
-            || !Number.isFinite(
-                dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits
-            )
-            || dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits
-                < HDR_RENDER_SETTING_RANGES.outputPeakNits.minimum
-            || dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits
-                > HDR_RENDER_SETTING_RANGES.outputPeakNits.maximum
+            || dynamicFrameSettings.inputPeakNits > HDR_RENDER_SETTING_RANGES.inputPeakNits.maximum
+            || !Number.isFinite(dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits)
+            || dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits < HDR_RENDER_SETTING_RANGES.outputPeakNits.minimum
+            || dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits > HDR_RENDER_SETTING_RANGES.outputPeakNits.maximum
             || anchors.length > MAXIMUM_DYNAMIC_ANCHOR_COUNT
-            || anchors.some((anchor: number): boolean => (
-                !Number.isFinite(anchor) || anchor < 0 || anchor > 1
-            ))
+            || anchors.some((anchor: number): boolean => !Number.isFinite(anchor) || anchor < 0 || anchor > 1)
             || (toneMapping !== null && (
                 !Number.isFinite(toneMapping.kneePointX)
                 || toneMapping.kneePointX < 0
@@ -297,16 +283,13 @@ export function createRenderSettingsUniformData(
 
         integerValues[UNIFORM_DYNAMIC_MODE_INDEX] = toneMapping ? 2 : 1;
         floatValues[UNIFORM_INPUT_PEAK_INDEX] = dynamicFrameSettings.inputPeakNits;
-        floatValues[UNIFORM_DYNAMIC_SCENE_AVERAGE_INDEX] =
-            dynamicFrameSettings.averageNits;
-        floatValues[UNIFORM_DYNAMIC_TARGET_PEAK_INDEX] =
-            dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits;
+        floatValues[UNIFORM_DYNAMIC_SCENE_AVERAGE_INDEX] = dynamicFrameSettings.averageNits;
+        floatValues[UNIFORM_DYNAMIC_TARGET_PEAK_INDEX] = dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits;
         floatValues[UNIFORM_DYNAMIC_KNEE_X_INDEX] = toneMapping?.kneePointX ?? 0;
         floatValues[UNIFORM_DYNAMIC_KNEE_Y_INDEX] = toneMapping?.kneePointY ?? 0;
         integerValues[UNIFORM_DYNAMIC_ANCHOR_COUNT_INDEX] = anchors.length;
         for (let anchorIndex = 0; anchorIndex < anchors.length; anchorIndex += 1) {
-            floatValues[UNIFORM_DYNAMIC_ANCHOR_START_INDEX + anchorIndex] =
-                anchors[anchorIndex];
+            floatValues[UNIFORM_DYNAMIC_ANCHOR_START_INDEX + anchorIndex] = anchors[anchorIndex];
         }
     }
     return new Uint8Array(buffer);

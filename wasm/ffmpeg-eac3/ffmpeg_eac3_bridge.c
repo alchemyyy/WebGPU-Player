@@ -1,5 +1,5 @@
 /*
- * Focused FFmpeg E-AC-3 decoder bridge for the WebGPU player engine.
+ * FFmpeg E-AC-3 decoder bridge for the WebGPU player engine.
  */
 
 #include <emscripten.h>

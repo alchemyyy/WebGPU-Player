@@ -34,18 +34,9 @@ const WORKER_ENTRY_POINTS = Object.freeze([
     [ 'webgpu-player/CustomDecode.worker.js', join(SOURCE_DIRECTORY, 'pipeline', 'CustomDecode.worker.ts') ],
     [ 'webgpu-player/DTSExactCapabilityProbe.worker.js', join(EXACT_CAPABILITY_DIRECTORY, 'DTSExactCapabilityProbe.worker.ts') ],
     [ 'webgpu-player/HEVCExactCapabilityProbe.worker.js', join(EXACT_CAPABILITY_DIRECTORY, 'HEVCExactCapabilityProbe.worker.ts') ],
-    [
-        'webgpu-player/JPEG2000ExactCapabilityProbe.worker.js',
-        join(EXACT_CAPABILITY_DIRECTORY, 'JPEG2000ExactCapabilityProbe.worker.ts')
-    ],
-    [
-        'webgpu-player/MPEG2VC1ExactCapabilityProbe.worker.js',
-        join(EXACT_CAPABILITY_DIRECTORY, 'MPEG2VC1ExactCapabilityProbe.worker.ts')
-    ],
-    [
-        'webgpu-player/TrueHDExactCapabilityProbe.worker.js',
-        join(EXACT_CAPABILITY_DIRECTORY, 'TrueHDExactCapabilityProbe.worker.ts')
-    ]
+    [ 'webgpu-player/JPEG2000ExactCapabilityProbe.worker.js', join(EXACT_CAPABILITY_DIRECTORY, 'JPEG2000ExactCapabilityProbe.worker.ts') ],
+    [ 'webgpu-player/MPEG2VC1ExactCapabilityProbe.worker.js', join(EXACT_CAPABILITY_DIRECTORY, 'MPEG2VC1ExactCapabilityProbe.worker.ts') ],
+    [ 'webgpu-player/TrueHDExactCapabilityProbe.worker.js', join(EXACT_CAPABILITY_DIRECTORY, 'TrueHDExactCapabilityProbe.worker.ts') ]
 ]);
 
 /** Worker bundles, as destination relative to libraries/ mapped to the esbuild entry point. */
@@ -77,10 +68,7 @@ export function getLibraryAssets() {
         [ 'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.js', join(WASM_OUTPUT_DIRECTORY, 'ffmpeg-mpeg2-vc1', 'ffmpeg-mpeg2-vc1.js') ],
         [ 'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.wasm', join(WASM_OUTPUT_DIRECTORY, 'ffmpeg-mpeg2-vc1', 'ffmpeg-mpeg2-vc1.wasm') ],
         [ 'ffmpeg-mpeg2-vc1/LICENSE.ffmpeg.txt', licenseFFmpeg ],
-        [
-            'ffmpeg-mpeg2-vc1/ffmpeg_mpeg2_vc1_bridge.c',
-            join(WASM_DIRECTORY, 'ffmpeg-mpeg2-vc1', 'ffmpeg_mpeg2_vc1_bridge.c')
-        ],
+        [ 'ffmpeg-mpeg2-vc1/ffmpeg_mpeg2_vc1_bridge.c', join(WASM_DIRECTORY, 'ffmpeg-mpeg2-vc1', 'ffmpeg_mpeg2_vc1_bridge.c') ],
         [ 'ffmpeg-mpeg2-vc1/LICENSE.bridge.txt', licenseEngine ],
         [
             'ffmpeg-mpeg2-vc1/mpeg2-progressive-1920x1080-qualification.bin',
@@ -91,10 +79,7 @@ export function getLibraryAssets() {
             join(QUALIFICATION_VECTORS_DIRECTORY, 'vc1', 'vc1-advanced-progressive-1920x1080.mkv')
         ],
         [ 'openjpeg/openjpeg-decode.js', packageFile('@cornerstonejs/codec-openjpeg', 'dist/openjpegwasm_decode.js') ],
-        [
-            'openjpeg/openjpeg-decode.wasm',
-            packageFile('@cornerstonejs/codec-openjpeg', 'dist/openjpegwasm_decode.wasm')
-        ],
+        [ 'openjpeg/openjpeg-decode.wasm', packageFile('@cornerstonejs/codec-openjpeg', 'dist/openjpegwasm_decode.wasm') ],
         [ 'openjpeg/LICENSE.wrapper.txt', packageFile('@cornerstonejs/codec-openjpeg', 'LICENSE') ],
         [ 'openjpeg/LICENSE.openjpeg.txt', join(WASM_LICENSES_DIRECTORY, 'LICENSE.openjpeg.txt') ],
         [ 'openjpeg/jpeg2000-960x540-qualification.bin', join(CODEC_VECTOR_ASSETS_DIRECTORY, 'jpeg2000', 'srgb-960x540.jp2') ]

@@ -59,43 +59,29 @@ import type {
 } from './CustomPlaybackControllerTypes';
 
 // The longest startup period without progress
-export const DEFAULT_CUSTOM_PLAYBACK_STARTUP_TIMEOUT_MICROSECONDS =
-    millisecondsToMicroseconds(20_000);
+export const DEFAULT_CUSTOM_PLAYBACK_STARTUP_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(20_000);
 // The longest startup overall, even while it keeps progressing
-export const DEFAULT_CUSTOM_PLAYBACK_STARTUP_CEILING_MICROSECONDS =
-    millisecondsToMicroseconds(60_000);
+export const DEFAULT_CUSTOM_PLAYBACK_STARTUP_CEILING_MICROSECONDS = millisecondsToMicroseconds(60_000);
 // Startup progress is sampled this often, or at the quiet bound when that is shorter
 const STARTUP_PROGRESS_SAMPLE_INTERVAL_MICROSECONDS = millisecondsToMicroseconds(1_000);
 const MILLISECONDS_PER_SECOND = 1_000;
-export const DEFAULT_CUSTOM_PLAYBACK_STOP_TIMEOUT_MICROSECONDS =
-    millisecondsToMicroseconds(1_500);
-export const DEFAULT_CUSTOM_PLAYBACK_TIME_UPDATE_INTERVAL_MICROSECONDS =
-    millisecondsToMicroseconds(250);
-export const DEFAULT_CUSTOM_PLAYBACK_VIDEO_STARVATION_GRACE_MICROSECONDS =
-    millisecondsToMicroseconds(100);
-export const DEFAULT_CUSTOM_PLAYBACK_STALL_TIMEOUT_MICROSECONDS =
-    millisecondsToMicroseconds(10_000);
-export const DEFAULT_CUSTOM_PLAYBACK_MAXIMUM_VIDEO_DECODE_LAG_MICROSECONDS =
-    millisecondsToMicroseconds(2_000);
-export const DEFAULT_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS =
-    millisecondsToMicroseconds(2_000);
+export const DEFAULT_CUSTOM_PLAYBACK_STOP_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(1_500);
+export const DEFAULT_CUSTOM_PLAYBACK_TIME_UPDATE_INTERVAL_MICROSECONDS = millisecondsToMicroseconds(250);
+export const DEFAULT_CUSTOM_PLAYBACK_VIDEO_STARVATION_GRACE_MICROSECONDS = millisecondsToMicroseconds(100);
+export const DEFAULT_CUSTOM_PLAYBACK_STALL_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(10_000);
+export const DEFAULT_CUSTOM_PLAYBACK_MAXIMUM_VIDEO_DECODE_LAG_MICROSECONDS = millisecondsToMicroseconds(2_000);
+export const DEFAULT_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS = millisecondsToMicroseconds(2_000);
 // Matches Chromium's delay before it disables a hidden page's video track
-export const CUSTOM_PLAYBACK_BACKGROUND_VIDEO_SUSPENSION_DELAY_MICROSECONDS =
-    millisecondsToMicroseconds(10_000);
+export const CUSTOM_PLAYBACK_BACKGROUND_VIDEO_SUSPENSION_DELAY_MICROSECONDS = millisecondsToMicroseconds(10_000);
 // After a hidden period, frames ending further behind the clock are never presented
-export const CUSTOM_PLAYBACK_VIDEO_CATCH_UP_TOLERANCE_MICROSECONDS =
-    millisecondsToMicroseconds(100);
+export const CUSTOM_PLAYBACK_VIDEO_CATCH_UP_TOLERANCE_MICROSECONDS = millisecondsToMicroseconds(100);
 
 // A live layout switch resumes audio this far ahead, so decode fills it before the clock arrives
-export const CUSTOM_PLAYBACK_AUDIO_OUTPUT_SWITCH_LEAD_MICROSECONDS =
-    millisecondsToMicroseconds(250);
-export const CUSTOM_PLAYBACK_AUDIO_OUTPUT_SWITCH_TIMEOUT_MICROSECONDS =
-    millisecondsToMicroseconds(5_000);
+export const CUSTOM_PLAYBACK_AUDIO_OUTPUT_SWITCH_LEAD_MICROSECONDS = millisecondsToMicroseconds(250);
+export const CUSTOM_PLAYBACK_AUDIO_OUTPUT_SWITCH_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(5_000);
 
-const MINIMUM_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS =
-    millisecondsToMicroseconds(100);
-const CUSTOM_PLAYBACK_AUDIO_DRAIN_LATENCY_SAFETY_MICROSECONDS =
-    millisecondsToMicroseconds(100);
+const MINIMUM_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS = millisecondsToMicroseconds(100);
+const CUSTOM_PLAYBACK_AUDIO_DRAIN_LATENCY_SAFETY_MICROSECONDS = millisecondsToMicroseconds(100);
 
 type PendingStartup = {
     completing: boolean
@@ -143,27 +129,15 @@ type AudioOutputSwitch = {
 
 const MAXIMUM_CONTROLLER_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(60_000);
 const ZERO_MICROSECONDS = millisecondsToMicroseconds(0);
+const NOOP_EVENT_HANDLER: CustomPlaybackControllerEventHandler = (): void => undefined;
+const NOOP_FALLBACK_HOOK: CustomPlaybackHTMLFallbackHook = (): void => undefined;
 
 function createVideoDecodeSession(
     eventHandler: (event: CustomDecodeSessionEvent) => void,
     audioBridgeFactory: CustomDecodeAudioBridgeFactory | null,
     nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null
 ): CustomVideoDecodeSession {
-    return new CustomDecodeSession(
-        eventHandler,
-        undefined,
-        null,
-        audioBridgeFactory,
-        nativeAudioBridgeFactory
-    );
-}
-
-function createNoopEventHandler(): CustomPlaybackControllerEventHandler {
-    return (): void => undefined;
-}
-
-function createNoopFallbackHook(): CustomPlaybackHTMLFallbackHook {
-    return (): void => undefined;
+    return new CustomDecodeSession(eventHandler, undefined, null, audioBridgeFactory, nativeAudioBridgeFactory);
 }
 
 function defaultMonotonicTimeSource(): Microseconds {
@@ -184,10 +158,7 @@ function validateTrackIndex(trackIndex: number, label: string): void {
     }
 }
 
-function validateCodedDimension(
-    value: number,
-    label: string
-): void {
+function validateCodedDimension(value: number, label: string): void {
     if (!Number.isSafeInteger(value) || value <= 0) {
         throw new RangeError(`${label} must be a positive safe integer`);
     }
@@ -217,12 +188,10 @@ function validateAudioPlayOptions(options: CustomPlaybackPlayOptions): void {
     if (options.audioTrackIndex === null && options.audioOutputMode !== undefined) {
         throw new TypeError('Custom playback cannot select an audio output mode without audio');
     }
-    if (options.audioDownmixAlgorithm !== undefined
-        && !isCustomAudioDownmixAlgorithm(options.audioDownmixAlgorithm)) {
+    if (options.audioDownmixAlgorithm !== undefined && !isCustomAudioDownmixAlgorithm(options.audioDownmixAlgorithm)) {
         throw new TypeError('Custom playback audio downmix algorithm is invalid');
     }
-    if (options.audioDownmixAlgorithm !== undefined
-        && options.audioTrackIndex === null) {
+    if (options.audioDownmixAlgorithm !== undefined && options.audioTrackIndex === null) {
         throw new TypeError('Custom playback cannot select a downmix algorithm without audio');
     }
     const decodedAudioOutputChannelCount = options.decodedAudioOutputChannelCount;
@@ -232,8 +201,7 @@ function validateAudioPlayOptions(options: CustomPlaybackPlayOptions): void {
         && decodedAudioOutputChannelCount !== 8) {
         throw new RangeError('Decoded audio output channel count must be 2, 6, or 8');
     }
-    if (decodedAudioOutputChannelCount !== undefined
-        && (options.audioTrackIndex === null || audioOutputMode !== 'decoded-pcm')) {
+    if (decodedAudioOutputChannelCount !== undefined && (options.audioTrackIndex === null || audioOutputMode !== 'decoded-pcm')) {
         throw new TypeError('Decoded audio output channels require decoded PCM audio');
     }
     validateAudioDownmixSettings(options, audioOutputMode);
@@ -245,9 +213,8 @@ function getAudioDownmixAlgorithm(options: CustomPlaybackPlayOptions): CustomAud
 }
 
 /**
- * Applies a live switch's channel ceiling to the decoded source layout, which
- * outranks the declared one that can under-declare E-AC-3 7.1. Before any PCM
- * decodes, the request already reflects the server's channel count.
+ * Applies a live switch's channel ceiling to the decoded source layout, which outranks the declared one that can under-declare E-AC-3 7.1.
+ * Before any PCM decodes, the request already reflects the server's channel count.
  */
 function selectLiveAudioOutputChannelCount(
     requestedChannelCount: CustomAudioOutputChannelCount,
@@ -256,10 +223,7 @@ function selectLiveAudioOutputChannelCount(
     if (decodedSourceChannelCount === null) {
         return requestedChannelCount;
     }
-    return selectCustomAudioOutputChannelCountForMaximum(
-        requestedChannelCount,
-        decodedSourceChannelCount
-    );
+    return selectCustomAudioOutputChannelCountForMaximum(requestedChannelCount, decodedSourceChannelCount);
 }
 
 /** Reports whether a source that may be multichannel mixes down to a stereo output. */
@@ -268,8 +232,7 @@ function isStereoDownmix(
     decodedSourceChannelCount: number | null
 ): boolean {
     return outputChannelCount === CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT
-        && (decodedSourceChannelCount === null
-            || decodedSourceChannelCount > CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT);
+        && (decodedSourceChannelCount === null || decodedSourceChannelCount > CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT);
 }
 
 function validateAudioOutputOptions(options: CustomPlaybackAudioOutputOptions): void {
@@ -277,8 +240,7 @@ function validateAudioOutputOptions(options: CustomPlaybackAudioOutputOptions): 
     if (outputChannelCount !== 2 && outputChannelCount !== 6 && outputChannelCount !== 8) {
         throw new RangeError('Decoded audio output channel count must be 2, 6, or 8');
     }
-    if (options.audioDownmixAlgorithm !== undefined
-        && !isCustomAudioDownmixAlgorithm(options.audioDownmixAlgorithm)) {
+    if (options.audioDownmixAlgorithm !== undefined && !isCustomAudioDownmixAlgorithm(options.audioDownmixAlgorithm)) {
         throw new TypeError('Custom playback audio downmix algorithm is invalid');
     }
     if (options.audioDownmixSettings !== undefined) {
@@ -361,14 +323,8 @@ function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
     }
     validateVideoDecoderRoute(options);
     validateHDRColorNeutralization(options);
-    validateCodedDimension(
-        options.maximumCodedWidth,
-        'Maximum coded width'
-    );
-    validateCodedDimension(
-        options.maximumCodedHeight,
-        'Maximum coded height'
-    );
+    validateCodedDimension(options.maximumCodedWidth, 'Maximum coded width');
+    validateCodedDimension(options.maximumCodedHeight, 'Maximum coded height');
     validateTrackIndex(options.videoTrackIndex, 'Video track index');
     validateAudioPlayOptions(options);
     switch (options.videoOutputMode) {
@@ -388,9 +344,7 @@ function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
 function copyPlayOptions(options: CustomPlaybackPlayOptions): CustomPlaybackPlayOptions {
     return {
         audioDownmixAlgorithm: options.audioDownmixAlgorithm,
-        audioDownmixSettings: options.audioDownmixSettings ?
-            { ...options.audioDownmixSettings } :
-            undefined,
+        audioDownmixSettings: options.audioDownmixSettings ? { ...options.audioDownmixSettings } : undefined,
         audioOutputMode: options.audioOutputMode,
         audioTrackIndex: options.audioTrackIndex,
         decodedAudioOutputChannelCount: options.decodedAudioOutputChannelCount,
@@ -410,17 +364,11 @@ function copyPlayOptions(options: CustomPlaybackPlayOptions): CustomPlaybackPlay
     };
 }
 
-function hasSameAudioLayout(
-    left: DecodeWorkerAudioConfiguration,
-    right: DecodeWorkerAudioConfiguration
-): boolean {
-    return left.channelCount === right.channelCount
-        && left.sampleRate === right.sampleRate;
+function hasSameAudioLayout(left: DecodeWorkerAudioConfiguration, right: DecodeWorkerAudioConfiguration): boolean {
+    return left.channelCount === right.channelCount && left.sampleRate === right.sampleRate;
 }
 
-function getFallbackDisposition(
-    reason: CustomPlaybackFallbackReason
-): CustomPlaybackFallbackDisposition {
+function getFallbackDisposition(reason: CustomPlaybackFallbackReason): CustomPlaybackFallbackDisposition {
     switch (reason) {
         case 'audio-output-failed':
         case 'audio-output-unavailable':
@@ -438,9 +386,7 @@ function getFallbackDisposition(
     }
 }
 
-function createDefaultAudioOutputFactory(
-    options: CustomPlaybackControllerOptions
-): CustomAudioOutputFactory | null {
+function createDefaultAudioOutputFactory(options: CustomPlaybackControllerOptions): CustomAudioOutputFactory | null {
     if (options.audioOutputFactory) {
         return options.audioOutputFactory;
     }
@@ -453,9 +399,7 @@ function createDefaultAudioOutputFactory(
 
     const audioContext = options.audioContext;
     const audioWorkletOptions = { ...options.audioWorkletOptions };
-    return async (
-        configuration: DecodeWorkerAudioConfiguration
-    ): Promise<CustomAudioOutputBinding> => {
+    return async (configuration: DecodeWorkerAudioConfiguration): Promise<CustomAudioOutputBinding> => {
         if (audioContext.sampleRate !== configuration.sampleRate) {
             throw new RangeError('Decoded audio sample rate does not match the AudioContext');
         }
@@ -544,28 +488,24 @@ export default class CustomPlaybackController {
     private videoStarvationAnchorMonotonicTimeMicroseconds: Microseconds | null = null;
 
     public constructor(options: CustomPlaybackControllerOptions = {}) {
-        this.eventHandler = options.eventHandler ?? createNoopEventHandler();
-        this.fallbackHook = options.fallbackHook ?? createNoopFallbackHook();
+        this.eventHandler = options.eventHandler ?? NOOP_EVENT_HANDLER;
+        this.fallbackHook = options.fallbackHook ?? NOOP_FALLBACK_HOOK;
         this.monotonicTimeSource = options.monotonicTimeSource ?? defaultMonotonicTimeSource;
         this.clock = options.clock ?? new MediaClock(this.monotonicTimeSource);
         this.maximumVideoDecodeLagMicroseconds = requirePositiveTimeout(
-            options.maximumVideoDecodeLagMicroseconds
-                ?? DEFAULT_CUSTOM_PLAYBACK_MAXIMUM_VIDEO_DECODE_LAG_MICROSECONDS,
+            options.maximumVideoDecodeLagMicroseconds ?? DEFAULT_CUSTOM_PLAYBACK_MAXIMUM_VIDEO_DECODE_LAG_MICROSECONDS,
             'Maximum video decode lag'
         );
         this.pipelineStopTimeoutMicroseconds = requirePositiveTimeout(
-            options.pipelineStopTimeoutMicroseconds
-                ?? DEFAULT_CUSTOM_PLAYBACK_STOP_TIMEOUT_MICROSECONDS,
+            options.pipelineStopTimeoutMicroseconds ?? DEFAULT_CUSTOM_PLAYBACK_STOP_TIMEOUT_MICROSECONDS,
             'Pipeline stop timeout'
         );
         this.startupTimeoutMicroseconds = requirePositiveTimeout(
-            options.startupTimeoutMicroseconds
-                ?? DEFAULT_CUSTOM_PLAYBACK_STARTUP_TIMEOUT_MICROSECONDS,
+            options.startupTimeoutMicroseconds ?? DEFAULT_CUSTOM_PLAYBACK_STARTUP_TIMEOUT_MICROSECONDS,
             'Playback startup timeout'
         );
         const startupCeilingMicroseconds = requirePositiveTimeout(
-            options.startupCeilingMicroseconds
-                ?? DEFAULT_CUSTOM_PLAYBACK_STARTUP_CEILING_MICROSECONDS,
+            options.startupCeilingMicroseconds ?? DEFAULT_CUSTOM_PLAYBACK_STARTUP_CEILING_MICROSECONDS,
             'Playback startup ceiling'
         );
         // The ceiling never cuts the quiet bound short
@@ -573,19 +513,16 @@ export default class CustomPlaybackController {
             this.startupTimeoutMicroseconds :
             startupCeilingMicroseconds;
         this.playbackStallTimeoutMicroseconds = requirePositiveTimeout(
-            options.playbackStallTimeoutMicroseconds
-                ?? DEFAULT_CUSTOM_PLAYBACK_STALL_TIMEOUT_MICROSECONDS,
+            options.playbackStallTimeoutMicroseconds ?? DEFAULT_CUSTOM_PLAYBACK_STALL_TIMEOUT_MICROSECONDS,
             'Playback stall timeout'
         );
         this.timeUpdateIntervalMicroseconds = requirePositiveTimeout(
-            options.timeUpdateIntervalMicroseconds
-                ?? DEFAULT_CUSTOM_PLAYBACK_TIME_UPDATE_INTERVAL_MICROSECONDS,
+            options.timeUpdateIntervalMicroseconds ?? DEFAULT_CUSTOM_PLAYBACK_TIME_UPDATE_INTERVAL_MICROSECONDS,
             'Time update interval'
         );
         this.audioOutputFactory = createDefaultAudioOutputFactory(options);
         this.nativeAudioBridgeFactory = options.nativeAudioBridgeFactory ?? null;
-        const videoDecodeSessionFactory: CustomVideoDecodeSessionFactory =
-            options.videoDecodeSessionFactory ?? createVideoDecodeSession;
+        const videoDecodeSessionFactory: CustomVideoDecodeSessionFactory = options.videoDecodeSessionFactory ?? createVideoDecodeSession;
         this.videoDecodeSession = videoDecodeSessionFactory(
             this.handleVideoDecodeEvent,
             this.audioOutputFactory ? this.createAudioBridge : null,

@@ -24,7 +24,8 @@ class GeneratorStep:
     arguments: tuple[str, ...] = ()
 
 
-# Every generator whose output is committed. The local playback media generators are run by hand
+# Every generator whose output is committed.
+# The local playback media generators are run by hand
 GENERATOR_STEPS: Final = (
     GeneratorStep("generate_dts_capability_vectors.py"),
     # Re-encodes the source streams and compares them with the committed ones before building the module from them
@@ -38,8 +39,6 @@ GENERATOR_STEPS: Final = (
 
 
 def parse_arguments(command_arguments: Sequence[str] | None) -> argparse.Namespace:
-    """Parses the command line."""
-
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--check",

@@ -3,8 +3,7 @@ export const COLOR_METADATA_VERSION = 1;
 const MAXIMUM_LUMINANCE_NITS = 10_000;
 const MINIMUM_LUMINANCE_NITS = 1;
 
-// The BT.601 members use the WebCodecs names (SMPTE 170M for 525-line, BT.470 BG for 625-line), so they compare
-// directly with VideoFrame.colorSpace
+// The BT.601 members use the WebCodecs names (SMPTE 170M for 525-line, BT.470 BG for 625-line), so they compare directly with VideoFrame.colorSpace
 export type ColorPrimaries = 'bt2020' | 'bt470bg' | 'bt709' | 'smpte170m';
 export type ColorRange = 'full' | 'limited';
 export type ColorTransfer = 'hlg' | 'pq' | 'sdr';
@@ -61,9 +60,7 @@ export function assertValidInputColorMetadata(metadata: InputColorMetadata): voi
         default:
             throw new RangeError('Unsupported color transfer');
     }
-    if (!Number.isInteger(metadata.bitDepth)
-        || metadata.bitDepth < 8
-        || metadata.bitDepth > 16) {
+    if (!Number.isInteger(metadata.bitDepth) || metadata.bitDepth < 8 || metadata.bitDepth > 16) {
         throw new RangeError('Input bit depth must be an integer from 8 through 16');
     }
     if (!Number.isFinite(metadata.nominalPeakNits)
@@ -78,10 +75,8 @@ export function assertValidInputColorMetadata(metadata: InputColorMetadata): voi
     }
 }
 
-/** Creates explicit BT.709 SDR metadata for reference processing and tests. */
-export function createSDRColorMetadata(
-    overrides: InputColorMetadataOverrides = {}
-): InputColorMetadata {
+/** Creates BT.709 SDR metadata for reference processing and tests. */
+export function createSDRColorMetadata(overrides: InputColorMetadataOverrides = {}): InputColorMetadata {
     const metadata: InputColorMetadata = {
         bitDepth: 8,
         matrix: 'bt709',
@@ -97,10 +92,8 @@ export function createSDRColorMetadata(
     return metadata;
 }
 
-/** Creates explicit BT.2020 PQ metadata for reference processing and tests. */
-export function createPQColorMetadata(
-    overrides: InputColorMetadataOverrides = {}
-): InputColorMetadata {
+/** Creates BT.2020 PQ metadata for reference processing and tests. */
+export function createPQColorMetadata(overrides: InputColorMetadataOverrides = {}): InputColorMetadata {
     const metadata: InputColorMetadata = {
         bitDepth: 10,
         matrix: 'bt2020-ncl',
@@ -116,10 +109,8 @@ export function createPQColorMetadata(
     return metadata;
 }
 
-/** Creates explicit BT.2020 HLG metadata for reference processing and tests. */
-export function createHLGColorMetadata(
-    overrides: InputColorMetadataOverrides = {}
-): InputColorMetadata {
+/** Creates BT.2020 HLG metadata for reference processing and tests. */
+export function createHLGColorMetadata(overrides: InputColorMetadataOverrides = {}): InputColorMetadata {
     const metadata: InputColorMetadata = {
         bitDepth: 10,
         matrix: 'bt2020-ncl',

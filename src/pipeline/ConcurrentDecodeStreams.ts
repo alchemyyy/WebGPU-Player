@@ -1,6 +1,5 @@
 /**
- * Cancels sibling decode streams on the first failure and drains every stream
- * before the worker may report that its generation stopped.
+ * Cancels sibling decode streams on the first failure and drains every stream before the worker may report that its generation stopped.
  */
 export async function settleConcurrentDecodeStreams(
     streamPromises: readonly Promise<void>[],

@@ -42,10 +42,7 @@ class CDPClient {
     static async connect(webSocketURL) {
         const socket = new WebSocket(webSocketURL);
         await new Promise((resolve, reject) => {
-            const timeout = setTimeout(
-                () => reject(new Error('CDP connection timed out')),
-                COMMAND_TIMEOUT_MILLISECONDS
-            );
+            const timeout = setTimeout(() => reject(new Error('CDP connection timed out')), COMMAND_TIMEOUT_MILLISECONDS);
             socket.addEventListener('open', () => {
                 clearTimeout(timeout);
                 resolve();
@@ -79,9 +76,7 @@ class CDPClient {
     handleClose() {
         for (const pendingCommand of this.pendingCommands.values()) {
             clearTimeout(pendingCommand.timeout);
-            pendingCommand.reject(new Error(
-                `CDP connection closed during: ${pendingCommand.method}`
-            ));
+            pendingCommand.reject(new Error(`CDP connection closed during: ${pendingCommand.method}`));
         }
         this.pendingCommands.clear();
     }
@@ -103,9 +98,7 @@ class CDPClient {
         this.pendingCommands.delete(message.id);
         clearTimeout(pendingCommand.timeout);
         if (message.error) {
-            pendingCommand.reject(new Error(
-                `CDP command failed: ${pendingCommand.method}: ${message.error.message}`
-            ));
+            pendingCommand.reject(new Error(`CDP command failed: ${pendingCommand.method}: ${message.error.message}`));
             return;
         }
         pendingCommand.resolve(message.result);

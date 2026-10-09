@@ -48,10 +48,7 @@ class CDPClient {
         const socket = new WebSocket(webSocketDebuggerURL);
         await new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
-                reject(new ValidationError(
-                    'debug-connection-timeout',
-                    'Timed out while connecting to Chromium'
-                ));
+                reject(new ValidationError('debug-connection-timeout', 'Timed out while connecting to Chromium'));
             }, timeoutMilliseconds);
             socket.addEventListener('open', () => {
                 clearTimeout(timeout);
@@ -59,10 +56,7 @@ class CDPClient {
             }, { once: true });
             socket.addEventListener('error', () => {
                 clearTimeout(timeout);
-                reject(new ValidationError(
-                    'debug-connection-failed',
-                    'Unable to connect to Chromium'
-                ));
+                reject(new ValidationError('debug-connection-failed', 'Unable to connect to Chromium'));
             }, { once: true });
         });
         return new CDPClient(socket, timeoutMilliseconds + 5_000);
@@ -80,10 +74,7 @@ class CDPClient {
         const commandPromise = new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
                 this.pendingCommands.delete(identifier);
-                reject(new ValidationError(
-                    'debug-command-timeout',
-                    `Chromium command timed out: ${method}`
-                ));
+                reject(new ValidationError('debug-command-timeout', `Chromium command timed out: ${method}`));
             }, this.commandTimeoutMilliseconds);
             this.pendingCommands.set(identifier, { method, reject, resolve, timeout });
         });
@@ -190,17 +181,11 @@ function parseConfiguration(argumentsList) {
     const frontendURL = new URL(configuration.frontendURL);
     const mediaURL = new URL(configuration.mediaURL);
     if (frontendURL.origin !== mediaURL.origin) {
-        throw new ValidationError(
-            'configuration-invalid',
-            'The vector must share the frontend origin'
-        );
+        throw new ValidationError('configuration-invalid', 'The vector must share the frontend origin');
     }
     const workerURL = new URL(configuration.workerURL ?? DEFAULT_WORKER_PATH, frontendURL);
     if (frontendURL.origin !== workerURL.origin) {
-        throw new ValidationError(
-            'configuration-invalid',
-            'The worker must share the frontend origin'
-        );
+        throw new ValidationError('configuration-invalid', 'The worker must share the frontend origin');
     }
     return {
         ...configuration,
@@ -212,8 +197,7 @@ function parseConfiguration(argumentsList) {
 }
 
 function getExpectedEnhancementDimensions(configuration) {
-    const resolutionDivisor = configuration.expectedBaseWidth
-        > DOLBY_VISION_ENHANCEMENT_FULL_RESOLUTION_MAXIMUM_WIDTH ? 2 : 1;
+    const resolutionDivisor = configuration.expectedBaseWidth > DOLBY_VISION_ENHANCEMENT_FULL_RESOLUTION_MAXIMUM_WIDTH ? 2 : 1;
     return {
         height: Math.ceil(configuration.expectedBaseHeight / resolutionDivisor),
         width: Math.ceil(configuration.expectedBaseWidth / resolutionDivisor)
@@ -226,10 +210,7 @@ async function getPageTarget(configuration) {
         signal: AbortSignal.timeout(configuration.timeoutMilliseconds)
     });
     if (!response.ok) {
-        throw new ValidationError(
-            'debug-target-list-failed',
-            'Chromium target discovery failed'
-        );
+        throw new ValidationError('debug-target-list-failed', 'Chromium target discovery failed');
     }
     const targets = await response.json();
     const frontendOrigin = new URL(configuration.frontendURL).origin;
@@ -244,20 +225,14 @@ async function getPageTarget(configuration) {
         }
     }) : null;
     if (!pageTarget || typeof pageTarget.webSocketDebuggerUrl !== 'string') {
-        throw new ValidationError(
-            'debug-page-missing',
-            'No frontend Chromium page target is available'
-        );
+        throw new ValidationError('debug-page-missing', 'No frontend Chromium page target is available');
     }
     return pageTarget;
 }
 
 function createWorkerValidationExpression(configuration) {
     const frontendURL = new URL(configuration.frontendURL);
-    const parserURL = new URL(
-        'libraries/libdovi/dovi-rpu-parser.wasm',
-        frontendURL
-    ).href;
+    const parserURL = new URL('libraries/libdovi/dovi-rpu-parser.wasm', frontendURL).href;
     return `(async () => {
         const generation = 1;
         const worker = new Worker(${JSON.stringify(configuration.workerURL)});
@@ -418,14 +393,8 @@ function validateResult(result, configuration) {
     addFailure(result?.error === null, 'worker-error');
     addFailure(result?.stopped === true, 'worker-stop-missing');
     addFailure(result?.ready?.audio === null, 'unexpected-audio-route');
-    addFailure(
-        result?.ready?.codedWidth === configuration.expectedBaseWidth,
-        'base-ready-width-invalid'
-    );
-    addFailure(
-        result?.ready?.codedHeight === configuration.expectedBaseHeight,
-        'base-ready-height-invalid'
-    );
+    addFailure(result?.ready?.codedWidth === configuration.expectedBaseWidth, 'base-ready-width-invalid');
+    addFailure(result?.ready?.codedHeight === configuration.expectedBaseHeight, 'base-ready-height-invalid');
     const frame = result?.frame;
     addFailure(frame !== null && typeof frame === 'object', 'decoded-frame-missing');
     addFailure(frame?.baseFormat === 'I420P10', 'base-format-invalid');
@@ -434,14 +403,8 @@ function validateResult(result, configuration) {
     addFailure(frame?.baseCodedHeight === configuration.expectedBaseHeight, 'base-height-invalid');
     addFailure(frame?.enhancementFormat === 'I420P10', 'enhancement-format-invalid');
     addFailure(frame?.enhancementBitDepth === 10, 'enhancement-bit-depth-invalid');
-    addFailure(
-        frame?.enhancementCodedWidth === expectedEnhancementDimensions.width,
-        'enhancement-width-invalid'
-    );
-    addFailure(
-        frame?.enhancementCodedHeight === expectedEnhancementDimensions.height,
-        'enhancement-height-invalid'
-    );
+    addFailure(frame?.enhancementCodedWidth === expectedEnhancementDimensions.width, 'enhancement-width-invalid');
+    addFailure(frame?.enhancementCodedHeight === expectedEnhancementDimensions.height, 'enhancement-height-invalid');
     addFailure(frame?.sameBuffer === true, 'compound-buffer-not-shared');
     addFailure(
         Number.isSafeInteger(frame?.enhancementStartOffset)
@@ -460,10 +423,7 @@ function validateResult(result, configuration) {
     );
     addFailure(frame?.enhancementDisposition === 'decoded-fel', 'fel-disposition-invalid');
     addFailure(frame?.hasEnhancementLayerVCL === true, 'enhancement-vcl-missing');
-    addFailure(
-        frame?.schemaVersion === EXPECTED_METADATA_SCHEMA_VERSION,
-        'metadata-schema-invalid'
-    );
+    addFailure(frame?.schemaVersion === EXPECTED_METADATA_SCHEMA_VERSION, 'metadata-schema-invalid');
     addFailure(
         Array.isArray(frame?.parsedRPUByteLengths)
             && frame.parsedRPUByteLengths.length === 1
@@ -481,10 +441,7 @@ async function main() {
         return;
     }
     const pageTarget = await getPageTarget(configuration);
-    const client = await CDPClient.connect(
-        pageTarget.webSocketDebuggerUrl,
-        configuration.timeoutMilliseconds
-    );
+    const client = await CDPClient.connect(pageTarget.webSocketDebuggerUrl, configuration.timeoutMilliseconds);
     try {
         const evaluation = await client.send('Runtime.evaluate', {
             awaitPromise: true,
@@ -500,12 +457,13 @@ async function main() {
         }
         const result = evaluation.result?.value;
         const failures = validateResult(result, configuration);
+        const expectedEnhancementDimensions = getExpectedEnhancementDimensions(configuration);
         const report = {
             expectedGeometry: {
                 baseHeight: configuration.expectedBaseHeight,
                 baseWidth: configuration.expectedBaseWidth,
-                enhancementHeight: getExpectedEnhancementDimensions(configuration).height,
-                enhancementWidth: getExpectedEnhancementDimensions(configuration).width
+                enhancementHeight: expectedEnhancementDimensions.height,
+                enhancementWidth: expectedEnhancementDimensions.width
             },
             failures,
             result,
