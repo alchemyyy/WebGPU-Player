@@ -1,3 +1,4 @@
+import { getEmscriptenWASMOptions } from '../../DecoderWASMSource';
 import JPEG2000SoftwareVideoDecoder, {
     getJPEG2000RGBAFingerprint,
     type JPEG2000SoftwareVideoDecoderDependencies,
@@ -20,6 +21,7 @@ type OpenJPEGModuleFactory = (options: {
     locateFile: (path: string, prefix: string) => string
     print: (...values: unknown[]) => void
     printErr: (...values: unknown[]) => void
+    wasmBinary?: ArrayBuffer
 }) => Promise<OpenJPEGModule>;
 
 type JPEG2000ProbeWorkerScope = typeof globalThis & {
@@ -55,13 +57,14 @@ function createDependencies(
     request: JPEG2000ExactCapabilityWorkerRequest
 ): JPEG2000SoftwareVideoDecoderDependencies {
     return {
-        createModule: async (wasmURL: string): Promise<OpenJPEGModule> => {
+        // The binary comes from the request's source, not from the URL the decoder resolves
+        createModule: async (): Promise<OpenJPEGModule> => {
             const factory = workerScope.OpenJPEGWASM as OpenJPEGModuleFactory | undefined;
             if (typeof factory !== 'function') {
                 throw new Error('The JPEG 2000 probe module factory is unavailable');
             }
             return factory({
-                locateFile: (): string => wasmURL,
+                ...getEmscriptenWASMOptions(request.decoderWASM),
                 print: (): void => undefined,
                 printErr: (): void => undefined
             });
@@ -82,9 +85,7 @@ function createDependencies(
             }
             workerScope.importScripts(url);
         },
-        resolveAssetURL: (path: string): string => (
-            path.endsWith('.wasm') ? request.decoderWASMURL : request.decoderGlueURL
-        )
+        resolveAssetURL: (): string => request.decoderGlueURL
     };
 }
 

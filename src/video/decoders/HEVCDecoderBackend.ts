@@ -24,6 +24,7 @@ type EmscriptenHEVCModule = {
 
 type EmscriptenHEVCModuleOptions = {
     locateFile?: (path: string, scriptDirectory: string) => string
+    wasmBinary?: ArrayBuffer
 };
 
 type EmscriptenHEVCModuleFactory = (
@@ -77,6 +78,17 @@ export type HEVCDecoderBackend = {
     feed: (data: Uint8Array) => void
     flush: (frameHandler: HEVCDecodedFrameHandler) => number
 };
+
+/** Locates hevc-decode.wasm by URL, or supplies its bytes so instantiation fetches nothing. */
+export type HEVCDecoderModuleOptions = Readonly<{
+    wasmBinary?: ArrayBuffer
+    wasmURL?: string
+}>;
+
+/** One instantiated hevc-decode.wasm module, which hosts successive decoders. */
+export type HEVCDecoderModule = Readonly<{
+    createDecoder: () => HEVCDecoderBackend
+}>;
 
 function requireAllocation(module: EmscriptenHEVCModule, byteLength: number): number {
     const pointer = module._malloc(byteLength);
@@ -432,20 +444,37 @@ class HEVCWASMDecoderBackend implements HEVCDecoderBackend {
     }
 }
 
-/** Creates a decoder from the @hevcjs/core glue module loaded in this worker. */
-export async function createHEVCDecoderBackend(
-    options: DecoderOptions
-): Promise<HEVCDecoderBackend> {
+/** Instantiates the @hevcjs/core glue module loaded in this worker. */
+export async function createHEVCDecoderModule(
+    options: HEVCDecoderModuleOptions
+): Promise<HEVCDecoderModule> {
     const decoderGlobal = globalThis as HEVCDecoderGlobal;
     if (typeof decoderGlobal.HEVCDecoderModule !== 'function') {
         throw new Error('The HEVC WASM decoder module factory is unavailable');
     }
 
     const moduleFactory = decoderGlobal.HEVCDecoderModule as EmscriptenHEVCModuleFactory;
+    // NOTE: The glue adopts this object as its Module and installs aborting getters on it, so every instantiation needs a fresh one
     const moduleOptions: EmscriptenHEVCModuleOptions = {};
-    if (options.wasmBinaryUrl) {
-        moduleOptions.locateFile = (): string => options.wasmBinaryUrl as string;
+    const wasmURL = options.wasmURL;
+    if (wasmURL) {
+        moduleOptions.locateFile = (): string => wasmURL;
+    }
+    if (options.wasmBinary) {
+        // The glue compiles these bytes instead of fetching the located file
+        moduleOptions.wasmBinary = options.wasmBinary;
     }
     const module = await moduleFactory(moduleOptions);
-    return new HEVCWASMDecoderBackend(module);
+    // Each decoder owns only its native context, so destroying one leaves the module reusable
+    return Object.freeze({
+        createDecoder: (): HEVCDecoderBackend => new HEVCWASMDecoderBackend(module)
+    });
+}
+
+/** Creates a decoder on its own instance of the @hevcjs/core glue module loaded in this worker. */
+export async function createHEVCDecoderBackend(
+    options: DecoderOptions
+): Promise<HEVCDecoderBackend> {
+    const decoderModule = await createHEVCDecoderModule({ wasmURL: options.wasmBinaryUrl });
+    return decoderModule.createDecoder();
 }

@@ -1,12 +1,13 @@
 import type {
-    DecoderOptions,
     HEVCFrame,
     HEVCStreamInfo
 } from '@hevcjs/core';
 
 import {
-    createHEVCDecoderBackend,
-    type HEVCDecoderBackend
+    createHEVCDecoderModule,
+    type HEVCDecoderBackend,
+    type HEVCDecoderModule,
+    type HEVCDecoderModuleOptions
 } from '../../video/decoders/HEVCDecoderBackend';
 import {
     HEVC_EXACT_CAPABILITY_MAXIMUM_DECODED_BYTE_LENGTH,
@@ -21,12 +22,12 @@ import {
 } from './HEVCExactCapabilityProtocol';
 
 export type HEVCExactCapabilityWorkerRuntimeDependencies = Readonly<{
-    createDecoder: (options: DecoderOptions) => Promise<HEVCDecoderBackend>
+    createDecoderModule: (options: HEVCDecoderModuleOptions) => Promise<HEVCDecoderModule>
     fingerprintFrame: (frame: HEVCFrame) => number
 }>;
 
 const DEFAULT_DEPENDENCIES: HEVCExactCapabilityWorkerRuntimeDependencies = Object.freeze({
-    createDecoder: createHEVCDecoderBackend,
+    createDecoderModule: createHEVCDecoderModule,
     fingerprintFrame: createFrameFingerprint
 });
 
@@ -375,20 +376,18 @@ function consumeFrame(
     );
 }
 
-async function probeQualification(
+function probeQualification(
     qualificationRequest: HEVCExactCapabilityWorkerQualificationRequest,
-    decoderWASMURL: string,
+    decoderModule: HEVCDecoderModule,
     dependencies: HEVCExactCapabilityWorkerRuntimeDependencies
-): Promise<HEVCExactCapabilityWorkerQualificationResult> {
+): HEVCExactCapabilityWorkerQualificationResult {
     let decoder: HEVCDecoderBackend | null = null;
 
     try {
         const vectorMetadata = parseVectorMetadata(
             qualificationRequest.qualificationAccessUnits[0]
         );
-        decoder = await dependencies.createDecoder({
-            wasmBinaryUrl: decoderWASMURL
-        });
+        decoder = decoderModule.createDecoder();
         const state: HEVCExactQualificationState = {
             decodedFrameFingerprints: [],
             decodedFrameCount: 0,
@@ -482,14 +481,25 @@ export async function runHEVCExactCapabilityWorkerRequest(
         throw new TypeError('The exact HEVC capability worker request is invalid');
     }
 
+    const moduleOptions: HEVCDecoderModuleOptions = request.decoderWASM.kind === 'bytes' ?
+        { wasmBinary: request.decoderWASM.bytes } :
+        { wasmURL: request.decoderWASM.url };
     const results: HEVCExactCapabilityWorkerQualificationResult[] = [];
+    // One instantiated module hosts each vector's decoder in turn, saving a fetch and compile per vector
+    let decoderModule: HEVCDecoderModule | null = null;
     let totalDecodedByteLength = 0;
     for (const qualificationRequest of request.qualifications) {
-        const result = await probeQualification(
-            qualificationRequest,
-            request.decoderWASMURL,
-            dependencies
-        );
+        let result: HEVCExactCapabilityWorkerQualificationResult;
+        try {
+            decoderModule ??= await dependencies.createDecoderModule(moduleOptions);
+            result = probeQualification(qualificationRequest, decoderModule, dependencies);
+        } catch {
+            result = createFailureResult(qualificationRequest, 'decode-error');
+        }
+        if (!result.supported) {
+            // Any failure, a trap mid-call included, may leave the module heap inconsistent, so the next vector gets a fresh module
+            decoderModule = null;
+        }
         totalDecodedByteLength += result.totalDecodedByteLength ?? 0;
         if (
             !Number.isSafeInteger(totalDecodedByteLength)

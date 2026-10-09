@@ -2,7 +2,10 @@ import {
     isTrueHDExactCapabilityWorkerRequest,
     type TrueHDExactCapabilityWorkerResponse
 } from './TrueHDExactCapabilityProtocol';
-import { runTrueHDExactCapabilityQualification } from './TrueHDExactCapabilityRunner';
+import {
+    createTrueHDExactCapabilityRunnerEnvironment,
+    runTrueHDExactCapabilityQualification
+} from './TrueHDExactCapabilityRunner';
 
 let probeStarted = false;
 
@@ -11,8 +14,9 @@ async function handleRequest(value: unknown): Promise<void> {
         return;
     }
     probeStarted = true;
-    const response: TrueHDExactCapabilityWorkerResponse =
-        await runTrueHDExactCapabilityQualification();
+    const response: TrueHDExactCapabilityWorkerResponse = await runTrueHDExactCapabilityQualification(
+        createTrueHDExactCapabilityRunnerEnvironment(value.decoderWASM)
+    );
     globalThis.postMessage(response);
 }
 

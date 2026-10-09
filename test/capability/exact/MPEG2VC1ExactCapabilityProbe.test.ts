@@ -123,6 +123,52 @@ describe('MPEG2VC1ExactCapabilityProbe', () => {
         expect(worker.terminateCount).toBe(1);
     });
 
+    it('hands the downloaded decoder binary to the worker with the vector', async () => {
+        const worker = new MockMPEG2VC1CapabilityWorker();
+        const decoderWASMBytes = new ArrayBuffer(8);
+        const loadDecoderWASM = vi.fn(async (): Promise<ArrayBuffer> => decoderWASMBytes);
+        const warmAsset = vi.fn(async (): Promise<void> => undefined);
+        const probe = new MPEG2VC1ExactCapabilityProbe(createEnvironment(worker, { loadDecoderWASM, warmAsset }));
+
+        probe.prepare();
+        const capabilityPromise = probe.probe();
+        await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
+
+        expect(loadDecoderWASM).toHaveBeenCalledExactlyOnceWith(
+            'https://example.test/web/libraries/ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.wasm'
+        );
+        expect(warmAsset.mock.calls).toEqual([
+            [ 'https://example.test/web/libraries/webgpu-player/MPEG2VC1ExactCapabilityProbe.worker.js' ],
+            [ 'https://example.test/web/libraries/ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.js' ]
+        ]);
+        expect(isMPEG2VC1ExactCapabilityWorkerRequest(worker.postedMessages[0])).toBe(true);
+        expect(worker.postedMessages[0]).toMatchObject({
+            decoderWASM: { bytes: decoderWASMBytes, kind: 'bytes' }
+        });
+        expect(worker.postedTransfers[0]).toHaveLength(2);
+        expect(worker.postedTransfers[0]).toContain(decoderWASMBytes);
+
+        worker.emit('message', createSuccessfulResponse());
+        await expect(capabilityPromise).resolves.toMatchObject({ status: 'supported' });
+    });
+
+    it('reports a failed vector download as an unknown asset failure without a worker', async () => {
+        const worker = new MockMPEG2VC1CapabilityWorker();
+        const createWorker = vi.fn((): MockMPEG2VC1CapabilityWorker => worker);
+        const probe = new MPEG2VC1ExactCapabilityProbe(createEnvironment(worker, {
+            createWorker,
+            loadVector: async (): Promise<ArrayBuffer> => {
+                throw new Error('offline');
+            }
+        }));
+
+        await expect(probe.probe()).resolves.toMatchObject({
+            reason: 'asset-unavailable',
+            status: 'unknown'
+        });
+        expect(createWorker).not.toHaveBeenCalled();
+    });
+
     it('fails closed when the worker fingerprint differs', async () => {
         const worker = new MockMPEG2VC1CapabilityWorker();
         const probe = new MPEG2VC1ExactCapabilityProbe(createEnvironment(worker));

@@ -1,4 +1,6 @@
 import type { Microseconds } from '../../MediaTime';
+import { createEmscriptenModuleLoader } from '../../DecoderWASMSource';
+import { TRUEHD_DECODER_WASM_ASSET } from '../../EngineAssets';
 import type { FFmpegTrueHDModule } from '#wasm/ffmpeg-truehd/ffmpeg-truehd.mjs';
 import { isSupportedCustomAudioSampleRate } from '../CustomAudioSampleRate';
 import {
@@ -65,14 +67,14 @@ type FFmpegTrueHDFunctionTable = {
 
 export type TrueHDDecoderModuleFactory = () => Promise<FFmpegTrueHDModule>;
 
-let defaultModulePromise: Promise<FFmpegTrueHDModule> | null = null;
-
-async function loadDefaultTrueHDDecoderModule(): Promise<FFmpegTrueHDModule> {
-    if (!defaultModulePromise) {
-        defaultModulePromise = import('#wasm/ffmpeg-truehd/ffmpeg-truehd.mjs').then(async moduleNamespace => moduleNamespace.default());
-    }
-    return defaultModulePromise;
-}
+/**
+ * Instantiates FFmpeg's TrueHD and MLP decoders once per worker, when the first decoder needs them.
+ * It fetches the served binary unless the first caller passes bytes it already fetched.
+ */
+export const loadTrueHDDecoderModule = createEmscriptenModuleLoader<FFmpegTrueHDModule>(
+    async () => (await import('#wasm/ffmpeg-truehd/ffmpeg-truehd.mjs')).default,
+    TRUEHD_DECODER_WASM_ASSET
+);
 
 function requireFunction<FunctionType extends (...arguments_: never[]) => unknown>(
     module: FFmpegTrueHDModule,
@@ -161,7 +163,7 @@ export default class TrueHDSoftwareAudioDecoder {
     /** Creates one decoder after lazy WebAssembly initialization. */
     public static async create(
         codec: TrueHDDecoderCodec = 'truehd',
-        moduleFactory: TrueHDDecoderModuleFactory = loadDefaultTrueHDDecoderModule
+        moduleFactory: TrueHDDecoderModuleFactory = loadTrueHDDecoderModule
     ): Promise<TrueHDSoftwareAudioDecoder> {
         const module = await moduleFactory();
         if (!(module.HEAPU8 instanceof Uint8Array)

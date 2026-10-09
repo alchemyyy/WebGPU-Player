@@ -156,7 +156,7 @@ describe('BundledHEVCExactCapabilityProbe', () => {
         expect(worker.postedTransfers[0]).toHaveLength(27);
         expect(worker.postedMessages[0]).toMatchObject({
             decoderGlueURL: 'https://example.test/web/libraries/hevcjs/hevc-decode.js',
-            decoderWASMURL: 'https://example.test/web/libraries/hevcjs/hevc-decode.wasm',
+            decoderWASM: { kind: 'url', url: 'https://example.test/web/libraries/hevcjs/hevc-decode.wasm' },
             requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
             type: 'probe'
         });
@@ -196,6 +196,7 @@ describe('BundledHEVCExactCapabilityProbe', () => {
         const worker = new MockCapabilityWorker();
         const probe = new BundledHEVCExactCapabilityProbe(createEnvironment(worker));
         const resultPromise = probe.probe();
+        await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
         const response = createSuccessfulResponse();
         worker.emit('message', {
             ...response,
@@ -234,6 +235,7 @@ describe('BundledHEVCExactCapabilityProbe', () => {
         const worker = new MockCapabilityWorker();
         const probe = new BundledHEVCExactCapabilityProbe(createEnvironment(worker));
         const resultPromise = probe.probe();
+        await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
         const response = createSuccessfulResponse();
         worker.emit('message', {
             ...response,
@@ -259,6 +261,7 @@ describe('BundledHEVCExactCapabilityProbe', () => {
         const worker = new MockCapabilityWorker();
         const probe = new BundledHEVCExactCapabilityProbe(createEnvironment(worker));
         const resultPromise = probe.probe();
+        await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
         worker.emit(eventType);
 
         const capabilities = await resultPromise;
@@ -334,15 +337,67 @@ describe('BundledHEVCExactCapabilityProbe', () => {
             'https://example.test/web/libraries/hevcjs/main10-4k-qualification.bin'
         );
         expect(capabilities.reason).toBe('failed');
-        expect(capabilities.qualifications['main10-4k'].reason).toBe('worker-error');
+        expect(capabilities.qualifications['main10-4k'].reason).toBe('asset-unavailable');
+        // A failed download never starts a worker
         expect(worker.postedMessages).toHaveLength(0);
-        expect(worker.terminateCount).toBe(1);
+        expect(worker.terminateCount).toBe(0);
+    });
+
+    it('downloads its assets on prepare and arms its timeout only once they arrive', async () => {
+        const worker = new MockCapabilityWorker();
+        const baseEnvironment = createEnvironment(worker);
+        const qualificationBitstream = await baseEnvironment.loadQualificationBitstream('');
+        const decoderWASMBytes = new ArrayBuffer(8);
+        const vectorDownload: { resolve: ((bitstream: ArrayBuffer) => void) | null } = { resolve: null };
+        const loadQualificationBitstream = vi.fn((): Promise<ArrayBuffer> => new Promise<ArrayBuffer>(resolve => {
+            vectorDownload.resolve = resolve;
+        }));
+        const loadDecoderWASM = vi.fn(async (): Promise<ArrayBuffer> => decoderWASMBytes);
+        const warmAsset = vi.fn(async (): Promise<void> => undefined);
+        const createWorker = vi.fn((): MockCapabilityWorker => worker);
+        const setTimeout = vi.fn(baseEnvironment.setTimeout);
+        const probe = new BundledHEVCExactCapabilityProbe({
+            ...baseEnvironment,
+            createWorker,
+            loadDecoderWASM,
+            loadQualificationBitstream,
+            setTimeout,
+            warmAsset
+        });
+
+        probe.prepare();
+        const resultPromise = probe.probe();
+        await Promise.resolve();
+
+        expect(loadDecoderWASM).toHaveBeenCalledExactlyOnceWith(
+            'https://example.test/web/libraries/hevcjs/hevc-decode.wasm'
+        );
+        expect(warmAsset.mock.calls).toEqual([
+            [ 'https://example.test/web/libraries/webgpu-player/HEVCExactCapabilityProbe.worker.js' ],
+            [ 'https://example.test/web/libraries/hevcjs/hevc-decode.js' ]
+        ]);
+        expect(createWorker).not.toHaveBeenCalled();
+        expect(setTimeout).not.toHaveBeenCalled();
+
+        vectorDownload.resolve?.(qualificationBitstream);
+        await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
+        expect(setTimeout).toHaveBeenCalledOnce();
+        expect(worker.postedMessages[0]).toMatchObject({
+            decoderWASM: { bytes: decoderWASMBytes, kind: 'bytes' }
+        });
+        expect(worker.postedTransfers[0]).toHaveLength(28);
+        expect(worker.postedTransfers[0]).toContain(decoderWASMBytes);
+
+        worker.emit('message', createSuccessfulResponse());
+        await expect(resultPromise).resolves.toMatchObject({ reason: 'complete' });
+        expect(loadQualificationBitstream).toHaveBeenCalledOnce();
     });
 
     it('rejects malformed worker messages and ignores later events', async () => {
         const worker = new MockCapabilityWorker();
         const probe = new BundledHEVCExactCapabilityProbe(createEnvironment(worker));
         const resultPromise = probe.probe();
+        await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
         worker.emit('message', { type: 'result', results: [] });
         worker.emit('message', createSuccessfulResponse());
 

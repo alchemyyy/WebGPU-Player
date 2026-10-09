@@ -16,8 +16,8 @@ The stock profile is the one the add-on's HTML backend returns from `getDevicePr
    - A retry (`options.isRetry === true`) returns the stock profile unchanged.
    - Otherwise it adopts the stored playback preferences, keeps the stock profile as a per-item proof (`rememberNativeDeviceProfile`), and strips every bitrate field and condition (`createBitrateIndependentDeviceProfile`).
    - It stops there when custom decode is off or the engine's `CustomPlaybackRuntime.getCustomPlaybackRuntimeAvailability` fails (secure context, Worker, `navigator.gpu`, `VideoFrame`).
-   - It awaits the engine's `probeCustomDecodeCapabilities` and the native-media audio probe.
-     The first call on a page blocks PlaybackInfo until the probes settle.
+   - It awaits the engine's `probeCustomDecodeCapabilities(item)` and the native-media audio probe.
+     PlaybackInfo waits until the probes the item selects settle (see [Probes and caching](#probes-and-caching)); a probe an earlier item ran is not repeated.
    - `getHDRDeviceProfileOptions` waits for the GPU authorizations the item's HDR scope needs (5 s each; see [Probe scopes](#probe-scopes)) and returns the flags and route keys.
    - `CustomDeviceProfile.augmentDeviceProfileForCustomDecode` builds the profile, and `HostCompatibleWebGPUPlayer` marks it so the PlaybackInfo interceptor recognizes the request.
 3. Request PlaybackInfo (host).
@@ -68,8 +68,19 @@ The stock profile is the one the add-on's HTML backend returns from `getDevicePr
 - Dedicated workers: bundled HEVC (`@hevcjs/core`), DTS (libdcadec), TrueHD/MLP (FFmpeg), JPEG 2000 (OpenJPEG), and MPEG-2/VC-1 (FFmpeg).
 - GPU: presentation authorization reads back renders of the production shaders.
   Results are cached per `GPUDevice`, canvas format, and shader signature, and dropped on device loss.
-- Each probe is one module-level promise for the page's lifetime and is never invalidated.
-  `SerializedHeavyCapabilityProbeScheduler` runs the heavy probes one at a time; after one times out, later heavy probes report a timeout until the page reloads.
+- `selectCustomDecodeProbes(item)` picks the probes an item needs.
+  Every audio probe runs for every item, because a playing item can switch to any of its audio tracks.
+  The video probes follow the union of the video streams across the item's sources: the codec picks the native and bundled probes, a range extension picks its own variants, a stream beyond 8-bit SDR adds the raw-plane and native HDR probes, and a range that is neither SDR nor static HDR adds the Dolby Vision probe.
+  An HDR item also runs the HEVC and AV1 probes, because an HDR transcode targets those codecs and their ranges bound it.
+  An item without stream metadata, or with a video stream that names no codec, runs every probe.
+- A probe the item does not select reads `not-probed`, which no profile rule or eligibility check treats as support, and its exact result is absent; `probeStates` records which probes a result ran.
+  At eligibility, the host keeps the negotiated result when `hasProbedCustomDecodeSelection` says it covers the played source, and otherwise probes that source.
+- A run downloads every selected probe's assets at once when it starts: each exact probe's `prepare` fetches its qualification vector and decoder binary as bytes and warms its worker script and glue in the HTTP cache, and every selected range-extension vector starts downloading.
+  A probe's downloads finish before its decode timeout starts, under their own 30 s bound (`capability/CapabilityAssetLoading.ts`), so a slow link never reads as a slow decoder or trips the queue's timeout.
+  A download that fails with a network error, 408, 429, or 5xx is retried after 250 ms and again after 1 s, inside the same 30 s bound; any other HTTP failure, or the bound ending, is final.
+  The worker receives the binary as bytes through `DecoderWASMSource`; a failed download reports `asset-unavailable` with an unknown status.
+- Each probe is one module-level promise for the page's lifetime and is never invalidated, so a later item runs only the probes no earlier item ran.
+  `SerializedHeavyCapabilityProbeScheduler` runs the heavy probes one at a time, audio first; after one times out, later heavy probes report a timeout until the page reloads.
 
 ## Route catalog
 

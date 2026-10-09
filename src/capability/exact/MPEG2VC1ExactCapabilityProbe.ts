@@ -1,8 +1,15 @@
 import {
+    getDecoderWASMTransfer,
+    loadDecoderWASMSource,
+    type DecoderWASMSource
+} from '../../DecoderWASMSource';
+import {
     createEngineWorker,
     resolveEngineAssetURL,
-    type EngineAssetPath
+    type EngineAssetPath,
+    type EngineWorkerPath
 } from '../../EngineAssets';
+import { fetchCapabilityAsset, warmCapabilityAsset } from '../CapabilityAssetLoading';
 import {
     getMPEG2VC1Qualification,
     isMPEG2VC1ExactCapabilityWorkerResponse,
@@ -41,9 +48,11 @@ const MPEG2_VIDEO_QUALIFICATION_ASSET: EngineAssetPath =
     'ffmpeg-mpeg2-vc1/mpeg2-progressive-1920x1080-qualification.bin';
 const VC1_VIDEO_QUALIFICATION_ASSET: EngineAssetPath =
     'ffmpeg-mpeg2-vc1/vc1-advanced-progressive-1920x1080-qualification.bin';
+const MPEG2_VC1_EXACT_CAPABILITY_WORKER_ASSET: EngineWorkerPath = 'webgpu-player/MPEG2VC1ExactCapabilityProbe.worker.js';
 
 export type MPEG2VC1ExactCapabilityReason =
     | 'api-unavailable'
+    | 'asset-unavailable'
     | 'decode-error'
     | 'decode-output-verified'
     | 'output-mismatch'
@@ -80,6 +89,8 @@ export type MPEG2VC1ExactCapabilityProbeWorker = {
 export type MPEG2VC1ExactCapabilityProbeEnvironment = Readonly<{
     clearTimeout: (timeout: ReturnType<typeof globalThis.setTimeout>) => void
     createWorker: (() => MPEG2VC1ExactCapabilityProbeWorker) | null
+    // Downloads the decoder binary as bytes for the worker; without it the worker fetches the binary itself
+    loadDecoderWASM?: ((url: string) => Promise<ArrayBuffer>) | null
     loadVector: (url: string) => Promise<ArrayBuffer>
     resolveAssetURL: (path: EngineAssetPath) => string
     runtimeAvailable: boolean
@@ -87,23 +98,18 @@ export type MPEG2VC1ExactCapabilityProbeEnvironment = Readonly<{
         callback: () => void,
         milliseconds: number
     ) => ReturnType<typeof globalThis.setTimeout>
+    // Downloads the worker script and decoder glue into the HTTP cache before the timed probe loads them
+    warmAsset?: ((url: string) => Promise<void>) | null
+}>;
+
+type MPEG2VC1ExactCapabilityProbeAssets = Readonly<{
+    decoderWASM: DecoderWASMSource
+    vector: ArrayBuffer
 }>;
 
 function createDefaultWorker(): MPEG2VC1ExactCapabilityProbeWorker {
-    const worker = createEngineWorker('webgpu-player/MPEG2VC1ExactCapabilityProbe.worker.js');
+    const worker = createEngineWorker(MPEG2_VC1_EXACT_CAPABILITY_WORKER_ASSET);
     return worker as unknown as MPEG2VC1ExactCapabilityProbeWorker;
-}
-
-async function loadDefaultVector(url: string): Promise<ArrayBuffer> {
-    const response = await fetch(url, {
-        cache: 'force-cache',
-        credentials: 'same-origin',
-        redirect: 'error'
-    });
-    if (!response.ok) {
-        throw new Error('The exact MPEG-2/VC-1 qualification vector request failed');
-    }
-    return response.arrayBuffer();
 }
 
 function createDefaultEnvironment(): MPEG2VC1ExactCapabilityProbeEnvironment {
@@ -113,12 +119,14 @@ function createDefaultEnvironment(): MPEG2VC1ExactCapabilityProbeEnvironment {
     return {
         clearTimeout: (timeout): void => globalThis.clearTimeout(timeout),
         createWorker: runtimeAvailable ? createDefaultWorker : null,
-        loadVector: loadDefaultVector,
+        loadDecoderWASM: fetchCapabilityAsset,
+        loadVector: fetchCapabilityAsset,
         resolveAssetURL: resolveEngineAssetURL,
         runtimeAvailable,
         setTimeout: (callback, milliseconds): ReturnType<typeof globalThis.setTimeout> => (
             globalThis.setTimeout(callback, milliseconds)
-        )
+        ),
+        warmAsset: warmCapabilityAsset
     };
 }
 
@@ -147,7 +155,7 @@ function createCapability(
     let status: MPEG2VC1ExactCapability['status'];
     if (supported) {
         status = 'supported';
-    } else if (reason === 'api-unavailable' || reason === 'probe-timeout') {
+    } else if (reason === 'api-unavailable' || reason === 'asset-unavailable' || reason === 'probe-timeout') {
         status = 'unknown';
     } else {
         status = 'unsupported';
@@ -169,6 +177,7 @@ function createCapability(
 /** Owns one cached, fail-closed exact-output probe for the MPEG-2 or VC-1 codec it is constructed with. */
 export default class MPEG2VC1ExactCapabilityProbe {
     private cachedProbe: Promise<MPEG2VC1ExactCapability> | null = null;
+    private preparedAssets: Promise<MPEG2VC1ExactCapabilityProbeAssets | null> | null = null;
     private readonly qualification: MPEG2VC1Qualification;
 
     public constructor(
@@ -188,19 +197,62 @@ export default class MPEG2VC1ExactCapabilityProbe {
         );
     }
 
+    /** Starts this probe's downloads; a probe run prepares every probe it selected, so their downloads overlap. */
+    public prepare(): void {
+        if (!this.environment.runtimeAvailable || !this.environment.createWorker) {
+            return;
+        }
+        this.preparedAssets ??= this.loadAssets();
+    }
+
     /** Returns the same immutable capability result for every call. */
     public probe(): Promise<MPEG2VC1ExactCapability> {
         this.cachedProbe ??= this.runProbe();
         return this.cachedProbe;
     }
 
-    private runProbe(): Promise<MPEG2VC1ExactCapability> {
-        if (!this.environment.runtimeAvailable || !this.environment.createWorker) {
-            return Promise.resolve(createCapability('api-unavailable', this.qualification));
+    private async loadAssets(): Promise<MPEG2VC1ExactCapabilityProbeAssets | null> {
+        const environment = this.environment;
+        const vectorAsset = this.qualification.codec === 'vc1' ?
+            VC1_VIDEO_QUALIFICATION_ASSET :
+            MPEG2_VIDEO_QUALIFICATION_ASSET;
+        try {
+            const [ vector, decoderWASM ] = await Promise.all([
+                environment.loadVector(environment.resolveAssetURL(vectorAsset)),
+                loadDecoderWASMSource(
+                    environment.resolveAssetURL(MPEG2_VC1_DECODER_WASM_ASSET),
+                    environment.loadDecoderWASM
+                ),
+                environment.warmAsset?.(environment.resolveAssetURL(MPEG2_VC1_EXACT_CAPABILITY_WORKER_ASSET)),
+                environment.warmAsset?.(environment.resolveAssetURL(MPEG2_VC1_DECODER_GLUE_ASSET))
+            ]);
+            return { decoderWASM, vector };
+        } catch {
+            return null;
         }
+    }
+
+    private async runProbe(): Promise<MPEG2VC1ExactCapability> {
+        const createWorker = this.environment.createWorker;
+        if (!this.environment.runtimeAvailable || !createWorker) {
+            return createCapability('api-unavailable', this.qualification);
+        }
+        this.prepare();
+        // The downloads finish before the decode timeout starts
+        const assets = await this.preparedAssets;
+        if (!assets) {
+            return createCapability('asset-unavailable', this.qualification);
+        }
+        return this.runWorker(createWorker, assets);
+    }
+
+    private runWorker(
+        createWorker: () => MPEG2VC1ExactCapabilityProbeWorker,
+        assets: MPEG2VC1ExactCapabilityProbeAssets
+    ): Promise<MPEG2VC1ExactCapability> {
         let worker: MPEG2VC1ExactCapabilityProbeWorker;
         try {
-            worker = this.environment.createWorker();
+            worker = createWorker();
         } catch {
             return Promise.resolve(createCapability(
                 'worker-create-failed',
@@ -266,35 +318,18 @@ export default class MPEG2VC1ExactCapabilityProbe {
                 settle(createCapability('probe-timeout', this.qualification));
             }, this.timeoutMilliseconds);
 
-            const loadAndPostRequest = async (): Promise<void> => {
-                try {
-                    const vector = await this.environment.loadVector(
-                        this.environment.resolveAssetURL(
-                            this.qualification.codec === 'vc1' ?
-                                VC1_VIDEO_QUALIFICATION_ASSET :
-                                MPEG2_VIDEO_QUALIFICATION_ASSET
-                        )
-                    );
-                    if (settled) {
-                        return;
-                    }
-                    const request: MPEG2VC1ExactCapabilityWorkerRequest = {
-                        decoderGlueURL: this.environment.resolveAssetURL(
-                            MPEG2_VC1_DECODER_GLUE_ASSET
-                        ),
-                        decoderWASMURL: this.environment.resolveAssetURL(
-                            MPEG2_VC1_DECODER_WASM_ASSET
-                        ),
-                        vector,
-                        requestID: this.qualification.requestID,
-                        type: 'probe'
-                    };
-                    worker.postMessage(request, [ vector ]);
-                } catch {
-                    settle(createCapability('worker-error', this.qualification));
-                }
-            };
-            void loadAndPostRequest();
+            try {
+                const request: MPEG2VC1ExactCapabilityWorkerRequest = {
+                    decoderGlueURL: this.environment.resolveAssetURL(MPEG2_VC1_DECODER_GLUE_ASSET),
+                    decoderWASM: assets.decoderWASM,
+                    vector: assets.vector,
+                    requestID: this.qualification.requestID,
+                    type: 'probe'
+                };
+                worker.postMessage(request, [ assets.vector, ...getDecoderWASMTransfer(assets.decoderWASM) ]);
+            } catch {
+                settle(createCapability('worker-error', this.qualification));
+            }
         });
     }
 }
@@ -302,18 +337,36 @@ export default class MPEG2VC1ExactCapabilityProbe {
 let defaultProbe: MPEG2VC1ExactCapabilityProbe | null = null;
 let defaultVC1Probe: MPEG2VC1ExactCapabilityProbe | null = null;
 
-/** Qualifies and caches the bundled progressive MPEG-2 software route. */
-export function probeMPEG2ExactCapability(): Promise<MPEG2VC1ExactCapability> {
+function getDefaultMPEG2Probe(): MPEG2VC1ExactCapabilityProbe {
     defaultProbe ??= new MPEG2VC1ExactCapabilityProbe();
-    return defaultProbe.probe();
+    return defaultProbe;
 }
 
-/** Qualifies and caches the bundled progressive Advanced VC-1 software route. */
-export function probeVC1ExactCapability(): Promise<MPEG2VC1ExactCapability> {
+function getDefaultVC1Probe(): MPEG2VC1ExactCapabilityProbe {
     defaultVC1Probe ??= new MPEG2VC1ExactCapabilityProbe(
         createDefaultEnvironment(),
         MPEG2_VC1_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS,
         'vc1'
     );
-    return defaultVC1Probe.probe();
+    return defaultVC1Probe;
+}
+
+/** Qualifies and caches the bundled progressive MPEG-2 software route. */
+export function probeMPEG2ExactCapability(): Promise<MPEG2VC1ExactCapability> {
+    return getDefaultMPEG2Probe().probe();
+}
+
+/** Starts the MPEG-2 probe's downloads ahead of its turn. */
+export function prepareMPEG2ExactCapability(): void {
+    getDefaultMPEG2Probe().prepare();
+}
+
+/** Qualifies and caches the bundled progressive Advanced VC-1 software route. */
+export function probeVC1ExactCapability(): Promise<MPEG2VC1ExactCapability> {
+    return getDefaultVC1Probe().probe();
+}
+
+/** Starts the VC-1 probe's downloads ahead of its turn. */
+export function prepareVC1ExactCapability(): void {
+    getDefaultVC1Probe().prepare();
 }

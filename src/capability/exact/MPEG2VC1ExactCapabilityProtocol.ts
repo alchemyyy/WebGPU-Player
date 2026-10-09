@@ -1,3 +1,5 @@
+import { isDecoderWASMSource, type DecoderWASMSource } from '../../DecoderWASMSource';
+
 export const MPEG2_EXACT_CAPABILITY_REQUEST_ID =
     'mpeg2-progressive-main-1920x1080-v1';
 export const VC1_EXACT_CAPABILITY_REQUEST_ID =
@@ -53,7 +55,8 @@ const VC1_QUALIFICATION: MPEG2VC1Qualification = Object.freeze({
 
 export type MPEG2VC1ExactCapabilityWorkerRequest = {
     decoderGlueURL: string
-    decoderWASMURL: string
+    // ffmpeg-mpeg2-vc1.wasm: bytes the page already fetched, or the URL the worker fetches
+    decoderWASM: DecoderWASMSource
     vector: ArrayBuffer
     requestID: MPEG2VC1ExactCapabilityRequestID
     type: 'probe'
@@ -132,7 +135,7 @@ export function isMPEG2VC1ExactCapabilityWorkerRequest(
         && value.vector.byteLength > 0
         && value.vector.byteLength <= 16 * 1024 * 1024
         && isCodecAssetURL(value.decoderGlueURL)
-        && isCodecAssetURL(value.decoderWASMURL);
+        && isDecoderWASMSource(value.decoderWASM);
 }
 
 /** Validates all exact-output evidence returned by the worker. */

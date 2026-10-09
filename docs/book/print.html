@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-24f8931a.js";
+            window.path_to_searchindex_js = "searchindex-bd09b325.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -613,8 +613,8 @@ When it declines, PlaybackManager picks the plain HTML player, which negotiates 
 <li>A retry (<code>options.isRetry === true</code>) returns the stock profile unchanged.</li>
 <li>Otherwise it adopts the stored playback preferences, keeps the stock profile as a per-item proof (<code>rememberNativeDeviceProfile</code>), and strips every bitrate field and condition (<code>createBitrateIndependentDeviceProfile</code>).</li>
 <li>It stops there when custom decode is off or the engine’s <code>CustomPlaybackRuntime.getCustomPlaybackRuntimeAvailability</code> fails (secure context, Worker, <code>navigator.gpu</code>, <code>VideoFrame</code>).</li>
-<li>It awaits the engine’s <code>probeCustomDecodeCapabilities</code> and the native-media audio probe.
-The first call on a page blocks PlaybackInfo until the probes settle.</li>
+<li>It awaits the engine’s <code>probeCustomDecodeCapabilities(item)</code> and the native-media audio probe.
+PlaybackInfo waits until the probes the item selects settle (see <a href="#probes-and-caching">Probes and caching</a>); a probe an earlier item ran is not repeated.</li>
 <li><code>getHDRDeviceProfileOptions</code> waits for the GPU authorizations the item’s HDR scope needs (5 s each; see <a href="#probe-scopes">Probe scopes</a>) and returns the flags and route keys.</li>
 <li><code>CustomDeviceProfile.augmentDeviceProfileForCustomDecode</code> builds the profile, and <code>HostCompatibleWebGPUPlayer</code> marks it so the PlaybackInfo interceptor recognizes the request.</li>
 </ul>
@@ -672,8 +672,19 @@ A codec with several routes is split with ApplyConditions.</li>
 <li>Dedicated workers: bundled HEVC (<code>@hevcjs/core</code>), DTS (libdcadec), TrueHD/MLP (FFmpeg), JPEG 2000 (OpenJPEG), and MPEG-2/VC-1 (FFmpeg).</li>
 <li>GPU: presentation authorization reads back renders of the production shaders.
 Results are cached per <code>GPUDevice</code>, canvas format, and shader signature, and dropped on device loss.</li>
-<li>Each probe is one module-level promise for the page’s lifetime and is never invalidated.
-<code>SerializedHeavyCapabilityProbeScheduler</code> runs the heavy probes one at a time; after one times out, later heavy probes report a timeout until the page reloads.</li>
+<li><code>selectCustomDecodeProbes(item)</code> picks the probes an item needs.
+Every audio probe runs for every item, because a playing item can switch to any of its audio tracks.
+The video probes follow the union of the video streams across the item’s sources: the codec picks the native and bundled probes, a range extension picks its own variants, a stream beyond 8-bit SDR adds the raw-plane and native HDR probes, and a range that is neither SDR nor static HDR adds the Dolby Vision probe.
+An HDR item also runs the HEVC and AV1 probes, because an HDR transcode targets those codecs and their ranges bound it.
+An item without stream metadata, or with a video stream that names no codec, runs every probe.</li>
+<li>A probe the item does not select reads <code>not-probed</code>, which no profile rule or eligibility check treats as support, and its exact result is absent; <code>probeStates</code> records which probes a result ran.
+At eligibility, the host keeps the negotiated result when <code>hasProbedCustomDecodeSelection</code> says it covers the played source, and otherwise probes that source.</li>
+<li>A run downloads every selected probe’s assets at once when it starts: each exact probe’s <code>prepare</code> fetches its qualification vector and decoder binary as bytes and warms its worker script and glue in the HTTP cache, and every selected range-extension vector starts downloading.
+A probe’s downloads finish before its decode timeout starts, under their own 30 s bound (<code>capability/CapabilityAssetLoading.ts</code>), so a slow link never reads as a slow decoder or trips the queue’s timeout.
+A download that fails with a network error, 408, 429, or 5xx is retried after 250 ms and again after 1 s, inside the same 30 s bound; any other HTTP failure, or the bound ending, is final.
+The worker receives the binary as bytes through <code>DecoderWASMSource</code>; a failed download reports <code>asset-unavailable</code> with an unknown status.</li>
+<li>Each probe is one module-level promise for the page’s lifetime and is never invalidated, so a later item runs only the probes no earlier item ran.
+<code>SerializedHeavyCapabilityProbeScheduler</code> runs the heavy probes one at a time, audio first; after one times out, later heavy probes report a timeout until the page reloads.</li>
 </ul>
 <h2 id="route-catalog"><a class="header" href="#route-catalog">Route catalog</a></h2>
 <div class="table-wrapper">
@@ -1139,7 +1150,8 @@ Firefox decodes 10-bit AV1 to 8-bit <code>BGRX</code>, so no raw AV1 route, P10 
 Each source file’s tests are at the same relative path under <code>test/</code>, and integration suites that span several modules sit beside their main module.</p>
 <h2 id="src"><a class="header" href="#src">src/</a></h2>
 <ul>
-<li><code>EngineAssets.ts</code>: the typed manifest of every runtime asset path, and URL resolution against the host’s asset base or, inside a worker, the worker’s own URL.</li>
+<li><code>EngineAssets.ts</code>: the typed manifest of every runtime asset path, the audio decoder binaries that probe and playback workers share, and URL resolution against the host’s asset base or, inside a worker, the worker’s own URL.</li>
+<li><code>DecoderWASMSource.ts</code>: a decoder’s WebAssembly as its served URL or as bytes a caller already fetched, with their validation and transfer across a worker boundary, their Emscripten <code>locateFile</code> and <code>wasmBinary</code> options, and the loader that instantiates a kit’s module once per worker on first use.</li>
 <li><code>EngineConfiguration.ts</code>: the feature flags a host can set.</li>
 <li><code>MediaTime.ts</code>: branded integer microseconds and conversions to Jellyfin ticks.</li>
 <li><code>TimeMath.ts</code>: safe-integer microsecond math.</li>
@@ -1166,7 +1178,8 @@ Authorization shares it.</li>
 <ul>
 <li><code>CustomContainerCodecSupport.ts</code>: the single container and codec matrix.</li>
 <li><code>CustomPlaybackEligibility.ts</code>: per-session route choice, the player-selection prefilter, and <code>hasEligibleCustomVideoRoute</code> for item-scoped negotiation.</li>
-<li><code>CustomDecodeCapabilities.ts</code>: the cached orchestrator of every capability probe, and the codec lists.</li>
+<li><code>CustomDecodeCapabilities.ts</code>: the cached orchestrator of every capability probe, the per-item probe selection, and the codec lists.</li>
+<li><code>CapabilityAssetLoading.ts</code>: the bounded, retried download of a probe’s vectors and decoder binaries, and the HTTP cache warm-up of its worker script and glue.</li>
 <li><code>CustomPlaybackRuntime.ts</code>: runtime feature detection with failure reasons.</li>
 <li><code>H264ProfileCapabilities.ts</code>: the per-profile H.264 decoded-output probe and Jellyfin’s profile names.</li>
 <li><code>HEVCRangeExtensionCapabilities.ts</code>: the nine range-extension variant definitions and the stream metadata resolver.</li>
@@ -1178,7 +1191,8 @@ Their vectors are in <code>capability/vectors/</code> and <code>bin/codec_vector
 <ul>
 <li><code>HEVCExactCapability{Probe,Probe.worker,Protocol,WorkerRuntime}.ts</code>: bundled HEVC (8-frame fingerprints).</li>
 <li><code>DTSExactCapability{Probe,Probe.worker,Protocol,Runner}.ts</code>: libdcadec (7 vectors, real-time factor of at least 2).</li>
-<li><code>TrueHDExactCapability{Probe,Probe.worker,Protocol,Runner}.ts</code>: TrueHD and MLP (4 vectors, major-sync recovery).</li>
+<li><code>TrueHDExactCapability{Probe,Probe.worker,Protocol,Runner}.ts</code>: TrueHD and MLP (4 vectors, major-sync recovery).
+Both requests carry the decoder binary, as the URL the playback worker also loads or as bytes the page fetched.</li>
 <li><code>JPEG2000ExactCapability{Probe,Probe.worker,Protocol}.ts</code>: OpenJPEG (a 960x540 RGBA fingerprint).</li>
 <li><code>MPEG2VC1ExactCapability{Probe,Probe.worker,Protocol}.ts</code>: MPEG-2 and VC-1 (12 frames, an I420 fingerprint).</li>
 </ul>
@@ -1276,6 +1290,7 @@ A Dolby Vision pair is a BL in any format from I420 to I444P12 and an I420P10 EL
 <h3 id="audiodecoders"><a class="header" href="#audiodecoders">audio/decoders/</a></h3>
 <ul>
 <li><code>AC3SoftwareAudioDecoder.ts</code>, <code>EAC3SoftwareAudioDecoder.ts</code>, <code>DTSSoftwareAudioDecoder.ts</code>, <code>TrueHDSoftwareAudioDecoder.ts</code> [worker]: the <code>@mediabunny/ac3</code> registration and the lazily loaded WASM decoders.
+A worker fetches a kit’s served binary when it creates the kit’s first decoder; <code>loadDTSDecoderModule</code>, <code>loadEAC3DecoderModule</code>, and <code>loadTrueHDDecoderModule</code> take bytes a caller already fetched instead.
 E-AC-3, DTS, and TrueHD report their channel layout, and the FFmpeg wrappers stamp later frames of one packet after its earlier ones.</li>
 <li><code>DTSSeekRecovery.ts</code>: the 1 s DTS preroll and a bounded tolerance for XLL sync errors.</li>
 <li><code>CustomAudioDecoderRegistration.ts</code>, <code>MediabunnyPCMBuiltinDecoderAvailability.ts</code>: decoder registration and G.711 availability.</li>
@@ -1315,6 +1330,7 @@ E-AC-3, DTS, and TrueHD report their channel layout, and the FFmpeg wrappers sta
 <ul>
 <li><code>test/helpers/enginePaths.ts</code>: the engine root and the <code>node_modules</code> location, independent of the test runner’s working directory, and the folders from <code>tools/constants.json</code>.</li>
 <li><code>test/helpers/dolbyVisionAV1ITUTT35Payload.ts</code>, <code>test/helpers/dolbyVisionMixedRPUVector.ts</code>: wrap an HEVC RPU in the AV1 EMDF T.35 container, and build RPUs with mixed and linear pieces.</li>
+<li><code>test/helpers/libraryAssets.ts</code>: the asset build’s tables from <code>scripts/library-assets.mjs</code>, and a served decoder binary read as bytes from the file the build copies, since tests have no server for its URL.</li>
 <li><code>wasm/</code>: the decoder sources and build.
 See <a href="#webassembly-decoders">WebAssembly decoders</a>.</li>
 <li><code>vendor/</code>: the FFmpeg and dcadec submodules (<code>update = none</code>), which <code>make -C wasm sources</code> fetches.</li>
@@ -1326,7 +1342,7 @@ See <a href="#codec-vectors">Codec vectors</a>.</li>
 See <a href="#tools">Tools</a>.</li>
 <li><code>bin/wasm/</code>: the decoder builds from <code>make -C wasm</code>, ignored:
 <ul>
-<li><code>ffmpeg-eac3/</code>, <code>ffmpeg-truehd/</code>, <code>libdcadec-dts/</code> [worker]: Emscripten single-file ES modules (<code>.mjs</code> with embedded WASM), imported as <code>#wasm/&lt;kit&gt;/&lt;kit&gt;.mjs</code> through the <code>imports</code> map in <code>package.json</code>.
+<li><code>ffmpeg-eac3/</code>, <code>ffmpeg-truehd/</code>, <code>libdcadec-dts/</code> [worker]: Emscripten ES module glue (<code>.mjs</code>), imported as <code>#wasm/&lt;kit&gt;/&lt;kit&gt;.mjs</code> through the <code>imports</code> map in <code>package.json</code> and bundled into the workers, and its <code>.wasm</code>, served from <code>libraries/&lt;kit&gt;/</code>.
 Their hand-written declarations are <code>wasm/&lt;kit&gt;/&lt;kit&gt;.d.mts</code>, which the map’s <code>types</code> condition resolves.</li>
 <li><code>ffmpeg-mpeg2-vc1/</code> and <code>libdovi/</code>: served from <code>libraries/</code>.</li>
 </ul>
@@ -1482,7 +1498,7 @@ The add-on supplies each one itself:</p>
 </thead>
 <tbody>
 <tr><td>Bitrate-free selection, the stream-copy veto, and the second request that sizes a transcode</td><td><code>compat/PlaybackInfoInterceptor.ts</code>, an interceptor on the server’s axios instance, applying <code>PlaybackInfoPolicy.ts</code>, <code>PlaybackBitratePolicy.ts</code>, and <code>PlaybackStreamCopyPolicy.ts</code>. <code>MediaSourceSelection.ts</code> replicates PlaybackManager’s choice of source</td></tr>
-<tr><td>Request generations and superseded starts</td><td><code>compat/PlaybackManagerHooks.ts</code> wraps <code>play</code>, <code>nextTrack</code>, <code>previousTrack</code>, <code>setCurrentPlaylistItem</code>, and <code>stop</code> to cancel a pending WebGPU start. <code>HostCompatibleWebGPUPlayer.play</code> never settles a superseded start, and stops the server encodings it requested</td></tr>
+<tr><td>Request generations and superseded starts</td><td><code>compat/PlaybackManagerHooks.ts</code> wraps <code>play</code>, <code>nextTrack</code>, <code>previousTrack</code>, <code>setCurrentPlaylistItem</code>, and <code>stop</code> to cancel a pending WebGPU start. A <code>play</code> whose options match the pending request’s, comparing items by ID, instead returns that request’s promise while its start is pending, so a second click does not restart it. <code>HostCompatibleWebGPUPlayer.play</code> never settles a superseded start, and stops the server encodings it requested</td></tr>
 <tr><td>Player preference ordering</td><td><code>HostCompatibleWebGPUPlayer.canPlayItem</code> declines when the user prefers the HTML player, and inside a native app shell</td></tr>
 <tr><td>The player settings menu and the preference control</td><td><code>compat/SettingsEntryPoints.ts</code> adds the “WebGPU Settings” button to the player’s OSD and the preferred player control to the Playback settings page, through the DOM</td></tr>
 <tr><td>A listener for source renegotiation</td><td>None: the player raises <code>PlayerEvent.Error</code>, and PlaybackManager’s error retry ladder asks for a transcode</td></tr>
@@ -1551,17 +1567,19 @@ The build writes them to <code>bin/wasm/</code>, which is ignored like everythin
 <tr><th>Kit</th><th>Output in <code>bin/wasm/&lt;kit&gt;/</code></th><th>Library and license</th><th>Our source (MIT)</th></tr>
 </thead>
 <tbody>
-<tr><td><code>ffmpeg-eac3</code></td><td><code>ffmpeg-eac3.mjs</code></td><td>FFmpeg E-AC-3 and AC-3, LGPL-2.1-or-later</td><td><code>ffmpeg-eac3/ffmpeg_eac3_bridge.c</code></td></tr>
-<tr><td><code>ffmpeg-truehd</code></td><td><code>ffmpeg-truehd.mjs</code></td><td>FFmpeg TrueHD and MLP, LGPL-2.1-or-later</td><td><code>ffmpeg-truehd/ffmpeg_truehd_bridge.c</code></td></tr>
+<tr><td><code>ffmpeg-eac3</code></td><td><code>ffmpeg-eac3.mjs</code>, <code>ffmpeg-eac3.wasm</code></td><td>FFmpeg E-AC-3 and AC-3, LGPL-2.1-or-later</td><td><code>ffmpeg-eac3/ffmpeg_eac3_bridge.c</code></td></tr>
+<tr><td><code>ffmpeg-truehd</code></td><td><code>ffmpeg-truehd.mjs</code>, <code>ffmpeg-truehd.wasm</code></td><td>FFmpeg TrueHD and MLP, LGPL-2.1-or-later</td><td><code>ffmpeg-truehd/ffmpeg_truehd_bridge.c</code></td></tr>
 <tr><td><code>ffmpeg-mpeg2-vc1</code></td><td><code>ffmpeg-mpeg2-vc1.js</code>, <code>ffmpeg-mpeg2-vc1.wasm</code></td><td>FFmpeg MPEG-2 Video and VC-1, LGPL-2.1-or-later</td><td><code>ffmpeg-mpeg2-vc1/ffmpeg_mpeg2_vc1_bridge.c</code></td></tr>
-<tr><td><code>libdcadec-dts</code></td><td><code>libdcadec-dts.mjs</code></td><td><a href="https://github.com/foo86/dcadec">dcadec</a> DTS, DTS-HD High Resolution, and DTS-HD Master Audio, LGPL-2.1-or-later</td><td><code>libdcadec-dts/libdcadec_dts_bridge.c</code></td></tr>
+<tr><td><code>libdcadec-dts</code></td><td><code>libdcadec-dts.mjs</code>, <code>libdcadec-dts.wasm</code></td><td><a href="https://github.com/foo86/dcadec">dcadec</a> DTS, DTS-HD High Resolution, and DTS-HD Master Audio, LGPL-2.1-or-later</td><td><code>libdcadec-dts/libdcadec_dts_bridge.c</code></td></tr>
 <tr><td><code>libdovi</code></td><td><code>dovi-rpu-parser.wasm</code></td><td>The <code>dolby_vision</code> crate from <a href="https://github.com/quietvoid/dovi_tool">dovi_tool</a>, vendored and patched, MIT</td><td><code>libdovi/</code></td></tr>
 </tbody>
 </table>
 </div>
-<p>The <code>.mjs</code> outputs are single-file ES modules with the WASM embedded.
+<p>The <code>.mjs</code> outputs are the audio kits’ ES module glue, which esbuild bundles into each worker that imports it.
 Their hand-written TypeScript declarations sit beside the bridges as <code>&lt;kit&gt;/&lt;kit&gt;.d.mts</code>, and the engine imports them as <code>#wasm/&lt;kit&gt;/&lt;kit&gt;.mjs</code> (see <a href="#embedding-the-engine">Embedding the engine</a>).
-The other outputs are served from <code>libraries/</code>.
+Every <code>.wasm</code> file, and the <code>ffmpeg-mpeg2-vc1</code> glue, is served from <code>libraries/&lt;kit&gt;/</code>.
+An audio binary is fetched only when a worker creates its first decoder of that kit, and a probe worker and the playback worker fetch the same URL, so the browser caches it once.
+<code>src/DecoderWASMSource.ts</code> always passes the glue <code>locateFile</code>, because a bundled glue cannot resolve its own URL, or <code>wasmBinary</code> with bytes a caller already fetched.
 The OpenJPEG and hevc.js decoders come from npm packages, which <code>scripts/build.mjs</code> copies; nothing here builds them.</p>
 <h2 id="you-need-2"><a class="header" href="#you-need-2">You need</a></h2>
 <ul>
@@ -1852,6 +1870,7 @@ Each assumes a checkout set up as in <a href="#set-up-a-checkout">Set up a check
 <ol>
 <li>Capability.
 Add an exact-output probe to <code>src/capability/CustomDecodeCapabilities.ts</code>.
+Give a video probe an identifier in <code>CustomDecodeVideoProbe</code> and <code>CUSTOM_DECODE_VIDEO_PROBES</code>, and select it in <code>selectItemVideoProbes</code> for the streams that need it, or no item runs it.
 For an HEVC range extension:
 <ul>
 <li>add its definition to <code>src/capability/HEVCRangeExtensionCapabilities.ts</code>;</li>
@@ -1969,6 +1988,18 @@ Widening the generic ranges would advertise those pairs for every item, so the p
 <li>A declared HDR base also waits for the static HDR probes (10-06, host).
 A Dolby Vision item whose declared PQ or HLG base is not an exact native P7 or P8 base probes Dolby Vision in parallel with the static HDR routes (external first, raw only when no external key is authorized), so its base fallback can be advertised.
 Any other Dolby Vision item waits only for Dolby Vision.</li>
+<li>Video probes run per item; audio probes always run (10-08).
+Probing every codec on the first negotiation of a page blocked PlaybackInfo for about 2.6 s, mostly on decoders the item did not contain.
+A video stream cannot change within a negotiation, since another version or item renegotiates, so the video probes follow the item’s streams and run on demand.
+An audio track can change during playback, so every audio probe runs for every item.
+A probe outside the selection reads <code>not-probed</code>, never a verdict, so an unprobed codec is not advertised.</li>
+<li>Probe downloads run in parallel and outside the decode timeouts (10-08).
+The exact probes armed their timeouts before downloading their vectors and binaries, and the range-extension probes downloaded inside the queue’s 2 s timed slot, so a slow cold link failed a capable decoder as unsupported or timed out every later probe.
+A run now starts every selected probe’s downloads at once and each probe decodes only once its own are done; decoding stays one probe at a time.
+Worker scripts and glue are warmed in the HTTP cache rather than spawned early, so no worker or compile competes with a running probe’s real-time-factor measurement.</li>
+<li>An identical play request joins the pending start (10-08, host).
+A second click on the same item while its start is pending used to supersede a healthy session and repeat the item fetch, PlaybackInfo, and worker setup.
+The PlaybackManager hook returns the pending request’s promise for a request with the same items and options, and any other request still supersedes it.</li>
 </ul>
 <h2 id="video-decode-and-dolby-vision"><a class="header" href="#video-decode-and-dolby-vision">Video decode and Dolby Vision</a></h2>
 <p>These were settled on stock Chrome on Windows, with a Chromium 153 source audit.</p>
@@ -2289,6 +2320,11 @@ There is no Docker and no Python of our own in the build.
 <code>bin/</code> holds generated output, and only <code>bin/codec_vector_assets/</code> is committed, so <code>bin/wasm/</code> is ignored.
 Each checkout builds the decoders with <code>make -C wasm sources all</code> before the tests and the asset build.
 Their hand-written declarations live in <code>wasm/&lt;kit&gt;/</code>, and the <code>types</code> condition of the <code>#wasm/*</code> import resolves TypeScript to them, so type checks and lint need no build.</li>
+<li>Audio decoder binaries are served files (10-08).
+The DTS, TrueHD, and E-AC-3 kits link without <code>SINGLE_FILE</code>: esbuild bundles their ES module glue into the workers, and each <code>.wasm</code> is served from <code>libraries/&lt;kit&gt;/</code>.
+Embedded, the binaries were base64 in every worker that imported them: 1.4 MB of the playback worker for every session, and DTS and TrueHD downloaded a second time inside their probe workers.
+A served binary is one cache entry for the probe and playback workers, compiles while it streams, and loads only when a decoder of its kit is created.
+The glue always gets <code>locateFile</code>, or <code>wasmBinary</code> with bytes the page already fetched, through <code>src/DecoderWASMSource.ts</code>.</li>
 <li>Codec vectors are generated into a committed <code>bin/</code> folder (10-05).
 <code>bin/codec_vector_assets/</code> is the one committed folder in <code>bin/</code>, so every change to a qualification stream, generated module, or reference shows in review.
 The generators are all Python, in <code>scripts/codec_vector_assets/</code>.

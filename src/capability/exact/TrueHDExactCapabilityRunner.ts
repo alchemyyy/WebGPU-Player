@@ -1,4 +1,5 @@
 import { MICROSECONDS_PER_SECOND } from '../../MediaTime';
+import type { DecoderWASMSource } from '../../DecoderWASMSource';
 import {
     createTrueHDExactCapabilityVectors,
     type TrueHDExactCapabilityVector
@@ -15,6 +16,7 @@ import {
     type TrueHDExactCapabilityWorkerResponse
 } from './TrueHDExactCapabilityProtocol';
 import TrueHDSoftwareAudioDecoder, {
+    loadTrueHDDecoderModule,
     type TrueHDDecodedAudioOutput,
     type TrueHDDecoderCodec
 } from '../../audio/decoders/TrueHDSoftwareAudioDecoder';
@@ -181,16 +183,19 @@ function measureThroughput(
     };
 }
 
-function createDefaultEnvironment(): TrueHDExactCapabilityRunnerEnvironment {
+/** The probe worker's environment: decoders from the requested FFmpeg TrueHD binary, timed by the worker's clock. */
+export function createTrueHDExactCapabilityRunnerEnvironment(
+    decoderWASM: DecoderWASMSource
+): TrueHDExactCapabilityRunnerEnvironment {
     return {
-        createDecoder: codec => TrueHDSoftwareAudioDecoder.create(codec),
+        createDecoder: codec => TrueHDSoftwareAudioDecoder.create(codec, () => loadTrueHDDecoderModule(decoderWASM)),
         now: () => performance.now()
     };
 }
 
 /** Qualifies exact PCM, post-seek major-sync recovery, and real-time throughput. */
 export async function runTrueHDExactCapabilityQualification(
-    environment: TrueHDExactCapabilityRunnerEnvironment = createDefaultEnvironment()
+    environment: TrueHDExactCapabilityRunnerEnvironment
 ): Promise<TrueHDExactCapabilityWorkerResponse> {
     const evidence: TrueHDQualificationEvidence = {
         decodeMilliseconds: null,

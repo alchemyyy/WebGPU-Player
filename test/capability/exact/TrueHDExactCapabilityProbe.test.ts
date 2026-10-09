@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { TRUEHD_DECODER_WASM_ASSET } from 'webgpu-player/EngineAssets';
 import TrueHDExactCapabilityProbe, {
     type TrueHDExactCapabilityProbeEnvironment,
     type TrueHDExactCapabilityProbeWorker
@@ -15,11 +16,18 @@ import {
     type TrueHDExactCapabilityWorkerResponse
 } from 'webgpu-player/capability/exact/TrueHDExactCapabilityProtocol';
 
+const ASSET_BASE_URL = 'https://example.test/web/libraries/';
+// The URL the playback worker resolves for the same binary
+const DECODER_WASM_URL = `${ASSET_BASE_URL}${TRUEHD_DECODER_WASM_ASSET}`;
+const DECODER_WASM_BYTE_LENGTH = 8;
+const WRONG_REQUEST_ID = 'wrong';
+
 type WorkerEventType = 'error' | 'message' | 'messageerror';
 type WorkerListener = (event: Event) => void;
 
 class FakeTrueHDProbeWorker implements TrueHDExactCapabilityProbeWorker {
     public readonly postedMessages: unknown[] = [];
+    public readonly postedTransfers: Transferable[][] = [];
     public terminateCallCount = 0;
 
     private readonly listeners = new Map<WorkerEventType, Set<WorkerListener>>();
@@ -33,8 +41,9 @@ class FakeTrueHDProbeWorker implements TrueHDExactCapabilityProbeWorker {
         typeListeners.add(listener);
     }
 
-    public postMessage(message: unknown): void {
+    public postMessage(message: unknown, transfer: Transferable[]): void {
         this.postedMessages.push(message);
+        this.postedTransfers.push(transfer);
     }
 
     public removeEventListener(type: WorkerEventType, listener: WorkerListener): void {
@@ -80,6 +89,7 @@ function createEnvironment(
     return {
         clearTimeout: vi.fn(),
         createWorker: () => worker,
+        resolveAssetURL: path => `${ASSET_BASE_URL}${path}`,
         runtimeAvailable: true,
         setTimeout: callback => {
             timeoutCallback.value = callback;
@@ -90,13 +100,31 @@ function createEnvironment(
 
 describe('TrueHD exact capability protocol', () => {
     it('accepts only the bounded request shape', () => {
-        expect(isTrueHDExactCapabilityWorkerRequest({
+        const request = {
+            decoderWASM: { kind: 'url', url: DECODER_WASM_URL },
             requestID: TRUEHD_EXACT_CAPABILITY_REQUEST_ID,
             type: 'probe'
-        })).toBe(true);
+        };
+        expect(isTrueHDExactCapabilityWorkerRequest(request)).toBe(true);
         expect(isTrueHDExactCapabilityWorkerRequest({
-            requestID: 'wrong',
+            ...request,
+            requestID: WRONG_REQUEST_ID
+        })).toBe(false);
+    });
+
+    it('accepts the decoder binary as a URL or as bytes the page fetched', () => {
+        const request = {
+            requestID: TRUEHD_EXACT_CAPABILITY_REQUEST_ID,
             type: 'probe'
+        };
+        expect(isTrueHDExactCapabilityWorkerRequest({
+            ...request,
+            decoderWASM: { bytes: new ArrayBuffer(DECODER_WASM_BYTE_LENGTH), kind: 'bytes' }
+        })).toBe(true);
+        expect(isTrueHDExactCapabilityWorkerRequest(request)).toBe(false);
+        expect(isTrueHDExactCapabilityWorkerRequest({
+            ...request,
+            decoderWASM: { kind: 'url', url: TRUEHD_DECODER_WASM_ASSET }
         })).toBe(false);
     });
 
@@ -128,10 +156,13 @@ describe('TrueHDExactCapabilityProbe', () => {
 
         const firstProbe = probe.probe();
         expect(probe.probe()).toBe(firstProbe);
+        await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
         expect(worker.postedMessages).toEqual([ {
+            decoderWASM: { kind: 'url', url: DECODER_WASM_URL },
             requestID: TRUEHD_EXACT_CAPABILITY_REQUEST_ID,
             type: 'probe'
         } ]);
+        expect(worker.postedTransfers).toEqual([ [] ]);
         worker.emitMessage(createSupportedResponse());
 
         await expect(firstProbe).resolves.toMatchObject({
@@ -156,6 +187,7 @@ describe('TrueHDExactCapabilityProbe', () => {
         );
 
         const resultPromise = probe.probe();
+        await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
         worker.emitMessage({
             ...createSupportedResponse(),
             majorSyncRecoveryVerified: false
@@ -172,6 +204,7 @@ describe('TrueHDExactCapabilityProbe', () => {
         const environment: TrueHDExactCapabilityProbeEnvironment = {
             clearTimeout: vi.fn(),
             createWorker,
+            resolveAssetURL: vi.fn(),
             runtimeAvailable: false,
             setTimeout: vi.fn()
         };
@@ -193,6 +226,7 @@ describe('TrueHDExactCapabilityProbe', () => {
         );
 
         const resultPromise = probe.probe();
+        await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
         timeoutCallback.value?.();
         worker.emitMessage(createSupportedResponse());
 
@@ -211,6 +245,7 @@ describe('TrueHDExactCapabilityProbe', () => {
         );
 
         const resultPromise = probe.probe();
+        await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
         worker.emitMessage({ supported: true });
 
         await expect(resultPromise).resolves.toMatchObject({

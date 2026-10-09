@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { TEST_VECTORS_DIRECTORY } from '../../helpers/enginePaths';
+import { readDecoderWASMSource } from '../../helpers/libraryAssets';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -10,14 +11,21 @@ import {
     EncodedPacketSink,
     Input
 } from 'mediabunny';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import DTSSoftwareAudioDecoder, {
-    DTS_PROFILE_DIGITAL_SURROUND
+    DTS_PROFILE_DIGITAL_SURROUND,
+    loadDTSDecoderModule
 } from 'webgpu-player/audio/decoders/DTSSoftwareAudioDecoder';
+import { DTS_DECODER_WASM_ASSET } from 'webgpu-player/EngineAssets';
 import { requireMicroseconds } from 'webgpu-player/TimeMath';
 
 const MATROSKA_VECTOR_PATH = resolve(TEST_VECTORS_DIRECTORY, 'dts', 'core_51_24_48_768_0.mka');
+
+beforeAll(async () => {
+    // The served binary, which the decoders below reuse
+    await loadDTSDecoderModule(await readDecoderWASMSource(DTS_DECODER_WASM_ASSET));
+});
 
 describe('Mediabunny DTS demux integration', () => {
     it('surfaces Matroska A_DTS packets for the owned decoder', async () => {

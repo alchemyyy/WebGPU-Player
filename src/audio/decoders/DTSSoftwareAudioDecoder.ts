@@ -3,6 +3,8 @@ import type { CustomAudioChannelLayout } from '../processing/CustomAudioChannelL
 import { isSupportedCustomAudioSampleRate } from '../CustomAudioSampleRate';
 import { getQualifiedCustomWaveChannelLayout } from '../processing/CustomWaveChannelLayout';
 import { requireMicroseconds } from '../../TimeMath';
+import { createEmscriptenModuleLoader } from '../../DecoderWASMSource';
+import { DTS_DECODER_WASM_ASSET } from '../../EngineAssets';
 import type { LibDCADECModule } from '#wasm/libdcadec-dts/libdcadec-dts.mjs';
 
 const DTS_MAXIMUM_PACKET_SIZE = 2 * 1024 * 1024;
@@ -70,14 +72,14 @@ type LibDCADECFunctionTable = {
 
 export type DTSDecoderModuleFactory = () => Promise<LibDCADECModule>;
 
-let defaultModulePromise: Promise<LibDCADECModule> | null = null;
-
-async function loadDefaultDTSDecoderModule(): Promise<LibDCADECModule> {
-    if (!defaultModulePromise) {
-        defaultModulePromise = import('#wasm/libdcadec-dts/libdcadec-dts.mjs').then(async moduleNamespace => moduleNamespace.default());
-    }
-    return defaultModulePromise;
-}
+/**
+ * Instantiates libdcadec once per worker, when the first DTS decoder needs it.
+ * It fetches the served binary unless the first caller passes bytes it already fetched.
+ */
+export const loadDTSDecoderModule = createEmscriptenModuleLoader<LibDCADECModule>(
+    async () => (await import('#wasm/libdcadec-dts/libdcadec-dts.mjs')).default,
+    DTS_DECODER_WASM_ASSET
+);
 
 function requireFunction<FunctionType extends (...arguments_: never[]) => unknown>(
     module: LibDCADECModule,
@@ -190,7 +192,7 @@ export default class DTSSoftwareAudioDecoder {
     }
 
     /** Creates one decoder after lazy WebAssembly initialization. */
-    public static async create(moduleFactory: DTSDecoderModuleFactory = loadDefaultDTSDecoderModule): Promise<DTSSoftwareAudioDecoder> {
+    public static async create(moduleFactory: DTSDecoderModuleFactory = loadDTSDecoderModule): Promise<DTSSoftwareAudioDecoder> {
         const module = await moduleFactory();
         if (!(module.HEAPU8 instanceof Uint8Array) || !(module.HEAP32 instanceof Int32Array)) {
             throw new Error('The bundled DTS decoder memory views are unavailable');

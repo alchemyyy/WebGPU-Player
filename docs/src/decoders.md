@@ -5,15 +5,17 @@ The build writes them to `bin/wasm/`, which is ignored like everything in `bin/`
 
 | Kit | Output in `bin/wasm/<kit>/` | Library and license | Our source (MIT) |
 | --- | --- | --- | --- |
-| `ffmpeg-eac3` | `ffmpeg-eac3.mjs` | FFmpeg E-AC-3 and AC-3, LGPL-2.1-or-later | `ffmpeg-eac3/ffmpeg_eac3_bridge.c` |
-| `ffmpeg-truehd` | `ffmpeg-truehd.mjs` | FFmpeg TrueHD and MLP, LGPL-2.1-or-later | `ffmpeg-truehd/ffmpeg_truehd_bridge.c` |
+| `ffmpeg-eac3` | `ffmpeg-eac3.mjs`, `ffmpeg-eac3.wasm` | FFmpeg E-AC-3 and AC-3, LGPL-2.1-or-later | `ffmpeg-eac3/ffmpeg_eac3_bridge.c` |
+| `ffmpeg-truehd` | `ffmpeg-truehd.mjs`, `ffmpeg-truehd.wasm` | FFmpeg TrueHD and MLP, LGPL-2.1-or-later | `ffmpeg-truehd/ffmpeg_truehd_bridge.c` |
 | `ffmpeg-mpeg2-vc1` | `ffmpeg-mpeg2-vc1.js`, `ffmpeg-mpeg2-vc1.wasm` | FFmpeg MPEG-2 Video and VC-1, LGPL-2.1-or-later | `ffmpeg-mpeg2-vc1/ffmpeg_mpeg2_vc1_bridge.c` |
-| `libdcadec-dts` | `libdcadec-dts.mjs` | [dcadec](https://github.com/foo86/dcadec) DTS, DTS-HD High Resolution, and DTS-HD Master Audio, LGPL-2.1-or-later | `libdcadec-dts/libdcadec_dts_bridge.c` |
+| `libdcadec-dts` | `libdcadec-dts.mjs`, `libdcadec-dts.wasm` | [dcadec](https://github.com/foo86/dcadec) DTS, DTS-HD High Resolution, and DTS-HD Master Audio, LGPL-2.1-or-later | `libdcadec-dts/libdcadec_dts_bridge.c` |
 | `libdovi` | `dovi-rpu-parser.wasm` | The `dolby_vision` crate from [dovi_tool](https://github.com/quietvoid/dovi_tool), vendored and patched, MIT | `libdovi/` |
 
-The `.mjs` outputs are single-file ES modules with the WASM embedded.
+The `.mjs` outputs are the audio kits' ES module glue, which esbuild bundles into each worker that imports it.
 Their hand-written TypeScript declarations sit beside the bridges as `<kit>/<kit>.d.mts`, and the engine imports them as `#wasm/<kit>/<kit>.mjs` (see [Embedding the engine](embedding.md)).
-The other outputs are served from `libraries/`.
+Every `.wasm` file, and the `ffmpeg-mpeg2-vc1` glue, is served from `libraries/<kit>/`.
+An audio binary is fetched only when a worker creates its first decoder of that kit, and a probe worker and the playback worker fetch the same URL, so the browser caches it once.
+`src/DecoderWASMSource.ts` always passes the glue `locateFile`, because a bundled glue cannot resolve its own URL, or `wasmBinary` with bytes a caller already fetched.
 The OpenJPEG and hevc.js decoders come from npm packages, which `scripts/build.mjs` copies; nothing here builds them.
 
 ## You need

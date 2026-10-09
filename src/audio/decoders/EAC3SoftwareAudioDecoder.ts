@@ -1,4 +1,6 @@
 import type { Microseconds } from '../../MediaTime';
+import { createEmscriptenModuleLoader } from '../../DecoderWASMSource';
+import { EAC3_DECODER_WASM_ASSET } from '../../EngineAssets';
 import type { FFmpegEAC3Module } from '#wasm/ffmpeg-eac3/ffmpeg-eac3.mjs';
 import type { CustomAudioChannelLayout } from '../processing/CustomAudioChannelLayout';
 import { isSupportedCustomAudioSampleRate } from '../CustomAudioSampleRate';
@@ -43,14 +45,14 @@ type FFmpegEAC3FunctionTable = {
 
 export type EAC3DecoderModuleFactory = () => Promise<FFmpegEAC3Module>;
 
-let defaultModulePromise: Promise<FFmpegEAC3Module> | null = null;
-
-async function loadDefaultEAC3DecoderModule(): Promise<FFmpegEAC3Module> {
-    if (!defaultModulePromise) {
-        defaultModulePromise = import('#wasm/ffmpeg-eac3/ffmpeg-eac3.mjs').then(async moduleNamespace => moduleNamespace.default());
-    }
-    return defaultModulePromise;
-}
+/**
+ * Instantiates FFmpeg's E-AC-3 decoder once per worker, when the first E-AC-3 decoder needs it.
+ * It fetches the served binary unless the first caller passes bytes it already fetched.
+ */
+export const loadEAC3DecoderModule = createEmscriptenModuleLoader<FFmpegEAC3Module>(
+    async () => (await import('#wasm/ffmpeg-eac3/ffmpeg-eac3.mjs')).default,
+    EAC3_DECODER_WASM_ASSET
+);
 
 function requireFunction<FunctionType extends (...arguments_: never[]) => unknown>(
     module: FFmpegEAC3Module,
@@ -114,7 +116,7 @@ export default class EAC3SoftwareAudioDecoder {
     }
 
     /** Creates one decoder after lazy WebAssembly initialization. */
-    public static async create(moduleFactory: EAC3DecoderModuleFactory = loadDefaultEAC3DecoderModule): Promise<EAC3SoftwareAudioDecoder> {
+    public static async create(moduleFactory: EAC3DecoderModuleFactory = loadEAC3DecoderModule): Promise<EAC3SoftwareAudioDecoder> {
         const module = await moduleFactory();
         if (!(module.HEAPF32 instanceof Float32Array) || !(module.HEAPU8 instanceof Uint8Array)) {
             throw new Error('The bundled E-AC-3 decoder memory views are unavailable');

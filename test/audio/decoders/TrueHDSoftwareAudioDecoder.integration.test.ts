@@ -1,9 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import { createTrueHDExactCapabilityVectors } from '#codec_vector_assets/truehd/TrueHDExactCapabilityVectors';
 import TrueHDSoftwareAudioDecoder, {
+    loadTrueHDDecoderModule,
     type TrueHDDecodedAudioOutput
 } from 'webgpu-player/audio/decoders/TrueHDSoftwareAudioDecoder';
+import { TRUEHD_DECODER_WASM_ASSET } from 'webgpu-player/EngineAssets';
+
+import { readDecoderWASMSource } from '../../helpers/libraryAssets';
+
+beforeAll(async () => {
+    // The served binary, which the decoders below reuse
+    await loadTrueHDDecoderModule(await readDecoderWASMSource(TRUEHD_DECODER_WASM_ASSET));
+});
 
 describe('TrueHDSoftwareAudioDecoder WebAssembly integration', () => {
     it('matches native FFmpeg PCM for every synthetic qualification frame', async () => {

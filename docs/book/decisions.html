@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-24f8931a.js";
+            window.path_to_searchindex_js = "searchindex-bd09b325.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -218,6 +218,18 @@ Widening the generic ranges would advertise those pairs for every item, so the p
 <li>A declared HDR base also waits for the static HDR probes (10-06, host).
 A Dolby Vision item whose declared PQ or HLG base is not an exact native P7 or P8 base probes Dolby Vision in parallel with the static HDR routes (external first, raw only when no external key is authorized), so its base fallback can be advertised.
 Any other Dolby Vision item waits only for Dolby Vision.</li>
+<li>Video probes run per item; audio probes always run (10-08).
+Probing every codec on the first negotiation of a page blocked PlaybackInfo for about 2.6 s, mostly on decoders the item did not contain.
+A video stream cannot change within a negotiation, since another version or item renegotiates, so the video probes follow the item’s streams and run on demand.
+An audio track can change during playback, so every audio probe runs for every item.
+A probe outside the selection reads <code>not-probed</code>, never a verdict, so an unprobed codec is not advertised.</li>
+<li>Probe downloads run in parallel and outside the decode timeouts (10-08).
+The exact probes armed their timeouts before downloading their vectors and binaries, and the range-extension probes downloaded inside the queue’s 2 s timed slot, so a slow cold link failed a capable decoder as unsupported or timed out every later probe.
+A run now starts every selected probe’s downloads at once and each probe decodes only once its own are done; decoding stays one probe at a time.
+Worker scripts and glue are warmed in the HTTP cache rather than spawned early, so no worker or compile competes with a running probe’s real-time-factor measurement.</li>
+<li>An identical play request joins the pending start (10-08, host).
+A second click on the same item while its start is pending used to supersede a healthy session and repeat the item fetch, PlaybackInfo, and worker setup.
+The PlaybackManager hook returns the pending request’s promise for a request with the same items and options, and any other request still supersedes it.</li>
 </ul>
 <h2 id="video-decode-and-dolby-vision"><a class="header" href="#video-decode-and-dolby-vision">Video decode and Dolby Vision</a></h2>
 <p>These were settled on stock Chrome on Windows, with a Chromium 153 source audit.</p>
@@ -538,6 +550,11 @@ There is no Docker and no Python of our own in the build.
 <code>bin/</code> holds generated output, and only <code>bin/codec_vector_assets/</code> is committed, so <code>bin/wasm/</code> is ignored.
 Each checkout builds the decoders with <code>make -C wasm sources all</code> before the tests and the asset build.
 Their hand-written declarations live in <code>wasm/&lt;kit&gt;/</code>, and the <code>types</code> condition of the <code>#wasm/*</code> import resolves TypeScript to them, so type checks and lint need no build.</li>
+<li>Audio decoder binaries are served files (10-08).
+The DTS, TrueHD, and E-AC-3 kits link without <code>SINGLE_FILE</code>: esbuild bundles their ES module glue into the workers, and each <code>.wasm</code> is served from <code>libraries/&lt;kit&gt;/</code>.
+Embedded, the binaries were base64 in every worker that imported them: 1.4 MB of the playback worker for every session, and DTS and TrueHD downloaded a second time inside their probe workers.
+A served binary is one cache entry for the probe and playback workers, compiles while it streams, and loads only when a decoder of its kit is created.
+The glue always gets <code>locateFile</code>, or <code>wasmBinary</code> with bytes the page already fetched, through <code>src/DecoderWASMSource.ts</code>.</li>
 <li>Codec vectors are generated into a committed <code>bin/</code> folder (10-05).
 <code>bin/codec_vector_assets/</code> is the one committed folder in <code>bin/</code>, so every change to a qualification stream, generated module, or reference shows in review.
 The generators are all Python, in <code>scripts/codec_vector_assets/</code>.

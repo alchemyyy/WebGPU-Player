@@ -1,22 +1,29 @@
 // @vitest-environment node
 
 import { TEST_VECTORS_DIRECTORY } from '../../helpers/enginePaths';
+import { readDecoderWASMSource } from '../../helpers/libraryAssets';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import {
     getStereoChannelDataFingerprint,
     type StereoChannelData
 } from 'webgpu-player/audio/processing/CustomAudioDownmix';
 import { mixCustomAudioToStereo } from 'webgpu-player/audio/processing/CustomAudioChannelLayout';
-import { runDTSExactCapabilityQualification } from 'webgpu-player/capability/exact/DTSExactCapabilityRunner';
+import {
+    createDTSExactCapabilityRunnerEnvironment,
+    runDTSExactCapabilityQualification
+} from 'webgpu-player/capability/exact/DTSExactCapabilityRunner';
 import DTSSoftwareAudioDecoder, {
     DTS_PROFILE_HD_MASTER_AUDIO,
     type DTSDecodedAudioOutput,
-    getDTSDecodedAudioFingerprint
+    getDTSDecodedAudioFingerprint,
+    loadDTSDecoderModule
 } from 'webgpu-player/audio/decoders/DTSSoftwareAudioDecoder';
+import type { DecoderWASMSource } from 'webgpu-player/DecoderWASMSource';
+import { DTS_DECODER_WASM_ASSET } from 'webgpu-player/EngineAssets';
 import { CUSTOM_AUDIO_LIMITER_CEILING_GAIN } from 'webgpu-player/audio/processing/StreamingAudioLookaheadLimiter';
 import StreamingAudioOutputPipeline, {
     type StreamingAudioResamplerOutput
@@ -157,9 +164,19 @@ function processStereoOutput(
     return concatenateStereoOutput(outputs);
 }
 
+let decoderWASM: DecoderWASMSource;
+
+beforeAll(async () => {
+    // The served binary, instantiated once for every decoder in this file
+    decoderWASM = await readDecoderWASMSource(DTS_DECODER_WASM_ASSET);
+    await loadDTSDecoderModule(decoderWASM);
+});
+
 describe('bundled libdcadec integration', () => {
     it('passes exact family output and real-time throughput qualification', async () => {
-        const result = await runDTSExactCapabilityQualification();
+        const result = await runDTSExactCapabilityQualification(
+            createDTSExactCapabilityRunnerEnvironment(decoderWASM)
+        );
 
         expect(result).toMatchObject({
             reason: 'decode-output-verified',

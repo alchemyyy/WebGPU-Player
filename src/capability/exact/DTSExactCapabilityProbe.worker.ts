@@ -2,7 +2,10 @@ import {
     isDTSExactCapabilityWorkerRequest,
     type DTSExactCapabilityWorkerResponse
 } from './DTSExactCapabilityProtocol';
-import { runDTSExactCapabilityQualification } from './DTSExactCapabilityRunner';
+import {
+    createDTSExactCapabilityRunnerEnvironment,
+    runDTSExactCapabilityQualification
+} from './DTSExactCapabilityRunner';
 
 let probeStarted = false;
 
@@ -11,8 +14,9 @@ async function handleRequest(value: unknown): Promise<void> {
         return;
     }
     probeStarted = true;
-    const response: DTSExactCapabilityWorkerResponse =
-        await runDTSExactCapabilityQualification();
+    const response: DTSExactCapabilityWorkerResponse = await runDTSExactCapabilityQualification(
+        createDTSExactCapabilityRunnerEnvironment(value.decoderWASM)
+    );
     globalThis.postMessage(response);
 }
 

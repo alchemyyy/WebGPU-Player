@@ -77,8 +77,10 @@ FFMPEG_CONFIGURE_BASE := --target-os=none --arch=x86_32 --enable-cross-compile -
 	--disable-x86asm --disable-inline-asm --disable-programs --disable-doc --disable-debug
 FFMPEG_CONFIGURE_TOOLS = --cc=$(EMCC) --cxx=$(EMXX) --ar=$(EMAR) --ranlib=$(EMRANLIB) \
 	--host-cc=$(HOST_CC) --nm=$(LLVM_NM)
+# The audio kits link ES module glue, which the engine bundles into its workers, and a separate WASM file.
+# The probe and playback workers share that file's URL, and fetch it only when they create a decoder
 AUDIO_WORKER_LINK_FLAGS := -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=worker -sFILESYSTEM=0 \
-	-sSINGLE_FILE=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=33554432 \
+	-sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=33554432 \
 	-sMAXIMUM_MEMORY=268435456 -sMALLOC=emmalloc -sASSERTIONS=0 -sWASM_BIGINT=1
 
 # E-AC-3: FFmpeg enables the shared AC-3 decoder with its E-AC-3 decoder dependency
@@ -175,9 +177,9 @@ LIBDOVI_REMAPS = '--remap-path-prefix=$(call native_path,$(CARGO_HOME_DIRECTORY)
 '--remap-path-prefix=$(LIBDOVI_RUST_SOURCE)=/rustc/$(LIBDOVI_RUSTC_COMMIT)/'
 
 # Outputs, relative to $(BUILD)/<kit>/output and bin/wasm/<kit>
-OUTPUTS_ffmpeg-eac3 := ffmpeg-eac3.mjs
-OUTPUTS_ffmpeg-truehd := ffmpeg-truehd.mjs
-OUTPUTS_libdcadec-dts := libdcadec-dts.mjs
+OUTPUTS_ffmpeg-eac3 := ffmpeg-eac3.mjs ffmpeg-eac3.wasm
+OUTPUTS_ffmpeg-truehd := ffmpeg-truehd.mjs ffmpeg-truehd.wasm
+OUTPUTS_libdcadec-dts := libdcadec-dts.mjs libdcadec-dts.wasm
 OUTPUTS_ffmpeg-mpeg2-vc1 := ffmpeg-mpeg2-vc1.js ffmpeg-mpeg2-vc1.wasm
 OUTPUTS_libdovi := dovi-rpu-parser.wasm
 
@@ -276,7 +278,8 @@ define require_decoders
 	}
 endef
 
-# Emscripten on Windows writes CRLF into the JavaScript glue; bin/wasm holds LF on every host
+# Emscripten on Windows writes CRLF into the JavaScript glue; bin/wasm holds LF on every host.
+# A glue links under its final name, so it names its WASM file after the kit, then moves aside to be normalized
 # $(1): raw output, $(2): normalized output
 define normalize_line_endings
 	tr -d '\r' < $(1) > $(2)
@@ -292,7 +295,8 @@ build-ffmpeg-eac3: toolchain
 		$(AUDIO_WORKER_LINK_FLAGS) -sEXPORTED_FUNCTIONS=$(call comma_list,$(FFMPEG_EAC3_EXPORTS)) \
 		-sEXPORTED_RUNTIME_METHODS=$(call comma_list,$(FFMPEG_EAC3_RUNTIME_METHODS)) \
 		$(FFMPEG_AUDIO_LINK_TAIL) \
-		-o $(BUILD)/ffmpeg-eac3/output/raw.mjs
+		-o $(BUILD)/ffmpeg-eac3/output/ffmpeg-eac3.mjs
+	mv $(BUILD)/ffmpeg-eac3/output/ffmpeg-eac3.mjs $(BUILD)/ffmpeg-eac3/output/raw.mjs
 	$(call normalize_line_endings,$(BUILD)/ffmpeg-eac3/output/raw.mjs,$(BUILD)/ffmpeg-eac3/output/ffmpeg-eac3.mjs)
 
 build-ffmpeg-truehd: toolchain
@@ -304,7 +308,8 @@ build-ffmpeg-truehd: toolchain
 		$(AUDIO_WORKER_LINK_FLAGS) -sEXPORTED_FUNCTIONS=$(call comma_list,$(FFMPEG_TRUEHD_EXPORTS)) \
 		-sEXPORTED_RUNTIME_METHODS=$(call comma_list,$(FFMPEG_TRUEHD_RUNTIME_METHODS)) \
 		$(FFMPEG_AUDIO_LINK_TAIL) \
-		-o $(BUILD)/ffmpeg-truehd/output/raw.mjs
+		-o $(BUILD)/ffmpeg-truehd/output/ffmpeg-truehd.mjs
+	mv $(BUILD)/ffmpeg-truehd/output/ffmpeg-truehd.mjs $(BUILD)/ffmpeg-truehd/output/raw.mjs
 	$(call normalize_line_endings,$(BUILD)/ffmpeg-truehd/output/raw.mjs,$(BUILD)/ffmpeg-truehd/output/ffmpeg-truehd.mjs)
 
 build-ffmpeg-mpeg2-vc1: toolchain
@@ -328,7 +333,8 @@ build-libdcadec-dts: toolchain
 		$(WASM)/libdcadec-dts/libdcadec_dts_bridge.c $(addprefix $(DCADEC_ROOT)/libdcadec/,$(DCADEC_SOURCES)) \
 		$(AUDIO_WORKER_LINK_FLAGS) -sEXPORTED_FUNCTIONS=$(call comma_list,$(LIBDCADEC_EXPORTS)) \
 		-sEXPORTED_RUNTIME_METHODS=cwrap,HEAPU8,HEAP32 -Wl,--no-entry \
-		-o $(BUILD)/libdcadec-dts/output/raw.mjs
+		-o $(BUILD)/libdcadec-dts/output/libdcadec-dts.mjs
+	mv $(BUILD)/libdcadec-dts/output/libdcadec-dts.mjs $(BUILD)/libdcadec-dts/output/raw.mjs
 	$(call normalize_line_endings,$(BUILD)/libdcadec-dts/output/raw.mjs,$(BUILD)/libdcadec-dts/output/libdcadec-dts.mjs)
 
 # The crate's .cargo/config.toml supplies the memory link arguments; --config appends the remaps

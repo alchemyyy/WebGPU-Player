@@ -1,4 +1,5 @@
 import { MICROSECONDS_PER_SECOND, type Microseconds } from '../../MediaTime';
+import type { DecoderWASMSource } from '../../DecoderWASMSource';
 import { getStereoChannelDataFingerprint } from '../../audio/processing/CustomAudioDownmix';
 import { mixCustomAudioToStereo } from '../../audio/processing/CustomAudioChannelLayout';
 import { createDTSExactCapabilityVectors } from '#codec_vector_assets/dts/DTSExactCapabilityVectors';
@@ -14,7 +15,8 @@ import {
 import DTSSoftwareAudioDecoder, {
     DTS_PROFILE_HD_MASTER_AUDIO,
     type DTSDecodedAudioOutput,
-    getDTSDecodedAudioFingerprint
+    getDTSDecodedAudioFingerprint,
+    loadDTSDecoderModule
 } from '../../audio/decoders/DTSSoftwareAudioDecoder';
 
 export type DTSExactCapabilityRunnerEnvironment = Readonly<{
@@ -81,16 +83,19 @@ function decodeVector(
     return { frameCount, output };
 }
 
-function createDefaultEnvironment(): DTSExactCapabilityRunnerEnvironment {
+/** The probe worker's environment: decoders from the requested libdcadec binary, timed by the worker's clock. */
+export function createDTSExactCapabilityRunnerEnvironment(
+    decoderWASM: DecoderWASMSource
+): DTSExactCapabilityRunnerEnvironment {
     return {
-        createDecoder: () => DTSSoftwareAudioDecoder.create(),
+        createDecoder: () => DTSSoftwareAudioDecoder.create(() => loadDTSDecoderModule(decoderWASM)),
         now: () => performance.now()
     };
 }
 
 /** Runs exact decode/downmix checks followed by a bounded DTS-HD MA throughput test. */
 export async function runDTSExactCapabilityQualification(
-    environment: DTSExactCapabilityRunnerEnvironment = createDefaultEnvironment()
+    environment: DTSExactCapabilityRunnerEnvironment
 ): Promise<DTSExactCapabilityWorkerResponse> {
     let decoder: DTSSoftwareAudioDecoder | null = null;
     let libraryVersion: number | null = null;

@@ -41,6 +41,18 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
 - A declared HDR base also waits for the static HDR probes (10-06, host).
   A Dolby Vision item whose declared PQ or HLG base is not an exact native P7 or P8 base probes Dolby Vision in parallel with the static HDR routes (external first, raw only when no external key is authorized), so its base fallback can be advertised.
   Any other Dolby Vision item waits only for Dolby Vision.
+- Video probes run per item; audio probes always run (10-08).
+  Probing every codec on the first negotiation of a page blocked PlaybackInfo for about 2.6 s, mostly on decoders the item did not contain.
+  A video stream cannot change within a negotiation, since another version or item renegotiates, so the video probes follow the item's streams and run on demand.
+  An audio track can change during playback, so every audio probe runs for every item.
+  A probe outside the selection reads `not-probed`, never a verdict, so an unprobed codec is not advertised.
+- Probe downloads run in parallel and outside the decode timeouts (10-08).
+  The exact probes armed their timeouts before downloading their vectors and binaries, and the range-extension probes downloaded inside the queue's 2 s timed slot, so a slow cold link failed a capable decoder as unsupported or timed out every later probe.
+  A run now starts every selected probe's downloads at once and each probe decodes only once its own are done; decoding stays one probe at a time.
+  Worker scripts and glue are warmed in the HTTP cache rather than spawned early, so no worker or compile competes with a running probe's real-time-factor measurement.
+- An identical play request joins the pending start (10-08, host).
+  A second click on the same item while its start is pending used to supersede a healthy session and repeat the item fetch, PlaybackInfo, and worker setup.
+  The PlaybackManager hook returns the pending request's promise for a request with the same items and options, and any other request still supersedes it.
 
 ## Video decode and Dolby Vision
 
@@ -354,6 +366,11 @@ These were settled on Firefox 157 on Windows.
   `bin/` holds generated output, and only `bin/codec_vector_assets/` is committed, so `bin/wasm/` is ignored.
   Each checkout builds the decoders with `make -C wasm sources all` before the tests and the asset build.
   Their hand-written declarations live in `wasm/<kit>/`, and the `types` condition of the `#wasm/*` import resolves TypeScript to them, so type checks and lint need no build.
+- Audio decoder binaries are served files (10-08).
+  The DTS, TrueHD, and E-AC-3 kits link without `SINGLE_FILE`: esbuild bundles their ES module glue into the workers, and each `.wasm` is served from `libraries/<kit>/`.
+  Embedded, the binaries were base64 in every worker that imported them: 1.4 MB of the playback worker for every session, and DTS and TrueHD downloaded a second time inside their probe workers.
+  A served binary is one cache entry for the probe and playback workers, compiles while it streams, and loads only when a decoder of its kit is created.
+  The glue always gets `locateFile`, or `wasmBinary` with bytes the page already fetched, through `src/DecoderWASMSource.ts`.
 - Codec vectors are generated into a committed `bin/` folder (10-05).
   `bin/codec_vector_assets/` is the one committed folder in `bin/`, so every change to a qualification stream, generated module, or reference shows in review.
   The generators are all Python, in `scripts/codec_vector_assets/`.

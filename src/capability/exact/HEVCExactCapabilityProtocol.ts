@@ -1,3 +1,5 @@
+import { isDecoderWASMSource, type DecoderWASMSource } from '../../DecoderWASMSource';
+
 export const HEVC_EXACT_CAPABILITY_REQUEST_ID = 1;
 export const HEVC_EXACT_CAPABILITY_MAXIMUM_ACCESS_UNIT_BYTE_LENGTH = 128 * 1024;
 export const HEVC_EXACT_CAPABILITY_MAXIMUM_DECODED_BYTE_LENGTH = 32 * 1024 * 1024;
@@ -136,7 +138,8 @@ export type HEVCExactCapabilityWorkerQualificationRequest = Readonly<{
 
 export type HEVCExactCapabilityWorkerRequest = Readonly<{
     decoderGlueURL: string
-    decoderWASMURL: string
+    // hevc-decode.wasm: bytes the page already fetched, or the URL the worker fetches
+    decoderWASM: DecoderWASMSource
     requestID: typeof HEVC_EXACT_CAPABILITY_REQUEST_ID
     qualifications: readonly HEVCExactCapabilityWorkerQualificationRequest[]
     type: 'probe'
@@ -253,8 +256,7 @@ export function isHEVCExactCapabilityWorkerRequest(
         || request.requestID !== HEVC_EXACT_CAPABILITY_REQUEST_ID
         || typeof request.decoderGlueURL !== 'string'
         || request.decoderGlueURL.length === 0
-        || typeof request.decoderWASMURL !== 'string'
-        || request.decoderWASMURL.length === 0
+        || !isDecoderWASMSource(request.decoderWASM)
         || !Array.isArray(request.qualifications)
         || request.qualifications.length !== HEVC_EXACT_CAPABILITY_VECTORS.length
     ) {

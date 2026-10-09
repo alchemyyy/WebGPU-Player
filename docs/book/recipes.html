@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-24f8931a.js";
+            window.path_to_searchindex_js = "searchindex-bd09b325.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -184,6 +184,7 @@ Each assumes a checkout set up as in <a href="setup.html">Set up a checkout</a>.
 <ol>
 <li>Capability.
 Add an exact-output probe to <code>src/capability/CustomDecodeCapabilities.ts</code>.
+Give a video probe an identifier in <code>CustomDecodeVideoProbe</code> and <code>CUSTOM_DECODE_VIDEO_PROBES</code>, and select it in <code>selectItemVideoProbes</code> for the streams that need it, or no item runs it.
 For an HEVC range extension:
 <ul>
 <li>add its definition to <code>src/capability/HEVCRangeExtensionCapabilities.ts</code>;</li>

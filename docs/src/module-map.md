@@ -6,7 +6,8 @@ Each source file's tests are at the same relative path under `test/`, and integr
 
 ## src/
 
-- `EngineAssets.ts`: the typed manifest of every runtime asset path, and URL resolution against the host's asset base or, inside a worker, the worker's own URL.
+- `EngineAssets.ts`: the typed manifest of every runtime asset path, the audio decoder binaries that probe and playback workers share, and URL resolution against the host's asset base or, inside a worker, the worker's own URL.
+- `DecoderWASMSource.ts`: a decoder's WebAssembly as its served URL or as bytes a caller already fetched, with their validation and transfer across a worker boundary, their Emscripten `locateFile` and `wasmBinary` options, and the loader that instantiates a kit's module once per worker on first use.
 - `EngineConfiguration.ts`: the feature flags a host can set.
 - `MediaTime.ts`: branded integer microseconds and conversions to Jellyfin ticks.
 - `TimeMath.ts`: safe-integer microsecond math.
@@ -33,7 +34,8 @@ Each source file's tests are at the same relative path under `test/`, and integr
 
 - `CustomContainerCodecSupport.ts`: the single container and codec matrix.
 - `CustomPlaybackEligibility.ts`: per-session route choice, the player-selection prefilter, and `hasEligibleCustomVideoRoute` for item-scoped negotiation.
-- `CustomDecodeCapabilities.ts`: the cached orchestrator of every capability probe, and the codec lists.
+- `CustomDecodeCapabilities.ts`: the cached orchestrator of every capability probe, the per-item probe selection, and the codec lists.
+- `CapabilityAssetLoading.ts`: the bounded, retried download of a probe's vectors and decoder binaries, and the HTTP cache warm-up of its worker script and glue.
 - `CustomPlaybackRuntime.ts`: runtime feature detection with failure reasons.
 - `H264ProfileCapabilities.ts`: the per-profile H.264 decoded-output probe and Jellyfin's profile names.
 - `HEVCRangeExtensionCapabilities.ts`: the nine range-extension variant definitions and the stream metadata resolver.
@@ -47,6 +49,7 @@ Their vectors are in `capability/vectors/` and `bin/codec_vector_assets/`, which
 - `HEVCExactCapability{Probe,Probe.worker,Protocol,WorkerRuntime}.ts`: bundled HEVC (8-frame fingerprints).
 - `DTSExactCapability{Probe,Probe.worker,Protocol,Runner}.ts`: libdcadec (7 vectors, real-time factor of at least 2).
 - `TrueHDExactCapability{Probe,Probe.worker,Protocol,Runner}.ts`: TrueHD and MLP (4 vectors, major-sync recovery).
+  Both requests carry the decoder binary, as the URL the playback worker also loads or as bytes the page fetched.
 - `JPEG2000ExactCapability{Probe,Probe.worker,Protocol}.ts`: OpenJPEG (a 960x540 RGBA fingerprint).
 - `MPEG2VC1ExactCapability{Probe,Probe.worker,Protocol}.ts`: MPEG-2 and VC-1 (12 frames, an I420 fingerprint).
 
@@ -146,6 +149,7 @@ All worker code unless marked.
 ### audio/decoders/
 
 - `AC3SoftwareAudioDecoder.ts`, `EAC3SoftwareAudioDecoder.ts`, `DTSSoftwareAudioDecoder.ts`, `TrueHDSoftwareAudioDecoder.ts` [worker]: the `@mediabunny/ac3` registration and the lazily loaded WASM decoders.
+  A worker fetches a kit's served binary when it creates the kit's first decoder; `loadDTSDecoderModule`, `loadEAC3DecoderModule`, and `loadTrueHDDecoderModule` take bytes a caller already fetched instead.
   E-AC-3, DTS, and TrueHD report their channel layout, and the FFmpeg wrappers stamp later frames of one packet after its earlier ones.
 - `DTSSeekRecovery.ts`: the 1 s DTS preroll and a bounded tolerance for XLL sync errors.
 - `CustomAudioDecoderRegistration.ts`, `MediabunnyPCMBuiltinDecoderAvailability.ts`: decoder registration and G.711 availability.
@@ -187,6 +191,7 @@ The authorization vectors are in `capability/vectors/`.
 
 - `test/helpers/enginePaths.ts`: the engine root and the `node_modules` location, independent of the test runner's working directory, and the folders from `tools/constants.json`.
 - `test/helpers/dolbyVisionAV1ITUTT35Payload.ts`, `test/helpers/dolbyVisionMixedRPUVector.ts`: wrap an HEVC RPU in the AV1 EMDF T.35 container, and build RPUs with mixed and linear pieces.
+- `test/helpers/libraryAssets.ts`: the asset build's tables from `scripts/library-assets.mjs`, and a served decoder binary read as bytes from the file the build copies, since tests have no server for its URL.
 - `wasm/`: the decoder sources and build.
   See [WebAssembly decoders](decoders.md).
 - `vendor/`: the FFmpeg and dcadec submodules (`update = none`), which `make -C wasm sources` fetches.
@@ -197,7 +202,7 @@ The authorization vectors are in `capability/vectors/`.
 - `tools/`: browser probes, the DTS downmix report, and `constants.json`.
   See [Tools](tools.md).
 - `bin/wasm/`: the decoder builds from `make -C wasm`, ignored:
-  - `ffmpeg-eac3/`, `ffmpeg-truehd/`, `libdcadec-dts/` [worker]: Emscripten single-file ES modules (`.mjs` with embedded WASM), imported as `#wasm/<kit>/<kit>.mjs` through the `imports` map in `package.json`.
+  - `ffmpeg-eac3/`, `ffmpeg-truehd/`, `libdcadec-dts/` [worker]: Emscripten ES module glue (`.mjs`), imported as `#wasm/<kit>/<kit>.mjs` through the `imports` map in `package.json` and bundled into the workers, and its `.wasm`, served from `libraries/<kit>/`.
     Their hand-written declarations are `wasm/<kit>/<kit>.d.mts`, which the map's `types` condition resolves.
   - `ffmpeg-mpeg2-vc1/` and `libdovi/`: served from `libraries/`.
 - `bin/codec_vector_assets/`: the generated codec vectors, the one committed folder in `bin/`:

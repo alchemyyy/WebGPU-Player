@@ -9,6 +9,13 @@ export type FFmpegTrueHDModule = {
     ) => (...arguments_: number[]) => number | void
 };
 
-declare const createFFmpegTrueHDModule: () => Promise<FFmpegTrueHDModule>;
+export type FFmpegTrueHDModuleOptions = {
+    // Names ffmpeg-truehd.wasm's URL; a glue bundled into a worker cannot derive it
+    locateFile: (path: string, scriptDirectory: string) => string
+    // Bytes the caller already fetched, instantiated instead of the located URL
+    wasmBinary?: ArrayBuffer
+};
+
+declare const createFFmpegTrueHDModule: (options: FFmpegTrueHDModuleOptions) => Promise<FFmpegTrueHDModule>;
 
 export default createFFmpegTrueHDModule;

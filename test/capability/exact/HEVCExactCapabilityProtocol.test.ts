@@ -30,7 +30,7 @@ function loadMain10UltraHDQualificationBitstream(): ArrayBuffer {
 function createRequest(): HEVCExactCapabilityWorkerRequest {
     return {
         decoderGlueURL: 'https://example.test/hevc-decode.js',
-        decoderWASMURL: 'https://example.test/hevc-decode.wasm',
+        decoderWASM: { kind: 'url', url: 'https://example.test/hevc-decode.wasm' },
         requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
         qualifications: createHEVCExactCapabilityWorkerQualificationRequests(
             loadMain10UltraHDQualificationBitstream()
@@ -109,6 +109,30 @@ describe('exact HEVC capability vectors and protocol', () => {
                 request.qualifications[1],
                 request.qualifications[2]
             ]
+        })).toBe(false);
+    });
+
+    it('accepts the decoder binary as preloaded bytes or an HTTP(S) URL only', () => {
+        const request = createRequest();
+        expect(isHEVCExactCapabilityWorkerRequest({
+            ...request,
+            decoderWASM: { bytes: new ArrayBuffer(8), kind: 'bytes' }
+        })).toBe(true);
+        expect(isHEVCExactCapabilityWorkerRequest({
+            ...request,
+            decoderWASM: { bytes: new ArrayBuffer(0), kind: 'bytes' }
+        })).toBe(false);
+        expect(isHEVCExactCapabilityWorkerRequest({
+            ...request,
+            decoderWASM: { bytes: new Uint8Array(8), kind: 'bytes' }
+        })).toBe(false);
+        expect(isHEVCExactCapabilityWorkerRequest({
+            ...request,
+            decoderWASM: { kind: 'url', url: 'file:///hevc-decode.wasm' }
+        })).toBe(false);
+        expect(isHEVCExactCapabilityWorkerRequest({
+            ...request,
+            decoderWASM: undefined
         })).toBe(false);
     });
 

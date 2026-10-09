@@ -1,3 +1,5 @@
+import { isDecoderWASMSource, type DecoderWASMSource } from '../../DecoderWASMSource';
+
 export const DTS_EXACT_CAPABILITY_REQUEST_ID = 'libdcadec-dts-family-v1';
 export const DTS_QUALIFICATION_VECTOR_COUNT = 7;
 export const DTS_QUALIFICATION_PROFILE_MASK = 0x1f;
@@ -6,6 +8,8 @@ export const DTS_QUALIFICATION_WARMUP_CYCLE_COUNT = 1;
 export const DTS_QUALIFICATION_MEASURED_CYCLE_COUNT = 8;
 
 export type DTSExactCapabilityWorkerRequest = Readonly<{
+    // The libdcadec binary: the URL the playback worker also loads, or bytes the page already fetched
+    decoderWASM: DecoderWASMSource
     requestID: typeof DTS_EXACT_CAPABILITY_REQUEST_ID
     type: 'probe'
 }>;
@@ -62,7 +66,8 @@ export function isDTSExactCapabilityWorkerRequest(
 ): value is DTSExactCapabilityWorkerRequest {
     return isRecord(value)
         && value.type === 'probe'
-        && value.requestID === DTS_EXACT_CAPABILITY_REQUEST_ID;
+        && value.requestID === DTS_EXACT_CAPABILITY_REQUEST_ID
+        && isDecoderWASMSource(value.decoderWASM);
 }
 
 /** Validates every output and throughput field returned by the DTS probe worker. */

@@ -1,31 +1,32 @@
 // @vitest-environment node
 
-import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
     configureEngineAssets,
+    DTS_DECODER_WASM_ASSET,
+    EAC3_DECODER_WASM_ASSET,
     ENGINE_LIBRARY_PATHS,
     ENGINE_WORKER_PATHS,
-    resolveEngineAssetURL
+    resolveEngineAssetURL,
+    TRUEHD_DECODER_WASM_ASSET,
+    type EngineLibraryPath,
+    type EngineWorkerPath
 } from 'webgpu-player/EngineAssets';
 import { HEVC_RANGE_EXTENSION_VARIANTS } from 'webgpu-player/capability/HEVCRangeExtensionCapabilities';
 
-import { SCRIPTS_DIRECTORY } from './helpers/enginePaths';
+import { loadLibraryAssets } from './helpers/libraryAssets';
 
-type AssetTable = readonly (readonly [ string, string ])[];
+const PAGE_URL = 'https://example.test/web/index.html';
+const ASSET_BASE_URL = 'https://example.test/web/libraries/';
+const CACHE_KEY = 'build-1';
+const AUDIO_DECODER_WASM_ASSETS = [ DTS_DECODER_WASM_ASSET, EAC3_DECODER_WASM_ASSET, TRUEHD_DECODER_WASM_ASSET ] as const;
 
-type LibraryAssetsModule = Readonly<{
-    getLibraryAssets: () => AssetTable
-    getWorkerEntryPoints: () => AssetTable
-}>;
-
-async function loadLibraryAssets(): Promise<LibraryAssetsModule> {
-    // Imported by URL, because the build tables are plain JavaScript without declarations
-    const moduleURL = pathToFileURL(resolve(SCRIPTS_DIRECTORY, 'library-assets.mjs')).href;
-    return await import(/* @vite-ignore */ moduleURL) as LibraryAssetsModule;
+/** Resolves a path as the worker at the given asset path would, from its own URL. */
+function resolveInWorker(workerPath: EngineWorkerPath, path: EngineLibraryPath): string {
+    vi.stubGlobal('location', { href: `${ASSET_BASE_URL}${workerPath}?v=${CACHE_KEY}` });
+    vi.stubGlobal('importScripts', () => undefined);
+    return resolveEngineAssetURL(path);
 }
 
 afterEach(() => {
@@ -51,6 +52,14 @@ describe('engine asset manifest', () => {
     it('covers every HEVC range-extension qualification stream', () => {
         for (const variant of HEVC_RANGE_EXTENSION_VARIANTS) {
             expect(ENGINE_LIBRARY_PATHS).toContain(`webgpu-player/hevc-rext/${variant}.bin`);
+        }
+    });
+
+    it('serves each audio decoder binary as its own file', async () => {
+        const { getLibraryAssets } = await loadLibraryAssets();
+        const copiedDestinations = getLibraryAssets().map(([ destination ]) => destination);
+        for (const path of AUDIO_DECODER_WASM_ASSETS) {
+            expect(copiedDestinations.filter(destination => destination === path)).toHaveLength(1);
         }
     });
 });
@@ -84,5 +93,20 @@ describe('engine asset URLs', () => {
         expect(resolveEngineAssetURL('hevcjs/hevc-decode.wasm')).toBe(
             'https://example.test/web/libraries/hevcjs/hevc-decode.wasm?v=build-1'
         );
+    });
+
+    it('gives the page, the probe workers, and the playback worker one URL per audio decoder binary', () => {
+        for (const path of AUDIO_DECODER_WASM_ASSETS) {
+            vi.stubGlobal('location', { href: PAGE_URL });
+            configureEngineAssets({ baseURL: ASSET_BASE_URL, cacheKey: CACHE_KEY });
+            const pageURL = resolveEngineAssetURL(path);
+            vi.unstubAllGlobals();
+
+            expect(pageURL).toBe(`${ASSET_BASE_URL}${path}?v=${CACHE_KEY}`);
+            expect(resolveInWorker('webgpu-player/DTSExactCapabilityProbe.worker.js', path)).toBe(pageURL);
+            expect(resolveInWorker('webgpu-player/TrueHDExactCapabilityProbe.worker.js', path)).toBe(pageURL);
+            expect(resolveInWorker('webgpu-player/CustomDecode.worker.js', path)).toBe(pageURL);
+            vi.unstubAllGlobals();
+        }
     });
 });

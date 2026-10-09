@@ -142,9 +142,40 @@ describe('HEVC range-extension capability probe', () => {
 
         for (const variant of HEVC_RANGE_EXTENSION_VARIANTS) {
             expect(capabilities.hevcRangeExtensions?.[variant]).toMatchObject({
-                reason: 'probe-exception',
+                reason: 'asset-unavailable',
                 status: 'unknown'
             });
+        }
+    });
+
+    it('downloads every vector before the timed decodes, so a slow download never times out the queue', async () => {
+        vi.useFakeTimers();
+        try {
+            const harness = createEnvironment();
+            const vectorLoader = harness.environment.hevcRangeExtensionVectorLoader;
+            const requestedAssets: string[] = [];
+            // Each download outlasts the 2 s timed-probe bound before it resolves
+            harness.environment.hevcRangeExtensionVectorLoader = async (assetPath): Promise<ArrayBuffer> => {
+                requestedAssets.push(assetPath);
+                await new Promise<void>(resolve => {
+                    globalThis.setTimeout(resolve, 5_000);
+                });
+                return vectorLoader ? vectorLoader(assetPath) : new ArrayBuffer(0);
+            };
+
+            const capabilitiesPromise = new CustomDecodeCapabilityProbe(harness.environment).probe();
+            await vi.advanceTimersByTimeAsync(0);
+            // Every selected vector is requested at once rather than one per queue turn
+            expect(requestedAssets).toHaveLength(HEVC_RANGE_EXTENSION_VARIANTS.length);
+            await vi.advanceTimersByTimeAsync(5_000);
+            await vi.runAllTimersAsync();
+            const capabilities = await capabilitiesPromise;
+
+            for (const variant of HEVC_RANGE_EXTENSION_VARIANTS) {
+                expect(capabilities.hevcRangeExtensions?.[variant].reason).not.toBe('probe-timeout');
+            }
+        } finally {
+            vi.useRealTimers();
         }
     });
 });

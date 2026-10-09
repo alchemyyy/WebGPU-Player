@@ -62,9 +62,10 @@ afterEach(() => {
 describe('exact HEVC capability probe integration', () => {
     it('decodes all exact moving Main and Main10 vectors through pinned JS/WASM', async () => {
         vi.stubGlobal('HEVCDecoderModule', loadActualModuleFactory());
+        // The page hands the worker the binary's bytes, as the probe does after its parallel download
         const request: HEVCExactCapabilityWorkerRequest = {
             decoderGlueURL: HEVC_GLUE_PATH,
-            decoderWASMURL: HEVC_WASM_PATH,
+            decoderWASM: { bytes: Uint8Array.from(readFileSync(HEVC_WASM_PATH)).buffer, kind: 'bytes' },
             requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
             qualifications: createHEVCExactCapabilityWorkerQualificationRequests(
                 Uint8Array.from(readFileSync(MAIN10_4K_QUALIFICATION_PATH)).buffer
@@ -151,4 +152,19 @@ describe('exact HEVC capability probe integration', () => {
             totalDecodedByteLength: 199_065_600
         });
     }, 15_000);
+
+    it('rejects a decoder binary named by a URL outside HTTP(S)', async () => {
+        vi.stubGlobal('HEVCDecoderModule', loadActualModuleFactory());
+        const request: HEVCExactCapabilityWorkerRequest = {
+            decoderGlueURL: HEVC_GLUE_PATH,
+            decoderWASM: { kind: 'url', url: HEVC_WASM_PATH },
+            requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
+            qualifications: createHEVCExactCapabilityWorkerQualificationRequests(
+                Uint8Array.from(readFileSync(MAIN10_4K_QUALIFICATION_PATH)).buffer
+            ),
+            type: 'probe'
+        };
+
+        await expect(runHEVCExactCapabilityWorkerRequest(request)).rejects.toThrow(TypeError);
+    });
 });

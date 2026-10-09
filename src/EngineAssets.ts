@@ -13,13 +13,16 @@ export const ENGINE_WORKER_PATHS = Object.freeze([
 
 /** Decoders and qualification streams, relative to the asset base. */
 export const ENGINE_LIBRARY_PATHS = Object.freeze([
+    'ffmpeg-eac3/ffmpeg-eac3.wasm',
     'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.js',
     'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.wasm',
     'ffmpeg-mpeg2-vc1/mpeg2-progressive-1920x1080-qualification.bin',
     'ffmpeg-mpeg2-vc1/vc1-advanced-progressive-1920x1080-qualification.bin',
+    'ffmpeg-truehd/ffmpeg-truehd.wasm',
     'hevcjs/hevc-decode.js',
     'hevcjs/hevc-decode.wasm',
     'hevcjs/main10-4k-qualification.bin',
+    'libdcadec-dts/libdcadec-dts.wasm',
     'libdovi/dovi-rpu-parser.wasm',
     'openjpeg/jpeg2000-960x540-qualification.bin',
     'openjpeg/openjpeg-decode.js',
@@ -38,6 +41,11 @@ export const ENGINE_LIBRARY_PATHS = Object.freeze([
 export type EngineWorkerPath = typeof ENGINE_WORKER_PATHS[number];
 export type EngineLibraryPath = typeof ENGINE_LIBRARY_PATHS[number];
 export type EngineAssetPath = EngineWorkerPath | EngineLibraryPath;
+
+// The bundled audio decoders' binaries; a probe worker and the playback worker resolve one URL, so the browser caches each once
+export const DTS_DECODER_WASM_ASSET = 'libdcadec-dts/libdcadec-dts.wasm' satisfies EngineLibraryPath;
+export const EAC3_DECODER_WASM_ASSET = 'ffmpeg-eac3/ffmpeg-eac3.wasm' satisfies EngineLibraryPath;
+export const TRUEHD_DECODER_WASM_ASSET = 'ffmpeg-truehd/ffmpeg-truehd.wasm' satisfies EngineLibraryPath;
 
 export type EngineAssetConfiguration = Readonly<{
     // Absolute or page-relative URL of the served bin/libraries directory

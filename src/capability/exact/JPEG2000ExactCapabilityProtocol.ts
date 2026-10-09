@@ -1,3 +1,5 @@
+import { isDecoderWASMSource, type DecoderWASMSource } from '../../DecoderWASMSource';
+
 export const JPEG2000_QUALIFICATION_CODED_HEIGHT = 540;
 export const JPEG2000_QUALIFICATION_CODED_WIDTH = 960;
 export const JPEG2000_QUALIFICATION_RGBA_BYTE_LENGTH = 2_073_600;
@@ -6,7 +8,8 @@ export const JPEG2000_EXACT_CAPABILITY_REQUEST_ID = 'jpeg2000-srgb-960x540-v1';
 
 export type JPEG2000ExactCapabilityWorkerRequest = {
     decoderGlueURL: string
-    decoderWASMURL: string
+    // openjpeg-decode.wasm: bytes the page already fetched, or the URL the worker fetches
+    decoderWASM: DecoderWASMSource
     vector: ArrayBuffer
     requestID: typeof JPEG2000_EXACT_CAPABILITY_REQUEST_ID
     type: 'probe'
@@ -69,7 +72,7 @@ export function isJPEG2000ExactCapabilityWorkerRequest(
         && value.vector.byteLength > 0
         && value.vector.byteLength <= 64 * 1024 * 1024
         && isCodecAssetURL(value.decoderGlueURL)
-        && isCodecAssetURL(value.decoderWASMURL);
+        && isDecoderWASMSource(value.decoderWASM);
 }
 
 /** Validates every exact-output field returned by the probe worker. */

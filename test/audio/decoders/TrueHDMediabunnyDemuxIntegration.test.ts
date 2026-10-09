@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { TEST_VECTORS_DIRECTORY } from '../../helpers/enginePaths';
+import { readDecoderWASMSource } from '../../helpers/libraryAssets';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -10,15 +11,23 @@ import {
     EncodedPacketSink,
     Input
 } from 'mediabunny';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
-import TrueHDSoftwareAudioDecoder from 'webgpu-player/audio/decoders/TrueHDSoftwareAudioDecoder';
+import TrueHDSoftwareAudioDecoder, {
+    loadTrueHDDecoderModule
+} from 'webgpu-player/audio/decoders/TrueHDSoftwareAudioDecoder';
+import { TRUEHD_DECODER_WASM_ASSET } from 'webgpu-player/EngineAssets';
 import { requireMicroseconds } from 'webgpu-player/TimeMath';
 
 const MATROSKA_VECTOR_PATH = resolve(
     TEST_VECTORS_DIRECTORY,
     'truehd', 'truehd_51_side_24_96000.mka'
 );
+
+beforeAll(async () => {
+    // The served binary, which the decoders below reuse
+    await loadTrueHDDecoderModule(await readDecoderWASMSource(TRUEHD_DECODER_WASM_ASSET));
+});
 
 describe('Mediabunny TrueHD demux integration', () => {
     it('surfaces Matroska A_TRUEHD packets for the owned decoder', async () => {

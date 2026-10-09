@@ -7,11 +7,16 @@ import CustomDecodeCapabilityProbe, {
     createNativeVideoOutputProbe,
     createRawHDRVideoOutputProbe,
     CUSTOM_BUNDLED_AUDIO_CODECS,
+    CUSTOM_DECODE_AUDIO_PROBES,
+    CUSTOM_DECODE_VIDEO_PROBES,
     CUSTOM_NATIVE_SURROUND_AUDIO_CODECS,
     CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS,
     CUSTOM_RAW_HDR_VIDEO_CODECS,
     CUSTOM_VIDEO_CODECS,
     CUSTOM_WEB_CODECS_AUDIO_CODECS,
+    hasProbedCustomDecodeSelection,
+    selectCustomDecodeProbes,
+    type CustomDecodeCapabilities,
     type NativeDolbyVisionVideoOutputProbeRequest,
     type NativeDolbyVisionVideoOutputProbeResult,
     type RawHDRVideoOutputProbeResult,
@@ -2677,5 +2682,248 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(closeFrame).toHaveBeenCalledOnce();
         expect(copyFrame).toHaveBeenCalledOnce();
         expect(closeDecoder).toHaveBeenCalledOnce();
+    });
+});
+
+const SDR_HEVC_STREAM = Object.freeze({
+    BitDepth: 8,
+    Codec: 'hevc',
+    PixelFormat: 'yuv420p',
+    Profile: 'Main',
+    Type: 'Video',
+    VideoRange: 'SDR',
+    VideoRangeType: 'SDR'
+});
+const HDR10_PLUS_HEVC_STREAM = Object.freeze({
+    BitDepth: 10,
+    Codec: 'hevc',
+    ColorPrimaries: 'bt2020',
+    ColorSpace: 'bt2020nc',
+    ColorTransfer: 'smpte2084',
+    Hdr10PlusPresentFlag: true,
+    PixelFormat: 'yuv420p10le',
+    Profile: 'Main 10',
+    Type: 'Video',
+    VideoRange: 'HDR',
+    VideoRangeType: 'HDR10Plus'
+});
+const MAIN_422_10_HEVC_STREAM = Object.freeze({
+    BitDepth: 10,
+    Codec: 'hevc',
+    PixelFormat: 'yuv422p10le',
+    Profile: 'Main 4:2:2 10',
+    Type: 'Video',
+    VideoRange: 'SDR',
+    VideoRangeType: 'SDR'
+});
+const SDR_H264_STREAM = Object.freeze({
+    BitDepth: 8,
+    Codec: 'h264',
+    Type: 'Video',
+    VideoRange: 'SDR',
+    VideoRangeType: 'SDR'
+});
+const SDR_MPEG2_STREAM = Object.freeze({
+    BitDepth: 8,
+    Codec: 'mpeg2video',
+    Type: 'Video',
+    VideoRange: 'SDR',
+    VideoRangeType: 'SDR'
+});
+const FLAC_STREAM = Object.freeze({ Codec: 'flac', Type: 'Audio' });
+
+function createItem(...mediaStreamLists: ReadonlyArray<readonly object[]>): object {
+    return {
+        MediaSources: mediaStreamLists.map((mediaStreams: readonly object[]): object => ({ MediaStreams: mediaStreams }))
+    };
+}
+
+function getSelectedVideoProbes(item: unknown): ReadonlySet<string> {
+    const audioProbes: ReadonlySet<string> = new Set<string>(CUSTOM_DECODE_AUDIO_PROBES);
+    return new Set<string>(selectCustomDecodeProbes(item).filter((probe: string): boolean => !audioProbes.has(probe)));
+}
+
+describe('item-scoped capability probe selection', () => {
+    it('starts every audio probe first for every item', () => {
+        for (const item of [ createItem([ SDR_HEVC_STREAM ]), createItem([ FLAC_STREAM ]), {} ]) {
+            expect(selectCustomDecodeProbes(item).slice(0, CUSTOM_DECODE_AUDIO_PROBES.length))
+                .toEqual([ ...CUSTOM_DECODE_AUDIO_PROBES ]);
+        }
+    });
+
+    it('selects only the video probes an SDR HEVC item needs', () => {
+        expect(getSelectedVideoProbes(createItem([ SDR_HEVC_STREAM, FLAC_STREAM ]))).toEqual(new Set([
+            'bundled-hevc',
+            'native-sdr:hevc',
+            'native-ultra-hd:hevc'
+        ]));
+    });
+
+    it('adds the HDR routes and the HDR transcode targets for an HDR HEVC item', () => {
+        const videoProbes = getSelectedVideoProbes(createItem([ HDR10_PLUS_HEVC_STREAM ]));
+
+        for (const probe of [
+            'bundled-hevc',
+            'native-hdr-hevc',
+            'native-sdr:av1',
+            'native-sdr:hevc',
+            'native-ultra-hd:av1',
+            'native-ultra-hd:hevc',
+            'raw:av1',
+            'raw:hevc'
+        ]) {
+            expect(videoProbes).toContain(probe);
+        }
+        for (const probe of [
+            'bundled-jpeg2000',
+            'bundled-mpeg2',
+            'bundled-vc1',
+            'h264-profiles',
+            'hevc-range-extension:main422-10'
+        ]) {
+            expect(videoProbes).not.toContain(probe);
+        }
+    });
+
+    it('selects a named range extension through its own variant only', () => {
+        const videoProbes = getSelectedVideoProbes(createItem([ MAIN_422_10_HEVC_STREAM ]));
+        const rangeExtensionProbes = [ ...videoProbes ].filter((probe: string): boolean => (
+            probe.startsWith('hevc-range-extension:')
+        ));
+
+        expect(rangeExtensionProbes).toEqual([ 'hevc-range-extension:main422-10' ]);
+        expect(videoProbes).not.toContain('native-hdr-hevc');
+        expect(videoProbes).not.toContain('raw:hevc');
+    });
+
+    it('unions the video streams of every source of an item', () => {
+        const videoProbes = getSelectedVideoProbes(createItem([ SDR_H264_STREAM ], [ SDR_MPEG2_STREAM ]));
+
+        expect(videoProbes).toEqual(new Set([ 'bundled-mpeg2', 'h264-profiles' ]));
+    });
+
+    it('selects no video probe for an item without video streams', () => {
+        expect(getSelectedVideoProbes(createItem([ FLAC_STREAM ]))).toEqual(new Set());
+    });
+
+    it.each([
+        { item: undefined, name: 'no item' },
+        { item: {}, name: 'an item without sources' },
+        { item: { MediaSources: [ { MediaStreams: [ SDR_HEVC_STREAM ] }, {} ] }, name: 'a source without streams' },
+        { item: createItem([ { Type: 'Video' } ]), name: 'a video stream without a codec' }
+    ])('runs every video probe for $name', ({ item }) => {
+        expect(getSelectedVideoProbes(item)).toEqual(new Set(CUSTOM_DECODE_VIDEO_PROBES));
+    });
+
+    it('runs only the selected probes and reports the rest as not probed', async () => {
+        const harness = createEnvironment(new Set(), new Set());
+        const environment = harness.environment;
+
+        const capabilities = await new CustomDecodeCapabilityProbe(environment).probe(
+            createItem([ SDR_HEVC_STREAM, FLAC_STREAM ])
+        );
+
+        expect(environment.bundledHEVCExactProbe?.probe).toHaveBeenCalledOnce();
+        expect(environment.bundledDTSExactProbe?.probe).toHaveBeenCalledOnce();
+        expect(environment.bundledTrueHDExactProbe?.probe).toHaveBeenCalledOnce();
+        expect(environment.bundledJPEG2000ExactProbe?.probe).not.toHaveBeenCalled();
+        expect(environment.bundledMPEG2ExactProbe?.probe).not.toHaveBeenCalled();
+        expect(environment.bundledVC1ExactProbe?.probe).not.toHaveBeenCalled();
+        expect(harness.rawHDRVideoOutputProbe).not.toHaveBeenCalled();
+        for (const codec of [ 'h264', 'jpeg2000', 'mpeg2video', 'vc1' ] as const) {
+            expect(capabilities.video[codec]).toMatchObject({ reason: 'not-probed', status: 'not-probed' });
+        }
+        expect(capabilities.video.hevc.status).not.toBe('not-probed');
+        expect(capabilities.bundledMPEG2).toBeUndefined();
+        expect(capabilities.h264Profiles).toBeUndefined();
+        expect(capabilities.bundledHEVC).toBe(BUNDLED_HEVC_EXACT_CAPABILITIES);
+        expect(capabilities.bundledDTS).toBe(SUPPORTED_DTS_EXACT_CAPABILITY);
+        expect(Object.values(capabilities.hevcRangeExtensions ?? {}).map(
+            (capability: { status: string }): string => capability.status
+        )).toEqual(new Array(9).fill('not-probed'));
+        expect(capabilities.probeStates).toMatchObject({
+            'bundled-dts': 'probed',
+            'bundled-hevc': 'probed',
+            'bundled-mpeg2': 'not-probed',
+            'h264-profiles': 'not-probed'
+        });
+    });
+
+    it('starts each probe once per page across items', async () => {
+        const harness = createEnvironment(new Set(), new Set());
+        const environment = harness.environment;
+        const probe = new CustomDecodeCapabilityProbe(environment);
+
+        const hevcCapabilities = await probe.probe(createItem([ SDR_HEVC_STREAM ]));
+        const mpeg2Capabilities = await probe.probe(createItem([ SDR_MPEG2_STREAM ]));
+        const repeatedCapabilities = await probe.probe(createItem([ SDR_HEVC_STREAM ]));
+
+        expect(repeatedCapabilities).toBe(hevcCapabilities);
+        expect(environment.bundledHEVCExactProbe?.probe).toHaveBeenCalledOnce();
+        expect(environment.bundledMPEG2ExactProbe?.probe).toHaveBeenCalledOnce();
+        expect(environment.bundledDTSExactProbe?.probe).toHaveBeenCalledOnce();
+        expect(environment.bundledTrueHDExactProbe?.probe).toHaveBeenCalledOnce();
+        expect(mpeg2Capabilities.bundledMPEG2).toBe(UNSUPPORTED_MPEG2_EXACT_CAPABILITY);
+        expect(mpeg2Capabilities.bundledDTS).toBe(SUPPORTED_DTS_EXACT_CAPABILITY);
+        expect(mpeg2Capabilities.video.hevc.status).toBe('not-probed');
+    });
+
+    it('starts the downloads of every selected exact probe before the first one runs', async () => {
+        const harness = createEnvironment(new Set(), new Set());
+        const environment = harness.environment;
+        const probeDTS = vi.fn(async () => SUPPORTED_DTS_EXACT_CAPABILITY);
+        const prepares = {
+            dts: vi.fn(),
+            hevc: vi.fn(),
+            jpeg2000: vi.fn(),
+            mpeg2: vi.fn(),
+            truehd: vi.fn(),
+            vc1: vi.fn()
+        };
+        environment.bundledDTSExactProbe = { prepare: prepares.dts, probe: probeDTS };
+        environment.bundledHEVCExactProbe = {
+            prepare: prepares.hevc,
+            probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
+        };
+        environment.bundledJPEG2000ExactProbe = {
+            prepare: prepares.jpeg2000,
+            probe: vi.fn(async () => UNSUPPORTED_JPEG2000_EXACT_CAPABILITY)
+        };
+        environment.bundledMPEG2ExactProbe = {
+            prepare: prepares.mpeg2,
+            probe: vi.fn(async () => UNSUPPORTED_MPEG2_EXACT_CAPABILITY)
+        };
+        environment.bundledTrueHDExactProbe = {
+            prepare: prepares.truehd,
+            probe: vi.fn(async () => SUPPORTED_TRUEHD_EXACT_CAPABILITY)
+        };
+        environment.bundledVC1ExactProbe = {
+            prepare: prepares.vc1,
+            probe: vi.fn(async () => UNSUPPORTED_VC1_EXACT_CAPABILITY)
+        };
+
+        await new CustomDecodeCapabilityProbe(environment).probe(createItem([ SDR_HEVC_STREAM ]));
+
+        for (const prepare of [ prepares.dts, prepares.truehd, prepares.hevc ]) {
+            expect(prepare).toHaveBeenCalledOnce();
+            // DTS is the first exact probe in the heavy queue
+            expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(probeDTS.mock.invocationCallOrder[0]);
+        }
+        for (const prepare of [ prepares.jpeg2000, prepares.mpeg2, prepares.vc1 ]) {
+            expect(prepare).not.toHaveBeenCalled();
+        }
+    });
+
+    it('reports whether a result covers an item or media source', async () => {
+        const harness = createEnvironment(new Set(), new Set());
+        const hevcItem = createItem([ SDR_HEVC_STREAM ]);
+        const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe(hevcItem);
+        const unscopedCapabilities: CustomDecodeCapabilities = { ...capabilities, probeStates: undefined };
+
+        expect(hasProbedCustomDecodeSelection(capabilities, hevcItem)).toBe(true);
+        expect(hasProbedCustomDecodeSelection(capabilities, { MediaStreams: [ SDR_HEVC_STREAM ] })).toBe(true);
+        expect(hasProbedCustomDecodeSelection(capabilities, createItem([ SDR_MPEG2_STREAM ]))).toBe(false);
+        expect(hasProbedCustomDecodeSelection(capabilities, {})).toBe(false);
+        expect(hasProbedCustomDecodeSelection(unscopedCapabilities, createItem([ SDR_MPEG2_STREAM ]))).toBe(true);
     });
 });

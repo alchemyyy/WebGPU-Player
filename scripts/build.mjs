@@ -19,7 +19,9 @@ const WORKER_TARGET = 'es2022';
 
 function copyAsset(destination, source) {
     if (!existsSync(source)) {
-        throw new Error(`Missing engine asset for libraries/${destination}: ${source}`);
+        // A decoder build from before a kit gained an output lacks that output
+        const remedy = source.startsWith(WASM_OUTPUT_DIRECTORY) ? '; rebuild the decoders with make -C wasm sources all' : '';
+        throw new Error(`Missing engine asset for libraries/${destination}: ${source}${remedy}`);
     }
     const target = join(LIBRARY_OUTPUT_DIRECTORY, destination);
     mkdirSync(dirname(target), { recursive: true });
@@ -65,7 +67,7 @@ await build({
     })),
     format: 'iife',
     logLevel: 'warning',
-    // The single-file decoder glue reads import.meta.url only to derive a script directory it never uses
+    // The audio decoder glue reads import.meta.url only to locate its WASM, which the engine always locates for it
     logOverride: { 'empty-import-meta': 'silent' },
     minify: PRODUCTION,
     outdir: LIBRARY_OUTPUT_DIRECTORY,

@@ -44,7 +44,9 @@ export type HEVCRangeExtensionRawFormat = Extract<
 
 export type HEVCRangeExtensionCapabilityReason =
     | 'api-unavailable'
+    | 'asset-unavailable'
     | 'config-unsupported'
+    | 'not-probed'
     | 'output-copy-supported'
     | 'output-copy-unsupported'
     | 'probe-exception'
@@ -59,7 +61,8 @@ export type HEVCRangeExtensionCapability = Readonly<{
     jellyfinProfile: string
     pixelFormat: HEVCRangeExtensionPixelFormat
     reason: HEVCRangeExtensionCapabilityReason
-    status: 'supported' | 'unsupported' | 'unknown'
+    // A variant outside the negotiated item's selection is not probed, which is never a verdict
+    status: 'not-probed' | 'supported' | 'unsupported' | 'unknown'
     variant: HEVCRangeExtensionVariant
 }>;
 
@@ -84,6 +87,7 @@ export type HEVCRangeExtensionProbeDefinition = Readonly<{
 
 const VECTOR_CODED_HEIGHT = 192;
 const VECTOR_CODED_WIDTH = 192;
+const GENERIC_PROFILE_TOKEN = 'REXT';
 
 type HEVCRangeExtensionVectorEvidence = Readonly<{
     accessUnits: readonly HEVCRangeExtensionProbeAccessUnit[]
@@ -96,6 +100,10 @@ function parseOptionalBitDepth(value: unknown): number | null {
     }
     const parsedValue = typeof value === 'number' ? value : Number(value);
     return Number.isFinite(parsedValue) ? parsedValue : null;
+}
+
+function normalizeProfileToken(profile: unknown): string {
+    return String(profile ?? '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
 }
 
 function createDefinition(
@@ -367,15 +375,13 @@ export function definitionMatchesHEVCRangeExtensionStream(
     pixelFormat: string | null | undefined,
     bitDepth: number | null | undefined
 ): boolean {
-    const normalizedProfile = String(profile ?? '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
-    const normalizedNamedProfile = definition.jellyfinProfile
-        .replace(/[^A-Z0-9]/gi, '')
-        .toUpperCase();
+    const normalizedProfile = normalizeProfileToken(profile);
+    const normalizedNamedProfile = normalizeProfileToken(definition.jellyfinProfile);
     const normalizedPixelFormat = String(pixelFormat ?? '').trim().toLowerCase();
     const normalizedBitDepth = typeof bitDepth === 'number' && Number.isFinite(bitDepth) ?
         bitDepth :
         null;
-    return (normalizedProfile === 'REXT' || normalizedProfile === normalizedNamedProfile)
+    return (normalizedProfile === GENERIC_PROFILE_TOKEN || normalizedProfile === normalizedNamedProfile)
         && normalizedPixelFormat === definition.pixelFormat
         // Jellyfin can omit BitDepth when FFprobe exposes only PixelFormat
         && (normalizedBitDepth === null || normalizedBitDepth === definition.bitDepth);
@@ -419,4 +425,24 @@ export function getHEVCRangeExtensionStreamDefinitionFromMetadata(
         typeof metadata.PixelFormat === 'string' ? metadata.PixelFormat : null,
         bitDepth
     );
+}
+
+/**
+ * Returns the variants whose capabilities decide a range-extension stream's negotiation, or none for another stream.
+ * A named profile needs only its own variant.
+ * Generic Rext hides the chroma format, so the profile advertises a depth only when every chroma variant at that depth qualifies.
+ */
+export function getHEVCRangeExtensionNegotiationVariants(
+    stream: unknown
+): readonly HEVCRangeExtensionVariant[] {
+    const definition = getHEVCRangeExtensionStreamDefinitionFromMetadata(stream);
+    if (!definition) {
+        return [];
+    }
+    if (normalizeProfileToken((stream as { Profile?: unknown }).Profile) !== GENERIC_PROFILE_TOKEN) {
+        return [ definition.variant ];
+    }
+    return HEVC_RANGE_EXTENSION_VARIANTS.filter((variant: HEVCRangeExtensionVariant): boolean => (
+        HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS[variant].bitDepth === definition.bitDepth
+    ));
 }

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-24f8931a.js";
+            window.path_to_searchindex_js = "searchindex-bd09b325.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -186,17 +186,19 @@ The build writes them to <code>bin/wasm/</code>, which is ignored like everythin
 <tr><th>Kit</th><th>Output in <code>bin/wasm/&lt;kit&gt;/</code></th><th>Library and license</th><th>Our source (MIT)</th></tr>
 </thead>
 <tbody>
-<tr><td><code>ffmpeg-eac3</code></td><td><code>ffmpeg-eac3.mjs</code></td><td>FFmpeg E-AC-3 and AC-3, LGPL-2.1-or-later</td><td><code>ffmpeg-eac3/ffmpeg_eac3_bridge.c</code></td></tr>
-<tr><td><code>ffmpeg-truehd</code></td><td><code>ffmpeg-truehd.mjs</code></td><td>FFmpeg TrueHD and MLP, LGPL-2.1-or-later</td><td><code>ffmpeg-truehd/ffmpeg_truehd_bridge.c</code></td></tr>
+<tr><td><code>ffmpeg-eac3</code></td><td><code>ffmpeg-eac3.mjs</code>, <code>ffmpeg-eac3.wasm</code></td><td>FFmpeg E-AC-3 and AC-3, LGPL-2.1-or-later</td><td><code>ffmpeg-eac3/ffmpeg_eac3_bridge.c</code></td></tr>
+<tr><td><code>ffmpeg-truehd</code></td><td><code>ffmpeg-truehd.mjs</code>, <code>ffmpeg-truehd.wasm</code></td><td>FFmpeg TrueHD and MLP, LGPL-2.1-or-later</td><td><code>ffmpeg-truehd/ffmpeg_truehd_bridge.c</code></td></tr>
 <tr><td><code>ffmpeg-mpeg2-vc1</code></td><td><code>ffmpeg-mpeg2-vc1.js</code>, <code>ffmpeg-mpeg2-vc1.wasm</code></td><td>FFmpeg MPEG-2 Video and VC-1, LGPL-2.1-or-later</td><td><code>ffmpeg-mpeg2-vc1/ffmpeg_mpeg2_vc1_bridge.c</code></td></tr>
-<tr><td><code>libdcadec-dts</code></td><td><code>libdcadec-dts.mjs</code></td><td><a href="https://github.com/foo86/dcadec">dcadec</a> DTS, DTS-HD High Resolution, and DTS-HD Master Audio, LGPL-2.1-or-later</td><td><code>libdcadec-dts/libdcadec_dts_bridge.c</code></td></tr>
+<tr><td><code>libdcadec-dts</code></td><td><code>libdcadec-dts.mjs</code>, <code>libdcadec-dts.wasm</code></td><td><a href="https://github.com/foo86/dcadec">dcadec</a> DTS, DTS-HD High Resolution, and DTS-HD Master Audio, LGPL-2.1-or-later</td><td><code>libdcadec-dts/libdcadec_dts_bridge.c</code></td></tr>
 <tr><td><code>libdovi</code></td><td><code>dovi-rpu-parser.wasm</code></td><td>The <code>dolby_vision</code> crate from <a href="https://github.com/quietvoid/dovi_tool">dovi_tool</a>, vendored and patched, MIT</td><td><code>libdovi/</code></td></tr>
 </tbody>
 </table>
 </div>
-<p>The <code>.mjs</code> outputs are single-file ES modules with the WASM embedded.
+<p>The <code>.mjs</code> outputs are the audio kits’ ES module glue, which esbuild bundles into each worker that imports it.
 Their hand-written TypeScript declarations sit beside the bridges as <code>&lt;kit&gt;/&lt;kit&gt;.d.mts</code>, and the engine imports them as <code>#wasm/&lt;kit&gt;/&lt;kit&gt;.mjs</code> (see <a href="embedding.html">Embedding the engine</a>).
-The other outputs are served from <code>libraries/</code>.
+Every <code>.wasm</code> file, and the <code>ffmpeg-mpeg2-vc1</code> glue, is served from <code>libraries/&lt;kit&gt;/</code>.
+An audio binary is fetched only when a worker creates its first decoder of that kit, and a probe worker and the playback worker fetch the same URL, so the browser caches it once.
+<code>src/DecoderWASMSource.ts</code> always passes the glue <code>locateFile</code>, because a bundled glue cannot resolve its own URL, or <code>wasmBinary</code> with bytes a caller already fetched.
 The OpenJPEG and hevc.js decoders come from npm packages, which <code>scripts/build.mjs</code> copies; nothing here builds them.</p>
 <h2 id="you-need"><a class="header" href="#you-need">You need</a></h2>
 <ul>

@@ -1,4 +1,16 @@
-import { createEngineWorker } from '../../EngineAssets';
+import {
+    getDecoderWASMTransfer,
+    loadDecoderWASMSource,
+    type DecoderWASMSource
+} from '../../DecoderWASMSource';
+import {
+    createEngineWorker,
+    resolveEngineAssetURL,
+    TRUEHD_DECODER_WASM_ASSET,
+    type EngineAssetPath,
+    type EngineWorkerPath
+} from '../../EngineAssets';
+import { fetchCapabilityAsset, warmCapabilityAsset } from '../CapabilityAssetLoading';
 import {
     TRUEHD_EXACT_CAPABILITY_REQUEST_ID,
     TRUEHD_QUALIFICATION_CHANNEL_COUNT_MASK,
@@ -12,12 +24,14 @@ import {
 } from './TrueHDExactCapabilityProtocol';
 
 export const TRUEHD_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS = 4_000;
+const TRUEHD_EXACT_CAPABILITY_WORKER_ASSET: EngineWorkerPath = 'webgpu-player/TrueHDExactCapabilityProbe.worker.js';
 const TRUEHD_QUALIFIED_CHANNEL_COUNTS = Object.freeze([ 2, 6 ] as const);
 const TRUEHD_QUALIFIED_CODECS = Object.freeze([ 'truehd', 'mlp' ] as const);
 const TRUEHD_QUALIFIED_SAMPLE_RATES = Object.freeze([ 48_000, 96_000, 192_000 ] as const);
 
 export type TrueHDExactCapabilityReason =
     | 'api-unavailable'
+    | 'asset-unavailable'
     | TrueHDExactCapabilityWorkerResponse['reason']
     | 'probe-timeout'
     | 'worker-create-failed'
@@ -51,7 +65,7 @@ export type TrueHDExactCapabilityProbeWorker = {
         type: 'error' | 'message' | 'messageerror',
         listener: TrueHDExactCapabilityProbeWorkerEventListener
     ) => void
-    postMessage: (message: unknown) => void
+    postMessage: (message: unknown, transfer: Transferable[]) => void
     removeEventListener: (
         type: 'error' | 'message' | 'messageerror',
         listener: TrueHDExactCapabilityProbeWorkerEventListener
@@ -62,15 +76,20 @@ export type TrueHDExactCapabilityProbeWorker = {
 export type TrueHDExactCapabilityProbeEnvironment = Readonly<{
     clearTimeout: (timeout: ReturnType<typeof globalThis.setTimeout>) => void
     createWorker: (() => TrueHDExactCapabilityProbeWorker) | null
+    // Downloads the decoder binary as bytes for the worker; without it the worker fetches the binary itself
+    loadDecoderWASM?: ((url: string) => Promise<ArrayBuffer>) | null
+    resolveAssetURL: (path: EngineAssetPath) => string
     runtimeAvailable: boolean
     setTimeout: (
         callback: () => void,
         milliseconds: number
     ) => ReturnType<typeof globalThis.setTimeout>
+    // Downloads the worker script into the HTTP cache before the timed probe loads it
+    warmAsset?: ((url: string) => Promise<void>) | null
 }>;
 
 function createDefaultWorker(): TrueHDExactCapabilityProbeWorker {
-    const worker = createEngineWorker('webgpu-player/TrueHDExactCapabilityProbe.worker.js');
+    const worker = createEngineWorker(TRUEHD_EXACT_CAPABILITY_WORKER_ASSET);
     return worker as unknown as TrueHDExactCapabilityProbeWorker;
 }
 
@@ -81,10 +100,13 @@ function createDefaultEnvironment(): TrueHDExactCapabilityProbeEnvironment {
     return {
         clearTimeout: timeout => globalThis.clearTimeout(timeout),
         createWorker: runtimeAvailable ? createDefaultWorker : null,
+        loadDecoderWASM: typeof globalThis.fetch === 'function' ? fetchCapabilityAsset : null,
+        resolveAssetURL: resolveEngineAssetURL,
         runtimeAvailable,
         setTimeout: (callback, milliseconds): ReturnType<typeof globalThis.setTimeout> => (
             globalThis.setTimeout(callback, milliseconds)
-        )
+        ),
+        warmAsset: typeof globalThis.fetch === 'function' ? warmCapabilityAsset : null
     };
 }
 
@@ -108,7 +130,7 @@ function createCapability(
     let status: TrueHDExactCapability['status'];
     if (supported) {
         status = 'supported';
-    } else if (reason === 'api-unavailable' || reason === 'probe-timeout') {
+    } else if (reason === 'api-unavailable' || reason === 'asset-unavailable' || reason === 'probe-timeout') {
         status = 'unknown';
     } else {
         status = 'unsupported';
@@ -143,6 +165,7 @@ function createCapability(
 /** Owns one cached, fail-closed TrueHD/MLP output and throughput probe. */
 export default class TrueHDExactCapabilityProbe {
     private cachedProbe: Promise<TrueHDExactCapability> | null = null;
+    private preparedDecoderWASM: Promise<DecoderWASMSource | null> | null = null;
 
     public constructor(
         private readonly environment: TrueHDExactCapabilityProbeEnvironment =
@@ -155,19 +178,57 @@ export default class TrueHDExactCapabilityProbe {
         }
     }
 
+    /** Starts this probe's downloads; a probe run prepares every probe it selected, so their downloads overlap. */
+    public prepare(): void {
+        if (!this.environment.runtimeAvailable || !this.environment.createWorker) {
+            return;
+        }
+        this.preparedDecoderWASM ??= this.loadAssets();
+    }
+
     /** Returns the same immutable capability result for every call. */
     public probe(): Promise<TrueHDExactCapability> {
         this.cachedProbe ??= this.runProbe();
         return this.cachedProbe;
     }
 
-    private runProbe(): Promise<TrueHDExactCapability> {
-        if (!this.environment.runtimeAvailable || !this.environment.createWorker) {
-            return Promise.resolve(createCapability('api-unavailable'));
+    private async loadAssets(): Promise<DecoderWASMSource | null> {
+        const environment = this.environment;
+        try {
+            const [ decoderWASM ] = await Promise.all([
+                loadDecoderWASMSource(
+                    environment.resolveAssetURL(TRUEHD_DECODER_WASM_ASSET),
+                    environment.loadDecoderWASM
+                ),
+                environment.warmAsset?.(environment.resolveAssetURL(TRUEHD_EXACT_CAPABILITY_WORKER_ASSET))
+            ]);
+            return decoderWASM;
+        } catch {
+            return null;
         }
+    }
+
+    private async runProbe(): Promise<TrueHDExactCapability> {
+        const createWorker = this.environment.createWorker;
+        if (!this.environment.runtimeAvailable || !createWorker) {
+            return createCapability('api-unavailable');
+        }
+        this.prepare();
+        // The downloads finish before the decode timeout starts, which also keeps them out of the throughput measurement
+        const decoderWASM = await this.preparedDecoderWASM;
+        if (!decoderWASM) {
+            return createCapability('asset-unavailable');
+        }
+        return this.runWorker(createWorker, decoderWASM);
+    }
+
+    private runWorker(
+        createWorker: () => TrueHDExactCapabilityProbeWorker,
+        decoderWASM: DecoderWASMSource
+    ): Promise<TrueHDExactCapability> {
         let worker: TrueHDExactCapabilityProbeWorker;
         try {
-            worker = this.environment.createWorker();
+            worker = createWorker();
         } catch {
             return Promise.resolve(createCapability('worker-create-failed'));
         }
@@ -221,11 +282,12 @@ export default class TrueHDExactCapabilityProbe {
             }, this.timeoutMilliseconds);
 
             const request: TrueHDExactCapabilityWorkerRequest = {
+                decoderWASM,
                 requestID: TRUEHD_EXACT_CAPABILITY_REQUEST_ID,
                 type: 'probe'
             };
             try {
-                worker.postMessage(request);
+                worker.postMessage(request, getDecoderWASMTransfer(decoderWASM));
             } catch {
                 settle(createCapability('worker-error'));
             }
@@ -239,4 +301,10 @@ let defaultProbe: TrueHDExactCapabilityProbe | null = null;
 export function probeTrueHDExactCapability(): Promise<TrueHDExactCapability> {
     defaultProbe ??= new TrueHDExactCapabilityProbe();
     return defaultProbe.probe();
+}
+
+/** Starts the FFmpeg TrueHD probe's downloads ahead of its turn. */
+export function prepareTrueHDExactCapability(): void {
+    defaultProbe ??= new TrueHDExactCapabilityProbe();
+    defaultProbe.prepare();
 }

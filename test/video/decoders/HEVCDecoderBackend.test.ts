@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
     createHEVCDecoderBackend,
+    createHEVCDecoderModule,
     MAXIMUM_HEVC_DRAINED_FRAME_COUNT,
     type HEVCDecodedFrameHandler
 } from 'webgpu-player/video/decoders/HEVCDecoderBackend';
@@ -11,11 +12,12 @@ type NativeFunction = (...arguments_: number[]) => number;
 
 type FakeModuleHarness = {
     drainedFrameIndexes: number[]
-    destroyCount: { value: number }
+    destroyedDecoderPointers: number[]
     factory: ReturnType<typeof vi.fn>
     feedBytes: Uint8Array[]
     flushResult: { value: number }
     locatedWASMURL: { value: string | null }
+    receivedWASMBinary: { value: ArrayBuffer | null }
 };
 
 type FakeFrameLayout = {
@@ -76,9 +78,11 @@ function createFakeModule(
     const heapU16 = new Uint16Array(memory);
     const feedBytes: Uint8Array[] = [];
     const drainedFrameIndexes: number[] = [];
-    const destroyCount = { value: 0 };
+    const destroyedDecoderPointers: number[] = [];
     const flushResult = { value: 0 };
     const locatedWASMURL = { value: null as string | null };
+    const receivedWASMBinary = { value: null as ArrayBuffer | null };
+    let createdDecoderCount = 0;
     let nextAllocationPointer = firstAllocationPointer;
     heapU16.set([ 1, 2, 3, 4, 5, 6, 7, 8 ], lumaPointer >> 1);
     heapU16.set([ 9, 10 ], chromaBluePointer >> 1);
@@ -99,9 +103,13 @@ function createFakeModule(
     }
 
     const nativeFunctions: Record<string, NativeFunction> = {};
-    nativeFunctions['hevc_decoder_create'] = (): number => 1;
-    nativeFunctions['hevc_decoder_destroy'] = (): number => {
-        destroyCount.value += 1;
+    // Each native decoder gets its own pointer: 1, 2, and so on
+    nativeFunctions['hevc_decoder_create'] = (): number => {
+        createdDecoderCount += 1;
+        return createdDecoderCount;
+    };
+    nativeFunctions['hevc_decoder_destroy'] = (...nativeArguments: number[]): number => {
+        destroyedDecoderPointers.push(nativeArguments[0]);
         return 0;
     };
     nativeFunctions['hevc_decoder_drain'] = (...nativeArguments: number[]): number => {
@@ -141,17 +149,20 @@ function createFakeModule(
     };
     const factory = vi.fn(async (options: {
         locateFile?: (path: string, scriptDirectory: string) => string
+        wasmBinary?: ArrayBuffer
     }): Promise<unknown> => {
         locatedWASMURL.value = options.locateFile?.('hevc-decode.wasm', '/ignored/') ?? null;
+        receivedWASMBinary.value = options.wasmBinary ?? null;
         return moduleValue;
     });
     return {
         drainedFrameIndexes,
-        destroyCount,
+        destroyedDecoderPointers,
         factory,
         feedBytes,
         flushResult,
-        locatedWASMURL
+        locatedWASMURL,
+        receivedWASMBinary
     };
 }
 
@@ -198,7 +209,7 @@ describe('createHEVCDecoderBackend', () => {
         expect(backend.info).toBeNull();
         backend.destroy();
         backend.destroy();
-        expect(harness.destroyCount.value).toBe(1);
+        expect(harness.destroyedDecoderPointers).toEqual([ 1 ]);
     });
 
     it('rejects a native flush failure and use after destroy', async () => {
@@ -328,5 +339,60 @@ describe('createHEVCDecoderBackend', () => {
         vi.stubGlobal('HEVCDecoderModule', undefined);
 
         await expect(createHEVCDecoderBackend({})).rejects.toThrow('factory is unavailable');
+    });
+});
+
+describe('createHEVCDecoderModule', () => {
+    it('hosts successive decoders on one instantiated module', async () => {
+        const harness = createFakeModule();
+        vi.stubGlobal('HEVCDecoderModule', harness.factory);
+        const decoderModule = await createHEVCDecoderModule({
+            wasmURL: 'https://example.test/hevc-decode.wasm'
+        });
+
+        const firstBackend = decoderModule.createDecoder();
+        firstBackend.destroy();
+        const secondBackend = decoderModule.createDecoder();
+        secondBackend.feed(new Uint8Array([ 0, 0, 0, 1, 38, 1 ]));
+        secondBackend.destroy();
+
+        expect(harness.factory).toHaveBeenCalledOnce();
+        expect(harness.locatedWASMURL.value).toBe('https://example.test/hevc-decode.wasm');
+        expect(harness.receivedWASMBinary.value).toBeNull();
+        expect(harness.destroyedDecoderPointers).toEqual([ 1, 2 ]);
+        expect(harness.feedBytes).toHaveLength(1);
+        expect(() => firstBackend.feed(new Uint8Array([ 0 ]))).toThrow('destroyed');
+    });
+
+    it('hands preloaded WASM bytes to the glue', async () => {
+        const harness = createFakeModule();
+        vi.stubGlobal('HEVCDecoderModule', harness.factory);
+        const wasmBinary = new ArrayBuffer(8);
+
+        await createHEVCDecoderModule({
+            wasmBinary,
+            wasmURL: 'https://example.test/hevc-decode.wasm'
+        });
+
+        expect(harness.receivedWASMBinary.value).toBe(wasmBinary);
+        expect(harness.locatedWASMURL.value).toBe('https://example.test/hevc-decode.wasm');
+    });
+
+    it('gives the glue a fresh settings object on every instantiation', async () => {
+        const harness = createFakeModule();
+        vi.stubGlobal('HEVCDecoderModule', harness.factory);
+        const options = { wasmURL: 'https://example.test/hevc-decode.wasm' };
+
+        await createHEVCDecoderModule(options);
+        await createHEVCDecoderModule(options);
+
+        // NOTE: The glue's assertion build installs aborting getters on the object it receives, so reusing one aborts the next instantiation
+        expect(harness.factory.mock.calls[0][0]).not.toBe(harness.factory.mock.calls[1][0]);
+    });
+
+    it('requires the glue module factory', async () => {
+        vi.stubGlobal('HEVCDecoderModule', undefined);
+
+        await expect(createHEVCDecoderModule({})).rejects.toThrow('factory is unavailable');
     });
 });

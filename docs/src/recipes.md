@@ -7,6 +7,7 @@ Each assumes a checkout set up as in [Set up a checkout](setup.md).
 
 1. Capability.
    Add an exact-output probe to `src/capability/CustomDecodeCapabilities.ts`.
+   Give a video probe an identifier in `CustomDecodeVideoProbe` and `CUSTOM_DECODE_VIDEO_PROBES`, and select it in `selectItemVideoProbes` for the streams that need it, or no item runs it.
    For an HEVC range extension:
    - add its definition to `src/capability/HEVCRangeExtensionCapabilities.ts`;
    - add its vector to `scripts/codec_vector_assets/generate_HEVC_range_extension_vectors.py` and generate it into `bin/codec_vector_assets/hevc-range-extension/`;

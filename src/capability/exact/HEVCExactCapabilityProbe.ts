@@ -1,8 +1,15 @@
 import {
+    getDecoderWASMTransfer,
+    loadDecoderWASMSource,
+    type DecoderWASMSource
+} from '../../DecoderWASMSource';
+import {
     createEngineWorker,
     resolveEngineAssetURL,
-    type EngineAssetPath
+    type EngineAssetPath,
+    type EngineWorkerPath
 } from '../../EngineAssets';
+import { fetchCapabilityAsset, warmCapabilityAsset } from '../CapabilityAssetLoading';
 import {
     createHEVCExactCapabilityWorkerQualificationRequests
 } from '../vectors/HEVCExactCapabilityVectors';
@@ -23,11 +30,13 @@ import {
 const HEVC_DECODER_GLUE_ASSET: EngineAssetPath = 'hevcjs/hevc-decode.js';
 const HEVC_DECODER_WASM_ASSET: EngineAssetPath = 'hevcjs/hevc-decode.wasm';
 const HEVC_MAIN10_4K_QUALIFICATION_ASSET: EngineAssetPath = 'hevcjs/main10-4k-qualification.bin';
+const HEVC_EXACT_CAPABILITY_WORKER_ASSET: EngineWorkerPath = 'webgpu-player/HEVCExactCapabilityProbe.worker.js';
 
 export type BundledHEVCExactCapabilityStatus = 'supported' | 'unsupported';
 export type BundledHEVCExactCapabilityReason =
     | HEVCExactCapabilityWorkerQualificationReason
     | 'api-unavailable'
+    | 'asset-unavailable'
     | 'probe-timeout'
     | 'worker-create-failed'
     | 'worker-error'
@@ -73,6 +82,8 @@ export type HEVCExactCapabilityProbeWorker = {
 export type HEVCExactCapabilityProbeEnvironment = Readonly<{
     clearTimeout: (timeout: ReturnType<typeof globalThis.setTimeout>) => void
     createWorker: (() => HEVCExactCapabilityProbeWorker) | null
+    // Downloads the decoder binary as bytes for the worker; without it the worker fetches the binary itself
+    loadDecoderWASM?: ((url: string) => Promise<ArrayBuffer>) | null
     loadQualificationBitstream: (url: string) => Promise<ArrayBuffer>
     resolveAssetURL: (path: EngineAssetPath) => string
     runtimeAvailable: boolean
@@ -80,23 +91,18 @@ export type HEVCExactCapabilityProbeEnvironment = Readonly<{
         callback: () => void,
         milliseconds: number
     ) => ReturnType<typeof globalThis.setTimeout>
+    // Downloads the worker script and decoder glue into the HTTP cache before the timed probe loads them
+    warmAsset?: ((url: string) => Promise<void>) | null
+}>;
+
+type HEVCExactCapabilityProbeAssets = Readonly<{
+    decoderWASM: DecoderWASMSource
+    qualificationBitstream: ArrayBuffer
 }>;
 
 function createDefaultWorker(): HEVCExactCapabilityProbeWorker {
-    const worker = createEngineWorker('webgpu-player/HEVCExactCapabilityProbe.worker.js');
+    const worker = createEngineWorker(HEVC_EXACT_CAPABILITY_WORKER_ASSET);
     return worker as unknown as HEVCExactCapabilityProbeWorker;
-}
-
-async function loadDefaultQualificationBitstream(url: string): Promise<ArrayBuffer> {
-    const response = await fetch(url, {
-        cache: 'force-cache',
-        credentials: 'same-origin',
-        redirect: 'error'
-    });
-    if (!response.ok) {
-        throw new Error('The exact HEVC qualification vector request failed');
-    }
-    return response.arrayBuffer();
 }
 
 function createDefaultEnvironment(): HEVCExactCapabilityProbeEnvironment {
@@ -107,12 +113,14 @@ function createDefaultEnvironment(): HEVCExactCapabilityProbeEnvironment {
     return {
         clearTimeout: (timeout): void => globalThis.clearTimeout(timeout),
         createWorker: runtimeAvailable ? createDefaultWorker : null,
-        loadQualificationBitstream: loadDefaultQualificationBitstream,
+        loadDecoderWASM: fetchCapabilityAsset,
+        loadQualificationBitstream: fetchCapabilityAsset,
         resolveAssetURL: resolveEngineAssetURL,
         runtimeAvailable,
         setTimeout: (callback, milliseconds): ReturnType<typeof globalThis.setTimeout> => (
             globalThis.setTimeout(callback, milliseconds)
-        )
+        ),
+        warmAsset: warmCapabilityAsset
     };
 }
 
@@ -259,6 +267,7 @@ function createCapabilitiesFromResponse(
 /** Owns one cached, fail-closed exact bundled HEVC capability qualification. */
 export class BundledHEVCExactCapabilityProbe {
     private cachedProbe: Promise<BundledHEVCExactCapabilities> | null = null;
+    private preparedAssets: Promise<HEVCExactCapabilityProbeAssets | null> | null = null;
 
     public constructor(
         private readonly environment: HEVCExactCapabilityProbeEnvironment =
@@ -271,20 +280,61 @@ export class BundledHEVCExactCapabilityProbe {
         }
     }
 
+    /** Starts this probe's downloads; a probe run prepares every probe it selected, so their downloads overlap. */
+    public prepare(): void {
+        if (!this.environment.runtimeAvailable || !this.environment.createWorker) {
+            return;
+        }
+        this.preparedAssets ??= this.loadAssets();
+    }
+
     /** Returns the same immutable result promise for all calls in this runtime. */
     public probe(): Promise<BundledHEVCExactCapabilities> {
         this.cachedProbe ??= this.runProbe();
         return this.cachedProbe;
     }
 
-    private runProbe(): Promise<BundledHEVCExactCapabilities> {
-        if (!this.environment.runtimeAvailable || !this.environment.createWorker) {
-            return Promise.resolve(createUniformFailureCapabilities('api-unavailable'));
+    private async loadAssets(): Promise<HEVCExactCapabilityProbeAssets | null> {
+        const environment = this.environment;
+        try {
+            const [ qualificationBitstream, decoderWASM ] = await Promise.all([
+                environment.loadQualificationBitstream(
+                    environment.resolveAssetURL(HEVC_MAIN10_4K_QUALIFICATION_ASSET)
+                ),
+                loadDecoderWASMSource(
+                    environment.resolveAssetURL(HEVC_DECODER_WASM_ASSET),
+                    environment.loadDecoderWASM
+                ),
+                environment.warmAsset?.(environment.resolveAssetURL(HEVC_EXACT_CAPABILITY_WORKER_ASSET)),
+                environment.warmAsset?.(environment.resolveAssetURL(HEVC_DECODER_GLUE_ASSET))
+            ]);
+            return { decoderWASM, qualificationBitstream };
+        } catch {
+            return null;
         }
+    }
 
+    private async runProbe(): Promise<BundledHEVCExactCapabilities> {
+        const createWorker = this.environment.createWorker;
+        if (!this.environment.runtimeAvailable || !createWorker) {
+            return createUniformFailureCapabilities('api-unavailable');
+        }
+        this.prepare();
+        // The downloads finish before the decode timeout starts
+        const assets = await this.preparedAssets;
+        if (!assets) {
+            return createUniformFailureCapabilities('asset-unavailable');
+        }
+        return this.runWorker(createWorker, assets);
+    }
+
+    private runWorker(
+        createWorker: () => HEVCExactCapabilityProbeWorker,
+        assets: HEVCExactCapabilityProbeAssets
+    ): Promise<BundledHEVCExactCapabilities> {
         let worker: HEVCExactCapabilityProbeWorker;
         try {
-            worker = this.environment.createWorker();
+            worker = createWorker();
         } catch {
             return Promise.resolve(createUniformFailureCapabilities('worker-create-failed'));
         }
@@ -338,43 +388,26 @@ export class BundledHEVCExactCapabilityProbe {
                 settle(createUniformFailureCapabilities('probe-timeout'));
             }, this.timeoutMilliseconds);
 
-            const loadAndPostRequest = async (): Promise<void> => {
-                try {
-                    const qualificationBitstream =
-                        await this.environment.loadQualificationBitstream(
-                            this.environment.resolveAssetURL(
-                                HEVC_MAIN10_4K_QUALIFICATION_ASSET
-                            )
-                        );
-                    if (settled) {
-                        return;
-                    }
-                    const qualifications =
-                        createHEVCExactCapabilityWorkerQualificationRequests(
-                            qualificationBitstream
-                        );
-                    const request: HEVCExactCapabilityWorkerRequest = {
-                        decoderGlueURL: this.environment.resolveAssetURL(
-                            HEVC_DECODER_GLUE_ASSET
-                        ),
-                        decoderWASMURL: this.environment.resolveAssetURL(
-                            HEVC_DECODER_WASM_ASSET
-                        ),
-                        requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
-                        qualifications,
-                        type: 'probe'
-                    };
-                    const transfer: Transferable[] = [];
-                    for (const qualification of qualifications) {
-                        transfer.push(qualification.accessUnit);
-                        transfer.push(...qualification.qualificationAccessUnits);
-                    }
-                    worker.postMessage(request, transfer);
-                } catch {
-                    settle(createUniformFailureCapabilities('worker-error'));
+            try {
+                const qualifications = createHEVCExactCapabilityWorkerQualificationRequests(
+                    assets.qualificationBitstream
+                );
+                const request: HEVCExactCapabilityWorkerRequest = {
+                    decoderGlueURL: this.environment.resolveAssetURL(HEVC_DECODER_GLUE_ASSET),
+                    decoderWASM: assets.decoderWASM,
+                    requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
+                    qualifications,
+                    type: 'probe'
+                };
+                const transfer: Transferable[] = getDecoderWASMTransfer(assets.decoderWASM);
+                for (const qualification of qualifications) {
+                    transfer.push(qualification.accessUnit);
+                    transfer.push(...qualification.qualificationAccessUnits);
                 }
-            };
-            void loadAndPostRequest();
+                worker.postMessage(request, transfer);
+            } catch {
+                settle(createUniformFailureCapabilities('worker-error'));
+            }
         });
     }
 }
@@ -385,4 +418,10 @@ let defaultProbe: BundledHEVCExactCapabilityProbe | null = null;
 export function probeBundledHEVCExactCapabilities(): Promise<BundledHEVCExactCapabilities> {
     defaultProbe ??= new BundledHEVCExactCapabilityProbe();
     return defaultProbe.probe();
+}
+
+/** Starts the exact bundled HEVC probe's downloads ahead of its turn. */
+export function prepareBundledHEVCExactCapabilities(): void {
+    defaultProbe ??= new BundledHEVCExactCapabilityProbe();
+    defaultProbe.prepare();
 }

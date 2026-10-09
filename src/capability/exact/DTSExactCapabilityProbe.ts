@@ -1,4 +1,16 @@
-import { createEngineWorker } from '../../EngineAssets';
+import {
+    getDecoderWASMTransfer,
+    loadDecoderWASMSource,
+    type DecoderWASMSource
+} from '../../DecoderWASMSource';
+import {
+    createEngineWorker,
+    DTS_DECODER_WASM_ASSET,
+    resolveEngineAssetURL,
+    type EngineAssetPath,
+    type EngineWorkerPath
+} from '../../EngineAssets';
+import { fetchCapabilityAsset, warmCapabilityAsset } from '../CapabilityAssetLoading';
 import {
     DTS_EXACT_CAPABILITY_REQUEST_ID,
     DTS_QUALIFICATION_VECTOR_COUNT,
@@ -10,6 +22,7 @@ import {
 } from './DTSExactCapabilityProtocol';
 
 export const DTS_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS = 4_000;
+const DTS_EXACT_CAPABILITY_WORKER_ASSET: EngineWorkerPath = 'webgpu-player/DTSExactCapabilityProbe.worker.js';
 const DTS_QUALIFIED_PROFILES = Object.freeze([
     'core',
     'core-96-24',
@@ -21,6 +34,7 @@ const DTS_QUALIFIED_SAMPLE_RATES = Object.freeze([ 48_000, 96_000, 192_000 ] as 
 
 export type DTSExactCapabilityReason =
     | 'api-unavailable'
+    | 'asset-unavailable'
     | DTSExactCapabilityWorkerResponse['reason']
     | 'probe-timeout'
     | 'worker-create-failed'
@@ -51,7 +65,7 @@ export type DTSExactCapabilityProbeWorker = {
         type: 'error' | 'message' | 'messageerror',
         listener: DTSExactCapabilityProbeWorkerEventListener
     ) => void
-    postMessage: (message: unknown) => void
+    postMessage: (message: unknown, transfer: Transferable[]) => void
     removeEventListener: (
         type: 'error' | 'message' | 'messageerror',
         listener: DTSExactCapabilityProbeWorkerEventListener
@@ -62,15 +76,20 @@ export type DTSExactCapabilityProbeWorker = {
 export type DTSExactCapabilityProbeEnvironment = Readonly<{
     clearTimeout: (timeout: ReturnType<typeof globalThis.setTimeout>) => void
     createWorker: (() => DTSExactCapabilityProbeWorker) | null
+    // Downloads the decoder binary as bytes for the worker; without it the worker fetches the binary itself
+    loadDecoderWASM?: ((url: string) => Promise<ArrayBuffer>) | null
+    resolveAssetURL: (path: EngineAssetPath) => string
     runtimeAvailable: boolean
     setTimeout: (
         callback: () => void,
         milliseconds: number
     ) => ReturnType<typeof globalThis.setTimeout>
+    // Downloads the worker script into the HTTP cache before the timed probe loads it
+    warmAsset?: ((url: string) => Promise<void>) | null
 }>;
 
 function createDefaultWorker(): DTSExactCapabilityProbeWorker {
-    const worker = createEngineWorker('webgpu-player/DTSExactCapabilityProbe.worker.js');
+    const worker = createEngineWorker(DTS_EXACT_CAPABILITY_WORKER_ASSET);
     return worker as unknown as DTSExactCapabilityProbeWorker;
 }
 
@@ -81,10 +100,13 @@ function createDefaultEnvironment(): DTSExactCapabilityProbeEnvironment {
     return {
         clearTimeout: timeout => globalThis.clearTimeout(timeout),
         createWorker: runtimeAvailable ? createDefaultWorker : null,
+        loadDecoderWASM: typeof globalThis.fetch === 'function' ? fetchCapabilityAsset : null,
+        resolveAssetURL: resolveEngineAssetURL,
         runtimeAvailable,
         setTimeout: (callback, milliseconds): ReturnType<typeof globalThis.setTimeout> => (
             globalThis.setTimeout(callback, milliseconds)
-        )
+        ),
+        warmAsset: typeof globalThis.fetch === 'function' ? warmCapabilityAsset : null
     };
 }
 
@@ -105,7 +127,7 @@ function createCapability(
     let status: DTSExactCapability['status'];
     if (supported) {
         status = 'supported';
-    } else if (reason === 'api-unavailable' || reason === 'probe-timeout') {
+    } else if (reason === 'api-unavailable' || reason === 'asset-unavailable' || reason === 'probe-timeout') {
         status = 'unknown';
     } else {
         status = 'unsupported';
@@ -137,6 +159,7 @@ function createCapability(
 /** Owns one cached, fail-closed libdcadec output and throughput probe. */
 export default class DTSExactCapabilityProbe {
     private cachedProbe: Promise<DTSExactCapability> | null = null;
+    private preparedDecoderWASM: Promise<DecoderWASMSource | null> | null = null;
 
     public constructor(
         private readonly environment: DTSExactCapabilityProbeEnvironment =
@@ -149,19 +172,57 @@ export default class DTSExactCapabilityProbe {
         }
     }
 
+    /** Starts this probe's downloads; a probe run prepares every probe it selected, so their downloads overlap. */
+    public prepare(): void {
+        if (!this.environment.runtimeAvailable || !this.environment.createWorker) {
+            return;
+        }
+        this.preparedDecoderWASM ??= this.loadAssets();
+    }
+
     /** Returns the same immutable capability result for every call. */
     public probe(): Promise<DTSExactCapability> {
         this.cachedProbe ??= this.runProbe();
         return this.cachedProbe;
     }
 
-    private runProbe(): Promise<DTSExactCapability> {
-        if (!this.environment.runtimeAvailable || !this.environment.createWorker) {
-            return Promise.resolve(createCapability('api-unavailable'));
+    private async loadAssets(): Promise<DecoderWASMSource | null> {
+        const environment = this.environment;
+        try {
+            const [ decoderWASM ] = await Promise.all([
+                loadDecoderWASMSource(
+                    environment.resolveAssetURL(DTS_DECODER_WASM_ASSET),
+                    environment.loadDecoderWASM
+                ),
+                environment.warmAsset?.(environment.resolveAssetURL(DTS_EXACT_CAPABILITY_WORKER_ASSET))
+            ]);
+            return decoderWASM;
+        } catch {
+            return null;
         }
+    }
+
+    private async runProbe(): Promise<DTSExactCapability> {
+        const createWorker = this.environment.createWorker;
+        if (!this.environment.runtimeAvailable || !createWorker) {
+            return createCapability('api-unavailable');
+        }
+        this.prepare();
+        // The downloads finish before the decode timeout starts, which also keeps them out of the throughput measurement
+        const decoderWASM = await this.preparedDecoderWASM;
+        if (!decoderWASM) {
+            return createCapability('asset-unavailable');
+        }
+        return this.runWorker(createWorker, decoderWASM);
+    }
+
+    private runWorker(
+        createWorker: () => DTSExactCapabilityProbeWorker,
+        decoderWASM: DecoderWASMSource
+    ): Promise<DTSExactCapability> {
         let worker: DTSExactCapabilityProbeWorker;
         try {
-            worker = this.environment.createWorker();
+            worker = createWorker();
         } catch {
             return Promise.resolve(createCapability('worker-create-failed'));
         }
@@ -215,11 +276,12 @@ export default class DTSExactCapabilityProbe {
             }, this.timeoutMilliseconds);
 
             const request: DTSExactCapabilityWorkerRequest = {
+                decoderWASM,
                 requestID: DTS_EXACT_CAPABILITY_REQUEST_ID,
                 type: 'probe'
             };
             try {
-                worker.postMessage(request);
+                worker.postMessage(request, getDecoderWASMTransfer(decoderWASM));
             } catch {
                 settle(createCapability('worker-error'));
             }
@@ -233,4 +295,10 @@ let defaultProbe: DTSExactCapabilityProbe | null = null;
 export function probeDTSExactCapability(): Promise<DTSExactCapability> {
     defaultProbe ??= new DTSExactCapabilityProbe();
     return defaultProbe.probe();
+}
+
+/** Starts the libdcadec probe's downloads ahead of its turn. */
+export function prepareDTSExactCapability(): void {
+    defaultProbe ??= new DTSExactCapabilityProbe();
+    defaultProbe.prepare();
 }

@@ -4,7 +4,9 @@ import {
     RAW_HDR_CAPABILITY_VECTOR_CODED_WIDTH
 } from './vectors/RawHDRCapabilityVectors';
 import H264ProfileCapabilityProbe, { type H264ProfileCapabilities } from './H264ProfileCapabilities';
+import { fetchCapabilityAsset } from './CapabilityAssetLoading';
 import {
+    prepareBundledHEVCExactCapabilities,
     probeBundledHEVCExactCapabilities,
     type BundledHEVCExactCapabilities
 } from './exact/HEVCExactCapabilityProbe';
@@ -14,12 +16,17 @@ import {
     type CustomDecodeRawVideoFrameFormat
 } from '../pipeline/DecodeWorkerProtocol';
 import {
+    getHEVCRangeExtensionNegotiationVariants,
     HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS,
     HEVC_RANGE_EXTENSION_VARIANTS,
     type HEVCRangeExtensionCapability,
     type HEVCRangeExtensionProbeDefinition,
     type HEVCRangeExtensionVariant
 } from './HEVCRangeExtensionCapabilities';
+import {
+    getPresentationInputColorMetadata,
+    isKnownSDRPresentationInput
+} from '../presentation/PresentationInput';
 import {
     createNativeAudioCapabilityVector,
     type NativeAudioCapabilityVector
@@ -38,18 +45,23 @@ import {
 } from './vectors/NativeUltraHDVideoCapabilityVectors';
 import { createNativeVideoCapabilityVector } from './vectors/NativeVideoCapabilityVectors';
 import {
+    prepareJPEG2000ExactCapability,
     probeJPEG2000ExactCapability,
     type JPEG2000ExactCapability
 } from './exact/JPEG2000ExactCapabilityProbe';
 import {
+    prepareDTSExactCapability,
     probeDTSExactCapability,
     type DTSExactCapability
 } from './exact/DTSExactCapabilityProbe';
 import {
+    prepareTrueHDExactCapability,
     probeTrueHDExactCapability,
     type TrueHDExactCapability
 } from './exact/TrueHDExactCapabilityProbe';
 import {
+    prepareMPEG2ExactCapability,
+    prepareVC1ExactCapability,
     probeMPEG2ExactCapability,
     probeVC1ExactCapability,
     type MPEG2VC1ExactCapability
@@ -90,13 +102,15 @@ const NATIVE_DOLBY_VISION_HEVC_VECTOR_CODED_HEIGHT = 2_160;
 const NATIVE_DOLBY_VISION_HEVC_VECTOR_CODED_WIDTH = 3_840;
 const NATIVE_HDR_HEVC_VECTOR_CODED_HEIGHT = 2_160;
 const NATIVE_HDR_HEVC_VECTOR_CODED_WIDTH = 3_840;
+const JPEG2000_CODEC_STRING = 'mjp2';
 
 export type CustomVideoCodec = typeof CUSTOM_VIDEO_CODECS[number];
 export type CustomRawHDRVideoCodec = typeof CUSTOM_RAW_HDR_VIDEO_CODECS[number];
 export type CustomNativeSurroundAudioCodec = typeof CUSTOM_NATIVE_SURROUND_AUDIO_CODECS[number];
 export type CustomNativeUltraHDVideoCodec = typeof CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS[number];
 export type CustomDecodeCodec = CustomAudioCodec | CustomVideoCodec;
-export type CustomDecodeCapabilityStatus = 'supported' | 'unsupported' | 'unknown';
+// A probe outside the negotiated item's selection is not probed, which is never a verdict
+export type CustomDecodeCapabilityStatus = 'not-probed' | 'supported' | 'unsupported' | 'unknown';
 export type CustomDecodeCapabilityReason =
     | 'api-unavailable'
     | 'bundled-software-decoder'
@@ -104,9 +118,37 @@ export type CustomDecodeCapabilityReason =
     | 'config-unsupported'
     | 'decode-output-missing'
     | 'decode-output-verified'
+    | 'not-probed'
     | 'probe-exception'
     | 'probe-timeout'
     | 'throughput-insufficient';
+
+/** The audio probes, which every item runs because a playing item can switch to any of its audio tracks. */
+export const CUSTOM_DECODE_AUDIO_PROBES = [
+    'native-audio',
+    'native-surround-audio',
+    'bundled-dts',
+    'bundled-truehd'
+] as const;
+
+// The codecs whose ordinary SDR route has a decoded-output vector; H.264 qualifies per profile instead
+type NativeSDRVideoProbeCodec = 'av1' | 'hevc' | 'vp8' | 'vp9';
+
+export type CustomDecodeAudioProbe = typeof CUSTOM_DECODE_AUDIO_PROBES[number];
+export type CustomDecodeVideoProbe =
+    | 'bundled-hevc'
+    | 'bundled-jpeg2000'
+    | 'bundled-mpeg2'
+    | 'bundled-vc1'
+    | 'h264-profiles'
+    | 'native-dolby-vision-hevc'
+    | 'native-hdr-hevc'
+    | `hevc-range-extension:${HEVCRangeExtensionVariant}`
+    | `native-sdr:${NativeSDRVideoProbeCodec}`
+    | `native-ultra-hd:${CustomNativeUltraHDVideoCodec}`
+    | `raw:${CustomRawHDRVideoCodec}`;
+export type CustomDecodeProbe = CustomDecodeAudioProbe | CustomDecodeVideoProbe;
+export type CustomDecodeProbeState = 'not-probed' | 'probed';
 
 export type CustomDecodeCodecCapability<Codec extends CustomDecodeCodec> = {
     codec: Codec
@@ -157,6 +199,11 @@ export type CustomDecodeCapabilities = {
     nativeHDRHEVC?: CustomNativeHDRHEVCCapability
     nativeSurroundAudio?: Readonly<Record<CustomNativeSurroundAudioCodec, CustomNativeSurroundAudioCodecCapability>>
     nativeUltraHDVideo?: Readonly<Record<CustomNativeUltraHDVideoCodec, CustomNativeUltraHDVideoCodecCapability>>
+    /**
+     * Whether this result ran each probe.
+     * A probe outside the item's selection is not probed: its status entries read `not-probed`, and its exact or H.264 result is omitted.
+     */
+    probeStates?: Readonly<Record<CustomDecodeProbe, CustomDecodeProbeState>>
     rawHDRVideo: Readonly<Record<CustomRawHDRVideoCodec, CustomRawHDRVideoCodecCapability>>
     telemetry: Readonly<CustomDecodeProbeTelemetry>
     video: Readonly<Record<CustomVideoCodec, CustomDecodeCodecCapability<CustomVideoCodec>>>
@@ -193,6 +240,7 @@ export type CustomRawHDRVideoCapabilityReason =
     | 'api-unavailable'
     | 'bundled-software-decoder'
     | 'config-unsupported'
+    | 'not-probed'
     | 'output-copy-supported'
     | 'output-copy-unsupported'
     | 'probe-exception'
@@ -289,14 +337,20 @@ export type HEVCRangeExtensionVectorLoader = (
     assetPath: EngineLibraryPath
 ) => Promise<ArrayBuffer>;
 
+/** An exact probe; prepare starts its downloads ahead of its turn in the heavy queue. */
+export type ExactCapabilityProbe<Capability> = {
+    prepare?: () => void
+    probe: () => Promise<Capability>
+};
+
 export type WebCodecsCapabilityEnvironment = {
     audioDecoder?: Pick<typeof AudioDecoder, 'isConfigSupported'> | null
-    bundledDTSExactProbe?: { probe: () => Promise<DTSExactCapability> } | null
-    bundledHEVCExactProbe?: { probe: () => Promise<BundledHEVCExactCapabilities> } | null
-    bundledJPEG2000ExactProbe?: { probe: () => Promise<JPEG2000ExactCapability> } | null
-    bundledMPEG2ExactProbe?: { probe: () => Promise<MPEG2VC1ExactCapability> } | null
-    bundledVC1ExactProbe?: { probe: () => Promise<MPEG2VC1ExactCapability> } | null
-    bundledTrueHDExactProbe?: { probe: () => Promise<TrueHDExactCapability> } | null
+    bundledDTSExactProbe?: ExactCapabilityProbe<DTSExactCapability> | null
+    bundledHEVCExactProbe?: ExactCapabilityProbe<BundledHEVCExactCapabilities> | null
+    bundledJPEG2000ExactProbe?: ExactCapabilityProbe<JPEG2000ExactCapability> | null
+    bundledMPEG2ExactProbe?: ExactCapabilityProbe<MPEG2VC1ExactCapability> | null
+    bundledVC1ExactProbe?: ExactCapabilityProbe<MPEG2VC1ExactCapability> | null
+    bundledTrueHDExactProbe?: ExactCapabilityProbe<TrueHDExactCapability> | null
     h264ProfileProbe?: Pick<H264ProfileCapabilityProbe, 'probe'> | null
     hevcRangeExtensionVectorLoader?: HEVCRangeExtensionVectorLoader | null
     nativeAudioOutputProbe?: NativeAudioOutputProbe | null
@@ -323,15 +377,13 @@ type DecodedVideoProbeDefinition = VideoProbeDefinition & {
     outputVector: NonNullable<VideoProbeDefinition['outputVector']>
 };
 
+type NativeSDRVideoProbeDefinition = DecodedVideoProbeDefinition & {
+    codec: NativeSDRVideoProbeCodec
+};
+
 type NativeUltraHDVideoProbeDefinition = DecodedVideoProbeDefinition & {
     codec: CustomNativeUltraHDVideoCodec
 };
-
-function hasDecodedVideoOutputVector(
-    definition: VideoProbeDefinition
-): definition is DecodedVideoProbeDefinition {
-    return definition.outputVector !== undefined;
-}
 
 type AudioProbeDefinition = {
     codec: Exclude<CustomAudioCodec, CustomBundledAudioCodec>
@@ -408,22 +460,28 @@ const NATIVE_VORBIS_AUDIO_VECTOR: NativeAudioCapabilityVector =
     createNativeAudioCapabilityVector('vorbis');
 const CAPABILITY_PROBE_TIMEOUT = Symbol('custom-decode-capability-probe-timeout');
 const defaultH264ProfileCapabilityProbe = new H264ProfileCapabilityProbe();
-const defaultBundledHEVCExactProbe = {
+const defaultBundledHEVCExactProbe: ExactCapabilityProbe<BundledHEVCExactCapabilities> = {
+    prepare: prepareBundledHEVCExactCapabilities,
     probe: probeBundledHEVCExactCapabilities
 };
-const defaultBundledDTSExactProbe = {
+const defaultBundledDTSExactProbe: ExactCapabilityProbe<DTSExactCapability> = {
+    prepare: prepareDTSExactCapability,
     probe: probeDTSExactCapability
 };
-const defaultBundledTrueHDExactProbe = {
+const defaultBundledTrueHDExactProbe: ExactCapabilityProbe<TrueHDExactCapability> = {
+    prepare: prepareTrueHDExactCapability,
     probe: probeTrueHDExactCapability
 };
-const defaultBundledJPEG2000ExactProbe = {
+const defaultBundledJPEG2000ExactProbe: ExactCapabilityProbe<JPEG2000ExactCapability> = {
+    prepare: prepareJPEG2000ExactCapability,
     probe: probeJPEG2000ExactCapability
 };
-const defaultBundledMPEG2ExactProbe = {
+const defaultBundledMPEG2ExactProbe: ExactCapabilityProbe<MPEG2VC1ExactCapability> = {
+    prepare: prepareMPEG2ExactCapability,
     probe: probeMPEG2ExactCapability
 };
-const defaultBundledVC1ExactProbe = {
+const defaultBundledVC1ExactProbe: ExactCapabilityProbe<MPEG2VC1ExactCapability> = {
+    prepare: prepareVC1ExactCapability,
     probe: probeVC1ExactCapability
 };
 
@@ -457,6 +515,9 @@ function waitForCapabilityProbe<Value>(
     });
 }
 
+// A view of the page's heavy probe scheduler; the video probes' view waits for the audio probes
+type HeavyCapabilityProbeQueue = Pick<SerializedHeavyCapabilityProbeScheduler, 'run' | 'runTimed'>;
+
 /** Runs decoder-backed capability probes without competing for decode resources. */
 class SerializedHeavyCapabilityProbeScheduler {
     private probeChain: Promise<void> = Promise.resolve();
@@ -474,6 +535,15 @@ class SerializedHeavyCapabilityProbeScheduler {
         probe: () => Promise<Value>
     ): Promise<Value | typeof CAPABILITY_PROBE_TIMEOUT> {
         return this.enqueue(probe, true);
+    }
+
+    /** Returns a queue onto this one whose probes join it only once the gate settles. */
+    public after(gate: Promise<unknown>): HeavyCapabilityProbeQueue {
+        const settledGate: Promise<void> = gate.then((): void => undefined, (): void => undefined);
+        return {
+            run: <Value>(probe: () => Promise<Value>) => settledGate.then(() => this.run(probe)),
+            runTimed: <Value>(probe: () => Promise<Value>) => settledGate.then(() => this.runTimed(probe))
+        };
     }
 
     private enqueue<Value>(
@@ -502,17 +572,20 @@ class SerializedHeavyCapabilityProbeScheduler {
         return resultPromise;
     }
 }
-const VIDEO_PROBE_DEFINITIONS: readonly VideoProbeDefinition[] = [
-    {
-        codec: 'h264',
-        config: {
-            codec: 'avc1.640028',
-            codedHeight: NATIVE_SDR_VIDEO_VECTOR_CODED_HEIGHT,
-            codedWidth: NATIVE_SDR_VIDEO_VECTOR_CODED_WIDTH,
-            hardwareAcceleration: getCustomDecodeHardwareAcceleration('video-frame'),
-            optimizeForLatency: true
-        }
-    },
+
+// The configuration-only H.264 probe; the per-profile probe supplies the decoded-output evidence
+const H264_CONFIGURATION_PROBE_DEFINITION: VideoProbeDefinition = {
+    codec: 'h264',
+    config: {
+        codec: 'avc1.640028',
+        codedHeight: NATIVE_SDR_VIDEO_VECTOR_CODED_HEIGHT,
+        codedWidth: NATIVE_SDR_VIDEO_VECTOR_CODED_WIDTH,
+        hardwareAcceleration: getCustomDecodeHardwareAcceleration('video-frame'),
+        optimizeForLatency: true
+    }
+};
+
+const NATIVE_SDR_VIDEO_PROBE_DEFINITIONS: readonly NativeSDRVideoProbeDefinition[] = [
     {
         codec: 'hevc',
         config: {
@@ -755,6 +828,91 @@ const RAW_HDR_VIDEO_PROBE_DEFINITIONS: readonly RawHDRVideoProbeDefinition[] = [
         expectedDecodedFrameFingerprint: AV1_MAIN_10_VECTOR.decodedFrameFingerprint
     }
 ];
+
+function getNativeSDRVideoProbe(codec: NativeSDRVideoProbeCodec): CustomDecodeVideoProbe {
+    return `native-sdr:${codec}`;
+}
+
+function getNativeUltraHDVideoProbe(codec: CustomNativeUltraHDVideoCodec): CustomDecodeVideoProbe {
+    return `native-ultra-hd:${codec}`;
+}
+
+function getRawVideoProbe(codec: CustomRawHDRVideoCodec): CustomDecodeVideoProbe {
+    return `raw:${codec}`;
+}
+
+function getHEVCRangeExtensionVideoProbe(variant: HEVCRangeExtensionVariant): CustomDecodeVideoProbe {
+    return `hevc-range-extension:${variant}`;
+}
+
+const NATIVE_SDR_VIDEO_PROBES: readonly CustomDecodeVideoProbe[] = NATIVE_SDR_VIDEO_PROBE_DEFINITIONS.map(
+    (definition: NativeSDRVideoProbeDefinition): CustomDecodeVideoProbe => getNativeSDRVideoProbe(definition.codec)
+);
+const NATIVE_ULTRA_HD_VIDEO_PROBES: readonly CustomDecodeVideoProbe[] = NATIVE_ULTRA_HD_VIDEO_PROBE_DEFINITIONS.map(
+    (definition: NativeUltraHDVideoProbeDefinition): CustomDecodeVideoProbe => getNativeUltraHDVideoProbe(definition.codec)
+);
+const RAW_VIDEO_PROBES: readonly CustomDecodeVideoProbe[] = RAW_HDR_VIDEO_PROBE_DEFINITIONS.map(
+    (definition: RawHDRVideoProbeDefinition): CustomDecodeVideoProbe => getRawVideoProbe(definition.codec)
+);
+
+/** Every video probe, in the order a run starts them; an item without stream metadata runs them all. */
+export const CUSTOM_DECODE_VIDEO_PROBES: readonly CustomDecodeVideoProbe[] = [
+    'h264-profiles',
+    ...NATIVE_SDR_VIDEO_PROBES,
+    ...NATIVE_ULTRA_HD_VIDEO_PROBES,
+    ...RAW_VIDEO_PROBES,
+    ...HEVC_RANGE_EXTENSION_VARIANTS.map(getHEVCRangeExtensionVideoProbe),
+    'bundled-hevc',
+    'bundled-jpeg2000',
+    'bundled-mpeg2',
+    'bundled-vc1',
+    'native-dolby-vision-hevc',
+    'native-hdr-hevc'
+];
+
+// The video configuration probes the telemetry counts
+const VIDEO_CONFIGURATION_PROBES: readonly CustomDecodeVideoProbe[] = [
+    'h264-profiles',
+    ...NATIVE_SDR_VIDEO_PROBES,
+    ...NATIVE_ULTRA_HD_VIDEO_PROBES,
+    'native-dolby-vision-hevc',
+    'native-hdr-hevc'
+];
+
+/**
+ * The video probes every HDR item runs, whatever its codec.
+ * An HDR source can transcode to HEVC or AV1 and keep HDR, and the augmented profile's ranges for those codecs bound that output, so they must come from settled probes.
+ */
+const HDR_TRANSCODE_TARGET_VIDEO_PROBES: readonly CustomDecodeVideoProbe[] = [
+    'native-sdr:hevc',
+    'native-ultra-hd:hevc',
+    'raw:hevc',
+    'bundled-hevc',
+    'native-hdr-hevc',
+    'native-sdr:av1',
+    'native-ultra-hd:av1',
+    'raw:av1'
+];
+
+// NOTE: Mirrors the codec names eligibility accepts; a name missing here would leave its codec unprobed
+const CUSTOM_VIDEO_CODEC_NAMES: ReadonlyMap<string, CustomVideoCodec> = new Map<string, CustomVideoCodec>([
+    [ 'AV1', 'av1' ],
+    [ 'AVC', 'h264' ],
+    [ 'AVC1', 'h264' ],
+    [ 'H264', 'h264' ],
+    [ 'H265', 'hevc' ],
+    [ 'HEVC', 'hevc' ],
+    [ 'J2K', 'jpeg2000' ],
+    [ 'JPEG 2000', 'jpeg2000' ],
+    [ 'JPEG2000', 'jpeg2000' ],
+    [ 'MPEG-2', 'mpeg2video' ],
+    [ 'MPEG2', 'mpeg2video' ],
+    [ 'MPEG2VIDEO', 'mpeg2video' ],
+    [ 'VC-1', 'vc1' ],
+    [ 'VC1', 'vc1' ],
+    [ 'VP8', 'vp8' ],
+    [ 'VP9', 'vp9' ]
+]);
 
 function mixRawHDRFingerprintValue(fingerprint: number, value: number): number {
     let mixedFingerprint = Math.imul(
@@ -1377,16 +1535,8 @@ export function createNativeHDRVideoOutputProbe(): NativeDolbyVisionVideoOutputP
     return createNativeDolbyVisionVideoOutputProbe();
 }
 
-async function loadHEVCRangeExtensionVector(assetPath: EngineLibraryPath): Promise<ArrayBuffer> {
-    const response = await fetch(resolveEngineAssetURL(assetPath), {
-        cache: 'force-cache',
-        credentials: 'same-origin',
-        redirect: 'error'
-    });
-    if (!response.ok) {
-        throw new Error('The HEVC range-extension vector request failed');
-    }
-    return response.arrayBuffer();
+function loadHEVCRangeExtensionVector(assetPath: EngineLibraryPath): Promise<ArrayBuffer> {
+    return fetchCapabilityAsset(resolveEngineAssetURL(assetPath));
 }
 
 function getDefaultEnvironment(): WebCodecsCapabilityEnvironment {
@@ -1422,6 +1572,18 @@ function createUnavailableCapability<Codec extends CustomDecodeCodec>(
         codecString,
         reason: 'api-unavailable',
         status: 'unknown'
+    });
+}
+
+function createNotProbedCapability<Codec extends CustomDecodeCodec>(
+    codec: Codec,
+    codecString: string
+): CustomDecodeCodecCapability<Codec> {
+    return Object.freeze({
+        codec,
+        codecString,
+        reason: 'not-probed',
+        status: 'not-probed'
     });
 }
 
@@ -1508,10 +1670,10 @@ function createRawHDRVideoCapabilities(
     for (const capability of probedCapabilities) {
         switch (capability.codec) {
             case 'hevc':
-                capabilities.hevc = selectHEVCRawHDRCapability(
-                    capability,
-                    bundledHEVCCapability
-                );
+                // The bundled qualification decides raw HEVC only beside the native raw probe it always runs with
+                capabilities.hevc = capability.status === 'not-probed' ?
+                    capability :
+                    selectHEVCRawHDRCapability(capability, bundledHEVCCapability);
                 break;
             case 'vp9':
                 capabilities.vp9 = capability;
@@ -1525,8 +1687,8 @@ function createRawHDRVideoCapabilities(
 }
 
 async function probeOptionalExactCapability<Capability>(
-    exactProbe: { probe: () => Promise<Capability> } | null | undefined,
-    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
+    exactProbe: ExactCapabilityProbe<Capability> | null | undefined,
+    heavyProbeScheduler: HeavyCapabilityProbeQueue
 ): Promise<Capability | null> {
     if (!exactProbe) {
         return null;
@@ -1543,7 +1705,7 @@ function createBundledJPEG2000Capability(
     exactCapability: JPEG2000ExactCapability | null
 ): CustomDecodeCodecCapability<'jpeg2000'> {
     if (!exactCapability) {
-        return createUnavailableCapability('jpeg2000', 'mjp2');
+        return createUnavailableCapability('jpeg2000', JPEG2000_CODEC_STRING);
     }
     if (exactCapability.status === 'supported') {
         return Object.freeze({
@@ -1566,6 +1728,7 @@ function createBundledJPEG2000Capability(
         case 'output-mismatch':
             reason = 'decode-output-missing';
             break;
+        case 'asset-unavailable':
         case 'worker-create-failed':
         case 'worker-error':
         case 'worker-message-invalid':
@@ -1619,6 +1782,7 @@ function createBundledMPEG2VC1Capability(
         case 'output-mismatch':
             reason = 'decode-output-missing';
             break;
+        case 'asset-unavailable':
         case 'worker-create-failed':
         case 'worker-error':
         case 'worker-message-invalid':
@@ -1634,12 +1798,6 @@ function createBundledMPEG2VC1Capability(
         reason,
         status: exactCapability.status
     });
-}
-
-function createOptionalBundledVC1Capability(
-    bundledVC1: MPEG2VC1ExactCapability | null
-): Pick<CustomDecodeCapabilities, 'bundledVC1'> {
-    return bundledVC1 ? { bundledVC1 } : {};
 }
 
 function createBundledDTSCapability(
@@ -1672,6 +1830,7 @@ function createBundledDTSCapability(
         case 'output-mismatch':
             reason = 'decode-output-missing';
             break;
+        case 'asset-unavailable':
         case 'worker-create-failed':
         case 'worker-error':
         case 'worker-message-invalid':
@@ -1721,6 +1880,7 @@ function createBundledTrueHDCapability<Codec extends 'mlp' | 'truehd'>(
         case 'output-mismatch':
             reason = 'decode-output-missing';
             break;
+        case 'asset-unavailable':
         case 'worker-create-failed':
         case 'worker-error':
         case 'worker-message-invalid':
@@ -1751,7 +1911,7 @@ function createBundledAudioCapability(
 
 async function probeH264Profiles(
     profileProbe: Pick<H264ProfileCapabilityProbe, 'probe'> | null | undefined,
-    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
+    heavyProbeScheduler: HeavyCapabilityProbeQueue
 ): Promise<H264ProfileCapabilities> {
     if (profileProbe) {
         try {
@@ -1773,7 +1933,7 @@ async function probeRawHDRVideoConfig(
     definition: RawHDRVideoProbeDefinition,
     decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
     outputProbe: RawHDRVideoOutputProbe | null | undefined,
-    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
+    heavyProbeScheduler: HeavyCapabilityProbeQueue
 ): Promise<CustomRawHDRVideoCodecCapability> {
     const baseCapability = {
         bitDepth: 10 as const,
@@ -1851,23 +2011,29 @@ async function probeRawHDRVideoConfig(
     }
 }
 
-async function probeHEVCRangeExtensionConfig(
-    definition: HEVCRangeExtensionProbeDefinition,
-    decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
-    outputProbe: RawHDRVideoOutputProbe | null | undefined,
-    vectorLoader: HEVCRangeExtensionVectorLoader | null | undefined,
-    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
-): Promise<HEVCRangeExtensionCapability> {
-    const baseCapability = {
+function createHEVCRangeExtensionBaseCapability(
+    definition: HEVCRangeExtensionProbeDefinition
+): Omit<HEVCRangeExtensionCapability, 'reason' | 'status'> {
+    return {
         bitDepth: definition.bitDepth,
         chromaFormat: definition.chromaFormat,
-        codec: 'hevc' as const,
+        codec: 'hevc',
         codecString: definition.config.codec,
         format: definition.format,
         jellyfinProfile: definition.jellyfinProfile,
         pixelFormat: definition.pixelFormat,
         variant: definition.variant
     };
+}
+
+async function probeHEVCRangeExtensionConfig(
+    definition: HEVCRangeExtensionProbeDefinition,
+    decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
+    outputProbe: RawHDRVideoOutputProbe | null | undefined,
+    vectorLoader: HEVCRangeExtensionVectorLoader | null | undefined,
+    heavyProbeScheduler: HeavyCapabilityProbeQueue
+): Promise<HEVCRangeExtensionCapability> {
+    const baseCapability = createHEVCRangeExtensionBaseCapability(definition);
     if (!decoder || !outputProbe || !vectorLoader) {
         return Object.freeze({
             ...baseCapability,
@@ -1876,6 +2042,11 @@ async function probeHEVCRangeExtensionConfig(
         });
     }
 
+    // The vector downloads alongside the configuration check and every other selected probe's assets
+    const vectorDownload: Promise<ArrayBuffer | null> = vectorLoader(definition.assetPath).then(
+        (vectorBuffer: ArrayBuffer): ArrayBuffer => vectorBuffer,
+        (): null => null
+    );
     try {
         const support = await waitForCapabilityProbe(
             decoder.isConfigSupported({ ...definition.config })
@@ -1895,8 +2066,16 @@ async function probeHEVCRangeExtensionConfig(
             });
         }
 
+        // NOTE: The download finishes before the timed decode, so a slow link never times out the shared queue
+        const vectorBuffer = await vectorDownload;
+        if (!vectorBuffer) {
+            return Object.freeze({
+                ...baseCapability,
+                reason: 'asset-unavailable',
+                status: 'unknown'
+            });
+        }
         const outputProbeResult = await heavyProbeScheduler.runTimed(async () => {
-            const vectorBuffer = await vectorLoader(definition.assetPath);
             const vectorBytes = new Uint8Array(vectorBuffer);
             const encodedChunks: Array<
                 RawHDRVideoOutputProbeRequest['encodedChunks'][number]
@@ -2004,7 +2183,7 @@ async function probeNativeAudioConfig(
     definition: AudioProbeDefinition,
     decoder: DecoderCapabilityAPI<AudioDecoderConfig> | null | undefined,
     outputProbe: NativeAudioOutputProbe | null | undefined,
-    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
+    heavyProbeScheduler: HeavyCapabilityProbeQueue
 ): Promise<CustomDecodeCodecCapability<Exclude<CustomAudioCodec, CustomBundledAudioCodec>>> {
     if (!decoder) {
         return createUnavailableCapability(definition.codec, definition.config.codec);
@@ -2084,7 +2263,7 @@ async function probeNativeSurroundAudioConfig(
     definition: NativeSurroundAudioProbeDefinition,
     decoder: DecoderCapabilityAPI<AudioDecoderConfig> | null | undefined,
     outputProbe: NativeAudioOutputProbe | null | undefined,
-    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
+    heavyProbeScheduler: HeavyCapabilityProbeQueue
 ): Promise<CustomNativeSurroundAudioCodecCapability> {
     const capability = await probeNativeAudioConfig(
         definition,
@@ -2104,7 +2283,7 @@ async function probeNativeSurroundAudioConfig(
 
 function createNativeSurroundAudioProbePromises(
     environment: WebCodecsCapabilityEnvironment,
-    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
+    heavyProbeScheduler: HeavyCapabilityProbeQueue
 ): Array<Promise<CustomNativeSurroundAudioCodecCapability>> {
     const probePromises: Array<Promise<CustomNativeSurroundAudioCodecCapability>> = [];
     for (const definition of NATIVE_SURROUND_AUDIO_PROBE_DEFINITIONS) {
@@ -2146,7 +2325,7 @@ async function probeNativeVideoConfig(
     definition: DecodedVideoProbeDefinition,
     decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
     outputProbe: NativeVideoOutputProbe | null | undefined,
-    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
+    heavyProbeScheduler: HeavyCapabilityProbeQueue
 ): Promise<CustomDecodeCodecCapability<CustomVideoCodec>> {
     if (!decoder) {
         return createUnavailableCapability(definition.codec, definition.config.codec);
@@ -2219,7 +2398,7 @@ async function probeNativeUltraHDVideoConfig(
     definition: NativeUltraHDVideoProbeDefinition,
     decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
     outputProbe: NativeVideoOutputProbe | null | undefined,
-    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
+    heavyProbeScheduler: HeavyCapabilityProbeQueue
 ): Promise<CustomNativeUltraHDVideoCodecCapability> {
     const capability: CustomDecodeCodecCapability<CustomVideoCodec> =
         await probeNativeVideoConfig(
@@ -2235,22 +2414,6 @@ async function probeNativeUltraHDVideoConfig(
         reason: capability.reason,
         status: capability.status
     });
-}
-
-function createNativeUltraHDVideoProbePromises(
-    environment: WebCodecsCapabilityEnvironment,
-    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
-): Array<Promise<CustomNativeUltraHDVideoCodecCapability>> {
-    const probePromises: Array<Promise<CustomNativeUltraHDVideoCodecCapability>> = [];
-    for (const definition of NATIVE_ULTRA_HD_VIDEO_PROBE_DEFINITIONS) {
-        probePromises.push(probeNativeUltraHDVideoConfig(
-            definition,
-            environment.videoDecoder,
-            environment.nativeVideoOutputProbe,
-            heavyProbeScheduler
-        ));
-    }
-    return probePromises;
 }
 
 function createNativeUltraHDVideoCapabilities(
@@ -2269,26 +2432,33 @@ function createNativeUltraHDVideoCapabilities(
     return Object.freeze(capabilitiesByCodec);
 }
 
+function getSelectedProbeCount(
+    selection: ReadonlySet<CustomDecodeProbe>,
+    probes: readonly CustomDecodeProbe[]
+): number {
+    return probes.filter((probe: CustomDecodeProbe): boolean => selection.has(probe)).length;
+}
+
 function getNativeUltraHDVideoProbeCount(
-    environment: WebCodecsCapabilityEnvironment
+    environment: WebCodecsCapabilityEnvironment,
+    selection: ReadonlySet<CustomDecodeProbe>
 ): number {
     return environment.videoDecoder && environment.nativeVideoOutputProbe ?
-        NATIVE_ULTRA_HD_VIDEO_PROBE_DEFINITIONS.length :
+        getSelectedProbeCount(selection, NATIVE_ULTRA_HD_VIDEO_PROBES) :
         0;
 }
 
-function getVideoProbeCount(environment: WebCodecsCapabilityEnvironment): number {
-    const bundledProbeCount = Number(Boolean(environment.bundledJPEG2000ExactProbe))
-        + Number(Boolean(environment.bundledMPEG2ExactProbe))
-        + Number(Boolean(environment.bundledVC1ExactProbe));
+function getVideoProbeCount(
+    environment: WebCodecsCapabilityEnvironment,
+    selection: ReadonlySet<CustomDecodeProbe>
+): number {
+    const bundledProbeCount = Number(Boolean(environment.bundledJPEG2000ExactProbe) && selection.has('bundled-jpeg2000'))
+        + Number(Boolean(environment.bundledMPEG2ExactProbe) && selection.has('bundled-mpeg2'))
+        + Number(Boolean(environment.bundledVC1ExactProbe) && selection.has('bundled-vc1'));
     if (!environment.videoDecoder) {
         return bundledProbeCount;
     }
-    // The 2 counts the native Profile 5 and HEVC Main 10 HDR probes
-    return VIDEO_PROBE_DEFINITIONS.length
-        + NATIVE_ULTRA_HD_VIDEO_PROBE_DEFINITIONS.length
-        + 2
-        + bundledProbeCount;
+    return getSelectedProbeCount(selection, VIDEO_CONFIGURATION_PROBES) + bundledProbeCount;
 }
 
 type NativeHEVCFrameRouteProbeCapability = {
@@ -2303,7 +2473,7 @@ async function probeNativeHEVCFrameRoute(
     expectedCodedWidth: number,
     decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
     outputProbe: NativeDolbyVisionVideoOutputProbe | null | undefined,
-    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
+    heavyProbeScheduler: HeavyCapabilityProbeQueue
 ): Promise<NativeHEVCFrameRouteProbeCapability> {
     const unavailableCapability: NativeHEVCFrameRouteProbeCapability = {
         reason: 'api-unavailable',
@@ -2365,7 +2535,7 @@ async function probeNativeHEVCFrameRoute(
 async function probeNativeDolbyVisionHEVC(
     decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
     outputProbe: NativeDolbyVisionVideoOutputProbe | null | undefined,
-    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
+    heavyProbeScheduler: HeavyCapabilityProbeQueue
 ): Promise<CustomNativeDolbyVisionHEVCCapability> {
     const routeCapability = await probeNativeHEVCFrameRoute(
         NATIVE_DOLBY_VISION_HEVC_PROBE_DEFINITION.config,
@@ -2388,7 +2558,7 @@ async function probeNativeDolbyVisionHEVC(
 async function probeNativeHDRHEVC(
     decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
     outputProbe: NativeDolbyVisionVideoOutputProbe | null | undefined,
-    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
+    heavyProbeScheduler: HeavyCapabilityProbeQueue
 ): Promise<CustomNativeHDRHEVCCapability> {
     const routeCapability = await probeNativeHEVCFrameRoute(
         NATIVE_HDR_HEVC_PROBE_DEFINITION.config,
@@ -2428,14 +2598,14 @@ function getProbeReason(
 
 function getSupportedVideoCodecCount(
     capabilities: Pick<CustomDecodeCapabilities, 'nativeUltraHDVideo' | 'video'>,
-    h264Profiles: H264ProfileCapabilities,
-    bundledHEVC: BundledHEVCExactCapabilities | null
+    h264Profiles: H264ProfileCapabilities | undefined,
+    bundledHEVC: BundledHEVCExactCapabilities | undefined
 ): number {
     let supportedCount = 0;
     for (const codec of CUSTOM_VIDEO_CODECS) {
         switch (codec) {
             case 'h264':
-                if (Object.values(h264Profiles).some(capability => (
+                if (Object.values(h264Profiles ?? {}).some(capability => (
                     capability.status === 'supported'
                     && capability.evidence === 'decoded-output'
                 ))) {
@@ -2466,24 +2636,9 @@ function getSupportedVideoCodecCount(
     return supportedCount;
 }
 
-function createVideoProbePromise(
-    definition: VideoProbeDefinition,
-    environment: WebCodecsCapabilityEnvironment,
-    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
-): Promise<CustomDecodeCodecCapability<CustomVideoCodec>> {
-    return hasDecodedVideoOutputVector(definition) ?
-        probeNativeVideoConfig(
-            definition,
-            environment.videoDecoder,
-            environment.nativeVideoOutputProbe,
-            heavyProbeScheduler
-        ) :
-        probeConfig(definition, environment.videoDecoder);
-}
-
 function createAudioProbePromises(
     environment: WebCodecsCapabilityEnvironment,
-    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
+    heavyProbeScheduler: HeavyCapabilityProbeQueue
 ): Array<Promise<CustomDecodeCodecCapability<CustomAudioCodec>>> {
     const probePromises: Array<Promise<CustomDecodeCodecCapability<CustomAudioCodec>>> = [];
     for (const definition of AUDIO_PROBE_DEFINITIONS) {
@@ -2491,39 +2646,6 @@ function createAudioProbePromises(
             definition,
             environment.audioDecoder,
             environment.nativeAudioOutputProbe,
-            heavyProbeScheduler
-        ));
-    }
-    return probePromises;
-}
-
-function createHEVCRangeExtensionProbePromises(
-    environment: WebCodecsCapabilityEnvironment,
-    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
-): Array<Promise<HEVCRangeExtensionCapability>> {
-    const probePromises: Array<Promise<HEVCRangeExtensionCapability>> = [];
-    for (const variant of HEVC_RANGE_EXTENSION_VARIANTS) {
-        probePromises.push(probeHEVCRangeExtensionConfig(
-            HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS[variant],
-            environment.videoDecoder,
-            environment.rawHDRVideoOutputProbe,
-            environment.hevcRangeExtensionVectorLoader,
-            heavyProbeScheduler
-        ));
-    }
-    return probePromises;
-}
-
-function createRawHDRVideoProbePromises(
-    environment: WebCodecsCapabilityEnvironment,
-    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
-): Array<Promise<CustomRawHDRVideoCodecCapability>> {
-    const probePromises: Array<Promise<CustomRawHDRVideoCodecCapability>> = [];
-    for (const definition of RAW_HDR_VIDEO_PROBE_DEFINITIONS) {
-        probePromises.push(probeRawHDRVideoConfig(
-            definition,
-            environment.videoDecoder,
-            environment.rawHDRVideoOutputProbe,
             heavyProbeScheduler
         ));
     }
@@ -2543,221 +2665,742 @@ function createHEVCRangeExtensionCapabilities(
     return Object.freeze(hevcRangeExtensions);
 }
 
-/** Probes the decode capabilities of WebCodecs and the bundled decoders once, and caches the result. */
+function createNotProbedNativeUltraHDVideoCapability(
+    definition: NativeUltraHDVideoProbeDefinition
+): CustomNativeUltraHDVideoCodecCapability {
+    return Object.freeze({
+        bitDepth: CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
+        codec: definition.codec,
+        codecString: definition.config.codec,
+        reason: 'not-probed',
+        status: 'not-probed'
+    });
+}
+
+function createNotProbedRawVideoCapability(
+    definition: RawHDRVideoProbeDefinition
+): CustomRawHDRVideoCodecCapability {
+    return Object.freeze({
+        bitDepth: 10,
+        codec: definition.codec,
+        codecString: definition.config.codec,
+        format: 'I420P10',
+        reason: 'not-probed',
+        status: 'not-probed'
+    });
+}
+
+function createNotProbedHEVCRangeExtensionCapability(
+    variant: HEVCRangeExtensionVariant
+): HEVCRangeExtensionCapability {
+    return Object.freeze({
+        ...createHEVCRangeExtensionBaseCapability(HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS[variant]),
+        reason: 'not-probed',
+        status: 'not-probed'
+    });
+}
+
+const NOT_PROBED_NATIVE_DOLBY_VISION_HEVC_CAPABILITY: CustomNativeDolbyVisionHEVCCapability = Object.freeze({
+    bitDepth: 10,
+    codec: 'hevc',
+    codecString: NATIVE_DOLBY_VISION_HEVC_PROBE_DEFINITION.config.codec,
+    profile: 5,
+    reason: 'not-probed',
+    status: 'not-probed'
+});
+
+const NOT_PROBED_NATIVE_HDR_HEVC_CAPABILITY: CustomNativeHDRHEVCCapability = Object.freeze({
+    bitDepth: 10,
+    codec: 'hevc',
+    codecString: NATIVE_HDR_HEVC_PROBE_DEFINITION.config.codec,
+    reason: 'not-probed',
+    status: 'not-probed'
+});
+
+// Dolby Vision and incomplete metadata are unknown
+type VideoStreamDynamicRange = 'sdr' | 'static-hdr' | 'unknown';
+
+type ProbeSelectionMediaStream = {
+    BitDepth?: unknown
+    Codec?: unknown
+    Type?: unknown
+};
+
+type ProbeSelectionMediaSource = {
+    MediaStreams?: unknown
+};
+
+type ProbeSelectionItem = ProbeSelectionMediaSource & {
+    MediaSources?: unknown
+};
+
+function normalizeMetadataValue(value: unknown): string | null {
+    if (typeof value !== 'string') {
+        return null;
+    }
+    const normalizedValue = value.trim().toUpperCase();
+    return normalizedValue || null;
+}
+
+function hasMediaStreamMetadata(value: unknown): value is { MediaStreams: readonly unknown[] } {
+    if (!value || typeof value !== 'object') {
+        return false;
+    }
+    const mediaStreams = (value as ProbeSelectionMediaSource).MediaStreams;
+    return Array.isArray(mediaStreams) && mediaStreams.length > 0;
+}
+
+/** Returns the stream lists of an item's sources, or null when the item or any of its sources lacks stream metadata. */
+function getItemMediaStreamLists(item: unknown): Array<readonly unknown[]> | null {
+    if (!item || typeof item !== 'object') {
+        return null;
+    }
+    const selectionItem = item as ProbeSelectionItem;
+    if (!Array.isArray(selectionItem.MediaSources)) {
+        return hasMediaStreamMetadata(selectionItem) ? [ selectionItem.MediaStreams ] : null;
+    }
+    const mediaStreamLists: Array<readonly unknown[]> = [];
+    for (const mediaSource of selectionItem.MediaSources) {
+        if (!hasMediaStreamMetadata(mediaSource)) {
+            return null;
+        }
+        mediaStreamLists.push(mediaSource.MediaStreams);
+    }
+    return mediaStreamLists.length > 0 ? mediaStreamLists : null;
+}
+
+function getVideoMediaStreams(
+    mediaStreamLists: ReadonlyArray<readonly unknown[]>
+): ProbeSelectionMediaStream[] {
+    const videoStreams: ProbeSelectionMediaStream[] = [];
+    for (const mediaStreams of mediaStreamLists) {
+        for (const stream of mediaStreams) {
+            if (
+                stream
+                && typeof stream === 'object'
+                && normalizeMetadataValue((stream as ProbeSelectionMediaStream).Type) === 'VIDEO'
+            ) {
+                videoStreams.push(stream as ProbeSelectionMediaStream);
+            }
+        }
+    }
+    return videoStreams;
+}
+
+/** Classifies a video stream's range: positively identified SDR, static PQ or HLG, or unknown. */
+function getVideoStreamDynamicRange(stream: ProbeSelectionMediaStream): VideoStreamDynamicRange {
+    const presentationOptions = { mediaSource: { MediaStreams: [ stream ] } };
+    if (isKnownSDRPresentationInput(presentationOptions)) {
+        return 'sdr';
+    }
+    const transfer = getPresentationInputColorMetadata(presentationOptions)?.transfer;
+    return transfer === 'pq' || transfer === 'hlg' ? 'static-hdr' : 'unknown';
+}
+
+/** Returns whether a stream may carry more than 8 bits; an absent or unreadable depth may. */
+function mayExceedNativeVideoBitDepth(stream: ProbeSelectionMediaStream): boolean {
+    const bitDepth: number = stream.BitDepth == null || stream.BitDepth === '' ?
+        Number.NaN :
+        Number(stream.BitDepth);
+    return !Number.isFinite(bitDepth) || bitDepth > CUSTOM_NATIVE_VIDEO_BIT_DEPTH;
+}
+
+function addHEVCStreamProbes(
+    stream: ProbeSelectionMediaStream,
+    dynamicRange: VideoStreamDynamicRange,
+    beyondNativeSDR: boolean,
+    probes: Set<CustomDecodeVideoProbe>
+): void {
+    probes.add('native-sdr:hevc');
+    probes.add('native-ultra-hd:hevc');
+    // The bundled decoder backs Main without native decode, raw Main 10 planes, and every dual-layer EL
+    probes.add('bundled-hevc');
+    const rangeExtensionVariants = getHEVCRangeExtensionNegotiationVariants(stream);
+    for (const variant of rangeExtensionVariants) {
+        probes.add(getHEVCRangeExtensionVideoProbe(variant));
+    }
+    // A range extension decodes only through its own variants
+    if (beyondNativeSDR && rangeExtensionVariants.length === 0) {
+        probes.add('native-hdr-hevc');
+        probes.add('raw:hevc');
+    }
+    // An unknown range may be Dolby Vision, whose Profile 5 has a native route
+    if (dynamicRange === 'unknown') {
+        probes.add('native-dolby-vision-hevc');
+    }
+}
+
+function addVideoStreamProbes(
+    stream: ProbeSelectionMediaStream,
+    codec: CustomVideoCodec,
+    dynamicRange: VideoStreamDynamicRange,
+    probes: Set<CustomDecodeVideoProbe>
+): void {
+    // HDR, Dolby Vision, and depths beyond 8 bits present through raw planes or native HEVC Main 10
+    const beyondNativeSDR = dynamicRange !== 'sdr' || mayExceedNativeVideoBitDepth(stream);
+    switch (codec) {
+        case 'av1':
+        case 'vp9':
+            probes.add(getNativeSDRVideoProbe(codec));
+            probes.add(getNativeUltraHDVideoProbe(codec));
+            if (beyondNativeSDR) {
+                probes.add(getRawVideoProbe(codec));
+            }
+            break;
+        case 'h264':
+            probes.add('h264-profiles');
+            break;
+        case 'hevc':
+            addHEVCStreamProbes(stream, dynamicRange, beyondNativeSDR, probes);
+            break;
+        case 'jpeg2000':
+            probes.add('bundled-jpeg2000');
+            break;
+        case 'mpeg2video':
+            probes.add('bundled-mpeg2');
+            break;
+        case 'vc1':
+            probes.add('bundled-vc1');
+            break;
+        case 'vp8':
+            probes.add(getNativeSDRVideoProbe(codec));
+            break;
+    }
+}
+
+/** Returns the video probes an item's streams need, or null when its metadata cannot scope them. */
+function selectItemVideoProbes(item: unknown): ReadonlySet<CustomDecodeVideoProbe> | null {
+    const mediaStreamLists = getItemMediaStreamLists(item);
+    if (!mediaStreamLists) {
+        return null;
+    }
+    const probes = new Set<CustomDecodeVideoProbe>();
+    let HDRSourcePresent = false;
+    for (const stream of getVideoMediaStreams(mediaStreamLists)) {
+        const codecName = normalizeMetadataValue(stream.Codec);
+        // A video stream that names no codec could need any probe
+        if (!codecName) {
+            return null;
+        }
+        const dynamicRange = getVideoStreamDynamicRange(stream);
+        HDRSourcePresent ||= dynamicRange !== 'sdr';
+        const codec = CUSTOM_VIDEO_CODEC_NAMES.get(codecName);
+        // A codec no custom route decodes needs no probe of its own
+        if (codec) {
+            addVideoStreamProbes(stream, codec, dynamicRange, probes);
+        }
+    }
+    if (HDRSourcePresent) {
+        for (const probe of HDR_TRANSCODE_TARGET_VIDEO_PROBES) {
+            probes.add(probe);
+        }
+    }
+    return probes;
+}
+
+/**
+ * Returns the probes an item needs, in the order a run starts them.
+ * Every audio probe runs, because a playing item can switch to any of its audio tracks.
+ * The video probes follow the union of the video streams across the item's sources, and an item without stream metadata runs them all.
+ */
+export function selectCustomDecodeProbes(item: unknown): readonly CustomDecodeProbe[] {
+    const videoProbes = selectItemVideoProbes(item);
+    const selection: CustomDecodeProbe[] = [ ...CUSTOM_DECODE_AUDIO_PROBES ];
+    for (const probe of CUSTOM_DECODE_VIDEO_PROBES) {
+        if (!videoProbes || videoProbes.has(probe)) {
+            selection.push(probe);
+        }
+    }
+    return selection;
+}
+
+/**
+ * Returns whether a result ran every probe an item or media source selects.
+ * A result without probe states ran every probe.
+ */
+export function hasProbedCustomDecodeSelection(capabilities: CustomDecodeCapabilities, item: unknown): boolean {
+    const probeStates = capabilities.probeStates;
+    if (!probeStates) {
+        return true;
+    }
+    return selectCustomDecodeProbes(item).every((probe: CustomDecodeProbe): boolean => probeStates[probe] === 'probed');
+}
+
+/** Starts every selected exact probe's downloads at once; their decodes still take turns in the heavy queue. */
+function prepareExactProbes(
+    selection: ReadonlySet<CustomDecodeProbe>,
+    environment: WebCodecsCapabilityEnvironment
+): void {
+    const exactProbes: Array<readonly [ CustomDecodeProbe, ExactCapabilityProbe<unknown> | null | undefined ]> = [
+        [ 'bundled-dts', environment.bundledDTSExactProbe ],
+        [ 'bundled-truehd', environment.bundledTrueHDExactProbe ],
+        [ 'bundled-hevc', environment.bundledHEVCExactProbe ],
+        [ 'bundled-jpeg2000', environment.bundledJPEG2000ExactProbe ],
+        [ 'bundled-mpeg2', environment.bundledMPEG2ExactProbe ],
+        [ 'bundled-vc1', environment.bundledVC1ExactProbe ]
+    ];
+    for (const [ probe, exactProbe ] of exactProbes) {
+        if (!selection.has(probe)) {
+            continue;
+        }
+        try {
+            exactProbe?.prepare?.();
+        } catch {
+            // A probe whose downloads cannot start early downloads them in its turn
+        }
+    }
+}
+
+function createProbeStates(
+    selection: ReadonlySet<CustomDecodeProbe>
+): Readonly<Record<CustomDecodeProbe, CustomDecodeProbeState>> {
+    const probeStates = {} as Record<CustomDecodeProbe, CustomDecodeProbeState>;
+    for (const probe of [ ...CUSTOM_DECODE_AUDIO_PROBES, ...CUSTOM_DECODE_VIDEO_PROBES ]) {
+        probeStates[probe] = selection.has(probe) ? 'probed' : 'not-probed';
+    }
+    return Object.freeze(probeStates);
+}
+
+type AudioProbeResults = Readonly<{
+    bundledDTS: DTSExactCapability | null
+    bundledTrueHD: TrueHDExactCapability | null
+    nativeAudio: readonly CustomDecodeCodecCapability<CustomAudioCodec>[]
+    nativeSurroundAudio: readonly CustomNativeSurroundAudioCodecCapability[]
+}>;
+
+type H264ProbeResult = Readonly<{
+    configuration: CustomDecodeCodecCapability<CustomVideoCodec>
+    profiles: H264ProfileCapabilities
+}>;
+
+// An unselected probe holds its not-probed result, or null for an exact or H.264 probe
+type VideoProbeResults = Readonly<{
+    bundledHEVC: BundledHEVCExactCapabilities | null
+    bundledJPEG2000: JPEG2000ExactCapability | null
+    bundledMPEG2: MPEG2VC1ExactCapability | null
+    bundledVC1: MPEG2VC1ExactCapability | null
+    h264: H264ProbeResult | null
+    hevcRangeExtensions: readonly HEVCRangeExtensionCapability[]
+    nativeDolbyVisionHEVC: CustomNativeDolbyVisionHEVCCapability
+    nativeHDRHEVC: CustomNativeHDRHEVCCapability
+    nativeSDRVideo: readonly CustomDecodeCodecCapability<CustomVideoCodec>[]
+    nativeUltraHDVideo: readonly CustomNativeUltraHDVideoCodecCapability[]
+    rawVideo: readonly CustomRawHDRVideoCodecCapability[]
+}>;
+
+type ExactCapabilities = Pick<
+    CustomDecodeCapabilities,
+    | 'bundledDTS'
+    | 'bundledHEVC'
+    | 'bundledJPEG2000'
+    | 'bundledMPEG2'
+    | 'bundledTrueHD'
+    | 'bundledVC1'
+    | 'h264Profiles'
+>;
+
+type ProbeTelemetryCapabilities = ExactCapabilities & Required<Pick<
+    CustomDecodeCapabilities,
+    | 'audio'
+    | 'nativeDolbyVisionHEVC'
+    | 'nativeHDRHEVC'
+    | 'nativeSurroundAudio'
+    | 'nativeUltraHDVideo'
+    | 'rawHDRVideo'
+    | 'video'
+>>;
+
+async function probeH264(
+    environment: WebCodecsCapabilityEnvironment,
+    heavyProbeScheduler: HeavyCapabilityProbeQueue
+): Promise<H264ProbeResult> {
+    const [ configuration, profiles ] = await Promise.all([
+        probeConfig(H264_CONFIGURATION_PROBE_DEFINITION, environment.videoDecoder),
+        probeH264Profiles(environment.h264ProfileProbe, heavyProbeScheduler)
+    ]);
+    return { configuration, profiles };
+}
+
+function createVideoCodecCapabilities(
+    selection: ReadonlySet<CustomDecodeProbe>,
+    videoResults: VideoProbeResults
+): Readonly<Record<CustomVideoCodec, CustomDecodeCodecCapability<CustomVideoCodec>>> {
+    const videoCapabilities: Array<CustomDecodeCodecCapability<CustomVideoCodec>> = [];
+    videoCapabilities.push(
+        videoResults.h264?.configuration
+            ?? createNotProbedCapability('h264', H264_CONFIGURATION_PROBE_DEFINITION.config.codec),
+        ...videoResults.nativeSDRVideo,
+        selection.has('bundled-jpeg2000') ?
+            createBundledJPEG2000Capability(videoResults.bundledJPEG2000) :
+            createNotProbedCapability('jpeg2000', JPEG2000_CODEC_STRING),
+        selection.has('bundled-mpeg2') ?
+            createBundledMPEG2VC1Capability('mpeg2video', videoResults.bundledMPEG2) :
+            createNotProbedCapability('mpeg2video', 'mpeg2video'),
+        selection.has('bundled-vc1') ?
+            createBundledMPEG2VC1Capability('vc1', videoResults.bundledVC1) :
+            createNotProbedCapability('vc1', 'vc1')
+    );
+    const video = {} as Record<CustomVideoCodec, CustomDecodeCodecCapability<CustomVideoCodec>>;
+    for (const capability of videoCapabilities) {
+        video[capability.codec] = capability;
+    }
+    return Object.freeze(video);
+}
+
+function createAudioCodecCapabilities(
+    audioResults: AudioProbeResults
+): Readonly<Record<CustomAudioCodec, CustomDecodeCodecCapability<CustomAudioCodec>>> {
+    const audioCapabilities: Array<CustomDecodeCodecCapability<CustomAudioCodec>> = [];
+    audioCapabilities.push(...audioResults.nativeAudio);
+    audioCapabilities.push(createBundledDTSCapability(audioResults.bundledDTS));
+    audioCapabilities.push(createBundledTrueHDCapability(audioResults.bundledTrueHD, 'mlp'));
+    audioCapabilities.push(createBundledTrueHDCapability(audioResults.bundledTrueHD, 'truehd'));
+    for (const definition of BUNDLED_AUDIO_CODEC_DEFINITIONS) {
+        audioCapabilities.push(createBundledAudioCapability(definition));
+    }
+    const audio = {} as Record<CustomAudioCodec, CustomDecodeCodecCapability<CustomAudioCodec>>;
+    for (const capability of audioCapabilities) {
+        audio[capability.codec] = capability;
+    }
+    return Object.freeze(audio);
+}
+
+/** Returns the exact and H.264 profile results that ran and settled; an absent one claims nothing. */
+function createExactCapabilities(
+    audioResults: AudioProbeResults,
+    videoResults: VideoProbeResults
+): ExactCapabilities {
+    const exactCapabilities: ExactCapabilities = {};
+    if (audioResults.bundledDTS) {
+        exactCapabilities.bundledDTS = audioResults.bundledDTS;
+    }
+    if (videoResults.bundledHEVC) {
+        exactCapabilities.bundledHEVC = videoResults.bundledHEVC;
+    }
+    if (videoResults.bundledJPEG2000) {
+        exactCapabilities.bundledJPEG2000 = videoResults.bundledJPEG2000;
+    }
+    if (videoResults.bundledMPEG2) {
+        exactCapabilities.bundledMPEG2 = videoResults.bundledMPEG2;
+    }
+    if (audioResults.bundledTrueHD) {
+        exactCapabilities.bundledTrueHD = audioResults.bundledTrueHD;
+    }
+    if (videoResults.bundledVC1) {
+        exactCapabilities.bundledVC1 = videoResults.bundledVC1;
+    }
+    if (videoResults.h264) {
+        exactCapabilities.h264Profiles = videoResults.h264.profiles;
+    }
+    return exactCapabilities;
+}
+
+function countCapabilityStatus(
+    capabilities: ReadonlyArray<Readonly<{ status: CustomDecodeCapabilityStatus }>>,
+    status: CustomDecodeCapabilityStatus
+): number {
+    return capabilities.filter((capability: Readonly<{ status: CustomDecodeCapabilityStatus }>): boolean => (
+        capability.status === status
+    )).length;
+}
+
+function createProbeTelemetry(
+    environment: WebCodecsCapabilityEnvironment,
+    selection: ReadonlySet<CustomDecodeProbe>,
+    capabilities: ProbeTelemetryCapabilities
+): Readonly<CustomDecodeProbeTelemetry> {
+    const audioCapabilities = Object.values(capabilities.audio);
+    const videoCapabilities = Object.values(capabilities.video);
+    const nativeSurroundAudioCapabilities = Object.values(capabilities.nativeSurroundAudio);
+    const nativeUltraHDVideoCapabilities = Object.values(capabilities.nativeUltraHDVideo);
+    const allCapabilities: Array<CustomDecodeCodecCapability<CustomDecodeCodec>> = [];
+    allCapabilities.push(
+        ...videoCapabilities,
+        ...audioCapabilities,
+        capabilities.nativeDolbyVisionHEVC,
+        capabilities.nativeHDRHEVC,
+        ...nativeSurroundAudioCapabilities,
+        ...nativeUltraHDVideoCapabilities
+    );
+    const nativeHDRVideoOutputAvailable = Boolean(environment.videoDecoder && environment.nativeHDRVideoOutputProbe);
+    const rawVideoOutputAvailable = Boolean(environment.videoDecoder && environment.rawHDRVideoOutputProbe);
+    return Object.freeze({
+        audioProbeCount: environment.audioDecoder ? AUDIO_PROBE_DEFINITIONS.length : 0,
+        // Plus DTS, MLP, and TrueHD
+        bundledAudioCodecCount: BUNDLED_AUDIO_CODEC_DEFINITIONS.length + 3,
+        nativeSurroundAudioProbeCount: getNativeSurroundAudioProbeCount(environment),
+        nativeHDRVideoProbeCount: Number(nativeHDRVideoOutputAvailable && selection.has('native-hdr-hevc')),
+        nativeUltraHDVideoProbeCount: getNativeUltraHDVideoProbeCount(environment, selection),
+        rawHDRVideoProbeCount: rawVideoOutputAvailable ? getSelectedProbeCount(selection, RAW_VIDEO_PROBES) : 0,
+        reason: getProbeReason(environment, allCapabilities),
+        supportedAudioCodecCount: countCapabilityStatus(audioCapabilities, 'supported'),
+        supportedNativeSurroundAudioCodecCount: countCapabilityStatus(nativeSurroundAudioCapabilities, 'supported'),
+        supportedNativeHDRVideoCodecCount: countCapabilityStatus([ capabilities.nativeHDRHEVC ], 'supported'),
+        supportedNativeUltraHDVideoCodecCount: countCapabilityStatus(nativeUltraHDVideoCapabilities, 'supported'),
+        supportedRawHDRVideoCodecCount: countCapabilityStatus(Object.values(capabilities.rawHDRVideo), 'supported'),
+        supportedVideoCodecCount: getSupportedVideoCodecCount(
+            capabilities,
+            capabilities.h264Profiles,
+            capabilities.bundledHEVC
+        ),
+        unknownAudioCodecCount: countCapabilityStatus(audioCapabilities, 'unknown'),
+        unknownNativeSurroundAudioCodecCount: countCapabilityStatus(nativeSurroundAudioCapabilities, 'unknown'),
+        unknownNativeHDRVideoCodecCount: countCapabilityStatus([ capabilities.nativeHDRHEVC ], 'unknown'),
+        unknownNativeUltraHDVideoCodecCount: countCapabilityStatus(nativeUltraHDVideoCapabilities, 'unknown'),
+        unknownVideoCodecCount: countCapabilityStatus(videoCapabilities, 'unknown'),
+        videoProbeCount: getVideoProbeCount(environment, selection)
+    });
+}
+
+function createCustomDecodeCapabilities(
+    environment: WebCodecsCapabilityEnvironment,
+    selection: ReadonlySet<CustomDecodeProbe>,
+    audioResults: AudioProbeResults,
+    videoResults: VideoProbeResults
+): CustomDecodeCapabilities {
+    const capabilities: ProbeTelemetryCapabilities = {
+        ...createExactCapabilities(audioResults, videoResults),
+        audio: createAudioCodecCapabilities(audioResults),
+        nativeDolbyVisionHEVC: videoResults.nativeDolbyVisionHEVC,
+        nativeHDRHEVC: videoResults.nativeHDRHEVC,
+        nativeSurroundAudio: createNativeSurroundAudioCapabilities(audioResults.nativeSurroundAudio),
+        nativeUltraHDVideo: createNativeUltraHDVideoCapabilities(videoResults.nativeUltraHDVideo),
+        rawHDRVideo: Object.freeze(createRawHDRVideoCapabilities(videoResults.rawVideo, videoResults.bundledHEVC)),
+        video: createVideoCodecCapabilities(selection, videoResults)
+    };
+    return Object.freeze({
+        ...capabilities,
+        hevcRangeExtensions: createHEVCRangeExtensionCapabilities(videoResults.hevcRangeExtensions),
+        probeStates: createProbeStates(selection),
+        telemetry: createProbeTelemetry(environment, selection, capabilities)
+    });
+}
+
+/** Probes decode capabilities per item; each probe runs once per page, and a later item reuses its result. */
 export default class CustomDecodeCapabilityProbe {
-    private cachedProbe: Promise<CustomDecodeCapabilities> | null = null;
-    private readonly environment: WebCodecsCapabilityEnvironment | null;
+    private environment: WebCodecsCapabilityEnvironment | null;
+    // One queue for the page, so probes started for different items still run one heavy probe at a time
+    private readonly heavyProbeScheduler = new SerializedHeavyCapabilityProbeScheduler();
+    private readonly probeResults = new Map<CustomDecodeProbe, Promise<unknown>>();
+    private readonly selectionResults = new Map<string, Promise<CustomDecodeCapabilities>>();
 
     public constructor(environment: WebCodecsCapabilityEnvironment | null = null) {
         this.environment = environment;
     }
 
-    /** Returns the same cached capability result for all calls. */
-    public probe(): Promise<CustomDecodeCapabilities> {
-        if (!this.cachedProbe) {
-            this.cachedProbe = this.runProbe(this.environment ?? getDefaultEnvironment());
+    /**
+     * Returns the capabilities an item needs; items that select the same probes share one result.
+     * Without an item, or for one without stream metadata, every probe runs.
+     */
+    public probe(item?: unknown): Promise<CustomDecodeCapabilities> {
+        const selection = selectCustomDecodeProbes(item);
+        const selectionKey = selection.join(',');
+        let capabilities = this.selectionResults.get(selectionKey);
+        if (!capabilities) {
+            capabilities = this.runProbes(new Set<CustomDecodeProbe>(selection));
+            this.selectionResults.set(selectionKey, capabilities);
         }
-        return this.cachedProbe;
+        return capabilities;
     }
 
-    private async runProbe(environment: WebCodecsCapabilityEnvironment): Promise<CustomDecodeCapabilities> {
-        const heavyProbeScheduler = new SerializedHeavyCapabilityProbeScheduler();
-        const videoProbePromises: Array<Promise<CustomDecodeCodecCapability<CustomVideoCodec>>> = [];
-        for (const definition of VIDEO_PROBE_DEFINITIONS) {
-            videoProbePromises.push(createVideoProbePromise(
-                definition,
-                environment,
-                heavyProbeScheduler
-            ));
-        }
-        const nativeUltraHDVideoProbePromises: Array<Promise<
-            CustomNativeUltraHDVideoCodecCapability
-        >> =
-            createNativeUltraHDVideoProbePromises(environment, heavyProbeScheduler);
-        const audioProbePromises = createAudioProbePromises(environment, heavyProbeScheduler);
-        const nativeSurroundAudioProbePromises: Array<Promise<
-            CustomNativeSurroundAudioCodecCapability
-        >> = createNativeSurroundAudioProbePromises(environment, heavyProbeScheduler);
-        const rawHDRVideoProbePromises = createRawHDRVideoProbePromises(
+    private async runProbes(selection: ReadonlySet<CustomDecodeProbe>): Promise<CustomDecodeCapabilities> {
+        const environment = this.environment ?? getDefaultEnvironment();
+        this.environment = environment;
+        prepareExactProbes(selection, environment);
+        const audioProbes = this.startAudioProbes(environment);
+        // Video work joins the heavy queue behind every audio probe, so a video timeout never costs audio its verdicts
+        const videoProbes = this.startVideoProbes(
+            selection,
             environment,
-            heavyProbeScheduler
+            this.heavyProbeScheduler.after(audioProbes)
         );
-        const hevcRangeExtensionProbePromises = createHEVCRangeExtensionProbePromises(
-            environment,
-            heavyProbeScheduler
-        );
+        const [ audioResults, videoResults ] = await Promise.all([ audioProbes, videoProbes ]);
+        return createCustomDecodeCapabilities(environment, selection, audioResults, videoResults);
+    }
 
-        const [
-            videoCapabilities,
-            probedAudioCapabilities,
-            rawHDRVideoProbeCapabilities,
-            hevcRangeExtensionCapabilities,
-            h264Profiles,
-            bundledDTS,
-            bundledHEVC,
-            bundledJPEG2000,
-            bundledMPEG2,
-            bundledVC1,
-            bundledTrueHD,
-            nativeDolbyVisionHEVC,
-            nativeHDRHEVC,
-            nativeSurroundAudioCapabilities,
-            nativeUltraHDVideoCapabilities
-        ] = await Promise.all([
-            Promise.all(videoProbePromises),
-            Promise.all(audioProbePromises),
-            Promise.all(rawHDRVideoProbePromises),
-            Promise.all(hevcRangeExtensionProbePromises),
-            probeH264Profiles(environment.h264ProfileProbe, heavyProbeScheduler),
-            probeOptionalExactCapability(
+    /** Starts every audio probe once per page, because a playing item can switch to any of its audio tracks. */
+    private async startAudioProbes(environment: WebCodecsCapabilityEnvironment): Promise<AudioProbeResults> {
+        const heavyProbeScheduler = this.heavyProbeScheduler;
+        const [ nativeAudio, nativeSurroundAudio, bundledDTS, bundledTrueHD ] = await Promise.all([
+            this.startProbe('native-audio', () => Promise.all(
+                createAudioProbePromises(environment, heavyProbeScheduler)
+            )),
+            this.startProbe('native-surround-audio', () => Promise.all(
+                createNativeSurroundAudioProbePromises(environment, heavyProbeScheduler)
+            )),
+            this.startProbe('bundled-dts', () => probeOptionalExactCapability(
                 environment.bundledDTSExactProbe,
                 heavyProbeScheduler
-            ),
-            probeOptionalExactCapability(
-                environment.bundledHEVCExactProbe,
-                heavyProbeScheduler
-            ),
-            probeOptionalExactCapability(
-                environment.bundledJPEG2000ExactProbe,
-                heavyProbeScheduler
-            ),
-            probeOptionalExactCapability(
-                environment.bundledMPEG2ExactProbe,
-                heavyProbeScheduler
-            ),
-            probeOptionalExactCapability(
-                environment.bundledVC1ExactProbe,
-                heavyProbeScheduler
-            ),
-            probeOptionalExactCapability(
+            )),
+            this.startProbe('bundled-truehd', () => probeOptionalExactCapability(
                 environment.bundledTrueHDExactProbe,
                 heavyProbeScheduler
-            ),
-            probeNativeDolbyVisionHEVC(
+            ))
+        ]);
+        return { bundledDTS, bundledTrueHD, nativeAudio, nativeSurroundAudio };
+    }
+
+    /** Starts the selected video probes that no earlier item started, in queue order; an unselected probe resolves as not probed. */
+    private async startVideoProbes(
+        selection: ReadonlySet<CustomDecodeProbe>,
+        environment: WebCodecsCapabilityEnvironment,
+        videoQueue: HeavyCapabilityProbeQueue
+    ): Promise<VideoProbeResults> {
+        const h264 = this.startSelectedProbe<H264ProbeResult | null>(
+            selection,
+            'h264-profiles',
+            () => probeH264(environment, videoQueue),
+            null
+        );
+        const nativeSDRVideo = Promise.all(NATIVE_SDR_VIDEO_PROBE_DEFINITIONS.map(
+            (definition: NativeSDRVideoProbeDefinition): Promise<CustomDecodeCodecCapability<CustomVideoCodec>> => (
+                this.startSelectedProbe<CustomDecodeCodecCapability<CustomVideoCodec>>(
+                    selection,
+                    getNativeSDRVideoProbe(definition.codec),
+                    () => probeNativeVideoConfig(
+                        definition,
+                        environment.videoDecoder,
+                        environment.nativeVideoOutputProbe,
+                        videoQueue
+                    ),
+                    createNotProbedCapability(definition.codec, definition.config.codec)
+                )
+            )
+        ));
+        const nativeUltraHDVideo = Promise.all(NATIVE_ULTRA_HD_VIDEO_PROBE_DEFINITIONS.map(
+            (definition: NativeUltraHDVideoProbeDefinition): Promise<CustomNativeUltraHDVideoCodecCapability> => (
+                this.startSelectedProbe(
+                    selection,
+                    getNativeUltraHDVideoProbe(definition.codec),
+                    () => probeNativeUltraHDVideoConfig(
+                        definition,
+                        environment.videoDecoder,
+                        environment.nativeVideoOutputProbe,
+                        videoQueue
+                    ),
+                    createNotProbedNativeUltraHDVideoCapability(definition)
+                )
+            )
+        ));
+        const rawVideo = Promise.all(RAW_HDR_VIDEO_PROBE_DEFINITIONS.map(
+            (definition: RawHDRVideoProbeDefinition): Promise<CustomRawHDRVideoCodecCapability> => (
+                this.startSelectedProbe(
+                    selection,
+                    getRawVideoProbe(definition.codec),
+                    () => probeRawHDRVideoConfig(
+                        definition,
+                        environment.videoDecoder,
+                        environment.rawHDRVideoOutputProbe,
+                        videoQueue
+                    ),
+                    createNotProbedRawVideoCapability(definition)
+                )
+            )
+        ));
+        const hevcRangeExtensions = Promise.all(HEVC_RANGE_EXTENSION_VARIANTS.map(
+            (variant: HEVCRangeExtensionVariant): Promise<HEVCRangeExtensionCapability> => (
+                this.startSelectedProbe(
+                    selection,
+                    getHEVCRangeExtensionVideoProbe(variant),
+                    () => probeHEVCRangeExtensionConfig(
+                        HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS[variant],
+                        environment.videoDecoder,
+                        environment.rawHDRVideoOutputProbe,
+                        environment.hevcRangeExtensionVectorLoader,
+                        videoQueue
+                    ),
+                    createNotProbedHEVCRangeExtensionCapability(variant)
+                )
+            )
+        ));
+        const bundledHEVC = this.startSelectedProbe<BundledHEVCExactCapabilities | null>(
+            selection,
+            'bundled-hevc',
+            () => probeOptionalExactCapability(environment.bundledHEVCExactProbe, videoQueue),
+            null
+        );
+        const bundledJPEG2000 = this.startSelectedProbe<JPEG2000ExactCapability | null>(
+            selection,
+            'bundled-jpeg2000',
+            () => probeOptionalExactCapability(environment.bundledJPEG2000ExactProbe, videoQueue),
+            null
+        );
+        const bundledMPEG2 = this.startSelectedProbe<MPEG2VC1ExactCapability | null>(
+            selection,
+            'bundled-mpeg2',
+            () => probeOptionalExactCapability(environment.bundledMPEG2ExactProbe, videoQueue),
+            null
+        );
+        const bundledVC1 = this.startSelectedProbe<MPEG2VC1ExactCapability | null>(
+            selection,
+            'bundled-vc1',
+            () => probeOptionalExactCapability(environment.bundledVC1ExactProbe, videoQueue),
+            null
+        );
+        const nativeDolbyVisionHEVC = this.startSelectedProbe(
+            selection,
+            'native-dolby-vision-hevc',
+            () => probeNativeDolbyVisionHEVC(
                 environment.videoDecoder,
                 environment.nativeDolbyVisionVideoOutputProbe,
-                heavyProbeScheduler
+                videoQueue
             ),
-            probeNativeHDRHEVC(
+            NOT_PROBED_NATIVE_DOLBY_VISION_HEVC_CAPABILITY
+        );
+        const nativeHDRHEVC = this.startSelectedProbe(
+            selection,
+            'native-hdr-hevc',
+            () => probeNativeHDRHEVC(
                 environment.videoDecoder,
                 environment.nativeHDRVideoOutputProbe,
-                heavyProbeScheduler
+                videoQueue
             ),
-            Promise.all(nativeSurroundAudioProbePromises),
-            Promise.all(nativeUltraHDVideoProbePromises)
-        ]);
-        videoCapabilities.push(createBundledJPEG2000Capability(bundledJPEG2000));
-        videoCapabilities.push(createBundledMPEG2VC1Capability(
-            'mpeg2video',
-            bundledMPEG2
-        ));
-        videoCapabilities.push(createBundledMPEG2VC1Capability('vc1', bundledVC1));
-        const audioCapabilities: Array<CustomDecodeCodecCapability<CustomAudioCodec>> = [];
-        audioCapabilities.push(...probedAudioCapabilities);
-        audioCapabilities.push(createBundledDTSCapability(bundledDTS));
-        audioCapabilities.push(createBundledTrueHDCapability(bundledTrueHD, 'mlp'));
-        audioCapabilities.push(createBundledTrueHDCapability(bundledTrueHD, 'truehd'));
-        for (const definition of BUNDLED_AUDIO_CODEC_DEFINITIONS) {
-            audioCapabilities.push(createBundledAudioCapability(definition));
-        }
-        const video = {} as Record<CustomVideoCodec, CustomDecodeCodecCapability<CustomVideoCodec>>;
-        for (const capability of videoCapabilities) {
-            video[capability.codec] = capability;
-        }
-        const audio = {} as Record<CustomAudioCodec, CustomDecodeCodecCapability<CustomAudioCodec>>;
-        for (const capability of audioCapabilities) {
-            audio[capability.codec] = capability;
-        }
-        const rawHDRVideo = createRawHDRVideoCapabilities(
-            rawHDRVideoProbeCapabilities,
-            bundledHEVC
+            NOT_PROBED_NATIVE_HDR_HEVC_CAPABILITY
         );
-        const nativeUltraHDVideo: Readonly<Record<
-            CustomNativeUltraHDVideoCodec,
-            CustomNativeUltraHDVideoCodecCapability
-        >> = createNativeUltraHDVideoCapabilities(nativeUltraHDVideoCapabilities);
-        const nativeSurroundAudio: Readonly<Record<
-            CustomNativeSurroundAudioCodec,
-            CustomNativeSurroundAudioCodecCapability
-        >> = createNativeSurroundAudioCapabilities(nativeSurroundAudioCapabilities);
+        return {
+            bundledHEVC: await bundledHEVC,
+            bundledJPEG2000: await bundledJPEG2000,
+            bundledMPEG2: await bundledMPEG2,
+            bundledVC1: await bundledVC1,
+            h264: await h264,
+            hevcRangeExtensions: await hevcRangeExtensions,
+            nativeDolbyVisionHEVC: await nativeDolbyVisionHEVC,
+            nativeHDRHEVC: await nativeHDRHEVC,
+            nativeSDRVideo: await nativeSDRVideo,
+            nativeUltraHDVideo: await nativeUltraHDVideo,
+            rawVideo: await rawVideo
+        };
+    }
 
-        const allCapabilities: Array<CustomDecodeCodecCapability<CustomDecodeCodec>> = [];
-        allCapabilities.push(
-            ...videoCapabilities,
-            ...audioCapabilities,
-            nativeDolbyVisionHEVC,
-            nativeHDRHEVC,
-            ...nativeSurroundAudioCapabilities,
-            ...nativeUltraHDVideoCapabilities
-        );
-        const telemetry = Object.freeze({
-            audioProbeCount: environment.audioDecoder ? AUDIO_PROBE_DEFINITIONS.length : 0,
-            // Plus DTS, MLP, and TrueHD
-            bundledAudioCodecCount: BUNDLED_AUDIO_CODEC_DEFINITIONS.length + 3,
-            nativeSurroundAudioProbeCount: getNativeSurroundAudioProbeCount(environment),
-            nativeHDRVideoProbeCount: environment.videoDecoder
-                && environment.nativeHDRVideoOutputProbe ? 1 : 0,
-            nativeUltraHDVideoProbeCount: getNativeUltraHDVideoProbeCount(environment),
-            rawHDRVideoProbeCount: environment.videoDecoder && environment.rawHDRVideoOutputProbe ?
-                RAW_HDR_VIDEO_PROBE_DEFINITIONS.length :
-                0,
-            reason: getProbeReason(environment, allCapabilities),
-            supportedAudioCodecCount: audioCapabilities.filter(capability => capability.status === 'supported').length,
-            supportedNativeSurroundAudioCodecCount: nativeSurroundAudioCapabilities.filter(
-                capability => capability.status === 'supported'
-            ).length,
-            supportedNativeHDRVideoCodecCount: Number(
-                nativeHDRHEVC.status === 'supported'
-            ),
-            supportedNativeUltraHDVideoCodecCount: nativeUltraHDVideoCapabilities.filter(
-                capability => capability.status === 'supported'
-            ).length,
-            supportedRawHDRVideoCodecCount: Object.values(rawHDRVideo).filter(capability => (
-                capability.status === 'supported'
-            )).length,
-            supportedVideoCodecCount: getSupportedVideoCodecCount(
-                { nativeUltraHDVideo, video },
-                h264Profiles,
-                bundledHEVC
-            ),
-            unknownAudioCodecCount: audioCapabilities.filter(capability => capability.status === 'unknown').length,
-            unknownNativeSurroundAudioCodecCount: nativeSurroundAudioCapabilities.filter(
-                capability => capability.status === 'unknown'
-            ).length,
-            unknownNativeHDRVideoCodecCount: Number(nativeHDRHEVC.status === 'unknown'),
-            unknownNativeUltraHDVideoCodecCount: nativeUltraHDVideoCapabilities.filter(
-                capability => capability.status === 'unknown'
-            ).length,
-            unknownVideoCodecCount: videoCapabilities.filter(capability => capability.status === 'unknown').length,
-            videoProbeCount: getVideoProbeCount(environment)
-        });
+    /** Starts a probe once per page; a later run shares its promise. */
+    private startProbe<Result>(probe: CustomDecodeProbe, start: () => Promise<Result>): Promise<Result> {
+        // Each identifier always starts the same probe, so its promise carries that probe's result type
+        const startedProbe = this.probeResults.get(probe) as Promise<Result> | undefined;
+        if (startedProbe) {
+            return startedProbe;
+        }
+        const probeResult = start();
+        this.probeResults.set(probe, probeResult);
+        return probeResult;
+    }
 
-        return Object.freeze({
-            audio: Object.freeze(audio),
-            ...(bundledDTS ? { bundledDTS } : {}),
-            ...(bundledHEVC ? { bundledHEVC } : {}),
-            ...(bundledJPEG2000 ? { bundledJPEG2000 } : {}),
-            ...(bundledMPEG2 ? { bundledMPEG2 } : {}),
-            ...createOptionalBundledVC1Capability(bundledVC1),
-            ...(bundledTrueHD ? { bundledTrueHD } : {}),
-            h264Profiles,
-            hevcRangeExtensions: createHEVCRangeExtensionCapabilities(
-                hevcRangeExtensionCapabilities
-            ),
-            nativeDolbyVisionHEVC,
-            nativeHDRHEVC,
-            nativeSurroundAudio,
-            nativeUltraHDVideo,
-            rawHDRVideo: Object.freeze(rawHDRVideo),
-            telemetry,
-            video: Object.freeze(video)
-        });
+    /** Starts a selected probe once per page; a probe outside the selection resolves to its not-probed result. */
+    private startSelectedProbe<Result>(
+        selection: ReadonlySet<CustomDecodeProbe>,
+        probe: CustomDecodeProbe,
+        start: () => Promise<Result>,
+        notProbedResult: Result
+    ): Promise<Result> {
+        return selection.has(probe) ? this.startProbe(probe, start) : Promise.resolve(notProbedResult);
     }
 }
 
 const defaultCapabilityProbe = new CustomDecodeCapabilityProbe();
 
-/** Probes the current runtime once and reuses that result for later sessions. */
-export function probeCustomDecodeCapabilities(): Promise<CustomDecodeCapabilities> {
-    return defaultCapabilityProbe.probe();
+/**
+ * Probes what an item needs and reuses each probe's result for the page's lifetime.
+ * Every audio probe runs; the video probes follow the item's streams, and no item, or one without stream metadata, runs them all.
+ */
+export function probeCustomDecodeCapabilities(item?: unknown): Promise<CustomDecodeCapabilities> {
+    return defaultCapabilityProbe.probe(item);
 }

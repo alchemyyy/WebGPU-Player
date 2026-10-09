@@ -1,3 +1,5 @@
+import { isDecoderWASMSource, type DecoderWASMSource } from '../../DecoderWASMSource';
+
 export const TRUEHD_EXACT_CAPABILITY_REQUEST_ID = 'ffmpeg-truehd-mlp-v1';
 export const TRUEHD_QUALIFICATION_VECTOR_COUNT = 4;
 export const TRUEHD_QUALIFICATION_CODEC_MASK = 0x03;
@@ -8,6 +10,8 @@ export const TRUEHD_QUALIFICATION_WARMUP_CYCLE_COUNT = 1;
 export const TRUEHD_QUALIFICATION_MEASURED_CYCLE_COUNT = 8;
 
 export type TrueHDExactCapabilityWorkerRequest = Readonly<{
+    // The FFmpeg TrueHD binary: the URL the playback worker also loads, or bytes the page already fetched
+    decoderWASM: DecoderWASMSource
     requestID: typeof TRUEHD_EXACT_CAPABILITY_REQUEST_ID
     type: 'probe'
 }>;
@@ -75,7 +79,8 @@ export function isTrueHDExactCapabilityWorkerRequest(
 ): value is TrueHDExactCapabilityWorkerRequest {
     return isRecord(value)
         && value.type === 'probe'
-        && value.requestID === TRUEHD_EXACT_CAPABILITY_REQUEST_ID;
+        && value.requestID === TRUEHD_EXACT_CAPABILITY_REQUEST_ID
+        && isDecoderWASMSource(value.decoderWASM);
 }
 
 /** Validates all exact-output, recovery, and throughput evidence. */

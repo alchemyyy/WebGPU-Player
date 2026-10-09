@@ -1,8 +1,15 @@
 import {
+    getDecoderWASMTransfer,
+    loadDecoderWASMSource,
+    type DecoderWASMSource
+} from '../../DecoderWASMSource';
+import {
     createEngineWorker,
     resolveEngineAssetURL,
-    type EngineAssetPath
+    type EngineAssetPath,
+    type EngineWorkerPath
 } from '../../EngineAssets';
+import { fetchCapabilityAsset, warmCapabilityAsset } from '../CapabilityAssetLoading';
 import {
     isJPEG2000ExactCapabilityWorkerResponse,
     JPEG2000_EXACT_CAPABILITY_REQUEST_ID,
@@ -30,9 +37,11 @@ export const JPEG2000_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS = 2_000;
 const JPEG2000_DECODER_GLUE_ASSET: EngineAssetPath = 'openjpeg/openjpeg-decode.js';
 const JPEG2000_DECODER_WASM_ASSET: EngineAssetPath = 'openjpeg/openjpeg-decode.wasm';
 const JPEG2000_QUALIFICATION_ASSET: EngineAssetPath = 'openjpeg/jpeg2000-960x540-qualification.bin';
+const JPEG2000_EXACT_CAPABILITY_WORKER_ASSET: EngineWorkerPath = 'webgpu-player/JPEG2000ExactCapabilityProbe.worker.js';
 
 export type JPEG2000ExactCapabilityReason =
     | 'api-unavailable'
+    | 'asset-unavailable'
     | 'decode-error'
     | 'decode-output-verified'
     | 'output-mismatch'
@@ -69,6 +78,8 @@ export type JPEG2000ExactCapabilityProbeWorker = {
 export type JPEG2000ExactCapabilityProbeEnvironment = Readonly<{
     clearTimeout: (timeout: ReturnType<typeof globalThis.setTimeout>) => void
     createWorker: (() => JPEG2000ExactCapabilityProbeWorker) | null
+    // Downloads the decoder binary as bytes for the worker; without it the worker fetches the binary itself
+    loadDecoderWASM?: ((url: string) => Promise<ArrayBuffer>) | null
     loadVector: (url: string) => Promise<ArrayBuffer>
     resolveAssetURL: (path: EngineAssetPath) => string
     runtimeAvailable: boolean
@@ -76,23 +87,18 @@ export type JPEG2000ExactCapabilityProbeEnvironment = Readonly<{
         callback: () => void,
         milliseconds: number
     ) => ReturnType<typeof globalThis.setTimeout>
+    // Downloads the worker script and decoder glue into the HTTP cache before the timed probe loads them
+    warmAsset?: ((url: string) => Promise<void>) | null
+}>;
+
+type JPEG2000ExactCapabilityProbeAssets = Readonly<{
+    decoderWASM: DecoderWASMSource
+    vector: ArrayBuffer
 }>;
 
 function createDefaultWorker(): JPEG2000ExactCapabilityProbeWorker {
-    const worker = createEngineWorker('webgpu-player/JPEG2000ExactCapabilityProbe.worker.js');
+    const worker = createEngineWorker(JPEG2000_EXACT_CAPABILITY_WORKER_ASSET);
     return worker as unknown as JPEG2000ExactCapabilityProbeWorker;
-}
-
-async function loadDefaultVector(url: string): Promise<ArrayBuffer> {
-    const response = await fetch(url, {
-        cache: 'force-cache',
-        credentials: 'same-origin',
-        redirect: 'error'
-    });
-    if (!response.ok) {
-        throw new Error('The exact JPEG 2000 qualification vector request failed');
-    }
-    return response.arrayBuffer();
 }
 
 function createDefaultEnvironment(): JPEG2000ExactCapabilityProbeEnvironment {
@@ -105,12 +111,14 @@ function createDefaultEnvironment(): JPEG2000ExactCapabilityProbeEnvironment {
     return {
         clearTimeout: (timeout): void => globalThis.clearTimeout(timeout),
         createWorker: runtimeAvailable ? createDefaultWorker : null,
-        loadVector: loadDefaultVector,
+        loadDecoderWASM: fetchCapabilityAsset,
+        loadVector: fetchCapabilityAsset,
         resolveAssetURL: resolveEngineAssetURL,
         runtimeAvailable,
         setTimeout: (callback, milliseconds): ReturnType<typeof globalThis.setTimeout> => (
             globalThis.setTimeout(callback, milliseconds)
-        )
+        ),
+        warmAsset: warmCapabilityAsset
     };
 }
 
@@ -129,7 +137,7 @@ function createCapability(
     let status: JPEG2000ExactCapability['status'];
     if (supported) {
         status = 'supported';
-    } else if (reason === 'api-unavailable' || reason === 'probe-timeout') {
+    } else if (reason === 'api-unavailable' || reason === 'asset-unavailable' || reason === 'probe-timeout') {
         status = 'unknown';
     } else {
         status = 'unsupported';
@@ -154,6 +162,7 @@ function createCapability(
 /** Owns one cached, fail-closed OpenJPEG exact-output probe. */
 export default class JPEG2000ExactCapabilityProbe {
     private cachedProbe: Promise<JPEG2000ExactCapability> | null = null;
+    private preparedAssets: Promise<JPEG2000ExactCapabilityProbeAssets | null> | null = null;
 
     public constructor(
         private readonly environment: JPEG2000ExactCapabilityProbeEnvironment =
@@ -166,19 +175,59 @@ export default class JPEG2000ExactCapabilityProbe {
         }
     }
 
+    /** Starts this probe's downloads; a probe run prepares every probe it selected, so their downloads overlap. */
+    public prepare(): void {
+        if (!this.environment.runtimeAvailable || !this.environment.createWorker) {
+            return;
+        }
+        this.preparedAssets ??= this.loadAssets();
+    }
+
     /** Returns the same immutable capability result for every call. */
     public probe(): Promise<JPEG2000ExactCapability> {
         this.cachedProbe ??= this.runProbe();
         return this.cachedProbe;
     }
 
-    private runProbe(): Promise<JPEG2000ExactCapability> {
-        if (!this.environment.runtimeAvailable || !this.environment.createWorker) {
-            return Promise.resolve(createCapability('api-unavailable'));
+    private async loadAssets(): Promise<JPEG2000ExactCapabilityProbeAssets | null> {
+        const environment = this.environment;
+        try {
+            const [ vector, decoderWASM ] = await Promise.all([
+                environment.loadVector(environment.resolveAssetURL(JPEG2000_QUALIFICATION_ASSET)),
+                loadDecoderWASMSource(
+                    environment.resolveAssetURL(JPEG2000_DECODER_WASM_ASSET),
+                    environment.loadDecoderWASM
+                ),
+                environment.warmAsset?.(environment.resolveAssetURL(JPEG2000_EXACT_CAPABILITY_WORKER_ASSET)),
+                environment.warmAsset?.(environment.resolveAssetURL(JPEG2000_DECODER_GLUE_ASSET))
+            ]);
+            return { decoderWASM, vector };
+        } catch {
+            return null;
         }
+    }
+
+    private async runProbe(): Promise<JPEG2000ExactCapability> {
+        const createWorker = this.environment.createWorker;
+        if (!this.environment.runtimeAvailable || !createWorker) {
+            return createCapability('api-unavailable');
+        }
+        this.prepare();
+        // The downloads finish before the decode timeout starts
+        const assets = await this.preparedAssets;
+        if (!assets) {
+            return createCapability('asset-unavailable');
+        }
+        return this.runWorker(createWorker, assets);
+    }
+
+    private runWorker(
+        createWorker: () => JPEG2000ExactCapabilityProbeWorker,
+        assets: JPEG2000ExactCapabilityProbeAssets
+    ): Promise<JPEG2000ExactCapability> {
         let worker: JPEG2000ExactCapabilityProbeWorker;
         try {
-            worker = this.environment.createWorker();
+            worker = createWorker();
         } catch {
             return Promise.resolve(createCapability('worker-create-failed'));
         }
@@ -231,31 +280,18 @@ export default class JPEG2000ExactCapabilityProbe {
                 settle(createCapability('probe-timeout'));
             }, this.timeoutMilliseconds);
 
-            const loadAndPostRequest = async (): Promise<void> => {
-                try {
-                    const vector = await this.environment.loadVector(
-                        this.environment.resolveAssetURL(JPEG2000_QUALIFICATION_ASSET)
-                    );
-                    if (settled) {
-                        return;
-                    }
-                    const request: JPEG2000ExactCapabilityWorkerRequest = {
-                        decoderGlueURL: this.environment.resolveAssetURL(
-                            JPEG2000_DECODER_GLUE_ASSET
-                        ),
-                        decoderWASMURL: this.environment.resolveAssetURL(
-                            JPEG2000_DECODER_WASM_ASSET
-                        ),
-                        vector,
-                        requestID: JPEG2000_EXACT_CAPABILITY_REQUEST_ID,
-                        type: 'probe'
-                    };
-                    worker.postMessage(request, [ vector ]);
-                } catch {
-                    settle(createCapability('worker-error'));
-                }
-            };
-            void loadAndPostRequest();
+            try {
+                const request: JPEG2000ExactCapabilityWorkerRequest = {
+                    decoderGlueURL: this.environment.resolveAssetURL(JPEG2000_DECODER_GLUE_ASSET),
+                    decoderWASM: assets.decoderWASM,
+                    vector: assets.vector,
+                    requestID: JPEG2000_EXACT_CAPABILITY_REQUEST_ID,
+                    type: 'probe'
+                };
+                worker.postMessage(request, [ assets.vector, ...getDecoderWASMTransfer(assets.decoderWASM) ]);
+            } catch {
+                settle(createCapability('worker-error'));
+            }
         });
     }
 }
@@ -266,4 +302,10 @@ let defaultProbe: JPEG2000ExactCapabilityProbe | null = null;
 export function probeJPEG2000ExactCapability(): Promise<JPEG2000ExactCapability> {
     defaultProbe ??= new JPEG2000ExactCapabilityProbe();
     return defaultProbe.probe();
+}
+
+/** Starts the OpenJPEG probe's downloads ahead of its turn. */
+export function prepareJPEG2000ExactCapability(): void {
+    defaultProbe ??= new JPEG2000ExactCapabilityProbe();
+    defaultProbe.prepare();
 }
