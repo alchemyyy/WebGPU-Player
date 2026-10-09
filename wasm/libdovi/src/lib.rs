@@ -769,7 +769,7 @@ fn pack_component(
         num_pivots: num_pivots as u32,
         ..PackedComponent::default()
     };
-    // Linear interpolation pieces derive their polynomials from the exact pivots
+    // Linear interpolation pieces derive their polynomials from float64 pivots, not the packed float32 ones
     let mut pivots = [0.0_f64; MAXIMUM_PIVOT_COUNT];
     let mut cumulative_pivot = 0_u32;
     for (pivot_index, pivot_delta) in curve.pivots.iter().enumerate() {
@@ -949,8 +949,8 @@ fn pack_linear_interpolation_segments(
     mapping_methods: &[DoviMappingMethod],
     pivots: &[f64],
 ) -> ParserResult<()> {
-    // The curve's value at each pivot that has a scalar one
-    // A coded rise adds to the previous pivot's value, which a polynomial piece takes at its start
+    // The curve's value at each pivot that has a scalar one.
+    // A coded rise adds to the previous pivot's value, which a polynomial piece takes at its start.
     // An MMR piece maps all three components together, so its pivot has no scalar value
     let mut pivot_values: [Option<f64>; MAXIMUM_PIVOT_COUNT] = [None; MAXIMUM_PIVOT_COUNT];
     for (segment_index, (linear_piece, mapping_method)) in
@@ -1309,7 +1309,7 @@ pub unsafe extern "C" fn dovi_parser_destroy(context: *mut c_void) {
 }
 
 #[unsafe(no_mangle)]
-/// Clears the mapping state of one live parser context.
+/// Clears the mapping and display metadata state of one live parser context.
 ///
 /// # Safety
 /// The pointer must identify a live context returned by `dovi_parser_create`.
@@ -1554,7 +1554,7 @@ mod tests {
     const EMDF_HEADER: u64 = 0x01BE_6841;
     const EMDF_HEADER_BIT_LENGTH: usize = 27;
     const EMDF_VARIABLE_BITS_CHUNK_BIT_LENGTH: usize = 8;
-    // The input lengths upstream required before parsing an HEVC or an AV1 RPU
+    // The input lengths upstream requires before parsing an HEVC or an AV1 RPU
     const UPSTREAM_MINIMUM_HEVC_INPUT_BYTE_LENGTH: usize = 25;
     const UPSTREAM_MINIMUM_AV1_INPUT_BYTE_LENGTH: usize = 34;
 
@@ -2882,7 +2882,7 @@ mod tests {
 
     #[test]
     fn emdf_payload_sizes_that_overflow_or_pass_the_data_are_errors() {
-        // 65535 bytes, then a variable_bits chain past 32 bits; both once aborted the release WASM
+        // 65535 bytes, then a variable_bits chain past 32 bits; upstream aborts the release WASM on both
         let oversized = av1_payload_with_emdf_payload_size_chunks(&[0xFE, 0xFF]);
         let overflowing = av1_payload_with_emdf_payload_size_chunks(&[0xFF; 5]);
         for (input, message) in [
@@ -2953,7 +2953,7 @@ mod tests {
 
         let output = parse_into(&mut ParserContext::default(), &input).unwrap();
 
-        // The crate keeps each piece's method, which upstream overwrote with the last one
+        // The crate keeps each piece's method, which upstream overwrites with the last one
         let parsed_curve = &DoviRpu::parse_unspec62_nalu(&input)
             .unwrap()
             .rpu_data_mapping

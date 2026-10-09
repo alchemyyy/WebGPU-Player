@@ -43,7 +43,7 @@ describe('CustomAudioTrackMetadata', () => {
             .toBe(48_000);
         expect(getDeclaredAudioSampleRate('mlpa', 192_000 / ISO_BASE_MEDIA_SAMPLE_RATE_SCALE))
             .toBe(192_000);
-        // A muxer that wrote 16.16 already reads back correctly
+        // A muxer that wrote 16.16 already reads back as the integer rate
         expect(getDeclaredAudioSampleRate('mlpa', 96_000)).toBe(96_000);
     });
 

@@ -2706,7 +2706,7 @@ describe('WebGPUPresenter', () => {
                 dolbyVisionDualLayerFELPresentedFrameCount: 1,
                 dolbyVisionDualLayerMELPresentedFrameCount: 1
             });
-            // The BL textures keep its format, and the EL always uploads as 10-bit planes
+            // The BL textures follow the BL format, and the EL always uploads as 10-bit planes
             expect(getCreatedPlaneTextureFormats(deviceHarness)).toEqual([
                 baseTextureFormat,
                 baseTextureFormat,

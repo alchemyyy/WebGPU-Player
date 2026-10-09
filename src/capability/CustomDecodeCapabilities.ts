@@ -3,9 +3,7 @@ import {
     RAW_HDR_CAPABILITY_VECTOR_CODED_HEIGHT,
     RAW_HDR_CAPABILITY_VECTOR_CODED_WIDTH
 } from './vectors/RawHDRCapabilityVectors';
-import H264ProfileCapabilityProbe, {
-    type H264ProfileCapabilities
-} from './H264ProfileCapabilities';
+import H264ProfileCapabilityProbe, { type H264ProfileCapabilities } from './H264ProfileCapabilities';
 import {
     probeBundledHEVCExactCapabilities,
     type BundledHEVCExactCapabilities
@@ -83,10 +81,8 @@ export const CUSTOM_VIDEO_CODECS = [
     'jpeg2000'
 ] as const;
 export const CUSTOM_RAW_HDR_VIDEO_CODECS = [ 'hevc', 'vp9', 'av1' ] as const;
-export const CUSTOM_NATIVE_SURROUND_AUDIO_CODECS =
-    NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_CODECS;
-export const CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS =
-    NATIVE_ULTRA_HD_VIDEO_CAPABILITY_CODECS;
+export const CUSTOM_NATIVE_SURROUND_AUDIO_CODECS = NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_CODECS;
+export const CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS = NATIVE_ULTRA_HD_VIDEO_CAPABILITY_CODECS;
 export const CUSTOM_NATIVE_VIDEO_BIT_DEPTH = 8;
 const NATIVE_SDR_VIDEO_VECTOR_CODED_HEIGHT = 1_080;
 const NATIVE_SDR_VIDEO_VECTOR_CODED_WIDTH = 1_920;
@@ -97,10 +93,8 @@ const NATIVE_HDR_HEVC_VECTOR_CODED_WIDTH = 3_840;
 
 export type CustomVideoCodec = typeof CUSTOM_VIDEO_CODECS[number];
 export type CustomRawHDRVideoCodec = typeof CUSTOM_RAW_HDR_VIDEO_CODECS[number];
-export type CustomNativeSurroundAudioCodec =
-    typeof CUSTOM_NATIVE_SURROUND_AUDIO_CODECS[number];
-export type CustomNativeUltraHDVideoCodec =
-    typeof CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS[number];
+export type CustomNativeSurroundAudioCodec = typeof CUSTOM_NATIVE_SURROUND_AUDIO_CODECS[number];
+export type CustomNativeUltraHDVideoCodec = typeof CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS[number];
 export type CustomDecodeCodec = CustomAudioCodec | CustomVideoCodec;
 export type CustomDecodeCapabilityStatus = 'supported' | 'unsupported' | 'unknown';
 export type CustomDecodeCapabilityReason =
@@ -158,35 +152,24 @@ export type CustomDecodeCapabilities = {
     bundledVC1?: MPEG2VC1ExactCapability
     bundledTrueHD?: TrueHDExactCapability
     h264Profiles?: H264ProfileCapabilities
-    hevcRangeExtensions?: Readonly<Record<
-        HEVCRangeExtensionVariant,
-        HEVCRangeExtensionCapability
-    >>
+    hevcRangeExtensions?: Readonly<Record<HEVCRangeExtensionVariant, HEVCRangeExtensionCapability>>
     nativeDolbyVisionHEVC?: CustomNativeDolbyVisionHEVCCapability
     nativeHDRHEVC?: CustomNativeHDRHEVCCapability
-    nativeSurroundAudio?: Readonly<Record<
-        CustomNativeSurroundAudioCodec,
-        CustomNativeSurroundAudioCodecCapability
-    >>
-    nativeUltraHDVideo?: Readonly<Record<
-        CustomNativeUltraHDVideoCodec,
-        CustomNativeUltraHDVideoCodecCapability
-    >>
+    nativeSurroundAudio?: Readonly<Record<CustomNativeSurroundAudioCodec, CustomNativeSurroundAudioCodecCapability>>
+    nativeUltraHDVideo?: Readonly<Record<CustomNativeUltraHDVideoCodec, CustomNativeUltraHDVideoCodecCapability>>
     rawHDRVideo: Readonly<Record<CustomRawHDRVideoCodec, CustomRawHDRVideoCodecCapability>>
     telemetry: Readonly<CustomDecodeProbeTelemetry>
     video: Readonly<Record<CustomVideoCodec, CustomDecodeCodecCapability<CustomVideoCodec>>>
 };
 
-export type CustomNativeSurroundAudioCodecCapability =
-    CustomDecodeCodecCapability<CustomNativeSurroundAudioCodec> & {
-        inputChannelCount: typeof NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_CHANNEL_COUNT
-        sampleRate: typeof NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_SAMPLE_RATE
-    };
+export type CustomNativeSurroundAudioCodecCapability = CustomDecodeCodecCapability<CustomNativeSurroundAudioCodec> & {
+    inputChannelCount: typeof NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_CHANNEL_COUNT
+    sampleRate: typeof NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_SAMPLE_RATE
+};
 
-export type CustomNativeUltraHDVideoCodecCapability =
-    CustomDecodeCodecCapability<CustomNativeUltraHDVideoCodec> & {
-        bitDepth: typeof CUSTOM_NATIVE_VIDEO_BIT_DEPTH
-    };
+export type CustomNativeUltraHDVideoCodecCapability = CustomDecodeCodecCapability<CustomNativeUltraHDVideoCodec> & {
+    bitDepth: typeof CUSTOM_NATIVE_VIDEO_BIT_DEPTH
+};
 
 /** Returns whether an exact SDR output vector qualified the native codec route. */
 export function hasSupportedNativeSDRVideoCodec(
@@ -197,16 +180,14 @@ export function hasSupportedNativeSDRVideoCodec(
         || capabilities.nativeUltraHDVideo?.[codec].status === 'supported';
 }
 
-export type CustomNativeDolbyVisionHEVCCapability =
-    CustomDecodeCodecCapability<'hevc'> & {
-        bitDepth: 10
-        profile: 5
-    };
+export type CustomNativeDolbyVisionHEVCCapability = CustomDecodeCodecCapability<'hevc'> & {
+    bitDepth: 10
+    profile: 5
+};
 
-export type CustomNativeHDRHEVCCapability =
-    CustomDecodeCodecCapability<'hevc'> & {
-        bitDepth: 10
-    };
+export type CustomNativeHDRHEVCCapability = CustomDecodeCodecCapability<'hevc'> & {
+    bitDepth: 10
+};
 
 export type CustomRawHDRVideoCapabilityReason =
     | 'api-unavailable'
@@ -1391,7 +1372,7 @@ NativeDolbyVisionVideoOutputProbe | null {
     };
 }
 
-/** Creates the same exact output probe for ordinary native Main10 HDR. */
+/** Reuses the Profile 5 output probe for ordinary native HEVC Main 10 HDR. */
 export function createNativeHDRVideoOutputProbe(): NativeDolbyVisionVideoOutputProbe | null {
     return createNativeDolbyVisionVideoOutputProbe();
 }
@@ -1779,7 +1760,7 @@ async function probeH264Profiles(
                 return capabilities;
             }
         } catch {
-            // Fall through to the immutable unavailable result
+            // Fall through to the unavailable result
         }
     }
     return new H264ProfileCapabilityProbe({
@@ -2303,6 +2284,7 @@ function getVideoProbeCount(environment: WebCodecsCapabilityEnvironment): number
     if (!environment.videoDecoder) {
         return bundledProbeCount;
     }
+    // The 2 counts the native Profile 5 and HEVC Main 10 HDR probes
     return VIDEO_PROBE_DEFINITIONS.length
         + NATIVE_ULTRA_HD_VIDEO_PROBE_DEFINITIONS.length
         + 2
@@ -2561,7 +2543,7 @@ function createHEVCRangeExtensionCapabilities(
     return Object.freeze(hevcRangeExtensions);
 }
 
-/** Performs one cached, coarse WebCodecs decoder capability probe. */
+/** Probes the decode capabilities of WebCodecs and the bundled decoders once, and caches the result. */
 export default class CustomDecodeCapabilityProbe {
     private cachedProbe: Promise<CustomDecodeCapabilities> | null = null;
     private readonly environment: WebCodecsCapabilityEnvironment | null;
@@ -2710,6 +2692,7 @@ export default class CustomDecodeCapabilityProbe {
         );
         const telemetry = Object.freeze({
             audioProbeCount: environment.audioDecoder ? AUDIO_PROBE_DEFINITIONS.length : 0,
+            // Plus DTS, MLP, and TrueHD
             bundledAudioCodecCount: BUNDLED_AUDIO_CODEC_DEFINITIONS.length + 3,
             nativeSurroundAudioProbeCount: getNativeSurroundAudioProbeCount(environment),
             nativeHDRVideoProbeCount: environment.videoDecoder

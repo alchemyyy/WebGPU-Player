@@ -92,9 +92,7 @@ export type CustomDecodeAudioResyncOptions = {
     audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
     audioDownmixSettings?: AudioDownmixSettings
     /** Builds the output for the new layout after the previous bridge has stopped */
-    createAudioBridge: (
-        audioConfiguration: DecodeWorkerAudioConfiguration
-    ) => Promise<CustomDecodeAudioBridge>
+    createAudioBridge: (audioConfiguration: DecodeWorkerAudioConfiguration) => Promise<CustomDecodeAudioBridge>
     decodedAudioOutputChannelCount: CustomAudioOutputChannelCount
     targetTimeMicroseconds: Microseconds
 };
@@ -338,17 +336,13 @@ function isValidVideoOutputMode(value: string): value is CustomDecodeVideoOutput
 }
 
 function isValidVideoDecoderBackend(value: string): value is CustomDecodeVideoDecoderBackend {
-    return value === 'bundled-hevc'
-        || value === 'ffmpeg-mpeg2-vc1'
-        || value === 'native'
-        || value === 'openjpeg';
+    return value === 'bundled-hevc' || value === 'ffmpeg-mpeg2-vc1' || value === 'native' || value === 'openjpeg';
 }
 
 function isNativeMediaAudioConfiguration(
     configuration: DecodeWorkerReadyAudioConfiguration
 ): configuration is DecodeWorkerNativeMediaAudioConfiguration {
-    return 'outputMode' in configuration
-        && configuration.outputMode === 'native-media';
+    return 'outputMode' in configuration && configuration.outputMode === 'native-media';
 }
 
 function hasValidRawVideoFrameFormat(options: CustomDecodeSessionStartOptions): boolean {
@@ -360,9 +354,7 @@ function hasValidRawVideoFrameFormat(options: CustomDecodeSessionStartOptions): 
     }
 }
 
-function validateRawVideoFrameCopyLayout(
-    options: CustomDecodeSessionStartOptions
-): void {
+function validateRawVideoFrameCopyLayout(options: CustomDecodeSessionStartOptions): void {
     if (options.videoOutputMode !== 'raw-planes') {
         return;
     }
@@ -412,8 +404,7 @@ function validateDecodedAudioOutputChannelCount(
         && outputChannelCount !== 8) {
         throw new RangeError('Decoded audio output channel count must be 2, 6, or 8');
     }
-    if (outputChannelCount !== undefined
-        && (options.audioTrackIndex == null || audioOutputMode !== 'decoded-pcm')) {
+    if (outputChannelCount !== undefined && (options.audioTrackIndex == null || audioOutputMode !== 'decoded-pcm')) {
         throw new TypeError('Decoded audio output channels require decoded PCM audio');
     }
     if (options.audioDownmixSettings !== undefined) {
@@ -424,9 +415,7 @@ function validateDecodedAudioOutputChannelCount(
     }
 }
 
-function validateAudioDownmixAlgorithm(
-    options: CustomDecodeSessionStartOptions
-): void {
+function validateAudioDownmixAlgorithm(options: CustomDecodeSessionStartOptions): void {
     if (options.audioDownmixAlgorithm === undefined) {
         return;
     }
@@ -449,14 +438,11 @@ function getReadyAudioConfigurationError(
         return null;
     }
 
-    const responseOutputMode = isNativeMediaAudioConfiguration(audioConfiguration) ?
-        'native-media' :
-        'decoded-pcm';
+    const responseOutputMode = isNativeMediaAudioConfiguration(audioConfiguration) ? 'native-media' : 'decoded-pcm';
     if (responseOutputMode !== workerRecord.audioOutputMode) {
         return 'Decoded audio output mode did not match the request';
     }
-    if (responseOutputMode === 'decoded-pcm'
-        && audioConfiguration.channelCount !== workerRecord.decodedAudioOutputChannelCount) {
+    if (responseOutputMode === 'decoded-pcm' && audioConfiguration.channelCount !== workerRecord.decodedAudioOutputChannelCount) {
         return 'Decoded audio channel count did not match the request';
     }
     return null;
@@ -491,11 +477,8 @@ function validateAudioStartOptions(
     if (audioOutputMode === 'decoded-pcm' && !decodedAudioAvailable) {
         throw new Error('Custom audio decode requires an AudioWorklet bridge');
     }
-    if (audioOutputMode === 'native-media'
-        && (!nativeAudioAvailable || options.durationMicroseconds == null)) {
-        throw new Error(
-            'Native media audio requires an owned backend factory and a finite duration'
-        );
+    if (audioOutputMode === 'native-media' && (!nativeAudioAvailable || options.durationMicroseconds == null)) {
+        throw new Error('Native media audio requires an owned backend factory and a finite duration');
     }
 }
 
@@ -503,11 +486,7 @@ function validateHDRStartOptions(options: CustomDecodeSessionStartOptions): void
     if (typeof options.neutralizeHDRColorMetadata !== 'boolean') {
         throw new TypeError('Custom decode HDR color neutralization flag is invalid');
     }
-    if (
-        options.nativeHDRTransfer !== null
-        && options.nativeHDRTransfer !== 'hlg'
-        && options.nativeHDRTransfer !== 'pq'
-    ) {
+    if (options.nativeHDRTransfer !== null && options.nativeHDRTransfer !== 'hlg' && options.nativeHDRTransfer !== 'pq') {
         throw new TypeError('Custom decode native HDR transfer is invalid');
     }
     const invalidRoute = options.neutralizeHDRColorMetadata ?
@@ -517,9 +496,7 @@ function validateHDRStartOptions(options: CustomDecodeSessionStartOptions): void
             || options.dolbyVisionProfile !== null) :
         options.nativeHDRTransfer !== null;
     if (invalidRoute) {
-        throw new TypeError(
-            'HDR color neutralization requires native non-Dolby VideoFrame output'
-        );
+        throw new TypeError('HDR color neutralization requires native non-Dolby VideoFrame output');
     }
 }
 
@@ -595,9 +572,7 @@ export default class CustomDecodeSession {
                 ...(options.discardDolbyVisionEnhancementLayer ? { discardDolbyVisionEnhancementLayer: true } : {}),
                 dolbyVisionProfile: options.dolbyVisionProfile,
                 dolbyVisionRPUParserWASMURL: resolveDolbyVisionRPUParserWASMURL(),
-                frameCredits: options.videoOutputMode === 'raw-planes' ?
-                    MAX_DECODED_RAW_FRAME_CREDITS :
-                    MAX_DECODED_FRAME_CREDITS,
+                frameCredits: options.videoOutputMode === 'raw-planes' ? MAX_DECODED_RAW_FRAME_CREDITS : MAX_DECODED_FRAME_CREDITS,
                 generation: options.generation,
                 maximumCodedHeight: options.maximumCodedHeight,
                 maximumCodedWidth: options.maximumCodedWidth,
@@ -618,13 +593,11 @@ export default class CustomDecodeSession {
             if (workerRecord.audioOutputMode === 'native-media') {
                 startRequest.audioOutputMode = 'native-media';
             }
-            if (workerRecord.audioOutputMode === 'decoded-pcm'
-                && options.audioDownmixAlgorithm !== undefined) {
+            if (workerRecord.audioOutputMode === 'decoded-pcm' && options.audioDownmixAlgorithm !== undefined) {
                 startRequest.audioDownmixAlgorithm = options.audioDownmixAlgorithm;
             }
             if (options.decodedAudioOutputChannelCount !== undefined) {
-                startRequest.decodedAudioOutputChannelCount =
-                    options.decodedAudioOutputChannelCount;
+                startRequest.decodedAudioOutputChannelCount = options.decodedAudioOutputChannelCount;
             }
             this.postRequest(workerRecord, startRequest);
         } catch {
@@ -674,8 +647,8 @@ export default class CustomDecodeSession {
     }
 
     /**
-     * Posts a live gain snapshot only after a stereo decoded PCM worker is
-     * configured. Any declared source can decode to a bed that folds down.
+     * Posts a live gain snapshot only after a stereo decoded PCM worker is configured.
+     * Any declared source can decode to a bed that folds down.
      */
     public updateAudioDownmixSettings(settings: AudioDownmixSettings): boolean {
         assertValidAudioDownmixSettings(settings);
@@ -708,10 +681,7 @@ export default class CustomDecodeSession {
         }
     }
 
-    /**
-     * Returns native audio time only after decoded element progress qualified it,
-     * and never once the element played to the end of its media.
-     */
+    /** Returns native audio time only after decoded element progress qualified it, and never once the element played to the end of its media. */
     public getNativeAudioTimeMicroseconds(): Microseconds | null {
         if (this.telemetry.nativeAudioEnded) {
             return null;
@@ -744,8 +714,7 @@ export default class CustomDecodeSession {
 
         let selectedFrameIndex = -1;
         for (let frameIndex = 0; frameIndex < this.queuedFrames.length; frameIndex += 1) {
-            if (this.queuedFrames[frameIndex].presentationFrame.mediaTimeMicroseconds
-                > targetTimeMicroseconds) {
+            if (this.queuedFrames[frameIndex].presentationFrame.mediaTimeMicroseconds > targetTimeMicroseconds) {
                 break;
             }
             selectedFrameIndex = frameIndex;
@@ -768,10 +737,7 @@ export default class CustomDecodeSession {
                 closePresentationFrame(droppedFrame.presentationFrame);
                 continue;
             }
-            if (!this.recycleFrameBuffer(
-                droppedFrame.workerRecord,
-                droppedFrame.presentationFrame.frame.data
-            )) {
+            if (!this.recycleFrameBuffer(droppedFrame.workerRecord, droppedFrame.presentationFrame.frame.data)) {
                 this.abandonPresentationFrame(droppedFrame.presentationFrame);
                 for (
                     let abandonedFrameIndex = frameIndex + 1;
@@ -788,16 +754,10 @@ export default class CustomDecodeSession {
         }
 
         this.telemetry.takenFrameCount += 1;
-        this.pendingFrames.set(
-            selectedQueuedFrame.presentationFrame,
-            selectedQueuedFrame.workerRecord
-        );
+        this.pendingFrames.set(selectedQueuedFrame.presentationFrame, selectedQueuedFrame.workerRecord);
         this.telemetry.pendingFrameCount = this.pendingFrames.size;
         if (selectedQueuedFrame.presentationFrame.outputMode === 'video-frame') {
-            this.requestReplacementFrames(
-                selectedQueuedFrame.workerRecord,
-                consumedFrames.length
-            );
+            this.requestReplacementFrames(selectedQueuedFrame.workerRecord, consumedFrames.length);
         }
 
         return selectedQueuedFrame.presentationFrame;
@@ -864,9 +824,9 @@ export default class CustomDecodeSession {
     }
 
     /**
-     * Restarts only decoded audio at a target with a new output layout while video
-     * continues. The previous bridge stops at once and samples from earlier audio
-     * epochs are discarded. Resolves to the new epoch, or null when not issued.
+     * Restarts only decoded audio at a target with a new output layout while video continues.
+     * The previous bridge stops at once and samples from earlier audio epochs are discarded.
+     * Resolves to the new epoch, or null when not issued.
      */
     public async resyncAudio(options: CustomDecodeAudioResyncOptions): Promise<number | null> {
         requireMicroseconds(options.targetTimeMicroseconds, 'Audio resync target time');
@@ -874,8 +834,7 @@ export default class CustomDecodeSession {
         if (outputChannelCount !== 2 && outputChannelCount !== 6 && outputChannelCount !== 8) {
             throw new RangeError('Decoded audio output channel count must be 2, 6, or 8');
         }
-        if (options.audioDownmixAlgorithm !== undefined
-            && !isCustomAudioDownmixAlgorithm(options.audioDownmixAlgorithm)) {
+        if (options.audioDownmixAlgorithm !== undefined && !isCustomAudioDownmixAlgorithm(options.audioDownmixAlgorithm)) {
             throw new TypeError('Custom decode audio downmix algorithm is invalid');
         }
         if (options.audioDownmixSettings !== undefined) {
@@ -915,18 +874,14 @@ export default class CustomDecodeSession {
             audioBridge = await options.createAudioBridge(resyncedAudioConfiguration);
         } catch {
             if (this.isAudioEpochCurrent(workerRecord, audioEpoch)) {
-                this.handleAudioOutputFailure(
-                    workerRecord,
-                    'Unable to create the resynchronized audio output'
-                );
+                this.handleAudioOutputFailure(workerRecord, 'Unable to create the resynchronized audio output');
             }
             return null;
         }
         if (!this.isAudioEpochCurrent(workerRecord, audioEpoch)) {
             return null;
         }
-        // Decode can finish while the bridge is built; the finished run never sees
-        // the resync, so the bridge starts empty and lets playback drain to its end
+        // Decode can finish while the bridge is built; the finished run never sees the resync, so the bridge starts empty and lets playback drain to its end
         const decodeEnded = this.isDecodeEnded();
 
         workerRecord.audioConfiguration = resyncedAudioConfiguration;
@@ -951,11 +906,7 @@ export default class CustomDecodeSession {
                 audioConfiguration: resyncedAudioConfiguration,
                 callbacks: {
                     onCreditsReleased: audioSampleCredits => {
-                        this.requestReplacementAudioSamples(
-                            workerRecord,
-                            audioSampleCredits,
-                            audioEpoch
-                        );
+                        this.requestReplacementAudioSamples(workerRecord, audioSampleCredits, audioEpoch);
                     },
                     onFailure: message => {
                         if (workerRecord.audioEpoch === audioEpoch) {
@@ -1003,10 +954,7 @@ export default class CustomDecodeSession {
         if (typeof options.url !== 'string' || !options.url) {
             throw new TypeError('Custom decode URL must be a non-empty string');
         }
-        if (
-            !isValidCodedDimension(options.maximumCodedWidth)
-            || !isValidCodedDimension(options.maximumCodedHeight)
-        ) {
+        if (!isValidCodedDimension(options.maximumCodedWidth) || !isValidCodedDimension(options.maximumCodedHeight)) {
             throw new RangeError('Custom decode coded dimensions must be positive safe integers');
         }
         if (!isValidTrackIndex(options.videoTrackIndex)) {
@@ -1044,10 +992,7 @@ export default class CustomDecodeSession {
         validateRawVideoFrameCopyLayout(options);
     }
 
-    private createWorkerRecord(
-        worker: Worker,
-        options: CustomDecodeSessionStartOptions
-    ): WorkerRecord {
+    private createWorkerRecord(worker: Worker, options: CustomDecodeSessionStartOptions): WorkerRecord {
         const workerRecord: WorkerRecord = {
             audioConfiguration: null,
             audioEpoch: 0,
@@ -1179,19 +1124,12 @@ export default class CustomDecodeSession {
                 this.closeQueuedFrames();
                 this.clearPendingFrames();
                 void this.beginWorkerRetirement(workerRecord);
-                this.failSession(
-                    messageValue.generation,
-                    messageValue.failureKind,
-                    messageValue.message
-                );
+                this.failSession(messageValue.generation, messageValue.failureKind, messageValue.message);
                 break;
         }
     }
 
-    private handleReadyResponse(
-        workerRecord: WorkerRecord,
-        message: DecodeWorkerReadyResponse
-    ): void {
+    private handleReadyResponse(workerRecord: WorkerRecord, message: DecodeWorkerReadyResponse): void {
         if (workerRecord.configurationReceived || this.telemetry.state !== 'starting') {
             this.handleDecodeProtocolFailure(workerRecord, 'The custom decode worker sent duplicate readiness');
             return;
@@ -1202,10 +1140,7 @@ export default class CustomDecodeSession {
             workerRecord.maximumCodedWidth,
             workerRecord.maximumCodedHeight
         )) {
-            this.handleDecodeProtocolFailure(
-                workerRecord,
-                'The selected video track exceeds its negotiated decode route'
-            );
+            this.handleDecodeProtocolFailure(workerRecord, 'The selected video track exceeds its negotiated decode route');
             return;
         }
         const audioConfiguration = message.audio;
@@ -1218,10 +1153,7 @@ export default class CustomDecodeSession {
             displayHeight: message.displayHeight,
             displayWidth: message.displayWidth
         };
-        const audioConfigurationError = getReadyAudioConfigurationError(
-            workerRecord,
-            audioConfiguration
-        );
+        const audioConfigurationError = getReadyAudioConfigurationError(workerRecord, audioConfiguration);
         if (audioConfigurationError) {
             this.handleAudioOutputFailure(workerRecord, audioConfigurationError);
             return;
@@ -1231,10 +1163,8 @@ export default class CustomDecodeSession {
         workerRecord.containerDurationMicroseconds = message.containerDurationMicroseconds ?? null;
         const staticHDRMetadataScan = message.staticHDRMetadataScan ?? null;
         workerRecord.staticHDRMetadata = staticHDRMetadataScan?.metadata ?? null;
-        this.telemetry.staticHDRMetadataFirstAccessUnitIndex =
-            staticHDRMetadataScan?.firstMetadataAccessUnitIndex ?? null;
-        this.telemetry.staticHDRMetadataScanAccessUnitCount =
-            staticHDRMetadataScan?.accessUnitCount ?? 0;
+        this.telemetry.staticHDRMetadataFirstAccessUnitIndex = staticHDRMetadataScan?.firstMetadataAccessUnitIndex ?? null;
+        this.telemetry.staticHDRMetadataScanAccessUnitCount = staticHDRMetadataScan?.accessUnitCount ?? 0;
         this.telemetry.staticHDRMetadataStatus = staticHDRMetadataScan?.status ?? null;
         workerRecord.audioMediaReady = audioConfiguration === null;
         this.telemetry.state = 'configured';
@@ -1242,9 +1172,7 @@ export default class CustomDecodeSession {
             audio: audioConfiguration,
             codec: videoCodec,
             generation: workerRecord.generation,
-            ...(workerRecord.staticHDRMetadata ? {
-                staticHDRMetadata: workerRecord.staticHDRMetadata
-            } : {}),
+            ...(workerRecord.staticHDRMetadata ? { staticHDRMetadata: workerRecord.staticHDRMetadata } : {}),
             type: 'configured'
         });
 
@@ -1259,12 +1187,7 @@ export default class CustomDecodeSession {
         }
 
         if (this.configuredAudioBridge) {
-            this.completeReady(
-                workerRecord,
-                videoCodec,
-                audioConfiguration,
-                this.configuredAudioBridge
-            );
+            this.completeReady(workerRecord, videoCodec, audioConfiguration, this.configuredAudioBridge);
             return;
         }
 
@@ -1318,10 +1241,7 @@ export default class CustomDecodeSession {
             await this.nativeAudioStopTail;
         } catch {
             if (this.isWorkerCurrent(workerRecord)) {
-                this.handleAudioOutputFailure(
-                    workerRecord,
-                    'Unable to retire the previous native media audio output'
-                );
+                this.handleAudioOutputFailure(workerRecord, 'Unable to retire the previous native media audio output');
             }
             return;
         }
@@ -1370,25 +1290,16 @@ export default class CustomDecodeSession {
                 generation: workerRecord.generation,
                 startTimeMicroseconds: workerRecord.startTimeMicroseconds
             });
-            if (!started
-                || !this.isWorkerCurrent(workerRecord)
-                || this.activeNativeAudioBridge !== nativeAudioBridge) {
+            if (!started || !this.isWorkerCurrent(workerRecord) || this.activeNativeAudioBridge !== nativeAudioBridge) {
                 return;
             }
             workerRecord.nativeAudioBridgeStarted = true;
-            this.requestReplacementAudioSamples(
-                workerRecord,
-                nativeAudioBridge.initialAudioSegmentCredits
-            );
+            this.requestReplacementAudioSamples(workerRecord, nativeAudioBridge.initialAudioSegmentCredits);
             // An audio track that ended while the output was opening completes now
             this.completeEndedAudioTrack(workerRecord);
         } catch {
-            if (this.isWorkerCurrent(workerRecord)
-                && this.activeNativeAudioBridge === nativeAudioBridge) {
-                this.handleAudioOutputFailure(
-                    workerRecord,
-                    'Unable to initialize native media audio output'
-                );
+            if (this.isWorkerCurrent(workerRecord) && this.activeNativeAudioBridge === nativeAudioBridge) {
+                this.handleAudioOutputFailure(workerRecord, 'Unable to initialize native media audio output');
             }
         }
     }
@@ -1423,10 +1334,7 @@ export default class CustomDecodeSession {
                 this.handleAudioOutputFailure(workerRecord, 'Unable to initialize decoded audio output');
                 return;
             }
-            this.requestReplacementAudioSamples(
-                workerRecord,
-                audioBridge.initialAudioSampleCredits
-            );
+            this.requestReplacementAudioSamples(workerRecord, audioBridge.initialAudioSampleCredits);
             if (!this.isWorkerCurrent(workerRecord)) {
                 return;
             }
@@ -1475,18 +1383,13 @@ export default class CustomDecodeSession {
     }
 
     private isWorkerCurrent(workerRecord: WorkerRecord): boolean {
-        return this.activeWorker === workerRecord
-            && this.telemetry.activeGeneration === workerRecord.generation;
+        return this.activeWorker === workerRecord && this.telemetry.activeGeneration === workerRecord.generation;
     }
 
     /** Advances the video epoch of a live worker; an ended run cannot restart video. */
     private beginVideoEpoch(): WorkerRecord | null {
         const workerRecord = this.activeWorker;
-        if (
-            !workerRecord
-            || !this.isWorkerCurrent(workerRecord)
-            || this.telemetry.state === 'ended'
-        ) {
+        if (!workerRecord || !this.isWorkerCurrent(workerRecord) || this.telemetry.state === 'ended') {
             return null;
         }
 
@@ -1516,35 +1419,23 @@ export default class CustomDecodeSession {
         this.requestReplacementFrames(workerRecord, releasedFrameCredits);
     }
 
-    private handleFrameResponse(
-        workerRecord: WorkerRecord,
-        message: DecodeWorkerFrameResponse
-    ): void {
+    private handleFrameResponse(workerRecord: WorkerRecord, message: DecodeWorkerFrameResponse): void {
         // A mismatched output mode still reaches the enqueue protocol failure
-        if (
-            (message.videoEpoch ?? 0) !== workerRecord.videoEpoch
-            && message.outputMode === workerRecord.videoOutputMode
-        ) {
+        if ((message.videoEpoch ?? 0) !== workerRecord.videoEpoch && message.outputMode === workerRecord.videoOutputMode) {
             this.discardStaleEpochFrame(workerRecord, message);
             return;
         }
         this.enqueueFrame(workerRecord, message);
     }
 
-    private handleVideoEndedResponse(
-        workerRecord: WorkerRecord,
-        message: DecodeWorkerVideoEndedResponse
-    ): void {
+    private handleVideoEndedResponse(workerRecord: WorkerRecord, message: DecodeWorkerVideoEndedResponse): void {
         // A replaced epoch's end says nothing about the restarted video
         if (message.videoEpoch === workerRecord.videoEpoch) {
             this.telemetry.videoEnded = true;
         }
     }
 
-    private handleAudioEndedResponse(
-        workerRecord: WorkerRecord,
-        message: DecodeWorkerAudioEndedResponse
-    ): void {
+    private handleAudioEndedResponse(workerRecord: WorkerRecord, message: DecodeWorkerAudioEndedResponse): void {
         // A replaced epoch's end says nothing about the restarted audio
         if (message.audioEpoch !== workerRecord.audioEpoch) {
             return;
@@ -1558,10 +1449,9 @@ export default class CustomDecodeSession {
     }
 
     /**
-     * Lets an audio track that ended stand in for the PCM a start, a seek, or a
-     * resync waits for, since none will arrive past its end, and ends a
-     * native-media stream so its element plays out instead of stalling. Waits
-     * until the epoch's output exists.
+     * Lets an audio track that ended stand in for the PCM a start, a seek, or a resync waits for, since none will arrive past its end.
+     * It also ends a native-media stream, so its element plays out instead of stalling.
+     * Waits until the epoch's output exists.
      */
     private completeEndedAudioTrack(workerRecord: WorkerRecord): void {
         if (!workerRecord.audioTrackEnded || !this.isWorkerCurrent(workerRecord)) {
@@ -1613,15 +1503,11 @@ export default class CustomDecodeSession {
         }
         workerRecord.nativeAudioEndOfStreamRequested = true;
         void nativeAudioBridge.endOfStream(workerRecord.generation).then(ended => {
-            if (!this.isWorkerCurrent(workerRecord)
-                || this.activeNativeAudioBridge !== nativeAudioBridge) {
+            if (!this.isWorkerCurrent(workerRecord) || this.activeNativeAudioBridge !== nativeAudioBridge) {
                 return;
             }
             if (!ended) {
-                this.handleAudioOutputFailure(
-                    workerRecord,
-                    'Native audio output rejected end of stream'
-                );
+                this.handleAudioOutputFailure(workerRecord, 'Native audio output rejected end of stream');
                 return;
             }
             workerRecord.nativeAudioEndOfStreamAccepted = true;
@@ -1645,10 +1531,7 @@ export default class CustomDecodeSession {
     }
 
     /** Drops a frame that was in flight when its video epoch was replaced. */
-    private discardStaleEpochFrame(
-        workerRecord: WorkerRecord,
-        message: DecodeWorkerFrameResponse
-    ): void {
+    private discardStaleEpochFrame(workerRecord: WorkerRecord, message: DecodeWorkerFrameResponse): void {
         this.telemetry.staleFrameCount += 1;
         if (message.outputMode === 'video-frame') {
             message.frame.close();
@@ -1665,9 +1548,7 @@ export default class CustomDecodeSession {
         this.activeAudioBridge = null;
         if (this.activeNativeAudioBridge) {
             const nativeAudioBridge = this.activeNativeAudioBridge;
-            const stopPromise = generation === null ?
-                nativeAudioBridge.stop() :
-                nativeAudioBridge.stop(generation);
+            const stopPromise = generation === null ? nativeAudioBridge.stop() : nativeAudioBridge.stop(generation);
             this.nativeAudioStopScheduled = true;
             this.nativeAudioStopTail = Promise.all([
                 this.nativeAudioStopTail,
@@ -1701,10 +1582,7 @@ export default class CustomDecodeSession {
         const boundedFrameCount = workerRecord.videoOutputMode === 'raw-planes' ?
             this.queuedFrames.length + this.pendingFrames.size :
             this.queuedFrames.length;
-        if (
-            message.outputMode !== workerRecord.videoOutputMode
-            || boundedFrameCount >= maximumQueuedFrames
-        ) {
+        if (message.outputMode !== workerRecord.videoOutputMode || boundedFrameCount >= maximumQueuedFrames) {
             if (message.outputMode === 'video-frame') {
                 message.frame.close();
             } else {
@@ -1768,10 +1646,7 @@ export default class CustomDecodeSession {
             presentationFrame.durationMicroseconds
         );
         this.telemetry.queuedFrameCount = this.queuedFrames.length;
-        this.telemetry.peakFrameCount = Math.max(
-            this.telemetry.peakFrameCount,
-            this.queuedFrames.length + this.pendingFrames.size
-        );
+        this.telemetry.peakFrameCount = Math.max(this.telemetry.peakFrameCount, this.queuedFrames.length + this.pendingFrames.size);
         this.telemetry.receivedFrameCount += 1;
         this.recordDolbyVisionMetadata(message);
         this.recordHDR10PlusMetadata(message);
@@ -1813,20 +1688,14 @@ export default class CustomDecodeSession {
         }
     }
 
-    private validateRawFrameGeometry(
-        workerRecord: WorkerRecord,
-        message: DecodeWorkerFrameResponse
-    ): boolean {
+    private validateRawFrameGeometry(workerRecord: WorkerRecord, message: DecodeWorkerFrameResponse): boolean {
         if (message.outputMode !== 'raw-planes') {
             return true;
         }
         const videoGeometry = workerRecord.videoGeometry;
         if (!videoGeometry) {
             this.telemetry.abandonedRawFrameCount += 1;
-            this.handleDecodeProtocolFailure(
-                workerRecord,
-                'Decoded raw frame arrived before video track configuration'
-            );
+            this.handleDecodeProtocolFailure(workerRecord, 'Decoded raw frame arrived before video track configuration');
             return false;
         }
         try {
@@ -1853,10 +1722,7 @@ export default class CustomDecodeSession {
         }
     }
 
-    private enqueueAudioSample(
-        workerRecord: WorkerRecord,
-        message: DecodeWorkerAudioResponse
-    ): void {
+    private enqueueAudioSample(workerRecord: WorkerRecord, message: DecodeWorkerAudioResponse): void {
         if ((message.audioEpoch ?? 0) !== workerRecord.audioEpoch) {
             // The resync request already replaced this attempt's credit window
             this.telemetry.staleAudioSampleCount += 1;
@@ -1883,11 +1749,7 @@ export default class CustomDecodeSession {
                 this.telemetry.submittedAudioFrameCount += enqueueResult.frameCount;
                 this.telemetry.submittedAudioSampleCount += 1;
                 if (workerRecord.audioResyncPending) {
-                    this.recordResyncedAudioSubmission(
-                        workerRecord,
-                        enqueueResult.frameCount,
-                        message.sampleRate
-                    );
+                    this.recordResyncedAudioSubmission(workerRecord, enqueueResult.frameCount, message.sampleRate);
                     break;
                 }
                 workerRecord.audioMediaReady = audioFramesToMicroseconds(
@@ -1947,25 +1809,17 @@ export default class CustomDecodeSession {
         void nativeAudioBridge.enqueueInitialization(message);
     }
 
-    private enqueueNativeAudioMedia(
-        workerRecord: WorkerRecord,
-        message: DecodeWorkerNativeAudioMediaResponse
-    ): void {
+    private enqueueNativeAudioMedia(workerRecord: WorkerRecord, message: DecodeWorkerNativeAudioMediaResponse): void {
         const nativeAudioBridge = this.activeNativeAudioBridge;
         if (workerRecord.audioOutputMode !== 'native-media' || !nativeAudioBridge) {
-            this.handleDecodeProtocolFailure(
-                workerRecord,
-                'The custom decode worker returned unexpected native audio media'
-            );
+            this.handleDecodeProtocolFailure(workerRecord, 'The custom decode worker returned unexpected native audio media');
             return;
         }
         this.telemetry.lastAudioMediaTimeMicroseconds = message.startTimeMicroseconds;
         this.telemetry.receivedAudioSampleCount += 1;
         this.telemetry.receivedNativeAudioSegmentCount += 1;
         void nativeAudioBridge.enqueueMedia(message).then(appended => {
-            if (appended
-                && this.isWorkerCurrent(workerRecord)
-                && this.activeNativeAudioBridge === nativeAudioBridge) {
+            if (appended && this.isWorkerCurrent(workerRecord) && this.activeNativeAudioBridge === nativeAudioBridge) {
                 workerRecord.audioMediaReady = true;
                 this.emitReadyEventIfMediaReady(workerRecord);
             }
@@ -1980,10 +1834,7 @@ export default class CustomDecodeSession {
         }
         const nativeAudioBridge = this.activeNativeAudioBridge;
         if (!nativeAudioBridge) {
-            this.handleAudioOutputFailure(
-                workerRecord,
-                'Native audio output ended without an active backend'
-            );
+            this.handleAudioOutputFailure(workerRecord, 'Native audio output ended without an active backend');
             return;
         }
         // The audio end usually requested end of stream already; a bridge still opening requests it once started
@@ -1996,9 +1847,7 @@ export default class CustomDecodeSession {
     /** Ends a native-media session once decode ended and the element played out its completed stream. */
     private completeNativeAudioWorkerEndedIfReady(workerRecord: WorkerRecord): void {
         // Audio that ended before video ends its element first; video still plays on
-        if (!workerRecord.decodeEnded
-            || !workerRecord.nativeAudioElementEnded
-            || !workerRecord.nativeAudioEndOfStreamAccepted) {
+        if (!workerRecord.decodeEnded || !workerRecord.nativeAudioElementEnded || !workerRecord.nativeAudioEndOfStreamAccepted) {
             return;
         }
         this.completeWorkerEnded(workerRecord);
@@ -2012,10 +1861,7 @@ export default class CustomDecodeSession {
         this.emitEvent({ generation: workerRecord.generation, type: 'ended' });
     }
 
-    private requestReplacementFrames(
-        workerRecord: WorkerRecord,
-        frameCredits: number
-    ): void {
+    private requestReplacementFrames(workerRecord: WorkerRecord, frameCredits: number): void {
         if (!this.isWorkerCurrent(workerRecord) || frameCredits <= 0) {
             return;
         }
@@ -2174,11 +2020,7 @@ export default class CustomDecodeSession {
             this.stopActiveAudioPaths(workerRecord.generation);
             this.closeQueuedFrames();
             this.clearPendingFrames();
-            this.failSession(
-                workerRecord.generation,
-                'decode-failed',
-                'Unable to recycle the decoded raw frame buffer'
-            );
+            this.failSession(workerRecord.generation, 'decode-failed', 'Unable to recycle the decoded raw frame buffer');
             this.finishWorker(workerRecord);
             return false;
         }
@@ -2205,9 +2047,7 @@ export default class CustomDecodeSession {
         }
 
         workerRecord.retirementTimer = globalThis.setTimeout(() => {
-            console.warn(
-                `Custom decode worker generation ${workerRecord.generation} did not acknowledge shutdown`
-            );
+            console.warn(`Custom decode worker generation ${workerRecord.generation} did not acknowledge shutdown`);
             this.finishWorker(workerRecord);
         }, WORKER_STOP_TIMEOUT_MILLISECONDS);
         return workerRecord.retirementPromise;

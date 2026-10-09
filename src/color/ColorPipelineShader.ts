@@ -76,8 +76,7 @@ fn decodeInputTransfer(encodedRGB: vec3f) -> vec3f {
 }`;
         case 'hlg': {
             const luminanceCoefficients = getLuminanceCoefficients(metadata.primaries);
-            const systemGamma = 1.2
-                + (0.42 * Math.log10(metadata.nominalPeakNits / 1_000));
+            const systemGamma = 1.2 + (0.42 * Math.log10(metadata.nominalPeakNits / 1_000));
             return `
 fn applyHLGInverseOETF(encodedValue: f32) -> f32 {
     let clampedValue = clamp(encodedValue, 0.0, 1.0);
@@ -137,10 +136,7 @@ fn convertSourceRGBToIPTLMS(linearRGBNits: vec3f) -> vec3f {
 }`;
 }
 
-function createToneMapWGSL(
-    settings: RenderSettings,
-    metadata: InputColorMetadata
-): string {
+function createToneMapWGSL(settings: RenderSettings, metadata: InputColorMetadata): string {
     if (settings.mode === 'identity-sdr') {
         return `
 fn processColor(encodedRGB: vec3f, pixelCoordinate: vec2f) -> vec3f {
@@ -644,9 +640,7 @@ const RAW_DOLBY_VISION_VIDEO_FRAME_FORMATS: ReadonlySet<string> = new Set<RawDol
 ]);
 
 /** Returns whether RPU reconstruction can sample a raw frame format. */
-export function isRawDolbyVisionVideoFrameFormat(
-    format: string
-): format is RawDolbyVisionVideoFrameFormat {
+export function isRawDolbyVisionVideoFrameFormat(format: string): format is RawDolbyVisionVideoFrameFormat {
     return RAW_DOLBY_VISION_VIDEO_FRAME_FORMATS.has(format);
 }
 
@@ -655,10 +649,7 @@ type DolbyVisionDualLayerBaseFallback = 'hdr10' | 'sdr';
 
 const DOLBY_VISION_OUTPUT_METADATA = createPQColorMetadata({ range: 'full' });
 
-function createRenderSettingsUniformWGSL(
-    settings: RenderSettings,
-    binding: number
-): string {
+function createRenderSettingsUniformWGSL(settings: RenderSettings, binding: number): string {
     if (settings.mode === 'identity-sdr') {
         return '';
     }
@@ -788,8 +779,7 @@ fn recoverLimitedRangeBT709YUV(encodedBT709RGB: vec3f) -> vec3f {
 
 function createRawYUVTextureBindingsWGSL(format: RawYUVVideoFrameFormat): string {
     // HEVC defaults subsampled chroma to horizontal left siting when no location is signaled
-    const leftSitedSubsampledChroma = format.startsWith('I420')
-        || format.startsWith('I422');
+    const leftSitedSubsampledChroma = format.startsWith('I420') || format.startsWith('I422');
     const chromaTextureCoordinate = leftSitedSubsampledChroma ?
         'textureCoordinate + vec2f(0.5 / f32(textureDimensions(lumaTexture).x), 0.0)' :
         'textureCoordinate';
@@ -1033,9 +1023,7 @@ export function createExternalHDRColorPipelineWGSL(
         || metadata.range !== 'limited'
         || (metadata.transfer !== 'pq' && metadata.transfer !== 'hlg')
     ) {
-        throw new RangeError(
-            'External HDR presentation requires limited-range 10-bit BT.2020 PQ or HLG metadata'
-        );
+        throw new RangeError('External HDR presentation requires limited-range 10-bit BT.2020 PQ or HLG metadata');
     }
 
     return /* wgsl */ `
@@ -1103,9 +1091,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
 }
 
 /** Generates Profile 5 reconstruction from Chromium's opaque BT.709 texture. */
-export function createExternalDolbyVisionColorPipelineWGSL(
-    settings: HDRToSDRRenderSettings
-): string {
+export function createExternalDolbyVisionColorPipelineWGSL(settings: HDRToSDRRenderSettings): string {
     assertValidRenderSettings(settings);
 
     return /* wgsl */ `
@@ -1296,9 +1282,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
 `;
 }
 
-function createDolbyVisionSDRBaseLayerPresentationWGSL(
-    baseLayerFallback: DolbyVisionDualLayerBaseFallback
-): string {
+function createDolbyVisionSDRBaseLayerPresentationWGSL(baseLayerFallback: DolbyVisionDualLayerBaseFallback): string {
     if (baseLayerFallback !== 'sdr') {
         return '';
     }
@@ -1426,7 +1410,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
 `;
 }
 
-/** Generates Profile 7 MEL reconstruction with explicit FEL HDR10-base fallback over BL planes in format. */
+/** Generates Profile 7 MEL reconstruction with FEL HDR10-base fallback over BL planes in format. */
 export function createRawDolbyVisionProfile7ColorPipelineWGSL(
     settings: HDRToSDRRenderSettings,
     format: RawDolbyVisionVideoFrameFormat
@@ -1442,7 +1426,7 @@ export function createRawDolbyVisionProfile7FELColorPipelineWGSL(
     return createRawDolbyVisionDualLayerColorPipelineWGSL(settings, format, true, 'hdr10');
 }
 
-/** Generates Profile 4 MEL reconstruction with explicit FEL SDR-base fallback over BL planes in format. */
+/** Generates Profile 4 MEL reconstruction with FEL SDR-base fallback over BL planes in format. */
 export function createRawDolbyVisionProfile4ColorPipelineWGSL(
     settings: HDRToSDRRenderSettings,
     format: RawDolbyVisionVideoFrameFormat

@@ -91,15 +91,11 @@ def parse_duration_seconds(value: str) -> int:
         duration_seconds < MINIMUM_DURATION_SECONDS
         or duration_seconds > MAXIMUM_DURATION_SECONDS
     ):
-        raise argparse.ArgumentTypeError(
-            f"must be from {MINIMUM_DURATION_SECONDS} through {MAXIMUM_DURATION_SECONDS}"
-        )
+        raise argparse.ArgumentTypeError(f"must be from {MINIMUM_DURATION_SECONDS} through {MAXIMUM_DURATION_SECONDS}")
     return duration_seconds
 
 
 def create_argument_parser() -> argparse.ArgumentParser:
-    """Creates the vector-generator CLI."""
-
     parser = argparse.ArgumentParser(
         description=(
             "Generate PQ and HLG HEVC Main 10 Matroska vectors with AAC audio, plus "
@@ -109,23 +105,9 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--ffprobe", default="ffprobe")
     parser.add_argument("--output-directory", default=str(DEFAULT_OUTPUT_DIRECTORY))
-    parser.add_argument(
-        "--frame-rates",
-        nargs="+",
-        type=int,
-        choices=SUPPORTED_FRAME_RATES,
-        default=list(DEFAULT_FRAME_RATES),
-    )
-    parser.add_argument(
-        "--resolution",
-        choices=tuple(RESOLUTION_DIMENSIONS),
-        default=DEFAULT_RESOLUTION,
-    )
-    parser.add_argument(
-        "--duration-seconds",
-        type=parse_duration_seconds,
-        default=DEFAULT_DURATION_SECONDS,
-    )
+    parser.add_argument("--frame-rates", nargs="+", type=int, choices=SUPPORTED_FRAME_RATES, default=list(DEFAULT_FRAME_RATES))
+    parser.add_argument("--resolution", choices=tuple(RESOLUTION_DIMENSIONS), default=DEFAULT_RESOLUTION)
+    parser.add_argument("--duration-seconds", type=parse_duration_seconds, default=DEFAULT_DURATION_SECONDS)
     parser.add_argument("--include-ac3", dest="include_AC3", action="store_true")
     parser.add_argument("--include-eac3", dest="include_EAC3", action="store_true")
     parser.add_argument("--include-pcm", dest="include_PCM", action="store_true")
@@ -181,8 +163,6 @@ def create_dolby_switch_vector_name(resolution: str, audio_codec: str) -> str:
 
 
 def create_PCM_switch_vector_name(resolution: str) -> str:
-    """Returns the file name of the PCM audio-switch vector."""
-
     return (
         f"pq-main10-{resolution}{SWITCH_VECTOR_FRAME_RATE}-aac-{PCM_SWITCH_CODEC}-"
         f"{PCM_SAMPLE_RATE}-mono.mkv"
@@ -249,12 +229,7 @@ def probe_streams(settings: GenerationSettings, path: Path) -> list[dict[str, ob
     return list(json.loads(result.stdout).get("streams", []))
 
 
-def find_first_stream(
-    streams: Sequence[dict[str, object]],
-    codec_name: str,
-) -> dict[str, object] | None:
-    """Returns the first stream with the given codec name."""
-
+def find_first_stream(streams: Sequence[dict[str, object]], codec_name: str) -> dict[str, object] | None:
     for stream in streams:
         if stream.get("codec_name") == codec_name:
             return stream
@@ -276,9 +251,7 @@ def require_playback_smoke_vector(
     video_stream = find_first_stream(streams, "hevc")
     audio_stream = find_first_stream(streams, audio_codec)
     if video_stream is None or audio_stream is None:
-        raise VectorGenerationError(
-            f"The expected HEVC/{audio_codec} streams are missing from {path}"
-        )
+        raise VectorGenerationError(f"The expected HEVC/{audio_codec} streams are missing from {path}")
 
     expected_video = {
         "profile": "Main 10",
@@ -313,9 +286,7 @@ def require_replaceable_output(settings: GenerationSettings, output_path: Path) 
     """Refuses to replace an existing vector unless overwriting was requested."""
 
     if output_path.exists() and not settings.overwrite:
-        raise VectorGenerationError(
-            f"{output_path} already exists; pass --overwrite to replace it"
-        )
+        raise VectorGenerationError(f"{output_path} already exists; pass --overwrite to replace it")
 
 
 def create_tone_input(frequency: int, sample_rate: int, duration_seconds: int) -> str:
@@ -336,16 +307,8 @@ def create_playback_smoke_vector(
     )
     if output_path.exists() and not settings.overwrite:
         if not settings.reuse_existing_base_vectors:
-            raise VectorGenerationError(
-                f"{output_path} already exists; pass --overwrite to replace it"
-            )
-        require_playback_smoke_vector(
-            settings,
-            output_path,
-            transfer,
-            BASE_AUDIO_CODEC,
-            frame_rate,
-        )
+            raise VectorGenerationError(f"{output_path} already exists; pass --overwrite to replace it")
+        require_playback_smoke_vector(settings, output_path, transfer, BASE_AUDIO_CODEC, frame_rate)
         return output_path
 
     video_input = (
@@ -366,11 +329,7 @@ def create_playback_smoke_vector(
             "-f",
             "lavfi",
             "-i",
-            create_tone_input(
-                transfer.tone_frequency,
-                AUDIO_SAMPLE_RATE,
-                settings.duration_seconds,
-            ),
+            create_tone_input(transfer.tone_frequency, AUDIO_SAMPLE_RATE, settings.duration_seconds),
             "-map",
             "0:v:0",
             "-map",
@@ -402,13 +361,7 @@ def create_playback_smoke_vector(
         ],
         f"FFmpeg failed while generating {output_path}",
     )
-    require_playback_smoke_vector(
-        settings,
-        output_path,
-        transfer,
-        BASE_AUDIO_CODEC,
-        frame_rate,
-    )
+    require_playback_smoke_vector(settings, output_path, transfer, BASE_AUDIO_CODEC, frame_rate)
     return output_path
 
 
@@ -420,10 +373,7 @@ def create_dolby_audio_switch_vector(
 ) -> Path:
     """Remuxes the PQ base vector with a non-default AC-3 or E-AC-3 switch track."""
 
-    output_path = settings.output_directory / create_dolby_switch_vector_name(
-        settings.resolution,
-        audio_codec,
-    )
+    output_path = settings.output_directory / create_dolby_switch_vector_name(settings.resolution, audio_codec)
     require_replaceable_output(settings, output_path)
     run_tool(
         [
@@ -470,20 +420,11 @@ def create_dolby_audio_switch_vector(
         f"FFmpeg failed while generating {output_path}",
     )
     for verified_audio_codec in (BASE_AUDIO_CODEC, audio_codec):
-        require_playback_smoke_vector(
-            settings,
-            output_path,
-            PQ_TRANSFER,
-            verified_audio_codec,
-            SWITCH_VECTOR_FRAME_RATE,
-        )
+        require_playback_smoke_vector(settings, output_path, PQ_TRANSFER, verified_audio_codec, SWITCH_VECTOR_FRAME_RATE)
     return output_path
 
 
-def create_PCM_audio_switch_vector(
-    settings: GenerationSettings,
-    base_vector_path: Path,
-) -> Path:
+def create_PCM_audio_switch_vector(settings: GenerationSettings, base_vector_path: Path) -> Path:
     """Remuxes the PQ base vector with a non-default 44.1 kHz mono PCM switch track."""
 
     output_path = settings.output_directory / create_PCM_switch_vector_name(settings.resolution)
@@ -530,13 +471,7 @@ def create_PCM_audio_switch_vector(
         ],
         f"FFmpeg failed while generating {output_path}",
     )
-    require_playback_smoke_vector(
-        settings,
-        output_path,
-        PQ_TRANSFER,
-        BASE_AUDIO_CODEC,
-        SWITCH_VECTOR_FRAME_RATE,
-    )
+    require_playback_smoke_vector(settings, output_path, PQ_TRANSFER, BASE_AUDIO_CODEC, SWITCH_VECTOR_FRAME_RATE)
     require_playback_smoke_vector(
         settings,
         output_path,
@@ -562,9 +497,7 @@ def execute(
     switch_vector_requested = include_AC3 or include_EAC3 or include_PCM
     # Validated before encoding so a bad request does not waste the base encodes
     if switch_vector_requested and SWITCH_VECTOR_FRAME_RATE not in unique_frame_rates:
-        raise VectorGenerationError(
-            "--include-ac3, --include-eac3, and --include-pcm require 24 in --frame-rates"
-        )
+        raise VectorGenerationError("--include-ac3, --include-eac3, and --include-pcm require 24 in --frame-rates")
 
     settings.output_directory.mkdir(parents=True, exist_ok=True)
     generated_paths: list[Path] = []
@@ -579,27 +512,11 @@ def execute(
     if switch_base_vector_path is None:
         return generated_paths
     if include_AC3:
-        generated_paths.append(
-            create_dolby_audio_switch_vector(
-                settings,
-                switch_base_vector_path,
-                "ac3",
-                AC3_TONE_FREQUENCY,
-            )
-        )
+        generated_paths.append(create_dolby_audio_switch_vector(settings, switch_base_vector_path, "ac3", AC3_TONE_FREQUENCY))
     if include_EAC3:
-        generated_paths.append(
-            create_dolby_audio_switch_vector(
-                settings,
-                switch_base_vector_path,
-                "eac3",
-                EAC3_TONE_FREQUENCY,
-            )
-        )
+        generated_paths.append(create_dolby_audio_switch_vector(settings, switch_base_vector_path, "eac3", EAC3_TONE_FREQUENCY))
     if include_PCM:
-        generated_paths.append(
-            create_PCM_audio_switch_vector(settings, switch_base_vector_path)
-        )
+        generated_paths.append(create_PCM_audio_switch_vector(settings, switch_base_vector_path))
     return generated_paths
 
 

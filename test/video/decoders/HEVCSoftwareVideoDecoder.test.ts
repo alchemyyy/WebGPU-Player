@@ -181,7 +181,7 @@ function createStreamInfo(bitDepth: 8 | 10): HEVCStreamInfo {
         bitDepth,
         chromaFormat: 1,
         height: bitDepth === 8 ? 64 : 360,
-        // @hevcjs/core 1.3.2 currently reports zero for these parsed fields
+        // @hevcjs/core 1.3.2 reports zero for these parsed fields
         level: 0,
         profile: 0,
         width: bitDepth === 8 ? 64 : 640

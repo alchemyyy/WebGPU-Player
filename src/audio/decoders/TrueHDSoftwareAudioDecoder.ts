@@ -69,9 +69,7 @@ let defaultModulePromise: Promise<FFmpegTrueHDModule> | null = null;
 
 async function loadDefaultTrueHDDecoderModule(): Promise<FFmpegTrueHDModule> {
     if (!defaultModulePromise) {
-        defaultModulePromise = import('#wasm/ffmpeg-truehd/ffmpeg-truehd.mjs').then(
-            async moduleNamespace => moduleNamespace.default()
-        );
+        defaultModulePromise = import('#wasm/ffmpeg-truehd/ffmpeg-truehd.mjs').then(async moduleNamespace => moduleNamespace.default());
     }
     return defaultModulePromise;
 }
@@ -92,24 +90,14 @@ function requireFunction<FunctionType extends (...arguments_: never[]) => unknow
     return functionValue as unknown as FunctionType;
 }
 
-function createFunctionTable(
-    module: FFmpegTrueHDModule
-): FFmpegTrueHDFunctionTable {
+function createFunctionTable(module: FFmpegTrueHDModule): FFmpegTrueHDFunctionTable {
     return {
         clear: requireFunction(module, 'jellyfin_truehd_clear', 1),
         configurePacket: requireFunction(module, 'jellyfin_truehd_configure_packet', 2),
         create: requireFunction(module, 'jellyfin_truehd_create', 1),
         destroy: requireFunction(module, 'jellyfin_truehd_destroy', 1),
-        getBitsPerRawSample: requireFunction(
-            module,
-            'jellyfin_truehd_get_bits_per_raw_sample',
-            1
-        ),
-        getBytesPerSample: requireFunction(
-            module,
-            'jellyfin_truehd_get_bytes_per_sample',
-            1
-        ),
+        getBitsPerRawSample: requireFunction(module, 'jellyfin_truehd_get_bits_per_raw_sample', 1),
+        getBytesPerSample: requireFunction(module, 'jellyfin_truehd_get_bytes_per_sample', 1),
         getChannelCount: requireFunction(module, 'jellyfin_truehd_get_channel_count', 1),
         getChannelMask: requireFunction(module, 'jellyfin_truehd_get_channel_mask', 1),
         getData: requireFunction(module, 'jellyfin_truehd_get_interleaved_data', 1),
@@ -162,10 +150,7 @@ export default class TrueHDSoftwareAudioDecoder {
     private constructor(module: FFmpegTrueHDModule, codec: TrueHDDecoderCodec) {
         this.module = module;
         this.functions = createFunctionTable(module);
-        this.libraryVersion = requirePositiveSafeInteger(
-            this.functions.getVersion(),
-            'FFmpeg libavcodec version'
-        );
+        this.libraryVersion = requirePositiveSafeInteger(this.functions.getVersion(), 'FFmpeg libavcodec version');
         this.codec = codec;
         this.decoder = this.functions.create(getCodecID(codec));
         if (!Number.isSafeInteger(this.decoder) || this.decoder <= 0) {
@@ -188,15 +173,10 @@ export default class TrueHDSoftwareAudioDecoder {
     }
 
     /** Decodes one Mediabunny-demuxed access unit into zero or more owned PCM blocks. */
-    public decode(
-        data: Uint8Array,
-        mediaTimeMicroseconds: Microseconds
-    ): readonly TrueHDDecodedAudioOutput[] {
+    public decode(data: Uint8Array, mediaTimeMicroseconds: Microseconds): readonly TrueHDDecodedAudioOutput[] {
         this.requireOpen();
         requireMicroseconds(mediaTimeMicroseconds, 'TrueHD packet timestamp');
-        if (!(data instanceof Uint8Array)
-            || data.byteLength <= 0
-            || data.byteLength > TRUEHD_MAXIMUM_PACKET_SIZE) {
+        if (!(data instanceof Uint8Array) || data.byteLength <= 0 || data.byteLength > TRUEHD_MAXIMUM_PACKET_SIZE) {
             throw new RangeError('TrueHD packet size is outside the bounded decoder envelope');
         }
 
@@ -207,10 +187,7 @@ export default class TrueHDSoftwareAudioDecoder {
             throw new Error('Unable to allocate the bounded TrueHD packet buffer');
         }
         this.module.HEAPU8.set(data, packetPointer);
-        const sendStatus = this.functions.sendPacket(
-            this.decoder,
-            mediaTimeMicroseconds
-        );
+        const sendStatus = this.functions.sendPacket(this.decoder, mediaTimeMicroseconds);
         if (sendStatus === TRUEHD_SEND_STATUS_NO_OUTPUT) {
             return [];
         }
@@ -226,9 +203,7 @@ export default class TrueHDSoftwareAudioDecoder {
                 return outputs;
             }
             if (receiveStatus <= TRUEHD_RECEIVE_STATUS_FATAL) {
-                throw new Error(
-                    `Bundled TrueHD frame receive failed with status ${receiveStatus}`
-                );
+                throw new Error(`Bundled TrueHD frame receive failed with status ${receiveStatus}`);
             }
             // A packet holds any number of access units, and each output consumes at least one of its bytes
             if (outputs.length >= data.byteLength) {
@@ -256,39 +231,27 @@ export default class TrueHDSoftwareAudioDecoder {
     }
 
     /**
-     * Copies the received frame. FFmpeg resets the packet timestamp after a
-     * partial consume, so a later frame of the same packet without one starts
-     * where the packet's earlier frames ended.
+     * Copies the received frame.
+     * FFmpeg resets the packet timestamp after a partial consume, so a later frame of the same packet without one starts where the packet's earlier frames ended.
      */
-    private copyCurrentOutput(
-        packetMediaTimeMicroseconds: Microseconds,
-        precedingPacketFrameCount: number
-    ): TrueHDDecodedAudioOutput {
+    private copyCurrentOutput(packetMediaTimeMicroseconds: Microseconds, precedingPacketFrameCount: number): TrueHDDecodedAudioOutput {
         const frameCount = this.functions.getSampleCount(this.decoder);
-        if (!Number.isSafeInteger(frameCount)
-            || frameCount <= 0
-            || frameCount > TRUEHD_MAXIMUM_DECODED_FRAME_COUNT) {
+        if (!Number.isSafeInteger(frameCount) || frameCount <= 0 || frameCount > TRUEHD_MAXIMUM_DECODED_FRAME_COUNT) {
             throw new RangeError('Bundled TrueHD output frame count is invalid');
         }
         const sampleRate = this.functions.getSampleRate(this.decoder);
         if (!isSupportedCustomAudioSampleRate(sampleRate)) {
-            throw new RangeError(
-                `Bundled TrueHD output sample rate ${sampleRate} Hz is invalid`
-            );
+            throw new RangeError(`Bundled TrueHD output sample rate ${sampleRate} Hz is invalid`);
         }
         const bitsPerSample = this.functions.getBitsPerRawSample(this.decoder);
         if (!TRUEHD_SUPPORTED_BITS_PER_SAMPLE.has(bitsPerSample)) {
-            throw new RangeError(
-                `Bundled TrueHD output depth ${bitsPerSample} is unsupported`
-            );
+            throw new RangeError(`Bundled TrueHD output depth ${bitsPerSample} is unsupported`);
         }
         const channelCount = this.functions.getChannelCount(this.decoder);
         const channelMask = this.functions.getChannelMask(this.decoder) >>> 0;
         const qualifiedLayout = getQualifiedCustomWaveChannelLayout(channelMask);
         if (!qualifiedLayout || qualifiedLayout.channelCount !== channelCount) {
-            throw new RangeError(
-                `Bundled TrueHD channel mask 0x${channelMask.toString(16)} is unqualified`
-            );
+            throw new RangeError(`Bundled TrueHD channel mask 0x${channelMask.toString(16)} is unqualified`);
         }
 
         const sampleFormat = this.functions.getSampleFormat(this.decoder);
@@ -303,9 +266,7 @@ export default class TrueHDSoftwareAudioDecoder {
                 break;
         }
         if (bytesPerSample !== expectedBytesPerSample || expectedBytesPerSample === 0) {
-            throw new RangeError(
-                `Bundled TrueHD sample format ${sampleFormat} is unsupported`
-            );
+            throw new RangeError(`Bundled TrueHD sample format ${sampleFormat} is unsupported`);
         }
 
         const interleavedSampleCount = frameCount * channelCount;
@@ -326,36 +287,25 @@ export default class TrueHDSoftwareAudioDecoder {
         }
         if (sampleFormat === TRUEHD_AV_SAMPLE_FORMAT_S16) {
             const firstSampleIndex = dataPointer / Int16Array.BYTES_PER_ELEMENT;
-            const sourceSamples = this.module.HEAP16.subarray(
-                firstSampleIndex,
-                firstSampleIndex + interleavedSampleCount
-            );
+            const sourceSamples = this.module.HEAP16.subarray(firstSampleIndex, firstSampleIndex + interleavedSampleCount);
             this.copyInterleavedPCM(sourceSamples, channelData, 2 ** 15);
         } else {
             const firstSampleIndex = dataPointer / Int32Array.BYTES_PER_ELEMENT;
-            const sourceSamples = this.module.HEAP32.subarray(
-                firstSampleIndex,
-                firstSampleIndex + interleavedSampleCount
-            );
+            const sourceSamples = this.module.HEAP32.subarray(firstSampleIndex, firstSampleIndex + interleavedSampleCount);
             this.copyInterleavedPCM(sourceSamples, channelData, 2 ** 31);
         }
 
         const decodedPTS = this.functions.getPTS(this.decoder);
-        const mediaTimeMicroseconds = Number.isSafeInteger(decodedPTS)
-            && decodedPTS >= 0 ?
+        const mediaTimeMicroseconds = Number.isSafeInteger(decodedPTS) && decodedPTS >= 0 ?
             requireMicroseconds(decodedPTS, 'Decoded TrueHD timestamp') :
-            addMicroseconds(
-                packetMediaTimeMicroseconds,
-                audioFramesToMicroseconds(precedingPacketFrameCount, sampleRate)
-            );
+            addMicroseconds(packetMediaTimeMicroseconds, audioFramesToMicroseconds(precedingPacketFrameCount, sampleRate));
         return {
             bitsPerSample: bitsPerSample as 16 | 20 | 24,
             channelData,
             channelLayout: qualifiedLayout.layout,
             channelMask,
             codec: this.codec,
-            containsAtmosMetadata: this.functions.getProfile(this.decoder)
-                === TRUEHD_ATMOS_PROFILE,
+            containsAtmosMetadata: this.functions.getProfile(this.decoder) === TRUEHD_ATMOS_PROFILE,
             frameCount,
             losslessChannelBed: true,
             mediaTimeMicroseconds,
@@ -375,8 +325,7 @@ export default class TrueHDSoftwareAudioDecoder {
         for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
             const interleavedFrameOffset = frameIndex * channelCount;
             for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
-                channelData[channelIndex][frameIndex] =
-                    sourceSamples[interleavedFrameOffset + channelIndex] / sampleScale;
+                channelData[channelIndex][frameIndex] = sourceSamples[interleavedFrameOffset + channelIndex] / sampleScale;
             }
         }
     }

@@ -123,10 +123,7 @@ def get_packet_PID(packet: bytes | bytearray | memoryview) -> int:
     return ((packet[1] & 0x1F) << 8) | packet[2]
 
 
-def get_single_packet_section(
-    packet: bytes | bytearray | memoryview,
-    expected_table_ID: int,
-) -> PacketSection | None:
+def get_single_packet_section(packet: bytes | bytearray | memoryview, expected_table_ID: int) -> PacketSection | None:
     """Returns the CRC-valid section that starts and ends in one packet, or None."""
 
     payload_offset = get_payload_offset(packet)
@@ -137,9 +134,7 @@ def get_single_packet_section(
     section_offset = payload_offset + 1 + packet[payload_offset]
     if section_offset + 3 > len(packet) or packet[section_offset] != expected_table_ID:
         return None
-    section_byte_length = 3 + (
-        ((packet[section_offset + 1] & 0x0F) << 8) | packet[section_offset + 2]
-    )
+    section_byte_length = 3 + (((packet[section_offset + 1] & 0x0F) << 8) | packet[section_offset + 2])
     section_end_offset = section_offset + section_byte_length
     if (
         section_byte_length < MINIMUM_SECTION_BYTE_LENGTH
@@ -154,11 +149,7 @@ def get_program_map_PIDs(data: bytes | bytearray | memoryview) -> set[int]:
     """Returns the PMT PIDs that the bounded PATs list, skipping the network PID entry."""
 
     program_map_PIDs: set[int] = set()
-    for packet_offset in range(
-        0,
-        len(data) - MPEG_TS_PACKET_BYTE_LENGTH + 1,
-        MPEG_TS_PACKET_BYTE_LENGTH,
-    ):
+    for packet_offset in range(0, len(data) - MPEG_TS_PACKET_BYTE_LENGTH + 1, MPEG_TS_PACKET_BYTE_LENGTH):
         packet = data[packet_offset : packet_offset + MPEG_TS_PACKET_BYTE_LENGTH]
         if get_packet_PID(packet) != PROGRAM_ASSOCIATION_TABLE_PID:
             continue
@@ -252,12 +243,7 @@ def patch_program_map_packet(
     section = get_single_packet_section(packet, PROGRAM_MAP_TABLE_ID)
     if section is None:
         return False
-    enhancement_entry = find_program_map_enhancement_entry(
-        packet,
-        section,
-        base_PID,
-        enhancement_PID,
-    )
+    enhancement_entry = find_program_map_enhancement_entry(packet, section, base_PID, enhancement_PID)
     if enhancement_entry is None:
         return False
     descriptor = create_dolby_vision_descriptor(base_PID, configuration)
@@ -315,13 +301,8 @@ def patch_dolby_vision_program_maps(
             if patch_program_map_packet(packet, configuration, base_PID, enhancement_PID):
                 patched_program_map_count += 1
     if patched_program_map_count == 0:
-        raise TransportStreamVectorError(
-            "No generated PMT contains the expected HEVC BL and EL PIDs"
-        )
-    return ProgramMapPatchResult(
-        output_data=bytes(output_data),
-        patched_program_map_count=patched_program_map_count,
-    )
+        raise TransportStreamVectorError("No generated PMT contains the expected HEVC BL and EL PIDs")
+    return ProgramMapPatchResult(output_data=bytes(output_data), patched_program_map_count=patched_program_map_count)
 
 
 def create_transport_stream_FFmpeg_arguments(input_path: str, output_path: str) -> list[str]:
@@ -396,18 +377,12 @@ def parse_enhancement_layer_configuration(probe_output: str) -> DolbyVisionConfi
     ):
         raise TransportStreamVectorError("The enhancement track is not an RPU-bearing Profile 7 EL")
     return DolbyVisionConfiguration(
-        BL_signal_compatibility_ID=require_record_integer(
-            record,
-            "dv_bl_signal_compatibility_id",
-            MAXIMUM_BL_SIGNAL_COMPATIBILITY_ID,
-        ),
+        BL_signal_compatibility_ID=require_record_integer(record, "dv_bl_signal_compatibility_id", MAXIMUM_BL_SIGNAL_COMPATIBILITY_ID),
         level=require_record_integer(record, "dv_level", MAXIMUM_DOLBY_VISION_LEVEL),
     )
 
 
 def create_argument_parser() -> argparse.ArgumentParser:
-    """Creates the dual-PID transport stream vector CLI."""
-
     parser = argparse.ArgumentParser(
         prog="python scripts/codec_vector_assets/create_dual_PID_dolby_vision_TS_vector.py",
         description=(
@@ -485,23 +460,14 @@ def create_vector(configuration: VectorConfiguration) -> dict[str, object]:
     )
     with tempfile.TemporaryDirectory(prefix=TEMPORARY_DIRECTORY_PREFIX) as temporary_directory:
         generated_path = Path(temporary_directory) / "generated.ts"
-        execute_tool(
-            FFmpeg_path,
-            create_transport_stream_FFmpeg_arguments(
-                configuration.input_path,
-                str(generated_path),
-            ),
-        )
+        execute_tool(FFmpeg_path, create_transport_stream_FFmpeg_arguments(configuration.input_path, str(generated_path)))
         generated_status = generated_path.stat()
         if (
             not stat.S_ISREG(generated_status.st_mode)
             or generated_status.st_size > MAXIMUM_TRANSPORT_STREAM_BYTE_LENGTH
         ):
             raise TransportStreamVectorError("The generated MPEG-TS size is unsupported")
-        result = patch_dolby_vision_program_maps(
-            generated_path.read_bytes(),
-            dolby_vision_configuration,
-        )
+        result = patch_dolby_vision_program_maps(generated_path.read_bytes(), dolby_vision_configuration)
         Path(configuration.output_path).write_bytes(result.output_data)
         return {
             "basePID": BASE_VIDEO_PID,

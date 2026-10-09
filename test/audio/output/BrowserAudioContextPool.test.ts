@@ -189,8 +189,7 @@ describe('BrowserAudioContextPool', () => {
             audioContext.state = 'running';
         });
 
-        // Reacquire with the delayed implementation installed to model an
-        // asynchronous browser state transition
+        // Reacquire with the delayed implementation installed to model an asynchronous browser state transition
         await reference.release();
         const pendingReference = acquireSharedBrowserAudioContext(48_000);
         audioContext.suspend.mockImplementationOnce(async (): Promise<void> => {

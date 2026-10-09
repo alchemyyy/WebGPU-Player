@@ -58,14 +58,10 @@ import {
 
 export const DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION = 4;
 export const DOLBY_VISION_AUTHORIZATION_ROUTE_KEY = 'I420P10:dovi-rpu-v1';
-export const DOLBY_VISION_PROFILE4_AUTHORIZATION_ROUTE_KEY =
-    'I420P10:dovi-profile4-base-v1';
-export const DOLBY_VISION_PROFILE4_FEL_AUTHORIZATION_ROUTE_KEY =
-    'I420P10:dovi-profile4-fel-v1';
-export const DOLBY_VISION_PROFILE7_AUTHORIZATION_ROUTE_KEY =
-    'I420P10:dovi-profile7-base-v1';
-export const DOLBY_VISION_PROFILE7_FEL_AUTHORIZATION_ROUTE_KEY =
-    'I420P10:dovi-profile7-fel-v1';
+export const DOLBY_VISION_PROFILE4_AUTHORIZATION_ROUTE_KEY = 'I420P10:dovi-profile4-base-v1';
+export const DOLBY_VISION_PROFILE4_FEL_AUTHORIZATION_ROUTE_KEY = 'I420P10:dovi-profile4-fel-v1';
+export const DOLBY_VISION_PROFILE7_AUTHORIZATION_ROUTE_KEY = 'I420P10:dovi-profile7-base-v1';
+export const DOLBY_VISION_PROFILE7_FEL_AUTHORIZATION_ROUTE_KEY = 'I420P10:dovi-profile7-fel-v1';
 
 export type DolbyVisionAuthorizationRoute =
     | 'profile4-base'
@@ -169,8 +165,7 @@ function createSettings(): HDRToSDRRenderSettings {
 }
 
 function alignPlaneBytesPerRow(rowByteLength: number): number {
-    return Math.ceil(rowByteLength / RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT)
-        * RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT;
+    return Math.ceil(rowByteLength / RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT) * RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT;
 }
 
 function createFELPlaneDescriptor(
@@ -202,9 +197,7 @@ function setFELPlaneCode(
     code: number
 ): void {
     new DataView(data).setUint16(
-        plane.byteOffset
-            + (y * plane.bytesPerRow)
-            + (x * Uint16Array.BYTES_PER_ELEMENT),
+        plane.byteOffset + (y * plane.bytesPerRow) + (x * Uint16Array.BYTES_PER_ELEMENT),
         code,
         true
     );
@@ -221,60 +214,25 @@ function createFELAuthorizationFrames(format: RawDolbyVisionVideoFrameFormat): {
     const chromaWidth = Math.ceil(codedWidth / 2);
     const chromaHeight = Math.ceil(codedHeight / 2);
     const lumaPlane = createFELPlaneDescriptor('y', codedWidth, codedHeight, 0);
-    const chromaUPlane = createFELPlaneDescriptor(
-        'u',
-        chromaWidth,
-        chromaHeight,
-        lumaPlane.byteLength
-    );
-    const chromaVPlane = createFELPlaneDescriptor(
-        'v',
-        chromaWidth,
-        chromaHeight,
-        lumaPlane.byteLength + chromaUPlane.byteLength
-    );
-    const enhancementData = new ArrayBuffer(
-        lumaPlane.byteLength + chromaUPlane.byteLength + chromaVPlane.byteLength
-    );
+    const chromaUPlane = createFELPlaneDescriptor('u', chromaWidth, chromaHeight, lumaPlane.byteLength);
+    const chromaVPlane = createFELPlaneDescriptor('v', chromaWidth, chromaHeight, lumaPlane.byteLength + chromaUPlane.byteLength);
+    const enhancementData = new ArrayBuffer(lumaPlane.byteLength + chromaUPlane.byteLength + chromaVPlane.byteLength);
     for (let y = 0; y < lumaPlane.height; y += 1) {
         for (let x = 0; x < lumaPlane.width; x += 1) {
-            setFELPlaneCode(
-                enhancementData,
-                lumaPlane,
-                x,
-                y,
-                96 + ((x * 113 + y * 67) % 800)
-            );
+            setFELPlaneCode(enhancementData, lumaPlane, x, y, 96 + ((x * 113 + y * 67) % 800));
         }
     }
     for (let y = 0; y < chromaUPlane.height; y += 1) {
         for (let x = 0; x < chromaUPlane.width; x += 1) {
-            setFELPlaneCode(
-                enhancementData,
-                chromaUPlane,
-                x,
-                y,
-                160 + ((x * 173 + y * 89) % 700)
-            );
-            setFELPlaneCode(
-                enhancementData,
-                chromaVPlane,
-                x,
-                y,
-                224 + ((x * 71 + y * 191) % 650)
-            );
+            setFELPlaneCode(enhancementData, chromaUPlane, x, y, 160 + ((x * 173 + y * 89) % 700));
+            setFELPlaneCode(enhancementData, chromaVPlane, x, y, 224 + ((x * 71 + y * 191) % 650));
         }
     }
 
     const enhancementByteOffset = alignPlaneBytesPerRow(baseFrame.data.byteLength);
-    const compoundData = new ArrayBuffer(
-        enhancementByteOffset + enhancementData.byteLength
-    );
+    const compoundData = new ArrayBuffer(enhancementByteOffset + enhancementData.byteLength);
     new Uint8Array(compoundData).set(new Uint8Array(baseFrame.data));
-    new Uint8Array(compoundData).set(
-        new Uint8Array(enhancementData),
-        enhancementByteOffset
-    );
+    new Uint8Array(compoundData).set(new Uint8Array(enhancementData), enhancementByteOffset);
     baseFrame.data = compoundData;
     const enhancementFrame: TransferableRawVideoFrame = {
         bitDepth: 10,
@@ -308,13 +266,8 @@ function createFELAuthorizationFrames(format: RawDolbyVisionVideoFrameFormat): {
     return { baseFrame, enhancementFrame };
 }
 
-function getRawPlane(
-    frame: TransferableRawVideoFrame,
-    kind: 'u' | 'v' | 'y'
-): RawVideoPlaneDescriptor {
-    const plane = frame.planes.find(
-        (candidate: RawVideoPlaneDescriptor): boolean => candidate.kind === kind
-    );
+function getRawPlane(frame: TransferableRawVideoFrame, kind: 'u' | 'v' | 'y'): RawVideoPlaneDescriptor {
+    const plane = frame.planes.find((candidate: RawVideoPlaneDescriptor): boolean => candidate.kind === kind);
     if (!plane) {
         throw new TypeError(`The FEL authorization frame has no ${kind} plane`);
     }
@@ -330,9 +283,7 @@ function readFELPlaneCode(
     const clampedX = Math.min(Math.max(x, 0), plane.width - 1);
     const clampedY = Math.min(Math.max(y, 0), plane.height - 1);
     return new DataView(frame.data).getUint16(
-        plane.byteOffset
-            + (clampedY * plane.bytesPerRow)
-            + (clampedX * Uint16Array.BYTES_PER_ELEMENT),
+        plane.byteOffset + (clampedY * plane.bytesPerRow) + (clampedX * Uint16Array.BYTES_PER_ELEMENT),
         true
     );
 }
@@ -350,11 +301,9 @@ function sampleFELPlane(
     const baseY = Math.floor(sampleY);
     const fractionX = sampleX - baseX;
     const fractionY = sampleY - baseY;
-    const top = readFELPlaneCode(frame, plane, baseX, baseY)
-        * (1 - fractionX)
+    const top = readFELPlaneCode(frame, plane, baseX, baseY) * (1 - fractionX)
         + readFELPlaneCode(frame, plane, baseX + 1, baseY) * fractionX;
-    const bottom = readFELPlaneCode(frame, plane, baseX, baseY + 1)
-        * (1 - fractionX)
+    const bottom = readFELPlaneCode(frame, plane, baseX, baseY + 1) * (1 - fractionX)
         + readFELPlaneCode(frame, plane, baseX + 1, baseY + 1) * fractionX;
     return top * (1 - fractionY) + bottom * fractionY;
 }
@@ -371,35 +320,14 @@ function sampleFELAuthorizationFrame(
     const lumaHorizontalOffset = -0.5 / frame.codedWidth;
     const chromaHorizontalOffset = -1 / frame.codedWidth;
     return [
-        sampleFELPlane(
-            frame,
-            getRawPlane(frame, 'y'),
-            textureCoordinateX,
-            textureCoordinateY,
-            lumaHorizontalOffset
-        ),
-        sampleFELPlane(
-            frame,
-            getRawPlane(frame, 'u'),
-            textureCoordinateX,
-            textureCoordinateY,
-            chromaHorizontalOffset
-        ),
-        sampleFELPlane(
-            frame,
-            getRawPlane(frame, 'v'),
-            textureCoordinateX,
-            textureCoordinateY,
-            chromaHorizontalOffset
-        )
+        sampleFELPlane(frame, getRawPlane(frame, 'y'), textureCoordinateX, textureCoordinateY, lumaHorizontalOffset),
+        sampleFELPlane(frame, getRawPlane(frame, 'u'), textureCoordinateX, textureCoordinateY, chromaHorizontalOffset),
+        sampleFELPlane(frame, getRawPlane(frame, 'v'), textureCoordinateX, textureCoordinateY, chromaHorizontalOffset)
     ];
 }
 
-/** Creates a stable identity for the exact DV vector, shader, and target. */
-export function createDolbyVisionShaderSignature(
-    targetFormat: GPUTextureFormat,
-    shaderCode: string
-): string {
+/** Creates a stable identity for the Dolby Vision vector, shader, and target. */
+export function createDolbyVisionShaderSignature(targetFormat: GPUTextureFormat, shaderCode: string): string {
     const signatureInput = [
         `vector=${DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION}`,
         `uniform=${RENDER_SETTINGS_VERSION}`,
@@ -415,7 +343,7 @@ export function createDolbyVisionShaderSignature(
     return `fnv1a32-${hash.toString(16).padStart(8, '0')}`;
 }
 
-/** Computes CPU-reference samples for the exact synthetic authorization vector. */
+/** Computes CPU-reference samples for the synthetic authorization vector. */
 export function createExpectedDolbyVisionAuthorizationObservations(
     packedRPUData: ArrayBuffer,
     settings: HDRToSDRRenderSettings,
@@ -423,9 +351,7 @@ export function createExpectedDolbyVisionAuthorizationObservations(
     frameValue?: TransferableRawVideoFrame,
     enhancementFrame: TransferableRawVideoFrame | null = null
 ): readonly RawHDRVectorObservation[] {
-    const frame = frameValue ?? createRawHDRAuthorizationVector(
-        'I420P10:bt2020-ncl:bt2020:limited:pq'
-    );
+    const frame = frameValue ?? createRawHDRAuthorizationVector('I420P10:bt2020-ncl:bt2020:limited:pq');
     const outputMetadata = createPQColorMetadata({ range: 'full' });
     const maximumBaseLayerCode = (2 ** frame.bitDepth) - 1;
     return RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.map(sample => {
@@ -491,19 +417,13 @@ export function createExpectedDolbyVisionAuthorizationObservations(
             }
             case 'reconstruct':
                 reconstructedSignal = processEncodedRGB(
-                    reconstructDolbyVisionBT2020PQ(
-                        normalizedSignal,
-                        packedRPUData
-                    ),
+                    reconstructDolbyVisionBT2020PQ(normalizedSignal, packedRPUData),
                     outputMetadata,
                     settings
                 );
                 break;
         }
-        const dither = calculateRawHDRAuthorizationOutputDither(
-            sample.sampleX,
-            sample.sampleY
-        );
+        const dither = calculateRawHDRAuthorizationOutputDither(sample.sampleX, sample.sampleY);
         return {
             linearRGB: [
                 clamp(reconstructedSignal[0] + dither, 0, 1),
@@ -516,7 +436,7 @@ export function createExpectedDolbyVisionAuthorizationObservations(
     });
 }
 
-/** Returns the exact CPU reference for the reduced-resolution FEL probe of one dual-layer profile and BL format. */
+/** Returns the CPU reference for the reduced-resolution FEL probe of one dual-layer profile and BL format. */
 export function createExpectedDolbyVisionFELAuthorizationObservations(
     settings: HDRToSDRRenderSettings,
     profile: 4 | 7 = 7,
@@ -571,9 +491,7 @@ function createAuthorizationShader(
 }
 
 /** Returns the raw HDR vector key whose luma ramp and chroma blocks cover one raw frame format. */
-function getAuthorizationVectorKey(
-    format: RawDolbyVisionVideoFrameFormat
-): RawHDRAuthorizationRouteKey {
+function getAuthorizationVectorKey(format: RawDolbyVisionVideoFrameFormat): RawHDRAuthorizationRouteKey {
     // 8-bit formats have no PQ vector; the reconstruction ignores the vector's color tags either way
     return getRawFormatBitDepth(format) === 8 ?
         `${format as 'I420' | 'I422' | 'I444'}:bt709:bt709:limited:sdr` :
@@ -581,7 +499,8 @@ function getAuthorizationVectorKey(
 }
 
 /**
- * Returns the dual-layer scenarios over a BL vector in format, whose RPU vectors declare the format's bit depth: FEL composition with a half-resolution I420P10 EL, or MEL reconstruction and the FEL compatible-base fallback.
+ * Returns the dual-layer scenarios over a BL vector in the given format, with RPU vectors that declare the format's bit depth.
+ * The FEL route composes a half-resolution I420P10 EL; the base route checks MEL reconstruction and the FEL compatible-base fallback.
  */
 function createDualLayerAuthorizationScenarios(
     profile: 4 | 7,
@@ -652,11 +571,7 @@ function createAuthorizationScenarios(
             return createDualLayerAuthorizationScenarios(7, true, format, settings);
         case 'single-layer': {
             const frame = createRawHDRAuthorizationVector(getAuthorizationVectorKey(format));
-            const packedRPUData = createDolbyVisionAuthorizationRPUVector(
-                8,
-                'single-layer',
-                frame.bitDepth
-            );
+            const packedRPUData = createDolbyVisionAuthorizationRPUVector(8, 'single-layer', frame.bitDepth);
             return [ {
                 enhancementFrame: null,
                 expectedObservations: createExpectedDolbyVisionAuthorizationObservations(
@@ -716,7 +631,7 @@ function discardErrorScope(device: GPUDevice): void {
     }
 }
 
-/** Runs the exact production raw upload, RPU binding, shader, and draw path. */
+/** Runs the production raw upload, RPU binding, shader, and draw path. */
 export class DolbyVisionPresentationAuthorizationRunner {
     public readonly routeKey: DolbyVisionAuthorizationRouteKey;
 
@@ -727,29 +642,17 @@ export class DolbyVisionPresentationAuthorizationRunner {
         this.routeKey = getAuthorizationRouteKey(route, format);
     }
 
-    /** Returns the exact production shader covered by this runner. */
+    /** Returns the production shader this runner covers. */
     public createShader(settings: HDRToSDRRenderSettings): string {
         return createAuthorizationShader(this.route, this.format, settings);
     }
 
-    public async validate(
-        device: GPUDevice,
-        targetFormat: GPUTextureFormat
-    ): Promise<DolbyVisionAuthorizationDecision> {
+    public async validate(device: GPUDevice, targetFormat: GPUTextureFormat): Promise<DolbyVisionAuthorizationDecision> {
         const settings = createSettings();
         const shaderCode = this.createShader(settings);
-        const shaderSignature = createDolbyVisionShaderSignature(
-            targetFormat,
-            shaderCode
-        );
+        const shaderSignature = createDolbyVisionShaderSignature(targetFormat, shaderCode);
         if (!AUTHORIZED_TARGET_FORMATS.has(targetFormat)) {
-            return createRejectedDecision(
-                device,
-                targetFormat,
-                shaderSignature,
-                this.routeKey,
-                'target-format-unsupported'
-            );
+            return createRejectedDecision(device, targetFormat, shaderSignature, this.routeKey, 'target-format-unsupported');
         }
         const targetUsage = getValidationTextureUsage();
         if (
@@ -757,13 +660,7 @@ export class DolbyVisionPresentationAuthorizationRunner {
             || typeof GPUBufferUsage === 'undefined'
             || typeof GPUTextureUsage === 'undefined'
         ) {
-            return createRejectedDecision(
-                device,
-                targetFormat,
-                shaderSignature,
-                this.routeKey,
-                'gpu-api-unavailable'
-            );
+            return createRejectedDecision(device, targetFormat, shaderSignature, this.routeKey, 'gpu-api-unavailable');
         }
 
         let targetTexture: GPUTexture | null = null;
@@ -778,9 +675,7 @@ export class DolbyVisionPresentationAuthorizationRunner {
         const deadline = new GPUAuthorizationDeadline(device);
         try {
             const scenarios = createAuthorizationScenarios(this.route, this.format, settings);
-            const pipeline = await deadline.wait(
-                createRawYUVRenderPipeline(device, targetFormat, shaderCode)
-            );
+            const pipeline = await deadline.wait(createRawYUVRenderPipeline(device, targetFormat, shaderCode));
             const resources = createRawYUVRenderResources(device, pipeline, settings);
             presentationUniformBuffer = resources.presentationUniformBuffer;
             renderSettingsUniformBuffer = resources.renderSettingsUniformBuffer;
@@ -807,8 +702,7 @@ export class DolbyVisionPresentationAuthorizationRunner {
             pixelReader = new GPUCanvasPixelReader({
                 device,
                 format: targetFormat,
-                maximumReadbacks: RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.length
-                    * scenarios.length
+                maximumReadbacks: RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.length * scenarios.length
             });
             let maximumChannelError = 0;
             let sampleCount = 0;
@@ -819,8 +713,7 @@ export class DolbyVisionPresentationAuthorizationRunner {
                 const renderResult = renderRawYUVFrame({
                     ...resources,
                     device,
-                    dolbyVisionEnhancementUniformBuffer:
-                        enhancementUniformBuffer ?? undefined,
+                    dolbyVisionEnhancementUniformBuffer: enhancementUniformBuffer ?? undefined,
                     dolbyVisionRPUStorageBuffer: RPUStorageBuffer,
                     enhancementFrame: scenario.enhancementFrame,
                     enhancementTextureSet,
@@ -836,13 +729,7 @@ export class DolbyVisionPresentationAuthorizationRunner {
                 errorScopePushed = false;
                 const validationError = await deadline.wait(validationPromise);
                 if (validationError) {
-                    return createRejectedDecision(
-                        device,
-                        targetFormat,
-                        shaderSignature,
-                        this.routeKey,
-                        'gpu-validation-failed'
-                    );
+                    return createRejectedDecision(device, targetFormat, shaderSignature, this.routeKey, 'gpu-validation-failed');
                 }
 
                 const readback = await deadline.wait(
@@ -851,17 +738,9 @@ export class DolbyVisionPresentationAuthorizationRunner {
                 );
                 const actualObservations: RawHDRVectorObservation[] = [];
                 if (readback.failure || !readback.linearRGB) {
-                    return createRejectedDecision(
-                        device,
-                        targetFormat,
-                        shaderSignature,
-                        this.routeKey,
-                        'readback-failed'
-                    );
+                    return createRejectedDecision(device, targetFormat, shaderSignature, this.routeKey, 'readback-failed');
                 }
-                for (let sampleIndex = 0;
-                    sampleIndex < RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.length;
-                    sampleIndex += 1) {
+                for (let sampleIndex = 0; sampleIndex < RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.length; sampleIndex += 1) {
                     const sample = RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES[sampleIndex];
                     actualObservations.push({
                         linearRGB: readback.linearRGB[sampleIndex],
@@ -869,15 +748,9 @@ export class DolbyVisionPresentationAuthorizationRunner {
                         sampleY: sample.sampleY
                     });
                 }
-                const comparison = evaluateRawHDRVectorObservations(
-                    scenario.expectedObservations,
-                    actualObservations
-                );
+                const comparison = evaluateRawHDRVectorObservations(scenario.expectedObservations, actualObservations);
                 sampleCount += actualObservations.length;
-                maximumChannelError = Math.max(
-                    maximumChannelError,
-                    comparison.maximumChannelError
-                );
+                maximumChannelError = Math.max(maximumChannelError, comparison.maximumChannelError);
                 if (!comparison.accepted) {
                     return createRejectedDecision(
                         device,
@@ -903,13 +776,7 @@ export class DolbyVisionPresentationAuthorizationRunner {
                 targetFormat
             };
         } catch (error) {
-            return createRejectedDecision(
-                device,
-                targetFormat,
-                shaderSignature,
-                this.routeKey,
-                classifyFailure(error)
-            );
+            return createRejectedDecision(device, targetFormat, shaderSignature, this.routeKey, classifyFailure(error));
         } finally {
             deadline.destroy();
             if (errorScopePushed) {
@@ -927,14 +794,13 @@ export class DolbyVisionPresentationAuthorizationRunner {
     }
 }
 
-/** Device-scoped cache for the exact Dolby Vision shader authorization. */
+/** Caches the Dolby Vision authorization decision per device, keyed by target format and shader signature. */
 export class DolbyVisionPresentationAuthorizationRegistry {
     private readonly devices = new WeakMap<GPUDevice, DeviceProbeCache>();
     private readonly runner: DolbyVisionPresentationAuthorizationRunner;
 
     public constructor(
-        runnerOrRoute: DolbyVisionPresentationAuthorizationRunner | DolbyVisionAuthorizationRoute =
-        'single-layer',
+        runnerOrRoute: DolbyVisionPresentationAuthorizationRunner | DolbyVisionAuthorizationRoute = 'single-layer',
         format: RawDolbyVisionVideoFrameFormat = 'I420P10'
     ) {
         this.runner = typeof runnerOrRoute === 'string' ?
@@ -942,27 +808,21 @@ export class DolbyVisionPresentationAuthorizationRegistry {
             runnerOrRoute;
     }
 
-    /** Starts the exact-device probe without delaying ordinary playback. */
+    /** Starts the probe for this device and target format without waiting for it. */
     public prewarm(device: GPUDevice, targetFormat: GPUTextureFormat): void {
         void this.authorize(device, targetFormat);
     }
 
-    /** Waits only a probe that has already been started. */
-    public async waitForPending(
-        device: GPUDevice,
-        targetFormat: GPUTextureFormat
-    ): Promise<void> {
+    /** Waits for a probe that is already running, without starting one. */
+    public async waitForPending(device: GPUDevice, targetFormat: GPUTextureFormat): Promise<void> {
         const probe = this.getCachedProbe(device, targetFormat);
         if (probe && !probe.decision) {
             await probe.promise;
         }
     }
 
-    /** Returns a deduplicated decision for one exact device, target, and shader. */
-    public authorize(
-        device: GPUDevice,
-        targetFormat: GPUTextureFormat
-    ): Promise<DolbyVisionAuthorizationDecision> {
+    /** Returns the decision for one device, target format, and shader, starting a probe only when none is cached. */
+    public authorize(device: GPUDevice, targetFormat: GPUTextureFormat): Promise<DolbyVisionAuthorizationDecision> {
         const cacheKey = this.createCacheKey(targetFormat);
         const deviceCache = this.getDeviceCache(device);
         const cachedProbe = deviceCache.probes.get(cacheKey);
@@ -995,7 +855,7 @@ export class DolbyVisionPresentationAuthorizationRegistry {
         return probe.promise;
     }
 
-    /** Checks only settled authorization and never waits optimistically. */
+    /** Returns true only when a settled probe authorized this device, target format, and shader; a pending probe counts as unauthorized. */
     public isAuthorized(
         device: GPUDevice,
         targetFormat: GPUTextureFormat,
@@ -1015,10 +875,7 @@ export class DolbyVisionPresentationAuthorizationRegistry {
     }
 
     /** Returns bounded diagnostics without exposing retained GPU objects. */
-    public getTelemetry(
-        device: GPUDevice | null,
-        targetFormat: GPUTextureFormat | null
-    ): DolbyVisionAuthorizationTelemetry {
+    public getTelemetry(device: GPUDevice | null, targetFormat: GPUTextureFormat | null): DolbyVisionAuthorizationTelemetry {
         const unavailable: DolbyVisionAuthorizationTelemetry = {
             failureReason: null,
             vectorVersion: DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION,
@@ -1053,16 +910,10 @@ export class DolbyVisionPresentationAuthorizationRegistry {
 
     private createCacheKey(targetFormat: GPUTextureFormat): string {
         const shaderCode = this.runner.createShader(createSettings());
-        return `${targetFormat}\u0000${createDolbyVisionShaderSignature(
-            targetFormat,
-            shaderCode
-        )}`;
+        return `${targetFormat}\u0000${createDolbyVisionShaderSignature(targetFormat, shaderCode)}`;
     }
 
-    private getCachedProbe(
-        device: GPUDevice,
-        targetFormat: GPUTextureFormat
-    ): CachedProbe | undefined {
+    private getCachedProbe(device: GPUDevice, targetFormat: GPUTextureFormat): CachedProbe | undefined {
         return this.devices.get(device)?.probes.get(this.createCacheKey(targetFormat));
     }
 

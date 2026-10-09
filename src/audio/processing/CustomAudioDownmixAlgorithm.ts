@@ -7,18 +7,12 @@ export const CUSTOM_AUDIO_DOWNMIX_ALGORITHMS = Object.freeze({
     StandardLORO: 'standard-lo-ro'
 } as const);
 
-export type CustomAudioDownmixAlgorithm =
-    typeof CUSTOM_AUDIO_DOWNMIX_ALGORITHMS[
-        keyof typeof CUSTOM_AUDIO_DOWNMIX_ALGORITHMS
-    ];
+export type CustomAudioDownmixAlgorithm = typeof CUSTOM_AUDIO_DOWNMIX_ALGORITHMS[keyof typeof CUSTOM_AUDIO_DOWNMIX_ALGORITHMS];
 
-export const DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM =
-    CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.StandardLORO;
+export const DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM = CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.StandardLORO;
 
 /** Rejects unknown persisted or cross-thread downmix algorithm values. */
-export function isCustomAudioDownmixAlgorithm(
-    value: unknown
-): value is CustomAudioDownmixAlgorithm {
+export function isCustomAudioDownmixAlgorithm(value: unknown): value is CustomAudioDownmixAlgorithm {
     switch (value) {
         case CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.AC4:
         case CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.Dave750:
@@ -33,10 +27,6 @@ export function isCustomAudioDownmixAlgorithm(
 }
 
 /** Falls back to the standard full-gain matrix for invalid stored settings. */
-export function normalizeCustomAudioDownmixAlgorithm(
-    value: unknown
-): CustomAudioDownmixAlgorithm {
-    return isCustomAudioDownmixAlgorithm(value) ?
-        value :
-        DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM;
+export function normalizeCustomAudioDownmixAlgorithm(value: unknown): CustomAudioDownmixAlgorithm {
+    return isCustomAudioDownmixAlgorithm(value) ? value : DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM;
 }

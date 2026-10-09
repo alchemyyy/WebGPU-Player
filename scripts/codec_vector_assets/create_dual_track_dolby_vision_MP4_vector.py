@@ -208,10 +208,7 @@ def find_unique_nested_box(data: bytes, root_box: BMFFBox, path: Sequence[str]) 
 
     current_box = root_box
     for box_type in path:
-        current_box = find_required_box(
-            parse_children(data, current_box.data_offset, current_box.end_offset),
-            box_type,
-        )
+        current_box = find_required_box(parse_children(data, current_box.data_offset, current_box.end_offset), box_type)
     return current_box
 
 
@@ -250,26 +247,13 @@ def parse_video_track(data: bytes, track_box: BMFFBox) -> VideoTrack:
         or read_four_CC(data, handler_box.data_offset + 8, handler_box.end_offset) != "vide"
     ):
         raise VectorError("The vector contains a non-video track")
-    sample_description_box = find_unique_nested_box(
-        data,
-        track_box,
-        ("mdia", "minf", "stbl", "stsd"),
-    )
+    sample_description_box = find_unique_nested_box(data, track_box, ("mdia", "minf", "stbl", "stsd"))
     if (
         sample_description_box.data_size < 8
-        or read_unsigned_32(
-            data,
-            sample_description_box.data_offset + 4,
-            sample_description_box.end_offset,
-        )
-        != 1
+        or read_unsigned_32(data, sample_description_box.data_offset + 4, sample_description_box.end_offset) != 1
     ):
         raise VectorError("The vector requires one video sample entry per track")
-    sample_entry = parse_box(
-        data,
-        sample_description_box.data_offset + 8,
-        sample_description_box.end_offset,
-    )
+    sample_entry = parse_box(data, sample_description_box.data_offset + 8, sample_description_box.end_offset)
     if (
         sample_entry.end_offset != sample_description_box.end_offset
         or sample_entry.box_type not in BASE_HEVC_SAMPLE_ENTRY_TYPES
@@ -278,37 +262,22 @@ def parse_video_track(data: bytes, track_box: BMFFBox) -> VideoTrack:
     sample_entry_child_offset = sample_entry.data_offset + VISUAL_SAMPLE_ENTRY_FIELD_BYTE_LENGTH
     if sample_entry_child_offset > sample_entry.end_offset:
         raise VectorError("An HEVC visual sample entry is truncated")
-    sample_entry_children = parse_children(
-        data,
-        sample_entry_child_offset,
-        sample_entry.end_offset,
-    )
+    sample_entry_children = parse_children(data, sample_entry_child_offset, sample_entry.end_offset)
     find_required_box(sample_entry_children, "hvcC")
     dolby_vision_configuration_box = find_unique_box(sample_entry_children, "dvcC")
     track_ID = parse_track_ID(data, track_header_box)
     return VideoTrack(
         dolby_vision_configuration_box=dolby_vision_configuration_box,
-        height=read_unsigned_16(
-            data,
-            sample_entry.data_offset + VISUAL_SAMPLE_ENTRY_HEIGHT_OFFSET,
-            sample_entry.end_offset,
-        ),
+        height=read_unsigned_16(data, sample_entry.data_offset + VISUAL_SAMPLE_ENTRY_HEIGHT_OFFSET, sample_entry.end_offset),
         sample_entry=sample_entry,
         track_box=track_box,
         track_header_box=track_header_box,
         track_ID=track_ID,
-        width=read_unsigned_16(
-            data,
-            sample_entry.data_offset + VISUAL_SAMPLE_ENTRY_WIDTH_OFFSET,
-            sample_entry.end_offset,
-        ),
+        width=read_unsigned_16(data, sample_entry.data_offset + VISUAL_SAMPLE_ENTRY_WIDTH_OFFSET, sample_entry.end_offset),
     )
 
 
-def require_profile7_enhancement_configuration(
-    data: bytes,
-    configuration_box: BMFFBox | None,
-) -> int:
+def require_profile7_enhancement_configuration(data: bytes, configuration_box: BMFFBox | None) -> int:
     """Returns the flag bits offset of an RPU-bearing Profile 7 EL dvcC configuration."""
 
     if configuration_box is None or configuration_box.data_size < 4:
@@ -356,9 +325,7 @@ def patch_dual_track_dolby_vision_MP4(source_data: bytes | bytearray | memoryvie
         raise VectorError("The vector requires a compact movie box size")
     # Growing moov keeps the chunk offsets valid only while all media data precedes it
     media_data_boxes = [box for box in top_level_boxes if box.box_type == "mdat"]
-    if not media_data_boxes or any(
-        box.end_offset > movie_box.start_offset for box in media_data_boxes
-    ):
+    if not media_data_boxes or any(box.end_offset > movie_box.start_offset for box in media_data_boxes):
         raise VectorError("All vector media data must precede the movie box")
     track_boxes = [
         box
@@ -370,22 +337,15 @@ def patch_dual_track_dolby_vision_MP4(source_data: bytes | bytearray | memoryvie
     tracks = [parse_video_track(source, track_box) for track_box in track_boxes]
     if tracks[0].track_ID == tracks[1].track_ID:
         raise VectorError("The vector track IDs are duplicated")
-    enhancement_tracks = [
-        track for track in tracks if track.dolby_vision_configuration_box is not None
-    ]
+    enhancement_tracks = [track for track in tracks if track.dolby_vision_configuration_box is not None]
     if len(enhancement_tracks) != 1:
         raise VectorError("The vector requires exactly one Dolby Vision enhancement track")
     enhancement_track = enhancement_tracks[0]
     base_track = next((track for track in tracks if track is not enhancement_track), None)
     if base_track is None or base_track.dolby_vision_configuration_box is not None:
         raise VectorError("The vector base track is ambiguous")
-    configuration_bits_offset = require_profile7_enhancement_configuration(
-        source,
-        enhancement_track.dolby_vision_configuration_box,
-    )
-    dolby_vision_sample_entry_type = DOLBY_VISION_SAMPLE_ENTRY_TYPE_BY_HEVC_TYPE.get(
-        enhancement_track.sample_entry.box_type
-    )
+    configuration_bits_offset = require_profile7_enhancement_configuration(source, enhancement_track.dolby_vision_configuration_box)
+    dolby_vision_sample_entry_type = DOLBY_VISION_SAMPLE_ENTRY_TYPE_BY_HEVC_TYPE.get(enhancement_track.sample_entry.box_type)
     if dolby_vision_sample_entry_type is None:
         raise VectorError("The enhancement sample entry type is unsupported")
 
@@ -424,8 +384,6 @@ def patch_dual_track_dolby_vision_MP4(source_data: bytes | bytearray | memoryvie
 
 
 def create_argument_parser() -> argparse.ArgumentParser:
-    """Creates the dual-track vector CLI."""
-
     parser = argparse.ArgumentParser(
         prog="python scripts/codec_vector_assets/create_dual_track_dolby_vision_MP4_vector.py",
         description=(
@@ -437,11 +395,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("input_path", metavar="separate-profile7.mkv")
     parser.add_argument("output_path", metavar="output.mp4")
-    parser.add_argument(
-        "--ffmpeg",
-        metavar="path",
-        help="FFmpeg executable; defaults to ffmpeg on PATH",
-    )
+    parser.add_argument("--ffmpeg", metavar="path", help="FFmpeg executable; defaults to ffmpeg on PATH")
     return parser
 
 
@@ -462,9 +416,7 @@ def parse_arguments(command_arguments: Sequence[str] | None) -> DualTrackVectorC
     )
 
 
-def create_dual_track_dolby_vision_MP4_vector(
-    configuration: DualTrackVectorConfiguration,
-) -> dict[str, object]:
+def create_dual_track_dolby_vision_MP4_vector(configuration: DualTrackVectorConfiguration) -> dict[str, object]:
     """Remuxes the separate-track source with FFmpeg and writes the patched dual-track MP4."""
 
     source_status = os.stat(configuration.input_path)

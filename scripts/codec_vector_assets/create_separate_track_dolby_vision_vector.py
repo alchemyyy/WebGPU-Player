@@ -72,8 +72,6 @@ class VectorConfiguration:
 
 
 def get_NAL_unit_type(NAL_unit: bytes | memoryview) -> int:
-    """Returns the HEVC NAL unit type from the first header byte."""
-
     return (NAL_unit[0] >> 1) & 0x3F
 
 
@@ -105,9 +103,7 @@ def require_elementary_stream(NAL_unit_types: set[int], layer: str) -> None:
         raise VectorError(f"{layer} stream has no VCL NAL unit")
 
 
-def split_interleaved_dolby_vision_annex_B(
-    source_data: bytes | bytearray | memoryview,
-) -> DolbyVisionLayerSplit:
+def split_interleaved_dolby_vision_annex_B(source_data: bytes | bytearray | memoryview) -> DolbyVisionLayerSplit:
     """Splits one Annex B interleaved Profile 7 access unit into BL and EL/RPU streams."""
 
     data = bytes(source_data)
@@ -171,8 +167,6 @@ def split_interleaved_dolby_vision_annex_B(
 
 
 def create_argument_parser() -> argparse.ArgumentParser:
-    """Creates the separate-track vector CLI."""
-
     parser = argparse.ArgumentParser(
         prog="python scripts/codec_vector_assets/create_separate_track_dolby_vision_vector.py",
         description=(

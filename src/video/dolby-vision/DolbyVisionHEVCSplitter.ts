@@ -87,10 +87,7 @@ function readNALUnitLength(
     return byteLength;
 }
 
-function parseLengthPrefixedNALUnits(
-    data: Uint8Array,
-    lengthSize: HEVCLengthSize
-): HEVCNALUnit[] {
+function parseLengthPrefixedNALUnits(data: Uint8Array, lengthSize: HEVCLengthSize): HEVCNALUnit[] {
     const nalUnits: HEVCNALUnit[] = [];
     let offset = 0;
     while (offset < data.byteLength) {
@@ -102,8 +99,7 @@ function parseLengthPrefixedNALUnits(
         }
         const nalUnitByteLength = readNALUnitLength(data, offset, lengthSize);
         offset += lengthSize;
-        if (nalUnitByteLength < MINIMUM_NAL_UNIT_BYTE_LENGTH
-            || offset + nalUnitByteLength > data.byteLength) {
+        if (nalUnitByteLength < MINIMUM_NAL_UNIT_BYTE_LENGTH || offset + nalUnitByteLength > data.byteLength) {
             throw new TypeError('The HEVC access unit contains an invalid NAL unit length');
         }
         nalUnits.push(parseNALUnit(data.subarray(offset, offset + nalUnitByteLength)));
@@ -112,10 +108,7 @@ function parseLengthPrefixedNALUnits(
     return nalUnits;
 }
 
-function findAnnexBStartCode(
-    data: Uint8Array,
-    startOffset: number
-): { byteLength: 3 | 4, offset: number } | null {
+function findAnnexBStartCode(data: Uint8Array, startOffset: number): { byteLength: 3 | 4, offset: number } | null {
     for (let offset = startOffset; offset + 3 <= data.byteLength; offset += 1) {
         if (data[offset] !== 0 || data[offset + 1] !== 0) {
             continue;
@@ -123,9 +116,7 @@ function findAnnexBStartCode(
         if (data[offset + 2] === 1) {
             return { byteLength: 3, offset };
         }
-        if (offset + 4 <= data.byteLength
-            && data[offset + 2] === 0
-            && data[offset + 3] === 1) {
+        if (offset + 4 <= data.byteLength && data[offset + 2] === 0 && data[offset + 3] === 1) {
             return { byteLength: 4, offset };
         }
     }
@@ -158,10 +149,7 @@ function parseAnnexBNALUnits(data: Uint8Array): HEVCNALUnit[] {
 }
 
 /** Parses one bounded HEVC access unit without copying its NAL payloads. */
-export function parseHEVCNALUnits(
-    data: Uint8Array,
-    format: HEVCNALFormat
-): HEVCNALUnit[] {
+export function parseHEVCNALUnits(data: Uint8Array, format: HEVCNALFormat): HEVCNALUnit[] {
     switch (format.kind) {
         case 'annex-b':
             return parseAnnexBNALUnits(data);
@@ -171,9 +159,7 @@ export function parseHEVCNALUnits(
 }
 
 function getPrefixByteLength(format: HEVCNALFormat): number {
-    return format.kind === 'annex-b' ?
-        ANNEX_B_START_CODE.byteLength :
-        format.lengthSize;
+    return format.kind === 'annex-b' ? ANNEX_B_START_CODE.byteLength : format.lengthSize;
 }
 
 function getMaximumNALUnitByteLength(lengthSize: HEVCLengthSize): number {
@@ -193,10 +179,7 @@ function writeNALUnitLength(
     }
 }
 
-function encodeNALUnits(
-    nalUnits: readonly Uint8Array[],
-    format: HEVCNALFormat
-): Uint8Array | null {
+function encodeNALUnits(nalUnits: readonly Uint8Array[], format: HEVCNALFormat): Uint8Array | null {
     if (nalUnits.length === 0) {
         return null;
     }
@@ -206,8 +189,7 @@ function encodeNALUnits(
         if (nalUnit.byteLength < MINIMUM_NAL_UNIT_BYTE_LENGTH) {
             throw new TypeError('An output HEVC NAL unit is missing its two-byte header');
         }
-        if (format.kind === 'length-prefixed'
-            && nalUnit.byteLength > getMaximumNALUnitByteLength(format.lengthSize)) {
+        if (format.kind === 'length-prefixed' && nalUnit.byteLength > getMaximumNALUnitByteLength(format.lengthSize)) {
             throw new TypeError('An HEVC NAL unit does not fit the output length field');
         }
         outputByteLength += prefixByteLength + nalUnit.byteLength;
@@ -222,12 +204,7 @@ function encodeNALUnits(
         if (format.kind === 'annex-b') {
             output.set(ANNEX_B_START_CODE, outputOffset);
         } else {
-            writeNALUnitLength(
-                output,
-                outputOffset,
-                format.lengthSize,
-                nalUnit.byteLength
-            );
+            writeNALUnitLength(output, outputOffset, format.lengthSize, nalUnit.byteLength);
         }
         outputOffset += prefixByteLength;
         output.set(nalUnit, outputOffset);
@@ -237,9 +214,8 @@ function encodeNALUnits(
 }
 
 /**
- * Separates BL, RPU, and wrapped EL NAL units without retaining packet views. NAL units with nuh_layer_id
- * above zero, such as an MV-HEVC second view or an SHVC layer, are dropped: single-layer decoders ignore them
- * and the base layer decodes without them.
+ * Separates BL, RPU, and wrapped EL NAL units without retaining packet views.
+ * NAL units with nuh_layer_id above zero, such as an MV-HEVC second view or an SHVC layer, are dropped: single-layer decoders ignore them and the base layer decodes without them.
  */
 export function splitDolbyVisionHEVCAccessUnit(
     data: Uint8Array,
@@ -287,10 +263,7 @@ export function splitDolbyVisionHEVCAccessUnit(
 
     return {
         baseLayerData: encodeNALUnits(baseLayerNALUnits, inputFormat),
-        enhancementLayerData: encodeNALUnits(
-            enhancementLayerNALUnits,
-            enhancementOutputFormat
-        ),
+        enhancementLayerData: encodeNALUnits(enhancementLayerNALUnits, enhancementOutputFormat),
         hasBaseLayerVCL,
         hasEnhancementLayerVCL,
         hasRequiredEnhancementLayerParameterSets:
@@ -302,21 +275,14 @@ export function splitDolbyVisionHEVCAccessUnit(
 }
 
 /** Returns whether an access unit contains a random-access skipped picture. */
-export function hasHEVCRASLPicture(
-    data: Uint8Array,
-    format: HEVCNALFormat
-): boolean {
+export function hasHEVCRASLPicture(data: Uint8Array, format: HEVCNALFormat): boolean {
     requireAccessUnit(data);
     return parseHEVCNALUnits(data, format).some((nalUnit: HEVCNALUnit): boolean => (
-        nalUnit.type === HEVC_RASL_N_NAL_UNIT_TYPE
-        || nalUnit.type === HEVC_RASL_R_NAL_UNIT_TYPE
+        nalUnit.type === HEVC_RASL_N_NAL_UNIT_TYPE || nalUnit.type === HEVC_RASL_R_NAL_UNIT_TYPE
     ));
 }
 
-function getNextChromiumNALOrderState(
-    orderState: ChromiumHEVCNALOrderState,
-    nalUnitType: number
-): ChromiumHEVCNALOrderState | null {
+function getNextChromiumNALOrderState(orderState: ChromiumHEVCNALOrderState, nalUnitType: number): ChromiumHEVCNALOrderState | null {
     switch (orderState) {
         case ChromiumHEVCNALOrderState.NoMoreDataAllowed:
             return null;
@@ -332,10 +298,7 @@ type ExactChromiumNALTransition = {
     nextState: ChromiumHEVCNALOrderState | null
 };
 
-function getExactChromiumNALTransition(
-    orderState: ChromiumHEVCNALOrderState,
-    nalUnitType: number
-): ExactChromiumNALTransition {
+function getExactChromiumNALTransition(orderState: ChromiumHEVCNALOrderState, nalUnitType: number): ExactChromiumNALTransition {
     switch (nalUnitType) {
         case 35:
             return {
@@ -363,10 +326,7 @@ function getExactChromiumNALTransition(
     }
 }
 
-function getActiveChromiumNALOrderState(
-    orderState: ChromiumHEVCNALOrderState,
-    nalUnitType: number
-): ChromiumHEVCNALOrderState | null {
+function getActiveChromiumNALOrderState(orderState: ChromiumHEVCNALOrderState, nalUnitType: number): ChromiumHEVCNALOrderState | null {
     const exactTransition = getExactChromiumNALTransition(orderState, nalUnitType);
     if (exactTransition.handled) {
         return exactTransition.nextState;
@@ -398,8 +358,7 @@ function isChromiumHEVCPrefixNALUnit(nalUnitType: number): boolean {
         case 39:
             return true;
         default:
-            return (nalUnitType >= 41 && nalUnitType <= 44)
-                || (nalUnitType >= 48 && nalUnitType <= 55);
+            return (nalUnitType >= 41 && nalUnitType <= 44) || (nalUnitType >= 48 && nalUnitType <= 55);
     }
 }
 
@@ -409,16 +368,12 @@ function isChromiumHEVCSuffixNALUnit(nalUnitType: number): boolean {
         case 40:
             return true;
         default:
-            return (nalUnitType >= 45 && nalUnitType <= 47)
-                || (nalUnitType >= 56 && nalUnitType <= 63);
+            return (nalUnitType >= 45 && nalUnitType <= 47) || (nalUnitType >= 56 && nalUnitType <= 63);
     }
 }
 
 /** Removes only HEVC NAL ordering violations rejected by Chromium. */
-export function sanitizeHEVCAccessUnitForChromium(
-    data: Uint8Array,
-    format: HEVCNALFormat
-): Uint8Array | null {
+export function sanitizeHEVCAccessUnitForChromium(data: Uint8Array, format: HEVCNALFormat): Uint8Array | null {
     requireAccessUnit(data);
     const nalUnits = parseHEVCNALUnits(data, format);
     const retainedNALUnits: Uint8Array[] = [];
@@ -459,11 +414,7 @@ export function rewriteHEVCAccessUnitColorDescriptionToBT709(
             rewrittenNALUnits.push(nalUnit.data);
             continue;
         }
-        rewrittenNALUnits.push(rewriteHEVCSPSColorDescriptionToBT709(
-            nalUnit.data,
-            expectedHDRTransfer,
-            preferredTransferCharacteristics
-        ));
+        rewrittenNALUnits.push(rewriteHEVCSPSColorDescriptionToBT709(nalUnit.data, expectedHDRTransfer, preferredTransferCharacteristics));
         rewritten = true;
     }
     return rewritten ? encodeNALUnits(rewrittenNALUnits, format) : null;

@@ -47,9 +47,7 @@ let defaultModulePromise: Promise<FFmpegEAC3Module> | null = null;
 
 async function loadDefaultEAC3DecoderModule(): Promise<FFmpegEAC3Module> {
     if (!defaultModulePromise) {
-        defaultModulePromise = import('#wasm/ffmpeg-eac3/ffmpeg-eac3.mjs').then(
-            async moduleNamespace => moduleNamespace.default()
-        );
+        defaultModulePromise = import('#wasm/ffmpeg-eac3/ffmpeg-eac3.mjs').then(async moduleNamespace => moduleNamespace.default());
     }
     return defaultModulePromise;
 }
@@ -108,10 +106,7 @@ export default class EAC3SoftwareAudioDecoder {
     private constructor(module: FFmpegEAC3Module) {
         this.module = module;
         this.functions = createFunctionTable(module);
-        this.libraryVersion = requirePositiveSafeInteger(
-            this.functions.getVersion(),
-            'FFmpeg libavcodec version'
-        );
+        this.libraryVersion = requirePositiveSafeInteger(this.functions.getVersion(), 'FFmpeg libavcodec version');
         this.decoder = this.functions.create();
         if (!Number.isSafeInteger(this.decoder) || this.decoder <= 0) {
             throw new Error('Unable to create the bundled E-AC-3 decoder');
@@ -119,27 +114,19 @@ export default class EAC3SoftwareAudioDecoder {
     }
 
     /** Creates one decoder after lazy WebAssembly initialization. */
-    public static async create(
-        moduleFactory: EAC3DecoderModuleFactory = loadDefaultEAC3DecoderModule
-    ): Promise<EAC3SoftwareAudioDecoder> {
+    public static async create(moduleFactory: EAC3DecoderModuleFactory = loadDefaultEAC3DecoderModule): Promise<EAC3SoftwareAudioDecoder> {
         const module = await moduleFactory();
-        if (!(module.HEAPF32 instanceof Float32Array)
-            || !(module.HEAPU8 instanceof Uint8Array)) {
+        if (!(module.HEAPF32 instanceof Float32Array) || !(module.HEAPU8 instanceof Uint8Array)) {
             throw new Error('The bundled E-AC-3 decoder memory views are unavailable');
         }
         return new EAC3SoftwareAudioDecoder(module);
     }
 
     /** Decodes one Mediabunny-demuxed access unit into owned planar PCM blocks. */
-    public decode(
-        data: Uint8Array,
-        mediaTimeMicroseconds: Microseconds
-    ): readonly EAC3DecodedAudioOutput[] {
+    public decode(data: Uint8Array, mediaTimeMicroseconds: Microseconds): readonly EAC3DecodedAudioOutput[] {
         this.requireOpen();
         requireMicroseconds(mediaTimeMicroseconds, 'E-AC-3 packet timestamp');
-        if (!(data instanceof Uint8Array)
-            || data.byteLength <= 0
-            || data.byteLength > EAC3_MAXIMUM_PACKET_SIZE) {
+        if (!(data instanceof Uint8Array) || data.byteLength <= 0 || data.byteLength > EAC3_MAXIMUM_PACKET_SIZE) {
             throw new RangeError('E-AC-3 packet size is outside the bounded decoder envelope');
         }
 
@@ -150,10 +137,7 @@ export default class EAC3SoftwareAudioDecoder {
             throw new Error('Unable to allocate the bounded E-AC-3 packet buffer');
         }
         this.module.HEAPU8.set(data, packetPointer);
-        const sendStatus = this.functions.sendPacket(
-            this.decoder,
-            mediaTimeMicroseconds
-        );
+        const sendStatus = this.functions.sendPacket(this.decoder, mediaTimeMicroseconds);
         if (sendStatus === EAC3_STATUS_NO_OUTPUT) {
             return [];
         }
@@ -169,9 +153,7 @@ export default class EAC3SoftwareAudioDecoder {
                 return outputs;
             }
             if (receiveStatus <= EAC3_STATUS_FATAL) {
-                throw new Error(
-                    `Bundled E-AC-3 frame receive failed with status ${receiveStatus}`
-                );
+                throw new Error(`Bundled E-AC-3 frame receive failed with status ${receiveStatus}`);
             }
             // A packet holds any number of syncframes, and each output consumes at least one of its bytes
             if (outputs.length >= data.byteLength) {
@@ -199,40 +181,28 @@ export default class EAC3SoftwareAudioDecoder {
     }
 
     /**
-     * Copies the received frame. FFmpeg resets the packet timestamp after a
-     * partial consume, so a later frame of the same packet without one starts
-     * where the packet's earlier frames ended.
+     * Copies the received frame.
+     * FFmpeg resets the packet timestamp after a partial consume, so a later frame of the same packet without one starts where the packet's earlier frames ended.
      */
-    private copyCurrentOutput(
-        packetMediaTimeMicroseconds: Microseconds,
-        precedingPacketFrameCount: number
-    ): EAC3DecodedAudioOutput {
+    private copyCurrentOutput(packetMediaTimeMicroseconds: Microseconds, precedingPacketFrameCount: number): EAC3DecodedAudioOutput {
         const frameCount = this.functions.getSampleCount(this.decoder);
-        if (!Number.isSafeInteger(frameCount)
-            || frameCount <= 0
-            || frameCount > EAC3_MAXIMUM_DECODED_FRAME_COUNT) {
+        if (!Number.isSafeInteger(frameCount) || frameCount <= 0 || frameCount > EAC3_MAXIMUM_DECODED_FRAME_COUNT) {
             throw new RangeError('Bundled E-AC-3 output frame count is invalid');
         }
         const sampleRate = this.functions.getSampleRate(this.decoder);
         if (!isSupportedCustomAudioSampleRate(sampleRate)) {
-            throw new RangeError(
-                `Bundled E-AC-3 output sample rate ${sampleRate} Hz is invalid`
-            );
+            throw new RangeError(`Bundled E-AC-3 output sample rate ${sampleRate} Hz is invalid`);
         }
         const sampleFormat = this.functions.getSampleFormat(this.decoder);
         if (sampleFormat !== EAC3_AV_SAMPLE_FORMAT_F32_PLANAR) {
-            throw new RangeError(
-                `Bundled E-AC-3 sample format ${sampleFormat} is unsupported`
-            );
+            throw new RangeError(`Bundled E-AC-3 sample format ${sampleFormat} is unsupported`);
         }
 
         const channelCount = this.functions.getChannelCount(this.decoder);
         const channelMask = this.functions.getChannelMask(this.decoder) >>> 0;
         const qualifiedLayout = getQualifiedCustomWaveChannelLayout(channelMask);
         if (!qualifiedLayout || qualifiedLayout.channelCount !== channelCount) {
-            throw new RangeError(
-                `Bundled E-AC-3 channel mask 0x${channelMask.toString(16)} is unqualified`
-            );
+            throw new RangeError(`Bundled E-AC-3 channel mask 0x${channelMask.toString(16)} is unqualified`);
         }
 
         const channelData: Float32Array[] = [];
@@ -246,20 +216,13 @@ export default class EAC3SoftwareAudioDecoder {
                 throw new RangeError('Bundled E-AC-3 output is outside decoder memory');
             }
             const firstSampleIndex = planePointer / Float32Array.BYTES_PER_ELEMENT;
-            channelData.push(this.module.HEAPF32.slice(
-                firstSampleIndex,
-                firstSampleIndex + frameCount
-            ));
+            channelData.push(this.module.HEAPF32.slice(firstSampleIndex, firstSampleIndex + frameCount));
         }
 
         const decodedPTS = this.functions.getPTS(this.decoder);
-        const mediaTimeMicroseconds = Number.isSafeInteger(decodedPTS)
-            && decodedPTS >= 0 ?
+        const mediaTimeMicroseconds = Number.isSafeInteger(decodedPTS) && decodedPTS >= 0 ?
             requireMicroseconds(decodedPTS, 'Decoded E-AC-3 timestamp') :
-            addMicroseconds(
-                packetMediaTimeMicroseconds,
-                audioFramesToMicroseconds(precedingPacketFrameCount, sampleRate)
-            );
+            addMicroseconds(packetMediaTimeMicroseconds, audioFramesToMicroseconds(precedingPacketFrameCount, sampleRate));
         return {
             channelData,
             channelLayout: qualifiedLayout.layout,

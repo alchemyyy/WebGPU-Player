@@ -101,8 +101,6 @@ class AnnexBStartCode:
 
     @property
     def NAL_unit_offset(self) -> int:
-        """Returns the offset of the NAL unit that follows the start code."""
-
         return self.byte_offset + self.byte_length
 
 
@@ -252,12 +250,7 @@ def run_command(command: str, arguments: Sequence[str]) -> subprocess.CompletedP
     """Runs one command with an argument list and captures its raw output."""
 
     try:
-        return subprocess.run(
-            [command, *arguments],
-            capture_output=True,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
+        return subprocess.run([command, *arguments], capture_output=True, check=False, stdin=subprocess.DEVNULL)
     except OSError as error:
         raise VectorGenerationError(f"{command} failed:\n{error}") from error
 
@@ -278,9 +271,7 @@ def run_binary_command(command: str, arguments: Sequence[str]) -> bytes:
 
     result = run_command(command, arguments)
     if result.returncode != 0:
-        raise VectorGenerationError(
-            f"{command} failed:\n{result.stderr.decode('utf-8', errors='replace')}"
-        )
+        raise VectorGenerationError(f"{command} failed:\n{result.stderr.decode('utf-8', errors='replace')}")
     return result.stdout
 
 
@@ -369,10 +360,7 @@ def get_packet_byte_lengths(input_path: Path) -> list[int]:
         ),
     )
     # A blank line, which empty output produces, reads as 0
-    return [
-        int(line) if line.strip() else 0
-        for line in split_output_lines(result.standard_output)
-    ]
+    return [int(line) if line.strip() else 0 for line in split_output_lines(result.standard_output)]
 
 
 def get_picture_types(input_path: Path) -> list[str]:
@@ -482,8 +470,8 @@ def rewrite_parameter_sets(
 ) -> bytes:
     """Returns the stream with its one VPS and one SPS rewritten through their unescaped RBSPs.
 
-    The rewrite receives each RBSP and the offset of its general_profile_tier_level, which must be
-    followed by required_byte_length bytes. Every other NAL unit is copied unchanged.
+    The rewrite receives each RBSP and the offset of its general_profile_tier_level, which must be followed by required_byte_length bytes.
+    Every other NAL unit is copied unchanged.
     """
 
     start_codes = find_annex_B_start_codes(data)
@@ -493,9 +481,7 @@ def rewrite_parameter_sets(
     patched_VPS_count = 0
     patched_SPS_count = 0
     for unit_index, start_code in enumerate(start_codes):
-        NAL_unit = data[
-            start_code.NAL_unit_offset : get_NAL_unit_end_offset(data, start_codes, unit_index)
-        ]
+        NAL_unit = data[start_code.NAL_unit_offset : get_NAL_unit_end_offset(data, start_codes, unit_index)]
         NAL_unit_type = get_NAL_unit_type(NAL_unit, 0)
         output_parts.append(data[start_code.byte_offset : start_code.NAL_unit_offset])
         if NAL_unit_type not in (VPS_NAL_UNIT_TYPE, SPS_NAL_UNIT_TYPE):
@@ -513,9 +499,7 @@ def rewrite_parameter_sets(
         else:
             patched_SPS_count += 1
     if patched_VPS_count != 1 or patched_SPS_count != 1:
-        raise VectorGenerationError(
-            f"Expected one VPS/SPS, patched {patched_VPS_count}/{patched_SPS_count}"
-        )
+        raise VectorGenerationError(f"Expected one VPS/SPS, patched {patched_VPS_count}/{patched_SPS_count}")
     return b"".join(output_parts)
 
 
@@ -532,9 +516,7 @@ def patch_profile_tier_level_to_range_extension(data: bytes, constraint_prefix: 
         RBSP[profile_tier_level_offset + COMPATIBILITY_FLAGS_OFFSET : constraint_flags_offset] = (
             RANGE_EXTENSION_COMPATIBILITY_FLAGS
         )
-        RBSP[constraint_flags_offset:constraint_flags_end_offset] = bytes(
-            (constraint_bytes[0], constraint_bytes[1], 0, 0, 0, 0)
-        )
+        RBSP[constraint_flags_offset:constraint_flags_end_offset] = bytes((constraint_bytes[0], constraint_bytes[1], 0, 0, 0, 0))
 
     return rewrite_parameter_sets(data, PROFILE_TIER_LEVEL_PREFIX_BYTE_LENGTH, rewrite_profile)
 
@@ -548,10 +530,7 @@ def set_general_level_IDC(data: bytes, level_IDC: int) -> bytes:
     return rewrite_parameter_sets(data, GENERAL_LEVEL_IDC_OFFSET + 1, rewrite_level)
 
 
-def get_profile_tier_level_evidence(
-    data: bytes,
-    expected_NAL_unit_type: int,
-) -> ProfileTierLevelEvidence:
+def get_profile_tier_level_evidence(data: bytes, expected_NAL_unit_type: int) -> ProfileTierLevelEvidence:
     """Returns the general profile-tier-level fields of the first NAL unit of the expected type."""
 
     start_codes = find_annex_B_start_codes(data)
@@ -565,19 +544,13 @@ def get_profile_tier_level_evidence(
     )
     if unit_index is None:
         raise VectorGenerationError(f"Vector has no NAL unit type {expected_NAL_unit_type}")
-    NAL_unit = data[
-        start_codes[unit_index].NAL_unit_offset : get_NAL_unit_end_offset(data, start_codes, unit_index)
-    ]
+    NAL_unit = data[start_codes[unit_index].NAL_unit_offset : get_NAL_unit_end_offset(data, start_codes, unit_index)]
     RBSP = remove_emulation_prevention_bytes(NAL_unit)
     profile_tier_level_offset = get_profile_tier_level_offset(expected_NAL_unit_type)
     constraint_flags_offset = profile_tier_level_offset + CONSTRAINT_FLAGS_OFFSET
     if len(RBSP) < profile_tier_level_offset + PROFILE_TIER_LEVEL_PREFIX_BYTE_LENGTH:
-        raise VectorGenerationError(
-            "Vector parameter set is too short for profile-tier-level constraints"
-        )
-    compatibility_flags = RBSP[
-        profile_tier_level_offset + COMPATIBILITY_FLAGS_OFFSET : constraint_flags_offset
-    ]
+        raise VectorGenerationError("Vector parameter set is too short for profile-tier-level constraints")
+    compatibility_flags = RBSP[profile_tier_level_offset + COMPATIBILITY_FLAGS_OFFSET : constraint_flags_offset]
     first_constraint_byte = RBSP[constraint_flags_offset]
     second_constraint_byte = RBSP[constraint_flags_offset + 1]
     return {
@@ -769,51 +742,27 @@ def get_vector_evidence(vector: RangeExtensionVector, generated_path: Path) -> V
 def require_vector_evidence(vector: RangeExtensionVector, evidence: VectorEvidence) -> None:
     """Requires the measured evidence to match the vector table."""
 
-    require_equal(
-        evidence["accessUnitByteLengths"],
-        vector.access_unit_byte_lengths,
-        f"{vector.variant} access-unit lengths",
-    )
-    require_equal(
-        evidence["pictureTypes"],
-        ["I"] if vector.frame_count == 1 else ["I", "P"],
-        f"{vector.variant} picture types",
-    )
+    require_equal(evidence["accessUnitByteLengths"], vector.access_unit_byte_lengths, f"{vector.variant} access-unit lengths")
+    require_equal(evidence["pictureTypes"], ["I"] if vector.frame_count == 1 else ["I", "P"], f"{vector.variant} picture types")
     PTL_evidence = evidence["PTL"]["VPS"]
     require_equal(evidence["PTL"]["SPS"], PTL_evidence, f"{vector.variant} VPS/SPS PTL")
-    require_equal(
-        PTL_evidence["profileIDC"],
-        RANGE_EXTENSION_PROFILE_IDC,
-        f"{vector.variant} profile IDC",
-    )
+    require_equal(PTL_evidence["profileIDC"], RANGE_EXTENSION_PROFILE_IDC, f"{vector.variant} profile IDC")
     require_equal(
         PTL_evidence["compatibilityFlags"],
         RANGE_EXTENSION_COMPATIBILITY_FLAGS.hex().upper(),
         f"{vector.variant} compatibility flags",
     )
     require_equal(PTL_evidence["constraintPrefix"], vector.constraint_prefix, f"{vector.variant} PTL")
-    require_equal(
-        PTL_evidence["intraConstrained"],
-        vector.intra_constrained,
-        f"{vector.variant} intra constraint",
-    )
+    require_equal(PTL_evidence["intraConstrained"], vector.intra_constrained, f"{vector.variant} intra constraint")
     require_equal(PTL_evidence["onePictureOnly"], False, f"{vector.variant} one-picture constraint")
-    require_equal(
-        evidence["decodedFingerprints"],
-        vector.expected_fingerprints,
-        f"{vector.variant} decoded fingerprints",
-    )
+    require_equal(evidence["decodedFingerprints"], vector.expected_fingerprints, f"{vector.variant} decoded fingerprints")
 
 
 def verify_vector(vector: RangeExtensionVector, generated_path: Path, *, check: bool) -> None:
     """Requires the expected structure, then writes the vector or compares it with the committed bytes."""
 
     require_vector_evidence(vector, get_vector_evidence(vector, generated_path))
-    write_or_check_output(
-        VECTOR_DIRECTORY / f"{vector.variant}.hevc",
-        generated_path.read_bytes(),
-        check=check,
-    )
+    write_or_check_output(VECTOR_DIRECTORY / f"{vector.variant}.hevc", generated_path.read_bytes(), check=check)
 
 
 def write_output_line(text: str) -> None:

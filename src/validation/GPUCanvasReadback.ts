@@ -69,10 +69,7 @@ type GPUCanvasReadbackFailureResult = {
     linearRGB: null
 };
 
-function createFailure(
-    code: GPUCanvasReadbackFailureCode,
-    message: string
-): GPUCanvasReadbackFailureResult {
+function createFailure(code: GPUCanvasReadbackFailureCode, message: string): GPUCanvasReadbackFailureResult {
     return {
         failure: { code, message },
         linearRGB: null
@@ -239,10 +236,7 @@ function decodeMappedPixels(
     const linearRGB: ColorTriplet[] = [];
     for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
         const byteOffset = bytesPerRow * sampleIndex;
-        linearRGB.push(decodePixel(
-            mappedBytes.subarray(byteOffset, byteOffset + pixelByteLength),
-            format
-        ));
+        linearRGB.push(decodePixel(mappedBytes.subarray(byteOffset, byteOffset + pixelByteLength), format));
     }
     return linearRGB;
 }
@@ -261,7 +255,10 @@ export function getValidationCanvasUsage(): GPUTextureUsageFlags | null {
     return getValidationTextureUsage();
 }
 
-/** Copies one texture texel into a short-lived mapped buffer. */
+/**
+ * Reads canvas or texture texels back as linear RGB through short-lived mapped buffers.
+ * One reader reads at most maximumReadbacks texels over its lifetime.
+ */
 export class GPUCanvasPixelReader {
     private readonly activeBuffers = new Set<GPUBuffer>();
     private readonly pendingOperationCancellations = new Set<() => void>();
@@ -292,10 +289,7 @@ export class GPUCanvasPixelReader {
         sampleY: number,
         sourceTexture?: GPUTexture
     ): Promise<GPUCanvasPixelReadbackResult> {
-        const result = await this.readPixels(
-            [ { sampleX, sampleY } ],
-            sourceTexture
-        );
+        const result = await this.readPixels([ { sampleX, sampleY } ], sourceTexture);
         if (result.failure || !result.linearRGB) {
             return {
                 failure: result.failure,
@@ -343,9 +337,7 @@ export class GPUCanvasPixelReader {
         this.activeBuffers.clear();
     }
 
-    private preflight(
-        samples: readonly GPUCanvasPixelSample[]
-    ): GPUCanvasReadbackFailureResult | null {
+    private preflight(samples: readonly GPUCanvasPixelSample[]): GPUCanvasReadbackFailureResult | null {
         if (this.destroyed) {
             return createFailure('destroyed', 'The canvas pixel reader has been destroyed');
         }
@@ -356,27 +348,18 @@ export class GPUCanvasPixelReader {
             return createFailure('validation-error', 'At least one texture sample is required');
         }
         if (this.readbackCount + samples.length > this.maximumReadbacks) {
-            return createFailure(
-                'observation-limit-reached',
-                'The bounded canvas readback limit has been reached'
-            );
+            return createFailure('observation-limit-reached', 'The bounded canvas readback limit has been reached');
         }
         for (const sample of samples) {
             if (!Number.isSafeInteger(sample.sampleX)
                 || !Number.isSafeInteger(sample.sampleY)
                 || sample.sampleX < 0
                 || sample.sampleY < 0) {
-                return createFailure(
-                    'validation-error',
-                    'Texture sample coordinates must be non-negative integers'
-                );
+                return createFailure('validation-error', 'Texture sample coordinates must be non-negative integers');
             }
         }
         if (!isReadableCanvasFormat(this.format)) {
-            return createFailure(
-                'unsupported-format',
-                `Canvas format ${this.format} does not have a validation readback decoder`
-            );
+            return createFailure('unsupported-format', `Canvas format ${this.format} does not have a validation readback decoder`);
         }
 
         return null;
@@ -398,33 +381,19 @@ export class GPUCanvasPixelReader {
             } else if (this.context) {
                 texture = this.context.getCurrentTexture();
             } else {
-                return createFailure(
-                    'gpu-api-unavailable',
-                    'A source texture or configured WebGPU canvas context is required'
-                );
+                return createFailure('gpu-api-unavailable', 'A source texture or configured WebGPU canvas context is required');
             }
         } catch (error) {
             return createFailure('mapping-failed', getErrorMessage(error));
         }
-        if (samples.some(sample => (
-            sample.sampleX >= texture.width || sample.sampleY >= texture.height
-        ))) {
-            return createFailure(
-                'validation-error',
-                'Sample coordinates exceed the texture bounds'
-            );
+        if (samples.some(sample => (sample.sampleX >= texture.width || sample.sampleY >= texture.height))) {
+            return createFailure('validation-error', 'Sample coordinates exceed the texture bounds');
         }
         if (texture.format !== this.format) {
-            return createFailure(
-                'validation-error',
-                `Readback texture format ${texture.format} does not match ${this.format}`
-            );
+            return createFailure('validation-error', `Readback texture format ${texture.format} does not match ${this.format}`);
         }
         if ((texture.usage & usageConstants.textureCopySource) === 0) {
-            return createFailure(
-                'copy-source-disabled',
-                'The source texture must include GPUTextureUsage.COPY_SRC'
-            );
+            return createFailure('copy-source-disabled', 'The source texture must include GPUTextureUsage.COPY_SRC');
         }
 
         return this.submitReadback(texture, samples, usageConstants);
@@ -440,8 +409,7 @@ export class GPUCanvasPixelReader {
         }
 
         const pixelByteLength = getPixelByteLength(this.format);
-        const bytesPerRow = Math.ceil(pixelByteLength / COPY_BYTES_PER_ROW_ALIGNMENT)
-            * COPY_BYTES_PER_ROW_ALIGNMENT;
+        const bytesPerRow = Math.ceil(pixelByteLength / COPY_BYTES_PER_ROW_ALIGNMENT) * COPY_BYTES_PER_ROW_ALIGNMENT;
         const bufferByteLength = bytesPerRow * samples.length;
         let buffer: GPUBuffer | null = null;
         let errorScopePushed = false;
@@ -460,9 +428,7 @@ export class GPUCanvasPixelReader {
             });
             encodePixelCopies(commandEncoder, texture, buffer, samples, bytesPerRow);
             this.device.queue.submit([ commandEncoder.finish() ]);
-            const mappingResult = await this.waitForOperation(
-                buffer.mapAsync(usageConstants.mapRead, 0, bufferByteLength)
-            );
+            const mappingResult = await this.waitForOperation(buffer.mapAsync(usageConstants.mapRead, 0, bufferByteLength));
             if (mappingResult === GPU_CANVAS_READBACK_OPERATION_DESTROYED) {
                 return createFailure('destroyed', 'The reader was destroyed during canvas readback');
             }
@@ -487,13 +453,7 @@ export class GPUCanvasPixelReader {
             }
 
             const mappedBytes = new Uint8Array(buffer.getMappedRange(0, bufferByteLength));
-            const linearRGB = decodeMappedPixels(
-                mappedBytes,
-                this.format,
-                samples.length,
-                bytesPerRow,
-                pixelByteLength
-            );
+            const linearRGB = decodeMappedPixels(mappedBytes, this.format, samples.length, bytesPerRow, pixelByteLength);
             return {
                 failure: null,
                 linearRGB

@@ -97,8 +97,6 @@ def create_structural_MKV_merge_arguments(input_path: str, output_path: str) -> 
 
 
 def create_argument_parser() -> argparse.ArgumentParser:
-    """Creates the playback vector CLI."""
-
     parser = argparse.ArgumentParser(
         prog="python scripts/codec_vector_assets/create_profile7_playback_vector.py",
         description=(
@@ -112,11 +110,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("input_path", metavar="separate-profile7.mkv")
     parser.add_argument("output_path", metavar="output.mp4")
-    parser.add_argument(
-        "--ffmpeg",
-        metavar="path",
-        help="FFmpeg executable; defaults to ffmpeg on PATH",
-    )
+    parser.add_argument("--ffmpeg", metavar="path", help="FFmpeg executable; defaults to ffmpeg on PATH")
     parser.add_argument(
         "--mkvtoolnix-directory",
         dest="MKVToolNix_directory",
@@ -167,14 +161,8 @@ def create_playback_vector(configuration: PlaybackVectorConfiguration) -> dict[s
     with tempfile.TemporaryDirectory(prefix="webgpu-dovi-playback-") as temporary_directory:
         encoded_path = os.path.join(temporary_directory, "encoded.mkv")
         normalized_path = os.path.join(temporary_directory, "normalized.mkv")
-        execute_tool(
-            FFmpeg_path,
-            create_structural_FFmpeg_arguments(configuration.input_path, encoded_path),
-        )
-        execute_tool(
-            MKV_merge_path,
-            create_structural_MKV_merge_arguments(encoded_path, normalized_path),
-        )
+        execute_tool(FFmpeg_path, create_structural_FFmpeg_arguments(configuration.input_path, encoded_path))
+        execute_tool(MKV_merge_path, create_structural_MKV_merge_arguments(encoded_path, normalized_path))
         result = create_dual_track_dolby_vision_MP4_vector(
             DualTrackVectorConfiguration(
                 input_path=normalized_path,

@@ -5,22 +5,21 @@ const MAXIMUM_HEVC_SHORT_TERM_REFERENCE_PICTURE_SET_COUNT = 64;
 const MAXIMUM_SPS_NAL_UNIT_BYTE_LENGTH = 64 * 1024;
 const MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE = 0x7FFF_FFFF;
 const MAIN_PROFILE_BASE_DPB_PICTURE_COUNT = 6;
-const HEVC_LEVEL_MAXIMUM_LUMA_PICTURE_SAMPLE_COUNTS: Readonly<Partial<Record<number, number>>> =
-    Object.freeze({
-        30: 36_864,
-        60: 122_880,
-        63: 245_760,
-        90: 552_960,
-        93: 983_040,
-        120: 2_228_224,
-        123: 2_228_224,
-        150: 8_912_896,
-        153: 8_912_896,
-        156: 8_912_896,
-        180: 35_651_584,
-        183: 35_651_584,
-        186: 35_651_584
-    });
+const HEVC_LEVEL_MAXIMUM_LUMA_PICTURE_SAMPLE_COUNTS: Readonly<Partial<Record<number, number>>> = Object.freeze({
+    30: 36_864,
+    60: 122_880,
+    63: 245_760,
+    90: 552_960,
+    93: 983_040,
+    120: 2_228_224,
+    123: 2_228_224,
+    150: 8_912_896,
+    153: 8_912_896,
+    156: 8_912_896,
+    180: 35_651_584,
+    183: 35_651_584,
+    186: 35_651_584
+});
 
 // ITU-T H.273 colour_primaries code points
 const BT709_COLOR_PRIMARIES = 1;
@@ -186,12 +185,7 @@ function createRBSP(nalUnit: Uint8Array): Uint8Array {
     const rbspBytes: number[] = [];
     for (let byteIndex = 2; byteIndex < nalUnit.byteLength; byteIndex += 1) {
         const byteValue = nalUnit[byteIndex];
-        if (
-            byteValue === 3
-            && byteIndex >= 4
-            && nalUnit[byteIndex - 1] === 0
-            && nalUnit[byteIndex - 2] === 0
-        ) {
+        if (byteValue === 3 && byteIndex >= 4 && nalUnit[byteIndex - 1] === 0 && nalUnit[byteIndex - 2] === 0) {
             const nextByte = nalUnit[byteIndex + 1];
             if (byteIndex + 1 >= nalUnit.byteLength || nextByte > 3) {
                 throw new TypeError('The HEVC SPS has an invalid emulation-prevention byte');
@@ -206,10 +200,7 @@ function createRBSP(nalUnit: Uint8Array): Uint8Array {
     return new Uint8Array(rbspBytes);
 }
 
-function parseProfileTierLevel(
-    reader: BoundedBitReader,
-    maximumSubLayerIndex: number
-): ProfileTierLevel {
+function parseProfileTierLevel(reader: BoundedBitReader, maximumSubLayerIndex: number): ProfileTierLevel {
     reader.skipBits(2, 'general_profile_space');
     reader.skipBits(1, 'general_tier_flag');
     const profileIDC = reader.readBits(5, 'general_profile_idc');
@@ -245,67 +236,40 @@ function skipScalingListData(reader: BoundedBitReader): void {
         const matrixCount = sizeIndex === 3 ? 2 : 6;
         for (let matrixIndex = 0; matrixIndex < matrixCount; matrixIndex += 1) {
             if (!reader.readFlag('scaling_list_pred_mode_flag')) {
-                reader.readUnsignedExpGolomb(
-                    'scaling_list_pred_matrix_id_delta',
-                    MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
-                );
+                reader.readUnsignedExpGolomb('scaling_list_pred_matrix_id_delta', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
                 continue;
             }
 
             const coefficientCount = Math.min(64, 1 << (4 + (2 * sizeIndex)));
             if (sizeIndex > 1) {
-                reader.readUnsignedExpGolomb(
-                    'scaling_list_dc_coef_minus8',
-                    MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
-                );
+                reader.readUnsignedExpGolomb('scaling_list_dc_coef_minus8', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
             }
-            for (let coefficientIndex = 0;
-                coefficientIndex < coefficientCount;
-                coefficientIndex += 1
-            ) {
-                reader.readUnsignedExpGolomb(
-                    'scaling_list_delta_coef',
-                    MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
-                );
+            for (let coefficientIndex = 0; coefficientIndex < coefficientCount; coefficientIndex += 1) {
+                reader.readUnsignedExpGolomb('scaling_list_delta_coef', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
             }
         }
     }
 }
 
 function parseExplicitReferencePictureSet(reader: BoundedBitReader): number {
-    const negativePictureCount = reader.readUnsignedExpGolomb(
-        'num_negative_pics',
-        MAXIMUM_HEVC_REFERENCE_PICTURE_COUNT
-    );
-    const positivePictureCount = reader.readUnsignedExpGolomb(
-        'num_positive_pics',
-        MAXIMUM_HEVC_REFERENCE_PICTURE_COUNT
-    );
+    const negativePictureCount = reader.readUnsignedExpGolomb('num_negative_pics', MAXIMUM_HEVC_REFERENCE_PICTURE_COUNT);
+    const positivePictureCount = reader.readUnsignedExpGolomb('num_positive_pics', MAXIMUM_HEVC_REFERENCE_PICTURE_COUNT);
     const deltaPictureCount = negativePictureCount + positivePictureCount;
     if (deltaPictureCount > MAXIMUM_HEVC_REFERENCE_PICTURE_COUNT) {
         throw new TypeError('The HEVC SPS reference picture set is too large');
     }
     for (let pictureIndex = 0; pictureIndex < deltaPictureCount; pictureIndex += 1) {
-        reader.readUnsignedExpGolomb(
-            'delta_poc_minus1',
-            MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
-        );
+        reader.readUnsignedExpGolomb('delta_poc_minus1', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
         reader.skipBits(1, 'used_by_curr_pic_flag');
     }
     return deltaPictureCount;
 }
 
-function parsePredictedReferencePictureSet(
-    reader: BoundedBitReader,
-    referenceDeltaPictureCount: number
-): number {
+function parsePredictedReferencePictureSet(reader: BoundedBitReader, referenceDeltaPictureCount: number): number {
     reader.skipBits(1, 'delta_rps_sign');
     reader.readUnsignedExpGolomb('abs_delta_rps_minus1', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
     let deltaPictureCount = 0;
-    for (let pictureIndex = 0;
-        pictureIndex <= referenceDeltaPictureCount;
-        pictureIndex += 1
-    ) {
+    for (let pictureIndex = 0; pictureIndex <= referenceDeltaPictureCount; pictureIndex += 1) {
         const usedByCurrentPicture = reader.readFlag('used_by_curr_pic_flag');
         if (usedByCurrentPicture || reader.readFlag('use_delta_flag')) {
             deltaPictureCount += 1;
@@ -317,14 +281,10 @@ function parsePredictedReferencePictureSet(
     return deltaPictureCount;
 }
 
-function parseShortTermReferencePictureSets(
-    reader: BoundedBitReader,
-    setCount: number
-): void {
+function parseShortTermReferencePictureSets(reader: BoundedBitReader, setCount: number): void {
     const deltaPictureCounts: number[] = [];
     for (let setIndex = 0; setIndex < setCount; setIndex += 1) {
-        const predicted = setIndex > 0
-            && reader.readFlag('inter_ref_pic_set_prediction_flag');
+        const predicted = setIndex > 0 && reader.readFlag('inter_ref_pic_set_prediction_flag');
         const deltaPictureCount = predicted ?
             parsePredictedReferencePictureSet(reader, deltaPictureCounts[setIndex - 1]) :
             parseExplicitReferencePictureSet(reader);
@@ -446,14 +406,8 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
     }
 
     if (reader.readFlag('chroma_loc_info_present_flag')) {
-        reader.readUnsignedExpGolomb(
-            'chroma_sample_loc_type_top_field',
-            MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
-        );
-        reader.readUnsignedExpGolomb(
-            'chroma_sample_loc_type_bottom_field',
-            MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
-        );
+        reader.readUnsignedExpGolomb('chroma_sample_loc_type_top_field', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
+        reader.readUnsignedExpGolomb('chroma_sample_loc_type_bottom_field', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
     }
     reader.skipBits(1, 'neutral_chroma_indication_flag');
     const fieldSequence = reader.readFlag('field_seq_flag');
@@ -488,14 +442,8 @@ type SPSDimensions = {
 
 /** Reads the picture size; only its declared level, checked later, bounds it. */
 function parseSPSDimensions(reader: BoundedBitReader): SPSDimensions {
-    const codedWidth = reader.readUnsignedExpGolomb(
-        'pic_width_in_luma_samples',
-        MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
-    );
-    const codedHeight = reader.readUnsignedExpGolomb(
-        'pic_height_in_luma_samples',
-        MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
-    );
+    const codedWidth = reader.readUnsignedExpGolomb('pic_width_in_luma_samples', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
+    const codedHeight = reader.readUnsignedExpGolomb('pic_height_in_luma_samples', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
     if (codedWidth <= 0 || codedHeight <= 0) {
         throw new TypeError('The HEVC SPS coded dimensions are invalid');
     }
@@ -508,22 +456,10 @@ function parseSPSDimensions(reader: BoundedBitReader): SPSDimensions {
         };
     }
 
-    const leftOffset = reader.readUnsignedExpGolomb(
-        'conf_win_left_offset',
-        MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
-    );
-    const rightOffset = reader.readUnsignedExpGolomb(
-        'conf_win_right_offset',
-        MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
-    );
-    const topOffset = reader.readUnsignedExpGolomb(
-        'conf_win_top_offset',
-        MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
-    );
-    const bottomOffset = reader.readUnsignedExpGolomb(
-        'conf_win_bottom_offset',
-        MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
-    );
+    const leftOffset = reader.readUnsignedExpGolomb('conf_win_left_offset', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
+    const rightOffset = reader.readUnsignedExpGolomb('conf_win_right_offset', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
+    const topOffset = reader.readUnsignedExpGolomb('conf_win_top_offset', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
+    const bottomOffset = reader.readUnsignedExpGolomb('conf_win_bottom_offset', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
     const displayWidth = codedWidth - (2 * (leftOffset + rightOffset));
     const displayHeight = codedHeight - (2 * (topOffset + bottomOffset));
     if (displayWidth <= 0 || displayHeight <= 0) {
@@ -538,18 +474,12 @@ function parseSPSBitDepth(reader: BoundedBitReader): {
 } {
     const lumaBitDepth = 8 + reader.readUnsignedExpGolomb('bit_depth_luma_minus8', 6);
     const chromaBitDepth = 8 + reader.readUnsignedExpGolomb('bit_depth_chroma_minus8', 6);
-    if (
-        lumaBitDepth !== chromaBitDepth
-        || (lumaBitDepth !== 8 && lumaBitDepth !== 10)
-    ) {
+    if (lumaBitDepth !== chromaBitDepth || (lumaBitDepth !== 8 && lumaBitDepth !== 10)) {
         throw new TypeError('The HEVC SPS bit depth is unsupported');
     }
     return {
         bitDepth: lumaBitDepth,
-        log2MaximumPictureOrderCountLSBMinus4: reader.readUnsignedExpGolomb(
-            'log2_max_pic_order_cnt_lsb_minus4',
-            12
-        )
+        log2MaximumPictureOrderCountLSBMinus4: reader.readUnsignedExpGolomb('log2_max_pic_order_cnt_lsb_minus4', 12)
     };
 }
 
@@ -563,8 +493,7 @@ function getMaximumDPBPictureCount(
         throw new TypeError('The HEVC SPS picture sample count is invalid');
     }
     // Only the specification bounds the DPB, at any picture size; an unknown level allows its largest
-    const levelMaximumPictureSampleCount =
-        HEVC_LEVEL_MAXIMUM_LUMA_PICTURE_SAMPLE_COUNTS[levelIDC];
+    const levelMaximumPictureSampleCount = HEVC_LEVEL_MAXIMUM_LUMA_PICTURE_SAMPLE_COUNTS[levelIDC];
     if (levelMaximumPictureSampleCount === undefined) {
         return MAXIMUM_HEVC_DPB_PICTURE_COUNT;
     }
@@ -574,20 +503,11 @@ function getMaximumDPBPictureCount(
 
     let levelMaximum: number;
     if (pictureSampleCount <= levelMaximumPictureSampleCount / 4) {
-        levelMaximum = Math.min(
-            4 * MAIN_PROFILE_BASE_DPB_PICTURE_COUNT,
-            MAXIMUM_HEVC_DPB_PICTURE_COUNT
-        );
+        levelMaximum = Math.min(4 * MAIN_PROFILE_BASE_DPB_PICTURE_COUNT, MAXIMUM_HEVC_DPB_PICTURE_COUNT);
     } else if (pictureSampleCount <= levelMaximumPictureSampleCount / 2) {
-        levelMaximum = Math.min(
-            2 * MAIN_PROFILE_BASE_DPB_PICTURE_COUNT,
-            MAXIMUM_HEVC_DPB_PICTURE_COUNT
-        );
+        levelMaximum = Math.min(2 * MAIN_PROFILE_BASE_DPB_PICTURE_COUNT, MAXIMUM_HEVC_DPB_PICTURE_COUNT);
     } else if (pictureSampleCount <= (3 * levelMaximumPictureSampleCount) / 4) {
-        levelMaximum = Math.min(
-            Math.floor((4 * MAIN_PROFILE_BASE_DPB_PICTURE_COUNT) / 3),
-            MAXIMUM_HEVC_DPB_PICTURE_COUNT
-        );
+        levelMaximum = Math.min(Math.floor((4 * MAIN_PROFILE_BASE_DPB_PICTURE_COUNT) / 3), MAXIMUM_HEVC_DPB_PICTURE_COUNT);
     } else {
         levelMaximum = MAIN_PROFILE_BASE_DPB_PICTURE_COUNT;
     }
@@ -599,50 +519,28 @@ function parseSubLayerOrdering(
     maximumSubLayerIndex: number,
     maximumDPBPictureCount: number
 ): number {
-    const subLayerOrderingInfoPresent = reader.readFlag(
-        'sps_sub_layer_ordering_info_present_flag'
-    );
+    const subLayerOrderingInfoPresent = reader.readFlag('sps_sub_layer_ordering_info_present_flag');
     const firstOrderingLayer = subLayerOrderingInfoPresent ? 0 : maximumSubLayerIndex;
     let previousBufferingMinus1 = -1;
     let previousReorderPictureCount = -1;
     let declaredMaximumDPBPictureCount = 0;
-    for (let subLayerIndex = firstOrderingLayer;
-        subLayerIndex <= maximumSubLayerIndex;
-        subLayerIndex += 1
-    ) {
-        const bufferingMinus1 = reader.readUnsignedExpGolomb(
-            'sps_max_dec_pic_buffering_minus1',
-            MAXIMUM_HEVC_DPB_PICTURE_COUNT - 1
-        );
-        const reorderPictureCount = reader.readUnsignedExpGolomb(
-            'sps_max_num_reorder_pics',
-            MAXIMUM_HEVC_DPB_PICTURE_COUNT - 1
-        );
-        reader.readUnsignedExpGolomb(
-            'sps_max_latency_increase_plus1',
-            MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
-        );
+    for (let subLayerIndex = firstOrderingLayer; subLayerIndex <= maximumSubLayerIndex; subLayerIndex += 1) {
+        const bufferingMinus1 = reader.readUnsignedExpGolomb('sps_max_dec_pic_buffering_minus1', MAXIMUM_HEVC_DPB_PICTURE_COUNT - 1);
+        const reorderPictureCount = reader.readUnsignedExpGolomb('sps_max_num_reorder_pics', MAXIMUM_HEVC_DPB_PICTURE_COUNT - 1);
+        reader.readUnsignedExpGolomb('sps_max_latency_increase_plus1', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
         const decodedPictureBufferSize = bufferingMinus1 + 1;
         if (decodedPictureBufferSize > maximumDPBPictureCount) {
-            throw new TypeError(
-                'The HEVC SPS decoded picture buffer exceeds its level and picture-size bound'
-            );
+            throw new TypeError('The HEVC SPS decoded picture buffer exceeds its level and picture-size bound');
         }
         if (reorderPictureCount > bufferingMinus1) {
             throw new TypeError('The HEVC SPS reorder count exceeds its decoded picture buffer');
         }
-        if (
-            previousBufferingMinus1 > bufferingMinus1
-            || previousReorderPictureCount > reorderPictureCount
-        ) {
+        if (previousBufferingMinus1 > bufferingMinus1 || previousReorderPictureCount > reorderPictureCount) {
             throw new TypeError('The HEVC SPS sub-layer ordering is not monotonic');
         }
         previousBufferingMinus1 = bufferingMinus1;
         previousReorderPictureCount = reorderPictureCount;
-        declaredMaximumDPBPictureCount = Math.max(
-            declaredMaximumDPBPictureCount,
-            decodedPictureBufferSize
-        );
+        declaredMaximumDPBPictureCount = Math.max(declaredMaximumDPBPictureCount, decodedPictureBufferSize);
     }
     return declaredMaximumDPBPictureCount;
 }
@@ -655,9 +553,7 @@ function skipCodingStructure(reader: BoundedBitReader): void {
     reader.readUnsignedExpGolomb('max_transform_hierarchy_depth_inter', 5);
     reader.readUnsignedExpGolomb('max_transform_hierarchy_depth_intra', 5);
 
-    if (reader.readFlag('scaling_list_enabled_flag')
-        && reader.readFlag('sps_scaling_list_data_present_flag')
-    ) {
+    if (reader.readFlag('scaling_list_enabled_flag') && reader.readFlag('sps_scaling_list_data_present_flag')) {
         skipScalingListData(reader);
     }
     reader.skipBits(1, 'amp_enabled_flag');
@@ -670,10 +566,7 @@ function skipCodingStructure(reader: BoundedBitReader): void {
     }
 }
 
-function skipReferencePictureSyntax(
-    reader: BoundedBitReader,
-    log2MaximumPictureOrderCountLSBMinus4: number
-): void {
+function skipReferencePictureSyntax(reader: BoundedBitReader, log2MaximumPictureOrderCountLSBMinus4: number): void {
     const shortTermReferencePictureSetCount = reader.readUnsignedExpGolomb(
         'num_short_term_ref_pic_sets',
         MAXIMUM_HEVC_SHORT_TERM_REFERENCE_PICTURE_SET_COUNT
@@ -688,10 +581,7 @@ function skipReferencePictureSyntax(
         MAXIMUM_HEVC_REFERENCE_PICTURE_COUNT
     );
     const pictureOrderCountBitCount = log2MaximumPictureOrderCountLSBMinus4 + 4;
-    for (let pictureIndex = 0;
-        pictureIndex < longTermReferencePictureCount;
-        pictureIndex += 1
-    ) {
+    for (let pictureIndex = 0; pictureIndex < longTermReferencePictureCount; pictureIndex += 1) {
         reader.skipBits(pictureOrderCountBitCount, 'lt_ref_pic_poc_lsb_sps');
         reader.skipBits(1, 'used_by_curr_pic_lt_sps_flag');
     }
@@ -730,17 +620,10 @@ function parseHEVCSPSSyntax(nalUnit: Uint8Array): ParsedHEVCSPS {
     const maximumDPBPictureCount = parseSubLayerOrdering(
         reader,
         maximumSubLayerIndex,
-        getMaximumDPBPictureCount(
-            profileTierLevel.levelIDC,
-            dimensions.codedWidth,
-            dimensions.codedHeight
-        )
+        getMaximumDPBPictureCount(profileTierLevel.levelIDC, dimensions.codedWidth, dimensions.codedHeight)
     );
     skipCodingStructure(reader);
-    skipReferencePictureSyntax(
-        reader,
-        bitDepthConfiguration.log2MaximumPictureOrderCountLSBMinus4
-    );
+    skipReferencePictureSyntax(reader, bitDepthConfiguration.log2MaximumPictureOrderCountLSBMinus4);
     reader.skipBits(1, 'sps_temporal_mvp_enabled_flag');
     reader.skipBits(1, 'strong_intra_smoothing_enabled_flag');
     // An SPS without VUI leaves its color unspecified and field_seq_flag inferred as 0
@@ -823,8 +706,7 @@ function provesHDRTransfer(
     switch (expectedHDRTransfer) {
         case 'pq':
             // A PQ VUI proves PQ whatever the SEI suggests; the SEI only matters for a compatible-signaled VUI
-            return transferValue === PQ_TRANSFER_CHARACTERISTICS
-                || effectiveTransferValue === PQ_TRANSFER_CHARACTERISTICS;
+            return transferValue === PQ_TRANSFER_CHARACTERISTICS || effectiveTransferValue === PQ_TRANSFER_CHARACTERISTICS;
         case 'hlg':
             return effectiveTransferValue === HLG_TRANSFER_CHARACTERISTICS
                 || (
@@ -857,15 +739,9 @@ export function rewriteHEVCSPSColorDescriptionToBT709(
         codes.fullRange
         || codes.primaries !== BT2020_COLOR_PRIMARIES
         || codes.matrix !== BT2020_NCL_MATRIX_COEFFICIENTS
-        || !provesHDRTransfer(
-            codes.transfer,
-            expectedHDRTransfer,
-            preferredTransferCharacteristics
-        )
+        || !provesHDRTransfer(codes.transfer, expectedHDRTransfer, preferredTransferCharacteristics)
     )) {
-        throw new TypeError(
-            'The HEVC SPS does not match the expected limited-range BT.2020 HDR route'
-        );
+        throw new TypeError('The HEVC SPS does not match the expected limited-range BT.2020 HDR route');
     }
     if (
         !codes.fullRange

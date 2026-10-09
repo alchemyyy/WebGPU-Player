@@ -56,39 +56,26 @@ class VectorConfiguration:
 
 
 def read_uint32_BE(data: bytes | bytearray, offset: int) -> int:
-    """Reads one unsigned big-endian 32-bit integer."""
-
     return int.from_bytes(data[offset : offset + 4], "big")
 
 
 def get_HEVC_NAL_unit_type(first_header_byte: int) -> int:
-    """Returns the HEVC NAL unit type from the first header byte."""
-
     return (first_header_byte >> 1) & 0x3F
 
 
-def find_wrapped_enhancement_parameter_sets(
-    data: bytes | bytearray,
-) -> list[WrappedParameterSetCandidate]:
+def find_wrapped_enhancement_parameter_sets(data: bytes | bytearray) -> list[WrappedParameterSetCandidate]:
     """Returns every length-prefixed NAL type 63 wrapper that holds an HEVC parameter set."""
 
     candidates: list[WrappedParameterSetCandidate] = []
     # Outer headers from the end of the first length prefix through len - 4
     search_end_offset = len(data) - MINIMUM_WRAPPED_NAL_UNIT_BYTE_LENGTH + 1
-    for header_match in ENHANCEMENT_WRAPPER_HEADER_PATTERN.finditer(
-        data,
-        NAL_UNIT_LENGTH_PREFIX_BYTE_LENGTH,
-        search_end_offset,
-    ):
+    for header_match in ENHANCEMENT_WRAPPER_HEADER_PATTERN.finditer(data, NAL_UNIT_LENGTH_PREFIX_BYTE_LENGTH, search_end_offset):
         outer_header_offset = header_match.start()
         inner_header_offset = outer_header_offset + 2
         inner_NAL_unit_type = get_HEVC_NAL_unit_type(data[inner_header_offset])
         if inner_NAL_unit_type not in HEVC_PARAMETER_SET_NAL_UNIT_TYPES:
             continue
-        declared_byte_length = read_uint32_BE(
-            data,
-            outer_header_offset - NAL_UNIT_LENGTH_PREFIX_BYTE_LENGTH,
-        )
+        declared_byte_length = read_uint32_BE(data, outer_header_offset - NAL_UNIT_LENGTH_PREFIX_BYTE_LENGTH)
         if (
             declared_byte_length < MINIMUM_WRAPPED_NAL_UNIT_BYTE_LENGTH
             or outer_header_offset + declared_byte_length > len(data)
@@ -104,19 +91,13 @@ def find_wrapped_enhancement_parameter_sets(
     return candidates
 
 
-def require_one_parameter_set_of_each_type(
-    candidates: Sequence[WrappedParameterSetCandidate],
-) -> None:
+def require_one_parameter_set_of_each_type(candidates: Sequence[WrappedParameterSetCandidate]) -> None:
     """Requires exactly one wrapped EL VPS, SPS, and PPS."""
 
     for NAL_unit_type in HEVC_PARAMETER_SET_NAL_UNIT_TYPES:
-        matching_count = sum(
-            1 for candidate in candidates if candidate.NAL_unit_type == NAL_unit_type
-        )
+        matching_count = sum(1 for candidate in candidates if candidate.NAL_unit_type == NAL_unit_type)
         if matching_count != 1:
-            raise VectorError(
-                f"Expected one wrapped EL NAL type {NAL_unit_type}, found {matching_count}"
-            )
+            raise VectorError(f"Expected one wrapped EL NAL type {NAL_unit_type}, found {matching_count}")
     if len(candidates) != len(HEVC_PARAMETER_SET_NAL_UNIT_TYPES):
         raise VectorError("The vector has unexpected wrapped EL parameter-set copies")
 
@@ -133,9 +114,7 @@ def replace_with_filler_data(data: bytearray, candidate: WrappedParameterSetCand
     data[end_offset - 1] = 0x80
 
 
-def create_container_only_HVCE_vector(
-    source_data: bytes | bytearray | memoryview,
-) -> ContainerOnlyHVCEVector:
+def create_container_only_HVCE_vector(source_data: bytes | bytearray | memoryview) -> ContainerOnlyHVCEVector:
     """Creates a same-size vector that requires container hvcE for EL decode."""
 
     data = bytearray(source_data)
@@ -156,8 +135,6 @@ def create_container_only_HVCE_vector(
 
 
 def create_argument_parser() -> argparse.ArgumentParser:
-    """Creates the container-only hvcE vector CLI."""
-
     parser = argparse.ArgumentParser(
         prog="python scripts/codec_vector_assets/create_container_only_HVCE_vector.py",
         description=(
@@ -167,11 +144,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
             "container hvcE configuration."
         ),
     )
-    parser.add_argument(
-        "input_path",
-        metavar="input.mkv",
-        help="Matroska source with an hvcE mapping and wrapped EL parameter sets",
-    )
+    parser.add_argument("input_path", metavar="input.mkv", help="Matroska source with an hvcE mapping and wrapped EL parameter sets")
     parser.add_argument("output_path", metavar="output.mkv", help="Matroska copy to write")
     return parser
 

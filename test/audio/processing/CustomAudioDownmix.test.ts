@@ -389,9 +389,7 @@ describe('downmixThreeChannelToStereo', () => {
             );
 
             for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
-                const expectedSample = weights.shared
-                    * expectedLevels[frameIndex]
-                    * expectedOutputGains[frameIndex];
+                const expectedSample = weights.shared * expectedLevels[frameIndex] * expectedOutputGains[frameIndex];
                 expect(outputLeft[frameIndex]).toBeCloseTo(expectedSample, 6);
                 expect(outputRight[frameIndex]).toBeCloseTo(expectedSample, 6);
             }

@@ -27,10 +27,7 @@ export type QualifiedCustomWaveChannelLayout = Readonly<{
     layout: CustomAudioChannelLayout
 }>;
 
-const CUSTOM_WAVE_CHANNEL_LAYOUTS = new Map<
-    number,
-    QualifiedCustomWaveChannelLayout
->([
+const CUSTOM_WAVE_CHANNEL_LAYOUTS = new Map<number, QualifiedCustomWaveChannelLayout>([
     [
         CUSTOM_WAVE_CHANNEL_MASK_MONO,
         { channelCount: 1, layout: CUSTOM_MONO_CHANNEL_LAYOUT }
@@ -70,9 +67,7 @@ const CUSTOM_WAVE_CHANNEL_LAYOUTS = new Map<
 ]);
 
 /** Maps only exact native/WAVE masks covered by the shared PCM pipeline. */
-export function getQualifiedCustomWaveChannelLayout(
-    channelMask: number
-): QualifiedCustomWaveChannelLayout | null {
+export function getQualifiedCustomWaveChannelLayout(channelMask: number): QualifiedCustomWaveChannelLayout | null {
     if (!Number.isSafeInteger(channelMask) || channelMask <= 0) {
         return null;
     }

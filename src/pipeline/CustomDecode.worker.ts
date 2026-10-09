@@ -206,9 +206,7 @@ const DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS = 1_000;
 const DTS_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS = 3_000;
 const TRUEHD_ACCESS_UNITS_PER_SECOND = 1_200;
 // One TrueHD or MLP access unit can decode to no PCM
-const TRUEHD_ACCESS_UNIT_ALLOWANCE_MICROSECONDS = Math.ceil(
-    MICROSECONDS_PER_SECOND / TRUEHD_ACCESS_UNITS_PER_SECOND
-);
+const TRUEHD_ACCESS_UNIT_ALLOWANCE_MICROSECONDS = Math.ceil(MICROSECONDS_PER_SECOND / TRUEHD_ACCESS_UNITS_PER_SECOND);
 const NO_ACCESS_UNIT_ALLOWANCE_MICROSECONDS = 0;
 // Mediabunny's dec3 parse can declare a 7.1 E-AC-3 track as 6 or 7 channels
 const EAC3_UNDER_DECLARED_SEVEN_POINT_ONE_CHANNEL_COUNT = 7;
@@ -403,9 +401,7 @@ function postVideoStartupProgress(
     mediaTimeMicroseconds: Microseconds | null
 ): void {
     // Startup progress describes only the initial attempt, not later video resyncs
-    if (isVideoAttemptStopped(run)
-        || run.videoEpoch !== 0
-        || packetCount > MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT) {
+    if (isVideoAttemptStopped(run) || run.videoEpoch !== 0 || packetCount > MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT) {
         return;
     }
     postResponse({
@@ -417,9 +413,7 @@ function postVideoStartupProgress(
     });
 }
 
-function createRawFrameBufferPool(
-    videoOutputMode: CustomDecodeVideoOutputMode
-): RawFrameBufferPool | null {
+function createRawFrameBufferPool(videoOutputMode: CustomDecodeVideoOutputMode): RawFrameBufferPool | null {
     switch (videoOutputMode) {
         case 'raw-planes':
             return new RawFrameBufferPool(MAX_DECODED_RAW_FRAME_CREDITS);
@@ -429,10 +423,7 @@ function createRawFrameBufferPool(
 }
 
 function getRetryDelay(previousAttempts: number, error: unknown): number | null {
-    if (
-        error instanceof UnsupportedRangeResponseError
-        || !isRetryableMediaFetchError(error)
-    ) {
+    if (error instanceof UnsupportedRangeResponseError || !isRetryableMediaFetchError(error)) {
         return null;
     }
     if (previousAttempts > MAX_NETWORK_RETRY_ATTEMPTS) {
@@ -442,10 +433,7 @@ function getRetryDelay(previousAttempts: number, error: unknown): number | null 
     return NETWORK_RETRY_BASE_SECONDS * (2 ** (previousAttempts - 1));
 }
 
-const validatedRangeFetch: typeof fetch = async (
-    input: RequestInfo | URL,
-    requestInit?: RequestInit
-): Promise<Response> => {
+const validatedRangeFetch: typeof fetch = async (input: RequestInfo | URL, requestInit?: RequestInit): Promise<Response> => {
     const requestHeaders = requestInit?.headers === undefined && input instanceof Request ?
         input.headers :
         // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
@@ -461,15 +449,10 @@ const validatedRangeFetch: typeof fetch = async (
         } catch {
             // Preserve a token-safe placeholder for malformed request URLs
         }
-        const requestMethod = requestInit?.method
-            ?? (input instanceof Request ? input.method : 'GET');
+        const requestMethod = requestInit?.method ?? (input instanceof Request ? input.method : 'GET');
         const rangeHeader = requestHeaders.get('Range');
-        const requestDescription = rangeHeader ?
-            `${requestMethod} ${requestPath} (${rangeHeader})` :
-            `${requestMethod} ${requestPath}`;
-        throw new MediaNetworkError(
-            `${requestDescription}: ${getSafeErrorMessage(error)}`
-        );
+        const requestDescription = rangeHeader ? `${requestMethod} ${requestPath} (${rangeHeader})` : `${requestMethod} ${requestPath}`;
+        throw new MediaNetworkError(`${requestDescription}: ${getSafeErrorMessage(error)}`);
     }
     requireSuccessfulMediaHTTPResponse(response);
     requireValidByteRangeResponse(requestHeaders.get('Range'), response);
@@ -484,21 +467,13 @@ function wakeWaiters(waiters: Array<() => void>): void {
 }
 
 function addFrameCredits(run: DecodeRun, frameCredits: number): void {
-    const maximumFrameCredits = run.videoOutputMode === 'raw-planes' ?
-        MAX_DECODED_RAW_FRAME_CREDITS :
-        MAX_DECODED_FRAME_CREDITS;
-    run.frameCredits = Math.min(
-        maximumFrameCredits,
-        run.frameCredits + frameCredits
-    );
+    const maximumFrameCredits = run.videoOutputMode === 'raw-planes' ? MAX_DECODED_RAW_FRAME_CREDITS : MAX_DECODED_FRAME_CREDITS;
+    run.frameCredits = Math.min(maximumFrameCredits, run.frameCredits + frameCredits);
     wakeWaiters(run.wakeFrameCreditWaiters);
 }
 
 function addAudioSampleCredits(run: DecodeRun, audioSampleCredits: number): void {
-    run.audioSampleCredits = Math.min(
-        MAX_DECODED_AUDIO_SAMPLE_CREDITS,
-        run.audioSampleCredits + audioSampleCredits
-    );
+    run.audioSampleCredits = Math.min(MAX_DECODED_AUDIO_SAMPLE_CREDITS, run.audioSampleCredits + audioSampleCredits);
     wakeWaiters(run.wakeAudioCreditWaiters);
 }
 
@@ -530,8 +505,7 @@ function recordVideoAttemptFramePosted(run: DecodeRun): void {
 
 /** Restores credits an unwinding video attempt consumed without posting a frame. */
 function refundVideoAttemptCredits(run: DecodeRun): void {
-    const unpostedCreditCount = run.videoAttemptConsumedCreditCount
-        - run.videoAttemptPostedFrameCount;
+    const unpostedCreditCount = run.videoAttemptConsumedCreditCount - run.videoAttemptPostedFrameCount;
     run.videoAttemptConsumedCreditCount = 0;
     run.videoAttemptPostedFrameCount = 0;
     if (unpostedCreditCount > 0 && !run.cancelled) {
@@ -554,14 +528,11 @@ function requestVideoAttemptControl(run: DecodeRun, control: VideoAttemptControl
 }
 
 /**
- * Waits for the resync that starts the next video attempt. Returns null when
- * the run stops, or when audio has finished after the video track ended. A
- * suspended or interrupted video still has frames left, so it waits for its
- * resync even after audio finished.
+ * Waits for the resync that starts the next video attempt.
+ * Returns null when the run stops, or when audio has finished after the video track ended.
+ * A suspended or interrupted video still has frames left, so it waits for its resync even after audio finished.
  */
-async function waitForVideoAttemptResync(
-    run: DecodeRun
-): Promise<Extract<VideoAttemptControl, { kind: 'resync' }> | null> {
+async function waitForVideoAttemptResync(run: DecodeRun): Promise<Extract<VideoAttemptControl, { kind: 'resync' }> | null> {
     while (!run.cancelled) {
         const control = run.pendingVideoControl;
         if (control) {
@@ -654,9 +625,7 @@ async function retireAudioAttemptIterator(run: DecodeRun): Promise<void> {
     await retireIterator(audioIterator);
 }
 
-async function retireIterator(
-    iterator: { return?: () => Promise<unknown> } | null
-): Promise<void> {
+async function retireIterator(iterator: { return?: () => Promise<unknown> } | null): Promise<void> {
     try {
         await iterator?.return?.();
     } catch {
@@ -680,13 +649,9 @@ function stopRun(run: DecodeRun): void {
     run.input?.dispose();
     const iteratorRetirementPromises: Array<Promise<void>> = [];
     iteratorRetirementPromises.push(retireIterator(run.audioIterator));
-    iteratorRetirementPromises.push(
-        run.enhancementPacketPairer?.retire() ?? Promise.resolve()
-    );
+    iteratorRetirementPromises.push(run.enhancementPacketPairer?.retire() ?? Promise.resolve());
     iteratorRetirementPromises.push(retireIterator(run.videoIterator));
-    run.iteratorRetirementPromise = Promise.all(iteratorRetirementPromises).then(
-        (): void => undefined
-    );
+    run.iteratorRetirementPromise = Promise.all(iteratorRetirementPromises).then((): void => undefined);
 }
 
 function getSafeErrorMessage(error: unknown): string {
@@ -736,8 +701,7 @@ function requireAudioOutputChunkFrameBound(frameCount: number): number {
 /** Logs a large timeline correction or a rejection so field logs show where audio moved. */
 function logAudioTimelineCorrection(correction: StreamingAudioTimelineCorrection): void {
     if (correction.kind !== 'reject'
-        && Math.abs(correction.correctionMicroseconds)
-            <= LOGGED_AUDIO_TIMELINE_CORRECTION_MICROSECONDS) {
+        && Math.abs(correction.correctionMicroseconds) <= LOGGED_AUDIO_TIMELINE_CORRECTION_MICROSECONDS) {
         return;
     }
     let description: string;
@@ -818,13 +782,8 @@ function getFocusedSoftwareVideoRoute(
     }
 }
 
-async function prepareFocusedSoftwareVideoTrack(
-    input: FocusedSoftwareVideoTrackInput
-): Promise<PreparedVideoTrack | null> {
-    const route = getFocusedSoftwareVideoRoute(
-        input.request.videoDecoderBackend,
-        input.internalCodecID
-    );
+async function prepareFocusedSoftwareVideoTrack(input: FocusedSoftwareVideoTrackInput): Promise<PreparedVideoTrack | null> {
+    const route = getFocusedSoftwareVideoRoute(input.request.videoDecoderBackend, input.internalCodecID);
     if (!route) {
         return null;
     }
@@ -843,16 +802,10 @@ async function prepareFocusedSoftwareVideoTrack(
 
     const colorSpace = route.includeColorSpace ? await input.videoTrack.getColorSpace() : null;
     const description = route.codec === 'vc1' ?
-        getMatroskaVC1DecoderDescription(
-            input.videoTrack,
-            input.codedWidth,
-            input.codedHeight
-        ) :
+        getMatroskaVC1DecoderDescription(input.videoTrack, input.codedWidth, input.codedHeight) :
         null;
     if (route.codec === 'vc1' && !description) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'The selected VC-1 track has no supported WVC1 decoder description'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The selected VC-1 track has no supported WVC1 decoder description');
     }
     // A bundled decoder is software whatever the codec
     const videoHardwareAcceleration = getCustomDecodeRequestHardwareAcceleration(input.request, null);
@@ -896,12 +849,9 @@ async function readHEVCStaticHDRMetadata(
     const accessUnits: Uint8Array[] = [];
     let scannedByteLength = 0;
     let packet = await packetSink.getFirstPacket(STATIC_HDR_METADATA_PACKET_OPTIONS);
-    while (packet
-        && !run.cancelled
-        && accessUnits.length < MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT) {
+    while (packet && !run.cancelled && accessUnits.length < MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT) {
         const nextByteLength = scannedByteLength + packet.data.byteLength;
-        if (accessUnits.length > 0
-            && nextByteLength > STATIC_HDR_METADATA_SCAN_MAXIMUM_BYTE_LENGTH) {
+        if (accessUnits.length > 0 && nextByteLength > STATIC_HDR_METADATA_SCAN_MAXIMUM_BYTE_LENGTH) {
             break;
         }
         accessUnits.push(packet.data);
@@ -919,10 +869,7 @@ async function readHEVCStaticHDRMetadata(
  * The engine reads RPUs from HEVC NAL units and AV1 metadata OBUs.
  * AV1 Dolby Vision (Profile 10) is single-layer, so no AV1 track has a dual-layer route.
  */
-function requireDolbyVisionRPUTrack(
-    codec: VideoCodec,
-    dolbyVisionProfile: CustomDecodeDolbyVisionProfile
-): void {
+function requireDolbyVisionRPUTrack(codec: VideoCodec, dolbyVisionProfile: CustomDecodeDolbyVisionProfile): void {
     if (dolbyVisionProfile === null) {
         return;
     }
@@ -937,9 +884,7 @@ function requireDolbyVisionRPUTrack(
             }
             return;
         default:
-            throw new UnsupportedCustomDecodeSourceError(
-                `Dolby Vision RPU data cannot be read from the selected ${codec} track`
-            );
+            throw new UnsupportedCustomDecodeSourceError(`Dolby Vision RPU data cannot be read from the selected ${codec} track`);
     }
 }
 
@@ -955,9 +900,7 @@ async function prepareVideoTrack(
 
     const videoTrack = getTrackByOrdinal(videoTracks, request.videoTrackIndex);
     if (!videoTrack) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'The selected video track ordinal is unavailable'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The selected video track ordinal is unavailable');
     }
     await assignISOBaseMediaDolbyVisionSampleEntryCodec(videoTrack);
     // Both the owned AV1 path and the sample sink decode with the corrected codec string
@@ -982,20 +925,11 @@ async function prepareVideoTrack(
     if (dimensions.some(dimension => !Number.isSafeInteger(dimension) || dimension <= 0)) {
         throw new UnsupportedCustomDecodeSourceError('The selected video dimensions are invalid');
     }
-    if (exceedsNegotiatedCodedSize(
-        codedWidth,
-        codedHeight,
-        request.maximumCodedWidth,
-        request.maximumCodedHeight
-    )) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'The selected video track exceeds its negotiated decode route'
-        );
+    if (exceedsNegotiatedCodedSize(codedWidth, codedHeight, request.maximumCodedWidth, request.maximumCodedHeight)) {
+        throw new UnsupportedCustomDecodeSourceError('The selected video track exceeds its negotiated decode route');
     }
     if (!Number.isSafeInteger(videoTrack.id) || videoTrack.id <= 0) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'The selected video container track number is invalid'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The selected video container track number is invalid');
     }
 
     const softwareTrack = await prepareFocusedSoftwareVideoTrack({
@@ -1018,9 +952,7 @@ async function prepareVideoTrack(
         videoTrack.canDecode()
     ]);
     if (!codec || !decoderConfig) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'The selected video codec configuration is unavailable'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The selected video codec configuration is unavailable');
     }
     if (request.videoDecoderBackend === 'bundled-hevc' && codec !== 'hevc') {
         throw new UnsupportedCustomDecodeSourceError(
@@ -1585,13 +1517,10 @@ async function prepareAudioTrack(
 }
 
 /**
- * Reads the duration from the container's metadata for a source the server never probed. Only the presented
- * video track is asked: a late-starting audio track would make Mediabunny scan for its first packet.
+ * Reads the duration from the container's metadata for a source the server never probed.
+ * Only the presented video track is asked: a late-starting audio track would make Mediabunny scan for its first packet.
  */
-async function readContainerDurationMicroseconds(
-    input: Input,
-    videoTrack: InputVideoTrack
-): Promise<Microseconds | null> {
+async function readContainerDurationMicroseconds(input: Input, videoTrack: InputVideoTrack): Promise<Microseconds | null> {
     try {
         const durationSeconds = await input.getDurationFromMetadata([ videoTrack ]);
         if (durationSeconds === null || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
@@ -1660,14 +1589,8 @@ type TakenDecodedFrame<Frame> = DecodedFrameTiming & {
 };
 
 function getVideoSampleTiming(sample: VideoSample): DecodedFrameTiming {
-    const mediaTimeMicroseconds = requireMicroseconds(
-        sample.microsecondTimestamp,
-        'Decoded frame timestamp'
-    );
-    const durationMicroseconds = requireMicroseconds(
-        sample.microsecondDuration,
-        'Decoded frame duration'
-    );
+    const mediaTimeMicroseconds = requireMicroseconds(sample.microsecondTimestamp, 'Decoded frame timestamp');
+    const durationMicroseconds = requireMicroseconds(sample.microsecondDuration, 'Decoded frame duration');
     if (durationMicroseconds < 0) {
         throw new RangeError('Decoded frame duration must not be negative');
     }
@@ -1703,12 +1626,10 @@ function takeOwnedVideoFrame(output: OwnedDecodedVideoOutput): TakenDecodedFrame
 }
 
 /**
- * Takes a decoded output for a raw copy. CPU planes are copied straight from their sample, because Firefox
- * cannot construct a VideoFrame in a high-bit-depth format such as the bundled HEVC decoder's I420P10.
+ * Takes a decoded output for a raw copy.
+ * CPU planes are copied straight from their sample, because Firefox cannot construct a VideoFrame in a high-bit-depth format such as the bundled HEVC decoder's I420P10.
  */
-function takeOwnedRawVideoFrameSource(
-    output: OwnedDecodedVideoOutput
-): TakenDecodedFrame<RawVideoFrameSource> {
+function takeOwnedRawVideoFrameSource(output: OwnedDecodedVideoOutput): TakenDecodedFrame<RawVideoFrameSource> {
     if (output.source.kind !== 'planar-sample') {
         return takeOwnedVideoFrame(output);
     }

@@ -15,9 +15,7 @@ import {
     type ColorTriplet
 } from '../color/ColorPipeline';
 import { createRawYUVColorPipelineWGSL } from '../color/ColorPipelineShader';
-import {
-    millisecondsToMicroseconds
-} from '../MediaTime';
+import { millisecondsToMicroseconds } from '../MediaTime';
 import {
     createRawYUVRenderPipeline,
     createRawYUVRenderResources,
@@ -37,13 +35,10 @@ import {
     GPUCanvasPixelReader,
     getValidationTextureUsage
 } from './GPUCanvasReadback';
-import GPUAuthorizationDeadline, {
-    GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS
-} from './GPUAuthorizationDeadline';
+import GPUAuthorizationDeadline, { GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS } from './GPUAuthorizationDeadline';
 
 export const RAW_HDR_AUTHORIZATION_VECTOR_VERSION = 2;
-export const RAW_HDR_AUTHORIZATION_TIMEOUT_MICROSECONDS =
-    GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS;
+export const RAW_HDR_AUTHORIZATION_TIMEOUT_MICROSECONDS = GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS;
 
 const VECTOR_HEIGHT = 8;
 const VECTOR_WIDTH = 16;
@@ -104,9 +99,7 @@ function createRawAuthorizationRouteKeys(): readonly RawHDRAuthorizationRouteKey
 }
 
 export const RAW_HDR_AUTHORIZATION_ROUTE_KEYS = createRawAuthorizationRouteKeys();
-const RAW_AUTHORIZATION_ROUTE_KEY_SET = new Set<RawHDRAuthorizationRouteKey>(
-    RAW_HDR_AUTHORIZATION_ROUTE_KEYS
-);
+const RAW_AUTHORIZATION_ROUTE_KEY_SET = new Set<RawHDRAuthorizationRouteKey>(RAW_HDR_AUTHORIZATION_ROUTE_KEYS);
 
 export type RawHDRAuthorizationFailureReason =
     | 'device-lost'
@@ -167,10 +160,7 @@ type DeviceProbeCache = {
 
 type TelemetryAccumulator = {
     authorizedRouteKeys: RawHDRAuthorizationRouteKey[]
-    failureReasons: Partial<Record<
-        RawHDRAuthorizationRouteKey,
-        RawHDRAuthorizationFailureReason
-    >>
+    failureReasons: Partial<Record<RawHDRAuthorizationRouteKey, RawHDRAuthorizationFailureReason>>
     pendingRouteKeys: RawHDRAuthorizationRouteKey[]
     rejectedRouteKeys: RawHDRAuthorizationRouteKey[]
 };
@@ -227,9 +217,7 @@ function getRawFormatBitDepth(format: AuthorizedRawSDRFormat): RawVideoBitDepth 
     }
 }
 
-function getRawFrameTransfer(
-    metadata: InputColorMetadata
-): RawVideoFrameColorSpace['transfer'] {
+function getRawFrameTransfer(metadata: InputColorMetadata): RawVideoFrameColorSpace['transfer'] {
     switch (metadata.transfer) {
         case 'pq':
             return 'smpte2084';
@@ -266,7 +254,7 @@ function createSettings(metadata: InputColorMetadata): RenderSettings {
         });
 }
 
-/** Returns the raw YUV presentation tuples currently covered by production probes. */
+/** Returns the probe route key for a raw YUV format and its color metadata, or null when no production probe covers them. */
 export function getRawHDRAuthorizationRouteKey(
     format: SupportedRawVideoFrameFormat,
     metadata: InputColorMetadata
@@ -301,11 +289,8 @@ export function getRawHDRAuthorizationRouteKey(
         null;
 }
 
-/** Creates a stable, non-cryptographic identity for an exact compiled route. */
-export function createRawHDRShaderSignature(
-    targetFormat: GPUTextureFormat,
-    shaderCode: string
-): string {
+/** Creates a stable, non-cryptographic identity for a compiled route. */
+export function createRawHDRShaderSignature(targetFormat: GPUTextureFormat, shaderCode: string): string {
     const signatureInput = [
         `vector=${RAW_HDR_AUTHORIZATION_VECTOR_VERSION}`,
         `uniform=${RENDER_SETTINGS_VERSION}`,
@@ -350,9 +335,7 @@ function setPlaneCode(
     code: number
 ): void {
     const view = new DataView(data);
-    const byteOffset = plane.byteOffset
-        + (y * plane.bytesPerRow)
-        + (x * plane.bytesPerComponent);
+    const byteOffset = plane.byteOffset + (y * plane.bytesPerRow) + (x * plane.bytesPerComponent);
     if (plane.bytesPerComponent === 1) {
         view.setUint8(byteOffset, code);
         return;
@@ -368,8 +351,7 @@ function populateVectorLuma(
     const codeScale = 2 ** (bitDepth - 8);
     for (let y = 0; y < VECTOR_HEIGHT; y += 1) {
         for (let x = 0; x < VECTOR_WIDTH; x += 1) {
-            const rampCode = (16 * codeScale)
-                + Math.round((219 * codeScale * x) / (VECTOR_WIDTH - 1));
+            const rampCode = (16 * codeScale) + Math.round((219 * codeScale * x) / (VECTOR_WIDTH - 1));
             const lumaCode = y < VECTOR_HEIGHT / 2 ?
                 rampCode :
                 Math.round((120 + (x * 4.5)) * codeScale);
@@ -408,9 +390,7 @@ function populateVectorChroma(
 }
 
 /** Builds one padded planar luma-ramp and chromatic-macroblock vector. */
-export function createRawHDRAuthorizationVector(
-    routeKey: RawHDRAuthorizationRouteKey
-): TransferableRawVideoFrame {
+export function createRawHDRAuthorizationVector(routeKey: RawHDRAuthorizationRouteKey): TransferableRawVideoFrame {
     const metadata = createMetadata(routeKey);
     const format = getRouteFormat(routeKey);
     const bytesPerComponent: 1 | 2 = metadata.bitDepth === 8 ? 1 : 2;
@@ -439,16 +419,9 @@ export function createRawHDRAuthorizationVector(
         lumaPlane.byteLength + chromaUPlane.byteLength,
         bytesPerComponent
     );
-    const data = new ArrayBuffer(
-        lumaPlane.byteLength + chromaUPlane.byteLength + chromaVPlane.byteLength
-    );
+    const data = new ArrayBuffer(lumaPlane.byteLength + chromaUPlane.byteLength + chromaVPlane.byteLength);
     populateVectorLuma(data, lumaPlane, metadata.bitDepth as RawVideoBitDepth);
-    populateVectorChroma(
-        data,
-        chromaUPlane,
-        chromaVPlane,
-        metadata.bitDepth as RawVideoBitDepth
-    );
+    populateVectorChroma(data, chromaUPlane, chromaVPlane, metadata.bitDepth as RawVideoBitDepth);
 
     return {
         bitDepth: metadata.bitDepth as RawVideoBitDepth,
@@ -484,9 +457,7 @@ function readPlaneCode(
 ): number {
     const clampedX = clamp(x, 0, plane.width - 1);
     const clampedY = clamp(y, 0, plane.height - 1);
-    const byteOffset = plane.byteOffset
-        + (clampedY * plane.bytesPerRow)
-        + (clampedX * plane.bytesPerComponent);
+    const byteOffset = plane.byteOffset + (clampedY * plane.bytesPerRow) + (clampedX * plane.bytesPerComponent);
     const view = new DataView(frame.data);
     return plane.bytesPerComponent === 1 ?
         view.getUint8(byteOffset) :
@@ -522,10 +493,7 @@ function samplePlaneCode(
     return mix(top, bottom, fractionY);
 }
 
-function getPlane(
-    frame: TransferableRawVideoFrame,
-    kind: RawVideoPlaneDescriptor['kind']
-): RawVideoPlaneDescriptor {
+function getPlane(frame: TransferableRawVideoFrame, kind: RawVideoPlaneDescriptor['kind']): RawVideoPlaneDescriptor {
     const plane = frame.planes.find(candidate => candidate.kind === kind);
     if (!plane) {
         throw new Error(`Vector does not contain a ${kind} plane`);
@@ -534,10 +502,7 @@ function getPlane(
 }
 
 /** Reproduces the production shader's bounded output dither at one pixel. */
-export function calculateRawHDRAuthorizationOutputDither(
-    sampleX: number,
-    sampleY: number
-): number {
+export function calculateRawHDRAuthorizationOutputDither(sampleX: number, sampleY: number): number {
     const pixelCoordinateX = sampleX + 0.5;
     const pixelCoordinateY = sampleY + 0.5;
     const innerValue = (pixelCoordinateX * 0.06711056) + (pixelCoordinateY * 0.00583715);
@@ -570,9 +535,7 @@ export function createExpectedRawHDRVectorObservations(
     metadata: InputColorMetadata,
     settings: RenderSettings
 ): readonly RawHDRVectorObservation[] {
-    return RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.map((
-        sample: VectorSample
-    ): RawHDRVectorObservation => {
+    return RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.map((sample: VectorSample): RawHDRVectorObservation => {
         const rawYUV = sampleRawI420P10Frame(frame, sample.sampleX, sample.sampleY);
         const maximumCode = (2 ** metadata.bitDepth) - 1;
         const encodedYUV: ColorTriplet = [
@@ -614,9 +577,7 @@ export function evaluateRawHDRVectorObservations(
             return { accepted: false, maximumChannelError: Number.POSITIVE_INFINITY };
         }
         for (let componentIndex = 0; componentIndex < 3; componentIndex += 1) {
-            const channelError = Math.abs(
-                actual.linearRGB[componentIndex] - expected.linearRGB[componentIndex]
-            );
+            const channelError = Math.abs(actual.linearRGB[componentIndex] - expected.linearRGB[componentIndex]);
             if (!Number.isFinite(channelError)) {
                 return { accepted: false, maximumChannelError: Number.POSITIVE_INFINITY };
             }
@@ -672,11 +633,7 @@ function getCachedRouteProbe(
 ): CachedRouteProbe | undefined {
     const metadata = createMetadata(routeKey);
     const settings = createSettings(metadata);
-    const shaderCode = createRawYUVColorPipelineWGSL(
-        metadata,
-        settings,
-        getRouteFormat(routeKey)
-    );
+    const shaderCode = createRawYUVColorPipelineWGSL(metadata, settings, getRouteFormat(routeKey));
     const signature = createRawHDRShaderSignature(targetFormat, shaderCode);
     return deviceCache?.routes.get(`${targetFormat}\u0000${signature}\u0000${routeKey}`);
 }
@@ -705,9 +662,7 @@ function recordRouteTelemetry(
     }
 }
 
-function getAuthorizationTelemetryStatus(
-    accumulator: TelemetryAccumulator
-): RawHDRAuthorizationTelemetry['status'] {
+function getAuthorizationTelemetryStatus(accumulator: TelemetryAccumulator): RawHDRAuthorizationTelemetry['status'] {
     if (accumulator.authorizedRouteKeys.length > 0) {
         return 'authorized';
     }
@@ -717,7 +672,7 @@ function getAuthorizationTelemetryStatus(
     return accumulator.rejectedRouteKeys.length > 0 ? 'rejected' : 'unavailable';
 }
 
-/** Runs the exact production raw upload, binding, shader, viewport, and draw path. */
+/** Runs the production raw upload, binding, shader, viewport, and draw path. */
 export class RawHDRPresentationAuthorizationRunner {
     public async validate(
         device: GPUDevice,
@@ -730,13 +685,7 @@ export class RawHDRPresentationAuthorizationRunner {
         const shaderCode = createRawYUVColorPipelineWGSL(metadata, settings, format);
         const shaderSignature = createRawHDRShaderSignature(targetFormat, shaderCode);
         if (!AUTHORIZED_TARGET_FORMATS.has(targetFormat)) {
-            return createRejectedDecision(
-                device,
-                targetFormat,
-                routeKey,
-                shaderSignature,
-                'target-format-unsupported'
-            );
+            return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'target-format-unsupported');
         }
         const targetUsage = getValidationTextureUsage();
         if (
@@ -744,13 +693,7 @@ export class RawHDRPresentationAuthorizationRunner {
             || typeof GPUBufferUsage === 'undefined'
             || typeof GPUTextureUsage === 'undefined'
         ) {
-            return createRejectedDecision(
-                device,
-                targetFormat,
-                routeKey,
-                shaderSignature,
-                'gpu-api-unavailable'
-            );
+            return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'gpu-api-unavailable');
         }
 
         let targetTexture: GPUTexture | null = null;
@@ -759,14 +702,9 @@ export class RawHDRPresentationAuthorizationRunner {
         let renderSettingsUniformBuffer: GPUBuffer | null = null;
         let pixelReader: GPUCanvasPixelReader | null = null;
         let errorScopePushed = false;
-        const deadline = new GPUAuthorizationDeadline(
-            device,
-            RAW_HDR_AUTHORIZATION_TIMEOUT_MICROSECONDS
-        );
+        const deadline = new GPUAuthorizationDeadline(device, RAW_HDR_AUTHORIZATION_TIMEOUT_MICROSECONDS);
         try {
-            const pipeline = await deadline.wait(
-                createRawYUVRenderPipeline(device, targetFormat, shaderCode)
-            );
+            const pipeline = await deadline.wait(createRawYUVRenderPipeline(device, targetFormat, shaderCode));
             const resources = createRawYUVRenderResources(device, pipeline, settings);
             presentationUniformBuffer = resources.presentationUniformBuffer;
             renderSettingsUniformBuffer = resources.renderSettingsUniformBuffer;
@@ -798,13 +736,7 @@ export class RawHDRPresentationAuthorizationRunner {
             errorScopePushed = false;
             const validationError = await deadline.wait(validationPromise);
             if (validationError) {
-                return createRejectedDecision(
-                    device,
-                    targetFormat,
-                    routeKey,
-                    shaderSignature,
-                    'gpu-validation-failed'
-                );
+                return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'gpu-validation-failed');
             }
 
             pixelReader = new GPUCanvasPixelReader({
@@ -818,17 +750,9 @@ export class RawHDRPresentationAuthorizationRunner {
             );
             const actualObservations: RawHDRVectorObservation[] = [];
             if (readback.failure || !readback.linearRGB) {
-                return createRejectedDecision(
-                    device,
-                    targetFormat,
-                    routeKey,
-                    shaderSignature,
-                    'readback-failed'
-                );
+                return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'readback-failed');
             }
-            for (let sampleIndex = 0;
-                sampleIndex < RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.length;
-                sampleIndex += 1) {
+            for (let sampleIndex = 0; sampleIndex < RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.length; sampleIndex += 1) {
                 const sample = RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES[sampleIndex];
                 actualObservations.push({
                     linearRGB: readback.linearRGB[sampleIndex],
@@ -836,15 +760,8 @@ export class RawHDRPresentationAuthorizationRunner {
                     sampleY: sample.sampleY
                 });
             }
-            const expectedObservations = createExpectedRawHDRVectorObservations(
-                frame,
-                metadata,
-                settings
-            );
-            const comparison = evaluateRawHDRVectorObservations(
-                expectedObservations,
-                actualObservations
-            );
+            const expectedObservations = createExpectedRawHDRVectorObservations(frame, metadata, settings);
+            const comparison = evaluateRawHDRVectorObservations(expectedObservations, actualObservations);
             if (!comparison.accepted) {
                 return createRejectedDecision(
                     device,
@@ -870,13 +787,7 @@ export class RawHDRPresentationAuthorizationRunner {
                 targetFormat
             };
         } catch (error) {
-            return createRejectedDecision(
-                device,
-                targetFormat,
-                routeKey,
-                shaderSignature,
-                classifyFailure(error)
-            );
+            return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, classifyFailure(error));
         } finally {
             deadline.destroy();
             if (errorScopePushed) {
@@ -897,7 +808,7 @@ export class RawHDRPresentationAuthorizationRunner {
     }
 }
 
-/** Device-scoped, exact-shader cache for production raw HDR authorization. */
+/** Caches raw YUV authorization decisions per device, keyed by target format, shader signature, and route. */
 export class RawHDRPresentationAuthorizationRegistry {
     private readonly devices = new WeakMap<GPUDevice, DeviceProbeCache>();
     private readonly runner: RawHDRPresentationAuthorizationRunner;
@@ -906,7 +817,7 @@ export class RawHDRPresentationAuthorizationRegistry {
         this.runner = runner;
     }
 
-    /** Starts exact HDR route probes and deduplicates concurrent requests. */
+    /** Starts the HDR route probes; concurrent requests share one probe per route. */
     public prewarm(device: GPUDevice, targetFormat: GPUTextureFormat): void {
         for (const routeKey of RAW_HDR_AUTHORIZATION_ROUTE_KEYS) {
             if (!routeKey.endsWith(':sdr')) {
@@ -915,7 +826,7 @@ export class RawHDRPresentationAuthorizationRegistry {
         }
     }
 
-    /** Starts exact SDR raw-YUV routes independently from the HDR setting. */
+    /** Starts the SDR raw YUV route probes, independent of the HDR setting. */
     public prewarmSDR(device: GPUDevice, targetFormat: GPUTextureFormat): void {
         for (const routeKey of RAW_HDR_AUTHORIZATION_ROUTE_KEYS) {
             if (routeKey.endsWith(':sdr')) {
@@ -924,7 +835,7 @@ export class RawHDRPresentationAuthorizationRegistry {
         }
     }
 
-    /** Waits only probes that were already started for this exact device and format. */
+    /** Waits for the probes already started for this device and format, without starting any. */
     public async waitForPending(device: GPUDevice, targetFormat: GPUTextureFormat): Promise<void> {
         const deviceCache = this.devices.get(device);
         if (!deviceCache) {
@@ -942,7 +853,7 @@ export class RawHDRPresentationAuthorizationRegistry {
         }
     }
 
-    /** Returns a deduplicated decision for one exact device/format/shader route. */
+    /** Returns the decision for one device, target format, and route, starting a probe only when none is cached. */
     public authorize(
         device: GPUDevice,
         targetFormat: GPUTextureFormat,
@@ -969,13 +880,7 @@ export class RawHDRPresentationAuthorizationRegistry {
                 return decision;
             },
             (): RawHDRRouteAuthorizationDecision => {
-                const decision = createRejectedDecision(
-                    device,
-                    targetFormat,
-                    routeKey,
-                    shaderSignature,
-                    'unexpected-error'
-                );
+                const decision = createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'unexpected-error');
                 probe.decision = decision;
                 return decision;
             }
@@ -984,7 +889,7 @@ export class RawHDRPresentationAuthorizationRegistry {
         return probe.promise;
     }
 
-    /** Checks only settled exact-device authorization and never waits optimistically. */
+    /** Returns true only when a settled probe authorized this device, target format, and shader; a pending probe counts as unauthorized. */
     public isAuthorized(
         device: GPUDevice,
         targetFormat: GPUTextureFormat,
@@ -1008,10 +913,7 @@ export class RawHDRPresentationAuthorizationRegistry {
     }
 
     /** Returns bounded state for diagnostics without exposing GPU objects. */
-    public getTelemetry(
-        device: GPUDevice | null,
-        targetFormat: GPUTextureFormat | null
-    ): RawHDRAuthorizationTelemetry {
+    public getTelemetry(device: GPUDevice | null, targetFormat: GPUTextureFormat | null): RawHDRAuthorizationTelemetry {
         if (!device || !targetFormat) {
             return {
                 authorizedRouteKeys: [],
@@ -1033,11 +935,7 @@ export class RawHDRPresentationAuthorizationRegistry {
         };
         const deviceCache = this.devices.get(device);
         for (const routeKey of RAW_HDR_AUTHORIZATION_ROUTE_KEYS) {
-            recordRouteTelemetry(
-                accumulator,
-                routeKey,
-                getCachedRouteProbe(deviceCache, targetFormat, routeKey)
-            );
+            recordRouteTelemetry(accumulator, routeKey, getCachedRouteProbe(deviceCache, targetFormat, routeKey));
         }
 
         return {

@@ -38,8 +38,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function getUnmappedVideoTrackInfo(track: InputVideoTrack): ISOBaseMediaVideoTrackInfo | null {
-    // Mediabunny 1.52.2 parses a Dolby Vision sample entry's hvcC, avcC, av1C, and colr children but maps only
-    // the base sample entry types to codecs, so contain the write to its internal track info here
+    // Mediabunny 1.52.2 parses a Dolby Vision sample entry's hvcC, avcC, av1C, and colr children but maps only the base sample entry types to codecs, so contain the write to its internal track info here
     const backing = (track as unknown as { _backing?: unknown })._backing;
     if (!isRecord(backing) || !isRecord(backing.internalTrack)) {
         return null;
@@ -57,10 +56,7 @@ function getUnmappedVideoTrackInfo(track: InputVideoTrack): ISOBaseMediaVideoTra
     return info as unknown as ISOBaseMediaVideoTrackInfo;
 }
 
-function hasRequiredCodecDescription(
-    trackInfo: ISOBaseMediaVideoTrackInfo,
-    sampleEntryCodec: DolbyVisionSampleEntryCodec
-): boolean {
+function hasRequiredCodecDescription(trackInfo: ISOBaseMediaVideoTrackInfo, sampleEntryCodec: DolbyVisionSampleEntryCodec): boolean {
     const descriptionByteLength = trackInfo.codecDescription?.byteLength ?? 0;
     switch (sampleEntryCodec.codec) {
         case 'avc':
@@ -74,15 +70,12 @@ function hasRequiredCodecDescription(
 }
 
 /**
- * Assigns the codec Mediabunny assigns to the matching base sample entry when a track uses a Dolby Vision
- * sample entry: dvh1 and dvhe read as HEVC, dva1 and dvav as AVC (avc1 and avc3), and dav1 as AV1. Any other
- * track, or one whose internal shape or decoder configuration record does not match, is left unchanged. Call
- * it before the track's first getDecoderConfig(), whose result Mediabunny caches. Returns whether the codec
- * was assigned.
+ * Assigns the codec Mediabunny assigns to the matching base sample entry when a track uses a Dolby Vision sample entry: dvh1 and dvhe read as HEVC, dva1 and dvav as AVC (avc1 and avc3), and dav1 as AV1.
+ * Any other track, or one whose internal shape or decoder configuration record does not match, is left unchanged.
+ * Call it before the track's first getDecoderConfig(), whose result Mediabunny caches.
+ * Returns whether the codec was assigned.
  */
-export async function assignISOBaseMediaDolbyVisionSampleEntryCodec(
-    track: InputVideoTrack
-): Promise<boolean> {
+export async function assignISOBaseMediaDolbyVisionSampleEntryCodec(track: InputVideoTrack): Promise<boolean> {
     const internalCodecID = await track.getInternalCodecId();
     if (typeof internalCodecID !== 'string') {
         return false;

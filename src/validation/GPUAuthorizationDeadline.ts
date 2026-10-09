@@ -7,9 +7,7 @@ import {
 export const GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(5_000);
 
 export type GPUAuthorizationCancellationReason = 'device-lost' | 'timeout';
-type GPUAuthorizationCancellationListener = (
-    reason: GPUAuthorizationCancellationReason
-) => void;
+type GPUAuthorizationCancellationListener = (reason: GPUAuthorizationCancellationReason) => void;
 
 function getMonotonicTimeMicroseconds(): Microseconds {
     const timeMilliseconds = typeof globalThis.performance?.now === 'function' ?
@@ -20,33 +18,22 @@ function getMonotonicTimeMicroseconds(): Microseconds {
 
 /** Applies one monotonic timeout and device-loss boundary to a GPU probe. */
 export default class GPUAuthorizationDeadline {
-    private readonly cancellationListeners = new Set<
-        GPUAuthorizationCancellationListener
-    >();
+    private readonly cancellationListeners = new Set<GPUAuthorizationCancellationListener>();
     private readonly expirationTimeMicroseconds: Microseconds;
     private readonly timeout: ReturnType<typeof globalThis.setTimeout>;
     private cancellationReason: GPUAuthorizationCancellationReason | null = null;
     private destroyed = false;
 
-    public constructor(
-        device: GPUDevice,
-        timeoutMicroseconds = GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS
-    ) {
-        this.expirationTimeMicroseconds = (
-            Number(getMonotonicTimeMicroseconds())
-            + Number(timeoutMicroseconds)
-        ) as Microseconds;
+    public constructor(device: GPUDevice, timeoutMicroseconds = GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS) {
+        this.expirationTimeMicroseconds = (Number(getMonotonicTimeMicroseconds()) + Number(timeoutMicroseconds)) as Microseconds;
         this.timeout = globalThis.setTimeout((): void => {
             this.cancel('timeout');
         }, microsecondsToMilliseconds(timeoutMicroseconds));
         this.scheduleDeviceLossObservation(device);
     }
 
-    /** Waits one operation without extending the original deadline. */
-    public wait<Value>(
-        operation: Promise<Value>,
-        cancelOperation: () => void = (): void => undefined
-    ): Promise<Value> {
+    /** Waits for one operation without extending the original deadline. */
+    public wait<Value>(operation: Promise<Value>, cancelOperation: () => void = (): void => undefined): Promise<Value> {
         this.expireIfNeeded();
         return new Promise<Value>((resolve, reject) => {
             let settled = false;
@@ -58,9 +45,7 @@ export default class GPUAuthorizationDeadline {
                 this.cancellationListeners.delete(cancelListener);
                 callback();
             };
-            const cancelListener = (
-                reason: GPUAuthorizationCancellationReason
-            ): void => {
+            const cancelListener = (reason: GPUAuthorizationCancellationReason): void => {
                 settle((): void => {
                     try {
                         cancelOperation();
@@ -93,11 +78,7 @@ export default class GPUAuthorizationDeadline {
     }
 
     private expireIfNeeded(): void {
-        if (
-            !this.cancellationReason
-            && Number(getMonotonicTimeMicroseconds())
-                >= Number(this.expirationTimeMicroseconds)
-        ) {
+        if (!this.cancellationReason && Number(getMonotonicTimeMicroseconds()) >= Number(this.expirationTimeMicroseconds)) {
             this.cancel('timeout');
         }
     }

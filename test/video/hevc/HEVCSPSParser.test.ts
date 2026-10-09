@@ -22,7 +22,7 @@ const MAIN10_PQ_SPS = createBytesFromHex(
 const MAIN10_HLG_SPS = createBytesFromHex(
     '42010102200000030090000003000003003fa005020171f2b6595952930bc05a848904820000030002000003003010'
 );
-// MAIN10_HLG_SPS with NAL bytes 32 to 35, (1 << 31) | (primaries << 23) | (transfer << 15) | (matrix << 7) | 2, replaced
+// MAIN10_HLG_SPS with NAL bytes 32 to 35 replaced by (1 << 31) | (primaries << 23) | (transfer << 15) | (matrix << 7) | 2
 const MAIN10_BT2020_10_SPS = createBytesFromHex(
     '42010102200000030090000003000003003fa005020171f2b6595952930bc05a848704820000030002000003003010'
 );

@@ -625,7 +625,7 @@ describe('StreamingAudioResampler', () => {
             maximumInputTimestampDeviationMicroseconds: 1_167,
             sourceFrameCount: 320
         });
-        // The field failure: 1167 microseconds exceeded the former 1021 microsecond tolerance
+        // Without the allowance, the 1167 microsecond deviation exceeds the 1021 microsecond tolerance: the failure seen in the field
         expect(ordinaryResampler.getTelemetry().filledInputCount).toBe(1);
     });
 

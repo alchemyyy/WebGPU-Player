@@ -263,11 +263,7 @@ class BaseLayerColor:
     def has_color_description(self) -> bool:
         """Returns whether all three code points are specified, the condition for FFmpeg to write a colr box."""
 
-        return UNSPECIFIED_COLOR_CODE not in (
-            self.primaries,
-            self.transfer_characteristics,
-            self.matrix_coefficients,
-        )
+        return UNSPECIFIED_COLOR_CODE not in (self.primaries, self.transfer_characteristics, self.matrix_coefficients)
 
 
 # 10.0 has no compatible base: untagged and full range, as a decoded Profile 5 stream is.
@@ -500,9 +496,7 @@ def pack_bit_fields(fields: Sequence[BitField], *, padding_bit: int) -> bytes:
         packed_value = (packed_value << field_bit_count) | field_value
         bit_count += field_bit_count
     padding_bit_count = -bit_count % 8
-    packed_value = (packed_value << padding_bit_count) | (
-        ((1 << padding_bit_count) - 1) if padding_bit else 0
-    )
+    packed_value = (packed_value << padding_bit_count) | (((1 << padding_bit_count) - 1) if padding_bit else 0)
     return packed_value.to_bytes((bit_count + padding_bit_count) // 8, "big")
 
 
@@ -802,9 +796,7 @@ def insert_dolby_vision_metadata(stream: bytes, RPUs: Sequence[bytes]) -> Inject
 
     temporal_units = split_temporal_units(parse_OBUs(stream))
     if len(temporal_units) != len(RPUs):
-        raise VectorGenerationError(
-            f"The bitstream has {len(temporal_units)} temporal units for {len(RPUs)} RPUs"
-        )
+        raise VectorGenerationError(f"The bitstream has {len(temporal_units)} temporal units for {len(RPUs)} RPUs")
     output = bytearray()
     summaries: list[TemporalUnitSummary] = []
     has_sequence_header = False
@@ -835,9 +827,7 @@ def insert_dolby_vision_metadata(stream: bytes, RPUs: Sequence[bytes]) -> Inject
             if OBU.OBU_type not in CONTAINER_DROPPED_OBU_TYPES:
                 sample_byte_length += len(OBU.data)
         if len(shown_frame_types) != 1:
-            raise VectorGenerationError(
-                f"Temporal unit {len(summaries)} shows {len(shown_frame_types)} frames instead of one"
-            )
+            raise VectorGenerationError(f"Temporal unit {len(summaries)} shows {len(shown_frame_types)} frames instead of one")
         output += unit_output
         summaries.append(
             TemporalUnitSummary(
@@ -904,10 +894,7 @@ def create_dolby_vision_configuration_record(configuration: DolbyVisionConfigura
     return pack_bit_fields(fields, padding_bit=0)
 
 
-def get_dolby_vision_configuration(
-    sub_profile: SubProfile,
-    encode_settings: AV1EncodeSettings,
-) -> DolbyVisionConfiguration:
+def get_dolby_vision_configuration(sub_profile: SubProfile, encode_settings: AV1EncodeSettings) -> DolbyVisionConfiguration:
     """Returns the Profile 10 configuration of one encode of a sub-profile."""
 
     return DolbyVisionConfiguration(
@@ -1030,9 +1017,7 @@ def read_MP4_video_signaling(data: bytes) -> MP4VideoSignaling:
 
     sample_entry = find_AV1_sample_entry(data)
     find_required_box(sample_entry.children, AV1_CONFIGURATION_BOX_TYPE)
-    configuration_boxes = [
-        child for child in sample_entry.children if child.box_type in DOLBY_VISION_CONFIGURATION_BOX_TYPES
-    ]
+    configuration_boxes = [child for child in sample_entry.children if child.box_type in DOLBY_VISION_CONFIGURATION_BOX_TYPES]
     if len(configuration_boxes) > 1:
         raise VectorGenerationError("The MP4 AV1 sample entry has more than one Dolby Vision configuration")
     configuration_record = None
@@ -1208,10 +1193,7 @@ def probe_media(tools: MediaTools, path: Path, input_format: str | None = None) 
 def probe_dolby_vision_metadata(tools: MediaTools, path: Path, input_format: str) -> list[dict[str, Any]]:
     """Returns the Dolby Vision metadata FFmpeg decodes for each frame of a raw bitstream."""
 
-    output = execute_tool(
-        tools.FFprobe_path,
-        ["-v", "error", "-f", input_format, "-show_frames", "-of", "json", str(path)],
-    )
+    output = execute_tool(tools.FFprobe_path, ["-v", "error", "-f", input_format, "-show_frames", "-of", "json", str(path)])
     frames = json.loads(output).get("frames", [])
     frame_metadata: list[dict[str, Any]] = []
     for frame_index, frame in enumerate(frames):
@@ -1229,8 +1211,6 @@ def probe_dolby_vision_metadata(tools: MediaTools, path: Path, input_format: str
 
 
 def get_streams(probe: Mapping[str, Any], codec_type: str) -> list[dict[str, Any]]:
-    """Returns the FFprobe streams of one codec type."""
-
     streams = probe.get("streams", [])
     if not isinstance(streams, list):
         raise VectorGenerationError("FFprobe reported no stream list")
@@ -1238,8 +1218,6 @@ def get_streams(probe: Mapping[str, Any], codec_type: str) -> list[dict[str, Any
 
 
 def require_one_stream(probe: Mapping[str, Any], codec_type: str, label: str) -> dict[str, Any]:
-    """Returns the only FFprobe stream of one codec type."""
-
     streams = get_streams(probe, codec_type)
     if len(streams) != 1:
         raise VectorGenerationError(f"{label} has {len(streams)} {codec_type} streams instead of one")
@@ -1267,11 +1245,7 @@ def require_OBU_stream_evidence(
     require_equal(stream.get("codec_name"), AV1_CODEC_NAME, f"{label} codec")
     require_equal(stream.get("profile"), FFPROBE_AV1_PROFILE, f"{label} profile")
     require_equal(stream.get("pix_fmt"), PIXEL_FORMAT, f"{label} pixel format")
-    require_equal(
-        [stream.get("width"), stream.get("height")],
-        [encode_settings.width, encode_settings.height],
-        f"{label} size",
-    )
+    require_equal([stream.get("width"), stream.get("height")], [encode_settings.width, encode_settings.height], f"{label} size")
     require_equal(get_stream_color(stream), get_FFmpeg_color_names(color), f"{label} sequence header color")
 
 
@@ -1377,11 +1351,7 @@ def require_MP4_signaling(data: bytes, build: DolbyVisionAV1Build, configuration
     color = build.sub_profile.color
     signaling = read_MP4_video_signaling(data)
     require_equal(signaling.sample_entry_type, get_MP4_sample_entry_type(build.sub_profile), f"{label} sample entry")
-    require_equal(
-        (signaling.dolby_vision_configuration_record or b"").hex(),
-        configuration_record.hex(),
-        f"{label} dvvC record",
-    )
+    require_equal((signaling.dolby_vision_configuration_record or b"").hex(), configuration_record.hex(), f"{label} dvvC record")
     # FFmpeg writes a colr box only when all three code points are specified
     expected_color = color if color.has_color_description else None
     require_equal(
@@ -1435,9 +1405,7 @@ def build_dolby_vision_AV1_files(
     configuration = get_dolby_vision_configuration(sub_profile, encode_settings)
     configuration_record = create_dolby_vision_configuration_record(configuration)
     configured_path = temporary_directory / f"{file_stem}-configured.mp4"
-    configured_path.write_bytes(
-        insert_dolby_vision_configuration_box(intermediate_path.read_bytes(), configuration_record)
-    )
+    configured_path.write_bytes(insert_dolby_vision_configuration_box(intermediate_path.read_bytes(), configuration_record))
     execute_tool(tools.FFmpeg_path, create_remux_arguments(configured_path, MP4_FORMAT, build.MP4_path))
     execute_tool(tools.FFmpeg_path, create_remux_arguments(configured_path, MATROSKA_FORMAT, build.Matroska_path))
     sample_entry_type = get_MP4_sample_entry_type(sub_profile)
@@ -1446,14 +1414,7 @@ def build_dolby_vision_AV1_files(
 
     require_MP4_signaling(build.MP4_path.read_bytes(), build, configuration_record, build.MP4_path.name)
     for container_format, path in ((MP4_FORMAT, build.MP4_path), (MATROSKA_FORMAT, build.Matroska_path)):
-        require_container_evidence(
-            probe_media(tools, path),
-            container_format,
-            build,
-            configuration,
-            injected_stream,
-            path.name,
-        )
+        require_container_evidence(probe_media(tools, path), container_format, build, configuration, injected_stream, path.name)
     return BuiltDolbyVisionAV1Files(injected_stream=injected_stream, injected_stream_path=injected_stream_path)
 
 
@@ -1542,8 +1503,6 @@ def require_FFmpeg_metadata_parity(
 
 
 def get_vector_file_name(sub_profile: SubProfile, container_format: str) -> str:
-    """Returns the committed file name of one vector."""
-
     return f"profile{sub_profile.name}.{FILE_EXTENSION_BY_FORMAT[container_format]}"
 
 
@@ -1652,8 +1611,6 @@ def generate_vector_files(tools: MediaTools, temporary_directory: Path) -> dict[
 
 
 def parse_arguments(command_arguments: Sequence[str] | None) -> argparse.Namespace:
-    """Parses the command line."""
-
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--check",

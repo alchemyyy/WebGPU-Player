@@ -17,9 +17,7 @@ import {
     type OwnedVideoStreamRun
 } from './OwnedVideoDecodeStream';
 
-function createAV1FrameMetadataSource(
-    metadataQueue: DolbyVisionAV1EncodedMetadataQueue
-): OwnedVideoFrameMetadataSource {
+function createAV1FrameMetadataSource(metadataQueue: DolbyVisionAV1EncodedMetadataQueue): OwnedVideoFrameMetadataSource {
     return {
         clear: (): void => {
             metadataQueue.clear();
@@ -48,12 +46,7 @@ export async function runOwnedAV1VideoStream(
     keyPacketMediaTimeMicroseconds: Microseconds
 ): Promise<void> {
     const metadataQueue = new DolbyVisionAV1EncodedMetadataQueue(rpuParser);
-    const state = new OwnedVideoStreamState(
-        stream,
-        createAV1FrameMetadataSource(metadataQueue),
-        startTimeMicroseconds,
-        null
-    );
+    const state = new OwnedVideoStreamState(stream, createAV1FrameMetadataSource(metadataQueue), startTimeMicroseconds, null);
     const decoder = createDecoder({
         onError: (error: unknown): void => {
             state.recordDecoderFailure(error);

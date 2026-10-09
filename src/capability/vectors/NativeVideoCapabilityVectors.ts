@@ -11,14 +11,11 @@ export type NativeVideoCapabilityVector = Readonly<{
     encodedKeyFrame: Uint8Array
 }>;
 
-// Generated with FFmpeg git-862338fe31. Each IVF frame payload is retained
-// without the 32-byte IVF header or 12-byte per-frame header
-// ffmpeg -f lavfi -i "color=c=black:s=64x64:r=1" -frames:v 1 -pix_fmt yuv420p \
-// -c:v libvpx -deadline best -cpu-used 0 -g 1 -f ivf vp8.ivf
-// ffmpeg -f lavfi -i "color=c=black:s=64x64:r=1" -frames:v 1 -pix_fmt yuv420p \
-// -c:v libvpx-vp9 -deadline best -cpu-used 0 -g 1 -lossless 1 -f ivf vp9.ivf
-// ffmpeg -f lavfi -i "color=c=black:s=64x64:r=1" -frames:v 1 -pix_fmt yuv420p \
-// -c:v libaom-av1 -cpu-used 0 -crf 0 -g 1 -still-picture 1 -f ivf av1.ivf
+// Each IVF frame payload is retained without the 32-byte IVF header or 12-byte per-frame header.
+// Generated with FFmpeg git-862338fe31:
+// ffmpeg -f lavfi -i "color=c=black:s=64x64:r=1" -frames:v 1 -pix_fmt yuv420p -c:v libvpx -deadline best -cpu-used 0 -g 1 -f ivf vp8.ivf
+// ffmpeg -f lavfi -i "color=c=black:s=64x64:r=1" -frames:v 1 -pix_fmt yuv420p -c:v libvpx-vp9 -deadline best -cpu-used 0 -g 1 -lossless 1 -f ivf vp9.ivf
+// ffmpeg -f lavfi -i "color=c=black:s=64x64:r=1" -frames:v 1 -pix_fmt yuv420p -c:v libaom-av1 -cpu-used 0 -crf 0 -g 1 -still-picture 1 -f ivf av1.ivf
 const AV1_MAIN_KEY_FRAME_BASE64 = 'EgAKBhgVf/+wCDIMEAAAAEsXxj38v/+g';
 const VP8_KEY_FRAME_BASE64 =
     '8AIAnQEqQABAAABHCIWFiIWEiAICAAZwPEJgCrIg9zAA/v+rUIA=';

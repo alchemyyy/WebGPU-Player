@@ -74,9 +74,7 @@ let defaultModulePromise: Promise<LibDCADECModule> | null = null;
 
 async function loadDefaultDTSDecoderModule(): Promise<LibDCADECModule> {
     if (!defaultModulePromise) {
-        defaultModulePromise = import('#wasm/libdcadec-dts/libdcadec-dts.mjs').then(
-            async moduleNamespace => moduleNamespace.default()
-        );
+        defaultModulePromise = import('#wasm/libdcadec-dts/libdcadec-dts.mjs').then(async moduleNamespace => moduleNamespace.default());
     }
     return defaultModulePromise;
 }
@@ -137,8 +135,7 @@ function isQualifiedDTSOutputEnvelope(
     if (sampleRate <= 96_000) {
         return true;
     }
-    return profile === DTS_PROFILE_HD_MASTER_AUDIO
-        && DTS_HIGH_SAMPLE_RATE_SUPPORTED_CHANNEL_COUNTS.has(channelCount);
+    return profile === DTS_PROFILE_HD_MASTER_AUDIO && DTS_HIGH_SAMPLE_RATE_SUPPORTED_CHANNEL_COUNTS.has(channelCount);
 }
 
 function requirePositiveSafeInteger(value: number, name: string): number {
@@ -157,7 +154,7 @@ function requireSuccessfulDTSDecodeStatus(decodeStatus: number): void {
     }
 }
 
-/** Fingerprints exact integer PCM output in stable channel-major order. */
+/** Fingerprints the integer PCM output in channel-major order. */
 export function getDTSDecodedAudioFingerprint(output: DTSDecodedAudioOutput): number {
     const sampleScale = 2 ** (output.bitsPerSample - 1);
     let fingerprint = DTS_FNV1A_OFFSET_BASIS;
@@ -173,7 +170,7 @@ export function getDTSDecodedAudioFingerprint(output: DTSDecodedAudioOutput): nu
     return fingerprint;
 }
 
-/** Owns one bounded libdcadec context inside the existing custom decode worker. */
+/** Owns one bounded libdcadec context in the custom decode worker. */
 export default class DTSSoftwareAudioDecoder {
     public readonly libraryVersion: number;
 
@@ -185,10 +182,7 @@ export default class DTSSoftwareAudioDecoder {
     private constructor(module: LibDCADECModule) {
         this.module = module;
         this.functions = createFunctionTable(module);
-        this.libraryVersion = requirePositiveSafeInteger(
-            this.functions.getVersion(),
-            'libdcadec version'
-        );
+        this.libraryVersion = requirePositiveSafeInteger(this.functions.getVersion(), 'libdcadec version');
         this.decoder = this.functions.create();
         if (!Number.isSafeInteger(this.decoder) || this.decoder <= 0) {
             throw new Error('Unable to create the bundled DTS decoder');
@@ -196,27 +190,19 @@ export default class DTSSoftwareAudioDecoder {
     }
 
     /** Creates one decoder after lazy WebAssembly initialization. */
-    public static async create(
-        moduleFactory: DTSDecoderModuleFactory = loadDefaultDTSDecoderModule
-    ): Promise<DTSSoftwareAudioDecoder> {
+    public static async create(moduleFactory: DTSDecoderModuleFactory = loadDefaultDTSDecoderModule): Promise<DTSSoftwareAudioDecoder> {
         const module = await moduleFactory();
-        if (!(module.HEAPU8 instanceof Uint8Array)
-            || !(module.HEAP32 instanceof Int32Array)) {
+        if (!(module.HEAPU8 instanceof Uint8Array) || !(module.HEAP32 instanceof Int32Array)) {
             throw new Error('The bundled DTS decoder memory views are unavailable');
         }
         return new DTSSoftwareAudioDecoder(module);
     }
 
     /** Decodes one Mediabunny-demuxed DTS access unit into owned planar PCM. */
-    public decode(
-        data: Uint8Array,
-        mediaTimeMicroseconds: Microseconds
-    ): DTSDecodedAudioOutput {
+    public decode(data: Uint8Array, mediaTimeMicroseconds: Microseconds): DTSDecodedAudioOutput {
         this.requireOpen();
         requireMicroseconds(mediaTimeMicroseconds, 'DTS packet timestamp');
-        if (!(data instanceof Uint8Array)
-            || data.byteLength <= 0
-            || data.byteLength > DTS_MAXIMUM_PACKET_SIZE) {
+        if (!(data instanceof Uint8Array) || data.byteLength <= 0 || data.byteLength > DTS_MAXIMUM_PACKET_SIZE) {
             throw new RangeError('DTS packet size is outside the bounded decoder envelope');
         }
 
@@ -231,16 +217,12 @@ export default class DTSSoftwareAudioDecoder {
         requireSuccessfulDTSDecodeStatus(decodeStatus);
 
         const frameCount = this.functions.getSampleCount(this.decoder);
-        if (!Number.isSafeInteger(frameCount)
-            || frameCount <= 0
-            || frameCount > DTS_MAXIMUM_DECODED_FRAME_COUNT) {
+        if (!Number.isSafeInteger(frameCount) || frameCount <= 0 || frameCount > DTS_MAXIMUM_DECODED_FRAME_COUNT) {
             throw new RangeError('Bundled DTS output frame count is invalid');
         }
         const sampleRate = this.functions.getSampleRate(this.decoder);
         if (!isSupportedCustomAudioSampleRate(sampleRate)) {
-            throw new RangeError(
-                `Bundled DTS output sample rate ${sampleRate} Hz is invalid`
-            );
+            throw new RangeError(`Bundled DTS output sample rate ${sampleRate} Hz is invalid`);
         }
         const bitsPerSample = this.functions.getBitsPerSample(this.decoder);
         if (!DTS_SUPPORTED_BITS_PER_SAMPLE.has(bitsPerSample)) {
@@ -253,25 +235,15 @@ export default class DTSSoftwareAudioDecoder {
         const channelMask = this.functions.getChannelMask(this.decoder);
         const channelLayout = getQualifiedCustomWaveChannelLayout(channelMask);
         if (!channelLayout) {
-            throw new RangeError(
-                `Bundled DTS channel mask 0x${channelMask.toString(16)} is unqualified`
-            );
+            throw new RangeError(`Bundled DTS channel mask 0x${channelMask.toString(16)} is unqualified`);
         }
-        if (!isQualifiedDTSOutputEnvelope(
-            profile,
-            sampleRate,
-            channelLayout.channelCount
-        )) {
-            throw new RangeError(
-                'Bundled DTS high-sample-rate output is outside the supported Master Audio envelope'
-            );
+        if (!isQualifiedDTSOutputEnvelope(profile, sampleRate, channelLayout.channelCount)) {
+            throw new RangeError('Bundled DTS high-sample-rate output is outside the supported Master Audio envelope');
         }
 
         const channelData: Float32Array[] = [];
         const sampleScale = 2 ** (bitsPerSample - 1);
-        for (let channelIndex = 0;
-            channelIndex < channelLayout.channelCount;
-            channelIndex += 1) {
+        for (let channelIndex = 0; channelIndex < channelLayout.channelCount; channelIndex += 1) {
             const planePointer = this.functions.getPlane(this.decoder, channelIndex);
             const firstSampleIndex = planePointer / Int32Array.BYTES_PER_ELEMENT;
             if (!Number.isSafeInteger(firstSampleIndex)
@@ -279,10 +251,7 @@ export default class DTSSoftwareAudioDecoder {
                 || firstSampleIndex + frameCount > this.module.HEAP32.length) {
                 throw new RangeError('Bundled DTS output plane is outside decoder memory');
             }
-            const sourcePlane = this.module.HEAP32.subarray(
-                firstSampleIndex,
-                firstSampleIndex + frameCount
-            );
+            const sourcePlane = this.module.HEAP32.subarray(firstSampleIndex, firstSampleIndex + frameCount);
             const outputPlane = new Float32Array(frameCount);
             for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
                 outputPlane[frameIndex] = sourcePlane[frameIndex] / sampleScale;
@@ -299,9 +268,7 @@ export default class DTSSoftwareAudioDecoder {
             channelMask,
             filterStatus,
             frameCount,
-            lossless: profile === DTS_PROFILE_HD_MASTER_AUDIO
-                && parseStatus === 0
-                && filterStatus === 0,
+            lossless: profile === DTS_PROFILE_HD_MASTER_AUDIO && parseStatus === 0 && filterStatus === 0,
             mediaTimeMicroseconds,
             parseStatus,
             profile,

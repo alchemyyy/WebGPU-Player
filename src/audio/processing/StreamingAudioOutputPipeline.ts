@@ -18,9 +18,8 @@ export type StreamingAudioOutputPipelineTelemetry = Readonly<{
 }>;
 
 /**
- * Runs resampling before the optional final-rate linked peak limiter. The
- * source rate can change mid-stream and the limiter can be enabled late, while
- * the output format and the output timeline stay fixed.
+ * Runs resampling before the optional final-rate linked peak limiter.
+ * The source rate can change mid-stream and the limiter can be enabled late, while the output format and the output timeline stay fixed.
  */
 export default class StreamingAudioOutputPipeline {
     private finalized = false;
@@ -37,7 +36,7 @@ export default class StreamingAudioOutputPipeline {
         }
     }
 
-    /** Processes one decoded PCM input. */
+    /** Resamples one decoded PCM input and passes the result through the limiter when one is enabled. */
     public push(input: StreamingAudioResamplerInput): StreamingAudioResamplerOutput[] {
         if (this.finalized) {
             throw new Error('Cannot add audio after output pipeline finalization');
@@ -47,9 +46,9 @@ export default class StreamingAudioOutputPipeline {
     }
 
     /**
-     * Rebinds to a new decoded source rate. The old resampler's tail goes
-     * through the limiter, which keeps running, and the new resampler continues
-     * the old output timeline. Returns the tail, which precedes any later output.
+     * Rebinds to a new decoded source rate.
+     * The old resampler's tail goes through the limiter, which keeps running, and the new resampler continues the old output timeline.
+     * Returns the tail, which precedes any later output.
      */
     public changeSourceSampleRate(sourceSampleRate: number): StreamingAudioResamplerOutput[] {
         if (this.finalized) {

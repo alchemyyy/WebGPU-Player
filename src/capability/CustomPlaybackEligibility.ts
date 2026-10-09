@@ -312,7 +312,10 @@ export type EligibleCustomPlayback = {
     audioSourceChannelCount: number | null
     /** Zero-based ordinal within container audio tracks, not MediaStream.Index. */
     audioTrackIndex: number | null
-    /** Set when a dual-layer route reconstructs without its EL, because no qualified decoder decodes it: MEL reconstructs exactly and FEL presents its base */
+    /**
+     * Set when a dual-layer route reconstructs without its EL, because no qualified decoder decodes it.
+     * MEL still reconstructs exactly, and FEL presents its base.
+     */
     discardDolbyVisionEnhancementLayer?: true
     /** Null when the server has no runtime for the source */
     durationMicroseconds: Microseconds | null
@@ -1181,7 +1184,8 @@ function getHEVCDolbyVisionReconstructionFrameFormat(
 }
 
 /**
- * Returns the raw frame format RPU reconstruction decodes a Dolby Vision base layer into: the HEVC base layer's own format, or I420P10 for AV1 Main at 10 bits.
+ * Returns the raw frame format that RPU reconstruction decodes a Dolby Vision base layer into.
+ * An HEVC base layer keeps its own format, and AV1 Main at 10 bits decodes to I420P10.
  * AV1 carries a single-layer RPU only, so a dual-layer profile never reconstructs over AV1.
  */
 function getDolbyVisionReconstructionFrameFormat(
@@ -1358,8 +1362,11 @@ function selectDolbyVisionReconstructionOutput(
 }
 
 /**
- * Selects a Dolby Vision route in this order: native Profile 5, the native compatible base of Profile 7 or 8,
- * RPU reconstruction, then the base layer a compatibility ID declares, which the ordinary routes present.
+ * Selects a Dolby Vision route in this order:
+ * - native Profile 5;
+ * - the native compatible base of Profile 7 or 8;
+ * - RPU reconstruction;
+ * - the base layer a compatibility ID declares, which the ordinary routes present.
  */
 function selectDolbyVisionVideoOutput(
     options: unknown,
@@ -1943,9 +1950,8 @@ function getPlaybackSelectionMediaSources(
 }
 
 /**
- * Rejects the wrapper only when item metadata proves every candidate video
- * route is outside the custom decoder's structural envelope. Runtime probes
- * still make the final capability decision after player selection.
+ * Returns false only when item metadata proves every candidate video route is outside the custom decoder's structural envelope.
+ * Player selection uses it as a metadata-only prefilter; runtime probes still make the final capability decision after selection.
  */
 export function hasPotentialCustomPlaybackVideoRoute(
     item: unknown,
@@ -1959,9 +1965,9 @@ export function hasPotentialCustomPlaybackVideoRoute(
 }
 
 /**
- * Returns whether a media source's presented video stream has an eligible route, judged by exactly the runtime
- * video selection and ignoring audio, transport, and runtime availability. Negotiation uses it to advertise one
- * exact item whose range label no generic route covers.
+ * Returns whether a media source's presented video stream has an eligible route, judged by the same video selection playback runs.
+ * Audio, transport, and runtime availability are ignored.
+ * Negotiation uses it to advertise one exact item whose range label no generic route covers.
  */
 export function hasEligibleCustomVideoRoute(
     mediaSource: unknown,
@@ -1993,7 +1999,7 @@ export function hasEligibleCustomVideoRoute(
     ).status === 'selected';
 }
 
-/** Selects only a direct VOD source the complete measured client pipeline can own. */
+/** Returns the custom playback route for a direct-play VOD source, or the reason the probed pipeline cannot own it. */
 export function getCustomPlaybackEligibility(
     options: unknown,
     capabilities: CustomDecodeCapabilities,

@@ -56,8 +56,6 @@ class HEVCProfileTierLevel:
 
 
 def create_argument_parser() -> argparse.ArgumentParser:
-    """Creates the vector-generator CLI."""
-
     parser = argparse.ArgumentParser(
         description=(
             "Generate one controlled 4K24 PQ Main10 High Tier Level 5.1 "
@@ -66,10 +64,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--ffprobe", default="ffprobe")
-    parser.add_argument(
-        "--output-directory",
-        default=str(DEFAULT_OUTPUT_DIRECTORY),
-    )
+    parser.add_argument("--output-directory", default=str(DEFAULT_OUTPUT_DIRECTORY))
     parser.add_argument("--duration-seconds", type=int, default=EXPECTED_DURATION_SECONDS)
     parser.add_argument("--overwrite", action="store_true")
     return parser
@@ -78,10 +73,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
 def parse_HEVC_profile_tier_level(data: bytes) -> HEVCProfileTierLevel:
     """Parses the first SPS profile, tier, level, and progressive flags."""
 
-    SPS = next(
-        (NAL_unit for NAL_unit in find_annex_B_NAL_units(data) if NAL_unit.nal_type == 33),
-        None,
-    )
+    SPS = next((NAL_unit for NAL_unit in find_annex_B_NAL_units(data) if NAL_unit.nal_type == 33), None)
     if SPS is None:
         raise VectorGenerationError("The generated HEVC stream has no SPS")
     NAL_unit = data[SPS.payload_offset : SPS.end_offset]
@@ -108,9 +100,7 @@ def require_expected_profile_tier_level(data: bytes) -> HEVCProfileTierLevel:
         level_IDC=EXPECTED_LEVEL_IDC,
         profile_IDC=EXPECTED_PROFILE_IDC,
     ):
-        raise VectorGenerationError(
-            f"Unexpected HEVC profile/tier/level signaling: {profile_tier_level}"
-        )
+        raise VectorGenerationError(f"Unexpected HEVC profile/tier/level signaling: {profile_tier_level}")
     return profile_tier_level
 
 
@@ -185,9 +175,7 @@ def generate_high_tier_HEVC(
     HEVC = output_path.read_bytes()
     require_expected_profile_tier_level(HEVC)
     if scan_static_HDR_metadata(HEVC) != "absent":
-        raise VectorGenerationError(
-            "The base High Tier stream unexpectedly contains static HDR metadata"
-        )
+        raise VectorGenerationError("The base High Tier stream unexpectedly contains static HDR metadata")
 
 
 def require_options(arguments: argparse.Namespace) -> None:
@@ -209,21 +197,13 @@ def execute(arguments: argparse.Namespace) -> dict[str, object]:
     manifest_path = output_directory / MANIFEST_FILE_NAME
     existing_paths = [path for path in (vector_path, manifest_path) if path.exists()]
     if existing_paths and not arguments.overwrite:
-        raise VectorGenerationError(
-            f"Output already exists; pass --overwrite: {existing_paths[0]}"
-        )
+        raise VectorGenerationError(f"Output already exists; pass --overwrite: {existing_paths[0]}")
 
     ffmpeg_version = run_command((ffmpeg_path, "-version"), "FFmpeg version query")
-    with tempfile.TemporaryDirectory(
-        prefix="webgpu-native-hevc-high-tier-"
-    ) as temporary_directory:
+    with tempfile.TemporaryDirectory(prefix="webgpu-native-hevc-high-tier-") as temporary_directory:
         temporary_path = Path(temporary_directory)
         base_path = temporary_path / "base.hevc"
-        generate_high_tier_HEVC(
-            ffmpeg_path,
-            base_path,
-            duration_seconds=arguments.duration_seconds,
-        )
+        generate_high_tier_HEVC(ffmpeg_path, base_path, duration_seconds=arguments.duration_seconds)
         injected_HEVC = inject_prefix_SEI_NAL_units(
             base_path.read_bytes(),
             (create_valid_static_HDR_SEI_NAL_unit(VALID_TONE_MAPPING_PEAK_NITS),),
@@ -251,11 +231,7 @@ def execute(arguments: argparse.Namespace) -> dict[str, object]:
         if stream_metadata["video"].get("level") != EXPECTED_LEVEL_IDC:
             raise VectorGenerationError("Muxed High Tier vector has the wrong HEVC level")
         extracted_path = temporary_path / "extracted.hevc"
-        extracted_HEVC = extract_HEVC(
-            ffmpeg_path,
-            staged_vector_path,
-            extracted_path,
-        )
+        extracted_HEVC = extract_HEVC(ffmpeg_path, staged_vector_path, extracted_path)
         require_expected_profile_tier_level(extracted_HEVC)
         if scan_static_HDR_metadata(extracted_HEVC) != "valid":
             raise VectorGenerationError("Muxed High Tier HDR metadata is not valid")
@@ -282,10 +258,7 @@ def execute(arguments: argparse.Namespace) -> dict[str, object]:
         "schemaVersion": 1,
     }
     temporary_manifest_path = manifest_path.with_suffix(".tmp")
-    temporary_manifest_path.write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    temporary_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(temporary_manifest_path, manifest_path)
     return {
         "vector": vector_path.name,
@@ -295,7 +268,7 @@ def execute(arguments: argparse.Namespace) -> dict[str, object]:
 
 
 def main(command_arguments: Sequence[str] | None = None) -> int:
-    """Runs the CLI and emits one bounded machine-readable summary."""
+    """Runs the CLI and prints the JSON summary."""
 
     arguments = create_argument_parser().parse_args(command_arguments)
     try:

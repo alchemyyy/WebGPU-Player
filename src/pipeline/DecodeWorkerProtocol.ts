@@ -41,8 +41,7 @@ import { isSupportedCustomAudioSampleRate } from '../audio/CustomAudioSampleRate
 import { isDolbyVisionDualLayerProfile } from '../video/dolby-vision/DolbyVisionProfiles';
 
 export const MAX_DECODED_FRAME_CREDITS = 4;
-export const MAX_DECODED_RAW_FRAME_CREDITS =
-    MAXIMUM_OUTSTANDING_RAW_FRAME_TRANSFER_COUNT;
+export const MAX_DECODED_RAW_FRAME_CREDITS = MAXIMUM_OUTSTANDING_RAW_FRAME_TRANSFER_COUNT;
 export const MAX_DECODED_AUDIO_SAMPLE_CREDITS = 8;
 export const MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE = 65_536;
 export const MAX_DECODED_AUDIO_CHANNELS = 32;
@@ -146,7 +145,7 @@ export type DecodeWorkerStartRequest = {
     audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
     /** Applies user channel and output gains after selecting the downmix matrix. */
     audioDownmixSettings?: AudioDownmixSettings
-    /** Defaults to decoded-pcm for compatibility with existing session callers. */
+    /** Defaults to decoded-pcm. */
     audioOutputMode?: CustomDecodeAudioOutputMode
     audioSampleCredits: number
     /** Zero-based ordinal within input.getAudioTracks(), not a Jellyfin stream index. */
@@ -223,8 +222,8 @@ export type DecodeWorkerSuspendVideoRequest = {
 };
 
 /**
- * Restarts only decoded PCM audio at a target with a new output layout while
- * video continues. The output stage is rebuilt; demux and video are untouched.
+ * Restarts only decoded PCM audio at a target with a new output layout while video continues.
+ * The output stage is rebuilt; demux and video are untouched.
  */
 export type DecodeWorkerResyncAudioRequest = {
     audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
@@ -383,7 +382,7 @@ export type DecodeWorkerAudioEndedResponse = {
     type: 'audio-ended'
 };
 
-/** Reports the format the audio decoder actually produces, which can differ from the declared one. */
+/** Reports the format the audio decoder produces, which can differ from the declared one. */
 export type DecodeWorkerAudioSourceFormatResponse = {
     audioEpoch: number
     channelCount: number
@@ -420,15 +419,11 @@ function isMicroseconds(value: unknown): value is Microseconds {
 }
 
 function isFrameCredit(value: unknown): value is number {
-    return Number.isSafeInteger(value)
-        && Number(value) > 0
-        && Number(value) <= MAX_DECODED_FRAME_CREDITS;
+    return Number.isSafeInteger(value) && Number(value) > 0 && Number(value) <= MAX_DECODED_FRAME_CREDITS;
 }
 
 function isAudioSampleCredit(value: unknown, allowZero: boolean): value is number {
-    return Number.isSafeInteger(value)
-        && Number(value) >= (allowZero ? 0 : 1)
-        && Number(value) <= MAX_DECODED_AUDIO_SAMPLE_CREDITS;
+    return Number.isSafeInteger(value) && Number(value) >= (allowZero ? 0 : 1) && Number(value) <= MAX_DECODED_AUDIO_SAMPLE_CREDITS;
 }
 
 function isPositiveInteger(value: unknown): value is number {
@@ -436,13 +431,11 @@ function isPositiveInteger(value: unknown): value is number {
 }
 
 function isVideoEpoch(value: unknown, allowInitialEpoch: boolean): value is number {
-    return Number.isSafeInteger(value)
-        && Number(value) >= (allowInitialEpoch ? 0 : 1);
+    return Number.isSafeInteger(value) && Number(value) >= (allowInitialEpoch ? 0 : 1);
 }
 
 function isAudioEpoch(value: unknown, allowInitialEpoch: boolean): value is number {
-    return Number.isSafeInteger(value)
-        && Number(value) >= (allowInitialEpoch ? 0 : 1);
+    return Number.isSafeInteger(value) && Number(value) >= (allowInitialEpoch ? 0 : 1);
 }
 
 function hasValidOptionalAudioEpoch(value: Record<string, unknown>): boolean {
@@ -450,14 +443,10 @@ function hasValidOptionalAudioEpoch(value: Record<string, unknown>): boolean {
 }
 
 function isVideoStartupProgressPacketCount(value: unknown): value is number {
-    return Number.isSafeInteger(value)
-        && Number(value) >= 0
-        && Number(value) <= MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT;
+    return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT;
 }
 
-function isCustomDecodeWorkerProgressPhase(
-    value: unknown
-): value is CustomDecodeWorkerProgressPhase {
+function isCustomDecodeWorkerProgressPhase(value: unknown): value is CustomDecodeWorkerProgressPhase {
     switch (value) {
         case 'video-decoder-ready':
         case 'video-key-packet-ready':
@@ -482,10 +471,7 @@ function isVideoOutputMode(value: unknown): value is CustomDecodeVideoOutputMode
 }
 
 function isVideoDecoderBackend(value: unknown): value is CustomDecodeVideoDecoderBackend {
-    return value === 'bundled-hevc'
-        || value === 'ffmpeg-mpeg2-vc1'
-        || value === 'native'
-        || value === 'openjpeg';
+    return value === 'bundled-hevc' || value === 'ffmpeg-mpeg2-vc1' || value === 'native' || value === 'openjpeg';
 }
 
 function isNativeHDRTransfer(value: unknown): value is CustomDecodeNativeHDRTransfer {
@@ -496,9 +482,7 @@ function isAudioOutputMode(value: unknown): value is CustomDecodeAudioOutputMode
     return value === 'decoded-pcm' || value === 'native-media';
 }
 
-function isDecodedAudioOutputChannelCount(
-    value: unknown
-): value is CustomAudioOutputChannelCount {
+function isDecodedAudioOutputChannelCount(value: unknown): value is CustomAudioOutputChannelCount {
     return value === 2 || value === 6 || value === 8;
 }
 
@@ -520,8 +504,7 @@ function isValidDecodedAudioOutputSelection(
     hasAudioTrack: boolean
 ): boolean {
     if (audioOutputMode !== 'decoded-pcm' || !hasAudioTrack) {
-        return value.audioDownmixSettings === undefined
-            && value.decodedAudioOutputChannelCount === undefined;
+        return value.audioDownmixSettings === undefined && value.decodedAudioOutputChannelCount === undefined;
     }
     const hasValidOutputChannelCount = value.decodedAudioOutputChannelCount === undefined
         || isDecodedAudioOutputChannelCount(value.decodedAudioOutputChannelCount);
@@ -538,8 +521,7 @@ function isValidAudioDownmixAlgorithmSelection(
     if (audioOutputMode !== 'decoded-pcm' || !hasAudioTrack) {
         return value.audioDownmixAlgorithm === undefined;
     }
-    return value.audioDownmixAlgorithm === undefined
-        || isCustomAudioDownmixAlgorithm(value.audioDownmixAlgorithm);
+    return value.audioDownmixAlgorithm === undefined || isCustomAudioDownmixAlgorithm(value.audioDownmixAlgorithm);
 }
 
 /** Accepts only raw plane formats the worker can copy and the presenter can upload. */
@@ -561,9 +543,7 @@ export function isRawVideoFrameFormat(value: unknown): value is CustomDecodeRawV
 }
 
 function isCodecAssetURL(value: unknown): value is string {
-    if (typeof value !== 'string'
-        || value.length === 0
-        || value.length > MAXIMUM_CODEC_ASSET_URL_LENGTH) {
+    if (typeof value !== 'string' || value.length === 0 || value.length > MAXIMUM_CODEC_ASSET_URL_LENGTH) {
         return false;
     }
     try {
@@ -584,9 +564,7 @@ type RawVideoFormatValidation = {
     planeKinds: readonly RawVideoPlaneDescriptor['kind'][]
 };
 
-function getRawVideoFormatValidation(
-    format: unknown
-): RawVideoFormatValidation | null {
+function getRawVideoFormatValidation(format: unknown): RawVideoFormatValidation | null {
     switch (format) {
         case 'I420':
             return {
@@ -734,17 +712,11 @@ function isRawVideoPlane(
         return false;
     }
     const isChromaPlane = expectedKind !== 'y';
-    const expectedWidth = isChromaPlane ?
-        Math.ceil(codedWidth / validation.chromaWidthDivisor) :
-        codedWidth;
-    const expectedHeight = isChromaPlane ?
-        Math.ceil(codedHeight / validation.chromaHeightDivisor) :
-        codedHeight;
+    const expectedWidth = isChromaPlane ? Math.ceil(codedWidth / validation.chromaWidthDivisor) : codedWidth;
+    const expectedHeight = isChromaPlane ? Math.ceil(codedHeight / validation.chromaHeightDivisor) : codedHeight;
     const expectedBytesPerComponent = validation.bytesPerComponent;
     const expectedComponentsPerTexel = expectedKind === 'uv' ? 2 : 1;
-    const rowByteLength = expectedWidth
-        * expectedBytesPerComponent
-        * expectedComponentsPerTexel;
+    const rowByteLength = expectedWidth * expectedBytesPerComponent * expectedComponentsPerTexel;
     const bytesPerRow = Number(value.bytesPerRow);
     const byteLength = Number(value.byteLength);
     return value.byteOffset === expectedByteOffset
@@ -762,14 +734,10 @@ function isRawVideoPlane(
 
 function isTransferableRawVideoFrame(value: unknown): value is TransferableRawVideoFrame {
     const frameEndOffset = getTransferableRawVideoFrameEndOffset(value, 0);
-    return frameEndOffset !== null
-        && (value as TransferableRawVideoFrame).data.byteLength === frameEndOffset;
+    return frameEndOffset !== null && (value as TransferableRawVideoFrame).data.byteLength === frameEndOffset;
 }
 
-function getTransferableRawVideoFrameEndOffset(
-    value: unknown,
-    expectedStartOffset: number
-): number | null {
+function getTransferableRawVideoFrameEndOffset(value: unknown, expectedStartOffset: number): number | null {
     if (!isRecord(value)) {
         return null;
     }
@@ -813,10 +781,7 @@ function getTransferableRawVideoFrameEndOffset(
         expectedByteOffset += Number((plane as RawVideoPlaneDescriptor).byteLength);
     }
     const frameByteLength = expectedByteOffset - expectedStartOffset;
-    return frameByteLength > 0
-        && expectedByteOffset <= value.data.byteLength ?
-        expectedByteOffset :
-        null;
+    return frameByteLength > 0 && expectedByteOffset <= value.data.byteLength ? expectedByteOffset : null;
 }
 
 function hasValidRawVideoCopyLayout(value: Record<string, unknown>): boolean {
@@ -841,9 +806,7 @@ function hasValidRawVideoCopyLayout(value: Record<string, unknown>): boolean {
 }
 
 /** Returns the raw frame layers one presented frame transfers; dual-layer profiles pair an EL frame. */
-export function getDolbyVisionRawFrameLayerCount(
-    profile: CustomDecodeDolbyVisionProfile
-): number {
+export function getDolbyVisionRawFrameLayerCount(profile: CustomDecodeDolbyVisionProfile): number {
     return isDolbyVisionDualLayerProfile(profile) ?
         RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT :
         RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT;
@@ -853,10 +816,7 @@ export function getDolbyVisionRawFrameLayerCount(
  * Validates an atomic Dolby Vision BL and EL pair in one buffer.
  * The BL takes the route's raw format, and the EL is always 10-bit 4:2:0 whatever the format of its BL.
  */
-function isTransferableRawVideoFramePair(
-    baseFrameValue: unknown,
-    enhancementFrameValue: unknown
-): boolean {
+function isTransferableRawVideoFramePair(baseFrameValue: unknown, enhancementFrameValue: unknown): boolean {
     const baseFrameEndOffset = getTransferableRawVideoFrameEndOffset(baseFrameValue, 0);
     if (baseFrameEndOffset === null) {
         return false;
@@ -872,10 +832,7 @@ function isTransferableRawVideoFramePair(
     const enhancementFrameOffset = Math.ceil(
         baseFrameEndOffset / RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT
     ) * RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT;
-    const enhancementFrameEndOffset = getTransferableRawVideoFrameEndOffset(
-        enhancementFrameValue,
-        enhancementFrameOffset
-    );
+    const enhancementFrameEndOffset = getTransferableRawVideoFrameEndOffset(enhancementFrameValue, enhancementFrameOffset);
     if (enhancementFrameEndOffset === null) {
         return false;
     }
@@ -883,9 +840,7 @@ function isTransferableRawVideoFramePair(
     return enhancementFrame.data === baseFrame.data
         && enhancementFrameEndOffset === baseFrame.data.byteLength
         && enhancementFrame.format === RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT
-        && Math.abs(
-            enhancementFrame.timestampMicroseconds - baseFrame.timestampMicroseconds
-        ) <= 1;
+        && Math.abs(enhancementFrame.timestampMicroseconds - baseFrame.timestampMicroseconds) <= 1;
 }
 
 function isFailureKind(value: unknown): value is CustomDecodeFailureKind {
@@ -951,14 +906,11 @@ function isChannelData(
 
 function hasValidOptionalDolbyVisionMetadata(value: Record<string, unknown>): boolean {
     return value.encodedDolbyVisionMetadata === undefined
-        || isTransferableDolbyVisionEncodedFrameMetadata(
-            value.encodedDolbyVisionMetadata
-        );
+        || isTransferableDolbyVisionEncodedFrameMetadata(value.encodedDolbyVisionMetadata);
 }
 
 function hasValidOptionalHDR10PlusMetadata(value: Record<string, unknown>): boolean {
-    return value.HDR10PlusMetadata === undefined
-        || isHDR10PlusFrameMetadata(value.HDR10PlusMetadata);
+    return value.HDR10PlusMetadata === undefined || isHDR10PlusFrameMetadata(value.HDR10PlusMetadata);
 }
 
 /** Validates a Dolby Vision route profile received across a module or worker boundary. */
@@ -967,15 +919,12 @@ export function isDolbyVisionProfile(value: unknown): value is CustomDecodeDolby
 }
 
 function isVideoResyncRequest(value: Record<string, unknown>): boolean {
-    return isVideoEpoch(value.videoEpoch, false)
-        && isMicroseconds(value.targetTimeMicroseconds);
+    return isVideoEpoch(value.videoEpoch, false) && isMicroseconds(value.targetTimeMicroseconds);
 }
 
 function hasValidOptionalAudioDownmix(value: Record<string, unknown>): boolean {
-    return (value.audioDownmixAlgorithm === undefined
-            || isCustomAudioDownmixAlgorithm(value.audioDownmixAlgorithm))
-        && (value.audioDownmixSettings === undefined
-            || isAudioDownmixSettings(value.audioDownmixSettings));
+    return (value.audioDownmixAlgorithm === undefined || isCustomAudioDownmixAlgorithm(value.audioDownmixAlgorithm))
+        && (value.audioDownmixSettings === undefined || isAudioDownmixSettings(value.audioDownmixSettings));
 }
 
 /** Only a dual-layer route has an EL to discard. */
@@ -987,8 +936,7 @@ function hasValidDiscardedEnhancementLayer(value: Record<string, unknown>): bool
 }
 
 function isAudioPullRequest(value: Record<string, unknown>): boolean {
-    return isAudioSampleCredit(value.audioSampleCredits, false)
-        && hasValidOptionalAudioEpoch(value);
+    return isAudioSampleCredit(value.audioSampleCredits, false) && hasValidOptionalAudioEpoch(value);
 }
 
 function isAudioResyncRequest(value: Record<string, unknown>): boolean {
@@ -1011,17 +959,8 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
             const hasNoAudioTrack = value.audioTrackIndex === null;
             const hasValidAudioCredits = isAudioSampleCredit(value.audioSampleCredits, true);
             const audioOutputMode = value.audioOutputMode ?? 'decoded-pcm';
-            const hasValidDecodedAudioOutput = isValidDecodedAudioOutputSelection(
-                value,
-                audioOutputMode,
-                hasAudioTrack
-            );
-            const hasValidAudioDownmixAlgorithm =
-                isValidAudioDownmixAlgorithmSelection(
-                    value,
-                    audioOutputMode,
-                    hasAudioTrack
-                );
+            const hasValidDecodedAudioOutput = isValidDecodedAudioOutputSelection(value, audioOutputMode, hasAudioTrack);
+            const hasValidAudioDownmixAlgorithm = isValidAudioDownmixAlgorithmSelection(value, audioOutputMode, hasAudioTrack);
             const hasValidVideoOutput = value.videoOutputMode === 'raw-planes' ?
                 isRawVideoFrameFormat(value.rawVideoFrameFormat) :
                 value.videoOutputMode === 'video-frame'
@@ -1032,8 +971,7 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                     && value.dolbyVisionProfile === null
                     && value.neutralizeHDRColorMetadata === false
                     && value.nativeHDRTransfer === null);
-            const hasValidMPEG2VC1Route =
-                value.videoDecoderBackend !== 'ffmpeg-mpeg2-vc1'
+            const hasValidMPEG2VC1Route = value.videoDecoderBackend !== 'ffmpeg-mpeg2-vc1'
                 || (value.videoOutputMode === 'video-frame'
                     && value.rawVideoFrameFormat === null
                     && value.dolbyVisionProfile === null
@@ -1064,8 +1002,7 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                 && hasValidOpenJPEGRoute
                 && hasValidMPEG2VC1Route
                 && isFrameCredit(value.frameCredits)
-                && (value.videoOutputMode !== 'raw-planes'
-                    || value.frameCredits === MAX_DECODED_RAW_FRAME_CREDITS)
+                && (value.videoOutputMode !== 'raw-planes' || value.frameCredits === MAX_DECODED_RAW_FRAME_CREDITS)
                 && (hasAudioTrack || hasNoAudioTrack)
                 && isAudioOutputMode(audioOutputMode)
                 && hasValidDecodedAudioOutput
@@ -1107,15 +1044,11 @@ function isDecodeWorkerFrameResponse(value: Record<string, unknown>): boolean {
     }
     switch (value.outputMode) {
         case 'video-frame':
-            return isRecord(value.frame)
-                && typeof value.frame.close === 'function';
+            return isRecord(value.frame) && typeof value.frame.close === 'function';
         case 'raw-planes': {
             const hasValidFrame = (
                 Object.prototype.hasOwnProperty.call(value, 'enhancementFrame') ?
-                    isTransferableRawVideoFramePair(
-                        value.frame,
-                        value.enhancementFrame
-                    ) :
+                    isTransferableRawVideoFramePair(value.frame, value.enhancementFrame) :
                     isTransferableRawVideoFrame(value.frame)
             );
             if (!hasValidFrame) {
@@ -1123,8 +1056,7 @@ function isDecodeWorkerFrameResponse(value: Record<string, unknown>): boolean {
             }
             const frame = value.frame as TransferableRawVideoFrame;
             return frame.timestampMicroseconds === value.mediaTimeMicroseconds
-                && (frame.durationMicroseconds === null
-                    || frame.durationMicroseconds === value.durationMicroseconds);
+                && (frame.durationMicroseconds === null || frame.durationMicroseconds === value.durationMicroseconds);
         }
         default:
             return false;
@@ -1179,16 +1111,14 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
                 || !isMicroseconds(value.endTimeMicroseconds)) {
                 return false;
             }
-            const durationMicroseconds = Number(value.endTimeMicroseconds)
-                - Number(value.startTimeMicroseconds);
+            const durationMicroseconds = Number(value.endTimeMicroseconds) - Number(value.startTimeMicroseconds);
             return durationMicroseconds > 0
                 && durationMicroseconds <= MAXIMUM_NATIVE_AUDIO_SEGMENT_DURATION_MICROSECONDS;
         }
         case 'progress':
             return isCustomDecodeWorkerProgressPhase(value.phase)
                 && isVideoStartupProgressPacketCount(value.packetCount)
-                && (value.mediaTimeMicroseconds === null
-                    || isMicroseconds(value.mediaTimeMicroseconds));
+                && (value.mediaTimeMicroseconds === null || isMicroseconds(value.mediaTimeMicroseconds));
         case 'ended':
         case 'stopped':
             return true;
@@ -1204,8 +1134,7 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
         case 'video-ended':
             return isVideoEpoch(value.videoEpoch, true);
         case 'video-interrupted':
-            return value.reason === 'decoder-reclaimed'
-                && isVideoEpoch(value.videoEpoch, true);
+            return value.reason === 'decoder-reclaimed' && isVideoEpoch(value.videoEpoch, true);
         default:
             return false;
     }

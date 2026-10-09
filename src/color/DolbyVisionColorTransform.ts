@@ -23,14 +23,10 @@ import type { ColorTriplet } from './ColorPipeline';
 
 const BYTES_PER_PACKED_WORD = Uint32Array.BYTES_PER_ELEMENT;
 const PACKED_WORDS_PER_MMR_VECTOR = 4;
-const DOLBY_VISION_RPU_PACKED_WORD_COUNT =
-    DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH / BYTES_PER_PACKED_WORD;
-const COMPONENT_PIVOT_WORD_OFFSET =
-    DOLBY_VISION_RPU_PACKED_COMPONENT_PIVOT_OFFSET / BYTES_PER_PACKED_WORD;
-const COMPONENT_SEGMENT_WORD_OFFSET =
-    DOLBY_VISION_RPU_PACKED_COMPONENT_SEGMENT_OFFSET / BYTES_PER_PACKED_WORD;
-const COMPONENT_MMR_WORD_OFFSET =
-    DOLBY_VISION_RPU_PACKED_COMPONENT_MMR_OFFSET / BYTES_PER_PACKED_WORD;
+const DOLBY_VISION_RPU_PACKED_WORD_COUNT = DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH / BYTES_PER_PACKED_WORD;
+const COMPONENT_PIVOT_WORD_OFFSET = DOLBY_VISION_RPU_PACKED_COMPONENT_PIVOT_OFFSET / BYTES_PER_PACKED_WORD;
+const COMPONENT_SEGMENT_WORD_OFFSET = DOLBY_VISION_RPU_PACKED_COMPONENT_SEGMENT_OFFSET / BYTES_PER_PACKED_WORD;
+const COMPONENT_MMR_WORD_OFFSET = DOLBY_VISION_RPU_PACKED_COMPONENT_MMR_OFFSET / BYTES_PER_PACKED_WORD;
 const DOLBY_VISION_RPU_FLAGS_WORD_OFFSET = 3;
 const DOLBY_VISION_RPU_FEL_FLAG = 1 << 6;
 
@@ -60,10 +56,7 @@ function readUnsignedInteger(view: DataView, wordOffset: number): number {
     return view.getUint32(wordOffset * BYTES_PER_PACKED_WORD, true);
 }
 
-function multiplyMatrixRows(
-    rows: readonly ColorTriplet[],
-    signal: ColorTriplet
-): ColorTriplet {
+function multiplyMatrixRows(rows: readonly ColorTriplet[], signal: ColorTriplet): ColorTriplet {
     return [
         (rows[0][0] * signal[0]) + (rows[0][1] * signal[1]) + (rows[0][2] * signal[2]),
         (rows[1][0] * signal[0]) + (rows[1][1] * signal[1]) + (rows[1][2] * signal[2]),
@@ -104,10 +97,7 @@ function findSegmentIndex(
 ): number {
     let segmentIndex = 0;
     for (let pivotIndex = 1; pivotIndex < pivotCount - 1; pivotIndex += 1) {
-        const pivot = readFloat(
-            view,
-            componentWordOffset + COMPONENT_PIVOT_WORD_OFFSET + pivotIndex
-        );
+        const pivot = readFloat(view, componentWordOffset + COMPONENT_PIVOT_WORD_OFFSET + pivotIndex);
         if (componentSignal >= pivot) {
             segmentIndex = pivotIndex;
         }
@@ -123,9 +113,7 @@ function evaluatePolynomial(
     const constant = readFloat(view, segmentWordOffset);
     const linearCoefficient = readFloat(view, segmentWordOffset + 1);
     const quadraticCoefficient = readFloat(view, segmentWordOffset + 2);
-    return ((quadraticCoefficient * componentSignal) + linearCoefficient)
-        * componentSignal
-        + constant;
+    return ((quadraticCoefficient * componentSignal) + linearCoefficient) * componentSignal + constant;
 }
 
 function evaluateMMR(
@@ -152,19 +140,15 @@ function evaluateMMR(
         sourceSignal[0] * sourceSignal[1] * sourceSignal[2]
     ];
     let result = readFloat(view, segmentWordOffset);
-    const mmrWordOffset = componentWordOffset
-        + COMPONENT_MMR_WORD_OFFSET
-        + (mmrVectorIndex * PACKED_WORDS_PER_MMR_VECTOR);
+    const mmrWordOffset = componentWordOffset + COMPONENT_MMR_WORD_OFFSET + (mmrVectorIndex * PACKED_WORDS_PER_MMR_VECTOR);
     for (let orderIndex = 0; orderIndex < mmrOrder; orderIndex += 1) {
         const coefficientWordOffset = mmrWordOffset + (orderIndex * 8);
         const exponent = orderIndex + 1;
         for (let signalIndex = 0; signalIndex < 3; signalIndex += 1) {
-            result += readFloat(view, coefficientWordOffset + signalIndex)
-                * Math.pow(sourceSignal[signalIndex], exponent);
+            result += readFloat(view, coefficientWordOffset + signalIndex) * Math.pow(sourceSignal[signalIndex], exponent);
         }
         for (let productIndex = 0; productIndex < 4; productIndex += 1) {
-            result += readFloat(view, coefficientWordOffset + 4 + productIndex)
-                * Math.pow(signalProducts[productIndex], exponent);
+            result += readFloat(view, coefficientWordOffset + 4 + productIndex) * Math.pow(signalProducts[productIndex], exponent);
         }
     }
     return result;
@@ -175,19 +159,11 @@ function reshapeComponent(
     sourceSignal: ColorTriplet,
     componentIndex: number
 ): number {
-    const componentWordOffset = DOLBY_VISION_RPU_COMPONENT_WORD_OFFSET
-        + (componentIndex * DOLBY_VISION_RPU_COMPONENT_WORD_STRIDE);
+    const componentWordOffset = DOLBY_VISION_RPU_COMPONENT_WORD_OFFSET + (componentIndex * DOLBY_VISION_RPU_COMPONENT_WORD_STRIDE);
     const pivotCount = readUnsignedInteger(view, componentWordOffset);
     const componentSignal = clamp(sourceSignal[componentIndex], 0, 1);
-    const segmentIndex = findSegmentIndex(
-        view,
-        componentWordOffset,
-        pivotCount,
-        componentSignal
-    );
-    const segmentWordOffset = componentWordOffset
-        + COMPONENT_SEGMENT_WORD_OFFSET
-        + (segmentIndex * 4);
+    const segmentIndex = findSegmentIndex(view, componentWordOffset, pivotCount, componentSignal);
+    const segmentWordOffset = componentWordOffset + COMPONENT_SEGMENT_WORD_OFFSET + (segmentIndex * 4);
 
     // Each segment carries its own method, so one component may mix polynomial and MMR pieces
     const mmrSegment = readFloat(view, segmentWordOffset + DOLBY_VISION_RPU_SEGMENT_MMR_ORDER_INDEX) > 0;
@@ -195,22 +171,13 @@ function reshapeComponent(
         evaluateMMR(view, componentWordOffset, segmentWordOffset, sourceSignal) :
         evaluatePolynomial(view, segmentWordOffset, componentSignal);
 
-    const lowerPivot = readFloat(
-        view,
-        componentWordOffset + COMPONENT_PIVOT_WORD_OFFSET
-    );
-    const upperPivot = readFloat(
-        view,
-        componentWordOffset + COMPONENT_PIVOT_WORD_OFFSET + pivotCount - 1
-    );
+    const lowerPivot = readFloat(view, componentWordOffset + COMPONENT_PIVOT_WORD_OFFSET);
+    const upperPivot = readFloat(view, componentWordOffset + COMPONENT_PIVOT_WORD_OFFSET + pivotCount - 1);
     return clamp(reshapedSignal, lowerPivot, upperPivot);
 }
 
 /** Applies the libplacebo reshape model to one normalized base-layer signal. */
-export function reshapeDolbyVisionSignal(
-    normalizedBaseSignal: ColorTriplet,
-    packedRPUData: ArrayBuffer
-): ColorTriplet {
+export function reshapeDolbyVisionSignal(normalizedBaseSignal: ColorTriplet, packedRPUData: ArrayBuffer): ColorTriplet {
     decodeDolbyVisionRPUSnapshot(packedRPUData);
     const view = new DataView(packedRPUData);
     const sourceSignal: ColorTriplet = [
@@ -226,18 +193,11 @@ export function reshapeDolbyVisionSignal(
 }
 
 /** Reconstructs one Dolby Vision base signal into encoded BT.2020 PQ RGB. */
-export function reconstructDolbyVisionBT2020PQ(
-    normalizedBaseSignal: ColorTriplet,
-    packedRPUData: ArrayBuffer
-): ColorTriplet {
+export function reconstructDolbyVisionBT2020PQ(normalizedBaseSignal: ColorTriplet, packedRPUData: ArrayBuffer): ColorTriplet {
     const snapshot = decodeDolbyVisionRPUSnapshot(packedRPUData);
     const view = new DataView(packedRPUData);
     const reshapedSignal = reshapeDolbyVisionSignal(normalizedBaseSignal, packedRPUData);
-    return reconstructDolbyVisionReshapedBT2020PQ(
-        reshapedSignal,
-        snapshot.baseLayerBitDepth,
-        view
-    );
+    return reconstructDolbyVisionReshapedBT2020PQ(reshapedSignal, snapshot.baseLayerBitDepth, view);
 }
 
 function reconstructDolbyVisionReshapedBT2020PQ(
@@ -245,8 +205,7 @@ function reconstructDolbyVisionReshapedBT2020PQ(
     baseLayerBitDepth: number,
     view: DataView
 ): ColorTriplet {
-    const codeScale = (2 ** baseLayerBitDepth)
-        / ((2 ** baseLayerBitDepth) - 1);
+    const codeScale = (2 ** baseLayerBitDepth) / ((2 ** baseLayerBitDepth) - 1);
     const nonlinearOffset: ColorTriplet = [
         readFloat(view, DOLBY_VISION_RPU_COLOR_WORD_OFFSET),
         readFloat(view, DOLBY_VISION_RPU_COLOR_WORD_OFFSET + 1),
@@ -285,16 +244,8 @@ export function reconstructDolbyVisionBT2020PQWithEnhancement(
         throw new TypeError('Dolby Vision enhancement reconstruction requires active FEL NLQ');
     }
     const reshapedSignal = reshapeDolbyVisionSignal(normalizedBaseSignal, packedRPUData);
-    const reconstructedSignal = composeDolbyVisionEnhancementSignal(
-        reshapedSignal,
-        normalizedEnhancementSignal,
-        packedRPUData
-    );
-    return reconstructDolbyVisionReshapedBT2020PQ(
-        reconstructedSignal,
-        snapshot.baseLayerBitDepth,
-        new DataView(packedRPUData)
-    );
+    const reconstructedSignal = composeDolbyVisionEnhancementSignal(reshapedSignal, normalizedEnhancementSignal, packedRPUData);
+    return reconstructDolbyVisionReshapedBT2020PQ(reconstructedSignal, snapshot.baseLayerBitDepth, new DataView(packedRPUData));
 }
 
 /** Composes normalized LINEAR_DZ EL residuals into an already reshaped BL signal. */
@@ -310,16 +261,8 @@ export function composeDolbyVisionEnhancementSignal(
     const reconstructedSignal: [number, number, number] = [ 0, 0, 0 ];
     for (let componentIndex = 0; componentIndex < 3; componentIndex += 1) {
         const nlq = snapshot.nlq[componentIndex];
-        const centeredEnhancement = clamp(
-            normalizedEnhancementSignal[componentIndex],
-            0,
-            1
-        ) - nlq.offset;
-        const residual = Math.sign(centeredEnhancement)
-            * (
-                Math.abs(centeredEnhancement) * nlq.deadzoneSlope
-                + nlq.deadzoneThreshold
-            );
+        const centeredEnhancement = clamp(normalizedEnhancementSignal[componentIndex], 0, 1) - nlq.offset;
+        const residual = Math.sign(centeredEnhancement) * (Math.abs(centeredEnhancement) * nlq.deadzoneSlope + nlq.deadzoneThreshold);
         reconstructedSignal[componentIndex] = reshapedSignal[componentIndex] + residual;
     }
     return reconstructedSignal;

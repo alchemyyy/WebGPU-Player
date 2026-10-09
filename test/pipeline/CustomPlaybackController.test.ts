@@ -341,8 +341,10 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
     }
 
     /**
-     * Mirrors the real audio resync: the new layout's bridge is built first, a bridge
-     * failure fails the current generation, and a replaced attempt issues no epoch.
+     * Mirrors the real audio resync:
+     * - the new layout's bridge is built first;
+     * - a bridge failure fails the current generation;
+     * - a replaced attempt issues no epoch.
      */
     public async resyncDecodedAudio(
         options: CustomDecodeAudioResyncOptions
@@ -3284,7 +3286,7 @@ describe('CustomPlaybackController', () => {
         const harness = createControllerHarness(true);
         await startReadyPlayback(harness, true);
         harness.controller.setPageVisibility(false);
-        // A variable frame rate still starts 3.5 s before the clock but still covers it
+        // A 4 s variable-frame-rate still frame starts 3.5 s before the clock yet covers it
         harness.videoDecodeSession.queueFrame(createDecodedFrame(
             millisecondsToMicroseconds(5_500),
             secondsToMicroseconds(4)
@@ -4315,7 +4317,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         harness.setMonotonicTime(secondsToMicroseconds(12));
         await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
             .resolves.toBe(true);
-        // The rebuilt stage reports the active generation exactly like an established output
+        // The rebuilt stage reports the active generation as an established output does
         audioOutput.reconfiguredBridges[0].activate(generation, audioOutput.generation);
         const waitingEventCount = harness.events.filter(event => event.type === 'waiting').length;
 

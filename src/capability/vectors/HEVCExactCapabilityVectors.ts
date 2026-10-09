@@ -5,25 +5,14 @@ import {
     type HEVCExactCapabilityWorkerQualificationRequest
 } from '../exact/HEVCExactCapabilityProtocol';
 
-// Regeneration recipe using FFmpeg git-862338fe31 and x265 4.1+225-1b48507eb
-// PowerShell: $common = 'high-tier=0:keyint=30:min-keyint=1:scenecut=0:bframes=0:' +
-// 'repeat-headers=1:annexb=1:info=0:pools=1:frame-threads=1:wpp=0'
-// ffmpeg -f lavfi -i "color=c=black:s=1920x1080:r=1" -frames:v 1 -pix_fmt yuv420p `
-// -c:v libx265 -profile:v main -preset ultrafast -x265-params "level-idc=4.0:$common" `
-// -f hevc -y hevc-main-1080p.hevc
-// ffmpeg -f lavfi -i "color=c=black:s=1920x1080:r=1" -frames:v 1 -pix_fmt yuv420p10le `
-// -c:v libx265 -profile:v main10 -preset ultrafast -x265-params "level-idc=4.0:$common" `
-// -f hevc -y hevc-main10-1080p.hevc
-// ffmpeg -f lavfi -i "color=c=black:s=3840x2160:r=1" -frames:v 1 -pix_fmt yuv420p10le `
-// -c:v libx265 -profile:v main10 -preset ultrafast -x265-params "level-idc=5.1:$common" `
-// -f hevc -y hevc-main10-4k.hevc
-// PowerShell: $qualification = 'high-tier=0:keyint=2:min-keyint=2:scenecut=0:' +
-// 'bframes=0:open-gop=0:repeat-headers=1:annexb=1:info=0:pools=1:' +
-// 'frame-threads=1:wpp=0'
-// The two 1080p qualification bitstreams use $qualification with
-// -i "smptebars=s=1920x1080:r=30:d=0.267,scroll=h=0.01" -frames:v 8 and the matching commands above
-// The 4K qualification bitstream, src/capability/vectors/qualification/hevc/main10-4k-complex.hevc,
-// uses $common with -i "testsrc2=s=3840x2160:r=30:d=0.267" -frames:v 8 and the 4K command above
+// Regeneration recipe in PowerShell, using FFmpeg git-862338fe31 and x265 4.1+225-1b48507eb:
+// $common = 'high-tier=0:keyint=30:min-keyint=1:scenecut=0:bframes=0:repeat-headers=1:annexb=1:info=0:pools=1:frame-threads=1:wpp=0'
+// ffmpeg -f lavfi -i "color=c=black:s=1920x1080:r=1" -frames:v 1 -pix_fmt yuv420p -c:v libx265 -profile:v main -preset ultrafast -x265-params "level-idc=4.0:$common" -f hevc -y hevc-main-1080p.hevc
+// ffmpeg -f lavfi -i "color=c=black:s=1920x1080:r=1" -frames:v 1 -pix_fmt yuv420p10le -c:v libx265 -profile:v main10 -preset ultrafast -x265-params "level-idc=4.0:$common" -f hevc -y hevc-main10-1080p.hevc
+// ffmpeg -f lavfi -i "color=c=black:s=3840x2160:r=1" -frames:v 1 -pix_fmt yuv420p10le -c:v libx265 -profile:v main10 -preset ultrafast -x265-params "level-idc=5.1:$common" -f hevc -y hevc-main10-4k.hevc
+// $qualification = 'high-tier=0:keyint=2:min-keyint=2:scenecut=0:bframes=0:open-gop=0:repeat-headers=1:annexb=1:info=0:pools=1:frame-threads=1:wpp=0'
+// The two 1080p qualification bitstreams use $qualification with -i "smptebars=s=1920x1080:r=30:d=0.267,scroll=h=0.01" -frames:v 8 and the matching commands above.
+// The 4K qualification bitstream, src/capability/vectors/qualification/hevc/main10-4k-complex.hevc, uses $common with -i "testsrc2=s=3840x2160:r=30:d=0.267" -frames:v 8 and the 4K command above
 const MAIN_1080P_ACCESS_UNIT_BASE64 =
     'AAAAAUABDAH//wFgAAADAJAAAAMAAAMAeLoCQAAAAAFCAQEBYAAAAwCQAAADAAADAHigA8CAEQfLlukpMLwFoCAAAAMAIAAAAwAhAAAAAUQBwHPAiQAAASgBrE7XH//13pyv34XE/MjdwAAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwCugA==';
 const MAIN10_1080P_ACCESS_UNIT_BASE64 =

@@ -3,12 +3,11 @@
 # Needs GNU Make, Git, a POSIX shell (Git Bash on Windows), Node.js, Emscripten 4.0.13, and cargo.
 # Activate the pinned emsdk first, or pass EMSDK=/path/to/emsdk.
 #
-#   make -C wasm sources      Fetch the pinned FFmpeg and dcadec submodules
-#   make -C wasm all          Build every decoder into bin/wasm, which is ignored like the rest of bin
-#   make -C wasm check        Rebuild every decoder and compare it with the existing bin/wasm
-#   make -C wasm <kit>        Rebuild one of: $(KITS)
-#   make -C wasm source-archives
-#                               Write the corresponding-source tarballs for a release
+#   make -C wasm sources            Fetch the pinned FFmpeg and dcadec submodules
+#   make -C wasm all                Build every decoder into bin/wasm, which is ignored like the rest of bin
+#   make -C wasm check              Rebuild every decoder and compare it with the existing bin/wasm
+#   make -C wasm <kit>              Rebuild one of: $(KITS)
+#   make -C wasm source-archives    Write the corresponding-source tarballs for a release
 
 SHELL := /bin/sh
 .SUFFIXES:

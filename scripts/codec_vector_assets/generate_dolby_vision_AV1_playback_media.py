@@ -81,25 +81,16 @@ def parse_duration_seconds(value: str) -> int:
 
     duration_seconds = int(value)
     if duration_seconds < MINIMUM_DURATION_SECONDS or duration_seconds > MAXIMUM_DURATION_SECONDS:
-        raise argparse.ArgumentTypeError(
-            f"must be from {MINIMUM_DURATION_SECONDS} through {MAXIMUM_DURATION_SECONDS}"
-        )
+        raise argparse.ArgumentTypeError(f"must be from {MINIMUM_DURATION_SECONDS} through {MAXIMUM_DURATION_SECONDS}")
     return duration_seconds
 
 
 def create_argument_parser() -> argparse.ArgumentParser:
-    """Creates the playback media CLI."""
-
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--ffmpeg", metavar="path", help="FFmpeg executable; defaults to ffmpeg on PATH")
     parser.add_argument("--ffprobe", metavar="path", help="FFprobe executable; defaults to ffprobe on PATH")
     parser.add_argument("--output-directory", default=str(DEFAULT_OUTPUT_DIRECTORY))
-    parser.add_argument(
-        "--sub-profiles",
-        nargs="+",
-        choices=tuple(SUB_PROFILES_BY_NAME),
-        default=list(SUB_PROFILES_BY_NAME),
-    )
+    parser.add_argument("--sub-profiles", nargs="+", choices=tuple(SUB_PROFILES_BY_NAME), default=list(SUB_PROFILES_BY_NAME))
     parser.add_argument("--frame-rate", choices=tuple(FRAME_RATES), default=DEFAULT_FRAME_RATE_NAME)
     parser.add_argument("--duration-seconds", type=parse_duration_seconds, default=DEFAULT_DURATION_SECONDS)
     parser.add_argument("--overwrite", action="store_true")
@@ -107,8 +98,6 @@ def create_argument_parser() -> argparse.ArgumentParser:
 
 
 def create_media_file_name(sub_profile: SubProfile, frame_rate_name: str, container_format: str) -> str:
-    """Returns the file name of one playback file."""
-
     return (
         f"dolby-vision-profile{sub_profile.name}-av1-{MEDIA_RESOLUTION_NAME}{frame_rate_name}-aac."
         f"{FILE_EXTENSION_BY_FORMAT[container_format]}"
