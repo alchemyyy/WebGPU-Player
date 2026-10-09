@@ -56,10 +56,22 @@
     align-items: flex-end;
 }
 
-/* Only the hit area grows: the arrow stays where stock mdBook draws it, centered in a 90px column at the outer edge */
+/* Only the hit area grows: the arrow and the hover highlight stay where stock mdBook draws them, in a full-height 90px column at the outer edge */
 .nav-chapters > .fa-svg {
+    display: flex;
+    align-items: center;
+    justify-content: center;
     width: 90px;
     max-width: 100%;
+    height: 100%;
+}
+
+.nav-chapters:hover {
+    background-color: transparent;
+}
+
+.nav-chapters:hover > .fa-svg {
+    background-color: var(--theme-hover);
 }
 
 [dir=rtl] .nav-chapters.next {
