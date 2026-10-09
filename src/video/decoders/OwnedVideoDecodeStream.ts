@@ -2,6 +2,7 @@ import type { EncodedPacket, VideoSample } from 'mediabunny';
 
 import type { Microseconds } from '../../MediaTime';
 import { requireMicroseconds } from '../../TimeMath';
+import { recordTimingWait, startTimingWait } from '../../TimingTrace';
 import DolbyVisionFramePairQueue, {
     MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH
 } from '../dolby-vision/DolbyVisionFramePairQueue';
@@ -451,6 +452,19 @@ function isOwnedVideoDecoderBackpressured(
         && enhancementDecoder.getDecodeQueueSize() >= OWNED_VIDEO_DECODE_QUEUE_HIGH_WATER_MARK;
 }
 
+/** Reads the next packet, recording the wait as a `video-read` when a timing trace runs. */
+export async function readNextVideoPacket(packetIterator: OwnedVideoPacketIterator): Promise<IteratorResult<EncodedPacket>> {
+    const readStartedAt = startTimingWait();
+    const packetResult = await packetIterator.next();
+    if (readStartedAt !== null) {
+        recordTimingWait('video-read', readStartedAt, {
+            mediaTimeMicroseconds: packetResult.done ? null : packetResult.value.microsecondTimestamp,
+            source: 'packet'
+        });
+    }
+    return packetResult;
+}
+
 /**
  * Pumps one owned attempt until it stops or every frame is posted.
  * Ready frames are posted first.
@@ -488,7 +502,7 @@ export async function pumpOwnedVideoFrames(
             return;
         }
 
-        const packetResult = await packetIterator.next();
+        const packetResult = await readNextVideoPacket(packetIterator);
         if (stream.isStopped()) {
             return;
         }

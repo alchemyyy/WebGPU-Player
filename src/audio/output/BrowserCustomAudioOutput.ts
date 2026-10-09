@@ -38,13 +38,36 @@ import type {
 import type { DecodeWorkerAudioConfiguration } from '../../pipeline/DecodeWorkerProtocol';
 import { configureCustomAudioDestination } from '../NativeMultichannelAudioOutput';
 import { requireMicroseconds } from '../../TimeMath';
+import { isTimingTraceActive, recordTimingEvent, roundTimingMilliseconds } from '../../TimingTrace';
 
 const MAX_BUFFERED_AUDIO_SECONDS = CUSTOM_AUDIO_OUTPUT_BUFFERED_SECONDS;
 const MAX_OUTPUT_TIMESTAMP_CORRECTION_MICROSECONDS = secondsToMicroseconds(MAX_BUFFERED_AUDIO_SECONDS);
+const MILLISECONDS_PER_SECOND = 1_000;
 
 type AudioContextWithSinkInfo = AudioContext & {
     readonly sinkId?: string | Readonly<{ type: string }>
 };
+
+/** How the last mapped worklet report met the output clock, kept for the timing trace */
+type OutputClockCorrelation = Readonly<{
+    /** Correlated: corrected to the audible point; rendered-point: reported late, so its rendered point is kept */
+    correlation: 'correlated' | 'rendered-point' | 'uncorrelated'
+    outputContextTimeMicroseconds: number | null
+    /** How long before the mapping the browser's output timestamp was taken */
+    outputTimestampAgeMilliseconds: number | null
+}>;
+
+const UNCORRELATED_OUTPUT_CLOCK: OutputClockCorrelation = Object.freeze({
+    correlation: 'uncorrelated',
+    outputContextTimeMicroseconds: null,
+    outputTimestampAgeMilliseconds: null
+});
+
+function secondsToTimingMilliseconds(seconds: unknown): number | null {
+    return typeof seconds === 'number' && Number.isFinite(seconds) ?
+        roundTimingMilliseconds(seconds * MILLISECONDS_PER_SECOND) :
+        null;
+}
 
 function acquireWorkletOutput(
     audioContext: AudioContext,
@@ -72,6 +95,7 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
     private readonly audioContext: AudioContext;
     private destroyed = false;
     private destroyPromise: Promise<void> | null = null;
+    private lastOutputClockCorrelation: OutputClockCorrelation = UNCORRELATED_OUTPUT_CLOCK;
     private mediaFloorGeneration: number | null = null;
     private mediaFloorMicroseconds: Microseconds | null = null;
     private muted = false;
@@ -321,12 +345,34 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
 
         this.observeTelemetryState(telemetry);
         const mappedTelemetry = this.mapOutputTelemetry(telemetry);
+        if (isTimingTraceActive()) {
+            this.recordOutputClockTiming(telemetry, mappedTelemetry);
+        }
         for (const listener of this.telemetryListeners) {
             listener({ ...mappedTelemetry });
         }
     };
 
+    /** Records one report's mapping onto the physical output clock, with the values the mapping used. */
+    private recordOutputClockTiming(telemetry: AudioWorkletTelemetry, mappedTelemetry: AudioWorkletTelemetry): void {
+        const correlation = this.lastOutputClockCorrelation;
+        recordTimingEvent('audio-clock', {
+            baseLatencyMilliseconds: secondsToTimingMilliseconds(this.audioContext.baseLatency),
+            contextTimeMilliseconds: secondsToTimingMilliseconds(this.audioContext.currentTime),
+            correlation: correlation.correlation,
+            mappedMediaTimeMicroseconds: mappedTelemetry.mediaTimeMicroseconds,
+            outputContextTimeMicroseconds: correlation.outputContextTimeMicroseconds,
+            outputLatencyMilliseconds: secondsToTimingMilliseconds(this.audioContext.outputLatency),
+            outputTimestampAgeMilliseconds: correlation.outputTimestampAgeMilliseconds,
+            queuedFrames: telemetry.queuedFrames,
+            reason: telemetry.reason,
+            renderedContextTimeMicroseconds: telemetry.mediaTimeContextTimeMicroseconds,
+            renderedMediaTimeMicroseconds: telemetry.mediaTimeMicroseconds
+        });
+    }
+
     private mapOutputTelemetry(telemetry: AudioWorkletTelemetry): AudioWorkletTelemetry {
+        this.lastOutputClockCorrelation = UNCORRELATED_OUTPUT_CLOCK;
         const fallbackTelemetry = this.createFallbackTelemetry(telemetry);
         const mediaContextTimeMicroseconds = telemetry.mediaTimeContextTimeMicroseconds;
         if (mediaContextTimeMicroseconds === null
@@ -368,12 +414,18 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
         } catch {
             return fallbackTelemetry;
         }
+        this.lastOutputClockCorrelation = {
+            correlation: 'uncorrelated',
+            outputContextTimeMicroseconds,
+            outputTimestampAgeMilliseconds: roundTimingMilliseconds(performance.now() - outputPerformanceTimeMilliseconds)
+        };
         if (outputContextTimeMicroseconds > currentContextTimeMicroseconds) {
             return fallbackTelemetry;
         }
 
         const correctionMicroseconds = mediaContextTimeMicroseconds - outputContextTimeMicroseconds;
         if (correctionMicroseconds <= 0) {
+            this.lastOutputClockCorrelation = { ...this.lastOutputClockCorrelation, correlation: 'rendered-point' };
             // The latest rendered media point is the safe forward bound
             this.physicalCorrelationGeneration = telemetry.generation;
             return this.clampTelemetryToMediaFloor({
@@ -395,6 +447,7 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
         } catch {
             return fallbackTelemetry;
         }
+        this.lastOutputClockCorrelation = { ...this.lastOutputClockCorrelation, correlation: 'correlated' };
         this.physicalCorrelationGeneration = telemetry.generation;
         return this.clampTelemetryToMediaFloor({
             ...telemetry,

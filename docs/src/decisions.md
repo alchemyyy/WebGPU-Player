@@ -248,6 +248,12 @@ These were settled on Firefox 157 on Windows.
 - Presenter geometry (08-07).
   Layout is invalidated on seek, resize, style and class mutations, and CSS motion events.
   Nothing reads layout per frame during an animation.
+- Timing trace and presentation counters (10-09).
+  Video that crawled and caught up in waves showed no dropped frames, because a frame shown late is not dropped and a clock re-anchor is not counted.
+  The telemetry now counts frames shown later than their own duration while playing, the worst lag, and clock re-anchors of 16 ms or more with the largest jump, and hosts report stale discards beside skipped frames.
+  `TimingTrace.ts` records render ticks, clock syncs, frame arrivals and outputs, frame credit and read waits, fetches, GPU completion, audio clock mappings, and long tasks, but only while a host runs a trace.
+  Without one, each hook costs a null check and allocates nothing.
+  Worker events carry epoch times, `performance.timeOrigin` plus `performance.now()`, and reach the page on their own `timing-trace` message, which is merged even from a replaced generation because it explains the moments before the replacement.
 
 ## Audio
 

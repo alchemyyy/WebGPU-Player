@@ -2,6 +2,11 @@ import type { VideoCodec } from 'mediabunny';
 
 import type { Microseconds } from '../MediaTime';
 import {
+    isWorkerTimingTraceEvent,
+    MAXIMUM_TIMING_TRACE_EVENTS_PER_MESSAGE,
+    type WorkerTimingTraceEvent
+} from '../TimingTrace';
+import {
     isTransferableDolbyVisionEncodedFrameMetadata,
     type TransferableDolbyVisionEncodedFrameMetadata
 } from '../video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
@@ -166,6 +171,8 @@ export type DecodeWorkerStartRequest = {
     /** Asks for the container's duration in the ready response, because the server reported none */
     reportContainerDuration?: boolean
     startTimeMicroseconds: Microseconds
+    /** Asks the worker to send its timing events, because the page records a timing trace */
+    timingTrace?: boolean
     type: 'start'
     url: string
     videoDecoderBackend: CustomDecodeVideoDecoderBackend
@@ -391,6 +398,13 @@ export type DecodeWorkerAudioSourceFormatResponse = {
     type: 'audio-source-format'
 };
 
+/** Carries a batch of the worker's timing trace events. */
+export type DecodeWorkerTimingTraceResponse = {
+    events: readonly WorkerTimingTraceEvent[]
+    generation: number
+    type: 'timing-trace'
+};
+
 export type DecodeWorkerResponse =
     | DecodeWorkerAudioEndedResponse
     | DecodeWorkerAudioSourceFormatResponse
@@ -403,6 +417,7 @@ export type DecodeWorkerResponse =
     | DecodeWorkerProgressResponse
     | DecodeWorkerReadyResponse
     | DecodeWorkerStoppedResponse
+    | DecodeWorkerTimingTraceResponse
     | DecodeWorkerVideoEndedResponse
     | DecodeWorkerVideoInterruptedResponse;
 
@@ -980,6 +995,7 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
             return typeof value.url === 'string'
                 && value.url.length > 0
                 && isOptionalBoolean(value.reportContainerDuration)
+                && isOptionalBoolean(value.timingTrace)
                 && isDolbyVisionProfile(value.dolbyVisionProfile)
                 && hasValidDiscardedEnhancementLayer(value)
                 && isCodecAssetURL(value.dolbyVisionRPUParserWASMURL)
@@ -1135,6 +1151,11 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
             return isVideoEpoch(value.videoEpoch, true);
         case 'video-interrupted':
             return value.reason === 'decoder-reclaimed' && isVideoEpoch(value.videoEpoch, true);
+        case 'timing-trace':
+            return Array.isArray(value.events)
+                && value.events.length > 0
+                && value.events.length <= MAXIMUM_TIMING_TRACE_EVENTS_PER_MESSAGE
+                && value.events.every(isWorkerTimingTraceEvent);
         default:
             return false;
     }

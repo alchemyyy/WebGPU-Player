@@ -36,6 +36,7 @@ import {
 import MediaClock from './MediaClock';
 import { hasRawVideoFrameCopyLayout } from '../video/RawVideoFrameCopy';
 import { addMicroseconds, requireMicroseconds } from '../TimeMath';
+import { isTimingTraceActive, recordTimingEvent } from '../TimingTrace';
 import type {
     CustomAudioOutput,
     CustomAudioOutputBinding,
@@ -75,6 +76,8 @@ export const DEFAULT_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS
 export const CUSTOM_PLAYBACK_BACKGROUND_VIDEO_SUSPENSION_DELAY_MICROSECONDS = millisecondsToMicroseconds(10_000);
 // After a hidden period, frames ending further behind the clock are never presented
 export const CUSTOM_PLAYBACK_VIDEO_CATCH_UP_TOLERANCE_MICROSECONDS = millisecondsToMicroseconds(100);
+/** A clock re-anchor of at least one 60 Hz refresh can change which frame is shown, so telemetry counts it as a reset */
+export const CUSTOM_PLAYBACK_CLOCK_RESET_THRESHOLD_MICROSECONDS = millisecondsToMicroseconds(16);
 
 // A live layout switch resumes audio this far ahead, so decode fills it before the clock arrives
 export const CUSTOM_PLAYBACK_AUDIO_OUTPUT_SWITCH_LEAD_MICROSECONDS = millisecondsToMicroseconds(250);
@@ -103,6 +106,15 @@ type PendingStartup = {
 };
 
 type ClockStarvation = 'audio' | 'video';
+
+/** What re-anchored the clock, as the timing trace names it */
+type ClockSynchronizationReason =
+    | 'audio-drain'
+    | 'audio-output'
+    | 'audio-underflow'
+    | 'audio-underflow-recovered'
+    | 'native-audio'
+    | 'video-starvation-recovered';
 
 type DrainedAudioTail = {
     endMediaTimeMicroseconds: Microseconds | null
@@ -433,6 +445,7 @@ export default class CustomPlaybackController {
     private audioTelemetryUnsubscribe: (() => void) | null = null;
     private awaitingPostSeekVideoFrame = false;
     private readonly clock: CustomPlaybackClock;
+    private clockResetCount = 0;
     private clockStarvation: ClockStarvation | null = null;
     private currentGeneration = 0;
     private currentSource: CustomPlaybackPlayOptions | null = null;
@@ -444,9 +457,11 @@ export default class CustomPlaybackController {
     private fallbackGeneration: number | null = null;
     private fallbackReason: CustomPlaybackFallbackReason | null = null;
     private readonly fallbackHook: CustomPlaybackHTMLFallbackHook;
+    private largestClockJumpMicroseconds: Microseconds = ZERO_MICROSECONDS;
     private lastErrorMessage: string | null = null;
     private lastTimeUpdateMonotonicMicroseconds: Microseconds | null = null;
     private lastVideoDecodeLag: CustomPlaybackVideoDecodeLagTelemetry | null = null;
+    private lateFrameCount = 0;
     private readonly monotonicTimeSource: () => Microseconds;
     private readonly maximumVideoDecodeLagMicroseconds: Microseconds;
     private muted = false;
@@ -486,6 +501,7 @@ export default class CustomPlaybackController {
     private waitingForVideoFrame = false;
     private videoStarvationAnchorMediaTimeMicroseconds: Microseconds | null = null;
     private videoStarvationAnchorMonotonicTimeMicroseconds: Microseconds | null = null;
+    private worstFrameLagMicroseconds: Microseconds = ZERO_MICROSECONDS;
 
     public constructor(options: CustomPlaybackControllerOptions = {}) {
         this.eventHandler = options.eventHandler ?? NOOP_EVENT_HANDLER;
@@ -543,7 +559,7 @@ export default class CustomPlaybackController {
             requireMicroseconds(nativeAudioTimeMicroseconds, 'Native audio clock time');
             this.nativeAudioClockGeneration = generation;
             this.nativeAudioClockTimeMicroseconds = nativeAudioTimeMicroseconds;
-            this.clock.synchronize(nativeAudioTimeMicroseconds);
+            this.synchronizeClock(nativeAudioTimeMicroseconds, 'native-audio');
             return nativeAudioTimeMicroseconds;
         }
         // An element that played out a track ending before video leaves the clock to run on
@@ -946,6 +962,43 @@ export default class CustomPlaybackController {
     /** Supplies the renderer with the newest decoded frame for its target time. */
     public takeFrame(targetTimeMicroseconds: Microseconds): DecodedPresentationFrame | null {
         requireMicroseconds(targetTimeMicroseconds, 'Presentation target time');
+        const presentationFrame = this.takeFrameForTarget(targetTimeMicroseconds);
+        this.recordRenderTick(targetTimeMicroseconds, presentationFrame);
+        return presentationFrame;
+    }
+
+    /** Counts a taken frame the clock already carried past its display interval, and records the tick in the timing trace. */
+    private recordRenderTick(
+        targetTimeMicroseconds: Microseconds,
+        presentationFrame: DecodedPresentationFrame | null
+    ): void {
+        const lagMicroseconds = presentationFrame ?
+            targetTimeMicroseconds - presentationFrame.mediaTimeMicroseconds :
+            null;
+        if (presentationFrame && lagMicroseconds !== null && this.state === 'playing') {
+            if (lagMicroseconds > this.worstFrameLagMicroseconds) {
+                this.worstFrameLagMicroseconds = requireMicroseconds(lagMicroseconds, 'Frame lag');
+            }
+            if (presentationFrame.durationMicroseconds > 0 && lagMicroseconds > presentationFrame.durationMicroseconds) {
+                this.lateFrameCount += 1;
+            }
+        }
+        if (!isTimingTraceActive()) {
+            return;
+        }
+        const decodeTelemetry = this.videoDecodeSession.getTelemetry();
+        recordTimingEvent('render-tick', {
+            frameDurationMicroseconds: presentationFrame?.durationMicroseconds ?? null,
+            frameMediaTimeMicroseconds: presentationFrame?.mediaTimeMicroseconds ?? null,
+            lagMicroseconds,
+            pendingFrameCount: decodeTelemetry.pendingFrameCount,
+            queuedFrameCount: decodeTelemetry.queuedFrameCount,
+            state: this.state,
+            targetTimeMicroseconds
+        });
+    }
+
+    private takeFrameForTarget(targetTimeMicroseconds: Microseconds): DecodedPresentationFrame | null {
         const generation = this.activeGeneration;
         if (generation === null
             || (this.state !== 'playing' && this.state !== 'paused')) {
@@ -1159,6 +1212,12 @@ export default class CustomPlaybackController {
             normalizationGain: this.normalizationGain,
             pageHidden: this.pageHidden,
             playCount: this.playCount,
+            presentationTiming: {
+                clockResetCount: this.clockResetCount,
+                largestClockJumpMicroseconds: this.largestClockJumpMicroseconds,
+                lateFrameCount: this.lateFrameCount,
+                worstFrameLagMicroseconds: this.worstFrameLagMicroseconds
+            },
             staleEventCount: this.staleEventCount,
             startupDurationMicroseconds: this.startupDurationMicroseconds,
             state: this.state,
@@ -1207,6 +1266,10 @@ export default class CustomPlaybackController {
         this.startupDurationMicroseconds = null;
         this.lastTimeUpdateMonotonicMicroseconds = null;
         this.discardedStaleVideoFrameCount = 0;
+        this.clockResetCount = 0;
+        this.largestClockJumpMicroseconds = ZERO_MICROSECONDS;
+        this.lateFrameCount = 0;
+        this.worstFrameLagMicroseconds = ZERO_MICROSECONDS;
         this.awaitingPostSeekVideoFrame = phase === 'seeking';
         this.resetDrainAndStarvationState();
         this.playCount += 1;
@@ -1767,7 +1830,7 @@ export default class CustomPlaybackController {
             Math.min(outputTelemetry.mediaTimeMicroseconds, audioEndTimeMicroseconds),
             'Correlated terminal audio time'
         );
-        this.clock.synchronize(correlatedMediaTimeMicroseconds);
+        this.synchronizeClock(correlatedMediaTimeMicroseconds, 'audio-drain');
         if (this.state === 'playing' && this.clock.isPaused) {
             this.clock.resume();
         }
@@ -1794,10 +1857,10 @@ export default class CustomPlaybackController {
             return false;
         }
 
-        this.clock.synchronize(requireMicroseconds(
+        this.synchronizeClock(requireMicroseconds(
             Math.max(this.currentTimeMicroseconds, audioEndTimeMicroseconds),
             'Uncorrelated terminal audio release time'
-        ));
+        ), 'audio-drain');
         this.releaseTerminalAudioTail();
         return true;
     }
@@ -2301,7 +2364,7 @@ export default class CustomPlaybackController {
                     && this.clockStarvation === null
                     && !this.isTerminalAudioTailReleased(generation)
                 ) {
-                    this.clock.synchronize(telemetry.mediaTimeMicroseconds);
+                    this.synchronizeClock(telemetry.mediaTimeMicroseconds, 'audio-output');
                     this.emitTimeUpdateIfDue();
                 }
                 return;
@@ -2336,7 +2399,7 @@ export default class CustomPlaybackController {
 
         const playbackWasWaiting = this.hasActivePlaybackWait();
         if (telemetry.hasPhysicalOutputTimeCorrelation) {
-            this.clock.synchronize(telemetry.mediaTimeMicroseconds);
+            this.synchronizeClock(telemetry.mediaTimeMicroseconds, 'audio-underflow');
         }
         if (!this.clock.isPaused) {
             this.clock.pause();
@@ -2356,7 +2419,7 @@ export default class CustomPlaybackController {
             this.clockStarvation = null;
             if (this.state === 'playing') {
                 if (telemetry.hasPhysicalOutputTimeCorrelation) {
-                    this.clock.synchronize(telemetry.mediaTimeMicroseconds);
+                    this.synchronizeClock(telemetry.mediaTimeMicroseconds, 'audio-underflow-recovered');
                 }
                 this.clock.resume();
                 if (!this.waitingForVideoFrame) {
@@ -2368,7 +2431,7 @@ export default class CustomPlaybackController {
             && this.state === 'playing'
             && this.clockStarvation === null
         ) {
-            this.clock.synchronize(telemetry.mediaTimeMicroseconds);
+            this.synchronizeClock(telemetry.mediaTimeMicroseconds, 'audio-underflow-recovered');
         }
         this.clearPlaybackStarvationIfRecovered();
         this.emitTimeUpdateIfDue();
@@ -2448,6 +2511,11 @@ export default class CustomPlaybackController {
             return true;
         }
 
+        recordTimingEvent('frame-discarded', {
+            mediaTimeMicroseconds: presentationFrame.mediaTimeMicroseconds,
+            reason: 'decode-lag',
+            targetTimeMicroseconds
+        });
         this.handleStaleVideoFrame(generation, videoDecodeLag);
         this.emitTimeUpdateIfDue();
         this.completeEndedPlaybackIfDrained(generation);
@@ -2558,7 +2626,7 @@ export default class CustomPlaybackController {
             && outputTelemetry.mediaTimeMicroseconds < audioEndTimeMicroseconds) {
             // The speakers still play the tail, so they keep the clock
             if (this.state === 'playing' && this.clockStarvation === null) {
-                this.clock.synchronize(outputTelemetry.mediaTimeMicroseconds);
+                this.synchronizeClock(outputTelemetry.mediaTimeMicroseconds, 'audio-drain');
             }
             return false;
         }
@@ -2727,6 +2795,11 @@ export default class CustomPlaybackController {
             return true;
         }
 
+        recordTimingEvent('frame-discarded', {
+            mediaTimeMicroseconds: presentationFrame.mediaTimeMicroseconds,
+            reason: 'catch-up',
+            targetTimeMicroseconds
+        });
         this.discardedStaleVideoFrameCount += 1;
         this.videoFrameMissStartedAtMicroseconds = null;
         // The bounded stall timeout still limits a decoder that cannot catch up
@@ -2750,12 +2823,34 @@ export default class CustomPlaybackController {
         this.videoStarvationAnchorMonotonicTimeMicroseconds = this.readMonotonicTime();
     }
 
+    /** Re-anchors the clock to an external time, counting the jump as a reset when it can change the frame shown. */
+    private synchronizeClock(mediaTimeMicroseconds: Microseconds, reason: ClockSynchronizationReason): void {
+        const previousMediaTimeMicroseconds = this.clock.mediaTimeMicroseconds;
+        this.clock.synchronize(mediaTimeMicroseconds);
+        const jumpMicroseconds = mediaTimeMicroseconds - previousMediaTimeMicroseconds;
+        if (jumpMicroseconds === 0) {
+            return;
+        }
+        const jumpMagnitudeMicroseconds = requireMicroseconds(Math.abs(jumpMicroseconds), 'Clock jump');
+        if (jumpMagnitudeMicroseconds >= CUSTOM_PLAYBACK_CLOCK_RESET_THRESHOLD_MICROSECONDS) {
+            this.clockResetCount += 1;
+        }
+        if (jumpMagnitudeMicroseconds > this.largestClockJumpMicroseconds) {
+            this.largestClockJumpMicroseconds = jumpMagnitudeMicroseconds;
+        }
+        recordTimingEvent('clock-sync', {
+            jumpMicroseconds,
+            mediaTimeMicroseconds,
+            reason
+        });
+    }
+
     private recoverVideoStarvation(presentationFrame: DecodedPresentationFrame): void {
         if (this.clockStarvation !== 'video') {
             return;
         }
 
-        this.clock.synchronize(presentationFrame.mediaTimeMicroseconds);
+        this.synchronizeClock(presentationFrame.mediaTimeMicroseconds, 'video-starvation-recovered');
         this.clockStarvation = null;
         this.videoStarvationAnchorMediaTimeMicroseconds = null;
         this.videoStarvationAnchorMonotonicTimeMicroseconds = null;
@@ -2999,6 +3094,11 @@ export default class CustomPlaybackController {
     }
 
     private emitEvent(event: CustomPlaybackControllerEvent): void {
+        if (event.type === 'waiting') {
+            recordTimingEvent('playback-wait', { reason: event.reason, waiting: true });
+        } else if (event.type === 'playing') {
+            recordTimingEvent('playback-wait', { reason: null, waiting: false });
+        }
         try {
             this.eventHandler(event);
         } catch (error) {

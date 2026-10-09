@@ -29,8 +29,10 @@ import CustomPlaybackController, {
     CUSTOM_PLAYBACK_AUDIO_OUTPUT_SWITCH_LEAD_MICROSECONDS,
     CUSTOM_PLAYBACK_AUDIO_OUTPUT_SWITCH_TIMEOUT_MICROSECONDS,
     CUSTOM_PLAYBACK_BACKGROUND_VIDEO_SUSPENSION_DELAY_MICROSECONDS,
+    CUSTOM_PLAYBACK_CLOCK_RESET_THRESHOLD_MICROSECONDS,
     CUSTOM_PLAYBACK_VIDEO_CATCH_UP_TOLERANCE_MICROSECONDS
 } from 'webgpu-player/pipeline/CustomPlaybackController';
+import { clearTimingTrace, exportTimingTrace, startTimingTrace } from 'webgpu-player/TimingTrace';
 import type {
     CustomAudioOutput,
     CustomAudioOutputBinding,
@@ -4960,5 +4962,109 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         await harness.controller.destroy();
         expect(replacementOutput.outputDeviceListenerCount).toBe(0);
         await expect(seekPromise).resolves.toMatchObject({ status: 'stopped' });
+    });
+});
+
+// Playback starts at media time 5 s when the monotonic clock reads 10 s
+const PRESENTATION_TIMING_TICK_MONOTONIC_TIME = millisecondsToMicroseconds(10_200);
+const PRESENTATION_TIMING_ON_TIME_FRAME_MEDIA_TIME = millisecondsToMicroseconds(5_180);
+const PRESENTATION_TIMING_ON_TIME_LAG = millisecondsToMicroseconds(20);
+const PRESENTATION_TIMING_LATE_TICK_MONOTONIC_TIME = millisecondsToMicroseconds(10_400);
+const PRESENTATION_TIMING_LATE_FRAME_MEDIA_TIME = millisecondsToMicroseconds(5_300);
+const PRESENTATION_TIMING_LATE_FRAME_LAG = millisecondsToMicroseconds(100);
+const CLOCK_SYNC_MONOTONIC_TIME = millisecondsToMicroseconds(10_250);
+// The clock reads 5.25 s; a 10 ms jump stays under the reset threshold and a 60 ms jump back crosses it
+const CLOCK_SMALL_JUMP_MEDIA_TIME = millisecondsToMicroseconds(5_260);
+const CLOCK_SMALL_JUMP = millisecondsToMicroseconds(10);
+const CLOCK_RESET_MEDIA_TIME = millisecondsToMicroseconds(5_200);
+const CLOCK_RESET_JUMP = millisecondsToMicroseconds(60);
+const PRESENTATION_TIMING_SEEK_TIME = secondsToMicroseconds(40);
+
+describe('CustomPlaybackController presentation timing', () => {
+    afterEach(() => {
+        clearTimingTrace();
+    });
+
+    it('counts frames taken after the clock passed their display interval, and the worst lag', async () => {
+        const harness = createControllerHarness(true);
+        await startReadyPlayback(harness, true);
+
+        harness.setMonotonicTime(PRESENTATION_TIMING_TICK_MONOTONIC_TIME);
+        const onTimeFrame = createDecodedFrame(PRESENTATION_TIMING_ON_TIME_FRAME_MEDIA_TIME);
+        harness.videoDecodeSession.queueFrame(onTimeFrame);
+        expect(harness.controller.takeCurrentFrame()).toBe(onTimeFrame);
+        expect(harness.controller.getTelemetry().presentationTiming).toMatchObject({
+            lateFrameCount: 0,
+            worstFrameLagMicroseconds: PRESENTATION_TIMING_ON_TIME_LAG
+        });
+
+        // The frame ends 60 ms before the clock, so its whole display interval has passed
+        harness.setMonotonicTime(PRESENTATION_TIMING_LATE_TICK_MONOTONIC_TIME);
+        const lateFrame = createDecodedFrame(PRESENTATION_TIMING_LATE_FRAME_MEDIA_TIME);
+        harness.videoDecodeSession.queueFrame(lateFrame);
+        expect(harness.controller.takeCurrentFrame()).toBe(lateFrame);
+        expect(harness.controller.getTelemetry().presentationTiming).toMatchObject({
+            lateFrameCount: 1,
+            worstFrameLagMicroseconds: PRESENTATION_TIMING_LATE_FRAME_LAG
+        });
+        await harness.controller.destroy();
+    });
+
+    it('counts clock re-anchors of at least one 60 Hz refresh as resets and clears them for a new generation', async () => {
+        const harness = createControllerHarness(true);
+        await startReadyPlayback(harness, true);
+        harness.setMonotonicTime(CLOCK_SYNC_MONOTONIC_TIME);
+
+        harness.audioOutput?.emitTelemetry(CLOCK_SMALL_JUMP_MEDIA_TIME);
+        expect(harness.controller.getTelemetry().presentationTiming).toEqual({
+            clockResetCount: 0,
+            largestClockJumpMicroseconds: CLOCK_SMALL_JUMP,
+            lateFrameCount: 0,
+            worstFrameLagMicroseconds: 0
+        });
+
+        harness.audioOutput?.emitTelemetry(CLOCK_RESET_MEDIA_TIME);
+        expect(harness.controller.getTelemetry().presentationTiming).toMatchObject({
+            clockResetCount: 1,
+            largestClockJumpMicroseconds: CLOCK_RESET_JUMP
+        });
+        expect(CLOCK_RESET_JUMP).toBeGreaterThanOrEqual(CUSTOM_PLAYBACK_CLOCK_RESET_THRESHOLD_MICROSECONDS);
+
+        const seekPromise = harness.controller.seek(PRESENTATION_TIMING_SEEK_TIME);
+        expect(harness.controller.getTelemetry().presentationTiming).toEqual({
+            clockResetCount: 0,
+            largestClockJumpMicroseconds: 0,
+            lateFrameCount: 0,
+            worstFrameLagMicroseconds: 0
+        });
+        await harness.controller.destroy();
+        await expect(seekPromise).resolves.toMatchObject({ status: 'stopped' });
+    });
+
+    it('records render ticks and clock re-anchors only while a timing trace runs', async () => {
+        const harness = createControllerHarness(true);
+        await startReadyPlayback(harness, true);
+        harness.setMonotonicTime(PRESENTATION_TIMING_TICK_MONOTONIC_TIME);
+        harness.videoDecodeSession.queueFrame(createDecodedFrame(PRESENTATION_TIMING_ON_TIME_FRAME_MEDIA_TIME));
+        harness.controller.takeCurrentFrame();
+        expect(exportTimingTrace()).toBeNull();
+
+        startTimingTrace();
+        harness.setMonotonicTime(PRESENTATION_TIMING_LATE_TICK_MONOTONIC_TIME);
+        harness.videoDecodeSession.queueFrame(createDecodedFrame(PRESENTATION_TIMING_LATE_FRAME_MEDIA_TIME));
+        harness.controller.takeCurrentFrame();
+        harness.audioOutput?.emitTelemetry(CLOCK_RESET_MEDIA_TIME);
+
+        const events = exportTimingTrace()?.events ?? [];
+        expect(events.find(event => event.kind === 'render-tick')?.fields).toMatchObject({
+            frameMediaTimeMicroseconds: PRESENTATION_TIMING_LATE_FRAME_MEDIA_TIME,
+            lagMicroseconds: PRESENTATION_TIMING_LATE_FRAME_LAG,
+            state: 'playing'
+        });
+        expect(events.find(event => event.kind === 'clock-sync')?.fields).toMatchObject({
+            mediaTimeMicroseconds: CLOCK_RESET_MEDIA_TIME,
+            reason: 'audio-output'
+        });
+        await harness.controller.destroy();
     });
 });

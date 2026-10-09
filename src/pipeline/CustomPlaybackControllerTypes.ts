@@ -173,6 +173,18 @@ export type CustomPlaybackVideoDecodeLagTelemetry = {
     targetTimeMicroseconds: Microseconds
 };
 
+/** How the presented video kept to the clock in the current generation. */
+export type CustomPlaybackPresentationTimingTelemetry = {
+    /** Clock re-anchors that moved the clock by at least one 60 Hz refresh */
+    clockResetCount: number
+    /** The largest clock re-anchor, in either direction */
+    largestClockJumpMicroseconds: Microseconds
+    /** Frames taken after the clock had already passed the end of their display interval */
+    lateFrameCount: number
+    /** The largest lag of a taken frame behind the clock */
+    worstFrameLagMicroseconds: Microseconds
+};
+
 export type CustomPlaybackTelemetry = {
     activeGeneration: number | null
     audioBridge: CustomDecodeAudioBridgeTelemetry | null
@@ -192,6 +204,7 @@ export type CustomPlaybackTelemetry = {
     normalizationGain: number
     pageHidden: boolean
     playCount: number
+    presentationTiming: CustomPlaybackPresentationTimingTelemetry
     staleEventCount: number
     startupDurationMicroseconds: Microseconds | null
     state: CustomPlaybackState

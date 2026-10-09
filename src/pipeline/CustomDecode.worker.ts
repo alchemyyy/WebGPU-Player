@@ -20,6 +20,13 @@ import { isDolbyVisionDualLayerProfile } from '../video/dolby-vision/DolbyVision
 import { getAudioSampleWindow } from '../audio/AudioSampleWindow';
 import { settleConcurrentDecodeStreams } from './ConcurrentDecodeStreams';
 import { CUSTOM_DECODE_INPUT_FORMATS } from './CustomDecodeInputFormats';
+import {
+    recordTimingEvent,
+    recordTimingWait,
+    startTimingWait,
+    startWorkerTimingTrace,
+    stopWorkerTimingTrace
+} from '../TimingTrace';
 import { markHandledDecodeFailure, suppressHandledDecodeFailureRejections } from './HandledDecodeFailures';
 import { registerRequiredCustomAudioDecoder } from '../audio/decoders/CustomAudioDecoderRegistration';
 import {
@@ -149,6 +156,7 @@ import {
     getOwnedDecodedVideoTiming,
     OwnedVideoStreamState,
     pumpOwnedVideoFrames,
+    readNextVideoPacket,
     type OwnedDecodedVideoOutput,
     type OwnedDecodedVideoSource,
     type OwnedVideoDecoderCallbacks,
@@ -447,8 +455,15 @@ const validatedRangeFetch: typeof fetch = async (input: RequestInfo | URL, reque
         // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
         new Headers(requestInit?.headers);
     let response: Response;
+    const fetchStartedAt = startTimingWait();
     try {
         response = await fetch(input, requestInit);
+        if (fetchStartedAt !== null) {
+            recordTimingWait('fetch', fetchStartedAt, {
+                range: requestHeaders.get('Range'),
+                status: response.status
+            });
+        }
     } catch (error) {
         const requestURL = input instanceof Request ? input.url : String(input);
         let requestPath = '[media path]';
@@ -491,11 +506,14 @@ function isVideoAttemptStopped(run: DecodeRun): boolean {
 }
 
 async function waitForFrameCredit(run: DecodeRun): Promise<boolean> {
+    // Only a decode loop held back by the page's frame credits records a wait
+    const waitStartedAt = run.frameCredits === 0 ? startTimingWait() : null;
     while (!isVideoAttemptStopped(run) && run.frameCredits === 0) {
         await new Promise<void>(resolve => {
             run.wakeFrameCreditWaiters.push(resolve);
         });
     }
+    recordTimingWait('video-credit-wait', waitStartedAt);
 
     if (isVideoAttemptStopped(run)) {
         return false;
@@ -507,8 +525,9 @@ async function waitForFrameCredit(run: DecodeRun): Promise<boolean> {
 }
 
 /** Counts a posted frame against the credits its video attempt consumed. */
-function recordVideoAttemptFramePosted(run: DecodeRun): void {
+function recordVideoAttemptFramePosted(run: DecodeRun, mediaTimeMicroseconds: Microseconds): void {
     run.videoAttemptPostedFrameCount += 1;
+    recordTimingEvent('video-frame-output', { mediaTimeMicroseconds });
 }
 
 /** Restores credits an unwinding video attempt consumed without posting a frame. */
@@ -1747,7 +1766,7 @@ async function postRawVideoFrame(
     const transferables = getRawVideoFrameTransferList(rawFrame);
     attachHDR10PlusMetadata(response, HDR10PlusMetadata);
     transferables.push(...attachDolbyVisionEncodedMetadata(response, encodedDolbyVisionMetadata));
-    recordVideoAttemptFramePosted(run);
+    recordVideoAttemptFramePosted(run, mediaTimeMicroseconds);
     postResponse(response, transferables);
 }
 
@@ -1844,7 +1863,7 @@ async function postRawVideoFramePair(run: DecodeRun, request: RawVideoFramePairP
     const transferables = getRawVideoFramePairTransferList(rawFramePair);
     attachHDR10PlusMetadata(response, HDR10PlusMetadata);
     transferables.push(...attachDolbyVisionEncodedMetadata(response, encodedDolbyVisionMetadata));
-    recordVideoAttemptFramePosted(run);
+    recordVideoAttemptFramePosted(run, mediaTimeMicroseconds);
     postResponse(response, transferables);
 }
 
@@ -1868,7 +1887,7 @@ function postTransferredVideoFrame(
     attachHDR10PlusMetadata(response, HDR10PlusMetadata);
     const transferables: Transferable[] = [ frame as unknown as Transferable ];
     transferables.push(...attachDolbyVisionEncodedMetadata(response, encodedDolbyVisionMetadata));
-    recordVideoAttemptFramePosted(run);
+    recordVideoAttemptFramePosted(run, mediaTimeMicroseconds);
     postResponse(response, transferables);
 }
 
@@ -2948,7 +2967,7 @@ async function streamJPEG2000Frames(
         run.videoIterator = packetIterator;
         let packetCount = 0;
         while (await waitForFrameCredit(run)) {
-            const packetResult = await packetIterator.next();
+            const packetResult = await readNextVideoPacket(packetIterator);
             if (isVideoAttemptStopped(run) || packetResult.done) {
                 return;
             }
@@ -3088,7 +3107,7 @@ async function streamMPEG2VC1Frames(
 
         let packetCount = 0;
         while (!isVideoAttemptStopped(run)) {
-            const packetResult = await packetIterator.next();
+            const packetResult = await readNextVideoPacket(packetIterator);
             if (isVideoAttemptStopped(run)) {
                 return;
             }
@@ -3166,6 +3185,19 @@ function createMPEG2VC1DecoderConfiguration(
     };
 }
 
+/** Reads the next decoded sample, recording the wait as a `video-read` when a timing trace runs. */
+async function readNextVideoSample(iterator: MediaSampleIterator<VideoSample>): Promise<IteratorResult<VideoSample>> {
+    const readStartedAt = startTimingWait();
+    const iteratorResult = await iterator.next();
+    if (readStartedAt !== null) {
+        recordTimingWait('video-read', readStartedAt, {
+            mediaTimeMicroseconds: iteratorResult.done ? null : secondsToMicroseconds(iteratorResult.value.timestamp),
+            source: 'sample'
+        });
+    }
+    return iteratorResult;
+}
+
 async function streamVideoFrames(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
@@ -3199,7 +3231,7 @@ async function streamVideoFrames(
     run.videoIterator = iterator;
 
     while (await waitForFrameCredit(run)) {
-        const iteratorResult = await iterator.next();
+        const iteratorResult = await readNextVideoSample(iterator);
         if (isVideoAttemptStopped(run)) {
             iteratorResult.value?.close();
             return;
@@ -3776,6 +3808,11 @@ async function streamAudioAttempts(
 
 async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest, { type: 'start' }>): Promise<void> {
     let reportDecodeStreamFailure = false;
+    if (request.timingTrace === true) {
+        startWorkerTimingTrace((events): void => {
+            postResponse({ events, generation: run.generation, type: 'timing-trace' });
+        });
+    }
     try {
         const input = new Input({
             formats: withMatroskaBlockAdditions(CUSTOM_DECODE_INPUT_FORMATS),
@@ -3856,6 +3893,8 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
         if (currentRun === run) {
             currentRun = null;
         }
+        // The page drops a worker's messages once it stops, so its last timing events go first
+        stopWorkerTimingTrace();
         postResponse({ generation: run.generation, type: 'stopped' });
     }
 }

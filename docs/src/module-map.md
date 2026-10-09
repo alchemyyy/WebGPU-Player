@@ -11,6 +11,7 @@ Each source file's tests are at the same relative path under `test/`, and integr
 - `EngineConfiguration.ts`: the feature flags a host can set.
 - `MediaTime.ts`: branded integer microseconds and conversions to Jellyfin ticks.
 - `TimeMath.ts`: safe-integer microsecond math.
+- `TimingTrace.ts`: the opt-in playback timing trace: the page's ring buffer, the decode worker's batches stamped on the shared epoch clock, long tasks, and the JSON export; every hook is one null check until a host starts a trace.
 - `style.scss`: presenter and overlay styles, imported by the host.
 
 ## presentation/
@@ -75,7 +76,7 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 
 ## pipeline/
 
-- `CustomPlaybackController.ts` [main]: lifecycle, generations, the clock, the startup (20 s without progress, 60 s ceiling), stall (10 s), and lag (2 s) policy, the live audio output layout switch, the end-of-stream and ended-track drains, and the fallback disposition.
+- `CustomPlaybackController.ts` [main]: lifecycle, generations, the clock, the startup (20 s without progress, 60 s ceiling), stall (10 s), and lag (2 s) policy, the live audio output layout switch, the end-of-stream and ended-track drains, the presentation timing counters, and the fallback disposition.
 - `CustomPlaybackControllerTypes.ts`: states, events, fallback reasons, and dispositions.
 - `CustomDecodeSession.ts` [main]: one worker per generation, the frame queue, credits, raw buffer recycling, readiness, audio-only resync epochs, the decoded source format, and an ended audio track completing a start, a resync, or a native-media stream.
 - `CustomDecode.worker.ts` [worker]: demux, decoder dispatch, raw copy, Dolby Vision and HDR metadata, the PCM pipeline as restartable audio attempts, fMP4 remux, and credit waits.

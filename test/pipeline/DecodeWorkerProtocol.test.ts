@@ -30,9 +30,13 @@ import {
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 import { parseHEVCHDR10PlusMetadata } from 'webgpu-player/video/hdr/HDR10PlusMetadata';
 
+import { MAXIMUM_TIMING_TRACE_EVENTS_PER_MESSAGE } from 'webgpu-player/TimingTrace';
+
 import { createHDR10PlusHEVCVector } from '../../src/capability/vectors/HDR10PlusVectors';
 
 const DOLBY_VISION_RPU_PARSER_WASM_URL = 'https://example.test/libraries/libdovi/dovi-rpu-parser.wasm';
+// Any positive epoch time; worker events carry the shared epoch clock
+const TIMING_TRACE_EVENT_EPOCH_MILLISECONDS = 1_791_000_000_000;
 
 const RAW_TEST_FRAME_CODED_WIDTH = 4;
 const RAW_TEST_FRAME_CODED_HEIGHT = 2;
@@ -317,6 +321,45 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerResponse(readyResponse)).toBe(true);
         expect(isDecodeWorkerResponse({ ...readyResponse, containerDurationMicroseconds: 0 })).toBe(false);
         expect(isDecodeWorkerResponse({ ...readyResponse, containerDurationMicroseconds: -1 })).toBe(false);
+    });
+
+    it('validates the timing trace request and its event batches', () => {
+        const request = {
+            audioSampleCredits: 0,
+            audioTrackIndex: null,
+            dolbyVisionProfile: null,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
+            frameCredits: MAX_DECODED_FRAME_CREDITS,
+            generation: 1,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: null,
+            startTimeMicroseconds: 0,
+            timingTrace: true,
+            type: 'start',
+            url: 'http://localhost/video.mkv',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        } as const;
+        const timingEvent = {
+            epochMilliseconds: TIMING_TRACE_EVENT_EPOCH_MILLISECONDS,
+            fields: { waitMilliseconds: 1 },
+            kind: 'video-credit-wait'
+        } as const;
+        const timingResponse = { events: [ timingEvent ], generation: 1, type: 'timing-trace' } as const;
+
+        expect(isDecodeWorkerRequest(request)).toBe(true);
+        expect(isDecodeWorkerRequest({ ...request, timingTrace: 'yes' })).toBe(false);
+        expect(isDecodeWorkerResponse(timingResponse)).toBe(true);
+        expect(isDecodeWorkerResponse({ ...timingResponse, events: [] })).toBe(false);
+        expect(isDecodeWorkerResponse({ ...timingResponse, events: [ { ...timingEvent, kind: 'unknown-kind' } ] })).toBe(false);
+        expect(isDecodeWorkerResponse({
+            ...timingResponse,
+            events: Array.from({ length: MAXIMUM_TIMING_TRACE_EVENTS_PER_MESSAGE + 1 }, () => timingEvent)
+        })).toBe(false);
     });
 
     it('accepts only the SDR VideoFrame shape for FFmpeg MPEG-2/VC-1 video', () => {

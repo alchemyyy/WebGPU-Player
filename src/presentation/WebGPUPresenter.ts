@@ -1,4 +1,5 @@
 import { isHDRToneMappingEnabled } from '../EngineConfiguration';
+import { recordTimingWait, startTimingWait } from '../TimingTrace';
 
 import {
     microsecondsToMilliseconds,
@@ -2755,7 +2756,9 @@ export default class WebGPUPresenter {
         device: GPUDevice,
         completedHandler: (gpuWorkCompleted: boolean) => void
     ): void {
+        const submittedAtEpochMilliseconds = startTimingWait();
         const notify = (gpuWorkCompleted: boolean): void => {
+            recordTimingWait('gpu-work-done', submittedAtEpochMilliseconds, { completed: gpuWorkCompleted });
             try {
                 completedHandler(gpuWorkCompleted);
             } catch (error) {

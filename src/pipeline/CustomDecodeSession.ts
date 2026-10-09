@@ -1,5 +1,6 @@
 import { createEngineWorker } from '../EngineAssets';
 import type { Microseconds } from '../MediaTime';
+import { ingestWorkerTimingEvents, isTimingTraceActive, recordTimingEvent } from '../TimingTrace';
 import type { DecodedPresentationFrame } from '../presentation/WebGPUPresenter';
 import type CustomDecodeAudioBridge from '../audio/output/CustomDecodeAudioBridge';
 import type CustomDecodeNativeAudioBridge from '../audio/native/CustomDecodeNativeAudioBridge';
@@ -581,6 +582,7 @@ export default class CustomDecodeSession {
                 rawVideoFrameFormat: options.rawVideoFrameFormat,
                 ...(options.durationMicroseconds == null ? { reportContainerDuration: true } : {}),
                 startTimeMicroseconds: options.startTimeMicroseconds,
+                ...(isTimingTraceActive() ? { timingTrace: true } : {}),
                 type: 'start',
                 url: options.url,
                 videoDecoderBackend: options.videoDecoderBackend,
@@ -733,6 +735,10 @@ export default class CustomDecodeSession {
         this.telemetry.droppedFrameCount += consumedFrames.length;
         for (let frameIndex = 0; frameIndex < consumedFrames.length; frameIndex += 1) {
             const droppedFrame = consumedFrames[frameIndex];
+            recordTimingEvent('frame-dropped', {
+                mediaTimeMicroseconds: droppedFrame.presentationFrame.mediaTimeMicroseconds,
+                targetTimeMicroseconds
+            });
             if (droppedFrame.presentationFrame.outputMode === 'video-frame') {
                 closePresentationFrame(droppedFrame.presentationFrame);
                 continue;
@@ -1054,6 +1060,11 @@ export default class CustomDecodeSession {
 
         if (messageValue.type === 'stopped') {
             this.finishWorker(workerRecord);
+            return;
+        }
+        // A replaced worker's timing still explains the moments before its replacement
+        if (messageValue.type === 'timing-trace') {
+            ingestWorkerTimingEvents(messageValue.events);
             return;
         }
 
@@ -1642,6 +1653,12 @@ export default class CustomDecodeSession {
         this.telemetry.queuedFrameCount = this.queuedFrames.length;
         this.telemetry.peakFrameCount = Math.max(this.telemetry.peakFrameCount, this.queuedFrames.length + this.pendingFrames.size);
         this.telemetry.receivedFrameCount += 1;
+        recordTimingEvent('frame-arrived', {
+            durationMicroseconds: presentationFrame.durationMicroseconds,
+            mediaTimeMicroseconds: presentationFrame.mediaTimeMicroseconds,
+            pendingFrameCount: this.pendingFrames.size,
+            queuedFrameCount: this.queuedFrames.length
+        });
         this.recordDolbyVisionMetadata(message);
         this.recordHDR10PlusMetadata(message);
         this.emitReadyEventIfMediaReady(workerRecord);

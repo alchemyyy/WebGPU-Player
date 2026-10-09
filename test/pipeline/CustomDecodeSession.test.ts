@@ -6,6 +6,12 @@ import {
     type Microseconds
 } from 'webgpu-player/MediaTime';
 import { audioFramesToMicroseconds } from 'webgpu-player/TimeMath';
+import {
+    clearTimingTrace,
+    exportTimingTrace,
+    performanceTimeToEpochMilliseconds,
+    startTimingTrace
+} from 'webgpu-player/TimingTrace';
 import type CustomDecodeAudioBridge from 'webgpu-player/audio/output/CustomDecodeAudioBridge';
 import type { CustomAudioOutputChannelCount } from 'webgpu-player/audio/processing/CustomAudioChannelLayout';
 import {
@@ -47,6 +53,7 @@ import { createHDR10PlusHEVCVector } from '../../src/capability/vectors/HDR10Plu
 type MessageHandler = (event: MessageEvent<unknown>) => void;
 type ErrorHandler = (event: ErrorEvent) => void;
 
+const TIMING_TRACE_CREDIT_WAIT_MILLISECONDS = 12.5;
 const ULTRA_HD_8K_CODED_WIDTH = 7_680;
 const ULTRA_HD_8K_CODED_HEIGHT = 4_320;
 const ULTRA_HD_16K_CODED_WIDTH = 15_360;
@@ -580,6 +587,39 @@ describe('CustomDecodeSession', () => {
             videoDecoderBackend: 'bundled-hevc',
             videoOutputMode: 'raw-planes'
         });
+    });
+
+    it('asks workers for timing events while a trace runs and merges them, even from a replaced worker', () => {
+        const replacedWorker = new MockWorker();
+        const tracedWorker = new MockWorker();
+        const workers = [ replacedWorker, tracedWorker ];
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => workers.shift() as unknown as Worker
+        );
+        try {
+            startSession(session, 1);
+            expect(replacedWorker.postedMessages[0]).not.toHaveProperty('timingTrace');
+
+            startTimingTrace();
+            startSession(session, 2);
+            expect(tracedWorker.postedMessages[0]).toMatchObject({ generation: 2, timingTrace: true });
+            replacedWorker.emitMessage({
+                events: [ {
+                    epochMilliseconds: performanceTimeToEpochMilliseconds(performance.now()),
+                    fields: { waitMilliseconds: TIMING_TRACE_CREDIT_WAIT_MILLISECONDS },
+                    kind: 'video-credit-wait'
+                } ],
+                generation: 1,
+                type: 'timing-trace'
+            });
+
+            expect(exportTimingTrace()?.events.map(event => [ event.realm, event.kind, event.fields.waitMilliseconds ])).toEqual([
+                [ 'worker', 'video-credit-wait', TIMING_TRACE_CREDIT_WAIT_MILLISECONDS ]
+            ]);
+        } finally {
+            clearTimingTrace();
+        }
     });
 
     it.each([

@@ -38,7 +38,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-c2130c90.js";
+            window.path_to_searchindex_js = "searchindex-70c28fe2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c0e4fc60.js"></script>
@@ -191,6 +191,7 @@ Each source file’s tests are at the same relative path under <code>test/</code
 <li><code>EngineConfiguration.ts</code>: the feature flags a host can set.</li>
 <li><code>MediaTime.ts</code>: branded integer microseconds and conversions to Jellyfin ticks.</li>
 <li><code>TimeMath.ts</code>: safe-integer microsecond math.</li>
+<li><code>TimingTrace.ts</code>: the opt-in playback timing trace: the page’s ring buffer, the decode worker’s batches stamped on the shared epoch clock, long tasks, and the JSON export; every hook is one null check until a host starts a trace.</li>
 <li><code>style.scss</code>: presenter and overlay styles, imported by the host.</li>
 </ul>
 <h2 id="presentation"><a class="header" href="#presentation">presentation/</a></h2>
@@ -253,7 +254,7 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 </ul>
 <h2 id="pipeline"><a class="header" href="#pipeline">pipeline/</a></h2>
 <ul>
-<li><code>CustomPlaybackController.ts</code> [main]: lifecycle, generations, the clock, the startup (20 s without progress, 60 s ceiling), stall (10 s), and lag (2 s) policy, the live audio output layout switch, the end-of-stream and ended-track drains, and the fallback disposition.</li>
+<li><code>CustomPlaybackController.ts</code> [main]: lifecycle, generations, the clock, the startup (20 s without progress, 60 s ceiling), stall (10 s), and lag (2 s) policy, the live audio output layout switch, the end-of-stream and ended-track drains, the presentation timing counters, and the fallback disposition.</li>
 <li><code>CustomPlaybackControllerTypes.ts</code>: states, events, fallback reasons, and dispositions.</li>
 <li><code>CustomDecodeSession.ts</code> [main]: one worker per generation, the frame queue, credits, raw buffer recycling, readiness, audio-only resync epochs, the decoded source format, and an ended audio track completing a start, a resync, or a native-media stream.</li>
 <li><code>CustomDecode.worker.ts</code> [worker]: demux, decoder dispatch, raw copy, Dolby Vision and HDR metadata, the PCM pipeline as restartable audio attempts, fMP4 remux, and credit waits.</li>

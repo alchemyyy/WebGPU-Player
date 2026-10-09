@@ -38,7 +38,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-c2130c90.js";
+            window.path_to_searchindex_js = "searchindex-70c28fe2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c0e4fc60.js"></script>
@@ -432,6 +432,12 @@ A full seek was rejected because it restarts audio too.</li>
 <li>Presenter geometry (08-07).
 Layout is invalidated on seek, resize, style and class mutations, and CSS motion events.
 Nothing reads layout per frame during an animation.</li>
+<li>Timing trace and presentation counters (10-09).
+Video that crawled and caught up in waves showed no dropped frames, because a frame shown late is not dropped and a clock re-anchor is not counted.
+The telemetry now counts frames shown later than their own duration while playing, the worst lag, and clock re-anchors of 16 ms or more with the largest jump, and hosts report stale discards beside skipped frames.
+<code>TimingTrace.ts</code> records render ticks, clock syncs, frame arrivals and outputs, frame credit and read waits, fetches, GPU completion, audio clock mappings, and long tasks, but only while a host runs a trace.
+Without one, each hook costs a null check and allocates nothing.
+Worker events carry epoch times, <code>performance.timeOrigin</code> plus <code>performance.now()</code>, and reach the page on their own <code>timing-trace</code> message, which is merged even from a replaced generation because it explains the moments before the replacement.</li>
 </ul>
 <h2 id="audio"><a class="header" href="#audio">Audio</a></h2>
 <ul>

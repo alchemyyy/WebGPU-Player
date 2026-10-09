@@ -67,6 +67,16 @@ Check: the engine checks from [Set up a checkout](setup.md), and the host's chec
    - this book.
 3. Rerun the DTS and TrueHD generators, which embed import paths computed from the constants, then run every `--check` and the full engine checks.
 
+## Capture a timing trace
+
+1. Call `startTimingTrace()` from `webgpu-player/TimingTrace` before the play request, so the decode worker the play starts is asked for its events.
+   A worker started before the trace sends none.
+2. Play the passage under investigation.
+3. Call `exportTimingTrace(metadata)` and save the result as JSON.
+   `stopTimingTrace()` stops recording but keeps the events exportable until the next start or `clearTimingTrace()`.
+4. Read the events in time order.
+   `timeMilliseconds` counts from the trace start, `realm` says whether the page or the decode worker recorded it, and `droppedEventCount` is nonzero when the ring buffer overwrote the oldest events.
+
 ## Ship an engine change to the host
 
 Commit the change in the engine repository and push it before the host commits the new submodule pointer, so the host never pins a commit nobody can fetch.

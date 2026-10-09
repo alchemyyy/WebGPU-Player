@@ -39,7 +39,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-c2130c90.js";
+            window.path_to_searchindex_js = "searchindex-70c28fe2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c0e4fc60.js"></script>
@@ -1132,6 +1132,7 @@ Each source file’s tests are at the same relative path under <code>test/</code
 <li><code>EngineConfiguration.ts</code>: the feature flags a host can set.</li>
 <li><code>MediaTime.ts</code>: branded integer microseconds and conversions to Jellyfin ticks.</li>
 <li><code>TimeMath.ts</code>: safe-integer microsecond math.</li>
+<li><code>TimingTrace.ts</code>: the opt-in playback timing trace: the page’s ring buffer, the decode worker’s batches stamped on the shared epoch clock, long tasks, and the JSON export; every hook is one null check until a host starts a trace.</li>
 <li><code>style.scss</code>: presenter and overlay styles, imported by the host.</li>
 </ul>
 <h2 id="presentation"><a class="header" href="#presentation">presentation/</a></h2>
@@ -1194,7 +1195,7 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 </ul>
 <h2 id="pipeline"><a class="header" href="#pipeline">pipeline/</a></h2>
 <ul>
-<li><code>CustomPlaybackController.ts</code> [main]: lifecycle, generations, the clock, the startup (20 s without progress, 60 s ceiling), stall (10 s), and lag (2 s) policy, the live audio output layout switch, the end-of-stream and ended-track drains, and the fallback disposition.</li>
+<li><code>CustomPlaybackController.ts</code> [main]: lifecycle, generations, the clock, the startup (20 s without progress, 60 s ceiling), stall (10 s), and lag (2 s) policy, the live audio output layout switch, the end-of-stream and ended-track drains, the presentation timing counters, and the fallback disposition.</li>
 <li><code>CustomPlaybackControllerTypes.ts</code>: states, events, fallback reasons, and dispositions.</li>
 <li><code>CustomDecodeSession.ts</code> [main]: one worker per generation, the frame queue, credits, raw buffer recycling, readiness, audio-only resync epochs, the decoded source format, and an ended audio track completing a start, a resync, or a native-media stream.</li>
 <li><code>CustomDecode.worker.ts</code> [worker]: demux, decoder dispatch, raw copy, Dolby Vision and HDR metadata, the PCM pipeline as restartable audio attempts, fMP4 remux, and credit waits.</li>
@@ -1881,6 +1882,16 @@ Every reader in <a href="#folder-names-live-in-one-file">Repository layout</a> f
 </li>
 <li>Rerun the DTS and TrueHD generators, which embed import paths computed from the constants, then run every <code>--check</code> and the full engine checks.</li>
 </ol>
+<h2 id="capture-a-timing-trace"><a class="header" href="#capture-a-timing-trace">Capture a timing trace</a></h2>
+<ol>
+<li>Call <code>startTimingTrace()</code> from <code>webgpu-player/TimingTrace</code> before the play request, so the decode worker the play starts is asked for its events.
+A worker started before the trace sends none.</li>
+<li>Play the passage under investigation.</li>
+<li>Call <code>exportTimingTrace(metadata)</code> and save the result as JSON.
+<code>stopTimingTrace()</code> stops recording but keeps the events exportable until the next start or <code>clearTimingTrace()</code>.</li>
+<li>Read the events in time order.
+<code>timeMilliseconds</code> counts from the trace start, <code>realm</code> says whether the page or the decode worker recorded it, and <code>droppedEventCount</code> is nonzero when the ring buffer overwrote the oldest events.</li>
+</ol>
 <h2 id="ship-an-engine-change-to-the-host"><a class="header" href="#ship-an-engine-change-to-the-host">Ship an engine change to the host</a></h2>
 <p>Commit the change in the engine repository and push it before the host commits the new submodule pointer, so the host never pins a commit nobody can fetch.</p>
 <h2 id="update-this-book"><a class="header" href="#update-this-book">Update this book</a></h2>
@@ -2138,6 +2149,12 @@ A full seek was rejected because it restarts audio too.</li>
 <li>Presenter geometry (08-07).
 Layout is invalidated on seek, resize, style and class mutations, and CSS motion events.
 Nothing reads layout per frame during an animation.</li>
+<li>Timing trace and presentation counters (10-09).
+Video that crawled and caught up in waves showed no dropped frames, because a frame shown late is not dropped and a clock re-anchor is not counted.
+The telemetry now counts frames shown later than their own duration while playing, the worst lag, and clock re-anchors of 16 ms or more with the largest jump, and hosts report stale discards beside skipped frames.
+<code>TimingTrace.ts</code> records render ticks, clock syncs, frame arrivals and outputs, frame credit and read waits, fetches, GPU completion, audio clock mappings, and long tasks, but only while a host runs a trace.
+Without one, each hook costs a null check and allocates nothing.
+Worker events carry epoch times, <code>performance.timeOrigin</code> plus <code>performance.now()</code>, and reach the page on their own <code>timing-trace</code> message, which is merged even from a replaced generation because it explains the moments before the replacement.</li>
 </ul>
 <h2 id="audio-2"><a class="header" href="#audio-2">Audio</a></h2>
 <ul>

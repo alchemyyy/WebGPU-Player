@@ -38,7 +38,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-c2130c90.js";
+            window.path_to_searchindex_js = "searchindex-70c28fe2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c0e4fc60.js"></script>
@@ -254,6 +254,16 @@ Every reader in <a href="layout.html#folder-names-live-in-one-file">Repository l
 </ul>
 </li>
 <li>Rerun the DTS and TrueHD generators, which embed import paths computed from the constants, then run every <code>--check</code> and the full engine checks.</li>
+</ol>
+<h2 id="capture-a-timing-trace"><a class="header" href="#capture-a-timing-trace">Capture a timing trace</a></h2>
+<ol>
+<li>Call <code>startTimingTrace()</code> from <code>webgpu-player/TimingTrace</code> before the play request, so the decode worker the play starts is asked for its events.
+A worker started before the trace sends none.</li>
+<li>Play the passage under investigation.</li>
+<li>Call <code>exportTimingTrace(metadata)</code> and save the result as JSON.
+<code>stopTimingTrace()</code> stops recording but keeps the events exportable until the next start or <code>clearTimingTrace()</code>.</li>
+<li>Read the events in time order.
+<code>timeMilliseconds</code> counts from the trace start, <code>realm</code> says whether the page or the decode worker recorded it, and <code>droppedEventCount</code> is nonzero when the ring buffer overwrote the oldest events.</li>
 </ol>
 <h2 id="ship-an-engine-change-to-the-host"><a class="header" href="#ship-an-engine-change-to-the-host">Ship an engine change to the host</a></h2>
 <p>Commit the change in the engine repository and push it before the host commits the new submodule pointer, so the host never pins a commit nobody can fetch.</p>
