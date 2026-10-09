@@ -12,7 +12,9 @@ const EMULATION_PREVENTION_BYTE = 0x03;
 
 const ITU_T_T35_COUNTRY_CODE_UNITED_STATES = 0xB5;
 const ITU_T_T35_PROVIDER_CODE_DOLBY = 0x003B;
+const ITU_T_T35_PROVIDER_CODE_BIT_LENGTH = 16;
 const ITU_T_T35_PROVIDER_ORIENTED_CODE_DOLBY = 0x0000_0800;
+const ITU_T_T35_PROVIDER_ORIENTED_CODE_BIT_LENGTH = 32;
 // emdf_version 0, key_id 6, emdf_payload_id 31, emdf_payload_id_ext 225, four clear flags, and discard_unknown_payload, which FFmpeg reads as one fixed value
 const EMDF_HEADER = 0x01BE_6841;
 const EMDF_HEADER_BIT_LENGTH = 27;
@@ -103,6 +105,36 @@ function writeVariableBits(writer: BitWriter, value: number): void {
     });
 }
 
+/** Writes the country code, when included, then Dolby's provider code and provider-oriented code. */
+function writeDolbyVisionITUTT35Header(writer: BitWriter, includeCountryCode: boolean): void {
+    if (includeCountryCode) {
+        writer.writeBits(ITU_T_T35_COUNTRY_CODE_UNITED_STATES, BITS_PER_BYTE);
+    }
+    writer.writeBits(ITU_T_T35_PROVIDER_CODE_DOLBY, ITU_T_T35_PROVIDER_CODE_BIT_LENGTH);
+    writer.writeBits(ITU_T_T35_PROVIDER_ORIENTED_CODE_DOLBY, ITU_T_T35_PROVIDER_ORIENTED_CODE_BIT_LENGTH);
+}
+
+function createDolbyVisionITUTT35Header(): number[] {
+    const writer = new BitWriter();
+    writeDolbyVisionITUTT35Header(writer, true);
+    return writer.bytes;
+}
+
+function createDolbyVisionITUTT35PayloadPrefix(): number[] {
+    const writer = new BitWriter();
+    writeDolbyVisionITUTT35Header(writer, true);
+    // The EMDF header bits that fill whole bytes; the rest share a byte with the payload size
+    const partialByteBitLength = EMDF_HEADER_BIT_LENGTH % BITS_PER_BYTE;
+    writer.writeBits(Math.floor(EMDF_HEADER / 2 ** partialByteBitLength), EMDF_HEADER_BIT_LENGTH - partialByteBitLength);
+    return writer.bytes;
+}
+
+/** The ITU-T T.35 header of a Dolby Vision metadata OBU payload: the United States country code, then Dolby's provider code and provider-oriented code. */
+export const DOLBY_VISION_ITUT_T35_HEADER: readonly number[] = createDolbyVisionITUTT35Header();
+
+/** The bytes every Dolby Vision T.35 payload starts with: the T.35 header, then the EMDF header bits that fill whole bytes. */
+export const DOLBY_VISION_ITUT_T35_PAYLOAD_PREFIX: readonly number[] = createDolbyVisionITUTT35PayloadPrefix();
+
 /**
  * Wraps one HEVC RPU in the ITU-T T.35 payload of an AV1 Dolby Vision metadata OBU, by default from its country code.
  * The RPU may be framed as an Annex B or UNSPEC62 NAL unit, or start at its 0x19 prefix.
@@ -123,11 +155,7 @@ export function createDolbyVisionAV1ITUTT35Payload(
     const emdfPayload = rpu.slice(1, rpuEnd);
 
     const writer = new BitWriter();
-    if (options.includeCountryCode ?? true) {
-        writer.writeBits(ITU_T_T35_COUNTRY_CODE_UNITED_STATES, BITS_PER_BYTE);
-    }
-    writer.writeBits(ITU_T_T35_PROVIDER_CODE_DOLBY, 16);
-    writer.writeBits(ITU_T_T35_PROVIDER_ORIENTED_CODE_DOLBY, 32);
+    writeDolbyVisionITUTT35Header(writer, options.includeCountryCode ?? true);
     writer.writeBits(EMDF_HEADER, EMDF_HEADER_BIT_LENGTH);
     writeVariableBits(writer, emdfPayload.length);
     for (const value of emdfPayload) {

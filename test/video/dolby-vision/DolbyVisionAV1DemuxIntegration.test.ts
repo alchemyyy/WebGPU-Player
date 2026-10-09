@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { createDolbyVisionAV1ITUTT35Payload } from '../../helpers/dolbyVisionAV1ITUTT35Payload';
+import { createDolbyVisionAV1ITUTT35Payload, DOLBY_VISION_ITUT_T35_HEADER } from '../../helpers/dolbyVisionAV1ITUTT35Payload';
 import { CODEC_VECTOR_ASSETS_DIRECTORY, ENGINE_ROOT, WASM_OUTPUT_DIRECTORY } from '../../helpers/enginePaths';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -86,8 +86,9 @@ const LEB128_CONTINUATION_FLAG = 0x80;
 const LEB128_VALUE_BIT_COUNT = 7;
 // trailing_bits() after a byte-aligned OBU payload
 const OBU_TRAILING_BITS_BYTE = 0x80;
-// metadata_type 4 (ITU-T T.35), the United States country code, then Dolby's provider and oriented codes
-const DOLBY_VISION_METADATA_PREFIX: readonly number[] = [ 0x04, 0xB5, 0x00, 0x3B, 0x00, 0x00, 0x08, 0x00 ];
+const METADATA_TYPE_ITUT_T35 = 4;
+// The ITU-T T.35 metadata_type, then the Dolby Vision T.35 header
+const DOLBY_VISION_METADATA_PREFIX: readonly number[] = [ METADATA_TYPE_ITUT_T35, ...DOLBY_VISION_ITUT_T35_HEADER ];
 
 async function createParser(): Promise<DolbyVisionRPUParser> {
     return DolbyVisionRPUParser.create('local-parser.wasm', {

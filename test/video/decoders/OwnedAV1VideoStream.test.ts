@@ -14,13 +14,13 @@ import type {
 import type { DolbyVisionEncodedFrameMetadata } from 'webgpu-player/video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 
+import { DOLBY_VISION_ITUT_T35_PAYLOAD_PREFIX } from '../../helpers/dolbyVisionAV1ITUTT35Payload';
+
 const OBU_HAS_SIZE_FIELD_FLAG = 0x02;
 const OBU_TYPE_SEQUENCE_HEADER = 1;
 const OBU_TYPE_METADATA = 5;
 const OBU_TYPE_FRAME = 6;
 const METADATA_TYPE_ITUT_T35 = 4;
-// Country code, Dolby's provider code and oriented code, then the start of an EMDF container
-const DOLBY_VISION_T35_HEADER = [ 0xB5, 0x00, 0x3B, 0x00, 0x00, 0x08, 0x00, 0x37, 0xCD, 0x08 ];
 // A power-of-two frame rate keeps every timestamp exact in seconds and in microseconds
 const FRAMES_PER_SECOND = 32;
 const FRAME_DURATION_MICROSECONDS = 31_250 as Microseconds;
@@ -223,7 +223,7 @@ function createTemporalUnit(frameIndex: number, rpuTag: number | null, hasFrame 
     const data = [
         ...(rpuTag === null ?
             [] :
-            createOBU(OBU_TYPE_METADATA, [ METADATA_TYPE_ITUT_T35, ...DOLBY_VISION_T35_HEADER, rpuTag, 0x80 ])),
+            createOBU(OBU_TYPE_METADATA, [ METADATA_TYPE_ITUT_T35, ...DOLBY_VISION_ITUT_T35_PAYLOAD_PREFIX, rpuTag, 0x80 ])),
         ...(hasFrame ? createOBU(OBU_TYPE_FRAME, [ frameIndex ]) : createOBU(OBU_TYPE_SEQUENCE_HEADER, [ 1 ]))
     ];
     return new EncodedPacket(
@@ -250,7 +250,7 @@ function createHarness(
             // Each RPU parses to its own buffer, so a test can tell which frame received which RPU
             parseAV1ITUTT35: vi.fn(async (payload: Uint8Array): Promise<ArrayBuffer> => {
                 const packedRPUData = createDolbyVisionAuthorizationRPUVector(8);
-                parsedRPUData.set(payload[DOLBY_VISION_T35_HEADER.length], packedRPUData);
+                parsedRPUData.set(payload[DOLBY_VISION_ITUT_T35_PAYLOAD_PREFIX.length], packedRPUData);
                 return packedRPUData;
             })
         },
@@ -313,7 +313,7 @@ describe('runOwnedAV1VideoStream', () => {
         expect(postedRPUData[2]).toBeNull();
         expect(postedRPUData[3]).toBe(harness.parsedRPUData.get(0x13));
         expect(harness.rpuParser.parseAV1ITUTT35.mock.calls.map(call => (
-            (call[0] as Uint8Array)[DOLBY_VISION_T35_HEADER.length]
+            (call[0] as Uint8Array)[DOLBY_VISION_ITUT_T35_PAYLOAD_PREFIX.length]
         ))).toEqual([ 0x10, 0x11, 0x13 ]);
         expect(decoder.decodedPackets.map(packet => Array.from(packet.data))).toEqual([
             createOBU(OBU_TYPE_FRAME, [ 0 ]),

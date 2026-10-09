@@ -12,12 +12,14 @@ import {
 import { splitDolbyVisionAV1TemporalUnit } from 'webgpu-player/video/dolby-vision/DolbyVisionAV1Splitter';
 import { createNativeVideoCapabilityVector } from 'webgpu-player/capability/vectors/NativeVideoCapabilityVectors';
 
+import { DOLBY_VISION_ITUT_T35_PAYLOAD_PREFIX } from '../../helpers/dolbyVisionAV1ITUTT35Payload';
+
 const OBU_EXTENSION_FLAG = 0x04;
 const OBU_HAS_SIZE_FIELD_FLAG = 0x02;
 const METADATA_TYPE_HDR_CLL = 1;
 const METADATA_TYPE_ITUT_T35 = 4;
-// Country code, Dolby's provider code and oriented code, then the start of an EMDF container
-const DOLBY_VISION_T35_MESSAGE = [ 0xB5, 0x00, 0x3B, 0x00, 0x00, 0x08, 0x00, 0x37, 0xCD, 0x08, 0x19, 0x80 ];
+// The Dolby Vision payload prefix, then two payload bytes the splitter does not read
+const DOLBY_VISION_T35_MESSAGE = [ ...DOLBY_VISION_ITUT_T35_PAYLOAD_PREFIX, 0x19, 0x80 ];
 // Country code, the HDR10+ provider code and oriented code, application identifier and version
 const HDR10_PLUS_T35_MESSAGE = [ 0xB5, 0x00, 0x3C, 0x00, 0x01, 0x04, 0x01, 0x40, 0x80 ];
 

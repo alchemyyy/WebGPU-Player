@@ -5,6 +5,8 @@ import DolbyVisionRPUParserSession, {
     type DolbyVisionRPUParserPort
 } from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParserSession';
 
+import { DOLBY_VISION_ITUT_T35_HEADER } from '../../helpers/dolbyVisionAV1ITUTT35Payload';
+
 function createDeferred<Value>(): {
     promise: Promise<Value>
     resolve: (value: Value) => void
@@ -72,7 +74,7 @@ describe('DolbyVisionRPUParserSession', () => {
         const parser = createParserPort(packedData, av1PackedData);
         const createParser = vi.fn(() => deferredParser.promise);
         const session = DolbyVisionRPUParserSession.create('parser.wasm', { createParser });
-        const payload = new Uint8Array([ 0xB5, 0x00, 0x3B, 0x00, 0x00, 0x08, 0x00 ]);
+        const payload = new Uint8Array(DOLBY_VISION_ITUT_T35_HEADER);
         const rpuNALUnit = new Uint8Array([ 124, 1, 25, 8, 9 ]);
         const av1ParsePromise = session.parseAV1ITUTT35(payload);
         const parsePromise = session.parse(rpuNALUnit);

@@ -12,6 +12,8 @@ import {
 import { AV1OBUParseError } from 'webgpu-player/video/av1/AV1OBUParser';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 
+import { DOLBY_VISION_ITUT_T35_PAYLOAD_PREFIX } from '../../helpers/dolbyVisionAV1ITUTT35Payload';
+
 function createRPUParser(
     packedRPUData: ArrayBuffer = createDolbyVisionAuthorizationRPUVector()
 ): {
@@ -495,8 +497,6 @@ const AV1_OBU_TYPE_TEMPORAL_DELIMITER = 2;
 const AV1_OBU_TYPE_METADATA = 5;
 const AV1_OBU_TYPE_FRAME = 6;
 const AV1_METADATA_TYPE_ITUT_T35 = 4;
-// Country code, Dolby's provider code and oriented code, then the start of an EMDF container
-const AV1_DOLBY_VISION_T35_HEADER = [ 0xB5, 0x00, 0x3B, 0x00, 0x00, 0x08, 0x00, 0x37, 0xCD, 0x08 ];
 
 function createAV1OBU(type: number, payload: readonly number[]): Uint8Array {
     return new Uint8Array([
@@ -507,7 +507,7 @@ function createAV1OBU(type: number, payload: readonly number[]): Uint8Array {
 }
 
 function createAV1DolbyVisionT35Message(rpuByte: number): number[] {
-    return [ ...AV1_DOLBY_VISION_T35_HEADER, rpuByte, 0x80 ];
+    return [ ...DOLBY_VISION_ITUT_T35_PAYLOAD_PREFIX, rpuByte, 0x80 ];
 }
 
 function createAV1DolbyVisionMetadataOBU(rpuByte: number): Uint8Array {
