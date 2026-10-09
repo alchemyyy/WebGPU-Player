@@ -79,6 +79,8 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 - `CustomPlaybackControllerTypes.ts`: states, events, fallback reasons, and dispositions.
 - `CustomDecodeSession.ts` [main]: one worker per generation, the frame queue, credits, raw buffer recycling, readiness, audio-only resync epochs, the decoded source format, and an ended audio track completing a start, a resync, or a native-media stream.
 - `CustomDecode.worker.ts` [worker]: demux, decoder dispatch, raw copy, Dolby Vision and HDR metadata, the PCM pipeline as restartable audio attempts, fMP4 remux, and credit waits.
+- `CustomDecodeInputFormats.ts` [worker]: Mediabunny's input formats with Matroska content decoding scoped to frames, so header-stripped laced audio demuxes intact.
+- `HandledDecodeFailures.ts` [worker]: marks the failures the worker catches, so the duplicate rejection Mediabunny leaves behind is not reported as unhandled.
 - `DecodeWorkerProtocol.ts`: messages, validators, credit constants (4, 2, 8), and the backend and output literals.
 - `CustomDecodeTrackSelection.ts`, `ConcurrentDecodeStreams.ts`: track lookup by ordinal within one media type, and concurrent decode streams that cancel each other on the first failure and all drain before the worker reports that the generation stopped.
 - `MediaClock.ts` [main]: the generation-tagged clock; `synchronize` re-anchors it.

@@ -19,6 +19,7 @@ import {
 } from 'mediabunny';
 import { describe, expect, it, vi } from 'vitest';
 
+import { CUSTOM_DECODE_INPUT_FORMATS } from 'webgpu-player/pipeline/CustomDecodeInputFormats';
 import {
     createMatroskaBlockAdditionReader,
     withMatroskaBlockAdditions,
@@ -282,6 +283,21 @@ describe('withMatroskaBlockAdditions', () => {
                             getExpectedAdditions(frames[SECOND_KEY_FRAME_INDEX + 1])
                         );
                         expect(firstPacket && describeAdditions(readBlockAdditions(firstPacket))).toEqual(getExpectedAdditions(frames[0]));
+                    }
+                );
+            });
+
+            it('composes with the worker\'s laced-block content decoding', async () => {
+                await withVideoTrack(
+                    readVP9HDR10PlusVector(vector.fileName),
+                    withMatroskaBlockAdditions(CUSTOM_DECODE_INPUT_FORMATS),
+                    async (track: InputVideoTrack): Promise<void> => {
+                        const readBlockAdditions = createMatroskaBlockAdditionReader(track);
+                        const packets = await readPackets(track);
+
+                        expect(packets.map(packet => describeAdditions(readBlockAdditions(packet)))).toEqual(
+                            VP9_HDR10_PLUS_EXPECTATIONS.frames.map(getExpectedAdditions)
+                        );
                     }
                 );
             });

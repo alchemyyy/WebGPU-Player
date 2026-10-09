@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5adc3150.js";
+            window.path_to_searchindex_js = "searchindex-6ce9ccd1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -608,6 +608,8 @@ The stock profile is the one the add-on’s HTML backend returns from <code>getD
 PlaybackManager offers the item to players in priority order, and <code>WebGPUPlayer</code> (priority 0) comes first.
 <code>HostCompatibleWebGPUPlayer.canPlayItem</code> declines when the user prefers the HTML player or inside a native app shell.
 With custom decode enabled, <code>WebGPUPlayer.canPlayItem</code> also requires the engine’s metadata-only prefilter, <code>CustomPlaybackEligibility.hasPotentialCustomPlaybackVideoRoute</code>.
+The prefilter declines a source whose containers no route in <code>CUSTOM_CONTAINER_CODEC_RULES</code> carries, such as AVI, FLV, ASF, or an MPEG program stream.
+It also declines a video codec no route decodes, such as MPEG-4 Part 2 (DivX, Xvid), H.263, MS-MPEG4, MPEG-1, or Theora, and interlaced or rotated video.
 When it declines, PlaybackManager picks the plain HTML player, which negotiates with the stock profile.</li>
 <li>Build the device profile (host), in <code>WebGPUPlayer.getDeviceProfile(item, options)</code>:
 <ul>
@@ -1232,6 +1234,8 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 <li><code>CustomPlaybackControllerTypes.ts</code>: states, events, fallback reasons, and dispositions.</li>
 <li><code>CustomDecodeSession.ts</code> [main]: one worker per generation, the frame queue, credits, raw buffer recycling, readiness, audio-only resync epochs, the decoded source format, and an ended audio track completing a start, a resync, or a native-media stream.</li>
 <li><code>CustomDecode.worker.ts</code> [worker]: demux, decoder dispatch, raw copy, Dolby Vision and HDR metadata, the PCM pipeline as restartable audio attempts, fMP4 remux, and credit waits.</li>
+<li><code>CustomDecodeInputFormats.ts</code> [worker]: Mediabunny’s input formats with Matroska content decoding scoped to frames, so header-stripped laced audio demuxes intact.</li>
+<li><code>HandledDecodeFailures.ts</code> [worker]: marks the failures the worker catches, so the duplicate rejection Mediabunny leaves behind is not reported as unhandled.</li>
 <li><code>DecodeWorkerProtocol.ts</code>: messages, validators, credit constants (4, 2, 8), and the backend and output literals.</li>
 <li><code>CustomDecodeTrackSelection.ts</code>, <code>ConcurrentDecodeStreams.ts</code>: track lookup by ordinal within one media type, and concurrent decode streams that cancel each other on the first failure and all drain before the worker reports that the generation stopped.</li>
 <li><code>MediaClock.ts</code> [main]: the generation-tagged clock; <code>synchronize</code> re-anchors it.</li>
@@ -2204,6 +2208,17 @@ A packet finds its block through the track backing’s packet-to-cluster map, wh
 Each internal is shape-checked: when one differs, demuxing proceeds untouched and reads no additions, with one console warning, and <code>test/video/MatroskaBlockAdditions.test.ts</code> fails on the committed vectors.
 HDR10+ is recognized by its ITU-T T.35 header, not by BlockAddID, so no BlockAdditionMapping is needed: FFmpeg writes BlockAddID 4 with a mapping in Matroska and without one in WebM, and reads it either way.
 A laced block keeps no additions, because Mediabunny replaces it with one new block per frame; Matroska muxers lace audio, not video.</li>
+<li>Header-stripped laced Matroska blocks are split before their content is decoded (10-09).
+Older mkvmerge releases moved the leading bytes of every AC-3, DTS, and MP3 frame into the track’s ContentCompression (header stripping), and laced audio by default.
+The Matroska specification scopes a block’s content encoding to its frames, excluding the lacing data, and FFmpeg reads it that way.
+Mediabunny 1.52.2, and 1.61.3 too, restores the stripped bytes ahead of a laced block’s lace header, so it misreads the frame count and no frame decodes.
+<code>CustomDecodeInputFormats.ts</code> gives the worker a Matroska format whose demuxer splits such a block as stored and then restores each frame’s bytes, contained as <code>MatroskaBlockAdditions.ts</code> is, which wraps it in turn.
+When the internals differ, demuxing proceeds untouched with one console warning, and <code>test/pipeline/CustomDecodeInputFormats.test.ts</code> fails.
+Its last case fails once Mediabunny itself reads such blocks correctly, and the replacement can then go.</li>
+<li>A custom decoder’s failure is reported once (10-09).
+After a Mediabunny custom decoder rejects, Mediabunny 1.52.2 queues the decoder’s <code>close()</code> behind the failed call without a handler, so the same error resurfaces as an unhandled rejection and the decoder is never closed.
+The worker marks every failure it catches (<code>HandledDecodeFailures.ts</code>) and prevents the unhandled-rejection report of a marked error only, so any other unhandled rejection is still reported.
+The unclosed decoder ends with its worker, which the session terminates when the generation stops.</li>
 <li>Decoder surfaces must not starve (08-08, <code>ecb5a4ec09</code>).
 Native frame credits return after <code>queue.onSubmittedWorkDone()</code>, not after <code>submit()</code>, because Chromium holds the decoder mailbox until the GPU completes and the D3D surface pool is finite.</li>
 <li>Rejected alternatives.

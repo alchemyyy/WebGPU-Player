@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5adc3150.js";
+            window.path_to_searchindex_js = "searchindex-6ce9ccd1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -188,6 +188,8 @@ The stock profile is the one the add-on’s HTML backend returns from <code>getD
 PlaybackManager offers the item to players in priority order, and <code>WebGPUPlayer</code> (priority 0) comes first.
 <code>HostCompatibleWebGPUPlayer.canPlayItem</code> declines when the user prefers the HTML player or inside a native app shell.
 With custom decode enabled, <code>WebGPUPlayer.canPlayItem</code> also requires the engine’s metadata-only prefilter, <code>CustomPlaybackEligibility.hasPotentialCustomPlaybackVideoRoute</code>.
+The prefilter declines a source whose containers no route in <code>CUSTOM_CONTAINER_CODEC_RULES</code> carries, such as AVI, FLV, ASF, or an MPEG program stream.
+It also declines a video codec no route decodes, such as MPEG-4 Part 2 (DivX, Xvid), H.263, MS-MPEG4, MPEG-1, or Theora, and interlaced or rotated video.
 When it declines, PlaybackManager picks the plain HTML player, which negotiates with the stock profile.</li>
 <li>Build the device profile (host), in <code>WebGPUPlayer.getDeviceProfile(item, options)</code>:
 <ul>

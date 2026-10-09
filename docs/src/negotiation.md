@@ -11,6 +11,8 @@ The stock profile is the one the add-on's HTML backend returns from `getDevicePr
    PlaybackManager offers the item to players in priority order, and `WebGPUPlayer` (priority 0) comes first.
    `HostCompatibleWebGPUPlayer.canPlayItem` declines when the user prefers the HTML player or inside a native app shell.
    With custom decode enabled, `WebGPUPlayer.canPlayItem` also requires the engine's metadata-only prefilter, `CustomPlaybackEligibility.hasPotentialCustomPlaybackVideoRoute`.
+   The prefilter declines a source whose containers no route in `CUSTOM_CONTAINER_CODEC_RULES` carries, such as AVI, FLV, ASF, or an MPEG program stream.
+   It also declines a video codec no route decodes, such as MPEG-4 Part 2 (DivX, Xvid), H.263, MS-MPEG4, MPEG-1, or Theora, and interlaced or rotated video.
    When it declines, PlaybackManager picks the plain HTML player, which negotiates with the stock profile.
 2. Build the device profile (host), in `WebGPUPlayer.getDeviceProfile(item, options)`:
    - A retry (`options.isRetry === true`) returns the stock profile unchanged.

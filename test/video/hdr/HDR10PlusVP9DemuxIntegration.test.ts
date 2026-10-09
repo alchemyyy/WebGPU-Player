@@ -1,7 +1,6 @@
 // @vitest-environment node
 
 import {
-    ALL_FORMATS,
     BufferSource,
     EncodedPacketSink,
     Input,
@@ -10,6 +9,7 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import { microsecondsToSeconds, type Microseconds } from 'webgpu-player/MediaTime';
+import { CUSTOM_DECODE_INPUT_FORMATS } from 'webgpu-player/pipeline/CustomDecodeInputFormats';
 import { runOwnedVP9VideoStream } from 'webgpu-player/video/decoders/OwnedVP9VideoStream';
 import type {
     OwnedVideoDecoderCallbacks,
@@ -61,7 +61,7 @@ const BT2020_PQ_COLOR_SPACE = {
 /** Plays a vector as the worker's owned VP9 path does, from the key packet at or before the start time, through a decoder that outputs every packet's frame. */
 async function playVector(vector: VP9HDR10PlusVector, startTimeMicroseconds: Microseconds): Promise<PlayedVector> {
     const input = new Input({
-        formats: withMatroskaBlockAdditions(ALL_FORMATS),
+        formats: withMatroskaBlockAdditions(CUSTOM_DECODE_INPUT_FORMATS),
         source: new BufferSource(readVP9HDR10PlusVector(vector.fileName))
     });
     try {
@@ -110,7 +110,7 @@ describe('HDR10+ VP9 demux integration', () => {
         (_fileName: string, vector: VP9HDR10PlusVector) => {
             it('reads a VP9 Profile 2 BT.2020 PQ track', async () => {
                 const input = new Input({
-                    formats: withMatroskaBlockAdditions(ALL_FORMATS),
+                    formats: withMatroskaBlockAdditions(CUSTOM_DECODE_INPUT_FORMATS),
                     source: new BufferSource(readVP9HDR10PlusVector(vector.fileName))
                 });
                 try {

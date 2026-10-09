@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5adc3150.js";
+            window.path_to_searchindex_js = "searchindex-6ce9ccd1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -254,6 +254,8 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 <li><code>CustomPlaybackControllerTypes.ts</code>: states, events, fallback reasons, and dispositions.</li>
 <li><code>CustomDecodeSession.ts</code> [main]: one worker per generation, the frame queue, credits, raw buffer recycling, readiness, audio-only resync epochs, the decoded source format, and an ended audio track completing a start, a resync, or a native-media stream.</li>
 <li><code>CustomDecode.worker.ts</code> [worker]: demux, decoder dispatch, raw copy, Dolby Vision and HDR metadata, the PCM pipeline as restartable audio attempts, fMP4 remux, and credit waits.</li>
+<li><code>CustomDecodeInputFormats.ts</code> [worker]: Mediabunny’s input formats with Matroska content decoding scoped to frames, so header-stripped laced audio demuxes intact.</li>
+<li><code>HandledDecodeFailures.ts</code> [worker]: marks the failures the worker catches, so the duplicate rejection Mediabunny leaves behind is not reported as unhandled.</li>
 <li><code>DecodeWorkerProtocol.ts</code>: messages, validators, credit constants (4, 2, 8), and the backend and output literals.</li>
 <li><code>CustomDecodeTrackSelection.ts</code>, <code>ConcurrentDecodeStreams.ts</code>: track lookup by ordinal within one media type, and concurrent decode streams that cancel each other on the first failure and all drain before the worker reports that the generation stopped.</li>
 <li><code>MediaClock.ts</code> [main]: the generation-tagged clock; <code>synchronize</code> re-anchors it.</li>

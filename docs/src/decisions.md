@@ -168,6 +168,17 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Each internal is shape-checked: when one differs, demuxing proceeds untouched and reads no additions, with one console warning, and `test/video/MatroskaBlockAdditions.test.ts` fails on the committed vectors.
   HDR10+ is recognized by its ITU-T T.35 header, not by BlockAddID, so no BlockAdditionMapping is needed: FFmpeg writes BlockAddID 4 with a mapping in Matroska and without one in WebM, and reads it either way.
   A laced block keeps no additions, because Mediabunny replaces it with one new block per frame; Matroska muxers lace audio, not video.
+- Header-stripped laced Matroska blocks are split before their content is decoded (10-09).
+  Older mkvmerge releases moved the leading bytes of every AC-3, DTS, and MP3 frame into the track's ContentCompression (header stripping), and laced audio by default.
+  The Matroska specification scopes a block's content encoding to its frames, excluding the lacing data, and FFmpeg reads it that way.
+  Mediabunny 1.52.2, and 1.61.3 too, restores the stripped bytes ahead of a laced block's lace header, so it misreads the frame count and no frame decodes.
+  `CustomDecodeInputFormats.ts` gives the worker a Matroska format whose demuxer splits such a block as stored and then restores each frame's bytes, contained as `MatroskaBlockAdditions.ts` is, which wraps it in turn.
+  When the internals differ, demuxing proceeds untouched with one console warning, and `test/pipeline/CustomDecodeInputFormats.test.ts` fails.
+  Its last case fails once Mediabunny itself reads such blocks correctly, and the replacement can then go.
+- A custom decoder's failure is reported once (10-09).
+  After a Mediabunny custom decoder rejects, Mediabunny 1.52.2 queues the decoder's `close()` behind the failed call without a handler, so the same error resurfaces as an unhandled rejection and the decoder is never closed.
+  The worker marks every failure it catches (`HandledDecodeFailures.ts`) and prevents the unhandled-rejection report of a marked error only, so any other unhandled rejection is still reported.
+  The unclosed decoder ends with its worker, which the session terminates when the generation stops.
 - Decoder surfaces must not starve (08-08, `ecb5a4ec09`).
   Native frame credits return after `queue.onSubmittedWorkDone()`, not after `submit()`, because Chromium holds the decoder mailbox until the GPU completes and the D3D surface pool is finite.
 - Rejected alternatives.

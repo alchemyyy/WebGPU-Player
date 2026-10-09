@@ -1,6 +1,5 @@
 /* eslint-disable no-restricted-globals */
 import {
-    ALL_FORMATS,
     AudioSampleSink,
     EncodedPacketSink,
     Input,
@@ -20,6 +19,8 @@ import { getDolbyVisionEnhancementDimensions } from '../video/dolby-vision/Dolby
 import { isDolbyVisionDualLayerProfile } from '../video/dolby-vision/DolbyVisionProfiles';
 import { getAudioSampleWindow } from '../audio/AudioSampleWindow';
 import { settleConcurrentDecodeStreams } from './ConcurrentDecodeStreams';
+import { CUSTOM_DECODE_INPUT_FORMATS } from './CustomDecodeInputFormats';
+import { markHandledDecodeFailure, suppressHandledDecodeFailureRejections } from './HandledDecodeFailures';
 import { registerRequiredCustomAudioDecoder } from '../audio/decoders/CustomAudioDecoderRegistration';
 import {
     DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
@@ -3253,6 +3254,7 @@ async function runVideoAttempt(
             });
         }
     } catch (error) {
+        markHandledDecodeFailure(error);
         // Failures while a replaced attempt unwinds are expected and discarded
         if (run.cancelled || (!run.videoAttemptCancelled && !isCodecReclamationError(error))) {
             throw error;
@@ -3742,6 +3744,7 @@ async function streamAudioAttempts(
         try {
             await streamPreparedAudio(run, attemptRequest, attemptTrack);
         } catch (error) {
+            markHandledDecodeFailure(error);
             // Failures while a replaced attempt unwinds are expected and discarded
             if (run.cancelled || !run.audioAttemptCancelled) {
                 throw error;
@@ -3775,7 +3778,7 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
     let reportDecodeStreamFailure = false;
     try {
         const input = new Input({
-            formats: withMatroskaBlockAdditions(ALL_FORMATS),
+            formats: withMatroskaBlockAdditions(CUSTOM_DECODE_INPUT_FORMATS),
             source: new UrlSource(request.url, {
                 fetchFn: validatedRangeFetch,
                 getRetryDelay,
@@ -3835,6 +3838,7 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
             postResponse({ generation: run.generation, type: 'ended' });
         }
     } catch (error) {
+        markHandledDecodeFailure(error);
         if (!run.cancelled || reportDecodeStreamFailure) {
             postResponse({
                 failureKind: classifyFailure(error),
@@ -4001,5 +4005,6 @@ function handleRequest(requestValue: unknown): void {
 workerScope.addEventListener('message', event => {
     handleRequest(event.data);
 });
+suppressHandledDecodeFailureRejections(self);
 
 /* eslint-enable no-restricted-globals */
