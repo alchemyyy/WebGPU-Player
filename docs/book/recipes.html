@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c8b0fdbf.js";
+            window.path_to_searchindex_js = "searchindex-9141c141.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -178,104 +178,82 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="recipes"><a class="header" href="#recipes">Recipes</a></h1>
-<p>Short procedures for the changes that come up most. Each assumes a checkout set
-up as in <a href="setup.html">Set up a checkout</a>.</p>
+<p>Short procedures for the changes that come up most.
+Each assumes a checkout set up as in <a href="setup.html">Set up a checkout</a>.</p>
 <h2 id="add-or-change-a-codec-route"><a class="header" href="#add-or-change-a-codec-route">Add or change a codec route</a></h2>
 <ol>
-<li>Capability. Add an exact-output probe to
-<code>src/capability/CustomDecodeCapabilities.ts</code>. For an HEVC range extension:
+<li>Capability.
+Add an exact-output probe to <code>src/capability/CustomDecodeCapabilities.ts</code>.
+For an HEVC range extension:
 <ul>
 <li>add its definition to <code>src/capability/HEVCRangeExtensionCapabilities.ts</code>;</li>
-<li>add its vector to
-<code>scripts/codec_vector_assets/generate_HEVC_range_extension_vectors.py</code> and
-generate it into <code>bin/codec_vector_assets/hevc-range-extension/</code>;</li>
-<li>add its served path to <code>src/EngineAssets.ts</code>. The asset build serves every
-vector in that folder, and the <code>EngineAssets</code> test checks that the two
-agree.</li>
+<li>add its vector to <code>scripts/codec_vector_assets/generate_HEVC_range_extension_vectors.py</code> and generate it into <code>bin/codec_vector_assets/hevc-range-extension/</code>;</li>
+<li>add its served path to <code>src/EngineAssets.ts</code>.
+The asset build serves every vector in that folder, and the <code>EngineAssets</code> test checks that the two agree.</li>
 </ul>
 </li>
 <li>Presentation:
 <ul>
-<li>add the route key to <code>src/validation/RawHDRPresentationAuthorization.ts</code>,
-or to the external or Dolby Vision authorization beside it;</li>
+<li>add the route key to <code>src/validation/RawHDRPresentationAuthorization.ts</code>, or to the external or Dolby Vision authorization beside it;</li>
 <li>add the shader to <code>src/color/ColorPipelineShader.ts</code>;</li>
-<li>add the uploads to <code>src/presentation/RawYUVGPURenderer.ts</code> and
-<code>src/video/RawVideoFrameCopy.ts</code>;</li>
+<li>add the uploads to <code>src/presentation/RawYUVGPURenderer.ts</code> and <code>src/video/RawVideoFrameCopy.ts</code>;</li>
 <li>add any new raw format to <code>src/pipeline/DecodeWorkerProtocol.ts</code>.</li>
 </ul>
 </li>
-<li>Runtime. <code>src/capability/CustomPlaybackEligibility.ts</code> selects the route, and
-<code>src/presentation/PresentationInput.ts</code> parses the color and Dolby Vision
-descriptors.</li>
-<li>Negotiation. <code>jellyfin-webgpu-client/src/custom/CustomDeviceProfile.ts</code>
-(host) turns the evidence into CodecProfile conditions, and
-<code>jellyfin-webgpu-client/src/WebGPUPlayer.ts</code> (host) derives the option flags
-and configures the color pipeline. Container pairing stays only in
-<code>src/capability/CustomContainerCodecSupport.ts</code>. Add no resolution, level,
-frame rate, or bitrate gate, and no decoder pair blacklist.</li>
-<li>Tests. Add the row, its expected route, and its fallbacks to
-<code>jellyfin-webgpu-client.tests/custom/HEVCDirectPlaySupportMatrix.test.ts</code>
-(host).</li>
-<li>Update <a href="codec-support.html">HEVC and Dolby Vision support</a>, and
-<a href="negotiation.html">Negotiation and routes</a> if the route catalog changed.</li>
+<li>Runtime.
+<code>src/capability/CustomPlaybackEligibility.ts</code> selects the route, and <code>src/presentation/PresentationInput.ts</code> parses the color and Dolby Vision descriptors.</li>
+<li>Negotiation.
+<code>jellyfin-webgpu-client/src/custom/CustomDeviceProfile.ts</code> (host) turns the evidence into CodecProfile conditions, and <code>jellyfin-webgpu-client/src/WebGPUPlayer.ts</code> (host) derives the option flags and configures the color pipeline.
+Container pairing stays only in <code>src/capability/CustomContainerCodecSupport.ts</code>.
+Add no resolution, level, frame rate, or bitrate gate, and no decoder pair blacklist.</li>
+<li>Tests.
+Add the row, its expected route, and its fallbacks to <code>jellyfin-webgpu-client.tests/custom/HEVCDirectPlaySupportMatrix.test.ts</code> (host).</li>
+<li>Update <a href="codec-support.html">HEVC and Dolby Vision support</a>, and <a href="negotiation.html">Negotiation and routes</a> if the route catalog changed.</li>
 </ol>
-<p>Check: the engine checks and the host checks from
-<a href="jellyfin-host.html#build-and-check">The Jellyfin host</a>.</p>
+<p>Check: the engine checks and the host checks from <a href="jellyfin-host.html#build-and-check">The Jellyfin host</a>.</p>
 <h2 id="rebuild-one-decoder"><a class="header" href="#rebuild-one-decoder">Rebuild one decoder</a></h2>
 <ol>
 <li>Edit the bridge in <code>wasm/&lt;kit&gt;/</code>, or move the pinned commit in <code>vendor/</code>.</li>
 <li>Run <code>make -C wasm &lt;kit&gt;</code>, with Emscripten active or <code>EMSDK=</code> set.</li>
 <li>Run <code>npm test</code>, which exercises the decoders from <code>bin/wasm/</code> under Node.</li>
-<li>Run <code>make -C wasm check</code>, which must report every output identical. A
-change that is not reproducible shows up here.</li>
+<li>Run <code>make -C wasm check</code>, which must report every output identical.
+A change that is not reproducible shows up here.</li>
 </ol>
 <h2 id="change-the-dolby-vision-parser"><a class="header" href="#change-the-dolby-vision-parser">Change the Dolby Vision parser</a></h2>
 <ol>
-<li>Edit <code>wasm/libdovi/src/lib.rs</code>, or the vendored crate in
-<code>wasm/libdovi/vendor/dolby_vision/</code>.</li>
-<li>For any change to the vendored crate, add an entry to its <code>PATCHES.md</code>
-naming the file, the change, and the FFmpeg behavior it follows.</li>
-<li>If the packed snapshot changes, update
-<code>src/video/dolby-vision/DolbyVisionRPUDataLayout.ts</code>, the decoder in
-<code>DolbyVisionRPUParser.ts</code>, and its revision prefix together.</li>
-<li>From <code>wasm/libdovi/</code>, run <code>cargo test --locked</code> and
-<code>cargo clippy --locked --all-targets</code>.</li>
+<li>Edit <code>wasm/libdovi/src/lib.rs</code>, or the vendored crate in <code>wasm/libdovi/vendor/dolby_vision/</code>.</li>
+<li>For any change to the vendored crate, add an entry to its <code>PATCHES.md</code> naming the file, the change, and the FFmpeg behavior it follows.</li>
+<li>If the packed snapshot changes, update <code>src/video/dolby-vision/DolbyVisionRPUDataLayout.ts</code>, the decoder in <code>DolbyVisionRPUParser.ts</code>, and its revision prefix together.</li>
+<li>From <code>wasm/libdovi/</code>, run <code>cargo test --locked</code> and <code>cargo clippy --locked --all-targets</code>.</li>
 <li>Run <code>make -C wasm libdovi</code>, then <code>make -C wasm check KITS=libdovi</code>.</li>
-<li>Run <code>npm test</code>. The parser tests in <code>test/video/dolby-vision/</code> run the
-rebuilt <code>dovi-rpu-parser.wasm</code>.</li>
+<li>Run <code>npm test</code>.
+The parser tests in <code>test/video/dolby-vision/</code> run the rebuilt <code>dovi-rpu-parser.wasm</code>.</li>
 </ol>
 <h2 id="revise-a-committed-codec-vector"><a class="header" href="#revise-a-committed-codec-vector">Revise a committed codec vector</a></h2>
 <ol>
-<li>For an encoder-dependent vector (JPEG 2000, MPEG-2, the TrueHD sources),
-delete the committed file. A differing encode never replaces one.</li>
-<li>Run its generator with the pinned FFmpeg on PATH, for example
-<code>python scripts/codec_vector_assets/generate_mpeg2_capability_vector.py</code>.</li>
-<li>Run <code>python scripts/generate_all_codec_vector_assets.py --check</code> and the
-generator tests.</li>
-<li>Review the diff of <code>bin/codec_vector_assets/</code>, and update any pinned
-fingerprint or length only after inspecting the decoded output.</li>
+<li>For an encoder-dependent vector (JPEG 2000, MPEG-2, the TrueHD sources), delete the committed file.
+A differing encode never replaces one.</li>
+<li>Run its generator with the pinned FFmpeg on PATH, for example <code>python scripts/codec_vector_assets/generate_mpeg2_capability_vector.py</code>.</li>
+<li>Run <code>python scripts/generate_all_codec_vector_assets.py --check</code> and the generator tests.</li>
+<li>Review the diff of <code>bin/codec_vector_assets/</code>, and update any pinned fingerprint or length only after inspecting the decoded output.</li>
 </ol>
 <h2 id="move-an-engine-folder"><a class="header" href="#move-an-engine-folder">Move an engine folder</a></h2>
 <ol>
-<li>Change the folder in <code>tools/constants.json</code>. Every reader in
-<a href="layout.html#folder-names-live-in-one-file">Repository layout</a> follows.</li>
+<li>Change the folder in <code>tools/constants.json</code>.
+Every reader in <a href="layout.html#folder-names-live-in-one-file">Repository layout</a> follows.</li>
 <li>Edit by hand the files that cannot read it:
 <ul>
 <li><code>.gitignore</code>, <code>.gitattributes</code>, <code>.gitmodules</code>, and <code>tsconfig.json</code>;</li>
-<li><code>package.json</code>: its scripts, and its <code>imports</code> map, which sends <code>#wasm/*</code>
-to <code>bin/wasm/*</code> for bundlers and to <code>wasm/*</code> for TypeScript, and
-<code>#codec_vector_assets/*</code> to the generated modules;</li>
+<li><code>package.json</code>: its scripts, and its <code>imports</code> map, which sends <code>#wasm/*</code> to <code>bin/wasm/*</code> for bundlers and to <code>wasm/*</code> for TypeScript, and <code>#codec_vector_assets/*</code> to the generated modules;</li>
 <li>this book.</li>
 </ul>
 </li>
-<li>Rerun the DTS and TrueHD generators, which embed import paths computed from
-the constants, then run every <code>--check</code> and the full engine checks.</li>
+<li>Rerun the DTS and TrueHD generators, which embed import paths computed from the constants, then run every <code>--check</code> and the full engine checks.</li>
 </ol>
 <h2 id="ship-an-engine-change-to-the-host"><a class="header" href="#ship-an-engine-change-to-the-host">Ship an engine change to the host</a></h2>
 <ol>
 <li>Commit the change in the engine repository and push it.</li>
-<li>In the plugin repository, commit the new submodule pointer of
-<code>jellyfin-webgpu-client/vendor/webgpu-player</code>.</li>
+<li>In the plugin repository, commit the new submodule pointer of <code>jellyfin-webgpu-client/vendor/webgpu-player</code>.</li>
 </ol>
 <p>Push the engine first, so the host never pins a commit nobody can fetch.</p>
 <h2 id="update-this-book"><a class="header" href="#update-this-book">Update this book</a></h2>

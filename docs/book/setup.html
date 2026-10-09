@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c8b0fdbf.js";
+            window.path_to_searchindex_js = "searchindex-9141c141.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -181,34 +181,29 @@
 <h2 id="you-need"><a class="header" href="#you-need">You need</a></h2>
 <ul>
 <li>Node.js 24 and npm 11.</li>
-<li>For the decoders: GNU Make, Git, a POSIX shell (Git Bash on Windows),
-Emscripten 4.0.13, and rustup.</li>
-<li>For the codec vectors: Python 3.10 or later, and the FFmpeg build named in
-<a href="codec-vectors.html">Codec vectors</a>.</li>
+<li>For the decoders: GNU Make, Git, a POSIX shell (Git Bash on Windows), Emscripten 4.0.13, and rustup.</li>
+<li>For the codec vectors: Python 3.10 or later, and the FFmpeg build named in <a href="codec-vectors.html">Codec vectors</a>.</li>
 <li>For this book: mdBook 0.5.</li>
-<li>To run the engine: Chrome, Edge, or Firefox with WebGPU and WebCodecs, on a
-secure context (HTTPS or <code>localhost</code>). Firefox on Windows decodes HEVC in
-software only; see <a href="decisions.html#firefox">Decisions</a>.</li>
-<li>On Windows, long path support. The decoder build’s FFmpeg and cargo trees
-pass 260 characters in a nested checkout. Enable <code>LongPathsEnabled</code> and Git’s
-<code>core.longpaths</code>; GNU Make and the MSVC linker that cargo uses must accept
-long paths too.</li>
+<li>To run the engine: Chrome, Edge, or Firefox with WebGPU and WebCodecs, on a secure context (HTTPS or <code>localhost</code>).
+Firefox on Windows decodes HEVC in software only; see <a href="decisions.html#firefox">Decisions</a>.</li>
+<li>On Windows, long path support.
+The decoder build’s FFmpeg and cargo trees pass 260 characters in a nested checkout.
+Enable <code>LongPathsEnabled</code> and Git’s <code>core.longpaths</code>; GNU Make and the MSVC linker that cargo uses must accept long paths too.</li>
 </ul>
 <h2 id="steps"><a class="header" href="#steps">Steps</a></h2>
 <ol>
 <li>
-<p>Install the dependencies. In a standalone checkout, run <code>npm ci</code> in the
-engine root. When a host lists the engine as an npm workspace, run <code>npm ci</code>
-in the host root instead; the engine then has no <code>node_modules</code> of its own.</p>
+<p>Install the dependencies.
+In a standalone checkout, run <code>npm ci</code> in the engine root.
+When a host lists the engine as an npm workspace, run <code>npm ci</code> in the host root instead; the engine then has no <code>node_modules</code> of its own.</p>
 </li>
 <li>
-<p>Build the decoders, once per checkout and again after a decoder source
-changes:</p>
+<p>Build the decoders, once per checkout and again after a decoder source changes:</p>
 <pre><code class="language-sh">make -C wasm sources all
 </code></pre>
-<p>Activate Emscripten with <code>emsdk_env</code> first, or append
-<code>EMSDK=/path/to/emsdk</code>. The build writes <code>bin/wasm/</code>, which is ignored. See
-<a href="decoders.html">WebAssembly decoders</a>.</p>
+<p>Activate Emscripten with <code>emsdk_env</code> first, or append <code>EMSDK=/path/to/emsdk</code>.
+The build writes <code>bin/wasm/</code>, which is ignored.
+See <a href="decoders.html">WebAssembly decoders</a>.</p>
 </li>
 <li>
 <p>Run the checks from the engine root:</p>
@@ -218,8 +213,7 @@ npm test
 npm run build
 python scripts/generate_all_codec_vector_assets.py --check
 </code></pre>
-<p>Inside a host workspace, run the npm scripts from the host root with
-<code>-w webgpu-player</code>, for example <code>npm test -w webgpu-player</code>.</p>
+<p>Inside a host workspace, run the npm scripts from the host root with <code>-w webgpu-player</code>, for example <code>npm test -w webgpu-player</code>.</p>
 </li>
 </ol>
 <h2 id="what-the-checks-cover"><a class="header" href="#what-the-checks-cover">What the checks cover</a></h2>
@@ -237,8 +231,8 @@ python scripts/generate_all_codec_vector_assets.py --check
 </tbody>
 </table>
 </div>
-<p>A host may lint the engine with its own ESLint config as well; the Jellyfin
-add-on does. Engine changes must then pass both configurations.</p>
+<p>A host may lint the engine with its own ESLint config as well; the Jellyfin add-on does.
+Engine changes must then pass both configurations.</p>
 
                     </main>
 

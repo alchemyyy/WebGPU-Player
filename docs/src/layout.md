@@ -17,17 +17,15 @@
 `bin/` holds:
 
 - `bin/wasm/`: the decoder builds from `make -C wasm`.
-- `bin/libraries/` and `bin/build-info.json`: the served assets from
-  `npm run build`.
-- `bin/playback_smoke_media/`: local playback media from the smoke media
-  generators.
-- `bin/codec_vector_assets/`: the generated codec vectors. This is the one
-  committed folder, so every change to a vector shows in review.
+- `bin/libraries/` and `bin/build-info.json`: the served assets from `npm run build`.
+- `bin/playback_smoke_media/`: local playback media from the smoke media generators.
+- `bin/codec_vector_assets/`: the generated codec vectors.
+  This is the one committed folder, so every change to a vector shows in review.
 
 ## Folder names live in one file
 
-`tools/constants.json` names every engine folder. Read a path from it instead
-of spelling it out, so moving a folder is a one-line change.
+`tools/constants.json` names every engine folder.
+Read a path from it instead of spelling it out, so moving a folder is a one-line change.
 
 | Reader | Reads it through |
 | --- | --- |
@@ -39,5 +37,5 @@ of spelling it out, so moving a folder is a one-line change.
 | `wasm/Makefile` | `node -p`, which is why decoder builds need Node.js |
 | Hosts | The file itself, at `<engine>/tools/constants.json` |
 
-Some files cannot read it. [Recipes](recipes.md#move-an-engine-folder) lists
-them.
+Some files cannot read it.
+[Recipes](recipes.md#move-an-engine-folder) lists them.

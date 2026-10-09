@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c8b0fdbf.js";
+            window.path_to_searchindex_js = "searchindex-9141c141.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -178,34 +178,27 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="hevc-and-dolby-vision-support"><a class="header" href="#hevc-and-dolby-vision-support">HEVC and Dolby Vision support</a></h1>
-<p>This chapter says which HEVC and Dolby Vision sources play through the custom
-pipeline, by which route, and on what evidence. It comes from the source and
-the unit tests, not from playback. The host’s
-<code>jellyfin-webgpu-client.tests/custom/HEVCDirectPlaySupportMatrix.test.ts</code>
-(host) asserts every row:</p>
+<p>This chapter says which HEVC and Dolby Vision sources play through the custom pipeline, by which route, and on what evidence.
+It comes from the source and the unit tests, not from playback.
+<code>jellyfin-webgpu-client.tests/custom/HEVCDirectPlaySupportMatrix.test.ts</code> (host) asserts every row except the <code>metadata-unsupported</code> and <code>video-track-unavailable</code> rejections:</p>
 <ul>
-<li>negotiation: <code>isSameSessionNativePlaybackCompatible</code>, a conservative model of
-Jellyfin’s codec profile evaluation, against the profile from
-<code>augmentDeviceProfileForCustomDecode</code>, scoped to the item as the host scopes
-it;</li>
+<li>negotiation: <code>isSameSessionNativePlaybackCompatible</code>, a conservative model of Jellyfin’s codec profile evaluation, against the profile from <code>augmentDeviceProfileForCustomDecode</code>, scoped to the item as the host scopes it;</li>
 <li>runtime eligibility: <code>getCustomPlaybackEligibility</code>;</li>
 <li>DirectPlay, which is both together;</li>
 <li>the exact route selected when every probe and authorization passes.</li>
 </ul>
-<p>For representative rows it also asserts the fallback routes, once with native
-VideoFrame HDR and Dolby Vision presentation withheld and once without native
-HEVC decode.</p>
-<p>Read every “Yes” as conditional. The evidence listed for at least one of the
-row’s routes must pass on the running browser and GPU, the user’s Custom decode
-setting must be on, and HDR and Dolby Vision rows also need the HDR tone mapping
-setting. A retry is never widened. HEVC is advertised only in the containers
-that <code>capability/CustomContainerCodecSupport.ts</code> pairs with it (MP4, M4V, MOV,
-Matroska, MPEG-TS, M2TS). Resolution, level, frame rate, and bitrate are never
-gates.</p>
-<p>When Jellyfin direct-plays a row that is negotiated but not eligible, the
-client rejects it at runtime. It falls back to the HTML player in the same
-session when the stock profile covers the source, and otherwise asks for one
-renegotiation.</p>
+<p>For representative rows it also asserts the fallback routes, once with native VideoFrame HDR and Dolby Vision presentation withheld and once without native HEVC decode.</p>
+<p>Read every “Yes” as conditional:</p>
+<ul>
+<li>the evidence listed for at least one of the row’s routes must pass on the running browser and GPU;</li>
+<li>the user’s Custom decode setting must be on;</li>
+<li>HDR and Dolby Vision rows also need the HDR tone mapping setting.</li>
+</ul>
+<p>A retry is never widened.
+HEVC is advertised only in the containers that <code>capability/CustomContainerCodecSupport.ts</code> pairs with it (MP4, M4V, MOV, Matroska, MPEG-TS, M2TS, MTS).
+Resolution, level, frame rate, and bitrate are never gates.</p>
+<p>When Jellyfin direct-plays a row that is negotiated but not eligible, the client rejects it at runtime.
+It falls back to the HTML player in the same session when the stock profile covers the source, and otherwise asks for one renegotiation.</p>
 <h2 id="plain-hevc"><a class="header" href="#plain-hevc">Plain HEVC</a></h2>
 <div class="table-wrapper">
 <table>
@@ -221,14 +214,10 @@ renegotiation.</p>
 </tbody>
 </table>
 </div>
-<p>The SDR rows cover every transfer the engine reads as SDR: BT.709, SMPTE 170M,
-sRGB, and the BT.2020 10 and 12-bit transfers, which use the BT.709 curve. They
-take BT.709, BT.601 (SMPTE 170M, SMPTE 240M, or BT.470 BG), or BT.2020 primaries
-and matrix. The VF-SDR routes leave the color conversion to Chrome, while the
-raw SDR keys stay BT.709 only.</p>
-<p>The HLG row includes HLG-compatible streams, whose VUI signals the BT.2020
-10-bit transfer and whose alternative transfer characteristics SEI names HLG
-(see <a href="#evidence">Other conditions</a>).</p>
+<p>The SDR rows cover every transfer the engine reads as SDR: BT.709, SMPTE 170M, sRGB, and the BT.2020 10 and 12-bit transfers, which use the BT.709 curve.
+They take BT.709, BT.601 (SMPTE 170M, SMPTE 240M, or BT.470 BG), or BT.2020 primaries and matrix.
+The VF-SDR routes leave the color conversion to Chrome, while the raw SDR keys stay BT.709 only.</p>
+<p>The HLG row includes HLG-compatible streams, whose VUI signals the BT.2020 10-bit transfer and whose alternative transfer characteristics SEI names HLG (see <a href="#evidence">Other conditions</a>).</p>
 <h2 id="range-extensions"><a class="header" href="#range-extensions">Range extensions</a></h2>
 <div class="table-wrapper">
 <table>
@@ -239,15 +228,14 @@ raw SDR keys stay BT.709 only.</p>
 <tr><td>SDR, Rext or a named alias, any of the 9 variants</td><td>Yes</td><td>Yes</td><td>RAW in the variant’s exact format, SDR</td><td><code>hevcRangeExtensions[variant]</code> and <code>&lt;format&gt;:bt709:bt709:&lt;limited or full&gt;:sdr</code>; negotiation needs both the limited and the full key</td></tr>
 <tr><td>HDR10, HDR10Plus, or HLG, Rext or a named alias, the 6 variants of 10 or 12 bits</td><td>Yes</td><td>Yes</td><td>RAW in the variant’s exact format, PQ or HLG</td><td><code>hevcRangeExtensions[variant]</code> and <code>&lt;format&gt;:bt2020-ncl:bt2020:limited:&lt;pq or hlg&gt;</code></td></tr>
 <tr><td>Rext with BitDepth omitted but PixelFormat present</td><td>No: the required VideoBitDepth condition cannot match</td><td>Yes: the depth is read from PixelFormat</td><td>RAW in the variant’s exact format</td><td>As the matching row</td></tr>
-<tr><td>Generic Rext monochrome (<code>gray12le</code>), or a PixelFormat that contradicts BitDepth</td><td>Yes, when the generic Rext depth is advertised</td><td>No, <code>codec-unsupported</code></td><td>None</td><td>None</td></tr>
+<tr><td>Generic Rext monochrome (<code>gray12le</code>), or a PixelFormat that contradicts BitDepth</td><td>Yes, when the generic Rext depth is advertised</td><td>No: <code>codec-unsupported</code>, or for an HDR label <code>hdr-codec-unsupported</code>, or <code>hdr-presentation-unavailable</code> when the raw HDR key is not authorized</td><td>None</td><td>None</td></tr>
 </tbody>
 </table>
 </div>
-<p>Jellyfin reports the generic <code>Rext</code> profile, and a profile condition cannot
-express chroma format. Generic <code>Rext</code> is therefore advertised for a bit depth
-and range only when all three chroma formats at that depth pass. Named aliases
-are exact per variant. At runtime the PixelFormat must be exact, and an
-explicit BitDepth must agree with it.</p>
+<p>Jellyfin reports the generic <code>Rext</code> profile, and a profile condition cannot express chroma format.
+Generic <code>Rext</code> is therefore advertised for a bit depth and range only when all three chroma formats at that depth pass.
+Named aliases are exact per variant.
+At runtime the PixelFormat must be exact, and an explicit BitDepth must agree with it.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -267,10 +255,9 @@ explicit BitDepth must agree with it.</p>
 </table>
 </div>
 <h2 id="dolby-vision"><a class="header" href="#dolby-vision">Dolby Vision</a></h2>
-<p>A variant is written as Jellyfin’s range label; the Dolby Vision profile and
-compatibility ID (CCID); the HEVC profile. Main 10 at 10 bits unless stated.
-“Item route” means only the item’s own exact route advertises it (see
-<a href="negotiation.html#what-the-profile-advertises">Negotiation and routes</a>).</p>
+<p>A variant is written as Jellyfin’s range label; the Dolby Vision profile and compatibility ID (CCID); the HEVC profile.
+Main 10 at 10 bits unless stated.
+“Item route” means only the item’s own exact route advertises it (see <a href="negotiation.html#what-the-profile-advertises">Negotiation and routes</a>).</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -296,13 +283,12 @@ compatibility ID (CCID); the HEVC profile. Main 10 at 10 bits unless stated.
 </div>
 <p>Dolby Vision outside HEVC:</p>
 <ul>
-<li>Profile 9 (AVC, 8-bit) has no RPU route, because the engine owns no AVC
-decode path. Its declared SDR base plays through the H.264 routes. Jellyfin
-labels it by transfer, or SDR under a <code>dvav</code> or <code>dva1</code> sample entry.</li>
-<li>Profile 10 (AV1) is deferred and never negotiated. The plugin repository’s
+<li>Profile 9 (AVC, 8-bit) has no RPU route, because the engine owns no AVC decode path.
+Its declared SDR base plays through the H.264 routes.
+Jellyfin labels it by transfer, or SDR under a <code>dvav</code> or <code>dva1</code> sample entry.</li>
+<li>Profile 10 (AV1) is deferred and never negotiated.
 <code>DOLBY_VISION_PROFILE_10_AV1.md</code> (host) records why, and the work list.</li>
-<li>The retired Profiles 0 to 3 and 6 have no RPU route and present only a
-declared base.</li>
+<li>The retired Profiles 0 to 3 and 6 have no RPU route and present only a declared base.</li>
 </ul>
 <h2 id="rejected-at-runtime"><a class="header" href="#rejected-at-runtime">Rejected at runtime</a></h2>
 <div class="table-wrapper">
@@ -318,10 +304,8 @@ declared base.</li>
 </table>
 </div>
 <h2 id="routes"><a class="header" href="#routes">Routes</a></h2>
-<p>A route is the eligibility output: <code>videoOutputMode</code>, <code>videoDecoderBackend</code>,
-<code>rawVideoFrameFormat</code>, <code>dolbyVisionProfile</code>, and <code>nativeHDRTransfer</code>.
-<code>WebGPUPlayer.configurePresentationColorPipeline</code> (host) maps it to a presenter
-input mode.</p>
+<p>A route is the eligibility output: <code>videoOutputMode</code>, <code>videoDecoderBackend</code>, <code>rawVideoFrameFormat</code>, <code>dolbyVisionProfile</code>, and <code>nativeHDRTransfer</code>.
+<code>WebGPUPlayer.configurePresentationColorPipeline</code> (host) maps it to a presenter input mode.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -339,8 +323,7 @@ input mode.</p>
 </tbody>
 </table>
 </div>
-<p>HDR10+ dynamic metadata is applied on VF-PQ, DV base PQ, and RAW PQ, and
-ignored on VF-DV5 and the RAW-DV routes.</p>
+<p>HDR10+ dynamic metadata is applied on VF-PQ, DV base PQ, and RAW PQ, and ignored on VF-DV5 and the RAW-DV routes.</p>
 <h2 id="evidence"><a class="header" href="#evidence">Evidence</a></h2>
 <p>Probes, all in <code>capability/CustomDecodeCapabilities.ts</code>:</p>
 <div class="table-wrapper">
@@ -376,80 +359,55 @@ ignored on VF-DV5 and the RAW-DV routes.</p>
 </tbody>
 </table>
 </div>
-<p><code>I420P10:dovi-rpu-v1</code> and the Profile 7 keys are part of the default Dolby
-Vision prewarm. The Profile 4 keys and the single-layer keys of other formats
-authorize on first use, and the host waits for them before building the profile
-and before eligibility, so a stream that needs one is never offered or started
-on an unsettled probe.</p>
+<p><code>I420P10:dovi-rpu-v1</code> and the Profile 7 keys are part of the default Dolby Vision prewarm.
+The Profile 4 keys and the single-layer keys of other formats authorize on first use, and the host waits for them before building the profile and before eligibility, so a stream that needs one is never offered or started on an unsettled probe.</p>
 <p>Other conditions:</p>
 <ul>
-<li>Native VideoFrame HDR and the DV base routes also need explicit
-ColorTransfer, ColorPrimaries, and ColorSpace values.</li>
-<li>The SPS parser never rejects a VUI color description. It maps each code to a
-WebCodecs name or to unspecified (null), and an SPS without VUI has
-unspecified color. Only the native HDR route check is strict: limited range,
-BT.2020 primaries, the BT.2020 non-constant-luminance matrix, and the route’s
-transfer.</li>
-<li>The transfer that check reads is the key access unit’s alternative transfer
-characteristics SEI value (payload type 147) when one is present, and the
-VUI transfer otherwise. Without the SEI, VF-HLG and DV base HLG also accept
-the BT.2020 10 and 12-bit VUI transfers (14 and 15) of HLG-compatible
-streams. An SEI naming another transfer rejects the HLG route, and a
-malformed SEI counts as absent, as in FFmpeg.</li>
-<li>The DV base ranges are negotiated per item. Without an exact item match,
-those ranges are advertised only through RAW-DV.</li>
-<li>P20 is MV-HEVC. NAL units with a <code>nuh_layer_id</code> above 0, the second view, are
-dropped before decode, and SEI of other layers is ignored.</li>
+<li>Native VideoFrame HDR and the DV base routes also need explicit ColorTransfer, ColorPrimaries, and ColorSpace values.</li>
+<li>The SPS parser never rejects a VUI color description.
+It maps each code to a WebCodecs name or to unspecified (null), and an SPS without VUI has unspecified color.
+Only the native HDR route check is strict: limited range, BT.2020 primaries, the BT.2020 non-constant-luminance matrix, and the route’s transfer.</li>
+<li>The transfer that check reads is the key access unit’s alternative transfer characteristics SEI value (payload type 147) when one is present, and the VUI transfer otherwise.
+Without the SEI, VF-HLG and DV base HLG also accept the BT.2020 10 and 12-bit VUI transfers (14 and 15) of HLG-compatible streams.
+An SEI naming another transfer rejects the HLG route, and a malformed SEI counts as absent, as in FFmpeg.</li>
+<li>The DV base ranges are negotiated per item.
+Without an exact item match, those ranges are advertised only through RAW-DV.</li>
+<li>P20 is MV-HEVC.
+NAL units with a <code>nuh_layer_id</code> above 0, the second view, are dropped before decode, and SEI of other layers is ignored.</li>
 <li>A separate-track P7 (a base track and an EL track) selects the same routes.
-<code>test/capability/CustomPlaybackEligibility.test.ts</code> covers it; the matrix
-does not, because its negotiation model reads a single video stream.</li>
+<code>test/capability/CustomPlaybackEligibility.test.ts</code> covers it; the matrix does not, because its negotiation model reads a single video stream.</li>
 <li>An RPU the parser rejects ends the custom session, which then falls back.
-The parser follows FFmpeg’s <code>dovi_rpudec.c</code>: unknown, misplaced, short, or
-padded display-metadata extension blocks are skipped, and only a block whose
-coded length runs past the payload rejects the RPU.</li>
+The parser follows FFmpeg’s <code>dovi_rpudec.c</code>: unknown, misplaced, short, or padded display-metadata extension blocks are skipped, and only a block whose coded length runs past the payload rejects the RPU.</li>
 </ul>
 <h2 id="not-supported"><a class="header" href="#not-supported">Not supported</a></h2>
-<p>Each item is neither negotiated nor eligible, unless the tables above say it
-is negotiated only.</p>
+<p>Each item is neither negotiated nor eligible, unless the tables above say it is negotiated only.</p>
 <ul>
 <li>HDR10, HDR10Plus, or HLG at 8 bits, under any profile.</li>
-<li>Profile and bit depth contradictions: Main at 10 bits, Main 10 at 8 bits,
-Main 10 at 12 bits.</li>
+<li>Profile and bit depth contradictions: Main at 10 bits, Main 10 at 8 bits, Main 10 at 12 bits.</li>
 <li>14-bit and 16-bit range extensions.</li>
-<li>Monochrome range extensions, which generic Rext negotiates and the runtime
-rejects.</li>
-<li>High Throughput 4:4:4 profiles, Screen Content Coding (<code>Screen-Extended</code>)
-profiles, Main Still Picture, and named Intra aliases such as
-<code>Main 4:4:4 10 Intra</code>. Generic Rext with an intra constraint is the ordinary
-variant.</li>
+<li>Monochrome range extensions, which generic Rext negotiates and the runtime rejects.</li>
+<li>High Throughput 4:4:4 profiles, Screen Content Coding (<code>Screen-Extended</code>) profiles, Main Still Picture, and named Intra aliases such as <code>Main 4:4:4 10 Intra</code>.
+Generic Rext with an intra constraint is the ordinary variant.</li>
 <li>Interlaced HEVC of any profile or range.</li>
 <li>Dolby Vision:
 <ul>
 <li>the invalid configurations in the rejected table;</li>
 <li>Dolby Vision over 8-bit Main without a declared SDR base;</li>
-<li>dual-layer (P4, P7) reconstruction outside I420P10, where only a declared
-base plays;</li>
+<li>dual-layer (P4, P7) reconstruction outside I420P10, where only a declared base plays;</li>
 <li>RPU reconstruction for AVC Profile 9, and all of AV1 Profile 10;</li>
-<li>RPUs the parser rejects: a component that mixes polynomial and MMR pieces
-(the crate keeps one mapping method per component), polynomial linear
-interpolation, a mapping color space other than YCbCr, or a mapping chroma
-format above 4:4:4.</li>
+<li>RPUs the parser rejects: a component that mixes polynomial and MMR pieces (the crate keeps one mapping method per component), polynomial linear interpolation, a mapping color space other than YCbCr, or a mapping chroma format above 4:4:4.</li>
 </ul>
 </li>
 </ul>
 <h2 id="known-issues"><a class="header" href="#known-issues">Known issues</a></h2>
 <ul>
-<li>The P4 and P7 EL is always decoded by the bundled WASM decoder, but
-eligibility never checks that decoder’s qualification. If it fails, playback
-silently drops to the base layer.</li>
-<li>The bundled HEVC decoder’s 3840x2160 limit is not modelled in eligibility. A
-larger source on the <code>bundled-hevc</code> route fails at decode time instead of
-being declined.</li>
-<li>Firefox on Windows has no WebCodecs HEVC (see
-<a href="decisions.html#firefox">Decisions</a>), so every row takes its bundled route.
-Main 8-bit SDR plays through <code>bundled-hevc</code>, and HDR10, HLG, and Dolby
-Vision through RAW, below real time at 4K. Main 10 SDR and the range
-extensions have no bundled route and are not eligible there.</li>
+<li>The P4 and P7 EL is always decoded by the bundled WASM decoder, but eligibility never checks that decoder’s qualification.
+If it fails, playback silently drops to the base layer.</li>
+<li>The bundled HEVC decoder’s 3840x2160 limit is not modelled in eligibility.
+A larger source on the <code>bundled-hevc</code> route fails at decode time instead of being declined.</li>
+<li>Firefox on Windows has no WebCodecs HEVC (see <a href="decisions.html#firefox">Decisions</a>), so a row plays there only through a bundled route.
+Main 8-bit SDR plays through <code>bundled-hevc</code>, and HDR10, HLG, and Dolby Vision through RAW, below real time at 4K.
+Main 10 SDR and the range extensions have no bundled route and are not eligible there.</li>
 </ul>
 
                     </main>

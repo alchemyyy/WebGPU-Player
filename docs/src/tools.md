@@ -1,8 +1,9 @@
 # Tools
 
-`tools/` holds development and validation tooling. Nothing in it ships. Run
-every command from the engine root. `tools/constants.json` is described in
-[Repository layout](layout.md#folder-names-live-in-one-file).
+`tools/` holds development and validation tooling.
+Nothing in it ships.
+Run every command from the engine root.
+`tools/constants.json` is described in [Repository layout](layout.md#folder-names-live-in-one-file).
 
 ## DTS downmix report
 
@@ -11,9 +12,8 @@ npx --no-install vite-node --script tools/report_dts_downmix_reference.ts --chec
 ```
 
 `report_dts_downmix_reference.ts` prints the DTS downmix fingerprint report.
-With `--check` it fails unless every decoded stereo fingerprint matches the
-qualification fingerprint in `src/capability/vectors/test/dts/packets.json`. It
-runs the DTS decoder from `bin/wasm/`, so build the decoders first.
+With `--check` it fails unless every decoded stereo fingerprint matches the qualification fingerprint in `src/capability/vectors/test/dts/packets.json`.
+It runs the DTS decoder from `bin/wasm/`, so build the decoders first.
 
 ## Browser probes
 

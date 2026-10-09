@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c8b0fdbf.js";
+            window.path_to_searchindex_js = "searchindex-9141c141.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -179,7 +179,7 @@
                     <main>
                         <h1 id="webassembly-decoders"><a class="header" href="#webassembly-decoders">WebAssembly decoders</a></h1>
 <p><code>wasm/</code> holds the sources and the build of the engine’s WebAssembly decoders.
-The build writes them to <code>bin/wasm/</code>, which is ignored like the rest of <code>bin/</code>.</p>
+The build writes them to <code>bin/wasm/</code>, which is ignored like everything in <code>bin/</code> but <code>bin/codec_vector_assets/</code>.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -194,21 +194,18 @@ The build writes them to <code>bin/wasm/</code>, which is ignored like the rest 
 </tbody>
 </table>
 </div>
-<p>The <code>.mjs</code> outputs are single-file ES modules with the WASM embedded. Their
-hand-written TypeScript declarations sit beside the bridges as
-<code>&lt;kit&gt;/&lt;kit&gt;.d.mts</code>, and the engine imports them as <code>#wasm/&lt;kit&gt;/&lt;kit&gt;.mjs</code>
-(see <a href="embedding.html">Embedding the engine</a>). The other outputs are served from
-<code>libraries/</code>. The OpenJPEG and hevc.js decoders come from npm packages, which
-<code>scripts/build.mjs</code> copies; nothing here builds them.</p>
+<p>The <code>.mjs</code> outputs are single-file ES modules with the WASM embedded.
+Their hand-written TypeScript declarations sit beside the bridges as <code>&lt;kit&gt;/&lt;kit&gt;.d.mts</code>, and the engine imports them as <code>#wasm/&lt;kit&gt;/&lt;kit&gt;.mjs</code> (see <a href="embedding.html">Embedding the engine</a>).
+The other outputs are served from <code>libraries/</code>.
+The OpenJPEG and hevc.js decoders come from npm packages, which <code>scripts/build.mjs</code> copies; nothing here builds them.</p>
 <h2 id="you-need"><a class="header" href="#you-need">You need</a></h2>
 <ul>
-<li>GNU Make, Git, and a POSIX shell (Git Bash on Windows). No container is
-involved.</li>
+<li>GNU Make, Git, and a POSIX shell (Git Bash on Windows).
+No container is involved.</li>
 <li>Node.js: the Makefile reads the engine’s folders from <code>tools/constants.json</code>.</li>
-<li>Emscripten 4.0.13 (revision <code>2659582941bef14008476903f48941909db1b196</code>),
-activated with <code>emsdk_env</code> or named with <code>EMSDK=/path/to/emsdk</code>.</li>
-<li>rustup, for <code>libdovi</code>. Its <code>rust-toolchain.toml</code> selects Rust 1.96.1 with the
-<code>wasm32-unknown-unknown</code> target.</li>
+<li>Emscripten 4.0.13 (revision <code>2659582941bef14008476903f48941909db1b196</code>), activated with <code>emsdk_env</code> or named with <code>EMSDK=/path/to/emsdk</code>.</li>
+<li>rustup, for <code>libdovi</code>.
+Its <code>rust-toolchain.toml</code> selects Rust 1.96.1 with the <code>wasm32-unknown-unknown</code> target.</li>
 </ul>
 <h2 id="commands"><a class="header" href="#commands">Commands</a></h2>
 <p>Run from the engine root:</p>
@@ -219,59 +216,48 @@ make -C wasm ffmpeg-eac3        # Rebuild one kit
 make -C wasm source-archives    # Write the release source tarballs to wasm/build/source-archives
 make -C wasm clean
 </code></pre>
-<p><code>-j5</code> builds the kits in parallel, and <code>JOBS</code> sets the parallelism inside each
-FFmpeg build. A full <code>check</code> takes several minutes.</p>
+<p><code>-j5</code> builds the kits in parallel, and <code>JOBS</code> sets the parallelism inside each FFmpeg build.
+A full <code>check</code> takes several minutes.</p>
 <h2 id="how-the-build-works"><a class="header" href="#how-the-build-works">How the build works</a></h2>
 <ul>
-<li>Pinned sources. FFmpeg and dcadec are git submodules in the engine’s
-<code>vendor/</code>, pinned to exact commits. They are shallow and marked
-<code>update = none</code>, so a recursive clone of the engine, or of a host that embeds
-it, skips them until <code>make sources</code> fetches them.</li>
-<li>Fresh source trees. Each FFmpeg kit extracts a fresh copy of the pinned tree
-into <code>wasm/build/&lt;kit&gt;/</code> with <code>git archive</code>, then configures and builds it
-there with only that kit’s decoders. Building outside a git checkout keeps
-FFmpeg’s embedded version string and source paths stable.</li>
-<li>Configuration checks. The build fails unless configure enabled exactly the
-whitelisted decoders and kept the LGPL scope: no GPL, nonfree, or version 3
-components.</li>
-<li>A fixed environment. The build sets <code>SOURCE_DATE_EPOCH</code>, the locale, the time
-zone, and the Python hash seed, ignores compiler variables from the calling
-environment, and refuses any Emscripten other than 4.0.13.</li>
-<li>Line endings. Emscripten on Windows writes CRLF into its JavaScript glue; the
-build converts it to LF, so the output does not depend on the host.</li>
-<li>Rust panic paths. Panics embed source paths, so the <code>libdovi</code> build maps the
-cargo home, crate, and target directories to fixed names. With the <code>rust-src</code>
-component installed, rustc rewrites the standard library’s
-<code>/rustc/&lt;commit&gt;</code> paths to the toolchain’s local copy, so the build maps that
-copy back too.</li>
-<li><code>make check</code> rebuilds everything and compares it byte for byte with the
-existing <code>bin/wasm/</code>. Copy another machine’s <code>bin/wasm/</code> in first to check
-that two machines build the same bytes.</li>
+<li>Pinned sources.
+FFmpeg and dcadec are git submodules in the engine’s <code>vendor/</code>, pinned to exact commits.
+They are shallow and marked <code>update = none</code>, so a recursive clone of the engine, or of a host that embeds it, skips them until <code>make sources</code> fetches them.</li>
+<li>Fresh source trees.
+Each FFmpeg kit extracts a fresh copy of the pinned tree into <code>wasm/build/&lt;kit&gt;/</code> with <code>git archive</code>, then configures and builds it there with only that kit’s decoders.
+Building outside a git checkout keeps FFmpeg’s embedded version string and source paths stable.</li>
+<li>Configuration checks.
+The build fails unless configure enabled exactly the whitelisted decoders and kept the LGPL scope: no GPL, nonfree, or version 3 components.</li>
+<li>A fixed environment.
+The build sets <code>SOURCE_DATE_EPOCH</code>, the locale, the time zone, and the Python hash seed, ignores compiler variables from the calling environment, and refuses any Emscripten other than 4.0.13.</li>
+<li>Line endings.
+Emscripten on Windows writes CRLF into its JavaScript glue; the build converts it to LF, so the output does not depend on the host.</li>
+<li>Rust panic paths.
+Panics embed source paths, so the <code>libdovi</code> build maps the cargo home, crate, and target directories to fixed names.
+With the <code>rust-src</code> component installed, rustc rewrites the standard library’s <code>/rustc/&lt;commit&gt;</code> paths to the toolchain’s local copy, so the build maps that copy back too.</li>
+<li><code>make check</code> rebuilds everything and compares it byte for byte with the existing <code>bin/wasm/</code>.
+Copy another machine’s <code>bin/wasm/</code> in first to check that two machines build the same bytes.</li>
 </ul>
 <h2 id="the-dolby-vision-parser-crate"><a class="header" href="#the-dolby-vision-parser-crate">The Dolby Vision parser crate</a></h2>
-<p><code>wasm/libdovi/</code> is our crate. <code>src/lib.rs</code> wraps the <code>dolby_vision</code> crate and
-packs each RPU into the fixed snapshot layout the engine reads
-(<code>video/dolby-vision/DolbyVisionRPUDataLayout.ts</code>).</p>
-<p>The <code>dolby_vision</code> crate is not fetched from GitHub. It is copied from dovi_tool
-rev <code>38adec0</code> into <code>wasm/libdovi/vendor/dolby_vision/</code> and built as a path
-dependency, because the parser follows FFmpeg’s <code>libavcodec/dovi_rpudec.c</code>
-where upstream is stricter. <code>vendor/dolby_vision/PATCHES.md</code> lists every
-deviation from upstream; update it with any change to the copy. The
-<a href="recipes.html#change-the-dolby-vision-parser">Recipes</a> cover a change.</p>
+<p><code>wasm/libdovi/</code> is our crate.
+<code>src/lib.rs</code> wraps the <code>dolby_vision</code> crate and packs each RPU into the fixed snapshot layout the engine reads (<code>video/dolby-vision/DolbyVisionRPUDataLayout.ts</code>).</p>
+<p>The <code>dolby_vision</code> crate is not fetched from GitHub.
+It is copied from dovi_tool rev <code>38adec0</code> into <code>wasm/libdovi/vendor/dolby_vision/</code> and built as a path dependency, because the parser follows FFmpeg’s <code>libavcodec/dovi_rpudec.c</code> where upstream is stricter.
+<code>vendor/dolby_vision/PATCHES.md</code> lists every deviation from upstream; update it with any change to the copy.
+The <a href="recipes.html#change-the-dolby-vision-parser">Recipes</a> cover a change.</p>
 <p>From <code>wasm/libdovi/</code>:</p>
 <pre><code class="language-sh">cargo test --locked
 cargo clippy --locked --all-targets
 </code></pre>
 <h2 id="licenses"><a class="header" href="#licenses">Licenses</a></h2>
 <ul>
-<li>The bridges and the <code>libdovi</code> crate are MIT, like the rest of the engine. The
-vendored <code>dolby_vision</code> crate is MIT too and keeps its own <code>LICENSE</code>.</li>
-<li>FFmpeg and libdcadec are LGPL-2.1-or-later. <code>wasm/licenses/</code> holds their
-license texts.</li>
-<li><code>scripts/build.mjs</code> serves each LGPL decoder with its license, the bridge
-source, and the bridge license. The Makefile pins the exact upstream commits.</li>
-<li>Attach the tarballs from <code>make source-archives</code> to every release: the exact
-FFmpeg and dcadec trees, and the engine’s <code>wasm/</code> sources.</li>
+<li>The bridges and the <code>libdovi</code> crate are MIT, like the rest of the engine.
+The vendored <code>dolby_vision</code> crate is MIT too and keeps its own <code>LICENSE</code>.</li>
+<li>FFmpeg and libdcadec are LGPL-2.1-or-later.
+<code>wasm/licenses/</code> holds their license texts.</li>
+<li><code>scripts/build.mjs</code> serves each LGPL decoder with its license, the bridge source, and the bridge license.
+The Makefile pins the exact upstream commits.</li>
+<li>Attach the tarballs from <code>make source-archives</code> to every release: the exact FFmpeg and dcadec trees, and the engine’s <code>wasm/</code> sources.</li>
 </ul>
 <h2 id="layout"><a class="header" href="#layout">Layout</a></h2>
 <div class="table-wrapper">

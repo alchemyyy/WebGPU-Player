@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c8b0fdbf.js";
+            window.path_to_searchindex_js = "searchindex-9141c141.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -178,67 +178,50 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="embedding-the-engine"><a class="header" href="#embedding-the-engine">Embedding the engine</a></h1>
-<p>A host imports the engine’s TypeScript, serves its prebuilt workers and
-decoders, and configures it once at startup. Read the engine’s folders from
-<code>tools/constants.json</code> (<code>sourceDirectory</code>, <code>scriptsDirectory</code>,
-<code>libraryOutputDirectory</code>, <code>buildInfoFile</code>) rather than restating them.</p>
+<p>A host imports the engine’s TypeScript, serves its prebuilt workers and decoders, and configures it once at startup.
+Read the engine’s folders from <code>tools/constants.json</code> (<code>sourceDirectory</code>, <code>scriptsDirectory</code>, <code>libraryOutputDirectory</code>, <code>buildInfoFile</code>) rather than restating them.</p>
 <h2 id="you-need"><a class="header" href="#you-need">You need</a></h2>
 <ul>
 <li>The engine as a git submodule of the host.</li>
-<li>A bundler that reads a package’s <code>imports</code> field: webpack 5, Vite, and
-esbuild do, without configuration.</li>
-<li>The decoder toolchain from <a href="setup.html">Set up a checkout</a>, for the first build
-of each checkout.</li>
+<li>A bundler that reads a package’s <code>imports</code> field: webpack 5, Vite, and esbuild do, without configuration.</li>
+<li>The decoder toolchain from <a href="setup.html">Set up a checkout</a>, for the first build of each checkout.</li>
 </ul>
 <h2 id="steps"><a class="header" href="#steps">Steps</a></h2>
 <ol>
 <li>
-<p>Make the sources resolvable. Map <code>webgpu-player/*</code> to the engine’s <code>src/*</code>
-in the host’s TypeScript <code>paths</code> and in its bundler alias.</p>
+<p>Make the sources resolvable.
+Map <code>webgpu-player/*</code> to the engine’s <code>src/*</code> in the host’s TypeScript <code>paths</code> and in its bundler alias.</p>
 </li>
 <li>
-<p>Resolve the engine’s own imports. The engine imports its decoder builds as
-<code>#wasm/*</code> and two generated vector modules as <code>#codec_vector_assets/*</code>,
-through the <code>imports</code> field of its <code>package.json</code>:</p>
+<p>Resolve the engine’s own imports.
+The engine imports its decoder builds as <code>#wasm/*</code> and two generated vector modules as <code>#codec_vector_assets/*</code>, through the <code>imports</code> field of its <code>package.json</code>:</p>
 <ul>
-<li><code>#wasm/*</code> points TypeScript (the <code>types</code> condition) at the declarations in
-<code>wasm/*</code>, so type checks need no decoder build, and points bundlers at the
-builds in <code>bin/wasm/*</code>.</li>
+<li><code>#wasm/*</code> points TypeScript (the <code>types</code> condition) at the declarations in <code>wasm/*</code>, so type checks need no decoder build, and points bundlers at the builds in <code>bin/wasm/*</code>.</li>
 <li><code>#codec_vector_assets/*</code> points at <code>bin/codec_vector_assets/*.ts</code>.</li>
 </ul>
-<p>TypeScript reads that field under <code>bundler</code>, <code>node16</code>, or <code>nodenext</code> module
-resolution. A host on <code>node</code> resolution must map each entry in <code>paths</code>, using
-the <code>types</code> target where there is one: <code>#wasm/*</code> to <code>&lt;engine&gt;/wasm/*</code>, and
-<code>#codec_vector_assets/*</code> to <code>&lt;engine&gt;/bin/codec_vector_assets/*.ts</code>. The
-host’s TypeScript loader must also transpile <code>bin/codec_vector_assets/</code> as
-well as <code>src/</code>.</p>
+<p>TypeScript reads that field under <code>bundler</code>, <code>node16</code>, or <code>nodenext</code> module resolution.
+A host on <code>node</code> resolution must map each entry in <code>paths</code>, using the <code>types</code> target where there is one: <code>#wasm/*</code> to <code>&lt;engine&gt;/wasm/*</code>, and <code>#codec_vector_assets/*</code> to <code>&lt;engine&gt;/bin/codec_vector_assets/*.ts</code>.
+The host’s TypeScript loader must transpile <code>bin/codec_vector_assets/</code> as well as <code>src/</code>.</p>
 </li>
 <li>
-<p>Install the engine’s dependencies. Add the engine to the host’s npm
-<code>workspaces</code>, so npm installs them, <code>esbuild</code> for the asset build included.
-Without a workspace, install the engine’s <code>dependencies</code> and <code>esbuild</code> in the
-host.</p>
+<p>Install the engine’s dependencies.
+Add the engine to the host’s npm <code>workspaces</code>, so npm installs them, <code>esbuild</code> for the asset build included.
+Without a workspace, install the engine’s <code>dependencies</code> and <code>esbuild</code> in the host.</p>
 </li>
 <li>
-<p>Build the decoders once per checkout, and again after a decoder source
-changes: <code>make -C &lt;engine&gt;/wasm sources all</code>. The asset build and the
-decoder tests read them from <code>&lt;engine&gt;/bin/wasm/</code>, and the asset build stops
-when that folder is missing.</p>
+<p>Build the decoders once per checkout, and again after a decoder source changes: <code>make -C &lt;engine&gt;/wasm sources all</code>.
+The asset build and the decoder tests read them from <code>&lt;engine&gt;/bin/wasm/</code>, and the asset build stops when that folder is missing.</p>
 </li>
 <li>
-<p>Build the served assets before bundling:
-<code>node &lt;engine&gt;/scripts/build.mjs</code>, with <code>--production</code> for a production
-build. It bundles the six engine workers with esbuild as classic workers,
-because the decoder glue loads through <code>importScripts</code>, and copies the
-decoders, their licenses, and the qualification streams into
-<code>&lt;engine&gt;/bin/libraries/</code>. It also writes <code>&lt;engine&gt;/bin/build-info.json</code>,
-whose <code>assetKey</code> hashes every served file.</p>
+<p>Build the served assets before bundling: <code>node &lt;engine&gt;/scripts/build.mjs</code>, with <code>--production</code> for a production build.
+It bundles the six engine workers with esbuild as classic workers, because the decoder glue loads through <code>importScripts</code>.
+It copies the decoders, their licenses, and the qualification streams into <code>&lt;engine&gt;/bin/libraries/</code>.
+It also writes <code>&lt;engine&gt;/bin/build-info.json</code>, whose <code>assetKey</code> hashes every served file.</p>
 </li>
 <li>
-<p>Serve <code>&lt;engine&gt;/bin/libraries/</code> unmodified, and do not minify it again. The
-default asset base is <code>libraries/</code> beside the page. Workers live in its
-<code>webgpu-player/</code> folder and resolve the other assets relative to their own
-URL, so keep the layout intact.</p>
+<p>Serve <code>&lt;engine&gt;/bin/libraries/</code> unmodified, and do not minify it again.
+The default asset base is <code>libraries/</code> beside the page.
+Workers live in its <code>webgpu-player/</code> folder and resolve the other assets relative to their own URL, so keep the layout intact.</p>
 </li>
 <li>
 <p>Configure the engine at startup:</p>
@@ -255,31 +238,23 @@ configureEngineFeatureFlags({ isHDRToneMappingEnabled: () =&gt; Promise.resolve(
 </ol>
 <h2 id="how-assets-are-named-and-served"><a class="header" href="#how-assets-are-named-and-served">How assets are named and served</a></h2>
 <ul>
-<li><code>src/EngineAssets.ts</code> names every runtime asset, <code>scripts/library-assets.mjs</code>
-maps each served file to its source, and the <code>EngineAssets</code> test keeps the
-two in agreement. <code>scripts/build.mjs</code> fails when an asset it maps is missing,
-which also stops a host build that runs it.</li>
-<li>Asset URLs are stable. The cache key is appended as <code>?v=</code>, so a browser never
-mixes files from two builds.</li>
-<li>Engine workers are served at <code>libraries/webgpu-player/&lt;Name&gt;.worker.js</code>, not
-as host bundler chunks.</li>
-<li>Qualification streams are served with a <code>.bin</code> extension, because Jellyfin’s
-static file provider rejects unknown extensions. The generated ones come from
-<code>bin/codec_vector_assets/</code>, the hand-made ones from
-<code>src/capability/vectors/qualification/</code>.</li>
-<li>The served folder holds each decoder’s license beside it. The LGPL decoders’
-corresponding source is published with each release; see
-<a href="decoders.html#licenses">WebAssembly decoders</a>.</li>
+<li><code>src/EngineAssets.ts</code> names every runtime asset, <code>scripts/library-assets.mjs</code> maps each served file to its source, and the <code>EngineAssets</code> test keeps the two in agreement.
+<code>scripts/build.mjs</code> fails when an asset it maps is missing, which also stops a host build that runs it.</li>
+<li>Asset URLs are stable.
+The cache key is appended as <code>?v=</code>, so a browser never mixes files from two builds.</li>
+<li>Engine workers are served at <code>libraries/webgpu-player/&lt;Name&gt;.worker.js</code>, not as host bundler chunks.</li>
+<li>Qualification streams are served with a <code>.bin</code> extension, because Jellyfin’s static file provider rejects unknown extensions.
+The generated ones come from <code>bin/codec_vector_assets/</code>, the hand-made ones from <code>src/capability/vectors/qualification/</code>.</li>
+<li>The served folder holds each decoder’s license beside it.
+The LGPL decoders’ corresponding source is published with each release; see <a href="decoders.html#licenses">WebAssembly decoders</a>.</li>
 </ul>
 <h2 id="gotchas"><a class="header" href="#gotchas">Gotchas</a></h2>
 <ul>
-<li>Reload the page fully after deploying a new build. Open pages keep their old
-bundles; engine workers and decoders change their <code>?v=</code> key with every build.</li>
-<li>A bundler dev server that runs the asset build at configuration load must be
-restarted after an engine worker changes.</li>
-<li>WebGPU needs a secure context. Over plain HTTP on a LAN address, a host that
-still selects the WebGPU player plays HTML pass-through only, which proves
-nothing.</li>
+<li>Reload the page fully after deploying a new build.
+Open pages keep their old bundles; engine workers and decoders change their <code>?v=</code> key with every build.</li>
+<li>A bundler dev server that runs the asset build at configuration load must be restarted after an engine worker changes.</li>
+<li>WebGPU needs a secure context.
+Over plain HTTP on a LAN address, a host that still selects the WebGPU player plays HTML pass-through only, which proves nothing.</li>
 </ul>
 
                     </main>

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c8b0fdbf.js";
+            window.path_to_searchindex_js = "searchindex-9141c141.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -178,45 +178,40 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="maintaining-this-book"><a class="header" href="#maintaining-this-book">Maintaining this book</a></h1>
-<p>The book is the engine’s only documentation, for people and for coding agents
-alike. It is built with <a href="https://github.com/rust-lang/mdBook">mdBook</a> 0.5.</p>
+<p>The book is the engine’s only documentation.
+It is built with <a href="https://github.com/rust-lang/mdBook">mdBook</a> 0.5.</p>
 <h2 id="build-and-read-it"><a class="header" href="#build-and-read-it">Build and read it</a></h2>
 <ol>
 <li>Install mdBook once: <code>cargo install mdbook --version 0.5.4 --locked</code>.</li>
-<li>From the engine root, run <code>mdbook serve docs --open</code> while editing; it
-rebuilds on every save.</li>
-<li>Before committing, run <code>mdbook build docs</code>. It writes the ignored
-<code>docs/book/</code> and fails on a broken <code>SUMMARY.md</code>.</li>
+<li>From the engine root, run <code>mdbook serve docs --open</code> while editing; it rebuilds on every save.</li>
+<li>Before committing, run <code>mdbook build docs</code>.
+It fails on a broken <code>SUMMARY.md</code>, and it rewrites <code>docs/book/</code>, which is tracked.
+Commit the rebuilt book with the chapters it was built from.</li>
 </ol>
-<p><code>docs/book.toml</code> holds the configuration, and <code>docs/src/SUMMARY.md</code> the table
-of contents. A chapter that is not listed in <code>SUMMARY.md</code> is not built.</p>
+<p><code>docs/book.toml</code> holds the configuration, and <code>docs/src/SUMMARY.md</code> the table of contents.
+A chapter that is not listed in <code>SUMMARY.md</code> is not built.</p>
 <h2 id="when-to-update-it"><a class="header" href="#when-to-update-it">When to update it</a></h2>
 <p>Update the chapter in the same change that alters what it describes:</p>
 <ul>
-<li>a route, a probe, a route key, or an eligibility rule: <a href="negotiation.html">Negotiation and
-routes</a> and <a href="codec-support.html">HEVC and Dolby Vision support</a>;</li>
-<li>a file added, moved, or removed: <a href="module-map.html">Module map</a>, and
-<a href="layout.html">Repository layout</a> for a folder;</li>
+<li>a route, a probe, a route key, or an eligibility rule: <a href="negotiation.html">Negotiation and routes</a> and <a href="codec-support.html">HEVC and Dolby Vision support</a>;</li>
+<li>a file added, moved, or removed: <a href="module-map.html">Module map</a>, and <a href="layout.html">Repository layout</a> for a folder;</li>
 <li>a decoder or a build step: <a href="decoders.html">WebAssembly decoders</a>;</li>
 <li>a vector or a generator: <a href="codec-vectors.html">Codec vectors</a>;</li>
-<li>a settled investigation: <a href="decisions.html">Decisions</a>. Treat it as append-only:
-revise an entry when the facts change, rather than adding a contradicting
-one.</li>
+<li>a settled investigation: <a href="decisions.html">Decisions</a>.
+Never delete an entry; revise it when its facts change, rather than adding one that contradicts it.</li>
 </ul>
 <h2 id="how-to-write-it"><a class="header" href="#how-to-write-it">How to write it</a></h2>
 <ul>
-<li>Record durable facts: architecture, routes, layout, procedures, and
-decisions. Git already records history and working-tree state, so there are
-no changelogs, status snapshots, or “uncommitted” notes.</li>
-<li>Write procedures as recipes: what you need, numbered steps, then how to
-check the result.</li>
-<li>Prefer plain sentences and short lists. Use a table only for data that has
-columns. Keep bold, callouts, and decoration out.</li>
+<li>Record durable facts: architecture, routes, layout, procedures, and decisions.
+Git already records history and working-tree state, so there are no changelogs, status snapshots, or “uncommitted” notes.</li>
+<li>Write procedures as recipes: what you need, numbered steps, then how to check the result.</li>
+<li>Prefer plain sentences and short lists.
+Use a table only for data that has columns.
+Keep bold, callouts, and decoration out.</li>
+<li>Put each sentence on its own line; never wrap a line at a fixed column.</li>
 <li>Use ASCII only.</li>
-<li>Follow the path conventions in the <a href="introduction.html">Introduction</a>: engine
-paths from the engine root, host paths from the plugin root marked (host).</li>
-<li>Never include credentials, server addresses, item IDs, media titles or
-paths, or absolute machine paths.</li>
+<li>Follow the path conventions in the <a href="introduction.html">Introduction</a>: engine paths from the engine root, host paths from the plugin root marked (host).</li>
+<li>Never include credentials, server addresses, item IDs, media titles or paths, or absolute machine paths.</li>
 </ul>
 
                     </main>

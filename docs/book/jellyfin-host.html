@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c8b0fdbf.js";
+            window.path_to_searchindex_js = "searchindex-9141c141.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -178,10 +178,9 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="the-jellyfin-host"><a class="header" href="#the-jellyfin-host">The Jellyfin host</a></h1>
-<p>The engine’s host is the Jellyfin server plugin <code>jellyfin-plugin-webgpu-player</code>
-and its web client add-on. Together they add the WebGPU Player to an
-unmodified Jellyfin Web. Paths in this chapter are relative to the plugin
-repository root; the plugin’s own <code>README.md</code> covers the server side in full.</p>
+<p>The engine’s host is the Jellyfin server plugin <code>jellyfin-plugin-webgpu-player</code> and its web client add-on.
+Together they add the WebGPU Player to an unmodified Jellyfin Web.
+Paths in this chapter are relative to the plugin repository root; the plugin’s own <code>README.md</code> covers the server side in full.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -199,32 +198,21 @@ repository root; the plugin’s own <code>README.md</code> covers the server sid
 </div>
 <h2 id="how-the-add-on-reaches-the-page"><a class="header" href="#how-the-add-on-reaches-the-page">How the add-on reaches the page</a></h2>
 <ol>
-<li>The server plugin rewrites two Jellyfin Web files, through the File
-Transformation plugin when it is installed and through its own middleware
-otherwise. <code>index.html</code> gets a bootstrap script that sets
-<code>window.WebGPUPlayerConfig</code> (the asset base URL) and defines
-<code>window.WebGPUPlayer</code>, a factory that imports the add-on entry. <code>config.json</code>
-gets <code>WebGPUPlayer</code> appended to its <code>plugins</code> list.</li>
-<li>Jellyfin Web’s plugin manager loads <code>WebGPUPlayer</code> through its window plugin
-path and constructs it with its dependency bag.</li>
-<li><code>jellyfin-webgpu-client/src/index.ts</code> configures the engine: the asset base
-is the add-on route plus <code>libraries/</code>, the cache key is the engine build’s
-asset key, and <code>isHDRToneMappingEnabled</code> reads the user’s preference. It then
-binds the host bridge, installs the host-compatible mode, and returns a
-<code>HostCompatibleWebGPUPlayer</code>.</li>
-<li>The plugin serves the add-on build at <code>&lt;BaseUrl&gt;/WebGPUPlayer/assets/&lt;path&gt;</code>,
-the engine’s served folder included.</li>
+<li>The server plugin rewrites two Jellyfin Web files, through the File Transformation plugin when it is installed and through its own middleware otherwise.
+<code>index.html</code> gets a bootstrap script that sets <code>window.WebGPUPlayerConfig</code> (the asset base URL) and defines <code>window.WebGPUPlayer</code>, a factory that imports the add-on entry.
+<code>config.json</code> gets <code>WebGPUPlayer</code> appended to its <code>plugins</code> list.</li>
+<li>Jellyfin Web’s plugin manager loads <code>WebGPUPlayer</code> through its window plugin path and constructs it with its dependency bag.</li>
+<li><code>jellyfin-webgpu-client/src/index.ts</code> configures the engine: the asset base is the add-on route plus <code>libraries/</code>, the cache key is the engine build’s asset key, and <code>isHDRToneMappingEnabled</code> reads the user’s preference.
+It then binds the host bridge, installs the host-compatible mode, and returns a <code>HostCompatibleWebGPUPlayer</code>.</li>
+<li>The plugin serves the add-on build at <code>&lt;BaseUrl&gt;/WebGPUPlayer/assets/&lt;path&gt;</code>, the engine’s served folder included.</li>
 </ol>
 <h2 id="the-player"><a class="header" href="#the-player">The player</a></h2>
-<p><code>WebGPUPlayer</code> (<code>jellyfin-webgpu-client/src/WebGPUPlayer.ts</code>) is the player
-PlaybackManager sees: id <code>webgpuplayer</code>, priority 0, and
-<code>syncPlayWrapAs = 'htmlvideoplayer'</code>. It owns an HTML player, the add-on’s own
-copy in <code>src/backend/htmlVideoPlayer/</code>, which is both the HTML backend and the
-event and UI shell of the custom path. <a href="architecture.html">Architecture</a> and
-<a href="negotiation.html">Negotiation and routes</a> follow a session through it.</p>
+<p><code>WebGPUPlayer</code> (<code>jellyfin-webgpu-client/src/WebGPUPlayer.ts</code>) is the player PlaybackManager sees: id <code>webgpuplayer</code>, priority 0, and <code>syncPlayWrapAs = 'htmlvideoplayer'</code>.
+It owns an HTML player, the add-on’s own copy in <code>src/backend/htmlVideoPlayer/</code>, which is both the HTML backend and the event and UI shell of the custom path.
+<a href="architecture.html">Architecture</a> and <a href="negotiation.html">Negotiation and routes</a> follow a session through it.</p>
 <h2 id="host-compatible-mode"><a class="header" href="#host-compatible-mode">Host-compatible mode</a></h2>
-<p>The player was written against PlaybackManager seams that stock Jellyfin Web
-does not have. The add-on supplies each one itself:</p>
+<p>The player relies on PlaybackManager seams that stock Jellyfin Web does not have.
+The add-on supplies each one itself:</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -239,35 +227,28 @@ does not have. The add-on supplies each one itself:</p>
 </tbody>
 </table>
 </div>
-<p><code>src/host/</code> binds the host’s singletons from the plugin bag at construction,
-so evaluating the add-on’s modules never touches them. <code>src/shims/</code> replaces
-host modules the add-on cannot import directly.</p>
+<p><code>src/host/</code> binds the host’s singletons from the plugin bag at construction, so evaluating the add-on’s modules never touches them.
+<code>src/shims/</code> replaces host modules the add-on cannot import directly.</p>
 <h2 id="settings"><a class="header" href="#settings">Settings</a></h2>
 <p>Every setting is local to the browser profile.</p>
 <ul>
-<li><code>WebGPUUserSettings.ts</code> stores render controls, the automatic peak, downmix,
-the output device, and the playback preferences in localStorage under
-<code>&lt;userId&gt;-webGPUPlaybackSettings</code> (version 2).</li>
-<li>Custom decode and HDR tone mapping (<code>WebGPUPlaybackPreferences.ts</code>) default
-to on. They shape the device profile, so a playback keeps the values its
-negotiation adopted, and a change applies from the next negotiation.</li>
-<li>The player preference (Auto, WebGPU, or HTML) is the user setting
-<code>preferredVideoPlayer</code>, stored as <code>&lt;userId&gt;-preferredVideoPlayer</code>.</li>
+<li><code>WebGPUUserSettings.ts</code> stores render controls, the automatic peak, downmix, the output device, and the playback preferences in localStorage under <code>&lt;userId&gt;-webGPUPlaybackSettings</code> (version 2).</li>
+<li>Custom decode and HDR tone mapping (<code>WebGPUPlaybackPreferences.ts</code>) default to on.
+They shape the device profile, so a playback keeps the values its negotiation adopted, and a change applies from the next negotiation.</li>
+<li>The player preference (Auto, WebGPU, or HTML) is the user setting <code>preferredVideoPlayer</code>, stored as <code>&lt;userId&gt;-preferredVideoPlayer</code>.</li>
 </ul>
 <h2 id="build-and-check"><a class="header" href="#build-and-check">Build and check</a></h2>
-<p>You need Node.js 24 and npm 11, the decoder toolchain from
-<a href="setup.html">Set up a checkout</a>, and a Jellyfin Web checkout. The checkout is a
-read-only input; an unmodified upstream one works. The server plugin also needs
-the .NET 10 SDK.</p>
+<p>You need Node.js 24 and npm 11, the decoder toolchain from <a href="setup.html">Set up a checkout</a>, and a Jellyfin Web checkout.
+The checkout is a read-only input; an unmodified upstream one works.
+The server plugin also needs the .NET 10 SDK.</p>
 <ol>
 <li>
-<p>In the plugin root, run <code>git submodule update --init</code>. Then run <code>npm ci</code> in
-<code>jellyfin-webgpu-client/</code>.</p>
+<p>In the plugin root, run <code>git submodule update --init</code>.
+Then run <code>npm ci</code> in <code>jellyfin-webgpu-client/</code>.</p>
 </li>
 <li>
-<p>Point <code>JELLYFIN_WEB_DIR</code> at the Jellyfin Web checkout, as an absolute path or
-one relative to <code>jellyfin-webgpu-client/</code>. The default is
-<code>../../jellyfin-web</code>.</p>
+<p>Point <code>JELLYFIN_WEB_DIR</code> at the Jellyfin Web checkout, as an absolute path or one relative to <code>jellyfin-webgpu-client/</code>.
+The default is <code>../../jellyfin-web</code>.</p>
 </li>
 <li>
 <p>In <code>jellyfin-webgpu-client/</code>, run:</p>
@@ -280,38 +261,23 @@ npm run build
 </ol>
 <p>What they do:</p>
 <ul>
-<li>Every script first writes the ignored <code>tsconfig.host.json</code>, which maps the
-host’s module specifiers into <code>JELLYFIN_WEB_DIR</code> and the engine’s <code>imports</code>
-into <code>paths</code>, because the add-on’s <code>node</code> module resolution does not read
-them.</li>
-<li><code>typecheck</code> checks the add-on, its tests, and the engine sources against the
-host’s types. It reports only the add-on’s and the engine’s diagnostics,
-because the host’s own dependencies are not installed.</li>
-<li><code>lint</code> runs ESLint over the add-on and its tests, and over the engine’s
-<code>src/</code> and <code>test/</code>.</li>
-<li><code>test</code> runs the add-on’s suites; <code>npm test -w webgpu-player</code> runs the
-engine’s.</li>
-<li><code>build</code> builds the hls.js fork when its <code>dist</code> is missing, runs the engine’s
-asset build, copies <code>bin/libraries/</code> into the add-on’s <code>libraries/</code>, and
-writes the add-on to <code>bin/jellyfin-webgpu-client/</code>.</li>
-<li><code>./build.sh</code> in the plugin root builds the decoders (when <code>bin/wasm/</code> is
-missing), the add-on, and the plugin that embeds it.</li>
+<li>Every script first writes the ignored <code>tsconfig.host.json</code>, which maps the host’s module specifiers into <code>JELLYFIN_WEB_DIR</code> and the engine’s <code>imports</code> into <code>paths</code>, because the add-on’s <code>node</code> module resolution does not read them.</li>
+<li><code>typecheck</code> checks the add-on, its tests, and the engine sources against the host’s types.
+It reports only the add-on’s and the engine’s diagnostics, because the host’s own dependencies are not installed.</li>
+<li><code>lint</code> runs ESLint over the add-on and its tests, and over the engine’s <code>src/</code> and <code>test/</code>.</li>
+<li><code>test</code> runs the add-on’s suites; <code>npm test -w webgpu-player</code> runs the engine’s.</li>
+<li><code>build</code> builds the hls.js fork when its <code>dist</code> is missing, runs the engine’s asset build, copies <code>bin/libraries/</code> into the add-on’s <code>libraries/</code>, and writes the add-on to <code>bin/jellyfin-webgpu-client/</code>.</li>
+<li><code>./build.sh</code> in the plugin root builds the decoders (when <code>bin/wasm/</code> is missing), the add-on, and the plugin that embeds it.</li>
 </ul>
 <h2 id="gotchas"><a class="header" href="#gotchas">Gotchas</a></h2>
 <ul>
 <li>Never write into the Jellyfin Web checkout.</li>
-<li><code>node_modules/webgpu-player</code> is npm’s workspace junction to
-<code>vendor/webgpu-player</code>. Remove it alone (<code>cmd /c rmdir</code>) before deleting
-<code>node_modules</code> with a tool that follows junctions, or the engine checkout is
-deleted with it.</li>
-<li>After the hls.js submodule moves, delete <code>vendor/webgpu-player-hls/dist</code>; the
-build rebuilds it only when it is missing.</li>
-<li>The playback tester parses the <code>getStats()</code> labels <code>Playback pipeline</code>,
-<code>Decoded / presented frames</code>, and <code>Dropped / queued frames</code>. Renaming them
-breaks its playback proof.</li>
-<li>File Transformation passes Jellyfin’s 304 responses through untransformed, so
-a browser that cached the stock files before the install needs one hard
-refresh.</li>
+<li><code>node_modules/webgpu-player</code> is npm’s workspace junction to <code>vendor/webgpu-player</code>.
+Remove it alone (<code>cmd /c rmdir</code>) before deleting <code>node_modules</code> with a tool that follows junctions, or the engine checkout is deleted with it.</li>
+<li>After the hls.js submodule moves, delete <code>vendor/webgpu-player-hls/dist</code>; the build rebuilds it only when it is missing.</li>
+<li>The external playback tester, which is in neither repository, parses the <code>getStats()</code> labels <code>Playback pipeline</code>, <code>Decoded / presented frames</code>, and <code>Dropped / queued frames</code>.
+They come from the <code>WebGPUStats*</code> strings in <code>jellyfin-webgpu-client/src/strings/en-us.json</code> (host), so renaming them, or running a translated UI, breaks its playback proof.</li>
+<li>File Transformation passes Jellyfin’s 304 responses through untransformed, so a browser that cached the stock files before the install needs one hard refresh.</li>
 </ul>
 
                     </main>

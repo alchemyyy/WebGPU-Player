@@ -1,105 +1,84 @@
 # HDR10+ Follow-Ups
 
-Four separate fixes. Two are small and touch only the engine. The other two
-need new plumbing, and one of those depends on Mediabunny. There is also a
-quick negotiation fix. This comes from reading the code plus the research
-results; nothing has been changed yet.
+Four separate fixes.
+Two are small and touch only the engine.
+The other two need new plumbing, and one of those depends on Mediabunny.
+There is also a quick negotiation fix.
 
-Engine paths are relative to the engine root. Host paths are relative to the
-plugin repository root and marked (host).
+Engine paths are relative to the engine root.
+Host paths are relative to the plugin repository root and marked (host).
 
 ## 1. Accept "profile A" HDR10+ (about half a day, engine only)
 
-Profile A streams have no tone-mapping curve and a target peak of 0. They are
-legal, and they are the common shape, but the parser rejects them as
-malformed. Three places have to change together:
+Profile A streams have no tone-mapping curve and a target peak of 0.
+They are legal, and they are the common shape, but the parser rejects them as malformed.
+Three places have to change together:
 
-- Parser: `src/video/hdr/HDR10PlusMetadata.ts` must accept a target peak of 0,
-  both while parsing and in the check at the worker boundary.
-- Renderer: `src/presentation/RenderSettings.ts` should use the curve mode only
-  when a curve is present. The "peak at least 1" rule should apply only there.
+- Parser: `src/video/hdr/HDR10PlusMetadata.ts` must accept a target peak of 0, both while parsing and in the check at the worker boundary.
+- Renderer: `src/presentation/RenderSettings.ts` should use the curve mode only when a curve is present.
+  The "peak at least 1" rule should apply only there.
   A profile A frame then uses the scene peak/average mode.
 - Tests: add a profile A vector and one of hdr10plus_tool's MIT sample streams.
 
-If the three do not change together, frames fail the worker check or the
-uniform write throws and playback falls back.
+If the three do not change together, frames fail the worker check or the uniform write throws and playback falls back.
 
 ## 2. Reuse the last metadata on frames without it (about half a day, needs a decision)
 
-FFmpeg keeps the last HDR10+ metadata until new metadata replaces it or the
-decoder flushes. x265's `--dhdr10-opt` relies on that: in its sample, 18 of 30
-frames carry none. Today the engine switches to static tone mapping on those
-frames, mid-scene.
+FFmpeg keeps the last HDR10+ metadata until new metadata replaces it or the decoder flushes.
+x265's `--dhdr10-opt` relies on that: in its sample, 18 of 30 frames carry none.
+The engine switches to static tone mapping on those frames, mid-scene.
 
-The fix: keep the last valid metadata for the current decode run, and reset it
-on seek or a new run (each seek already starts a new worker). It reverses
-behavior pinned by `test/presentation/WebGPUPresenter.test.ts:1800`, so it
-needs a decision on whether to adopt FFmpeg's behavior, and on whether a
-malformed payload keeps the old metadata or clears it.
+The fix: keep the last valid metadata for the current decode run, and reset it on seek or a new run (each seek already starts a new worker).
+It reverses behavior pinned by the `applies per-frame HDR10+ metadata and clears it on fallback and seek` test in `test/presentation/WebGPUPresenter.test.ts`.
+It needs a decision on whether to adopt FFmpeg's behavior, and on whether a malformed payload keeps the old metadata or clears it.
 
 ## 3. Negotiation: AV1/VP9 labeled HDR10Plus never direct-plays (a few hours, add-on)
 
-The add-on adds the HDR10Plus label only to HEVC routes
-(`jellyfin-webgpu-client/src/custom/CustomDeviceProfile.ts:275`, host). AV1 and
-VP9 raw routes advertise only HDR10 and HLG. So when Jellyfin labels an AV1 or
-VP9 stream HDR10Plus, it is never direct-played through the custom pipeline,
-even though the engine would already accept it.
+The add-on adds the HDR10Plus label only to HEVC routes (`jellyfin-webgpu-client/src/custom/CustomDeviceProfile.ts:getAuthorizedRawHEVCHDRVideoRangeTypes`, host).
+AV1 and VP9 raw routes advertise only HDR10 and HLG.
+When Jellyfin labels an AV1 or VP9 stream HDR10Plus, the stream is never direct-played through the custom pipeline, even though the engine would accept it.
 
-HDR10+ always carries a static HDR10 base. Advertising HDR10Plus on those
-routes now would play the base correctly, and the dynamic metadata would follow
-once 4 and 5 land. This also needs new rows in the host's negotiation test
-matrix.
+HDR10+ always carries a static HDR10 base.
+Advertising HDR10Plus on those routes would play that base as HDR10, and the dynamic metadata would follow once 4 and 5 land.
+This also needs new rows in the host's negotiation test matrix.
 
 ## 4. HDR10+ in AV1 (about 2 to 3 days)
 
-AV1 carries HDR10+ in metadata OBUs inside each frame's data, in MP4 and
-Matroska alike. Today AV1 frames reach the engine only through Mediabunny's
-decoded-frame sink, which hides the packet bytes, so the metadata is never
-seen. It needs:
+AV1 carries HDR10+ in metadata OBUs inside each frame's data, in MP4 and Matroska alike.
+AV1 frames reach the engine only through Mediabunny's decoded-frame sink, which hides the packet bytes, so the metadata is never seen.
+Reading it needs:
 
-- Our own AV1 decode path: read packets with Mediabunny's packet sink, scan
-  them for metadata OBUs, and feed WebCodecs ourselves. This mirrors the
-  existing HEVC path (`streamOwnedHEVCFrames` in
-  `src/pipeline/CustomDecode.worker.ts`).
-- An OBU scanner: pick out the HDR10+ OBUs, then reuse the existing payload
-  parser unchanged.
-- A codec-neutral metadata queue: the current one
-  (`src/video/hdr/HEVCDynamicHDRMetadataQueue.ts`) matches metadata to decoded
-  frames by timestamp, which suits AV1 too. It just needs to stop being
-  HEVC-specific.
-- Static HDR metadata (optional, about half a day more): AV1 mastering display
-  and content light levels, from OBUs or the container. These are not read for
-  AV1 either.
+- Our own AV1 decode path: read packets with Mediabunny's packet sink, scan them for metadata OBUs, and feed WebCodecs ourselves.
+  This mirrors the existing HEVC path (`streamOwnedHEVCFrames` in `src/pipeline/CustomDecode.worker.ts`).
+- An OBU scanner: pick out the HDR10+ OBUs, then reuse the existing payload parser unchanged.
+- A codec-neutral metadata queue: the current one (`src/video/hdr/HEVCDynamicHDRMetadataQueue.ts`) matches metadata to decoded frames by timestamp, which suits AV1 too.
+  It only needs to stop being HEVC-specific.
+- Static HDR metadata (optional, about half a day more): AV1 mastering display and content light levels, from OBUs or the container.
+  These are not read for AV1 either.
 - A test vector, generated by a Python script with a pinned encoder.
 
-The decode path and the generalized queue are exactly what the Dolby Vision
-Profile 10 note lists (work items 3 to 5 in the plugin repository's
-`DOLBY_VISION_PROFILE_10_AV1.md`), so this work is shared with Profile 10.
+The AV1 decode path is work item 5 of the Dolby Vision Profile 10 note (`DOLBY_VISION_PROFILE_10_AV1.md` in the plugin repository), and its OBU splitter (item 3) scans the same packets, so that work is shared with Profile 10.
+That note's item 4 generalizes a different queue, `DolbyVisionEncodedMetadataQueue`.
 
 ## 5. HDR10+ in WebM/Matroska side data, mainly VP9 (about 1 to 2 days, plus a Mediabunny decision)
 
-VP9 has no in-frame metadata, so its HDR10+ lives in Matroska BlockAdditional
-elements. Mediabunny 1.52.2 drops those: its packet side data type has only
-`alpha`. Three ways to get it:
+VP9 has no in-frame metadata, so its HDR10+ lives in Matroska BlockAdditional elements.
+Mediabunny 1.52.2 drops those: its packet side data type has only `alpha`.
+Three ways to get it:
 
-- Upstream: a Mediabunny PR that exposes these side data entries. This is the
-  cleanest, but it is a public action that needs the owner's go-ahead, and it
-  means waiting for a release.
-- A contained override in the engine: the same kind of hook already used for
-  Mediabunny's missing Dolby Vision sample entries
-  (`src/video/dolby-vision/ISOBaseMediaDolbyVisionSampleEntry.ts`). It is
-  faster, but fragile across Mediabunny upgrades.
+- Upstream: a Mediabunny PR that exposes these side data entries.
+  It needs no workaround in the engine, but it means waiting for a release.
+- A contained override in the engine: the kind of hook the engine already uses for Mediabunny's missing Dolby Vision sample entries (`src/video/dolby-vision/ISOBaseMediaDolbyVisionSampleEntry.ts`).
+  It is faster, but fragile across Mediabunny upgrades.
 - A local patch to the installed Mediabunny.
 
-Any of these also needs our own VP9 decode path, the same shape as the AV1 one
-in 4. A VP9 test vector should be possible with FFmpeg alone (libvpx-vp9 passes
-HDR10+ side data through to WebM), but that is unverified with the pinned
-build.
+Any of these also needs our own VP9 decode path, the same shape as the AV1 one in 4.
+A VP9 test vector should be possible with FFmpeg alone (libvpx-vp9 passes HDR10+ side data through to WebM), but that is unverified with the pinned build.
 
 ## Recommended order
 
-1. Do 1, 3, and, if agreed, 2 first. That is about a day, and it fixes common
-   HEVC HDR10+ files plus the AV1/VP9 negotiation gap.
+1. Do 1, 3, and, if agreed, 2 first.
+   That is about a day, and it fixes common HEVC HDR10+ files plus the AV1/VP9 negotiation gap.
 2. Then 4, which is also most of the groundwork for Profile 10.
 3. Then 5, once the Mediabunny approach is chosen.
 
@@ -108,4 +87,5 @@ Altogether, roughly 5 to 7 days.
 ## Open decisions
 
 - Whether to start with 1 and 3.
-- Whether to adopt FFmpeg's carry-forward behavior for 2.
+- Whether to adopt FFmpeg's carry-forward behavior for 2, and whether a malformed payload keeps the old metadata or clears it.
+- Which Mediabunny approach to take for 5.

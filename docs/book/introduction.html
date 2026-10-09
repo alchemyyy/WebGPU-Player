@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c8b0fdbf.js";
+            window.path_to_searchindex_js = "searchindex-9141c141.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -178,52 +178,44 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="webgpu-player"><a class="header" href="#webgpu-player">WebGPU Player</a></h1>
-<p>WebGPU Player is a media playback engine for the browser. It plays sources a
-browser cannot play natively, and presents HDR and Dolby Vision through its own
-color pipeline.</p>
+<p>WebGPU Player is a media playback engine for the browser.
+It plays sources a browser cannot play natively, and presents HDR and Dolby Vision through its own color pipeline.</p>
 <ul>
 <li>Demux: <a href="https://github.com/Vanilagy/mediabunny">Mediabunny</a>, in a worker.</li>
-<li>Decode: WebCodecs, or WebAssembly decoders built from FFmpeg, libdcadec,
-hevc.js, and OpenJPEG.</li>
+<li>Decode: WebCodecs, or WebAssembly decoders built from FFmpeg, libdcadec, hevc.js, and OpenJPEG.</li>
 <li>Present: WebGPU, with tone mapping for HDR10, HDR10+, HLG, and Dolby Vision.</li>
 <li>Audio: an AudioWorklet output that owns the playback clock.</li>
 </ul>
 <p>The engine gives a host page two layers:</p>
 <ol>
-<li>A custom pipeline for direct-play sources the browser has qualified. Demux,
-decode, presentation, and audio all run in the engine.</li>
-<li>WebGPU presentation of frames the host’s own <code>&lt;video&gt;</code> element decodes, for
-color control of SDR video.</li>
+<li>A custom pipeline for direct-play sources the browser has qualified.
+Demux, decode, presentation, and audio all run in the engine.</li>
+<li>WebGPU presentation of frames the host’s own <code>&lt;video&gt;</code> element decodes, for color control of SDR video.</li>
 </ol>
-<p>Nothing is offered until the running browser has proven it. A decode route is
-qualified by decoding a known stream and checking the exact output. An HDR or
-Dolby Vision presentation is authorized by rendering a known input through the
-production shader on the current GPU device.</p>
-<p>The engine knows nothing about Jellyfin. Its host today is the Jellyfin plugin
-<code>jellyfin-plugin-webgpu-player</code>: the plugin’s web client add-on embeds the
-engine as a git submodule at <code>jellyfin-webgpu-client/vendor/webgpu-player/</code>,
-and supplies the Jellyfin player, the device profile, the settings, and the
-HTML fallback. See <a href="jellyfin-host.html">The Jellyfin host</a>.</p>
+<p>Nothing is offered until the running browser has proven it.
+A decode route is qualified by decoding a known stream and checking the exact output.
+An HDR or Dolby Vision presentation is authorized by rendering a known input through the production shader on the current GPU device.</p>
+<p>The engine knows nothing about Jellyfin.
+Its host is the Jellyfin plugin <code>jellyfin-plugin-webgpu-player</code>.
+The plugin’s web client add-on embeds the engine as a git submodule at <code>jellyfin-webgpu-client/vendor/webgpu-player/</code>, and supplies the Jellyfin player, the device profile, the settings, and the HTML fallback.
+See <a href="jellyfin-host.html">The Jellyfin host</a>.</p>
 <h2 id="invariants"><a class="header" href="#invariants">Invariants</a></h2>
 <ul>
-<li>Negotiation advertises only what the selected route implements and has
-exact-output evidence for. A route is never gated on resolution, level, frame
-rate, bitrate, or a throughput benchmark.</li>
-<li><code>capability/CustomContainerCodecSupport.ts</code> is the only table of which
-container carries which codec. There are no decoder pair blacklists.</li>
-<li>A failure in the custom pipeline falls back to the host’s HTML player in the
-same session, or asks for one renegotiation. A player is never selected
-recursively.</li>
-<li>WebGPU needs a secure context. Validate over HTTPS against a local server. A
-successful negotiation is not a successful playback.</li>
+<li>Negotiation advertises only what the selected route implements and has exact-output evidence for.
+A route is never gated on resolution, level, frame rate, bitrate, or a throughput benchmark.</li>
+<li><code>capability/CustomContainerCodecSupport.ts</code> is the only table of which container carries which codec.
+There are no decoder pair blacklists.</li>
+<li>A failure in the custom pipeline falls back to the host’s HTML player in the same session, or asks for one renegotiation.
+A player is never selected recursively.</li>
+<li>WebGPU needs a secure context.
+Validate over HTTPS against a local server.
+A successful negotiation is not a successful playback.</li>
 </ul>
 <h2 id="conventions"><a class="header" href="#conventions">Conventions</a></h2>
 <ul>
-<li>Engine paths are relative to the engine root. Paths inside <code>src/</code> may drop
-the prefix; <code>capability/</code>, <code>pipeline/</code>, <code>audio/</code>, <code>video/</code>, <code>presentation/</code>,
-<code>color/</code>, and <code>validation/</code> are its domains.</li>
-<li>Host paths are relative to the plugin repository root and marked (host), for
-example <code>jellyfin-webgpu-client/src/WebGPUPlayer.ts</code> (host).</li>
+<li>Engine paths are relative to the engine root.
+Paths inside <code>src/</code> may drop the prefix; <code>capability/</code>, <code>pipeline/</code>, <code>audio/</code>, <code>video/</code>, <code>presentation/</code>, <code>color/</code>, and <code>validation/</code> are its domains.</li>
+<li>Host paths are relative to the plugin repository root and marked (host), for example <code>jellyfin-webgpu-client/src/WebGPUPlayer.ts</code> (host).</li>
 <li>Symbols are written <code>file:symbol</code> or <code>Class.method</code>.</li>
 </ul>
 <h2 id="where-to-look"><a class="header" href="#where-to-look">Where to look</a></h2>

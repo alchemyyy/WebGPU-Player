@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c8b0fdbf.js";
+            window.path_to_searchindex_js = "searchindex-9141c141.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -201,16 +201,14 @@
 <p><code>bin/</code> holds:</p>
 <ul>
 <li><code>bin/wasm/</code>: the decoder builds from <code>make -C wasm</code>.</li>
-<li><code>bin/libraries/</code> and <code>bin/build-info.json</code>: the served assets from
-<code>npm run build</code>.</li>
-<li><code>bin/playback_smoke_media/</code>: local playback media from the smoke media
-generators.</li>
-<li><code>bin/codec_vector_assets/</code>: the generated codec vectors. This is the one
-committed folder, so every change to a vector shows in review.</li>
+<li><code>bin/libraries/</code> and <code>bin/build-info.json</code>: the served assets from <code>npm run build</code>.</li>
+<li><code>bin/playback_smoke_media/</code>: local playback media from the smoke media generators.</li>
+<li><code>bin/codec_vector_assets/</code>: the generated codec vectors.
+This is the one committed folder, so every change to a vector shows in review.</li>
 </ul>
 <h2 id="folder-names-live-in-one-file"><a class="header" href="#folder-names-live-in-one-file">Folder names live in one file</a></h2>
-<p><code>tools/constants.json</code> names every engine folder. Read a path from it instead
-of spelling it out, so moving a folder is a one-line change.</p>
+<p><code>tools/constants.json</code> names every engine folder.
+Read a path from it instead of spelling it out, so moving a folder is a one-line change.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -227,8 +225,8 @@ of spelling it out, so moving a folder is a one-line change.</p>
 </tbody>
 </table>
 </div>
-<p>Some files cannot read it. <a href="recipes.html#move-an-engine-folder">Recipes</a> lists
-them.</p>
+<p>Some files cannot read it.
+<a href="recipes.html#move-an-engine-folder">Recipes</a> lists them.</p>
 
                     </main>
 

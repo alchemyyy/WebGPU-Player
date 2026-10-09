@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c8b0fdbf.js";
+            window.path_to_searchindex_js = "searchindex-9141c141.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -178,351 +178,216 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="module-map"><a class="header" href="#module-map">Module map</a></h1>
-<p>One line per file or family. <code>[main]</code>, <code>[worker]</code>, and <code>[worklet]</code> mark the
-thread where it is not obvious. Each source file’s tests are at the same
-relative path under <code>test/</code>, and integration suites that span several modules
-sit beside their main module.</p>
+<p>One entry per file or family.
+<code>[main]</code>, <code>[worker]</code>, and <code>[worklet]</code> mark the thread where it is not obvious.
+Each source file’s tests are at the same relative path under <code>test/</code>, and integration suites that span several modules sit beside their main module.</p>
 <h2 id="src"><a class="header" href="#src">src/</a></h2>
 <ul>
-<li><code>EngineAssets.ts</code>: the typed manifest of every runtime asset path, and URL
-resolution against the host’s asset base or, inside a worker, the worker’s
-own URL.</li>
+<li><code>EngineAssets.ts</code>: the typed manifest of every runtime asset path, and URL resolution against the host’s asset base or, inside a worker, the worker’s own URL.</li>
 <li><code>EngineConfiguration.ts</code>: the feature flags a host can set.</li>
-<li><code>MediaTime.ts</code>: branded integer microseconds and conversions to Jellyfin
-ticks.</li>
+<li><code>MediaTime.ts</code>: branded integer microseconds and conversions to Jellyfin ticks.</li>
 <li><code>TimeMath.ts</code>: safe-integer microsecond math.</li>
 <li><code>style.scss</code>: presenter and overlay styles, imported by the host.</li>
 </ul>
 <h2 id="presentation"><a class="header" href="#presentation">presentation/</a></h2>
 <ul>
-<li><code>WebGPUPresenter.ts</code>: the GPU device and canvas; rVFC and pushed-frame
-submission; installing the color pipeline; HDR and Dolby Vision
-authorization; device-loss recovery; the latched fallback.</li>
-<li><code>RawYUVGPURenderer.ts</code>: uploads raw YUV planes, and a Dolby Vision EL, into
-integer textures and draws them. Authorization shares it.</li>
-<li><code>PresentationInput.ts</code>: MediaStream metadata to color metadata; Dolby Vision
-descriptors with their RPU route; declared and exact native base metadata;
-the presented video ordinal; the known-SDR gate.</li>
-<li><code>PresentationGeometry.ts</code>: pure object-fit and object-position math to
-viewport and texture transforms.</li>
-<li><code>RenderSettings.ts</code>: versioned (v7) HDR-to-SDR settings and their 144-byte
-uniform, HDR10+ fields included.</li>
+<li><code>WebGPUPresenter.ts</code>: the GPU device and canvas; rVFC and pushed-frame submission; installing the color pipeline; HDR and Dolby Vision authorization; device-loss recovery; the latched fallback.</li>
+<li><code>RawYUVGPURenderer.ts</code>: uploads raw YUV planes, and a Dolby Vision EL, into integer textures and draws them.
+Authorization shares it.</li>
+<li><code>PresentationInput.ts</code>: MediaStream metadata to color metadata; Dolby Vision descriptors with their RPU route; declared and exact native base metadata; the presented video ordinal; the known-SDR gate.</li>
+<li><code>PresentationGeometry.ts</code>: pure object-fit and object-position math to viewport and texture transforms.</li>
+<li><code>RenderSettings.ts</code>: versioned (v7) HDR-to-SDR settings and their 144-byte uniform, HDR10+ fields included.</li>
 <li><code>identity.wgsl.ts</code>: the passthrough <code>texture_external</code> shader with crop.</li>
 </ul>
 <h2 id="color"><a class="header" href="#color">color/</a></h2>
 <ul>
-<li><code>ColorMetadata.ts</code>: the input color schema, validation, and SDR, PQ, and HLG
-factories.</li>
-<li><code>ColorPipeline.ts</code>: the CPU reference of range, matrix, transfer, gamut,
-tone mapping, and display controls, and the luminance, YUV matrix, gamut,
-and IPT tables for BT.709, BT.2020, and BT.601 that the shaders share.</li>
-<li><code>ColorPipelineShader.ts</code>: WGSL generators for raw YUV, external HDR code
-recovery, and external and raw Dolby Vision (FEL included), plus the shared
-<code>processColor</code>.</li>
-<li><code>DolbyVisionColorTransform.ts</code>: RPU reshaping (polynomial and MMR), the FEL
-NLQ residual, and reconstruction to BT.2020 PQ, as a CPU reference and as
-WGSL.</li>
+<li><code>ColorMetadata.ts</code>: the input color schema, validation, and SDR, PQ, and HLG factories.</li>
+<li><code>ColorPipeline.ts</code>: the CPU reference of range, matrix, transfer, gamut, tone mapping, and display controls, and the luminance, YUV matrix, gamut, and IPT tables for BT.709, BT.2020, and BT.601 that the shaders share.</li>
+<li><code>ColorPipelineShader.ts</code>: WGSL generators for raw YUV, external HDR code recovery, and external and raw Dolby Vision (FEL included), plus the shared <code>processColor</code>.</li>
+<li><code>DolbyVisionColorTransform.ts</code>: RPU reshaping (polynomial and MMR), the FEL NLQ residual, and reconstruction to BT.2020 PQ, as a CPU reference and as WGSL.</li>
 </ul>
 <h2 id="capability"><a class="header" href="#capability">capability/</a></h2>
 <ul>
 <li><code>CustomContainerCodecSupport.ts</code>: the single container and codec matrix.</li>
-<li><code>CustomPlaybackEligibility.ts</code>: per-session route choice, the
-player-selection prefilter, and <code>hasEligibleCustomVideoRoute</code> for item-scoped
-negotiation.</li>
-<li><code>CustomDecodeCapabilities.ts</code>: the cached orchestrator of every capability
-probe, and the codec lists.</li>
+<li><code>CustomPlaybackEligibility.ts</code>: per-session route choice, the player-selection prefilter, and <code>hasEligibleCustomVideoRoute</code> for item-scoped negotiation.</li>
+<li><code>CustomDecodeCapabilities.ts</code>: the cached orchestrator of every capability probe, and the codec lists.</li>
 <li><code>CustomPlaybackRuntime.ts</code>: runtime feature detection with failure reasons.</li>
-<li><code>H264ProfileCapabilities.ts</code>: the per-profile H.264 decoded-output probe and
-Jellyfin’s profile names.</li>
-<li><code>HEVCRangeExtensionCapabilities.ts</code>: the nine range-extension variant
-definitions and the stream metadata resolver.</li>
-<li><code>NativeMediaAudioCapabilities.ts</code>: the MSE AC-3/E-AC-3 route probe and its
-selection.</li>
+<li><code>H264ProfileCapabilities.ts</code>: the per-profile H.264 decoded-output probe and Jellyfin’s profile names.</li>
+<li><code>HEVCRangeExtensionCapabilities.ts</code>: the nine range-extension variant definitions and the stream metadata resolver.</li>
+<li><code>NativeMediaAudioCapabilities.ts</code>: the MSE AC-3/E-AC-3 route probe and its selection.</li>
 </ul>
 <h3 id="capabilityexact"><a class="header" href="#capabilityexact">capability/exact/</a></h3>
-<p>Qualification of the bundled decoders. Their vectors are in
-<code>capability/vectors/</code> and, for DTS and TrueHD, in the generated modules in
-<code>bin/codec_vector_assets/</code>.</p>
+<p>Qualification of the bundled decoders.
+Their vectors are in <code>capability/vectors/</code> and <code>bin/codec_vector_assets/</code>, which holds the generated DTS and TrueHD modules and the JPEG 2000 and MPEG-2 streams.</p>
 <ul>
-<li><code>HEVCExactCapability{Probe,Probe.worker,Protocol,WorkerRuntime}.ts</code>: bundled
-HEVC (8-frame fingerprints).</li>
-<li><code>DTSExactCapability{Probe,Probe.worker,Protocol,Runner}.ts</code>: libdcadec (7
-vectors, real-time factor of at least 2).</li>
-<li><code>TrueHDExactCapability{Probe,Probe.worker,Protocol,Runner}.ts</code>: TrueHD and
-MLP (4 vectors, major-sync recovery).</li>
-<li><code>JPEG2000ExactCapability{Probe,Probe.worker,Protocol}.ts</code>: OpenJPEG
-(a 960x540 RGBA fingerprint).</li>
-<li><code>MPEG2VC1ExactCapability{Probe,Probe.worker,Protocol}.ts</code>: MPEG-2 and VC-1
-(12 frames, an I420 fingerprint).</li>
+<li><code>HEVCExactCapability{Probe,Probe.worker,Protocol,WorkerRuntime}.ts</code>: bundled HEVC (8-frame fingerprints).</li>
+<li><code>DTSExactCapability{Probe,Probe.worker,Protocol,Runner}.ts</code>: libdcadec (7 vectors, real-time factor of at least 2).</li>
+<li><code>TrueHDExactCapability{Probe,Probe.worker,Protocol,Runner}.ts</code>: TrueHD and MLP (4 vectors, major-sync recovery).</li>
+<li><code>JPEG2000ExactCapability{Probe,Probe.worker,Protocol}.ts</code>: OpenJPEG (a 960x540 RGBA fingerprint).</li>
+<li><code>MPEG2VC1ExactCapability{Probe,Probe.worker,Protocol}.ts</code>: MPEG-2 and VC-1 (12 frames, an I420 fingerprint).</li>
 </ul>
 <h3 id="capabilityvectors"><a class="header" href="#capabilityvectors">capability/vectors/</a></h3>
-<p>Hand-made vectors: known inputs with known answers. Qualification vectors run
-in the browser before a route is advertised; test vectors feed only tests and
-generators. The TypeScript modules are embedded in the bundle; the binary files
-are served or read as files.</p>
+<p>Hand-made vectors: known inputs with known answers.
+Qualification vectors run in the browser before a route is advertised; test vectors feed only tests and generators.
+The TypeScript modules are embedded in the bundle; the binary files are served or read as files.</p>
 <ul>
-<li><code>HEVCExactCapabilityVectors.ts</code>: HEVC access units and 8-frame fingerprints,
-which also feed the native HEVC probes.</li>
+<li><code>HEVCExactCapabilityVectors.ts</code>: HEVC access units and 8-frame fingerprints, which also feed the native HEVC probes.</li>
 <li><code>NativeMediaAudioCapabilityVectors.ts</code>: fMP4 AC-3/E-AC-3 vectors.</li>
-<li><code>NativeAudioCapabilityVectors.ts</code>: stereo silence packets per WebCodecs
-codec.</li>
+<li><code>NativeAudioCapabilityVectors.ts</code>: stereo silence packets per WebCodecs codec.</li>
 <li><code>NativeSurroundAudioCapabilityVectors.ts</code>: 5.1 silence packets.</li>
 <li><code>NativeVideoCapabilityVectors.ts</code>: 64x64 VP8, VP9, and AV1 keyframes.</li>
-<li><code>NativeUltraHDVideoCapabilityVectors.ts</code>: 4K 8-bit HEVC, VP9, and AV1
-keyframes.</li>
-<li><code>RawHDRCapabilityVectors.ts</code>: 4K 10-bit VP9 and AV1 keyframes with plane
-fingerprints.</li>
-<li><code>ExternalHDRAuthorizationVector.ts</code>: the neutralized Main 10 access unit and
-its expected samples, for external HDR authorization.</li>
-<li><code>DolbyVisionAuthorizationVector.ts</code>: synthetic RPU snapshots for Dolby Vision
-authorization.</li>
-<li><code>HDR10PlusVectors.ts</code>: deterministic HDR10+ HEVC access units for the
-dynamic HDR tests.</li>
-<li><code>qualification/</code>: streams served at runtime that no script generates: the
-HEVC Main 10 4K stream (<code>hevc/</code>) and the VC-1 stream (<code>vc1/</code>).</li>
-<li><code>test/</code>: inputs only tests and generators read: DTS samples, a TrueHD
-Matroska remux, and Dolby Vision RPU payloads.</li>
+<li><code>NativeUltraHDVideoCapabilityVectors.ts</code>: 4K 8-bit HEVC, VP9, and AV1 keyframes.</li>
+<li><code>RawHDRCapabilityVectors.ts</code>: 4K 10-bit VP9 and AV1 keyframes with plane fingerprints.</li>
+<li><code>ExternalHDRAuthorizationVector.ts</code>: the neutralized Main 10 access unit and its expected samples, for external HDR authorization.</li>
+<li><code>DolbyVisionAuthorizationVector.ts</code>: synthetic RPU snapshots for Dolby Vision authorization.</li>
+<li><code>HDR10PlusVectors.ts</code>: deterministic HDR10+ HEVC access units for the dynamic HDR tests.</li>
+<li><code>qualification/</code>: streams served at runtime that no script generates: the HEVC Main 10 4K stream (<code>hevc/</code>) and the VC-1 stream (<code>vc1/</code>).</li>
+<li><code>test/</code>: inputs only tests and generators read: DTS samples, a TrueHD Matroska remux, and Dolby Vision RPU payloads.</li>
 </ul>
 <h2 id="pipeline"><a class="header" href="#pipeline">pipeline/</a></h2>
 <ul>
-<li><code>CustomPlaybackController.ts</code> [main]: lifecycle, generations, the clock, the
-startup (20 s), stall (10 s), and lag (2 s) policy, the live audio output
-layout switch, the end-of-stream drain, and the fallback disposition.</li>
-<li><code>CustomPlaybackControllerTypes.ts</code>: states, events, fallback reasons, and
-dispositions.</li>
-<li><code>CustomDecodeSession.ts</code> [main]: one worker per generation, the frame queue,
-credits, raw buffer recycling, readiness, and audio-only resync epochs.</li>
-<li><code>CustomDecode.worker.ts</code> [worker]: demux, decoder dispatch, raw copy, Dolby
-Vision and HDR metadata, the PCM pipeline as restartable audio attempts, fMP4
-remux, and credit waits.</li>
-<li><code>DecodeWorkerProtocol.ts</code>: messages, validators, credit constants (4, 2, 8),
-and the backend and output literals.</li>
-<li><code>CustomDecodeTrackSelection.ts</code>, <code>ConcurrentDecodeStreams.ts</code>: track
-selection and concurrent stream helpers.</li>
-<li><code>MediaClock.ts</code> [main]: the generation-tagged clock; <code>synchronize</code>
-re-anchors it.</li>
+<li><code>CustomPlaybackController.ts</code> [main]: lifecycle, generations, the clock, the startup (20 s without progress, 60 s ceiling), stall (10 s), and lag (2 s) policy, the live audio output layout switch, the end-of-stream and ended-track drains, and the fallback disposition.</li>
+<li><code>CustomPlaybackControllerTypes.ts</code>: states, events, fallback reasons, and dispositions.</li>
+<li><code>CustomDecodeSession.ts</code> [main]: one worker per generation, the frame queue, credits, raw buffer recycling, readiness, audio-only resync epochs, the decoded source format, and an ended audio track completing a start, a resync, or a native-media stream.</li>
+<li><code>CustomDecode.worker.ts</code> [worker]: demux, decoder dispatch, raw copy, Dolby Vision and HDR metadata, the PCM pipeline as restartable audio attempts, fMP4 remux, and credit waits.</li>
+<li><code>DecodeWorkerProtocol.ts</code>: messages, validators, credit constants (4, 2, 8), and the backend and output literals.</li>
+<li><code>CustomDecodeTrackSelection.ts</code>, <code>ConcurrentDecodeStreams.ts</code>: track lookup by ordinal within one media type, and concurrent decode streams that cancel each other on the first failure and all drain before the worker reports that the generation stopped.</li>
+<li><code>MediaClock.ts</code> [main]: the generation-tagged clock; <code>synchronize</code> re-anchors it.</li>
 <li><code>MediaFetchPolicy.ts</code>: retries only transport errors and 408, 429, and 5xx.</li>
-<li><code>HTTPRangeResponse.ts</code>: validates Range responses, Jellyfin’s cross-origin
-206 included.</li>
+<li><code>HTTPRangeResponse.ts</code>: validates Range responses, Jellyfin’s cross-origin 206 included.</li>
 </ul>
 <h2 id="video"><a class="header" href="#video">video/</a></h2>
 <p>All worker code unless marked.</p>
 <ul>
 <li><code>DecodedVideoGeometry.ts</code> [main and worker]: the first-decoded-size lock.</li>
-<li><code>RawVideoFrameCopy.ts</code>: copies a <code>VideoFrame</code>, or a software decoder’s
-sample of CPU planes without one, into aligned planar buffers (I420 to
-I444P12, base and enhancement layers), up to 128 MiB per transfer.</li>
-<li><code>RawFrameBufferPool.ts</code>: reusable raw buffers, bounded by the raw credits
-(2).</li>
+<li><code>RawVideoFrameCopy.ts</code>: copies a <code>VideoFrame</code>, or a software decoder’s sample of CPU planes without one, into aligned plane buffers (NV12, and I420 to I444P12; base and enhancement layers), up to 128 MiB per transfer.</li>
+<li><code>RawFrameBufferPool.ts</code>: reusable raw buffers, bounded by the raw credits (2).</li>
 <li><code>MatroskaVFWVideoConfiguration.ts</code>: extracts the VC-1 <code>WVC1</code> extradata.</li>
 </ul>
 <h3 id="videodecoders"><a class="header" href="#videodecoders">video/decoders/</a></h3>
 <ul>
-<li><code>OwnedNativeHEVCVideoDecoder.ts</code>: the engine’s own WebCodecs HEVC decoder:
-NAL order fix, leading RASL drop, optional SPS neutralization.</li>
-<li><code>HEVCSoftwareVideoDecoder.ts</code>: the <code>@hevcjs/core</code> decoder (I420 and
-I420P10) with a shutdown registry.</li>
+<li><code>OwnedNativeHEVCVideoDecoder.ts</code>: the engine’s own WebCodecs HEVC decoder: NAL order fix, leading RASL drop, optional SPS neutralization.</li>
+<li><code>HEVCSoftwareVideoDecoder.ts</code>: the <code>@hevcjs/core</code> decoder (I420 and I420P10) with a shutdown registry.</li>
 <li><code>HEVCDecoderBackend.ts</code>: the low-level <code>@hevcjs/core</code> WASM binding.</li>
 <li><code>JPEG2000SoftwareVideoDecoder.ts</code>: OpenJPEG WASM to an RGBA <code>VideoFrame</code>.</li>
 <li><code>MPEG2VC1SoftwareVideoDecoder.ts</code>: FFmpeg WASM MPEG-2 and VC-1 to I420.</li>
 </ul>
 <h3 id="videodolby-vision"><a class="header" href="#videodolby-vision">video/dolby-vision/</a></h3>
 <ul>
-<li><code>DolbyVisionProfiles.ts</code> [main and worker]: the dual-layer profile set (P4,
-P7).</li>
-<li><code>DolbyVisionHEVCSplitter.ts</code>: NAL parsing; the BL, RPU (62), and EL (63)
-split; RASL handling; in-band SPS neutralization; drops NAL units of layers
-above 0, the MV-HEVC second view.</li>
-<li><code>DolbyVisionEncodedMetadata.ts</code>, <code>DolbyVisionEncodedMetadataProtocol.ts</code>:
-per-packet RPU parsing, PTS-keyed metadata, and the transferable schema.</li>
-<li><code>DolbyVisionEncodedPacketPairer.ts</code>, <code>DolbyVisionFramePairQueue.ts</code>: BL and
-EL packet and frame pairing (1 us tolerance).</li>
-<li><code>DolbyVisionRPUParser.ts</code>, <code>DolbyVisionRPUParserSession.ts</code>,
-<code>DolbyVisionRPUDataLayout.ts</code>: the libdovi WASM parser, its per-run session,
-and the packed 3232-byte snapshot layout.</li>
-<li><code>ISOBaseMediaDolbyVisionSampleEntry.ts</code>: gives Mediabunny’s unmapped <code>dvh1</code>,
-<code>dvhe</code>, <code>dva1</code>, <code>dvav</code>, and <code>dav1</code> tracks their wrapped codec.</li>
-<li><code>MatroskaDolbyVisionHVCE.ts</code>, <code>ISOBaseMediaDolbyVisionConfiguration.ts</code>,
-<code>MPEGTransportStreamDolbyVisionConfiguration.ts</code>: find a P4 or P7 EL
-configuration in Matroska; in MP4, as a separate EL track or as <code>hvcE</code> beside
-the BL <code>hvcC</code> of one interleaved track; or in MPEG-TS and M2TS (descriptor
-versions 1 and 2).</li>
-<li><code>DolbyVisionGeometry.ts</code> [main and worker]: the P4 and P7 EL coded size (half
-the BL when the BL is wider than 1920).</li>
+<li><code>DolbyVisionProfiles.ts</code> [main and worker]: the dual-layer profile set (P4, P7).</li>
+<li><code>DolbyVisionHEVCSplitter.ts</code>: NAL parsing; the BL, RPU (62), and EL (63) split; RASL handling; in-band SPS neutralization; drops NAL units of layers above 0, the MV-HEVC second view.</li>
+<li><code>DolbyVisionEncodedMetadata.ts</code>, <code>DolbyVisionEncodedMetadataProtocol.ts</code>: per-packet RPU parsing, PTS-keyed metadata, and the transferable schema.</li>
+<li><code>DolbyVisionEncodedPacketPairer.ts</code>, <code>DolbyVisionFramePairQueue.ts</code>: BL and EL packet and frame pairing (1 us tolerance).</li>
+<li><code>DolbyVisionRPUParser.ts</code>, <code>DolbyVisionRPUParserSession.ts</code>, <code>DolbyVisionRPUDataLayout.ts</code>: the libdovi WASM parser, its per-run session, and the packed 3232-byte snapshot layout.</li>
+<li><code>ISOBaseMediaDolbyVisionSampleEntry.ts</code>: gives Mediabunny’s unmapped <code>dvh1</code>, <code>dvhe</code>, <code>dva1</code>, <code>dvav</code>, and <code>dav1</code> tracks their wrapped codec.</li>
+<li><code>MatroskaDolbyVisionHVCE.ts</code>, <code>ISOBaseMediaDolbyVisionConfiguration.ts</code>, <code>MPEGTransportStreamDolbyVisionConfiguration.ts</code>: find a P4 or P7 EL configuration in Matroska; in MP4, as a separate EL track or as <code>hvcE</code> beside the BL <code>hvcC</code> of one interleaved track; or in MPEG-TS and M2TS (any descriptor version).</li>
+<li><code>DolbyVisionGeometry.ts</code> [main and worker]: the P4 and P7 EL coded size (half the BL when the BL is wider than 1920).</li>
 </ul>
 <h3 id="videohdr"><a class="header" href="#videohdr">video/hdr/</a></h3>
 <ul>
-<li><code>HDR10PlusMetadata.ts</code>, <code>HEVCDynamicHDRMetadataQueue.ts</code>: ST 2094-40
-parsing and PTS matching to decoded frames.</li>
+<li><code>HDR10PlusMetadata.ts</code>, <code>HEVCDynamicHDRMetadataQueue.ts</code>: ST 2094-40 parsing and PTS matching to decoded frames.</li>
 <li><code>HEVCStaticHDRMetadata.ts</code>: the MDCV and CLL startup scan.</li>
-<li><code>StaticHDRMetadata.ts</code> [main and worker]: the MDCV and CLL luminance schema,
-the scan-result validators shared across the worker boundary, and the static
-tone mapping source peak.</li>
+<li><code>StaticHDRMetadata.ts</code> [main and worker]: the MDCV and CLL luminance schema, the scan-result validators shared across the worker boundary, and the static tone mapping source peak.</li>
 </ul>
 <h3 id="videohevc"><a class="header" href="#videohevc">video/hevc/</a></h3>
 <ul>
-<li><code>HEVCSEI.ts</code>, <code>HEVCSPSParser.ts</code>: SEI extraction and the alternative
-transfer characteristics value; SPS parsing, the VUI color mapping to
-WebCodecs names, and the VUI rewrite with its native HDR route check.</li>
-<li><code>NativeHDRHEVCColorNeutralizer.ts</code>: rewrites the <code>hvcC</code> SPS and the decoder
-colorSpace to limited BT.709 for the native external HDR route.</li>
+<li><code>HEVCSEI.ts</code>, <code>HEVCSPSParser.ts</code>: SEI extraction and the alternative transfer characteristics value; SPS parsing, the VUI color mapping to WebCodecs names, and the VUI rewrite with its native HDR route check.</li>
+<li><code>NativeHDRHEVCColorNeutralizer.ts</code>: rewrites the <code>hvcC</code> SPS and the decoder colorSpace to limited BT.709 for the native external HDR route.</li>
 </ul>
 <h2 id="audio"><a class="header" href="#audio">audio/</a></h2>
 <ul>
-<li><code>CustomAudioCodec.ts</code>: the WebCodecs, Mediabunny PCM, and bundled codec
-lists.</li>
+<li><code>CustomAudioCodec.ts</code>: the WebCodecs, Mediabunny PCM, and bundled codec lists.</li>
 <li><code>CustomAudioSampleRate.ts</code>: the 3000 to 192000 Hz integer contract.</li>
-<li><code>CustomCompressedAudioRoute.ts</code>: the E-AC-3, DTS, and TrueHD route tables and
-predicates.</li>
-<li><code>CustomAudioOutputPolicy.ts</code>: input channels per codec, and the 48 kHz 2, 6,
-and 8-channel output contract.</li>
-<li><code>NativeMultichannelAudioOutput.ts</code>: <code>selectCustomAudioOutputChannelCount</code>.</li>
+<li><code>CustomCompressedAudioRoute.ts</code>: the E-AC-3, DTS, and TrueHD route tables and predicates, with their Jellyfin ChannelLayout requirements.</li>
+<li><code>CustomAudioOutputPolicy.ts</code>: input channels per codec, the 3.0 layout requirement for decoders without a speaker mask, and the 48 kHz 2, 6, and 8-channel output contract with its 2 s ring.</li>
+<li><code>CustomAudioTrackMetadata.ts</code> [worker]: the Matroska and ISO BMFF DTS and TrueHD tracks the bundled decoders own, declared-rate recovery for their sample entries, and the decoded audio timestamp tolerance.</li>
+<li><code>AudioStartPacket.ts</code> [worker]: the packet an audio attempt starts from, without Mediabunny’s proof scans when the track starts late.</li>
+<li><code>NativeMultichannelAudioOutput.ts</code>: <code>selectCustomAudioOutputChannelCount</code>, the output layout rule (three channels and 5.1 to 5.1, 6.1 and 7.1 to 7.1 or 5.1, otherwise stereo).</li>
 <li><code>AudioNormalization.ts</code>: TrackGain and AlbumGain decibels to linear gain.</li>
 <li><code>AudioSampleWindow.ts</code>: PCM windowing at a seek.</li>
 </ul>
 <h3 id="audiodecoders"><a class="header" href="#audiodecoders">audio/decoders/</a></h3>
 <ul>
-<li><code>AC3SoftwareAudioDecoder.ts</code>, <code>EAC3SoftwareAudioDecoder.ts</code>,
-<code>DTSSoftwareAudioDecoder.ts</code>, <code>TrueHDSoftwareAudioDecoder.ts</code> [worker]: the
-<code>@mediabunny/ac3</code> registration and the lazily loaded WASM decoders. E-AC-3
-reports its channel layout.</li>
-<li><code>DTSSeekRecovery.ts</code>: the 1 s DTS preroll and a bounded tolerance for XLL
-sync errors.</li>
-<li><code>CustomAudioDecoderRegistration.ts</code>,
-<code>MediabunnyPCMBuiltinDecoderAvailability.ts</code>: decoder registration and G.711
-availability.</li>
+<li><code>AC3SoftwareAudioDecoder.ts</code>, <code>EAC3SoftwareAudioDecoder.ts</code>, <code>DTSSoftwareAudioDecoder.ts</code>, <code>TrueHDSoftwareAudioDecoder.ts</code> [worker]: the <code>@mediabunny/ac3</code> registration and the lazily loaded WASM decoders.
+E-AC-3, DTS, and TrueHD report their channel layout, and the FFmpeg wrappers stamp later frames of one packet after its earlier ones.</li>
+<li><code>DTSSeekRecovery.ts</code>: the 1 s DTS preroll and a bounded tolerance for XLL sync errors.</li>
+<li><code>CustomAudioDecoderRegistration.ts</code>, <code>MediabunnyPCMBuiltinDecoderAvailability.ts</code>: decoder registration and G.711 availability.</li>
 </ul>
 <h3 id="audioprocessing"><a class="header" href="#audioprocessing">audio/processing/</a></h3>
 <ul>
-<li><code>StreamingAudioResampler.ts</code>, <code>StreamingAudioLookaheadLimiter.ts</code>,
-<code>StreamingAudioOutputPipeline.ts</code>, <code>StreamingAudioDownmixSettings.ts</code>
-[worker]: the 48 kHz resampler, the 100 ms lookahead limiter, the pipeline,
-and generation-scoped live gains.</li>
-<li><code>CustomAudioDownmix.ts</code>, <code>CustomAudioDownmixAlgorithm.ts</code>,
-<code>CustomAudioChannelLayout.ts</code>, <code>CustomWaveChannelLayout.ts</code>: downmix matrices
-per algorithm, algorithm IDs, layout tables, and WAVE mask mapping.</li>
+<li><code>StreamingAudioResampler.ts</code>, <code>StreamingAudioLookaheadLimiter.ts</code>, <code>StreamingAudioOutputPipeline.ts</code>, <code>StreamingAudioDownmixSettings.ts</code> [worker]: the 48 kHz resampler with input timestamp reconciliation within 2 s (larger deviations throw, and a listener sees every correction) and a continuation across source rate changes, the 100 ms lookahead limiter, the pipeline that rebinds its source rate and enables the limiter late, and generation-scoped live gains that follow the decoded rate.</li>
+<li><code>DecodedAudioOutputStage.ts</code> [worker]: binds one audio attempt’s output stage to the decoded rate and layout, checks them against the decoded PCM routes, and reports each bound format.</li>
+<li><code>CustomAudioDownmix.ts</code>, <code>CustomAudioDownmixAlgorithm.ts</code>, <code>CustomAudioChannelLayout.ts</code>, <code>CustomWaveChannelLayout.ts</code>: downmix matrices per algorithm (three-channel beds have their own), algorithm IDs, layout tables with by-name mapping to 5.1 and 7.1 outputs, and WAVE mask mapping.</li>
 </ul>
 <h3 id="audiooutput"><a class="header" href="#audiooutput">audio/output/</a></h3>
 <ul>
-<li><code>AudioWorkletController.ts</code> [main], <code>AudioWorkletProcessorSource.ts</code>
-[worklet], <code>AudioWorkletProtocol.ts</code>: the worklet node, the inline processor,
-and their messages.</li>
-<li><code>AudioOutputDevicePresence.ts</code> [main]: whether <code>enumerateDevices()</code> lists any
-audio output.</li>
-<li><code>BrowserAudioContextPool.ts</code>, <code>BrowserAudioContextPrewarm.ts</code>,
-<code>BrowserAudioWorkletPool.ts</code>, <code>BrowserAudioOperation.ts</code> [main]: the shared
-48 kHz context (never pooled when created without an output device), the
-prewarm lease, the leased worklet node, and timeouts.</li>
-<li><code>BrowserCustomAudioOutput.ts</code> [main]: the production output: context, sink
-lease, worklet lease, the physical output time correction, in-place layout
-reconfiguration, and <code>sinkchange</code> reporting.</li>
-<li><code>CustomDecodeAudioBridge.ts</code> [main]: worker PCM to the worklet, with
-continuity checks and credits.</li>
-<li><code>WebGPUAudioOutputManager.ts</code>: the page-wide sink router (<code>setSinkId</code>), with
-its fallback chain, <code>devicechange</code> handling, output recovery poll and sink
-rebuild, picker, and UI snapshot.</li>
+<li><code>AudioWorkletController.ts</code> [main], <code>AudioWorkletProcessorSource.ts</code> [worklet], <code>AudioWorkletProtocol.ts</code>: the worklet node, the inline processor (which renders silence from a flush up to the first chunk), and their messages.</li>
+<li><code>AudioOutputDevicePresence.ts</code> [main]: whether <code>enumerateDevices()</code> lists any audio output.</li>
+<li><code>BrowserAudioContextPool.ts</code>, <code>BrowserAudioContextPrewarm.ts</code>, <code>BrowserAudioWorkletPool.ts</code>, <code>BrowserAudioOperation.ts</code> [main]: the shared 48 kHz context (never pooled when created without an output device), the prewarm lease, the leased worklet node, and timeouts.</li>
+<li><code>BrowserCustomAudioOutput.ts</code> [main]: the production output: context, sink lease, worklet lease, the physical output time correction, in-place layout reconfiguration, and <code>sinkchange</code> reporting.</li>
+<li><code>CustomDecodeAudioBridge.ts</code> [main]: worker PCM to the worklet, with continuity checks and credits.</li>
+<li><code>WebGPUAudioOutputManager.ts</code>: the page-wide sink router (<code>setSinkId</code>), with its fallback chain, <code>devicechange</code> handling, output recovery poll and sink rebuild, picker, and UI snapshot.</li>
 </ul>
 <h3 id="audionative"><a class="header" href="#audionative">audio/native/</a></h3>
 <p>AC-3 and E-AC-3 through a hidden <code>&lt;audio&gt;</code> and MSE.</p>
 <ul>
-<li><code>CustomDecodeNativeAudioBridge.ts</code>, <code>OwnedNativeMediaAudioBackend.ts</code>
-[main]: the bridge and the owned media element.</li>
-<li><code>NativeMediaAudioFMP4Remuxer.ts</code> [worker]: the fMP4 remux of the selected
-audio track.</li>
-<li><code>NativeMediaAudioLimits.ts</code>: native-media limits.</li>
+<li><code>CustomDecodeNativeAudioBridge.ts</code>, <code>OwnedNativeMediaAudioBackend.ts</code> [main]: the bridge and the owned media element, which parks at a late first fragment, delays <code>play()</code> by the gap, and advances by a late timer’s overshoot.</li>
+<li><code>NativeMediaAudioFMP4Remuxer.ts</code> [worker]: the fMP4 remux of the selected audio track.</li>
+<li><code>NativeMediaAudioLimits.ts</code>: the segment caps (2 s, 2 MiB) and the pending-append caps (16 segments, 4 MiB).</li>
 </ul>
 <h2 id="validation"><a class="header" href="#validation">validation/</a></h2>
 <p>The authorization vectors are in <code>capability/vectors/</code>.</p>
 <ul>
-<li><code>RawHDRPresentationAuthorization.ts</code>: raw route keys, readback through the
-production raw shader, and the per-device registry.</li>
-<li><code>ExternalHDRPresentationAuthorization.ts</code>: external PQ and HLG route keys,
-checked with the neutralized Main 10 vector.</li>
-<li><code>DolbyVisionPresentationAuthorization.ts</code>,
-<code>ExternalDolbyVisionPresentationAuthorization.ts</code>: raw Dolby Vision keys
-(single-layer per raw format, the P4 and P7 bases, the P4 and P7 FEL) and
-the external P5 key, checked with synthetic RPU vectors.</li>
-<li><code>GPUAuthorizationDeadline.ts</code>: the shared 5 s timeout, cancelled on device
-loss.</li>
+<li><code>RawHDRPresentationAuthorization.ts</code>: raw route keys, readback through the production raw shader, and the per-device registry.</li>
+<li><code>ExternalHDRPresentationAuthorization.ts</code>: external PQ and HLG route keys, checked with the neutralized Main 10 vector.</li>
+<li><code>DolbyVisionPresentationAuthorization.ts</code>, <code>ExternalDolbyVisionPresentationAuthorization.ts</code>: raw Dolby Vision keys (single-layer per raw format, the P4 and P7 bases, the P4 and P7 FEL) and the external P5 key, checked with synthetic RPU vectors.</li>
+<li><code>GPUAuthorizationDeadline.ts</code>: the shared 5 s timeout, cancelled on device loss.</li>
 <li><code>GPUCanvasReadback.ts</code>: bounded GPU canvas pixel readback (5 s).</li>
 </ul>
 <h2 id="outside-src"><a class="header" href="#outside-src">Outside src/</a></h2>
 <ul>
-<li><code>test/helpers/enginePaths.ts</code>: the engine root and the <code>node_modules</code>
-location, independent of the test runner’s working directory, and the
-folders from <code>tools/constants.json</code>.</li>
-<li><code>wasm/</code>: the decoder sources and build. See
-<a href="decoders.html">WebAssembly decoders</a>.</li>
-<li><code>vendor/</code>: the FFmpeg and dcadec submodules (<code>update = none</code>), which
-<code>make -C wasm sources</code> fetches.</li>
-<li><code>scripts/build.mjs</code>: assembles <code>bin/libraries/</code>, including the esbuild worker
-bundles. <code>scripts/library-assets.mjs</code> maps each served file to its source.</li>
-<li><code>scripts/codec_vector_assets/</code>: the Python codec vector generators, their
-tests in <code>test/</code>, and the local playback media generators. See
-<a href="codec-vectors.html">Codec vectors</a>.</li>
-<li><code>tools/</code>: browser probes, the DTS downmix report, and <code>constants.json</code>. See
-<a href="tools.html">Tools</a>.</li>
+<li><code>test/helpers/enginePaths.ts</code>: the engine root and the <code>node_modules</code> location, independent of the test runner’s working directory, and the folders from <code>tools/constants.json</code>.</li>
+<li><code>wasm/</code>: the decoder sources and build.
+See <a href="decoders.html">WebAssembly decoders</a>.</li>
+<li><code>vendor/</code>: the FFmpeg and dcadec submodules (<code>update = none</code>), which <code>make -C wasm sources</code> fetches.</li>
+<li><code>scripts/build.mjs</code>: assembles <code>bin/libraries/</code>, including the esbuild worker bundles.
+<code>scripts/library-assets.mjs</code> maps each served file to its source.</li>
+<li><code>scripts/codec_vector_assets/</code>: the Python codec vector generators, their tests in <code>test/</code>, and the local playback media generators.
+See <a href="codec-vectors.html">Codec vectors</a>.</li>
+<li><code>tools/</code>: browser probes, the DTS downmix report, and <code>constants.json</code>.
+See <a href="tools.html">Tools</a>.</li>
 <li><code>bin/wasm/</code>: the decoder builds from <code>make -C wasm</code>, ignored:
 <ul>
-<li><code>ffmpeg-eac3/</code>, <code>ffmpeg-truehd/</code>, <code>libdcadec-dts/</code> [worker]: Emscripten
-single-file ES modules (<code>.mjs</code> with embedded WASM), imported as
-<code>#wasm/&lt;kit&gt;/&lt;kit&gt;.mjs</code> through the <code>imports</code> map in <code>package.json</code>. Their
-hand-written declarations are <code>wasm/&lt;kit&gt;/&lt;kit&gt;.d.mts</code>, which the map’s
-<code>types</code> condition resolves.</li>
+<li><code>ffmpeg-eac3/</code>, <code>ffmpeg-truehd/</code>, <code>libdcadec-dts/</code> [worker]: Emscripten single-file ES modules (<code>.mjs</code> with embedded WASM), imported as <code>#wasm/&lt;kit&gt;/&lt;kit&gt;.mjs</code> through the <code>imports</code> map in <code>package.json</code>.
+Their hand-written declarations are <code>wasm/&lt;kit&gt;/&lt;kit&gt;.d.mts</code>, which the map’s <code>types</code> condition resolves.</li>
 <li><code>ffmpeg-mpeg2-vc1/</code> and <code>libdovi/</code>: served from <code>libraries/</code>.</li>
 </ul>
 </li>
-<li><code>bin/codec_vector_assets/</code>: the generated codec vectors, the one committed
-folder in <code>bin/</code>:
+<li><code>bin/codec_vector_assets/</code>: the generated codec vectors, the one committed folder in <code>bin/</code>:
 <ul>
-<li><code>dts/DTSExactCapabilityVectors.ts</code>,
-<code>truehd/TrueHDExactCapabilityVectors.ts</code>: access units and expected
-outputs, which <code>capability/exact/</code> imports as <code>#codec_vector_assets/*</code>.
-<code>truehd/</code> also holds the synthetic TrueHD and MLP streams the module
-embeds.</li>
-<li><code>hevc-range-extension/</code>, <code>jpeg2000/</code>, <code>mpeg2/</code>: qualification streams
-served at runtime from <code>bin/libraries/</code>.</li>
+<li><code>dts/DTSExactCapabilityVectors.ts</code>, <code>truehd/TrueHDExactCapabilityVectors.ts</code>: access units and expected outputs, which <code>capability/exact/</code> imports as <code>#codec_vector_assets/*</code>.
+<code>truehd/</code> also holds the synthetic TrueHD and MLP streams the module embeds.</li>
+<li><code>hevc-range-extension/</code>, <code>jpeg2000/</code>, <code>mpeg2/</code>: qualification streams served at runtime from <code>bin/libraries/</code>.</li>
 <li><code>downmix-reference/</code>: the deterministic 7.1-to-stereo reference.</li>
 </ul>
 </li>
 </ul>
 <h2 id="host-the-jellyfin-add-on"><a class="header" href="#host-the-jellyfin-add-on">Host: the Jellyfin add-on</a></h2>
-<p>Paths are relative to the plugin repository root. See
-<a href="jellyfin-host.html">The Jellyfin host</a>.</p>
+<p>Paths are relative to the plugin repository root.
+See <a href="jellyfin-host.html">The Jellyfin host</a>.</p>
 <ul>
-<li><code>jellyfin-webgpu-client/src/index.ts</code>: the add-on entry. It configures the
-engine’s assets and feature flags, binds the host bridge, installs the
-host-compatible mode, and returns the player.</li>
-<li><code>jellyfin-webgpu-client/src/WebGPUPlayer.ts</code>: the Jellyfin-facing player:
-profile augmentation, the stream-copy veto, eligibility, the rAF loop,
-fallback, renegotiation, and generations.</li>
-<li><code>jellyfin-webgpu-client/src/HostCompatibleWebGPUPlayer.ts</code>: adapts
-<code>WebGPUPlayer</code> to the stock PlaybackManager: purpose-less bitrate requests,
-the player preference, marked profiles, and superseded starts that never
-settle.</li>
-<li><code>jellyfin-webgpu-client/src/HTMLPlayerDelegate.ts</code>: owns one HTML player and
-forwards its events for the current generation only.</li>
-<li><code>jellyfin-webgpu-client/src/backend/</code>: the add-on’s own copy of the HTML
-video player and its media helper, usable as an owned backend.</li>
-<li><code>jellyfin-webgpu-client/src/custom/CustomDeviceProfile.ts</code>:
-<code>augmentDeviceProfileForCustomDecode</code> and
-<code>createBitrateIndependentDeviceProfile</code>.</li>
-<li><code>jellyfin-webgpu-client/src/custom/NativeDirectPlayCompatibility.ts</code>: checks
-the stock profile against the chosen source, the proof for same-session
-fallback.</li>
-<li><code>jellyfin-webgpu-client/src/compat/</code>: stand-ins for the PlaybackManager seams
-stock Jellyfin Web lacks: the PlaybackInfo interceptor and its policies,
-PlaybackManager hooks, and the settings entry points.</li>
-<li><code>jellyfin-webgpu-client/src/host/</code>, <code>jellyfin-webgpu-client/src/shims/</code>:
-host singletons bound late from the plugin bag, and replacements for host
-modules the add-on cannot import.</li>
-<li><code>jellyfin-webgpu-client/src/WebGPUUserSettings.ts</code>,
-<code>WebGPUPlaybackPreferences.ts</code>, <code>PreferredVideoPlayer.ts</code>: local per-user
-settings (v2), the custom decode and HDR tone mapping preferences, and the
-Auto, WebGPU, or HTML player preference.</li>
-<li><code>jellyfin-webgpu-client/src/ui/WebGPUPlaybackSettingsDialog.ts</code>: the
-in-player settings panel, with live render and downmix updates and
-restart-required options marked.</li>
+<li><code>jellyfin-webgpu-client/src/index.ts</code>: the add-on entry.
+It configures the engine’s assets and feature flags, binds the host bridge, installs the host-compatible mode, and returns the player.</li>
+<li><code>jellyfin-webgpu-client/src/WebGPUPlayer.ts</code>: the Jellyfin-facing player: profile augmentation, the stream-copy veto, eligibility, the rAF loop, fallback, renegotiation, and generations.</li>
+<li><code>jellyfin-webgpu-client/src/HostCompatibleWebGPUPlayer.ts</code>: adapts <code>WebGPUPlayer</code> to the stock PlaybackManager: purpose-less bitrate requests, the player preference, marked profiles, and superseded starts that never settle.</li>
+<li><code>jellyfin-webgpu-client/src/HTMLPlayerDelegate.ts</code>: owns one HTML player and forwards its events for the current generation only.</li>
+<li><code>jellyfin-webgpu-client/src/backend/</code>: the add-on’s own copy of the HTML video player and its media helper, usable as an owned backend.</li>
+<li><code>jellyfin-webgpu-client/src/custom/CustomDeviceProfile.ts</code>: <code>augmentDeviceProfileForCustomDecode</code> and <code>createBitrateIndependentDeviceProfile</code>.</li>
+<li><code>jellyfin-webgpu-client/src/custom/NativeDirectPlayCompatibility.ts</code>: checks the stock profile against the chosen source, the proof for same-session fallback.</li>
+<li><code>jellyfin-webgpu-client/src/compat/</code>: stand-ins for the PlaybackManager seams stock Jellyfin Web lacks: the PlaybackInfo interceptor and its policies, PlaybackManager hooks, and the settings entry points.</li>
+<li><code>jellyfin-webgpu-client/src/host/</code>, <code>jellyfin-webgpu-client/src/shims/</code>: host singletons bound late from the plugin bag, and replacements for host modules the add-on cannot import.</li>
+<li><code>jellyfin-webgpu-client/src/WebGPUUserSettings.ts</code>, <code>WebGPUPlaybackPreferences.ts</code>, <code>PreferredVideoPlayer.ts</code>: local per-user settings (v2), the custom decode and HDR tone mapping preferences, and the Auto, WebGPU, or HTML player preference.</li>
+<li><code>jellyfin-webgpu-client/src/ui/WebGPUPlaybackSettingsDialog.ts</code>: the in-player settings panel, with live render and downmix updates and restart-required options marked.</li>
 </ul>
 
                     </main>
