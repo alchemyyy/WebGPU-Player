@@ -82,10 +82,7 @@ function parseFiniteNumber(value: string): number | null {
     return Number.isFinite(parsedValue) ? parsedValue : null;
 }
 
-function parseKeywordCoordinate(
-    value: string,
-    axis: 'x' | 'y'
-): ObjectPositionCoordinate | null {
+function parseKeywordCoordinate(value: string, axis: 'x' | 'y'): ObjectPositionCoordinate | null {
     switch (value) {
         case 'center':
             return CENTER_POSITION_COORDINATE;
@@ -139,10 +136,7 @@ function parseCalculationCoordinate(value: string): ObjectPositionCoordinate | n
     };
 }
 
-function parsePositionCoordinate(
-    value: string,
-    axis: 'x' | 'y'
-): ObjectPositionCoordinate | null {
+function parsePositionCoordinate(value: string, axis: 'x' | 'y'): ObjectPositionCoordinate | null {
     const normalizedValue = value.toLowerCase();
     return parseKeywordCoordinate(normalizedValue, axis)
         ?? parsePercentageCoordinate(normalizedValue)
@@ -201,10 +195,7 @@ type ParsedEdgeToken = {
     nextTokenIndex: number
 };
 
-function parseEdgeToken(
-    tokens: readonly string[],
-    tokenIndex: number
-): ParsedEdgeToken | null {
+function parseEdgeToken(tokens: readonly string[], tokenIndex: number): ParsedEdgeToken | null {
     const token = tokens[tokenIndex].toLowerCase();
     if (token === 'center') {
         return { axis: null, coordinate: null, nextTokenIndex: tokenIndex };
@@ -312,9 +303,7 @@ function requirePositiveDimension(value: number, name: string): void {
 }
 
 /** Computes CSS object-fit and object-position as a GPU viewport and source crop. */
-export function calculateTexturePresentationGeometry(
-    input: TexturePresentationGeometryInput
-): TexturePresentationGeometry {
+export function calculateTexturePresentationGeometry(input: TexturePresentationGeometryInput): TexturePresentationGeometry {
     requirePositiveDimension(input.sourceWidth, 'Source width');
     requirePositiveDimension(input.sourceHeight, 'Source height');
     requirePositiveDimension(input.targetCSSWidth, 'Target CSS width');
@@ -360,12 +349,8 @@ export function calculateTexturePresentationGeometry(
     }
 
     const objectPosition = parseObjectPosition(input.objectPosition || '50% 50%');
-    const objectX = (
-        (input.targetCSSWidth - objectWidth) * objectPosition.x.percentage
-    ) + objectPosition.x.lengthPixels;
-    const objectY = (
-        (input.targetCSSHeight - objectHeight) * objectPosition.y.percentage
-    ) + objectPosition.y.lengthPixels;
+    const objectX = ((input.targetCSSWidth - objectWidth) * objectPosition.x.percentage) + objectPosition.x.lengthPixels;
+    const objectY = ((input.targetCSSHeight - objectHeight) * objectPosition.y.percentage) + objectPosition.y.lengthPixels;
     const visibleLeft = Math.max(objectX, 0);
     const visibleTop = Math.max(objectY, 0);
     const visibleRight = Math.min(objectX + objectWidth, input.targetCSSWidth);

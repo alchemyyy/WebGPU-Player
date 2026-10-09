@@ -51,9 +51,7 @@ function findAnnexBStartCode(bytes: Uint8Array, startOffset: number): AnnexBStar
         if (bytes[byteOffset + 2] === 1) {
             return { byteLength: 3, offset: byteOffset };
         }
-        if (byteOffset + 4 <= bytes.byteLength
-            && bytes[byteOffset + 2] === 0
-            && bytes[byteOffset + 3] === 1) {
+        if (byteOffset + 4 <= bytes.byteLength && bytes[byteOffset + 2] === 0 && bytes[byteOffset + 3] === 1) {
             return { byteLength: 4, offset: byteOffset };
         }
     }
@@ -79,12 +77,7 @@ function findFirstVCLNALUnitType(accessUnit: ArrayBuffer): number | null {
 function createRBSP(nalUnit: Uint8Array): Uint8Array {
     const bytes: number[] = [];
     for (let byteIndex = 2; byteIndex < nalUnit.byteLength; byteIndex += 1) {
-        if (
-            nalUnit[byteIndex] === 3
-            && byteIndex >= 4
-            && nalUnit[byteIndex - 1] === 0
-            && nalUnit[byteIndex - 2] === 0
-        ) {
+        if (nalUnit[byteIndex] === 3 && byteIndex >= 4 && nalUnit[byteIndex - 1] === 0 && nalUnit[byteIndex - 2] === 0) {
             continue;
         }
         bytes.push(nalUnit[byteIndex]);
@@ -99,8 +92,7 @@ function parseVectorMetadata(accessUnit: ArrayBuffer): HEVCExactVectorMetadata {
         const nalUnitOffset = startCode.offset + startCode.byteLength;
         const nextStartCode = findAnnexBStartCode(bytes, nalUnitOffset);
         const nalUnitEnd = nextStartCode?.offset ?? bytes.byteLength;
-        if (nalUnitOffset + 2 <= nalUnitEnd
-            && ((bytes[nalUnitOffset] >> 1) & 0x3F) === 33) {
+        if (nalUnitOffset + 2 <= nalUnitEnd && ((bytes[nalUnitOffset] >> 1) & 0x3F) === 33) {
             const nalUnit = bytes.subarray(nalUnitOffset, nalUnitEnd);
             const rbsp = createRBSP(nalUnit);
             if (rbsp.byteLength < 13) {
@@ -124,10 +116,7 @@ function parseVectorMetadata(accessUnit: ArrayBuffer): HEVCExactVectorMetadata {
 
 function createFailureResult(
     qualificationRequest: HEVCExactCapabilityWorkerQualificationRequest,
-    reason: Exclude<
-        HEVCExactCapabilityWorkerQualificationResult['reason'],
-        'decode-output-verified'
-    >
+    reason: Exclude<HEVCExactCapabilityWorkerQualificationResult['reason'], 'decode-output-verified'>
 ): HEVCExactCapabilityWorkerQualificationResult {
     return {
         bitDepth: null,
@@ -165,14 +154,8 @@ const FNV1A_OFFSET_BASIS = 2_166_136_261;
 const FNV1A_PRIME = 16_777_619;
 
 function mixFingerprintValue(fingerprint: number, value: number): number {
-    let mixedFingerprint = Math.imul(
-        (fingerprint ^ (value & 0xFF)) >>> 0,
-        FNV1A_PRIME
-    ) >>> 0;
-    mixedFingerprint = Math.imul(
-        (mixedFingerprint ^ ((value >>> 8) & 0xFF)) >>> 0,
-        FNV1A_PRIME
-    ) >>> 0;
+    let mixedFingerprint = Math.imul((fingerprint ^ (value & 0xFF)) >>> 0, FNV1A_PRIME) >>> 0;
+    mixedFingerprint = Math.imul((mixedFingerprint ^ ((value >>> 8) & 0xFF)) >>> 0, FNV1A_PRIME) >>> 0;
     return mixedFingerprint;
 }
 
@@ -184,51 +167,20 @@ function mixPlaneFingerprint(
 ): number {
     let mixedFingerprint = mixFingerprintValue(fingerprint, width);
     mixedFingerprint = mixFingerprintValue(mixedFingerprint, height);
-    for (
-        let rowSampleIndex = 0;
-        rowSampleIndex < FINGERPRINT_ROW_SAMPLE_COUNT;
-        rowSampleIndex += 1
-    ) {
-        const rowIndex = Math.floor(
-            rowSampleIndex * (height - 1) / (FINGERPRINT_ROW_SAMPLE_COUNT - 1)
-        );
-        for (
-            let columnSampleIndex = 0;
-            columnSampleIndex < FINGERPRINT_COLUMN_SAMPLE_COUNT;
-            columnSampleIndex += 1
-        ) {
-            const columnIndex = Math.floor(
-                columnSampleIndex * (width - 1)
-                    / (FINGERPRINT_COLUMN_SAMPLE_COUNT - 1)
-            );
-            mixedFingerprint = mixFingerprintValue(
-                mixedFingerprint,
-                plane[(rowIndex * width) + columnIndex]
-            );
+    for (let rowSampleIndex = 0; rowSampleIndex < FINGERPRINT_ROW_SAMPLE_COUNT; rowSampleIndex += 1) {
+        const rowIndex = Math.floor(rowSampleIndex * (height - 1) / (FINGERPRINT_ROW_SAMPLE_COUNT - 1));
+        for (let columnSampleIndex = 0; columnSampleIndex < FINGERPRINT_COLUMN_SAMPLE_COUNT; columnSampleIndex += 1) {
+            const columnIndex = Math.floor(columnSampleIndex * (width - 1) / (FINGERPRINT_COLUMN_SAMPLE_COUNT - 1));
+            mixedFingerprint = mixFingerprintValue(mixedFingerprint, plane[(rowIndex * width) + columnIndex]);
         }
     }
     return mixedFingerprint;
 }
 
 function createFrameFingerprint(frame: HEVCFrame): number {
-    let fingerprint = mixPlaneFingerprint(
-        FNV1A_OFFSET_BASIS,
-        frame.y,
-        frame.width,
-        frame.height
-    );
-    fingerprint = mixPlaneFingerprint(
-        fingerprint,
-        frame.cb,
-        frame.chromaWidth,
-        frame.chromaHeight
-    );
-    return mixPlaneFingerprint(
-        fingerprint,
-        frame.cr,
-        frame.chromaWidth,
-        frame.chromaHeight
-    );
+    let fingerprint = mixPlaneFingerprint(FNV1A_OFFSET_BASIS, frame.y, frame.width, frame.height);
+    fingerprint = mixPlaneFingerprint(fingerprint, frame.cb, frame.chromaWidth, frame.chromaHeight);
+    return mixPlaneFingerprint(fingerprint, frame.cr, frame.chromaWidth, frame.chromaHeight);
 }
 
 function frameMatchesRequest(
@@ -242,15 +194,10 @@ function frameMatchesRequest(
 ): boolean {
     const expectedChromaWidth = Math.ceil(qualificationRequest.codedWidth / 2);
     const expectedChromaHeight = Math.ceil(qualificationRequest.codedHeight / 2);
-    const expectedLumaSampleCount = qualificationRequest.codedWidth
-        * qualificationRequest.codedHeight;
+    const expectedLumaSampleCount = qualificationRequest.codedWidth * qualificationRequest.codedHeight;
     const expectedChromaSampleCount = expectedChromaWidth * expectedChromaHeight;
-    const expectedDecodedByteLength = (
-        expectedLumaSampleCount + (2 * expectedChromaSampleCount)
-    ) * Uint16Array.BYTES_PER_ELEMENT;
-    const definition = HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[
-        qualificationRequest.vector
-    ];
+    const expectedDecodedByteLength = (expectedLumaSampleCount + (2 * expectedChromaSampleCount)) * Uint16Array.BYTES_PER_ELEMENT;
+    const definition = HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[qualificationRequest.vector];
 
     return frame.width === qualificationRequest.codedWidth
         && frame.height === qualificationRequest.codedHeight
@@ -273,14 +220,8 @@ function frameMatchesRequest(
                 && streamInfo.height === qualificationRequest.codedHeight
                 && streamInfo.bitDepth === qualificationRequest.bitDepth
                 && streamInfo.chromaFormat === 1
-                && (
-                    streamInfo.profile === 0
-                    || streamInfo.profile === qualificationRequest.profileIDC
-                )
-                && (
-                    streamInfo.level === 0
-                    || streamInfo.level === qualificationRequest.levelIDC
-                )
+                && (streamInfo.profile === 0 || streamInfo.profile === qualificationRequest.profileIDC)
+                && (streamInfo.level === 0 || streamInfo.level === qualificationRequest.levelIDC)
             )
         );
 }
@@ -352,8 +293,7 @@ function consumeFrame(
     state.totalDecodedByteLength += decodedByteLength;
     if (
         !Number.isSafeInteger(state.totalDecodedByteLength)
-        || state.totalDecodedByteLength
-            > HEVC_EXACT_CAPABILITY_MAXIMUM_TOTAL_DECODED_BYTE_LENGTH
+        || state.totalDecodedByteLength > HEVC_EXACT_CAPABILITY_MAXIMUM_TOTAL_DECODED_BYTE_LENGTH
     ) {
         throw new TypeError('The exact HEVC probe aggregate output exceeds its bound');
     }
@@ -384,9 +324,7 @@ function probeQualification(
     let decoder: HEVCDecoderBackend | null = null;
 
     try {
-        const vectorMetadata = parseVectorMetadata(
-            qualificationRequest.qualificationAccessUnits[0]
-        );
+        const vectorMetadata = parseVectorMetadata(qualificationRequest.qualificationAccessUnits[0]);
         decoder = decoderModule.createDecoder();
         const state: HEVCExactQualificationState = {
             decodedFrameFingerprints: [],
@@ -395,14 +333,8 @@ function probeQualification(
             outputMatches: true,
             totalDecodedByteLength: 0
         };
-        for (
-            let accessUnitIndex = 0;
-            accessUnitIndex < qualificationRequest.qualificationAccessUnits.length;
-            accessUnitIndex += 1
-        ) {
-            const definition = HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[
-                qualificationRequest.vector
-            ];
+        for (let accessUnitIndex = 0; accessUnitIndex < qualificationRequest.qualificationAccessUnits.length; accessUnitIndex += 1) {
+            const definition = HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[qualificationRequest.vector];
             if (
                 findFirstVCLNALUnitType(
                     qualificationRequest.qualificationAccessUnits[accessUnitIndex]
@@ -410,61 +342,34 @@ function probeQualification(
             ) {
                 return createFailureResult(qualificationRequest, 'decode-error');
             }
-            decoder.feed(new Uint8Array(
-                qualificationRequest.qualificationAccessUnits[accessUnitIndex]
-            ));
+            decoder.feed(new Uint8Array(qualificationRequest.qualificationAccessUnits[accessUnitIndex]));
             const streamInfo = decoder.info;
             decoder.drain((frame: HEVCFrame): void => {
-                consumeFrame(
-                    frame,
-                    streamInfo,
-                    vectorMetadata,
-                    qualificationRequest,
-                    state,
-                    dependencies.fingerprintFrame
-                );
+                consumeFrame(frame, streamInfo, vectorMetadata, qualificationRequest, state, dependencies.fingerprintFrame);
             });
         }
         const finalStreamInfo = decoder.info;
         decoder.flush((frame: HEVCFrame): void => {
-            consumeFrame(
-                frame,
-                finalStreamInfo,
-                vectorMetadata,
-                qualificationRequest,
-                state,
-                dependencies.fingerprintFrame
-            );
+            consumeFrame(frame, finalStreamInfo, vectorMetadata, qualificationRequest, state, dependencies.fingerprintFrame);
         });
         if (!state.geometry) {
             return createFailureResult(qualificationRequest, 'decode-error');
         }
         const evidence: HEVCExactQualificationEvidence = {
-            decodedFrameFingerprints: Object.freeze([
-                ...state.decodedFrameFingerprints
-            ]),
+            decodedFrameFingerprints: Object.freeze([...state.decodedFrameFingerprints]),
             decodedFrameCount: state.decodedFrameCount,
             geometry: state.geometry,
             totalDecodedByteLength: state.totalDecodedByteLength
         };
-        const expectedDecodedByteLength = state.geometry.decodedByteLength
-            * qualificationRequest.qualificationFrameCount;
+        const expectedDecodedByteLength = state.geometry.decodedByteLength * qualificationRequest.qualificationFrameCount;
         if (
             state.decodedFrameCount !== qualificationRequest.qualificationFrameCount
             || state.totalDecodedByteLength !== expectedDecodedByteLength
             || !state.outputMatches
         ) {
-            return createQualificationResult(
-                qualificationRequest,
-                evidence,
-                'output-mismatch'
-            );
+            return createQualificationResult(qualificationRequest, evidence, 'output-mismatch');
         }
-        return createQualificationResult(
-            qualificationRequest,
-            evidence,
-            'decode-output-verified'
-        );
+        return createQualificationResult(qualificationRequest, evidence, 'decode-output-verified');
     } catch {
         return createFailureResult(qualificationRequest, 'decode-error');
     } finally {
@@ -503,8 +408,7 @@ export async function runHEVCExactCapabilityWorkerRequest(
         totalDecodedByteLength += result.totalDecodedByteLength ?? 0;
         if (
             !Number.isSafeInteger(totalDecodedByteLength)
-            || totalDecodedByteLength
-                > HEVC_EXACT_CAPABILITY_MAXIMUM_TOTAL_DECODED_BYTE_LENGTH
+            || totalDecodedByteLength > HEVC_EXACT_CAPABILITY_MAXIMUM_TOTAL_DECODED_BYTE_LENGTH
         ) {
             results.push(createFailureResult(qualificationRequest, 'decode-error'));
             continue;

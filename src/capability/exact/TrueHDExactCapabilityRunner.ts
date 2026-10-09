@@ -95,23 +95,14 @@ function outputMatchesExpected(
         && output.sampleRate === vector.sampleRate;
 }
 
-function decodeVector(
-    decoder: TrueHDSoftwareAudioDecoder,
-    vector: TrueHDExactCapabilityVector
-): number {
+function decodeVector(decoder: TrueHDSoftwareAudioDecoder, vector: TrueHDExactCapabilityVector): number {
     decoder.clear();
     let decodedFrameCount = 0;
     let decodedOutputCount = 0;
-    for (let accessUnitIndex = 0;
-        accessUnitIndex < vector.accessUnits.length;
-        accessUnitIndex += 1) {
+    for (let accessUnitIndex = 0; accessUnitIndex < vector.accessUnits.length; accessUnitIndex += 1) {
         const expectedOutput = vector.expectedOutputs[accessUnitIndex];
-        const outputs = decoder.decode(
-            vector.accessUnits[accessUnitIndex],
-            expectedOutput.mediaTimeMicroseconds
-        );
-        if (outputs.length !== 1
-            || !outputMatchesExpected(outputs[0], vector, expectedOutput)) {
+        const outputs = decoder.decode(vector.accessUnits[accessUnitIndex], expectedOutput.mediaTimeMicroseconds);
+        if (outputs.length !== 1 || !outputMatchesExpected(outputs[0], vector, expectedOutput)) {
             throw new Error('TrueHD exact qualification output mismatch');
         }
         decodedFrameCount += outputs[0].frameCount;
@@ -123,20 +114,12 @@ function decodeVector(
     return decodedFrameCount;
 }
 
-function verifyMajorSyncRecovery(
-    decoder: TrueHDSoftwareAudioDecoder,
-    vector: TrueHDExactCapabilityVector
-): boolean {
+function verifyMajorSyncRecovery(decoder: TrueHDSoftwareAudioDecoder, vector: TrueHDExactCapabilityVector): boolean {
     decoder.clear();
     let firstOutput: TrueHDDecodedAudioOutput | null = null;
-    for (let accessUnitIndex = vector.majorSyncRecoveryStartIndex;
-        accessUnitIndex < vector.accessUnits.length;
-        accessUnitIndex += 1) {
+    for (let accessUnitIndex = vector.majorSyncRecoveryStartIndex; accessUnitIndex < vector.accessUnits.length; accessUnitIndex += 1) {
         const expectedOutput = vector.expectedOutputs[accessUnitIndex];
-        const outputs = decoder.decode(
-            vector.accessUnits[accessUnitIndex],
-            expectedOutput.mediaTimeMicroseconds
-        );
+        const outputs = decoder.decode(vector.accessUnits[accessUnitIndex], expectedOutput.mediaTimeMicroseconds);
         for (const output of outputs) {
             if (!outputMatchesExpected(output, vector, expectedOutput)) {
                 return false;
@@ -145,8 +128,7 @@ function verifyMajorSyncRecovery(
         }
     }
     return firstOutput !== null
-        && firstOutput.mediaTimeMicroseconds
-            > vector.expectedOutputs[vector.majorSyncRecoveryStartIndex].mediaTimeMicroseconds;
+        && firstOutput.mediaTimeMicroseconds > vector.expectedOutputs[vector.majorSyncRecoveryStartIndex].mediaTimeMicroseconds;
 }
 
 function measureThroughput(
@@ -154,39 +136,29 @@ function measureThroughput(
     vector: TrueHDExactCapabilityVector,
     now: () => number
 ): Pick<TrueHDQualificationEvidence, 'decodeMilliseconds' | 'measuredRealTimeFactor'> {
-    for (let cycleIndex = 0;
-        cycleIndex < TRUEHD_QUALIFICATION_WARMUP_CYCLE_COUNT;
-        cycleIndex += 1) {
+    for (let cycleIndex = 0; cycleIndex < TRUEHD_QUALIFICATION_WARMUP_CYCLE_COUNT; cycleIndex += 1) {
         decodeVector(decoder, vector);
     }
 
     let decodedFrameCount = 0;
     const startMilliseconds = now();
-    for (let cycleIndex = 0;
-        cycleIndex < TRUEHD_QUALIFICATION_MEASURED_CYCLE_COUNT;
-        cycleIndex += 1) {
+    for (let cycleIndex = 0; cycleIndex < TRUEHD_QUALIFICATION_MEASURED_CYCLE_COUNT; cycleIndex += 1) {
         decodedFrameCount += decodeVector(decoder, vector);
     }
     const decodeMilliseconds = now() - startMilliseconds;
     if (!Number.isFinite(decodeMilliseconds) || decodeMilliseconds <= 0) {
         return { decodeMilliseconds: null, measuredRealTimeFactor: null };
     }
-    const decodedDurationMilliseconds = decodedFrameCount
-        * (MICROSECONDS_PER_SECOND / 1_000)
-        / vector.sampleRate;
+    const decodedDurationMilliseconds = decodedFrameCount * (MICROSECONDS_PER_SECOND / 1_000) / vector.sampleRate;
     const measuredRealTimeFactor = decodedDurationMilliseconds / decodeMilliseconds;
     return {
         decodeMilliseconds,
-        measuredRealTimeFactor: Number.isFinite(measuredRealTimeFactor) ?
-            measuredRealTimeFactor :
-            null
+        measuredRealTimeFactor: Number.isFinite(measuredRealTimeFactor) ? measuredRealTimeFactor : null
     };
 }
 
 /** The probe worker's environment: decoders from the requested FFmpeg TrueHD binary, timed by the worker's clock. */
-export function createTrueHDExactCapabilityRunnerEnvironment(
-    decoderWASM: DecoderWASMSource
-): TrueHDExactCapabilityRunnerEnvironment {
+export function createTrueHDExactCapabilityRunnerEnvironment(decoderWASM: DecoderWASMSource): TrueHDExactCapabilityRunnerEnvironment {
     return {
         createDecoder: codec => TrueHDSoftwareAudioDecoder.create(codec, () => loadTrueHDDecoderModule(decoderWASM)),
         now: () => performance.now()
@@ -233,13 +205,9 @@ export async function runTrueHDExactCapabilityQualification(
             return createFailureResponse('output-mismatch', evidence);
         }
 
-        const recoveryVector = vectors.find(vector => (
-            vector.codec === 'truehd' && vector.sampleRate === 48_000
-        ));
+        const recoveryVector = vectors.find(vector => (vector.codec === 'truehd' && vector.sampleRate === 48_000));
         const trueHDDecoder = decoders.get('truehd');
-        if (!recoveryVector
-            || !trueHDDecoder
-            || !verifyMajorSyncRecovery(trueHDDecoder, recoveryVector)) {
+        if (!recoveryVector || !trueHDDecoder || !verifyMajorSyncRecovery(trueHDDecoder, recoveryVector)) {
             return createFailureResponse('major-sync-recovery-failed', evidence);
         }
         evidence.majorSyncRecoveryVerified = true;
@@ -252,16 +220,11 @@ export async function runTrueHDExactCapabilityQualification(
         if (!throughputVector) {
             throw new Error('TrueHD throughput vector is unavailable');
         }
-        const throughput = measureThroughput(
-            trueHDDecoder,
-            throughputVector,
-            environment.now
-        );
+        const throughput = measureThroughput(trueHDDecoder, throughputVector, environment.now);
         evidence.decodeMilliseconds = throughput.decodeMilliseconds;
         evidence.measuredRealTimeFactor = throughput.measuredRealTimeFactor;
         if (evidence.measuredRealTimeFactor === null
-            || evidence.measuredRealTimeFactor
-                < TRUEHD_QUALIFICATION_MINIMUM_REAL_TIME_FACTOR) {
+            || evidence.measuredRealTimeFactor < TRUEHD_QUALIFICATION_MINIMUM_REAL_TIME_FACTOR) {
             return createFailureResponse('throughput-insufficient', evidence);
         }
         return {

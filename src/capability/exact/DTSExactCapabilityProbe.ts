@@ -61,15 +61,9 @@ export type DTSExactCapability = Readonly<{
 type DTSExactCapabilityProbeWorkerEventListener = (event: Event) => void;
 
 export type DTSExactCapabilityProbeWorker = {
-    addEventListener: (
-        type: 'error' | 'message' | 'messageerror',
-        listener: DTSExactCapabilityProbeWorkerEventListener
-    ) => void
+    addEventListener: (type: 'error' | 'message' | 'messageerror', listener: DTSExactCapabilityProbeWorkerEventListener) => void
     postMessage: (message: unknown, transfer: Transferable[]) => void
-    removeEventListener: (
-        type: 'error' | 'message' | 'messageerror',
-        listener: DTSExactCapabilityProbeWorkerEventListener
-    ) => void
+    removeEventListener: (type: 'error' | 'message' | 'messageerror', listener: DTSExactCapabilityProbeWorkerEventListener) => void
     terminate: () => void
 };
 
@@ -80,10 +74,7 @@ export type DTSExactCapabilityProbeEnvironment = Readonly<{
     loadDecoderWASM?: ((url: string) => Promise<ArrayBuffer>) | null
     resolveAssetURL: (path: EngineAssetPath) => string
     runtimeAvailable: boolean
-    setTimeout: (
-        callback: () => void,
-        milliseconds: number
-    ) => ReturnType<typeof globalThis.setTimeout>
+    setTimeout: (callback: () => void, milliseconds: number) => ReturnType<typeof globalThis.setTimeout>
     // Downloads the worker script into the HTTP cache before the timed probe loads it
     warmAsset?: ((url: string) => Promise<void>) | null
 }>;
@@ -162,10 +153,8 @@ export default class DTSExactCapabilityProbe {
     private preparedDecoderWASM: Promise<DecoderWASMSource | null> | null = null;
 
     public constructor(
-        private readonly environment: DTSExactCapabilityProbeEnvironment =
-        createDefaultEnvironment(),
-        private readonly timeoutMilliseconds =
-        DTS_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS
+        private readonly environment: DTSExactCapabilityProbeEnvironment = createDefaultEnvironment(),
+        private readonly timeoutMilliseconds = DTS_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS
     ) {
         if (!Number.isSafeInteger(timeoutMilliseconds) || timeoutMilliseconds <= 0) {
             throw new TypeError('The exact DTS capability timeout is invalid');
@@ -190,10 +179,7 @@ export default class DTSExactCapabilityProbe {
         const environment = this.environment;
         try {
             const [ decoderWASM ] = await Promise.all([
-                loadDecoderWASMSource(
-                    environment.resolveAssetURL(DTS_DECODER_WASM_ASSET),
-                    environment.loadDecoderWASM
-                ),
+                loadDecoderWASMSource(environment.resolveAssetURL(DTS_DECODER_WASM_ASSET), environment.loadDecoderWASM),
                 environment.warmAsset?.(environment.resolveAssetURL(DTS_EXACT_CAPABILITY_WORKER_ASSET))
             ]);
             return decoderWASM;
@@ -252,9 +238,7 @@ export default class DTSExactCapabilityProbe {
                 cleanup();
                 resolve(capability);
             };
-            const messageHandler: DTSExactCapabilityProbeWorkerEventListener = (
-                event: Event
-            ): void => {
+            const messageHandler: DTSExactCapabilityProbeWorkerEventListener = (event: Event): void => {
                 const value = (event as MessageEvent<unknown>).data;
                 if (!isDTSExactCapabilityWorkerResponse(value)) {
                     settle(createCapability('worker-message-invalid'));

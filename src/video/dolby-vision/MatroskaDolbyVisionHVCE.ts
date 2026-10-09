@@ -25,10 +25,7 @@ const MAXIMUM_HVCE_BYTE_LENGTH = 1_024 * 1_024;
 const MINIMUM_DOLBY_VISION_CONFIGURATION_BYTE_LENGTH = 4;
 const MAXIMUM_DOLBY_VISION_CONFIGURATION_BYTE_LENGTH = 1_024;
 
-export type MatroskaByteRangeReader = (
-    offset: number,
-    byteLength: number
-) => Promise<Uint8Array | null>;
+export type MatroskaByteRangeReader = (offset: number, byteLength: number) => Promise<Uint8Array | null>;
 
 export type MatroskaDolbyVisionTrackConfiguration = {
     enhancementConfiguration: Uint8Array | null
@@ -127,10 +124,7 @@ function parseElementHeader(
     };
 }
 
-function requireContainedElementEnd(
-    header: EBMLElementHeader,
-    containerEndOffset: number
-): number {
+function requireContainedElementEnd(header: EBMLElementHeader, containerEndOffset: number): number {
     if (header.dataSize === null) {
         throw new TypeError('A bounded Matroska metadata element uses an unknown size');
     }
@@ -200,11 +194,7 @@ function parseBlockAdditionMapping(
                 if (blockAddIDType !== null) {
                     throw new TypeError('The Matroska block-addition type is duplicated');
                 }
-                blockAddIDType = readUnsignedInteger(
-                    data,
-                    header.dataOffset,
-                    elementEndOffset
-                );
+                blockAddIDType = readUnsignedInteger(data, header.dataOffset, elementEndOffset);
                 break;
             case MATROSKA_BLOCK_ADD_ID_EXTRA_DATA_ID:
                 if (extraData !== null) {
@@ -228,9 +218,7 @@ function requireHVCEExtraData(extraData: Uint8Array | null): Uint8Array {
     return extraData;
 }
 
-function parseDolbyVisionConfiguration(
-    extraData: Uint8Array | null
-): DolbyVisionConfiguration {
+function parseDolbyVisionConfiguration(extraData: Uint8Array | null): DolbyVisionConfiguration {
     if (!extraData
         || extraData.byteLength < MINIMUM_DOLBY_VISION_CONFIGURATION_BYTE_LENGTH
         || extraData.byteLength > MAXIMUM_DOLBY_VISION_CONFIGURATION_BYTE_LENGTH) {
@@ -278,22 +266,14 @@ function parseTrackEntryElement(
             state.codecID = readASCIIString(data, header.dataOffset, elementEndOffset);
             break;
         case MATROSKA_BLOCK_ADDITION_MAPPING_ID: {
-            const mapping = parseBlockAdditionMapping(
-                data,
-                header.dataOffset,
-                elementEndOffset
-            );
+            const mapping = parseBlockAdditionMapping(data, header.dataOffset, elementEndOffset);
             switch (mapping.type) {
                 case MATROSKA_DVCC_BLOCK_ADD_ID_TYPE:
                 case MATROSKA_DVVC_BLOCK_ADD_ID_TYPE:
                     if (state.dolbyVisionConfiguration) {
-                        throw new TypeError(
-                            'The Matroska track has multiple Dolby Vision configurations'
-                        );
+                        throw new TypeError('The Matroska track has multiple Dolby Vision configurations');
                     }
-                    state.dolbyVisionConfiguration = parseDolbyVisionConfiguration(
-                        mapping.extraData
-                    );
+                    state.dolbyVisionConfiguration = parseDolbyVisionConfiguration(mapping.extraData);
                     break;
                 case MATROSKA_HVCE_BLOCK_ADD_ID_TYPE:
                     if (state.enhancementConfiguration) {
@@ -352,9 +332,7 @@ function getSeparateEnhancementTrackNumber(
     hevcVideoTracks: readonly ParsedTrackEntry[],
     selectedTrackNumber: number
 ): number | null {
-    const enhancementTracks = hevcVideoTracks.filter(
-        isSeparateDolbyVisionEnhancementTrack
-    );
+    const enhancementTracks = hevcVideoTracks.filter(isSeparateDolbyVisionEnhancementTrack);
     if (enhancementTracks.length !== 1 || hevcVideoTracks.length !== 2) {
         return null;
     }
@@ -368,10 +346,7 @@ function getSeparateEnhancementTrackNumber(
     return enhancementTrack.trackNumber;
 }
 
-function parseTracks(
-    data: Uint8Array,
-    selectedTrackNumber: number
-): MatroskaDolbyVisionTrackConfiguration {
+function parseTracks(data: Uint8Array, selectedTrackNumber: number): MatroskaDolbyVisionTrackConfiguration {
     const hevcVideoTracks: ParsedTrackEntry[] = [];
     const trackNumbers = new Set<number>();
     let trackEntryCount = 0;
@@ -389,11 +364,7 @@ function parseTracks(
         if (trackEntryCount > MAXIMUM_TRACK_ENTRY_COUNT) {
             throw new TypeError('The Matroska track count exceeds its bound');
         }
-        const trackEntry = parseTrackEntry(
-            data,
-            header.dataOffset,
-            elementEndOffset
-        );
+        const trackEntry = parseTrackEntry(data, header.dataOffset, elementEndOffset);
         if (trackEntry.trackNumber !== null) {
             if (trackNumbers.has(trackEntry.trackNumber)) {
                 throw new TypeError('A Matroska track number is duplicated');
@@ -403,26 +374,17 @@ function parseTracks(
         if (isHEVCVideoTrack(trackEntry)) {
             hevcVideoTracks.push(trackEntry);
         }
-        if (
-            trackEntry.trackNumber === selectedTrackNumber
-            && isHEVCVideoTrack(trackEntry)
-        ) {
+        if (trackEntry.trackNumber === selectedTrackNumber && isHEVCVideoTrack(trackEntry)) {
             selectedEnhancementConfiguration = trackEntry.enhancementConfiguration;
         }
     }
     return {
         enhancementConfiguration: selectedEnhancementConfiguration,
-        separateEnhancementTrackNumber: getSeparateEnhancementTrackNumber(
-            hevcVideoTracks,
-            selectedTrackNumber
-        )
+        separateEnhancementTrackNumber: getSeparateEnhancementTrackNumber(hevcVideoTracks, selectedTrackNumber)
     };
 }
 
-async function readElementHeaderAt(
-    reader: MatroskaByteRangeReader,
-    offset: number
-): Promise<EBMLElementHeader | null> {
+async function readElementHeaderAt(reader: MatroskaByteRangeReader, offset: number): Promise<EBMLElementHeader | null> {
     const data = await reader(offset, MAXIMUM_EBML_HEADER_BYTE_LENGTH);
     if (!data || data.byteLength === 0) {
         return null;
@@ -438,16 +400,10 @@ async function readElementHeaderAt(
     };
 }
 
-async function findSegment(
-    reader: MatroskaByteRangeReader
-): Promise<EBMLElementHeader | null> {
+async function findSegment(reader: MatroskaByteRangeReader): Promise<EBMLElementHeader | null> {
     let offset = 0;
     let ebmlHeaderSeen = false;
-    for (
-        let elementIndex = 0;
-        elementIndex < MAXIMUM_LEVEL_ZERO_ELEMENT_COUNT;
-        elementIndex += 1
-    ) {
+    for (let elementIndex = 0; elementIndex < MAXIMUM_LEVEL_ZERO_ELEMENT_COUNT; elementIndex += 1) {
         const header = await readElementHeaderAt(reader, offset);
         if (!header) {
             return null;
@@ -475,10 +431,7 @@ function isOffsetBeforeEnd(offset: number, endOffset: number | null): boolean {
     return endOffset === null || offset < endOffset;
 }
 
-function getNextElementOffset(
-    header: EBMLElementHeader,
-    containerEndOffset: number | null
-): number | null {
+function getNextElementOffset(header: EBMLElementHeader, containerEndOffset: number | null): number | null {
     if (header.dataSize === null) {
         return null;
     }
@@ -492,23 +445,14 @@ function getNextElementOffset(
     return nextOffset;
 }
 
-async function findTracks(
-    reader: MatroskaByteRangeReader,
-    segment: EBMLElementHeader
-): Promise<EBMLElementHeader | null> {
-    const segmentEndOffset = segment.dataSize === null ?
-        null :
-        segment.dataOffset + segment.dataSize;
+async function findTracks(reader: MatroskaByteRangeReader, segment: EBMLElementHeader): Promise<EBMLElementHeader | null> {
+    const segmentEndOffset = segment.dataSize === null ? null : segment.dataOffset + segment.dataSize;
     if (segmentEndOffset !== null && !Number.isSafeInteger(segmentEndOffset)) {
         return null;
     }
 
     let offset = segment.dataOffset;
-    for (
-        let elementIndex = 0;
-        elementIndex < MAXIMUM_SEGMENT_METADATA_ELEMENT_COUNT;
-        elementIndex += 1
-    ) {
+    for (let elementIndex = 0; elementIndex < MAXIMUM_SEGMENT_METADATA_ELEMENT_COUNT; elementIndex += 1) {
         if (!isOffsetBeforeEnd(offset, segmentEndOffset)) {
             return null;
         }
@@ -557,10 +501,7 @@ export async function readMatroskaDolbyVisionTrackConfiguration(
         return null;
     }
     try {
-        return await readMatroskaDolbyVisionTrackConfigurationStrict(
-            reader,
-            selectedTrackNumber
-        );
+        return await readMatroskaDolbyVisionTrackConfigurationStrict(reader, selectedTrackNumber);
     } catch {
         return null;
     }

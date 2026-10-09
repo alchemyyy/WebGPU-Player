@@ -150,9 +150,7 @@ describe('TrueHDExactCapabilityProbe', () => {
     it('caches a fully verified channel-bed capability', async () => {
         const worker = new FakeTrueHDProbeWorker();
         const timeoutCallback = { value: null as (() => void) | null };
-        const probe = new TrueHDExactCapabilityProbe(
-            createEnvironment(worker, timeoutCallback)
-        );
+        const probe = new TrueHDExactCapabilityProbe(createEnvironment(worker, timeoutCallback));
 
         const firstProbe = probe.probe();
         expect(probe.probe()).toBe(firstProbe);
@@ -182,9 +180,7 @@ describe('TrueHDExactCapabilityProbe', () => {
     it('fails closed when nominal success omits exact recovery evidence', async () => {
         const worker = new FakeTrueHDProbeWorker();
         const timeoutCallback = { value: null as (() => void) | null };
-        const probe = new TrueHDExactCapabilityProbe(
-            createEnvironment(worker, timeoutCallback)
-        );
+        const probe = new TrueHDExactCapabilityProbe(createEnvironment(worker, timeoutCallback));
 
         const resultPromise = probe.probe();
         await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
@@ -221,9 +217,7 @@ describe('TrueHDExactCapabilityProbe', () => {
     it('terminates a timed-out worker and ignores later output', async () => {
         const worker = new FakeTrueHDProbeWorker();
         const timeoutCallback = { value: null as (() => void) | null };
-        const probe = new TrueHDExactCapabilityProbe(
-            createEnvironment(worker, timeoutCallback)
-        );
+        const probe = new TrueHDExactCapabilityProbe(createEnvironment(worker, timeoutCallback));
 
         const resultPromise = probe.probe();
         await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
@@ -240,9 +234,7 @@ describe('TrueHDExactCapabilityProbe', () => {
     it('rejects malformed worker messages', async () => {
         const worker = new FakeTrueHDProbeWorker();
         const timeoutCallback = { value: null as (() => void) | null };
-        const probe = new TrueHDExactCapabilityProbe(
-            createEnvironment(worker, timeoutCallback)
-        );
+        const probe = new TrueHDExactCapabilityProbe(createEnvironment(worker, timeoutCallback));
 
         const resultPromise = probe.probe();
         await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));

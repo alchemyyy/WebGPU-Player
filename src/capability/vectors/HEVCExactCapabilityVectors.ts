@@ -67,8 +67,7 @@ function createQualificationAccessUnits(
     const bitstream = inlineBitstream === undefined ?
         new Uint8Array(main10UltraHDQualificationBitstream) :
         decodeBase64(inlineBitstream);
-    const byteLengths = HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[vector]
-        .qualificationAccessUnitByteLengths;
+    const byteLengths = HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[vector].qualificationAccessUnitByteLengths;
     const accessUnits: ArrayBuffer[] = [];
     let byteOffset = 0;
     for (const byteLength of byteLengths) {
@@ -76,9 +75,7 @@ function createQualificationAccessUnits(
         if (!Number.isSafeInteger(nextByteOffset) || nextByteOffset > bitstream.byteLength) {
             throw new TypeError('The exact HEVC qualification vector is truncated');
         }
-        accessUnits.push(createTransferableBuffer(
-            bitstream.subarray(byteOffset, nextByteOffset)
-        ));
+        accessUnits.push(createTransferableBuffer(bitstream.subarray(byteOffset, nextByteOffset)));
         byteOffset = nextByteOffset;
     }
     if (byteOffset !== bitstream.byteLength) {
@@ -88,17 +85,14 @@ function createQualificationAccessUnits(
 }
 
 /** Creates a fresh exact single-frame access unit for a qualification vector. */
-export function createHEVCExactCapabilityAccessUnit(
-    vector: HEVCExactCapabilityVector
-): ArrayBuffer {
+export function createHEVCExactCapabilityAccessUnit(vector: HEVCExactCapabilityVector): ArrayBuffer {
     return createTransferableBuffer(decodeBase64(ACCESS_UNIT_BASE64[vector]));
 }
 
 /** Creates fresh transferable access units for one exact capability probe. */
 export function createHEVCExactCapabilityWorkerQualificationRequests(
     main10UltraHDQualificationBitstream: ArrayBuffer
-):
-    readonly HEVCExactCapabilityWorkerQualificationRequest[] {
+): readonly HEVCExactCapabilityWorkerQualificationRequest[] {
     if (!(main10UltraHDQualificationBitstream instanceof ArrayBuffer)) {
         throw new TypeError('The exact HEVC 4K qualification vector is unavailable');
     }
@@ -112,10 +106,7 @@ export function createHEVCExactCapabilityWorkerQualificationRequests(
             codedWidth: definition.codedWidth,
             levelIDC: definition.levelIDC,
             profileIDC: definition.profileIDC,
-            qualificationAccessUnits: createQualificationAccessUnits(
-                vector,
-                main10UltraHDQualificationBitstream
-            ),
+            qualificationAccessUnits: createQualificationAccessUnits(vector, main10UltraHDQualificationBitstream),
             qualificationFrameCount: definition.qualificationFrameCount,
             vector
         });

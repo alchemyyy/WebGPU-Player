@@ -61,9 +61,7 @@ function isWorkerReason(value: unknown): value is DTSExactCapabilityWorkerReason
 }
 
 /** Rejects malformed requests before initializing executable decoder code. */
-export function isDTSExactCapabilityWorkerRequest(
-    value: unknown
-): value is DTSExactCapabilityWorkerRequest {
+export function isDTSExactCapabilityWorkerRequest(value: unknown): value is DTSExactCapabilityWorkerRequest {
     return isRecord(value)
         && value.type === 'probe'
         && value.requestID === DTS_EXACT_CAPABILITY_REQUEST_ID
@@ -71,9 +69,7 @@ export function isDTSExactCapabilityWorkerRequest(
 }
 
 /** Validates every output and throughput field returned by the DTS probe worker. */
-export function isDTSExactCapabilityWorkerResponse(
-    value: unknown
-): value is DTSExactCapabilityWorkerResponse {
+export function isDTSExactCapabilityWorkerResponse(value: unknown): value is DTSExactCapabilityWorkerResponse {
     return isRecord(value)
         && value.type === 'result'
         && value.requestID === DTS_EXACT_CAPABILITY_REQUEST_ID

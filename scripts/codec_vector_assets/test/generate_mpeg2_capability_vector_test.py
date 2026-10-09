@@ -18,7 +18,7 @@ from generated_output import GeneratedOutputError  # noqa: E402
 
 
 class FFmpegResolutionTests(unittest.TestCase):
-    """Covers the explicit flag and the PATH default."""
+    """Covers the --ffmpeg flag and the PATH default."""
 
     def test_defaults_to_FFmpeg_on_PATH(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

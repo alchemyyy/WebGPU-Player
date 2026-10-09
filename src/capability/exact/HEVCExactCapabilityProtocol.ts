@@ -190,14 +190,10 @@ function isNullableFingerprintArray(value: unknown): value is readonly number[] 
 }
 
 function isVector(value: unknown): value is HEVCExactCapabilityVector {
-    return value === 'main-1080p'
-        || value === 'main10-1080p'
-        || value === 'main10-4k';
+    return value === 'main-1080p' || value === 'main10-1080p' || value === 'main10-4k';
 }
 
-function isWorkerQualificationReason(
-    value: unknown
-): value is HEVCExactCapabilityWorkerQualificationReason {
+function isWorkerQualificationReason(value: unknown): value is HEVCExactCapabilityWorkerQualificationReason {
     switch (value) {
         case 'decode-error':
         case 'decode-output-verified':
@@ -214,27 +210,18 @@ function getQualificationInputByteLength(
 ): number | null {
     if (
         !Array.isArray(qualificationRequest.qualificationAccessUnits)
-        || qualificationRequest.qualificationAccessUnits.length
-            !== definition.qualificationAccessUnitByteLengths.length
+        || qualificationRequest.qualificationAccessUnits.length !== definition.qualificationAccessUnitByteLengths.length
     ) {
         return null;
     }
 
     let inputByteLength = 0;
-    for (
-        let accessUnitIndex = 0;
-        accessUnitIndex < qualificationRequest.qualificationAccessUnits.length;
-        accessUnitIndex += 1
-    ) {
-        const qualificationAccessUnit = qualificationRequest.qualificationAccessUnits[
-            accessUnitIndex
-        ];
+    for (let accessUnitIndex = 0; accessUnitIndex < qualificationRequest.qualificationAccessUnits.length; accessUnitIndex += 1) {
+        const qualificationAccessUnit = qualificationRequest.qualificationAccessUnits[accessUnitIndex];
         if (
             !(qualificationAccessUnit instanceof ArrayBuffer)
-            || qualificationAccessUnit.byteLength
-                !== definition.qualificationAccessUnitByteLengths[accessUnitIndex]
-            || qualificationAccessUnit.byteLength
-                > HEVC_EXACT_CAPABILITY_MAXIMUM_ACCESS_UNIT_BYTE_LENGTH
+            || qualificationAccessUnit.byteLength !== definition.qualificationAccessUnitByteLengths[accessUnitIndex]
+            || qualificationAccessUnit.byteLength > HEVC_EXACT_CAPABILITY_MAXIMUM_ACCESS_UNIT_BYTE_LENGTH
         ) {
             return null;
         }
@@ -244,9 +231,7 @@ function getQualificationInputByteLength(
 }
 
 /** Checks an internal worker request before allocating decoder memory. */
-export function isHEVCExactCapabilityWorkerRequest(
-    value: unknown
-): value is HEVCExactCapabilityWorkerRequest {
+export function isHEVCExactCapabilityWorkerRequest(value: unknown): value is HEVCExactCapabilityWorkerRequest {
     if (!value || typeof value !== 'object') {
         return false;
     }
@@ -279,28 +264,20 @@ export function isHEVCExactCapabilityWorkerRequest(
             seenVectors.has(vector)
             || !(qualificationRequest.accessUnit instanceof ArrayBuffer)
             || qualificationRequest.accessUnit.byteLength === 0
-            || qualificationRequest.accessUnit.byteLength
-                > HEVC_EXACT_CAPABILITY_MAXIMUM_ACCESS_UNIT_BYTE_LENGTH
+            || qualificationRequest.accessUnit.byteLength > HEVC_EXACT_CAPABILITY_MAXIMUM_ACCESS_UNIT_BYTE_LENGTH
             || qualificationRequest.bitDepth !== definition.bitDepth
             || qualificationRequest.codedHeight !== definition.codedHeight
             || qualificationRequest.codedWidth !== definition.codedWidth
             || qualificationRequest.levelIDC !== definition.levelIDC
             || qualificationRequest.profileIDC !== definition.profileIDC
-            || definition.decodedFrameFingerprints.length
-                !== definition.qualificationFrameCount
-            || definition.qualificationAccessUnitByteLengths.length
-                !== definition.qualificationFrameCount
-            || definition.qualificationVCLNALUnitTypes.length
-                !== definition.qualificationFrameCount
-            || qualificationRequest.qualificationFrameCount
-                !== definition.qualificationFrameCount
+            || definition.decodedFrameFingerprints.length !== definition.qualificationFrameCount
+            || definition.qualificationAccessUnitByteLengths.length !== definition.qualificationFrameCount
+            || definition.qualificationVCLNALUnitTypes.length !== definition.qualificationFrameCount
+            || qualificationRequest.qualificationFrameCount !== definition.qualificationFrameCount
         ) {
             return false;
         }
-        const qualificationInputByteLength = getQualificationInputByteLength(
-            qualificationRequest,
-            definition
-        );
+        const qualificationInputByteLength = getQualificationInputByteLength(qualificationRequest, definition);
         if (qualificationInputByteLength === null) {
             return false;
         }
@@ -312,8 +289,7 @@ export function isHEVCExactCapabilityWorkerRequest(
             + (2 * chromaWidth * chromaHeight)
         ) * Uint16Array.BYTES_PER_ELEMENT;
         totalInputByteLength += qualificationRequest.accessUnit.byteLength;
-        totalDecodedByteLength += decodedFrameByteLength
-            * definition.qualificationFrameCount;
+        totalDecodedByteLength += decodedFrameByteLength * definition.qualificationFrameCount;
         if (
             !Number.isSafeInteger(totalInputByteLength)
             || totalInputByteLength > HEVC_EXACT_CAPABILITY_MAXIMUM_TOTAL_INPUT_BYTE_LENGTH
@@ -328,9 +304,7 @@ export function isHEVCExactCapabilityWorkerRequest(
 }
 
 /** Checks the bounded summary returned by the capability worker. */
-export function isHEVCExactCapabilityWorkerResponse(
-    value: unknown
-): value is HEVCExactCapabilityWorkerResponse {
+export function isHEVCExactCapabilityWorkerResponse(value: unknown): value is HEVCExactCapabilityWorkerResponse {
     if (!value || typeof value !== 'object') {
         return false;
     }
@@ -378,8 +352,7 @@ export function isHEVCExactCapabilityWorkerResponse(
                     || result.codedHeight === null
                     || result.codedWidth === null
                     || result.decodedFrameFingerprints === null
-                    || result.decodedFrameFingerprints.length
-                        !== HEVC_EXACT_CAPABILITY_QUALIFICATION_FRAME_COUNT
+                    || result.decodedFrameFingerprints.length !== HEVC_EXACT_CAPABILITY_QUALIFICATION_FRAME_COUNT
                     || result.decodedFrameCount === null
                     || result.decodedByteLength === null
                     || result.levelIDC === null

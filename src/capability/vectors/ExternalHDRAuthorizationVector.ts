@@ -3,8 +3,7 @@ export const EXTERNAL_HDR_AUTHORIZATION_CODED_WIDTH = 1_920;
 export const EXTERNAL_HDR_AUTHORIZATION_CODED_HEIGHT = 1_088;
 export const EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH = 1_920;
 export const EXTERNAL_HDR_AUTHORIZATION_DISPLAY_HEIGHT = 1_080;
-export const EXTERNAL_HDR_AUTHORIZATION_VECTOR_SHA256 =
-    '9d887b9cf249f44a283b92c466791cbad357bea11f3eb9b246b01338304cd098';
+export const EXTERNAL_HDR_AUTHORIZATION_VECTOR_SHA256 = '9d887b9cf249f44a283b92c466791cbad357bea11f3eb9b246b01338304cd098';
 
 export type ExternalHDRAuthorizationVectorSample = {
     rawYUVCode: readonly [number, number, number]
@@ -12,8 +11,7 @@ export type ExternalHDRAuthorizationVectorSample = {
     sampleY: number
 };
 
-export const EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES:
-readonly ExternalHDRAuthorizationVectorSample[] = [{
+export const EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES: readonly ExternalHDRAuthorizationVectorSample[] = [{
     rawYUVCode: [ 64, 512, 512 ],
     sampleX: 0,
     sampleY: 135
@@ -120,7 +118,7 @@ function decodeBase64(base64: string): Uint8Array {
     return bytes;
 }
 
-/** Returns a fresh Annex B access unit for native HDR transport authorization. */
+/** Returns a new copy of the Annex B access unit for native HDR transport authorization. */
 export function createExternalHDRAuthorizationAccessUnit(): Uint8Array {
     return decodeBase64(EXTERNAL_HDR_AUTHORIZATION_ACCESS_UNIT_BASE64);
 }

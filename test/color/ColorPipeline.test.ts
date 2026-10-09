@@ -132,11 +132,7 @@ describe('ColorPipeline', () => {
         expect(convertLinearRGBGamut([ 1, 0, 0 ], 'smpte170m', 'bt709')).toEqual([ 0.939542, 0.017772, -0.001622 ]);
         expect(convertLinearRGBGamut([ 1, 0, 0 ], 'bt470bg', 'bt709')).toEqual([ 1.044043, 0, 0 ]);
         expect(convertLinearRGBGamut(linearRGB, 'smpte170m', 'bt2020')).toEqual(
-            convertLinearRGBGamut(
-                convertLinearRGBGamut(linearRGB, 'smpte170m', 'bt709'),
-                'bt709',
-                'bt2020'
-            )
+            convertLinearRGBGamut(convertLinearRGBGamut(linearRGB, 'smpte170m', 'bt709'), 'bt709', 'bt2020')
         );
         for (const primaries of EVERY_COLOR_PRIMARIES) {
             const roundTripRGB = convertLinearRGBGamut(
@@ -202,12 +198,7 @@ describe('ColorPipeline', () => {
     it('supports both SDR output encodings', () => {
         const sRGBOutput = encodeSDROutput([ 0, 50, 100 ], 100, 'srgb');
         const bt709Output = encodeSDROutput([ 0, 50, 100 ], 100, 'bt709');
-        const blackPointCompensatedOutput = encodeSDROutput(
-            [ 0.1, 50.05, 100 ],
-            100,
-            'srgb',
-            0.1
-        );
+        const blackPointCompensatedOutput = encodeSDROutput([ 0.1, 50.05, 100 ], 100, 'srgb', 0.1);
 
         expect(sRGBOutput[0]).toBe(0);
         expect(sRGBOutput[1]).toBeCloseTo(0.735356983, 8);
@@ -243,21 +234,9 @@ describe('ColorPipeline', () => {
         const encoded100Nits = applyPQOETF(100);
         const settings = createHDRToSDRRenderSettings();
         const metadata = createPQColorMetadata();
-        const mappedRed = processEncodedRGB(
-            [ encoded100Nits, 0, 0 ],
-            metadata,
-            settings
-        );
-        const mappedGreen = processEncodedRGB(
-            [ 0, encoded100Nits, 0 ],
-            metadata,
-            settings
-        );
-        const mappedBlue = processEncodedRGB(
-            [ 0, 0, encoded100Nits ],
-            metadata,
-            settings
-        );
+        const mappedRed = processEncodedRGB([ encoded100Nits, 0, 0 ], metadata, settings);
+        const mappedGreen = processEncodedRGB([ 0, encoded100Nits, 0 ], metadata, settings);
+        const mappedBlue = processEncodedRGB([ 0, 0, encoded100Nits ], metadata, settings);
 
         expect(mappedRed).toEqual(expect.arrayContaining([
             expect.any(Number),
@@ -280,11 +259,7 @@ describe('ColorPipeline', () => {
     it('applies display controls after HDR output encoding', () => {
         const encodedRGB: ColorTriplet = [ 0.25, 0.5, 0.75 ];
         const metadata = createHLGColorMetadata();
-        const neutralOutput = processEncodedRGB(
-            encodedRGB,
-            metadata,
-            createHDRToSDRRenderSettings()
-        );
+        const neutralOutput = processEncodedRGB(encodedRGB, metadata, createHDRToSDRRenderSettings());
         const adjustedOutput = processEncodedRGB(
             encodedRGB,
             metadata,

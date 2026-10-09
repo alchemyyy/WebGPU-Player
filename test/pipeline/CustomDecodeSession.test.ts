@@ -29,12 +29,8 @@ import {
     type DecodeWorkerAudioResponse,
     type DecodeWorkerResyncAudioRequest
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
-import {
-    DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
-} from 'webgpu-player/video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
-import {
-    resolveDolbyVisionRPUParserWASMURL
-} from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParser';
+import { DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION } from 'webgpu-player/video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
+import { resolveDolbyVisionRPUParserWASMURL } from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParser';
 import type {
     OwnedNativeMediaAudioEventHandler,
     OwnedNativeMediaAudioTelemetry
@@ -182,12 +178,10 @@ function createRawFrame(
     };
 }
 
-function createCompoundRawFrames(
-    mediaTimeMicroseconds: Microseconds
-): {
-        baseFrame: TransferableRawVideoFrame
-        enhancementFrame: TransferableRawVideoFrame
-    } {
+function createCompoundRawFrames(mediaTimeMicroseconds: Microseconds): {
+    baseFrame: TransferableRawVideoFrame
+    enhancementFrame: TransferableRawVideoFrame
+} {
     const baseFrameTemplate = createRawFrame(mediaTimeMicroseconds);
     const enhancementFrameTemplate = createRawFrame(mediaTimeMicroseconds, {
         codedHeight: 1,
@@ -196,9 +190,7 @@ function createCompoundRawFrames(
         displayWidth: 2
     });
     const enhancementByteOffset = baseFrameTemplate.data.byteLength;
-    const data = new ArrayBuffer(
-        enhancementByteOffset + enhancementFrameTemplate.data.byteLength
-    );
+    const data = new ArrayBuffer(enhancementByteOffset + enhancementFrameTemplate.data.byteLength);
     return {
         baseFrame: {
             ...baseFrameTemplate,
@@ -334,9 +326,7 @@ type DecodedAudioSessionHarness = {
 /** Returns a decoded audio bridge double that submits every sample it receives. */
 function createSubmittingAudioBridge(initialAudioSampleCredits: number): CustomDecodeAudioBridge {
     return {
-        enqueue: vi.fn((
-            message: DecodeWorkerAudioResponse
-        ): ReturnType<CustomDecodeAudioBridge['enqueue']> => ({
+        enqueue: vi.fn((message: DecodeWorkerAudioResponse): ReturnType<CustomDecodeAudioBridge['enqueue']> => ({
             frameCount: message.frameCount,
             status: 'submitted'
         })),
@@ -356,10 +346,7 @@ function emitAudioSample(
 ): void {
     worker.emitMessage({
         channelCount,
-        channelData: Array.from(
-            { length: channelCount },
-            (): Float32Array => new Float32Array(frameCount)
-        ),
+        channelData: Array.from({ length: channelCount }, (): Float32Array => new Float32Array(frameCount)),
         durationMicroseconds: audioFramesToMicroseconds(frameCount, DECODED_AUDIO_SAMPLE_RATE),
         frameCount,
         generation,
@@ -407,12 +394,7 @@ function startReadyDecodedAudioSession(generation: number): DecodedAudioSessionH
     });
     emitFrame(worker, generation, 1_000_000);
     for (let sampleIndex = 0; sampleIndex < 3; sampleIndex += 1) {
-        emitAudioSample(
-            worker,
-            generation,
-            2,
-            1_000_000 + sampleIndex * DECODED_AUDIO_SAMPLE_DURATION_MICROSECONDS
-        );
+        emitAudioSample(worker, generation, 2, 1_000_000 + sampleIndex * DECODED_AUDIO_SAMPLE_DURATION_MICROSECONDS);
     }
     if (session.getTelemetry().state !== 'ready') {
         throw new Error('The decoded audio session did not become ready');
@@ -421,14 +403,9 @@ function startReadyDecodedAudioSession(generation: number): DecodedAudioSessionH
 }
 
 /** Issues an audio resync that must be declined without touching the session. */
-async function expectAudioResyncDeclined(
-    session: CustomDecodeSession,
-    worker: MockWorker
-): Promise<void> {
+async function expectAudioResyncDeclined(session: CustomDecodeSession, worker: MockWorker): Promise<void> {
     const postedMessageCount = worker.postedMessages.length;
-    const createAudioBridge = vi.fn(
-        async (): Promise<CustomDecodeAudioBridge> => createSubmittingAudioBridge(4)
-    );
+    const createAudioBridge = vi.fn(async (): Promise<CustomDecodeAudioBridge> => createSubmittingAudioBridge(4));
 
     await expect(session.resyncAudio({
         createAudioBridge,
@@ -455,10 +432,7 @@ type NativeAudioSessionHarness = {
 };
 
 /** Starts a native-media E-AC-3 session whose owned backend opens once the given promise settles. */
-function startNativeAudioSession(
-    generation: number,
-    backendOpened: Promise<void> = Promise.resolve()
-): NativeAudioSessionHarness {
+function startNativeAudioSession(generation: number, backendOpened: Promise<void> = Promise.resolve()): NativeAudioSessionHarness {
     const worker = new MockWorker();
     const events: CustomDecodeSessionEvent[] = [];
     let activeBackendGeneration: number | null = null;
@@ -781,8 +755,7 @@ describe('CustomDecodeSession', () => {
         });
 
         const presentationFrame = session.takeFrame(secondsToMicroseconds(1.1));
-        expect(presentationFrame?.encodedDolbyVisionMetadata)
-            .toBe(encodedDolbyVisionMetadata);
+        expect(presentationFrame?.encodedDolbyVisionMetadata).toBe(encodedDolbyVisionMetadata);
         expect(session.getTelemetry()).toMatchObject({
             receivedDolbyVisionEnhancementFrameCount: 1,
             receivedDolbyVisionFrameCount: 1,
@@ -803,10 +776,7 @@ describe('CustomDecodeSession', () => {
         );
         startSession(session, 32);
         emitRawReady(worker, 32);
-        const validMetadata = parseHEVCHDR10PlusMetadata(
-            createHDR10PlusHEVCVector('valid'),
-            { kind: 'annex-b' }
-        );
+        const validMetadata = parseHEVCHDR10PlusMetadata(createHDR10PlusHEVCVector('valid'), { kind: 'annex-b' });
         worker.emitMessage({
             durationMicroseconds: 100_000,
             frame: createFrame(),
@@ -1286,8 +1256,7 @@ describe('CustomDecodeSession', () => {
             );
             session.start({
                 audioTrackIndex: 0,
-                decodedAudioOutputChannelCount:
-                    configuration.decodedAudioOutputChannelCount,
+                decodedAudioOutputChannelCount: configuration.decodedAudioOutputChannelCount,
                 dolbyVisionProfile: null,
                 generation: configuration.generation,
                 maximumCodedHeight: 1_080,
@@ -1520,9 +1489,7 @@ describe('CustomDecodeSession', () => {
         startSession(session, 32, undefined, 'raw-planes');
         emitRawReady(worker, 32);
         const mediaTimeMicroseconds = secondsToMicroseconds(1.1);
-        const { baseFrame, enhancementFrame } = createCompoundRawFrames(
-            mediaTimeMicroseconds
-        );
+        const { baseFrame, enhancementFrame } = createCompoundRawFrames(mediaTimeMicroseconds);
         worker.emitMessage({
             durationMicroseconds: 100_000,
             encodedDolbyVisionMetadata: {
@@ -1547,9 +1514,7 @@ describe('CustomDecodeSession', () => {
         }
         expect(presentationFrame.frame).toBe(baseFrame);
         expect(presentationFrame.enhancementFrame).toBe(enhancementFrame);
-        expect(presentationFrame.enhancementFrame?.data).toBe(
-            presentationFrame.frame.data
-        );
+        expect(presentationFrame.enhancementFrame?.data).toBe(presentationFrame.frame.data);
         expect(session.acknowledgeFrame(presentationFrame)).toBe(true);
         expect(worker.postedMessages.at(-1)).toEqual({
             buffer: baseFrame.data,
@@ -2073,9 +2038,7 @@ describe('CustomDecodeSession', () => {
         expect(destroyStopPromise).toBe(fallbackStopPromise);
         expect(fallbackStopSettled).toBe(false);
         expect(destroyStopSettled).toBe(false);
-        expect(worker.postedMessages.filter(message => (
-            message as { type?: string }
-        ).type === 'stop')).toHaveLength(1);
+        expect(worker.postedMessages.filter(message => (message as { type?: string }).type === 'stop')).toHaveLength(1);
         expect(worker.terminate).not.toHaveBeenCalled();
 
         worker.emitMessage({ generation: 11, type: 'stopped' });
@@ -2151,9 +2114,7 @@ describe('CustomDecodeSession', () => {
                 durationMicroseconds: 21_333,
                 frameCount: 1_024,
                 generation: 9,
-                mediaTimeMicroseconds: 1_000_000 + Math.round(
-                    sampleIndex * 1_024 * 1_000_000 / 48_000
-                ),
+                mediaTimeMicroseconds: 1_000_000 + Math.round(sampleIndex * 1_024 * 1_000_000 / 48_000),
                 sampleRate: 48_000,
                 type: 'audio'
             });
@@ -2924,9 +2885,7 @@ describe('CustomDecodeSession', () => {
     it('resyncs decoded audio to a new layout in a new epoch while video continues', async () => {
         const { audioBridge, events, session, worker } = startReadyDecodedAudioSession(80);
         const resyncedAudioBridge = createSubmittingAudioBridge(4);
-        const createAudioBridge = vi.fn(
-            async (): Promise<CustomDecodeAudioBridge> => resyncedAudioBridge
-        );
+        const createAudioBridge = vi.fn(async (): Promise<CustomDecodeAudioBridge> => resyncedAudioBridge);
         const audioDownmixSettings: AudioDownmixSettings = {
             centerLevel: 0.75,
             outputGain: 1.5,
@@ -2956,8 +2915,7 @@ describe('CustomDecodeSession', () => {
         expect(audioBridge.stop).toHaveBeenCalledWith(80);
         expect(createAudioBridge).toHaveBeenCalledOnce();
         expect(createAudioBridge).toHaveBeenCalledWith(resyncedAudioConfiguration);
-        expect(vi.mocked(audioBridge.stop).mock.invocationCallOrder[0])
-            .toBeLessThan(createAudioBridge.mock.invocationCallOrder[0]);
+        expect(vi.mocked(audioBridge.stop).mock.invocationCallOrder[0]).toBeLessThan(createAudioBridge.mock.invocationCallOrder[0]);
         expect(session.getTelemetry()).toMatchObject({
             audioChannelCount: 2,
             audioEpoch: 1,
@@ -2996,8 +2954,7 @@ describe('CustomDecodeSession', () => {
             type: 'resync-audio'
         } ]);
         expect(isDecodeWorkerRequest(postedResyncMessages[0])).toBe(true);
-        expect((postedResyncMessages[0] as DecodeWorkerResyncAudioRequest).audioDownmixSettings)
-            .not.toBe(audioDownmixSettings);
+        expect((postedResyncMessages[0] as DecodeWorkerResyncAudioRequest).audioDownmixSettings).not.toBe(audioDownmixSettings);
         expect(session.getTelemetry()).toMatchObject({
             audioChannelCount: 6,
             audioEpoch: 1,
@@ -3054,10 +3011,7 @@ describe('CustomDecodeSession', () => {
             event.type === 'ready'
         ))).toHaveLength(1);
         expect(resyncedAudioBridge.enqueue).toHaveBeenCalledTimes(4);
-        expect(resyncedAudioBridge.enqueue).toHaveBeenLastCalledWith(
-            expect.objectContaining({ audioEpoch: 1, channelCount: 8 }),
-            81
-        );
+        expect(resyncedAudioBridge.enqueue).toHaveBeenLastCalledWith(expect.objectContaining({ audioEpoch: 1, channelCount: 8 }), 81);
         expect(audioBridge.enqueue).toHaveBeenCalledTimes(3);
     });
 
@@ -3120,8 +3074,7 @@ describe('CustomDecodeSession', () => {
             decodedAudioOutputChannelCount: 6,
             targetTimeMicroseconds: secondsToMicroseconds(5)
         })).resolves.toBe(1);
-        const firstResyncedBridgeCallbacks =
-            vi.mocked(firstResyncedAudioBridge.start).mock.calls[0][0].callbacks;
+        const firstResyncedBridgeCallbacks = vi.mocked(firstResyncedAudioBridge.start).mock.calls[0][0].callbacks;
         const firstResyncMessageCount = worker.postedMessages.length;
 
         firstResyncedBridgeCallbacks.onCreditsReleased(2);
@@ -3169,9 +3122,7 @@ describe('CustomDecodeSession', () => {
             const secondDeferredAudioBridge = createDeferred<CustomDecodeAudioBridge>();
             const firstAudioBridge = createSubmittingAudioBridge(4);
             const secondAudioBridge = createSubmittingAudioBridge(5);
-            const secondCreateAudioBridge = vi.fn(
-                (): Promise<CustomDecodeAudioBridge> => secondDeferredAudioBridge.promise
-            );
+            const secondCreateAudioBridge = vi.fn((): Promise<CustomDecodeAudioBridge> => secondDeferredAudioBridge.promise);
             const postedMessageCount = worker.postedMessages.length;
             const eventCount = events.length;
 
@@ -3255,9 +3206,7 @@ describe('CustomDecodeSession', () => {
         const eventCount = events.length;
 
         const firstResyncPromise = session.resyncAudio({
-            createAudioBridge: (): Promise<CustomDecodeAudioBridge> => Promise.reject(
-                new Error('The superseded output failed')
-            ),
+            createAudioBridge: (): Promise<CustomDecodeAudioBridge> => Promise.reject(new Error('The superseded output failed')),
             decodedAudioOutputChannelCount: 6,
             targetTimeMicroseconds: secondsToMicroseconds(5)
         });
@@ -3286,9 +3235,7 @@ describe('CustomDecodeSession', () => {
         const postedMessageCount = worker.postedMessages.length;
 
         await expect(session.resyncAudio({
-            createAudioBridge: (): Promise<CustomDecodeAudioBridge> => Promise.reject(
-                new Error('AudioWorklet creation failed')
-            ),
+            createAudioBridge: (): Promise<CustomDecodeAudioBridge> => Promise.reject(new Error('AudioWorklet creation failed')),
             decodedAudioOutputChannelCount: 6,
             targetTimeMicroseconds: secondsToMicroseconds(5)
         })).resolves.toBeNull();
@@ -3510,12 +3457,7 @@ describe('CustomDecodeSession', () => {
         });
         emitFrame(worker, 104, 1_000_000);
         for (let sampleIndex = 0; sampleIndex < 3; sampleIndex += 1) {
-            emitAudioSample(
-                worker,
-                104,
-                2,
-                1_000_000 + sampleIndex * DECODED_AUDIO_SAMPLE_DURATION_MICROSECONDS
-            );
+            emitAudioSample(worker, 104, 2, 1_000_000 + sampleIndex * DECODED_AUDIO_SAMPLE_DURATION_MICROSECONDS);
         }
         expect(session.getTelemetry()).toMatchObject({
             audioSourceChannelCount: 8,
@@ -3822,9 +3764,7 @@ describe('CustomDecodeSession', () => {
 
     it('rejects invalid audio resync options before changing the session', async () => {
         const { audioBridge, session, worker } = startReadyDecodedAudioSession(98);
-        const createAudioBridge = vi.fn(
-            async (): Promise<CustomDecodeAudioBridge> => createSubmittingAudioBridge(4)
-        );
+        const createAudioBridge = vi.fn(async (): Promise<CustomDecodeAudioBridge> => createSubmittingAudioBridge(4));
         const resyncOptions: CustomDecodeAudioResyncOptions = {
             createAudioBridge,
             decodedAudioOutputChannelCount: 6,

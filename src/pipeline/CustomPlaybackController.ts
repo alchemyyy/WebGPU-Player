@@ -538,8 +538,7 @@ export default class CustomPlaybackController {
             return this.clock.mediaTimeMicroseconds;
         }
 
-        const nativeAudioTimeMicroseconds =
-            this.videoDecodeSession.getNativeAudioTimeMicroseconds();
+        const nativeAudioTimeMicroseconds = this.videoDecodeSession.getNativeAudioTimeMicroseconds();
         if (nativeAudioTimeMicroseconds !== null) {
             requireMicroseconds(nativeAudioTimeMicroseconds, 'Native audio clock time');
             this.nativeAudioClockGeneration = generation;
@@ -770,16 +769,15 @@ export default class CustomPlaybackController {
     }
 
     /**
-     * Switches decoded audio to a new output layout and downmix while video keeps
-     * playing. Audio rests briefly while the new layout fills, and the clock keeps
-     * running. The channel count is a ceiling applied to the decoded source layout:
-     * three channels and 5.1 use a 5.1 output, 6.1 and 7.1 use a 7.1 output or fold
-     * into a 5.1 one, and anything else mixes down to stereo. Resolves false when
-     * the live switch is unavailable or did not start.
+     * Switches decoded audio to a new output layout and downmix while video keeps playing.
+     * Audio rests briefly while the new layout fills, and the clock keeps running.
+     * The channel count is a ceiling applied to the decoded source layout:
+     * - three channels and 5.1 use a 5.1 output;
+     * - 6.1 and 7.1 use a 7.1 output or fold into a 5.1 one;
+     * - anything else mixes down to stereo.
+     * Resolves false when the live switch is unavailable or did not start.
      */
-    public async reconfigureAudioOutput(
-        options: CustomPlaybackAudioOutputOptions
-    ): Promise<boolean> {
+    public async reconfigureAudioOutput(options: CustomPlaybackAudioOutputOptions): Promise<boolean> {
         this.requireUsable();
         validateAudioOutputOptions(options);
         const generation = this.activeGeneration;
@@ -799,8 +797,7 @@ export default class CustomPlaybackController {
             return false;
         }
 
-        const decodedSourceChannelCount =
-            this.videoDecodeSession.getTelemetry().decodedAudioSourceChannelCount;
+        const decodedSourceChannelCount = this.videoDecodeSession.getTelemetry().decodedAudioSourceChannelCount;
         const outputChannelCount = selectLiveAudioOutputChannelCount(
             options.decodedAudioOutputChannelCount,
             decodedSourceChannelCount
@@ -998,8 +995,7 @@ export default class CustomPlaybackController {
     }
 
     /**
-     * Applies page visibility. A returning page restarts video alone from the keyframe
-     * preceding the clock when its decoder was released or fell behind while hidden.
+     * A returning page restarts video alone from the keyframe preceding the clock when its decoder was released or fell behind while hidden.
      * Returns whether a video resync was requested.
      */
     public setPageVisibility(visible: boolean): boolean {
@@ -1073,9 +1069,7 @@ export default class CustomPlaybackController {
             return;
         }
 
-        const presentationFrame = this.videoDecodeSession.takeFrame(
-            this.getCurrentPresentationTargetTime()
-        );
+        const presentationFrame = this.videoDecodeSession.takeFrame(this.getCurrentPresentationTargetTime());
         if (presentationFrame) {
             this.videoResyncPending = false;
             this.recordDrainedVideoFrameEnd(presentationFrame);
@@ -1222,11 +1216,7 @@ export default class CustomPlaybackController {
         this.emitEvent({ generation, reason: 'startup', type: 'waiting' });
         this.emitTimeUpdate();
 
-        const pendingStartup = this.createPendingStartup(
-            generation,
-            desiredPlaying,
-            phase
-        );
+        const pendingStartup = this.createPendingStartup(generation, desiredPlaying, phase);
         this.pendingStartup = pendingStartup;
         void this.prepareGeneration(generation, options);
         return pendingStartup.promise;
@@ -1265,8 +1255,8 @@ export default class CustomPlaybackController {
     }
 
     /**
-     * Samples startup progress. A large or remote source may need longer than the quiet bound to start, so
-     * startup fails only after the quiet bound passes without progress, or at the ceiling regardless.
+     * Samples startup progress.
+     * A large or remote source may need longer than the quiet bound to start, so startup fails only after the quiet bound passes without progress, or at the ceiling regardless.
      */
     private checkStartupProgress(generation: number): void {
         const pendingStartup = this.pendingStartup;
@@ -1339,21 +1329,11 @@ export default class CustomPlaybackController {
             + `audio path ${this.audioPath}`;
     }
 
-    private async prepareGeneration(
-        generation: number,
-        options: CustomPlaybackPlayOptions
-    ): Promise<void> {
+    private async prepareGeneration(generation: number, options: CustomPlaybackPlayOptions): Promise<void> {
         try {
-            await this.waitBounded(
-                this.setAudioPlaying(false),
-                'Custom audio suspension exceeded its bound'
-            );
+            await this.waitBounded(this.setAudioPlaying(false), 'Custom audio suspension exceeded its bound');
         } catch (error) {
-            this.activateFallback(
-                generation,
-                'audio-output-failed',
-                this.getErrorMessage(error)
-            );
+            this.activateFallback(generation, 'audio-output-failed', this.getErrorMessage(error));
             return;
         }
 
@@ -1422,11 +1402,7 @@ export default class CustomPlaybackController {
                 videoTrackIndex: activeOptions.videoTrackIndex
             });
         } catch (error) {
-            this.activateFallback(
-                generation,
-                'lifecycle-failed',
-                this.getErrorMessage(error)
-            );
+            this.activateFallback(generation, 'lifecycle-failed', this.getErrorMessage(error));
         }
     }
 
@@ -1471,11 +1447,7 @@ export default class CustomPlaybackController {
                 this.completeEndedPlaybackIfDrained(event.generation);
                 break;
             case 'error':
-                this.activateFallback(
-                    event.generation,
-                    event.failureKind,
-                    event.message
-                );
+                this.activateFallback(event.generation, event.failureKind, event.message);
                 break;
             case 'video-interrupted':
                 this.handleVideoInterrupted();
@@ -1484,9 +1456,8 @@ export default class CustomPlaybackController {
     };
 
     /**
-     * Lets video carry playback past the end of the current audio epoch. A video
-     * decoder released for a hidden page restarts at the clock, since only video
-     * can reach the end of the stream now.
+     * Lets video carry playback past the end of the current audio epoch.
+     * A video decoder released for a hidden page restarts at the clock, since only video can still reach the end of the stream.
      */
     private handleAudioEnded(generation: number): void {
         // Startup completes through the ready event the ended track releases
@@ -1509,9 +1480,7 @@ export default class CustomPlaybackController {
         this.requestVideoResync(this.getCurrentPresentationTargetTime());
     }
 
-    private handleVideoConfigured(
-        event: Extract<CustomDecodeSessionEvent, { type: 'configured' }>
-    ): void {
+    private handleVideoConfigured(event: Extract<CustomDecodeSessionEvent, { type: 'configured' }>): void {
         if (this.pendingStartup?.generation !== event.generation) {
             return;
         }
@@ -1526,9 +1495,7 @@ export default class CustomPlaybackController {
         }
     }
 
-    private handleVideoReady(
-        event: Extract<CustomDecodeSessionEvent, { type: 'ready' }>
-    ): void {
+    private handleVideoReady(event: Extract<CustomDecodeSessionEvent, { type: 'ready' }>): void {
         if (this.pendingStartup?.generation !== event.generation) {
             return;
         }
@@ -1581,11 +1548,7 @@ export default class CustomPlaybackController {
                 this.setState('paused', generation);
             }
         } catch (error) {
-            this.activateFallback(
-                generation,
-                'audio-output-failed',
-                this.getErrorMessage(error)
-            );
+            this.activateFallback(generation, 'audio-output-failed', this.getErrorMessage(error));
             return;
         } finally {
             if (this.pendingStartup === pendingStartup) {
@@ -1755,10 +1718,7 @@ export default class CustomPlaybackController {
         };
     }
 
-    private updateTerminalAudioDrain(
-        generation: number,
-        drainedAudioTail: DrainedAudioTail
-    ): boolean {
+    private updateTerminalAudioDrain(generation: number, drainedAudioTail: DrainedAudioTail): boolean {
         this.prepareTerminalAudioDrain(generation);
         if (this.terminalAudioTailReleased) {
             return true;
@@ -1819,9 +1779,7 @@ export default class CustomPlaybackController {
         return true;
     }
 
-    private updateUncorrelatedTerminalAudioDrain(
-        audioEndTimeMicroseconds: Microseconds
-    ): boolean {
+    private updateUncorrelatedTerminalAudioDrain(audioEndTimeMicroseconds: Microseconds): boolean {
         const monotonicTimeMicroseconds = this.readMonotonicTime();
         if (this.terminalAudioDrainDeadlineMicroseconds === null) {
             if (this.state === 'playing' && !this.clock.isPaused) {
@@ -1853,17 +1811,14 @@ export default class CustomPlaybackController {
     }
 
     private getUncorrelatedAudioDrainGraceMicroseconds(): Microseconds {
-        const getEstimatedOutputLatencyMicroseconds =
-            this.audioOutput?.getEstimatedOutputLatencyMicroseconds;
+        const getEstimatedOutputLatencyMicroseconds = this.audioOutput?.getEstimatedOutputLatencyMicroseconds;
         if (!getEstimatedOutputLatencyMicroseconds) {
             return DEFAULT_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS;
         }
 
         let estimatedOutputLatencyMicroseconds: Microseconds | null;
         try {
-            estimatedOutputLatencyMicroseconds = getEstimatedOutputLatencyMicroseconds.call(
-                this.audioOutput
-            );
+            estimatedOutputLatencyMicroseconds = getEstimatedOutputLatencyMicroseconds.call(this.audioOutput);
         } catch {
             return DEFAULT_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS;
         }
@@ -1887,9 +1842,7 @@ export default class CustomPlaybackController {
         );
     }
 
-    private recordDrainedVideoFrameEnd(
-        presentationFrame: DecodedPresentationFrame
-    ): void {
+    private recordDrainedVideoFrameEnd(presentationFrame: DecodedPresentationFrame): void {
         const frameEndTimeMicroseconds = addMicroseconds(
             presentationFrame.mediaTimeMicroseconds,
             presentationFrame.durationMicroseconds > 0 ?
@@ -1978,14 +1931,9 @@ export default class CustomPlaybackController {
         return binding.bridge;
     };
 
-    private getOrCreateAudioBinding(
-        configuration: DecodeWorkerAudioConfiguration
-    ): Promise<CustomAudioOutputBinding> {
+    private getOrCreateAudioBinding(configuration: DecodeWorkerAudioConfiguration): Promise<CustomAudioOutputBinding> {
         try {
-            assertSupportedCustomAudioOutputLayout(
-                configuration.channelCount,
-                configuration.sampleRate
-            );
+            assertSupportedCustomAudioOutputLayout(configuration.channelCount, configuration.sampleRate);
         } catch (error) {
             return Promise.reject(error);
         }
@@ -2099,9 +2047,7 @@ export default class CustomPlaybackController {
             configuration: { ...configuration }
         };
         this.audioOutput = binding.output;
-        this.audioTelemetryUnsubscribe = binding.output.onTelemetry(
-            this.handleAudioOutputTelemetry
-        );
+        this.audioTelemetryUnsubscribe = binding.output.onTelemetry(this.handleAudioOutputTelemetry);
         this.audioOutputDeviceUnsubscribe = binding.output.onOutputDeviceChange?.(
             this.handleAudioOutputDeviceChange
         ) ?? null;
@@ -2203,8 +2149,8 @@ export default class CustomPlaybackController {
     }
 
     /**
-     * Resumes a clock that was waiting on the retired output's underflow. The new
-     * output starts filled, so it never reports a recovery of its own.
+     * Resumes a clock that was waiting on the retired output's underflow.
+     * The new output starts filled, so it never reports a recovery of its own.
      */
     private releaseRetiredAudioStarvation(generation: number): void {
         if (this.clockStarvation !== 'audio') {
@@ -2275,9 +2221,7 @@ export default class CustomPlaybackController {
         });
     };
 
-    private readonly handleAudioOutputTelemetry = (
-        telemetry: AudioWorkletTelemetry
-    ): void => {
+    private readonly handleAudioOutputTelemetry = (telemetry: AudioWorkletTelemetry): void => {
         const generation = this.activeGeneration;
         const audioOutput = this.audioOutput;
         const bridgeTelemetry = this.audioBinding?.bridge.getTelemetry();
@@ -2342,10 +2286,7 @@ export default class CustomPlaybackController {
         return Math.min(this.getOutputGain(), 1);
     }
 
-    private handleActiveAudioTelemetry(
-        telemetry: AudioWorkletTelemetry,
-        generation: number
-    ): void {
+    private handleActiveAudioTelemetry(telemetry: AudioWorkletTelemetry, generation: number): void {
         switch (telemetry.reason) {
             case 'underflow':
                 this.handleAudioUnderflow(telemetry, generation);
@@ -2372,10 +2313,7 @@ export default class CustomPlaybackController {
         }
     }
 
-    private handleAudioUnderflow(
-        telemetry: AudioWorkletTelemetry,
-        generation: number
-    ): void {
+    private handleAudioUnderflow(telemetry: AudioWorkletTelemetry, generation: number): void {
         if (this.state !== 'playing' || this.clockStarvation === 'audio') {
             return;
         }
@@ -2389,10 +2327,7 @@ export default class CustomPlaybackController {
                 return;
             }
         }
-        const terminalAudioTail = this.getTerminalAudioTailFromUnderflow(
-            telemetry,
-            generation
-        );
+        const terminalAudioTail = this.getTerminalAudioTailFromUnderflow(telemetry, generation);
         if (terminalAudioTail) {
             this.updateTerminalAudioDrain(generation, terminalAudioTail);
             this.emitTimeUpdateIfDue();
@@ -2416,10 +2351,7 @@ export default class CustomPlaybackController {
         this.emitTimeUpdateIfDue();
     }
 
-    private handleAudioUnderflowRecovery(
-        telemetry: AudioWorkletTelemetry,
-        generation: number
-    ): void {
+    private handleAudioUnderflowRecovery(telemetry: AudioWorkletTelemetry, generation: number): void {
         if (this.clockStarvation === 'audio') {
             this.clockStarvation = null;
             if (this.state === 'playing') {
@@ -2505,7 +2437,7 @@ export default class CustomPlaybackController {
         if (!videoDecodeLag) {
             return false;
         }
-        // Seek preroll and a delayed RAF can each produce one stale frame
+        // Seek preroll and a delayed RAF can each produce one stale frame.
         // Release its decode credit and apply the bounded starvation policy
         if (!this.discardStaleVideoFrame(presentationFrame)) {
             this.activateFallback(
@@ -2522,10 +2454,7 @@ export default class CustomPlaybackController {
         return true;
     }
 
-    private beginVideoFrameWait(
-        generation: number,
-        monotonicTimeMicroseconds: Microseconds
-    ): void {
+    private beginVideoFrameWait(generation: number, monotonicTimeMicroseconds: Microseconds): void {
         if (this.hasVideoTrackEnded()) {
             return;
         }
@@ -2593,10 +2522,7 @@ export default class CustomPlaybackController {
         return generation !== null && this.isTerminalAudioTailReleased(generation);
     }
 
-    /**
-     * Drains the tail of an audio track that ended before video, so the clock
-     * then runs on without audio.
-     */
+    /** Drains the tail of an audio track that ended before video, so the clock then runs on without audio. */
     private completeEndedAudioTrackDrain(generation: number): void {
         if (this.state !== 'playing'
             || this.pendingEndedGeneration === generation
@@ -2611,15 +2537,11 @@ export default class CustomPlaybackController {
     }
 
     /**
-     * Plays out the tail of an audio track that ended before video. Unlike the end
-     * of stream drain, video waits stay in force and the clock never pauses for an
-     * uncorrelated output, since video carries playback past the tail. Returns
-     * whether the tail was released.
+     * Plays out the tail of an audio track that ended before video.
+     * Unlike the end-of-stream drain, video waits stay in force and the clock never pauses for an uncorrelated output, since video carries playback past the tail.
+     * Returns whether the tail was released.
      */
-    private updateEndedAudioTrackDrain(
-        generation: number,
-        drainedAudioTail: DrainedAudioTail
-    ): boolean {
+    private updateEndedAudioTrackDrain(generation: number, drainedAudioTail: DrainedAudioTail): boolean {
         if (this.terminalAudioDrainGeneration !== generation) {
             this.terminalAudioDrainDeadlineMicroseconds = null;
             this.terminalAudioDrainGeneration = generation;
@@ -2671,11 +2593,7 @@ export default class CustomPlaybackController {
             return false;
         }
 
-        this.activateFallback(
-            generation,
-            'playback-stalled',
-            this.getPlaybackStallMessage(generation)
-        );
+        this.activateFallback(generation, 'playback-stalled', this.getPlaybackStallMessage(generation));
         return true;
     }
 
@@ -2722,9 +2640,7 @@ export default class CustomPlaybackController {
         };
     }
 
-    private discardStaleVideoFrame(
-        presentationFrame: DecodedPresentationFrame
-    ): boolean {
+    private discardStaleVideoFrame(presentationFrame: DecodedPresentationFrame): boolean {
         let released = false;
         try {
             released = this.videoDecodeSession.discardFrame(presentationFrame);
@@ -2751,8 +2667,7 @@ export default class CustomPlaybackController {
     /**
      * Only audio-clocked native decode is released while hidden.
      * Software decoders keep draining because a keyframe resync is costly for them.
-     * An ended video track has already released its decoder, and once the audio
-     * track ended only video can reach the end of the stream.
+     * An ended video track has already released its decoder, and once the audio track ended only video can reach the end of the stream.
      */
     private canSuspendBackgroundVideo(): boolean {
         return typeof this.currentSource?.audioTrackIndex === 'number'
@@ -2762,12 +2677,8 @@ export default class CustomPlaybackController {
     }
 
     /** Reports whether the newest decoded frame ends more than the tolerance before the target. */
-    private isVideoDecodeBehind(
-        targetTimeMicroseconds: Microseconds,
-        toleranceMicroseconds: Microseconds
-    ): boolean {
-        const lastFrameEndMediaTimeMicroseconds =
-            this.videoDecodeSession.getTelemetry().lastFrameEndMediaTimeMicroseconds;
+    private isVideoDecodeBehind(targetTimeMicroseconds: Microseconds, toleranceMicroseconds: Microseconds): boolean {
+        const lastFrameEndMediaTimeMicroseconds = this.videoDecodeSession.getTelemetry().lastFrameEndMediaTimeMicroseconds;
         return lastFrameEndMediaTimeMicroseconds !== null
             && targetTimeMicroseconds - lastFrameEndMediaTimeMicroseconds > toleranceMicroseconds;
     }
@@ -2787,10 +2698,7 @@ export default class CustomPlaybackController {
         return true;
     }
 
-    /**
-     * Drops a frame the clock already passed while video catches up after a hidden
-     * period, so the backlog is skipped instead of shown fast-forward.
-     */
+    /** Drops a frame the clock already passed while video catches up after a hidden period, so the backlog is skipped instead of shown fast-forward. */
     private discardLateCatchUpFrame(
         presentationFrame: DecodedPresentationFrame,
         targetTimeMicroseconds: Microseconds,
@@ -2806,8 +2714,7 @@ export default class CustomPlaybackController {
                 presentationFrame.durationMicroseconds :
                 ZERO_MICROSECONDS
         );
-        if (targetTimeMicroseconds - frameEndMicroseconds
-            <= CUSTOM_PLAYBACK_VIDEO_CATCH_UP_TOLERANCE_MICROSECONDS) {
+        if (targetTimeMicroseconds - frameEndMicroseconds <= CUSTOM_PLAYBACK_VIDEO_CATCH_UP_TOLERANCE_MICROSECONDS) {
             this.videoCatchUpActive = false;
             return false;
         }
@@ -2875,10 +2782,7 @@ export default class CustomPlaybackController {
             Math.round(elapsedMicroseconds * this.clock.rate),
             'Video starvation elapsed time'
         );
-        return addMicroseconds(
-            this.videoStarvationAnchorMediaTimeMicroseconds,
-            scaledElapsedMicroseconds
-        );
+        return addMicroseconds(this.videoStarvationAnchorMediaTimeMicroseconds, scaledElapsedMicroseconds);
     }
 
     private emitTimeUpdateIfDue(): void {
@@ -2965,8 +2869,7 @@ export default class CustomPlaybackController {
         this.audioOutputPromise = null;
         this.audioOutputPromiseConfiguration = null;
         if (pendingOutputPromise) {
-            // A browser factory may never settle; creation revisioning makes a
-            // late result self-dispose without blocking stop or replacement
+            // A browser factory may never settle; creation revisioning makes a late result self-dispose without blocking stop or replacement
             void pendingOutputPromise.then(
                 (binding: CustomAudioOutputBinding): Promise<void> | void => {
                     if (!outputs.has(binding.output)) {

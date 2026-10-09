@@ -87,10 +87,7 @@ export type OwnedVideoStreamRun = {
     isStopped: () => boolean
     notifyDecoderProgress: () => void
     /** Takes ownership of both outputs, which it posts or closes. */
-    postFrame: (
-        output: OwnedDecodedVideoOutput,
-        enhancementOutput: OwnedDecodedVideoOutput | null
-    ) => Promise<void>
+    postFrame: (output: OwnedDecodedVideoOutput, enhancementOutput: OwnedDecodedVideoOutput | null) => Promise<void>
     postStartupProgress: (
         phase: OwnedVideoStreamProgressPhase,
         packetCount: number,
@@ -102,10 +99,7 @@ export type OwnedVideoStreamRun = {
     waitForFrameCredit: () => Promise<boolean>
 };
 
-export type OwnedVideoPacketDecoder = (
-    packet: EncodedPacket,
-    packetMediaTimeMicroseconds: Microseconds
-) => Promise<boolean>;
+export type OwnedVideoPacketDecoder = (packet: EncodedPacket, packetMediaTimeMicroseconds: Microseconds) => Promise<boolean>;
 
 type OwnedOutputPostResult = 'none' | 'posted' | 'stopped';
 
@@ -114,25 +108,15 @@ export function getOwnedDecodedVideoTiming(source: OwnedDecodedVideoSource): {
     durationMicroseconds: Microseconds
     mediaTimeMicroseconds: Microseconds
 } {
-    const durationMicrosecondsValue = source.kind === 'native-frame' ?
-        source.frame.duration ?? 0 :
-        source.sample.microsecondDuration;
-    const mediaTimeMicrosecondsValue = source.kind === 'native-frame' ?
-        source.frame.timestamp :
-        source.sample.microsecondTimestamp;
-    const durationMicroseconds = requireMicroseconds(
-        durationMicrosecondsValue,
-        'Owned decoded video frame duration'
-    );
+    const durationMicrosecondsValue = source.kind === 'native-frame' ? source.frame.duration ?? 0 : source.sample.microsecondDuration;
+    const mediaTimeMicrosecondsValue = source.kind === 'native-frame' ? source.frame.timestamp : source.sample.microsecondTimestamp;
+    const durationMicroseconds = requireMicroseconds(durationMicrosecondsValue, 'Owned decoded video frame duration');
     if (durationMicroseconds < 0) {
         throw new RangeError('Owned decoded video frame duration must not be negative');
     }
     return {
         durationMicroseconds,
-        mediaTimeMicroseconds: requireMicroseconds(
-            mediaTimeMicrosecondsValue,
-            'Owned decoded video frame timestamp'
-        )
+        mediaTimeMicroseconds: requireMicroseconds(mediaTimeMicrosecondsValue, 'Owned decoded video frame timestamp')
     };
 }
 
@@ -157,10 +141,7 @@ export function closeOwnedDecodedVideoOutput(output: OwnedDecodedVideoOutput | n
 }
 
 /** Returns whether a decoded EL has the format and geometry the compound raw copy requires of it. */
-function isComposableEnhancementSource(
-    source: OwnedDecodedVideoSource,
-    expectedGeometry: RawVideoFrameGeometry
-): boolean {
+function isComposableEnhancementSource(source: OwnedDecodedVideoSource, expectedGeometry: RawVideoFrameGeometry): boolean {
     const format = source.kind === 'native-frame' ? source.frame.format : source.sample.format;
     // A sample reports the geometry its raw copy source takes, with square-pixel display dimensions
     const geometry: RawVideoFrameGeometry = source.kind === 'native-frame' ?
@@ -240,10 +221,7 @@ export class OwnedVideoStreamState {
                 source
             };
             sourceOwned = false;
-            if (
-                timing.mediaTimeMicroseconds < this.startTimeMicroseconds
-                && !this.firstPresentationOutputQueued
-            ) {
+            if (timing.mediaTimeMicroseconds < this.startTimeMicroseconds && !this.firstPresentationOutputQueued) {
                 closeOwnedDecodedVideoOutput(this.preStartOutput);
                 this.preStartOutput = decodedOutput;
                 decodedOutput = null;
@@ -336,10 +314,7 @@ export class OwnedVideoStreamState {
         }
     }
 
-    public async finishPackets(
-        decoder: OwnedVideoDecoderPort,
-        enhancementDecoder: OwnedVideoDecoderPort | null
-    ): Promise<void> {
+    public async finishPackets(decoder: OwnedVideoDecoderPort, enhancementDecoder: OwnedVideoDecoderPort | null): Promise<void> {
         // The flush releases frames the decoders hold beyond the intake bound, such as reorder-held pictures
         this.framePairs.beginFinalDrain();
         await decoder.flush();
@@ -369,10 +344,7 @@ export class OwnedVideoStreamState {
             return 'stopped';
         }
 
-        const framePair = this.framePairs.takeReadyPair() as DolbyVisionFramePair<
-            OwnedDecodedVideoOutput,
-            OwnedDecodedVideoOutput
-        >;
+        const framePair = this.framePairs.takeReadyPair() as DolbyVisionFramePair<OwnedDecodedVideoOutput, OwnedDecodedVideoOutput>;
         await this.stream.postFrame(framePair.baseFrame, framePair.enhancementFrame);
         this.frameCreditHeld = false;
         return 'posted';

@@ -359,14 +359,8 @@ describe('External Dolby Vision presentation authorization', () => {
         expect(createExternalDolbyVisionShaderSignature('bgra8unorm', 'shader')).not.toBe(
             createExternalDolbyVisionShaderSignature('rgba8unorm', 'shader')
         );
-        expect(createExternalDolbyVisionShaderSignature(
-            'bgra8unorm',
-            'shader',
-            'input-a'
-        )).not.toBe(createExternalDolbyVisionShaderSignature(
-            'bgra8unorm',
-            'shader',
-            'input-b'
-        ));
+        expect(createExternalDolbyVisionShaderSignature('bgra8unorm', 'shader', 'input-a')).not.toBe(
+            createExternalDolbyVisionShaderSignature('bgra8unorm', 'shader', 'input-b')
+        );
     });
 });

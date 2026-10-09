@@ -117,12 +117,9 @@ export type DolbyVisionRPUParserDependencies = {
     loadInstance: (wasmURL: string) => Promise<WebAssembly.Instance>
 };
 
-/** Reports one bounded libdovi parser failure with its stable status code. */
+/** Reports a libdovi parser failure with its stable status code. */
 export class DolbyVisionRPUParseError extends Error {
-    public constructor(
-        public readonly statusCode: number,
-        message: string
-    ) {
+    public constructor(public readonly statusCode: number, message: string) {
         super(message);
         this.name = 'DolbyVisionRPUParseError';
     }
@@ -150,10 +147,7 @@ export function resolveDolbyVisionRPUParserWASMURL(): string {
     return resolveEngineAssetURL(DOLBY_VISION_RPU_PARSER_WASM_ASSET);
 }
 
-function getWASMFunction(
-    exportsValue: Record<string, unknown>,
-    name: string
-): WASMFunction {
+function getWASMFunction(exportsValue: Record<string, unknown>, name: string): WASMFunction {
     if (typeof exportsValue[name] !== 'function') {
         throw new TypeError(`Dolby Vision parser export ${name} is missing`);
     }
@@ -170,34 +164,13 @@ function requireParserExports(instance: WebAssembly.Instance): DolbyVisionRPUPar
         createContext: getWASMFunction(exportsValue, 'dovi_parser_create'),
         deallocate: getWASMFunction(exportsValue, 'dovi_parser_deallocate'),
         destroyContext: getWASMFunction(exportsValue, 'dovi_parser_destroy'),
-        getLastErrorByteLength: getWASMFunction(
-            exportsValue,
-            'dovi_parser_last_error_byte_length'
-        ),
-        getLastErrorPointer: getWASMFunction(
-            exportsValue,
-            'dovi_parser_last_error_pointer'
-        ),
-        getMaximumBufferByteLength: getWASMFunction(
-            exportsValue,
-            'dovi_parser_maximum_buffer_byte_length'
-        ),
-        getMaximumMemoryByteLength: getWASMFunction(
-            exportsValue,
-            'dovi_parser_maximum_memory_byte_length'
-        ),
-        getOutputByteLength: getWASMFunction(
-            exportsValue,
-            'dovi_parser_output_byte_length'
-        ),
-        getRevisionPrefix: getWASMFunction(
-            exportsValue,
-            'dovi_parser_revision_prefix'
-        ),
-        getSchemaVersion: getWASMFunction(
-            exportsValue,
-            'dovi_parser_schema_version'
-        ),
+        getLastErrorByteLength: getWASMFunction(exportsValue, 'dovi_parser_last_error_byte_length'),
+        getLastErrorPointer: getWASMFunction(exportsValue, 'dovi_parser_last_error_pointer'),
+        getMaximumBufferByteLength: getWASMFunction(exportsValue, 'dovi_parser_maximum_buffer_byte_length'),
+        getMaximumMemoryByteLength: getWASMFunction(exportsValue, 'dovi_parser_maximum_memory_byte_length'),
+        getOutputByteLength: getWASMFunction(exportsValue, 'dovi_parser_output_byte_length'),
+        getRevisionPrefix: getWASMFunction(exportsValue, 'dovi_parser_revision_prefix'),
+        getSchemaVersion: getWASMFunction(exportsValue, 'dovi_parser_schema_version'),
         memory: exportsValue.memory,
         parse: getWASMFunction(exportsValue, 'dovi_parser_parse'),
         parseAV1ITUTT35: getWASMFunction(exportsValue, 'dovi_parser_parse_av1_t35'),
@@ -247,31 +220,14 @@ function readPaddedMatrix(view: DataView, byteOffset: number, name: string): num
 
 function readNLQ(view: DataView): DolbyVisionRPUNLQData[] {
     const nlq: DolbyVisionRPUNLQData[] = [];
-    const nlqOffset = DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH
-        + DOLBY_VISION_RPU_PACKED_COLOR_BYTE_LENGTH;
-    for (
-        let componentIndex = 0;
-        componentIndex < DOLBY_VISION_RPU_PACKED_COMPONENT_COUNT;
-        componentIndex += 1
-    ) {
+    const nlqOffset = DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH + DOLBY_VISION_RPU_PACKED_COLOR_BYTE_LENGTH;
+    for (let componentIndex = 0; componentIndex < DOLBY_VISION_RPU_PACKED_COMPONENT_COUNT; componentIndex += 1) {
         const componentOffset = nlqOffset + (componentIndex * 16);
         nlq.push({
-            deadzoneSlope: requireFinite(
-                view.getFloat32(componentOffset + 4, true),
-                'Dolby Vision NLQ slope'
-            ),
-            deadzoneThreshold: requireFinite(
-                view.getFloat32(componentOffset + 8, true),
-                'Dolby Vision NLQ threshold'
-            ),
-            offset: requireFinite(
-                view.getFloat32(componentOffset, true),
-                'Dolby Vision NLQ offset'
-            ),
-            vdrInMaximum: requireFinite(
-                view.getFloat32(componentOffset + 12, true),
-                'Dolby Vision NLQ VDR maximum'
-            )
+            deadzoneSlope: requireFinite(view.getFloat32(componentOffset + 4, true), 'Dolby Vision NLQ slope'),
+            deadzoneThreshold: requireFinite(view.getFloat32(componentOffset + 8, true), 'Dolby Vision NLQ threshold'),
+            offset: requireFinite(view.getFloat32(componentOffset, true), 'Dolby Vision NLQ offset'),
+            vdrInMaximum: requireFinite(view.getFloat32(componentOffset + 12, true), 'Dolby Vision NLQ VDR maximum')
         });
     }
     return nlq;
@@ -285,19 +241,10 @@ function readComponentPivots(
     const pivots: number[] = [];
     for (let pivotIndex = 0; pivotIndex < numPivots; pivotIndex += 1) {
         const pivot = requireFinite(
-            view.getFloat32(
-                componentOffset
-                    + DOLBY_VISION_RPU_PACKED_COMPONENT_PIVOT_OFFSET
-                    + (pivotIndex * 4),
-                true
-            ),
+            view.getFloat32(componentOffset + DOLBY_VISION_RPU_PACKED_COMPONENT_PIVOT_OFFSET + (pivotIndex * 4), true),
             'Dolby Vision pivot'
         );
-        if (
-            pivot < 0
-            || pivot > 1
-            || (pivotIndex > 0 && pivot < pivots[pivotIndex - 1])
-        ) {
+        if (pivot < 0 || pivot > 1 || (pivotIndex > 0 && pivot < pivots[pivotIndex - 1])) {
             throw new TypeError('Dolby Vision packed pivots are not ordered in range');
         }
         pivots.push(pivot);
@@ -310,9 +257,7 @@ function readSegmentValues(
     componentOffset: number,
     segmentIndex: number
 ): number[] {
-    const segmentOffset = componentOffset
-        + DOLBY_VISION_RPU_PACKED_COMPONENT_SEGMENT_OFFSET
-        + (segmentIndex * 16);
+    const segmentOffset = componentOffset + DOLBY_VISION_RPU_PACKED_COMPONENT_SEGMENT_OFFSET + (segmentIndex * 16);
     const segmentValues: number[] = [];
     for (let valueIndex = 0; valueIndex < 4; valueIndex += 1) {
         segmentValues.push(requireFinite(
@@ -348,11 +293,7 @@ function validateComponentSegments(
     segmentCount: number
 ): void {
     let segmentFlags = 0;
-    for (
-        let segmentIndex = 0;
-        segmentIndex < MAXIMUM_DOLBY_VISION_RPU_SEGMENT_COUNT;
-        segmentIndex += 1
-    ) {
+    for (let segmentIndex = 0; segmentIndex < MAXIMUM_DOLBY_VISION_RPU_SEGMENT_COUNT; segmentIndex += 1) {
         const segmentValues = readSegmentValues(view, componentOffset, segmentIndex);
         if (segmentIndex >= segmentCount) {
             continue;
@@ -373,26 +314,15 @@ function validateComponentSegments(
 }
 
 function validateComponentMMRData(view: DataView, componentOffset: number): void {
-    for (
-        let valueIndex = 0;
-        valueIndex < MAXIMUM_DOLBY_VISION_RPU_MMR_VECTOR_COUNT * 4;
-        valueIndex += 1
-    ) {
+    for (let valueIndex = 0; valueIndex < MAXIMUM_DOLBY_VISION_RPU_MMR_VECTOR_COUNT * 4; valueIndex += 1) {
         requireFinite(
-            view.getFloat32(
-                componentOffset
-                    + DOLBY_VISION_RPU_PACKED_COMPONENT_MMR_OFFSET
-                    + (valueIndex * 4),
-                true
-            ),
+            view.getFloat32(componentOffset + DOLBY_VISION_RPU_PACKED_COMPONENT_MMR_OFFSET + (valueIndex * 4), true),
             'Dolby Vision MMR coefficient'
         );
     }
 }
 
-function getComponentMappingMethod(
-    componentFlags: number
-): DolbyVisionRPUComponentSummary['mappingMethod'] {
+function getComponentMappingMethod(componentFlags: number): DolbyVisionRPUComponentSummary['mappingMethod'] {
     switch (componentFlags) {
         case DOLBY_VISION_RPU_COMPONENT_FLAG_POLYNOMIAL:
             return 'polynomial';
@@ -405,33 +335,20 @@ function getComponentMappingMethod(
     }
 }
 
-function readComponent(
-    view: DataView,
-    componentIndex: number
-): DolbyVisionRPUComponentSummary {
-    const componentOffset = PACKED_COMPONENT_OFFSET
-        + (componentIndex * DOLBY_VISION_RPU_PACKED_COMPONENT_BYTE_LENGTH);
+function readComponent(view: DataView, componentIndex: number): DolbyVisionRPUComponentSummary {
+    const componentOffset = PACKED_COMPONENT_OFFSET + (componentIndex * DOLBY_VISION_RPU_PACKED_COMPONENT_BYTE_LENGTH);
     const numPivots = view.getUint32(componentOffset, true);
     const mmrVectorCount = view.getUint32(componentOffset + 4, true);
     const componentFlags = view.getUint32(componentOffset + 8, true);
     if (numPivots < 2 || numPivots > MAXIMUM_DOLBY_VISION_RPU_PIVOT_COUNT) {
         throw new TypeError('Dolby Vision packed pivot count is invalid');
     }
-    if (
-        mmrVectorCount > MAXIMUM_DOLBY_VISION_RPU_MMR_VECTOR_COUNT
-        || mmrVectorCount % 2 !== 0
-    ) {
+    if (mmrVectorCount > MAXIMUM_DOLBY_VISION_RPU_MMR_VECTOR_COUNT || mmrVectorCount % 2 !== 0) {
         throw new TypeError('Dolby Vision packed MMR vector count is invalid');
     }
     const mappingMethod = getComponentMappingMethod(componentFlags);
     const pivots = readComponentPivots(view, componentOffset, numPivots);
-    validateComponentSegments(
-        view,
-        componentOffset,
-        componentFlags,
-        mmrVectorCount,
-        numPivots - 1
-    );
+    validateComponentSegments(view, componentOffset, componentFlags, mmrVectorCount, numPivots - 1);
     validateComponentMMRData(view, componentOffset);
 
     return {
@@ -496,9 +413,7 @@ function validateOptionalSnapshotMetadata(
     level1MaximumPQ: number | null,
     level1AveragePQ: number | null
 ): void {
-    const hasCompleteLevel1 = level1MinimumPQ !== null
-        && level1MaximumPQ !== null
-        && level1AveragePQ !== null;
+    const hasCompleteLevel1 = level1MinimumPQ !== null && level1MaximumPQ !== null && level1AveragePQ !== null;
     if (
         ((flags & FLAG_LEVEL1_METADATA) !== 0) !== hasCompleteLevel1
         || ((flags & FLAG_USED_PREVIOUS_MAPPING) !== 0) !== (previousMappingID !== null)
@@ -508,12 +423,9 @@ function validateOptionalSnapshotMetadata(
     }
 }
 
-/** Checks the fixed fields needed to safely transport a parser snapshot. */
-export function hasCompatibleDolbyVisionRPUSnapshotHeader(
-    packedData: unknown
-): packedData is ArrayBuffer {
-    if (!(packedData instanceof ArrayBuffer)
-        || packedData.byteLength !== DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH) {
+/** Checks that a transported parser snapshot's fixed header matches this build's schema and parser revision. */
+export function hasCompatibleDolbyVisionRPUSnapshotHeader(packedData: unknown): packedData is ArrayBuffer {
+    if (!(packedData instanceof ArrayBuffer) || packedData.byteLength !== DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH) {
         return false;
     }
     const view = new DataView(packedData);
@@ -531,8 +443,7 @@ export function hasCompatibleDolbyVisionRPUSnapshotHeader(
 
 /** Validates and decodes one owned schema-versioned parser snapshot. */
 export function decodeDolbyVisionRPUSnapshot(packedData: ArrayBuffer): DolbyVisionRPUSnapshot {
-    if (!(packedData instanceof ArrayBuffer)
-        || packedData.byteLength !== DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH) {
+    if (!(packedData instanceof ArrayBuffer) || packedData.byteLength !== DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH) {
         throw new TypeError('Dolby Vision RPU snapshot has an invalid byte length');
     }
     if (!hasCompatibleDolbyVisionRPUSnapshotHeader(packedData)) {
@@ -547,33 +458,18 @@ export function decodeDolbyVisionRPUSnapshot(packedData: ArrayBuffer): DolbyVisi
     const validatedFlags = validateSnapshotFlags(profile, flags);
 
     const components: DolbyVisionRPUComponentSummary[] = [];
-    for (
-        let componentIndex = 0;
-        componentIndex < DOLBY_VISION_RPU_PACKED_COMPONENT_COUNT;
-        componentIndex += 1
-    ) {
+    for (let componentIndex = 0; componentIndex < DOLBY_VISION_RPU_PACKED_COMPONENT_COUNT; componentIndex += 1) {
         components.push(readComponent(view, componentIndex));
     }
     const nonlinearOffset: number[] = [];
     for (let componentIndex = 0; componentIndex < 3; componentIndex += 1) {
         nonlinearOffset.push(requireFinite(
-            view.getFloat32(
-                DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH + (componentIndex * 4),
-                true
-            ),
+            view.getFloat32(DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH + (componentIndex * 4), true),
             'Dolby Vision nonlinear offset'
         ));
     }
-    const nonlinearMatrix = readPaddedMatrix(
-        view,
-        DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH + 16,
-        'Dolby Vision nonlinear matrix'
-    );
-    const linearMatrix = readPaddedMatrix(
-        view,
-        DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH + 64,
-        'Dolby Vision linear matrix'
-    );
+    const nonlinearMatrix = readPaddedMatrix(view, DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH + 16, 'Dolby Vision nonlinear matrix');
+    const linearMatrix = readPaddedMatrix(view, DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH + 64, 'Dolby Vision linear matrix');
     const previousMappingID = readOptionalUnsignedInteger(view.getUint32(88, true));
     const level1MinimumPQ = readOptionalUnsignedInteger(view.getUint32(152, true));
     const level1MaximumPQ = readOptionalUnsignedInteger(view.getUint32(156, true));
@@ -620,7 +516,7 @@ export function decodeDolbyVisionRPUSnapshot(packedData: ArrayBuffer): DolbyVisi
     };
 }
 
-/** Owns one bounded, stateful libdovi WASM parser instance. */
+/** Owns one stateful libdovi WASM parser instance with fixed maximum input and memory sizes. */
 export default class DolbyVisionRPUParser {
     private closed = false;
 
@@ -631,7 +527,7 @@ export default class DolbyVisionRPUParser {
         private readonly outputPointer: number
     ) {}
 
-    /** Loads and validates the exact pinned parser ABI. */
+    /** Loads the parser and rejects one whose ABI differs from the pinned version. */
     public static async create(
         wasmURL: string,
         dependencies: DolbyVisionRPUParserDependencies = DEFAULT_DEPENDENCIES
@@ -640,22 +536,15 @@ export default class DolbyVisionRPUParser {
         const parserExports = requireParserExports(instance);
         if (
             parserExports.getSchemaVersion() !== DOLBY_VISION_RPU_SCHEMA_VERSION
-            || parserExports.getRevisionPrefix()
-                !== DOLBY_VISION_RPU_PARSER_REVISION_PREFIX
-            || parserExports.getOutputByteLength()
-                !== DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH
-            || parserExports.getMaximumBufferByteLength()
-                !== MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH
-            || parserExports.getMaximumMemoryByteLength()
-                !== MAXIMUM_DOLBY_VISION_RPU_PARSER_MEMORY_BYTE_LENGTH
+            || parserExports.getRevisionPrefix() !== DOLBY_VISION_RPU_PARSER_REVISION_PREFIX
+            || parserExports.getOutputByteLength() !== DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH
+            || parserExports.getMaximumBufferByteLength() !== MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH
+            || parserExports.getMaximumMemoryByteLength() !== MAXIMUM_DOLBY_VISION_RPU_PARSER_MEMORY_BYTE_LENGTH
         ) {
             throw new TypeError('Dolby Vision parser ABI does not match the player');
         }
 
-        const contextPointer = requireInteger(
-            parserExports.createContext(),
-            'Dolby Vision parser context pointer'
-        );
+        const contextPointer = requireInteger(parserExports.createContext(), 'Dolby Vision parser context pointer');
         if (contextPointer === 0) {
             throw new Error('Dolby Vision parser context allocation failed');
         }
@@ -663,9 +552,7 @@ export default class DolbyVisionRPUParser {
         let outputPointer = 0;
         try {
             inputPointer = requireInteger(
-                parserExports.allocate(
-                    MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH
-                ),
+                parserExports.allocate(MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH),
                 'Dolby Vision parser input pointer'
             );
             outputPointer = requireInteger(
@@ -687,24 +574,13 @@ export default class DolbyVisionRPUParser {
                 DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
                 'Dolby Vision parser output'
             );
-            return new DolbyVisionRPUParser(
-                parserExports,
-                contextPointer,
-                inputPointer,
-                outputPointer
-            );
+            return new DolbyVisionRPUParser(parserExports, contextPointer, inputPointer, outputPointer);
         } catch (error) {
             if (outputPointer !== 0) {
-                parserExports.deallocate(
-                    outputPointer,
-                    DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH
-                );
+                parserExports.deallocate(outputPointer, DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH);
             }
             if (inputPointer !== 0) {
-                parserExports.deallocate(
-                    inputPointer,
-                    MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH
-                );
+                parserExports.deallocate(inputPointer, MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH);
             }
             parserExports.destroyContext(contextPointer);
             throw error;
@@ -729,27 +605,18 @@ export default class DolbyVisionRPUParser {
         this.requireOpen();
         const statusCode = this.parserExports.reset(this.contextPointer);
         if (statusCode !== 0) {
-            throw new DolbyVisionRPUParseError(
-                statusCode,
-                'Dolby Vision parser reset failed'
-            );
+            throw new DolbyVisionRPUParseError(statusCode, 'Dolby Vision parser reset failed');
         }
     }
 
-    /** Releases the parser context and both fixed shared buffers exactly once. */
+    /** Releases the parser context and both shared buffers. Later calls do nothing. */
     public close(): void {
         if (this.closed) {
             return;
         }
         this.closed = true;
-        this.parserExports.deallocate(
-            this.outputPointer,
-            DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH
-        );
-        this.parserExports.deallocate(
-            this.inputPointer,
-            MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH
-        );
+        this.parserExports.deallocate(this.outputPointer, DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH);
+        this.parserExports.deallocate(this.inputPointer, MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH);
         this.parserExports.destroyContext(this.contextPointer);
     }
 
@@ -767,11 +634,7 @@ export default class DolbyVisionRPUParser {
             input.byteLength,
             'Dolby Vision parser input'
         );
-        const inputView = new Uint8Array(
-            this.parserExports.memory.buffer,
-            inputRange.pointer,
-            inputRange.byteLength
-        );
+        const inputView = new Uint8Array(this.parserExports.memory.buffer, inputRange.pointer, inputRange.byteLength);
         inputView.set(input);
         try {
             const statusCode = entryPoint(
@@ -800,39 +663,22 @@ export default class DolbyVisionRPUParser {
             ).slice().buffer;
             return decodeDolbyVisionRPUSnapshot(packedData);
         } finally {
-            new Uint8Array(
-                this.parserExports.memory.buffer,
-                this.inputPointer,
-                input.byteLength
-            ).fill(0);
+            new Uint8Array(this.parserExports.memory.buffer, this.inputPointer, input.byteLength).fill(0);
         }
     }
 
     private readLastError(): string {
-        const byteLength = this.parserExports.getLastErrorByteLength(
-            this.contextPointer
-        );
+        const byteLength = this.parserExports.getLastErrorByteLength(this.contextPointer);
         if (byteLength === 0) {
             return '';
         }
         if (byteLength > MAXIMUM_PARSER_ERROR_BYTE_LENGTH) {
             return 'Dolby Vision parser returned an oversized diagnostic';
         }
-        const pointer = this.parserExports.getLastErrorPointer(
-            this.contextPointer
-        );
-        const range = requireMemoryRange(
-            this.parserExports.memory,
-            pointer,
-            byteLength,
-            'Dolby Vision parser diagnostic'
-        );
+        const pointer = this.parserExports.getLastErrorPointer(this.contextPointer);
+        const range = requireMemoryRange(this.parserExports.memory, pointer, byteLength, 'Dolby Vision parser diagnostic');
         // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
-        return new TextDecoder().decode(new Uint8Array(
-            this.parserExports.memory.buffer,
-            range.pointer,
-            range.byteLength
-        ));
+        return new TextDecoder().decode(new Uint8Array(this.parserExports.memory.buffer, range.pointer, range.byteLength));
     }
 
     private requireOpen(): void {

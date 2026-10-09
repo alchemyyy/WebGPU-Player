@@ -145,9 +145,7 @@ describe('DTSExactCapabilityProbe', () => {
     it('caches and returns a fully verified channel-bed capability', async () => {
         const worker = new FakeDTSProbeWorker();
         const timeoutCallback = { value: null as (() => void) | null };
-        const probe = new DTSExactCapabilityProbe(
-            createEnvironment(worker, timeoutCallback)
-        );
+        const probe = new DTSExactCapabilityProbe(createEnvironment(worker, timeoutCallback));
 
         const firstProbe = probe.probe();
         const secondProbe = probe.probe();
@@ -179,9 +177,7 @@ describe('DTSExactCapabilityProbe', () => {
     it('fails closed when a nominal success omits exact family evidence', async () => {
         const worker = new FakeDTSProbeWorker();
         const timeoutCallback = { value: null as (() => void) | null };
-        const probe = new DTSExactCapabilityProbe(
-            createEnvironment(worker, timeoutCallback)
-        );
+        const probe = new DTSExactCapabilityProbe(createEnvironment(worker, timeoutCallback));
 
         const resultPromise = probe.probe();
         await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
@@ -218,9 +214,7 @@ describe('DTSExactCapabilityProbe', () => {
     it('terminates a timed-out worker and ignores later output', async () => {
         const worker = new FakeDTSProbeWorker();
         const timeoutCallback = { value: null as (() => void) | null };
-        const probe = new DTSExactCapabilityProbe(
-            createEnvironment(worker, timeoutCallback)
-        );
+        const probe = new DTSExactCapabilityProbe(createEnvironment(worker, timeoutCallback));
 
         const resultPromise = probe.probe();
         await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
@@ -238,9 +232,7 @@ describe('DTSExactCapabilityProbe', () => {
     it('rejects malformed worker messages', async () => {
         const worker = new FakeDTSProbeWorker();
         const timeoutCallback = { value: null as (() => void) | null };
-        const probe = new DTSExactCapabilityProbe(
-            createEnvironment(worker, timeoutCallback)
-        );
+        const probe = new DTSExactCapabilityProbe(createEnvironment(worker, timeoutCallback));
 
         const resultPromise = probe.probe();
         await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
@@ -277,9 +269,7 @@ describe('DTSExactCapabilityProbe', () => {
         await Promise.resolve();
 
         expect(loadDecoderWASM).toHaveBeenCalledExactlyOnceWith(DECODER_WASM_URL);
-        expect(warmAsset).toHaveBeenCalledExactlyOnceWith(
-            `${ASSET_BASE_URL}webgpu-player/DTSExactCapabilityProbe.worker.js`
-        );
+        expect(warmAsset).toHaveBeenCalledExactlyOnceWith(`${ASSET_BASE_URL}webgpu-player/DTSExactCapabilityProbe.worker.js`);
         expect(createWorker).not.toHaveBeenCalled();
         expect(setTimeoutSpy).not.toHaveBeenCalled();
 

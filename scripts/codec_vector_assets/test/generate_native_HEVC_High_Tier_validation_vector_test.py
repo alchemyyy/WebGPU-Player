@@ -1,4 +1,4 @@
-"""Tests the compact native HEVC High Tier vector generator contracts."""
+"""Tests the native HEVC High Tier vector generator's SPS check and duration limits without running FFmpeg."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from generate_static_HDR_validation_vectors import VectorGenerationError  # noqa
 
 
 def create_SPS(*, high_tier: bool) -> bytes:
-    """Creates the bounded SPS prefix consumed by the generator parser."""
+    """Returns an Annex B SPS NAL unit that ends after general_level_idc, the last field the generator parses."""
 
     RBSP = bytearray([0x01] * 13)
     RBSP[1] = generator.EXPECTED_PROFILE_IDC | (0x20 if high_tier else 0)
@@ -26,7 +26,7 @@ def create_SPS(*, high_tier: bool) -> bytes:
 
 
 class NativeHEVCHighTierVectorTests(unittest.TestCase):
-    """Covers profile/tier parsing and option bounds."""
+    """Covers the profile, tier, and level parse and the duration limits."""
 
     def test_parses_exact_high_tier_profile_level(self) -> None:
         profile_tier_level = generator.parse_HEVC_profile_tier_level(

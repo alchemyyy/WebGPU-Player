@@ -90,11 +90,7 @@ function createRouteObservations(
         createHDRToSDRRenderSettings({
             toneMapping: { inputPeakNits: metadata.nominalPeakNits }
         });
-    return createExpectedRawHDRVectorObservations(
-        frame,
-        metadata,
-        settings
-    );
+    return createExpectedRawHDRVectorObservations(frame, metadata, settings);
 }
 
 function createDeviceHarness(
@@ -296,10 +292,7 @@ describe('RawHDRPresentationAuthorization', () => {
             'I420P12',
             createPQColorMetadata({ bitDepth: 12 })
         )).toBe('I420P12:bt2020-ncl:bt2020:limited:pq');
-        expect(getRawHDRAuthorizationRouteKey(
-            'I444P10',
-            createPQColorMetadata({ bitDepth: 12 })
-        )).toBeNull();
+        expect(getRawHDRAuthorizationRouteKey('I444P10', createPQColorMetadata({ bitDepth: 12 }))).toBeNull();
     });
 
     it('enumerates both SDR ranges for all nine Rext raw formats', () => {
@@ -347,11 +340,7 @@ describe('RawHDRPresentationAuthorization', () => {
             const harness = createDeviceHarness(observations);
             const runner = new RawHDRPresentationAuthorizationRunner();
 
-            const decision = await runner.validate(
-                harness.device,
-                'bgra8unorm',
-                routeKey
-            );
+            const decision = await runner.validate(harness.device, 'bgra8unorm', routeKey);
 
             expect(decision).toMatchObject({
                 authorizedRouteKeys: [ routeKey ],
@@ -562,11 +551,7 @@ describe('RawHDRPresentationAuthorization', () => {
         const decision = createAuthorizedDecision(firstHarness.device, routeKey, targetFormat);
         const metadata = createPQColorMetadata();
         const settings = createHDRToSDRRenderSettings();
-        const exactShaderCode = createRawYUVColorPipelineWGSL(
-            metadata,
-            settings,
-            'I420P10'
-        );
+        const exactShaderCode = createRawYUVColorPipelineWGSL(metadata, settings, 'I420P10');
         decision.shaderSignature = createRawHDRShaderSignature(targetFormat, exactShaderCode);
         resolveDecision(decision);
         await expect(firstPromise).resolves.toBe(decision);

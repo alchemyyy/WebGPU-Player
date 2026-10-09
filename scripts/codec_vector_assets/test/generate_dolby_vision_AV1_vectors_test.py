@@ -168,7 +168,7 @@ def create_container_probe(
     container_format: str,
     injected_stream: generator.InjectedStream,
 ) -> dict[str, Any]:
-    """Returns the FFprobe description a correct container of the build has."""
+    """Returns the FFprobe output of a container that matches the build."""
 
     color = build.sub_profile.color
     sample_entry_type = generator.get_MP4_sample_entry_type(build.sub_profile)
@@ -281,7 +281,7 @@ class BitFieldTests(unittest.TestCase):
 
 
 class SourceRPUTests(unittest.TestCase):
-    """Covers reading the dovi_tool payloads into the RPUs the HEVC parse reads."""
+    """Covers reading the dovi_tool payloads into the unescaped RPUs the HEVC parse reads."""
 
     def test_unescapes_as_the_crate_does(self) -> None:
         cases = (
@@ -307,7 +307,7 @@ class SourceRPUTests(unittest.TestCase):
                 self.assertLess(len(source_RPU.RPU), len(source_RPU.escaped_RPU))
 
     def test_uses_only_single_layer_profile_5_and_8_payloads(self) -> None:
-        # The fourth header byte after the prefix holds vdr_rpu_profile 0 (Profile 5) or 1 (Profile 8)
+        # RPU[3], the third byte after the 0x19 prefix, holds vdr_rpu_profile 0 (Profile 5) or 1 (Profile 8)
         RPU_profiles = {"profile5.bin": 0, "profile5-02.bin": 0, "profile8.bin": 1, "profile84.bin": 1}
         for sub_profile in generator.SUB_PROFILES:
             for file_name in sub_profile.source_RPU_file_names:
@@ -436,7 +436,7 @@ class OBUTests(unittest.TestCase):
     def test_writes_the_metadata_OBU_libaom_writes(self) -> None:
         OBU = generator.create_dolby_vision_metadata_OBU(FFMPEG_REBUILT_PROFILE_8_RPU)
         payload = b"\x04\xB5" + FFMPEG_ITUT_T35_PAYLOAD + b"\x80"
-        # Metadata OBU type 5 with a size field, the 2-byte size, metadata_type 4, the T.35 payload, trailing bits
+        # Metadata OBU type 5 with a size field, the 2-byte size, metadata_type 4, country code 0xB5, the T.35 payload, trailing bits
         self.assertEqual(OBU, b"\x2A" + generator.encode_leb128(len(payload)) + payload)
         parsed_OBU = generator.parse_OBUs(OBU)[0]
         self.assertTrue(generator.is_dolby_vision_metadata_OBU(parsed_OBU))
@@ -508,7 +508,7 @@ class InsertionTests(unittest.TestCase):
         self.assertEqual(
             injected_stream.temporal_units[1:],
             (
-                # Padding OBUs leave the sample like temporal delimiters
+                # FFmpeg's muxers drop padding OBUs from the sample, as they drop temporal delimiters
                 generator.TemporalUnitSummary(
                     key_frame=False,
                     sample_byte_length=len(light_level + metadata_OBU + hidden_frame + INTER_FRAME),
@@ -895,9 +895,7 @@ class ToolTests(unittest.TestCase):
             generator.UNSPECIFIED_FULL_RANGE_COLOR,
             Path("base.obu"),
         )[8]
-        self.assertTrue(
-            source.endswith("setparams=color_primaries=unknown:color_trc=unknown:colorspace=unknown:range=pc")
-        )
+        self.assertTrue(source.endswith("setparams=color_primaries=unknown:color_trc=unknown:colorspace=unknown:range=pc"))
 
     def test_muxes_and_remuxes_with_bitexact_FFmpeg(self) -> None:
         intermediate_arguments = generator.create_intermediate_MP4_arguments(
@@ -1008,11 +1006,9 @@ class CommittedVectorTests(unittest.TestCase):
                     expected_counts[file_name] = expected_counts.get(file_name, 0) + 1
                 with self.subTest(sub_profile=sub_profile.name, container_format=container_format):
                     for file_name, expected_count in expected_counts.items():
-                        metadata_OBU = generator.create_dolby_vision_metadata_OBU(
-                            generator.read_source_RPU(file_name).RPU
-                        )
+                        metadata_OBU = generator.create_dolby_vision_metadata_OBU(generator.read_source_RPU(file_name).RPU)
                         self.assertEqual(data.count(metadata_OBU), expected_count)
-                    # Every Dolby Vision metadata OBU starts with these bytes
+                    # Every Dolby Vision metadata OBU payload starts with metadata_type 4, country code 0xB5, provider code 0x003B, and provider oriented code 0x800
                     self.assertEqual(data.count(b"\x04\xB5\x00\x3B\x00\x00\x08\x00"), generator.VECTOR_FRAME_COUNT)
 
     def test_MP4_vectors_signal_their_sub_profile(self) -> None:

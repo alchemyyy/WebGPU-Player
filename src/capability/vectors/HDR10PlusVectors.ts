@@ -31,8 +31,7 @@ class BitWriter {
     public finish(): Uint8Array {
         const output = new Uint8Array(Math.ceil(this.bits.length / 8));
         for (let bitIndex = 0; bitIndex < this.bits.length; bitIndex += 1) {
-            output[Math.floor(bitIndex / 8)] |= this.bits[bitIndex]
-                << (7 - (bitIndex % 8));
+            output[Math.floor(bitIndex / 8)] |= this.bits[bitIndex] << (7 - (bitIndex % 8));
         }
         return output;
     }
@@ -82,10 +81,7 @@ function createApplicationPayload(maximumRedSCLNits: number, windowCount = 1): U
     return writer.finish();
 }
 
-function createRegisteredPayload(
-    maximumRedSCLNits: number,
-    windowCount = 1
-): Uint8Array {
+function createRegisteredPayload(maximumRedSCLNits: number, windowCount = 1): Uint8Array {
     const applicationPayload = createApplicationPayload(maximumRedSCLNits, windowCount);
     const payload = new Uint8Array(6 + applicationPayload.byteLength);
     payload.set([ 0xB5, 0x00, 0x3C, 0x00, 0x01, 0x04 ]);
@@ -121,9 +117,7 @@ function addEmulationPreventionBytes(RBSP: Uint8Array): Uint8Array {
 function createSEINALUnit(payloads: readonly Uint8Array[]): Uint8Array {
     const RBSPBytes: number[] = [];
     for (const payload of payloads) {
-        RBSPBytes.push(...encodeExtendedSEIValue(
-            USER_DATA_REGISTERED_ITU_T_T35_PAYLOAD_TYPE
-        ));
+        RBSPBytes.push(...encodeExtendedSEIValue(USER_DATA_REGISTERED_ITU_T_T35_PAYLOAD_TYPE));
         RBSPBytes.push(...encodeExtendedSEIValue(payload.byteLength));
         RBSPBytes.push(...payload);
     }
@@ -154,7 +148,7 @@ function encodeAnnexBNALUnits(nalUnits: readonly Uint8Array[]): Uint8Array {
     return output;
 }
 
-/** Creates one deterministic HEVC access unit for a dynamic-HDR validation state. */
+/** Creates a deterministic Annex B HEVC access unit whose HDR10+ SEI is absent, conflicting, malformed, unsupported, or valid. */
 export function createHDR10PlusHEVCVector(kind: HDR10PlusVectorKind): Uint8Array {
     const payloads: Uint8Array[] = [];
     switch (kind) {

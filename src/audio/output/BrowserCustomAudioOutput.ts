@@ -40,9 +40,7 @@ import { configureCustomAudioDestination } from '../NativeMultichannelAudioOutpu
 import { requireMicroseconds } from '../../TimeMath';
 
 const MAX_BUFFERED_AUDIO_SECONDS = CUSTOM_AUDIO_OUTPUT_BUFFERED_SECONDS;
-const MAX_OUTPUT_TIMESTAMP_CORRECTION_MICROSECONDS = secondsToMicroseconds(
-    MAX_BUFFERED_AUDIO_SECONDS
-);
+const MAX_OUTPUT_TIMESTAMP_CORRECTION_MICROSECONDS = secondsToMicroseconds(MAX_BUFFERED_AUDIO_SECONDS);
 
 type AudioContextWithSinkInfo = AudioContext & {
     readonly sinkId?: string | Readonly<{ type: string }>
@@ -131,13 +129,11 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
     }
 
     /**
-     * Replaces the worklet with one for a new channel count on the same context and
-     * sink. Decode resumes into the returned bridge without reopening the device.
+     * Replaces the worklet with one for a new channel count on the same context and sink.
+     * Decode resumes into the returned bridge without reopening the device.
      * Overlapping calls run in order, so each one retires the previous worklet.
      */
-    public reconfigure(
-        configuration: DecodeWorkerAudioConfiguration
-    ): Promise<CustomDecodeAudioBridge> {
+    public reconfigure(configuration: DecodeWorkerAudioConfiguration): Promise<CustomDecodeAudioBridge> {
         const reconfiguration = this.reconfigurationTail.then(
             (): Promise<CustomDecodeAudioBridge> => this.reconfigureWorklet(configuration)
         );
@@ -148,16 +144,11 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
         return reconfiguration;
     }
 
-    private async reconfigureWorklet(
-        configuration: DecodeWorkerAudioConfiguration
-    ): Promise<CustomDecodeAudioBridge> {
+    private async reconfigureWorklet(configuration: DecodeWorkerAudioConfiguration): Promise<CustomDecodeAudioBridge> {
         if (this.destroyed) {
             throw new Error('Browser audio output is destroyed');
         }
-        assertSupportedCustomAudioOutputLayout(
-            configuration.channelCount,
-            configuration.sampleRate
-        );
+        assertSupportedCustomAudioOutputLayout(configuration.channelCount, configuration.sampleRate);
         if (this.audioContext.sampleRate !== configuration.sampleRate) {
             throw new RangeError('The browser did not create the requested audio sample rate');
         }
@@ -175,10 +166,7 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
             // The pooled node serves one lease at a time, so the old layout must retire first
             await this.workletLease.release();
         }
-        configureCustomAudioDestination(
-            this.audioContext,
-            configuration.channelCount as 2 | 6 | 8
-        );
+        configureCustomAudioDestination(this.audioContext, configuration.channelCount as 2 | 6 | 8);
         const workletLease = await acquireWorkletOutput(
             this.audioContext,
             configuration.channelCount,
@@ -384,8 +372,7 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
             return fallbackTelemetry;
         }
 
-        const correctionMicroseconds = mediaContextTimeMicroseconds
-            - outputContextTimeMicroseconds;
+        const correctionMicroseconds = mediaContextTimeMicroseconds - outputContextTimeMicroseconds;
         if (correctionMicroseconds <= 0) {
             // The latest rendered media point is the safe forward bound
             this.physicalCorrelationGeneration = telemetry.generation;
@@ -416,9 +403,7 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
         });
     }
 
-    private clampTelemetryToMediaFloor(
-        telemetry: AudioWorkletTelemetry
-    ): AudioWorkletTelemetry {
+    private clampTelemetryToMediaFloor(telemetry: AudioWorkletTelemetry): AudioWorkletTelemetry {
         const mediaFloorMicroseconds = this.getMediaFloor(telemetry.generation);
         return {
             ...telemetry,
@@ -429,9 +414,7 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
         };
     }
 
-    private createFallbackTelemetry(
-        telemetry: AudioWorkletTelemetry
-    ): AudioWorkletTelemetry {
+    private createFallbackTelemetry(telemetry: AudioWorkletTelemetry): AudioWorkletTelemetry {
         const uncorrelatedTelemetry: AudioWorkletTelemetry = {
             ...telemetry,
             hasPhysicalOutputTimeCorrelation: false
@@ -517,16 +500,11 @@ async function createOutput(
     if (prewarmedAudioContext && !consumedPrewarm) {
         await prewarmedAudioContext.close();
     }
-    const audioContextReference = consumedPrewarm
-        ?? acquireSharedBrowserAudioContext(configuration.sampleRate);
+    const audioContextReference = consumedPrewarm ?? acquireSharedBrowserAudioContext(configuration.sampleRate);
     const audioContext = audioContextReference.audioContext;
     // The router rebuilds the sink of a context created without an output device once one appears
-    const createdWithoutOutputDevice = await audioContextReference.createdWithoutOutputDevice
-        .catch((): boolean => false);
-    const audioOutputTargetLease = audioOutputManager.registerAudioContext(
-        audioContext,
-        { createdWithoutOutputDevice }
-    );
+    const createdWithoutOutputDevice = await audioContextReference.createdWithoutOutputDevice.catch((): boolean => false);
+    const audioOutputTargetLease = audioOutputManager.registerAudioContext(audioContext, { createdWithoutOutputDevice });
     let workletLease: SharedBrowserAudioWorkletLease | null = null;
     let workletLeasePromise: Promise<SharedBrowserAudioWorkletLease> | null = null;
     try {

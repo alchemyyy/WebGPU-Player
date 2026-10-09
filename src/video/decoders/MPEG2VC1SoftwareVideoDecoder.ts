@@ -36,10 +36,7 @@ export type MPEG2VC1SoftwareVideoDecoderCallbacks = {
 export type MPEG2VC1DecoderModule = {
     HEAPU8: Uint8Array
     _mpeg2_vc1_decoder_close: (decoder: number) => void
-    _mpeg2_vc1_decoder_configure_packet: (
-        decoder: number,
-        packetByteLength: number
-    ) => number
+    _mpeg2_vc1_decoder_configure_packet: (decoder: number, packetByteLength: number) => number
     _mpeg2_vc1_decoder_create: (
         codec: number,
         codedWidth: number,
@@ -104,10 +101,7 @@ type PackedI420Frame = {
 };
 
 export class MPEG2VC1InterlacedFrameError extends Error {
-    public constructor(
-        public readonly topFieldFirst: boolean,
-        public readonly repeatPicture: number
-    ) {
+    public constructor(public readonly topFieldFirst: boolean, public readonly repeatPicture: number) {
         super('The MPEG-2/VC-1 software decoder output an interlaced frame');
         this.name = 'MPEG2VC1InterlacedFrameError';
     }
@@ -192,10 +186,7 @@ function getColorMatrix(value: number): VideoMatrixCoefficients | undefined {
     }
 }
 
-function getFullRange(
-    value: number,
-    configuredValue: boolean | null | undefined
-): boolean | null | undefined {
+function getFullRange(value: number, configuredValue: boolean | null | undefined): boolean | null | undefined {
     switch (value) {
         case AV_COLOR_RANGE_MPEG:
             return false;
@@ -220,21 +211,15 @@ function copyPlane(
     }
     for (let rowIndex = 0; rowIndex < planeHeight; rowIndex += 1) {
         const sourceOffset = sourcePointer + (rowIndex * sourceStride);
-        if (
-            sourceOffset < 0
-            || sourceOffset + planeWidth > module.HEAPU8.byteLength
-        ) {
+        if (sourceOffset < 0 || sourceOffset + planeWidth > module.HEAPU8.byteLength) {
             throw new RangeError('The MPEG-2/VC-1 software decoder plane exceeds WASM memory');
         }
         const destinationRowOffset = destinationOffset + (rowIndex * planeWidth);
-        destination.set(
-            module.HEAPU8.subarray(sourceOffset, sourceOffset + planeWidth),
-            destinationRowOffset
-        );
+        destination.set(module.HEAPU8.subarray(sourceOffset, sourceOffset + planeWidth), destinationRowOffset);
     }
 }
 
-/** Focused FFmpeg decoder for progressive MPEG-2 Video and VC-1. */
+/** Decodes progressive MPEG-2 Video and VC-1 with an FFmpeg WASM build that contains only those two decoders. */
 export default class MPEG2VC1SoftwareVideoDecoder {
     private closed = false;
     private decoder = 0;
@@ -247,19 +232,15 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         private readonly dependencies: MPEG2VC1SoftwareVideoDecoderDependencies = DEFAULT_DEPENDENCIES
     ) {}
 
-    /** Loads the focused decoder and opens exactly one codec context. */
+    /** Loads the WASM decoder and opens its codec context. It throws when the decoder is already initialized or closed. */
     public async init(): Promise<void> {
         if (this.closed || this.module || this.decoder !== 0) {
             throw new Error('The MPEG-2/VC-1 software decoder cannot be initialized in its current state');
         }
         this.validateConfiguration();
 
-        const decoderGlueURL = this.dependencies.resolveAssetURL(
-            MPEG2_VC1_DECODER_GLUE_ASSET
-        );
-        const decoderWASMURL = this.dependencies.resolveAssetURL(
-            MPEG2_VC1_DECODER_WASM_ASSET
-        );
+        const decoderGlueURL = this.dependencies.resolveAssetURL(MPEG2_VC1_DECODER_GLUE_ASSET);
+        const decoderWASMURL = this.dependencies.resolveAssetURL(MPEG2_VC1_DECODER_WASM_ASSET);
         this.dependencies.loadDecoderGlue(decoderGlueURL);
         const module = await this.dependencies.createModule(decoderWASMURL);
         if (this.closed) {
@@ -268,9 +249,7 @@ export default class MPEG2VC1SoftwareVideoDecoder {
 
         const decoderDescription = this.configuration.description;
         const decoder = toHeapAddress(module._mpeg2_vc1_decoder_create(
-            this.configuration.codec === 'vc1' ?
-                MPEG2_VC1_CODEC_VC1 :
-                MPEG2_VC1_CODEC_MPEG2VIDEO,
+            this.configuration.codec === 'vc1' ? MPEG2_VC1_CODEC_VC1 : MPEG2_VC1_CODEC_MPEG2VIDEO,
             this.configuration.codedWidth,
             this.configuration.codedHeight,
             decoderDescription?.byteLength ?? 0
@@ -282,12 +261,8 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         try {
             if (decoderDescription) {
                 const descriptionPointer = toHeapAddress(module._mpeg2_vc1_decoder_get_extradata(decoder));
-                if (descriptionPointer === 0
-                    || descriptionPointer + decoderDescription.byteLength
-                        > module.HEAPU8.byteLength) {
-                    throw new Error(
-                        'The MPEG-2/VC-1 software decoder description allocation is invalid'
-                    );
+                if (descriptionPointer === 0 || descriptionPointer + decoderDescription.byteLength > module.HEAPU8.byteLength) {
+                    throw new Error('The MPEG-2/VC-1 software decoder description allocation is invalid');
                 }
                 module.HEAPU8.set(decoderDescription, descriptionPointer);
             }
@@ -314,14 +289,8 @@ export default class MPEG2VC1SoftwareVideoDecoder {
             throw new RangeError('The MPEG-2/VC-1 compressed packet is empty');
         }
 
-        const timestampMicroseconds = requireMicroseconds(
-            packet.microsecondTimestamp,
-            'MPEG-2/VC-1 packet timestamp'
-        );
-        const durationMicroseconds = requireMicroseconds(
-            packet.microsecondDuration,
-            'MPEG-2/VC-1 packet duration'
-        );
+        const timestampMicroseconds = requireMicroseconds(packet.microsecondTimestamp, 'MPEG-2/VC-1 packet timestamp');
+        const durationMicroseconds = requireMicroseconds(packet.microsecondDuration, 'MPEG-2/VC-1 packet duration');
         if (durationMicroseconds < 0) {
             throw new RangeError('The MPEG-2/VC-1 packet duration must not be negative');
         }
@@ -334,10 +303,7 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         // VFW VC-1 can replace a zero-duration timing placeholder before output
         this.durationsByTimestamp.set(timestampMicroseconds, durationMicroseconds);
 
-        const packetPointer = toHeapAddress(module._mpeg2_vc1_decoder_configure_packet(
-            decoder,
-            packet.data.byteLength
-        ));
+        const packetPointer = toHeapAddress(module._mpeg2_vc1_decoder_configure_packet(decoder, packet.data.byteLength));
         if (packetPointer === 0) {
             throw new Error('The MPEG-2/VC-1 software decoder packet allocation failed');
         }
@@ -355,7 +321,7 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         this.emitAvailableFrames(false);
     }
 
-    /** Drains every delayed picture and fails if packet timing was silently lost. */
+    /** Drains every delayed picture and fails if any packet produced no output. */
     public flush(): void {
         const { decoder, module } = this.requireDecoder();
         const drainResult = module._mpeg2_vc1_decoder_start_drain(decoder);
@@ -368,7 +334,7 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         }
     }
 
-    /** Releases the codec context and all queued timing metadata exactly once. */
+    /** Releases the codec context and queued packet timing. Later calls do nothing. */
     public close(): void {
         if (this.closed) {
             return;
@@ -458,18 +424,13 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         if (timestampValue === AV_NOPTS_VALUE) {
             throw new TypeError('The MPEG-2/VC-1 software decoder output has no timestamp');
         }
-        const timestampMicroseconds = requireMicroseconds(
-            Number(timestampValue),
-            'MPEG-2/VC-1 decoded frame timestamp'
-        );
+        const timestampMicroseconds = requireMicroseconds(Number(timestampValue), 'MPEG-2/VC-1 decoded frame timestamp');
         const queuedDuration = this.durationsByTimestamp.get(timestampMicroseconds);
         const decodedDuration = requireMicroseconds(
             Number(module._mpeg2_vc1_decoder_get_duration(decoder)),
             'MPEG-2/VC-1 decoded frame duration'
         );
-        const durationMicroseconds = decodedDuration > 0 ?
-            decodedDuration :
-            queuedDuration;
+        const durationMicroseconds = decodedDuration > 0 ? decodedDuration : queuedDuration;
         if (durationMicroseconds === undefined) {
             throw new Error('The MPEG-2/VC-1 software decoder output has no matching packet timing');
         }
@@ -498,10 +459,7 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         }
     }
 
-    private copyCurrentFrame(
-        module: MPEG2VC1DecoderModule,
-        decoder: number
-    ): PackedI420Frame {
+    private copyCurrentFrame(module: MPEG2VC1DecoderModule, decoder: number): PackedI420Frame {
         const codedWidth = module._mpeg2_vc1_decoder_get_width(decoder);
         const codedHeight = module._mpeg2_vc1_decoder_get_height(decoder);
         if (
@@ -525,11 +483,7 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         const planeDimensions = [
             { height: codedHeight, offset: 0, width: codedWidth },
             { height: chromaHeight, offset: lumaByteLength, width: chromaWidth },
-            {
-                height: chromaHeight,
-                offset: lumaByteLength + chromaByteLength,
-                width: chromaWidth
-            }
+            { height: chromaHeight, offset: lumaByteLength + chromaByteLength, width: chromaWidth }
         ] as const;
         for (let planeIndex = 0; planeIndex < planeDimensions.length; planeIndex += 1) {
             const dimensions = planeDimensions[planeIndex];
@@ -579,22 +533,14 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         return { height, left, top, width };
     }
 
-    private getOutputColorSpace(
-        module: MPEG2VC1DecoderModule,
-        decoder: number
-    ): VideoColorSpaceInit | undefined {
+    private getOutputColorSpace(module: MPEG2VC1DecoderModule, decoder: number): VideoColorSpaceInit | undefined {
         const configuredColorSpace = this.configuration.colorSpace;
         const colorRange = module._mpeg2_vc1_decoder_get_color_range(decoder);
         return {
             fullRange: getFullRange(colorRange, configuredColorSpace?.fullRange),
-            matrix: getColorMatrix(module._mpeg2_vc1_decoder_get_color_matrix(decoder))
-                ?? configuredColorSpace?.matrix,
-            primaries: getColorPrimaries(
-                module._mpeg2_vc1_decoder_get_color_primaries(decoder)
-            ) ?? configuredColorSpace?.primaries,
-            transfer: getColorTransfer(
-                module._mpeg2_vc1_decoder_get_color_transfer(decoder)
-            ) ?? configuredColorSpace?.transfer
+            matrix: getColorMatrix(module._mpeg2_vc1_decoder_get_color_matrix(decoder)) ?? configuredColorSpace?.matrix,
+            primaries: getColorPrimaries(module._mpeg2_vc1_decoder_get_color_primaries(decoder)) ?? configuredColorSpace?.primaries,
+            transfer: getColorTransfer(module._mpeg2_vc1_decoder_get_color_transfer(decoder)) ?? configuredColorSpace?.transfer
         };
     }
 }

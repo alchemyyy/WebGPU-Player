@@ -63,15 +63,9 @@ export type JPEG2000ExactCapability = Readonly<{
 type JPEG2000ExactCapabilityProbeWorkerEventListener = (event: Event) => void;
 
 export type JPEG2000ExactCapabilityProbeWorker = {
-    addEventListener: (
-        type: 'error' | 'message' | 'messageerror',
-        listener: JPEG2000ExactCapabilityProbeWorkerEventListener
-    ) => void
+    addEventListener: (type: 'error' | 'message' | 'messageerror', listener: JPEG2000ExactCapabilityProbeWorkerEventListener) => void
     postMessage: (message: unknown, transfer: Transferable[]) => void
-    removeEventListener: (
-        type: 'error' | 'message' | 'messageerror',
-        listener: JPEG2000ExactCapabilityProbeWorkerEventListener
-    ) => void
+    removeEventListener: (type: 'error' | 'message' | 'messageerror', listener: JPEG2000ExactCapabilityProbeWorkerEventListener) => void
     terminate: () => void
 };
 
@@ -83,10 +77,7 @@ export type JPEG2000ExactCapabilityProbeEnvironment = Readonly<{
     loadVector: (url: string) => Promise<ArrayBuffer>
     resolveAssetURL: (path: EngineAssetPath) => string
     runtimeAvailable: boolean
-    setTimeout: (
-        callback: () => void,
-        milliseconds: number
-    ) => ReturnType<typeof globalThis.setTimeout>
+    setTimeout: (callback: () => void, milliseconds: number) => ReturnType<typeof globalThis.setTimeout>
     // Downloads the worker script and decoder glue into the HTTP cache before the timed probe loads them
     warmAsset?: ((url: string) => Promise<void>) | null
 }>;
@@ -131,9 +122,7 @@ function createCapability(
         && response.codedWidth === JPEG2000_QUALIFICATION_CODED_WIDTH
         && response.decodedRGBAByteLength === JPEG2000_QUALIFICATION_RGBA_BYTE_LENGTH
         && response.decodedRGBAFingerprint === JPEG2000_QUALIFICATION_RGBA_FINGERPRINT;
-    const supported = reason === 'decode-output-verified'
-        && response?.supported === true
-        && exactOutputMatches;
+    const supported = reason === 'decode-output-verified' && response?.supported === true && exactOutputMatches;
     let status: JPEG2000ExactCapability['status'];
     if (supported) {
         status = 'supported';
@@ -165,10 +154,8 @@ export default class JPEG2000ExactCapabilityProbe {
     private preparedAssets: Promise<JPEG2000ExactCapabilityProbeAssets | null> | null = null;
 
     public constructor(
-        private readonly environment: JPEG2000ExactCapabilityProbeEnvironment =
-        createDefaultEnvironment(),
-        private readonly timeoutMilliseconds =
-        JPEG2000_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS
+        private readonly environment: JPEG2000ExactCapabilityProbeEnvironment = createDefaultEnvironment(),
+        private readonly timeoutMilliseconds = JPEG2000_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS
     ) {
         if (!Number.isSafeInteger(timeoutMilliseconds) || timeoutMilliseconds <= 0) {
             throw new TypeError('The exact JPEG 2000 capability timeout is invalid');
@@ -194,10 +181,7 @@ export default class JPEG2000ExactCapabilityProbe {
         try {
             const [ vector, decoderWASM ] = await Promise.all([
                 environment.loadVector(environment.resolveAssetURL(JPEG2000_QUALIFICATION_ASSET)),
-                loadDecoderWASMSource(
-                    environment.resolveAssetURL(JPEG2000_DECODER_WASM_ASSET),
-                    environment.loadDecoderWASM
-                ),
+                loadDecoderWASMSource(environment.resolveAssetURL(JPEG2000_DECODER_WASM_ASSET), environment.loadDecoderWASM),
                 environment.warmAsset?.(environment.resolveAssetURL(JPEG2000_EXACT_CAPABILITY_WORKER_ASSET)),
                 environment.warmAsset?.(environment.resolveAssetURL(JPEG2000_DECODER_GLUE_ASSET))
             ]);
@@ -257,9 +241,7 @@ export default class JPEG2000ExactCapabilityProbe {
                 cleanup();
                 resolve(capability);
             };
-            const messageHandler: JPEG2000ExactCapabilityProbeWorkerEventListener = (
-                event: Event
-            ): void => {
+            const messageHandler: JPEG2000ExactCapabilityProbeWorkerEventListener = (event: Event): void => {
                 const value = (event as MessageEvent<unknown>).data;
                 if (!isJPEG2000ExactCapabilityWorkerResponse(value)) {
                     settle(createCapability('worker-message-invalid'));

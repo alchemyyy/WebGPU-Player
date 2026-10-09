@@ -32,8 +32,6 @@ describe('runTrueHDExactCapabilityQualification integration', () => {
         });
         expect(result.libraryVersion).toBeGreaterThan(0);
         expect(result.decodeMilliseconds).toBeGreaterThan(0);
-        expect(result.measuredRealTimeFactor).toBeGreaterThanOrEqual(
-            TRUEHD_QUALIFICATION_MINIMUM_REAL_TIME_FACTOR
-        );
+        expect(result.measuredRealTimeFactor).toBeGreaterThanOrEqual(TRUEHD_QUALIFICATION_MINIMUM_REAL_TIME_FACTOR);
     }, 30_000);
 });

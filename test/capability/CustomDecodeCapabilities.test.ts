@@ -46,9 +46,7 @@ type NativeSurroundAudioSupport = Readonly<{
 
 const CAPABILITY_PROBE_TIMEOUT_MILLISECONDS = 2_000;
 
-function getBundledHEVCCodecString(
-    vector: HEVCExactCapabilityVector
-): BundledHEVCExactQualification['codecString'] {
+function getBundledHEVCCodecString(vector: HEVCExactCapabilityVector): BundledHEVCExactQualification['codecString'] {
     switch (vector) {
         case 'main-1080p':
             return 'hvc1.1.6.L120.B0';
@@ -59,10 +57,7 @@ function getBundledHEVCCodecString(
     }
 }
 
-function createBundledHEVCQualification(
-    vector: HEVCExactCapabilityVector,
-    supported: boolean
-): BundledHEVCExactQualification {
+function createBundledHEVCQualification(vector: HEVCExactCapabilityVector, supported: boolean): BundledHEVCExactQualification {
     const main10 = vector !== 'main-1080p';
     return Object.freeze({
         bitDepth: main10 ? 10 : 8,
@@ -80,9 +75,7 @@ function createBundledHEVCCapabilities(
     main10FullHDSupported = true,
     main10UltraHDSupported = true
 ): BundledHEVCExactCapabilities {
-    const supportedCount = Number(mainSupported)
-        + Number(main10FullHDSupported)
-        + Number(main10UltraHDSupported);
+    const supportedCount = Number(mainSupported) + Number(main10FullHDSupported) + Number(main10UltraHDSupported);
     let reason: BundledHEVCExactCapabilities['reason'] = 'failed';
     if (supportedCount === 3) {
         reason = 'complete';
@@ -91,18 +84,9 @@ function createBundledHEVCCapabilities(
     }
     return Object.freeze({
         qualifications: Object.freeze({
-            'main-1080p': createBundledHEVCQualification(
-                'main-1080p',
-                mainSupported
-            ),
-            'main10-1080p': createBundledHEVCQualification(
-                'main10-1080p',
-                main10FullHDSupported
-            ),
-            'main10-4k': createBundledHEVCQualification(
-                'main10-4k',
-                main10UltraHDSupported
-            )
+            'main-1080p': createBundledHEVCQualification('main-1080p', mainSupported),
+            'main10-1080p': createBundledHEVCQualification('main10-1080p', main10FullHDSupported),
+            'main10-4k': createBundledHEVCQualification('main10-4k', main10UltraHDSupported)
         }),
         reason
     });
@@ -195,8 +179,7 @@ function createEnvironment(
         configuration: new Set<string>()
     }
 ): CapabilityEnvironmentHarness {
-    const nativeSurroundAudioOutputSupport = nativeSurroundAudioSupport.output
-        ?? nativeSurroundAudioSupport.configuration;
+    const nativeSurroundAudioOutputSupport = nativeSurroundAudioSupport.output ?? nativeSurroundAudioSupport.configuration;
     const videoProbe = vi.fn(async (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => ({
         config,
         supported: videoSupport.has(config.codec)
@@ -213,16 +196,12 @@ function createEnvironment(
         const outputCopySupported = rawHDRVideoOutputSupport.has(probeRequest.codec);
         return { outputCopySupported };
     });
-    const nativeDolbyVisionVideoOutputProbe = vi.fn(
-        async (): Promise<NativeDolbyVisionVideoOutputProbeResult> => ({
-            outputSupported: nativeDolbyVisionVideoOutputSupported
-        })
-    );
-    const nativeHDRVideoOutputProbe = vi.fn(
-        async (): Promise<NativeDolbyVisionVideoOutputProbeResult> => ({
-            outputSupported: false
-        })
-    );
+    const nativeDolbyVisionVideoOutputProbe = vi.fn(async (): Promise<NativeDolbyVisionVideoOutputProbeResult> => ({
+        outputSupported: nativeDolbyVisionVideoOutputSupported
+    }));
+    const nativeHDRVideoOutputProbe = vi.fn(async (): Promise<NativeDolbyVisionVideoOutputProbeResult> => ({
+        outputSupported: false
+    }));
     const nativeVideoOutputProbe = vi.fn(async (probeRequest: {
         configuration: VideoDecoderConfig
     }): Promise<boolean> => nativeVideoOutputSupport.has(probeRequest.configuration.codec));
@@ -285,10 +264,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         const observeHeavyProbe = async <Value>(value: Value): Promise<Value> => {
             activeHeavyProbeCount += 1;
             heavyProbeInvocationCount += 1;
-            maximumActiveHeavyProbeCount = Math.max(
-                maximumActiveHeavyProbeCount,
-                activeHeavyProbeCount
-            );
+            maximumActiveHeavyProbeCount = Math.max(maximumActiveHeavyProbeCount, activeHeavyProbeCount);
             try {
                 await Promise.resolve();
                 return value;
@@ -326,9 +302,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         harness.environment.bundledTrueHDExactProbe = {
             probe: vi.fn(() => observeHeavyProbe(SUPPORTED_TRUEHD_EXACT_CAPABILITY))
         };
-        harness.environment.nativeAudioOutputProbe = vi.fn(
-            () => observeHeavyProbe(true)
-        );
+        harness.environment.nativeAudioOutputProbe = vi.fn(() => observeHeavyProbe(true));
         harness.environment.nativeDolbyVisionVideoOutputProbe = vi.fn(
             () => observeHeavyProbe({
                 outputSupported: true
@@ -339,9 +313,7 @@ describe('CustomDecodeCapabilityProbe', () => {
                 outputSupported: true
             })
         );
-        harness.environment.nativeVideoOutputProbe = vi.fn(
-            () => observeHeavyProbe(true)
-        );
+        harness.environment.nativeVideoOutputProbe = vi.fn(() => observeHeavyProbe(true));
         harness.environment.rawHDRVideoOutputProbe = vi.fn(
             () => observeHeavyProbe({
                 outputCopySupported: true
@@ -384,8 +356,7 @@ describe('CustomDecodeCapabilityProbe', () => {
 
         await vi.advanceTimersByTimeAsync(0);
         expect(nativeAudioOutputProbe).toHaveBeenCalledOnce();
-        expect(nativeAudioOutputProbe.mock.calls[0][0].configuration.codec)
-            .toBe('mp4a.40.2');
+        expect(nativeAudioOutputProbe.mock.calls[0][0].configuration.codec).toBe('mp4a.40.2');
 
         await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
         const capabilities = await probePromise;
@@ -536,9 +507,7 @@ describe('CustomDecodeCapabilityProbe', () => {
             expectedCodedWidth: 3_840,
             expectedFormat: 'I420P10'
         });
-        expect(
-            harness.rawHDRVideoOutputProbe.mock.calls[0][0].encodedChunks[0].data
-        ).toHaveLength(2_957);
+        expect(harness.rawHDRVideoOutputProbe.mock.calls[0][0].encodedChunks[0].data).toHaveLength(2_957);
         expect(capabilities.telemetry).toEqual({
             audioProbeCount: 5,
             bundledAudioCodecCount: CUSTOM_BUNDLED_AUDIO_CODECS.length,
@@ -644,14 +613,9 @@ describe('CustomDecodeCapabilityProbe', () => {
             descriptionByteLength,
             expectedNumberOfFrames
         }) => {
-            const harness = createEnvironment(
-                new Set(),
-                new Set([ codecString ])
-            );
+            const harness = createEnvironment(new Set(), new Set([ codecString ]));
 
-            const capabilities = await new CustomDecodeCapabilityProbe(
-                harness.environment
-            ).probe();
+            const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
 
             expect(capabilities.audio[codec]).toMatchObject({
                 reason: 'decode-output-verified',
@@ -731,9 +695,7 @@ describe('CustomDecodeCapabilityProbe', () => {
                 { configuration: codecSupport, output: codecSupport }
             );
 
-            const capabilities = await new CustomDecodeCapabilityProbe(
-                harness.environment
-            ).probe();
+            const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
 
             expect(capabilities.nativeSurroundAudio?.[codec]).toMatchObject({
                 inputChannelCount: 6,
@@ -766,18 +728,9 @@ describe('CustomDecodeCapabilityProbe', () => {
     );
 
     it('rejects audio config support without matching decoded output', async () => {
-        const harness = createEnvironment(
-            new Set(),
-            new Set([ 'opus' ]),
-            new Set(),
-            false,
-            new Set(),
-            new Set()
-        );
+        const harness = createEnvironment(new Set(), new Set([ 'opus' ]), new Set(), false, new Set(), new Set());
 
-        const capabilities = await new CustomDecodeCapabilityProbe(
-            harness.environment
-        ).probe();
+        const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
 
         expect(capabilities.audio.opus).toMatchObject({
             reason: 'decode-output-missing',
@@ -789,9 +742,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         const harness = createEnvironment(new Set(), new Set([ 'opus' ]));
         harness.environment.nativeAudioOutputProbe = null;
 
-        const capabilities = await new CustomDecodeCapabilityProbe(
-            harness.environment
-        ).probe();
+        const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
 
         expect(capabilities.audio.opus).toMatchObject({
             reason: 'api-unavailable',
@@ -827,14 +778,9 @@ describe('CustomDecodeCapabilityProbe', () => {
     ] as const)(
         'requires exact decoded native $codec output',
         async ({ codec, codecString, expectedCodedHeight, expectedCodedWidth }) => {
-            const harness = createEnvironment(
-                new Set([ codecString ]),
-                new Set()
-            );
+            const harness = createEnvironment(new Set([ codecString ]), new Set());
 
-            const capabilities = await new CustomDecodeCapabilityProbe(
-                harness.environment
-            ).probe();
+            const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
 
             expect(capabilities.video[codec]).toMatchObject({
                 reason: 'decode-output-verified',
@@ -879,14 +825,9 @@ describe('CustomDecodeCapabilityProbe', () => {
     ] as const)(
         'requires exact decoded native Ultra HD $codec output',
         async ({ codec, codecString, encodedByteLength }) => {
-            const harness = createEnvironment(
-                new Set([ codecString ]),
-                new Set()
-            );
+            const harness = createEnvironment(new Set([ codecString ]), new Set());
 
-            const capabilities = await new CustomDecodeCapabilityProbe(
-                harness.environment
-            ).probe();
+            const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
 
             expect(capabilities.nativeUltraHDVideo?.[codec]).toMatchObject({
                 bitDepth: 8,
@@ -916,17 +857,9 @@ describe('CustomDecodeCapabilityProbe', () => {
     );
 
     it('rejects config support without matching decoded native output', async () => {
-        const harness = createEnvironment(
-            new Set([ 'vp8' ]),
-            new Set(),
-            new Set(),
-            false,
-            new Set()
-        );
+        const harness = createEnvironment(new Set([ 'vp8' ]), new Set(), new Set(), false, new Set());
 
-        const capabilities = await new CustomDecodeCapabilityProbe(
-            harness.environment
-        ).probe();
+        const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
 
         expect(capabilities.video.vp8).toMatchObject({
             reason: 'decode-output-missing',
@@ -938,9 +871,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         const harness = createEnvironment(new Set([ 'vp8' ]), new Set());
         harness.environment.nativeVideoOutputProbe = null;
 
-        const capabilities = await new CustomDecodeCapabilityProbe(
-            harness.environment
-        ).probe();
+        const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
 
         expect(capabilities.video.vp8).toMatchObject({
             reason: 'api-unavailable',
@@ -951,12 +882,8 @@ describe('CustomDecodeCapabilityProbe', () => {
     it('bounds an ordinary native decoded-output probe that never settles', async () => {
         vi.useFakeTimers();
         const harness = createEnvironment(new Set([ 'vp8' ]), new Set());
-        harness.environment.nativeVideoOutputProbe = vi.fn(
-            () => new Promise<boolean>(() => undefined)
-        );
-        const probePromise = new CustomDecodeCapabilityProbe(
-            harness.environment
-        ).probe();
+        harness.environment.nativeVideoOutputProbe = vi.fn(() => new Promise<boolean>(() => undefined));
+        const probePromise = new CustomDecodeCapabilityProbe(harness.environment).probe();
 
         await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
         const capabilities = await probePromise;
@@ -1230,8 +1157,7 @@ describe('CustomDecodeCapabilityProbe', () => {
             reason: 'bundled-software-decoder',
             status: 'supported'
         });
-        expect(supported.bundledMPEG2)
-            .toBe(SUPPORTED_MPEG2_EXACT_CAPABILITY);
+        expect(supported.bundledMPEG2).toBe(SUPPORTED_MPEG2_EXACT_CAPABILITY);
     });
 
     it('gates bundled Advanced VC-1 on exact decoded-output qualification', async () => {
@@ -1272,20 +1198,12 @@ describe('CustomDecodeCapabilityProbe', () => {
         }).probe();
         const mainOnly = await new CustomDecodeCapabilityProbe({
             bundledHEVCExactProbe: {
-                probe: vi.fn(async () => createBundledHEVCCapabilities(
-                    true,
-                    false,
-                    false
-                ))
+                probe: vi.fn(async () => createBundledHEVCCapabilities(true, false, false))
             }
         }).probe();
         const main10FullHDOnly = await new CustomDecodeCapabilityProbe({
             bundledHEVCExactProbe: {
-                probe: vi.fn(async () => createBundledHEVCCapabilities(
-                    false,
-                    true,
-                    false
-                ))
+                probe: vi.fn(async () => createBundledHEVCCapabilities(false, true, false))
             }
         }).probe();
         const allQualifications = await new CustomDecodeCapabilityProbe({
@@ -1323,11 +1241,7 @@ describe('CustomDecodeCapabilityProbe', () => {
             hevc: 'hvc1.2.4.L153.B0',
             vp9: 'vp09.02.10.10'
         } as const;
-        const harness = createEnvironment(
-            new Set(Object.values(rawCodecStrings)),
-            new Set(),
-            new Set(CUSTOM_RAW_HDR_VIDEO_CODECS)
-        );
+        const harness = createEnvironment(new Set(Object.values(rawCodecStrings)), new Set(), new Set(CUSTOM_RAW_HDR_VIDEO_CODECS));
 
         const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
 
@@ -1341,9 +1255,7 @@ describe('CustomDecodeCapabilityProbe', () => {
                 reason: 'output-copy-supported',
                 status: 'supported'
             });
-            const outputProbeRequest = harness.rawHDRVideoOutputProbe.mock.calls.find(
-                call => call[0].codec === codec
-            )?.[0];
+            const outputProbeRequest = harness.rawHDRVideoOutputProbe.mock.calls.find(call => call[0].codec === codec)?.[0];
             expect(outputProbeRequest?.configuration).toMatchObject({
                 codec: rawCodecStrings[codec],
                 hardwareAcceleration: expectedHints[codec]
@@ -1357,11 +1269,7 @@ describe('CustomDecodeCapabilityProbe', () => {
     });
 
     it('prefers qualified native HEVC raw output over the bundled decoder', async () => {
-        const harness = createEnvironment(
-            new Set([ 'hvc1.2.4.L153.B0' ]),
-            new Set(),
-            new Set([ 'hevc' ])
-        );
+        const harness = createEnvironment(new Set([ 'hvc1.2.4.L153.B0' ]), new Set(), new Set([ 'hevc' ]));
 
         const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
 
@@ -1397,16 +1305,9 @@ describe('CustomDecodeCapabilityProbe', () => {
             reason,
             status
         }) => {
-            const harness = createEnvironment(
-                new Set([ 'hev1.2.4.H150.B0' ]),
-                new Set(),
-                new Set(),
-                outputSupported
-            );
+            const harness = createEnvironment(new Set([ 'hev1.2.4.H150.B0' ]), new Set(), new Set(), outputSupported);
 
-            const capabilities = await new CustomDecodeCapabilityProbe(
-                harness.environment
-            ).probe();
+            const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
 
             expect(capabilities.nativeDolbyVisionHEVC).toMatchObject({
                 reason,
@@ -1431,20 +1332,13 @@ describe('CustomDecodeCapabilityProbe', () => {
     );
 
     it('requires exact decoded native Main10 HDR output', async () => {
-        const harness = createEnvironment(
-            new Set([ 'hvc1.2.4.L153.B0' ]),
-            new Set()
-        );
-        const nativeHDRVideoOutputProbe = vi.fn(async (
-            probeRequest: NativeDolbyVisionVideoOutputProbeRequest
-        ) => ({
+        const harness = createEnvironment(new Set([ 'hvc1.2.4.L153.B0' ]), new Set());
+        const nativeHDRVideoOutputProbe = vi.fn(async (probeRequest: NativeDolbyVisionVideoOutputProbeRequest) => ({
             outputSupported: probeRequest.expectedCodedWidth === 3_840
         }));
         harness.environment.nativeHDRVideoOutputProbe = nativeHDRVideoOutputProbe;
 
-        const capabilities = await new CustomDecodeCapabilityProbe(
-            harness.environment
-        ).probe();
+        const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
 
         expect(capabilities.nativeHDRHEVC).toMatchObject({
             bitDepth: 10,
@@ -1464,8 +1358,7 @@ describe('CustomDecodeCapabilityProbe', () => {
             expectedCodedHeight: 2_160,
             expectedCodedWidth: 3_840
         });
-        expect(nativeHDRVideoOutputProbe.mock.calls[0][0].encodedKeyFrame)
-            .toBeInstanceOf(Uint8Array);
+        expect(nativeHDRVideoOutputProbe.mock.calls[0][0].encodedKeyFrame).toBeInstanceOf(Uint8Array);
     });
 
     it.each([
@@ -1480,7 +1373,7 @@ describe('CustomDecodeCapabilityProbe', () => {
             } ],
             supported: true
         },
-        // Firefox emits an empty AudioData for the Vorbis priming packet before the exact output
+        // Firefox emits an empty AudioData for the Vorbis priming packet before the expected output
         {
             outputs: [
                 {
@@ -1815,11 +1708,7 @@ describe('CustomDecodeCapabilityProbe', () => {
                 }
 
                 public decode(chunk: { timestamp: number }): void {
-                    this.callbacks.output(
-                        new FakeVideoFrame(
-                            chunk.timestamp + timestampOffset
-                        ) as unknown as VideoFrame
-                    );
+                    this.callbacks.output(new FakeVideoFrame(chunk.timestamp + timestampOffset) as unknown as VideoFrame);
                 }
 
                 public flush(): Promise<void> {
@@ -1882,15 +1771,10 @@ describe('CustomDecodeCapabilityProbe', () => {
 
             public decode(chunk: { timestamp: number }): void {
                 queuedFrameCount += 1;
-                maximumQueuedFrameCount = Math.max(
-                    maximumQueuedFrameCount,
-                    queuedFrameCount
-                );
+                maximumQueuedFrameCount = Math.max(maximumQueuedFrameCount, queuedFrameCount);
                 void Promise.resolve().then((): void => {
                     queuedFrameCount -= 1;
-                    this.callbacks.output(
-                        new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame
-                    );
+                    this.callbacks.output(new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame);
                 });
             }
 
@@ -1954,9 +1838,7 @@ describe('CustomDecodeCapabilityProbe', () => {
             }
 
             public decode(chunk: { timestamp: number }): void {
-                this.callbacks.output(
-                    new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame
-                );
+                this.callbacks.output(new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame);
             }
 
             public flush(): Promise<void> {
@@ -2063,12 +1945,8 @@ describe('CustomDecodeCapabilityProbe', () => {
             }
 
             public decode(chunk: { timestamp: number }): void {
-                this.callbacks.output(
-                    new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame
-                );
-                this.callbacks.output(
-                    new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame
-                );
+                this.callbacks.output(new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame);
+                this.callbacks.output(new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame);
             }
 
             public flush(): Promise<void> {
@@ -2320,10 +2198,7 @@ describe('CustomDecodeCapabilityProbe', () => {
 
                 public constructor(public readonly timestamp: number) {
                     openFrameCount += 1;
-                    maximumOpenFrameCount = Math.max(
-                        maximumOpenFrameCount,
-                        openFrameCount
-                    );
+                    maximumOpenFrameCount = Math.max(maximumOpenFrameCount, openFrameCount);
                 }
 
                 public allocationSize(): number {
@@ -2352,9 +2227,7 @@ describe('CustomDecodeCapabilityProbe', () => {
 
                 public decode(chunk: { timestamp: number }): void {
                     const frame = new FakeVideoFrame(chunk.timestamp);
-                    this.callbacks.output(
-                        frame as unknown as VideoFrame
-                    );
+                    this.callbacks.output(frame as unknown as VideoFrame);
                 }
 
                 public flush(): Promise<void> {
@@ -2453,9 +2326,7 @@ describe('CustomDecodeCapabilityProbe', () => {
 
                 public decode(chunk: { timestamp: number }): void {
                     decodedChunkTimestamps.push(chunk.timestamp);
-                    this.callbacks.output(
-                        new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame
-                    );
+                    this.callbacks.output(new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame);
                 }
 
                 public flush(): Promise<void> {
@@ -2746,8 +2617,7 @@ function getSelectedVideoProbes(item: unknown): ReadonlySet<string> {
 describe('item-scoped capability probe selection', () => {
     it('starts every audio probe first for every item', () => {
         for (const item of [ createItem([ SDR_HEVC_STREAM ]), createItem([ FLAC_STREAM ]), {} ]) {
-            expect(selectCustomDecodeProbes(item).slice(0, CUSTOM_DECODE_AUDIO_PROBES.length))
-                .toEqual([ ...CUSTOM_DECODE_AUDIO_PROBES ]);
+            expect(selectCustomDecodeProbes(item).slice(0, CUSTOM_DECODE_AUDIO_PROBES.length)).toEqual([ ...CUSTOM_DECODE_AUDIO_PROBES ]);
         }
     });
 
@@ -2819,9 +2689,7 @@ describe('item-scoped capability probe selection', () => {
         const harness = createEnvironment(new Set(), new Set());
         const environment = harness.environment;
 
-        const capabilities = await new CustomDecodeCapabilityProbe(environment).probe(
-            createItem([ SDR_HEVC_STREAM, FLAC_STREAM ])
-        );
+        const capabilities = await new CustomDecodeCapabilityProbe(environment).probe(createItem([ SDR_HEVC_STREAM, FLAC_STREAM ]));
 
         expect(environment.bundledHEVCExactProbe?.probe).toHaveBeenCalledOnce();
         expect(environment.bundledDTSExactProbe?.probe).toHaveBeenCalledOnce();

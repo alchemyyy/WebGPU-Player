@@ -15,10 +15,7 @@ type ExpectedVector = Readonly<{
     codecString: string
 }>;
 
-const EXPECTED_VECTORS: Readonly<Record<
-    NativeUltraHDVideoCapabilityVectorCodec,
-    ExpectedVector
->> = Object.freeze({
+const EXPECTED_VECTORS: Readonly<Record<NativeUltraHDVideoCapabilityVectorCodec, ExpectedVector>> = Object.freeze({
     av1: Object.freeze({
         byteLength: 49,
         codecString: 'av01.0.12M.08'

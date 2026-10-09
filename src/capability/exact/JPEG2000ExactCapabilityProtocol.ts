@@ -34,9 +34,7 @@ function isSafeNullableInteger(value: unknown): value is number | null {
     return value === null || (Number.isSafeInteger(value) && Number(value) >= 0);
 }
 
-function isWorkerReason(
-    value: unknown
-): value is JPEG2000ExactCapabilityWorkerResponse['reason'] {
+function isWorkerReason(value: unknown): value is JPEG2000ExactCapabilityWorkerResponse['reason'] {
     switch (value) {
         case 'decode-error':
         case 'decode-output-verified':
@@ -62,9 +60,7 @@ function isCodecAssetURL(value: unknown): value is string {
 }
 
 /** Rejects malformed probe requests before loading executable codec assets. */
-export function isJPEG2000ExactCapabilityWorkerRequest(
-    value: unknown
-): value is JPEG2000ExactCapabilityWorkerRequest {
+export function isJPEG2000ExactCapabilityWorkerRequest(value: unknown): value is JPEG2000ExactCapabilityWorkerRequest {
     return isRecord(value)
         && value.type === 'probe'
         && value.requestID === JPEG2000_EXACT_CAPABILITY_REQUEST_ID
@@ -76,9 +72,7 @@ export function isJPEG2000ExactCapabilityWorkerRequest(
 }
 
 /** Validates every exact-output field returned by the probe worker. */
-export function isJPEG2000ExactCapabilityWorkerResponse(
-    value: unknown
-): value is JPEG2000ExactCapabilityWorkerResponse {
+export function isJPEG2000ExactCapabilityWorkerResponse(value: unknown): value is JPEG2000ExactCapabilityWorkerResponse {
     return isRecord(value)
         && value.type === 'result'
         && value.requestID === JPEG2000_EXACT_CAPABILITY_REQUEST_ID

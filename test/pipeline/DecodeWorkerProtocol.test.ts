@@ -21,9 +21,7 @@ import {
     DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION,
     MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT
 } from 'webgpu-player/video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
-import {
-    DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH
-} from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParser';
+import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParser';
 import { MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH } from 'webgpu-player/audio/native/NativeMediaAudioLimits';
 import {
     type RawVideoPlaneDescriptor,
@@ -34,8 +32,7 @@ import { parseHEVCHDR10PlusMetadata } from 'webgpu-player/video/hdr/HDR10PlusMet
 
 import { createHDR10PlusHEVCVector } from '../../src/capability/vectors/HDR10PlusVectors';
 
-const DOLBY_VISION_RPU_PARSER_WASM_URL =
-    'https://example.test/libraries/libdovi/dovi-rpu-parser.wasm';
+const DOLBY_VISION_RPU_PARSER_WASM_URL = 'https://example.test/libraries/libdovi/dovi-rpu-parser.wasm';
 
 const RAW_TEST_FRAME_CODED_WIDTH = 4;
 const RAW_TEST_FRAME_CODED_HEIGHT = 2;
@@ -67,10 +64,7 @@ function createPackedRPUData(): ArrayBuffer {
 }
 
 /** Creates a 4x2 frame whose planes start at an offset of its own buffer, as the worker lays them out. */
-function createRawFrame(
-    format: RawTestFrameFormat = 'I420',
-    byteOffset = 0
-): TransferableRawVideoFrame {
+function createRawFrame(format: RawTestFrameFormat = 'I420', byteOffset = 0): TransferableRawVideoFrame {
     const formatDefinition = RAW_TEST_FRAME_FORMATS[format];
     const chromaWidth = RAW_TEST_FRAME_CODED_WIDTH / formatDefinition.chromaWidthDivisor;
     const chromaHeight = RAW_TEST_FRAME_CODED_HEIGHT / formatDefinition.chromaHeightDivisor;
@@ -123,13 +117,10 @@ function createRawFrame(
 }
 
 /** Lays a BL in any format and an EL in one buffer, the EL at the next aligned offset. */
-function createCompoundRawFrames(
-    baseFormat: RawTestFrameFormat = 'I420',
-    enhancementFormat: RawTestFrameFormat = 'I420P10'
-): {
-        baseFrame: TransferableRawVideoFrame
-        enhancementFrame: TransferableRawVideoFrame
-    } {
+function createCompoundRawFrames(baseFormat: RawTestFrameFormat = 'I420', enhancementFormat: RawTestFrameFormat = 'I420P10'): {
+    baseFrame: TransferableRawVideoFrame
+    enhancementFrame: TransferableRawVideoFrame
+} {
     const baseFrame = createRawFrame(baseFormat);
     const enhancementFrame = createRawFrame(enhancementFormat, baseFrame.data.byteLength);
     const data = enhancementFrame.data;
@@ -178,12 +169,9 @@ describe('DecodeWorkerProtocol', () => {
     it('selects acceleration for native raw output and the bundled HEVC backend', () => {
         expect(getCustomDecodeHardwareAcceleration('raw-planes')).toBe('no-preference');
         expect(getCustomDecodeHardwareAcceleration('raw-planes', 'native', true)).toBe('no-preference');
-        expect(getCustomDecodeHardwareAcceleration('video-frame', 'bundled-hevc'))
-            .toBe('prefer-software');
-        expect(getCustomDecodeHardwareAcceleration('video-frame', 'openjpeg'))
-            .toBe('prefer-software');
-        expect(getCustomDecodeHardwareAcceleration('video-frame', 'ffmpeg-mpeg2-vc1'))
-            .toBe('prefer-software');
+        expect(getCustomDecodeHardwareAcceleration('video-frame', 'bundled-hevc')).toBe('prefer-software');
+        expect(getCustomDecodeHardwareAcceleration('video-frame', 'openjpeg')).toBe('prefer-software');
+        expect(getCustomDecodeHardwareAcceleration('video-frame', 'ffmpeg-mpeg2-vc1')).toBe('prefer-software');
     });
 
     it('prefers hardware only for native VideoFrames whose opaque hardware output is presented', () => {
@@ -770,10 +758,7 @@ describe('DecodeWorkerProtocol', () => {
             encodedDolbyVisionMetadata: {
                 enhancementLayerDisposition: 'absent',
                 hasEnhancementLayerVCL: false,
-                parsedRPUData: Array.from(
-                    { length: MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT + 1 },
-                    createPackedRPUData
-                ),
+                parsedRPUData: Array.from({ length: MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT + 1 }, createPackedRPUData),
                 schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
             }
         })).toBe(false);
@@ -797,10 +782,7 @@ describe('DecodeWorkerProtocol', () => {
             outputMode: 'video-frame',
             type: 'frame'
         } as const;
-        const validMetadata = parseHEVCHDR10PlusMetadata(
-            createHDR10PlusHEVCVector('valid'),
-            { kind: 'annex-b' }
-        );
+        const validMetadata = parseHEVCHDR10PlusMetadata(createHDR10PlusHEVCVector('valid'), { kind: 'annex-b' });
         expect(isDecodeWorkerResponse({
             ...baseFrame,
             HDR10PlusMetadata: validMetadata
@@ -1923,10 +1905,7 @@ describe('DecodeWorkerProtocol', () => {
     it('treats an omitted PCM sample epoch as the initial attempt and rejects malformed epochs', () => {
         const audioResponse = {
             channelCount: 6,
-            channelData: Array.from(
-                { length: 6 },
-                (): Float32Array => new Float32Array(1_024)
-            ),
+            channelData: Array.from({ length: 6 }, (): Float32Array => new Float32Array(1_024)),
             durationMicroseconds: 21_333,
             frameCount: 1_024,
             generation: 2,

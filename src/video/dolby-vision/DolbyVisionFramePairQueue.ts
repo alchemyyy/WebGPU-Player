@@ -22,8 +22,7 @@ function requireTimestamp(timestampMicroseconds: Microseconds): void {
 }
 
 /**
- * Pairs decoded Dolby Vision BL and EL outputs without allowing either decoder
- * to create an unbounded ownership queue.
+ * Pairs decoded Dolby Vision BL and EL outputs without allowing either decoder to create an unbounded ownership queue.
  */
 export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
     private readonly baseFrames: Array<DolbyVisionTimedFrame<BaseFrame>> = [];
@@ -61,10 +60,7 @@ export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
             frame.mediaTimeMicroseconds,
             'enhancement'
         );
-        if (
-            this.enhancementFrames.length
-            >= MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH
-        ) {
+        if (this.enhancementFrames.length >= MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH) {
             const discardedFrame = this.enhancementFrames.shift();
             if (discardedFrame) {
                 this.closeEnhancementFrame(discardedFrame.frame);
@@ -75,8 +71,8 @@ export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
     }
 
     /**
-     * Marks the EL decoder exhausted or degraded and releases waiting BL frames. Queued EL frames stay until a
-     * BL frame pairs with them or passes them, so a full ready queue cannot strip the layer from matching frames.
+     * Marks the EL decoder exhausted or degraded and releases waiting BL frames.
+     * Queued EL frames stay until a BL frame pairs with them or passes them, so a full ready queue cannot strip the layer from matching frames.
      */
     public finishEnhancement(): void {
         if (this.enhancementEnded) {
@@ -87,8 +83,8 @@ export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
     }
 
     /**
-     * Lets the ready queue exceed its bound while the decoders flush their last frames. No further packet is
-     * submitted, so the frames the decoders still hold are the whole remainder and must not fail the stream.
+     * Lets the ready queue exceed its bound while the decoders flush their last frames.
+     * No further packet is submitted, so the frames the decoders still hold are the whole remainder and must not fail the stream.
      */
     public beginFinalDrain(): void {
         this.finalDrain = true;
@@ -103,7 +99,6 @@ export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
         return framePair;
     }
 
-    /** Returns whether a resolved compound ownership unit can be consumed. */
     public hasReadyPair(): boolean {
         return this.readyPairs.length > 0;
     }
@@ -133,8 +128,7 @@ export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
         layer: 'base' | 'enhancement'
     ): void {
         const previousFrame = frames.at(-1);
-        if (previousFrame
-            && timestampMicroseconds < previousFrame.mediaTimeMicroseconds) {
+        if (previousFrame && timestampMicroseconds < previousFrame.mediaTimeMicroseconds) {
             throw new RangeError(`Decoded Dolby Vision ${layer} frames are not in presentation order`);
         }
     }
@@ -146,10 +140,8 @@ export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
             this.discardOlderEnhancementFrames(baseFrame.mediaTimeMicroseconds);
             const enhancementFrame = this.enhancementFrames[0];
             if (enhancementFrame) {
-                const timestampDelta = enhancementFrame.mediaTimeMicroseconds
-                    - baseFrame.mediaTimeMicroseconds;
-                if (Math.abs(timestampDelta)
-                    <= DOLBY_VISION_FRAME_PAIR_TOLERANCE_MICROSECONDS) {
+                const timestampDelta = enhancementFrame.mediaTimeMicroseconds - baseFrame.mediaTimeMicroseconds;
+                if (Math.abs(timestampDelta) <= DOLBY_VISION_FRAME_PAIR_TOLERANCE_MICROSECONDS) {
                     this.baseFrames.shift();
                     this.enhancementFrames.shift();
                     this.readyPairs.push({

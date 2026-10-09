@@ -5,9 +5,7 @@ import {
     type CustomPlaybackRuntimeEnvironment
 } from 'webgpu-player/capability/CustomPlaybackRuntime';
 
-function createEnvironment(
-    overrides: Partial<CustomPlaybackRuntimeEnvironment> = {}
-): CustomPlaybackRuntimeEnvironment {
+function createEnvironment(overrides: Partial<CustomPlaybackRuntimeEnvironment> = {}): CustomPlaybackRuntimeEnvironment {
     return {
         animationFrame: true,
         audioContext: true,

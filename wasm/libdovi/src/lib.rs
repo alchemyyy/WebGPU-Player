@@ -1188,7 +1188,8 @@ fn unsigned_coefficient(
     )?)
 }
 
-/// An unsigned coefficient at full precision, whose integer part only fixed point codes
+/// An unsigned coefficient at full precision.
+/// Only fixed-point coefficients code an integer part
 fn unsigned_coefficient_value(
     header: &dolby_vision::rpu::rpu_data_header::RpuDataHeader,
     integer: Option<u64>,

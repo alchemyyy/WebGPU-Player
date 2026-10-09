@@ -61,15 +61,9 @@ export type TrueHDExactCapability = Readonly<{
 type TrueHDExactCapabilityProbeWorkerEventListener = (event: Event) => void;
 
 export type TrueHDExactCapabilityProbeWorker = {
-    addEventListener: (
-        type: 'error' | 'message' | 'messageerror',
-        listener: TrueHDExactCapabilityProbeWorkerEventListener
-    ) => void
+    addEventListener: (type: 'error' | 'message' | 'messageerror', listener: TrueHDExactCapabilityProbeWorkerEventListener) => void
     postMessage: (message: unknown, transfer: Transferable[]) => void
-    removeEventListener: (
-        type: 'error' | 'message' | 'messageerror',
-        listener: TrueHDExactCapabilityProbeWorkerEventListener
-    ) => void
+    removeEventListener: (type: 'error' | 'message' | 'messageerror', listener: TrueHDExactCapabilityProbeWorkerEventListener) => void
     terminate: () => void
 };
 
@@ -80,10 +74,7 @@ export type TrueHDExactCapabilityProbeEnvironment = Readonly<{
     loadDecoderWASM?: ((url: string) => Promise<ArrayBuffer>) | null
     resolveAssetURL: (path: EngineAssetPath) => string
     runtimeAvailable: boolean
-    setTimeout: (
-        callback: () => void,
-        milliseconds: number
-    ) => ReturnType<typeof globalThis.setTimeout>
+    setTimeout: (callback: () => void, milliseconds: number) => ReturnType<typeof globalThis.setTimeout>
     // Downloads the worker script into the HTTP cache before the timed probe loads it
     warmAsset?: ((url: string) => Promise<void>) | null
 }>;
@@ -168,10 +159,8 @@ export default class TrueHDExactCapabilityProbe {
     private preparedDecoderWASM: Promise<DecoderWASMSource | null> | null = null;
 
     public constructor(
-        private readonly environment: TrueHDExactCapabilityProbeEnvironment =
-        createDefaultEnvironment(),
-        private readonly timeoutMilliseconds =
-        TRUEHD_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS
+        private readonly environment: TrueHDExactCapabilityProbeEnvironment = createDefaultEnvironment(),
+        private readonly timeoutMilliseconds = TRUEHD_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS
     ) {
         if (!Number.isSafeInteger(timeoutMilliseconds) || timeoutMilliseconds <= 0) {
             throw new TypeError('The exact TrueHD capability timeout is invalid');
@@ -196,10 +185,7 @@ export default class TrueHDExactCapabilityProbe {
         const environment = this.environment;
         try {
             const [ decoderWASM ] = await Promise.all([
-                loadDecoderWASMSource(
-                    environment.resolveAssetURL(TRUEHD_DECODER_WASM_ASSET),
-                    environment.loadDecoderWASM
-                ),
+                loadDecoderWASMSource(environment.resolveAssetURL(TRUEHD_DECODER_WASM_ASSET), environment.loadDecoderWASM),
                 environment.warmAsset?.(environment.resolveAssetURL(TRUEHD_EXACT_CAPABILITY_WORKER_ASSET))
             ]);
             return decoderWASM;
@@ -258,9 +244,7 @@ export default class TrueHDExactCapabilityProbe {
                 cleanup();
                 resolve(capability);
             };
-            const messageHandler: TrueHDExactCapabilityProbeWorkerEventListener = (
-                event: Event
-            ): void => {
+            const messageHandler: TrueHDExactCapabilityProbeWorkerEventListener = (event: Event): void => {
                 const value = (event as MessageEvent<unknown>).data;
                 if (!isTrueHDExactCapabilityWorkerResponse(value)) {
                     settle(createCapability('worker-message-invalid'));

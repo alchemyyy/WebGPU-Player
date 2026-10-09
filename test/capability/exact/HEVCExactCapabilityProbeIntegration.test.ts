@@ -8,27 +8,16 @@ import { runInThisContext } from 'node:vm';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import {
-    createHEVCExactCapabilityWorkerQualificationRequests
-} from 'webgpu-player/capability/vectors/HEVCExactCapabilityVectors';
+import { createHEVCExactCapabilityWorkerQualificationRequests } from 'webgpu-player/capability/vectors/HEVCExactCapabilityVectors';
 import {
     HEVC_EXACT_CAPABILITY_REQUEST_ID,
     type HEVCExactCapabilityWorkerRequest
 } from 'webgpu-player/capability/exact/HEVCExactCapabilityProtocol';
 import { runHEVCExactCapabilityWorkerRequest } from 'webgpu-player/capability/exact/HEVCExactCapabilityWorkerRuntime';
 
-const HEVC_GLUE_PATH = resolve(
-    NODE_MODULES_ROOT,
-    '@hevcjs/core/dist/wasm/hevc-decode.js'
-);
-const HEVC_WASM_PATH = resolve(
-    NODE_MODULES_ROOT,
-    '@hevcjs/core/dist/wasm/hevc-decode.wasm'
-);
-const MAIN10_4K_QUALIFICATION_PATH = resolve(
-    QUALIFICATION_VECTORS_DIRECTORY,
-    'hevc', 'main10-4k-complex.hevc'
-);
+const HEVC_GLUE_PATH = resolve(NODE_MODULES_ROOT, '@hevcjs/core/dist/wasm/hevc-decode.js');
+const HEVC_WASM_PATH = resolve(NODE_MODULES_ROOT, '@hevcjs/core/dist/wasm/hevc-decode.wasm');
+const MAIN10_4K_QUALIFICATION_PATH = resolve(QUALIFICATION_VECTORS_DIRECTORY, 'hevc', 'main10-4k-complex.hevc');
 
 type EmscriptenModuleFactory = (options: {
     locateFile?: (path: string, scriptDirectory: string) => string

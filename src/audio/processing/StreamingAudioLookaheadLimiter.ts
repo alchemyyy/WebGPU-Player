@@ -18,8 +18,7 @@ export const CUSTOM_AUDIO_LIMITER_MINIMUM_ATTACK_MILLISECONDS = 3;
 export const CUSTOM_AUDIO_LIMITER_MAXIMUM_ATTACK_MILLISECONDS = 10;
 export const CUSTOM_AUDIO_LIMITER_RELEASE_MILLISECONDS = 100;
 export const CUSTOM_AUDIO_LIMITER_CEILING_DBFS = -1;
-export const CUSTOM_AUDIO_LIMITER_CEILING_GAIN =
-    10 ** (CUSTOM_AUDIO_LIMITER_CEILING_DBFS / 20);
+export const CUSTOM_AUDIO_LIMITER_CEILING_GAIN = 10 ** (CUSTOM_AUDIO_LIMITER_CEILING_DBFS / 20);
 
 export type StreamingAudioLookaheadLimiterOptions = Readonly<{
     channelCount: number
@@ -54,13 +53,12 @@ function millisecondsToFrames(milliseconds: number, sampleRate: number): number 
 /** Maps a unit interval with zero first and second derivatives at both ends. */
 export function quinticSmoothstep(value: number): number {
     const boundedValue = Math.max(0, Math.min(1, value));
-    return boundedValue * boundedValue * boundedValue
-        * (boundedValue * (boundedValue * 6 - 15) + 10);
+    return boundedValue * boundedValue * boundedValue * (boundedValue * (boundedValue * 6 - 15) + 10);
 }
 
 /**
- * Applies one linked gain envelope to buffered planar PCM. The 100 ms horizon
- * preserves original media timestamps while quintic attacks anticipate peaks.
+ * Applies one linked gain envelope to buffered planar PCM.
+ * The 100 ms horizon preserves original media timestamps while quintic attacks anticipate peaks.
  */
 export default class StreamingAudioLookaheadLimiter {
     public readonly analysisFrameCount: number;
@@ -85,43 +83,17 @@ export default class StreamingAudioLookaheadLimiter {
     private sourceFrameCount = 0;
 
     public constructor(options: StreamingAudioLookaheadLimiterOptions) {
-        this.channelCount = requirePositiveSafeInteger(
-            options.channelCount,
-            'Limiter channel count'
-        );
-        this.maximumOutputFrameCount = requirePositiveSafeInteger(
-            options.maximumOutputFrameCount,
-            'Limiter maximum output frame count'
-        );
-        this.minimumOutputFrameCount = requirePositiveSafeInteger(
-            options.minimumOutputFrameCount,
-            'Limiter minimum output frame count'
-        );
+        this.channelCount = requirePositiveSafeInteger(options.channelCount, 'Limiter channel count');
+        this.maximumOutputFrameCount = requirePositiveSafeInteger(options.maximumOutputFrameCount, 'Limiter maximum output frame count');
+        this.minimumOutputFrameCount = requirePositiveSafeInteger(options.minimumOutputFrameCount, 'Limiter minimum output frame count');
         if (this.minimumOutputFrameCount > this.maximumOutputFrameCount) {
-            throw new RangeError(
-                'Limiter minimum output frame count cannot exceed its maximum'
-            );
+            throw new RangeError('Limiter minimum output frame count cannot exceed its maximum');
         }
-        this.sampleRate = requireSupportedCustomAudioSampleRate(
-            options.sampleRate,
-            'Limiter sample rate'
-        );
-        this.analysisFrameCount = millisecondsToFrames(
-            CUSTOM_AUDIO_LIMITER_ANALYSIS_MILLISECONDS,
-            this.sampleRate
-        );
-        this.minimumAttackFrameCount = millisecondsToFrames(
-            CUSTOM_AUDIO_LIMITER_MINIMUM_ATTACK_MILLISECONDS,
-            this.sampleRate
-        );
-        this.maximumAttackFrameCount = millisecondsToFrames(
-            CUSTOM_AUDIO_LIMITER_MAXIMUM_ATTACK_MILLISECONDS,
-            this.sampleRate
-        );
-        const releaseFrameCount = millisecondsToFrames(
-            CUSTOM_AUDIO_LIMITER_RELEASE_MILLISECONDS,
-            this.sampleRate
-        );
+        this.sampleRate = requireSupportedCustomAudioSampleRate(options.sampleRate, 'Limiter sample rate');
+        this.analysisFrameCount = millisecondsToFrames(CUSTOM_AUDIO_LIMITER_ANALYSIS_MILLISECONDS, this.sampleRate);
+        this.minimumAttackFrameCount = millisecondsToFrames(CUSTOM_AUDIO_LIMITER_MINIMUM_ATTACK_MILLISECONDS, this.sampleRate);
+        this.maximumAttackFrameCount = millisecondsToFrames(CUSTOM_AUDIO_LIMITER_MAXIMUM_ATTACK_MILLISECONDS, this.sampleRate);
+        const releaseFrameCount = millisecondsToFrames(CUSTOM_AUDIO_LIMITER_RELEASE_MILLISECONDS, this.sampleRate);
         this.releaseCoefficient = Math.exp(-1 / releaseFrameCount);
 
         for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
@@ -130,9 +102,7 @@ export default class StreamingAudioLookaheadLimiter {
     }
 
     /** Buffers contiguous PCM and emits frames with a complete future horizon. */
-    public push(
-        inputs: readonly StreamingAudioResamplerOutput[]
-    ): StreamingAudioResamplerOutput[] {
+    public push(inputs: readonly StreamingAudioResamplerOutput[]): StreamingAudioResamplerOutput[] {
         if (this.finalized) {
             throw new Error('Cannot add audio after limiter finalization');
         }
@@ -196,9 +166,7 @@ export default class StreamingAudioLookaheadLimiter {
             const inputChannel = input.channelData[channelIndex];
             if (!(inputChannel instanceof Float32Array)
                 || inputChannel.length !== input.frameCount) {
-                throw new RangeError(
-                    'Limiter input channels must be equal-length Float32Array values'
-                );
+                throw new RangeError('Limiter input channels must be equal-length Float32Array values');
             }
             for (const sample of inputChannel) {
                 if (!Number.isFinite(sample)) {
@@ -207,9 +175,7 @@ export default class StreamingAudioLookaheadLimiter {
                 this.maximumInputPeak = Math.max(this.maximumInputPeak, Math.abs(sample));
             }
             const previousBuffer = this.channelBuffers[channelIndex];
-            const combinedBuffer = new Float32Array(
-                previousBuffer.length + input.frameCount
-            );
+            const combinedBuffer = new Float32Array(previousBuffer.length + input.frameCount);
             combinedBuffer.set(previousBuffer);
             combinedBuffer.set(inputChannel, previousBuffer.length);
             this.channelBuffers[channelIndex] = combinedBuffer;
@@ -226,9 +192,7 @@ export default class StreamingAudioLookaheadLimiter {
             this.anchorMediaTimeMicroseconds,
             audioFramesToMicroseconds(this.sourceFrameCount, this.sampleRate)
         );
-        const timestampToleranceMicroseconds = Math.ceil(
-            MICROSECONDS_PER_SECOND / this.sampleRate
-        );
+        const timestampToleranceMicroseconds = Math.ceil(MICROSECONDS_PER_SECOND / this.sampleRate);
         if (Math.abs(mediaTimeMicroseconds - expectedMediaTimeMicroseconds)
             > timestampToleranceMicroseconds) {
             throw new RangeError('Limiter input timestamps contain a gap or overlap');
@@ -262,10 +226,7 @@ export default class StreamingAudioLookaheadLimiter {
         return outputs;
     }
 
-    private getEmittableFrameCount(
-        availableFrameCount: number,
-        finalizing: boolean
-    ): number {
+    private getEmittableFrameCount(availableFrameCount: number, finalizing: boolean): number {
         if (finalizing || availableFrameCount < this.minimumOutputFrameCount) {
             return finalizing ? availableFrameCount : 0;
         }
@@ -338,10 +299,7 @@ export default class StreamingAudioLookaheadLimiter {
         };
     }
 
-    private createAttackConstraints(
-        localStartFrame: number,
-        frameCount: number
-    ): Float32Array {
+    private createAttackConstraints(localStartFrame: number, frameCount: number): Float32Array {
         const constraints = new Float32Array(frameCount);
         constraints.fill(UNITY_GAIN);
         const analysisEndFrame = Math.min(
@@ -406,9 +364,7 @@ export default class StreamingAudioLookaheadLimiter {
             return;
         }
         for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
-            this.channelBuffers[channelIndex] = this.channelBuffers[channelIndex].slice(
-                consumedFrameCount
-            );
+            this.channelBuffers[channelIndex] = this.channelBuffers[channelIndex].slice(consumedFrameCount);
         }
         this.bufferStartFrame = this.outputFrameCount;
     }

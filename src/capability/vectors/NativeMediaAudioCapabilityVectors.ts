@@ -320,7 +320,7 @@ function decodeBase64(base64: string): Uint8Array {
     return bytes;
 }
 
-/** Returns a fresh exact fMP4 sample for native MSE decoder qualification. */
+/** Returns a new copy of the fMP4 vector that qualifies native MSE decoding of one codec and channel count. */
 export function createNativeMediaAudioProbeVector(
     codec: NativeMediaAudioProbeVectorCodec,
     channelCount: NativeMediaAudioProbeVectorChannelCount

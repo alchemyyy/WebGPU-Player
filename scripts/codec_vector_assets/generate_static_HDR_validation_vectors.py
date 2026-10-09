@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Generate deterministic PQ HEVC vectors for static HDR scan states."""
+"""Generate PQ HEVC Matroska vectors for the static HDR metadata scan states: absent, malformed, conflicting, and valid.
+
+The vectors share one x265 encode of testsrc2; each inserts the prefix SEI of its state before the first VCL NAL unit and adds a FLAC sine tone.
+The manifest records the scan status and tone mapping peak the engine is expected to report for each file.
+"""
 
 from __future__ import annotations
 
@@ -40,11 +44,11 @@ StaticHDRStatus = Literal["absent", "conflicting", "malformed", "valid"]
 
 
 class VectorGenerationError(RuntimeError):
-    """Reports a deterministic vector generation or verification failure."""
+    """Reports a vector that cannot be generated or fails its verification."""
 
 
 class StaticHDRConflictError(ValueError):
-    """Reports two internally valid but incompatible static metadata values."""
+    """Reports a static metadata field that two payloads set to different values."""
 
 
 @dataclass(frozen=True)
@@ -59,7 +63,7 @@ class AnnexBNALUnit:
 
 @dataclass(frozen=True)
 class VectorDefinition:
-    """Defines one exact injected metadata state and renderer expectation."""
+    """One vector: the SEI NAL units it injects, and the scan status and tone mapping peak expected from it."""
 
     expected_peak_nits: int
     expected_status: StaticHDRStatus
@@ -140,7 +144,7 @@ def create_mastering_display_payload(
     maximum_luminance_nits: float,
     minimum_luminance_nits: float = MINIMUM_LUMINANCE_NITS,
 ) -> bytes:
-    """Creates one standards-shaped BT.2020 mastering-display payload."""
+    """Returns a mastering display colour volume payload: P3 primaries, a D65 white point, and the given luminance range in nits."""
 
     maximum_luminance_code = round(maximum_luminance_nits * MASTERING_LUMINANCE_SCALE)
     minimum_luminance_code = round(minimum_luminance_nits * MASTERING_LUMINANCE_SCALE)
@@ -173,7 +177,7 @@ def create_content_light_payload(
 
 
 def create_prefix_SEI_NAL_unit(payloads: Sequence[tuple[int, bytes]]) -> bytes:
-    """Creates one prefix-SEI NAL unit containing exact payload records."""
+    """Returns an escaped prefix SEI NAL unit, header included, that carries the (payload type, payload) records in order."""
 
     RBSP = bytearray()
     for payload_type, payload in payloads:
@@ -186,7 +190,7 @@ def create_prefix_SEI_NAL_unit(payloads: Sequence[tuple[int, bytes]]) -> bytes:
 
 
 def create_valid_static_HDR_SEI_NAL_unit(maximum_luminance_nits: int) -> bytes:
-    """Creates exact mastering-display and content-light metadata."""
+    """Returns a prefix SEI NAL unit with a mastering display payload of the given peak and a content light payload of MaxCLL 500 and MaxFALL 200."""
 
     return create_prefix_SEI_NAL_unit(
         (
@@ -203,7 +207,10 @@ def create_valid_static_HDR_SEI_NAL_unit(maximum_luminance_nits: int) -> bytes:
 
 
 def create_vector_definitions() -> tuple[VectorDefinition, ...]:
-    """Returns the four exact static-HDR vector states."""
+    """Returns the four vectors.
+
+    The malformed vector's mastering display minimum exceeds its maximum, and the conflicting vector carries two mastering display payloads with different peaks.
+    """
 
     valid_4000_NAL_unit = create_valid_static_HDR_SEI_NAL_unit(
         VALID_TONE_MAPPING_PEAK_NITS
@@ -257,7 +264,7 @@ def create_vector_definitions() -> tuple[VectorDefinition, ...]:
 
 
 def find_annex_B_NAL_units(data: bytes) -> tuple[AnnexBNALUnit, ...]:
-    """Returns every complete Annex B NAL boundary in byte order."""
+    """Returns the NAL units of an Annex B stream in byte order, skipping any too short for a NAL header."""
 
     start_codes: list[tuple[int, int]] = []
     byte_index = 0
@@ -298,7 +305,7 @@ def inject_prefix_SEI_NAL_units(
     source: bytes,
     injected_NAL_units: Sequence[bytes],
 ) -> bytes:
-    """Inserts prefix SEI after startup headers and before the first VCL NAL."""
+    """Returns the stream with the NAL units inserted before its first VCL NAL unit, after the parameter sets."""
 
     if not injected_NAL_units:
         return source
@@ -315,7 +322,7 @@ def inject_prefix_SEI_NAL_units(
 
 
 def read_extended_SEI_value(data: bytes, start_offset: int) -> tuple[int, int]:
-    """Reads one HEVC SEI extended value and returns value plus next offset."""
+    """Reads one SEI payload type or size field and returns its value and the offset after it."""
 
     offset = start_offset
     value = 0
@@ -332,7 +339,7 @@ def merge_luminance_value(
     name: str,
     value: float | None,
 ) -> None:
-    """Merges one optional luminance and reports exact conflicts."""
+    """Records a luminance a payload carries, and raises StaticHDRConflictError if an earlier payload gave it another value."""
 
     if value is None:
         return
@@ -346,7 +353,10 @@ def parse_static_HDR_SEI_payloads(
     NAL_unit_data: bytes,
     metadata: dict[str, float | None],
 ) -> None:
-    """Parses the static payload subset needed to verify generated vectors."""
+    """Merges the mastering display and content light payloads of one SEI NAL unit into the metadata, skipping other payload types.
+
+    A zero content light level counts as absent, and a malformed payload raises ValueError.
+    """
 
     if len(NAL_unit_data) < 3:
         raise ValueError("The HEVC SEI NAL unit is truncated")
@@ -395,7 +405,7 @@ def parse_static_HDR_SEI_payloads(
 
 
 def is_valid_luminance(value: float | None, *, allow_zero: bool) -> bool:
-    """Matches the bounded renderer metadata luminance contract."""
+    """Mirrors the engine's isNullableLuminance: an absent value, or a finite one from 1 (0 when allowed) to 10,000 nits."""
 
     return value is None or (
         math.isfinite(value)
@@ -405,7 +415,7 @@ def is_valid_luminance(value: float | None, *, allow_zero: bool) -> bool:
 
 
 def scan_static_HDR_metadata(data: bytes) -> StaticHDRStatus:
-    """Classifies static metadata across a complete generated Annex B stream."""
+    """Classifies the static HDR metadata of a whole Annex B stream with the statuses of the engine's scanHEVCStaticHDRMetadata, which reads only a startup prefix."""
 
     metadata: dict[str, float | None] = {
         "masteringMaximum": None,
@@ -449,7 +459,7 @@ def scan_static_HDR_metadata(data: bytes) -> StaticHDRStatus:
 
 
 def run_command(arguments: Sequence[str], label: str) -> subprocess.CompletedProcess[str]:
-    """Runs one fixed argument vector and preserves diagnostics only on failure."""
+    """Runs a command without a shell, and on failure raises VectorGenerationError with its stderr, or its stdout if stderr is empty."""
 
     result = subprocess.run(
         list(arguments),
@@ -465,7 +475,7 @@ def run_command(arguments: Sequence[str], label: str) -> subprocess.CompletedPro
 
 
 def require_executable(command: str, label: str) -> str:
-    """Resolves one required executable without invoking a shell."""
+    """Returns the command's path on PATH, or the resolved path of the file it names, and raises VectorGenerationError if neither exists."""
 
     resolved = shutil.which(command)
     if resolved is None:
@@ -477,7 +487,7 @@ def require_executable(command: str, label: str) -> str:
 
 
 def calculate_SHA256(path: Path) -> str:
-    """Calculates one streaming SHA-256 file identity."""
+    """Returns the SHA-256 hex digest of a file, read in 1 MiB chunks."""
 
     digest = hashlib.sha256()
     with path.open("rb") as input_stream:
@@ -498,7 +508,7 @@ def generate_base_HEVC(
     frame_rate: int,
     duration_seconds: int,
 ) -> None:
-    """Generates one metadata-free PQ Main10 elementary stream."""
+    """Encodes testsrc2 into a PQ Main 10 HEVC elementary stream that carries no static HDR metadata."""
 
     frame_count = frame_rate * duration_seconds
     key_frame_interval = frame_rate * 2
@@ -570,7 +580,7 @@ def mux_vector(
     frame_rate: int,
     duration_seconds: int,
 ) -> None:
-    """Muxes one injected video stream with deterministic stereo FLAC."""
+    """Muxes an HEVC stream and a 440 Hz stereo FLAC tone into Matroska."""
 
     audio_input = (
         f"sine=frequency=440:sample_rate=48000:duration={duration_seconds}"
@@ -620,7 +630,7 @@ def require_exact_stream_metadata(
     height: int,
     frame_rate: int,
 ) -> Mapping[str, object]:
-    """Verifies the exact video and audio tuple every generated vector promises."""
+    """Requires FFprobe to report the expected video and audio stream fields, and returns them with the probed HEVC level."""
 
     result = run_command(
         (
@@ -704,7 +714,7 @@ def extract_HEVC(
     vector_path: Path,
     output_path: Path,
 ) -> bytes:
-    """Extracts the exact muxed video back to Annex B for status verification."""
+    """Copies the video of a vector back out as Annex B HEVC, so its scan status can be checked after muxing."""
 
     run_command(
         (
@@ -729,7 +739,7 @@ def extract_HEVC(
 
 
 def require_generator_options(arguments: argparse.Namespace) -> None:
-    """Rejects dimensions and durations outside the supported vector bounds."""
+    """Rejects a size, frame rate, or duration outside the generator's limits."""
 
     if arguments.width < 16 or arguments.width > 8192 or arguments.width % 2 != 0:
         raise VectorGenerationError("Vector width must be an even integer from 16 to 8192")
@@ -742,7 +752,7 @@ def require_generator_options(arguments: argparse.Namespace) -> None:
 
 
 def execute(arguments: argparse.Namespace) -> dict[str, object]:
-    """Generates, remux-verifies, and atomically publishes all four vectors."""
+    """Builds and verifies all four vectors in a temporary directory before moving any into the output directory, then writes the manifest."""
 
     require_generator_options(arguments)
     ffmpeg_path = require_executable(arguments.ffmpeg, "FFmpeg")
@@ -856,7 +866,7 @@ def execute(arguments: argparse.Namespace) -> dict[str, object]:
 
 
 def main(command_arguments: Sequence[str] | None = None) -> int:
-    """Runs the CLI and emits one bounded machine-readable summary."""
+    """Runs the generator and prints a JSON summary, or prints the error and returns 1."""
 
     arguments = create_argument_parser().parse_args(command_arguments)
     try:

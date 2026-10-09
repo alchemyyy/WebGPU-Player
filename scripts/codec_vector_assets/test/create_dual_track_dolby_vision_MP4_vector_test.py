@@ -133,9 +133,7 @@ def create_track(
     track_children = [track_header]
     if track_reference is not None:
         track_children.append(track_reference)
-    track_children.append(
-        box("mdia", concatenate([handler, box("minf", box("stbl", sample_description))]))
-    )
+    track_children.append(box("mdia", concatenate([handler, box("minf", box("stbl", sample_description))])))
     return box("trak", concatenate(track_children))
 
 
@@ -215,7 +213,7 @@ class DualTrackPatchTests(unittest.TestCase):
     """Covers the ISO base media patch with synthetic two-track MP4 files."""
 
     def assert_vector_error(self, source: bytes, message: str) -> None:
-        """Asserts that patching fails with exactly one VectorError message."""
+        """Asserts that patching raises a VectorError, not a subclass, with the given message."""
 
         with self.assertRaises(generator.VectorError) as raised:
             generator.patch_dual_track_dolby_vision_MP4(source)
@@ -287,9 +285,7 @@ class DualTrackPatchTests(unittest.TestCase):
         compact_source = create_MP4()
         # ftyp and the one-byte mdat occupy the first 17 bytes
         movie = compact_source[17:]
-        extended_media_data = concatenate(
-            [unsigned_32(1), b"mdat", (17).to_bytes(8, "big"), bytes((1,))]
-        )
+        extended_media_data = concatenate([unsigned_32(1), b"mdat", (17).to_bytes(8, "big"), bytes((1,))])
         source = concatenate([box("ftyp"), extended_media_data, movie])
 
         result = generator.patch_dual_track_dolby_vision_MP4(source)
@@ -450,9 +446,7 @@ class CommandLineTests(unittest.TestCase):
     def test_fails_with_status_1_for_a_missing_input(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             missing_path = os.path.join(temporary_directory, "missing.mkv")
-            status, stdout, stderr = run_main(
-                [missing_path, os.path.join(temporary_directory, "output.mp4")]
-            )
+            status, stdout, stderr = run_main([missing_path, os.path.join(temporary_directory, "output.mp4")])
 
         self.assertEqual((status, stdout), (1, ""))
         self.assertIn("missing.mkv", stderr)

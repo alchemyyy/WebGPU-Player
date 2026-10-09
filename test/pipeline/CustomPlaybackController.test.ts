@@ -60,10 +60,7 @@ class ControllerDecodeWorker {
     public readonly postedMessages: unknown[] = [];
     public readonly terminate = vi.fn();
 
-    public addEventListener(
-        type: string,
-        handler: EventListenerOrEventListenerObject
-    ): void {
+    public addEventListener(type: string, handler: EventListenerOrEventListenerObject): void {
         if (type === 'message') {
             this.messageHandlers.add(handler as ControllerDecodeWorkerMessageHandler);
         }
@@ -79,10 +76,7 @@ class ControllerDecodeWorker {
         this.postedMessages.push(message);
     }
 
-    public removeEventListener(
-        type: string,
-        handler: EventListenerOrEventListenerObject
-    ): void {
+    public removeEventListener(type: string, handler: EventListenerOrEventListenerObject): void {
         if (type === 'message') {
             this.messageHandlers.delete(handler as ControllerDecodeWorkerMessageHandler);
         }
@@ -310,15 +304,11 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
         this.nativeAudioEnded = nativeAudioEnded;
     }
 
-    public setNativeAudioTimeMicroseconds(
-        nativeAudioTimeMicroseconds: Microseconds | null
-    ): void {
+    public setNativeAudioTimeMicroseconds(nativeAudioTimeMicroseconds: Microseconds | null): void {
         this.nativeAudioTimeMicroseconds = nativeAudioTimeMicroseconds;
     }
 
-    public async prepareAudio(
-        configuration: DecodeWorkerAudioConfiguration
-    ): Promise<CustomDecodeAudioBridge | null> {
+    public async prepareAudio(configuration: DecodeWorkerAudioConfiguration): Promise<CustomDecodeAudioBridge | null> {
         if (!this.audioBridgeFactory) {
             return null;
         }
@@ -346,9 +336,7 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
      * - a bridge failure fails the current generation;
      * - a replaced attempt issues no epoch.
      */
-    public async resyncDecodedAudio(
-        options: CustomDecodeAudioResyncOptions
-    ): Promise<number | null> {
+    public async resyncDecodedAudio(options: CustomDecodeAudioResyncOptions): Promise<number | null> {
         const generation = this.activeGeneration;
         const audioConfiguration = this.audioConfiguration;
         if (generation === null || !audioConfiguration) {
@@ -502,9 +490,7 @@ class FakeAudioOutput implements CustomAudioOutput {
         this.currentGeneration = generation;
     }
 
-    public setEstimatedOutputLatencyMicroseconds(
-        estimatedOutputLatencyMicroseconds: Microseconds | null
-    ): void {
+    public setEstimatedOutputLatencyMicroseconds(estimatedOutputLatencyMicroseconds: Microseconds | null): void {
         this.estimatedOutputLatencyMicroseconds = estimatedOutputLatencyMicroseconds;
     }
 }
@@ -547,9 +533,7 @@ class FakeAudioBridge {
         };
     }
 
-    public setSubmittedEndMediaTimeMicroseconds(
-        submittedEndMediaTimeMicroseconds: Microseconds | null
-    ): void {
+    public setSubmittedEndMediaTimeMicroseconds(submittedEndMediaTimeMicroseconds: Microseconds | null): void {
         this.telemetry = {
             ...this.telemetry,
             submittedEndMediaTimeMicroseconds,
@@ -918,9 +902,7 @@ describe('CustomPlaybackController', () => {
     it('retains a pending-startup gain update for the new decode generation', async () => {
         const harness = createControllerHarness(true);
         const decoderStop = createDeferred<void>();
-        harness.videoDecodeSession.stop.mockImplementationOnce(
-            (): Promise<void> => decoderStop.promise
-        );
+        harness.videoDecodeSession.stop.mockImplementationOnce((): Promise<void> => decoderStop.promise);
         const startPromise = harness.controller.play(createPlayOptions(0));
         await flushAsyncWork();
         const settings: {
@@ -936,8 +918,7 @@ describe('CustomPlaybackController', () => {
         };
 
         expect(harness.controller.updateAudioDownmixSettings(settings)).toBe(false);
-        expect(harness.videoDecodeSession.updateAudioDownmixSettings)
-            .not.toHaveBeenCalled();
+        expect(harness.videoDecodeSession.updateAudioDownmixSettings).not.toHaveBeenCalled();
         settings.outputGain = 9;
         decoderStop.resolve();
         await flushAsyncWork();
@@ -983,8 +964,7 @@ describe('CustomPlaybackController', () => {
         };
 
         expect(harness.controller.updateAudioDownmixSettings(settings)).toBe(true);
-        expect(harness.videoDecodeSession.updateAudioDownmixSettings)
-            .toHaveBeenCalledWith(settings);
+        expect(harness.videoDecodeSession.updateAudioDownmixSettings).toHaveBeenCalledWith(settings);
         expect(harness.controller.playbackState).toBe('starting');
 
         await harness.controller.destroy();
@@ -1008,8 +988,7 @@ describe('CustomPlaybackController', () => {
         };
 
         expect(harness.controller.updateAudioDownmixSettings(settings)).toBe(true);
-        expect(harness.videoDecodeSession.updateAudioDownmixSettings)
-            .toHaveBeenCalledWith(settings);
+        expect(harness.videoDecodeSession.updateAudioDownmixSettings).toHaveBeenCalledWith(settings);
         settings.centerLevel = 2;
         const switchPromise = harness.controller.setAudioStreamIndex(2);
         await flushAsyncWork();
@@ -1063,8 +1042,7 @@ describe('CustomPlaybackController', () => {
         expect(harness.audioOutput?.setVolume).toHaveBeenLastCalledWith(0.5);
         expect(harness.audioOutput?.setMuted).toHaveBeenLastCalledWith(true);
         expect(() => harness.controller.setNormalizationGain(-1)).toThrow(RangeError);
-        expect(() => harness.controller.setNormalizationGain(Number.POSITIVE_INFINITY))
-            .toThrow(RangeError);
+        expect(() => harness.controller.setNormalizationGain(Number.POSITIVE_INFINITY)).toThrow(RangeError);
         if (!harness.audioOutput) {
             throw new Error('Expected an audio output');
         }
@@ -1085,9 +1063,7 @@ describe('CustomPlaybackController', () => {
     });
 
     it('owns native media audio controls and hands clock authority over once', async () => {
-        const nativeAudioBridgeFactory = (
-            vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory
-        );
+        const nativeAudioBridgeFactory = (vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory);
         const harness = createControllerHarness(false, { nativeAudioBridgeFactory });
         const playOptions: CustomPlaybackPlayOptions = {
             ...createPlayOptions(0),
@@ -1123,20 +1099,16 @@ describe('CustomPlaybackController', () => {
             generation,
             status: 'started'
         });
-        expect(harness.videoDecodeSession.setNativeAudioVolume)
-            .toHaveBeenLastCalledWith(1);
-        expect(harness.videoDecodeSession.setNativeAudioMuted)
-            .toHaveBeenLastCalledWith(false);
-        expect(harness.videoDecodeSession.setNativeAudioPlaying)
-            .toHaveBeenLastCalledWith(true);
+        expect(harness.videoDecodeSession.setNativeAudioVolume).toHaveBeenLastCalledWith(1);
+        expect(harness.videoDecodeSession.setNativeAudioMuted).toHaveBeenLastCalledWith(false);
+        expect(harness.videoDecodeSession.setNativeAudioPlaying).toHaveBeenLastCalledWith(true);
         expect(harness.controller.canSetAudioStreamIndex()).toBe(true);
 
         harness.setMonotonicTime(secondsToMicroseconds(10.25));
         expect(harness.controller.currentTimeMicroseconds).toBe(5_250_000);
         harness.videoDecodeSession.setNativeAudioTimeMicroseconds(secondsToMicroseconds(6));
         expect(harness.controller.currentTimeMicroseconds).toBe(6_000_000);
-        expect(harness.controller.getTelemetry().clock.mediaTimeMicroseconds)
-            .toBe(6_000_000);
+        expect(harness.controller.getTelemetry().clock.mediaTimeMicroseconds).toBe(6_000_000);
 
         harness.videoDecodeSession.setNativeAudioTimeMicroseconds(null);
         harness.setMonotonicTime(secondsToMicroseconds(10.5));
@@ -1145,25 +1117,18 @@ describe('CustomPlaybackController', () => {
         harness.controller.setNormalizationGain(2);
         harness.controller.setVolume(0.4);
         harness.controller.setMuted(true);
-        expect(harness.videoDecodeSession.setNativeAudioVolume)
-            .toHaveBeenLastCalledWith(0.8);
-        expect(harness.videoDecodeSession.setNativeAudioMuted)
-            .toHaveBeenLastCalledWith(true);
+        expect(harness.videoDecodeSession.setNativeAudioVolume).toHaveBeenLastCalledWith(0.8);
+        expect(harness.videoDecodeSession.setNativeAudioMuted).toHaveBeenLastCalledWith(true);
 
         harness.controller.setNormalizationGain(4);
-        expect(harness.videoDecodeSession.setNativeAudioVolume)
-            .toHaveBeenLastCalledWith(1);
+        expect(harness.videoDecodeSession.setNativeAudioVolume).toHaveBeenLastCalledWith(1);
 
         harness.controller.pause();
-        expect(harness.videoDecodeSession.setNativeAudioPlaying)
-            .toHaveBeenLastCalledWith(false);
+        expect(harness.videoDecodeSession.setNativeAudioPlaying).toHaveBeenLastCalledWith(false);
         harness.controller.resume();
-        expect(harness.videoDecodeSession.setNativeAudioPlaying)
-            .toHaveBeenLastCalledWith(true);
+        expect(harness.videoDecodeSession.setNativeAudioPlaying).toHaveBeenLastCalledWith(true);
 
-        harness.videoDecodeSession.setNativeAudioTimeMicroseconds(
-            secondsToMicroseconds(120)
-        );
+        harness.videoDecodeSession.setNativeAudioTimeMicroseconds(secondsToMicroseconds(120));
         harness.videoDecodeSession.emit({ generation, type: 'ended' });
         expect(harness.controller.playbackState).toBe('ended');
         expect(harness.events.filter(event => event.type === 'ended')).toHaveLength(1);
@@ -1171,9 +1136,7 @@ describe('CustomPlaybackController', () => {
     });
 
     it('runs the clock on once native audio played out a track that ended before video', async () => {
-        const nativeAudioBridgeFactory = (
-            vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory
-        );
+        const nativeAudioBridgeFactory = (vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory);
         const harness = createControllerHarness(false, { nativeAudioBridgeFactory });
         const startPromise = harness.controller.play({
             ...createPlayOptions(0),
@@ -1226,9 +1189,7 @@ describe('CustomPlaybackController', () => {
     });
 
     it('falls back in the same session when owned native audio play is rejected', async () => {
-        const nativeAudioBridgeFactory = (
-            vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory
-        );
+        const nativeAudioBridgeFactory = (vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory);
         const harness = createControllerHarness(false, { nativeAudioBridgeFactory });
         const startPromise = harness.controller.play({
             ...createPlayOptions(0),
@@ -1296,27 +1257,15 @@ describe('CustomPlaybackController', () => {
         await startReadyPlayback(harness, true);
 
         harness.setMonotonicTime(secondsToMicroseconds(10.1));
-        harness.audioOutput?.emitTelemetry(
-            secondsToMicroseconds(5.08),
-            undefined,
-            { reason: 'underflow' }
-        );
+        harness.audioOutput?.emitTelemetry(secondsToMicroseconds(5.08), undefined, { reason: 'underflow' });
         expect(harness.controller.currentTimeMicroseconds).toBe(5_080_000);
         expect(harness.events.filter(event => event.type === 'waiting'
             && event.reason === 'audio-buffer')).toHaveLength(1);
 
         harness.setMonotonicTime(secondsToMicroseconds(12));
         expect(harness.controller.currentTimeMicroseconds).toBe(5_080_000);
-        harness.audioOutput?.emitTelemetry(
-            secondsToMicroseconds(9),
-            undefined,
-            { reason: 'periodic' }
-        );
-        harness.audioOutput?.emitTelemetry(
-            secondsToMicroseconds(9),
-            undefined,
-            { reason: 'underflow' }
-        );
+        harness.audioOutput?.emitTelemetry(secondsToMicroseconds(9), undefined, { reason: 'periodic' });
+        harness.audioOutput?.emitTelemetry(secondsToMicroseconds(9), undefined, { reason: 'underflow' });
         expect(harness.controller.currentTimeMicroseconds).toBe(5_080_000);
         expect(harness.events.filter(event => event.type === 'waiting'
             && event.reason === 'audio-buffer')).toHaveLength(1);
@@ -1370,11 +1319,7 @@ describe('CustomPlaybackController', () => {
         const harness = createControllerHarness(true);
         await startReadyPlayback(harness, true);
         harness.setMonotonicTime(secondsToMicroseconds(10.1));
-        harness.audioOutput?.emitTelemetry(
-            secondsToMicroseconds(5.08),
-            undefined,
-            { reason: 'underflow' }
-        );
+        harness.audioOutput?.emitTelemetry(secondsToMicroseconds(5.08), undefined, { reason: 'underflow' });
         harness.setMonotonicTime(secondsToMicroseconds(20.1));
 
         expect(harness.controller.takeCurrentFrame()).toBeNull();
@@ -1619,11 +1564,7 @@ describe('CustomPlaybackController', () => {
             generation,
             type: 'ready'
         });
-        const staleVideoFrame = emitControllerDecodedFrame(
-            worker,
-            generation,
-            secondsToMicroseconds(5)
-        );
+        const staleVideoFrame = emitControllerDecodedFrame(worker, generation, secondsToMicroseconds(5));
         await expect(startPromise).resolves.toMatchObject({ generation, status: 'started' });
 
         monotonicTimeMicroseconds = secondsToMicroseconds(13);
@@ -1641,11 +1582,7 @@ describe('CustomPlaybackController', () => {
         });
         expect(worker.postedMessages).toHaveLength(2);
 
-        const currentVideoFrame = emitControllerDecodedFrame(
-            worker,
-            generation,
-            secondsToMicroseconds(8)
-        );
+        const currentVideoFrame = emitControllerDecodedFrame(worker, generation, secondsToMicroseconds(8));
         const currentPresentationFrame = controller.takeCurrentFrame();
         expect(currentPresentationFrame?.frame).toBe(currentVideoFrame);
         expect(decodeSession.getTelemetry().pendingFrameCount).toBe(1);
@@ -1780,9 +1717,7 @@ describe('CustomPlaybackController', () => {
 
         expect(harness.controller.playbackState).toBe('paused');
         harness.controller.resume();
-        const initialTimeUpdateCount = harness.events.filter(
-            event => event.type === 'timeupdate'
-        ).length;
+        const initialTimeUpdateCount = harness.events.filter(event => event.type === 'timeupdate').length;
         expect(harness.controller.takeCurrentFrame()).toBeNull();
         expect(harness.controller.takeCurrentFrame()).toBeNull();
         harness.setMonotonicTime(millisecondsToMicroseconds(10_099));
@@ -1793,14 +1728,10 @@ describe('CustomPlaybackController', () => {
         expect(harness.controller.takeCurrentFrame()).toBeNull();
         expect(harness.events.filter(event => event.type === 'waiting'
             && event.reason === 'video-frame')).toHaveLength(1);
-        expect(harness.events.filter(event => event.type === 'timeupdate')).toHaveLength(
-            initialTimeUpdateCount
-        );
+        expect(harness.events.filter(event => event.type === 'timeupdate')).toHaveLength(initialTimeUpdateCount);
         harness.setMonotonicTime(secondsToMicroseconds(10.25));
         expect(harness.controller.takeCurrentFrame()).toBeNull();
-        expect(harness.events.filter(event => event.type === 'timeupdate')).toHaveLength(
-            initialTimeUpdateCount + 1
-        );
+        expect(harness.events.filter(event => event.type === 'timeupdate')).toHaveLength(initialTimeUpdateCount + 1);
         expect(harness.events.filter(event => event.type === 'waiting'
             && event.reason === 'video-frame')).toHaveLength(1);
 
@@ -1946,9 +1877,7 @@ describe('CustomPlaybackController', () => {
         harness.videoDecodeSession.queueFrame(firstFrame);
         harness.videoDecodeSession.queueFrame(finalFrame);
         harness.audioBridge.setPendingFrameCount(2_048);
-        harness.audioBridge.setSubmittedEndMediaTimeMicroseconds(
-            secondsToMicroseconds(5.08)
-        );
+        harness.audioBridge.setSubmittedEndMediaTimeMicroseconds(secondsToMicroseconds(5.08));
 
         harness.videoDecodeSession.emit({ generation, type: 'ended' });
 
@@ -1966,11 +1895,7 @@ describe('CustomPlaybackController', () => {
         expect(harness.controller.playbackState).toBe('playing');
 
         harness.audioBridge.setPendingFrameCount(0);
-        harness.audioOutput?.emitTelemetry(
-            secondsToMicroseconds(5.08),
-            undefined,
-            { queuedFrames: 0 }
-        );
+        harness.audioOutput?.emitTelemetry(secondsToMicroseconds(5.08), undefined, { queuedFrames: 0 });
         expect(harness.controller.playbackState).toBe('ended');
         expect(harness.events.filter(event => event.type === 'ended')).toEqual([
             { generation, type: 'ended' }
@@ -1989,9 +1914,7 @@ describe('CustomPlaybackController', () => {
         harness.videoDecodeSession.queueFrame(finalFrame);
         expect(harness.controller.takeCurrentFrame()).toBe(finalFrame);
         expect(harness.controller.notifyFramePresented(finalFrame)).toBe(true);
-        harness.audioBridge.setSubmittedEndMediaTimeMicroseconds(
-            secondsToMicroseconds(5.12)
-        );
+        harness.audioBridge.setSubmittedEndMediaTimeMicroseconds(secondsToMicroseconds(5.12));
 
         harness.audioOutput?.emitTelemetry(
             secondsToMicroseconds(5.04),
@@ -2010,17 +1933,9 @@ describe('CustomPlaybackController', () => {
         expect(harness.controller.playbackState).toBe('playing');
         expect(harness.fallbackRequests).toHaveLength(0);
 
-        harness.audioOutput?.emitTelemetry(
-            requireMicroseconds(5_119_999),
-            undefined,
-            { queuedFrames: 0 }
-        );
+        harness.audioOutput?.emitTelemetry(requireMicroseconds(5_119_999), undefined, { queuedFrames: 0 });
         expect(harness.controller.playbackState).toBe('playing');
-        harness.audioOutput?.emitTelemetry(
-            secondsToMicroseconds(5.12),
-            undefined,
-            { queuedFrames: 0 }
-        );
+        harness.audioOutput?.emitTelemetry(secondsToMicroseconds(5.12), undefined, { queuedFrames: 0 });
 
         expect(harness.controller.playbackState).toBe('ended');
         expect(harness.events.filter(event => event.type === 'ended')).toEqual([ {
@@ -2033,14 +1948,9 @@ describe('CustomPlaybackController', () => {
     it('continues the presentation clock through a video tail after physical audio drains', async () => {
         const harness = createControllerHarness(true);
         const generation = await startReadyPlayback(harness, true);
-        const finalFrame = createDecodedFrame(
-            secondsToMicroseconds(5.12),
-            millisecondsToMicroseconds(40)
-        );
+        const finalFrame = createDecodedFrame(secondsToMicroseconds(5.12), millisecondsToMicroseconds(40));
         harness.videoDecodeSession.queueFrame(finalFrame);
-        harness.audioBridge.setSubmittedEndMediaTimeMicroseconds(
-            secondsToMicroseconds(5.08)
-        );
+        harness.audioBridge.setSubmittedEndMediaTimeMicroseconds(secondsToMicroseconds(5.08));
         harness.videoDecodeSession.emit({ generation, type: 'ended' });
 
         harness.audioOutput?.emitTelemetry(
@@ -2048,11 +1958,7 @@ describe('CustomPlaybackController', () => {
             undefined,
             { queuedFrames: 0, reason: 'underflow' }
         );
-        harness.audioOutput?.emitTelemetry(
-            secondsToMicroseconds(5.08),
-            undefined,
-            { queuedFrames: 0 }
-        );
+        harness.audioOutput?.emitTelemetry(secondsToMicroseconds(5.08), undefined, { queuedFrames: 0 });
         expect(harness.controller.playbackState).toBe('playing');
 
         harness.setMonotonicTime(millisecondsToMicroseconds(10_030));
@@ -2081,12 +1987,8 @@ describe('CustomPlaybackController', () => {
         harness.videoDecodeSession.queueFrame(finalFrame);
         expect(harness.controller.takeCurrentFrame()).toBe(finalFrame);
         expect(harness.controller.notifyFramePresented(finalFrame)).toBe(true);
-        harness.audioBridge.setSubmittedEndMediaTimeMicroseconds(
-            secondsToMicroseconds(5.08)
-        );
-        harness.audioOutput?.setEstimatedOutputLatencyMicroseconds(
-            millisecondsToMicroseconds(50)
-        );
+        harness.audioBridge.setSubmittedEndMediaTimeMicroseconds(secondsToMicroseconds(5.08));
+        harness.audioOutput?.setEstimatedOutputLatencyMicroseconds(millisecondsToMicroseconds(50));
         harness.videoDecodeSession.emit({ generation, type: 'ended' });
         harness.audioOutput?.emitTelemetry(
             secondsToMicroseconds(5.08),
@@ -2120,9 +2022,7 @@ describe('CustomPlaybackController', () => {
 
         expect(harness.controller.takeCurrentFrame()).toBe(finalFrame);
         expect(harness.controller.playbackState).toBe('playing');
-        expect(harness.controller.notifyFramePresented(
-            createDecodedFrame(secondsToMicroseconds(5))
-        )).toBe(false);
+        expect(harness.controller.notifyFramePresented(createDecodedFrame(secondsToMicroseconds(5)))).toBe(false);
         expect(harness.controller.playbackState).toBe('playing');
 
         expect(harness.controller.notifyFramePresented(finalFrame)).toBe(true);
@@ -2172,10 +2072,7 @@ describe('CustomPlaybackController', () => {
     }) => {
         const harness = createControllerHarness(false);
         const generation = await startReadyPlayback(harness, false);
-        const finalFrame = createDecodedFrame(
-            secondsToMicroseconds(5),
-            durationMicroseconds
-        );
+        const finalFrame = createDecodedFrame(secondsToMicroseconds(5), durationMicroseconds);
         harness.videoDecodeSession.queueFrame(finalFrame);
         harness.videoDecodeSession.emit({ generation, type: 'ended' });
 
@@ -2190,10 +2087,7 @@ describe('CustomPlaybackController', () => {
         expect(harness.controller.takeCurrentFrame()).toBeNull();
         expect(harness.controller.playbackState).toBe('playing');
 
-        harness.setMonotonicTime(addMicroseconds(
-            secondsToMicroseconds(10),
-            durationMicroseconds
-        ));
+        harness.setMonotonicTime(addMicroseconds(secondsToMicroseconds(10), durationMicroseconds));
         expect(harness.controller.takeCurrentFrame()).toBeNull();
         expect(harness.controller.playbackState).toBe('ended');
     });
@@ -2201,10 +2095,7 @@ describe('CustomPlaybackController', () => {
     it('does not invent a hold duration for a zero-duration final frame', async () => {
         const harness = createControllerHarness(false);
         const generation = await startReadyPlayback(harness, false);
-        const finalFrame = createDecodedFrame(
-            secondsToMicroseconds(5),
-            secondsToMicroseconds(0)
-        );
+        const finalFrame = createDecodedFrame(secondsToMicroseconds(5), secondsToMicroseconds(0));
         harness.videoDecodeSession.queueFrame(finalFrame);
         harness.videoDecodeSession.emit({ generation, type: 'ended' });
 
@@ -2282,11 +2173,7 @@ describe('CustomPlaybackController', () => {
         harness.videoDecodeSession.queueFrame(staleFinalFrame);
         harness.videoDecodeSession.emit({ generation, type: 'ended' });
         expect(harness.controller.takeCurrentFrame()).toBe(staleFinalFrame);
-        harness.audioOutput?.emitTelemetry(
-            secondsToMicroseconds(5),
-            undefined,
-            { reason: 'underflow' }
-        );
+        harness.audioOutput?.emitTelemetry(secondsToMicroseconds(5), undefined, { reason: 'underflow' });
 
         expect(harness.controller.setPlaybackRate(2)).toBe(false);
         expect(harness.controller.notifyFramePresented(staleFinalFrame)).toBe(false);
@@ -2338,9 +2225,7 @@ describe('CustomPlaybackController', () => {
             throw new Error('Expected an audio output');
         }
         const delayedAudioSuspension = createDeferred<void>();
-        harness.audioOutput.setPlaying.mockImplementationOnce(
-            (): Promise<void> => delayedAudioSuspension.promise
-        );
+        harness.audioOutput.setPlaying.mockImplementationOnce((): Promise<void> => delayedAudioSuspension.promise);
 
         const firstSeek = harness.controller.seek(secondsToMicroseconds(10));
         const secondSeek = harness.controller.seek(secondsToMicroseconds(20));
@@ -2349,8 +2234,7 @@ describe('CustomPlaybackController', () => {
         if (!latestGeneration) {
             throw new Error('Latest seek generation did not start');
         }
-        expect(harness.videoDecodeSession.starts.at(-1)?.startTimeMicroseconds)
-            .toBe(secondsToMicroseconds(20));
+        expect(harness.videoDecodeSession.starts.at(-1)?.startTimeMicroseconds).toBe(secondsToMicroseconds(20));
         const stopCallCount = harness.videoDecodeSession.stop.mock.calls.length;
 
         delayedAudioSuspension.resolve(undefined);
@@ -2428,9 +2312,7 @@ describe('CustomPlaybackController', () => {
     });
 
     it('switches between decoded PCM and owned native media audio routes', async () => {
-        const nativeAudioBridgeFactory = (
-            vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory
-        );
+        const nativeAudioBridgeFactory = (vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory);
         const harness = createControllerHarness(true, { nativeAudioBridgeFactory });
         const firstGeneration = await startReadyPlayback(harness, true);
         harness.audioOutput?.emitTelemetry(secondsToMicroseconds(33));
@@ -2900,9 +2782,7 @@ describe('CustomPlaybackController', () => {
         outputDestroyed.reject(new Error('AudioContext close failed'));
 
         await expect(destroyPromise).resolves.toBeUndefined();
-        expect(harness.controller.getTelemetry().lastErrorMessage).toContain(
-            'AudioContext close failed'
-        );
+        expect(harness.controller.getTelemetry().lastErrorMessage).toContain('AudioContext close failed');
     });
 
     it('bounds stalled audio destruction', async () => {
@@ -2913,9 +2793,7 @@ describe('CustomPlaybackController', () => {
             if (!harness.audioOutput) {
                 throw new Error('Expected an audio output');
             }
-            harness.audioOutput.destroy.mockReturnValueOnce(
-                new Promise<void>(() => undefined)
-            );
+            harness.audioOutput.destroy.mockReturnValueOnce(new Promise<void>(() => undefined));
             const destroyPromise = harness.controller.destroy();
 
             await vi.advanceTimersByTimeAsync(100);
@@ -3111,9 +2989,7 @@ describe('CustomPlaybackController', () => {
         harness.setMonotonicTime(millisecondsToMicroseconds(10_500));
         harness.controller.drainBackgroundVideo();
 
-        expect(harness.videoDecodeSession.takeFrame).toHaveBeenCalledWith(
-            millisecondsToMicroseconds(5_500)
-        );
+        expect(harness.videoDecodeSession.takeFrame).toHaveBeenCalledWith(millisecondsToMicroseconds(5_500));
         expect(harness.videoDecodeSession.discardFrame).toHaveBeenCalledWith(dueFrame);
         expect(dueFrame.frame.close).toHaveBeenCalledOnce();
         expect(futureFrame.frame.close).not.toHaveBeenCalled();
@@ -3200,9 +3076,7 @@ describe('CustomPlaybackController', () => {
         expect(harness.controller.setPageVisibility(true)).toBe(false);
 
         expect(harness.videoDecodeSession.resyncVideo).toHaveBeenCalledOnce();
-        expect(harness.videoDecodeSession.resyncVideo).toHaveBeenCalledWith(
-            secondsToMicroseconds(65)
-        );
+        expect(harness.videoDecodeSession.resyncVideo).toHaveBeenCalledWith(secondsToMicroseconds(65));
         // Audio and the clock continue; only video restarts
         expect(harness.videoDecodeSession.stop).toHaveBeenCalledTimes(stopCallCount);
         expect(harness.videoDecodeSession.starts).toHaveLength(1);
@@ -3246,9 +3120,7 @@ describe('CustomPlaybackController', () => {
 
         expect(harness.videoDecodeSession.suspendVideo).not.toHaveBeenCalled();
         expect(harness.videoDecodeSession.resyncVideo).toHaveBeenCalledOnce();
-        expect(harness.videoDecodeSession.resyncVideo).toHaveBeenCalledWith(
-            secondsToMicroseconds(9)
-        );
+        expect(harness.videoDecodeSession.resyncVideo).toHaveBeenCalledWith(secondsToMicroseconds(9));
         expect(harness.controller.getTelemetry()).toMatchObject({
             pageHidden: false,
             videoResyncPending: true,
@@ -3260,9 +3132,7 @@ describe('CustomPlaybackController', () => {
         const harness = createControllerHarness(true);
         await startReadyPlayback(harness, true);
         harness.controller.setPageVisibility(false);
-        harness.videoDecodeSession.queueFrame(
-            createDecodedFrame(millisecondsToMicroseconds(8_960))
-        );
+        harness.videoDecodeSession.queueFrame(createDecodedFrame(millisecondsToMicroseconds(8_960)));
         harness.setMonotonicTime(secondsToMicroseconds(14));
         harness.controller.drainBackgroundVideo();
 
@@ -3308,9 +3178,7 @@ describe('CustomPlaybackController', () => {
         const harness = createControllerHarness(true);
         await startReadyPlayback(harness, true);
         harness.controller.setPageVisibility(false);
-        harness.videoDecodeSession.queueFrame(
-            createDecodedFrame(millisecondsToMicroseconds(5_500))
-        );
+        harness.videoDecodeSession.queueFrame(createDecodedFrame(millisecondsToMicroseconds(5_500)));
         harness.setMonotonicTime(millisecondsToMicroseconds(10_500));
         harness.controller.drainBackgroundVideo();
         harness.setMonotonicTime(secondsToMicroseconds(11));
@@ -3361,9 +3229,7 @@ describe('CustomPlaybackController', () => {
         });
 
         expect(harness.videoDecodeSession.resyncVideo).toHaveBeenCalledOnce();
-        expect(harness.videoDecodeSession.resyncVideo).toHaveBeenCalledWith(
-            secondsToMicroseconds(7)
-        );
+        expect(harness.videoDecodeSession.resyncVideo).toHaveBeenCalledWith(secondsToMicroseconds(7));
         expect(harness.controller.getTelemetry()).toMatchObject({
             pageHidden: !visible,
             videoResyncPending: true,
@@ -3396,9 +3262,7 @@ describe('CustomPlaybackController', () => {
         harness.setMonotonicTime(secondsToMicroseconds(15));
         expect(harness.controller.setPageVisibility(true)).toBe(true);
         expect(harness.videoDecodeSession.resyncVideo).toHaveBeenCalledOnce();
-        expect(harness.videoDecodeSession.resyncVideo).toHaveBeenCalledWith(
-            secondsToMicroseconds(10)
-        );
+        expect(harness.videoDecodeSession.resyncVideo).toHaveBeenCalledWith(secondsToMicroseconds(10));
         expect(harness.controller.getTelemetry()).toMatchObject({
             pageHidden: false,
             videoResyncPending: true,
@@ -3488,9 +3352,7 @@ describe('CustomPlaybackController', () => {
         const eventCount = harness.events.length;
         expect(harness.controller.takeCurrentFrame()).toBeNull();
 
-        expect(harness.events.slice(eventCount)).toContainEqual(
-            expect.objectContaining({ type: 'playing' })
-        );
+        expect(harness.events.slice(eventCount)).toContainEqual(expect.objectContaining({ type: 'playing' }));
         harness.setMonotonicTime(secondsToMicroseconds(30));
         expect(harness.controller.takeCurrentFrame()).toBeNull();
         expect(harness.controller.playbackState).toBe('playing');
@@ -3517,18 +3379,10 @@ describe('CustomPlaybackController', () => {
         expect(harness.controller.currentTimeMicroseconds).toBe(5_100_000);
 
         // Physical output reaching the tail releases the clock from audio
-        harness.audioOutput?.emitTelemetry(
-            secondsToMicroseconds(5.12),
-            undefined,
-            { queuedFrames: 0 }
-        );
+        harness.audioOutput?.emitTelemetry(secondsToMicroseconds(5.12), undefined, { queuedFrames: 0 });
         expect(harness.controller.currentTimeMicroseconds).toBe(5_120_000);
         harness.setMonotonicTime(millisecondsToMicroseconds(11_060));
-        harness.audioOutput?.emitTelemetry(
-            secondsToMicroseconds(5.12),
-            undefined,
-            { queuedFrames: 0 }
-        );
+        harness.audioOutput?.emitTelemetry(secondsToMicroseconds(5.12), undefined, { queuedFrames: 0 });
         expect(harness.controller.currentTimeMicroseconds).toBe(6_120_000);
 
         // Video keeps presenting against the clock well past the stall timeout
@@ -3603,9 +3457,7 @@ describe('CustomPlaybackController', () => {
 
         // Only video can reach the end of the stream now
         expect(harness.videoDecodeSession.resyncVideo).toHaveBeenCalledOnce();
-        expect(harness.videoDecodeSession.resyncVideo).toHaveBeenCalledWith(
-            secondsToMicroseconds(25)
-        );
+        expect(harness.videoDecodeSession.resyncVideo).toHaveBeenCalledWith(secondsToMicroseconds(25));
         expect(harness.controller.getTelemetry()).toMatchObject({
             pageHidden: true,
             videoResyncPending: true,
@@ -3706,17 +3558,13 @@ describe('CustomPlaybackController', () => {
         );
 
         // The end of stream drain would clear the wait and report playing
-        expect(harness.events.slice(eventCount)).not.toContainEqual(
-            expect.objectContaining({ type: 'playing' })
-        );
+        expect(harness.events.slice(eventCount)).not.toContainEqual(expect.objectContaining({ type: 'playing' }));
         harness.setMonotonicTime(millisecondsToMicroseconds(10_300));
         expect(harness.controller.currentTimeMicroseconds).toBe(millisecondsToMicroseconds(5_100));
         const frame = createDecodedFrame(millisecondsToMicroseconds(5_120));
         harness.videoDecodeSession.queueFrame(frame);
         expect(harness.controller.takeCurrentFrame()).toBe(frame);
-        expect(harness.events.slice(eventCount)).toContainEqual(
-            expect.objectContaining({ type: 'playing' })
-        );
+        expect(harness.events.slice(eventCount)).toContainEqual(expect.objectContaining({ type: 'playing' }));
         expect(harness.controller.currentTimeMicroseconds).toBe(millisecondsToMicroseconds(5_120));
     });
 
@@ -3764,9 +3612,7 @@ describe('CustomPlaybackController', () => {
 
         harness.videoDecodeSession.endAudioTrack();
 
-        expect(harness.events.slice(eventCount)).toContainEqual(
-            expect.objectContaining({ type: 'playing' })
-        );
+        expect(harness.events.slice(eventCount)).toContainEqual(expect.objectContaining({ type: 'playing' }));
         harness.setMonotonicTime(secondsToMicroseconds(11));
         expect(harness.controller.currentTimeMicroseconds).toBe(millisecondsToMicroseconds(6_040));
     });
@@ -3816,9 +3662,7 @@ type OutputRebuildRace = {
 async function seekDuringOutputRebuild(harness: ControllerHarness): Promise<OutputRebuildRace> {
     const audioOutput = requireAudioOutput(harness);
     const rebuild = createDeferred<CustomDecodeAudioBridge>();
-    audioOutput.reconfigure.mockImplementationOnce(
-        (): Promise<CustomDecodeAudioBridge> => rebuild.promise
-    );
+    audioOutput.reconfigure.mockImplementationOnce((): Promise<CustomDecodeAudioBridge> => rebuild.promise);
     const switchPromise = harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS);
     await flushAsyncWork();
     expect(audioOutput.reconfigure).toHaveBeenCalledOnce();
@@ -3901,8 +3745,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         const harness = createControllerHarness(true);
         const audioOutput = requireAudioOutput(harness);
 
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(false);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(false);
 
         const startPromise = harness.controller.play(createPlayOptions(1));
         await flushAsyncWork();
@@ -3915,8 +3758,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         audioOutput.setPlaying.mockClear();
         expect(harness.controller.playbackState).toBe('starting');
 
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(false);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(false);
 
         expect(audioOutput.setPlaying).not.toHaveBeenCalled();
         expect(audioOutput.reconfigure).not.toHaveBeenCalled();
@@ -3937,9 +3779,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
                 if (event.type === 'statechange'
                     && event.state === 'playing'
                     && playbackController) {
-                    declinedSwitches.push(
-                        playbackController.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)
-                    );
+                    declinedSwitches.push(playbackController.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS));
                 }
             }
         });
@@ -3960,24 +3800,17 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
 
     it('declines a live switch once playback ended or fell back', async () => {
         const harness = createControllerHarness(true);
-        const generation = await startReadyPlayback(
-            harness,
-            true,
-            {},
-            FIVE_POINT_ONE_DOWNMIX_CONFIGURATION
-        );
+        const generation = await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
         // A drained output lets the end of the stream finish playback at once
         audioOutput.emitTelemetry(secondsToMicroseconds(5), undefined, { queuedFrames: 0 });
         harness.videoDecodeSession.emit({ generation, type: 'ended' });
         expect(harness.controller.playbackState).toBe('ended');
 
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(false);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(false);
         expect(harness.controller.setPlaybackRate(2)).toBe(false);
         expect(harness.controller.playbackState).toBe('fallback');
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(false);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(false);
 
         expect(audioOutput.reconfigure).not.toHaveBeenCalled();
         expect(harness.videoDecodeSession.resyncAudio).not.toHaveBeenCalled();
@@ -3986,9 +3819,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
     });
 
     it('declines a live switch for native media audio or a source without audio', async () => {
-        const nativeAudioBridgeFactory = (
-            vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory
-        );
+        const nativeAudioBridgeFactory = (vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory);
         const harness = createControllerHarness(true, { nativeAudioBridgeFactory });
         await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
@@ -4013,8 +3844,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
             type: 'ready'
         });
         await expect(nativeSwitchPromise).resolves.toMatchObject({ status: 'started' });
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(false);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(false);
 
         const videoOnlyPromise = harness.controller.play(createPlayOptions());
         await flushAsyncWork();
@@ -4029,8 +3859,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
             type: 'ready'
         });
         await expect(videoOnlyPromise).resolves.toMatchObject({ status: 'started' });
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(false);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(false);
 
         expect(audioOutput.reconfigure).not.toHaveBeenCalled();
         expect(harness.videoDecodeSession.resyncAudio).not.toHaveBeenCalled();
@@ -4060,8 +3889,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         removeCapability(harness);
         audioOutput.setPlaying.mockClear();
 
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(false);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(false);
 
         expect(audioOutput.setPlaying).not.toHaveBeenCalled();
         expect(reconfigure).not.toHaveBeenCalled();
@@ -4086,8 +3914,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         })).resolves.toBe(true);
 
         expect(harness.videoDecodeSession.updateAudioDownmixSettings).toHaveBeenCalledOnce();
-        expect(harness.videoDecodeSession.updateAudioDownmixSettings)
-            .toHaveBeenCalledWith(LIVE_DOWNMIX_SETTINGS);
+        expect(harness.videoDecodeSession.updateAudioDownmixSettings).toHaveBeenCalledWith(LIVE_DOWNMIX_SETTINGS);
         expect(harness.videoDecodeSession.resyncAudio).not.toHaveBeenCalled();
         expect(audioOutput.reconfigure).not.toHaveBeenCalled();
         expect(audioOutput.setPlaying).not.toHaveBeenCalled();
@@ -4193,12 +4020,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
 
     it('switches a playing layout live and adopts the rebuilt binding', async () => {
         const harness = createControllerHarness(true);
-        const generation = await startReadyPlayback(
-            harness,
-            true,
-            {},
-            FIVE_POINT_ONE_DOWNMIX_CONFIGURATION
-        );
+        const generation = await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
         harness.setMonotonicTime(secondsToMicroseconds(12));
         audioOutput.setPlaying.mockClear();
@@ -4296,8 +4118,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         // Playback started at 5 seconds of media and 10 seconds of monotonic time
         harness.setMonotonicTime(addMicroseconds(mediaTimeMicroseconds, secondsToMicroseconds(5)));
 
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(true);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(true);
 
         expect(harness.videoDecodeSession.resyncAudio).toHaveBeenCalledWith(
             expect.objectContaining({ targetTimeMicroseconds: expectedTargetMicroseconds })
@@ -4307,16 +4128,10 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
 
     it('neither synchronizes nor starves the clock from audio while a switch is pending', async () => {
         const harness = createControllerHarness(true);
-        const generation = await startReadyPlayback(
-            harness,
-            true,
-            {},
-            FIVE_POINT_ONE_DOWNMIX_CONFIGURATION
-        );
+        const generation = await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
         harness.setMonotonicTime(secondsToMicroseconds(12));
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(true);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(true);
         // The rebuilt stage reports the active generation as an established output does
         audioOutput.reconfiguredBridges[0].activate(generation, audioOutput.generation);
         const waitingEventCount = harness.events.filter(event => event.type === 'waiting').length;
@@ -4327,8 +4142,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
 
         expect(harness.controller.currentTimeMicroseconds).toBe(millisecondsToMicroseconds(7_100));
         expect(harness.controller.getTelemetry().clock.paused).toBe(false);
-        expect(harness.events.filter(event => event.type === 'waiting'))
-            .toHaveLength(waitingEventCount);
+        expect(harness.events.filter(event => event.type === 'waiting')).toHaveLength(waitingEventCount);
 
         // The clock is 150 milliseconds short of the 7.25-second target
         harness.videoDecodeSession.completeAudioResync();
@@ -4345,8 +4159,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
         harness.setMonotonicTime(secondsToMicroseconds(12));
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(true);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(true);
         audioOutput.setPlaying.mockClear();
 
         harness.controller.pause();
@@ -4365,16 +4178,10 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
 
     it('starts the switched output once the clock reaches the switch target', async () => {
         const harness = createControllerHarness(true);
-        const generation = await startReadyPlayback(
-            harness,
-            true,
-            {},
-            FIVE_POINT_ONE_DOWNMIX_CONFIGURATION
-        );
+        const generation = await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
         harness.setMonotonicTime(secondsToMicroseconds(12));
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(true);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(true);
         audioOutput.setPlaying.mockClear();
 
         // A report for an earlier audio epoch does not complete this switch
@@ -4408,8 +4215,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
         harness.setMonotonicTime(secondsToMicroseconds(12));
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(true);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(true);
         audioOutput.setPlaying.mockClear();
 
         harness.setMonotonicTime(millisecondsToMicroseconds(12_250));
@@ -4436,8 +4242,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         harness.setMonotonicTime(secondsToMicroseconds(12));
         audioOutput.setPlaying.mockClear();
 
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(true);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(true);
 
         expect(harness.controller.getTelemetry().audioOutputSwitchPending).toBe(true);
         await vi.advanceTimersByTimeAsync(AUDIO_OUTPUT_SWITCH_LEAD_MILLISECONDS);
@@ -4493,8 +4298,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
         harness.setMonotonicTime(secondsToMicroseconds(12));
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(true);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(true);
         // The audio fills 150 milliseconds short of the 7.25-second target
         harness.setMonotonicTime(millisecondsToMicroseconds(12_100));
         harness.videoDecodeSession.completeAudioResync();
@@ -4525,8 +4329,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
         harness.setMonotonicTime(secondsToMicroseconds(12));
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(true);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(true);
         // Paused 150 milliseconds short of the 7.25-second target
         harness.setMonotonicTime(millisecondsToMicroseconds(12_100));
         harness.controller.pause();
@@ -4548,12 +4351,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
 
     it('resumes a clock starved by the retired output once the switched audio fills', async () => {
         const harness = createControllerHarness(true);
-        const generation = await startReadyPlayback(
-            harness,
-            true,
-            {},
-            FIVE_POINT_ONE_DOWNMIX_CONFIGURATION
-        );
+        const generation = await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
         harness.setMonotonicTime(secondsToMicroseconds(12));
         // The previous output runs dry at 7 seconds, so the clock waits for audio
@@ -4562,8 +4360,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         harness.setMonotonicTime(secondsToMicroseconds(13));
         audioOutput.setPlaying.mockClear();
 
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(true);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(true);
 
         // The waiting clock takes no lead because it resumes with the new audio
         expect(harness.videoDecodeSession.resyncAudio).toHaveBeenCalledWith(
@@ -4573,8 +4370,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         harness.videoDecodeSession.completeAudioResync();
 
         expect(audioOutput.setPlaying.mock.calls).toEqual([ [ false ], [ true ] ]);
-        expect(harness.events.filter(event => event.type === 'playing'))
-            .toHaveLength(playingEventCount + 1);
+        expect(harness.events.filter(event => event.type === 'playing')).toHaveLength(playingEventCount + 1);
         expect(harness.controller.getTelemetry()).toMatchObject({
             audioOutputSwitchPending: false,
             clock: { paused: false },
@@ -4596,9 +4392,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         harness.setMonotonicTime(secondsToMicroseconds(12));
 
         // The second request arrives before the first one rebuilds the output
-        const surroundSwitch = harness.controller.reconfigureAudioOutput(
-            FIVE_POINT_ONE_OUTPUT_OPTIONS
-        );
+        const surroundSwitch = harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS);
         const stereoSwitch = harness.controller.reconfigureAudioOutput({
             decodedAudioOutputChannelCount: 2
         });
@@ -4610,9 +4404,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
             expect.objectContaining({ decodedAudioOutputChannelCount: 2 })
         );
         expect(audioOutput.reconfigure).toHaveBeenCalledOnce();
-        expect(audioOutput.reconfigure).toHaveBeenCalledWith(
-            expect.objectContaining({ channelCount: 2 })
-        );
+        expect(audioOutput.reconfigure).toHaveBeenCalledWith(expect.objectContaining({ channelCount: 2 }));
         harness.videoDecodeSession.completeAudioResync();
         await vi.advanceTimersByTimeAsync(AUDIO_OUTPUT_SWITCH_LEAD_MILLISECONDS);
         expect(audioOutput.setPlaying).toHaveBeenLastCalledWith(true);
@@ -4634,8 +4426,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         );
         const audioOutput = requireAudioOutput(harness);
 
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(true);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(true);
 
         expect(harness.videoDecodeSession.resyncAudio).toHaveBeenCalledWith(
             expect.objectContaining({ decodedAudioOutputChannelCount: 6 })
@@ -4734,12 +4525,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
 
     it('switches the layout after the audio track ended without holding the clock', async () => {
         const harness = createControllerHarness(true);
-        const generation = await startReadyPlayback(
-            harness,
-            true,
-            {},
-            FIVE_POINT_ONE_DOWNMIX_CONFIGURATION
-        );
+        const generation = await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
         harness.audioBridge.setSubmittedEndMediaTimeMicroseconds(millisecondsToMicroseconds(5_040));
         harness.videoDecodeSession.endAudioTrack();
@@ -4750,8 +4536,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         );
         harness.setMonotonicTime(secondsToMicroseconds(12));
 
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(true);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(true);
         expect(harness.videoDecodeSession.resyncAudio).toHaveBeenCalledOnce();
         // The resynced epoch starts past the end of the track, so it ends at once
         harness.videoDecodeSession.completeAudioResync();
@@ -4780,8 +4565,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         const audioOutput = requireAudioOutput(harness);
         audioOutput.setPlaying.mockClear();
 
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(true);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(true);
 
         expect(harness.videoDecodeSession.resyncAudio).not.toHaveBeenCalled();
         expect(audioOutput.reconfigure).not.toHaveBeenCalled();
@@ -4877,8 +4661,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         harness.videoDecodeSession.resyncAudio.mockResolvedValueOnce(null);
         audioOutput.setPlaying.mockClear();
 
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(false);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(false);
 
         expect(audioOutput.setPlaying.mock.calls).toEqual([ [ false ] ]);
         expect(harness.controller.getTelemetry()).toMatchObject({
@@ -4892,20 +4675,14 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
 
     it('falls back in the same session when the audio resync rejects', async () => {
         const harness = createControllerHarness(true);
-        const generation = await startReadyPlayback(
-            harness,
-            true,
-            {},
-            FIVE_POINT_ONE_DOWNMIX_CONFIGURATION
-        );
+        const generation = await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
         harness.videoDecodeSession.resyncAudio.mockRejectedValueOnce(
             new Error('The decode worker rejected the audio resync')
         );
         audioOutput.setPlaying.mockClear();
 
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(false);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(false);
 
         expect(harness.fallbackRequests).toEqual([ {
             disposition: 'same-session-native',
@@ -4926,20 +4703,12 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
 
     it('falls back in the same session when the output cannot rebuild its layout', async () => {
         const harness = createControllerHarness(true);
-        const generation = await startReadyPlayback(
-            harness,
-            true,
-            {},
-            FIVE_POINT_ONE_DOWNMIX_CONFIGURATION
-        );
+        const generation = await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
-        audioOutput.reconfigure.mockRejectedValueOnce(
-            new Error('AudioWorklet output reconfiguration failed')
-        );
+        audioOutput.reconfigure.mockRejectedValueOnce(new Error('AudioWorklet output reconfiguration failed'));
         audioOutput.setPlaying.mockClear();
 
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(false);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(false);
 
         expect(audioOutput.reconfigure).toHaveBeenCalledOnce();
         expect(harness.fallbackRequests).toEqual([ expect.objectContaining({
@@ -4958,16 +4727,10 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
 
     it('falls back in the same session when the switched audio never fills', async () => {
         const harness = createControllerHarness(true);
-        const generation = await startReadyPlayback(
-            harness,
-            true,
-            {},
-            FIVE_POINT_ONE_DOWNMIX_CONFIGURATION
-        );
+        const generation = await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
         audioOutput.setPlaying.mockClear();
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(true);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(true);
 
         await vi.advanceTimersByTimeAsync(AUDIO_OUTPUT_SWITCH_TIMEOUT_MILLISECONDS - 1);
         expect(harness.fallbackRequests).toHaveLength(0);
@@ -5001,8 +4764,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
         harness.setMonotonicTime(secondsToMicroseconds(12));
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(true);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(true);
         // The new audio has filled and waits for its target
         harness.videoDecodeSession.completeAudioResync();
         audioOutput.setPlaying.mockClear();
@@ -5023,13 +4785,9 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
         const resync = createDeferred<number | null>();
-        harness.videoDecodeSession.resyncAudio.mockImplementationOnce(
-            (): Promise<number | null> => resync.promise
-        );
+        harness.videoDecodeSession.resyncAudio.mockImplementationOnce((): Promise<number | null> => resync.promise);
         audioOutput.setPlaying.mockClear();
-        const switchPromise = harness.controller.reconfigureAudioOutput(
-            FIVE_POINT_ONE_OUTPUT_OPTIONS
-        );
+        const switchPromise = harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS);
         await flushAsyncWork();
         expect(harness.videoDecodeSession.resyncAudio).toHaveBeenCalledOnce();
 
@@ -5046,15 +4804,9 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
 
     it('drops a pending switch when another failure falls back first', async () => {
         const harness = createControllerHarness(true);
-        const generation = await startReadyPlayback(
-            harness,
-            true,
-            {},
-            FIVE_POINT_ONE_DOWNMIX_CONFIGURATION
-        );
+        const generation = await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(true);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(true);
         audioOutput.setPlaying.mockClear();
 
         harness.videoDecodeSession.emit({
@@ -5081,16 +4833,10 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
 
     it('starts the switched output at once when the stream ends during the switch', async () => {
         const harness = createControllerHarness(true);
-        const generation = await startReadyPlayback(
-            harness,
-            true,
-            {},
-            FIVE_POINT_ONE_DOWNMIX_CONFIGURATION
-        );
+        const generation = await startReadyPlayback(harness, true, {}, FIVE_POINT_ONE_DOWNMIX_CONFIGURATION);
         const audioOutput = requireAudioOutput(harness);
         harness.setMonotonicTime(secondsToMicroseconds(12));
-        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS))
-            .resolves.toBe(true);
+        await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(true);
         audioOutput.setPlaying.mockClear();
 
         // A tail shorter than the resync fill minimum never reports audio-resynced
@@ -5171,8 +4917,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         // Without an active generation there is no playback to report a change for
         expect(harness.controller.setPlaybackRate(2)).toBe(false);
         audioOutput.emitOutputDeviceChange();
-        expect(harness.events.filter(event => event.type === 'audio-output-changed'))
-            .toHaveLength(2);
+        expect(harness.events.filter(event => event.type === 'audio-output-changed')).toHaveLength(2);
 
         await harness.controller.destroy();
         expect(audioOutput.outputDeviceListenerCount).toBe(0);
@@ -5181,16 +4926,12 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
     it('moves device change reporting to a replacement output', async () => {
         const audioOutputs: FakeAudioOutput[] = [];
         const harness = createControllerHarness(true, {
-            audioOutputFactory: (
-                configuration: DecodeWorkerAudioConfiguration
-            ): CustomAudioOutputBinding => {
+            audioOutputFactory: (configuration: DecodeWorkerAudioConfiguration): CustomAudioOutputBinding => {
                 const audioOutput = new FakeAudioOutput();
                 audioOutput.reportMaximumChannelCount(configuration.channelCount);
                 audioOutputs.push(audioOutput);
                 return {
-                    bridge: new FakeAudioBridge(
-                        audioOutput.generation
-                    ) as unknown as CustomDecodeAudioBridge,
+                    bridge: new FakeAudioBridge(audioOutput.generation) as unknown as CustomDecodeAudioBridge,
                     configuration: { ...configuration },
                     output: audioOutput
                 };

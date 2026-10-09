@@ -68,12 +68,9 @@ describe('NativeMediaAudioCapabilities', () => {
         const capabilities = await probeNativeMediaAudioCapabilities({
             exactPlaybackProbe: async probeInput => {
                 probeInputs.push(probeInput);
-                const supported = probeInput.codec === 'eac3'
-                    && probeInput.channelCount === 6;
+                const supported = probeInput.codec === 'eac3' && probeInput.channelCount === 6;
                 return {
-                    reason: supported ?
-                        'decoded-playback-advanced' :
-                        'playback-not-advanced',
+                    reason: supported ? 'decoded-playback-advanced' : 'playback-not-advanced',
                     supported
                 };
             },
@@ -81,8 +78,7 @@ describe('NativeMediaAudioCapabilities', () => {
         });
 
         expect(probeInputs).toHaveLength(4);
-        expect(probeInputs.every(probeInput => probeInput.vector.byteLength > 1_000))
-            .toBe(true);
+        expect(probeInputs.every(probeInput => probeInput.vector.byteLength > 1_000)).toBe(true);
         expect(capabilities.audio.ac3.status).toBe('unsupported');
         expect(capabilities.audio.eac3.status).toBe('supported');
         expect(capabilities.audio.eac3.layouts[6]).toMatchObject({
@@ -97,20 +93,16 @@ describe('NativeMediaAudioCapabilities', () => {
             unknownLayoutCount: 0
         });
 
-        expect(getSupportedNativeMediaAudioRoute(capabilities, 'eac3', 6, 48_000))
-            .toEqual({
-                channelCount: 6,
-                codec: 'eac3',
-                codecString: 'ec-3',
-                mimeType: 'audio/mp4; codecs="ec-3"',
-                sampleRate: 48_000
-            });
-        expect(getSupportedNativeMediaAudioRoute(capabilities, 'eac3', 2, 48_000))
-            .toBeNull();
-        expect(getSupportedNativeMediaAudioRoute(capabilities, 'eac3', 6, 44_100))
-            .toBeNull();
-        expect(getSupportedNativeMediaAudioRoute(capabilities, 'eac3', 8, 48_000))
-            .toBeNull();
+        expect(getSupportedNativeMediaAudioRoute(capabilities, 'eac3', 6, 48_000)).toEqual({
+            channelCount: 6,
+            codec: 'eac3',
+            codecString: 'ec-3',
+            mimeType: 'audio/mp4; codecs="ec-3"',
+            sampleRate: 48_000
+        });
+        expect(getSupportedNativeMediaAudioRoute(capabilities, 'eac3', 2, 48_000)).toBeNull();
+        expect(getSupportedNativeMediaAudioRoute(capabilities, 'eac3', 6, 44_100)).toBeNull();
+        expect(getSupportedNativeMediaAudioRoute(capabilities, 'eac3', 8, 48_000)).toBeNull();
     });
 
     it('starts exact layout probes concurrently and caches the aggregate result', async () => {

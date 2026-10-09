@@ -51,7 +51,10 @@ export type DolbyVisionPresentationDescriptor = {
     baseLayerBitDepth: number
     /** Any 4-bit dv_bl_signal_compatibility_id, or null when the stream reports none. */
     baseLayerSignalCompatibilityID: number | null
-    /** The signaled EL flag. Single-layer routes ignore it, and dual-layer routes present a missing EL. */
+    /**
+     * The signaled EL flag.
+     * Single-layer routes ignore it, and dual-layer routes present a missing EL.
+     */
     enhancementLayerPresent: boolean
     /** The signaled dv_profile. */
     profile: number
@@ -112,13 +115,11 @@ function getDolbyVisionReconstructionProfile(
 export { isDolbyVisionDualLayerProfile };
 
 /**
- * Returns the transfer of the base layer that a compatibility ID declares displayable on its own. HDR10 and
- * Ultra HD Blu-ray declare PQ, HLG declares HLG, and SDR declares SDR. None and reserved IDs declare nothing, and
- * a Profile 5 style IPT base layer is never displayable whatever its ID, so those streams need RPU reconstruction.
+ * Returns the transfer of the base layer that a compatibility ID declares displayable on its own.
+ * HDR10 and Ultra HD Blu-ray declare PQ, HLG declares HLG, and SDR declares SDR.
+ * None and reserved IDs declare nothing, and a Profile 5 style IPT base layer is never displayable whatever its ID, so those streams need RPU reconstruction.
  */
-export function getDolbyVisionDeclaredBaseTransfer(
-    descriptor: DolbyVisionPresentationDescriptor
-): ColorTransfer | null {
+export function getDolbyVisionDeclaredBaseTransfer(descriptor: DolbyVisionPresentationDescriptor): ColorTransfer | null {
     if (
         descriptor.profile === NONCOMPATIBLE_BASE_LAYER_PROFILE
         || descriptor.reconstructionProfile === NONCOMPATIBLE_BASE_LAYER_PROFILE
@@ -139,27 +140,21 @@ export function getDolbyVisionDeclaredBaseTransfer(
 }
 
 /** Returns whether Profile 7 declares an HDR10-compatible base layer, with or without its EL. */
-export function isDolbyVisionProfile7HDR10BaseLayerDescriptor(
-    descriptor: DolbyVisionPresentationDescriptor
-): boolean {
+export function isDolbyVisionProfile7HDR10BaseLayerDescriptor(descriptor: DolbyVisionPresentationDescriptor): boolean {
     return descriptor.profile === 7
         && descriptor.baseLayerBitDepth === 10
         && getDolbyVisionDeclaredBaseTransfer(descriptor) === 'pq';
 }
 
 /** Returns whether Profile 8 declares an HDR10-compatible base layer; a signaled EL is ignored. */
-export function isDolbyVisionProfile8HDR10BaseLayerDescriptor(
-    descriptor: DolbyVisionPresentationDescriptor
-): boolean {
+export function isDolbyVisionProfile8HDR10BaseLayerDescriptor(descriptor: DolbyVisionPresentationDescriptor): boolean {
     return descriptor.profile === 8
         && descriptor.baseLayerBitDepth === 10
         && getDolbyVisionDeclaredBaseTransfer(descriptor) === 'pq';
 }
 
 /** Returns whether Profile 8 declares an HLG-compatible base layer; a signaled EL is ignored. */
-export function isDolbyVisionProfile8HLGBaseLayerDescriptor(
-    descriptor: DolbyVisionPresentationDescriptor
-): boolean {
+export function isDolbyVisionProfile8HLGBaseLayerDescriptor(descriptor: DolbyVisionPresentationDescriptor): boolean {
     return descriptor.profile === 8
         && descriptor.baseLayerBitDepth === 10
         && getDolbyVisionDeclaredBaseTransfer(descriptor) === 'hlg';
@@ -370,9 +365,7 @@ function resolveTransfer(videoStream: MediaStreamMetadata): ColorTransfer | null
     if (videoRange === 'unknown') {
         return null;
     }
-    const transfer = rangeTypeTransfer
-        ?? explicitTransfer
-        ?? (videoRange === 'sdr' ? 'sdr' : null);
+    const transfer = rangeTypeTransfer ?? explicitTransfer ?? (videoRange === 'sdr' ? 'sdr' : null);
     if (!transfer) {
         return null;
     }
@@ -475,10 +468,7 @@ function getPositiveSafeInteger(value: unknown): number | null {
     return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
-function hasMatchingSeparateTrackGeometry(
-    baseLayerStream: MediaStreamMetadata,
-    enhancementLayerStream: MediaStreamMetadata
-): boolean {
+function hasMatchingSeparateTrackGeometry(baseLayerStream: MediaStreamMetadata, enhancementLayerStream: MediaStreamMetadata): boolean {
     const baseLayerWidth = getPositiveSafeInteger(baseLayerStream.Width);
     const baseLayerHeight = getPositiveSafeInteger(baseLayerStream.Height);
     const enhancementLayerWidth = getPositiveSafeInteger(enhancementLayerStream.Width);
@@ -491,18 +481,12 @@ function hasMatchingSeparateTrackGeometry(
     ) {
         return false;
     }
-    const expectedDimensions = getDolbyVisionEnhancementDimensions(
-        baseLayerWidth,
-        baseLayerHeight
-    );
+    const expectedDimensions = getDolbyVisionEnhancementDimensions(baseLayerWidth, baseLayerHeight);
     return enhancementLayerWidth === expectedDimensions.width
         && enhancementLayerHeight === expectedDimensions.height;
 }
 
-function hasMatchingSeparateTrackFrameRate(
-    baseLayerStream: MediaStreamMetadata,
-    enhancementLayerStream: MediaStreamMetadata
-): boolean {
+function hasMatchingSeparateTrackFrameRate(baseLayerStream: MediaStreamMetadata, enhancementLayerStream: MediaStreamMetadata): boolean {
     const frameRateFields: ReadonlyArray<'AverageFrameRate' | 'RealFrameRate'> = [
         'AverageFrameRate',
         'RealFrameRate'
@@ -510,9 +494,7 @@ function hasMatchingSeparateTrackFrameRate(
     let matchedFrameRate = false;
     for (const frameRateField of frameRateFields) {
         const baseLayerFrameRate = getPositiveFiniteNumber(baseLayerStream[frameRateField]);
-        const enhancementLayerFrameRate = getPositiveFiniteNumber(
-            enhancementLayerStream[frameRateField]
-        );
+        const enhancementLayerFrameRate = getPositiveFiniteNumber(enhancementLayerStream[frameRateField]);
         if (baseLayerFrameRate === null && enhancementLayerFrameRate === null) {
             continue;
         }
@@ -530,8 +512,7 @@ function hasMatchingSeparateTrackFrameRate(
 
 function isSeparateProfile7EnhancementStream(videoStream: MediaStreamMetadata): boolean {
     const rangeType = normalizeMetadataToken(videoStream.VideoRangeType);
-    // Jellyfin 10.11 reports BL=true for Matroska EL tracks and BL=false for
-    // ISO BMFF EL tracks, so topology and all other exact P7 fields are required
+    // Jellyfin 10.11 reports BL=true for Matroska EL tracks and BL=false for ISO BMFF EL tracks, so topology and all other exact P7 fields are required
     return isHEVCStream(videoStream)
         && videoStream.BitDepth === DEFAULT_HDR_BIT_DEPTH
         && videoStream.IsInterlaced === false
@@ -542,8 +523,7 @@ function isSeparateProfile7EnhancementStream(videoStream: MediaStreamMetadata): 
         && parseExactMetadataFlag(videoStream.RpuPresentFlag) === true
         && (
             rangeType?.startsWith(DOLBY_VISION_PREFIX) === true
-            // Jellyfin classifies separate MPEG-TS EL streams as HDR10 even
-            // when their exact FFmpeg side data identifies Profile 7
+            // Jellyfin classifies separate MPEG-TS EL streams as HDR10 even when their FFmpeg side data identifies Profile 7
             || (
                 parseRangeType(videoStream.VideoRangeType) === 'pq'
                 && parseTransfer(videoStream.ColorTransfer) === 'pq'
@@ -559,18 +539,12 @@ function isSeparateProfile7BaseStream(videoStream: MediaStreamMetadata): boolean
         && parseVideoStreamColorMetadata(videoStream)?.transfer === 'pq';
 }
 
-function parseSeparateProfile7Selection(
-    videoStreams: readonly MediaStreamMetadata[]
-): DolbyVisionPresentationSelection | null {
+function parseSeparateProfile7Selection(videoStreams: readonly MediaStreamMetadata[]): DolbyVisionPresentationSelection | null {
     if (videoStreams.length !== 2) {
         return null;
     }
-    const baseLayerVideoTrackOrdinal = videoStreams.findIndex(
-        isSeparateProfile7BaseStream
-    );
-    const enhancementLayerVideoTrackOrdinal = videoStreams.findIndex(
-        isSeparateProfile7EnhancementStream
-    );
+    const baseLayerVideoTrackOrdinal = videoStreams.findIndex(isSeparateProfile7BaseStream);
+    const enhancementLayerVideoTrackOrdinal = videoStreams.findIndex(isSeparateProfile7EnhancementStream);
     if (
         baseLayerVideoTrackOrdinal < 0
         || enhancementLayerVideoTrackOrdinal < 0
@@ -590,8 +564,7 @@ function parseSeparateProfile7Selection(
         baseLayerVideoTrackOrdinal,
         descriptor: {
             baseLayerBitDepth: 10,
-            // The separate base track carries no Dolby Vision signaling and is proven PQ on its own, so it is an
-            // HDR10-compatible base whatever compatibility ID the enhancement track reports
+            // The separate base track carries no Dolby Vision signaling and is proven PQ on its own, so it is an HDR10-compatible base whatever compatibility ID the enhancement track reports
             baseLayerSignalCompatibilityID: ULTRA_HD_BLU_RAY_BL_SIGNAL_COMPATIBILITY_ID,
             enhancementLayerPresent: true,
             profile: 7,
@@ -601,12 +574,10 @@ function parseSeparateProfile7Selection(
 }
 
 /**
- * Parses one stream's Dolby Vision configuration. Any profile with a present base layer, a valid or absent
- * compatibility ID, and a valid bit depth is accepted; route selection decides whether it can be presented.
+ * Parses one stream's Dolby Vision configuration.
+ * Any profile with a present base layer, a valid or absent compatibility ID, and a valid bit depth is accepted; route selection decides whether it can be presented.
  */
-function parseDolbyVisionDescriptor(
-    videoStream: MediaStreamMetadata
-): DolbyVisionPresentationDescriptor | null {
+function parseDolbyVisionDescriptor(videoStream: MediaStreamMetadata): DolbyVisionPresentationDescriptor | null {
     const profile = parseDolbyVisionInteger(videoStream.DvProfile);
     if (profile === null || !hasEnabledMetadataFlag(videoStream.BlPresentFlag)) {
         return null;
@@ -618,8 +589,7 @@ function parseDolbyVisionDescriptor(
     if (bitDepth === null) {
         return null;
     }
-    // Every compatibility ID is supported: RPU reconstruction ignores it, and it only decides whether a base
-    // route may present the base layer on its own
+    // Every compatibility ID is supported: RPU reconstruction ignores it, and it only decides whether a base route may present the base layer on its own
     if (!isAbsentOrValidBLSignalCompatibilityID(videoStream.DvBlSignalCompatibilityId)) {
         return null;
     }
@@ -661,9 +631,7 @@ function getPlaybackVideoStreams(options: unknown): MediaStreamMetadata[] | null
 }
 
 /** Returns one exact supported single-stream or separate-track Dolby Vision selection. */
-export function getDolbyVisionPresentationSelection(
-    options: unknown
-): DolbyVisionPresentationSelection | null {
+export function getDolbyVisionPresentationSelection(options: unknown): DolbyVisionPresentationSelection | null {
     const videoStreams = getPlaybackVideoStreams(options);
     if (!videoStreams) {
         return null;
@@ -676,16 +644,13 @@ export function getDolbyVisionPresentationSelection(
 }
 
 /** Returns the parsed Dolby Vision descriptor of the presented stream. */
-export function getDolbyVisionPresentationDescriptor(
-    options: unknown
-): DolbyVisionPresentationDescriptor | null {
+export function getDolbyVisionPresentationDescriptor(options: unknown): DolbyVisionPresentationDescriptor | null {
     return getDolbyVisionPresentationSelection(options)?.descriptor ?? null;
 }
 
 /**
- * Returns the video-track ordinal Jellyfin presents. Independent video tracks
- * follow Jellyfin's first-track selection; Dolby Vision remains fail-closed
- * unless its exact single-stream or separate-track topology is recognized.
+ * Returns the video-track ordinal Jellyfin presents.
+ * Independent video tracks follow Jellyfin's first-track selection; Dolby Vision remains fail-closed unless its exact single-stream or separate-track topology is recognized.
  */
 export function getPresentationVideoTrackOrdinal(options: unknown): number | null {
     const videoStreams = getPlaybackVideoStreams(options);
@@ -712,9 +677,7 @@ function getDolbyVisionHDR10BaseColorMetadata(
     if (!selection || !acceptsDescriptor(selection.descriptor)) {
         return null;
     }
-    const videoStream = getPlaybackVideoStreams(options)?.[
-        selection.baseLayerVideoTrackOrdinal
-    ];
+    const videoStream = getPlaybackVideoStreams(options)?.[selection.baseLayerVideoTrackOrdinal];
     if (!videoStream
         || parseColorPrimaries(videoStream.ColorPrimaries) !== 'bt2020'
         || parseYUVMatrix(videoStream.ColorSpace) !== 'bt2020-ncl'
@@ -733,36 +696,22 @@ function getDolbyVisionHDR10BaseColorMetadata(
 }
 
 /** Returns exact BT.2020 PQ metadata for a Profile 7 HDR10-compatible base. */
-export function getDolbyVisionProfile7HDR10BaseColorMetadata(
-    options: unknown
-): InputColorMetadata | null {
-    return getDolbyVisionHDR10BaseColorMetadata(
-        options,
-        isDolbyVisionProfile7HDR10BaseLayerDescriptor
-    );
+export function getDolbyVisionProfile7HDR10BaseColorMetadata(options: unknown): InputColorMetadata | null {
+    return getDolbyVisionHDR10BaseColorMetadata(options, isDolbyVisionProfile7HDR10BaseLayerDescriptor);
 }
 
 /** Returns exact BT.2020 PQ metadata for a Profile 8.1 HDR10-compatible base. */
-export function getDolbyVisionProfile8HDR10BaseColorMetadata(
-    options: unknown
-): InputColorMetadata | null {
-    return getDolbyVisionHDR10BaseColorMetadata(
-        options,
-        isDolbyVisionProfile8HDR10BaseLayerDescriptor
-    );
+export function getDolbyVisionProfile8HDR10BaseColorMetadata(options: unknown): InputColorMetadata | null {
+    return getDolbyVisionHDR10BaseColorMetadata(options, isDolbyVisionProfile8HDR10BaseLayerDescriptor);
 }
 
 /** Returns exact BT.2020 HLG metadata for a Profile 8.4 HLG-compatible base. */
-export function getDolbyVisionProfile8HLGBaseColorMetadata(
-    options: unknown
-): InputColorMetadata | null {
+export function getDolbyVisionProfile8HLGBaseColorMetadata(options: unknown): InputColorMetadata | null {
     const selection = getDolbyVisionPresentationSelection(options);
     if (!selection || !isDolbyVisionProfile8HLGBaseLayerDescriptor(selection.descriptor)) {
         return null;
     }
-    const videoStream = getPlaybackVideoStreams(options)?.[
-        selection.baseLayerVideoTrackOrdinal
-    ];
+    const videoStream = getPlaybackVideoStreams(options)?.[selection.baseLayerVideoTrackOrdinal];
     if (!videoStream
         || videoStream.BitDepth !== DEFAULT_HDR_BIT_DEPTH
         || parseColorRange(videoStream.ColorRange) !== 'limited'
@@ -810,10 +759,7 @@ export function parseVideoStreamColorMetadata(stream: unknown): InputColorMetada
 }
 
 /** Builds renderer metadata from one stream's explicit color fields under an already resolved transfer. */
-function createVideoStreamColorMetadata(
-    videoStream: MediaStreamMetadata,
-    transfer: ColorTransfer
-): InputColorMetadata | null {
+function createVideoStreamColorMetadata(videoStream: MediaStreamMetadata, transfer: ColorTransfer): InputColorMetadata | null {
     // HDR10+ retains a PQ-compatible static HDR10 base for per-frame metadata
     if (hasEnabledMetadataFlag(videoStream.Hdr10PlusPresentFlag) && transfer !== 'pq') {
         return null;
@@ -828,11 +774,7 @@ function createVideoStreamColorMetadata(
     const parsedRange = parseColorRange(videoStream.ColorRange);
     const parsedPrimaries = parseColorPrimaries(videoStream.ColorPrimaries);
     const parsedMatrix = parseYUVMatrix(videoStream.ColorSpace);
-    if (
-        parsedRange === 'unknown'
-        || parsedPrimaries === 'unknown'
-        || parsedMatrix === 'unknown'
-    ) {
+    if (parsedRange === 'unknown' || parsedPrimaries === 'unknown' || parsedMatrix === 'unknown') {
         return null;
     }
 
@@ -850,9 +792,9 @@ function createVideoStreamColorMetadata(
 }
 
 /**
- * Returns renderer metadata for a Dolby Vision base layer presented on its own through an ordinary route. The
- * compatibility ID declares the transfer. Jellyfin derives VideoRange and VideoRangeType from the Dolby Vision
- * configuration and mislabels some profiles, so only an explicit ColorTransfer may contradict the declaration.
+ * Returns renderer metadata for a Dolby Vision base layer presented on its own through an ordinary route.
+ * The compatibility ID declares the transfer.
+ * Jellyfin derives VideoRange and VideoRangeType from the Dolby Vision configuration and mislabels some profiles, so only an explicit ColorTransfer may contradict the declaration.
  */
 export function getDolbyVisionBaseColorMetadata(options: unknown): InputColorMetadata | null {
     const selection = getDolbyVisionPresentationSelection(options);
@@ -860,9 +802,7 @@ export function getDolbyVisionBaseColorMetadata(options: unknown): InputColorMet
         return null;
     }
     const declaredTransfer = getDolbyVisionDeclaredBaseTransfer(selection.descriptor);
-    const videoStream = getPlaybackVideoStreams(options)?.[
-        selection.baseLayerVideoTrackOrdinal
-    ];
+    const videoStream = getPlaybackVideoStreams(options)?.[selection.baseLayerVideoTrackOrdinal];
     if (!declaredTransfer || !videoStream) {
         return null;
     }
@@ -885,10 +825,7 @@ export function getPresentationInputColorMetadata(options: unknown): InputColorM
 }
 
 function isKnownSDRVideoStream(videoStream: MediaStreamMetadata): boolean {
-    if (
-        hasEnabledMetadataFlag(videoStream.Hdr10PlusPresentFlag)
-        || hasDolbyVisionMetadata(videoStream)
-    ) {
+    if (hasEnabledMetadataFlag(videoStream.Hdr10PlusPresentFlag) || hasDolbyVisionMetadata(videoStream)) {
         return false;
     }
 
@@ -912,9 +849,8 @@ function isKnownSDRVideoStream(videoStream: MediaStreamMetadata): boolean {
 }
 
 /**
- * Returns whether a stream names an HDR transfer, BT.2020 primaries, and the BT.2020 non-constant-luminance
- * matrix. Absent, unknown, unspecified, and reserved values do not count, so a defaulted description never
- * selects a route that rewrites the bitstream as BT.2020.
+ * Returns whether a stream names an HDR transfer, BT.2020 primaries, and the BT.2020 non-constant-luminance matrix.
+ * Absent, unknown, unspecified, and reserved values do not count, so a defaulted description never selects a route that rewrites the bitstream as BT.2020.
  */
 export function hasExplicitBT2020HDRColorDescription(stream: unknown): boolean {
     if (!stream || typeof stream !== 'object') {
@@ -928,9 +864,8 @@ export function hasExplicitBT2020HDRColorDescription(stream: unknown): boolean {
 }
 
 /**
- * Returns true only when Jellyfin metadata positively identifies an SDR frame
- * source. Unknown and HDR inputs remain on direct HTML presentation until the
- * external-texture color path has been validated for them.
+ * Returns true only when Jellyfin metadata positively identifies an SDR frame source.
+ * Unknown and HDR inputs remain on direct HTML presentation until the external-texture color path has been validated for them.
  */
 export function isKnownSDRPresentationInput(options: unknown): boolean {
     const videoStreams = getPlaybackVideoStreams(options);

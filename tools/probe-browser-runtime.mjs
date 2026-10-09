@@ -1,3 +1,6 @@
+// Prints a browser's WebCodecs decoder configuration support and WebGPU adapter as JSON.
+// It attaches to the first page of a remote debugging endpoint, navigates it to the target URL, and runs the probe there.
+// Usage: node tools/probe-browser-runtime.mjs [debugging URL] [target URL]
 const DEFAULT_DEBUGGING_URL = 'http://localhost:9224';
 const DEFAULT_TARGET_URL = 'http://localhost:8080';
 

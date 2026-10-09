@@ -739,14 +739,8 @@ export default class CustomDecodeSession {
             }
             if (!this.recycleFrameBuffer(droppedFrame.workerRecord, droppedFrame.presentationFrame.frame.data)) {
                 this.abandonPresentationFrame(droppedFrame.presentationFrame);
-                for (
-                    let abandonedFrameIndex = frameIndex + 1;
-                    abandonedFrameIndex < consumedFrames.length;
-                    abandonedFrameIndex += 1
-                ) {
-                    this.abandonPresentationFrame(
-                        consumedFrames[abandonedFrameIndex].presentationFrame
-                    );
+                for (let abandonedFrameIndex = frameIndex + 1; abandonedFrameIndex < consumedFrames.length; abandonedFrameIndex += 1) {
+                    this.abandonPresentationFrame(consumedFrames[abandonedFrameIndex].presentationFrame);
                 }
                 this.abandonPresentationFrame(selectedQueuedFrame.presentationFrame);
                 return null;

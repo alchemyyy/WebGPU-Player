@@ -16,10 +16,7 @@ type ExpectedVector = Readonly<{
     expectedOutputFrameCount: number
 }>;
 
-const EXPECTED_VECTORS: Readonly<Record<
-    NativeSurroundAudioCapabilityVectorCodec,
-    ExpectedVector
->> = Object.freeze({
+const EXPECTED_VECTORS: Readonly<Record<NativeSurroundAudioCapabilityVectorCodec, ExpectedVector>> = Object.freeze({
     aac: Object.freeze({
         chunkByteLengths: [ 36 ],
         codecString: 'mp4a.40.2',
@@ -62,9 +59,7 @@ describe('native surround audio capability vectors', () => {
                 sampleRate: NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_SAMPLE_RATE
             });
             expect(vector.description).toHaveLength(expectedVector.descriptionByteLength);
-            expect(vector.encodedChunks.map(chunk => chunk.data.byteLength)).toEqual(
-                expectedVector.chunkByteLengths
-            );
+            expect(vector.encodedChunks.map(chunk => chunk.data.byteLength)).toEqual(expectedVector.chunkByteLengths);
         }
     );
 

@@ -46,9 +46,7 @@ class MockJPEG2000CapabilityWorker implements JPEG2000ExactCapabilityProbeWorker
     }
 
     public emit(type: WorkerEventType, data?: unknown): void {
-        const event = type === 'message' ?
-            new MessageEvent<unknown>('message', { data }) :
-            new Event(type);
+        const event = type === 'message' ? new MessageEvent<unknown>('message', { data }) : new Event(type);
         for (const listener of this.listeners.get(type) ?? []) {
             listener(event);
         }
@@ -72,9 +70,7 @@ function createEnvironment(
     };
 }
 
-function createSuccessfulResponse(
-    overrides: Partial<JPEG2000ExactCapabilityWorkerResponse> = {}
-): JPEG2000ExactCapabilityWorkerResponse {
+function createSuccessfulResponse(overrides: Partial<JPEG2000ExactCapabilityWorkerResponse> = {}): JPEG2000ExactCapabilityWorkerResponse {
     return {
         codedHeight: JPEG2000_QUALIFICATION_CODED_HEIGHT,
         codedWidth: JPEG2000_QUALIFICATION_CODED_WIDTH,

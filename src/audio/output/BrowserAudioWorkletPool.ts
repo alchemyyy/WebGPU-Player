@@ -94,19 +94,13 @@ function configurationsMatch(
         && first.telemetryIntervalFrames === second.telemetryIntervalFrames;
 }
 
-function removePooledState(
-    audioContext: AudioContext,
-    state: PooledBrowserAudioWorkletState
-): void {
+function removePooledState(audioContext: AudioContext, state: PooledBrowserAudioWorkletState): void {
     if (pooledStates.get(audioContext) === state) {
         pooledStates.delete(audioContext);
     }
 }
 
-function invalidatePooledState(
-    audioContext: AudioContext,
-    state: PooledBrowserAudioWorkletState
-): Promise<void> {
+function invalidatePooledState(audioContext: AudioContext, state: PooledBrowserAudioWorkletState): Promise<void> {
     if (state.invalidationPromise) {
         return state.invalidationPromise;
     }
@@ -144,8 +138,8 @@ function rejectAfterInvalidationStarts(
     state: PooledBrowserAudioWorkletState,
     releaseError: unknown
 ): Promise<void> {
-    // Context invalidation can overlap bounded processor retirement. The pool
-    // still blocks reuse through retirementPromises until destruction settles.
+    // Context invalidation can overlap bounded processor retirement.
+    // The pool still blocks reuse through retirementPromises until destruction settles
     void invalidatePooledState(audioContext, state).catch((): void => undefined);
     return Promise.reject(releaseError);
 }
@@ -203,10 +197,7 @@ class GuardedAudioWorkletOutput implements AudioWorkletOutputController {
         return this.active && this.controller.isPlaying;
     }
 
-    public enqueue(
-        chunk: TransferablePlanarPCM,
-        generation: number
-    ): AudioEnqueueSubmission {
+    public enqueue(chunk: TransferablePlanarPCM, generation: number): AudioEnqueueSubmission {
         this.requireActive();
         return this.controller.enqueue(chunk, generation);
     }
@@ -309,9 +300,7 @@ function createLease(
     };
 }
 
-function createControllerOptions(
-    configuration: AudioWorkletControllerConfiguration
-): AudioWorkletControllerOptions {
+function createControllerOptions(configuration: AudioWorkletControllerConfiguration): AudioWorkletControllerOptions {
     return {
         channelCount: configuration.channelCount,
         maxBufferedFrames: configuration.maxBufferedFrames,
@@ -343,9 +332,7 @@ async function createPooledState(
         const controller = await controllerPromise;
         newState.controller = controller;
         if (!configurationsMatch(controller.configuration, configuration)) {
-            const configurationError = new RangeError(
-                'Created audio worklet configuration does not match the requested configuration'
-            );
+            const configurationError = new RangeError('Created audio worklet configuration does not match the requested configuration');
             try {
                 await invalidatePooledState(audioContext, newState);
             } catch {
@@ -386,8 +373,8 @@ async function leaseIdlePooledState(
 }
 
 /**
- * Exclusively leases the page-lifetime output for an AudioContext. Release is
- * acknowledged on the worklet thread before another guarded facade is issued.
+ * Exclusively leases the page-lifetime output for an AudioContext.
+ * Release is acknowledged on the worklet thread before another guarded facade is issued.
  */
 export async function acquireSharedBrowserAudioWorklet(
     audioContext: AudioContext,
@@ -405,11 +392,7 @@ export async function acquireSharedBrowserAudioWorklet(
 
         const existingState = pooledStates.get(audioContext);
         if (!existingState) {
-            return createPooledState(
-                audioContext,
-                requestedConfiguration,
-                takeLeaseId()
-            );
+            return createPooledState(audioContext, requestedConfiguration, takeLeaseId());
         }
         if (existingState.releasePromise) {
             await existingState.releasePromise;

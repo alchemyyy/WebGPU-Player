@@ -534,8 +534,7 @@ describe('createRawDolbyVisionProfile4ColorPipelineWGSL', () => {
 });
 
 describe('dual-layer Dolby Vision over every BL format', () => {
-    const leftSitedChromaCoordinate =
-        'textureCoordinate + vec2f(0.5 / f32(textureDimensions(lumaTexture).x), 0.0)';
+    const leftSitedChromaCoordinate = 'textureCoordinate + vec2f(0.5 / f32(textureDimensions(lumaTexture).x), 0.0)';
     const dualLayerGenerators = [
         [ 'Profile 4', createRawDolbyVisionProfile4ColorPipelineWGSL, false, 'sdr' ],
         [ 'Profile 4 FEL', createRawDolbyVisionProfile4FELColorPipelineWGSL, true, 'sdr' ],

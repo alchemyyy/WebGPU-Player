@@ -521,23 +521,14 @@ function hasQualifiedDecodedPCMInputLayout(
         return false;
     }
     if (codec === 'eac3') {
-        return isSupportedEAC3InputRoute(
-            stream.Channels,
-            stream.SampleRate,
-            stream.ChannelLayout
-        );
+        return isSupportedEAC3InputRoute(stream.Channels, stream.SampleRate, stream.ChannelLayout);
     }
     if (codec === 'dts') {
         const profile = normalizeMetadataToken(stream.Profile);
         if (capabilities.bundledDTS?.status !== 'supported') {
             return false;
         }
-        return isSupportedDTSInputRoute(
-            stream.Channels,
-            stream.SampleRate,
-            profile,
-            stream.ChannelLayout
-        );
+        return isSupportedDTSInputRoute(stream.Channels, stream.SampleRate, profile, stream.ChannelLayout);
     }
     if (codec === 'mlp' || codec === 'truehd') {
         const exactCapability = capabilities.bundledTrueHD;
@@ -636,10 +627,7 @@ function normalizeMetadataToken(value: unknown): string | null {
     return normalizeMetadataValue(value)?.replace(/[^A-Z0-9]/g, '') ?? null;
 }
 
-function hasSupportedNativeVideoProfile(
-    codec: CustomVideoCodec,
-    stream: MediaStream
-): boolean {
+function hasSupportedNativeVideoProfile(codec: CustomVideoCodec, stream: MediaStream): boolean {
     const profile = normalizeMetadataToken(stream.Profile);
     switch (codec) {
         case 'h264':
@@ -659,10 +647,7 @@ function hasSupportedNativeVideoProfile(
     }
 }
 
-function hasSupportedRawVideoProfile(
-    codec: CustomVideoCodec,
-    stream: MediaStream
-): boolean {
+function hasSupportedRawVideoProfile(codec: CustomVideoCodec, stream: MediaStream): boolean {
     const profile = normalizeMetadataToken(stream.Profile);
     switch (codec) {
         case 'hevc':
@@ -738,10 +723,7 @@ function getHEVCSDRVideoSelection(
     stream: MediaStream,
     bitDepth: number
 ): SDRVideoSelection | null {
-    if (
-        !isPositiveSafeInteger(stream.Width)
-        || !isPositiveSafeInteger(stream.Height)
-    ) {
+    if (!isPositiveSafeInteger(stream.Width) || !isPositiveSafeInteger(stream.Height)) {
         return null;
     }
 
@@ -752,10 +734,7 @@ function getHEVCSDRVideoSelection(
             videoDecoderBackend: 'native'
         } : null;
     }
-    if (
-        bitDepth !== CUSTOM_NATIVE_VIDEO_BIT_DEPTH
-        || !hasSupportedNativeVideoProfile('hevc', stream)
-    ) {
+    if (bitDepth !== CUSTOM_NATIVE_VIDEO_BIT_DEPTH || !hasSupportedNativeVideoProfile('hevc', stream)) {
         return null;
     }
     if (hasSupportedNativeSDRVideoCodec('hevc', capabilities)) {
@@ -891,9 +870,7 @@ function supportsRawHDRVideo(
 }
 
 /** Returns the decoder behind a raw capability: the bundled HEVC decoder when it qualified, else native. */
-function getRawVideoDecoderBackend(
-    capability: CustomRawHDRVideoCodecCapability
-): CustomDecodeVideoDecoderBackend {
+function getRawVideoDecoderBackend(capability: CustomRawHDRVideoCodecCapability): CustomDecodeVideoDecoderBackend {
     return capability.reason === 'bundled-software-decoder' ? 'bundled-hevc' : 'native';
 }
 
@@ -958,12 +935,7 @@ function selectSDRVideoOutput(
     stream: MediaStream,
     colorMetadata: InputColorMetadata
 ): VideoOutputSelection {
-    const sdrSelection = getSDRVideoSelection(
-        capabilities,
-        videoCodec,
-        stream,
-        colorMetadata.bitDepth
-    );
+    const sdrSelection = getSDRVideoSelection(capabilities, videoCodec, stream, colorMetadata.bitDepth);
     if (!sdrSelection) {
         return selectRawSDRVideoOutput(
             capabilities,
@@ -1122,10 +1094,7 @@ function selectNativeDolbyVisionBaseOutput(
     videoCodec: CustomVideoCodec,
     videoStream: MediaStream
 ): VideoOutputSelection | null {
-    const colorMetadata = getAuthorizedDolbyVisionNativeBaseMetadata(
-        options,
-        eligibilityOptions
-    );
+    const colorMetadata = getAuthorizedDolbyVisionNativeBaseMetadata(options, eligibilityOptions);
     if (colorMetadata === null || eligibilityOptions.allowNativeHDR !== true) {
         return null;
     }
@@ -1166,9 +1135,7 @@ type DolbyVisionReconstructionSource = {
 };
 
 /** Returns an HEVC base layer's raw format: its range extension's own, I420 for Main, or I420P10 for Main 10. */
-function getHEVCDolbyVisionReconstructionFrameFormat(
-    stream: MediaStream
-): CustomDecodeRawVideoFrameFormat | null {
+function getHEVCDolbyVisionReconstructionFrameFormat(stream: MediaStream): CustomDecodeRawVideoFrameFormat | null {
     const rangeExtensionDefinition = getHEVCRangeExtensionStreamDefinitionFromMetadata(stream);
     if (rangeExtensionDefinition) {
         return rangeExtensionDefinition.format;
@@ -1211,9 +1178,7 @@ function getDolbyVisionReconstructionFrameFormat(
 }
 
 /** Returns the raw frame format the presented stream's RPU route would decode, before capability checks. */
-export function getDolbyVisionReconstructionRawFrameFormat(
-    options: unknown
-): CustomDecodeRawVideoFrameFormat | null {
+export function getDolbyVisionReconstructionRawFrameFormat(options: unknown): CustomDecodeRawVideoFrameFormat | null {
     const selection = getDolbyVisionPresentationSelection(options);
     if (!selection || selection.descriptor.reconstructionProfile === null) {
         return null;
@@ -1326,10 +1291,7 @@ function selectDolbyVisionReconstructionOutput(
     if (reconstructionProfile === null) {
         return { reason: 'hdr-codec-unsupported', status: 'invalid' };
     }
-    const presentationAllowed = isDolbyVisionReconstructionAllowed(
-        reconstructionProfile,
-        eligibilityOptions
-    );
+    const presentationAllowed = isDolbyVisionReconstructionAllowed(reconstructionProfile, eligibilityOptions);
     const source = getDolbyVisionReconstructionSource(
         capabilities,
         videoCodec,
@@ -1383,11 +1345,7 @@ function selectDolbyVisionVideoOutput(
         descriptor.reconstructionProfile === 5
         && descriptor.baseLayerBitDepth === 10
         && eligibilityOptions.allowNativeDolbyVision === true
-        && supportsNativeDolbyVisionProfile5(
-            capabilities,
-            videoCodec,
-            videoStream
-        )
+        && supportsNativeDolbyVisionProfile5(capabilities, videoCodec, videoStream)
     ) {
         const nativeCapability = capabilities.nativeDolbyVisionHEVC;
         if (!nativeCapability) {
@@ -1468,13 +1426,7 @@ function selectVideoOutput(
     }
     const hdr = colorMetadata.transfer !== 'sdr';
     if (!hdr) {
-        return selectSDRVideoOutput(
-            capabilities,
-            eligibilityOptions,
-            videoCodec,
-            videoStream,
-            colorMetadata
-        );
+        return selectSDRVideoOutput(capabilities, eligibilityOptions, videoCodec, videoStream, colorMetadata);
     }
     const externalHDRRouteKey = getExternalHDRAuthorizationRouteKey(colorMetadata);
     const nativeHDRTransfer = colorMetadata.transfer === 'sdr' ?
@@ -1484,9 +1436,7 @@ function selectVideoOutput(
     if (
         eligibilityOptions.allowNativeHDR === true
         && externalHDRRouteKey !== null
-        && (eligibilityOptions.authorizedExternalHDRRouteKeys ?? []).includes(
-            externalHDRRouteKey
-        )
+        && (eligibilityOptions.authorizedExternalHDRRouteKeys ?? []).includes(externalHDRRouteKey)
         && nativeHDRTransfer !== null
         && hasExplicitNativeHDRChromaticity(videoStream)
         && supportsNativeMain10HEVC(nativeHDRCapability, videoCodec, videoStream)
@@ -1512,22 +1462,11 @@ function selectVideoOutput(
     if (!rawVideoFrameFormat) {
         return { reason: 'metadata-unsupported', status: 'invalid' };
     }
-    const rawHDRRouteKey = getRawHDRAuthorizationRouteKey(
-        rawVideoFrameFormat,
-        colorMetadata
-    );
-    if (
-        !rawHDRRouteKey
-        || !(eligibilityOptions.authorizedRawHDRRouteKeys ?? []).includes(rawHDRRouteKey)
-    ) {
+    const rawHDRRouteKey = getRawHDRAuthorizationRouteKey(rawVideoFrameFormat, colorMetadata);
+    if (!rawHDRRouteKey || !(eligibilityOptions.authorizedRawHDRRouteKeys ?? []).includes(rawHDRRouteKey)) {
         return { reason: 'hdr-presentation-unavailable', status: 'invalid' };
     }
-    if (!supportsRawHDRVideo(
-        capabilities,
-        videoCodec,
-        videoStream,
-        rawVideoFrameFormat
-    )) {
+    if (!supportsRawHDRVideo(capabilities, videoCodec, videoStream, rawVideoFrameFormat)) {
         return { reason: 'hdr-codec-unsupported', status: 'invalid' };
     }
     return createRawVideoOutputSelection(
@@ -1572,10 +1511,7 @@ function parsePlaybackSource(
     const durationMicroseconds = reportedDurationMicroseconds !== null && reportedDurationMicroseconds > 0 ?
         reportedDurationMicroseconds :
         null;
-    const startTimeMicroseconds = ticksToMicroseconds(
-        playbackOptions.playerStartPositionTicks,
-        0
-    );
+    const startTimeMicroseconds = ticksToMicroseconds(playbackOptions.playerStartPositionTicks, 0);
     if (startTimeMicroseconds === null) {
         return { eligible: false, parsed: false, reason: 'invalid-options' };
     }
@@ -1596,10 +1532,7 @@ function parsePlaybackSource(
     };
 }
 
-function selectVideoStream(
-    options: unknown,
-    streams: readonly MediaStream[]
-): VideoStreamSelection {
+function selectVideoStream(options: unknown, streams: readonly MediaStream[]): VideoStreamSelection {
     const videoStreams: TypedStreamCandidate[] = [];
     for (let streamPosition = 0; streamPosition < streams.length; streamPosition += 1) {
         const stream = streams[streamPosition];
@@ -1649,9 +1582,7 @@ function selectPlaybackAudio(
         };
     }
 
-    const audioCodec = AUDIO_CODEC_ALIASES.get(
-        normalizeMetadataValue(selectedAudio.stream.Codec) ?? ''
-    );
+    const audioCodec = AUDIO_CODEC_ALIASES.get(normalizeMetadataValue(selectedAudio.stream.Codec) ?? '');
     if (!audioCodec) {
         return { reason: 'audio-codec-unsupported', status: 'invalid' };
     }
@@ -1674,11 +1605,8 @@ function selectPlaybackAudio(
     };
 }
 
-function hasPotentialCustomVideoDimensions(
-    stream: MediaStream
-): boolean {
-    return isPositiveSafeInteger(stream.Width)
-        && isPositiveSafeInteger(stream.Height);
+function hasPotentialCustomVideoDimensions(stream: MediaStream): boolean {
+    return isPositiveSafeInteger(stream.Width) && isPositiveSafeInteger(stream.Height);
 }
 
 function hasPotentialSDRVideoRoute(
@@ -1700,9 +1628,7 @@ function hasPotentialSDRVideoRoute(
         case 'mpeg2video':
         case 'vc1':
             return containerTokens.some(container => container === 'MKV' || container === 'MATROSKA')
-                && normalizeMetadataToken(stream.Profile) === (
-                    codec === 'vc1' ? 'ADVANCED' : 'MAIN'
-                )
+                && normalizeMetadataToken(stream.Profile) === (codec === 'vc1' ? 'ADVANCED' : 'MAIN')
                 && hasPotentialCustomVideoDimensions(stream);
         case 'jpeg2000':
             return containerTokens.some(container => container === 'MJ2' || container === 'MOV')
@@ -1729,10 +1655,7 @@ function hasPotentialHDRVideoRoute(
         && hasPotentialCustomVideoDimensions(stream);
 }
 
-function hasCompletePotentialSDRVideoMetadata(
-    codec: CustomVideoCodec,
-    stream: MediaStream
-): boolean {
+function hasCompletePotentialSDRVideoMetadata(codec: CustomVideoCodec, stream: MediaStream): boolean {
     if (!isPositiveSafeInteger(stream.Width) || !isPositiveSafeInteger(stream.Height)) {
         return false;
     }
@@ -1877,12 +1800,7 @@ function hasPotentialColorVideoRoute(
         if (!hasCompletePotentialSDRVideoMetadata(codec, stream)) {
             return true;
         }
-        return hasPotentialSDRVideoRoute(
-            codec,
-            stream,
-            containerTokens,
-            colorMetadata
-        );
+        return hasPotentialSDRVideoRoute(codec, stream, containerTokens, colorMetadata);
     }
     if (!hasCompletePotentialHDRVideoMetadata(stream)) {
         return true;
@@ -1890,9 +1808,7 @@ function hasPotentialColorVideoRoute(
     return hasPotentialHDRVideoRoute(codec, stream, colorMetadata.bitDepth);
 }
 
-function getCompletePlaybackSelectionMediaSources(
-    sourceValues: readonly unknown[]
-): MediaSource[] | null {
+function getCompletePlaybackSelectionMediaSources(sourceValues: readonly unknown[]): MediaSource[] | null {
     const sources: MediaSource[] = [];
     for (const sourceValue of sourceValues) {
         if (!sourceValue || typeof sourceValue !== 'object') {
@@ -1924,10 +1840,7 @@ function getRequestedPlaybackSelectionMediaSource(
     return null;
 }
 
-function getPlaybackSelectionMediaSources(
-    item: unknown,
-    playOptions: unknown
-): MediaSource[] | null {
+function getPlaybackSelectionMediaSources(item: unknown, playOptions: unknown): MediaSource[] | null {
     if (!item || typeof item !== 'object') {
         return null;
     }
@@ -1941,10 +1854,7 @@ function getPlaybackSelectionMediaSources(
         (playOptions as PlaybackSelectionOptions).mediaSourceId :
         null;
     if (typeof requestedMediaSourceId === 'string' && requestedMediaSourceId.length > 0) {
-        return getRequestedPlaybackSelectionMediaSource(
-            selectionItem.MediaSources,
-            requestedMediaSourceId
-        );
+        return getRequestedPlaybackSelectionMediaSource(selectionItem.MediaSources, requestedMediaSourceId);
     }
     return getCompletePlaybackSelectionMediaSources(selectionItem.MediaSources);
 }
@@ -1953,10 +1863,7 @@ function getPlaybackSelectionMediaSources(
  * Returns false only when item metadata proves every candidate video route is outside the custom decoder's structural envelope.
  * Player selection uses it as a metadata-only prefilter; runtime probes still make the final capability decision after selection.
  */
-export function hasPotentialCustomPlaybackVideoRoute(
-    item: unknown,
-    playOptions?: unknown
-): boolean {
+export function hasPotentialCustomPlaybackVideoRoute(item: unknown, playOptions?: unknown): boolean {
     const mediaSources = getPlaybackSelectionMediaSources(item, playOptions);
     if (!mediaSources) {
         return true;
@@ -2005,10 +1912,7 @@ export function getCustomPlaybackEligibility(
     capabilities: CustomDecodeCapabilities,
     eligibilityOptions: CustomPlaybackEligibilityOptions
 ): CustomPlaybackEligibility {
-    const parsedSource = parsePlaybackSource(
-        options,
-        eligibilityOptions.runtimeAvailability
-    );
+    const parsedSource = parsePlaybackSource(options, eligibilityOptions.runtimeAvailability);
     if (!parsedSource.parsed) {
         return { eligible: false, reason: parsedSource.reason };
     }

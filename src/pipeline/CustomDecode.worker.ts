@@ -373,10 +373,7 @@ type BundledDecodedAudioOutput = Pick<
 >;
 
 type WorkerScope = {
-    addEventListener: (
-        type: 'message',
-        listener: (event: MessageEvent<unknown>) => void
-    ) => void
+    addEventListener: (type: 'message', listener: (event: MessageEvent<unknown>) => void) => void
     postMessage: (message: DecodeWorkerResponse, transfer?: Transferable[]) => void
 };
 
@@ -960,9 +957,7 @@ async function prepareVideoTrack(
         );
     }
     if (request.neutralizeHDRColorMetadata && codec !== 'hevc') {
-        throw new UnsupportedCustomDecodeSourceError(
-            'HDR color neutralization requires an HEVC video track'
-        );
+        throw new UnsupportedCustomDecodeSourceError('HDR color neutralization requires an HEVC video track');
     }
     if (!canDecode) {
         throw new UnsupportedCustomDecodeSourceError(
@@ -990,9 +985,7 @@ async function prepareVideoTrack(
     };
 }
 
-function getDefaultDolbyVisionEnhancementGeometry(
-    preparedVideoTrack: PreparedVideoTrack
-): RawVideoFrameGeometry {
+function getDefaultDolbyVisionEnhancementGeometry(preparedVideoTrack: PreparedVideoTrack): RawVideoFrameGeometry {
     const baseGeometry = preparedVideoTrack.geometry;
     const enhancementDimensions = getDolbyVisionEnhancementDimensions(
         baseGeometry.codedWidth,
@@ -1023,9 +1016,7 @@ function getContainerDolbyVisionEnhancementConfiguration(
         ) {
             return null;
         }
-        const spsConfiguration = parseHEVCSPS(
-            decoderConfiguration.sequenceParameterSets[0]
-        );
+        const spsConfiguration = parseHEVCSPS(decoderConfiguration.sequenceParameterSets[0]);
         const expectedGeometry = getDefaultDolbyVisionEnhancementGeometry(preparedVideoTrack);
         if (
             spsConfiguration.codedHeight !== expectedGeometry.codedHeight
@@ -1069,10 +1060,7 @@ function createDolbyVisionEnhancementDecoderConfiguration(
     description: Uint8Array | null = null
 ): DolbyVisionEnhancementDecoderConfiguration | null {
     if (description) {
-        return getContainerDolbyVisionEnhancementConfiguration(
-            preparedVideoTrack,
-            description
-        );
+        return getContainerDolbyVisionEnhancementConfiguration(preparedVideoTrack, description);
     }
     const geometry = getDefaultDolbyVisionEnhancementGeometry(preparedVideoTrack);
     return {
@@ -1091,9 +1079,7 @@ function createDolbyVisionEnhancementDecoderConfiguration(
     };
 }
 
-function copyDecoderDescription(
-    description: AllowSharedBufferSource | undefined
-): Uint8Array | null {
+function copyDecoderDescription(description: AllowSharedBufferSource | undefined): Uint8Array | null {
     if (description === undefined) {
         return null;
     }
@@ -1104,11 +1090,7 @@ function copyDecoderDescription(
         return new Uint8Array(description).slice();
     }
     if (ArrayBuffer.isView(description)) {
-        return new Uint8Array(
-            description.buffer,
-            description.byteOffset,
-            description.byteLength
-        ).slice();
+        return new Uint8Array(description.buffer, description.byteOffset, description.byteLength).slice();
     }
     return null;
 }
@@ -1154,14 +1136,9 @@ async function createSeparateDolbyVisionEnhancementDecoderConfiguration(
     }
     let configuration: DolbyVisionEnhancementDecoderConfiguration | null = null;
     if (description) {
-        configuration = getContainerDolbyVisionEnhancementConfiguration(
-            preparedVideoTrack,
-            description
-        );
+        configuration = getContainerDolbyVisionEnhancementConfiguration(preparedVideoTrack, description);
     } else if (decoderPacketFormat?.kind === 'annex-b') {
-        configuration = createDolbyVisionEnhancementDecoderConfiguration(
-            preparedVideoTrack
-        );
+        configuration = createDolbyVisionEnhancementDecoderConfiguration(preparedVideoTrack);
     }
     if (!configuration) {
         return null;
@@ -1196,9 +1173,7 @@ async function getSelectedAudioTrackMetadata(
 
     const audioTrack = getTrackByOrdinal(audioTracks, audioTrackOrdinal);
     if (!audioTrack) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'The selected audio track ordinal is unavailable'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The selected audio track ordinal is unavailable');
     }
 
     const [
@@ -1228,15 +1203,11 @@ async function getSelectedAudioTrackMetadata(
         throw new UnsupportedCustomDecodeSourceError('The selected audio channel count is unsupported');
     }
     if (!isSupportedCustomAudioSampleRate(sampleRate)) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'The selected audio sample rate is invalid'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The selected audio sample rate is invalid');
     }
     const inputChannelLayout = getCustomAudioChannelLayout(channelCount);
     if (!inputChannelLayout) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'The selected audio channel layout is unavailable'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The selected audio channel layout is unavailable');
     }
 
     return {
@@ -1252,9 +1223,7 @@ async function getSelectedAudioTrackMetadata(
     };
 }
 
-function prepareNativeMediaAudioTrack(
-    metadata: SelectedAudioTrackMetadata
-): PreparedAudioTrack {
+function prepareNativeMediaAudioTrack(metadata: SelectedAudioTrackMetadata): PreparedAudioTrack {
     const {
         audioTrack,
         channelCount,
@@ -1265,9 +1234,7 @@ function prepareNativeMediaAudioTrack(
         timeResolution
     } = metadata;
     if (!codec || !decoderConfig) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'The selected native audio codec configuration is unavailable'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The selected native audio codec configuration is unavailable');
     }
     const codecMatchesDecoderConfiguration =
         (codec === 'ac3' && decoderConfig.codec === 'ac-3')
@@ -1446,9 +1413,7 @@ async function prepareMediabunnyDecodedAudioTrack(
         timeResolution
     } = metadata;
     if (!codec || !decoderConfig) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'The decoded PCM audio configuration is unavailable'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The decoded PCM audio configuration is unavailable');
     }
     // HE-AAC with Parametric Stereo declares its mono core; the decoder reports stereo
     if (!isSupportedCustomAudioInputLayout(codec, channelCount, sampleRate)) {
@@ -1508,11 +1473,7 @@ async function prepareAudioTrack(
             }
             return metadata.trueHDDecoderCodec ?
                 prepareTrueHDAudioTrack(metadata, decodedAudioOutputChannelCount) :
-                prepareMediabunnyDecodedAudioTrack(
-                    metadata,
-                    run,
-                    decodedAudioOutputChannelCount
-                );
+                prepareMediabunnyDecodedAudioTrack(metadata, run, decodedAudioOutputChannelCount);
     }
 }
 
@@ -1681,16 +1642,12 @@ async function postRawVideoFrame(
     const rawVideoFrameFormat = run.rawVideoFrameFormat;
     if (rawVideoFrameFormat === null) {
         frame.close();
-        throw new UnsupportedCustomDecodeSourceError(
-            'The raw video frame output format is unavailable'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The raw video frame output format is unavailable');
     }
     const bufferLease = run.rawFrameBufferPool?.acquire() ?? null;
     if (!bufferLease) {
         frame.close();
-        throw new UnsupportedCustomDecodeSourceError(
-            'The raw video frame buffer pool was exhausted'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The raw video frame buffer pool was exhausted');
     }
     const rawFrame = await copyVideoFrameToRawPlanes(frame, {
         expectedGeometry: decodedVideoGeometry,
@@ -1709,14 +1666,10 @@ async function postRawVideoFrame(
         return;
     }
     if (rawFrame.timestampMicroseconds !== mediaTimeMicroseconds) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'The decoded raw frame timestamp did not match its media sample'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The decoded raw frame timestamp did not match its media sample');
     }
     if (run.outstandingRawFrameBufferCount >= MAX_DECODED_RAW_FRAME_CREDITS) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'The raw video frame buffer window exceeded its bound'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The raw video frame buffer window exceeded its bound');
     }
 
     run.outstandingRawFrameBufferCount += 1;
@@ -1731,10 +1684,7 @@ async function postRawVideoFrame(
     };
     const transferables = getRawVideoFrameTransferList(rawFrame);
     attachHDR10PlusMetadata(response, HDR10PlusMetadata);
-    transferables.push(...attachDolbyVisionEncodedMetadata(
-        response,
-        encodedDolbyVisionMetadata
-    ));
+    transferables.push(...attachDolbyVisionEncodedMetadata(response, encodedDolbyVisionMetadata));
     recordVideoAttemptFramePosted(run);
     postResponse(response, transferables);
 }
@@ -1750,10 +1700,7 @@ type RawVideoFramePairPostRequest = {
     mediaTimeMicroseconds: Microseconds
 };
 
-async function postRawVideoFramePair(
-    run: DecodeRun,
-    request: RawVideoFramePairPostRequest
-): Promise<void> {
+async function postRawVideoFramePair(run: DecodeRun, request: RawVideoFramePairPostRequest): Promise<void> {
     const {
         baseFrame,
         baseGeometry,
@@ -1768,17 +1715,13 @@ async function postRawVideoFramePair(
     if (rawVideoFrameFormat === null) {
         baseFrame.close();
         enhancementFrame?.close();
-        throw new UnsupportedCustomDecodeSourceError(
-            'The compound raw video frame output format is unavailable'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The compound raw video frame output format is unavailable');
     }
     const bufferLease = run.rawFrameBufferPool?.acquire() ?? null;
     if (!bufferLease) {
         baseFrame.close();
         enhancementFrame?.close();
-        throw new UnsupportedCustomDecodeSourceError(
-            'The compound raw video frame buffer pool was exhausted'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The compound raw video frame buffer pool was exhausted');
     }
     const rawFramePair = await copyVideoFramePairToRawPlanes(
         baseFrame,
@@ -1807,9 +1750,7 @@ async function postRawVideoFramePair(
         );
     }
     if (run.outstandingRawFrameBufferCount >= MAX_DECODED_RAW_FRAME_CREDITS) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'The compound raw video frame buffer window exceeded its bound'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The compound raw video frame buffer window exceeded its bound');
     }
 
     run.outstandingRawFrameBufferCount += 1;
@@ -1840,10 +1781,7 @@ async function postRawVideoFramePair(
     };
     const transferables = getRawVideoFramePairTransferList(rawFramePair);
     attachHDR10PlusMetadata(response, HDR10PlusMetadata);
-    transferables.push(...attachDolbyVisionEncodedMetadata(
-        response,
-        encodedDolbyVisionMetadata
-    ));
+    transferables.push(...attachDolbyVisionEncodedMetadata(response, encodedDolbyVisionMetadata));
     recordVideoAttemptFramePosted(run);
     postResponse(response, transferables);
 }
@@ -1867,10 +1805,7 @@ function postTransferredVideoFrame(
     };
     attachHDR10PlusMetadata(response, HDR10PlusMetadata);
     const transferables: Transferable[] = [ frame as unknown as Transferable ];
-    transferables.push(...attachDolbyVisionEncodedMetadata(
-        response,
-        encodedDolbyVisionMetadata
-    ));
+    transferables.push(...attachDolbyVisionEncodedMetadata(response, encodedDolbyVisionMetadata));
     recordVideoAttemptFramePosted(run);
     postResponse(response, transferables);
 }
@@ -1900,9 +1835,7 @@ function takeMatchingEnhancementFrame(
     const decodedEnhancementFrame = takeOwnedRawVideoFrameSource(enhancementOutput);
     if (Math.abs(decodedEnhancementFrame.mediaTimeMicroseconds - mediaTimeMicroseconds) > 1) {
         decodedEnhancementFrame.frame.close();
-        throw new UnsupportedCustomDecodeSourceError(
-            'The decoded Dolby Vision layers have mismatched timestamps'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The decoded Dolby Vision layers have mismatched timestamps');
     }
     return decodedEnhancementFrame.frame;
 }
@@ -2057,9 +1990,7 @@ function prepareDecodedAudioOutputChannelData(
         );
     }
 
-    const settingsBlock = streamingDownmixSettings.takeBlock(
-        inputChannelData[0]?.length ?? 0
-    );
+    const settingsBlock = streamingDownmixSettings.takeBlock(inputChannelData[0]?.length ?? 0);
     return prepareCustomAudioOutputChannelData(
         inputChannelData,
         inputChannelLayout,
@@ -2089,8 +2020,8 @@ function postDecodedAudioSourceFormat(
 }
 
 /**
- * Creates an attempt's output stage with the tolerance its codec and container
- * timestamps need. The stage binds to the first decoded format.
+ * Creates an attempt's output stage with the tolerance its codec and container timestamps need.
+ * The stage binds to the first decoded format.
  */
 function createDecodedAudioOutputStage(
     run: DecodeRun,
@@ -2126,10 +2057,7 @@ function normalizeAudioSample(
     streamingDownmixSettings: StreamingAudioDownmixSettings | null
 ): StreamingAudioResamplerOutput[] {
     try {
-        const sampleTimeMicroseconds = requireMicroseconds(
-            sample.microsecondTimestamp,
-            'Decoded audio timestamp'
-        );
+        const sampleTimeMicroseconds = requireMicroseconds(sample.microsecondTimestamp, 'Decoded audio timestamp');
         // A decoded sample of any length is taken; the resampler re-chunks it within the protocol frame limit
         if (!Number.isSafeInteger(sample.numberOfFrames) || sample.numberOfFrames <= 0) {
             throw new UnsupportedCustomDecodeSourceError('A decoded audio sample has an invalid frame count');
@@ -2424,11 +2352,7 @@ async function createSeparateDolbyVisionEnhancementPacketStream(
         if (!keyPacket || isVideoAttemptStopped(run)) {
             return null;
         }
-        const iterator = packetSink.packets(
-            keyPacket,
-            undefined,
-            OWNED_HEVC_PACKET_OPTIONS
-        );
+        const iterator = packetSink.packets(keyPacket, undefined, OWNED_HEVC_PACKET_OPTIONS);
         const pairer = new DolbyVisionEncodedPacketPairer(iterator);
         run.enhancementPacketPairer = pairer;
         return {
@@ -2487,11 +2411,7 @@ async function decodeOwnedHEVCPacket(
         return false;
     }
     hevcStream.dynamicHDRMetadataQueue.processPacket(packet);
-    const processedPacket = await processOwnedHEVCPacket(
-        hevcStream,
-        packet,
-        separateEnhancementPacket
-    );
+    const processedPacket = await processOwnedHEVCPacket(hevcStream, packet, separateEnhancementPacket);
     state.decodeEnhancementPacket(
         processedPacket.enhancementLayerPacket,
         processedPacket.hasEnhancementLayerVCL,
@@ -2504,11 +2424,7 @@ async function decodeOwnedHEVCPacket(
         hevcStream.decoder
     );
     state.throwDecoderFailure();
-    if (
-        separateEnhancementStream
-        && !separateEnhancementStream.pairer.retired
-        && !state.canDecodeEnhancement()
-    ) {
+    if (separateEnhancementStream && !separateEnhancementStream.pairer.retired && !state.canDecodeEnhancement()) {
         await separateEnhancementStream.pairer.retire();
     }
     return true;
@@ -2605,10 +2521,7 @@ async function readContainerDolbyVisionTrackConfiguration(
             };
         }
         const transportStreamConfiguration =
-            await readMPEGTransportStreamDolbyVisionTrackConfiguration(
-                reader,
-                containerTrackNumber
-            );
+            await readMPEGTransportStreamDolbyVisionTrackConfiguration(reader, containerTrackNumber);
         if (!transportStreamConfiguration) {
             return null;
         }
@@ -2675,9 +2588,7 @@ async function streamOwnedHEVCFrames(
     preparedVideoTrack: PreparedVideoTrack
 ): Promise<void> {
     if (preparedVideoTrack.codec !== 'hevc') {
-        throw new UnsupportedCustomDecodeSourceError(
-            'The owned HEVC decoder requires an HEVC track'
-        );
+        throw new UnsupportedCustomDecodeSourceError('The owned HEVC decoder requires an HEVC track');
     }
 
     const packetSink = new EncodedPacketSink(preparedVideoTrack.videoTrack);
@@ -2693,25 +2604,12 @@ async function streamOwnedHEVCFrames(
         keyPacket.microsecondTimestamp,
         'Owned HEVC key packet timestamp'
     );
-    postVideoStartupProgress(
-        run,
-        'video-key-packet-ready',
-        0,
-        keyPacketMediaTimeMicroseconds
-    );
+    postVideoStartupProgress(run, 'video-key-packet-ready', 0, keyPacketMediaTimeMicroseconds);
 
-    const packetIterator = packetSink.packets(
-        keyPacket,
-        undefined,
-        OWNED_HEVC_PACKET_OPTIONS
-    );
+    const packetIterator = packetSink.packets(keyPacket, undefined, OWNED_HEVC_PACKET_OPTIONS);
     run.videoIterator = packetIterator;
     const inputFormat = getHEVCNALFormat(preparedVideoTrack.decoderConfig);
-    const keyPacketSplit = splitDolbyVisionHEVCAccessUnit(
-        keyPacket.data,
-        inputFormat,
-        ANNEX_B_HEVC_NAL_FORMAT
-    );
+    const keyPacketSplit = splitDolbyVisionHEVCAccessUnit(keyPacket.data, inputFormat, ANNEX_B_HEVC_NAL_FORMAT);
     let enhancementConfiguration = await resolveDolbyVisionEnhancementDecoderConfiguration(
         run,
         request,
@@ -2725,10 +2623,7 @@ async function streamOwnedHEVCFrames(
             keyPacketMediaTimeMicroseconds
         ) :
         null;
-    if (
-        enhancementConfiguration?.source.kind === 'separate-track'
-        && !separateEnhancementStream
-    ) {
+    if (enhancementConfiguration?.source.kind === 'separate-track' && !separateEnhancementStream) {
         enhancementConfiguration = null;
     }
     if (isVideoAttemptStopped(run)) {
@@ -2736,9 +2631,7 @@ async function streamOwnedHEVCFrames(
         await separateEnhancementStream?.pairer.retire();
         return;
     }
-    const rpuParser = DolbyVisionRPUParserSession.create(
-        request.dolbyVisionRPUParserWASMURL
-    );
+    const rpuParser = DolbyVisionRPUParserSession.create(request.dolbyVisionRPUParserWASMURL);
     const metadataQueue = new DolbyVisionEncodedMetadataQueue(
         inputFormat,
         rpuParser,
@@ -2805,12 +2698,7 @@ async function streamOwnedHEVCFrames(
         if (decoderInitializationResult.status === 'rejected') {
             throw decoderInitializationResult.reason;
         }
-        postVideoStartupProgress(
-            run,
-            'video-decoder-ready',
-            0,
-            keyPacketMediaTimeMicroseconds
-        );
+        postVideoStartupProgress(run, 'video-decoder-ready', 0, keyPacketMediaTimeMicroseconds);
         const hevcStream: OwnedHEVCStream = {
             decoder,
             dynamicHDRMetadataQueue,
@@ -2830,8 +2718,7 @@ async function streamOwnedHEVCFrames(
             )
         );
     } finally {
-        // Close the decoders first: an output arriving during the awaits below would otherwise land in the
-        // cleared queue and leak its frame
+        // Close the decoders first: an output arriving during the awaits below would otherwise land in the cleared queue and leak its frame
         decoder.close();
         enhancementDecoder?.close();
         state.close();
@@ -2874,22 +2761,11 @@ async function streamOwnedAV1Frames(
         keyPacket.microsecondTimestamp,
         'Owned AV1 key packet timestamp'
     );
-    postVideoStartupProgress(
-        run,
-        'video-key-packet-ready',
-        0,
-        keyPacketMediaTimeMicroseconds
-    );
+    postVideoStartupProgress(run, 'video-key-packet-ready', 0, keyPacketMediaTimeMicroseconds);
 
-    const packetIterator = packetSink.packets(
-        keyPacket,
-        undefined,
-        OWNED_AV1_PACKET_OPTIONS
-    );
+    const packetIterator = packetSink.packets(keyPacket, undefined, OWNED_AV1_PACKET_OPTIONS);
     run.videoIterator = packetIterator;
-    const rpuParser = DolbyVisionRPUParserSession.create(
-        request.dolbyVisionRPUParserWASMURL
-    );
+    const rpuParser = DolbyVisionRPUParserSession.create(request.dolbyVisionRPUParserWASMURL);
     const decoderConfig: VideoDecoderConfig = {
         ...preparedVideoTrack.decoderConfig,
         hardwareAcceleration: preparedVideoTrack.videoHardwareAcceleration,
@@ -2943,12 +2819,7 @@ async function streamJPEG2000Frames(
         startPacket.microsecondTimestamp,
         'OpenJPEG first packet timestamp'
     );
-    postVideoStartupProgress(
-        run,
-        'video-key-packet-ready',
-        0,
-        firstPacketMediaTimeMicroseconds
-    );
+    postVideoStartupProgress(run, 'video-key-packet-ready', 0, firstPacketMediaTimeMicroseconds);
 
     const decoder = new JPEG2000SoftwareVideoDecoder();
     try {
@@ -2956,18 +2827,9 @@ async function streamJPEG2000Frames(
         if (isVideoAttemptStopped(run)) {
             return;
         }
-        postVideoStartupProgress(
-            run,
-            'video-decoder-ready',
-            0,
-            firstPacketMediaTimeMicroseconds
-        );
+        postVideoStartupProgress(run, 'video-decoder-ready', 0, firstPacketMediaTimeMicroseconds);
 
-        const packetIterator = packetSink.packets(
-            startPacket,
-            undefined,
-            OPENJPEG_PACKET_OPTIONS
-        );
+        const packetIterator = packetSink.packets(startPacket, undefined, OPENJPEG_PACKET_OPTIONS);
         run.videoIterator = packetIterator;
         let packetCount = 0;
         while (await waitForFrameCredit(run)) {
@@ -2989,23 +2851,10 @@ async function streamJPEG2000Frames(
             if (packetDurationMicroseconds < 0) {
                 throw new RangeError('OpenJPEG packet duration must not be negative');
             }
-            postVideoStartupProgress(
-                run,
-                'video-packet-started',
-                packetCount,
-                packetMediaTimeMicroseconds
-            );
-            let frame: VideoFrame | null = decoder.decode(
-                packet,
-                preparedVideoTrack.geometry
-            );
+            postVideoStartupProgress(run, 'video-packet-started', packetCount, packetMediaTimeMicroseconds);
+            let frame: VideoFrame | null = decoder.decode(packet, preparedVideoTrack.geometry);
             try {
-                postVideoStartupProgress(
-                    run,
-                    'video-packet-decoded',
-                    packetCount,
-                    packetMediaTimeMicroseconds
-                );
+                postVideoStartupProgress(run, 'video-packet-decoded', packetCount, packetMediaTimeMicroseconds);
                 const ownedFrame = frame;
                 frame = null;
                 await postVideoFrame(
@@ -3053,10 +2902,7 @@ async function postMPEG2VC1Samples(
                 kind: 'planar-sample',
                 sample
             });
-            if (
-                timing.mediaTimeMicroseconds + timing.durationMicroseconds
-                <= startTimeMicroseconds
-            ) {
+            if (timing.mediaTimeMicroseconds + timing.durationMicroseconds <= startTimeMicroseconds) {
                 continue;
             }
             if (!await waitForFrameCredit(run) || isVideoAttemptStopped(run)) {
@@ -3087,10 +2933,7 @@ async function streamMPEG2VC1Frames(
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
     preparedVideoTrack: PreparedVideoTrack
 ): Promise<void> {
-    const decoderConfiguration = createMPEG2VC1DecoderConfiguration(
-        run,
-        preparedVideoTrack
-    );
+    const decoderConfiguration = createMPEG2VC1DecoderConfiguration(run, preparedVideoTrack);
     const packetSink = new EncodedPacketSink(preparedVideoTrack.videoTrack);
     const startTimeSeconds = microsecondsToSeconds(request.startTimeMicroseconds);
     const keyPacket = await packetSink.getKeyPacket(
@@ -3104,12 +2947,7 @@ async function streamMPEG2VC1Frames(
         keyPacket.microsecondTimestamp,
         'MPEG-2/VC-1 key packet timestamp'
     );
-    postVideoStartupProgress(
-        run,
-        'video-key-packet-ready',
-        0,
-        keyPacketMediaTimeMicroseconds
-    );
+    postVideoStartupProgress(run, 'video-key-packet-ready', 0, keyPacketMediaTimeMicroseconds);
 
     const pendingSamples: VideoSample[] = [];
     let decoderError: unknown = null;
@@ -3124,23 +2962,14 @@ async function streamMPEG2VC1Frames(
             pendingSamples.push(sample);
         }
     });
-    const packetIterator = packetSink.packets(
-        keyPacket,
-        undefined,
-        MPEG2_VC1_PACKET_OPTIONS
-    );
+    const packetIterator = packetSink.packets(keyPacket, undefined, MPEG2_VC1_PACKET_OPTIONS);
     run.videoIterator = packetIterator;
     try {
         await decoder.init();
         if (isVideoAttemptStopped(run)) {
             return;
         }
-        postVideoStartupProgress(
-            run,
-            'video-decoder-ready',
-            0,
-            keyPacketMediaTimeMicroseconds
-        );
+        postVideoStartupProgress(run, 'video-decoder-ready', 0, keyPacketMediaTimeMicroseconds);
 
         let packetCount = 0;
         while (!isVideoAttemptStopped(run)) {
@@ -3157,22 +2986,12 @@ async function streamMPEG2VC1Frames(
                 packet.microsecondTimestamp,
                 'MPEG-2/VC-1 packet timestamp'
             );
-            postVideoStartupProgress(
-                run,
-                'video-packet-started',
-                packetCount,
-                packetMediaTimeMicroseconds
-            );
+            postVideoStartupProgress(run, 'video-packet-started', packetCount, packetMediaTimeMicroseconds);
             decoder.decode(packet);
             if (decoderError !== null) {
                 throw decoderError;
             }
-            postVideoStartupProgress(
-                run,
-                'video-packet-decoded',
-                packetCount,
-                packetMediaTimeMicroseconds
-            );
+            postVideoStartupProgress(run, 'video-packet-decoded', packetCount, packetMediaTimeMicroseconds);
             if (!await postMPEG2VC1Samples(
                 run,
                 pendingSamples,
@@ -3189,12 +3008,7 @@ async function streamMPEG2VC1Frames(
         if (decoderError !== null) {
             throw decoderError;
         }
-        await postMPEG2VC1Samples(
-            run,
-            pendingSamples,
-            preparedVideoTrack.geometry,
-            request.startTimeMicroseconds
-        );
+        await postMPEG2VC1Samples(run, pendingSamples, preparedVideoTrack.geometry, request.startTimeMicroseconds);
     } finally {
         closeMPEG2VC1Samples(pendingSamples);
         try {
@@ -3221,13 +3035,8 @@ function createMPEG2VC1DecoderConfiguration(
         );
     }
     const decoderDescription = preparedVideoTrack.decoderConfig.description;
-    if (
-        preparedVideoTrack.codec === 'vc1'
-        && !(decoderDescription instanceof Uint8Array)
-    ) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'The negotiated VC-1 decoder description is unavailable'
-        );
+    if (preparedVideoTrack.codec === 'vc1' && !(decoderDescription instanceof Uint8Array)) {
+        throw new UnsupportedCustomDecodeSourceError('The negotiated VC-1 decoder description is unavailable');
     }
     return {
         codec: preparedVideoTrack.codec,
@@ -3315,11 +3124,7 @@ async function runVideoAttempt(
     run.videoAttemptCancelled = false;
     run.videoTrackEnded = false;
     try {
-        await streamVideoFrames(
-            run,
-            { ...request, startTimeMicroseconds },
-            preparedVideoTrack
-        );
+        await streamVideoFrames(run, { ...request, startTimeMicroseconds }, preparedVideoTrack);
         if (!isVideoAttemptStopped(run)) {
             run.videoTrackEnded = true;
             // Audio can outlast the video track, so its end is reported separately
@@ -3331,10 +3136,7 @@ async function runVideoAttempt(
         }
     } catch (error) {
         // Failures while a replaced attempt unwinds are expected and discarded
-        if (
-            run.cancelled
-            || (!run.videoAttemptCancelled && !isCodecReclamationError(error))
-        ) {
+        if (run.cancelled || (!run.videoAttemptCancelled && !isCodecReclamationError(error))) {
             throw error;
         }
         if (!run.videoAttemptCancelled) {
@@ -3376,10 +3178,7 @@ async function streamVideoAttempts(
     }
 }
 
-/**
- * Gives every stereo decoded PCM output live downmix gains, since any declared
- * layout can decode to a multichannel bed that folds down.
- */
+/** Gives every stereo decoded PCM output live downmix gains, since any declared layout can decode to a multichannel bed that folds down. */
 function createStreamingAudioDownmixSettings(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
@@ -3456,10 +3255,7 @@ async function streamDTSAudioPackets(
         ?? createDefaultAudioDownmixSettings();
     const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
     const seekRecovery = new DTSSeekRecovery(request.startTimeMicroseconds);
-    const startPacket = await getAudioStartPacket(
-        packetSink,
-        seekRecovery.prerollTimeMicroseconds
-    );
+    const startPacket = await getAudioStartPacket(packetSink, seekRecovery.prerollTimeMicroseconds);
     const iterator = packetSink.packets(startPacket ?? undefined) as unknown as
         MediaSampleIterator<EncodedPacket>;
     run.audioIterator = iterator;
@@ -3554,10 +3350,7 @@ async function streamEAC3AudioPackets(
             const packet = iteratorResult.value;
             const decodedOutputs = decoder.decode(
                 packet.data,
-                requireMicroseconds(
-                    packet.microsecondTimestamp,
-                    'Encoded E-AC-3 packet timestamp'
-                )
+                requireMicroseconds(packet.microsecondTimestamp, 'Encoded E-AC-3 packet timestamp')
             );
             const normalizedOutputs: StreamingAudioResamplerOutput[] = [];
             for (const output of decodedOutputs) {
@@ -3623,10 +3416,7 @@ async function streamTrueHDAudioPackets(
             const packet = iteratorResult.value;
             const decodedOutputs = decoder.decode(
                 packet.data,
-                requireMicroseconds(
-                    packet.microsecondTimestamp,
-                    'Encoded TrueHD packet timestamp'
-                )
+                requireMicroseconds(packet.microsecondTimestamp, 'Encoded TrueHD packet timestamp')
             );
             const normalizedOutputs: StreamingAudioResamplerOutput[] = [];
             for (const output of decodedOutputs) {
@@ -3658,10 +3448,7 @@ function takeOwnedArrayBuffer(data: Uint8Array): ArrayBuffer {
     return data.slice().buffer;
 }
 
-async function postNativeAudioOutput(
-    run: DecodeRun,
-    output: NativeMediaAudioFMP4RemuxOutput
-): Promise<boolean> {
+async function postNativeAudioOutput(run: DecodeRun, output: NativeMediaAudioFMP4RemuxOutput): Promise<boolean> {
     let initializationSegment = output.initializationSegment;
     for (const segment of output.mediaSegments) {
         if (!await waitForAudioSampleCredit(run)) {
@@ -3708,9 +3495,7 @@ async function streamNativeAudioPackets(
         'eac3';
     const decoderConfig = preparedAudioTrack.decoderConfig;
     if (!decoderConfig) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'Native audio decoder configuration is unavailable'
-        );
+        throw new UnsupportedCustomDecodeSourceError('Native audio decoder configuration is unavailable');
     }
     const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
     const startPacket = await getAudioStartPacket(packetSink, request.startTimeMicroseconds);
@@ -3780,9 +3565,7 @@ function streamPreparedAudio(
                 case 'mediabunny':
                     return streamAudioSamples(run, request, preparedAudioTrack);
             }
-            throw new UnsupportedCustomDecodeSourceError(
-                'The selected audio decoder backend is unsupported'
-            );
+            throw new UnsupportedCustomDecodeSourceError('The selected audio decoder backend is unsupported');
         case 'native-media':
             return streamNativeAudioPackets(run, request, preparedAudioTrack);
     }
@@ -3794,9 +3577,7 @@ function createAudioAttemptTrack(
     outputChannelCount: CustomAudioOutputChannelCount
 ): PreparedAudioTrack {
     if (preparedAudioTrack.outputMode !== 'decoded-pcm') {
-        throw new UnsupportedCustomDecodeSourceError(
-            'Only decoded PCM audio can change its output layout'
-        );
+        throw new UnsupportedCustomDecodeSourceError('Only decoded PCM audio can change its output layout');
     }
     return {
         ...preparedAudioTrack,
@@ -3809,9 +3590,8 @@ function createAudioAttemptTrack(
 }
 
 /**
- * Streams audio as restartable attempts so an output layout change never touches
- * video. A later attempt starts at its resync target with a rebuilt output stage,
- * and a finished track still accepts a resync until video finishes too.
+ * Streams audio as restartable attempts so an output layout change never touches video.
+ * A later attempt starts at its resync target with a rebuilt output stage, and a finished track still accepts a resync until video finishes too.
  */
 async function streamAudioAttempts(
     run: DecodeRun,
@@ -3827,10 +3607,7 @@ async function streamAudioAttempts(
             run.audioEpoch = control.audioEpoch;
             run.audioSampleCredits = control.audioSampleCredits;
             run.audioStreamFinished = false;
-            attemptTrack = createAudioAttemptTrack(
-                preparedAudioTrack,
-                control.decodedAudioOutputChannelCount
-            );
+            attemptTrack = createAudioAttemptTrack(preparedAudioTrack, control.decodedAudioOutputChannelCount);
             attemptRequest = {
                 ...request,
                 audioDownmixAlgorithm: control.audioDownmixAlgorithm
@@ -3840,11 +3617,7 @@ async function streamAudioAttempts(
                 decodedAudioOutputChannelCount: control.decodedAudioOutputChannelCount,
                 startTimeMicroseconds: control.targetTimeMicroseconds
             };
-            run.audioDownmixSettings = createStreamingAudioDownmixSettings(
-                run,
-                attemptRequest,
-                attemptTrack
-            );
+            run.audioDownmixSettings = createStreamingAudioDownmixSettings(run, attemptRequest, attemptTrack);
         }
 
         run.audioAttemptCancelled = false;
@@ -3921,11 +3694,7 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
             return;
         }
 
-        run.audioDownmixSettings = createStreamingAudioDownmixSettings(
-            run,
-            request,
-            preparedAudioTrack
-        );
+        run.audioDownmixSettings = createStreamingAudioDownmixSettings(run, request, preparedAudioTrack);
         postReadyResponse(run, preparedVideoTrack, preparedAudioTrack, containerDurationMicroseconds);
         run.audioStreamFinished = preparedAudioTrack === null;
         const streamPromises: Array<Promise<void>> = [];
@@ -3969,9 +3738,7 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
     }
 }
 
-function registerRequiredVideoDecoder(
-    request: Extract<DecodeWorkerRequest, { type: 'start' }>
-): void {
+function registerRequiredVideoDecoder(request: Extract<DecodeWorkerRequest, { type: 'start' }>): void {
     if (request.videoDecoderBackend === 'bundled-hevc') {
         registerHEVCSoftwareVideoDecoder();
     }
@@ -3996,9 +3763,7 @@ function handleVideoControlRequest(
         });
 }
 
-function handleAudioControlRequest(
-    request: Extract<DecodeWorkerRequest, { type: 'resync-audio' }>
-): void {
+function handleAudioControlRequest(request: Extract<DecodeWorkerRequest, { type: 'resync-audio' }>): void {
     if (currentRun?.generation !== request.generation) {
         return;
     }
@@ -4110,10 +3875,7 @@ function handleRequest(requestValue: unknown): void {
             }
             break;
         case 'update-audio-downmix-settings':
-            currentRun?.audioDownmixSettings?.update(
-                requestValue.generation,
-                requestValue.audioDownmixSettings
-            );
+            currentRun?.audioDownmixSettings?.update(requestValue.generation, requestValue.audioDownmixSettings);
             break;
     }
 }

@@ -141,7 +141,7 @@ class EmulationPreventionTests(unittest.TestCase):
             (b"\x00\x00\x03\x03", b"\x00\x00\x03"),
             # Three zeros never occur in a NAL unit, but nothing rejects them
             (b"\x00\x00\x00\x03", b"\x00\x00\x00"),
-            # An escape needs two bytes before it
+            # An escape needs two zero bytes before it
             (b"\x00\x03", b"\x00\x03"),
             (b"\x03\x00\x03", b"\x03\x00\x03"),
             (b"", b""),
@@ -308,7 +308,7 @@ class ProfileTierLevelPatchTests(unittest.TestCase):
                     generator.patch_profile_tier_level_to_range_extension(data, "9F.88")
 
     def test_rejects_parameter_sets_too_short_once_unescaped(self) -> None:
-        # Escaped, each is long enough, but its RBSP ends one byte before the last constraint byte
+        # Each escaped unit is long enough, but its RBSP ends one byte before the last constraint byte
         self.assertEqual(len(generator.remove_emulation_prevention_bytes(MAIN_VPS[:18])), 16)
         self.assertEqual(len(generator.remove_emulation_prevention_bytes(MAIN_SPS[:15])), 13)
         for data in (create_stream((MAIN_VPS[:18], MAIN_SPS)), create_stream((MAIN_VPS, MAIN_SPS[:15]))):
@@ -408,7 +408,7 @@ class ProfileTierLevelEvidenceTests(unittest.TestCase):
                     )
 
     def test_masks_profile_space_and_tier_out_of_the_profile_IDC(self) -> None:
-        # Profile space 3 and High tier around profile IDC 4
+        # Byte 0xE4 holds profile space 3 and the High tier flag before profile IDC 4
         SPS = bytes.fromhex("420101E408000003009F8800000300005D")
         evidence = generator.get_profile_tier_level_evidence(create_stream((SPS,)), 33)
         self.assertEqual(evidence["profileIDC"], 4)
@@ -471,7 +471,7 @@ class FingerprintTests(unittest.TestCase):
                 )
 
     def test_fingerprints_frames_of_every_pixel_format(self) -> None:
-        # Formats with one geometry share a fingerprint, since only the geometry and bytes enter it
+        # Formats with the same geometry share a fingerprint, since only the geometry and bytes enter it
         frame_fingerprints = {
             "yuv420p": 4_180_004_021,
             "yuv422p": 2_029_015_285,
@@ -704,7 +704,7 @@ class EvidenceRequirementTests(unittest.TestCase):
         for evidence, message in cases:
             with self.subTest(message=message):
                 with self.assertRaises(generator.VectorGenerationError) as raised:
-                    # The mismatched evidence deliberately breaks the declared shape
+                    # The mismatched evidence breaks the declared shape, hence the cast
                     generator.require_vector_evidence(vector, cast(generator.VectorEvidence, evidence))
                 self.assertEqual(str(raised.exception), message)
 

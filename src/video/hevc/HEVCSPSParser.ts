@@ -423,7 +423,6 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
     };
 }
 
-/** A full-range signal with no named primaries, transfer, or matrix */
 function createFullRangeOnlyColorSpace(): HEVCSPSColorSpace {
     return {
         fullRange: true,

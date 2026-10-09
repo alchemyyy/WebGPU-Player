@@ -49,9 +49,7 @@ class MockCapabilityWorker implements HEVCExactCapabilityProbeWorker {
     }
 
     public emit(type: WorkerEventType, data?: unknown): void {
-        const event = type === 'message' ?
-            new MessageEvent<unknown>('message', { data }) :
-            new Event(type);
+        const event = type === 'message' ? new MessageEvent<unknown>('message', { data }) : new Event(type);
         for (const listener of [ ...(this.listeners.get(type) ?? []) ]) {
             listener(event);
         }
@@ -95,8 +93,7 @@ function createSuccessfulQualificationResult(
         profileIDC: definition.profileIDC,
         reason: 'decode-output-verified',
         supported: true,
-        totalDecodedByteLength: getExpectedDecodedByteLength(vector)
-            * definition.qualificationFrameCount,
+        totalDecodedByteLength: getExpectedDecodedByteLength(vector) * definition.qualificationFrameCount,
         ...overrides,
         decodedFrameFingerprints
     };
@@ -118,9 +115,7 @@ function createEnvironment(
     worker: MockCapabilityWorker,
     overrides: Partial<HEVCExactCapabilityProbeEnvironment> = {}
 ): HEVCExactCapabilityProbeEnvironment {
-    const qualificationByteLength = HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[
-        'main10-4k'
-    ].qualificationAccessUnitByteLengths.reduce(
+    const qualificationByteLength = HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS['main10-4k'].qualificationAccessUnitByteLengths.reduce(
         (totalByteLength, byteLength) => totalByteLength + byteLength,
         0
     );
@@ -308,9 +303,7 @@ describe('BundledHEVCExactCapabilityProbe', () => {
             }
         });
         const creationResult = await creationProbe.probe();
-        expect(creationResult.qualifications['main10-4k'].reason).toBe(
-            'worker-create-failed'
-        );
+        expect(creationResult.qualifications['main10-4k'].reason).toBe('worker-create-failed');
         expect(await creationProbe.probe()).toBe(creationResult);
 
         const worker = new MockCapabilityWorker();
@@ -333,9 +326,7 @@ describe('BundledHEVCExactCapabilityProbe', () => {
 
         const capabilities = await probe.probe();
 
-        expect(loadQualificationBitstream).toHaveBeenCalledWith(
-            'https://example.test/web/libraries/hevcjs/main10-4k-qualification.bin'
-        );
+        expect(loadQualificationBitstream).toHaveBeenCalledWith('https://example.test/web/libraries/hevcjs/main10-4k-qualification.bin');
         expect(capabilities.reason).toBe('failed');
         expect(capabilities.qualifications['main10-4k'].reason).toBe('asset-unavailable');
         // A failed download never starts a worker
@@ -369,9 +360,7 @@ describe('BundledHEVCExactCapabilityProbe', () => {
         const resultPromise = probe.probe();
         await Promise.resolve();
 
-        expect(loadDecoderWASM).toHaveBeenCalledExactlyOnceWith(
-            'https://example.test/web/libraries/hevcjs/hevc-decode.wasm'
-        );
+        expect(loadDecoderWASM).toHaveBeenCalledExactlyOnceWith('https://example.test/web/libraries/hevcjs/hevc-decode.wasm');
         expect(warmAsset.mock.calls).toEqual([
             [ 'https://example.test/web/libraries/webgpu-player/HEVCExactCapabilityProbe.worker.js' ],
             [ 'https://example.test/web/libraries/hevcjs/hevc-decode.js' ]
@@ -402,9 +391,7 @@ describe('BundledHEVCExactCapabilityProbe', () => {
         worker.emit('message', createSuccessfulResponse());
 
         const capabilities = await resultPromise;
-        expect(capabilities.qualifications['main10-4k'].reason).toBe(
-            'worker-message-invalid'
-        );
+        expect(capabilities.qualifications['main10-4k'].reason).toBe('worker-message-invalid');
         expect(worker.terminateCount).toBe(1);
     });
 });

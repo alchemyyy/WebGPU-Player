@@ -35,9 +35,7 @@ function createHarness(
     supportedCodecs: ReadonlySet<string>,
     matchingOutputs: ReadonlySet<string> = supportedCodecs
 ): ProfileProbeHarness {
-    const configurationProbe = vi.fn(async (
-        configuration: VideoDecoderConfig
-    ): Promise<VideoDecoderSupport> => ({
+    const configurationProbe = vi.fn(async (configuration: VideoDecoderConfig): Promise<VideoDecoderSupport> => ({
         config: configuration,
         supported: supportedCodecs.has(configuration.codec)
     }));
@@ -159,12 +157,8 @@ describe('H264ProfileCapabilityProbe', () => {
     });
 
     it('maps Jellyfin profile spellings and rejects ambiguous values', () => {
-        expect(getH264ProfileFromJellyfinValue('Constrained Baseline')).toBe(
-            'constrained-baseline'
-        );
-        expect(getH264ProfileFromJellyfinValue('constrained-baseline')).toBe(
-            'constrained-baseline'
-        );
+        expect(getH264ProfileFromJellyfinValue('Constrained Baseline')).toBe('constrained-baseline');
+        expect(getH264ProfileFromJellyfinValue('constrained-baseline')).toBe('constrained-baseline');
         expect(getH264ProfileFromJellyfinValue('Baseline')).toBe('baseline');
         expect(getH264ProfileFromJellyfinValue('main')).toBe('main');
         expect(getH264ProfileFromJellyfinValue('HIGH')).toBe('high');
@@ -174,10 +168,7 @@ describe('H264ProfileCapabilityProbe', () => {
     });
 
     it('selects and checks only profiles with decoded-output evidence', async () => {
-        const harness = createHarness(
-            new Set(PROFILE_CODEC_STRINGS),
-            new Set([ 'avc1.42C028', 'avc1.4D0028' ])
-        );
+        const harness = createHarness(new Set(PROFILE_CODEC_STRINGS), new Set([ 'avc1.42C028', 'avc1.4D0028' ]));
         const capabilities = await new H264ProfileCapabilityProbe(harness.environment).probe();
 
         expect(getSupportedH264JellyfinProfileNames(capabilities)).toEqual([
@@ -192,10 +183,7 @@ describe('H264ProfileCapabilityProbe', () => {
     });
 
     it('keeps partial configuration and output support fail-closed', async () => {
-        const harness = createHarness(
-            new Set([ 'avc1.42C028', 'avc1.640028' ]),
-            new Set([ 'avc1.42C028' ])
-        );
+        const harness = createHarness(new Set([ 'avc1.42C028', 'avc1.640028' ]), new Set([ 'avc1.42C028' ]));
         const capabilities = await new H264ProfileCapabilityProbe(harness.environment).probe();
 
         expect(capabilities['constrained-baseline']).toMatchObject({
@@ -314,17 +302,13 @@ describe('H264ProfileCapabilityProbe', () => {
 
     it('contains probe exceptions without hiding unaffected profiles', async () => {
         const harness = createHarness(new Set(PROFILE_CODEC_STRINGS));
-        harness.configurationProbe.mockImplementation(async (
-            configuration: VideoDecoderConfig
-        ): Promise<VideoDecoderSupport> => {
+        harness.configurationProbe.mockImplementation(async (configuration: VideoDecoderConfig): Promise<VideoDecoderSupport> => {
             if (configuration.codec === 'avc1.420028') {
                 throw new DOMException('Capability API failed', 'OperationError');
             }
             return { config: configuration, supported: true };
         });
-        harness.outputProbe.mockImplementation(async (
-            probeRequest: H264ProfileOutputProbeRequest
-        ): Promise<boolean> => {
+        harness.outputProbe.mockImplementation(async (probeRequest: H264ProfileOutputProbeRequest): Promise<boolean> => {
             if (probeRequest.profile === 'main') {
                 throw new TypeError('Decoder construction failed');
             }
@@ -367,10 +351,7 @@ describe('createH264ProfileOutputProbe', () => {
             createEncodedKeyFrame: (): unknown => ({})
         });
 
-        const outputMatches = await outputProbe(
-            createOutputProbeRequest(),
-            createCancellationHarness().signal
-        );
+        const outputMatches = await outputProbe(createOutputProbeRequest(), createCancellationHarness().signal);
 
         expect(outputMatches).toBe(true);
         expect(frameClose).toHaveBeenCalledOnce();
@@ -402,10 +383,7 @@ describe('createH264ProfileOutputProbe', () => {
             createEncodedKeyFrame: (data: Uint8Array): unknown => ({ data })
         });
 
-        const outputMatches = await outputProbe(
-            createOutputProbeRequest(),
-            createCancellationHarness().signal
-        );
+        const outputMatches = await outputProbe(createOutputProbeRequest(), createCancellationHarness().signal);
 
         expect(outputMatches).toBe(false);
         expect(receivedChunk).toEqual({ data: new Uint8Array([ 0x00, 0x00, 0x00, 0x01 ]) });
@@ -437,10 +415,7 @@ describe('createH264ProfileOutputProbe', () => {
             createEncodedKeyFrame: (): unknown => ({})
         });
 
-        const outputMatches = await outputProbe(
-            createOutputProbeRequest(),
-            createCancellationHarness().signal
-        );
+        const outputMatches = await outputProbe(createOutputProbeRequest(), createCancellationHarness().signal);
 
         expect(outputMatches).toBe(false);
         expect(frameClose).toHaveBeenCalledTimes(2);
@@ -459,10 +434,7 @@ describe('createH264ProfileOutputProbe', () => {
             createEncodedKeyFrame: (): unknown => ({})
         });
         const cancellationHarness = createCancellationHarness();
-        const outputPromise = outputProbe(
-            createOutputProbeRequest(),
-            cancellationHarness.signal
-        );
+        const outputPromise = outputProbe(createOutputProbeRequest(), cancellationHarness.signal);
 
         cancellationHarness.cancel();
 
@@ -476,18 +448,13 @@ describe('createH264ProfileOutputProbe', () => {
             createDecoder: (callbacks: H264ProbeDecoderCallbacks): H264ProbeDecoder => ({
                 close: decoderClose,
                 configure: vi.fn(),
-                decode: (): void => callbacks.error(
-                    new DOMException('Invalid H264 sample', 'EncodingError')
-                ),
+                decode: (): void => callbacks.error(new DOMException('Invalid H264 sample', 'EncodingError')),
                 flush: async (): Promise<void> => undefined
             }),
             createEncodedKeyFrame: (): unknown => ({})
         });
 
-        await expect(outputProbe(
-            createOutputProbeRequest(),
-            createCancellationHarness().signal
-        )).rejects.toThrow('Invalid H264 sample');
+        await expect(outputProbe(createOutputProbeRequest(), createCancellationHarness().signal)).rejects.toThrow('Invalid H264 sample');
         expect(decoderClose).toHaveBeenCalledOnce();
     });
 });

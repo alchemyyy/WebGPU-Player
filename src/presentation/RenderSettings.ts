@@ -140,11 +140,7 @@ export function assertValidRenderSettings(settings: RenderSettings): void {
         toneMapping.outputPeakNits,
         toneMapping.paperWhiteNits
     );
-    numericSettings.push(
-        settings.display.brightness,
-        settings.display.contrast,
-        settings.display.saturation
-    );
+    numericSettings.push(settings.display.brightness, settings.display.contrast, settings.display.saturation);
     if (!numericSettings.every(Number.isFinite)) {
         throw new RangeError('Tone mapping settings must be finite');
     }

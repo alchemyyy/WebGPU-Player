@@ -64,8 +64,7 @@ function requireGeneration(generation: number): number {
 }
 
 /**
- * Bridges worker-decoded planar PCM into one AudioWorkletController while
- * releasing worker credits only after complete samples leave the worklet queue.
+ * Bridges worker-decoded planar PCM into one AudioWorkletController while releasing worker credits only after complete samples leave the worklet queue.
  */
 export default class CustomDecodeAudioBridge {
     private activeDecodeGeneration: number | null = null;
@@ -86,10 +85,7 @@ export default class CustomDecodeAudioBridge {
     private workletGeneration: number | null = null;
 
     public constructor(private readonly controller: AudioWorkletOutputController) {
-        this.maximumPendingSampleCount = Math.min(
-            MAX_DECODED_AUDIO_SAMPLE_CREDITS,
-            controller.configuration.maxChunks
-        );
+        this.maximumPendingSampleCount = Math.min(MAX_DECODED_AUDIO_SAMPLE_CREDITS, controller.configuration.maxChunks);
     }
 
     /** Returns the fixed credit window used to bound worker audio output. */
@@ -100,10 +96,7 @@ export default class CustomDecodeAudioBridge {
     /** Flushes old PCM and binds a new decoder generation to the worklet. */
     public start(options: CustomDecodeAudioBridgeStartOptions): void {
         const decodeGeneration = requireGeneration(options.decodeGeneration);
-        const startTimeMicroseconds = requireMicroseconds(
-            options.startTimeMicroseconds,
-            'Audio bridge start time'
-        );
+        const startTimeMicroseconds = requireMicroseconds(options.startTimeMicroseconds, 'Audio bridge start time');
         this.validateAudioConfiguration(options.audioConfiguration);
 
         this.unsubscribeTelemetry?.();
@@ -126,10 +119,7 @@ export default class CustomDecodeAudioBridge {
     }
 
     /** Transfers a decoded audio sample to the worklet if the generation is current. */
-    public enqueue(
-        message: DecodeWorkerAudioResponse,
-        decodeGeneration: number
-    ): CustomDecodeAudioBridgeEnqueueResult {
+    public enqueue(message: DecodeWorkerAudioResponse, decodeGeneration: number): CustomDecodeAudioBridgeEnqueueResult {
         if (decodeGeneration !== this.activeDecodeGeneration || this.failed) {
             this.staleSampleCount += 1;
             return { frameCount: message.frameCount, status: 'stale-generation' };
@@ -185,10 +175,7 @@ export default class CustomDecodeAudioBridge {
         if (this.activeDecodeGeneration === null) {
             return;
         }
-        if (
-            decodeGeneration !== null
-            && decodeGeneration !== this.activeDecodeGeneration
-        ) {
+        if (decodeGeneration !== null && decodeGeneration !== this.activeDecodeGeneration) {
             return;
         }
 
@@ -317,16 +304,12 @@ export default class CustomDecodeAudioBridge {
         }
     }
 
-    private getNextContinuousMediaTime(
-        message: DecodeWorkerAudioResponse
-    ): Microseconds | null {
+    private getNextContinuousMediaTime(message: DecodeWorkerAudioResponse): Microseconds | null {
         const expectedMediaTimeMicroseconds = this.expectedNextMediaTimeMicroseconds;
         if (message.sampleRate !== this.controller.configuration.sampleRate) {
             return null;
         }
-        const timestampToleranceMicroseconds = Math.ceil(
-            1_000_000 / message.sampleRate
-        );
+        const timestampToleranceMicroseconds = Math.ceil(1_000_000 / message.sampleRate);
         if (expectedMediaTimeMicroseconds !== null && Math.abs(
             message.mediaTimeMicroseconds - expectedMediaTimeMicroseconds
         ) > timestampToleranceMicroseconds) {
@@ -338,9 +321,7 @@ export default class CustomDecodeAudioBridge {
                 message.frameCount,
                 message.sampleRate
             );
-            if (Math.abs(
-                message.durationMicroseconds - calculatedDurationMicroseconds
-            ) > timestampToleranceMicroseconds) {
+            if (Math.abs(message.durationMicroseconds - calculatedDurationMicroseconds) > timestampToleranceMicroseconds) {
                 return null;
             }
             return addMicroseconds(

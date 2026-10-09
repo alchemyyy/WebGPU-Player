@@ -157,13 +157,9 @@ class SplitInterleavedDolbyVisionTests(unittest.TestCase):
             generator.VectorError,
             "Enhancement-layer stream has no HEVC NAL type 33",
         ):
-            generator.split_interleaved_dolby_vision_annex_B(
-                create_interleaved_access_unit(enhancement_types=(32, 34, 19))
-            )
+            generator.split_interleaved_dolby_vision_annex_B(create_interleaved_access_unit(enhancement_types=(32, 34, 19)))
         with self.assertRaisesRegex(generator.VectorError, "one RPU"):
-            generator.split_interleaved_dolby_vision_annex_B(
-                create_interleaved_access_unit(RPU_count=2)
-            )
+            generator.split_interleaved_dolby_vision_annex_B(create_interleaved_access_unit(RPU_count=2))
 
     def test_rejects_non_annex_B_input(self) -> None:
         with self.assertRaisesRegex(generator.VectorError, "not Annex B"):
@@ -199,16 +195,12 @@ class MatroskaIdentificationTests(unittest.TestCase):
             3,
         )
         self.assertEqual(
-            generator.require_single_HEVC_video_track(
-                create_identification(create_HEVC_track(3.0))
-            ),
+            generator.require_single_HEVC_video_track(create_identification(create_HEVC_track(3.0))),
             3,
         )
         audio_track = {"id": 1, "properties": {"codec_id": "A_FLAC"}, "type": "audio"}
         self.assertEqual(
-            generator.require_single_HEVC_video_track(
-                create_identification(audio_track, create_HEVC_track(0))
-            ),
+            generator.require_single_HEVC_video_track(create_identification(audio_track, create_HEVC_track(0))),
             0,
         )
         invalid_identifications: tuple[object, ...] = (
@@ -313,9 +305,7 @@ class SeparateTrackVectorTests(unittest.TestCase):
             mkvmerge_path = media_tools.resolve_MKVToolNix_tool("mkvmerge", str(tool_directory))
             interleaved_path = commands[1][3].split(":", 1)[1]
             temporary_vector_directory = Path(interleaved_path).parent
-            self.assertTrue(
-                temporary_vector_directory.name.startswith(generator.TEMPORARY_DIRECTORY_PREFIX)
-            )
+            self.assertTrue(temporary_vector_directory.name.startswith(generator.TEMPORARY_DIRECTORY_PREFIX))
             self.assertFalse(temporary_vector_directory.exists())
             self.assertEqual(
                 commands,

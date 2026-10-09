@@ -8,8 +8,7 @@ export const NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_CODECS = [
     'vorbis'
 ] as const;
 
-export type NativeSurroundAudioCapabilityVectorCodec =
-    typeof NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_CODECS[number];
+export type NativeSurroundAudioCapabilityVectorCodec = typeof NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_CODECS[number];
 
 export type NativeSurroundAudioCapabilityVectorChunk = Readonly<{
     data: Uint8Array
@@ -30,7 +29,7 @@ export type NativeSurroundAudioCapabilityVector = Readonly<{
 
 // Generated with FFmpeg git-862338fe31 from 48 kHz 5.1 digital silence.
 // Container metadata and packets were extracted through Mediabunny 1.52.2.
-// Chromium 151 decoded each vector into one exact six-channel AudioData.
+// Chromium 151 decoded each vector into a single six-channel AudioData
 const AAC_DESCRIPTION_BASE64 = 'EbBW5QA=';
 
 const AAC_PACKET_BASE64 = '3gIATGF2YzYyLjI0LjEwMAACMEACEQBGCMBGIAjBGBhGAAHA';
@@ -156,10 +155,7 @@ function decodeBase64(base64: string): Uint8Array {
     return bytes;
 }
 
-function createChunk(
-    base64: string,
-    duration: number
-): NativeSurroundAudioCapabilityVectorChunk {
+function createChunk(base64: string, duration: number): NativeSurroundAudioCapabilityVectorChunk {
     return {
         data: decodeBase64(base64),
         duration,
@@ -167,7 +163,7 @@ function createChunk(
     };
 }
 
-/** Returns fresh exact encoded 5.1 packets and decoder initialization bytes. */
+/** Returns new copies of one codec's encoded 5.1 packets and decoder description. */
 export function createNativeSurroundAudioCapabilityVector(
     codec: NativeSurroundAudioCapabilityVectorCodec
 ): NativeSurroundAudioCapabilityVector {

@@ -10,9 +10,7 @@ import {
     type EngineWorkerPath
 } from '../../EngineAssets';
 import { fetchCapabilityAsset, warmCapabilityAsset } from '../CapabilityAssetLoading';
-import {
-    createHEVCExactCapabilityWorkerQualificationRequests
-} from '../vectors/HEVCExactCapabilityVectors';
+import { createHEVCExactCapabilityWorkerQualificationRequests } from '../vectors/HEVCExactCapabilityVectors';
 import {
     HEVC_EXACT_CAPABILITY_VECTORS,
     HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS,
@@ -57,25 +55,16 @@ export type BundledHEVCExactQualification = Readonly<{
 }>;
 
 export type BundledHEVCExactCapabilities = Readonly<{
-    qualifications: Readonly<Record<
-        HEVCExactCapabilityVector,
-        BundledHEVCExactQualification
-    >>
+    qualifications: Readonly<Record<HEVCExactCapabilityVector, BundledHEVCExactQualification>>
     reason: 'complete' | 'failed' | 'partial' | 'unavailable'
 }>;
 
 type HEVCExactCapabilityProbeWorkerEventListener = (event: Event) => void;
 
 export type HEVCExactCapabilityProbeWorker = {
-    addEventListener: (
-        type: 'error' | 'message' | 'messageerror',
-        listener: HEVCExactCapabilityProbeWorkerEventListener
-    ) => void
+    addEventListener: (type: 'error' | 'message' | 'messageerror', listener: HEVCExactCapabilityProbeWorkerEventListener) => void
     postMessage: (message: unknown, transfer: Transferable[]) => void
-    removeEventListener: (
-        type: 'error' | 'message' | 'messageerror',
-        listener: HEVCExactCapabilityProbeWorkerEventListener
-    ) => void
+    removeEventListener: (type: 'error' | 'message' | 'messageerror', listener: HEVCExactCapabilityProbeWorkerEventListener) => void
     terminate: () => void
 };
 
@@ -87,10 +76,7 @@ export type HEVCExactCapabilityProbeEnvironment = Readonly<{
     loadQualificationBitstream: (url: string) => Promise<ArrayBuffer>
     resolveAssetURL: (path: EngineAssetPath) => string
     runtimeAvailable: boolean
-    setTimeout: (
-        callback: () => void,
-        milliseconds: number
-    ) => ReturnType<typeof globalThis.setTimeout>
+    setTimeout: (callback: () => void, milliseconds: number) => ReturnType<typeof globalThis.setTimeout>
     // Downloads the worker script and decoder glue into the HTTP cache before the timed probe loads them
     warmAsset?: ((url: string) => Promise<void>) | null
 }>;
@@ -124,15 +110,10 @@ function createDefaultEnvironment(): HEVCExactCapabilityProbeEnvironment {
     };
 }
 
-function getExpectedDecodedByteLength(
-    definition: HEVCExactCapabilityVectorDefinition
-): number {
+function getExpectedDecodedByteLength(definition: HEVCExactCapabilityVectorDefinition): number {
     const chromaWidth = Math.ceil(definition.codedWidth / 2);
     const chromaHeight = Math.ceil(definition.codedHeight / 2);
-    return (
-        (definition.codedWidth * definition.codedHeight)
-        + (2 * chromaWidth * chromaHeight)
-    ) * Uint16Array.BYTES_PER_ELEMENT;
+    return ((definition.codedWidth * definition.codedHeight) + (2 * chromaWidth * chromaHeight)) * Uint16Array.BYTES_PER_ELEMENT;
 }
 
 function createQualification(
@@ -159,20 +140,10 @@ function createCapabilities(
     qualificationResults: readonly BundledHEVCExactQualification[],
     unavailable = false
 ): BundledHEVCExactCapabilities {
-    const mainQualification = qualificationResults.find(
-        qualification => qualification.vector === 'main-1080p'
-    );
-    const main10FullHDQualification = qualificationResults.find(
-        qualification => qualification.vector === 'main10-1080p'
-    );
-    const main10UltraHDQualification = qualificationResults.find(
-        qualification => qualification.vector === 'main10-4k'
-    );
-    if (
-        !mainQualification
-        || !main10FullHDQualification
-        || !main10UltraHDQualification
-    ) {
+    const mainQualification = qualificationResults.find(qualification => qualification.vector === 'main-1080p');
+    const main10FullHDQualification = qualificationResults.find(qualification => qualification.vector === 'main10-1080p');
+    const main10UltraHDQualification = qualificationResults.find(qualification => qualification.vector === 'main10-4k');
+    if (!mainQualification || !main10FullHDQualification || !main10UltraHDQualification) {
         throw new TypeError('An exact HEVC qualification result is missing');
     }
     const qualifications = Object.freeze({
@@ -180,9 +151,7 @@ function createCapabilities(
         'main10-1080p': main10FullHDQualification,
         'main10-4k': main10UltraHDQualification
     });
-    const supportedCount = qualificationResults.filter(
-        qualification => qualification.status === 'supported'
-    ).length;
+    const supportedCount = qualificationResults.filter(qualification => qualification.status === 'supported').length;
     let reason: BundledHEVCExactCapabilities['reason'];
     if (unavailable) {
         reason = 'unavailable';
@@ -197,17 +166,11 @@ function createCapabilities(
 }
 
 function createUniformFailureCapabilities(
-    reason: Exclude<
-        BundledHEVCExactCapabilityReason,
-        HEVCExactCapabilityWorkerQualificationReason
-    >
+    reason: Exclude<BundledHEVCExactCapabilityReason, HEVCExactCapabilityWorkerQualificationReason>
 ): BundledHEVCExactCapabilities {
     const qualifications: BundledHEVCExactQualification[] = [];
     for (const vector of HEVC_EXACT_CAPABILITY_VECTORS) {
-        qualifications.push(createQualification(
-            HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[vector],
-            reason
-        ));
+        qualifications.push(createQualification(HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[vector], reason));
     }
     return createCapabilities(qualifications, reason === 'api-unavailable');
 }
@@ -224,8 +187,7 @@ function workerResultMatchesDefinition(
         && result.codedHeight === definition.codedHeight
         && result.codedWidth === definition.codedWidth
         && result.decodedFrameFingerprints !== null
-        && result.decodedFrameFingerprints.length
-            === definition.decodedFrameFingerprints.length
+        && result.decodedFrameFingerprints.length === definition.decodedFrameFingerprints.length
         && result.decodedFrameFingerprints.every((fingerprint, frameIndex) => (
             fingerprint === definition.decodedFrameFingerprints[frameIndex]
         ))
@@ -233,13 +195,10 @@ function workerResultMatchesDefinition(
         && result.decodedByteLength === getExpectedDecodedByteLength(definition)
         && result.levelIDC === definition.levelIDC
         && result.profileIDC === definition.profileIDC
-        && result.totalDecodedByteLength === getExpectedDecodedByteLength(definition)
-            * definition.qualificationFrameCount;
+        && result.totalDecodedByteLength === getExpectedDecodedByteLength(definition) * definition.qualificationFrameCount;
 }
 
-function createCapabilitiesFromResponse(
-    response: HEVCExactCapabilityWorkerResponse
-): BundledHEVCExactCapabilities {
+function createCapabilitiesFromResponse(response: HEVCExactCapabilityWorkerResponse): BundledHEVCExactCapabilities {
     const qualifications: BundledHEVCExactQualification[] = [];
     for (const vector of HEVC_EXACT_CAPABILITY_VECTORS) {
         const definition = HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[vector];
@@ -248,18 +207,10 @@ function createCapabilitiesFromResponse(
             return createUniformFailureCapabilities('worker-message-invalid');
         }
         if (result.supported && !workerResultMatchesDefinition(result, definition)) {
-            qualifications.push(createQualification(
-                definition,
-                'output-mismatch',
-                result
-            ));
+            qualifications.push(createQualification(definition, 'output-mismatch', result));
             continue;
         }
-        qualifications.push(createQualification(
-            definition,
-            result.reason,
-            result
-        ));
+        qualifications.push(createQualification(definition, result.reason, result));
     }
     return createCapabilities(qualifications);
 }
@@ -270,10 +221,8 @@ export class BundledHEVCExactCapabilityProbe {
     private preparedAssets: Promise<HEVCExactCapabilityProbeAssets | null> | null = null;
 
     public constructor(
-        private readonly environment: HEVCExactCapabilityProbeEnvironment =
-        createDefaultEnvironment(),
-        private readonly timeoutMilliseconds =
-        HEVC_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS
+        private readonly environment: HEVCExactCapabilityProbeEnvironment = createDefaultEnvironment(),
+        private readonly timeoutMilliseconds = HEVC_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS
     ) {
         if (!Number.isSafeInteger(timeoutMilliseconds) || timeoutMilliseconds <= 0) {
             throw new TypeError('The exact HEVC capability timeout is invalid');
@@ -298,13 +247,8 @@ export class BundledHEVCExactCapabilityProbe {
         const environment = this.environment;
         try {
             const [ qualificationBitstream, decoderWASM ] = await Promise.all([
-                environment.loadQualificationBitstream(
-                    environment.resolveAssetURL(HEVC_MAIN10_4K_QUALIFICATION_ASSET)
-                ),
-                loadDecoderWASMSource(
-                    environment.resolveAssetURL(HEVC_DECODER_WASM_ASSET),
-                    environment.loadDecoderWASM
-                ),
+                environment.loadQualificationBitstream(environment.resolveAssetURL(HEVC_MAIN10_4K_QUALIFICATION_ASSET)),
+                loadDecoderWASMSource(environment.resolveAssetURL(HEVC_DECODER_WASM_ASSET), environment.loadDecoderWASM),
                 environment.warmAsset?.(environment.resolveAssetURL(HEVC_EXACT_CAPABILITY_WORKER_ASSET)),
                 environment.warmAsset?.(environment.resolveAssetURL(HEVC_DECODER_GLUE_ASSET))
             ]);
@@ -364,9 +308,7 @@ export class BundledHEVCExactCapabilityProbe {
                 cleanup();
                 resolve(capabilities);
             };
-            const messageHandler: HEVCExactCapabilityProbeWorkerEventListener = (
-                event: Event
-            ): void => {
+            const messageHandler: HEVCExactCapabilityProbeWorkerEventListener = (event: Event): void => {
                 const value = (event as MessageEvent<unknown>).data;
                 if (!isHEVCExactCapabilityWorkerResponse(value)) {
                     settle(createUniformFailureCapabilities('worker-message-invalid'));
@@ -389,9 +331,7 @@ export class BundledHEVCExactCapabilityProbe {
             }, this.timeoutMilliseconds);
 
             try {
-                const qualifications = createHEVCExactCapabilityWorkerQualificationRequests(
-                    assets.qualificationBitstream
-                );
+                const qualifications = createHEVCExactCapabilityWorkerQualificationRequests(assets.qualificationBitstream);
                 const request: HEVCExactCapabilityWorkerRequest = {
                     decoderGlueURL: this.environment.resolveAssetURL(HEVC_DECODER_GLUE_ASSET),
                     decoderWASM: assets.decoderWASM,

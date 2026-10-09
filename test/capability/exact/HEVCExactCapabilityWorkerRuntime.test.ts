@@ -6,9 +6,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi, type Mock } from 'vitest';
 
-import {
-    createHEVCExactCapabilityWorkerQualificationRequests
-} from 'webgpu-player/capability/vectors/HEVCExactCapabilityVectors';
+import { createHEVCExactCapabilityWorkerQualificationRequests } from 'webgpu-player/capability/vectors/HEVCExactCapabilityVectors';
 import {
     HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS,
     HEVC_EXACT_CAPABILITY_REQUEST_ID,
@@ -32,9 +30,7 @@ function createRequest(): HEVCExactCapabilityWorkerRequest {
         decoderGlueURL: 'https://example.test/hevc-decode.js',
         decoderWASM: { kind: 'url', url: 'https://example.test/hevc-decode.wasm' },
         requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
-        qualifications: createHEVCExactCapabilityWorkerQualificationRequests(
-            MAIN10_4K_QUALIFICATION_BITSTREAM
-        ),
+        qualifications: createHEVCExactCapabilityWorkerQualificationRequests(MAIN10_4K_QUALIFICATION_BITSTREAM),
         type: 'probe'
     };
 }
@@ -121,12 +117,10 @@ function createModuleHarness(backends: readonly HEVCDecoderBackend[]): {
 
 function fingerprintFrame(frame: HEVCFrame): number {
     if (frame.width === 3_840) {
-        return HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS['main10-4k']
-            .decodedFrameFingerprints[frame.poc];
+        return HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS['main10-4k'].decodedFrameFingerprints[frame.poc];
     }
     const vector = frame.bitDepth === 10 ? 'main10-1080p' : 'main-1080p';
-    return HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[vector]
-        .decodedFrameFingerprints[frame.poc];
+    return HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[vector].decodedFrameFingerprints[frame.poc];
 }
 
 describe('runHEVCExactCapabilityWorkerRequest', () => {
@@ -152,9 +146,7 @@ describe('runHEVCExactCapabilityWorkerRequest', () => {
                 chromaWidth: 960,
                 codedHeight: 1_080,
                 codedWidth: 1_920,
-                decodedFrameFingerprints:
-                    HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS['main-1080p']
-                        .decodedFrameFingerprints,
+                decodedFrameFingerprints: HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS['main-1080p'].decodedFrameFingerprints,
                 decodedFrameCount: 8,
                 decodedByteLength: 6_220_800,
                 levelIDC: 120,
@@ -170,9 +162,7 @@ describe('runHEVCExactCapabilityWorkerRequest', () => {
                 chromaWidth: 960,
                 codedHeight: 1_080,
                 codedWidth: 1_920,
-                decodedFrameFingerprints:
-                    HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS['main10-1080p']
-                        .decodedFrameFingerprints,
+                decodedFrameFingerprints: HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS['main10-1080p'].decodedFrameFingerprints,
                 decodedFrameCount: 8,
                 decodedByteLength: 6_220_800,
                 levelIDC: 120,
@@ -188,9 +178,7 @@ describe('runHEVCExactCapabilityWorkerRequest', () => {
                 chromaWidth: 1_920,
                 codedHeight: 2_160,
                 codedWidth: 3_840,
-                decodedFrameFingerprints:
-                    HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS['main10-4k']
-                        .decodedFrameFingerprints,
+                decodedFrameFingerprints: HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS['main10-4k'].decodedFrameFingerprints,
                 decodedFrameCount: 8,
                 decodedByteLength: 24_883_200,
                 levelIDC: 153,
@@ -210,10 +198,8 @@ describe('runHEVCExactCapabilityWorkerRequest', () => {
         expect(main10FullHDDestroy).toHaveBeenCalledOnce();
         expect(main10Destroy).toHaveBeenCalledOnce();
         // The shared module holds one decoder at a time
-        expect(mainDestroy.mock.invocationCallOrder[0])
-            .toBeLessThan(harness.createDecoder.mock.invocationCallOrder[1]);
-        expect(main10FullHDDestroy.mock.invocationCallOrder[0])
-            .toBeLessThan(harness.createDecoder.mock.invocationCallOrder[2]);
+        expect(mainDestroy.mock.invocationCallOrder[0]).toBeLessThan(harness.createDecoder.mock.invocationCallOrder[1]);
+        expect(main10FullHDDestroy.mock.invocationCallOrder[0]).toBeLessThan(harness.createDecoder.mock.invocationCallOrder[2]);
     });
 
     it('instantiates the module from preloaded WASM bytes', async () => {
@@ -293,7 +279,7 @@ describe('runHEVCExactCapabilityWorkerRequest', () => {
             'decode-error',
             'decode-error'
         ]);
-        // Each vector retries instantiation, as it did when every vector owned a module
+        // A failed instantiation leaves no module behind, so each vector retries it
         expect(createDecoderModule).toHaveBeenCalledTimes(3);
     });
 

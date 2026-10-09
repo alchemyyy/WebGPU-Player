@@ -142,10 +142,7 @@ function createRawFrameSource(
 }
 
 /** Copies a BL in format and an I420P10 EL through the production pair copy. */
-function copyRawFramePair(
-    format: SupportedRawVideoFrameFormat,
-    includeEnhancementFrame = true
-): Promise<TransferableRawVideoFramePair> {
+function copyRawFramePair(format: SupportedRawVideoFrameFormat, includeEnhancementFrame = true): Promise<TransferableRawVideoFramePair> {
     return copyVideoFramePairToRawPlanes(
         createRawFrameSource(format, BASE_CODED_WIDTH, BASE_CODED_HEIGHT),
         includeEnhancementFrame ?
@@ -193,18 +190,13 @@ function getTextureSizes(descriptors: readonly GPUTextureDescriptor[]): Array<[n
     });
 }
 
-function getBoundTextureIndex(
-    bindGroupEntries: readonly GPUBindGroupEntry[],
-    binding: number
-): number | undefined {
+function getBoundTextureIndex(bindGroupEntries: readonly GPUBindGroupEntry[], binding: number): number | undefined {
     const entry = bindGroupEntries.find(candidate => candidate.binding === binding);
     return (entry?.resource as MockTextureView | undefined)?.textureIndex;
 }
 
 function getEnhancementUniformWrite(harness: RendererHarness): Uint32Array | undefined {
-    const uniformWrite = harness.queueWriteBuffer.mock.calls.find(
-        (call: unknown[]) => call[0] === harness.enhancementUniformBuffer
-    );
+    const uniformWrite = harness.queueWriteBuffer.mock.calls.find((call: unknown[]) => call[0] === harness.enhancementUniformBuffer);
     return uniformWrite?.[2] as Uint32Array | undefined;
 }
 
@@ -264,15 +256,10 @@ describe('renderRawYUVFrame Dolby Vision pairs', () => {
                 ...baseFrame.planes.map(plane => plane.byteOffset),
                 ...(enhancementFrame?.planes.map(plane => plane.byteOffset) ?? [])
             ]);
-            expect(harness.queueWriteTexture.mock.calls.every(
-                (call: unknown[]) => call[1] === baseFrame.data
-            )).toBe(true);
+            expect(harness.queueWriteTexture.mock.calls.every((call: unknown[]) => call[1] === baseFrame.data)).toBe(true);
             for (let planeIndex = 0; planeIndex < 3; planeIndex += 1) {
                 expect(getBoundTextureIndex(harness.bindGroupEntries, planeIndex + 1)).toBe(planeIndex);
-                expect(getBoundTextureIndex(
-                    harness.bindGroupEntries,
-                    ENHANCEMENT_FIRST_BINDING + planeIndex
-                )).toBe(planeIndex + 3);
+                expect(getBoundTextureIndex(harness.bindGroupEntries, ENHANCEMENT_FIRST_BINDING + planeIndex)).toBe(planeIndex + 3);
             }
             expect(harness.bindGroupEntries.map(entry => entry.binding)).toEqual([
                 0, 1, 2, 3, 4, 5, 6, 7, 8, ENHANCEMENT_UNIFORM_BINDING
@@ -295,10 +282,7 @@ describe('renderRawYUVFrame Dolby Vision pairs', () => {
             'r8uint'
         ]);
         for (let planeIndex = 0; planeIndex < 3; planeIndex += 1) {
-            expect(getBoundTextureIndex(
-                harness.bindGroupEntries,
-                ENHANCEMENT_FIRST_BINDING + planeIndex
-            )).toBe(planeIndex);
+            expect(getBoundTextureIndex(harness.bindGroupEntries, ENHANCEMENT_FIRST_BINDING + planeIndex)).toBe(planeIndex);
         }
         expect(Array.from(getEnhancementUniformWrite(harness) ?? [])).toEqual([ 0, 0, 0, 0 ]);
     });

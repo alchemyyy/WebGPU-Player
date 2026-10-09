@@ -16,10 +16,7 @@ export type H264JellyfinProfileName =
     | 'main'
     | 'high';
 
-export const H264_JELLYFIN_PROFILE_NAMES: Readonly<Record<
-    H264Profile,
-    H264JellyfinProfileName
->> = Object.freeze({
+export const H264_JELLYFIN_PROFILE_NAMES: Readonly<Record<H264Profile, H264JellyfinProfileName>> = Object.freeze({
     'constrained-baseline': 'constrained baseline',
     baseline: 'baseline',
     main: 'main',
@@ -51,10 +48,7 @@ export type H264ProfileCapability = Readonly<{
     status: H264ProfileCapabilityStatus
 }>;
 
-export type H264ProfileCapabilities = Readonly<Record<
-    H264Profile,
-    H264ProfileCapability
->>;
+export type H264ProfileCapabilities = Readonly<Record<H264Profile, H264ProfileCapability>>;
 
 /** Maps a Jellyfin stream profile to one independently probed H264 profile. */
 export function getH264ProfileFromJellyfinValue(value: unknown): H264Profile | null {
@@ -77,9 +71,7 @@ export function getH264ProfileFromJellyfinValue(value: unknown): H264Profile | n
 }
 
 /** Returns only Jellyfin profile names backed by verified decoder output. */
-export function getSupportedH264JellyfinProfileNames(
-    capabilities: H264ProfileCapabilities
-): H264JellyfinProfileName[] {
+export function getSupportedH264JellyfinProfileNames(capabilities: H264ProfileCapabilities): H264JellyfinProfileName[] {
     const profileNames: H264JellyfinProfileName[] = [];
     for (const profile of H264_PROFILES) {
         const capability = capabilities[profile];
@@ -90,18 +82,14 @@ export function getSupportedH264JellyfinProfileNames(
     return profileNames;
 }
 
-/** Requires verified output for the exact H264 profile named by Jellyfin. */
-export function supportsH264JellyfinProfile(
-    capabilities: H264ProfileCapabilities,
-    profileValue: unknown
-): boolean {
+/** Requires verified decoder output for the H264 profile Jellyfin names. */
+export function supportsH264JellyfinProfile(capabilities: H264ProfileCapabilities, profileValue: unknown): boolean {
     const profile = getH264ProfileFromJellyfinValue(profileValue);
     if (!profile) {
         return false;
     }
     const capability = capabilities[profile];
-    return capability.status === 'supported'
-        && capability.evidence === 'decoded-output';
+    return capability.status === 'supported' && capability.evidence === 'decoded-output';
 }
 
 export type H264ProfileOutputProbeRequest = Readonly<{
@@ -221,34 +209,30 @@ function createProbeConfiguration(codec: string): Readonly<VideoDecoderConfig> {
     });
 }
 
-const H264_PROBE_DEFINITIONS: Readonly<Record<H264Profile, H264ProbeDefinition>> =
-    Object.freeze({
-        'constrained-baseline': Object.freeze({
-            configuration: createProbeConfiguration('avc1.42C028'),
-            encodedKeyFrame: H264_CONSTRAINED_BASELINE_KEY_FRAME,
-            profile: 'constrained-baseline'
-        }),
-        baseline: Object.freeze({
-            configuration: createProbeConfiguration('avc1.420028'),
-            encodedKeyFrame: H264_BASELINE_KEY_FRAME,
-            profile: 'baseline'
-        }),
-        main: Object.freeze({
-            configuration: createProbeConfiguration('avc1.4D0028'),
-            encodedKeyFrame: H264_MAIN_KEY_FRAME,
-            profile: 'main'
-        }),
-        high: Object.freeze({
-            configuration: createProbeConfiguration('avc1.640028'),
-            encodedKeyFrame: H264_HIGH_KEY_FRAME,
-            profile: 'high'
-        })
-    });
+const H264_PROBE_DEFINITIONS: Readonly<Record<H264Profile, H264ProbeDefinition>> = Object.freeze({
+    'constrained-baseline': Object.freeze({
+        configuration: createProbeConfiguration('avc1.42C028'),
+        encodedKeyFrame: H264_CONSTRAINED_BASELINE_KEY_FRAME,
+        profile: 'constrained-baseline'
+    }),
+    baseline: Object.freeze({
+        configuration: createProbeConfiguration('avc1.420028'),
+        encodedKeyFrame: H264_BASELINE_KEY_FRAME,
+        profile: 'baseline'
+    }),
+    main: Object.freeze({
+        configuration: createProbeConfiguration('avc1.4D0028'),
+        encodedKeyFrame: H264_MAIN_KEY_FRAME,
+        profile: 'main'
+    }),
+    high: Object.freeze({
+        configuration: createProbeConfiguration('avc1.640028'),
+        encodedKeyFrame: H264_HIGH_KEY_FRAME,
+        profile: 'high'
+    })
+});
 
-function frameMatchesRequest(
-    frame: H264ProbeDecodedFrame,
-    probeRequest: H264ProfileOutputProbeRequest
-): boolean {
+function frameMatchesRequest(frame: H264ProbeDecodedFrame, probeRequest: H264ProfileOutputProbeRequest): boolean {
     return frame.codedHeight === probeRequest.expectedCodedHeight
         && frame.codedWidth === probeRequest.expectedCodedWidth
         && frame.displayHeight === probeRequest.expectedDisplayHeight
@@ -256,10 +240,8 @@ function frameMatchesRequest(
         && frame.timestamp === probeRequest.expectedTimestamp;
 }
 
-/** Creates the bounded probe's real decoder-output verification operation. */
-export function createH264ProfileOutputProbe(
-    runtime: H264ProbeDecodeRuntime
-): H264ProfileOutputProbe {
+/** Creates an output probe that passes only when decoding the keyframe yields a single frame with the expected dimensions and timestamp. */
+export function createH264ProfileOutputProbe(runtime: H264ProbeDecodeRuntime): H264ProfileOutputProbe {
     return async (
         probeRequest: H264ProfileOutputProbeRequest,
         cancellationSignal: H264ProbeCancellationSignal
@@ -321,8 +303,7 @@ export function createH264ProfileOutputProbe(
 }
 
 function createDefaultOutputProbe(): H264ProfileOutputProbe | null {
-    if (typeof globalThis.VideoDecoder !== 'function'
-        || typeof globalThis.EncodedVideoChunk !== 'function') {
+    if (typeof globalThis.VideoDecoder !== 'function' || typeof globalThis.EncodedVideoChunk !== 'function') {
         return null;
     }
 
@@ -498,9 +479,7 @@ export default class H264ProfileCapabilityProbe {
     private readonly environment: H264ProfileCapabilityEnvironment;
     private resultPromise: Promise<H264ProfileCapabilities> | null = null;
 
-    public constructor(
-        environment: H264ProfileCapabilityEnvironment = createDefaultEnvironment()
-    ) {
+    public constructor(environment: H264ProfileCapabilityEnvironment = createDefaultEnvironment()) {
         this.environment = environment;
     }
 

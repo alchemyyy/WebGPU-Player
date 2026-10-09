@@ -113,11 +113,7 @@ function writePaddedMatrix(
     matrix: readonly number[]
 ): void {
     for (let rowIndex = 0; rowIndex < 3; rowIndex += 1) {
-        writeFloatArray(
-            view,
-            (wordOffset + (rowIndex * 4)) * BYTES_PER_WORD,
-            matrix.slice(rowIndex * 3, (rowIndex + 1) * 3)
-        );
+        writeFloatArray(view, (wordOffset + (rowIndex * 4)) * BYTES_PER_WORD, matrix.slice(rowIndex * 3, (rowIndex + 1) * 3));
     }
 }
 
@@ -126,17 +122,12 @@ function writeComponent(
     componentIndex: number,
     component: SyntheticRPUComponent
 ): void {
-    const componentWordOffset = DOLBY_VISION_RPU_COMPONENT_WORD_OFFSET
-        + (componentIndex * DOLBY_VISION_RPU_COMPONENT_WORD_STRIDE);
+    const componentWordOffset = DOLBY_VISION_RPU_COMPONENT_WORD_OFFSET + (componentIndex * DOLBY_VISION_RPU_COMPONENT_WORD_STRIDE);
     const componentByteOffset = componentWordOffset * BYTES_PER_WORD;
     view.setUint32(componentByteOffset, component.pivots.length, true);
     view.setUint32(componentByteOffset + 4, component.mmrVectors.length, true);
     view.setUint32(componentByteOffset + 8, component.mappingMethod, true);
-    writeFloatArray(
-        view,
-        componentByteOffset + DOLBY_VISION_RPU_PACKED_COMPONENT_PIVOT_OFFSET,
-        component.pivots
-    );
+    writeFloatArray(view, componentByteOffset + DOLBY_VISION_RPU_PACKED_COMPONENT_PIVOT_OFFSET, component.pivots);
     for (let segmentIndex = 0; segmentIndex < component.segments.length; segmentIndex += 1) {
         writeFloatArray(
             view,
@@ -170,16 +161,12 @@ function getVectorFlags(layerMode: DolbyVisionAuthorizationLayerMode): number {
     }
 }
 
-function writeNLQVector(
-    view: DataView,
-    layerMode: DolbyVisionAuthorizationLayerMode
-): void {
+function writeNLQVector(view: DataView, layerMode: DolbyVisionAuthorizationLayerMode): void {
     if (layerMode === 'single-layer') {
         return;
     }
     for (let componentIndex = 0; componentIndex < 3; componentIndex += 1) {
-        const wordOffset = DOLBY_VISION_RPU_NLQ_WORD_OFFSET
-            + (componentIndex * NLQ_WORD_STRIDE);
+        const wordOffset = DOLBY_VISION_RPU_NLQ_WORD_OFFSET + (componentIndex * NLQ_WORD_STRIDE);
         writeFloatArray(view, wordOffset * BYTES_PER_WORD, [
             0,
             layerMode === 'fel' ? 0.125 : 0,
@@ -190,8 +177,8 @@ function writeNLQVector(
 }
 
 /**
- * Builds a deterministic schema-valid vector that exercises polynomial and MMR paths. Profiles 4 and 7 are
- * dual-layer; the base-layer bit depth matches the raw frame format the vector authorizes.
+ * Builds a deterministic schema-valid vector that exercises polynomial and MMR paths.
+ * Profiles 4 and 7 are dual-layer; the base-layer bit depth matches the raw frame format the vector authorizes.
  */
 export function createDolbyVisionAuthorizationRPUVector(
     profile: 4 | 5 | 7 | 8 = 8,
@@ -223,21 +210,9 @@ export function createDolbyVisionAuthorizationRPUVector(
     view.setUint32(LEVEL1_MAXIMUM_PQ_BYTE_OFFSET, MISSING_UNSIGNED_INTEGER, true);
     view.setUint32(LEVEL1_AVERAGE_PQ_BYTE_OFFSET, MISSING_UNSIGNED_INTEGER, true);
 
-    writeFloatArray(
-        view,
-        DOLBY_VISION_RPU_COLOR_WORD_OFFSET * BYTES_PER_WORD,
-        [ 0.0625, 0.5, 0.5 ]
-    );
-    writePaddedMatrix(
-        view,
-        DOLBY_VISION_RPU_COLOR_WORD_OFFSET + 4,
-        NONLINEAR_MATRIX
-    );
-    writePaddedMatrix(
-        view,
-        DOLBY_VISION_RPU_COLOR_WORD_OFFSET + 16,
-        LINEAR_RGB_TO_LMS_MATRIX
-    );
+    writeFloatArray(view, DOLBY_VISION_RPU_COLOR_WORD_OFFSET * BYTES_PER_WORD, [ 0.0625, 0.5, 0.5 ]);
+    writePaddedMatrix(view, DOLBY_VISION_RPU_COLOR_WORD_OFFSET + 4, NONLINEAR_MATRIX);
+    writePaddedMatrix(view, DOLBY_VISION_RPU_COLOR_WORD_OFFSET + 16, LINEAR_RGB_TO_LMS_MATRIX);
     writeNLQVector(view, layerMode);
     for (let componentIndex = 0; componentIndex < SYNTHETIC_COMPONENTS.length; componentIndex += 1) {
         writeComponent(view, componentIndex, SYNTHETIC_COMPONENTS[componentIndex]);

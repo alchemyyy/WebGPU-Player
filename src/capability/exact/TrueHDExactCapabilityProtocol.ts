@@ -68,15 +68,11 @@ function isWorkerReason(value: unknown): value is TrueHDExactCapabilityWorkerRea
 }
 
 function isBoundedMask(value: unknown, qualifiedMask: number): value is number {
-    return Number.isSafeInteger(value)
-        && Number(value) >= 0
-        && (Number(value) & ~qualifiedMask) === 0;
+    return Number.isSafeInteger(value) && Number(value) >= 0 && (Number(value) & ~qualifiedMask) === 0;
 }
 
 /** Rejects malformed requests before loading the executable decoder module. */
-export function isTrueHDExactCapabilityWorkerRequest(
-    value: unknown
-): value is TrueHDExactCapabilityWorkerRequest {
+export function isTrueHDExactCapabilityWorkerRequest(value: unknown): value is TrueHDExactCapabilityWorkerRequest {
     return isRecord(value)
         && value.type === 'probe'
         && value.requestID === TRUEHD_EXACT_CAPABILITY_REQUEST_ID
@@ -84,9 +80,7 @@ export function isTrueHDExactCapabilityWorkerRequest(
 }
 
 /** Validates all exact-output, recovery, and throughput evidence. */
-export function isTrueHDExactCapabilityWorkerResponse(
-    value: unknown
-): value is TrueHDExactCapabilityWorkerResponse {
+export function isTrueHDExactCapabilityWorkerResponse(value: unknown): value is TrueHDExactCapabilityWorkerResponse {
     return isRecord(value)
         && value.type === 'result'
         && value.requestID === TRUEHD_EXACT_CAPABILITY_REQUEST_ID
@@ -99,13 +93,7 @@ export function isTrueHDExactCapabilityWorkerResponse(
         && Number.isSafeInteger(value.verifiedVectorCount)
         && Number(value.verifiedVectorCount) >= 0
         && Number(value.verifiedVectorCount) <= TRUEHD_QUALIFICATION_VECTOR_COUNT
-        && isBoundedMask(
-            value.verifiedChannelCountMask,
-            TRUEHD_QUALIFICATION_CHANNEL_COUNT_MASK
-        )
+        && isBoundedMask(value.verifiedChannelCountMask, TRUEHD_QUALIFICATION_CHANNEL_COUNT_MASK)
         && isBoundedMask(value.verifiedCodecMask, TRUEHD_QUALIFICATION_CODEC_MASK)
-        && isBoundedMask(
-            value.verifiedSampleRateMask,
-            TRUEHD_QUALIFICATION_SAMPLE_RATE_MASK
-        );
+        && isBoundedMask(value.verifiedSampleRateMask, TRUEHD_QUALIFICATION_SAMPLE_RATE_MASK);
 }

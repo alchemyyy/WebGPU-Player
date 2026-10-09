@@ -35,10 +35,7 @@ type FakeBackendOptions = {
     info?: HEVCStreamInfo | null
 };
 
-function emitBackendFrames(
-    frames: readonly HEVCFrame[],
-    frameHandler: HEVCDecodedFrameHandler
-): number {
+function emitBackendFrames(frames: readonly HEVCFrame[], frameHandler: HEVCDecodedFrameHandler): number {
     for (const frame of frames) {
         frameHandler(frame);
     }
@@ -144,10 +141,7 @@ function createHVCCDescription(
     return new Uint8Array(descriptionBytes);
 }
 
-function createLengthPrefixedPacket(
-    nalUnit: Uint8Array,
-    lengthSize: 1 | 2 | 3 | 4 = 4
-): Uint8Array {
+function createLengthPrefixedPacket(nalUnit: Uint8Array, lengthSize: 1 | 2 | 3 | 4 = 4): Uint8Array {
     const packet = new Uint8Array(lengthSize + nalUnit.byteLength);
     let remainingLength = nalUnit.byteLength;
     for (let byteIndex = lengthSize - 1; byteIndex >= 0; byteIndex -= 1) {
@@ -218,9 +212,7 @@ function createDependencies(backend: HEVCDecoderBackend): {
     loadDecoderGlue: ReturnType<typeof vi.fn>
     resolveAssetURL: ReturnType<typeof vi.fn>
 } {
-    const createDecoder = vi.fn(
-        async (): Promise<HEVCDecoderBackend> => backend
-    );
+    const createDecoder = vi.fn(async (): Promise<HEVCDecoderBackend> => backend);
     const loadDecoderGlue = vi.fn<(url: string) => void>();
     const resolveAssetURL = vi.fn((path: string): string => `https://example.test/web/libraries/${path}`);
     return {
@@ -295,10 +287,7 @@ function createEncodedPacket(
 }
 
 /** Initializes an hev1 UHD Main 10 decoder, which takes its parameter sets in band. */
-async function createInBandUHDDecoder(
-    backend: HEVCDecoderBackend,
-    codec: string
-): Promise<HEVCSoftwareVideoDecoder> {
+async function createInBandUHDDecoder(backend: HEVCDecoderBackend, codec: string): Promise<HEVCSoftwareVideoDecoder> {
     const decoder = new HEVCSoftwareVideoDecoder(createDependencies(backend).dependencies);
     const mutableDecoder = decoder as unknown as MutableDecoderContract;
     mutableDecoder.codec = 'hevc';
@@ -366,9 +355,7 @@ describe('HEVC bitstream conversion', () => {
         const configuration = parseHEVCDecoderConfiguration(description);
 
         expect(configuration.sequenceParameterSets).toEqual([ MAIN10_SPS ]);
-        expect(configuration.parameterSetsAnnexB).toEqual(
-            createAnnexBPacket([ baseLayerVPS, MAIN10_SPS, baseLayerPPS ])
-        );
+        expect(configuration.parameterSetsAnnexB).toEqual(createAnnexBPacket([ baseLayerVPS, MAIN10_SPS, baseLayerPPS ]));
         expect(HEVCSoftwareVideoDecoder.supports('hevc', {
             codec: 'hvc1.2.4.L120.B0',
             codedHeight: 360,
@@ -401,22 +388,13 @@ describe('HEVC bitstream conversion', () => {
 
     it('rejects truncated configuration records and packet lengths', () => {
         const description = createHVCCDescription();
-        expect(() => parseHEVCDecoderConfiguration(description.subarray(0, -1))).toThrow(
-            'invalid NAL unit'
-        );
-        expect(() => convertHVCCPacketToAnnexB(
-            new Uint8Array([ 0, 0, 0, 8, 38, 1 ]),
-            4
-        )).toThrow('invalid NAL unit length');
-        expect(() => inspectAnnexBPacket(new Uint8Array([ 38, 1 ]))).toThrow(
-            'neither Annex B nor HVCC'
-        );
+        expect(() => parseHEVCDecoderConfiguration(description.subarray(0, -1))).toThrow('invalid NAL unit');
+        expect(() => convertHVCCPacketToAnnexB(new Uint8Array([ 0, 0, 0, 8, 38, 1 ]), 4)).toThrow('invalid NAL unit length');
+        expect(() => inspectAnnexBPacket(new Uint8Array([ 38, 1 ]))).toThrow('neither Annex B nor HVCC');
 
         const mismatchedPlaneDepths = createHVCCDescription();
         mismatchedPlaneDepths[18] = 0;
-        expect(() => parseHEVCDecoderConfiguration(mismatchedPlaneDepths)).toThrow(
-            'mismatched plane bit depths'
-        );
+        expect(() => parseHEVCDecoderConfiguration(mismatchedPlaneDepths)).toThrow('mismatched plane bit depths');
     });
 });
 
@@ -566,18 +544,12 @@ describe('HEVCSoftwareVideoDecoder', () => {
         const dependencyHarness = createDependencies(backend);
 
         const decoder = new HEVCSoftwareVideoDecoder(dependencyHarness.dependencies);
-        const mediabunnyDecoder = new MediabunnyHEVCSoftwareVideoDecoder(
-            dependencyHarness.dependencies
-        );
+        const mediabunnyDecoder = new MediabunnyHEVCSoftwareVideoDecoder(dependencyHarness.dependencies);
 
         expect(decoder).toBeInstanceOf(CustomVideoDecoder);
         expect(mediabunnyDecoder).toBeInstanceOf(CustomVideoDecoder);
-        expect(Object.getPrototypeOf(HEVCSoftwareVideoDecoder.prototype)).toBe(
-            CustomVideoDecoder.prototype
-        );
-        expect(Object.getPrototypeOf(MediabunnyHEVCSoftwareVideoDecoder.prototype)).toBe(
-            CustomVideoDecoder.prototype
-        );
+        expect(Object.getPrototypeOf(HEVCSoftwareVideoDecoder.prototype)).toBe(CustomVideoDecoder.prototype);
+        expect(Object.getPrototypeOf(MediabunnyHEVCSoftwareVideoDecoder.prototype)).toBe(CustomVideoDecoder.prototype);
         decoder.close();
         mediabunnyDecoder.close();
     });
@@ -619,9 +591,7 @@ describe('HEVCSoftwareVideoDecoder', () => {
             throw destroyError;
         });
         const onError = vi.fn((): undefined => undefined);
-        const decoder = new MediabunnyHEVCSoftwareVideoDecoder(
-            createDependencies(backend).dependencies
-        );
+        const decoder = new MediabunnyHEVCSoftwareVideoDecoder(createDependencies(backend).dependencies);
         configureDecoder(decoder, { onError });
         let serializedCalls = Promise.resolve();
 
@@ -642,12 +612,8 @@ describe('HEVCSoftwareVideoDecoder', () => {
     it('waits for every live adapter to complete backend destruction', async () => {
         const firstBackend = new FakeHEVCDecoderBackend();
         const secondBackend = new FakeHEVCDecoderBackend();
-        const firstDecoder = new HEVCSoftwareVideoDecoder(
-            createDependencies(firstBackend).dependencies
-        );
-        const secondDecoder = new HEVCSoftwareVideoDecoder(
-            createDependencies(secondBackend).dependencies
-        );
+        const firstDecoder = new HEVCSoftwareVideoDecoder(createDependencies(firstBackend).dependencies);
+        const secondDecoder = new HEVCSoftwareVideoDecoder(createDependencies(secondBackend).dependencies);
         configureDecoder(firstDecoder);
         configureDecoder(secondDecoder);
         await firstDecoder.init();
@@ -885,18 +851,13 @@ describe('HEVCSoftwareVideoDecoder', () => {
         { matrix: 'bt709', primaries: 'smpte170m', transfer: 'smpte170m' },
         { matrix: 'smpte170m', primaries: 'smpte170m', transfer: 'pq' }
     ])('rejects a container color that contradicts a SMPTE 170M SPS: %o', containerColor => {
-        const decoder = new HEVCSoftwareVideoDecoder(
-            createDependencies(new FakeHEVCDecoderBackend()).dependencies
-        );
+        const decoder = new HEVCSoftwareVideoDecoder(createDependencies(new FakeHEVCDecoderBackend()).dependencies);
         configureDecoder(decoder, {
             colorSpace: { fullRange: false, ...containerColor },
             sequenceParameterSet: MAIN10_SMPTE170M_SPS
         });
 
-        expect(HEVCSoftwareVideoDecoder.supports(
-            'hevc',
-            (decoder as unknown as MutableDecoderContract).config
-        )).toBe(false);
+        expect(HEVCSoftwareVideoDecoder.supports('hevc', (decoder as unknown as MutableDecoderContract).config)).toBe(false);
         decoder.close();
     });
 
@@ -997,16 +958,10 @@ describe('HEVCSoftwareVideoDecoder', () => {
         configureDecoder(decoder);
         await decoder.init();
 
-        for (
-            let packetIndex = 0;
-            packetIndex < MAXIMUM_HEVC_PENDING_PICTURE_COUNT;
-            packetIndex += 1
-        ) {
+        for (let packetIndex = 0; packetIndex < MAXIMUM_HEVC_PENDING_PICTURE_COUNT; packetIndex += 1) {
             decoder.decode(createEncodedPacket(packetIndex, 0.04, packetIndex));
         }
-        expect(() => decoder.decode(createEncodedPacket(65, 0.04, 65))).toThrow(
-            'reorder window exceeded'
-        );
+        expect(() => decoder.decode(createEncodedPacket(65, 0.04, 65))).toThrow('reorder window exceeded');
         expect(() => decoder.flush()).toThrow('ended before every picture was output');
         decoder.close();
 
@@ -1017,9 +972,7 @@ describe('HEVCSoftwareVideoDecoder', () => {
         const secondDecoder = new HEVCSoftwareVideoDecoder(secondDependencyHarness.dependencies);
         configureDecoder(secondDecoder);
         await secondDecoder.init();
-        expect(() => secondDecoder.decode(createEncodedPacket(0, 0.04, 0))).toThrow(
-            'without packet timing'
-        );
+        expect(() => secondDecoder.decode(createEncodedPacket(0, 0.04, 0))).toThrow('without packet timing');
         secondDecoder.close();
     });
 
@@ -1039,9 +992,7 @@ describe('HEVCSoftwareVideoDecoder', () => {
         configureDecoder(decoder);
         await decoder.init();
 
-        expect(() => decoder.decode(createEncodedPacket(0, 0.04, 0))).toThrow(
-            'contradicts the active SPS'
-        );
+        expect(() => decoder.decode(createEncodedPacket(0, 0.04, 0))).toThrow('contradicts the active SPS');
         decoder.close();
     });
 

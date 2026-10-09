@@ -31,10 +31,7 @@ const MAXIMUM_HEVC_CONFIGURATION_BYTE_LENGTH = 1_024 * 1_024;
 const MINIMUM_DOLBY_VISION_CONFIGURATION_BYTE_LENGTH = 4;
 const MAXIMUM_DOLBY_VISION_CONFIGURATION_BYTE_LENGTH = 1_024;
 
-export type ISOBaseMediaByteRangeReader = (
-    offset: number,
-    byteLength: number
-) => Promise<Uint8Array | null>;
+export type ISOBaseMediaByteRangeReader = (offset: number, byteLength: number) => Promise<Uint8Array | null>;
 
 export type ISOBaseMediaDolbyVisionTrackConfiguration = {
     enhancementConfiguration: Uint8Array
@@ -119,9 +116,7 @@ function parseBox(
     }
     const compactSize = readUnsigned32(data, startOffset, containerEndOffset);
     const type = readFourCC(data, startOffset + 4, containerEndOffset);
-    const headerByteLength = compactSize === 1 ?
-        EXTENDED_BOX_HEADER_BYTE_LENGTH :
-        BASIC_BOX_HEADER_BYTE_LENGTH;
+    const headerByteLength = compactSize === 1 ? EXTENDED_BOX_HEADER_BYTE_LENGTH : BASIC_BOX_HEADER_BYTE_LENGTH;
     let boxByteLength = compactSize;
     if (compactSize === 1) {
         boxByteLength = readUnsigned64(data, startOffset + 8, containerEndOffset);
@@ -164,10 +159,7 @@ function parseChildren(
     return boxes;
 }
 
-function findUniqueBox(
-    boxes: readonly ISOBaseMediaBox[],
-    type: string
-): ISOBaseMediaBox | null {
+function findUniqueBox(boxes: readonly ISOBaseMediaBox[], type: string): ISOBaseMediaBox | null {
     const matchingBoxes = boxes.filter((box: ISOBaseMediaBox): boolean => box.type === type);
     if (matchingBoxes.length > 1) {
         throw new TypeError(`The ISO base media ${type} box is duplicated`);
@@ -214,25 +206,15 @@ function parseTrackID(data: Uint8Array, trackBox: ISOBaseMediaBox): number | nul
 }
 
 function parseHandlerType(data: Uint8Array, trackBox: ISOBaseMediaBox): string | null {
-    const handlerBox = findUniqueNestedBox(
-        data,
-        trackBox,
-        [ MEDIA_BOX, HANDLER_BOX ]
-    );
+    const handlerBox = findUniqueNestedBox(data, trackBox, [ MEDIA_BOX, HANDLER_BOX ]);
     if (!handlerBox || handlerBox.dataSize < 12) {
         return null;
     }
     return readFourCC(data, handlerBox.dataOffset + 8, handlerBox.endOffset);
 }
 
-function parseDolbyVisionConfiguration(
-    data: Uint8Array,
-    box: ISOBaseMediaBox
-): ParsedDolbyVisionConfiguration {
-    if (
-        box.dataSize < MINIMUM_DOLBY_VISION_CONFIGURATION_BYTE_LENGTH
-        || box.dataSize > MAXIMUM_DOLBY_VISION_CONFIGURATION_BYTE_LENGTH
-    ) {
+function parseDolbyVisionConfiguration(data: Uint8Array, box: ISOBaseMediaBox): ParsedDolbyVisionConfiguration {
+    if (box.dataSize < MINIMUM_DOLBY_VISION_CONFIGURATION_BYTE_LENGTH || box.dataSize > MAXIMUM_DOLBY_VISION_CONFIGURATION_BYTE_LENGTH) {
         throw new TypeError('The ISO base media Dolby Vision configuration size is unsupported');
     }
     const configurationBits = (data[box.dataOffset + 2] * 256) + data[box.dataOffset + 3];
@@ -245,33 +227,21 @@ function parseDolbyVisionConfiguration(
 }
 
 function copyHEVCConfiguration(data: Uint8Array, box: ISOBaseMediaBox): Uint8Array {
-    if (
-        box.dataSize < MINIMUM_HEVC_CONFIGURATION_BYTE_LENGTH
-        || box.dataSize > MAXIMUM_HEVC_CONFIGURATION_BYTE_LENGTH
-    ) {
+    if (box.dataSize < MINIMUM_HEVC_CONFIGURATION_BYTE_LENGTH || box.dataSize > MAXIMUM_HEVC_CONFIGURATION_BYTE_LENGTH) {
         throw new TypeError('The ISO base media HEVC configuration size is unsupported');
     }
     return data.slice(box.dataOffset, box.endOffset);
 }
 
-function parseVideoSampleEntry(
-    data: Uint8Array,
-    sampleEntryBox: ISOBaseMediaBox
-): ParsedVideoSampleEntry {
+function parseVideoSampleEntry(data: Uint8Array, sampleEntryBox: ISOBaseMediaBox): ParsedVideoSampleEntry {
     const childStartOffset = sampleEntryBox.dataOffset + VISUAL_SAMPLE_ENTRY_FIELD_BYTE_LENGTH;
     if (childStartOffset > sampleEntryBox.endOffset) {
         throw new TypeError('The ISO base media visual sample entry is truncated');
     }
     const childBoxes = parseChildren(data, childStartOffset, sampleEntryBox.endOffset);
     const hevcConfigurationBox = findUniqueBox(childBoxes, HEVC_CONFIGURATION_BOX);
-    const enhancementHEVCConfigurationBox = findUniqueBox(
-        childBoxes,
-        ENHANCEMENT_HEVC_CONFIGURATION_BOX
-    );
-    const dolbyVisionConfigurationBox = findUniqueBox(
-        childBoxes,
-        DOLBY_VISION_CONFIGURATION_BOX
-    );
+    const enhancementHEVCConfigurationBox = findUniqueBox(childBoxes, ENHANCEMENT_HEVC_CONFIGURATION_BOX);
+    const dolbyVisionConfigurationBox = findUniqueBox(childBoxes, DOLBY_VISION_CONFIGURATION_BOX);
     return {
         dolbyVisionConfiguration: dolbyVisionConfigurationBox ?
             parseDolbyVisionConfiguration(data, dolbyVisionConfigurationBox) :
@@ -286,10 +256,7 @@ function parseVideoSampleEntry(
     };
 }
 
-function parseVideoSampleDescription(
-    data: Uint8Array,
-    trackBox: ISOBaseMediaBox
-): ParsedVideoSampleEntry | null {
+function parseVideoSampleDescription(data: Uint8Array, trackBox: ISOBaseMediaBox): ParsedVideoSampleEntry | null {
     const sampleDescriptionBox = findUniqueNestedBox(
         data,
         trackBox,
@@ -314,23 +281,13 @@ function parseVideoSampleDescription(
     return parseVideoSampleEntry(data, sampleEntryBox);
 }
 
-function parseVideoDependencyTrackIDs(
-    data: Uint8Array,
-    trackBox: ISOBaseMediaBox
-): readonly number[] {
+function parseVideoDependencyTrackIDs(data: Uint8Array, trackBox: ISOBaseMediaBox): readonly number[] {
     const trackReferenceBox = findUniqueNestedBox(data, trackBox, [ TRACK_REFERENCE_BOX ]);
     if (!trackReferenceBox) {
         return [];
     }
-    const referenceBoxes = parseChildren(
-        data,
-        trackReferenceBox.dataOffset,
-        trackReferenceBox.endOffset
-    );
-    const videoDependencyBox = findUniqueBox(
-        referenceBoxes,
-        VIDEO_DEPENDENCY_REFERENCE_BOX
-    );
+    const referenceBoxes = parseChildren(data, trackReferenceBox.dataOffset, trackReferenceBox.endOffset);
+    const videoDependencyBox = findUniqueBox(referenceBoxes, VIDEO_DEPENDENCY_REFERENCE_BOX);
     if (!videoDependencyBox) {
         return [];
     }
@@ -338,11 +295,7 @@ function parseVideoDependencyTrackIDs(
         throw new TypeError('The ISO base media vdep reference size is invalid');
     }
     const trackIDs: number[] = [];
-    for (
-        let offset = videoDependencyBox.dataOffset;
-        offset < videoDependencyBox.endOffset;
-        offset += 4
-    ) {
+    for (let offset = videoDependencyBox.dataOffset; offset < videoDependencyBox.endOffset; offset += 4) {
         const trackID = readUnsigned32(data, offset, videoDependencyBox.endOffset);
         if (trackID <= 0) {
             throw new TypeError('The ISO base media vdep track ID is invalid');
@@ -358,9 +311,7 @@ function parseTrack(data: Uint8Array, trackBox: ISOBaseMediaBox): ParsedTrack {
         handlerType,
         trackID: parseTrackID(data, trackBox),
         videoDependencyTrackIDs: parseVideoDependencyTrackIDs(data, trackBox),
-        videoSampleEntry: handlerType === VIDEO_HANDLER_TYPE ?
-            parseVideoSampleDescription(data, trackBox) :
-            null
+        videoSampleEntry: handlerType === VIDEO_HANDLER_TYPE ? parseVideoSampleDescription(data, trackBox) : null
     };
 }
 
@@ -412,10 +363,7 @@ function getInterleavedEnhancementConfiguration(track: ParsedTrack): Uint8Array 
     return sampleEntry.enhancementHEVCConfiguration;
 }
 
-function parseMovieConfiguration(
-    data: Uint8Array,
-    selectedTrackNumber: number
-): ISOBaseMediaDolbyVisionTrackConfiguration | null {
+function parseMovieConfiguration(data: Uint8Array, selectedTrackNumber: number): ISOBaseMediaDolbyVisionTrackConfiguration | null {
     const movieChildren = parseChildren(data, 0, data.byteLength);
     const trackBoxes = movieChildren.filter((box: ISOBaseMediaBox): boolean => (
         box.type === TRACK_BOX
@@ -441,9 +389,7 @@ function parseMovieConfiguration(
     if (!selectedTrack) {
         return null;
     }
-    const interleavedEnhancementConfiguration = getInterleavedEnhancementConfiguration(
-        selectedTrack
-    );
+    const interleavedEnhancementConfiguration = getInterleavedEnhancementConfiguration(selectedTrack);
     if (interleavedEnhancementConfiguration) {
         return {
             enhancementConfiguration: interleavedEnhancementConfiguration,
@@ -472,10 +418,7 @@ function parseMovieConfiguration(
     };
 }
 
-async function readBoxAt(
-    reader: ISOBaseMediaByteRangeReader,
-    offset: number
-): Promise<ISOBaseMediaBox | null> {
+async function readBoxAt(reader: ISOBaseMediaByteRangeReader, offset: number): Promise<ISOBaseMediaBox | null> {
     const data = await reader(offset, EXTENDED_BOX_HEADER_BYTE_LENGTH);
     if (!data || data.byteLength < BASIC_BOX_HEADER_BYTE_LENGTH) {
         return null;
@@ -489,12 +432,8 @@ function parseRangeBoxHeader(data: Uint8Array, absoluteOffset: number): ISOBaseM
     if (compactSize === 0) {
         throw new TypeError('A top-level ISO base media box has an unknown size');
     }
-    const headerByteLength = compactSize === 1 ?
-        EXTENDED_BOX_HEADER_BYTE_LENGTH :
-        BASIC_BOX_HEADER_BYTE_LENGTH;
-    const boxByteLength = compactSize === 1 ?
-        readUnsigned64(data, 8, data.byteLength) :
-        compactSize;
+    const headerByteLength = compactSize === 1 ? EXTENDED_BOX_HEADER_BYTE_LENGTH : BASIC_BOX_HEADER_BYTE_LENGTH;
+    const boxByteLength = compactSize === 1 ? readUnsigned64(data, 8, data.byteLength) : compactSize;
     if (boxByteLength < headerByteLength) {
         throw new TypeError('The ISO base media box size is invalid');
     }
@@ -512,9 +451,7 @@ function parseRangeBoxHeader(data: Uint8Array, absoluteOffset: number): ISOBaseM
     };
 }
 
-async function findMovieBox(
-    reader: ISOBaseMediaByteRangeReader
-): Promise<ISOBaseMediaBox | null> {
+async function findMovieBox(reader: ISOBaseMediaByteRangeReader): Promise<ISOBaseMediaBox | null> {
     let offset = 0;
     for (let boxIndex = 0; boxIndex < MAXIMUM_TOP_LEVEL_BOX_COUNT; boxIndex += 1) {
         const box = await readBoxAt(reader, offset);
@@ -562,10 +499,7 @@ export async function readISOBaseMediaDolbyVisionTrackConfiguration(
         return null;
     }
     try {
-        return await readISOBaseMediaDolbyVisionTrackConfigurationStrict(
-            reader,
-            selectedTrackNumber
-        );
+        return await readISOBaseMediaDolbyVisionTrackConfigurationStrict(reader, selectedTrackNumber);
     } catch {
         return null;
     }

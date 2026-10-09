@@ -14,12 +14,7 @@ import {
 function findAnnexBNALUnit(data: Uint8Array, nalUnitType: number): Uint8Array {
     const startOffsets: number[] = [];
     for (let offset = 0; offset + 4 <= data.byteLength; offset += 1) {
-        if (
-            data[offset] === 0
-            && data[offset + 1] === 0
-            && data[offset + 2] === 0
-            && data[offset + 3] === 1
-        ) {
+        if (data[offset] === 0 && data[offset + 1] === 0 && data[offset + 2] === 0 && data[offset + 3] === 1) {
             startOffsets.push(offset);
         }
     }
@@ -41,9 +36,7 @@ describe('ExternalHDRAuthorizationVector', () => {
 
         expect(accessUnit).toHaveLength(4_471);
         // The runtime shader signature embeds this digest, so it must describe the embedded bytes
-        expect(EXTERNAL_HDR_AUTHORIZATION_VECTOR_SHA256).toBe(
-            createHash('sha256').update(accessUnit).digest('hex')
-        );
+        expect(EXTERNAL_HDR_AUTHORIZATION_VECTOR_SHA256).toBe(createHash('sha256').update(accessUnit).digest('hex'));
         expect(configuration).toMatchObject({
             bitDepth: 10,
             codedHeight: EXTERNAL_HDR_AUTHORIZATION_CODED_HEIGHT,

@@ -182,12 +182,10 @@ type CustomAudioOutputChannelRoute = Readonly<{
 
 /**
  * Maps a decoded channel count to its layout when the decoder reports no speaker mask.
- * Three channels are 3.0 (FL, FR, FC), the order AAC, FLAC, Opus, and Vorbis decode to;
+ * Three channels are 3.0 (FL, FR, FC), the order AAC, FLAC, Opus, and Vorbis decode to.
  * 2.1 and 3.0(back) beds come only from a decoder's speaker mask.
  */
-export function getCustomAudioChannelLayout(
-    channelCount: number
-): CustomAudioChannelLayout | null {
+export function getCustomAudioChannelLayout(channelCount: number): CustomAudioChannelLayout | null {
     switch (channelCount) {
         case CUSTOM_MONO_INPUT_CHANNEL_COUNT:
             return CUSTOM_MONO_CHANNEL_LAYOUT;
@@ -207,8 +205,7 @@ export function getCustomAudioChannelLayout(
 }
 
 /**
- * Reports whether converting the layout to the output sums channels, which can
- * exceed full scale, so the output stage must run its peak limiter.
+ * Reports whether converting the layout to the output sums channels, which can exceed full scale, so the output stage must run its peak limiter.
  */
 export function requiresCustomAudioFoldDown(
     layout: CustomAudioChannelLayout,
@@ -217,14 +214,9 @@ export function requiresCustomAudioFoldDown(
     return layout.channels.length > outputChannelCount;
 }
 
-function requireLayoutChannelData(
-    channelData: readonly Float32Array[],
-    layout: CustomAudioChannelLayout
-): number {
+function requireLayoutChannelData(channelData: readonly Float32Array[], layout: CustomAudioChannelLayout): number {
     if (channelData.length !== layout.channels.length) {
-        throw new RangeError(
-            `${layout.id} audio requires exactly ${layout.channels.length} input channels`
-        );
+        throw new RangeError(`${layout.id} audio requires exactly ${layout.channels.length} input channels`);
     }
     const frameCount = channelData[0]?.length ?? 0;
     if (frameCount <= 0) {
@@ -238,12 +230,11 @@ function requireLayoutChannelData(
     return frameCount;
 }
 
-/** Applies the one shared channel-layout policy before decoded PCM output. */
+/** Mixes a decoded layout to stereo: mono is duplicated, stereo passes through, and every larger bed uses its downmix. */
 export function mixCustomAudioToStereo(
     channelData: readonly Float32Array[],
     layout: CustomAudioChannelLayout,
-    downmixAlgorithm: CustomAudioDownmixAlgorithm =
-    DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
+    downmixAlgorithm: CustomAudioDownmixAlgorithm = DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
     downmixSettings: AudioDownmixSettings = createDefaultAudioDownmixSettings(),
     downmixSettingsRamp: AudioDownmixSettingsRamp | null = null
 ): StereoChannelData {
@@ -355,9 +346,8 @@ function getSurroundOutputChannelRoutes(
 }
 
 /**
- * Maps each decoded channel by name into a 5.1 or 7.1 output. Missing speakers
- * stay silent; 7.1 sides and backs fold into the 5.1 surrounds, and a back
- * center splits across the back or surround pair, each at sqrt(1/2).
+ * Maps each decoded channel by name into a 5.1 or 7.1 output.
+ * Missing speakers stay silent; 7.1 sides and backs fold into the 5.1 surrounds, and a back center splits across the back or surround pair, each at sqrt(1/2).
  */
 function mapCustomAudioToSurround(
     channelData: readonly Float32Array[],
@@ -370,20 +360,12 @@ function mapCustomAudioToSurround(
     }
 
     const outputChannelData: Float32Array[] = [];
-    for (let outputChannelIndex = 0;
-        outputChannelIndex < outputChannelCount;
-        outputChannelIndex += 1) {
+    for (let outputChannelIndex = 0; outputChannelIndex < outputChannelCount; outputChannelIndex += 1) {
         outputChannelData.push(new Float32Array(frameCount));
     }
-    for (let inputChannelIndex = 0;
-        inputChannelIndex < layout.channels.length;
-        inputChannelIndex += 1) {
+    for (let inputChannelIndex = 0; inputChannelIndex < layout.channels.length; inputChannelIndex += 1) {
         const inputChannel = channelData[inputChannelIndex];
-        const routes = getSurroundOutputChannelRoutes(
-            layout.channels[inputChannelIndex],
-            layout,
-            outputChannelCount
-        );
+        const routes = getSurroundOutputChannelRoutes(layout.channels[inputChannelIndex], layout, outputChannelCount);
         for (const route of routes) {
             const outputChannel = outputChannelData[route.outputChannelIndex];
             for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
@@ -395,15 +377,13 @@ function mapCustomAudioToSurround(
 }
 
 /**
- * Converts any decoded layout to the output layout by channel name: an exact
- * 5.1 or 7.1 bed passes through, and stereo output uses the selected downmix.
+ * Converts any decoded layout to the output layout by channel name: an exact 5.1 or 7.1 bed passes through, and stereo output uses the selected downmix.
  */
 export function prepareCustomAudioOutputChannelData(
     channelData: readonly Float32Array[],
     layout: CustomAudioChannelLayout,
     outputChannelCount: CustomAudioOutputChannelCount,
-    downmixAlgorithm: CustomAudioDownmixAlgorithm =
-    DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
+    downmixAlgorithm: CustomAudioDownmixAlgorithm = DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
     downmixSettings: AudioDownmixSettings = createDefaultAudioDownmixSettings(),
     downmixSettingsRamp: AudioDownmixSettingsRamp | null = null
 ): CustomAudioOutputChannelData {

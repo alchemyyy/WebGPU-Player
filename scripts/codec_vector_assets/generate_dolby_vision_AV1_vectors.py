@@ -15,8 +15,7 @@ For each sub-profile:
 - FFmpeg remuxes that file into both vectors, writing the container records from the configuration it read.
 The 10.0 MP4 sample entry is then renamed dav1, which FFmpeg cannot write.
 
-Mode: pinned build.
-Another FFmpeg build encodes and muxes other bytes, so the generator refuses any build but the pinned one.
+The generator refuses any FFmpeg build but the pinned one, because another build encodes and muxes other bytes.
 Before writing, it validates:
 - every temporal unit;
 - the container records, color tags, and packets that FFprobe reads back;
@@ -1254,7 +1253,7 @@ def require_injected_stream(
     source_RPUs: Sequence[SourceRPU],
     label: str,
 ) -> None:
-    """Requires every temporal unit to carry exactly the source RPU of its frame."""
+    """Requires each temporal unit to carry one RPU, the source RPU of its frame."""
 
     require_equal(
         [[RPU.hex() for RPU in RPUs] for RPUs in read_dolby_vision_RPUs(injected_stream.data)],

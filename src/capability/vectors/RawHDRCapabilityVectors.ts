@@ -16,7 +16,7 @@ export type RawHDRCapabilityVector = {
 // AV1 uses libaom-av1 with -cpu-used 8 -crf 0 -still-picture 1.
 // VP9 uses libvpx-vp9 with -deadline realtime -cpu-used 8 -lossless 1 -row-mt 1.
 // Both inputs are color=c=gray:size=3840x2160:rate=30,format=yuv420p10le.
-// The IVF container header and per-frame header are intentionally excluded.
+// The IVF container header and per-frame header are excluded
 const AV1_MAIN_10_KEY_FRAME_BASE64 = [
     'EgAKCBsu+/4b+oCAMpcGEAAASzTNQxF2g12I+iXq7fz80xEFAabpe283IPJz8va+',
     'mkdeoG4m+wsYqJN0LNZq00lX5Kj8D9XWItvFr1OF6lWZ9WtoaFTIcTyP0hx5DOU',
@@ -114,10 +114,8 @@ function decodeBase64(base64: string): Uint8Array {
     return bytes;
 }
 
-/** Returns a new exact-resolution encoded keyframe for a raw HDR capability probe. */
-export function createRawHDRCapabilityVector(
-    codec: RawHDRCapabilityVectorCodec
-): RawHDRCapabilityVector {
+/** Returns a new copy of the codec's 4K keyframe vector for a raw HDR capability probe. */
+export function createRawHDRCapabilityVector(codec: RawHDRCapabilityVectorCodec): RawHDRCapabilityVector {
     switch (codec) {
         case 'av1':
             return {

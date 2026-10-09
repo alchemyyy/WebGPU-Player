@@ -20,9 +20,7 @@ type AudioContextWithSink = AudioContext & {
 };
 
 type MediaDevicesWithAudioOutputSelection = MediaDevices & {
-    selectAudioOutput?: (
-        options?: Readonly<{ deviceId?: string }>
-    ) => Promise<MediaDeviceInfo>
+    selectAudioOutput?: (options?: Readonly<{ deviceId?: string }>) => Promise<MediaDeviceInfo>
 };
 
 type RoutingTargetKind = 'audio-context' | 'media-element';
@@ -146,8 +144,7 @@ export type WebGPUAudioContextRegistrationOptions = Readonly<{
 
 function getDefaultMediaDevices(): MediaDevicesWithAudioOutputSelection | null {
     // eslint-disable-next-line compat/compat -- Feature-detected secure-context API
-    return globalThis.navigator?.mediaDevices as MediaDevicesWithAudioOutputSelection | undefined
-        ?? null;
+    return globalThis.navigator?.mediaDevices as MediaDevicesWithAudioOutputSelection | undefined ?? null;
 }
 
 function isPageHidden(): boolean {
@@ -261,9 +258,8 @@ export class WebGPUAudioOutputManager {
     }
 
     /**
-     * Rebuilds every AudioContext sink so the browser re-reads the device behind
-     * it. Chromium can move a default output to another device without telling
-     * the page, which leaves the page with a stale channel count.
+     * Rebuilds every AudioContext sink so the browser re-reads the device behind it.
+     * Chromium can move a default output to another device without telling the page, which leaves the page with a stale channel count.
      */
     public redetectAudioOutputs(): Promise<void> {
         this.requireUsable();
@@ -342,9 +338,8 @@ export class WebGPUAudioOutputManager {
     }
 
     /**
-     * Registers an exact AudioContext generation before its worklet becomes
-     * active. A context created without an output device has its sink rebuilt
-     * once an output appears, because Chromium never moves that output itself.
+     * Registers one AudioContext generation before its worklet becomes active.
+     * A context created without an output device has its sink rebuilt once an output appears, because Chromium never moves that output itself.
      */
     public registerAudioContext(
         audioContext: AudioContext,
@@ -380,9 +375,7 @@ export class WebGPUAudioOutputManager {
     }
 
     /** Registers an owned media element before a source can autoplay. */
-    public registerMediaElement(
-        mediaElement: HTMLMediaElement
-    ): WebGPUAudioOutputTargetLease {
+    public registerMediaElement(mediaElement: HTMLMediaElement): WebGPUAudioOutputTargetLease {
         return this.registerTarget({
             failedSinkIds: new Set<string>(),
             hasAppliedSink: false,
@@ -462,9 +455,7 @@ export class WebGPUAudioOutputManager {
         };
         registeredTarget.leases.set(leaseIdentifier, leaseState);
         // A pending rebuild needs fresh output presence before the first route
-        void this.scheduleReconciliation(
-            this.devices.length === 0 || registeredTarget.outputRebuildRequired
-        );
+        void this.scheduleReconciliation(this.devices.length === 0 || registeredTarget.outputRebuildRequired);
         let releasePromise: Promise<void> | null = null;
         return {
             ready,
@@ -596,8 +587,7 @@ export class WebGPUAudioOutputManager {
     }
 
     private createRoutingDecision(enumerationFailed: boolean): RoutingDecision {
-        let selectedDeviceAvailability: RoutingDecision['selectedDeviceAvailability'] =
-            'unavailable';
+        let selectedDeviceAvailability: RoutingDecision['selectedDeviceAvailability'] = 'unavailable';
         if (this.selectedDeviceId) {
             if (enumerationFailed || !this.hasSuccessfulDeviceEnumeration) {
                 selectedDeviceAvailability = 'unknown';
@@ -621,10 +611,7 @@ export class WebGPUAudioOutputManager {
         };
     }
 
-    private async routeTargets(
-        decision: RoutingDecision,
-        requestedRevision: number
-    ): Promise<RoutingSummary | null> {
+    private async routeTargets(decision: RoutingDecision, requestedRevision: number): Promise<RoutingSummary | null> {
         let appliedSinkId: string | null = null;
         let routeFailure: unknown = null;
         let targetCount = 0;
@@ -780,23 +767,18 @@ export class WebGPUAudioOutputManager {
         );
     }
 
-    private shouldPreserveTargetRoute(
-        target: RoutingTarget,
-        decision: RoutingDecision
-    ): boolean {
+    private shouldPreserveTargetRoute(target: RoutingTarget, decision: RoutingDecision): boolean {
         if (!target.hasAppliedSink
             || target.routeRecoveryRequired
             || target.failedSinkIds.has(target.lastAppliedSinkId)
             || this.isOutputRebuildDue(target)) {
             return false;
         }
-        // Browsers resolve a same-ID sink request without touching the output,
-        // so an unchanged route is kept even across device changes
+        // Browsers resolve a same-ID sink request without touching the output, so an unchanged route is kept even across device changes
         if (target.lastAppliedSinkId === decision.requestedSinkId) {
             return true;
         }
-        return decision.preserveExistingRoutes
-            && target.failedSinkIds.has(decision.requestedSinkId);
+        return decision.preserveExistingRoutes && target.failedSinkIds.has(decision.requestedSinkId);
     }
 
     private isOutputRebuildDue(target: RoutingTarget): boolean {
@@ -805,10 +787,7 @@ export class WebGPUAudioOutputManager {
             && this.outputDevicePresence === 'present';
     }
 
-    private applyTargetWithoutRouting(
-        target: RoutingTarget,
-        requestedSinkId: string
-    ): TargetRoutingResult {
+    private applyTargetWithoutRouting(target: RoutingTarget, requestedSinkId: string): TargetRoutingResult {
         if (!requestedSinkId) {
             target.hasAppliedSink = true;
             target.lastAppliedSinkId = requestedSinkId;
@@ -822,10 +801,7 @@ export class WebGPUAudioOutputManager {
         };
     }
 
-    private createCandidateSinkIds(
-        target: RoutingTarget,
-        decision: RoutingDecision
-    ): string[] {
+    private createCandidateSinkIds(target: RoutingTarget, decision: RoutingDecision): string[] {
         const requestedSinkId = decision.requestedSinkId;
         const candidateSinkIds: string[] = [];
         if (!target.failedSinkIds.has(requestedSinkId)) {
@@ -924,8 +900,7 @@ export class WebGPUAudioOutputManager {
         return { status: 'success' };
     }
 
-    // Detaching first turns the next sink request into a real change, which makes
-    // the browser open a fresh output with the parameters of a present device
+    // Detaching first turns the next sink request into a real change, which makes the browser open a fresh output with the parameters of a present device
     private async detachTargetSink(target: RoutingTarget): Promise<void> {
         try {
             await target.detachSink?.();
@@ -935,18 +910,12 @@ export class WebGPUAudioOutputManager {
         }
     }
 
-    private markSinkFailed(
-        target: RoutingTarget,
-        candidateSinkId: string
-    ): void {
+    private markSinkFailed(target: RoutingTarget, candidateSinkId: string): void {
         target.failedSinkIds.add(candidateSinkId);
         target.routeRecoveryRequired = true;
     }
 
-    private async resumeAfterFailedSinkChange(
-        target: RoutingTarget,
-        sinkFailure: unknown
-    ): Promise<unknown> {
+    private async resumeAfterFailedSinkChange(target: RoutingTarget, sinkFailure: unknown): Promise<unknown> {
         try {
             await this.resumeTargetIfIntended(target);
             return sinkFailure;
@@ -1016,13 +985,11 @@ export class WebGPUAudioOutputManager {
         if (target.hasAppliedSink) {
             this.markSinkFailed(target, target.lastAppliedSinkId);
         }
-        // NOTE: A context created with an output device keeps real stream
-        // parameters, so resuming it reaches a device again without a rebuild
+        // NOTE: A context created with an output device keeps real stream parameters, so resuming it reaches a device again without a rebuild
         void this.scheduleReconciliation(false);
     }
 
-    // Chromium dispatches devicechange only with microphone permission, so a
-    // context waiting for an output device learns of one through enumeration
+    // Chromium dispatches devicechange only with microphone permission, so a context waiting for an output device learns of one through enumeration
     private hasPendingOutputRecovery(): boolean {
         for (const target of this.routingTargets.values()) {
             if (target.detachSink !== undefined
@@ -1034,9 +1001,8 @@ export class WebGPUAudioOutputManager {
     }
 
     /**
-     * Polls while recovery is pending and the page is visible, retrying every
-     * interval without a limit. A hidden page stops polling and probes again
-     * as soon as it becomes visible.
+     * Polls while recovery is pending and the page is visible, retrying every interval without a limit.
+     * A hidden page stops polling and probes again as soon as it becomes visible.
      */
     private updateOutputRecoveryPoll(): void {
         const recoveryPending = !this.destroyed && this.hasPendingOutputRecovery();
@@ -1136,10 +1102,7 @@ export class WebGPUAudioOutputManager {
         leaseState.resolveReady();
     }
 
-    private setSnapshot(
-        status: WebGPUAudioOutputStatus,
-        messageCode: WebGPUAudioOutputMessageCode
-    ): void {
+    private setSnapshot(status: WebGPUAudioOutputStatus, messageCode: WebGPUAudioOutputMessageCode): void {
         this.snapshotStatus = status;
         this.snapshotMessageCode = messageCode;
         const snapshot = this.getSnapshot();

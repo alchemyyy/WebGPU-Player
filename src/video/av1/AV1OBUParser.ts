@@ -139,7 +139,5 @@ export function getAV1ITUTT35Message(obu: AV1OBU): Uint8Array | null {
         return null;
     }
     const metadataType = readLEB128(obu.payload, 0, 'metadata_type');
-    return metadataType.value === AV1_METADATA_TYPE_ITUT_T35 ?
-        obu.payload.subarray(metadataType.byteLength) :
-        null;
+    return metadataType.value === AV1_METADATA_TYPE_ITUT_T35 ? obu.payload.subarray(metadataType.byteLength) : null;
 }

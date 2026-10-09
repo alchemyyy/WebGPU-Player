@@ -35,10 +35,7 @@ export type OwnedNativeHEVCVideoDecoderOptions = {
  * Returns a key access unit's alternative transfer characteristics SEI value.
  * As in FFmpeg, SEI errors are not fatal: a malformed SEI counts as absent, so the SPS VUI alone must prove the route.
  */
-function findKeyPacketPreferredTransferCharacteristics(
-    accessUnit: Uint8Array,
-    format: HEVCNALFormat
-): number | null {
+function findKeyPacketPreferredTransferCharacteristics(accessUnit: Uint8Array, format: HEVCNALFormat): number | null {
     try {
         return findHEVCPreferredTransferCharacteristics(accessUnit, format);
     } catch (error) {
@@ -66,7 +63,7 @@ export default class OwnedNativeHEVCVideoDecoder {
         private readonly options: OwnedNativeHEVCVideoDecoderOptions = {}
     ) {}
 
-    /** Creates and configures the native decoder exactly once. */
+    /** Creates and configures the native decoder. A second call, or a call after close(), throws. */
     public async init(): Promise<void> {
         if (this.closed) {
             throw new Error('The owned native HEVC decoder is closed');
@@ -85,17 +82,14 @@ export default class OwnedNativeHEVCVideoDecoder {
         });
         decoder.ondequeue = (): void => this.callbacks.onProgress();
         try {
-            const neutralizeHDRColorMetadata =
-                this.options.neutralizeHDRColorMetadata === true;
+            const neutralizeHDRColorMetadata = this.options.neutralizeHDRColorMetadata === true;
             if (neutralizeHDRColorMetadata) {
-                const neutralizedConfiguration =
-                    neutralizeNativeHDRHEVCDecoderConfigWithValidation(
-                        this.config,
-                        this.requireNativeHDRTransfer()
-                    );
+                const neutralizedConfiguration = neutralizeNativeHDRHEVCDecoderConfigWithValidation(
+                    this.config,
+                    this.requireNativeHDRTransfer()
+                );
                 decoder.configure(neutralizedConfiguration.configuration);
-                this.nativeHDRColorDescriptionValidated =
-                    neutralizedConfiguration.decoderDescriptionValidated;
+                this.nativeHDRColorDescriptionValidated = neutralizedConfiguration.decoderDescriptionValidated;
             } else {
                 decoder.configure(this.config);
                 this.nativeHDRColorDescriptionValidated = false;
@@ -111,7 +105,7 @@ export default class OwnedNativeHEVCVideoDecoder {
         this.decoder = decoder;
     }
 
-    /** Queues one cleaned base-layer packet or deliberately drops leading RASL. */
+    /** Queues one cleaned base-layer packet, or drops a leading RASL picture and returns false. */
     public decode(packet: EncodedPacket): boolean {
         const decoder = this.requireDecoder();
         if (this.currentPacketIndex > 0 && !this.raslSkipped) {
@@ -123,10 +117,7 @@ export default class OwnedNativeHEVCVideoDecoder {
 
         let decodedPacketData = packet.data;
         if (this.currentPacketIndex === 0) {
-            const sanitizedData = sanitizeHEVCAccessUnitForChromium(
-                decodedPacketData,
-                this.inputFormat
-            );
+            const sanitizedData = sanitizeHEVCAccessUnitForChromium(decodedPacketData, this.inputFormat);
             if (sanitizedData?.byteLength === 0) {
                 return false;
             }
@@ -137,9 +128,7 @@ export default class OwnedNativeHEVCVideoDecoder {
 
         decodedPacketData = this.neutralizeHDRPacketData(packet, decodedPacketData);
 
-        const decodedPacket = decodedPacketData === packet.data ?
-            packet :
-            packet.clone({ data: decodedPacketData });
+        const decodedPacket = decodedPacketData === packet.data ? packet : packet.clone({ data: decodedPacketData });
 
         decoder.decode(this.dependencies.createEncodedVideoChunk(decodedPacket));
         this.currentPacketIndex += 1;
@@ -165,10 +154,7 @@ export default class OwnedNativeHEVCVideoDecoder {
         return transfer;
     }
 
-    private neutralizeHDRPacketData(
-        packet: EncodedPacket,
-        packetData: Uint8Array
-    ): Uint8Array {
+    private neutralizeHDRPacketData(packet: EncodedPacket, packetData: Uint8Array): Uint8Array {
         if (this.options.neutralizeHDRColorMetadata !== true) {
             return packetData;
         }
@@ -186,14 +172,12 @@ export default class OwnedNativeHEVCVideoDecoder {
             }
         }
         if (!this.nativeHDRColorDescriptionValidated) {
-            throw new TypeError(
-                'Native HDR color neutralization requires a validated HEVC SPS'
-            );
+            throw new TypeError('Native HDR color neutralization requires a validated HEVC SPS');
         }
         return packetData;
     }
 
-    /** Closes the decoder exactly once and rejects later callbacks. */
+    /** Closes the decoder and any frame it outputs afterwards. Later calls do nothing. */
     public close(): void {
         if (this.closed) {
             return;

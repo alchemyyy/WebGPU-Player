@@ -17,10 +17,8 @@ export type NativeVideoCapabilityVector = Readonly<{
 // ffmpeg -f lavfi -i "color=c=black:s=64x64:r=1" -frames:v 1 -pix_fmt yuv420p -c:v libvpx-vp9 -deadline best -cpu-used 0 -g 1 -lossless 1 -f ivf vp9.ivf
 // ffmpeg -f lavfi -i "color=c=black:s=64x64:r=1" -frames:v 1 -pix_fmt yuv420p -c:v libaom-av1 -cpu-used 0 -crf 0 -g 1 -still-picture 1 -f ivf av1.ivf
 const AV1_MAIN_KEY_FRAME_BASE64 = 'EgAKBhgVf/+wCDIMEAAAAEsXxj38v/+g';
-const VP8_KEY_FRAME_BASE64 =
-    '8AIAnQEqQABAAABHCIWFiIWEiAICAAZwPEJgCrIg9zAA/v+rUIA=';
-const VP9_PROFILE_0_KEY_FRAME_BASE64 =
-    'gkmDQgAD8AP2ADgkHBgAAAAgAAB4uf///tk/AAVicz2A';
+const VP8_KEY_FRAME_BASE64 = '8AIAnQEqQABAAABHCIWFiIWEiAICAAZwPEJgCrIg9zAA/v+rUIA=';
+const VP9_PROFILE_0_KEY_FRAME_BASE64 = 'gkmDQgAD8AP2ADgkHBgAAAAgAAB4uf///tk/AAVicz2A';
 
 function decodeBase64(base64: string): Uint8Array {
     const decoded = globalThis.atob(base64);
@@ -32,9 +30,7 @@ function decodeBase64(base64: string): Uint8Array {
 }
 
 /** Returns a new exact native SDR codec keyframe for output qualification. */
-export function createNativeVideoCapabilityVector(
-    codec: NativeVideoCapabilityVectorCodec
-): NativeVideoCapabilityVector {
+export function createNativeVideoCapabilityVector(codec: NativeVideoCapabilityVectorCodec): NativeVideoCapabilityVector {
     switch (codec) {
         case 'av1':
             return {

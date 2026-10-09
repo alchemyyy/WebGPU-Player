@@ -608,9 +608,7 @@ describe('getDolbyVisionDeclaredBaseTransfer', () => {
         [ 3, null ],
         [ 15, null ]
     ])('declares AV1 Profile 10 compatibility ID %s as a %s base', (compatibilityID, transfer) => {
-        expect(getDolbyVisionDeclaredBaseTransfer(
-            createDescriptor(10, compatibilityID, 8)
-        )).toBe(transfer);
+        expect(getDolbyVisionDeclaredBaseTransfer(createDescriptor(10, compatibilityID, 8))).toBe(transfer);
     });
 
     it.each([

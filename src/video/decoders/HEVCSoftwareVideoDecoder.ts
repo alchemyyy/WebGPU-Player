@@ -164,10 +164,7 @@ function appendAnnexBNALUnit(output: Uint8Array, offset: number, nalUnit: Uint8A
     return offset + ANNEX_B_START_CODE.byteLength + nalUnit.byteLength;
 }
 
-function parseHVCCNALArrays(
-    description: Uint8Array,
-    arrayCount: number
-): Uint8Array[] {
+function parseHVCCNALArrays(description: Uint8Array, arrayCount: number): Uint8Array[] {
     const parameterSets: Uint8Array[] = [];
     let offset = 23;
     for (let arrayIndex = 0; arrayIndex < arrayCount; arrayIndex += 1) {
@@ -204,9 +201,7 @@ function parseHVCCNALArrays(
 }
 
 /** Parses one ISO/IEC 14496-15 HEVCDecoderConfigurationRecord. */
-export function parseHEVCDecoderConfiguration(
-    descriptionSource: AllowSharedBufferSource
-): HEVCDecoderConfiguration {
+export function parseHEVCDecoderConfiguration(descriptionSource: AllowSharedBufferSource): HEVCDecoderConfiguration {
     const description = toUint8Array(descriptionSource);
     if (
         description.byteLength < 23
@@ -229,8 +224,7 @@ export function parseHEVCDecoderConfiguration(
     const bitDepth = bitDepthValue as HEVCDecoderConfiguration['bitDepth'];
     const lengthSize = ((description[21] & 0x03) + 1) as 1 | 2 | 3 | 4;
     const arrayCount = description[22];
-    // Another layer's parameter sets, such as an alpha layer's that FFmpeg keeps in HVCC, do not describe the
-    // base layer, which is the only layer decoded
+    // Another layer's parameter sets, such as an alpha layer's that FFmpeg keeps in HVCC, do not describe the base layer, which is the only layer decoded
     const parameterSets = parseHVCCNALArrays(description, arrayCount).filter(
         (parameterSet: Uint8Array): boolean => (
             getHEVCNALUnitLayerID(parameterSet) === HEVC_BASE_LAYER_ID
@@ -274,10 +268,7 @@ function readLengthPrefix(data: Uint8Array, offset: number, lengthSize: number):
 }
 
 /** Converts one HVCC length-prefixed access unit to an Annex B packet. */
-export function convertHVCCPacketToAnnexB(
-    packetData: Uint8Array,
-    lengthSize: 1 | 2 | 3 | 4
-): AnnexBPacket {
+export function convertHVCCPacketToAnnexB(packetData: Uint8Array, lengthSize: 1 | 2 | 3 | 4): AnnexBPacket {
     if (packetData.byteLength === 0) {
         throw new TypeError('The HEVC packet is empty');
     }
@@ -314,10 +305,7 @@ export function convertHVCCPacketToAnnexB(
     return { data: output, hasVCLNALUnit };
 }
 
-function findAnnexBStartCode(
-    data: Uint8Array,
-    startOffset: number
-): { byteLength: 3 | 4; offset: number } | null {
+function findAnnexBStartCode(data: Uint8Array, startOffset: number): { byteLength: 3 | 4; offset: number } | null {
     for (let offset = startOffset; offset + 3 <= data.byteLength; offset += 1) {
         if (data[offset] !== 0 || data[offset + 1] !== 0) {
             continue;
@@ -412,9 +400,7 @@ function getPrimariesEquivalent(primaries: HEVCSPSColorPrimaries): HEVCSPSColorP
 }
 
 /** Returns the transfer whose curve a transfer uses: SMPTE 170M uses the BT.709 OETF. */
-function getTransferEquivalent(
-    transfer: HEVCSPSTransferCharacteristics
-): HEVCSPSTransferCharacteristics {
+function getTransferEquivalent(transfer: HEVCSPSTransferCharacteristics): HEVCSPSTransferCharacteristics {
     return transfer === 'smpte170m' ? 'bt709' : transfer;
 }
 
@@ -490,10 +476,7 @@ function mergeSampleColorSpace(
     } as VideoColorSpaceInit;
 }
 
-function spsConfigurationsMatch(
-    first: HEVCSPSConfiguration,
-    second: HEVCSPSConfiguration
-): boolean {
+function spsConfigurationsMatch(first: HEVCSPSConfiguration, second: HEVCSPSConfiguration): boolean {
     return first.bitDepth === second.bitDepth
         && first.chromaFormat === second.chromaFormat
         && first.codedHeight === second.codedHeight
@@ -516,9 +499,7 @@ function spsConfigurationsMatch(
         );
 }
 
-function parseConsistentSPSConfiguration(
-    sequenceParameterSets: readonly Uint8Array[]
-): HEVCSPSConfiguration {
+function parseConsistentSPSConfiguration(sequenceParameterSets: readonly Uint8Array[]): HEVCSPSConfiguration {
     if (sequenceParameterSets.length === 0) {
         throw new TypeError('The HEVC decoder configuration has no sequence parameter set');
     }
@@ -555,10 +536,7 @@ function hasSupportedConfiguredDimensions(config: VideoDecoderConfig): boolean {
         && isPositiveSafeInteger(config.codedHeight);
 }
 
-function validateSPSDimensionsAgainstConfig(
-    spsConfiguration: HEVCSPSConfiguration,
-    config: VideoDecoderConfig
-): void {
+function validateSPSDimensionsAgainstConfig(spsConfiguration: HEVCSPSConfiguration, config: VideoDecoderConfig): void {
     const configuredWidth = Number(config.codedWidth);
     const configuredHeight = Number(config.codedHeight);
     const matchesCodedDimensions = spsConfiguration.codedWidth === configuredWidth
@@ -607,9 +585,7 @@ function supportsHEVCConfiguration(codec: VideoCodec, config: VideoDecoderConfig
         const decoderConfiguration = parseHEVCDecoderConfiguration(config.description);
         const codecProfileIDC = getProfileIDCFromCodecString(config.codec);
         if (decoderConfiguration.sequenceParameterSets.length > 0) {
-            const spsConfiguration = parseConsistentSPSConfiguration(
-                decoderConfiguration.sequenceParameterSets
-            );
+            const spsConfiguration = parseConsistentSPSConfiguration(decoderConfiguration.sequenceParameterSets);
             validateSPSAgainstDecoderConfiguration(spsConfiguration, decoderConfiguration, config);
         } else if (sampleEntry === 'hvc1') {
             return false;
@@ -718,10 +694,7 @@ function getAnnexBSequenceParameterSets(packetData: Uint8Array): Uint8Array[] {
     return sequenceParameterSets;
 }
 
-function validateDecodedFrameAgainstSPS(
-    frame: HEVCFrame,
-    spsConfiguration: HEVCSPSConfiguration
-): void {
+function validateDecodedFrameAgainstSPS(frame: HEVCFrame, spsConfiguration: HEVCSPSConfiguration): void {
     if (
         !decodedDimensionsMatchSPS(frame.width, frame.height, spsConfiguration)
         || frame.bitDepth !== spsConfiguration.bitDepth
@@ -811,9 +784,7 @@ export default class HEVCSoftwareVideoDecoder {
     private spsConfiguration: HEVCSPSConfiguration | null = null;
     private streamInfo: HEVCStreamInfo | null = null;
 
-    public constructor(
-        private readonly dependencies: HEVCSoftwareVideoDecoderDependencies = DEFAULT_DEPENDENCIES
-    ) {
+    public constructor(private readonly dependencies: HEVCSoftwareVideoDecoderDependencies = DEFAULT_DEPENDENCIES) {
         const lifecycle = createSoftwareDecoderLifecycle();
         this.shutdownPromise = lifecycle.promise;
         this.shutdownResolver = lifecycle.resolve;
@@ -844,9 +815,7 @@ export default class HEVCSoftwareVideoDecoder {
             this.decoderConfiguration
             && this.decoderConfiguration.sequenceParameterSets.length > 0
         ) {
-            const spsConfiguration = parseConsistentSPSConfiguration(
-                this.decoderConfiguration.sequenceParameterSets
-            );
+            const spsConfiguration = parseConsistentSPSConfiguration(this.decoderConfiguration.sequenceParameterSets);
             validateSPSAgainstDecoderConfiguration(
                 spsConfiguration,
                 this.decoderConfiguration,
@@ -1133,13 +1102,10 @@ export class MediabunnyHEVCSoftwareVideoDecoder {
     private failed = false;
     private fatalErrorReported = false;
 
-    public constructor(
-        dependencies: HEVCSoftwareVideoDecoderDependencies = DEFAULT_DEPENDENCIES
-    ) {
+    public constructor(dependencies: HEVCSoftwareVideoDecoderDependencies = DEFAULT_DEPENDENCIES) {
         this.decoder = new HEVCSoftwareVideoDecoder(dependencies);
     }
 
-    /** Delegates exact capability checks to the strict decoder implementation. */
     public static supports(codec: VideoCodec, config: VideoDecoderConfig): boolean {
         return HEVCSoftwareVideoDecoder.supports(codec, config);
     }
@@ -1224,8 +1190,7 @@ export class MediabunnyHEVCSoftwareVideoDecoder {
     }
 }
 
-// Preserve Mediabunny's runtime decoder contract without downleveling a native
-// ES class constructor through this repository's ES5 TypeScript target
+// Preserve Mediabunny's runtime decoder contract without downleveling a native ES class constructor through the host build's ES5 TypeScript target
 Object.setPrototypeOf(HEVCSoftwareVideoDecoder.prototype, CustomVideoDecoder.prototype);
 Object.setPrototypeOf(MediabunnyHEVCSoftwareVideoDecoder.prototype, CustomVideoDecoder.prototype);
 

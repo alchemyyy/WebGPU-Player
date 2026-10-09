@@ -55,9 +55,7 @@ export function splitDolbyVisionAV1TemporalUnit(data: Uint8Array): DolbyVisionAV
     }
 
     return {
-        decoderData: rpuPayloads.length === 0 ?
-            data :
-            concatenateOBUs(retainedOBUs, retainedByteLength),
+        decoderData: rpuPayloads.length === 0 ? data : concatenateOBUs(retainedOBUs, retainedByteLength),
         hasFrame,
         rpuPayloads
     };

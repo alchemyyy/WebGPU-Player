@@ -62,8 +62,7 @@ function outputMatchesVector(
         return outputMatches;
     }
     const stereo = mixCustomAudioToStereo(output.channelData, output.channelLayout);
-    return getStereoChannelDataFingerprint(stereo)
-        === vector.expectedStereoFingerprint;
+    return getStereoChannelDataFingerprint(stereo) === vector.expectedStereoFingerprint;
 }
 
 function decodeVector(
@@ -84,9 +83,7 @@ function decodeVector(
 }
 
 /** The probe worker's environment: decoders from the requested libdcadec binary, timed by the worker's clock. */
-export function createDTSExactCapabilityRunnerEnvironment(
-    decoderWASM: DecoderWASMSource
-): DTSExactCapabilityRunnerEnvironment {
+export function createDTSExactCapabilityRunnerEnvironment(decoderWASM: DecoderWASMSource): DTSExactCapabilityRunnerEnvironment {
     return {
         createDecoder: () => DTSSoftwareAudioDecoder.create(() => loadDTSDecoderModule(decoderWASM)),
         now: () => performance.now()
@@ -108,24 +105,13 @@ export async function runDTSExactCapabilityQualification(
         for (const vector of vectors) {
             const { output } = decodeVector(decoder, vector.accessUnits);
             if (!outputMatchesVector(output, vector)) {
-                return createFailureResponse(
-                    'output-mismatch',
-                    libraryVersion,
-                    verifiedVectorCount,
-                    verifiedProfileMask
-                );
+                return createFailureResponse('output-mismatch', libraryVersion, verifiedVectorCount, verifiedProfileMask);
             }
             verifiedVectorCount += 1;
             verifiedProfileMask |= output.profile;
         }
-        if (verifiedVectorCount !== DTS_QUALIFICATION_VECTOR_COUNT
-            || verifiedProfileMask !== DTS_QUALIFICATION_PROFILE_MASK) {
-            return createFailureResponse(
-                'output-mismatch',
-                libraryVersion,
-                verifiedVectorCount,
-                verifiedProfileMask
-            );
+        if (verifiedVectorCount !== DTS_QUALIFICATION_VECTOR_COUNT || verifiedProfileMask !== DTS_QUALIFICATION_PROFILE_MASK) {
+            return createFailureResponse('output-mismatch', libraryVersion, verifiedVectorCount, verifiedProfileMask);
         }
 
         const throughputVector = vectors.find(vector => (
@@ -133,44 +119,24 @@ export async function runDTSExactCapabilityQualification(
             && vector.sampleRate === 192_000
         ));
         if (!throughputVector) {
-            return createFailureResponse(
-                'output-mismatch',
-                libraryVersion,
-                verifiedVectorCount,
-                verifiedProfileMask
-            );
+            return createFailureResponse('output-mismatch', libraryVersion, verifiedVectorCount, verifiedProfileMask);
         }
-        for (let cycleIndex = 0;
-            cycleIndex < DTS_QUALIFICATION_WARMUP_CYCLE_COUNT;
-            cycleIndex += 1) {
+        for (let cycleIndex = 0; cycleIndex < DTS_QUALIFICATION_WARMUP_CYCLE_COUNT; cycleIndex += 1) {
             decodeVector(decoder, throughputVector.accessUnits);
         }
 
         let decodedFrameCount = 0;
         const startMilliseconds = environment.now();
-        for (let cycleIndex = 0;
-            cycleIndex < DTS_QUALIFICATION_MEASURED_CYCLE_COUNT;
-            cycleIndex += 1) {
-            decodedFrameCount += decodeVector(
-                decoder,
-                throughputVector.accessUnits
-            ).frameCount;
+        for (let cycleIndex = 0; cycleIndex < DTS_QUALIFICATION_MEASURED_CYCLE_COUNT; cycleIndex += 1) {
+            decodedFrameCount += decodeVector(decoder, throughputVector.accessUnits).frameCount;
         }
         const decodeMilliseconds = environment.now() - startMilliseconds;
         if (!Number.isFinite(decodeMilliseconds) || decodeMilliseconds <= 0) {
-            return createFailureResponse(
-                'throughput-insufficient',
-                libraryVersion,
-                verifiedVectorCount,
-                verifiedProfileMask
-            );
+            return createFailureResponse('throughput-insufficient', libraryVersion, verifiedVectorCount, verifiedProfileMask);
         }
-        const decodedDurationMilliseconds = decodedFrameCount
-            * (MICROSECONDS_PER_SECOND / 1_000)
-            / throughputVector.sampleRate;
+        const decodedDurationMilliseconds = decodedFrameCount * (MICROSECONDS_PER_SECOND / 1_000) / throughputVector.sampleRate;
         const measuredRealTimeFactor = decodedDurationMilliseconds / decodeMilliseconds;
-        if (!Number.isFinite(measuredRealTimeFactor)
-            || measuredRealTimeFactor < DTS_QUALIFICATION_MINIMUM_REAL_TIME_FACTOR) {
+        if (!Number.isFinite(measuredRealTimeFactor) || measuredRealTimeFactor < DTS_QUALIFICATION_MINIMUM_REAL_TIME_FACTOR) {
             return createFailureResponse(
                 'throughput-insufficient',
                 libraryVersion,
@@ -192,12 +158,7 @@ export async function runDTSExactCapabilityQualification(
             verifiedProfileMask
         };
     } catch {
-        return createFailureResponse(
-            'decode-error',
-            libraryVersion,
-            verifiedVectorCount,
-            verifiedProfileMask
-        );
+        return createFailureResponse('decode-error', libraryVersion, verifiedVectorCount, verifiedProfileMask);
     } finally {
         decoder?.close();
     }

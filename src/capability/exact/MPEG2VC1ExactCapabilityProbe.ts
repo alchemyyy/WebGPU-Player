@@ -44,10 +44,8 @@ export const MPEG2_VC1_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS = 5_000;
 
 const MPEG2_VC1_DECODER_GLUE_ASSET: EngineAssetPath = 'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.js';
 const MPEG2_VC1_DECODER_WASM_ASSET: EngineAssetPath = 'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.wasm';
-const MPEG2_VIDEO_QUALIFICATION_ASSET: EngineAssetPath =
-    'ffmpeg-mpeg2-vc1/mpeg2-progressive-1920x1080-qualification.bin';
-const VC1_VIDEO_QUALIFICATION_ASSET: EngineAssetPath =
-    'ffmpeg-mpeg2-vc1/vc1-advanced-progressive-1920x1080-qualification.bin';
+const MPEG2_VIDEO_QUALIFICATION_ASSET: EngineAssetPath = 'ffmpeg-mpeg2-vc1/mpeg2-progressive-1920x1080-qualification.bin';
+const VC1_VIDEO_QUALIFICATION_ASSET: EngineAssetPath = 'ffmpeg-mpeg2-vc1/vc1-advanced-progressive-1920x1080-qualification.bin';
 const MPEG2_VC1_EXACT_CAPABILITY_WORKER_ASSET: EngineWorkerPath = 'webgpu-player/MPEG2VC1ExactCapabilityProbe.worker.js';
 
 export type MPEG2VC1ExactCapabilityReason =
@@ -74,15 +72,9 @@ export type MPEG2VC1ExactCapability = Readonly<{
 type MPEG2VC1ExactCapabilityProbeWorkerEventListener = (event: Event) => void;
 
 export type MPEG2VC1ExactCapabilityProbeWorker = {
-    addEventListener: (
-        type: 'error' | 'message' | 'messageerror',
-        listener: MPEG2VC1ExactCapabilityProbeWorkerEventListener
-    ) => void
+    addEventListener: (type: 'error' | 'message' | 'messageerror', listener: MPEG2VC1ExactCapabilityProbeWorkerEventListener) => void
     postMessage: (message: unknown, transfer: Transferable[]) => void
-    removeEventListener: (
-        type: 'error' | 'message' | 'messageerror',
-        listener: MPEG2VC1ExactCapabilityProbeWorkerEventListener
-    ) => void
+    removeEventListener: (type: 'error' | 'message' | 'messageerror', listener: MPEG2VC1ExactCapabilityProbeWorkerEventListener) => void
     terminate: () => void
 };
 
@@ -94,10 +86,7 @@ export type MPEG2VC1ExactCapabilityProbeEnvironment = Readonly<{
     loadVector: (url: string) => Promise<ArrayBuffer>
     resolveAssetURL: (path: EngineAssetPath) => string
     runtimeAvailable: boolean
-    setTimeout: (
-        callback: () => void,
-        milliseconds: number
-    ) => ReturnType<typeof globalThis.setTimeout>
+    setTimeout: (callback: () => void, milliseconds: number) => ReturnType<typeof globalThis.setTimeout>
     // Downloads the worker script and decoder glue into the HTTP cache before the timed probe loads them
     warmAsset?: ((url: string) => Promise<void>) | null
 }>;
@@ -130,10 +119,7 @@ function createDefaultEnvironment(): MPEG2VC1ExactCapabilityProbeEnvironment {
     };
 }
 
-function responseMatchesQualification(
-    response: MPEG2VC1ExactCapabilityWorkerResponse,
-    qualification: MPEG2VC1Qualification
-): boolean {
+function responseMatchesQualification(response: MPEG2VC1ExactCapabilityWorkerResponse, qualification: MPEG2VC1Qualification): boolean {
     return response.supported
         && response.reason === 'decode-output-verified'
         && response.requestID === qualification.requestID
@@ -150,8 +136,7 @@ function createCapability(
     qualification: MPEG2VC1Qualification,
     response: MPEG2VC1ExactCapabilityWorkerResponse | null = null
 ): MPEG2VC1ExactCapability {
-    const supported = response !== null
-        && responseMatchesQualification(response, qualification);
+    const supported = response !== null && responseMatchesQualification(response, qualification);
     let status: MPEG2VC1ExactCapability['status'];
     if (supported) {
         status = 'supported';
@@ -160,9 +145,7 @@ function createCapability(
     } else {
         status = 'unsupported';
     }
-    const resolvedReason = reason === 'decode-output-verified' && !supported ?
-        'output-mismatch' :
-        reason;
+    const resolvedReason = reason === 'decode-output-verified' && !supported ? 'output-mismatch' : reason;
     return Object.freeze({
         codec: qualification.codec,
         decodedFrameByteLength: response?.decodedFrameByteLength ?? null,
@@ -181,10 +164,8 @@ export default class MPEG2VC1ExactCapabilityProbe {
     private readonly qualification: MPEG2VC1Qualification;
 
     public constructor(
-        private readonly environment: MPEG2VC1ExactCapabilityProbeEnvironment =
-        createDefaultEnvironment(),
-        private readonly timeoutMilliseconds =
-        MPEG2_VC1_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS,
+        private readonly environment: MPEG2VC1ExactCapabilityProbeEnvironment = createDefaultEnvironment(),
+        private readonly timeoutMilliseconds = MPEG2_VC1_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS,
         codec: MPEG2VC1Codec = 'mpeg2video'
     ) {
         if (!Number.isSafeInteger(timeoutMilliseconds) || timeoutMilliseconds <= 0) {
@@ -213,16 +194,11 @@ export default class MPEG2VC1ExactCapabilityProbe {
 
     private async loadAssets(): Promise<MPEG2VC1ExactCapabilityProbeAssets | null> {
         const environment = this.environment;
-        const vectorAsset = this.qualification.codec === 'vc1' ?
-            VC1_VIDEO_QUALIFICATION_ASSET :
-            MPEG2_VIDEO_QUALIFICATION_ASSET;
+        const vectorAsset = this.qualification.codec === 'vc1' ? VC1_VIDEO_QUALIFICATION_ASSET : MPEG2_VIDEO_QUALIFICATION_ASSET;
         try {
             const [ vector, decoderWASM ] = await Promise.all([
                 environment.loadVector(environment.resolveAssetURL(vectorAsset)),
-                loadDecoderWASMSource(
-                    environment.resolveAssetURL(MPEG2_VC1_DECODER_WASM_ASSET),
-                    environment.loadDecoderWASM
-                ),
+                loadDecoderWASMSource(environment.resolveAssetURL(MPEG2_VC1_DECODER_WASM_ASSET), environment.loadDecoderWASM),
                 environment.warmAsset?.(environment.resolveAssetURL(MPEG2_VC1_EXACT_CAPABILITY_WORKER_ASSET)),
                 environment.warmAsset?.(environment.resolveAssetURL(MPEG2_VC1_DECODER_GLUE_ASSET))
             ]);
@@ -254,10 +230,7 @@ export default class MPEG2VC1ExactCapabilityProbe {
         try {
             worker = createWorker();
         } catch {
-            return Promise.resolve(createCapability(
-                'worker-create-failed',
-                this.qualification
-            ));
+            return Promise.resolve(createCapability('worker-create-failed', this.qualification));
         }
 
         return new Promise<MPEG2VC1ExactCapability>((resolve): void => {
@@ -285,18 +258,10 @@ export default class MPEG2VC1ExactCapabilityProbe {
                 cleanup();
                 resolve(capability);
             };
-            const messageHandler: MPEG2VC1ExactCapabilityProbeWorkerEventListener = (
-                event: Event
-            ): void => {
+            const messageHandler: MPEG2VC1ExactCapabilityProbeWorkerEventListener = (event: Event): void => {
                 const value = (event as MessageEvent<unknown>).data;
-                if (
-                    !isMPEG2VC1ExactCapabilityWorkerResponse(value)
-                    || value.requestID !== this.qualification.requestID
-                ) {
-                    settle(createCapability(
-                        'worker-message-invalid',
-                        this.qualification
-                    ));
+                if (!isMPEG2VC1ExactCapabilityWorkerResponse(value) || value.requestID !== this.qualification.requestID) {
+                    settle(createCapability('worker-message-invalid', this.qualification));
                     return;
                 }
                 settle(createCapability(value.reason, this.qualification, value));
@@ -304,13 +269,9 @@ export default class MPEG2VC1ExactCapabilityProbe {
             const errorHandler: MPEG2VC1ExactCapabilityProbeWorkerEventListener = (): void => {
                 settle(createCapability('worker-error', this.qualification));
             };
-            const messageErrorHandler: MPEG2VC1ExactCapabilityProbeWorkerEventListener =
-                (): void => {
-                    settle(createCapability(
-                        'worker-message-invalid',
-                        this.qualification
-                    ));
-                };
+            const messageErrorHandler: MPEG2VC1ExactCapabilityProbeWorkerEventListener = (): void => {
+                settle(createCapability('worker-message-invalid', this.qualification));
+            };
             worker.addEventListener('message', messageHandler);
             worker.addEventListener('error', errorHandler);
             worker.addEventListener('messageerror', messageErrorHandler);

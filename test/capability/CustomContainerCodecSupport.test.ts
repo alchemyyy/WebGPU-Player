@@ -17,17 +17,9 @@ describe('CustomContainerCodecSupport', () => {
             for (const container of containers) {
                 expect(isCustomPlaybackContainer(container)).toBe(true);
                 for (const videoCodec of rule.videoCodecs) {
-                    expect(supportsCustomContainerCodecCombination(
-                        [ container ],
-                        videoCodec,
-                        null
-                    )).toBe(true);
+                    expect(supportsCustomContainerCodecCombination([ container ], videoCodec, null)).toBe(true);
                     for (const audioCodec of rule.audioCodecs) {
-                        expect(supportsCustomContainerCodecCombination(
-                            [ container ],
-                            videoCodec,
-                            audioCodec
-                        )).toBe(true);
+                        expect(supportsCustomContainerCodecCombination([ container ], videoCodec, audioCodec)).toBe(true);
                     }
                 }
             }
@@ -59,11 +51,7 @@ describe('CustomContainerCodecSupport', () => {
     ] as const)(
         'rejects the undeclared %s/%s/%s container combination',
         (container, videoCodec, audioCodec) => {
-            expect(supportsCustomContainerCodecCombination(
-                [ container ],
-                videoCodec,
-                audioCodec
-            )).toBe(false);
+            expect(supportsCustomContainerCodecCombination([ container ], videoCodec, audioCodec)).toBe(false);
         }
     );
 });

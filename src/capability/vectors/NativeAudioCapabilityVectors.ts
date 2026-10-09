@@ -28,9 +28,12 @@ export type NativeAudioCapabilityVector = Readonly<{
 // Generated with FFmpeg git-862338fe31 from 48 kHz stereo digital silence.
 // Container metadata and packets were extracted through Mediabunny 1.52.2.
 // Common input: -f lavfi -i "anullsrc=r=48000:cl=stereo" -t 0.12
-// Encoders: aac -b:a 128k; libopus -b:a 96k -vbr off -frame_duration 20;
-// flac -compression_level 5; libmp3lame -b:a 128k -write_xing 0;
-// and libvorbis -q:a -1
+// Encoders:
+// - aac -b:a 128k
+// - libopus -b:a 96k -vbr off -frame_duration 20
+// - flac -compression_level 5
+// - libmp3lame -b:a 128k -write_xing 0
+// - libvorbis -q:a -1
 const AAC_DESCRIPTION_BASE64 = 'EZBW5QA=';
 const AAC_PACKET_BASE64 = '3gIATGF2YzYyLjI0LjEwMABCIAjBGDg=';
 const OPUS_DESCRIPTION_BASE64 = 'T3B1c0hlYWQBAjgBgLsAAAAAAA==';
@@ -40,8 +43,7 @@ const OPUS_PACKET_BASE64 = [
     'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
     'AAAAAAAAAAAAAAAAAAAA'
 ].join('');
-const FLAC_DESCRIPTION_BASE64 =
-    'ZkxhQ4AAACISABIAAAAOAAAOC7gC8AAAFoC8JDKwwIUUKtcH7S7yDT0P';
+const FLAC_DESCRIPTION_BASE64 = 'ZkxhQ4AAACISABIAAAAOAAAOC7gC8AAAFoC8JDKwwIUUKtcH7S7yDT0P';
 const FLAC_PACKET_BASE64 = '//haGADWAAAAAAAABmY=';
 const MP3_PACKET_BASE64 = [
     '//uUZAAP8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAETEFNRTMuMTAwVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV',
@@ -127,9 +129,7 @@ function createChunk(base64: string, duration: number): NativeAudioCapabilityVec
 }
 
 /** Returns fresh exact encoded audio packets and decoder initialization bytes. */
-export function createNativeAudioCapabilityVector(
-    codec: NativeAudioCapabilityVectorCodec
-): NativeAudioCapabilityVector {
+export function createNativeAudioCapabilityVector(codec: NativeAudioCapabilityVectorCodec): NativeAudioCapabilityVector {
     const common: Readonly<{
         codec: NativeAudioCapabilityVectorCodec
         expectedOutputTimestamp: number

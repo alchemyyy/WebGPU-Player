@@ -241,7 +241,7 @@ function installMonotonicClockShift(): (milliseconds: number) => void {
     };
 }
 
-/** Starts a backend parked on the late first fragment whose element buffers one range */
+/** Starts a backend parked on the late first fragment whose element buffers one range. */
 async function createParkedHarness(
     bufferedStartSeconds: number,
     bufferedEndSeconds: number
@@ -253,7 +253,7 @@ async function createParkedHarness(
     return harness;
 }
 
-/** Plays a parked late start whose deferred play() timer runs the given lateness after it was due */
+/** Plays a parked late start whose deferred play() timer runs the given lateness after it was due. */
 async function playWithLateTimer(
     harness: BackendHarness,
     shiftMonotonicClock: (milliseconds: number) => void,
@@ -266,7 +266,7 @@ async function playWithLateTimer(
     await vi.advanceTimersByTimeAsync(1);
 }
 
-/** Keeps every play() pending and returns a function that rejects the latest one */
+/** Keeps every play() pending and returns a function that rejects the latest one. */
 function holdPlayRequests(audioElement: FakeAudioElement): (error: DOMException) => void {
     const playRejections: Array<(error: DOMException) => void> = [];
     vi.spyOn(audioElement, 'play').mockImplementation(

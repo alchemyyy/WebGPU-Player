@@ -42,7 +42,5 @@ export function createAV1CodecParameterString(sequenceHeader: AV1SequenceHeader)
         + `.${formatTwoDigits(colorConfig.transferCharacteristics)}`
         + `.${formatTwoDigits(colorConfig.matrixCoefficients)}`
         + `.${colorConfig.fullRange ? 1 : 0}`;
-    return optionalFields === DEFAULT_OPTIONAL_FIELDS ?
-        mandatoryFields :
-        `${mandatoryFields}${optionalFields}`;
+    return optionalFields === DEFAULT_OPTIONAL_FIELDS ? mandatoryFields : `${mandatoryFields}${optionalFields}`;
 }

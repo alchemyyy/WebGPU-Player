@@ -116,9 +116,7 @@ function createDefinition(
     evidence: HEVCRangeExtensionVectorEvidence
 ): HEVCRangeExtensionProbeDefinition {
     return Object.freeze({
-        accessUnits: Object.freeze(evidence.accessUnits.map(
-            accessUnit => Object.freeze({ ...accessUnit })
-        )),
+        accessUnits: Object.freeze(evidence.accessUnits.map(accessUnit => Object.freeze({ ...accessUnit }))),
         assetPath: `webgpu-player/hevc-rext/${variant}.bin`,
         bitDepth,
         chromaFormat,
@@ -136,7 +134,7 @@ function createDefinition(
     });
 }
 
-/** Exact Rext config, decoded-output, chroma, and bit-depth probe definitions. */
+/** Per-variant Rext probe definitions: decoder config, chroma format, bit depth, and the expected decoded-frame fingerprints. */
 export const HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS: Readonly<Record<
     HEVCRangeExtensionVariant,
     HEVCRangeExtensionProbeDefinition
@@ -368,7 +366,7 @@ export const HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS: Readonly<Record<
     )
 });
 
-/** Jellyfin currently emits generic Rext; named profiles remain accepted aliases. */
+/** Jellyfin emits the generic Rext profile; the named profiles are accepted as aliases. */
 export function definitionMatchesHEVCRangeExtensionStream(
     definition: HEVCRangeExtensionProbeDefinition,
     profile: string | null | undefined,
@@ -378,16 +376,14 @@ export function definitionMatchesHEVCRangeExtensionStream(
     const normalizedProfile = normalizeProfileToken(profile);
     const normalizedNamedProfile = normalizeProfileToken(definition.jellyfinProfile);
     const normalizedPixelFormat = String(pixelFormat ?? '').trim().toLowerCase();
-    const normalizedBitDepth = typeof bitDepth === 'number' && Number.isFinite(bitDepth) ?
-        bitDepth :
-        null;
+    const normalizedBitDepth = typeof bitDepth === 'number' && Number.isFinite(bitDepth) ? bitDepth : null;
     return (normalizedProfile === GENERIC_PROFILE_TOKEN || normalizedProfile === normalizedNamedProfile)
         && normalizedPixelFormat === definition.pixelFormat
         // Jellyfin can omit BitDepth when FFprobe exposes only PixelFormat
         && (normalizedBitDepth === null || normalizedBitDepth === definition.bitDepth);
 }
 
-/** Resolves one exact runtime Rext route without deriving chroma from profile alone. */
+/** Finds the Rext variant for a stream; chroma comes from the pixel format, never from the profile alone. */
 export function getHEVCRangeExtensionStreamDefinition(
     profile: string | null | undefined,
     pixelFormat: string | null | undefined,
@@ -395,22 +391,15 @@ export function getHEVCRangeExtensionStreamDefinition(
 ): HEVCRangeExtensionProbeDefinition | null {
     for (const variant of HEVC_RANGE_EXTENSION_VARIANTS) {
         const definition = HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS[variant];
-        if (definitionMatchesHEVCRangeExtensionStream(
-            definition,
-            profile,
-            pixelFormat,
-            bitDepth
-        )) {
+        if (definitionMatchesHEVCRangeExtensionStream(definition, profile, pixelFormat, bitDepth)) {
             return definition;
         }
     }
     return null;
 }
 
-/** Resolves Jellyfin stream metadata while treating omitted bit depth as inferable. */
-export function getHEVCRangeExtensionStreamDefinitionFromMetadata(
-    stream: unknown
-): HEVCRangeExtensionProbeDefinition | null {
+/** Finds the Rext variant for a Jellyfin media stream; a missing BitDepth is inferred from the pixel format. */
+export function getHEVCRangeExtensionStreamDefinitionFromMetadata(stream: unknown): HEVCRangeExtensionProbeDefinition | null {
     if (!stream || typeof stream !== 'object') {
         return null;
     }
@@ -432,9 +421,7 @@ export function getHEVCRangeExtensionStreamDefinitionFromMetadata(
  * A named profile needs only its own variant.
  * Generic Rext hides the chroma format, so the profile advertises a depth only when every chroma variant at that depth qualifies.
  */
-export function getHEVCRangeExtensionNegotiationVariants(
-    stream: unknown
-): readonly HEVCRangeExtensionVariant[] {
+export function getHEVCRangeExtensionNegotiationVariants(stream: unknown): readonly HEVCRangeExtensionVariant[] {
     const definition = getHEVCRangeExtensionStreamDefinitionFromMetadata(stream);
     if (!definition) {
         return [];

@@ -212,16 +212,14 @@ class DualPIDTransportStreamTests(unittest.TestCase):
                 | result.output_data[section_offset + 2]
             )
             self.assertEqual(
-                get_MPEG2_CRC32(
-                    result.output_data[section_offset : section_offset + section_byte_length]
-                ),
+                get_MPEG2_CRC32(result.output_data[section_offset : section_offset + section_byte_length]),
                 0,
             )
 
     def test_writes_the_level_and_compatibility_ID_of_the_EL_configuration(self) -> None:
         configurations = (
             (LEVEL_3_CONFIGURATION, LEVEL_3_DESCRIPTOR),
-            # Level 6 is (7 << 9) | (6 << 3) | 6 = 0x0E36, and ID 2 fills the high nibble
+            # Profile 7, level 6, and the RPU and EL flags pack to (7 << 9) | (6 << 3) | 0b110 = 0x0E36, and ID 2 fills the high nibble of the last byte
             (
                 generator.DolbyVisionConfiguration(BL_signal_compatibility_ID=2, level=6),
                 bytes((0xB0, 0x07, 0x01, 0x00, 0x0E, 0x36, 0x08, 0x00, 0x20)),
@@ -270,9 +268,7 @@ class EnhancementLayerConfigurationTests(unittest.TestCase):
             ),
             # Other side data, such as a display matrix, is skipped
             (
-                create_probe_output(
-                    [{"side_data_type": "Display Matrix"}, create_configuration_record(dv_level=13)]
-                ),
+                create_probe_output([{"side_data_type": "Display Matrix"}, create_configuration_record(dv_level=13)]),
                 generator.DolbyVisionConfiguration(BL_signal_compatibility_ID=6, level=13),
             ),
         )
@@ -372,9 +368,7 @@ class DualPIDVectorCLITests(unittest.TestCase):
             self.assertEqual(standard_output, json.dumps(expected_summary, indent=2) + "\n")
             generated_path = Path(commands[1][-1])
             self.assertEqual(generated_path.name, "generated.ts")
-            self.assertTrue(
-                generated_path.parent.name.startswith(generator.TEMPORARY_DIRECTORY_PREFIX)
-            )
+            self.assertTrue(generated_path.parent.name.startswith(generator.TEMPORARY_DIRECTORY_PREFIX))
             self.assertFalse(generated_path.parent.exists())
             self.assertEqual(
                 commands,

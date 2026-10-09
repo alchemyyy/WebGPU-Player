@@ -50,9 +50,7 @@ class MockMPEG2VC1CapabilityWorker implements MPEG2VC1ExactCapabilityProbeWorker
     }
 
     public emit(type: WorkerEventType, data?: unknown): void {
-        const event = type === 'message' ?
-            new MessageEvent<unknown>('message', { data }) :
-            new Event(type);
+        const event = type === 'message' ? new MessageEvent<unknown>('message', { data }) : new Event(type);
         for (const listener of this.listeners.get(type) ?? []) {
             listener(event);
         }
@@ -76,9 +74,7 @@ function createEnvironment(
     };
 }
 
-function createSuccessfulResponse(
-    overrides: Partial<MPEG2VC1ExactCapabilityWorkerResponse> = {}
-): MPEG2VC1ExactCapabilityWorkerResponse {
+function createSuccessfulResponse(overrides: Partial<MPEG2VC1ExactCapabilityWorkerResponse> = {}): MPEG2VC1ExactCapabilityWorkerResponse {
     return {
         codedHeight: MPEG2_VC1_QUALIFICATION_CODED_HEIGHT,
         codedWidth: MPEG2_VC1_QUALIFICATION_CODED_WIDTH,
@@ -187,14 +183,8 @@ describe('MPEG2VC1ExactCapabilityProbe', () => {
 
     it('selects and independently qualifies the Advanced VC-1 vector', async () => {
         const worker = new MockMPEG2VC1CapabilityWorker();
-        const loadVector = vi.fn<
-            (url: string) => Promise<ArrayBuffer>
-        >(async (): Promise<ArrayBuffer> => new ArrayBuffer(128));
-        const probe = new MPEG2VC1ExactCapabilityProbe(
-            createEnvironment(worker, { loadVector }),
-            5_000,
-            'vc1'
-        );
+        const loadVector = vi.fn<(url: string) => Promise<ArrayBuffer>>(async (): Promise<ArrayBuffer> => new ArrayBuffer(128));
+        const probe = new MPEG2VC1ExactCapabilityProbe(createEnvironment(worker, { loadVector }), 5_000, 'vc1');
         const capabilityPromise = probe.probe();
         await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
 
@@ -224,11 +214,10 @@ describe('MPEG2VC1ExactCapabilityProbe', () => {
             runtimeAvailable: false
         });
 
-        await expect(new MPEG2VC1ExactCapabilityProbe(environment).probe())
-            .resolves.toMatchObject({
-                reason: 'api-unavailable',
-                status: 'unknown'
-            });
+        await expect(new MPEG2VC1ExactCapabilityProbe(environment).probe()).resolves.toMatchObject({
+            reason: 'api-unavailable',
+            status: 'unknown'
+        });
         expect(worker.terminateCount).toBe(0);
     });
 

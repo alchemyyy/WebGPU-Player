@@ -15,8 +15,8 @@ const FILTER_QUALIFIED_SOURCE_SAMPLE_RATE = 192_000;
 const MICROSECONDS_PER_SECOND = 1_000_000;
 
 /**
- * The largest gap filled with silence or overlap trimmed. A larger discontinuity
- * fails the input instead, because no correction keeps audio and video aligned.
+ * The largest gap filled with silence or overlap trimmed.
+ * A larger discontinuity fails the input instead, because no correction keeps audio and video aligned.
  */
 export const MAXIMUM_AUDIO_TIMELINE_CORRECTION_MICROSECONDS = 2_000_000;
 
@@ -36,9 +36,7 @@ export type StreamingAudioTimelineCorrection = Readonly<{
     kind: 'drop' | 'fill' | 'reject' | 'trim'
 }>;
 
-export type StreamingAudioTimelineCorrectionListener = (
-    correction: StreamingAudioTimelineCorrection
-) => void;
+export type StreamingAudioTimelineCorrectionListener = (correction: StreamingAudioTimelineCorrection) => void;
 
 export type StreamingAudioResamplerOptions = {
     channelCount: number
@@ -48,8 +46,7 @@ export type StreamingAudioResamplerOptions = {
     /** Defaults to MAXIMUM_AUDIO_TIMELINE_CORRECTION_MICROSECONDS */
     maximumTimelineCorrectionMicroseconds?: number
     /**
-     * The timestamp jitter absorbed without correction, before one source
-     * sample is added: container quantization plus any codec allowance.
+     * The timestamp jitter absorbed without correction, before one source sample is added: container quantization plus any codec allowance.
      */
     maximumTimestampQuantizationMicroseconds: number
     minimumOutputFrameCount: number
@@ -132,9 +129,7 @@ function blackmanWindow(normalizedDistance: number): number {
 
 /** Returns the kernel radius in source frames, widened for a source faster than the qualified rate. */
 function getFilterRadius(sourceSampleRate: number): number {
-    return Math.ceil(
-        FILTER_RADIUS * Math.max(1, sourceSampleRate / FILTER_QUALIFIED_SOURCE_SAMPLE_RATE)
-    );
+    return Math.ceil(FILTER_RADIUS * Math.max(1, sourceSampleRate / FILTER_QUALIFIED_SOURCE_SAMPLE_RATE));
 }
 
 function createFilterTable(
@@ -142,8 +137,7 @@ function createFilterTable(
     targetSampleRate: number,
     filterRadius: number
 ): Float64Array {
-    const cutoff = Math.min(1, targetSampleRate / sourceSampleRate)
-        * FILTER_CUTOFF_HEADROOM;
+    const cutoff = Math.min(1, targetSampleRate / sourceSampleRate) * FILTER_CUTOFF_HEADROOM;
     const filterTapCount = filterRadius * 2;
     const table = new Float64Array((FILTER_PHASE_COUNT + 1) * filterTapCount);
     for (let phaseIndex = 0; phaseIndex <= FILTER_PHASE_COUNT; phaseIndex += 1) {
@@ -152,9 +146,7 @@ function createFilterTable(
         let coefficientSum = 0;
         for (let tapIndex = 0; tapIndex < filterTapCount; tapIndex += 1) {
             const distance = tapIndex - filterRadius + 1 - fraction;
-            const coefficient = cutoff
-                * sinc(cutoff * distance)
-                * blackmanWindow(distance / filterRadius);
+            const coefficient = cutoff * sinc(cutoff * distance) * blackmanWindow(distance / filterRadius);
             table[phaseOffset + tapIndex] = coefficient;
             coefficientSum += coefficient;
         }
@@ -170,12 +162,9 @@ function createFilterTable(
 
 /**
  * Converts planar PCM with one bounded, windowed-sinc streaming stage.
- * Symmetric lookahead preserves media timestamps instead of adding A/V delay,
- * while finalization edge-extends only the terminal filter tail. Input
- * timestamps are reconciled against the accepted timeline: jitter is absorbed,
- * and gaps and overlaps up to the correction bound are filled with silence or
- * trimmed, so the output timeline stays contiguous. A larger discontinuity
- * throws.
+ * Symmetric lookahead preserves media timestamps instead of adding A/V delay, while finalization edge-extends only the terminal filter tail.
+ * Input timestamps are reconciled against the accepted timeline: jitter is absorbed, and gaps and overlaps up to the correction bound are filled with silence or trimmed, so the output timeline stays contiguous.
+ * A larger discontinuity throws.
  */
 export default class StreamingAudioResampler {
     public readonly channelCount: number;
@@ -228,9 +217,7 @@ export default class StreamingAudioResampler {
             'Minimum output frame count'
         );
         if (this.minimumOutputFrameCount > this.maximumOutputFrameCount) {
-            throw new RangeError(
-                'Minimum output frame count cannot exceed maximum output frame count'
-            );
+            throw new RangeError('Minimum output frame count cannot exceed maximum output frame count');
         }
         this.sourceSampleRate = requireSupportedCustomAudioSampleRate(
             options.sourceSampleRate,
@@ -277,10 +264,7 @@ export default class StreamingAudioResampler {
             throw new Error('Cannot add audio after resampler finalization');
         }
         const frameCount = this.validateInput(input);
-        const reconciliation = this.reconcileInputTimestamp(
-            input.mediaTimeMicroseconds,
-            frameCount
-        );
+        const reconciliation = this.reconcileInputTimestamp(input.mediaTimeMicroseconds, frameCount);
 
         const output: StreamingAudioResamplerOutput[] = [];
         if (reconciliation.silenceFrameCount > 0) {
@@ -319,9 +303,8 @@ export default class StreamingAudioResampler {
     }
 
     /**
-     * Returns where a successor resumes after finalization: the output end, the
-     * next expected input time, and the last raw input timestamp. Null when no
-     * timeline was ever established.
+     * Returns where a successor resumes after finalization: the output end, the next expected input time, and the last raw input timestamp.
+     * Null when no timeline was ever established.
      */
     public getContinuation(): StreamingAudioResamplerContinuation | null {
         if (!this.finalized) {
@@ -357,8 +340,7 @@ export default class StreamingAudioResampler {
             filledInputCount: this.filledInputCount,
             filterLatencySourceFrames: this.filterTable === null ? 0 : this.filterRadius,
             finalized: this.finalized,
-            maximumInputTimestampDeviationMicroseconds:
-                this.maximumInputTimestampDeviationMicroseconds,
+            maximumInputTimestampDeviationMicroseconds: this.maximumInputTimestampDeviationMicroseconds,
             outputFrameCount: this.nextOutputFrame,
             sourceFrameCount: this.totalSourceFrames,
             trimmedInputCount: this.trimmedInputCount
@@ -383,12 +365,13 @@ export default class StreamingAudioResampler {
     }
 
     /**
-     * Places one input on the accepted timeline. In order: the first input
-     * anchors; jitter within tolerance is absorbed; a timestamp at or before
-     * the previous raw one is absorbed as non-advancing (Matroska lace frames
-     * without a block duration share one timestamp); a deviation beyond the
-     * correction bound throws; a gap is filled with silence; an overlap is
-     * trimmed, or dropped when the remainder is within tolerance.
+     * Places one input on the accepted timeline by the first of these rules that applies:
+     * - the first input anchors the timeline;
+     * - jitter within tolerance is absorbed;
+     * - a timestamp at or before the previous raw one is absorbed as non-advancing (Matroska lace frames without a block duration share one timestamp);
+     * - a deviation beyond the correction bound throws;
+     * - a gap is filled with silence;
+     * - an overlap is trimmed, or dropped when the remainder is within tolerance.
      */
     private reconcileInputTimestamp(
         mediaTimeMicroseconds: Microseconds,
@@ -407,8 +390,7 @@ export default class StreamingAudioResampler {
             inputAnchorMediaTimeMicroseconds,
             audioFramesToMicroseconds(this.totalSourceFrames, this.sourceSampleRate)
         );
-        const timestampDeviationMicroseconds = mediaTimeMicroseconds
-            - expectedMediaTimeMicroseconds;
+        const timestampDeviationMicroseconds = mediaTimeMicroseconds - expectedMediaTimeMicroseconds;
         const absoluteDeviationMicroseconds = Math.abs(timestampDeviationMicroseconds);
         if (absoluteDeviationMicroseconds <= this.timestampToleranceMicroseconds) {
             if (absoluteDeviationMicroseconds > 0) {
@@ -512,10 +494,7 @@ export default class StreamingAudioResampler {
         return output;
     }
 
-    private appendSource(
-        channelData: readonly Float32Array[],
-        frameCount: number
-    ): StreamingAudioResamplerOutput[] {
+    private appendSource(channelData: readonly Float32Array[], frameCount: number): StreamingAudioResamplerOutput[] {
         if (this.totalSourceFrames === 0) {
             for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
                 this.firstSourceValues[channelIndex] = channelData[channelIndex][0];
@@ -543,9 +522,7 @@ export default class StreamingAudioResampler {
         }
     }
 
-    private renderPassthroughAvailable(
-        finalizing: boolean
-    ): StreamingAudioResamplerOutput[] {
+    private renderPassthroughAvailable(finalizing: boolean): StreamingAudioResamplerOutput[] {
         const availableFrameCount = this.totalSourceFrames - this.nextOutputFrame;
         const emittableFrameCount = this.getEmittableOutputFrameCount(
             availableFrameCount,
@@ -583,9 +560,7 @@ export default class StreamingAudioResampler {
         const consumedFrameCount = this.nextOutputFrame - this.bufferStartSourceFrame;
         if (consumedFrameCount > 0) {
             for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
-                this.channelBuffers[channelIndex] = this.channelBuffers[channelIndex].slice(
-                    consumedFrameCount
-                );
+                this.channelBuffers[channelIndex] = this.channelBuffers[channelIndex].slice(consumedFrameCount);
             }
             this.bufferStartSourceFrame = this.nextOutputFrame;
         }
@@ -624,10 +599,7 @@ export default class StreamingAudioResampler {
         return output;
     }
 
-    private getEmittableOutputFrameCount(
-        availableFrameCount: number,
-        finalizing: boolean
-    ): number {
+    private getEmittableOutputFrameCount(availableFrameCount: number, finalizing: boolean): number {
         if (finalizing) {
             return availableFrameCount;
         }
@@ -648,9 +620,7 @@ export default class StreamingAudioResampler {
         const availableSourceFrameCount = finalizing ?
             this.totalSourceFrames :
             Math.max(0, this.totalSourceFrames - this.filterRadius);
-        const exclusiveOutputFrame = Math.ceil(
-            (availableSourceFrameCount * this.targetSampleRate) / this.sourceSampleRate
-        );
+        const exclusiveOutputFrame = Math.ceil((availableSourceFrameCount * this.targetSampleRate) / this.sourceSampleRate);
         return Math.max(0, exclusiveOutputFrame - this.nextOutputFrame);
     }
 
@@ -667,9 +637,7 @@ export default class StreamingAudioResampler {
         const sourceFrame = Math.floor(sourcePositionNumerator / this.targetSampleRate);
         const fractionalNumerator = sourcePositionNumerator
             - sourceFrame * this.targetSampleRate;
-        const phaseIndex = Math.round(
-            (fractionalNumerator * FILTER_PHASE_COUNT) / this.targetSampleRate
-        );
+        const phaseIndex = Math.round((fractionalNumerator * FILTER_PHASE_COUNT) / this.targetSampleRate);
         const filterTapCount = this.filterRadius * 2;
         const coefficientOffset = phaseIndex * filterTapCount;
         const firstFilterSourceFrame = sourceFrame - this.filterRadius + 1;
@@ -735,9 +703,7 @@ export default class StreamingAudioResampler {
         if (finalizing) {
             return;
         }
-        const nextSourceFrame = Math.floor(
-            (this.nextOutputFrame * this.sourceSampleRate) / this.targetSampleRate
-        );
+        const nextSourceFrame = Math.floor((this.nextOutputFrame * this.sourceSampleRate) / this.targetSampleRate);
         const firstRequiredSourceFrame = Math.max(
             0,
             nextSourceFrame - this.filterRadius + 1
@@ -747,9 +713,7 @@ export default class StreamingAudioResampler {
             return;
         }
         for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
-            this.channelBuffers[channelIndex] = this.channelBuffers[channelIndex].slice(
-                trimFrameCount
-            );
+            this.channelBuffers[channelIndex] = this.channelBuffers[channelIndex].slice(trimFrameCount);
         }
         this.bufferStartSourceFrame = firstRequiredSourceFrame;
     }

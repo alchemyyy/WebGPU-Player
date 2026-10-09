@@ -43,9 +43,7 @@ type OpenJPEGModuleOptions = {
     printErr: (...values: unknown[]) => void
 };
 
-type OpenJPEGModuleFactory = (
-    options: OpenJPEGModuleOptions
-) => Promise<OpenJPEGModule>;
+type OpenJPEGModuleFactory = (options: OpenJPEGModuleOptions) => Promise<OpenJPEGModule>;
 
 type ClassicWorkerGlobal = typeof globalThis & {
     OpenJPEGWASM?: unknown
@@ -61,10 +59,7 @@ export type JPEG2000DecodedImage = {
 
 export type JPEG2000SoftwareVideoDecoderDependencies = {
     createModule: (wasmURL: string) => Promise<OpenJPEGModule>
-    createVideoFrame: (
-        data: AllowSharedBufferSource,
-        init: VideoFrameBufferInit
-    ) => VideoFrame
+    createVideoFrame: (data: AllowSharedBufferSource, init: VideoFrameBufferInit) => VideoFrame
     loadDecoderGlue: (url: string) => void
     resolveAssetURL: (path: EngineAssetPath) => string
 };
@@ -84,10 +79,7 @@ function checkedRGBAByteLength(width: number, height: number): number {
     return byteLength;
 }
 
-function requireMatchingGeometry(
-    frameInfo: OpenJPEGFrameInfo,
-    expectedGeometry: RawVideoFrameGeometry
-): void {
+function requireMatchingGeometry(frameInfo: OpenJPEGFrameInfo, expectedGeometry: RawVideoFrameGeometry): void {
     if (
         frameInfo.width !== expectedGeometry.codedWidth
         || frameInfo.height !== expectedGeometry.codedHeight
@@ -98,10 +90,7 @@ function requireMatchingGeometry(
     }
 }
 
-function copyRGBToRGBA(
-    source: Uint8ClampedArray,
-    pixelCount: number
-): Uint8Array {
+function copyRGBToRGBA(source: Uint8ClampedArray, pixelCount: number): Uint8Array {
     if (source.byteLength !== pixelCount * 3) {
         throw new TypeError('The JPEG 2000 RGB output has an invalid byte length');
     }
@@ -119,10 +108,7 @@ function copyRGBToRGBA(
     return rgba;
 }
 
-function copyGrayToRGBA(
-    source: Uint8ClampedArray,
-    pixelCount: number
-): Uint8Array {
+function copyGrayToRGBA(source: Uint8ClampedArray, pixelCount: number): Uint8Array {
     if (source.byteLength !== pixelCount) {
         throw new TypeError('The JPEG 2000 grayscale output has an invalid byte length');
     }
@@ -167,10 +153,7 @@ async function createDefaultModule(wasmURL: string): Promise<OpenJPEGModule> {
     });
 }
 
-function createDefaultVideoFrame(
-    data: AllowSharedBufferSource,
-    init: VideoFrameBufferInit
-): VideoFrame {
+function createDefaultVideoFrame(data: AllowSharedBufferSource, init: VideoFrameBufferInit): VideoFrame {
     // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
     return new VideoFrame(data, init);
 }
@@ -182,7 +165,7 @@ const DEFAULT_DEPENDENCIES: JPEG2000SoftwareVideoDecoderDependencies = {
     resolveAssetURL: resolveEngineAssetURL
 };
 
-/** Calculates a stable FNV-1a fingerprint over an exact decoded RGBA frame. */
+/** Calculates the 32-bit FNV-1a fingerprint of a decoded RGBA frame. */
 export function getJPEG2000RGBAFingerprint(rgba: Uint8Array): number {
     let fingerprint = 2_166_136_261;
     for (const value of rgba) {
@@ -199,8 +182,7 @@ export default class JPEG2000SoftwareVideoDecoder {
     private module: OpenJPEGModule | null = null;
 
     public constructor(
-        private readonly dependencies: JPEG2000SoftwareVideoDecoderDependencies =
-        DEFAULT_DEPENDENCIES
+        private readonly dependencies: JPEG2000SoftwareVideoDecoderDependencies = DEFAULT_DEPENDENCIES
     ) {}
 
     /** Loads the pinned OpenJPEG WASM module and creates one reusable decoder. */
@@ -223,10 +205,7 @@ export default class JPEG2000SoftwareVideoDecoder {
     }
 
     /** Decodes one independent JPEG 2000 picture into owned, full-range 8-bit RGBA. */
-    public decodeToRGBA(
-        packetData: Uint8Array,
-        expectedGeometry: RawVideoFrameGeometry
-    ): JPEG2000DecodedImage {
+    public decodeToRGBA(packetData: Uint8Array, expectedGeometry: RawVideoFrameGeometry): JPEG2000DecodedImage {
         const decoder = this.requireDecoder();
         if (packetData.byteLength === 0) {
             throw new TypeError('The JPEG 2000 packet is empty');
@@ -276,21 +255,12 @@ export default class JPEG2000SoftwareVideoDecoder {
     }
 
     /** Decodes one packet and transfers ownership of a timestamped VideoFrame to the caller. */
-    public decode(
-        packet: EncodedPacket,
-        expectedGeometry: RawVideoFrameGeometry
-    ): VideoFrame {
+    public decode(packet: EncodedPacket, expectedGeometry: RawVideoFrameGeometry): VideoFrame {
         if (packet.isMetadataOnly) {
             throw new TypeError('The JPEG 2000 decoder cannot decode a metadata-only packet');
         }
-        const timestampMicroseconds = requireMicroseconds(
-            packet.microsecondTimestamp,
-            'JPEG 2000 packet timestamp'
-        );
-        const durationMicroseconds = requireMicroseconds(
-            packet.microsecondDuration,
-            'JPEG 2000 packet duration'
-        );
+        const timestampMicroseconds = requireMicroseconds(packet.microsecondTimestamp, 'JPEG 2000 packet timestamp');
+        const durationMicroseconds = requireMicroseconds(packet.microsecondDuration, 'JPEG 2000 packet duration');
         return this.createVideoFrame(
             this.decodeToRGBA(packet.data, expectedGeometry),
             timestampMicroseconds,
@@ -311,10 +281,7 @@ export default class JPEG2000SoftwareVideoDecoder {
         if (durationMicroseconds < 0) {
             throw new TypeError('The JPEG 2000 frame duration cannot be negative');
         }
-        if (
-            image.codedWidth !== displayGeometry.codedWidth
-            || image.codedHeight !== displayGeometry.codedHeight
-        ) {
+        if (image.codedWidth !== displayGeometry.codedWidth || image.codedHeight !== displayGeometry.codedHeight) {
             throw new TypeError('The JPEG 2000 VideoFrame geometry is inconsistent');
         }
         return this.dependencies.createVideoFrame(image.rgba, {
@@ -334,7 +301,7 @@ export default class JPEG2000SoftwareVideoDecoder {
         });
     }
 
-    /** Releases the Emscripten decoder exactly once. */
+    /** Releases the Emscripten decoder. Later calls do nothing. */
     public close(): void {
         if (this.closed) {
             return;

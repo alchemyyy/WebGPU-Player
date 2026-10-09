@@ -108,9 +108,7 @@ export type ExternalHDRAuthorizationTelemetry = {
     targetFormat: GPUTextureFormat | null
 };
 
-export type ExternalHDRAuthorizationFrameFactory = (
-    signal: AbortSignal
-) => Promise<VideoFrame>;
+export type ExternalHDRAuthorizationFrameFactory = (signal: AbortSignal) => Promise<VideoFrame>;
 
 type CachedRouteProbe = {
     decision: ExternalHDRRouteAuthorizationDecision | null
@@ -159,9 +157,7 @@ function createSettings(metadata: InputColorMetadata): HDRToSDRRenderSettings {
 }
 
 /** Returns the exact Main10 HDR metadata routes covered by the native-frame probe. */
-export function getExternalHDRAuthorizationRouteKey(
-    metadata: InputColorMetadata
-): ExternalHDRAuthorizationRouteKey | null {
+export function getExternalHDRAuthorizationRouteKey(metadata: InputColorMetadata): ExternalHDRAuthorizationRouteKey | null {
     if (
         metadata.bitDepth !== 10
         || metadata.matrix !== 'bt2020-ncl'
@@ -224,19 +220,13 @@ function frameMatchesAuthorizationContract(frame: VideoFrame): boolean {
         && frame.colorSpace.transfer === 'bt709';
 }
 
-async function flushVideoDecoderUntilAbort(
-    decoder: VideoDecoder,
-    signal?: AbortSignal
-): Promise<void> {
+async function flushVideoDecoderUntilAbort(decoder: VideoDecoder, signal?: AbortSignal): Promise<void> {
     if (!signal) {
         await decoder.flush();
         return;
     }
     if (signal.aborted) {
-        throw new DOMException(
-            'External HDR authorization decode was aborted',
-            'AbortError'
-        );
+        throw new DOMException('External HDR authorization decode was aborted', 'AbortError');
     }
 
     let rejectAbort: ((reason: DOMException) => void) | null = null;
@@ -244,10 +234,7 @@ async function flushVideoDecoderUntilAbort(
         rejectAbort = reject;
     });
     const handleAbort = (): void => {
-        rejectAbort?.(new DOMException(
-            'External HDR authorization decode was aborted',
-            'AbortError'
-        ));
+        rejectAbort?.(new DOMException('External HDR authorization decode was aborted', 'AbortError'));
     };
     signal.addEventListener('abort', handleAbort, { once: true });
     try {
@@ -259,9 +246,7 @@ async function flushVideoDecoderUntilAbort(
 }
 
 /** Decodes one neutralized Main10 vector and requires Chromium's opaque hardware output. */
-export async function createExternalHDRAuthorizationFrame(
-    signal?: AbortSignal
-): Promise<VideoFrame> {
+export async function createExternalHDRAuthorizationFrame(signal?: AbortSignal): Promise<VideoFrame> {
     if (
         typeof VideoDecoder === 'undefined'
         || typeof EncodedVideoChunk === 'undefined'
@@ -333,10 +318,7 @@ export async function createExternalHDRAuthorizationFrame(
         }));
         await flushVideoDecoderUntilAbort(decoder, signal);
         if (signal?.aborted) {
-            throw new DOMException(
-                'External HDR authorization decode was aborted',
-                'AbortError'
-            );
+            throw new DOMException('External HDR authorization decode was aborted', 'AbortError');
         }
         if (decodeState.decoderError) {
             throw decodeState.decoderError;
@@ -373,10 +355,7 @@ export function createExpectedExternalHDRAuthorizationObservations(
             sample.rawYUVCode[2] / MAXIMUM_10_BIT_CODE
         ];
         const referenceRGB = processEncodedYUV(encodedYUV, metadata, settings);
-        const dither = calculateRawHDRAuthorizationOutputDither(
-            sample.sampleX,
-            sample.sampleY
-        );
+        const dither = calculateRawHDRAuthorizationOutputDither(sample.sampleX, sample.sampleY);
         return {
             linearRGB: [
                 clamp(referenceRGB[0] + dither, 0, 1),
@@ -389,10 +368,7 @@ export function createExpectedExternalHDRAuthorizationObservations(
     });
 }
 
-function classifyFailure(
-    error: unknown,
-    phase: AuthorizationPhase
-): ExternalHDRAuthorizationFailureReason {
+function classifyFailure(error: unknown, phase: AuthorizationPhase): ExternalHDRAuthorizationFailureReason {
     switch (getErrorMessage(error)) {
         case 'decode-failed':
             return 'decode-failed';
@@ -489,19 +465,9 @@ export class ExternalHDRPresentationAuthorizationRunner {
         const metadata = createMetadata(routeKey);
         const settings = createSettings(metadata);
         const shaderCode = createExternalHDRColorPipelineWGSL(metadata, settings);
-        const shaderSignature = createExternalHDRShaderSignature(
-            targetFormat,
-            routeKey,
-            shaderCode
-        );
+        const shaderSignature = createExternalHDRShaderSignature(targetFormat, routeKey, shaderCode);
         if (!EXTERNAL_HDR_AUTHORIZATION_ROUTE_KEYS.includes(routeKey)) {
-            return createRejectedDecision(
-                device,
-                targetFormat,
-                routeKey,
-                shaderSignature,
-                'route-unsupported'
-            );
+            return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'route-unsupported');
         }
         if (!AUTHORIZED_TARGET_FORMATS.has(targetFormat)) {
             return createRejectedDecision(
@@ -518,13 +484,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
             || typeof GPUBufferUsage === 'undefined'
             || typeof GPUTextureUsage === 'undefined'
         ) {
-            return createRejectedDecision(
-                device,
-                targetFormat,
-                routeKey,
-                shaderSignature,
-                'gpu-api-unavailable'
-            );
+            return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'gpu-api-unavailable');
         }
 
         let targetTexture: GPUTexture | null = null;
@@ -537,9 +497,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
         let phase: AuthorizationPhase = 'gpu-render';
         const deadline = new GPUAuthorizationDeadline(device);
         try {
-            const pipeline = await deadline.wait(
-                createRenderPipeline(device, targetFormat, shaderCode)
-            );
+            const pipeline = await deadline.wait(createRenderPipeline(device, targetFormat, shaderCode));
             const sampler = device.createSampler({
                 magFilter: 'linear',
                 minFilter: 'linear'
@@ -549,11 +507,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
                 size: FLOATS_PER_PRESENTATION_UNIFORM * Float32Array.BYTES_PER_ELEMENT,
                 usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM
             });
-            device.queue.writeBuffer(
-                presentationUniformBuffer,
-                0,
-                new Float32Array([ 1, 1, 0, 0 ])
-            );
+            device.queue.writeBuffer(presentationUniformBuffer, 0, new Float32Array([ 1, 1, 0, 0 ]));
             renderSettingsUniformBuffer = createRawYUVRenderSettingsUniformBuffer(device);
             writeRawYUVRenderSettingsUniform(device, renderSettingsUniformBuffer, settings);
 
@@ -567,10 +521,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
                     resolvedFrame.close();
                 }
             }, (): void => undefined);
-            frame = await deadline.wait(
-                framePromise,
-                (): void => activeFrameAbortController.abort()
-            );
+            frame = await deadline.wait(framePromise, (): void => activeFrameAbortController.abort());
             frameAbortController = null;
             targetTexture = device.createTexture({
                 dimension: '2d',
@@ -622,14 +573,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
             });
             renderPass.setPipeline(pipeline);
             renderPass.setBindGroup(0, bindGroup);
-            renderPass.setViewport(
-                0,
-                0,
-                frame.displayWidth,
-                frame.displayHeight,
-                0,
-                1
-            );
+            renderPass.setViewport(0, 0, frame.displayWidth, frame.displayHeight, 0, 1);
             renderPass.draw(VERTEX_COUNT);
             renderPass.end();
             device.queue.submit([ commandEncoder.finish() ]);
@@ -652,20 +596,11 @@ export class ExternalHDRPresentationAuthorizationRunner {
                 maximumReadbacks: EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES.length
             });
             const readback = await deadline.wait(
-                pixelReader.readPixels(
-                    EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES,
-                    targetTexture
-                ),
+                pixelReader.readPixels(EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES, targetTexture),
                 (): void => pixelReader?.destroy()
             );
             if (readback.failure || !readback.linearRGB) {
-                return createRejectedDecision(
-                    device,
-                    targetFormat,
-                    routeKey,
-                    shaderSignature,
-                    'readback-failed'
-                );
+                return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'readback-failed');
             }
             const actualObservations: RawHDRVectorObservation[] = [];
             for (let sampleIndex = 0;
@@ -678,10 +613,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
                     sampleY: sample.sampleY
                 });
             }
-            const expectedObservations = createExpectedExternalHDRAuthorizationObservations(
-                routeKey,
-                settings
-            );
+            const expectedObservations = createExpectedExternalHDRAuthorizationObservations(routeKey, settings);
             const comparison = evaluateRawHDRVectorObservations(
                 expectedObservations,
                 actualObservations,
@@ -734,9 +666,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
     }
 }
 
-function getAuthorizationTelemetryStatus(
-    accumulator: TelemetryAccumulator
-): ExternalHDRAuthorizationTelemetry['status'] {
+function getAuthorizationTelemetryStatus(accumulator: TelemetryAccumulator): ExternalHDRAuthorizationTelemetry['status'] {
     if (accumulator.pendingRouteKeys.length > 0) {
         return 'pending';
     }
@@ -750,9 +680,7 @@ function getAuthorizationTelemetryStatus(
 export class ExternalHDRPresentationAuthorizationRegistry {
     private readonly devices = new WeakMap<GPUDevice, DeviceProbeCache>();
 
-    public constructor(
-        private readonly runner = new ExternalHDRPresentationAuthorizationRunner()
-    ) {}
+    public constructor(private readonly runner = new ExternalHDRPresentationAuthorizationRunner()) {}
 
     /** Starts both exact shader probes without delaying ordinary playback. */
     public prewarm(device: GPUDevice, targetFormat: GPUTextureFormat): void {
@@ -762,10 +690,7 @@ export class ExternalHDRPresentationAuthorizationRegistry {
     }
 
     /** Waits only route probes already started for this device and target. */
-    public async waitForPending(
-        device: GPUDevice,
-        targetFormat: GPUTextureFormat
-    ): Promise<void> {
+    public async waitForPending(device: GPUDevice, targetFormat: GPUTextureFormat): Promise<void> {
         const pendingPromises: Promise<ExternalHDRRouteAuthorizationDecision>[] = [];
         for (const routeKey of EXTERNAL_HDR_AUTHORIZATION_ROUTE_KEYS) {
             const probe = this.getCachedProbe(device, targetFormat, routeKey);
@@ -802,10 +727,7 @@ export class ExternalHDRPresentationAuthorizationRegistry {
             },
             (): ExternalHDRRouteAuthorizationDecision => {
                 const metadata = createMetadata(routeKey);
-                const shaderCode = createExternalHDRColorPipelineWGSL(
-                    metadata,
-                    createSettings(metadata)
-                );
+                const shaderCode = createExternalHDRColorPipelineWGSL(metadata, createSettings(metadata));
                 const decision = createRejectedDecision(
                     device,
                     targetFormat,
@@ -833,11 +755,7 @@ export class ExternalHDRPresentationAuthorizationRegistry {
             return false;
         }
         const shaderCode = createExternalHDRColorPipelineWGSL(metadata, settings);
-        const shaderSignature = createExternalHDRShaderSignature(
-            targetFormat,
-            routeKey,
-            shaderCode
-        );
+        const shaderSignature = createExternalHDRShaderSignature(targetFormat, routeKey, shaderCode);
         const decision = this.getCachedProbe(device, targetFormat, routeKey)?.decision;
         return decision?.status === 'authorized'
             && decision.device === device
@@ -879,8 +797,7 @@ export class ExternalHDRPresentationAuthorizationRegistry {
                 continue;
             }
             if (probe.decision.maximumChannelError !== null) {
-                accumulator.maximumChannelErrors[routeKey] =
-                    probe.decision.maximumChannelError;
+                accumulator.maximumChannelErrors[routeKey] = probe.decision.maximumChannelError;
             }
             accumulator.sampleCounts[routeKey] = probe.decision.sampleCount;
             if (probe.decision.status === 'authorized') {
@@ -901,15 +818,9 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         };
     }
 
-    private createCacheKey(
-        targetFormat: GPUTextureFormat,
-        routeKey: ExternalHDRAuthorizationRouteKey
-    ): string {
+    private createCacheKey(targetFormat: GPUTextureFormat, routeKey: ExternalHDRAuthorizationRouteKey): string {
         const metadata = createMetadata(routeKey);
-        const shaderCode = createExternalHDRColorPipelineWGSL(
-            metadata,
-            createSettings(metadata)
-        );
+        const shaderCode = createExternalHDRColorPipelineWGSL(metadata, createSettings(metadata));
         return `${targetFormat}\u0000${routeKey}\u0000${createExternalHDRShaderSignature(
             targetFormat,
             routeKey,
@@ -922,9 +833,7 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         targetFormat: GPUTextureFormat,
         routeKey: ExternalHDRAuthorizationRouteKey
     ): CachedRouteProbe | undefined {
-        return this.devices.get(device)?.routes.get(
-            this.createCacheKey(targetFormat, routeKey)
-        );
+        return this.devices.get(device)?.routes.get(this.createCacheKey(targetFormat, routeKey));
     }
 
     private getDeviceCache(device: GPUDevice): DeviceProbeCache {

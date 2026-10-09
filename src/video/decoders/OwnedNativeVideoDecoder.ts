@@ -53,7 +53,7 @@ export default class OwnedNativeVideoDecoder implements OwnedVideoDecoderPort {
         private readonly dependencies: OwnedNativeVideoDecoderDependencies = DEFAULT_NATIVE_VIDEO_DECODER_DEPENDENCIES
     ) {}
 
-    /** Creates and configures the native decoder exactly once. */
+    /** Creates and configures the native decoder. A second call, or a call after close(), throws. */
     public async init(): Promise<void> {
         if (this.closed) {
             throw new Error('The owned native video decoder is closed');
@@ -99,7 +99,7 @@ export default class OwnedNativeVideoDecoder implements OwnedVideoDecoderPort {
         return this.decoder?.decodeQueueSize ?? 0;
     }
 
-    /** Closes the decoder exactly once and closes any later output. */
+    /** Closes the decoder and any frame it outputs afterwards. Later calls do nothing. */
     public close(): void {
         if (this.closed) {
             return;

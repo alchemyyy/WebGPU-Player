@@ -52,14 +52,11 @@ function createFailureResponse(
     };
 }
 
-function createDependencies(
-    request: MPEG2VC1ExactCapabilityWorkerRequest
-): MPEG2VC1SoftwareVideoDecoderDependencies {
+function createDependencies(request: MPEG2VC1ExactCapabilityWorkerRequest): MPEG2VC1SoftwareVideoDecoderDependencies {
     return {
         // The binary comes from the request's source, not from the URL the decoder resolves
         createModule: async (): Promise<MPEG2VC1DecoderModule> => {
-            const factory = workerScope.MPEG2VC1DecoderModule as
-                MPEG2VC1DecoderModuleFactory | undefined;
+            const factory = workerScope.MPEG2VC1DecoderModule as MPEG2VC1DecoderModuleFactory | undefined;
             if (typeof factory !== 'function') {
                 throw new Error('The MPEG-2/VC-1 probe module factory is unavailable');
             }
@@ -78,13 +75,10 @@ function createDependencies(
     };
 }
 
-async function getQualifiedTrack(
-    input: Input,
-    qualification: MPEG2VC1Qualification
-): Promise<{
-        description?: Uint8Array
-        track: InputVideoTrack
-    }> {
+async function getQualifiedTrack(input: Input, qualification: MPEG2VC1Qualification): Promise<{
+    description?: Uint8Array
+    track: InputVideoTrack
+}> {
     const tracks = await input.getVideoTracks();
     if (tracks.length !== 1) {
         throw new TypeError('The MPEG-2/VC-1 vector track count is invalid');
@@ -105,11 +99,7 @@ async function getQualifiedTrack(
         throw new TypeError('The MPEG-2/VC-1 vector route is invalid');
     }
     if (qualification.codec === 'vc1') {
-        const description = getMatroskaVC1DecoderDescription(
-            track,
-            codedWidth,
-            codedHeight
-        );
+        const description = getMatroskaVC1DecoderDescription(track, codedWidth, codedHeight);
         if (!description) {
             throw new TypeError('The VC-1 qualification description is invalid');
         }
@@ -163,9 +153,7 @@ async function fingerprintSamples(samples: readonly VideoSample[]): Promise<{
     };
 }
 
-async function runProbe(
-    request: MPEG2VC1ExactCapabilityWorkerRequest
-): Promise<MPEG2VC1ExactCapabilityWorkerResponse> {
+async function runProbe(request: MPEG2VC1ExactCapabilityWorkerRequest): Promise<MPEG2VC1ExactCapabilityWorkerResponse> {
     const qualification = getMPEG2VC1Qualification(request.requestID);
     const input = new Input({
         formats: ALL_FORMATS,
@@ -204,8 +192,7 @@ async function runProbe(
             throw new TypeError('The MPEG-2/VC-1 qualification frame count is invalid');
         }
         const fingerprints = await fingerprintSamples(samples);
-        const outputMatches = fingerprints.decodedFrameByteLength
-                === qualification.frameByteLength
+        const outputMatches = fingerprints.decodedFrameByteLength === qualification.frameByteLength
             && fingerprints.decodedTotalByteLength === qualification.totalByteLength
             && fingerprints.decodedI420Fingerprint === qualification.fingerprint;
         let reason: MPEG2VC1ExactCapabilityWorkerResponse['reason'];

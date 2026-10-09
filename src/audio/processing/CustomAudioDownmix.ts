@@ -26,8 +26,7 @@ const SIX_POINT_ONE_SIDE_RIGHT_CHANNEL_INDEX = 6;
 const THREE_CHANNEL_SHARED_CHANNEL_INDEX = 2;
 
 const SIX_POINT_ONE_DIRECT_CHANNEL_GAIN = 1 / (1 + 3 / Math.SQRT2);
-const SIX_POINT_ONE_MIXED_CHANNEL_GAIN =
-    SIX_POINT_ONE_DIRECT_CHANNEL_GAIN / Math.SQRT2;
+const SIX_POINT_ONE_MIXED_CHANNEL_GAIN = SIX_POINT_ONE_DIRECT_CHANNEL_GAIN / Math.SQRT2;
 const MAXIMUM_CHANNEL_LEVEL = 2;
 const MAXIMUM_OUTPUT_GAIN = 10;
 const STEREO_FINGERPRINT_OFFSET_BASIS = 0x811c9dc5;
@@ -58,10 +57,8 @@ type SevenPointOneDownmixCoefficients = Readonly<{
 }>;
 
 const STANDARD_MIXED_CHANNEL_GAIN = Math.SQRT1_2;
-const FIVE_POINT_ONE_NORMALIZATION_GAIN =
-    1 / (1 + 2 * STANDARD_MIXED_CHANNEL_GAIN);
-const SEVEN_POINT_ONE_NORMALIZATION_GAIN =
-    1 / (1 + 3 * STANDARD_MIXED_CHANNEL_GAIN);
+const FIVE_POINT_ONE_NORMALIZATION_GAIN = 1 / (1 + 2 * STANDARD_MIXED_CHANNEL_GAIN);
+const SEVEN_POINT_ONE_NORMALIZATION_GAIN = 1 / (1 + 3 * STANDARD_MIXED_CHANNEL_GAIN);
 const AC4_FOLDED_SURROUND_GAIN = 0.5;
 const NIGHT_MODE_FOLDED_SURROUND_GAIN = 0.3 * Math.SQRT1_2;
 // A back center is both surrounds at sqrt(1/2) each, as swresample folds it into stereo
@@ -199,9 +196,7 @@ export type ThreeChannelDownmixSharedChannel =
     | 'front-center'
     | 'low-frequency-effects';
 
-function getFivePointOneDownmixCoefficients(
-    algorithm: CustomAudioDownmixAlgorithmValue
-): FivePointOneDownmixCoefficients {
+function getFivePointOneDownmixCoefficients(algorithm: CustomAudioDownmixAlgorithmValue): FivePointOneDownmixCoefficients {
     switch (algorithm) {
         case CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.AC4:
         case CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.StandardLORO:
@@ -217,9 +212,7 @@ function getFivePointOneDownmixCoefficients(
     }
 }
 
-function getSevenPointOneDownmixCoefficients(
-    algorithm: CustomAudioDownmixAlgorithmValue
-): SevenPointOneDownmixCoefficients {
+function getSevenPointOneDownmixCoefficients(algorithm: CustomAudioDownmixAlgorithmValue): SevenPointOneDownmixCoefficients {
     switch (algorithm) {
         case CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.AC4:
             return SEVEN_POINT_ONE_AC4_COEFFICIENTS;
@@ -254,9 +247,7 @@ export function createDefaultAudioDownmixSettings(): AudioDownmixSettings {
 }
 
 /** Rejects settings outside the supported user-adjustment ranges. */
-export function assertValidAudioDownmixSettings(
-    settings: AudioDownmixSettings
-): void {
+export function assertValidAudioDownmixSettings(settings: AudioDownmixSettings): void {
     if (settings.version !== AUDIO_DOWNMIX_SETTINGS_VERSION) {
         throw new RangeError('Unsupported audio downmix settings version');
     }
@@ -292,8 +283,7 @@ function getThreeChannelBaseCoefficients(
         case 'back-center':
             return {
                 direct: coefficients.direct,
-                shared: (coefficients.surround + coefficients.oppositeSurround)
-                    * BACK_CENTER_SURROUND_GAIN
+                shared: (coefficients.surround + coefficients.oppositeSurround) * BACK_CENTER_SURROUND_GAIN
             };
         case 'front-center':
             return { direct: coefficients.direct, shared: coefficients.center };
@@ -303,9 +293,7 @@ function getThreeChannelBaseCoefficients(
 }
 
 /** Scales the weights so each output's direct and shared weights sum to one. */
-function normalizeThreeChannelCoefficients(
-    coefficients: ThreeChannelDownmixCoefficients
-): ThreeChannelDownmixCoefficients {
+function normalizeThreeChannelCoefficients(coefficients: ThreeChannelDownmixCoefficients): ThreeChannelDownmixCoefficients {
     const weightSum = coefficients.direct + coefficients.shared;
     return {
         direct: coefficients.direct / weightSum,
@@ -314,9 +302,8 @@ function normalizeThreeChannelCoefficients(
 }
 
 /**
- * Selects a three-channel bed's weights for the algorithm. The peak-normalized
- * and RFC 7845 5.1 matrices are normalized for six channels, so the bed
- * renormalizes its own base weights instead.
+ * Selects a three-channel bed's weights for the algorithm.
+ * The peak-normalized and RFC 7845 5.1 matrices are normalized for six channels, so the bed renormalizes its own base weights instead.
  */
 function getThreeChannelDownmixCoefficients(
     algorithm: CustomAudioDownmixAlgorithmValue,
@@ -360,9 +347,7 @@ function getThreeChannelSharedLevel(
     }
 }
 
-function requireThreeChannelPlanarInput(
-    channelData: readonly Float32Array[]
-): number {
+function requireThreeChannelPlanarInput(channelData: readonly Float32Array[]): number {
     if (channelData.length !== THREE_CHANNEL_COUNT) {
         throw new RangeError('Three-channel downmix requires exactly 3 input channels');
     }
@@ -377,16 +362,13 @@ function requireThreeChannelPlanarInput(
 }
 
 /**
- * Downmixes WAVE-order three-channel planar PCM (FL, FR, shared) to stereo with
- * the selected matrix. The shared channel feeds both outputs: a 3.0 front center
- * follows the center level, a 3.0(back) back center the surround level, and a
- * 2.1 LFE no user level.
+ * Downmixes WAVE-order three-channel planar PCM (FL, FR, shared) to stereo with the selected matrix.
+ * The shared channel feeds both outputs: a 3.0 front center follows the center level, a 3.0(back) back center the surround level, and a 2.1 LFE no user level.
  */
 export function downmixThreeChannelToStereo(
     channelData: readonly Float32Array[],
     sharedChannel: ThreeChannelDownmixSharedChannel,
-    algorithm: CustomAudioDownmixAlgorithmValue =
-    DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
+    algorithm: CustomAudioDownmixAlgorithmValue = DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
     settings: AudioDownmixSettings = createDefaultAudioDownmixSettings(),
     settingsRamp: AudioDownmixSettingsRamp | null = null
 ): StereoChannelData {
@@ -417,18 +399,14 @@ export function downmixThreeChannelToStereo(
         }
         const sharedContribution = sharedInput[frameIndex] * coefficients.shared
             * getThreeChannelSharedLevel(sharedChannel, centerLevel, surroundLevel);
-        outputLeft[frameIndex] =
-            (frontLeft[frameIndex] * coefficients.direct + sharedContribution) * outputGain;
-        outputRight[frameIndex] =
-            (frontRight[frameIndex] * coefficients.direct + sharedContribution) * outputGain;
+        outputLeft[frameIndex] = (frontLeft[frameIndex] * coefficients.direct + sharedContribution) * outputGain;
+        outputRight[frameIndex] = (frontRight[frameIndex] * coefficients.direct + sharedContribution) * outputGain;
     }
 
     return [ outputLeft, outputRight ];
 }
 
-function requireFivePointOnePlanarInput(
-    channelData: readonly Float32Array[]
-): number {
+function requireFivePointOnePlanarInput(channelData: readonly Float32Array[]): number {
     if (channelData.length !== FIVE_POINT_ONE_CHANNEL_COUNT) {
         throw new RangeError('5.1 downmix requires exactly 6 input channels');
     }
@@ -443,13 +421,12 @@ function requireFivePointOnePlanarInput(
 }
 
 /**
- * Downmixes FFmpeg-order 5.1 planar PCM (FL, FR, FC, LFE, surround L/R) to
- * stereo with the selected matrix. Standard Lo/Ro intentionally omits LFE.
+ * Downmixes FFmpeg-order 5.1 planar PCM (FL, FR, FC, LFE, surround L/R) to stereo with the selected matrix.
+ * Standard Lo/Ro omits LFE.
  */
 export function downmixFivePointOneToStereo(
     channelData: readonly Float32Array[],
-    algorithm: CustomAudioDownmixAlgorithmValue =
-    DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
+    algorithm: CustomAudioDownmixAlgorithmValue = DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
     settings: AudioDownmixSettings = createDefaultAudioDownmixSettings(),
     settingsRamp: AudioDownmixSettingsRamp | null = null
 ): StereoChannelData {
@@ -486,23 +463,19 @@ export function downmixFivePointOneToStereo(
             + frontCenter[frameIndex] * coefficients.center * centerLevel
             + lfe[frameIndex] * coefficients.lfe
             + surroundLeft[frameIndex] * coefficients.surround * surroundLevel
-            + surroundRight[frameIndex] * coefficients.oppositeSurround
-                * surroundLevel) * outputGain;
+            + surroundRight[frameIndex] * coefficients.oppositeSurround * surroundLevel) * outputGain;
         outputRight[frameIndex] =
             (frontRight[frameIndex] * coefficients.direct
             + frontCenter[frameIndex] * coefficients.center * centerLevel
             + lfe[frameIndex] * coefficients.lfe
             + surroundRight[frameIndex] * coefficients.surround * surroundLevel
-            + surroundLeft[frameIndex] * coefficients.oppositeSurround
-                * surroundLevel) * outputGain;
+            + surroundLeft[frameIndex] * coefficients.oppositeSurround * surroundLevel) * outputGain;
     }
 
     return [ outputLeft, outputRight ];
 }
 
-function requireSixPointOnePlanarInput(
-    channelData: readonly Float32Array[]
-): number {
+function requireSixPointOnePlanarInput(channelData: readonly Float32Array[]): number {
     if (channelData.length !== SIX_POINT_ONE_CHANNEL_COUNT) {
         throw new RangeError('6.1 downmix requires exactly 7 input channels');
     }
@@ -517,9 +490,8 @@ function requireSixPointOnePlanarInput(
 }
 
 /**
- * Downmixes WAVE-order 6.1 planar PCM (FL, FR, FC, LFE, BC, SL, SR) to
- * bounded stereo before optional user gain. The LFE channel is intentionally
- * omitted from the Lo/Ro mix.
+ * Downmixes WAVE-order 6.1 planar PCM (FL, FR, FC, LFE, BC, SL, SR) to bounded stereo before optional user gain.
+ * The Lo/Ro mix omits the LFE channel.
  */
 export function downmixSixPointOneToStereo(
     channelData: readonly Float32Array[],
@@ -555,29 +527,21 @@ export function downmixSixPointOneToStereo(
         }
         outputLeft[frameIndex] =
             (frontLeft[frameIndex] * SIX_POINT_ONE_DIRECT_CHANNEL_GAIN
-            + frontCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN
-                * centerLevel
-            + backCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN
-                * surroundLevel
-            + sideLeft[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN
-                * surroundLevel) * outputGain;
+            + frontCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * centerLevel
+            + backCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * surroundLevel
+            + sideLeft[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * surroundLevel) * outputGain;
         outputRight[frameIndex] =
             (frontRight[frameIndex] * SIX_POINT_ONE_DIRECT_CHANNEL_GAIN
-            + frontCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN
-                * centerLevel
-            + backCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN
-                * surroundLevel
-            + sideRight[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN
-                * surroundLevel) * outputGain;
+            + frontCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * centerLevel
+            + backCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * surroundLevel
+            + sideRight[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN * surroundLevel) * outputGain;
     }
 
     return [ outputLeft, outputRight ];
 }
 
 /** Fingerprints exact float32 stereo output in stable channel-major order. */
-export function getStereoChannelDataFingerprint(
-    channelData: StereoChannelData
-): number {
+export function getStereoChannelDataFingerprint(channelData: StereoChannelData): number {
     if (channelData[0].length !== channelData[1].length) {
         throw new RangeError('Stereo fingerprint requires equal-length channels');
     }
@@ -586,9 +550,7 @@ export function getStereoChannelDataFingerprint(
     for (const channel of channelData) {
         for (const sample of channel) {
             sampleBytes.setFloat32(0, sample, true);
-            for (let byteIndex = 0;
-                byteIndex < Float32Array.BYTES_PER_ELEMENT;
-                byteIndex += 1) {
+            for (let byteIndex = 0; byteIndex < Float32Array.BYTES_PER_ELEMENT; byteIndex += 1) {
                 fingerprint ^= sampleBytes.getUint8(byteIndex);
                 fingerprint = Math.imul(fingerprint, STEREO_FINGERPRINT_PRIME) >>> 0;
             }
@@ -597,9 +559,7 @@ export function getStereoChannelDataFingerprint(
     return fingerprint;
 }
 
-function requireSevenPointOnePlanarInput(
-    channelData: readonly Float32Array[]
-): number {
+function requireSevenPointOnePlanarInput(channelData: readonly Float32Array[]): number {
     if (channelData.length !== SEVEN_POINT_ONE_CHANNEL_COUNT) {
         throw new RangeError('7.1 downmix requires exactly 8 input channels');
     }
@@ -614,14 +574,12 @@ function requireSevenPointOnePlanarInput(
 }
 
 /**
- * Downmixes WAVE-order 7.1 planar PCM (FL, FR, FC, LFE, BL, BR, SL, SR) to
- * stereo with the selected matrix. Standard Lo/Ro uses mpv's default
- * libswresample coefficients and omits LFE; the output limiter handles peaks.
+ * Downmixes WAVE-order 7.1 planar PCM (FL, FR, FC, LFE, BL, BR, SL, SR) to stereo with the selected matrix.
+ * Standard Lo/Ro uses mpv's default libswresample coefficients and omits LFE; the output limiter handles peaks.
  */
 export function downmixSevenPointOneToStereo(
     channelData: readonly Float32Array[],
-    algorithm: CustomAudioDownmixAlgorithmValue =
-    DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
+    algorithm: CustomAudioDownmixAlgorithmValue = DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
     settings: AudioDownmixSettings = createDefaultAudioDownmixSettings(),
     settingsRamp: AudioDownmixSettingsRamp | null = null
 ): StereoChannelData {
@@ -662,8 +620,7 @@ export function downmixSevenPointOneToStereo(
             + backLeft[frameIndex] * coefficients.back * surroundLevel
             + backRight[frameIndex] * coefficients.oppositeBack * surroundLevel
             + sideLeft[frameIndex] * coefficients.side * surroundLevel
-            + sideRight[frameIndex] * coefficients.oppositeSide
-                * surroundLevel) * outputGain;
+            + sideRight[frameIndex] * coefficients.oppositeSide * surroundLevel) * outputGain;
         outputRight[frameIndex] =
             (frontRight[frameIndex] * coefficients.direct
             + frontCenter[frameIndex] * coefficients.center * centerLevel
@@ -671,8 +628,7 @@ export function downmixSevenPointOneToStereo(
             + backRight[frameIndex] * coefficients.back * surroundLevel
             + backLeft[frameIndex] * coefficients.oppositeBack * surroundLevel
             + sideRight[frameIndex] * coefficients.side * surroundLevel
-            + sideLeft[frameIndex] * coefficients.oppositeSide
-                * surroundLevel) * outputGain;
+            + sideLeft[frameIndex] * coefficients.oppositeSide * surroundLevel) * outputGain;
     }
 
     return [ outputLeft, outputRight ];

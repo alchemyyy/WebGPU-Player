@@ -53,9 +53,7 @@ function createFailureResponse(
     };
 }
 
-function createDependencies(
-    request: JPEG2000ExactCapabilityWorkerRequest
-): JPEG2000SoftwareVideoDecoderDependencies {
+function createDependencies(request: JPEG2000ExactCapabilityWorkerRequest): JPEG2000SoftwareVideoDecoderDependencies {
     return {
         // The binary comes from the request's source, not from the URL the decoder resolves
         createModule: async (): Promise<OpenJPEGModule> => {
@@ -69,10 +67,7 @@ function createDependencies(
                 printErr: (): void => undefined
             });
         },
-        createVideoFrame: (
-            data: AllowSharedBufferSource,
-            init: VideoFrameBufferInit
-        ): VideoFrame => {
+        createVideoFrame: (data: AllowSharedBufferSource, init: VideoFrameBufferInit): VideoFrame => {
             // eslint-disable-next-line compat/compat -- The exact capability probe gates this route
             return new VideoFrame(data, init);
         },
@@ -89,27 +84,16 @@ function createDependencies(
     };
 }
 
-async function runProbe(
-    request: JPEG2000ExactCapabilityWorkerRequest
-): Promise<JPEG2000ExactCapabilityWorkerResponse> {
+async function runProbe(request: JPEG2000ExactCapabilityWorkerRequest): Promise<JPEG2000ExactCapabilityWorkerResponse> {
     const decoder = new JPEG2000SoftwareVideoDecoder(createDependencies(request));
     try {
         await decoder.init();
-        const image = decoder.decodeToRGBA(
-            new Uint8Array(request.vector),
-            QUALIFICATION_GEOMETRY
-        );
-        const frame = decoder.createVideoFrame(
-            image,
-            requireMicroseconds(0),
-            requireMicroseconds(41_667),
-            QUALIFICATION_GEOMETRY
-        );
+        const image = decoder.decodeToRGBA(new Uint8Array(request.vector), QUALIFICATION_GEOMETRY);
+        const frame = decoder.createVideoFrame(image, requireMicroseconds(0), requireMicroseconds(41_667), QUALIFICATION_GEOMETRY);
         frame.close();
         const decodedRGBAByteLength = image.rgba.byteLength;
         const decodedRGBAFingerprint = getJPEG2000RGBAFingerprint(image.rgba);
-        const outputMatches = decodedRGBAByteLength
-                === JPEG2000_QUALIFICATION_RGBA_BYTE_LENGTH
+        const outputMatches = decodedRGBAByteLength === JPEG2000_QUALIFICATION_RGBA_BYTE_LENGTH
             && decodedRGBAFingerprint === JPEG2000_QUALIFICATION_RGBA_FINGERPRINT;
         let reason: JPEG2000ExactCapabilityWorkerResponse['reason'];
         if (!outputMatches) {

@@ -6,11 +6,8 @@ import {
 
 export const DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION = 4;
 export const MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT = 16;
-export const MAXIMUM_DOLBY_VISION_RPU_BYTE_LENGTH =
-    MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH;
-export const MAXIMUM_DOLBY_VISION_RPU_FRAME_BYTE_LENGTH =
-    MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT
-    * MAXIMUM_DOLBY_VISION_RPU_BYTE_LENGTH;
+export const MAXIMUM_DOLBY_VISION_RPU_BYTE_LENGTH = MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH;
+export const MAXIMUM_DOLBY_VISION_RPU_FRAME_BYTE_LENGTH = MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT * MAXIMUM_DOLBY_VISION_RPU_BYTE_LENGTH;
 
 export type DolbyVisionEnhancementLayerDisposition =
     | 'absent'
@@ -35,7 +32,7 @@ export type TransferableDolbyVisionEncodedFrameMetadata = {
     schemaVersion: typeof DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
 };
 
-/** Converts extracted metadata to explicit postMessage ownership. */
+/** Takes the part of the metadata that crosses postMessage with a frame; the encoded RPUs stay in the worker. */
 export function takeTransferableDolbyVisionEncodedFrameMetadata(
     metadata: DolbyVisionEncodedFrameMetadata | null
 ): TransferableDolbyVisionEncodedFrameMetadata | null {
@@ -64,9 +61,7 @@ export function getDolbyVisionEncodedMetadataTransferList(
     return transferables;
 }
 
-function isEnhancementLayerDisposition(
-    value: unknown
-): value is DolbyVisionEnhancementLayerDisposition {
+function isEnhancementLayerDisposition(value: unknown): value is DolbyVisionEnhancementLayerDisposition {
     switch (value) {
         case 'absent':
         case 'decoded-fel':
@@ -80,9 +75,7 @@ function isEnhancementLayerDisposition(
 }
 
 /** Validates encoded Dolby Vision metadata received across the worker boundary. */
-export function isTransferableDolbyVisionEncodedFrameMetadata(
-    value: unknown
-): value is TransferableDolbyVisionEncodedFrameMetadata {
+export function isTransferableDolbyVisionEncodedFrameMetadata(value: unknown): value is TransferableDolbyVisionEncodedFrameMetadata {
     if (!value || typeof value !== 'object') {
         return false;
     }
@@ -94,8 +87,7 @@ export function isTransferableDolbyVisionEncodedFrameMetadata(
         || !Array.isArray(metadata.parsedRPUData)
         || metadata.parsedRPUData.length === 0
         || metadata.parsedRPUData.length > MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT
-        || (metadata.enhancementLayerDisposition === 'absent'
-            && metadata.hasEnhancementLayerVCL)
+        || (metadata.enhancementLayerDisposition === 'absent' && metadata.hasEnhancementLayerVCL)
     ) {
         return false;
     }

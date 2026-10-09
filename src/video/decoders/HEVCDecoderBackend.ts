@@ -27,9 +27,7 @@ type EmscriptenHEVCModuleOptions = {
     wasmBinary?: ArrayBuffer
 };
 
-type EmscriptenHEVCModuleFactory = (
-    options: EmscriptenHEVCModuleOptions
-) => Promise<EmscriptenHEVCModule>;
+type EmscriptenHEVCModuleFactory = (options: EmscriptenHEVCModuleOptions) => Promise<EmscriptenHEVCModule>;
 
 type HEVCDecoderGlobal = typeof globalThis & {
     HEVCDecoderModule?: unknown
@@ -41,11 +39,7 @@ type HEVCNativeAPI = {
     drain: (decoderPointer: number, countPointer: number) => number
     feed: (decoderPointer: number, dataPointer: number, byteLength: number) => number
     flush: (decoderPointer: number) => number
-    getDrainedFrame: (
-        decoderPointer: number,
-        frameIndex: number,
-        framePointer: number
-    ) => number
+    getDrainedFrame: (decoderPointer: number, frameIndex: number, framePointer: number) => number
     getInfo: (decoderPointer: number, infoPointer: number) => number
 };
 
@@ -207,25 +201,16 @@ function validateFrameLayout(
     };
 }
 
-function getPlaneForSynchronousConsumption(
-    module: EmscriptenHEVCModule,
-    layout: HEVCPlaneLayout
-): Uint16Array {
+function getPlaneForSynchronousConsumption(module: EmscriptenHEVCModule, layout: HEVCPlaneLayout): Uint16Array {
     const baseSampleOffset = layout.pointer / Uint16Array.BYTES_PER_ELEMENT;
     if (layout.stride === layout.width) {
-        return module.HEAPU16.subarray(
-            baseSampleOffset,
-            baseSampleOffset + (layout.width * layout.height)
-        );
+        return module.HEAPU16.subarray(baseSampleOffset, baseSampleOffset + (layout.width * layout.height));
     }
 
     const output = new Uint16Array(layout.width * layout.height);
     for (let rowIndex = 0; rowIndex < layout.height; rowIndex += 1) {
         const sourceOffset = baseSampleOffset + (rowIndex * layout.stride);
-        output.set(
-            module.HEAPU16.subarray(sourceOffset, sourceOffset + layout.width),
-            rowIndex * layout.width
-        );
+        output.set(module.HEAPU16.subarray(sourceOffset, sourceOffset + layout.width), rowIndex * layout.width);
     }
     return output;
 }
@@ -237,11 +222,7 @@ class HEVCWASMDecoderBackend implements HEVCDecoderBackend {
     public constructor(private readonly module: EmscriptenHEVCModule) {
         this.nativeAPI = {
             create: module.cwrap('hevc_decoder_create', 'number', []) as () => number,
-            destroy: module.cwrap(
-                'hevc_decoder_destroy',
-                null,
-                [ 'number' ]
-            ) as (decoderPointer: number) => number,
+            destroy: module.cwrap('hevc_decoder_destroy', null, [ 'number' ]) as (decoderPointer: number) => number,
             drain: module.cwrap(
                 'hevc_decoder_drain',
                 'number',
@@ -252,20 +233,12 @@ class HEVCWASMDecoderBackend implements HEVCDecoderBackend {
                 'number',
                 [ 'number', 'number', 'number' ]
             ) as (decoderPointer: number, dataPointer: number, byteLength: number) => number,
-            flush: module.cwrap(
-                'hevc_decoder_flush',
-                'number',
-                [ 'number' ]
-            ) as (decoderPointer: number) => number,
+            flush: module.cwrap('hevc_decoder_flush', 'number', [ 'number' ]) as (decoderPointer: number) => number,
             getDrainedFrame: module.cwrap(
                 'hevc_decoder_get_drained_frame',
                 'number',
                 [ 'number', 'number', 'number' ]
-            ) as (
-                decoderPointer: number,
-                frameIndex: number,
-                framePointer: number
-            ) => number,
+            ) as (decoderPointer: number, frameIndex: number, framePointer: number) => number,
             getInfo: module.cwrap(
                 'hevc_decoder_get_info',
                 'number',
@@ -303,11 +276,7 @@ class HEVCWASMDecoderBackend implements HEVCDecoderBackend {
         const dataPointer = requireAllocation(this.module, data.byteLength);
         try {
             new Uint8Array(this.module.HEAPU16.buffer).set(data, dataPointer);
-            const result = this.nativeAPI.feed(
-                this.decoderPointer,
-                dataPointer,
-                data.byteLength
-            );
+            const result = this.nativeAPI.feed(this.decoderPointer, dataPointer, data.byteLength);
             if (result !== 0) {
                 throw new Error(`The HEVC WASM decoder feed failed with code ${result}`);
             }
@@ -325,11 +294,7 @@ class HEVCWASMDecoderBackend implements HEVCDecoderBackend {
                 throw new Error(`The HEVC WASM decoder drain failed with code ${result}`);
             }
             const frameCount = this.module.getValue(countPointer, 'i32');
-            if (
-                !Number.isSafeInteger(frameCount)
-                || frameCount < 0
-                || frameCount > MAXIMUM_HEVC_DRAINED_FRAME_COUNT
-            ) {
+            if (!Number.isSafeInteger(frameCount) || frameCount < 0 || frameCount > MAXIMUM_HEVC_DRAINED_FRAME_COUNT) {
                 throw new TypeError('The HEVC WASM decoder returned an invalid frame count');
             }
 
@@ -338,7 +303,7 @@ class HEVCWASMDecoderBackend implements HEVCDecoderBackend {
                 if (!frame) {
                     throw new Error('The HEVC WASM decoder omitted a reported frame');
                 }
-                // Deliver each copied frame before extracting the next one
+                // The planes may view WASM memory, so the handler consumes this frame before the next extraction
                 frameHandler(frame);
             }
             return frameCount;
@@ -354,11 +319,7 @@ class HEVCWASMDecoderBackend implements HEVCDecoderBackend {
             throw new Error(`The HEVC WASM decoder flush failed with code ${result}`);
         }
 
-        for (
-            let frameIndex = 0;
-            frameIndex <= MAXIMUM_HEVC_DRAINED_FRAME_COUNT;
-            frameIndex += 1
-        ) {
+        for (let frameIndex = 0; frameIndex <= MAXIMUM_HEVC_DRAINED_FRAME_COUNT; frameIndex += 1) {
             const frame = this.extractDrainedFrame(frameIndex);
             if (!frame) {
                 return frameIndex;
@@ -382,18 +343,9 @@ class HEVCWASMDecoderBackend implements HEVCDecoderBackend {
     }
 
     private extractDrainedFrame(frameIndex: number): HEVCFrame | null {
-        const framePointer = requireAllocation(
-            this.module,
-            DRAINED_FRAME_STRUCTURE_BYTE_LENGTH
-        );
+        const framePointer = requireAllocation(this.module, DRAINED_FRAME_STRUCTURE_BYTE_LENGTH);
         try {
-            if (
-                this.nativeAPI.getDrainedFrame(
-                    this.decoderPointer,
-                    frameIndex,
-                    framePointer
-                ) !== 0
-            ) {
+            if (this.nativeAPI.getDrainedFrame(this.decoderPointer, frameIndex, framePointer) !== 0) {
                 return null;
             }
 
@@ -445,9 +397,7 @@ class HEVCWASMDecoderBackend implements HEVCDecoderBackend {
 }
 
 /** Instantiates the @hevcjs/core glue module loaded in this worker. */
-export async function createHEVCDecoderModule(
-    options: HEVCDecoderModuleOptions
-): Promise<HEVCDecoderModule> {
+export async function createHEVCDecoderModule(options: HEVCDecoderModuleOptions): Promise<HEVCDecoderModule> {
     const decoderGlobal = globalThis as HEVCDecoderGlobal;
     if (typeof decoderGlobal.HEVCDecoderModule !== 'function') {
         throw new Error('The HEVC WASM decoder module factory is unavailable');
@@ -472,9 +422,7 @@ export async function createHEVCDecoderModule(
 }
 
 /** Creates a decoder on its own instance of the @hevcjs/core glue module loaded in this worker. */
-export async function createHEVCDecoderBackend(
-    options: DecoderOptions
-): Promise<HEVCDecoderBackend> {
+export async function createHEVCDecoderBackend(options: DecoderOptions): Promise<HEVCDecoderBackend> {
     const decoderModule = await createHEVCDecoderModule({ wasmURL: options.wasmBinaryUrl });
     return decoderModule.createDecoder();
 }

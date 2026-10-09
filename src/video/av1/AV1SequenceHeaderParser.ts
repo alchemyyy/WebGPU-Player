@@ -155,9 +155,7 @@ function readTimingInfo(reader: AV1BitReader): AV1TimingInfo {
     const equalPictureInterval = reader.readFlag('equal_picture_interval');
     return {
         numberOfUnitsInDisplayTick,
-        ticksPerPictureMinus1: equalPictureInterval ?
-            reader.readUVLC('num_ticks_per_picture_minus_1') :
-            null,
+        ticksPerPictureMinus1: equalPictureInterval ? reader.readUVLC('num_ticks_per_picture_minus_1') : null,
         timeScale
     };
 }
@@ -175,10 +173,7 @@ function readDecoderModelInfo(reader: AV1BitReader): AV1DecoderModelInfo {
     };
 }
 
-function readOperatingParameters(
-    reader: AV1BitReader,
-    decoderModelInfo: AV1DecoderModelInfo
-): AV1OperatingParameters {
+function readOperatingParameters(reader: AV1BitReader, decoderModelInfo: AV1DecoderModelInfo): AV1OperatingParameters {
     const bufferDelayBitCount = decoderModelInfo.bufferDelayLengthMinus1 + 1;
     const decoderBufferDelay = reader.readBits(bufferDelayBitCount, 'decoder_buffer_delay');
     const encoderBufferDelay = reader.readBits(bufferDelayBitCount, 'encoder_buffer_delay');
@@ -196,9 +191,7 @@ function readOperatingPoint(
 ): AV1OperatingPoint {
     const operatingPointIDC = reader.readBits(12, 'operating_point_idc');
     const levelIndex = reader.readBits(5, 'seq_level_idx');
-    const tier = levelIndex > MAXIMUM_SEQUENCE_LEVEL_INDEX_WITHOUT_TIER ?
-        reader.readBits(1, 'seq_tier') as 0 | 1 :
-        0;
+    const tier = levelIndex > MAXIMUM_SEQUENCE_LEVEL_INDEX_WITHOUT_TIER ? reader.readBits(1, 'seq_tier') as 0 | 1 : 0;
     const operatingParameters = decoderModelInfo && reader.readFlag('decoder_model_present_for_this_op') ?
         readOperatingParameters(reader, decoderModelInfo) :
         null;
@@ -216,10 +209,7 @@ function readOperatingPoint(
 }
 
 /** Reads every operating point; a reduced still picture header codes only the first point's level. */
-function readOperatingPoints(
-    reader: AV1BitReader,
-    decoderModelInfo: AV1DecoderModelInfo | null
-): AV1OperatingPoint[] {
+function readOperatingPoints(reader: AV1BitReader, decoderModelInfo: AV1DecoderModelInfo | null): AV1OperatingPoint[] {
     const initialDisplayDelayPresent = reader.readFlag('initial_display_delay_present_flag');
     const operatingPointCount = reader.readBits(5, 'operating_points_cnt_minus_1') + 1;
     const operatingPoints: AV1OperatingPoint[] = [];
@@ -369,9 +359,7 @@ export function parseAV1SequenceHeader(payload: Uint8Array): AV1SequenceHeader {
         if (reader.readFlag('timing_info_present_flag')) {
             timingInfo = readTimingInfo(reader);
             // The decoder model needs timing, so its flag is coded only after timing info
-            decoderModelInfo = reader.readFlag('decoder_model_info_present_flag') ?
-                readDecoderModelInfo(reader) :
-                null;
+            decoderModelInfo = reader.readFlag('decoder_model_info_present_flag') ? readDecoderModelInfo(reader) : null;
         }
         operatingPoints = readOperatingPoints(reader, decoderModelInfo);
     }

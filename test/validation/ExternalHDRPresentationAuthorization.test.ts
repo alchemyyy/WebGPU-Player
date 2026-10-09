@@ -308,16 +308,8 @@ describe('External HDR presentation authorization', () => {
         const validate = vi.spyOn(runner, 'validate');
         const registry = new ExternalHDRPresentationAuthorizationRegistry(runner);
 
-        const firstDecision = registry.authorize(
-            harness.device,
-            'bgra8unorm',
-            PQ_ROUTE_KEY
-        );
-        const secondDecision = registry.authorize(
-            harness.device,
-            'bgra8unorm',
-            PQ_ROUTE_KEY
-        );
+        const firstDecision = registry.authorize(harness.device, 'bgra8unorm', PQ_ROUTE_KEY);
+        const secondDecision = registry.authorize(harness.device, 'bgra8unorm', PQ_ROUTE_KEY);
         expect(secondDecision).toBe(firstDecision);
         expect(registry.getTelemetry(harness.device, 'bgra8unorm').status).toBe('pending');
 
@@ -375,26 +367,10 @@ describe('External HDR presentation authorization', () => {
     });
 
     it('includes route, shader, and target in the stable signature', () => {
-        const signature = createExternalHDRShaderSignature(
-            'bgra8unorm',
-            PQ_ROUTE_KEY,
-            'shader'
-        );
-        expect(signature).toBe(createExternalHDRShaderSignature(
-            'bgra8unorm',
-            PQ_ROUTE_KEY,
-            'shader'
-        ));
-        expect(signature).not.toBe(createExternalHDRShaderSignature(
-            'rgba8unorm',
-            PQ_ROUTE_KEY,
-            'shader'
-        ));
-        expect(signature).not.toBe(createExternalHDRShaderSignature(
-            'bgra8unorm',
-            HLG_ROUTE_KEY,
-            'shader'
-        ));
+        const signature = createExternalHDRShaderSignature('bgra8unorm', PQ_ROUTE_KEY, 'shader');
+        expect(signature).toBe(createExternalHDRShaderSignature('bgra8unorm', PQ_ROUTE_KEY, 'shader'));
+        expect(signature).not.toBe(createExternalHDRShaderSignature('rgba8unorm', PQ_ROUTE_KEY, 'shader'));
+        expect(signature).not.toBe(createExternalHDRShaderSignature('bgra8unorm', HLG_ROUTE_KEY, 'shader'));
     });
 
     it('creates only an opaque, neutralized hardware decoder frame', async () => {

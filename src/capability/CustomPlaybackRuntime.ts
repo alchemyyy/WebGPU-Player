@@ -84,7 +84,7 @@ function getFailureReason(
     return null;
 }
 
-/** Reports whether the common and requested source-path primitives are present. */
+/** Reports whether the browser APIs that custom playback always needs, and the ones the requirements add, are present. */
 export function getCustomPlaybackRuntimeAvailability(
     environment: Readonly<CustomPlaybackRuntimeEnvironment> = getDefaultEnvironment(),
     requirements: CustomPlaybackRuntimeRequirements = {}

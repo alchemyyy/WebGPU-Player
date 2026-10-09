@@ -6,9 +6,7 @@ import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import {
-    createHEVCExactCapabilityWorkerQualificationRequests
-} from 'webgpu-player/capability/vectors/HEVCExactCapabilityVectors';
+import { createHEVCExactCapabilityWorkerQualificationRequests } from 'webgpu-player/capability/vectors/HEVCExactCapabilityVectors';
 import {
     HEVC_EXACT_CAPABILITY_REQUEST_ID,
     HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS,
@@ -18,10 +16,7 @@ import {
     type HEVCExactCapabilityWorkerResponse
 } from 'webgpu-player/capability/exact/HEVCExactCapabilityProtocol';
 
-const MAIN10_4K_QUALIFICATION_PATH = resolve(
-    QUALIFICATION_VECTORS_DIRECTORY,
-    'hevc', 'main10-4k-complex.hevc'
-);
+const MAIN10_4K_QUALIFICATION_PATH = resolve(QUALIFICATION_VECTORS_DIRECTORY, 'hevc', 'main10-4k-complex.hevc');
 
 function loadMain10UltraHDQualificationBitstream(): ArrayBuffer {
     return Uint8Array.from(readFileSync(MAIN10_4K_QUALIFICATION_PATH)).buffer;
@@ -32,21 +27,15 @@ function createRequest(): HEVCExactCapabilityWorkerRequest {
         decoderGlueURL: 'https://example.test/hevc-decode.js',
         decoderWASM: { kind: 'url', url: 'https://example.test/hevc-decode.wasm' },
         requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
-        qualifications: createHEVCExactCapabilityWorkerQualificationRequests(
-            loadMain10UltraHDQualificationBitstream()
-        ),
+        qualifications: createHEVCExactCapabilityWorkerQualificationRequests(loadMain10UltraHDQualificationBitstream()),
         type: 'probe'
     };
 }
 
 describe('exact HEVC capability vectors and protocol', () => {
     it('recreates all exact Main and Main10 access units as fresh buffers', () => {
-        const firstRequests = createHEVCExactCapabilityWorkerQualificationRequests(
-            loadMain10UltraHDQualificationBitstream()
-        );
-        const secondRequests = createHEVCExactCapabilityWorkerQualificationRequests(
-            loadMain10UltraHDQualificationBitstream()
-        );
+        const firstRequests = createHEVCExactCapabilityWorkerQualificationRequests(loadMain10UltraHDQualificationBitstream());
+        const secondRequests = createHEVCExactCapabilityWorkerQualificationRequests(loadMain10UltraHDQualificationBitstream());
 
         expect(firstRequests).toHaveLength(3);
         for (let requestIndex = 0; requestIndex < firstRequests.length; requestIndex += 1) {
@@ -59,13 +48,9 @@ describe('exact HEVC capability vectors and protocol', () => {
                 levelIDC: definition.levelIDC,
                 profileIDC: definition.profileIDC
             });
-            expect(request.qualificationAccessUnits).toHaveLength(
-                definition.qualificationFrameCount
-            );
+            expect(request.qualificationAccessUnits).toHaveLength(definition.qualificationFrameCount);
             expect(request.accessUnit).not.toBe(secondRequests[requestIndex].accessUnit);
-            expect(request.qualificationAccessUnits[0]).not.toBe(
-                secondRequests[requestIndex].qualificationAccessUnits[0]
-            );
+            expect(request.qualificationAccessUnits[0]).not.toBe(secondRequests[requestIndex].qualificationAccessUnits[0]);
         }
     });
 
@@ -146,9 +131,7 @@ describe('exact HEVC capability vectors and protocol', () => {
                     chromaWidth: 960,
                     codedHeight: 1_080,
                     codedWidth: 1_920,
-                    decodedFrameFingerprints:
-                        HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS['main-1080p']
-                            .decodedFrameFingerprints,
+                    decodedFrameFingerprints: HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS['main-1080p'].decodedFrameFingerprints,
                     decodedFrameCount: 8,
                     decodedByteLength: 6_220_800,
                     levelIDC: 120,

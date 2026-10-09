@@ -7,8 +7,7 @@ export const NATIVE_ULTRA_HD_VIDEO_CAPABILITY_CODECS = [
     'av1'
 ] as const;
 
-export type NativeUltraHDVideoCapabilityVectorCodec =
-    typeof NATIVE_ULTRA_HD_VIDEO_CAPABILITY_CODECS[number];
+export type NativeUltraHDVideoCapabilityVectorCodec = typeof NATIVE_ULTRA_HD_VIDEO_CAPABILITY_CODECS[number];
 
 export type NativeUltraHDVideoCapabilityVector = Readonly<{
     codec: NativeUltraHDVideoCapabilityVectorCodec
@@ -20,7 +19,7 @@ export type NativeUltraHDVideoCapabilityVector = Readonly<{
 
 // Generated with FFmpeg git-862338fe31 from one 3840x2160 black keyframe.
 // HEVC is progressive 8-bit Main Level 5.1 Annex B with encoder SEI removed.
-// VP9 Profile 0 and AV1 Main retain only the first IVF frame payload.
+// VP9 Profile 0 and AV1 Main retain only the first IVF frame payload
 const HEVC_MAIN_KEY_FRAME_BASE64 = [
     'AAAAAUABDAH//yFgAAADAJAAAAMAAAMAmZWUCQAAAAFCAQEhYAAAAwCQAAADAAADAJmgAeAgAhxZZWVKTC8BaAgAAAMACAAAAwDA',
     'QAAAAAFEAcBzwYkAAAEoAax0CIaaGGB+B955111xxtttttttpppppppppppppppppppppppppppppppppppppppppppppqAHH//E',
@@ -63,8 +62,7 @@ const VP9_PROFILE_0_KEY_FRAME_BASE64 = [
     'UqVSpUqlSpWdDUYL4AeN5QnDhb/Fn8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/B',
     'n8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/Bn8GfwZ/BcgA='
 ].join('');
-const AV1_MAIN_KEY_FRAME_BASE64 =
-    'EgAKCBsu+/4b+gCAMiMT/AAAFgAAA60ZzuMJVv9/1iP4UzljTt+FOfqhrdS/wJlKIA==';
+const AV1_MAIN_KEY_FRAME_BASE64 = 'EgAKCBsu+/4b+gCAMiMT/AAAFgAAA60ZzuMJVv9/1iP4UzljTt+FOfqhrdS/wJlKIA==';
 
 function decodeBase64(base64: string): Uint8Array {
     const decoded: string = globalThis.atob(base64);
@@ -75,7 +73,7 @@ function decodeBase64(base64: string): Uint8Array {
     return bytes;
 }
 
-/** Returns a fresh exact 3840x2160 native SDR output vector. */
+/** Returns a new copy of the codec's 3840x2160 native SDR output vector. */
 export function createNativeUltraHDVideoCapabilityVector(
     codec: NativeUltraHDVideoCapabilityVectorCodec
 ): NativeUltraHDVideoCapabilityVector {

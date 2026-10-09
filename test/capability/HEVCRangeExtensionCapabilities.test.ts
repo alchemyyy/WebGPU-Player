@@ -131,11 +131,8 @@ function readVPSRawByteSequencePayload(bytes: Uint8Array): Uint8Array {
     if (startCodeIndex < 0) {
         throw new Error('Vector does not start with an HEVC access unit');
     }
-    const networkAbstractionLayerHeaderIndex = startCodeIndex
-        + getStartCodeLength(bytes, startCodeIndex);
-    const networkAbstractionLayerType = (
-        bytes[networkAbstractionLayerHeaderIndex] >> 1
-    ) & 0x3f;
+    const networkAbstractionLayerHeaderIndex = startCodeIndex + getStartCodeLength(bytes, startCodeIndex);
+    const networkAbstractionLayerType = (bytes[networkAbstractionLayerHeaderIndex] >> 1) & 0x3f;
     if (networkAbstractionLayerType !== 32) {
         throw new Error('Vector does not start with an HEVC VPS');
     }
@@ -144,9 +141,7 @@ function readVPSRawByteSequencePayload(bytes: Uint8Array): Uint8Array {
     const payloadEndIndex = nextStartCodeIndex < 0 ? bytes.length : nextStartCodeIndex;
     const rawByteSequencePayload: number[] = [];
     for (let byteIndex = payloadStartIndex; byteIndex < payloadEndIndex; byteIndex += 1) {
-        if (bytes[byteIndex] === 3
-            && rawByteSequencePayload.at(-1) === 0
-            && rawByteSequencePayload.at(-2) === 0) {
+        if (bytes[byteIndex] === 3 && rawByteSequencePayload.at(-1) === 0 && rawByteSequencePayload.at(-2) === 0) {
             continue;
         }
         rawByteSequencePayload.push(bytes[byteIndex]);
@@ -174,9 +169,7 @@ function readSPSRawByteSequencePayload(bytes: Uint8Array): Uint8Array {
     }
     const rawByteSequencePayload: number[] = [];
     for (let byteIndex = SPS.headerIndex + 2; byteIndex < SPS.endIndex; byteIndex += 1) {
-        if (bytes[byteIndex] === 3
-            && rawByteSequencePayload.at(-1) === 0
-            && rawByteSequencePayload.at(-2) === 0) {
+        if (bytes[byteIndex] === 3 && rawByteSequencePayload.at(-1) === 0 && rawByteSequencePayload.at(-2) === 0) {
             continue;
         }
         rawByteSequencePayload.push(bytes[byteIndex]);
@@ -248,19 +241,14 @@ class RawBitReader {
     }
 }
 
-function getNALRawByteSequencePayload(
-    bytes: Uint8Array,
-    networkAbstractionLayerUnit: AnnexBNALUnit
-): Uint8Array {
+function getNALRawByteSequencePayload(bytes: Uint8Array, networkAbstractionLayerUnit: AnnexBNALUnit): Uint8Array {
     const rawByteSequencePayload: number[] = [];
     for (
         let byteIndex = networkAbstractionLayerUnit.headerIndex + 2;
         byteIndex < networkAbstractionLayerUnit.endIndex;
         byteIndex += 1
     ) {
-        if (bytes[byteIndex] === 3
-            && rawByteSequencePayload.at(-1) === 0
-            && rawByteSequencePayload.at(-2) === 0) {
+        if (bytes[byteIndex] === 3 && rawByteSequencePayload.at(-1) === 0 && rawByteSequencePayload.at(-2) === 0) {
             continue;
         }
         rawByteSequencePayload.push(bytes[byteIndex]);
@@ -272,38 +260,25 @@ function getVectorSliceTypes(bytes: Uint8Array): number[] {
     const networkAbstractionLayerUnits = getAnnexBNALUnits(bytes);
     const extraSliceHeaderBitsByPictureParameterSet = new Map<number, number>();
     for (const networkAbstractionLayerUnit of networkAbstractionLayerUnits) {
-        const networkAbstractionLayerType = (
-            bytes[networkAbstractionLayerUnit.headerIndex] >> 1
-        ) & 0x3F;
+        const networkAbstractionLayerType = (bytes[networkAbstractionLayerUnit.headerIndex] >> 1) & 0x3F;
         if (networkAbstractionLayerType !== 34) {
             continue;
         }
-        const bitReader = new RawBitReader(getNALRawByteSequencePayload(
-            bytes,
-            networkAbstractionLayerUnit
-        ));
+        const bitReader = new RawBitReader(getNALRawByteSequencePayload(bytes, networkAbstractionLayerUnit));
         const pictureParameterSetID = bitReader.readUnsignedExpGolomb();
         bitReader.readUnsignedExpGolomb();
         bitReader.readBit();
         bitReader.readBit();
-        extraSliceHeaderBitsByPictureParameterSet.set(
-            pictureParameterSetID,
-            bitReader.readBits(3)
-        );
+        extraSliceHeaderBitsByPictureParameterSet.set(pictureParameterSetID, bitReader.readBits(3));
     }
 
     const sliceTypes: number[] = [];
     for (const networkAbstractionLayerUnit of networkAbstractionLayerUnits) {
-        const networkAbstractionLayerType = (
-            bytes[networkAbstractionLayerUnit.headerIndex] >> 1
-        ) & 0x3F;
+        const networkAbstractionLayerType = (bytes[networkAbstractionLayerUnit.headerIndex] >> 1) & 0x3F;
         if (networkAbstractionLayerType > 31) {
             continue;
         }
-        const bitReader = new RawBitReader(getNALRawByteSequencePayload(
-            bytes,
-            networkAbstractionLayerUnit
-        ));
+        const bitReader = new RawBitReader(getNALRawByteSequencePayload(bytes, networkAbstractionLayerUnit));
         const firstSliceSegmentInPicture = bitReader.readBit() === 1;
         if (!firstSliceSegmentInPicture) {
             throw new Error('HEVC vector must use one first slice per access unit');
@@ -312,9 +287,7 @@ function getVectorSliceTypes(bytes: Uint8Array): number[] {
             bitReader.readBit();
         }
         const pictureParameterSetID = bitReader.readUnsignedExpGolomb();
-        const extraSliceHeaderBitCount = extraSliceHeaderBitsByPictureParameterSet.get(
-            pictureParameterSetID
-        );
+        const extraSliceHeaderBitCount = extraSliceHeaderBitsByPictureParameterSet.get(pictureParameterSetID);
         if (extraSliceHeaderBitCount === undefined) {
             throw new Error('HEVC vector slice references an unknown PPS');
         }
@@ -362,16 +335,10 @@ describe('HEVCRangeExtensionCapabilities', () => {
         for (const variant of HEVC_RANGE_EXTENSION_VARIANTS) {
             const definition = HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS[variant];
             const expected = EXPECTED_VARIANTS[variant];
-            const vectorPath = resolve(
-                CODEC_VECTOR_ASSETS_DIRECTORY,
-                'hevc-range-extension',
-                `${variant}.hevc`
-            );
+            const vectorPath = resolve(CODEC_VECTOR_ASSETS_DIRECTORY, 'hevc-range-extension', `${variant}.hevc`);
             const vectorBytes = new Uint8Array(readFileSync(vectorPath));
 
-            expect(definition.config.codec).toBe(
-                `hvc1.4.10.L93.${getEmbeddedCodecConstraintSuffix(vectorBytes)}`
-            );
+            expect(definition.config.codec).toBe(`hvc1.4.10.L93.${getEmbeddedCodecConstraintSuffix(vectorBytes)}`);
             expect(definition.accessUnits.reduce(
                 (totalByteLength: number, accessUnit): number => (
                     totalByteLength + accessUnit.byteLength
@@ -435,21 +402,9 @@ describe('HEVCRangeExtensionCapabilities', () => {
     );
 
     it('infers omitted bit depth only from an exact Rext pixel format', () => {
-        expect(getHEVCRangeExtensionStreamDefinition(
-            'Rext',
-            'yuv422p12le',
-            null
-        )?.variant).toBe('main422-12');
-        expect(getHEVCRangeExtensionStreamDefinition(
-            'Rext',
-            'yuv422p12le',
-            10
-        )).toBeNull();
-        expect(getHEVCRangeExtensionStreamDefinition(
-            'Rext',
-            'yuv422p14le',
-            null
-        )).toBeNull();
+        expect(getHEVCRangeExtensionStreamDefinition('Rext', 'yuv422p12le', null)?.variant).toBe('main422-12');
+        expect(getHEVCRangeExtensionStreamDefinition('Rext', 'yuv422p12le', 10)).toBeNull();
+        expect(getHEVCRangeExtensionStreamDefinition('Rext', 'yuv422p14le', null)).toBeNull();
     });
 
     it.each([ null, undefined, Number.NaN, '' ])(
@@ -477,10 +432,6 @@ describe('HEVCRangeExtensionCapabilities', () => {
         'Screen-Extended Main 4:4:4',
         'High Throughput 4:4:4'
     ])('rejects unsupported extension profile family %s', profile => {
-        expect(getHEVCRangeExtensionStreamDefinition(
-            profile,
-            'yuv444p10le',
-            10
-        )).toBeNull();
+        expect(getHEVCRangeExtensionStreamDefinition(profile, 'yuv444p10le', 10)).toBeNull();
     });
 });

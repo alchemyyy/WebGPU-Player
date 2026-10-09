@@ -142,9 +142,7 @@ describe('parseHEVCSPS', () => {
                     transfer: 'bt709'
                 }
             });
-            expect(parseHEVCSPS(
-                rewriteHEVCSPSColorDescriptionToBT709(rewrittenSPS)
-            )).toEqual(parseHEVCSPS(rewrittenSPS));
+            expect(parseHEVCSPS(rewriteHEVCSPSColorDescriptionToBT709(rewrittenSPS))).toEqual(parseHEVCSPS(rewrittenSPS));
         }
     });
 
@@ -196,9 +194,7 @@ describe('parseHEVCSPS', () => {
 
         expect(() => parseHEVCSPS(interlacedSPS)).toThrow('not constrained to progressive');
         expect(() => parseHEVCSPS(MAIN10_PQ_SPS.subarray(0, 30))).toThrow('ends inside');
-        expect(() => parseHEVCSPS(new Uint8Array((64 * 1024) + 1))).toThrow(
-            'NAL unit header is invalid'
-        );
+        expect(() => parseHEVCSPS(new Uint8Array((64 * 1024) + 1))).toThrow('NAL unit header is invalid');
     });
 
     it.each([

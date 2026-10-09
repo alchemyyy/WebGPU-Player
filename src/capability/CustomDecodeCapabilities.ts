@@ -307,9 +307,7 @@ export type NativeVideoOutputProbeRequest = {
     expectedTimestamp: number
 };
 
-export type NativeVideoOutputProbe = (
-    probeRequest: NativeVideoOutputProbeRequest
-) => Promise<boolean>;
+export type NativeVideoOutputProbe = (probeRequest: NativeVideoOutputProbeRequest) => Promise<boolean>;
 
 export type NativeAudioOutputProbeRequest = {
     codec: Exclude<CustomAudioCodec, CustomBundledAudioCodec>
@@ -325,17 +323,13 @@ export type NativeAudioOutputProbeRequest = {
     expectedTimestamp: number
 };
 
-export type NativeAudioOutputProbe = (
-    probeRequest: NativeAudioOutputProbeRequest
-) => Promise<boolean>;
+export type NativeAudioOutputProbe = (probeRequest: NativeAudioOutputProbeRequest) => Promise<boolean>;
 
 type RawHDRVideoFrameCopyToOptions = Omit<VideoFrameCopyToOptions, 'format'> & {
     format: CustomDecodeRawVideoFrameFormat
 };
 
-export type HEVCRangeExtensionVectorLoader = (
-    assetPath: EngineLibraryPath
-) => Promise<ArrayBuffer>;
+export type HEVCRangeExtensionVectorLoader = (assetPath: EngineLibraryPath) => Promise<ArrayBuffer>;
 
 /** An exact probe; prepare starts its downloads ahead of its turn in the heavy queue. */
 export type ExactCapabilityProbe<Capability> = {
@@ -435,29 +429,19 @@ const NATIVE_VIDEO_MAXIMUM_VERTICAL_CODED_ALIGNMENT = 64;
 const NATIVE_AUDIO_MAXIMUM_ABSOLUTE_SILENCE_SAMPLE = 0.000_001;
 const HEVC_MAIN10_BLACK_DECODED_FRAME_FINGERPRINT = 3_873_342_648;
 const NATIVE_HEVC_SDR_ACCESS_UNIT = createHEVCExactCapabilityAccessUnit('main-1080p');
-const NATIVE_DOLBY_VISION_HEVC_ACCESS_UNIT = createHEVCExactCapabilityAccessUnit(
-    'main10-4k'
-);
+const NATIVE_DOLBY_VISION_HEVC_ACCESS_UNIT = createHEVCExactCapabilityAccessUnit('main10-4k');
 const NATIVE_HDR_HEVC_ACCESS_UNIT = createHEVCExactCapabilityAccessUnit('main10-4k');
 const NATIVE_AV1_SDR_VECTOR = createNativeVideoCapabilityVector('av1');
 const NATIVE_VP8_SDR_VECTOR = createNativeVideoCapabilityVector('vp8');
 const NATIVE_VP9_SDR_VECTOR = createNativeVideoCapabilityVector('vp9');
-const NATIVE_ULTRA_HD_HEVC_VECTOR: NativeUltraHDVideoCapabilityVector =
-    createNativeUltraHDVideoCapabilityVector('hevc');
-const NATIVE_ULTRA_HD_VP9_VECTOR: NativeUltraHDVideoCapabilityVector =
-    createNativeUltraHDVideoCapabilityVector('vp9');
-const NATIVE_ULTRA_HD_AV1_VECTOR: NativeUltraHDVideoCapabilityVector =
-    createNativeUltraHDVideoCapabilityVector('av1');
-const NATIVE_AAC_AUDIO_VECTOR: NativeAudioCapabilityVector =
-    createNativeAudioCapabilityVector('aac');
-const NATIVE_OPUS_AUDIO_VECTOR: NativeAudioCapabilityVector =
-    createNativeAudioCapabilityVector('opus');
-const NATIVE_FLAC_AUDIO_VECTOR: NativeAudioCapabilityVector =
-    createNativeAudioCapabilityVector('flac');
-const NATIVE_MP3_AUDIO_VECTOR: NativeAudioCapabilityVector =
-    createNativeAudioCapabilityVector('mp3');
-const NATIVE_VORBIS_AUDIO_VECTOR: NativeAudioCapabilityVector =
-    createNativeAudioCapabilityVector('vorbis');
+const NATIVE_ULTRA_HD_HEVC_VECTOR: NativeUltraHDVideoCapabilityVector = createNativeUltraHDVideoCapabilityVector('hevc');
+const NATIVE_ULTRA_HD_VP9_VECTOR: NativeUltraHDVideoCapabilityVector = createNativeUltraHDVideoCapabilityVector('vp9');
+const NATIVE_ULTRA_HD_AV1_VECTOR: NativeUltraHDVideoCapabilityVector = createNativeUltraHDVideoCapabilityVector('av1');
+const NATIVE_AAC_AUDIO_VECTOR: NativeAudioCapabilityVector = createNativeAudioCapabilityVector('aac');
+const NATIVE_OPUS_AUDIO_VECTOR: NativeAudioCapabilityVector = createNativeAudioCapabilityVector('opus');
+const NATIVE_FLAC_AUDIO_VECTOR: NativeAudioCapabilityVector = createNativeAudioCapabilityVector('flac');
+const NATIVE_MP3_AUDIO_VECTOR: NativeAudioCapabilityVector = createNativeAudioCapabilityVector('mp3');
+const NATIVE_VORBIS_AUDIO_VECTOR: NativeAudioCapabilityVector = createNativeAudioCapabilityVector('vorbis');
 const CAPABILITY_PROBE_TIMEOUT = Symbol('custom-decode-capability-probe-timeout');
 const defaultH264ProfileCapabilityProbe = new H264ProfileCapabilityProbe();
 const defaultBundledHEVCExactProbe: ExactCapabilityProbe<BundledHEVCExactCapabilities> = {
@@ -485,9 +469,7 @@ const defaultBundledVC1ExactProbe: ExactCapabilityProbe<MPEG2VC1ExactCapability>
     probe: probeVC1ExactCapability
 };
 
-function waitForCapabilityProbe<Value>(
-    promise: Promise<Value>
-): Promise<Value | typeof CAPABILITY_PROBE_TIMEOUT> {
+function waitForCapabilityProbe<Value>(promise: Promise<Value>): Promise<Value | typeof CAPABILITY_PROBE_TIMEOUT> {
     return new Promise<Value | typeof CAPABILITY_PROBE_TIMEOUT>((resolve, reject) => {
         let settled = false;
         const timeout = globalThis.setTimeout((): void => {
@@ -524,16 +506,12 @@ class SerializedHeavyCapabilityProbeScheduler {
     private timedOut = false;
 
     /** Enqueues a probe which provides its own bounded completion. */
-    public run<Value>(
-        probe: () => Promise<Value>
-    ): Promise<Value | typeof CAPABILITY_PROBE_TIMEOUT> {
+    public run<Value>(probe: () => Promise<Value>): Promise<Value | typeof CAPABILITY_PROBE_TIMEOUT> {
         return this.enqueue(probe, false);
     }
 
     /** Enqueues a probe with the common output-probe timeout. */
-    public runTimed<Value>(
-        probe: () => Promise<Value>
-    ): Promise<Value | typeof CAPABILITY_PROBE_TIMEOUT> {
+    public runTimed<Value>(probe: () => Promise<Value>): Promise<Value | typeof CAPABILITY_PROBE_TIMEOUT> {
         return this.enqueue(probe, true);
     }
 
@@ -565,10 +543,7 @@ class SerializedHeavyCapabilityProbeScheduler {
             }
             return result;
         });
-        this.probeChain = resultPromise.then(
-            (): void => undefined,
-            (): void => undefined
-        );
+        this.probeChain = resultPromise.then((): void => undefined, (): void => undefined);
         return resultPromise;
     }
 }
@@ -748,9 +723,7 @@ readonly NativeSurroundAudioProbeDefinition[] {
     return definitions;
 }
 
-const NATIVE_SURROUND_AUDIO_PROBE_DEFINITIONS:
-readonly NativeSurroundAudioProbeDefinition[] =
-    createNativeSurroundAudioProbeDefinitions();
+const NATIVE_SURROUND_AUDIO_PROBE_DEFINITIONS: readonly NativeSurroundAudioProbeDefinition[] = createNativeSurroundAudioProbeDefinitions();
 
 const BUNDLED_AUDIO_CODEC_DEFINITIONS: readonly BundledAudioCodecDefinition[] = [
     { codec: 'ac3', codecString: 'ac-3' },
@@ -782,12 +755,7 @@ const RAW_HDR_VIDEO_PROBE_DEFINITIONS: readonly RawHDRVideoProbeDefinition[] = [
             codec: 'hvc1.2.4.L153.B0',
             codedHeight: REPRESENTATIVE_RAW_HDR_VIDEO_HEIGHT,
             codedWidth: REPRESENTATIVE_RAW_HDR_VIDEO_WIDTH,
-            hardwareAcceleration: getCustomDecodeHardwareAcceleration(
-                'raw-planes',
-                'native',
-                false,
-                'hevc'
-            ),
+            hardwareAcceleration: getCustomDecodeHardwareAcceleration('raw-planes', 'native', false, 'hevc'),
             optimizeForLatency: true
         },
         encodedKeyFrame: new Uint8Array(HEVC_MAIN10_ACCESS_UNIT),
@@ -799,12 +767,7 @@ const RAW_HDR_VIDEO_PROBE_DEFINITIONS: readonly RawHDRVideoProbeDefinition[] = [
             codec: 'vp09.02.10.10',
             codedHeight: REPRESENTATIVE_RAW_HDR_VIDEO_HEIGHT,
             codedWidth: REPRESENTATIVE_RAW_HDR_VIDEO_WIDTH,
-            hardwareAcceleration: getCustomDecodeHardwareAcceleration(
-                'raw-planes',
-                'native',
-                false,
-                'vp9'
-            ),
+            hardwareAcceleration: getCustomDecodeHardwareAcceleration('raw-planes', 'native', false, 'vp9'),
             optimizeForLatency: true
         },
         encodedKeyFrame: VP9_PROFILE_2_VECTOR.encodedKeyFrame,
@@ -816,12 +779,7 @@ const RAW_HDR_VIDEO_PROBE_DEFINITIONS: readonly RawHDRVideoProbeDefinition[] = [
             codec: 'av01.0.08M.10',
             codedHeight: REPRESENTATIVE_RAW_HDR_VIDEO_HEIGHT,
             codedWidth: REPRESENTATIVE_RAW_HDR_VIDEO_WIDTH,
-            hardwareAcceleration: getCustomDecodeHardwareAcceleration(
-                'raw-planes',
-                'native',
-                false,
-                'av1'
-            ),
+            hardwareAcceleration: getCustomDecodeHardwareAcceleration('raw-planes', 'native', false, 'av1'),
             optimizeForLatency: true
         },
         encodedKeyFrame: AV1_MAIN_10_VECTOR.encodedKeyFrame,
@@ -915,14 +873,8 @@ const CUSTOM_VIDEO_CODEC_NAMES: ReadonlyMap<string, CustomVideoCodec> = new Map<
 ]);
 
 function mixRawHDRFingerprintValue(fingerprint: number, value: number): number {
-    let mixedFingerprint = Math.imul(
-        (fingerprint ^ (value & 0xFF)) >>> 0,
-        RAW_HDR_FNV1A_PRIME
-    ) >>> 0;
-    mixedFingerprint = Math.imul(
-        (mixedFingerprint ^ ((value >>> 8) & 0xFF)) >>> 0,
-        RAW_HDR_FNV1A_PRIME
-    ) >>> 0;
+    let mixedFingerprint = Math.imul((fingerprint ^ (value & 0xFF)) >>> 0, RAW_HDR_FNV1A_PRIME) >>> 0;
+    mixedFingerprint = Math.imul((mixedFingerprint ^ ((value >>> 8) & 0xFF)) >>> 0, RAW_HDR_FNV1A_PRIME) >>> 0;
     return mixedFingerprint;
 }
 
@@ -948,14 +900,8 @@ function mixRawHDRPlaneFingerprint(
 
     let mixedFingerprint = mixRawHDRFingerprintValue(fingerprint, width);
     mixedFingerprint = mixRawHDRFingerprintValue(mixedFingerprint, height);
-    for (
-        let rowSampleIndex = 0;
-        rowSampleIndex < RAW_HDR_FINGERPRINT_ROW_SAMPLE_COUNT;
-        rowSampleIndex += 1
-    ) {
-        const rowIndex = Math.floor(
-            rowSampleIndex * (height - 1) / (RAW_HDR_FINGERPRINT_ROW_SAMPLE_COUNT - 1)
-        );
+    for (let rowSampleIndex = 0; rowSampleIndex < RAW_HDR_FINGERPRINT_ROW_SAMPLE_COUNT; rowSampleIndex += 1) {
+        const rowIndex = Math.floor(rowSampleIndex * (height - 1) / (RAW_HDR_FINGERPRINT_ROW_SAMPLE_COUNT - 1));
         for (
             let columnSampleIndex = 0;
             columnSampleIndex < RAW_HDR_FINGERPRINT_COLUMN_SAMPLE_COUNT;
@@ -1109,9 +1055,7 @@ export function createRawHDRVideoOutputProbe(): RawHDRVideoOutputProbe | null {
         return null;
     }
 
-    return async (
-        probeRequest: RawHDRVideoOutputProbeRequest
-    ): Promise<RawHDRVideoOutputProbeResult> => {
+    return async (probeRequest: RawHDRVideoOutputProbeRequest): Promise<RawHDRVideoOutputProbeResult> => {
         const unsupportedResult: RawHDRVideoOutputProbeResult = Object.freeze({
             outputCopySupported: false
         });
@@ -1146,11 +1090,7 @@ export function createRawHDRVideoOutputProbe(): RawHDRVideoOutputProbe | null {
                     outputMatches = false;
                     return;
                 }
-                const copiedFrame = await copyDecodedRawHDRFrame(
-                    frame,
-                    probeRequest.expectedFormat,
-                    destination
-                );
+                const copiedFrame = await copyDecodedRawHDRFrame(frame, probeRequest.expectedFormat, destination);
                 if (!copiedFrame) {
                     outputMatches = false;
                     return;
@@ -1262,14 +1202,8 @@ function nativeAudioDataMatchesRequest(
     }
 
     try {
-        for (
-            let channelIndex = 0;
-            channelIndex < probeRequest.expectedNumberOfChannels;
-            channelIndex += 1
-        ) {
-            const samples: Float32Array = new Float32Array(
-                probeRequest.expectedNumberOfFrames
-            );
+        for (let channelIndex = 0; channelIndex < probeRequest.expectedNumberOfChannels; channelIndex += 1) {
+            const samples: Float32Array = new Float32Array(probeRequest.expectedNumberOfFrames);
             audioData.copyTo(samples, {
                 format: 'f32-planar',
                 planeIndex: channelIndex
@@ -1337,10 +1271,7 @@ export function createNativeAudioOutputProbe(): NativeAudioOutputProbe | null {
             return await Promise.race([
                 runOutputProbe(),
                 new Promise<boolean>(resolve => {
-                    timeout = globalThis.setTimeout(
-                        () => resolve(false),
-                        VIDEO_OUTPUT_PROBE_TIMEOUT_MILLISECONDS
-                    );
+                    timeout = globalThis.setTimeout(() => resolve(false), VIDEO_OUTPUT_PROBE_TIMEOUT_MILLISECONDS);
                 })
             ]);
         } finally {
@@ -1355,10 +1286,7 @@ export function createNativeAudioOutputProbe(): NativeAudioOutputProbe | null {
     };
 }
 
-function nativeVideoFrameMatchesRequest(
-    frame: VideoFrame,
-    probeRequest: NativeVideoOutputProbeRequest
-): boolean {
+function nativeVideoFrameMatchesRequest(frame: VideoFrame, probeRequest: NativeVideoOutputProbeRequest): boolean {
     const visibleRectangle = frame.visibleRect;
     const maximumCodedHeight = Math.ceil(
         probeRequest.expectedCodedHeight / NATIVE_VIDEO_MAXIMUM_VERTICAL_CODED_ALIGNMENT
@@ -1426,10 +1354,7 @@ export function createNativeVideoOutputProbe(): NativeVideoOutputProbe | null {
             return await Promise.race([
                 runOutputProbe(),
                 new Promise<boolean>(resolve => {
-                    timeout = globalThis.setTimeout(
-                        () => resolve(false),
-                        VIDEO_OUTPUT_PROBE_TIMEOUT_MILLISECONDS
-                    );
+                    timeout = globalThis.setTimeout(() => resolve(false), VIDEO_OUTPUT_PROBE_TIMEOUT_MILLISECONDS);
                 })
             ]);
         } finally {
@@ -1599,16 +1524,10 @@ function hasSupportedBundledHEVCProfile(
 function createBundledHEVCRawHDRCapability(
     exactCapabilities: BundledHEVCExactCapabilities | null | undefined
 ): CustomRawHDRVideoCodecCapability {
-    const main10Qualifications = Object.values(
-        exactCapabilities?.qualifications ?? {}
-    ).filter(
-        qualification => qualification.profile === 'main10'
-    );
-    const supportedQualification = main10Qualifications.find(
-        qualification => qualification.status === 'supported'
-    );
-    const representativeQualification = supportedQualification
-        ?? main10Qualifications[0];
+    const main10Qualifications = Object.values(exactCapabilities?.qualifications ?? {})
+        .filter(qualification => qualification.profile === 'main10');
+    const supportedQualification = main10Qualifications.find(qualification => qualification.status === 'supported');
+    const representativeQualification = supportedQualification ?? main10Qualifications[0];
     const baseCapability = {
         bitDepth: 10 as const,
         codec: 'hevc' as const,
@@ -1800,9 +1719,7 @@ function createBundledMPEG2VC1Capability(
     });
 }
 
-function createBundledDTSCapability(
-    exactCapability: DTSExactCapability | null
-): CustomDecodeCodecCapability<'dts'> {
+function createBundledDTSCapability(exactCapability: DTSExactCapability | null): CustomDecodeCodecCapability<'dts'> {
     if (!exactCapability) {
         return createUnavailableCapability('dts', 'dts');
     }
@@ -1950,9 +1867,7 @@ async function probeRawHDRVideoConfig(
     }
 
     try {
-        const support = await waitForCapabilityProbe(
-            decoder.isConfigSupported({ ...definition.config })
-        );
+        const support = await waitForCapabilityProbe(decoder.isConfigSupported({ ...definition.config }));
         if (support === CAPABILITY_PROBE_TIMEOUT) {
             return Object.freeze({
                 ...baseCapability,
@@ -2048,9 +1963,7 @@ async function probeHEVCRangeExtensionConfig(
         (): null => null
     );
     try {
-        const support = await waitForCapabilityProbe(
-            decoder.isConfigSupported({ ...definition.config })
-        );
+        const support = await waitForCapabilityProbe(decoder.isConfigSupported({ ...definition.config }));
         if (support === CAPABILITY_PROBE_TIMEOUT) {
             return Object.freeze({
                 ...baseCapability,
@@ -2152,9 +2065,7 @@ async function probeConfig<Codec extends CustomDecodeCodec, Config extends { cod
     }
 
     try {
-        const support = await waitForCapabilityProbe(
-            decoder.isConfigSupported({ ...definition.config })
-        );
+        const support = await waitForCapabilityProbe(decoder.isConfigSupported({ ...definition.config }));
         if (support === CAPABILITY_PROBE_TIMEOUT) {
             return Object.freeze({
                 codec: definition.codec,
@@ -2190,9 +2101,7 @@ async function probeNativeAudioConfig(
     }
 
     try {
-        const support = await waitForCapabilityProbe(
-            decoder.isConfigSupported({ ...definition.config })
-        );
+        const support = await waitForCapabilityProbe(decoder.isConfigSupported({ ...definition.config }));
         if (support === CAPABILITY_PROBE_TIMEOUT) {
             return Object.freeze({
                 codec: definition.codec,
@@ -2265,12 +2174,7 @@ async function probeNativeSurroundAudioConfig(
     outputProbe: NativeAudioOutputProbe | null | undefined,
     heavyProbeScheduler: HeavyCapabilityProbeQueue
 ): Promise<CustomNativeSurroundAudioCodecCapability> {
-    const capability = await probeNativeAudioConfig(
-        definition,
-        decoder,
-        outputProbe,
-        heavyProbeScheduler
-    );
+    const capability = await probeNativeAudioConfig(definition, decoder, outputProbe, heavyProbeScheduler);
     return Object.freeze({
         codec: definition.codec,
         codecString: capability.codecString,
@@ -2313,9 +2217,7 @@ function createNativeSurroundAudioCapabilities(
     return Object.freeze(capabilitiesByCodec);
 }
 
-function getNativeSurroundAudioProbeCount(
-    environment: WebCodecsCapabilityEnvironment
-): number {
+function getNativeSurroundAudioProbeCount(environment: WebCodecsCapabilityEnvironment): number {
     return environment.audioDecoder && environment.nativeAudioOutputProbe ?
         NATIVE_SURROUND_AUDIO_PROBE_DEFINITIONS.length :
         0;
@@ -2332,9 +2234,7 @@ async function probeNativeVideoConfig(
     }
 
     try {
-        const support = await waitForCapabilityProbe(
-            decoder.isConfigSupported({ ...definition.config })
-        );
+        const support = await waitForCapabilityProbe(decoder.isConfigSupported({ ...definition.config }));
         if (support === CAPABILITY_PROBE_TIMEOUT) {
             return Object.freeze({
                 codec: definition.codec,
@@ -2401,12 +2301,7 @@ async function probeNativeUltraHDVideoConfig(
     heavyProbeScheduler: HeavyCapabilityProbeQueue
 ): Promise<CustomNativeUltraHDVideoCodecCapability> {
     const capability: CustomDecodeCodecCapability<CustomVideoCodec> =
-        await probeNativeVideoConfig(
-            definition,
-            decoder,
-            outputProbe,
-            heavyProbeScheduler
-        );
+        await probeNativeVideoConfig(definition, decoder, outputProbe, heavyProbeScheduler);
     return Object.freeze({
         bitDepth: CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
         codec: definition.codec,
@@ -2677,9 +2572,7 @@ function createNotProbedNativeUltraHDVideoCapability(
     });
 }
 
-function createNotProbedRawVideoCapability(
-    definition: RawHDRVideoProbeDefinition
-): CustomRawHDRVideoCodecCapability {
+function createNotProbedRawVideoCapability(definition: RawHDRVideoProbeDefinition): CustomRawHDRVideoCodecCapability {
     return Object.freeze({
         bitDepth: 10,
         codec: definition.codec,
@@ -2690,9 +2583,7 @@ function createNotProbedRawVideoCapability(
     });
 }
 
-function createNotProbedHEVCRangeExtensionCapability(
-    variant: HEVCRangeExtensionVariant
-): HEVCRangeExtensionCapability {
+function createNotProbedHEVCRangeExtensionCapability(variant: HEVCRangeExtensionVariant): HEVCRangeExtensionCapability {
     return Object.freeze({
         ...createHEVCRangeExtensionBaseCapability(HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS[variant]),
         reason: 'not-probed',
@@ -2769,9 +2660,7 @@ function getItemMediaStreamLists(item: unknown): Array<readonly unknown[]> | nul
     return mediaStreamLists.length > 0 ? mediaStreamLists : null;
 }
 
-function getVideoMediaStreams(
-    mediaStreamLists: ReadonlyArray<readonly unknown[]>
-): ProbeSelectionMediaStream[] {
+function getVideoMediaStreams(mediaStreamLists: ReadonlyArray<readonly unknown[]>): ProbeSelectionMediaStream[] {
     const videoStreams: ProbeSelectionMediaStream[] = [];
     for (const mediaStreams of mediaStreamLists) {
         for (const stream of mediaStreams) {
@@ -3350,11 +3239,7 @@ export default class CustomDecodeCapabilityProbe {
         const nativeHDRHEVC = this.startSelectedProbe(
             selection,
             'native-hdr-hevc',
-            () => probeNativeHDRHEVC(
-                environment.videoDecoder,
-                environment.nativeHDRVideoOutputProbe,
-                videoQueue
-            ),
+            () => probeNativeHDRHEVC(environment.videoDecoder, environment.nativeHDRVideoOutputProbe, videoQueue),
             NOT_PROBED_NATIVE_HDR_HEVC_CAPABILITY
         );
         return {

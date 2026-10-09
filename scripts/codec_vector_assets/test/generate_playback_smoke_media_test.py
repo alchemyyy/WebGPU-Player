@@ -1,4 +1,4 @@
-"""Focused tests for playback smoke vector parameters."""
+"""Tests the playback smoke media generator's encode parameters, vector names, and options without running FFmpeg."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def create_settings(output_directory: Path) -> GenerationSettings:
 
 
 class PlaybackSmokeMediaTests(unittest.TestCase):
-    """Covers vector contracts without requiring codec executables."""
+    """Covers the HEVC level, the x265 parameters, the vector names, and the option checks."""
 
     def test_uses_level_4_1_only_for_1080p60(self) -> None:
         self.assertEqual(get_expected_HEVC_level_IDC("1080p", 60), HEVC_LEVEL_4_1_IDC)

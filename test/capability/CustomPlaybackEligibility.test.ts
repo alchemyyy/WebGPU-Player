@@ -99,10 +99,7 @@ function createCapability<Codec extends CustomAudioCodec | CustomVideoCodec>(
 }
 
 function createH264ProfileCapabilities(): H264ProfileCapabilities {
-    const capabilities = {} as Record<
-        typeof H264_PROFILES[number],
-        H264ProfileCapabilities[typeof H264_PROFILES[number]]
-    >;
+    const capabilities = {} as Record<typeof H264_PROFILES[number], H264ProfileCapabilities[typeof H264_PROFILES[number]]>;
     for (const profile of H264_PROFILES) {
         capabilities[profile] = Object.freeze({
             codecString: profile,
@@ -153,9 +150,7 @@ function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['
     };
 }
 
-function createBundledDTSCapability(): NonNullable<
-    CustomDecodeCapabilities['bundledDTS']
-> {
+function createBundledDTSCapability(): NonNullable<CustomDecodeCapabilities['bundledDTS']> {
     return Object.freeze({
         channelBedOnly: true,
         codec: 'dts',
@@ -180,9 +175,7 @@ function createBundledDTSCapability(): NonNullable<
     });
 }
 
-function createBundledTrueHDCapability(): NonNullable<
-    CustomDecodeCapabilities['bundledTrueHD']
-> {
+function createBundledTrueHDCapability(): NonNullable<CustomDecodeCapabilities['bundledTrueHD']> {
     return Object.freeze({
         channelBedOnly: true,
         channelCounts: Object.freeze([ 2, 6 ] as const),
@@ -204,9 +197,7 @@ function createBundledTrueHDCapability(): NonNullable<
     });
 }
 
-function createBundledJPEG2000Capability(): NonNullable<
-    CustomDecodeCapabilities['bundledJPEG2000']
-> {
+function createBundledJPEG2000Capability(): NonNullable<CustomDecodeCapabilities['bundledJPEG2000']> {
     return Object.freeze({
         bitDepth: 8,
         codec: 'jpeg2000',
@@ -218,9 +209,7 @@ function createBundledJPEG2000Capability(): NonNullable<
     });
 }
 
-function createBundledMPEG2Capability(): NonNullable<
-    CustomDecodeCapabilities['bundledMPEG2']
-> {
+function createBundledMPEG2Capability(): NonNullable<CustomDecodeCapabilities['bundledMPEG2']> {
     return Object.freeze({
         codec: 'mpeg2video',
         decodedFrameByteLength: 3_110_400,
@@ -232,9 +221,7 @@ function createBundledMPEG2Capability(): NonNullable<
     });
 }
 
-function createBundledVC1Capability(): NonNullable<
-    CustomDecodeCapabilities['bundledVC1']
-> {
+function createBundledVC1Capability(): NonNullable<CustomDecodeCapabilities['bundledVC1']> {
     return Object.freeze({
         ...createBundledMPEG2Capability(),
         codec: 'vc1',
@@ -243,9 +230,7 @@ function createBundledVC1Capability(): NonNullable<
 }
 
 function createCapabilities(): CustomDecodeCapabilities {
-    const createRawHDRCapability = (
-        codec: CustomRawHDRVideoCodec
-    ): CustomRawHDRVideoCodecCapability => ({
+    const createRawHDRCapability = (codec: CustomRawHDRVideoCodec): CustomRawHDRVideoCodecCapability => ({
         bitDepth: 10,
         codec,
         codecString: codec === 'hevc' ? 'hvc1.2.4.L153.B0' : codec,
@@ -253,10 +238,7 @@ function createCapabilities(): CustomDecodeCapabilities {
         reason: codec === 'hevc' ? 'bundled-software-decoder' : 'output-copy-supported',
         status: 'supported'
     });
-    const audio = {} as Record<
-        CustomAudioCodec,
-        CustomDecodeCodecCapability<CustomAudioCodec>
-    >;
+    const audio = {} as Record<CustomAudioCodec, CustomDecodeCodecCapability<CustomAudioCodec>>;
     for (const codec of CUSTOM_AUDIO_CODECS) {
         audio[codec] = createCapability(codec, true);
     }
@@ -329,10 +311,7 @@ function createNativeSurroundAudioCapabilities(
         opus: 'opus',
         vorbis: 'vorbis'
     };
-    const capabilities = {} as Record<
-        CustomNativeSurroundAudioCodec,
-        CustomNativeSurroundAudioCodecCapability
-    >;
+    const capabilities = {} as Record<CustomNativeSurroundAudioCodec, CustomNativeSurroundAudioCodecCapability>;
     for (const codec of CUSTOM_NATIVE_SURROUND_AUDIO_CODECS) {
         const supported: boolean = supportedCodecs.has(codec);
         capabilities[codec] = {
@@ -355,10 +334,7 @@ function createNativeUltraHDVideoCapabilities(
         hevc: 'hvc1.1.6.L153.B0',
         vp9: 'vp09.00.51.08'
     };
-    const capabilities = {} as Record<
-        CustomNativeUltraHDVideoCodec,
-        CustomNativeUltraHDVideoCodecCapability
-    >;
+    const capabilities = {} as Record<CustomNativeUltraHDVideoCodec, CustomNativeUltraHDVideoCodecCapability>;
     for (const codec of CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS) {
         const supported: boolean = supportedCodecs.has(codec);
         capabilities[codec] = {
@@ -372,17 +348,12 @@ function createNativeUltraHDVideoCapabilities(
     return capabilities;
 }
 
-function createNativeMediaAudioCapabilities(
-    supportedRoutes: ReadonlySet<string>
-): NativeMediaAudioCapabilities {
+function createNativeMediaAudioCapabilities(supportedRoutes: ReadonlySet<string>): NativeMediaAudioCapabilities {
     const audio = {} as Record<NativeMediaAudioCodec, NativeMediaAudioCodecCapability>;
     for (const codec of [ 'ac3', 'eac3' ] as const) {
         const codecString = codec === 'ac3' ? 'ac-3' : 'ec-3';
         const mimeType = `audio/mp4; codecs="${codecString}"`;
-        const layouts = {} as Record<
-            NativeMediaAudioChannelCount,
-            NativeMediaAudioLayoutCapability
-        >;
+        const layouts = {} as Record<NativeMediaAudioChannelCount, NativeMediaAudioLayoutCapability>;
         let codecSupported = false;
         for (const channelCount of [ 2, 6 ] as const) {
             const supported = supportedRoutes.has(`${codec}:${channelCount}:48000`);
@@ -1693,11 +1664,7 @@ describe('CustomPlaybackEligibility', () => {
                 runtimeAvailability: AVAILABLE_RUNTIME
             }
         )).toEqual({ eligible: false, reason: 'hdr-presentation-unavailable' });
-        expect(getCustomPlaybackEligibility(
-            hdrOptions,
-            createCapabilities(),
-            PQ_AUTHORIZATION
-        )).toMatchObject({
+        expect(getCustomPlaybackEligibility(hdrOptions, createCapabilities(), PQ_AUTHORIZATION)).toMatchObject({
             eligible: true,
             hdr: true,
             maximumCodedHeight: 2_160,
@@ -2358,11 +2325,7 @@ describe('CustomPlaybackEligibility', () => {
             runtimeAvailability: AVAILABLE_RUNTIME
         };
 
-        expect(getCustomPlaybackEligibility(
-            profile7Options,
-            capabilities,
-            eligibilityOptions
-        )).toMatchObject({
+        expect(getCustomPlaybackEligibility(profile7Options, capabilities, eligibilityOptions)).toMatchObject({
             dolbyVisionProfile: null,
             eligible: true,
             hdr: true,
@@ -2381,11 +2344,7 @@ describe('CustomPlaybackEligibility', () => {
         mediaSource.MediaStreams[0].Height = 1_080;
         mediaSource.MediaStreams[0].Level = 120;
         mediaSource.MediaStreams[0].Width = 1_920;
-        expect(getCustomPlaybackEligibility(
-            profile7Options,
-            capabilities,
-            eligibilityOptions
-        )).toMatchObject({
+        expect(getCustomPlaybackEligibility(profile7Options, capabilities, eligibilityOptions)).toMatchObject({
             dolbyVisionProfile: null,
             eligible: true,
             maximumCodedHeight: 1_080,
@@ -2481,11 +2440,7 @@ describe('CustomPlaybackEligibility', () => {
             runtimeAvailability: AVAILABLE_RUNTIME
         };
 
-        expect(getCustomPlaybackEligibility(
-            profile8Options,
-            capabilities,
-            eligibilityOptions
-        )).toMatchObject({
+        expect(getCustomPlaybackEligibility(profile8Options, capabilities, eligibilityOptions)).toMatchObject({
             dolbyVisionProfile: null,
             eligible: true,
             hdr: true,
@@ -2504,11 +2459,7 @@ describe('CustomPlaybackEligibility', () => {
         mediaSource.MediaStreams[0].Height = 1_080;
         mediaSource.MediaStreams[0].Level = 120;
         mediaSource.MediaStreams[0].Width = 1_920;
-        expect(getCustomPlaybackEligibility(
-            profile8Options,
-            capabilities,
-            eligibilityOptions
-        )).toMatchObject({
+        expect(getCustomPlaybackEligibility(profile8Options, capabilities, eligibilityOptions)).toMatchObject({
             dolbyVisionProfile: null,
             eligible: true,
             nativeHDRTransfer: 'pq',
@@ -2810,11 +2761,7 @@ describe('CustomPlaybackEligibility', () => {
             url: '/Videos/item/stream.mkv?api_key=secret'
         });
 
-        expect(getCustomPlaybackEligibility(
-            options,
-            createCapabilities(),
-            PQ_AUTHORIZATION
-        )).toMatchObject({
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), PQ_AUTHORIZATION)).toMatchObject({
             audioOutputMode: 'decoded-pcm',
             audioSourceChannelCount: 6,
             audioTrackIndex: 1,
@@ -2840,11 +2787,7 @@ describe('CustomPlaybackEligibility', () => {
         mediaSource.MediaStreams[0].Codec = codec;
         mediaSource.MediaStreams[0].IsInterlaced = true;
 
-        expect(getCustomPlaybackEligibility(
-            options,
-            createCapabilities(),
-            PQ_AUTHORIZATION
-        )).toEqual({
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), PQ_AUTHORIZATION)).toEqual({
             eligible: false,
             reason: 'interlaced-video-unsupported'
         });
@@ -2866,11 +2809,7 @@ describe('CustomPlaybackEligibility', () => {
             mediaSource.MediaStreams[0].IsInterlaced = value;
         }
 
-        expect(getCustomPlaybackEligibility(
-            options,
-            createCapabilities(),
-            PQ_AUTHORIZATION
-        )).toEqual({
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), PQ_AUTHORIZATION)).toEqual({
             eligible: false,
             reason: 'interlaced-video-unsupported'
         });
@@ -2927,11 +2866,7 @@ describe('CustomPlaybackEligibility', () => {
         ] as const) {
             mediaSource.MediaStreams[0].Width = width;
             mediaSource.MediaStreams[0].Height = height;
-            expect(getCustomPlaybackEligibility(
-                hdrOptions,
-                baseCapabilities,
-                PQ_AUTHORIZATION
-            )).toMatchObject({
+            expect(getCustomPlaybackEligibility(hdrOptions, baseCapabilities, PQ_AUTHORIZATION)).toMatchObject({
                 eligible: true,
                 maximumCodedHeight: height,
                 maximumCodedWidth: width,
@@ -2963,11 +2898,7 @@ describe('CustomPlaybackEligibility', () => {
             Width: 3_840
         };
 
-        expect(getCustomPlaybackEligibility(
-            options,
-            createCapabilities(),
-            PQ_AUTHORIZATION
-        )).toMatchObject({
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), PQ_AUTHORIZATION)).toMatchObject({
             eligible: true,
             hdr: true,
             rawVideoFrameFormat: 'I420P10',
@@ -3008,11 +2939,7 @@ describe('CustomPlaybackEligibility', () => {
                 }
             });
 
-            const result = getCustomPlaybackEligibility(
-                options,
-                createCapabilities(),
-                PQ_AUTHORIZATION
-            );
+            const result = getCustomPlaybackEligibility(options, createCapabilities(), PQ_AUTHORIZATION);
             expect(result.eligible).toBe(expectedEligible);
             if (!expectedEligible) {
                 expect(result).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
@@ -3069,11 +2996,7 @@ describe('CustomPlaybackEligibility', () => {
             }
         });
 
-        expect(getCustomPlaybackEligibility(
-            options,
-            capabilities,
-            PQ_AUTHORIZATION
-        )).toMatchObject({
+        expect(getCustomPlaybackEligibility(options, capabilities, PQ_AUTHORIZATION)).toMatchObject({
             eligible: true,
             maximumCodedHeight: 1_080,
             maximumCodedWidth: 1_920,
@@ -3085,11 +3008,7 @@ describe('CustomPlaybackEligibility', () => {
         };
         mediaSource.MediaStreams[0].Height = 2_160;
         mediaSource.MediaStreams[0].Width = 3_840;
-        expect(getCustomPlaybackEligibility(
-            options,
-            capabilities,
-            PQ_AUTHORIZATION
-        )).toMatchObject({
+        expect(getCustomPlaybackEligibility(options, capabilities, PQ_AUTHORIZATION)).toMatchObject({
             eligible: true,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
@@ -3166,9 +3085,7 @@ describe('CustomPlaybackEligibility', () => {
             const baseCapabilities: CustomDecodeCapabilities = createCapabilities();
             const capabilities: CustomDecodeCapabilities = {
                 ...baseCapabilities,
-                nativeUltraHDVideo: createNativeUltraHDVideoCapabilities(
-                    new Set([ codec ])
-                ),
+                nativeUltraHDVideo: createNativeUltraHDVideoCapabilities(new Set([ codec ])),
                 video: {
                     ...baseCapabilities.video,
                     [codec]: createCapability(codec, false)
@@ -3643,9 +3560,7 @@ describe('CustomPlaybackEligibility', () => {
                 eac3: createCapability('eac3', false)
             }
         };
-        const nativeMediaAudioCapabilities = createNativeMediaAudioCapabilities(
-            new Set([ 'eac3:6:48000' ])
-        );
+        const nativeMediaAudioCapabilities = createNativeMediaAudioCapabilities(new Set([ 'eac3:6:48000' ]));
         const nativeOnlyRuntime: CustomPlaybackRuntimeAvailability = {
             available: true,
             environment: {
@@ -3701,9 +3616,7 @@ describe('CustomPlaybackEligibility', () => {
 
         expect(getCustomPlaybackEligibility(options, createCapabilities(), {
             allowRawHDR: false,
-            nativeMediaAudioCapabilities: createNativeMediaAudioCapabilities(
-                new Set([ 'ac3:2:48000' ])
-            ),
+            nativeMediaAudioCapabilities: createNativeMediaAudioCapabilities(new Set([ 'ac3:2:48000' ])),
             runtimeAvailability: AVAILABLE_RUNTIME
         })).toMatchObject({
             audioOutputMode: 'decoded-pcm',
@@ -3721,9 +3634,7 @@ describe('CustomPlaybackEligibility', () => {
 
         expect(getCustomPlaybackEligibility(options, createCapabilities(), {
             allowRawHDR: false,
-            nativeMediaAudioCapabilities: createNativeMediaAudioCapabilities(
-                new Set([ 'ac3:2:48000' ])
-            ),
+            nativeMediaAudioCapabilities: createNativeMediaAudioCapabilities(new Set([ 'ac3:2:48000' ])),
             runtimeAvailability: AVAILABLE_RUNTIME
         })).toMatchObject({
             audioOutputMode: 'native-media',
@@ -4302,9 +4213,7 @@ describe('CustomPlaybackEligibility', () => {
             mediaSource.MediaStreams[1].Codec = codec;
             const capabilities: CustomDecodeCapabilities = {
                 ...createCapabilities(),
-                nativeSurroundAudio: createNativeSurroundAudioCapabilities(
-                    new Set([ codec ])
-                )
+                nativeSurroundAudio: createNativeSurroundAudioCapabilities(new Set([ codec ]))
             };
 
             expect(getCustomPlaybackEligibility(
@@ -4441,9 +4350,7 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
         Profile: 'Main 12'
     } as const;
 
-    function createDolbyVisionOptions(
-        videoStream: Record<string, unknown>
-    ): Record<string, unknown> {
+    function createDolbyVisionOptions(videoStream: Record<string, unknown>): Record<string, unknown> {
         return createOptions({
             mediaSource: {
                 Container: 'mkv',
@@ -4477,10 +4384,7 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
     }
 
     function createRangeExtensionCapabilities(): CustomDecodeCapabilities {
-        const hevcRangeExtensions = {} as Record<
-            HEVCRangeExtensionVariant,
-            HEVCRangeExtensionCapability
-        >;
+        const hevcRangeExtensions = {} as Record<HEVCRangeExtensionVariant, HEVCRangeExtensionCapability>;
         for (const variant of HEVC_RANGE_EXTENSION_VARIANTS) {
             const definition = HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS[variant];
             hevcRangeExtensions[variant] = {

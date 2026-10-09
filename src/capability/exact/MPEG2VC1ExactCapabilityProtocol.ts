@@ -1,9 +1,7 @@
 import { isDecoderWASMSource, type DecoderWASMSource } from '../../DecoderWASMSource';
 
-export const MPEG2_EXACT_CAPABILITY_REQUEST_ID =
-    'mpeg2-progressive-main-1920x1080-v1';
-export const VC1_EXACT_CAPABILITY_REQUEST_ID =
-    'vc1-progressive-advanced-1920x1080-v1';
+export const MPEG2_EXACT_CAPABILITY_REQUEST_ID = 'mpeg2-progressive-main-1920x1080-v1';
+export const VC1_EXACT_CAPABILITY_REQUEST_ID = 'vc1-progressive-advanced-1920x1080-v1';
 export const MPEG2_VC1_QUALIFICATION_CODED_HEIGHT = 1_080;
 export const MPEG2_VC1_QUALIFICATION_CODED_WIDTH = 1_920;
 export const MPEG2_VC1_QUALIFICATION_FRAME_COUNT = 12;
@@ -83,9 +81,7 @@ function isSafeNullableInteger(value: unknown): value is number | null {
     return value === null || (Number.isSafeInteger(value) && Number(value) >= 0);
 }
 
-function isWorkerReason(
-    value: unknown
-): value is MPEG2VC1ExactCapabilityWorkerResponse['reason'] {
+function isWorkerReason(value: unknown): value is MPEG2VC1ExactCapabilityWorkerResponse['reason'] {
     switch (value) {
         case 'decode-error':
         case 'decode-output-verified':
@@ -111,23 +107,16 @@ function isCodecAssetURL(value: unknown): value is string {
 }
 
 function isRequestID(value: unknown): value is MPEG2VC1ExactCapabilityRequestID {
-    return value === MPEG2_EXACT_CAPABILITY_REQUEST_ID
-        || value === VC1_EXACT_CAPABILITY_REQUEST_ID;
+    return value === MPEG2_EXACT_CAPABILITY_REQUEST_ID || value === VC1_EXACT_CAPABILITY_REQUEST_ID;
 }
 
-/** Returns the immutable qualification specification for one focused codec. */
-export function getMPEG2VC1Qualification(
-    requestID: MPEG2VC1ExactCapabilityRequestID
-): MPEG2VC1Qualification {
-    return requestID === VC1_EXACT_CAPABILITY_REQUEST_ID ?
-        VC1_QUALIFICATION :
-        MPEG2_QUALIFICATION;
+/** Returns the immutable qualification specification for the codec a request ID names. */
+export function getMPEG2VC1Qualification(requestID: MPEG2VC1ExactCapabilityRequestID): MPEG2VC1Qualification {
+    return requestID === VC1_EXACT_CAPABILITY_REQUEST_ID ? VC1_QUALIFICATION : MPEG2_QUALIFICATION;
 }
 
-/** Rejects malformed requests before loading the focused executable decoder. */
-export function isMPEG2VC1ExactCapabilityWorkerRequest(
-    value: unknown
-): value is MPEG2VC1ExactCapabilityWorkerRequest {
+/** Rejects malformed requests before the worker loads the MPEG-2/VC-1 decoder. */
+export function isMPEG2VC1ExactCapabilityWorkerRequest(value: unknown): value is MPEG2VC1ExactCapabilityWorkerRequest {
     return isRecord(value)
         && value.type === 'probe'
         && isRequestID(value.requestID)
@@ -138,10 +127,8 @@ export function isMPEG2VC1ExactCapabilityWorkerRequest(
         && isDecoderWASMSource(value.decoderWASM);
 }
 
-/** Validates all exact-output evidence returned by the worker. */
-export function isMPEG2VC1ExactCapabilityWorkerResponse(
-    value: unknown
-): value is MPEG2VC1ExactCapabilityWorkerResponse {
+/** Checks the shape of the exact-output evidence the worker returns; the probe compares its values with the qualification. */
+export function isMPEG2VC1ExactCapabilityWorkerResponse(value: unknown): value is MPEG2VC1ExactCapabilityWorkerResponse {
     return isRecord(value)
         && value.type === 'result'
         && isRequestID(value.requestID)

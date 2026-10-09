@@ -1,4 +1,4 @@
-"""Focused tests for deterministic static HDR HEVC vector construction."""
+"""Tests the static HDR vector generator's SEI injection, metadata scan, and option limits without running FFmpeg."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from generate_static_HDR_validation_vectors import (  # noqa: E402
 
 
 def create_base_HEVC_stream() -> bytes:
-    """Creates one structural parameter-set plus VCL Annex B stream."""
+    """Returns an Annex B stream of a VPS and an IDR slice NAL unit, each only a NAL header and a 0x80 byte."""
 
     video_parameter_set = bytes((32 << 1, 1, 0x80))
     VCL_NAL_unit = bytes((19 << 1, 1, 0x80))
@@ -33,7 +33,7 @@ def create_base_HEVC_stream() -> bytes:
 
 
 class StaticHDRVectorGeneratorTests(unittest.TestCase):
-    """Covers exact state construction without requiring codec executables."""
+    """Covers the four vector states, the SEI placement, emulation prevention, and the option limits."""
 
     def test_constructs_every_static_HDR_scan_state(self) -> None:
         base_stream = create_base_HEVC_stream()

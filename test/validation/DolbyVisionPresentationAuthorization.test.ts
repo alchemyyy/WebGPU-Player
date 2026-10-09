@@ -80,9 +80,7 @@ function createExpectedObservations(): readonly RawHDRVectorObservation[] {
     );
 }
 
-function createDeviceHarness(
-    ...observationSets: Array<readonly RawHDRVectorObservation[]>
-): DeviceHarness {
+function createDeviceHarness(...observationSets: Array<readonly RawHDRVectorObservation[]>): DeviceHarness {
     const observationMaps: Array<Map<string, ColorTriplet>> = [];
     for (const observations of observationSets) {
         const observationMap = new Map<string, ColorTriplet>();
@@ -212,9 +210,7 @@ function getWrittenRPUVectors(harness: DeviceHarness): ArrayBuffer[] {
         ));
 }
 
-function mutateFirstObservation(
-    observations: readonly RawHDRVectorObservation[]
-): readonly RawHDRVectorObservation[] {
+function mutateFirstObservation(observations: readonly RawHDRVectorObservation[]): readonly RawHDRVectorObservation[] {
     return observations.map((observation, observationIndex) => observationIndex === 0 ? {
         ...observation,
         linearRGB: [
@@ -278,12 +274,8 @@ describe('Dolby Vision presentation authorization', () => {
     });
 
     it('builds distinct schema-valid Profile 7 MEL and FEL vectors', () => {
-        const melSnapshot = decodeDolbyVisionRPUSnapshot(
-            createDolbyVisionAuthorizationRPUVector(7, 'mel')
-        );
-        const felSnapshot = decodeDolbyVisionRPUSnapshot(
-            createDolbyVisionAuthorizationRPUVector(7, 'fel')
-        );
+        const melSnapshot = decodeDolbyVisionRPUSnapshot(createDolbyVisionAuthorizationRPUVector(7, 'mel'));
+        const felSnapshot = decodeDolbyVisionRPUSnapshot(createDolbyVisionAuthorizationRPUVector(7, 'fel'));
 
         expect(melSnapshot).toMatchObject({
             disableResidual: false,
@@ -331,11 +323,7 @@ describe('Dolby Vision presentation authorization', () => {
         const felRPUData = createDolbyVisionAuthorizationRPUVector(7, 'fel');
         const harness = createDeviceHarness(
             createExpectedDolbyVisionAuthorizationObservations(melRPUData, settings),
-            createExpectedDolbyVisionAuthorizationObservations(
-                felRPUData,
-                settings,
-                'fel-hdr10-base'
-            )
+            createExpectedDolbyVisionAuthorizationObservations(felRPUData, settings, 'fel-hdr10-base')
         );
         const runner = new DolbyVisionPresentationAuthorizationRunner('profile7-base');
 
@@ -354,9 +342,7 @@ describe('Dolby Vision presentation authorization', () => {
         const settings = createHDRToSDRRenderSettings({
             toneMapping: { inputPeakNits: 4_000 }
         });
-        const harness = createDeviceHarness(
-            createExpectedDolbyVisionFELAuthorizationObservations(settings)
-        );
+        const harness = createDeviceHarness(createExpectedDolbyVisionFELAuthorizationObservations(settings));
         const runner = new DolbyVisionPresentationAuthorizationRunner('profile7-fel');
 
         const decision = await runner.validate(harness.device, 'bgra8unorm');
@@ -368,15 +354,11 @@ describe('Dolby Vision presentation authorization', () => {
             status: 'authorized'
         });
         expect(harness.draw).toHaveBeenCalledOnce();
-        expect(harness.bindGroupEntries.map(entry => entry.binding)).toEqual(
-            expect.arrayContaining([ 5, 6, 7, 8, 9 ])
-        );
+        expect(harness.bindGroupEntries.map(entry => entry.binding)).toEqual(expect.arrayContaining([ 5, 6, 7, 8, 9 ]));
     });
 
     it('rejects a bounded pixel mismatch', async () => {
-        const harness = createDeviceHarness(mutateFirstObservation(
-            createExpectedObservations()
-        ));
+        const harness = createDeviceHarness(mutateFirstObservation(createExpectedObservations()));
         const runner = new DolbyVisionPresentationAuthorizationRunner();
 
         await expect(runner.validate(harness.device, 'bgra8unorm')).resolves.toMatchObject({
@@ -429,12 +411,8 @@ describe('Dolby Vision presentation authorization', () => {
     });
 
     it.each([ 8, 10, 12 ])('builds dual-layer Profile 4 MEL and FEL vectors at %i bits', bitDepth => {
-        const melSnapshot = decodeDolbyVisionRPUSnapshot(
-            createDolbyVisionAuthorizationRPUVector(4, 'mel', bitDepth)
-        );
-        const felSnapshot = decodeDolbyVisionRPUSnapshot(
-            createDolbyVisionAuthorizationRPUVector(4, 'fel', bitDepth)
-        );
+        const melSnapshot = decodeDolbyVisionRPUSnapshot(createDolbyVisionAuthorizationRPUVector(4, 'mel', bitDepth));
+        const felSnapshot = decodeDolbyVisionRPUSnapshot(createDolbyVisionAuthorizationRPUVector(4, 'fel', bitDepth));
 
         expect(melSnapshot).toMatchObject({ baseLayerBitDepth: bitDepth, layerMode: 'mel', profile: 4 });
         expect(felSnapshot).toMatchObject({ baseLayerBitDepth: bitDepth, layerMode: 'fel', profile: 4 });
@@ -471,9 +449,7 @@ describe('Dolby Vision presentation authorization', () => {
         const settings = createHDRToSDRRenderSettings({
             toneMapping: { inputPeakNits: 4_000 }
         });
-        const harness = createDeviceHarness(
-            createExpectedDolbyVisionFELAuthorizationObservations(settings, 4)
-        );
+        const harness = createDeviceHarness(createExpectedDolbyVisionFELAuthorizationObservations(settings, 4));
         const runner = new DolbyVisionPresentationAuthorizationRunner('profile4-fel');
 
         await expect(runner.validate(harness.device, 'bgra8unorm')).resolves.toMatchObject({
@@ -481,9 +457,7 @@ describe('Dolby Vision presentation authorization', () => {
             routeKey: DOLBY_VISION_PROFILE4_FEL_AUTHORIZATION_ROUTE_KEY,
             status: 'authorized'
         });
-        expect(harness.bindGroupEntries.map(entry => entry.binding)).toEqual(
-            expect.arrayContaining([ 5, 6, 7, 8, 9 ])
-        );
+        expect(harness.bindGroupEntries.map(entry => entry.binding)).toEqual(expect.arrayContaining([ 5, 6, 7, 8, 9 ]));
     });
 
     it('presents the Profile 4 SDR base exactly, without tone mapping or dither', () => {
@@ -671,9 +645,7 @@ describe('Dolby Vision presentation authorization', () => {
                     status: 'authorized'
                 });
                 expect(runner.createShader(settings)).toBe(createShader(settings, format));
-                expect(harness.bindGroupEntries.map(entry => entry.binding)).toEqual(
-                    expect.arrayContaining([ 5, 6, 7, 8, 9 ])
-                );
+                expect(harness.bindGroupEntries.map(entry => entry.binding)).toEqual(expect.arrayContaining([ 5, 6, 7, 8, 9 ]));
                 expect(getPlaneTextures(harness)).toEqual([
                     ...basePlaneTextures,
                     [ 'r16uint', 8, 4 ],
@@ -700,12 +672,8 @@ describe('Dolby Vision presentation authorization', () => {
                 frame
             );
             // The first luma ramp row runs from code 16 to 235, scaled to the depth, over neutral chroma
-            const blackObservation = observations.find(
-                observation => observation.sampleX === 0 && observation.sampleY === 0
-            );
-            const whiteObservation = observations.find(
-                observation => observation.sampleX === 15 && observation.sampleY === 0
-            );
+            const blackObservation = observations.find(observation => observation.sampleX === 0 && observation.sampleY === 0);
+            const whiteObservation = observations.find(observation => observation.sampleX === 15 && observation.sampleY === 0);
 
             for (let componentIndex = 0; componentIndex < 3; componentIndex += 1) {
                 expect(blackObservation?.linearRGB[componentIndex]).toBeCloseTo(0, 9);

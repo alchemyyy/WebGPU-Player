@@ -19,7 +19,7 @@ const IDLE_OUTPUT_RECOVERY_POLL_INTERVAL_MILLISECONDS = 3_600_000;
 const OUTPUT_RECOVERY_POLL_INTERVAL_MILLISECONDS = 250;
 const SILENT_AUDIO_SINK: SilentAudioSink = { type: 'none' };
 
-/** Compares sinks the way browsers short-circuit a request for the current sink */
+/** Compares sinks the way browsers short-circuit a request for the current sink. */
 function isSameAudioSink(
     currentSink: AudioSinkRequest,
     requestedSink: AudioSinkRequest
@@ -52,7 +52,7 @@ class FakeAudioContext extends EventTarget {
     // Chromium suspends a running context while it switches outputs
     public suspendDuringSinkChange = false;
 
-    /** Applies a sink request like a browser, which resolves a same-sink request untouched */
+    /** Applies a sink request like a browser, which resolves a same-sink request untouched. */
     public async changeSink(sinkId: AudioSinkRequest): Promise<void> {
         if (isSameAudioSink(this.sinkId, sinkId)) {
             return;
@@ -70,7 +70,7 @@ class FakeMediaElement extends EventTarget {
     );
     public sinkId = '';
 
-    /** Applies a sink request like a browser, which resolves a same-ID request untouched */
+    /** Applies a sink request like a browser, which resolves a same-ID request untouched. */
     public async changeSink(sinkId: string): Promise<void> {
         if (sinkId === this.sinkId) {
             return;

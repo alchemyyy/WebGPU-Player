@@ -13,8 +13,7 @@ export const NATIVE_MEDIA_AUDIO_SAMPLE_RATE = 48_000;
 export const NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS = [ 2, 6 ] as const;
 
 export type NativeMediaAudioCodec = typeof NATIVE_MEDIA_AUDIO_CODECS[number];
-export type NativeMediaAudioChannelCount =
-    typeof NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS[number];
+export type NativeMediaAudioChannelCount = typeof NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS[number];
 export type NativeMediaAudioCapabilityStatus = 'supported' | 'unsupported' | 'unknown';
 export type NativeMediaAudioCapabilityReason =
     | 'api-unavailable'
@@ -66,9 +65,7 @@ export type NativeMediaAudioExactProbeResult = {
 };
 
 export type NativeMediaAudioCapabilityEnvironment = {
-    exactPlaybackProbe?: (
-        request: Readonly<NativeMediaAudioExactProbeRequest>
-    ) => Promise<NativeMediaAudioExactProbeResult>
+    exactPlaybackProbe?: (request: Readonly<NativeMediaAudioExactProbeRequest>) => Promise<NativeMediaAudioExactProbeResult>
     isTypeSupported?: ((mimeType: string) => boolean) | null
 };
 
@@ -87,18 +84,14 @@ const DEFINITIONS: readonly NativeMediaAudioDefinition[] = [
 ];
 
 function getDefaultIsTypeSupported(): ((mimeType: string) => boolean) | null {
-    if (typeof globalThis.MediaSource !== 'function'
-        || typeof globalThis.MediaSource.isTypeSupported !== 'function') {
+    if (typeof globalThis.MediaSource !== 'function' || typeof globalThis.MediaSource.isTypeSupported !== 'function') {
         return null;
     }
     // eslint-disable-next-line compat/compat -- Native MSE audio is capability-gated
     return (mimeType: string): boolean => globalThis.MediaSource.isTypeSupported(mimeType);
 }
 
-function waitForSourceOpen(
-    mediaSource: MediaSource,
-    timeoutMicroseconds: Microseconds
-): Promise<boolean> {
+function waitForSourceOpen(mediaSource: MediaSource, timeoutMicroseconds: Microseconds): Promise<boolean> {
     if (mediaSource.readyState === 'open') {
         return Promise.resolve(true);
     }
@@ -161,10 +154,7 @@ function appendVector(
     });
 }
 
-function waitForPlaybackAdvance(
-    audioElement: HTMLAudioElement,
-    timeoutMicroseconds: Microseconds
-): Promise<boolean> {
+function waitForPlaybackAdvance(audioElement: HTMLAudioElement, timeoutMicroseconds: Microseconds): Promise<boolean> {
     const startingTimeMicroseconds = secondsToMicroseconds(audioElement.currentTime);
     return new Promise<boolean>(resolve => {
         const timeout = globalThis.setTimeout((): void => {
@@ -173,8 +163,7 @@ function waitForPlaybackAdvance(
         }, microsecondsToMilliseconds(timeoutMicroseconds));
         const checkProgress = (): void => {
             const currentTimeMicroseconds = secondsToMicroseconds(audioElement.currentTime);
-            if (currentTimeMicroseconds - startingTimeMicroseconds
-                < REQUIRED_PLAYBACK_ADVANCE_MICROSECONDS) {
+            if (currentTimeMicroseconds - startingTimeMicroseconds < REQUIRED_PLAYBACK_ADVANCE_MICROSECONDS) {
                 return;
             }
             cleanup();
@@ -227,20 +216,13 @@ async function runDefaultExactPlaybackProbe(
     audioElement.src = objectURL;
 
     try {
-        const sourceOpened = await waitForSourceOpen(
-            mediaSource,
-            PROBE_TIMEOUT_MICROSECONDS
-        );
+        const sourceOpened = await waitForSourceOpen(mediaSource, PROBE_TIMEOUT_MICROSECONDS);
         if (!sourceOpened || mediaSource.readyState !== 'open') {
             return { reason: 'probe-timeout', supported: false };
         }
 
         const sourceBuffer = mediaSource.addSourceBuffer(request.mimeType);
-        const vectorAppended = await appendVector(
-            sourceBuffer,
-            request.vector,
-            PROBE_TIMEOUT_MICROSECONDS
-        );
+        const vectorAppended = await appendVector(sourceBuffer, request.vector, PROBE_TIMEOUT_MICROSECONDS);
         if (!vectorAppended) {
             return { reason: 'vector-append-failed', supported: false };
         }
@@ -253,10 +235,7 @@ async function runDefaultExactPlaybackProbe(
         } catch {
             return { reason: 'playback-failed', supported: false };
         }
-        const advanced = await waitForPlaybackAdvance(
-            audioElement,
-            PROBE_TIMEOUT_MICROSECONDS
-        );
+        const advanced = await waitForPlaybackAdvance(audioElement, PROBE_TIMEOUT_MICROSECONDS);
         return advanced ?
             { reason: 'decoded-playback-advanced', supported: true } :
             { reason: 'playback-not-advanced', supported: false };
@@ -307,18 +286,11 @@ async function probeNativeMediaAudioLayout(
     definition: NativeMediaAudioDefinition,
     channelCount: NativeMediaAudioChannelCount,
     isTypeSupported: ((mimeType: string) => boolean) | null,
-    exactPlaybackProbe: (
-        probeInput: Readonly<NativeMediaAudioExactProbeRequest>
-    ) => Promise<NativeMediaAudioExactProbeResult>
+    exactPlaybackProbe: (probeInput: Readonly<NativeMediaAudioExactProbeRequest>) => Promise<NativeMediaAudioExactProbeResult>
 ): Promise<NativeMediaAudioLayoutProbeOutcome> {
     if (!isTypeSupported) {
         return {
-            capability: createUnavailableLayout(
-                definition,
-                channelCount,
-                'api-unavailable',
-                'unknown'
-            ),
+            capability: createUnavailableLayout(definition, channelCount, 'api-unavailable', 'unknown'),
             probed: false
         };
     }
@@ -328,23 +300,13 @@ async function probeNativeMediaAudioLayout(
         mimeSupported = isTypeSupported(definition.mimeType);
     } catch {
         return {
-            capability: createUnavailableLayout(
-                definition,
-                channelCount,
-                'probe-exception',
-                'unknown'
-            ),
+            capability: createUnavailableLayout(definition, channelCount, 'probe-exception', 'unknown'),
             probed: false
         };
     }
     if (!mimeSupported) {
         return {
-            capability: createUnavailableLayout(
-                definition,
-                channelCount,
-                'mime-unsupported',
-                'unsupported'
-            ),
+            capability: createUnavailableLayout(definition, channelCount, 'mime-unsupported', 'unsupported'),
             probed: false
         };
     }
@@ -357,10 +319,7 @@ async function probeNativeMediaAudioLayout(
     try {
         const result = await exactPlaybackProbe({
             ...route,
-            vector: createNativeMediaAudioProbeVector(
-                definition.codec,
-                channelCount as NativeMediaAudioProbeVectorChannelCount
-            )
+            vector: createNativeMediaAudioProbeVector(definition.codec, channelCount as NativeMediaAudioProbeVectorChannelCount)
         });
         return {
             capability: {
@@ -372,12 +331,7 @@ async function probeNativeMediaAudioLayout(
         };
     } catch {
         return {
-            capability: createUnavailableLayout(
-                definition,
-                channelCount,
-                'probe-exception',
-                'unknown'
-            ),
+            capability: createUnavailableLayout(definition, channelCount, 'probe-exception', 'unknown'),
             probed: true
         };
     }
@@ -401,18 +355,10 @@ export async function probeNativeMediaAudioCapabilities(
         capabilityPromises.push((async (): Promise<NativeMediaAudioCodecCapability> => {
             const layoutPromises: Array<Promise<NativeMediaAudioLayoutProbeOutcome>> = [];
             for (const channelCount of NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS) {
-                layoutPromises.push(probeNativeMediaAudioLayout(
-                    definition,
-                    channelCount,
-                    isTypeSupported,
-                    exactPlaybackProbe
-                ));
+                layoutPromises.push(probeNativeMediaAudioLayout(definition, channelCount, isTypeSupported, exactPlaybackProbe));
             }
             const outcomes = await Promise.all(layoutPromises);
-            const layouts = {} as Record<
-                NativeMediaAudioChannelCount,
-                NativeMediaAudioLayoutCapability
-            >;
+            const layouts = {} as Record<NativeMediaAudioChannelCount, NativeMediaAudioLayoutCapability>;
             for (let layoutIndex = 0; layoutIndex < outcomes.length; layoutIndex += 1) {
                 const outcome = outcomes[layoutIndex];
                 layouts[NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS[layoutIndex]] = outcome.capability;
@@ -452,7 +398,7 @@ export async function probeNativeMediaAudioCapabilities(
     };
 }
 
-/** Performs one cached exact native-media audio capability probe. */
+/** Probes the native MSE audio routes once and caches the result. */
 export default class NativeMediaAudioCapabilityProbe {
     private cachedProbe: Promise<NativeMediaAudioCapabilities> | null = null;
     private readonly environment: NativeMediaAudioCapabilityEnvironment | null;
@@ -461,7 +407,7 @@ export default class NativeMediaAudioCapabilityProbe {
         this.environment = environment;
     }
 
-    /** Reuses one immutable route result for every negotiation in this page. */
+    /** Starts the probe on the first call; later calls share its result. */
     public probe(): Promise<NativeMediaAudioCapabilities> {
         if (!this.cachedProbe) {
             this.cachedProbe = probeNativeMediaAudioCapabilities(this.environment ?? {});
@@ -472,20 +418,19 @@ export default class NativeMediaAudioCapabilityProbe {
 
 const defaultNativeMediaAudioCapabilityProbe = new NativeMediaAudioCapabilityProbe();
 
-/** Probes exact owned native-audio routes once for the current page. */
+/** Probes the native MSE audio routes once per page. */
 export function probeCachedNativeMediaAudioCapabilities(): Promise<NativeMediaAudioCapabilities> {
     return defaultNativeMediaAudioCapabilityProbe.probe();
 }
 
-/** Returns a route only when its exact codec, channel count, and sample rate passed. */
+/** Returns a route only when the probe passed for its codec, channel count, and sample rate. */
 export function getSupportedNativeMediaAudioRoute(
     capabilities: NativeMediaAudioCapabilities,
     codec: NativeMediaAudioCodec,
     channelCount: number,
     sampleRate: number
 ): NativeMediaAudioRoute | null {
-    if ((channelCount !== 2 && channelCount !== 6)
-        || sampleRate !== NATIVE_MEDIA_AUDIO_SAMPLE_RATE) {
+    if ((channelCount !== 2 && channelCount !== 6) || sampleRate !== NATIVE_MEDIA_AUDIO_SAMPLE_RATE) {
         return null;
     }
     const layout = capabilities.audio[codec].layouts[channelCount];

@@ -15,9 +15,7 @@ type HEVCDecoderWorkerScope = typeof globalThis & {
 const workerScope = globalThis as HEVCDecoderWorkerScope;
 let probeStarted = false;
 
-function createDecodeErrorResponse(
-    request: HEVCExactCapabilityWorkerRequest
-): HEVCExactCapabilityWorkerResponse {
+function createDecodeErrorResponse(request: HEVCExactCapabilityWorkerRequest): HEVCExactCapabilityWorkerResponse {
     const results: HEVCExactCapabilityWorkerQualificationResult[] = [];
     for (const qualificationRequest of request.qualifications) {
         results.push({

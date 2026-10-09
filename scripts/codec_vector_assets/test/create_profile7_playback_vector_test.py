@@ -102,7 +102,7 @@ class PlaybackVectorTests(unittest.TestCase):
             configuration: DualTrackVectorConfiguration,
         ) -> dict[str, object]:
             dual_track_configurations.append(configuration)
-            # A UHD source's 1080p EL behind the BL scaled to 1080p
+            # A UHD source: the BL scaled to 1080p, and its 1080p EL copied
             return {
                 "baseHeight": 1_080,
                 "baseTrackID": 1,
@@ -122,9 +122,7 @@ class PlaybackVectorTests(unittest.TestCase):
             Path(input_path).write_bytes(b"separate-track source")
             FFmpeg_path = create_empty_file(os.path.join(temporary_directory, "ffmpeg.exe"))
             MKVToolNix_directory = os.path.join(temporary_directory, "MKVToolNix")
-            MKV_merge_path = create_empty_file(
-                os.path.join(MKVToolNix_directory, MKV_MERGE_EXECUTABLE_NAME)
-            )
+            MKV_merge_path = create_empty_file(os.path.join(MKVToolNix_directory, MKV_MERGE_EXECUTABLE_NAME))
             with (
                 patch.object(subprocess, "run", side_effect=run_tool),
                 patch.object(
@@ -147,9 +145,7 @@ class PlaybackVectorTests(unittest.TestCase):
         encoded_path = encode_command[-1]
         normalized_path = os.path.join(os.path.dirname(encoded_path), "normalized.mkv")
         self.assertEqual(os.path.basename(encoded_path), "encoded.mkv")
-        self.assertTrue(
-            os.path.basename(os.path.dirname(encoded_path)).startswith("webgpu-dovi-playback-")
-        )
+        self.assertTrue(os.path.basename(os.path.dirname(encoded_path)).startswith("webgpu-dovi-playback-"))
         self.assertEqual(
             encode_command,
             [FFmpeg_path, *generator.create_structural_FFmpeg_arguments(input_path, encoded_path)],
@@ -229,9 +225,7 @@ class CommandLineTests(unittest.TestCase):
     def test_fails_with_status_1_for_a_missing_input(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             missing_path = os.path.join(temporary_directory, "missing.mkv")
-            status, stdout, stderr = run_main(
-                [missing_path, os.path.join(temporary_directory, "playback.mp4")]
-            )
+            status, stdout, stderr = run_main([missing_path, os.path.join(temporary_directory, "playback.mp4")])
 
         self.assertEqual((status, stdout), (1, ""))
         self.assertIn("missing.mkv", stderr)

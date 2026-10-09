@@ -141,10 +141,7 @@ function createSectionAssembler(): PSISectionAssembler {
     };
 }
 
-function parseTransportPacket(
-    data: Uint8Array,
-    transportPacketOffset: number
-): TransportStreamPacket | null {
+function parseTransportPacket(data: Uint8Array, transportPacketOffset: number): TransportStreamPacket | null {
     const transportPacketEndOffset = transportPacketOffset + MPEG_TS_PACKET_BYTE_LENGTH;
     if (
         transportPacketOffset < 0
@@ -216,8 +213,7 @@ function appendSectionBytes(
             return;
         }
         if (assembler.expectedByteLength === null) {
-            const sectionByteLength = 3
-                + (((assembler.buffer[1] & 0x0F) << 8) | assembler.buffer[2]);
+            const sectionByteLength = 3 + (((assembler.buffer[1] & 0x0F) << 8) | assembler.buffer[2]);
             if (sectionByteLength < 4 || sectionByteLength > MAXIMUM_PSI_SECTION_BYTE_LENGTH) {
                 resetSectionAssembler(assembler);
                 return;
@@ -240,10 +236,7 @@ function appendSectionBytes(
     }
 }
 
-function takePacketSections(
-    assembler: PSISectionAssembler,
-    packet: TransportStreamPacket
-): Uint8Array[] {
+function takePacketSections(assembler: PSISectionAssembler, packet: TransportStreamPacket): Uint8Array[] {
     const sections: Uint8Array[] = [];
     if (packet.discontinuity) {
         resetSectionAssembler(assembler);
@@ -342,9 +335,9 @@ function isRegistrationDescriptor(
 }
 
 /**
- * Reads the base-layer PID that a dual-layer EL descriptor depends on. Like FFmpeg, any dv_version_major is
- * parsed the same way, and the trailing BL signal compatibility ID and dv_md_compression byte is optional: it
- * describes the base layer and the RPU, not where the EL is.
+ * Reads the base-layer PID that a dual-layer EL descriptor depends on.
+ * Like FFmpeg, any dv_version_major is parsed the same way, and the trailing BL signal compatibility ID and dv_md_compression byte is optional.
+ * That byte describes the base layer and the RPU, not where the EL is.
  */
 function readDolbyVisionDependencyPID(
     data: Uint8Array,
@@ -462,10 +455,7 @@ function parseProgramMap(section: Uint8Array): ProgramMap | null {
     };
 }
 
-function getEnhancementPIDs(
-    programMap: ProgramMap,
-    selectedBasePID: number
-): readonly number[] {
+function getEnhancementPIDs(programMap: ProgramMap, selectedBasePID: number): readonly number[] {
     const selectedBaseStream = programMap.streams.find(
         (stream: ProgramMapStream): boolean => (
             stream.pid === selectedBasePID && stream.streamType === HEVC_STREAM_TYPE
@@ -505,10 +495,7 @@ function getEnhancementPIDs(
     return candidatePIDs;
 }
 
-function registerProgramMapPIDs(
-    state: TransportConfigurationParseState,
-    section: Uint8Array
-): boolean {
+function registerProgramMapPIDs(state: TransportConfigurationParseState, section: Uint8Array): boolean {
     for (const programMapPID of readProgramMapPIDs(section)) {
         if (state.programMapPIDs.has(programMapPID)) {
             continue;
@@ -586,8 +573,7 @@ function parseTransportStreamConfiguration(
 
     for (
         let packetOffset = 0;
-        packetOffset + layout.transportPacketOffset + MPEG_TS_PACKET_BYTE_LENGTH
-            <= data.byteLength;
+        packetOffset + layout.transportPacketOffset + MPEG_TS_PACKET_BYTE_LENGTH <= data.byteLength;
         packetOffset += layout.packetByteLength
     ) {
         const packet = parseTransportPacket(

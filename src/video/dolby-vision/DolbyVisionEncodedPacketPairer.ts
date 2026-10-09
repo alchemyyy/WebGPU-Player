@@ -8,7 +8,7 @@ export type DolbyVisionEncodedPacketIterator = {
     return?: () => Promise<IteratorResult<EncodedPacket>>
 };
 
-/** Aligns a bounded forward-only EL packet stream to monotonically ordered BL PTS. */
+/** Pairs a forward-only EL packet stream with the BL packets, one EL packet per BL packet in decode order. */
 export default class DolbyVisionEncodedPacketPairer {
     private ended = false;
     private retirementPromise: Promise<void> | null = null;
@@ -20,14 +20,9 @@ export default class DolbyVisionEncodedPacketPairer {
         return this.retirementPromise !== null;
     }
 
-    /** Takes the next decode-order EL packet and verifies its BL PTS. */
-    public async takeMatchingPacket(
-        baseTimestampMicrosecondsValue: number
-    ): Promise<EncodedPacket | null> {
-        const baseTimestampMicroseconds = requireMicroseconds(
-            baseTimestampMicrosecondsValue,
-            'Dolby Vision base packet timestamp'
-        );
+    /** Takes the next decode-order EL packet and checks that its PTS matches the BL packet's. */
+    public async takeMatchingPacket(baseTimestampMicrosecondsValue: number): Promise<EncodedPacket | null> {
+        const baseTimestampMicroseconds = requireMicroseconds(baseTimestampMicrosecondsValue, 'Dolby Vision base packet timestamp');
         if (this.ended) {
             return null;
         }
@@ -40,16 +35,13 @@ export default class DolbyVisionEncodedPacketPairer {
             iteratorResult.value.microsecondTimestamp,
             'Dolby Vision enhancement packet timestamp'
         );
-        if (Math.abs(enhancementTimestampMicroseconds - baseTimestampMicroseconds)
-            > DOLBY_VISION_FRAME_PAIR_TOLERANCE_MICROSECONDS) {
-            throw new RangeError(
-                'Separate Dolby Vision packets are not aligned in decode order'
-            );
+        if (Math.abs(enhancementTimestampMicroseconds - baseTimestampMicroseconds) > DOLBY_VISION_FRAME_PAIR_TOLERANCE_MICROSECONDS) {
+            throw new RangeError('Separate Dolby Vision packets are not aligned in decode order');
         }
         return iteratorResult.value;
     }
 
-    /** Retires the iterator exactly once and releases its retained future packet. */
+    /** Retires the iterator, which releases any packet it read ahead. Later calls return the first call's promise. */
     public retire(): Promise<void> {
         if (this.retirementPromise) {
             return this.retirementPromise;
@@ -63,7 +55,7 @@ export default class DolbyVisionEncodedPacketPairer {
         try {
             await this.iterator.return?.();
         } catch {
-            // Input disposal remains the authoritative cancellation signal
+            // Disposing the input cancels the iterator anyway, so a failed return() is ignored
         }
     }
 }

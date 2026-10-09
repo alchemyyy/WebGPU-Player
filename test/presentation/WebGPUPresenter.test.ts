@@ -24,9 +24,7 @@ const dolbyVisionAuthorizationMockState = vi.hoisted(() => ({
 }));
 
 vi.mock('webgpu-player/EngineConfiguration', () => ({
-    isHDRToneMappingEnabled: vi.fn(
-        (): Promise<boolean> => Promise.resolve(webSettingsMockState.hdrToneMappingEnabled)
-    )
+    isHDRToneMappingEnabled: vi.fn((): Promise<boolean> => Promise.resolve(webSettingsMockState.hdrToneMappingEnabled))
 }));
 
 vi.mock('webgpu-player/validation/RawHDRPresentationAuthorization', () => ({
@@ -351,10 +349,7 @@ function notifyMutationObservers(target: Node): number {
     return notificationCount;
 }
 
-const originalCanvasGetContext = Object.getOwnPropertyDescriptor(
-    HTMLCanvasElement.prototype,
-    'getContext'
-);
+const originalCanvasGetContext = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'getContext');
 const originalDevicePixelRatio = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio');
 const originalGPU = Object.getOwnPropertyDescriptor(navigator, 'gpu');
 const originalGPUBufferUsage = Object.getOwnPropertyDescriptor(globalThis, 'GPUBufferUsage');
@@ -664,9 +659,7 @@ function createRawFrame(
     for (const definition of planeDefinitions) {
         const width = Math.ceil(codedWidth / definition.widthDivisor);
         const height = Math.ceil(codedHeight / definition.heightDivisor);
-        const rowByteLength = width
-            * definition.componentsPerTexel
-            * definition.bytesPerComponent;
+        const rowByteLength = width * definition.componentsPerTexel * definition.bytesPerComponent;
         const bytesPerRow = Math.ceil(rowByteLength / 256) * 256;
         const byteLength = bytesPerRow * height;
         planes.push({
@@ -712,9 +705,7 @@ type CompoundDolbyVisionRawFrames = {
 };
 
 /** Creates a BL in baseFormat and a half-resolution I420P10 EL in one compound buffer, as the worker posts them. */
-function createCompoundDolbyVisionRawFrames(
-    baseFormat: RawDolbyVisionVideoFrameFormat = 'I420P10'
-): CompoundDolbyVisionRawFrames {
+function createCompoundDolbyVisionRawFrames(baseFormat: RawDolbyVisionVideoFrameFormat = 'I420P10'): CompoundDolbyVisionRawFrames {
     const baseFrameTemplate = createRawFrame(
         baseFormat,
         createPQColorMetadata({ bitDepth: getRawFormatBitDepth(baseFormat) }),
@@ -723,9 +714,7 @@ function createCompoundDolbyVisionRawFrames(
     );
     const enhancementFrameTemplate = createRawFrame('I420P10', createPQColorMetadata(), 4, 2);
     const enhancementByteOffset = baseFrameTemplate.data.byteLength;
-    const data = new ArrayBuffer(
-        enhancementByteOffset + enhancementFrameTemplate.data.byteLength
-    );
+    const data = new ArrayBuffer(enhancementByteOffset + enhancementFrameTemplate.data.byteLength);
     return {
         baseFrame: {
             ...baseFrameTemplate,
@@ -932,9 +921,7 @@ describe('WebGPUPresenter', () => {
         const presenter = new WebGPUPresenter(fallbackHandler);
 
         presenter.startSession(1);
-        await vi.advanceTimersByTimeAsync(
-            microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS)
-        );
+        await vi.advanceTimersByTimeAsync(microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS));
 
         expect(fallbackHandler).toHaveBeenCalledOnce();
         expect(fallbackHandler).toHaveBeenCalledWith(1, 'adapter-unavailable');
@@ -972,9 +959,7 @@ describe('WebGPUPresenter', () => {
     it('destroys the device and falls back when pipeline creation fails', async () => {
         const gpuHarness = createGPUHarness();
         const deviceHarness = gpuHarness.devices[0];
-        deviceHarness.createRenderPipelineAsync.mockRejectedValue(
-            new Error('simulated pipeline creation failure')
-        );
+        deviceHarness.createRenderPipelineAsync.mockRejectedValue(new Error('simulated pipeline creation failure'));
         installGPU(gpuHarness.gpu);
         const fallbackHandler = vi.fn();
         const presenter = new WebGPUPresenter(fallbackHandler);
@@ -1025,10 +1010,7 @@ describe('WebGPUPresenter', () => {
         presenter.attach(surfaceHarness.surface, 1);
 
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
-        expect(fallbackHandler).toHaveBeenCalledWith(
-            1,
-            'request-video-frame-callback-unavailable'
-        );
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'request-video-frame-callback-unavailable');
         expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry().state).toBe('fallback');
     });
@@ -1053,10 +1035,7 @@ describe('WebGPUPresenter', () => {
 
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
         expect(fallbackHandler).toHaveBeenCalledOnce();
-        expect(fallbackHandler).toHaveBeenCalledWith(
-            1,
-            'request-video-frame-callback-unavailable'
-        );
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'request-video-frame-callback-unavailable');
         expect(gpuHarness.devices[0].queueSubmit).toHaveBeenCalledOnce();
         expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry().state).toBe('fallback');
@@ -1159,9 +1138,7 @@ describe('WebGPUPresenter', () => {
         const contextHarness = createCanvasContextHarness();
         const surfaceHarness = createSurfaceHarness();
         const submittedWork = createDeferred<void>();
-        gpuHarness.devices[0].queueOnSubmittedWorkDone.mockReturnValueOnce(
-            submittedWork.promise
-        );
+        gpuHarness.devices[0].queueOnSubmittedWorkDone.mockReturnValueOnce(submittedWork.promise);
         installGPU(gpuHarness.gpu);
         installCanvasContext(contextHarness.context);
         const presenter = new WebGPUPresenter(vi.fn());
@@ -1203,9 +1180,7 @@ describe('WebGPUPresenter', () => {
         const contextHarness = createCanvasContextHarness();
         const surfaceHarness = createSurfaceHarness();
         const submittedWork = createDeferred<void>();
-        gpuHarness.devices[0].queueOnSubmittedWorkDone.mockReturnValueOnce(
-            submittedWork.promise
-        );
+        gpuHarness.devices[0].queueOnSubmittedWorkDone.mockReturnValueOnce(submittedWork.promise);
         installGPU(gpuHarness.gpu);
         installCanvasContext(contextHarness.context);
         const presenter = new WebGPUPresenter(vi.fn());
@@ -1276,9 +1251,7 @@ describe('WebGPUPresenter', () => {
         expect(closeFrame).toHaveBeenCalledOnce();
         const toneMappingShaderDescriptor = gpuHarness.devices[0].createShaderModule.mock.calls
             .map((call: unknown[]) => call[0] as { code: string })
-            .find(descriptor => descriptor.code.includes(
-                'fn recoverLimitedRangeBT709YUV'
-            ));
+            .find(descriptor => descriptor.code.includes('fn recoverLimitedRangeBT709YUV'));
         expect(toneMappingShaderDescriptor).toBeDefined();
         expect(fallbackHandler).not.toHaveBeenCalled();
     });
@@ -1370,12 +1343,8 @@ describe('WebGPUPresenter', () => {
             clientHeight: { configurable: true, value: 600 },
             clientWidth: { configurable: true, value: 800 }
         });
-        surfaceHarness.surface.container.getBoundingClientRect = vi.fn(
-            () => createRectangle(0, 0, 800, 600)
-        );
-        surfaceHarness.surface.video.getBoundingClientRect = vi.fn(
-            () => createRectangle(0, 0, 800, 600)
-        );
+        surfaceHarness.surface.container.getBoundingClientRect = vi.fn(() => createRectangle(0, 0, 800, 600));
+        surfaceHarness.surface.video.getBoundingClientRect = vi.fn(() => createRectangle(0, 0, 800, 600));
         Object.defineProperty(window, 'devicePixelRatio', {
             configurable: true,
             value: 1.5
@@ -1508,17 +1477,13 @@ describe('WebGPUPresenter', () => {
 
         layoutHeight = 225;
         layoutWidth = 400;
-        surfaceHarness.surface.container.dispatchEvent(
-            new Event('animationstart', { bubbles: true })
-        );
+        surfaceHarness.surface.container.dispatchEvent(new Event('animationstart', { bubbles: true }));
         expect(refreshHandler).toHaveBeenCalledOnce();
         expect(canvas).toMatchObject({ height: 225, width: 400 });
 
         layoutHeight = 720;
         layoutWidth = 1_280;
-        surfaceHarness.surface.container.dispatchEvent(
-            new Event('animationend', { bubbles: true })
-        );
+        surfaceHarness.surface.container.dispatchEvent(new Event('animationend', { bubbles: true }));
         expect(refreshHandler).toHaveBeenCalledTimes(2);
         expect(canvas).toMatchObject({ height: 720, width: 1_280 });
         expect(canvas?.style.height).toBe('720px');
@@ -1738,19 +1703,14 @@ describe('WebGPUPresenter', () => {
         const contextHarness = createCanvasContextHarness();
         const firstSurfaceHarness = createSurfaceHarness();
         const secondSurfaceHarness = createSurfaceHarness(640, 360);
-        const addEventListenerSpy = vi.spyOn(
-            firstSurfaceHarness.surface.container,
-            'addEventListener'
-        );
+        const addEventListenerSpy = vi.spyOn(firstSurfaceHarness.surface.container, 'addEventListener');
         installGPU(gpuHarness.gpu);
         installCanvasContext(contextHarness.context);
         const presenter = new WebGPUPresenter(vi.fn());
 
         presenter.startSession(1);
         presenter.attach(firstSurfaceHarness.surface, 1);
-        await vi.waitFor(() => expect(
-            firstSurfaceHarness.requestVideoFrameCallback
-        ).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(firstSurfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
         expect(firstSurfaceHarness.surface.container.querySelector(
             '.webgpuPlayerCanvas'
         )).toBeInstanceOf(HTMLCanvasElement);
@@ -1765,14 +1725,10 @@ describe('WebGPUPresenter', () => {
         expect(staleMotionHandler).toBeDefined();
 
         presenter.attach(secondSurfaceHarness.surface, 1);
-        await vi.waitFor(() => expect(
-            secondSurfaceHarness.requestVideoFrameCallback
-        ).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(secondSurfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
 
         expect(firstSurfaceHarness.cancelVideoFrameCallback).toHaveBeenCalledWith(1);
-        expect(firstSurfaceHarness.surface.container.querySelector(
-            '.webgpuPlayerCanvas'
-        )).toBeNull();
+        expect(firstSurfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(secondSurfaceHarness.surface.container.querySelector(
             '.webgpuPlayerCanvas'
         )).toBeInstanceOf(HTMLCanvasElement);
@@ -1782,9 +1738,7 @@ describe('WebGPUPresenter', () => {
         firstSurfaceHarness.callbacks.get(1)?.(performance.now(), createFrameMetadata());
         expect(gpuHarness.devices[0].queueSubmit).not.toHaveBeenCalled();
         secondSurfaceHarness.callbacks.get(1)?.(performance.now(), createFrameMetadata());
-        await vi.waitFor(() => expect(
-            secondSurfaceHarness.requestVideoFrameCallback
-        ).toHaveBeenCalledTimes(2));
+        await vi.waitFor(() => expect(secondSurfaceHarness.requestVideoFrameCallback).toHaveBeenCalledTimes(2));
         const canvas = secondSurfaceHarness.surface.container.querySelector('canvas');
         expect(gpuHarness.devices[0].queueSubmit).toHaveBeenCalledOnce();
         expect(canvas).toMatchObject({
@@ -1796,12 +1750,8 @@ describe('WebGPUPresenter', () => {
             clientHeight: { configurable: true, value: 180 },
             clientWidth: { configurable: true, value: 320 }
         });
-        const secondContainerRectangle = vi.fn(
-            () => createRectangle(0, 0, 320, 180)
-        );
-        const secondVideoRectangle = vi.fn(
-            () => createRectangle(0, 0, 320, 180)
-        );
+        const secondContainerRectangle = vi.fn(() => createRectangle(0, 0, 320, 180));
+        const secondVideoRectangle = vi.fn(() => createRectangle(0, 0, 320, 180));
         secondSurfaceHarness.surface.container.getBoundingClientRect = secondContainerRectangle;
         secondSurfaceHarness.surface.video.getBoundingClientRect = secondVideoRectangle;
 
@@ -1864,8 +1814,7 @@ describe('WebGPUPresenter', () => {
 
             const rawFrame = createRawFrame(format, metadata);
             const submitted = presenter.presentDecodedFrame({
-                durationMicroseconds: rawFrame.durationMicroseconds
-                    ?? secondsToMicroseconds(0),
+                durationMicroseconds: rawFrame.durationMicroseconds ?? secondsToMicroseconds(0),
                 frame: rawFrame,
                 mediaTimeMicroseconds: rawFrame.timestampMicroseconds,
                 outputMode: 'raw-planes'
@@ -1877,9 +1826,7 @@ describe('WebGPUPresenter', () => {
             expect(deviceHarness.createTexture.mock.calls.map(call => (
                 call[0] as GPUTextureDescriptor
             ).format)).toEqual(expectedTextureFormats);
-            expect(deviceHarness.queueWriteTexture).toHaveBeenCalledTimes(
-                rawFrame.planes.length
-            );
+            expect(deviceHarness.queueWriteTexture).toHaveBeenCalledTimes(rawFrame.planes.length);
             for (let planeIndex = 0; planeIndex < rawFrame.planes.length; planeIndex += 1) {
                 const plane = rawFrame.planes[planeIndex];
                 const upload = deviceHarness.queueWriteTexture.mock.calls[planeIndex];
@@ -1898,8 +1845,7 @@ describe('WebGPUPresenter', () => {
             const bindGroupDescriptor = deviceHarness.createBindGroup.mock.calls.at(-1)?.[0] as {
                 entries: GPUBindGroupEntry[]
             };
-            expect(bindGroupDescriptor.entries.map(entry => entry.binding))
-                .toEqual(expectedBindings);
+            expect(bindGroupDescriptor.entries.map(entry => entry.binding)).toEqual(expectedBindings);
             await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
         }
     );
@@ -1936,8 +1882,7 @@ describe('WebGPUPresenter', () => {
         const validFrame = createRawFrame('I420P10', metadata);
         expect(presenter.presentDecodedFrame({
             HDR10PlusMetadata: validMetadata,
-            durationMicroseconds: validFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
+            durationMicroseconds: validFrame.durationMicroseconds ?? secondsToMicroseconds(0),
             frame: validFrame,
             mediaTimeMicroseconds: validFrame.timestampMicroseconds,
             outputMode: 'raw-planes'
@@ -1973,8 +1918,7 @@ describe('WebGPUPresenter', () => {
                 createHDR10PlusHEVCVector('malformed'),
                 { kind: 'annex-b' }
             ),
-            durationMicroseconds: malformedFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
+            durationMicroseconds: malformedFrame.durationMicroseconds ?? secondsToMicroseconds(0),
             frame: malformedFrame,
             mediaTimeMicroseconds: malformedFrame.timestampMicroseconds,
             outputMode: 'raw-planes'
@@ -2031,8 +1975,7 @@ describe('WebGPUPresenter', () => {
                 createHDR10PlusHEVCVector('valid'),
                 { kind: 'annex-b' }
             ),
-            durationMicroseconds: frame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
+            durationMicroseconds: frame.durationMicroseconds ?? secondsToMicroseconds(0),
             frame,
             mediaTimeMicroseconds: frame.timestampMicroseconds,
             outputMode: 'raw-planes'
@@ -2085,24 +2028,16 @@ describe('WebGPUPresenter', () => {
         const deviceHarness = gpuHarness.devices[0];
         deviceHarness.queueWriteBuffer.mockClear();
 
-        const firstFrame = createRawFrame(
-            'I420P10',
-            metadata,
-            8,
-            4,
-            { height: 4, width: 4, x: 2, y: 0 }
-        );
+        const firstFrame = createRawFrame('I420P10', metadata, 8, 4, { height: 4, width: 4, x: 2, y: 0 });
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: firstFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
+            durationMicroseconds: firstFrame.durationMicroseconds ?? secondsToMicroseconds(0),
             frame: firstFrame,
             mediaTimeMicroseconds: firstFrame.timestampMicroseconds,
             outputMode: 'raw-planes'
         }, 1)).toBe(true);
 
         expect(deviceHarness.queueWriteBuffer).toHaveBeenCalledOnce();
-        const presentationUniforms = deviceHarness.queueWriteBuffer.mock.calls[0][2] as
-            Float32Array<ArrayBuffer>;
+        const presentationUniforms = deviceHarness.queueWriteBuffer.mock.calls[0][2] as Float32Array<ArrayBuffer>;
         expect(Array.from(presentationUniforms)).toEqual([ 0.5, 1, 0.25, 0 ]);
         expect(deviceHarness.createTexture).toHaveBeenCalledTimes(3);
 
@@ -2115,8 +2050,7 @@ describe('WebGPUPresenter', () => {
 
         const secondFrame = createRawFrame('I420P10', metadata);
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: secondFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
+            durationMicroseconds: secondFrame.durationMicroseconds ?? secondsToMicroseconds(0),
             frame: secondFrame,
             mediaTimeMicroseconds: secondFrame.timestampMicroseconds,
             outputMode: 'raw-planes'
@@ -2126,8 +2060,7 @@ describe('WebGPUPresenter', () => {
 
         const resizedFrame = createRawFrame('I420P10', metadata, 10, 6);
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: resizedFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
+            durationMicroseconds: resizedFrame.durationMicroseconds ?? secondsToMicroseconds(0),
             frame: resizedFrame,
             mediaTimeMicroseconds: resizedFrame.timestampMicroseconds,
             outputMode: 'raw-planes'
@@ -2187,25 +2120,21 @@ describe('WebGPUPresenter', () => {
         const packedRPUData = createDolbyVisionAuthorizationRPUVector();
         const rawFrame = createRawFrame('I420P10', createPQColorMetadata());
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: rawFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
+            durationMicroseconds: rawFrame.durationMicroseconds ?? secondsToMicroseconds(0),
             encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(packedRPUData),
             frame: rawFrame,
             mediaTimeMicroseconds: rawFrame.timestampMicroseconds,
             outputMode: 'raw-planes'
         }, 1)).toBe(true);
 
-        const RPUWrite = deviceHarness.queueWriteBuffer.mock.calls.find(
-            (call: unknown[]) => call[0] === RPUBuffer
-        );
+        const RPUWrite = deviceHarness.queueWriteBuffer.mock.calls.find((call: unknown[]) => call[0] === RPUBuffer);
         expect(RPUWrite).toBeDefined();
         expect(RPUWrite?.[1]).toBe(0);
         expect(RPUWrite?.[2]).toBe(packedRPUData);
         const bindGroupDescriptor = deviceHarness.createBindGroup.mock.calls.at(-1)?.[0] as {
             entries: GPUBindGroupEntry[]
         };
-        expect(bindGroupDescriptor.entries.map(entry => entry.binding))
-            .toEqual([ 0, 1, 2, 3, 4, 5 ]);
+        expect(bindGroupDescriptor.entries.map(entry => entry.binding)).toEqual([ 0, 1, 2, 3, 4, 5 ]);
         expect(fallbackHandler).not.toHaveBeenCalled();
 
         presenter.endSession(2);
@@ -2244,13 +2173,8 @@ describe('WebGPUPresenter', () => {
         const melRPUData = createDolbyVisionAuthorizationRPUVector(7, 'mel');
         const melFrame = createRawFrame('I420P10', createPQColorMetadata());
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: melFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
-            encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(
-                melRPUData,
-                'discarded-mel',
-                true
-            ),
+            durationMicroseconds: melFrame.durationMicroseconds ?? secondsToMicroseconds(0),
+            encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(melRPUData, 'discarded-mel', true),
             frame: melFrame,
             mediaTimeMicroseconds: melFrame.timestampMicroseconds,
             outputMode: 'raw-planes'
@@ -2260,13 +2184,8 @@ describe('WebGPUPresenter', () => {
         const felRPUData = createDolbyVisionAuthorizationRPUVector(7, 'fel');
         const felFrame = createRawFrame('I420P10', createPQColorMetadata());
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: felFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
-            encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(
-                felRPUData,
-                'discarded-fel',
-                true
-            ),
+            durationMicroseconds: felFrame.durationMicroseconds ?? secondsToMicroseconds(0),
+            encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(felRPUData, 'discarded-fel', true),
             frame: felFrame,
             mediaTimeMicroseconds: felFrame.timestampMicroseconds,
             outputMode: 'raw-planes'
@@ -2310,9 +2229,7 @@ describe('WebGPUPresenter', () => {
         const deviceHarness = gpuHarness.devices[0];
         const fullFELShader = deviceHarness.createShaderModule.mock.calls
             .map((call: unknown[]) => call[0] as { code: string })
-            .find(descriptor => descriptor.code.includes(
-                '@group(0) @binding(9) var<uniform> enhancement'
-            ));
+            .find(descriptor => descriptor.code.includes('@group(0) @binding(9) var<uniform> enhancement'));
         expect(fullFELShader?.code).toContain(
             'reconstructDolbyVisionBT2020PQWithEnhancement'
         );
@@ -2320,13 +2237,8 @@ describe('WebGPUPresenter', () => {
         const { baseFrame, enhancementFrame } = createCompoundDolbyVisionRawFrames();
         const packedRPUData = createDolbyVisionAuthorizationRPUVector(7, 'fel');
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: baseFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
-            encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(
-                packedRPUData,
-                'decoded-fel',
-                true
-            ),
+            durationMicroseconds: baseFrame.durationMicroseconds ?? secondsToMicroseconds(0),
+            encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(packedRPUData, 'decoded-fel', true),
             enhancementFrame,
             frame: baseFrame,
             mediaTimeMicroseconds: baseFrame.timestampMicroseconds,
@@ -2339,8 +2251,7 @@ describe('WebGPUPresenter', () => {
         const bindGroupDescriptor = deviceHarness.createBindGroup.mock.calls.at(-1)?.[0] as {
             entries: GPUBindGroupEntry[]
         };
-        expect(bindGroupDescriptor.entries.map(entry => entry.binding))
-            .toEqual([ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 ]);
+        expect(bindGroupDescriptor.entries.map(entry => entry.binding)).toEqual([ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 ]);
         expect(presenter.getTelemetry()).toMatchObject({
             dolbyVisionDualLayerFELBaseFallbackPresentedFrameCount: 0,
             dolbyVisionDualLayerFELPresentedFrameCount: 1,
@@ -2381,13 +2292,8 @@ describe('WebGPUPresenter', () => {
             true
         );
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: baseFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
-            encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(
-                packedRPUData,
-                'decoded-fel',
-                true
-            ),
+            durationMicroseconds: baseFrame.durationMicroseconds ?? secondsToMicroseconds(0),
+            encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(packedRPUData, 'decoded-fel', true),
             enhancementFrame,
             frame: baseFrame,
             mediaTimeMicroseconds: baseFrame.timestampMicroseconds,
@@ -2459,9 +2365,7 @@ describe('WebGPUPresenter', () => {
                 mediaTimeMicroseconds: frame.timestampMicroseconds,
                 outputMode: 'raw-planes'
             }, 1)).toBe(true);
-            await vi.waitFor(() => expect(
-                presenter.getTelemetry().presentedFrameCount
-            ).toBe(frameIndex + 1));
+            await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(frameIndex + 1));
         }
         // MEL reconstructs exactly from the BL, and FEL presents its HDR10-compatible base
         expect(presenter.getTelemetry()).toMatchObject({
@@ -2499,9 +2403,7 @@ describe('WebGPUPresenter', () => {
                 mediaTimeMicroseconds: frame.timestampMicroseconds,
                 outputMode: 'raw-planes'
             }, 1)).toBe(true);
-            await vi.waitFor(() => expect(
-                presenter.getTelemetry().presentedFrameCount
-            ).toBe(frameIndex + 1));
+            await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(frameIndex + 1));
         }
         expect(presenter.getTelemetry()).toMatchObject({
             dolbyVisionDualLayerFELBaseFallbackPresentedFrameCount: 1,
@@ -2513,9 +2415,7 @@ describe('WebGPUPresenter', () => {
     it.each([ 5, 8 ] as const)(
         'presents a single-layer RPU in a Profile %i session whatever its own single-layer profile',
         async profile => {
-            const { configured, fallbackHandler, presenter } = await createRawDolbyVisionPresenter(
-                profile
-            );
+            const { configured, fallbackHandler, presenter } = await createRawDolbyVisionPresenter(profile);
             expect(configured).toBe(true);
 
             const RPUProfiles = [ 5, 8 ] as const;
@@ -2530,19 +2430,14 @@ describe('WebGPUPresenter', () => {
                     mediaTimeMicroseconds: frame.timestampMicroseconds,
                     outputMode: 'raw-planes'
                 }, 1)).toBe(true);
-                await vi.waitFor(() => expect(
-                    presenter.getTelemetry().presentedFrameCount
-                ).toBe(frameIndex + 1));
+                await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(frameIndex + 1));
             }
             expect(fallbackHandler).not.toHaveBeenCalled();
         }
     );
 
     it('reconstructs a single-layer RPU over 12-bit range-extension planes', async () => {
-        const { configured, fallbackHandler, presenter } = await createRawDolbyVisionPresenter(
-            8,
-            'I420P12'
-        );
+        const { configured, fallbackHandler, presenter } = await createRawDolbyVisionPresenter(8, 'I420P12');
         expect(configured).toBe(true);
 
         const frame = createRawFrame('I420P12', createPQColorMetadata({ bitDepth: 12 }));
@@ -2559,10 +2454,7 @@ describe('WebGPUPresenter', () => {
     });
 
     it('rejects an RPU whose base-layer depth differs from the decoded planes', async () => {
-        const { configured, fallbackHandler, presenter } = await createRawDolbyVisionPresenter(
-            8,
-            'I420P12'
-        );
+        const { configured, fallbackHandler, presenter } = await createRawDolbyVisionPresenter(8, 'I420P12');
         expect(configured).toBe(true);
 
         const frame = createRawFrame('I420P12', createPQColorMetadata({ bitDepth: 12 }));
@@ -2786,10 +2678,7 @@ describe('WebGPUPresenter', () => {
     );
 
     it('rejects a dual-layer RPU whose BL depth differs from the BL format', async () => {
-        const { configured, fallbackHandler, presenter } = await createRawDolbyVisionPresenter(
-            4,
-            'I422P12'
-        );
+        const { configured, fallbackHandler, presenter } = await createRawDolbyVisionPresenter(4, 'I422P12');
         expect(configured).toBe(true);
 
         const frame = createRawFrame('I422P12', createPQColorMetadata({ bitDepth: 12 }));
@@ -2900,17 +2789,13 @@ describe('WebGPUPresenter', () => {
         const rawFrame = createRawFrame('I420P10', createPQColorMetadata());
 
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: rawFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
+            durationMicroseconds: rawFrame.durationMicroseconds ?? secondsToMicroseconds(0),
             encodedDolbyVisionMetadata: toMetadata(),
             frame: rawFrame,
             mediaTimeMicroseconds: rawFrame.timestampMicroseconds,
             outputMode: 'raw-planes'
         }, 1)).toBe(false);
-        expect(fallbackHandler).toHaveBeenCalledWith(
-            1,
-            'dolby-vision-metadata-invalid'
-        );
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'dolby-vision-metadata-invalid');
         expect(gpuHarness.devices[0].queueWriteTexture).not.toHaveBeenCalled();
     });
 
@@ -2942,8 +2827,7 @@ describe('WebGPUPresenter', () => {
         rawFrame.planes = [{ ...firstPlane, bytesPerRow: 128 }, ...rawFrame.planes.slice(1) ];
 
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: rawFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
+            durationMicroseconds: rawFrame.durationMicroseconds ?? secondsToMicroseconds(0),
             frame: rawFrame,
             mediaTimeMicroseconds: rawFrame.timestampMicroseconds,
             outputMode: 'raw-planes'
@@ -2980,8 +2864,7 @@ describe('WebGPUPresenter', () => {
         const rawFrame = createRawFrame('I420P10', metadata);
 
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: rawFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
+            durationMicroseconds: rawFrame.durationMicroseconds ?? secondsToMicroseconds(0),
             frame: rawFrame,
             mediaTimeMicroseconds: rawFrame.timestampMicroseconds,
             outputMode: 'raw-planes'
@@ -3017,8 +2900,7 @@ describe('WebGPUPresenter', () => {
         }, 1);
         const firstFrame = createRawFrame('I420P10', metadata);
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: firstFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
+            durationMicroseconds: firstFrame.durationMicroseconds ?? secondsToMicroseconds(0),
             frame: firstFrame,
             mediaTimeMicroseconds: firstFrame.timestampMicroseconds,
             outputMode: 'raw-planes'
@@ -3036,8 +2918,7 @@ describe('WebGPUPresenter', () => {
 
         const recoveredFrame = createRawFrame('I420P10', metadata);
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: recoveredFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
+            durationMicroseconds: recoveredFrame.durationMicroseconds ?? secondsToMicroseconds(0),
             frame: recoveredFrame,
             mediaTimeMicroseconds: recoveredFrame.timestampMicroseconds,
             outputMode: 'raw-planes'
@@ -3092,8 +2973,7 @@ describe('WebGPUPresenter', () => {
         } as GPUDeviceLostInfo);
         await vi.waitFor(() => expect(gpuHarness.requestDevice).toHaveBeenCalledTimes(2));
         await vi.waitFor(() => expect(presenter.getTelemetry().deviceRecoveryCount).toBe(1));
-        expect(externalHDRAuthorizationMockState.authorizeCalls)
-            .toEqual([ gpuHarness.devices[1].device ]);
+        expect(externalHDRAuthorizationMockState.authorizeCalls).toEqual([ gpuHarness.devices[1].device ]);
         expect(fallbackHandler).not.toHaveBeenCalled();
 
         const recoveredFrame = createNeutralBT709VideoFrame(vi.fn());
@@ -3138,8 +3018,7 @@ describe('WebGPUPresenter', () => {
 
         const firstFrame = createRawFrame('I420P10', createPQColorMetadata());
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: firstFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
+            durationMicroseconds: firstFrame.durationMicroseconds ?? secondsToMicroseconds(0),
             encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(),
             frame: firstFrame,
             mediaTimeMicroseconds: firstFrame.timestampMicroseconds,
@@ -3153,8 +3032,7 @@ describe('WebGPUPresenter', () => {
         } as GPUDeviceLostInfo);
         await vi.waitFor(() => expect(gpuHarness.requestDevice).toHaveBeenCalledTimes(2));
         await vi.waitFor(() => expect(presenter.getTelemetry().deviceRecoveryCount).toBe(1));
-        expect(dolbyVisionAuthorizationMockState.authorizeCalls)
-            .toEqual([ gpuHarness.devices[1].device ]);
+        expect(dolbyVisionAuthorizationMockState.authorizeCalls).toEqual([ gpuHarness.devices[1].device ]);
         expect(gpuHarness.devices[1].createBuffer.mock.calls.some(
             (call: unknown[]) => (
                 (call[0] as GPUBufferDescriptor).label
@@ -3165,8 +3043,7 @@ describe('WebGPUPresenter', () => {
 
         const recoveredFrame = createRawFrame('I420P10', createPQColorMetadata());
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: recoveredFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
+            durationMicroseconds: recoveredFrame.durationMicroseconds ?? secondsToMicroseconds(0),
             encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(),
             frame: recoveredFrame,
             mediaTimeMicroseconds: recoveredFrame.timestampMicroseconds,
@@ -3396,8 +3273,7 @@ describe('WebGPUPresenter', () => {
 
         const rawFrame = createRawFrame('I420P10', metadata);
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: rawFrame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
+            durationMicroseconds: rawFrame.durationMicroseconds ?? secondsToMicroseconds(0),
             frame: rawFrame,
             mediaTimeMicroseconds: rawFrame.timestampMicroseconds,
             outputMode: 'raw-planes'
@@ -3406,8 +3282,7 @@ describe('WebGPUPresenter', () => {
         const hdrBindGroupDescriptor = gpuHarness.devices[0].createBindGroup.mock.calls[0][0] as {
             entries: GPUBindGroupEntry[]
         };
-        expect(hdrBindGroupDescriptor.entries.map(entry => entry.binding))
-            .toEqual([ 0, 1, 2, 3, 4 ]);
+        expect(hdrBindGroupDescriptor.entries.map(entry => entry.binding)).toEqual([ 0, 1, 2, 3, 4 ]);
         expect(presenter.getTelemetry()).toMatchObject({
             lastPresentedMediaTimeMicroseconds: rawFrame.timestampMicroseconds,
             mode: 'hdr-to-sdr',
@@ -3439,35 +3314,27 @@ describe('WebGPUPresenter', () => {
             rawFrameFormat: 'I420P10',
             settings: createHDRToSDRRenderSettings()
         }, 1)).resolves.toBe(true);
-        const retainedPipeline = (
-            presenter as unknown as { pipeline: GPURenderPipeline | null }
-        ).pipeline;
+        const retainedPipeline = (presenter as unknown as { pipeline: GPURenderPipeline | null }).pipeline;
         const latePipeline = {
             getBindGroupLayout: vi.fn(() => ({}))
         } as unknown as GPURenderPipeline;
         const pipelineResult = createDeferred<GPURenderPipeline>();
-        deviceHarness.createRenderPipelineAsync.mockImplementationOnce(
-            () => pipelineResult.promise
-        );
+        deviceHarness.createRenderPipelineAsync.mockImplementationOnce(() => pipelineResult.promise);
 
         presenter.endSession(2);
         vi.useFakeTimers();
         presenter.startSession(3);
-        await vi.advanceTimersByTimeAsync(
-            microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS)
-        );
+        await vi.advanceTimersByTimeAsync(microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS));
 
         expect(deviceHarness.createRenderPipelineAsync).toHaveBeenCalledTimes(5);
         expect(fallbackHandler).toHaveBeenCalledOnce();
         expect(fallbackHandler).toHaveBeenCalledWith(3, 'pipeline-creation-failed');
-        expect((presenter as unknown as { pipeline: GPURenderPipeline | null }).pipeline)
-            .toBe(retainedPipeline);
+        expect((presenter as unknown as { pipeline: GPURenderPipeline | null }).pipeline).toBe(retainedPipeline);
 
         pipelineResult.resolve(latePipeline);
         await pipelineResult.promise;
         await Promise.resolve();
-        expect((presenter as unknown as { pipeline: GPURenderPipeline | null }).pipeline)
-            .toBe(retainedPipeline);
+        expect((presenter as unknown as { pipeline: GPURenderPipeline | null }).pipeline).toBe(retainedPipeline);
         expect(fallbackHandler).toHaveBeenCalledOnce();
     });
 
@@ -3560,8 +3427,7 @@ describe('WebGPUPresenter', () => {
         frame.colorSpace.primaries = 'bt709';
 
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: frame.durationMicroseconds
-                ?? secondsToMicroseconds(0),
+            durationMicroseconds: frame.durationMicroseconds ?? secondsToMicroseconds(0),
             frame,
             mediaTimeMicroseconds: frame.timestampMicroseconds,
             outputMode: 'raw-planes'
@@ -3796,9 +3662,7 @@ describe('WebGPUPresenter', () => {
         const contextHarness = createCanvasContextHarness();
         const surfaceHarness = createSurfaceHarness();
         const deviceHarness = gpuHarness.devices[0];
-        deviceHarness.popErrorScope.mockResolvedValueOnce(
-            new GPUValidationError('simulated invalid submission')
-        );
+        deviceHarness.popErrorScope.mockResolvedValueOnce(new GPUValidationError('simulated invalid submission'));
         installGPU(gpuHarness.gpu);
         installCanvasContext(contextHarness.context);
         const fallbackHandler = vi.fn();
@@ -3842,9 +3706,7 @@ describe('WebGPUPresenter', () => {
         vi.useFakeTimers();
         surfaceHarness.callbacks.get(1)?.(performance.now(), createFrameMetadata());
 
-        await vi.advanceTimersByTimeAsync(
-            microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS)
-        );
+        await vi.advanceTimersByTimeAsync(microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS));
         expect(fallbackHandler).toHaveBeenCalledOnce();
         expect(fallbackHandler).toHaveBeenCalledWith(1, 'frame-render-failed');
         expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
@@ -4053,9 +3915,7 @@ describe('WebGPUPresenter', () => {
         await vi.advanceTimersByTimeAsync(0);
         expect(gpuHarness.requestDevice).toHaveBeenCalledTimes(2);
 
-        await vi.advanceTimersByTimeAsync(
-            microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS)
-        );
+        await vi.advanceTimersByTimeAsync(microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS));
 
         expect(fallbackHandler).toHaveBeenCalledOnce();
         expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed');
@@ -4079,9 +3939,7 @@ describe('WebGPUPresenter', () => {
             expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledTimes(2);
         });
         const callbackFromLostDevice = surfaceHarness.callbacks.get(2);
-        const visibleCanvas = surfaceHarness.surface.container.querySelector(
-            '.webgpuPlayerCanvas-visible'
-        );
+        const visibleCanvas = surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas-visible');
         expect(visibleCanvas).toBeInstanceOf(HTMLCanvasElement);
 
         const recoveryDevice = createDeferred<GPUDevice>();
@@ -4104,9 +3962,7 @@ describe('WebGPUPresenter', () => {
         await vi.waitFor(() => {
             expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledTimes(3);
         });
-        const recoveredCanvas = surfaceHarness.surface.container.querySelector(
-            '.webgpuPlayerCanvas'
-        );
+        const recoveredCanvas = surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas');
         expect(recoveredCanvas).toBeInstanceOf(HTMLCanvasElement);
         expect(recoveredCanvas?.classList.contains('webgpuPlayerCanvas-visible')).toBe(false);
 
@@ -4180,12 +4036,8 @@ describe('WebGPUPresenter', () => {
             clientHeight: { configurable: true, value: 600 },
             clientWidth: { configurable: true, value: 800 }
         });
-        surfaceHarness.surface.container.getBoundingClientRect = vi.fn(
-            () => createRectangle(0, 0, 800, 600)
-        );
-        surfaceHarness.surface.video.getBoundingClientRect = vi.fn(
-            () => createRectangle(0, 0, 800, 600)
-        );
+        surfaceHarness.surface.container.getBoundingClientRect = vi.fn(() => createRectangle(0, 0, 800, 600));
+        surfaceHarness.surface.video.getBoundingClientRect = vi.fn(() => createRectangle(0, 0, 800, 600));
         Object.defineProperty(window, 'devicePixelRatio', {
             configurable: true,
             value: 1.5

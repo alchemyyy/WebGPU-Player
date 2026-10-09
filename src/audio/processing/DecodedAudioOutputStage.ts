@@ -58,12 +58,9 @@ export class UnsupportedDecodedAudioFormatError extends Error {
 }
 
 /**
- * Binds one audio attempt's output stage to the format its decoder actually
- * produces, which is authoritative over the declared one: HE-AAC declares its
- * core rate, and Mediabunny can under-declare E-AC-3 7.1. The pipeline is
- * created at the first decoded rate, and a later rate change rebinds the
- * resampler while the output format and timeline stay fixed. A layout that
- * folds down to the output turns the peak limiter on.
+ * Binds one audio attempt's output stage to the format its decoder produces, which is authoritative over the declared one: HE-AAC declares its core rate, and Mediabunny can under-declare E-AC-3 7.1.
+ * The pipeline is created at the first decoded rate, and a later rate change rebinds the resampler while the output format and timeline stay fixed.
+ * A layout that folds down to the output turns the peak limiter on.
  */
 export default class DecodedAudioOutputStage {
     private boundSourceFormat: DecodedAudioSourceFormat | null = null;
@@ -86,15 +83,11 @@ export default class DecodedAudioOutputStage {
     ): BoundDecodedAudioInput {
         const { channelCount, sampleRate } = decodedAudioFormat;
         if (!isSupportedCustomAudioSampleRate(sampleRate)) {
-            throw new UnsupportedDecodedAudioFormatError(
-                `The decoded audio sample rate ${sampleRate} Hz is invalid`
-            );
+            throw new UnsupportedDecodedAudioFormatError(`The decoded audio sample rate ${sampleRate} Hz is invalid`);
         }
         const layout = decodedAudioFormat.layout ?? getCustomAudioChannelLayout(channelCount);
         if (!layout || layout.channels.length !== channelCount) {
-            throw new UnsupportedDecodedAudioFormatError(
-                `The decoded ${channelCount}-channel audio layout is unsupported`
-            );
+            throw new UnsupportedDecodedAudioFormatError(`The decoded ${channelCount}-channel audio layout is unsupported`);
         }
         const routeCodec = this.options.routeCodec;
         if (!isSupportedCustomAudioInputLayout(routeCodec, channelCount, sampleRate)) {
@@ -117,8 +110,7 @@ export default class DecodedAudioOutputStage {
             pipeline.enablePeakLimiter();
         }
         streamingDownmixSettings?.setSampleRate(sampleRate);
-        if (this.boundSourceFormat?.channelCount !== channelCount
-            || this.boundSourceFormat.sampleRate !== sampleRate) {
+        if (this.boundSourceFormat?.channelCount !== channelCount || this.boundSourceFormat.sampleRate !== sampleRate) {
             const sourceFormat: DecodedAudioSourceFormat = { channelCount, sampleRate };
             this.boundSourceFormat = sourceFormat;
             this.options.onSourceFormat?.(sourceFormat);

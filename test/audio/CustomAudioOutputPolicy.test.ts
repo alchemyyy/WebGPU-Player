@@ -14,7 +14,7 @@ import {
     isSupportedCustomAudioOutputLayout
 } from 'webgpu-player/audio/CustomAudioOutputPolicy';
 
-// Any positive integer rate is well formed; a PCM source past 192 kHz included
+// Any positive integer rate is well formed, including a PCM source past 192 kHz
 const DXD_SAMPLE_RATE = 352_800;
 const ZERO_SAMPLE_RATE = 0;
 const FRACTIONAL_SAMPLE_RATE = 48_000.5;

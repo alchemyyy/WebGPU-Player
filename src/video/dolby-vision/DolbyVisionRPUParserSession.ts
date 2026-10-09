@@ -28,7 +28,7 @@ function releaseParser(parser: DolbyVisionRPUParserPort): void {
     try {
         parser.reset();
     } catch {
-        // Closing remains authoritative when reset fails during retirement
+        // The parser is closed below even when its reset fails
     }
     try {
         parser.close();
@@ -84,14 +84,15 @@ export default class DolbyVisionRPUParserSession {
     }
 
     /**
-     * Parses the owned ITU-T T.35 payload of one AV1 Dolby Vision metadata OBU in decode order into transferable packed data, sharing the mapping and display metadata state of parse.
+     * Parses the owned ITU-T T.35 payload of one AV1 Dolby Vision metadata OBU in decode order into transferable packed data.
+     * It shares the mapping and display metadata state of parse.
      */
     public async parseAV1ITUTT35(payload: Uint8Array): Promise<ArrayBuffer> {
         const parser = await this.waitForParser();
         return parser.parseAV1ITUTT35(payload).packedData;
     }
 
-    /** Invalidates the generation and retires the parser exactly once. */
+    /** Invalidates the generation and retires the parser. Later calls do nothing. */
     public close(): void {
         if (this.closed) {
             return;
