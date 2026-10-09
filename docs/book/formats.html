@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Tools - WebGPU Player</title>
+        <title>Supported formats - WebGPU Player</title>
 
 
         <!-- Custom HTML head -->
@@ -180,48 +180,117 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="tools"><a class="header" href="#tools">Tools</a></h1>
-<p><code>tools/</code> holds development and validation tooling.
-Nothing in it ships.
-Run every command from the engine root.
-<code>tools/constants.json</code> is described in <a href="layout.html#folder-names-live-in-one-file">Repository layout</a>.</p>
-<h2 id="diagram-renderer"><a class="header" href="#diagram-renderer">Diagram renderer</a></h2>
-<pre><code class="language-sh">node tools/render-diagrams.mjs [--check | --watch] [book directory ...]
-</code></pre>
-<p><code>render-diagrams.mjs</code> renders each book’s PlantUML sources from <code>diagrams/</code> into light and dark SVGs in <code>src/diagrams/</code>, and removes SVGs whose source is gone.
-With no book directory it renders this book; the Jellyfin plugin passes its own <code>docs/</code> too.
-<code>--check</code> renders into a temporary folder and fails on any difference.
-It needs Java, and downloads the pinned PlantUML jar into <code>bin/plantuml/</code> on first use.
-See <a href="maintaining.html#diagrams">Maintaining this book</a>.</p>
-<h2 id="dts-downmix-report"><a class="header" href="#dts-downmix-report">DTS downmix report</a></h2>
-<pre><code class="language-sh">npx --no-install vite-node --script tools/report_dts_downmix_reference.ts --check
-</code></pre>
-<p><code>report_dts_downmix_reference.ts</code> prints the DTS downmix fingerprint report.
-With <code>--check</code> it fails unless every decoded stereo fingerprint matches the qualification fingerprint in <code>src/capability/vectors/test/dts/packets.json</code>.
-It runs the DTS decoder from <code>bin/wasm/</code>, so build the decoders first.</p>
-<h2 id="browser-probes"><a class="header" href="#browser-probes">Browser probes</a></h2>
+                        <h1 id="supported-formats"><a class="header" href="#supported-formats">Supported formats</a></h1>
+<p>This chapter lists what the custom pipeline plays, and what it does not.
+A source plays when its container, its video track, and its selected audio track all appear below, and the running browser and GPU pass the route’s evidence.
+Anything else is ineligible, and the host falls back.
+<a href="codec-support.html">HEVC and Dolby Vision support</a> holds the full HEVC and Dolby Vision matrix, and <a href="routes.html">Eligibility and routes</a> the checks, routes, and evidence behind every row.</p>
+<p>The pipeline plays a direct-play file over http(s).
+It does not play live streams, HLS or DASH, or a server transcode.</p>
+<h2 id="containers"><a class="header" href="#containers">Containers</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>File</th><th>Does</th></tr>
+<tr><th>Container</th><th>Video</th><th>Audio</th></tr>
 </thead>
 <tbody>
-<tr><td><code>run-dolby-vision-worker-smoke.mjs</code></td><td>Runs a Dolby Vision Profile 7 FEL decode in the prebuilt custom decode worker through Chromium remote debugging. The worker defaults to <code>libraries/webgpu-player/CustomDecode.worker.js</code>, relative to <code>--frontend-url</code></td></tr>
-<tr><td><code>probe-browser-runtime.mjs</code></td><td>Configuration-only browser diagnostics</td></tr>
-<tr><td><code>probe_dynamic_HDR_shader.py</code>, <code>probe-dynamic-HDR-shader-browser.mjs</code>, <code>emit_dynamic_HDR_shader.ts</code>, <code>probe_dynamic_HDR_vector.ts</code></td><td>Compile the production HDR10+ WGSL in headless Chromium</td></tr>
+<tr><td>Matroska</td><td>H.264, HEVC, VP8, VP9, AV1, MPEG-2, VC-1</td><td>AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, MLP, PCM</td></tr>
+<tr><td>WebM</td><td>VP8, VP9, AV1</td><td>Opus, Vorbis</td></tr>
+<tr><td>MP4, M4V, MOV, 3GP, 3G2</td><td>H.264, HEVC, VP8, VP9, AV1</td><td>AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, PCM</td></tr>
+<tr><td>MOV, MJ2</td><td>JPEG 2000</td><td>AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, PCM</td></tr>
+<tr><td>MPEG-TS, M2TS, MTS</td><td>H.264, HEVC</td><td>AAC, MP3, AC-3, E-AC-3</td></tr>
+<tr><td>AVI, FLV, ASF (WMV), MPEG program streams (MPG, VOB), Ogg, RealMedia, MXF, and every other container</td><td>Not supported</td><td>Not supported</td></tr>
 </tbody>
 </table>
 </div>
+<p>PCM in Matroska is 8-bit unsigned, 16, 24, or 32-bit integer in either byte order, or little-endian 32 or 64-bit float.
+PCM in MP4, M4V, and MOV is 16, 24, or 32-bit integer or 32 or 64-bit float, in either byte order; MOV also carries 8-bit, mu-law, and A-law PCM.
+The rows come from <code>capability/CustomContainerCodecSupport.ts</code>.</p>
+<h2 id="video"><a class="header" href="#video">Video</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Codec</th><th>Plays</th><th>Decoder</th><th>Does not play</th></tr>
+</thead>
+<tbody>
+<tr><td>H.264</td><td>Constrained Baseline, Baseline, Main, and High, at 8 bits 4:2:0</td><td>WebCodecs</td><td>High 10, High 4:2:2, High 4:4:4, and every other profile</td></tr>
+<tr><td>HEVC</td><td>Main and Main 10: SDR, HDR10, HDR10+, HLG, and Dolby Vision; the 9 range extensions, 4:2:0, 4:2:2, and 4:4:4 at 8, 10, and 12 bits</td><td>WebCodecs, or hevc.js for Main and Main 10</td><td>14 and 16 bits, monochrome, Screen Content Coding, High Throughput, Main Still Picture, and the named Intra profiles</td></tr>
+<tr><td>VP8</td><td>Profile 0</td><td>WebCodecs</td><td></td></tr>
+<tr><td>VP9</td><td>Profile 0 at 8 bits: SDR; Profile 2 at 10 bits: SDR, HDR10, HDR10+, and HLG</td><td>WebCodecs; Profile 2 in software</td><td>Profiles 1 and 3 (4:2:2 and 4:4:4)</td></tr>
+<tr><td>AV1</td><td>Main at 8 bits: SDR; Main at 10 bits: SDR, HDR10, HDR10+, HLG, and Dolby Vision Profile 10</td><td>WebCodecs; 10 bits in software</td><td>The High and Professional profiles</td></tr>
+<tr><td>MPEG-2</td><td>Main profile, in Matroska</td><td>FFmpeg</td><td>Other profiles, and other containers</td></tr>
+<tr><td>VC-1</td><td>Advanced profile, in Matroska</td><td>FFmpeg</td><td>The Simple and Main profiles, and other containers</td></tr>
+<tr><td>JPEG 2000</td><td>8 bits, in MOV and MJ2</td><td>OpenJPEG</td><td>Other bit depths</td></tr>
+</tbody>
+</table>
+</div>
+<p>Every other video codec is not supported, among them MPEG-4 Part 2 (DivX, Xvid), H.263, MS-MPEG4, MPEG-1, Theora, VVC, ProRes, DNxHD, and Motion JPEG.
+WebCodecs is the browser’s own decoder; hevc.js, FFmpeg, and OpenJPEG run in the engine as WebAssembly.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Property</th><th>Plays</th><th>Does not play</th></tr>
+</thead>
+<tbody>
+<tr><td>Scan</td><td>Progressive</td><td>Interlaced, in any codec</td></tr>
+<tr><td>Rotation</td><td>0</td><td>Any other rotation</td></tr>
+<tr><td>Frame size, frame rate, level, and bitrate</td><td>Whatever the decoder accepts; none of them is a gate</td><td></td></tr>
+<tr><td>Color</td><td>BT.709, BT.601, and BT.2020 primaries and matrices; an unknown or unspecified tag takes its transfer’s default</td><td>Any other tag value, and 10-bit SDR AV1 or VP9 outside BT.709, whose only route is raw planes</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="hdr"><a class="header" href="#hdr">HDR</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Format</th><th>Plays</th><th>Does not play</th></tr>
+</thead>
+<tbody>
+<tr><td>HDR10</td><td>HEVC Main 10 and the 10 and 12-bit range extensions, VP9 Profile 2, and AV1 Main at 10 bits</td><td>HDR10 at 8 bits</td></tr>
+<tr><td>HDR10+</td><td>As HDR10, with per-frame metadata from HEVC SEI, AV1 metadata OBUs, or a VP9 track’s Matroska or WebM BlockAdditionals</td><td>Per-frame metadata for VP9 in MP4, which carries none and plays as HDR10</td></tr>
+<tr><td>HLG</td><td>As HDR10</td><td>HLG at 8 bits</td></tr>
+<tr><td>Dolby Vision</td><td>Profiles 4, 5, 7 (MEL and FEL), 8, and 20 over HEVC, and Profile 10 over AV1 Main at 10 bits</td><td>RPU reconstruction for Profile 9 (AVC), the retired Profiles 0 to 3 and 6, and Profile 10 at 8 bits or outside Main, which play only a declared base layer</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="audio"><a class="header" href="#audio">Audio</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Codec</th><th>Plays</th><th>Decoder</th><th>Does not play</th></tr>
+</thead>
+<tbody>
+<tr><td>AAC</td><td>Mono, stereo, 3.0, and 5.1</td><td>WebCodecs</td><td>More than 6 channels</td></tr>
+<tr><td>Opus, FLAC, Vorbis</td><td>Mono, stereo, 3.0, and 5.1</td><td>WebCodecs</td><td>More than 6 channels</td></tr>
+<tr><td>MP3</td><td>Mono and stereo</td><td>WebCodecs</td><td></td></tr>
+<tr><td>AC-3</td><td>Mono, stereo, and 5.1</td><td>FFmpeg (<code>@mediabunny/ac3</code>), or the browser’s own decoder through MSE when it has one</td><td>Three channels, because 2/1 and 3/0 cannot be told apart</td></tr>
+<tr><td>E-AC-3</td><td>Mono, stereo, 5.1, and 7.1; Dolby Atmos plays its channel bed</td><td>FFmpeg, or the browser’s own decoder through MSE when it has one</td><td>Atmos objects</td></tr>
+<tr><td>DTS</td><td>Core and 96/24 in mono or 5.1; HRA in mono, 5.1, or 7.1; MA, and MA with DTS:X, in mono, stereo, three channels, 5.1, or 7.1</td><td>libdcadec</td><td>DTS-ES, DTS Express, DTS-UHD, and above 96 kHz anything but 5.1 MA</td></tr>
+<tr><td>TrueHD</td><td>Mono, stereo, 5.1, and 7.1 at 48 kHz; Dolby Atmos plays its channel bed</td><td>FFmpeg</td><td>Atmos objects</td></tr>
+<tr><td>MLP</td><td>Mono and stereo, in Matroska</td><td>FFmpeg</td><td></td></tr>
+<tr><td>PCM</td><td>Integer, float, mu-law, and A-law PCM, in mono, stereo, 3.0, or 5.1</td><td>Mediabunny</td><td></td></tr>
+</tbody>
+</table>
+</div>
+<p>Every other audio codec is not supported, among them MP2, WMA, ALAC, AMR, and Speex.
+A source whose selected audio track is not supported does not play through the pipeline.
+Every route resamples to 48 kHz.
+A three-channel or 5.1 source outputs 5.1 on a device with 6 channels or more.
+A 7.1 source outputs 7.1 on a device with 8 channels, and 5.1 on one with 6 or 7.
+Everything else downmixes to stereo.</p>
+<h2 id="subtitles"><a class="header" href="#subtitles">Subtitles</a></h2>
+<p>The engine reads no subtitle track and renders no subtitles, and a source’s subtitle tracks never affect its eligibility.
+The host draws subtitles over the video: <code>style.scss</code> keeps the host’s subtitle layers (<code>.videoSubtitles</code>, libass canvases, and other canvases) above the WebGPU canvas.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="codec-vectors.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="layout.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="recipes.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="architecture.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -231,11 +300,11 @@ It runs the DTS decoder from <code>bin/wasm/</code>, so build the decoders first
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="codec-vectors.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="layout.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="recipes.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="architecture.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

@@ -8,6 +8,8 @@ It plays sources a browser cannot play natively, and presents HDR and Dolby Visi
 - Present: WebGPU, with tone mapping for HDR10, HDR10+, HLG, and Dolby Vision.
 - Audio: an AudioWorklet output that owns the playback clock.
 
+[Supported formats](formats.md) lists the containers, codecs, and HDR formats it plays, and those it does not.
+
 The engine gives a host page two layers:
 
 1. A custom pipeline for direct-play sources the browser has qualified.

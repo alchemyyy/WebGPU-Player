@@ -9,6 +9,7 @@
 
 # How it works
 
+- [Supported formats](formats.md)
 - [Architecture](architecture.md)
 - [Eligibility and routes](routes.md)
 - [HEVC and Dolby Vision support](codec-support.md)
