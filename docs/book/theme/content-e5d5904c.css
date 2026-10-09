@@ -1,0 +1,4 @@
+/* Page content: wider than the stock 750px */
+:root {
+    --content-max-width: 900px;
+}

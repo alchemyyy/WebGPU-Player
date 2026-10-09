@@ -1,5 +1,5 @@
 <!DOCTYPE HTML>
-<html lang="en" class="light sidebar-visible" dir="ltr">
+<html lang="en" class="rust sidebar-visible" dir="ltr">
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
@@ -13,8 +13,7 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon-de23e50b.svg">
-        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="icon" href="favicon-ad71d439.svg">
         <link rel="stylesheet" href="css/variables-8adf115d.css">
         <link rel="stylesheet" href="css/general-e96d0476.css">
         <link rel="stylesheet" href="css/chrome-d279d366.css">
@@ -29,17 +28,21 @@
         <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="theme/content-e5d5904c.css">
+        <link rel="stylesheet" href="theme/sidebar-9277b103.css">
+        <link rel="stylesheet" href="theme/navigation-7d5965d2.css">
+        <link rel="stylesheet" href="theme/diagrams-d4c2bd13.css">
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
-            const default_light_theme = "light";
-            const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6ce9ccd1.js";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "searchindex-a6a3c2ad.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-130df29e.js"></script>
+        <script src="toc-72948aae.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -77,7 +80,7 @@
             try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
             if (theme === null || theme === undefined) { theme = default_theme; }
             const html = document.documentElement;
-            html.classList.remove('light')
+            html.classList.remove('rust')
             html.classList.add(theme);
             html.classList.add("js");
         </script>
@@ -196,13 +199,12 @@ Demux, decode, presentation, and audio all run in the engine.</li>
 <p>Nothing is offered until the running browser has proven it.
 A decode route is qualified by decoding a known stream and checking the exact output.
 An HDR or Dolby Vision presentation is authorized by rendering a known input through the production shader on the current GPU device.</p>
-<p>The engine knows nothing about Jellyfin.
-Its host is the Jellyfin plugin <code>jellyfin-plugin-webgpu-player</code>.
-The plugin’s web client add-on embeds the engine as a git submodule at <code>jellyfin-webgpu-client/vendor/webgpu-player/</code>, and supplies the Jellyfin player, the device profile, the settings, and the HTML fallback.
-See <a href="#the-jellyfin-host">The Jellyfin host</a>.</p>
+<p>The engine knows nothing about Jellyfin’s player, server API, or UI; it reads Jellyfin’s media metadata shapes as its input.
+Its host is the Jellyfin plugin <code>jellyfin-plugin-webgpu-player</code>, whose web client add-on embeds the engine as a git submodule at <code>jellyfin-webgpu-client/vendor/webgpu-player/</code>.
+The add-on supplies the Jellyfin player, the device profile, the settings, and the HTML fallback, and the plugin documents them in its own book, in <code>docs/</code> of the plugin repository.</p>
 <h2 id="invariants"><a class="header" href="#invariants">Invariants</a></h2>
 <ul>
-<li>Negotiation advertises only what the selected route implements and has exact-output evidence for.
+<li>A host advertises only what the selected route implements and has exact-output evidence for.
 A route is never gated on resolution, level, frame rate, bitrate, or a throughput benchmark.</li>
 <li><code>capability/CustomContainerCodecSupport.ts</code> is the only table of which container carries which codec.
 There are no decoder pair blacklists.</li>
@@ -216,7 +218,6 @@ A successful negotiation is not a successful playback.</li>
 <ul>
 <li>Engine paths are relative to the engine root.
 Paths inside <code>src/</code> may drop the prefix; <code>capability/</code>, <code>pipeline/</code>, <code>audio/</code>, <code>video/</code>, <code>presentation/</code>, <code>color/</code>, and <code>validation/</code> are its domains.</li>
-<li>Host paths are relative to the plugin repository root and marked (host), for example <code>jellyfin-webgpu-client/src/WebGPUPlayer.ts</code> (host).</li>
 <li>Symbols are written <code>file:symbol</code> or <code>Class.method</code>.</li>
 </ul>
 <h2 id="where-to-look"><a class="header" href="#where-to-look">Where to look</a></h2>
@@ -229,8 +230,8 @@ Paths inside <code>src/</code> may drop the prefix; <code>capability/</code>, <c
 <tr><td>Build and test a checkout</td><td><a href="#set-up-a-checkout">Set up a checkout</a></td></tr>
 <tr><td>Find a folder or a file</td><td><a href="#repository-layout">Repository layout</a>, <a href="#module-map">Module map</a></td></tr>
 <tr><td>Follow a playback session</td><td><a href="#architecture">Architecture</a></td></tr>
-<tr><td>Learn why a source plays or not</td><td><a href="#negotiation-and-routes">Negotiation and routes</a>, <a href="#hevc-and-dolby-vision-support">HEVC and Dolby Vision support</a></td></tr>
-<tr><td>Put the engine in a page</td><td><a href="#embedding-the-engine">Embedding the engine</a>, <a href="#the-jellyfin-host">The Jellyfin host</a></td></tr>
+<tr><td>Learn why a source plays or not</td><td><a href="#eligibility-and-routes">Eligibility and routes</a>, <a href="#hevc-and-dolby-vision-support">HEVC and Dolby Vision support</a></td></tr>
+<tr><td>Put the engine in a page</td><td><a href="#embedding-the-engine">Embedding the engine</a></td></tr>
 <tr><td>Change a decoder or a vector</td><td><a href="#webassembly-decoders">WebAssembly decoders</a>, <a href="#codec-vectors">Codec vectors</a>, <a href="#recipes">Recipes</a></td></tr>
 <tr><td>Avoid repeating an investigation</td><td><a href="#decisions">Decisions</a></td></tr>
 </tbody>
@@ -310,7 +311,8 @@ Engine changes must then pass both configurations.</p>
 <tr><td><code>vendor/</code></td><td>The FFmpeg and dcadec submodules, fetched only by <code>make -C wasm sources</code></td></tr>
 <tr><td><code>scripts/</code></td><td><code>build.mjs</code> (the served assets), <code>library-assets.mjs</code> (which file is served from where), and the codec vector generators. See <a href="#codec-vectors">Codec vectors</a></td></tr>
 <tr><td><code>tools/</code></td><td>Development tooling that never ships, and <code>constants.json</code>. See <a href="#tools">Tools</a></td></tr>
-<tr><td><code>docs/</code></td><td>This book</td></tr>
+<tr><td><code>docs/</code></td><td>This book: chapters in <code>src/</code>, PlantUML sources in <code>diagrams/</code> and their SVGs in <code>src/diagrams/</code>, stylesheets, scripts, and the favicon in <code>theme/</code>, and the built book in <code>book/</code></td></tr>
+<tr><td><code>images/</code></td><td>The project logo, <code>webgpu-player-logo.svg</code>, the Inkscape source of the favicon</td></tr>
 <tr><td><code>bin/</code></td><td>Generated files, all ignored except <code>bin/codec_vector_assets/</code>. See below</td></tr>
 </tbody>
 </table>
@@ -320,6 +322,7 @@ Engine changes must then pass both configurations.</p>
 <li><code>bin/wasm/</code>: the decoder builds from <code>make -C wasm</code>.</li>
 <li><code>bin/libraries/</code> and <code>bin/build-info.json</code>: the served assets from <code>npm run build</code>.</li>
 <li><code>bin/playback_smoke_media/</code>: local playback media from the smoke media generators.</li>
+<li><code>bin/plantuml/</code>: the pinned PlantUML jar that <code>tools/render-diagrams.mjs</code> downloads.</li>
 <li><code>bin/codec_vector_assets/</code>: the generated codec vectors.
 This is the one committed folder, so every change to a vector shows in review.</li>
 </ul>
@@ -347,38 +350,25 @@ Read a path from it instead of spelling it out, so moving a folder is a one-line
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="architecture"><a class="header" href="#architecture">Architecture</a></h1>
 <h2 id="layers"><a class="header" href="#layers">Layers</a></h2>
-<pre><code class="language-text">Jellyfin Web PlaybackManager (stock)
-  getDeviceProfile -&gt; PlaybackInfo -&gt; player.play(); 'playbackstart' when play() resolves
-   |
-WebGPUPlayer (host): the only player PlaybackManager sees
-   |-- HTMLPlayerDelegate (host) -&gt; the add-on's own HtmlVideoPlayer (host): the HTML
-   |     backend, and the event and UI shell of the custom path
-   |-- WebGPUPresenter: its own GPUDevice, a canvas over the backend &lt;video&gt;
-   |-- WebGPUAudioOutputManager (one per page): sink routing for every audio target
-   |
-   +-- (a) HTML decode, WebGPU presentation (known-SDR input only)
-   |     &lt;video&gt; or hls.js decodes, and the media element is the clock.
-   |     rVFC -&gt; importExternalTexture -&gt; identity WGSL -&gt; canvas.
-   |     HDR or unknown input: the presenter is off and the &lt;video&gt; shows.
-   |
-   +-- (b) Custom pipeline (eligible direct-play VOD)
-         CustomPlaybackController [main]: MediaClock, startup, stall, and lag policy, fallback
-          CustomDecodeSession [main]: one worker per generation, frame queue, credits
-           CustomDecode.worker [worker]: Mediabunny demux, range-validated fetch
-             video: WebCodecs | OwnedNativeHEVCVideoDecoder | hevc.js WASM (+ Dolby Vision EL)
-                    | OwnedNativeVideoDecoder (AV1, VP9) | OpenJPEG
-                    | FFmpeg MPEG-2 and VC-1 WASM
-             audio: WebCodecs | @mediabunny/ac3 | E-AC-3, DTS, TrueHD WASM
-                    -&gt; downmix -&gt; resample to 48 kHz -&gt; limiter; or AC-3/E-AC-3 fMP4 remux
-           &lt;- 'frame': VideoFrame | raw planes in a pooled buffer (+ Dolby Vision, HDR10+ metadata)
-           &lt;- 'audio': f32 planar PCM | fMP4 segments
-         video: rAF -&gt; controller.takeCurrentFrame -&gt; presenter.presentDecodedFrame
-                (external texture | RawYUVGPURenderer) -&gt; fused color WGSL -&gt; canvas
-         audio: CustomDecodeAudioBridge -&gt; AudioWorklet (pooled 48 kHz context)
-                | CustomDecodeNativeAudioBridge -&gt; hidden &lt;audio&gt; + MSE
-</code></pre>
-<p><code>WebGPUPlayer</code>, <code>HTMLPlayerDelegate</code>, and <code>HtmlVideoPlayer</code> with its hls.js runtime are host code, and the rAF loop runs in <code>WebGPUPlayer</code>.
-Everything else in the diagram is engine code.</p>
+<div class="diagram">
+<a class="diagram-light" href="diagrams/architecture-layers.light.svg"><img src="diagrams/architecture-layers.light.svg" alt="Architecture layers: the host, the engine&#39;s main thread, its decode worker, its AudioWorklet, and the GPU"></a>
+<a class="diagram-dark" href="diagrams/architecture-layers.dark.svg"><img src="diagrams/architecture-layers.dark.svg" alt="Architecture layers: the host, the engine&#39;s main thread, its decode worker, its AudioWorklet, and the GPU"></a>
+</div>
+
+<p>A session takes one of two paths:</p>
+<ul>
+<li>(a) HTML decode with WebGPU presentation, for known-SDR input only.
+The <code>&lt;video&gt;</code> element or hls.js decodes, and the media element is the clock.
+Frames go rVFC, <code>importExternalTexture</code>, identity WGSL, canvas.
+For HDR or unknown input the presenter is off and the <code>&lt;video&gt;</code> shows.</li>
+<li>(b) The custom pipeline, for eligible direct-play VOD.
+The worker posts <code>'frame'</code> messages (a <code>VideoFrame</code>, or raw planes in a pooled buffer, with Dolby Vision and HDR10+ metadata) and <code>'audio'</code> messages (f32 planar PCM, or fMP4 segments).
+The host’s rAF loop takes the controller’s current frame and presents it.
+Decoded audio plays through an AudioWorklet in a pooled 48 kHz context, and AC-3 and E-AC-3 can play through a hidden <code>&lt;audio&gt;</code> element and MSE.</li>
+</ul>
+<p>The host player, its HTML backend with any hls.js runtime, and the rAF loop are host code.
+Everything else in the diagram is engine code.
+The plugin’s book follows the Jellyfin host’s half of a session.</p>
 <h2 id="clock"><a class="header" href="#clock">Clock</a></h2>
 <ul>
 <li>Decoded PCM: the worklet’s render time, corrected to physical output time by <code>BrowserCustomAudioOutput</code> through <code>getOutputTimestamp</code>, re-anchors a <code>performance.now</code> <code>MediaClock</code>.
@@ -389,18 +379,23 @@ A first fragment more than 40 ms after the start position parks the element at t
 An audio track that ends before the video hands the clock to the <code>MediaClock</code> once its tail has played out.</li>
 </ul>
 <p>Video is pulled: each rAF draws the newest frame at or before the clock.</p>
+<div class="diagram">
+<a class="diagram-light" href="diagrams/frame-presentation.light.svg"><img src="diagrams/frame-presentation.light.svg" alt="How the clock is chosen and how each tick selects, presents, or waits for a frame"></a>
+<a class="diagram-dark" href="diagrams/frame-presentation.dark.svg"><img src="diagrams/frame-presentation.dark.svg" alt="How the clock is chosen and how each tick selects, presents, or waits for a frame"></a>
+</div>
+
 <h2 id="startup-of-a-custom-session"><a class="header" href="#startup-of-a-custom-session">Startup of a custom session</a></h2>
+<div class="diagram">
+<a class="diagram-light" href="diagrams/custom-session-startup.light.svg"><img src="diagrams/custom-session-startup.light.svg" alt="Sequence of a custom session&#39;s startup"></a>
+<a class="diagram-dark" href="diagrams/custom-session-startup.dark.svg"><img src="diagrams/custom-session-startup.dark.svg" alt="Sequence of a custom session&#39;s startup"></a>
+</div>
+
 <ol>
-<li><code>WebGPUPlayer.play</code> (host) advances the presentation generation and consumes the stock-profile proof.
-It runs <code>prewarmBrowserAudioContext(48000)</code> synchronously inside <code>play()</code> (the user-activation window), calls <code>presenter.startSession</code>, and queues <code>startBackendPlayback</code>.</li>
-<li><code>startCustomPlaybackBounded</code> (host) runs eligibility, described in <a href="#negotiation-and-routes">Negotiation and routes</a>.
-It waits for the raw SDR prewarm.
-An HDR range-extension source also waits for the raw HDR prewarm, and a Dolby Vision source waits for its first-use key (Profile 4, or Profile 7 or single-layer reconstruction outside I420P10).
-Other HDR and Dolby Vision routes use only keys that have already settled.
-Its 25 s bound lasts until the controller starts, and the controller’s own startup bound applies after that.</li>
-<li>The host loads the pipeline as the <code>webgpu-custom-playback</code> chunk.
-<code>HtmlVideoPlayer.prepareCustomPlayback</code> (host) returns a source-less <code>&lt;video&gt;</code>.
-The presenter enters push mode, and <code>configurePresentationColorPipeline</code> (host) installs the shaders and authorizes the selected route.</li>
+<li>The host runs <code>prewarmBrowserAudioContext(48000)</code> synchronously inside its play call (the user-activation window) and calls <code>presenter.startSession</code>.</li>
+<li>The host runs eligibility, described in <a href="#eligibility-and-routes">Eligibility and routes</a>, once the authorization keys the source needs have settled.
+Its own setup bound should end where the controller starts, so the controller’s startup bound applies after that.</li>
+<li>The host gives the presenter a source-less <code>&lt;video&gt;</code>.
+The presenter enters push mode, and the host installs the shaders and authorizes the selected route through the presenter.</li>
 <li><code>controller.play</code> creates a generation, resets the clock, emits <code>waiting</code>, and starts the startup bound.
 It samples the decode counters every second and fails after 20 s without progress, or at 60 s regardless.
 The fallback message names the counters it reached, so a timeout shows where startup stalled.
@@ -411,7 +406,7 @@ It scans HEVC SEI on the native PQ route, and AV1 MDCV and CLL metadata OBUs whe
 Video and audio then stream concurrently.</li>
 <li>The session is ready when the first frame is queued and at least 100 ms of PCM has been submitted, or, on the native-media audio route, when the first segment is appended.</li>
 <li><code>completeStartupIfReady</code> starts audio, resumes the clock, and emits <code>ready</code> and <code>playing</code>.
-The rAF loop starts, <code>play()</code> resolves, and PlaybackManager emits <code>playbackstart</code>.</li>
+The host then starts its rAF loop.</li>
 </ol>
 <h2 id="steady-state"><a class="header" href="#steady-state">Steady state</a></h2>
 <div class="table-wrapper">
@@ -451,7 +446,7 @@ A gap, an overlap, or an overflow that reaches the bridge is therefore an engine
 </ul>
 <p>Hidden page, through <code>setPageVisibility</code> and <code>drainBackgroundVideo</code>:</p>
 <ul>
-<li>No rAF runs while the page is hidden, so a 25 ms timer in <code>WebGPUPlayer</code> (host) takes and discards due frames against the clock.
+<li>No rAF runs while the page is hidden, so the host takes and discards due frames against the clock on a timer (25 ms in the Jellyfin host).
 Credits keep flowing and audio stays the master.</li>
 <li>After 10 s hidden, audio-clocked <code>native</code> decode sends <code>suspend-video</code>.
 The worker unwinds only its video attempt and releases the decoder.
@@ -473,7 +468,7 @@ The backing size is the CSS size times the device pixel ratio, capped by <code>m
 <p>Seek: a new presentation generation, then <code>controller.seek</code>, then a new generation and a new worker at the target.
 The owned HEVC, AV1, and VP9 paths start at the preceding key packet.
 DTS and TrueHD use a 1 s preroll.
-Stale results are dropped by <code>customPlaybackSeekRevision</code> (host).</p>
+The host drops stale seek results by its own revision.</p>
 </li>
 <li>
 <p>Audio track switch: eligibility runs again.
@@ -496,7 +491,7 @@ A clock that waited on the old output’s underflow resumes at this point, becau
 A pause holds the start, and resume counts down to the target again.</li>
 </ol>
 <p>A failure, or a fill that exceeds 5 s, falls back to HTML in the same session.
-The host triggers the switch when the output reports <code>sinkchange</code> with a different channel count, and when force stereo or the algorithm changes.</p>
+The host triggers the switch, for example when the output reports <code>sinkchange</code> with a different channel count.</p>
 </li>
 <li>
 <p>Pause: the clock pauses and the worklet is gated to silence.
@@ -523,7 +518,7 @@ Polling runs only while the page is visible; a hidden page stops it and probes a
 The rebuilt sink reports <code>sinkchange</code>, so a surround device switches the session’s layout at once.</p>
 </li>
 <li>
-<p>Re-detect output (WebGPU settings, host): rebuilds every AudioContext sink so the browser re-reads the device.
+<p>Re-detect output (<code>WebGPUAudioOutputManager.redetectAudioOutputs</code>, offered by the host’s settings): rebuilds every AudioContext sink so the browser re-reads the device.
 Chromium moves a default output to a new device without telling the page, which leaves a stale channel count until a rebuild.</p>
 </li>
 <li>
@@ -538,8 +533,7 @@ The end also completes a start or audio resync that has no PCM left to wait for.
 A native-media session sends <code>endOfStream</code>, so <code>&lt;audio&gt;</code> plays out, and the clock then runs without the element.</p>
 </li>
 <li>
-<p>Stop: <code>controller.destroy</code> stops the worker (terminated after 1 s), releases the worklet and the sink lease (1.5 s cap), and ends the presenter session.
-The delegate stops the backend synchronously, so <code>stopped</code> stays in order.</p>
+<p>Stop: <code>controller.destroy</code> stops the worker (terminated after 1 s), releases the worklet and the sink lease (1.5 s cap), and ends the presenter session.</p>
 </li>
 </ul>
 <h2 id="fallback-and-renegotiation"><a class="header" href="#fallback-and-renegotiation">Fallback and renegotiation</a></h2>
@@ -556,18 +550,13 @@ The delegate stops the backend synchronously, so <code>stopped</code> stays in o
 </table>
 </div>
 <ul>
-<li>When <code>currentPlaybackRequiresSourceRenegotiation</code> (host) is set, every reason renegotiates, because the stock profile does not cover the source.</li>
-<li>Failures in the wrapper itself (presenter, frame submission, rAF) are <code>lifecycle-failed</code>.</li>
-<li>Renegotiation fires <code>sourcerenegotiationrequired</code> once per session.
-A listener accepts it only by calling <code>accept()</code> synchronously during dispatch.
-Stock Jellyfin Web has no listener, so the player raises <code>PlayerEvent.Error</code> instead and PlaybackManager’s error retry ladder asks for a transcode.
-During a start, <code>play()</code> resolves first and the error follows.</li>
+<li>The host carries out each disposition, and may renegotiate on every reason when its HTML player cannot play the source.</li>
+<li>Failures in the host’s wrapper (presenter, frame submission, rAF) are <code>lifecycle-failed</code>.</li>
 <li>Fallback never selects another player.</li>
 </ul>
 <p>Every stale callback is dropped by a generation or revision check:</p>
 <ul>
-<li><code>WebGPUPlayer</code> (host): the presentation, backend session, setup, seek, audio selection, frame, and terminal error revisions.</li>
-<li><code>HTMLPlayerDelegate</code> (host): the forwarding generation.</li>
+<li>The host: its own generations and revisions.</li>
 <li>The controller: <code>activeGeneration</code> and <code>fallbackGeneration</code>.</li>
 <li>The session: one worker record per generation.</li>
 <li>The worklet: its flush generation.</li>
@@ -582,8 +571,6 @@ A frame with a colorSpace that is not neutral latches <code>decoded-frame-color-
 <li>The raw route checks each frame’s colorSpace against the metadata, and a null member is unspecified, so it never contradicts.
 SDR also matches a <code>smpte170m</code> transfer, and HLG a <code>bt709</code> transfer on BT.2020 primaries.</li>
 <li>WebGPU presentation on the HTML path is SDR only: a <code>&lt;video&gt;</code> external texture is browser-converted sRGB.</li>
-<li>The add-on’s <code>HtmlVideoPlayer.play()</code> (host) runs synchronously only when custom decode is off and no teardown is pending.
-Otherwise it runs after the asynchronous eligibility check.</li>
 <li>Worker track indices are container ordinals, not Jellyfin <code>MediaStream.Index</code>.</li>
 <li>Every seek, audio switch, and paused repaint starts a new worker that reopens the input.
 The 32 MiB read cache belongs to one worker.</li>
@@ -597,44 +584,23 @@ Route checks allow the same 64 px through <code>exceedsNegotiatedCodedSize</code
 It is accepted only for <code>/Videos/{id}/stream</code> with a bounded <code>Content-Length</code> (<code>pipeline/HTTPRangeResponse.ts</code>).</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="negotiation-and-routes"><a class="header" href="#negotiation-and-routes">Negotiation and routes</a></h1>
-<p>This chapter follows a playback from player selection to a Jellyfin decision, and then to a concrete decode and presentation route.
-Player selection, the device profile, and the PlaybackInfo requests are host code.
-Eligibility, the probes, and the route catalog are engine code.
-The stock profile is the one the add-on’s HTML backend returns from <code>getDeviceProfile</code>.</p>
-<h2 id="flow"><a class="header" href="#flow">Flow</a></h2>
+<h1 id="eligibility-and-routes"><a class="header" href="#eligibility-and-routes">Eligibility and routes</a></h1>
+<p>This chapter follows a source from the engine’s capability evidence to a concrete decode and presentation route.
+The host turns the same evidence into what it advertises to its server; the Jellyfin plugin’s book describes its device profile.</p>
+<h2 id="host-entry-points"><a class="header" href="#host-entry-points">Host entry points</a></h2>
+<p>A host calls these, in this order, for each playback:</p>
 <ol>
-<li>Select a player (host).
-PlaybackManager offers the item to players in priority order, and <code>WebGPUPlayer</code> (priority 0) comes first.
-<code>HostCompatibleWebGPUPlayer.canPlayItem</code> declines when the user prefers the HTML player or inside a native app shell.
-With custom decode enabled, <code>WebGPUPlayer.canPlayItem</code> also requires the engine’s metadata-only prefilter, <code>CustomPlaybackEligibility.hasPotentialCustomPlaybackVideoRoute</code>.
+<li><code>CustomPlaybackEligibility.hasPotentialCustomPlaybackVideoRoute</code>, the metadata-only prefilter, when it chooses a player.
 The prefilter declines a source whose containers no route in <code>CUSTOM_CONTAINER_CODEC_RULES</code> carries, such as AVI, FLV, ASF, or an MPEG program stream.
-It also declines a video codec no route decodes, such as MPEG-4 Part 2 (DivX, Xvid), H.263, MS-MPEG4, MPEG-1, or Theora, and interlaced or rotated video.
-When it declines, PlaybackManager picks the plain HTML player, which negotiates with the stock profile.</li>
-<li>Build the device profile (host), in <code>WebGPUPlayer.getDeviceProfile(item, options)</code>:
-<ul>
-<li>A retry (<code>options.isRetry === true</code>) returns the stock profile unchanged.</li>
-<li>Otherwise it adopts the stored playback preferences, keeps the stock profile as a per-item proof (<code>rememberNativeDeviceProfile</code>), and strips every bitrate field and condition (<code>createBitrateIndependentDeviceProfile</code>).</li>
-<li>It stops there when custom decode is off or the engine’s <code>CustomPlaybackRuntime.getCustomPlaybackRuntimeAvailability</code> fails (secure context, Worker, <code>navigator.gpu</code>, <code>VideoFrame</code>).</li>
-<li>It awaits the engine’s <code>probeCustomDecodeCapabilities(item)</code> and the native-media audio probe.
-PlaybackInfo waits until the probes the item selects settle (see <a href="#probes-and-caching">Probes and caching</a>); a probe an earlier item ran is not repeated.</li>
-<li><code>getHDRDeviceProfileOptions</code> waits for the GPU authorizations the item’s HDR scope needs (5 s each; see <a href="#probe-scopes">Probe scopes</a>) and returns the flags and route keys.</li>
-<li><code>CustomDeviceProfile.augmentDeviceProfileForCustomDecode</code> builds the profile, and <code>HostCompatibleWebGPUPlayer</code> marks it so the PlaybackInfo interceptor recognizes the request.</li>
-</ul>
-</li>
-<li>Request PlaybackInfo (host).
-The add-on’s axios interceptor (<code>compat/PlaybackInfoInterceptor.ts</code>) applies the player’s request rules (<code>compat/PlaybackInfoPolicy.ts</code>) to the body that stock PlaybackManager built:
-<ul>
-<li>The selection request carries no <code>MaxStreamingBitrate</code>.</li>
-<li><code>AllowVideoStreamCopy</code> becomes false when <code>WebGPUPlayer.supportsVideoStreamCopy</code> vetoes the source, which it does for any Dolby Vision descriptor.</li>
-<li>When the selected source will transcode, a second request sizes the transcode with the detected bitrate.</li>
-</ul>
-</li>
-<li>Start the session (host).
-<code>WebGPUPlayer.play</code> consumes the stock-profile proof.
-It sets <code>currentPlaybackRequiresSourceRenegotiation</code> when the profile was augmented, the method is DirectPlay or DirectStream, and <code>NativeDirectPlayCompatibility.isSameSessionNativePlaybackCompatible</code> fails for the stock profile.</li>
-<li>Check eligibility (engine).
-The host’s <code>startCustomPlaybackBounded</code> (25 s) calls <code>getCustomPlaybackEligibility</code>, which checks in order:
+It also declines a video codec no route decodes, such as MPEG-4 Part 2 (DivX, Xvid), H.263, MS-MPEG4, MPEG-1, or Theora, and interlaced or rotated video.</li>
+<li><code>CustomPlaybackRuntime.getCustomPlaybackRuntimeAvailability</code>, which fails without a secure context, Worker, <code>navigator.gpu</code>, or <code>VideoFrame</code>.</li>
+<li><code>probeCustomDecodeCapabilities(item)</code>, the native-media audio probe, and the GPU authorizations the item needs (5 s each), before it advertises anything; see <a href="#probes-and-caching">Probes and caching</a>.</li>
+<li><code>hasEligibleCustomVideoRoute</code>, to ask whether the runtime would present one item with the measured capabilities and authorizations.</li>
+<li><code>getCustomPlaybackEligibility</code>, when the session starts, with the route flags and authorized keys of <code>CustomPlaybackEligibilityOptions</code>.
+<code>allowRawSDR</code> needs only a settled <code>:sdr</code> raw key.</li>
+</ol>
+<h2 id="eligibility"><a class="header" href="#eligibility">Eligibility</a></h2>
+<p><code>getCustomPlaybackEligibility</code> checks in order:</p>
 <ol>
 <li><code>parsePlaybackSource</code>: DirectPlay, not live, a custom container, and an http(s) URL.
 A missing or zero <code>RunTimeTicks</code> is an unknown duration, not a rejection.
@@ -646,29 +612,7 @@ Playback then ends with the streams, audio takes the decoded-PCM route because t
 <li><code>supportsCustomContainerCodecCombination</code>.</li>
 <li>The runtime budget.</li>
 </ol>
-</li>
-<li>Fall back (host).
-An ineligible, timed-out, or failed start falls back.
-Without the renegotiation flag, the add-on’s HTML player plays the same source in the same session.
-With it, the player asks for a renegotiation.
-On stock Jellyfin Web that is the error retry ladder, whose <code>changeStream</code> passes <code>isRetry</code>, so the retry negotiates with the stock profile and is never widened.
-An ineligible start logs its eligibility reason with <code>console.warn</code> first, since it raises no error of its own.</li>
-</ol>
-<h2 id="how-the-profile-is-augmented"><a class="header" href="#how-the-profile-is-augmented">How the profile is augmented</a></h2>
-<p><code>augmentDeviceProfileForCustomDecode</code> (host), in order:</p>
-<ol>
-<li>Strip bitrate.</li>
-<li>Find the supported video and audio codecs.</li>
-<li>Add one DirectPlayProfile per rule in the engine’s <code>CUSTOM_CONTAINER_CODEC_RULES</code>.</li>
-<li>Add the custom subtitle profiles (vtt, ass/ssa, pgssub).</li>
-<li>Scope the stock video and container conditions to non-custom containers.</li>
-<li><code>widenAuthorizedHDRCodecProfiles</code>.</li>
-<li><code>appendMeasuredVideoRouteProfiles</code>.
-Each route profile requires VideoRangeType, VideoBitDepth, <code>IsInterlaced=false</code>, and VideoProfile.
-A codec with several routes is split with ApplyConditions.</li>
-<li><code>appendMeasuredAudioRouteProfiles</code>.</li>
-<li><code>splitOriginalAudioRouteProfiles</code>.</li>
-</ol>
+<p>An ineligible result carries its reason, and the host falls back.</p>
 <h2 id="probes-and-caching"><a class="header" href="#probes-and-caching">Probes and caching</a></h2>
 <ul>
 <li>Main thread: WebCodecs configuration and decoded-output probes, raw <code>copyTo</code> fingerprints, the per-profile H.264 probe, and the MSE AC-3/E-AC-3 probe.</li>
@@ -712,6 +656,11 @@ The worker receives the binary as bytes through <code>DecoderWASMSource</code>; 
 </div>
 <h2 id="video-route-selection"><a class="header" href="#video-route-selection">Video route selection</a></h2>
 <p><code>selectVideoOutput</code> tries these in order.</p>
+<div class="diagram">
+<a class="diagram-light" href="diagrams/video-route-selection.light.svg"><img src="diagrams/video-route-selection.light.svg" alt="Video route selection order"></a>
+<a class="diagram-dark" href="diagrams/video-route-selection.dark.svg"><img src="diagrams/video-route-selection.dark.svg" alt="Video route selection order"></a>
+</div>
+
 <ol>
 <li>A Dolby Vision descriptor.
 <code>PresentationInput.getDolbyVisionPresentationSelection</code> accepts any integer profile with the base layer flag set, a valid bit depth, and any 4-bit compatibility ID (CCID) or none; the EL flag never rejects.
@@ -748,65 +697,8 @@ A range extension never falls through to the steps below.</li>
 Then, for 10-bit 4:2:0 SDR that none of them decodes (AV1 Main, VP9 Profile 2, or HEVC Main 10 without native decode), raw I420P10 through the raw SDR keys, which are BT.709 only.</li>
 <li>PQ or HLG: native external (<code>external-hevc-main10-bt709-limited:&lt;pq|hlg&gt;-v1</code>) first, then raw (<code>&lt;I420P10|I420P12&gt;:bt2020-ncl:bt2020:limited:&lt;pq|hlg&gt;</code>).</li>
 </ol>
-<p>Every HDR and Dolby Vision flag also requires the user’s HDR tone mapping setting.
-<code>allowRawSDR</code> needs only a settled <code>:sdr</code> raw key.</p>
-<h2 id="what-the-profile-advertises"><a class="header" href="#what-the-profile-advertises">What the profile advertises</a></h2>
-<p>The profile advertises ranges per item HDR scope.
-A known-SDR item gets no HDR routes, and an item with missing metadata is scoped <code>unknown</code> and gets all of them.
-The raw Dolby Vision route also advertises DOVIInvalid, Jellyfin’s label for P8 outside CCIDs 1, 2, and 4 (and, on Jellyfin 12, for a base whose color contradicts its CCID), because RPU reconstruction presents any CCID.
-The generic DOVIWithEL ranges are advertised with or without the bundled HEVC decoder’s Main 10 qualification, because P7 reconstructs from its base layer when no qualified decoder decodes the EL.
-The full HEVC matrix is in <a href="#hevc-and-dolby-vision-support">HEVC and Dolby Vision support</a>.</p>
-<p>Per codec, the routes are:</p>
-<ul>
-<li>AV1 (VideoProfile <code>main</code>):
-<ul>
-<li>native SDR at 8 bits;</li>
-<li>raw HDR10, HDR10Plus, and HLG at 10 bits;</li>
-<li>raw Dolby Vision Profile 10 at 10 bits (DOVI, DOVIWithHDR10, DOVIWithHDR10Plus, DOVIWithSDR, DOVIWithHLG, and DOVIInvalid, never DOVIWithEL), when <code>rawHDRVideo.av1</code> passes and the <code>I420P10:dovi-rpu-v1</code> key is authorized;</li>
-<li>raw SDR at 10 bits.</li>
-</ul>
-</li>
-<li>VP9:
-<ul>
-<li>native SDR at 8 bits (<code>profile 0</code>);</li>
-<li>raw HDR10, HDR10Plus, and HLG, and raw SDR, at 10 bits (<code>profile 2</code>).</li>
-</ul>
-</li>
-<li>HEVC: as <a href="#hevc-and-dolby-vision-support">HEVC and Dolby Vision support</a> lists, with raw SDR at 10 bits (<code>main 10</code>) beside the native Main 10 SDR route.</li>
-</ul>
-<p>Every raw HDR route that advertises HDR10 also advertises HDR10Plus, because HDR10+ always carries a static HDR10 base that raw PQ presents (<code>getRawHDRRouteVideoRangeTypes</code>, host).</p>
-<p>Raw SDR at 10 bits needs <code>allowRawSDR</code> with both I420P10 BT.709 SDR keys, limited and full, because a profile condition cannot express color range.</p>
-<p>Jellyfin labels many Dolby Vision streams the engine can present outside the generic Dolby Vision ranges:</p>
-<ul>
-<li>P4 and P20 by transfer (SDR under a <code>dvhe</code> or <code>dvh1</code> sample entry);</li>
-<li>DV over Rext, Main 12, or 8-bit Main under a profile and depth the generic ranges do not pair with that label;</li>
-<li>a P10 Matroska stream without a CCID, by transfer.</li>
-</ul>
-<p>For a non-retry Dolby Vision item, <code>getHDRDeviceProfileOptions</code> (host) passes the item’s streams as <code>itemMediaSource</code>.
-<code>CustomDeviceProfile</code> asks the engine’s <code>hasEligibleCustomVideoRoute</code> whether the runtime would present the item with the measured capabilities and authorizations.
-If it would, <code>CustomDeviceProfile</code> advertises the item’s exact VideoProfile (as the existing route token), VideoBitDepth, and VideoRangeType as one more HEVC or AV1 route.</p>
-<h2 id="probe-scopes"><a class="header" href="#probe-scopes">Probe scopes</a></h2>
-<p><code>getHDRDeviceProfileProbeScope</code> (host) picks the GPU authorizations an item waits for:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Scope</th><th>Waits for</th></tr>
-</thead>
-<tbody>
-<tr><td><code>none</code></td><td>Nothing: a known-SDR item</td></tr>
-<tr><td><code>static-hdr</code></td><td>Native external HDR, and raw HDR only when no external key is authorized</td></tr>
-<tr><td><code>dolby-vision</code></td><td>Dolby Vision only; the item declares no HDR base</td></tr>
-<tr><td><code>dolby-vision-profile7</code>, <code>dolby-vision-profile8-hdr10-base</code>, <code>dolby-vision-profile8-hlg-base</code></td><td>Dolby Vision and native external HDR, for the exact native base</td></tr>
-<tr><td><code>dolby-vision-hdr-base</code></td><td>Dolby Vision, in parallel with the <code>static-hdr</code> waits, for a declared PQ or HLG base outside those exact shapes</td></tr>
-<tr><td><code>unknown</code></td><td>Native external HDR, raw HDR, and Dolby Vision</td></tr>
-</tbody>
-</table>
-</div>
-<p>The scopes assume HEVC, whose static HDR prefers the native external route.
-An AV1, VP9, or HEVC range-extension item presents HDR only through raw planes, so in every scope that can present an HDR base it also waits for raw HDR, in parallel and whatever the external result.
-Eligibility waits the same way for such an item whose metadata or declared Dolby Vision base is PQ or HLG.</p>
-<p>The Dolby Vision wait also settles the item’s first-use key: Profile 4 in any format, or Profile 7 or single-layer reconstruction in a format other than I420P10.
-Every non-retry profile also waits for the raw SDR authorization, whatever the scope.</p>
+<p>An AV1, VP9, or HEVC range-extension source presents HDR only through raw planes, so a host must settle the raw HDR keys for it whatever the external result.
+The Dolby Vision keys a source needs on first use (Profile 4 in any format, or Profile 7 or single-layer reconstruction in a format other than I420P10) must settle before eligibility.</p>
 <h2 id="route-keys"><a class="header" href="#route-keys">Route keys</a></h2>
 <ul>
 <li>Raw: <code>&lt;I420P10..I444P12&gt;:bt2020-ncl:bt2020:limited:&lt;pq|hlg&gt;</code> and <code>&lt;I420..I444P12&gt;:bt709:bt709:&lt;full|limited&gt;:sdr</code>.</li>
@@ -816,6 +708,11 @@ Only <code>I420P10:dovi-rpu-v1</code> and the I420P10 Profile 7 keys are prewarm
 <li>Dolby Vision external: <code>external-I420P10-bt709-limited:dovi-p5-rpu-v1</code>.</li>
 </ul>
 <h2 id="audio-routes"><a class="header" href="#audio-routes">Audio routes</a></h2>
+<div class="diagram">
+<a class="diagram-light" href="diagrams/audio-output.light.svg"><img src="diagrams/audio-output.light.svg" alt="Audio route choice and the decoded PCM and native-media output paths"></a>
+<a class="diagram-dark" href="diagrams/audio-output.dark.svg"><img src="diagrams/audio-output.dark.svg" alt="Audio route choice and the decoded PCM and native-media output paths"></a>
+</div>
+
 <ul>
 <li>
 <p>Track: <code>DefaultAudioStreamIndex</code>, else the first audio stream.
@@ -856,31 +753,17 @@ DTS and TrueHD play from Matroska and from MP4, M4V, and MOV (the <code>DTS </co
 <li>
 <p>Rates: any positive integer, resampled to 48 kHz.
 Past 192 kHz the resampler’s kernel widens in proportion, so its band edge stays as sharp as at 192 kHz.
-A browser decoder judges its own rates per item, and a rate it refuses falls back.
-The profile uses <code>AudioSampleRate NotEquals 0</code>, because Jellyfin reuses conditions as transcode targets.</p>
+A browser decoder judges its own rates per item, and a rate it refuses falls back.</p>
 </li>
 <li>
-<p>Output channels: <code>WebGPUPlayer.selectDecodedAudioOutputChannelCount</code> (host) returns 2 when stereo is forced.
-Otherwise a three-channel or 5.1 source gets 6 when <code>destination.maxChannelCount</code> is at least 6, and a 6.1 or 7.1 source gets 8 when it is at least 8, else 6 when it is at least 6.
-Everything else downmixes to 2 with the user’s algorithm.
+<p>Output channels: <code>selectCustomAudioOutputChannelCountForMaximum</code> (<code>audio/NativeMultichannelAudioOutput.ts</code>) gives a three-channel or 5.1 source 6 when <code>destination.maxChannelCount</code> is at least 6, and a 6.1 or 7.1 source 8 when it is at least 8, else 6 when it is at least 6.
+Everything else downmixes to 2 with the selected algorithm.
+A host may force 2.
 A live layout switch applies the same rule to the decoded layout.</p>
 </li>
 </ul>
 <h2 id="gotchas-1"><a class="header" href="#gotchas-1">Gotchas</a></h2>
 <ul>
-<li>Jellyfin ANDs the conditions of every matching CodecProfile (<code>StreamBuilder</code>).
-A looser added profile cannot override a stricter one, so stock profiles are split by container, and codecs with several routes use ApplyConditions.</li>
-<li>The server matches a profile container against any token of the probed container.
-Every MP4/MOV file probes as <code>mov,mp4,m4a,3gp,3g2,mj2</code>, so a stock split never names an alias of a codec’s route containers (<code>getCustomContainerFamilyForVideoCodec</code>, host).
-A stock HEVC split scoped to <code>mj2,webm</code>, for example, rejects every Dolby Vision range in MP4 files.</li>
-<li>Width, Height, VideoLevel, and VideoFramerate are removed only for custom containers.
-Bitrate is stripped everywhere on non-retry profiles.</li>
-<li>HEVC routes expand to every (VideoProfile, VideoRangeType) pair, with <code>VideoBitDepth Equals 0</code> as the value that always fails.
-AV1 and VP9 expand the same way when they have more than one route, so their native 8-bit SDR and raw 10-bit SDR share one SDR pair with both depths.
-H.264 is not expanded.</li>
-<li>Generic <code>Rext</code> advertises a bit depth only when 4:2:0, 4:2:2, and 4:4:4 at that depth are all authorized (<code>hasCompleteRextBitDepthEnvelope</code>, host).</li>
-<li>The native external route needs explicit color fields that a profile cannot express.
-Such a source can negotiate DirectPlay and then take the raw route or fall back.</li>
 <li>Native decode uses the hint its probes measured (<code>getCustomDecodeHardwareAcceleration</code>).
 Only the routes that present the decoder’s opaque hardware output (native external HDR, the native Dolby Vision base, and external Profile 5) prefer hardware.
 Raw-plane AV1 and VP9 prefer software, because Chromium’s hardware decoders return opaque 10-bit surfaces.
@@ -888,74 +771,57 @@ Every other native route uses <code>no-preference</code>, so a codec without a h
 One exception: 10-bit SDR HEVC has no probe of its own.
 The native HDR HEVC probe gates it with <code>prefer-hardware</code>, while the SDR route requests <code>no-preference</code>.
 Chromium decodes HEVC only in hardware, so both resolve to the same decoder.</li>
-<li>AC-3, E-AC-3, and PCM have no runtime probe, so the host’s <code>appendMeasuredNativeAudioRouteProfiles</code> never emits its 48 kHz profile.</li>
 <li>These composed routes have no probe vector: DTS mono, DTS 2-channel MA, DTS 3-channel MA, DTS 6-channel HRA, TrueHD and MLP mono, and TrueHD 7.1 at 48 kHz.</li>
-<li>A profile condition cannot express ChannelLayout, so three-channel routes and E-AC-3 and TrueHD 7.1 are advertised by channel count and qualified by layout only at eligibility.</li>
-<li>A profile condition cannot express color primaries, so 10-bit SDR AV1 or VP9 tagged BT.601 or BT.2020 negotiates and then fails eligibility: the raw SDR keys are BT.709 only.</li>
-<li>A P10 Matroska stream without a CCID, labeled by transfer, negotiates through the static HDR ranges, but it declares no base, so it plays only through its RPU route.</li>
-<li><code>customProfileAugmentationAvailable</code> (host) stays set for the lifetime of the player instance.</li>
-<li>Dolby Vision sources always disable HLS video stream copy, so an HLS fallback re-encodes the video.</li>
+<li>The raw SDR keys are BT.709 only, so 10-bit SDR AV1 or VP9 tagged BT.601 or BT.2020 is not eligible.</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="hevc-and-dolby-vision-support"><a class="header" href="#hevc-and-dolby-vision-support">HEVC and Dolby Vision support</a></h1>
-<p>This chapter says which HEVC and Dolby Vision sources, AV1 Profile 10 included, play through the custom pipeline, by which route, and on what evidence.
+<p>This chapter says which HEVC and Dolby Vision sources, AV1 Profile 10 included, the custom pipeline plays, by which route, and on what evidence.
+It is the engine’s support matrix: what <code>getCustomPlaybackEligibility</code> accepts and the route it selects, whatever the host.
+A host may restrict it further; the Jellyfin plugin’s book has the matrix of what Jellyfin negotiates for each row.
 It comes from the source and the unit tests, not from playback.
-<code>jellyfin-webgpu-client.tests/custom/HEVCDirectPlaySupportMatrix.test.ts</code> and <code>jellyfin-webgpu-client.tests/custom/AV1DirectPlaySupportMatrix.test.ts</code> (host) assert every row except the <code>metadata-unsupported</code> and <code>video-track-unavailable</code> rejections:</p>
-<ul>
-<li>negotiation: <code>isSameSessionNativePlaybackCompatible</code>, a conservative model of Jellyfin’s codec profile evaluation, against the profile from <code>augmentDeviceProfileForCustomDecode</code>, scoped to the item as the host scopes it;</li>
-<li>runtime eligibility: <code>getCustomPlaybackEligibility</code>;</li>
-<li>DirectPlay, which is both together;</li>
-<li>the exact route selected when every probe and authorization passes.</li>
-</ul>
-<p>For representative rows it also asserts the fallback routes, once with native VideoFrame HDR and Dolby Vision presentation withheld and once without native HEVC decode.</p>
+<code>test/capability/CustomPlaybackEligibility.test.ts</code> covers route selection, and the Jellyfin plugin’s support matrix tests assert every row, with its fallbacks, through <code>getCustomPlaybackEligibility</code>.</p>
 <p>Read every “Yes” as conditional:</p>
 <ul>
 <li>the evidence listed for at least one of the row’s routes must pass on the running browser and GPU;</li>
-<li>the user’s Custom decode setting must be on;</li>
-<li>HDR and Dolby Vision rows also need the HDR tone mapping setting.</li>
+<li>the host must pass the route flags and authorized keys of <code>CustomPlaybackEligibilityOptions</code> for that evidence.</li>
 </ul>
-<p>A retry is never widened.
-HEVC is advertised only in the containers that <code>capability/CustomContainerCodecSupport.ts</code> pairs with it (MP4, M4V, MOV, Matroska, MPEG-TS, M2TS, MTS).
-Resolution, level, frame rate, and bitrate are never gates.</p>
-<p>When Jellyfin direct-plays a row that is negotiated but not eligible, the client rejects it at runtime.
-It falls back to the HTML player in the same session when the stock profile covers the source, and otherwise asks for one renegotiation.</p>
+<p>HEVC is eligible only in the containers that <code>capability/CustomContainerCodecSupport.ts</code> pairs with it (MP4, M4V, MOV, Matroska, MPEG-TS, M2TS, MTS).
+Resolution, level, frame rate, and bitrate are never gates.
+The route names are defined in <a href="#routes">Routes</a>, and the probe and authorization names in <a href="#evidence">Evidence</a>.</p>
 <h2 id="plain-hevc"><a class="header" href="#plain-hevc">Plain HEVC</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Variant</th><th>Negotiated</th><th>Eligible</th><th>Route, then fallback</th><th>Evidence</th></tr>
+<tr><th>Variant</th><th>Eligible</th><th>Route, then fallback</th><th>Evidence</th></tr>
 </thead>
 <tbody>
-<tr><td>SDR, Main, 8-bit</td><td>Yes</td><td>Yes</td><td>VF-SDR native, then VF-SDR bundled</td><td>Native: <code>video.hevc</code> or <code>nativeUltraHDVideo.hevc</code>. Bundled: <code>bundledHEVC</code> Main</td></tr>
-<tr><td>SDR, Main 10, 10-bit</td><td>Yes</td><td>Yes</td><td>VF-SDR native, then RAW I420P10 SDR</td><td>VF-SDR: <code>nativeHDRHEVC</code>. RAW: <code>rawHDRVideo.hevc</code> and <code>I420P10:bt709:bt709:&lt;limited or full&gt;:sdr</code>; negotiation needs both keys</td></tr>
-<tr><td>HDR10 or HDR10Plus, Main 10, 10-bit</td><td>Yes</td><td>Yes</td><td>VF-PQ, then RAW I420P10 PQ</td><td>VF: <code>nativeHDRHEVC</code> and <code>ext-pq</code>. RAW: <code>rawHDRVideo.hevc</code> and <code>I420P10:bt2020-ncl:bt2020:limited:pq</code></td></tr>
-<tr><td>HLG, Main 10, 10-bit</td><td>Yes</td><td>Yes</td><td>VF-HLG, then RAW I420P10 HLG</td><td>VF: <code>nativeHDRHEVC</code> and <code>ext-hlg</code>. RAW: <code>rawHDRVideo.hevc</code> and <code>I420P10:bt2020-ncl:bt2020:limited:hlg</code></td></tr>
-<tr><td>Unknown range</td><td>No</td><td>No</td><td>None</td><td>None</td></tr>
+<tr><td>SDR, Main, 8-bit</td><td>Yes</td><td>VF-SDR native, then VF-SDR bundled</td><td>Native: <code>video.hevc</code> or <code>nativeUltraHDVideo.hevc</code>. Bundled: <code>bundledHEVC</code> Main</td></tr>
+<tr><td>SDR, Main 10, 10-bit</td><td>Yes</td><td>VF-SDR native, then RAW I420P10 SDR</td><td>VF-SDR: <code>nativeHDRHEVC</code>. RAW: <code>rawHDRVideo.hevc</code> and <code>I420P10:bt709:bt709:&lt;limited or full&gt;:sdr</code></td></tr>
+<tr><td>PQ, with or without HDR10+ metadata, Main 10, 10-bit</td><td>Yes</td><td>VF-PQ, then RAW I420P10 PQ</td><td>VF: <code>nativeHDRHEVC</code> and <code>ext-pq</code>. RAW: <code>rawHDRVideo.hevc</code> and <code>I420P10:bt2020-ncl:bt2020:limited:pq</code></td></tr>
+<tr><td>HLG, Main 10, 10-bit</td><td>Yes</td><td>VF-HLG, then RAW I420P10 HLG</td><td>VF: <code>nativeHDRHEVC</code> and <code>ext-hlg</code>. RAW: <code>rawHDRVideo.hevc</code> and <code>I420P10:bt2020-ncl:bt2020:limited:hlg</code></td></tr>
 </tbody>
 </table>
 </div>
 <p>The SDR rows cover every transfer the engine reads as SDR: BT.709, SMPTE 170M, sRGB, and the BT.2020 10 and 12-bit transfers, which use the BT.709 curve.
 They take BT.709, BT.601 (SMPTE 170M, SMPTE 240M, or BT.470 BG), or BT.2020 primaries and matrix.
 The VF-SDR routes leave the color conversion to Chrome, while the raw SDR keys stay BT.709 only, so Main 10 SDR in BT.601 or BT.2020 color has no raw fallback.</p>
-<p>The HLG row includes HLG-compatible streams, whose VUI signals the BT.2020 10-bit transfer and whose alternative transfer characteristics SEI names HLG (see <a href="#evidence">Other conditions</a>).</p>
+<p>The HLG row includes HLG-compatible streams, whose VUI signals the BT.2020 10-bit transfer and whose alternative transfer characteristics SEI names HLG (see <a href="#evidence">Evidence</a>).</p>
 <h2 id="range-extensions"><a class="header" href="#range-extensions">Range extensions</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Variant</th><th>Negotiated</th><th>Eligible</th><th>Route</th><th>Evidence</th></tr>
+<tr><th>Variant</th><th>Eligible</th><th>Route</th><th>Evidence</th></tr>
 </thead>
 <tbody>
-<tr><td>SDR, Rext or a named alias, any of the 9 variants</td><td>Yes</td><td>Yes</td><td>RAW in the variant’s exact format, SDR</td><td><code>hevcRangeExtensions[variant]</code> and <code>&lt;format&gt;:bt709:bt709:&lt;limited or full&gt;:sdr</code>; negotiation needs both the limited and the full key</td></tr>
-<tr><td>HDR10, HDR10Plus, or HLG, Rext or a named alias, the 6 variants of 10 or 12 bits</td><td>Yes</td><td>Yes</td><td>RAW in the variant’s exact format, PQ or HLG</td><td><code>hevcRangeExtensions[variant]</code> and <code>&lt;format&gt;:bt2020-ncl:bt2020:limited:&lt;pq or hlg&gt;</code></td></tr>
-<tr><td>Rext with BitDepth omitted but PixelFormat present</td><td>No: the required VideoBitDepth condition cannot match</td><td>Yes: the depth is read from PixelFormat</td><td>RAW in the variant’s exact format</td><td>As the matching row</td></tr>
-<tr><td>Generic Rext monochrome (<code>gray12le</code>), or a PixelFormat that contradicts BitDepth</td><td>Yes, when the generic Rext depth is advertised</td><td>No: <code>codec-unsupported</code>, or for an HDR label <code>hdr-codec-unsupported</code>, or <code>hdr-presentation-unavailable</code> when the raw HDR key is not authorized</td><td>None</td><td>None</td></tr>
+<tr><td>SDR, any of the 9 variants</td><td>Yes</td><td>RAW in the variant’s exact format, SDR</td><td><code>hevcRangeExtensions[variant]</code> and <code>&lt;format&gt;:bt709:bt709:&lt;limited or full&gt;:sdr</code></td></tr>
+<tr><td>PQ or HLG, the 6 variants of 10 or 12 bits</td><td>Yes</td><td>RAW in the variant’s exact format, PQ or HLG</td><td><code>hevcRangeExtensions[variant]</code> and <code>&lt;format&gt;:bt2020-ncl:bt2020:limited:&lt;pq or hlg&gt;</code></td></tr>
+<tr><td>BitDepth omitted but PixelFormat present</td><td>Yes: the depth is read from PixelFormat</td><td>RAW in the variant’s exact format</td><td>As the matching row</td></tr>
+<tr><td>Monochrome (<code>gray12le</code>), or a PixelFormat that contradicts BitDepth</td><td>No: <code>codec-unsupported</code>, or for HDR <code>hdr-codec-unsupported</code>, or <code>hdr-presentation-unavailable</code> when the raw HDR key is not authorized</td><td>None</td><td>None</td></tr>
 </tbody>
 </table>
 </div>
-<p>Jellyfin reports the generic <code>Rext</code> profile, and a profile condition cannot express chroma format.
-Generic <code>Rext</code> is therefore advertised for a bit depth and range only when all three chroma formats at that depth pass.
-Named aliases are exact per variant.
-At runtime the PixelFormat must be exact, and an explicit BitDepth must agree with it.</p>
+<p>The PixelFormat must be exact, and an explicit BitDepth must agree with it.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -975,79 +841,77 @@ At runtime the PixelFormat must be exact, and an explicit BitDepth must agree wi
 </table>
 </div>
 <h2 id="dolby-vision"><a class="header" href="#dolby-vision">Dolby Vision</a></h2>
-<p>A variant is written as Jellyfin’s range label; the Dolby Vision profile and compatibility ID (CCID); the HEVC profile.
+<p>A variant is written as the Dolby Vision profile and compatibility ID (CCID), then the HEVC profile.
 Main 10 at 10 bits unless stated.
-“Item route” means only the item’s own exact route advertises it (see <a href="#what-the-profile-advertises">Negotiation and routes</a>).</p>
+The engine reads the Dolby Vision configuration and the color fields; it ignores VideoRange and VideoRangeType.</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Variant</th><th>Negotiated</th><th>Eligible</th><th>Route, then fallback</th><th>Evidence</th></tr>
+<tr><th>Variant</th><th>Eligible</th><th>Route, then fallback</th><th>Evidence</th></tr>
 </thead>
 <tbody>
-<tr><td>DOVI, or HDR10 for a CCID outside Jellyfin’s set; P5, any CCID or none</td><td>Yes</td><td>Yes</td><td>VF-DV5, then RAW-DV P5</td><td>VF: <code>nativeDolbyVisionHEVC</code> and <code>dovi-p5</code>. RAW: <code>rawHDRVideo.hevc</code> and <code>dovi-rpu</code></td></tr>
-<tr><td>DOVIWithEL or DOVIWithELHDR10Plus; P7, CCID 6 or 1, MEL or FEL, with or without the EL</td><td>Yes</td><td>Yes</td><td>DV base PQ, then RAW-DV7, then the declared PQ base through RAW</td><td>Base: <code>nativeHDRHEVC</code>, <code>ext-pq</code>, and exact BT.2020 PQ base metadata. RAW-DV7: <code>rawHDRVideo.hevc</code> and <code>dovi-p7-base</code>; decoding the EL needs the bundled Main 10 qualification, and the FEL residual also needs <code>dovi-p7-fel</code></td></tr>
-<tr><td>DOVIWithEL, or HDR10 for a CCID outside Jellyfin’s set; P7, any other CCID or none</td><td>Yes</td><td>Yes</td><td>RAW-DV7 only; the CCID declares no base</td><td>As RAW-DV7 above</td></tr>
-<tr><td>DOVIWithHDR10 or DOVIWithHDR10Plus; P8.1, with or without an EL flag</td><td>Yes</td><td>Yes</td><td>DV base PQ, then RAW-DV P8, then the declared PQ base through RAW</td><td>Base: as for P7. RAW-DV: <code>rawHDRVideo.hevc</code> and <code>dovi-rpu</code></td></tr>
-<tr><td>DOVIInvalid; P8, CCID 6 (an Ultra HD Blu-ray HDR10 base)</td><td>Yes</td><td>Yes</td><td>As P8.1</td><td>As P8.1; DOVIInvalid comes with the raw Dolby Vision route</td></tr>
-<tr><td>DOVIWithSDR; P8.2</td><td>Yes</td><td>Yes</td><td>RAW-DV P8, then the declared SDR base through VF-SDR native</td><td>RAW-DV: as P8.1. VF-SDR: <code>nativeHDRHEVC</code></td></tr>
-<tr><td>DOVIWithHLG; P8.4</td><td>Yes</td><td>Yes</td><td>DV base HLG, then RAW-DV P8, then the declared HLG base through RAW</td><td>Base: <code>nativeHDRHEVC</code>, <code>ext-hlg</code>, and exact limited BT.2020 HLG base metadata. RAW-DV: as P8.1</td></tr>
-<tr><td>DOVIInvalid, or a label by transfer; P8, CCID 0, reserved, none, or a base whose color contradicts its CCID (Jellyfin 12)</td><td>Yes</td><td>Yes</td><td>RAW-DV P8 only</td><td>As P8.1</td></tr>
-<tr><td>SDR, or HDR10 or HLG by transfer (SDR under a <code>dvhe</code> sample entry); P4, CCID 2, MEL or FEL, with or without the EL</td><td>Yes</td><td>Yes</td><td>RAW-DV4, then the declared SDR base through VF-SDR native</td><td>RAW-DV4: <code>rawHDRVideo.hevc</code> and <code>dovi-p4-base</code>; decoding the EL needs the bundled Main 10 qualification, and the FEL residual also needs <code>dovi-p4-fel</code>. VF-SDR: <code>nativeHDRHEVC</code></td></tr>
-<tr><td>HDR10, HLG, or SDR by transfer (SDR under a <code>dvh1</code> sample entry); P20 MV-HEVC, CCID 1, 2, 4, 6, or reserved</td><td>Yes</td><td>Yes</td><td>RAW-DV P8 on the base view, then the declared base through the static routes</td><td>As P8.1</td></tr>
-<tr><td>As above; P20, CCID 0 or none</td><td>Yes</td><td>Yes</td><td>VF-DV5 on the base view, then RAW-DV P5</td><td>As P5</td></tr>
-<tr><td>Any label; P5, P8, or P20 over Rext or a named alias</td><td>Item route</td><td>Yes</td><td>RAW-DV in the variant’s exact format, then the declared base through RAW in that format</td><td><code>hevcRangeExtensions[variant]</code> and <code>&lt;format&gt;:dovi-rpu-v1</code></td></tr>
-<tr><td>Any label; P4 or P7 over Rext or a named alias</td><td>Item route</td><td>Yes</td><td>RAW-DV4 or RAW-DV7 with the BL in the variant’s exact format, then the declared base through RAW in that format</td><td><code>hevcRangeExtensions[variant]</code> and <code>&lt;format&gt;:dovi-profile4-base-v1</code> or <code>&lt;format&gt;:dovi-profile7-base-v1</code>; decoding the EL needs the bundled Main 10 qualification, and the FEL residual also needs the matching FEL key</td></tr>
-<tr><td>Any label; P5, P8, or P20 over 8-bit Main</td><td>Item route</td><td>Yes</td><td>RAW-DV in I420 through <code>bundled-hevc</code>, then (CCID 2) the declared SDR base through VF-SDR native, then VF-SDR bundled</td><td>RAW-DV: <code>bundledHEVC</code> Main and <code>I420:dovi-rpu-v1</code>. VF-SDR: as SDR Main</td></tr>
-<tr><td>Any label; P4 or P7 over 8-bit Main</td><td>Item route</td><td>Yes</td><td>RAW-DV4 or RAW-DV7 with an I420 BL, both layers through <code>bundled-hevc</code>, then the declared base</td><td><code>bundledHEVC</code> Main and the I420 dual-layer keys; decoding the EL needs <code>bundledHEVC</code> Main 10</td></tr>
+<tr><td>P5, any CCID or none</td><td>Yes</td><td>VF-DV5, then RAW-DV P5</td><td>VF: <code>nativeDolbyVisionHEVC</code> and <code>dovi-p5</code>. RAW: <code>rawHDRVideo.hevc</code> and <code>dovi-rpu</code></td></tr>
+<tr><td>P7, CCID 1 or 6, MEL or FEL, with or without the EL</td><td>Yes</td><td>DV base PQ, then RAW-DV7, then the declared PQ base through RAW</td><td>Base: <code>nativeHDRHEVC</code>, <code>ext-pq</code>, and exact BT.2020 PQ base metadata. RAW-DV7: <code>rawHDRVideo.hevc</code> and <code>dovi-p7-base</code>; decoding the EL needs the bundled Main 10 qualification, and the FEL residual also needs <code>dovi-p7-fel</code></td></tr>
+<tr><td>P7, any other CCID or none</td><td>Yes</td><td>RAW-DV7 only; the CCID declares no base</td><td>As RAW-DV7 above</td></tr>
+<tr><td>P8, CCID 1 or 6, with or without an EL flag</td><td>Yes</td><td>DV base PQ, then RAW-DV P8, then the declared PQ base through RAW</td><td>Base: as for P7. RAW-DV: <code>rawHDRVideo.hevc</code> and <code>dovi-rpu</code></td></tr>
+<tr><td>P8, CCID 2</td><td>Yes</td><td>RAW-DV P8, then the declared SDR base through VF-SDR native</td><td>RAW-DV: as P8 with CCID 1. VF-SDR: <code>nativeHDRHEVC</code></td></tr>
+<tr><td>P8, CCID 4</td><td>Yes</td><td>DV base HLG, then RAW-DV P8, then the declared HLG base through RAW</td><td>Base: <code>nativeHDRHEVC</code>, <code>ext-hlg</code>, and exact limited BT.2020 HLG base metadata. RAW-DV: as P8 with CCID 1</td></tr>
+<tr><td>P8, CCID 0, reserved, or none, or an explicit ColorTransfer that contradicts the CCID</td><td>Yes</td><td>RAW-DV P8 only</td><td>As P8 with CCID 1</td></tr>
+<tr><td>P4, CCID 2, MEL or FEL, with or without the EL</td><td>Yes</td><td>RAW-DV4, then the declared SDR base through VF-SDR native</td><td>RAW-DV4: <code>rawHDRVideo.hevc</code> and <code>dovi-p4-base</code>; decoding the EL needs the bundled Main 10 qualification, and the FEL residual also needs <code>dovi-p4-fel</code>. VF-SDR: <code>nativeHDRHEVC</code></td></tr>
+<tr><td>P20 MV-HEVC, CCID 1, 2, 4, 6, or reserved</td><td>Yes</td><td>RAW-DV P8 on the base view, then the declared base through the static routes</td><td>As P8 with CCID 1</td></tr>
+<tr><td>P20, CCID 0 or none</td><td>Yes</td><td>VF-DV5 on the base view, then RAW-DV P5</td><td>As P5</td></tr>
+<tr><td>P5, P8, or P20 over Rext or a named alias</td><td>Yes</td><td>RAW-DV in the variant’s exact format, then the declared base through RAW in that format</td><td><code>hevcRangeExtensions[variant]</code> and <code>&lt;format&gt;:dovi-rpu-v1</code></td></tr>
+<tr><td>P4 or P7 over Rext or a named alias</td><td>Yes</td><td>RAW-DV4 or RAW-DV7 with the BL in the variant’s exact format, then the declared base through RAW in that format</td><td><code>hevcRangeExtensions[variant]</code> and <code>&lt;format&gt;:dovi-profile4-base-v1</code> or <code>&lt;format&gt;:dovi-profile7-base-v1</code>; decoding the EL needs the bundled Main 10 qualification, and the FEL residual also needs the matching FEL key</td></tr>
+<tr><td>P5, P8, or P20 over 8-bit Main</td><td>Yes</td><td>RAW-DV in I420 through <code>bundled-hevc</code>, then (CCID 2) the declared SDR base through VF-SDR native, then VF-SDR bundled</td><td>RAW-DV: <code>bundledHEVC</code> Main and <code>I420:dovi-rpu-v1</code>. VF-SDR: as SDR Main</td></tr>
+<tr><td>P4 or P7 over 8-bit Main</td><td>Yes</td><td>RAW-DV4 or RAW-DV7 with an I420 BL, both layers through <code>bundled-hevc</code>, then the declared base</td><td><code>bundledHEVC</code> Main and the I420 dual-layer keys; decoding the EL needs <code>bundledHEVC</code> Main 10</td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="dolby-vision-over-av1"><a class="header" href="#dolby-vision-over-av1">Dolby Vision over AV1</a></h2>
 <p>Profile 10 is single-layer: the RPU travels in an ITU-T T.35 metadata OBU of each temporal unit, and the base layer is AV1 Main at 10 bits.
 RAW-DV here decodes through the engine’s own AV1 path, natively in software, into I420P10.
-Every AV1 track takes that path, whatever its route, so the declared base of a DOVIWithHDR10Plus stream applies its HDR10+ metadata OBUs too (see <a href="#video-decode-and-dolby-vision">Decisions</a>).
+Every AV1 track takes that path, whatever its route, so the declared base of a stream with HDR10+ metadata applies its HDR10+ metadata OBUs too (see <a href="#video-decode-and-dolby-vision">Decisions</a>).
 Only an RPU route loads the RPU parser; any other route removes the RPU OBUs without parsing them.</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Variant</th><th>Negotiated</th><th>Eligible</th><th>Route, then fallback</th><th>Evidence</th></tr>
+<tr><th>Variant</th><th>Eligible</th><th>Route, then fallback</th><th>Evidence</th></tr>
 </thead>
 <tbody>
-<tr><td>DOVI; P10.0, CCID 0 (an IPT base)</td><td>Yes</td><td>Yes</td><td>RAW-DV P5 only; the CCID declares no base</td><td><code>rawHDRVideo.av1</code> and <code>dovi-rpu</code></td></tr>
-<tr><td>DOVIWithHDR10 or DOVIWithHDR10Plus; P10.1</td><td>Yes</td><td>Yes</td><td>RAW-DV P8, then the declared PQ base through RAW I420P10 PQ</td><td>RAW-DV: as P10.0. Base: <code>rawHDRVideo.av1</code> and <code>I420P10:bt2020-ncl:bt2020:limited:pq</code></td></tr>
-<tr><td>DOVIWithSDR; P10.2</td><td>Yes</td><td>Yes</td><td>RAW-DV P8, then the declared SDR base through RAW I420P10 SDR</td><td>RAW-DV: as P10.0. Base: <code>rawHDRVideo.av1</code> and the I420P10 BT.709 SDR keys</td></tr>
-<tr><td>DOVIWithHLG; P10.4</td><td>Yes</td><td>Yes</td><td>RAW-DV P8, then the declared HLG base through RAW I420P10 HLG</td><td>RAW-DV: as P10.0. Base: <code>rawHDRVideo.av1</code> and <code>I420P10:bt2020-ncl:bt2020:limited:hlg</code></td></tr>
-<tr><td>DOVIInvalid; P10 with CCID 6, a reserved CCID, or a base whose color contradicts its CCID</td><td>Yes</td><td>Yes</td><td>RAW-DV P8; CCID 6 then falls back to its PQ base</td><td>As P10.1</td></tr>
-<tr><td>HDR10, HLG, or SDR by transfer; P10 without a CCID (Matroska)</td><td>Yes</td><td>Yes</td><td>RAW-DV P5 only; the stream declares no base</td><td>As P10.0</td></tr>
-<tr><td>Any label; P10 at 8 bits, or outside the Main profile</td><td>Item route, with a declared SDR base</td><td>Only with a declared SDR base</td><td>The declared SDR base through native VF-SDR; no RPU route, because raw AV1 qualifies at 10 bits only</td><td>As 8-bit AV1 SDR</td></tr>
+<tr><td>P10, CCID 0 (an IPT base)</td><td>Yes</td><td>RAW-DV P5 only; the CCID declares no base</td><td><code>rawHDRVideo.av1</code> and <code>dovi-rpu</code></td></tr>
+<tr><td>P10, CCID 1</td><td>Yes</td><td>RAW-DV P8, then the declared PQ base through RAW I420P10 PQ</td><td>RAW-DV: as P10 with CCID 0. Base: <code>rawHDRVideo.av1</code> and <code>I420P10:bt2020-ncl:bt2020:limited:pq</code></td></tr>
+<tr><td>P10, CCID 2</td><td>Yes</td><td>RAW-DV P8, then the declared SDR base through RAW I420P10 SDR</td><td>RAW-DV: as P10 with CCID 0. Base: <code>rawHDRVideo.av1</code> and the I420P10 BT.709 SDR keys</td></tr>
+<tr><td>P10, CCID 4</td><td>Yes</td><td>RAW-DV P8, then the declared HLG base through RAW I420P10 HLG</td><td>RAW-DV: as P10 with CCID 0. Base: <code>rawHDRVideo.av1</code> and <code>I420P10:bt2020-ncl:bt2020:limited:hlg</code></td></tr>
+<tr><td>P10, CCID 6, a reserved CCID, or an explicit ColorTransfer that contradicts the CCID</td><td>Yes</td><td>RAW-DV P8; CCID 6 then falls back to its PQ base</td><td>As P10 with CCID 1</td></tr>
+<tr><td>P10 without a CCID</td><td>Yes</td><td>RAW-DV P5 only; the stream declares no base</td><td>As P10 with CCID 0</td></tr>
+<tr><td>P10 at 8 bits, or outside the Main profile</td><td>Only with a declared SDR base</td><td>The declared SDR base through native VF-SDR; no RPU route, because raw AV1 qualifies at 10 bits only</td><td>As 8-bit AV1 SDR</td></tr>
 </tbody>
 </table>
 </div>
-<p>The MP4 <code>dav1</code> sample entry of a 10.0 stream maps to no codec in FFmpeg, and so in Jellyfin’s probe, so the server never offers such a file for direct play.
-The engine maps <code>dav1</code> to AV1 itself (see <a href="#video-decode-and-dolby-vision">Decisions</a>), and Matroska 10.0 plays.</p>
+<p>The engine maps the MP4 <code>dav1</code> sample entry of a 10.0 stream to AV1 itself (see <a href="#video-decode-and-dolby-vision">Decisions</a>).</p>
 <p>Dolby Vision outside HEVC and AV1:</p>
 <ul>
 <li>Profile 9 (AVC, 8-bit) has no RPU route, because the engine owns no AVC decode path.
-Its declared SDR base plays through the H.264 routes.
-Jellyfin labels it by transfer, or SDR under a <code>dvav</code> or <code>dva1</code> sample entry.</li>
+Its declared SDR base plays through the H.264 routes.</li>
 <li>The retired Profiles 0 to 3 and 6 have no RPU route and present only a declared base.</li>
 </ul>
-<h2 id="rejected-at-runtime"><a class="header" href="#rejected-at-runtime">Rejected at runtime</a></h2>
+<h2 id="rejected"><a class="header" href="#rejected">Rejected</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Variant</th><th>Negotiated</th><th>Eligible</th></tr>
+<tr><th>Variant</th><th>Reason</th></tr>
 </thead>
 <tbody>
-<tr><td>Any DOVI label, DOVIInvalid included, without Dolby Vision configuration fields</td><td>Yes</td><td>No, <code>metadata-unsupported</code></td></tr>
-<tr><td>Dolby Vision over 8-bit Main without a declared SDR base, when the bundled decoder’s Main qualification failed</td><td>No</td><td>No, <code>hdr-codec-unsupported</code>: only the bundled decoder reads 8-bit Main raw planes</td></tr>
-<tr><td>A Dolby Vision configuration without an integer profile, without the base layer flag, or with a CCID that is not a 4-bit integer; several video tracks other than a separate P7 pair</td><td>Yes, as the reported label</td><td>No, <code>video-track-unavailable</code></td></tr>
+<tr><td>No color metadata</td><td><code>metadata-unsupported</code></td></tr>
+<tr><td>A Dolby Vision descriptor without Dolby Vision configuration fields</td><td><code>metadata-unsupported</code></td></tr>
+<tr><td>Dolby Vision over 8-bit Main without a declared SDR base, when the bundled decoder’s Main qualification failed</td><td><code>hdr-codec-unsupported</code>: only the bundled decoder reads 8-bit Main raw planes</td></tr>
+<tr><td>A Dolby Vision configuration without an integer profile, without the base layer flag, or with a CCID that is not a 4-bit integer; several video tracks other than a separate P7 pair</td><td><code>video-track-unavailable</code></td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="routes"><a class="header" href="#routes">Routes</a></h2>
 <p>A route is the eligibility output: <code>videoOutputMode</code>, <code>videoDecoderBackend</code>, <code>rawVideoFrameFormat</code>, <code>dolbyVisionProfile</code>, and <code>nativeHDRTransfer</code>, plus <code>discardDolbyVisionEnhancementLayer</code> for a dual-layer route without a qualified EL decoder.
-<code>WebGPUPlayer.configurePresentationColorPipeline</code> (host) maps it to a presenter input mode.</p>
+The host maps it to a presenter input mode.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -1065,6 +929,7 @@ Jellyfin labels it by transfer, or SDR under a <code>dvav</code> or <code>dva1</
 </tbody>
 </table>
 </div>
+<p><a href="#video-route-selection">Eligibility and routes</a> gives the order in which they are tried.</p>
 <p>HDR10+ dynamic metadata is applied on VF-PQ, DV base PQ, and RAW PQ, and ignored on VF-DV5 and the RAW-DV routes.
 HEVC carries it in SEI, and AV1 in ITU-T T.35 metadata OBUs, whose trailing bits the engine removes as dav1d does: it drops the trailing zero bytes, then the byte holding the trailing one bit, which must be 0x80, or the frame’s metadata is malformed.
 VP9 has no metadata of its own, so Matroska and WebM carry each frame’s ITU-T T.35 message beside it in a BlockAdditional, and VP9 in MP4 carries none.
@@ -1101,7 +966,7 @@ Each decode attempt and each seek starts without carried metadata.</p>
 <tbody>
 <tr><td><code>ext-pq</code></td><td><code>external-hevc-main10-bt709-limited:pq-v1</code></td><td><code>ExternalHDRPresentationAuthorization.ts</code></td></tr>
 <tr><td><code>ext-hlg</code></td><td><code>external-hevc-main10-bt709-limited:hlg-v1</code></td><td><code>ExternalHDRPresentationAuthorization.ts</code></td></tr>
-<tr><td>Raw keys</td><td><code>&lt;format&gt;:...</code>, as written in the tables</td><td><code>RawHDRPresentationAuthorization.ts</code></td></tr>
+<tr><td>Raw keys</td><td><code>&lt;format&gt;:...</code>, as written in <a href="#route-keys">Route keys</a></td><td><code>RawHDRPresentationAuthorization.ts</code></td></tr>
 <tr><td><code>dovi-rpu</code></td><td><code>&lt;format&gt;:dovi-rpu-v1</code>, one per raw format from I420 to I444P12</td><td><code>DolbyVisionPresentationAuthorization.ts</code></td></tr>
 <tr><td><code>dovi-p4-base</code>, <code>dovi-p4-fel</code></td><td><code>&lt;format&gt;:dovi-profile4-base-v1</code>, <code>&lt;format&gt;:dovi-profile4-fel-v1</code>, one pair per BL format from I420 to I444P12</td><td><code>DolbyVisionPresentationAuthorization.ts</code></td></tr>
 <tr><td><code>dovi-p7-base</code>, <code>dovi-p7-fel</code></td><td><code>&lt;format&gt;:dovi-profile7-base-v1</code>, <code>&lt;format&gt;:dovi-profile7-fel-v1</code>, one pair per BL format from I420 to I444P12</td><td><code>DolbyVisionPresentationAuthorization.ts</code></td></tr>
@@ -1110,7 +975,7 @@ Each decode attempt and each seek starts without carried metadata.</p>
 </table>
 </div>
 <p><code>I420P10:dovi-rpu-v1</code> and the I420P10 Profile 7 keys are part of the default Dolby Vision prewarm.
-The Profile 4 keys in any format, and the Profile 7 and single-layer keys of other formats, authorize on first use, and the host waits for them before building the profile and before eligibility, so a stream that needs one is never offered or started on an unsettled probe.</p>
+The Profile 4 keys in any format, and the Profile 7 and single-layer keys of other formats, authorize on first use, so a host must wait for them before it advertises or starts a stream that needs one.</p>
 <p>Other conditions:</p>
 <ul>
 <li>Native VideoFrame HDR and the DV base routes also need explicit ColorTransfer, ColorPrimaries, and ColorSpace values.</li>
@@ -1120,30 +985,26 @@ Only the native HDR route check is strict: limited range, BT.2020 primaries, the
 <li>The transfer that check reads is the key access unit’s alternative transfer characteristics SEI value (payload type 147) when one is present, and the VUI transfer otherwise.
 Without the SEI, VF-HLG and DV base HLG also accept the BT.2020 10 and 12-bit VUI transfers (14 and 15) of HLG-compatible streams.
 An SEI naming another transfer rejects the HLG route, and a malformed SEI counts as absent, as in FFmpeg.</li>
-<li>The DV base ranges are negotiated per item.
-Without an exact item match, those ranges are advertised only through RAW-DV.</li>
 <li>P20 is MV-HEVC.
 NAL units with a <code>nuh_layer_id</code> above 0, the second view, are dropped before decode, and SEI of other layers is ignored.</li>
 <li>A separate-track P7 (a base track and an EL track) selects the same routes.
-<code>test/capability/CustomPlaybackEligibility.test.ts</code> covers it; the matrix does not, because its negotiation model reads a single video stream.</li>
+<code>test/capability/CustomPlaybackEligibility.test.ts</code> covers it.</li>
 <li>An RPU the parser rejects ends the custom session, which then falls back.
 The parser follows FFmpeg’s <code>dovi_rpudec.c</code>: unknown, misplaced, short, or padded display-metadata extension blocks are skipped, and only a block whose coded length runs past the payload rejects the RPU.
 It also reads what FFmpeg does not: polynomial and MMR pieces mixed within one component, polynomial linear interpolation (see <a href="#video-decode-and-dolby-vision">Decisions</a>), and any mapping color space or chroma format.</li>
 </ul>
 <h2 id="not-supported"><a class="header" href="#not-supported">Not supported</a></h2>
-<p>Each item is neither negotiated nor eligible, unless the tables above say it is negotiated only.</p>
 <ul>
 <li>HDR10, HDR10Plus, or HLG at 8 bits, under any profile.</li>
 <li>Profile and bit depth contradictions: Main at 10 bits, Main 10 at 8 bits, Main 10 at 12 bits.</li>
 <li>14-bit and 16-bit range extensions.</li>
-<li>Monochrome range extensions, which generic Rext negotiates and the runtime rejects.</li>
+<li>Monochrome range extensions.</li>
 <li>High Throughput 4:4:4 profiles, Screen Content Coding (<code>Screen-Extended</code>) profiles, Main Still Picture, and named Intra aliases such as <code>Main 4:4:4 10 Intra</code>.
 Generic Rext with an intra constraint is the ordinary variant.</li>
 <li>Interlaced HEVC of any profile or range.</li>
 <li>Dolby Vision:
 <ul>
-<li>the invalid configurations in the rejected table;</li>
-<li>Dolby Vision over 8-bit Main without a declared SDR base, when the bundled decoder’s Main qualification failed;</li>
+<li>the configurations in <a href="#rejected">Rejected</a>;</li>
 <li>RPU reconstruction for AVC Profile 9, and for AV1 Profile 10 at 8 bits or outside the Main profile;</li>
 <li>RPUs the parser rejects: a linear interpolation piece next to an MMR piece, an RPU format extension, missing sequence information, display metadata compression above method 1, and a header from which no profile is inferred.</li>
 </ul>
@@ -1151,7 +1012,7 @@ Generic Rext with an intra constraint is the ordinary variant.</li>
 </ul>
 <h2 id="known-issues"><a class="header" href="#known-issues">Known issues</a></h2>
 <ul>
-<li>Firefox on Windows has no WebCodecs HEVC (see <a href="#firefox">Decisions</a>), so an HEVC row plays there only through a bundled route.
+<li>Firefox on Windows has no WebCodecs HEVC (see <a href="#firefox">Decisions</a>), so HEVC plays there only through a bundled route.
 Main 8-bit SDR plays through <code>bundled-hevc</code>, and Main 10 SDR, HDR10, HLG, and Dolby Vision through RAW, below real time at 4K.
 The range extensions have no bundled route and are not eligible there.
 Firefox decodes 10-bit AV1 to 8-bit <code>BGRX</code>, so no raw AV1 route, P10 included, qualifies there.</li>
@@ -1392,23 +1253,6 @@ Their hand-written declarations are <code>wasm/&lt;kit&gt;/&lt;kit&gt;.d.mts</co
 </ul>
 </li>
 </ul>
-<h2 id="host-the-jellyfin-add-on"><a class="header" href="#host-the-jellyfin-add-on">Host: the Jellyfin add-on</a></h2>
-<p>Paths are relative to the plugin repository root.
-See <a href="#the-jellyfin-host">The Jellyfin host</a>.</p>
-<ul>
-<li><code>jellyfin-webgpu-client/src/index.ts</code>: the add-on entry.
-It configures the engine’s assets and feature flags, binds the host bridge, installs the host-compatible mode, and returns the player.</li>
-<li><code>jellyfin-webgpu-client/src/WebGPUPlayer.ts</code>: the Jellyfin-facing player: profile augmentation, the stream-copy veto, eligibility, the rAF loop, fallback, renegotiation, and generations.</li>
-<li><code>jellyfin-webgpu-client/src/HostCompatibleWebGPUPlayer.ts</code>: adapts <code>WebGPUPlayer</code> to the stock PlaybackManager: purpose-less bitrate requests, the player preference, marked profiles, and superseded starts that never settle.</li>
-<li><code>jellyfin-webgpu-client/src/HTMLPlayerDelegate.ts</code>: owns one HTML player and forwards its events for the current generation only.</li>
-<li><code>jellyfin-webgpu-client/src/backend/</code>: the add-on’s own copy of the HTML video player and its media helper, usable as an owned backend.</li>
-<li><code>jellyfin-webgpu-client/src/custom/CustomDeviceProfile.ts</code>: <code>augmentDeviceProfileForCustomDecode</code> and <code>createBitrateIndependentDeviceProfile</code>.</li>
-<li><code>jellyfin-webgpu-client/src/custom/NativeDirectPlayCompatibility.ts</code>: checks the stock profile against the chosen source, the proof for same-session fallback.</li>
-<li><code>jellyfin-webgpu-client/src/compat/</code>: stand-ins for the PlaybackManager seams stock Jellyfin Web lacks: the PlaybackInfo interceptor and its policies, PlaybackManager hooks, and the settings entry points.</li>
-<li><code>jellyfin-webgpu-client/src/host/</code>, <code>jellyfin-webgpu-client/src/shims/</code>: host singletons bound late from the plugin bag, and replacements for host modules the add-on cannot import.</li>
-<li><code>jellyfin-webgpu-client/src/WebGPUUserSettings.ts</code>, <code>WebGPUPlaybackPreferences.ts</code>, <code>PreferredVideoPlayer.ts</code>: local per-user settings (v2), the custom decode and HDR tone mapping preferences, and the Auto, WebGPU, or HTML player preference.</li>
-<li><code>jellyfin-webgpu-client/src/ui/WebGPUPlaybackSettingsDialog.ts</code>: the in-player settings panel, with live render and downmix updates and restart-required options marked.</li>
-</ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="embedding-the-engine"><a class="header" href="#embedding-the-engine">Embedding the engine</a></h1>
 <p>A host imports the engine’s TypeScript, serves its prebuilt workers and decoders, and configures it once at startup.
@@ -1488,109 +1332,6 @@ Open pages keep their old bundles; engine workers and decoders change their <cod
 <li>A bundler dev server that runs the asset build at configuration load must be restarted after an engine worker changes.</li>
 <li>WebGPU needs a secure context.
 Over plain HTTP on a LAN address, a host that still selects the WebGPU player plays HTML pass-through only, which proves nothing.</li>
-</ul>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="the-jellyfin-host"><a class="header" href="#the-jellyfin-host">The Jellyfin host</a></h1>
-<p>The engine’s host is the Jellyfin server plugin <code>jellyfin-plugin-webgpu-player</code> and its web client add-on.
-Together they add the WebGPU Player to an unmodified Jellyfin Web.
-Paths in this chapter are relative to the plugin repository root; the plugin’s own <code>README.md</code> covers the server side in full.</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Path</th><th>Holds</th></tr>
-</thead>
-<tbody>
-<tr><td><code>Jellyfin.Plugin.WebGPUPlayer/</code></td><td>The server plugin: the web client rewrites and the asset route</td></tr>
-<tr><td><code>jellyfin-webgpu-client/</code></td><td>The add-on, a private npm package with its sources in <code>src/</code></td></tr>
-<tr><td><code>jellyfin-webgpu-client/vendor/webgpu-player/</code></td><td>This engine: a submodule, and an npm workspace of the add-on</td></tr>
-<tr><td><code>jellyfin-webgpu-client/vendor/webgpu-player-hls/</code></td><td>The hls.js fork, a submodule</td></tr>
-<tr><td><code>jellyfin-webgpu-client.tests/</code></td><td>The add-on’s Vitest suites, mirroring its <code>src/</code></td></tr>
-<tr><td><code>bin/jellyfin-webgpu-client/</code></td><td>The add-on build, which the plugin embeds</td></tr>
-</tbody>
-</table>
-</div>
-<h2 id="how-the-add-on-reaches-the-page"><a class="header" href="#how-the-add-on-reaches-the-page">How the add-on reaches the page</a></h2>
-<ol>
-<li>The server plugin rewrites two Jellyfin Web files, through the File Transformation plugin when it is installed and through its own middleware otherwise.
-<code>index.html</code> gets a bootstrap script that sets <code>window.WebGPUPlayerConfig</code> (the asset base URL) and defines <code>window.WebGPUPlayer</code>, a factory that imports the add-on entry.
-<code>config.json</code> gets <code>WebGPUPlayer</code> appended to its <code>plugins</code> list.</li>
-<li>Jellyfin Web’s plugin manager loads <code>WebGPUPlayer</code> through its window plugin path and constructs it with its dependency bag.</li>
-<li><code>jellyfin-webgpu-client/src/index.ts</code> configures the engine: the asset base is the add-on route plus <code>libraries/</code>, the cache key is the engine build’s asset key, and <code>isHDRToneMappingEnabled</code> reads the user’s preference.
-It then binds the host bridge, installs the host-compatible mode, and returns a <code>HostCompatibleWebGPUPlayer</code>.</li>
-<li>The plugin serves the add-on build at <code>&lt;BaseUrl&gt;/WebGPUPlayer/assets/&lt;path&gt;</code>, the engine’s served folder included.</li>
-</ol>
-<h2 id="the-player"><a class="header" href="#the-player">The player</a></h2>
-<p><code>WebGPUPlayer</code> (<code>jellyfin-webgpu-client/src/WebGPUPlayer.ts</code>) is the player PlaybackManager sees: id <code>webgpuplayer</code>, priority 0, and <code>syncPlayWrapAs = 'htmlvideoplayer'</code>.
-It owns an HTML player, the add-on’s own copy in <code>src/backend/htmlVideoPlayer/</code>, which is both the HTML backend and the event and UI shell of the custom path.
-<a href="#architecture">Architecture</a> and <a href="#negotiation-and-routes">Negotiation and routes</a> follow a session through it.</p>
-<h2 id="host-compatible-mode"><a class="header" href="#host-compatible-mode">Host-compatible mode</a></h2>
-<p>The player relies on PlaybackManager seams that stock Jellyfin Web does not have.
-The add-on supplies each one itself:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Missing seam</th><th>Stand-in</th></tr>
-</thead>
-<tbody>
-<tr><td>Bitrate-free selection, the stream-copy veto, and the second request that sizes a transcode</td><td><code>compat/PlaybackInfoInterceptor.ts</code>, an interceptor on the server’s axios instance, applying <code>PlaybackInfoPolicy.ts</code>, <code>PlaybackBitratePolicy.ts</code>, and <code>PlaybackStreamCopyPolicy.ts</code>. <code>MediaSourceSelection.ts</code> replicates PlaybackManager’s choice of source</td></tr>
-<tr><td>Request generations and superseded starts</td><td><code>compat/PlaybackManagerHooks.ts</code> wraps <code>play</code>, <code>nextTrack</code>, <code>previousTrack</code>, <code>setCurrentPlaylistItem</code>, and <code>stop</code> to cancel a pending WebGPU start. A <code>play</code> whose options match the pending request’s, comparing items by ID, instead returns that request’s promise while its start is pending, so a second click does not restart it. <code>HostCompatibleWebGPUPlayer.play</code> never settles a superseded start, and stops the server encodings it requested</td></tr>
-<tr><td>Player preference ordering</td><td><code>HostCompatibleWebGPUPlayer.canPlayItem</code> declines when the user prefers the HTML player, and inside a native app shell</td></tr>
-<tr><td>The player settings menu and the preference control</td><td><code>compat/SettingsEntryPoints.ts</code> adds the “WebGPU Settings” button to the player’s OSD and the preferred player control to the Playback settings page, through the DOM</td></tr>
-<tr><td>A listener for source renegotiation</td><td>None: the player raises <code>PlayerEvent.Error</code>, and PlaybackManager’s error retry ladder asks for a transcode</td></tr>
-</tbody>
-</table>
-</div>
-<p><code>src/host/</code> binds the host’s singletons from the plugin bag at construction, so evaluating the add-on’s modules never touches them.
-<code>src/shims/</code> replaces host modules the add-on cannot import directly.</p>
-<h2 id="settings"><a class="header" href="#settings">Settings</a></h2>
-<p>Every setting is local to the browser profile.</p>
-<ul>
-<li><code>WebGPUUserSettings.ts</code> stores render controls, the automatic peak, downmix, the output device, and the playback preferences in localStorage under <code>&lt;userId&gt;-webGPUPlaybackSettings</code> (version 2).</li>
-<li>Custom decode and HDR tone mapping (<code>WebGPUPlaybackPreferences.ts</code>) default to on.
-They shape the device profile, so a playback keeps the values its negotiation adopted, and a change applies from the next negotiation.</li>
-<li>The player preference (Auto, WebGPU, or HTML) is the user setting <code>preferredVideoPlayer</code>, stored as <code>&lt;userId&gt;-preferredVideoPlayer</code>.</li>
-</ul>
-<h2 id="build-and-check"><a class="header" href="#build-and-check">Build and check</a></h2>
-<p>You need Node.js 24 and npm 11, the decoder toolchain from <a href="#set-up-a-checkout">Set up a checkout</a>, and a Jellyfin Web checkout.
-The checkout is a read-only input; an unmodified upstream one works.
-The server plugin also needs the .NET 10 SDK.</p>
-<ol>
-<li>
-<p>In the plugin root, run <code>git submodule update --init</code>.
-Then run <code>npm ci</code> in <code>jellyfin-webgpu-client/</code>.</p>
-</li>
-<li>
-<p>Point <code>JELLYFIN_WEB_DIR</code> at the Jellyfin Web checkout, as an absolute path or one relative to <code>jellyfin-webgpu-client/</code>.
-The default is <code>../../jellyfin-web</code>.</p>
-</li>
-<li>
-<p>In <code>jellyfin-webgpu-client/</code>, run:</p>
-<pre><code class="language-sh">npm run typecheck
-npm run lint
-npm test
-npm run build
-</code></pre>
-</li>
-</ol>
-<p>What they do:</p>
-<ul>
-<li>Every script first writes the ignored <code>tsconfig.host.json</code>, which maps the host’s module specifiers into <code>JELLYFIN_WEB_DIR</code> and the engine’s <code>imports</code> into <code>paths</code>, because the add-on’s <code>node</code> module resolution does not read them.</li>
-<li><code>typecheck</code> checks the add-on, its tests, and the engine sources against the host’s types.
-It reports only the add-on’s and the engine’s diagnostics, because the host’s own dependencies are not installed.</li>
-<li><code>lint</code> runs ESLint over the add-on and its tests, and over the engine’s <code>src/</code> and <code>test/</code>.</li>
-<li><code>test</code> runs the add-on’s suites; <code>npm test -w webgpu-player</code> runs the engine’s.</li>
-<li><code>build</code> builds the hls.js fork when its <code>dist</code> is missing, runs the engine’s asset build, copies <code>bin/libraries/</code> into the add-on’s <code>libraries/</code>, and writes the add-on to <code>bin/jellyfin-webgpu-client/</code>.</li>
-<li><code>./build.sh</code> in the plugin root builds the decoders (when <code>bin/wasm/</code> is missing), the add-on, and the plugin that embeds it.</li>
-</ul>
-<h2 id="gotchas-3"><a class="header" href="#gotchas-3">Gotchas</a></h2>
-<ul>
-<li>Never write into the Jellyfin Web checkout.</li>
-<li><code>node_modules/webgpu-player</code> is npm’s workspace junction to <code>vendor/webgpu-player</code>.
-Remove it alone (<code>cmd /c rmdir</code>) before deleting <code>node_modules</code> with a tool that follows junctions, or the engine checkout is deleted with it.</li>
-<li>After the hls.js submodule moves, delete <code>vendor/webgpu-player-hls/dist</code>; the build rebuilds it only when it is missing.</li>
-<li>The external playback tester, which is in neither repository, parses the <code>getStats()</code> labels <code>Playback pipeline</code>, <code>Decoded / presented frames</code>, and <code>Dropped / queued frames</code>.
-They come from the <code>WebGPUStats*</code> strings in <code>jellyfin-webgpu-client/src/strings/en-us.json</code> (host), so renaming them, or running a translated UI, breaks its playback proof.</li>
-<li>File Transformation passes Jellyfin’s 304 responses through untransformed, so a browser that cached the stock files before the install needs one hard refresh.</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="webassembly-decoders"><a class="header" href="#webassembly-decoders">WebAssembly decoders</a></h1>
@@ -1934,6 +1675,14 @@ A test adds the generator folder to the import path, so it also runs on its own:
 Nothing in it ships.
 Run every command from the engine root.
 <code>tools/constants.json</code> is described in <a href="#folder-names-live-in-one-file">Repository layout</a>.</p>
+<h2 id="diagram-renderer"><a class="header" href="#diagram-renderer">Diagram renderer</a></h2>
+<pre><code class="language-sh">node tools/render-diagrams.mjs [--check | --watch] [book directory ...]
+</code></pre>
+<p><code>render-diagrams.mjs</code> renders each book’s PlantUML sources from <code>diagrams/</code> into light and dark SVGs in <code>src/diagrams/</code>, and removes SVGs whose source is gone.
+With no book directory it renders this book; the Jellyfin plugin passes its own <code>docs/</code> too.
+<code>--check</code> renders into a temporary folder and fails on any difference.
+It needs Java, and downloads the pinned PlantUML jar into <code>bin/plantuml/</code> on first use.
+See <a href="#diagrams">Maintaining this book</a>.</p>
 <h2 id="dts-downmix-report"><a class="header" href="#dts-downmix-report">DTS downmix report</a></h2>
 <pre><code class="language-sh">npx --no-install vite-node --script tools/report_dts_downmix_reference.ts --check
 </code></pre>
@@ -1980,15 +1729,15 @@ The asset build serves every vector in that folder, and the <code>EngineAssets</
 </li>
 <li>Runtime.
 <code>src/capability/CustomPlaybackEligibility.ts</code> selects the route, and <code>src/presentation/PresentationInput.ts</code> parses the color and Dolby Vision descriptors.</li>
-<li>Negotiation.
-<code>jellyfin-webgpu-client/src/custom/CustomDeviceProfile.ts</code> (host) turns the evidence into CodecProfile conditions, and <code>jellyfin-webgpu-client/src/WebGPUPlayer.ts</code> (host) derives the option flags and configures the color pipeline.
-Container pairing stays only in <code>src/capability/CustomContainerCodecSupport.ts</code>.
+<li>Container pairing stays only in <code>src/capability/CustomContainerCodecSupport.ts</code>.
 Add no resolution, level, frame rate, or bitrate gate, and no decoder pair blacklist.</li>
 <li>Tests.
-Add the row, its expected route, and its fallbacks to <code>jellyfin-webgpu-client.tests/custom/HEVCDirectPlaySupportMatrix.test.ts</code> or <code>AV1DirectPlaySupportMatrix.test.ts</code> beside it (host).</li>
-<li>Update <a href="#hevc-and-dolby-vision-support">HEVC and Dolby Vision support</a>, and <a href="#negotiation-and-routes">Negotiation and routes</a> if the route catalog changed.</li>
+Cover the route’s selection and fallbacks in <code>test/capability/CustomPlaybackEligibility.test.ts</code>.</li>
+<li>Update <a href="#hevc-and-dolby-vision-support">HEVC and Dolby Vision support</a>, and <a href="#eligibility-and-routes">Eligibility and routes</a> if the route catalog changed.</li>
+<li>Advertise the route in the host.
+The Jellyfin plugin’s book has the recipe for its device profile and its support matrix tests.</li>
 </ol>
-<p>Check: the engine checks and the host checks from <a href="#build-and-check">The Jellyfin host</a>.</p>
+<p>Check: the engine checks from <a href="#set-up-a-checkout">Set up a checkout</a>, and the host’s checks.</p>
 <h2 id="rebuild-one-decoder"><a class="header" href="#rebuild-one-decoder">Rebuild one decoder</a></h2>
 <ol>
 <li>Edit the bridge in <code>wasm/&lt;kit&gt;/</code>, or move the pinned commit in <code>vendor/</code>.</li>
@@ -2030,16 +1779,13 @@ Every reader in <a href="#folder-names-live-in-one-file">Repository layout</a> f
 <li>Rerun the DTS and TrueHD generators, which embed import paths computed from the constants, then run every <code>--check</code> and the full engine checks.</li>
 </ol>
 <h2 id="ship-an-engine-change-to-the-host"><a class="header" href="#ship-an-engine-change-to-the-host">Ship an engine change to the host</a></h2>
-<ol>
-<li>Commit the change in the engine repository and push it.</li>
-<li>In the plugin repository, commit the new submodule pointer of <code>jellyfin-webgpu-client/vendor/webgpu-player</code>.</li>
-</ol>
-<p>Push the engine first, so the host never pins a commit nobody can fetch.</p>
+<p>Commit the change in the engine repository and push it before the host commits the new submodule pointer, so the host never pins a commit nobody can fetch.</p>
 <h2 id="update-this-book"><a class="header" href="#update-this-book">Update this book</a></h2>
 <p>See <a href="#maintaining-this-book">Maintaining this book</a>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="decisions"><a class="header" href="#decisions">Decisions</a></h1>
-<p>This chapter records settled decisions about the engine and its Jellyfin host.
+<p>This chapter records settled decisions about the engine.
+The Jellyfin plugin’s book records the decisions about its integration.
 Dates are month-day in 2026, UTC.
 Commit hashes refer to the Jellyfin Web fork’s <code>webgpu-player</code> branch, where the engine was developed until it became its own repository on 10-02.</p>
 <h2 id="negotiation"><a class="header" href="#negotiation">Negotiation</a></h2>
@@ -2055,30 +1801,13 @@ Above 192 kHz the resampler widens its kernel in proportion, so its band edge st
 The real bounds remain: the level’s DPB, a representable copy layout, the WASM heap (4 GiB for MPEG-2/VC-1, 2 GiB in the prebuilt HEVC and OpenJPEG decoders), the adapter’s texture limit, and what a browser decoder accepts.
 Limits that pace or chunk work stay as tuning: transfer credits, queue depths, pending windows, and output chunk sizes.
 So do guards against corrupt data that no real stream reaches, such as header and RPU size bounds and the 2 MiB audio packet bound.</li>
-<li>Bitrate is telemetry only.
-The first PlaybackInfo request omits bitrate.
-Only a bounded second request may carry it, to size a transcode that was already decided.</li>
-<li>Live performance adaptation is deferred to a separate runtime controller that would react to sustained drops, queue starvation, underruns, and A/V drift, with warm-up, hysteresis, and cooldown.
-It must never change the device profile during a session.</li>
+<li>Live performance adaptation is deferred to a separate runtime controller that would react to sustained drops, queue starvation, underruns, and A/V drift, with warm-up, hysteresis, and cooldown.</li>
 <li>One composition matrix (08-05, <code>9a1c3f2922</code>).
 <code>capability/CustomContainerCodecSupport.ts</code> decides only whether a container carries a codec.
 Each track is qualified on its own.
 Never add decoder pair blacklists.</li>
-<li>Retries use the stock HTML profile, with no custom widening.
-A custom failure that asks for renegotiation can therefore get <code>AudioCodecNotSupported</code> (for example E-AC-3) on the retry.
-Fix the trigger, not the retry profile.</li>
-<li>Dolby Vision is never stream-copied into HLS (08-05).
-Without a veto, the augmented profile lets Jellyfin copy Dolby Vision HEVC into HLS, which Chromium MSE rejects.
-<code>WebGPUPlayer.supportsVideoStreamCopy()</code> (host) returns false for Dolby Vision sources, and the host sends <code>AllowVideoStreamCopy=false</code>.</li>
-<li>The Jellyfin integration is a server plugin with a client add-on (10-04; the fork was abandoned 10-05).
-Stock Jellyfin Web stays unmodified.
-The add-on loads through Jellyfin Web’s window plugin path, and stand-ins replace the PlaybackManager seams the fork had added (see <a href="#host-compatible-mode">The Jellyfin host</a>).</li>
-<li>A Dolby Vision item advertises its own exact route (10-06, host).
-Jellyfin labels P4 and P20 by transfer, and labels Dolby Vision over Rext, Main 12, or 8-bit Main in ranges the generic routes do not pair with that profile and depth.
-Widening the generic ranges would advertise those pairs for every item, so the profile asks the engine whether this item has a runtime route and adds exactly its VideoProfile, VideoBitDepth, and VideoRangeType.</li>
-<li>A declared HDR base also waits for the static HDR probes (10-06, host).
-A Dolby Vision item whose declared PQ or HLG base is not an exact native P7 or P8 base probes Dolby Vision in parallel with the static HDR routes (external first, raw only when no external key is authorized), so its base fallback can be advertised.
-Any other Dolby Vision item waits only for Dolby Vision.</li>
+<li><code>hasEligibleCustomVideoRoute</code> answers for one item (10-06).
+Jellyfin labels some Dolby Vision streams in ranges a host’s generic routes do not pair with their profile and depth, so the engine tells a host whether this item has a runtime route, and the host advertises exactly that item’s route.</li>
 <li>Video probes run per item; audio probes always run (10-08).
 Probing every codec on the first negotiation of a page blocked PlaybackInfo for about 2.6 s, mostly on decoders the item did not contain.
 A video stream cannot change within a negotiation, since another version or item renegotiates, so the video probes follow the item’s streams and run on demand.
@@ -2088,12 +1817,6 @@ A probe outside the selection reads <code>not-probed</code>, never a verdict, so
 The exact probes armed their timeouts before downloading their vectors and binaries, and the range-extension probes downloaded inside the queue’s 2 s timed slot, so a slow cold link failed a capable decoder as unsupported or timed out every later probe.
 A run now starts every selected probe’s downloads at once and each probe decodes only once its own are done; decoding stays one probe at a time.
 Worker scripts and glue are warmed in the HTTP cache rather than spawned early, so no worker or compile competes with a running probe’s real-time-factor measurement.</li>
-<li>An identical play request joins the pending start (10-08, host).
-A second click on the same item while its start is pending used to supersede a healthy session and repeat the item fetch, PlaybackInfo, and worker setup.
-The PlaybackManager hook returns the pending request’s promise for a request with the same items and options, and any other request still supersedes it.</li>
-<li>Every raw HDR route that advertises HDR10 also advertises HDR10Plus (10-09, host).
-HDR10+ always carries a static HDR10 base, which raw PQ presents, so AV1 and VP9 advertise the label as HEVC does.
-Jellyfin labels a stream HDR10Plus whenever it carries HDR10+ metadata, so a route without the label never direct-plays such a stream.</li>
 </ul>
 <h2 id="video-decode-and-dolby-vision"><a class="header" href="#video-decode-and-dolby-vision">Video decode and Dolby Vision</a></h2>
 <p>These were settled on stock Chrome on Windows, with a Chromium 153 source audit.</p>
@@ -2312,13 +2035,6 @@ A full seek was rejected because it restarts audio too.</li>
 <li>Presenter geometry (08-07).
 Layout is invalidated on seek, resize, style and class mutations, and CSS motion events.
 Nothing reads layout per frame during an animation.</li>
-<li>No asynchronous work before an ordinary HTML start (08-05, host).
-With custom decode off, <code>HtmlVideoPlayer.play()</code> starts synchronously.
-Normalization gain moves only on a fallback from the custom path to HTML.
-Seek completions are revision-guarded, and retired native audio is muted before its asynchronous cleanup.</li>
-<li>Parallel probe sessions cause false failures.
-Three concurrent sessions produced spurious <code>DirectPlayError</code>s.
-Diagnose one session at a time.</li>
 </ul>
 <h2 id="audio-1"><a class="header" href="#audio-1">Audio</a></h2>
 <ul>
@@ -2438,10 +2154,8 @@ Its only host is the Jellyfin plugin’s add-on.</li>
 <li>The engine is an npm workspace of its host (10-02).
 npm installs the engine’s dependencies, so the host lists only what it uses directly.
 Inside the host the engine has no <code>node_modules</code> of its own, and its tooling finds packages by walking up from the engine root.</li>
-<li><code>WebGPUPlayer.ts</code> stays in the host (10-02).
-It implements Jellyfin Web’s player contract: events, superseded starts, device profiles, the HTML delegate, and user settings.
-Moving it would make the engine Jellyfin-aware, or need a wide host-injection layer.
-A later refactor may move its host-neutral orchestration into an engine session class.</li>
+<li>The Jellyfin player stays in the host (10-02).
+Moving it would make the engine Jellyfin-aware; the plugin’s book records the decision.</li>
 <li>Engine workers are prebuilt (10-02).
 esbuild bundles them as classic workers, because the decoder glue loads through <code>importScripts</code>.
 They are served at stable URLs under <code>libraries/webgpu-player/</code> with a per-build <code>?v=</code> key, not as host bundler chunks.</li>
@@ -2480,18 +2194,12 @@ Their classes follow the codecs too, as in <code>MPEG2VC1SoftwareVideoDecoder</c
 The repository’s <code>LICENSE</code> covers them.</li>
 <li>Both repositories lint the engine (10-02).
 The engine has its own ESLint config adapted from Jellyfin Web’s, and the host’s lint also covers the engine’s <code>src/</code> and <code>test/</code>, so the engine stays clean under both.</li>
-<li>The documentation is this book (10-06): one mdBook in <code>docs/</code>, with no READMEs nested in other folders and no separate agent map.</li>
-<li>libbitsub replaces libpgs (10-02, host).
-This follows upstream and adds VobSub support.
-The custom path drives it through <code>timeOffset</code>, measured against the source-less video.</li>
-</ul>
-<h2 id="transport"><a class="header" href="#transport">Transport</a></h2>
-<ul>
-<li>hls.js is a local fork (08-09, host).
-The fork streams a partial <code>mdat</code> after a complete <code>moof</code> and <code>mdat</code> header, to stay under the MSE quota on very high bitrate fMP4.</li>
-<li>hls.js is vendored as a submodule (10-02, host): <code>alchemyyy/hls.js</code>, branch <code>fix/cals2</code>, at <code>jellyfin-webgpu-client/vendor/webgpu-player-hls/</code>.
-The add-on aliases <code>hls.js</code> to it, and builds its <code>dist</code> when it is missing.
-It replaced a sibling checkout whose <code>dist</code> had silently gone stale.</li>
+<li>The documentation is this book (10-06): one mdBook in <code>docs/</code>, with no READMEs nested in other folders and no separate agent map.
+It covers only the engine (10-09); the Jellyfin plugin documents its integration in its own book.</li>
+<li>Diagrams are PlantUML, rendered to committed SVGs in two variants (10-09).
+They replace the text diagrams and the PlantUML activity diagrams of the Jellyfin Web fork, whose paths, line numbers, and timeouts no longer matched the code.
+One theme, adapted from the fork’s Boreal theme, renders a light variant for the rust book theme and a dark one for coal, and the book shows the variant matching the reader’s theme.
+The SVGs are committed so a book builds without Java; the PlantUML jar is not, and the renderer downloads it into <code>bin/plantuml/</code> against a pinned SHA-256.</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="maintaining-this-book"><a class="header" href="#maintaining-this-book">Maintaining this book</a></h1>
@@ -2505,12 +2213,47 @@ It is built with <a href="https://github.com/rust-lang/mdBook">mdBook</a> 0.5.</
 It fails on a broken <code>SUMMARY.md</code>, and it rewrites <code>docs/book/</code>, which is tracked.
 Commit the rebuilt book with the chapters it was built from.</li>
 </ol>
-<p><code>docs/book.toml</code> holds the configuration, and <code>docs/src/SUMMARY.md</code> the table of contents.
-A chapter that is not listed in <code>SUMMARY.md</code> is not built.</p>
+<p><code>docs/book.toml</code> holds the configuration, <code>docs/theme/</code> the stylesheets, and <code>docs/src/SUMMARY.md</code> the table of contents.
+The Jellyfin plugin’s book imports these stylesheets from their source paths, so keep their file names stable.
+<code>docs/theme/favicon.svg</code> is a plain-SVG export of the logo; after changing <code>images/webgpu-player-logo.svg</code>, export it again from the engine root:</p>
+<pre><code class="language-sh">inkscape images/webgpu-player-logo.svg --export-plain-svg --export-filename=docs/theme/favicon.svg
+</code></pre>
+<p>A chapter that is not listed in <code>SUMMARY.md</code> is not built.</p>
+<h2 id="diagrams"><a class="header" href="#diagrams">Diagrams</a></h2>
+<p>Diagrams are PlantUML sources in <code>docs/diagrams/</code>, rendered to SVG in <code>docs/src/diagrams/</code>.
+Both folders are tracked, so a book builds without Java.
+Every diagram renders twice: a light variant for the rust theme and a dark variant for coal, and <code>docs/theme/diagrams.css</code> shows the one that matches the reader’s theme.
+<code>docs/theme/diagrams.js</code> turns each embedded diagram into an in-page viewer: drag pans, Ctrl+wheel, a pinch, or a double-click zooms, and a toolbar zooms, fits, or opens the SVG; a plain wheel still scrolls the page.
+Without JavaScript the diagram scales to the column and links to its SVG.</p>
+<p>You need Java 11 or later on PATH.
+The first render downloads the pinned PlantUML jar into <code>bin/plantuml/</code> and checks its SHA-256.</p>
+<ol>
+<li>
+<p>Edit or add a source in <code>docs/diagrams/</code>.
+Start it with <code>@startuml</code> and <code>!include diagram-theme.puml</code>, and color activity nodes with the theme’s semantic colors (<code>$HL_BLUE</code>, <code>$HL_GREEN</code>, <code>$HL_AMBER</code>, <code>$HL_NAVY</code>, <code>$HL_RED</code>).
+Never end a line inside a multi-line activity label with <code>;</code>, which ends the label.</p>
+</li>
+<li>
+<p>Run <code>node tools/render-diagrams.mjs</code> from the engine root.
+With <code>--watch</code> it renders again on every save, beside <code>mdbook serve</code>.</p>
+</li>
+<li>
+<p>Embed both variants where the diagram belongs:</p>
+<pre><code class="language-html">&lt;div class="diagram"&gt;
+&lt;a class="diagram-light" href="diagrams/&lt;name&gt;.light.svg"&gt;&lt;img src="diagrams/&lt;name&gt;.light.svg" alt="&lt;what it shows&gt;"&gt;&lt;/a&gt;
+&lt;a class="diagram-dark" href="diagrams/&lt;name&gt;.dark.svg"&gt;&lt;img src="diagrams/&lt;name&gt;.dark.svg" alt="&lt;what it shows&gt;"&gt;&lt;/a&gt;
+&lt;/div&gt;
+</code></pre>
+</li>
+<li>
+<p>Before committing, run <code>node tools/render-diagrams.mjs --check</code>, which fails when a committed SVG is stale, missing, or has no source.</p>
+</li>
+</ol>
+<p>The Jellyfin plugin’s book includes <code>diagram-theme.puml</code> from here, so keep its name and variables stable.</p>
 <h2 id="when-to-update-it"><a class="header" href="#when-to-update-it">When to update it</a></h2>
 <p>Update the chapter in the same change that alters what it describes:</p>
 <ul>
-<li>a route, a probe, a route key, or an eligibility rule: <a href="#negotiation-and-routes">Negotiation and routes</a> and <a href="#hevc-and-dolby-vision-support">HEVC and Dolby Vision support</a>;</li>
+<li>a route, a probe, a route key, or an eligibility rule: <a href="#eligibility-and-routes">Eligibility and routes</a> and <a href="#hevc-and-dolby-vision-support">HEVC and Dolby Vision support</a>;</li>
 <li>a file added, moved, or removed: <a href="#module-map">Module map</a>, and <a href="#repository-layout">Repository layout</a> for a folder;</li>
 <li>a decoder or a build step: <a href="#webassembly-decoders">WebAssembly decoders</a>;</li>
 <li>a vector or a generator: <a href="#codec-vectors">Codec vectors</a>;</li>
@@ -2527,7 +2270,9 @@ Use a table only for data that has columns.
 Keep bold, callouts, and decoration out.</li>
 <li>Put each sentence on its own line; never wrap a line at a fixed column.</li>
 <li>Use ASCII only.</li>
-<li>Follow the path conventions in the <a href="#webgpu-player">Introduction</a>: engine paths from the engine root, host paths from the plugin root marked (host).</li>
+<li>Follow the path conventions in the <a href="#webgpu-player">Introduction</a>: engine paths from the engine root.</li>
+<li>Keep Jellyfin integration out: the player, the device profile, PlaybackInfo, settings, and the add-on belong in the Jellyfin plugin’s book.
+Jellyfin’s media metadata, which the engine reads as its input, belongs here.</li>
 <li>Never include credentials, server addresses, item IDs, media titles or paths, or absolute machine paths.</li>
 </ul>
 
@@ -2570,6 +2315,7 @@ Keep bold, callouts, and decoration out.</li>
         <script src="book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="theme/diagrams-4e7daedb.js"></script>
 
         <script>
         window.addEventListener('load', function() {

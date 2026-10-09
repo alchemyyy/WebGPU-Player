@@ -14,8 +14,13 @@
   "codecVectorAssetsDirectory": "bin/codec_vector_assets",
   "playbackSmokeMediaDirectory": "bin/playback_smoke_media",
   "buildInfoFile": "bin/build-info.json",
+  "plantUMLOutputDirectory": "bin/plantuml",
   "documentationDirectory": "docs",
   "documentationOutputDirectory": "docs/book",
+  "documentationDiagramsDirectory": "docs/diagrams",
+  "documentationDiagramOutputDirectory": "docs/src/diagrams",
+  "documentationThemeDirectory": "docs/theme",
+  "imagesDirectory": "images",
   "vendorDirectory": "vendor",
   "ffmpegSourceDirectory": "vendor/ffmpeg",
   "dcadecSourceDirectory": "vendor/dcadec"

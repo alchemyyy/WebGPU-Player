@@ -1,5 +1,5 @@
 <!DOCTYPE HTML>
-<html lang="en" class="light sidebar-visible" dir="ltr">
+<html lang="en" class="rust sidebar-visible" dir="ltr">
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
@@ -12,8 +12,7 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon-de23e50b.svg">
-        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="icon" href="favicon-ad71d439.svg">
         <link rel="stylesheet" href="css/variables-8adf115d.css">
         <link rel="stylesheet" href="css/general-e96d0476.css">
         <link rel="stylesheet" href="css/chrome-d279d366.css">
@@ -28,17 +27,21 @@
         <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="theme/content-e5d5904c.css">
+        <link rel="stylesheet" href="theme/sidebar-9277b103.css">
+        <link rel="stylesheet" href="theme/navigation-7d5965d2.css">
+        <link rel="stylesheet" href="theme/diagrams-d4c2bd13.css">
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
-            const default_light_theme = "light";
-            const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6ce9ccd1.js";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "searchindex-a6a3c2ad.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-130df29e.js"></script>
+        <script src="toc-72948aae.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -76,7 +79,7 @@
             try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
             if (theme === null || theme === undefined) { theme = default_theme; }
             const html = document.documentElement;
-            html.classList.remove('light')
+            html.classList.remove('rust')
             html.classList.add(theme);
             html.classList.add("js");
         </script>
@@ -203,15 +206,15 @@ The asset build serves every vector in that folder, and the <code>EngineAssets</
 </li>
 <li>Runtime.
 <code>src/capability/CustomPlaybackEligibility.ts</code> selects the route, and <code>src/presentation/PresentationInput.ts</code> parses the color and Dolby Vision descriptors.</li>
-<li>Negotiation.
-<code>jellyfin-webgpu-client/src/custom/CustomDeviceProfile.ts</code> (host) turns the evidence into CodecProfile conditions, and <code>jellyfin-webgpu-client/src/WebGPUPlayer.ts</code> (host) derives the option flags and configures the color pipeline.
-Container pairing stays only in <code>src/capability/CustomContainerCodecSupport.ts</code>.
+<li>Container pairing stays only in <code>src/capability/CustomContainerCodecSupport.ts</code>.
 Add no resolution, level, frame rate, or bitrate gate, and no decoder pair blacklist.</li>
 <li>Tests.
-Add the row, its expected route, and its fallbacks to <code>jellyfin-webgpu-client.tests/custom/HEVCDirectPlaySupportMatrix.test.ts</code> or <code>AV1DirectPlaySupportMatrix.test.ts</code> beside it (host).</li>
-<li>Update <a href="codec-support.html">HEVC and Dolby Vision support</a>, and <a href="negotiation.html">Negotiation and routes</a> if the route catalog changed.</li>
+Cover the route’s selection and fallbacks in <code>test/capability/CustomPlaybackEligibility.test.ts</code>.</li>
+<li>Update <a href="codec-support.html">HEVC and Dolby Vision support</a>, and <a href="routes.html">Eligibility and routes</a> if the route catalog changed.</li>
+<li>Advertise the route in the host.
+The Jellyfin plugin’s book has the recipe for its device profile and its support matrix tests.</li>
 </ol>
-<p>Check: the engine checks and the host checks from <a href="jellyfin-host.html#build-and-check">The Jellyfin host</a>.</p>
+<p>Check: the engine checks from <a href="setup.html">Set up a checkout</a>, and the host’s checks.</p>
 <h2 id="rebuild-one-decoder"><a class="header" href="#rebuild-one-decoder">Rebuild one decoder</a></h2>
 <ol>
 <li>Edit the bridge in <code>wasm/&lt;kit&gt;/</code>, or move the pinned commit in <code>vendor/</code>.</li>
@@ -253,11 +256,7 @@ Every reader in <a href="layout.html#folder-names-live-in-one-file">Repository l
 <li>Rerun the DTS and TrueHD generators, which embed import paths computed from the constants, then run every <code>--check</code> and the full engine checks.</li>
 </ol>
 <h2 id="ship-an-engine-change-to-the-host"><a class="header" href="#ship-an-engine-change-to-the-host">Ship an engine change to the host</a></h2>
-<ol>
-<li>Commit the change in the engine repository and push it.</li>
-<li>In the plugin repository, commit the new submodule pointer of <code>jellyfin-webgpu-client/vendor/webgpu-player</code>.</li>
-</ol>
-<p>Push the engine first, so the host never pins a commit nobody can fetch.</p>
+<p>Commit the change in the engine repository and push it before the host commits the new submodule pointer, so the host never pins a commit nobody can fetch.</p>
 <h2 id="update-this-book"><a class="header" href="#update-this-book">Update this book</a></h2>
 <p>See <a href="maintaining.html">Maintaining this book</a>.</p>
 
@@ -312,6 +311,7 @@ Every reader in <a href="layout.html#folder-names-live-in-one-file">Repository l
         <script src="book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="theme/diagrams-4e7daedb.js"></script>
 
 
 

@@ -1,5 +1,5 @@
 <!DOCTYPE HTML>
-<html lang="en" class="light sidebar-visible" dir="ltr">
+<html lang="en" class="rust sidebar-visible" dir="ltr">
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
@@ -12,8 +12,7 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon-de23e50b.svg">
-        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="icon" href="favicon-ad71d439.svg">
         <link rel="stylesheet" href="css/variables-8adf115d.css">
         <link rel="stylesheet" href="css/general-e96d0476.css">
         <link rel="stylesheet" href="css/chrome-d279d366.css">
@@ -28,17 +27,21 @@
         <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="theme/content-e5d5904c.css">
+        <link rel="stylesheet" href="theme/sidebar-9277b103.css">
+        <link rel="stylesheet" href="theme/navigation-7d5965d2.css">
+        <link rel="stylesheet" href="theme/diagrams-d4c2bd13.css">
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
-            const default_light_theme = "light";
-            const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6ce9ccd1.js";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "searchindex-a6a3c2ad.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-130df29e.js"></script>
+        <script src="toc-72948aae.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -76,7 +79,7 @@
             try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
             if (theme === null || theme === undefined) { theme = default_theme; }
             const html = document.documentElement;
-            html.classList.remove('light')
+            html.classList.remove('rust')
             html.classList.add(theme);
             html.classList.add("js");
         </script>
@@ -188,12 +191,47 @@ It is built with <a href="https://github.com/rust-lang/mdBook">mdBook</a> 0.5.</
 It fails on a broken <code>SUMMARY.md</code>, and it rewrites <code>docs/book/</code>, which is tracked.
 Commit the rebuilt book with the chapters it was built from.</li>
 </ol>
-<p><code>docs/book.toml</code> holds the configuration, and <code>docs/src/SUMMARY.md</code> the table of contents.
-A chapter that is not listed in <code>SUMMARY.md</code> is not built.</p>
+<p><code>docs/book.toml</code> holds the configuration, <code>docs/theme/</code> the stylesheets, and <code>docs/src/SUMMARY.md</code> the table of contents.
+The Jellyfin plugin’s book imports these stylesheets from their source paths, so keep their file names stable.
+<code>docs/theme/favicon.svg</code> is a plain-SVG export of the logo; after changing <code>images/webgpu-player-logo.svg</code>, export it again from the engine root:</p>
+<pre><code class="language-sh">inkscape images/webgpu-player-logo.svg --export-plain-svg --export-filename=docs/theme/favicon.svg
+</code></pre>
+<p>A chapter that is not listed in <code>SUMMARY.md</code> is not built.</p>
+<h2 id="diagrams"><a class="header" href="#diagrams">Diagrams</a></h2>
+<p>Diagrams are PlantUML sources in <code>docs/diagrams/</code>, rendered to SVG in <code>docs/src/diagrams/</code>.
+Both folders are tracked, so a book builds without Java.
+Every diagram renders twice: a light variant for the rust theme and a dark variant for coal, and <code>docs/theme/diagrams.css</code> shows the one that matches the reader’s theme.
+<code>docs/theme/diagrams.js</code> turns each embedded diagram into an in-page viewer: drag pans, Ctrl+wheel, a pinch, or a double-click zooms, and a toolbar zooms, fits, or opens the SVG; a plain wheel still scrolls the page.
+Without JavaScript the diagram scales to the column and links to its SVG.</p>
+<p>You need Java 11 or later on PATH.
+The first render downloads the pinned PlantUML jar into <code>bin/plantuml/</code> and checks its SHA-256.</p>
+<ol>
+<li>
+<p>Edit or add a source in <code>docs/diagrams/</code>.
+Start it with <code>@startuml</code> and <code>!include diagram-theme.puml</code>, and color activity nodes with the theme’s semantic colors (<code>$HL_BLUE</code>, <code>$HL_GREEN</code>, <code>$HL_AMBER</code>, <code>$HL_NAVY</code>, <code>$HL_RED</code>).
+Never end a line inside a multi-line activity label with <code>;</code>, which ends the label.</p>
+</li>
+<li>
+<p>Run <code>node tools/render-diagrams.mjs</code> from the engine root.
+With <code>--watch</code> it renders again on every save, beside <code>mdbook serve</code>.</p>
+</li>
+<li>
+<p>Embed both variants where the diagram belongs:</p>
+<pre><code class="language-html">&lt;div class="diagram"&gt;
+&lt;a class="diagram-light" href="diagrams/&lt;name&gt;.light.svg"&gt;&lt;img src="diagrams/&lt;name&gt;.light.svg" alt="&lt;what it shows&gt;"&gt;&lt;/a&gt;
+&lt;a class="diagram-dark" href="diagrams/&lt;name&gt;.dark.svg"&gt;&lt;img src="diagrams/&lt;name&gt;.dark.svg" alt="&lt;what it shows&gt;"&gt;&lt;/a&gt;
+&lt;/div&gt;
+</code></pre>
+</li>
+<li>
+<p>Before committing, run <code>node tools/render-diagrams.mjs --check</code>, which fails when a committed SVG is stale, missing, or has no source.</p>
+</li>
+</ol>
+<p>The Jellyfin plugin’s book includes <code>diagram-theme.puml</code> from here, so keep its name and variables stable.</p>
 <h2 id="when-to-update-it"><a class="header" href="#when-to-update-it">When to update it</a></h2>
 <p>Update the chapter in the same change that alters what it describes:</p>
 <ul>
-<li>a route, a probe, a route key, or an eligibility rule: <a href="negotiation.html">Negotiation and routes</a> and <a href="codec-support.html">HEVC and Dolby Vision support</a>;</li>
+<li>a route, a probe, a route key, or an eligibility rule: <a href="routes.html">Eligibility and routes</a> and <a href="codec-support.html">HEVC and Dolby Vision support</a>;</li>
 <li>a file added, moved, or removed: <a href="module-map.html">Module map</a>, and <a href="layout.html">Repository layout</a> for a folder;</li>
 <li>a decoder or a build step: <a href="decoders.html">WebAssembly decoders</a>;</li>
 <li>a vector or a generator: <a href="codec-vectors.html">Codec vectors</a>;</li>
@@ -210,7 +248,9 @@ Use a table only for data that has columns.
 Keep bold, callouts, and decoration out.</li>
 <li>Put each sentence on its own line; never wrap a line at a fixed column.</li>
 <li>Use ASCII only.</li>
-<li>Follow the path conventions in the <a href="introduction.html">Introduction</a>: engine paths from the engine root, host paths from the plugin root marked (host).</li>
+<li>Follow the path conventions in the <a href="introduction.html">Introduction</a>: engine paths from the engine root.</li>
+<li>Keep Jellyfin integration out: the player, the device profile, PlaybackInfo, settings, and the add-on belong in the Jellyfin plugin’s book.
+Jellyfin’s media metadata, which the engine reads as its input, belongs here.</li>
 <li>Never include credentials, server addresses, item IDs, media titles or paths, or absolute machine paths.</li>
 </ul>
 
@@ -259,6 +299,7 @@ Keep bold, callouts, and decoration out.</li>
         <script src="book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="theme/diagrams-4e7daedb.js"></script>
 
 
 

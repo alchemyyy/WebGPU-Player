@@ -5,6 +5,18 @@ Nothing in it ships.
 Run every command from the engine root.
 `tools/constants.json` is described in [Repository layout](layout.md#folder-names-live-in-one-file).
 
+## Diagram renderer
+
+```sh
+node tools/render-diagrams.mjs [--check | --watch] [book directory ...]
+```
+
+`render-diagrams.mjs` renders each book's PlantUML sources from `diagrams/` into light and dark SVGs in `src/diagrams/`, and removes SVGs whose source is gone.
+With no book directory it renders this book; the Jellyfin plugin passes its own `docs/` too.
+`--check` renders into a temporary folder and fails on any difference.
+It needs Java, and downloads the pinned PlantUML jar into `bin/plantuml/` on first use.
+See [Maintaining this book](maintaining.md#diagrams).
+
 ## DTS downmix report
 
 ```sh

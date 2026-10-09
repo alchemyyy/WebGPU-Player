@@ -20,15 +20,15 @@ Each assumes a checkout set up as in [Set up a checkout](setup.md).
    - add any new raw format to `src/pipeline/DecodeWorkerProtocol.ts`.
 3. Runtime.
    `src/capability/CustomPlaybackEligibility.ts` selects the route, and `src/presentation/PresentationInput.ts` parses the color and Dolby Vision descriptors.
-4. Negotiation.
-   `jellyfin-webgpu-client/src/custom/CustomDeviceProfile.ts` (host) turns the evidence into CodecProfile conditions, and `jellyfin-webgpu-client/src/WebGPUPlayer.ts` (host) derives the option flags and configures the color pipeline.
-   Container pairing stays only in `src/capability/CustomContainerCodecSupport.ts`.
+4. Container pairing stays only in `src/capability/CustomContainerCodecSupport.ts`.
    Add no resolution, level, frame rate, or bitrate gate, and no decoder pair blacklist.
 5. Tests.
-   Add the row, its expected route, and its fallbacks to `jellyfin-webgpu-client.tests/custom/HEVCDirectPlaySupportMatrix.test.ts` or `AV1DirectPlaySupportMatrix.test.ts` beside it (host).
-6. Update [HEVC and Dolby Vision support](codec-support.md), and [Negotiation and routes](negotiation.md) if the route catalog changed.
+   Cover the route's selection and fallbacks in `test/capability/CustomPlaybackEligibility.test.ts`.
+6. Update [HEVC and Dolby Vision support](codec-support.md), and [Eligibility and routes](routes.md) if the route catalog changed.
+7. Advertise the route in the host.
+   The Jellyfin plugin's book has the recipe for its device profile and its support matrix tests.
 
-Check: the engine checks and the host checks from [The Jellyfin host](jellyfin-host.md#build-and-check).
+Check: the engine checks from [Set up a checkout](setup.md), and the host's checks.
 
 ## Rebuild one decoder
 
@@ -69,10 +69,7 @@ Check: the engine checks and the host checks from [The Jellyfin host](jellyfin-h
 
 ## Ship an engine change to the host
 
-1. Commit the change in the engine repository and push it.
-2. In the plugin repository, commit the new submodule pointer of `jellyfin-webgpu-client/vendor/webgpu-player`.
-
-Push the engine first, so the host never pins a commit nobody can fetch.
+Commit the change in the engine repository and push it before the host commits the new submodule pointer, so the host never pins a commit nobody can fetch.
 
 ## Update this book
 

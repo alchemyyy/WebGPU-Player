@@ -1,5 +1,5 @@
 <!DOCTYPE HTML>
-<html lang="en" class="light sidebar-visible" dir="ltr">
+<html lang="en" class="rust sidebar-visible" dir="ltr">
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
@@ -12,8 +12,7 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon-de23e50b.svg">
-        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="icon" href="favicon-ad71d439.svg">
         <link rel="stylesheet" href="css/variables-8adf115d.css">
         <link rel="stylesheet" href="css/general-e96d0476.css">
         <link rel="stylesheet" href="css/chrome-d279d366.css">
@@ -28,17 +27,21 @@
         <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="theme/content-e5d5904c.css">
+        <link rel="stylesheet" href="theme/sidebar-9277b103.css">
+        <link rel="stylesheet" href="theme/navigation-7d5965d2.css">
+        <link rel="stylesheet" href="theme/diagrams-d4c2bd13.css">
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
-            const default_light_theme = "light";
-            const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6ce9ccd1.js";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "searchindex-a6a3c2ad.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-130df29e.js"></script>
+        <script src="toc-72948aae.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -76,7 +79,7 @@
             try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
             if (theme === null || theme === undefined) { theme = default_theme; }
             const html = document.documentElement;
-            html.classList.remove('light')
+            html.classList.remove('rust')
             html.classList.add(theme);
             html.classList.add("js");
         </script>
@@ -193,7 +196,8 @@
 <tr><td><code>vendor/</code></td><td>The FFmpeg and dcadec submodules, fetched only by <code>make -C wasm sources</code></td></tr>
 <tr><td><code>scripts/</code></td><td><code>build.mjs</code> (the served assets), <code>library-assets.mjs</code> (which file is served from where), and the codec vector generators. See <a href="codec-vectors.html">Codec vectors</a></td></tr>
 <tr><td><code>tools/</code></td><td>Development tooling that never ships, and <code>constants.json</code>. See <a href="tools.html">Tools</a></td></tr>
-<tr><td><code>docs/</code></td><td>This book</td></tr>
+<tr><td><code>docs/</code></td><td>This book: chapters in <code>src/</code>, PlantUML sources in <code>diagrams/</code> and their SVGs in <code>src/diagrams/</code>, stylesheets, scripts, and the favicon in <code>theme/</code>, and the built book in <code>book/</code></td></tr>
+<tr><td><code>images/</code></td><td>The project logo, <code>webgpu-player-logo.svg</code>, the Inkscape source of the favicon</td></tr>
 <tr><td><code>bin/</code></td><td>Generated files, all ignored except <code>bin/codec_vector_assets/</code>. See below</td></tr>
 </tbody>
 </table>
@@ -203,6 +207,7 @@
 <li><code>bin/wasm/</code>: the decoder builds from <code>make -C wasm</code>.</li>
 <li><code>bin/libraries/</code> and <code>bin/build-info.json</code>: the served assets from <code>npm run build</code>.</li>
 <li><code>bin/playback_smoke_media/</code>: local playback media from the smoke media generators.</li>
+<li><code>bin/plantuml/</code>: the pinned PlantUML jar that <code>tools/render-diagrams.mjs</code> downloads.</li>
 <li><code>bin/codec_vector_assets/</code>: the generated codec vectors.
 This is the one committed folder, so every change to a vector shows in review.</li>
 </ul>
@@ -279,6 +284,7 @@ Read a path from it instead of spelling it out, so moving a folder is a one-line
         <script src="book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="theme/diagrams-4e7daedb.js"></script>
 
 
 

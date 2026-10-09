@@ -8,4 +8,8 @@ build-dir = "book"
 create-missing = false
 
 [output.html]
+default-theme = "rust"
+preferred-dark-theme = "coal"
+additional-css = ["theme/content.css", "theme/sidebar.css", "theme/navigation.css", "theme/diagrams.css"]
+additional-js = ["theme/diagrams.js"]
 git-repository-url = "https://github.com/alchemyyy/WebGPU-Player"

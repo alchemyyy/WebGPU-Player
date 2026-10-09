@@ -1,0 +1,33 @@
+@startuml
+!include diagram-theme.puml
+
+start
+:selectPlaybackAudio:
+DefaultAudioStreamIndex, else the first audio stream; <<$HL_BLUE>>
+:Normalization gain G = 10^(dB / 20) from TrackGain or AlbumGain,
+each falling back to the other; unity when Off or missing; <<$HL_BLUE>>
+if (AC-3 or E-AC-3, 2 or 6 channels, exactly 48 kHz,\nand the MSE probe passed?) then (native media)
+  :Worker remuxes the track to fMP4
+  (2 MiB or 2 s segments, 2 credits, at most 6 s ahead); <<$HL_AMBER>>
+  :CustomDecodeNativeAudioBridge appends to a hidden audio element through MSE; <<$HL_AMBER>>
+  :element.volume = min(volume^3 * G, 1); <<$HL_GREEN>>
+else (decoded PCM)
+  :Decode: WebCodecs, @mediabunny/ac3, or E-AC-3, DTS, TrueHD WASM; <<$HL_AMBER>>
+  :Bind the output stage to the decoded rate and layout,
+  and rebind on a later change; <<$HL_NAVY>>
+  :Reconcile timestamps within 2 s: fill gaps with silence, trim overlaps,
+  a larger deviation fails as decode-failed; <<$HL_NAVY>>
+  if (Decoded layout differs from the output layout?) then (yes)
+    :Stereo output: downmix with the selected algorithm,
+    5.1 or 7.1 output: map by channel name; <<$HL_AMBER>>
+  endif
+  :Resample to 48 kHz; <<$HL_AMBER>>
+  :Lookahead limiter (100 ms, -1 dBFS); <<$HL_AMBER>>
+  :40 ms to 12000-frame chunks, 8 credits; <<$HL_AMBER>>
+  :CustomDecodeAudioBridge -> AudioWorklet 2 s ring; <<$HL_AMBER>>
+  :Worklet gain = volume^3 * G, uncapped,
+  clipped samples are counted; <<$HL_GREEN>>
+endif
+:WebGPUAudioOutputManager routes the sink (setSinkId); <<$HL_GREEN>>
+stop
+@enduml

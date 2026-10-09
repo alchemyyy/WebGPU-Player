@@ -1,5 +1,7 @@
 # WebGPU Player
 
+<img src="images/webgpu-player-logo.svg" alt="WebGPU Player logo" width="160">
+
 A WebGPU and WebCodecs media playback engine for the browser.
 It plays sources that browsers cannot play natively, and presents HDR10, HDR10+, HLG, and Dolby Vision through its own color pipeline.
 Every route is qualified in the running browser before a host may offer it.

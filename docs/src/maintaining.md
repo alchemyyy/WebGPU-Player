@@ -11,14 +11,49 @@ It is built with [mdBook](https://github.com/rust-lang/mdBook) 0.5.
    It fails on a broken `SUMMARY.md`, and it rewrites `docs/book/`, which is tracked.
    Commit the rebuilt book with the chapters it was built from.
 
-`docs/book.toml` holds the configuration, and `docs/src/SUMMARY.md` the table of contents.
+`docs/book.toml` holds the configuration, `docs/theme/` the stylesheets, and `docs/src/SUMMARY.md` the table of contents.
+The Jellyfin plugin's book imports these stylesheets from their source paths, so keep their file names stable.
+`docs/theme/favicon.svg` is a plain-SVG export of the logo; after changing `images/webgpu-player-logo.svg`, export it again from the engine root:
+
+```sh
+inkscape images/webgpu-player-logo.svg --export-plain-svg --export-filename=docs/theme/favicon.svg
+```
 A chapter that is not listed in `SUMMARY.md` is not built.
+
+## Diagrams
+
+Diagrams are PlantUML sources in `docs/diagrams/`, rendered to SVG in `docs/src/diagrams/`.
+Both folders are tracked, so a book builds without Java.
+Every diagram renders twice: a light variant for the rust theme and a dark variant for coal, and `docs/theme/diagrams.css` shows the one that matches the reader's theme.
+`docs/theme/diagrams.js` turns each embedded diagram into an in-page viewer: drag pans, Ctrl+wheel, a pinch, or a double-click zooms, and a toolbar zooms, fits, or opens the SVG; a plain wheel still scrolls the page.
+Without JavaScript the diagram scales to the column and links to its SVG.
+
+You need Java 11 or later on PATH.
+The first render downloads the pinned PlantUML jar into `bin/plantuml/` and checks its SHA-256.
+
+1. Edit or add a source in `docs/diagrams/`.
+   Start it with `@startuml` and `!include diagram-theme.puml`, and color activity nodes with the theme's semantic colors (`$HL_BLUE`, `$HL_GREEN`, `$HL_AMBER`, `$HL_NAVY`, `$HL_RED`).
+   Never end a line inside a multi-line activity label with `;`, which ends the label.
+2. Run `node tools/render-diagrams.mjs` from the engine root.
+   With `--watch` it renders again on every save, beside `mdbook serve`.
+3. Embed both variants where the diagram belongs:
+
+   ```html
+   <div class="diagram">
+   <a class="diagram-light" href="diagrams/<name>.light.svg"><img src="diagrams/<name>.light.svg" alt="<what it shows>"></a>
+   <a class="diagram-dark" href="diagrams/<name>.dark.svg"><img src="diagrams/<name>.dark.svg" alt="<what it shows>"></a>
+   </div>
+   ```
+
+4. Before committing, run `node tools/render-diagrams.mjs --check`, which fails when a committed SVG is stale, missing, or has no source.
+
+The Jellyfin plugin's book includes `diagram-theme.puml` from here, so keep its name and variables stable.
 
 ## When to update it
 
 Update the chapter in the same change that alters what it describes:
 
-- a route, a probe, a route key, or an eligibility rule: [Negotiation and routes](negotiation.md) and [HEVC and Dolby Vision support](codec-support.md);
+- a route, a probe, a route key, or an eligibility rule: [Eligibility and routes](routes.md) and [HEVC and Dolby Vision support](codec-support.md);
 - a file added, moved, or removed: [Module map](module-map.md), and [Repository layout](layout.md) for a folder;
 - a decoder or a build step: [WebAssembly decoders](decoders.md);
 - a vector or a generator: [Codec vectors](codec-vectors.md);
@@ -35,5 +70,7 @@ Update the chapter in the same change that alters what it describes:
   Keep bold, callouts, and decoration out.
 - Put each sentence on its own line; never wrap a line at a fixed column.
 - Use ASCII only.
-- Follow the path conventions in the [Introduction](introduction.md): engine paths from the engine root, host paths from the plugin root marked (host).
+- Follow the path conventions in the [Introduction](introduction.md): engine paths from the engine root.
+- Keep Jellyfin integration out: the player, the device profile, PlaybackInfo, settings, and the add-on belong in the Jellyfin plugin's book.
+  Jellyfin's media metadata, which the engine reads as its input, belongs here.
 - Never include credentials, server addresses, item IDs, media titles or paths, or absolute machine paths.

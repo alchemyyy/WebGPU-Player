@@ -2,40 +2,25 @@
 
 ## Layers
 
-```text
-Jellyfin Web PlaybackManager (stock)
-  getDeviceProfile -> PlaybackInfo -> player.play(); 'playbackstart' when play() resolves
-   |
-WebGPUPlayer (host): the only player PlaybackManager sees
-   |-- HTMLPlayerDelegate (host) -> the add-on's own HtmlVideoPlayer (host): the HTML
-   |     backend, and the event and UI shell of the custom path
-   |-- WebGPUPresenter: its own GPUDevice, a canvas over the backend <video>
-   |-- WebGPUAudioOutputManager (one per page): sink routing for every audio target
-   |
-   +-- (a) HTML decode, WebGPU presentation (known-SDR input only)
-   |     <video> or hls.js decodes, and the media element is the clock.
-   |     rVFC -> importExternalTexture -> identity WGSL -> canvas.
-   |     HDR or unknown input: the presenter is off and the <video> shows.
-   |
-   +-- (b) Custom pipeline (eligible direct-play VOD)
-         CustomPlaybackController [main]: MediaClock, startup, stall, and lag policy, fallback
-          CustomDecodeSession [main]: one worker per generation, frame queue, credits
-           CustomDecode.worker [worker]: Mediabunny demux, range-validated fetch
-             video: WebCodecs | OwnedNativeHEVCVideoDecoder | hevc.js WASM (+ Dolby Vision EL)
-                    | OwnedNativeVideoDecoder (AV1, VP9) | OpenJPEG
-                    | FFmpeg MPEG-2 and VC-1 WASM
-             audio: WebCodecs | @mediabunny/ac3 | E-AC-3, DTS, TrueHD WASM
-                    -> downmix -> resample to 48 kHz -> limiter; or AC-3/E-AC-3 fMP4 remux
-           <- 'frame': VideoFrame | raw planes in a pooled buffer (+ Dolby Vision, HDR10+ metadata)
-           <- 'audio': f32 planar PCM | fMP4 segments
-         video: rAF -> controller.takeCurrentFrame -> presenter.presentDecodedFrame
-                (external texture | RawYUVGPURenderer) -> fused color WGSL -> canvas
-         audio: CustomDecodeAudioBridge -> AudioWorklet (pooled 48 kHz context)
-                | CustomDecodeNativeAudioBridge -> hidden <audio> + MSE
-```
+<div class="diagram">
+<a class="diagram-light" href="diagrams/architecture-layers.light.svg"><img src="diagrams/architecture-layers.light.svg" alt="Architecture layers: the host, the engine's main thread, its decode worker, its AudioWorklet, and the GPU"></a>
+<a class="diagram-dark" href="diagrams/architecture-layers.dark.svg"><img src="diagrams/architecture-layers.dark.svg" alt="Architecture layers: the host, the engine's main thread, its decode worker, its AudioWorklet, and the GPU"></a>
+</div>
 
-`WebGPUPlayer`, `HTMLPlayerDelegate`, and `HtmlVideoPlayer` with its hls.js runtime are host code, and the rAF loop runs in `WebGPUPlayer`.
+A session takes one of two paths:
+
+- (a) HTML decode with WebGPU presentation, for known-SDR input only.
+  The `<video>` element or hls.js decodes, and the media element is the clock.
+  Frames go rVFC, `importExternalTexture`, identity WGSL, canvas.
+  For HDR or unknown input the presenter is off and the `<video>` shows.
+- (b) The custom pipeline, for eligible direct-play VOD.
+  The worker posts `'frame'` messages (a `VideoFrame`, or raw planes in a pooled buffer, with Dolby Vision and HDR10+ metadata) and `'audio'` messages (f32 planar PCM, or fMP4 segments).
+  The host's rAF loop takes the controller's current frame and presents it.
+  Decoded audio plays through an AudioWorklet in a pooled 48 kHz context, and AC-3 and E-AC-3 can play through a hidden `<audio>` element and MSE.
+
+The host player, its HTML backend with any hls.js runtime, and the rAF loop are host code.
 Everything else in the diagram is engine code.
+The plugin's book follows the Jellyfin host's half of a session.
 
 ## Clock
 
@@ -48,18 +33,23 @@ Everything else in the diagram is engine code.
 
 Video is pulled: each rAF draws the newest frame at or before the clock.
 
+<div class="diagram">
+<a class="diagram-light" href="diagrams/frame-presentation.light.svg"><img src="diagrams/frame-presentation.light.svg" alt="How the clock is chosen and how each tick selects, presents, or waits for a frame"></a>
+<a class="diagram-dark" href="diagrams/frame-presentation.dark.svg"><img src="diagrams/frame-presentation.dark.svg" alt="How the clock is chosen and how each tick selects, presents, or waits for a frame"></a>
+</div>
+
 ## Startup of a custom session
 
-1. `WebGPUPlayer.play` (host) advances the presentation generation and consumes the stock-profile proof.
-   It runs `prewarmBrowserAudioContext(48000)` synchronously inside `play()` (the user-activation window), calls `presenter.startSession`, and queues `startBackendPlayback`.
-2. `startCustomPlaybackBounded` (host) runs eligibility, described in [Negotiation and routes](negotiation.md).
-   It waits for the raw SDR prewarm.
-   An HDR range-extension source also waits for the raw HDR prewarm, and a Dolby Vision source waits for its first-use key (Profile 4, or Profile 7 or single-layer reconstruction outside I420P10).
-   Other HDR and Dolby Vision routes use only keys that have already settled.
-   Its 25 s bound lasts until the controller starts, and the controller's own startup bound applies after that.
-3. The host loads the pipeline as the `webgpu-custom-playback` chunk.
-   `HtmlVideoPlayer.prepareCustomPlayback` (host) returns a source-less `<video>`.
-   The presenter enters push mode, and `configurePresentationColorPipeline` (host) installs the shaders and authorizes the selected route.
+<div class="diagram">
+<a class="diagram-light" href="diagrams/custom-session-startup.light.svg"><img src="diagrams/custom-session-startup.light.svg" alt="Sequence of a custom session's startup"></a>
+<a class="diagram-dark" href="diagrams/custom-session-startup.dark.svg"><img src="diagrams/custom-session-startup.dark.svg" alt="Sequence of a custom session's startup"></a>
+</div>
+
+1. The host runs `prewarmBrowserAudioContext(48000)` synchronously inside its play call (the user-activation window) and calls `presenter.startSession`.
+2. The host runs eligibility, described in [Eligibility and routes](routes.md), once the authorization keys the source needs have settled.
+   Its own setup bound should end where the controller starts, so the controller's startup bound applies after that.
+3. The host gives the presenter a source-less `<video>`.
+   The presenter enters push mode, and the host installs the shaders and authorizes the selected route through the presenter.
 4. `controller.play` creates a generation, resets the clock, emits `waiting`, and starts the startup bound.
    It samples the decode counters every second and fails after 20 s without progress, or at 60 s regardless.
    The fallback message names the counters it reached, so a timeout shows where startup stalled.
@@ -70,7 +60,7 @@ Video is pulled: each rAF draws the newest frame at or before the clock.
    Video and audio then stream concurrently.
 6. The session is ready when the first frame is queued and at least 100 ms of PCM has been submitted, or, on the native-media audio route, when the first segment is appended.
 7. `completeStartupIfReady` starts audio, resumes the clock, and emits `ready` and `playing`.
-   The rAF loop starts, `play()` resolves, and PlaybackManager emits `playbackstart`.
+   The host then starts its rAF loop.
 
 ## Steady state
 
@@ -105,7 +95,7 @@ Lag guard, in `CustomPlaybackController`:
 
 Hidden page, through `setPageVisibility` and `drainBackgroundVideo`:
 
-- No rAF runs while the page is hidden, so a 25 ms timer in `WebGPUPlayer` (host) takes and discards due frames against the clock.
+- No rAF runs while the page is hidden, so the host takes and discards due frames against the clock on a timer (25 ms in the Jellyfin host).
   Credits keep flowing and audio stays the master.
 - After 10 s hidden, audio-clocked `native` decode sends `suspend-video`.
   The worker unwinds only its video attempt and releases the decoder.
@@ -127,7 +117,7 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
 - Seek: a new presentation generation, then `controller.seek`, then a new generation and a new worker at the target.
   The owned HEVC, AV1, and VP9 paths start at the preceding key packet.
   DTS and TrueHD use a 1 s preroll.
-  Stale results are dropped by `customPlaybackSeekRevision` (host).
+  The host drops stale seek results by its own revision.
 - Audio track switch: eligibility runs again.
   If the source is no longer eligible, the session renegotiates; otherwise it restarts as a seek at the current time.
   Downmix gain changes apply live with a 20 ms ramp.
@@ -145,7 +135,7 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
      A pause holds the start, and resume counts down to the target again.
 
   A failure, or a fill that exceeds 5 s, falls back to HTML in the same session.
-  The host triggers the switch when the output reports `sinkchange` with a different channel count, and when force stereo or the algorithm changes.
+  The host triggers the switch, for example when the output reports `sinkchange` with a different channel count.
 - Pause: the clock pauses and the worklet is gated to silence.
   The AudioContext keeps running; the pool suspends it only when idle.
   A playback rate other than 1 with audio falls back to the HTML player in the same session.
@@ -162,7 +152,7 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
   Each poll that lists an output runs a recovery pass, without a retry limit: it rebuilds the sink with `setSinkId({ type: 'none' })` and then the requested sink, and resumes.
   Polling runs only while the page is visible; a hidden page stops it and probes again as soon as it becomes visible.
   The rebuilt sink reports `sinkchange`, so a surround device switches the session's layout at once.
-- Re-detect output (WebGPU settings, host): rebuilds every AudioContext sink so the browser re-reads the device.
+- Re-detect output (`WebGPUAudioOutputManager.redetectAudioOutputs`, offered by the host's settings): rebuilds every AudioContext sink so the browser re-reads the device.
   Chromium moves a default output to a new device without telling the page, which leaves a stale channel count until a rebuild.
 - End of stream: the worker flushes the resampler and limiter tails and posts `ended`.
   The controller emits `ended` once the bridge and worklet queues are empty, the output time has reached the end, and the video queues are empty.
@@ -172,7 +162,6 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
   The end also completes a start or audio resync that has no PCM left to wait for.
   A native-media session sends `endOfStream`, so `<audio>` plays out, and the clock then runs without the element.
 - Stop: `controller.destroy` stops the worker (terminated after 1 s), releases the worklet and the sink lease (1.5 s cap), and ends the presenter session.
-  The delegate stops the backend synchronously, so `stopped` stays in order.
 
 ## Fallback and renegotiation
 
@@ -183,18 +172,13 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
 | HTML player, same session | audio-output-failed, audio-output-unavailable, lifecycle-failed, playback-rate-unsupported |
 | Renegotiate the source | decode-failed, ended-before-ready, network-failed, playback-stalled, range-unsupported, source-unsupported, startup-timeout |
 
-- When `currentPlaybackRequiresSourceRenegotiation` (host) is set, every reason renegotiates, because the stock profile does not cover the source.
-- Failures in the wrapper itself (presenter, frame submission, rAF) are `lifecycle-failed`.
-- Renegotiation fires `sourcerenegotiationrequired` once per session.
-  A listener accepts it only by calling `accept()` synchronously during dispatch.
-  Stock Jellyfin Web has no listener, so the player raises `PlayerEvent.Error` instead and PlaybackManager's error retry ladder asks for a transcode.
-  During a start, `play()` resolves first and the error follows.
+- The host carries out each disposition, and may renegotiate on every reason when its HTML player cannot play the source.
+- Failures in the host's wrapper (presenter, frame submission, rAF) are `lifecycle-failed`.
 - Fallback never selects another player.
 
 Every stale callback is dropped by a generation or revision check:
 
-- `WebGPUPlayer` (host): the presentation, backend session, setup, seek, audio selection, frame, and terminal error revisions.
-- `HTMLPlayerDelegate` (host): the forwarding generation.
+- The host: its own generations and revisions.
 - The controller: `activeGeneration` and `fallbackGeneration`.
 - The session: one worker record per generation.
 - The worklet: its flush generation.
@@ -209,8 +193,6 @@ Every stale callback is dropped by a generation or revision check:
 - The raw route checks each frame's colorSpace against the metadata, and a null member is unspecified, so it never contradicts.
   SDR also matches a `smpte170m` transfer, and HLG a `bt709` transfer on BT.2020 primaries.
 - WebGPU presentation on the HTML path is SDR only: a `<video>` external texture is browser-converted sRGB.
-- The add-on's `HtmlVideoPlayer.play()` (host) runs synchronously only when custom decode is off and no teardown is pending.
-  Otherwise it runs after the asynchronous eligibility check.
 - Worker track indices are container ordinals, not Jellyfin `MediaStream.Index`.
 - Every seek, audio switch, and paused repaint starts a new worker that reopens the input.
   The 32 MiB read cache belongs to one worker.

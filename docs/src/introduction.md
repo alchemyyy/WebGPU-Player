@@ -18,14 +18,13 @@ Nothing is offered until the running browser has proven it.
 A decode route is qualified by decoding a known stream and checking the exact output.
 An HDR or Dolby Vision presentation is authorized by rendering a known input through the production shader on the current GPU device.
 
-The engine knows nothing about Jellyfin.
-Its host is the Jellyfin plugin `jellyfin-plugin-webgpu-player`.
-The plugin's web client add-on embeds the engine as a git submodule at `jellyfin-webgpu-client/vendor/webgpu-player/`, and supplies the Jellyfin player, the device profile, the settings, and the HTML fallback.
-See [The Jellyfin host](jellyfin-host.md).
+The engine knows nothing about Jellyfin's player, server API, or UI; it reads Jellyfin's media metadata shapes as its input.
+Its host is the Jellyfin plugin `jellyfin-plugin-webgpu-player`, whose web client add-on embeds the engine as a git submodule at `jellyfin-webgpu-client/vendor/webgpu-player/`.
+The add-on supplies the Jellyfin player, the device profile, the settings, and the HTML fallback, and the plugin documents them in its own book, in `docs/` of the plugin repository.
 
 ## Invariants
 
-- Negotiation advertises only what the selected route implements and has exact-output evidence for.
+- A host advertises only what the selected route implements and has exact-output evidence for.
   A route is never gated on resolution, level, frame rate, bitrate, or a throughput benchmark.
 - `capability/CustomContainerCodecSupport.ts` is the only table of which container carries which codec.
   There are no decoder pair blacklists.
@@ -39,7 +38,6 @@ See [The Jellyfin host](jellyfin-host.md).
 
 - Engine paths are relative to the engine root.
   Paths inside `src/` may drop the prefix; `capability/`, `pipeline/`, `audio/`, `video/`, `presentation/`, `color/`, and `validation/` are its domains.
-- Host paths are relative to the plugin repository root and marked (host), for example `jellyfin-webgpu-client/src/WebGPUPlayer.ts` (host).
 - Symbols are written `file:symbol` or `Class.method`.
 
 ## Where to look
@@ -49,7 +47,7 @@ See [The Jellyfin host](jellyfin-host.md).
 | Build and test a checkout | [Set up a checkout](setup.md) |
 | Find a folder or a file | [Repository layout](layout.md), [Module map](module-map.md) |
 | Follow a playback session | [Architecture](architecture.md) |
-| Learn why a source plays or not | [Negotiation and routes](negotiation.md), [HEVC and Dolby Vision support](codec-support.md) |
-| Put the engine in a page | [Embedding the engine](embedding.md), [The Jellyfin host](jellyfin-host.md) |
+| Learn why a source plays or not | [Eligibility and routes](routes.md), [HEVC and Dolby Vision support](codec-support.md) |
+| Put the engine in a page | [Embedding the engine](embedding.md) |
 | Change a decoder or a vector | [WebAssembly decoders](decoders.md), [Codec vectors](codec-vectors.md), [Recipes](recipes.md) |
 | Avoid repeating an investigation | [Decisions](decisions.md) |

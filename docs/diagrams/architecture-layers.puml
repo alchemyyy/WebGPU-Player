@@ -1,0 +1,62 @@
+@startuml
+!include diagram-theme.puml
+skinparam nodesep 25
+skinparam ranksep 45
+
+rectangle "Host (host code)" $BOX_HOST {
+  rectangle "**Host player**\nnegotiates the source,\nruns the rAF loop" as hostPlayer
+  rectangle "**HTML backend**\nvideo element, hls.js;\nevent and UI shell" as htmlBackend
+}
+
+rectangle "Main thread (engine)" $BOX_MAIN {
+  rectangle "**CustomPlaybackController**\nMediaClock; startup, stall,\nand lag policy; fallback" as controller
+  rectangle "**CustomDecodeSession**\none worker per generation;\nframe queue; credits" as session
+  rectangle "**WebGPUPresenter**\nown GPUDevice; canvas\nover the backend video" as presenter
+  rectangle "**CustomDecodeAudioBridge**\ndecoded PCM, credits" as pcmBridge
+  rectangle "**CustomDecodeNativeAudioBridge**\nhidden audio element + MSE" as nativeBridge
+  rectangle "**WebGPUAudioOutputManager**\none per page; sink routing" as sinkManager
+}
+
+rectangle "CustomDecode.worker (engine)" $BOX_WORKER {
+  rectangle "**Mediabunny demux**\nrange-validated fetch" as demux
+  rectangle "**Video decode**\nWebCodecs; owned HEVC, AV1, VP9;\nhevc.js WASM (+ Dolby Vision EL);\nOpenJPEG; FFmpeg MPEG-2 and VC-1" as videoDecoders
+  rectangle "**Audio decode**\nWebCodecs; @mediabunny/ac3;\nE-AC-3, DTS, TrueHD WASM" as audioDecoders
+  rectangle "**PCM pipeline**\ndownmix, resample to\n48 kHz, limiter" as pcmPipeline
+  rectangle "**fMP4 remux**\nAC-3, E-AC-3" as remux
+}
+
+rectangle "AudioWorklet (engine)" $BOX_WORKLET {
+  rectangle "**Worklet processor**\n2 s ring; gain; play gate" as processor
+}
+
+rectangle "GPU" $BOX_GPU {
+  rectangle "**Upload**\nexternal texture, or\nRawYUVGPURenderer" as upload
+  rectangle "**Color**\nfused WGSL; identity\nfor HTML frames" as colorShader
+}
+
+hostPlayer -right-> htmlBackend : (a) known-SDR\nHTML decode
+hostPlayer -down-> controller : (b) eligible\ndirect-play VOD
+htmlBackend -down-> presenter : rVFC frames
+hostPlayer -down-> presenter : presentDecodedFrame
+
+controller -right-> session
+session -down-> demux : start, credits
+demux -down-> videoDecoders
+demux -down-> audioDecoders
+demux -down-> remux
+audioDecoders -down-> pcmPipeline
+videoDecoders -up-> session : 'frame'
+pcmPipeline -up-> pcmBridge : 'audio' PCM
+remux -up-> nativeBridge : fMP4 segments
+pcmBridge -down-> processor
+presenter -right-> upload
+upload -right-> colorShader
+sinkManager ..> processor : setSinkId
+sinkManager ..> nativeBridge : setSinkId
+
+' Layout: two rows in the main thread, and the worklet and GPU beside the worker
+controller -[hidden]down-> pcmBridge
+session -[hidden]down-> nativeBridge
+presenter -[hidden]down-> sinkManager
+processor -[hidden]right-> upload
+@enduml

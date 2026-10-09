@@ -1,5 +1,5 @@
 <!DOCTYPE HTML>
-<html lang="en" class="light sidebar-visible" dir="ltr">
+<html lang="en" class="rust sidebar-visible" dir="ltr">
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
@@ -12,8 +12,7 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon-de23e50b.svg">
-        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="icon" href="favicon-ad71d439.svg">
         <link rel="stylesheet" href="css/variables-8adf115d.css">
         <link rel="stylesheet" href="css/general-e96d0476.css">
         <link rel="stylesheet" href="css/chrome-d279d366.css">
@@ -28,17 +27,21 @@
         <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="theme/content-e5d5904c.css">
+        <link rel="stylesheet" href="theme/sidebar-9277b103.css">
+        <link rel="stylesheet" href="theme/navigation-7d5965d2.css">
+        <link rel="stylesheet" href="theme/diagrams-d4c2bd13.css">
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
-            const default_light_theme = "light";
-            const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6ce9ccd1.js";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "searchindex-a6a3c2ad.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-130df29e.js"></script>
+        <script src="toc-72948aae.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -76,7 +79,7 @@
             try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
             if (theme === null || theme === undefined) { theme = default_theme; }
             const html = document.documentElement;
-            html.classList.remove('light')
+            html.classList.remove('rust')
             html.classList.add(theme);
             html.classList.add("js");
         </script>
@@ -179,38 +182,25 @@
                     <main>
                         <h1 id="architecture"><a class="header" href="#architecture">Architecture</a></h1>
 <h2 id="layers"><a class="header" href="#layers">Layers</a></h2>
-<pre><code class="language-text">Jellyfin Web PlaybackManager (stock)
-  getDeviceProfile -&gt; PlaybackInfo -&gt; player.play(); 'playbackstart' when play() resolves
-   |
-WebGPUPlayer (host): the only player PlaybackManager sees
-   |-- HTMLPlayerDelegate (host) -&gt; the add-on's own HtmlVideoPlayer (host): the HTML
-   |     backend, and the event and UI shell of the custom path
-   |-- WebGPUPresenter: its own GPUDevice, a canvas over the backend &lt;video&gt;
-   |-- WebGPUAudioOutputManager (one per page): sink routing for every audio target
-   |
-   +-- (a) HTML decode, WebGPU presentation (known-SDR input only)
-   |     &lt;video&gt; or hls.js decodes, and the media element is the clock.
-   |     rVFC -&gt; importExternalTexture -&gt; identity WGSL -&gt; canvas.
-   |     HDR or unknown input: the presenter is off and the &lt;video&gt; shows.
-   |
-   +-- (b) Custom pipeline (eligible direct-play VOD)
-         CustomPlaybackController [main]: MediaClock, startup, stall, and lag policy, fallback
-          CustomDecodeSession [main]: one worker per generation, frame queue, credits
-           CustomDecode.worker [worker]: Mediabunny demux, range-validated fetch
-             video: WebCodecs | OwnedNativeHEVCVideoDecoder | hevc.js WASM (+ Dolby Vision EL)
-                    | OwnedNativeVideoDecoder (AV1, VP9) | OpenJPEG
-                    | FFmpeg MPEG-2 and VC-1 WASM
-             audio: WebCodecs | @mediabunny/ac3 | E-AC-3, DTS, TrueHD WASM
-                    -&gt; downmix -&gt; resample to 48 kHz -&gt; limiter; or AC-3/E-AC-3 fMP4 remux
-           &lt;- 'frame': VideoFrame | raw planes in a pooled buffer (+ Dolby Vision, HDR10+ metadata)
-           &lt;- 'audio': f32 planar PCM | fMP4 segments
-         video: rAF -&gt; controller.takeCurrentFrame -&gt; presenter.presentDecodedFrame
-                (external texture | RawYUVGPURenderer) -&gt; fused color WGSL -&gt; canvas
-         audio: CustomDecodeAudioBridge -&gt; AudioWorklet (pooled 48 kHz context)
-                | CustomDecodeNativeAudioBridge -&gt; hidden &lt;audio&gt; + MSE
-</code></pre>
-<p><code>WebGPUPlayer</code>, <code>HTMLPlayerDelegate</code>, and <code>HtmlVideoPlayer</code> with its hls.js runtime are host code, and the rAF loop runs in <code>WebGPUPlayer</code>.
-Everything else in the diagram is engine code.</p>
+<div class="diagram">
+<a class="diagram-light" href="diagrams/architecture-layers.light.svg"><img src="diagrams/architecture-layers.light.svg" alt="Architecture layers: the host, the engine&#39;s main thread, its decode worker, its AudioWorklet, and the GPU"></a>
+<a class="diagram-dark" href="diagrams/architecture-layers.dark.svg"><img src="diagrams/architecture-layers.dark.svg" alt="Architecture layers: the host, the engine&#39;s main thread, its decode worker, its AudioWorklet, and the GPU"></a>
+</div>
+
+<p>A session takes one of two paths:</p>
+<ul>
+<li>(a) HTML decode with WebGPU presentation, for known-SDR input only.
+The <code>&lt;video&gt;</code> element or hls.js decodes, and the media element is the clock.
+Frames go rVFC, <code>importExternalTexture</code>, identity WGSL, canvas.
+For HDR or unknown input the presenter is off and the <code>&lt;video&gt;</code> shows.</li>
+<li>(b) The custom pipeline, for eligible direct-play VOD.
+The worker posts <code>'frame'</code> messages (a <code>VideoFrame</code>, or raw planes in a pooled buffer, with Dolby Vision and HDR10+ metadata) and <code>'audio'</code> messages (f32 planar PCM, or fMP4 segments).
+The host’s rAF loop takes the controller’s current frame and presents it.
+Decoded audio plays through an AudioWorklet in a pooled 48 kHz context, and AC-3 and E-AC-3 can play through a hidden <code>&lt;audio&gt;</code> element and MSE.</li>
+</ul>
+<p>The host player, its HTML backend with any hls.js runtime, and the rAF loop are host code.
+Everything else in the diagram is engine code.
+The plugin’s book follows the Jellyfin host’s half of a session.</p>
 <h2 id="clock"><a class="header" href="#clock">Clock</a></h2>
 <ul>
 <li>Decoded PCM: the worklet’s render time, corrected to physical output time by <code>BrowserCustomAudioOutput</code> through <code>getOutputTimestamp</code>, re-anchors a <code>performance.now</code> <code>MediaClock</code>.
@@ -221,18 +211,23 @@ A first fragment more than 40 ms after the start position parks the element at t
 An audio track that ends before the video hands the clock to the <code>MediaClock</code> once its tail has played out.</li>
 </ul>
 <p>Video is pulled: each rAF draws the newest frame at or before the clock.</p>
+<div class="diagram">
+<a class="diagram-light" href="diagrams/frame-presentation.light.svg"><img src="diagrams/frame-presentation.light.svg" alt="How the clock is chosen and how each tick selects, presents, or waits for a frame"></a>
+<a class="diagram-dark" href="diagrams/frame-presentation.dark.svg"><img src="diagrams/frame-presentation.dark.svg" alt="How the clock is chosen and how each tick selects, presents, or waits for a frame"></a>
+</div>
+
 <h2 id="startup-of-a-custom-session"><a class="header" href="#startup-of-a-custom-session">Startup of a custom session</a></h2>
+<div class="diagram">
+<a class="diagram-light" href="diagrams/custom-session-startup.light.svg"><img src="diagrams/custom-session-startup.light.svg" alt="Sequence of a custom session&#39;s startup"></a>
+<a class="diagram-dark" href="diagrams/custom-session-startup.dark.svg"><img src="diagrams/custom-session-startup.dark.svg" alt="Sequence of a custom session&#39;s startup"></a>
+</div>
+
 <ol>
-<li><code>WebGPUPlayer.play</code> (host) advances the presentation generation and consumes the stock-profile proof.
-It runs <code>prewarmBrowserAudioContext(48000)</code> synchronously inside <code>play()</code> (the user-activation window), calls <code>presenter.startSession</code>, and queues <code>startBackendPlayback</code>.</li>
-<li><code>startCustomPlaybackBounded</code> (host) runs eligibility, described in <a href="negotiation.html">Negotiation and routes</a>.
-It waits for the raw SDR prewarm.
-An HDR range-extension source also waits for the raw HDR prewarm, and a Dolby Vision source waits for its first-use key (Profile 4, or Profile 7 or single-layer reconstruction outside I420P10).
-Other HDR and Dolby Vision routes use only keys that have already settled.
-Its 25 s bound lasts until the controller starts, and the controller’s own startup bound applies after that.</li>
-<li>The host loads the pipeline as the <code>webgpu-custom-playback</code> chunk.
-<code>HtmlVideoPlayer.prepareCustomPlayback</code> (host) returns a source-less <code>&lt;video&gt;</code>.
-The presenter enters push mode, and <code>configurePresentationColorPipeline</code> (host) installs the shaders and authorizes the selected route.</li>
+<li>The host runs <code>prewarmBrowserAudioContext(48000)</code> synchronously inside its play call (the user-activation window) and calls <code>presenter.startSession</code>.</li>
+<li>The host runs eligibility, described in <a href="routes.html">Eligibility and routes</a>, once the authorization keys the source needs have settled.
+Its own setup bound should end where the controller starts, so the controller’s startup bound applies after that.</li>
+<li>The host gives the presenter a source-less <code>&lt;video&gt;</code>.
+The presenter enters push mode, and the host installs the shaders and authorizes the selected route through the presenter.</li>
 <li><code>controller.play</code> creates a generation, resets the clock, emits <code>waiting</code>, and starts the startup bound.
 It samples the decode counters every second and fails after 20 s without progress, or at 60 s regardless.
 The fallback message names the counters it reached, so a timeout shows where startup stalled.
@@ -243,7 +238,7 @@ It scans HEVC SEI on the native PQ route, and AV1 MDCV and CLL metadata OBUs whe
 Video and audio then stream concurrently.</li>
 <li>The session is ready when the first frame is queued and at least 100 ms of PCM has been submitted, or, on the native-media audio route, when the first segment is appended.</li>
 <li><code>completeStartupIfReady</code> starts audio, resumes the clock, and emits <code>ready</code> and <code>playing</code>.
-The rAF loop starts, <code>play()</code> resolves, and PlaybackManager emits <code>playbackstart</code>.</li>
+The host then starts its rAF loop.</li>
 </ol>
 <h2 id="steady-state"><a class="header" href="#steady-state">Steady state</a></h2>
 <div class="table-wrapper">
@@ -283,7 +278,7 @@ A gap, an overlap, or an overflow that reaches the bridge is therefore an engine
 </ul>
 <p>Hidden page, through <code>setPageVisibility</code> and <code>drainBackgroundVideo</code>:</p>
 <ul>
-<li>No rAF runs while the page is hidden, so a 25 ms timer in <code>WebGPUPlayer</code> (host) takes and discards due frames against the clock.
+<li>No rAF runs while the page is hidden, so the host takes and discards due frames against the clock on a timer (25 ms in the Jellyfin host).
 Credits keep flowing and audio stays the master.</li>
 <li>After 10 s hidden, audio-clocked <code>native</code> decode sends <code>suspend-video</code>.
 The worker unwinds only its video attempt and releases the decoder.
@@ -305,7 +300,7 @@ The backing size is the CSS size times the device pixel ratio, capped by <code>m
 <p>Seek: a new presentation generation, then <code>controller.seek</code>, then a new generation and a new worker at the target.
 The owned HEVC, AV1, and VP9 paths start at the preceding key packet.
 DTS and TrueHD use a 1 s preroll.
-Stale results are dropped by <code>customPlaybackSeekRevision</code> (host).</p>
+The host drops stale seek results by its own revision.</p>
 </li>
 <li>
 <p>Audio track switch: eligibility runs again.
@@ -328,7 +323,7 @@ A clock that waited on the old output’s underflow resumes at this point, becau
 A pause holds the start, and resume counts down to the target again.</li>
 </ol>
 <p>A failure, or a fill that exceeds 5 s, falls back to HTML in the same session.
-The host triggers the switch when the output reports <code>sinkchange</code> with a different channel count, and when force stereo or the algorithm changes.</p>
+The host triggers the switch, for example when the output reports <code>sinkchange</code> with a different channel count.</p>
 </li>
 <li>
 <p>Pause: the clock pauses and the worklet is gated to silence.
@@ -355,7 +350,7 @@ Polling runs only while the page is visible; a hidden page stops it and probes a
 The rebuilt sink reports <code>sinkchange</code>, so a surround device switches the session’s layout at once.</p>
 </li>
 <li>
-<p>Re-detect output (WebGPU settings, host): rebuilds every AudioContext sink so the browser re-reads the device.
+<p>Re-detect output (<code>WebGPUAudioOutputManager.redetectAudioOutputs</code>, offered by the host’s settings): rebuilds every AudioContext sink so the browser re-reads the device.
 Chromium moves a default output to a new device without telling the page, which leaves a stale channel count until a rebuild.</p>
 </li>
 <li>
@@ -370,8 +365,7 @@ The end also completes a start or audio resync that has no PCM left to wait for.
 A native-media session sends <code>endOfStream</code>, so <code>&lt;audio&gt;</code> plays out, and the clock then runs without the element.</p>
 </li>
 <li>
-<p>Stop: <code>controller.destroy</code> stops the worker (terminated after 1 s), releases the worklet and the sink lease (1.5 s cap), and ends the presenter session.
-The delegate stops the backend synchronously, so <code>stopped</code> stays in order.</p>
+<p>Stop: <code>controller.destroy</code> stops the worker (terminated after 1 s), releases the worklet and the sink lease (1.5 s cap), and ends the presenter session.</p>
 </li>
 </ul>
 <h2 id="fallback-and-renegotiation"><a class="header" href="#fallback-and-renegotiation">Fallback and renegotiation</a></h2>
@@ -388,18 +382,13 @@ The delegate stops the backend synchronously, so <code>stopped</code> stays in o
 </table>
 </div>
 <ul>
-<li>When <code>currentPlaybackRequiresSourceRenegotiation</code> (host) is set, every reason renegotiates, because the stock profile does not cover the source.</li>
-<li>Failures in the wrapper itself (presenter, frame submission, rAF) are <code>lifecycle-failed</code>.</li>
-<li>Renegotiation fires <code>sourcerenegotiationrequired</code> once per session.
-A listener accepts it only by calling <code>accept()</code> synchronously during dispatch.
-Stock Jellyfin Web has no listener, so the player raises <code>PlayerEvent.Error</code> instead and PlaybackManager’s error retry ladder asks for a transcode.
-During a start, <code>play()</code> resolves first and the error follows.</li>
+<li>The host carries out each disposition, and may renegotiate on every reason when its HTML player cannot play the source.</li>
+<li>Failures in the host’s wrapper (presenter, frame submission, rAF) are <code>lifecycle-failed</code>.</li>
 <li>Fallback never selects another player.</li>
 </ul>
 <p>Every stale callback is dropped by a generation or revision check:</p>
 <ul>
-<li><code>WebGPUPlayer</code> (host): the presentation, backend session, setup, seek, audio selection, frame, and terminal error revisions.</li>
-<li><code>HTMLPlayerDelegate</code> (host): the forwarding generation.</li>
+<li>The host: its own generations and revisions.</li>
 <li>The controller: <code>activeGeneration</code> and <code>fallbackGeneration</code>.</li>
 <li>The session: one worker record per generation.</li>
 <li>The worklet: its flush generation.</li>
@@ -414,8 +403,6 @@ A frame with a colorSpace that is not neutral latches <code>decoded-frame-color-
 <li>The raw route checks each frame’s colorSpace against the metadata, and a null member is unspecified, so it never contradicts.
 SDR also matches a <code>smpte170m</code> transfer, and HLG a <code>bt709</code> transfer on BT.2020 primaries.</li>
 <li>WebGPU presentation on the HTML path is SDR only: a <code>&lt;video&gt;</code> external texture is browser-converted sRGB.</li>
-<li>The add-on’s <code>HtmlVideoPlayer.play()</code> (host) runs synchronously only when custom decode is off and no teardown is pending.
-Otherwise it runs after the asynchronous eligibility check.</li>
 <li>Worker track indices are container ordinals, not Jellyfin <code>MediaStream.Index</code>.</li>
 <li>Every seek, audio switch, and paused repaint starts a new worker that reopens the input.
 The 32 MiB read cache belongs to one worker.</li>
@@ -437,7 +424,7 @@ It is accepted only for <code>/Videos/{id}/stream</code> with a bounded <code>Co
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="negotiation.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="routes.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -451,7 +438,7 @@ It is accepted only for <code>/Videos/{id}/stream</code> with a bounded <code>Co
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="negotiation.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="routes.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
@@ -480,6 +467,7 @@ It is accepted only for <code>/Videos/{id}/stream</code> with a bounded <code>Co
         <script src="book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="theme/diagrams-4e7daedb.js"></script>
 
 
 

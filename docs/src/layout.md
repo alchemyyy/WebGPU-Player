@@ -11,7 +11,8 @@
 | `vendor/` | The FFmpeg and dcadec submodules, fetched only by `make -C wasm sources` |
 | `scripts/` | `build.mjs` (the served assets), `library-assets.mjs` (which file is served from where), and the codec vector generators. See [Codec vectors](codec-vectors.md) |
 | `tools/` | Development tooling that never ships, and `constants.json`. See [Tools](tools.md) |
-| `docs/` | This book |
+| `docs/` | This book: chapters in `src/`, PlantUML sources in `diagrams/` and their SVGs in `src/diagrams/`, stylesheets, scripts, and the favicon in `theme/`, and the built book in `book/` |
+| `images/` | The project logo, `webgpu-player-logo.svg`, the Inkscape source of the favicon |
 | `bin/` | Generated files, all ignored except `bin/codec_vector_assets/`. See below |
 
 `bin/` holds:
@@ -19,6 +20,7 @@
 - `bin/wasm/`: the decoder builds from `make -C wasm`.
 - `bin/libraries/` and `bin/build-info.json`: the served assets from `npm run build`.
 - `bin/playback_smoke_media/`: local playback media from the smoke media generators.
+- `bin/plantuml/`: the pinned PlantUML jar that `tools/render-diagrams.mjs` downloads.
 - `bin/codec_vector_assets/`: the generated codec vectors.
   This is the one committed folder, so every change to a vector shows in review.
 

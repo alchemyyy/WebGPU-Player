@@ -1,0 +1,88 @@
+/* Page centering and chapter navigation: the body and the menu bar title center on the page beside the sidebar, and the previous and next buttons stretch across the voids on either side of the body */
+
+/* Horizontal offset of the page from the viewport edge, which the visible sidebar pushes over, and the width of the sidebar's resize handle at the page's edge */
+.page-wrapper {
+    --page-offset: 0px;
+    --sidebar-handle-width: 0px;
+}
+
+/* The page starts at the sidebar's edge, so the resize handle overlays the page's padding instead of taking part in centering */
+/* NOTE: stock mdBook starts the page after the handle's 8px strip, which centers everything 4px right of the space beside the sidebar */
+@media only screen and (min-width: 620px) {
+    #mdbook-sidebar-toggle-anchor:checked ~ .page-wrapper {
+        --page-offset: var(--sidebar-width);
+        --sidebar-handle-width: var(--sidebar-resize-indicator-width);
+        margin-inline-start: var(--sidebar-width);
+    }
+
+    /* Keep the whole height of the handle above the page, where the menu bar (z-index 101) would otherwise cover its top */
+    .sidebar {
+        z-index: 102;
+    }
+}
+
+/* Math: .page and .content pad the centered body symmetrically, so each void is half of the page width left over after the body */
+/* NOTE: a fixed element's percentage width is relative to the viewport without its scrollbar */
+/* NOTE: the stock 90px minimum would overlap the 900px body near the 1380px breakpoint where the buttons appear */
+.nav-chapters {
+    min-width: 0;
+    max-width: none;
+    width: calc((100% - var(--page-offset) - var(--content-max-width)) / 2);
+}
+
+/* No hover fade: the highlight and the arrow color change at once, and only the position and width slide with the page when the sidebar opens or closes */
+/* NOTE: stock mdBook fades both in over 0.15s and out over 0.5s, and its :hover rule sets its own transition, so both states are overridden */
+.nav-chapters,
+.nav-chapters:hover {
+    transition: inset-inline-start 0.3s ease, width 0.3s ease;
+}
+
+/* Follow a sidebar drag without lagging behind it */
+.sidebar-resizing .nav-chapters,
+.sidebar-resizing .nav-chapters:hover {
+    transition: none;
+}
+
+/* The previous button starts after the resize handle, so the handle stays draggable */
+.nav-chapters.previous {
+    margin-inline-start: 0;
+    inset-inline-start: calc(var(--page-offset) + var(--sidebar-handle-width));
+    width: calc((100% - var(--page-offset) - var(--content-max-width)) / 2 - var(--sidebar-handle-width));
+    align-items: flex-start;
+}
+
+.nav-chapters.next {
+    right: 0;
+    align-items: flex-end;
+}
+
+/* Only the hit area grows: the arrow stays where stock mdBook draws it, centered in a 90px column at the outer edge */
+.nav-chapters > .fa-svg {
+    width: 90px;
+    max-width: 100%;
+}
+
+[dir=rtl] .nav-chapters.next {
+    right: unset;
+    left: 0;
+}
+
+/* Menu bar title: center it on the page, and so on the body, instead of between button groups of unequal width */
+/* NOTE: stock mdBook gives the title the space left between three left buttons and two right ones, which puts it about 25px right of center */
+#mdbook-menu-bar .left-buttons,
+#mdbook-menu-bar .right-buttons {
+    display: flex;
+    flex: 1 1 0;
+    margin: 0 10px;
+}
+
+#mdbook-menu-bar .right-buttons {
+    justify-content: flex-end;
+}
+
+#mdbook-menu-bar .menu-title {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

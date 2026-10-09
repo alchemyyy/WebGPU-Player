@@ -10,14 +10,13 @@
 # How it works
 
 - [Architecture](architecture.md)
-- [Negotiation and routes](negotiation.md)
+- [Eligibility and routes](routes.md)
 - [HEVC and Dolby Vision support](codec-support.md)
 - [Module map](module-map.md)
 
 # Integration
 
 - [Embedding the engine](embedding.md)
-- [The Jellyfin host](jellyfin-host.md)
 
 # Build and test
 

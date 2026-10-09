@@ -1,0 +1,43 @@
+@startuml
+!include diagram-theme.puml
+
+partition "Pick the clock" {
+  start
+  if (Audio route?) then (decoded PCM)
+    :Worklet render time, corrected to physical output time
+    through getOutputTimestamp, re-anchors the MediaClock; <<$HL_BLUE>>
+  elseif () then (native media)
+    :The hidden audio element's currentTime; <<$HL_BLUE>>
+  else (no audio)
+    :MediaClock alone, held while video starves; <<$HL_BLUE>>
+  endif
+}
+
+partition "Each tick" {
+  repeat
+    if (Page visible?) then (yes)
+      :rAF: controller.takeCurrentFrame; <<$HL_AMBER>>
+    else (hidden)
+      :Host timer (25 ms in the Jellyfin host) takes and discards due frames,
+      after 10 s, audio-clocked native decode suspends video; <<$HL_NAVY>>
+    endif
+    :takeFrame picks the newest frame at or before the clock,
+    older frames close and return their credits; <<$HL_AMBER>>
+    if (Frame more than 2 s behind the clock?) then (yes)
+      :Discard and re-credit it, then start a video wait; <<$HL_RED>>
+    elseif (Queue empty for 100 ms while playing?) then (yes)
+      :Start a video wait; <<$HL_RED>>
+    else (no)
+      :presenter.presentDecodedFrame:
+      external texture or raw planes, fused color WGSL; <<$HL_GREEN>>
+      :VideoFrame closes after submit(),
+      its credit returns after onSubmittedWorkDone; <<$HL_AMBER>>
+    endif
+    if (A wait lasted 10 s?) then (yes)
+      :Fail with playback-stalled; <<$HL_RED>>
+      stop
+    endif
+  repeat while (Session current?) is (yes) not (stop, seek, or fallback)
+  stop
+}
+@enduml

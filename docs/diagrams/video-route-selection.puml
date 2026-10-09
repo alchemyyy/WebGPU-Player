@@ -1,0 +1,57 @@
+@startuml
+!include diagram-theme.puml
+
+start
+:selectVideoOutput; <<$HL_BLUE>>
+if (Dolby Vision descriptor?) then (yes)
+  :getDolbyVisionPresentationSelection:
+  any integer profile with the base layer flag,
+  any 4-bit CCID or none; <<$HL_BLUE>>
+  if (Native external Profile 5?\n10-bit P5, or P20 reconstructing as P5) then (yes)
+    :VF-DV5; <<$HL_GREEN>>
+    stop
+  elseif (Native compatible base?\nCCID 1 or 6 for P7 and P8, 4 for P8,\nexact BT.2020 limited metadata) then (yes)
+    :DV base PQ or HLG, ignoring the RPU and EL; <<$HL_GREEN>>
+    stop
+  elseif (Raw RPU reconstruction?) then (yes)
+    :RAW-DV (P5, P8, P10, P20)
+    or RAW-DV4 and RAW-DV7 (P4, P7) with a bundled EL; <<$HL_GREEN>>
+    stop
+  elseif (Declared base?\nCCID 1 or 6 PQ, 4 HLG, 2 SDR) then (yes)
+    :Continue with the declared base's color; <<$HL_AMBER>>
+  else (no)
+    :Ineligible, with the reconstruction step's reason; <<$HL_RED>>
+    stop
+  endif
+endif
+if (Color metadata?) then (no)
+  :metadata-unsupported; <<$HL_RED>>
+  stop
+endif
+if (HEVC range extension?) then (yes)
+  if (Exact variant capability and raw key?) then (yes)
+    :RAW in the variant's exact format; <<$HL_GREEN>>
+  else (no)
+    :Ineligible, never falling through; <<$HL_RED>>
+  endif
+  stop
+endif
+if (Transfer?) then (SDR)
+  if (native, native Main 10, bundled-hevc,\nffmpeg-mpeg2-vc1, or openjpeg?) then (yes)
+    :VF-SDR; <<$HL_GREEN>>
+  elseif (10-bit 4:2:0 with BT.709 raw SDR keys?) then (yes)
+    :RAW I420P10 SDR; <<$HL_GREEN>>
+  else (no)
+    :Ineligible; <<$HL_RED>>
+  endif
+else (PQ or HLG)
+  if (Native external key authorized?) then (yes)
+    :VF-PQ or VF-HLG; <<$HL_GREEN>>
+  elseif (Raw HDR key authorized?) then (yes)
+    :RAW PQ or HLG; <<$HL_GREEN>>
+  else (no)
+    :Ineligible; <<$HL_RED>>
+  endif
+endif
+stop
+@enduml

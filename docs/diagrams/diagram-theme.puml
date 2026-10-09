@@ -1,0 +1,185 @@
+' Diagram theme for both books, derived from the Boreal theme of the original player diagrams
+' Every diagram renders twice: DIAGRAM_MODE=light matches mdBook's rust theme, and DIAGRAM_MODE=dark matches coal
+' Usage: !include diagram-theme.puml after @startuml; tools/render-diagrams.mjs defines DIAGRAM_MODE
+
+!theme plain
+
+!ifndef DIAGRAM_MODE
+!define DIAGRAM_MODE dark
+!endif
+
+' Semantic palette
+' Blue: input, clock, or frame target
+' Green: accepted route or successful output
+' Amber: queue, routing, conversion, or ownership transfer
+' Navy: generation or session boundary
+' Red: rejection, starvation, fallback, or failure
+!if DIAGRAM_MODE == "light"
+!$SURFACE         = "#EFEFE9"
+!$SURFACE_ALT     = "#D6D6CE"
+!$BORDER          = "#8F887F"
+!$ACCENT          = "#8C391F"
+!$ARROW           = "#4A3F39"
+!$TEXT            = "#262625"
+!$TEXT_MUTED      = "#5C5A55"
+!$HL_BLUE         = "#C7DAEB"
+!$HL_GREEN        = "#CCE3CF"
+!$HL_AMBER        = "#F0DBAE"
+!$HL_NAVY         = "#D2D8E6"
+!$HL_RED          = "#EFCCCA"
+!$BOX_HOST        = "#E6DCCB"
+!$BOX_MAIN        = "#D9E2EA"
+!$BOX_WORKER      = "#DCE6D6"
+!$BOX_WORKLET     = "#E4DAE9"
+!$BOX_GPU         = "#EADDD3"
+!else
+!$SURFACE         = "#202427"
+!$SURFACE_ALT     = "#181B1D"
+!$BORDER          = "#4A5056"
+!$ACCENT          = "#3473AD"
+!$ARROW           = "#8FB3D4"
+!$TEXT            = "#D0D7DE"
+!$TEXT_MUTED      = "#98A3AD"
+!$HL_BLUE         = "#22405E"
+!$HL_GREEN        = "#1D3B2C"
+!$HL_AMBER        = "#4F3B14"
+!$HL_NAVY         = "#1B2A3A"
+!$HL_RED          = "#4A2121"
+!$BOX_HOST        = "#2B2519"
+!$BOX_MAIN        = "#1A2531"
+!$BOX_WORKER      = "#1B2A21"
+!$BOX_WORKLET     = "#261D30"
+!$BOX_GPU         = "#2E2020"
+!endif
+
+' Global: the page shows through, so a diagram sits on the book's own background
+skinparam backgroundColor transparent
+skinparam defaultFontColor $TEXT
+skinparam defaultFontName sans-serif
+skinparam defaultFontSize 13
+skinparam shadowing false
+skinparam roundCorner 6
+skinparam ArrowColor $ARROW
+skinparam ArrowFontColor $TEXT_MUTED
+skinparam ArrowFontSize 12
+
+skinparam title {
+  FontColor $TEXT
+  FontSize 18
+  FontStyle bold
+}
+
+skinparam note {
+  BackgroundColor $SURFACE_ALT
+  BorderColor $BORDER
+  FontColor $TEXT
+  FontSize 12
+}
+
+skinparam legend {
+  BackgroundColor $SURFACE_ALT
+  BorderColor $BORDER
+  FontColor $TEXT
+  FontSize 12
+}
+
+' Sequence diagrams
+skinparam sequenceMessageAlign left
+skinparam responseMessageBelowArrow true
+skinparam sequenceArrowThickness 1.5
+skinparam sequenceArrowColor $ARROW
+skinparam sequenceLifeLineBorderColor $BORDER
+skinparam sequenceLifeLineBackgroundColor $HL_BLUE
+skinparam sequenceBoxBackgroundColor $SURFACE_ALT
+skinparam sequenceBoxBorderColor $BORDER
+skinparam sequenceBoxFontColor $TEXT
+skinparam sequenceBoxFontStyle bold
+skinparam BoxPadding 10
+skinparam ParticipantPadding 12
+
+skinparam sequence {
+  ParticipantBackgroundColor $SURFACE
+  ParticipantBorderColor $ACCENT
+  ParticipantFontColor $TEXT
+  ParticipantFontStyle bold
+  ActorBackgroundColor $SURFACE
+  ActorBorderColor $ACCENT
+  ActorFontColor $TEXT
+  GroupBackgroundColor $SURFACE_ALT
+  GroupBorderColor $BORDER
+  GroupFontColor $TEXT
+  GroupHeaderFontColor $TEXT
+  GroupBodyBackgroundColor transparent
+  DividerBackgroundColor $SURFACE
+  DividerBorderColor $ACCENT
+  DividerFontColor $TEXT
+  DividerFontStyle bold
+  ReferenceBackgroundColor $SURFACE
+  ReferenceBorderColor $ACCENT
+}
+
+' Activity diagrams
+skinparam activity {
+  BackgroundColor $SURFACE
+  BorderColor $ACCENT
+  FontColor $TEXT
+  BarColor $ACCENT
+  StartColor $ACCENT
+  EndColor $ACCENT
+  DiamondBackgroundColor $SURFACE_ALT
+  DiamondBorderColor $ACCENT
+  DiamondFontColor $TEXT
+}
+
+skinparam partition {
+  BackgroundColor transparent
+  BorderColor $BORDER
+  FontColor $TEXT
+  FontStyle bold
+}
+
+skinparam swimlane {
+  BorderColor $BORDER
+  TitleFontColor $TEXT
+}
+
+' Component diagrams
+skinparam rectangle {
+  BackgroundColor $SURFACE
+  BorderColor $ACCENT
+  FontColor $TEXT
+  StereotypeFontColor $TEXT_MUTED
+}
+
+skinparam component {
+  BackgroundColor $SURFACE
+  BorderColor $ACCENT
+  FontColor $TEXT
+  StereotypeFontColor $TEXT_MUTED
+}
+
+skinparam package {
+  BackgroundColor $SURFACE_ALT
+  BorderColor $BORDER
+  FontColor $TEXT
+  FontStyle bold
+}
+
+skinparam frame {
+  BackgroundColor transparent
+  BorderColor $BORDER
+  FontColor $TEXT
+  FontStyle bold
+}
+
+skinparam database {
+  BackgroundColor $SURFACE
+  BorderColor $ACCENT
+  FontColor $TEXT
+}
+
+skinparam queue {
+  BackgroundColor $SURFACE
+  BorderColor $ACCENT
+  FontColor $TEXT
+}

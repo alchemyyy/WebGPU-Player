@@ -1,5 +1,5 @@
 <!DOCTYPE HTML>
-<html lang="en" class="light sidebar-visible" dir="ltr">
+<html lang="en" class="rust sidebar-visible" dir="ltr">
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
@@ -12,8 +12,7 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon-de23e50b.svg">
-        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="icon" href="favicon-ad71d439.svg">
         <link rel="stylesheet" href="css/variables-8adf115d.css">
         <link rel="stylesheet" href="css/general-e96d0476.css">
         <link rel="stylesheet" href="css/chrome-d279d366.css">
@@ -28,17 +27,21 @@
         <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="theme/content-e5d5904c.css">
+        <link rel="stylesheet" href="theme/sidebar-9277b103.css">
+        <link rel="stylesheet" href="theme/navigation-7d5965d2.css">
+        <link rel="stylesheet" href="theme/diagrams-d4c2bd13.css">
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
-            const default_light_theme = "light";
-            const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6ce9ccd1.js";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "searchindex-a6a3c2ad.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-130df29e.js"></script>
+        <script src="toc-72948aae.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -76,7 +79,7 @@
             try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
             if (theme === null || theme === undefined) { theme = default_theme; }
             const html = document.documentElement;
-            html.classList.remove('light')
+            html.classList.remove('rust')
             html.classList.add(theme);
             html.classList.add("js");
         </script>
@@ -412,23 +415,6 @@ Their hand-written declarations are <code>wasm/&lt;kit&gt;/&lt;kit&gt;.d.mts</co
 </ul>
 </li>
 </ul>
-<h2 id="host-the-jellyfin-add-on"><a class="header" href="#host-the-jellyfin-add-on">Host: the Jellyfin add-on</a></h2>
-<p>Paths are relative to the plugin repository root.
-See <a href="jellyfin-host.html">The Jellyfin host</a>.</p>
-<ul>
-<li><code>jellyfin-webgpu-client/src/index.ts</code>: the add-on entry.
-It configures the engine’s assets and feature flags, binds the host bridge, installs the host-compatible mode, and returns the player.</li>
-<li><code>jellyfin-webgpu-client/src/WebGPUPlayer.ts</code>: the Jellyfin-facing player: profile augmentation, the stream-copy veto, eligibility, the rAF loop, fallback, renegotiation, and generations.</li>
-<li><code>jellyfin-webgpu-client/src/HostCompatibleWebGPUPlayer.ts</code>: adapts <code>WebGPUPlayer</code> to the stock PlaybackManager: purpose-less bitrate requests, the player preference, marked profiles, and superseded starts that never settle.</li>
-<li><code>jellyfin-webgpu-client/src/HTMLPlayerDelegate.ts</code>: owns one HTML player and forwards its events for the current generation only.</li>
-<li><code>jellyfin-webgpu-client/src/backend/</code>: the add-on’s own copy of the HTML video player and its media helper, usable as an owned backend.</li>
-<li><code>jellyfin-webgpu-client/src/custom/CustomDeviceProfile.ts</code>: <code>augmentDeviceProfileForCustomDecode</code> and <code>createBitrateIndependentDeviceProfile</code>.</li>
-<li><code>jellyfin-webgpu-client/src/custom/NativeDirectPlayCompatibility.ts</code>: checks the stock profile against the chosen source, the proof for same-session fallback.</li>
-<li><code>jellyfin-webgpu-client/src/compat/</code>: stand-ins for the PlaybackManager seams stock Jellyfin Web lacks: the PlaybackInfo interceptor and its policies, PlaybackManager hooks, and the settings entry points.</li>
-<li><code>jellyfin-webgpu-client/src/host/</code>, <code>jellyfin-webgpu-client/src/shims/</code>: host singletons bound late from the plugin bag, and replacements for host modules the add-on cannot import.</li>
-<li><code>jellyfin-webgpu-client/src/WebGPUUserSettings.ts</code>, <code>WebGPUPlaybackPreferences.ts</code>, <code>PreferredVideoPlayer.ts</code>: local per-user settings (v2), the custom decode and HDR tone mapping preferences, and the Auto, WebGPU, or HTML player preference.</li>
-<li><code>jellyfin-webgpu-client/src/ui/WebGPUPlaybackSettingsDialog.ts</code>: the in-player settings panel, with live render and downmix updates and restart-required options marked.</li>
-</ul>
 
                     </main>
 
@@ -481,6 +467,7 @@ It configures the engine’s assets and feature flags, binds the host bridge, in
         <script src="book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="theme/diagrams-4e7daedb.js"></script>
 
 
 

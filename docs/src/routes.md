@@ -1,68 +1,36 @@
-# Negotiation and routes
+# Eligibility and routes
 
-This chapter follows a playback from player selection to a Jellyfin decision, and then to a concrete decode and presentation route.
-Player selection, the device profile, and the PlaybackInfo requests are host code.
-Eligibility, the probes, and the route catalog are engine code.
-The stock profile is the one the add-on's HTML backend returns from `getDeviceProfile`.
+This chapter follows a source from the engine's capability evidence to a concrete decode and presentation route.
+The host turns the same evidence into what it advertises to its server; the Jellyfin plugin's book describes its device profile.
 
-## Flow
+## Host entry points
 
-1. Select a player (host).
-   PlaybackManager offers the item to players in priority order, and `WebGPUPlayer` (priority 0) comes first.
-   `HostCompatibleWebGPUPlayer.canPlayItem` declines when the user prefers the HTML player or inside a native app shell.
-   With custom decode enabled, `WebGPUPlayer.canPlayItem` also requires the engine's metadata-only prefilter, `CustomPlaybackEligibility.hasPotentialCustomPlaybackVideoRoute`.
+A host calls these, in this order, for each playback:
+
+1. `CustomPlaybackEligibility.hasPotentialCustomPlaybackVideoRoute`, the metadata-only prefilter, when it chooses a player.
    The prefilter declines a source whose containers no route in `CUSTOM_CONTAINER_CODEC_RULES` carries, such as AVI, FLV, ASF, or an MPEG program stream.
    It also declines a video codec no route decodes, such as MPEG-4 Part 2 (DivX, Xvid), H.263, MS-MPEG4, MPEG-1, or Theora, and interlaced or rotated video.
-   When it declines, PlaybackManager picks the plain HTML player, which negotiates with the stock profile.
-2. Build the device profile (host), in `WebGPUPlayer.getDeviceProfile(item, options)`:
-   - A retry (`options.isRetry === true`) returns the stock profile unchanged.
-   - Otherwise it adopts the stored playback preferences, keeps the stock profile as a per-item proof (`rememberNativeDeviceProfile`), and strips every bitrate field and condition (`createBitrateIndependentDeviceProfile`).
-   - It stops there when custom decode is off or the engine's `CustomPlaybackRuntime.getCustomPlaybackRuntimeAvailability` fails (secure context, Worker, `navigator.gpu`, `VideoFrame`).
-   - It awaits the engine's `probeCustomDecodeCapabilities(item)` and the native-media audio probe.
-     PlaybackInfo waits until the probes the item selects settle (see [Probes and caching](#probes-and-caching)); a probe an earlier item ran is not repeated.
-   - `getHDRDeviceProfileOptions` waits for the GPU authorizations the item's HDR scope needs (5 s each; see [Probe scopes](#probe-scopes)) and returns the flags and route keys.
-   - `CustomDeviceProfile.augmentDeviceProfileForCustomDecode` builds the profile, and `HostCompatibleWebGPUPlayer` marks it so the PlaybackInfo interceptor recognizes the request.
-3. Request PlaybackInfo (host).
-   The add-on's axios interceptor (`compat/PlaybackInfoInterceptor.ts`) applies the player's request rules (`compat/PlaybackInfoPolicy.ts`) to the body that stock PlaybackManager built:
-   - The selection request carries no `MaxStreamingBitrate`.
-   - `AllowVideoStreamCopy` becomes false when `WebGPUPlayer.supportsVideoStreamCopy` vetoes the source, which it does for any Dolby Vision descriptor.
-   - When the selected source will transcode, a second request sizes the transcode with the detected bitrate.
-4. Start the session (host).
-   `WebGPUPlayer.play` consumes the stock-profile proof.
-   It sets `currentPlaybackRequiresSourceRenegotiation` when the profile was augmented, the method is DirectPlay or DirectStream, and `NativeDirectPlayCompatibility.isSameSessionNativePlaybackCompatible` fails for the stock profile.
-5. Check eligibility (engine).
-   The host's `startCustomPlaybackBounded` (25 s) calls `getCustomPlaybackEligibility`, which checks in order:
-   1. `parsePlaybackSource`: DirectPlay, not live, a custom container, and an http(s) URL.
-      A missing or zero `RunTimeTicks` is an unknown duration, not a rejection.
-      Playback then ends with the streams, audio takes the decoded-PCM route because the native media backend needs a duration, and the worker reports the container's duration on `ready`.
-   2. `selectVideoStream`.
-   3. Rotation 0 and `IsInterlaced === false`.
-   4. `selectVideoOutput` (below).
-   5. `selectPlaybackAudio`.
-   6. `supportsCustomContainerCodecCombination`.
-   7. The runtime budget.
-6. Fall back (host).
-   An ineligible, timed-out, or failed start falls back.
-   Without the renegotiation flag, the add-on's HTML player plays the same source in the same session.
-   With it, the player asks for a renegotiation.
-   On stock Jellyfin Web that is the error retry ladder, whose `changeStream` passes `isRetry`, so the retry negotiates with the stock profile and is never widened.
-   An ineligible start logs its eligibility reason with `console.warn` first, since it raises no error of its own.
+2. `CustomPlaybackRuntime.getCustomPlaybackRuntimeAvailability`, which fails without a secure context, Worker, `navigator.gpu`, or `VideoFrame`.
+3. `probeCustomDecodeCapabilities(item)`, the native-media audio probe, and the GPU authorizations the item needs (5 s each), before it advertises anything; see [Probes and caching](#probes-and-caching).
+4. `hasEligibleCustomVideoRoute`, to ask whether the runtime would present one item with the measured capabilities and authorizations.
+5. `getCustomPlaybackEligibility`, when the session starts, with the route flags and authorized keys of `CustomPlaybackEligibilityOptions`.
+   `allowRawSDR` needs only a settled `:sdr` raw key.
 
-## How the profile is augmented
+## Eligibility
 
-`augmentDeviceProfileForCustomDecode` (host), in order:
+`getCustomPlaybackEligibility` checks in order:
 
-1. Strip bitrate.
-2. Find the supported video and audio codecs.
-3. Add one DirectPlayProfile per rule in the engine's `CUSTOM_CONTAINER_CODEC_RULES`.
-4. Add the custom subtitle profiles (vtt, ass/ssa, pgssub).
-5. Scope the stock video and container conditions to non-custom containers.
-6. `widenAuthorizedHDRCodecProfiles`.
-7. `appendMeasuredVideoRouteProfiles`.
-   Each route profile requires VideoRangeType, VideoBitDepth, `IsInterlaced=false`, and VideoProfile.
-   A codec with several routes is split with ApplyConditions.
-8. `appendMeasuredAudioRouteProfiles`.
-9. `splitOriginalAudioRouteProfiles`.
+1. `parsePlaybackSource`: DirectPlay, not live, a custom container, and an http(s) URL.
+   A missing or zero `RunTimeTicks` is an unknown duration, not a rejection.
+   Playback then ends with the streams, audio takes the decoded-PCM route because the native media backend needs a duration, and the worker reports the container's duration on `ready`.
+2. `selectVideoStream`.
+3. Rotation 0 and `IsInterlaced === false`.
+4. `selectVideoOutput` (below).
+5. `selectPlaybackAudio`.
+6. `supportsCustomContainerCodecCombination`.
+7. The runtime budget.
+
+An ineligible result carries its reason, and the host falls back.
 
 ## Probes and caching
 
@@ -104,6 +72,11 @@ The stock profile is the one the add-on's HTML backend returns from `getDevicePr
 
 `selectVideoOutput` tries these in order.
 
+<div class="diagram">
+<a class="diagram-light" href="diagrams/video-route-selection.light.svg"><img src="diagrams/video-route-selection.light.svg" alt="Video route selection order"></a>
+<a class="diagram-dark" href="diagrams/video-route-selection.dark.svg"><img src="diagrams/video-route-selection.dark.svg" alt="Video route selection order"></a>
+</div>
+
 1. A Dolby Vision descriptor.
    `PresentationInput.getDolbyVisionPresentationSelection` accepts any integer profile with the base layer flag set, a valid bit depth, and any 4-bit compatibility ID (CCID) or none; the EL flag never rejects.
    The descriptor names the RPU route (`reconstructionProfile`): Profiles 4, 5, 7, and 8 as signaled; Profiles 10 (AV1) and 20 as 5 with CCID 0 or none and as 8 otherwise; none for Profile 9, the retired profiles, or a stream without an RPU.
@@ -136,62 +109,8 @@ The stock profile is the one the add-on's HTML backend returns from `getDevicePr
    Then, for 10-bit 4:2:0 SDR that none of them decodes (AV1 Main, VP9 Profile 2, or HEVC Main 10 without native decode), raw I420P10 through the raw SDR keys, which are BT.709 only.
 5. PQ or HLG: native external (`external-hevc-main10-bt709-limited:<pq|hlg>-v1`) first, then raw (`<I420P10|I420P12>:bt2020-ncl:bt2020:limited:<pq|hlg>`).
 
-Every HDR and Dolby Vision flag also requires the user's HDR tone mapping setting.
-`allowRawSDR` needs only a settled `:sdr` raw key.
-
-## What the profile advertises
-
-The profile advertises ranges per item HDR scope.
-A known-SDR item gets no HDR routes, and an item with missing metadata is scoped `unknown` and gets all of them.
-The raw Dolby Vision route also advertises DOVIInvalid, Jellyfin's label for P8 outside CCIDs 1, 2, and 4 (and, on Jellyfin 12, for a base whose color contradicts its CCID), because RPU reconstruction presents any CCID.
-The generic DOVIWithEL ranges are advertised with or without the bundled HEVC decoder's Main 10 qualification, because P7 reconstructs from its base layer when no qualified decoder decodes the EL.
-The full HEVC matrix is in [HEVC and Dolby Vision support](codec-support.md).
-
-Per codec, the routes are:
-
-- AV1 (VideoProfile `main`):
-  - native SDR at 8 bits;
-  - raw HDR10, HDR10Plus, and HLG at 10 bits;
-  - raw Dolby Vision Profile 10 at 10 bits (DOVI, DOVIWithHDR10, DOVIWithHDR10Plus, DOVIWithSDR, DOVIWithHLG, and DOVIInvalid, never DOVIWithEL), when `rawHDRVideo.av1` passes and the `I420P10:dovi-rpu-v1` key is authorized;
-  - raw SDR at 10 bits.
-- VP9:
-  - native SDR at 8 bits (`profile 0`);
-  - raw HDR10, HDR10Plus, and HLG, and raw SDR, at 10 bits (`profile 2`).
-- HEVC: as [HEVC and Dolby Vision support](codec-support.md) lists, with raw SDR at 10 bits (`main 10`) beside the native Main 10 SDR route.
-
-Every raw HDR route that advertises HDR10 also advertises HDR10Plus, because HDR10+ always carries a static HDR10 base that raw PQ presents (`getRawHDRRouteVideoRangeTypes`, host).
-
-Raw SDR at 10 bits needs `allowRawSDR` with both I420P10 BT.709 SDR keys, limited and full, because a profile condition cannot express color range.
-
-Jellyfin labels many Dolby Vision streams the engine can present outside the generic Dolby Vision ranges:
-
-- P4 and P20 by transfer (SDR under a `dvhe` or `dvh1` sample entry);
-- DV over Rext, Main 12, or 8-bit Main under a profile and depth the generic ranges do not pair with that label;
-- a P10 Matroska stream without a CCID, by transfer.
-
-For a non-retry Dolby Vision item, `getHDRDeviceProfileOptions` (host) passes the item's streams as `itemMediaSource`.
-`CustomDeviceProfile` asks the engine's `hasEligibleCustomVideoRoute` whether the runtime would present the item with the measured capabilities and authorizations.
-If it would, `CustomDeviceProfile` advertises the item's exact VideoProfile (as the existing route token), VideoBitDepth, and VideoRangeType as one more HEVC or AV1 route.
-
-## Probe scopes
-
-`getHDRDeviceProfileProbeScope` (host) picks the GPU authorizations an item waits for:
-
-| Scope | Waits for |
-| --- | --- |
-| `none` | Nothing: a known-SDR item |
-| `static-hdr` | Native external HDR, and raw HDR only when no external key is authorized |
-| `dolby-vision` | Dolby Vision only; the item declares no HDR base |
-| `dolby-vision-profile7`, `dolby-vision-profile8-hdr10-base`, `dolby-vision-profile8-hlg-base` | Dolby Vision and native external HDR, for the exact native base |
-| `dolby-vision-hdr-base` | Dolby Vision, in parallel with the `static-hdr` waits, for a declared PQ or HLG base outside those exact shapes |
-| `unknown` | Native external HDR, raw HDR, and Dolby Vision |
-
-The scopes assume HEVC, whose static HDR prefers the native external route.
-An AV1, VP9, or HEVC range-extension item presents HDR only through raw planes, so in every scope that can present an HDR base it also waits for raw HDR, in parallel and whatever the external result.
-Eligibility waits the same way for such an item whose metadata or declared Dolby Vision base is PQ or HLG.
-
-The Dolby Vision wait also settles the item's first-use key: Profile 4 in any format, or Profile 7 or single-layer reconstruction in a format other than I420P10.
-Every non-retry profile also waits for the raw SDR authorization, whatever the scope.
+An AV1, VP9, or HEVC range-extension source presents HDR only through raw planes, so a host must settle the raw HDR keys for it whatever the external result.
+The Dolby Vision keys a source needs on first use (Profile 4 in any format, or Profile 7 or single-layer reconstruction in a format other than I420P10) must settle before eligibility.
 
 ## Route keys
 
@@ -202,6 +121,11 @@ Every non-retry profile also waits for the raw SDR authorization, whatever the s
 - Dolby Vision external: `external-I420P10-bt709-limited:dovi-p5-rpu-v1`.
 
 ## Audio routes
+
+<div class="diagram">
+<a class="diagram-light" href="diagrams/audio-output.light.svg"><img src="diagrams/audio-output.light.svg" alt="Audio route choice and the decoded PCM and native-media output paths"></a>
+<a class="diagram-dark" href="diagrams/audio-output.dark.svg"><img src="diagrams/audio-output.dark.svg" alt="Audio route choice and the decoded PCM and native-media output paths"></a>
+</div>
 
 - Track: `DefaultAudioStreamIndex`, else the first audio stream.
   Codec aliases: DCA is dts, EC-3 is eac3, TRUE-HD is truehd.
@@ -230,27 +154,13 @@ Every non-retry profile also waits for the raw SDR authorization, whatever the s
 - Rates: any positive integer, resampled to 48 kHz.
   Past 192 kHz the resampler's kernel widens in proportion, so its band edge stays as sharp as at 192 kHz.
   A browser decoder judges its own rates per item, and a rate it refuses falls back.
-  The profile uses `AudioSampleRate NotEquals 0`, because Jellyfin reuses conditions as transcode targets.
-- Output channels: `WebGPUPlayer.selectDecodedAudioOutputChannelCount` (host) returns 2 when stereo is forced.
-  Otherwise a three-channel or 5.1 source gets 6 when `destination.maxChannelCount` is at least 6, and a 6.1 or 7.1 source gets 8 when it is at least 8, else 6 when it is at least 6.
-  Everything else downmixes to 2 with the user's algorithm.
+- Output channels: `selectCustomAudioOutputChannelCountForMaximum` (`audio/NativeMultichannelAudioOutput.ts`) gives a three-channel or 5.1 source 6 when `destination.maxChannelCount` is at least 6, and a 6.1 or 7.1 source 8 when it is at least 8, else 6 when it is at least 6.
+  Everything else downmixes to 2 with the selected algorithm.
+  A host may force 2.
   A live layout switch applies the same rule to the decoded layout.
 
 ## Gotchas
 
-- Jellyfin ANDs the conditions of every matching CodecProfile (`StreamBuilder`).
-  A looser added profile cannot override a stricter one, so stock profiles are split by container, and codecs with several routes use ApplyConditions.
-- The server matches a profile container against any token of the probed container.
-  Every MP4/MOV file probes as `mov,mp4,m4a,3gp,3g2,mj2`, so a stock split never names an alias of a codec's route containers (`getCustomContainerFamilyForVideoCodec`, host).
-  A stock HEVC split scoped to `mj2,webm`, for example, rejects every Dolby Vision range in MP4 files.
-- Width, Height, VideoLevel, and VideoFramerate are removed only for custom containers.
-  Bitrate is stripped everywhere on non-retry profiles.
-- HEVC routes expand to every (VideoProfile, VideoRangeType) pair, with `VideoBitDepth Equals 0` as the value that always fails.
-  AV1 and VP9 expand the same way when they have more than one route, so their native 8-bit SDR and raw 10-bit SDR share one SDR pair with both depths.
-  H.264 is not expanded.
-- Generic `Rext` advertises a bit depth only when 4:2:0, 4:2:2, and 4:4:4 at that depth are all authorized (`hasCompleteRextBitDepthEnvelope`, host).
-- The native external route needs explicit color fields that a profile cannot express.
-  Such a source can negotiate DirectPlay and then take the raw route or fall back.
 - Native decode uses the hint its probes measured (`getCustomDecodeHardwareAcceleration`).
   Only the routes that present the decoder's opaque hardware output (native external HDR, the native Dolby Vision base, and external Profile 5) prefer hardware.
   Raw-plane AV1 and VP9 prefer software, because Chromium's hardware decoders return opaque 10-bit surfaces.
@@ -258,10 +168,5 @@ Every non-retry profile also waits for the raw SDR authorization, whatever the s
   One exception: 10-bit SDR HEVC has no probe of its own.
   The native HDR HEVC probe gates it with `prefer-hardware`, while the SDR route requests `no-preference`.
   Chromium decodes HEVC only in hardware, so both resolve to the same decoder.
-- AC-3, E-AC-3, and PCM have no runtime probe, so the host's `appendMeasuredNativeAudioRouteProfiles` never emits its 48 kHz profile.
 - These composed routes have no probe vector: DTS mono, DTS 2-channel MA, DTS 3-channel MA, DTS 6-channel HRA, TrueHD and MLP mono, and TrueHD 7.1 at 48 kHz.
-- A profile condition cannot express ChannelLayout, so three-channel routes and E-AC-3 and TrueHD 7.1 are advertised by channel count and qualified by layout only at eligibility.
-- A profile condition cannot express color primaries, so 10-bit SDR AV1 or VP9 tagged BT.601 or BT.2020 negotiates and then fails eligibility: the raw SDR keys are BT.709 only.
-- A P10 Matroska stream without a CCID, labeled by transfer, negotiates through the static HDR ranges, but it declares no base, so it plays only through its RPU route.
-- `customProfileAugmentationAvailable` (host) stays set for the lifetime of the player instance.
-- Dolby Vision sources always disable HLS video stream copy, so an HLS fallback re-encodes the video.
+- The raw SDR keys are BT.709 only, so 10-bit SDR AV1 or VP9 tagged BT.601 or BT.2020 is not eligible.

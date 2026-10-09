@@ -1,5 +1,5 @@
 <!DOCTYPE HTML>
-<html lang="en" class="light sidebar-visible" dir="ltr">
+<html lang="en" class="rust sidebar-visible" dir="ltr">
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
@@ -12,8 +12,7 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon-de23e50b.svg">
-        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="icon" href="favicon-ad71d439.svg">
         <link rel="stylesheet" href="css/variables-8adf115d.css">
         <link rel="stylesheet" href="css/general-e96d0476.css">
         <link rel="stylesheet" href="css/chrome-d279d366.css">
@@ -28,17 +27,21 @@
         <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="theme/content-e5d5904c.css">
+        <link rel="stylesheet" href="theme/sidebar-9277b103.css">
+        <link rel="stylesheet" href="theme/navigation-7d5965d2.css">
+        <link rel="stylesheet" href="theme/diagrams-d4c2bd13.css">
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
-            const default_light_theme = "light";
-            const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6ce9ccd1.js";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "searchindex-a6a3c2ad.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-130df29e.js"></script>
+        <script src="toc-72948aae.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -76,7 +79,7 @@
             try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
             if (theme === null || theme === undefined) { theme = default_theme; }
             const html = document.documentElement;
-            html.classList.remove('light')
+            html.classList.remove('rust')
             html.classList.add(theme);
             html.classList.add("js");
         </script>
@@ -195,13 +198,12 @@ Demux, decode, presentation, and audio all run in the engine.</li>
 <p>Nothing is offered until the running browser has proven it.
 A decode route is qualified by decoding a known stream and checking the exact output.
 An HDR or Dolby Vision presentation is authorized by rendering a known input through the production shader on the current GPU device.</p>
-<p>The engine knows nothing about Jellyfin.
-Its host is the Jellyfin plugin <code>jellyfin-plugin-webgpu-player</code>.
-The plugin’s web client add-on embeds the engine as a git submodule at <code>jellyfin-webgpu-client/vendor/webgpu-player/</code>, and supplies the Jellyfin player, the device profile, the settings, and the HTML fallback.
-See <a href="jellyfin-host.html">The Jellyfin host</a>.</p>
+<p>The engine knows nothing about Jellyfin’s player, server API, or UI; it reads Jellyfin’s media metadata shapes as its input.
+Its host is the Jellyfin plugin <code>jellyfin-plugin-webgpu-player</code>, whose web client add-on embeds the engine as a git submodule at <code>jellyfin-webgpu-client/vendor/webgpu-player/</code>.
+The add-on supplies the Jellyfin player, the device profile, the settings, and the HTML fallback, and the plugin documents them in its own book, in <code>docs/</code> of the plugin repository.</p>
 <h2 id="invariants"><a class="header" href="#invariants">Invariants</a></h2>
 <ul>
-<li>Negotiation advertises only what the selected route implements and has exact-output evidence for.
+<li>A host advertises only what the selected route implements and has exact-output evidence for.
 A route is never gated on resolution, level, frame rate, bitrate, or a throughput benchmark.</li>
 <li><code>capability/CustomContainerCodecSupport.ts</code> is the only table of which container carries which codec.
 There are no decoder pair blacklists.</li>
@@ -215,7 +217,6 @@ A successful negotiation is not a successful playback.</li>
 <ul>
 <li>Engine paths are relative to the engine root.
 Paths inside <code>src/</code> may drop the prefix; <code>capability/</code>, <code>pipeline/</code>, <code>audio/</code>, <code>video/</code>, <code>presentation/</code>, <code>color/</code>, and <code>validation/</code> are its domains.</li>
-<li>Host paths are relative to the plugin repository root and marked (host), for example <code>jellyfin-webgpu-client/src/WebGPUPlayer.ts</code> (host).</li>
 <li>Symbols are written <code>file:symbol</code> or <code>Class.method</code>.</li>
 </ul>
 <h2 id="where-to-look"><a class="header" href="#where-to-look">Where to look</a></h2>
@@ -228,8 +229,8 @@ Paths inside <code>src/</code> may drop the prefix; <code>capability/</code>, <c
 <tr><td>Build and test a checkout</td><td><a href="setup.html">Set up a checkout</a></td></tr>
 <tr><td>Find a folder or a file</td><td><a href="layout.html">Repository layout</a>, <a href="module-map.html">Module map</a></td></tr>
 <tr><td>Follow a playback session</td><td><a href="architecture.html">Architecture</a></td></tr>
-<tr><td>Learn why a source plays or not</td><td><a href="negotiation.html">Negotiation and routes</a>, <a href="codec-support.html">HEVC and Dolby Vision support</a></td></tr>
-<tr><td>Put the engine in a page</td><td><a href="embedding.html">Embedding the engine</a>, <a href="jellyfin-host.html">The Jellyfin host</a></td></tr>
+<tr><td>Learn why a source plays or not</td><td><a href="routes.html">Eligibility and routes</a>, <a href="codec-support.html">HEVC and Dolby Vision support</a></td></tr>
+<tr><td>Put the engine in a page</td><td><a href="embedding.html">Embedding the engine</a></td></tr>
 <tr><td>Change a decoder or a vector</td><td><a href="decoders.html">WebAssembly decoders</a>, <a href="codec-vectors.html">Codec vectors</a>, <a href="recipes.html">Recipes</a></td></tr>
 <tr><td>Avoid repeating an investigation</td><td><a href="decisions.html">Decisions</a></td></tr>
 </tbody>
@@ -281,6 +282,7 @@ Paths inside <code>src/</code> may drop the prefix; <code>capability/</code>, <c
         <script src="book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="theme/diagrams-4e7daedb.js"></script>
 
 
 

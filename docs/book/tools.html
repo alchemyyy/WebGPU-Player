@@ -1,5 +1,5 @@
 <!DOCTYPE HTML>
-<html lang="en" class="light sidebar-visible" dir="ltr">
+<html lang="en" class="rust sidebar-visible" dir="ltr">
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
@@ -12,8 +12,7 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon-de23e50b.svg">
-        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="icon" href="favicon-ad71d439.svg">
         <link rel="stylesheet" href="css/variables-8adf115d.css">
         <link rel="stylesheet" href="css/general-e96d0476.css">
         <link rel="stylesheet" href="css/chrome-d279d366.css">
@@ -28,17 +27,21 @@
         <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="theme/content-e5d5904c.css">
+        <link rel="stylesheet" href="theme/sidebar-9277b103.css">
+        <link rel="stylesheet" href="theme/navigation-7d5965d2.css">
+        <link rel="stylesheet" href="theme/diagrams-d4c2bd13.css">
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
             const path_to_root = "";
-            const default_light_theme = "light";
-            const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6ce9ccd1.js";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "searchindex-a6a3c2ad.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-130df29e.js"></script>
+        <script src="toc-72948aae.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -76,7 +79,7 @@
             try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
             if (theme === null || theme === undefined) { theme = default_theme; }
             const html = document.documentElement;
-            html.classList.remove('light')
+            html.classList.remove('rust')
             html.classList.add(theme);
             html.classList.add("js");
         </script>
@@ -182,6 +185,14 @@
 Nothing in it ships.
 Run every command from the engine root.
 <code>tools/constants.json</code> is described in <a href="layout.html#folder-names-live-in-one-file">Repository layout</a>.</p>
+<h2 id="diagram-renderer"><a class="header" href="#diagram-renderer">Diagram renderer</a></h2>
+<pre><code class="language-sh">node tools/render-diagrams.mjs [--check | --watch] [book directory ...]
+</code></pre>
+<p><code>render-diagrams.mjs</code> renders each book’s PlantUML sources from <code>diagrams/</code> into light and dark SVGs in <code>src/diagrams/</code>, and removes SVGs whose source is gone.
+With no book directory it renders this book; the Jellyfin plugin passes its own <code>docs/</code> too.
+<code>--check</code> renders into a temporary folder and fails on any difference.
+It needs Java, and downloads the pinned PlantUML jar into <code>bin/plantuml/</code> on first use.
+See <a href="maintaining.html#diagrams">Maintaining this book</a>.</p>
 <h2 id="dts-downmix-report"><a class="header" href="#dts-downmix-report">DTS downmix report</a></h2>
 <pre><code class="language-sh">npx --no-install vite-node --script tools/report_dts_downmix_reference.ts --check
 </code></pre>
@@ -253,6 +264,7 @@ It runs the DTS decoder from <code>bin/wasm/</code>, so build the decoders first
         <script src="book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
+        <script src="theme/diagrams-4e7daedb.js"></script>
 
 
 

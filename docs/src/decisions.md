@@ -1,6 +1,7 @@
 # Decisions
 
-This chapter records settled decisions about the engine and its Jellyfin host.
+This chapter records settled decisions about the engine.
+The Jellyfin plugin's book records the decisions about its integration.
 Dates are month-day in 2026, UTC.
 Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the engine was developed until it became its own repository on 10-02.
 
@@ -17,30 +18,13 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
   The real bounds remain: the level's DPB, a representable copy layout, the WASM heap (4 GiB for MPEG-2/VC-1, 2 GiB in the prebuilt HEVC and OpenJPEG decoders), the adapter's texture limit, and what a browser decoder accepts.
   Limits that pace or chunk work stay as tuning: transfer credits, queue depths, pending windows, and output chunk sizes.
   So do guards against corrupt data that no real stream reaches, such as header and RPU size bounds and the 2 MiB audio packet bound.
-- Bitrate is telemetry only.
-  The first PlaybackInfo request omits bitrate.
-  Only a bounded second request may carry it, to size a transcode that was already decided.
 - Live performance adaptation is deferred to a separate runtime controller that would react to sustained drops, queue starvation, underruns, and A/V drift, with warm-up, hysteresis, and cooldown.
-  It must never change the device profile during a session.
 - One composition matrix (08-05, `9a1c3f2922`).
   `capability/CustomContainerCodecSupport.ts` decides only whether a container carries a codec.
   Each track is qualified on its own.
   Never add decoder pair blacklists.
-- Retries use the stock HTML profile, with no custom widening.
-  A custom failure that asks for renegotiation can therefore get `AudioCodecNotSupported` (for example E-AC-3) on the retry.
-  Fix the trigger, not the retry profile.
-- Dolby Vision is never stream-copied into HLS (08-05).
-  Without a veto, the augmented profile lets Jellyfin copy Dolby Vision HEVC into HLS, which Chromium MSE rejects.
-  `WebGPUPlayer.supportsVideoStreamCopy()` (host) returns false for Dolby Vision sources, and the host sends `AllowVideoStreamCopy=false`.
-- The Jellyfin integration is a server plugin with a client add-on (10-04; the fork was abandoned 10-05).
-  Stock Jellyfin Web stays unmodified.
-  The add-on loads through Jellyfin Web's window plugin path, and stand-ins replace the PlaybackManager seams the fork had added (see [The Jellyfin host](jellyfin-host.md#host-compatible-mode)).
-- A Dolby Vision item advertises its own exact route (10-06, host).
-  Jellyfin labels P4 and P20 by transfer, and labels Dolby Vision over Rext, Main 12, or 8-bit Main in ranges the generic routes do not pair with that profile and depth.
-  Widening the generic ranges would advertise those pairs for every item, so the profile asks the engine whether this item has a runtime route and adds exactly its VideoProfile, VideoBitDepth, and VideoRangeType.
-- A declared HDR base also waits for the static HDR probes (10-06, host).
-  A Dolby Vision item whose declared PQ or HLG base is not an exact native P7 or P8 base probes Dolby Vision in parallel with the static HDR routes (external first, raw only when no external key is authorized), so its base fallback can be advertised.
-  Any other Dolby Vision item waits only for Dolby Vision.
+- `hasEligibleCustomVideoRoute` answers for one item (10-06).
+  Jellyfin labels some Dolby Vision streams in ranges a host's generic routes do not pair with their profile and depth, so the engine tells a host whether this item has a runtime route, and the host advertises exactly that item's route.
 - Video probes run per item; audio probes always run (10-08).
   Probing every codec on the first negotiation of a page blocked PlaybackInfo for about 2.6 s, mostly on decoders the item did not contain.
   A video stream cannot change within a negotiation, since another version or item renegotiates, so the video probes follow the item's streams and run on demand.
@@ -50,12 +34,6 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
   The exact probes armed their timeouts before downloading their vectors and binaries, and the range-extension probes downloaded inside the queue's 2 s timed slot, so a slow cold link failed a capable decoder as unsupported or timed out every later probe.
   A run now starts every selected probe's downloads at once and each probe decodes only once its own are done; decoding stays one probe at a time.
   Worker scripts and glue are warmed in the HTTP cache rather than spawned early, so no worker or compile competes with a running probe's real-time-factor measurement.
-- An identical play request joins the pending start (10-08, host).
-  A second click on the same item while its start is pending used to supersede a healthy session and repeat the item fetch, PlaybackInfo, and worker setup.
-  The PlaybackManager hook returns the pending request's promise for a request with the same items and options, and any other request still supersedes it.
-- Every raw HDR route that advertises HDR10 also advertises HDR10Plus (10-09, host).
-  HDR10+ always carries a static HDR10 base, which raw PQ presents, so AV1 and VP9 advertise the label as HEVC does.
-  Jellyfin labels a stream HDR10Plus whenever it carries HDR10+ metadata, so a route without the label never direct-plays such a stream.
 
 ## Video decode and Dolby Vision
 
@@ -270,13 +248,6 @@ These were settled on Firefox 157 on Windows.
 - Presenter geometry (08-07).
   Layout is invalidated on seek, resize, style and class mutations, and CSS motion events.
   Nothing reads layout per frame during an animation.
-- No asynchronous work before an ordinary HTML start (08-05, host).
-  With custom decode off, `HtmlVideoPlayer.play()` starts synchronously.
-  Normalization gain moves only on a fallback from the custom path to HTML.
-  Seek completions are revision-guarded, and retired native audio is muted before its asynchronous cleanup.
-- Parallel probe sessions cause false failures.
-  Three concurrent sessions produced spurious `DirectPlayError`s.
-  Diagnose one session at a time.
 
 ## Audio
 
@@ -393,10 +364,8 @@ These were settled on Firefox 157 on Windows.
 - The engine is an npm workspace of its host (10-02).
   npm installs the engine's dependencies, so the host lists only what it uses directly.
   Inside the host the engine has no `node_modules` of its own, and its tooling finds packages by walking up from the engine root.
-- `WebGPUPlayer.ts` stays in the host (10-02).
-  It implements Jellyfin Web's player contract: events, superseded starts, device profiles, the HTML delegate, and user settings.
-  Moving it would make the engine Jellyfin-aware, or need a wide host-injection layer.
-  A later refactor may move its host-neutral orchestration into an engine session class.
+- The Jellyfin player stays in the host (10-02).
+  Moving it would make the engine Jellyfin-aware; the plugin's book records the decision.
 - Engine workers are prebuilt (10-02).
   esbuild bundles them as classic workers, because the decoder glue loads through `importScripts`.
   They are served at stable URLs under `libraries/webgpu-player/` with a per-build `?v=` key, not as host bundler chunks.
@@ -436,14 +405,8 @@ These were settled on Firefox 157 on Windows.
 - Both repositories lint the engine (10-02).
   The engine has its own ESLint config adapted from Jellyfin Web's, and the host's lint also covers the engine's `src/` and `test/`, so the engine stays clean under both.
 - The documentation is this book (10-06): one mdBook in `docs/`, with no READMEs nested in other folders and no separate agent map.
-- libbitsub replaces libpgs (10-02, host).
-  This follows upstream and adds VobSub support.
-  The custom path drives it through `timeOffset`, measured against the source-less video.
-
-## Transport
-
-- hls.js is a local fork (08-09, host).
-  The fork streams a partial `mdat` after a complete `moof` and `mdat` header, to stay under the MSE quota on very high bitrate fMP4.
-- hls.js is vendored as a submodule (10-02, host): `alchemyyy/hls.js`, branch `fix/cals2`, at `jellyfin-webgpu-client/vendor/webgpu-player-hls/`.
-  The add-on aliases `hls.js` to it, and builds its `dist` when it is missing.
-  It replaced a sibling checkout whose `dist` had silently gone stale.
+  It covers only the engine (10-09); the Jellyfin plugin documents its integration in its own book.
+- Diagrams are PlantUML, rendered to committed SVGs in two variants (10-09).
+  They replace the text diagrams and the PlantUML activity diagrams of the Jellyfin Web fork, whose paths, line numbers, and timeouts no longer matched the code.
+  One theme, adapted from the fork's Boreal theme, renders a light variant for the rust book theme and a dark one for coal, and the book shows the variant matching the reader's theme.
+  The SVGs are committed so a book builds without Java; the PlantUML jar is not, and the renderer downloads it into `bin/plantuml/` against a pinned SHA-256.
