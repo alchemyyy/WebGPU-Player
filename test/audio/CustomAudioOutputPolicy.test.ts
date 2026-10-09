@@ -14,6 +14,11 @@ import {
     isSupportedCustomAudioOutputLayout
 } from 'webgpu-player/audio/CustomAudioOutputPolicy';
 
+// Any positive integer rate is well formed; a PCM source past 192 kHz included
+const DXD_SAMPLE_RATE = 352_800;
+const ZERO_SAMPLE_RATE = 0;
+const FRACTIONAL_SAMPLE_RATE = 48_000.5;
+
 describe('CustomAudioOutputPolicy', () => {
     it('accepts only the measured stereo and native multichannel 48 kHz layouts', () => {
         expect(isSupportedCustomAudioOutputLayout(
@@ -76,11 +81,11 @@ describe('CustomAudioOutputPolicy', () => {
         expect(isSupportedCustomAudioInputLayout('eac3', 8, 48_000)).toBe(true);
         expect(isSupportedCustomAudioInputLayout('eac3', 6, 44_100)).toBe(true);
         expect(isSupportedCustomAudioInputLayout('eac3', 6, 12_345)).toBe(true);
-        expect(isSupportedCustomAudioInputLayout('eac3', 6, 192_001)).toBe(false);
+        expect(isSupportedCustomAudioInputLayout('eac3', 6, ZERO_SAMPLE_RATE)).toBe(false);
         expect(isSupportedCustomAudioInputLayout('eac3', '6', 48_000)).toBe(false);
     });
 
-    it('accepts measured and composed DTS channel beds at every bounded sample rate', () => {
+    it('accepts measured and composed DTS channel beds at every sample rate', () => {
         expect(getSupportedCustomAudioInputChannelCounts('dts')).toEqual([
             1,
             2,
@@ -103,8 +108,8 @@ describe('CustomAudioOutputPolicy', () => {
                 .toBe(true);
         }
         expect(isSupportedCustomAudioInputLayout('dts', 4, 48_000)).toBe(false);
-        expect(isSupportedCustomAudioInputLayout('dts', 8, 2_999)).toBe(false);
-        expect(isSupportedCustomAudioInputLayout('dts', 8, 192_001)).toBe(false);
+        expect(isSupportedCustomAudioInputLayout('dts', 8, ZERO_SAMPLE_RATE)).toBe(false);
+        expect(isSupportedCustomAudioInputLayout('dts', 8, FRACTIONAL_SAMPLE_RATE)).toBe(false);
     });
 
     it('accepts vector and composed TrueHD channel-bed routes', () => {
@@ -124,7 +129,7 @@ describe('CustomAudioOutputPolicy', () => {
         }
         expect(isSupportedCustomAudioInputLayout('truehd', 8, 96_000)).toBe(false);
         expect(isSupportedCustomAudioInputLayout('truehd', 3, 48_000)).toBe(false);
-        expect(isSupportedCustomAudioInputLayout('truehd', 6, 192_001)).toBe(false);
+        expect(isSupportedCustomAudioInputLayout('truehd', 6, FRACTIONAL_SAMPLE_RATE)).toBe(false);
         expect(getSupportedCustomAudioInputChannelCounts('mlp')).toEqual([ 1, 2 ]);
         expect(isSupportedCustomAudioInputLayout('mlp', 1, 48_000)).toBe(true);
         expect(isSupportedCustomAudioInputLayout('mlp', 2, 48_000)).toBe(true);
@@ -183,7 +188,8 @@ describe('CustomAudioOutputPolicy', () => {
         expect(isSupportedCustomAudioInputLayout('pcm-s24', 2, 44_100)).toBe(true);
         expect(isSupportedCustomAudioInputLayout('ulaw', 1, 8_000)).toBe(true);
         expect(isSupportedCustomAudioInputLayout('pcm-s24', 8, 48_000)).toBe(false);
-        expect(isSupportedCustomAudioInputLayout('pcm-s24', 2, 2_999)).toBe(false);
+        expect(isSupportedCustomAudioInputLayout('pcm-s24', 2, DXD_SAMPLE_RATE)).toBe(true);
+        expect(isSupportedCustomAudioInputLayout('pcm-s24', 2, FRACTIONAL_SAMPLE_RATE)).toBe(false);
         expect(isCustomMediabunnyPCMAudioCodec('pcm-s64le')).toBe(false);
         expect(isMediabunnyPCMDecoderCodec('pcm-s64')).toBe(false);
     });

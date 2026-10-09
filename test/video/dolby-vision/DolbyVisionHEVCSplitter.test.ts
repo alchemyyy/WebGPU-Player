@@ -10,6 +10,8 @@ import {
     splitDolbyVisionHEVCAccessUnit
 } from 'webgpu-player/video/dolby-vision/DolbyVisionHEVCSplitter';
 
+const EMPTY_ACCESS_UNIT_ERROR = 'access unit is empty';
+
 function createNALUnit(type: number, payload: readonly number[]): Uint8Array {
     return new Uint8Array([ (type & 0x3F) << 1, 1, ...payload ]);
 }
@@ -278,7 +280,7 @@ describe('DolbyVisionHEVCSplitter validation', () => {
         expect(() => splitDolbyVisionHEVCAccessUnit(
             new Uint8Array(),
             { kind: 'annex-b' }
-        )).toThrow('size is unsupported');
+        )).toThrow(EMPTY_ACCESS_UNIT_ERROR);
         expect(() => splitDolbyVisionHEVCAccessUnit(
             new Uint8Array([ 0, 0, 0, 5, 1, 2 ]),
             { kind: 'length-prefixed', lengthSize: 4 }

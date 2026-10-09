@@ -75,15 +75,17 @@ const ULTRA_HD_BLU_RAY_BL_SIGNAL_COMPATIBILITY_ID = 6;
 const NO_BL_SIGNAL_COMPATIBILITY_ID = 0;
 // Profile 5 carries an IPT base layer that is never displayable on its own
 const NONCOMPATIBLE_BASE_LAYER_PROFILE = 5;
+// Profile 10 is AV1; it carries a single-layer RPU in a metadata OBU
+const AV1_PROFILE = 10;
 // Profile 20 is stereo MV-HEVC; its base view reconstructs like a single-layer profile
 const MULTIVIEW_HEVC_PROFILE = 20;
 // Profiles 0 through 3 and 9 are 8-bit by definition; every other profile is 10-bit
 const EIGHT_BIT_BASE_LAYER_PROFILES = new Set([ 0, 1, 2, 3, 9 ]);
 
 /**
- * Returns the RPU route for a signaled profile. Profile 20 reconstructs its base view like Profile 5 when no
- * compatible base is declared and like Profile 8 otherwise. AVC Profile 9, AV1 Profile 10, and the retired
- * profiles have no RPU route, so only a declared base layer can present them.
+ * Returns the RPU route for a signaled profile.
+ * AV1 Profile 10 and the Profile 20 base view reconstruct like Profile 5 when no compatible base is declared (10.0 has an IPT base), and like Profile 8 otherwise.
+ * AVC Profile 9 and the retired profiles have no RPU route, so only a declared base layer can present them.
  */
 function getDolbyVisionReconstructionProfile(
     profile: number,
@@ -99,6 +101,7 @@ function getDolbyVisionReconstructionProfile(
         case 7:
         case 8:
             return profile;
+        case AV1_PROFILE:
         case MULTIVIEW_HEVC_PROFILE:
             return compatibilityID === null || compatibilityID === NO_BL_SIGNAL_COMPATIBILITY_ID ? 5 : 8;
         default:

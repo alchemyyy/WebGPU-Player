@@ -2,12 +2,14 @@ import { EncodedPacket } from 'mediabunny';
 import { describe, expect, it, vi } from 'vitest';
 
 import DolbyVisionEncodedMetadataQueue, {
+    DolbyVisionAV1EncodedMetadataQueue,
     MAXIMUM_DOLBY_VISION_PENDING_FRAME_COUNT
 } from 'webgpu-player/video/dolby-vision/DolbyVisionEncodedMetadata';
 import {
     isTransferableDolbyVisionEncodedFrameMetadata,
     takeTransferableDolbyVisionEncodedFrameMetadata
 } from 'webgpu-player/video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
+import { AV1OBUParseError } from 'webgpu-player/video/av1/AV1OBUParser';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 
 function createRPUParser(
@@ -102,7 +104,7 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
             processedPacket.enhancementLayerPacket?.data ?? new Uint8Array()
         )).toEqual([ 1 ]);
         const metadata = queue.takeFrameMetadata(1_250_000);
-        expect(metadata?.rpuNALUnits).toEqual([ rpu ]);
+        expect(metadata?.encodedRPUs).toEqual([ rpu ]);
         expect(metadata?.parsedRPUData).toHaveLength(1);
         expect(rpuParser.parse).toHaveBeenCalledWith(rpu);
         expect(metadata?.enhancementLayerDisposition).toBe('discarded-mel');
@@ -189,9 +191,9 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
             processedPacket.enhancementLayerPacket?.data ?? new Uint8Array()
         )).toEqual([ 19 ]);
         expect(metadata).toMatchObject({
+            encodedRPUs: [ rpu ],
             enhancementLayerDisposition: 'discarded-fel',
-            hasEnhancementLayerVCL: true,
-            rpuNALUnits: [ rpu ]
+            hasEnhancementLayerVCL: true
         });
         expect(rpuParser.parse).toHaveBeenCalledWith(rpu);
         queue.requireDrained();
@@ -243,9 +245,9 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
                 processedPacket.baseLayerPacket?.data ?? new Uint8Array()
             )).toEqual([ 19 ]);
             expect(metadata).toMatchObject({
+                encodedRPUs: [ rpu ],
                 enhancementLayerDisposition: 'absent',
-                hasEnhancementLayerVCL: false,
-                rpuNALUnits: [ rpu ]
+                hasEnhancementLayerVCL: false
             });
             expect(metadata?.parsedRPUData).toHaveLength(1);
             expect(isTransferableDolbyVisionEncodedFrameMetadata(
@@ -327,9 +329,9 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
         expect(processedPacket.enhancementLayerPacket).toBeNull();
         expect(processedPacket.hasEnhancementLayerVCL).toBe(false);
         expect(metadata).toMatchObject({
+            encodedRPUs: [ rpu ],
             enhancementLayerDisposition: 'absent',
-            hasEnhancementLayerVCL: false,
-            rpuNALUnits: [ rpu ]
+            hasEnhancementLayerVCL: false
         });
         expect(isTransferableDolbyVisionEncodedFrameMetadata(
             takeTransferableDolbyVisionEncodedFrameMetadata(metadata)
@@ -418,8 +420,8 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
             2
         ));
 
-        expect(queue.takeFrameMetadata(3_000_000)?.rpuNALUnits).toEqual([ firstRPU ]);
-        expect(queue.takeFrameMetadata(3_000_000)?.rpuNALUnits).toEqual([ secondRPU ]);
+        expect(queue.takeFrameMetadata(3_000_000)?.encodedRPUs).toEqual([ firstRPU ]);
+        expect(queue.takeFrameMetadata(3_000_000)?.encodedRPUs).toEqual([ secondRPU ]);
         queue.requireDrained();
     });
 
@@ -480,6 +482,190 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
         }
 
         await expect(queue.processPacket(createPacket(packetData, 10, 100))).rejects.toThrow(
+            'frame window exceeded its bound'
+        );
+        queue.clear();
+        queue.requireDrained();
+    });
+});
+
+const AV1_OBU_HAS_SIZE_FIELD_FLAG = 0x02;
+const AV1_OBU_TYPE_SEQUENCE_HEADER = 1;
+const AV1_OBU_TYPE_TEMPORAL_DELIMITER = 2;
+const AV1_OBU_TYPE_METADATA = 5;
+const AV1_OBU_TYPE_FRAME = 6;
+const AV1_METADATA_TYPE_ITUT_T35 = 4;
+// Country code, Dolby's provider code and oriented code, then the start of an EMDF container
+const AV1_DOLBY_VISION_T35_HEADER = [ 0xB5, 0x00, 0x3B, 0x00, 0x00, 0x08, 0x00, 0x37, 0xCD, 0x08 ];
+
+function createAV1OBU(type: number, payload: readonly number[]): Uint8Array {
+    return new Uint8Array([
+        (type << 3) | AV1_OBU_HAS_SIZE_FIELD_FLAG,
+        payload.length,
+        ...payload
+    ]);
+}
+
+function createAV1DolbyVisionT35Message(rpuByte: number): number[] {
+    return [ ...AV1_DOLBY_VISION_T35_HEADER, rpuByte, 0x80 ];
+}
+
+function createAV1DolbyVisionMetadataOBU(rpuByte: number): Uint8Array {
+    return createAV1OBU(AV1_OBU_TYPE_METADATA, [
+        AV1_METADATA_TYPE_ITUT_T35,
+        ...createAV1DolbyVisionT35Message(rpuByte)
+    ]);
+}
+
+function concatenateAV1OBUs(obus: readonly Uint8Array[]): Uint8Array {
+    const output = new Uint8Array(obus.reduce(
+        (byteLength: number, obu: Uint8Array): number => byteLength + obu.byteLength,
+        0
+    ));
+    let offset = 0;
+    for (const obu of obus) {
+        output.set(obu, offset);
+        offset += obu.byteLength;
+    }
+    return output;
+}
+
+function createAV1RPUParser(
+    packedRPUData: ArrayBuffer = createDolbyVisionAuthorizationRPUVector(8)
+): {
+        parseAV1ITUTT35: ReturnType<typeof vi.fn>
+    } {
+    return {
+        parseAV1ITUTT35: vi.fn(async (): Promise<ArrayBuffer> => (
+            packedRPUData.slice(0)
+        ))
+    };
+}
+
+describe('DolbyVisionAV1EncodedMetadataQueue', () => {
+    it('strips the RPU OBU and keys its parsed metadata by the unit timestamp', async () => {
+        const temporalDelimiter = createAV1OBU(AV1_OBU_TYPE_TEMPORAL_DELIMITER, []);
+        const frame = createAV1OBU(AV1_OBU_TYPE_FRAME, [ 1, 2, 3 ]);
+        const rpuParser = createAV1RPUParser();
+        const queue = new DolbyVisionAV1EncodedMetadataQueue(rpuParser);
+
+        const processedUnit = await queue.processTemporalUnit(createPacket(
+            concatenateAV1OBUs([ temporalDelimiter, createAV1DolbyVisionMetadataOBU(0x42), frame ]),
+            1.25,
+            7
+        ));
+        const metadata = queue.takeFrameMetadata(1_250_000);
+
+        expect(processedUnit.hasFrame).toBe(true);
+        expect(processedUnit.decoderPacket).toMatchObject({
+            microsecondTimestamp: 1_250_000,
+            sequenceNumber: 7,
+            type: 'key'
+        });
+        expect(Array.from(processedUnit.decoderPacket.data)).toEqual(Array.from(concatenateAV1OBUs([
+            temporalDelimiter,
+            frame
+        ])));
+        expect(rpuParser.parseAV1ITUTT35).toHaveBeenCalledOnce();
+        expect(Array.from(rpuParser.parseAV1ITUTT35.mock.calls[0][0] as Uint8Array)).toEqual(
+            createAV1DolbyVisionT35Message(0x42)
+        );
+        expect(metadata).toMatchObject({
+            enhancementLayerDisposition: 'absent',
+            hasEnhancementLayerVCL: false
+        });
+        expect(metadata?.parsedRPUData).toHaveLength(1);
+        expect(isTransferableDolbyVisionEncodedFrameMetadata(
+            takeTransferableDolbyVisionEncodedFrameMetadata(metadata)
+        )).toBe(true);
+        queue.requireDrained();
+    });
+
+    it('passes a unit without an RPU through as the same packet', async () => {
+        const rpuParser = createAV1RPUParser();
+        const queue = new DolbyVisionAV1EncodedMetadataQueue(rpuParser);
+        const packet = createPacket(createAV1OBU(AV1_OBU_TYPE_FRAME, [ 1 ]), 2);
+
+        const processedUnit = await queue.processTemporalUnit(packet);
+
+        expect(processedUnit.decoderPacket).toBe(packet);
+        expect(processedUnit.hasFrame).toBe(true);
+        expect(queue.takeFrameMetadata(2_000_000)).toBeNull();
+        expect(rpuParser.parseAV1ITUTT35).not.toHaveBeenCalled();
+        queue.requireDrained();
+    });
+
+    it('records no frame for a unit without a frame header', async () => {
+        const queue = new DolbyVisionAV1EncodedMetadataQueue(createAV1RPUParser());
+
+        const processedUnit = await queue.processTemporalUnit(createPacket(concatenateAV1OBUs([
+            createAV1OBU(AV1_OBU_TYPE_TEMPORAL_DELIMITER, []),
+            createAV1OBU(AV1_OBU_TYPE_SEQUENCE_HEADER, [ 1 ])
+        ]), 2.5));
+
+        expect(processedUnit.hasFrame).toBe(false);
+        queue.requireDrained();
+        expect(() => queue.takeFrameMetadata(2_500_000)).toThrow(
+            'A decoded AV1 frame has no matching encoded packet metadata'
+        );
+    });
+
+    it('rejects two RPUs in one temporal unit before parsing either', async () => {
+        const rpuParser = createAV1RPUParser();
+        const queue = new DolbyVisionAV1EncodedMetadataQueue(rpuParser);
+
+        await expect(queue.processTemporalUnit(createPacket(concatenateAV1OBUs([
+            createAV1DolbyVisionMetadataOBU(1),
+            createAV1DolbyVisionMetadataOBU(2),
+            createAV1OBU(AV1_OBU_TYPE_FRAME, [ 3 ])
+        ]), 3))).rejects.toThrow('more than one Dolby Vision RPU');
+        expect(rpuParser.parseAV1ITUTT35).not.toHaveBeenCalled();
+        queue.requireDrained();
+    });
+
+    it('rejects an RPU in a temporal unit without a frame', async () => {
+        const queue = new DolbyVisionAV1EncodedMetadataQueue(createAV1RPUParser());
+
+        await expect(queue.processTemporalUnit(createPacket(concatenateAV1OBUs([
+            createAV1OBU(AV1_OBU_TYPE_SEQUENCE_HEADER, [ 1 ]),
+            createAV1DolbyVisionMetadataOBU(2)
+        ]), 3.5))).rejects.toThrow('not paired with an AV1 frame');
+        queue.requireDrained();
+    });
+
+    it('rejects a malformed temporal unit and a failed RPU parse without recording a frame', async () => {
+        const parseFailure = new Error('RPU parse failed');
+        const rpuParser = createAV1RPUParser();
+        rpuParser.parseAV1ITUTT35.mockRejectedValue(parseFailure);
+        const queue = new DolbyVisionAV1EncodedMetadataQueue(rpuParser);
+
+        await expect(queue.processTemporalUnit(createPacket(
+            new Uint8Array([ (AV1_OBU_TYPE_FRAME << 3) | AV1_OBU_HAS_SIZE_FIELD_FLAG, 9, 1 ]),
+            4
+        ))).rejects.toThrow(AV1OBUParseError);
+        await expect(queue.processTemporalUnit(createPacket(concatenateAV1OBUs([
+            createAV1DolbyVisionMetadataOBU(1),
+            createAV1OBU(AV1_OBU_TYPE_FRAME, [ 2 ])
+        ]), 4.5))).rejects.toBe(parseFailure);
+        queue.requireDrained();
+    });
+
+    it('rejects a decoder that loses a frame and bounds the pending frames', async () => {
+        const queue = new DolbyVisionAV1EncodedMetadataQueue(createAV1RPUParser());
+        const packetData = createAV1OBU(AV1_OBU_TYPE_FRAME, [ 1 ]);
+        await queue.processTemporalUnit(createPacket(packetData, 5));
+
+        expect(() => queue.requireDrained()).toThrow(
+            'The AV1 decoder ended before every metadata entry was matched'
+        );
+        for (
+            let packetIndex = 1;
+            packetIndex < MAXIMUM_DOLBY_VISION_PENDING_FRAME_COUNT;
+            packetIndex += 1
+        ) {
+            await queue.processTemporalUnit(createPacket(packetData, 5 + (packetIndex / 24), packetIndex));
+        }
+        await expect(queue.processTemporalUnit(createPacket(packetData, 10, 100))).rejects.toThrow(
             'frame window exceeded its bound'
         );
         queue.clear();

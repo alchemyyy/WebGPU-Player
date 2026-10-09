@@ -1,5 +1,12 @@
 // @vitest-environment node
 
+import { createDolbyVisionAV1ITUTT35Payload } from '../../helpers/dolbyVisionAV1ITUTT35Payload';
+import {
+    createMixedDolbyVisionRPUVector,
+    getPackedComponentFlagsByteOffset,
+    getPackedSegmentByteOffset,
+    MIXED_COMPONENT_INDEX
+} from '../../helpers/dolbyVisionMixedRPUVector';
 import { TEST_VECTORS_DIRECTORY, WASM_OUTPUT_DIRECTORY } from '../../helpers/enginePaths';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -19,6 +26,11 @@ import DolbyVisionRPUParser, {
     type DolbyVisionRPUParserDependencies,
     type DolbyVisionRPULayerMode
 } from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParser';
+import {
+    DOLBY_VISION_RPU_COMPONENT_FLAG_MMR,
+    DOLBY_VISION_RPU_COMPONENT_FLAG_POLYNOMIAL,
+    DOLBY_VISION_RPU_SEGMENT_MMR_ORDER_INDEX
+} from 'webgpu-player/video/dolby-vision/DolbyVisionRPUDataLayout';
 
 const PARSER_WASM_PATH = resolve(WASM_OUTPUT_DIRECTORY, 'libdovi', 'dovi-rpu-parser.wasm');
 const RPU_VECTOR_DIRECTORY = resolve(TEST_VECTORS_DIRECTORY, 'dolby-vision-rpu');
@@ -28,6 +40,12 @@ const WASM_PAGE_BYTE_LENGTH = 64 * 1_024;
 const RPU_FORMAT_EXTENSION_BYTE_INDEX = 6;
 const RPU_FORMAT_EXTENSION_BIT = 0x80;
 const SNAPSHOT_PROFILE_BYTE_OFFSET = 20;
+// The AV1 trailing bits and zero padding that may end an OBU after its T.35 payload
+const OBU_TRAILING_BYTES: readonly number[] = [ 0x80, 0x00, 0x00 ];
+// The low byte of the provider code, after the country code
+const ITU_T_T35_PROVIDER_CODE_LOW_BYTE_INDEX = 2;
+const STATUS_PARSE_FAILED = 3;
+const SEGMENT_MMR_ORDER_BYTE_OFFSET = DOLBY_VISION_RPU_SEGMENT_MMR_ORDER_INDEX * Float32Array.BYTES_PER_ELEMENT;
 
 describe('Dolby Vision parser asset URL', () => {
     it('resolves the parser against the engine asset base', () => {
@@ -61,7 +79,7 @@ const PARSER_VECTORS: readonly ParserVector[] = [
         layerMode: 'single-layer',
         level1: [ 2, 3_383, 819 ],
         profile: 5,
-        sha256: '0355f79fbbaac16fda35482f9eb734f4a5fd59fc90d0cbf91a7638c815060e13',
+        sha256: '9e260db8a124fe237d238d6532cde1e4b82c198c9bde656cfb3ce5709ac19842',
         sourcePQ: [ 62, 3_696 ]
     },
     {
@@ -71,7 +89,7 @@ const PARSER_VECTORS: readonly ParserVector[] = [
         layerMode: 'single-layer',
         level1: [ 0, 2_081, 819 ],
         profile: 5,
-        sha256: '9166784ce6633ca16aa6da1fd875639d137d93cce8e9e871351a1e5edc4756b6',
+        sha256: '0bb79ce7db2f3ae7447f15e979b632e0b4f4da474b03cb7fe1fa714090ec2122',
         sourcePQ: [ 7, 3_079 ]
     },
     {
@@ -81,7 +99,7 @@ const PARSER_VECTORS: readonly ParserVector[] = [
         layerMode: 'single-layer',
         level1: [ 2, 3_383, 819 ],
         profile: 8,
-        sha256: 'bb4d6b3923f489950010f02919d92b3880b7f527232544fc20445946cde3446b',
+        sha256: '32c081a532a499ef9a9ffe2da1bf0f6db6cc81cfd2ad901d06a45a6c3e1fd9ce',
         sourcePQ: [ 62, 3_696 ]
     },
     {
@@ -91,7 +109,7 @@ const PARSER_VECTORS: readonly ParserVector[] = [
         layerMode: 'single-layer',
         level1: [ 2, 3_383, 819 ],
         profile: 8,
-        sha256: '499ac7b241f02c357d37d0ff918b20b34977e26d4dabc58313ca782ae602aff0',
+        sha256: '9875addcf0384fc8193773ef089c19fa63c33a6bfdf8b7a0cbe41b34d49b5daa',
         sourcePQ: [ 62, 3_696 ]
     },
     {
@@ -101,7 +119,7 @@ const PARSER_VECTORS: readonly ParserVector[] = [
         layerMode: 'fel',
         level1: [ 0, 4_095, 1_024 ],
         profile: 4,
-        sha256: 'cb960d4eaa336d1134ecb8bdf8e127595bd1a52c331f966342f8cd7b8d15c29c',
+        sha256: '28b4aff54a2eaa06e3e790f34315875ce766c963153a3eaca3bf318ae4d56b99',
         sourcePQ: [ 62, 3_697 ]
     },
     {
@@ -111,7 +129,7 @@ const PARSER_VECTORS: readonly ParserVector[] = [
         layerMode: 'mel',
         level1: [ 0, 2_081, 1_340 ],
         profile: 7,
-        sha256: '08d55bfad4555c8f797d78710127dd4552a318c0bfef93f9f2ac614371641eb4',
+        sha256: '8f80d9e3b1e43a51120950ffc9e4de5330f98e52b3ebc87d84e263dcd2fddf32',
         sourcePQ: [ 7, 3_079 ]
     },
     {
@@ -121,7 +139,7 @@ const PARSER_VECTORS: readonly ParserVector[] = [
         layerMode: 'mel',
         level1: [ 0, 3_100, 2_048 ],
         profile: 7,
-        sha256: '71e59494eec47e7f15f01ce8bf77e6e74ebbe4449d1a0d8d25cac3f195634ed1',
+        sha256: '303d6d37a7105d609e6fb2bd0fd40e877dbd07bbebf7ab873bbad5d18d630970',
         sourcePQ: [ 7, 3_079 ]
     },
     {
@@ -131,7 +149,7 @@ const PARSER_VECTORS: readonly ParserVector[] = [
         layerMode: 'fel',
         level1: [ 0, 2_873, 1_060 ],
         profile: 7,
-        sha256: '8d85c1be0a59e9583526714ec07cf9e9b23a2418203f80c670395a0aab829c81',
+        sha256: 'ba5c6ec01d41e2286023ad2b5b46fecbeb0fcee96f9cbd2bf272e90f46be535c',
         sourcePQ: [ 7, 3_079 ]
     },
     {
@@ -141,7 +159,7 @@ const PARSER_VECTORS: readonly ParserVector[] = [
         layerMode: 'fel',
         level1: [ 12, 2_452, 887 ],
         profile: 7,
-        sha256: '3a8e16df1b283cc33c551383d678614b5e41dfcb954fc5d6f28c8850deaf76ea',
+        sha256: 'a619491ac6a38b8f3bd1e590f3983fe4be165ac5531f4f87be206e552b430640',
         sourcePQ: [ 62, 3_696 ]
     }
 ];
@@ -319,7 +337,185 @@ describe('DolbyVisionRPUParser pinned WASM integration', () => {
     });
 });
 
+describe('DolbyVisionRPUParser AV1 ITU-T T.35 payloads', () => {
+    it.each(PARSER_VECTORS)(
+        'packs $fileName from its AV1 T.35 payload as from its HEVC RPU',
+        async vector => {
+            const rpu = readVector(vector.fileName);
+            const hevcParser = await createActualParser();
+            const av1Parser = await createActualParser();
+            try {
+                const hevcPackedData = new Uint8Array(hevcParser.parse(rpu).packedData);
+                // The parser accepts the payload with or without its country code
+                for (const includeCountryCode of [ true, false ]) {
+                    av1Parser.reset();
+                    const snapshot = av1Parser.parseAV1ITUTT35(
+                        createDolbyVisionAV1ITUTT35Payload(rpu, { includeCountryCode })
+                    );
+                    expect(snapshot.profile).toBe(vector.profile);
+                    expect(new Uint8Array(snapshot.packedData)).toEqual(hevcPackedData);
+                }
+            } finally {
+                hevcParser.close();
+                av1Parser.close();
+            }
+        }
+    );
+
+    it('ignores the OBU trailing bits after the EMDF container', async () => {
+        const parser = await createActualParser();
+        try {
+            const payload = createDolbyVisionAV1ITUTT35Payload(readVector('profile8.bin'));
+            const expectedPackedData = new Uint8Array(parser.parseAV1ITUTT35(payload).packedData);
+            parser.reset();
+
+            const snapshot = parser.parseAV1ITUTT35(
+                Uint8Array.from([ ...payload, ...OBU_TRAILING_BYTES ])
+            );
+
+            expect(new Uint8Array(snapshot.packedData)).toEqual(expectedPackedData);
+        } finally {
+            parser.close();
+        }
+    });
+
+    it('rejects another T.35 provider without poisoning either entry point', async () => {
+        const parser = await createActualParser();
+        const payload = createDolbyVisionAV1ITUTT35Payload(readVector('profile8.bin'));
+        const otherProviderPayload = payload.slice();
+        otherProviderPayload[ITU_T_T35_PROVIDER_CODE_LOW_BYTE_INDEX] += 1;
+        try {
+            let parseError: unknown;
+            try {
+                parser.parseAV1ITUTT35(otherProviderPayload);
+            } catch (error) {
+                parseError = error;
+            }
+            expect(parseError).toBeInstanceOf(DolbyVisionRPUParseError);
+            expect(parseError).toMatchObject({ statusCode: STATUS_PARSE_FAILED });
+            expect((parseError as Error).message).toContain('Invalid AV1 RPU payload header');
+            // Each entry point rejects the other's framing
+            expect(() => parser.parse(payload)).toThrowError(
+                expect.objectContaining({ statusCode: STATUS_PARSE_FAILED })
+            );
+            expect(() => parser.parseAV1ITUTT35(readVector('profile8.bin'))).toThrowError(
+                expect.objectContaining({ statusCode: STATUS_PARSE_FAILED })
+            );
+            expect(parser.parseAV1ITUTT35(payload).profile).toBe(8);
+            expect(parser.parse(readVector('profile8.bin')).profile).toBe(8);
+        } finally {
+            parser.close();
+        }
+    });
+
+    it('bounds AV1 payloads like HEVC RPUs and refuses them once closed', async () => {
+        const parser = await createActualParser();
+        expect(() => parser.parseAV1ITUTT35(new Uint8Array(0))).toThrow(
+            'input exceeds its byte bound'
+        );
+        expect(() => parser.parseAV1ITUTT35(
+            new Uint8Array(MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH + 1)
+        )).toThrow('input exceeds its byte bound');
+        parser.close();
+        expect(() => parser.parseAV1ITUTT35(
+            createDolbyVisionAV1ITUTT35Payload(readVector('profile8.bin'))
+        )).toThrow('parser is closed');
+    });
+});
+
 describe('decodeDolbyVisionRPUSnapshot validation', () => {
+    it('reports the mapping method of each component, including mixed pieces', () => {
+        const snapshot = decodeDolbyVisionRPUSnapshot(createMixedDolbyVisionRPUVector());
+
+        expect(snapshot.schemaVersion).toBe(DOLBY_VISION_RPU_SCHEMA_VERSION);
+        expect(snapshot.components.map(component => component.mappingMethod)).toEqual([
+            'polynomial',
+            'mixed',
+            'mmr'
+        ]);
+    });
+
+    it.each([
+        {
+            corrupt: (view: DataView): void => {
+                // The polynomial piece rewritten as a valid order-1 MMR piece leaves no polynomial segment
+                const segmentByteOffset = getPackedSegmentByteOffset(MIXED_COMPONENT_INDEX, 1);
+                view.setFloat32(segmentByteOffset + Float32Array.BYTES_PER_ELEMENT, 0, true);
+                view.setFloat32(segmentByteOffset + SEGMENT_MMR_ORDER_BYTE_OFFSET, 1, true);
+            },
+            message: 'segment methods contradict their component flags',
+            name: 'mixed flags over MMR segments only'
+        },
+        {
+            corrupt: (view: DataView): void => {
+                view.setUint32(
+                    getPackedComponentFlagsByteOffset(MIXED_COMPONENT_INDEX),
+                    DOLBY_VISION_RPU_COMPONENT_FLAG_POLYNOMIAL,
+                    true
+                );
+            },
+            message: 'segment methods contradict their component flags',
+            name: 'polynomial flags over an MMR segment'
+        },
+        {
+            corrupt: (view: DataView): void => {
+                view.setUint32(
+                    getPackedComponentFlagsByteOffset(MIXED_COMPONENT_INDEX),
+                    DOLBY_VISION_RPU_COMPONENT_FLAG_MMR,
+                    true
+                );
+            },
+            message: 'segment methods contradict their component flags',
+            name: 'MMR flags over a polynomial segment'
+        },
+        {
+            corrupt: (view: DataView): void => {
+                view.setFloat32(
+                    getPackedSegmentByteOffset(MIXED_COMPONENT_INDEX, 1) + SEGMENT_MMR_ORDER_BYTE_OFFSET,
+                    -1,
+                    true
+                );
+            },
+            message: 'segment method is invalid',
+            name: 'a negative MMR order'
+        },
+        {
+            corrupt: (view: DataView): void => {
+                view.setFloat32(
+                    getPackedSegmentByteOffset(MIXED_COMPONENT_INDEX, 0) + SEGMENT_MMR_ORDER_BYTE_OFFSET,
+                    1.5,
+                    true
+                );
+            },
+            message: 'MMR segment references invalid packed data',
+            name: 'a fractional MMR order'
+        },
+        {
+            corrupt: (view: DataView): void => {
+                // Order 3 from the third vector runs past the component's six vectors
+                view.setFloat32(
+                    getPackedSegmentByteOffset(MIXED_COMPONENT_INDEX, 0) + Float32Array.BYTES_PER_ELEMENT,
+                    2,
+                    true
+                );
+            },
+            message: 'MMR segment references invalid packed data',
+            name: 'MMR vectors past the packed count'
+        },
+        {
+            corrupt: (view: DataView): void => {
+                view.setUint32(getPackedComponentFlagsByteOffset(MIXED_COMPONENT_INDEX), 4, true);
+            },
+            message: 'packed component method is invalid',
+            name: 'an unknown component flag'
+        }
+    ])('validates each segment by its own method: $name', ({ corrupt, message }) => {
+        const packedData = createMixedDolbyVisionRPUVector();
+        corrupt(new DataView(packedData));
+
+        expect(() => decodeDolbyVisionRPUSnapshot(packedData)).toThrow(message);
+    });
+
     it('rejects incompatible headers and non-finite shader data', async () => {
         const parser = await createActualParser();
         const validPackedData = parser.parse(readVector('profile8.bin')).packedData;
@@ -407,6 +603,7 @@ describe('decodeDolbyVisionRPUSnapshot validation', () => {
                     DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH
                 ),
                 dovi_parser_parse: (): number => 0,
+                dovi_parser_parse_av1_t35: (): number => 0,
                 dovi_parser_reset: (): number => 0,
                 dovi_parser_revision_prefix: (): number => (
                     DOLBY_VISION_RPU_PARSER_REVISION_PREFIX

@@ -24,6 +24,17 @@ const EAC3_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE_WIDE = 0x06cf;
 // AV_NOPTS_VALUE as the bridge returns it, a double far outside the safe integer range
 const FFMPEG_NO_PRESENTATION_TIMESTAMP = -(2 ** 63);
 const DEFAULT_PRESENTATION_TIMESTAMP = 1_250_000;
+// A malformed decoded rate; any positive integer rate is valid
+const ZERO_SAMPLE_RATE = 0;
+const INVALID_SAMPLE_RATE_ERROR = `sample rate ${ZERO_SAMPLE_RATE} Hz is invalid`;
+const FAKE_FRAME_RECEIVED = 1;
+const FAKE_NO_OUTPUT = 0;
+// Every decoded syncframe consumes at least one packet byte
+const PACKET_FRAMES_EXCEEDED_ERROR = 'exceeded the frames its packet can hold';
+const SINGLE_FRAME_PACKET_BYTE_LENGTH = 1;
+const THREE_FRAME_PACKET_BYTE_LENGTH = 3;
+// An ISO BMFF E-AC-3 sample holds up to six one-block syncframes
+const MP4_SAMPLE_SYNCFRAME_COUNT = 6;
 
 type FakeDecoderOptions = Readonly<{
     channelCount?: number
@@ -159,7 +170,7 @@ describe('EAC3SoftwareAudioDecoder', () => {
         const decoder = await EAC3SoftwareAudioDecoder.create(fakeDecoder.moduleFactory);
 
         const outputs = decoder.decode(
-            new Uint8Array([ 1 ]),
+            new Uint8Array(THREE_FRAME_PACKET_BYTE_LENGTH),
             requireMicroseconds(5_000_000, 'Test packet timestamp')
         );
 
@@ -168,6 +179,37 @@ describe('EAC3SoftwareAudioDecoder', () => {
             5_001_000,
             5_002_000
         ]);
+    });
+
+    it('decodes every syncframe of an MP4 sample that holds six', async () => {
+        const fakeDecoder = createFakeEAC3Decoder({
+            channelCount: 2,
+            channelMask: CUSTOM_WAVE_CHANNEL_MASK_STEREO,
+            receiveStatuses: [
+                ...new Array<number>(MP4_SAMPLE_SYNCFRAME_COUNT).fill(FAKE_FRAME_RECEIVED),
+                FAKE_NO_OUTPUT
+            ]
+        });
+        const decoder = await EAC3SoftwareAudioDecoder.create(fakeDecoder.moduleFactory);
+
+        expect(decoder.decode(
+            new Uint8Array(MP4_SAMPLE_SYNCFRAME_COUNT),
+            requireMicroseconds(0, 'Test packet timestamp')
+        )).toHaveLength(MP4_SAMPLE_SYNCFRAME_COUNT);
+    });
+
+    it('refuses more frames than its packet has bytes to hold', async () => {
+        const fakeDecoder = createFakeEAC3Decoder({
+            channelCount: 2,
+            channelMask: CUSTOM_WAVE_CHANNEL_MASK_STEREO,
+            receiveStatuses: [ FAKE_FRAME_RECEIVED, FAKE_FRAME_RECEIVED, FAKE_NO_OUTPUT ]
+        });
+        const decoder = await EAC3SoftwareAudioDecoder.create(fakeDecoder.moduleFactory);
+
+        expect(() => decoder.decode(
+            new Uint8Array(SINGLE_FRAME_PACKET_BYTE_LENGTH),
+            requireMicroseconds(0, 'Test packet timestamp')
+        )).toThrow(PACKET_FRAMES_EXCEEDED_ERROR);
     });
 
     it.each([
@@ -209,8 +251,8 @@ describe('EAC3SoftwareAudioDecoder', () => {
             'sample format 3 is unsupported'
         ],
         [
-            { sampleRate: 192_001 },
-            'sample rate 192001 Hz is outside the supported range'
+            { sampleRate: ZERO_SAMPLE_RATE },
+            INVALID_SAMPLE_RATE_ERROR
         ]
     ] as const)(
         'rejects ambiguous or unsupported decoded output %#',

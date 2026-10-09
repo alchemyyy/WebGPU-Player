@@ -68,7 +68,8 @@ pub struct DoviRpu {
 
 impl DoviRpu {
     pub fn validated_trimmed_data(data: &[u8]) -> Result<&[u8]> {
-        if data.len() < 25 {
+        // Only the start bytes are required here; parse bounds the RPU itself, as FFmpeg does
+        if data.len() < 5 {
             bail!("Invalid RPU length: {}", data.len());
         }
 

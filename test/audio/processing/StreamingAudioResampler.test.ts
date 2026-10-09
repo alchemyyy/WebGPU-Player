@@ -16,6 +16,25 @@ const TRUEHD_ACCESS_UNIT_ALLOWANCE_MICROSECONDS = 834;
 // Chunk boundaries round independently to whole microseconds
 const OUTPUT_TIMESTAMP_ROUNDING_MICROSECONDS = 1;
 
+// The kernel radius qualified for sources up to 192 kHz, which widens in proportion past it
+const QUALIFIED_FILTER_RADIUS = 32;
+const QUALIFIED_FILTER_SOURCE_SAMPLE_RATE = 192_000;
+const DXD_SAMPLE_RATE = 352_800;
+const DXD_48_KHZ_FAMILY_SAMPLE_RATE = 384_000;
+const CHROMIUM_DECODER_HIGHEST_SAMPLE_RATE = 768_000;
+const PASSBAND_TONE_FREQUENCY = 10_000;
+// Past the transition band of the 192 kHz kernel at a 48 kHz target
+const STOPBAND_TONE_FREQUENCY = 40_000;
+const MINIMUM_PASSBAND_ROOT_MEAN_SQUARE = 0.65;
+const MAXIMUM_STOPBAND_ROOT_MEAN_SQUARE = 0.002;
+// Skips the filter's edge-extended start
+const SETTLED_OUTPUT_FRAME = 128;
+const RESAMPLED_SECONDS_FRACTION = 4;
+// Malformed rates; any positive integer rate is valid
+const ZERO_SAMPLE_RATE = 0;
+const FRACTIONAL_SAMPLE_RATE = 48_000.5;
+const MALFORMED_SOURCE_RATE_ERROR = 'Source sample rate must be a positive integer number of Hz';
+
 function createPassthroughResampler(
     maximumTimestampQuantizationMicroseconds: number
 ): StreamingAudioResampler {
@@ -86,6 +105,24 @@ function calculateRootMeanSquare(samples: Float32Array, startFrame: number): num
         squareSum += samples[frameIndex] * samples[frameIndex];
     }
     return Math.sqrt(squareSum / (samples.length - startFrame));
+}
+
+/** Resamples a quarter second of one tone to the target rate and returns its settled RMS. */
+function getResampledToneRootMeanSquare(sourceSampleRate: number, frequency: number): number {
+    const resampler = new StreamingAudioResampler({
+        channelCount: 1,
+        maximumOutputFrameCount: 65_536,
+        maximumTimestampQuantizationMicroseconds: DEFAULT_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+        minimumOutputFrameCount: 1,
+        sourceSampleRate,
+        targetSampleRate: TARGET_SAMPLE_RATE
+    });
+    const output = resampler.push({
+        channelData: [ createSine(sourceSampleRate, frequency, sourceSampleRate / RESAMPLED_SECONDS_FRACTION) ],
+        mediaTimeMicroseconds: requireMicroseconds(0)
+    });
+    output.push(...resampler.finalize());
+    return calculateRootMeanSquare(concatenateOutput(output), SETTLED_OUTPUT_FRAME);
 }
 
 describe('StreamingAudioResampler', () => {
@@ -264,7 +301,7 @@ describe('StreamingAudioResampler', () => {
         expect(stopbandRootMeanSquare).toBeLessThan(0.002);
     });
 
-    it('resamples a bounded integer source rate not represented by a vector', () => {
+    it('resamples an integer source rate not represented by a vector', () => {
         const sourceSampleRate = 12_345;
         const source = createSine(sourceSampleRate, 1_000, sourceSampleRate / 5);
         const resampler = new StreamingAudioResampler({
@@ -288,7 +325,7 @@ describe('StreamingAudioResampler', () => {
         expect(calculateRootMeanSquare(samples, 128)).toBeCloseTo(Math.SQRT1_2, 2);
     });
 
-    it.each([ 2_999, 192_001 ])('rejects out-of-range source rate %d', sampleRate => {
+    it.each([ ZERO_SAMPLE_RATE, FRACTIONAL_SAMPLE_RATE ])('rejects malformed source rate %d', sampleRate => {
         expect(() => new StreamingAudioResampler({
             channelCount: 1,
             maximumOutputFrameCount: 1_024,
@@ -297,7 +334,31 @@ describe('StreamingAudioResampler', () => {
             minimumOutputFrameCount: 1,
             sourceSampleRate: sampleRate,
             targetSampleRate: TARGET_SAMPLE_RATE
-        })).toThrow('Source sample rate must be between 3000 and 192000 Hz');
+        })).toThrow(MALFORMED_SOURCE_RATE_ERROR);
+    });
+
+    it.each([
+        QUALIFIED_FILTER_SOURCE_SAMPLE_RATE,
+        DXD_SAMPLE_RATE,
+        DXD_48_KHZ_FAMILY_SAMPLE_RATE,
+        CHROMIUM_DECODER_HIGHEST_SAMPLE_RATE
+    ])('keeps the 192 kHz band edge for a %d Hz source with a proportionally wider kernel', sourceSampleRate => {
+        const resampler = new StreamingAudioResampler({
+            channelCount: 1,
+            maximumOutputFrameCount: 1_024,
+            maximumTimestampQuantizationMicroseconds: DEFAULT_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+            minimumOutputFrameCount: 1,
+            sourceSampleRate,
+            targetSampleRate: TARGET_SAMPLE_RATE
+        });
+
+        expect(resampler.getTelemetry().filterLatencySourceFrames).toBe(Math.ceil(
+            QUALIFIED_FILTER_RADIUS * sourceSampleRate / QUALIFIED_FILTER_SOURCE_SAMPLE_RATE
+        ));
+        expect(getResampledToneRootMeanSquare(sourceSampleRate, PASSBAND_TONE_FREQUENCY))
+            .toBeGreaterThan(MINIMUM_PASSBAND_ROOT_MEAN_SQUARE);
+        expect(getResampledToneRootMeanSquare(sourceSampleRate, STOPBAND_TONE_FREQUENCY))
+            .toBeLessThan(MAXIMUM_STOPBAND_ROOT_MEAN_SQUARE);
     });
 
     it('canonicalizes bounded Matroska DTS timestamp quantization', () => {

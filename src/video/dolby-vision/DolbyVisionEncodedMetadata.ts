@@ -3,9 +3,9 @@ import { EncodedPacket } from 'mediabunny';
 import { requireMicroseconds } from '../../TimeMath';
 import {
     DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION,
+    MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT,
+    MAXIMUM_DOLBY_VISION_RPU_BYTE_LENGTH,
     MAXIMUM_DOLBY_VISION_RPU_FRAME_BYTE_LENGTH,
-    MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_BYTE_LENGTH,
-    MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT,
     type DolbyVisionEncodedFrameMetadata
 } from './DolbyVisionEncodedMetadataProtocol';
 import {
@@ -17,12 +17,14 @@ import {
     type DolbyVisionHEVCSplitResult,
     type HEVCNALFormat
 } from './DolbyVisionHEVCSplitter';
+import { splitDolbyVisionAV1TemporalUnit } from './DolbyVisionAV1Splitter';
 import { parseHEVCDecoderConfiguration } from '../decoders/HEVCSoftwareVideoDecoder';
 
 export const MAXIMUM_DOLBY_VISION_PENDING_FRAME_COUNT = 64;
 export const MAXIMUM_DOLBY_VISION_PENDING_METADATA_BYTE_LENGTH = 64 * 1_024 * 1_024;
-export const MAXIMUM_DOLBY_VISION_ENHANCEMENT_ACCESS_UNIT_BYTE_LENGTH = 32 * 1_024 * 1_024;
 const DOLBY_VISION_PACKET_PAIR_TOLERANCE_MICROSECONDS = 1;
+// Profile 10 is single-layer, so one RPU describes a temporal unit's one shown frame
+const MAXIMUM_DOLBY_VISION_AV1_TEMPORAL_UNIT_RPU_COUNT = 1;
 
 export type ProcessedDolbyVisionHEVCPacket = {
     baseLayerPacket: EncodedPacket | null
@@ -31,9 +33,22 @@ export type ProcessedDolbyVisionHEVCPacket = {
     hasEnhancementLayerVCL: boolean
 };
 
+export type ProcessedDolbyVisionAV1TemporalUnit = {
+    /** The temporal unit without its Dolby Vision metadata OBUs; the input packet when it carried none */
+    decoderPacket: EncodedPacket
+    /** Whether the decoder outputs a frame, which takes the unit's metadata entry */
+    hasFrame: boolean
+};
+
 export type DolbyVisionRPUDataParser = {
     parse: (rpuNALUnit: Uint8Array) => Promise<ArrayBuffer>
 };
+
+export type DolbyVisionAV1RPUDataParser = {
+    parseAV1ITUTT35: (payload: Uint8Array) => Promise<ArrayBuffer>
+};
+
+type DolbyVisionCodecName = 'AV1' | 'HEVC';
 
 type PendingFrameMetadata = {
     byteLength: number
@@ -70,27 +85,27 @@ export function getHEVCNALFormat(decoderConfig: VideoDecoderConfig): HEVCNALForm
 }
 
 function getMetadataByteLength(
-    rpuNALUnits: readonly Uint8Array[],
+    encodedRPUs: readonly Uint8Array[],
     parsedRPUData: readonly ArrayBuffer[]
 ): number {
-    if (rpuNALUnits.length > MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT) {
-        throw new TypeError('A Dolby Vision frame contains too many RPU NAL units');
+    if (encodedRPUs.length > MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT) {
+        throw new TypeError('A Dolby Vision frame contains too many RPUs');
     }
 
     let rpuByteLength = 0;
-    for (const rpuNALUnit of rpuNALUnits) {
+    for (const encodedRPU of encodedRPUs) {
         if (
-            rpuNALUnit.byteLength === 0
-            || rpuNALUnit.byteLength > MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_BYTE_LENGTH
+            encodedRPU.byteLength === 0
+            || encodedRPU.byteLength > MAXIMUM_DOLBY_VISION_RPU_BYTE_LENGTH
         ) {
-            throw new TypeError('A Dolby Vision RPU NAL unit exceeds its size bound');
+            throw new TypeError('A Dolby Vision RPU exceeds its size bound');
         }
-        rpuByteLength += rpuNALUnit.byteLength;
+        rpuByteLength += encodedRPU.byteLength;
     }
     if (rpuByteLength > MAXIMUM_DOLBY_VISION_RPU_FRAME_BYTE_LENGTH) {
         throw new TypeError('Dolby Vision RPU data exceeds its per-frame size bound');
     }
-    if (parsedRPUData.length !== rpuNALUnits.length
+    if (parsedRPUData.length !== encodedRPUs.length
         || parsedRPUData.some(data => data.byteLength !== DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH)) {
         throw new TypeError('Parsed Dolby Vision RPU data does not match its encoded frame');
     }
@@ -124,10 +139,6 @@ function getEnhancementLayerDisposition(
     if (!enhancementLayerData) {
         return 'absent';
     }
-    if (enhancementLayerData.byteLength
-        > MAXIMUM_DOLBY_VISION_ENHANCEMENT_ACCESS_UNIT_BYTE_LENGTH) {
-        throw new TypeError('A Dolby Vision enhancement access unit exceeds its size bound');
-    }
     if (parsedRPUData.length !== 1) {
         throw new TypeError('A Dolby Vision enhancement access unit requires one exact RPU');
     }
@@ -144,11 +155,77 @@ function getEnhancementLayerDisposition(
     }
 }
 
-/** Owns split HEVC metadata until the decoder emits the matching frame PTS. */
-export default class DolbyVisionEncodedMetadataQueue {
+/**
+ * Holds each frame's packet metadata until the decoder emits the frame, keyed by presentation timestamp.
+ * Entries that share a timestamp keep their decode order, and the window bounds the frames and bytes it holds.
+ */
+class DolbyVisionFrameMetadataWindow {
     private pendingByteLength = 0;
     private pendingFrameCount = 0;
     private readonly pendingFrames = new Map<number, PendingFrameMetadata[]>();
+
+    public constructor(private readonly codecName: DolbyVisionCodecName) {}
+
+    public enqueue(
+        timestampMicroseconds: number,
+        pendingFrame: PendingFrameMetadata
+    ): void {
+        if (this.pendingFrameCount >= MAXIMUM_DOLBY_VISION_PENDING_FRAME_COUNT) {
+            throw new Error('The Dolby Vision metadata frame window exceeded its bound');
+        }
+        if (
+            this.pendingByteLength + pendingFrame.byteLength
+            > MAXIMUM_DOLBY_VISION_PENDING_METADATA_BYTE_LENGTH
+        ) {
+            throw new Error('The Dolby Vision metadata byte window exceeded its bound');
+        }
+
+        const frames = this.pendingFrames.get(timestampMicroseconds) ?? [];
+        if (!this.pendingFrames.has(timestampMicroseconds)) {
+            this.pendingFrames.set(timestampMicroseconds, frames);
+        }
+        frames.push(pendingFrame);
+        this.pendingFrameCount += 1;
+        this.pendingByteLength += pendingFrame.byteLength;
+    }
+
+    /** Takes the oldest entry recorded for one decoded frame's timestamp. */
+    public take(timestampMicrosecondsValue: number): DolbyVisionEncodedFrameMetadata | null {
+        const timestampMicroseconds = requireMicroseconds(
+            timestampMicrosecondsValue,
+            `Decoded ${this.codecName} frame timestamp`
+        );
+        const frames = this.pendingFrames.get(timestampMicroseconds);
+        if (!frames || frames.length === 0) {
+            throw new Error(`A decoded ${this.codecName} frame has no matching encoded packet metadata`);
+        }
+
+        const pendingFrame = frames.shift() as PendingFrameMetadata;
+        if (frames.length === 0) {
+            this.pendingFrames.delete(timestampMicroseconds);
+        }
+        this.pendingFrameCount -= 1;
+        this.pendingByteLength -= pendingFrame.byteLength;
+        return pendingFrame.metadata;
+    }
+
+    /** Rejects decoder packet loss instead of attaching stale RPU data later. */
+    public requireDrained(): void {
+        if (this.pendingFrameCount !== 0 || this.pendingByteLength !== 0) {
+            throw new Error(`The ${this.codecName} decoder ended before every metadata entry was matched`);
+        }
+    }
+
+    public clear(): void {
+        this.pendingFrames.clear();
+        this.pendingFrameCount = 0;
+        this.pendingByteLength = 0;
+    }
+}
+
+/** Owns split HEVC metadata until the decoder emits the matching frame PTS. */
+export default class DolbyVisionEncodedMetadataQueue {
+    private readonly frameMetadataWindow = new DolbyVisionFrameMetadataWindow('HEVC');
 
     public constructor(
         private readonly inputFormat: HEVCNALFormat,
@@ -185,7 +262,7 @@ export default class DolbyVisionEncodedMetadataQueue {
             splitResult;
 
         if (presentedSplit.hasBaseLayerVCL) {
-            this.enqueueFrame(
+            this.frameMetadataWindow.enqueue(
                 timestampMicroseconds,
                 this.createPendingFrameMetadata(
                     presentedSplit,
@@ -273,13 +350,13 @@ export default class DolbyVisionEncodedMetadataQueue {
             hasBaseLayerVCL: true,
             hasEnhancementLayerVCL
         };
-        this.enqueueFrame(baseTimestampMicroseconds, {
+        this.frameMetadataWindow.enqueue(baseTimestampMicroseconds, {
             byteLength: metadataByteLength,
             metadata: this.retainDolbyVisionMetadata ? {
+                encodedRPUs: rpuNALUnits,
                 enhancementLayerDisposition,
                 hasEnhancementLayerVCL,
                 parsedRPUData,
-                rpuNALUnits,
                 schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
             } : null
         });
@@ -290,36 +367,17 @@ export default class DolbyVisionEncodedMetadataQueue {
     public takeFrameMetadata(
         timestampMicrosecondsValue: number
     ): DolbyVisionEncodedFrameMetadata | null {
-        const timestampMicroseconds = requireMicroseconds(
-            timestampMicrosecondsValue,
-            'Decoded HEVC frame timestamp'
-        );
-        const frames = this.pendingFrames.get(timestampMicroseconds);
-        if (!frames || frames.length === 0) {
-            throw new Error('A decoded HEVC frame has no matching encoded packet metadata');
-        }
-
-        const pendingFrame = frames.shift() as PendingFrameMetadata;
-        if (frames.length === 0) {
-            this.pendingFrames.delete(timestampMicroseconds);
-        }
-        this.pendingFrameCount -= 1;
-        this.pendingByteLength -= pendingFrame.byteLength;
-        return pendingFrame.metadata;
+        return this.frameMetadataWindow.take(timestampMicrosecondsValue);
     }
 
     /** Rejects decoder packet loss instead of attaching stale RPU data later. */
     public requireDrained(): void {
-        if (this.pendingFrameCount !== 0 || this.pendingByteLength !== 0) {
-            throw new Error('The HEVC decoder ended before every metadata entry was matched');
-        }
+        this.frameMetadataWindow.requireDrained();
     }
 
     /** Discards all generation-owned encoded metadata. */
     public clear(): void {
-        this.pendingFrames.clear();
-        this.pendingFrameCount = 0;
-        this.pendingByteLength = 0;
+        this.frameMetadataWindow.clear();
     }
 
     private async parseRPUData(rpuNALUnits: readonly Uint8Array[]): Promise<ArrayBuffer[]> {
@@ -350,35 +408,82 @@ export default class DolbyVisionEncodedMetadataQueue {
         return {
             byteLength: getMetadataByteLength(splitResult.rpuNALUnits, parsedRPUData),
             metadata: hasDolbyVisionFrameData ? {
+                encodedRPUs: splitResult.rpuNALUnits,
                 enhancementLayerDisposition,
                 hasEnhancementLayerVCL: splitResult.hasEnhancementLayerVCL,
                 parsedRPUData,
-                rpuNALUnits: splitResult.rpuNALUnits,
                 schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
             } : null
         };
     }
+}
 
-    private enqueueFrame(
-        timestampMicroseconds: number,
-        pendingFrame: PendingFrameMetadata
-    ): void {
-        if (this.pendingFrameCount >= MAXIMUM_DOLBY_VISION_PENDING_FRAME_COUNT) {
-            throw new Error('The Dolby Vision metadata frame window exceeded its bound');
+/**
+ * Owns AV1 Dolby Vision metadata until the decoder emits the frame of its temporal unit.
+ * Each unit has exactly one shown frame, whose timestamp is the unit's, so the unit's timestamp keys its entry.
+ */
+export class DolbyVisionAV1EncodedMetadataQueue {
+    private readonly frameMetadataWindow = new DolbyVisionFrameMetadataWindow('AV1');
+
+    public constructor(private readonly rpuParser: DolbyVisionAV1RPUDataParser) {}
+
+    /**
+     * Removes the Dolby Vision metadata OBUs of one temporal unit and parses its RPU in decode order.
+     * It records the entry the unit's frame takes.
+     * Profile 10 is single-layer: there is never an EL, and a unit carries at most one RPU, beside its frame.
+     */
+    public async processTemporalUnit(packet: EncodedPacket): Promise<ProcessedDolbyVisionAV1TemporalUnit> {
+        const timestampMicroseconds = requireMicroseconds(
+            packet.microsecondTimestamp,
+            'Encoded AV1 packet timestamp'
+        );
+        const splitResult = splitDolbyVisionAV1TemporalUnit(packet.data);
+        if (splitResult.rpuPayloads.length > MAXIMUM_DOLBY_VISION_AV1_TEMPORAL_UNIT_RPU_COUNT) {
+            throw new TypeError('An AV1 temporal unit carries more than one Dolby Vision RPU');
         }
-        if (
-            this.pendingByteLength + pendingFrame.byteLength
-            > MAXIMUM_DOLBY_VISION_PENDING_METADATA_BYTE_LENGTH
-        ) {
-            throw new Error('The Dolby Vision metadata byte window exceeded its bound');
+        if (splitResult.rpuPayloads.length > 0 && !splitResult.hasFrame) {
+            throw new TypeError('Dolby Vision metadata is not paired with an AV1 frame');
         }
 
-        const frames = this.pendingFrames.get(timestampMicroseconds) ?? [];
-        if (!this.pendingFrames.has(timestampMicroseconds)) {
-            this.pendingFrames.set(timestampMicroseconds, frames);
+        const parsedRPUData: ArrayBuffer[] = [];
+        for (const rpuPayload of splitResult.rpuPayloads) {
+            parsedRPUData.push(await this.rpuParser.parseAV1ITUTT35(rpuPayload));
         }
-        frames.push(pendingFrame);
-        this.pendingFrameCount += 1;
-        this.pendingByteLength += pendingFrame.byteLength;
+        if (splitResult.hasFrame) {
+            this.frameMetadataWindow.enqueue(timestampMicroseconds, {
+                byteLength: getMetadataByteLength(splitResult.rpuPayloads, parsedRPUData),
+                metadata: parsedRPUData.length > 0 ? {
+                    encodedRPUs: splitResult.rpuPayloads,
+                    enhancementLayerDisposition: 'absent',
+                    hasEnhancementLayerVCL: false,
+                    parsedRPUData,
+                    schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
+                } : null
+            });
+        }
+
+        return {
+            decoderPacket: splitResult.decoderData === packet.data ?
+                packet :
+                packet.clone({ data: splitResult.decoderData }),
+            hasFrame: splitResult.hasFrame
+        };
+    }
+
+    /** Takes the unique metadata entry associated with one decoded frame. */
+    public takeFrameMetadata(
+        timestampMicrosecondsValue: number
+    ): DolbyVisionEncodedFrameMetadata | null {
+        return this.frameMetadataWindow.take(timestampMicrosecondsValue);
+    }
+
+    /** Rejects decoder frame loss instead of attaching stale RPU data later. */
+    public requireDrained(): void {
+        this.frameMetadataWindow.requireDrained();
+    }
+
+    /** Discards all generation-owned encoded metadata. */
+    public clear(): void {
+        this.frameMetadataWindow.clear();
     }
 }

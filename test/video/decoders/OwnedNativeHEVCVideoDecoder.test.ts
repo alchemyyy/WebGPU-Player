@@ -8,9 +8,9 @@ import {
 } from 'vitest';
 
 import OwnedNativeHEVCVideoDecoder, {
-    type NativeVideoDecoderPort,
     type OwnedNativeHEVCVideoDecoderDependencies
 } from 'webgpu-player/video/decoders/OwnedNativeHEVCVideoDecoder';
+import type { NativeVideoDecoderPort } from 'webgpu-player/video/decoders/OwnedNativeVideoDecoder';
 import { parseHEVCSPS } from 'webgpu-player/video/hevc/HEVCSPSParser';
 
 function createBytesFromHex(hex: string): Uint8Array {

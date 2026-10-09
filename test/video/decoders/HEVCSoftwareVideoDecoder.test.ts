@@ -85,11 +85,27 @@ const MAIN10_SPS = createBytesFromHex(
 const CROPPED_1080P_MAIN10_SPS = createBytesFromHex(
     '420101022000000300900000030000030078a003c0801107cad96e92930bc05a848804db0800001f480002ee0040'
 );
-const OVERSIZED_MAIN10_SPS = createBytesFromHex(
+const UHD_CODED_WIDTH = 3_840;
+const UHD_CODED_HEIGHT = 2_160;
+const DCI_4K_CODED_WIDTH = 4_096;
+const DCI_4K_CODED_HEIGHT = 2_160;
+const LEVEL_5_CODEC_STRING = 'hvc1.2.4.L150.B0';
+const LEVEL_5_1_IN_BAND_CODEC_STRING = 'hev1.2.4.L153.B0';
+const LEVEL_6_IN_BAND_CODEC_STRING = 'hev1.2.4.L180.B0';
+const DPB_ABOVE_LEVEL_ERROR = 'decoded picture buffer exceeds';
+const IN_BAND_PACKET_TIMESTAMP_SECONDS = 0;
+const IN_BAND_PACKET_DURATION_SECONDS = 0.04;
+const IN_BAND_PACKET_SEQUENCE_NUMBER = 0;
+// A DCI 4K Main 10 SPS, larger than UHD
+const DCI_4K_MAIN10_SPS = createBytesFromHex(
     '420101022000000300900000030000030096a00080080087136595952930bc05a84880482000000300200000030301'
 );
-const OVERSIZED_DPB_MAIN10_SPS = createBytesFromHex(
+// UHD Main 10 SPSs declaring seven DPB pictures, which level 6 allows at UHD and level 5.1 does not
+const LEVEL_6_DPB_7_UHD_MAIN10_SPS = createBytesFromHex(
     '4201010200000000800000000000b4a001e020021c4d967ff089a848804800'
+);
+const LEVEL_5_1_DPB_7_UHD_MAIN10_SPS = createBytesFromHex(
+    '420101020000000080000000000099a001e020021c4d967ff089a848804800'
 );
 // MAIN10_SPS with its VUI color description replaced by BT.2020 primaries and matrix with the BT.2020 10-bit transfer
 const MAIN10_BT2020_10_SPS = createBytesFromHex(
@@ -278,6 +294,43 @@ function createEncodedPacket(
     );
 }
 
+/** Initializes an hev1 UHD Main 10 decoder, which takes its parameter sets in band. */
+async function createInBandUHDDecoder(
+    backend: HEVCDecoderBackend,
+    codec: string
+): Promise<HEVCSoftwareVideoDecoder> {
+    const decoder = new HEVCSoftwareVideoDecoder(createDependencies(backend).dependencies);
+    const mutableDecoder = decoder as unknown as MutableDecoderContract;
+    mutableDecoder.codec = 'hevc';
+    mutableDecoder.config = {
+        codec,
+        codedHeight: UHD_CODED_HEIGHT,
+        codedWidth: UHD_CODED_WIDTH,
+        colorSpace: {
+            fullRange: false,
+            matrix: 'bt2020-ncl',
+            primaries: 'bt2020',
+            transfer: 'pq'
+        } as unknown as VideoColorSpaceInit,
+        hardwareAcceleration: 'prefer-software'
+    };
+    mutableDecoder.onError = (): undefined => undefined;
+    mutableDecoder.onSample = (sample: VideoSample): void => sample.close();
+    await decoder.init();
+    return decoder;
+}
+
+/** Creates a key packet that carries an SPS in band ahead of its picture. */
+function createInBandSPSPacket(sequenceParameterSet: Uint8Array): EncodedPacket {
+    return new EncodedPacket(
+        createAnnexBPacket([ sequenceParameterSet, createNALUnit(19, [ 1 ]) ]),
+        'key',
+        IN_BAND_PACKET_TIMESTAMP_SECONDS,
+        IN_BAND_PACKET_DURATION_SECONDS,
+        IN_BAND_PACKET_SEQUENCE_NUMBER
+    );
+}
+
 describe('HEVC bitstream conversion', () => {
     it('parses HVCC parameter sets and converts each to Annex B', () => {
         const description = createHVCCDescription(2, 10, 2);
@@ -431,15 +484,23 @@ describe('HEVCSoftwareVideoDecoder', () => {
             codedWidth: 1_920,
             description: main10Description
         })).toBe(false);
+        // Any frame size decodes once the configuration and SPS agree on it
+        const DCI4KDescription = createHVCCDescription(2, 10, 4, [
+            createNALUnit(32, [ 1 ]),
+            DCI_4K_MAIN10_SPS,
+            createNALUnit(34, [ 3 ])
+        ]);
         expect(HEVCSoftwareVideoDecoder.supports('hevc', {
-            codec: 'hvc1.2.4.L150.B0',
-            codedHeight: 2_160,
-            codedWidth: 3_840,
-            description: createHVCCDescription(2, 10, 4, [
-                createNALUnit(32, [ 1 ]),
-                OVERSIZED_MAIN10_SPS,
-                createNALUnit(34, [ 3 ])
-            ])
+            codec: LEVEL_5_CODEC_STRING,
+            codedHeight: DCI_4K_CODED_HEIGHT,
+            codedWidth: DCI_4K_CODED_WIDTH,
+            description: DCI4KDescription
+        })).toBe(true);
+        expect(HEVCSoftwareVideoDecoder.supports('hevc', {
+            codec: LEVEL_5_CODEC_STRING,
+            codedHeight: UHD_CODED_HEIGHT,
+            codedWidth: UHD_CODED_WIDTH,
+            description: DCI4KDescription
         })).toBe(false);
         expect(HEVCSoftwareVideoDecoder.supports('avc', {
             codec: 'avc1.640028',
@@ -655,37 +716,23 @@ describe('HEVCSoftwareVideoDecoder', () => {
         decoder.close();
     });
 
-    it('rejects an oversized in-band DPB before feeding the WASM decoder', async () => {
+    it('rejects an in-band DPB above its level before feeding the WASM decoder', async () => {
         const backend = new FakeHEVCDecoderBackend();
-        const dependencyHarness = createDependencies(backend);
-        const decoder = new HEVCSoftwareVideoDecoder(dependencyHarness.dependencies);
-        const mutableDecoder = decoder as unknown as MutableDecoderContract;
-        mutableDecoder.codec = 'hevc';
-        mutableDecoder.config = {
-            codec: 'hev1.2.4.L180.B0',
-            codedHeight: 2_160,
-            codedWidth: 3_840,
-            colorSpace: {
-                fullRange: false,
-                matrix: 'bt2020-ncl',
-                primaries: 'bt2020',
-                transfer: 'pq'
-            } as unknown as VideoColorSpaceInit,
-            hardwareAcceleration: 'prefer-software'
-        };
-        mutableDecoder.onError = (): undefined => undefined;
-        mutableDecoder.onSample = (sample: VideoSample): void => sample.close();
-        await decoder.init();
-        const packet = new EncodedPacket(
-            createAnnexBPacket([ OVERSIZED_DPB_MAIN10_SPS, createNALUnit(19, [ 1 ]) ]),
-            'key',
-            0,
-            0.04,
-            0
-        );
+        const decoder = await createInBandUHDDecoder(backend, LEVEL_5_1_IN_BAND_CODEC_STRING);
 
-        expect(() => decoder.decode(packet)).toThrow('decoded picture buffer exceeds');
+        expect(() => decoder.decode(createInBandSPSPacket(LEVEL_5_1_DPB_7_UHD_MAIN10_SPS)))
+            .toThrow(DPB_ABOVE_LEVEL_ERROR);
         expect(backend.feed).not.toHaveBeenCalled();
+        decoder.close();
+    });
+
+    it('feeds an in-band DPB its level allows at any picture size', async () => {
+        const backend = new FakeHEVCDecoderBackend();
+        const decoder = await createInBandUHDDecoder(backend, LEVEL_6_IN_BAND_CODEC_STRING);
+
+        decoder.decode(createInBandSPSPacket(LEVEL_6_DPB_7_UHD_MAIN10_SPS));
+
+        expect(backend.feed).toHaveBeenCalledOnce();
         decoder.close();
     });
 

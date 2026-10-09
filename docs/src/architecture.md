@@ -22,7 +22,8 @@ WebGPUPlayer (host): the only player PlaybackManager sees
           CustomDecodeSession [main]: one worker per generation, frame queue, credits
            CustomDecode.worker [worker]: Mediabunny demux, range-validated fetch
              video: WebCodecs | OwnedNativeHEVCVideoDecoder | hevc.js WASM (+ Dolby Vision EL)
-                    | OpenJPEG | FFmpeg MPEG-2 and VC-1 WASM
+                    | OwnedNativeVideoDecoder (AV1 Dolby Vision) | OpenJPEG
+                    | FFmpeg MPEG-2 and VC-1 WASM
              audio: WebCodecs | @mediabunny/ac3 | E-AC-3, DTS, TrueHD WASM
                     -> downmix -> resample to 48 kHz -> limiter; or AC-3/E-AC-3 fMP4 remux
            <- 'frame': VideoFrame | raw planes in a pooled buffer (+ Dolby Vision, HDR10+ metadata)
@@ -53,7 +54,7 @@ Video is pulled: each rAF draws the newest frame at or before the clock.
    It runs `prewarmBrowserAudioContext(48000)` synchronously inside `play()` (the user-activation window), calls `presenter.startSession`, and queues `startBackendPlayback`.
 2. `startCustomPlaybackBounded` (host) runs eligibility, described in [Negotiation and routes](negotiation.md).
    It waits for the raw SDR prewarm.
-   An HDR range-extension source also waits for the raw HDR prewarm, and a Dolby Vision source waits for its first-use key (Profile 4, or single-layer reconstruction outside I420P10).
+   An HDR range-extension source also waits for the raw HDR prewarm, and a Dolby Vision source waits for its first-use key (Profile 4, or Profile 7 or single-layer reconstruction outside I420P10).
    Other HDR and Dolby Vision routes use only keys that have already settled.
    Its 25 s bound lasts until the controller starts, and the controller's own startup bound applies after that.
 3. The host loads the pipeline as the `webgpu-custom-playback` chunk.
@@ -85,7 +86,7 @@ Video credits:
 - A presented `VideoFrame` closes after `submit()`, but its credit returns only after `queue.onSubmittedWorkDone()`.
   This keeps the decoder's surfaces from starving.
 - In raw mode the pooled buffer is the credit, and it returns through `recycle-frame`.
-- The owned HEVC path reads a packet only while it holds a credit.
+- The owned HEVC and AV1 paths read a packet only while they hold a credit.
 
 Audio credits:
 
@@ -123,7 +124,7 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
 ## Transitions
 
 - Seek: a new presentation generation, then `controller.seek`, then a new generation and a new worker at the target.
-  The owned HEVC path starts at the preceding key packet.
+  The owned HEVC and AV1 paths start at the preceding key packet.
   DTS and TrueHD use a 1 s preroll.
   Stale results are dropped by `customPlaybackSeekRevision` (host).
 - Audio track switch: eligibility runs again.

@@ -51,6 +51,15 @@ import { createHDR10PlusHEVCVector } from '../../src/capability/vectors/HDR10Plu
 type MessageHandler = (event: MessageEvent<unknown>) => void;
 type ErrorHandler = (event: ErrorEvent) => void;
 
+const ULTRA_HD_8K_CODED_WIDTH = 7_680;
+const ULTRA_HD_8K_CODED_HEIGHT = 4_320;
+const ULTRA_HD_16K_CODED_WIDTH = 15_360;
+const ULTRA_HD_16K_CODED_HEIGHT = 8_640;
+// A row this wide aligns past the safe integer range, so no copy layout can describe it
+const UNREPRESENTABLE_CODED_WIDTH = Number.MAX_SAFE_INTEGER;
+const UNREPRESENTABLE_CODED_HEIGHT = 2;
+const UNREPRESENTABLE_RAW_ROUTE_ERROR = 'Custom decode raw-frame route has no representable copy layout';
+
 class MockWorker {
     readonly postedMessages: unknown[] = [];
     readonly postedTransfers: Transferable[][] = [];
@@ -599,7 +608,11 @@ describe('CustomDecodeSession', () => {
         });
     });
 
-    it('accepts one 8K 10-bit raw transfer without imposing a 4K ceiling', () => {
+    it.each([
+        { height: ULTRA_HD_8K_CODED_HEIGHT, label: '8K', profile: null, width: ULTRA_HD_8K_CODED_WIDTH },
+        { height: ULTRA_HD_16K_CODED_HEIGHT, label: '16K', profile: null, width: ULTRA_HD_16K_CODED_WIDTH },
+        { height: ULTRA_HD_8K_CODED_HEIGHT, label: '8K Profile 7', profile: 7, width: ULTRA_HD_8K_CODED_WIDTH }
+    ] as const)('starts a $label 10-bit raw transfer at any frame size', ({ height, profile, width }) => {
         const worker = new MockWorker();
         const session = new CustomDecodeSession(
             () => undefined,
@@ -607,10 +620,10 @@ describe('CustomDecodeSession', () => {
         );
 
         session.start({
-            dolbyVisionProfile: null,
+            dolbyVisionProfile: profile,
             generation: 40,
-            maximumCodedHeight: 4_320,
-            maximumCodedWidth: 7_680,
+            maximumCodedHeight: height,
+            maximumCodedWidth: width,
             nativeHDRTransfer: null,
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: 'I420P10',
@@ -623,22 +636,23 @@ describe('CustomDecodeSession', () => {
 
         expect(worker.postedMessages[0]).toMatchObject({
             frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
-            maximumCodedHeight: 4_320,
-            maximumCodedWidth: 7_680,
+            maximumCodedHeight: height,
+            maximumCodedWidth: width,
             videoOutputMode: 'raw-planes'
         });
     });
 
-    it('rejects raw geometry only when the transfer byte budget is exceeded', () => {
+    it('rejects raw geometry only when no copy layout can describe it', () => {
         const session = new CustomDecodeSession(
             () => undefined,
             () => new MockWorker() as unknown as Worker
         );
-        const startOptions = {
+
+        expect(() => session.start({
             dolbyVisionProfile: null,
             generation: 41,
-            maximumCodedHeight: 8_640,
-            maximumCodedWidth: 15_360,
+            maximumCodedHeight: UNREPRESENTABLE_CODED_HEIGHT,
+            maximumCodedWidth: UNREPRESENTABLE_CODED_WIDTH,
             nativeHDRTransfer: null,
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: 'I420P10',
@@ -647,18 +661,7 @@ describe('CustomDecodeSession', () => {
             videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
-        } as const;
-
-        expect(() => session.start(startOptions)).toThrow(
-            'Custom decode raw-frame route exceeds its transfer memory budget'
-        );
-        expect(() => session.start({
-            ...startOptions,
-            dolbyVisionProfile: 7,
-            generation: 42,
-            maximumCodedHeight: 4_320,
-            maximumCodedWidth: 7_680
-        })).toThrow('Custom decode raw-frame route exceeds its transfer memory budget');
+        })).toThrow(UNREPRESENTABLE_RAW_ROUTE_ERROR);
     });
 
     it('accepts every raw plane format and rejects unknown or mismatched formats', () => {
@@ -841,6 +844,39 @@ describe('CustomDecodeSession', () => {
             expect(session.acknowledgeFrame(presentationFrame)).toBe(true);
             presentationFrame.frame.close();
         }
+    });
+
+    it('asks the worker to discard a dual-layer EL only when the route discards it', () => {
+        const startOptions = {
+            dolbyVisionProfile: 7,
+            durationMicroseconds: secondsToMicroseconds(60),
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: 'I420P10',
+            startTimeMicroseconds: secondsToMicroseconds(0),
+            url: 'http://localhost/video.mkv',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'raw-planes',
+            videoTrackIndex: 0
+        } as const;
+        const postedRequests = [ false, true ].map((discardDolbyVisionEnhancementLayer: boolean, index: number) => {
+            const worker = new MockWorker();
+            new CustomDecodeSession(() => undefined, () => worker as unknown as Worker).start({
+                ...startOptions,
+                discardDolbyVisionEnhancementLayer,
+                generation: index + 1
+            });
+            return worker.postedMessages[0];
+        });
+
+        expect(postedRequests[0]).not.toHaveProperty('discardDolbyVisionEnhancementLayer');
+        expect(postedRequests[1]).toMatchObject({
+            discardDolbyVisionEnhancementLayer: true,
+            dolbyVisionProfile: 7,
+            type: 'start'
+        });
     });
 
     it('asks for the container duration only without a server duration and forwards it on ready', () => {

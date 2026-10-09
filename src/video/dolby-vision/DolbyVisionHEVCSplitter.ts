@@ -9,7 +9,6 @@ const DOLBY_VISION_ENHANCEMENT_WRAPPER_NAL_UNIT_TYPE = 63;
 const HEVC_VPS_NAL_UNIT_TYPE = 32;
 const HEVC_SPS_NAL_UNIT_TYPE = 33;
 const HEVC_PPS_NAL_UNIT_TYPE = 34;
-const MAXIMUM_ACCESS_UNIT_BYTE_LENGTH = 64 * 1_024 * 1_024;
 const MAXIMUM_NAL_UNIT_COUNT = 4_096;
 const MINIMUM_NAL_UNIT_BYTE_LENGTH = 2;
 
@@ -48,10 +47,8 @@ enum ChromiumHEVCNALOrderState {
 }
 
 function requireAccessUnit(data: Uint8Array): void {
-    if (!(data instanceof Uint8Array)
-        || data.byteLength === 0
-        || data.byteLength > MAXIMUM_ACCESS_UNIT_BYTE_LENGTH) {
-        throw new TypeError('The HEVC access unit size is unsupported');
+    if (!(data instanceof Uint8Array) || data.byteLength === 0) {
+        throw new TypeError('The HEVC access unit is empty');
     }
 }
 
@@ -214,9 +211,8 @@ function encodeNALUnits(
             throw new TypeError('An HEVC NAL unit does not fit the output length field');
         }
         outputByteLength += prefixByteLength + nalUnit.byteLength;
-        if (!Number.isSafeInteger(outputByteLength)
-            || outputByteLength > MAXIMUM_ACCESS_UNIT_BYTE_LENGTH) {
-            throw new TypeError('The split HEVC access unit exceeds its size bound');
+        if (!Number.isSafeInteger(outputByteLength)) {
+            throw new TypeError('The split HEVC access unit size is not representable');
         }
     }
 

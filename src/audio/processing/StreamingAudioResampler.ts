@@ -9,7 +9,9 @@ import { requireSupportedCustomAudioSampleRate } from '../CustomAudioSampleRate'
 const FILTER_CUTOFF_HEADROOM = 0.94;
 const FILTER_PHASE_COUNT = 2_048;
 const FILTER_RADIUS = 32;
-const FILTER_TAP_COUNT = FILTER_RADIUS * 2;
+// The kernel was qualified for sources up to this rate.
+// A faster source widens it in proportion, which keeps the band edge as sharp as it is for this rate
+const FILTER_QUALIFIED_SOURCE_SAMPLE_RATE = 192_000;
 const MICROSECONDS_PER_SECOND = 1_000_000;
 
 /**
@@ -128,26 +130,38 @@ function blackmanWindow(normalizedDistance: number): number {
         + 0.08 * Math.cos(2 * Math.PI * normalizedDistance);
 }
 
-function createFilterTable(sourceSampleRate: number, targetSampleRate: number): Float64Array {
+/** Returns the kernel radius in source frames, widened for a source faster than the qualified rate. */
+function getFilterRadius(sourceSampleRate: number): number {
+    return Math.ceil(
+        FILTER_RADIUS * Math.max(1, sourceSampleRate / FILTER_QUALIFIED_SOURCE_SAMPLE_RATE)
+    );
+}
+
+function createFilterTable(
+    sourceSampleRate: number,
+    targetSampleRate: number,
+    filterRadius: number
+): Float64Array {
     const cutoff = Math.min(1, targetSampleRate / sourceSampleRate)
         * FILTER_CUTOFF_HEADROOM;
-    const table = new Float64Array((FILTER_PHASE_COUNT + 1) * FILTER_TAP_COUNT);
+    const filterTapCount = filterRadius * 2;
+    const table = new Float64Array((FILTER_PHASE_COUNT + 1) * filterTapCount);
     for (let phaseIndex = 0; phaseIndex <= FILTER_PHASE_COUNT; phaseIndex += 1) {
         const fraction = phaseIndex / FILTER_PHASE_COUNT;
-        const phaseOffset = phaseIndex * FILTER_TAP_COUNT;
+        const phaseOffset = phaseIndex * filterTapCount;
         let coefficientSum = 0;
-        for (let tapIndex = 0; tapIndex < FILTER_TAP_COUNT; tapIndex += 1) {
-            const distance = tapIndex - FILTER_RADIUS + 1 - fraction;
+        for (let tapIndex = 0; tapIndex < filterTapCount; tapIndex += 1) {
+            const distance = tapIndex - filterRadius + 1 - fraction;
             const coefficient = cutoff
                 * sinc(cutoff * distance)
-                * blackmanWindow(distance / FILTER_RADIUS);
+                * blackmanWindow(distance / filterRadius);
             table[phaseOffset + tapIndex] = coefficient;
             coefficientSum += coefficient;
         }
         if (!Number.isFinite(coefficientSum) || Math.abs(coefficientSum) < Number.EPSILON) {
             throw new Error('Unable to construct the audio resampling filter');
         }
-        for (let tapIndex = 0; tapIndex < FILTER_TAP_COUNT; tapIndex += 1) {
+        for (let tapIndex = 0; tapIndex < filterTapCount; tapIndex += 1) {
             table[phaseOffset + tapIndex] /= coefficientSum;
         }
     }
@@ -177,6 +191,7 @@ export default class StreamingAudioResampler {
     private readonly channelBuffers: Float32Array[] = [];
     private droppedInputCount = 0;
     private filledInputCount = 0;
+    private readonly filterRadius: number;
     private readonly filterTable: Float64Array | null;
     private finalized = false;
     private readonly firstSourceValues: number[] = [];
@@ -250,9 +265,10 @@ export default class StreamingAudioResampler {
             this.firstSourceValues.push(0);
             this.lastSourceValues.push(0);
         }
+        this.filterRadius = getFilterRadius(this.sourceSampleRate);
         this.filterTable = this.sourceSampleRate === this.targetSampleRate ?
             null :
-            createFilterTable(this.sourceSampleRate, this.targetSampleRate);
+            createFilterTable(this.sourceSampleRate, this.targetSampleRate, this.filterRadius);
     }
 
     /** Adds one source chunk and returns every newly available output chunk. */
@@ -339,7 +355,7 @@ export default class StreamingAudioResampler {
             bufferedSourceFrameCount: this.channelBuffers[0]?.length ?? 0,
             droppedInputCount: this.droppedInputCount,
             filledInputCount: this.filledInputCount,
-            filterLatencySourceFrames: this.filterTable === null ? 0 : FILTER_RADIUS,
+            filterLatencySourceFrames: this.filterTable === null ? 0 : this.filterRadius,
             finalized: this.finalized,
             maximumInputTimestampDeviationMicroseconds:
                 this.maximumInputTimestampDeviationMicroseconds,
@@ -631,7 +647,7 @@ export default class StreamingAudioResampler {
     private getAvailableOutputFrameCount(finalizing: boolean): number {
         const availableSourceFrameCount = finalizing ?
             this.totalSourceFrames :
-            Math.max(0, this.totalSourceFrames - FILTER_RADIUS);
+            Math.max(0, this.totalSourceFrames - this.filterRadius);
         const exclusiveOutputFrame = Math.ceil(
             (availableSourceFrameCount * this.targetSampleRate) / this.sourceSampleRate
         );
@@ -654,12 +670,13 @@ export default class StreamingAudioResampler {
         const phaseIndex = Math.round(
             (fractionalNumerator * FILTER_PHASE_COUNT) / this.targetSampleRate
         );
-        const coefficientOffset = phaseIndex * FILTER_TAP_COUNT;
-        const firstFilterSourceFrame = sourceFrame - FILTER_RADIUS + 1;
+        const filterTapCount = this.filterRadius * 2;
+        const coefficientOffset = phaseIndex * filterTapCount;
+        const firstFilterSourceFrame = sourceFrame - this.filterRadius + 1;
 
         for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
             let value = 0;
-            for (let tapIndex = 0; tapIndex < FILTER_TAP_COUNT; tapIndex += 1) {
+            for (let tapIndex = 0; tapIndex < filterTapCount; tapIndex += 1) {
                 const sourceFrameIndex = firstFilterSourceFrame + tapIndex;
                 value += this.getSourceValue(channelIndex, sourceFrameIndex, finalizing)
                     * filterTable[coefficientOffset + tapIndex];
@@ -723,7 +740,7 @@ export default class StreamingAudioResampler {
         );
         const firstRequiredSourceFrame = Math.max(
             0,
-            nextSourceFrame - FILTER_RADIUS + 1
+            nextSourceFrame - this.filterRadius + 1
         );
         const trimFrameCount = firstRequiredSourceFrame - this.bufferStartSourceFrame;
         if (trimFrameCount <= 0) {

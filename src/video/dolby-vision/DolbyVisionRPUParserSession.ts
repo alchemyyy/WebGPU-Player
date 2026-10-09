@@ -5,6 +5,7 @@ import DolbyVisionRPUParser, {
 export type DolbyVisionRPUParserPort = {
     close: () => void
     parse: (rpuNALUnit: Uint8Array) => DolbyVisionRPUSnapshot
+    parseAV1ITUTT35: (payload: Uint8Array) => DolbyVisionRPUSnapshot
     reset: () => void
 };
 
@@ -76,15 +77,18 @@ export default class DolbyVisionRPUParserSession {
         );
     }
 
-    /** Parses one owned RPU in decode order into transferable packed data. */
+    /** Parses one owned HEVC RPU NAL unit in decode order into transferable packed data. */
     public async parse(rpuNALUnit: Uint8Array): Promise<ArrayBuffer> {
-        this.requireOpen();
-        const initialization = await this.initialization;
-        this.requireOpen();
-        if (!initialization.parser) {
-            throw initialization.error;
-        }
-        return initialization.parser.parse(rpuNALUnit).packedData;
+        const parser = await this.waitForParser();
+        return parser.parse(rpuNALUnit).packedData;
+    }
+
+    /**
+     * Parses the owned ITU-T T.35 payload of one AV1 Dolby Vision metadata OBU in decode order into transferable packed data, sharing the mapping and display metadata state of parse.
+     */
+    public async parseAV1ITUTT35(payload: Uint8Array): Promise<ArrayBuffer> {
+        const parser = await this.waitForParser();
+        return parser.parseAV1ITUTT35(payload).packedData;
     }
 
     /** Invalidates the generation and retires the parser exactly once. */
@@ -98,6 +102,16 @@ export default class DolbyVisionRPUParserSession {
         if (parser) {
             releaseParser(parser);
         }
+    }
+
+    private async waitForParser(): Promise<DolbyVisionRPUParserPort> {
+        this.requireOpen();
+        const initialization = await this.initialization;
+        this.requireOpen();
+        if (!initialization.parser) {
+            throw initialization.error;
+        }
+        return initialization.parser;
     }
 
     private requireOpen(): void {

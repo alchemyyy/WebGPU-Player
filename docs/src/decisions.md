@@ -9,7 +9,14 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
 - No static performance gates (08-06).
   Width, Height, VideoLevel, VideoFramerate, startup throughput benchmarks, and FPS or headroom tiers were removed from every custom route (`db8dbc7622`).
   A capability means the path implements the codec, profile, and output contract, and vector geometry is output evidence only.
-  The real limits stay: codec and profile, bit depth, interlacing, container, exact decoder acceptance, transfer byte bounds, and GPU texture limits.
+  The real limits stay: codec and profile, bit depth, interlacing, container, and exact decoder acceptance.
+- No artificial size limits (10-08).
+  Nothing refuses media for its frame size, sample rate, or packet size alone.
+  The bundled HEVC, JPEG 2000, and MPEG-2/VC-1 size caps, the raw-copy byte budget, the packet and container read caps, the 3 kHz to 192 kHz audio window, and the per-packet audio frame counts were removed.
+  Above 192 kHz the resampler widens its kernel in proportion, so its band edge stays where the 192 kHz qualification put it.
+  The real bounds remain: the level's DPB, a representable copy layout, the WASM heap (4 GiB for MPEG-2/VC-1, 2 GiB in the prebuilt HEVC and OpenJPEG decoders), the adapter's texture limit, and what a browser decoder accepts.
+  Limits that pace or chunk work stay as tuning: transfer credits, queue depths, pending windows, and output chunk sizes.
+  So do guards against corrupt data that no real stream reaches, such as header and RPU size bounds and the 2 MiB audio packet bound.
 - Bitrate is telemetry only.
   The first PlaybackInfo request omits bitrate.
   Only a bounded second request may carry it, to size a transcode that was already decided.
@@ -58,28 +65,73 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   The native base route takes the PQ and HLG bases of P7 and P8, and any declared base is the last fallback after reconstruction.
   Other IDs (0, reserved, none) declare nothing, so those streams need their RPU.
   The raw Dolby Vision route advertises DOVIInvalid for the same reason, and the MPEG-TS dual-PID dependency accepts any CCID.
-- Every Dolby Vision profile except P10 gets a route (10-06).
-  P4, P20, P7 without its EL, and P8 with an EL flag all play, as do Dolby Vision over Rext, Main 12, or 8-bit Main, MPEG-TS descriptor version 2, and compressed display metadata.
+- Every Dolby Vision profile gets a route (10-06, 10-08).
+  P4, P20, P7 without its EL, P8 with an EL flag, and AV1 P10 all play, as do Dolby Vision over Rext, Main 12, or 8-bit Main, MPEG-TS descriptor version 2, and compressed display metadata.
   Routes are tried in this order: native P5, the native compatible base (P7, P8), RPU reconstruction, then the declared base through the ordinary routes.
   A stream fails closed only when none applies.
   Reconstruction comes before the declared base, apart from the native-base-first case, because a base without its RPU is not the graded picture.
-  P20 reconstructs its MV-HEVC base view as P5 (CCID 0 or none) or as P8.
-  P9 (AVC) and P10 (AV1) have no RPU route; P9 plays its declared base, and P10 is deferred.
+  P20 reconstructs its MV-HEVC base view, and P10 its AV1 picture, as P5 (CCID 0 or none) or as P8.
+  P9 (AVC) has no RPU route, because the engine owns no AVC decode path, and plays its declared base.
+- Profile 10 decodes through the engine's own AV1 path (10-08).
+  Mediabunny's `VideoSampleSink` hides the packet bytes that carry the RPU, so a P10 route reads packets with `EncodedPacketSink` and feeds its own WebCodecs decoder.
+  Each temporal unit's Dolby Vision ITU-T T.35 metadata OBUs are removed before decode, so no browser decoder sees them.
+  The libdovi T.35 entry point parses them in decode order.
+  A temporal unit has exactly one shown frame, so its timestamp keys its RPU, as a PTS keys an HEVC RPU.
+  The route profile comes from the container descriptor; the profile the crate infers from the RPU header (5 for 10.0, 8 otherwise) only validates the snapshot.
+  AV1 has no native external Dolby Vision or HDR route, because nothing neutralizes an AV1 sequence header's color, so P10 reconstructs from raw I420P10 only.
+- Raw AV1 and VP9 planes prefer software (10-08).
+  Chromium's hardware AV1 and VP9 decoders return opaque 10-bit surfaces whose planes `copyTo` cannot expose, while its software decoders (dav1d, libvpx) return copyable I420P10.
+  Raw-plane decode of AV1 and VP9 therefore requests `prefer-software`, in the raw probes and at runtime alike, so the raw HDR, raw SDR, and P10 routes qualify on GPUs with AV1 or VP9 hardware decode.
+  HEVC keeps `no-preference`, because Chromium has no software HEVC decoder.
+- Dual-layer reconstruction runs in every raw format (10-08).
+  P4 and P7 over a range extension or 8-bit Main reconstruct with the BL in its own raw format and the EL in I420P10, the only format the bundled EL decoder is qualified for.
+  An EL that decodes in another format or at another size than its configuration leaves the stream to its BL, as a failed EL decoder does.
+  A frame whose RPU names an EL depth other than 10 bits presents without its EL, because the EL texture holds 10-bit codes.
+  The FEL fallback presents the BL at the format's own depth, which the per-frame check holds equal to the RPU's BL depth.
+  Each format has its own base and FEL keys; only the I420P10 Profile 7 keys are prewarmed.
+- The bundled EL decoder decides whether a dual-layer route decodes its EL (10-08).
+  The P4 and P7 EL is always decoded by the bundled HEVC decoder.
+  Without that decoder's Main 10 qualification, dual-layer reconstruction is still selected, with `discardDolbyVisionEnhancementLayer` set, so the worker creates no EL decoder: MEL reconstructs exactly from the BL, and FEL presents its base, which the declared base route would also present.
+  Before 10-08 the route started the unqualified decoder and dropped the EL only when it failed.
+  Gating the route on the qualification instead would cost MEL its reconstruction and leave P7 with CCID 0 no route.
+- 8-bit Main Dolby Vision reconstructs through the bundled decoder (10-08).
+  Native HEVC Main decodes to hardware surfaces that no probe proves copyable, so an 8-bit Main base layer reconstructs from the bundled decoder's I420 planes, with the `I420:dovi-rpu-v1` key or the I420 dual-layer keys.
+- 10-bit SDR has a raw route (10-08).
+  AV1 Main and VP9 Profile 2 have no 10-bit VideoFrame route, and HEVC Main 10 has none without native decode, so 10-bit 4:2:0 SDR presents from raw I420P10 through the raw SDR keys.
+  Those keys are BT.709 only, so BT.601 and BT.2020 SDR at 10 bits have no raw route.
+  The same route presents a declared 10-bit SDR base, such as P10.2's.
 - Single-layer profiles discard a signaled EL (10-06).
   P5, P8, and P20 have no EL composition, so their EL flag is ignored and in-band EL NAL units are dropped.
   A P4 or P7 frame without a paired EL presents MEL exactly, because a MEL carries no residual, and FEL as its base layer: the HDR10 base for P7, and the SDR base exactly for P4, with no tone mapping or dither.
-- The `dolby_vision` crate is vendored and patched (10-06).
+- The `dolby_vision` crate is vendored and patched (10-06, 10-08).
   It is copied from dovi_tool rev `38adec0` into `wasm/libdovi/vendor/dolby_vision/`, and its `PATCHES.md` lists every deviation.
-  The bridge in `wasm/libdovi/src/lib.rs` adds what the crate lacks: a reuse cache for compressed display metadata, Profile 4's 2^30 YCC offset scale, and mapping chroma formats up to 4:4:4.
+  The bridge in `wasm/libdovi/src/lib.rs` adds what the crate lacks: a reuse cache for compressed display metadata, Profile 4's 2^30 YCC offset scale, and every mapping color space and chroma format.
+  Every color space and chroma format works because the composer maps the decoded components as they are and the RPU's own matrices convert them, as for Profile 5's IPT.
+  The AV1 EMDF container is bounded before it sizes a buffer.
   Upstream rejected syntax that FFmpeg's `dovi_rpudec.c` accepts, so the patches follow FFmpeg:
   - header limits widened to FFmpeg's (8 to 16-bit layers, coefficient precision up to 32 bits, no mapping color space or chroma check);
+  - a mapping method per piece rather than per component;
   - unsupported syntax as a typed error;
   - panics returned as errors;
   - display-metadata extension blocks skipped as `parse_ext_blocks` does.
     Only a block whose coded length runs past the payload rejects the RPU.
+- Mixed pieces and linear interpolation are packed per segment (10-08).
+  A component may mix polynomial and MMR pieces, as FFmpeg reads them, so the snapshot (schema 2) stores the method per segment: an MMR segment has an order above 0 in its last slot.
+  Polynomial linear interpolation, which FFmpeg rejects for lack of samples and ETSI GS CCM 001 V1.1.1 does not define, is read as annex A of US 10,701,399 B2 codes it.
+  A piece carries the curve's rise to its start pivot from the previous pivot's value, the first piece its start value outright, and the last piece also the rise to its end pivot.
+  The annex leaves a polynomial neighbor's value undefined, so the bridge takes a polynomial piece's value at its start pivot as the value a following linear piece rises from, and ends a linear piece before a polynomial continuously with it.
+  Each linear piece is packed as the order-1 polynomial between its pivots' values.
+  A linear piece next to an MMR piece is rejected: an MMR piece maps all three components together, so it has no scalar value to rise from or end on.
+  The revision prefix names the vendored dovi_tool commit; the schema version is what a snapshot's readers check.
 - Mediabunny's Dolby Vision sample entries are mapped in the engine (10-06).
   Mediabunny 1.52.2 parses `dvh1`, `dvhe`, `dva1`, `dvav`, and `dav1` but gives them no codec.
   `ISOBaseMediaDolbyVisionSampleEntry.ts` writes the wrapped codec into the track's internal info, contained the way `MatroskaVFWVideoConfiguration.ts` is, so Mediabunny itself stays unmodified.
+- AV1 codec strings come from the bitstream (10-08).
+  Without an `av1C` record, as in every Matroska track, Mediabunny 1.52.2 reads the first packet's sequence header, but it reads `decoder_model_info_present_flag` without timing info and the initial display delay flag once per operating point.
+  Its `color_config` also skips the color description and range, and takes the Professional profile below 12 bits as 4:2:0.
+  Every field after the operating points comes out wrong: a 10-bit Profile 10 Matroska vector reads as 8-bit and monochrome.
+  `AV1DecoderConfiguration.ts` parses the first packet's sequence header as the specification defines it and replaces the cached decoder configuration's codec string before the first `getDecoderConfig()` or `canDecode()`, so both the sample sink and the owned AV1 path decode with the stream's own string.
+  It is contained the same way, and leaves a track whose first packet has no sequence header untouched.
 - Decoder surfaces must not starve (08-08, `ecb5a4ec09`).
   Native frame credits return after `queue.onSubmittedWorkDone()`, not after `submit()`, because Chromium holds the decoder mailbox until the GPU completes and the D3D surface pool is finite.
 - Rejected alternatives.

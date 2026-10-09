@@ -1,4 +1,6 @@
 import {
+    DOLBY_VISION_RPU_COMPONENT_FLAG_MMR,
+    DOLBY_VISION_RPU_COMPONENT_FLAG_POLYNOMIAL,
     DOLBY_VISION_RPU_PACKED_COLOR_BYTE_LENGTH,
     DOLBY_VISION_RPU_PACKED_COMPONENT_BYTE_LENGTH,
     DOLBY_VISION_RPU_PACKED_COMPONENT_COUNT,
@@ -7,6 +9,7 @@ import {
     DOLBY_VISION_RPU_PACKED_COMPONENT_SEGMENT_OFFSET,
     DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH,
     DOLBY_VISION_RPU_PACKED_NLQ_BYTE_LENGTH,
+    DOLBY_VISION_RPU_SEGMENT_MMR_ORDER_INDEX,
     MAXIMUM_DOLBY_VISION_RPU_MMR_VECTOR_COUNT,
     MAXIMUM_DOLBY_VISION_RPU_PIVOT_COUNT,
     MAXIMUM_DOLBY_VISION_RPU_SEGMENT_COUNT
@@ -15,7 +18,7 @@ import { resolveEngineAssetURL, type EngineAssetPath } from '../../EngineAssets'
 import { isDolbyVisionDualLayerProfile } from './DolbyVisionProfiles';
 
 export const DOLBY_VISION_RPU_PARSER_WASM_ASSET: EngineAssetPath = 'libdovi/dovi-rpu-parser.wasm';
-export const DOLBY_VISION_RPU_SCHEMA_VERSION = 1;
+export const DOLBY_VISION_RPU_SCHEMA_VERSION = 2;
 export const DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH = 3_232;
 export const DOLBY_VISION_RPU_PARSER_REVISION_PREFIX = 0x38AD_EC04;
 export const DOLBY_VISION_RPU_SCHEMA_MAGIC = 0x5052_5644;
@@ -59,13 +62,14 @@ type DolbyVisionRPUParserWASMExports = {
     getSchemaVersion: WASMFunction
     memory: WebAssembly.Memory
     parse: WASMFunction
+    parseAV1ITUTT35: WASMFunction
     reset: WASMFunction
 };
 
 export type DolbyVisionRPULayerMode = 'fel' | 'mel' | 'single-layer';
 
 export type DolbyVisionRPUComponentSummary = {
-    mappingMethod: 'mmr' | 'polynomial'
+    mappingMethod: 'mixed' | 'mmr' | 'polynomial'
     mmrVectorCount: number
     numPivots: number
     pivots: readonly number[]
@@ -196,6 +200,7 @@ function requireParserExports(instance: WebAssembly.Instance): DolbyVisionRPUPar
         ),
         memory: exportsValue.memory,
         parse: getWASMFunction(exportsValue, 'dovi_parser_parse'),
+        parseAV1ITUTT35: getWASMFunction(exportsValue, 'dovi_parser_parse_av1_t35'),
         reset: getWASMFunction(exportsValue, 'dovi_parser_reset')
     };
 }
@@ -320,7 +325,7 @@ function readSegmentValues(
 
 function validateMMRSegment(segmentValues: readonly number[], mmrVectorCount: number): void {
     const mmrIndex = segmentValues[1];
-    const mmrOrder = segmentValues[3];
+    const mmrOrder = segmentValues[DOLBY_VISION_RPU_SEGMENT_MMR_ORDER_INDEX];
     if (
         !Number.isInteger(mmrIndex)
         || mmrIndex < 0
@@ -334,6 +339,7 @@ function validateMMRSegment(segmentValues: readonly number[], mmrVectorCount: nu
     }
 }
 
+/** Validates each segment by its own method, which together must match the component flags. */
 function validateComponentSegments(
     view: DataView,
     componentOffset: number,
@@ -341,6 +347,7 @@ function validateComponentSegments(
     mmrVectorCount: number,
     segmentCount: number
 ): void {
+    let segmentFlags = 0;
     for (
         let segmentIndex = 0;
         segmentIndex < MAXIMUM_DOLBY_VISION_RPU_SEGMENT_COUNT;
@@ -350,12 +357,18 @@ function validateComponentSegments(
         if (segmentIndex >= segmentCount) {
             continue;
         }
-        if (componentFlags === 1 && segmentValues[3] !== 0) {
-            throw new TypeError('Dolby Vision polynomial segment has an MMR order');
-        }
-        if (componentFlags === 2) {
+        const mmrOrder = segmentValues[DOLBY_VISION_RPU_SEGMENT_MMR_ORDER_INDEX];
+        if (mmrOrder > 0) {
             validateMMRSegment(segmentValues, mmrVectorCount);
+            segmentFlags |= DOLBY_VISION_RPU_COMPONENT_FLAG_MMR;
+        } else if (mmrOrder === 0) {
+            segmentFlags |= DOLBY_VISION_RPU_COMPONENT_FLAG_POLYNOMIAL;
+        } else {
+            throw new TypeError('Dolby Vision segment method is invalid');
         }
+    }
+    if (segmentFlags !== componentFlags) {
+        throw new TypeError('Dolby Vision segment methods contradict their component flags');
     }
 }
 
@@ -377,12 +390,16 @@ function validateComponentMMRData(view: DataView, componentOffset: number): void
     }
 }
 
-function getComponentMappingMethod(componentFlags: number): 'mmr' | 'polynomial' {
+function getComponentMappingMethod(
+    componentFlags: number
+): DolbyVisionRPUComponentSummary['mappingMethod'] {
     switch (componentFlags) {
-        case 1:
+        case DOLBY_VISION_RPU_COMPONENT_FLAG_POLYNOMIAL:
             return 'polynomial';
-        case 2:
+        case DOLBY_VISION_RPU_COMPONENT_FLAG_MMR:
             return 'mmr';
+        case DOLBY_VISION_RPU_COMPONENT_FLAG_POLYNOMIAL | DOLBY_VISION_RPU_COMPONENT_FLAG_MMR:
+            return 'mixed';
         default:
             throw new TypeError('Dolby Vision packed component method is invalid');
     }
@@ -694,59 +711,17 @@ export default class DolbyVisionRPUParser {
         }
     }
 
-    /** Parses one RPU in decode order and returns an owned immutable snapshot. */
+    /** Parses one HEVC UNSPEC62 RPU NAL unit in decode order and returns an owned immutable snapshot. */
     public parse(rpuNALUnit: Uint8Array): DolbyVisionRPUSnapshot {
-        this.requireOpen();
-        if (!(rpuNALUnit instanceof Uint8Array)
-            || rpuNALUnit.byteLength === 0
-            || rpuNALUnit.byteLength > MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH) {
-            throw new TypeError('Dolby Vision RPU input exceeds its byte bound');
-        }
-        const inputRange = requireMemoryRange(
-            this.parserExports.memory,
-            this.inputPointer,
-            rpuNALUnit.byteLength,
-            'Dolby Vision parser input'
-        );
-        const inputView = new Uint8Array(
-            this.parserExports.memory.buffer,
-            inputRange.pointer,
-            inputRange.byteLength
-        );
-        inputView.set(rpuNALUnit);
-        try {
-            const statusCode = this.parserExports.parse(
-                this.contextPointer,
-                this.inputPointer,
-                rpuNALUnit.byteLength,
-                this.outputPointer,
-                DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH
-            );
-            if (statusCode !== 0) {
-                throw new DolbyVisionRPUParseError(
-                    statusCode,
-                    this.readLastError() || `Dolby Vision parser failed with status ${statusCode}`
-                );
-            }
-            const outputRange = requireMemoryRange(
-                this.parserExports.memory,
-                this.outputPointer,
-                DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
-                'Dolby Vision parser output'
-            );
-            const packedData = new Uint8Array(
-                this.parserExports.memory.buffer,
-                outputRange.pointer,
-                outputRange.byteLength
-            ).slice().buffer;
-            return decodeDolbyVisionRPUSnapshot(packedData);
-        } finally {
-            new Uint8Array(
-                this.parserExports.memory.buffer,
-                this.inputPointer,
-                rpuNALUnit.byteLength
-            ).fill(0);
-        }
+        return this.parseInput(this.parserExports.parse, rpuNALUnit);
+    }
+
+    /**
+     * Parses the ITU-T T.35 payload of one AV1 Dolby Vision metadata OBU, from its country code to the end of the OBU payload, in decode order.
+     * It shares the mapping and display metadata state of parse.
+     */
+    public parseAV1ITUTT35(payload: Uint8Array): DolbyVisionRPUSnapshot {
+        return this.parseInput(this.parserExports.parseAV1ITUTT35, payload);
     }
 
     /** Clears all prior-mapping state at seek and generation boundaries. */
@@ -776,6 +751,61 @@ export default class DolbyVisionRPUParser {
             MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH
         );
         this.parserExports.destroyContext(this.contextPointer);
+    }
+
+    /** Copies one bounded input into the shared buffer and decodes the entry point's snapshot. */
+    private parseInput(entryPoint: WASMFunction, input: Uint8Array): DolbyVisionRPUSnapshot {
+        this.requireOpen();
+        if (!(input instanceof Uint8Array)
+            || input.byteLength === 0
+            || input.byteLength > MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH) {
+            throw new TypeError('Dolby Vision RPU input exceeds its byte bound');
+        }
+        const inputRange = requireMemoryRange(
+            this.parserExports.memory,
+            this.inputPointer,
+            input.byteLength,
+            'Dolby Vision parser input'
+        );
+        const inputView = new Uint8Array(
+            this.parserExports.memory.buffer,
+            inputRange.pointer,
+            inputRange.byteLength
+        );
+        inputView.set(input);
+        try {
+            const statusCode = entryPoint(
+                this.contextPointer,
+                this.inputPointer,
+                input.byteLength,
+                this.outputPointer,
+                DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH
+            );
+            if (statusCode !== 0) {
+                throw new DolbyVisionRPUParseError(
+                    statusCode,
+                    this.readLastError() || `Dolby Vision parser failed with status ${statusCode}`
+                );
+            }
+            const outputRange = requireMemoryRange(
+                this.parserExports.memory,
+                this.outputPointer,
+                DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
+                'Dolby Vision parser output'
+            );
+            const packedData = new Uint8Array(
+                this.parserExports.memory.buffer,
+                outputRange.pointer,
+                outputRange.byteLength
+            ).slice().buffer;
+            return decodeDolbyVisionRPUSnapshot(packedData);
+        } finally {
+            new Uint8Array(
+                this.parserExports.memory.buffer,
+                this.inputPointer,
+                input.byteLength
+            ).fill(0);
+        }
     }
 
     private readLastError(): string {

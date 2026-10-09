@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9141c141.js";
+            window.path_to_searchindex_js = "searchindex-24f8931a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -178,9 +178,9 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="hevc-and-dolby-vision-support"><a class="header" href="#hevc-and-dolby-vision-support">HEVC and Dolby Vision support</a></h1>
-<p>This chapter says which HEVC and Dolby Vision sources play through the custom pipeline, by which route, and on what evidence.
+<p>This chapter says which HEVC and Dolby Vision sources, AV1 Profile 10 included, play through the custom pipeline, by which route, and on what evidence.
 It comes from the source and the unit tests, not from playback.
-<code>jellyfin-webgpu-client.tests/custom/HEVCDirectPlaySupportMatrix.test.ts</code> (host) asserts every row except the <code>metadata-unsupported</code> and <code>video-track-unavailable</code> rejections:</p>
+<code>jellyfin-webgpu-client.tests/custom/HEVCDirectPlaySupportMatrix.test.ts</code> and <code>jellyfin-webgpu-client.tests/custom/AV1DirectPlaySupportMatrix.test.ts</code> (host) assert every row except the <code>metadata-unsupported</code> and <code>video-track-unavailable</code> rejections:</p>
 <ul>
 <li>negotiation: <code>isSameSessionNativePlaybackCompatible</code>, a conservative model of Jellyfin’s codec profile evaluation, against the profile from <code>augmentDeviceProfileForCustomDecode</code>, scoped to the item as the host scopes it;</li>
 <li>runtime eligibility: <code>getCustomPlaybackEligibility</code>;</li>
@@ -207,7 +207,7 @@ It falls back to the HTML player in the same session when the stock profile cove
 </thead>
 <tbody>
 <tr><td>SDR, Main, 8-bit</td><td>Yes</td><td>Yes</td><td>VF-SDR native, then VF-SDR bundled</td><td>Native: <code>video.hevc</code> or <code>nativeUltraHDVideo.hevc</code>. Bundled: <code>bundledHEVC</code> Main</td></tr>
-<tr><td>SDR, Main 10, 10-bit</td><td>Yes</td><td>Yes</td><td>VF-SDR native</td><td><code>nativeHDRHEVC</code></td></tr>
+<tr><td>SDR, Main 10, 10-bit</td><td>Yes</td><td>Yes</td><td>VF-SDR native, then RAW I420P10 SDR</td><td>VF-SDR: <code>nativeHDRHEVC</code>. RAW: <code>rawHDRVideo.hevc</code> and <code>I420P10:bt709:bt709:&lt;limited or full&gt;:sdr</code>; negotiation needs both keys</td></tr>
 <tr><td>HDR10 or HDR10Plus, Main 10, 10-bit</td><td>Yes</td><td>Yes</td><td>VF-PQ, then RAW I420P10 PQ</td><td>VF: <code>nativeHDRHEVC</code> and <code>ext-pq</code>. RAW: <code>rawHDRVideo.hevc</code> and <code>I420P10:bt2020-ncl:bt2020:limited:pq</code></td></tr>
 <tr><td>HLG, Main 10, 10-bit</td><td>Yes</td><td>Yes</td><td>VF-HLG, then RAW I420P10 HLG</td><td>VF: <code>nativeHDRHEVC</code> and <code>ext-hlg</code>. RAW: <code>rawHDRVideo.hevc</code> and <code>I420P10:bt2020-ncl:bt2020:limited:hlg</code></td></tr>
 <tr><td>Unknown range</td><td>No</td><td>No</td><td>None</td><td>None</td></tr>
@@ -216,7 +216,7 @@ It falls back to the HTML player in the same session when the stock profile cove
 </div>
 <p>The SDR rows cover every transfer the engine reads as SDR: BT.709, SMPTE 170M, sRGB, and the BT.2020 10 and 12-bit transfers, which use the BT.709 curve.
 They take BT.709, BT.601 (SMPTE 170M, SMPTE 240M, or BT.470 BG), or BT.2020 primaries and matrix.
-The VF-SDR routes leave the color conversion to Chrome, while the raw SDR keys stay BT.709 only.</p>
+The VF-SDR routes leave the color conversion to Chrome, while the raw SDR keys stay BT.709 only, so Main 10 SDR in BT.601 or BT.2020 color has no raw fallback.</p>
 <p>The HLG row includes HLG-compatible streams, whose VUI signals the BT.2020 10-bit transfer and whose alternative transfer characteristics SEI names HLG (see <a href="#evidence">Other conditions</a>).</p>
 <h2 id="range-extensions"><a class="header" href="#range-extensions">Range extensions</a></h2>
 <div class="table-wrapper">
@@ -265,29 +265,49 @@ Main 10 at 10 bits unless stated.
 </thead>
 <tbody>
 <tr><td>DOVI, or HDR10 for a CCID outside Jellyfin’s set; P5, any CCID or none</td><td>Yes</td><td>Yes</td><td>VF-DV5, then RAW-DV P5</td><td>VF: <code>nativeDolbyVisionHEVC</code> and <code>dovi-p5</code>. RAW: <code>rawHDRVideo.hevc</code> and <code>dovi-rpu</code></td></tr>
-<tr><td>DOVIWithEL or DOVIWithELHDR10Plus; P7, CCID 6 or 1, MEL or FEL, with or without the EL</td><td>Yes</td><td>Yes</td><td>DV base PQ, then RAW-DV7, then the declared PQ base through RAW</td><td>Base: <code>nativeHDRHEVC</code>, <code>ext-pq</code>, and exact BT.2020 PQ base metadata. RAW-DV7: <code>rawHDRVideo.hevc</code> within the two-layer budget and <code>dovi-p7-base</code>; the FEL residual also needs <code>dovi-p7-fel</code></td></tr>
+<tr><td>DOVIWithEL or DOVIWithELHDR10Plus; P7, CCID 6 or 1, MEL or FEL, with or without the EL</td><td>Yes</td><td>Yes</td><td>DV base PQ, then RAW-DV7, then the declared PQ base through RAW</td><td>Base: <code>nativeHDRHEVC</code>, <code>ext-pq</code>, and exact BT.2020 PQ base metadata. RAW-DV7: <code>rawHDRVideo.hevc</code> and <code>dovi-p7-base</code>; decoding the EL needs the bundled Main 10 qualification, and the FEL residual also needs <code>dovi-p7-fel</code></td></tr>
 <tr><td>DOVIWithEL, or HDR10 for a CCID outside Jellyfin’s set; P7, any other CCID or none</td><td>Yes</td><td>Yes</td><td>RAW-DV7 only; the CCID declares no base</td><td>As RAW-DV7 above</td></tr>
 <tr><td>DOVIWithHDR10 or DOVIWithHDR10Plus; P8.1, with or without an EL flag</td><td>Yes</td><td>Yes</td><td>DV base PQ, then RAW-DV P8, then the declared PQ base through RAW</td><td>Base: as for P7. RAW-DV: <code>rawHDRVideo.hevc</code> and <code>dovi-rpu</code></td></tr>
 <tr><td>DOVIInvalid; P8, CCID 6 (an Ultra HD Blu-ray HDR10 base)</td><td>Yes</td><td>Yes</td><td>As P8.1</td><td>As P8.1; DOVIInvalid comes with the raw Dolby Vision route</td></tr>
 <tr><td>DOVIWithSDR; P8.2</td><td>Yes</td><td>Yes</td><td>RAW-DV P8, then the declared SDR base through VF-SDR native</td><td>RAW-DV: as P8.1. VF-SDR: <code>nativeHDRHEVC</code></td></tr>
 <tr><td>DOVIWithHLG; P8.4</td><td>Yes</td><td>Yes</td><td>DV base HLG, then RAW-DV P8, then the declared HLG base through RAW</td><td>Base: <code>nativeHDRHEVC</code>, <code>ext-hlg</code>, and exact limited BT.2020 HLG base metadata. RAW-DV: as P8.1</td></tr>
 <tr><td>DOVIInvalid, or a label by transfer; P8, CCID 0, reserved, none, or a base whose color contradicts its CCID (Jellyfin 12)</td><td>Yes</td><td>Yes</td><td>RAW-DV P8 only</td><td>As P8.1</td></tr>
-<tr><td>SDR, or HDR10 or HLG by transfer (SDR under a <code>dvhe</code> sample entry); P4, CCID 2, MEL or FEL, with or without the EL</td><td>Yes</td><td>Yes</td><td>RAW-DV4, then the declared SDR base through VF-SDR native</td><td>RAW-DV4: <code>rawHDRVideo.hevc</code> within the two-layer budget and <code>dovi-p4-base</code>; the FEL residual also needs <code>dovi-p4-fel</code>. VF-SDR: <code>nativeHDRHEVC</code></td></tr>
+<tr><td>SDR, or HDR10 or HLG by transfer (SDR under a <code>dvhe</code> sample entry); P4, CCID 2, MEL or FEL, with or without the EL</td><td>Yes</td><td>Yes</td><td>RAW-DV4, then the declared SDR base through VF-SDR native</td><td>RAW-DV4: <code>rawHDRVideo.hevc</code> and <code>dovi-p4-base</code>; decoding the EL needs the bundled Main 10 qualification, and the FEL residual also needs <code>dovi-p4-fel</code>. VF-SDR: <code>nativeHDRHEVC</code></td></tr>
 <tr><td>HDR10, HLG, or SDR by transfer (SDR under a <code>dvh1</code> sample entry); P20 MV-HEVC, CCID 1, 2, 4, 6, or reserved</td><td>Yes</td><td>Yes</td><td>RAW-DV P8 on the base view, then the declared base through the static routes</td><td>As P8.1</td></tr>
 <tr><td>As above; P20, CCID 0 or none</td><td>Yes</td><td>Yes</td><td>VF-DV5 on the base view, then RAW-DV P5</td><td>As P5</td></tr>
 <tr><td>Any label; P5, P8, or P20 over Rext or a named alias</td><td>Item route</td><td>Yes</td><td>RAW-DV in the variant’s exact format, then the declared base through RAW in that format</td><td><code>hevcRangeExtensions[variant]</code> and <code>&lt;format&gt;:dovi-rpu-v1</code></td></tr>
-<tr><td>Any label; P4 or P7 over Rext or a named alias</td><td>Item route, when the CCID declares a base</td><td>Likewise</td><td>The declared base through RAW in the variant’s format; dual-layer reconstruction is I420P10 only</td><td>As the matching range-extension row</td></tr>
-<tr><td>DOVIWithSDR or SDR; any profile with CCID 2 over 8-bit Main</td><td>Item route</td><td>Yes</td><td>The declared SDR base through VF-SDR native, then VF-SDR bundled</td><td>As SDR Main</td></tr>
+<tr><td>Any label; P4 or P7 over Rext or a named alias</td><td>Item route</td><td>Yes</td><td>RAW-DV4 or RAW-DV7 with the BL in the variant’s exact format, then the declared base through RAW in that format</td><td><code>hevcRangeExtensions[variant]</code> and <code>&lt;format&gt;:dovi-profile4-base-v1</code> or <code>&lt;format&gt;:dovi-profile7-base-v1</code>; decoding the EL needs the bundled Main 10 qualification, and the FEL residual also needs the matching FEL key</td></tr>
+<tr><td>Any label; P5, P8, or P20 over 8-bit Main</td><td>Item route</td><td>Yes</td><td>RAW-DV in I420 through <code>bundled-hevc</code>, then (CCID 2) the declared SDR base through VF-SDR native, then VF-SDR bundled</td><td>RAW-DV: <code>bundledHEVC</code> Main and <code>I420:dovi-rpu-v1</code>. VF-SDR: as SDR Main</td></tr>
+<tr><td>Any label; P4 or P7 over 8-bit Main</td><td>Item route</td><td>Yes</td><td>RAW-DV4 or RAW-DV7 with an I420 BL, both layers through <code>bundled-hevc</code>, then the declared base</td><td><code>bundledHEVC</code> Main and the I420 dual-layer keys; decoding the EL needs <code>bundledHEVC</code> Main 10</td></tr>
 </tbody>
 </table>
 </div>
-<p>Dolby Vision outside HEVC:</p>
+<h2 id="dolby-vision-over-av1"><a class="header" href="#dolby-vision-over-av1">Dolby Vision over AV1</a></h2>
+<p>Profile 10 is single-layer: the RPU travels in an ITU-T T.35 metadata OBU of each temporal unit, and the base layer is AV1 Main at 10 bits.
+RAW-DV here decodes through the engine’s own AV1 path, natively in software, into I420P10.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Variant</th><th>Negotiated</th><th>Eligible</th><th>Route, then fallback</th><th>Evidence</th></tr>
+</thead>
+<tbody>
+<tr><td>DOVI; P10.0, CCID 0 (an IPT base)</td><td>Yes</td><td>Yes</td><td>RAW-DV P5 only; the CCID declares no base</td><td><code>rawHDRVideo.av1</code> and <code>dovi-rpu</code></td></tr>
+<tr><td>DOVIWithHDR10 or DOVIWithHDR10Plus; P10.1</td><td>Yes</td><td>Yes</td><td>RAW-DV P8, then the declared PQ base through RAW I420P10 PQ</td><td>RAW-DV: as P10.0. Base: <code>rawHDRVideo.av1</code> and <code>I420P10:bt2020-ncl:bt2020:limited:pq</code></td></tr>
+<tr><td>DOVIWithSDR; P10.2</td><td>Yes</td><td>Yes</td><td>RAW-DV P8, then the declared SDR base through RAW I420P10 SDR</td><td>RAW-DV: as P10.0. Base: <code>rawHDRVideo.av1</code> and the I420P10 BT.709 SDR keys</td></tr>
+<tr><td>DOVIWithHLG; P10.4</td><td>Yes</td><td>Yes</td><td>RAW-DV P8, then the declared HLG base through RAW I420P10 HLG</td><td>RAW-DV: as P10.0. Base: <code>rawHDRVideo.av1</code> and <code>I420P10:bt2020-ncl:bt2020:limited:hlg</code></td></tr>
+<tr><td>DOVIInvalid; P10 with CCID 6, a reserved CCID, or a base whose color contradicts its CCID</td><td>Yes</td><td>Yes</td><td>RAW-DV P8; CCID 6 then falls back to its PQ base</td><td>As P10.1</td></tr>
+<tr><td>HDR10, HLG, or SDR by transfer; P10 without a CCID (Matroska)</td><td>Yes</td><td>Yes</td><td>RAW-DV P5 only; the stream declares no base</td><td>As P10.0</td></tr>
+<tr><td>Any label; P10 at 8 bits, or outside the Main profile</td><td>Item route, with a declared SDR base</td><td>Only with a declared SDR base</td><td>The declared SDR base through native VF-SDR; no RPU route, because raw AV1 qualifies at 10 bits only</td><td>As 8-bit AV1 SDR</td></tr>
+</tbody>
+</table>
+</div>
+<p>The MP4 <code>dav1</code> sample entry of a 10.0 stream maps to no codec in FFmpeg, and so in Jellyfin’s probe, so the server never offers such a file for direct play.
+The engine maps <code>dav1</code> to AV1 itself (see <a href="decisions.html#video-decode-and-dolby-vision">Decisions</a>), and Matroska 10.0 plays.</p>
+<p>Dolby Vision outside HEVC and AV1:</p>
 <ul>
 <li>Profile 9 (AVC, 8-bit) has no RPU route, because the engine owns no AVC decode path.
 Its declared SDR base plays through the H.264 routes.
 Jellyfin labels it by transfer, or SDR under a <code>dvav</code> or <code>dva1</code> sample entry.</li>
-<li>Profile 10 (AV1) is deferred and never negotiated.
-<code>DOLBY_VISION_PROFILE_10_AV1.md</code> (host) records why, and the work list.</li>
 <li>The retired Profiles 0 to 3 and 6 have no RPU route and present only a declared base.</li>
 </ul>
 <h2 id="rejected-at-runtime"><a class="header" href="#rejected-at-runtime">Rejected at runtime</a></h2>
@@ -298,13 +318,13 @@ Jellyfin labels it by transfer, or SDR under a <code>dvav</code> or <code>dva1</
 </thead>
 <tbody>
 <tr><td>Any DOVI label, DOVIInvalid included, without Dolby Vision configuration fields</td><td>Yes</td><td>No, <code>metadata-unsupported</code></td></tr>
-<tr><td>Dolby Vision over 8-bit Main without a declared SDR base</td><td>No</td><td>No, <code>hdr-codec-unsupported</code>: no RPU route reads 8-bit Main</td></tr>
+<tr><td>Dolby Vision over 8-bit Main without a declared SDR base, when the bundled decoder’s Main qualification failed</td><td>No</td><td>No, <code>hdr-codec-unsupported</code>: only the bundled decoder reads 8-bit Main raw planes</td></tr>
 <tr><td>A Dolby Vision configuration without an integer profile, without the base layer flag, or with a CCID that is not a 4-bit integer; several video tracks other than a separate P7 pair</td><td>Yes, as the reported label</td><td>No, <code>video-track-unavailable</code></td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="routes"><a class="header" href="#routes">Routes</a></h2>
-<p>A route is the eligibility output: <code>videoOutputMode</code>, <code>videoDecoderBackend</code>, <code>rawVideoFrameFormat</code>, <code>dolbyVisionProfile</code>, and <code>nativeHDRTransfer</code>.
+<p>A route is the eligibility output: <code>videoOutputMode</code>, <code>videoDecoderBackend</code>, <code>rawVideoFrameFormat</code>, <code>dolbyVisionProfile</code>, and <code>nativeHDRTransfer</code>, plus <code>discardDolbyVisionEnhancementLayer</code> for a dual-layer route without a qualified EL decoder.
 <code>WebGPUPlayer.configurePresentationColorPipeline</code> (host) maps it to a presenter input mode.</p>
 <div class="table-wrapper">
 <table>
@@ -317,9 +337,9 @@ Jellyfin labels it by transfer, or SDR under a <code>dvav</code> or <code>dva1</
 <tr><td>DV base PQ, DV base HLG</td><td>As VF-PQ or VF-HLG, with <code>dolbyVisionProfile</code> null</td><td><code>external-hdr</code></td><td>P7 and P8 only. RPU and EL discarded. Preferred over RAW-DV whenever authorized</td></tr>
 <tr><td>Declared base</td><td>An ordinary route, with <code>dolbyVisionProfile</code> null</td><td>As that route</td><td>Used only when no RPU route is selected. RPU and EL discarded</td></tr>
 <tr><td>VF-DV5</td><td><code>video-frame</code>; <code>native</code>; <code>dolbyVisionProfile</code> 5</td><td><code>external-dolby-vision</code></td><td>Per-frame Profile 5 RPU, also for a P20 with CCID 0 or none</td></tr>
-<tr><td>RAW</td><td><code>raw-planes</code> in the exact format; <code>native</code> (WebCodecs <code>copyTo</code>), or <code>bundled-hevc</code> for Main 10 I420P10 only</td><td><code>raw-yuv</code></td><td></td></tr>
-<tr><td>RAW-DV</td><td><code>raw-planes</code> in I420P10 for Main 10, or a range-extension variant’s exact format; <code>dolbyVisionProfile</code> 5 or 8</td><td><code>raw-dolby-vision</code></td><td>RPU reconstruction. A P20 reports the profile it reconstructs as. A signaled EL is discarded</td></tr>
-<tr><td>RAW-DV7, RAW-DV4</td><td>I420P10 <code>raw-planes</code>; <code>dolbyVisionProfile</code> 7 or 4</td><td><code>raw-dolby-vision</code>, Profile 7 or 4</td><td>The EL is always decoded by the bundled WASM decoder. MEL reshapes; the FEL residual needs the FEL key and a paired EL frame. Without a paired EL, MEL is still exact and FEL presents its base: the HDR10 base for P7, and the SDR base exactly for P4 (limited BT.709, no tone mapping or dither)</td></tr>
+<tr><td>RAW</td><td><code>raw-planes</code> in the exact format; <code>native</code> (WebCodecs <code>copyTo</code>), or <code>bundled-hevc</code> for Main 10 I420P10 only</td><td><code>raw-yuv</code></td><td>Also 10-bit SDR, through the BT.709 raw SDR keys</td></tr>
+<tr><td>RAW-DV</td><td><code>raw-planes</code> in I420P10 for HEVC Main 10 and AV1, I420 for HEVC Main through <code>bundled-hevc</code>, or a range-extension variant’s exact format; <code>dolbyVisionProfile</code> 5 or 8</td><td><code>raw-dolby-vision</code></td><td>RPU reconstruction. A P10 or P20 reports the profile it reconstructs as. A signaled EL is discarded</td></tr>
+<tr><td>RAW-DV7, RAW-DV4</td><td><code>raw-planes</code> with the BL in I420P10, in I420 through <code>bundled-hevc</code>, or in a range-extension variant’s exact format, and an I420P10 EL; <code>dolbyVisionProfile</code> 7 or 4</td><td><code>raw-dolby-vision</code>, Profile 7 or 4</td><td>The EL is always decoded by the bundled WASM decoder; without its Main 10 qualification the route discards the EL. MEL reshapes; the FEL residual needs the FEL key and a paired EL frame. Without a paired EL, MEL is still exact and FEL presents its base at the BL’s depth: the HDR10 base for P7, and the SDR base exactly for P4 (limited BT.709, no tone mapping or dither)</td></tr>
 </tbody>
 </table>
 </div>
@@ -337,6 +357,7 @@ Jellyfin labels it by transfer, or SDR under a <code>dvav</code> or <code>dva1</
 <tr><td><code>nativeHDRHEVC</code></td><td>4K Main 10 decode output</td></tr>
 <tr><td><code>nativeDolbyVisionHEVC</code></td><td>The <code>hev1.2.4.H150.B0</code> configuration plus Main 10 decode</td></tr>
 <tr><td><code>rawHDRVideo.hevc</code></td><td>An I420P10 <code>copyTo</code> fingerprint, or a bundled Main 10 qualification</td></tr>
+<tr><td><code>rawHDRVideo.av1</code></td><td>A 4K AV1 Main 10 keyframe decoded with <code>prefer-software</code> and its I420P10 <code>copyTo</code> fingerprint</td></tr>
 <tr><td><code>bundledHEVC</code></td><td>hevc.js Main and Main 10 qualifications with pinned fingerprints</td></tr>
 <tr><td><code>hevcRangeExtensions[variant]</code></td><td>The exact configuration, the two-frame vector, the exact copy format, and pinned fingerprints</td></tr>
 </tbody>
@@ -353,14 +374,14 @@ Jellyfin labels it by transfer, or SDR under a <code>dvav</code> or <code>dva1</
 <tr><td><code>ext-hlg</code></td><td><code>external-hevc-main10-bt709-limited:hlg-v1</code></td><td><code>ExternalHDRPresentationAuthorization.ts</code></td></tr>
 <tr><td>Raw keys</td><td><code>&lt;format&gt;:...</code>, as written in the tables</td><td><code>RawHDRPresentationAuthorization.ts</code></td></tr>
 <tr><td><code>dovi-rpu</code></td><td><code>&lt;format&gt;:dovi-rpu-v1</code>, one per raw format from I420 to I444P12</td><td><code>DolbyVisionPresentationAuthorization.ts</code></td></tr>
-<tr><td><code>dovi-p4-base</code>, <code>dovi-p4-fel</code></td><td><code>I420P10:dovi-profile4-base-v1</code>, <code>I420P10:dovi-profile4-fel-v1</code></td><td><code>DolbyVisionPresentationAuthorization.ts</code></td></tr>
-<tr><td><code>dovi-p7-base</code>, <code>dovi-p7-fel</code></td><td><code>I420P10:dovi-profile7-base-v1</code>, <code>I420P10:dovi-profile7-fel-v1</code></td><td><code>DolbyVisionPresentationAuthorization.ts</code></td></tr>
+<tr><td><code>dovi-p4-base</code>, <code>dovi-p4-fel</code></td><td><code>&lt;format&gt;:dovi-profile4-base-v1</code>, <code>&lt;format&gt;:dovi-profile4-fel-v1</code>, one pair per BL format from I420 to I444P12</td><td><code>DolbyVisionPresentationAuthorization.ts</code></td></tr>
+<tr><td><code>dovi-p7-base</code>, <code>dovi-p7-fel</code></td><td><code>&lt;format&gt;:dovi-profile7-base-v1</code>, <code>&lt;format&gt;:dovi-profile7-fel-v1</code>, one pair per BL format from I420 to I444P12</td><td><code>DolbyVisionPresentationAuthorization.ts</code></td></tr>
 <tr><td><code>dovi-p5</code></td><td><code>external-I420P10-bt709-limited:dovi-p5-rpu-v1</code></td><td><code>ExternalDolbyVisionPresentationAuthorization.ts</code></td></tr>
 </tbody>
 </table>
 </div>
-<p><code>I420P10:dovi-rpu-v1</code> and the Profile 7 keys are part of the default Dolby Vision prewarm.
-The Profile 4 keys and the single-layer keys of other formats authorize on first use, and the host waits for them before building the profile and before eligibility, so a stream that needs one is never offered or started on an unsettled probe.</p>
+<p><code>I420P10:dovi-rpu-v1</code> and the I420P10 Profile 7 keys are part of the default Dolby Vision prewarm.
+The Profile 4 keys in any format, and the Profile 7 and single-layer keys of other formats, authorize on first use, and the host waits for them before building the profile and before eligibility, so a stream that needs one is never offered or started on an unsettled probe.</p>
 <p>Other conditions:</p>
 <ul>
 <li>Native VideoFrame HDR and the DV base routes also need explicit ColorTransfer, ColorPrimaries, and ColorSpace values.</li>
@@ -377,7 +398,8 @@ NAL units with a <code>nuh_layer_id</code> above 0, the second view, are dropped
 <li>A separate-track P7 (a base track and an EL track) selects the same routes.
 <code>test/capability/CustomPlaybackEligibility.test.ts</code> covers it; the matrix does not, because its negotiation model reads a single video stream.</li>
 <li>An RPU the parser rejects ends the custom session, which then falls back.
-The parser follows FFmpeg’s <code>dovi_rpudec.c</code>: unknown, misplaced, short, or padded display-metadata extension blocks are skipped, and only a block whose coded length runs past the payload rejects the RPU.</li>
+The parser follows FFmpeg’s <code>dovi_rpudec.c</code>: unknown, misplaced, short, or padded display-metadata extension blocks are skipped, and only a block whose coded length runs past the payload rejects the RPU.
+It also reads what FFmpeg does not: polynomial and MMR pieces mixed within one component, polynomial linear interpolation (see <a href="decisions.html#video-decode-and-dolby-vision">Decisions</a>), and any mapping color space or chroma format.</li>
 </ul>
 <h2 id="not-supported"><a class="header" href="#not-supported">Not supported</a></h2>
 <p>Each item is neither negotiated nor eligible, unless the tables above say it is negotiated only.</p>
@@ -392,22 +414,18 @@ Generic Rext with an intra constraint is the ordinary variant.</li>
 <li>Dolby Vision:
 <ul>
 <li>the invalid configurations in the rejected table;</li>
-<li>Dolby Vision over 8-bit Main without a declared SDR base;</li>
-<li>dual-layer (P4, P7) reconstruction outside I420P10, where only a declared base plays;</li>
-<li>RPU reconstruction for AVC Profile 9, and all of AV1 Profile 10;</li>
-<li>RPUs the parser rejects: a component that mixes polynomial and MMR pieces (the crate keeps one mapping method per component), polynomial linear interpolation, a mapping color space other than YCbCr, or a mapping chroma format above 4:4:4.</li>
+<li>Dolby Vision over 8-bit Main without a declared SDR base, when the bundled decoder’s Main qualification failed;</li>
+<li>RPU reconstruction for AVC Profile 9, and for AV1 Profile 10 at 8 bits or outside the Main profile;</li>
+<li>RPUs the parser rejects: a linear interpolation piece next to an MMR piece, an RPU format extension, missing sequence information, display metadata compression above method 1, and a header from which no profile is inferred.</li>
 </ul>
 </li>
 </ul>
 <h2 id="known-issues"><a class="header" href="#known-issues">Known issues</a></h2>
 <ul>
-<li>The P4 and P7 EL is always decoded by the bundled WASM decoder, but eligibility never checks that decoder’s qualification.
-If it fails, playback silently drops to the base layer.</li>
-<li>The bundled HEVC decoder’s 3840x2160 limit is not modelled in eligibility.
-A larger source on the <code>bundled-hevc</code> route fails at decode time instead of being declined.</li>
-<li>Firefox on Windows has no WebCodecs HEVC (see <a href="decisions.html#firefox">Decisions</a>), so a row plays there only through a bundled route.
-Main 8-bit SDR plays through <code>bundled-hevc</code>, and HDR10, HLG, and Dolby Vision through RAW, below real time at 4K.
-Main 10 SDR and the range extensions have no bundled route and are not eligible there.</li>
+<li>Firefox on Windows has no WebCodecs HEVC (see <a href="decisions.html#firefox">Decisions</a>), so an HEVC row plays there only through a bundled route.
+Main 8-bit SDR plays through <code>bundled-hevc</code>, and Main 10 SDR, HDR10, HLG, and Dolby Vision through RAW, below real time at 4K.
+The range extensions have no bundled route and are not eligible there.
+Firefox decodes 10-bit AV1 to 8-bit <code>BGRX</code>, so no raw AV1 route, P10 included, qualifies there.</li>
 </ul>
 
                     </main>

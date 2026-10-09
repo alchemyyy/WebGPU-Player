@@ -87,7 +87,7 @@ export default class DecodedAudioOutputStage {
         const { channelCount, sampleRate } = decodedAudioFormat;
         if (!isSupportedCustomAudioSampleRate(sampleRate)) {
             throw new UnsupportedDecodedAudioFormatError(
-                `The decoded audio sample rate ${sampleRate} Hz is outside the supported range`
+                `The decoded audio sample rate ${sampleRate} Hz is invalid`
             );
         }
         const layout = decodedAudioFormat.layout ?? getCustomAudioChannelLayout(channelCount);

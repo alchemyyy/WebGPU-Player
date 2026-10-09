@@ -654,9 +654,6 @@ export function isRawDolbyVisionVideoFrameFormat(
 type DolbyVisionDualLayerBaseFallback = 'hdr10' | 'sdr';
 
 const DOLBY_VISION_OUTPUT_METADATA = createPQColorMetadata({ range: 'full' });
-const DOLBY_VISION_PROFILE7_BASE_METADATA = createPQColorMetadata();
-// Profile 4 declares an SDR-compatible base layer, which an FEL frame without its EL presents unmodified
-const DOLBY_VISION_PROFILE4_BASE_METADATA = createSDRColorMetadata({ bitDepth: 10 });
 
 function createRenderSettingsUniformWGSL(
     settings: RenderSettings,
@@ -1316,20 +1313,37 @@ fn presentSDRBaseLayer(rawBaseSignal: vec3f) -> vec4f {
 }
 
 /**
- * Generates dual-layer MEL reconstruction, optional FEL residual reconstruction, and the exact compatible base
- * an FEL frame falls back to without its EL: the HDR10 base of Profile 7 or the SDR base of Profile 4.
+ * Returns the limited-range compatible base an FEL frame without its EL presents, at the bit depth of its BL format.
+ * The per-frame checks hold that depth equal to the RPU's BL bit depth, which reconstruction normalizes by.
+ */
+function getDolbyVisionDualLayerBaseMetadata(
+    baseLayerFallback: DolbyVisionDualLayerBaseFallback,
+    format: RawDolbyVisionVideoFrameFormat
+): InputColorMetadata {
+    const bitDepth = getRawFormatBitDepth(format);
+    switch (baseLayerFallback) {
+        case 'hdr10':
+            return createPQColorMetadata({ bitDepth });
+        case 'sdr':
+            // Profile 4 declares an SDR-compatible base layer, which an FEL frame without its EL presents unmodified
+            return createSDRColorMetadata({ bitDepth });
+    }
+}
+
+/**
+ * Generates dual-layer MEL reconstruction, optional FEL residual reconstruction, and the exact compatible base an FEL frame falls back to without its EL.
+ * That base is the HDR10 base of Profile 7 or the SDR base of Profile 4.
+ * The BL is sampled in its own planar format and the EL always as I420P10.
  */
 function createRawDolbyVisionDualLayerColorPipelineWGSL(
     settings: HDRToSDRRenderSettings,
-    format: Extract<RawDolbyVisionVideoFrameFormat, 'I420P10'>,
+    format: RawDolbyVisionVideoFrameFormat,
     enhancementEnabled: boolean,
     baseLayerFallback: DolbyVisionDualLayerBaseFallback
 ): string {
     assertValidRenderSettings(settings);
 
-    const baseLayerMetadata = baseLayerFallback === 'hdr10' ?
-        DOLBY_VISION_PROFILE7_BASE_METADATA :
-        DOLBY_VISION_PROFILE4_BASE_METADATA;
+    const baseLayerMetadata = getDolbyVisionDualLayerBaseMetadata(baseLayerFallback, format);
     const baseLayerFallbackStatement = baseLayerFallback === 'hdr10' ?
         'encodedBT2020PQ = convertRawYUVToEncodedRGB(normalizeRawYUV(rawBaseSignal));' :
         'return presentSDRBaseLayer(rawBaseSignal);';
@@ -1412,34 +1426,34 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
 `;
 }
 
-/** Generates Profile 7 MEL reconstruction with explicit FEL HDR10-base fallback. */
+/** Generates Profile 7 MEL reconstruction with explicit FEL HDR10-base fallback over BL planes in format. */
 export function createRawDolbyVisionProfile7ColorPipelineWGSL(
     settings: HDRToSDRRenderSettings,
-    format: Extract<RawDolbyVisionVideoFrameFormat, 'I420P10'>
+    format: RawDolbyVisionVideoFrameFormat
 ): string {
     return createRawDolbyVisionDualLayerColorPipelineWGSL(settings, format, false, 'hdr10');
 }
 
-/** Generates full Profile 7 FEL residual reconstruction with BL-only degradation. */
+/** Generates full Profile 7 FEL residual reconstruction with BL-only degradation over BL planes in format. */
 export function createRawDolbyVisionProfile7FELColorPipelineWGSL(
     settings: HDRToSDRRenderSettings,
-    format: Extract<RawDolbyVisionVideoFrameFormat, 'I420P10'>
+    format: RawDolbyVisionVideoFrameFormat
 ): string {
     return createRawDolbyVisionDualLayerColorPipelineWGSL(settings, format, true, 'hdr10');
 }
 
-/** Generates Profile 4 MEL reconstruction with explicit FEL SDR-base fallback. */
+/** Generates Profile 4 MEL reconstruction with explicit FEL SDR-base fallback over BL planes in format. */
 export function createRawDolbyVisionProfile4ColorPipelineWGSL(
     settings: HDRToSDRRenderSettings,
-    format: Extract<RawDolbyVisionVideoFrameFormat, 'I420P10'>
+    format: RawDolbyVisionVideoFrameFormat
 ): string {
     return createRawDolbyVisionDualLayerColorPipelineWGSL(settings, format, false, 'sdr');
 }
 
-/** Generates full Profile 4 FEL residual reconstruction with SDR-base degradation. */
+/** Generates full Profile 4 FEL residual reconstruction with SDR-base degradation over BL planes in format. */
 export function createRawDolbyVisionProfile4FELColorPipelineWGSL(
     settings: HDRToSDRRenderSettings,
-    format: Extract<RawDolbyVisionVideoFrameFormat, 'I420P10'>
+    format: RawDolbyVisionVideoFrameFormat
 ): string {
     return createRawDolbyVisionDualLayerColorPipelineWGSL(settings, format, true, 'sdr');
 }

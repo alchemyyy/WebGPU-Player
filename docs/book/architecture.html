@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9141c141.js";
+            window.path_to_searchindex_js = "searchindex-24f8931a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -198,7 +198,8 @@ WebGPUPlayer (host): the only player PlaybackManager sees
           CustomDecodeSession [main]: one worker per generation, frame queue, credits
            CustomDecode.worker [worker]: Mediabunny demux, range-validated fetch
              video: WebCodecs | OwnedNativeHEVCVideoDecoder | hevc.js WASM (+ Dolby Vision EL)
-                    | OpenJPEG | FFmpeg MPEG-2 and VC-1 WASM
+                    | OwnedNativeVideoDecoder (AV1 Dolby Vision) | OpenJPEG
+                    | FFmpeg MPEG-2 and VC-1 WASM
              audio: WebCodecs | @mediabunny/ac3 | E-AC-3, DTS, TrueHD WASM
                     -&gt; downmix -&gt; resample to 48 kHz -&gt; limiter; or AC-3/E-AC-3 fMP4 remux
            &lt;- 'frame': VideoFrame | raw planes in a pooled buffer (+ Dolby Vision, HDR10+ metadata)
@@ -226,7 +227,7 @@ An audio track that ends before the video hands the clock to the <code>MediaCloc
 It runs <code>prewarmBrowserAudioContext(48000)</code> synchronously inside <code>play()</code> (the user-activation window), calls <code>presenter.startSession</code>, and queues <code>startBackendPlayback</code>.</li>
 <li><code>startCustomPlaybackBounded</code> (host) runs eligibility, described in <a href="negotiation.html">Negotiation and routes</a>.
 It waits for the raw SDR prewarm.
-An HDR range-extension source also waits for the raw HDR prewarm, and a Dolby Vision source waits for its first-use key (Profile 4, or single-layer reconstruction outside I420P10).
+An HDR range-extension source also waits for the raw HDR prewarm, and a Dolby Vision source waits for its first-use key (Profile 4, or Profile 7 or single-layer reconstruction outside I420P10).
 Other HDR and Dolby Vision routes use only keys that have already settled.
 Its 25 s bound lasts until the controller starts, and the controller’s own startup bound applies after that.</li>
 <li>The host loads the pipeline as the <code>webgpu-custom-playback</code> chunk.
@@ -263,7 +264,7 @@ The rAF loop starts, <code>play()</code> resolves, and PlaybackManager emits <co
 <li>A presented <code>VideoFrame</code> closes after <code>submit()</code>, but its credit returns only after <code>queue.onSubmittedWorkDone()</code>.
 This keeps the decoder’s surfaces from starving.</li>
 <li>In raw mode the pooled buffer is the credit, and it returns through <code>recycle-frame</code>.</li>
-<li>The owned HEVC path reads a packet only while it holds a credit.</li>
+<li>The owned HEVC and AV1 paths read a packet only while they hold a credit.</li>
 </ul>
 <p>Audio credits:</p>
 <ul>
@@ -301,7 +302,7 @@ The backing size is the CSS size times the device pixel ratio, capped by <code>m
 <ul>
 <li>
 <p>Seek: a new presentation generation, then <code>controller.seek</code>, then a new generation and a new worker at the target.
-The owned HEVC path starts at the preceding key packet.
+The owned HEVC and AV1 paths start at the preceding key packet.
 DTS and TrueHD use a 1 s preroll.
 Stale results are dropped by <code>customPlaybackSeekRevision</code> (host).</p>
 </li>

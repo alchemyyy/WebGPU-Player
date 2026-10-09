@@ -9,6 +9,9 @@ import {
     isSupportedTrueHDMetadataRoute
 } from 'webgpu-player/audio/CustomCompressedAudioRoute';
 
+// A malformed declared rate; any positive integer rate is well formed
+const FRACTIONAL_SAMPLE_RATE = 48_000.5;
+
 describe('CustomCompressedAudioRoute', () => {
     it('accepts stereo DTS-HD MA without broadening other DTS profiles', () => {
         expect(isSupportedDTSInputRoute(2, 48_000, 'DTSHDMA')).toBe(true);
@@ -83,7 +86,7 @@ describe('CustomCompressedAudioRoute', () => {
         [ 8, 48_000, '5.1' ],
         [ 7, 48_000, '7.1' ],
         [ 3, 48_000, '3.0' ],
-        [ 8, 192_001, '7.1' ]
+        [ 8, FRACTIONAL_SAMPLE_RATE, '7.1' ]
     ] as const)(
         'rejects unqualified %i-channel E-AC-3 route',
         (channelCount, sampleRate, channelLayout) => {

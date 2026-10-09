@@ -39,23 +39,10 @@ const HEVC_MAIN_10_PROFILE_IDC = 2;
 const HEVC_VPS_NAL_UNIT_TYPE = 32;
 const HEVC_SPS_NAL_UNIT_TYPE = 33;
 const HEVC_PPS_NAL_UNIT_TYPE = 34;
-const MAXIMUM_COMPRESSED_PACKET_BYTE_LENGTH = 64 * 1024 * 1024;
 const MAXIMUM_DECODER_DESCRIPTION_BYTE_LENGTH = 1024 * 1024;
-const MAXIMUM_HEVC_CODED_HEIGHT = 2_160;
-const MAXIMUM_HEVC_CODED_WIDTH = 3_840;
+// The decoder takes any frame size its configuration and SPS agree on.
+// A frame's planes live in the WASM memory, so the decoder itself bounds what it can return
 const MAXIMUM_HEVC_CONFORMANCE_PADDING = 64;
-const MAXIMUM_HEVC_SPS_CODED_HEIGHT = MAXIMUM_HEVC_CODED_HEIGHT
-    + MAXIMUM_HEVC_CONFORMANCE_PADDING;
-const MAXIMUM_HEVC_SPS_CODED_WIDTH = MAXIMUM_HEVC_CODED_WIDTH
-    + MAXIMUM_HEVC_CONFORMANCE_PADDING;
-const MAXIMUM_DECODED_FRAME_BYTE_LENGTH = (
-    MAXIMUM_HEVC_SPS_CODED_WIDTH * MAXIMUM_HEVC_SPS_CODED_HEIGHT
-    + (
-        2
-        * Math.ceil(MAXIMUM_HEVC_SPS_CODED_WIDTH / 2)
-        * Math.ceil(MAXIMUM_HEVC_SPS_CODED_HEIGHT / 2)
-    )
-) * Uint16Array.BYTES_PER_ELEMENT;
 export const MAXIMUM_HEVC_PENDING_PICTURE_COUNT = 64;
 // The color names a VideoSample accepts, keyed by the WebCodecs name or the alias a container may report
 const SAMPLE_COLOR_PRIMARIES: ReadonlyMap<string, HEVCSPSColorPrimaries> = new Map([
@@ -286,16 +273,13 @@ function readLengthPrefix(data: Uint8Array, offset: number, lengthSize: number):
     return nalUnitByteLength;
 }
 
-/** Converts one HVCC length-prefixed access unit to a bounded Annex B packet. */
+/** Converts one HVCC length-prefixed access unit to an Annex B packet. */
 export function convertHVCCPacketToAnnexB(
     packetData: Uint8Array,
     lengthSize: 1 | 2 | 3 | 4
 ): AnnexBPacket {
-    if (
-        packetData.byteLength === 0
-        || packetData.byteLength > MAXIMUM_COMPRESSED_PACKET_BYTE_LENGTH
-    ) {
-        throw new TypeError('The HEVC packet size is unsupported');
+    if (packetData.byteLength === 0) {
+        throw new TypeError('The HEVC packet is empty');
     }
 
     const nalUnits: Uint8Array[] = [];
@@ -316,11 +300,8 @@ export function convertHVCCPacketToAnnexB(
         hasVCLNALUnit ||= getNALUnitType(nalUnit, 0) <= 31;
         nalUnits.push(nalUnit);
         outputByteLength += ANNEX_B_START_CODE.byteLength + nalUnit.byteLength;
-        if (
-            !Number.isSafeInteger(outputByteLength)
-            || outputByteLength > MAXIMUM_COMPRESSED_PACKET_BYTE_LENGTH
-        ) {
-            throw new TypeError('The converted HEVC packet exceeds its size bound');
+        if (!Number.isSafeInteger(outputByteLength)) {
+            throw new TypeError('The converted HEVC packet size is not representable');
         }
         offset += nalUnitByteLength;
     }
@@ -353,11 +334,8 @@ function findAnnexBStartCode(
 
 /** Validates an Annex B access unit and reports whether it contains coded picture data. */
 export function inspectAnnexBPacket(packetData: Uint8Array): AnnexBPacket {
-    if (
-        packetData.byteLength === 0
-        || packetData.byteLength > MAXIMUM_COMPRESSED_PACKET_BYTE_LENGTH
-    ) {
-        throw new TypeError('The HEVC packet size is unsupported');
+    if (packetData.byteLength === 0) {
+        throw new TypeError('The HEVC packet is empty');
     }
 
     let startCode = findAnnexBStartCode(packetData, 0);
@@ -574,9 +552,7 @@ function hasSupportedConfiguredDimensions(config: VideoDecoderConfig): boolean {
     return config.codedWidth !== undefined
         && config.codedHeight !== undefined
         && isPositiveSafeInteger(config.codedWidth)
-        && isPositiveSafeInteger(config.codedHeight)
-        && config.codedWidth <= MAXIMUM_HEVC_CODED_WIDTH
-        && config.codedHeight <= MAXIMUM_HEVC_CODED_HEIGHT;
+        && isPositiveSafeInteger(config.codedHeight);
 }
 
 function validateSPSDimensionsAgainstConfig(
@@ -600,12 +576,10 @@ function validateSPSDimensionsAgainstConfig(
             <= MAXIMUM_HEVC_CONFORMANCE_PADDING;
     if (
         !hasSupportedConfiguredDimensions(config)
-        || spsConfiguration.codedWidth > MAXIMUM_HEVC_SPS_CODED_WIDTH
-        || spsConfiguration.codedHeight > MAXIMUM_HEVC_SPS_CODED_HEIGHT
         || !hasValidDisplayDimensions
         || (!matchesCodedDimensions && !matchesDisplayDimensionsWithBoundedPadding)
     ) {
-        throw new TypeError('The HEVC SPS dimensions contradict the bounded decoder configuration');
+        throw new TypeError('The HEVC SPS dimensions contradict the decoder configuration');
     }
 }
 
@@ -1041,12 +1015,8 @@ export default class HEVCSoftwareVideoDecoder {
         const bytesPerSample = frame.bitDepth === 8 ? 1 : 2;
         const totalSampleCount = lumaSampleCount + (2 * chromaSampleCount);
         const frameByteLength = totalSampleCount * bytesPerSample;
-        if (
-            !Number.isSafeInteger(frameByteLength)
-            || frameByteLength <= 0
-            || frameByteLength > MAXIMUM_DECODED_FRAME_BYTE_LENGTH
-        ) {
-            throw new TypeError('The decoded HEVC frame exceeds its memory bound');
+        if (!Number.isSafeInteger(frameByteLength) || frameByteLength <= 0) {
+            throw new TypeError('The decoded HEVC frame size is invalid');
         }
 
         const sampleData = this.packFramePlanes(frame, totalSampleCount);

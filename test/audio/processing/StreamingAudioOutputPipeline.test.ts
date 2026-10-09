@@ -8,6 +8,9 @@ import StreamingAudioOutputPipeline, {
 import { requireMicroseconds } from 'webgpu-player/TimeMath';
 
 const SAMPLE_RATE = 48_000;
+// A malformed source rate; any positive integer rate is valid
+const ZERO_SAMPLE_RATE = 0;
+const MALFORMED_SOURCE_RATE_ERROR = 'Source sample rate must be a positive integer number of Hz';
 
 function createPipeline(
     peakLimiterEnabled: boolean,
@@ -197,8 +200,8 @@ describe('StreamingAudioOutputPipeline', () => {
 
         expect(pipeline.changeSourceSampleRate(SAMPLE_RATE)).toEqual([]);
         expect(pipeline.getTelemetry().sourceSampleRateChangeCount).toBe(0);
-        expect(() => pipeline.changeSourceSampleRate(2_999)).toThrow(
-            'Source sample rate must be between 3000 and 192000 Hz'
+        expect(() => pipeline.changeSourceSampleRate(ZERO_SAMPLE_RATE)).toThrow(
+            MALFORMED_SOURCE_RATE_ERROR
         );
     });
 

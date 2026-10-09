@@ -1,0 +1,311 @@
+{
+  "ITUTT35Payload": "itu_t_t35_country_code through the end of the metadata OBU payload, its trailing bits included",
+  "generator": "scripts/codec_vector_assets/generate_dolby_vision_AV1_vectors.py",
+  "sourceRPUDirectory": "src/capability/vectors/test/dolby-vision-rpu",
+  "vectors": [
+    {
+      "baseLayerSignalCompatibilityID": 0,
+      "colorPrimaries": 2,
+      "container": "mp4",
+      "dolbyVisionLevel": 1,
+      "dolbyVisionProfile": 10,
+      "fileName": "profile10.0.mp4",
+      "frameCount": 4,
+      "frames": [
+        {
+          "ITUTT35PayloadSHA256": "d171de4882054a34aa816a4d386ee315b59119209247c49188e096170643897c",
+          "keyFrame": true,
+          "sourceRPUFileName": "profile5.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "bf2b3dfb1ff51e4ab2a83515f92003efd014e0e8fd78d8a872c98f35c937d8c4",
+          "keyFrame": false,
+          "sourceRPUFileName": "profile5-02.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "d171de4882054a34aa816a4d386ee315b59119209247c49188e096170643897c",
+          "keyFrame": true,
+          "sourceRPUFileName": "profile5.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "bf2b3dfb1ff51e4ab2a83515f92003efd014e0e8fd78d8a872c98f35c937d8c4",
+          "keyFrame": false,
+          "sourceRPUFileName": "profile5-02.bin"
+        }
+      ],
+      "fullRange": true,
+      "height": 192,
+      "matrixCoefficients": 2,
+      "sampleEntry": "dav1",
+      "subProfile": "10.0",
+      "transferCharacteristics": 2,
+      "width": 192
+    },
+    {
+      "baseLayerSignalCompatibilityID": 0,
+      "colorPrimaries": 2,
+      "container": "matroska",
+      "dolbyVisionLevel": 1,
+      "dolbyVisionProfile": 10,
+      "fileName": "profile10.0.mkv",
+      "frameCount": 4,
+      "frames": [
+        {
+          "ITUTT35PayloadSHA256": "d171de4882054a34aa816a4d386ee315b59119209247c49188e096170643897c",
+          "keyFrame": true,
+          "sourceRPUFileName": "profile5.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "bf2b3dfb1ff51e4ab2a83515f92003efd014e0e8fd78d8a872c98f35c937d8c4",
+          "keyFrame": false,
+          "sourceRPUFileName": "profile5-02.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "d171de4882054a34aa816a4d386ee315b59119209247c49188e096170643897c",
+          "keyFrame": true,
+          "sourceRPUFileName": "profile5.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "bf2b3dfb1ff51e4ab2a83515f92003efd014e0e8fd78d8a872c98f35c937d8c4",
+          "keyFrame": false,
+          "sourceRPUFileName": "profile5-02.bin"
+        }
+      ],
+      "fullRange": true,
+      "height": 192,
+      "matrixCoefficients": 2,
+      "sampleEntry": null,
+      "subProfile": "10.0",
+      "transferCharacteristics": 2,
+      "width": 192
+    },
+    {
+      "baseLayerSignalCompatibilityID": 1,
+      "colorPrimaries": 9,
+      "container": "mp4",
+      "dolbyVisionLevel": 1,
+      "dolbyVisionProfile": 10,
+      "fileName": "profile10.1.mp4",
+      "frameCount": 4,
+      "frames": [
+        {
+          "ITUTT35PayloadSHA256": "a41f1693beeee9f18a4617f645688c3c595121480365611dcdf11f4df230b5b8",
+          "keyFrame": true,
+          "sourceRPUFileName": "profile8.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "a41f1693beeee9f18a4617f645688c3c595121480365611dcdf11f4df230b5b8",
+          "keyFrame": false,
+          "sourceRPUFileName": "profile8.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "a41f1693beeee9f18a4617f645688c3c595121480365611dcdf11f4df230b5b8",
+          "keyFrame": true,
+          "sourceRPUFileName": "profile8.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "a41f1693beeee9f18a4617f645688c3c595121480365611dcdf11f4df230b5b8",
+          "keyFrame": false,
+          "sourceRPUFileName": "profile8.bin"
+        }
+      ],
+      "fullRange": false,
+      "height": 192,
+      "matrixCoefficients": 9,
+      "sampleEntry": "av01",
+      "subProfile": "10.1",
+      "transferCharacteristics": 16,
+      "width": 192
+    },
+    {
+      "baseLayerSignalCompatibilityID": 1,
+      "colorPrimaries": 9,
+      "container": "matroska",
+      "dolbyVisionLevel": 1,
+      "dolbyVisionProfile": 10,
+      "fileName": "profile10.1.mkv",
+      "frameCount": 4,
+      "frames": [
+        {
+          "ITUTT35PayloadSHA256": "a41f1693beeee9f18a4617f645688c3c595121480365611dcdf11f4df230b5b8",
+          "keyFrame": true,
+          "sourceRPUFileName": "profile8.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "a41f1693beeee9f18a4617f645688c3c595121480365611dcdf11f4df230b5b8",
+          "keyFrame": false,
+          "sourceRPUFileName": "profile8.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "a41f1693beeee9f18a4617f645688c3c595121480365611dcdf11f4df230b5b8",
+          "keyFrame": true,
+          "sourceRPUFileName": "profile8.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "a41f1693beeee9f18a4617f645688c3c595121480365611dcdf11f4df230b5b8",
+          "keyFrame": false,
+          "sourceRPUFileName": "profile8.bin"
+        }
+      ],
+      "fullRange": false,
+      "height": 192,
+      "matrixCoefficients": 9,
+      "sampleEntry": null,
+      "subProfile": "10.1",
+      "transferCharacteristics": 16,
+      "width": 192
+    },
+    {
+      "baseLayerSignalCompatibilityID": 2,
+      "colorPrimaries": 1,
+      "container": "mp4",
+      "dolbyVisionLevel": 1,
+      "dolbyVisionProfile": 10,
+      "fileName": "profile10.2.mp4",
+      "frameCount": 4,
+      "frames": [
+        {
+          "ITUTT35PayloadSHA256": "a41f1693beeee9f18a4617f645688c3c595121480365611dcdf11f4df230b5b8",
+          "keyFrame": true,
+          "sourceRPUFileName": "profile8.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "a41f1693beeee9f18a4617f645688c3c595121480365611dcdf11f4df230b5b8",
+          "keyFrame": false,
+          "sourceRPUFileName": "profile8.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "a41f1693beeee9f18a4617f645688c3c595121480365611dcdf11f4df230b5b8",
+          "keyFrame": true,
+          "sourceRPUFileName": "profile8.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "a41f1693beeee9f18a4617f645688c3c595121480365611dcdf11f4df230b5b8",
+          "keyFrame": false,
+          "sourceRPUFileName": "profile8.bin"
+        }
+      ],
+      "fullRange": false,
+      "height": 192,
+      "matrixCoefficients": 1,
+      "sampleEntry": "av01",
+      "subProfile": "10.2",
+      "transferCharacteristics": 1,
+      "width": 192
+    },
+    {
+      "baseLayerSignalCompatibilityID": 2,
+      "colorPrimaries": 1,
+      "container": "matroska",
+      "dolbyVisionLevel": 1,
+      "dolbyVisionProfile": 10,
+      "fileName": "profile10.2.mkv",
+      "frameCount": 4,
+      "frames": [
+        {
+          "ITUTT35PayloadSHA256": "a41f1693beeee9f18a4617f645688c3c595121480365611dcdf11f4df230b5b8",
+          "keyFrame": true,
+          "sourceRPUFileName": "profile8.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "a41f1693beeee9f18a4617f645688c3c595121480365611dcdf11f4df230b5b8",
+          "keyFrame": false,
+          "sourceRPUFileName": "profile8.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "a41f1693beeee9f18a4617f645688c3c595121480365611dcdf11f4df230b5b8",
+          "keyFrame": true,
+          "sourceRPUFileName": "profile8.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "a41f1693beeee9f18a4617f645688c3c595121480365611dcdf11f4df230b5b8",
+          "keyFrame": false,
+          "sourceRPUFileName": "profile8.bin"
+        }
+      ],
+      "fullRange": false,
+      "height": 192,
+      "matrixCoefficients": 1,
+      "sampleEntry": null,
+      "subProfile": "10.2",
+      "transferCharacteristics": 1,
+      "width": 192
+    },
+    {
+      "baseLayerSignalCompatibilityID": 4,
+      "colorPrimaries": 9,
+      "container": "mp4",
+      "dolbyVisionLevel": 1,
+      "dolbyVisionProfile": 10,
+      "fileName": "profile10.4.mp4",
+      "frameCount": 4,
+      "frames": [
+        {
+          "ITUTT35PayloadSHA256": "053613f1f8892aeb03761cfd2a4cfa7e31ad75f7470f312c9ba5a8bf108a7cf5",
+          "keyFrame": true,
+          "sourceRPUFileName": "profile84.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "053613f1f8892aeb03761cfd2a4cfa7e31ad75f7470f312c9ba5a8bf108a7cf5",
+          "keyFrame": false,
+          "sourceRPUFileName": "profile84.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "053613f1f8892aeb03761cfd2a4cfa7e31ad75f7470f312c9ba5a8bf108a7cf5",
+          "keyFrame": true,
+          "sourceRPUFileName": "profile84.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "053613f1f8892aeb03761cfd2a4cfa7e31ad75f7470f312c9ba5a8bf108a7cf5",
+          "keyFrame": false,
+          "sourceRPUFileName": "profile84.bin"
+        }
+      ],
+      "fullRange": false,
+      "height": 192,
+      "matrixCoefficients": 9,
+      "sampleEntry": "av01",
+      "subProfile": "10.4",
+      "transferCharacteristics": 18,
+      "width": 192
+    },
+    {
+      "baseLayerSignalCompatibilityID": 4,
+      "colorPrimaries": 9,
+      "container": "matroska",
+      "dolbyVisionLevel": 1,
+      "dolbyVisionProfile": 10,
+      "fileName": "profile10.4.mkv",
+      "frameCount": 4,
+      "frames": [
+        {
+          "ITUTT35PayloadSHA256": "053613f1f8892aeb03761cfd2a4cfa7e31ad75f7470f312c9ba5a8bf108a7cf5",
+          "keyFrame": true,
+          "sourceRPUFileName": "profile84.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "053613f1f8892aeb03761cfd2a4cfa7e31ad75f7470f312c9ba5a8bf108a7cf5",
+          "keyFrame": false,
+          "sourceRPUFileName": "profile84.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "053613f1f8892aeb03761cfd2a4cfa7e31ad75f7470f312c9ba5a8bf108a7cf5",
+          "keyFrame": true,
+          "sourceRPUFileName": "profile84.bin"
+        },
+        {
+          "ITUTT35PayloadSHA256": "053613f1f8892aeb03761cfd2a4cfa7e31ad75f7470f312c9ba5a8bf108a7cf5",
+          "keyFrame": false,
+          "sourceRPUFileName": "profile84.bin"
+        }
+      ],
+      "fullRange": false,
+      "height": 192,
+      "matrixCoefficients": 9,
+      "sampleEntry": null,
+      "subProfile": "10.4",
+      "transferCharacteristics": 18,
+      "width": 192
+    }
+  ]
+}

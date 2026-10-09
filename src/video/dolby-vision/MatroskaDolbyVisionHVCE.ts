@@ -18,7 +18,6 @@ const MATROSKA_HVCE_BLOCK_ADD_ID_TYPE = 0x6876_6345;
 const MAXIMUM_EBML_HEADER_BYTE_LENGTH = 12;
 const MAXIMUM_LEVEL_ZERO_ELEMENT_COUNT = 8;
 const MAXIMUM_SEGMENT_METADATA_ELEMENT_COUNT = 128;
-const MAXIMUM_TRACKS_BYTE_LENGTH = 4 * 1_024 * 1_024;
 const MAXIMUM_TRACK_ENTRY_COUNT = 1_024;
 const MAXIMUM_CODEC_ID_BYTE_LENGTH = 64;
 const MINIMUM_HVCE_BYTE_LENGTH = 23;
@@ -537,13 +536,9 @@ async function readMatroskaDolbyVisionTrackConfigurationStrict(
     if (!segment) {
         return null;
     }
+    // Large CodecPrivate data, such as subtitle headers, can make Tracks large, so it is read whatever its size
     const tracks = await findTracks(reader, segment);
-    if (
-        !tracks
-        || tracks.dataSize === null
-        || tracks.dataSize <= 0
-        || tracks.dataSize > MAXIMUM_TRACKS_BYTE_LENGTH
-    ) {
+    if (!tracks || tracks.dataSize === null || tracks.dataSize <= 0) {
         return null;
     }
     const tracksData = await reader(tracks.dataOffset, tracks.dataSize);
@@ -553,7 +548,7 @@ async function readMatroskaDolbyVisionTrackConfigurationStrict(
     return parseTracks(tracksData, selectedTrackNumber);
 }
 
-/** Reads bounded Dolby Vision configuration for the selected Matroska HEVC track. */
+/** Reads Dolby Vision configuration for the selected Matroska HEVC track. */
 export async function readMatroskaDolbyVisionTrackConfiguration(
     reader: MatroskaByteRangeReader,
     selectedTrackNumber: number

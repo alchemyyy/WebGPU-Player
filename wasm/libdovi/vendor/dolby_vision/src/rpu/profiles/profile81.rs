@@ -64,7 +64,7 @@ impl Profile81 {
         DoviReshapingCurve {
             num_pivots_minus2: 0,
             pivots: vec![0, 1023],
-            mapping_idc: DoviMappingMethod::Polynomial,
+            mapping_idc: vec![DoviMappingMethod::Polynomial],
             polynomial: Some(DoviPolynomialCurve::p81_default()),
             mmr: None,
         }

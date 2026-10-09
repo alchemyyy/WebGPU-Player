@@ -22,6 +22,17 @@ const TRUEHD_ATMOS_PROFILE = 30;
 // AV_NOPTS_VALUE as the bridge returns it, a double far outside the safe integer range
 const FFMPEG_NO_PRESENTATION_TIMESTAMP = -(2 ** 63);
 const DEFAULT_PRESENTATION_TIMESTAMP = 1_250_000;
+// A malformed decoded rate; any positive integer rate is valid
+const ZERO_SAMPLE_RATE = 0;
+const INVALID_SAMPLE_RATE_ERROR = `sample rate ${ZERO_SAMPLE_RATE} Hz is invalid`;
+const FAKE_FRAME_RECEIVED = 1;
+const FAKE_NO_OUTPUT = 0;
+// Every decoded access unit consumes at least one packet byte
+const PACKET_FRAMES_EXCEEDED_ERROR = 'exceeded the frames its packet can hold';
+const SINGLE_FRAME_PACKET_BYTE_LENGTH = 1;
+const THREE_FRAME_PACKET_BYTE_LENGTH = 3;
+// Many access units in one packet, as an MPEG-TS PES of TrueHD carries
+const PES_ACCESS_UNIT_COUNT = 24;
 // One 1/1200 s access unit at 48 kHz
 const TRUEHD_ACCESS_UNIT_FRAME_COUNT = 40;
 
@@ -185,7 +196,7 @@ describe('TrueHDSoftwareAudioDecoder', () => {
         );
 
         const outputs = decoder.decode(
-            new Uint8Array([ 1 ]),
+            new Uint8Array(THREE_FRAME_PACKET_BYTE_LENGTH),
             requireMicroseconds(3_000_000, 'Test packet timestamp')
         );
 
@@ -194,6 +205,34 @@ describe('TrueHDSoftwareAudioDecoder', () => {
             3_000_833,
             3_001_667
         ]);
+    });
+
+    it('decodes every access unit of a packet that holds many', async () => {
+        const fakeDecoder = createFakeTrueHDDecoder({
+            receiveStatuses: [
+                ...new Array<number>(PES_ACCESS_UNIT_COUNT).fill(FAKE_FRAME_RECEIVED),
+                FAKE_NO_OUTPUT
+            ],
+            sampleCount: TRUEHD_ACCESS_UNIT_FRAME_COUNT
+        });
+        const decoder = await TrueHDSoftwareAudioDecoder.create('truehd', fakeDecoder.moduleFactory);
+
+        expect(decoder.decode(
+            new Uint8Array(PES_ACCESS_UNIT_COUNT),
+            requireMicroseconds(0, 'Test packet timestamp')
+        )).toHaveLength(PES_ACCESS_UNIT_COUNT);
+    });
+
+    it('refuses more access units than its packet has bytes to hold', async () => {
+        const fakeDecoder = createFakeTrueHDDecoder({
+            receiveStatuses: [ FAKE_FRAME_RECEIVED, FAKE_FRAME_RECEIVED, FAKE_NO_OUTPUT ]
+        });
+        const decoder = await TrueHDSoftwareAudioDecoder.create('truehd', fakeDecoder.moduleFactory);
+
+        expect(() => decoder.decode(
+            new Uint8Array(SINGLE_FRAME_PACKET_BYTE_LENGTH),
+            requireMicroseconds(0, 'Test packet timestamp')
+        )).toThrow(PACKET_FRAMES_EXCEEDED_ERROR);
     });
 
     it.each([
@@ -255,7 +294,7 @@ describe('TrueHDSoftwareAudioDecoder', () => {
     });
 
     it.each([
-        [ { sampleRate: 192_001 }, 'sample rate 192001 Hz is outside the supported range' ],
+        [ { sampleRate: ZERO_SAMPLE_RATE }, INVALID_SAMPLE_RATE_ERROR ],
         [ { bitsPerSample: 32 }, 'output depth 32 is unsupported' ],
         [ { channelCount: 6, channelMask: CUSTOM_WAVE_CHANNEL_MASK_STEREO },
             'channel mask 0x3 is unqualified' ],

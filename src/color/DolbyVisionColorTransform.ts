@@ -8,6 +8,7 @@ import {
     DOLBY_VISION_RPU_PACKED_COMPONENT_SEGMENT_OFFSET,
     DOLBY_VISION_RPU_ENHANCEMENT_LAYER_BIT_DEPTH_WORD_OFFSET,
     DOLBY_VISION_RPU_NLQ_WORD_OFFSET,
+    DOLBY_VISION_RPU_SEGMENT_MMR_ORDER_INDEX,
     MAXIMUM_DOLBY_VISION_RPU_MMR_VECTOR_COUNT,
     MAXIMUM_DOLBY_VISION_RPU_PIVOT_COUNT
 } from '../video/dolby-vision/DolbyVisionRPUDataLayout';
@@ -134,7 +135,7 @@ function evaluateMMR(
     sourceSignal: ColorTriplet
 ): number {
     const mmrVectorIndex = readFloat(view, segmentWordOffset + 1);
-    const mmrOrder = readFloat(view, segmentWordOffset + 3);
+    const mmrOrder = readFloat(view, segmentWordOffset + DOLBY_VISION_RPU_SEGMENT_MMR_ORDER_INDEX);
     if (!Number.isInteger(mmrVectorIndex)
         || !Number.isInteger(mmrOrder)
         || mmrVectorIndex < 0
@@ -177,7 +178,6 @@ function reshapeComponent(
     const componentWordOffset = DOLBY_VISION_RPU_COMPONENT_WORD_OFFSET
         + (componentIndex * DOLBY_VISION_RPU_COMPONENT_WORD_STRIDE);
     const pivotCount = readUnsignedInteger(view, componentWordOffset);
-    const mappingMethod = readUnsignedInteger(view, componentWordOffset + 2);
     const componentSignal = clamp(sourceSignal[componentIndex], 0, 1);
     const segmentIndex = findSegmentIndex(
         view,
@@ -189,22 +189,11 @@ function reshapeComponent(
         + COMPONENT_SEGMENT_WORD_OFFSET
         + (segmentIndex * 4);
 
-    let reshapedSignal: number;
-    switch (mappingMethod) {
-        case 1:
-            reshapedSignal = evaluatePolynomial(view, segmentWordOffset, componentSignal);
-            break;
-        case 2:
-            reshapedSignal = evaluateMMR(
-                view,
-                componentWordOffset,
-                segmentWordOffset,
-                sourceSignal
-            );
-            break;
-        default:
-            throw new TypeError('Dolby Vision mapping method is invalid');
-    }
+    // Each segment carries its own method, so one component may mix polynomial and MMR pieces
+    const mmrSegment = readFloat(view, segmentWordOffset + DOLBY_VISION_RPU_SEGMENT_MMR_ORDER_INDEX) > 0;
+    const reshapedSignal = mmrSegment ?
+        evaluateMMR(view, componentWordOffset, segmentWordOffset, sourceSignal) :
+        evaluatePolynomial(view, segmentWordOffset, componentSignal);
 
     const lowerPivot = readFloat(
         view,
@@ -427,7 +416,7 @@ fn evaluateDolbyVisionMMR(
     sourceSignal: vec3f
 ) -> f32 {
     let mmrVectorIndex = u32(loadDolbyVisionFloat(segmentWordOffset + 1u));
-    let mmrOrder = u32(loadDolbyVisionFloat(segmentWordOffset + 3u));
+    let mmrOrder = u32(loadDolbyVisionFloat(segmentWordOffset + ${DOLBY_VISION_RPU_SEGMENT_MMR_ORDER_INDEX}u));
     let signalProducts = vec4f(
         sourceSignal.x * sourceSignal.y,
         sourceSignal.x * sourceSignal.z,
@@ -465,7 +454,6 @@ fn reshapeDolbyVisionComponent(
     let componentWordOffset = ${DOLBY_VISION_RPU_COMPONENT_WORD_OFFSET}u
         + (componentIndex * ${DOLBY_VISION_RPU_COMPONENT_WORD_STRIDE}u);
     let pivotCount = dolbyVisionRPU.words[componentWordOffset];
-    let mappingMethod = dolbyVisionRPU.words[componentWordOffset + 2u];
     let componentSignal = clamp(sourceSignal[componentIndex], 0.0, 1.0);
     var segmentIndex = 0u;
     for (var pivotIndex = 1u; pivotIndex < ${MAXIMUM_DOLBY_VISION_RPU_PIVOT_COUNT}u; pivotIndex += 1u) {
@@ -481,19 +469,20 @@ fn reshapeDolbyVisionComponent(
     }
     let segmentWordOffset = componentWordOffset + ${COMPONENT_SEGMENT_WORD_OFFSET}u
         + (segmentIndex * 4u);
+    // Each segment carries its own method, so one component may mix polynomial and MMR pieces
     var reshapedSignal: f32;
-    if (mappingMethod == 1u) {
-        let constant = loadDolbyVisionFloat(segmentWordOffset);
-        let linearCoefficient = loadDolbyVisionFloat(segmentWordOffset + 1u);
-        let quadraticCoefficient = loadDolbyVisionFloat(segmentWordOffset + 2u);
-        reshapedSignal = ((quadraticCoefficient * componentSignal) + linearCoefficient)
-            * componentSignal + constant;
-    } else {
+    if (loadDolbyVisionFloat(segmentWordOffset + ${DOLBY_VISION_RPU_SEGMENT_MMR_ORDER_INDEX}u) > 0.0) {
         reshapedSignal = evaluateDolbyVisionMMR(
             componentWordOffset,
             segmentWordOffset,
             sourceSignal
         );
+    } else {
+        let constant = loadDolbyVisionFloat(segmentWordOffset);
+        let linearCoefficient = loadDolbyVisionFloat(segmentWordOffset + 1u);
+        let quadraticCoefficient = loadDolbyVisionFloat(segmentWordOffset + 2u);
+        reshapedSignal = ((quadraticCoefficient * componentSignal) + linearCoefficient)
+            * componentSignal + constant;
     }
     let lowerPivot = loadDolbyVisionFloat(
         componentWordOffset + ${COMPONENT_PIVOT_WORD_OFFSET}u

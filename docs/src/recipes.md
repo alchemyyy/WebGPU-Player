@@ -24,7 +24,7 @@ Each assumes a checkout set up as in [Set up a checkout](setup.md).
    Container pairing stays only in `src/capability/CustomContainerCodecSupport.ts`.
    Add no resolution, level, frame rate, or bitrate gate, and no decoder pair blacklist.
 5. Tests.
-   Add the row, its expected route, and its fallbacks to `jellyfin-webgpu-client.tests/custom/HEVCDirectPlaySupportMatrix.test.ts` (host).
+   Add the row, its expected route, and its fallbacks to `jellyfin-webgpu-client.tests/custom/HEVCDirectPlaySupportMatrix.test.ts` or `AV1DirectPlaySupportMatrix.test.ts` beside it (host).
 6. Update [HEVC and Dolby Vision support](codec-support.md), and [Negotiation and routes](negotiation.md) if the route catalog changed.
 
 Check: the engine checks and the host checks from [The Jellyfin host](jellyfin-host.md#build-and-check).
@@ -41,7 +41,8 @@ Check: the engine checks and the host checks from [The Jellyfin host](jellyfin-h
 
 1. Edit `wasm/libdovi/src/lib.rs`, or the vendored crate in `wasm/libdovi/vendor/dolby_vision/`.
 2. For any change to the vendored crate, add an entry to its `PATCHES.md` naming the file, the change, and the FFmpeg behavior it follows.
-3. If the packed snapshot changes, update `src/video/dolby-vision/DolbyVisionRPUDataLayout.ts`, the decoder in `DolbyVisionRPUParser.ts`, and its revision prefix together.
+3. If the packed snapshot changes, update `src/video/dolby-vision/DolbyVisionRPUDataLayout.ts`, the decoder in `DolbyVisionRPUParser.ts`, the reshaping in `src/color/DolbyVisionColorTransform.ts`, and the schema version in `lib.rs` and `DolbyVisionRPUParser.ts` together.
+   The revision prefix names the vendored dovi_tool commit and changes only when the copy moves to another upstream revision.
 4. From `wasm/libdovi/`, run `cargo test --locked` and `cargo clippy --locked --all-targets`.
 5. Run `make -C wasm libdovi`, then `make -C wasm check KITS=libdovi`.
 6. Run `npm test`.

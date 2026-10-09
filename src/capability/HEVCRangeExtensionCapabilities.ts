@@ -118,7 +118,7 @@ function createDefinition(
             codec: evidence.codecString,
             codedHeight: VECTOR_CODED_HEIGHT,
             codedWidth: VECTOR_CODED_WIDTH,
-            hardwareAcceleration: getCustomDecodeHardwareAcceleration('raw-planes', 'native'),
+            hardwareAcceleration: getCustomDecodeHardwareAcceleration('raw-planes', 'native', false, 'hevc'),
             optimizeForLatency: true
         },
         format,

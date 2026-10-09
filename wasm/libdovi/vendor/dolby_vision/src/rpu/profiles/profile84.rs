@@ -52,11 +52,13 @@ impl Profile84 {
             linear_interp_flag: vec![],
             poly_coef_int,
             poly_coef,
+            pred_linear_interp_value_int: vec![],
+            pred_linear_interp_value: vec![],
         };
         let luma_reshaping_curve = DoviReshapingCurve {
             num_pivots_minus2: 7,
             pivots: vec![63, 69, 230, 256, 256, 37, 16, 8, 7],
-            mapping_idc: DoviMappingMethod::Polynomial,
+            mapping_idc: vec![DoviMappingMethod::Polynomial; 8],
             polynomial: Some(poly_curve),
             mmr: None,
         };
@@ -84,7 +86,7 @@ impl Profile84 {
         let chroma_reshaping_curve1 = DoviReshapingCurve {
             num_pivots_minus2: 0,
             pivots: vec![0, 1023],
-            mapping_idc: DoviMappingMethod::MMR,
+            mapping_idc: vec![DoviMappingMethod::MMR],
             polynomial: None,
             mmr: Some(mmr_curve1),
         };
@@ -110,7 +112,7 @@ impl Profile84 {
         let chroma_reshaping_curve2 = DoviReshapingCurve {
             num_pivots_minus2: 0,
             pivots: vec![0, 1023],
-            mapping_idc: DoviMappingMethod::MMR,
+            mapping_idc: vec![DoviMappingMethod::MMR],
             polynomial: None,
             mmr: Some(mmr_curve2),
         };

@@ -62,6 +62,8 @@ export type CustomPlaybackPlayOptions = {
     audioOutputMode?: CustomDecodeAudioOutputMode
     audioTrackIndex: number | null
     decodedAudioOutputChannelCount?: CustomAudioOutputChannelCount
+    /** A dual-layer route reconstructs from its BL alone, because no qualified decoder decodes its EL */
+    discardDolbyVisionEnhancementLayer?: boolean
     durationMicroseconds: Microseconds | null
     dolbyVisionProfile: CustomDecodeDolbyVisionProfile
     maximumCodedHeight: number

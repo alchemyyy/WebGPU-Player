@@ -27,7 +27,7 @@ Each source file's tests are at the same relative path under `test/`, and integr
 - `ColorMetadata.ts`: the input color schema, validation, and SDR, PQ, and HLG factories.
 - `ColorPipeline.ts`: the CPU reference of range, matrix, transfer, gamut, tone mapping, and display controls, and the luminance, YUV matrix, gamut, and IPT tables for BT.709, BT.2020, and BT.601 that the shaders share.
 - `ColorPipelineShader.ts`: WGSL generators for raw YUV, external HDR code recovery, and external and raw Dolby Vision (FEL included), plus the shared `processColor`.
-- `DolbyVisionColorTransform.ts`: RPU reshaping (polynomial and MMR), the FEL NLQ residual, and reconstruction to BT.2020 PQ, as a CPU reference and as WGSL.
+- `DolbyVisionColorTransform.ts`: RPU reshaping (polynomial and MMR, chosen per segment), the FEL NLQ residual, and reconstruction to BT.2020 PQ, as a CPU reference and as WGSL.
 
 ## capability/
 
@@ -86,12 +86,22 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 All worker code unless marked.
 
 - `DecodedVideoGeometry.ts` [main and worker]: the first-decoded-size lock.
-- `RawVideoFrameCopy.ts`: copies a `VideoFrame`, or a software decoder's sample of CPU planes without one, into aligned plane buffers (NV12, and I420 to I444P12; base and enhancement layers), up to 128 MiB per transfer.
+- `RawVideoFrameCopy.ts`: copies a `VideoFrame`, or a software decoder's sample of CPU planes without one, into aligned plane buffers (NV12, and I420 to I444P12), up to 128 MiB per transfer.
+  A Dolby Vision pair is a BL in any format from I420 to I444P12 and an I420P10 EL, in one compound buffer.
 - `RawFrameBufferPool.ts`: reusable raw buffers, bounded by the raw credits (2).
 - `MatroskaVFWVideoConfiguration.ts`: extracts the VC-1 `WVC1` extradata.
 
+### video/av1/
+
+- `AV1OBUParser.ts`: the OBU walk of one temporal unit (headers, extension headers, leb128 sizes, a last OBU without a size field), frame header detection, and ITU-T T.35 metadata messages.
+- `AV1SequenceHeaderParser.ts`, `AV1CodecParameterString.ts`: the sequence header, parsed as the AV1 specification defines it, and the `av01` codec string it declares.
+- `AV1DecoderConfiguration.ts`: replaces the codec string Mediabunny derives for an AV1 track with the one its first packet's sequence header declares.
+
 ### video/decoders/
 
+- `OwnedVideoDecodeStream.ts`: the codec-neutral state of one owned decode attempt: decoded outputs matched with their packets' metadata, the pre-start rule, BL and EL pairing, frame credits, and the packet pump.
+- `OwnedNativeVideoDecoder.ts`: an owned WebCodecs decoder for packets that decode unchanged, used for AV1.
+- `OwnedAV1VideoStream.ts`: one attempt of the owned AV1 Dolby Vision path.
 - `OwnedNativeHEVCVideoDecoder.ts`: the engine's own WebCodecs HEVC decoder: NAL order fix, leading RASL drop, optional SPS neutralization.
 - `HEVCSoftwareVideoDecoder.ts`: the `@hevcjs/core` decoder (I420 and I420P10) with a shutdown registry.
 - `HEVCDecoderBackend.ts`: the low-level `@hevcjs/core` WASM binding.
@@ -102,9 +112,10 @@ All worker code unless marked.
 
 - `DolbyVisionProfiles.ts` [main and worker]: the dual-layer profile set (P4, P7).
 - `DolbyVisionHEVCSplitter.ts`: NAL parsing; the BL, RPU (62), and EL (63) split; RASL handling; in-band SPS neutralization; drops NAL units of layers above 0, the MV-HEVC second view.
-- `DolbyVisionEncodedMetadata.ts`, `DolbyVisionEncodedMetadataProtocol.ts`: per-packet RPU parsing, PTS-keyed metadata, and the transferable schema.
+- `DolbyVisionAV1Splitter.ts`: removes the Dolby Vision T.35 metadata OBUs from an AV1 temporal unit and returns their messages; other metadata, HDR10+ included, stays.
+- `DolbyVisionEncodedMetadata.ts`, `DolbyVisionEncodedMetadataProtocol.ts`: per-packet RPU parsing for HEVC and per-temporal-unit parsing for AV1, over one PTS-keyed window, and the transferable schema.
 - `DolbyVisionEncodedPacketPairer.ts`, `DolbyVisionFramePairQueue.ts`: BL and EL packet and frame pairing (1 us tolerance).
-- `DolbyVisionRPUParser.ts`, `DolbyVisionRPUParserSession.ts`, `DolbyVisionRPUDataLayout.ts`: the libdovi WASM parser, its per-run session, and the packed 3232-byte snapshot layout.
+- `DolbyVisionRPUParser.ts`, `DolbyVisionRPUParserSession.ts`, `DolbyVisionRPUDataLayout.ts`: the libdovi WASM parser with its HEVC and AV1 T.35 entry points, its per-run session, and the packed 3232-byte snapshot layout (schema 2: a mapping method per segment).
 - `ISOBaseMediaDolbyVisionSampleEntry.ts`: gives Mediabunny's unmapped `dvh1`, `dvhe`, `dva1`, `dvav`, and `dav1` tracks their wrapped codec.
 - `MatroskaDolbyVisionHVCE.ts`, `ISOBaseMediaDolbyVisionConfiguration.ts`, `MPEGTransportStreamDolbyVisionConfiguration.ts`: find a P4 or P7 EL configuration in Matroska; in MP4, as a separate EL track or as `hvcE` beside the BL `hvcC` of one interleaved track; or in MPEG-TS and M2TS (any descriptor version).
 - `DolbyVisionGeometry.ts` [main and worker]: the P4 and P7 EL coded size (half the BL when the BL is wider than 1920).
@@ -123,7 +134,7 @@ All worker code unless marked.
 ## audio/
 
 - `CustomAudioCodec.ts`: the WebCodecs, Mediabunny PCM, and bundled codec lists.
-- `CustomAudioSampleRate.ts`: the 3000 to 192000 Hz integer contract.
+- `CustomAudioSampleRate.ts`: the sample rate contract, any positive integer.
 - `CustomCompressedAudioRoute.ts`: the E-AC-3, DTS, and TrueHD route tables and predicates, with their Jellyfin ChannelLayout requirements.
 - `CustomAudioOutputPolicy.ts`: input channels per codec, the 3.0 layout requirement for decoders without a speaker mask, and the 48 kHz 2, 6, and 8-channel output contract with its 2 s ring.
 - `CustomAudioTrackMetadata.ts` [worker]: the Matroska and ISO BMFF DTS and TrueHD tracks the bundled decoders own, declared-rate recovery for their sample entries, and the decoded audio timestamp tolerance.
@@ -168,13 +179,14 @@ The authorization vectors are in `capability/vectors/`.
 
 - `RawHDRPresentationAuthorization.ts`: raw route keys, readback through the production raw shader, and the per-device registry.
 - `ExternalHDRPresentationAuthorization.ts`: external PQ and HLG route keys, checked with the neutralized Main 10 vector.
-- `DolbyVisionPresentationAuthorization.ts`, `ExternalDolbyVisionPresentationAuthorization.ts`: raw Dolby Vision keys (single-layer per raw format, the P4 and P7 bases, the P4 and P7 FEL) and the external P5 key, checked with synthetic RPU vectors.
+- `DolbyVisionPresentationAuthorization.ts`, `ExternalDolbyVisionPresentationAuthorization.ts`: raw Dolby Vision keys (per raw format: single-layer, the P4 and P7 bases, and the P4 and P7 FEL) and the external P5 key, checked with synthetic RPU vectors.
 - `GPUAuthorizationDeadline.ts`: the shared 5 s timeout, cancelled on device loss.
 - `GPUCanvasReadback.ts`: bounded GPU canvas pixel readback (5 s).
 
 ## Outside src/
 
 - `test/helpers/enginePaths.ts`: the engine root and the `node_modules` location, independent of the test runner's working directory, and the folders from `tools/constants.json`.
+- `test/helpers/dolbyVisionAV1ITUTT35Payload.ts`, `test/helpers/dolbyVisionMixedRPUVector.ts`: wrap an HEVC RPU in the AV1 EMDF T.35 container, and build RPUs with mixed and linear pieces.
 - `wasm/`: the decoder sources and build.
   See [WebAssembly decoders](decoders.md).
 - `vendor/`: the FFmpeg and dcadec submodules (`update = none`), which `make -C wasm sources` fetches.
@@ -192,6 +204,7 @@ The authorization vectors are in `capability/vectors/`.
   - `dts/DTSExactCapabilityVectors.ts`, `truehd/TrueHDExactCapabilityVectors.ts`: access units and expected outputs, which `capability/exact/` imports as `#codec_vector_assets/*`.
     `truehd/` also holds the synthetic TrueHD and MLP streams the module embeds.
   - `hevc-range-extension/`, `jpeg2000/`, `mpeg2/`: qualification streams served at runtime from `bin/libraries/`.
+  - `dolby-vision-av1/`: the Profile 10 test vectors and their `expectations.json`.
   - `downmix-reference/`: the deterministic 7.1-to-stereo reference.
 
 ## Host: the Jellyfin add-on

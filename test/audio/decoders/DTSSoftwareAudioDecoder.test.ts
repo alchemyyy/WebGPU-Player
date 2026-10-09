@@ -27,6 +27,9 @@ const LEFT_PLANE_POINTER = 1_024;
 const RIGHT_PLANE_POINTER = 1_088;
 const FRAME_COUNT = 4;
 const LIBDCADEC_VERSION = 0x0002_0001;
+// A malformed decoded rate; any positive integer rate is valid
+const ZERO_SAMPLE_RATE = 0;
+const INVALID_SAMPLE_RATE_ERROR = `sample rate ${ZERO_SAMPLE_RATE} Hz is invalid`;
 
 type FakeDTSDecoder = Readonly<{
     clearCalls: number[]
@@ -186,7 +189,7 @@ describe('DTSSoftwareAudioDecoder', () => {
     it.each([
         [ 'jellyfin_dts_decode_packet', () => -4, 'decode failed' ],
         [ 'jellyfin_dts_get_sample_count', () => 16_385, 'frame count' ],
-        [ 'jellyfin_dts_get_sample_rate', () => 192_001, 'outside the supported range' ],
+        [ 'jellyfin_dts_get_sample_rate', () => ZERO_SAMPLE_RATE, INVALID_SAMPLE_RATE_ERROR ],
         [ 'jellyfin_dts_get_bits_per_sample', () => 20, 'unsupported' ],
         [ 'jellyfin_dts_get_profile', () => 0, 'profile' ],
         [ 'jellyfin_dts_get_channel_mask', () => 1, 'channel mask' ],

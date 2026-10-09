@@ -525,7 +525,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(harness.rawHDRVideoOutputProbe.mock.calls[0][0]).toMatchObject({
             codec: 'vp9',
             configuration: {
-                hardwareAcceleration: 'no-preference'
+                hardwareAcceleration: 'prefer-software'
             },
             expectedCodedHeight: 2_160,
             expectedCodedWidth: 3_840,
@@ -1310,6 +1310,45 @@ describe('CustomDecodeCapabilityProbe', () => {
             reason: 'bundled-software-decoder',
             status: 'supported'
         });
+    });
+
+    it('measures raw AV1 and VP9 planes on the software decoders and raw HEVC with no preference', async () => {
+        const rawCodecStrings = {
+            av1: 'av01.0.08M.10',
+            hevc: 'hvc1.2.4.L153.B0',
+            vp9: 'vp09.02.10.10'
+        } as const;
+        const harness = createEnvironment(
+            new Set(Object.values(rawCodecStrings)),
+            new Set(),
+            new Set(CUSTOM_RAW_HDR_VIDEO_CODECS)
+        );
+
+        const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
+
+        const expectedHints = {
+            av1: 'prefer-software',
+            hevc: 'no-preference',
+            vp9: 'prefer-software'
+        } as const;
+        for (const codec of CUSTOM_RAW_HDR_VIDEO_CODECS) {
+            expect(capabilities.rawHDRVideo[codec]).toMatchObject({
+                reason: 'output-copy-supported',
+                status: 'supported'
+            });
+            const outputProbeRequest = harness.rawHDRVideoOutputProbe.mock.calls.find(
+                call => call[0].codec === codec
+            )?.[0];
+            expect(outputProbeRequest?.configuration).toMatchObject({
+                codec: rawCodecStrings[codec],
+                hardwareAcceleration: expectedHints[codec]
+            });
+        }
+        // The configuration check measures the same hint as the decoded output
+        expect(harness.videoProbe.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining([
+            expect.objectContaining({ codec: rawCodecStrings.av1, hardwareAcceleration: 'prefer-software' }),
+            expect.objectContaining({ codec: rawCodecStrings.vp9, hardwareAcceleration: 'prefer-software' })
+        ]));
     });
 
     it('prefers qualified native HEVC raw output over the bundled decoder', async () => {

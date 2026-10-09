@@ -52,13 +52,22 @@ const MAIN10_BT2020_CONSTANT_LUMINANCE_HLG_SPS = createBytesFromHex(
 const MAIN10_SPS_WITHOUT_VUI = createBytesFromHex(
     '42010102200000030090000003000003003fa005020171f2b6595952930b20'
 );
+const UHD_CODED_WIDTH = 3_840;
+const UHD_CODED_HEIGHT = 2_160;
+const LEVEL_5_1_IDC = 153;
+const LEVEL_6_IDC = 180;
+// Level 5.1 allows six pictures at UHD, and level 6 sixteen
+const LEVEL_5_1_UHD_DPB_PICTURE_COUNT = 6;
+const LEVEL_6_UHD_DECLARED_DPB_PICTURE_COUNT = 7;
+const DPB_ABOVE_LEVEL_ERROR = 'decoded picture buffer exceeds its level and picture-size bound';
 const LEVEL_5_1_4K_MAIN10_SPS = createBytesFromHex(
     '420101020000000080000000000099a001e020021c4d966ff089a848804800'
 );
-const LEVEL_5_1_OVERSIZED_DPB_SPS = createBytesFromHex(
+// UHD Main 10 SPSs declaring seven DPB pictures
+const LEVEL_5_1_DPB_7_UHD_MAIN10_SPS = createBytesFromHex(
     '420101020000000080000000000099a001e020021c4d967ff089a848804800'
 );
-const LEVEL_6_OVERSIZED_IMPLEMENTATION_DPB_SPS = createBytesFromHex(
+const LEVEL_6_DPB_7_UHD_MAIN10_SPS = createBytesFromHex(
     '4201010200000000800000000000b4a001e020021c4d967ff089a848804800'
 );
 const DOLBY_VISION_PROFILE_5_SPS_WITH_UNSPECIFIED_COLOR = createBytesFromHex(
@@ -161,20 +170,24 @@ describe('parseHEVCSPS', () => {
 
     it('accepts a six-picture 4K DPB within the Main10 Level 5.1 bound', () => {
         expect(parseHEVCSPS(LEVEL_5_1_4K_MAIN10_SPS)).toMatchObject({
-            codedHeight: 2_160,
-            codedWidth: 3_840,
-            levelIDC: 153,
-            maximumDPBPictureCount: 6
+            codedHeight: UHD_CODED_HEIGHT,
+            codedWidth: UHD_CODED_WIDTH,
+            levelIDC: LEVEL_5_1_IDC,
+            maximumDPBPictureCount: LEVEL_5_1_UHD_DPB_PICTURE_COUNT
         });
     });
 
-    it('rejects DPB declarations above the level and software memory budgets', () => {
-        expect(() => parseHEVCSPS(LEVEL_5_1_OVERSIZED_DPB_SPS)).toThrow(
-            'decoded picture buffer exceeds its level and picture-size bound'
-        );
-        expect(() => parseHEVCSPS(LEVEL_6_OVERSIZED_IMPLEMENTATION_DPB_SPS)).toThrow(
-            'decoded picture buffer exceeds its level and picture-size bound'
-        );
+    it('rejects a DPB declaration above its level at the picture size', () => {
+        expect(() => parseHEVCSPS(LEVEL_5_1_DPB_7_UHD_MAIN10_SPS)).toThrow(DPB_ABOVE_LEVEL_ERROR);
+    });
+
+    it('accepts any DPB its level allows at the picture size, whatever memory it takes', () => {
+        expect(parseHEVCSPS(LEVEL_6_DPB_7_UHD_MAIN10_SPS)).toMatchObject({
+            codedHeight: UHD_CODED_HEIGHT,
+            codedWidth: UHD_CODED_WIDTH,
+            levelIDC: LEVEL_6_IDC,
+            maximumDPBPictureCount: LEVEL_6_UHD_DECLARED_DPB_PICTURE_COUNT
+        });
     });
 
     it('rejects interlaced constraints, truncated input, and oversized NAL units', () => {

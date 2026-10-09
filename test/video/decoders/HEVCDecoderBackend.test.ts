@@ -26,6 +26,16 @@ type FakeFrameLayout = {
     width: number
 };
 
+// The fake stores planes up to this size; a frame reporting larger planes lies outside its memory
+const FAKE_MEMORY_MAXIMUM_STORED_LUMA_SAMPLE_COUNT = 65_536;
+// Wider and taller than UHD, but small enough for the fake to store
+const WIDER_THAN_UHD_FRAME_WIDTH = 4_096;
+const TALLER_THAN_UHD_FRAME_HEIGHT = 4_320;
+const MINIMUM_FRAME_DIMENSION = 2;
+const ULTRA_HD_16K_FRAME_WIDTH = 15_360;
+const ULTRA_HD_16K_FRAME_HEIGHT = 8_640;
+const PLANE_OUTSIDE_MEMORY_ERROR = 'plane exceeds its memory';
+
 function writeInt32(dataView: DataView, byteOffset: number, value: number): void {
     dataView.setInt32(byteOffset, value, true);
 }
@@ -46,11 +56,11 @@ function createFakeModule(
         width: 4,
         ...frameOverrides
     };
-    const hasBoundedDimensions = frameLayout.width <= 3_840 && frameLayout.height <= 2_160;
-    const storedLumaSampleCount = hasBoundedDimensions ?
+    const storesPlanes = frameLayout.width * frameLayout.height <= FAKE_MEMORY_MAXIMUM_STORED_LUMA_SAMPLE_COUNT;
+    const storedLumaSampleCount = storesPlanes ?
         frameLayout.width * frameLayout.height :
         8;
-    const storedChromaSampleCount = hasBoundedDimensions ?
+    const storedChromaSampleCount = storesPlanes ?
         frameLayout.chromaWidth * frameLayout.chromaHeight :
         2;
     const lumaPointer = 256;
@@ -211,9 +221,10 @@ describe('createHEVCDecoderBackend', () => {
         backend.destroy();
     });
 
-    it('rejects route-oversized frames before allocating decoded planes', async () => {
-        const width = 16_384;
-        const height = 6_144;
+    it.each([
+        { height: MINIMUM_FRAME_DIMENSION, label: 'wider', width: WIDER_THAN_UHD_FRAME_WIDTH },
+        { height: TALLER_THAN_UHD_FRAME_HEIGHT, label: 'taller', width: MINIMUM_FRAME_DIMENSION }
+    ])('exposes a frame $label than UHD whose planes lie in memory', async ({ height, width }) => {
         const harness = createFakeModule({
             chromaHeight: height / 2,
             chromaWidth: width / 2,
@@ -222,8 +233,27 @@ describe('createHEVCDecoderBackend', () => {
         });
         vi.stubGlobal('HEVCDecoderModule', harness.factory);
         const backend = await createHEVCDecoderBackend({});
+        const drainedFrames: HEVCFrame[] = [];
 
-        expect(() => backend.drain((): void => undefined)).toThrow('invalid 4:2:0 dimensions');
+        expect(backend.drain((frame: HEVCFrame): void => {
+            drainedFrames.push(frame);
+        })).toBe(1);
+        expect(drainedFrames[0]).toMatchObject({ height, width });
+        expect(drainedFrames[0]?.y.length).toBe(width * height);
+        backend.destroy();
+    });
+
+    it('rejects a frame whose planes lie outside the WASM memory', async () => {
+        const harness = createFakeModule({
+            chromaHeight: ULTRA_HD_16K_FRAME_HEIGHT / 2,
+            chromaWidth: ULTRA_HD_16K_FRAME_WIDTH / 2,
+            height: ULTRA_HD_16K_FRAME_HEIGHT,
+            width: ULTRA_HD_16K_FRAME_WIDTH
+        });
+        vi.stubGlobal('HEVCDecoderModule', harness.factory);
+        const backend = await createHEVCDecoderBackend({});
+
+        expect(() => backend.drain((): void => undefined)).toThrow(PLANE_OUTSIDE_MEMORY_ERROR);
         backend.destroy();
     });
 

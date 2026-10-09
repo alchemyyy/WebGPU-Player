@@ -14,7 +14,7 @@ use dolby_vision::rpu::rpu_data_nlq::DoviELType;
 use dolby_vision::rpu::vdr_dm_data::VdrDmData;
 
 const PARSER_SCHEMA_MAGIC: u32 = 0x5052_5644;
-const PARSER_SCHEMA_VERSION: u32 = 1;
+const PARSER_SCHEMA_VERSION: u32 = 2;
 const PARSER_REVISION_PREFIX: u32 = 0x38AD_EC04;
 const MAXIMUM_LINEAR_MEMORY_BYTE_LENGTH: u32 = 16 * 1_024 * 1_024;
 const MAXIMUM_SHARED_BUFFER_BYTE_LENGTH: usize = 64 * 1_024;
@@ -53,6 +53,10 @@ const FLAG_FEL: u32 = 1 << 6;
 const FLAG_SCENE_REFRESH: u32 = 1 << 7;
 const FLAG_DEFAULT_COLOR_METADATA: u32 = 1 << 8;
 
+// Component flags, one per mapping method the component's pieces use
+const COMPONENT_FLAG_POLYNOMIAL: u32 = 1 << 0;
+const COMPONENT_FLAG_MMR: u32 = 1 << 1;
+
 const STATUS_INVALID_ARGUMENT: i32 = 1;
 const STATUS_INPUT_TOO_LARGE: i32 = 2;
 const STATUS_PARSE_FAILED: i32 = 3;
@@ -69,9 +73,15 @@ const RPU_FORMAT_EXTENSION_MASK: u16 = 0x700;
 // FFmpeg's dm_compression values, which the crate stores as reserved_zero_3bits
 const UNCOMPRESSED_DISPLAY_METADATA: u8 = 0;
 const COMPRESSED_DISPLAY_METADATA: u8 = 1;
-const YCBCR_MAPPING_COLOR_SPACE: u64 = 0;
-// The engine reshapes each pixel after chroma upsampling, so every defined mapping chroma format applies alike
-const MAXIMUM_MAPPING_CHROMA_FORMAT_IDC: u64 = 2;
+
+/// How the input buffer carries one RPU
+#[derive(Clone, Copy)]
+enum RpuFraming {
+    /// An HEVC UNSPEC62 NAL unit, after an optional start code
+    HEVCUnspec62NALUnit,
+    /// The ITU-T T.35 payload of one AV1 metadata OBU, from its country code or its provider code to the end of the OBU payload
+    AV1ITUTT35Payload,
+}
 
 #[derive(Debug)]
 struct ParserFailure {
@@ -128,8 +138,12 @@ impl ParserContext {
         self.color_metadata = None;
     }
 
-    fn parse(&mut self, input: &[u8], output: &mut [u8]) -> ParserResult<()> {
-        let rpu = DoviRpu::parse_unspec62_nalu(input).map_err(|error| {
+    fn parse(&mut self, input: &[u8], framing: RpuFraming, output: &mut [u8]) -> ParserResult<()> {
+        let parsed_rpu = match framing {
+            RpuFraming::HEVCUnspec62NALUnit => DoviRpu::parse_unspec62_nalu(input),
+            RpuFraming::AV1ITUTT35Payload => DoviRpu::parse_itu_t35_dovi_metadata_obu(input),
+        };
+        let rpu = parsed_rpu.map_err(|error| {
             if let Some(syntax) = error.downcast_ref::<UnsupportedRpuSyntax>() {
                 return unsupported_syntax_failure(*syntax);
             }
@@ -273,6 +287,8 @@ struct PackedNLQData {
     vdr_in_max: f32,
 }
 
+/// One component's packed curve.
+/// A polynomial segment holds [c0, c1, c2, 0] and an MMR segment [constant, first vector index, 0, order], so a positive fourth value marks MMR
 struct PackedComponent {
     flags: u32,
     mmr_vector_count: u32,
@@ -280,6 +296,16 @@ struct PackedComponent {
     pivots: [f32; COMPONENT_PIVOT_FLOAT_COUNT],
     segment_data: [[f32; 4]; MAXIMUM_SEGMENT_COUNT],
     mmr_data: [[f32; 4]; MAXIMUM_MMR_VECTOR_COUNT],
+}
+
+/// The values one linear interpolation piece codes, on the polynomial coefficients' scale.
+/// Each is the curve's rise from the previous pivot's value, as annex A.2.4.2 of US 10,701,399 B2 derives linear_interp_value
+#[derive(Clone, Copy)]
+struct LinearInterpolationPiece {
+    // The first piece codes its start value outright
+    start_rise: f64,
+    // Coded only by a component's last piece
+    end_rise: Option<f64>,
 }
 
 impl Default for PackedComponent {
@@ -317,25 +343,7 @@ impl PackedSnapshot {
         scaled_color: ScaledColorMetadata,
         explicit_color_metadata: bool,
     ) -> ParserResult<Self> {
-        if mapping.mapping_color_space != YCBCR_MAPPING_COLOR_SPACE {
-            return Err(ParserFailure::new(
-                STATUS_UNSUPPORTED_METADATA,
-                format!(
-                    "Dolby Vision mapping color space {} is unsupported",
-                    mapping.mapping_color_space
-                ),
-            ));
-        }
-        if mapping.mapping_chroma_format_idc > MAXIMUM_MAPPING_CHROMA_FORMAT_IDC {
-            return Err(ParserFailure::new(
-                STATUS_UNSUPPORTED_METADATA,
-                format!(
-                    "Dolby Vision mapping chroma format {} is unsupported",
-                    mapping.mapping_chroma_format_idc
-                ),
-            ));
-        }
-
+        // Every mapping color space and chroma format applies, as in FFmpeg: the reshape maps the upsampled decoded components as they are, and the RPU's ycc_to_rgb matrix converts them
         let ScaledColorMetadata {
             metadata: color,
             ycc_to_rgb_offset_scale,
@@ -611,9 +619,6 @@ fn unsupported_syntax_failure(syntax: UnsupportedRpuSyntax) -> ParserFailure {
         UnsupportedRpuSyntax::DmCompression(method) => {
             format!("Dolby Vision display metadata compression method {method} is unsupported")
         }
-        UnsupportedRpuSyntax::LinearInterpolation => {
-            "Polynomial linear interpolation is unsupported".to_string()
-        }
     };
     ParserFailure::new(STATUS_UNSUPPORTED_METADATA, message)
 }
@@ -763,6 +768,12 @@ fn pack_component(
         ));
     }
     let segment_count = num_pivots - 1;
+    if curve.mapping_idc.len() != segment_count {
+        return Err(ParserFailure::new(
+            STATUS_INVALID_MAPPING,
+            "Dolby Vision reshape does not give every piece a mapping method",
+        ));
+    }
     let bit_depth = u32::try_from(header.bl_bit_depth_minus8 + 8).map_err(|_| {
         ParserFailure::new(STATUS_INVALID_MAPPING, "Base-layer bit depth is invalid")
     })?;
@@ -771,6 +782,8 @@ fn pack_component(
         num_pivots: num_pivots as u32,
         ..PackedComponent::default()
     };
+    // Linear interpolation pieces derive their polynomials from the exact pivots
+    let mut pivots = [0.0_f64; MAXIMUM_PIVOT_COUNT];
     let mut cumulative_pivot = 0_u32;
     for (pivot_index, pivot_delta) in curve.pivots.iter().enumerate() {
         cumulative_pivot = cumulative_pivot
@@ -785,166 +798,304 @@ fn pack_component(
             ));
         }
         packed.pivots[pivot_index] = cumulative_pivot as f32 / pivot_denominator as f32;
+        pivots[pivot_index] = f64::from(cumulative_pivot) / f64::from(pivot_denominator);
     }
 
-    match curve.mapping_idc {
-        DoviMappingMethod::Polynomial => {
-            packed.flags = 1;
-            pack_polynomial_segments(
-                &mut packed,
-                curve.polynomial.as_ref().ok_or_else(|| {
+    // Each method's curve holds its pieces in coded order
+    let mut linear_pieces = [None; MAXIMUM_SEGMENT_COUNT];
+    let mut polynomial_piece_count = 0;
+    let mut mmr_piece_count = 0;
+    let mut mmr_vector_count = 0;
+    for (segment_index, mapping_method) in curve.mapping_idc.iter().enumerate() {
+        match mapping_method {
+            DoviMappingMethod::Polynomial => {
+                let polynomial = curve.polynomial.as_ref().ok_or_else(|| {
                     ParserFailure::new(
                         STATUS_INVALID_MAPPING,
                         "Polynomial reshape is missing its coefficients",
                     )
-                })?,
-                segment_count,
-                header,
-            )?;
-        }
-        DoviMappingMethod::MMR => {
-            packed.flags = 2;
-            pack_mmr_segments(
-                &mut packed,
-                curve.mmr.as_ref().ok_or_else(|| {
+                })?;
+                linear_pieces[segment_index] = pack_polynomial_segment(
+                    &mut packed.segment_data[segment_index],
+                    polynomial,
+                    polynomial_piece_count,
+                    segment_index + 1 == segment_count,
+                    header,
+                )?;
+                polynomial_piece_count += 1;
+                packed.flags |= COMPONENT_FLAG_POLYNOMIAL;
+            }
+            DoviMappingMethod::MMR => {
+                let mmr = curve.mmr.as_ref().ok_or_else(|| {
                     ParserFailure::new(
                         STATUS_INVALID_MAPPING,
                         "MMR reshape is missing its coefficients",
                     )
-                })?,
-                segment_count,
-                header,
-            )?;
-        }
-        DoviMappingMethod::Invalid => {
-            return Err(ParserFailure::new(
-                STATUS_INVALID_MAPPING,
-                "Dolby Vision reshape uses an invalid mapping method",
-            ));
+                })?;
+                mmr_vector_count = pack_mmr_segment(
+                    &mut packed,
+                    segment_index,
+                    mmr,
+                    mmr_piece_count,
+                    mmr_vector_count,
+                    header,
+                )?;
+                mmr_piece_count += 1;
+                packed.flags |= COMPONENT_FLAG_MMR;
+            }
+            DoviMappingMethod::Invalid => {
+                return Err(ParserFailure::new(
+                    STATUS_INVALID_MAPPING,
+                    "Dolby Vision reshape uses an invalid mapping method",
+                ));
+            }
         }
     }
+    let polynomial_pieces_match = curve
+        .polynomial
+        .as_ref()
+        .is_none_or(|polynomial| polynomial.poly_order_minus1.len() == polynomial_piece_count);
+    let mmr_pieces_match = curve
+        .mmr
+        .as_ref()
+        .is_none_or(|mmr| mmr.mmr_order_minus1.len() == mmr_piece_count);
+    if !polynomial_pieces_match || !mmr_pieces_match {
+        return Err(ParserFailure::new(
+            STATUS_INVALID_MAPPING,
+            "Dolby Vision reshape pieces disagree with their mapping methods",
+        ));
+    }
+    packed.mmr_vector_count = mmr_vector_count as u32;
+    pack_linear_interpolation_segments(
+        &mut packed,
+        &linear_pieces[..segment_count],
+        &curve.mapping_idc,
+        &pivots,
+    )?;
     Ok(packed)
 }
 
-fn pack_polynomial_segments(
-    packed: &mut PackedComponent,
+/// Packs one polynomial piece's coefficients, or returns the coded values of a linear interpolation piece, whose polynomial depends on the pieces around it
+fn pack_polynomial_segment(
+    segment: &mut [f32; 4],
     polynomial: &DoviPolynomialCurve,
-    segment_count: usize,
+    piece_index: usize,
+    last_piece: bool,
     header: &dolby_vision::rpu::rpu_data_header::RpuDataHeader,
-) -> ParserResult<()> {
-    if polynomial.poly_order_minus1.len() != segment_count
-        || polynomial.poly_coef.len() != segment_count
-    {
+) -> ParserResult<Option<LinearInterpolationPiece>> {
+    let (Some(order_minus1), Some(coefficients)) = (
+        polynomial.poly_order_minus1.get(piece_index),
+        polynomial.poly_coef.get(piece_index),
+    ) else {
         return Err(ParserFailure::new(
             STATUS_INVALID_MAPPING,
             "Polynomial reshape segment arrays have inconsistent lengths",
         ));
-    }
-    for segment_index in 0..segment_count {
-        if polynomial
+    };
+    let linear_interpolation = *order_minus1 == 0
+        && polynomial
             .linear_interp_flag
-            .get(segment_index)
+            .get(piece_index)
             .copied()
-            .unwrap_or(false)
-        {
+            .unwrap_or(false);
+    if linear_interpolation {
+        return linear_interpolation_piece(polynomial, piece_index, last_piece, header).map(Some);
+    }
+
+    let coefficient_count = *order_minus1 as usize + 2;
+    if !(2..=3).contains(&coefficient_count) || coefficients.len() != coefficient_count {
+        return Err(ParserFailure::new(
+            STATUS_INVALID_MAPPING,
+            "Polynomial reshape coefficient count is invalid",
+        ));
+    }
+    for (coefficient_index, coefficient) in coefficients.iter().enumerate() {
+        let integer = polynomial
+            .poly_coef_int
+            .get(piece_index)
+            .and_then(|values| values.get(coefficient_index))
+            .copied();
+        segment[coefficient_index] = signed_coefficient(header, integer, *coefficient)?;
+    }
+    Ok(None)
+}
+
+/// Reads the unsigned rises a linear interpolation piece codes on the polynomial coefficients' scale: to its start pivot and, for the last piece, to its end pivot
+fn linear_interpolation_piece(
+    polynomial: &DoviPolynomialCurve,
+    piece_index: usize,
+    last_piece: bool,
+    header: &dolby_vision::rpu::rpu_data_header::RpuDataHeader,
+) -> ParserResult<LinearInterpolationPiece> {
+    let fractional_values = polynomial
+        .pred_linear_interp_value
+        .get(piece_index)
+        .map_or(&[][..], |values| values.as_slice());
+    let integer_values = polynomial
+        .pred_linear_interp_value_int
+        .get(piece_index)
+        .map_or(&[][..], |values| values.as_slice());
+    let value_count = if last_piece { 2 } else { 1 };
+    if fractional_values.len() != value_count {
+        return Err(ParserFailure::new(
+            STATUS_INVALID_MAPPING,
+            "Linear interpolation piece codes an unexpected number of values",
+        ));
+    }
+    let value = |value_index: usize| {
+        unsigned_coefficient_value(
+            header,
+            integer_values.get(value_index).copied(),
+            fractional_values[value_index],
+        )
+    };
+    Ok(LinearInterpolationPiece {
+        start_rise: value(0)?,
+        end_rise: if last_piece { Some(value(1)?) } else { None },
+    })
+}
+
+/// Packs each linear interpolation piece as the order-1 polynomial between the curve's values at its pivots, so the shader evaluates it like any polynomial piece
+fn pack_linear_interpolation_segments(
+    packed: &mut PackedComponent,
+    linear_pieces: &[Option<LinearInterpolationPiece>],
+    mapping_methods: &[DoviMappingMethod],
+    pivots: &[f64],
+) -> ParserResult<()> {
+    // The curve's value at each pivot that has a scalar one
+    // A coded rise adds to the previous pivot's value, which a polynomial piece takes at its start
+    // An MMR piece maps all three components together, so its pivot has no scalar value
+    let mut pivot_values: [Option<f64>; MAXIMUM_PIVOT_COUNT] = [None; MAXIMUM_PIVOT_COUNT];
+    for (segment_index, (linear_piece, mapping_method)) in
+        linear_pieces.iter().zip(mapping_methods).enumerate()
+    {
+        let Some(linear_piece) = linear_piece else {
+            if let DoviMappingMethod::Polynomial = mapping_method {
+                let [constant, linear, quadratic, _] =
+                    packed.segment_data[segment_index].map(f64::from);
+                let pivot = pivots[segment_index];
+                pivot_values[segment_index] =
+                    Some(constant + ((linear + (quadratic * pivot)) * pivot));
+            }
+            continue;
+        };
+        let previous_value = match segment_index.checked_sub(1) {
+            Some(previous_segment_index) => {
+                pivot_values[previous_segment_index].ok_or_else(|| {
+                    ParserFailure::new(
+                        STATUS_UNSUPPORTED_METADATA,
+                        "Dolby Vision linear interpolation after an MMR piece is unsupported",
+                    )
+                })?
+            }
+            None => 0.0,
+        };
+        let start_value = previous_value + linear_piece.start_rise;
+        pivot_values[segment_index] = Some(start_value);
+        // Only the last piece codes the rise to its end pivot
+        if let Some(end_rise) = linear_piece.end_rise {
+            pivot_values[segment_index + 1] = Some(start_value + end_rise);
+        }
+    }
+
+    for (segment_index, linear_piece) in linear_pieces.iter().enumerate() {
+        if linear_piece.is_none() {
+            continue;
+        }
+        let next_segment_index = segment_index + 1;
+        let (Some(start_value), Some(end_value)) = (
+            pivot_values[segment_index],
+            pivot_values[next_segment_index],
+        ) else {
             return Err(ParserFailure::new(
                 STATUS_UNSUPPORTED_METADATA,
-                "Polynomial linear interpolation is unsupported",
+                "Dolby Vision linear interpolation before an MMR piece is unsupported",
             ));
-        }
-        let coefficient_count = polynomial.poly_order_minus1[segment_index] as usize + 2;
-        if !(2..=3).contains(&coefficient_count)
-            || polynomial.poly_coef[segment_index].len() != coefficient_count
-        {
-            return Err(ParserFailure::new(
-                STATUS_INVALID_MAPPING,
-                "Polynomial reshape coefficient count is invalid",
-            ));
-        }
-        for coefficient_index in 0..coefficient_count {
-            let integer = polynomial
-                .poly_coef_int
-                .get(segment_index)
-                .and_then(|values| values.get(coefficient_index))
-                .copied();
-            packed.segment_data[segment_index][coefficient_index] = signed_coefficient(
-                header,
-                integer,
-                polynomial.poly_coef[segment_index][coefficient_index],
-            )?;
-        }
+        };
+        let start_pivot = pivots[segment_index];
+        let end_pivot = pivots[next_segment_index];
+        // A zero-width piece keeps its start value
+        let slope = if end_pivot > start_pivot {
+            (end_value - start_value) / (end_pivot - start_pivot)
+        } else {
+            0.0
+        };
+        packed.segment_data[segment_index] = [
+            finite_f32(start_value - (slope * start_pivot))?,
+            finite_f32(slope)?,
+            0.0,
+            0.0,
+        ];
     }
     Ok(())
 }
 
-fn pack_mmr_segments(
+/// Packs one MMR piece, with its coefficient vectors after those of the component's earlier MMR pieces, and returns the next free vector index
+fn pack_mmr_segment(
     packed: &mut PackedComponent,
+    segment_index: usize,
     mmr: &DoviMMRCurve,
-    segment_count: usize,
+    piece_index: usize,
+    first_vector_index: usize,
     header: &dolby_vision::rpu::rpu_data_header::RpuDataHeader,
-) -> ParserResult<()> {
-    if mmr.mmr_order_minus1.len() != segment_count
-        || mmr.mmr_constant.len() != segment_count
-        || mmr.mmr_coef.len() != segment_count
-    {
+) -> ParserResult<usize> {
+    let (Some(order_minus1), Some(constant), Some(orders)) = (
+        mmr.mmr_order_minus1.get(piece_index),
+        mmr.mmr_constant.get(piece_index),
+        mmr.mmr_coef.get(piece_index),
+    ) else {
         return Err(ParserFailure::new(
             STATUS_INVALID_MAPPING,
             "MMR reshape segment arrays have inconsistent lengths",
         ));
+    };
+    let order = *order_minus1 as usize + 1;
+    if !(1..=MAXIMUM_MMR_ORDER).contains(&order) || orders.len() != order {
+        return Err(ParserFailure::new(
+            STATUS_INVALID_MAPPING,
+            "MMR reshape order is invalid",
+        ));
     }
-    let mut mmr_vector_index = 0;
-    for segment_index in 0..segment_count {
-        let order = mmr.mmr_order_minus1[segment_index] as usize + 1;
-        if !(1..=MAXIMUM_MMR_ORDER).contains(&order) || mmr.mmr_coef[segment_index].len() != order {
+    packed.segment_data[segment_index][0] = signed_coefficient(
+        header,
+        mmr.mmr_constant_int.get(piece_index).copied(),
+        *constant,
+    )?;
+    packed.segment_data[segment_index][1] = first_vector_index as f32;
+    packed.segment_data[segment_index][3] = order as f32;
+
+    let mut mmr_vector_index = first_vector_index;
+    for (order_index, order_coefficients) in orders.iter().enumerate() {
+        if order_coefficients.len() != MAXIMUM_MMR_COEFFICIENT_COUNT
+            || mmr_vector_index + 1 >= MAXIMUM_MMR_VECTOR_COUNT
+        {
             return Err(ParserFailure::new(
                 STATUS_INVALID_MAPPING,
-                "MMR reshape order is invalid",
+                "MMR reshape coefficient array exceeds its packed bound",
             ));
         }
-        packed.segment_data[segment_index][0] = signed_coefficient(
-            header,
-            mmr.mmr_constant_int.get(segment_index).copied(),
-            mmr.mmr_constant[segment_index],
-        )?;
-        packed.segment_data[segment_index][1] = mmr_vector_index as f32;
-        packed.segment_data[segment_index][3] = order as f32;
-
-        for order_index in 0..order {
-            if mmr.mmr_coef[segment_index][order_index].len() != MAXIMUM_MMR_COEFFICIENT_COUNT
-                || mmr_vector_index + 1 >= MAXIMUM_MMR_VECTOR_COUNT
-            {
-                return Err(ParserFailure::new(
-                    STATUS_INVALID_MAPPING,
-                    "MMR reshape coefficient array exceeds its packed bound",
-                ));
-            }
-            let mut coefficients = [0.0_f32; MAXIMUM_MMR_COEFFICIENT_COUNT];
-            for (coefficient_index, coefficient) in coefficients.iter_mut().enumerate() {
-                let integer = mmr
-                    .mmr_coef_int
-                    .get(segment_index)
-                    .and_then(|orders| orders.get(order_index))
-                    .and_then(|values| values.get(coefficient_index))
-                    .copied();
-                *coefficient = signed_coefficient(
-                    header,
-                    integer,
-                    mmr.mmr_coef[segment_index][order_index][coefficient_index],
-                )?;
-            }
-            packed.mmr_data[mmr_vector_index] =
-                [coefficients[0], coefficients[1], coefficients[2], 0.0];
-            packed.mmr_data[mmr_vector_index + 1] = [
-                coefficients[3],
-                coefficients[4],
-                coefficients[5],
-                coefficients[6],
-            ];
-            mmr_vector_index += 2;
+        let mut coefficients = [0.0_f32; MAXIMUM_MMR_COEFFICIENT_COUNT];
+        for (coefficient_index, coefficient) in coefficients.iter_mut().enumerate() {
+            let integer = mmr
+                .mmr_coef_int
+                .get(piece_index)
+                .and_then(|orders| orders.get(order_index))
+                .and_then(|values| values.get(coefficient_index))
+                .copied();
+            *coefficient =
+                signed_coefficient(header, integer, order_coefficients[coefficient_index])?;
         }
+        packed.mmr_data[mmr_vector_index] =
+            [coefficients[0], coefficients[1], coefficients[2], 0.0];
+        packed.mmr_data[mmr_vector_index + 1] = [
+            coefficients[3],
+            coefficients[4],
+            coefficients[5],
+            coefficients[6],
+        ];
+        mmr_vector_index += 2;
     }
-    packed.mmr_vector_count = mmr_vector_index as u32;
-    Ok(())
+    Ok(mmr_vector_index)
 }
 
 fn pack_nlq(
@@ -1043,17 +1194,35 @@ fn unsigned_coefficient(
     integer: u64,
     fractional: u64,
 ) -> ParserResult<f32> {
-    let value = match header.coefficient_data_type {
-        0 => integer as f64 + fractional as f64 / coefficient_scale(header)?,
-        1 => float_coefficient(fractional)?,
-        _ => {
-            return Err(ParserFailure::new(
-                STATUS_UNSUPPORTED_METADATA,
-                "Dolby Vision coefficient data type is unsupported",
-            ));
+    finite_f32(unsigned_coefficient_value(
+        header,
+        Some(integer),
+        fractional,
+    )?)
+}
+
+/// An unsigned coefficient at full precision, whose integer part only fixed point codes
+fn unsigned_coefficient_value(
+    header: &dolby_vision::rpu::rpu_data_header::RpuDataHeader,
+    integer: Option<u64>,
+    fractional: u64,
+) -> ParserResult<f64> {
+    match header.coefficient_data_type {
+        0 => {
+            let integer = integer.ok_or_else(|| {
+                ParserFailure::new(
+                    STATUS_INVALID_MAPPING,
+                    "Fixed-point coefficient is missing its integer part",
+                )
+            })?;
+            Ok(integer as f64 + fractional as f64 / coefficient_scale(header)?)
         }
-    };
-    finite_f32(value)
+        1 => float_coefficient(fractional),
+        _ => Err(ParserFailure::new(
+            STATUS_UNSUPPORTED_METADATA,
+            "Dolby Vision coefficient data type is unsupported",
+        )),
+    }
 }
 
 fn coefficient_scale(
@@ -1198,7 +1367,7 @@ pub unsafe extern "C" fn dovi_parser_deallocate(pointer: *mut u8, byte_length: u
 }
 
 #[unsafe(no_mangle)]
-/// Parses one RPU into the fixed schema output buffer.
+/// Parses one HEVC UNSPEC62 NAL unit RPU into the fixed schema output buffer.
 ///
 /// # Safety
 /// The context and both buffers must be live, non-overlapping allocations from
@@ -1209,6 +1378,57 @@ pub unsafe extern "C" fn dovi_parser_parse(
     input_byte_length: u32,
     output_pointer: *mut u8,
     output_byte_length: u32,
+) -> i32 {
+    // SAFETY: The caller upholds the contract this function shares with the helper.
+    unsafe {
+        parse_exported_input(
+            context_pointer,
+            input_pointer,
+            input_byte_length,
+            output_pointer,
+            output_byte_length,
+            RpuFraming::HEVCUnspec62NALUnit,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Parses the ITU-T T.35 payload of one AV1 Dolby Vision metadata OBU, from its country code or its provider code to the end of the OBU payload, into the fixed schema output buffer.
+/// It shares the context's mapping and display metadata state with `dovi_parser_parse`.
+///
+/// # Safety
+/// The context and both buffers must be live, non-overlapping allocations from this module with at least the supplied lengths.
+pub unsafe extern "C" fn dovi_parser_parse_av1_t35(
+    context_pointer: *mut c_void,
+    input_pointer: *const u8,
+    input_byte_length: u32,
+    output_pointer: *mut u8,
+    output_byte_length: u32,
+) -> i32 {
+    // SAFETY: The caller upholds the contract this function shares with the helper.
+    unsafe {
+        parse_exported_input(
+            context_pointer,
+            input_pointer,
+            input_byte_length,
+            output_pointer,
+            output_byte_length,
+            RpuFraming::AV1ITUTT35Payload,
+        )
+    }
+}
+
+/// Validates the exported buffers, then parses one framed RPU into the fixed schema output buffer.
+///
+/// # Safety
+/// The context and both buffers must be live, non-overlapping allocations from this module with at least the supplied lengths.
+unsafe fn parse_exported_input(
+    context_pointer: *mut c_void,
+    input_pointer: *const u8,
+    input_byte_length: u32,
+    output_pointer: *mut u8,
+    output_byte_length: u32,
+    framing: RpuFraming,
 ) -> i32 {
     let Some(context) = parse_context(context_pointer) else {
         return STATUS_INVALID_ARGUMENT;
@@ -1230,7 +1450,7 @@ pub unsafe extern "C" fn dovi_parser_parse(
     if output_byte_length as usize != OUTPUT_BYTE_LENGTH {
         let failure = ParserFailure::new(
             STATUS_INVALID_ARGUMENT,
-            "Parser output length does not match schema version 1",
+            format!("Parser output length does not match schema version {PARSER_SCHEMA_VERSION}"),
         );
         context.record_error(&failure);
         return failure.code;
@@ -1240,7 +1460,7 @@ pub unsafe extern "C" fn dovi_parser_parse(
     let input = unsafe { slice::from_raw_parts(input_pointer, input_byte_length) };
     // SAFETY: The exact fixed output length was checked above.
     let output = unsafe { slice::from_raw_parts_mut(output_pointer, OUTPUT_BYTE_LENGTH) };
-    match context.parse(input, output) {
+    match context.parse(input, framing, output) {
         Ok(()) => 0,
         Err(failure) => {
             context.record_error(&failure);
@@ -1279,19 +1499,30 @@ pub unsafe extern "C" fn dovi_parser_last_error_byte_length(context: *const c_vo
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
     use super::*;
+    use dolby_vision::av1::convert_regular_rpu_to_av1_payload;
     use dolby_vision::rpu::ConversionMode;
     use dolby_vision::rpu::extension_metadata::blocks::ExtMetadataBlockLevel1;
     use dolby_vision::rpu::extension_metadata::{CmV29DmData, DmData, WithExtMetadataBlocks};
     use dolby_vision::rpu::generate::GenerateConfig;
     use dolby_vision::rpu::rpu_data_header::RpuDataHeader;
-    use dolby_vision::utils::add_start_code_emulation_prevention_3_byte;
+    use dolby_vision::utils::{
+        add_start_code_emulation_prevention_3_byte, clear_start_code_emulation_prevention_3_byte,
+    };
 
     // Packed header words, in PackedSnapshot::write order
     const FLAGS_WORD: usize = 3;
     const PROFILE_WORD: usize = 5;
     const RPU_FORMAT_WORD: usize = 7;
+    const COEFFICIENT_DATA_TYPE_WORD: usize = 10;
     const BASE_LAYER_BIT_DEPTH_WORD: usize = 12;
+    const MAPPING_ID_WORD: usize = 21;
+    const PREVIOUS_MAPPING_ID_WORD: usize = 22;
+    const MAPPING_COLOR_SPACE_WORD: usize = 23;
     const MAPPING_CHROMA_FORMAT_WORD: usize = 24;
     const SIGNAL_EOTF_WORD: usize = 27;
     const SOURCE_MAXIMUM_PQ_WORD: usize = 36;
@@ -1300,9 +1531,46 @@ mod tests {
     const LEVEL1_AVERAGE_PQ_WORD: usize = 40;
     const SCENE_REFRESH_WORD: usize = 41;
     const AFFECTED_DM_METADATA_ID_WORD: usize = 42;
-    const LUMA_PIVOT_BYTE_OFFSET: usize = HEADER_BYTE_LENGTH
-        + ((COLOR_FLOAT_COUNT + NLQ_FLOAT_COUNT) * size_of::<f32>())
-        + (COMPONENT_HEADER_U32_COUNT * size_of::<u32>());
+    const COMPONENT_BYTE_OFFSET: usize =
+        HEADER_BYTE_LENGTH + ((COLOR_FLOAT_COUNT + NLQ_FLOAT_COUNT) * size_of::<f32>());
+    const LUMA_PIVOT_BYTE_OFFSET: usize =
+        COMPONENT_BYTE_OFFSET + (COMPONENT_HEADER_U32_COUNT * size_of::<u32>());
+
+    // Packed component words and vectors, in PackedComponent::write order
+    const COMPONENT_MMR_VECTOR_COUNT_WORD: usize = 1;
+    const COMPONENT_FLAGS_WORD: usize = 2;
+    const PACKED_VECTOR_BYTE_LENGTH: usize = 4 * size_of::<f32>();
+    const COMPONENT_SEGMENT_BYTE_OFFSET: usize =
+        (COMPONENT_HEADER_U32_COUNT + COMPONENT_PIVOT_FLOAT_COUNT) * size_of::<u32>();
+    const COMPONENT_MMR_BYTE_OFFSET: usize =
+        COMPONENT_SEGMENT_BYTE_OFFSET + (COMPONENT_SEGMENT_FLOAT_COUNT * size_of::<f32>());
+
+    // The crate's Profile 8.1 header codes 10-bit pivots and 23 coefficient fraction bits
+    const PIVOT_CODE_MAXIMUM: f64 = 1_023.0;
+    const COEFFICIENT_LOG2_DENOMINATOR: u64 = 23;
+    const COEFFICIENT_SCALE: f64 = (1_u64 << COEFFICIENT_LOG2_DENOMINATOR) as f64;
+    const FLOAT_COEFFICIENT_DATA_TYPE: u8 = 1;
+    const FLOAT_COEFFICIENT_BIT_LENGTH: u32 = 32;
+    // Packed linear interpolation polynomials are float32 coefficients derived in float64
+    const LINEAR_INTERPOLATION_TOLERANCE: f64 = 0.000_001;
+
+    // The engine names its folders in this file, which the Makefile also reads through Node
+    const ENGINE_LAYOUT_FILE: &str = "tools/constants.json";
+    const TEST_VECTORS_DIRECTORY_KEY: &str = "testVectorsDirectory";
+    const RPU_VECTOR_DIRECTORY: &str = "dolby-vision-rpu";
+    const RPU_VECTOR_EXTENSION: &str = "bin";
+    const ITU_T_T35_COUNTRY_CODE_UNITED_STATES: u8 = 0xB5;
+    // The AV1 trailing bits and zero padding that may end an OBU after its T.35 payload
+    const OBU_TRAILING_BYTES: [u8; 3] = [0x80, 0x00, 0x00];
+    // The country code, the provider code, the provider-oriented code, and the EMDF header bits FFmpeg reads as one fixed value
+    const ITU_T_T35_PROVIDER_CODE_DOLBY: u64 = 0x003B;
+    const ITU_T_T35_PROVIDER_ORIENTED_CODE_DOLBY: u64 = 0x0800;
+    const EMDF_HEADER: u64 = 0x01BE_6841;
+    const EMDF_HEADER_BIT_LENGTH: usize = 27;
+    const EMDF_VARIABLE_BITS_CHUNK_BIT_LENGTH: usize = 8;
+    // The input lengths upstream required before parsing an HEVC or an AV1 RPU
+    const UPSTREAM_MINIMUM_HEVC_INPUT_BYTE_LENGTH: usize = 25;
+    const UPSTREAM_MINIMUM_AV1_INPUT_BYTE_LENGTH: usize = 34;
 
     // The prefix byte, rpu_type, rpu_format, vdr_rpu_profile, vdr_rpu_level, and vdr_seq_info_present_flag
     const FIXED_HEADER_BIT_LENGTH: usize = 8 + 6 + 11 + 4 + 4 + 1;
@@ -1564,7 +1832,9 @@ mod tests {
 
     fn parse_into(context: &mut ParserContext, input: &[u8]) -> ParserResult<Vec<u8>> {
         let mut output = vec![0_u8; OUTPUT_BYTE_LENGTH];
-        context.parse(input, &mut output).map(|()| output)
+        context
+            .parse(input, RpuFraming::HEVCUnspec62NALUnit, &mut output)
+            .map(|()| output)
     }
 
     fn header_word(output: &[u8], word_index: usize) -> u32 {
@@ -1689,6 +1959,283 @@ mod tests {
         rpu.header.use_prev_vdr_rpu_flag = true;
         rpu.header.prev_vdr_rpu_id = mapping_id;
         rpu
+    }
+
+    fn parse_av1_into(context: &mut ParserContext, input: &[u8]) -> ParserResult<Vec<u8>> {
+        let mut output = vec![0_u8; OUTPUT_BYTE_LENGTH];
+        context
+            .parse(input, RpuFraming::AV1ITUTT35Payload, &mut output)
+            .map(|()| output)
+    }
+
+    /// The ITU-T T.35 payload of an AV1 metadata OBU that carries the RPU, from its country code
+    fn encode_av1(rpu: &DoviRpu) -> Vec<u8> {
+        rpu.write_av1_rpu_metadata_obu_t35_complete().unwrap()
+    }
+
+    /// A parse result that two entry points can be compared by
+    fn outcome(result: ParserResult<Vec<u8>>) -> Result<Vec<u8>, (i32, String)> {
+        result.map_err(|failure| (failure.code, failure.message))
+    }
+
+    /// Resolves one engine folder from tools/constants.json through Node, as the Makefile does
+    fn engine_layout_directory(key: &str) -> PathBuf {
+        let engine_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .find(|directory| directory.join(ENGINE_LAYOUT_FILE).is_file())
+            .expect("The crate lies inside the engine");
+        let output = Command::new("node")
+            .arg("-p")
+            .arg(format!("require(process.argv[1]).{key}"))
+            .arg(engine_root.join(ENGINE_LAYOUT_FILE))
+            .output()
+            .expect("Node reads the engine layout, as for the Makefile");
+        assert!(output.status.success());
+        engine_root.join(String::from_utf8(output.stdout).unwrap().trim())
+    }
+
+    fn rpu_vector_paths() -> Vec<PathBuf> {
+        let directory =
+            engine_layout_directory(TEST_VECTORS_DIRECTORY_KEY).join(RPU_VECTOR_DIRECTORY);
+        let mut paths: Vec<PathBuf> = fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == RPU_VECTOR_EXTENSION)
+            })
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    /// Wraps an HEVC RPU vector, a start code and then the escaped RPU, in the AV1 T.35 payload the crate writes, without the country code
+    fn av1_payload_from_hevc_vector(vector: &[u8]) -> Vec<u8> {
+        let escaped_rpu = DoviRpu::validated_trimmed_data(vector).unwrap();
+        convert_regular_rpu_to_av1_payload(&clear_start_code_emulation_prevention_3_byte(
+            escaped_rpu,
+        ))
+        .unwrap()
+    }
+
+    /// The T.35 payload of a Dolby Vision metadata OBU up to and including emdf_payload_size, coded in variable_bits chunks of 8 bits
+    fn av1_payload_with_emdf_payload_size_chunks(size_chunks: &[u64]) -> Vec<u8> {
+        let mut writer = BitWriter::default();
+        writer.write_bits(u64::from(ITU_T_T35_COUNTRY_CODE_UNITED_STATES), 8);
+        writer.write_bits(ITU_T_T35_PROVIDER_CODE_DOLBY, 16);
+        writer.write_bits(ITU_T_T35_PROVIDER_ORIENTED_CODE_DOLBY, 32);
+        writer.write_bits(EMDF_HEADER, EMDF_HEADER_BIT_LENGTH);
+        for (chunk_index, chunk) in size_chunks.iter().enumerate() {
+            writer.write_bits(*chunk, EMDF_VARIABLE_BITS_CHUNK_BIT_LENGTH);
+            // read_more
+            writer.write_bits(u64::from(chunk_index + 1 < size_chunks.len()), 1);
+        }
+        writer.fill_to_byte(0);
+        writer.bytes
+    }
+
+    fn component_word(output: &[u8], component_index: usize, word_index: usize) -> u32 {
+        let byte_offset = COMPONENT_BYTE_OFFSET
+            + (component_index * COMPONENT_BYTE_LENGTH)
+            + (word_index * size_of::<u32>());
+        u32::from_le_bytes(output[byte_offset..byte_offset + 4].try_into().unwrap())
+    }
+
+    fn component_vector(output: &[u8], component_index: usize, byte_offset: usize) -> [f32; 4] {
+        let vector_byte_offset =
+            COMPONENT_BYTE_OFFSET + (component_index * COMPONENT_BYTE_LENGTH) + byte_offset;
+        array::from_fn(|index| float_at(output, vector_byte_offset + (index * size_of::<f32>())))
+    }
+
+    fn segment(output: &[u8], component_index: usize, segment_index: usize) -> [f32; 4] {
+        component_vector(
+            output,
+            component_index,
+            COMPONENT_SEGMENT_BYTE_OFFSET + (segment_index * PACKED_VECTOR_BYTE_LENGTH),
+        )
+    }
+
+    fn mmr_vector(output: &[u8], component_index: usize, vector_index: usize) -> [f32; 4] {
+        component_vector(
+            output,
+            component_index,
+            COMPONENT_MMR_BYTE_OFFSET + (vector_index * PACKED_VECTOR_BYTE_LENGTH),
+        )
+    }
+
+    /// A value as the crate codes a signed coefficient: an integer part and a 23-bit fraction
+    fn signed_fixed_point(value: f64) -> (i64, u64) {
+        let integer = value.floor();
+        (
+            integer as i64,
+            ((value - integer) * COEFFICIENT_SCALE) as u64,
+        )
+    }
+
+    fn unsigned_fixed_point(value: f64) -> (u64, u64) {
+        let (integer, fraction) = signed_fixed_point(value);
+        (u64::try_from(integer).unwrap(), fraction)
+    }
+
+    fn normalized_pivot(pivot_code: u16) -> f64 {
+        f64::from(pivot_code) / PIVOT_CODE_MAXIMUM
+    }
+
+    /// A curve over absolute pivot codes, to which the push helpers add pieces in coded order
+    fn reshaping_curve(pivot_codes: &[u16]) -> DoviReshapingCurve {
+        // The crate keeps the coded first pivot and then each difference
+        let mut previous_code = 0;
+        let pivots = pivot_codes
+            .iter()
+            .map(|code| {
+                let delta = code - previous_code;
+                previous_code = *code;
+                delta
+            })
+            .collect();
+        DoviReshapingCurve {
+            num_pivots_minus2: pivot_codes.len() as u64 - 2,
+            pivots,
+            ..DoviReshapingCurve::default()
+        }
+    }
+
+    fn push_polynomial_piece(curve: &mut DoviReshapingCurve, coefficients: &[f64]) {
+        curve.mapping_idc.push(DoviMappingMethod::Polynomial);
+        let polynomial = curve.polynomial.get_or_insert_with(Default::default);
+        polynomial
+            .poly_order_minus1
+            .push(coefficients.len() as u64 - 2);
+        polynomial.linear_interp_flag.push(false);
+        polynomial.poly_coef_int.push(
+            coefficients
+                .iter()
+                .map(|value| signed_fixed_point(*value).0)
+                .collect(),
+        );
+        polynomial.poly_coef.push(
+            coefficients
+                .iter()
+                .map(|value| signed_fixed_point(*value).1)
+                .collect(),
+        );
+        polynomial
+            .pred_linear_interp_value_int
+            .push(Default::default());
+        polynomial.pred_linear_interp_value.push(Default::default());
+    }
+
+    /// Adds a linear interpolation piece coding its start value, and its end value when last
+    fn push_linear_interpolation_piece(curve: &mut DoviReshapingCurve, values: &[f64]) {
+        curve.mapping_idc.push(DoviMappingMethod::Polynomial);
+        let polynomial = curve.polynomial.get_or_insert_with(Default::default);
+        polynomial.poly_order_minus1.push(0);
+        polynomial.linear_interp_flag.push(true);
+        polynomial.poly_coef_int.push(Default::default());
+        polynomial.poly_coef.push(Default::default());
+        polynomial.pred_linear_interp_value_int.push(
+            values
+                .iter()
+                .map(|value| unsigned_fixed_point(*value).0)
+                .collect(),
+        );
+        polynomial.pred_linear_interp_value.push(
+            values
+                .iter()
+                .map(|value| unsigned_fixed_point(*value).1)
+                .collect(),
+        );
+    }
+
+    fn push_mmr_piece(
+        curve: &mut DoviReshapingCurve,
+        constant: f64,
+        orders: &[[f64; MAXIMUM_MMR_COEFFICIENT_COUNT]],
+    ) {
+        curve.mapping_idc.push(DoviMappingMethod::MMR);
+        let mmr = curve.mmr.get_or_insert_with(Default::default);
+        mmr.mmr_order_minus1.push(orders.len() as u8 - 1);
+        mmr.mmr_constant_int.push(signed_fixed_point(constant).0);
+        mmr.mmr_constant.push(signed_fixed_point(constant).1);
+        mmr.mmr_coef_int.push(
+            orders
+                .iter()
+                .map(|order| {
+                    order
+                        .iter()
+                        .map(|value| signed_fixed_point(*value).0)
+                        .collect()
+                })
+                .collect(),
+        );
+        mmr.mmr_coef.push(
+            orders
+                .iter()
+                .map(|order| {
+                    order
+                        .iter()
+                        .map(|value| signed_fixed_point(*value).1)
+                        .collect()
+                })
+                .collect(),
+        );
+    }
+
+    /// The crate's Profile 8.1 RPU with one component's curve replaced
+    fn rpu_with_curve(component_index: usize, curve: DoviReshapingCurve) -> DoviRpu {
+        let mut rpu = profile8_rpu();
+        assert_eq!(
+            rpu.header.coefficient_log2_denom,
+            COEFFICIENT_LOG2_DENOMINATOR
+        );
+        rpu.rpu_data_mapping.as_mut().unwrap().curves[component_index] = curve;
+        rpu
+    }
+
+    /// Recodes every polynomial coefficient and linear interpolation value as float32 bits
+    fn with_float_coefficients(mut rpu: DoviRpu) -> DoviRpu {
+        rpu.header.coefficient_data_type = FLOAT_COEFFICIENT_DATA_TYPE;
+        rpu.header.coefficient_log2_denom_length = FLOAT_COEFFICIENT_BIT_LENGTH;
+        let float_bits = |integer: f64, fraction: u64| -> u64 {
+            u64::from(((integer + (fraction as f64 / COEFFICIENT_SCALE)) as f32).to_bits())
+        };
+        for curve in &mut rpu.rpu_data_mapping.as_mut().unwrap().curves {
+            assert!(curve.mmr.is_none());
+            let polynomial = curve.polynomial.as_mut().unwrap();
+            for (integers, fractions) in polynomial
+                .poly_coef_int
+                .iter_mut()
+                .zip(&mut polynomial.poly_coef)
+            {
+                for (integer, fraction) in integers.iter().zip(fractions.iter_mut()) {
+                    *fraction = float_bits(*integer as f64, *fraction);
+                }
+                integers.clear();
+            }
+            for (integers, fractions) in polynomial
+                .pred_linear_interp_value_int
+                .iter_mut()
+                .zip(&mut polynomial.pred_linear_interp_value)
+            {
+                for (integer, fraction) in integers.iter().zip(fractions.iter_mut()) {
+                    *fraction = float_bits(*integer as f64, *fraction);
+                }
+                integers.clear();
+            }
+        }
+        rpu
+    }
+
+    /// Asserts that a packed segment is the line through the given (pivot, value) points
+    fn assert_line_through(segment: [f32; 4], points: [(f64, f64); 2]) {
+        assert_eq!(segment[2..], [0.0, 0.0]);
+        for (pivot, value) in points {
+            let line_value = f64::from(segment[0]) + (f64::from(segment[1]) * pivot);
+            assert!(
+                (line_value - value).abs() < LINEAR_INTERPOLATION_TOLERANCE,
+                "{segment:?} gives {line_value} instead of {value} at {pivot}"
+            );
+        }
     }
 
     #[test]
@@ -1840,12 +2387,11 @@ mod tests {
             &encode(&with_source_maximum_pq(profile8_rpu(), 3_000)),
         )
         .unwrap();
-        let mut rejected = with_source_maximum_pq(profile8_rpu(), 1_000);
-        rejected
-            .rpu_data_mapping
-            .as_mut()
-            .unwrap()
-            .mapping_color_space = 1;
+        // The bridge rejects a linear interpolation piece before an MMR piece only while packing
+        let mut luma = reshaping_curve(&[0, 512, 1_023]);
+        push_linear_interpolation_piece(&mut luma, &[0.25]);
+        push_mmr_piece(&mut luma, 0.5, &[[0.0; MAXIMUM_MMR_COEFFICIENT_COUNT]]);
+        let rejected = with_source_maximum_pq(rpu_with_curve(0, luma), 1_000);
         let failure = parse_into(&mut context, &encode(&rejected)).unwrap_err();
         assert_eq!(failure.code, STATUS_UNSUPPORTED_METADATA);
 
@@ -2002,49 +2548,58 @@ mod tests {
     }
 
     #[test]
-    fn mapping_chroma_formats_through_two_are_accepted() {
+    fn every_mapping_color_space_and_chroma_format_is_packed() {
         let mut context = ParserContext::default();
-        for chroma_format_idc in 0..=2 {
-            let mut rpu = profile8_rpu();
-            rpu.rpu_data_mapping
-                .as_mut()
-                .unwrap()
-                .mapping_chroma_format_idc = chroma_format_idc;
+        // YCbCr, RGB, and IPT, then 4:2:0, 4:2:2, 4:4:4, and a value FFmpeg reads without a name
+        for mapping_color_space in 0..=2 {
+            for chroma_format_idc in 0..=3 {
+                let mut rpu = profile8_rpu();
+                let mapping = rpu.rpu_data_mapping.as_mut().unwrap();
+                mapping.mapping_color_space = mapping_color_space;
+                mapping.mapping_chroma_format_idc = chroma_format_idc;
 
-            let output = parse_into(&mut context, &encode(&rpu)).unwrap();
+                let output = parse_into(&mut context, &encode(&rpu)).unwrap();
 
-            assert_eq!(
-                u64::from(header_word(&output, MAPPING_CHROMA_FORMAT_WORD)),
-                chroma_format_idc
-            );
+                assert_eq!(
+                    u64::from(header_word(&output, MAPPING_COLOR_SPACE_WORD)),
+                    mapping_color_space
+                );
+                assert_eq!(
+                    u64::from(header_word(&output, MAPPING_CHROMA_FORMAT_WORD)),
+                    chroma_format_idc
+                );
+            }
         }
-
-        let mut rpu = profile8_rpu();
-        rpu.rpu_data_mapping
-            .as_mut()
-            .unwrap()
-            .mapping_chroma_format_idc = 3;
-        let failure = parse_into(&mut context, &encode(&rpu)).unwrap_err();
-        assert_eq!(failure.code, STATUS_UNSUPPORTED_METADATA);
     }
 
     #[test]
-    fn linear_interpolation_is_an_error_instead_of_a_panic() {
-        let mut context = ParserContext::default();
-        let rpu = profile8_rpu();
+    fn linear_interpolation_values_follow_their_flag_as_ffmpeg_would_read_them() {
+        let start_value = 0.25;
+        let end_rise = 1.5;
+        let mut luma = reshaping_curve(&[0, 1_023]);
+        push_linear_interpolation_piece(&mut luma, &[start_value, end_rise]);
+        let rpu = rpu_with_curve(0, luma);
         let bit_offset = first_linear_interpolation_flag_bit_offset(&rpu);
-        // Guards the offset: ue(0) mapping_idc, ue(0) poly_order_minus1, the clear flag, then se(0)
-        assert_eq!(
-            read_bits(&rpu.write_rpu().unwrap(), bit_offset - 2, 4),
-            0b1101
-        );
 
-        let failure =
-            parse_into(&mut context, &encode_with_bits(&rpu, bit_offset, 1, 1)).unwrap_err();
+        // The set flag, then for the last piece ue(v) and u(23) at the start and end pivots
+        let mut expected = BitWriter::default();
+        expected.write_bits(1, 1);
+        for value in [start_value, end_rise] {
+            let (integer, fraction) = unsigned_fixed_point(value);
+            expected.write_unsigned_exp_golomb(integer);
+            expected.write_bits(fraction, COEFFICIENT_LOG2_DENOMINATOR as usize);
+        }
+        let written = rpu.write_rpu().unwrap();
+        for position in 0..expected.bit_length {
+            assert_eq!(
+                read_bits(&written, bit_offset + position, 1),
+                read_bits(&expected.bytes, position, 1)
+            );
+        }
 
-        assert_eq!(failure.code, STATUS_UNSUPPORTED_METADATA);
-        assert!(failure.message.contains("linear interpolation"));
-        assert!(parse_into(&mut context, &encode(&rpu)).is_ok());
+        // The end value is the start value plus the coded rise
+        let output = parse_into(&mut ParserContext::default(), &encode(&rpu)).unwrap();
+        assert_eq!(segment(&output, 0, 0), [0.25, 1.5, 0.0, 0.0]);
     }
 
     #[test]
@@ -2226,5 +2781,391 @@ mod tests {
 
         assert_eq!(failure.code, STATUS_PARSE_FAILED);
         assert!(failure.message.contains("runs past the metadata payload"));
+    }
+
+    #[test]
+    fn av1_t35_payloads_pack_every_rpu_vector_like_its_hevc_nal_unit() {
+        let vector_paths = rpu_vector_paths();
+        assert!(!vector_paths.is_empty());
+        for vector_path in vector_paths {
+            let vector = fs::read(&vector_path).unwrap();
+            let hevc_output = parse_into(&mut ParserContext::default(), &vector)
+                .unwrap_or_else(|failure| panic!("{}: {}", vector_path.display(), failure.message));
+            let payload = av1_payload_from_hevc_vector(&vector);
+            let mut payload_with_country_code = vec![ITU_T_T35_COUNTRY_CODE_UNITED_STATES];
+            payload_with_country_code.extend_from_slice(&payload);
+
+            for av1_input in [payload, payload_with_country_code] {
+                let av1_output = parse_av1_into(&mut ParserContext::default(), &av1_input);
+                assert_eq!(
+                    outcome(av1_output),
+                    Ok(hevc_output.clone()),
+                    "{}",
+                    vector_path.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn av1_t35_payloads_ignore_the_obu_trailing_bits() {
+        let rpu = profile8_rpu();
+        let expected = parse_into(&mut ParserContext::default(), &encode(&rpu)).unwrap();
+        let mut payload = encode_av1(&rpu);
+        payload.extend_from_slice(&OBU_TRAILING_BYTES);
+
+        let output = parse_av1_into(&mut ParserContext::default(), &payload).unwrap();
+
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn av1_t35_payloads_require_the_dolby_country_and_provider_codes() {
+        let mut context = ParserContext::default();
+        let payload = encode_av1(&profile8_rpu());
+        // Another country code, provider code, or provider-oriented code
+        for (byte_index, value) in [(0, 0xB4), (2, 0x3C), (6, 0x01)] {
+            let mut other_provider = payload.clone();
+            other_provider[byte_index] = value;
+
+            let failure = parse_av1_into(&mut context, &other_provider).unwrap_err();
+
+            assert_eq!(failure.code, STATUS_PARSE_FAILED);
+            assert!(failure.message.contains("Invalid AV1 RPU payload header"));
+        }
+        // A rejected payload leaves the context usable
+        assert!(parse_av1_into(&mut context, &payload).is_ok());
+    }
+
+    #[test]
+    fn each_entry_point_rejects_the_other_framing() {
+        let mut context = ParserContext::default();
+        let rpu = profile8_rpu();
+
+        let hevc_failure = parse_into(&mut context, &encode_av1(&rpu)).unwrap_err();
+        let av1_failure = parse_av1_into(&mut context, &encode(&rpu)).unwrap_err();
+
+        assert_eq!(hevc_failure.code, STATUS_PARSE_FAILED);
+        assert_eq!(av1_failure.code, STATUS_PARSE_FAILED);
+    }
+
+    #[test]
+    fn av1_t35_payloads_share_mapping_and_display_metadata_state_with_hevc() {
+        let mut context = ParserContext::default();
+        let mut stored = with_source_maximum_pq(profile8_rpu(), 3_000);
+        stored.rpu_data_mapping.as_mut().unwrap().vdr_rpu_id = 3;
+        parse_into(&mut context, &encode(&stored)).unwrap();
+
+        // An AV1 RPU reuses the mapping and display metadata an HEVC RPU stored
+        let mut reusing =
+            compressed_rpu(profile8_rpu(), ExtMetadataBlockLevel1::new(5, 2_000, 1_000));
+        reusing.header.use_prev_vdr_rpu_flag = true;
+        reusing.header.prev_vdr_rpu_id = 3;
+        reusing.rpu_data_mapping = None;
+        let output = parse_av1_into(&mut context, &encode_av1(&reusing)).unwrap();
+
+        assert_ne!(
+            header_word(&output, FLAGS_WORD) & FLAG_USED_PREVIOUS_MAPPING,
+            0
+        );
+        assert_eq!(header_word(&output, MAPPING_ID_WORD), 3);
+        assert_eq!(header_word(&output, PREVIOUS_MAPPING_ID_WORD), 3);
+        assert_eq!(header_word(&output, SOURCE_MAXIMUM_PQ_WORD), 3_000);
+        assert_eq!(level1(&output), [5, 2_000, 1_000]);
+
+        // And an HEVC RPU reuses what an AV1 RPU stored
+        parse_av1_into(
+            &mut context,
+            &encode_av1(&with_source_maximum_pq(stored, 2_000)),
+        )
+        .unwrap();
+        let output = parse_into(&mut context, &encode(&reusing)).unwrap();
+        assert_eq!(header_word(&output, SOURCE_MAXIMUM_PQ_WORD), 2_000);
+
+        context.reset();
+        let failure = parse_av1_into(&mut context, &encode_av1(&reusing)).unwrap_err();
+        assert_eq!(failure.code, STATUS_MISSING_MAPPING_STATE);
+    }
+
+    #[test]
+    fn av1_rpus_keep_the_profile_their_header_infers() {
+        // Profile 10.0 RPUs are coded like Profile 5, and 10.1, 10.2, and 10.4 like Profile 8
+        let profile5 = DoviRpu::profile5_config(&GenerateConfig::default()).unwrap();
+        for (rpu, profile) in [(profile5, 5), (profile8_rpu(), 8)] {
+            let output = parse_av1_into(&mut ParserContext::default(), &encode_av1(&rpu)).unwrap();
+
+            assert_eq!(header_word(&output, PROFILE_WORD), profile);
+        }
+    }
+
+    #[test]
+    fn emdf_payload_sizes_that_overflow_or_pass_the_data_are_errors() {
+        // 65535 bytes, then a variable_bits chain past 32 bits; both once aborted the release WASM
+        let oversized = av1_payload_with_emdf_payload_size_chunks(&[0xFE, 0xFF]);
+        let overflowing = av1_payload_with_emdf_payload_size_chunks(&[0xFF; 5]);
+        for (input, message) in [
+            (
+                oversized,
+                "EMDF payload size 65535 exceeds the remaining data",
+            ),
+            (overflowing, "variable_bits value exceeds 32 bits"),
+        ] {
+            let failure = parse_av1_into(&mut ParserContext::default(), &input).unwrap_err();
+
+            assert_eq!(failure.code, STATUS_PARSE_FAILED);
+            assert!(failure.message.contains(message), "{}", failure.message);
+        }
+    }
+
+    #[test]
+    fn rpus_below_the_upstream_minimum_lengths_parse_like_ffmpeg() {
+        // An RPU that reuses a stored mapping and carries no display metadata is a few bytes long
+        let mut reusing = without_color_metadata(profile8_rpu());
+        reusing.header.use_prev_vdr_rpu_flag = true;
+        reusing.rpu_data_mapping = None;
+        let hevc_input = encode(&reusing);
+        let av1_input = encode_av1(&reusing);
+        assert!(hevc_input.len() < UPSTREAM_MINIMUM_HEVC_INPUT_BYTE_LENGTH);
+        assert!(av1_input.len() < UPSTREAM_MINIMUM_AV1_INPUT_BYTE_LENGTH);
+
+        let mut context = ParserContext::default();
+        parse_into(&mut context, &encode(&profile8_rpu())).unwrap();
+        let hevc_output = parse_into(&mut context, &hevc_input).unwrap();
+        let av1_output = parse_av1_into(&mut context, &av1_input).unwrap();
+
+        let flags = header_word(&hevc_output, FLAGS_WORD);
+        assert_ne!(flags & FLAG_USED_PREVIOUS_MAPPING, 0);
+        assert_ne!(flags & FLAG_DEFAULT_COLOR_METADATA, 0);
+        assert_eq!(av1_output, hevc_output);
+    }
+
+    #[test]
+    fn single_method_components_keep_their_component_flags() {
+        let rpu = DoviRpu::profile84_config(&GenerateConfig::default()).unwrap();
+
+        let output = parse_into(&mut ParserContext::default(), &encode(&rpu)).unwrap();
+
+        let component_flags: [u32; 3] = array::from_fn(|component_index| {
+            component_word(&output, component_index, COMPONENT_FLAGS_WORD)
+        });
+        assert_eq!(
+            component_flags,
+            [
+                COMPONENT_FLAG_POLYNOMIAL,
+                COMPONENT_FLAG_MMR,
+                COMPONENT_FLAG_MMR
+            ]
+        );
+    }
+
+    #[test]
+    fn mixed_polynomial_and_mmr_pieces_pack_per_segment() {
+        let first_order = [0.5, 0.25, 0.125, 0.0, 0.0, 0.0, -0.5];
+        let second_order = [0.0, 0.0, 0.0, 0.75, 0.0, 0.0, 0.0];
+        let mut chroma = reshaping_curve(&[0, 300, 700, 1_023]);
+        push_mmr_piece(&mut chroma, 0.5, &[first_order]);
+        push_polynomial_piece(&mut chroma, &[0.25, 1.0, -0.25]);
+        push_mmr_piece(&mut chroma, -1.5, &[first_order, second_order]);
+        let rpu = rpu_with_curve(1, chroma);
+        let input = encode(&rpu);
+
+        let output = parse_into(&mut ParserContext::default(), &input).unwrap();
+
+        // The crate keeps each piece's method, which upstream overwrote with the last one
+        let parsed_curve = &DoviRpu::parse_unspec62_nalu(&input)
+            .unwrap()
+            .rpu_data_mapping
+            .unwrap()
+            .curves[1];
+        assert_eq!(
+            parsed_curve.mapping_idc,
+            [
+                DoviMappingMethod::MMR,
+                DoviMappingMethod::Polynomial,
+                DoviMappingMethod::MMR
+            ]
+        );
+        assert_eq!(
+            component_word(&output, 1, COMPONENT_FLAGS_WORD),
+            COMPONENT_FLAG_POLYNOMIAL | COMPONENT_FLAG_MMR
+        );
+        assert_eq!(
+            component_word(&output, 1, COMPONENT_MMR_VECTOR_COUNT_WORD),
+            6
+        );
+        // MMR segments hold their constant, first vector, and order; polynomials leave the order zero
+        assert_eq!(segment(&output, 1, 0), [0.5, 0.0, 0.0, 1.0]);
+        assert_eq!(segment(&output, 1, 1), [0.25, 1.0, -0.25, 0.0]);
+        assert_eq!(segment(&output, 1, 2), [-1.5, 2.0, 0.0, 2.0]);
+        // The later MMR piece's vectors follow the earlier piece's
+        for vector_index in [0, 2] {
+            assert_eq!(
+                mmr_vector(&output, 1, vector_index),
+                [0.5, 0.25, 0.125, 0.0]
+            );
+            assert_eq!(
+                mmr_vector(&output, 1, vector_index + 1),
+                [0.0, 0.0, 0.0, -0.5]
+            );
+        }
+        assert_eq!(mmr_vector(&output, 1, 4), [0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(mmr_vector(&output, 1, 5), [0.75, 0.0, 0.0, 0.0]);
+        assert_eq!(mmr_vector(&output, 1, 6), [0.0; 4]);
+        // The other components keep the Profile 8.1 polynomials
+        assert_eq!(
+            component_word(&output, 0, COMPONENT_FLAGS_WORD),
+            COMPONENT_FLAG_POLYNOMIAL
+        );
+        assert_eq!(
+            component_word(&output, 2, COMPONENT_FLAGS_WORD),
+            COMPONENT_FLAG_POLYNOMIAL
+        );
+    }
+
+    #[test]
+    fn all_linear_interpolation_curves_pack_one_line_per_piece() {
+        let pivot_codes = [0, 256, 512, 1_023];
+        let values = [0.0625, 0.25, 0.5, 1.0];
+        // Each piece codes the rise from the previous pivot's value, and the first its start value
+        let rises = [0.0625, 0.1875, 0.25, 0.5];
+        let mut luma = reshaping_curve(&pivot_codes);
+        push_linear_interpolation_piece(&mut luma, &rises[..1]);
+        push_linear_interpolation_piece(&mut luma, &rises[1..2]);
+        // The last piece also codes the rise to its end pivot
+        push_linear_interpolation_piece(&mut luma, &rises[2..]);
+
+        let output = parse_into(
+            &mut ParserContext::default(),
+            &encode(&rpu_with_curve(0, luma)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            component_word(&output, 0, COMPONENT_FLAGS_WORD),
+            COMPONENT_FLAG_POLYNOMIAL
+        );
+        for segment_index in 0..3 {
+            assert_line_through(
+                segment(&output, 0, segment_index),
+                [segment_index, segment_index + 1].map(|pivot_index| {
+                    (
+                        normalized_pivot(pivot_codes[pivot_index]),
+                        values[pivot_index],
+                    )
+                }),
+            );
+        }
+    }
+
+    #[test]
+    fn linear_interpolation_before_a_polynomial_ends_on_that_polynomial() {
+        let pivot_codes = [0, 512, 1_023];
+        let polynomial = [0.125, 0.75, 0.25];
+        let mut luma = reshaping_curve(&pivot_codes);
+        push_linear_interpolation_piece(&mut luma, &[0.0625]);
+        push_polynomial_piece(&mut luma, &polynomial);
+
+        let output = parse_into(
+            &mut ParserContext::default(),
+            &encode(&rpu_with_curve(0, luma)),
+        )
+        .unwrap();
+
+        let boundary = normalized_pivot(pivot_codes[1]);
+        let boundary_value =
+            polynomial[0] + (polynomial[1] * boundary) + (polynomial[2] * boundary * boundary);
+        assert_line_through(
+            segment(&output, 0, 0),
+            [(0.0, 0.0625), (boundary, boundary_value)],
+        );
+        assert_eq!(segment(&output, 0, 1), [0.125, 0.75, 0.25, 0.0]);
+    }
+
+    #[test]
+    fn a_linear_interpolation_piece_after_a_polynomial_rises_from_its_start_value() {
+        let pivot_codes = [0, 384, 1_023];
+        let mut luma = reshaping_curve(&pivot_codes);
+        push_polynomial_piece(&mut luma, &[0.25, 1.0]);
+        push_linear_interpolation_piece(&mut luma, &[0.25, 0.375]);
+
+        let output = parse_into(
+            &mut ParserContext::default(),
+            &encode(&rpu_with_curve(0, luma)),
+        )
+        .unwrap();
+
+        // The polynomial is 0.25 at its start pivot, so the line runs from 0.5 to 0.875
+        assert_eq!(segment(&output, 0, 0), [0.25, 1.0, 0.0, 0.0]);
+        assert_line_through(
+            segment(&output, 0, 1),
+            [(normalized_pivot(pivot_codes[1]), 0.5), (1.0, 0.875)],
+        );
+    }
+
+    #[test]
+    fn zero_width_linear_interpolation_pieces_keep_their_start_value() {
+        // The middle piece starts and ends at code 512, and the first piece ends on its start value
+        let mut luma = reshaping_curve(&[0, 512, 512, 1_023]);
+        push_linear_interpolation_piece(&mut luma, &[0.125]);
+        push_linear_interpolation_piece(&mut luma, &[0.25]);
+        push_linear_interpolation_piece(&mut luma, &[0.125, 0.5]);
+
+        let output = parse_into(
+            &mut ParserContext::default(),
+            &encode(&rpu_with_curve(0, luma)),
+        )
+        .unwrap();
+
+        assert_line_through(
+            segment(&output, 0, 0),
+            [(0.0, 0.125), (normalized_pivot(512), 0.375)],
+        );
+        assert_eq!(segment(&output, 0, 1), [0.375, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn linear_interpolation_next_to_an_mmr_piece_is_unsupported() {
+        // An MMR piece has no scalar value for a line to end on or rise from
+        let mut chroma = reshaping_curve(&[0, 512, 1_023]);
+        push_linear_interpolation_piece(&mut chroma, &[0.5]);
+        push_mmr_piece(&mut chroma, 0.5, &[[0.0; MAXIMUM_MMR_COEFFICIENT_COUNT]]);
+        let mut chroma_after_mmr = reshaping_curve(&[0, 512, 1_023]);
+        push_mmr_piece(
+            &mut chroma_after_mmr,
+            0.5,
+            &[[0.0; MAXIMUM_MMR_COEFFICIENT_COUNT]],
+        );
+        push_linear_interpolation_piece(&mut chroma_after_mmr, &[0.5, 0.25]);
+
+        for (curve, expected_message) in [
+            (chroma, "linear interpolation before an MMR piece"),
+            (chroma_after_mmr, "linear interpolation after an MMR piece"),
+        ] {
+            let failure = parse_into(
+                &mut ParserContext::default(),
+                &encode(&rpu_with_curve(2, curve)),
+            )
+            .unwrap_err();
+
+            assert_eq!(failure.code, STATUS_UNSUPPORTED_METADATA);
+            assert!(failure.message.contains(expected_message));
+        }
+    }
+
+    #[test]
+    fn float_linear_interpolation_values_are_float32_bits() {
+        let mut luma = reshaping_curve(&[0, 1_023]);
+        push_linear_interpolation_piece(&mut luma, &[0.375, 0.5]);
+        let rpu = with_float_coefficients(rpu_with_curve(0, luma));
+
+        let output = parse_into(&mut ParserContext::default(), &encode(&rpu)).unwrap();
+
+        assert_eq!(
+            header_word(&output, COEFFICIENT_DATA_TYPE_WORD),
+            u32::from(FLOAT_COEFFICIENT_DATA_TYPE)
+        );
+        assert_eq!(segment(&output, 0, 0), [0.375, 0.5, 0.0, 0.0]);
+        // The Profile 8.1 identity polynomials survive the float recoding
+        assert_eq!(segment(&output, 1, 0), [0.0, 1.0, 0.0, 0.0]);
     }
 }

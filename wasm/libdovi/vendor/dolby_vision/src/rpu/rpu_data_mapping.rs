@@ -1,4 +1,4 @@
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, anyhow, bail, ensure};
 use bitvec_helpers::{
     bitstream_io_reader::BsIoSliceReader, bitstream_io_writer::BitstreamIoWriter,
 };
@@ -12,7 +12,7 @@ use crate::rpu::MMR_MAX_COEFFS;
 use super::rpu_data_header::RpuDataHeader;
 use super::rpu_data_nlq::{DoviELType, RpuDataNlq};
 
-use super::{NLQ_NUM_PIVOTS, NUM_COMPONENTS, UnsupportedRpuSyntax};
+use super::{NLQ_NUM_PIVOTS, NUM_COMPONENTS};
 
 /// FFmpeg's bound, AV_DOVI_MAX_PIECES - 1, which also bounds the per-piece allocations
 const MAXIMUM_NUM_PIVOTS_MINUS2: u64 = 7;
@@ -65,17 +65,16 @@ pub struct DoviReshapingCurve {
     pub num_pivots_minus2: u64,
     pub pivots: Vec<u16>,
 
-    // Consistent for a component
-    // Luma (component 0): Polynomial
-    // Chroma (components 1 and 2): MMR
-    pub mapping_idc: DoviMappingMethod,
+    /// One method per piece, as FFmpeg's `mapping_idc[]`, so a component may mix methods.
+    /// Usually luma (component 0) is Polynomial and chroma (components 1 and 2) MMR
+    pub mapping_idc: Vec<DoviMappingMethod>,
 
-    /// DoviMappingMethod::Polynomial
+    /// The DoviMappingMethod::Polynomial pieces, in coded order
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub polynomial: Option<DoviPolynomialCurve>,
 
-    /// DoviMappingMethod::MMR
+    /// The DoviMappingMethod::MMR pieces, in coded order
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub mmr: Option<DoviMMRCurve>,
@@ -86,8 +85,13 @@ pub struct DoviReshapingCurve {
 pub struct DoviPolynomialCurve {
     pub poly_order_minus1: Vec<u64>,
     pub linear_interp_flag: Vec<bool>,
+    /// Empty for a linear interpolation piece, which codes no coefficients
     pub poly_coef_int: Vec<ArrayVec<[i64; 3]>>,
     pub poly_coef: Vec<ArrayVec<[u64; 3]>>,
+    /// For a linear interpolation piece, the predicted values at its start pivot and, for the component's last piece, at its end pivot
+    /// Empty for other pieces
+    pub pred_linear_interp_value_int: Vec<ArrayVec<[u64; 2]>>,
+    pub pred_linear_interp_value: Vec<ArrayVec<[u64; 2]>>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -155,10 +159,11 @@ impl RpuDataMapping {
         for cmp in 0..NUM_COMPONENTS {
             let curve = &mut mapping.curves[cmp];
             let num_pieces = (curve.num_pivots_minus2 + 1) as usize;
+            curve.mapping_idc = Vec::with_capacity(num_pieces);
 
-            for _ in 0..num_pieces {
+            for piece_index in 0..num_pieces {
                 let mapping_idc = DoviMappingMethod::try_from(reader.read_ue()?)?;
-                curve.mapping_idc = mapping_idc;
+                curve.mapping_idc.push(mapping_idc);
 
                 // MAPPING_POLYNOMIAL
                 if mapping_idc == DoviMappingMethod::Polynomial {
@@ -166,7 +171,7 @@ impl RpuDataMapping {
                         .polynomial
                         .get_or_insert_with(|| DoviPolynomialCurve::new(num_pieces));
 
-                    poly_curve.parse(reader, header)?;
+                    poly_curve.parse(reader, header, piece_index + 1 == num_pieces)?;
                 } else if mapping_idc == DoviMappingMethod::MMR {
                     let mmr_curve = curve
                         .mmr
@@ -220,86 +225,97 @@ impl RpuDataMapping {
         for cmp in 0..NUM_COMPONENTS {
             let curve = &self.curves[cmp];
             let num_pieces = (curve.num_pivots_minus2 + 1) as usize;
+            ensure!(
+                curve.mapping_idc.len() == num_pieces,
+                "mapping_idc should hold one method per piece"
+            );
 
-            for i in 0..num_pieces {
-                writer.write_ue(curve.mapping_idc as u64)?;
+            // Each method's curve holds its pieces in coded order
+            let mut poly_piece_count = 0;
+            let mut mmr_piece_count = 0;
 
-                // MAPPING_POLYNOMIAL
-                if let Some(poly_curve) = &curve.polynomial {
-                    writer.write_ue(poly_curve.poly_order_minus1[i])?;
+            for (piece_index, mapping_idc) in curve.mapping_idc.iter().copied().enumerate() {
+                writer.write_ue(mapping_idc as u64)?;
 
-                    let poly_order_minus1 = poly_curve.poly_order_minus1[i];
-                    if poly_order_minus1 == 0 {
-                        writer.write_bit(poly_curve.linear_interp_flag[i])?;
-                    }
+                match mapping_idc {
+                    // MAPPING_POLYNOMIAL
+                    DoviMappingMethod::Polynomial => {
+                        let poly_curve = curve
+                            .polynomial
+                            .as_ref()
+                            .ok_or_else(|| anyhow!("Missing polynomial curve"))?;
+                        let i = poly_piece_count;
+                        poly_piece_count += 1;
 
-                    if poly_order_minus1 == 0 && poly_curve.linear_interp_flag[i] {
-                        unimplemented!("write: Polynomial interpolation: please open an issue");
+                        writer.write_ue(poly_curve.poly_order_minus1[i])?;
 
-                        /*
-                        if header.coefficient_data_type == 0 {
-                            writer.write_ue(
-                                self.pred_linear_interp_value_int[cmp_idx][pivot_idx],
-                            );
+                        let poly_order_minus1 = poly_curve.poly_order_minus1[i];
+                        if poly_order_minus1 == 0 {
+                            writer.write_bit(poly_curve.linear_interp_flag[i])?;
                         }
 
-                        writer.write_n(
-                            &self.pred_linear_interp_value[cmp_idx][pivot_idx].to_be_bytes(),
-                            coefficient_log2_denom_length,
-                        );
+                        if poly_order_minus1 == 0 && poly_curve.linear_interp_flag[i] {
+                            // The last piece also codes the value at its end pivot
+                            let value_count = if piece_index + 1 == num_pieces { 2 } else { 1 };
 
-                        if pivot_idx as u64 == header.num_pivots_minus2[cmp_idx] {
-                            if header.coefficient_data_type == 0 {
-                                writer.write_ue(
-                                    self.pred_linear_interp_value_int[cmp_idx][pivot_idx + 1],
-                                );
+                            for j in 0..value_count {
+                                if header.coefficient_data_type == 0 {
+                                    writer
+                                        .write_ue(poly_curve.pred_linear_interp_value_int[i][j])?;
+                                }
+
+                                writer.write_var(
+                                    coefficient_log2_denom_length,
+                                    poly_curve.pred_linear_interp_value[i][j],
+                                )?;
                             }
+                        } else {
+                            let poly_coef_count = poly_order_minus1 as usize + 1;
 
-                            writer.write_n(
-                                &self.pred_linear_interp_value[cmp_idx][pivot_idx + 1]
-                                    .to_be_bytes(),
-                                coefficient_log2_denom_length,
-                            );
-                        }
-                        */
-                    } else {
-                        let poly_coef_count = poly_order_minus1 as usize + 1;
+                            for j in 0..=poly_coef_count {
+                                if header.coefficient_data_type == 0 {
+                                    writer.write_se(poly_curve.poly_coef_int[i][j])?;
+                                }
 
-                        for j in 0..=poly_coef_count {
-                            if header.coefficient_data_type == 0 {
-                                writer.write_se(poly_curve.poly_coef_int[i][j])?;
+                                writer.write_var(
+                                    coefficient_log2_denom_length,
+                                    poly_curve.poly_coef[i][j],
+                                )?;
                             }
-
-                            writer.write_var(
-                                coefficient_log2_denom_length,
-                                poly_curve.poly_coef[i][j],
-                            )?;
                         }
                     }
-                } else if let Some(mmr_curve) = &curve.mmr {
                     // MAPPING_MMR
-                    writer.write::<2, u8>(mmr_curve.mmr_order_minus1[i])?;
+                    DoviMappingMethod::MMR => {
+                        let mmr_curve = curve
+                            .mmr
+                            .as_ref()
+                            .ok_or_else(|| anyhow!("Missing MMR curve"))?;
+                        let i = mmr_piece_count;
+                        mmr_piece_count += 1;
 
-                    if header.coefficient_data_type == 0 {
-                        writer.write_se(mmr_curve.mmr_constant_int[i])?;
-                    }
+                        writer.write::<2, u8>(mmr_curve.mmr_order_minus1[i])?;
 
-                    writer.write_var(coefficient_log2_denom_length, mmr_curve.mmr_constant[i])?;
+                        if header.coefficient_data_type == 0 {
+                            writer.write_se(mmr_curve.mmr_constant_int[i])?;
+                        }
 
-                    for j in 0..mmr_curve.mmr_order_minus1[i] as usize + 1 {
-                        for k in 0..MMR_MAX_COEFFS {
-                            if header.coefficient_data_type == 0 {
-                                writer.write_se(mmr_curve.mmr_coef_int[i][j][k])?;
+                        writer
+                            .write_var(coefficient_log2_denom_length, mmr_curve.mmr_constant[i])?;
+
+                        for j in 0..mmr_curve.mmr_order_minus1[i] as usize + 1 {
+                            for k in 0..MMR_MAX_COEFFS {
+                                if header.coefficient_data_type == 0 {
+                                    writer.write_se(mmr_curve.mmr_coef_int[i][j][k])?;
+                                }
+
+                                writer.write_var(
+                                    coefficient_log2_denom_length,
+                                    mmr_curve.mmr_coef[i][j][k],
+                                )?;
                             }
-
-                            writer.write_var(
-                                coefficient_log2_denom_length,
-                                mmr_curve.mmr_coef[i][j][k],
-                            )?;
                         }
                     }
-                } else {
-                    bail!("Missing mapping method");
+                    DoviMappingMethod::Invalid => bail!("Missing mapping method"),
                 }
             }
         }
@@ -370,7 +386,8 @@ impl RpuDataMapping {
             curve.pivots.push(0);
             curve.pivots.push(1023);
 
-            curve.mapping_idc = DoviMappingMethod::Polynomial;
+            curve.mapping_idc.clear();
+            curve.mapping_idc.push(DoviMappingMethod::Polynomial);
             curve.mmr = None;
 
             if let Some(poly_curve) = curve.polynomial.as_mut() {
@@ -393,10 +410,17 @@ impl DoviPolynomialCurve {
             linear_interp_flag: Vec::with_capacity(num_pieces),
             poly_coef_int: Vec::with_capacity(num_pieces),
             poly_coef: Vec::with_capacity(num_pieces),
+            pred_linear_interp_value_int: Vec::with_capacity(num_pieces),
+            pred_linear_interp_value: Vec::with_capacity(num_pieces),
         }
     }
 
-    fn parse(&mut self, reader: &mut BsIoSliceReader, header: &RpuDataHeader) -> Result<()> {
+    fn parse(
+        &mut self,
+        reader: &mut BsIoSliceReader,
+        header: &RpuDataHeader,
+        last_piece: bool,
+    ) -> Result<()> {
         let coefficient_log2_denom_length = header.coefficient_log2_denom_length;
 
         let poly_order_minus1 = reader.read_ue()?;
@@ -411,30 +435,24 @@ impl DoviPolynomialCurve {
         };
         self.linear_interp_flag.push(linear_interp_flag);
 
+        let mut poly_coef_int = array_vec!();
+        let mut poly_coef = array_vec!();
+        let mut pred_linear_interp_value_int = array_vec!();
+        let mut pred_linear_interp_value = array_vec!();
+
         if poly_order_minus1 == 0 && linear_interp_flag {
-            // Linear interpolation
-            bail!(UnsupportedRpuSyntax::LinearInterpolation);
+            // Linear interpolation codes the value at the piece's start pivot, and the last piece also the value at its end pivot (ETSI GS CCM 001)
+            let value_count = if last_piece { 2 } else { 1 };
 
-            /*if header.coefficient_data_type == 0 {
-                self.pred_linear_interp_value_int[i] = reader.read_ue()?;
-            }
-
-            self.pred_linear_interp_value[i] =
-                reader.get_n(coefficient_log2_denom_length)?;
-
-            if pivot_idx as u64 == header.num_pivots_minus2[cmp] {
+            for _j in 0..value_count {
                 if header.coefficient_data_type == 0 {
-                    self.pred_linear_interp_value_int[cmp][pivot_idx + 1] =
-                        reader.read_ue()?;
+                    pred_linear_interp_value_int.push(reader.read_ue()?);
                 }
 
-                self.pred_linear_interp_value[cmp][pivot_idx + 1] =
-                    reader.get_n(coefficient_log2_denom_length)?;
-            }*/
+                pred_linear_interp_value.push(reader.read_var(coefficient_log2_denom_length)?);
+            }
         } else {
             let poly_coef_count = poly_order_minus1 as usize + 2;
-            let mut poly_coef_int = array_vec!();
-            let mut poly_coef = array_vec!();
 
             for _j in 0..poly_coef_count {
                 if header.coefficient_data_type == 0 {
@@ -443,10 +461,13 @@ impl DoviPolynomialCurve {
 
                 poly_coef.push(reader.read_var(coefficient_log2_denom_length)?);
             }
-
-            self.poly_coef_int.push(poly_coef_int);
-            self.poly_coef.push(poly_coef);
         }
+
+        self.poly_coef_int.push(poly_coef_int);
+        self.poly_coef.push(poly_coef);
+        self.pred_linear_interp_value_int
+            .push(pred_linear_interp_value_int);
+        self.pred_linear_interp_value.push(pred_linear_interp_value);
 
         Ok(())
     }
@@ -470,6 +491,12 @@ impl DoviPolynomialCurve {
 
         self.poly_coef.clear();
         self.poly_coef.push(array_vec!(0, 0));
+
+        self.pred_linear_interp_value_int.clear();
+        self.pred_linear_interp_value_int.push(array_vec!());
+
+        self.pred_linear_interp_value.clear();
+        self.pred_linear_interp_value.push(array_vec!());
     }
 }
 

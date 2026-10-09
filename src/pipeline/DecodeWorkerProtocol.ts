@@ -1,3 +1,5 @@
+import type { VideoCodec } from 'mediabunny';
+
 import type { Microseconds } from '../MediaTime';
 import {
     isTransferableDolbyVisionEncodedFrameMetadata,
@@ -12,10 +14,9 @@ import {
     MAXIMUM_NATIVE_AUDIO_SEGMENT_DURATION_MICROSECONDS
 } from '../audio/native/NativeMediaAudioLimits';
 import {
-    hasRawVideoFrameResourceBudget,
-    MAXIMUM_COMPOUND_RAW_FRAME_COPY_BYTE_LENGTH,
+    hasRawVideoFrameCopyLayout,
     MAXIMUM_OUTSTANDING_RAW_FRAME_TRANSFER_COUNT,
-    MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH,
+    RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT,
     RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT,
     RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
     RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT,
@@ -75,41 +76,61 @@ export type CustomDecodeWorkerProgressPhase =
     | 'video-packet-started';
 
 /**
- * Matches a qualified route to the acceleration preference its capability probes measured. Native routes
- * that present the decoder's opaque hardware output prefer hardware; every other native route qualifies
- * with no preference, so a codec without a hardware decoder (VP8 in Chromium on Windows) decodes in software.
+ * Returns whether a codec's raw planes need its software decoder.
+ * Chromium's hardware AV1 and VP9 decoders return opaque surfaces whose planes copyTo cannot expose, while dav1d and libvpx return copyable planes.
+ * Chromium has no software HEVC decoder, so HEVC keeps its hardware decoder.
+ */
+function requiresSoftwareRawPlaneDecode(videoCodec: VideoCodec | null): boolean {
+    switch (videoCodec) {
+        case 'av1':
+        case 'vp9':
+            return true;
+        default:
+            return false;
+    }
+}
+
+/**
+ * Matches a qualified route to the acceleration preference its capability probes measured.
+ * Native routes that present the decoder's opaque hardware output prefer hardware.
+ * Raw AV1 and VP9 planes prefer software.
+ * Every other native route qualifies with no preference, so a codec without a hardware decoder decodes in software, as VP8 does in Chromium on Windows.
  */
 export function getCustomDecodeHardwareAcceleration(
     videoOutputMode: CustomDecodeVideoOutputMode,
     videoDecoderBackend: CustomDecodeVideoDecoderBackend = 'native',
-    hardwareOutputRequired = false
+    hardwareOutputRequired = false,
+    videoCodec: VideoCodec | null = null
 ): HardwareAcceleration {
     if (videoDecoderBackend !== 'native') {
         return 'prefer-software';
     }
     switch (videoOutputMode) {
         case 'raw-planes':
-            return 'no-preference';
+            return requiresSoftwareRawPlaneDecode(videoCodec) ? 'prefer-software' : 'no-preference';
         case 'video-frame':
             return hardwareOutputRequired ? 'prefer-hardware' : 'no-preference';
     }
 }
 
 /**
- * Returns the acceleration preference of a start request's video route. On a native VideoFrame route,
- * neutralized color marks the external HDR route and the native Dolby Vision base, and a Dolby Vision
- * profile marks external Profile 5; both present the decoder's opaque hardware output.
+ * Returns the acceleration preference of a start request's video route on its track's codec.
+ * The codec is null for a bundled decoder outside WebCodecs.
+ * On a native VideoFrame route, neutralized color marks the external HDR route and the native Dolby Vision base, and a Dolby Vision profile marks external Profile 5.
+ * Both present the decoder's opaque hardware output.
  */
 export function getCustomDecodeRequestHardwareAcceleration(
     request: Pick<
         DecodeWorkerStartRequest,
         'dolbyVisionProfile' | 'neutralizeHDRColorMetadata' | 'videoDecoderBackend' | 'videoOutputMode'
-    >
+    >,
+    videoCodec: VideoCodec | null
 ): HardwareAcceleration {
     return getCustomDecodeHardwareAcceleration(
         request.videoOutputMode,
         request.videoDecoderBackend,
-        request.neutralizeHDRColorMetadata || request.dolbyVisionProfile !== null
+        request.neutralizeHDRColorMetadata || request.dolbyVisionProfile !== null,
+        videoCodec
     );
 }
 
@@ -132,6 +153,8 @@ export type DecodeWorkerStartRequest = {
     audioTrackIndex: number | null
     /** Defaults to stereo and is valid only for decoded PCM audio. */
     decodedAudioOutputChannelCount?: CustomAudioOutputChannelCount
+    /** Asks a dual-layer route to leave its EL undecoded, because no qualified decoder decodes it. */
+    discardDolbyVisionEnhancementLayer?: boolean
     dolbyVisionProfile: CustomDecodeDolbyVisionProfile
     dolbyVisionRPUParserWASMURL: string
     frameCredits: number
@@ -791,13 +814,12 @@ function getTransferableRawVideoFrameEndOffset(
     }
     const frameByteLength = expectedByteOffset - expectedStartOffset;
     return frameByteLength > 0
-        && frameByteLength <= MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH
         && expectedByteOffset <= value.data.byteLength ?
         expectedByteOffset :
         null;
 }
 
-function hasValidRawVideoResourceBudget(value: Record<string, unknown>): boolean {
+function hasValidRawVideoCopyLayout(value: Record<string, unknown>): boolean {
     if (value.videoOutputMode !== 'raw-planes') {
         return true;
     }
@@ -808,7 +830,7 @@ function hasValidRawVideoResourceBudget(value: Record<string, unknown>): boolean
     ) {
         return false;
     }
-    return hasRawVideoFrameResourceBudget({
+    return hasRawVideoFrameCopyLayout({
         codedHeight: Number(value.maximumCodedHeight),
         codedWidth: Number(value.maximumCodedWidth),
         displayHeight: Number(value.maximumCodedHeight),
@@ -827,6 +849,10 @@ export function getDolbyVisionRawFrameLayerCount(
         RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT;
 }
 
+/**
+ * Validates an atomic Dolby Vision BL and EL pair in one buffer.
+ * The BL takes the route's raw format, and the EL is always 10-bit 4:2:0 whatever the format of its BL.
+ */
 function isTransferableRawVideoFramePair(
     baseFrameValue: unknown,
     enhancementFrameValue: unknown
@@ -836,10 +862,7 @@ function isTransferableRawVideoFramePair(
         return false;
     }
     const baseFrame = baseFrameValue as TransferableRawVideoFrame;
-    if (
-        baseFrame.data.byteLength <= baseFrameEndOffset
-        || baseFrame.data.byteLength > MAXIMUM_COMPOUND_RAW_FRAME_COPY_BYTE_LENGTH
-    ) {
+    if (baseFrame.data.byteLength <= baseFrameEndOffset) {
         return false;
     }
     if (enhancementFrameValue === null) {
@@ -859,7 +882,7 @@ function isTransferableRawVideoFramePair(
     const enhancementFrame = enhancementFrameValue as TransferableRawVideoFrame;
     return enhancementFrame.data === baseFrame.data
         && enhancementFrameEndOffset === baseFrame.data.byteLength
-        && enhancementFrame.format === baseFrame.format
+        && enhancementFrame.format === RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT
         && Math.abs(
             enhancementFrame.timestampMicroseconds - baseFrame.timestampMicroseconds
         ) <= 1;
@@ -955,6 +978,14 @@ function hasValidOptionalAudioDownmix(value: Record<string, unknown>): boolean {
             || isAudioDownmixSettings(value.audioDownmixSettings));
 }
 
+/** Only a dual-layer route has an EL to discard. */
+function hasValidDiscardedEnhancementLayer(value: Record<string, unknown>): boolean {
+    return isOptionalBoolean(value.discardDolbyVisionEnhancementLayer)
+        && (value.discardDolbyVisionEnhancementLayer !== true
+            || (isDolbyVisionProfile(value.dolbyVisionProfile)
+                && isDolbyVisionDualLayerProfile(value.dolbyVisionProfile)));
+}
+
 function isAudioPullRequest(value: Record<string, unknown>): boolean {
     return isAudioSampleCredit(value.audioSampleCredits, false)
         && hasValidOptionalAudioEpoch(value);
@@ -1012,6 +1043,7 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                 && value.url.length > 0
                 && isOptionalBoolean(value.reportContainerDuration)
                 && isDolbyVisionProfile(value.dolbyVisionProfile)
+                && hasValidDiscardedEnhancementLayer(value)
                 && isCodecAssetURL(value.dolbyVisionRPUParserWASMURL)
                 && isMicroseconds(value.startTimeMicroseconds)
                 && isTrackIndex(value.videoTrackIndex)
@@ -1028,7 +1060,7 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                         && value.dolbyVisionProfile === null) :
                     value.nativeHDRTransfer === null)
                 && hasValidVideoOutput
-                && hasValidRawVideoResourceBudget(value)
+                && hasValidRawVideoCopyLayout(value)
                 && hasValidOpenJPEGRoute
                 && hasValidMPEG2VC1Route
                 && isFrameCredit(value.frameCredits)

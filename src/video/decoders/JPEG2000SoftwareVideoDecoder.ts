@@ -7,11 +7,6 @@ import { requireMicroseconds } from '../../TimeMath';
 
 const JPEG2000_DECODER_GLUE_ASSET: EngineAssetPath = 'openjpeg/openjpeg-decode.js';
 const JPEG2000_DECODER_WASM_ASSET: EngineAssetPath = 'openjpeg/openjpeg-decode.wasm';
-const JPEG2000_MAXIMUM_CODED_HEIGHT = 2_160;
-const JPEG2000_MAXIMUM_CODED_WIDTH = 3_840;
-const JPEG2000_MAXIMUM_COMPRESSED_PACKET_BYTE_LENGTH = 64 * 1024 * 1024;
-const JPEG2000_MAXIMUM_DECODED_RGBA_BYTE_LENGTH =
-    JPEG2000_MAXIMUM_CODED_WIDTH * JPEG2000_MAXIMUM_CODED_HEIGHT * 4;
 const OPENJPEG_COLOR_SPACE_SRGB = 1;
 const OPENJPEG_COLOR_SPACE_GRAY = 2;
 
@@ -79,20 +74,12 @@ function isPositiveSafeInteger(value: number): boolean {
 }
 
 function checkedRGBAByteLength(width: number, height: number): number {
-    if (
-        !isPositiveSafeInteger(width)
-        || !isPositiveSafeInteger(height)
-        || width > JPEG2000_MAXIMUM_CODED_WIDTH
-        || height > JPEG2000_MAXIMUM_CODED_HEIGHT
-    ) {
-        throw new TypeError('The JPEG 2000 decoded dimensions are unsupported');
+    if (!isPositiveSafeInteger(width) || !isPositiveSafeInteger(height)) {
+        throw new TypeError('The JPEG 2000 decoded dimensions are invalid');
     }
     const byteLength = width * height * 4;
-    if (
-        !Number.isSafeInteger(byteLength)
-        || byteLength > JPEG2000_MAXIMUM_DECODED_RGBA_BYTE_LENGTH
-    ) {
-        throw new TypeError('The JPEG 2000 decoded frame exceeds its allocation bound');
+    if (!Number.isSafeInteger(byteLength)) {
+        throw new TypeError('The JPEG 2000 decoded frame size is not representable');
     }
     return byteLength;
 }
@@ -205,7 +192,7 @@ export function getJPEG2000RGBAFingerprint(rgba: Uint8Array): number {
     return fingerprint;
 }
 
-/** Owns one bounded OpenJPEG decoder and converts qualified 8-bit sRGB output to VideoFrame. */
+/** Owns one OpenJPEG decoder and converts qualified 8-bit sRGB output to VideoFrame. */
 export default class JPEG2000SoftwareVideoDecoder {
     private closed = false;
     private decoder: OpenJPEGDecoder | null = null;
@@ -241,11 +228,8 @@ export default class JPEG2000SoftwareVideoDecoder {
         expectedGeometry: RawVideoFrameGeometry
     ): JPEG2000DecodedImage {
         const decoder = this.requireDecoder();
-        if (
-            packetData.byteLength === 0
-            || packetData.byteLength > JPEG2000_MAXIMUM_COMPRESSED_PACKET_BYTE_LENGTH
-        ) {
-            throw new TypeError('The JPEG 2000 packet size is unsupported');
+        if (packetData.byteLength === 0) {
+            throw new TypeError('The JPEG 2000 packet is empty');
         }
         const encodedBuffer = decoder.getEncodedBuffer(packetData.byteLength);
         if (encodedBuffer.byteLength !== packetData.byteLength) {

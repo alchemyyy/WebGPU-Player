@@ -117,6 +117,7 @@ FFMPEG_AUDIO_LDFLAGS := -Oz -flto
 FFMPEG_AUDIO_LINK_TAIL := -msimd128 -flto -Oz -Wl,--no-entry
 
 # Progressive MPEG-2 Video and VC-1, as a classic worker module with a separate WASM file
+# Its heap may grow to the 4 GiB a wasm32 module addresses, so no picture size is refused for memory
 FFMPEG_MPEG2_VC1_COMPONENTS := --disable-all --disable-everything --disable-gpl \
 	--disable-version3 --disable-nonfree --enable-avcodec --enable-decoder=mpeg2video \
 	--enable-decoder=vc1 --disable-autodetect --disable-pthreads \
@@ -139,7 +140,7 @@ FFMPEG_MPEG2_VC1_EXPORTS := _mpeg2_vc1_decoder_create _mpeg2_vc1_decoder_get_ext
 	_mpeg2_vc1_decoder_get_duration _mpeg2_vc1_decoder_error_again \
 	_mpeg2_vc1_decoder_error_eof _mpeg2_vc1_decoder_close
 FFMPEG_MPEG2_VC1_LINK_FLAGS := -O3 -flto -sWASM=1 -sWASM_BIGINT=1 -sFILESYSTEM=0 \
-	-sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=536870912 \
+	-sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=4294967296 \
 	-sSTACK_SIZE=5242880 -sMODULARIZE=1 -sEXPORT_NAME=MPEG2VC1DecoderModule \
 	-sENVIRONMENT=worker,node -sASSERTIONS=0 -sMALLOC=emmalloc \
 	-sEXPORTED_FUNCTIONS=$(call comma_list,$(FFMPEG_MPEG2_VC1_EXPORTS)) \

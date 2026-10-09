@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9141c141.js";
+            window.path_to_searchindex_js = "searchindex-24f8931a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -204,7 +204,7 @@ Authorization shares it.</li>
 <li><code>ColorMetadata.ts</code>: the input color schema, validation, and SDR, PQ, and HLG factories.</li>
 <li><code>ColorPipeline.ts</code>: the CPU reference of range, matrix, transfer, gamut, tone mapping, and display controls, and the luminance, YUV matrix, gamut, and IPT tables for BT.709, BT.2020, and BT.601 that the shaders share.</li>
 <li><code>ColorPipelineShader.ts</code>: WGSL generators for raw YUV, external HDR code recovery, and external and raw Dolby Vision (FEL included), plus the shared <code>processColor</code>.</li>
-<li><code>DolbyVisionColorTransform.ts</code>: RPU reshaping (polynomial and MMR), the FEL NLQ residual, and reconstruction to BT.2020 PQ, as a CPU reference and as WGSL.</li>
+<li><code>DolbyVisionColorTransform.ts</code>: RPU reshaping (polynomial and MMR, chosen per segment), the FEL NLQ residual, and reconstruction to BT.2020 PQ, as a CPU reference and as WGSL.</li>
 </ul>
 <h2 id="capability"><a class="header" href="#capability">capability/</a></h2>
 <ul>
@@ -260,12 +260,22 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 <p>All worker code unless marked.</p>
 <ul>
 <li><code>DecodedVideoGeometry.ts</code> [main and worker]: the first-decoded-size lock.</li>
-<li><code>RawVideoFrameCopy.ts</code>: copies a <code>VideoFrame</code>, or a software decoder’s sample of CPU planes without one, into aligned plane buffers (NV12, and I420 to I444P12; base and enhancement layers), up to 128 MiB per transfer.</li>
+<li><code>RawVideoFrameCopy.ts</code>: copies a <code>VideoFrame</code>, or a software decoder’s sample of CPU planes without one, into aligned plane buffers (NV12, and I420 to I444P12), up to 128 MiB per transfer.
+A Dolby Vision pair is a BL in any format from I420 to I444P12 and an I420P10 EL, in one compound buffer.</li>
 <li><code>RawFrameBufferPool.ts</code>: reusable raw buffers, bounded by the raw credits (2).</li>
 <li><code>MatroskaVFWVideoConfiguration.ts</code>: extracts the VC-1 <code>WVC1</code> extradata.</li>
 </ul>
+<h3 id="videoav1"><a class="header" href="#videoav1">video/av1/</a></h3>
+<ul>
+<li><code>AV1OBUParser.ts</code>: the OBU walk of one temporal unit (headers, extension headers, leb128 sizes, a last OBU without a size field), frame header detection, and ITU-T T.35 metadata messages.</li>
+<li><code>AV1SequenceHeaderParser.ts</code>, <code>AV1CodecParameterString.ts</code>: the sequence header, parsed as the AV1 specification defines it, and the <code>av01</code> codec string it declares.</li>
+<li><code>AV1DecoderConfiguration.ts</code>: replaces the codec string Mediabunny derives for an AV1 track with the one its first packet’s sequence header declares.</li>
+</ul>
 <h3 id="videodecoders"><a class="header" href="#videodecoders">video/decoders/</a></h3>
 <ul>
+<li><code>OwnedVideoDecodeStream.ts</code>: the codec-neutral state of one owned decode attempt: decoded outputs matched with their packets’ metadata, the pre-start rule, BL and EL pairing, frame credits, and the packet pump.</li>
+<li><code>OwnedNativeVideoDecoder.ts</code>: an owned WebCodecs decoder for packets that decode unchanged, used for AV1.</li>
+<li><code>OwnedAV1VideoStream.ts</code>: one attempt of the owned AV1 Dolby Vision path.</li>
 <li><code>OwnedNativeHEVCVideoDecoder.ts</code>: the engine’s own WebCodecs HEVC decoder: NAL order fix, leading RASL drop, optional SPS neutralization.</li>
 <li><code>HEVCSoftwareVideoDecoder.ts</code>: the <code>@hevcjs/core</code> decoder (I420 and I420P10) with a shutdown registry.</li>
 <li><code>HEVCDecoderBackend.ts</code>: the low-level <code>@hevcjs/core</code> WASM binding.</li>
@@ -276,9 +286,10 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 <ul>
 <li><code>DolbyVisionProfiles.ts</code> [main and worker]: the dual-layer profile set (P4, P7).</li>
 <li><code>DolbyVisionHEVCSplitter.ts</code>: NAL parsing; the BL, RPU (62), and EL (63) split; RASL handling; in-band SPS neutralization; drops NAL units of layers above 0, the MV-HEVC second view.</li>
-<li><code>DolbyVisionEncodedMetadata.ts</code>, <code>DolbyVisionEncodedMetadataProtocol.ts</code>: per-packet RPU parsing, PTS-keyed metadata, and the transferable schema.</li>
+<li><code>DolbyVisionAV1Splitter.ts</code>: removes the Dolby Vision T.35 metadata OBUs from an AV1 temporal unit and returns their messages; other metadata, HDR10+ included, stays.</li>
+<li><code>DolbyVisionEncodedMetadata.ts</code>, <code>DolbyVisionEncodedMetadataProtocol.ts</code>: per-packet RPU parsing for HEVC and per-temporal-unit parsing for AV1, over one PTS-keyed window, and the transferable schema.</li>
 <li><code>DolbyVisionEncodedPacketPairer.ts</code>, <code>DolbyVisionFramePairQueue.ts</code>: BL and EL packet and frame pairing (1 us tolerance).</li>
-<li><code>DolbyVisionRPUParser.ts</code>, <code>DolbyVisionRPUParserSession.ts</code>, <code>DolbyVisionRPUDataLayout.ts</code>: the libdovi WASM parser, its per-run session, and the packed 3232-byte snapshot layout.</li>
+<li><code>DolbyVisionRPUParser.ts</code>, <code>DolbyVisionRPUParserSession.ts</code>, <code>DolbyVisionRPUDataLayout.ts</code>: the libdovi WASM parser with its HEVC and AV1 T.35 entry points, its per-run session, and the packed 3232-byte snapshot layout (schema 2: a mapping method per segment).</li>
 <li><code>ISOBaseMediaDolbyVisionSampleEntry.ts</code>: gives Mediabunny’s unmapped <code>dvh1</code>, <code>dvhe</code>, <code>dva1</code>, <code>dvav</code>, and <code>dav1</code> tracks their wrapped codec.</li>
 <li><code>MatroskaDolbyVisionHVCE.ts</code>, <code>ISOBaseMediaDolbyVisionConfiguration.ts</code>, <code>MPEGTransportStreamDolbyVisionConfiguration.ts</code>: find a P4 or P7 EL configuration in Matroska; in MP4, as a separate EL track or as <code>hvcE</code> beside the BL <code>hvcC</code> of one interleaved track; or in MPEG-TS and M2TS (any descriptor version).</li>
 <li><code>DolbyVisionGeometry.ts</code> [main and worker]: the P4 and P7 EL coded size (half the BL when the BL is wider than 1920).</li>
@@ -297,7 +308,7 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 <h2 id="audio"><a class="header" href="#audio">audio/</a></h2>
 <ul>
 <li><code>CustomAudioCodec.ts</code>: the WebCodecs, Mediabunny PCM, and bundled codec lists.</li>
-<li><code>CustomAudioSampleRate.ts</code>: the 3000 to 192000 Hz integer contract.</li>
+<li><code>CustomAudioSampleRate.ts</code>: the sample rate contract, any positive integer.</li>
 <li><code>CustomCompressedAudioRoute.ts</code>: the E-AC-3, DTS, and TrueHD route tables and predicates, with their Jellyfin ChannelLayout requirements.</li>
 <li><code>CustomAudioOutputPolicy.ts</code>: input channels per codec, the 3.0 layout requirement for decoders without a speaker mask, and the 48 kHz 2, 6, and 8-channel output contract with its 2 s ring.</li>
 <li><code>CustomAudioTrackMetadata.ts</code> [worker]: the Matroska and ISO BMFF DTS and TrueHD tracks the bundled decoders own, declared-rate recovery for their sample entries, and the decoded audio timestamp tolerance.</li>
@@ -340,13 +351,14 @@ E-AC-3, DTS, and TrueHD report their channel layout, and the FFmpeg wrappers sta
 <ul>
 <li><code>RawHDRPresentationAuthorization.ts</code>: raw route keys, readback through the production raw shader, and the per-device registry.</li>
 <li><code>ExternalHDRPresentationAuthorization.ts</code>: external PQ and HLG route keys, checked with the neutralized Main 10 vector.</li>
-<li><code>DolbyVisionPresentationAuthorization.ts</code>, <code>ExternalDolbyVisionPresentationAuthorization.ts</code>: raw Dolby Vision keys (single-layer per raw format, the P4 and P7 bases, the P4 and P7 FEL) and the external P5 key, checked with synthetic RPU vectors.</li>
+<li><code>DolbyVisionPresentationAuthorization.ts</code>, <code>ExternalDolbyVisionPresentationAuthorization.ts</code>: raw Dolby Vision keys (per raw format: single-layer, the P4 and P7 bases, and the P4 and P7 FEL) and the external P5 key, checked with synthetic RPU vectors.</li>
 <li><code>GPUAuthorizationDeadline.ts</code>: the shared 5 s timeout, cancelled on device loss.</li>
 <li><code>GPUCanvasReadback.ts</code>: bounded GPU canvas pixel readback (5 s).</li>
 </ul>
 <h2 id="outside-src"><a class="header" href="#outside-src">Outside src/</a></h2>
 <ul>
 <li><code>test/helpers/enginePaths.ts</code>: the engine root and the <code>node_modules</code> location, independent of the test runner’s working directory, and the folders from <code>tools/constants.json</code>.</li>
+<li><code>test/helpers/dolbyVisionAV1ITUTT35Payload.ts</code>, <code>test/helpers/dolbyVisionMixedRPUVector.ts</code>: wrap an HEVC RPU in the AV1 EMDF T.35 container, and build RPUs with mixed and linear pieces.</li>
 <li><code>wasm/</code>: the decoder sources and build.
 See <a href="decoders.html">WebAssembly decoders</a>.</li>
 <li><code>vendor/</code>: the FFmpeg and dcadec submodules (<code>update = none</code>), which <code>make -C wasm sources</code> fetches.</li>
@@ -368,6 +380,7 @@ Their hand-written declarations are <code>wasm/&lt;kit&gt;/&lt;kit&gt;.d.mts</co
 <li><code>dts/DTSExactCapabilityVectors.ts</code>, <code>truehd/TrueHDExactCapabilityVectors.ts</code>: access units and expected outputs, which <code>capability/exact/</code> imports as <code>#codec_vector_assets/*</code>.
 <code>truehd/</code> also holds the synthetic TrueHD and MLP streams the module embeds.</li>
 <li><code>hevc-range-extension/</code>, <code>jpeg2000/</code>, <code>mpeg2/</code>: qualification streams served at runtime from <code>bin/libraries/</code>.</li>
+<li><code>dolby-vision-av1/</code>: the Profile 10 test vectors and their <code>expectations.json</code>.</li>
 <li><code>downmix-reference/</code>: the deterministic 7.1-to-stereo reference.</li>
 </ul>
 </li>

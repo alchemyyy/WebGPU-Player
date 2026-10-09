@@ -28,8 +28,6 @@ pub enum UnsupportedRpuSyntax {
     RpuFormat(u16),
     /// Display metadata compression methods 2 through 7
     DmCompression(u8),
-    /// Polynomial linear interpolation, whose coefficient layout is undocumented
-    LinearInterpolation,
 }
 
 impl std::fmt::Display for UnsupportedRpuSyntax {
@@ -43,9 +41,6 @@ impl std::fmt::Display for UnsupportedRpuSyntax {
             }
             UnsupportedRpuSyntax::DmCompression(method) => {
                 write!(f, "DM metadata compression method {method} is unsupported")
-            }
-            UnsupportedRpuSyntax::LinearInterpolation => {
-                write!(f, "Polynomial linear interpolation is unsupported")
             }
         }
     }

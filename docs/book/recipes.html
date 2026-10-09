@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9141c141.js";
+            window.path_to_searchindex_js = "searchindex-24f8931a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-130df29e.js"></script>
@@ -207,7 +207,7 @@ The asset build serves every vector in that folder, and the <code>EngineAssets</
 Container pairing stays only in <code>src/capability/CustomContainerCodecSupport.ts</code>.
 Add no resolution, level, frame rate, or bitrate gate, and no decoder pair blacklist.</li>
 <li>Tests.
-Add the row, its expected route, and its fallbacks to <code>jellyfin-webgpu-client.tests/custom/HEVCDirectPlaySupportMatrix.test.ts</code> (host).</li>
+Add the row, its expected route, and its fallbacks to <code>jellyfin-webgpu-client.tests/custom/HEVCDirectPlaySupportMatrix.test.ts</code> or <code>AV1DirectPlaySupportMatrix.test.ts</code> beside it (host).</li>
 <li>Update <a href="codec-support.html">HEVC and Dolby Vision support</a>, and <a href="negotiation.html">Negotiation and routes</a> if the route catalog changed.</li>
 </ol>
 <p>Check: the engine checks and the host checks from <a href="jellyfin-host.html#build-and-check">The Jellyfin host</a>.</p>
@@ -223,7 +223,8 @@ A change that is not reproducible shows up here.</li>
 <ol>
 <li>Edit <code>wasm/libdovi/src/lib.rs</code>, or the vendored crate in <code>wasm/libdovi/vendor/dolby_vision/</code>.</li>
 <li>For any change to the vendored crate, add an entry to its <code>PATCHES.md</code> naming the file, the change, and the FFmpeg behavior it follows.</li>
-<li>If the packed snapshot changes, update <code>src/video/dolby-vision/DolbyVisionRPUDataLayout.ts</code>, the decoder in <code>DolbyVisionRPUParser.ts</code>, and its revision prefix together.</li>
+<li>If the packed snapshot changes, update <code>src/video/dolby-vision/DolbyVisionRPUDataLayout.ts</code>, the decoder in <code>DolbyVisionRPUParser.ts</code>, the reshaping in <code>src/color/DolbyVisionColorTransform.ts</code>, and the schema version in <code>lib.rs</code> and <code>DolbyVisionRPUParser.ts</code> together.
+The revision prefix names the vendored dovi_tool commit and changes only when the copy moves to another upstream revision.</li>
 <li>From <code>wasm/libdovi/</code>, run <code>cargo test --locked</code> and <code>cargo clippy --locked --all-targets</code>.</li>
 <li>Run <code>make -C wasm libdovi</code>, then <code>make -C wasm check KITS=libdovi</code>.</li>
 <li>Run <code>npm test</code>.

@@ -1,5 +1,11 @@
 // @vitest-environment node
 
+import {
+    createMixedDolbyVisionRPUVector,
+    MIXED_COMPONENT_INDEX,
+    MIXED_COMPONENT_PIVOTS,
+    MIXED_COMPONENT_POLYNOMIAL
+} from '../helpers/dolbyVisionMixedRPUVector';
 import { TEST_VECTORS_DIRECTORY, WASM_OUTPUT_DIRECTORY } from '../helpers/enginePaths';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -211,6 +217,30 @@ describe('Dolby Vision CPU color reconstruction', () => {
         )[1]).toBeCloseTo(0.4, REFERENCE_DECIMAL_PRECISION);
     });
 
+    it('evaluates each segment of a mixed component by its own method', () => {
+        const mixedPackedData = createMixedDolbyVisionRPUVector();
+        const mmrPackedData = createDolbyVisionAuthorizationRPUVector();
+        const middlePivot = MIXED_COMPONENT_PIVOTS[1];
+        const mmrSignal: ColorTriplet = [ 0.2, middlePivot / 2, 0.4 ];
+        const polynomialSignal: ColorTriplet = [ 0.2, (middlePivot + 1) / 2, 0.4 ];
+        const polynomialInput = polynomialSignal[MIXED_COMPONENT_INDEX];
+
+        // Below the middle pivot the component keeps the vector's MMR piece
+        expect(reshapeDolbyVisionSignal(mmrSignal, mixedPackedData)).toEqual(
+            reshapeDolbyVisionSignal(mmrSignal, mmrPackedData)
+        );
+        // From it on the polynomial piece applies, while the other components are unchanged
+        const reshapedSignal = reshapeDolbyVisionSignal(polynomialSignal, mixedPackedData);
+        expect(reshapedSignal[MIXED_COMPONENT_INDEX]).toBeCloseTo(
+            MIXED_COMPONENT_POLYNOMIAL[0]
+                + (MIXED_COMPONENT_POLYNOMIAL[1] * polynomialInput)
+                + (MIXED_COMPONENT_POLYNOMIAL[2] * polynomialInput * polynomialInput),
+            REFERENCE_DECIMAL_PRECISION
+        );
+        const unmixedSignal = reshapeDolbyVisionSignal(polynomialSignal, mmrPackedData);
+        expect([ reshapedSignal[0], reshapedSignal[2] ]).toEqual([ unmixedSignal[0], unmixedSignal[2] ]);
+    });
+
     it('composes Profile 7 FEL LINEAR_DZ residuals after BL reshape', () => {
         const packedRPUData = createDolbyVisionAuthorizationRPUVector(7, 'fel');
         const baseSignal: ColorTriplet = [ 0.2, 0.4, 0.7 ];
@@ -277,6 +307,26 @@ describe('createDolbyVisionColorTransformWGSL', () => {
         expect(reconstruction.indexOf('linearBT2020')).toBeLessThan(
             reconstruction.indexOf('applyDolbyVisionPQOETF')
         );
+    });
+
+    it('selects each segment method from that segment, as the CPU reference does', () => {
+        const shader = createDolbyVisionColorTransformWGSL(5);
+        const reshape = shader.slice(
+            shader.indexOf('fn reshapeDolbyVisionComponent'),
+            shader.indexOf('fn applyDolbyVisionPQEOTF')
+        );
+        const segmentMethodTest = 'if (loadDolbyVisionFloat(segmentWordOffset + 3u) > 0.0) {';
+
+        expect(reshape).toContain(segmentMethodTest);
+        expect(reshape.indexOf(segmentMethodTest)).toBeLessThan(
+            reshape.indexOf('evaluateDolbyVisionMMR(')
+        );
+        expect(reshape.indexOf('evaluateDolbyVisionMMR(')).toBeLessThan(
+            reshape.indexOf('quadraticCoefficient * componentSignal')
+        );
+        // The component flags do not select one method for every segment
+        expect(reshape).not.toContain('componentWordOffset + 2u');
+        expect(shader).toContain('u32(loadDolbyVisionFloat(segmentWordOffset + 3u))');
     });
 
     it('rejects invalid storage bindings', () => {

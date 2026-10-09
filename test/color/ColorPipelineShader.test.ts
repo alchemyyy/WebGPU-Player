@@ -594,6 +594,93 @@ describe('createRawDolbyVisionProfile4ColorPipelineWGSL', () => {
     });
 });
 
+describe('dual-layer Dolby Vision over every BL format', () => {
+    const leftSitedChromaCoordinate =
+        'textureCoordinate + vec2f(0.5 / f32(textureDimensions(lumaTexture).x), 0.0)';
+    const dualLayerGenerators = [
+        [ 'Profile 4', createRawDolbyVisionProfile4ColorPipelineWGSL, false, 'sdr' ],
+        [ 'Profile 4 FEL', createRawDolbyVisionProfile4FELColorPipelineWGSL, true, 'sdr' ],
+        [ 'Profile 7', createRawDolbyVisionProfile7ColorPipelineWGSL, false, 'hdr10' ],
+        [ 'Profile 7 FEL', createRawDolbyVisionProfile7FELColorPipelineWGSL, true, 'hdr10' ]
+    ] as const;
+
+    describe.each([
+        'I420',
+        'I420P10',
+        'I420P12',
+        'I422',
+        'I422P10',
+        'I422P12',
+        'I444',
+        'I444P10',
+        'I444P12'
+    ] as const)('over %s BL planes', format => {
+        it.each(dualLayerGenerators)(
+            'generates the %s shader with the base at the format depth and the EL as I420P10',
+            (_label, createShader, reconstructsFEL, baseLayerFallback) => {
+                const shader = createShader(createHDRToSDRRenderSettings(), format);
+                const fragmentFunction = shader.slice(shader.indexOf('@fragment'));
+                const codeScale = 2 ** (getRawTestBitDepth(format) - 8);
+                const chromaCoordinate = format.startsWith('I444') ?
+                    'textureCoordinate' :
+                    leftSitedChromaCoordinate;
+
+                expect(shader).toContain('@binding(1) var lumaTexture: texture_2d<u32>');
+                expect(shader).toContain('@binding(2) var chromaUTexture: texture_2d<u32>');
+                expect(shader).toContain('@binding(3) var chromaVTexture: texture_2d<u32>');
+                expect(shader).toContain('@binding(4) var<uniform> renderSettings');
+                expect(shader).toContain('@binding(5) var<storage, read> dolbyVisionRPU');
+                expect(shader).toContain(`sampleChromaU(${chromaCoordinate})`);
+                expect(shader).toContain(`sampleChromaV(${chromaCoordinate})`);
+                // The compatible base normalizes limited-range codes at the BL format's own depth
+                expect(getWGSLFunction(shader, 'normalizeRawYUV')).toContain(
+                    `(rawYUV.x - ${(16 * codeScale).toFixed(9)}) / ${(219 * codeScale).toFixed(9)}`
+                );
+                expect(getWGSLFunction(shader, 'normalizeRawYUV')).toContain(
+                    `(rawYUV.z - ${(128 * codeScale).toFixed(9)}) / ${(224 * codeScale).toFixed(9)}`
+                );
+                expect(getWGSLFunction(shader, 'convertRawYUVToEncodedRGB')).toContain(
+                    baseLayerFallback === 'sdr' ?
+                        'normalizedYUV.x + 1.5748 * normalizedYUV.z' :
+                        'normalizedYUV.x + 1.4746 * normalizedYUV.z'
+                );
+                expect(fragmentFunction).toContain(
+                    baseLayerFallback === 'sdr' ?
+                        'return presentSDRBaseLayer(rawBaseSignal);' :
+                        'encodedBT2020PQ = convertRawYUVToEncodedRGB(normalizeRawYUV(rawBaseSignal));'
+                );
+                expect(fragmentFunction).toContain(
+                    'encodedBT2020PQ = reconstructDolbyVisionBT2020PQ(rawBaseSignal)'
+                );
+                expect(shader.includes('fn presentSDRBaseLayer')).toBe(baseLayerFallback === 'sdr');
+                expect(shader.includes('@binding(6) var enhancementLumaTexture: texture_2d<u32>'))
+                    .toBe(reconstructsFEL);
+                expect(shader.includes('@binding(9) var<uniform> enhancement')).toBe(reconstructsFEL);
+                // The EL keeps its own 4:2:0 siting whatever the BL subsampling
+                expect(shader.includes('-1.0 / lumaDimensions.x')).toBe(reconstructsFEL);
+                expect(fragmentFunction.includes('sampleRawEnhancementYUV(textureCoordinate)'))
+                    .toBe(reconstructsFEL);
+            }
+        );
+    });
+
+    it('keeps a dual-layer shader stable across live setting changes outside I420P10', () => {
+        const firstShader = createRawDolbyVisionProfile4FELColorPipelineWGSL(
+            createHDRToSDRRenderSettings(),
+            'I444P12'
+        );
+        const secondShader = createRawDolbyVisionProfile4FELColorPipelineWGSL(
+            createHDRToSDRRenderSettings({
+                display: { brightness: 0.1, contrast: 1.2, saturation: 0.8 },
+                toneMapping: { inputPeakNits: 4_000 }
+            }),
+            'I444P12'
+        );
+
+        expect(secondShader).toBe(firstShader);
+    });
+});
+
 describe('createRawDolbyVisionProfile7FELColorPipelineWGSL', () => {
     it('binds, sites, and composes the decoded EL before Dolby color matrices', () => {
         const shader = createRawDolbyVisionProfile7FELColorPipelineWGSL(

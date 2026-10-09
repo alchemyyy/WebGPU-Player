@@ -1,19 +1,10 @@
 const HEVC_SPS_NAL_UNIT_TYPE = 33;
-const MAXIMUM_HEVC_CODED_DIMENSION = 16_384;
 const MAXIMUM_HEVC_DPB_PICTURE_COUNT = 16;
 const MAXIMUM_HEVC_REFERENCE_PICTURE_COUNT = MAXIMUM_HEVC_DPB_PICTURE_COUNT;
 const MAXIMUM_HEVC_SHORT_TERM_REFERENCE_PICTURE_SET_COUNT = 64;
 const MAXIMUM_SPS_NAL_UNIT_BYTE_LENGTH = 64 * 1024;
 const MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE = 0x7FFF_FFFF;
 const MAIN_PROFILE_BASE_DPB_PICTURE_COUNT = 6;
-const MAXIMUM_SOFTWARE_DECODE_CODED_HEIGHT = 2_160;
-const MAXIMUM_SOFTWARE_DECODE_CODED_WIDTH = 3_840;
-// Bound retained luma to six maximum-size 4K pictures
-// Main10 4:2:0 samples for that budget occupy about 150 MB
-const MAXIMUM_SOFTWARE_DECODE_DPB_LUMA_SAMPLE_COUNT =
-    MAXIMUM_SOFTWARE_DECODE_CODED_WIDTH
-    * MAXIMUM_SOFTWARE_DECODE_CODED_HEIGHT
-    * MAIN_PROFILE_BASE_DPB_PICTURE_COUNT;
 const HEVC_LEVEL_MAXIMUM_LUMA_PICTURE_SAMPLE_COUNTS: Readonly<Partial<Record<number, number>>> =
     Object.freeze({
         30: 36_864,
@@ -495,14 +486,15 @@ type SPSDimensions = {
     displayWidth: number
 };
 
+/** Reads the picture size; only its declared level, checked later, bounds it. */
 function parseSPSDimensions(reader: BoundedBitReader): SPSDimensions {
     const codedWidth = reader.readUnsignedExpGolomb(
         'pic_width_in_luma_samples',
-        MAXIMUM_HEVC_CODED_DIMENSION
+        MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
     );
     const codedHeight = reader.readUnsignedExpGolomb(
         'pic_height_in_luma_samples',
-        MAXIMUM_HEVC_CODED_DIMENSION
+        MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
     );
     if (codedWidth <= 0 || codedHeight <= 0) {
         throw new TypeError('The HEVC SPS coded dimensions are invalid');
@@ -518,19 +510,19 @@ function parseSPSDimensions(reader: BoundedBitReader): SPSDimensions {
 
     const leftOffset = reader.readUnsignedExpGolomb(
         'conf_win_left_offset',
-        MAXIMUM_HEVC_CODED_DIMENSION
+        MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
     );
     const rightOffset = reader.readUnsignedExpGolomb(
         'conf_win_right_offset',
-        MAXIMUM_HEVC_CODED_DIMENSION
+        MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
     );
     const topOffset = reader.readUnsignedExpGolomb(
         'conf_win_top_offset',
-        MAXIMUM_HEVC_CODED_DIMENSION
+        MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
     );
     const bottomOffset = reader.readUnsignedExpGolomb(
         'conf_win_bottom_offset',
-        MAXIMUM_HEVC_CODED_DIMENSION
+        MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE
     );
     const displayWidth = codedWidth - (2 * (leftOffset + rightOffset));
     const displayHeight = codedHeight - (2 * (topOffset + bottomOffset));
@@ -570,17 +562,11 @@ function getMaximumDPBPictureCount(
     if (!Number.isSafeInteger(pictureSampleCount) || pictureSampleCount <= 0) {
         throw new TypeError('The HEVC SPS picture sample count is invalid');
     }
-    const implementationMaximum = Math.max(
-        1,
-        Math.min(
-            MAXIMUM_HEVC_DPB_PICTURE_COUNT,
-            Math.floor(MAXIMUM_SOFTWARE_DECODE_DPB_LUMA_SAMPLE_COUNT / pictureSampleCount)
-        )
-    );
+    // Only the specification bounds the DPB, at any picture size; an unknown level allows its largest
     const levelMaximumPictureSampleCount =
         HEVC_LEVEL_MAXIMUM_LUMA_PICTURE_SAMPLE_COUNTS[levelIDC];
     if (levelMaximumPictureSampleCount === undefined) {
-        return implementationMaximum;
+        return MAXIMUM_HEVC_DPB_PICTURE_COUNT;
     }
     if (pictureSampleCount > levelMaximumPictureSampleCount) {
         throw new TypeError('The HEVC SPS dimensions exceed the declared level');
@@ -605,7 +591,7 @@ function getMaximumDPBPictureCount(
     } else {
         levelMaximum = MAIN_PROFILE_BASE_DPB_PICTURE_COUNT;
     }
-    return Math.min(levelMaximum, implementationMaximum);
+    return levelMaximum;
 }
 
 function parseSubLayerOrdering(

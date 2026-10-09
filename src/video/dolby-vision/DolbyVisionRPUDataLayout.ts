@@ -10,6 +10,12 @@ export const MAXIMUM_DOLBY_VISION_RPU_PIVOT_COUNT = 9;
 export const MAXIMUM_DOLBY_VISION_RPU_SEGMENT_COUNT = 8;
 export const MAXIMUM_DOLBY_VISION_RPU_MMR_VECTOR_COUNT = 48;
 
+// A component's flags hold one bit per mapping method its pieces use, so 3 marks a mixed component
+export const DOLBY_VISION_RPU_COMPONENT_FLAG_POLYNOMIAL = 1 << 0;
+export const DOLBY_VISION_RPU_COMPONENT_FLAG_MMR = 1 << 1;
+// A segment packs [c0, c1, c2, 0] for a polynomial piece and [constant, first vector, 0, order] for an MMR piece, so a positive value at this index marks MMR
+export const DOLBY_VISION_RPU_SEGMENT_MMR_ORDER_INDEX = 3;
+
 export const DOLBY_VISION_RPU_BASE_LAYER_BIT_DEPTH_WORD_OFFSET = 12;
 export const DOLBY_VISION_RPU_ENHANCEMENT_LAYER_BIT_DEPTH_WORD_OFFSET = 13;
 export const DOLBY_VISION_RPU_COLOR_WORD_OFFSET =

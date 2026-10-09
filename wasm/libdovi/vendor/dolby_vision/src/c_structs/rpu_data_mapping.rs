@@ -33,15 +33,13 @@ pub struct ReshapingCurve {
     pub num_pivots_minus2: u64,
     pub pivots: U16Data,
 
-    /// Consistent for a component
-    /// Luma (component 0): Polynomial = 0
-    /// Chroma (components 1 and 2): MMR = 1
-    pub mapping_idc: u8,
+    /// One method per piece: Polynomial = 0, MMR = 1
+    pub mapping_idc: Data,
 
-    /// mapping_idc = 0, null pointer otherwise
+    /// The Polynomial pieces in coded order, null pointer if there are none
     pub polynomial: *const PolynomialCurve,
 
-    /// mapping_idc = 1, null pointer otherwise
+    /// The MMR pieces in coded order, null pointer if there are none
     pub mmr: *const MMRCurve,
 }
 
@@ -51,6 +49,8 @@ pub struct PolynomialCurve {
     linear_interp_flag: Data,
     poly_coef_int: I64Data2D,
     poly_coef: U64Data2D,
+    pred_linear_interp_value_int: U64Data2D,
+    pred_linear_interp_value: U64Data2D,
 }
 
 #[repr(C)]
@@ -111,11 +111,14 @@ impl ReshapingCurve {
     pub unsafe fn free(&self) {
         unsafe {
             self.pivots.free();
+            self.mapping_idc.free();
 
+            // A component that mixes methods has both curves
             if !self.polynomial.is_null() {
                 let poly_curve = Box::from_raw(self.polynomial as *mut PolynomialCurve);
                 poly_curve.free();
-            } else if !self.mmr.is_null() {
+            }
+            if !self.mmr.is_null() {
                 let mmr_curve = Box::from_raw(self.mmr as *mut MMRCurve);
                 mmr_curve.free();
             }
@@ -132,6 +135,8 @@ impl PolynomialCurve {
             self.linear_interp_flag.free();
             self.poly_coef_int.free();
             self.poly_coef.free();
+            self.pred_linear_interp_value_int.free();
+            self.pred_linear_interp_value.free();
         }
     }
 }
@@ -155,7 +160,13 @@ impl From<&DoviReshapingCurve> for ReshapingCurve {
         Self {
             num_pivots_minus2: curve.num_pivots_minus2,
             pivots: U16Data::from(curve.pivots.clone()),
-            mapping_idc: curve.mapping_idc as u8,
+            mapping_idc: Data::from(
+                curve
+                    .mapping_idc
+                    .iter()
+                    .map(|mapping_idc| *mapping_idc as u8)
+                    .collect::<Vec<u8>>(),
+            ),
             polynomial: curve.polynomial.as_ref().map_or(null_mut(), |poly_curve| {
                 Box::into_raw(Box::new(PolynomialCurve::from(poly_curve)))
             }),
@@ -173,6 +184,10 @@ impl From<&DoviPolynomialCurve> for PolynomialCurve {
             linear_interp_flag: Data::from(poly_curve.linear_interp_flag.clone()),
             poly_coef_int: I64Data2D::from(poly_curve.poly_coef_int.clone()),
             poly_coef: U64Data2D::from(poly_curve.poly_coef.clone()),
+            pred_linear_interp_value_int: U64Data2D::from(
+                poly_curve.pred_linear_interp_value_int.clone(),
+            ),
+            pred_linear_interp_value: U64Data2D::from(poly_curve.pred_linear_interp_value.clone()),
         }
     }
 }

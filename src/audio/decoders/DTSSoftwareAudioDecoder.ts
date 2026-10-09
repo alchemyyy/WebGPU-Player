@@ -239,7 +239,7 @@ export default class DTSSoftwareAudioDecoder {
         const sampleRate = this.functions.getSampleRate(this.decoder);
         if (!isSupportedCustomAudioSampleRate(sampleRate)) {
             throw new RangeError(
-                `Bundled DTS output sample rate ${sampleRate} Hz is outside the supported range`
+                `Bundled DTS output sample rate ${sampleRate} Hz is invalid`
             );
         }
         const bitsPerSample = this.functions.getBitsPerSample(this.decoder);

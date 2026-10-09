@@ -20,6 +20,9 @@ const OUTPUT_SAMPLE_RATE = 48_000;
 // The decoded audio bridge accepts a chunk within one output frame of the previous chunk's end
 const BRIDGE_CONTINUITY_TOLERANCE_MICROSECONDS = Math.ceil(1_000_000 / OUTPUT_SAMPLE_RATE);
 const LIMITER_CEILING_TOLERANCE = 1e-6;
+// A malformed decoded rate; any positive integer rate binds
+const ZERO_SAMPLE_RATE = 0;
+const INVALID_SAMPLE_RATE_ERROR = `The decoded audio sample rate ${ZERO_SAMPLE_RATE} Hz is invalid`;
 
 type RecordingStage = {
     sourceFormats: DecodedAudioSourceFormat[]
@@ -200,11 +203,11 @@ describe('DecodedAudioOutputStage', () => {
         expect(stage.finalize()).toEqual([]);
     });
 
-    it('rejects an unsupported rate and a layout that does not describe the decoded channels', () => {
+    it('rejects an invalid rate and a layout that does not describe the decoded channels', () => {
         const { stage } = createRecordingStage('aac', 2);
 
-        expect(() => stage.bind({ channelCount: 2, layout: null, sampleRate: 2_999 }, null))
-            .toThrow('The decoded audio sample rate 2999 Hz is outside the supported range');
+        expect(() => stage.bind({ channelCount: 2, layout: null, sampleRate: ZERO_SAMPLE_RATE }, null))
+            .toThrow(INVALID_SAMPLE_RATE_ERROR);
         expect(() => stage.bind({ channelCount: 4, layout: null, sampleRate: 48_000 }, null))
             .toThrow('The decoded 4-channel audio layout is unsupported');
         expect(() => stage.bind({

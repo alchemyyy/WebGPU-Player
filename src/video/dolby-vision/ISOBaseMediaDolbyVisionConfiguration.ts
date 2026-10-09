@@ -26,7 +26,6 @@ const MAXIMUM_TOP_LEVEL_BOX_COUNT = 128;
 const MAXIMUM_CHILD_BOX_COUNT = 4_096;
 const MAXIMUM_TRACK_COUNT = 1_024;
 const MAXIMUM_SAMPLE_ENTRY_COUNT = 16;
-const MAXIMUM_MOVIE_BOX_BYTE_LENGTH = 16 * 1_024 * 1_024;
 const MINIMUM_HEVC_CONFIGURATION_BYTE_LENGTH = 23;
 const MAXIMUM_HEVC_CONFIGURATION_BYTE_LENGTH = 1_024 * 1_024;
 const MINIMUM_DOLBY_VISION_CONFIGURATION_BYTE_LENGTH = 4;
@@ -540,12 +539,9 @@ async function readISOBaseMediaDolbyVisionTrackConfigurationStrict(
     reader: ISOBaseMediaByteRangeReader,
     selectedTrackNumber: number
 ): Promise<ISOBaseMediaDolbyVisionTrackConfiguration | null> {
+    // A long or many-track movie has a large sample table, so the moov box is read whatever its size
     const movieBox = await findMovieBox(reader);
-    if (
-        !movieBox
-        || movieBox.dataSize <= 0
-        || movieBox.dataSize > MAXIMUM_MOVIE_BOX_BYTE_LENGTH
-    ) {
+    if (!movieBox || movieBox.dataSize <= 0) {
         return null;
     }
     const movieData = await reader(movieBox.dataOffset, movieBox.dataSize);
@@ -556,8 +552,7 @@ async function readISOBaseMediaDolbyVisionTrackConfigurationStrict(
 }
 
 /**
- * Reads bounded dual-layer Profile 4 or 7 configuration from an ISO base media file: a separate EL track, or
- * the hvcE EL configuration of a single track that interleaves both layers.
+ * Reads dual-layer Profile 4 or 7 configuration from an ISO base media file: a separate EL track, or the hvcE EL configuration of a single track that interleaves both layers.
  */
 export async function readISOBaseMediaDolbyVisionTrackConfiguration(
     reader: ISOBaseMediaByteRangeReader,

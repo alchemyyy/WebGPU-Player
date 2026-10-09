@@ -12,6 +12,14 @@ const PACKET_POINTER = 48;
 const EXTRADATA_POINTER = 256;
 const AGAIN_ERROR = -11;
 const EOF_ERROR = -541_478_725;
+const MPEG2_VIDEO_CODEC_SELECTOR = 1;
+const ULTRA_HD_8K_CODED_WIDTH = 7_680;
+const ULTRA_HD_8K_CODED_HEIGHT = 4_320;
+const INVALID_CODED_WIDTH = 0;
+const CONFIGURATION_UNSUPPORTED_ERROR = 'configuration is unsupported';
+// A decoder handle past 2 GiB, which the WASM i32 return reports as negative
+const HIGH_DECODER_HANDLE = (2 ** 31) + 16;
+const HIGH_DECODER_HANDLE_AS_I32 = HIGH_DECODER_HANDLE - (2 ** 32);
 
 type FakeMPEG2VC1Frame = {
     bottomCrop?: number
@@ -420,17 +428,51 @@ describe('MPEG2VC1SoftwareVideoDecoder', () => {
         decoder.close();
     });
 
-    it('fails closed on oversized configuration and contradictory output', async () => {
+    it('opens a configuration of any size', async () => {
         const harness = createHarness();
-        const oversizedDecoder = new MPEG2VC1SoftwareVideoDecoder({
+        const decoder = new MPEG2VC1SoftwareVideoDecoder({
             codec: 'mpeg2video',
-            codedHeight: 1_080,
-            codedWidth: 1_921
+            codedHeight: ULTRA_HD_8K_CODED_HEIGHT,
+            codedWidth: ULTRA_HD_8K_CODED_WIDTH
         }, {
             onError: vi.fn(),
             onSample: vi.fn()
         }, harness.dependencies);
-        await expect(oversizedDecoder.init()).rejects.toThrow('unsupported');
+
+        await decoder.init();
+
+        expect(harness.module._mpeg2_vc1_decoder_create).toHaveBeenCalledWith(
+            MPEG2_VIDEO_CODEC_SELECTOR,
+            ULTRA_HD_8K_CODED_WIDTH,
+            ULTRA_HD_8K_CODED_HEIGHT,
+            0
+        );
+        decoder.close();
+    });
+
+    it('reads a decoder handle past 2 GiB as an unsigned heap address', async () => {
+        const harness = createHarness();
+        harness.module._mpeg2_vc1_decoder_create.mockReturnValue(HIGH_DECODER_HANDLE_AS_I32);
+        const decoder = createDecoder(harness, []);
+
+        await decoder.init();
+
+        expect(harness.module._mpeg2_vc1_decoder_open).toHaveBeenCalledWith(HIGH_DECODER_HANDLE);
+        decoder.close();
+        expect(harness.module._mpeg2_vc1_decoder_close).toHaveBeenCalledWith(HIGH_DECODER_HANDLE);
+    });
+
+    it('fails closed on an invalid configuration and contradictory output', async () => {
+        const harness = createHarness();
+        const invalidDecoder = new MPEG2VC1SoftwareVideoDecoder({
+            codec: 'mpeg2video',
+            codedHeight: ULTRA_HD_8K_CODED_HEIGHT,
+            codedWidth: INVALID_CODED_WIDTH
+        }, {
+            onError: vi.fn(),
+            onSample: vi.fn()
+        }, harness.dependencies);
+        await expect(invalidDecoder.init()).rejects.toThrow(CONFIGURATION_UNSUPPORTED_ERROR);
         expect(harness.module._mpeg2_vc1_decoder_create).not.toHaveBeenCalled();
 
         const missingDescriptionDecoder = new MPEG2VC1SoftwareVideoDecoder({

@@ -34,7 +34,7 @@ import {
     type DecodeWorkerAudioConfiguration
 } from './DecodeWorkerProtocol';
 import MediaClock from './MediaClock';
-import { hasRawVideoFrameResourceBudget } from '../video/RawVideoFrameCopy';
+import { hasRawVideoFrameCopyLayout } from '../video/RawVideoFrameCopy';
 import { addMicroseconds, requireMicroseconds } from '../TimeMath';
 import type {
     CustomAudioOutput,
@@ -328,20 +328,20 @@ function validateVideoDecoderRoute(options: CustomPlaybackPlayOptions): void {
     }
 }
 
-function validateRawVideoFrameResourceBudget(options: CustomPlaybackPlayOptions): void {
+function validateRawVideoFrameCopyLayout(options: CustomPlaybackPlayOptions): void {
     if (options.videoOutputMode !== 'raw-planes') {
         return;
     }
     if (options.rawVideoFrameFormat === null) {
         throw new TypeError('Raw custom playback requires a requested raw frame format');
     }
-    if (!hasRawVideoFrameResourceBudget({
+    if (!hasRawVideoFrameCopyLayout({
         codedHeight: options.maximumCodedHeight,
         codedWidth: options.maximumCodedWidth,
         displayHeight: options.maximumCodedHeight,
         displayWidth: options.maximumCodedWidth
     }, options.rawVideoFrameFormat, getDolbyVisionRawFrameLayerCount(options.dolbyVisionProfile))) {
-        throw new RangeError('Raw custom playback exceeds its transfer memory budget');
+        throw new RangeError('Raw custom playback frames have no representable copy layout');
     }
 }
 
@@ -373,7 +373,7 @@ function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
     validateAudioPlayOptions(options);
     switch (options.videoOutputMode) {
         case 'raw-planes':
-            validateRawVideoFrameResourceBudget(options);
+            validateRawVideoFrameCopyLayout(options);
             break;
         case 'video-frame':
             if (options.rawVideoFrameFormat !== null) {
@@ -394,6 +394,7 @@ function copyPlayOptions(options: CustomPlaybackPlayOptions): CustomPlaybackPlay
         audioOutputMode: options.audioOutputMode,
         audioTrackIndex: options.audioTrackIndex,
         decodedAudioOutputChannelCount: options.decodedAudioOutputChannelCount,
+        discardDolbyVisionEnhancementLayer: options.discardDolbyVisionEnhancementLayer,
         durationMicroseconds: options.durationMicroseconds,
         dolbyVisionProfile: options.dolbyVisionProfile,
         maximumCodedHeight: options.maximumCodedHeight,
@@ -1468,6 +1469,7 @@ export default class CustomPlaybackController {
                 audioTrackIndex: activeOptions.audioTrackIndex,
                 decodedAudioOutputChannelCount:
                     activeOptions.decodedAudioOutputChannelCount,
+                discardDolbyVisionEnhancementLayer: activeOptions.discardDolbyVisionEnhancementLayer,
                 durationMicroseconds: activeOptions.durationMicroseconds,
                 dolbyVisionProfile: activeOptions.dolbyVisionProfile,
                 generation,

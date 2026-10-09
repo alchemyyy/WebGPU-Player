@@ -55,7 +55,7 @@ import {
     type DecodeWorkerVideoInterruptionReason
 } from './DecodeWorkerProtocol';
 import {
-    hasRawVideoFrameResourceBudget,
+    hasRawVideoFrameCopyLayout,
     type RawVideoFrameGeometry
 } from '../video/RawVideoFrameCopy';
 import type {
@@ -72,6 +72,7 @@ export type CustomDecodeSessionStartOptions = {
     audioOutputMode?: CustomDecodeAudioOutputMode
     audioTrackIndex?: number | null
     decodedAudioOutputChannelCount?: CustomAudioOutputChannelCount
+    discardDolbyVisionEnhancementLayer?: boolean
     durationMicroseconds?: Microseconds | null
     dolbyVisionProfile: CustomDecodeDolbyVisionProfile
     generation: number
@@ -359,7 +360,7 @@ function hasValidRawVideoFrameFormat(options: CustomDecodeSessionStartOptions): 
     }
 }
 
-function validateRawVideoFrameResourceBudget(
+function validateRawVideoFrameCopyLayout(
     options: CustomDecodeSessionStartOptions
 ): void {
     if (options.videoOutputMode !== 'raw-planes') {
@@ -367,13 +368,13 @@ function validateRawVideoFrameResourceBudget(
     }
 
     const rawVideoFrameFormat = options.rawVideoFrameFormat;
-    if (rawVideoFrameFormat === null || !hasRawVideoFrameResourceBudget({
+    if (rawVideoFrameFormat === null || !hasRawVideoFrameCopyLayout({
         codedHeight: options.maximumCodedHeight,
         codedWidth: options.maximumCodedWidth,
         displayHeight: options.maximumCodedHeight,
         displayWidth: options.maximumCodedWidth
     }, rawVideoFrameFormat, getDolbyVisionRawFrameLayerCount(options.dolbyVisionProfile))) {
-        throw new RangeError('Custom decode raw-frame route exceeds its transfer memory budget');
+        throw new RangeError('Custom decode raw-frame route has no representable copy layout');
     }
 }
 
@@ -591,6 +592,7 @@ export default class CustomDecodeSession {
             const startRequest: DecodeWorkerRequest = {
                 audioSampleCredits: 0,
                 audioTrackIndex: options.audioTrackIndex ?? null,
+                ...(options.discardDolbyVisionEnhancementLayer ? { discardDolbyVisionEnhancementLayer: true } : {}),
                 dolbyVisionProfile: options.dolbyVisionProfile,
                 dolbyVisionRPUParserWASMURL: resolveDolbyVisionRPUParserWASMURL(),
                 frameCredits: options.videoOutputMode === 'raw-planes' ?
@@ -1039,7 +1041,7 @@ export default class CustomDecodeSession {
                 'VideoFrame custom decode cannot request a raw frame format';
             throw new TypeError(message);
         }
-        validateRawVideoFrameResourceBudget(options);
+        validateRawVideoFrameCopyLayout(options);
     }
 
     private createWorkerRecord(

@@ -1,4 +1,4 @@
-use anyhow::{Result, ensure};
+use anyhow::{Result, anyhow, ensure};
 use bitvec_helpers::{
     bitstream_io_reader::BsIoSliceReader, bitstream_io_writer::BitstreamIoWriter,
 };
@@ -66,15 +66,20 @@ fn parse_variable_bits<const BITS: u32>(reader: &mut BsIoSliceReader) -> Result<
 
     loop {
         let tmp = reader.read::<BITS, u32>()?;
-        value += tmp;
+        value = value
+            .checked_add(tmp)
+            .ok_or_else(|| anyhow!("variable_bits value exceeds 32 bits"))?;
 
         // read_more flag
         if !reader.read_bit()? {
             break;
         }
 
-        value <<= BITS;
-        value += 1 << BITS;
+        // (value + 1) << BITS, checked so a long chain errors instead of wrapping
+        value = value
+            .checked_add(1)
+            .and_then(|value| value.checked_mul(1 << BITS))
+            .ok_or_else(|| anyhow!("variable_bits value exceeds 32 bits"))?;
     }
 
     Ok(value)

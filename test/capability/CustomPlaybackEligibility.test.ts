@@ -68,6 +68,24 @@ const PQ_AUTHORIZATION = {
     runtimeAvailability: AVAILABLE_RUNTIME
 };
 
+const ULTRA_HD_CODED_WIDTH = 3_840;
+const ULTRA_HD_CODED_HEIGHT = 2_160;
+const DCI_4K_CODED_WIDTH = 4_096;
+const DCI_4K_CODED_HEIGHT = 2_160;
+const ULTRA_HD_8K_CODED_WIDTH = 7_680;
+const ULTRA_HD_8K_CODED_HEIGHT = 4_320;
+const ULTRA_HD_16K_CODED_WIDTH = 15_360;
+const ULTRA_HD_16K_CODED_HEIGHT = 8_640;
+
+// Uncommon source rates, which the resampler converts like any other; a browser decoder judges its own per item
+const SUB_3_KHZ_SAMPLE_RATE = 2_999;
+const ABOVE_192_KHZ_SAMPLE_RATE = 192_001;
+const DXD_SAMPLE_RATE = 352_800;
+const DOUBLE_DXD_SAMPLE_RATE = 705_600;
+// Malformed declared rates
+const ZERO_SAMPLE_RATE = 0;
+const FRACTIONAL_SAMPLE_RATE = 48_000.5;
+
 function createCapability<Codec extends CustomAudioCodec | CustomVideoCodec>(
     codec: Codec,
     supported: boolean
@@ -564,18 +582,81 @@ describe('CustomPlaybackEligibility', () => {
             Profile: 'Main',
             Width: 720
         } ],
-        [ '10-bit SDR AV1', {
+        // The raw SDR keys are BT.709 only, and 10-bit AV1 and VP9 have no other route
+        [ '10-bit BT.601 SDR AV1', {
             AverageFrameRate: 24,
             BitDepth: 10,
             Codec: 'AV1',
+            ColorPrimaries: 'smpte170m',
+            ColorSpace: 'smpte170m',
+            ColorTransfer: 'smpte170m',
             Height: 1_632,
             Profile: 'Main',
             Width: 3_840
+        } ],
+        [ '10-bit BT.2020 SDR VP9', {
+            BitDepth: 10,
+            Codec: 'VP9',
+            ColorPrimaries: 'bt2020',
+            ColorSpace: 'bt2020nc',
+            ColorTransfer: 'bt2020-10',
+            Profile: 'Profile 2'
+        } ],
+        [ '10-bit SDR VP9 Profile 0', {
+            BitDepth: 10,
+            Codec: 'VP9',
+            Profile: 'Profile 0'
+        } ],
+        [ '8-bit Dolby Vision 10.0 AV1', {
+            BitDepth: 8,
+            BlPresentFlag: true,
+            Codec: 'AV1',
+            DvBlSignalCompatibilityId: 0,
+            DvProfile: 10,
+            Profile: 'Main',
+            RpuPresentFlag: true,
+            VideoRangeType: 'DOVI'
+        } ],
+        // AV1 carries no EL, and compatibility ID 0 declares no base
+        [ 'dual-layer Dolby Vision AV1', {
+            BitDepth: 10,
+            BlPresentFlag: true,
+            Codec: 'AV1',
+            DvBlSignalCompatibilityId: 0,
+            DvProfile: 7,
+            ElPresentFlag: true,
+            Profile: 'Main',
+            RpuPresentFlag: true,
+            VideoRangeType: 'DOVIWithEL'
         } ]
     ])('routes exact unsupported %s metadata to the HTML player', (_label, videoStream) => {
         const item = createPlaybackSelectionItem(videoStream);
 
         expect(hasPotentialCustomPlaybackVideoRoute(item)).toBe(false);
+    });
+
+    it.each([
+        [ 'AV1 Main', { Codec: 'AV1', Profile: 'Main' } ],
+        [ 'VP9 Profile 2', { Codec: 'VP9', Profile: 'Profile 2' } ],
+        [ 'full-range AV1 Main', { Codec: 'AV1', ColorRange: 'pc', Profile: 'Main' } ],
+        // HEVC Main 10 SDR also decodes natively, which presents BT.601 color
+        [ 'BT.601 HEVC Main 10', {
+            Codec: 'HEVC',
+            ColorPrimaries: 'smpte170m',
+            ColorSpace: 'smpte170m',
+            ColorTransfer: 'smpte170m',
+            Profile: 'Main 10'
+        } ]
+    ])('keeps 10-bit SDR %s eligible for wrapper selection', (_label, videoStream) => {
+        const item = createPlaybackSelectionItem({
+            AverageFrameRate: 24,
+            BitDepth: 10,
+            Height: 1_632,
+            Width: 3_840,
+            ...videoStream
+        });
+
+        expect(hasPotentialCustomPlaybackVideoRoute(item)).toBe(true);
     });
 
     it('keeps high-frame-rate progressive MPEG-2 eligible for wrapper selection', () => {
@@ -1148,6 +1229,68 @@ describe('CustomPlaybackEligibility', () => {
     });
 
     it.each([
+        { height: ULTRA_HD_CODED_HEIGHT, label: 'UHD', width: ULTRA_HD_CODED_WIDTH },
+        { height: DCI_4K_CODED_HEIGHT, label: 'DCI 4K', width: DCI_4K_CODED_WIDTH },
+        { height: ULTRA_HD_8K_CODED_HEIGHT, label: '8K', width: ULTRA_HD_8K_CODED_WIDTH },
+        { height: ULTRA_HD_16K_CODED_HEIGHT, label: '16K', width: ULTRA_HD_16K_CODED_WIDTH }
+    ])('takes the bundled HEVC decoder for a $label frame', ({ height, width }) => {
+        // Neither HEVC Main nor the raw Main 10 planes decode natively, so both routes need the bundled decoder.
+        // It takes any frame size, as the raw frame copy does
+        const baseCapabilities = createCapabilities();
+        const capabilities: CustomDecodeCapabilities = {
+            ...baseCapabilities,
+            video: {
+                ...baseCapabilities.video,
+                hevc: createCapability('hevc', false)
+            }
+        };
+        const createHEVCOptions = (videoStream: Record<string, unknown>): Record<string, unknown> => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.MediaStreams[0] = {
+                Codec: 'hevc',
+                Height: height,
+                Index: 0,
+                IsInterlaced: false,
+                Type: 'Video',
+                Width: width,
+                ...videoStream
+            };
+            return options;
+        };
+
+        expect(getCustomPlaybackEligibility(
+            createHEVCOptions({ BitDepth: 8, Profile: 'Main', VideoRangeType: 'SDR' }),
+            capabilities,
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toMatchObject({
+            eligible: true,
+            maximumCodedHeight: height,
+            maximumCodedWidth: width,
+            videoDecoderBackend: 'bundled-hevc'
+        });
+        expect(getCustomPlaybackEligibility(
+            createHEVCOptions({
+                BitDepth: 10,
+                ColorPrimaries: 'bt2020',
+                ColorSpace: 'bt2020nc',
+                ColorTransfer: 'smpte2084',
+                Profile: 'Main 10',
+                VideoRange: 'HDR',
+                VideoRangeType: 'HDR10'
+            }),
+            capabilities,
+            PQ_AUTHORIZATION
+        )).toMatchObject({
+            eligible: true,
+            videoDecoderBackend: 'bundled-hevc',
+            videoOutputMode: 'raw-planes'
+        });
+    });
+
+    it.each([
         'Constrained Baseline',
         'Baseline',
         'Main'
@@ -1365,32 +1508,41 @@ describe('CustomPlaybackEligibility', () => {
         }
     );
 
-    it.each([ 2_999, 192_001 ])(
-        'rejects stereo FLAC only outside the decoded-PCM source-rate contract at %i Hz',
-        sampleRate => {
-            const options = createOptions();
-            const mediaSource = options.mediaSource as {
-                Container: string
-                MediaStreams: Array<Record<string, unknown>>
-            };
-            mediaSource.Container = 'mkv';
-            mediaSource.MediaStreams[1] = {
-                BitDepth: 24,
-                BitRate: 1_300_000,
-                Channels: 2,
-                Codec: 'flac',
-                Index: 1,
-                SampleRate: sampleRate,
-                Type: 'Audio'
-            };
+    it.each([
+        { eligible: true, sampleRate: SUB_3_KHZ_SAMPLE_RATE },
+        { eligible: true, sampleRate: ABOVE_192_KHZ_SAMPLE_RATE },
+        { eligible: true, sampleRate: DXD_SAMPLE_RATE },
+        { eligible: true, sampleRate: DOUBLE_DXD_SAMPLE_RATE },
+        { eligible: false, sampleRate: ZERO_SAMPLE_RATE },
+        { eligible: false, sampleRate: FRACTIONAL_SAMPLE_RATE }
+    ])('decides stereo FLAC at $sampleRate Hz only by whether the rate is well formed', ({
+        eligible,
+        sampleRate
+    }) => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'mkv';
+        mediaSource.MediaStreams[1] = {
+            BitDepth: 24,
+            BitRate: 1_300_000,
+            Channels: 2,
+            Codec: 'flac',
+            Index: 1,
+            SampleRate: sampleRate,
+            Type: 'Audio'
+        };
 
-            expect(getCustomPlaybackEligibility(
-                options,
-                createCapabilities(),
-                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-            )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
-        }
-    );
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toMatchObject(eligible ?
+            { audioOutputMode: 'decoded-pcm', eligible: true } :
+            { eligible: false, reason: 'audio-layout-unsupported' });
+    });
 
     it.each([
         [ 'webm', 'h264', 'High', 'opus' ],
@@ -2724,7 +2876,7 @@ describe('CustomPlaybackEligibility', () => {
         });
     });
 
-    it('requires an exact copyable raw HDR codec, format, and transfer byte budget', () => {
+    it('requires an exact copyable raw HDR codec and format, at any frame size', () => {
         const hdrOptions = createOptions({
             mediaSource: {
                 Container: 'mkv',
@@ -2769,26 +2921,23 @@ describe('CustomPlaybackEligibility', () => {
         const mediaSource = hdrOptions.mediaSource as {
             MediaStreams: Array<{ Height: number, Width: number }>
         };
-        mediaSource.MediaStreams[0].Width = 7_680;
-        mediaSource.MediaStreams[0].Height = 4_320;
-        expect(getCustomPlaybackEligibility(
-            hdrOptions,
-            baseCapabilities,
-            PQ_AUTHORIZATION
-        )).toMatchObject({
-            eligible: true,
-            maximumCodedHeight: 4_320,
-            maximumCodedWidth: 7_680,
-            videoOutputMode: 'raw-planes'
-        });
-
-        mediaSource.MediaStreams[0].Width = 15_360;
-        mediaSource.MediaStreams[0].Height = 8_640;
-        expect(getCustomPlaybackEligibility(
-            hdrOptions,
-            baseCapabilities,
-            PQ_AUTHORIZATION
-        )).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
+        for (const [ width, height ] of [
+            [ ULTRA_HD_8K_CODED_WIDTH, ULTRA_HD_8K_CODED_HEIGHT ],
+            [ ULTRA_HD_16K_CODED_WIDTH, ULTRA_HD_16K_CODED_HEIGHT ]
+        ] as const) {
+            mediaSource.MediaStreams[0].Width = width;
+            mediaSource.MediaStreams[0].Height = height;
+            expect(getCustomPlaybackEligibility(
+                hdrOptions,
+                baseCapabilities,
+                PQ_AUTHORIZATION
+            )).toMatchObject({
+                eligible: true,
+                maximumCodedHeight: height,
+                maximumCodedWidth: width,
+                videoOutputMode: 'raw-planes'
+            });
+        }
     });
 
     it('selects the authorized raw HEVC route for HDR10+ input', () => {
@@ -4075,6 +4224,9 @@ describe('CustomPlaybackEligibility', () => {
         [ 'mkv', 'pcm_f64le', 6, 96_000 ],
         [ 'mov', 'pcm_s8', 2, 192_000 ],
         [ 'mov', 'pcm_s24le', 2, 12_345 ],
+        [ 'mov', 'pcm_s24le', 2, SUB_3_KHZ_SAMPLE_RATE ],
+        [ 'mov', 'pcm_s24le', 2, ABOVE_192_KHZ_SAMPLE_RATE ],
+        [ 'mkv', 'pcm_s24le', 2, DXD_SAMPLE_RATE ],
         [ 'mov', 'pcm_mulaw', 1, 8_000 ],
         [ 'mov', 'pcm_alaw', 1, 8_000 ]
     ] as const)(
@@ -4116,8 +4268,8 @@ describe('CustomPlaybackEligibility', () => {
         [ 'mkv', 'pcm_f32be', 2, 48_000, 'container-unsupported' ],
         [ 'mp4', 'pcm_alaw', 1, 8_000, 'container-unsupported' ],
         [ 'mov', 'pcm_s24le', 8, 48_000, 'audio-layout-unsupported' ],
-        [ 'mov', 'pcm_s24le', 2, 2_999, 'audio-layout-unsupported' ],
-        [ 'mov', 'pcm_s24le', 2, 192_001, 'audio-layout-unsupported' ]
+        [ 'mov', 'pcm_s24le', 2, ZERO_SAMPLE_RATE, 'audio-layout-unsupported' ],
+        [ 'mov', 'pcm_s24le', 2, FRACTIONAL_SAMPLE_RATE, 'audio-layout-unsupported' ]
     ] as const)(
         'rejects unimplemented PCM route %s/%s/%i/%i',
         (container, codec, channelCount, sampleRate, reason) => {
@@ -4173,7 +4325,7 @@ describe('CustomPlaybackEligibility', () => {
         [ 50_000_000, 96_000 ],
         [ 1_500_000_000, 192_000 ]
     ] as const)(
-        'ignores encoded audio bitrate %s at bounded source rate %i',
+        'ignores encoded audio bitrate %s at source rate %i',
         (bitrate, sampleRate) => {
             const options = createOptions();
             const mediaSource = options.mediaSource as {
@@ -4209,8 +4361,8 @@ describe('CustomPlaybackEligibility', () => {
     });
 
     it.each([
-        [ 2, 2_999 ],
-        [ 2, 192_001 ],
+        [ 2, ZERO_SAMPLE_RATE ],
+        [ 2, FRACTIONAL_SAMPLE_RATE ],
         [ undefined, 48_000 ],
         [ 2, undefined ]
     ])('rejects an unmeasured selected audio layout %#', (channelCount, sampleRate) => {
@@ -4601,7 +4753,7 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
         });
     });
 
-    it('keeps dual-layer reconstruction on Main 10 4:2:0 only', () => {
+    it('reconstructs Profile 7 over a Main 12 base in its range-extension format', () => {
         expect(getCustomPlaybackEligibility(
             createDolbyVisionOptions({
                 ...MAIN_12_STREAM,
@@ -4616,10 +4768,33 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
                 allowRawHDR: false,
                 runtimeAvailability: AVAILABLE_RUNTIME
             }
-        )).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
+        )).toMatchObject({
+            dolbyVisionProfile: 7,
+            eligible: true,
+            hdr: true,
+            rawVideoFrameFormat: 'I420P12',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'raw-planes'
+        });
     });
 
     it('fails closed without an RPU route or a declared base', () => {
+        // The bundled decoder's Main qualification is the only evidence for raw 8-bit Main planes
+        const capabilities = createCapabilities();
+        const bundledHEVC = createBundledHEVCCapabilities();
+        capabilities.bundledHEVC = {
+            ...bundledHEVC,
+            qualifications: {
+                ...bundledHEVC.qualifications,
+                'main-1080p': {
+                    ...bundledHEVC.qualifications['main-1080p'],
+                    reason: 'output-mismatch',
+                    status: 'unsupported'
+                }
+            },
+            reason: 'partial'
+        };
+
         expect(getCustomPlaybackEligibility(
             createDolbyVisionOptions({
                 BitDepth: 8,
@@ -4628,7 +4803,7 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
                 Profile: 'Main',
                 VideoRangeType: 'DOVIInvalid'
             }),
-            createCapabilities(),
+            capabilities,
             {
                 allowDolbyVision: true,
                 allowRawHDR: false,
@@ -4637,31 +4812,54 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
         )).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
     });
 
-    it('presents only the declared HDR10 base of AV1 Profile 10, which has no RPU route', () => {
+    it.each([
+        { height: DCI_4K_CODED_HEIGHT, width: DCI_4K_CODED_WIDTH },
+        { height: ULTRA_HD_8K_CODED_HEIGHT, width: ULTRA_HD_8K_CODED_WIDTH },
+        { height: ULTRA_HD_16K_CODED_HEIGHT, width: ULTRA_HD_16K_CODED_WIDTH }
+    ])('reconstructs 8-bit Main through the bundled decoder at $width x $height', ({ height, width }) => {
+        // Only the bundled decoder reads 8-bit Main raw planes, and it takes any frame size
         expect(getCustomPlaybackEligibility(
             createDolbyVisionOptions({
-                ...PQ_BASE_COLORS,
-                Codec: 'av1',
-                DvBlSignalCompatibilityId: 1,
-                DvProfile: 10,
+                BitDepth: 8,
+                DvBlSignalCompatibilityId: 0,
+                DvProfile: 8,
+                Height: height,
                 Profile: 'Main',
-                VideoRangeType: 'DOVIWithHDR10'
+                VideoRangeType: 'DOVIInvalid',
+                Width: width
             }),
             createCapabilities(),
-            PQ_AUTHORIZATION
+            {
+                allowDolbyVision: true,
+                allowRawHDR: false,
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
         )).toMatchObject({
-            dolbyVisionProfile: null,
+            dolbyVisionProfile: 8,
             eligible: true,
-            rawVideoFrameFormat: 'I420P10'
+            rawVideoFrameFormat: 'I420',
+            videoDecoderBackend: 'bundled-hevc'
         });
     });
 
     it.each([
         [ {}, 'I420P10' ],
         [ MAIN_12_STREAM, 'I420P12' ],
-        [ { ...MAIN_12_STREAM, DvProfile: 7, ElPresentFlag: true }, null ],
+        // Dual-layer profiles reconstruct in a range extension's own format, and 8-bit Main in I420
+        [ { ...MAIN_12_STREAM, DvProfile: 7, ElPresentFlag: true }, 'I420P12' ],
+        [ { DvProfile: 4, ElPresentFlag: true, PixelFormat: 'yuv422p10le', Profile: 'Rext' }, 'I422P10' ],
+        [ { BitDepth: 8, Profile: 'Main' }, 'I420' ],
+        [ { BitDepth: 8, DvProfile: 7, ElPresentFlag: true, Profile: 'Main' }, 'I420' ],
+        [ { Codec: 'av1', DvProfile: 10, Profile: 'Main' }, 'I420P10' ],
+        [ { Codec: 'av1', DvBlSignalCompatibilityId: 1, DvProfile: 10, Profile: 'Main' }, 'I420P10' ],
+        // AV1 carries no EL, and its RPU route is 10-bit Main only
+        [ { Codec: 'av1', DvProfile: 7, ElPresentFlag: true, Profile: 'Main' }, null ],
+        [ { BitDepth: 8, Codec: 'av1', DvProfile: 10, Profile: 'Main' }, null ],
+        [ { BitDepth: 12, Codec: 'av1', DvProfile: 10, Profile: 'Professional' }, null ],
         [ { BitDepth: 8, Codec: 'h264', DvProfile: 9, Profile: 'High' }, null ],
-        [ { BitDepth: 8, Profile: 'Main' }, null ]
+        [ { Codec: 'vp9', DvProfile: 8, Profile: 'Profile 2' }, null ],
+        [ { BitDepth: 10, Profile: 'Main' }, null ],
+        [ { Codec: undefined }, null ]
     ])('reports the reconstruction frame format of %o as %s', (videoStream, format) => {
         expect(getDolbyVisionReconstructionRawFrameFormat(createDolbyVisionOptions({
             DvBlSignalCompatibilityId: 0,
@@ -4688,5 +4886,883 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
         expect(hasEligibleCustomVideoRoute(mediaSource, createCapabilities(), {
             allowRawHDR: false
         })).toBe(false);
+    });
+
+    describe('AV1 Profile 10', () => {
+        const HLG_BASE_COLORS = {
+            ColorPrimaries: 'bt2020',
+            ColorSpace: 'bt2020nc',
+            ColorTransfer: 'arib-std-b67'
+        } as const;
+        const DECLARED_BASE_AUTHORIZATION = {
+            allowRawHDR: true,
+            allowRawSDR: true,
+            authorizedRawHDRRouteKeys: [
+                'I420P10:bt2020-ncl:bt2020:limited:hlg',
+                'I420P10:bt2020-ncl:bt2020:limited:pq',
+                'I420P10:bt709:bt709:limited:sdr'
+            ] as const,
+            runtimeAvailability: AVAILABLE_RUNTIME
+        };
+
+        function createProfile10Options(
+            compatibilityID: number | null,
+            videoStream: Record<string, unknown>
+        ): Record<string, unknown> {
+            return createDolbyVisionOptions({
+                Codec: 'av1',
+                ...(compatibilityID === null ? {} : {
+                    DvBlSignalCompatibilityId: compatibilityID
+                }),
+                DvProfile: 10,
+                Profile: 'Main',
+                ...videoStream
+            });
+        }
+
+        // Jellyfin's range labels; a stream without a compatibility ID is labeled by its transfer
+        it.each([
+            { colors: {}, compatibilityID: 0, rangeType: 'DOVI', reconstructionProfile: 5 },
+            { colors: PQ_BASE_COLORS, compatibilityID: 1, rangeType: 'DOVIWithHDR10', reconstructionProfile: 8 },
+            { colors: SDR_BASE_COLORS, compatibilityID: 2, rangeType: 'DOVIWithSDR', reconstructionProfile: 8 },
+            { colors: HLG_BASE_COLORS, compatibilityID: 4, rangeType: 'DOVIWithHLG', reconstructionProfile: 8 },
+            { colors: PQ_BASE_COLORS, compatibilityID: null, rangeType: 'HDR10', reconstructionProfile: 5 },
+            { colors: PQ_BASE_COLORS, compatibilityID: 3, rangeType: 'DOVIInvalid', reconstructionProfile: 8 }
+        ])('reconstructs $rangeType with ID $compatibilityID as Profile $reconstructionProfile in raw I420P10', ({
+            colors,
+            compatibilityID,
+            rangeType,
+            reconstructionProfile
+        }) => {
+            const options = createProfile10Options(compatibilityID, {
+                ...colors,
+                VideoRangeType: rangeType
+            });
+            const mediaSource = (options as { mediaSource: unknown }).mediaSource;
+
+            expect(hasPotentialCustomPlaybackVideoRoute({ MediaSources: [ mediaSource ] })).toBe(true);
+            expect(getDolbyVisionReconstructionRawFrameFormat(options)).toBe('I420P10');
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                {
+                    allowDolbyVision: true,
+                    allowRawHDR: false,
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
+            )).toMatchObject({
+                dolbyVisionProfile: reconstructionProfile,
+                eligible: true,
+                hdr: true,
+                neutralizeHDRColorMetadata: false,
+                rawVideoFrameFormat: 'I420P10',
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'raw-planes'
+            });
+            expect(hasEligibleCustomVideoRoute(mediaSource, createCapabilities(), {
+                allowDolbyVision: true,
+                allowRawHDR: false
+            })).toBe(true);
+        });
+
+        it.each([
+            { colors: PQ_BASE_COLORS, compatibilityID: 1, hdr: true, rangeType: 'DOVIWithHDR10' },
+            { colors: SDR_BASE_COLORS, compatibilityID: 2, hdr: false, rangeType: 'DOVIWithSDR' },
+            { colors: HLG_BASE_COLORS, compatibilityID: 4, hdr: true, rangeType: 'DOVIWithHLG' }
+        ])('presents the declared base of $rangeType through raw I420P10 when its RPU route is unavailable', ({
+            colors,
+            compatibilityID,
+            hdr,
+            rangeType
+        }) => {
+            const options = createProfile10Options(compatibilityID, {
+                ...colors,
+                VideoRangeType: rangeType
+            });
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                DECLARED_BASE_AUTHORIZATION
+            )).toMatchObject({
+                dolbyVisionProfile: null,
+                eligible: true,
+                hdr,
+                neutralizeHDRColorMetadata: false,
+                rawVideoFrameFormat: 'I420P10',
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'raw-planes'
+            });
+            expect(hasEligibleCustomVideoRoute(
+                (options as { mediaSource: unknown }).mediaSource,
+                createCapabilities(),
+                DECLARED_BASE_AUTHORIZATION
+            )).toBe(true);
+        });
+
+        // 10.0 has an IPT base, and the other IDs declare none, so only the RPU presents these streams
+        it.each([
+            { colors: {}, compatibilityID: 0, rangeType: 'DOVI' },
+            { colors: PQ_BASE_COLORS, compatibilityID: null, rangeType: 'HDR10' },
+            { colors: PQ_BASE_COLORS, compatibilityID: 3, rangeType: 'DOVIInvalid' }
+        ])('fails closed for $rangeType with ID $compatibilityID when its RPU route is unauthorized', ({
+            colors,
+            compatibilityID,
+            rangeType
+        }) => {
+            const options = createProfile10Options(compatibilityID, {
+                ...colors,
+                VideoRangeType: rangeType
+            });
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                DECLARED_BASE_AUTHORIZATION
+            )).toEqual({ eligible: false, reason: 'hdr-presentation-unavailable' });
+            expect(hasEligibleCustomVideoRoute(
+                (options as { mediaSource: unknown }).mediaSource,
+                createCapabilities(),
+                DECLARED_BASE_AUTHORIZATION
+            )).toBe(false);
+        });
+
+        it.each([
+            { colors: {}, compatibilityID: 0, rangeType: 'DOVI', reason: 'hdr-codec-unsupported' },
+            {
+                colors: PQ_BASE_COLORS,
+                compatibilityID: 1,
+                rangeType: 'DOVIWithHDR10',
+                reason: 'hdr-codec-unsupported'
+            },
+            // The SDR base falls through the SDR routes, whose reason is codec-unsupported
+            { colors: SDR_BASE_COLORS, compatibilityID: 2, rangeType: 'DOVIWithSDR', reason: 'codec-unsupported' }
+        ])('rejects $rangeType when raw AV1 decode is unqualified, which its declared base also needs', ({
+            colors,
+            compatibilityID,
+            rangeType,
+            reason
+        }) => {
+            const capabilities = createCapabilities();
+            capabilities.rawHDRVideo = {
+                ...capabilities.rawHDRVideo,
+                av1: {
+                    ...capabilities.rawHDRVideo.av1,
+                    reason: 'output-copy-unsupported',
+                    status: 'unsupported'
+                }
+            };
+
+            expect(getCustomPlaybackEligibility(
+                createProfile10Options(compatibilityID, { ...colors, VideoRangeType: rangeType }),
+                capabilities,
+                { ...DECLARED_BASE_AUTHORIZATION, allowDolbyVision: true }
+            )).toEqual({ eligible: false, reason });
+        });
+
+        it('takes neither native HEVC Dolby Vision route for AV1', () => {
+            const eligibilityOptions = {
+                allowDolbyVision: true,
+                allowNativeDolbyVision: true,
+                allowNativeDolbyVisionProfile8HDR10Base: true,
+                allowNativeHDR: true,
+                allowRawHDR: false,
+                authorizedExternalHDRRouteKeys: [ PQ_EXTERNAL_ROUTE_KEY ] as const,
+                runtimeAvailability: AVAILABLE_RUNTIME
+            };
+
+            expect(getCustomPlaybackEligibility(
+                createProfile10Options(0, { VideoRange: 'HDR', VideoRangeType: 'DOVI' }),
+                createCapabilities(),
+                eligibilityOptions
+            )).toMatchObject({
+                dolbyVisionProfile: 5,
+                rawVideoFrameFormat: 'I420P10',
+                videoOutputMode: 'raw-planes'
+            });
+            expect(getCustomPlaybackEligibility(
+                createProfile10Options(1, {
+                    ...PQ_BASE_COLORS,
+                    ColorRange: 'tv',
+                    VideoRange: 'HDR',
+                    VideoRangeType: 'DOVIWithHDR10'
+                }),
+                createCapabilities(),
+                eligibilityOptions
+            )).toMatchObject({
+                dolbyVisionProfile: 8,
+                neutralizeHDRColorMetadata: false,
+                rawVideoFrameFormat: 'I420P10',
+                videoOutputMode: 'raw-planes'
+            });
+        });
+
+        it('never reconstructs a dual-layer profile over AV1', () => {
+            const eligibilityOptions = {
+                ...DECLARED_BASE_AUTHORIZATION,
+                allowDolbyVisionProfile7: true
+            };
+
+            // Compatibility ID 6 declares a PQ base, which the raw AV1 route presents
+            expect(getCustomPlaybackEligibility(
+                createProfile10Options(6, {
+                    ...PQ_BASE_COLORS,
+                    DvProfile: 7,
+                    ElPresentFlag: true,
+                    VideoRangeType: 'DOVIWithEL'
+                }),
+                createCapabilities(),
+                eligibilityOptions
+            )).toMatchObject({
+                dolbyVisionProfile: null,
+                eligible: true,
+                hdr: true,
+                rawVideoFrameFormat: 'I420P10'
+            });
+            expect(getCustomPlaybackEligibility(
+                createProfile10Options(0, {
+                    DvProfile: 7,
+                    ElPresentFlag: true,
+                    VideoRangeType: 'DOVIWithEL'
+                }),
+                createCapabilities(),
+                eligibilityOptions
+            )).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
+        });
+
+        it('presents an 8-bit 10.2 base through the native AV1 route, since the RPU route is 10-bit', () => {
+            expect(getCustomPlaybackEligibility(
+                createProfile10Options(2, {
+                    ...SDR_BASE_COLORS,
+                    BitDepth: 8,
+                    VideoRangeType: 'DOVIWithSDR'
+                }),
+                createCapabilities(),
+                {
+                    allowDolbyVision: true,
+                    allowRawHDR: false,
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
+            )).toMatchObject({
+                dolbyVisionProfile: null,
+                eligible: true,
+                hdr: false,
+                rawVideoFrameFormat: null,
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'video-frame'
+            });
+        });
+    });
+
+    describe('8-bit HEVC Main', () => {
+        const MAIN_STREAM = { BitDepth: 8, Profile: 'Main' } as const;
+        const BUNDLED_RAW_I420_ROUTE = {
+            eligible: true,
+            hdr: true,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: 'I420',
+            videoDecoderBackend: 'bundled-hevc',
+            videoOutputMode: 'raw-planes'
+        } as const;
+        const RUNTIME_WITHOUT_VIDEO_DECODER: CustomPlaybackRuntimeAvailability = {
+            ...AVAILABLE_RUNTIME,
+            environment: { ...AVAILABLE_RUNTIME.environment, videoDecoder: false }
+        };
+
+        it.each([
+            { colors: {}, compatibilityID: 0, profile: 5, rangeType: 'DOVI' },
+            { colors: {}, compatibilityID: 0, profile: 8, rangeType: 'DOVIInvalid' },
+            { colors: SDR_BASE_COLORS, compatibilityID: 2, profile: 8, rangeType: 'DOVIWithSDR' }
+        ])('reconstructs Profile $profile with compatibility ID $compatibilityID from bundled raw I420', ({
+            colors,
+            compatibilityID,
+            profile,
+            rangeType
+        }) => {
+            const options = createDolbyVisionOptions({
+                ...MAIN_STREAM,
+                ...colors,
+                DvBlSignalCompatibilityId: compatibilityID,
+                DvProfile: profile,
+                VideoRangeType: rangeType
+            });
+
+            expect(hasPotentialCustomPlaybackVideoRoute({
+                MediaSources: [ (options as { mediaSource: unknown }).mediaSource ]
+            })).toBe(true);
+            expect(getDolbyVisionReconstructionRawFrameFormat(options)).toBe('I420');
+            // The native Profile 5 route is 10-bit only, and the bundled decoder needs no WebCodecs decoder
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                {
+                    allowDolbyVision: true,
+                    allowNativeDolbyVision: true,
+                    allowRawHDR: false,
+                    runtimeAvailability: RUNTIME_WITHOUT_VIDEO_DECODER
+                }
+            )).toMatchObject({ ...BUNDLED_RAW_I420_ROUTE, dolbyVisionProfile: profile });
+        });
+
+        it.each([
+            { compatibilityID: 2, profile: 4, rangeType: 'SDR' },
+            { compatibilityID: 0, profile: 7, rangeType: 'DOVIWithEL' }
+        ])('reconstructs dual-layer Profile $profile from a bundled raw I420 base layer', ({
+            compatibilityID,
+            profile,
+            rangeType
+        }) => {
+            const options = createDolbyVisionOptions({
+                ...MAIN_STREAM,
+                ...SDR_BASE_COLORS,
+                DvBlSignalCompatibilityId: compatibilityID,
+                DvProfile: profile,
+                ElPresentFlag: true,
+                VideoRangeType: rangeType
+            });
+
+            expect(getDolbyVisionReconstructionRawFrameFormat(options)).toBe('I420');
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                {
+                    allowDolbyVisionProfile4: profile === 4,
+                    allowDolbyVisionProfile7: profile === 7,
+                    allowRawHDR: false,
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
+            )).toMatchObject({ ...BUNDLED_RAW_I420_ROUTE, dolbyVisionProfile: profile });
+        });
+
+        it.each([
+            { profile: 4, rangeType: 'SDR' },
+            { profile: 8, rangeType: 'DOVIWithSDR' }
+        ])('presents the declared SDR base of Profile $profile through VF-SDR without its RPU route', ({
+            profile,
+            rangeType
+        }) => {
+            expect(getCustomPlaybackEligibility(
+                createDolbyVisionOptions({
+                    ...MAIN_STREAM,
+                    ...SDR_BASE_COLORS,
+                    DvBlSignalCompatibilityId: 2,
+                    DvProfile: profile,
+                    ElPresentFlag: profile === 4,
+                    VideoRangeType: rangeType
+                }),
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toMatchObject({
+                dolbyVisionProfile: null,
+                eligible: true,
+                hdr: false,
+                rawVideoFrameFormat: null,
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'video-frame'
+            });
+        });
+
+        it('rejects 10-bit metadata under the 8-bit Main profile', () => {
+            const options = createDolbyVisionOptions({
+                BitDepth: 10,
+                DvBlSignalCompatibilityId: 0,
+                DvProfile: 8,
+                Profile: 'Main',
+                VideoRangeType: 'DOVIInvalid'
+            });
+
+            expect(hasPotentialCustomPlaybackVideoRoute({
+                MediaSources: [ (options as { mediaSource: unknown }).mediaSource ]
+            })).toBe(false);
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                {
+                    allowDolbyVision: true,
+                    allowRawHDR: false,
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
+            )).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
+        });
+    });
+
+    describe('dual-layer reconstruction over range extensions', () => {
+        function createRangeExtensionOptions(
+            variant: HEVCRangeExtensionVariant,
+            videoStream: Record<string, unknown>
+        ): Record<string, unknown> {
+            const definition = HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS[variant];
+            return createDolbyVisionOptions({
+                BitDepth: definition.bitDepth,
+                ElPresentFlag: true,
+                PixelFormat: definition.pixelFormat,
+                Profile: 'Rext',
+                ...videoStream
+            });
+        }
+
+        it.each([
+            { compatibilityID: 0, format: 'I422P10', profile: 7, rangeType: 'DOVIWithEL', variant: 'main422-10' },
+            { compatibilityID: 2, format: 'I444P12', profile: 4, rangeType: 'SDR', variant: 'main444-12' }
+        ] as const)('reconstructs Profile $profile over $variant in $format', ({
+            compatibilityID,
+            format,
+            profile,
+            rangeType,
+            variant
+        }) => {
+            const options = createRangeExtensionOptions(variant, {
+                DvBlSignalCompatibilityId: compatibilityID,
+                DvProfile: profile,
+                VideoRangeType: rangeType
+            });
+
+            expect(hasPotentialCustomPlaybackVideoRoute({
+                MediaSources: [ (options as { mediaSource: unknown }).mediaSource ]
+            })).toBe(true);
+            expect(getDolbyVisionReconstructionRawFrameFormat(options)).toBe(format);
+            expect(getCustomPlaybackEligibility(
+                options,
+                createRangeExtensionCapabilities(),
+                {
+                    allowDolbyVisionProfile4: profile === 4,
+                    allowDolbyVisionProfile7: profile === 7,
+                    allowRawHDR: false,
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
+            )).toMatchObject({
+                dolbyVisionProfile: profile,
+                eligible: true,
+                hdr: true,
+                neutralizeHDRColorMetadata: false,
+                rawVideoFrameFormat: format,
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'raw-planes'
+            });
+        });
+
+        it('presents the declared base through the variant\'s raw route without reconstruction', () => {
+            expect(getCustomPlaybackEligibility(
+                createRangeExtensionOptions('main444-12', {
+                    DvBlSignalCompatibilityId: 2,
+                    DvProfile: 4,
+                    VideoRangeType: 'SDR'
+                }),
+                createRangeExtensionCapabilities(),
+                {
+                    allowRawHDR: false,
+                    allowRawSDR: true,
+                    authorizedRawHDRRouteKeys: [ 'I444P12:bt709:bt709:limited:sdr' ],
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
+            )).toMatchObject({
+                dolbyVisionProfile: null,
+                eligible: true,
+                hdr: false,
+                rawVideoFrameFormat: 'I444P12',
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'raw-planes'
+            });
+        });
+
+        it('requires the exact variant capability', () => {
+            const capabilities = createRangeExtensionCapabilities();
+            const hevcRangeExtensions = capabilities.hevcRangeExtensions as Record<
+                HEVCRangeExtensionVariant,
+                HEVCRangeExtensionCapability
+            >;
+            capabilities.hevcRangeExtensions = {
+                ...hevcRangeExtensions,
+                'main422-10': {
+                    ...hevcRangeExtensions['main422-10'],
+                    reason: 'output-copy-unsupported',
+                    status: 'unsupported'
+                }
+            };
+
+            expect(getCustomPlaybackEligibility(
+                createRangeExtensionOptions('main422-10', {
+                    DvBlSignalCompatibilityId: 0,
+                    DvProfile: 7,
+                    VideoRangeType: 'DOVIWithEL'
+                }),
+                capabilities,
+                {
+                    allowDolbyVisionProfile7: true,
+                    allowRawHDR: false,
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
+            )).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
+        });
+    });
+
+    describe('dual-layer reconstruction without the bundled Main 10 qualification', () => {
+        // The bundled decoder decodes every EL, so without its Main 10 qualification the route discards the EL
+        function createCapabilitiesWithoutBundledMain10(): CustomDecodeCapabilities {
+            const capabilities = createRangeExtensionCapabilities();
+            const bundledHEVC = createBundledHEVCCapabilities();
+            capabilities.bundledHEVC = {
+                qualifications: {
+                    ...bundledHEVC.qualifications,
+                    'main10-1080p': {
+                        ...bundledHEVC.qualifications['main10-1080p'],
+                        reason: 'output-mismatch',
+                        status: 'unsupported'
+                    },
+                    'main10-4k': {
+                        ...bundledHEVC.qualifications['main10-4k'],
+                        reason: 'output-mismatch',
+                        status: 'unsupported'
+                    }
+                },
+                reason: 'partial'
+            };
+            // Native copy still qualifies raw Main 10 planes for the base layer
+            capabilities.rawHDRVideo = {
+                ...capabilities.rawHDRVideo,
+                hevc: {
+                    ...capabilities.rawHDRVideo.hevc,
+                    reason: 'output-copy-supported'
+                }
+            };
+            return capabilities;
+        }
+
+        it('reconstructs Profile 7 without its EL instead of presenting its declared PQ base', () => {
+            const options = createDolbyVisionOptions({
+                ...PQ_BASE_COLORS,
+                DvBlSignalCompatibilityId: 6,
+                DvProfile: 7,
+                ElPresentFlag: true,
+                VideoRange: 'HDR',
+                VideoRangeType: 'DOVIWithEL'
+            });
+            const eligibilityOptions = {
+                ...PQ_AUTHORIZATION,
+                allowDolbyVisionProfile7: true
+            };
+
+            const qualified = getCustomPlaybackEligibility(options, createCapabilities(), eligibilityOptions);
+            expect(qualified).toMatchObject({ dolbyVisionProfile: 7, eligible: true });
+            expect(qualified).not.toHaveProperty('discardDolbyVisionEnhancementLayer');
+            // MEL reconstructs exactly without the EL, and FEL presents its base either way
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilitiesWithoutBundledMain10(),
+                eligibilityOptions
+            )).toMatchObject({
+                discardDolbyVisionEnhancementLayer: true,
+                dolbyVisionProfile: 7,
+                eligible: true,
+                hdr: true,
+                rawVideoFrameFormat: 'I420P10',
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'raw-planes'
+            });
+        });
+
+        it('reconstructs Profile 4 without its EL instead of presenting its declared SDR base', () => {
+            expect(getCustomPlaybackEligibility(
+                createDolbyVisionOptions({
+                    ...SDR_BASE_COLORS,
+                    DvBlSignalCompatibilityId: 2,
+                    DvProfile: 4,
+                    ElPresentFlag: true,
+                    VideoRangeType: 'SDR'
+                }),
+                createCapabilitiesWithoutBundledMain10(),
+                {
+                    allowDolbyVisionProfile4: true,
+                    allowRawHDR: false,
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
+            )).toMatchObject({
+                discardDolbyVisionEnhancementLayer: true,
+                dolbyVisionProfile: 4,
+                eligible: true,
+                hdr: true,
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'raw-planes'
+            });
+        });
+
+        it.each([
+            { format: 'I420P10', label: 'Main 10', videoStream: {} },
+            { format: 'I422P10', label: 'a range extension', videoStream: { PixelFormat: 'yuv422p10le', Profile: 'Rext' } }
+        ])('reconstructs Profile 7 over $label without a declared base or its EL', ({
+            format,
+            videoStream
+        }) => {
+            expect(getCustomPlaybackEligibility(
+                createDolbyVisionOptions({
+                    DvBlSignalCompatibilityId: 0,
+                    DvProfile: 7,
+                    ElPresentFlag: true,
+                    VideoRangeType: 'DOVIWithEL',
+                    ...videoStream
+                }),
+                createCapabilitiesWithoutBundledMain10(),
+                {
+                    allowDolbyVisionProfile7: true,
+                    allowRawHDR: false,
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
+            )).toMatchObject({
+                discardDolbyVisionEnhancementLayer: true,
+                dolbyVisionProfile: 7,
+                eligible: true,
+                rawVideoFrameFormat: format
+            });
+        });
+
+        it('keeps single-layer reconstruction, which decodes no EL', () => {
+            const eligibility = getCustomPlaybackEligibility(
+                createDolbyVisionOptions({
+                    DvBlSignalCompatibilityId: 0,
+                    DvProfile: 8,
+                    VideoRangeType: 'DOVIInvalid'
+                }),
+                createCapabilitiesWithoutBundledMain10(),
+                {
+                    allowDolbyVision: true,
+                    allowRawHDR: false,
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
+            );
+
+            expect(eligibility).toMatchObject({
+                dolbyVisionProfile: 8,
+                eligible: true,
+                rawVideoFrameFormat: 'I420P10',
+                videoDecoderBackend: 'native'
+            });
+            expect(eligibility).not.toHaveProperty('discardDolbyVisionEnhancementLayer');
+        });
+    });
+});
+
+describe('10-bit raw SDR route', () => {
+    const RAW_SDR_AUTHORIZATION = {
+        allowRawHDR: false,
+        allowRawSDR: true,
+        authorizedRawHDRRouteKeys: [
+            'I420P10:bt709:bt709:full:sdr',
+            'I420P10:bt709:bt709:limited:sdr'
+        ] as const,
+        runtimeAvailability: AVAILABLE_RUNTIME
+    };
+    const RAW_SDR_ROUTE = {
+        dolbyVisionProfile: null,
+        eligible: true,
+        hdr: false,
+        neutralizeHDRColorMetadata: false,
+        rawVideoFrameFormat: 'I420P10',
+        videoOutputMode: 'raw-planes'
+    } as const;
+
+    function createSDROptions(videoStream: Record<string, unknown>): Record<string, unknown> {
+        return createOptions({
+            mediaSource: {
+                Container: 'mkv',
+                DefaultAudioStreamIndex: 1,
+                MediaStreams: [
+                    {
+                        AverageFrameRate: 24,
+                        BitDepth: 10,
+                        ColorPrimaries: 'bt709',
+                        ColorSpace: 'bt709',
+                        ColorTransfer: 'bt709',
+                        Height: 2_160,
+                        Index: 0,
+                        IsInterlaced: false,
+                        Type: 'Video',
+                        VideoRange: 'SDR',
+                        VideoRangeType: 'SDR',
+                        Width: 3_840,
+                        ...videoStream
+                    },
+                    {
+                        Channels: 2,
+                        Codec: 'aac',
+                        Index: 1,
+                        SampleRate: 48_000,
+                        Type: 'Audio'
+                    }
+                ],
+                RunTimeTicks: 60_000_000
+            }
+        });
+    }
+
+    function createCapabilitiesWithoutNativeHEVC(): CustomDecodeCapabilities {
+        const capabilities = createCapabilities();
+        capabilities.nativeHDRHEVC = undefined;
+        capabilities.video = {
+            ...capabilities.video,
+            hevc: createCapability('hevc', false)
+        };
+        return capabilities;
+    }
+
+    it.each([
+        { codec: 'av1', colorRange: 'tv', profile: 'Main' },
+        { codec: 'vp9', colorRange: 'pc', profile: 'Profile 2' }
+    ])('selects native raw I420P10 for $codec $profile SDR in $colorRange range', ({
+        codec,
+        colorRange,
+        profile
+    }) => {
+        const options = createSDROptions({
+            Codec: codec,
+            ColorRange: colorRange,
+            Profile: profile
+        });
+
+        expect(hasPotentialCustomPlaybackVideoRoute({
+            MediaSources: [ (options as { mediaSource: unknown }).mediaSource ]
+        })).toBe(true);
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            RAW_SDR_AUTHORIZATION
+        )).toMatchObject({ ...RAW_SDR_ROUTE, videoDecoderBackend: 'native' });
+    });
+
+    it('decodes HEVC Main 10 SDR to bundled raw I420P10 without native HEVC', () => {
+        const options = createSDROptions({ Codec: 'hevc', Profile: 'Main 10' });
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilitiesWithoutNativeHEVC(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+        // The bundled decoder needs no WebCodecs decoder
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilitiesWithoutNativeHEVC(),
+            {
+                ...RAW_SDR_AUTHORIZATION,
+                runtimeAvailability: {
+                    ...AVAILABLE_RUNTIME,
+                    environment: { ...AVAILABLE_RUNTIME.environment, videoDecoder: false }
+                }
+            }
+        )).toMatchObject({ ...RAW_SDR_ROUTE, videoDecoderBackend: 'bundled-hevc' });
+    });
+
+    it('keeps HEVC Main 10 SDR on the native VideoFrame route when native decode qualifies', () => {
+        expect(getCustomPlaybackEligibility(
+            createSDROptions({ Codec: 'hevc', Profile: 'Main 10' }),
+            createCapabilities(),
+            RAW_SDR_AUTHORIZATION
+        )).toMatchObject({
+            eligible: true,
+            hdr: false,
+            rawVideoFrameFormat: null,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        });
+    });
+
+    it('presents the declared 10-bit SDR base of HEVC Profile 8.2 through raw I420P10 without native HEVC', () => {
+        expect(getCustomPlaybackEligibility(
+            createSDROptions({
+                BlPresentFlag: true,
+                Codec: 'hevc',
+                DvBlSignalCompatibilityId: 2,
+                DvProfile: 8,
+                Profile: 'Main 10',
+                RpuPresentFlag: true,
+                VideoRangeType: 'DOVIWithSDR'
+            }),
+            createCapabilitiesWithoutNativeHEVC(),
+            RAW_SDR_AUTHORIZATION
+        )).toMatchObject({ ...RAW_SDR_ROUTE, videoDecoderBackend: 'bundled-hevc' });
+    });
+
+    it.each([
+        {
+            label: 'without the raw SDR flag',
+            eligibilityOptions: { ...RAW_SDR_AUTHORIZATION, allowRawSDR: false }
+        },
+        {
+            label: 'without its own route key',
+            eligibilityOptions: {
+                ...RAW_SDR_AUTHORIZATION,
+                authorizedRawHDRRouteKeys: [ 'I420P10:bt709:bt709:full:sdr' ] as const
+            }
+        }
+    ])('rejects limited-range AV1 10-bit SDR $label', ({ eligibilityOptions }) => {
+        expect(getCustomPlaybackEligibility(
+            createSDROptions({ Codec: 'av1', Profile: 'Main' }),
+            createCapabilities(),
+            eligibilityOptions
+        )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+    });
+
+    // The raw SDR keys are BT.709 only, so BT.601 and BT.2020 SDR never reach the raw shaders
+    it.each([
+        {
+            colors: { ColorPrimaries: 'smpte170m', ColorSpace: 'smpte170m', ColorTransfer: 'smpte170m' },
+            label: 'BT.601'
+        },
+        {
+            colors: { ColorPrimaries: 'bt2020', ColorSpace: 'bt2020nc', ColorTransfer: 'bt2020-10' },
+            label: 'BT.2020'
+        }
+    ])('rejects $label 10-bit SDR on AV1 and VP9', ({ colors }) => {
+        for (const codecProfile of [
+            { Codec: 'av1', Profile: 'Main' },
+            { Codec: 'vp9', Profile: 'Profile 2' }
+        ]) {
+            const options = createSDROptions({ ...colors, ...codecProfile });
+
+            expect(hasPotentialCustomPlaybackVideoRoute({
+                MediaSources: [ (options as { mediaSource: unknown }).mediaSource ]
+            })).toBe(false);
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                RAW_SDR_AUTHORIZATION
+            )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+        }
+    });
+
+    it('requires the codec\'s raw capability and its profile, at any frame size', () => {
+        const capabilities = createCapabilities();
+        capabilities.rawHDRVideo = {
+            ...capabilities.rawHDRVideo,
+            vp9: {
+                ...capabilities.rawHDRVideo.vp9,
+                reason: 'output-copy-unsupported',
+                status: 'unsupported'
+            }
+        };
+
+        expect(getCustomPlaybackEligibility(
+            createSDROptions({ Codec: 'vp9', Profile: 'Profile 2' }),
+            capabilities,
+            RAW_SDR_AUTHORIZATION
+        )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+        expect(getCustomPlaybackEligibility(
+            createSDROptions({ Codec: 'vp9', Profile: 'Profile 0' }),
+            createCapabilities(),
+            RAW_SDR_AUTHORIZATION
+        )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+        expect(getCustomPlaybackEligibility(
+            createSDROptions({
+                Codec: 'av1',
+                Height: ULTRA_HD_16K_CODED_HEIGHT,
+                Profile: 'Main',
+                Width: ULTRA_HD_16K_CODED_WIDTH
+            }),
+            createCapabilities(),
+            RAW_SDR_AUTHORIZATION
+        )).toMatchObject({
+            eligible: true,
+            maximumCodedHeight: ULTRA_HD_16K_CODED_HEIGHT,
+            maximumCodedWidth: ULTRA_HD_16K_CODED_WIDTH,
+            videoOutputMode: 'raw-planes'
+        });
     });
 });

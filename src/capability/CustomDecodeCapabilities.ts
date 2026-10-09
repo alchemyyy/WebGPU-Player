@@ -720,6 +720,7 @@ const BUNDLED_AUDIO_CODEC_DEFINITIONS: readonly BundledAudioCodecDefinition[] = 
 const VP9_PROFILE_2_VECTOR = createRawHDRCapabilityVector('vp9');
 const AV1_MAIN_10_VECTOR = createRawHDRCapabilityVector('av1');
 const HEVC_MAIN10_ACCESS_UNIT = createHEVCExactCapabilityAccessUnit('main10-4k');
+// The runtime requests each probe's hint for its codec: raw AV1 and VP9 planes come from the software decoders
 const RAW_HDR_VIDEO_PROBE_DEFINITIONS: readonly RawHDRVideoProbeDefinition[] = [
     {
         codec: 'hevc',
@@ -729,7 +730,9 @@ const RAW_HDR_VIDEO_PROBE_DEFINITIONS: readonly RawHDRVideoProbeDefinition[] = [
             codedWidth: REPRESENTATIVE_RAW_HDR_VIDEO_WIDTH,
             hardwareAcceleration: getCustomDecodeHardwareAcceleration(
                 'raw-planes',
-                'native'
+                'native',
+                false,
+                'hevc'
             ),
             optimizeForLatency: true
         },
@@ -744,7 +747,9 @@ const RAW_HDR_VIDEO_PROBE_DEFINITIONS: readonly RawHDRVideoProbeDefinition[] = [
             codedWidth: REPRESENTATIVE_RAW_HDR_VIDEO_WIDTH,
             hardwareAcceleration: getCustomDecodeHardwareAcceleration(
                 'raw-planes',
-                'native'
+                'native',
+                false,
+                'vp9'
             ),
             optimizeForLatency: true
         },
@@ -759,7 +764,9 @@ const RAW_HDR_VIDEO_PROBE_DEFINITIONS: readonly RawHDRVideoProbeDefinition[] = [
             codedWidth: REPRESENTATIVE_RAW_HDR_VIDEO_WIDTH,
             hardwareAcceleration: getCustomDecodeHardwareAcceleration(
                 'raw-planes',
-                'native'
+                'native',
+                false,
+                'av1'
             ),
             optimizeForLatency: true
         },

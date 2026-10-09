@@ -306,6 +306,7 @@ describe('getDolbyVisionPresentationDescriptor', () => {
         [ { DvBlSignalCompatibilityId: 1, DvProfile: 8, ElPresentFlag: true }, 8, 10 ],
         // Without an RPU only a declared base layer can present the stream
         [ { DvProfile: 8, RpuPresentFlag: false }, null, 10 ],
+        [ { DvBlSignalCompatibilityId: 1, DvProfile: 10, RpuPresentFlag: false }, null, 10 ],
         // Any base-layer bit depth is accepted; route selection decides whether it can be presented
         [ { BitDepth: 12, DvProfile: 5 }, 5, 12 ],
         [ { BitDepth: 8, DvBlSignalCompatibilityId: 2, DvProfile: 8 }, 8, 8 ]
@@ -339,9 +340,17 @@ describe('getDolbyVisionPresentationDescriptor', () => {
         [ 20, 1, 8 ],
         [ 20, 2, 8 ],
         [ 20, 4, 8 ],
-        // AVC Profile 9, AV1 Profile 10, and the retired profiles have no RPU route
+        // AV1 Profile 10 reconstructs like Profile 5 for 10.0 or no ID, and like Profile 8 for every other ID
+        [ 10, null, 5 ],
+        [ 10, 0, 5 ],
+        [ 10, 1, 8 ],
+        [ 10, 2, 8 ],
+        [ 10, 4, 8 ],
+        [ 10, 3, 8 ],
+        [ 10, 6, 8 ],
+        [ 10, 15, 8 ],
+        // AVC Profile 9 and the retired profiles have no RPU route
         [ 9, 2, null ],
-        [ 10, 1, null ],
         [ 0, null, null ],
         [ 3, null, null ],
         [ 6, 1, null ]
@@ -371,6 +380,7 @@ describe('getDolbyVisionPresentationDescriptor', () => {
         [ 9, 8 ],
         [ 2, 8 ],
         [ 8, 10 ],
+        [ 10, 10 ],
         [ 20, 10 ]
     ])('defaults Profile %i without a bit depth to its %i-bit base layer', (profile, bitDepth) => {
         expect(getDolbyVisionPresentationDescriptor({
@@ -623,8 +633,23 @@ describe('getDolbyVisionDeclaredBaseTransfer', () => {
     });
 
     it.each([
+        [ 1, 'pq' ],
+        [ 2, 'sdr' ],
+        [ 4, 'hlg' ],
+        [ 6, 'pq' ],
+        [ 3, null ],
+        [ 15, null ]
+    ])('declares AV1 Profile 10 compatibility ID %s as a %s base', (compatibilityID, transfer) => {
+        expect(getDolbyVisionDeclaredBaseTransfer(
+            createDescriptor(10, compatibilityID, 8)
+        )).toBe(transfer);
+    });
+
+    it.each([
         createDescriptor(5, 1, 5),
         createDescriptor(5, 2, null),
+        createDescriptor(10, 0, 5),
+        createDescriptor(10, null, 5),
         createDescriptor(20, null, 5)
     ])('never declares the IPT base layer of a Profile 5 style stream: %o', descriptor => {
         expect(getDolbyVisionDeclaredBaseTransfer(descriptor)).toBeNull();
@@ -701,6 +726,37 @@ describe('getDolbyVisionBaseColorMetadata', () => {
         }))).toMatchObject({ bitDepth: 12, transfer: 'pq' });
     });
 
+    it.each([
+        [
+            1,
+            { ColorPrimaries: 'bt2020', ColorSpace: 'bt2020nc', ColorTransfer: 'smpte2084' },
+            { matrix: 'bt2020-ncl', primaries: 'bt2020', transfer: 'pq' }
+        ],
+        [
+            2,
+            { ColorPrimaries: 'bt709', ColorSpace: 'bt709', ColorTransfer: 'bt709' },
+            { matrix: 'bt709', primaries: 'bt709', transfer: 'sdr' }
+        ],
+        [
+            4,
+            { ColorPrimaries: 'bt2020', ColorSpace: 'bt2020nc', ColorTransfer: 'arib-std-b67' },
+            { matrix: 'bt2020-ncl', primaries: 'bt2020', transfer: 'hlg' }
+        ]
+    ])('presents the declared 10-bit base of AV1 Profile 10 with compatibility ID %i', (
+        compatibilityID,
+        colors,
+        expected
+    ) => {
+        expect(getDolbyVisionBaseColorMetadata(createOptions({
+            BitDepth: 10,
+            Codec: 'av1',
+            ...colors,
+            DvBlSignalCompatibilityId: compatibilityID,
+            DvProfile: 10,
+            Profile: 'Main'
+        }))).toMatchObject({ bitDepth: 10, range: 'limited', ...expected });
+    });
+
     it('presents the proven PQ base track of a separate Profile 7 pair', () => {
         expect(getDolbyVisionBaseColorMetadata({
             mediaSource: { MediaStreams: createSeparateProfile7Streams() }
@@ -728,7 +784,11 @@ describe('getDolbyVisionBaseColorMetadata', () => {
         { BitDepth: 8, DvBlSignalCompatibilityId: 1, DvProfile: 8 },
         { BitDepth: 10, DvBlSignalCompatibilityId: 0, DvProfile: 8 },
         { BitDepth: 10, DvBlSignalCompatibilityId: 1, DvProfile: 5 },
-        { BitDepth: 10, DvBlSignalCompatibilityId: 4, DvProfile: 8, Hdr10PlusPresentFlag: true }
+        { BitDepth: 10, DvBlSignalCompatibilityId: 4, DvProfile: 8, Hdr10PlusPresentFlag: true },
+        // AV1 10.0 has an IPT base, and a stream without an ID declares none even when its transfer is PQ
+        { BitDepth: 10, Codec: 'av1', DvBlSignalCompatibilityId: 0, DvProfile: 10 },
+        { BitDepth: 10, Codec: 'av1', ColorTransfer: 'smpte2084', DvProfile: 10 },
+        { BitDepth: 10, Codec: 'av1', DvBlSignalCompatibilityId: 3, DvProfile: 10 }
     ])('declares no presentable base for %o', stream => {
         expect(getDolbyVisionBaseColorMetadata(createOptions(stream))).toBeNull();
     });

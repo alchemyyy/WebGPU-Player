@@ -65,6 +65,7 @@ import {
     MAX_DECODED_RAW_FRAME_CREDITS,
     MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT,
     type CustomDecodeAudioOutputMode,
+    type CustomDecodeDolbyVisionProfile,
     type CustomDecodeFailureKind,
     type CustomDecodeNativeHDRTransfer,
     type CustomDecodeRawVideoFrameFormat,
@@ -86,10 +87,6 @@ import DolbyVisionEncodedMetadataQueue, {
     getHEVCNALFormat,
     type ProcessedDolbyVisionHEVCPacket
 } from '../video/dolby-vision/DolbyVisionEncodedMetadata';
-import DolbyVisionFramePairQueue, {
-    MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH,
-    type DolbyVisionFramePair
-} from '../video/dolby-vision/DolbyVisionFramePairQueue';
 import DolbyVisionEncodedPacketPairer from '../video/dolby-vision/DolbyVisionEncodedPacketPairer';
 import {
     splitDolbyVisionHEVCAccessUnit,
@@ -138,6 +135,22 @@ import NativeMediaAudioFMP4Remuxer, {
     type NativeMediaAudioFMP4RemuxOutput
 } from '../audio/native/NativeMediaAudioFMP4Remuxer';
 import OwnedNativeHEVCVideoDecoder from '../video/decoders/OwnedNativeHEVCVideoDecoder';
+import OwnedNativeVideoDecoder from '../video/decoders/OwnedNativeVideoDecoder';
+import { runOwnedAV1VideoStream } from '../video/decoders/OwnedAV1VideoStream';
+import {
+    closeOwnedDecodedVideoOutput,
+    getOwnedDecodedVideoTiming,
+    OwnedVideoStreamState,
+    pumpOwnedVideoFrames,
+    type OwnedDecodedVideoOutput,
+    type OwnedDecodedVideoSource,
+    type OwnedVideoDecoderCallbacks,
+    type OwnedVideoDecoderPort,
+    type OwnedVideoFrameMetadata,
+    type OwnedVideoFrameMetadataSource,
+    type OwnedVideoStreamRun
+} from '../video/decoders/OwnedVideoDecodeStream';
+import { assignAV1SequenceHeaderCodecString } from '../video/av1/AV1DecoderConfiguration';
 import { readISOBaseMediaDolbyVisionTrackConfiguration } from '../video/dolby-vision/ISOBaseMediaDolbyVisionConfiguration';
 import { assignISOBaseMediaDolbyVisionSampleEntryCodec } from '../video/dolby-vision/ISOBaseMediaDolbyVisionSampleEntry';
 import {
@@ -169,12 +182,13 @@ const URL_SOURCE_PARALLELISM = 2;
 const MAX_NETWORK_RETRY_ATTEMPTS = 2;
 const NETWORK_RETRY_BASE_SECONDS = 0.25;
 const OWNED_VIDEO_DECODER_QUEUE_HIGH_WATER_MARK = 16;
-// Every queued HEVC packet becomes a frame that may wait in the pair queue for a credit, so the decode
-// queue plus the decodes in flight must fit under that queue's bound
-const OWNED_HEVC_DECODE_QUEUE_HIGH_WATER_MARK = MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH / 2;
 const DOLBY_VISION_ENHANCEMENT_CODEC = 'hev1.2.4.L153.B0';
 const ANNEX_B_HEVC_NAL_FORMAT: HEVCNALFormat = { kind: 'annex-b' };
 const OWNED_HEVC_PACKET_OPTIONS = {
+    metadataOnly: false,
+    verifyKeyPackets: true
+} as const;
+const OWNED_AV1_PACKET_OPTIONS = {
     metadataOnly: false,
     verifyKeyPackets: true
 } as const;
@@ -275,8 +289,6 @@ type DecodeRun = {
     videoDecoderBackend: CustomDecodeVideoDecoderBackend
     /** Tags posted frames so the session can drop frames from replaced attempts */
     videoEpoch: number
-    /** The native decoder hint the route's capability probes measured */
-    videoHardwareAcceleration: HardwareAcceleration
     videoOutputMode: CustomDecodeVideoOutputMode
     videoIterator: MediaSampleIterator<EncodedPacket> | MediaSampleIterator<VideoSample> | null
     /** Set once the video stream unwinds so finished audio stops waiting for a resync */
@@ -297,6 +309,8 @@ type PreparedVideoTrack = {
     decoderConfig: VideoDecoderConfig
     geometry: RawVideoFrameGeometry
     staticHDRMetadataScan?: StaticHDRMetadataScanResult
+    /** The native decoder hint the route's capability probes measured for this codec */
+    videoHardwareAcceleration: HardwareAcceleration
     videoTrack: InputVideoTrack
 };
 
@@ -840,6 +854,8 @@ async function prepareFocusedSoftwareVideoTrack(
             'The selected VC-1 track has no supported WVC1 decoder description'
         );
     }
+    // A bundled decoder is software whatever the codec
+    const videoHardwareAcceleration = getCustomDecodeRequestHardwareAcceleration(input.request, null);
     return {
         availableVideoTracks: input.availableVideoTracks,
         codec: route.codec,
@@ -852,7 +868,7 @@ async function prepareFocusedSoftwareVideoTrack(
             ...(colorSpace ? { colorSpace } : {}),
             displayAspectHeight: input.displayHeight,
             displayAspectWidth: input.displayWidth,
-            hardwareAcceleration: 'prefer-software',
+            hardwareAcceleration: videoHardwareAcceleration,
             optimizeForLatency: true
         },
         geometry: {
@@ -861,6 +877,7 @@ async function prepareFocusedSoftwareVideoTrack(
             displayHeight: input.displayHeight,
             displayWidth: input.displayWidth
         },
+        videoHardwareAcceleration,
         videoTrack: input.videoTrack
     };
 }
@@ -897,6 +914,35 @@ async function readHEVCStaticHDRMetadata(
     return scanHEVCStaticHDRMetadata(accessUnits, getHEVCNALFormat(decoderConfig));
 }
 
+/**
+ * Rejects a Dolby Vision RPU route on a track whose RPUs the engine cannot read.
+ * The engine reads RPUs from HEVC NAL units and AV1 metadata OBUs.
+ * AV1 Dolby Vision (Profile 10) is single-layer, so no AV1 track has a dual-layer route.
+ */
+function requireDolbyVisionRPUTrack(
+    codec: VideoCodec,
+    dolbyVisionProfile: CustomDecodeDolbyVisionProfile
+): void {
+    if (dolbyVisionProfile === null) {
+        return;
+    }
+    switch (codec) {
+        case 'hevc':
+            return;
+        case 'av1':
+            if (isDolbyVisionDualLayerProfile(dolbyVisionProfile)) {
+                throw new UnsupportedCustomDecodeSourceError(
+                    `AV1 Dolby Vision has no Profile ${dolbyVisionProfile} enhancement layer route`
+                );
+            }
+            return;
+        default:
+            throw new UnsupportedCustomDecodeSourceError(
+                `Dolby Vision RPU data cannot be read from the selected ${codec} track`
+            );
+    }
+}
+
 async function prepareVideoTrack(
     input: Input,
     run: DecodeRun,
@@ -914,6 +960,8 @@ async function prepareVideoTrack(
         );
     }
     await assignISOBaseMediaDolbyVisionSampleEntryCodec(videoTrack);
+    // Both the owned AV1 path and the sample sink decode with the corrected codec string
+    await assignAV1SequenceHeaderCodecString(videoTrack);
 
     const [
         codec,
@@ -989,6 +1037,7 @@ async function prepareVideoTrack(
             `The browser cannot decode the selected ${codec} video configuration`
         );
     }
+    requireDolbyVisionRPUTrack(codec, request.dolbyVisionProfile);
 
     const staticHDRMetadataScan = codec === 'hevc' ?
         await readHEVCStaticHDRMetadata(videoTrack, decoderConfig, request, run) :
@@ -1004,6 +1053,7 @@ async function prepareVideoTrack(
         decoderConfig,
         geometry: { codedHeight, codedWidth, displayHeight, displayWidth },
         ...(staticHDRMetadataScan ? { staticHDRMetadataScan } : {}),
+        videoHardwareAcceleration: getCustomDecodeRequestHardwareAcceleration(request, codec),
         videoTrack
     };
 }
@@ -1247,7 +1297,7 @@ async function getSelectedAudioTrackMetadata(
     }
     if (!isSupportedCustomAudioSampleRate(sampleRate)) {
         throw new UnsupportedCustomDecodeSourceError(
-            'The selected audio sample rate is outside the supported range'
+            'The selected audio sample rate is invalid'
         );
     }
     const inputChannelLayout = getCustomAudioChannelLayout(channelCount);
@@ -1946,6 +1996,8 @@ async function postRawVideoOutput(
 ): Promise<void> {
     let frame: RawVideoFrameSource | null = null;
     let enhancementFrame: RawVideoFrameSource | null = null;
+    // Owned here until its frame is taken
+    let untakenEnhancementOutput = enhancementOutput;
     try {
         const decodedFrame = takeOwnedRawVideoFrameSource(output);
         frame = decodedFrame.frame;
@@ -1954,9 +2006,11 @@ async function postRawVideoOutput(
         if (isVideoAttemptStopped(run) || currentRun !== run) {
             return;
         }
-        if (enhancementOutput) {
+        if (untakenEnhancementOutput) {
+            const takenEnhancementOutput = untakenEnhancementOutput;
+            untakenEnhancementOutput = null;
             enhancementFrame = takeMatchingEnhancementFrame(
-                enhancementOutput,
+                takenEnhancementOutput,
                 decodedFrame.mediaTimeMicroseconds
             );
         }
@@ -1990,6 +2044,7 @@ async function postRawVideoOutput(
     } finally {
         frame?.close();
         enhancementFrame?.close();
+        closeOwnedDecodedVideoOutput(untakenEnhancementOutput);
     }
 }
 
@@ -2001,6 +2056,8 @@ function postTransferredVideoOutput(
     enhancementOutput: OwnedDecodedVideoOutput | null
 ): void {
     let frame: VideoFrame | null = null;
+    // Owned here until its frame is taken
+    let untakenEnhancementOutput = enhancementOutput;
     try {
         const decodedFrame = takeOwnedVideoFrame(output);
         frame = decodedFrame.frame;
@@ -2009,8 +2066,10 @@ function postTransferredVideoOutput(
         if (isVideoAttemptStopped(run) || currentRun !== run) {
             return;
         }
-        if (enhancementOutput) {
-            takeMatchingEnhancementFrame(enhancementOutput, decodedFrame.mediaTimeMicroseconds).close();
+        if (untakenEnhancementOutput) {
+            const takenEnhancementOutput = untakenEnhancementOutput;
+            untakenEnhancementOutput = null;
+            takeMatchingEnhancementFrame(takenEnhancementOutput, decodedFrame.mediaTimeMicroseconds).close();
         }
 
         postTransferredVideoFrame(
@@ -2024,6 +2083,7 @@ function postTransferredVideoOutput(
         frame = null;
     } finally {
         frame?.close();
+        closeOwnedDecodedVideoOutput(untakenEnhancementOutput);
     }
 }
 
@@ -2149,12 +2209,9 @@ function normalizeAudioSample(
             sample.microsecondTimestamp,
             'Decoded audio timestamp'
         );
-        if (
-            !Number.isSafeInteger(sample.numberOfFrames)
-            || sample.numberOfFrames <= 0
-            || sample.numberOfFrames > MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE
-        ) {
-            throw new UnsupportedCustomDecodeSourceError('A decoded audio sample exceeded the supported size');
+        // A decoded sample of any length is taken; the resampler re-chunks it within the protocol frame limit
+        if (!Number.isSafeInteger(sample.numberOfFrames) || sample.numberOfFrames <= 0) {
+            throw new UnsupportedCustomDecodeSourceError('A decoded audio sample has an invalid frame count');
         }
         const boundInput = outputStage.bind({
             channelCount: sample.numberOfChannels,
@@ -2285,97 +2342,10 @@ async function postNormalizedAudioOutput(
     return !isAudioAttemptStopped(run);
 }
 
-type OwnedDecodedVideoSource =
-    | {
-        frame: VideoFrame
-        geometry: RawVideoFrameGeometry
-        kind: 'native-frame'
-    }
-    // A software decoder's sample of CPU planes, copied to raw planes without a VideoFrame
-    | {
-        kind: 'planar-sample'
-        sample: VideoSample
-    }
-    // A Mediabunny sample that wraps a WebCodecs VideoFrame
-    | {
-        kind: 'video-sample'
-        sample: VideoSample
-    };
-
-type OwnedDecodedVideoOutput = {
-    durationMicroseconds: Microseconds
-    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null
-    HDR10PlusMetadata?: HDR10PlusFrameMetadata | null
-    mediaTimeMicroseconds: Microseconds
-    source: OwnedDecodedVideoSource
-};
-
-type OwnedHEVCVideoDecoderCallbacks = {
-    onError: (error: unknown) => void
-    onOutput: (output: OwnedDecodedVideoSource) => void
-    onProgress: () => void
-};
-
-type OwnedHEVCVideoDecoderPort = {
-    close: () => void
-    decode: (packet: EncodedPacket) => boolean
-    flush: () => Promise<void>
-    getDecodeQueueSize: () => number
-    init: () => Promise<void>
-};
-
-type OwnedOutputPostResult = 'none' | 'posted' | 'stopped';
-
-function getOwnedDecodedVideoTiming(source: OwnedDecodedVideoSource): {
-    durationMicroseconds: Microseconds
-    mediaTimeMicroseconds: Microseconds
-} {
-    const durationMicrosecondsValue = source.kind === 'native-frame' ?
-        source.frame.duration ?? 0 :
-        source.sample.microsecondDuration;
-    const mediaTimeMicrosecondsValue = source.kind === 'native-frame' ?
-        source.frame.timestamp :
-        source.sample.microsecondTimestamp;
-    const durationMicroseconds = requireMicroseconds(
-        durationMicrosecondsValue,
-        'Owned decoded HEVC frame duration'
-    );
-    if (durationMicroseconds < 0) {
-        throw new RangeError('Owned decoded HEVC frame duration must not be negative');
-    }
-    return {
-        durationMicroseconds,
-        mediaTimeMicroseconds: requireMicroseconds(
-            mediaTimeMicrosecondsValue,
-            'Owned decoded HEVC frame timestamp'
-        )
-    };
-}
-
-function closeOwnedDecodedVideoSource(source: OwnedDecodedVideoSource | null): void {
-    try {
-        switch (source?.kind) {
-            case 'native-frame':
-                source.frame.close();
-                break;
-            case 'planar-sample':
-            case 'video-sample':
-                source.sample.close();
-                break;
-        }
-    } catch {
-        // Ownership ends even when a decoder implementation throws while closing
-    }
-}
-
-function closeOwnedDecodedVideoOutput(output: OwnedDecodedVideoOutput | null): void {
-    closeOwnedDecodedVideoSource(output?.source ?? null);
-}
-
 function createOwnedBundledHEVCVideoDecoderPort(
     config: VideoDecoderConfig,
-    callbacks: OwnedHEVCVideoDecoderCallbacks
-): OwnedHEVCVideoDecoderPort {
+    callbacks: OwnedVideoDecoderCallbacks
+): OwnedVideoDecoderPort {
     const decoder = createOwnedHEVCSoftwareVideoDecoder(config, {
         onError: callbacks.onError,
         onSample: (sample: VideoSample): void => {
@@ -2406,18 +2376,18 @@ function createOwnedBundledHEVCVideoDecoderPort(
 
 function createOwnedHEVCVideoDecoderPort(
     run: DecodeRun,
-    decoderConfig: VideoDecoderConfig,
+    preparedVideoTrack: PreparedVideoTrack,
     inputFormat: ReturnType<typeof getHEVCNALFormat>,
-    callbacks: OwnedHEVCVideoDecoderCallbacks
-): OwnedHEVCVideoDecoderPort {
+    callbacks: OwnedVideoDecoderCallbacks
+): OwnedVideoDecoderPort {
     switch (run.videoDecoderBackend) {
         case 'bundled-hevc':
-            return createOwnedBundledHEVCVideoDecoderPort(decoderConfig, callbacks);
+            return createOwnedBundledHEVCVideoDecoderPort(preparedVideoTrack.decoderConfig, callbacks);
         case 'native':
             return new OwnedNativeHEVCVideoDecoder(
                 {
-                    ...decoderConfig,
-                    hardwareAcceleration: run.videoHardwareAcceleration,
+                    ...preparedVideoTrack.decoderConfig,
+                    hardwareAcceleration: preparedVideoTrack.videoHardwareAcceleration,
                     optimizeForLatency: true
                 },
                 inputFormat,
@@ -2448,288 +2418,72 @@ function createOwnedHEVCVideoDecoderPort(
     }
 }
 
-class OwnedHEVCStreamState {
-    private decoderFailure: unknown = null;
-    private enhancementDecoderFailed = false;
-    private readonly framePairs = new DolbyVisionFramePairQueue<
-        OwnedDecodedVideoOutput,
-        OwnedDecodedVideoOutput
-    >(closeOwnedDecodedVideoOutput, closeOwnedDecodedVideoOutput);
-    private firstPresentationOutputQueued = false;
-    private frameCreditHeld = false;
-    private preStartOutput: OwnedDecodedVideoOutput | null = null;
-    public packetsEnded = false;
-
-    public constructor(
-        private readonly metadataQueue: DolbyVisionEncodedMetadataQueue,
-        private readonly dynamicHDRMetadataQueue: HEVCDynamicHDRMetadataQueue,
-        private readonly startTimeMicroseconds: Microseconds,
-        private readonly enhancementExpectedGeometry: RawVideoFrameGeometry | null
-    ) {
-        if (!enhancementExpectedGeometry) {
-            this.framePairs.finishEnhancement();
-        }
-    }
-
-    public recordDecoderFailure(error: unknown): void {
-        this.decoderFailure ??= error;
-    }
-
-    public recordEnhancementDecoderFailure(): void {
-        if (this.enhancementDecoderFailed) {
-            return;
-        }
-        this.enhancementDecoderFailed = true;
-        this.framePairs.finishEnhancement();
-    }
-
-    public canDecodeEnhancement(): boolean {
-        return this.enhancementExpectedGeometry !== null
-            && !this.enhancementDecoderFailed;
-    }
-
-    public enqueueDecodedOutput(source: OwnedDecodedVideoSource): void {
-        let decodedOutput: OwnedDecodedVideoOutput | null = null;
-        let sourceOwned = true;
-        try {
-            const timing = getOwnedDecodedVideoTiming(source);
-            decodedOutput = {
-                durationMicroseconds: timing.durationMicroseconds,
-                encodedDolbyVisionMetadata: this.metadataQueue.takeFrameMetadata(
-                    timing.mediaTimeMicroseconds
-                ),
-                HDR10PlusMetadata: this.dynamicHDRMetadataQueue.takeFrameMetadata(
-                    timing.mediaTimeMicroseconds
-                ),
-                mediaTimeMicroseconds: timing.mediaTimeMicroseconds,
-                source
-            };
-            sourceOwned = false;
-            if (
-                timing.mediaTimeMicroseconds < this.startTimeMicroseconds
-                && !this.firstPresentationOutputQueued
-            ) {
-                closeOwnedDecodedVideoOutput(this.preStartOutput);
-                this.preStartOutput = decodedOutput;
-                decodedOutput = null;
-                return;
-            }
-
-            this.queueFirstPresentationOutput();
-            this.queueBaseOutput(decodedOutput);
-            decodedOutput = null;
-        } finally {
-            closeOwnedDecodedVideoOutput(decodedOutput);
-            if (sourceOwned) {
-                closeOwnedDecodedVideoSource(source);
-            }
-        }
-    }
-
-    public enqueueEnhancementDecodedOutput(source: OwnedDecodedVideoSource): void {
-        let decodedOutput: OwnedDecodedVideoOutput | null = null;
-        let sourceOwned = true;
-        try {
-            if (!this.canDecodeEnhancement()) {
-                return;
-            }
-            const timing = getOwnedDecodedVideoTiming(source);
-            decodedOutput = {
-                durationMicroseconds: timing.durationMicroseconds,
-                encodedDolbyVisionMetadata: null,
-                mediaTimeMicroseconds: timing.mediaTimeMicroseconds,
-                source
-            };
-            sourceOwned = false;
-            this.framePairs.enqueueEnhancementFrame({
-                frame: decodedOutput,
-                mediaTimeMicroseconds: decodedOutput.mediaTimeMicroseconds
-            });
-            decodedOutput = null;
-        } finally {
-            closeOwnedDecodedVideoOutput(decodedOutput);
-            if (sourceOwned) {
-                closeOwnedDecodedVideoSource(source);
-            }
-        }
-    }
-
-    public async decodePacket(
-        packet: EncodedPacket,
-        decoder: OwnedHEVCVideoDecoderPort,
-        enhancementDecoder: OwnedHEVCVideoDecoderPort | null,
-        separateEnhancementPacket: EncodedPacket | null = null,
-        separateEnhancementInputFormat: HEVCNALFormat | null = null
-    ): Promise<void> {
-        this.dynamicHDRMetadataQueue.processPacket(packet);
-        const processedPacket = await this.processEncodedPacket(
-            packet,
-            separateEnhancementPacket,
-            separateEnhancementInputFormat
-        );
-        this.decodeEnhancementPacket(processedPacket, enhancementDecoder);
-        this.decodeBasePacket(packet, processedPacket, decoder);
-        this.throwDecoderFailure();
-    }
-
-    private async processEncodedPacket(
-        packet: EncodedPacket,
-        separateEnhancementPacket: EncodedPacket | null,
-        separateEnhancementInputFormat: HEVCNALFormat | null
-    ): Promise<ProcessedDolbyVisionHEVCPacket> {
-        if (separateEnhancementPacket && separateEnhancementInputFormat) {
-            try {
-                return await this.metadataQueue.processSeparatePackets(
-                    packet,
-                    separateEnhancementPacket,
-                    separateEnhancementInputFormat
-                );
-            } catch {
-                this.recordEnhancementDecoderFailure();
-            }
-        }
-        return this.metadataQueue.processPacket(packet);
-    }
-
-    private decodeEnhancementPacket(
-        processedPacket: ProcessedDolbyVisionHEVCPacket,
-        enhancementDecoder: OwnedHEVCVideoDecoderPort | null
-    ): void {
-        const enhancementDecoderPacket = processedPacket.enhancementLayerPacket;
-        if (!enhancementDecoderPacket || !enhancementDecoder || !this.canDecodeEnhancement()) {
-            return;
-        }
-        try {
-            const packetAccepted = enhancementDecoder.decode(enhancementDecoderPacket);
-            if (!packetAccepted && processedPacket.hasEnhancementLayerVCL) {
-                this.recordEnhancementDecoderFailure();
-            }
-        } catch {
-            this.recordEnhancementDecoderFailure();
-        }
-    }
-
-    private decodeBasePacket(
-        sourcePacket: EncodedPacket,
-        processedPacket: ProcessedDolbyVisionHEVCPacket,
-        decoder: OwnedHEVCVideoDecoderPort
-    ): void {
-        const decoderPacket = processedPacket.baseLayerPacket;
-        if (!decoderPacket) {
-            return;
-        }
-        const packetAccepted = decoder.decode(decoderPacket);
-        if (!packetAccepted && processedPacket.hasBaseLayerVCL) {
-            this.metadataQueue.takeFrameMetadata(sourcePacket.microsecondTimestamp);
-            this.dynamicHDRMetadataQueue.takeFrameMetadata(
-                sourcePacket.microsecondTimestamp
-            );
-        }
-    }
-
-    public async finishPackets(
-        decoder: OwnedHEVCVideoDecoderPort,
-        enhancementDecoder: OwnedHEVCVideoDecoderPort | null
-    ): Promise<void> {
-        // The flush releases frames the decoders hold beyond the intake bound, such as reorder-held pictures
-        this.framePairs.beginFinalDrain();
-        await decoder.flush();
-        this.throwDecoderFailure();
-        if (enhancementDecoder && this.canDecodeEnhancement()) {
-            try {
-                await enhancementDecoder.flush();
-            } catch {
-                this.recordEnhancementDecoderFailure();
-            }
-        }
-        if (this.enhancementExpectedGeometry) {
-            this.framePairs.finishEnhancement();
-        }
-        this.metadataQueue.requireDrained();
-        this.dynamicHDRMetadataQueue.requireDrained();
-        this.queueFirstPresentationOutput();
-        this.packetsEnded = true;
-    }
-
-    public async postNextOutput(
-        run: DecodeRun,
-        expectedGeometry: RawVideoFrameGeometry
-    ): Promise<OwnedOutputPostResult> {
-        // A recorded failure surfaces before any further frame is posted
-        this.throwDecoderFailure();
-        if (!this.framePairs.hasReadyPair()) {
-            return 'none';
-        }
-        if (!await this.acquireFrameCredit(run)) {
-            return 'stopped';
-        }
-
-        const framePair = this.framePairs.takeReadyPair() as DolbyVisionFramePair<
-            OwnedDecodedVideoOutput,
-            OwnedDecodedVideoOutput
-        >;
-        await postVideoFrame(
+/** Binds an owned stream to its decode run and to the geometry its BL and EL frames must keep. */
+function createOwnedVideoStreamRun(
+    run: DecodeRun,
+    expectedGeometry: RawVideoFrameGeometry,
+    enhancementExpectedGeometry: RawVideoFrameGeometry | null
+): OwnedVideoStreamRun {
+    return {
+        isStopped: (): boolean => isVideoAttemptStopped(run),
+        notifyDecoderProgress: (): void => {
+            wakeWaiters(run.wakeVideoDecodeWaiters);
+        },
+        postFrame: (
+            output: OwnedDecodedVideoOutput,
+            enhancementOutput: OwnedDecodedVideoOutput | null
+        ): Promise<void> => postVideoFrame(
             run,
-            framePair.baseFrame,
+            output,
             expectedGeometry,
-            framePair.baseFrame.encodedDolbyVisionMetadata,
-            framePair.enhancementFrame,
-            this.enhancementExpectedGeometry
-        );
-        this.frameCreditHeld = false;
-        return 'posted';
-    }
-
-    public async acquireFrameCredit(run: DecodeRun): Promise<boolean> {
-        if (!this.frameCreditHeld) {
-            this.frameCreditHeld = await waitForFrameCredit(run);
-        }
-        return this.frameCreditHeld;
-    }
-
-    public async waitForDecoderProgress(run: DecodeRun): Promise<void> {
-        this.throwDecoderFailure();
-        if (this.framePairs.hasReadyPair() || isVideoAttemptStopped(run)) {
-            return;
-        }
-        await new Promise<void>(resolve => {
+            output.encodedDolbyVisionMetadata,
+            enhancementOutput,
+            enhancementExpectedGeometry
+        ),
+        postStartupProgress: (
+            phase: CustomDecodeWorkerProgressPhase,
+            packetCount: number,
+            mediaTimeMicroseconds: Microseconds
+        ): void => {
+            postVideoStartupProgress(run, phase, packetCount, mediaTimeMicroseconds);
+        },
+        waitForDecoderProgress: (): Promise<void> => new Promise<void>(resolve => {
             run.wakeVideoDecodeWaiters.push(resolve);
-        });
-        this.throwDecoderFailure();
-    }
-
-    public close(): void {
-        closeOwnedDecodedVideoOutput(this.preStartOutput);
-        this.preStartOutput = null;
-        this.framePairs.close();
-        this.metadataQueue.clear();
-        this.dynamicHDRMetadataQueue.clear();
-    }
-
-    private queueBaseOutput(decodedOutput: OwnedDecodedVideoOutput): void {
-        this.framePairs.enqueueBaseFrame({
-            frame: decodedOutput,
-            mediaTimeMicroseconds: decodedOutput.mediaTimeMicroseconds
-        });
-    }
-
-    private queueFirstPresentationOutput(): void {
-        if (this.firstPresentationOutputQueued) {
-            return;
-        }
-        this.firstPresentationOutputQueued = true;
-        if (this.preStartOutput) {
-            this.queueBaseOutput(this.preStartOutput);
-            this.preStartOutput = null;
-        }
-    }
-
-    private throwDecoderFailure(): void {
-        if (this.decoderFailure) {
-            throw this.decoderFailure;
-        }
-    }
+        }),
+        waitForFrameCredit: (): Promise<boolean> => waitForFrameCredit(run)
+    };
 }
+
+/** Matches each decoded HEVC frame with its Dolby Vision entry, then with its HDR10+ entry. */
+function createOwnedHEVCFrameMetadataSource(
+    metadataQueue: DolbyVisionEncodedMetadataQueue,
+    dynamicHDRMetadataQueue: HEVCDynamicHDRMetadataQueue
+): OwnedVideoFrameMetadataSource {
+    return {
+        clear: (): void => {
+            metadataQueue.clear();
+            dynamicHDRMetadataQueue.clear();
+        },
+        requireDrained: (): void => {
+            metadataQueue.requireDrained();
+            dynamicHDRMetadataQueue.requireDrained();
+        },
+        takeFrameMetadata: (timestampMicroseconds: number): OwnedVideoFrameMetadata => ({
+            encodedDolbyVisionMetadata: metadataQueue.takeFrameMetadata(timestampMicroseconds),
+            HDR10PlusMetadata: dynamicHDRMetadataQueue.takeFrameMetadata(timestampMicroseconds)
+        })
+    };
+}
+
+/** The decoders, queues, and state that each packet of one owned HEVC attempt passes through. */
+type OwnedHEVCStream = {
+    decoder: OwnedVideoDecoderPort
+    dynamicHDRMetadataQueue: HEVCDynamicHDRMetadataQueue
+    enhancementDecoder: OwnedVideoDecoderPort | null
+    metadataQueue: DolbyVisionEncodedMetadataQueue
+    separateEnhancementStream: SeparateDolbyVisionEnhancementPacketStream | null
+    state: OwnedVideoStreamState
+};
 
 async function createSeparateDolbyVisionEnhancementPacketStream(
     run: DecodeRun,
@@ -2765,15 +2519,34 @@ async function createSeparateDolbyVisionEnhancementPacketStream(
     }
 }
 
+/** Splits one HEVC packet; a separate-track EL packet that does not split leaves the stream to its BL. */
+async function processOwnedHEVCPacket(
+    hevcStream: OwnedHEVCStream,
+    packet: EncodedPacket,
+    separateEnhancementPacket: EncodedPacket | null
+): Promise<ProcessedDolbyVisionHEVCPacket> {
+    const separateEnhancementInputFormat = hevcStream.separateEnhancementStream?.inputFormat ?? null;
+    if (separateEnhancementPacket && separateEnhancementInputFormat) {
+        try {
+            return await hevcStream.metadataQueue.processSeparatePackets(
+                packet,
+                separateEnhancementPacket,
+                separateEnhancementInputFormat
+            );
+        } catch {
+            hevcStream.state.recordEnhancementDecoderFailure();
+        }
+    }
+    return hevcStream.metadataQueue.processPacket(packet);
+}
+
 async function decodeOwnedHEVCPacket(
     run: DecodeRun,
+    hevcStream: OwnedHEVCStream,
     packet: EncodedPacket,
-    packetMediaTimeMicroseconds: Microseconds,
-    decoder: OwnedHEVCVideoDecoderPort,
-    enhancementDecoder: OwnedHEVCVideoDecoderPort | null,
-    separateEnhancementStream: SeparateDolbyVisionEnhancementPacketStream | null,
-    state: OwnedHEVCStreamState
+    packetMediaTimeMicroseconds: Microseconds
 ): Promise<boolean> {
+    const { separateEnhancementStream, state } = hevcStream;
     let separateEnhancementPacket: EncodedPacket | null = null;
     if (separateEnhancementStream && state.canDecodeEnhancement()) {
         try {
@@ -2792,13 +2565,24 @@ async function decodeOwnedHEVCPacket(
     if (isVideoAttemptStopped(run)) {
         return false;
     }
-    await state.decodePacket(
+    hevcStream.dynamicHDRMetadataQueue.processPacket(packet);
+    const processedPacket = await processOwnedHEVCPacket(
+        hevcStream,
         packet,
-        decoder,
-        enhancementDecoder,
-        separateEnhancementPacket,
-        separateEnhancementStream?.inputFormat ?? null
+        separateEnhancementPacket
     );
+    state.decodeEnhancementPacket(
+        processedPacket.enhancementLayerPacket,
+        processedPacket.hasEnhancementLayerVCL,
+        hevcStream.enhancementDecoder
+    );
+    state.decodeBasePacket(
+        packet,
+        processedPacket.baseLayerPacket,
+        processedPacket.hasBaseLayerVCL,
+        hevcStream.decoder
+    );
+    state.throwDecoderFailure();
     if (
         separateEnhancementStream
         && !separateEnhancementStream.pairer.retired
@@ -2807,90 +2591,6 @@ async function decodeOwnedHEVCPacket(
         await separateEnhancementStream.pairer.retire();
     }
     return true;
-}
-
-function isOwnedHEVCDecoderBackpressured(
-    decoder: OwnedHEVCVideoDecoderPort,
-    enhancementDecoder: OwnedHEVCVideoDecoderPort | null,
-    state: OwnedHEVCStreamState
-): boolean {
-    if (decoder.getDecodeQueueSize() >= OWNED_HEVC_DECODE_QUEUE_HIGH_WATER_MARK) {
-        return true;
-    }
-    return state.canDecodeEnhancement()
-        && enhancementDecoder !== null
-        && enhancementDecoder.getDecodeQueueSize() >= OWNED_HEVC_DECODE_QUEUE_HIGH_WATER_MARK;
-}
-
-async function pumpOwnedHEVCFrames(
-    run: DecodeRun,
-    packetIterator: MediaSampleIterator<EncodedPacket>,
-    decoder: OwnedHEVCVideoDecoderPort,
-    enhancementDecoder: OwnedHEVCVideoDecoderPort | null,
-    separateEnhancementStream: SeparateDolbyVisionEnhancementPacketStream | null,
-    state: OwnedHEVCStreamState,
-    expectedGeometry: RawVideoFrameGeometry
-): Promise<void> {
-    let packetCount = 0;
-    while (!isVideoAttemptStopped(run)) {
-        const postResult = await state.postNextOutput(run, expectedGeometry);
-        switch (postResult) {
-            case 'posted':
-                continue;
-            case 'stopped':
-                return;
-            case 'none':
-                break;
-        }
-
-        if (state.packetsEnded) {
-            return;
-        }
-        if (isOwnedHEVCDecoderBackpressured(decoder, enhancementDecoder, state)) {
-            await state.waitForDecoderProgress(run);
-            continue;
-        }
-        if (!await state.acquireFrameCredit(run)) {
-            return;
-        }
-
-        const packetResult = await packetIterator.next();
-        if (isVideoAttemptStopped(run)) {
-            return;
-        }
-        if (packetResult.done) {
-            await state.finishPackets(decoder, enhancementDecoder);
-            continue;
-        }
-        packetCount += 1;
-        const packetMediaTimeMicroseconds = requireMicroseconds(
-            packetResult.value.microsecondTimestamp,
-            'Owned HEVC packet timestamp'
-        );
-        postVideoStartupProgress(
-            run,
-            'video-packet-started',
-            packetCount,
-            packetMediaTimeMicroseconds
-        );
-        if (!await decodeOwnedHEVCPacket(
-            run,
-            packetResult.value,
-            packetMediaTimeMicroseconds,
-            decoder,
-            enhancementDecoder,
-            separateEnhancementStream,
-            state
-        )) {
-            return;
-        }
-        postVideoStartupProgress(
-            run,
-            'video-packet-decoded',
-            packetCount,
-            packetMediaTimeMicroseconds
-        );
-    }
 }
 
 async function readDolbyVisionMetadataByteRange(
@@ -3011,7 +2711,11 @@ async function resolveDolbyVisionEnhancementDecoderConfiguration(
     preparedVideoTrack: PreparedVideoTrack,
     keyPacketSplit: ReturnType<typeof splitDolbyVisionHEVCAccessUnit>
 ): Promise<DolbyVisionEnhancementDecoderConfiguration | null> {
-    if (!isDolbyVisionDualLayerProfile(request.dolbyVisionProfile)) {
+    // A discarded EL reports its frames as discarded, so presentation reconstructs MEL exactly and FEL as its base
+    if (
+        !isDolbyVisionDualLayerProfile(request.dolbyVisionProfile)
+        || request.discardDolbyVisionEnhancementLayer === true
+    ) {
         return null;
     }
     if (keyPacketSplit.hasRequiredEnhancementLayerParameterSets) {
@@ -3114,23 +2818,28 @@ async function streamOwnedHEVCFrames(
     const rpuParser = DolbyVisionRPUParserSession.create(
         request.dolbyVisionRPUParserWASMURL
     );
-    const state = new OwnedHEVCStreamState(
-        new DolbyVisionEncodedMetadataQueue(
-            inputFormat,
-            rpuParser,
-            enhancementConfiguration?.packetFormat ?? inputFormat,
-            request.dolbyVisionProfile !== null
-        ),
-        new HEVCDynamicHDRMetadataQueue(inputFormat),
+    const metadataQueue = new DolbyVisionEncodedMetadataQueue(
+        inputFormat,
+        rpuParser,
+        enhancementConfiguration?.packetFormat ?? inputFormat,
+        request.dolbyVisionProfile !== null
+    );
+    const dynamicHDRMetadataQueue = new HEVCDynamicHDRMetadataQueue(inputFormat);
+    const streamRun = createOwnedVideoStreamRun(
+        run,
+        preparedVideoTrack.geometry,
+        enhancementConfiguration?.geometry ?? null
+    );
+    const state = new OwnedVideoStreamState(
+        streamRun,
+        createOwnedHEVCFrameMetadataSource(metadataQueue, dynamicHDRMetadataQueue),
         request.startTimeMicroseconds,
         enhancementConfiguration?.geometry ?? null
     );
-    const notifyDecoderProgress = (): void => {
-        wakeWaiters(run.wakeVideoDecodeWaiters);
-    };
+    const notifyDecoderProgress = streamRun.notifyDecoderProgress;
     const decoder = createOwnedHEVCVideoDecoderPort(
         run,
-        preparedVideoTrack.decoderConfig,
+        preparedVideoTrack,
         inputFormat,
         {
             onError: (error: unknown): void => {
@@ -3181,14 +2890,23 @@ async function streamOwnedHEVCFrames(
             0,
             keyPacketMediaTimeMicroseconds
         );
-        await pumpOwnedHEVCFrames(
-            run,
+        const hevcStream: OwnedHEVCStream = {
+            decoder,
+            dynamicHDRMetadataQueue,
+            enhancementDecoder,
+            metadataQueue,
+            separateEnhancementStream,
+            state
+        };
+        await pumpOwnedVideoFrames(
+            streamRun,
             packetIterator,
             decoder,
             enhancementDecoder,
-            separateEnhancementStream,
             state,
-            preparedVideoTrack.geometry
+            (packet: EncodedPacket, packetMediaTimeMicroseconds: Microseconds): Promise<boolean> => (
+                decodeOwnedHEVCPacket(run, hevcStream, packet, packetMediaTimeMicroseconds)
+            )
         );
     } finally {
         // Close the decoders first: an output arriving during the awaits below would otherwise land in the
@@ -3203,6 +2921,77 @@ async function streamOwnedHEVCFrames(
             // Input disposal is the authoritative cancellation signal
         }
         await separateEnhancementStream?.pairer.retire();
+    }
+}
+
+/**
+ * Decodes a Dolby Vision AV1 track in the engine's own decoder.
+ * Mediabunny's sample sink hides the metadata OBUs that carry the RPUs.
+ * Each attempt starts at the key packet preceding its start time.
+ */
+async function streamOwnedAV1Frames(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    preparedVideoTrack: PreparedVideoTrack
+): Promise<void> {
+    if (preparedVideoTrack.codec !== 'av1' || run.videoDecoderBackend !== 'native') {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The owned AV1 decoder requires an AV1 track on the native decoder'
+        );
+    }
+
+    const packetSink = new EncodedPacketSink(preparedVideoTrack.videoTrack);
+    const startTimeSeconds = microsecondsToSeconds(request.startTimeMicroseconds);
+    const keyPacket = await packetSink.getKeyPacket(
+        startTimeSeconds,
+        OWNED_AV1_PACKET_OPTIONS
+    ) ?? await packetSink.getFirstKeyPacket(OWNED_AV1_PACKET_OPTIONS);
+    if (!keyPacket || isVideoAttemptStopped(run)) {
+        return;
+    }
+    const keyPacketMediaTimeMicroseconds = requireMicroseconds(
+        keyPacket.microsecondTimestamp,
+        'Owned AV1 key packet timestamp'
+    );
+    postVideoStartupProgress(
+        run,
+        'video-key-packet-ready',
+        0,
+        keyPacketMediaTimeMicroseconds
+    );
+
+    const packetIterator = packetSink.packets(
+        keyPacket,
+        undefined,
+        OWNED_AV1_PACKET_OPTIONS
+    );
+    run.videoIterator = packetIterator;
+    const rpuParser = DolbyVisionRPUParserSession.create(
+        request.dolbyVisionRPUParserWASMURL
+    );
+    const decoderConfig: VideoDecoderConfig = {
+        ...preparedVideoTrack.decoderConfig,
+        hardwareAcceleration: preparedVideoTrack.videoHardwareAcceleration,
+        optimizeForLatency: true
+    };
+    try {
+        await runOwnedAV1VideoStream(
+            createOwnedVideoStreamRun(run, preparedVideoTrack.geometry, null),
+            packetIterator,
+            rpuParser,
+            (callbacks: OwnedVideoDecoderCallbacks): OwnedVideoDecoderPort => (
+                new OwnedNativeVideoDecoder(decoderConfig, callbacks)
+            ),
+            request.startTimeMicroseconds,
+            keyPacketMediaTimeMicroseconds
+        );
+    } finally {
+        rpuParser.close();
+        try {
+            await packetIterator.return?.();
+        } catch {
+            // Input disposal is the authoritative cancellation signal
+        }
     }
 }
 
@@ -3546,9 +3335,13 @@ async function streamVideoFrames(
     if (preparedVideoTrack.codec === 'hevc') {
         return streamOwnedHEVCFrames(run, request, preparedVideoTrack);
     }
+    // The sample sink hides the metadata OBUs, so only the owned path sees an AV1 RPU
+    if (preparedVideoTrack.codec === 'av1' && request.dolbyVisionProfile !== null) {
+        return streamOwnedAV1Frames(run, request, preparedVideoTrack);
+    }
 
     const sampleSink = new VideoSampleSink(preparedVideoTrack.videoTrack, {
-        hardwareAcceleration: run.videoHardwareAcceleration,
+        hardwareAcceleration: preparedVideoTrack.videoHardwareAcceleration,
         optimizeForLatency: true
     });
     const iterator = sampleSink.samples(
@@ -4340,7 +4133,6 @@ function handleRequest(requestValue: unknown): void {
                 videoAttemptPostedFrameCount: 0,
                 videoDecoderBackend: requestValue.videoDecoderBackend,
                 videoEpoch: 0,
-                videoHardwareAcceleration: getCustomDecodeRequestHardwareAcceleration(requestValue),
                 videoOutputMode: requestValue.videoOutputMode,
                 videoIterator: null,
                 videoStreamFinished: false,

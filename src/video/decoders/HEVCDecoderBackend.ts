@@ -7,13 +7,6 @@ import type {
 const DRAINED_FRAME_STRUCTURE_BYTE_LENGTH = 48;
 const STREAM_INFO_STRUCTURE_BYTE_LENGTH = 24;
 export const MAXIMUM_HEVC_DRAINED_FRAME_COUNT = 64;
-const MAXIMUM_HEVC_CODED_HEIGHT = 2_160;
-const MAXIMUM_HEVC_CODED_WIDTH = 3_840;
-/** Maximum transient JS plane storage copied for one decoded 4K Main10 frame. */
-export const MAXIMUM_HEVC_COPIED_FRAME_BYTE_LENGTH = (
-    MAXIMUM_HEVC_CODED_WIDTH * MAXIMUM_HEVC_CODED_HEIGHT
-    + (2 * Math.ceil(MAXIMUM_HEVC_CODED_WIDTH / 2) * Math.ceil(MAXIMUM_HEVC_CODED_HEIGHT / 2))
-) * Uint16Array.BYTES_PER_ELEMENT;
 
 type EmscriptenReturnType = 'number' | null;
 
@@ -147,14 +140,13 @@ function validateFrameLayout(
     if (
         !isPositiveSafeInteger(frameValues.width)
         || !isPositiveSafeInteger(frameValues.height)
-        || frameValues.width > MAXIMUM_HEVC_CODED_WIDTH
-        || frameValues.height > MAXIMUM_HEVC_CODED_HEIGHT
         || frameValues.chromaWidth !== Math.ceil(frameValues.width / 2)
         || frameValues.chromaHeight !== Math.ceil(frameValues.height / 2)
     ) {
         throw new TypeError('The HEVC WASM decoder returned invalid 4:2:0 dimensions');
     }
 
+    // Any frame size is accepted; each plane must lie within the WASM memory, which bounds the copy
     const lumaSampleCount = frameValues.width * frameValues.height;
     const chromaSampleCount = frameValues.chromaWidth * frameValues.chromaHeight;
     const totalSampleCount = lumaSampleCount + (2 * chromaSampleCount);
@@ -165,9 +157,8 @@ function validateFrameLayout(
         || !Number.isSafeInteger(totalSampleCount)
         || !Number.isSafeInteger(copiedByteLength)
         || copiedByteLength <= 0
-        || copiedByteLength > MAXIMUM_HEVC_COPIED_FRAME_BYTE_LENGTH
     ) {
-        throw new TypeError('The HEVC WASM decoder frame exceeds its memory bound');
+        throw new TypeError('The HEVC WASM decoder frame size is invalid');
     }
 
     const luma = validatePlaneLayout(

@@ -6,17 +6,10 @@ export const RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT = 256;
 
 export const RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT = 1;
 export const RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT = 2;
+// Paces in-flight transferable buffers; a frame of any size is copied
 export const MAXIMUM_OUTSTANDING_RAW_FRAME_TRANSFER_COUNT = 2;
-
-// One transferable may contain a frame or an atomic Dolby Vision frame pair
-export const MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH = 128 * 1_024 * 1_024;
-export const MAXIMUM_COMPOUND_RAW_FRAME_COPY_BYTE_LENGTH =
-    MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH;
-
-// This bounds in-flight transferable buffers, not decoder or GPU allocations
-export const MAXIMUM_RAW_FRAME_TRANSFER_WINDOW_BYTE_LENGTH =
-    MAXIMUM_COMPOUND_RAW_FRAME_COPY_BYTE_LENGTH
-    * MAXIMUM_OUTSTANDING_RAW_FRAME_TRANSFER_COUNT;
+// A Profile 4 or 7 EL is 10-bit 4:2:0 whatever the format of its BL
+export const RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT = 'I420P10';
 
 export type SupportedRawVideoFrameFormat =
     | 'I420'
@@ -40,6 +33,7 @@ export type RawVideoFrameCopyOptions = {
 export type RawVideoFramePairCopyOptions = {
     baseExpectedGeometry?: RawVideoFrameGeometry
     enhancementExpectedGeometry: RawVideoFrameGeometry
+    /** The BL format; the EL is always copied as RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT */
     format: SupportedRawVideoFrameFormat
     requireReusableBuffer?: boolean
     reusableBuffer?: ArrayBuffer
@@ -387,6 +381,17 @@ function assertNoTransform(frame: RawVideoFrameSource): void {
     }
 }
 
+/** Refuses an EL whose decoder reports a format other than the one every dual-layer route composes. */
+function assertEnhancementFrameFormat(frame: RawVideoFrameSource): void {
+    // A null format is opaque, so the requested copy format decides, as it does for the BL
+    if (frame.format !== null && frame.format !== RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT) {
+        throw new RawVideoFrameCopyError(
+            'unsupported-format',
+            `Dolby Vision enhancement frame format ${frame.format} is not ${RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT}`
+        );
+    }
+}
+
 function getVisibleRectangle(
     frame: RawVideoFrameSource,
     format: RawVideoFormatDefinition
@@ -498,11 +503,11 @@ function prepareFrame(
             || !isPositiveSafeInteger(bytesPerRow)
             || !isPositiveSafeInteger(byteLength)
             || !isNonNegativeSafeInteger(copyByteLength)
-            || copyByteLength + byteLength > MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH
+            || !isPositiveSafeInteger(copyByteLength + byteLength)
         ) {
             throw new RawVideoFrameCopyError(
                 'invalid-dimensions',
-                'The raw VideoFrame copy layout exceeds the bounded buffer size'
+                'The raw VideoFrame copy layout is not representable'
             );
         }
 
@@ -727,20 +732,20 @@ function getRawFrameCopyByteLength(
         const bytesPerRow = alignTo(rowByteLength, RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT);
         copyByteLength += bytesPerRow * height;
     }
-    if (
-        !isPositiveSafeInteger(copyByteLength)
-        || copyByteLength > MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH
-    ) {
+    if (!isPositiveSafeInteger(copyByteLength)) {
         throw new RawVideoFrameCopyError(
             'invalid-dimensions',
-            'The reserved raw VideoFrame copy layout exceeds its bounded buffer size'
+            'The reserved raw VideoFrame copy layout is not representable'
         );
     }
     return copyByteLength;
 }
 
-/** Returns whether aligned frame copies fit the bounded in-flight raw transfer window. */
-export function hasRawVideoFrameResourceBudget(
+/**
+ * Returns whether every layer of a frame has a representable aligned copy layout; no frame is too large.
+ * The first layer is the BL in format, and each further layer is a Dolby Vision EL reserved as I420P10 at the BL's coded size, which bounds the EL's own size.
+ */
+export function hasRawVideoFrameCopyLayout(
     geometry: RawVideoFrameGeometry,
     format: SupportedRawVideoFrameFormat,
     frameLayerCount = RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT
@@ -749,17 +754,20 @@ export function hasRawVideoFrameResourceBudget(
         return false;
     }
     try {
-        const copyByteLength = getRawFrameCopyByteLength(
+        const baseCopyByteLength = getRawFrameCopyByteLength(
             geometry,
             getFormatDefinition(format)
         );
-        const transferByteLength = copyByteLength * frameLayerCount;
-        const transferWindowByteLength = transferByteLength
-            * MAXIMUM_OUTSTANDING_RAW_FRAME_TRANSFER_COUNT;
-        return isPositiveSafeInteger(transferByteLength)
-            && transferByteLength <= MAXIMUM_COMPOUND_RAW_FRAME_COPY_BYTE_LENGTH
-            && isPositiveSafeInteger(transferWindowByteLength)
-            && transferWindowByteLength <= MAXIMUM_RAW_FRAME_TRANSFER_WINDOW_BYTE_LENGTH;
+        const enhancementLayerCount = frameLayerCount - RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT;
+        const enhancementCopyByteLength = enhancementLayerCount > 0 ?
+            getRawFrameCopyByteLength(
+                geometry,
+                getFormatDefinition(RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT)
+            ) :
+            0;
+        return isPositiveSafeInteger(
+            baseCopyByteLength + (enhancementCopyByteLength * enhancementLayerCount)
+        );
     } catch {
         return false;
     }
@@ -841,9 +849,8 @@ export async function copyVideoFrameToRawPlanes(
 }
 
 /**
- * Takes ownership of a decoded BL and optional EL frame and copies both into
- * one fixed-size transferable buffer. The reserved EL region keeps recycling
- * exact even when the EL decoder degrades and a BL-only frame is emitted.
+ * Takes ownership of a decoded BL and optional EL frame and copies both into one fixed-size transferable buffer: the BL in the requested format, then the EL as I420P10 at the next aligned offset.
+ * The reserved EL region keeps recycling exact even when the EL decoder degrades and a BL-only frame is emitted.
  */
 export async function copyVideoFramePairToRawPlanes(
     baseFrame: RawVideoFrameSource,
@@ -854,8 +861,10 @@ export async function copyVideoFramePairToRawPlanes(
         assertNoTransform(baseFrame);
         if (enhancementFrame) {
             assertNoTransform(enhancementFrame);
+            assertEnhancementFrameFormat(enhancementFrame);
         }
         const format = getFormatDefinition(options.format);
+        const enhancementFormat = getFormatDefinition(RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT);
         const preparedBaseFrame = prepareFrame(
             baseFrame,
             format,
@@ -867,14 +876,14 @@ export async function copyVideoFramePairToRawPlanes(
         );
         const reservedEnhancementByteLength = getRawFrameCopyByteLength(
             options.enhancementExpectedGeometry,
-            format
+            enhancementFormat
         );
         let preparedEnhancementFrame: PreparedRawVideoFrame | null = null;
         if (enhancementFrame) {
             preparedEnhancementFrame = shiftPreparedFrame(
                 prepareFrame(
                     enhancementFrame,
-                    format,
+                    enhancementFormat,
                     options.enhancementExpectedGeometry
                 ),
                 enhancementByteOffset
@@ -887,13 +896,10 @@ export async function copyVideoFramePairToRawPlanes(
             }
         }
         const compoundByteLength = enhancementByteOffset + reservedEnhancementByteLength;
-        if (
-            !isPositiveSafeInteger(compoundByteLength)
-            || compoundByteLength > MAXIMUM_COMPOUND_RAW_FRAME_COPY_BYTE_LENGTH
-        ) {
+        if (!isPositiveSafeInteger(compoundByteLength)) {
             throw new RawVideoFrameCopyError(
                 'invalid-dimensions',
-                'The compound raw VideoFrame copy exceeds its bounded buffer size'
+                'The compound raw VideoFrame copy is not representable'
             );
         }
         const data = allocateRawFrameBuffer(
@@ -915,7 +921,7 @@ export async function copyVideoFramePairToRawPlanes(
                 enhancementFrame,
                 data,
                 preparedEnhancementFrame,
-                options.format,
+                RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT,
                 'Enhancement VideoFrame.copyTo returned a layout that differs from the requested layout'
             );
         }

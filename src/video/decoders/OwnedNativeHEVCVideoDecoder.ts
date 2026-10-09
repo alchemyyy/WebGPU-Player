@@ -11,6 +11,12 @@ import {
     neutralizeNativeHDRHEVCDecoderConfigWithValidation
 } from '../hevc/NativeHDRHEVCColorNeutralizer';
 import type { HEVCHDRTransfer } from '../hevc/HEVCSPSParser';
+import {
+    closeCodec,
+    DEFAULT_NATIVE_VIDEO_DECODER_DEPENDENCIES,
+    type NativeVideoDecoderPort,
+    type OwnedNativeVideoDecoderDependencies
+} from './OwnedNativeVideoDecoder';
 
 export type OwnedNativeHEVCVideoDecoderCallbacks = {
     onError: (error: unknown) => void
@@ -18,42 +24,12 @@ export type OwnedNativeHEVCVideoDecoderCallbacks = {
     onProgress: () => void
 };
 
-export type NativeVideoDecoderPort = {
-    close: () => void
-    configure: (config: VideoDecoderConfig) => void
-    decode: (chunk: EncodedVideoChunk) => void
-    readonly decodeQueueSize: number
-    flush: () => Promise<void>
-    ondequeue: ((event: Event) => unknown) | null
-    readonly state: CodecState
-};
-
-export type OwnedNativeHEVCVideoDecoderDependencies = {
-    createDecoder: (init: VideoDecoderInit) => NativeVideoDecoderPort
-    createEncodedVideoChunk: (packet: EncodedPacket) => EncodedVideoChunk
-};
+export type OwnedNativeHEVCVideoDecoderDependencies = OwnedNativeVideoDecoderDependencies;
 
 export type OwnedNativeHEVCVideoDecoderOptions = {
     nativeHDRTransfer?: HEVCHDRTransfer
     neutralizeHDRColorMetadata?: boolean
 };
-
-const DEFAULT_DEPENDENCIES: OwnedNativeHEVCVideoDecoderDependencies = {
-    // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
-    createDecoder: (init: VideoDecoderInit): NativeVideoDecoderPort => new VideoDecoder(init),
-    createEncodedVideoChunk: (packet: EncodedPacket): EncodedVideoChunk => (
-        packet.toEncodedVideoChunk()
-    )
-};
-
-/** Closes a codec unless WebCodecs already closed it after an error or reclamation. */
-function closeCodec(decoder: NativeVideoDecoderPort): void {
-    decoder.ondequeue = null;
-    // NOTE: close() throws InvalidStateError on a closed codec, which would hide the codec's own error
-    if (decoder.state !== 'closed') {
-        decoder.close();
-    }
-}
 
 /**
  * Returns a key access unit's alternative transfer characteristics SEI value.
@@ -86,7 +62,7 @@ export default class OwnedNativeHEVCVideoDecoder {
         private readonly config: VideoDecoderConfig,
         private readonly inputFormat: HEVCNALFormat,
         private readonly callbacks: OwnedNativeHEVCVideoDecoderCallbacks,
-        private readonly dependencies: OwnedNativeHEVCVideoDecoderDependencies = DEFAULT_DEPENDENCIES,
+        private readonly dependencies: OwnedNativeHEVCVideoDecoderDependencies = DEFAULT_NATIVE_VIDEO_DECODER_DEPENDENCIES,
         private readonly options: OwnedNativeHEVCVideoDecoderOptions = {}
     ) {}
 

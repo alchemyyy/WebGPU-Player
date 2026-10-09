@@ -13,7 +13,6 @@ import {
 
 const TRUEHD_MAXIMUM_PACKET_SIZE = 2 * 1024 * 1024;
 const TRUEHD_MAXIMUM_DECODED_FRAME_COUNT = 16_384;
-const TRUEHD_MAXIMUM_OUTPUT_COUNT_PER_PACKET = 16;
 const TRUEHD_SEND_STATUS_FATAL = -1;
 const TRUEHD_SEND_STATUS_NO_OUTPUT = 0;
 const TRUEHD_RECEIVE_STATUS_FATAL = -1;
@@ -221,9 +220,7 @@ export default class TrueHDSoftwareAudioDecoder {
 
         const outputs: TrueHDDecodedAudioOutput[] = [];
         let emittedFrameCount = 0;
-        for (let outputIndex = 0;
-            outputIndex < TRUEHD_MAXIMUM_OUTPUT_COUNT_PER_PACKET;
-            outputIndex += 1) {
+        while (true) {
             const receiveStatus = this.functions.receiveFrame(this.decoder);
             if (receiveStatus === TRUEHD_RECEIVE_STATUS_NO_OUTPUT) {
                 return outputs;
@@ -233,11 +230,14 @@ export default class TrueHDSoftwareAudioDecoder {
                     `Bundled TrueHD frame receive failed with status ${receiveStatus}`
                 );
             }
+            // A packet holds any number of access units, and each output consumes at least one of its bytes
+            if (outputs.length >= data.byteLength) {
+                throw new RangeError('Bundled TrueHD output exceeded the frames its packet can hold');
+            }
             const output = this.copyCurrentOutput(mediaTimeMicroseconds, emittedFrameCount);
             outputs.push(output);
             emittedFrameCount += output.frameCount;
         }
-        throw new RangeError('Bundled TrueHD output exceeded the per-packet bound');
     }
 
     /** Clears inter-frame prediction state before a source change or seek. */
@@ -273,7 +273,7 @@ export default class TrueHDSoftwareAudioDecoder {
         const sampleRate = this.functions.getSampleRate(this.decoder);
         if (!isSupportedCustomAudioSampleRate(sampleRate)) {
             throw new RangeError(
-                `Bundled TrueHD output sample rate ${sampleRate} Hz is outside the supported range`
+                `Bundled TrueHD output sample rate ${sampleRate} Hz is invalid`
             );
         }
         const bitsPerSample = this.functions.getBitsPerRawSample(this.decoder);

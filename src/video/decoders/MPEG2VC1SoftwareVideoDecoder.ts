@@ -9,12 +9,7 @@ import { requireMicroseconds } from '../../TimeMath';
 
 const MPEG2_VC1_DECODER_GLUE_ASSET: EngineAssetPath = 'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.js';
 const MPEG2_VC1_DECODER_WASM_ASSET: EngineAssetPath = 'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.wasm';
-const MAXIMUM_CODED_HEIGHT = 1_080;
-const MAXIMUM_CODED_WIDTH = 1_920;
-const MAXIMUM_COMPRESSED_PACKET_BYTE_LENGTH = 64 * 1024 * 1024;
 const MAXIMUM_DECODER_DESCRIPTION_BYTE_LENGTH = 1024 * 1024;
-const MAXIMUM_DECODED_FRAME_BYTE_LENGTH =
-    MAXIMUM_CODED_WIDTH * MAXIMUM_CODED_HEIGHT * 3 / 2;
 const MAXIMUM_PENDING_PICTURE_COUNT = 64;
 const AV_NOPTS_VALUE = BigInt('-9223372036854775808');
 const AV_COLOR_RANGE_MPEG = 1;
@@ -120,6 +115,11 @@ export class MPEG2VC1InterlacedFrameError extends Error {
 
 function isPositiveSafeInteger(value: number | undefined): value is number {
     return Number.isSafeInteger(value) && (value ?? 0) > 0;
+}
+
+/** Reads a returned pointer as a heap address; past 2 GiB the WASM i32 result arrives negative. */
+function toHeapAddress(pointer: number): number {
+    return pointer >>> 0;
 }
 
 function loadDefaultDecoderGlue(url: string): void {
@@ -247,7 +247,7 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         private readonly dependencies: MPEG2VC1SoftwareVideoDecoderDependencies = DEFAULT_DEPENDENCIES
     ) {}
 
-    /** Loads the focused decoder and opens exactly one bounded codec context. */
+    /** Loads the focused decoder and opens exactly one codec context. */
     public async init(): Promise<void> {
         if (this.closed || this.module || this.decoder !== 0) {
             throw new Error('The MPEG-2/VC-1 software decoder cannot be initialized in its current state');
@@ -267,21 +267,21 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         }
 
         const decoderDescription = this.configuration.description;
-        const decoder = module._mpeg2_vc1_decoder_create(
+        const decoder = toHeapAddress(module._mpeg2_vc1_decoder_create(
             this.configuration.codec === 'vc1' ?
                 MPEG2_VC1_CODEC_VC1 :
                 MPEG2_VC1_CODEC_MPEG2VIDEO,
             this.configuration.codedWidth,
             this.configuration.codedHeight,
             decoderDescription?.byteLength ?? 0
-        );
+        ));
         if (decoder === 0) {
             throw new Error('The MPEG-2/VC-1 software decoder context could not be created');
         }
 
         try {
             if (decoderDescription) {
-                const descriptionPointer = module._mpeg2_vc1_decoder_get_extradata(decoder);
+                const descriptionPointer = toHeapAddress(module._mpeg2_vc1_decoder_get_extradata(decoder));
                 if (descriptionPointer === 0
                     || descriptionPointer + decoderDescription.byteLength
                         > module.HEAPU8.byteLength) {
@@ -310,11 +310,8 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         if (packet.isMetadataOnly) {
             throw new TypeError('The MPEG-2/VC-1 software decoder cannot decode metadata-only packets');
         }
-        if (
-            packet.data.byteLength <= 0
-            || packet.data.byteLength > MAXIMUM_COMPRESSED_PACKET_BYTE_LENGTH
-        ) {
-            throw new RangeError('The MPEG-2/VC-1 compressed packet exceeds its memory bound');
+        if (packet.data.byteLength <= 0) {
+            throw new RangeError('The MPEG-2/VC-1 compressed packet is empty');
         }
 
         const timestampMicroseconds = requireMicroseconds(
@@ -337,10 +334,10 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         // VFW VC-1 can replace a zero-duration timing placeholder before output
         this.durationsByTimestamp.set(timestampMicroseconds, durationMicroseconds);
 
-        const packetPointer = module._mpeg2_vc1_decoder_configure_packet(
+        const packetPointer = toHeapAddress(module._mpeg2_vc1_decoder_configure_packet(
             decoder,
             packet.data.byteLength
-        );
+        ));
         if (packetPointer === 0) {
             throw new Error('The MPEG-2/VC-1 software decoder packet allocation failed');
         }
@@ -391,8 +388,6 @@ export default class MPEG2VC1SoftwareVideoDecoder {
                 && this.configuration.codec !== 'vc1')
             || !isPositiveSafeInteger(this.configuration.codedWidth)
             || !isPositiveSafeInteger(this.configuration.codedHeight)
-            || this.configuration.codedWidth > MAXIMUM_CODED_WIDTH
-            || this.configuration.codedHeight > MAXIMUM_CODED_HEIGHT
         ) {
             throw new TypeError('The MPEG-2/VC-1 software decoder configuration is unsupported');
         }
@@ -522,12 +517,8 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         const lumaByteLength = codedWidth * codedHeight;
         const chromaByteLength = chromaWidth * chromaHeight;
         const frameByteLength = lumaByteLength + (2 * chromaByteLength);
-        if (
-            !Number.isSafeInteger(frameByteLength)
-            || frameByteLength <= 0
-            || frameByteLength > MAXIMUM_DECODED_FRAME_BYTE_LENGTH
-        ) {
-            throw new RangeError('The MPEG-2/VC-1 decoded frame exceeds its memory bound');
+        if (!Number.isSafeInteger(frameByteLength) || frameByteLength <= 0) {
+            throw new RangeError('The MPEG-2/VC-1 decoded frame size is not representable');
         }
 
         const data = new Uint8Array(frameByteLength);
@@ -544,7 +535,7 @@ export default class MPEG2VC1SoftwareVideoDecoder {
             const dimensions = planeDimensions[planeIndex];
             copyPlane(
                 module,
-                module._mpeg2_vc1_decoder_get_plane(decoder, planeIndex),
+                toHeapAddress(module._mpeg2_vc1_decoder_get_plane(decoder, planeIndex)),
                 module._mpeg2_vc1_decoder_get_stride(decoder, planeIndex),
                 dimensions.width,
                 dimensions.height,

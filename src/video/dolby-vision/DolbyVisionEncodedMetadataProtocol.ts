@@ -5,12 +5,12 @@ import {
 } from './DolbyVisionRPUParser';
 
 export const DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION = 4;
-export const MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT = 16;
-export const MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_BYTE_LENGTH =
+export const MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT = 16;
+export const MAXIMUM_DOLBY_VISION_RPU_BYTE_LENGTH =
     MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH;
 export const MAXIMUM_DOLBY_VISION_RPU_FRAME_BYTE_LENGTH =
-    MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT
-    * MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_BYTE_LENGTH;
+    MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT
+    * MAXIMUM_DOLBY_VISION_RPU_BYTE_LENGTH;
 
 export type DolbyVisionEnhancementLayerDisposition =
     | 'absent'
@@ -23,7 +23,8 @@ export type DolbyVisionEncodedFrameMetadata = {
     enhancementLayerDisposition: DolbyVisionEnhancementLayerDisposition
     hasEnhancementLayerVCL: boolean
     parsedRPUData: readonly ArrayBuffer[]
-    rpuNALUnits: readonly Uint8Array[]
+    /** The encoded RPUs, which stay in the worker: HEVC NAL units of type 62, or AV1 ITU-T T.35 messages */
+    encodedRPUs: readonly Uint8Array[]
     schemaVersion: typeof DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
 };
 
@@ -92,7 +93,7 @@ export function isTransferableDolbyVisionEncodedFrameMetadata(
         || typeof metadata.hasEnhancementLayerVCL !== 'boolean'
         || !Array.isArray(metadata.parsedRPUData)
         || metadata.parsedRPUData.length === 0
-        || metadata.parsedRPUData.length > MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT
+        || metadata.parsedRPUData.length > MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT
         || (metadata.enhancementLayerDisposition === 'absent'
             && metadata.hasEnhancementLayerVCL)
     ) {

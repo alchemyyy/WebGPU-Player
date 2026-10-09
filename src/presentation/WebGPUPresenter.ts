@@ -41,6 +41,7 @@ import {
     DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH
 } from '../video/dolby-vision/DolbyVisionRPUParser';
 import {
+    RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT,
     type RawVideoFrameColorSpace,
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
@@ -70,6 +71,7 @@ import {
 } from './PresentationGeometry';
 import {
     DolbyVisionPresentationAuthorizationRegistry,
+    type DolbyVisionAuthorizationRoute,
     type DolbyVisionAuthorizationTelemetry
 } from '../validation/DolbyVisionPresentationAuthorization';
 import {
@@ -108,6 +110,8 @@ const VERTEX_COUNT = 6;
 export const WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(5_000);
 export const RAW_HDR_NEGOTIATION_WAIT_MICROSECONDS = millisecondsToMicroseconds(5_000);
 const WEBGPU_RESOURCE_OPERATION_TIMEOUT = Symbol('webgpu-resource-operation-timeout');
+// The raw Dolby Vision BL format whose routes are prewarmed, and which authorization queries default to
+const PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT: RawDolbyVisionVideoFrameFormat = 'I420P10';
 
 function waitForWebGPUResourceOperation<Value>(
     promise: Promise<Value>
@@ -230,7 +234,7 @@ export type RawHDRColorPipelineConfiguration = {
 export type RawDolbyVisionColorPipelineConfiguration = {
     inputMode: 'raw-dolby-vision'
     profile: DolbyVisionReconstructionProfile
-    /** Dual-layer profiles are I420P10 only; single-layer profiles accept every planar format. */
+    /** The BL format of every profile; a dual-layer EL is always I420P10. */
     rawFrameFormat: RawDolbyVisionVideoFrameFormat
     settings: HDRToSDRRenderSettings
 };
@@ -290,6 +294,7 @@ type FrameSubmission = {
 };
 
 type DualLayerDolbyVisionRPUData = {
+    enhancementLayerBitDepth: number
     layerMode: 'fel' | 'mel'
     packedRPUData: ArrayBuffer
 };
@@ -299,6 +304,8 @@ type RawDolbyVisionAuthorizations = {
     base: DolbyVisionPresentationAuthorizationRegistry
     fel: DolbyVisionPresentationAuthorizationRegistry | null
 };
+
+type RawDolbyVisionAuthorizationKey = `${RawDolbyVisionVideoFrameFormat}:${DolbyVisionAuthorizationRoute}`;
 
 export type DolbyVisionReconstructionTarget = {
     profile: DolbyVisionReconstructionProfile
@@ -502,8 +509,8 @@ function rawDolbyVisionEnhancementFrameDescriptorMatches(
         && enhancementFrame.codedHeight * 2 === baseFrame.codedHeight
     );
     return enhancementFrame.data === baseFrame.data
-        && enhancementFrame.format === 'I420P10'
-        && enhancementFrame.bitDepth === 10
+        && enhancementFrame.format === RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT
+        && enhancementFrame.bitDepth === getRawFormatBitDepth(RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT)
         && hasCompatibleDimensions
         && Math.abs(
             enhancementFrame.timestampMicroseconds
@@ -593,24 +600,43 @@ function getDualLayerDolbyVisionRPUData(
         ) {
             return null;
         }
-        return { layerMode: snapshot.layerMode, packedRPUData };
+        return {
+            enhancementLayerBitDepth: snapshot.enhancementLayerBitDepth,
+            layerMode: snapshot.layerMode,
+            packedRPUData
+        };
     } catch {
         return null;
     }
 }
 
-function getDualLayerPresentation(
-    rpuData: DualLayerDolbyVisionRPUData,
+/**
+ * Returns the EL a frame composes, if any.
+ * The EL texture holds the EL decoder's 10-bit codes, so an RPU that scales its residual by another depth presents its base instead, as a frame whose EL failed to decode does.
+ */
+function getComposedEnhancementFrame(
+    rpuData: DualLayerDolbyVisionRPUData | null,
     reconstructsFEL: boolean,
     enhancementFrame: TransferableRawVideoFrame | null | undefined
+): TransferableRawVideoFrame | null {
+    if (
+        !reconstructsFEL
+        || !enhancementFrame
+        || rpuData?.enhancementLayerBitDepth !== getRawFormatBitDepth(RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT)
+    ) {
+        return null;
+    }
+    return enhancementFrame;
+}
+
+function getDualLayerPresentation(
+    rpuData: DualLayerDolbyVisionRPUData,
+    composedEnhancementFrame: TransferableRawVideoFrame | null
 ): DolbyVisionDualLayerPresentation {
     if (rpuData.layerMode === 'mel') {
         return 'mel';
     }
-    if (reconstructsFEL && enhancementFrame) {
-        return 'fel';
-    }
-    return 'fel-base-fallback';
+    return composedEnhancementFrame ? 'fel' : 'fel-base-fallback';
 }
 
 /** Presents frames from an owned HTML video without taking over playback. */
@@ -622,19 +648,11 @@ export default class WebGPUPresenter {
         new ExternalDolbyVisionPresentationAuthorizationRegistry();
     private readonly externalHDRAuthorization =
         new ExternalHDRPresentationAuthorizationRegistry();
-    // Single-layer reconstruction authorizes each raw frame format on first use; I420P10 is prewarmed
-    private readonly singleLayerDolbyVisionAuthorizations = new Map<
-        RawDolbyVisionVideoFrameFormat,
+    // Every raw Dolby Vision route authorizes each raw frame format on first use, apart from the prewarmed I420P10 single-layer and Profile 7 routes
+    private readonly rawDolbyVisionAuthorizations = new Map<
+        RawDolbyVisionAuthorizationKey,
         DolbyVisionPresentationAuthorizationRegistry
     >();
-    private readonly profile4DolbyVisionAuthorization =
-        new DolbyVisionPresentationAuthorizationRegistry('profile4-base');
-    private readonly profile4FELDolbyVisionAuthorization =
-        new DolbyVisionPresentationAuthorizationRegistry('profile4-fel');
-    private readonly profile7DolbyVisionAuthorization =
-        new DolbyVisionPresentationAuthorizationRegistry('profile7-base');
-    private readonly profile7FELDolbyVisionAuthorization =
-        new DolbyVisionPresentationAuthorizationRegistry('profile7-fel');
     private readonly rawHDRAuthorization = new RawHDRPresentationAuthorizationRegistry();
 
     private activeGeneration = 0;
@@ -895,8 +913,8 @@ export default class WebGPUPresenter {
     }
 
     /**
-     * Starts the exact Dolby Vision storage-buffer probes without delaying playback. The I420P10 single-layer
-     * and Profile 7 routes always run; a reconstruction target adds its own route.
+     * Starts the exact Dolby Vision storage-buffer probes without delaying playback.
+     * The I420P10 single-layer and Profile 7 routes always run; a reconstruction target adds its own routes in its raw frame format.
      */
     async prewarmDolbyVisionPresentationAuthorization(
         target: DolbyVisionReconstructionTarget | null = null
@@ -991,41 +1009,49 @@ export default class WebGPUPresenter {
 
     /** Returns bounded single-layer Dolby Vision authorization state without GPU objects. */
     getDolbyVisionAuthorizationTelemetry(
-        format: RawDolbyVisionVideoFrameFormat = 'I420P10'
+        format: RawDolbyVisionVideoFrameFormat = PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT
     ): DolbyVisionAuthorizationTelemetry {
-        return this.getSingleLayerDolbyVisionAuthorization(format).getTelemetry(
+        return this.getRawDolbyVisionAuthorization('single-layer', format).getTelemetry(
             this.device,
             this.canvasFormat
         );
     }
 
-    /** Returns exact Profile 4 MEL/SDR-base-fallback authorization state. */
-    getProfile4DolbyVisionAuthorizationTelemetry(): DolbyVisionAuthorizationTelemetry {
-        return this.profile4DolbyVisionAuthorization.getTelemetry(
+    /** Returns exact Profile 4 MEL/SDR-base-fallback authorization state for one BL format. */
+    getProfile4DolbyVisionAuthorizationTelemetry(
+        format: RawDolbyVisionVideoFrameFormat = PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT
+    ): DolbyVisionAuthorizationTelemetry {
+        return this.getRawDolbyVisionAuthorization('profile4-base', format).getTelemetry(
             this.device,
             this.canvasFormat
         );
     }
 
-    /** Returns exact Profile 4 FEL residual authorization state. */
-    getProfile4FELDolbyVisionAuthorizationTelemetry(): DolbyVisionAuthorizationTelemetry {
-        return this.profile4FELDolbyVisionAuthorization.getTelemetry(
+    /** Returns exact Profile 4 FEL residual authorization state for one BL format. */
+    getProfile4FELDolbyVisionAuthorizationTelemetry(
+        format: RawDolbyVisionVideoFrameFormat = PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT
+    ): DolbyVisionAuthorizationTelemetry {
+        return this.getRawDolbyVisionAuthorization('profile4-fel', format).getTelemetry(
             this.device,
             this.canvasFormat
         );
     }
 
-    /** Returns exact Profile 7 MEL/base-fallback authorization state. */
-    getProfile7DolbyVisionAuthorizationTelemetry(): DolbyVisionAuthorizationTelemetry {
-        return this.profile7DolbyVisionAuthorization.getTelemetry(
+    /** Returns exact Profile 7 MEL/base-fallback authorization state for one BL format. */
+    getProfile7DolbyVisionAuthorizationTelemetry(
+        format: RawDolbyVisionVideoFrameFormat = PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT
+    ): DolbyVisionAuthorizationTelemetry {
+        return this.getRawDolbyVisionAuthorization('profile7-base', format).getTelemetry(
             this.device,
             this.canvasFormat
         );
     }
 
-    /** Returns exact Profile 7 FEL residual authorization state. */
-    getProfile7FELDolbyVisionAuthorizationTelemetry(): DolbyVisionAuthorizationTelemetry {
-        return this.profile7FELDolbyVisionAuthorization.getTelemetry(
+    /** Returns exact Profile 7 FEL residual authorization state for one BL format. */
+    getProfile7FELDolbyVisionAuthorizationTelemetry(
+        format: RawDolbyVisionVideoFrameFormat = PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT
+    ): DolbyVisionAuthorizationTelemetry {
+        return this.getRawDolbyVisionAuthorization('profile7-fel', format).getTelemetry(
             this.device,
             this.canvasFormat
         );
@@ -1041,19 +1067,23 @@ export default class WebGPUPresenter {
 
     /** Returns only settled raw-plane single-layer Dolby Vision authorization for one frame format. */
     isRawDolbyVisionPresentationAuthorized(
-        format: RawDolbyVisionVideoFrameFormat = 'I420P10'
+        format: RawDolbyVisionVideoFrameFormat = PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT
     ): boolean {
         return this.isRawDolbyVisionRoutePresentationAuthorized(8, format);
     }
 
-    /** Returns only settled raw-plane Profile 4 authorization. */
-    isRawDolbyVisionProfile4PresentationAuthorized(): boolean {
-        return this.isRawDolbyVisionRoutePresentationAuthorized(4, 'I420P10');
+    /** Returns only settled raw-plane Profile 4 authorization for one BL frame format. */
+    isRawDolbyVisionProfile4PresentationAuthorized(
+        format: RawDolbyVisionVideoFrameFormat = PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT
+    ): boolean {
+        return this.isRawDolbyVisionRoutePresentationAuthorized(4, format);
     }
 
-    /** Returns only settled raw-plane Profile 7 authorization. */
-    isRawDolbyVisionProfile7PresentationAuthorized(): boolean {
-        return this.isRawDolbyVisionRoutePresentationAuthorized(7, 'I420P10');
+    /** Returns only settled raw-plane Profile 7 authorization for one BL frame format. */
+    isRawDolbyVisionProfile7PresentationAuthorized(
+        format: RawDolbyVisionVideoFrameFormat = PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT
+    ): boolean {
+        return this.isRawDolbyVisionRoutePresentationAuthorized(7, format);
     }
 
     /** Returns only settled external-texture Profile 5 authorization. */
@@ -1713,13 +1743,7 @@ export default class WebGPUPresenter {
         }
         const device = this.device;
         const targetFormat = this.canvasFormat;
-        if (
-            !isRawDolbyVisionVideoFrameFormat(configuration.rawFrameFormat)
-            || (
-                isDolbyVisionDualLayerProfile(configuration.profile)
-                && configuration.rawFrameFormat !== 'I420P10'
-            )
-        ) {
+        if (!isRawDolbyVisionVideoFrameFormat(configuration.rawFrameFormat)) {
             this.failColorConfiguration(
                 pendingConfiguration,
                 'hdr-color-configuration-invalid'
@@ -1899,15 +1923,10 @@ export default class WebGPUPresenter {
         const format = configuration.rawFrameFormat;
         switch (configuration.profile) {
             case 4:
+                return reconstructsFEL ?
+                    createRawDolbyVisionProfile4FELColorPipelineWGSL(settings, format) :
+                    createRawDolbyVisionProfile4ColorPipelineWGSL(settings, format);
             case 7:
-                if (format !== 'I420P10') {
-                    throw new RangeError('Dual-layer Dolby Vision requires I420P10 planes');
-                }
-                if (configuration.profile === 4) {
-                    return reconstructsFEL ?
-                        createRawDolbyVisionProfile4FELColorPipelineWGSL(settings, format) :
-                        createRawDolbyVisionProfile4ColorPipelineWGSL(settings, format);
-                }
                 return reconstructsFEL ?
                     createRawDolbyVisionProfile7FELColorPipelineWGSL(settings, format) :
                     createRawDolbyVisionProfile7ColorPipelineWGSL(settings, format);
@@ -1917,18 +1936,17 @@ export default class WebGPUPresenter {
         }
     }
 
-    private getSingleLayerDolbyVisionAuthorization(
+    private getRawDolbyVisionAuthorization(
+        route: DolbyVisionAuthorizationRoute,
         format: RawDolbyVisionVideoFrameFormat
     ): DolbyVisionPresentationAuthorizationRegistry {
-        const cachedAuthorization = this.singleLayerDolbyVisionAuthorizations.get(format);
+        const authorizationKey: RawDolbyVisionAuthorizationKey = `${format}:${route}`;
+        const cachedAuthorization = this.rawDolbyVisionAuthorizations.get(authorizationKey);
         if (cachedAuthorization) {
             return cachedAuthorization;
         }
-        const authorization = new DolbyVisionPresentationAuthorizationRegistry(
-            'single-layer',
-            format
-        );
-        this.singleLayerDolbyVisionAuthorizations.set(format, authorization);
+        const authorization = new DolbyVisionPresentationAuthorizationRegistry(route, format);
+        this.rawDolbyVisionAuthorizations.set(authorizationKey, authorization);
         return authorization;
     }
 
@@ -1939,18 +1957,18 @@ export default class WebGPUPresenter {
         switch (profile) {
             case 4:
                 return {
-                    base: this.profile4DolbyVisionAuthorization,
-                    fel: this.profile4FELDolbyVisionAuthorization
+                    base: this.getRawDolbyVisionAuthorization('profile4-base', format),
+                    fel: this.getRawDolbyVisionAuthorization('profile4-fel', format)
                 };
             case 7:
                 return {
-                    base: this.profile7DolbyVisionAuthorization,
-                    fel: this.profile7FELDolbyVisionAuthorization
+                    base: this.getRawDolbyVisionAuthorization('profile7-base', format),
+                    fel: this.getRawDolbyVisionAuthorization('profile7-fel', format)
                 };
             case 5:
             case 8:
                 return {
-                    base: this.getSingleLayerDolbyVisionAuthorization(format),
+                    base: this.getRawDolbyVisionAuthorization('single-layer', format),
                     fel: null
                 };
         }
@@ -1961,9 +1979,9 @@ export default class WebGPUPresenter {
     ): DolbyVisionPresentationAuthorizationRegistry[] {
         const authorizations: DolbyVisionPresentationAuthorizationRegistry[] = [];
         authorizations.push(
-            this.getSingleLayerDolbyVisionAuthorization('I420P10'),
-            this.profile7DolbyVisionAuthorization,
-            this.profile7FELDolbyVisionAuthorization
+            this.getRawDolbyVisionAuthorization('single-layer', PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT),
+            this.getRawDolbyVisionAuthorization('profile7-base', PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT),
+            this.getRawDolbyVisionAuthorization('profile7-fel', PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT)
         );
         if (!target) {
             return authorizations;
@@ -2295,7 +2313,10 @@ export default class WebGPUPresenter {
 
         let device: GPUDevice;
         try {
-            const devicePromise = adapter.requestDevice();
+            // A default device stops textures at 8192 texels; the adapter's own maximum takes any larger frame it can
+            const devicePromise = adapter.requestDevice({
+                requiredLimits: { maxTextureDimension2D: adapter.limits.maxTextureDimension2D }
+            });
             const deviceResult = await waitForWebGPUResourceOperation(devicePromise);
             if (deviceResult === WEBGPU_RESOURCE_OPERATION_TIMEOUT) {
                 void devicePromise.then((lateDevice: GPUDevice): void => {
@@ -2691,9 +2712,11 @@ export default class WebGPUPresenter {
         }
 
         device.queue.writeBuffer(storageBuffer, 0, packedRPUData);
-        const enhancementFrame = this.activeDolbyVisionFELReconstruction ?
-            decodedFrame.enhancementFrame ?? null :
-            null;
+        const enhancementFrame = getComposedEnhancementFrame(
+            dualLayerRPUData,
+            this.activeDolbyVisionFELReconstruction,
+            decodedFrame.enhancementFrame
+        );
         const submission = this.renderRawFrame(
             decodedFrame.frame,
             enhancementFrame
@@ -2703,11 +2726,7 @@ export default class WebGPUPresenter {
         }
         return {
             ...submission,
-            dolbyVisionDualLayerMode: getDualLayerPresentation(
-                dualLayerRPUData,
-                this.activeDolbyVisionFELReconstruction,
-                decodedFrame.enhancementFrame
-            )
+            dolbyVisionDualLayerMode: getDualLayerPresentation(dualLayerRPUData, enhancementFrame)
         };
     }
 
@@ -2914,7 +2933,10 @@ export default class WebGPUPresenter {
                 pipeline,
                 presentation: layout.presentation,
                 presentationUniformBuffer,
-                renderSettingsUniformBuffer,
+                // The buffer outlives an HDR session, and an identity SDR shader declares no binding for it
+                renderSettingsUniformBuffer: this.settings.mode === 'hdr-to-sdr' ?
+                    renderSettingsUniformBuffer :
+                    null,
                 targetView: canvasContext.getCurrentTexture().createView(),
                 textureSet: this.rawPlaneTextureSet
             });

@@ -7,14 +7,45 @@ import {
     createVideoSampleRawFrameSource,
     getRawVideoFramePairTransferList,
     getRawVideoFrameTransferList,
-    hasRawVideoFrameResourceBudget,
+    hasRawVideoFrameCopyLayout,
+    RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT,
     RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
+    RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT,
     type RawVideoFrameCopyError,
     type SupportedRawVideoFrameFormat
 } from 'webgpu-player/video/RawVideoFrameCopy';
 import { hasValidRawVideoFrameLayout } from 'webgpu-player/presentation/RawYUVGPURenderer';
 
 type MockFunction = ReturnType<typeof vi.fn>;
+
+const ULTRA_HD_8K_GEOMETRY = {
+    codedHeight: 4_320,
+    codedWidth: 7_680,
+    displayHeight: 4_320,
+    displayWidth: 7_680
+};
+const ULTRA_HD_16K_GEOMETRY = {
+    codedHeight: 8_640,
+    codedWidth: 15_360,
+    displayHeight: 8_640,
+    displayWidth: 15_360
+};
+// A row this wide aligns past the safe integer range
+const UNREPRESENTABLE_GEOMETRY = {
+    codedHeight: 2,
+    codedWidth: Number.MAX_SAFE_INTEGER,
+    displayHeight: 2,
+    displayWidth: Number.MAX_SAFE_INTEGER
+};
+// An I420 BL this size has a representable copy, but not beside an I420P10 EL reserved at its coded size
+const COMPOUND_UNREPRESENTABLE_CODED_WIDTH = 2 ** 26;
+const COMPOUND_UNREPRESENTABLE_CODED_HEIGHT = 2 ** 25;
+const COMPOUND_UNREPRESENTABLE_GEOMETRY = {
+    codedHeight: COMPOUND_UNREPRESENTABLE_CODED_HEIGHT,
+    codedWidth: COMPOUND_UNREPRESENTABLE_CODED_WIDTH,
+    displayHeight: COMPOUND_UNREPRESENTABLE_CODED_HEIGHT,
+    displayWidth: COMPOUND_UNREPRESENTABLE_CODED_WIDTH
+};
 
 type FrameHarness = {
     close: MockFunction
@@ -683,33 +714,34 @@ describe('createVideoSampleRawFrameSource', () => {
     });
 });
 
-describe('hasRawVideoFrameResourceBudget', () => {
-    const ultraHD8KGeometry = {
-        codedHeight: 4_320,
-        codedWidth: 7_680,
-        displayHeight: 4_320,
-        displayWidth: 7_680
-    };
-
-    it('rejects geometry whose aligned plane allocation exceeds the byte budget', () => {
-        expect(hasRawVideoFrameResourceBudget({
-            codedHeight: 8_640,
-            codedWidth: 15_360,
-            displayHeight: 8_640,
-            displayWidth: 15_360
-        }, 'I420P10')).toBe(false);
+describe('hasRawVideoFrameCopyLayout', () => {
+    it.each([
+        { format: 'I420P10', geometry: ULTRA_HD_16K_GEOMETRY, label: '16K 10-bit' },
+        { format: 'I444P12', geometry: ULTRA_HD_8K_GEOMETRY, label: '8K 4:4:4 12-bit' }
+    ] as const)('describes a single $label layer, whatever its size', ({ format, geometry }) => {
+        expect(hasRawVideoFrameCopyLayout(geometry, format, RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT)).toBe(true);
     });
 
-    it('enforces the compound budget for simultaneous Dolby Vision layers', () => {
-        expect(hasRawVideoFrameResourceBudget(
-            ultraHD8KGeometry,
-            'I420P10',
-            1
+    it.each([ 'I420', 'I420P10', 'I444P12' ] as const)('describes a 16K %s BL beside its EL', format => {
+        expect(hasRawVideoFrameCopyLayout(
+            ULTRA_HD_16K_GEOMETRY,
+            format,
+            RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT
         )).toBe(true);
-        expect(hasRawVideoFrameResourceBudget(
-            ultraHD8KGeometry,
-            'I420P10',
-            2
+    });
+
+    it('refuses only a layout whose byte length leaves the safe integer range', () => {
+        expect(hasRawVideoFrameCopyLayout(UNREPRESENTABLE_GEOMETRY, 'I420P10')).toBe(false);
+        expect(hasRawVideoFrameCopyLayout(
+            COMPOUND_UNREPRESENTABLE_GEOMETRY,
+            'I420',
+            RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT
+        )).toBe(true);
+        // The EL is reserved as I420P10 at the BL's coded size, twice the bytes of an 8-bit BL
+        expect(hasRawVideoFrameCopyLayout(
+            COMPOUND_UNREPRESENTABLE_GEOMETRY,
+            'I420',
+            RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT
         )).toBe(false);
     });
 });
@@ -841,5 +873,148 @@ describe('copyVideoFramePairToRawPlanes', () => {
         expect(enhancementHarness.copyTo).not.toHaveBeenCalled();
         expect(baseHarness.close).toHaveBeenCalledOnce();
         expect(enhancementHarness.close).toHaveBeenCalledOnce();
+    });
+
+    // 160 samples span more than one 256-byte row at 16 bits, so every BL format gets its own layout
+    const wideBaseGeometry = {
+        codedHeight: 4,
+        codedWidth: 160,
+        displayHeight: 4,
+        displayWidth: 160
+    };
+    const wideEnhancementGeometry = {
+        codedHeight: 2,
+        codedWidth: 80,
+        displayHeight: 2,
+        displayWidth: 80
+    };
+    // The 80x2 I420P10 EL takes one aligned row per plane row: 512 luma bytes and 256 per chroma plane
+    const wideEnhancementPlaneOffsets = [ 0, 512, 768 ];
+    const wideEnhancementByteLength = 1_024;
+
+    function createWideBaseHarness(format: SupportedRawVideoFrameFormat): FrameHarness {
+        return createFrameHarness({ codedHeight: 4, codedWidth: 160, format });
+    }
+
+    function createWideEnhancementHarness(format: string | null = 'I420P10'): FrameHarness {
+        return createFrameHarness({ codedHeight: 2, codedWidth: 80, format });
+    }
+
+    it.each([
+        [ 'I420', 8, 1, [ 0, 1_024, 1_536 ], 2_048 ],
+        [ 'I422P10', 10, 2, [ 0, 2_048, 3_072 ], 4_096 ],
+        [ 'I444P12', 12, 2, [ 0, 2_048, 4_096 ], 6_144 ]
+    ] as const)(
+        'copies a %s BL and its I420P10 EL into one aligned buffer',
+        async (
+            format: SupportedRawVideoFrameFormat,
+            bitDepth: number,
+            bytesPerComponent: number,
+            basePlaneOffsets: readonly number[],
+            baseByteLength: number
+        ) => {
+            const baseHarness = createWideBaseHarness(format);
+            const enhancementHarness = createWideEnhancementHarness();
+
+            const result = await copyVideoFramePairToRawPlanes(
+                baseHarness.frame,
+                enhancementHarness.frame,
+                {
+                    baseExpectedGeometry: wideBaseGeometry,
+                    enhancementExpectedGeometry: wideEnhancementGeometry,
+                    format
+                }
+            );
+
+            expect(result.baseFrame).toMatchObject({ bitDepth, codedHeight: 4, codedWidth: 160, format });
+            expect(result.baseFrame.planes.map(plane => plane.byteOffset)).toEqual(basePlaneOffsets);
+            expect(result.baseFrame.planes.every(plane => plane.bytesPerComponent === bytesPerComponent))
+                .toBe(true);
+            expect(result.enhancementFrame).toMatchObject({
+                bitDepth: 10,
+                codedHeight: 2,
+                codedWidth: 80,
+                format: 'I420P10'
+            });
+            expect(baseByteLength % RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT).toBe(0);
+            expect(result.enhancementFrame?.planes.map(plane => plane.byteOffset)).toEqual(
+                wideEnhancementPlaneOffsets.map(offset => baseByteLength + offset)
+            );
+            expect(result.enhancementFrame?.planes.map(plane => plane.bytesPerComponent)).toEqual([ 2, 2, 2 ]);
+            expect(result.enhancementFrame?.data).toBe(result.baseFrame.data);
+            expect(result.baseFrame.data.byteLength).toBe(baseByteLength + wideEnhancementByteLength);
+            expect(hasValidRawVideoFrameLayout(result.baseFrame)).toBe(true);
+            expect(result.enhancementFrame && hasValidRawVideoFrameLayout(result.enhancementFrame)).toBe(true);
+            expect(baseHarness.copyTo.mock.calls[0]?.[1]).toMatchObject({ format });
+            expect(enhancementHarness.copyTo.mock.calls[0]?.[1]).toMatchObject({ format: 'I420P10' });
+            expect(getRawVideoFramePairTransferList(result)).toEqual([ result.baseFrame.data ]);
+            expect(baseHarness.close).toHaveBeenCalledOnce();
+            expect(enhancementHarness.close).toHaveBeenCalledOnce();
+        }
+    );
+
+    it('reserves the I420P10 EL region when an I444P12 BL arrives alone', async () => {
+        const pairedResult = await copyVideoFramePairToRawPlanes(
+            createWideBaseHarness('I444P12').frame,
+            createWideEnhancementHarness().frame,
+            {
+                enhancementExpectedGeometry: wideEnhancementGeometry,
+                format: 'I444P12'
+            }
+        );
+        const baseOnlyHarness = createWideBaseHarness('I444P12');
+
+        const baseOnlyResult = await copyVideoFramePairToRawPlanes(
+            baseOnlyHarness.frame,
+            null,
+            {
+                enhancementExpectedGeometry: wideEnhancementGeometry,
+                format: 'I444P12',
+                requireReusableBuffer: true,
+                reusableBuffer: pairedResult.baseFrame.data
+            }
+        );
+
+        expect(baseOnlyResult.baseFrame.data).toBe(pairedResult.baseFrame.data);
+        expect(baseOnlyResult.baseFrame.data.byteLength).toBe(6_144 + wideEnhancementByteLength);
+        expect(baseOnlyResult.enhancementFrame).toBeNull();
+        expect(baseOnlyHarness.close).toHaveBeenCalledOnce();
+    });
+
+    it.each([ 'I420', 'I422P10' ])(
+        'refuses an EL decoded as %s before either copy begins',
+        async (enhancementFormat: string) => {
+            const baseHarness = createWideBaseHarness('I422P10');
+            const enhancementHarness = createWideEnhancementHarness(enhancementFormat);
+
+            await expectCopyFailure(copyVideoFramePairToRawPlanes(
+                baseHarness.frame,
+                enhancementHarness.frame,
+                {
+                    enhancementExpectedGeometry: wideEnhancementGeometry,
+                    format: 'I422P10'
+                }
+            ), 'unsupported-format');
+            expect(baseHarness.copyTo).not.toHaveBeenCalled();
+            expect(enhancementHarness.copyTo).not.toHaveBeenCalled();
+            expect(baseHarness.close).toHaveBeenCalledOnce();
+            expect(enhancementHarness.close).toHaveBeenCalledOnce();
+        }
+    );
+
+    it('copies an opaque EL through an explicit I420P10 request', async () => {
+        const enhancementHarness = createWideEnhancementHarness(null);
+
+        const result = await copyVideoFramePairToRawPlanes(
+            createWideBaseHarness('I420').frame,
+            enhancementHarness.frame,
+            {
+                enhancementExpectedGeometry: wideEnhancementGeometry,
+                format: 'I420'
+            }
+        );
+
+        expect(enhancementHarness.copyTo.mock.calls[0]?.[1]).toMatchObject({ format: 'I420P10' });
+        expect(result.enhancementFrame).toMatchObject({ bitDepth: 10, format: 'I420P10' });
     });
 });

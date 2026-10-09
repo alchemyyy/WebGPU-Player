@@ -25,6 +25,7 @@ import {
 } from '../color/DolbyVisionColorTransform';
 import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../video/dolby-vision/DolbyVisionRPUParser';
 import {
+    RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT,
     RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
     type RawVideoPlaneDescriptor,
     type SupportedRawVideoFrameFormat,
@@ -72,15 +73,14 @@ export type DolbyVisionAuthorizationRoute =
     | 'profile7-base'
     | 'profile7-fel'
     | 'single-layer';
+// One key per route and raw BL format; the dual-layer EL is I420P10 under every key
 export type DolbyVisionAuthorizationRouteKey =
-    | `${RawDolbyVisionVideoFrameFormat}:dovi-rpu-v1`
-    | typeof DOLBY_VISION_PROFILE4_AUTHORIZATION_ROUTE_KEY
-    | typeof DOLBY_VISION_PROFILE4_FEL_AUTHORIZATION_ROUTE_KEY
-    | typeof DOLBY_VISION_PROFILE7_AUTHORIZATION_ROUTE_KEY
-    | typeof DOLBY_VISION_PROFILE7_FEL_AUTHORIZATION_ROUTE_KEY;
+    | `${RawDolbyVisionVideoFrameFormat}:dovi-profile4-base-v1`
+    | `${RawDolbyVisionVideoFrameFormat}:dovi-profile4-fel-v1`
+    | `${RawDolbyVisionVideoFrameFormat}:dovi-profile7-base-v1`
+    | `${RawDolbyVisionVideoFrameFormat}:dovi-profile7-fel-v1`
+    | `${RawDolbyVisionVideoFrameFormat}:dovi-rpu-v1`;
 
-// Profile 4 declares an SDR base, which an FEL frame without its EL presents unmodified
-const DOLBY_VISION_PROFILE4_BASE_METADATA = createSDRColorMetadata({ bitDepth: 10 });
 const AUTHORIZED_TARGET_FORMATS = new Set<GPUTextureFormat>([
     'bgra8unorm',
     'rgba8unorm'
@@ -210,13 +210,12 @@ function setFELPlaneCode(
     );
 }
 
-function createFELAuthorizationFrames(): {
+/** Builds the BL vector in format and a half-resolution I420P10 EL behind it in one compound buffer. */
+function createFELAuthorizationFrames(format: RawDolbyVisionVideoFrameFormat): {
     baseFrame: TransferableRawVideoFrame
     enhancementFrame: TransferableRawVideoFrame
 } {
-    const baseFrame = createRawHDRAuthorizationVector(
-        'I420P10:bt2020-ncl:bt2020:limited:pq'
-    );
+    const baseFrame = createRawHDRAuthorizationVector(getAuthorizationVectorKey(format));
     const codedWidth = baseFrame.codedWidth / 2;
     const codedHeight = baseFrame.codedHeight / 2;
     const chromaWidth = Math.ceil(codedWidth / 2);
@@ -291,7 +290,7 @@ function createFELAuthorizationFrames(): {
         displayHeight: codedHeight,
         displayWidth: codedWidth,
         durationMicroseconds: baseFrame.durationMicroseconds,
-        format: 'I420P10',
+        format: RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT,
         planes: [ lumaPlane, chromaUPlane, chromaVPlane ].map(
             (plane: RawVideoPlaneDescriptor): RawVideoPlaneDescriptor => ({
                 ...plane,
@@ -441,15 +440,15 @@ export function createExpectedDolbyVisionAuthorizationObservations(
             case 'fel-hdr10-base':
                 reconstructedSignal = processEncodedYUV(
                     normalizedSignal,
-                    createPQColorMetadata(),
+                    createPQColorMetadata({ bitDepth: frame.bitDepth }),
                     settings
                 );
                 break;
             case 'fel-sdr-base': {
-                // The SDR base bypasses tone mapping and output dither, exactly like identity SDR
+                // Profile 4 declares an SDR base, which bypasses tone mapping and output dither like identity SDR
                 const encodedRGB = processEncodedYUV(
                     normalizedSignal,
-                    DOLBY_VISION_PROFILE4_BASE_METADATA,
+                    createSDRColorMetadata({ bitDepth: frame.bitDepth }),
                     createDefaultRenderSettings()
                 );
                 return {
@@ -517,13 +516,14 @@ export function createExpectedDolbyVisionAuthorizationObservations(
     });
 }
 
-/** Returns the exact CPU reference for the reduced-resolution FEL probe of one dual-layer profile. */
+/** Returns the exact CPU reference for the reduced-resolution FEL probe of one dual-layer profile and BL format. */
 export function createExpectedDolbyVisionFELAuthorizationObservations(
     settings: HDRToSDRRenderSettings,
-    profile: 4 | 7 = 7
+    profile: 4 | 7 = 7,
+    format: RawDolbyVisionVideoFrameFormat = 'I420P10'
 ): readonly RawHDRVectorObservation[] {
-    const packedRPUData = createDolbyVisionAuthorizationRPUVector(profile, 'fel');
-    const { baseFrame, enhancementFrame } = createFELAuthorizationFrames();
+    const { baseFrame, enhancementFrame } = createFELAuthorizationFrames(format);
+    const packedRPUData = createDolbyVisionAuthorizationRPUVector(profile, 'fel', baseFrame.bitDepth);
     return createExpectedDolbyVisionAuthorizationObservations(
         packedRPUData,
         settings,
@@ -533,23 +533,19 @@ export function createExpectedDolbyVisionFELAuthorizationObservations(
     );
 }
 
-function isDualLayerAuthorizationRoute(route: DolbyVisionAuthorizationRoute): boolean {
-    return route !== 'single-layer';
-}
-
 function getAuthorizationRouteKey(
     route: DolbyVisionAuthorizationRoute,
     format: RawDolbyVisionVideoFrameFormat
 ): DolbyVisionAuthorizationRouteKey {
     switch (route) {
         case 'profile4-base':
-            return DOLBY_VISION_PROFILE4_AUTHORIZATION_ROUTE_KEY;
+            return `${format}:dovi-profile4-base-v1`;
         case 'profile4-fel':
-            return DOLBY_VISION_PROFILE4_FEL_AUTHORIZATION_ROUTE_KEY;
+            return `${format}:dovi-profile4-fel-v1`;
         case 'profile7-base':
-            return DOLBY_VISION_PROFILE7_AUTHORIZATION_ROUTE_KEY;
+            return `${format}:dovi-profile7-base-v1`;
         case 'profile7-fel':
-            return DOLBY_VISION_PROFILE7_FEL_AUTHORIZATION_ROUTE_KEY;
+            return `${format}:dovi-profile7-fel-v1`;
         case 'single-layer':
             return `${format}:dovi-rpu-v1`;
     }
@@ -560,12 +556,6 @@ function createAuthorizationShader(
     format: RawDolbyVisionVideoFrameFormat,
     settings: HDRToSDRRenderSettings
 ): string {
-    if (route === 'single-layer') {
-        return createRawDolbyVisionColorPipelineWGSL(settings, format);
-    }
-    if (format !== 'I420P10') {
-        throw new RangeError('Dual-layer Dolby Vision authorization requires I420P10 planes');
-    }
     switch (route) {
         case 'profile4-base':
             return createRawDolbyVisionProfile4ColorPipelineWGSL(settings, format);
@@ -575,6 +565,8 @@ function createAuthorizationShader(
             return createRawDolbyVisionProfile7ColorPipelineWGSL(settings, format);
         case 'profile7-fel':
             return createRawDolbyVisionProfile7FELColorPipelineWGSL(settings, format);
+        case 'single-layer':
+            return createRawDolbyVisionColorPipelineWGSL(settings, format);
     }
 }
 
@@ -588,15 +580,19 @@ function getAuthorizationVectorKey(
         `${format as Exclude<RawDolbyVisionVideoFrameFormat, 'I420' | 'I422' | 'I444'>}:bt2020-ncl:bt2020:limited:pq`;
 }
 
+/**
+ * Returns the dual-layer scenarios over a BL vector in format, whose RPU vectors declare the format's bit depth: FEL composition with a half-resolution I420P10 EL, or MEL reconstruction and the FEL compatible-base fallback.
+ */
 function createDualLayerAuthorizationScenarios(
     profile: 4 | 7,
     reconstructsFEL: boolean,
+    format: RawDolbyVisionVideoFrameFormat,
     settings: HDRToSDRRenderSettings
 ): DolbyVisionAuthorizationScenario[] {
     const scenarios: DolbyVisionAuthorizationScenario[] = [];
     if (reconstructsFEL) {
-        const packedRPUData = createDolbyVisionAuthorizationRPUVector(profile, 'fel');
-        const { baseFrame, enhancementFrame } = createFELAuthorizationFrames();
+        const { baseFrame, enhancementFrame } = createFELAuthorizationFrames(format);
+        const packedRPUData = createDolbyVisionAuthorizationRPUVector(profile, 'fel', baseFrame.bitDepth);
         scenarios.push({
             enhancementFrame,
             expectedObservations: createExpectedDolbyVisionAuthorizationObservations(
@@ -612,10 +608,8 @@ function createDualLayerAuthorizationScenarios(
         return scenarios;
     }
 
-    const frame = createRawHDRAuthorizationVector(
-        'I420P10:bt2020-ncl:bt2020:limited:pq'
-    );
-    const melRPUData = createDolbyVisionAuthorizationRPUVector(profile, 'mel');
+    const frame = createRawHDRAuthorizationVector(getAuthorizationVectorKey(format));
+    const melRPUData = createDolbyVisionAuthorizationRPUVector(profile, 'mel', frame.bitDepth);
     scenarios.push({
         enhancementFrame: null,
         expectedObservations: createExpectedDolbyVisionAuthorizationObservations(
@@ -627,7 +621,7 @@ function createDualLayerAuthorizationScenarios(
         frame,
         packedRPUData: melRPUData
     });
-    const felRPUData = createDolbyVisionAuthorizationRPUVector(profile, 'fel');
+    const felRPUData = createDolbyVisionAuthorizationRPUVector(profile, 'fel', frame.bitDepth);
     scenarios.push({
         enhancementFrame: null,
         expectedObservations: createExpectedDolbyVisionAuthorizationObservations(
@@ -649,13 +643,13 @@ function createAuthorizationScenarios(
 ): DolbyVisionAuthorizationScenario[] {
     switch (route) {
         case 'profile4-base':
-            return createDualLayerAuthorizationScenarios(4, false, settings);
+            return createDualLayerAuthorizationScenarios(4, false, format, settings);
         case 'profile4-fel':
-            return createDualLayerAuthorizationScenarios(4, true, settings);
+            return createDualLayerAuthorizationScenarios(4, true, format, settings);
         case 'profile7-base':
-            return createDualLayerAuthorizationScenarios(7, false, settings);
+            return createDualLayerAuthorizationScenarios(7, false, format, settings);
         case 'profile7-fel':
-            return createDualLayerAuthorizationScenarios(7, true, settings);
+            return createDualLayerAuthorizationScenarios(7, true, format, settings);
         case 'single-layer': {
             const frame = createRawHDRAuthorizationVector(getAuthorizationVectorKey(format));
             const packedRPUData = createDolbyVisionAuthorizationRPUVector(
@@ -730,9 +724,6 @@ export class DolbyVisionPresentationAuthorizationRunner {
         public readonly route: DolbyVisionAuthorizationRoute = 'single-layer',
         public readonly format: RawDolbyVisionVideoFrameFormat = 'I420P10'
     ) {
-        if (isDualLayerAuthorizationRoute(route) && format !== 'I420P10') {
-            throw new RangeError('Dual-layer Dolby Vision authorization requires I420P10 planes');
-        }
         this.routeKey = getAuthorizationRouteKey(route, format);
     }
 

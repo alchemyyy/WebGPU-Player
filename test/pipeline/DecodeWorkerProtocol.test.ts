@@ -18,19 +18,15 @@ import {
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 import { CUSTOM_AUDIO_DOWNMIX_ALGORITHMS } from 'webgpu-player/audio/processing/CustomAudioDownmixAlgorithm';
 import {
-    MAXIMUM_CUSTOM_AUDIO_SAMPLE_RATE,
-    MINIMUM_CUSTOM_AUDIO_SAMPLE_RATE
-} from 'webgpu-player/audio/CustomAudioSampleRate';
-import {
     DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION,
-    MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT
+    MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT
 } from 'webgpu-player/video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
 import {
     DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH
 } from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParser';
 import { MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH } from 'webgpu-player/audio/native/NativeMediaAudioLimits';
 import {
-    MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH,
+    type RawVideoPlaneDescriptor,
     type TransferableRawVideoFrame
 } from 'webgpu-player/video/RawVideoFrameCopy';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
@@ -41,79 +37,103 @@ import { createHDR10PlusHEVCVector } from '../../src/capability/vectors/HDR10Plu
 const DOLBY_VISION_RPU_PARSER_WASM_URL =
     'https://example.test/libraries/libdovi/dovi-rpu-parser.wasm';
 
+const RAW_TEST_FRAME_CODED_WIDTH = 4;
+const RAW_TEST_FRAME_CODED_HEIGHT = 2;
+const RAW_TEST_FRAME_BYTES_PER_ROW = 256;
+const RAW_TEST_FRAME_FORMATS = {
+    I420: { bitDepth: 8, bytesPerComponent: 1, chromaHeightDivisor: 2, chromaWidthDivisor: 2 },
+    I420P10: { bitDepth: 10, bytesPerComponent: 2, chromaHeightDivisor: 2, chromaWidthDivisor: 2 },
+    I422P10: { bitDepth: 10, bytesPerComponent: 2, chromaHeightDivisor: 1, chromaWidthDivisor: 2 },
+    I444P12: { bitDepth: 12, bytesPerComponent: 2, chromaHeightDivisor: 1, chromaWidthDivisor: 1 }
+} as const;
+
+type RawTestFrameFormat = keyof typeof RAW_TEST_FRAME_FORMATS;
+
+const ULTRA_HD_8K_CODED_WIDTH = 7_680;
+const ULTRA_HD_8K_CODED_HEIGHT = 4_320;
+const ULTRA_HD_16K_CODED_WIDTH = 15_360;
+const ULTRA_HD_16K_CODED_HEIGHT = 8_640;
+// A row this wide has a byte length past the safe integer range, so no copy layout can describe it
+const UNREPRESENTABLE_CODED_WIDTH = Number.MAX_SAFE_INTEGER;
+const UNREPRESENTABLE_CODED_HEIGHT = 2;
+
+// Malformed rates; any positive integer rate is valid
+const ZERO_SAMPLE_RATE = 0;
+const NEGATIVE_SAMPLE_RATE = -1;
+const FRACTIONAL_SAMPLE_RATE = 48_000.5;
+
 function createPackedRPUData(): ArrayBuffer {
     return createDolbyVisionAuthorizationRPUVector();
 }
 
-function createRawFrame(): TransferableRawVideoFrame {
+/** Creates a 4x2 frame whose planes start at an offset of its own buffer, as the worker lays them out. */
+function createRawFrame(
+    format: RawTestFrameFormat = 'I420',
+    byteOffset = 0
+): TransferableRawVideoFrame {
+    const formatDefinition = RAW_TEST_FRAME_FORMATS[format];
+    const chromaWidth = RAW_TEST_FRAME_CODED_WIDTH / formatDefinition.chromaWidthDivisor;
+    const chromaHeight = RAW_TEST_FRAME_CODED_HEIGHT / formatDefinition.chromaHeightDivisor;
+    const planeGeometries = [
+        { height: RAW_TEST_FRAME_CODED_HEIGHT, kind: 'y', width: RAW_TEST_FRAME_CODED_WIDTH },
+        { height: chromaHeight, kind: 'u', width: chromaWidth },
+        { height: chromaHeight, kind: 'v', width: chromaWidth }
+    ] as const;
+    const planes: RawVideoPlaneDescriptor[] = [];
+    let planeByteOffset = byteOffset;
+    for (const planeGeometry of planeGeometries) {
+        const byteLength = RAW_TEST_FRAME_BYTES_PER_ROW * planeGeometry.height;
+        planes.push({
+            byteLength,
+            byteOffset: planeByteOffset,
+            bytesPerComponent: formatDefinition.bytesPerComponent,
+            bytesPerRow: RAW_TEST_FRAME_BYTES_PER_ROW,
+            componentsPerTexel: 1,
+            height: planeGeometry.height,
+            kind: planeGeometry.kind,
+            rowByteLength: planeGeometry.width * formatDefinition.bytesPerComponent,
+            width: planeGeometry.width
+        });
+        planeByteOffset += byteLength;
+    }
     return {
-        bitDepth: 8,
-        codedHeight: 2,
-        codedWidth: 4,
+        bitDepth: formatDefinition.bitDepth,
+        codedHeight: RAW_TEST_FRAME_CODED_HEIGHT,
+        codedWidth: RAW_TEST_FRAME_CODED_WIDTH,
         colorSpace: {
             fullRange: false,
             matrix: 'bt709',
             primaries: 'bt709',
             transfer: 'bt709'
         },
-        data: new ArrayBuffer(1_024),
-        displayHeight: 2,
-        displayWidth: 4,
+        data: new ArrayBuffer(planeByteOffset),
+        displayHeight: RAW_TEST_FRAME_CODED_HEIGHT,
+        displayWidth: RAW_TEST_FRAME_CODED_WIDTH,
         durationMicroseconds: millisecondsToMicroseconds(41.708),
-        format: 'I420',
-        planes: [
-            {
-                byteLength: 512,
-                byteOffset: 0,
-                bytesPerComponent: 1,
-                bytesPerRow: 256,
-                componentsPerTexel: 1,
-                height: 2,
-                kind: 'y',
-                rowByteLength: 4,
-                width: 4
-            },
-            {
-                byteLength: 256,
-                byteOffset: 512,
-                bytesPerComponent: 1,
-                bytesPerRow: 256,
-                componentsPerTexel: 1,
-                height: 1,
-                kind: 'u',
-                rowByteLength: 2,
-                width: 2
-            },
-            {
-                byteLength: 256,
-                byteOffset: 768,
-                bytesPerComponent: 1,
-                bytesPerRow: 256,
-                componentsPerTexel: 1,
-                height: 1,
-                kind: 'v',
-                rowByteLength: 2,
-                width: 2
-            }
-        ],
+        format,
+        planes,
         timestampMicroseconds: secondsToMicroseconds(-0.5),
-        visibleRectangle: { height: 2, width: 4, x: 0, y: 0 }
+        visibleRectangle: {
+            height: RAW_TEST_FRAME_CODED_HEIGHT,
+            width: RAW_TEST_FRAME_CODED_WIDTH,
+            x: 0,
+            y: 0
+        }
     };
 }
 
-function createCompoundRawFrames(): {
-    baseFrame: TransferableRawVideoFrame
-    enhancementFrame: TransferableRawVideoFrame
-} {
-    const baseFrame = createRawFrame();
-    const enhancementFrame = createRawFrame();
-    const data = new ArrayBuffer(2_048);
+/** Lays a BL in any format and an EL in one buffer, the EL at the next aligned offset. */
+function createCompoundRawFrames(
+    baseFormat: RawTestFrameFormat = 'I420',
+    enhancementFormat: RawTestFrameFormat = 'I420P10'
+): {
+        baseFrame: TransferableRawVideoFrame
+        enhancementFrame: TransferableRawVideoFrame
+    } {
+    const baseFrame = createRawFrame(baseFormat);
+    const enhancementFrame = createRawFrame(enhancementFormat, baseFrame.data.byteLength);
+    const data = enhancementFrame.data;
     baseFrame.data = data;
-    enhancementFrame.data = data;
-    enhancementFrame.planes = enhancementFrame.planes.map(plane => ({
-        ...plane,
-        byteOffset: plane.byteOffset + 1_024
-    }));
     return { baseFrame, enhancementFrame };
 }
 
@@ -172,6 +192,17 @@ describe('DecodeWorkerProtocol', () => {
         expect(getCustomDecodeHardwareAcceleration('video-frame', 'native', true)).toBe('prefer-hardware');
     });
 
+    it('prefers software only for raw AV1 and VP9 planes, whose hardware output is opaque', () => {
+        expect(getCustomDecodeHardwareAcceleration('raw-planes', 'native', false, 'av1')).toBe('prefer-software');
+        expect(getCustomDecodeHardwareAcceleration('raw-planes', 'native', true, 'av1')).toBe('prefer-software');
+        expect(getCustomDecodeHardwareAcceleration('raw-planes', 'native', false, 'vp9')).toBe('prefer-software');
+        // Chromium has no software HEVC decoder
+        expect(getCustomDecodeHardwareAcceleration('raw-planes', 'native', false, 'hevc')).toBe('no-preference');
+        expect(getCustomDecodeHardwareAcceleration('video-frame', 'native', false, 'av1')).toBe('no-preference');
+        expect(getCustomDecodeHardwareAcceleration('video-frame', 'native', false, 'vp9')).toBe('no-preference');
+        expect(getCustomDecodeHardwareAcceleration('video-frame', 'native', true, 'av1')).toBe('prefer-hardware');
+    });
+
     it.each([
         {
             expected: 'no-preference',
@@ -180,7 +211,8 @@ describe('DecodeWorkerProtocol', () => {
                 neutralizeHDRColorMetadata: false,
                 videoDecoderBackend: 'native',
                 videoOutputMode: 'video-frame'
-            }
+            },
+            videoCodec: 'av1'
         },
         {
             expected: 'prefer-hardware',
@@ -189,7 +221,8 @@ describe('DecodeWorkerProtocol', () => {
                 neutralizeHDRColorMetadata: true,
                 videoDecoderBackend: 'native',
                 videoOutputMode: 'video-frame'
-            }
+            },
+            videoCodec: 'hevc'
         },
         {
             expected: 'prefer-hardware',
@@ -198,7 +231,8 @@ describe('DecodeWorkerProtocol', () => {
                 neutralizeHDRColorMetadata: false,
                 videoDecoderBackend: 'native',
                 videoOutputMode: 'video-frame'
-            }
+            },
+            videoCodec: 'hevc'
         },
         {
             expected: 'no-preference',
@@ -207,7 +241,28 @@ describe('DecodeWorkerProtocol', () => {
                 neutralizeHDRColorMetadata: false,
                 videoDecoderBackend: 'native',
                 videoOutputMode: 'raw-planes'
-            }
+            },
+            videoCodec: 'hevc'
+        },
+        {
+            expected: 'prefer-software',
+            request: {
+                dolbyVisionProfile: 8,
+                neutralizeHDRColorMetadata: false,
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'raw-planes'
+            },
+            videoCodec: 'av1'
+        },
+        {
+            expected: 'prefer-software',
+            request: {
+                dolbyVisionProfile: null,
+                neutralizeHDRColorMetadata: false,
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'raw-planes'
+            },
+            videoCodec: 'vp9'
         },
         {
             expected: 'prefer-software',
@@ -216,10 +271,21 @@ describe('DecodeWorkerProtocol', () => {
                 neutralizeHDRColorMetadata: false,
                 videoDecoderBackend: 'bundled-hevc',
                 videoOutputMode: 'raw-planes'
-            }
+            },
+            videoCodec: 'hevc'
+        },
+        {
+            expected: 'prefer-software',
+            request: {
+                dolbyVisionProfile: null,
+                neutralizeHDRColorMetadata: false,
+                videoDecoderBackend: 'openjpeg',
+                videoOutputMode: 'video-frame'
+            },
+            videoCodec: null
         }
-    ] as const)('selects $expected for a start request route', ({ expected, request }) => {
-        expect(getCustomDecodeRequestHardwareAcceleration(request)).toBe(expected);
+    ] as const)('selects $expected for a $videoCodec start request route', ({ expected, request, videoCodec }) => {
+        expect(getCustomDecodeRequestHardwareAcceleration(request, videoCodec)).toBe(expected);
     });
 
     it('validates the container duration request and its positive report', () => {
@@ -523,6 +589,135 @@ describe('DecodeWorkerProtocol', () => {
         })).toBe(false);
     });
 
+    it.each([ 'I420', 'I420P10', 'I422P10', 'I444P12' ] as const)(
+        'accepts a %s BL paired with the I420P10 EL every dual-layer route composes',
+        baseFormat => {
+            const { baseFrame, enhancementFrame } = createCompoundRawFrames(baseFormat);
+
+            expect(isDecodeWorkerResponse({
+                durationMicroseconds: 41_708,
+                enhancementFrame,
+                frame: baseFrame,
+                generation: 2,
+                mediaTimeMicroseconds: -500_000,
+                outputMode: 'raw-planes',
+                type: 'frame'
+            })).toBe(true);
+        }
+    );
+
+    it.each([
+        [ 'I420', 'I420' ],
+        [ 'I422P10', 'I422P10' ],
+        [ 'I420P10', 'I444P12' ]
+    ] as const)('rejects a %s BL paired with a %s EL', (baseFormat, enhancementFormat) => {
+        const { baseFrame, enhancementFrame } = createCompoundRawFrames(baseFormat, enhancementFormat);
+
+        expect(isDecodeWorkerResponse({
+            durationMicroseconds: 41_708,
+            enhancementFrame,
+            frame: baseFrame,
+            generation: 2,
+            mediaTimeMicroseconds: -500_000,
+            outputMode: 'raw-planes',
+            type: 'frame'
+        })).toBe(false);
+    });
+
+    it.each([
+        {
+            description: 'the AV1 Profile 10 RPU route',
+            dolbyVisionProfile: 8,
+            rawVideoFrameFormat: 'I420P10',
+            videoDecoderBackend: 'native'
+        },
+        {
+            description: 'single-layer 8-bit Main Dolby Vision',
+            dolbyVisionProfile: 5,
+            rawVideoFrameFormat: 'I420',
+            videoDecoderBackend: 'bundled-hevc'
+        },
+        {
+            description: 'dual-layer 8-bit Main Dolby Vision',
+            dolbyVisionProfile: 7,
+            rawVideoFrameFormat: 'I420',
+            videoDecoderBackend: 'bundled-hevc'
+        },
+        {
+            description: 'a dual-layer range-extension BL',
+            dolbyVisionProfile: 4,
+            rawVideoFrameFormat: 'I444P12',
+            videoDecoderBackend: 'native'
+        },
+        {
+            description: 'native raw 10-bit SDR',
+            dolbyVisionProfile: null,
+            rawVideoFrameFormat: 'I420P10',
+            videoDecoderBackend: 'native'
+        },
+        {
+            description: 'bundled raw 10-bit SDR',
+            dolbyVisionProfile: null,
+            rawVideoFrameFormat: 'I420P10',
+            videoDecoderBackend: 'bundled-hevc'
+        }
+    ] as const)('accepts $description at 4K', ({
+        dolbyVisionProfile,
+        rawVideoFrameFormat,
+        videoDecoderBackend
+    }) => {
+        expect(isDecodeWorkerRequest({
+            audioSampleCredits: 0,
+            audioTrackIndex: null,
+            dolbyVisionProfile,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
+            frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
+            generation: 2,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat,
+            startTimeMicroseconds: 0,
+            type: 'start',
+            url: 'http://localhost/video.mkv',
+            videoDecoderBackend,
+            videoOutputMode: 'raw-planes',
+            videoTrackIndex: 0
+        })).toBe(true);
+    });
+
+    it('accepts a discarded Dolby Vision EL only on a dual-layer route', () => {
+        const request = {
+            audioSampleCredits: 0,
+            audioTrackIndex: null,
+            discardDolbyVisionEnhancementLayer: true,
+            dolbyVisionProfile: 7,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
+            frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
+            generation: 2,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: 'I420P10',
+            startTimeMicroseconds: 0,
+            type: 'start',
+            url: 'http://localhost/video.mkv',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'raw-planes',
+            videoTrackIndex: 0
+        } as const;
+
+        expect(isDecodeWorkerRequest(request)).toBe(true);
+        expect(isDecodeWorkerRequest({ ...request, dolbyVisionProfile: 4 })).toBe(true);
+        expect(isDecodeWorkerRequest({ ...request, discardDolbyVisionEnhancementLayer: false })).toBe(true);
+        // A single-layer route has no EL to discard
+        expect(isDecodeWorkerRequest({ ...request, dolbyVisionProfile: 8 })).toBe(false);
+        expect(isDecodeWorkerRequest({ ...request, dolbyVisionProfile: null })).toBe(false);
+        expect(isDecodeWorkerRequest({ ...request, discardDolbyVisionEnhancementLayer: 'yes' })).toBe(false);
+    });
+
     it('accepts only versioned and bounded encoded Dolby Vision frame metadata', () => {
         const baseFrame = {
             durationMicroseconds: 41_708,
@@ -576,7 +771,7 @@ describe('DecodeWorkerProtocol', () => {
                 enhancementLayerDisposition: 'absent',
                 hasEnhancementLayerVCL: false,
                 parsedRPUData: Array.from(
-                    { length: MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT + 1 },
+                    { length: MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT + 1 },
                     createPackedRPUData
                 ),
                 schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
@@ -788,9 +983,8 @@ describe('DecodeWorkerProtocol', () => {
         })).toBe(false);
     });
 
-    it('requires two in-flight raw transfer credits independently of each transfer byte bound', () => {
+    it('requires exactly the two in-flight raw transfer credits', () => {
         expect(MAX_DECODED_RAW_FRAME_CREDITS).toBe(2);
-        expect(MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH).toBe(128 * 1_024 * 1_024);
         const rawStartRequest = {
             audioSampleCredits: 0,
             audioTrackIndex: null,
@@ -833,7 +1027,7 @@ describe('DecodeWorkerProtocol', () => {
         })).toBe(false);
     });
 
-    it('accepts 8K raw geometry within one transfer budget and rejects an oversized transfer', () => {
+    it('accepts raw geometry of any size whose copy layout is representable', () => {
         const rawStartRequest = {
             audioSampleCredits: 0,
             audioTrackIndex: null,
@@ -841,8 +1035,8 @@ describe('DecodeWorkerProtocol', () => {
             dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
             frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
             generation: 1,
-            maximumCodedHeight: 4_320,
-            maximumCodedWidth: 7_680,
+            maximumCodedHeight: ULTRA_HD_8K_CODED_HEIGHT,
+            maximumCodedWidth: ULTRA_HD_8K_CODED_WIDTH,
             nativeHDRTransfer: null,
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: 'I420P10',
@@ -857,12 +1051,17 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerRequest(rawStartRequest)).toBe(true);
         expect(isDecodeWorkerRequest({
             ...rawStartRequest,
-            maximumCodedHeight: 8_640,
-            maximumCodedWidth: 15_360
+            maximumCodedHeight: ULTRA_HD_16K_CODED_HEIGHT,
+            maximumCodedWidth: ULTRA_HD_16K_CODED_WIDTH
+        })).toBe(true);
+        expect(isDecodeWorkerRequest({
+            ...rawStartRequest,
+            maximumCodedHeight: UNREPRESENTABLE_CODED_HEIGHT,
+            maximumCodedWidth: UNREPRESENTABLE_CODED_WIDTH
         })).toBe(false);
     });
 
-    it('charges both Profile 7 layers to each compound transfer budget', () => {
+    it('accepts both 8K Profile 7 layers in one compound transfer', () => {
         expect(isDecodeWorkerRequest({
             audioSampleCredits: 0,
             audioTrackIndex: null,
@@ -870,8 +1069,8 @@ describe('DecodeWorkerProtocol', () => {
             dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
             frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
             generation: 1,
-            maximumCodedHeight: 4_320,
-            maximumCodedWidth: 7_680,
+            maximumCodedHeight: ULTRA_HD_8K_CODED_HEIGHT,
+            maximumCodedWidth: ULTRA_HD_8K_CODED_WIDTH,
             nativeHDRTransfer: null,
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: 'I420P10',
@@ -881,7 +1080,7 @@ describe('DecodeWorkerProtocol', () => {
             videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
-        })).toBe(false);
+        })).toBe(true);
     });
 
     it('rejects malformed generations, dimensions, and failures', () => {
@@ -1109,7 +1308,7 @@ describe('DecodeWorkerProtocol', () => {
             frameCount: 1_024,
             generation: 2,
             mediaTimeMicroseconds: 0,
-            sampleRate: MAXIMUM_CUSTOM_AUDIO_SAMPLE_RATE + 1,
+            sampleRate: ZERO_SAMPLE_RATE,
             type: 'audio'
         })).toBe(false);
         expect(isDecodeWorkerResponse({
@@ -1119,14 +1318,14 @@ describe('DecodeWorkerProtocol', () => {
             frameCount: 1_024,
             generation: 2,
             mediaTimeMicroseconds: 0,
-            sampleRate: MINIMUM_CUSTOM_AUDIO_SAMPLE_RATE - 1,
+            sampleRate: FRACTIONAL_SAMPLE_RATE,
             type: 'audio'
         })).toBe(false);
         expect(isDecodeWorkerResponse({
             audio: {
                 channelCount: 2,
                 codec: 'opus',
-                sampleRate: MAXIMUM_CUSTOM_AUDIO_SAMPLE_RATE + 1
+                sampleRate: ZERO_SAMPLE_RATE
             },
             codec: 'avc1.640028',
             codedHeight: 1_080,
@@ -1141,7 +1340,7 @@ describe('DecodeWorkerProtocol', () => {
                 channelCount: 2,
                 codec: 'opus',
                 sampleRate: 48_000,
-                sourceSampleRate: MINIMUM_CUSTOM_AUDIO_SAMPLE_RATE - 1
+                sourceSampleRate: NEGATIVE_SAMPLE_RATE
             },
             codec: 'avc1.640028',
             codedHeight: 1_080,
@@ -1465,9 +1664,9 @@ describe('DecodeWorkerProtocol', () => {
             MAX_DECODED_AUDIO_CHANNELS + 1
         ];
         const invalidSampleRates: readonly unknown[] = [
-            MINIMUM_CUSTOM_AUDIO_SAMPLE_RATE - 1,
-            MAXIMUM_CUSTOM_AUDIO_SAMPLE_RATE + 1,
-            48_000.5,
+            ZERO_SAMPLE_RATE,
+            NEGATIVE_SAMPLE_RATE,
+            FRACTIONAL_SAMPLE_RATE,
             '48000',
             null,
             undefined

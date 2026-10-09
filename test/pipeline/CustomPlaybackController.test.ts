@@ -43,6 +43,16 @@ import type {
     CustomVideoDecodeSession
 } from 'webgpu-player/pipeline/CustomPlaybackControllerTypes';
 
+const ULTRA_HD_8K_CODED_WIDTH = 7_680;
+const ULTRA_HD_8K_CODED_HEIGHT = 4_320;
+const ULTRA_HD_16K_CODED_WIDTH = 15_360;
+const ULTRA_HD_16K_CODED_HEIGHT = 8_640;
+// A row this wide aligns past the safe integer range, so no copy layout can describe it
+const UNREPRESENTABLE_CODED_WIDTH = Number.MAX_SAFE_INTEGER;
+const UNREPRESENTABLE_CODED_HEIGHT = 2;
+const UNREPRESENTABLE_RAW_PLAYBACK_ERROR = 'Raw custom playback frames have no representable copy layout';
+const MAIN10_LEVEL_6_1_CODEC_STRING = 'hvc1.2.6.L183.B0';
+
 type ControllerDecodeWorkerMessageHandler = (event: MessageEvent<unknown>) => void;
 
 class ControllerDecodeWorker {
@@ -785,10 +795,11 @@ describe('CustomPlaybackController', () => {
         await harness.controller.destroy();
     });
 
-    it('forwards the selected Dolby Vision profile to the decode session', async () => {
+    it('forwards the selected Dolby Vision profile and its discarded EL to the decode session', async () => {
         const harness = createControllerHarness(false);
         const startPromise = harness.controller.play({
             ...createPlayOptions(),
+            discardDolbyVisionEnhancementLayer: true,
             dolbyVisionProfile: 7,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
@@ -803,6 +814,7 @@ describe('CustomPlaybackController', () => {
         }
 
         expect(harness.videoDecodeSession.starts[0]).toMatchObject({
+            discardDolbyVisionEnhancementLayer: true,
             dolbyVisionProfile: 7,
             generation,
             videoDecoderBackend: 'bundled-hevc',
@@ -821,30 +833,35 @@ describe('CustomPlaybackController', () => {
         await harness.controller.destroy();
     });
 
-    it('starts one 8K 10-bit raw transfer without imposing a 4K ceiling', async () => {
+    it.each([
+        { height: ULTRA_HD_8K_CODED_HEIGHT, label: '8K', profile: null, width: ULTRA_HD_8K_CODED_WIDTH },
+        { height: ULTRA_HD_16K_CODED_HEIGHT, label: '16K', profile: null, width: ULTRA_HD_16K_CODED_WIDTH },
+        { height: ULTRA_HD_8K_CODED_HEIGHT, label: '8K Profile 7', profile: 7, width: ULTRA_HD_8K_CODED_WIDTH }
+    ] as const)('starts a $label 10-bit raw transfer at any frame size', async ({ height, profile, width }) => {
         const harness = createControllerHarness(false);
         const startPromise = harness.controller.play({
             ...createPlayOptions(),
-            maximumCodedHeight: 4_320,
-            maximumCodedWidth: 7_680,
+            dolbyVisionProfile: profile,
+            maximumCodedHeight: height,
+            maximumCodedWidth: width,
             rawVideoFrameFormat: 'I420P10',
             videoOutputMode: 'raw-planes'
         });
         await flushAsyncWork();
         const generation = harness.videoDecodeSession.starts[0]?.generation;
         if (!generation) {
-            throw new Error('8K raw decode did not start');
+            throw new Error('The raw decode did not start');
         }
 
         expect(harness.videoDecodeSession.starts[0]).toMatchObject({
-            maximumCodedHeight: 4_320,
-            maximumCodedWidth: 7_680,
+            maximumCodedHeight: height,
+            maximumCodedWidth: width,
             rawVideoFrameFormat: 'I420P10',
             videoOutputMode: 'raw-planes'
         });
         harness.videoDecodeSession.emit({
             audio: null,
-            codec: 'hvc1.2.6.L183.B0',
+            codec: MAIN10_LEVEL_6_1_CODEC_STRING,
             generation,
             type: 'ready'
         });
@@ -855,25 +872,16 @@ describe('CustomPlaybackController', () => {
         await harness.controller.destroy();
     });
 
-    it('rejects raw playback only when the transfer byte budget is exceeded', async () => {
+    it('rejects raw playback only when no copy layout can describe its frames', async () => {
         const harness = createControllerHarness(false);
-        const oversizedOptions: CustomPlaybackPlayOptions = {
+
+        expect(() => harness.controller.play({
             ...createPlayOptions(),
-            maximumCodedHeight: 8_640,
-            maximumCodedWidth: 15_360,
+            maximumCodedHeight: UNREPRESENTABLE_CODED_HEIGHT,
+            maximumCodedWidth: UNREPRESENTABLE_CODED_WIDTH,
             rawVideoFrameFormat: 'I420P10',
             videoOutputMode: 'raw-planes'
-        };
-
-        expect(() => harness.controller.play(oversizedOptions)).toThrow(
-            'Raw custom playback exceeds its transfer memory budget'
-        );
-        expect(() => harness.controller.play({
-            ...oversizedOptions,
-            dolbyVisionProfile: 7,
-            maximumCodedHeight: 4_320,
-            maximumCodedWidth: 7_680
-        })).toThrow('Raw custom playback exceeds its transfer memory budget');
+        })).toThrow(UNREPRESENTABLE_RAW_PLAYBACK_ERROR);
         expect(harness.videoDecodeSession.starts).toEqual([]);
         await harness.controller.destroy();
     });

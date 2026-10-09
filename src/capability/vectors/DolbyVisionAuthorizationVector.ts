@@ -1,5 +1,7 @@
 import {
     DOLBY_VISION_RPU_COLOR_WORD_OFFSET,
+    DOLBY_VISION_RPU_COMPONENT_FLAG_MMR,
+    DOLBY_VISION_RPU_COMPONENT_FLAG_POLYNOMIAL,
     DOLBY_VISION_RPU_COMPONENT_WORD_OFFSET,
     DOLBY_VISION_RPU_COMPONENT_WORD_STRIDE,
     DOLBY_VISION_RPU_NLQ_WORD_OFFSET,
@@ -22,8 +24,6 @@ const MEL_FLAG = 1 << 5;
 const NLQ_ACTIVE_FLAG = 1 << 4;
 const NLQ_PRESENT_FLAG = 1 << 3;
 const MISSING_UNSIGNED_INTEGER = 0xFFFF_FFFF;
-const POLYNOMIAL_MAPPING_METHOD = 1;
-const MMR_MAPPING_METHOD = 2;
 const NLQ_WORD_STRIDE = 4;
 
 const COEFFICIENT_LOG2_DENOMINATOR_BYTE_OFFSET = 44;
@@ -52,7 +52,8 @@ const LINEAR_RGB_TO_LMS_MATRIX: readonly number[] = [
 ];
 
 type SyntheticRPUComponent = {
-    mappingMethod: typeof MMR_MAPPING_METHOD | typeof POLYNOMIAL_MAPPING_METHOD
+    // The component flags of a single-method component
+    mappingMethod: typeof DOLBY_VISION_RPU_COMPONENT_FLAG_MMR | typeof DOLBY_VISION_RPU_COMPONENT_FLAG_POLYNOMIAL
     mmrVectors: readonly (readonly number[])[]
     pivots: readonly number[]
     segments: readonly (readonly number[])[]
@@ -60,7 +61,7 @@ type SyntheticRPUComponent = {
 
 const SYNTHETIC_COMPONENTS: readonly SyntheticRPUComponent[] = [
     {
-        mappingMethod: POLYNOMIAL_MAPPING_METHOD,
+        mappingMethod: DOLBY_VISION_RPU_COMPONENT_FLAG_POLYNOMIAL,
         mmrVectors: [],
         pivots: [ 0, 0.5, 1 ],
         segments: [
@@ -69,7 +70,7 @@ const SYNTHETIC_COMPONENTS: readonly SyntheticRPUComponent[] = [
         ]
     },
     {
-        mappingMethod: MMR_MAPPING_METHOD,
+        mappingMethod: DOLBY_VISION_RPU_COMPONENT_FLAG_MMR,
         mmrVectors: [
             [ 0.02, 0.85, 0.01, 0 ],
             [ 0.08, 0, 0, 0 ],
@@ -82,7 +83,7 @@ const SYNTHETIC_COMPONENTS: readonly SyntheticRPUComponent[] = [
         segments: [ [ 0, 0, 0, 3 ] ]
     },
     {
-        mappingMethod: MMR_MAPPING_METHOD,
+        mappingMethod: DOLBY_VISION_RPU_COMPONENT_FLAG_MMR,
         mmrVectors: [
             [ 0.01, 0.02, 0.87, 0 ],
             [ 0, 0.06, 0, 0 ],

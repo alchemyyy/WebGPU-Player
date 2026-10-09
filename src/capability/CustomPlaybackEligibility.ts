@@ -26,6 +26,7 @@ import {
     type CustomNativeHDRHEVCCapability,
     type CustomNativeSurroundAudioCodecCapability,
     type CustomRawHDRVideoCodec,
+    type CustomRawHDRVideoCodecCapability,
     type CustomVideoCodec
 } from './CustomDecodeCapabilities';
 import {
@@ -73,13 +74,14 @@ import type {
 } from '../pipeline/DecodeWorkerProtocol';
 import { requireMicroseconds } from '../TimeMath';
 import {
-    hasRawVideoFrameResourceBudget,
+    hasRawVideoFrameCopyLayout,
     RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT,
     RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT,
     type RawVideoFrameGeometry
 } from '../video/RawVideoFrameCopy';
 import {
-    getHEVCRangeExtensionStreamDefinitionFromMetadata
+    getHEVCRangeExtensionStreamDefinitionFromMetadata,
+    type HEVCRangeExtensionProbeDefinition
 } from './HEVCRangeExtensionCapabilities';
 
 const DIRECT_PLAY_METHOD = 'DIRECTPLAY';
@@ -207,6 +209,7 @@ type VideoStreamSelection =
 
 type VideoOutputSelection =
     | {
+        discardDolbyVisionEnhancementLayer?: true
         dolbyVisionProfile?: DolbyVisionReconstructionProfile
         hdr: boolean
         maximumCodedHeight: number
@@ -258,6 +261,14 @@ function getNativeHDRTransferResult(
     return { nativeHDRTransfer: videoOutput.nativeHDRTransfer };
 }
 
+function getDiscardedEnhancementLayerResult(
+    videoOutput: Extract<VideoOutputSelection, { status: 'selected' }>
+): Pick<EligibleCustomPlayback, 'discardDolbyVisionEnhancementLayer'> {
+    return videoOutput.discardDolbyVisionEnhancementLayer ?
+        { discardDolbyVisionEnhancementLayer: true } :
+        {};
+}
+
 export type CustomPlaybackIneligibilityReason =
     | 'audio-codec-unsupported'
     | 'audio-layout-unsupported'
@@ -279,7 +290,9 @@ export type CustomPlaybackIneligibilityReason =
 export type CustomPlaybackEligibilityOptions = {
     /** Single-layer RPU reconstruction is authorized for the stream's raw frame format. */
     allowDolbyVision?: boolean
+    /** Profile 4 reconstruction is authorized for the stream's raw frame format. */
     allowDolbyVisionProfile4?: boolean
+    /** Profile 7 reconstruction is authorized for the stream's raw frame format. */
     allowDolbyVisionProfile7?: boolean
     allowNativeDolbyVision?: boolean
     allowNativeDolbyVisionProfile7HDR10Base?: boolean
@@ -299,6 +312,8 @@ export type EligibleCustomPlayback = {
     audioSourceChannelCount: number | null
     /** Zero-based ordinal within container audio tracks, not MediaStream.Index. */
     audioTrackIndex: number | null
+    /** Set when a dual-layer route reconstructs without its EL, because no qualified decoder decodes it: MEL reconstructs exactly and FEL presents its base */
+    discardDolbyVisionEnhancementLayer?: true
     /** Null when the server has no runtime for the source */
     durationMicroseconds: Microseconds | null
     dolbyVisionProfile: DolbyVisionReconstructionProfile | null
@@ -823,6 +838,16 @@ function getStreamRawVideoGeometry(stream: MediaStream): RawVideoFrameGeometry |
     };
 }
 
+/** Returns whether the stream's raw frames, with every layer a presented frame pairs, have a copy layout. */
+function hasStreamRawVideoFrameCopyLayout(
+    stream: MediaStream,
+    format: CustomDecodeRawVideoFrameFormat,
+    frameLayerCount: number
+): boolean {
+    const geometry = getStreamRawVideoGeometry(stream);
+    return geometry !== null && hasRawVideoFrameCopyLayout(geometry, format, frameLayerCount);
+}
+
 function getSDRVideoSelection(
     capabilities: CustomDecodeCapabilities,
     codec: CustomVideoCodec,
@@ -852,21 +877,110 @@ function supportsRawHDRVideo(
     if (capability.status !== 'supported'
         || capability.format !== format
         || capability.bitDepth !== stream.BitDepth
-        || !hasSupportedRawVideoProfile(codec, stream)) {
-        return false;
-    }
-    const geometry = getStreamRawVideoGeometry(stream);
-    if (!geometry || !hasRawVideoFrameResourceBudget(
-        geometry,
-        format,
-        frameLayerCount
-    )) {
+        || !hasSupportedRawVideoProfile(codec, stream)
+        || !hasStreamRawVideoFrameCopyLayout(stream, format, frameLayerCount)) {
         return false;
     }
     if (capability.reason !== 'bundled-software-decoder') {
         return true;
     }
     return hasSupportedBundledHEVCProfile(capabilities, 'main10');
+}
+
+/** Returns the decoder behind a raw capability: the bundled HEVC decoder when it qualified, else native. */
+function getRawVideoDecoderBackend(
+    capability: CustomRawHDRVideoCodecCapability
+): CustomDecodeVideoDecoderBackend {
+    return capability.reason === 'bundled-software-decoder' ? 'bundled-hevc' : 'native';
+}
+
+/** Creates a raw-plane route decoded by a codec's raw capability. */
+function createRawVideoOutputSelection(
+    capability: CustomRawHDRVideoCodecCapability,
+    stream: MediaStream,
+    rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat,
+    hdr: boolean
+): VideoOutputSelection {
+    const videoDecoderBackend = getRawVideoDecoderBackend(capability);
+    return {
+        hdr,
+        maximumCodedHeight: Number(stream.Height),
+        maximumCodedWidth: Number(stream.Width),
+        nativeVideoDecoderRequired: videoDecoderBackend === 'native',
+        neutralizeHDRColorMetadata: false,
+        rawVideoFrameFormat,
+        status: 'selected',
+        videoDecoderBackend,
+        videoOutputMode: 'raw-planes'
+    };
+}
+
+/**
+ * Selects raw planes for SDR that no VideoFrame route decodes: 10-bit 4:2:0 SDR in I420P10.
+ * AV1 and VP9 decode it only this way, and HEVC Main 10 needs it without native decode.
+ * The raw SDR keys are BT.709 only, so BT.601 and BT.2020 SDR have no raw route.
+ */
+function selectRawSDRVideoOutput(
+    capabilities: CustomDecodeCapabilities,
+    eligibilityOptions: CustomPlaybackEligibilityOptions,
+    videoCodec: CustomVideoCodec,
+    stream: MediaStream,
+    colorMetadata: InputColorMetadata
+): VideoOutputSelection | null {
+    const rawVideoFrameFormat = getRawVideoFrameFormat(colorMetadata.bitDepth);
+    if (eligibilityOptions.allowRawSDR !== true || rawVideoFrameFormat === null) {
+        return null;
+    }
+    const routeKey = getRawHDRAuthorizationRouteKey(rawVideoFrameFormat, colorMetadata);
+    if (
+        routeKey === null
+        || !(eligibilityOptions.authorizedRawHDRRouteKeys ?? []).includes(routeKey)
+        || !supportsRawHDRVideo(capabilities, videoCodec, stream, rawVideoFrameFormat)
+    ) {
+        return null;
+    }
+    return createRawVideoOutputSelection(
+        capabilities.rawHDRVideo[videoCodec as CustomRawHDRVideoCodec],
+        stream,
+        rawVideoFrameFormat,
+        false
+    );
+}
+
+/** Selects an SDR route: a VideoFrame route first, then raw planes for 10-bit SDR that none of them decodes. */
+function selectSDRVideoOutput(
+    capabilities: CustomDecodeCapabilities,
+    eligibilityOptions: CustomPlaybackEligibilityOptions,
+    videoCodec: CustomVideoCodec,
+    stream: MediaStream,
+    colorMetadata: InputColorMetadata
+): VideoOutputSelection {
+    const sdrSelection = getSDRVideoSelection(
+        capabilities,
+        videoCodec,
+        stream,
+        colorMetadata.bitDepth
+    );
+    if (!sdrSelection) {
+        return selectRawSDRVideoOutput(
+            capabilities,
+            eligibilityOptions,
+            videoCodec,
+            stream,
+            colorMetadata
+        ) ?? { reason: 'codec-unsupported', status: 'invalid' };
+    }
+    return {
+        hdr: false,
+        maximumCodedHeight: sdrSelection.maximumCodedHeight,
+        maximumCodedWidth: sdrSelection.maximumCodedWidth,
+        nativeVideoDecoderRequired: sdrSelection.videoDecoderBackend === 'native',
+        neutralizeHDRColorMetadata: false,
+        rawVideoFrameFormat: null,
+        status: 'selected',
+        videoDecoderBackend: sdrSelection.videoDecoderBackend,
+        videoOutputMode: 'video-frame'
+    };
 }
 
 function supportsNativeDolbyVisionProfile5(
@@ -924,6 +1038,18 @@ function getAuthorizedDolbyVisionNativeBaseMetadata(
         null;
 }
 
+/** Returns whether a range extension's exact variant capability passed for its format, bit depth, and chroma. */
+function hasSupportedHEVCRangeExtensionVariant(
+    capabilities: CustomDecodeCapabilities,
+    definition: HEVCRangeExtensionProbeDefinition
+): boolean {
+    const capability = capabilities.hevcRangeExtensions?.[definition.variant];
+    return capability?.status === 'supported'
+        && capability.format === definition.format
+        && capability.bitDepth === definition.bitDepth
+        && capability.chromaFormat === definition.chromaFormat;
+}
+
 function selectHEVCRangeExtensionVideoOutput(
     capabilities: CustomDecodeCapabilities,
     eligibilityOptions: CustomPlaybackEligibilityOptions,
@@ -941,13 +1067,7 @@ function selectHEVCRangeExtensionVideoOutput(
     const exactColorMetadata: InputColorMetadata = colorMetadata.bitDepth === definition.bitDepth ?
         colorMetadata :
         { ...colorMetadata, bitDepth: definition.bitDepth };
-    const capability = capabilities.hevcRangeExtensions?.[definition.variant];
-    if (
-        capability?.status !== 'supported'
-        || capability.format !== definition.format
-        || capability.bitDepth !== definition.bitDepth
-        || capability.chromaFormat !== definition.chromaFormat
-    ) {
+    if (!hasSupportedHEVCRangeExtensionVariant(capabilities, definition)) {
         return {
             reason: exactColorMetadata.transfer === 'sdr' ?
                 'codec-unsupported' :
@@ -956,7 +1076,7 @@ function selectHEVCRangeExtensionVideoOutput(
         };
     }
     const geometry = getStreamRawVideoGeometry(stream);
-    if (!geometry || !hasRawVideoFrameResourceBudget(
+    if (!geometry || !hasRawVideoFrameCopyLayout(
         geometry,
         definition.format,
         RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT
@@ -1042,22 +1162,48 @@ type DolbyVisionReconstructionSource = {
     videoDecoderBackend: CustomDecodeVideoDecoderBackend
 };
 
-/**
- * Returns the raw frame format RPU reconstruction decodes a Dolby Vision base layer into: the exact range
- * extension format, or I420P10 for Main 10. Dual-layer routes are Main 10 only, because the bundled
- * enhancement-layer decoder and the residual composer are qualified for 10-bit 4:2:0 alone.
- */
-function getDolbyVisionReconstructionFrameFormat(
-    stream: MediaStream,
-    dualLayer: boolean
+/** Returns an HEVC base layer's raw format: its range extension's own, I420 for Main, or I420P10 for Main 10. */
+function getHEVCDolbyVisionReconstructionFrameFormat(
+    stream: MediaStream
 ): CustomDecodeRawVideoFrameFormat | null {
     const rangeExtensionDefinition = getHEVCRangeExtensionStreamDefinitionFromMetadata(stream);
     if (rangeExtensionDefinition) {
-        return dualLayer ? null : rangeExtensionDefinition.format;
+        return rangeExtensionDefinition.format;
     }
-    return stream.BitDepth === 10 && hasSupportedRawVideoProfile('hevc', stream) ?
-        'I420P10' :
-        null;
+    switch (stream.BitDepth) {
+        case CUSTOM_NATIVE_VIDEO_BIT_DEPTH:
+            return hasSupportedNativeVideoProfile('hevc', stream) ? 'I420' : null;
+        case 10:
+            return hasSupportedRawVideoProfile('hevc', stream) ? 'I420P10' : null;
+        default:
+            return null;
+    }
+}
+
+/**
+ * Returns the raw frame format RPU reconstruction decodes a Dolby Vision base layer into: the HEVC base layer's own format, or I420P10 for AV1 Main at 10 bits.
+ * AV1 carries a single-layer RPU only, so a dual-layer profile never reconstructs over AV1.
+ */
+function getDolbyVisionReconstructionFrameFormat(
+    videoCodec: CustomVideoCodec,
+    stream: MediaStream,
+    dualLayer: boolean
+): CustomDecodeRawVideoFrameFormat | null {
+    switch (videoCodec) {
+        case 'hevc':
+            return getHEVCDolbyVisionReconstructionFrameFormat(stream);
+        case 'av1':
+            return !dualLayer && stream.BitDepth === 10 && hasSupportedRawVideoProfile(videoCodec, stream) ?
+                'I420P10' :
+                null;
+        case 'h264':
+        case 'jpeg2000':
+        case 'mpeg2video':
+        case 'vc1':
+        case 'vp8':
+        case 'vp9':
+            return null;
+    }
 }
 
 /** Returns the raw frame format the presented stream's RPU route would decode, before capability checks. */
@@ -1078,61 +1224,77 @@ export function getDolbyVisionReconstructionRawFrameFormat(
         && normalizeMetadataValue((stream as MediaStream).Type) === 'VIDEO'
     ));
     const baseLayerStream = videoStreams[selection.baseLayerVideoTrackOrdinal];
-    return baseLayerStream ?
+    const videoCodec = baseLayerStream ?
+        VIDEO_CODEC_ALIASES[normalizeMetadataValue(baseLayerStream.Codec) ?? ''] :
+        undefined;
+    return videoCodec ?
         getDolbyVisionReconstructionFrameFormat(
+            videoCodec,
             baseLayerStream,
             isDolbyVisionDualLayerProfile(selection.descriptor.reconstructionProfile)
         ) :
         null;
 }
 
+/**
+ * Returns the decoder of an HEVC base layer's raw planes.
+ * A range extension takes its exact variant capability, and Main 10 takes the raw HDR capability.
+ * Main takes the bundled decoder's Main qualification, since it has no qualified native raw route.
+ */
+function getHEVCDolbyVisionReconstructionSource(
+    capabilities: CustomDecodeCapabilities,
+    stream: MediaStream,
+    format: CustomDecodeRawVideoFrameFormat,
+    frameLayerCount: number
+): DolbyVisionReconstructionSource | null {
+    const rangeExtensionDefinition = getHEVCRangeExtensionStreamDefinitionFromMetadata(stream);
+    if (rangeExtensionDefinition) {
+        return hasSupportedHEVCRangeExtensionVariant(capabilities, rangeExtensionDefinition)
+            && hasStreamRawVideoFrameCopyLayout(stream, format, frameLayerCount) ?
+            { format, videoDecoderBackend: 'native' } :
+            null;
+    }
+    // Outside the range extensions only HEVC Main is I420
+    if (format === 'I420') {
+        return hasSupportedBundledHEVCProfile(capabilities, 'main')
+            && hasStreamRawVideoFrameCopyLayout(stream, format, frameLayerCount) ?
+            { format, videoDecoderBackend: 'bundled-hevc' } :
+            null;
+    }
+    return supportsRawHDRVideo(capabilities, 'hevc', stream, format, frameLayerCount) ?
+        { format, videoDecoderBackend: getRawVideoDecoderBackend(capabilities.rawHDRVideo.hevc) } :
+        null;
+}
+
+/**
+ * Returns the decoder of a Dolby Vision base layer's raw planes for RPU reconstruction.
+ * A dual-layer route reserves its EL even when the descriptor omits it, because the EL is found in-band.
+ */
 function getDolbyVisionReconstructionSource(
     capabilities: CustomDecodeCapabilities,
     videoCodec: CustomVideoCodec,
     stream: MediaStream,
     dualLayer: boolean
 ): DolbyVisionReconstructionSource | null {
-    if (videoCodec !== 'hevc') {
-        return null;
-    }
-    const format = getDolbyVisionReconstructionFrameFormat(stream, dualLayer);
+    const format = getDolbyVisionReconstructionFrameFormat(videoCodec, stream, dualLayer);
     if (format === null) {
         return null;
     }
-    const rangeExtensionDefinition = getHEVCRangeExtensionStreamDefinitionFromMetadata(stream);
-    if (rangeExtensionDefinition) {
-        const capability = capabilities.hevcRangeExtensions?.[rangeExtensionDefinition.variant];
-        const geometry = getStreamRawVideoGeometry(stream);
-        if (
-            capability?.status !== 'supported'
-            || capability.format !== rangeExtensionDefinition.format
-            || capability.bitDepth !== rangeExtensionDefinition.bitDepth
-            || capability.chromaFormat !== rangeExtensionDefinition.chromaFormat
-            || !geometry
-            || !hasRawVideoFrameResourceBudget(geometry, format, RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT)
-        ) {
-            return null;
-        }
-        return { format, videoDecoderBackend: 'native' };
+    if (videoCodec === 'hevc') {
+        return getHEVCDolbyVisionReconstructionSource(
+            capabilities,
+            stream,
+            format,
+            dualLayer ? RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT : RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT
+        );
     }
-    // A dual-layer stream budgets for its EL even when the descriptor omits it, because the EL is found in-band
-    if (!supportsRawHDRVideo(
-        capabilities,
-        videoCodec,
-        stream,
-        format,
-        dualLayer ? RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT : RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT
-    )) {
-        return null;
-    }
-    return {
-        format,
-        videoDecoderBackend: capabilities.rawHDRVideo.hevc.reason === 'bundled-software-decoder' ?
-            'bundled-hevc' :
-            'native'
-    };
+    // AV1 decodes natively; the bundled decoder is HEVC only
+    return supportsRawHDRVideo(capabilities, videoCodec, stream, format) ?
+        { format, videoDecoderBackend: 'native' } :
+        null;
 }
 
+/** Returns whether the host authorized the profile's reconstruction for the stream's raw frame format. */
 function isDolbyVisionReconstructionAllowed(
     reconstructionProfile: DolbyVisionReconstructionProfile,
     eligibilityOptions: CustomPlaybackEligibilityOptions
@@ -1176,7 +1338,12 @@ function selectDolbyVisionReconstructionOutput(
             status: 'invalid'
         };
     }
+    // The bundled HEVC decoder decodes every dual-layer EL.
+    // Without its Main 10 qualification the route reconstructs from the BL alone: exactly for MEL, and as its base for FEL
+    const discardEnhancementLayer = isDolbyVisionDualLayerProfile(reconstructionProfile)
+        && !hasSupportedBundledHEVCProfile(capabilities, 'main10');
     return {
+        ...(discardEnhancementLayer ? { discardDolbyVisionEnhancementLayer: true as const } : {}),
         dolbyVisionProfile: reconstructionProfile,
         hdr: true,
         maximumCodedHeight: Number(videoStream.Height),
@@ -1294,29 +1461,13 @@ function selectVideoOutput(
     }
     const hdr = colorMetadata.transfer !== 'sdr';
     if (!hdr) {
-        const sdrSelection = getSDRVideoSelection(
+        return selectSDRVideoOutput(
             capabilities,
+            eligibilityOptions,
             videoCodec,
             videoStream,
-            colorMetadata.bitDepth
+            colorMetadata
         );
-        if (!sdrSelection) {
-            return {
-                reason: 'codec-unsupported',
-                status: 'invalid'
-            };
-        }
-        return {
-            hdr: false,
-            maximumCodedHeight: sdrSelection.maximumCodedHeight,
-            maximumCodedWidth: sdrSelection.maximumCodedWidth,
-            nativeVideoDecoderRequired: sdrSelection.videoDecoderBackend === 'native',
-            neutralizeHDRColorMetadata: false,
-            rawVideoFrameFormat: null,
-            status: 'selected',
-            videoDecoderBackend: sdrSelection.videoDecoderBackend,
-            videoOutputMode: 'video-frame'
-        };
     }
     const externalHDRRouteKey = getExternalHDRAuthorizationRouteKey(colorMetadata);
     const nativeHDRTransfer = colorMetadata.transfer === 'sdr' ?
@@ -1372,22 +1523,12 @@ function selectVideoOutput(
     )) {
         return { reason: 'hdr-codec-unsupported', status: 'invalid' };
     }
-    const rawVideoCapability = capabilities.rawHDRVideo[
-        videoCodec as CustomRawHDRVideoCodec
-    ];
-    return {
-        hdr: true,
-        maximumCodedHeight: Number(videoStream.Height),
-        maximumCodedWidth: Number(videoStream.Width),
-        nativeVideoDecoderRequired: rawVideoCapability.reason !== 'bundled-software-decoder',
-        neutralizeHDRColorMetadata: false,
+    return createRawVideoOutputSelection(
+        capabilities.rawHDRVideo[videoCodec as CustomRawHDRVideoCodec],
+        videoStream,
         rawVideoFrameFormat,
-        status: 'selected',
-        videoDecoderBackend: rawVideoCapability.reason === 'bundled-software-decoder' ?
-            'bundled-hevc' :
-            'native',
-        videoOutputMode: 'raw-planes'
-    };
+        true
+    );
 }
 
 function parsePlaybackSource(
@@ -1537,13 +1678,15 @@ function hasPotentialSDRVideoRoute(
     codec: CustomVideoCodec,
     stream: MediaStream,
     containerTokens: readonly string[],
-    bitDepth: number
+    colorMetadata: InputColorMetadata
 ): boolean {
-    if (codec === 'hevc' && bitDepth === 10) {
+    // 10-bit 4:2:0 SDR has a raw I420P10 route, whose keys are BT.709 only; HEVC Main 10 also decodes natively
+    if (colorMetadata.bitDepth === 10) {
         return hasSupportedRawVideoProfile(codec, stream)
-            && hasPotentialCustomVideoDimensions(stream);
+            && hasPotentialCustomVideoDimensions(stream)
+            && (codec === 'hevc' || getRawHDRAuthorizationRouteKey('I420P10', colorMetadata) !== null);
     }
-    if (bitDepth !== CUSTOM_NATIVE_VIDEO_BIT_DEPTH) {
+    if (colorMetadata.bitDepth !== CUSTOM_NATIVE_VIDEO_BIT_DEPTH) {
         return false;
     }
     switch (codec) {
@@ -1687,9 +1830,9 @@ function hasPotentialDolbyVisionVideoRoute(
     }
     if (
         descriptor.reconstructionProfile !== null
-        && codec === 'hevc'
         && hasPotentialCustomVideoDimensions(stream)
         && getDolbyVisionReconstructionFrameFormat(
+            codec,
             stream,
             isDolbyVisionDualLayerProfile(descriptor.reconstructionProfile)
         ) !== null
@@ -1731,7 +1874,7 @@ function hasPotentialColorVideoRoute(
             codec,
             stream,
             containerTokens,
-            colorMetadata.bitDepth
+            colorMetadata
         );
     }
     if (!hasCompletePotentialHDRVideoMetadata(stream)) {
@@ -1932,6 +2075,7 @@ export function getCustomPlaybackEligibility(
         audioOutputMode,
         audioSourceChannelCount,
         audioTrackIndex,
+        ...getDiscardedEnhancementLayerResult(videoOutput),
         durationMicroseconds: parsedSource.durationMicroseconds,
         dolbyVisionProfile: videoOutput.dolbyVisionProfile ?? null,
         eligible: true,

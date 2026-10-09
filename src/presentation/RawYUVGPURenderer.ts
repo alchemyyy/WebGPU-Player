@@ -6,6 +6,7 @@ import {
     type RenderSettings
 } from './RenderSettings';
 import {
+    RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT,
     RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
     type RawVideoPlaneDescriptor,
     type SupportedRawVideoFrameFormat,
@@ -446,8 +447,10 @@ function getUploadedEnhancementTextureSet(
         destroyRawPlaneTextureSet(textureSet);
         return null;
     }
+    // The EL bindings sample 10-bit 4:2:0 planes whatever the BL format
     if (
-        !hasValidRawVideoFrameLayout(enhancementFrame)
+        enhancementFrame.format !== RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT
+        || !hasValidRawVideoFrameLayout(enhancementFrame)
         || enhancementFrame.data !== request.frame.data
     ) {
         throw new RangeError('Raw Dolby Vision enhancement frame layout is invalid');
@@ -489,6 +492,7 @@ function appendDolbyVisionEnhancementBindings(
         0,
         enhancementUniformValues
     );
+    // Without an EL, the unsampled EL bindings take the BL planes, whose integer textures fit them in any format
     const enhancementPlanes = enhancementTextureSet?.planes ?? textureSet.planes;
     if (enhancementPlanes.length !== 3) {
         throw new Error('Dolby Vision enhancement binding requires planar YUV');

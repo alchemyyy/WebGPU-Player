@@ -24,15 +24,22 @@ function createDeferred<Value>(): {
     };
 }
 
-function createParserPort(packedData = new ArrayBuffer(32)): DolbyVisionRPUParserPort & {
+function createParserPort(
+    packedData = new ArrayBuffer(32),
+    av1PackedData = new ArrayBuffer(32)
+): DolbyVisionRPUParserPort & {
     close: ReturnType<typeof vi.fn>
     parse: ReturnType<typeof vi.fn>
+    parseAV1ITUTT35: ReturnType<typeof vi.fn>
     reset: ReturnType<typeof vi.fn>
 } {
     return {
         close: vi.fn(),
         parse: vi.fn((): DolbyVisionRPUSnapshot => ({
             packedData
+        } as DolbyVisionRPUSnapshot)),
+        parseAV1ITUTT35: vi.fn((): DolbyVisionRPUSnapshot => ({
+            packedData: av1PackedData
         } as DolbyVisionRPUSnapshot)),
         reset: vi.fn()
     };
@@ -55,6 +62,32 @@ describe('DolbyVisionRPUParserSession', () => {
         expect(parser.parse).toHaveBeenCalledWith(rpuNALUnit);
         session.close();
         expect(parser.reset).toHaveBeenCalledTimes(1);
+        expect(parser.close).toHaveBeenCalledTimes(1);
+    });
+
+    it('routes AV1 T.35 payloads to the same lazily created parser', async () => {
+        const deferredParser = createDeferred<DolbyVisionRPUParserPort>();
+        const packedData = new ArrayBuffer(32);
+        const av1PackedData = new ArrayBuffer(32);
+        const parser = createParserPort(packedData, av1PackedData);
+        const createParser = vi.fn(() => deferredParser.promise);
+        const session = DolbyVisionRPUParserSession.create('parser.wasm', { createParser });
+        const payload = new Uint8Array([ 0xB5, 0x00, 0x3B, 0x00, 0x00, 0x08, 0x00 ]);
+        const rpuNALUnit = new Uint8Array([ 124, 1, 25, 8, 9 ]);
+        const av1ParsePromise = session.parseAV1ITUTT35(payload);
+        const parsePromise = session.parse(rpuNALUnit);
+
+        deferredParser.resolve(parser);
+
+        await expect(av1ParsePromise).resolves.toBe(av1PackedData);
+        await expect(parsePromise).resolves.toBe(packedData);
+        expect(createParser).toHaveBeenCalledTimes(1);
+        expect(parser.parseAV1ITUTT35).toHaveBeenCalledWith(payload);
+        expect(parser.parse).toHaveBeenCalledWith(rpuNALUnit);
+        session.close();
+        await expect(session.parseAV1ITUTT35(payload)).rejects.toThrow(
+            'parser session is closed'
+        );
         expect(parser.close).toHaveBeenCalledTimes(1);
     });
 

@@ -25,17 +25,18 @@ pub fn parse_itu_t35_dovi_metadata_obu(data: &[u8]) -> Result<DoviRpu> {
 }
 
 pub(crate) fn av1_validated_trimmed_data(data: &[u8]) -> Result<&[u8]> {
-    if data.len() < 34 {
-        bail!("Invalid RPU length: {}", data.len());
-    }
-
-    let data = if data[0] == 0xB5 {
+    let data = if data.first() == Some(&0xB5) {
         // itu_t_t35_country_code - United States
         // Remove from buffer
         &data[1..]
     } else {
         data
     };
+
+    // Only the fixed header is required here, as FFmpeg bounds the RPU by its EMDF payload size
+    if data.len() < ITU_T35_DOVI_RPU_PAYLOAD_HEADER_LEN {
+        bail!("Invalid RPU length: {}", data.len());
+    }
 
     let trimmed_data = match &data[..ITU_T35_DOVI_RPU_PAYLOAD_HEADER_LEN] {
         ITU_T35_DOVI_RPU_PAYLOAD_HEADER => data,
@@ -59,6 +60,11 @@ pub(crate) fn convert_av1_rpu_payload_to_regular(data: &[u8]) -> Result<Vec<u8>>
     ensure!(itu_t_t35_terminal_provider_oriented_code == 0x800);
 
     let emdf_payload_size = parse_emdf_container(&mut reader)?;
+    // As in FFmpeg, the payload must fit the remaining data before its coded size sizes a buffer
+    ensure!(
+        emdf_payload_size as u64 * 8 <= reader.available()?,
+        "EMDF payload size {emdf_payload_size} exceeds the remaining data"
+    );
     let mut converted_buf = vec![0; emdf_payload_size + 1];
     converted_buf[0] = 0x19;
 

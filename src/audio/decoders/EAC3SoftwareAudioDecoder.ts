@@ -11,7 +11,6 @@ import {
 
 const EAC3_MAXIMUM_PACKET_SIZE = 2 * 1024 * 1024;
 const EAC3_MAXIMUM_DECODED_FRAME_COUNT = 16_384;
-const EAC3_MAXIMUM_OUTPUT_COUNT_PER_PACKET = 4;
 const EAC3_STATUS_FATAL = -1;
 const EAC3_STATUS_NO_OUTPUT = 0;
 const EAC3_AV_SAMPLE_FORMAT_F32_PLANAR = 8;
@@ -164,9 +163,7 @@ export default class EAC3SoftwareAudioDecoder {
 
         const outputs: EAC3DecodedAudioOutput[] = [];
         let emittedFrameCount = 0;
-        for (let outputIndex = 0;
-            outputIndex < EAC3_MAXIMUM_OUTPUT_COUNT_PER_PACKET;
-            outputIndex += 1) {
+        while (true) {
             const receiveStatus = this.functions.receiveFrame(this.decoder);
             if (receiveStatus === EAC3_STATUS_NO_OUTPUT) {
                 return outputs;
@@ -176,11 +173,14 @@ export default class EAC3SoftwareAudioDecoder {
                     `Bundled E-AC-3 frame receive failed with status ${receiveStatus}`
                 );
             }
+            // A packet holds any number of syncframes, and each output consumes at least one of its bytes
+            if (outputs.length >= data.byteLength) {
+                throw new RangeError('Bundled E-AC-3 output exceeded the frames its packet can hold');
+            }
             const output = this.copyCurrentOutput(mediaTimeMicroseconds, emittedFrameCount);
             outputs.push(output);
             emittedFrameCount += output.frameCount;
         }
-        throw new RangeError('Bundled E-AC-3 output exceeded the per-packet bound');
     }
 
     /** Clears inter-frame state before a source change or seek. */
@@ -216,7 +216,7 @@ export default class EAC3SoftwareAudioDecoder {
         const sampleRate = this.functions.getSampleRate(this.decoder);
         if (!isSupportedCustomAudioSampleRate(sampleRate)) {
             throw new RangeError(
-                `Bundled E-AC-3 output sample rate ${sampleRate} Hz is outside the supported range`
+                `Bundled E-AC-3 output sample rate ${sampleRate} Hz is invalid`
             );
         }
         const sampleFormat = this.functions.getSampleFormat(this.decoder);

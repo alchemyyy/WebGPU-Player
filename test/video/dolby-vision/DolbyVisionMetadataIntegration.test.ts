@@ -1,5 +1,6 @@
 // @vitest-environment node
 
+import { createDolbyVisionAV1ITUTT35Payload } from '../../helpers/dolbyVisionAV1ITUTT35Payload';
 import { TEST_VECTORS_DIRECTORY, WASM_OUTPUT_DIRECTORY } from '../../helpers/enginePaths';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -94,6 +95,34 @@ describe('Dolby Vision metadata integration', () => {
             queue.requireDrained();
         } finally {
             queue.clear();
+            parserSession.close();
+        }
+    });
+
+    it('parses an AV1 T.35 payload in the same session state as an HEVC RPU', async () => {
+        const vector = new Uint8Array(readFileSync(resolve(
+            RPU_VECTOR_DIRECTORY,
+            'profile5.bin'
+        )));
+        const parserSession = DolbyVisionRPUParserSession.create('local-parser.wasm', {
+            createParser: createActualParser
+        });
+
+        try {
+            const hevcPackedData = await parserSession.parse(vector);
+            const av1PackedData = await parserSession.parseAV1ITUTT35(
+                createDolbyVisionAV1ITUTT35Payload(vector)
+            );
+
+            expect(new Uint8Array(av1PackedData)).toEqual(new Uint8Array(hevcPackedData));
+            // Profile 10.0 RPUs are coded like Profile 5 and keep that profile
+            expect(decodeDolbyVisionRPUSnapshot(av1PackedData)).toMatchObject({
+                layerMode: 'single-layer',
+                profile: 5,
+                sourceMaximumPQ: 3_696,
+                sourceMinimumPQ: 62
+            });
+        } finally {
             parserSession.close();
         }
     });

@@ -8,6 +8,11 @@ import {
 const BASE_TRACK_ID = 1;
 const ENHANCEMENT_TRACK_ID = 2;
 const VISUAL_SAMPLE_ENTRY_FIELD_BYTE_LENGTH = 78;
+const ENHANCEMENT_HEVC_CONFIGURATION_SEED = 0x70;
+// Takes a moov box past 16 MiB, as the sample tables of a long, many-track movie do
+const LARGE_SAMPLE_TABLE_BYTE_LENGTH = 17 * 1_024 * 1_024;
+// A moov size that runs past the end of its file
+const TRUNCATED_MOVIE_BOX_BYTE_LENGTH = (16 * 1_024 * 1_024) + 9;
 
 function concatenate(parts: readonly Uint8Array[]): Uint8Array {
     const byteLength = parts.reduce(
@@ -202,7 +207,7 @@ function createValidTracks(
             dependencyTrackIDs: options.referenceTrackIDs ?? [ BASE_TRACK_ID ],
             dolbyVisionConfiguration: options.dolbyVisionConfiguration
                 ?? createDolbyVisionConfiguration(),
-            hevcConfiguration: createHEVCConfiguration(0x70),
+            hevcConfiguration: createHEVCConfiguration(ENHANCEMENT_HEVC_CONFIGURATION_SEED),
             id: options.enhancementTrackID ?? ENHANCEMENT_TRACK_ID,
             sampleEntryType: options.enhancementType ?? 'dvh1'
         })
@@ -469,22 +474,36 @@ describe('readISOBaseMediaDolbyVisionTrackConfiguration', () => {
         )).resolves.toBeNull();
     });
 
-    it('rejects an oversized movie box without reading its payload', async () => {
-        const oversizedMovieHeader = concatenate([
-            encodeUnsigned32((16 * 1_024 * 1_024) + 9),
+    it('reads a movie box of any size', async () => {
+        const reader = createReader(createFile([
+            ...createValidTracks(),
+            createBox('free', new Uint8Array(LARGE_SAMPLE_TABLE_BYTE_LENGTH))
+        ]));
+
+        await expect(readISOBaseMediaDolbyVisionTrackConfiguration(
+            reader,
+            BASE_TRACK_ID
+        )).resolves.toEqual({
+            enhancementConfiguration: createHEVCConfiguration(ENHANCEMENT_HEVC_CONFIGURATION_SEED),
+            separateEnhancementTrackNumber: ENHANCEMENT_TRACK_ID
+        });
+    });
+
+    it('rejects a movie box that runs past the end of its file', async () => {
+        const truncatedMovieHeader = concatenate([
+            encodeUnsigned32(TRUNCATED_MOVIE_BOX_BYTE_LENGTH),
             encodeFourCC('moov'),
             new Uint8Array(8)
         ]);
         const reader = createReader(concatenate([
             createBox('ftyp'),
-            oversizedMovieHeader
+            truncatedMovieHeader
         ]));
 
         await expect(readISOBaseMediaDolbyVisionTrackConfiguration(
             reader,
             BASE_TRACK_ID
         )).resolves.toBeNull();
-        expect(reader).toHaveBeenCalledTimes(2);
     });
 
     it.each([ 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1 ])(
