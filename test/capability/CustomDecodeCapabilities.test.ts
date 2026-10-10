@@ -45,6 +45,16 @@ type NativeSurroundAudioSupport = Readonly<{
 }>;
 
 const CAPABILITY_PROBE_TIMEOUT_MILLISECONDS = 2_000;
+// The fingerprint of a zero-filled 4K I420P10 copy in its tight plane layout
+const ZERO_UHD_I420P10_FRAME_FINGERPRINT = 667_501_752;
+const UHD_I420P10_ALLOCATION_SIZE = 24_883_200;
+const UHD_I420P10_PLANE_LAYOUTS: readonly PlaneLayout[] = [
+    { offset: 0, stride: 7_680 },
+    { offset: 16_588_800, stride: 3_840 },
+    { offset: 20_736_000, stride: 3_840 }
+];
+// The spec rejects any non-RGB format in copy options, even the frame's own
+const EXPLICIT_PLANAR_FORMAT_REJECTION_MESSAGE = 'I420P10 is unsupported in ParseVideoFrameCopyToOptions';
 
 function getBundledHEVCCodecString(vector: HEVCExactCapabilityVector): BundledHEVCExactQualification['codecString'] {
     switch (vector) {
@@ -2387,6 +2397,87 @@ describe('CustomDecodeCapabilityProbe', () => {
             expect(decodedChunkTimestamps).toEqual([ 0, 1_000_000 ]);
         }
     );
+
+    it('qualifies raw output where the browser rejects a non-RGB copy format, as the spec requires', async () => {
+        const allocationSizeOptions: Array<VideoFrameCopyToOptions | undefined> = [];
+        const copyOptions: Array<VideoFrameCopyToOptions | undefined> = [];
+        const rejectExplicitPlanarFormat = (options?: VideoFrameCopyToOptions): void => {
+            if (options?.format) {
+                throw new DOMException(EXPLICIT_PLANAR_FORMAT_REJECTION_MESSAGE, 'NotSupportedError');
+            }
+        };
+        class FakeVideoFrame {
+            public readonly codedHeight = 2_160;
+            public readonly codedWidth = 3_840;
+            public readonly format = 'I420P10';
+            public readonly timestamp = 0;
+
+            public allocationSize(options?: VideoFrameCopyToOptions): number {
+                allocationSizeOptions.push(options);
+                rejectExplicitPlanarFormat(options);
+                return UHD_I420P10_ALLOCATION_SIZE;
+            }
+
+            public close(): void {
+                return;
+            }
+
+            public async copyTo(
+                _destination: AllowSharedBufferSource,
+                options?: VideoFrameCopyToOptions
+            ): Promise<readonly PlaneLayout[]> {
+                copyOptions.push(options);
+                rejectExplicitPlanarFormat(options);
+                return UHD_I420P10_PLANE_LAYOUTS;
+            }
+        }
+        class FakeVideoDecoder {
+            public constructor(private readonly callbacks: VideoDecoderInit) {}
+
+            public close(): void {
+                return;
+            }
+
+            public configure(): void {
+                return;
+            }
+
+            public decode(): void {
+                this.callbacks.output(new FakeVideoFrame() as unknown as VideoFrame);
+            }
+
+            public flush(): Promise<void> {
+                return Promise.resolve();
+            }
+        }
+        class FakeEncodedVideoChunk {}
+        vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+        vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+        const outputProbe = createRawHDRVideoOutputProbe();
+
+        await expect(outputProbe?.({
+            codec: 'hevc',
+            configuration: {
+                codec: 'hvc1.2.4.L153.B0',
+                codedHeight: 2_160,
+                codedWidth: 3_840
+            },
+            encodedChunks: [ {
+                data: new Uint8Array([ 1 ]),
+                timestamp: 0,
+                type: 'key'
+            } ],
+            expectedCodedHeight: 2_160,
+            expectedCodedWidth: 3_840,
+            expectedDecodedFrames: [ {
+                fingerprint: ZERO_UHD_I420P10_FRAME_FINGERPRINT,
+                timestamp: 0
+            } ],
+            expectedFormat: 'I420P10'
+        })).resolves.toEqual({ outputCopySupported: true });
+        expect(allocationSizeOptions).toEqual([ undefined ]);
+        expect(copyOptions).toEqual([ undefined ]);
+    });
 
     it('closes an owned raw frame when copyTo never settles', async () => {
         vi.useFakeTimers();

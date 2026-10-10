@@ -1015,15 +1015,18 @@ async function copyDecodedRawHDRFrame(
     expectedFormat: CustomDecodeRawVideoFrameFormat,
     destination: Uint8Array | null
 ): Promise<CopiedRawHDRFrame | null> {
-    const copyOptions: RawHDRVideoFrameCopyToOptions = { format: expectedFormat };
-    const browserCopyOptions = copyOptions as unknown as VideoFrameCopyToOptions;
+    // The spec's copy options accept only RGB formats, so a frame already in the expected format copies without one
+    const copyOptions: RawHDRVideoFrameCopyToOptions | undefined = String(decodedFrame.format) === expectedFormat ?
+        undefined :
+        { format: expectedFormat };
+    const browserCopyOptions = copyOptions as unknown as VideoFrameCopyToOptions | undefined;
     let allocationSize: number;
     try {
         allocationSize = decodedFrame.allocationSize(browserCopyOptions);
     } catch {
         return null;
     }
-    let output = destination?.byteLength === allocationSize ?
+    const output = destination?.byteLength === allocationSize ?
         destination :
         new Uint8Array(allocationSize);
     try {
@@ -1032,20 +1035,8 @@ async function copyDecodedRawHDRFrame(
             layouts: await decodedFrame.copyTo(output, browserCopyOptions)
         };
     } catch {
-        if (String(decodedFrame.format) !== expectedFormat) {
-            return null;
-        }
+        return null;
     }
-
-    // Current Chromium can reject an explicit native format
-    const nativeAllocationSize = decodedFrame.allocationSize();
-    if (output.byteLength !== nativeAllocationSize) {
-        output = new Uint8Array(nativeAllocationSize);
-    }
-    return {
-        destination: output,
-        layouts: await decodedFrame.copyTo(output)
-    };
 }
 
 /** Creates the exact decoded-frame copy probe for raw HDR output. */

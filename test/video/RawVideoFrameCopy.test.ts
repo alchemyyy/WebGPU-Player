@@ -29,6 +29,8 @@ type MockFunction = ReturnType<typeof vi.fn>;
 const DEFAULT_FRAME_COPY_BYTE_LENGTH = 1_024;
 const MISMATCHED_SPARE_BYTE_LENGTH = 512;
 const ALLOCATION_FAILURE_MESSAGE = 'Array buffer allocation failed';
+// The spec rejects any non-RGB format in copy options, even the frame's own
+const EXPLICIT_PLANAR_FORMAT_REJECTION_MESSAGE = 'I420P10 is unsupported in ParseVideoFrameCopyToOptions';
 
 const ULTRA_HD_8K_GEOMETRY = {
     codedHeight: 4_320,
@@ -430,13 +432,13 @@ describe('copyVideoFrameToRawPlanes', () => {
         expect(frameHarness.close).toHaveBeenCalledOnce();
     });
 
-    it('retries a matching software format without the explicit legacy option', async () => {
+    it('copies a frame already in the requested format without the format option', async () => {
         const copyTo = vi.fn(async (
             _destination: AllowSharedBufferSource,
             copyOptions?: VideoFrameCopyToOptions & { format?: string }
         ): Promise<PlaneLayout[]> => {
             if (copyOptions?.format) {
-                throw new DOMException('Explicit planar formats are unavailable', 'NotSupportedError');
+                throw new DOMException(EXPLICIT_PLANAR_FORMAT_REJECTION_MESSAGE, 'NotSupportedError');
             }
             return copyOptions?.layout ?? [];
         });
@@ -447,9 +449,8 @@ describe('copyVideoFrameToRawPlanes', () => {
         });
 
         expect(result.format).toBe('I420P10');
-        expect(frameHarness.copyTo).toHaveBeenCalledTimes(2);
-        expect(frameHarness.copyTo.mock.calls[0]?.[1]).toMatchObject({ format: 'I420P10' });
-        expect(frameHarness.copyTo.mock.calls[1]?.[1]).not.toHaveProperty('format');
+        expect(frameHarness.copyTo).toHaveBeenCalledOnce();
+        expect(frameHarness.copyTo.mock.calls[0]?.[1]).not.toHaveProperty('format');
         expect(frameHarness.close).toHaveBeenCalledOnce();
     });
 
@@ -1238,8 +1239,9 @@ describe('copyVideoFramePairToRawPlanes', () => {
             expect(result.baseFrame.data.byteLength).toBe(baseByteLength + wideEnhancementByteLength);
             expect(hasValidRawVideoFrameLayout(result.baseFrame)).toBe(true);
             expect(result.enhancementFrame && hasValidRawVideoFrameLayout(result.enhancementFrame)).toBe(true);
-            expect(baseHarness.copyTo.mock.calls[0]?.[1]).toMatchObject({ format });
-            expect(enhancementHarness.copyTo.mock.calls[0]?.[1]).toMatchObject({ format: 'I420P10' });
+            // Both layers already decode in their requested formats, so neither copy names one
+            expect(baseHarness.copyTo.mock.calls[0]?.[1]).not.toHaveProperty('format');
+            expect(enhancementHarness.copyTo.mock.calls[0]?.[1]).not.toHaveProperty('format');
             expect(getRawVideoFramePairTransferList(result)).toEqual([ result.baseFrame.data ]);
             expect(baseHarness.close).toHaveBeenCalledOnce();
             expect(enhancementHarness.close).toHaveBeenCalledOnce();

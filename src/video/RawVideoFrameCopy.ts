@@ -541,7 +541,7 @@ type RawVideoFrameCopyToOptions = Omit<VideoFrameCopyToOptions, 'format'> & {
     format: SupportedRawVideoFrameFormat
 };
 
-async function copyFrameData(
+function copyFrameData(
     frame: RawVideoFrameSource,
     data: ArrayBuffer,
     preparedFrame: PreparedRawVideoFrame,
@@ -556,7 +556,8 @@ async function copyFrameData(
             y: 0
         }
     };
-    if (!requestedFormat) {
+    // The spec's copy options accept only RGB formats, so a frame already in the requested format copies without one
+    if (!requestedFormat || frame.format === requestedFormat) {
         return frame.copyTo(data, baseOptions);
     }
 
@@ -564,16 +565,7 @@ async function copyFrameData(
         ...baseOptions,
         format: requestedFormat
     };
-    try {
-        return await frame.copyTo(data, requestedOptions as unknown as VideoFrameCopyToOptions);
-    } catch (error) {
-        if (frame.format !== requestedFormat) {
-            throw error;
-        }
-
-        // Older Chromium versions reject explicit non-RGB formats even when the decoded frame already exposes that format
-        return frame.copyTo(data, baseOptions);
-    }
+    return frame.copyTo(data, requestedOptions as unknown as VideoFrameCopyToOptions);
 }
 
 async function copyPreparedFrameData(

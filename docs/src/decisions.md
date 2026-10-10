@@ -257,6 +257,9 @@ These were settled on Firefox 157 on Windows.
   The bundled HEVC decoder's frames therefore never pass through a `VideoFrame` on the raw route: as the decoder drains a frame, the worker writes its planes from WASM memory into the aligned raw buffer it then transfers (10-09).
   On the VideoFrame route, which 8-bit SDR takes in Firefox, the worker writes each drained frame into compact I420 planes and constructs the `VideoFrame` itself with `transfer`, with the metadata `VideoSample.toVideoFrame()` gave it; a browser that ignores `transfer` copies the planes, and the worker writes the next frame into the same buffer.
   The external P5 authorization builds an `I420P10` frame and fails, but it needs WebCodecs HEVC regardless.
+- Copy options name a `format` only to convert (10-10).
+  The spec accepts only RGB formats there, and Firefox enforces it, rejecting even a frame's own `I420P10` in `allocationSize` and `copyTo`.
+  The raw copy and its capability probe therefore leave `format` out when the frame already has the requested format.
 - 10-bit AV1 decodes to 8-bit `BGRX`, and the 4K VP9 Profile 2 vector fails to decode (10-07), so raw HDR AV1 and VP9 do not qualify.
 - The Vorbis decoder emits an empty `AudioData` for the priming packet before the decoded one (10-07).
   Mediabunny skips it at runtime, and the audio probe skips empty outputs too.
