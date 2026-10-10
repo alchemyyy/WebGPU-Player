@@ -1,8 +1,8 @@
 import type { Microseconds } from '../../MediaTime';
+import { DTS_SEEK_PREROLL_MICROSECONDS, getAudioPrerollTimeMicroseconds } from '../AudioStartPacket';
 import { DTSDecoderSynchronizationError } from './DTSSoftwareAudioDecoder';
 import { requireMicroseconds } from '../../TimeMath';
 
-export const DTS_SEEK_PREROLL_MICROSECONDS = 1_000_000;
 export const MAXIMUM_DTS_SEEK_RECOVERY_PACKET_COUNT = 512;
 
 /** Bounds the libdcadec XLL synchronization wait after a nonzero seek. */
@@ -19,7 +19,7 @@ export default class DTSSeekRecovery {
             throw new RangeError('DTS seek target must not be negative');
         }
         this.prerollTimeMicroseconds = requireMicroseconds(
-            Math.max(0, targetTimeMicroseconds - DTS_SEEK_PREROLL_MICROSECONDS),
+            getAudioPrerollTimeMicroseconds(targetTimeMicroseconds, DTS_SEEK_PREROLL_MICROSECONDS),
             'DTS seek preroll time'
         );
     }

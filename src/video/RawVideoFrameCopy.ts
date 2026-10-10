@@ -1,6 +1,7 @@
 import { type VideoSample } from 'mediabunny';
 
 import { type Microseconds } from '../MediaTime';
+import type RawFrameBufferPool from './RawFrameBufferPool';
 
 export const RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT = 256;
 
@@ -24,19 +25,19 @@ export type SupportedRawVideoFrameFormat =
     | 'NV12';
 
 export type RawVideoFrameCopyOptions = {
+    /** Supplies the destination, which it allocates when no spare fits; without one the copy allocates its own */
+    bufferPool?: RawFrameBufferPool | null
     expectedGeometry?: RawVideoFrameGeometry
     format?: SupportedRawVideoFrameFormat
-    requireReusableBuffer?: boolean
-    reusableBuffer?: ArrayBuffer
 };
 
 export type RawVideoFramePairCopyOptions = {
     baseExpectedGeometry?: RawVideoFrameGeometry
+    /** Supplies the compound destination, which it allocates when no spare fits; without one the copy allocates its own */
+    bufferPool?: RawFrameBufferPool | null
     enhancementExpectedGeometry: RawVideoFrameGeometry
     /** The BL format; the EL is always copied as RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT */
     format: SupportedRawVideoFrameFormat
-    requireReusableBuffer?: boolean
-    reusableBuffer?: ArrayBuffer
 };
 
 export type RawVideoFrameGeometry = {
@@ -65,6 +66,7 @@ export type RawVideoFrameColorSpace = {
 /**
  * The decoded frame a raw copy reads and then closes.
  * A VideoFrame is one; a decoder sample that holds CPU planes is adapted by createVideoSampleRawFrameSource, so its planes are copied without a VideoFrame.
+ * A PreparedRawVideoFrameSource is one too, whose decoder already wrote its planes into the raw layout.
  */
 export type RawVideoFrameSource = {
     readonly codedHeight: number
@@ -600,19 +602,9 @@ function closeFrame(frame: RawVideoFrameSource): void {
     }
 }
 
-function allocateRawFrameBuffer(
-    copyByteLength: number,
-    reusableBuffer: ArrayBuffer | undefined,
-    requireReusableBuffer: boolean | undefined
-): ArrayBuffer {
-    if (reusableBuffer?.byteLength === copyByteLength) {
-        return reusableBuffer;
-    }
-    if (requireReusableBuffer) {
-        throw new RawVideoFrameCopyError('allocation-failed', 'The recycled raw frame buffer size did not match the copy layout');
-    }
+function allocateRawFrameBuffer(copyByteLength: number, bufferPool: RawFrameBufferPool | null | undefined): ArrayBuffer {
     try {
-        return new ArrayBuffer(copyByteLength);
+        return bufferPool ? bufferPool.take(copyByteLength) : new ArrayBuffer(copyByteLength);
     } catch (error) {
         throw new RawVideoFrameCopyError('allocation-failed', getErrorMessage(error));
     }
@@ -719,8 +711,251 @@ export function createVideoSampleRawFrameSource(sample: VideoSample): RawVideoFr
 }
 
 /**
+ * Copies a plane's rows from one stride to another, counted in the elements of each array, in one pass when neither side pads its rows.
+ * Both arrays start at the plane's first row, and a destination of bytes narrows 16-bit samples to their low byte.
+ */
+export function copyRawVideoPlaneRows(
+    source: Uint8Array | Uint16Array,
+    sourceStride: number,
+    destination: Uint8Array | Uint16Array,
+    destinationStride: number,
+    rowLength: number,
+    rowCount: number
+): void {
+    if (sourceStride === rowLength && destinationStride === rowLength) {
+        destination.set(source.subarray(0, rowLength * rowCount));
+        return;
+    }
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+        const sourceOffset = rowIndex * sourceStride;
+        destination.set(source.subarray(sourceOffset, sourceOffset + rowLength), rowIndex * destinationStride);
+    }
+}
+
+/** One plane of a software decoder's frame: 16-bit samples whose rows start a stride apart, from the first sample to the end of the last row. */
+export type RawVideoSourcePlane = Readonly<{
+    samples: Uint16Array
+    stride: number
+}>;
+
+/** What a prepared frame reports: the metadata of the VideoFrame its decoder's sample would make. */
+export type PreparedRawVideoFrameMetadata = Readonly<{
+    codedHeight: number
+    codedWidth: number
+    colorSpace: Readonly<RawVideoFrameColorSpace>
+    displayHeight: number
+    displayWidth: number
+    durationMicroseconds: Microseconds
+    /** The decoded format, which the planes are written in */
+    format: SupportedRawVideoFrameFormat
+    timestampMicroseconds: Microseconds
+}>;
+
+/** Returns the definition of a format whose planes a decoder's planes map onto one for one, each a single component. */
+function getPreparableFormatDefinition(format: SupportedRawVideoFrameFormat, sourcePlaneCount: number): RawVideoFormatDefinition {
+    const formatDefinition = getFormatDefinition(format);
+    if (
+        formatDefinition.planes.length !== sourcePlaneCount
+        || formatDefinition.planes.some((plane: RawVideoPlaneDefinition): boolean => plane.componentsPerTexel !== 1)
+    ) {
+        throw new RawVideoFrameCopyError('unsupported-format', `A decoder's planes cannot be prepared as ${format}`);
+    }
+    return formatDefinition;
+}
+
+/** Writes one decoded plane's rows into its aligned plane, narrowing each sample to a byte in an 8-bit format. */
+function writeSourcePlane(source: RawVideoSourcePlane, plane: RawVideoPlaneDescriptor, data: ArrayBuffer): void {
+    if (
+        !Number.isSafeInteger(source.stride)
+        || source.stride < plane.width
+        || source.samples.length !== ((plane.height - 1) * source.stride) + plane.width
+    ) {
+        throw new RawVideoFrameCopyError('invalid-layout', `The decoded ${plane.kind} plane does not hold its rows`);
+    }
+    switch (plane.bytesPerComponent) {
+        case 1:
+            copyRawVideoPlaneRows(
+                source.samples,
+                source.stride,
+                new Uint8Array(data, plane.byteOffset, plane.byteLength),
+                plane.bytesPerRow,
+                plane.width,
+                plane.height
+            );
+            return;
+        case 2:
+            copyRawVideoPlaneRows(
+                source.samples,
+                source.stride,
+                new Uint16Array(data, plane.byteOffset, plane.byteLength / Uint16Array.BYTES_PER_ELEMENT),
+                plane.bytesPerRow / Uint16Array.BYTES_PER_ELEMENT,
+                plane.width,
+                plane.height
+            );
+            return;
+    }
+}
+
+function isFullCodedRectangle(rectangle: DOMRectInit | undefined, codedWidth: number, codedHeight: number): boolean {
+    return rectangle === undefined || (
+        (rectangle.x ?? 0) === 0
+        && (rectangle.y ?? 0) === 0
+        && (rectangle.width ?? codedWidth) === codedWidth
+        && (rectangle.height ?? codedHeight) === codedHeight
+    );
+}
+
+/**
+ * A decoded frame whose planes were written, while its decoder still held them, into the aligned layout copyVideoFrameToRawPlanes produces in the frame's own format.
+ * A raw transfer of that format and geometry takes its buffer as it is; any other copy reads it through copyTo.
+ * Closing a frame that was never taken returns its buffer to its pool.
+ */
+export class PreparedRawVideoFrameSource implements RawVideoFrameSource {
+    public readonly codedHeight: number;
+    public readonly codedWidth: number;
+    public readonly colorSpace: Readonly<RawVideoFrameColorSpace>;
+    public readonly displayHeight: number;
+    public readonly displayWidth: number;
+    public readonly duration: number | null;
+    public readonly format: SupportedRawVideoFrameFormat;
+    public readonly timestamp: number;
+    public readonly visibleRect: Readonly<RawVideoFrameRectangle>;
+    private rawFrame: TransferableRawVideoFrame | null = null;
+
+    private constructor(metadata: PreparedRawVideoFrameMetadata, private readonly bufferPool: RawFrameBufferPool | null) {
+        this.codedHeight = metadata.codedHeight;
+        this.codedWidth = metadata.codedWidth;
+        this.colorSpace = {
+            fullRange: metadata.colorSpace.fullRange,
+            matrix: metadata.colorSpace.matrix,
+            primaries: metadata.colorSpace.primaries,
+            transfer: metadata.colorSpace.transfer
+        };
+        this.displayHeight = metadata.displayHeight;
+        this.displayWidth = metadata.displayWidth;
+        // A VideoFrame made without a duration reports null, as the one from VideoSample.toVideoFrame does for zero
+        this.duration = metadata.durationMicroseconds === 0 ? null : metadata.durationMicroseconds;
+        this.format = metadata.format;
+        this.timestamp = metadata.timestampMicroseconds;
+        this.visibleRect = {
+            height: metadata.codedHeight,
+            width: metadata.codedWidth,
+            x: 0,
+            y: 0
+        };
+    }
+
+    /**
+     * Writes a software decoder's 16-bit planes, in luma then chroma order, into the aligned layout of the frame's format.
+     * The buffer comes from the pool, which allocates when no spare fits, or is allocated when there is no pool.
+     */
+    public static prepare(
+        metadata: PreparedRawVideoFrameMetadata,
+        planes: readonly RawVideoSourcePlane[],
+        bufferPool: RawFrameBufferPool | null
+    ): PreparedRawVideoFrameSource {
+        const source = new PreparedRawVideoFrameSource(metadata, bufferPool);
+        const preparedFrame = prepareFrame(source, getPreparableFormatDefinition(metadata.format, planes.length), undefined);
+        const data = allocateRawFrameBuffer(preparedFrame.copyByteLength, bufferPool);
+        try {
+            for (let planeIndex = 0; planeIndex < planes.length; planeIndex += 1) {
+                writeSourcePlane(planes[planeIndex], preparedFrame.planes[planeIndex], data);
+            }
+        } catch (error) {
+            bufferPool?.release(data);
+            throw error;
+        }
+        source.rawFrame = createTransferableRawVideoFrame(source, data, preparedFrame);
+        return source;
+    }
+
+    /** Returns an untaken buffer to its pool; later calls do nothing. */
+    public close(): void {
+        const rawFrame = this.rawFrame;
+        this.rawFrame = null;
+        if (rawFrame) {
+            this.bufferPool?.release(rawFrame.data);
+        }
+    }
+
+    /**
+     * Copies the prepared planes into a destination layout, as a VideoFrame copies its own format.
+     * Only the full coded rectangle in the frame's own format is offered, which is all a raw copy asks for.
+     */
+    public async copyTo(destination: ArrayBuffer, options: VideoFrameCopyToOptions): Promise<PlaneLayout[]> {
+        const rawFrame = this.requireRawFrame();
+        const requestedFormat = (options as { format?: unknown }).format;
+        if (requestedFormat !== undefined && requestedFormat !== this.format) {
+            throw new TypeError(`A prepared ${this.format} frame cannot be copied as ${String(requestedFormat)}`);
+        }
+        if (!isFullCodedRectangle(options.rect, this.codedWidth, this.codedHeight)) {
+            throw new TypeError('A prepared frame copies only its full coded rectangle');
+        }
+        const layouts = options.layout;
+        if (!layouts || layouts.length !== rawFrame.planes.length) {
+            throw new TypeError('A prepared frame copy needs one layout for each plane');
+        }
+
+        const copiedLayouts: PlaneLayout[] = [];
+        for (let planeIndex = 0; planeIndex < rawFrame.planes.length; planeIndex += 1) {
+            const plane = rawFrame.planes[planeIndex];
+            const layout = layouts[planeIndex];
+            const destinationByteLength = (layout.stride * (plane.height - 1)) + plane.rowByteLength;
+            if (
+                !isNonNegativeSafeInteger(layout.offset)
+                || !Number.isSafeInteger(layout.stride)
+                || layout.stride < plane.rowByteLength
+                || !Number.isSafeInteger(layout.offset + destinationByteLength)
+                || layout.offset + destinationByteLength > destination.byteLength
+            ) {
+                throw new RangeError(`The prepared ${plane.kind} plane does not fit its destination layout`);
+            }
+            copyRawVideoPlaneRows(
+                new Uint8Array(rawFrame.data, plane.byteOffset, plane.byteLength),
+                plane.bytesPerRow,
+                new Uint8Array(destination, layout.offset, destinationByteLength),
+                layout.stride,
+                plane.rowByteLength,
+                plane.height
+            );
+            copiedLayouts.push({ offset: layout.offset, stride: layout.stride });
+        }
+        return copiedLayouts;
+    }
+
+    /**
+     * Hands over the prepared frame when it is in format at the expected geometry, after which this source holds nothing.
+     * Returns null and keeps the frame when either differs, so the caller copies it instead.
+     */
+    public takeRawFrame(
+        format: SupportedRawVideoFrameFormat,
+        expectedGeometry: RawVideoFrameGeometry
+    ): TransferableRawVideoFrame | null {
+        const rawFrame = this.requireRawFrame();
+        if (
+            rawFrame.format !== format
+            || rawFrame.codedWidth !== expectedGeometry.codedWidth
+            || rawFrame.codedHeight !== expectedGeometry.codedHeight
+            || rawFrame.displayWidth !== expectedGeometry.displayWidth
+            || rawFrame.displayHeight !== expectedGeometry.displayHeight
+        ) {
+            return null;
+        }
+        this.rawFrame = null;
+        return rawFrame;
+    }
+
+    private requireRawFrame(): TransferableRawVideoFrame {
+        if (!this.rawFrame) {
+            throw new Error('The prepared raw frame is closed');
+        }
+        return this.rawFrame;
+    }
+}
+
+/**
  * Takes ownership of one decoded frame, copies its complete coded planar YUV planes in the exposed or requested format, and closes the frame exactly once.
- * An exact-size live buffer is reused to keep the raw presentation cycle bounded.
+ * The destination comes from the buffer pool when one is given, so the raw presentation cycle reuses its buffers.
  */
 export async function copyVideoFrameToRawPlanes(
     frame: RawVideoFrameSource,
@@ -730,7 +965,7 @@ export async function copyVideoFrameToRawPlanes(
         assertNoTransform(frame);
         const format = getFormatDefinition(options.format ?? frame.format);
         const preparedFrame = prepareFrame(frame, format, options.expectedGeometry);
-        const data = allocateRawFrameBuffer(preparedFrame.copyByteLength, options.reusableBuffer, options.requireReusableBuffer);
+        const data = allocateRawFrameBuffer(preparedFrame.copyByteLength, options.bufferPool);
 
         let returnedLayouts: PlaneLayout[];
         try {
@@ -788,7 +1023,7 @@ export async function copyVideoFramePairToRawPlanes(
         if (!isPositiveSafeInteger(compoundByteLength)) {
             throw new RawVideoFrameCopyError('invalid-dimensions', 'The compound raw VideoFrame copy is not representable');
         }
-        const data = allocateRawFrameBuffer(compoundByteLength, options.reusableBuffer, options.requireReusableBuffer);
+        const data = allocateRawFrameBuffer(compoundByteLength, options.bufferPool);
 
         await copyPreparedFrameData(
             baseFrame,

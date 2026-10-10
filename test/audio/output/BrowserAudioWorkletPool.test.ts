@@ -17,6 +17,7 @@ type Deferred = {
 };
 
 type ControllerHarness = {
+    attachProducer: ReturnType<typeof vi.fn>
     controller: AudioWorkletController
     deactivate: ReturnType<typeof vi.fn>
     destroy: ReturnType<typeof vi.fn>
@@ -60,6 +61,7 @@ function createControllerHarness(
     configuration: AudioWorkletControllerConfiguration = defaultConfiguration
 ): ControllerHarness {
     const telemetryListeners = new Set<AudioTelemetryListener>();
+    const attachProducer = vi.fn();
     const deactivate = vi.fn((): Promise<void> => Promise.resolve());
     const destroy = vi.fn((): Promise<void> => Promise.resolve());
     const enqueue = vi.fn(() => ({ frameCount: 1, sequence: 1, status: 'submitted' as const }));
@@ -76,6 +78,7 @@ function createControllerHarness(
     const setPlaying = vi.fn();
     const setVolume = vi.fn();
     const controller = {
+        attachProducer,
         configuration: { ...configuration },
         deactivate,
         destroy,
@@ -91,6 +94,7 @@ function createControllerHarness(
         setVolume
     } as unknown as AudioWorkletController;
     return {
+        attachProducer,
         controller,
         deactivate,
         destroy,
@@ -153,6 +157,9 @@ describe('BrowserAudioWorkletPool', () => {
         const firstLease = await acquireSharedBrowserAudioWorklet(audioContext, defaultOptions);
         const staleOutput = firstLease.output;
         const unsubscribe = staleOutput.onTelemetry(vi.fn());
+        const producerPort = {} as MessagePort;
+        staleOutput.attachProducer(producerPort);
+        expect(harness.attachProducer).toHaveBeenCalledExactlyOnceWith(producerPort);
 
         expect(staleOutput).not.toBe(harness.controller);
         const release = firstLease.release();
@@ -167,6 +174,8 @@ describe('BrowserAudioWorkletPool', () => {
             timestampMicroseconds: secondsToMicroseconds(0)
         };
         expect(() => staleOutput.enqueue(PCMChunk, 1)).toThrow('no longer active');
+        expect(() => staleOutput.attachProducer(producerPort)).toThrow('no longer active');
+        expect(harness.attachProducer).toHaveBeenCalledOnce();
         expect(() => staleOutput.flush(secondsToMicroseconds(0))).toThrow('no longer active');
         expect(() => staleOutput.getTelemetry()).toThrow('no longer active');
         expect(() => staleOutput.generation).toThrow('no longer active');

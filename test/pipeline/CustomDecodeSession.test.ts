@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
     millisecondsToMicroseconds,
@@ -13,6 +13,7 @@ import {
     startTimingTrace
 } from 'webgpu-player/TimingTrace';
 import type CustomDecodeAudioBridge from 'webgpu-player/audio/output/CustomDecodeAudioBridge';
+import type { CustomDecodeAudioBridgeStartOptions } from 'webgpu-player/audio/output/CustomDecodeAudioBridge';
 import type { CustomAudioOutputChannelCount } from 'webgpu-player/audio/processing/CustomAudioChannelLayout';
 import {
     CUSTOM_AUDIO_DOWNMIX_ALGORITHMS,
@@ -32,7 +33,7 @@ import {
     MAX_DECODED_RAW_FRAME_CREDITS,
     type CustomDecodeDolbyVisionProfile,
     type CustomDecodeRawVideoFrameFormat,
-    type DecodeWorkerAudioResponse,
+    type DecodeWorkerAudioOutputAttachment,
     type DecodeWorkerResyncAudioRequest
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 import { DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION } from 'webgpu-player/video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
@@ -46,6 +47,10 @@ import type {
     TransferableRawVideoFrame
 } from 'webgpu-player/video/RawVideoFrameCopy';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
+import type {
+    DecodedPresentationFrame,
+    DecodedWorkerPresentationFrame
+} from 'webgpu-player/presentation/WebGPUPresenter';
 import { parseHEVCHDR10PlusMetadata } from 'webgpu-player/video/hdr/HDR10PlusMetadata';
 
 import { createHDR10PlusHEVCVector } from '../../src/capability/vectors/HDR10PlusVectors';
@@ -62,6 +67,18 @@ const ULTRA_HD_16K_CODED_HEIGHT = 8_640;
 const UNREPRESENTABLE_CODED_WIDTH = Number.MAX_SAFE_INTEGER;
 const UNREPRESENTABLE_CODED_HEIGHT = 2;
 const UNREPRESENTABLE_RAW_ROUTE_ERROR = 'Custom decode raw-frame route has no representable copy layout';
+// The bound a retired run has to acknowledge its stop before the session replaces its worker
+const WORKER_STOP_TIMEOUT_MILLISECONDS = 1_000;
+const TIMER_RESOLUTION_MILLISECONDS = 1;
+const FIRST_LIFECYCLE_GENERATION = 201;
+const SECOND_LIFECYCLE_GENERATION = 202;
+const THIRD_LIFECYCLE_GENERATION = 203;
+const DECODER_FAILURE_MESSAGE = 'Decoder failed';
+const INVALID_WORKER_MESSAGE_FAILURE = 'The custom decode worker sent an invalid message';
+const DESTROYED_SESSION_ERROR = 'The custom decode session is destroyed';
+const UNACKNOWLEDGED_STOP_WARNING = 'did not acknowledge shutdown';
+// A response type the protocol does not define
+const MALFORMED_RESPONSE_TYPE = 'malformed';
 
 class MockWorker {
     readonly postedMessages: unknown[] = [];
@@ -104,6 +121,45 @@ class MockWorker {
             handler(event);
         }
     }
+}
+
+type WorkerPool = {
+    createWorker: () => Worker
+    workers: MockWorker[]
+};
+
+/** Returns a worker factory that keeps every worker it creates, so a test tells reuse from replacement. */
+function createWorkerPool(): WorkerPool {
+    const workers: MockWorker[] = [];
+    return {
+        createWorker: (): Worker => {
+            const worker = new MockWorker();
+            workers.push(worker);
+            return worker as unknown as Worker;
+        },
+        workers
+    };
+}
+
+function getPostedStartGenerations(worker: MockWorker): number[] {
+    const generations: number[] = [];
+    for (const message of worker.postedMessages) {
+        const request = message as { generation?: unknown, type?: unknown };
+        if (request.type === 'start' && typeof request.generation === 'number') {
+            generations.push(request.generation);
+        }
+    }
+    return generations;
+}
+
+/** Narrows a taken frame to one whose payload reached the page; a worker frame fails the test. */
+function requirePayloadFrame(
+    presentationFrame: DecodedPresentationFrame | null
+): Exclude<DecodedPresentationFrame, DecodedWorkerPresentationFrame> | null {
+    if (presentationFrame?.outputMode === 'worker-frame') {
+        throw new TypeError('The taken frame stayed in the worker');
+    }
+    return presentationFrame;
 }
 
 function createFrame(): VideoFrame & { close: ReturnType<typeof vi.fn> } {
@@ -319,9 +375,25 @@ function emitRawFrame(
 }
 
 const DECODED_AUDIO_SAMPLE_RATE = 48_000;
+// A rate the worklet output never runs at
+const MISMATCHED_DECODED_AUDIO_SAMPLE_RATE = 44_100;
 // 40 ms at 48 kHz, so three samples cover the 100 ms startup and resync minimum
 const DECODED_AUDIO_SAMPLE_FRAME_COUNT = 1_920;
 const DECODED_AUDIO_SAMPLE_DURATION_MICROSECONDS = 40_000;
+// Two seconds at 48 kHz, as the worklet ring holds
+const DECODED_AUDIO_MAXIMUM_BUFFERED_FRAME_COUNT = 96_000;
+const AUDIO_OUTPUT_WORKLET_GENERATION = 2;
+const AUDIO_OUTPUT_ATTACH_FAILURE = 'Unable to attach decoded audio output';
+const DECODED_AUDIO_MISMATCH_FAILURE = 'Decoded audio did not match the configured output';
+
+// The worklet channels the bridge doubles opened, which close once each test ends
+const openedAudioOutputPorts: MessagePort[] = [];
+
+afterEach(() => {
+    for (const port of openedAudioOutputPorts.splice(0)) {
+        port.close();
+    }
+});
 
 type DecodedAudioSessionHarness = {
     audioBridge: CustomDecodeAudioBridge
@@ -330,38 +402,70 @@ type DecodedAudioSessionHarness = {
     worker: MockWorker
 };
 
-/** Returns a decoded audio bridge double that submits every sample it receives. */
+/** Returns the producer's end of a new worklet channel, whose closing the test can observe, with the bounds of a worklet of the layout. */
+function createAudioOutputAttachment(audioSampleCredits: number, channelCount: number): DecodeWorkerAudioOutputAttachment {
+    const channel = new MessageChannel();
+    openedAudioOutputPorts.push(channel.port1, channel.port2);
+    vi.spyOn(channel.port2, 'close');
+    return {
+        audioSampleCredits,
+        channelCount,
+        maximumBufferedFrameCount: DECODED_AUDIO_MAXIMUM_BUFFERED_FRAME_COUNT,
+        port: channel.port2,
+        sampleRate: DECODED_AUDIO_SAMPLE_RATE,
+        workletGeneration: AUDIO_OUTPUT_WORKLET_GENERATION
+    };
+}
+
+/** Returns a decoded audio bridge double that opens a worklet channel at each start and records every progress it receives. */
 function createSubmittingAudioBridge(initialAudioSampleCredits: number): CustomDecodeAudioBridge {
     return {
-        enqueue: vi.fn((message: DecodeWorkerAudioResponse): ReturnType<CustomDecodeAudioBridge['enqueue']> => ({
-            frameCount: message.frameCount,
-            status: 'submitted'
-        })),
         initialAudioSampleCredits,
-        start: vi.fn(),
+        recordSubmission: vi.fn((): ReturnType<CustomDecodeAudioBridge['recordSubmission']> => 'recorded'),
+        start: vi.fn((options: CustomDecodeAudioBridgeStartOptions): DecodeWorkerAudioOutputAttachment => (
+            createAudioOutputAttachment(initialAudioSampleCredits, options.audioConfiguration.channelCount)
+        )),
         stop: vi.fn()
     } as unknown as CustomDecodeAudioBridge;
 }
 
-function emitAudioSample(
+/** Returns the worklet channel a bridge double's start opened. */
+function getStartedAudioOutput(audioBridge: CustomDecodeAudioBridge, startIndex = 0): DecodeWorkerAudioOutputAttachment {
+    const startResult = vi.mocked(audioBridge.start).mock.results[startIndex];
+    if (startResult?.type !== 'return') {
+        throw new Error('The audio bridge double did not start');
+    }
+    return startResult.value;
+}
+
+/** Emits the progress of one chunk the worker's producer posted to the worklet. */
+function emitAudioProgress(
     worker: MockWorker,
     generation: number,
-    channelCount: number,
     mediaTimeMicroseconds: number,
-    audioEpoch?: number,
-    frameCount = DECODED_AUDIO_SAMPLE_FRAME_COUNT
+    audioEpoch = 0,
+    frameCount = DECODED_AUDIO_SAMPLE_FRAME_COUNT,
+    sampleRate = DECODED_AUDIO_SAMPLE_RATE
 ): void {
     worker.emitMessage({
-        channelCount,
-        channelData: Array.from({ length: channelCount }, (): Float32Array => new Float32Array(frameCount)),
-        durationMicroseconds: audioFramesToMicroseconds(frameCount, DECODED_AUDIO_SAMPLE_RATE),
+        audioEpoch,
+        durationMicroseconds: audioFramesToMicroseconds(frameCount, sampleRate),
         frameCount,
         generation,
         mediaTimeMicroseconds,
-        sampleRate: DECODED_AUDIO_SAMPLE_RATE,
-        type: 'audio',
-        ...(audioEpoch === undefined ? {} : { audioEpoch })
+        sampleRate,
+        type: 'audio-progress'
     });
+}
+
+function getPostedMessagesOfType(worker: MockWorker, type: string): Array<{ message: unknown, transfer: Transferable[] }> {
+    const postedMessages: Array<{ message: unknown, transfer: Transferable[] }> = [];
+    worker.postedMessages.forEach((message: unknown, messageIndex: number): void => {
+        if ((message as { type?: unknown }).type === type) {
+            postedMessages.push({ message, transfer: worker.postedTransfers[messageIndex] });
+        }
+    });
+    return postedMessages;
 }
 
 function countPostedMessages(worker: MockWorker, type: string): number {
@@ -401,7 +505,7 @@ function startReadyDecodedAudioSession(generation: number): DecodedAudioSessionH
     });
     emitFrame(worker, generation, 1_000_000);
     for (let sampleIndex = 0; sampleIndex < 3; sampleIndex += 1) {
-        emitAudioSample(worker, generation, 2, 1_000_000 + sampleIndex * DECODED_AUDIO_SAMPLE_DURATION_MICROSECONDS);
+        emitAudioProgress(worker, generation, 1_000_000 + sampleIndex * DECODED_AUDIO_SAMPLE_DURATION_MICROSECONDS);
     }
     if (session.getTelemetry().state !== 'ready') {
         throw new Error('The decoded audio session did not become ready');
@@ -589,22 +693,20 @@ describe('CustomDecodeSession', () => {
         });
     });
 
-    it('asks workers for timing events while a trace runs and merges them, even from a replaced worker', () => {
-        const replacedWorker = new MockWorker();
-        const tracedWorker = new MockWorker();
-        const workers = [ replacedWorker, tracedWorker ];
+    it('asks the worker for timing events while a trace runs and merges them, even from a retired generation', () => {
+        const worker = new MockWorker();
         const session = new CustomDecodeSession(
             () => undefined,
-            () => workers.shift() as unknown as Worker
+            () => worker as unknown as Worker
         );
         try {
             startSession(session, 1);
-            expect(replacedWorker.postedMessages[0]).not.toHaveProperty('timingTrace');
+            expect(worker.postedMessages[0]).not.toHaveProperty('timingTrace');
 
             startTimingTrace();
             startSession(session, 2);
-            expect(tracedWorker.postedMessages[0]).toMatchObject({ generation: 2, timingTrace: true });
-            replacedWorker.emitMessage({
+            // The retired run's last events precede its acknowledgement
+            worker.emitMessage({
                 events: [ {
                     epochMilliseconds: performanceTimeToEpochMilliseconds(performance.now()),
                     fields: { waitMilliseconds: TIMING_TRACE_CREDIT_WAIT_MILLISECONDS },
@@ -613,6 +715,8 @@ describe('CustomDecodeSession', () => {
                 generation: 1,
                 type: 'timing-trace'
             });
+            worker.emitMessage({ generation: 1, type: 'stopped' });
+            expect(worker.postedMessages.at(-1)).toMatchObject({ generation: 2, timingTrace: true, type: 'start' });
 
             expect(exportTimingTrace()?.events.map(event => [ event.realm, event.kind, event.fields.waitMilliseconds ])).toEqual([
                 [ 'worker', 'video-credit-wait', TIMING_TRACE_CREDIT_WAIT_MILLISECONDS ]
@@ -794,7 +898,7 @@ describe('CustomDecodeSession', () => {
             type: 'frame'
         });
 
-        const presentationFrame = session.takeFrame(secondsToMicroseconds(1.1));
+        const presentationFrame = requirePayloadFrame(session.takeFrame(secondsToMicroseconds(1.1)));
         expect(presentationFrame?.encodedDolbyVisionMetadata).toBe(encodedDolbyVisionMetadata);
         expect(session.getTelemetry()).toMatchObject({
             receivedDolbyVisionEnhancementFrameCount: 1,
@@ -836,8 +940,8 @@ describe('CustomDecodeSession', () => {
             type: 'frame'
         });
 
-        const validFrame = session.takeFrame(secondsToMicroseconds(1.1));
-        const malformedFrame = session.takeFrame(secondsToMicroseconds(1.2));
+        const validFrame = requirePayloadFrame(session.takeFrame(secondsToMicroseconds(1.1)));
+        const malformedFrame = requirePayloadFrame(session.takeFrame(secondsToMicroseconds(1.2)));
         expect(validFrame?.HDR10PlusMetadata).toBe(validMetadata);
         expect(malformedFrame?.HDR10PlusMetadata).toEqual({
             metadata: null,
@@ -1023,7 +1127,7 @@ describe('CustomDecodeSession', () => {
         emitFrame(worker, 7, 1_300_000);
         emitFrame(worker, 7, 1_400_000);
 
-        const presentationFrame = session.takeFrame(secondsToMicroseconds(1.25));
+        const presentationFrame = requirePayloadFrame(session.takeFrame(secondsToMicroseconds(1.25)));
         expect(presentationFrame?.frame).toBe(selectedFrame);
         expect(firstFrame.close).toHaveBeenCalledOnce();
         expect(selectedFrame.close).not.toHaveBeenCalled();
@@ -1131,12 +1235,7 @@ describe('CustomDecodeSession', () => {
 
     it('forwards an exact decoded multichannel output count to the worker', () => {
         const worker = new MockWorker();
-        const audioBridge = {
-            enqueue: vi.fn(),
-            initialAudioSampleCredits: 2,
-            start: vi.fn(),
-            stop: vi.fn()
-        } as unknown as CustomDecodeAudioBridge;
+        const audioBridge = createSubmittingAudioBridge(2);
         const session = new CustomDecodeSession(
             vi.fn(),
             () => worker as unknown as Worker,
@@ -1180,12 +1279,7 @@ describe('CustomDecodeSession', () => {
 
     it('posts an isolated live downmix snapshot only after stereo downmix configuration', () => {
         const worker = new MockWorker();
-        const audioBridge = {
-            enqueue: vi.fn(),
-            initialAudioSampleCredits: 2,
-            start: vi.fn(),
-            stop: vi.fn()
-        } as unknown as CustomDecodeAudioBridge;
+        const audioBridge = createSubmittingAudioBridge(2);
         const session = new CustomDecodeSession(
             vi.fn(),
             () => worker as unknown as Worker,
@@ -1283,12 +1377,7 @@ describe('CustomDecodeSession', () => {
 
         for (const configuration of configurations) {
             const worker = new MockWorker();
-            const audioBridge = {
-                enqueue: vi.fn(),
-                initialAudioSampleCredits: 2,
-                start: vi.fn(),
-                stop: vi.fn()
-            } as unknown as CustomDecodeAudioBridge;
+            const audioBridge = createSubmittingAudioBridge(2);
             const session = new CustomDecodeSession(
                 vi.fn(),
                 () => worker as unknown as Worker,
@@ -1407,12 +1496,7 @@ describe('CustomDecodeSession', () => {
 
     it('rejects a decoded output count that does not match the request', () => {
         const worker = new MockWorker();
-        const audioBridge = {
-            enqueue: vi.fn(),
-            initialAudioSampleCredits: 2,
-            start: vi.fn(),
-            stop: vi.fn()
-        } as unknown as CustomDecodeAudioBridge;
+        const audioBridge = createSubmittingAudioBridge(2);
         const session = new CustomDecodeSession(
             vi.fn(),
             () => worker as unknown as Worker,
@@ -1845,63 +1929,68 @@ describe('CustomDecodeSession', () => {
         expect(worker.postedMessages.at(-1)).toEqual({ generation: 21, type: 'stop' });
     });
 
-    it('closes stale frames and retires superseded workers by generation', async () => {
-        const workers = [ new MockWorker(), new MockWorker() ];
-        let workerIndex = 0;
+    it('closes stale frames and hands the worker to the next generation once the previous run stops', async () => {
+        const worker = new MockWorker();
+        const workerFactory = vi.fn((): Worker => worker as unknown as Worker);
         const session = new CustomDecodeSession(
             () => undefined,
-            () => workers[workerIndex++] as unknown as Worker
+            workerFactory
         );
 
         startSession(session, 1);
-        const pendingOldFrame = emitFrame(workers[0], 1, 1_000_000);
-        const queuedOldFrame = emitFrame(workers[0], 1, 1_100_000);
-        expect(session.takeFrame(secondsToMicroseconds(1))?.frame).toBe(pendingOldFrame);
+        expect(session.getTelemetry().workerReused).toBe(false);
+        const pendingOldFrame = emitFrame(worker, 1, 1_000_000);
+        const queuedOldFrame = emitFrame(worker, 1, 1_100_000);
+        expect(requirePayloadFrame(session.takeFrame(secondsToMicroseconds(1)))?.frame).toBe(pendingOldFrame);
         startSession(session, 2);
 
         expect(pendingOldFrame.close).toHaveBeenCalledOnce();
         expect(queuedOldFrame.close).toHaveBeenCalledOnce();
-        expect(workers[0].postedMessages.at(-1)).toEqual({ generation: 1, type: 'stop' });
+        expect(worker.postedMessages.at(-1)).toEqual({ generation: 1, type: 'stop' });
 
-        const staleFrame = emitFrame(workers[0], 1, 1_100_000);
+        const staleFrame = emitFrame(worker, 1, 1_100_000);
         expect(staleFrame.close).toHaveBeenCalledOnce();
         expect(session.getTelemetry().staleFrameCount).toBe(1);
 
-        workers[0].emitMessage({ generation: 1, type: 'stopped' });
-        expect(workers[0].terminate).toHaveBeenCalledOnce();
+        worker.emitMessage({ generation: 1, type: 'stopped' });
+        expect(worker.postedMessages.at(-1)).toMatchObject({ generation: 2, type: 'start' });
+        expect(session.getTelemetry().workerReused).toBe(true);
+        expect(workerFactory).toHaveBeenCalledOnce();
+        expect(worker.terminate).not.toHaveBeenCalled();
 
-        const currentFrame = emitFrame(workers[1], 2, 1_000_000);
-        expect(session.takeFrame(secondsToMicroseconds(1))?.frame).toBe(currentFrame);
+        const currentFrame = emitFrame(worker, 2, 1_000_000);
+        expect(requirePayloadFrame(session.takeFrame(secondsToMicroseconds(1)))?.frame).toBe(currentFrame);
         const stopPromise = session.stop();
         expect(currentFrame.close).toHaveBeenCalledOnce();
-        expect(workers[1].postedMessages.at(-1)).toEqual({ generation: 2, type: 'stop' });
-        workers[1].emitMessage({ generation: 2, type: 'stopped' });
+        expect(worker.postedMessages.at(-1)).toEqual({ generation: 2, type: 'stop' });
+        worker.emitMessage({ generation: 2, type: 'stopped' });
         await stopPromise;
-        expect(workers[1].terminate).toHaveBeenCalledOnce();
+        // The idle worker waits for the next start
+        expect(worker.terminate).not.toHaveBeenCalled();
     });
 
     it('does not recycle a pending raw buffer into a superseding generation', () => {
-        const workers = [ new MockWorker(), new MockWorker() ];
-        let workerIndex = 0;
+        const worker = new MockWorker();
         const session = new CustomDecodeSession(
             () => undefined,
-            () => workers[workerIndex++] as unknown as Worker
+            () => worker as unknown as Worker
         );
 
         startSession(session, 14, undefined, 'raw-planes');
-        emitRawReady(workers[0], 14);
-        emitRawFrame(workers[0], 14, secondsToMicroseconds(1.1));
+        emitRawReady(worker, 14);
+        emitRawFrame(worker, 14, secondsToMicroseconds(1.1));
         const stalePresentationFrame = session.takeFrame(secondsToMicroseconds(1.1));
         startSession(session, 15, undefined, 'raw-planes');
-        emitRawReady(workers[1], 15);
+        worker.emitMessage({ generation: 14, type: 'stopped' });
+        emitRawReady(worker, 15);
 
         if (!stalePresentationFrame || stalePresentationFrame.outputMode !== 'raw-planes') {
             throw new Error('Expected a pending decoded raw frame');
         }
-        const oldWorkerMessageCount = workers[0].postedMessages.length;
+        const postedMessageCount = worker.postedMessages.length;
         expect(session.acknowledgeFrame(stalePresentationFrame)).toBe(false);
-        expect(workers[0].postedMessages).toHaveLength(oldWorkerMessageCount);
-        expect(workers[1].postedMessages).toHaveLength(1);
+        expect(worker.postedMessages).toHaveLength(postedMessageCount);
+        expect(worker.postedMessages.at(-1)).toMatchObject({ generation: 15, type: 'start' });
         expect(session.getTelemetry().staleFrameCount).toBe(0);
     });
 
@@ -2031,7 +2120,7 @@ describe('CustomDecodeSession', () => {
 
             const stopPromise = session.stop();
             expect(worker.terminate).not.toHaveBeenCalled();
-            await vi.advanceTimersByTimeAsync(1_000);
+            await vi.advanceTimersByTimeAsync(WORKER_STOP_TIMEOUT_MILLISECONDS);
             await stopPromise;
 
             expect(worker.terminate).toHaveBeenCalledOnce();
@@ -2092,12 +2181,7 @@ describe('CustomDecodeSession', () => {
 
     it('waits for decoded video and a bounded PCM prebuffer before reporting ready', () => {
         const worker = new MockWorker();
-        const audioBridge = {
-            enqueue: vi.fn(() => ({ frameCount: 1_024, status: 'submitted' as const })),
-            initialAudioSampleCredits: 3,
-            start: vi.fn(),
-            stop: vi.fn()
-        } as unknown as CustomDecodeAudioBridge;
+        const audioBridge = createSubmittingAudioBridge(3);
         const events: CustomDecodeSessionEvent[] = [];
         const session = new CustomDecodeSession(
             event => events.push(event),
@@ -2131,11 +2215,16 @@ describe('CustomDecodeSession', () => {
             type: 'ready'
         });
         expect(audioBridge.start).toHaveBeenCalledOnce();
+        // The worker's producer takes its channel to the worklet, whose credit window replaces any pull
+        const audioOutput = getStartedAudioOutput(audioBridge);
         expect(worker.postedMessages.at(-1)).toEqual({
-            audioSampleCredits: 3,
+            audioEpoch: 0,
+            audioOutput,
             generation: 9,
-            type: 'pull-audio'
+            type: 'attach-audio-output'
         });
+        expect(worker.postedTransfers.at(-1)).toEqual([ audioOutput.port ]);
+        expect(isDecodeWorkerRequest(worker.postedMessages.at(-1))).toBe(true);
         expect(events).toEqual([ {
             audio: audioConfiguration,
             codec: 'hev1.2.4.L153.B0',
@@ -2148,21 +2237,19 @@ describe('CustomDecodeSession', () => {
         expect(events).toHaveLength(1);
 
         for (let sampleIndex = 0; sampleIndex < 5; sampleIndex += 1) {
-            worker.emitMessage({
-                channelCount: 2,
-                channelData: [ new Float32Array(1_024), new Float32Array(1_024) ],
-                durationMicroseconds: 21_333,
-                frameCount: 1_024,
-                generation: 9,
-                mediaTimeMicroseconds: 1_000_000 + Math.round(sampleIndex * 1_024 * 1_000_000 / 48_000),
-                sampleRate: 48_000,
-                type: 'audio'
-            });
+            emitAudioProgress(
+                worker,
+                9,
+                1_000_000 + Math.round(sampleIndex * 1_024 * 1_000_000 / 48_000),
+                0,
+                1_024
+            );
             if (sampleIndex < 4) {
                 expect(session.getTelemetry().state).toBe('configured');
             }
         }
-        expect(audioBridge.enqueue).toHaveBeenCalledTimes(5);
+        expect(audioBridge.recordSubmission).toHaveBeenCalledTimes(5);
+        expect(audioBridge.recordSubmission).toHaveBeenLastCalledWith(expect.objectContaining({ frameCount: 1_024 }), 9);
         expect(events.at(-1)).toEqual({
             audio: audioConfiguration,
             codec: 'hev1.2.4.L153.B0',
@@ -2181,14 +2268,9 @@ describe('CustomDecodeSession', () => {
             submittedAudioSampleCount: 5
         });
 
-        const bridgeStartOptions = vi.mocked(audioBridge.start).mock.calls[0][0];
-        bridgeStartOptions.callbacks.onCreditsReleased(2);
-        expect(worker.postedMessages.at(-1)).toEqual({
-            audioSampleCredits: 2,
-            generation: 9,
-            type: 'pull-audio'
-        });
+        expect(countPostedMessages(worker, 'pull-audio')).toBe(0);
 
+        const bridgeStartOptions = vi.mocked(audioBridge.start).mock.calls[0][0];
         bridgeStartOptions.callbacks.onFailure('The audio worklet overflowed');
         expect(session.getTelemetry()).toMatchObject({
             failureKind: 'audio-output-failed',
@@ -2200,18 +2282,12 @@ describe('CustomDecodeSession', () => {
     });
 
     it('requires a fresh PCM prebuffer after replacing the decode generation', async () => {
-        const workers = [ new MockWorker(), new MockWorker() ];
-        let workerIndex = 0;
-        const audioBridge = {
-            enqueue: vi.fn(() => ({ frameCount: 1_920, status: 'submitted' as const })),
-            initialAudioSampleCredits: 3,
-            start: vi.fn(),
-            stop: vi.fn()
-        } as unknown as CustomDecodeAudioBridge;
+        const worker = new MockWorker();
+        const audioBridge = createSubmittingAudioBridge(3);
         const events: CustomDecodeSessionEvent[] = [];
         const session = new CustomDecodeSession(
             event => events.push(event),
-            () => workers[workerIndex++] as unknown as Worker,
+            () => worker as unknown as Worker,
             audioBridge
         );
         const audioConfiguration = {
@@ -2221,23 +2297,14 @@ describe('CustomDecodeSession', () => {
             sourceChannelCount: 2,
             sourceSampleRate: 48_000
         };
-        const emitAudioPrebuffer = (worker: MockWorker, generation: number): void => {
+        const emitAudioPrebuffer = (generation: number): void => {
             for (let sampleIndex = 0; sampleIndex < 3; sampleIndex += 1) {
-                worker.emitMessage({
-                    channelCount: 2,
-                    channelData: [ new Float32Array(1_920), new Float32Array(1_920) ],
-                    durationMicroseconds: 40_000,
-                    frameCount: 1_920,
-                    generation,
-                    mediaTimeMicroseconds: 1_000_000 + sampleIndex * 40_000,
-                    sampleRate: 48_000,
-                    type: 'audio'
-                });
+                emitAudioProgress(worker, generation, 1_000_000 + sampleIndex * DECODED_AUDIO_SAMPLE_DURATION_MICROSECONDS);
             }
         };
 
         startSession(session, 40, 1);
-        workers[0].emitMessage({
+        worker.emitMessage({
             audio: audioConfiguration,
             codec: 'avc1.640029',
             codedHeight: 1_080,
@@ -2247,13 +2314,13 @@ describe('CustomDecodeSession', () => {
             generation: 40,
             type: 'ready'
         });
-        emitFrame(workers[0], 40, 1_000_000);
-        emitAudioPrebuffer(workers[0], 40);
+        emitFrame(worker, 40, 1_000_000);
+        emitAudioPrebuffer(40);
         expect(events.filter(event => event.type === 'ready')).toHaveLength(1);
 
         startSession(session, 41, 1);
-        workers[0].emitMessage({ generation: 40, type: 'stopped' });
-        workers[1].emitMessage({
+        worker.emitMessage({ generation: 40, type: 'stopped' });
+        worker.emitMessage({
             audio: audioConfiguration,
             codec: 'avc1.640029',
             codedHeight: 1_080,
@@ -2263,36 +2330,26 @@ describe('CustomDecodeSession', () => {
             generation: 41,
             type: 'ready'
         });
-        emitFrame(workers[1], 41, 1_000_000);
+        emitFrame(worker, 41, 1_000_000);
+        // A late chunk of the replaced generation is stale
+        emitAudioProgress(worker, 40, 1_120_000);
+        expect(session.getTelemetry().staleAudioSampleCount).toBe(1);
         for (let sampleIndex = 0; sampleIndex < 2; sampleIndex += 1) {
-            workers[1].emitMessage({
-                channelCount: 2,
-                channelData: [ new Float32Array(1_920), new Float32Array(1_920) ],
-                durationMicroseconds: 40_000,
-                frameCount: 1_920,
-                generation: 41,
-                mediaTimeMicroseconds: 1_000_000 + sampleIndex * 40_000,
-                sampleRate: 48_000,
-                type: 'audio'
-            });
+            emitAudioProgress(worker, 41, 1_000_000 + sampleIndex * DECODED_AUDIO_SAMPLE_DURATION_MICROSECONDS);
         }
         expect(events.filter(event => event.type === 'ready')).toHaveLength(1);
 
-        workers[1].emitMessage({
-            channelCount: 2,
-            channelData: [ new Float32Array(1_920), new Float32Array(1_920) ],
-            durationMicroseconds: 40_000,
-            frameCount: 1_920,
-            generation: 41,
-            mediaTimeMicroseconds: 1_080_000,
-            sampleRate: 48_000,
-            type: 'audio'
-        });
+        emitAudioProgress(worker, 41, 1_080_000);
         expect(events.filter(event => event.type === 'ready')).toHaveLength(2);
+        // Each generation attached its own channel to the worklet
+        expect(getPostedMessagesOfType(worker, 'attach-audio-output').map(({ message }) => message)).toEqual([
+            { audioEpoch: 0, audioOutput: getStartedAudioOutput(audioBridge, 0), generation: 40, type: 'attach-audio-output' },
+            { audioEpoch: 0, audioOutput: getStartedAudioOutput(audioBridge, 1), generation: 41, type: 'attach-audio-output' }
+        ]);
         expect(session.getTelemetry().submittedAudioFrameCount).toBe(5_760);
 
         const stopPromise = session.stop();
-        workers[1].emitMessage({ generation: 41, type: 'stopped' });
+        worker.emitMessage({ generation: 41, type: 'stopped' });
         await stopPromise;
     });
 
@@ -2461,12 +2518,7 @@ describe('CustomDecodeSession', () => {
 
     it('discards a bridge factory result after its decode generation stops', async () => {
         const worker = new MockWorker();
-        const audioBridge = {
-            enqueue: vi.fn(),
-            initialAudioSampleCredits: 2,
-            start: vi.fn(),
-            stop: vi.fn()
-        } as unknown as CustomDecodeAudioBridge;
+        const audioBridge = createSubmittingAudioBridge(2);
         const deferredAudioBridge = createDeferred<CustomDecodeAudioBridge>();
         const audioBridgeFactory = vi.fn(() => deferredAudioBridge.promise);
         const session = new CustomDecodeSession(
@@ -2673,7 +2725,7 @@ describe('CustomDecodeSession', () => {
 
         const currentFrame = emitFrame(worker, 63, 5_000_000, 1);
         expect(currentFrame.close).not.toHaveBeenCalled();
-        expect(session.takeFrame(secondsToMicroseconds(5))?.frame).toBe(currentFrame);
+        expect(requirePayloadFrame(session.takeFrame(secondsToMicroseconds(5)))?.frame).toBe(currentFrame);
         expect(session.getTelemetry()).toMatchObject({
             receivedFrameCount: 1,
             staleFrameCount: 1,
@@ -2844,21 +2896,22 @@ describe('CustomDecodeSession', () => {
     });
 
     it('starts each replacement generation at the initial video epoch', () => {
-        const workers = [ new MockWorker(), new MockWorker() ];
-        let workerIndex = 0;
+        const worker = new MockWorker();
         const session = new CustomDecodeSession(
             () => undefined,
-            () => workers[workerIndex++] as unknown as Worker
+            () => worker as unknown as Worker
         );
         startSession(session, 68);
-        emitRawReady(workers[0], 68);
+        emitRawReady(worker, 68);
         expect(session.resyncVideo(secondsToMicroseconds(5))).toBe(true);
         expect(session.suspendVideo()).toBe(true);
 
         startSession(session, 69);
-        workers[0].emitMessage({ generation: 68, type: 'stopped' });
-        emitRawReady(workers[1], 69);
-        const initialFrame = emitFrame(workers[1], 69, 1_100_000);
+        // A start still waiting for the worker has no video attempt to resynchronize
+        expect(session.resyncVideo(secondsToMicroseconds(5))).toBe(false);
+        worker.emitMessage({ generation: 68, type: 'stopped' });
+        emitRawReady(worker, 69);
+        const initialFrame = emitFrame(worker, 69, 1_100_000);
 
         expect(initialFrame.close).not.toHaveBeenCalled();
         expect(session.getTelemetry()).toMatchObject({
@@ -2869,9 +2922,9 @@ describe('CustomDecodeSession', () => {
             videoSuspensionCount: 0
         });
 
-        const replacementMessageCount = workers[1].postedMessages.length;
+        const replacementMessageCount = worker.postedMessages.length;
         expect(session.resyncVideo(secondsToMicroseconds(6))).toBe(true);
-        expect(workers[1].postedMessages.slice(replacementMessageCount)).toEqual([
+        expect(worker.postedMessages.slice(replacementMessageCount)).toEqual([
             {
                 generation: 69,
                 targetTimeMicroseconds: 6_000_000,
@@ -2970,13 +3023,13 @@ describe('CustomDecodeSession', () => {
         expect(vi.mocked(resyncedAudioBridge.start).mock.calls[0][0]).toEqual({
             audioConfiguration: resyncedAudioConfiguration,
             callbacks: {
-                onCreditsReleased: expect.any(Function),
                 onFailure: expect.any(Function)
             },
             decodeGeneration: 80,
             startTimeMicroseconds: 5_000_000
         });
-        // The request replaces the whole credit window, so no separate pull follows it
+        // The new worklet's channel carries the whole credit window, so no separate pull follows it
+        const resyncedAudioOutput = getStartedAudioOutput(resyncedAudioBridge);
         const postedResyncMessages = worker.postedMessages.slice(postedMessageCount);
         expect(postedResyncMessages).toEqual([ {
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
@@ -2987,12 +3040,14 @@ describe('CustomDecodeSession', () => {
                 version: 1
             },
             audioEpoch: 1,
-            audioSampleCredits: 4,
+            audioOutput: resyncedAudioOutput,
             decodedAudioOutputChannelCount: 6,
             generation: 80,
             targetTimeMicroseconds: 5_000_000,
             type: 'resync-audio'
         } ]);
+        expect(worker.postedTransfers.at(-1)).toEqual([ resyncedAudioOutput.port ]);
+        expect(resyncedAudioOutput).toMatchObject({ audioSampleCredits: 4, channelCount: 6 });
         expect(isDecodeWorkerRequest(postedResyncMessages[0])).toBe(true);
         expect((postedResyncMessages[0] as DecodeWorkerResyncAudioRequest).audioDownmixSettings).not.toBe(audioDownmixSettings);
         expect(session.getTelemetry()).toMatchObject({
@@ -3026,13 +3081,13 @@ describe('CustomDecodeSession', () => {
         const eventCount = events.length;
 
         // 100 ms at 48 kHz is 4800 frames; the 5760 startup frames of epoch zero do not count
-        emitAudioSample(worker, 81, 8, 5_000_000, 1, 2_400);
-        emitAudioSample(worker, 81, 8, 5_050_000, 1, 2_399);
-        expect(resyncedAudioBridge.enqueue).toHaveBeenCalledTimes(2);
+        emitAudioProgress(worker, 81, 5_000_000, 1, 2_400);
+        emitAudioProgress(worker, 81, 5_050_000, 1, 2_399);
+        expect(resyncedAudioBridge.recordSubmission).toHaveBeenCalledTimes(2);
         expect(events.slice(eventCount)).toEqual([]);
         expect(session.getTelemetry().audioResyncPending).toBe(true);
 
-        emitAudioSample(worker, 81, 8, 5_099_979, 1, 1);
+        emitAudioProgress(worker, 81, 5_099_979, 1, 1);
         expect(events.slice(eventCount)).toEqual([ {
             audioEpoch: 1,
             generation: 81,
@@ -3045,14 +3100,17 @@ describe('CustomDecodeSession', () => {
         });
 
         // Later samples neither repeat the event nor re-enter startup readiness
-        emitAudioSample(worker, 81, 8, 5_100_000, 1);
+        emitAudioProgress(worker, 81, 5_100_000, 1);
         expect(events.slice(eventCount)).toHaveLength(1);
         expect(events.filter((event: CustomDecodeSessionEvent): boolean => (
             event.type === 'ready'
         ))).toHaveLength(1);
-        expect(resyncedAudioBridge.enqueue).toHaveBeenCalledTimes(4);
-        expect(resyncedAudioBridge.enqueue).toHaveBeenLastCalledWith(expect.objectContaining({ audioEpoch: 1, channelCount: 8 }), 81);
-        expect(audioBridge.enqueue).toHaveBeenCalledTimes(3);
+        expect(resyncedAudioBridge.recordSubmission).toHaveBeenCalledTimes(4);
+        expect(resyncedAudioBridge.recordSubmission).toHaveBeenLastCalledWith(
+            expect.objectContaining({ audioEpoch: 1, frameCount: DECODED_AUDIO_SAMPLE_FRAME_COUNT }),
+            81
+        );
+        expect(audioBridge.recordSubmission).toHaveBeenCalledTimes(3);
     });
 
     it('drops PCM from replaced audio epochs without reaching an output or failing', async () => {
@@ -3066,8 +3124,8 @@ describe('CustomDecodeSession', () => {
         });
         const eventCount = events.length;
 
-        // PCM of the replaced attempt can still arrive while the new output is built
-        emitAudioSample(worker, 82, 2, 1_120_000);
+        // Progress of the replaced attempt can still arrive while the new output is built
+        emitAudioProgress(worker, 82, 1_120_000);
         expect(session.getTelemetry()).toMatchObject({
             failureKind: null,
             staleAudioSampleCount: 1,
@@ -3077,13 +3135,13 @@ describe('CustomDecodeSession', () => {
         deferredAudioBridge.resolve(resyncedAudioBridge);
         await expect(resyncPromise).resolves.toBe(1);
 
-        // An omitted epoch, an explicit initial epoch, and an unissued epoch are all stale
-        emitAudioSample(worker, 82, 2, 1_160_000);
-        emitAudioSample(worker, 82, 2, 1_200_000, 0);
-        emitAudioSample(worker, 82, 6, 5_000_000, 2);
+        // The initial epoch and an unissued epoch are both stale
+        emitAudioProgress(worker, 82, 1_160_000);
+        emitAudioProgress(worker, 82, 1_200_000, 0);
+        emitAudioProgress(worker, 82, 5_000_000, 2);
 
-        expect(audioBridge.enqueue).toHaveBeenCalledTimes(3);
-        expect(resyncedAudioBridge.enqueue).not.toHaveBeenCalled();
+        expect(audioBridge.recordSubmission).toHaveBeenCalledTimes(3);
+        expect(resyncedAudioBridge.recordSubmission).not.toHaveBeenCalled();
         expect(session.getTelemetry()).toMatchObject({
             audioEpoch: 1,
             audioResyncPending: true,
@@ -3097,16 +3155,13 @@ describe('CustomDecodeSession', () => {
         expect(countPostedMessages(worker, 'stop')).toBe(0);
     });
 
-    it('tags audio pulls with the current epoch and ignores credits from replaced bridges', async () => {
+    it('hands every audio epoch its own worklet channel and never pulls decoded audio', async () => {
         const { audioBridge, session, worker } = startReadyDecodedAudioSession(83);
-        const initialBridgeCallbacks = vi.mocked(audioBridge.start).mock.calls[0][0].callbacks;
-        // Pulls of the initial attempt omit the epoch
-        initialBridgeCallbacks.onCreditsReleased(1);
-        expect(worker.postedMessages.at(-1)).toStrictEqual({
-            audioSampleCredits: 1,
-            generation: 83,
-            type: 'pull-audio'
-        });
+        const initialAudioOutput = getStartedAudioOutput(audioBridge);
+        expect(getPostedMessagesOfType(worker, 'attach-audio-output')).toStrictEqual([ {
+            message: { audioEpoch: 0, audioOutput: initialAudioOutput, generation: 83, type: 'attach-audio-output' },
+            transfer: [ initialAudioOutput.port ]
+        } ]);
 
         const firstResyncedAudioBridge = createSubmittingAudioBridge(4);
         await expect(session.resyncAudio({
@@ -3114,21 +3169,6 @@ describe('CustomDecodeSession', () => {
             decodedAudioOutputChannelCount: 6,
             targetTimeMicroseconds: secondsToMicroseconds(5)
         })).resolves.toBe(1);
-        const firstResyncedBridgeCallbacks = vi.mocked(firstResyncedAudioBridge.start).mock.calls[0][0].callbacks;
-        const firstResyncMessageCount = worker.postedMessages.length;
-
-        firstResyncedBridgeCallbacks.onCreditsReleased(2);
-        // A late release from the replaced bridge belongs to a window the resync already reset
-        initialBridgeCallbacks.onCreditsReleased(2);
-
-        expect(worker.postedMessages.slice(firstResyncMessageCount)).toStrictEqual([ {
-            audioEpoch: 1,
-            audioSampleCredits: 2,
-            generation: 83,
-            type: 'pull-audio'
-        } ]);
-        expect(isDecodeWorkerRequest(worker.postedMessages.at(-1))).toBe(true);
-
         const secondResyncedAudioBridge = createSubmittingAudioBridge(4);
         await expect(session.resyncAudio({
             createAudioBridge: async (): Promise<CustomDecodeAudioBridge> => secondResyncedAudioBridge,
@@ -3137,18 +3177,60 @@ describe('CustomDecodeSession', () => {
         })).resolves.toBe(2);
         // A completed resync's bridge is the active output that the next resync stops
         expect(firstResyncedAudioBridge.stop).toHaveBeenCalledWith(83);
-        const secondResyncMessageCount = worker.postedMessages.length;
 
-        firstResyncedBridgeCallbacks.onCreditsReleased(1);
-        initialBridgeCallbacks.onCreditsReleased(1);
-        vi.mocked(secondResyncedAudioBridge.start).mock.calls[0][0].callbacks.onCreditsReleased(3);
+        const resyncRequests = getPostedMessagesOfType(worker, 'resync-audio');
+        const resyncedAudioOutputs = [
+            getStartedAudioOutput(firstResyncedAudioBridge),
+            getStartedAudioOutput(secondResyncedAudioBridge)
+        ];
+        expect(resyncRequests.map(({ message }) => message)).toMatchObject([
+            { audioEpoch: 1, audioOutput: resyncedAudioOutputs[0], decodedAudioOutputChannelCount: 6 },
+            { audioEpoch: 2, audioOutput: resyncedAudioOutputs[1], decodedAudioOutputChannelCount: 8 }
+        ]);
+        expect(resyncRequests.map(({ transfer }) => transfer)).toEqual(resyncedAudioOutputs.map(audioOutput => [ audioOutput.port ]));
+        expect(resyncedAudioOutputs.map(audioOutput => audioOutput.channelCount)).toEqual([ 6, 8 ]);
+        expect(countPostedMessages(worker, 'pull-audio')).toBe(0);
+    });
 
-        expect(worker.postedMessages.slice(secondResyncMessageCount)).toStrictEqual([ {
-            audioEpoch: 2,
-            audioSampleCredits: 3,
-            generation: 83,
-            type: 'pull-audio'
-        } ]);
+    it('fails decoded audio output when the worker cannot take its worklet channel', () => {
+        const worker = new MockWorker();
+        const events: CustomDecodeSessionEvent[] = [];
+        const audioBridge = createSubmittingAudioBridge(3);
+        const session = new CustomDecodeSession(
+            (event: CustomDecodeSessionEvent): void => {
+                events.push(event);
+            },
+            (): Worker => worker as unknown as Worker,
+            audioBridge
+        );
+        startSession(session, 105, 0);
+        const postMessage = worker.postMessage.bind(worker);
+        worker.postMessage = (message: unknown, transfer: Transferable[] = []): void => {
+            if ((message as { type?: unknown }).type === 'attach-audio-output') {
+                throw new DOMException('The port was already transferred', 'DataCloneError');
+            }
+            postMessage(message, transfer);
+        };
+
+        worker.emitMessage({
+            audio: { channelCount: 2, codec: 'opus', sampleRate: DECODED_AUDIO_SAMPLE_RATE },
+            codec: 'avc1.640028',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920,
+            generation: 105,
+            type: 'ready'
+        });
+
+        expect(getStartedAudioOutput(audioBridge).port.close).toHaveBeenCalledOnce();
+        expect(events.at(-1)).toEqual({
+            failureKind: 'audio-output-failed',
+            generation: 105,
+            message: AUDIO_OUTPUT_ATTACH_FAILURE,
+            type: 'error'
+        });
+        expect(audioBridge.stop).toHaveBeenCalledWith(105);
     });
 
     it.each([
@@ -3215,14 +3297,16 @@ describe('CustomDecodeSession', () => {
                 startTimeMicroseconds: 6_000_000
             });
             // Only the surviving epoch reaches the worker, without downmix fields it was not given
+            const secondAudioOutput = getStartedAudioOutput(secondAudioBridge);
             expect(worker.postedMessages.slice(postedMessageCount)).toStrictEqual([ {
                 audioEpoch: 2,
-                audioSampleCredits: 5,
+                audioOutput: secondAudioOutput,
                 decodedAudioOutputChannelCount: 8,
                 generation: 84,
                 targetTimeMicroseconds: 6_000_000,
                 type: 'resync-audio'
             } ]);
+            expect(secondAudioOutput.audioSampleCredits).toBe(5);
             expect(session.getTelemetry()).toMatchObject({
                 audioChannelCount: 8,
                 audioEpoch: 2,
@@ -3231,10 +3315,10 @@ describe('CustomDecodeSession', () => {
                 state: 'ready'
             });
 
-            emitAudioSample(worker, 84, 6, 5_000_000, 1);
-            emitAudioSample(worker, 84, 8, 6_000_000, 2);
-            expect(firstAudioBridge.enqueue).not.toHaveBeenCalled();
-            expect(secondAudioBridge.enqueue).toHaveBeenCalledOnce();
+            emitAudioProgress(worker, 84, 5_000_000, 1);
+            emitAudioProgress(worker, 84, 6_000_000, 2);
+            expect(firstAudioBridge.recordSubmission).not.toHaveBeenCalled();
+            expect(secondAudioBridge.recordSubmission).toHaveBeenCalledOnce();
             expect(session.getTelemetry().staleAudioSampleCount).toBe(1);
             expect(events.slice(eventCount)).toEqual([]);
         }
@@ -3304,7 +3388,7 @@ describe('CustomDecodeSession', () => {
     it('fails audio output when the resynchronized bridge cannot start', async () => {
         const { events, session, worker } = startReadyDecodedAudioSession(87);
         const resyncedAudioBridge = createSubmittingAudioBridge(4);
-        vi.mocked(resyncedAudioBridge.start).mockImplementation((): void => {
+        vi.mocked(resyncedAudioBridge.start).mockImplementation((): DecodeWorkerAudioOutputAttachment => {
             throw new RangeError('Decoded audio channel count does not match the AudioWorklet output');
         });
 
@@ -3330,7 +3414,7 @@ describe('CustomDecodeSession', () => {
         worker.emitMessage({ generation: 87, type: 'stopped' });
     });
 
-    it('fails audio output when a resynced epoch delivers the replaced layout', async () => {
+    it('fails audio output when a resynced epoch reports chunks at another rate than its output', async () => {
         const { events, session, worker } = startReadyDecodedAudioSession(88);
         const resyncedAudioBridge = createSubmittingAudioBridge(4);
         await expect(session.resyncAudio({
@@ -3339,13 +3423,14 @@ describe('CustomDecodeSession', () => {
             targetTimeMicroseconds: secondsToMicroseconds(5)
         })).resolves.toBe(1);
 
-        emitAudioSample(worker, 88, 2, 5_000_000, 1);
+        // The producer checks each chunk's layout against its worklet, so the page checks only the rate it reports
+        emitAudioProgress(worker, 88, 5_000_000, 1, DECODED_AUDIO_SAMPLE_FRAME_COUNT, MISMATCHED_DECODED_AUDIO_SAMPLE_RATE);
 
-        expect(resyncedAudioBridge.enqueue).not.toHaveBeenCalled();
+        expect(resyncedAudioBridge.recordSubmission).not.toHaveBeenCalled();
         expect(events.at(-1)).toEqual({
             failureKind: 'audio-output-failed',
             generation: 88,
-            message: 'Decoded audio did not match the configured output',
+            message: DECODED_AUDIO_MISMATCH_FAILURE,
             type: 'error'
         });
         expect(resyncedAudioBridge.stop).toHaveBeenCalledWith(88);
@@ -3497,7 +3582,7 @@ describe('CustomDecodeSession', () => {
         });
         emitFrame(worker, 104, 1_000_000);
         for (let sampleIndex = 0; sampleIndex < 3; sampleIndex += 1) {
-            emitAudioSample(worker, 104, 2, 1_000_000 + sampleIndex * DECODED_AUDIO_SAMPLE_DURATION_MICROSECONDS);
+            emitAudioProgress(worker, 104, 1_000_000 + sampleIndex * DECODED_AUDIO_SAMPLE_DURATION_MICROSECONDS);
         }
         expect(session.getTelemetry()).toMatchObject({
             audioSourceChannelCount: 8,
@@ -3793,6 +3878,8 @@ describe('CustomDecodeSession', () => {
             })
         );
         expect(countPostedMessages(endedHarness.worker, 'resync-audio')).toBe(0);
+        // No producer will feed the new worklet, so its channel closes
+        expect(getStartedAudioOutput(endedResyncedAudioBridge).port.close).toHaveBeenCalledOnce();
         expect(endedHarness.session.getTelemetry()).toMatchObject({
             audioEpoch: 1,
             audioResyncCount: 1,
@@ -3866,5 +3953,319 @@ describe('CustomDecodeSession', () => {
             ...resyncOptions,
             decodedAudioOutputChannelCount: 7 as unknown as CustomAudioOutputChannelCount
         })).rejects.toThrow('Decoded audio output channel count must be 2, 6, or 8');
+    });
+});
+
+describe('CustomDecodeSession worker lifecycle', () => {
+    it('creates its worker at the first start and reuses it for every later generation', async () => {
+        const pool = createWorkerPool();
+        const session = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(session, FIRST_LIFECYCLE_GENERATION);
+        const [ worker ] = pool.workers;
+        emitRawReady(worker, FIRST_LIFECYCLE_GENERATION);
+        emitFrame(worker, FIRST_LIFECYCLE_GENERATION, 1_100_000);
+
+        // The controller stops a generation before a seek starts the next one
+        const stopPromise = session.stop();
+        worker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+        await stopPromise;
+        startSession(session, SECOND_LIFECYCLE_GENERATION);
+        expect(worker.postedMessages.at(-1)).toMatchObject({ generation: SECOND_LIFECYCLE_GENERATION, type: 'start' });
+
+        // A start without a stop waits for the previous run's acknowledgement
+        startSession(session, THIRD_LIFECYCLE_GENERATION);
+        expect(worker.postedMessages.at(-1)).toEqual({ generation: SECOND_LIFECYCLE_GENERATION, type: 'stop' });
+        worker.emitMessage({ generation: SECOND_LIFECYCLE_GENERATION, type: 'stopped' });
+
+        expect(getPostedStartGenerations(worker)).toEqual([
+            FIRST_LIFECYCLE_GENERATION,
+            SECOND_LIFECYCLE_GENERATION,
+            THIRD_LIFECYCLE_GENERATION
+        ]);
+        expect(pool.workers).toHaveLength(1);
+        expect(worker.terminate).not.toHaveBeenCalled();
+        expect(session.getTelemetry()).toMatchObject({
+            activeGeneration: THIRD_LIFECYCLE_GENERATION,
+            state: 'starting',
+            workerReused: true
+        });
+    });
+
+    it('starts a generation only after the previous run stopped, and drops a start that never reached the worker', () => {
+        const pool = createWorkerPool();
+        const events: CustomDecodeSessionEvent[] = [];
+        const session = new CustomDecodeSession(event => events.push(event), pool.createWorker);
+        startSession(session, FIRST_LIFECYCLE_GENERATION);
+        const [ worker ] = pool.workers;
+
+        startSession(session, SECOND_LIFECYCLE_GENERATION);
+        startSession(session, THIRD_LIFECYCLE_GENERATION);
+        // Only the running generation is asked to stop
+        expect(worker.postedMessages.slice(1)).toEqual([ { generation: FIRST_LIFECYCLE_GENERATION, type: 'stop' } ]);
+        expect(session.getTelemetry()).toMatchObject({
+            activeGeneration: THIRD_LIFECYCLE_GENERATION,
+            state: 'starting',
+            workerReused: false
+        });
+
+        worker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+        expect(getPostedStartGenerations(worker)).toEqual([ FIRST_LIFECYCLE_GENERATION, THIRD_LIFECYCLE_GENERATION ]);
+        expect(session.getTelemetry().workerReused).toBe(true);
+        expect(events).toEqual([]);
+    });
+
+    it('drops a waiting start when the session stops, and resolves once the running run stopped', async () => {
+        const pool = createWorkerPool();
+        const session = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(session, FIRST_LIFECYCLE_GENERATION);
+        const [ worker ] = pool.workers;
+        startSession(session, SECOND_LIFECYCLE_GENERATION);
+
+        let stopSettled = false;
+        const stopPromise = session.stop().then((): void => {
+            stopSettled = true;
+        });
+        await Promise.resolve();
+        expect(stopSettled).toBe(false);
+
+        worker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+        await stopPromise;
+        expect(getPostedStartGenerations(worker)).toEqual([ FIRST_LIFECYCLE_GENERATION ]);
+        expect(countPostedMessages(worker, 'stop')).toBe(1);
+        expect(worker.terminate).not.toHaveBeenCalled();
+    });
+
+    it('replaces the worker after it reports an error', async () => {
+        const pool = createWorkerPool();
+        const events: CustomDecodeSessionEvent[] = [];
+        const session = new CustomDecodeSession(event => events.push(event), pool.createWorker);
+        startSession(session, FIRST_LIFECYCLE_GENERATION);
+        const [ failedWorker ] = pool.workers;
+
+        failedWorker.emitMessage({
+            failureKind: 'decode-failed',
+            generation: FIRST_LIFECYCLE_GENERATION,
+            message: DECODER_FAILURE_MESSAGE,
+            type: 'error'
+        });
+        expect(events.at(-1)).toEqual({
+            failureKind: 'decode-failed',
+            generation: FIRST_LIFECYCLE_GENERATION,
+            message: DECODER_FAILURE_MESSAGE,
+            type: 'error'
+        });
+        // The failed run still gets its bound to release its decoders
+        const stopPromise = session.stop();
+        expect(failedWorker.terminate).not.toHaveBeenCalled();
+        failedWorker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+        await stopPromise;
+        expect(failedWorker.terminate).toHaveBeenCalledOnce();
+
+        startSession(session, SECOND_LIFECYCLE_GENERATION);
+        expect(pool.workers).toHaveLength(2);
+        expect(getPostedStartGenerations(pool.workers[1])).toEqual([ SECOND_LIFECYCLE_GENERATION ]);
+        expect(session.getTelemetry().workerReused).toBe(false);
+    });
+
+    it('starts a waiting generation in a new worker at once when the previous run failed', () => {
+        const pool = createWorkerPool();
+        const events: CustomDecodeSessionEvent[] = [];
+        const session = new CustomDecodeSession(event => events.push(event), pool.createWorker);
+        startSession(session, FIRST_LIFECYCLE_GENERATION);
+        const [ failedWorker ] = pool.workers;
+        startSession(session, SECOND_LIFECYCLE_GENERATION);
+
+        // A retired run that fails before its acknowledgement leaves the worker unfit for another run
+        failedWorker.emitMessage({
+            failureKind: 'decode-failed',
+            generation: FIRST_LIFECYCLE_GENERATION,
+            message: DECODER_FAILURE_MESSAGE,
+            type: 'error'
+        });
+
+        expect(failedWorker.terminate).toHaveBeenCalledOnce();
+        expect(pool.workers).toHaveLength(2);
+        expect(getPostedStartGenerations(pool.workers[1])).toEqual([ SECOND_LIFECYCLE_GENERATION ]);
+        expect(events).toEqual([]);
+        expect(session.getTelemetry()).toMatchObject({ failureKind: null, state: 'starting' });
+    });
+
+    it('replaces the worker after an invalid message, and an idle one without failing its ended generation', () => {
+        const pool = createWorkerPool();
+        const events: CustomDecodeSessionEvent[] = [];
+        const session = new CustomDecodeSession(event => events.push(event), pool.createWorker);
+        startSession(session, FIRST_LIFECYCLE_GENERATION);
+        const [ invalidWorker ] = pool.workers;
+        const invalidFrame = createFrame();
+
+        invalidWorker.emitMessage({ frame: invalidFrame, generation: FIRST_LIFECYCLE_GENERATION, type: MALFORMED_RESPONSE_TYPE });
+        expect(invalidFrame.close).toHaveBeenCalledOnce();
+        expect(events.at(-1)).toEqual({
+            failureKind: 'decode-failed',
+            generation: FIRST_LIFECYCLE_GENERATION,
+            message: INVALID_WORKER_MESSAGE_FAILURE,
+            type: 'error'
+        });
+        expect(invalidWorker.postedMessages.at(-1)).toEqual({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stop' });
+        invalidWorker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+        expect(invalidWorker.terminate).toHaveBeenCalledOnce();
+
+        startSession(session, SECOND_LIFECYCLE_GENERATION);
+        const [ , idleWorker ] = pool.workers;
+        emitRawReady(idleWorker, SECOND_LIFECYCLE_GENERATION);
+        idleWorker.emitMessage({ generation: SECOND_LIFECYCLE_GENERATION, type: 'ended' });
+        idleWorker.emitMessage({ generation: SECOND_LIFECYCLE_GENERATION, type: 'stopped' });
+        expect(idleWorker.terminate).not.toHaveBeenCalled();
+
+        idleWorker.emitMessage({ generation: SECOND_LIFECYCLE_GENERATION, type: MALFORMED_RESPONSE_TYPE });
+        expect(idleWorker.terminate).toHaveBeenCalledOnce();
+        expect(session.getTelemetry()).toMatchObject({
+            activeGeneration: SECOND_LIFECYCLE_GENERATION,
+            failureKind: null,
+            state: 'ended'
+        });
+        expect(events.at(-1)).toEqual({ generation: SECOND_LIFECYCLE_GENERATION, type: 'ended' });
+    });
+
+    it('replaces a worker whose retired run does not acknowledge its stop within the bound', async () => {
+        vi.useFakeTimers();
+        const consoleWarning = vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
+        try {
+            const pool = createWorkerPool();
+            const session = new CustomDecodeSession(() => undefined, pool.createWorker);
+            startSession(session, FIRST_LIFECYCLE_GENERATION);
+            const [ unresponsiveWorker ] = pool.workers;
+            startSession(session, SECOND_LIFECYCLE_GENERATION);
+
+            await vi.advanceTimersByTimeAsync(WORKER_STOP_TIMEOUT_MILLISECONDS - TIMER_RESOLUTION_MILLISECONDS);
+            expect(unresponsiveWorker.terminate).not.toHaveBeenCalled();
+            expect(pool.workers).toHaveLength(1);
+
+            await vi.advanceTimersByTimeAsync(TIMER_RESOLUTION_MILLISECONDS);
+            expect(unresponsiveWorker.terminate).toHaveBeenCalledOnce();
+            expect(consoleWarning).toHaveBeenCalledWith(expect.stringContaining(UNACKNOWLEDGED_STOP_WARNING));
+            expect(pool.workers).toHaveLength(2);
+            expect(getPostedStartGenerations(pool.workers[1])).toEqual([ SECOND_LIFECYCLE_GENERATION ]);
+
+            // A late acknowledgement from the replaced worker reaches nothing
+            unresponsiveWorker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+            expect(getPostedStartGenerations(pool.workers[1])).toEqual([ SECOND_LIFECYCLE_GENERATION ]);
+            expect(session.getTelemetry()).toMatchObject({ failureKind: null, state: 'starting' });
+        } finally {
+            consoleWarning.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
+    it('replaces a worker that asks for it when its run stops', async () => {
+        const pool = createWorkerPool();
+        const session = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(session, FIRST_LIFECYCLE_GENERATION);
+        const [ leakingWorker ] = pool.workers;
+
+        const stopPromise = session.stop();
+        leakingWorker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, replaceWorker: true, type: 'stopped' });
+        await stopPromise;
+        expect(leakingWorker.terminate).toHaveBeenCalledOnce();
+
+        startSession(session, SECOND_LIFECYCLE_GENERATION);
+        expect(pool.workers).toHaveLength(2);
+        expect(getPostedStartGenerations(pool.workers[1])).toEqual([ SECOND_LIFECYCLE_GENERATION ]);
+    });
+
+    it('gives a start on another video decoder backend a new worker', async () => {
+        const pool = createWorkerPool();
+        const session = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(session, FIRST_LIFECYCLE_GENERATION);
+        const [ nativeWorker ] = pool.workers;
+        const stopPromise = session.stop();
+        nativeWorker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+        await stopPromise;
+
+        // This helper's raw-plane route takes the bundled HEVC decoder, which Mediabunny keeps registered for the worker's life
+        startSession(session, SECOND_LIFECYCLE_GENERATION, undefined, 'raw-planes');
+
+        expect(nativeWorker.terminate).toHaveBeenCalledOnce();
+        expect(pool.workers).toHaveLength(2);
+        expect(pool.workers[1].postedMessages[0]).toMatchObject({
+            generation: SECOND_LIFECYCLE_GENERATION,
+            type: 'start',
+            videoDecoderBackend: 'bundled-hevc'
+        });
+    });
+
+    it('replaces a crashed worker and starts the generation that waited for it in a new one', () => {
+        const pool = createWorkerPool();
+        const events: CustomDecodeSessionEvent[] = [];
+        const session = new CustomDecodeSession(event => events.push(event), pool.createWorker);
+        startSession(session, FIRST_LIFECYCLE_GENERATION);
+        const [ crashedWorker ] = pool.workers;
+        startSession(session, SECOND_LIFECYCLE_GENERATION);
+
+        crashedWorker.emitError();
+
+        expect(crashedWorker.terminate).toHaveBeenCalledOnce();
+        expect(pool.workers).toHaveLength(2);
+        expect(getPostedStartGenerations(pool.workers[1])).toEqual([ SECOND_LIFECYCLE_GENERATION ]);
+        // The crash took a retired run, so the waiting generation does not fail
+        expect(events).toEqual([]);
+    });
+
+    it('terminates the worker on destroy and refuses later starts', () => {
+        const pool = createWorkerPool();
+        const session = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(session, FIRST_LIFECYCLE_GENERATION);
+        const [ worker ] = pool.workers;
+        const frame = emitFrame(worker, FIRST_LIFECYCLE_GENERATION, 1_100_000);
+
+        session.destroy();
+
+        expect(frame.close).toHaveBeenCalledOnce();
+        expect(worker.postedMessages.at(-1)).toEqual({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stop' });
+        expect(worker.terminate).toHaveBeenCalledOnce();
+        expect(session.getTelemetry()).toMatchObject({ activeGeneration: null, state: 'idle' });
+
+        session.destroy();
+        expect(worker.terminate).toHaveBeenCalledOnce();
+        expect(() => startSession(session, SECOND_LIFECYCLE_GENERATION)).toThrow(DESTROYED_SESSION_ERROR);
+        expect(pool.workers).toHaveLength(1);
+    });
+
+    it('keeps an ended generation current after its run stops, so the native element still ends the session', async () => {
+        const harness = startNativeAudioSession(FIRST_LIFECYCLE_GENERATION);
+        await vi.waitFor((): void => {
+            expect(countPostedMessages(harness.worker, 'pull-audio')).toBe(1);
+        });
+        emitFrame(harness.worker, FIRST_LIFECYCLE_GENERATION, 1_000_000);
+        harness.worker.emitMessage({
+            data: new Uint8Array([ 1, 2 ]).buffer,
+            generation: FIRST_LIFECYCLE_GENERATION,
+            type: 'native-audio-init'
+        });
+        harness.worker.emitMessage({
+            data: new Uint8Array([ 3, 4 ]).buffer,
+            endTimeMicroseconds: 1_500_000,
+            generation: FIRST_LIFECYCLE_GENERATION,
+            startTimeMicroseconds: 1_000_000,
+            type: 'native-audio-media'
+        });
+        await vi.waitFor((): void => {
+            expect(harness.session.getTelemetry().state).toBe('ready');
+        });
+
+        harness.worker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'ended' });
+        await vi.waitFor((): void => {
+            expect(harness.endOfStream).toHaveBeenCalledWith(FIRST_LIFECYCLE_GENERATION);
+        });
+        // The run ends while the element still plays out its buffered audio
+        harness.worker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+        expect(harness.worker.terminate).not.toHaveBeenCalled();
+        expect(harness.session.getTelemetry().state).toBe('ready');
+
+        harness.emitBackendEvent({ generation: FIRST_LIFECYCLE_GENERATION, type: 'ended' });
+        await vi.waitFor((): void => {
+            expect(harness.session.getTelemetry().state).toBe('ended');
+        });
+        expect(harness.events.at(-1)).toEqual({ generation: FIRST_LIFECYCLE_GENERATION, type: 'ended' });
     });
 });

@@ -4,6 +4,7 @@ import {
     type Microseconds
 } from '../MediaTime';
 import type { DecodedPresentationFrame } from '../presentation/WebGPUPresenter';
+import type { WorkerPresentationRendererProvider } from '../presentation/WorkerPresentationProtocol';
 import AudioWorkletController from '../audio/output/AudioWorkletController';
 import type { AudioWorkletTelemetry } from '../audio/output/AudioWorkletProtocol';
 import { assertSupportedCustomAudioOutputLayout } from '../audio/CustomAudioOutputPolicy';
@@ -147,9 +148,17 @@ const NOOP_FALLBACK_HOOK: CustomPlaybackHTMLFallbackHook = (): void => undefined
 function createVideoDecodeSession(
     eventHandler: (event: CustomDecodeSessionEvent) => void,
     audioBridgeFactory: CustomDecodeAudioBridgeFactory | null,
-    nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null
+    nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null,
+    presentationRendererProvider: WorkerPresentationRendererProvider | null
 ): CustomVideoDecodeSession {
-    return new CustomDecodeSession(eventHandler, undefined, null, audioBridgeFactory, nativeAudioBridgeFactory);
+    return new CustomDecodeSession(
+        eventHandler,
+        undefined,
+        null,
+        audioBridgeFactory,
+        nativeAudioBridgeFactory,
+        presentationRendererProvider
+    );
 }
 
 function defaultMonotonicTimeSource(): Microseconds {
@@ -542,7 +551,8 @@ export default class CustomPlaybackController {
         this.videoDecodeSession = videoDecodeSessionFactory(
             this.handleVideoDecodeEvent,
             this.audioOutputFactory ? this.createAudioBridge : null,
-            this.nativeAudioBridgeFactory
+            this.nativeAudioBridgeFactory,
+            options.presentationRendererProvider ?? null
         );
     }
 
@@ -1228,14 +1238,17 @@ export default class CustomPlaybackController {
         };
     }
 
-    /** Stops all pipelines and permanently releases the AudioWorklet output. */
+    /** Stops all pipelines and permanently releases the decode worker and the AudioWorklet output. */
     public destroy(): Promise<void> {
         if (this.destroyPromise) {
             return this.destroyPromise;
         }
 
         this.destroyed = true;
-        this.destroyPromise = this.stopController().then(
+        this.destroyPromise = this.stopController().finally((): void => {
+            // The decode worker outlives every generation, so only a destroyed controller releases it
+            this.videoDecodeSession.destroy();
+        }).then(
             (): Promise<void> => this.destroyAudioResources(),
             async (error: unknown): Promise<void> => {
                 this.lastErrorMessage = this.getErrorMessage(error);

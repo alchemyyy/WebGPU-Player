@@ -35,6 +35,14 @@ const THREE_FRAME_PACKET_BYTE_LENGTH = 3;
 const PES_ACCESS_UNIT_COUNT = 24;
 // One 1/1200 s access unit at 48 kHz
 const TRUEHD_ACCESS_UNIT_FRAME_COUNT = 40;
+// The FNV-1a hash of the default fake S32 output's packed bytes
+const DEFAULT_S32_PCM_FINGERPRINT = 3_726_882_277;
+const S16_SAMPLE_FORMAT = 1;
+const S16_FULL_SCALE = 2 ** 15;
+const S32_FULL_SCALE = 2 ** 31;
+// Interleaved stereo frames at both ends of each packed format's range, and the smallest steps beside zero
+const S16_EXTREME_SAMPLES: readonly number[] = [ -32_768, 32_767, -1, 1 ];
+const S32_EXTREME_SAMPLES: readonly number[] = [ -2_147_483_648, 2_147_483_647, -1, 1 ];
 
 type FakeDecoderOptions = Readonly<{
     bitsPerSample?: number
@@ -45,6 +53,8 @@ type FakeDecoderOptions = Readonly<{
     sampleCount?: number
     sampleFormat?: number
     sampleRate?: number
+    /** Interleaved packed samples at the output pointer, replacing the default four */
+    samples?: readonly number[]
     sendStatus?: number
 }>;
 
@@ -99,10 +109,10 @@ function createFakeTrueHDDecoder(
         [ 'jellyfin_truehd_send_packet', (): number => options.sendStatus ?? 1 ]
     ]);
     if ((options.sampleFormat ?? 2) === 1) {
-        heap16.set([ 0, 16_384, -16_384, 8_192 ], OUTPUT_POINTER / 2);
+        heap16.set(options.samples ?? [ 0, 16_384, -16_384, 8_192 ], OUTPUT_POINTER / 2);
     } else {
         heap32.set(
-            [ 0, 1_073_741_824, -1_073_741_824, 536_870_912 ],
+            options.samples ?? [ 0, 1_073_741_824, -1_073_741_824, 536_870_912 ],
             OUTPUT_POINTER / 4
         );
     }
@@ -131,7 +141,8 @@ describe('TrueHDSoftwareAudioDecoder', () => {
         const fakeDecoder = createFakeTrueHDDecoder();
         const decoder = await TrueHDSoftwareAudioDecoder.create(
             'truehd',
-            fakeDecoder.moduleFactory
+            fakeDecoder.moduleFactory,
+            { pcmFingerprint: true }
         );
         const packet = new Uint8Array([ 1, 2, 3, 4 ]);
 
@@ -155,10 +166,43 @@ describe('TrueHDSoftwareAudioDecoder', () => {
         });
         expect(Array.from(outputs[0].channelData[0])).toEqual([ 0, -0.5 ]);
         expect(Array.from(outputs[0].channelData[1])).toEqual([ 0.5, 0.25 ]);
-        expect(outputs[0].pcmFingerprint).toBe(3_726_882_277);
+        expect(outputs[0].pcmFingerprint).toBe(DEFAULT_S32_PCM_FINGERPRINT);
         packet.fill(0);
         expect(Array.from(outputs[0].channelData[1])).toEqual([ 0.5, 0.25 ]);
     });
+
+    it('skips the PCM fingerprint unless the decoder was created to compute it', async () => {
+        const fakeDecoder = createFakeTrueHDDecoder();
+        const decoder = await TrueHDSoftwareAudioDecoder.create('truehd', fakeDecoder.moduleFactory);
+
+        const outputs = decoder.decode(
+            new Uint8Array([ 1 ]),
+            requireMicroseconds(0, 'Test packet timestamp')
+        );
+
+        expect(outputs[0].pcmFingerprint).toBeNull();
+        expect(Array.from(outputs[0].channelData[0])).toEqual([ 0, -0.5 ]);
+        expect(Array.from(outputs[0].channelData[1])).toEqual([ 0.5, 0.25 ]);
+    });
+
+    it.each([
+        [ 'S16', S16_SAMPLE_FORMAT, 16, S16_EXTREME_SAMPLES, S16_FULL_SCALE ],
+        [ 'S32', undefined, 24, S32_EXTREME_SAMPLES, S32_FULL_SCALE ]
+    ] as const)(
+        'scales %s samples at the ends of their range exactly as dividing by full scale does',
+        async (_formatName, sampleFormat, bitsPerSample, samples, fullScale) => {
+            const fakeDecoder = createFakeTrueHDDecoder({ bitsPerSample, sampleFormat, samples });
+            const decoder = await TrueHDSoftwareAudioDecoder.create('truehd', fakeDecoder.moduleFactory);
+
+            const outputs = decoder.decode(
+                new Uint8Array([ 1 ]),
+                requireMicroseconds(0, 'Test packet timestamp')
+            );
+
+            expect(outputs[0].channelData[0]).toEqual(new Float32Array([ samples[0] / fullScale, samples[2] / fullScale ]));
+            expect(outputs[0].channelData[1]).toEqual(new Float32Array([ samples[1] / fullScale, samples[3] / fullScale ]));
+        }
+    );
 
     it('supports packed S16 output without changing its PCM scale', async () => {
         const fakeDecoder = createFakeTrueHDDecoder({

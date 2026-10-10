@@ -47,6 +47,8 @@ export interface AudioWorkletOutputController {
     readonly configuration: AudioWorkletControllerConfiguration
     readonly generation: number
     readonly isPlaying: boolean
+    /** Hands the processor its end of a producer's channel for the current generation; the next flush detaches it */
+    attachProducer: (port: MessagePort) => void
     enqueue: (chunk: TransferablePlanarPCM, generation: number) => AudioEnqueueSubmission
     flush: (mediaTimeMicroseconds: Microseconds) => number
     getTelemetry: () => AudioWorkletTelemetry | null
@@ -232,6 +234,20 @@ export default class AudioWorkletController implements AudioWorkletOutputControl
         };
         this.node.port.postMessage(message, transferables);
         return { frameCount, sequence, status: 'submitted' };
+    }
+
+    /**
+     * Transfers one end of a producer's channel to the processor for the current generation.
+     * The producer's chunks then reach the processor without this thread, and each one returns to the producer once played; the next flush detaches it.
+     */
+    public attachProducer(port: MessagePort): void {
+        this.requireActive();
+        const message: CustomAudioWorkletMessage = {
+            generation: this.currentGeneration,
+            port,
+            type: 'attach-producer'
+        };
+        this.node.port.postMessage(message, [ port ]);
     }
 
     /** Flushes queued audio and invalidates every older decoder generation. */

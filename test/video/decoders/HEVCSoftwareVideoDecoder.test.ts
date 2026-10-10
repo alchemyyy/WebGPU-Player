@@ -8,16 +8,20 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 
 import type {
+    HEVCDecodedFrame,
     HEVCDecodedFrameHandler,
-    HEVCDecoderBackend
+    HEVCDecoderBackend,
+    HEVCFramePlane
 } from 'webgpu-player/video/decoders/HEVCDecoderBackend';
 import HEVCSoftwareVideoDecoder, {
     convertHVCCPacketToAnnexB,
+    createOwnedHEVCSoftwareVideoDecoder,
     hasRequiredHEVCParameterSets,
     inspectAnnexBPacket,
     MAXIMUM_HEVC_PENDING_PICTURE_COUNT,
     MediabunnyHEVCSoftwareVideoDecoder,
     parseHEVCDecoderConfiguration,
+    type HEVCSoftwareDecodedFrame,
     type HEVCSoftwareVideoDecoderDependencies,
     waitForHEVCSoftwareVideoDecoderShutdown
 } from 'webgpu-player/video/decoders/HEVCSoftwareVideoDecoder';
@@ -32,12 +36,20 @@ type MutableDecoderContract = {
 };
 
 type FakeBackendOptions = {
-    drainBatches?: HEVCFrame[][]
-    flushFrames?: HEVCFrame[]
+    drainBatches?: HEVCDecodedFrame[][]
+    flushFrames?: HEVCDecodedFrame[]
     info?: HEVCStreamInfo | null
 };
 
-function emitBackendFrames(frames: readonly HEVCFrame[], frameHandler: HEVCDecodedFrameHandler): number {
+/** A stream whose owned frames the sample path describes too: its depth, container color, and SPS. */
+type OwnedFrameVariant = Readonly<{
+    bitDepth: 8 | 10
+    colorSpace?: Record<string, unknown>
+    label: string
+    sequenceParameterSet?: Uint8Array
+}>;
+
+function emitBackendFrames(frames: readonly HEVCDecodedFrame[], frameHandler: HEVCDecodedFrameHandler): number {
     for (const frame of frames) {
         frameHandler(frame);
     }
@@ -106,6 +118,14 @@ const MAIN10_BT2020_10_SPS = createBytesFromHex(
 const MAIN10_SMPTE170M_SPS = createBytesFromHex(
     '4201010220000003009000000300000300ffa005020169365959a4932bc05a830303020000030002000003000210'
 );
+// A decoder pads each row by these many samples, as hevc.js does for a cropped width
+const PADDED_ROW_SAMPLE_COUNT = 8;
+const PADDING_SAMPLE = 0xFFFF;
+const COMPACT_PLANES_READ_ERROR = 'The compact planes were read';
+const OWNED_PACKET_TIMESTAMP_SECONDS = 1.25;
+const OWNED_PACKET_DURATION_SECONDS = 1 / 24;
+const OWNED_PACKET_SEQUENCE_NUMBER = 7;
+const MICROSECONDS_PER_SECOND = 1_000_000;
 
 function createHVCCDescription(
     profileIDC = 2,
@@ -198,6 +218,60 @@ function createFrame(bitDepth: 8 | 10 = 10, poc = 0): HEVCFrame {
         width,
         y: luma
     };
+}
+
+function padPlane(compact: Uint16Array, width: number, height: number): HEVCFramePlane {
+    const stride = width + PADDED_ROW_SAMPLE_COUNT;
+    const samples = new Uint16Array(((height - 1) * stride) + width).fill(PADDING_SAMPLE);
+    for (let rowIndex = 0; rowIndex < height; rowIndex += 1) {
+        samples.set(compact.subarray(rowIndex * width, (rowIndex + 1) * width), rowIndex * stride);
+    }
+    return { samples, stride };
+}
+
+function throwCompactPlanesRead(): never {
+    throw new Error(COMPACT_PLANES_READ_ERROR);
+}
+
+/**
+ * A frame as the WASM backend drains it: padded planes in its memory, whose compact planes the owned path must never read.
+ * A truncated frame's red chroma plane lacks its first sample, so it no longer holds its rows.
+ */
+function createPaddedFrame(bitDepth: 8 | 10, truncated = false): HEVCDecodedFrame {
+    const frame = createFrame(bitDepth);
+    const chromaRed = padPlane(frame.cr, frame.chromaWidth, frame.chromaHeight);
+    const planes = {
+        chromaBlue: padPlane(frame.cb, frame.chromaWidth, frame.chromaHeight),
+        chromaRed: truncated ? { samples: chromaRed.samples.subarray(1), stride: chromaRed.stride } : chromaRed,
+        luma: padPlane(frame.y, frame.width, frame.height)
+    };
+    return {
+        bitDepth: frame.bitDepth,
+        get cb(): Uint16Array {
+            return throwCompactPlanesRead();
+        },
+        chromaHeight: frame.chromaHeight,
+        chromaWidth: frame.chromaWidth,
+        get cr(): Uint16Array {
+            return throwCompactPlanesRead();
+        },
+        height: frame.height,
+        planes,
+        poc: frame.poc,
+        width: frame.width,
+        get y(): Uint16Array {
+            return throwCompactPlanesRead();
+        }
+    };
+}
+
+/** Copies a plane's rows out compactly, as a VideoSample holds them. */
+function compactPlane(plane: HEVCFramePlane, width: number, height: number): number[] {
+    const samples: number[] = [];
+    for (let rowIndex = 0; rowIndex < height; rowIndex += 1) {
+        samples.push(...plane.samples.subarray(rowIndex * plane.stride, (rowIndex * plane.stride) + width));
+    }
+    return samples;
 }
 
 function createDependencies(backend: HEVCDecoderBackend): {
@@ -1027,5 +1101,133 @@ describe('HEVCSoftwareVideoDecoder', () => {
         decoder.close();
 
         expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'destroy failed' }));
+    });
+
+    it.each<OwnedFrameVariant>([
+        { bitDepth: 10, label: 'a PQ Main 10 stream' },
+        { bitDepth: 8, label: 'a BT.709 Main stream' },
+        {
+            bitDepth: 10,
+            colorSpace: { fullRange: false, matrix: 'bt2020-ncl', primaries: 'bt2020', transfer: 'hlg' },
+            label: 'a container HLG over a BT.2020 10-bit SPS',
+            sequenceParameterSet: MAIN10_BT2020_10_SPS
+        },
+        {
+            bitDepth: 10,
+            colorSpace: { fullRange: false, matrix: 'bt470bg', primaries: 'smpte170m', transfer: 'bt709' },
+            label: 'a SMPTE 170M SPS',
+            sequenceParameterSet: MAIN10_SMPTE170M_SPS
+        }
+    ])('describes an owned frame of $label with its sample\'s metadata and planes', async (
+        variant: OwnedFrameVariant
+    ): Promise<void> => {
+        const sampleBackend = new FakeHEVCDecoderBackend({
+            drainBatches: [ [ createFrame(variant.bitDepth) ] ],
+            info: createStreamInfo(variant.bitDepth)
+        });
+        const ownedBackend = new FakeHEVCDecoderBackend({
+            drainBatches: [ [ createPaddedFrame(variant.bitDepth) ] ],
+            info: createStreamInfo(variant.bitDepth)
+        });
+        const samples: VideoSample[] = [];
+        const ownedFrames: Array<{ frame: HEVCSoftwareDecodedFrame, planeSamples: number[][] }> = [];
+        const sampleDecoder = new HEVCSoftwareVideoDecoder(createDependencies(sampleBackend).dependencies);
+        const ownedDecoder = new HEVCSoftwareVideoDecoder(createDependencies(ownedBackend).dependencies);
+        const ownedSampleHandler = vi.fn();
+        configureDecoder(sampleDecoder, {
+            ...variant,
+            onSample: (sample: VideoSample): void => {
+                samples.push(sample);
+            }
+        });
+        configureDecoder(ownedDecoder, { ...variant, onSample: ownedSampleHandler });
+        ownedDecoder.onFrame = (frame: HEVCSoftwareDecodedFrame): void => {
+            // The planes are read while the decoder still holds them
+            ownedFrames.push({
+                frame,
+                planeSamples: [
+                    compactPlane(frame.planes.luma, frame.codedWidth, frame.codedHeight),
+                    compactPlane(frame.planes.chromaBlue, frame.chromaWidth, frame.chromaHeight),
+                    compactPlane(frame.planes.chromaRed, frame.chromaWidth, frame.chromaHeight)
+                ]
+            });
+        };
+        await sampleDecoder.init();
+        await ownedDecoder.init();
+
+        const packet = createEncodedPacket(OWNED_PACKET_TIMESTAMP_SECONDS, OWNED_PACKET_DURATION_SECONDS, OWNED_PACKET_SEQUENCE_NUMBER);
+        sampleDecoder.decode(packet);
+        ownedDecoder.decode(packet);
+
+        expect(ownedSampleHandler).not.toHaveBeenCalled();
+        expect(ownedFrames).toHaveLength(1);
+        const [ sample ] = samples;
+        const { frame, planeSamples } = ownedFrames[0];
+        expect({
+            codedHeight: frame.codedHeight,
+            codedWidth: frame.codedWidth,
+            colorSpace: frame.colorSpace.toJSON(),
+            displayHeight: frame.displayHeight,
+            displayWidth: frame.displayWidth,
+            durationMicroseconds: frame.durationMicroseconds,
+            format: frame.format,
+            timestampMicroseconds: frame.timestampMicroseconds
+        }).toEqual({
+            codedHeight: sample.codedHeight,
+            codedWidth: sample.codedWidth,
+            colorSpace: sample.colorSpace.toJSON(),
+            displayHeight: sample.squarePixelHeight,
+            displayWidth: sample.squarePixelWidth,
+            durationMicroseconds: sample.microsecondDuration,
+            format: sample.format,
+            timestampMicroseconds: sample.microsecondTimestamp
+        });
+        expect(frame.timestampMicroseconds).toBe(OWNED_PACKET_TIMESTAMP_SECONDS * MICROSECONDS_PER_SECOND);
+        const sampleBytes = new Uint8Array(sample.allocationSize());
+        await sample.copyTo(sampleBytes);
+        const packedSamples = variant.bitDepth === 8 ? sampleBytes : new Uint16Array(sampleBytes.buffer);
+        expect(planeSamples.flat()).toEqual(Array.from(packedSamples));
+        sample.close();
+        sampleDecoder.close();
+        ownedDecoder.close();
+    });
+
+    it('creates an owned decoder whose frames and errors reach its callbacks', async () => {
+        const backend = new FakeHEVCDecoderBackend({
+            drainBatches: [ [ createPaddedFrame(10) ] ]
+        });
+        const onError = vi.fn();
+        const onFrame = vi.fn();
+        const decoder = createOwnedHEVCSoftwareVideoDecoder({
+            codec: 'hvc1.2.4.L120.B0',
+            codedHeight: 360,
+            codedWidth: 640,
+            description: createHVCCDescription(2, 10)
+        }, { onError, onFrame }, createDependencies(backend).dependencies);
+        backend.destroy.mockImplementation((): never => {
+            throw new Error('destroy failed');
+        });
+        await decoder.init();
+
+        decoder.decode(createEncodedPacket(0, OWNED_PACKET_DURATION_SECONDS, 0));
+        decoder.close();
+
+        expect(onFrame).toHaveBeenCalledOnce();
+        expect(onFrame.mock.calls[0][0]).toMatchObject({ codedHeight: 360, codedWidth: 640, format: 'I420P10' });
+        expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'destroy failed' }));
+    });
+
+    it('rejects an owned frame whose padded plane does not hold its rows', async () => {
+        const backend = new FakeHEVCDecoderBackend({
+            drainBatches: [ [ createPaddedFrame(10, true) ] ]
+        });
+        const decoder = new HEVCSoftwareVideoDecoder(createDependencies(backend).dependencies);
+        configureDecoder(decoder);
+        decoder.onFrame = vi.fn();
+        await decoder.init();
+
+        expect(() => decoder.decode(createEncodedPacket(0, OWNED_PACKET_DURATION_SECONDS, 0))).toThrow('plane lengths');
+        expect(decoder.onFrame).not.toHaveBeenCalled();
+        decoder.close();
     });
 });

@@ -10,6 +10,8 @@ import StreamingAudioOutputPipeline, {
 } from './StreamingAudioOutputPipeline';
 import type StreamingAudioDownmixSettings from './StreamingAudioDownmixSettings';
 import type { StreamingAudioTimelineCorrectionListener } from './StreamingAudioResampler';
+import type AudioOutputStageModule from './AudioOutputStageModule';
+import type PCMChannelPool from './PCMChannelPool';
 import {
     CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
     isSupportedCustomAudioInputLayout
@@ -31,12 +33,16 @@ export type DecodedAudioSourceFormat = Readonly<{
 }>;
 
 export type DecodedAudioOutputStageOptions = Readonly<{
+    /** Lends the WebAssembly stage's output channels their buffers, which the worklet returns once it played them */
+    channelPool?: PCMChannelPool | null
     maximumOutputFrameCount: number
     minimumOutputFrameCount: number
     /** Observes the first binding and every later change of the bound format */
     onSourceFormat?: (sourceFormat: DecodedAudioSourceFormat) => void
     onTimelineCorrection?: StreamingAudioTimelineCorrectionListener
     outputChannelCount: CustomAudioOutputChannelCount
+    /** Renders the resampler and limiter in WebAssembly; without it, the JavaScript references render the same bytes */
+    outputStageModule?: AudioOutputStageModule | null
     /** The codec name the decoded PCM route tables qualify */
     routeCodec: string
     timestampToleranceMicroseconds: number
@@ -123,6 +129,14 @@ export default class DecodedAudioOutputStage {
         return this.pipeline?.finalize() ?? [];
     }
 
+    /**
+     * Ends the stage without draining its tails and frees its WebAssembly kernels' memory.
+     * An attempt calls it however it ends; after finalize it does nothing.
+     */
+    public close(): void {
+        this.pipeline?.close();
+    }
+
     /** Returns the bound pipeline's accounting, or null before the first output. */
     public getTelemetry(): StreamingAudioOutputPipelineTelemetry | null {
         return this.pipeline?.getTelemetry() ?? null;
@@ -131,10 +145,12 @@ export default class DecodedAudioOutputStage {
     private createPipeline(sourceSampleRate: number): StreamingAudioOutputPipeline {
         return new StreamingAudioOutputPipeline({
             channelCount: this.options.outputChannelCount,
+            channelPool: this.options.channelPool,
             maximumOutputFrameCount: this.options.maximumOutputFrameCount,
             maximumTimestampQuantizationMicroseconds: this.options.timestampToleranceMicroseconds,
             minimumOutputFrameCount: this.options.minimumOutputFrameCount,
             onTimelineCorrection: this.options.onTimelineCorrection,
+            outputStageModule: this.options.outputStageModule,
             // Off until a decoded layout folds down
             peakLimiterEnabled: false,
             sourceSampleRate,

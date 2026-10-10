@@ -8,12 +8,15 @@ import {
 } from '../TimingTrace';
 import {
     isTransferableDolbyVisionEncodedFrameMetadata,
+    MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT,
     type TransferableDolbyVisionEncodedFrameMetadata
 } from '../video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
 import {
     isHDR10PlusFrameMetadata,
-    type HDR10PlusFrameMetadata
+    type HDR10PlusFrameMetadata,
+    type HDR10PlusFrameMetadataStatus
 } from '../video/hdr/HDR10PlusMetadata';
+import { isHDR10PlusFrameMetadataStatus } from '../presentation/WorkerPresentationProtocol';
 import {
     MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH,
     MAXIMUM_NATIVE_AUDIO_SEGMENT_DURATION_MICROSECONDS
@@ -52,6 +55,14 @@ export const MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE = 65_536;
 export const MAX_DECODED_AUDIO_CHANNELS = 32;
 export const MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT = 512;
 const MAXIMUM_CODEC_ASSET_URL_LENGTH = 2_048;
+export const MAXIMUM_RENDERER_STATUS_REASON_LENGTH = 256;
+// The fields of a frame with its payload, which a worker-frame descriptor never carries
+const WORKER_FRAME_PAYLOAD_FIELDS = Object.freeze([
+    'encodedDolbyVisionMetadata',
+    'enhancementFrame',
+    'frame',
+    'HDR10PlusMetadata'
+] as const);
 
 export type CustomDecodeVideoOutputMode = 'raw-planes' | 'video-frame';
 export type CustomDecodeRawVideoFrameFormat =
@@ -70,6 +81,8 @@ export type CustomDecodeVideoDecoderBackend =
     | 'native'
     | 'openjpeg';
 export type CustomDecodeAudioOutputMode = 'decoded-pcm' | 'native-media';
+/** Where a generation's frames present: on the page, or in the worker renderer, which keeps them. */
+export type CustomDecodePresentationMode = 'main' | 'worker';
 /** An RPU reconstruction route: Profiles 4 and 7 are dual-layer, Profiles 5 and 8 single-layer. */
 export type CustomDecodeDolbyVisionProfile = 4 | 5 | 7 | 8 | null;
 export type CustomDecodeNativeHDRTransfer = 'hlg' | 'pq' | null;
@@ -145,6 +158,7 @@ export type CustomDecodeFailureKind =
     | 'range-unsupported'
     | 'source-unsupported';
 
+/** Starts a generation's run in the session's worker, which an earlier generation may have used. */
 export type DecodeWorkerStartRequest = {
     /** Applies only when decoded multichannel PCM must be presented as stereo. */
     audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
@@ -167,6 +181,8 @@ export type DecodeWorkerStartRequest = {
     maximumCodedWidth: number
     nativeHDRTransfer: CustomDecodeNativeHDRTransfer
     neutralizeHDRColorMetadata: boolean
+    /** Defaults to main; in worker mode the worker keeps each frame for its renderer and posts a worker-frame descriptor */
+    presentationMode?: CustomDecodePresentationMode
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
     /** Asks for the container's duration in the ready response, because the server reported none */
     reportContainerDuration?: boolean
@@ -187,12 +203,37 @@ export type DecodeWorkerPullRequest = {
     type: 'pull'
 };
 
+/** Returns native media audio segment credits; decoded PCM takes its credits from its worklet producer. */
 export type DecodeWorkerAudioPullRequest = {
     /** Omitted epochs mean the initial audio attempt, epoch zero. */
     audioEpoch?: number
     audioSampleCredits: number
     generation: number
     type: 'pull-audio'
+};
+
+/** The producer's end of a channel to the AudioWorklet processor, with the bounds of the worklet it feeds */
+export type DecodeWorkerAudioOutputAttachment = {
+    /** The credit window: the most chunks in flight to the processor at once */
+    audioSampleCredits: number
+    channelCount: number
+    /** The processor's queue bound in frames */
+    maximumBufferedFrameCount: number
+    port: MessagePort
+    sampleRate: number
+    /** The worklet generation whose chunks the processor accepts on this channel */
+    workletGeneration: number
+};
+
+/**
+ * Gives decoded audio its channel to the AudioWorklet processor once the page's output exists.
+ * The epoch's audio attempt waits for it, and its credit window replaces the start request's zero credits.
+ */
+export type DecodeWorkerAttachAudioOutputRequest = {
+    audioEpoch: number
+    audioOutput: DecodeWorkerAudioOutputAttachment
+    generation: number
+    type: 'attach-audio-output'
 };
 
 export type DecodeWorkerUpdateAudioDownmixSettingsRequest = {
@@ -207,6 +248,30 @@ export type DecodeWorkerRecycleFrameRequest = {
     type: 'recycle-frame'
 };
 
+/**
+ * Gives the worker its renderer: the canvas the presenter transferred and the renderer's end of the presenter's channel.
+ * The session sends it once per worker, before the worker's first start, and the worker answers `renderer-status`.
+ */
+export type DecodeWorkerAttachRendererRequest = {
+    canvas: OffscreenCanvas
+    /** The generation whose start waits for the renderer's status, which echoes it */
+    generation: number
+    port: MessagePort
+    type: 'attach-renderer'
+};
+
+/**
+ * Releases worker frames the page dropped, discarded, presented, or abandoned.
+ * Each frame of a running run returns a frame credit, as `pull` does; a run that ended or is stopping gets none back.
+ * A frame outlives its run until the page releases it, so the page can still present the frames that finished a run; the worker's next start frees any it still holds.
+ */
+export type DecodeWorkerReleaseFramesRequest = {
+    frameIds: readonly number[]
+    generation: number
+    type: 'release-frames'
+};
+
+/** Ends a generation's run; the worker answers `stopped` once the run has released its decoders. */
 export type DecodeWorkerStopRequest = {
     generation: number
     type: 'stop'
@@ -237,8 +302,8 @@ export type DecodeWorkerResyncAudioRequest = {
     audioDownmixSettings?: AudioDownmixSettings
     /** Increases with every audio resync; samples from older epochs are stale */
     audioEpoch: number
-    /** Replaces the whole credit window, because samples of the replaced attempt never return credits */
-    audioSampleCredits: number
+    /** The new worklet's channel, whose credit window replaces the whole old one, since the replaced attempt's chunks never return credits */
+    audioOutput: DecodeWorkerAudioOutputAttachment
     decodedAudioOutputChannelCount: CustomAudioOutputChannelCount
     generation: number
     targetTimeMicroseconds: Microseconds
@@ -246,9 +311,12 @@ export type DecodeWorkerResyncAudioRequest = {
 };
 
 export type DecodeWorkerRequest =
+    | DecodeWorkerAttachAudioOutputRequest
+    | DecodeWorkerAttachRendererRequest
     | DecodeWorkerAudioPullRequest
     | DecodeWorkerPullRequest
     | DecodeWorkerRecycleFrameRequest
+    | DecodeWorkerReleaseFramesRequest
     | DecodeWorkerResyncAudioRequest
     | DecodeWorkerResyncVideoRequest
     | DecodeWorkerStartRequest
@@ -309,21 +377,48 @@ export type DecodeWorkerRawFrameResponse = DecodeWorkerFrameResponseBase & {
     outputMode: 'raw-planes'
 };
 
+/** A frame whose payload crosses to the page: a VideoFrame or raw planes, with its metadata. */
 export type DecodeWorkerFrameResponse =
     | DecodeWorkerRawFrameResponse
     | DecodeWorkerVideoFrameResponse;
 
-export type DecodeWorkerAudioResponse = {
-    /** Omitted epochs mean the initial audio attempt, epoch zero. */
-    audioEpoch?: number
-    channelCount: number
-    channelData: readonly Float32Array[]
+/** Counts what a worker frame's metadata holds, for the session's telemetry; the metadata itself stays in the worker. */
+export type DecodeWorkerFrameMetadataSummary = {
+    dolbyVision?: {
+        enhancementLayerVCL: boolean
+        rpuCount: number
+    }
+    HDR10PlusStatus?: HDR10PlusFrameMetadataStatus
+};
+
+/**
+ * A frame the worker keeps for its renderer: what the page needs to select and lay it out, without its payload or metadata.
+ * The page presents it by ID through the renderer's channel and releases it with `release-frames`.
+ */
+export type DecodeWorkerFrameDescriptorResponse = {
+    displayHeight: number
+    displayWidth: number
+    durationMicroseconds: Microseconds
+    /** Unique within the generation */
+    frameId: number
+    generation: number
+    mediaTimeMicroseconds: Microseconds
+    metadataSummary?: DecodeWorkerFrameMetadataSummary
+    outputMode: 'worker-frame'
+    type: 'frame'
+    /** Omitted epochs mean the initial video attempt, epoch zero. */
+    videoEpoch?: number
+};
+
+/** Reports one chunk the producer posted to the AudioWorklet processor, without its PCM, for readiness, telemetry, and the end-of-stream drain */
+export type DecodeWorkerAudioProgressResponse = {
+    audioEpoch: number
     durationMicroseconds: Microseconds
     frameCount: number
     generation: number
     mediaTimeMicroseconds: Microseconds
     sampleRate: number
-    type: 'audio'
+    type: 'audio-progress'
 };
 
 export type DecodeWorkerNativeAudioInitializationResponse = {
@@ -352,8 +447,14 @@ export type DecodeWorkerErrorResponse = {
     type: 'error'
 };
 
+/**
+ * Ends every run, stopped or finished; the worker then takes the next generation's start.
+ * A worker runs one generation at a time, so the session sends a start only after the previous run's `stopped`.
+ */
 export type DecodeWorkerStoppedResponse = {
     generation: number
+    /** Asks the session not to reuse the worker, because a decoder whose call failed was left unclosed */
+    replaceWorker?: boolean
     type: 'stopped'
 };
 
@@ -405,17 +506,28 @@ export type DecodeWorkerTimingTraceResponse = {
     type: 'timing-trace'
 };
 
+/** Answers `attach-renderer`: an available renderer presents the worker-frames of later worker-mode starts. */
+export type DecodeWorkerRendererStatusResponse = {
+    available: boolean
+    generation: number
+    /** Why the renderer is unavailable, for the log; null when it is available */
+    reason: string | null
+    type: 'renderer-status'
+};
+
 export type DecodeWorkerResponse =
     | DecodeWorkerAudioEndedResponse
+    | DecodeWorkerAudioProgressResponse
     | DecodeWorkerAudioSourceFormatResponse
-    | DecodeWorkerAudioResponse
     | DecodeWorkerEndedResponse
     | DecodeWorkerErrorResponse
+    | DecodeWorkerFrameDescriptorResponse
     | DecodeWorkerFrameResponse
     | DecodeWorkerNativeAudioInitializationResponse
     | DecodeWorkerNativeAudioMediaResponse
     | DecodeWorkerProgressResponse
     | DecodeWorkerReadyResponse
+    | DecodeWorkerRendererStatusResponse
     | DecodeWorkerStoppedResponse
     | DecodeWorkerTimingTraceResponse
     | DecodeWorkerVideoEndedResponse
@@ -497,11 +609,13 @@ function isAudioOutputMode(value: unknown): value is CustomDecodeAudioOutputMode
     return value === 'decoded-pcm' || value === 'native-media';
 }
 
-function isDecodedAudioOutputChannelCount(value: unknown): value is CustomAudioOutputChannelCount {
+/** Validates a decoded PCM output layout: stereo, 5.1, or 7.1. */
+export function isDecodedAudioOutputChannelCount(value: unknown): value is CustomAudioOutputChannelCount {
     return value === 2 || value === 6 || value === 8;
 }
 
-function isAudioDownmixSettings(value: unknown): value is AudioDownmixSettings {
+/** Validates downmix gains received across a worker boundary. */
+export function isAudioDownmixSettings(value: unknown): value is AudioDownmixSettings {
     if (!isRecord(value)) {
         return false;
     }
@@ -858,7 +972,8 @@ function isTransferableRawVideoFramePair(baseFrameValue: unknown, enhancementFra
         && Math.abs(enhancementFrame.timestampMicroseconds - baseFrame.timestampMicroseconds) <= 1;
 }
 
-function isFailureKind(value: unknown): value is CustomDecodeFailureKind {
+/** Validates a failure kind received across a worker boundary. */
+export function isCustomDecodeFailureKind(value: unknown): value is CustomDecodeFailureKind {
     switch (value) {
         case 'audio-output-failed':
         case 'decode-failed':
@@ -902,21 +1017,14 @@ function isAudioConfiguration(value: unknown): value is DecodeWorkerReadyAudioCo
         && value.mimeType.length > 0;
 }
 
-function isChannelData(
-    value: unknown,
-    channelCount: number,
-    frameCount: number
-): value is readonly Float32Array[] {
-    if (!Array.isArray(value) || value.length !== channelCount) {
-        return false;
-    }
-
-    for (const channel of value) {
-        if (!(channel instanceof Float32Array) || channel.length !== frameCount) {
-            return false;
-        }
-    }
-    return true;
+function isAudioProgressResponse(value: Record<string, unknown>): boolean {
+    return isAudioEpoch(value.audioEpoch, true)
+        && isMicroseconds(value.mediaTimeMicroseconds)
+        && isMicroseconds(value.durationMicroseconds)
+        && Number(value.durationMicroseconds) >= 0
+        && isPositiveInteger(value.frameCount)
+        && Number(value.frameCount) <= MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE
+        && isSupportedCustomAudioSampleRate(value.sampleRate);
 }
 
 function hasValidOptionalDolbyVisionMetadata(value: Record<string, unknown>): boolean {
@@ -954,12 +1062,80 @@ function isAudioPullRequest(value: Record<string, unknown>): boolean {
     return isAudioSampleCredit(value.audioSampleCredits, false) && hasValidOptionalAudioEpoch(value);
 }
 
+/** Validates the producer's end of a worklet channel, with the bounds of the worklet it feeds. */
+export function isAudioOutputAttachment(value: unknown): value is DecodeWorkerAudioOutputAttachment {
+    return isRecord(value)
+        && isAudioSampleCredit(value.audioSampleCredits, false)
+        && isDecodedAudioOutputChannelCount(value.channelCount)
+        && isPositiveInteger(value.maximumBufferedFrameCount)
+        && isSupportedCustomAudioSampleRate(value.sampleRate)
+        && isGeneration(value.workletGeneration)
+        && isMessagePort(value.port);
+}
+
+function isAudioOutputAttachRequest(value: Record<string, unknown>): boolean {
+    return isAudioEpoch(value.audioEpoch, true) && isAudioOutputAttachment(value.audioOutput);
+}
+
+/** The new worklet's channel carries the layout the resync asks for. */
 function isAudioResyncRequest(value: Record<string, unknown>): boolean {
     return isAudioEpoch(value.audioEpoch, false)
-        && isAudioSampleCredit(value.audioSampleCredits, false)
         && isDecodedAudioOutputChannelCount(value.decodedAudioOutputChannelCount)
+        && isAudioOutputAttachment(value.audioOutput)
+        && value.audioOutput.channelCount === value.decodedAudioOutputChannelCount
         && isMicroseconds(value.targetTimeMicroseconds)
         && hasValidOptionalAudioDownmix(value);
+}
+
+/** An omitted presentation mode means main. */
+function isOptionalPresentationMode(value: unknown): value is CustomDecodePresentationMode | undefined {
+    return value === undefined || value === 'main' || value === 'worker';
+}
+
+// A page without these constructors cannot present in a worker, and a Node test stubs them
+function isOffscreenCanvas(value: unknown): value is OffscreenCanvas {
+    return typeof OffscreenCanvas === 'function' && value instanceof OffscreenCanvas;
+}
+
+function isMessagePort(value: unknown): value is MessagePort {
+    return typeof MessagePort === 'function' && value instanceof MessagePort;
+}
+
+/** A renderer attachment carries the transferred canvas and the renderer's end of the presenter's channel. */
+function isRendererAttachmentRequest(value: Record<string, unknown>): boolean {
+    return isOffscreenCanvas(value.canvas) && isMessagePort(value.port);
+}
+
+/** An available renderer gives no reason; an unavailable one gives a bounded one for the log. */
+function isRendererStatusResponse(value: Record<string, unknown>): boolean {
+    if (typeof value.available !== 'boolean') {
+        return false;
+    }
+    if (value.available) {
+        return value.reason === null;
+    }
+    return typeof value.reason === 'string'
+        && value.reason.length > 0
+        && value.reason.length <= MAXIMUM_RENDERER_STATUS_REASON_LENGTH;
+}
+
+function isFrameId(value: unknown): value is number {
+    return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+/** Names each frame once, and never more frames than a run's credits keep outstanding. */
+function isReleasedFrameIdList(value: unknown): value is readonly number[] {
+    if (!Array.isArray(value) || value.length === 0 || value.length > MAX_DECODED_FRAME_CREDITS) {
+        return false;
+    }
+    const frameIds = new Set<number>();
+    for (const frameId of value) {
+        if (!isFrameId(frameId) || frameIds.has(frameId)) {
+            return false;
+        }
+        frameIds.add(frameId);
+    }
+    return true;
 }
 
 /** Validates a message before the decode worker acts on it. */
@@ -996,6 +1172,7 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                 && value.url.length > 0
                 && isOptionalBoolean(value.reportContainerDuration)
                 && isOptionalBoolean(value.timingTrace)
+                && isOptionalPresentationMode(value.presentationMode)
                 && isDolbyVisionProfile(value.dolbyVisionProfile)
                 && hasValidDiscardedEnhancementLayer(value)
                 && isCodecAssetURL(value.dolbyVisionRPUParserWASMURL)
@@ -1027,12 +1204,18 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                 && hasValidAudioCredits
                 && (hasAudioTrack || Number(value.audioSampleCredits) === 0);
         }
+        case 'attach-audio-output':
+            return isAudioOutputAttachRequest(value);
+        case 'attach-renderer':
+            return isRendererAttachmentRequest(value);
         case 'pull':
             return isFrameCredit(value.frameCredits);
         case 'pull-audio':
             return isAudioPullRequest(value);
         case 'recycle-frame':
             return value.buffer instanceof ArrayBuffer && value.buffer.byteLength > 0;
+        case 'release-frames':
+            return isReleasedFrameIdList(value.frameIds);
         case 'resync-audio':
             return isAudioResyncRequest(value);
         case 'resync-video':
@@ -1046,6 +1229,36 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
         default:
             return false;
     }
+}
+
+function isFrameMetadataSummary(value: unknown): value is DecodeWorkerFrameMetadataSummary {
+    if (!isRecord(value)) {
+        return false;
+    }
+    const dolbyVision = value.dolbyVision;
+    if (dolbyVision !== undefined && !(
+        isRecord(dolbyVision)
+        && typeof dolbyVision.enhancementLayerVCL === 'boolean'
+        && Number.isSafeInteger(dolbyVision.rpuCount)
+        && Number(dolbyVision.rpuCount) >= 0
+        && Number(dolbyVision.rpuCount) <= MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT
+    )) {
+        return false;
+    }
+    return value.HDR10PlusStatus === undefined || isHDR10PlusFrameMetadataStatus(value.HDR10PlusStatus);
+}
+
+/** A descriptor carries no payload and no metadata, which stay with the frame in the worker. */
+function isFrameDescriptor(value: Record<string, unknown>): boolean {
+    for (const payloadField of WORKER_FRAME_PAYLOAD_FIELDS) {
+        if (Object.prototype.hasOwnProperty.call(value, payloadField)) {
+            return false;
+        }
+    }
+    return isFrameId(value.frameId)
+        && isPositiveInteger(value.displayWidth)
+        && isPositiveInteger(value.displayHeight)
+        && (value.metadataSummary === undefined || isFrameMetadataSummary(value.metadataSummary));
 }
 
 function isDecodeWorkerFrameResponse(value: Record<string, unknown>): boolean {
@@ -1074,6 +1287,8 @@ function isDecodeWorkerFrameResponse(value: Record<string, unknown>): boolean {
             return frame.timestampMicroseconds === value.mediaTimeMicroseconds
                 && (frame.durationMicroseconds === null || frame.durationMicroseconds === value.durationMicroseconds);
         }
+        case 'worker-frame':
+            return isFrameDescriptor(value);
         default:
             return false;
     }
@@ -1101,20 +1316,8 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
                     || isStaticHDRMetadataScanResult(value.staticHDRMetadataScan));
         case 'frame':
             return isDecodeWorkerFrameResponse(value);
-        case 'audio': {
-            const channelCount = Number(value.channelCount);
-            const frameCount = Number(value.frameCount);
-            return isMicroseconds(value.mediaTimeMicroseconds)
-                && isMicroseconds(value.durationMicroseconds)
-                && Number(value.durationMicroseconds) >= 0
-                && isPositiveInteger(value.channelCount)
-                && channelCount <= MAX_DECODED_AUDIO_CHANNELS
-                && isPositiveInteger(value.frameCount)
-                && frameCount <= MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE
-                && isSupportedCustomAudioSampleRate(value.sampleRate)
-                && isChannelData(value.channelData, channelCount, frameCount)
-                && hasValidOptionalAudioEpoch(value);
-        }
+        case 'audio-progress':
+            return isAudioProgressResponse(value);
         case 'native-audio-init':
             return value.data instanceof ArrayBuffer
                 && value.data.byteLength > 0
@@ -1135,11 +1338,14 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
             return isCustomDecodeWorkerProgressPhase(value.phase)
                 && isVideoStartupProgressPacketCount(value.packetCount)
                 && (value.mediaTimeMicroseconds === null || isMicroseconds(value.mediaTimeMicroseconds));
+        case 'renderer-status':
+            return isRendererStatusResponse(value);
         case 'ended':
-        case 'stopped':
             return true;
+        case 'stopped':
+            return isOptionalBoolean(value.replaceWorker);
         case 'error':
-            return isFailureKind(value.failureKind) && typeof value.message === 'string';
+            return isCustomDecodeFailureKind(value.failureKind) && typeof value.message === 'string';
         case 'audio-ended':
             return isAudioEpoch(value.audioEpoch, true);
         case 'audio-source-format':

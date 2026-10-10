@@ -69,8 +69,8 @@ Check: the engine checks from [Set up a checkout](setup.md), and the host's chec
 
 ## Capture a timing trace
 
-1. Call `startTimingTrace()` from `webgpu-player/TimingTrace` before the play request, so the decode worker the play starts is asked for its events.
-   A worker started before the trace sends none.
+1. Call `startTimingTrace()` from `webgpu-player/TimingTrace` before the play request, so the decode run the play starts is asked for its events.
+   A run started before the trace sends none; the next seek's run does.
 2. Play the passage under investigation.
 3. Call `exportTimingTrace(metadata)` and save the result as JSON.
    `stopTimingTrace()` stops recording but keeps the events exportable until the next start or `clearTimingTrace()`.

@@ -30,6 +30,10 @@ const LIBDCADEC_VERSION = 0x0002_0001;
 // A malformed decoded rate; any positive integer rate is valid
 const ZERO_SAMPLE_RATE = 0;
 const INVALID_SAMPLE_RATE_ERROR = `sample rate ${ZERO_SAMPLE_RATE} Hz is invalid`;
+const SIXTEEN_BITS_PER_SAMPLE = 16;
+const SIXTEEN_BIT_FULL_SCALE = 2 ** 15;
+// Both ends of the 16-bit range and the smallest steps beside zero, one per frame
+const SIXTEEN_BIT_EXTREME_SAMPLES: readonly number[] = [ -32_768, 32_767, -1, 1 ];
 
 type FakeDTSDecoder = Readonly<{
     clearCalls: number[]
@@ -140,6 +144,19 @@ describe('DTSSoftwareAudioDecoder', () => {
         fakeDecoder.module.HEAP32[LEFT_PLANE_POINTER / Int32Array.BYTES_PER_ELEMENT] = 0;
         expect(output.channelData[0][0]).toBe(-1);
         decoder.close();
+    });
+
+    it('scales 16-bit output exactly as dividing by its full scale does', async () => {
+        const fakeDecoder = createFakeDTSDecoder({ jellyfin_dts_get_bits_per_sample: () => SIXTEEN_BITS_PER_SAMPLE });
+        const firstLeftSampleIndex = LEFT_PLANE_POINTER / Int32Array.BYTES_PER_ELEMENT;
+        fakeDecoder.module.HEAP32.set(SIXTEEN_BIT_EXTREME_SAMPLES, firstLeftSampleIndex);
+        const decoder = await DTSSoftwareAudioDecoder.create(fakeDecoder.moduleFactory);
+
+        const output = decoder.decode(new Uint8Array([ 1 ]), millisecondsToMicroseconds(0));
+
+        expect(output.channelData[0]).toEqual(new Float32Array(
+            SIXTEEN_BIT_EXTREME_SAMPLES.map(sample => sample / SIXTEEN_BIT_FULL_SCALE)
+        ));
     });
 
     it('clears history and destroys its context exactly once', async () => {

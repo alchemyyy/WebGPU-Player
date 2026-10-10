@@ -1,7 +1,8 @@
 import { EncodedPacket, type VideoSample } from 'mediabunny';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import MPEG2VC1SoftwareVideoDecoder, {
+    loadMPEG2VC1DecoderModule,
     MPEG2VC1InterlacedFrameError,
     type MPEG2VC1SoftwareVideoDecoderDependencies,
     type MPEG2VC1DecoderModule
@@ -20,6 +21,9 @@ const CONFIGURATION_UNSUPPORTED_ERROR = 'configuration is unsupported';
 // A decoder handle past 2 GiB, which the WASM i32 return reports as negative
 const HIGH_DECODER_HANDLE = (2 ** 31) + 16;
 const HIGH_DECODER_HANDLE_AS_I32 = HIGH_DECODER_HANDLE - (2 ** 32);
+const SHARED_MODULE_WASM_URL = 'https://example.test/web/libraries/ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.wasm';
+const WASM_TRAP_MESSAGE = 'unreachable';
+const REJECTED_PACKET_RESULT = -22;
 
 type FakeMPEG2VC1Frame = {
     bottomCrop?: number
@@ -493,5 +497,80 @@ describe('MPEG2VC1SoftwareVideoDecoder', () => {
             'dimensions exceed the configuration'
         );
         decoder.close();
+    });
+});
+
+describe('loadMPEG2VC1DecoderModule', () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    /** Creates a decoder on the worker's shared module, with the default loader. */
+    function createSharedModuleDecoder(): MPEG2VC1SoftwareVideoDecoder {
+        const harness = createHarness();
+        return createDecoder({
+            ...harness,
+            dependencies: { ...harness.dependencies, createModule: loadMPEG2VC1DecoderModule }
+        }, []);
+    }
+
+    it('instantiates one module for every decoder of the worker', async () => {
+        const module = new FakeMPEG2VC1DecoderModule();
+        const factory = vi.fn(async (): Promise<MPEG2VC1DecoderModule> => module);
+        vi.stubGlobal('MPEG2VC1DecoderModule', factory);
+
+        const firstDecoder = createSharedModuleDecoder();
+        const secondDecoder = createSharedModuleDecoder();
+        await Promise.all([ firstDecoder.init(), secondDecoder.init() ]);
+        firstDecoder.close();
+        const laterModule = await loadMPEG2VC1DecoderModule(SHARED_MODULE_WASM_URL);
+
+        expect(factory).toHaveBeenCalledOnce();
+        expect(laterModule).toBe(module);
+        // Each decoder opened and closes its own codec context
+        expect(module._mpeg2_vc1_decoder_create).toHaveBeenCalledTimes(2);
+        expect(module._mpeg2_vc1_decoder_close).toHaveBeenCalledOnce();
+        secondDecoder.close();
+    });
+
+    it('instantiates the module again once a decoder\'s native code traps', async () => {
+        const trappingModule = new FakeMPEG2VC1DecoderModule();
+        trappingModule._mpeg2_vc1_decoder_send_packet.mockImplementation((): never => {
+            throw new WebAssembly.RuntimeError(WASM_TRAP_MESSAGE);
+        });
+        const factory = vi.fn<() => Promise<MPEG2VC1DecoderModule>>()
+            .mockResolvedValueOnce(trappingModule)
+            .mockResolvedValueOnce(new FakeMPEG2VC1DecoderModule());
+        vi.stubGlobal('MPEG2VC1DecoderModule', factory);
+        const decoder = createSharedModuleDecoder();
+        await decoder.init();
+
+        expect(() => decoder.decode(createPacket())).toThrow(WASM_TRAP_MESSAGE);
+        const nextModule = await loadMPEG2VC1DecoderModule(SHARED_MODULE_WASM_URL);
+
+        expect(nextModule).not.toBe(trappingModule);
+        expect(factory).toHaveBeenCalledTimes(2);
+        decoder.close();
+    });
+
+    it('keeps the module after an error its native code returned', async () => {
+        const module = new FakeMPEG2VC1DecoderModule();
+        module._mpeg2_vc1_decoder_send_packet.mockReturnValue(REJECTED_PACKET_RESULT);
+        const factory = vi.fn(async (): Promise<MPEG2VC1DecoderModule> => module);
+        vi.stubGlobal('MPEG2VC1DecoderModule', factory);
+        const decoder = createSharedModuleDecoder();
+        await decoder.init();
+
+        expect(() => decoder.decode(createPacket())).toThrow('rejected a packet');
+
+        expect(await loadMPEG2VC1DecoderModule(SHARED_MODULE_WASM_URL)).toBe(module);
+        expect(factory).toHaveBeenCalledOnce();
+        decoder.close();
+    });
+
+    it('requires the glue module factory', async () => {
+        vi.stubGlobal('MPEG2VC1DecoderModule', undefined);
+
+        await expect(loadMPEG2VC1DecoderModule(SHARED_MODULE_WASM_URL)).rejects.toThrow('factory is unavailable');
     });
 });

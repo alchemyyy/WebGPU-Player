@@ -31,6 +31,7 @@ function packageFile(packageName, relativePath) {
 }
 
 const WORKER_ENTRY_POINTS = Object.freeze([
+    [ 'webgpu-player/CustomAudioDecode.worker.js', join(SOURCE_DIRECTORY, 'pipeline', 'CustomAudioDecode.worker.ts') ],
     [ 'webgpu-player/CustomDecode.worker.js', join(SOURCE_DIRECTORY, 'pipeline', 'CustomDecode.worker.ts') ],
     [ 'webgpu-player/DTSExactCapabilityProbe.worker.js', join(EXACT_CAPABILITY_DIRECTORY, 'DTSExactCapabilityProbe.worker.ts') ],
     [ 'webgpu-player/HEVCExactCapabilityProbe.worker.js', join(EXACT_CAPABILITY_DIRECTORY, 'HEVCExactCapabilityProbe.worker.ts') ],
@@ -69,6 +70,9 @@ export function getLibraryAssets() {
         [ 'libdcadec-dts/COPYING.LGPLv2.1', join(WASM_LICENSES_DIRECTORY, 'libdcadec-COPYING.LGPLv2.1') ],
         [ 'libdcadec-dts/libdcadec_dts_bridge.c', join(WASM_DIRECTORY, 'libdcadec-dts', 'libdcadec_dts_bridge.c') ],
         [ 'libdcadec-dts/LICENSE.bridge.txt', licenseEngine ],
+        // The decoded audio output stage is the engine's own code, served under the engine's license
+        [ 'audio-output-stage/audio-output-stage.wasm', join(WASM_OUTPUT_DIRECTORY, 'audio-output-stage', 'audio-output-stage.wasm') ],
+        [ 'audio-output-stage/LICENSE.txt', licenseEngine ],
         [ 'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.js', join(WASM_OUTPUT_DIRECTORY, 'ffmpeg-mpeg2-vc1', 'ffmpeg-mpeg2-vc1.js') ],
         [ 'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.wasm', join(WASM_OUTPUT_DIRECTORY, 'ffmpeg-mpeg2-vc1', 'ffmpeg-mpeg2-vc1.wasm') ],
         [ 'ffmpeg-mpeg2-vc1/LICENSE.ffmpeg.txt', licenseFFmpeg ],

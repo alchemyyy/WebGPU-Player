@@ -4,6 +4,7 @@ import { resolveEngineAssetURL, type EngineAssetPath } from '../../EngineAssets'
 import { type Microseconds } from '../../MediaTime';
 import { type RawVideoFrameGeometry } from '../RawVideoFrameCopy';
 import { requireMicroseconds } from '../../TimeMath';
+import WorkerWASMInstanceCache, { isWASMTrap } from './WorkerWASMInstanceCache';
 
 const JPEG2000_DECODER_GLUE_ASSET: EngineAssetPath = 'openjpeg/openjpeg-decode.js';
 const JPEG2000_DECODER_WASM_ASSET: EngineAssetPath = 'openjpeg/openjpeg-decode.wasm';
@@ -139,18 +140,25 @@ function loadDefaultDecoderGlue(url: string): void {
     }
 }
 
-async function createDefaultModule(wasmURL: string): Promise<OpenJPEGModule> {
+// The worker's decoders share one instance of the module, and each creates its own decoder in it
+const sharedDecoderModule = new WorkerWASMInstanceCache<OpenJPEGModule>();
+
+/**
+ * Returns the module instance this worker's decoders share, instantiated from the loaded glue on first use.
+ * A decoder whose native code traps makes the next one instantiate it again.
+ */
+export async function loadJPEG2000DecoderModule(wasmURL: string): Promise<OpenJPEGModule> {
     const workerGlobal = globalThis as ClassicWorkerGlobal;
     const factory = workerGlobal.OpenJPEGWASM as OpenJPEGModuleFactory | undefined;
     if (typeof factory !== 'function') {
         throw new Error('The JPEG 2000 decoder module factory is unavailable');
     }
-    return factory({
+    return sharedDecoderModule.load(factory, (): Promise<OpenJPEGModule> => factory({
         locateFile: (): string => wasmURL,
         // OpenJPEG reports every tile through stdout; keep ordinary playback quiet
         print: (): void => undefined,
         printErr: (): void => undefined
-    });
+    }));
 }
 
 function createDefaultVideoFrame(data: AllowSharedBufferSource, init: VideoFrameBufferInit): VideoFrame {
@@ -159,7 +167,7 @@ function createDefaultVideoFrame(data: AllowSharedBufferSource, init: VideoFrame
 }
 
 const DEFAULT_DEPENDENCIES: JPEG2000SoftwareVideoDecoderDependencies = {
-    createModule: createDefaultModule,
+    createModule: loadJPEG2000DecoderModule,
     createVideoFrame: createDefaultVideoFrame,
     loadDecoderGlue: loadDefaultDecoderGlue,
     resolveAssetURL: resolveEngineAssetURL
@@ -179,12 +187,13 @@ export function getJPEG2000RGBAFingerprint(rgba: Uint8Array): number {
 export default class JPEG2000SoftwareVideoDecoder {
     private closed = false;
     private decoder: OpenJPEGDecoder | null = null;
+    private module: OpenJPEGModule | null = null;
 
     public constructor(
         private readonly dependencies: JPEG2000SoftwareVideoDecoderDependencies = DEFAULT_DEPENDENCIES
     ) {}
 
-    /** Loads the pinned OpenJPEG WASM module and creates one reusable decoder. */
+    /** Creates one reusable decoder in the pinned OpenJPEG WASM module, which the worker's first decoder loads. */
     public async init(): Promise<void> {
         if (this.closed) {
             throw new Error('The JPEG 2000 decoder is closed');
@@ -199,6 +208,7 @@ export default class JPEG2000SoftwareVideoDecoder {
         if (this.closed) {
             return;
         }
+        this.module = module;
         this.decoder = new module.J2KDecoder();
     }
 
@@ -213,7 +223,15 @@ export default class JPEG2000SoftwareVideoDecoder {
             throw new Error('The JPEG 2000 decoder returned an invalid input buffer');
         }
         encodedBuffer.set(packetData);
-        decoder.decode();
+        try {
+            decoder.decode();
+        } catch (error) {
+            // A module whose code trapped is not shared with the worker's next decoder
+            if (isWASMTrap(error) && this.module) {
+                sharedDecoderModule.discard(this.module);
+            }
+            throw error;
+        }
 
         const frameInfo = decoder.getFrameInfo();
         requireMatchingGeometry(frameInfo, expectedGeometry);
@@ -299,7 +317,7 @@ export default class JPEG2000SoftwareVideoDecoder {
         });
     }
 
-    /** Releases the Emscripten decoder. Later calls do nothing. */
+    /** Releases the Emscripten decoder, which leaves the shared module to the worker's next decoder. Later calls do nothing. */
     public close(): void {
         if (this.closed) {
             return;
@@ -307,6 +325,7 @@ export default class JPEG2000SoftwareVideoDecoder {
         this.closed = true;
         const decoder = this.decoder;
         this.decoder = null;
+        this.module = null;
         decoder?.delete();
     }
 

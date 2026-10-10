@@ -1,8 +1,9 @@
 import { EncodedPacket } from 'mediabunny';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import JPEG2000SoftwareVideoDecoder, {
     getJPEG2000RGBAFingerprint,
+    loadJPEG2000DecoderModule,
     type JPEG2000SoftwareVideoDecoderDependencies,
     type OpenJPEGDecoder,
     type OpenJPEGFrameInfo,
@@ -16,6 +17,9 @@ const GEOMETRY: RawVideoFrameGeometry = {
     displayHeight: 9,
     displayWidth: 16
 };
+const SHARED_MODULE_WASM_URL = 'https://example.test/libraries/openjpeg/openjpeg-decode.wasm';
+const WASM_TRAP_MESSAGE = 'memory access out of bounds';
+const CORRUPT_CODESTREAM_MESSAGE = 'The codestream is corrupt';
 
 type FakeDecoderOptions = {
     colorSpace?: number
@@ -228,5 +232,77 @@ describe('JPEG2000SoftwareVideoDecoder', () => {
     it('uses a stable unsigned FNV-1a fingerprint', () => {
         expect(getJPEG2000RGBAFingerprint(new Uint8Array([ 1, 2, 3, 255 ])))
             .toBe(4_231_272_764);
+    });
+});
+
+describe('loadJPEG2000DecoderModule', () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    /** Creates a decoder on the worker's shared module, with the default loader. */
+    function createSharedModuleDecoder(harness: DecoderHarness): JPEG2000SoftwareVideoDecoder {
+        return new JPEG2000SoftwareVideoDecoder({
+            ...harness.dependencies,
+            createModule: loadJPEG2000DecoderModule
+        });
+    }
+
+    /** Stubs the glue factory, which returns the harnesses' modules in turn. */
+    function stubModuleFactory(harnesses: readonly DecoderHarness[]): ReturnType<typeof vi.fn> {
+        const factory = vi.fn<() => Promise<OpenJPEGModule>>();
+        for (const harness of harnesses) {
+            factory.mockImplementationOnce(async (): Promise<OpenJPEGModule> => harness.createModule());
+        }
+        vi.stubGlobal('OpenJPEGWASM', factory);
+        return factory;
+    }
+
+    it('instantiates one module for every decoder of the worker', async () => {
+        const harness = createHarness();
+        const factory = stubModuleFactory([ harness ]);
+        const firstDecoder = createSharedModuleDecoder(harness);
+        const secondDecoder = createSharedModuleDecoder(harness);
+
+        await Promise.all([ firstDecoder.init(), secondDecoder.init() ]);
+        firstDecoder.close();
+        await expect(loadJPEG2000DecoderModule(SHARED_MODULE_WASM_URL)).resolves.toBeDefined();
+
+        expect(factory).toHaveBeenCalledOnce();
+        // Each decoder deletes only its own OpenJPEG decoder
+        expect(harness.decoder.delete).toHaveBeenCalledOnce();
+        secondDecoder.close();
+    });
+
+    it('instantiates the module again once a decoder\'s native code traps', async () => {
+        const trappingHarness = createHarness();
+        trappingHarness.decoder.decode.mockImplementation((): never => {
+            throw new WebAssembly.RuntimeError(WASM_TRAP_MESSAGE);
+        });
+        const factory = stubModuleFactory([ trappingHarness, createHarness() ]);
+        const decoder = createSharedModuleDecoder(trappingHarness);
+        await decoder.init();
+
+        expect(() => decoder.decodeToRGBA(new Uint8Array([ 1 ]), GEOMETRY)).toThrow(WASM_TRAP_MESSAGE);
+        await loadJPEG2000DecoderModule(SHARED_MODULE_WASM_URL);
+
+        expect(factory).toHaveBeenCalledTimes(2);
+        decoder.close();
+    });
+
+    it('keeps the module after an error its native code reported', async () => {
+        const harness = createHarness();
+        harness.decoder.decode.mockImplementation((): never => {
+            throw new Error(CORRUPT_CODESTREAM_MESSAGE);
+        });
+        const factory = stubModuleFactory([ harness ]);
+        const decoder = createSharedModuleDecoder(harness);
+        await decoder.init();
+
+        expect(() => decoder.decodeToRGBA(new Uint8Array([ 1 ]), GEOMETRY)).toThrow(CORRUPT_CODESTREAM_MESSAGE);
+        await loadJPEG2000DecoderModule(SHARED_MODULE_WASM_URL);
+
+        expect(factory).toHaveBeenCalledOnce();
+        decoder.close();
     });
 });

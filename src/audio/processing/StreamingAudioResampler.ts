@@ -6,6 +6,13 @@ import {
 } from '../../TimeMath';
 import { requireSupportedCustomAudioSampleRate } from '../CustomAudioSampleRate';
 import { requirePositiveSafeInteger } from '../SafeIntegerValidation';
+import {
+    RESAMPLER_INCONSISTENT_HISTORY_MESSAGE,
+    RESAMPLER_UNAVAILABLE_LOOKAHEAD_MESSAGE,
+    type AudioOutputStageResamplerKernel,
+    type default as AudioOutputStageModule
+} from './AudioOutputStageModule';
+import type PCMChannelPool from './PCMChannelPool';
 
 const FILTER_CUTOFF_HEADROOM = 0.94;
 const FILTER_PHASE_COUNT = 2_048;
@@ -40,6 +47,8 @@ export type StreamingAudioTimelineCorrectionListener = (correction: StreamingAud
 
 export type StreamingAudioResamplerOptions = {
     channelCount: number
+    /** Lends a kernel's output channels their buffers; the reference path allocates its own */
+    channelPool?: PCMChannelPool | null
     /** Continues a predecessor's output timeline and input expectation */
     continuation?: StreamingAudioResamplerContinuation | null
     maximumOutputFrameCount: number
@@ -52,6 +61,10 @@ export type StreamingAudioResamplerOptions = {
     minimumOutputFrameCount: number
     /** Observes every fill, trim, drop, and rejection, for diagnostics */
     onTimelineCorrection?: StreamingAudioTimelineCorrectionListener
+    /**
+     * Keeps the source history and renders in this WebAssembly output stage, bit-identically; without it, or when it cannot allocate, this class renders as the JavaScript reference.
+     */
+    outputStageModule?: AudioOutputStageModule | null
     sourceSampleRate: number
     targetSampleRate: number
 };
@@ -158,6 +171,7 @@ function createFilterTable(
  * Symmetric lookahead preserves media timestamps instead of adding A/V delay, while finalization edge-extends only the terminal filter tail.
  * Input timestamps are reconciled against the accepted timeline: jitter is absorbed, and gaps and overlaps up to the correction bound are filled with silence or trimmed, so the output timeline stays contiguous.
  * A larger discontinuity throws.
+ * Its JavaScript storage and rendering are the reference; with an output stage module, a kernel keeps the history in a ring and renders the same bytes.
  */
 export default class StreamingAudioResampler {
     public readonly channelCount: number;
@@ -179,6 +193,8 @@ export default class StreamingAudioResampler {
     private readonly firstSourceValues: number[] = [];
     /** Anchors the input expectation in exact source frames, which a continuation carries over */
     private inputAnchorMediaTimeMicroseconds: Microseconds | null = null;
+    /** Holds the source history and renders in place of the reference storage, or null for the reference */
+    private readonly kernel: AudioOutputStageResamplerKernel | null;
     private readonly lastSourceValues: number[] = [];
     private maximumInputTimestampDeviationMicroseconds = 0;
     private nextOutputFrame = 0;
@@ -249,6 +265,20 @@ export default class StreamingAudioResampler {
         this.filterTable = this.sourceSampleRate === this.targetSampleRate ?
             null :
             createFilterTable(this.sourceSampleRate, this.targetSampleRate, this.filterRadius);
+        // At equal rates samples only pass through, which the module would slow with a staging copy.
+        // The kernel takes this table, built here because V8's Math.sin and Math.cos need not match a C library's
+        this.kernel = this.filterTable === null ?
+            null :
+            options.outputStageModule?.createResamplerKernel({
+                channelCount: this.channelCount,
+                channelPool: options.channelPool,
+                filterPhaseCount: FILTER_PHASE_COUNT,
+                filterRadius: this.filterRadius,
+                filterTable: this.filterTable,
+                maximumOutputFrameCount: this.maximumOutputFrameCount,
+                sourceSampleRate: this.sourceSampleRate,
+                targetSampleRate: this.targetSampleRate
+            }) ?? null;
     }
 
     /** Adds one source chunk and returns every newly available output chunk. */
@@ -276,23 +306,33 @@ export default class StreamingAudioResampler {
         return output;
     }
 
-    /** Flushes the symmetric filter tail exactly once. */
+    /** Flushes the symmetric filter tail exactly once, and frees a kernel's memory. */
     public finalize(): StreamingAudioResamplerOutput[] {
         if (this.finalized) {
             return [];
         }
         this.finalized = true;
-        if (this.totalSourceFrames === 0) {
-            return [];
+        try {
+            if (this.totalSourceFrames === 0) {
+                return [];
+            }
+            const output = this.filterTable === null ?
+                this.renderPassthroughAvailable(true) :
+                this.renderAvailable(true);
+            for (let channelIndex = 0; channelIndex < this.channelBuffers.length; channelIndex += 1) {
+                this.channelBuffers[channelIndex] = new Float32Array(0);
+            }
+            this.bufferStartSourceFrame = this.totalSourceFrames;
+            return output;
+        } finally {
+            this.kernel?.release();
         }
-        const output = this.filterTable === null ?
-            this.renderPassthroughAvailable(true) :
-            this.renderAvailable(true);
-        for (let channelIndex = 0; channelIndex < this.channelBuffers.length; channelIndex += 1) {
-            this.channelBuffers[channelIndex] = new Float32Array(0);
-        }
-        this.bufferStartSourceFrame = this.totalSourceFrames;
-        return output;
+    }
+
+    /** Ends the resampler without its tail and frees a kernel's memory, for an attempt that stops early. */
+    public close(): void {
+        this.finalized = true;
+        this.kernel?.release();
     }
 
     /**
@@ -328,7 +368,8 @@ export default class StreamingAudioResampler {
     public getTelemetry(): StreamingAudioResamplerTelemetry {
         return {
             absorbedInputCount: this.absorbedInputCount,
-            bufferedSourceFrameCount: this.channelBuffers[0]?.length ?? 0,
+            // The retained history spans from its first frame to the newest, in the reference's arrays and in a kernel's ring alike
+            bufferedSourceFrameCount: this.totalSourceFrames - this.bufferStartSourceFrame,
             droppedInputCount: this.droppedInputCount,
             filledInputCount: this.filledInputCount,
             filterLatencySourceFrames: this.filterTable === null ? 0 : this.filterRadius,
@@ -506,6 +547,11 @@ export default class StreamingAudioResampler {
     }
 
     private appendInput(channelData: readonly Float32Array[], frameCount: number): void {
+        if (this.kernel) {
+            // The ring copies only the new frames
+            this.kernel.append(channelData, frameCount);
+            return;
+        }
         for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
             const previousBuffer = this.channelBuffers[channelIndex];
             const combinedBuffer = new Float32Array(previousBuffer.length + frameCount);
@@ -577,13 +623,19 @@ export default class StreamingAudioResampler {
                 this.maximumOutputFrameCount
             );
             const outputStartFrame = this.nextOutputFrame;
-            const channelData: Float32Array[] = [];
-            for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
-                channelData.push(new Float32Array(chunkFrameCount));
-            }
-            for (let outputOffset = 0; outputOffset < chunkFrameCount; outputOffset += 1) {
-                this.renderFrame(channelData, outputOffset, finalizing);
-                this.nextOutputFrame += 1;
+            let channelData: Float32Array[];
+            if (this.kernel) {
+                channelData = this.kernel.render(outputStartFrame, chunkFrameCount, finalizing);
+                this.nextOutputFrame += chunkFrameCount;
+            } else {
+                channelData = [];
+                for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
+                    channelData.push(new Float32Array(chunkFrameCount));
+                }
+                for (let outputOffset = 0; outputOffset < chunkFrameCount; outputOffset += 1) {
+                    this.renderFrame(channelData, outputOffset, finalizing);
+                    this.nextOutputFrame += 1;
+                }
             }
             output.push(this.createOutput(channelData, outputStartFrame, chunkFrameCount));
             remainingFrameCount -= chunkFrameCount;
@@ -656,14 +708,14 @@ export default class StreamingAudioResampler {
         }
         if (sourceFrameIndex >= this.totalSourceFrames) {
             if (!finalizing) {
-                throw new RangeError('Resampler attempted to read unavailable lookahead');
+                throw new RangeError(RESAMPLER_UNAVAILABLE_LOOKAHEAD_MESSAGE);
             }
             return this.lastSourceValues[channelIndex];
         }
         const localFrameIndex = sourceFrameIndex - this.bufferStartSourceFrame;
         const channelBuffer = this.channelBuffers[channelIndex];
         if (localFrameIndex < 0 || localFrameIndex >= channelBuffer.length) {
-            throw new RangeError('Resampler history accounting is inconsistent');
+            throw new RangeError(RESAMPLER_INCONSISTENT_HISTORY_MESSAGE);
         }
         return channelBuffer[localFrameIndex];
     }
@@ -705,8 +757,13 @@ export default class StreamingAudioResampler {
         if (trimFrameCount <= 0) {
             return;
         }
-        for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
-            this.channelBuffers[channelIndex] = this.channelBuffers[channelIndex].slice(trimFrameCount);
+        if (this.kernel) {
+            // The ring only moves its start, so the retained history is never copied
+            this.kernel.discardBefore(firstRequiredSourceFrame);
+        } else {
+            for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
+                this.channelBuffers[channelIndex] = this.channelBuffers[channelIndex].slice(trimFrameCount);
+            }
         }
         this.bufferStartSourceFrame = firstRequiredSourceFrame;
     }

@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+    AUDIO_OUTPUT_STAGE_WASM_ASSET,
     configureEngineAssets,
     DTS_DECODER_WASM_ASSET,
     EAC3_DECODER_WASM_ASSET,
@@ -21,6 +22,9 @@ const PAGE_URL = 'https://example.test/web/index.html';
 const ASSET_BASE_URL = 'https://example.test/web/libraries/';
 const CACHE_KEY = 'build-1';
 const AUDIO_DECODER_WASM_ASSETS = [ DTS_DECODER_WASM_ASSET, EAC3_DECODER_WASM_ASSET, TRUEHD_DECODER_WASM_ASSET ] as const;
+// The output stage is the engine's own code, so its folder carries the engine's license
+const AUDIO_OUTPUT_STAGE_LICENSE_ASSET = 'audio-output-stage/LICENSE.txt';
+const ENGINE_LICENSE_FILE_NAME = 'LICENSE';
 
 /** Resolves a path as the worker at the given asset path would, from its own URL. */
 function resolveInWorker(workerPath: EngineWorkerPath, path: EngineLibraryPath): string {
@@ -61,6 +65,14 @@ describe('engine asset manifest', () => {
         for (const path of AUDIO_DECODER_WASM_ASSETS) {
             expect(copiedDestinations.filter(destination => destination === path)).toHaveLength(1);
         }
+    });
+
+    it('serves the audio output stage binary with the engine license beside it', async () => {
+        const { getLibraryAssets } = await loadLibraryAssets();
+        const assets = getLibraryAssets();
+        expect(assets.filter(([ destination ]) => destination === AUDIO_OUTPUT_STAGE_WASM_ASSET)).toHaveLength(1);
+        const license = assets.find(([ destination ]) => destination === AUDIO_OUTPUT_STAGE_LICENSE_ASSET);
+        expect(license?.[1]).toMatch(new RegExp(`[\\\\/]${ENGINE_LICENSE_FILE_NAME}$`, 'u'));
     });
 });
 
@@ -108,5 +120,11 @@ describe('engine asset URLs', () => {
             expect(resolveInWorker('webgpu-player/CustomDecode.worker.js', path)).toBe(pageURL);
             vi.unstubAllGlobals();
         }
+    });
+
+    it('resolves the audio output stage beside the playback worker with the build\'s cache key', () => {
+        expect(resolveInWorker('webgpu-player/CustomDecode.worker.js', AUDIO_OUTPUT_STAGE_WASM_ASSET)).toBe(
+            `${ASSET_BASE_URL}${AUDIO_OUTPUT_STAGE_WASM_ASSET}?v=${CACHE_KEY}`
+        );
     });
 });

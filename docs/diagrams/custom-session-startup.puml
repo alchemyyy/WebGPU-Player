@@ -11,8 +11,9 @@ participant "CustomPlaybackController" as controller
 participant "CustomDecodeSession" as session
 participant "Audio output" as audio
 end box
-box "Worker (engine)" $BOX_WORKER
+box "Workers (engine)" $BOX_WORKER
 participant "CustomDecode.worker" as worker
+participant "CustomAudioDecode.worker" as audioWorker
 end box
 
 host -> audio : prewarmBrowserAudioContext(48000)\ninside the user-activation window
@@ -32,13 +33,25 @@ note right of controller
   names the counters it reached.
 end note
 controller -> session : start
-session -> worker : create CustomDecode.worker.js?v=<build key>\ncredits: 4 frames, or 2 raw-plane buffers
+session -> worker : the first start creates CustomDecode.worker.js?v=<build key>
+session -> presenter : createWorkerPresentationAttachment,\nthrough the host's renderer provider
+session -> worker : 'attach-renderer': the transferred canvas\nand a channel to the presenter
+worker --> session : 'renderer-status', or the 2 s bound
+session -> worker : 'start', once the previous run stopped;\nworker presentation when the renderer is available;\ncredits: 4 frames, or 2 raw-plane buffers
+worker -> audioWorker : the first decoded PCM start\ncreates CustomAudioDecode.worker.js
 worker -> worker : prepare tracks (canDecode);\nscan static HDR metadata\n(first 16 access units or 8 MiB)
 worker --> session : 'ready'
 par video
-  worker --> session : 'frame' (credit-limited)
-else audio
-  worker --> audio : 'audio' PCM, or fMP4 segments
+  worker --> session : 'frame', or its descriptor (credit-limited)
+else decoded PCM
+  worker -> audioWorker : open the attempt; packet or sample\nbatches, 4 in flight
+  session -> worker : 'attach-audio-output': the worklet's channel
+  worker -> audioWorker : the worklet's channel
+  audioWorker --> audio : PCM chunks over that channel (8 credits)
+  audioWorker --> worker : progress
+  worker --> session : 'audio-progress'
+else native-media audio
+  worker --> audio : fMP4 segments
 end
 session -> controller : first frame queued, and 100 ms of PCM submitted\n(or the first native-media segment appended)
 controller -> audio : start

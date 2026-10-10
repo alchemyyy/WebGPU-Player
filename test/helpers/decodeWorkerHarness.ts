@@ -8,12 +8,17 @@ import {
     isDecodeWorkerResponse,
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
+    type DecodeWorkerFrameDescriptorResponse,
+    type DecodeWorkerFrameResponse,
     type DecodeWorkerResponse,
-    type DecodeWorkerStartRequest
+    type DecodeWorkerStartRequest,
+    type DecodeWorkerStoppedResponse
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 import type DolbyVisionRPUParserSession from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParserSession';
 
-export type DecodeWorkerFrameResponse = Extract<DecodeWorkerResponse, { type: 'frame' }>;
+import { createInProcessAudioDecodeWorkerConstructor, InProcessAudioDecodeWorker } from './inProcessAudioDecodeWorker';
+
+export type { DecodeWorkerFrameDescriptorResponse, DecodeWorkerFrameResponse };
 export type DecodeWorkerReadyResponse = Extract<DecodeWorkerResponse, { type: 'ready' }>;
 
 const WORKER_URL = 'https://example.test/web/libraries/webgpu-player/CustomDecode.worker.js';
@@ -130,16 +135,26 @@ export class FakeVideoDecoder {
     }
 }
 
-/** The worker's global scope, which plays the session's part: it returns each frame's credit and resolves once the run stops. */
+type ResponseWaiter = {
+    matches: (response: DecodeWorkerResponse) => boolean
+    resolve: (response: DecodeWorkerResponse) => void
+};
+
+/**
+ * The worker's global scope, which plays the session's part: it returns each frame's credit and resolves once the first run stops.
+ * The worker outlives its runs, so a test can start more generations in it and wait for each run's `stopped`.
+ */
 export class FakeWorkerScope extends EventTarget {
     public readonly responses: DecodeWorkerResponse[] = [];
     private resolveStopped: (() => void) | null = null;
+    private readonly responseWaiters: ResponseWaiter[] = [];
     public readonly stopped = new Promise<void>(resolve => {
         this.resolveStopped = resolve;
     });
 
     public postMessage(message: DecodeWorkerResponse): void {
         this.responses.push(message);
+        this.resolveResponseWaiters(message);
         switch (message.type) {
             case 'frame':
                 this.returnFrameCredit(message);
@@ -152,23 +167,64 @@ export class FakeWorkerScope extends EventTarget {
         }
     }
 
+    /** Resolves with the first response that matches, already posted or posted later. */
+    public waitForResponse(matches: (response: DecodeWorkerResponse) => boolean): Promise<DecodeWorkerResponse> {
+        const postedResponse = this.responses.find(matches);
+        if (postedResponse) {
+            return Promise.resolve(postedResponse);
+        }
+        return new Promise<DecodeWorkerResponse>(resolve => {
+            this.responseWaiters.push({ matches, resolve });
+        });
+    }
+
+    /** Resolves once the run of a generation posts `stopped`, which ends every run. */
+    public async waitForStopped(generation: number): Promise<DecodeWorkerStoppedResponse> {
+        const response = await this.waitForResponse(
+            (candidate: DecodeWorkerResponse): boolean => candidate.type === 'stopped' && candidate.generation === generation
+        );
+        if (response.type !== 'stopped') {
+            throw new Error('The matched response is not a stopped response');
+        }
+        return response;
+    }
+
+    private resolveResponseWaiters(message: DecodeWorkerResponse): void {
+        for (let waiterIndex = this.responseWaiters.length - 1; waiterIndex >= 0; waiterIndex -= 1) {
+            const waiter = this.responseWaiters[waiterIndex];
+            if (waiter.matches(message)) {
+                this.responseWaiters.splice(waiterIndex, 1);
+                waiter.resolve(message);
+            }
+        }
+    }
+
     public dispatchRequest(request: unknown): void {
         this.dispatchEvent(new MessageEvent('message', { data: request }));
     }
 
-    // The session recycles a raw frame's buffer once uploaded, and returns a VideoFrame's credit once presented
-    private returnFrameCredit(message: DecodeWorkerFrameResponse): void {
-        if (message.outputMode === 'raw-planes') {
-            const buffer = message.frame.data;
-            void Promise.resolve().then((): void => {
-                this.dispatchRequest({ buffer, generation: message.generation, type: 'recycle-frame' });
-            });
-            return;
+    // The session recycles a raw frame's buffer once uploaded, returns a VideoFrame's credit once presented, and releases a worker frame once its renderer presented it
+    private returnFrameCredit(message: DecodeWorkerFrameDescriptorResponse | DecodeWorkerFrameResponse): void {
+        switch (message.outputMode) {
+            case 'raw-planes': {
+                const buffer = message.frame.data;
+                void Promise.resolve().then((): void => {
+                    this.dispatchRequest({ buffer, generation: message.generation, type: 'recycle-frame' });
+                });
+                return;
+            }
+            case 'video-frame':
+                (message.frame as unknown as FakeDecodedVideoFrame).close();
+                void Promise.resolve().then((): void => {
+                    this.dispatchRequest({ frameCredits: RETURNED_FRAME_CREDITS, generation: message.generation, type: 'pull' });
+                });
+                return;
+            case 'worker-frame':
+                void Promise.resolve().then((): void => {
+                    this.dispatchRequest({ frameIds: [ message.frameId ], generation: message.generation, type: 'release-frames' });
+                });
+                return;
         }
-        (message.frame as unknown as FakeDecodedVideoFrame).close();
-        void Promise.resolve().then((): void => {
-            this.dispatchRequest({ frameCredits: RETURNED_FRAME_CREDITS, generation: message.generation, type: 'pull' });
-        });
     }
 }
 
@@ -222,6 +278,7 @@ export async function spyOnRPUParserSessions(): Promise<MockInstance<typeof Dolb
  */
 export async function startDecodeWorker(mediaFiles: ReadonlyMap<string, Uint8Array>): Promise<FakeWorkerScope> {
     FakeVideoDecoder.instances.length = 0;
+    InProcessAudioDecodeWorker.instances.length = 0;
     const files = new Map<string, Uint8Array>();
     for (const [ fileName, data ] of mediaFiles) {
         files.set(getMediaURL(fileName), data);
@@ -235,6 +292,9 @@ export async function startDecodeWorker(mediaFiles: ReadonlyMap<string, Uint8Arr
     vi.stubGlobal('fetch', createMediaFetch(files));
     vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
     vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+    // The worker spawns its audio decode worker for a decoded PCM run, whose runtime loads after the same reset
+    const { startAudioDecodeWorkerRuntime } = await import('webgpu-player/pipeline/AudioDecodeWorkerRuntime');
+    vi.stubGlobal('Worker', createInProcessAudioDecodeWorkerConstructor(startAudioDecodeWorkerRuntime));
     await import('webgpu-player/pipeline/CustomDecode.worker');
     return workerScope;
 }
@@ -266,22 +326,37 @@ export function createWorkerStartRequest(
     };
 }
 
-/** Starts a decode, waits until its run stops, and requires the run to reach the end of its video with only responses the session accepts. */
+/**
+ * Starts a decode, waits until its run stops, and requires the run to reach the end of its video with only responses the session accepts.
+ * Returns the responses posted since the start, so a worker that already ran earlier generations can run another.
+ */
 export async function decodeToEnd(workerScope: FakeWorkerScope, request: DecodeWorkerStartRequest): Promise<DecodeWorkerResponse[]> {
     expect(isDecodeWorkerRequest(request)).toBe(true);
+    const firstResponseIndex = workerScope.responses.length;
     workerScope.dispatchRequest(request);
-    await workerScope.stopped;
+    await workerScope.waitForStopped(request.generation);
 
-    const responseTypes = workerScope.responses.map(response => response.type);
+    const responses = workerScope.responses.slice(firstResponseIndex);
+    const responseTypes = responses.map(response => response.type);
     expect(responseTypes).not.toContain('error');
     expect(responseTypes.slice(-COMPLETED_RUN_RESPONSE_TYPES.length)).toEqual(COMPLETED_RUN_RESPONSE_TYPES);
     // The session drops any response its validator rejects
-    expect(workerScope.responses.filter(response => !isDecodeWorkerResponse(response))).toEqual([]);
-    return workerScope.responses;
+    expect(responses.filter(response => !isDecodeWorkerResponse(response))).toEqual([]);
+    return responses;
 }
 
+/** Returns the frames whose payload crossed to the page, which a worker-mode run never posts. */
 export function getFrameResponses(responses: readonly DecodeWorkerResponse[]): DecodeWorkerFrameResponse[] {
-    return responses.filter((response: DecodeWorkerResponse): response is DecodeWorkerFrameResponse => response.type === 'frame');
+    return responses.filter((response: DecodeWorkerResponse): response is DecodeWorkerFrameResponse => (
+        response.type === 'frame' && response.outputMode !== 'worker-frame'
+    ));
+}
+
+/** Returns the descriptors of the frames a worker-mode run kept for its renderer. */
+export function getFrameDescriptorResponses(responses: readonly DecodeWorkerResponse[]): DecodeWorkerFrameDescriptorResponse[] {
+    return responses.filter((response: DecodeWorkerResponse): response is DecodeWorkerFrameDescriptorResponse => (
+        response.type === 'frame' && response.outputMode === 'worker-frame'
+    ));
 }
 
 export function getReadyResponse(responses: readonly DecodeWorkerResponse[]): DecodeWorkerReadyResponse {

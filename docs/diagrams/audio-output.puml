@@ -12,7 +12,10 @@ if (AC-3 or E-AC-3, 2 or 6 channels, exactly 48 kHz,\nand the MSE probe passed?)
   :CustomDecodeNativeAudioBridge appends to a hidden audio element through MSE; <<$HL_AMBER>>
   :element.volume = min(volume^3 * G, 1); <<$HL_GREEN>>
 else (decoded PCM)
-  :Decode: WebCodecs, @mediabunny/ac3, or E-AC-3, DTS, TrueHD WASM; <<$HL_AMBER>>
+  :Decode: WebCodecs or @mediabunny/ac3 in the decode worker,
+  or E-AC-3, DTS, TrueHD WASM in the audio decode worker; <<$HL_AMBER>>
+  :The decode worker sends packets or decoded samples
+  in 40 ms batches, 4 in flight, to the audio decode worker; <<$HL_NAVY>>
   :Bind the output stage to the decoded rate and layout,
   and rebind on a later change; <<$HL_NAVY>>
   :Reconcile timestamps within 2 s: fill gaps with silence, trim overlaps,
@@ -24,7 +27,8 @@ else (decoded PCM)
   :Resample to 48 kHz; <<$HL_AMBER>>
   :Lookahead limiter (100 ms, -1 dBFS); <<$HL_AMBER>>
   :40 ms to 12000-frame chunks, 8 credits; <<$HL_AMBER>>
-  :CustomDecodeAudioBridge -> AudioWorklet 2 s ring; <<$HL_AMBER>>
+  :WorkletPCMProducer -> AudioWorklet 2 s ring,
+  over the channel CustomDecodeAudioBridge hands over; <<$HL_AMBER>>
   :Worklet gain = volume^3 * G, uncapped,
   clipped samples are counted; <<$HL_GREEN>>
 endif

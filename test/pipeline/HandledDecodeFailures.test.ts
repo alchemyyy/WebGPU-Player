@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
     markHandledDecodeFailure,
@@ -35,5 +35,19 @@ describe('HandledDecodeFailures', () => {
 
         expect(dispatchRejection(scope, PRIMITIVE_REJECTION_REASON).defaultPrevented).toBe(false);
         expect(dispatchRejection(scope, null).defaultPrevented).toBe(false);
+    });
+
+    it('reports each suppressed rejection, whose decoder Mediabunny left open', () => {
+        const scope = new EventTarget();
+        const onSuppressed = vi.fn();
+        suppressHandledDecodeFailureRejections(scope, onSuppressed);
+        const handledFailure = new Error(HANDLED_FAILURE_MESSAGE);
+        markHandledDecodeFailure(handledFailure);
+
+        dispatchRejection(scope, new Error(UNHANDLED_FAILURE_MESSAGE));
+        expect(onSuppressed).not.toHaveBeenCalled();
+
+        dispatchRejection(scope, handledFailure);
+        expect(onSuppressed).toHaveBeenCalledOnce();
     });
 });

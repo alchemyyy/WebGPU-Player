@@ -8,12 +8,17 @@ import {
     type EncodedPacket,
     registerDecoder,
     VideoSample,
+    VideoSampleColorSpace,
     type VideoCodec
 } from 'mediabunny';
 
 import {
     createHEVCDecoderBackend,
-    type HEVCDecoderBackend
+    getHEVCFramePlanes,
+    type HEVCDecodedFrame,
+    type HEVCDecoderBackend,
+    type HEVCFramePlane,
+    type HEVCFramePlanes
 } from './HEVCDecoderBackend';
 import {
     parseHEVCSPS,
@@ -68,6 +73,13 @@ const SAMPLE_MATRIX_COEFFICIENTS: ReadonlyMap<string, HEVCSPSMatrixCoefficients>
     [ 'bt709', 'bt709' ],
     [ 'smpte170m', 'smpte170m' ]
 ]);
+// The color a VideoSample gives YUV planes without a description: limited-range BT.709
+const DEFAULT_SAMPLE_COLOR_SPACE: VideoColorSpaceInit = {
+    fullRange: false,
+    matrix: 'bt709',
+    primaries: 'bt709',
+    transfer: 'bt709'
+};
 
 type HEVCTiming = {
     durationMicroseconds: Microseconds
@@ -113,9 +125,31 @@ type MutableHEVCSoftwareVideoDecoderContract = {
     onSample: (sample: VideoSample) => unknown
 };
 
+/**
+ * One decoded frame as the owned path takes it, with the metadata the Mediabunny path's VideoSample of it carries.
+ * Its planes view WASM memory, so they are gone once the handler returns.
+ */
+export type HEVCSoftwareDecodedFrame = Readonly<{
+    chromaHeight: number
+    chromaWidth: number
+    codedHeight: number
+    codedWidth: number
+    /** As the VideoSample reports it, limited-range BT.709 for a stream without a description */
+    colorSpace: VideoSampleColorSpace
+    displayHeight: number
+    displayWidth: number
+    durationMicroseconds: Microseconds
+    format: 'I420' | 'I420P10'
+    planes: HEVCFramePlanes
+    timestampMicroseconds: Microseconds
+}>;
+
+/** Consumes a decoded frame synchronously, before the decoder may reuse its WASM planes. */
+export type HEVCSoftwareDecodedFrameHandler = (frame: HEVCSoftwareDecodedFrame) => void;
+
 export type OwnedHEVCSoftwareVideoDecoderCallbacks = {
     onError: (error: unknown) => void
-    onSample: (sample: VideoSample) => unknown
+    onFrame: HEVCSoftwareDecodedFrameHandler
 };
 
 let softwareDecoderRegistered = false;
@@ -739,9 +773,18 @@ function validateStreamInfoAgainstSPS(
     }
 }
 
-function getValidatedFrameSampleCounts(frame: HEVCFrame): {
+/** Returns whether a plane holds exactly its rows: each a stride after the one before, the last one ending the plane. */
+function planeHoldsRows(plane: HEVCFramePlane, width: number, height: number): boolean {
+    return Number.isSafeInteger(plane.stride)
+        && plane.stride >= width
+        && plane.samples.length === ((height - 1) * plane.stride) + width;
+}
+
+/** Validates a frame's 4:2:0 geometry and plane extents through its strided planes, which leaves its compact planes unmade. */
+function getValidatedFramePlanes(frame: HEVCDecodedFrame): {
     chromaSampleCount: number
     lumaSampleCount: number
+    planes: HEVCFramePlanes
 } {
     const lumaSampleCount = checkedPlaneSampleCount(frame.width, frame.height, 'luma');
     const expectedChromaWidth = Math.ceil(frame.width / 2);
@@ -757,14 +800,15 @@ function getValidatedFrameSampleCounts(frame: HEVCFrame): {
         frame.chromaHeight,
         'chroma'
     );
+    const planes = getHEVCFramePlanes(frame);
     if (
-        frame.y.length !== lumaSampleCount
-        || frame.cb.length !== chromaSampleCount
-        || frame.cr.length !== chromaSampleCount
+        !planeHoldsRows(planes.luma, frame.width, frame.height)
+        || !planeHoldsRows(planes.chromaBlue, frame.chromaWidth, frame.chromaHeight)
+        || !planeHoldsRows(planes.chromaRed, frame.chromaWidth, frame.chromaHeight)
     ) {
         throw new TypeError('The decoded HEVC plane lengths do not match their dimensions');
     }
-    return { chromaSampleCount, lumaSampleCount };
+    return { chromaSampleCount, lumaSampleCount, planes };
 }
 
 /** Mediabunny decoder adapter for @hevcjs/core Main and Main10 planar output. */
@@ -773,6 +817,8 @@ export default class HEVCSoftwareVideoDecoder {
     public readonly config!: VideoDecoderConfig;
     public readonly onError!: (error: unknown) => undefined;
     public readonly onSample!: (sample: VideoSample) => unknown;
+    /** Takes each frame in place of onSample when set: the owned path writes the planes out itself, so no sample is packed */
+    public onFrame: HEVCSoftwareDecodedFrameHandler | null = null;
 
     private closed = false;
     private decoder: HEVCDecoderBackend | null = null;
@@ -888,14 +934,14 @@ export default class HEVCSoftwareVideoDecoder {
         if (timing) {
             insertTiming(this.pendingTimings, timing);
         }
-        decoder.drain((frame: HEVCFrame): void => this.emitFrame(frame));
+        decoder.drain((frame: HEVCDecodedFrame): void => this.emitFrame(frame));
     }
 
     /** Flushes the DPB and rejects silent packet loss instead of shifting later timestamps. */
     public flush(): void {
         const decoder = this.requireDecoder();
         this.updateStreamInfo(decoder.info);
-        decoder.flush((frame: HEVCFrame): void => this.emitFrame(frame));
+        decoder.flush((frame: HEVCDecodedFrame): void => this.emitFrame(frame));
         if (this.pendingTimings.length > 0) {
             throw new Error('The HEVC software decoder ended before every picture was output');
         }
@@ -950,12 +996,17 @@ export default class HEVCSoftwareVideoDecoder {
         return this.decoder;
     }
 
-    private emitFrame(frame: HEVCFrame): void {
+    private emitFrame(frame: HEVCDecodedFrame): void {
         const timing = this.pendingTimings.shift();
         if (!timing) {
             throw new Error('The HEVC software decoder output a frame without packet timing');
         }
 
+        if (this.onFrame) {
+            // The owned path writes the planes out before the decoder's next call can reuse their memory
+            this.onFrame(this.describeDecodedFrame(frame, timing));
+            return;
+        }
         const sample = this.createVideoSample(frame, timing);
         try {
             this.onSample(sample);
@@ -965,7 +1016,8 @@ export default class HEVCSoftwareVideoDecoder {
         }
     }
 
-    private createVideoSample(frame: HEVCFrame, timing: HEVCTiming): VideoSample {
+    /** Checks a drained frame against the active SPS and stream and returns that SPS. */
+    private requireValidDecodedFrame(frame: HEVCDecodedFrame): HEVCSPSConfiguration {
         this.requireDecoder();
         const streamInfo = this.streamInfo;
         const spsConfiguration = this.spsConfiguration;
@@ -979,7 +1031,39 @@ export default class HEVCSoftwareVideoDecoder {
         if (frame.bitDepth !== 8 && frame.bitDepth !== 10) {
             throw new TypeError('The HEVC software decoder output has an unsupported bit depth');
         }
-        const { chromaSampleCount, lumaSampleCount } = getValidatedFrameSampleCounts(frame);
+        return spsConfiguration;
+    }
+
+    /** Describes a drained frame with the metadata its VideoSample would carry, for the owned path, which takes its planes as they are. */
+    private describeDecodedFrame(frame: HEVCDecodedFrame, timing: HEVCTiming): HEVCSoftwareDecodedFrame {
+        const spsConfiguration = this.requireValidDecodedFrame(frame);
+        const { planes } = getValidatedFramePlanes(frame);
+        const displayDimensions = getDisplayDimensions(
+            this.config,
+            frame.width,
+            frame.height,
+            spsConfiguration
+        );
+        return {
+            chromaHeight: frame.chromaHeight,
+            chromaWidth: frame.chromaWidth,
+            codedHeight: frame.height,
+            codedWidth: frame.width,
+            colorSpace: new VideoSampleColorSpace(
+                mergeSampleColorSpace(spsConfiguration.colorSpace, this.config.colorSpace) ?? DEFAULT_SAMPLE_COLOR_SPACE
+            ),
+            displayHeight: displayDimensions.displayHeight,
+            displayWidth: displayDimensions.displayWidth,
+            durationMicroseconds: timing.durationMicroseconds,
+            format: frame.bitDepth === 8 ? 'I420' : 'I420P10',
+            planes,
+            timestampMicroseconds: timing.timestampMicroseconds
+        };
+    }
+
+    private createVideoSample(frame: HEVCDecodedFrame, timing: HEVCTiming): VideoSample {
+        const spsConfiguration = this.requireValidDecodedFrame(frame);
+        const { chromaSampleCount, lumaSampleCount } = getValidatedFramePlanes(frame);
 
         const bytesPerSample = frame.bitDepth === 8 ? 1 : 2;
         const totalSampleCount = lumaSampleCount + (2 * chromaSampleCount);
@@ -1072,7 +1156,7 @@ export default class HEVCSoftwareVideoDecoder {
     }
 }
 
-/** Creates a directly owned decoder without Mediabunny's sample-sink wrapper. */
+/** Creates a directly owned decoder without Mediabunny's sample-sink wrapper, which hands each frame over while its planes are in WASM memory. */
 export function createOwnedHEVCSoftwareVideoDecoder(
     config: VideoDecoderConfig,
     callbacks: OwnedHEVCSoftwareVideoDecoderCallbacks,
@@ -1086,7 +1170,7 @@ export function createOwnedHEVCSoftwareVideoDecoder(
         callbacks.onError(error);
         return undefined;
     };
-    decoderContract.onSample = callbacks.onSample;
+    decoder.onFrame = callbacks.onFrame;
     return decoder;
 }
 

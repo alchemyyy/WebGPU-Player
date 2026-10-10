@@ -238,7 +238,8 @@ export default class DTSSoftwareAudioDecoder {
         }
 
         const channelData: Float32Array[] = [];
-        const sampleScale = 2 ** (bitsPerSample - 1);
+        // Multiplying by the exact power-of-two reciprocal is bit-identical to dividing by the full-scale value
+        const sampleReciprocal = 2 ** -(bitsPerSample - 1);
         for (let channelIndex = 0; channelIndex < channelLayout.channelCount; channelIndex += 1) {
             const planePointer = this.functions.getPlane(this.decoder, channelIndex);
             const firstSampleIndex = planePointer / Int32Array.BYTES_PER_ELEMENT;
@@ -250,7 +251,7 @@ export default class DTSSoftwareAudioDecoder {
             const sourcePlane = this.module.HEAP32.subarray(firstSampleIndex, firstSampleIndex + frameCount);
             const outputPlane = new Float32Array(frameCount);
             for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
-                outputPlane[frameIndex] = sourcePlane[frameIndex] / sampleScale;
+                outputPlane[frameIndex] = sourcePlane[frameIndex] * sampleReciprocal;
             }
             channelData.push(outputPlane);
         }

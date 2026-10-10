@@ -47,6 +47,27 @@ Read the engine's folders from `tools/constants.json` (`sourceDirectory`, `scrip
 
    Pass `baseURL` to serve the assets from somewhere other than `libraries/`.
 
+## Presentation in the worker
+
+A host that presents custom playback with `WebGPUPresenter` lets the decode worker draw its own frames with two changes.
+
+1. Give the controller a renderer provider that asks the presenter for an attachment:
+
+   ```ts
+   const controller = new CustomPlaybackController({
+       // The current generation at call time, since a seek advances it
+       presentationRendererProvider: () => presenter.createWorkerPresentationAttachment(currentPresentationGeneration),
+       ...otherOptions
+   });
+   ```
+
+   The session calls it once for each decode worker it creates.
+   The presenter returns null outside push mode, without a surface, or where the page cannot transfer a canvas, and that worker then presents on the page.
+2. Treat a `'worker-frame'` as a `'video-frame'`: pass `presentDecodedFrame` a completion handler, and from it call `notifyFramePresented` when the GPU work completed, otherwise `notifyFrameDiscarded`.
+   A worker frame has no payload, so there is nothing to close.
+
+The worker's canvas carries the presenter's canvas classes from `style.scss`, so host styles for `.webgpuPlayerCanvas` apply to both.
+
 ## How assets are named and served
 
 - `src/EngineAssets.ts` names every runtime asset, `scripts/library-assets.mjs` maps each served file to its source, and the `EngineAssets` test keeps the two in agreement.

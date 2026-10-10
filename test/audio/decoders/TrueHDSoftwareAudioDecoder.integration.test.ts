@@ -19,7 +19,7 @@ describe('TrueHDSoftwareAudioDecoder WebAssembly integration', () => {
         const vectors = createTrueHDExactCapabilityVectors();
 
         for (const vector of vectors) {
-            const decoder = await TrueHDSoftwareAudioDecoder.create(vector.codec);
+            const decoder = await TrueHDSoftwareAudioDecoder.create(vector.codec, loadTrueHDDecoderModule, { pcmFingerprint: true });
             try {
                 const outputs: TrueHDDecodedAudioOutput[] = [];
                 for (let accessUnitIndex = 0;
@@ -63,7 +63,7 @@ describe('TrueHDSoftwareAudioDecoder WebAssembly integration', () => {
         if (!vector) {
             return;
         }
-        const decoder = await TrueHDSoftwareAudioDecoder.create('truehd');
+        const decoder = await TrueHDSoftwareAudioDecoder.create('truehd', loadTrueHDDecoderModule, { pcmFingerprint: true });
         try {
             const outputs: TrueHDDecodedAudioOutput[] = [];
             for (let accessUnitIndex = vector.majorSyncRecoveryStartIndex;

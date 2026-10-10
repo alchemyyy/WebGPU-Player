@@ -4,7 +4,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     createHEVCDecoderBackend,
     createHEVCDecoderModule,
+    getHEVCFramePlanes,
     MAXIMUM_HEVC_DRAINED_FRAME_COUNT,
+    type HEVCDecodedFrame,
     type HEVCDecodedFrameHandler
 } from 'webgpu-player/video/decoders/HEVCDecoderBackend';
 
@@ -16,17 +18,30 @@ type FakeModuleHarness = {
     factory: ReturnType<typeof vi.fn>
     feedBytes: Uint8Array[]
     flushResult: { value: number }
+    heap: Uint16Array
     locatedWASMURL: { value: string | null }
+    /** Makes the next feed trap, as the WASM code of a corrupt stream can */
+    trapNextFeed: { value: boolean }
     receivedWASMBinary: { value: ArrayBuffer | null }
 };
 
 type FakeFrameLayout = {
     bitDepth: number
     chromaHeight: number
+    chromaStride?: number
     chromaWidth: number
     height: number
+    lumaStride?: number
     width: number
 };
+
+/** A frame's fields and its compact planes, read while its handler runs. */
+type DrainedFrameSnapshot = HEVCFrame;
+
+// A 4x2 frame whose luma rows are two samples apart beyond their width, and whose chroma rows one
+const PADDED_LUMA_STRIDE = 6;
+const PADDED_CHROMA_STRIDE = 3;
+const WASM_TRAP_MESSAGE = 'unreachable';
 
 // The fake stores planes up to this size; a frame reporting larger planes lies outside its memory
 const FAKE_MEMORY_MAXIMUM_STORED_LUMA_SAMPLE_COUNT = 65_536;
@@ -58,12 +73,14 @@ function createFakeModule(
         width: 4,
         ...frameOverrides
     };
+    const lumaStride = frameLayout.lumaStride ?? frameLayout.width;
+    const chromaStride = frameLayout.chromaStride ?? frameLayout.chromaWidth;
     const storesPlanes = frameLayout.width * frameLayout.height <= FAKE_MEMORY_MAXIMUM_STORED_LUMA_SAMPLE_COUNT;
     const storedLumaSampleCount = storesPlanes ?
-        frameLayout.width * frameLayout.height :
+        ((frameLayout.height - 1) * lumaStride) + frameLayout.width :
         8;
     const storedChromaSampleCount = storesPlanes ?
-        frameLayout.chromaWidth * frameLayout.chromaHeight :
+        ((frameLayout.chromaHeight - 1) * chromaStride) + frameLayout.chromaWidth :
         2;
     const lumaPointer = 256;
     const chromaBluePointer = lumaPointer
@@ -82,11 +99,14 @@ function createFakeModule(
     const flushResult = { value: 0 };
     const locatedWASMURL = { value: null as string | null };
     const receivedWASMBinary = { value: null as ArrayBuffer | null };
+    const trapNextFeed = { value: false };
     let createdDecoderCount = 0;
     let nextAllocationPointer = firstAllocationPointer;
-    heapU16.set([ 1, 2, 3, 4, 5, 6, 7, 8 ], lumaPointer >> 1);
-    heapU16.set([ 9, 10 ], chromaBluePointer >> 1);
-    heapU16.set([ 11, 12 ], chromaRedPointer >> 1);
+    // Every stored sample, padding included, counts up from 1 through luma, then blue and red chroma
+    const storedSampleCount = storedLumaSampleCount + (2 * storedChromaSampleCount);
+    for (let sampleIndex = 0; sampleIndex < storedSampleCount; sampleIndex += 1) {
+        heapU16[(lumaPointer >> 1) + sampleIndex] = sampleIndex + 1;
+    }
 
     function writeFrame(framePointer: number, frameIndex: number): void {
         writePointer(dataView, framePointer, lumaPointer);
@@ -94,8 +114,8 @@ function createFakeModule(
         writePointer(dataView, framePointer + 8, chromaRedPointer);
         writeInt32(dataView, framePointer + 12, frameLayout.width);
         writeInt32(dataView, framePointer + 16, frameLayout.height);
-        writeInt32(dataView, framePointer + 20, frameLayout.width);
-        writeInt32(dataView, framePointer + 24, frameLayout.chromaWidth);
+        writeInt32(dataView, framePointer + 20, lumaStride);
+        writeInt32(dataView, framePointer + 24, chromaStride);
         writeInt32(dataView, framePointer + 28, frameLayout.chromaWidth);
         writeInt32(dataView, framePointer + 32, frameLayout.chromaHeight);
         writeInt32(dataView, framePointer + 36, frameLayout.bitDepth);
@@ -117,6 +137,10 @@ function createFakeModule(
         return 0;
     };
     nativeFunctions['hevc_decoder_feed'] = (...nativeArguments: number[]): number => {
+        if (trapNextFeed.value) {
+            trapNextFeed.value = false;
+            throw new WebAssembly.RuntimeError(WASM_TRAP_MESSAGE);
+        }
         const dataPointer = nativeArguments[1];
         const byteLength = nativeArguments[2];
         feedBytes.push(new Uint8Array(memory.slice(dataPointer, dataPointer + byteLength)));
@@ -161,8 +185,25 @@ function createFakeModule(
         factory,
         feedBytes,
         flushResult,
+        heap: heapU16,
         locatedWASMURL,
-        receivedWASMBinary
+        receivedWASMBinary,
+        trapNextFeed
+    };
+}
+
+/** Reads a frame's fields and compact planes while its handler runs, as a consumer must. */
+function snapshotFrame(frame: HEVCDecodedFrame): DrainedFrameSnapshot {
+    return {
+        bitDepth: frame.bitDepth,
+        cb: frame.cb.slice(),
+        chromaHeight: frame.chromaHeight,
+        chromaWidth: frame.chromaWidth,
+        cr: frame.cr.slice(),
+        height: frame.height,
+        poc: frame.poc,
+        width: frame.width,
+        y: frame.y.slice()
     };
 }
 
@@ -180,13 +221,13 @@ describe('createHEVCDecoderBackend', () => {
         expect(harness.locatedWASMURL.value).toBe('https://example.test/hevc-decode.wasm');
 
         backend.feed(new Uint8Array([ 0, 0, 0, 1, 38, 1 ]));
-        const drainedFrames: HEVCFrame[] = [];
-        const flushedFrames: HEVCFrame[] = [];
-        const drainedFrameCount = backend.drain((frame: HEVCFrame): void => {
-            drainedFrames.push(frame);
+        const drainedFrames: DrainedFrameSnapshot[] = [];
+        const flushedFrames: DrainedFrameSnapshot[] = [];
+        const drainedFrameCount = backend.drain((frame: HEVCDecodedFrame): void => {
+            drainedFrames.push(snapshotFrame(frame));
         });
-        const flushedFrameCount = backend.flush((frame: HEVCFrame): void => {
-            flushedFrames.push(frame);
+        const flushedFrameCount = backend.flush((frame: HEVCDecodedFrame): void => {
+            flushedFrames.push(snapshotFrame(frame));
         });
 
         expect(harness.feedBytes.map((data: Uint8Array): number[] => Array.from(data))).toEqual([
@@ -221,6 +262,64 @@ describe('createHEVCDecoderBackend', () => {
         expect(() => backend.flush((): void => undefined)).toThrow('code 7');
         backend.destroy();
         expect(() => backend.drain((): void => undefined)).toThrow('destroyed');
+    });
+
+    it('views padded planes in WASM memory and compacts their rows only when read', async () => {
+        const harness = createFakeModule({
+            chromaHeight: 2,
+            chromaStride: PADDED_CHROMA_STRIDE,
+            chromaWidth: 2,
+            height: 4,
+            lumaStride: PADDED_LUMA_STRIDE,
+            width: 4
+        });
+        vi.stubGlobal('HEVCDecoderModule', harness.factory);
+        const backend = await createHEVCDecoderBackend({});
+        const observations: Array<{
+            lumaViewsHeap: boolean
+            planes: ReturnType<typeof getHEVCFramePlanes>
+            snapshot: DrainedFrameSnapshot
+        }> = [];
+
+        backend.drain((frame: HEVCDecodedFrame): void => {
+            const planes = getHEVCFramePlanes(frame);
+            observations.push({
+                lumaViewsHeap: planes.luma.samples.buffer === harness.heap.buffer,
+                planes: {
+                    chromaBlue: { samples: planes.chromaBlue.samples.slice(), stride: planes.chromaBlue.stride },
+                    chromaRed: { samples: planes.chromaRed.samples.slice(), stride: planes.chromaRed.stride },
+                    luma: { samples: planes.luma.samples.slice(), stride: planes.luma.stride }
+                },
+                snapshot: snapshotFrame(frame)
+            });
+        });
+
+        // Luma rows start six samples apart and chroma rows three, so samples 5, 6, 11, 12, 17, 18, 25, and 30 are padding
+        expect(observations).toEqual([ {
+            lumaViewsHeap: true,
+            planes: {
+                chromaBlue: { samples: new Uint16Array([ 23, 24, 25, 26, 27 ]), stride: PADDED_CHROMA_STRIDE },
+                chromaRed: { samples: new Uint16Array([ 28, 29, 30, 31, 32 ]), stride: PADDED_CHROMA_STRIDE },
+                luma: {
+                    samples: new Uint16Array([
+                        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22
+                    ]),
+                    stride: PADDED_LUMA_STRIDE
+                }
+            },
+            snapshot: {
+                bitDepth: 10,
+                cb: new Uint16Array([ 23, 24, 26, 27 ]),
+                chromaHeight: 2,
+                chromaWidth: 2,
+                cr: new Uint16Array([ 28, 29, 31, 32 ]),
+                height: 4,
+                poc: 0,
+                width: 4,
+                y: new Uint16Array([ 1, 2, 3, 4, 7, 8, 9, 10, 13, 14, 15, 16, 19, 20, 21, 22 ])
+            }
+        } ]);
+        backend.destroy();
     });
 
     it('rejects invalid chroma geometry before exposing decoded planes', async () => {
@@ -339,6 +438,69 @@ describe('createHEVCDecoderBackend', () => {
         vi.stubGlobal('HEVCDecoderModule', undefined);
 
         await expect(createHEVCDecoderBackend({})).rejects.toThrow('factory is unavailable');
+    });
+
+    it('creates every decoder of the worker on one module instance', async () => {
+        const harness = createFakeModule();
+        vi.stubGlobal('HEVCDecoderModule', harness.factory);
+
+        const firstBackend = await createHEVCDecoderBackend({ wasmBinaryUrl: 'https://example.test/hevc-decode.wasm' });
+        firstBackend.destroy();
+        const secondBackend = await createHEVCDecoderBackend({ wasmBinaryUrl: 'https://example.test/hevc-decode.wasm' });
+        const concurrentBackends = await Promise.all([
+            createHEVCDecoderBackend({}),
+            createHEVCDecoderBackend({})
+        ]);
+
+        expect(harness.factory).toHaveBeenCalledOnce();
+        expect(harness.locatedWASMURL.value).toBe('https://example.test/hevc-decode.wasm');
+        // Each decoder still creates and destroys its own native context
+        secondBackend.destroy();
+        for (const backend of concurrentBackends) {
+            backend.destroy();
+        }
+        expect(harness.destroyedDecoderPointers).toEqual([ 1, 2, 3, 4 ]);
+    });
+
+    it('instantiates the module again for the next decoder after native code traps', async () => {
+        const harness = createFakeModule();
+        vi.stubGlobal('HEVCDecoderModule', harness.factory);
+        const trappingBackend = await createHEVCDecoderBackend({});
+        harness.trapNextFeed.value = true;
+
+        expect(() => trappingBackend.feed(new Uint8Array([ 0, 0, 0, 1, 38, 1 ]))).toThrow(WASM_TRAP_MESSAGE);
+        const nextBackend = await createHEVCDecoderBackend({});
+
+        expect(harness.factory).toHaveBeenCalledTimes(2);
+        trappingBackend.destroy();
+        nextBackend.destroy();
+    });
+
+    it('keeps the module after an error its native code returned', async () => {
+        const harness = createFakeModule();
+        harness.flushResult.value = 7;
+        vi.stubGlobal('HEVCDecoderModule', harness.factory);
+        const failingBackend = await createHEVCDecoderBackend({});
+
+        expect(() => failingBackend.flush((): void => undefined)).toThrow('code 7');
+        const nextBackend = await createHEVCDecoderBackend({});
+
+        expect(harness.factory).toHaveBeenCalledOnce();
+        failingBackend.destroy();
+        nextBackend.destroy();
+    });
+
+    it('retries the instantiation after a failed one', async () => {
+        const harness = createFakeModule();
+        const instantiationError = new Error('instantiation failed');
+        harness.factory.mockRejectedValueOnce(instantiationError);
+        vi.stubGlobal('HEVCDecoderModule', harness.factory);
+
+        await expect(createHEVCDecoderBackend({})).rejects.toBe(instantiationError);
+        const backend = await createHEVCDecoderBackend({});
+
+        expect(harness.factory).toHaveBeenCalledTimes(2);
+        backend.destroy();
     });
 });
 

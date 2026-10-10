@@ -38,7 +38,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-0bba3c6a.js";
+            window.path_to_searchindex_js = "searchindex-36a56e7f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c0e4fc60.js"></script>
@@ -239,6 +239,26 @@ configureEngineFeatureFlags({ isHDRToneMappingEnabled: () =&gt; Promise.resolve(
 <p>Pass <code>baseURL</code> to serve the assets from somewhere other than <code>libraries/</code>.</p>
 </li>
 </ol>
+<h2 id="presentation-in-the-worker"><a class="header" href="#presentation-in-the-worker">Presentation in the worker</a></h2>
+<p>A host that presents custom playback with <code>WebGPUPresenter</code> lets the decode worker draw its own frames with two changes.</p>
+<ol>
+<li>
+<p>Give the controller a renderer provider that asks the presenter for an attachment:</p>
+<pre><code class="language-ts">const controller = new CustomPlaybackController({
+    // The current generation at call time, since a seek advances it
+    presentationRendererProvider: () =&gt; presenter.createWorkerPresentationAttachment(currentPresentationGeneration),
+    ...otherOptions
+});
+</code></pre>
+<p>The session calls it once for each decode worker it creates.
+The presenter returns null outside push mode, without a surface, or where the page cannot transfer a canvas, and that worker then presents on the page.</p>
+</li>
+<li>
+<p>Treat a <code>'worker-frame'</code> as a <code>'video-frame'</code>: pass <code>presentDecodedFrame</code> a completion handler, and from it call <code>notifyFramePresented</code> when the GPU work completed, otherwise <code>notifyFrameDiscarded</code>.
+A worker frame has no payload, so there is nothing to close.</p>
+</li>
+</ol>
+<p>The worker’s canvas carries the presenter’s canvas classes from <code>style.scss</code>, so host styles for <code>.webgpuPlayerCanvas</code> apply to both.</p>
 <h2 id="how-assets-are-named-and-served"><a class="header" href="#how-assets-are-named-and-served">How assets are named and served</a></h2>
 <ul>
 <li><code>src/EngineAssets.ts</code> names every runtime asset, <code>scripts/library-assets.mjs</code> maps each served file to its source, and the <code>EngineAssets</code> test keeps the two in agreement.

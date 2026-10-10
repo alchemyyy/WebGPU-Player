@@ -1,22 +1,17 @@
-import { MICROSECONDS_PER_SECOND, type Microseconds } from '../../MediaTime';
-import type {
-    AudioEnqueueSubmission,
-    AudioWorkletOutputController
-} from './AudioWorkletController';
+import type { Microseconds } from '../../MediaTime';
+import type { AudioWorkletOutputController } from './AudioWorkletController';
 import type { AudioWorkletTelemetry } from './AudioWorkletProtocol';
 import {
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
     type DecodeWorkerAudioConfiguration,
-    type DecodeWorkerAudioResponse
+    type DecodeWorkerAudioOutputAttachment
 } from '../../pipeline/DecodeWorkerProtocol';
 import {
     addMicroseconds,
-    audioFramesToMicroseconds,
     requireMicroseconds
 } from '../../TimeMath';
 
 export type CustomDecodeAudioBridgeCallbacks = {
-    onCreditsReleased: (audioSampleCredits: number) => void
     onFailure: (message: string) => void
 };
 
@@ -27,33 +22,30 @@ export type CustomDecodeAudioBridgeStartOptions = {
     startTimeMicroseconds: Microseconds
 };
 
-export type CustomDecodeAudioBridgeEnqueueResult = {
+/** What the producer posted to the worklet: one chunk's progress, without its PCM */
+export type CustomDecodeAudioSubmission = {
+    durationMicroseconds: Microseconds
     frameCount: number
-    status:
-        | 'controller-rejected'
-        | 'output-capacity'
-        | 'stale-generation'
-        | 'submitted'
-        | 'timestamp-discontinuity'
+    mediaTimeMicroseconds: Microseconds
+    sampleRate: number
 };
+
+export type CustomDecodeAudioBridgeRecordResult = 'recorded' | 'stale-generation';
 
 export type CustomDecodeAudioBridgeTelemetry = {
     activeDecodeGeneration: number | null
     failed: boolean
+    /** Submitted frames the worklet has not yet played */
     pendingFrameCount: number
+    /** Submitted chunks the worklet has not yet played to their end */
     pendingSampleCount: number
+    /** Submitted chunks the worklet played to their end */
     releasedSampleCredits: number
     staleSampleCount: number
     submittedEndMediaTimeMicroseconds: Microseconds | null
     submittedFrameCount: number
     submittedSampleCount: number
     workletGeneration: number | null
-};
-
-type PendingAudioSample = {
-    frameCount: number
-    remainingFrameCount: number
-    sequence: number
 };
 
 function requireGeneration(generation: number): number {
@@ -64,21 +56,24 @@ function requireGeneration(generation: number): number {
 }
 
 /**
- * Bridges worker-decoded planar PCM into one AudioWorkletController while releasing worker credits only after complete samples leave the worklet queue.
+ * Runs one AudioWorkletController's side of decoded audio while the producer in a worker feeds the processor directly.
+ * It starts each decode generation with a flush and a new channel for the producer, stops it, and fails it on the processor's overflow and stale-generation reports.
+ * It also follows the producer's progress against the processor's consumption, which the end-of-stream drain reads.
  */
 export default class CustomDecodeAudioBridge {
     private activeDecodeGeneration: number | null = null;
     private callbacks: CustomDecodeAudioBridgeCallbacks | null = null;
-    private consumptionBaselineReady = false;
+    private consumedFrameCount = 0;
+    private consumptionBaseline: number | null = null;
     private failed = false;
-    private expectedNextMediaTimeMicroseconds: Microseconds | null = null;
-    private lastConsumedFrameCount = 0;
+    private lastConsumedFrames = 0;
     private lastMediaTimeMicroseconds: Microseconds = requireMicroseconds(0);
     private readonly maximumPendingSampleCount: number;
-    private readonly pendingSamples: PendingAudioSample[] = [];
-    private pendingFrameCount = 0;
+    /** The cumulative submitted frame count at the end of each chunk the worklet has not played to its end */
+    private readonly pendingSampleEndFrames: number[] = [];
     private releasedSampleCredits = 0;
     private staleSampleCount = 0;
+    private submittedEndMediaTimeMicroseconds: Microseconds | null = null;
     private submittedFrameCount = 0;
     private submittedSampleCount = 0;
     private unsubscribeTelemetry: (() => void) | null = null;
@@ -88,13 +83,16 @@ export default class CustomDecodeAudioBridge {
         this.maximumPendingSampleCount = Math.min(MAX_DECODED_AUDIO_SAMPLE_CREDITS, controller.configuration.maxChunks);
     }
 
-    /** Returns the fixed credit window used to bound worker audio output. */
+    /** Returns the fixed credit window the producer bounds its in-flight chunks with. */
     public get initialAudioSampleCredits(): number {
         return this.maximumPendingSampleCount;
     }
 
-    /** Flushes old PCM and binds a new decoder generation to the worklet. */
-    public start(options: CustomDecodeAudioBridgeStartOptions): void {
+    /**
+     * Flushes old PCM, binds a new decode generation to the worklet, and hands the processor one end of a new producer channel.
+     * Returns the other end, with the worklet generation, the credit window, and the queue's bounds, for the producer.
+     */
+    public start(options: CustomDecodeAudioBridgeStartOptions): DecodeWorkerAudioOutputAttachment {
         const decodeGeneration = requireGeneration(options.decodeGeneration);
         const startTimeMicroseconds = requireMicroseconds(options.startTimeMicroseconds, 'Audio bridge start time');
         this.validateAudioConfiguration(options.audioConfiguration);
@@ -103,69 +101,54 @@ export default class CustomDecodeAudioBridge {
         this.activeDecodeGeneration = decodeGeneration;
         this.callbacks = options.callbacks;
         this.failed = false;
-        this.lastConsumedFrameCount = 0;
         this.lastMediaTimeMicroseconds = startTimeMicroseconds;
         this.releasedSampleCredits = 0;
         this.staleSampleCount = 0;
-        this.submittedFrameCount = 0;
-        this.submittedSampleCount = 0;
         this.unsubscribeTelemetry = this.controller.onTelemetry(this.handleTelemetry);
-        this.workletGeneration = this.controller.flush(startTimeMicroseconds);
+        const workletGeneration = this.controller.flush(startTimeMicroseconds);
+        this.workletGeneration = workletGeneration;
+        // The flush detached any earlier producer, so the processor takes this channel for the new generation only
+        const channel = new MessageChannel();
+        try {
+            this.controller.attachProducer(channel.port1);
+        } catch (error) {
+            channel.port1.close();
+            channel.port2.close();
+            throw error;
+        }
+        const configuration = this.controller.configuration;
+        return {
+            audioSampleCredits: this.maximumPendingSampleCount,
+            channelCount: configuration.channelCount,
+            maximumBufferedFrameCount: configuration.maxBufferedFrames,
+            port: channel.port2,
+            sampleRate: configuration.sampleRate,
+            workletGeneration
+        };
     }
 
-    /** Transfers a decoded audio sample to the worklet if the generation is current. */
-    public enqueue(message: DecodeWorkerAudioResponse, decodeGeneration: number): CustomDecodeAudioBridgeEnqueueResult {
+    /** Records one chunk the producer posted, as its progress reports it, if the decode generation is current. */
+    public recordSubmission(
+        submission: CustomDecodeAudioSubmission,
+        decodeGeneration: number
+    ): CustomDecodeAudioBridgeRecordResult {
         if (decodeGeneration !== this.activeDecodeGeneration || this.failed) {
             this.staleSampleCount += 1;
-            return { frameCount: message.frameCount, status: 'stale-generation' };
+            return 'stale-generation';
         }
-        if (
-            this.pendingSamples.length >= this.maximumPendingSampleCount
-            || message.frameCount > this.controller.configuration.maxBufferedFrames - this.pendingFrameCount
-        ) {
-            this.notifyFailure('Decoded audio exceeded the bounded worklet queue');
-            return { frameCount: message.frameCount, status: 'output-capacity' };
-        }
-        const nextMediaTimeMicroseconds = this.getNextContinuousMediaTime(message);
-        if (nextMediaTimeMicroseconds === null) {
-            this.notifyFailure('Decoded audio timestamps contain a gap or overlap');
-            return { frameCount: message.frameCount, status: 'timestamp-discontinuity' };
-        }
-
-        const workletGeneration = this.workletGeneration;
-        if (workletGeneration === null) {
-            this.notifyFailure('Decoded audio output is not initialized');
-            return { frameCount: message.frameCount, status: 'controller-rejected' };
-        }
-
-        let submission: AudioEnqueueSubmission;
-        try {
-            submission = this.controller.enqueue({
-                channelData: message.channelData,
-                timestampMicroseconds: message.mediaTimeMicroseconds
-            }, workletGeneration);
-        } catch {
-            this.notifyFailure('Unable to transfer decoded audio to the worklet');
-            return { frameCount: message.frameCount, status: 'controller-rejected' };
-        }
-        if (submission.status !== 'submitted' || submission.sequence === null) {
-            this.notifyFailure('The audio worklet rejected a decoded sample');
-            return { frameCount: message.frameCount, status: 'controller-rejected' };
-        }
-
-        this.pendingSamples.push({
-            frameCount: message.frameCount,
-            remainingFrameCount: message.frameCount,
-            sequence: submission.sequence
-        });
-        this.pendingFrameCount += message.frameCount;
-        this.expectedNextMediaTimeMicroseconds = nextMediaTimeMicroseconds;
-        this.submittedFrameCount += message.frameCount;
+        this.submittedFrameCount += submission.frameCount;
         this.submittedSampleCount += 1;
-        return { frameCount: message.frameCount, status: 'submitted' };
+        this.submittedEndMediaTimeMicroseconds = addMicroseconds(
+            submission.mediaTimeMicroseconds,
+            submission.durationMicroseconds
+        );
+        this.pendingSampleEndFrames.push(this.submittedFrameCount);
+        // The processor can report a chunk's consumption before its progress reaches this thread
+        this.releaseConsumedSamples();
+        return 'recorded';
     }
 
-    /** Stops one active generation and synchronously invalidates queued PCM. */
+    /** Stops one active generation; the flush detaches the producer and invalidates queued PCM. */
     public stop(decodeGeneration: number | null = this.activeDecodeGeneration): void {
         if (this.activeDecodeGeneration === null) {
             return;
@@ -186,16 +169,16 @@ export default class CustomDecodeAudioBridge {
         }
     }
 
-    /** Returns bounded-queue accounting for diagnostics. */
+    /** Returns the submission and consumption accounting, for diagnostics and the end-of-stream drain. */
     public getTelemetry(): CustomDecodeAudioBridgeTelemetry {
         return {
             activeDecodeGeneration: this.activeDecodeGeneration,
             failed: this.failed,
-            pendingFrameCount: this.pendingFrameCount,
-            pendingSampleCount: this.pendingSamples.length,
+            pendingFrameCount: Math.max(0, this.submittedFrameCount - this.consumedFrameCount),
+            pendingSampleCount: this.pendingSampleEndFrames.length,
             releasedSampleCredits: this.releasedSampleCredits,
             staleSampleCount: this.staleSampleCount,
-            submittedEndMediaTimeMicroseconds: this.expectedNextMediaTimeMicroseconds,
+            submittedEndMediaTimeMicroseconds: this.submittedEndMediaTimeMicroseconds,
             submittedFrameCount: this.submittedFrameCount,
             submittedSampleCount: this.submittedSampleCount,
             workletGeneration: this.workletGeneration
@@ -226,68 +209,42 @@ export default class CustomDecodeAudioBridge {
             telemetry.mediaTimeMicroseconds,
             'Audio worklet media time'
         );
-        if (!this.consumptionBaselineReady) {
-            this.lastConsumedFrameCount = telemetry.consumedFrames;
-            this.consumptionBaselineReady = true;
-        } else if (telemetry.consumedFrames < this.lastConsumedFrameCount) {
+        if (this.consumptionBaseline === null) {
+            // The flush's own report opens the generation's consumption count
+            this.consumptionBaseline = telemetry.consumedFrames;
+            this.lastConsumedFrames = telemetry.consumedFrames;
+        } else if (telemetry.consumedFrames < this.lastConsumedFrames) {
             this.notifyFailure('Audio worklet consumption telemetry moved backwards');
             return;
         } else {
-            const consumedFrameCount = telemetry.consumedFrames - this.lastConsumedFrameCount;
-            this.lastConsumedFrameCount = telemetry.consumedFrames;
-            this.releaseConsumedSamples(consumedFrameCount);
+            this.lastConsumedFrames = telemetry.consumedFrames;
+            this.consumedFrameCount = telemetry.consumedFrames - this.consumptionBaseline;
+            this.releaseConsumedSamples();
         }
 
-        if (
-            telemetry.sequence !== null
-            && (telemetry.reason === 'overflow' || telemetry.reason === 'stale-generation')
-            && this.pendingSamples.some(sample => sample.sequence === telemetry.sequence)
-        ) {
+        if (telemetry.reason === 'overflow' || telemetry.reason === 'stale-generation') {
             this.notifyFailure('The audio worklet dropped a decoded sample');
         }
     };
 
-    /** Unsubscribes from worklet telemetry and drops the queue accounting of the current generation. */
+    /** Unsubscribes from worklet telemetry and drops the accounting of the current generation. */
     private resetGenerationState(): void {
         this.unsubscribeTelemetry?.();
         this.unsubscribeTelemetry = null;
-        this.pendingSamples.length = 0;
-        this.pendingFrameCount = 0;
-        this.consumptionBaselineReady = false;
-        this.expectedNextMediaTimeMicroseconds = null;
+        this.pendingSampleEndFrames.length = 0;
+        this.consumedFrameCount = 0;
+        this.consumptionBaseline = null;
+        this.lastConsumedFrames = 0;
+        this.submittedEndMediaTimeMicroseconds = null;
+        this.submittedFrameCount = 0;
+        this.submittedSampleCount = 0;
     }
 
-    private releaseConsumedSamples(consumedFrameCount: number): void {
-        let remainingConsumedFrames = consumedFrameCount;
-        let releasedSampleCount = 0;
-        while (remainingConsumedFrames > 0 && this.pendingSamples.length > 0) {
-            const pendingSample = this.pendingSamples[0];
-            const releasedFrameCount = Math.min(
-                remainingConsumedFrames,
-                pendingSample.remainingFrameCount
-            );
-            pendingSample.remainingFrameCount -= releasedFrameCount;
-            remainingConsumedFrames -= releasedFrameCount;
-            this.pendingFrameCount -= releasedFrameCount;
-            if (pendingSample.remainingFrameCount === 0) {
-                this.pendingSamples.shift();
-                releasedSampleCount += 1;
-            }
-        }
-
-        if (remainingConsumedFrames > 0) {
-            this.notifyFailure('Audio worklet consumed more decoded frames than were submitted');
-            return;
-        }
-        if (releasedSampleCount === 0) {
-            return;
-        }
-
-        this.releasedSampleCredits += releasedSampleCount;
-        try {
-            this.callbacks?.onCreditsReleased(releasedSampleCount);
-        } catch {
-            this.notifyFailure('Unable to replenish decoded audio credits');
+    /** Counts the chunks the worklet played to their end. */
+    private releaseConsumedSamples(): void {
+        while (this.pendingSampleEndFrames.length > 0 && this.pendingSampleEndFrames[0] <= this.consumedFrameCount) {
+            this.pendingSampleEndFrames.shift();
+            this.releasedSampleCredits += 1;
         }
     }
 
@@ -301,35 +258,6 @@ export default class CustomDecodeAudioBridge {
             this.callbacks?.onFailure(message);
         } catch {
             // Session callbacks must not escape the audio telemetry task
-        }
-    }
-
-    private getNextContinuousMediaTime(message: DecodeWorkerAudioResponse): Microseconds | null {
-        const expectedMediaTimeMicroseconds = this.expectedNextMediaTimeMicroseconds;
-        if (message.sampleRate !== this.controller.configuration.sampleRate) {
-            return null;
-        }
-        const timestampToleranceMicroseconds = Math.ceil(MICROSECONDS_PER_SECOND / message.sampleRate);
-        if (expectedMediaTimeMicroseconds !== null && Math.abs(
-            message.mediaTimeMicroseconds - expectedMediaTimeMicroseconds
-        ) > timestampToleranceMicroseconds) {
-            return null;
-        }
-
-        try {
-            const calculatedDurationMicroseconds = audioFramesToMicroseconds(
-                message.frameCount,
-                message.sampleRate
-            );
-            if (Math.abs(message.durationMicroseconds - calculatedDurationMicroseconds) > timestampToleranceMicroseconds) {
-                return null;
-            }
-            return addMicroseconds(
-                message.mediaTimeMicroseconds,
-                calculatedDurationMicroseconds
-            );
-        } catch {
-            return null;
         }
     }
 

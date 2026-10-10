@@ -3,6 +3,12 @@ import { requireSupportedCustomAudioSampleRate } from '../CustomAudioSampleRate'
 import { requirePositiveSafeInteger } from '../SafeIntegerValidation';
 import type { StreamingAudioResamplerOutput } from './StreamingAudioResampler';
 import {
+    LIMITER_NON_FINITE_SAMPLE_MESSAGE,
+    type AudioOutputStageLimiterKernel,
+    type default as AudioOutputStageModule
+} from './AudioOutputStageModule';
+import type PCMChannelPool from './PCMChannelPool';
+import {
     addMicroseconds,
     audioFramesToMicroseconds,
     requireMicroseconds
@@ -12,6 +18,7 @@ const MILLISECONDS_PER_SECOND = 1_000;
 const MAXIMUM_ATTACK_ATTENUATION_DB = 12;
 const UNITY_GAIN = 1;
 const LIMITED_GAIN_EPSILON = 1e-7;
+const LIMITER_CHANNEL_SHAPE_MESSAGE = 'Limiter input channels must be equal-length Float32Array values';
 
 export const CUSTOM_AUDIO_LIMITER_ANALYSIS_MILLISECONDS = 100;
 export const CUSTOM_AUDIO_LIMITER_MINIMUM_ATTACK_MILLISECONDS = 3;
@@ -22,8 +29,14 @@ export const CUSTOM_AUDIO_LIMITER_CEILING_GAIN = 10 ** (CUSTOM_AUDIO_LIMITER_CEI
 
 export type StreamingAudioLookaheadLimiterOptions = Readonly<{
     channelCount: number
+    /** Lends a kernel's output channels their buffers; the reference path allocates its own */
+    channelPool?: PCMChannelPool | null
     maximumOutputFrameCount: number
     minimumOutputFrameCount: number
+    /**
+     * Keeps the history, attack envelope, and gain in this WebAssembly output stage, bit-identically; without it, or when it cannot allocate, this class limits as the JavaScript reference.
+     */
+    outputStageModule?: AudioOutputStageModule | null
     sampleRate: number
 }>;
 
@@ -49,9 +62,21 @@ export function quinticSmoothstep(value: number): number {
     return boundedValue * boundedValue * boundedValue * (boundedValue * (boundedValue * 6 - 15) + 10);
 }
 
+/** Copies one input's frames into a kernel's ring, which rejects a non-finite sample and measures the peaks as it copies. */
+function appendKernelInput(kernel: AudioOutputStageLimiterKernel, input: StreamingAudioResamplerOutput): void {
+    for (const inputChannel of input.channelData) {
+        if (!(inputChannel instanceof Float32Array)
+            || inputChannel.length !== input.frameCount) {
+            throw new RangeError(LIMITER_CHANNEL_SHAPE_MESSAGE);
+        }
+    }
+    kernel.append(input.channelData, input.frameCount);
+}
+
 /**
  * Applies one linked gain envelope to buffered planar PCM.
  * The 100 ms horizon preserves original media timestamps while quintic attacks anticipate peaks.
+ * Its JavaScript analysis and rendering are the reference; with an output stage module, a kernel keeps the history in a ring, applies each peak's attack once, and renders the same bytes.
  */
 export default class StreamingAudioLookaheadLimiter {
     public readonly analysisFrameCount: number;
@@ -67,6 +92,8 @@ export default class StreamingAudioLookaheadLimiter {
     private readonly channelBuffers: Float32Array[] = [];
     private currentGain = UNITY_GAIN;
     private finalized = false;
+    /** Holds the history, attack envelope, and gain in place of the reference, or null for the reference */
+    private readonly kernel: AudioOutputStageLimiterKernel | null;
     private limitedFrameCount = 0;
     private maximumInputPeak = 0;
     private maximumOutputPeak = 0;
@@ -92,6 +119,18 @@ export default class StreamingAudioLookaheadLimiter {
         for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
             this.channelBuffers.push(new Float32Array(0));
         }
+        // The constants that come from Math.pow and Math.exp travel to the kernel as numbers, so no C library computes them
+        this.kernel = options.outputStageModule?.createLimiterKernel({
+            ceilingGain: CUSTOM_AUDIO_LIMITER_CEILING_GAIN,
+            channelCount: this.channelCount,
+            channelPool: options.channelPool,
+            limitedGainThreshold: UNITY_GAIN - LIMITED_GAIN_EPSILON,
+            maximumAttackAttenuationDecibels: MAXIMUM_ATTACK_ATTENUATION_DB,
+            maximumAttackFrameCount: this.maximumAttackFrameCount,
+            maximumOutputFrameCount: this.maximumOutputFrameCount,
+            minimumAttackFrameCount: this.minimumAttackFrameCount,
+            releaseCoefficient: this.releaseCoefficient
+        }) ?? null;
     }
 
     /** Buffers contiguous PCM and emits frames with a complete future horizon. */
@@ -105,30 +144,48 @@ export default class StreamingAudioLookaheadLimiter {
         return this.renderAvailable(false);
     }
 
-    /** Emits the complete retained tail exactly once without synthetic samples. */
+    /** Emits the complete retained tail exactly once without synthetic samples, and frees a kernel's memory. */
     public finalize(): StreamingAudioResamplerOutput[] {
         if (this.finalized) {
             return [];
         }
         this.finalized = true;
-        const output = this.renderAvailable(true);
-        for (let channelIndex = 0; channelIndex < this.channelBuffers.length; channelIndex += 1) {
-            this.channelBuffers[channelIndex] = new Float32Array(0);
+        try {
+            const output = this.renderAvailable(true);
+            for (let channelIndex = 0; channelIndex < this.channelBuffers.length; channelIndex += 1) {
+                this.channelBuffers[channelIndex] = new Float32Array(0);
+            }
+            this.bufferStartFrame = this.sourceFrameCount;
+            return output;
+        } finally {
+            this.kernel?.release();
         }
-        this.bufferStartFrame = this.sourceFrameCount;
-        return output;
+    }
+
+    /** Ends the limiter without its tail and frees a kernel's memory, for an attempt that stops early. */
+    public close(): void {
+        this.finalized = true;
+        this.kernel?.release();
     }
 
     /** Returns exact frame accounting and peak-envelope measurements. */
     public getTelemetry(): StreamingAudioLookaheadLimiterTelemetry {
-        return {
-            analysisFrameCount: this.analysisFrameCount,
-            bufferedFrameCount: this.channelBuffers[0]?.length ?? 0,
-            finalized: this.finalized,
+        // The kernel keeps its measurements past its release
+        const envelope = this.kernel?.getTelemetry() ?? {
             limitedFrameCount: this.limitedFrameCount,
             maximumInputPeak: this.maximumInputPeak,
             maximumOutputPeak: this.maximumOutputPeak,
-            minimumAppliedGain: this.minimumAppliedGain,
+            minimumAppliedGain: this.minimumAppliedGain
+        };
+        return {
+            analysisFrameCount: this.analysisFrameCount,
+            // The retained frames run from the first unrendered one to the newest, in the reference's arrays and in a kernel's ring alike
+            bufferedFrameCount: this.sourceFrameCount - this.bufferStartFrame,
+            finalized: this.finalized,
+            limitedFrameCount: envelope.limitedFrameCount,
+            maximumInputPeak: envelope.maximumInputPeak,
+            maximumOutputPeak: envelope.maximumOutputPeak,
+            minimumAppliedGain: envelope.minimumAppliedGain,
             outputFrameCount: this.outputFrameCount,
             sourceFrameCount: this.sourceFrameCount
         };
@@ -155,15 +212,20 @@ export default class StreamingAudioLookaheadLimiter {
         }
         this.validateAndSetTimestamp(input.mediaTimeMicroseconds);
 
+        if (this.kernel) {
+            appendKernelInput(this.kernel, input);
+            this.sourceFrameCount += input.frameCount;
+            return;
+        }
         for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
             const inputChannel = input.channelData[channelIndex];
             if (!(inputChannel instanceof Float32Array)
                 || inputChannel.length !== input.frameCount) {
-                throw new RangeError('Limiter input channels must be equal-length Float32Array values');
+                throw new RangeError(LIMITER_CHANNEL_SHAPE_MESSAGE);
             }
             for (const sample of inputChannel) {
                 if (!Number.isFinite(sample)) {
-                    throw new RangeError('Limiter input samples must be finite');
+                    throw new RangeError(LIMITER_NON_FINITE_SAMPLE_MESSAGE);
                 }
                 this.maximumInputPeak = Math.max(this.maximumInputPeak, Math.abs(sample));
             }
@@ -234,7 +296,29 @@ export default class StreamingAudioLookaheadLimiter {
 
     private renderChunk(frameCount: number): StreamingAudioResamplerOutput {
         const outputStartFrame = this.outputFrameCount;
-        const localStartFrame = outputStartFrame - this.bufferStartFrame;
+        const channelData = this.kernel ?
+            this.kernel.render(frameCount) :
+            this.renderReferenceChannelData(outputStartFrame - this.bufferStartFrame, frameCount);
+
+        this.outputFrameCount += frameCount;
+        const anchorMediaTimeMicroseconds = this.anchorMediaTimeMicroseconds;
+        if (anchorMediaTimeMicroseconds === null) {
+            throw new Error('Limiter output has no media-time anchor');
+        }
+        return {
+            channelData,
+            durationMicroseconds: audioFramesToMicroseconds(frameCount, this.sampleRate),
+            frameCount,
+            mediaTimeMicroseconds: addMicroseconds(
+                anchorMediaTimeMicroseconds,
+                audioFramesToMicroseconds(outputStartFrame, this.sampleRate)
+            ),
+            sampleRate: this.sampleRate
+        };
+    }
+
+    /** The reference rendering: attack constraints analyzed over the chunk and its horizon, then the gain recurrence. */
+    private renderReferenceChannelData(localStartFrame: number, frameCount: number): Float32Array[] {
         const attackConstraints = this.createAttackConstraints(
             localStartFrame,
             frameCount
@@ -274,22 +358,7 @@ export default class StreamingAudioLookaheadLimiter {
                 );
             }
         }
-
-        this.outputFrameCount += frameCount;
-        const anchorMediaTimeMicroseconds = this.anchorMediaTimeMicroseconds;
-        if (anchorMediaTimeMicroseconds === null) {
-            throw new Error('Limiter output has no media-time anchor');
-        }
-        return {
-            channelData,
-            durationMicroseconds: audioFramesToMicroseconds(frameCount, this.sampleRate),
-            frameCount,
-            mediaTimeMicroseconds: addMicroseconds(
-                anchorMediaTimeMicroseconds,
-                audioFramesToMicroseconds(outputStartFrame, this.sampleRate)
-            ),
-            sampleRate: this.sampleRate
-        };
+        return channelData;
     }
 
     private createAttackConstraints(localStartFrame: number, frameCount: number): Float32Array {
@@ -356,8 +425,11 @@ export default class StreamingAudioLookaheadLimiter {
         if (consumedFrameCount <= 0) {
             return;
         }
-        for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
-            this.channelBuffers[channelIndex] = this.channelBuffers[channelIndex].slice(consumedFrameCount);
+        // A kernel's ring reuses rendered frames' slots, so nothing is copied
+        if (!this.kernel) {
+            for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
+                this.channelBuffers[channelIndex] = this.channelBuffers[channelIndex].slice(consumedFrameCount);
+            }
         }
         this.bufferStartFrame = this.outputFrameCount;
     }

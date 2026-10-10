@@ -10,9 +10,9 @@ rectangle "Host (host code)" $BOX_HOST {
 
 rectangle "Main thread (engine)" $BOX_MAIN {
   rectangle "**CustomPlaybackController**\nMediaClock; startup, stall,\nand lag policy; fallback" as controller
-  rectangle "**CustomDecodeSession**\none worker per generation;\nframe queue; credits" as session
+  rectangle "**CustomDecodeSession**\none worker per session;\nframe queue; credits" as session
   rectangle "**WebGPUPresenter**\nown GPUDevice; canvas\nover the backend video" as presenter
-  rectangle "**CustomDecodeAudioBridge**\ndecoded PCM, credits" as pcmBridge
+  rectangle "**CustomDecodeAudioBridge**\nworklet channel; progress" as pcmBridge
   rectangle "**CustomDecodeNativeAudioBridge**\nhidden audio element + MSE" as nativeBridge
   rectangle "**WebGPUAudioOutputManager**\none per page; sink routing" as sinkManager
 }
@@ -20,9 +20,15 @@ rectangle "Main thread (engine)" $BOX_MAIN {
 rectangle "CustomDecode.worker (engine)" $BOX_WORKER {
   rectangle "**Mediabunny demux**\nrange-validated fetch" as demux
   rectangle "**Video decode**\nWebCodecs; owned HEVC, AV1, VP9;\nhevc.js WASM (+ Dolby Vision EL);\nOpenJPEG; FFmpeg MPEG-2 and VC-1" as videoDecoders
-  rectangle "**Audio decode**\nWebCodecs; @mediabunny/ac3;\nE-AC-3, DTS, TrueHD WASM" as audioDecoders
-  rectangle "**PCM pipeline**\ndownmix, resample to\n48 kHz, limiter" as pcmPipeline
+  rectangle "**Mediabunny audio decode**\nWebCodecs; @mediabunny/ac3" as audioDecoders
   rectangle "**fMP4 remux**\nAC-3, E-AC-3" as remux
+  rectangle "**WorkerPresentationRenderer**\nown GPUDevice; transferred\ncanvas; kept frames" as workerRenderer
+}
+
+rectangle "CustomAudioDecode.worker (engine)" $BOX_WORKER {
+  rectangle "**Bundled audio decode**\nE-AC-3, DTS, TrueHD WASM" as bundledAudioDecoders
+  rectangle "**PCM pipeline**\ndownmix, resample to\n48 kHz, limiter" as pcmPipeline
+  rectangle "**WorkletPCMProducer**\ncredits; continuity" as producer
 }
 
 rectangle "AudioWorklet (engine)" $BOX_WORKLET {
@@ -44,17 +50,24 @@ session -down-> demux : start, credits
 demux -down-> videoDecoders
 demux -down-> audioDecoders
 demux -down-> remux
-audioDecoders -down-> pcmPipeline
-videoDecoders -up-> session : 'frame'
-pcmPipeline -up-> pcmBridge : 'audio' PCM
+demux -right-> bundledAudioDecoders : packet batches
+audioDecoders -right-> pcmPipeline : sample batches
+bundledAudioDecoders -down-> pcmPipeline
+pcmPipeline -down-> producer
+videoDecoders -up-> session : 'frame', or its\ndescriptor
+videoDecoders -right-> workerRenderer : kept frames
+presenter -down-> workerRenderer : present by ID,\nlayout, pipeline
+workerRenderer -right-> upload : worker\npresentation
+producer -down-> processor : PCM chunks
+producer ..> session : progress, through\nthe decode worker
 remux -up-> nativeBridge : fMP4 segments
-pcmBridge -down-> processor
+pcmBridge -down-> processor : flush; the\nproducer's channel
 presenter -right-> upload
 upload -right-> colorShader
 sinkManager ..> processor : setSinkId
 sinkManager ..> nativeBridge : setSinkId
 
-' Layout: two rows in the main thread, and the worklet and GPU beside the worker
+' Layout: two rows in the main thread, and the worklet and GPU beside the workers
 controller -[hidden]down-> pcmBridge
 session -[hidden]down-> nativeBridge
 presenter -[hidden]down-> sinkManager

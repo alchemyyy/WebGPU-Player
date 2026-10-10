@@ -204,9 +204,14 @@ import {
 } from 'webgpu-player/presentation/RenderSettings';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 import WebGPUPresenter, {
+    type DecodedWorkerPresentationFrame,
     type PresentationSurface,
     WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS
 } from 'webgpu-player/presentation/WebGPUPresenter';
+import {
+    isWorkerPresentationRequest,
+    type WorkerPresentationResponse
+} from 'webgpu-player/presentation/WorkerPresentationProtocol';
 
 import { createHDR10PlusHEVCVector } from '../../src/capability/vectors/HDR10PlusVectors';
 
@@ -4229,5 +4234,349 @@ describe('WebGPUPresenter', () => {
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
         expect(fallbackHandler).toHaveBeenCalledWith(1, 'canvas-context-unavailable');
         expect(surfaceHarness.surface.container.children).toHaveLength(1);
+    });
+
+    describe('worker presentation', () => {
+        type FakeMessagePort = {
+            close: MockFunction
+            onmessage: ((event: MessageEvent<unknown>) => void) | null
+            postedMessages: unknown[]
+            postMessage: (message: unknown) => void
+        };
+
+        type FakeChannel = {
+            port1: FakeMessagePort
+            port2: FakeMessagePort
+        };
+
+        // The decode generation whose run posted the worker frames
+        const WORKER_DECODE_GENERATION = 41;
+        const WORKER_FRAME_DISPLAY_WIDTH = 1_920;
+        const WORKER_FRAME_DISPLAY_HEIGHT = 1_080;
+        const FIRST_WORKER_REVISION = 1;
+        const SECOND_WORKER_REVISION = 2;
+        const LIVE_TONE_MAPPING_EXPOSURE = 0.5;
+
+        const createdChannels: FakeChannel[] = [];
+        const transferredCanvases: HTMLCanvasElement[] = [];
+        const originalMessageChannel = Object.getOwnPropertyDescriptor(globalThis, 'MessageChannel');
+        const originalOffscreenCanvas = Object.getOwnPropertyDescriptor(globalThis, 'OffscreenCanvas');
+        const originalTransferControlToOffscreen = Object.getOwnPropertyDescriptor(
+            HTMLCanvasElement.prototype,
+            'transferControlToOffscreen'
+        );
+
+        class TestOffscreenCanvas {}
+
+        function createFakeMessagePort(): FakeMessagePort {
+            const postedMessages: unknown[] = [];
+            return {
+                close: vi.fn(),
+                onmessage: null,
+                postedMessages,
+                postMessage: (message: unknown): void => {
+                    postedMessages.push(message);
+                }
+            };
+        }
+
+        class TestMessageChannel implements FakeChannel {
+            readonly port1 = createFakeMessagePort();
+            readonly port2 = createFakeMessagePort();
+
+            constructor() {
+                createdChannels.push(this);
+            }
+        }
+
+        /** Delivers a renderer message to the presenter's end of the channel. */
+        function answerAsRenderer(channel: FakeChannel, response: WorkerPresentationResponse): void {
+            channel.port1.onmessage?.({ data: response } as MessageEvent<unknown>);
+        }
+
+        function getPostedRequests(channel: FakeChannel, type: string): Array<Record<string, unknown>> {
+            return channel.port1.postedMessages.filter((message: unknown): boolean => (
+                (message as Record<string, unknown>).type === type
+            )) as Array<Record<string, unknown>>;
+        }
+
+        function createWorkerFrame(frameId: number): DecodedWorkerPresentationFrame {
+            return {
+                decodeGeneration: WORKER_DECODE_GENERATION,
+                displayHeight: WORKER_FRAME_DISPLAY_HEIGHT,
+                displayWidth: WORKER_FRAME_DISPLAY_WIDTH,
+                durationMicroseconds: secondsToMicroseconds(0.04),
+                frameId,
+                mediaTimeMicroseconds: secondsToMicroseconds(frameId + 1),
+                outputMode: 'worker-frame'
+            };
+        }
+
+        function createPresentedResponse(frameId: number, ok: boolean): WorkerPresentationResponse {
+            return {
+                dolbyVisionDualLayerMode: null,
+                frameId,
+                generation: WORKER_DECODE_GENERATION,
+                gpuWorkCompleted: ok,
+                HDR10PlusResult: null,
+                ok,
+                type: 'presented'
+            };
+        }
+
+        function requireAttachedChannel(presenter: WebGPUPresenter): FakeChannel {
+            const attachment = presenter.createWorkerPresentationAttachment(1);
+            const channel = createdChannels.at(-1);
+            if (!attachment || !channel) {
+                throw new Error('The presenter created no worker presentation attachment');
+            }
+            expect(attachment.port).toBe(channel.port2);
+            expect(attachment.canvas).toBeInstanceOf(TestOffscreenCanvas);
+            return channel;
+        }
+
+        /** Attaches a renderer that reported ready and accepted the active pipeline. */
+        function attachReadyRenderer(presenter: WebGPUPresenter): FakeChannel {
+            const channel = requireAttachedChannel(presenter);
+            answerAsRenderer(channel, { reason: null, state: 'ready', type: 'status' });
+            answerAsRenderer(channel, { ok: true, reason: null, revision: FIRST_WORKER_REVISION, type: 'configured' });
+            return channel;
+        }
+
+        function getMainCanvas(): Element | null {
+            for (const canvas of document.querySelectorAll('.webgpuPlayerCanvas')) {
+                if (!transferredCanvases.includes(canvas as HTMLCanvasElement)) {
+                    return canvas;
+                }
+            }
+            return null;
+        }
+
+        beforeEach(() => {
+            createdChannels.length = 0;
+            transferredCanvases.length = 0;
+            Object.defineProperty(globalThis, 'MessageChannel', { configurable: true, value: TestMessageChannel });
+            Object.defineProperty(globalThis, 'OffscreenCanvas', { configurable: true, value: TestOffscreenCanvas });
+            Object.defineProperty(HTMLCanvasElement.prototype, 'transferControlToOffscreen', {
+                configurable: true,
+                value: function transferControlToOffscreen(this: HTMLCanvasElement): OffscreenCanvas {
+                    transferredCanvases.push(this);
+                    return new TestOffscreenCanvas() as unknown as OffscreenCanvas;
+                }
+            });
+        });
+
+        afterEach(() => {
+            restoreProperty(globalThis, 'MessageChannel', originalMessageChannel);
+            restoreProperty(globalThis, 'OffscreenCanvas', originalOffscreenCanvas);
+            restoreProperty(HTMLCanvasElement.prototype, 'transferControlToOffscreen', originalTransferControlToOffscreen);
+        });
+
+        it('creates a transferred canvas and a renderer channel only for a current pushed-frame session', async () => {
+            const idlePresenter = new WebGPUPresenter(vi.fn());
+            expect(idlePresenter.createWorkerPresentationAttachment(1)).toBeNull();
+
+            const { presenter } = await startRawRoutePresentation(
+                createPQColorMetadata(),
+                'I420P10',
+                createHDRToSDRRenderSettings()
+            );
+            expect(presenter.createWorkerPresentationAttachment(2)).toBeNull();
+            const channel = requireAttachedChannel(presenter);
+
+            const [ workerCanvas ] = transferredCanvases;
+            expect(workerCanvas.isConnected).toBe(true);
+            expect(workerCanvas.classList.contains('webgpuPlayerCanvas')).toBe(true);
+            expect(workerCanvas.classList.contains('webgpuPlayerCanvas-visible')).toBe(false);
+            // The renderer reads the active pipeline before any present
+            const [ configureRequest ] = channel.port1.postedMessages;
+            expect(isWorkerPresentationRequest(configureRequest)).toBe(true);
+            expect(configureRequest).toMatchObject({
+                inputMode: 'raw-yuv',
+                rawFrameFormat: 'I420P10',
+                revision: FIRST_WORKER_REVISION,
+                type: 'configure'
+            });
+        });
+
+        it('presents a worker frame by ID once its renderer is ready and configured, and completes the selection after its GPU work', async () => {
+            const { fallbackHandler, presenter } = await startRawRoutePresentation(
+                createPQColorMetadata(),
+                'I420P10',
+                createHDRToSDRRenderSettings()
+            );
+            const channel = requireAttachedChannel(presenter);
+            const completed = vi.fn();
+
+            // A renderer still starting, or still installing its pipeline, refuses the frame without a fallback
+            expect(presenter.presentDecodedFrame(createWorkerFrame(0), 1, completed)).toBe(false);
+            answerAsRenderer(channel, { reason: null, state: 'ready', type: 'status' });
+            expect(presenter.presentDecodedFrame(createWorkerFrame(0), 1, completed)).toBe(false);
+            answerAsRenderer(channel, { ok: true, reason: null, revision: FIRST_WORKER_REVISION, type: 'configured' });
+
+            expect(presenter.presentDecodedFrame(createWorkerFrame(1), 1, completed)).toBe(true);
+            const [ layoutRequest ] = getPostedRequests(channel, 'layout');
+            expect(isWorkerPresentationRequest(layoutRequest)).toBe(true);
+            expect(layoutRequest).toMatchObject({ revision: FIRST_WORKER_REVISION });
+            expect(getPostedRequests(channel, 'present')).toEqual([ {
+                frameId: 1,
+                generation: WORKER_DECODE_GENERATION,
+                layoutRevision: FIRST_WORKER_REVISION,
+                type: 'present'
+            } ]);
+            await Promise.resolve();
+            expect(completed).not.toHaveBeenCalled();
+
+            answerAsRenderer(channel, createPresentedResponse(1, true));
+            await vi.waitFor(() => expect(completed).toHaveBeenCalledWith(true));
+            const [ workerCanvas ] = transferredCanvases;
+            expect(workerCanvas.classList.contains('webgpuPlayerCanvas-visible')).toBe(true);
+            expect(getMainCanvas()?.classList.contains('webgpuPlayerCanvas-visible')).toBe(false);
+            expect(presenter.getTelemetry()).toMatchObject({ presentedFrameCount: 1, state: 'presenting' });
+
+            // An unchanged layout is not posted again
+            expect(presenter.presentDecodedFrame(createWorkerFrame(2), 1, completed)).toBe(true);
+            expect(getPostedRequests(channel, 'layout')).toHaveLength(1);
+            expect(fallbackHandler).not.toHaveBeenCalled();
+        });
+
+        it('discards a worker frame the renderer could not draw, and falls back on a renderer failure', async () => {
+            const { fallbackHandler, presenter } = await startRawRoutePresentation(
+                createPQColorMetadata(),
+                'I420P10',
+                createHDRToSDRRenderSettings()
+            );
+            const channel = attachReadyRenderer(presenter);
+            const completed = vi.fn();
+
+            expect(presenter.presentDecodedFrame(createWorkerFrame(0), 1, completed)).toBe(true);
+            answerAsRenderer(channel, createPresentedResponse(0, false));
+            await vi.waitFor(() => expect(completed).toHaveBeenCalledWith(false));
+            expect(transferredCanvases[0].classList.contains('webgpuPlayerCanvas-visible')).toBe(false);
+            expect(presenter.getTelemetry().presentedFrameCount).toBe(0);
+            expect(fallbackHandler).not.toHaveBeenCalled();
+
+            answerAsRenderer(channel, { reason: 'device-recovery-failed', type: 'failed' });
+            expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed');
+            expect(transferredCanvases[0].isConnected).toBe(false);
+        });
+
+        it('removes the canvas of an unavailable renderer and keeps presenting on the page', async () => {
+            const { fallbackHandler, presenter } = await startRawRoutePresentation(
+                createPQColorMetadata(),
+                'I420P10',
+                createHDRToSDRRenderSettings()
+            );
+            const channel = requireAttachedChannel(presenter);
+
+            answerAsRenderer(channel, { reason: 'gpu-unavailable', state: 'unavailable', type: 'status' });
+            expect(transferredCanvases[0].isConnected).toBe(false);
+            expect(channel.port1.close).toHaveBeenCalledOnce();
+            expect(getPostedRequests(channel, 'detach')).toHaveLength(1);
+            expect(fallbackHandler).not.toHaveBeenCalled();
+            expect(getMainCanvas()).toBeInstanceOf(HTMLCanvasElement);
+            expect(presentRawFrame(presenter, createRawFrame('I420P10', createPQColorMetadata()))).toBe(true);
+        });
+
+        it('replaces an earlier attachment and discards the frames its renderer was asked to draw', async () => {
+            const { presenter } = await startRawRoutePresentation(
+                createPQColorMetadata(),
+                'I420P10',
+                createHDRToSDRRenderSettings()
+            );
+            const firstChannel = attachReadyRenderer(presenter);
+            const completed = vi.fn();
+            expect(presenter.presentDecodedFrame(createWorkerFrame(0), 1, completed)).toBe(true);
+
+            const secondChannel = requireAttachedChannel(presenter);
+            await vi.waitFor(() => expect(completed).toHaveBeenCalledWith(false));
+            const [ firstCanvas, secondCanvas ] = transferredCanvases;
+            expect(firstCanvas.isConnected).toBe(false);
+            expect(secondCanvas.isConnected).toBe(true);
+            expect(firstChannel.port1.close).toHaveBeenCalledOnce();
+            expect(getPostedRequests(firstChannel, 'detach')).toHaveLength(1);
+            expect(getPostedRequests(secondChannel, 'configure')).toEqual([
+                expect.objectContaining({ revision: FIRST_WORKER_REVISION })
+            ]);
+
+            // A late answer of the replaced renderer reaches nothing
+            answerAsRenderer(firstChannel, createPresentedResponse(0, true));
+            expect(completed).toHaveBeenCalledOnce();
+        });
+
+        it('forwards live HDR controls and waits for the renderer to accept a new pipeline', async () => {
+            const { fallbackHandler, presenter } = await startRawRoutePresentation(
+                createPQColorMetadata(),
+                'I420P10',
+                createHDRToSDRRenderSettings()
+            );
+            const channel = attachReadyRenderer(presenter);
+            const liveSettings = createHDRToSDRRenderSettings({ toneMapping: { exposure: LIVE_TONE_MAPPING_EXPOSURE } });
+
+            expect(presenter.updateRenderSettings(liveSettings, 1)).toBe(true);
+            const [ settingsRequest ] = getPostedRequests(channel, 'settings');
+            expect(isWorkerPresentationRequest(settingsRequest)).toBe(true);
+            expect(settingsRequest).toMatchObject({ automaticInputPeakNits: true, revision: FIRST_WORKER_REVISION });
+
+            let configurationSettled = false;
+            const configurationPromise = presenter.configureColorPipeline({
+                inputMode: 'raw-yuv',
+                metadata: createPQColorMetadata(),
+                rawFrameFormat: 'I420P10',
+                settings: createHDRToSDRRenderSettings()
+            }, 1).then((configured: boolean): boolean => {
+                configurationSettled = true;
+                return configured;
+            });
+            await vi.waitFor(() => expect(getPostedRequests(channel, 'configure')).toHaveLength(2));
+            await Promise.resolve();
+            expect(configurationSettled).toBe(false);
+            expect(presenter.presentDecodedFrame(createWorkerFrame(0), 1, vi.fn())).toBe(false);
+
+            answerAsRenderer(channel, { ok: true, reason: null, revision: SECOND_WORKER_REVISION, type: 'configured' });
+            await expect(configurationPromise).resolves.toBe(true);
+            expect(presenter.presentDecodedFrame(createWorkerFrame(1), 1, vi.fn())).toBe(true);
+            expect(fallbackHandler).not.toHaveBeenCalled();
+        });
+
+        it('falls back when the renderer refuses a new pipeline', async () => {
+            const { fallbackHandler, presenter } = await startRawRoutePresentation(
+                createPQColorMetadata(),
+                'I420P10',
+                createHDRToSDRRenderSettings()
+            );
+            const channel = attachReadyRenderer(presenter);
+
+            const configurationPromise = presenter.configureColorPipeline({
+                inputMode: 'raw-yuv',
+                metadata: createPQColorMetadata(),
+                rawFrameFormat: 'I420P10',
+                settings: createHDRToSDRRenderSettings()
+            }, 1);
+            await vi.waitFor(() => expect(getPostedRequests(channel, 'configure')).toHaveLength(2));
+            answerAsRenderer(channel, {
+                ok: false,
+                reason: 'pipeline-creation-failed',
+                revision: SECOND_WORKER_REVISION,
+                type: 'configured'
+            });
+
+            await expect(configurationPromise).resolves.toBe(false);
+            expect(fallbackHandler).toHaveBeenCalledWith(1, 'pipeline-creation-failed');
+        });
+
+        it('ends the attachment with the session', async () => {
+            const { presenter } = await startRawRoutePresentation(
+                createPQColorMetadata(),
+                'I420P10',
+                createHDRToSDRRenderSettings()
+            );
+            const channel = attachReadyRenderer(presenter);
+
+            presenter.endSession(1);
+            expect(transferredCanvases[0].isConnected).toBe(false);
+            expect(channel.port1.close).toHaveBeenCalledOnce();
+            expect(getPostedRequests(channel, 'detach')).toHaveLength(1);
+        });
     });
 });

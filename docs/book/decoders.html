@@ -38,7 +38,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-0bba3c6a.js";
+            window.path_to_searchindex_js = "searchindex-36a56e7f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c0e4fc60.js"></script>
@@ -181,7 +181,7 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="webassembly-decoders"><a class="header" href="#webassembly-decoders">WebAssembly decoders</a></h1>
-<p><code>wasm/</code> holds the sources and the build of the engine’s WebAssembly decoders.
+<p><code>wasm/</code> holds the sources and the build of the engine’s WebAssembly decoders, and of its decoded audio output stage.
 The build writes them to <code>bin/wasm/</code>, which is ignored like everything in <code>bin/</code> but <code>bin/codec_vector_assets/</code>.</p>
 <div class="table-wrapper">
 <table>
@@ -194,6 +194,7 @@ The build writes them to <code>bin/wasm/</code>, which is ignored like everythin
 <tr><td><code>ffmpeg-mpeg2-vc1</code></td><td><code>ffmpeg-mpeg2-vc1.js</code>, <code>ffmpeg-mpeg2-vc1.wasm</code></td><td>FFmpeg MPEG-2 Video and VC-1, LGPL-2.1-or-later</td><td><code>ffmpeg-mpeg2-vc1/ffmpeg_mpeg2_vc1_bridge.c</code></td></tr>
 <tr><td><code>libdcadec-dts</code></td><td><code>libdcadec-dts.mjs</code>, <code>libdcadec-dts.wasm</code></td><td><a href="https://github.com/foo86/dcadec">dcadec</a> DTS, DTS-HD High Resolution, and DTS-HD Master Audio, LGPL-2.1-or-later</td><td><code>libdcadec-dts/libdcadec_dts_bridge.c</code></td></tr>
 <tr><td><code>libdovi</code></td><td><code>dovi-rpu-parser.wasm</code></td><td>The <code>dolby_vision</code> crate from <a href="https://github.com/quietvoid/dovi_tool">dovi_tool</a>, vendored and patched, MIT</td><td><code>libdovi/</code></td></tr>
+<tr><td><code>audio-output-stage</code></td><td><code>audio-output-stage.wasm</code></td><td>None: the engine’s resampler and limiter kernels</td><td><code>audio-output-stage/audio_output_stage.c</code></td></tr>
 </tbody>
 </table>
 </div>
@@ -202,7 +203,10 @@ Their hand-written TypeScript declarations sit beside the bridges as <code>&lt;k
 Every <code>.wasm</code> file, and the <code>ffmpeg-mpeg2-vc1</code> glue, is served from <code>libraries/&lt;kit&gt;/</code>.
 An audio binary is fetched only when a worker creates its first decoder of that kit, and a probe worker and the playback worker fetch the same URL, so the browser caches it once.
 <code>src/DecoderWASMSource.ts</code> always passes the glue <code>locateFile</code>, because a bundled glue cannot resolve its own URL, or <code>wasmBinary</code> with bytes a caller already fetched.
-The OpenJPEG and hevc.js decoders come from npm packages, which <code>scripts/build.mjs</code> copies; nothing here builds them.</p>
+The OpenJPEG and hevc.js decoders come from npm packages, which <code>scripts/build.mjs</code> copies; nothing here builds them.
+<code>audio-output-stage</code> and <code>libdovi</code> have no glue: the engine instantiates each <code>.wasm</code> itself, <code>audio-output-stage</code> once per playback worker when its first decoded audio attempt starts.
+The playback worker also makes one instance of each video kit, hevc.js, OpenJPEG, <code>ffmpeg-mpeg2-vc1</code>, and <code>libdovi</code>, when its first decoder or parser needs it (<code>video/decoders/WorkerWASMInstanceCache.ts</code>).
+Every later decoder or parser in the worker creates its own native context in that instance and releases only that context when it closes, and an instance whose code traps is replaced for the next one.</p>
 <h2 id="you-need"><a class="header" href="#you-need">You need</a></h2>
 <ul>
 <li>GNU Make, Git, and a POSIX shell (Git Bash on Windows).
@@ -256,13 +260,32 @@ The <a href="recipes.html#change-the-dolby-vision-parser">Recipes</a> cover a ch
 <pre><code class="language-sh">cargo test --locked
 cargo clippy --locked --all-targets
 </code></pre>
+<h2 id="the-audio-output-stage"><a class="header" href="#the-audio-output-stage">The audio output stage</a></h2>
+<p><code>wasm/audio-output-stage/audio_output_stage.c</code> holds the decoded audio output stage’s two kernels: the resampler’s source history and windowed-sinc rendering, and the lookahead limiter’s history, attack envelope, and gain.
+Timeline reconciliation, timestamps, output chunking, and the downmix stay in TypeScript, in <code>audio/processing/</code>.
+Each kernel keeps its history in a ring, so a push copies only its own frames, and its SIMD (simd128) vectors hold channel pairs or neighboring frames, never neighboring taps.
+The kernels produce the same bytes as <code>StreamingAudioResampler</code> and <code>StreamingAudioLookaheadLimiter</code>, which stay as the reference and the fallback (see <a href="decisions.html#audio">Decisions</a>).
+Three rules keep them exact:</p>
+<ul>
+<li><code>-ffp-contract=off</code>, so no multiply and add fuse.</li>
+<li>The filter table is built in JavaScript and copied in, because V8’s <code>Math.sin</code> and <code>Math.cos</code> need not match a C library’s.</li>
+<li>The limiter’s constants from <code>Math.pow</code> and <code>Math.exp</code> arrive as numbers, and its attack length reads the engine’s <code>Math.log10</code> through the module’s one import, <code>math.log10</code>.</li>
+</ul>
+<p>The kit links with <code>-sSTANDALONE_WASM</code> and emcc’s own <code>--no-entry</code>, so it has no JavaScript glue.
+It is a WASI reactor: <code>_initialize</code> runs the constructors that set up emmalloc’s heap, before any other export.
+It defines <code>emscripten_notify_memory_growth</code> itself, so <code>math.log10</code> is its only import.
+<code>audio/processing/AudioOutputStageModule.ts</code> instantiates it, refuses a module whose <code>audio_output_stage_abi_version</code> differs from its own, and wraps each kernel; raise the version with any change to an export’s meaning.</p>
+<p>After a change, rebuild the kit and run the equivalence suite, which compares both implementations byte for byte, from the engine root:</p>
+<pre><code class="language-sh">make -C wasm audio-output-stage
+npx vitest --watch=false test/audio/processing/AudioOutputStageModule.integration.test.ts
+</code></pre>
 <h2 id="licenses"><a class="header" href="#licenses">Licenses</a></h2>
 <ul>
-<li>The bridges and the <code>libdovi</code> crate are MIT, like the rest of the engine.
+<li>The bridges, the audio output stage, and the <code>libdovi</code> crate are MIT, like the rest of the engine.
 The vendored <code>dolby_vision</code> crate is MIT too and keeps its own <code>LICENSE</code>.</li>
 <li>FFmpeg and libdcadec are LGPL-2.1-or-later.
 <code>wasm/licenses/</code> holds their license texts.</li>
-<li><code>scripts/build.mjs</code> serves each LGPL decoder with its license, the bridge source, and the bridge license.
+<li><code>scripts/build.mjs</code> serves each LGPL decoder with its license, the bridge source, and the bridge license, and the audio output stage with the engine’s <code>LICENSE</code>.
 The Makefile pins the exact upstream commits.</li>
 <li>Attach the tarballs from <code>make source-archives</code> to every release: the exact FFmpeg and dcadec trees, and the engine’s <code>wasm/</code> sources.</li>
 </ul>
@@ -274,7 +297,7 @@ The Makefile pins the exact upstream commits.</li>
 </thead>
 <tbody>
 <tr><td><code>wasm/Makefile</code></td><td>The build</td></tr>
-<tr><td><code>wasm/&lt;kit&gt;/</code></td><td>A bridge source, and the TypeScript declarations of an ES module output</td></tr>
+<tr><td><code>wasm/&lt;kit&gt;/</code></td><td>A bridge or kernel source, and the TypeScript declarations of an ES module output</td></tr>
 <tr><td><code>wasm/libdovi/</code></td><td>The Rust crate that wraps the <code>dolby_vision</code> RPU parser</td></tr>
 <tr><td><code>wasm/libdovi/vendor/dolby_vision/</code></td><td>The vendored, patched <code>dolby_vision</code> crate and its <code>PATCHES.md</code></td></tr>
 <tr><td><code>wasm/licenses/</code></td><td>Upstream license texts</td></tr>

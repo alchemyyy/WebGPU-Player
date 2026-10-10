@@ -12,12 +12,19 @@ export function markHandledDecodeFailure(error: unknown): void {
     }
 }
 
-/** Keeps the scope from reporting an unhandled rejection whose reason the worker already caught. */
-export function suppressHandledDecodeFailureRejections(scope: Pick<EventTarget, 'addEventListener'>): void {
+/**
+ * Keeps the scope from reporting an unhandled rejection whose reason the worker already caught.
+ * Such a rejection is a close() that Mediabunny skipped, so `onSuppressed` learns that a failed decoder stays open.
+ */
+export function suppressHandledDecodeFailureRejections(
+    scope: Pick<EventTarget, 'addEventListener'>,
+    onSuppressed: () => void = (): void => undefined
+): void {
     scope.addEventListener(UNHANDLED_REJECTION_EVENT, (event: Event): void => {
         const reason: unknown = (event as PromiseRejectionEvent).reason;
         if (typeof reason === 'object' && reason !== null && handledDecodeFailures.has(reason)) {
             event.preventDefault();
+            onSuppressed();
         }
     });
 }

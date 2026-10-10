@@ -191,6 +191,11 @@ class GuardedAudioWorkletOutput implements AudioWorkletOutputController {
         return this.active && this.controller.isPlaying;
     }
 
+    public attachProducer(port: MessagePort): void {
+        this.requireActive();
+        this.controller.attachProducer(port);
+    }
+
     public enqueue(chunk: TransferablePlanarPCM, generation: number): AudioEnqueueSubmission {
         this.requireActive();
         return this.controller.enqueue(chunk, generation);

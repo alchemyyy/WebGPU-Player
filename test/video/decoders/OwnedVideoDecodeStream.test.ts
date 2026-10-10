@@ -3,8 +3,15 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { Microseconds } from 'webgpu-player/MediaTime';
 import { clearTimingTrace, exportTimingTrace, startTimingTrace } from 'webgpu-player/TimingTrace';
-import type { RawVideoFrameGeometry } from 'webgpu-player/video/RawVideoFrameCopy';
+import RawFrameBufferPool, {
+    MAXIMUM_SPARE_RAW_FRAME_BUFFERS_PER_BYTE_LENGTH
+} from 'webgpu-player/video/RawFrameBufferPool';
 import {
+    PreparedRawVideoFrameSource,
+    type RawVideoFrameGeometry
+} from 'webgpu-player/video/RawVideoFrameCopy';
+import {
+    getOwnedDecodedVideoTiming,
     OWNED_VIDEO_PACKET_PACING_MILLISECONDS,
     OwnedVideoStreamState,
     runOwnedSingleLayerVideoStream,
@@ -37,6 +44,16 @@ const FRAME_GEOMETRY: RawVideoFrameGeometry = {
 // EL dimensions that differ from the stream's first EL
 const MISMATCHED_ENHANCEMENT_CODED_WIDTH = 960;
 const MISMATCHED_ENHANCEMENT_DISPLAY_HEIGHT = 540;
+// A small frame a software decoder wrote into the raw layout at drain time
+const PREPARED_FRAME_GEOMETRY: RawVideoFrameGeometry = {
+    codedHeight: 2,
+    codedWidth: 4,
+    displayHeight: 2,
+    displayWidth: 4
+};
+const PREPARED_COLOR_SPACE = { fullRange: null, matrix: null, primaries: null, transfer: null };
+// A start after two frames, so the first two decoded frames precede it
+const SECOND_FRAME_END_MICROSECONDS = 2 * FRAME_DURATION_MICROSECONDS;
 
 class FakeVideoFrame {
     public readonly close = vi.fn();
@@ -58,7 +75,11 @@ type StateHarness = {
     state: OwnedVideoStreamState
 };
 
-function createHarness(hasEnhancementLayer: boolean): StateHarness {
+function createHarness(
+    hasEnhancementLayer: boolean,
+    enhancementGeometry: RawVideoFrameGeometry = FRAME_GEOMETRY,
+    startTimeMicroseconds = 0
+): StateHarness {
     const postedPairs: Array<[OwnedDecodedVideoOutput, OwnedDecodedVideoOutput | null]> = [];
     const stream: OwnedVideoStreamRun = {
         isStopped: (): boolean => false,
@@ -87,10 +108,50 @@ function createHarness(hasEnhancementLayer: boolean): StateHarness {
         state: new OwnedVideoStreamState(
             stream,
             frameMetadata,
-            0 as Microseconds,
-            hasEnhancementLayer ? FRAME_GEOMETRY : null
+            startTimeMicroseconds as Microseconds,
+            hasEnhancementLayer ? enhancementGeometry : null
         )
     };
+}
+
+/** Prepares a frame of zero samples in the raw layout, from the pool's buffers. */
+function createPreparedSource(
+    timestampMicroseconds: number,
+    format: 'I420' | 'I420P10',
+    bufferPool: RawFrameBufferPool | null
+): OwnedDecodedVideoSource {
+    const chromaWidth = PREPARED_FRAME_GEOMETRY.codedWidth / 2;
+    const chromaHeight = PREPARED_FRAME_GEOMETRY.codedHeight / 2;
+    const frame = PreparedRawVideoFrameSource.prepare(
+        {
+            ...PREPARED_FRAME_GEOMETRY,
+            colorSpace: PREPARED_COLOR_SPACE,
+            durationMicroseconds: FRAME_DURATION_MICROSECONDS as Microseconds,
+            format,
+            timestampMicroseconds: timestampMicroseconds as Microseconds
+        },
+        [
+            {
+                samples: new Uint16Array(PREPARED_FRAME_GEOMETRY.codedWidth * PREPARED_FRAME_GEOMETRY.codedHeight),
+                stride: PREPARED_FRAME_GEOMETRY.codedWidth
+            },
+            { samples: new Uint16Array(chromaWidth * chromaHeight), stride: chromaWidth },
+            { samples: new Uint16Array(chromaWidth * chromaHeight), stride: chromaWidth }
+        ],
+        bufferPool
+    );
+    return { frame, kind: 'prepared-raw-frame' };
+}
+
+/** Returns a pool holding one spare of a prepared frame's byte length, which the next prepared frame takes. */
+function createPoolWithSpare(format: 'I420' | 'I420P10'): { bufferPool: RawFrameBufferPool, spareBuffer: ArrayBuffer } {
+    const bufferPool = new RawFrameBufferPool(MAXIMUM_SPARE_RAW_FRAME_BUFFERS_PER_BYTE_LENGTH);
+    const source = createPreparedSource(0, format, null);
+    const spareBuffer = source.kind === 'prepared-raw-frame' ?
+        source.frame.takeRawFrame(format, PREPARED_FRAME_GEOMETRY)?.data ?? new ArrayBuffer(0) :
+        new ArrayBuffer(0);
+    bufferPool.release(spareBuffer);
+    return { bufferPool, spareBuffer };
 }
 
 function createFrameSource(
@@ -236,6 +297,50 @@ describe('OwnedVideoStreamState', () => {
         expect(harness.postedPairs).toHaveLength(0);
         harness.state.close();
         expect(harness.frameMetadata.clear).toHaveBeenCalledOnce();
+    });
+
+    it('reads a prepared frame\'s timing as a VideoFrame reports it', () => {
+        const source = createPreparedSource(FRAME_DURATION_MICROSECONDS, 'I420P10', null);
+
+        expect(getOwnedDecodedVideoTiming(source)).toEqual({
+            durationMicroseconds: FRAME_DURATION_MICROSECONDS,
+            mediaTimeMicroseconds: FRAME_DURATION_MICROSECONDS
+        });
+    });
+
+    it('pairs a prepared EL in the format the compound copy takes', async () => {
+        const harness = createHarness(true, PREPARED_FRAME_GEOMETRY);
+        const enhancementSource = createPreparedSource(0, 'I420P10', null);
+
+        harness.state.enqueueEnhancementDecodedOutput(enhancementSource);
+        harness.state.enqueueDecodedOutput(createPreparedSource(0, 'I420', null));
+
+        expect(await harness.state.postNextOutput()).toBe('posted');
+        expect(harness.postedPairs[0][1]?.source).toBe(enhancementSource);
+    });
+
+    it('returns the buffer of a prepared EL it cannot compose to the pool', async () => {
+        const harness = createHarness(true, PREPARED_FRAME_GEOMETRY);
+        const { bufferPool, spareBuffer } = createPoolWithSpare('I420');
+
+        harness.state.enqueueEnhancementDecodedOutput(createPreparedSource(0, 'I420', bufferPool));
+        harness.state.enqueueDecodedOutput(createPreparedSource(0, 'I420', null));
+
+        expect(harness.state.canDecodeEnhancement()).toBe(false);
+        expect(bufferPool.take(spareBuffer.byteLength)).toBe(spareBuffer);
+        expect(await harness.state.postNextOutput()).toBe('posted');
+        expect(harness.postedPairs[0][1]).toBeNull();
+    });
+
+    it('returns the buffer of a pre-start frame a later one replaces to the pool', () => {
+        const harness = createHarness(false, FRAME_GEOMETRY, SECOND_FRAME_END_MICROSECONDS);
+        const { bufferPool, spareBuffer } = createPoolWithSpare('I420P10');
+
+        harness.state.enqueueDecodedOutput(createPreparedSource(0, 'I420P10', bufferPool));
+        harness.state.enqueueDecodedOutput(createPreparedSource(FRAME_DURATION_MICROSECONDS, 'I420P10', null));
+
+        expect(bufferPool.take(spareBuffer.byteLength)).toBe(spareBuffer);
+        harness.state.close();
     });
 });
 

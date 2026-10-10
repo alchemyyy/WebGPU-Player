@@ -1,6 +1,6 @@
 # WebAssembly decoders
 
-`wasm/` holds the sources and the build of the engine's WebAssembly decoders.
+`wasm/` holds the sources and the build of the engine's WebAssembly decoders, and of its decoded audio output stage.
 The build writes them to `bin/wasm/`, which is ignored like everything in `bin/` but `bin/codec_vector_assets/`.
 
 | Kit | Output in `bin/wasm/<kit>/` | Library and license | Our source (MIT) |
@@ -10,6 +10,7 @@ The build writes them to `bin/wasm/`, which is ignored like everything in `bin/`
 | `ffmpeg-mpeg2-vc1` | `ffmpeg-mpeg2-vc1.js`, `ffmpeg-mpeg2-vc1.wasm` | FFmpeg MPEG-2 Video and VC-1, LGPL-2.1-or-later | `ffmpeg-mpeg2-vc1/ffmpeg_mpeg2_vc1_bridge.c` |
 | `libdcadec-dts` | `libdcadec-dts.mjs`, `libdcadec-dts.wasm` | [dcadec](https://github.com/foo86/dcadec) DTS, DTS-HD High Resolution, and DTS-HD Master Audio, LGPL-2.1-or-later | `libdcadec-dts/libdcadec_dts_bridge.c` |
 | `libdovi` | `dovi-rpu-parser.wasm` | The `dolby_vision` crate from [dovi_tool](https://github.com/quietvoid/dovi_tool), vendored and patched, MIT | `libdovi/` |
+| `audio-output-stage` | `audio-output-stage.wasm` | None: the engine's resampler and limiter kernels | `audio-output-stage/audio_output_stage.c` |
 
 The `.mjs` outputs are the audio kits' ES module glue, which esbuild bundles into each worker that imports it.
 Their hand-written TypeScript declarations sit beside the bridges as `<kit>/<kit>.d.mts`, and the engine imports them as `#wasm/<kit>/<kit>.mjs` (see [Embedding the engine](embedding.md)).
@@ -17,6 +18,9 @@ Every `.wasm` file, and the `ffmpeg-mpeg2-vc1` glue, is served from `libraries/<
 An audio binary is fetched only when a worker creates its first decoder of that kit, and a probe worker and the playback worker fetch the same URL, so the browser caches it once.
 `src/DecoderWASMSource.ts` always passes the glue `locateFile`, because a bundled glue cannot resolve its own URL, or `wasmBinary` with bytes a caller already fetched.
 The OpenJPEG and hevc.js decoders come from npm packages, which `scripts/build.mjs` copies; nothing here builds them.
+`audio-output-stage` and `libdovi` have no glue: the engine instantiates each `.wasm` itself, `audio-output-stage` once per playback worker when its first decoded audio attempt starts.
+The playback worker also makes one instance of each video kit, hevc.js, OpenJPEG, `ffmpeg-mpeg2-vc1`, and `libdovi`, when its first decoder or parser needs it (`video/decoders/WorkerWASMInstanceCache.ts`).
+Every later decoder or parser in the worker creates its own native context in that instance and releases only that context when it closes, and an instance whose code traps is replaced for the next one.
 
 ## You need
 
@@ -82,13 +86,37 @@ cargo test --locked
 cargo clippy --locked --all-targets
 ```
 
+## The audio output stage
+
+`wasm/audio-output-stage/audio_output_stage.c` holds the decoded audio output stage's two kernels: the resampler's source history and windowed-sinc rendering, and the lookahead limiter's history, attack envelope, and gain.
+Timeline reconciliation, timestamps, output chunking, and the downmix stay in TypeScript, in `audio/processing/`.
+Each kernel keeps its history in a ring, so a push copies only its own frames, and its SIMD (simd128) vectors hold channel pairs or neighboring frames, never neighboring taps.
+The kernels produce the same bytes as `StreamingAudioResampler` and `StreamingAudioLookaheadLimiter`, which stay as the reference and the fallback (see [Decisions](decisions.md#audio)).
+Three rules keep them exact:
+
+- `-ffp-contract=off`, so no multiply and add fuse.
+- The filter table is built in JavaScript and copied in, because V8's `Math.sin` and `Math.cos` need not match a C library's.
+- The limiter's constants from `Math.pow` and `Math.exp` arrive as numbers, and its attack length reads the engine's `Math.log10` through the module's one import, `math.log10`.
+
+The kit links with `-sSTANDALONE_WASM` and emcc's own `--no-entry`, so it has no JavaScript glue.
+It is a WASI reactor: `_initialize` runs the constructors that set up emmalloc's heap, before any other export.
+It defines `emscripten_notify_memory_growth` itself, so `math.log10` is its only import.
+`audio/processing/AudioOutputStageModule.ts` instantiates it, refuses a module whose `audio_output_stage_abi_version` differs from its own, and wraps each kernel; raise the version with any change to an export's meaning.
+
+After a change, rebuild the kit and run the equivalence suite, which compares both implementations byte for byte, from the engine root:
+
+```sh
+make -C wasm audio-output-stage
+npx vitest --watch=false test/audio/processing/AudioOutputStageModule.integration.test.ts
+```
+
 ## Licenses
 
-- The bridges and the `libdovi` crate are MIT, like the rest of the engine.
+- The bridges, the audio output stage, and the `libdovi` crate are MIT, like the rest of the engine.
   The vendored `dolby_vision` crate is MIT too and keeps its own `LICENSE`.
 - FFmpeg and libdcadec are LGPL-2.1-or-later.
   `wasm/licenses/` holds their license texts.
-- `scripts/build.mjs` serves each LGPL decoder with its license, the bridge source, and the bridge license.
+- `scripts/build.mjs` serves each LGPL decoder with its license, the bridge source, and the bridge license, and the audio output stage with the engine's `LICENSE`.
   The Makefile pins the exact upstream commits.
 - Attach the tarballs from `make source-archives` to every release: the exact FFmpeg and dcadec trees, and the engine's `wasm/` sources.
 
@@ -97,7 +125,7 @@ cargo clippy --locked --all-targets
 | Path | Holds |
 | --- | --- |
 | `wasm/Makefile` | The build |
-| `wasm/<kit>/` | A bridge source, and the TypeScript declarations of an ES module output |
+| `wasm/<kit>/` | A bridge or kernel source, and the TypeScript declarations of an ES module output |
 | `wasm/libdovi/` | The Rust crate that wraps the `dolby_vision` RPU parser |
 | `wasm/libdovi/vendor/dolby_vision/` | The vendored, patched `dolby_vision` crate and its `PATCHES.md` |
 | `wasm/licenses/` | Upstream license texts |

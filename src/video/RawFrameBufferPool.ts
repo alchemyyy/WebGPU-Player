@@ -1,51 +1,51 @@
-export type RawFrameBufferLease =
-    | { kind: 'allocate' }
-    | { buffer: ArrayBuffer, kind: 'reuse' };
+import { MAXIMUM_OUTSTANDING_RAW_FRAME_TRANSFER_COUNT } from './RawVideoFrameCopy';
 
-/** Owns the bounded FIFO of worker-side raw frame copy buffers. */
+// As many as the page can hold posted, so a steady stream reuses every spare it keeps; a 4K 10-bit spare is about 25 MB
+export const MAXIMUM_SPARE_RAW_FRAME_BUFFERS_PER_BYTE_LENGTH = MAXIMUM_OUTSTANDING_RAW_FRAME_TRANSFER_COUNT;
+
+/**
+ * Owns a run's spare raw frame buffers: buffers the page returned once uploaded, and buffers of frames closed without being posted.
+ * A frame takes a spare of its exact byte length, or a new buffer when no spare fits.
+ * Spares are kept up to a bound for each byte length, and a buffer past it is left to the garbage collector.
+ */
 export default class RawFrameBufferPool {
-    private readonly maximumBufferCount: number;
-    private readonly recycledBuffers: ArrayBuffer[] = [];
-    private checkedOutBufferCount = 0;
-    private remainingAllocationCount: number;
+    private readonly spareBuffers: ArrayBuffer[] = [];
 
-    public constructor(maximumBufferCount: number) {
-        if (!Number.isSafeInteger(maximumBufferCount) || maximumBufferCount <= 0) {
-            throw new RangeError('Raw frame buffer pool size must be a positive safe integer');
+    public constructor(private readonly maximumSpareCountPerByteLength: number) {
+        if (!Number.isSafeInteger(maximumSpareCountPerByteLength) || maximumSpareCountPerByteLength <= 0) {
+            throw new RangeError('The raw frame buffer pool bound must be a positive safe integer');
         }
-
-        this.maximumBufferCount = maximumBufferCount;
-        this.remainingAllocationCount = maximumBufferCount;
     }
 
-    /** Acquires the oldest recycled buffer or one of the fixed allocation slots. */
-    public acquire(): RawFrameBufferLease | null {
-        const recycledBuffer = this.recycledBuffers.shift();
-        if (recycledBuffer) {
-            this.checkedOutBufferCount += 1;
-            return { buffer: recycledBuffer, kind: 'reuse' };
+    /** Takes the oldest spare of exactly this byte length, or allocates a buffer when no spare fits. */
+    public take(byteLength: number): ArrayBuffer {
+        const spareIndex = this.spareBuffers.findIndex((buffer: ArrayBuffer): boolean => buffer.byteLength === byteLength);
+        if (spareIndex < 0) {
+            return new ArrayBuffer(byteLength);
         }
-        if (this.remainingAllocationCount === 0) {
-            return null;
-        }
-
-        this.remainingAllocationCount -= 1;
-        this.checkedOutBufferCount += 1;
-        return { kind: 'allocate' };
+        const [ spareBuffer ] = this.spareBuffers.splice(spareIndex, 1);
+        return spareBuffer;
     }
 
-    /** Adds a returned buffer without allowing the worker-side pool to grow. */
-    public recycle(buffer: ArrayBuffer): boolean {
-        if (
-            buffer.byteLength === 0
-            || this.checkedOutBufferCount === 0
-            || this.recycledBuffers.length >= this.maximumBufferCount
-        ) {
+    /**
+     * Keeps a buffer the worker owns again as a spare, and returns whether it was kept.
+     * A detached buffer, one already kept, or one past its byte length's bound is not.
+     */
+    public release(buffer: ArrayBuffer): boolean {
+        if (buffer.byteLength === 0 || this.spareBuffers.includes(buffer)) {
+            return false;
+        }
+        let sameLengthSpareCount = 0;
+        for (const spareBuffer of this.spareBuffers) {
+            if (spareBuffer.byteLength === buffer.byteLength) {
+                sameLengthSpareCount += 1;
+            }
+        }
+        if (sameLengthSpareCount >= this.maximumSpareCountPerByteLength) {
             return false;
         }
 
-        this.checkedOutBufferCount -= 1;
-        this.recycledBuffers.push(buffer);
+        this.spareBuffers.push(buffer);
         return true;
     }
 }

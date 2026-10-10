@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
     millisecondsToMicroseconds,
@@ -11,10 +11,13 @@ import {
     isDecodeWorkerRequest,
     isDecodeWorkerResponse,
     MAX_DECODED_AUDIO_CHANNELS,
+    MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
-    MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT
+    MAXIMUM_RENDERER_STATUS_REASON_LENGTH,
+    MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT,
+    type DecodeWorkerAudioOutputAttachment
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 import { CUSTOM_AUDIO_DOWNMIX_ALGORITHMS } from 'webgpu-player/audio/processing/CustomAudioDownmixAlgorithm';
 import {
@@ -33,6 +36,7 @@ import { parseHEVCHDR10PlusMetadata } from 'webgpu-player/video/hdr/HDR10PlusMet
 import { MAXIMUM_TIMING_TRACE_EVENTS_PER_MESSAGE } from 'webgpu-player/TimingTrace';
 
 import { createHDR10PlusHEVCVector } from '../../src/capability/vectors/HDR10PlusVectors';
+import { createWorkerStartRequest } from '../helpers/decodeWorkerHarness';
 
 const DOLBY_VISION_RPU_PARSER_WASM_URL = 'https://example.test/libraries/libdovi/dovi-rpu-parser.wasm';
 // Any positive epoch time; worker events carry the shared epoch clock
@@ -63,8 +67,53 @@ const ZERO_SAMPLE_RATE = 0;
 const NEGATIVE_SAMPLE_RATE = -1;
 const FRACTIONAL_SAMPLE_RATE = 48_000.5;
 
+// The producer's channel to a worklet of two seconds at 48 kHz
+const AUDIO_OUTPUT_SAMPLE_RATE = 48_000;
+const AUDIO_OUTPUT_MAXIMUM_BUFFERED_FRAME_COUNT = 96_000;
+const AUDIO_OUTPUT_WORKLET_GENERATION = 5;
+const AUDIO_PROGRESS_FRAME_COUNT = 1_024;
+const AUDIO_PROGRESS_DURATION_MICROSECONDS = 21_333;
+
+// Every channel a test opens, which closes once the test ends
+const openedPorts: MessagePort[] = [];
+
+afterEach(() => {
+    for (const port of openedPorts.splice(0)) {
+        port.close();
+    }
+});
+
+/** Returns the producer's end of a new channel to a worklet of the layout. */
+function createAudioOutputAttachment(channelCount: number, audioSampleCredits = MAX_DECODED_AUDIO_SAMPLE_CREDITS): DecodeWorkerAudioOutputAttachment {
+    const channel = new MessageChannel();
+    openedPorts.push(channel.port1, channel.port2);
+    return {
+        audioSampleCredits,
+        channelCount,
+        maximumBufferedFrameCount: AUDIO_OUTPUT_MAXIMUM_BUFFERED_FRAME_COUNT,
+        port: channel.port2,
+        sampleRate: AUDIO_OUTPUT_SAMPLE_RATE,
+        workletGeneration: AUDIO_OUTPUT_WORKLET_GENERATION
+    };
+}
+
 // HDR10+ profile A leaves the targeted display at 0, which a tone-mapping curve cannot adapt from
 const UNTARGETED_DISPLAY_LUMINANCE_NITS = 0;
+
+const STOPPED_RUN_GENERATION = 3;
+// Replacement is a yes-or-no request, so any other value is malformed
+const MALFORMED_REPLACE_WORKER_VALUE = 'yes';
+
+const PRESENTATION_MEDIA_FILE_NAME = 'presentation.mp4';
+const RENDERER_GENERATION = 4;
+const WORKER_FRAME_ID = 9;
+const WORKER_FRAME_DISPLAY_WIDTH = 1_920;
+const WORKER_FRAME_DISPLAY_HEIGHT = 1_080;
+const RENDERER_UNAVAILABLE_REASON = 'WebGPU is unavailable in workers';
+// Malformed worker presentation values
+const MALFORMED_PRESENTATION_MODE = 'gpu';
+const MALFORMED_FRAME_ID = -1;
+const MALFORMED_HDR10_PLUS_STATUS = 'present';
 
 function createPackedRPUData(): ArrayBuffer {
     return createDolbyVisionAuthorizationRPUVector();
@@ -1174,6 +1223,115 @@ describe('DecodeWorkerProtocol', () => {
         })).toBe(false);
     });
 
+    it('accepts a stopped run that asks for its worker to be replaced only with a boolean request', () => {
+        expect(isDecodeWorkerResponse({ generation: STOPPED_RUN_GENERATION, type: 'stopped' })).toBe(true);
+        expect(isDecodeWorkerResponse({ generation: STOPPED_RUN_GENERATION, replaceWorker: true, type: 'stopped' })).toBe(true);
+        expect(isDecodeWorkerResponse({ generation: STOPPED_RUN_GENERATION, replaceWorker: false, type: 'stopped' })).toBe(true);
+        expect(isDecodeWorkerResponse({
+            generation: STOPPED_RUN_GENERATION,
+            replaceWorker: MALFORMED_REPLACE_WORKER_VALUE,
+            type: 'stopped'
+        })).toBe(false);
+    });
+
+    it('accepts a start that asks for worker presentation only with a known mode', () => {
+        const startRequest = createWorkerStartRequest(PRESENTATION_MEDIA_FILE_NAME);
+        expect(isDecodeWorkerRequest(startRequest)).toBe(true);
+        expect(isDecodeWorkerRequest({ ...startRequest, presentationMode: 'worker' })).toBe(true);
+        expect(isDecodeWorkerRequest({ ...startRequest, presentationMode: 'main' })).toBe(true);
+        expect(isDecodeWorkerRequest({ ...startRequest, presentationMode: MALFORMED_PRESENTATION_MODE })).toBe(false);
+    });
+
+    it('accepts a renderer attachment only with a transferred canvas and a message port', () => {
+        class TestOffscreenCanvas {}
+        vi.stubGlobal('OffscreenCanvas', TestOffscreenCanvas);
+        const channel = new MessageChannel();
+        try {
+            const attachRequest = {
+                canvas: new TestOffscreenCanvas(),
+                generation: RENDERER_GENERATION,
+                port: channel.port2,
+                type: 'attach-renderer'
+            };
+            expect(isDecodeWorkerRequest(attachRequest)).toBe(true);
+            expect(isDecodeWorkerRequest({ ...attachRequest, canvas: document.createElement('canvas') })).toBe(false);
+            expect(isDecodeWorkerRequest({ ...attachRequest, port: channel })).toBe(false);
+            expect(isDecodeWorkerRequest({ ...attachRequest, generation: 0 })).toBe(false);
+        } finally {
+            channel.port1.close();
+            channel.port2.close();
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it('accepts a release of distinct frame IDs within the frame credits', () => {
+        const releaseRequest = { frameIds: [ 0, WORKER_FRAME_ID ], generation: RENDERER_GENERATION, type: 'release-frames' };
+        expect(isDecodeWorkerRequest(releaseRequest)).toBe(true);
+        expect(isDecodeWorkerRequest({
+            ...releaseRequest,
+            frameIds: Array.from({ length: MAX_DECODED_FRAME_CREDITS }, (_value: unknown, frameIndex: number): number => frameIndex)
+        })).toBe(true);
+        expect(isDecodeWorkerRequest({ ...releaseRequest, frameIds: [] })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...releaseRequest,
+            frameIds: Array.from({ length: MAX_DECODED_FRAME_CREDITS + 1 }, (_value: unknown, frameIndex: number): number => frameIndex)
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({ ...releaseRequest, frameIds: [ WORKER_FRAME_ID, WORKER_FRAME_ID ] })).toBe(false);
+        expect(isDecodeWorkerRequest({ ...releaseRequest, frameIds: [ MALFORMED_FRAME_ID ] })).toBe(false);
+        expect(isDecodeWorkerRequest({ ...releaseRequest, frameIds: WORKER_FRAME_ID })).toBe(false);
+    });
+
+    it('accepts a worker frame descriptor only without its payload and with bounded metadata counts', () => {
+        const descriptor = {
+            displayHeight: WORKER_FRAME_DISPLAY_HEIGHT,
+            displayWidth: WORKER_FRAME_DISPLAY_WIDTH,
+            durationMicroseconds: 41_708,
+            frameId: WORKER_FRAME_ID,
+            generation: RENDERER_GENERATION,
+            mediaTimeMicroseconds: 500_000,
+            outputMode: 'worker-frame',
+            type: 'frame'
+        };
+        expect(isDecodeWorkerResponse(descriptor)).toBe(true);
+        expect(isDecodeWorkerResponse({ ...descriptor, videoEpoch: 2 })).toBe(true);
+        expect(isDecodeWorkerResponse({
+            ...descriptor,
+            metadataSummary: {
+                dolbyVision: { enhancementLayerVCL: true, rpuCount: 1 },
+                HDR10PlusStatus: 'valid'
+            }
+        })).toBe(true);
+        expect(isDecodeWorkerResponse({ ...descriptor, metadataSummary: {} })).toBe(true);
+
+        // The payload and its metadata stay in the worker
+        expect(isDecodeWorkerResponse({ ...descriptor, frame: { close: vi.fn() } })).toBe(false);
+        expect(isDecodeWorkerResponse({ ...descriptor, encodedDolbyVisionMetadata: undefined })).toBe(false);
+        expect(isDecodeWorkerResponse({ ...descriptor, HDR10PlusMetadata: undefined })).toBe(false);
+        expect(isDecodeWorkerResponse({ ...descriptor, enhancementFrame: undefined })).toBe(false);
+
+        expect(isDecodeWorkerResponse({ ...descriptor, displayWidth: 0 })).toBe(false);
+        expect(isDecodeWorkerResponse({ ...descriptor, frameId: MALFORMED_FRAME_ID })).toBe(false);
+        expect(isDecodeWorkerResponse({
+            ...descriptor,
+            metadataSummary: { dolbyVision: { enhancementLayerVCL: false, rpuCount: MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT + 1 } }
+        })).toBe(false);
+        expect(isDecodeWorkerResponse({ ...descriptor, metadataSummary: { HDR10PlusStatus: MALFORMED_HDR10_PLUS_STATUS } })).toBe(false);
+    });
+
+    it('requires a bounded reason exactly when the worker renderer is unavailable', () => {
+        const readyStatus = { available: true, generation: RENDERER_GENERATION, reason: null, type: 'renderer-status' };
+        expect(isDecodeWorkerResponse(readyStatus)).toBe(true);
+        expect(isDecodeWorkerResponse({ ...readyStatus, available: false, reason: RENDERER_UNAVAILABLE_REASON })).toBe(true);
+        expect(isDecodeWorkerResponse({ ...readyStatus, reason: RENDERER_UNAVAILABLE_REASON })).toBe(false);
+        expect(isDecodeWorkerResponse({ ...readyStatus, available: false })).toBe(false);
+        expect(isDecodeWorkerResponse({ ...readyStatus, available: false, reason: '' })).toBe(false);
+        expect(isDecodeWorkerResponse({
+            ...readyStatus,
+            available: false,
+            reason: 'x'.repeat(MAXIMUM_RENDERER_STATUS_REASON_LENGTH + 1)
+        })).toBe(false);
+    });
+
     it('validates bounded optional static HDR metadata', () => {
         const staticHDRMetadata = {
             masteringDisplayMaximumLuminanceNits: 4_000,
@@ -1228,7 +1386,7 @@ describe('DecodeWorkerProtocol', () => {
         })).toBe(true);
     });
 
-    it('validates bounded planar PCM and independent audio credits', () => {
+    it('validates bounded PCM progress and independent audio credits', () => {
         const decodedAudioStartRequest = {
             audioDownmixSettings: {
                 centerLevel: 0.4,
@@ -1303,16 +1461,18 @@ describe('DecodeWorkerProtocol', () => {
             generation: 2,
             type: 'pull-audio'
         })).toBe(true);
-        expect(isDecodeWorkerResponse({
-            channelCount: 2,
-            channelData: [ new Float32Array(1_024), new Float32Array(1_024) ],
-            durationMicroseconds: 21_333,
-            frameCount: 1_024,
+        const progressResponse = {
+            audioEpoch: 0,
+            durationMicroseconds: AUDIO_PROGRESS_DURATION_MICROSECONDS,
+            frameCount: AUDIO_PROGRESS_FRAME_COUNT,
             generation: 2,
-            mediaTimeMicroseconds: -21_333,
-            sampleRate: 48_000,
-            type: 'audio'
-        })).toBe(true);
+            mediaTimeMicroseconds: -AUDIO_PROGRESS_DURATION_MICROSECONDS,
+            sampleRate: AUDIO_OUTPUT_SAMPLE_RATE,
+            type: 'audio-progress'
+        } as const;
+        expect(isDecodeWorkerResponse(progressResponse)).toBe(true);
+        // The PCM itself never reaches the page
+        expect(isDecodeWorkerResponse({ ...progressResponse, type: 'audio' })).toBe(false);
 
         const videoOnlyStartRequest = {
             audioSampleCredits: 0,
@@ -1342,36 +1502,11 @@ describe('DecodeWorkerProtocol', () => {
             ...videoOnlyStartRequest,
             audioSampleCredits: 1
         })).toBe(false);
-        expect(isDecodeWorkerResponse({
-            channelCount: 2,
-            channelData: [ new Float32Array(1_024), new Float32Array(512) ],
-            durationMicroseconds: 21_333,
-            frameCount: 1_024,
-            generation: 2,
-            mediaTimeMicroseconds: 0,
-            sampleRate: 48_000,
-            type: 'audio'
-        })).toBe(false);
-        expect(isDecodeWorkerResponse({
-            channelCount: 2,
-            channelData: [ new Float32Array(1_024), new Float32Array(1_024) ],
-            durationMicroseconds: 5_333,
-            frameCount: 1_024,
-            generation: 2,
-            mediaTimeMicroseconds: 0,
-            sampleRate: ZERO_SAMPLE_RATE,
-            type: 'audio'
-        })).toBe(false);
-        expect(isDecodeWorkerResponse({
-            channelCount: 2,
-            channelData: [ new Float32Array(1_024), new Float32Array(1_024) ],
-            durationMicroseconds: 5_333,
-            frameCount: 1_024,
-            generation: 2,
-            mediaTimeMicroseconds: 0,
-            sampleRate: FRACTIONAL_SAMPLE_RATE,
-            type: 'audio'
-        })).toBe(false);
+        expect(isDecodeWorkerResponse({ ...progressResponse, frameCount: 0 })).toBe(false);
+        expect(isDecodeWorkerResponse({ ...progressResponse, frameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE + 1 })).toBe(false);
+        expect(isDecodeWorkerResponse({ ...progressResponse, durationMicroseconds: -1 })).toBe(false);
+        expect(isDecodeWorkerResponse({ ...progressResponse, sampleRate: ZERO_SAMPLE_RATE })).toBe(false);
+        expect(isDecodeWorkerResponse({ ...progressResponse, sampleRate: FRACTIONAL_SAMPLE_RATE })).toBe(false);
         expect(isDecodeWorkerResponse({
             audio: {
                 channelCount: 2,
@@ -1761,7 +1896,7 @@ describe('DecodeWorkerProtocol', () => {
     it('accepts audio resync requests only with an advanced epoch and a decoded output layout', () => {
         const resyncRequest = {
             audioEpoch: 1,
-            audioSampleCredits: MAX_DECODED_AUDIO_SAMPLE_CREDITS,
+            audioOutput: createAudioOutputAttachment(6),
             decodedAudioOutputChannelCount: 6,
             generation: 3,
             targetTimeMicroseconds: 2_500_000,
@@ -1778,7 +1913,7 @@ describe('DecodeWorkerProtocol', () => {
             undefined,
             Number.MAX_SAFE_INTEGER + 1
         ];
-        const validChannelCounts: readonly unknown[] = [ 2, 6, 8 ];
+        const validChannelCounts: readonly number[] = [ 2, 6, 8 ];
         const invalidChannelCounts: readonly unknown[] = [
             0,
             1,
@@ -1811,21 +1946,56 @@ describe('DecodeWorkerProtocol', () => {
         for (const validChannelCount of validChannelCounts) {
             expect(isDecodeWorkerRequest({
                 ...resyncRequest,
+                audioOutput: { ...resyncRequest.audioOutput, channelCount: validChannelCount },
                 decodedAudioOutputChannelCount: validChannelCount
             })).toBe(true);
         }
         for (const invalidChannelCount of invalidChannelCounts) {
             expect(isDecodeWorkerRequest({
                 ...resyncRequest,
+                audioOutput: { ...resyncRequest.audioOutput, channelCount: invalidChannelCount },
                 decodedAudioOutputChannelCount: invalidChannelCount
             })).toBe(false);
+        }
+        // The new worklet must have the layout the resync asks for
+        expect(isDecodeWorkerRequest({
+            ...resyncRequest,
+            decodedAudioOutputChannelCount: 8
+        })).toBe(false);
+    });
+
+    it('accepts a worklet channel only with a port, a credit window, and the bounds of a decoded output', () => {
+        const attachRequest = {
+            audioEpoch: 0,
+            audioOutput: createAudioOutputAttachment(2),
+            generation: 3,
+            type: 'attach-audio-output'
+        } as const;
+        const invalidAudioOutputs: readonly unknown[] = [
+            { ...attachRequest.audioOutput, port: null },
+            { ...attachRequest.audioOutput, port: { postMessage: vi.fn() } },
+            { ...attachRequest.audioOutput, audioSampleCredits: 0 },
+            { ...attachRequest.audioOutput, audioSampleCredits: MAX_DECODED_AUDIO_SAMPLE_CREDITS + 1 },
+            { ...attachRequest.audioOutput, channelCount: 1 },
+            { ...attachRequest.audioOutput, maximumBufferedFrameCount: 0 },
+            { ...attachRequest.audioOutput, sampleRate: FRACTIONAL_SAMPLE_RATE },
+            { ...attachRequest.audioOutput, workletGeneration: 0 },
+            null
+        ];
+
+        expect(isDecodeWorkerRequest(attachRequest)).toBe(true);
+        expect(isDecodeWorkerRequest({ ...attachRequest, audioEpoch: 3 })).toBe(true);
+        expect(isDecodeWorkerRequest({ ...attachRequest, audioEpoch: -1 })).toBe(false);
+        expect(isDecodeWorkerRequest({ ...attachRequest, audioEpoch: undefined })).toBe(false);
+        for (const invalidAudioOutput of invalidAudioOutputs) {
+            expect(isDecodeWorkerRequest({ ...attachRequest, audioOutput: invalidAudioOutput })).toBe(false);
         }
     });
 
     it('bounds the replacement audio credit window and the audio resync target', () => {
         const resyncRequest = {
             audioEpoch: 1,
-            audioSampleCredits: 3,
+            audioOutput: createAudioOutputAttachment(8, 3),
             decodedAudioOutputChannelCount: 8,
             generation: 3,
             targetTimeMicroseconds: 2_500_000,
@@ -1853,15 +2023,17 @@ describe('DecodeWorkerProtocol', () => {
         for (const validAudioSampleCredit of validAudioSampleCredits) {
             expect(isDecodeWorkerRequest({
                 ...resyncRequest,
-                audioSampleCredits: validAudioSampleCredit
+                audioOutput: { ...resyncRequest.audioOutput, audioSampleCredits: validAudioSampleCredit }
             })).toBe(true);
         }
         for (const invalidAudioSampleCredit of invalidAudioSampleCredits) {
             expect(isDecodeWorkerRequest({
                 ...resyncRequest,
-                audioSampleCredits: invalidAudioSampleCredit
+                audioOutput: { ...resyncRequest.audioOutput, audioSampleCredits: invalidAudioSampleCredit }
             })).toBe(false);
         }
+        // The window comes with the new worklet's channel, never without one
+        expect(isDecodeWorkerRequest({ ...resyncRequest, audioOutput: undefined })).toBe(false);
         // Targets follow the signed start-time rule for negative leading timestamps
         expect(isDecodeWorkerRequest({
             ...resyncRequest,
@@ -1878,7 +2050,7 @@ describe('DecodeWorkerProtocol', () => {
     it('accepts an audio resync downmix selection only when it is valid', () => {
         const resyncRequest = {
             audioEpoch: 2,
-            audioSampleCredits: 4,
+            audioOutput: createAudioOutputAttachment(2, 4),
             decodedAudioOutputChannelCount: 2,
             generation: 3,
             targetTimeMicroseconds: 2_500_000,
@@ -1971,30 +2143,28 @@ describe('DecodeWorkerProtocol', () => {
         })).toBe(false);
     });
 
-    it('treats an omitted PCM sample epoch as the initial attempt and rejects malformed epochs', () => {
-        const audioResponse = {
-            channelCount: 6,
-            channelData: Array.from({ length: 6 }, (): Float32Array => new Float32Array(1_024)),
-            durationMicroseconds: 21_333,
-            frameCount: 1_024,
+    it('requires the audio epoch of every chunk progress', () => {
+        const progressResponse = {
+            audioEpoch: 0,
+            durationMicroseconds: AUDIO_PROGRESS_DURATION_MICROSECONDS,
+            frameCount: AUDIO_PROGRESS_FRAME_COUNT,
             generation: 2,
             mediaTimeMicroseconds: 5_000_000,
-            sampleRate: 48_000,
-            type: 'audio'
+            sampleRate: AUDIO_OUTPUT_SAMPLE_RATE,
+            type: 'audio-progress'
         } as const;
         const validAudioEpochs: readonly unknown[] = [ 0, 4, Number.MAX_SAFE_INTEGER ];
-        const invalidAudioEpochs: readonly unknown[] = [ -1, 0.5, '1', null, Number.NaN ];
+        const invalidAudioEpochs: readonly unknown[] = [ -1, 0.5, '1', null, undefined, Number.NaN ];
 
-        expect(isDecodeWorkerResponse(audioResponse)).toBe(true);
         for (const validAudioEpoch of validAudioEpochs) {
             expect(isDecodeWorkerResponse({
-                ...audioResponse,
+                ...progressResponse,
                 audioEpoch: validAudioEpoch
             })).toBe(true);
         }
         for (const invalidAudioEpoch of invalidAudioEpochs) {
             expect(isDecodeWorkerResponse({
-                ...audioResponse,
+                ...progressResponse,
                 audioEpoch: invalidAudioEpoch
             })).toBe(false);
         }

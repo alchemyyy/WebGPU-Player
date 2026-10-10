@@ -11,6 +11,10 @@ const SAMPLE_RATE = 48_000;
 // A malformed source rate; any positive integer rate is valid
 const ZERO_SAMPLE_RATE = 0;
 const MALFORMED_SOURCE_RATE_ERROR = 'Source sample rate must be a positive integer number of Hz';
+const FINALIZED_PIPELINE_ERROR = 'Cannot add audio after output pipeline finalization';
+const CLOSED_PIPELINE_SOURCE_SAMPLE_RATE = 44_100;
+const CLOSED_PIPELINE_INPUT_FRAME_COUNT = 4_410;
+const CLOSED_PIPELINE_INPUT_SAMPLE = 0.5;
 
 function createPipeline(
     peakLimiterEnabled: boolean,
@@ -258,5 +262,21 @@ describe('StreamingAudioOutputPipeline', () => {
         expect(getOutputFrameCount(outputs)).toBe(12_000);
         expect(getMaximumPeak(outputs))
             .toBeLessThanOrEqual(CUSTOM_AUDIO_LIMITER_CEILING_GAIN + 1e-6);
+    });
+
+    it('ends without its tails when an attempt closes it early', () => {
+        const pipeline = createPipeline(true, CLOSED_PIPELINE_SOURCE_SAMPLE_RATE);
+        const inputChannel = new Float32Array(CLOSED_PIPELINE_INPUT_FRAME_COUNT).fill(CLOSED_PIPELINE_INPUT_SAMPLE);
+        pipeline.push({ channelData: [ inputChannel, inputChannel ], mediaTimeMicroseconds: requireMicroseconds(0) });
+
+        pipeline.close();
+        pipeline.close();
+
+        expect(pipeline.finalize()).toEqual([]);
+        expect(() => pipeline.push({
+            channelData: [ inputChannel, inputChannel ],
+            mediaTimeMicroseconds: requireMicroseconds(0)
+        })).toThrow(FINALIZED_PIPELINE_ERROR);
+        expect(() => pipeline.changeSourceSampleRate(SAMPLE_RATE)).toThrow('after output pipeline finalization');
     });
 });

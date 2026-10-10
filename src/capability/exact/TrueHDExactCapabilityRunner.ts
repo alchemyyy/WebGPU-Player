@@ -157,10 +157,17 @@ function measureThroughput(
     };
 }
 
-/** The probe worker's environment: decoders from the requested FFmpeg TrueHD binary, timed by the worker's clock. */
+/**
+ * The probe worker's environment: decoders from the requested FFmpeg TrueHD binary, timed by the worker's clock.
+ * Its decoders fingerprint their PCM, which the exact comparison reads; playback decoders skip that work.
+ */
 export function createTrueHDExactCapabilityRunnerEnvironment(decoderWASM: DecoderWASMSource): TrueHDExactCapabilityRunnerEnvironment {
     return {
-        createDecoder: codec => TrueHDSoftwareAudioDecoder.create(codec, () => loadTrueHDDecoderModule(decoderWASM)),
+        createDecoder: codec => TrueHDSoftwareAudioDecoder.create(
+            codec,
+            () => loadTrueHDDecoderModule(decoderWASM),
+            { pcmFingerprint: true }
+        ),
         now: () => performance.now()
     };
 }

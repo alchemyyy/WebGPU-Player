@@ -159,6 +159,37 @@ function setPlaying(processor: ProcessorHarness, playing: boolean): void {
     processor.port.deliver({ playing, type: 'playback' });
 }
 
+// A producer's chunks carry their own sequences, which the releases echo
+const FIRST_PRODUCER_SEQUENCE = 1;
+const SECOND_PRODUCER_SEQUENCE = 2;
+const THIRD_PRODUCER_SEQUENCE = 3;
+const PRODUCER_GENERATION = 2;
+const NEXT_PRODUCER_GENERATION = 3;
+const PRODUCER_LEASE_ID = 4;
+
+/** Hands the processor a producer's end of its channel, as the page's attach-producer message does. */
+function attachProducer(processor: ProcessorHarness, generation: number): MockProcessorPort {
+    const producerPort = new MockProcessorPort();
+    processor.port.deliver({ generation, port: producerPort, type: 'attach-producer' });
+    return producerPort;
+}
+
+function deliverProducerChunk(
+    producerPort: MockProcessorPort,
+    generation: number,
+    sequence: number,
+    timestampMicroseconds: number,
+    ...channelSamples: number[][]
+): Float32Array[] {
+    const channelData = channelSamples.map(samples => new Float32Array(samples));
+    producerPort.deliver({ channelData, generation, sequence, timestampMicroseconds, type: 'enqueue' });
+    return channelData;
+}
+
+function getPostedMessageTypes(port: MockProcessorPort): unknown[] {
+    return port.postedMessages.map(message => (message as { type?: unknown }).type);
+}
+
 /** Renders one quantum on every processor channel and returns the samples. */
 function renderQuantum(processor: ProcessorStateHarness): number[][] {
     const outputChannels: Float32Array[] = [];
@@ -684,6 +715,126 @@ describe('AudioWorkletProcessorSource', () => {
                 },
                 underflowFrames: 0
             });
+        });
+    });
+
+    describe('producer channel', () => {
+        it('plays a producer chunk and returns it to the producer with its buffers once played', () => {
+            const processor = createLeadingGapProcessor();
+            deliverFlush(processor, PRODUCER_GENERATION, 0);
+            const producerPort = attachProducer(processor, PRODUCER_GENERATION);
+            const channelData = deliverProducerChunk(producerPort, PRODUCER_GENERATION, FIRST_PRODUCER_SEQUENCE, 0, [ 1, 2, 3, 4 ]);
+            setPlaying(processor, true);
+
+            expect(renderQuantum(processor)).toEqual([ [ 1, 2, 3, 4 ] ]);
+
+            expect(producerPort.postedMessages).toEqual([ {
+                channelBuffers: [ channelData[0].buffer ],
+                reason: 'consumed',
+                sequence: FIRST_PRODUCER_SEQUENCE,
+                type: 'released'
+            } ]);
+            expect(producerPort.postedTransfers).toEqual([ [ channelData[0].buffer ] ]);
+            // The page keeps its telemetry and gets no PCM back
+            expect(getPostedMessageTypes(processor.port)).not.toContain('recycle');
+            expect(processor.port.postedMessages.at(-1)).toMatchObject({
+                consumedFrames: 4,
+                generation: PRODUCER_GENERATION,
+                reason: 'periodic'
+            });
+        });
+
+        it('returns a rejected producer chunk at once with the reason it was dropped', () => {
+            const processor = createLeadingGapProcessor();
+            deliverFlush(processor, PRODUCER_GENERATION, 0);
+            const producerPort = attachProducer(processor, PRODUCER_GENERATION);
+
+            deliverProducerChunk(producerPort, PRODUCER_GENERATION, FIRST_PRODUCER_SEQUENCE, 0, [ 1, 2, 3, 4, 5, 6, 7, 8 ]);
+            // The queue holds eight frames, so one more overflows it
+            deliverProducerChunk(producerPort, PRODUCER_GENERATION, SECOND_PRODUCER_SEQUENCE, 8_000, [ 9 ]);
+            deliverProducerChunk(producerPort, PRODUCER_GENERATION, THIRD_PRODUCER_SEQUENCE, 8_000, [ 9 ], [ 10 ]);
+
+            expect(producerPort.postedMessages).toEqual([
+                expect.objectContaining({ reason: 'overflow', sequence: SECOND_PRODUCER_SEQUENCE, type: 'released' }),
+                expect.objectContaining({ reason: 'invalid', sequence: THIRD_PRODUCER_SEQUENCE, type: 'released' })
+            ]);
+            expect(processor.port.postedMessages).toContainEqual(expect.objectContaining({
+                generation: PRODUCER_GENERATION,
+                reason: 'overflow',
+                sequence: SECOND_PRODUCER_SEQUENCE
+            }));
+        });
+
+        it('returns a producer chunk of another generation as stale', () => {
+            const processor = createLeadingGapProcessor();
+            deliverFlush(processor, PRODUCER_GENERATION, 0);
+            const producerPort = attachProducer(processor, PRODUCER_GENERATION);
+
+            deliverProducerChunk(producerPort, NEXT_PRODUCER_GENERATION, FIRST_PRODUCER_SEQUENCE, 0, [ 1 ]);
+
+            expect(producerPort.postedMessages).toEqual([
+                expect.objectContaining({ reason: 'stale-generation', sequence: FIRST_PRODUCER_SEQUENCE, type: 'released' })
+            ]);
+            expect(processor).toMatchObject({ chunkCount: 0, staleChunks: 1 });
+        });
+
+        it('detaches the producer on flush and drops its queued and later chunks', () => {
+            const processor = createLeadingGapProcessor();
+            deliverFlush(processor, PRODUCER_GENERATION, 0);
+            const producerPort = attachProducer(processor, PRODUCER_GENERATION);
+            deliverProducerChunk(producerPort, PRODUCER_GENERATION, FIRST_PRODUCER_SEQUENCE, 0, [ 1, 2, 3, 4 ]);
+
+            deliverFlush(processor, NEXT_PRODUCER_GENERATION, 0);
+
+            expect(producerPort.closeCount).toBe(1);
+            expect(producerPort.onmessage).toBeNull();
+            // The queued chunk belonged to the replaced generation, whose producer is gone
+            expect(producerPort.postedMessages).toEqual([]);
+            expect(getPostedMessageTypes(processor.port)).not.toContain('recycle');
+            deliverProducerChunk(producerPort, NEXT_PRODUCER_GENERATION, SECOND_PRODUCER_SEQUENCE, 0, [ 5, 6, 7, 8 ]);
+            expect(processor).toMatchObject({ chunkCount: 0, queuedFrames: 0 });
+        });
+
+        it('closes an attachment that a later flush overtook and takes the current one', () => {
+            const processor = createLeadingGapProcessor();
+            deliverFlush(processor, PRODUCER_GENERATION, 0);
+            deliverFlush(processor, NEXT_PRODUCER_GENERATION, 0);
+
+            const staleProducerPort = attachProducer(processor, PRODUCER_GENERATION);
+            expect(staleProducerPort.closeCount).toBe(1);
+            expect(staleProducerPort.onmessage).toBeNull();
+
+            const currentProducerPort = attachProducer(processor, NEXT_PRODUCER_GENERATION);
+            deliverProducerChunk(currentProducerPort, NEXT_PRODUCER_GENERATION, FIRST_PRODUCER_SEQUENCE, 0, [ 1, 2, 3, 4 ]);
+            expect(processor).toMatchObject({ chunkCount: 1, queuedFrames: 4 });
+        });
+
+        it('replaces an attached producer with the next attachment of the generation', () => {
+            const processor = createLeadingGapProcessor();
+            deliverFlush(processor, PRODUCER_GENERATION, 0);
+            const firstProducerPort = attachProducer(processor, PRODUCER_GENERATION);
+            const secondProducerPort = attachProducer(processor, PRODUCER_GENERATION);
+
+            expect(firstProducerPort.closeCount).toBe(1);
+            deliverProducerChunk(firstProducerPort, PRODUCER_GENERATION, FIRST_PRODUCER_SEQUENCE, 0, [ 1 ]);
+            deliverProducerChunk(secondProducerPort, PRODUCER_GENERATION, FIRST_PRODUCER_SEQUENCE, 0, [ 2 ]);
+            expect(processor).toMatchObject({ chunkCount: 1, queuedFrames: 1 });
+        });
+
+        it('ignores an attachment without a port and detaches the producer on deactivate and destroy', () => {
+            const processor = createLeadingGapProcessor();
+            deliverFlush(processor, PRODUCER_GENERATION, 0);
+            processor.port.deliver({ generation: PRODUCER_GENERATION, port: {}, type: 'attach-producer' });
+            expect(processor.port.postedMessages.at(-1)).toMatchObject({ reason: 'flush' });
+
+            const deactivatedProducerPort = attachProducer(processor, PRODUCER_GENERATION);
+            processor.port.deliver({ generation: NEXT_PRODUCER_GENERATION, leaseId: PRODUCER_LEASE_ID, type: 'deactivate' });
+            expect(deactivatedProducerPort.closeCount).toBe(1);
+
+            const destroyedProducerPort = attachProducer(processor, NEXT_PRODUCER_GENERATION);
+            processor.port.deliver({ type: 'destroy' });
+            expect(destroyedProducerPort.closeCount).toBe(1);
+            expect(destroyedProducerPort.onmessage).toBeNull();
         });
     });
 });

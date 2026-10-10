@@ -1,6 +1,10 @@
 import { VideoSample } from 'mediabunny';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { Microseconds } from 'webgpu-player/MediaTime';
+import RawFrameBufferPool, {
+    MAXIMUM_SPARE_RAW_FRAME_BUFFERS_PER_BYTE_LENGTH
+} from 'webgpu-player/video/RawFrameBufferPool';
 import {
     copyVideoFramePairToRawPlanes,
     copyVideoFrameToRawPlanes,
@@ -8,15 +12,23 @@ import {
     getRawVideoFramePairTransferList,
     getRawVideoFrameTransferList,
     hasRawVideoFrameCopyLayout,
+    PreparedRawVideoFrameSource,
     RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT,
     RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
     RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT,
     type RawVideoFrameCopyError,
-    type SupportedRawVideoFrameFormat
+    type RawVideoSourcePlane,
+    type SupportedRawVideoFrameFormat,
+    type TransferableRawVideoFrame
 } from 'webgpu-player/video/RawVideoFrameCopy';
 import { hasValidRawVideoFrameLayout } from 'webgpu-player/presentation/RawYUVGPURenderer';
 
 type MockFunction = ReturnType<typeof vi.fn>;
+
+// The default 4x2 I420 frame takes one aligned row for each of its four plane rows
+const DEFAULT_FRAME_COPY_BYTE_LENGTH = 1_024;
+const MISMATCHED_SPARE_BYTE_LENGTH = 512;
+const ALLOCATION_FAILURE_MESSAGE = 'Array buffer allocation failed';
 
 const ULTRA_HD_8K_GEOMETRY = {
     codedHeight: 4_320,
@@ -224,47 +236,48 @@ describe('copyVideoFrameToRawPlanes', () => {
         expect(frameHarness.close).toHaveBeenCalledOnce();
     });
 
-    it('reuses an exact-size non-detached frame buffer', async () => {
+    it('reuses a spare of the copy layout\'s byte length from the pool', async () => {
         const frameHarness = createFrameHarness();
-        const reusableBuffer = new ArrayBuffer(1_024);
+        const bufferPool = new RawFrameBufferPool(MAXIMUM_SPARE_RAW_FRAME_BUFFERS_PER_BYTE_LENGTH);
+        const spareBuffer = new ArrayBuffer(DEFAULT_FRAME_COPY_BYTE_LENGTH);
+        bufferPool.release(spareBuffer);
 
-        const result = await copyVideoFrameToRawPlanes(
-            frameHarness.frame,
-            { reusableBuffer }
-        );
+        const result = await copyVideoFrameToRawPlanes(frameHarness.frame, { bufferPool });
 
-        expect(result.data).toBe(reusableBuffer);
+        expect(result.data).toBe(spareBuffer);
         expect(frameHarness.copyTo).toHaveBeenCalledWith(
-            reusableBuffer,
+            spareBuffer,
             expect.any(Object)
         );
         expect(frameHarness.close).toHaveBeenCalledOnce();
     });
 
-    it('allocates a correctly sized buffer instead of reusing a mismatched buffer', async () => {
+    it('allocates a correctly sized buffer instead of reusing a spare of another size', async () => {
         const frameHarness = createFrameHarness();
-        const mismatchedBuffer = new ArrayBuffer(512);
+        const bufferPool = new RawFrameBufferPool(MAXIMUM_SPARE_RAW_FRAME_BUFFERS_PER_BYTE_LENGTH);
+        const mismatchedBuffer = new ArrayBuffer(MISMATCHED_SPARE_BYTE_LENGTH);
+        bufferPool.release(mismatchedBuffer);
 
-        const result = await copyVideoFrameToRawPlanes(
-            frameHarness.frame,
-            { reusableBuffer: mismatchedBuffer }
-        );
+        const result = await copyVideoFrameToRawPlanes(frameHarness.frame, { bufferPool });
 
         expect(result.data).not.toBe(mismatchedBuffer);
-        expect(result.data.byteLength).toBe(1_024);
+        expect(result.data.byteLength).toBe(DEFAULT_FRAME_COPY_BYTE_LENGTH);
+        expect(bufferPool.take(MISMATCHED_SPARE_BYTE_LENGTH)).toBe(mismatchedBuffer);
         expect(frameHarness.close).toHaveBeenCalledOnce();
     });
 
-    it('does not allocate past a fixed pool when a recycled buffer size changes', async () => {
+    it('reports a buffer the pool cannot allocate before copying', async () => {
         const frameHarness = createFrameHarness();
+        const failingPool = {
+            take: (): never => {
+                throw new RangeError(ALLOCATION_FAILURE_MESSAGE);
+            }
+        } as unknown as RawFrameBufferPool;
 
         await expect(copyVideoFrameToRawPlanes(
             frameHarness.frame,
-            {
-                requireReusableBuffer: true,
-                reusableBuffer: new ArrayBuffer(512)
-            }
-        )).rejects.toMatchObject({ code: 'allocation-failed' });
+            { bufferPool: failingPool }
+        )).rejects.toMatchObject({ code: 'allocation-failed', message: ALLOCATION_FAILURE_MESSAGE });
         expect(frameHarness.copyTo).not.toHaveBeenCalled();
         expect(frameHarness.close).toHaveBeenCalledOnce();
     });
@@ -714,6 +727,285 @@ describe('createVideoSampleRawFrameSource', () => {
     });
 });
 
+// A decoder's frame whose rows are padded, with an odd chroma width
+const PREPARED_CODED_WIDTH = 6;
+const PREPARED_CODED_HEIGHT = 4;
+const PREPARED_CHROMA_WIDTH = 3;
+const PREPARED_CHROMA_HEIGHT = 2;
+const PREPARED_LUMA_STRIDE = 8;
+const PREPARED_CHROMA_STRIDE = 5;
+// A padding sample would surface as 255 or 65535 if any reached the frame
+const PREPARED_PADDING_SAMPLE = 0xFFFF;
+const PREPARED_DISPLAY_WIDTH = 8;
+const PREPARED_DISPLAY_HEIGHT = 4;
+const PREPARED_TIMESTAMP_MICROSECONDS = 1_500_000 as Microseconds;
+const PREPARED_DURATION_MICROSECONDS = 41_708 as Microseconds;
+const ZERO_DURATION_MICROSECONDS = 0 as Microseconds;
+const PREPARED_COLOR_SPACE = {
+    fullRange: false,
+    matrix: 'bt2020-ncl',
+    primaries: 'bt2020',
+    transfer: 'pq'
+} as const;
+const EIGHT_BIT_SAMPLE_LIMIT = 256;
+const TEN_BIT_SAMPLE_LIMIT = 1_024;
+const SAMPLE_PATTERN_STEP = 13;
+const SAMPLE_PATTERN_OFFSET = 64;
+const MICROSECONDS_PER_SECOND = 1_000_000;
+const PREPARED_GEOMETRY = {
+    codedHeight: PREPARED_CODED_HEIGHT,
+    codedWidth: PREPARED_CODED_WIDTH,
+    displayHeight: PREPARED_DISPLAY_HEIGHT,
+    displayWidth: PREPARED_DISPLAY_WIDTH
+};
+
+type PreparedFrameFormat = 'I420' | 'I420P10';
+
+type DecodedPlaneVector = {
+    compact: Uint16Array
+    strided: RawVideoSourcePlane
+};
+
+/** Builds a decoded plane twice: compact, as a VideoSample packs it, and padded, as a decoder's WASM memory holds it. */
+function createDecodedPlane(width: number, height: number, stride: number, firstSample: number, sampleLimit: number): DecodedPlaneVector {
+    const compact = new Uint16Array(width * height);
+    const strided = new Uint16Array(((height - 1) * stride) + width);
+    strided.fill(PREPARED_PADDING_SAMPLE);
+    for (let rowIndex = 0; rowIndex < height; rowIndex += 1) {
+        for (let columnIndex = 0; columnIndex < width; columnIndex += 1) {
+            const sampleIndex = (rowIndex * width) + columnIndex;
+            const sample = (SAMPLE_PATTERN_OFFSET + ((firstSample + sampleIndex) * SAMPLE_PATTERN_STEP)) % sampleLimit;
+            compact[sampleIndex] = sample;
+            strided[(rowIndex * stride) + columnIndex] = sample;
+        }
+    }
+    return { compact, strided: { samples: strided, stride } };
+}
+
+function createDecodedPlanes(format: PreparedFrameFormat): DecodedPlaneVector[] {
+    const sampleLimit = format === 'I420' ? EIGHT_BIT_SAMPLE_LIMIT : TEN_BIT_SAMPLE_LIMIT;
+    const lumaSampleCount = PREPARED_CODED_WIDTH * PREPARED_CODED_HEIGHT;
+    const chromaSampleCount = PREPARED_CHROMA_WIDTH * PREPARED_CHROMA_HEIGHT;
+    const planes: DecodedPlaneVector[] = [];
+    planes.push(createDecodedPlane(PREPARED_CODED_WIDTH, PREPARED_CODED_HEIGHT, PREPARED_LUMA_STRIDE, 0, sampleLimit));
+    planes.push(createDecodedPlane(
+        PREPARED_CHROMA_WIDTH,
+        PREPARED_CHROMA_HEIGHT,
+        PREPARED_CHROMA_STRIDE,
+        lumaSampleCount,
+        sampleLimit
+    ));
+    planes.push(createDecodedPlane(
+        PREPARED_CHROMA_WIDTH,
+        PREPARED_CHROMA_HEIGHT,
+        PREPARED_CHROMA_STRIDE,
+        lumaSampleCount + chromaSampleCount,
+        sampleLimit
+    ));
+    return planes;
+}
+
+/** Packs the compact planes and makes the VideoSample a software decoder gives Mediabunny. */
+function createPackedSample(
+    format: PreparedFrameFormat,
+    planes: readonly DecodedPlaneVector[],
+    durationMicroseconds: Microseconds
+): VideoSample {
+    const bytesPerSample = format === 'I420' ? 1 : 2;
+    const sampleCount = planes.reduce((count: number, plane: DecodedPlaneVector): number => count + plane.compact.length, 0);
+    const packedSamples = format === 'I420' ? new Uint8Array(sampleCount) : new Uint16Array(sampleCount);
+    const layout: PlaneLayout[] = [];
+    let sampleOffset = 0;
+    for (const plane of planes) {
+        packedSamples.set(plane.compact, sampleOffset);
+        layout.push({
+            offset: sampleOffset * bytesPerSample,
+            stride: (plane === planes[0] ? PREPARED_CODED_WIDTH : PREPARED_CHROMA_WIDTH) * bytesPerSample
+        });
+        sampleOffset += plane.compact.length;
+    }
+    return new VideoSample(new Uint8Array(packedSamples.buffer), {
+        codedHeight: PREPARED_CODED_HEIGHT,
+        codedWidth: PREPARED_CODED_WIDTH,
+        colorSpace: PREPARED_COLOR_SPACE as unknown as VideoColorSpaceInit,
+        displayHeight: PREPARED_DISPLAY_HEIGHT,
+        displayWidth: PREPARED_DISPLAY_WIDTH,
+        duration: durationMicroseconds / MICROSECONDS_PER_SECOND,
+        format,
+        layout,
+        timestamp: PREPARED_TIMESTAMP_MICROSECONDS / MICROSECONDS_PER_SECOND
+    });
+}
+
+function prepareDecodedFrame(
+    format: PreparedFrameFormat,
+    planes: readonly DecodedPlaneVector[],
+    bufferPool: RawFrameBufferPool | null,
+    durationMicroseconds: Microseconds = PREPARED_DURATION_MICROSECONDS
+): PreparedRawVideoFrameSource {
+    return PreparedRawVideoFrameSource.prepare(
+        {
+            codedHeight: PREPARED_CODED_HEIGHT,
+            codedWidth: PREPARED_CODED_WIDTH,
+            colorSpace: PREPARED_COLOR_SPACE,
+            displayHeight: PREPARED_DISPLAY_HEIGHT,
+            displayWidth: PREPARED_DISPLAY_WIDTH,
+            durationMicroseconds,
+            format,
+            timestampMicroseconds: PREPARED_TIMESTAMP_MICROSECONDS
+        },
+        planes.map((plane: DecodedPlaneVector): RawVideoSourcePlane => plane.strided),
+        bufferPool
+    );
+}
+
+function captureError(action: () => unknown): unknown {
+    try {
+        action();
+    } catch (error) {
+        return error;
+    }
+    return null;
+}
+
+/** Requires two raw frames to match in every field and every byte, padding included. */
+function expectSameRawFrame(actual: TransferableRawVideoFrame | null, expected: TransferableRawVideoFrame): void {
+    expect(actual).not.toBeNull();
+    const { data: actualData, ...actualMetadata } = actual as TransferableRawVideoFrame;
+    const { data: expectedData, ...expectedMetadata } = expected;
+    expect(actualMetadata).toEqual(expectedMetadata);
+    expect(new Uint8Array(actualData)).toEqual(new Uint8Array(expectedData));
+}
+
+describe('PreparedRawVideoFrameSource', () => {
+    it.each([ 'I420', 'I420P10' ] as const)(
+        'writes padded %s planes byte for byte as the packed sample chain copies them',
+        async (format: PreparedFrameFormat) => {
+            const planes = createDecodedPlanes(format);
+            const expectedFrame = await copyVideoFrameToRawPlanes(
+                createVideoSampleRawFrameSource(createPackedSample(format, planes, PREPARED_DURATION_MICROSECONDS)),
+                { expectedGeometry: PREPARED_GEOMETRY, format }
+            );
+
+            const preparedFrame = prepareDecodedFrame(format, planes, null);
+
+            expectSameRawFrame(preparedFrame.takeRawFrame(format, PREPARED_GEOMETRY), expectedFrame);
+        }
+    );
+
+    it('reports a zero duration as unknown, as the packed sample chain does', async () => {
+        const planes = createDecodedPlanes('I420P10');
+        const expectedFrame = await copyVideoFrameToRawPlanes(
+            createVideoSampleRawFrameSource(createPackedSample('I420P10', planes, ZERO_DURATION_MICROSECONDS)),
+            { format: 'I420P10' }
+        );
+
+        const preparedFrame = prepareDecodedFrame('I420P10', planes, null, ZERO_DURATION_MICROSECONDS);
+
+        expect(preparedFrame.duration).toBeNull();
+        expectSameRawFrame(preparedFrame.takeRawFrame('I420P10', PREPARED_GEOMETRY), expectedFrame);
+    });
+
+    it('hands its pooled buffer over only in its format at the expected geometry', () => {
+        const bufferPool = new RawFrameBufferPool(MAXIMUM_SPARE_RAW_FRAME_BUFFERS_PER_BYTE_LENGTH);
+        const preparedFrame = prepareDecodedFrame('I420P10', createDecodedPlanes('I420P10'), bufferPool);
+
+        expect(preparedFrame.takeRawFrame('I420', PREPARED_GEOMETRY)).toBeNull();
+        expect(preparedFrame.takeRawFrame('I420P10', {
+            ...PREPARED_GEOMETRY,
+            displayWidth: PREPARED_CODED_WIDTH
+        })).toBeNull();
+        const rawFrame = preparedFrame.takeRawFrame('I420P10', PREPARED_GEOMETRY);
+
+        expect(rawFrame?.format).toBe('I420P10');
+        // A taken buffer belongs to its transfer, so closing the source keeps it out of the pool
+        preparedFrame.close();
+        expect(bufferPool.release(rawFrame?.data ?? new ArrayBuffer(0))).toBe(true);
+        expect(() => preparedFrame.takeRawFrame('I420P10', PREPARED_GEOMETRY)).toThrow('closed');
+    });
+
+    it('writes into a spare from its pool and returns the spare when closed untaken', () => {
+        const bufferPool = new RawFrameBufferPool(MAXIMUM_SPARE_RAW_FRAME_BUFFERS_PER_BYTE_LENGTH);
+        const firstFrame = prepareDecodedFrame('I420', createDecodedPlanes('I420'), bufferPool);
+        const firstBuffer = firstFrame.takeRawFrame('I420', PREPARED_GEOMETRY)?.data;
+        bufferPool.release(firstBuffer ?? new ArrayBuffer(0));
+
+        const secondFrame = prepareDecodedFrame('I420', createDecodedPlanes('I420'), bufferPool);
+        secondFrame.close();
+        secondFrame.close();
+        const thirdFrame = prepareDecodedFrame('I420', createDecodedPlanes('I420'), bufferPool);
+
+        expect(thirdFrame.takeRawFrame('I420', PREPARED_GEOMETRY)?.data).toBe(firstBuffer);
+    });
+
+    it('copies into a compound buffer through copyTo, as the packed sample chain does', async () => {
+        const basePlanes = createDecodedPlanes('I420P10');
+        const enhancementPlanes = createDecodedPlanes('I420P10');
+        const pairOptions = {
+            baseExpectedGeometry: PREPARED_GEOMETRY,
+            enhancementExpectedGeometry: PREPARED_GEOMETRY,
+            format: 'I420P10'
+        } as const;
+        const expectedPair = await copyVideoFramePairToRawPlanes(
+            createVideoSampleRawFrameSource(createPackedSample('I420P10', basePlanes, PREPARED_DURATION_MICROSECONDS)),
+            createVideoSampleRawFrameSource(createPackedSample('I420P10', enhancementPlanes, PREPARED_DURATION_MICROSECONDS)),
+            pairOptions
+        );
+        const baseFrame = prepareDecodedFrame('I420P10', basePlanes, null);
+        const enhancementFrame = prepareDecodedFrame('I420P10', enhancementPlanes, null);
+
+        const preparedPair = await copyVideoFramePairToRawPlanes(baseFrame, enhancementFrame, pairOptions);
+
+        expectSameRawFrame(preparedPair.baseFrame, expectedPair.baseFrame);
+        expect(preparedPair.enhancementFrame).not.toBeNull();
+        expectSameRawFrame(preparedPair.enhancementFrame, expectedPair.enhancementFrame as TransferableRawVideoFrame);
+        // The pair copy closes both layers
+        await expect(baseFrame.copyTo(new ArrayBuffer(DEFAULT_FRAME_COPY_BYTE_LENGTH), {})).rejects.toThrow('closed');
+        await expect(enhancementFrame.copyTo(new ArrayBuffer(DEFAULT_FRAME_COPY_BYTE_LENGTH), {})).rejects.toThrow('closed');
+    });
+
+    it('refuses a copy in another format or of part of the frame', async () => {
+        const preparedFrame = prepareDecodedFrame('I420P10', createDecodedPlanes('I420P10'), null);
+        await expect(copyVideoFrameToRawPlanes(preparedFrame, { format: 'I420' })).rejects.toMatchObject({
+            code: 'copy-failed'
+        });
+
+        const croppedFrame = prepareDecodedFrame('I420P10', createDecodedPlanes('I420P10'), null);
+        await expect(croppedFrame.copyTo(new ArrayBuffer(DEFAULT_FRAME_COPY_BYTE_LENGTH), {
+            rect: { height: PREPARED_CHROMA_HEIGHT, width: PREPARED_CHROMA_WIDTH, x: 0, y: 0 }
+        })).rejects.toThrow('full coded rectangle');
+    });
+
+    it('returns its buffer to the pool when a decoded plane does not hold its rows', () => {
+        const planes = createDecodedPlanes('I420');
+        const frameByteLength = prepareDecodedFrame('I420', planes, null).takeRawFrame('I420', PREPARED_GEOMETRY)?.data.byteLength;
+        const bufferPool = new RawFrameBufferPool(MAXIMUM_SPARE_RAW_FRAME_BUFFERS_PER_BYTE_LENGTH);
+        const spareBuffer = new ArrayBuffer(frameByteLength ?? 0);
+        bufferPool.release(spareBuffer);
+        const truncatedPlanes: DecodedPlaneVector[] = [
+            planes[0],
+            planes[1],
+            {
+                compact: planes[2].compact,
+                strided: {
+                    samples: planes[2].strided.samples.subarray(1),
+                    stride: planes[2].strided.stride
+                }
+            }
+        ];
+
+        expect(captureError(() => prepareDecodedFrame('I420', truncatedPlanes, bufferPool))).toMatchObject({
+            code: 'invalid-layout'
+        });
+        expect(prepareDecodedFrame('I420', planes, bufferPool).takeRawFrame('I420', PREPARED_GEOMETRY)?.data).toBe(spareBuffer);
+    });
+
+    it('refuses a format whose planes a decoder\'s planes do not map onto', () => {
+        expect(captureError(() => prepareDecodedFrame('NV12' as PreparedFrameFormat, createDecodedPlanes('I420'), null)))
+            .toMatchObject({ code: 'unsupported-format' });
+    });
+});
+
 describe('hasRawVideoFrameCopyLayout', () => {
     it.each([
         { format: 'I420P10', geometry: ULTRA_HD_16K_GEOMETRY, label: '16K 10-bit' },
@@ -809,15 +1101,16 @@ describe('copyVideoFramePairToRawPlanes', () => {
             }
         );
         const baseOnlyHarness = createFrameHarness({ format: 'I420P10' });
+        const bufferPool = new RawFrameBufferPool(MAXIMUM_SPARE_RAW_FRAME_BUFFERS_PER_BYTE_LENGTH);
+        bufferPool.release(pairedResult.baseFrame.data);
 
         const baseOnlyResult = await copyVideoFramePairToRawPlanes(
             baseOnlyHarness.frame,
             null,
             {
+                bufferPool,
                 enhancementExpectedGeometry: enhancementGeometry,
-                format: 'I420P10',
-                requireReusableBuffer: true,
-                reusableBuffer: pairedResult.baseFrame.data
+                format: 'I420P10'
             }
         );
 
@@ -963,15 +1256,16 @@ describe('copyVideoFramePairToRawPlanes', () => {
             }
         );
         const baseOnlyHarness = createWideBaseHarness('I444P12');
+        const bufferPool = new RawFrameBufferPool(MAXIMUM_SPARE_RAW_FRAME_BUFFERS_PER_BYTE_LENGTH);
+        bufferPool.release(pairedResult.baseFrame.data);
 
         const baseOnlyResult = await copyVideoFramePairToRawPlanes(
             baseOnlyHarness.frame,
             null,
             {
+                bufferPool,
                 enhancementExpectedGeometry: wideEnhancementGeometry,
-                format: 'I444P12',
-                requireReusableBuffer: true,
-                reusableBuffer: pairedResult.baseFrame.data
+                format: 'I444P12'
             }
         );
 

@@ -8,7 +8,9 @@ import {
     type TransferableRawVideoFramePair
 } from 'webgpu-player/video/RawVideoFrameCopy';
 import {
+    drawRawYUVFrame,
     renderRawYUVFrame,
+    uploadRawYUVFrame,
     type RawYUVTexturePresentation
 } from 'webgpu-player/presentation/RawYUVGPURenderer';
 
@@ -35,6 +37,8 @@ const ENHANCEMENT_CODED_WIDTH = 80;
 const ENHANCEMENT_CODED_HEIGHT = 2;
 const ENHANCEMENT_FIRST_BINDING = 6;
 const ENHANCEMENT_UNIFORM_BINDING = 9;
+// A planar format's luma and two chroma planes
+const PLANAR_PLANE_COUNT = 3;
 const FULL_FRAME_PRESENTATION: RawYUVTexturePresentation = {
     textureOffsetX: 0,
     textureOffsetY: 0,
@@ -285,6 +289,42 @@ describe('renderRawYUVFrame Dolby Vision pairs', () => {
             expect(getBoundTextureIndex(harness.bindGroupEntries, ENHANCEMENT_FIRST_BINDING + planeIndex)).toBe(planeIndex);
         }
         expect(Array.from(getEnhancementUniformWrite(harness) ?? [])).toEqual([ 0, 0, 0, 0 ]);
+    });
+
+    it('draws an uploaded pair without uploading it again, and presents its BL alone when its EL is not composed', async () => {
+        const harness = createRendererHarness();
+        const { baseFrame, enhancementFrame } = await copyRawFramePair('I420P10');
+        const uploadResult = uploadRawYUVFrame({
+            device: harness.device,
+            enhancementFrame,
+            frame: baseFrame,
+            textureSet: null
+        });
+        const uploadCount = harness.queueWriteTexture.mock.calls.length;
+
+        drawRawYUVFrame({
+            device: harness.device,
+            dolbyVisionEnhancementUniformBuffer: harness.enhancementUniformBuffer,
+            dolbyVisionRPUStorageBuffer: { label: 'rpu' } as unknown as GPUBuffer,
+            enhancementTextureSet: null,
+            frame: baseFrame,
+            pipeline: {
+                getBindGroupLayout: vi.fn(() => ({}))
+            } as unknown as GPURenderPipeline,
+            presentation: FULL_FRAME_PRESENTATION,
+            presentationUniformBuffer: { label: 'presentation' } as unknown as GPUBuffer,
+            renderSettingsUniformBuffer: { label: 'settings' } as unknown as GPUBuffer,
+            targetView: {} as GPUTextureView,
+            textureSet: uploadResult.textureSet
+        });
+
+        expect(uploadResult.enhancementTextureSet?.format).toBe('I420P10');
+        expect(harness.queueWriteTexture).toHaveBeenCalledTimes(uploadCount);
+        for (let planeIndex = 0; planeIndex < PLANAR_PLANE_COUNT; planeIndex += 1) {
+            expect(getBoundTextureIndex(harness.bindGroupEntries, ENHANCEMENT_FIRST_BINDING + planeIndex)).toBe(planeIndex);
+        }
+        expect(Array.from(getEnhancementUniformWrite(harness) ?? [])).toEqual([ 0, 0, 0, 0 ]);
+        expect(harness.queueSubmit).toHaveBeenCalledOnce();
     });
 
     it('refuses an EL in another format and releases the textures it created', async () => {

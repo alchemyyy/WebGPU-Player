@@ -38,7 +38,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-0bba3c6a.js";
+            window.path_to_searchindex_js = "searchindex-36a56e7f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c0e4fc60.js"></script>
@@ -257,8 +257,8 @@ Every reader in <a href="layout.html#folder-names-live-in-one-file">Repository l
 </ol>
 <h2 id="capture-a-timing-trace"><a class="header" href="#capture-a-timing-trace">Capture a timing trace</a></h2>
 <ol>
-<li>Call <code>startTimingTrace()</code> from <code>webgpu-player/TimingTrace</code> before the play request, so the decode worker the play starts is asked for its events.
-A worker started before the trace sends none.</li>
+<li>Call <code>startTimingTrace()</code> from <code>webgpu-player/TimingTrace</code> before the play request, so the decode run the play starts is asked for its events.
+A run started before the trace sends none; the next seek’s run does.</li>
 <li>Play the passage under investigation.</li>
 <li>Call <code>exportTimingTrace(metadata)</code> and save the result as JSON.
 <code>stopTimingTrace()</code> stops recording but keeps the events exportable until the next start or <code>clearTimingTrace()</code>.</li>

@@ -6,6 +6,7 @@ import {
 import { resolveEngineAssetURL, type EngineAssetPath } from '../../EngineAssets';
 import { microsecondsToSeconds, type Microseconds } from '../../MediaTime';
 import { requireMicroseconds } from '../../TimeMath';
+import WorkerWASMInstanceCache, { isWASMTrap } from './WorkerWASMInstanceCache';
 
 const MPEG2_VC1_DECODER_GLUE_ASSET: EngineAssetPath = 'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.js';
 const MPEG2_VC1_DECODER_WASM_ASSET: EngineAssetPath = 'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.wasm';
@@ -130,17 +131,33 @@ function loadDefaultDecoderGlue(url: string): void {
     }
 }
 
-async function createDefaultModule(wasmURL: string): Promise<MPEG2VC1DecoderModule> {
+// The worker's decoders share one instance of the module, and each opens its own codec context in it
+const sharedDecoderModule = new WorkerWASMInstanceCache<MPEG2VC1DecoderModule>();
+
+/**
+ * Returns the module instance this worker's decoders share, instantiated from the loaded glue on first use.
+ * A decoder whose native code traps makes the next one instantiate it again.
+ */
+export async function loadMPEG2VC1DecoderModule(wasmURL: string): Promise<MPEG2VC1DecoderModule> {
     const workerGlobal = globalThis as MPEG2VC1DecoderWorkerGlobal;
     const moduleFactory = workerGlobal.MPEG2VC1DecoderModule;
     if (typeof moduleFactory !== 'function') {
         throw new Error('The MPEG-2/VC-1 software decoder module factory is unavailable');
     }
-    return moduleFactory({ locateFile: (): string => wasmURL });
+    return sharedDecoderModule.load(moduleFactory, (): Promise<MPEG2VC1DecoderModule> => (
+        moduleFactory({ locateFile: (): string => wasmURL })
+    ));
+}
+
+/** Forgets the shared module after its native code trapped; a module a caller supplied is not shared and stays. */
+function discardTrappedModule(module: MPEG2VC1DecoderModule, error: unknown): void {
+    if (isWASMTrap(error)) {
+        sharedDecoderModule.discard(module);
+    }
 }
 
 const DEFAULT_DEPENDENCIES: MPEG2VC1SoftwareVideoDecoderDependencies = {
-    createModule: createDefaultModule,
+    createModule: loadMPEG2VC1DecoderModule,
     loadDecoderGlue: loadDefaultDecoderGlue,
     resolveAssetURL: resolveEngineAssetURL
 };
@@ -232,7 +249,7 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         private readonly dependencies: MPEG2VC1SoftwareVideoDecoderDependencies = DEFAULT_DEPENDENCIES
     ) {}
 
-    /** Loads the WASM decoder and opens its codec context. It throws when the decoder is already initialized or closed. */
+    /** Opens a codec context in the WASM module, which the worker's first decoder loads. It throws when the decoder is already initialized or closed. */
     public async init(): Promise<void> {
         if (this.closed || this.module || this.decoder !== 0) {
             throw new Error('The MPEG-2/VC-1 software decoder cannot be initialized in its current state');
@@ -303,32 +320,42 @@ export default class MPEG2VC1SoftwareVideoDecoder {
         // VFW VC-1 can replace a zero-duration timing placeholder before output
         this.durationsByTimestamp.set(timestampMicroseconds, durationMicroseconds);
 
-        const packetPointer = toHeapAddress(module._mpeg2_vc1_decoder_configure_packet(decoder, packet.data.byteLength));
-        if (packetPointer === 0) {
-            throw new Error('The MPEG-2/VC-1 software decoder packet allocation failed');
+        try {
+            const packetPointer = toHeapAddress(module._mpeg2_vc1_decoder_configure_packet(decoder, packet.data.byteLength));
+            if (packetPointer === 0) {
+                throw new Error('The MPEG-2/VC-1 software decoder packet allocation failed');
+            }
+            module.HEAPU8.set(packet.data, packetPointer);
+            const sendResult = module._mpeg2_vc1_decoder_send_packet(
+                decoder,
+                BigInt(timestampMicroseconds),
+                BigInt(timestampMicroseconds),
+                BigInt(durationMicroseconds),
+                packet.type === 'key' ? 1 : 0
+            );
+            if (sendResult < 0) {
+                throw new Error(`The MPEG-2/VC-1 software decoder rejected a packet: ${sendResult}`);
+            }
+            this.emitAvailableFrames(module, decoder, false);
+        } catch (error) {
+            discardTrappedModule(module, error);
+            throw error;
         }
-        module.HEAPU8.set(packet.data, packetPointer);
-        const sendResult = module._mpeg2_vc1_decoder_send_packet(
-            decoder,
-            BigInt(timestampMicroseconds),
-            BigInt(timestampMicroseconds),
-            BigInt(durationMicroseconds),
-            packet.type === 'key' ? 1 : 0
-        );
-        if (sendResult < 0) {
-            throw new Error(`The MPEG-2/VC-1 software decoder rejected a packet: ${sendResult}`);
-        }
-        this.emitAvailableFrames(module, decoder, false);
     }
 
     /** Drains every delayed picture and fails if any packet produced no output. */
     public flush(): void {
         const { decoder, module } = this.requireDecoder();
-        const drainResult = module._mpeg2_vc1_decoder_start_drain(decoder);
-        if (drainResult < 0 && drainResult !== module._mpeg2_vc1_decoder_error_eof()) {
-            throw new Error(`The MPEG-2/VC-1 software decoder drain failed: ${drainResult}`);
+        try {
+            const drainResult = module._mpeg2_vc1_decoder_start_drain(decoder);
+            if (drainResult < 0 && drainResult !== module._mpeg2_vc1_decoder_error_eof()) {
+                throw new Error(`The MPEG-2/VC-1 software decoder drain failed: ${drainResult}`);
+            }
+            this.emitAvailableFrames(module, decoder, true);
+        } catch (error) {
+            discardTrappedModule(module, error);
+            throw error;
         }
-        this.emitAvailableFrames(module, decoder, true);
         if (this.durationsByTimestamp.size > 0) {
             throw new Error('The MPEG-2/VC-1 software decoder ended before every packet was output');
         }

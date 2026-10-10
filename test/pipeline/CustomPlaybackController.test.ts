@@ -42,8 +42,13 @@ import type {
     CustomPlaybackFallbackRequest,
     CustomPlaybackPlayOptions,
     CustomPlaybackStartResult,
-    CustomVideoDecodeSession
+    CustomVideoDecodeSession,
+    CustomVideoDecodeSessionFactory
 } from 'webgpu-player/pipeline/CustomPlaybackControllerTypes';
+import type {
+    WorkerPresentationAttachment,
+    WorkerPresentationRendererProvider
+} from 'webgpu-player/presentation/WorkerPresentationProtocol';
 
 const ULTRA_HD_8K_CODED_WIDTH = 7_680;
 const ULTRA_HD_8K_CODED_HEIGHT = 4_320;
@@ -54,6 +59,7 @@ const UNREPRESENTABLE_CODED_WIDTH = Number.MAX_SAFE_INTEGER;
 const UNREPRESENTABLE_CODED_HEIGHT = 2;
 const UNREPRESENTABLE_RAW_PLAYBACK_ERROR = 'Raw custom playback frames have no representable copy layout';
 const MAIN10_LEVEL_6_1_CODEC_STRING = 'hvc1.2.6.L183.B0';
+const WORKER_REUSE_SEEK_TARGET_MICROSECONDS = secondsToMicroseconds(42);
 
 type ControllerDecodeWorkerMessageHandler = (event: MessageEvent<unknown>) => void;
 
@@ -128,6 +134,7 @@ function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
         nativeAudioEnded: false,
         peakFrameCount: 0,
         pendingFrameCount: 0,
+        presentationMode: null,
         queuedFrameCount: 0,
         receivedAudioFrameCount: 0,
         receivedAudioSampleCount: 0,
@@ -142,6 +149,7 @@ function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
         receivedFrameCount: 0,
         receivedNativeAudioSegmentCount: 0,
         recycledRawFrameCount: 0,
+        rendererUnavailableReason: null,
         staleAudioSampleCount: 0,
         staleFrameCount: 0,
         state: 'idle',
@@ -156,7 +164,8 @@ function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
         videoEpoch: 0,
         videoProgressPhase: null,
         videoResyncCount: 0,
-        videoSuspensionCount: 0
+        videoSuspensionCount: 0,
+        workerReused: false
     };
 }
 
@@ -177,6 +186,7 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
     private videoEnded = false;
     public readonly starts: CustomDecodeSessionStartOptions[] = [];
     public readonly acknowledgeFrame = vi.fn((): boolean => true);
+    public readonly destroy = vi.fn();
     public readonly discardFrame = vi.fn((): boolean => true);
     public readonly setNativeAudioMuted = vi.fn();
     public readonly setNativeAudioPlaying = vi.fn(async (): Promise<void> => undefined);
@@ -1586,13 +1596,13 @@ describe('CustomPlaybackController', () => {
 
         const currentVideoFrame = emitControllerDecodedFrame(worker, generation, secondsToMicroseconds(8));
         const currentPresentationFrame = controller.takeCurrentFrame();
-        expect(currentPresentationFrame?.frame).toBe(currentVideoFrame);
+        if (currentPresentationFrame?.outputMode !== 'video-frame') {
+            throw new Error('Expected the replacement decoded VideoFrame');
+        }
+        expect(currentPresentationFrame.frame).toBe(currentVideoFrame);
         expect(decodeSession.getTelemetry().pendingFrameCount).toBe(1);
 
         currentVideoFrame.close();
-        if (!currentPresentationFrame) {
-            throw new Error('Expected the replacement decoded VideoFrame');
-        }
         expect(controller.notifyFramePresented(currentPresentationFrame)).toBe(true);
         expect(decodeSession.getTelemetry().pendingFrameCount).toBe(0);
         expect(worker.postedMessages.at(-1)).toEqual({
@@ -1611,6 +1621,8 @@ describe('CustomPlaybackController', () => {
         await destroyPromise;
         expect(staleVideoFrame.close).toHaveBeenCalledOnce();
         expect(currentVideoFrame.close).toHaveBeenCalledOnce();
+        // The acknowledged stop leaves the worker idle, and only the destroyed controller terminates it
+        expect(worker.terminate).toHaveBeenCalledOnce();
     });
 
     it('renegotiates after sustained ordinary playback decode lag', async () => {
@@ -2833,6 +2845,57 @@ describe('CustomPlaybackController', () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+
+    it('keeps the decode worker across a seek and releases it only once destroyed', async () => {
+        const harness = createControllerHarness(false);
+        const firstGeneration = await startReadyPlayback(harness, false);
+
+        const seekPromise = harness.controller.seek(WORKER_REUSE_SEEK_TARGET_MICROSECONDS);
+        await flushAsyncWork();
+        const seekGeneration = harness.videoDecodeSession.starts.at(-1)?.generation;
+        if (!seekGeneration) {
+            throw new Error('Seek generation did not start');
+        }
+        harness.videoDecodeSession.emit({
+            audio: null,
+            codec: 'avc1.640028',
+            generation: seekGeneration,
+            type: 'ready'
+        });
+        await expect(seekPromise).resolves.toMatchObject({ generation: seekGeneration, status: 'started' });
+        expect(seekGeneration).toBeGreaterThan(firstGeneration);
+        expect(harness.videoDecodeSession.destroy).not.toHaveBeenCalled();
+
+        await harness.controller.destroy();
+
+        expect(harness.videoDecodeSession.destroy).toHaveBeenCalledOnce();
+        // The stop gives the last run its bound to finish before the worker goes
+        const lastStopCallOrder = harness.videoDecodeSession.stop.mock.invocationCallOrder.at(-1) ?? Number.POSITIVE_INFINITY;
+        expect(lastStopCallOrder).toBeLessThan(harness.videoDecodeSession.destroy.mock.invocationCallOrder[0]);
+    });
+
+    it('hands the decode session the host\'s worker presentation renderer provider', async () => {
+        const presentationRendererProvider = vi.fn((): WorkerPresentationAttachment | null => null);
+        const sessionProviders: Array<WorkerPresentationRendererProvider | null> = [];
+        const videoDecodeSessionFactory: CustomVideoDecodeSessionFactory = (
+            eventHandler,
+            audioBridgeFactory,
+            _nativeAudioBridgeFactory,
+            sessionProvider
+        ): CustomVideoDecodeSession => {
+            sessionProviders.push(sessionProvider);
+            return new FakeVideoDecodeSession(eventHandler, audioBridgeFactory);
+        };
+
+        const providingController = new CustomPlaybackController({ presentationRendererProvider, videoDecodeSessionFactory });
+        const pageController = new CustomPlaybackController({ videoDecodeSessionFactory });
+
+        expect(sessionProviders).toEqual([ presentationRendererProvider, null ]);
+        // The session asks for an attachment only when it creates a worker
+        expect(presentationRendererProvider).not.toHaveBeenCalled();
+        await providingController.destroy();
+        await pageController.destroy();
     });
 
     it('bounds an unresolved audio suspension before preparing a replacement generation', async () => {

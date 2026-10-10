@@ -29,7 +29,6 @@ import {
     createRawDolbyVisionProfile7ColorPipelineWGSL,
     createRawDolbyVisionProfile7FELColorPipelineWGSL,
     createRawYUVColorPipelineWGSL,
-    getRawFormatBitDepth,
     isRawDolbyVisionVideoFrameFormat,
     type RawDolbyVisionVideoFrameFormat
 } from '../color/ColorPipelineShader';
@@ -37,39 +36,61 @@ import {
     isDolbyVisionDualLayerProfile,
     type DolbyVisionReconstructionProfile
 } from './PresentationInput';
+import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../video/dolby-vision/DolbyVisionRPUParser';
 import {
-    decodeDolbyVisionRPUSnapshot,
-    DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH
-} from '../video/dolby-vision/DolbyVisionRPUParser';
-import {
-    RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT,
-    type RawVideoFrameColorSpace,
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
 } from '../video/RawVideoFrameCopy';
-import {
-    isTransferableDolbyVisionEncodedFrameMetadata,
-    type TransferableDolbyVisionEncodedFrameMetadata
-} from '../video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
-import {
-    getHDR10PlusSceneLuminance,
-    isHDR10PlusFrameMetadata,
-    type HDR10PlusFrameMetadata
-} from '../video/hdr/HDR10PlusMetadata';
+import { type TransferableDolbyVisionEncodedFrameMetadata } from '../video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
+import { type HDR10PlusFrameMetadata } from '../video/hdr/HDR10PlusMetadata';
 import {
     createRawYUVRenderSettingsUniformBuffer,
     createRawYUVEnhancementUniformBuffer,
     createRawYUVRenderPipeline,
     destroyRawPlaneTextureSet,
-    hasValidRawVideoFrameLayout,
     renderRawYUVFrame,
     writeRawYUVRenderSettingsUniform,
     type RawPlaneTextureSet
 } from './RawYUVGPURenderer';
 import {
+    decodedFrameColorMatches,
+    decodedNeutralBT709FrameColorMatches,
+    getComposedEnhancementFrame,
+    getDualLayerDolbyVisionRPUData,
+    getDualLayerPresentation,
+    getHDR10PlusFrameRenderSettings,
+    getSingleLayerDolbyVisionRPUData,
+    isDolbyVisionInputMode,
+    isExternalInputMode,
+    rawDolbyVisionEnhancementFrameDescriptorMatches,
+    rawDolbyVisionFrameDescriptorMatches,
+    rawFrameDescriptorMatches,
+    type DualLayerDolbyVisionRPUData
+} from './DecodedFramePresentation';
+import { createExternalTextureRenderPipeline, drawExternalTextureFrame } from './ExternalTextureGPURenderer';
+import {
+    requestPresentationDevice,
+    waitForWebGPUResourceOperation,
+    WEBGPU_RESOURCE_OPERATION_TIMEOUT,
+    WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS
+} from './WebGPUResourceOperation';
+import {
     calculateTexturePresentationGeometry,
     type TexturePresentationGeometry
 } from './PresentationGeometry';
+import {
+    isWorkerPresentationResponse,
+    type PresentationFallbackReason,
+    type WorkerPresentationAttachment,
+    type WorkerPresentationConfigureRequest,
+    type WorkerPresentationDolbyVisionDualLayerMode,
+    type WorkerPresentationHDR10PlusResult,
+    type WorkerPresentationInputMode,
+    type WorkerPresentationLayoutRequest,
+    type WorkerPresentationPresentedResponse,
+    type WorkerPresentationRequest,
+    type WorkerPresentationSettingsRequest
+} from './WorkerPresentationProtocol';
 import {
     DolbyVisionPresentationAuthorizationRegistry,
     type DolbyVisionAuthorizationRoute,
@@ -106,30 +127,15 @@ const LAYOUT_MOTION_ITERATION_EVENT = 'animationiteration';
 const LAYOUT_MOTION_START_EVENTS = [ 'animationstart', 'transitionrun' ] as const;
 const MAX_DEVICE_RECOVERY_ATTEMPTS = 1;
 const MIN_CANVAS_DIMENSION = 1;
+// The texture dimension every WebGPU device supports, for a layout before the page's own device exists
+const WEBGPU_DEFAULT_MAXIMUM_TEXTURE_DIMENSION = 8_192;
 const VIDEO_READY_STATE_CURRENT_DATA = 2;
-const VERTEX_COUNT = 6;
-export const WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(5_000);
 export const RAW_HDR_NEGOTIATION_WAIT_MICROSECONDS = millisecondsToMicroseconds(5_000);
-const WEBGPU_RESOURCE_OPERATION_TIMEOUT = Symbol('webgpu-resource-operation-timeout');
 // The raw Dolby Vision BL format whose routes are prewarmed, and which authorization queries default to
 const PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT: RawDolbyVisionVideoFrameFormat = 'I420P10';
 
-function waitForWebGPUResourceOperation<Value>(
-    promise: Promise<Value>
-): Promise<Value | typeof WEBGPU_RESOURCE_OPERATION_TIMEOUT> {
-    return new Promise<Value | typeof WEBGPU_RESOURCE_OPERATION_TIMEOUT>((resolve, reject) => {
-        const timeout = globalThis.setTimeout((): void => {
-            resolve(WEBGPU_RESOURCE_OPERATION_TIMEOUT);
-        }, microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS));
-        promise.then((value: Value): void => {
-            globalThis.clearTimeout(timeout);
-            resolve(value);
-        }, (error: unknown): void => {
-            globalThis.clearTimeout(timeout);
-            reject(error);
-        });
-    });
-}
+// The worker renderer bounds its own waits the same way, so the bound lives with the shared wait
+export { WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS };
 
 function waitForRawHDRNegotiationProbe(operation: Promise<void>): Promise<void> {
     return new Promise<void>(resolve => {
@@ -152,23 +158,8 @@ export type PresentationSurface = {
     video: HTMLVideoElement
 };
 
-export type PresentationFallbackReason =
-    | 'adapter-unavailable'
-    | 'canvas-context-unavailable'
-    | 'canvas-configuration-failed'
-    | 'device-recovery-failed'
-    | 'device-request-failed'
-    | 'decoded-frame-color-mismatch'
-    | 'dolby-vision-metadata-invalid'
-    | 'frame-import-failed'
-    | 'frame-render-failed'
-    | 'gpu-unavailable'
-    | 'hdr-authorization-unavailable'
-    | 'hdr-color-configuration-invalid'
-    | 'hdr-tone-mapping-disabled'
-    | 'insecure-context'
-    | 'pipeline-creation-failed'
-    | 'request-video-frame-callback-unavailable';
+// The worker renderer reports the same reasons, so the list lives with its protocol
+export type { PresentationFallbackReason };
 
 export type PresentationTelemetry = {
     appliedHDR10PlusFrameCount: number
@@ -216,9 +207,25 @@ export type DecodedRawPresentationFrame = {
     outputMode: 'raw-planes'
 };
 
+/** A frame the decode worker keeps for its renderer, which the presenter asks to draw it by ID. */
+export type DecodedWorkerPresentationFrame = {
+    /** The decode generation whose run keeps the frame */
+    decodeGeneration: number
+    displayHeight: number
+    displayWidth: number
+    durationMicroseconds: Microseconds
+    frameId: number
+    mediaTimeMicroseconds: Microseconds
+    outputMode: 'worker-frame'
+};
+
 export type DecodedPresentationFrame =
     | DecodedRawPresentationFrame
-    | DecodedVideoPresentationFrame;
+    | DecodedVideoPresentationFrame
+    | DecodedWorkerPresentationFrame;
+
+/** A frame whose payload reached the page. */
+type DecodedPayloadPresentationFrame = DecodedRawPresentationFrame | DecodedVideoPresentationFrame;
 
 export type IdentityColorPipelineConfiguration = {
     settings: IdentitySDRRenderSettings
@@ -262,12 +269,7 @@ export type PresentationColorPipelineConfiguration = (
     automaticInputPeakNits?: boolean
 };
 
-type PresentationInputMode =
-    | 'external-dolby-vision'
-    | 'external-hdr'
-    | 'external-texture'
-    | 'raw-dolby-vision'
-    | 'raw-yuv';
+type PresentationInputMode = WorkerPresentationInputMode;
 
 type PresentationFallbackHandler = (generation: number, reason: PresentationFallbackReason) => void;
 
@@ -279,21 +281,12 @@ type PendingFrameCallback = {
     video: HTMLVideoElement
 };
 
-type DolbyVisionDualLayerPresentation =
-    | 'fel'
-    | 'fel-base-fallback'
-    | 'mel';
+type DolbyVisionDualLayerPresentation = WorkerPresentationDolbyVisionDualLayerMode;
 
 type FrameSubmission = {
     device: GPUDevice
     dolbyVisionDualLayerMode?: DolbyVisionDualLayerPresentation
     validationResult: Promise<GPUError | null> | null
-};
-
-type DualLayerDolbyVisionRPUData = {
-    enhancementLayerBitDepth: number
-    layerMode: 'fel' | 'mel'
-    packedRPUData: ArrayBuffer
 };
 
 /** The authorization registries one raw Dolby Vision route renders through. */
@@ -348,8 +341,75 @@ type CachedPresentationLayout = {
 
 type TexturePresentation = TexturePresentationGeometry;
 
+type CachedWorkerPresentationLayout = CachedPresentationLayout & {
+    revision: number
+};
+
+/** A frame the presenter asked the renderer to draw, until the renderer answers. */
+type PendingWorkerPresent = {
+    callbackTimeMicroseconds: Microseconds
+    completed: ((gpuWorkCompleted: boolean) => void) | undefined
+    decodeGeneration: number
+    frameId: number
+    /** The presentation generation that selected the frame */
+    generation: number
+    mediaTimeMicroseconds: Microseconds
+};
+
+/** How a configure the presenter waited for ended; released means the attachment went first. */
+type WorkerRendererConfigurationAnswer = 'accepted' | 'refused' | 'released' | 'timeout';
+
+type PendingWorkerRendererConfiguration = {
+    resolve: (answer: WorkerRendererConfigurationAnswer) => void
+    revision: number
+};
+
+/**
+ * The renderer of one decode worker: the canvas it draws into, its channel, and what it accepted.
+ * A worker attaches once, so a replaced worker gets a new attachment and the old canvas goes.
+ */
+type WorkerRendererAttachment = {
+    canvas: HTMLCanvasElement
+    /** The latest configure revision the renderer accepted */
+    configuredRevision: number
+    /** The latest configure revision sent */
+    configureRevision: number
+    layout: CachedWorkerPresentationLayout | null
+    layoutDirty: boolean
+    layoutRevision: number
+    pendingConfiguration: PendingWorkerRendererConfiguration | null
+    readonly pendingPresents: PendingWorkerPresent[]
+    port: MessagePort
+    status: 'pending' | 'ready'
+};
+
 function getMonotonicMicroseconds(): Microseconds {
     return millisecondsToMicroseconds(performance.now());
+}
+
+/** Reports whether this page can hand a canvas and a channel to a worker. */
+function canTransferCanvasToWorker(): boolean {
+    return typeof OffscreenCanvas === 'function'
+        && typeof MessageChannel === 'function'
+        && typeof HTMLCanvasElement === 'function'
+        && typeof HTMLCanvasElement.prototype.transferControlToOffscreen === 'function';
+}
+
+/** Calls a selection's completion handler outside the presenter's own call stack, as GPU completion does. */
+function notifyWorkerFrameCompletion(
+    completed: ((gpuWorkCompleted: boolean) => void) | undefined,
+    gpuWorkCompleted: boolean
+): void {
+    if (!completed) {
+        return;
+    }
+    void Promise.resolve().then((): void => {
+        try {
+            completed(gpuWorkCompleted);
+        } catch (error) {
+            console.warn('Worker frame completion handler failed', error);
+        }
+    });
 }
 
 function createTelemetry(settings: RenderSettings): PresentationTelemetry {
@@ -390,236 +450,6 @@ function cloneRenderSettings(settings: RenderSettings): RenderSettings {
                 toneMapping: { ...settings.toneMapping }
             };
     }
-}
-
-function decodedFrameColorMatches(frame: VideoFrame, metadata: InputColorMetadata): boolean {
-    const colorSpace = frame.colorSpace;
-    return String(colorSpace.transfer) === metadata.transfer
-        && String(colorSpace.primaries) === metadata.primaries
-        && String(colorSpace.matrix) === metadata.matrix
-        && colorSpace.fullRange === (metadata.range === 'full');
-}
-
-function decodedNeutralBT709FrameColorMatches(frame: VideoFrame): boolean {
-    const colorSpace = frame.colorSpace;
-    return colorSpace.fullRange === false
-        && String(colorSpace.matrix) === 'bt709'
-        && String(colorSpace.primaries) === 'bt709'
-        && String(colorSpace.transfer) === 'bt709';
-}
-
-function isExternalInputMode(inputMode: PresentationInputMode): boolean {
-    return inputMode === 'external-texture'
-        || inputMode === 'external-hdr'
-        || inputMode === 'external-dolby-vision';
-}
-
-function isDolbyVisionInputMode(inputMode: PresentationInputMode): boolean {
-    return inputMode === 'raw-dolby-vision' || inputMode === 'external-dolby-vision';
-}
-
-/** Returns whether a raw frame's transfer agrees with the metadata; a null transfer is unspecified. */
-function rawFrameTransferMatches(colorSpace: RawVideoFrameColorSpace, metadata: InputColorMetadata): boolean {
-    const transfer = colorSpace.transfer;
-    if (transfer === null) {
-        return true;
-    }
-    switch (metadata.transfer) {
-        case 'hlg':
-            // NOTE: An HLG-compatible VUI signals a BT.2020 transfer, which uses the BT.709 curve.
-            // A decoder may report that transfer as bt709 instead of null
-            return transfer === 'arib-std-b67'
-                || transfer === 'hlg'
-                || (transfer === 'bt709' && colorSpace.primaries === 'bt2020');
-        case 'pq':
-            return transfer === 'pq' || transfer === 'smpte2084';
-        case 'sdr':
-            // SMPTE 170M uses the BT.709 OETF
-            return transfer === 'bt709' || transfer === 'smpte170m';
-    }
-}
-
-/** Returns whether a raw frame color member agrees with the metadata; a null member is unspecified. */
-function rawFrameColorMemberMatches(frameValue: string | null, metadataValue: string): boolean {
-    return frameValue === null || frameValue === metadataValue;
-}
-
-function rawFrameColorMatches(frame: TransferableRawVideoFrame, metadata: InputColorMetadata): boolean {
-    const colorSpace = frame.colorSpace;
-    return frame.bitDepth === metadata.bitDepth
-        && (colorSpace.fullRange === null || colorSpace.fullRange === (metadata.range === 'full'))
-        && rawFrameColorMemberMatches(colorSpace.matrix, metadata.matrix)
-        && rawFrameColorMemberMatches(colorSpace.primaries, metadata.primaries)
-        && rawFrameTransferMatches(colorSpace, metadata);
-}
-
-function rawFrameDescriptorMatches(
-    decodedFrame: DecodedRawPresentationFrame,
-    metadata: InputColorMetadata,
-    format: SupportedRawVideoFrameFormat
-): boolean {
-    const frame = decodedFrame.frame;
-    return frame.format === format
-        && frame.timestampMicroseconds === decodedFrame.mediaTimeMicroseconds
-        && (frame.durationMicroseconds === null
-            || frame.durationMicroseconds === decodedFrame.durationMicroseconds)
-        && rawFrameColorMatches(frame, metadata)
-        && hasValidRawVideoFrameLayout(frame);
-}
-
-function rawDolbyVisionFrameDescriptorMatches(
-    decodedFrame: DecodedRawPresentationFrame,
-    format: SupportedRawVideoFrameFormat
-): boolean {
-    const frame = decodedFrame.frame;
-    return isRawDolbyVisionVideoFrameFormat(format)
-        && frame.format === format
-        && frame.bitDepth === getRawFormatBitDepth(format)
-        && frame.timestampMicroseconds === decodedFrame.mediaTimeMicroseconds
-        && (frame.durationMicroseconds === null
-            || frame.durationMicroseconds === decodedFrame.durationMicroseconds)
-        && hasValidRawVideoFrameLayout(frame);
-}
-
-function rawDolbyVisionEnhancementFrameDescriptorMatches(decodedFrame: DecodedRawPresentationFrame): boolean {
-    const enhancementFrame = decodedFrame.enhancementFrame;
-    if (!enhancementFrame) {
-        return true;
-    }
-    const baseFrame = decodedFrame.frame;
-    const hasCompatibleDimensions = (
-        enhancementFrame.codedWidth === baseFrame.codedWidth
-        && enhancementFrame.codedHeight === baseFrame.codedHeight
-    ) || (
-        enhancementFrame.codedWidth * 2 === baseFrame.codedWidth
-        && enhancementFrame.codedHeight * 2 === baseFrame.codedHeight
-    );
-    return enhancementFrame.data === baseFrame.data
-        && enhancementFrame.format === RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT
-        && enhancementFrame.bitDepth === getRawFormatBitDepth(RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT)
-        && hasCompatibleDimensions
-        && Math.abs(enhancementFrame.timestampMicroseconds - decodedFrame.mediaTimeMicroseconds) <= 1
-        && hasValidRawVideoFrameLayout(enhancementFrame);
-}
-
-/**
- * Returns the one single-layer RPU of a frame.
- * Profile 5 and 8 RPUs reconstruct through the same RPU-driven transform, so either is accepted whatever the container profile says (Profile 20 base views carry either).
- */
-function getSingleLayerDolbyVisionRPUData(
-    metadata: TransferableDolbyVisionEncodedFrameMetadata | undefined,
-    expectedBaseLayerBitDepth: number
-): ArrayBuffer | null {
-    if (
-        !isTransferableDolbyVisionEncodedFrameMetadata(metadata)
-        || metadata.hasEnhancementLayerVCL
-        || metadata.enhancementLayerDisposition !== 'absent'
-        || metadata.parsedRPUData.length !== 1
-    ) {
-        return null;
-    }
-    try {
-        const packedRPUData = metadata.parsedRPUData[0];
-        const snapshot = decodeDolbyVisionRPUSnapshot(packedRPUData);
-        return (snapshot.profile === 5 || snapshot.profile === 8)
-            && snapshot.layerMode === 'single-layer'
-            && snapshot.baseLayerBitDepth === expectedBaseLayerBitDepth
-            && snapshot.disableResidual
-            && !snapshot.nlqActive ?
-            packedRPUData :
-            null;
-    } catch {
-        return null;
-    }
-}
-
-/** Returns the EL disposition a dual-layer frame must report for its EL state. */
-function getExpectedDualLayerDisposition(
-    layerMode: 'fel' | 'mel',
-    hasEnhancementLayerVCL: boolean,
-    hasDecodedEnhancementFrame: boolean
-): TransferableDolbyVisionEncodedFrameMetadata['enhancementLayerDisposition'] {
-    if (!hasEnhancementLayerVCL) {
-        return 'absent';
-    }
-    if (hasDecodedEnhancementFrame) {
-        return layerMode === 'fel' ? 'decoded-fel' : 'decoded-mel';
-    }
-    return layerMode === 'fel' ? 'discarded-fel' : 'discarded-mel';
-}
-
-/**
- * Returns the one dual-layer RPU of a Profile 4 or 7 frame.
- * A frame whose EL is absent from the stream is accepted: MEL reconstructs exactly from the BL, and FEL presents its compatible base.
- */
-function getDualLayerDolbyVisionRPUData(
-    metadata: TransferableDolbyVisionEncodedFrameMetadata | undefined,
-    expectedProfile: 4 | 7,
-    expectedBaseLayerBitDepth: number,
-    hasDecodedEnhancementFrame: boolean
-): DualLayerDolbyVisionRPUData | null {
-    if (
-        !isTransferableDolbyVisionEncodedFrameMetadata(metadata)
-        || metadata.parsedRPUData.length !== 1
-        || (hasDecodedEnhancementFrame && !metadata.hasEnhancementLayerVCL)
-    ) {
-        return null;
-    }
-    try {
-        const packedRPUData = metadata.parsedRPUData[0];
-        const snapshot = decodeDolbyVisionRPUSnapshot(packedRPUData);
-        if (
-            snapshot.profile !== expectedProfile
-            || snapshot.baseLayerBitDepth !== expectedBaseLayerBitDepth
-            || snapshot.disableResidual
-            || snapshot.layerMode === 'single-layer'
-            // MEL carries no active residual and FEL always does
-            || snapshot.nlqActive !== (snapshot.layerMode === 'fel')
-            || metadata.enhancementLayerDisposition !== getExpectedDualLayerDisposition(
-                snapshot.layerMode,
-                metadata.hasEnhancementLayerVCL,
-                hasDecodedEnhancementFrame
-            )
-        ) {
-            return null;
-        }
-        return {
-            enhancementLayerBitDepth: snapshot.enhancementLayerBitDepth,
-            layerMode: snapshot.layerMode,
-            packedRPUData
-        };
-    } catch {
-        return null;
-    }
-}
-
-/**
- * Returns the EL a frame composes, if any.
- * The EL texture holds the EL decoder's 10-bit codes, so an RPU that scales its residual by another depth presents its base instead, as a frame whose EL failed to decode does.
- */
-function getComposedEnhancementFrame(
-    rpuData: DualLayerDolbyVisionRPUData | null,
-    reconstructsFEL: boolean,
-    enhancementFrame: TransferableRawVideoFrame | null | undefined
-): TransferableRawVideoFrame | null {
-    if (
-        !reconstructsFEL
-        || !enhancementFrame
-        || rpuData?.enhancementLayerBitDepth !== getRawFormatBitDepth(RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT)
-    ) {
-        return null;
-    }
-    return enhancementFrame;
-}
-
-function getDualLayerPresentation(
-    rpuData: DualLayerDolbyVisionRPUData,
-    composedEnhancementFrame: TransferableRawVideoFrame | null
-): DolbyVisionDualLayerPresentation {
-    if (rpuData.layerMode === 'mel') {
-        return 'mel';
-    }
-    return composedEnhancementFrame ? 'fel' : 'fel-base-fallback';
 }
 
 /** Presents frames from an owned HTML video without taking over playback. */
@@ -680,6 +510,8 @@ export default class WebGPUPresenter {
     private submissionValidated = false;
     private telemetry = createTelemetry(this.settings);
     private desiredShaderCode = identityShader;
+    /** The decode worker's renderer, which presents worker-frames in a canvas of its own */
+    private workerRenderer: WorkerRendererAttachment | null = null;
 
     constructor(
         fallbackHandler: PresentationFallbackHandler,
@@ -705,6 +537,7 @@ export default class WebGPUPresenter {
         this.cancelFrameCallback();
         this.unbindLayoutHandling();
         this.removeCanvas();
+        this.detachWorkerRenderer();
         this.destroyRawPlaneTextures();
         this.destroyDolbyVisionRPUStorageBuffer();
         this.destroyDolbyVisionEnhancementUniformBuffer();
@@ -754,6 +587,8 @@ export default class WebGPUPresenter {
             this.discardPendingSubmissionValidation();
             this.unbindLayoutHandling();
             this.removeCanvas();
+            // The worker canvas sits in the old surface, which shows nothing more
+            this.detachWorkerRenderer();
         }
 
         this.surface = surface;
@@ -789,7 +624,7 @@ export default class WebGPUPresenter {
         }
 
         if (this.decodedFramePushActive) {
-            if (!this.resynchronizeCachedPresentationLayout()) {
+            if (!this.resynchronizeDecodedPresentationLayouts()) {
                 return;
             }
             this.requestDecodedPresentationRefresh(generation);
@@ -797,6 +632,13 @@ export default class WebGPUPresenter {
         }
         this.invalidatePresentationLayout();
         this.renderCurrentFrameOrFallback(generation);
+    }
+
+    /** Recomputes the page and worker canvas layouts, and reports whether either changed. */
+    private resynchronizeDecodedPresentationLayouts(): boolean {
+        const pageLayoutChanged = this.resynchronizeCachedPresentationLayout();
+        const workerLayoutChanged = this.resynchronizeWorkerPresentationLayout();
+        return pageLayoutChanged || workerLayoutChanged;
     }
 
     /** Ends presentation while retaining reusable GPU resources. */
@@ -817,6 +659,7 @@ export default class WebGPUPresenter {
         this.discardPendingSubmissionValidation();
         this.unbindLayoutHandling();
         this.removeCanvas();
+        this.detachWorkerRenderer();
         this.destroyRawPlaneTextures();
         this.destroyDolbyVisionRPUStorageBuffer();
         this.destroyDolbyVisionEnhancementUniformBuffer();
@@ -1033,8 +876,66 @@ export default class WebGPUPresenter {
     }
 
     /**
+     * Creates the canvas a decode worker's renderer draws into, transferred, with the renderer's end of a new channel.
+     * A worker takes one attachment for its life, and a new one removes the previous canvas, since a canvas transfers only once.
+     * Returns null outside push mode, without a surface, or where the page cannot hand a canvas to a worker.
+     */
+    createWorkerPresentationAttachment(generation: number): WorkerPresentationAttachment | null {
+        const surface = this.surface;
+        if (
+            !this.isCurrent(generation)
+            || this.fallbackLatched
+            || !this.decodedFramePushActive
+            || !surface
+            || !canTransferCanvasToWorker()
+        ) {
+            return null;
+        }
+
+        let canvas: HTMLCanvasElement;
+        let offscreenCanvas: OffscreenCanvas;
+        let channel: MessageChannel;
+        try {
+            canvas = document.createElement('canvas');
+            canvas.classList.add(CANVAS_CLASS);
+            canvas.setAttribute('aria-hidden', 'true');
+            offscreenCanvas = canvas.transferControlToOffscreen();
+            channel = new MessageChannel();
+        } catch (error) {
+            console.warn('Unable to create a worker presentation canvas', error);
+            return null;
+        }
+
+        this.detachWorkerRenderer();
+        surface.container.appendChild(canvas);
+        const attachment: WorkerRendererAttachment = {
+            canvas,
+            configuredRevision: 0,
+            configureRevision: 0,
+            layout: null,
+            layoutDirty: true,
+            layoutRevision: 0,
+            pendingConfiguration: null,
+            pendingPresents: [],
+            port: channel.port1,
+            status: 'pending'
+        };
+        channel.port1.onmessage = (event: MessageEvent<unknown>): void => {
+            this.handleWorkerRendererMessage(attachment, event.data);
+        };
+        this.workerRenderer = attachment;
+        // A pending color configuration sends its own once prepared; the renderer reads its configure before any present
+        if (!this.pendingColorConfiguration && this.sendWorkerRendererConfiguration(attachment) === null) {
+            this.detachWorkerRenderer();
+            return null;
+        }
+        return { canvas: offscreenCanvas, port: channel.port2 };
+    }
+
+    /**
      * Takes ownership of one clock-selected decoded frame and closes it on every path.
      * This path does not require a native video-frame callback.
+     * The completion handler runs once the GPU work of a VideoFrame or a worker frame completed or failed.
      */
     presentDecodedFrame(
         decodedFrame: DecodedPresentationFrame,
@@ -1052,6 +953,9 @@ export default class WebGPUPresenter {
             ) {
                 this.fallback(generation, 'frame-render-failed');
                 return false;
+            }
+            if (decodedFrame.outputMode === 'worker-frame') {
+                return this.presentWorkerFrame(decodedFrame, generation, videoFrameSubmissionCompleted);
             }
             if (
                 this.pendingColorConfiguration?.generation === generation
@@ -1185,9 +1089,110 @@ export default class WebGPUPresenter {
         this.automaticInputPeakNits = configuration.automaticInputPeakNits ?? true;
         this.settings = preparedPipeline.settings;
         this.telemetry.mode = preparedPipeline.settings.mode;
+        // The worker renderer presents with the same pipeline, so it installs it before presentation resumes
+        if (!await this.configureWorkerRenderer(pendingConfiguration)) {
+            return false;
+        }
         this.pendingColorConfiguration = null;
         this.resumeAfterColorConfiguration(generation);
         return true;
+    }
+
+    /**
+     * Sends the worker renderer the pipeline just prepared, and waits for its answer once the renderer is ready.
+     * A renderer still starting takes the configure when it reads its port, and its frames wait for its answer.
+     */
+    private async configureWorkerRenderer(pendingConfiguration: PendingColorConfiguration): Promise<boolean> {
+        const attachment = this.workerRenderer;
+        if (!attachment) {
+            return true;
+        }
+        const revision = this.sendWorkerRendererConfiguration(attachment);
+        if (revision === null) {
+            this.failColorConfiguration(pendingConfiguration, 'pipeline-creation-failed');
+            return false;
+        }
+        if (attachment.status !== 'ready') {
+            return true;
+        }
+
+        const answer = await this.waitForWorkerRendererConfiguration(attachment, revision);
+        if (!this.isColorConfigurationCurrent(pendingConfiguration)) {
+            return false;
+        }
+        switch (answer) {
+            case 'accepted':
+            case 'released':
+                return true;
+            case 'refused':
+                // The refusal already latched its fallback
+                return false;
+            case 'timeout':
+                this.failColorConfiguration(pendingConfiguration, 'pipeline-creation-failed');
+                return false;
+        }
+    }
+
+    /** Sends the active pipeline to the worker renderer and returns its revision, or null when the channel refuses it. */
+    private sendWorkerRendererConfiguration(attachment: WorkerRendererAttachment): number | null {
+        const revision = attachment.configureRevision + 1;
+        const configureRequest: WorkerPresentationConfigureRequest = {
+            automaticInputPeakNits: this.automaticInputPeakNits,
+            dolbyVisionFELReconstruction: this.activeDolbyVisionFELReconstruction,
+            dolbyVisionProfile: this.activeDolbyVisionProfile,
+            inputColorMetadata: this.activeInputColorMetadata ? { ...this.activeInputColorMetadata } : null,
+            inputMode: this.activeInputMode,
+            rawFrameFormat: this.activeRawFrameFormat,
+            revision,
+            settings: cloneRenderSettings(this.settings),
+            shaderCode: this.desiredShaderCode,
+            type: 'configure'
+        };
+        if (!this.postWorkerRendererRequest(attachment, configureRequest)) {
+            return null;
+        }
+        attachment.configureRevision = revision;
+        return revision;
+    }
+
+    /** Resolves with the renderer's answer to one configure, bounded as other GPU resource operations are. */
+    private waitForWorkerRendererConfiguration(
+        attachment: WorkerRendererAttachment,
+        revision: number
+    ): Promise<WorkerRendererConfigurationAnswer> {
+        return new Promise<WorkerRendererConfigurationAnswer>(resolve => {
+            let timeout: ReturnType<typeof globalThis.setTimeout> | null = null;
+            const pendingConfiguration: PendingWorkerRendererConfiguration = {
+                resolve: (answer: WorkerRendererConfigurationAnswer): void => {
+                    if (timeout !== null) {
+                        globalThis.clearTimeout(timeout);
+                        timeout = null;
+                    }
+                    resolve(answer);
+                },
+                revision
+            };
+            attachment.pendingConfiguration?.resolve('released');
+            attachment.pendingConfiguration = pendingConfiguration;
+            timeout = globalThis.setTimeout((): void => {
+                timeout = null;
+                if (attachment.pendingConfiguration === pendingConfiguration) {
+                    attachment.pendingConfiguration = null;
+                }
+                resolve('timeout');
+            }, microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS));
+        });
+    }
+
+    /** Posts one request to the worker renderer; a channel that refuses it reports false. */
+    private postWorkerRendererRequest(attachment: WorkerRendererAttachment, request: WorkerPresentationRequest): boolean {
+        try {
+            attachment.port.postMessage(request);
+            return true;
+        } catch (error) {
+            console.warn('Unable to reach the worker presentation renderer', error);
+            return false;
+        }
     }
 
     private createRenderSettingsUniformBuffer(device: GPUDevice): GPUBuffer {
@@ -1215,7 +1220,7 @@ export default class WebGPUPresenter {
         }
     }
 
-    private applyHDR10PlusFrameMetadata(decodedFrame: DecodedPresentationFrame, generation: number): boolean {
+    private applyHDR10PlusFrameMetadata(decodedFrame: DecodedPayloadPresentationFrame, generation: number): boolean {
         if (!this.isCurrent(generation) || this.settings.mode !== 'hdr-to-sdr') {
             return true;
         }
@@ -1223,33 +1228,13 @@ export default class WebGPUPresenter {
         const frameMetadata = decodedFrame.HDR10PlusMetadata;
         const status = frameMetadata?.status ?? 'absent';
         this.telemetry.lastHDR10PlusMetadataStatus = status;
-        let dynamicFrameSettings: HDR10PlusFrameRenderSettings | null = null;
-        const supportsHDR10Plus = (
-            this.activeInputMode === 'external-hdr'
-            || this.activeInputMode === 'raw-yuv'
-        ) && this.activeInputColorMetadata?.transfer === 'pq';
-        // An absent or malformed frame may carry its run's last metadata, which applies as a valid frame's own does
-        if (
-            supportsHDR10Plus
-            && isHDR10PlusFrameMetadata(frameMetadata)
-            && frameMetadata.metadata
-        ) {
-            const sceneLuminance = getHDR10PlusSceneLuminance(frameMetadata.metadata);
-            const inputPeakNits = this.automaticInputPeakNits ?
-                Math.max(
-                    this.settings.toneMapping.paperWhiteNits,
-                    sceneLuminance.peakNits ?? this.settings.toneMapping.inputPeakNits
-                ) :
-                this.settings.toneMapping.inputPeakNits;
-            const averageNits = Math.min(inputPeakNits, Math.max(0, sceneLuminance.averageNits ?? 0));
-            dynamicFrameSettings = {
-                averageNits,
-                inputPeakNits,
-                targetedSystemDisplayMaximumLuminanceNits:
-                    frameMetadata.metadata.targetedSystemDisplayMaximumLuminanceNits,
-                toneMapping: frameMetadata.metadata.toneMapping
-            };
-        }
+        const dynamicFrameSettings = getHDR10PlusFrameRenderSettings(
+            frameMetadata,
+            this.activeInputMode,
+            this.activeInputColorMetadata,
+            this.settings,
+            this.automaticInputPeakNits
+        );
 
         if (dynamicFrameSettings || this.dynamicHDR10PlusSettingsActive) {
             if (!this.writeRenderSettingsUniform(this.settings, dynamicFrameSettings)) {
@@ -1302,8 +1287,29 @@ export default class WebGPUPresenter {
 
         this.settings = cloneRenderSettings(settings);
         this.automaticInputPeakNits = automaticInputPeakNits;
+        this.postWorkerRendererSettings(settings, automaticInputPeakNits);
         this.requestDecodedPresentationRefresh(generation);
         return true;
+    }
+
+    /** Gives the worker renderer the live controls of the configure it last received. */
+    private postWorkerRendererSettings(settings: HDRToSDRRenderSettings, automaticInputPeakNits: boolean): void {
+        const attachment = this.workerRenderer;
+        // A renderer that has no configure yet takes these controls with its first one
+        if (!attachment || attachment.configureRevision === 0) {
+            return;
+        }
+        const settingsRequest: WorkerPresentationSettingsRequest = {
+            automaticInputPeakNits,
+            revision: attachment.configureRevision,
+            settings: {
+                ...settings,
+                display: { ...settings.display },
+                toneMapping: { ...settings.toneMapping }
+            },
+            type: 'settings'
+        };
+        this.postWorkerRendererRequest(attachment, settingsRequest);
     }
 
     private async prepareColorPipeline(
@@ -2031,20 +2037,7 @@ export default class WebGPUPresenter {
         if (rawYUV) {
             return createRawYUVRenderPipeline(device, canvasFormat, shaderCode);
         }
-        const shaderModule = device.createShaderModule({ code: shaderCode });
-        return device.createRenderPipelineAsync({
-            fragment: {
-                entryPoint: 'fragmentMain',
-                module: shaderModule,
-                targets: [{ format: canvasFormat }]
-            },
-            layout: 'auto',
-            primitive: { topology: 'triangle-list' },
-            vertex: {
-                entryPoint: 'vertexMain',
-                module: shaderModule
-            }
-        });
+        return createExternalTextureRenderPipeline(device, canvasFormat, shaderCode);
     }
 
     private async initializeDeviceResources(resourceEpoch: number): Promise<boolean> {
@@ -2059,45 +2052,12 @@ export default class WebGPUPresenter {
             return false;
         }
 
-        let adapter: GPUAdapter | null;
-        try {
-            const adapterResult = await waitForWebGPUResourceOperation(gpu.requestAdapter());
-            if (adapterResult === WEBGPU_RESOURCE_OPERATION_TIMEOUT) {
-                this.initializationFailureReason = 'adapter-unavailable';
-                return false;
-            }
-            adapter = adapterResult;
-        } catch (error) {
-            console.warn('WebGPU adapter request failed', error);
-            this.initializationFailureReason = 'adapter-unavailable';
+        const deviceRequest = await requestPresentationDevice(gpu);
+        if (deviceRequest.failureReason !== null) {
+            this.initializationFailureReason = deviceRequest.failureReason;
             return false;
         }
-
-        if (!adapter) {
-            this.initializationFailureReason = 'adapter-unavailable';
-            return false;
-        }
-
-        let device: GPUDevice;
-        try {
-            // A default device stops textures at 8192 texels; the adapter's own maximum takes any larger frame it can
-            const devicePromise = adapter.requestDevice({
-                requiredLimits: { maxTextureDimension2D: adapter.limits.maxTextureDimension2D }
-            });
-            const deviceResult = await waitForWebGPUResourceOperation(devicePromise);
-            if (deviceResult === WEBGPU_RESOURCE_OPERATION_TIMEOUT) {
-                void devicePromise.then((lateDevice: GPUDevice): void => {
-                    lateDevice.destroy();
-                }, (): void => undefined);
-                this.initializationFailureReason = 'device-request-failed';
-                return false;
-            }
-            device = deviceResult;
-        } catch (error) {
-            console.warn('WebGPU device request failed', error);
-            this.initializationFailureReason = 'device-request-failed';
-            return false;
-        }
+        const device = deviceRequest.device;
         if (this.deviceResourceEpoch !== resourceEpoch) {
             device.destroy();
             return false;
@@ -2527,76 +2487,31 @@ export default class WebGPUPresenter {
             return null;
         }
 
-        const presentation = layout.presentation;
-        this.presentationUniformValues[0] = presentation.textureScaleX;
-        this.presentationUniformValues[1] = presentation.textureScaleY;
-        this.presentationUniformValues[2] = presentation.textureOffsetX;
-        this.presentationUniformValues[3] = presentation.textureOffsetY;
         const validateSubmission = !this.submissionValidated;
         if (validateSubmission) {
             device.pushErrorScope('validation');
         }
 
         try {
-            device.queue.writeBuffer(presentationUniformBuffer, 0, this.presentationUniformValues);
-
-            const externalTexture = device.importExternalTexture({
-                colorSpace: 'srgb',
-                source: source ?? surface.video
-            });
-            const bindGroupEntries: GPUBindGroupEntry[] = [];
-            bindGroupEntries.push({
-                binding: 0,
-                resource: sampler
-            }, {
-                binding: 1,
-                resource: externalTexture
-            }, {
-                binding: 2,
-                resource: { buffer: presentationUniformBuffer }
-            });
-            if (this.settings.mode === 'hdr-to-sdr' && renderSettingsUniformBuffer) {
-                bindGroupEntries.push({
-                    binding: 3,
-                    resource: { buffer: renderSettingsUniformBuffer }
-                });
-            }
+            let dolbyVisionRPUStorageBuffer: GPUBuffer | null = null;
             if (this.activeInputMode === 'external-dolby-vision') {
-                const storageBuffer = this.dolbyVisionRPUStorageBuffer;
-                if (!storageBuffer) {
+                dolbyVisionRPUStorageBuffer = this.dolbyVisionRPUStorageBuffer;
+                if (!dolbyVisionRPUStorageBuffer) {
                     throw new Error('The external Dolby Vision RPU buffer is unavailable');
                 }
-                bindGroupEntries.push({
-                    binding: 4,
-                    resource: { buffer: storageBuffer }
-                });
             }
-            const bindGroup = device.createBindGroup({
-                entries: bindGroupEntries,
-                layout: pipeline.getBindGroupLayout(0)
+            drawExternalTextureFrame({
+                device,
+                dolbyVisionRPUStorageBuffer,
+                pipeline,
+                presentation: layout.presentation,
+                presentationUniformBuffer,
+                presentationUniformValues: this.presentationUniformValues,
+                renderSettingsUniformBuffer: this.settings.mode === 'hdr-to-sdr' ? renderSettingsUniformBuffer : null,
+                sampler,
+                source: source ?? surface.video,
+                targetView: canvasContext.getCurrentTexture().createView()
             });
-            const commandEncoder = device.createCommandEncoder();
-            const renderPass = commandEncoder.beginRenderPass({
-                colorAttachments: [{
-                    clearValue: { r: 0, g: 0, b: 0, a: 1 },
-                    loadOp: 'clear',
-                    storeOp: 'store',
-                    view: canvasContext.getCurrentTexture().createView()
-                }]
-            });
-            renderPass.setPipeline(pipeline);
-            renderPass.setBindGroup(0, bindGroup);
-            renderPass.setViewport(
-                presentation.viewportX,
-                presentation.viewportY,
-                presentation.viewportWidth,
-                presentation.viewportHeight,
-                0,
-                1
-            );
-            renderPass.draw(VERTEX_COUNT);
-            renderPass.end();
-            device.queue.submit([commandEncoder.finish()]);
         } catch (error) {
             if (validateSubmission) {
                 this.discardErrorScope(device);
@@ -2715,7 +2630,11 @@ export default class WebGPUPresenter {
     }
 
     private recordDolbyVisionDualLayerPresentation(submission: FrameSubmission): void {
-        switch (submission.dolbyVisionDualLayerMode) {
+        this.recordDolbyVisionDualLayerMode(submission.dolbyVisionDualLayerMode);
+    }
+
+    private recordDolbyVisionDualLayerMode(dolbyVisionDualLayerMode: DolbyVisionDualLayerPresentation | null | undefined): void {
+        switch (dolbyVisionDualLayerMode) {
             case 'fel':
                 this.telemetry.dolbyVisionDualLayerFELPresentedFrameCount += 1;
                 break;
@@ -2725,6 +2644,7 @@ export default class WebGPUPresenter {
             case 'mel':
                 this.telemetry.dolbyVisionDualLayerMELPresentedFrameCount += 1;
                 break;
+            case null:
             case undefined:
                 break;
         }
@@ -2832,7 +2752,268 @@ export default class WebGPUPresenter {
 
     private markCanvasPresented(): void {
         this.canvas?.classList.add(CANVAS_VISIBLE_CLASS);
+        // Exactly one canvas shows
+        this.workerRenderer?.canvas.classList.remove(CANVAS_VISIBLE_CLASS);
         this.telemetry.state = 'presenting';
+    }
+
+    private markWorkerCanvasPresented(attachment: WorkerRendererAttachment): void {
+        attachment.canvas.classList.add(CANVAS_VISIBLE_CLASS);
+        this.canvas?.classList.remove(CANVAS_VISIBLE_CLASS);
+        this.telemetry.state = 'presenting';
+    }
+
+    /**
+     * Asks the worker renderer to draw a frame the decode worker keeps; the completion handler runs once the frame's GPU work ended.
+     * A frame the renderer cannot take yet is refused, as a pending color configuration refuses one on the page.
+     */
+    private presentWorkerFrame(
+        decodedFrame: DecodedWorkerPresentationFrame,
+        generation: number,
+        completed: ((gpuWorkCompleted: boolean) => void) | undefined
+    ): boolean {
+        const attachment = this.workerRenderer;
+        const surface = this.surface;
+        if (!attachment || !surface) {
+            // Only a renderer can draw a frame that never left the worker
+            this.fallback(generation, 'frame-render-failed');
+            return false;
+        }
+        if (
+            this.pendingColorConfiguration?.generation === generation
+            || attachment.status !== 'ready'
+            || attachment.configuredRevision !== attachment.configureRevision
+        ) {
+            return false;
+        }
+        if (decodedFrame.displayWidth <= 0 || decodedFrame.displayHeight <= 0) {
+            this.fallback(generation, 'frame-render-failed');
+            return false;
+        }
+
+        this.decodedFramePushActive = true;
+        this.cancelFrameCallback();
+        const layout = this.getWorkerPresentationLayout(
+            surface,
+            attachment,
+            decodedFrame.displayWidth,
+            decodedFrame.displayHeight
+        );
+        if (!layout) {
+            return false;
+        }
+        if (!this.postWorkerRendererRequest(attachment, {
+            frameId: decodedFrame.frameId,
+            generation: decodedFrame.decodeGeneration,
+            layoutRevision: layout.revision,
+            type: 'present'
+        })) {
+            this.fallback(generation, 'frame-render-failed');
+            return false;
+        }
+        attachment.pendingPresents.push({
+            callbackTimeMicroseconds: getMonotonicMicroseconds(),
+            completed,
+            decodeGeneration: decodedFrame.decodeGeneration,
+            frameId: decodedFrame.frameId,
+            generation,
+            mediaTimeMicroseconds: decodedFrame.mediaTimeMicroseconds
+        });
+        return true;
+    }
+
+    private handleWorkerRendererMessage(attachment: WorkerRendererAttachment, value: unknown): void {
+        if (this.workerRenderer !== attachment) {
+            return;
+        }
+        if (!isWorkerPresentationResponse(value)) {
+            console.warn('The worker presentation renderer sent an invalid message');
+            this.fallback(this.activeGeneration, 'frame-render-failed');
+            return;
+        }
+
+        switch (value.type) {
+            case 'status':
+                if (value.state === 'ready') {
+                    attachment.status = 'ready';
+                    return;
+                }
+                // The session presents on the page instead, so the renderer's canvas goes
+                this.detachWorkerRenderer();
+                return;
+            case 'configured': {
+                if (value.revision !== attachment.configureRevision) {
+                    // A newer configure is on its way
+                    return;
+                }
+                const pendingConfiguration = attachment.pendingConfiguration?.revision === value.revision ?
+                    attachment.pendingConfiguration :
+                    null;
+                if (pendingConfiguration) {
+                    attachment.pendingConfiguration = null;
+                }
+                if (!value.ok) {
+                    pendingConfiguration?.resolve('refused');
+                    this.fallback(this.activeGeneration, value.reason ?? 'pipeline-creation-failed');
+                    return;
+                }
+                attachment.configuredRevision = value.revision;
+                pendingConfiguration?.resolve('accepted');
+                return;
+            }
+            case 'presented':
+                this.completeWorkerFramePresentation(attachment, value);
+                return;
+            case 'failed':
+                this.fallback(this.activeGeneration, value.reason);
+                return;
+        }
+    }
+
+    /** Records a frame the renderer drew, as a validated submission is recorded on the page, and releases its selection. */
+    private completeWorkerFramePresentation(
+        attachment: WorkerRendererAttachment,
+        response: WorkerPresentationPresentedResponse
+    ): void {
+        const pendingPresentIndex = attachment.pendingPresents.findIndex((pendingPresent: PendingWorkerPresent): boolean => (
+            pendingPresent.decodeGeneration === response.generation && pendingPresent.frameId === response.frameId
+        ));
+        if (pendingPresentIndex < 0) {
+            return;
+        }
+        const [ pendingPresent ] = attachment.pendingPresents.splice(pendingPresentIndex, 1);
+        if (response.ok && this.isCurrent(pendingPresent.generation) && !this.fallbackLatched) {
+            this.markWorkerCanvasPresented(attachment);
+            this.recordPresentedFrame(
+                pendingPresent.mediaTimeMicroseconds,
+                pendingPresent.callbackTimeMicroseconds,
+                pendingPresent.callbackTimeMicroseconds,
+                'decoded'
+            );
+            this.recordDolbyVisionDualLayerMode(response.dolbyVisionDualLayerMode);
+            this.recordWorkerHDR10PlusResult(response.HDR10PlusResult);
+        }
+        notifyWorkerFrameCompletion(pendingPresent.completed, response.ok && response.gpuWorkCompleted);
+    }
+
+    /** Counts a worker frame's HDR10+ result as the page counts the frames it tone-maps itself. */
+    private recordWorkerHDR10PlusResult(result: WorkerPresentationHDR10PlusResult | null): void {
+        if (!result) {
+            return;
+        }
+        this.telemetry.lastHDR10PlusMetadataStatus = result.metadataStatus;
+        if (result.inputPeakNits === null) {
+            this.telemetry.staticFallbackHDR10PlusFrameCount += 1;
+            this.telemetry.lastHDR10PlusInputPeakNits = null;
+            return;
+        }
+        this.telemetry.appliedHDR10PlusFrameCount += 1;
+        if (result.metadataStatus !== 'valid') {
+            this.telemetry.carriedHDR10PlusFrameCount += 1;
+        }
+        this.telemetry.lastHDR10PlusInputPeakNits = result.inputPeakNits;
+    }
+
+    /**
+     * Ends the worker renderer's attachment: the renderer releases its device, its canvas leaves the page, and frames it was asked to draw are discarded.
+     * The decode worker keeps the attachment's frames until the session releases them.
+     */
+    private detachWorkerRenderer(): void {
+        const attachment = this.workerRenderer;
+        if (!attachment) {
+            return;
+        }
+        this.workerRenderer = null;
+        attachment.port.onmessage = null;
+        this.postWorkerRendererRequest(attachment, { type: 'detach' });
+        attachment.port.close();
+        attachment.canvas.remove();
+        const pendingConfiguration = attachment.pendingConfiguration;
+        attachment.pendingConfiguration = null;
+        pendingConfiguration?.resolve('released');
+        for (const pendingPresent of attachment.pendingPresents.splice(0)) {
+            notifyWorkerFrameCompletion(pendingPresent.completed, false);
+        }
+    }
+
+    /**
+     * Returns the layout a worker frame of this size draws in, posting it to the renderer when it changed.
+     * The canvas element keeps its page geometry here, while the renderer sizes the backing store it took over.
+     */
+    private getWorkerPresentationLayout(
+        surface: PresentationSurface,
+        attachment: WorkerRendererAttachment,
+        sourceWidth: number,
+        sourceHeight: number
+    ): CachedWorkerPresentationLayout | null {
+        const devicePixelRatio = Math.max(window.devicePixelRatio || 1, 1);
+        const cachedLayout = attachment.layout;
+        if (
+            cachedLayout
+            && !attachment.layoutDirty
+            && cachedLayout.devicePixelRatio === devicePixelRatio
+            && cachedLayout.videoHeight === sourceHeight
+            && cachedLayout.videoWidth === sourceWidth
+        ) {
+            return cachedLayout;
+        }
+
+        const geometry = this.synchronizeCanvasGeometry(
+            surface,
+            attachment.canvas,
+            this.device?.limits.maxTextureDimension2D ?? WEBGPU_DEFAULT_MAXIMUM_TEXTURE_DIMENSION,
+            devicePixelRatio,
+            false
+        );
+        if (!geometry) {
+            attachment.layoutDirty = true;
+            return null;
+        }
+        const layout: CachedPresentationLayout = {
+            devicePixelRatio,
+            geometry,
+            presentation: this.calculateTexturePresentation(surface.video, geometry, sourceWidth, sourceHeight),
+            videoHeight: sourceHeight,
+            videoWidth: sourceWidth
+        };
+        attachment.layoutDirty = false;
+        if (cachedLayout && this.presentationLayoutsMatch(cachedLayout, layout)) {
+            return cachedLayout;
+        }
+
+        const revision = attachment.layoutRevision + 1;
+        const layoutRequest: WorkerPresentationLayoutRequest = {
+            backingHeight: geometry.height,
+            backingWidth: geometry.width,
+            presentation: layout.presentation,
+            revision,
+            type: 'layout'
+        };
+        if (!this.postWorkerRendererRequest(attachment, layoutRequest)) {
+            attachment.layoutDirty = true;
+            return null;
+        }
+        attachment.layoutRevision = revision;
+        attachment.layout = { ...layout, revision };
+        return attachment.layout;
+    }
+
+    /** Recomputes the worker canvas layout after a layout change, and reports whether the renderer got a new one. */
+    private resynchronizeWorkerPresentationLayout(): boolean {
+        const attachment = this.workerRenderer;
+        const surface = this.surface;
+        const cachedLayout = attachment?.layout ?? null;
+        if (!attachment || !surface || !cachedLayout) {
+            return false;
+        }
+        attachment.layoutDirty = true;
+        const updatedLayout = this.getWorkerPresentationLayout(
+            surface,
+            attachment,
+            cachedLayout.videoWidth,
+            cachedLayout.videoHeight
+        );
+        return updatedLayout !== null && updatedLayout.revision !== cachedLayout.revision;
     }
 
     private discardErrorScope(device: GPUDevice): void {
@@ -2851,11 +3032,16 @@ export default class WebGPUPresenter {
         });
     }
 
+    /**
+     * Places a canvas over the video and returns its CSS and backing sizes.
+     * A canvas transferred to the worker renderer keeps its backing store there, so only the page canvas is resized here.
+     */
     private synchronizeCanvasGeometry(
         surface: PresentationSurface,
         canvas: HTMLCanvasElement,
-        device: GPUDevice,
-        devicePixelRatio: number
+        maximumDimension: number,
+        devicePixelRatio: number,
+        resizesBackingStore: boolean
     ): CanvasGeometry | null {
         const containerRectangle = surface.container.getBoundingClientRect();
         const videoRectangle = surface.video.getBoundingClientRect();
@@ -2881,7 +3067,6 @@ export default class WebGPUPresenter {
         canvas.style.width = `${canvasWidth}px`;
         canvas.style.height = `${canvasHeight}px`;
 
-        const maximumDimension = device.limits.maxTextureDimension2D;
         const backingScale = Math.min(
             devicePixelRatio,
             maximumDimension / canvasWidth,
@@ -2890,10 +3075,10 @@ export default class WebGPUPresenter {
         const backingWidth = Math.max(MIN_CANVAS_DIMENSION, Math.round(canvasWidth * backingScale));
         const backingHeight = Math.max(MIN_CANVAS_DIMENSION, Math.round(canvasHeight * backingScale));
 
-        if (canvas.width !== backingWidth) {
+        if (resizesBackingStore && canvas.width !== backingWidth) {
             canvas.width = backingWidth;
         }
-        if (canvas.height !== backingHeight) {
+        if (resizesBackingStore && canvas.height !== backingHeight) {
             canvas.height = backingHeight;
         }
 
@@ -2930,7 +3115,13 @@ export default class WebGPUPresenter {
         }
 
         this.invalidatePresentationLayout();
-        const geometry = this.synchronizeCanvasGeometry(surface, canvas, device, devicePixelRatio);
+        const geometry = this.synchronizeCanvasGeometry(
+            surface,
+            canvas,
+            device.limits.maxTextureDimension2D,
+            devicePixelRatio,
+            true
+        );
         if (!geometry) {
             return null;
         }
@@ -2998,6 +3189,9 @@ export default class WebGPUPresenter {
 
     private invalidatePresentationLayout(): void {
         this.presentationLayoutDirty = true;
+        if (this.workerRenderer) {
+            this.workerRenderer.layoutDirty = true;
+        }
     }
 
     private readonly handleLayoutInvalidation = (): void => {
@@ -3005,7 +3199,7 @@ export default class WebGPUPresenter {
             return;
         }
 
-        if (!this.resynchronizeCachedPresentationLayout()) {
+        if (!this.resynchronizeDecodedPresentationLayouts()) {
             return;
         }
         if (this.decodedFramePushActive) {
@@ -3509,6 +3703,7 @@ export default class WebGPUPresenter {
         this.discardPendingSubmissionValidation();
         this.unbindLayoutHandling();
         this.removeCanvas();
+        this.detachWorkerRenderer();
         this.destroyRawPlaneTextures();
         this.destroyDolbyVisionRPUStorageBuffer();
         this.destroyDolbyVisionEnhancementUniformBuffer();

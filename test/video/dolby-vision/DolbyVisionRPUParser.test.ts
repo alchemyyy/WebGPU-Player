@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import DolbyVisionRPUParser, {
     decodeDolbyVisionRPUSnapshot,
@@ -46,6 +46,14 @@ const OBU_TRAILING_BYTES: readonly number[] = [ 0x80, 0x00, 0x00 ];
 const ITU_T_T35_PROVIDER_CODE_LOW_BYTE_INDEX = 2;
 const STATUS_PARSE_FAILED = 3;
 const SEGMENT_MMR_ORDER_BYTE_OFFSET = DOLBY_VISION_RPU_SEGMENT_MMR_ORDER_INDEX * Float32Array.BYTES_PER_ELEMENT;
+// Each shared-instance test loads its parser from its own URL, so it starts without a cached instance
+const SHARED_PARSER_WASM_URL = 'https://example.test/web/libraries/libdovi/shared/dovi-rpu-parser.wasm';
+const TRAPPING_PARSER_WASM_URL = 'https://example.test/web/libraries/libdovi/trapping/dovi-rpu-parser.wasm';
+const WASM_TRAP_MESSAGE = 'unreachable';
+const MOCK_PARSER_CONTEXT_POINTER = 512;
+const MOCK_PARSER_FIRST_ALLOCATION_POINTER = 1_024;
+const MOCK_PARSER_MEMORY_PAGE_COUNT = 2;
+const MOCK_PARSER_ARTIFACT_BYTE_LENGTH = 8;
 
 describe('Dolby Vision parser asset URL', () => {
     it('resolves the parser against the engine asset base', () => {
@@ -625,5 +633,87 @@ describe('decodeDolbyVisionRPUSnapshot validation', () => {
         expect(allocate).toHaveBeenCalledTimes(2);
         expect(deallocate).toHaveBeenCalledTimes(2);
         expect(destroy).toHaveBeenCalledTimes(1);
+    });
+});
+
+/** A parser instance of fixed buffers whose parse entry point traps. */
+function createTrappingParserInstance(): WebAssembly.Instance {
+    let nextPointer = MOCK_PARSER_FIRST_ALLOCATION_POINTER;
+    /* eslint-disable @typescript-eslint/naming-convention -- Mirrors the external WASM ABI */
+    return {
+        exports: {
+            dovi_parser_allocate: (byteLength: number): number => {
+                const pointer = nextPointer;
+                nextPointer += byteLength;
+                return pointer;
+            },
+            dovi_parser_create: (): number => MOCK_PARSER_CONTEXT_POINTER,
+            dovi_parser_deallocate: (): number => 0,
+            dovi_parser_destroy: (): number => 0,
+            dovi_parser_last_error_byte_length: (): number => 0,
+            dovi_parser_last_error_pointer: (): number => 0,
+            dovi_parser_maximum_buffer_byte_length: (): number => MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH,
+            dovi_parser_maximum_memory_byte_length: (): number => MAXIMUM_DOLBY_VISION_RPU_PARSER_MEMORY_BYTE_LENGTH,
+            dovi_parser_output_byte_length: (): number => DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
+            dovi_parser_parse: (): never => {
+                throw new WebAssembly.RuntimeError(WASM_TRAP_MESSAGE);
+            },
+            dovi_parser_parse_av1_t35: (): number => 0,
+            dovi_parser_reset: (): number => 0,
+            dovi_parser_revision_prefix: (): number => DOLBY_VISION_RPU_PARSER_REVISION_PREFIX,
+            dovi_parser_schema_version: (): number => DOLBY_VISION_RPU_SCHEMA_VERSION,
+            memory: new WebAssembly.Memory({ initial: MOCK_PARSER_MEMORY_PAGE_COUNT })
+        }
+    } as unknown as WebAssembly.Instance;
+    /* eslint-enable @typescript-eslint/naming-convention */
+}
+
+describe('DolbyVisionRPUParser shared instance', () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+    });
+
+    it('fetches the parser once and gives every parser of the worker its own context', async () => {
+        const fetchParser = vi.fn(async (): Promise<Response> => new Response(PARSER_WASM_BYTES.slice()));
+        vi.stubGlobal('fetch', fetchParser);
+        const vector = readVector('profile8.bin');
+
+        const [ firstParser, secondParser ] = await Promise.all([
+            DolbyVisionRPUParser.create(SHARED_PARSER_WASM_URL),
+            DolbyVisionRPUParser.create(SHARED_PARSER_WASM_URL)
+        ]);
+        const firstSnapshot = firstParser.parse(vector);
+        firstParser.close();
+        const laterParser = await DolbyVisionRPUParser.create(SHARED_PARSER_WASM_URL);
+
+        expect(fetchParser).toHaveBeenCalledOnce();
+        expect(fetchParser).toHaveBeenCalledWith(SHARED_PARSER_WASM_URL);
+        // Closing one context leaves the others parsing
+        expect(new Uint8Array(secondParser.parse(vector).packedData)).toEqual(new Uint8Array(firstSnapshot.packedData));
+        expect(laterParser.parse(vector).profile).toBe(firstSnapshot.profile);
+        secondParser.close();
+        laterParser.close();
+    });
+
+    it('fetches the parser again once its code traps', async () => {
+        const fetchParser = vi.fn(async (): Promise<Response> => new Response(new Uint8Array(MOCK_PARSER_ARTIFACT_BYTE_LENGTH)));
+        vi.stubGlobal('fetch', fetchParser);
+        const instantiateTrappingParser = async (): Promise<WebAssembly.WebAssemblyInstantiatedSource> => ({
+            instance: createTrappingParserInstance(),
+            module: {} as WebAssembly.Module
+        });
+        // The parser instantiates fetched bytes, which this overload answers
+        vi.spyOn(WebAssembly, 'instantiate').mockImplementation(
+            instantiateTrappingParser as unknown as typeof WebAssembly.instantiate
+        );
+        const trappingParser = await DolbyVisionRPUParser.create(TRAPPING_PARSER_WASM_URL);
+
+        expect(() => trappingParser.parse(readVector('profile8.bin'))).toThrow(WASM_TRAP_MESSAGE);
+        const nextParser = await DolbyVisionRPUParser.create(TRAPPING_PARSER_WASM_URL);
+
+        expect(fetchParser).toHaveBeenCalledTimes(2);
+        trappingParser.close();
+        nextParser.close();
     });
 });

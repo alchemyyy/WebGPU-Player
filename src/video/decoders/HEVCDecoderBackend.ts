@@ -4,6 +4,8 @@ import type {
     HEVCStreamInfo
 } from '@hevcjs/core';
 
+import WorkerWASMInstanceCache, { isWASMTrap } from './WorkerWASMInstanceCache';
+
 const DRAINED_FRAME_STRUCTURE_BYTE_LENGTH = 48;
 const STREAM_INFO_STRUCTURE_BYTE_LENGTH = 24;
 export const MAXIMUM_HEVC_DRAINED_FRAME_COUNT = 64;
@@ -62,8 +64,29 @@ type HEVCFrameLayout = {
     width: number
 };
 
+/** One plane of a drained frame: 16-bit samples whose rows start a stride apart, from the first sample to the end of the last row. */
+export type HEVCFramePlane = Readonly<{
+    samples: Uint16Array
+    stride: number
+}>;
+
+/** The planes of a 4:2:0 frame. */
+export type HEVCFramePlanes = Readonly<{
+    chromaBlue: HEVCFramePlane
+    chromaRed: HEVCFramePlane
+    luma: HEVCFramePlane
+}>;
+
+/**
+ * A drained frame, whose planes view WASM memory only until the decoder's next call.
+ * The WASM backend's frames also carry their strided planes, and make the compact y, cb, and cr only when they are read.
+ */
+export type HEVCDecodedFrame = HEVCFrame & Readonly<{
+    planes?: HEVCFramePlanes
+}>;
+
 /** Consumes a frame synchronously before the decoder may reuse its WASM planes. */
-export type HEVCDecodedFrameHandler = (frame: HEVCFrame) => void;
+export type HEVCDecodedFrameHandler = (frame: HEVCDecodedFrame) => void;
 
 export type HEVCDecoderBackend = {
     readonly info: HEVCStreamInfo | null
@@ -201,45 +224,128 @@ function validateFrameLayout(
     };
 }
 
-function getPlaneForSynchronousConsumption(module: EmscriptenHEVCModule, layout: HEVCPlaneLayout): Uint16Array {
+/** Views a plane from its first sample to the end of its last row, without copying it out of WASM memory. */
+function getPlaneView(module: EmscriptenHEVCModule, layout: HEVCPlaneLayout): HEVCFramePlane {
     const baseSampleOffset = layout.pointer / Uint16Array.BYTES_PER_ELEMENT;
-    if (layout.stride === layout.width) {
-        return module.HEAPU16.subarray(baseSampleOffset, baseSampleOffset + (layout.width * layout.height));
+    const finalSampleEnd = baseSampleOffset + ((layout.height - 1) * layout.stride) + layout.width;
+    return {
+        samples: module.HEAPU16.subarray(baseSampleOffset, finalSampleEnd),
+        stride: layout.stride
+    };
+}
+
+/** Returns a plane as compact rows: the plane itself when its stride is its width, or a copy of its rows. */
+function getCompactPlane(plane: HEVCFramePlane, width: number, height: number): Uint16Array {
+    if (plane.stride === width) {
+        return plane.samples;
     }
 
-    const output = new Uint16Array(layout.width * layout.height);
-    for (let rowIndex = 0; rowIndex < layout.height; rowIndex += 1) {
-        const sourceOffset = baseSampleOffset + (rowIndex * layout.stride);
-        output.set(module.HEAPU16.subarray(sourceOffset, sourceOffset + layout.width), rowIndex * layout.width);
+    const output = new Uint16Array(width * height);
+    for (let rowIndex = 0; rowIndex < height; rowIndex += 1) {
+        const sourceOffset = rowIndex * plane.stride;
+        output.set(plane.samples.subarray(sourceOffset, sourceOffset + width), rowIndex * width);
     }
     return output;
+}
+
+/** A drained frame that views its strided planes in WASM memory and makes its compact planes only when they are read. */
+class HEVCWASMDecodedFrame {
+    public readonly bitDepth: number;
+    public readonly chromaHeight: number;
+    public readonly chromaWidth: number;
+    public readonly height: number;
+    public readonly planes: HEVCFramePlanes;
+    public readonly poc: number;
+    public readonly width: number;
+    private compactChromaBlue: Uint16Array | null = null;
+    private compactChromaRed: Uint16Array | null = null;
+    private compactLuma: Uint16Array | null = null;
+
+    public constructor(layout: HEVCFrameLayout, planes: HEVCFramePlanes) {
+        this.bitDepth = layout.bitDepth;
+        this.chromaHeight = layout.chromaHeight;
+        this.chromaWidth = layout.chromaWidth;
+        this.height = layout.height;
+        this.planes = planes;
+        this.poc = layout.poc;
+        this.width = layout.width;
+    }
+
+    public get cb(): Uint16Array {
+        this.compactChromaBlue ??= getCompactPlane(this.planes.chromaBlue, this.chromaWidth, this.chromaHeight);
+        return this.compactChromaBlue;
+    }
+
+    public get cr(): Uint16Array {
+        this.compactChromaRed ??= getCompactPlane(this.planes.chromaRed, this.chromaWidth, this.chromaHeight);
+        return this.compactChromaRed;
+    }
+
+    public get y(): Uint16Array {
+        this.compactLuma ??= getCompactPlane(this.planes.luma, this.width, this.height);
+        return this.compactLuma;
+    }
+}
+
+/** Returns a frame's planes with their strides: the WASM views a backend frame carries, or its compact planes, whose stride is their width. */
+export function getHEVCFramePlanes(frame: HEVCDecodedFrame): HEVCFramePlanes {
+    return frame.planes ?? {
+        chromaBlue: { samples: frame.cb, stride: frame.chromaWidth },
+        chromaRed: { samples: frame.cr, stride: frame.chromaWidth },
+        luma: { samples: frame.y, stride: frame.width }
+    };
+}
+
+/** Reports a trap in a native call before rethrowing it, so a shared module whose code trapped is not reused. */
+function guardNativeFunction(
+    nativeFunction: (...nativeArguments: number[]) => number,
+    onTrap: () => void
+): (...nativeArguments: number[]) => number {
+    return (...nativeArguments: number[]): number => {
+        try {
+            return nativeFunction(...nativeArguments);
+        } catch (error) {
+            if (isWASMTrap(error)) {
+                onTrap();
+            }
+            throw error;
+        }
+    };
 }
 
 class HEVCWASMDecoderBackend implements HEVCDecoderBackend {
     private decoderPointer: number;
     private readonly nativeAPI: HEVCNativeAPI;
 
-    public constructor(private readonly module: EmscriptenHEVCModule) {
+    public constructor(private readonly module: EmscriptenHEVCModule, onTrap: () => void) {
+        const cwrap = (
+            name: string,
+            returnType: EmscriptenReturnType,
+            argumentTypes: readonly string[]
+        ): (...nativeArguments: number[]) => number => guardNativeFunction(
+            module.cwrap(name, returnType, argumentTypes),
+            onTrap
+        );
         this.nativeAPI = {
-            create: module.cwrap('hevc_decoder_create', 'number', []) as () => number,
-            destroy: module.cwrap('hevc_decoder_destroy', null, [ 'number' ]) as (decoderPointer: number) => number,
-            drain: module.cwrap(
+            create: cwrap('hevc_decoder_create', 'number', []) as () => number,
+            destroy: cwrap('hevc_decoder_destroy', null, [ 'number' ]) as (decoderPointer: number) => number,
+            drain: cwrap(
                 'hevc_decoder_drain',
                 'number',
                 [ 'number', 'number' ]
             ) as (decoderPointer: number, countPointer: number) => number,
-            feed: module.cwrap(
+            feed: cwrap(
                 'hevc_decoder_feed',
                 'number',
                 [ 'number', 'number', 'number' ]
             ) as (decoderPointer: number, dataPointer: number, byteLength: number) => number,
-            flush: module.cwrap('hevc_decoder_flush', 'number', [ 'number' ]) as (decoderPointer: number) => number,
-            getDrainedFrame: module.cwrap(
+            flush: cwrap('hevc_decoder_flush', 'number', [ 'number' ]) as (decoderPointer: number) => number,
+            getDrainedFrame: cwrap(
                 'hevc_decoder_get_drained_frame',
                 'number',
                 [ 'number', 'number', 'number' ]
             ) as (decoderPointer: number, frameIndex: number, framePointer: number) => number,
-            getInfo: module.cwrap(
+            getInfo: cwrap(
                 'hevc_decoder_get_info',
                 'number',
                 [ 'number', 'number' ]
@@ -342,7 +448,7 @@ class HEVCWASMDecoderBackend implements HEVCDecoderBackend {
         this.nativeAPI.destroy(decoderPointer);
     }
 
-    private extractDrainedFrame(frameIndex: number): HEVCFrame | null {
+    private extractDrainedFrame(frameIndex: number): HEVCDecodedFrame | null {
         const framePointer = requireAllocation(this.module, DRAINED_FRAME_STRUCTURE_BYTE_LENGTH);
         try {
             if (this.nativeAPI.getDrainedFrame(this.decoderPointer, frameIndex, framePointer) !== 0) {
@@ -373,17 +479,11 @@ class HEVCWASMDecoderBackend implements HEVCDecoderBackend {
                 poc,
                 width
             });
-            return {
-                bitDepth: frameLayout.bitDepth,
-                cb: getPlaneForSynchronousConsumption(this.module, frameLayout.chromaBlue),
-                chromaHeight: frameLayout.chromaHeight,
-                chromaWidth: frameLayout.chromaWidth,
-                cr: getPlaneForSynchronousConsumption(this.module, frameLayout.chromaRed),
-                height: frameLayout.height,
-                poc: frameLayout.poc,
-                width: frameLayout.width,
-                y: getPlaneForSynchronousConsumption(this.module, frameLayout.luma)
-            };
+            return new HEVCWASMDecodedFrame(frameLayout, {
+                chromaBlue: getPlaneView(this.module, frameLayout.chromaBlue),
+                chromaRed: getPlaneView(this.module, frameLayout.chromaRed),
+                luma: getPlaneView(this.module, frameLayout.luma)
+            });
         } finally {
             this.module._free(framePointer);
         }
@@ -396,14 +496,22 @@ class HEVCWASMDecoderBackend implements HEVCDecoderBackend {
     }
 }
 
-/** Instantiates the @hevcjs/core glue module loaded in this worker. */
-export async function createHEVCDecoderModule(options: HEVCDecoderModuleOptions): Promise<HEVCDecoderModule> {
+// The playback worker's decoders share one instance of the glue module
+const sharedDecoderModule = new WorkerWASMInstanceCache<HEVCDecoderModule>();
+
+function requireModuleFactory(): EmscriptenHEVCModuleFactory {
     const decoderGlobal = globalThis as HEVCDecoderGlobal;
     if (typeof decoderGlobal.HEVCDecoderModule !== 'function') {
         throw new Error('The HEVC WASM decoder module factory is unavailable');
     }
+    return decoderGlobal.HEVCDecoderModule as EmscriptenHEVCModuleFactory;
+}
 
-    const moduleFactory = decoderGlobal.HEVCDecoderModule as EmscriptenHEVCModuleFactory;
+async function instantiateDecoderModule(
+    moduleFactory: EmscriptenHEVCModuleFactory,
+    options: HEVCDecoderModuleOptions,
+    onTrap: (decoderModule: HEVCDecoderModule) => void
+): Promise<HEVCDecoderModule> {
     // NOTE: The glue adopts this object as its Module and installs aborting getters on it, so every instantiation needs a fresh one
     const moduleOptions: EmscriptenHEVCModuleOptions = {};
     const wasmURL = options.wasmURL;
@@ -416,13 +524,33 @@ export async function createHEVCDecoderModule(options: HEVCDecoderModuleOptions)
     }
     const module = await moduleFactory(moduleOptions);
     // Each decoder owns only its native context, so destroying one leaves the module reusable
-    return Object.freeze({
-        createDecoder: (): HEVCDecoderBackend => new HEVCWASMDecoderBackend(module)
+    const decoderModule: HEVCDecoderModule = Object.freeze({
+        createDecoder: (): HEVCDecoderBackend => new HEVCWASMDecoderBackend(module, (): void => {
+            onTrap(decoderModule);
+        })
     });
+    return decoderModule;
 }
 
-/** Creates a decoder on its own instance of the @hevcjs/core glue module loaded in this worker. */
+/** Instantiates the @hevcjs/core glue module loaded in this worker, as an instance of the caller's own, apart from the one its playback decoders share. */
+export async function createHEVCDecoderModule(options: HEVCDecoderModuleOptions): Promise<HEVCDecoderModule> {
+    return instantiateDecoderModule(requireModuleFactory(), options, (): void => undefined);
+}
+
+/**
+ * Creates a decoder on the one instance of the @hevcjs/core glue module that this worker's decoders share.
+ * The first decoder instantiates it, and a decoder whose native code traps makes the next one instantiate it again.
+ */
 export async function createHEVCDecoderBackend(options: DecoderOptions): Promise<HEVCDecoderBackend> {
-    const decoderModule = await createHEVCDecoderModule({ wasmURL: options.wasmBinaryUrl });
+    const moduleFactory = requireModuleFactory();
+    const decoderModule = await sharedDecoderModule.load(moduleFactory, (): Promise<HEVCDecoderModule> => (
+        instantiateDecoderModule(
+            moduleFactory,
+            { wasmURL: options.wasmBinaryUrl },
+            (trappedModule: HEVCDecoderModule): void => {
+                sharedDecoderModule.discard(trappedModule);
+            }
+        )
+    ));
     return decoderModule.createDecoder();
 }

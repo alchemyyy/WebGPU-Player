@@ -3,6 +3,7 @@
 
 /** Prebuilt engine workers. They live one directory below the asset base. */
 export const ENGINE_WORKER_PATHS = Object.freeze([
+    'webgpu-player/CustomAudioDecode.worker.js',
     'webgpu-player/CustomDecode.worker.js',
     'webgpu-player/DTSExactCapabilityProbe.worker.js',
     'webgpu-player/HEVCExactCapabilityProbe.worker.js',
@@ -11,8 +12,9 @@ export const ENGINE_WORKER_PATHS = Object.freeze([
     'webgpu-player/TrueHDExactCapabilityProbe.worker.js'
 ] as const);
 
-/** Decoders and qualification streams, relative to the asset base. */
+/** Decoders, the audio output stage, and qualification streams, relative to the asset base. */
 export const ENGINE_LIBRARY_PATHS = Object.freeze([
+    'audio-output-stage/audio-output-stage.wasm',
     'ffmpeg-eac3/ffmpeg-eac3.wasm',
     'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.js',
     'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.wasm',
@@ -46,6 +48,8 @@ export type EngineAssetPath = EngineWorkerPath | EngineLibraryPath;
 export const DTS_DECODER_WASM_ASSET = 'libdcadec-dts/libdcadec-dts.wasm' satisfies EngineLibraryPath;
 export const EAC3_DECODER_WASM_ASSET = 'ffmpeg-eac3/ffmpeg-eac3.wasm' satisfies EngineLibraryPath;
 export const TRUEHD_DECODER_WASM_ASSET = 'ffmpeg-truehd/ffmpeg-truehd.wasm' satisfies EngineLibraryPath;
+// The decoded audio output stage's resampler and limiter kernels, which the playback worker loads on its first decoded audio attempt
+export const AUDIO_OUTPUT_STAGE_WASM_ASSET = 'audio-output-stage/audio-output-stage.wasm' satisfies EngineLibraryPath;
 
 export type EngineAssetConfiguration = Readonly<{
     // Absolute or page-relative URL of the served bin/libraries directory

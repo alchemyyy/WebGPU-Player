@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import { millisecondsToMicroseconds } from 'webgpu-player/MediaTime';
+import { DTS_SEEK_PREROLL_MICROSECONDS } from 'webgpu-player/audio/AudioStartPacket';
 import { DTSDecoderSynchronizationError } from 'webgpu-player/audio/decoders/DTSSoftwareAudioDecoder';
 import DTSSeekRecovery, {
-    DTS_SEEK_PREROLL_MICROSECONDS,
     MAXIMUM_DTS_SEEK_RECOVERY_PACKET_COUNT
 } from 'webgpu-player/audio/decoders/DTSSeekRecovery';
 

@@ -19,7 +19,7 @@ EMSCRIPTEN_REVISION := 2659582941bef14008476903f48941909db1b196
 FFMPEG_COMMIT := a59498db085e3d635532397128550141ab87408a
 DCADEC_COMMIT := b93deed1a231dd6dd7e39b9fe7d2abe05aa00158
 
-KITS := ffmpeg-eac3 ffmpeg-truehd libdcadec-dts ffmpeg-mpeg2-vc1 libdovi
+KITS := ffmpeg-eac3 ffmpeg-truehd libdcadec-dts ffmpeg-mpeg2-vc1 libdovi audio-output-stage
 
 empty :=
 space := $(empty) $(empty)
@@ -176,12 +176,26 @@ LIBDOVI_REMAPS = '--remap-path-prefix=$(call native_path,$(CARGO_HOME_DIRECTORY)
 '--remap-path-prefix=$(call native_path,$(LIBDOVI_TARGET))=/target',\
 '--remap-path-prefix=$(LIBDOVI_RUST_SOURCE)=/rustc/$(LIBDOVI_RUSTC_COMMIT)/'
 
+# The decoded audio output stage: the resampler and limiter kernels, a standalone module without JavaScript glue.
+# Its outputs must match the JavaScript reference bit for bit, so no multiply and add may fuse.
+# emcc's own --no-entry makes it a reactor, whose exported _initialize runs the constructors that set up emmalloc's heap
+AUDIO_OUTPUT_STAGE_CFLAGS := -std=c11 -O3 -DNDEBUG -msimd128 -ffp-contract=off
+AUDIO_OUTPUT_STAGE_LINK_FLAGS := -sSTANDALONE_WASM -sMALLOC=emmalloc -sALLOW_MEMORY_GROWTH=1 \
+	-sINITIAL_MEMORY=4194304 -sMAXIMUM_MEMORY=4294967296 -sSTACK_SIZE=65536 --no-entry
+AUDIO_OUTPUT_STAGE_EXPORTS := _audio_output_stage_abi_version _audio_resampler_create \
+	_audio_resampler_destroy _audio_resampler_filter_table _audio_resampler_reserve_input \
+	_audio_resampler_output _audio_resampler_append _audio_resampler_discard_before \
+	_audio_resampler_render _audio_limiter_create _audio_limiter_destroy \
+	_audio_limiter_reserve_input _audio_limiter_output _audio_limiter_telemetry \
+	_audio_limiter_append _audio_limiter_render
+
 # Outputs, relative to $(BUILD)/<kit>/output and bin/wasm/<kit>
 OUTPUTS_ffmpeg-eac3 := ffmpeg-eac3.mjs ffmpeg-eac3.wasm
 OUTPUTS_ffmpeg-truehd := ffmpeg-truehd.mjs ffmpeg-truehd.wasm
 OUTPUTS_libdcadec-dts := libdcadec-dts.mjs libdcadec-dts.wasm
 OUTPUTS_ffmpeg-mpeg2-vc1 := ffmpeg-mpeg2-vc1.js ffmpeg-mpeg2-vc1.wasm
 OUTPUTS_libdovi := dovi-rpu-parser.wasm
+OUTPUTS_audio-output-stage := audio-output-stage.wasm
 
 .PHONY: all check clean sources source-archives toolchain $(KITS) $(KITS:%=build-%)
 
@@ -201,6 +215,7 @@ check: $(KITS:%=build-%)
 			libdcadec-dts) outputs="$(OUTPUTS_libdcadec-dts)" ;; \
 			ffmpeg-mpeg2-vc1) outputs="$(OUTPUTS_ffmpeg-mpeg2-vc1)" ;; \
 			libdovi) outputs="$(OUTPUTS_libdovi)" ;; \
+			audio-output-stage) outputs="$(OUTPUTS_audio-output-stage)" ;; \
 		esac; \
 		for output in $$outputs; do \
 			if cmp -s $(BUILD)/$$kit/output/$$output $(DIST)/$$kit/$$output; then \
@@ -345,3 +360,12 @@ build-libdovi:
 		--target wasm32-unknown-unknown \
 		--config "target.wasm32-unknown-unknown.rustflags=[$(LIBDOVI_REMAPS)]"
 	cp $(LIBDOVI_MODULE) $(BUILD)/libdovi/output/dovi-rpu-parser.wasm
+
+# A .wasm output links without JavaScript glue; the module's one import is Math.log10
+build-audio-output-stage: toolchain
+	rm -rf $(BUILD)/audio-output-stage
+	mkdir -p $(BUILD)/audio-output-stage/output
+	$(EMCC) $(AUDIO_OUTPUT_STAGE_CFLAGS) -ffile-prefix-map=$(ENGINE)=webgpu-player \
+		$(WASM)/audio-output-stage/audio_output_stage.c \
+		$(AUDIO_OUTPUT_STAGE_LINK_FLAGS) -sEXPORTED_FUNCTIONS=$(call comma_list,$(AUDIO_OUTPUT_STAGE_EXPORTS)) \
+		-o $(BUILD)/audio-output-stage/output/audio-output-stage.wasm

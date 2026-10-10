@@ -15,6 +15,7 @@ import {
     MAXIMUM_DOLBY_VISION_RPU_SEGMENT_COUNT
 } from './DolbyVisionRPUDataLayout';
 import { resolveEngineAssetURL, type EngineAssetPath } from '../../EngineAssets';
+import WorkerWASMInstanceCache, { isWASMTrap } from '../decoders/WorkerWASMInstanceCache';
 import { isDolbyVisionDualLayerProfile } from './DolbyVisionProfiles';
 
 export const DOLBY_VISION_RPU_PARSER_WASM_ASSET: EngineAssetPath = 'libdovi/dovi-rpu-parser.wasm';
@@ -138,8 +139,16 @@ async function loadDefaultInstance(wasmURL: string): Promise<WebAssembly.Instanc
     return result.instance;
 }
 
+// The worker's parsers share one instance, and each creates its own context in it
+const sharedParserInstance = new WorkerWASMInstanceCache<WebAssembly.Instance>();
+
+/** Returns the instance this worker's parsers share, fetched and instantiated on first use. */
+function loadSharedInstance(wasmURL: string): Promise<WebAssembly.Instance> {
+    return sharedParserInstance.load(wasmURL, (): Promise<WebAssembly.Instance> => loadDefaultInstance(wasmURL));
+}
+
 const DEFAULT_DEPENDENCIES: DolbyVisionRPUParserDependencies = {
-    loadInstance: loadDefaultInstance
+    loadInstance: loadSharedInstance
 };
 
 /** Resolves the parser module against the engine asset base. */
@@ -516,18 +525,22 @@ export function decodeDolbyVisionRPUSnapshot(packedData: ArrayBuffer): DolbyVisi
     };
 }
 
-/** Owns one stateful libdovi WASM parser instance with fixed maximum input and memory sizes. */
+/**
+ * Owns one stateful libdovi parser context and its input and output buffers, in a WASM instance with fixed maximum input and memory sizes.
+ * By default the worker's parsers share one instance.
+ */
 export default class DolbyVisionRPUParser {
     private closed = false;
 
     private constructor(
+        private readonly instance: WebAssembly.Instance,
         private readonly parserExports: DolbyVisionRPUParserWASMExports,
         private readonly contextPointer: number,
         private readonly inputPointer: number,
         private readonly outputPointer: number
     ) {}
 
-    /** Loads the parser and rejects one whose ABI differs from the pinned version. */
+    /** Creates a parser context in the loaded instance and rejects an instance whose ABI differs from the pinned version. */
     public static async create(
         wasmURL: string,
         dependencies: DolbyVisionRPUParserDependencies = DEFAULT_DEPENDENCIES
@@ -574,7 +587,7 @@ export default class DolbyVisionRPUParser {
                 DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
                 'Dolby Vision parser output'
             );
-            return new DolbyVisionRPUParser(parserExports, contextPointer, inputPointer, outputPointer);
+            return new DolbyVisionRPUParser(instance, parserExports, contextPointer, inputPointer, outputPointer);
         } catch (error) {
             if (outputPointer !== 0) {
                 parserExports.deallocate(outputPointer, DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH);
@@ -662,6 +675,12 @@ export default class DolbyVisionRPUParser {
                 outputRange.byteLength
             ).slice().buffer;
             return decodeDolbyVisionRPUSnapshot(packedData);
+        } catch (error) {
+            // An instance whose code trapped is not shared with the worker's next parser
+            if (isWASMTrap(error)) {
+                sharedParserInstance.discard(this.instance);
+            }
+            throw error;
         } finally {
             new Uint8Array(this.parserExports.memory.buffer, this.inputPointer, input.byteLength).fill(0);
         }

@@ -189,6 +189,29 @@ describe('AudioWorkletController', () => {
         });
     });
 
+    it('transfers a producer channel for the generation the last flush started', async () => {
+        const harness = createAudioNodeHarness();
+        const controller = new AudioWorkletController(harness.node, configuration);
+        const channel = new MessageChannel();
+        try {
+            const flushedGeneration = controller.flush(secondsToMicroseconds(2));
+
+            controller.attachProducer(channel.port1);
+
+            expect(harness.port.messages.at(-1)).toEqual({
+                message: { generation: flushedGeneration, port: channel.port1, type: 'attach-producer' },
+                transferables: [ channel.port1 ]
+            });
+            const destroyPromise = controller.destroy();
+            harness.port.dispatchRetired();
+            await destroyPromise;
+            expect(() => controller.attachProducer(channel.port2)).toThrow('destroyed');
+        } finally {
+            channel.port1.close();
+            channel.port2.close();
+        }
+    });
+
     it('updates playback, volume, and mute without rebuilding the node', () => {
         const harness = createAudioNodeHarness();
         const controller = new AudioWorkletController(harness.node, configuration);

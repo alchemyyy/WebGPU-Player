@@ -35,7 +35,6 @@ import {
 } from '../audio/processing/CustomAudioDownmixAlgorithm';
 import {
     getCustomAudioChannelLayout,
-    prepareCustomAudioOutputChannelData,
     type CustomAudioChannelLayout,
     type CustomAudioOutputChannelCount
 } from '../audio/processing/CustomAudioChannelLayout';
@@ -44,30 +43,38 @@ import {
     type AudioDownmixSettings
 } from '../audio/processing/CustomAudioDownmix';
 import {
-    CUSTOM_AUDIO_OUTPUT_BUFFERED_SECONDS,
     CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
     CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
     isSupportedCustomAudioInputLayout
 } from '../audio/CustomAudioOutputPolicy';
 import { isSupportedCustomAudioSampleRate } from '../audio/CustomAudioSampleRate';
-import { getAudioStartPacket } from '../audio/AudioStartPacket';
 import {
-    getAudioTimestampToleranceMicroseconds,
+    DTS_SEEK_PREROLL_MICROSECONDS,
+    getAudioPrerollTimeMicroseconds,
+    getAudioStartPacket,
+    TRUEHD_MAJOR_SYNC_PREROLL_MICROSECONDS
+} from '../audio/AudioStartPacket';
+import {
     getBundledAudioDecoderCodec,
     getDeclaredAudioSampleRate
 } from '../audio/CustomAudioTrackMetadata';
-import DecodedAudioOutputStage, {
-    UnsupportedDecodedAudioFormatError,
-    type DecodedAudioSourceFormat
-} from '../audio/processing/DecodedAudioOutputStage';
-import type { StreamingAudioResamplerOutput } from '../audio/processing/StreamingAudioOutputPipeline';
-import type { StreamingAudioTimelineCorrection } from '../audio/processing/StreamingAudioResampler';
-import StreamingAudioDownmixSettings from '../audio/processing/StreamingAudioDownmixSettings';
+import { createEngineWorker, type EngineWorkerPath } from '../EngineAssets';
+import AudioDecodeWorkerClient, {
+    AudioDecodeWorkerAttemptError,
+    AudioDecodeWorkerPacketBatchBuilder,
+    AudioDecodeWorkerPCMBatchBuilder,
+    type AudioDecodeWorkerAttempt
+} from './AudioDecodeWorkerClient';
+import type {
+    AudioDecodeWorkerDecoderBackend,
+    AudioDecodeWorkerPCMSample,
+    AudioDecodeWorkerProgressResponse,
+    AudioDecodeWorkerSourceFormatResponse
+} from './AudioDecodeWorkerProtocol';
 import {
     getCustomDecodeRequestHardwareAcceleration,
     isDecodeWorkerRequest,
     MAX_DECODED_AUDIO_CHANNELS,
-    MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
@@ -76,11 +83,16 @@ import {
     type CustomDecodeDolbyVisionProfile,
     type CustomDecodeFailureKind,
     type CustomDecodeNativeHDRTransfer,
+    type CustomDecodePresentationMode,
     type CustomDecodeRawVideoFrameFormat,
     type CustomDecodeVideoDecoderBackend,
     type CustomDecodeVideoOutputMode,
     type CustomDecodeWorkerProgressPhase,
+    type DecodeWorkerAudioOutputAttachment,
     type DecodeWorkerNativeMediaAudioConfiguration,
+    type DecodeWorkerFrameDescriptorResponse,
+    type DecodeWorkerFrameMetadataSummary,
+    type DecodeWorkerFrameResponse,
     type DecodeWorkerReadyAudioConfiguration,
     type DecodeWorkerRequest,
     type DecodeWorkerResponse
@@ -103,7 +115,8 @@ import {
 import {
     getDolbyVisionEncodedMetadataTransferList,
     takeTransferableDolbyVisionEncodedFrameMetadata,
-    type DolbyVisionEncodedFrameMetadata
+    type DolbyVisionEncodedFrameMetadata,
+    type TransferableDolbyVisionEncodedFrameMetadata
 } from '../video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
 import { DolbyVisionRPUParseError } from '../video/dolby-vision/DolbyVisionRPUParser';
 import DolbyVisionRPUParserSession from '../video/dolby-vision/DolbyVisionRPUParserSession';
@@ -112,8 +125,14 @@ import {
     hasRequiredHEVCParameterSets,
     parseHEVCDecoderConfiguration,
     registerHEVCSoftwareVideoDecoder,
-    waitForHEVCSoftwareVideoDecoderShutdown
+    waitForHEVCSoftwareVideoDecoderShutdown,
+    type HEVCSoftwareDecodedFrame
 } from '../video/decoders/HEVCSoftwareVideoDecoder';
+import {
+    HEVCVideoFrameWriter,
+    writeHEVCDecodedFrame,
+    type HEVCFrameOutput
+} from '../video/decoders/HEVCFrameOutput';
 import { parseHEVCSPS } from '../video/hevc/HEVCSPSParser';
 import { scanHEVCStaticHDRMetadata } from '../video/hdr/HEVCStaticHDRMetadata';
 import {
@@ -131,16 +150,23 @@ import {
     MediaNetworkError,
     requireSuccessfulMediaHTTPResponse
 } from './MediaFetchPolicy';
-import RawFrameBufferPool from '../video/RawFrameBufferPool';
+import RawFrameBufferPool, { MAXIMUM_SPARE_RAW_FRAME_BUFFERS_PER_BYTE_LENGTH } from '../video/RawFrameBufferPool';
 import {
     copyVideoFramePairToRawPlanes,
     copyVideoFrameToRawPlanes,
     createVideoSampleRawFrameSource,
     getRawVideoFramePairTransferList,
     getRawVideoFrameTransferList,
+    PreparedRawVideoFrameSource,
     type RawVideoFrameGeometry,
-    type RawVideoFrameSource
+    type RawVideoFrameSource,
+    type TransferableRawVideoFrame
 } from '../video/RawVideoFrameCopy';
+import WorkerFrameStore, { type WorkerFrameDescription } from '../presentation/WorkerFrameStore';
+import WorkerPresentationRenderer, {
+    declineWorkerPresentationAttachment
+} from '../presentation/WorkerPresentationRenderer';
+import type { PresentationFallbackReason } from '../presentation/WorkerPresentationProtocol';
 import { requireMicroseconds } from '../TimeMath';
 import NativeMediaAudioFMP4Remuxer, {
     type NativeMediaAudioFMP4Codec,
@@ -174,14 +200,7 @@ import {
     readMPEGTransportStreamDolbyVisionTrackConfiguration
 } from '../video/dolby-vision/MPEGTransportStreamDolbyVisionConfiguration';
 import JPEG2000SoftwareVideoDecoder from '../video/decoders/JPEG2000SoftwareVideoDecoder';
-import DTSSoftwareAudioDecoder, {
-    type DTSDecodedAudioOutput
-} from '../audio/decoders/DTSSoftwareAudioDecoder';
-import DTSSeekRecovery from '../audio/decoders/DTSSeekRecovery';
-import EAC3SoftwareAudioDecoder from '../audio/decoders/EAC3SoftwareAudioDecoder';
-import TrueHDSoftwareAudioDecoder, {
-    type TrueHDDecoderCodec
-} from '../audio/decoders/TrueHDSoftwareAudioDecoder';
+import type { TrueHDDecoderCodec } from '../audio/decoders/TrueHDSoftwareAudioDecoder';
 import MPEG2VC1SoftwareVideoDecoder, {
     type MPEG2VC1SoftwareVideoDecoderConfiguration
 } from '../video/decoders/MPEG2VC1SoftwareVideoDecoder';
@@ -218,31 +237,10 @@ const MPEG2_VC1_PACKET_OPTIONS = {
     verifyKeyPackets: true
 } as const;
 const STATIC_HDR_METADATA_SCAN_MAXIMUM_BYTE_LENGTH = 8 * 1024 * 1024;
-const TRUEHD_MAJOR_SYNC_PREROLL_MICROSECONDS = 1_000_000;
-const MICROSECONDS_PER_SECOND = 1_000_000;
-// Codec floors of the decoded audio timestamp tolerance; DTS lace phases wander further
-const DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS = 1_000;
-const DTS_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS = 3_000;
-const TRUEHD_ACCESS_UNITS_PER_SECOND = 1_200;
-// One TrueHD or MLP access unit can decode to no PCM
-const TRUEHD_ACCESS_UNIT_ALLOWANCE_MICROSECONDS = Math.ceil(MICROSECONDS_PER_SECOND / TRUEHD_ACCESS_UNITS_PER_SECOND);
-const NO_ACCESS_UNIT_ALLOWANCE_MICROSECONDS = 0;
 // Mediabunny's dec3 parse can declare a 7.1 E-AC-3 track as 6 or 7 channels
 const EAC3_UNDER_DECLARED_SEVEN_POINT_ONE_CHANNEL_COUNT = 7;
-const MINIMUM_AUDIO_OUTPUT_CHUNK_DURATION_MICROSECONDS = 40_000;
-const MINIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT = Math.ceil(
-    CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
-        * MINIMUM_AUDIO_OUTPUT_CHUNK_DURATION_MICROSECONDS
-        / MICROSECONDS_PER_SECOND
-);
-// Every credit holding a largest chunk at most fills the worklet ring, so filled silence never overflows it
-const MAXIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT = requireAudioOutputChunkFrameBound(Math.floor(
-    CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
-        * CUSTOM_AUDIO_OUTPUT_BUFFERED_SECONDS
-        / MAX_DECODED_AUDIO_SAMPLE_CREDITS
-));
-// Smaller fills and trims are routine container jitter and stay out of the console
-const LOGGED_AUDIO_TIMELINE_CORRECTION_MICROSECONDS = 100_000;
+const AUDIO_DECODE_WORKER_ASSET: EngineWorkerPath = 'webgpu-player/CustomAudioDecode.worker.js';
+const ENCODED_AUDIO_PACKET_TIMESTAMP = 'Encoded audio packet timestamp';
 
 type MediaSampleIterator<Sample> = {
     next: () => Promise<IteratorResult<Sample>>
@@ -263,9 +261,11 @@ type VideoAttemptControl =
 /** Restarts decoded audio at a target with a new output stage while video continues */
 type AudioAttemptControl = {
     audioDownmixAlgorithm: CustomAudioDownmixAlgorithm | undefined
+    /** A later live update replaces it, since the attempt opens with the newest gains */
     audioDownmixSettings: AudioDownmixSettings | undefined
     audioEpoch: number
-    audioSampleCredits: number
+    /** The new worklet's channel, whose credit window replaces the old one */
+    audioOutput: DecodeWorkerAudioOutputAttachment
     decodedAudioOutputChannelCount: CustomAudioOutputChannelCount
     targetTimeMicroseconds: Microseconds
 };
@@ -273,10 +273,16 @@ type AudioAttemptControl = {
 type DecodeRun = {
     /** Ends the current audio attempt without stopping video or the run */
     audioAttemptCancelled: boolean
-    audioDownmixSettings: StreamingAudioDownmixSettings | null
+    /** The current decoded PCM attempt in the audio decode worker, which feeds the worklet over its own channel */
+    audioDecodeAttempt: AudioDecodeWorkerAttempt | null
+    /** Settle once the audio decode worker released each closed attempt's decoder, output stage, and worklet channel */
+    audioDecodeAttemptClosures: Array<Promise<void>>
     /** Tags posted audio so the session can drop samples from replaced attempts */
     audioEpoch: number
     audioIterator: MediaSampleIterator<AudioSample> | MediaSampleIterator<EncodedPacket> | null
+    /** Whether the current decoded PCM attempt has its worklet channel */
+    audioOutputAttached: boolean
+    /** Native media segment credits from the page; decoded PCM takes the audio decode worker's input credits */
     audioSampleCredits: number
     /** Set once the audio stream completes so a video stream that reached its end can end the run */
     audioStreamFinished: boolean
@@ -287,6 +293,8 @@ type DecodeRun = {
     generation: number
     input: Input | null
     iteratorRetirementPromise: Promise<void> | null
+    /** The newest downmix gains: the start's, then each resync's or live update's; every attempt opens with them */
+    latestAudioDownmixSettings: AudioDownmixSettings | undefined
     maximumCodedHeight: number
     maximumCodedWidth: number
     metadataAbortController: AbortController | null
@@ -295,8 +303,12 @@ type DecodeRun = {
     outstandingRawFrameBufferCount: number
     /** Latest unprocessed resync request for the decoded audio stream */
     pendingAudioControl: AudioAttemptControl | null
+    /** A channel to the worklet that the next decoded PCM attempt opens with: a resync's, or the initial one before its attempt opened */
+    pendingAudioOutput: DecodeWorkerAudioOutputAttachment | null
     /** Latest unprocessed resync or suspension request for the video stream */
     pendingVideoControl: VideoAttemptControl | null
+    /** In worker mode the run keeps its frames for the renderer and posts their descriptors */
+    presentationMode: CustomDecodePresentationMode
     rawFrameBufferPool: RawFrameBufferPool | null
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
     /** Ends the current video attempt without stopping audio or the run */
@@ -386,11 +398,6 @@ type SelectedAudioTrackMetadata = {
     trueHDDecoderCodec: TrueHDDecoderCodec | null
 };
 
-type BundledDecodedAudioOutput = Pick<
-    DTSDecodedAudioOutput,
-    'channelData' | 'channelLayout' | 'frameCount' | 'mediaTimeMicroseconds' | 'sampleRate'
->;
-
 type WorkerScope = {
     addEventListener: (type: 'message', listener: (event: MessageEvent<unknown>) => void) => void
     postMessage: (message: DecodeWorkerResponse, transfer?: Transferable[]) => void
@@ -404,7 +411,19 @@ class UnsupportedCustomDecodeSourceError extends Error {
 }
 
 const workerScope = self as unknown as WorkerScope;
+// The run that control requests address; a run replaced here still unwinds before the next one starts
 let currentRun: DecodeRun | null = null;
+// Settles once the latest run has posted `stopped`, so runs never overlap in this worker
+let previousRunCompletion: Promise<void> = Promise.resolve();
+// Mediabunny never closes a custom decoder whose call failed, so a worker that suppressed such a failure asks to be replaced
+let unclosedDecoderSuspected = false;
+// The audio decode worker this worker spawns for its first decoded PCM run and keeps for every later one; a lost one asks for this worker's replacement
+let audioDecodeWorkerClient: AudioDecodeWorkerClient | null = null;
+const WORKER_RENDERER_ATTACHED_REASON = 'This worker already has a renderer';
+// The frames worker-mode runs keep for the renderer, which outlives every run
+const workerFrameStore = new WorkerFrameStore();
+// The renderer the page attached; a worker takes one for its life
+let workerPresentationRenderer: WorkerPresentationRenderer | null = null;
 
 function postResponse(response: DecodeWorkerResponse, transfer?: Transferable[]): void {
     workerScope.postMessage(response, transfer);
@@ -429,10 +448,11 @@ function postVideoStartupProgress(
     });
 }
 
+/** Creates a raw route's pool of spare buffers, which the decoders' drain-time frames and the raw copies take from, and recycled buffers return to. */
 function createRawFrameBufferPool(videoOutputMode: CustomDecodeVideoOutputMode): RawFrameBufferPool | null {
     switch (videoOutputMode) {
         case 'raw-planes':
-            return new RawFrameBufferPool(MAX_DECODED_RAW_FRAME_CREDITS);
+            return new RawFrameBufferPool(MAXIMUM_SPARE_RAW_FRAME_BUFFERS_PER_BYTE_LENGTH);
         case 'video-frame':
             return null;
     }
@@ -599,30 +619,85 @@ function isAudioAttemptStopped(run: DecodeRun): boolean {
     return run.cancelled || run.audioAttemptCancelled;
 }
 
+/** Takes one native media segment credit, waiting until the page returns one. */
 async function waitForAudioSampleCredit(run: DecodeRun): Promise<boolean> {
-    while (!isAudioAttemptStopped(run) && run.audioSampleCredits === 0) {
+    while (!isAudioAttemptStopped(run)) {
+        if (run.audioSampleCredits > 0) {
+            run.audioSampleCredits -= 1;
+            return true;
+        }
         await new Promise<void>(resolve => {
             run.wakeAudioCreditWaiters.push(resolve);
         });
     }
-
-    if (isAudioAttemptStopped(run)) {
-        return false;
-    }
-
-    run.audioSampleCredits -= 1;
-    return true;
+    return false;
 }
 
-/** Stores the newest audio resync request and unwinds the active audio attempt. */
+/** Throws the failure the audio decode worker reported for an attempt, as the failure kind it chose. */
+function requireHealthyAudioDecodeAttempt(attempt: AudioDecodeWorkerAttempt): void {
+    const failure = attempt.failure;
+    if (failure) {
+        throw new AudioDecodeWorkerAttemptError(failure);
+    }
+}
+
+/** Takes one input credit of a decoded PCM attempt, waiting until the audio decode worker rendered a batch; its failure fails the attempt here. */
+async function waitForAudioDecodeInputCredit(run: DecodeRun, attempt: AudioDecodeWorkerAttempt): Promise<boolean> {
+    while (!isAudioAttemptStopped(run)) {
+        requireHealthyAudioDecodeAttempt(attempt);
+        if (attempt.takeInputCredit()) {
+            return true;
+        }
+        await new Promise<void>(resolve => {
+            run.wakeAudioCreditWaiters.push(resolve);
+        });
+    }
+    return false;
+}
+
+/** Waits until the audio decode worker rendered a finished attempt's tails, or the attempt stops. */
+async function waitForAudioDecodeAttemptFinished(run: DecodeRun, attempt: AudioDecodeWorkerAttempt): Promise<void> {
+    while (!isAudioAttemptStopped(run)) {
+        requireHealthyAudioDecodeAttempt(attempt);
+        if (attempt.finished) {
+            return;
+        }
+        await new Promise<void>(resolve => {
+            run.wakeAudioCreditWaiters.push(resolve);
+        });
+    }
+}
+
+/**
+ * Closes the current decoded PCM attempt, whose worklet channel closes at once; the worklet drops whatever was still in flight on it.
+ * The run's end waits until the audio decode worker released the attempt.
+ */
+function closeAudioDecodeAttempt(run: DecodeRun): void {
+    const attempt = run.audioDecodeAttempt;
+    run.audioDecodeAttempt = null;
+    run.audioOutputAttached = false;
+    if (attempt) {
+        run.audioDecodeAttemptClosures.push(attempt.close());
+    }
+}
+
+/**
+ * Stores the newest audio resync request and unwinds the active audio attempt; a channel that no attempt will open is closed.
+ * The replaced attempt stops feeding its worklet channel at once, since the page flushed that worklet.
+ */
 function requestAudioAttemptControl(run: DecodeRun, control: AudioAttemptControl): void {
     const latestAudioEpoch = run.pendingAudioControl?.audioEpoch ?? run.audioEpoch;
     if (run.cancelled || control.audioEpoch <= latestAudioEpoch) {
+        control.audioOutput.port.close();
         return;
     }
 
+    run.pendingAudioControl?.audioOutput.port.close();
+    run.pendingAudioOutput?.port.close();
+    run.pendingAudioOutput = null;
     run.pendingAudioControl = control;
     run.audioAttemptCancelled = true;
+    closeAudioDecodeAttempt(run);
     wakeWaiters(run.wakeAudioCreditWaiters);
     wakeWaiters(run.wakeAudioControlWaiters);
 }
@@ -668,6 +743,12 @@ function stopRun(run: DecodeRun): void {
     run.cancelled = true;
     run.metadataAbortController?.abort();
     run.metadataAbortController = null;
+    // The page flushed the worklet before it stopped the run, or the run finished and the worklet plays out its queue
+    closeAudioDecodeAttempt(run);
+    run.pendingAudioOutput?.port.close();
+    run.pendingAudioOutput = null;
+    run.pendingAudioControl?.audioOutput.port.close();
+    run.pendingAudioControl = null;
     wakeWaiters(run.wakeAudioControlWaiters);
     wakeWaiters(run.wakeAudioCreditWaiters);
     wakeWaiters(run.wakeFrameCreditWaiters);
@@ -699,8 +780,8 @@ function classifyFailure(error: unknown): CustomDecodeFailureKind {
     if (error instanceof UnsupportedCustomDecodeSourceError) {
         return 'source-unsupported';
     }
-    if (error instanceof UnsupportedDecodedAudioFormatError) {
-        return 'source-unsupported';
+    if (error instanceof AudioDecodeWorkerAttemptError) {
+        return error.failureKind;
     }
     if (error instanceof DolbyVisionRPUParseError) {
         return 'source-unsupported';
@@ -710,47 +791,6 @@ function classifyFailure(error: unknown): CustomDecodeFailureKind {
     }
 
     return 'decode-failed';
-}
-
-/** Checks the largest decoded audio chunk against the minimum chunk and the protocol frame limit. */
-function requireAudioOutputChunkFrameBound(frameCount: number): number {
-    if (!Number.isSafeInteger(frameCount)
-        || frameCount < MINIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT
-        || frameCount > MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE) {
-        throw new RangeError(
-            'The largest decoded audio chunk must hold at least the minimum chunk '
-            + 'and at most the protocol frame limit'
-        );
-    }
-    return frameCount;
-}
-
-/** Logs a large timeline correction or a rejection so field logs show where audio moved. */
-function logAudioTimelineCorrection(correction: StreamingAudioTimelineCorrection): void {
-    if (correction.kind !== 'reject'
-        && Math.abs(correction.correctionMicroseconds) <= LOGGED_AUDIO_TIMELINE_CORRECTION_MICROSECONDS) {
-        return;
-    }
-    let description: string;
-    switch (correction.kind) {
-        case 'drop':
-            description = 'Decoded audio input dropped as an overlap';
-            break;
-        case 'fill':
-            description = 'Decoded audio timeline gap filled with silence';
-            break;
-        case 'reject':
-            description = 'Decoded audio timeline discontinuity exceeded the correction bound';
-            break;
-        case 'trim':
-            description = 'Decoded audio timeline overlap trimmed';
-            break;
-    }
-    console.warn(
-        `${description}: input ${correction.inputMediaTimeMicroseconds} microseconds, `
-        + `expected ${correction.expectedMediaTimeMicroseconds} microseconds, `
-        + `correction ${correction.correctionMicroseconds} microseconds`
-    );
 }
 
 type FocusedSoftwareVideoRoute = Readonly<{
@@ -1664,16 +1704,31 @@ function takeOwnedVideoFrame(output: OwnedDecodedVideoOutput): TakenDecodedFrame
         case 'planar-sample':
         case 'video-sample':
             return takeVideoFrame(output.source.sample);
+        case 'prepared-raw-frame':
+            // Only an EL is prepared on a VideoFrame route, and an EL travels only inside a raw frame pair
+            output.source.frame.close();
+            throw new UnsupportedCustomDecodeSourceError('A frame prepared as raw planes cannot be posted as a VideoFrame');
     }
 }
 
 /**
  * Takes a decoded output for a raw copy.
- * CPU planes are copied straight from their sample, because Firefox cannot construct a VideoFrame in a high-bit-depth format such as the bundled HEVC decoder's I420P10.
+ * A sample's CPU planes are copied straight from it, because Firefox cannot construct a VideoFrame in a high-bit-depth format such as I420P10.
+ * A frame its decoder already wrote into the raw layout, as the bundled HEVC decoder does, is taken as it is.
  */
 function takeOwnedRawVideoFrameSource(output: OwnedDecodedVideoOutput): TakenDecodedFrame<RawVideoFrameSource> {
-    if (output.source.kind !== 'planar-sample') {
-        return takeOwnedVideoFrame(output);
+    switch (output.source.kind) {
+        case 'prepared-raw-frame':
+            return {
+                durationMicroseconds: output.durationMicroseconds,
+                frame: output.source.frame,
+                mediaTimeMicroseconds: output.mediaTimeMicroseconds
+            };
+        case 'native-frame':
+        case 'video-sample':
+            return takeOwnedVideoFrame(output);
+        case 'planar-sample':
+            break;
     }
     const sample = output.source.sample;
     try {
@@ -1689,7 +1744,8 @@ function takeOwnedRawVideoFrameSource(output: OwnedDecodedVideoOutput): TakenDec
     }
 }
 
-type MutableDecodeWorkerFrameResponse = Extract<DecodeWorkerResponse, { type: 'frame' }>;
+// A frame whose payload crosses to the page; a worker-frame descriptor carries no metadata to attach
+type MutableDecodeWorkerFrameResponse = DecodeWorkerFrameResponse;
 
 function attachDolbyVisionEncodedMetadata(
     response: MutableDecodeWorkerFrameResponse,
@@ -1711,6 +1767,138 @@ function attachHDR10PlusMetadata(
     }
 }
 
+/** A raw frame a worker-mode run keeps for its renderer, with its timing and metadata. */
+type WorkerRawFrameKeepRequest = {
+    durationMicroseconds: Microseconds
+    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null
+    /** Absent off a Dolby Vision pair route, and null for a pair whose EL did not decode */
+    enhancementFrame?: TransferableRawVideoFrame | null
+    frame: TransferableRawVideoFrame
+    HDR10PlusMetadata: HDR10PlusFrameMetadata | null | undefined
+    mediaTimeMicroseconds: Microseconds
+};
+
+/** Counts what a kept frame's metadata holds, for the session's telemetry; the metadata stays with the frame. */
+function getWorkerFrameMetadataSummary(
+    encodedDolbyVisionMetadata: TransferableDolbyVisionEncodedFrameMetadata | null,
+    HDR10PlusMetadata: HDR10PlusFrameMetadata | null
+): DecodeWorkerFrameMetadataSummary | null {
+    if (!encodedDolbyVisionMetadata && !HDR10PlusMetadata) {
+        return null;
+    }
+    const metadataSummary: DecodeWorkerFrameMetadataSummary = {};
+    if (encodedDolbyVisionMetadata) {
+        metadataSummary.dolbyVision = {
+            enhancementLayerVCL: encodedDolbyVisionMetadata.hasEnhancementLayerVCL,
+            rpuCount: encodedDolbyVisionMetadata.parsedRPUData.length
+        };
+    }
+    if (HDR10PlusMetadata) {
+        metadataSummary.HDR10PlusStatus = HDR10PlusMetadata.status;
+    }
+    return metadataSummary;
+}
+
+function createWorkerFrameDescription(
+    run: DecodeRun,
+    durationMicroseconds: Microseconds,
+    mediaTimeMicroseconds: Microseconds,
+    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null,
+    HDR10PlusMetadata: HDR10PlusFrameMetadata | null | undefined
+): WorkerFrameDescription {
+    return {
+        durationMicroseconds,
+        encodedDolbyVisionMetadata: takeTransferableDolbyVisionEncodedFrameMetadata(encodedDolbyVisionMetadata),
+        generation: run.generation,
+        HDR10PlusMetadata: HDR10PlusMetadata ?? null,
+        mediaTimeMicroseconds
+    };
+}
+
+/** Refuses a frame past those a run's credits let it keep, as the page refuses a raw buffer past its window. */
+function requireWorkerFrameWindow(run: DecodeRun): void {
+    const maximumFrameCount = run.videoOutputMode === 'raw-planes' ? MAX_DECODED_RAW_FRAME_CREDITS : MAX_DECODED_FRAME_CREDITS;
+    if (workerFrameStore.getFrameCount(run.generation) >= maximumFrameCount) {
+        throw new UnsupportedCustomDecodeSourceError('The worker frame window exceeded its bound');
+    }
+}
+
+/** Posts the descriptor of a frame the run keeps, which the page selects and presents through the renderer by its ID. */
+function postWorkerFrameDescriptor(
+    run: DecodeRun,
+    frameId: number,
+    description: WorkerFrameDescription,
+    displayWidth: number,
+    displayHeight: number
+): void {
+    const metadataSummary = getWorkerFrameMetadataSummary(
+        description.encodedDolbyVisionMetadata,
+        description.HDR10PlusMetadata
+    );
+    const response: DecodeWorkerFrameDescriptorResponse = {
+        displayHeight,
+        displayWidth,
+        durationMicroseconds: description.durationMicroseconds,
+        frameId,
+        generation: run.generation,
+        mediaTimeMicroseconds: description.mediaTimeMicroseconds,
+        ...(metadataSummary ? { metadataSummary } : {}),
+        outputMode: 'worker-frame',
+        type: 'frame',
+        videoEpoch: run.videoEpoch
+    };
+    recordVideoAttemptFramePosted(run, description.mediaTimeMicroseconds);
+    postResponse(response);
+}
+
+/**
+ * Keeps a raw frame for the renderer, which uploads its planes, and posts its descriptor.
+ * The upload copied the planes, so the buffer returns to the run's pool at once.
+ */
+function keepWorkerRawFrame(run: DecodeRun, request: WorkerRawFrameKeepRequest): void {
+    try {
+        requireWorkerFrameWindow(run);
+        const description = createWorkerFrameDescription(
+            run,
+            request.durationMicroseconds,
+            request.mediaTimeMicroseconds,
+            request.encodedDolbyVisionMetadata,
+            request.HDR10PlusMetadata
+        );
+        const frameId = workerFrameStore.keepRawFrame(description, request.frame, request.enhancementFrame);
+        postWorkerFrameDescriptor(run, frameId, description, request.frame.displayWidth, request.frame.displayHeight);
+    } finally {
+        run.rawFrameBufferPool?.release(request.frame.data);
+    }
+}
+
+/** Keeps a VideoFrame for the renderer, which imports it when the page presents it, and posts its descriptor. */
+function keepWorkerVideoFrame(
+    run: DecodeRun,
+    frame: VideoFrame,
+    durationMicroseconds: Microseconds,
+    mediaTimeMicroseconds: Microseconds,
+    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null,
+    HDR10PlusMetadata: HDR10PlusFrameMetadata | null | undefined
+): void {
+    requireWorkerFrameWindow(run);
+    const description = createWorkerFrameDescription(
+        run,
+        durationMicroseconds,
+        mediaTimeMicroseconds,
+        encodedDolbyVisionMetadata,
+        HDR10PlusMetadata
+    );
+    const frameId = workerFrameStore.keepVideoFrame(description, frame);
+    postWorkerFrameDescriptor(
+        run,
+        frameId,
+        description,
+        frame.displayWidth || frame.codedWidth,
+        frame.displayHeight || frame.codedHeight
+    );
+}
+
 async function postRawVideoFrame(
     run: DecodeRun,
     frame: RawVideoFrameSource,
@@ -1725,29 +1913,35 @@ async function postRawVideoFrame(
         frame.close();
         throw new UnsupportedCustomDecodeSourceError('The raw video frame output format is unavailable');
     }
-    const bufferLease = run.rawFrameBufferPool?.acquire() ?? null;
-    if (!bufferLease) {
-        frame.close();
-        throw new UnsupportedCustomDecodeSourceError('The raw video frame buffer pool was exhausted');
-    }
-    const rawFrame = await copyVideoFrameToRawPlanes(frame, {
+    // A frame its decoder already wrote in this format and geometry is transferred as it is
+    const preparedRawFrame = frame instanceof PreparedRawVideoFrameSource ?
+        frame.takeRawFrame(rawVideoFrameFormat, decodedVideoGeometry) :
+        null;
+    const rawFrame = preparedRawFrame ?? await copyVideoFrameToRawPlanes(frame, {
+        bufferPool: run.rawFrameBufferPool,
         expectedGeometry: decodedVideoGeometry,
-        format: rawVideoFrameFormat,
-        requireReusableBuffer: bufferLease.kind === 'reuse',
-        reusableBuffer: bufferLease.kind === 'reuse' ?
-            bufferLease.buffer :
-            undefined
+        format: rawVideoFrameFormat
     });
     if (run.cancelled || currentRun !== run) {
         return;
     }
     if (run.videoAttemptCancelled) {
-        // A replaced attempt returns its copy buffer instead of posting a stale frame
-        run.rawFrameBufferPool?.recycle(rawFrame.data);
+        // A replaced attempt returns its buffer instead of posting a stale frame
+        run.rawFrameBufferPool?.release(rawFrame.data);
         return;
     }
     if (rawFrame.timestampMicroseconds !== mediaTimeMicroseconds) {
         throw new UnsupportedCustomDecodeSourceError('The decoded raw frame timestamp did not match its media sample');
+    }
+    if (run.presentationMode === 'worker') {
+        keepWorkerRawFrame(run, {
+            durationMicroseconds: rawFrame.durationMicroseconds ?? durationMicroseconds,
+            encodedDolbyVisionMetadata,
+            frame: rawFrame,
+            HDR10PlusMetadata,
+            mediaTimeMicroseconds
+        });
+        return;
     }
     if (run.outstandingRawFrameBufferCount >= MAX_DECODED_RAW_FRAME_CREDITS) {
         throw new UnsupportedCustomDecodeSourceError('The raw video frame buffer window exceeded its bound');
@@ -1798,23 +1992,15 @@ async function postRawVideoFramePair(run: DecodeRun, request: RawVideoFramePairP
         enhancementFrame?.close();
         throw new UnsupportedCustomDecodeSourceError('The compound raw video frame output format is unavailable');
     }
-    const bufferLease = run.rawFrameBufferPool?.acquire() ?? null;
-    if (!bufferLease) {
-        baseFrame.close();
-        enhancementFrame?.close();
-        throw new UnsupportedCustomDecodeSourceError('The compound raw video frame buffer pool was exhausted');
-    }
+    // Each layer is copied once more into the compound buffer, even when its decoder already wrote it in the raw layout
     const rawFramePair = await copyVideoFramePairToRawPlanes(
         baseFrame,
         enhancementFrame,
         {
             baseExpectedGeometry: baseGeometry,
+            bufferPool: run.rawFrameBufferPool,
             enhancementExpectedGeometry: enhancementGeometry,
-            format: rawVideoFrameFormat,
-            requireReusableBuffer: bufferLease.kind === 'reuse',
-            reusableBuffer: bufferLease.kind === 'reuse' ?
-                bufferLease.buffer :
-                undefined
+            format: rawVideoFrameFormat
         }
     );
     if (run.cancelled || currentRun !== run) {
@@ -1822,7 +2008,7 @@ async function postRawVideoFramePair(run: DecodeRun, request: RawVideoFramePairP
     }
     if (run.videoAttemptCancelled) {
         // Both layers share one compound buffer, which returns to the pool unposted
-        run.rawFrameBufferPool?.recycle(rawFramePair.baseFrame.data);
+        run.rawFrameBufferPool?.release(rawFramePair.baseFrame.data);
         return;
     }
     if (rawFramePair.baseFrame.timestampMicroseconds !== mediaTimeMicroseconds) {
@@ -1830,11 +2016,6 @@ async function postRawVideoFramePair(run: DecodeRun, request: RawVideoFramePairP
             'The decoded compound raw frame timestamp did not match its media sample'
         );
     }
-    if (run.outstandingRawFrameBufferCount >= MAX_DECODED_RAW_FRAME_CREDITS) {
-        throw new UnsupportedCustomDecodeSourceError('The compound raw video frame buffer window exceeded its bound');
-    }
-
-    run.outstandingRawFrameBufferCount += 1;
     if (rawFramePair.enhancementFrame && encodedDolbyVisionMetadata) {
         switch (encodedDolbyVisionMetadata.enhancementLayerDisposition) {
             case 'discarded-fel':
@@ -1849,6 +2030,22 @@ async function postRawVideoFramePair(run: DecodeRun, request: RawVideoFramePairP
                 break;
         }
     }
+    if (run.presentationMode === 'worker') {
+        keepWorkerRawFrame(run, {
+            durationMicroseconds: rawFramePair.baseFrame.durationMicroseconds ?? durationMicroseconds,
+            encodedDolbyVisionMetadata,
+            enhancementFrame: rawFramePair.enhancementFrame,
+            frame: rawFramePair.baseFrame,
+            HDR10PlusMetadata,
+            mediaTimeMicroseconds
+        });
+        return;
+    }
+    if (run.outstandingRawFrameBufferCount >= MAX_DECODED_RAW_FRAME_CREDITS) {
+        throw new UnsupportedCustomDecodeSourceError('The compound raw video frame buffer window exceeded its bound');
+    }
+
+    run.outstandingRawFrameBufferCount += 1;
     const response: MutableDecodeWorkerFrameResponse = {
         durationMicroseconds: rawFramePair.baseFrame.durationMicroseconds
             ?? durationMicroseconds,
@@ -1867,6 +2064,7 @@ async function postRawVideoFramePair(run: DecodeRun, request: RawVideoFramePairP
     postResponse(response, transferables);
 }
 
+/** Transfers a VideoFrame to the page, or in worker mode keeps it for the renderer; either way the caller no longer owns it. */
 function postTransferredVideoFrame(
     run: DecodeRun,
     frame: VideoFrame,
@@ -1875,6 +2073,17 @@ function postTransferredVideoFrame(
     encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null,
     HDR10PlusMetadata: HDR10PlusFrameMetadata | null | undefined
 ): void {
+    if (run.presentationMode === 'worker') {
+        keepWorkerVideoFrame(
+            run,
+            frame,
+            durationMicroseconds,
+            mediaTimeMicroseconds,
+            encodedDolbyVisionMetadata,
+            HDR10PlusMetadata
+        );
+        return;
+    }
     const response: MutableDecodeWorkerFrameResponse = {
         durationMicroseconds,
         frame,
@@ -2053,112 +2262,72 @@ async function postVideoFrame(
     }
 }
 
-function prepareDecodedAudioOutputChannelData(
-    inputChannelData: readonly Float32Array[],
-    preparedAudioTrack: PreparedAudioTrack,
-    inputChannelLayout: CustomAudioChannelLayout,
-    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm,
-    downmixSettings: AudioDownmixSettings,
-    streamingDownmixSettings: StreamingAudioDownmixSettings | null
-): readonly Float32Array[] {
-    if (!streamingDownmixSettings) {
-        return prepareCustomAudioOutputChannelData(
-            inputChannelData,
-            inputChannelLayout,
-            preparedAudioTrack.outputChannelCount,
-            audioDownmixAlgorithm,
-            downmixSettings
-        );
-    }
-
-    const settingsBlock = streamingDownmixSettings.takeBlock(inputChannelData[0]?.length ?? 0);
-    return prepareCustomAudioOutputChannelData(
-        inputChannelData,
-        inputChannelLayout,
-        preparedAudioTrack.outputChannelCount,
-        audioDownmixAlgorithm,
-        settingsBlock.settings,
-        settingsBlock.ramp
-    );
-}
-
-/** Reports the decoded format an audio attempt bound, which the session prefers over the declared one */
-function postDecodedAudioSourceFormat(
-    run: DecodeRun,
-    audioEpoch: number,
-    sourceFormat: DecodedAudioSourceFormat
-): void {
-    if (isAudioAttemptStopped(run) || run.audioEpoch !== audioEpoch) {
+/** Reports a chunk the audio decode worker posted to the worklet, while its attempt is the current one. */
+function postAudioProgress(run: DecodeRun, response: AudioDecodeWorkerProgressResponse): void {
+    if (isAudioAttemptStopped(run) || run.audioEpoch !== response.audioEpoch) {
         return;
     }
     postResponse({
-        audioEpoch,
-        channelCount: sourceFormat.channelCount,
+        audioEpoch: response.audioEpoch,
+        durationMicroseconds: response.durationMicroseconds,
+        frameCount: response.frameCount,
         generation: run.generation,
-        sampleRate: sourceFormat.sampleRate,
+        mediaTimeMicroseconds: response.mediaTimeMicroseconds,
+        sampleRate: response.sampleRate,
+        type: 'audio-progress'
+    });
+}
+
+/** Reports the decoded format an audio attempt bound, which the session prefers over the declared one */
+function postDecodedAudioSourceFormat(run: DecodeRun, response: AudioDecodeWorkerSourceFormatResponse): void {
+    if (isAudioAttemptStopped(run) || run.audioEpoch !== response.audioEpoch) {
+        return;
+    }
+    postResponse({
+        audioEpoch: response.audioEpoch,
+        channelCount: response.channelCount,
+        generation: run.generation,
+        sampleRate: response.sampleRate,
         type: 'audio-source-format'
     });
 }
 
 /**
- * Creates an attempt's output stage with the tolerance its codec and container timestamps need.
- * The stage binds to the first decoded format.
+ * Copies the part of a decoded sample at or after the start into planar channels the batch transfers, and closes the sample.
+ * A sample wholly before the start still carries its format, which the audio decode worker binds as it would any other.
  */
-function createDecodedAudioOutputStage(
-    run: DecodeRun,
-    preparedAudioTrack: PreparedAudioTrack,
-    codecFloorMicroseconds: number,
-    accessUnitAllowanceMicroseconds: number
-): DecodedAudioOutputStage {
-    const audioEpoch = run.audioEpoch;
-    return new DecodedAudioOutputStage({
-        maximumOutputFrameCount: MAXIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT,
-        minimumOutputFrameCount: MINIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT,
-        onSourceFormat: sourceFormat => {
-            postDecodedAudioSourceFormat(run, audioEpoch, sourceFormat);
-        },
-        onTimelineCorrection: logAudioTimelineCorrection,
-        outputChannelCount: preparedAudioTrack.outputChannelCount,
-        routeCodec: preparedAudioTrack.routeCodec,
-        timestampToleranceMicroseconds: getAudioTimestampToleranceMicroseconds(
-            preparedAudioTrack.timeResolution,
-            codecFloorMicroseconds,
-            accessUnitAllowanceMicroseconds
-        )
-    });
-}
-
-function normalizeAudioSample(
-    sample: AudioSample,
-    preparedAudioTrack: PreparedAudioTrack,
-    startTimeMicroseconds: Microseconds,
-    outputStage: DecodedAudioOutputStage,
-    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm,
-    downmixSettings: AudioDownmixSettings,
-    streamingDownmixSettings: StreamingAudioDownmixSettings | null
-): StreamingAudioResamplerOutput[] {
+function copyAudioSampleWindow(sample: AudioSample, startTimeMicroseconds: Microseconds): AudioDecodeWorkerPCMSample {
     try {
         const sampleTimeMicroseconds = requireMicroseconds(sample.microsecondTimestamp, 'Decoded audio timestamp');
         // A decoded sample of any length is taken; the resampler re-chunks it within the protocol frame limit
         if (!Number.isSafeInteger(sample.numberOfFrames) || sample.numberOfFrames <= 0) {
             throw new UnsupportedCustomDecodeSourceError('A decoded audio sample has an invalid frame count');
         }
-        const boundInput = outputStage.bind({
-            channelCount: sample.numberOfChannels,
-            layout: null,
-            sampleRate: sample.sampleRate
-        }, streamingDownmixSettings);
+        // The window needs a valid rate, and a channel count beyond any layout never reaches the copy
+        if (!isSupportedCustomAudioSampleRate(sample.sampleRate)) {
+            throw new UnsupportedCustomDecodeSourceError(`The decoded audio sample rate ${sample.sampleRate} Hz is invalid`);
+        }
+        if (!Number.isSafeInteger(sample.numberOfChannels)
+            || sample.numberOfChannels <= 0
+            || sample.numberOfChannels > MAX_DECODED_AUDIO_CHANNELS) {
+            throw new UnsupportedCustomDecodeSourceError(`The decoded ${sample.numberOfChannels}-channel audio layout is unsupported`);
+        }
         const sampleWindow = getAudioSampleWindow(
             sampleTimeMicroseconds,
             sample.numberOfFrames,
             sample.sampleRate,
             startTimeMicroseconds
         );
+        const channelData: Float32Array[] = [];
         if (!sampleWindow) {
-            return boundInput.outputs;
+            return {
+                channelCount: sample.numberOfChannels,
+                channelData,
+                frameCount: 0,
+                mediaTimeMicroseconds: sampleTimeMicroseconds,
+                sampleRate: sample.sampleRate
+            };
         }
-
-        const inputChannelData: Float32Array[] = [];
         for (let channelIndex = 0; channelIndex < sample.numberOfChannels; channelIndex += 1) {
             const channel = new Float32Array(sampleWindow.frameCount);
             sample.copyTo(channel, {
@@ -2167,123 +2336,49 @@ function normalizeAudioSample(
                 format: 'f32-planar',
                 planeIndex: channelIndex
             });
-            inputChannelData.push(channel);
+            channelData.push(channel);
         }
-
-        const channelData = prepareDecodedAudioOutputChannelData(
-            inputChannelData,
-            preparedAudioTrack,
-            boundInput.layout,
-            audioDownmixAlgorithm,
-            downmixSettings,
-            streamingDownmixSettings
-        );
-        return [
-            ...boundInput.outputs,
-            ...boundInput.pipeline.push({
-                channelData,
-                mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds
-            })
-        ];
+        return {
+            channelCount: sample.numberOfChannels,
+            channelData,
+            frameCount: sampleWindow.frameCount,
+            mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds,
+            sampleRate: sample.sampleRate
+        };
     } finally {
         sample.close();
     }
 }
 
-/** Normalizes one DTS, E-AC-3, or TrueHD output, whose decoder reports its speaker layout. */
-function normalizeBundledAudioOutput(
-    output: BundledDecodedAudioOutput,
-    preparedAudioTrack: PreparedAudioTrack,
-    startTimeMicroseconds: Microseconds,
-    outputStage: DecodedAudioOutputStage,
-    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm,
-    downmixSettings: AudioDownmixSettings,
-    streamingDownmixSettings: StreamingAudioDownmixSettings | null
-): StreamingAudioResamplerOutput[] {
-    const boundInput = outputStage.bind({
-        channelCount: output.channelData.length,
-        layout: output.channelLayout,
-        sampleRate: output.sampleRate
-    }, streamingDownmixSettings);
-    const sampleWindow = getAudioSampleWindow(
-        output.mediaTimeMicroseconds,
-        output.frameCount,
-        output.sampleRate,
-        startTimeMicroseconds
-    );
-    if (!sampleWindow) {
-        return boundInput.outputs;
+/** Returns where the bundled HEVC decoder writes a run's BL frames: into the run's raw layout, or into VideoFrames. */
+function getBundledHEVCFrameOutput(run: DecodeRun): HEVCFrameOutput {
+    switch (run.videoOutputMode) {
+        case 'raw-planes':
+            return { bufferPool: run.rawFrameBufferPool, kind: 'raw-planes' };
+        case 'video-frame':
+            return { kind: 'video-frame', writer: new HEVCVideoFrameWriter() };
     }
-
-    const inputChannelData: Float32Array[] = [];
-    const endFrame = sampleWindow.frameOffset + sampleWindow.frameCount;
-    for (const channel of output.channelData) {
-        inputChannelData.push(channel.slice(sampleWindow.frameOffset, endFrame));
-    }
-    const channelData = prepareDecodedAudioOutputChannelData(
-        inputChannelData,
-        preparedAudioTrack,
-        boundInput.layout,
-        audioDownmixAlgorithm,
-        downmixSettings,
-        streamingDownmixSettings
-    );
-    return [
-        ...boundInput.outputs,
-        ...boundInput.pipeline.push({
-            channelData,
-            mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds
-        })
-    ];
 }
 
-async function postNormalizedAudioOutput(
-    run: DecodeRun,
-    outputs: readonly StreamingAudioResamplerOutput[],
-    reservedCredit: boolean
-): Promise<boolean> {
-    let creditAvailable = reservedCredit;
-    for (const output of outputs) {
-        if (!creditAvailable && !await waitForAudioSampleCredit(run)) {
-            return false;
-        }
-        creditAvailable = false;
-        if (isAudioAttemptStopped(run)) {
-            return false;
-        }
-        const channelData = output.channelData;
-        const transferables = channelData.map(channel => channel.buffer);
-        postResponse({
-            ...(run.audioEpoch > 0 ? { audioEpoch: run.audioEpoch } : {}),
-            channelCount: channelData.length,
-            channelData,
-            durationMicroseconds: output.durationMicroseconds,
-            frameCount: output.frameCount,
-            generation: run.generation,
-            mediaTimeMicroseconds: output.mediaTimeMicroseconds,
-            sampleRate: output.sampleRate,
-            type: 'audio'
-        }, transferables);
-    }
-    // A replaced attempt's credit window is reset by its successor
-    if (creditAvailable && !isAudioAttemptStopped(run)) {
-        addAudioSampleCredits(run, 1);
-    }
-    return !isAudioAttemptStopped(run);
+/** Returns where the bundled HEVC decoder writes a run's EL frames, which travel only as raw planes inside a frame pair. */
+function getBundledHEVCEnhancementFrameOutput(run: DecodeRun): HEVCFrameOutput {
+    return { bufferPool: run.rawFrameBufferPool, kind: 'raw-planes' };
 }
 
+/**
+ * Creates an owned port for the bundled HEVC decoder.
+ * Each frame is written out while its planes are in WASM memory, so the decoder's planes are copied once on their way to the page.
+ */
 function createOwnedBundledHEVCVideoDecoderPort(
     config: VideoDecoderConfig,
-    callbacks: OwnedVideoDecoderCallbacks
+    callbacks: OwnedVideoDecoderCallbacks,
+    frameOutput: HEVCFrameOutput
 ): OwnedVideoDecoderPort {
     const decoder = createOwnedHEVCSoftwareVideoDecoder(config, {
         onError: callbacks.onError,
-        onSample: (sample: VideoSample): void => {
+        onFrame: (frame: HEVCSoftwareDecodedFrame): void => {
             try {
-                callbacks.onOutput({
-                    kind: 'planar-sample',
-                    sample
-                });
+                callbacks.onOutput(writeHEVCDecodedFrame(frame, frameOutput));
             } finally {
                 callbacks.onProgress();
             }
@@ -2312,7 +2407,11 @@ function createOwnedHEVCVideoDecoderPort(
 ): OwnedVideoDecoderPort {
     switch (run.videoDecoderBackend) {
         case 'bundled-hevc':
-            return createOwnedBundledHEVCVideoDecoderPort(preparedVideoTrack.decoderConfig, callbacks);
+            return createOwnedBundledHEVCVideoDecoderPort(
+                preparedVideoTrack.decoderConfig,
+                callbacks,
+                getBundledHEVCFrameOutput(run)
+            );
         case 'native':
             return new OwnedNativeHEVCVideoDecoder(
                 {
@@ -2743,7 +2842,8 @@ async function streamOwnedHEVCFrames(
                     state.enqueueEnhancementDecodedOutput(output);
                 },
                 onProgress: notifyDecoderProgress
-            }
+            },
+            getBundledHEVCEnhancementFrameOutput(run)
         ) :
         null;
     try {
@@ -3333,265 +3433,177 @@ async function streamVideoAttempts(
     }
 }
 
-/** Gives every stereo decoded PCM output live downmix gains, since any declared layout can decode to a multichannel bed that folds down. */
-function createStreamingAudioDownmixSettings(
-    run: DecodeRun,
-    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
-    preparedAudioTrack: PreparedAudioTrack | null
-): StreamingAudioDownmixSettings | null {
-    if (!preparedAudioTrack
-        || preparedAudioTrack.outputMode !== 'decoded-pcm'
-        || preparedAudioTrack.outputChannelCount !== 2) {
-        return null;
-    }
-
-    return new StreamingAudioDownmixSettings(
-        run.generation,
-        preparedAudioTrack.sourceSampleRate,
-        request.audioDownmixSettings ?? createDefaultAudioDownmixSettings()
-    );
+/** Returns the audio decode worker, spawning it on first use; a spawn that failed fails each attempt it would serve. */
+function getAudioDecodeWorkerClient(): AudioDecodeWorkerClient {
+    audioDecodeWorkerClient ??= new AudioDecodeWorkerClient((): Worker => createEngineWorker(AUDIO_DECODE_WORKER_ASSET));
+    return audioDecodeWorkerClient;
 }
 
-async function streamAudioSamples(
+/** Returns the decoder the audio decode worker runs for a track: a bundled one, or none for samples Mediabunny decodes here. */
+function getAudioDecodeWorkerDecoderBackend(preparedAudioTrack: PreparedAudioTrack): AudioDecodeWorkerDecoderBackend {
+    const decoderBackend = preparedAudioTrack.decoderBackend;
+    return decoderBackend === 'mediabunny' ? 'pcm' : decoderBackend;
+}
+
+/** Returns where a bundled decoder's packets start: a lead before the start for DTS and TrueHD to synchronize, or the start. */
+function getAudioPacketLookupTimeMicroseconds(
+    decoderBackend: Exclude<AudioDecodeWorkerDecoderBackend, 'pcm'>,
+    startTimeMicroseconds: Microseconds
+): Microseconds {
+    switch (decoderBackend) {
+        case 'dts':
+            return getAudioPrerollTimeMicroseconds(startTimeMicroseconds, DTS_SEEK_PREROLL_MICROSECONDS);
+        case 'mlp':
+        case 'truehd':
+            return getAudioPrerollTimeMicroseconds(startTimeMicroseconds, TRUEHD_MAJOR_SYNC_PREROLL_MICROSECONDS);
+        case 'eac3':
+            return startTimeMicroseconds;
+    }
+}
+
+/**
+ * Opens a decoded PCM attempt in the audio decode worker with the run's newest gains.
+ * The attempt takes the worklet channel waiting for it: a resync's, or an initial one the page attached before the attempt opened.
+ */
+function openAudioDecodeAttempt(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
     preparedAudioTrack: PreparedAudioTrack
-): Promise<void> {
-    const audioDownmixAlgorithm = request.audioDownmixAlgorithm
-        ?? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM;
-    const downmixSettings = request.audioDownmixSettings
-        ?? createDefaultAudioDownmixSettings();
+): AudioDecodeWorkerAttempt {
+    const audioOutput = run.pendingAudioOutput;
+    run.pendingAudioOutput = null;
+    const attempt = getAudioDecodeWorkerClient().openAttempt({
+        audioDownmixAlgorithm: request.audioDownmixAlgorithm ?? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
+        audioDownmixSettings: run.latestAudioDownmixSettings ?? createDefaultAudioDownmixSettings(),
+        audioEpoch: run.audioEpoch,
+        audioOutput,
+        decoderBackend: getAudioDecodeWorkerDecoderBackend(preparedAudioTrack),
+        generation: run.generation,
+        outputChannelCount: preparedAudioTrack.outputChannelCount,
+        routeCodec: preparedAudioTrack.routeCodec,
+        sourceSampleRate: preparedAudioTrack.sourceSampleRate,
+        startTimeMicroseconds: request.startTimeMicroseconds,
+        timeResolution: preparedAudioTrack.timeResolution
+    }, {
+        onChange: (): void => {
+            wakeWaiters(run.wakeAudioCreditWaiters);
+        },
+        onProgress: (response: AudioDecodeWorkerProgressResponse): void => {
+            postAudioProgress(run, response);
+        },
+        onSourceFormat: (response: AudioDecodeWorkerSourceFormatResponse): void => {
+            postDecodedAudioSourceFormat(run, response);
+        }
+    });
+    run.audioDecodeAttempt = attempt;
+    run.audioOutputAttached = audioOutput !== null;
+    return attempt;
+}
+
+/**
+ * Sends a bundled decoder's packets from the one at the lookup time, in batches, each on an input credit.
+ * Returns true at the end of the track, and false once the attempt stops.
+ */
+async function forwardAudioPackets(
+    run: DecodeRun,
+    attempt: AudioDecodeWorkerAttempt,
+    preparedAudioTrack: PreparedAudioTrack,
+    lookupTimeMicroseconds: Microseconds
+): Promise<boolean> {
+    const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
+    const startPacket = await getAudioStartPacket(packetSink, lookupTimeMicroseconds);
+    const iterator = packetSink.packets(startPacket ?? undefined) as unknown as
+        MediaSampleIterator<EncodedPacket>;
+    run.audioIterator = iterator;
+    const batchBuilder = new AudioDecodeWorkerPacketBatchBuilder();
+    while (await waitForAudioDecodeInputCredit(run, attempt)) {
+        while (!batchBuilder.isFull()) {
+            const iteratorResult = await iterator.next();
+            if (isAudioAttemptStopped(run)) {
+                return false;
+            }
+            if (iteratorResult.done) {
+                const lastBatch = batchBuilder.take();
+                if (lastBatch) {
+                    attempt.sendInput(lastBatch);
+                }
+                return true;
+            }
+            const packet = iteratorResult.value;
+            batchBuilder.add(packet.data, requireMicroseconds(packet.microsecondTimestamp, ENCODED_AUDIO_PACKET_TIMESTAMP));
+        }
+        const batch = batchBuilder.take();
+        if (batch) {
+            attempt.sendInput(batch);
+        }
+    }
+    return false;
+}
+
+/**
+ * Sends the samples Mediabunny decodes from the start, cut to it, in batches, each on an input credit.
+ * Returns true at the end of the track, and false once the attempt stops.
+ */
+async function forwardAudioSamples(
+    run: DecodeRun,
+    attempt: AudioDecodeWorkerAttempt,
+    preparedAudioTrack: PreparedAudioTrack,
+    startTimeMicroseconds: Microseconds
+): Promise<boolean> {
     const sampleSink = new AudioSampleSink(preparedAudioTrack.audioTrack);
-    const outputStage = createDecodedAudioOutputStage(
-        run,
-        preparedAudioTrack,
-        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
-        NO_ACCESS_UNIT_ALLOWANCE_MICROSECONDS
-    );
     const iterator = sampleSink.samples(
-        microsecondsToSeconds(request.startTimeMicroseconds)
+        microsecondsToSeconds(startTimeMicroseconds)
     ) as unknown as MediaSampleIterator<AudioSample>;
     run.audioIterator = iterator;
-
-    while (await waitForAudioSampleCredit(run)) {
-        const iteratorResult = await iterator.next();
-        if (isAudioAttemptStopped(run)) {
-            iteratorResult.value?.close();
-            return;
+    const batchBuilder = new AudioDecodeWorkerPCMBatchBuilder();
+    while (await waitForAudioDecodeInputCredit(run, attempt)) {
+        while (!batchBuilder.isFull()) {
+            const iteratorResult = await iterator.next();
+            if (isAudioAttemptStopped(run)) {
+                iteratorResult.value?.close();
+                return false;
+            }
+            if (iteratorResult.done) {
+                const lastBatch = batchBuilder.take();
+                if (lastBatch) {
+                    attempt.sendInput(lastBatch);
+                }
+                return true;
+            }
+            batchBuilder.add(copyAudioSampleWindow(iteratorResult.value, startTimeMicroseconds));
         }
-        if (iteratorResult.done) {
-            await postNormalizedAudioOutput(run, outputStage.finalize(), true);
-            return;
+        const batch = batchBuilder.take();
+        if (batch) {
+            attempt.sendInput(batch);
         }
+    }
+    return false;
+}
 
-        const output = normalizeAudioSample(
-            iteratorResult.value,
+/**
+ * Streams one decoded PCM attempt through the audio decode worker, which decodes, renders, and feeds the worklet.
+ * This worker only demuxes for it, so a bundled decoder or the output stage never holds up video.
+ */
+async function streamDecodedAudio(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    preparedAudioTrack: PreparedAudioTrack
+): Promise<void> {
+    const attempt = openAudioDecodeAttempt(run, request, preparedAudioTrack);
+    const decoderBackend = getAudioDecodeWorkerDecoderBackend(preparedAudioTrack);
+    const trackEnded = decoderBackend === 'pcm' ?
+        await forwardAudioSamples(run, attempt, preparedAudioTrack, request.startTimeMicroseconds) :
+        await forwardAudioPackets(
+            run,
+            attempt,
             preparedAudioTrack,
-            request.startTimeMicroseconds,
-            outputStage,
-            audioDownmixAlgorithm,
-            downmixSettings,
-            run.audioDownmixSettings
+            getAudioPacketLookupTimeMicroseconds(decoderBackend, request.startTimeMicroseconds)
         );
-        if (!await postNormalizedAudioOutput(run, output, true)) {
-            return;
-        }
+    if (!trackEnded) {
+        return;
     }
-}
-
-async function streamDTSAudioPackets(
-    run: DecodeRun,
-    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
-    preparedAudioTrack: PreparedAudioTrack
-): Promise<void> {
-    const audioDownmixAlgorithm = request.audioDownmixAlgorithm
-        ?? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM;
-    const downmixSettings = request.audioDownmixSettings
-        ?? createDefaultAudioDownmixSettings();
-    const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
-    const seekRecovery = new DTSSeekRecovery(request.startTimeMicroseconds);
-    const startPacket = await getAudioStartPacket(packetSink, seekRecovery.prerollTimeMicroseconds);
-    const iterator = packetSink.packets(startPacket ?? undefined) as unknown as
-        MediaSampleIterator<EncodedPacket>;
-    run.audioIterator = iterator;
-    const decoder = await DTSSoftwareAudioDecoder.create();
-    const outputStage = createDecodedAudioOutputStage(
-        run,
-        preparedAudioTrack,
-        DTS_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
-        NO_ACCESS_UNIT_ALLOWANCE_MICROSECONDS
-    );
-
-    try {
-        while (await waitForAudioSampleCredit(run)) {
-            const iteratorResult = await iterator.next();
-            if (isAudioAttemptStopped(run)) {
-                return;
-            }
-            if (iteratorResult.done) {
-                seekRecovery.requireSynchronizationRecovered();
-                await postNormalizedAudioOutput(run, outputStage.finalize(), true);
-                return;
-            }
-            const packet = iteratorResult.value;
-            const packetTimeMicroseconds = requireMicroseconds(
-                packet.microsecondTimestamp,
-                'Encoded DTS packet timestamp'
-            );
-            seekRecovery.requireSynchronizationRecoveredBefore(packetTimeMicroseconds);
-            let output: DTSDecodedAudioOutput;
-            try {
-                output = decoder.decode(packet.data, packetTimeMicroseconds);
-            } catch (error) {
-                if (!seekRecovery.shouldIgnore(error, packetTimeMicroseconds)) {
-                    throw error;
-                }
-                if (!await postNormalizedAudioOutput(run, [], true)) {
-                    return;
-                }
-                continue;
-            }
-            seekRecovery.markDecodeSucceeded();
-            const normalizedOutput = normalizeBundledAudioOutput(
-                output,
-                preparedAudioTrack,
-                request.startTimeMicroseconds,
-                outputStage,
-                audioDownmixAlgorithm,
-                downmixSettings,
-                run.audioDownmixSettings
-            );
-            if (!await postNormalizedAudioOutput(run, normalizedOutput, true)) {
-                return;
-            }
-        }
-    } finally {
-        decoder.close();
-    }
-}
-
-async function streamEAC3AudioPackets(
-    run: DecodeRun,
-    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
-    preparedAudioTrack: PreparedAudioTrack
-): Promise<void> {
-    const audioDownmixAlgorithm = request.audioDownmixAlgorithm
-        ?? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM;
-    const downmixSettings = request.audioDownmixSettings
-        ?? createDefaultAudioDownmixSettings();
-    const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
-    const startPacket = await getAudioStartPacket(packetSink, request.startTimeMicroseconds);
-    const iterator = packetSink.packets(startPacket ?? undefined) as unknown as
-        MediaSampleIterator<EncodedPacket>;
-    run.audioIterator = iterator;
-    const decoder = await EAC3SoftwareAudioDecoder.create();
-    const outputStage = createDecodedAudioOutputStage(
-        run,
-        preparedAudioTrack,
-        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
-        NO_ACCESS_UNIT_ALLOWANCE_MICROSECONDS
-    );
-
-    try {
-        while (await waitForAudioSampleCredit(run)) {
-            const iteratorResult = await iterator.next();
-            if (isAudioAttemptStopped(run)) {
-                return;
-            }
-            if (iteratorResult.done) {
-                await postNormalizedAudioOutput(run, outputStage.finalize(), true);
-                return;
-            }
-            const packet = iteratorResult.value;
-            const decodedOutputs = decoder.decode(
-                packet.data,
-                requireMicroseconds(packet.microsecondTimestamp, 'Encoded E-AC-3 packet timestamp')
-            );
-            const normalizedOutputs: StreamingAudioResamplerOutput[] = [];
-            for (const output of decodedOutputs) {
-                normalizedOutputs.push(...normalizeBundledAudioOutput(
-                    output,
-                    preparedAudioTrack,
-                    request.startTimeMicroseconds,
-                    outputStage,
-                    audioDownmixAlgorithm,
-                    downmixSettings,
-                    run.audioDownmixSettings
-                ));
-            }
-            if (!await postNormalizedAudioOutput(run, normalizedOutputs, true)) {
-                return;
-            }
-        }
-    } finally {
-        decoder.close();
-    }
-}
-
-async function streamTrueHDAudioPackets(
-    run: DecodeRun,
-    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
-    preparedAudioTrack: PreparedAudioTrack
-): Promise<void> {
-    const audioDownmixAlgorithm = request.audioDownmixAlgorithm
-        ?? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM;
-    const downmixSettings = request.audioDownmixSettings
-        ?? createDefaultAudioDownmixSettings();
-    const decoderCodec = preparedAudioTrack.decoderBackend;
-    if (decoderCodec !== 'truehd' && decoderCodec !== 'mlp') {
-        throw new UnsupportedCustomDecodeSourceError('TrueHD decoder selection is unavailable');
-    }
-    const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
-    const prerollTimeMicroseconds = Math.max(
-        0,
-        request.startTimeMicroseconds - TRUEHD_MAJOR_SYNC_PREROLL_MICROSECONDS
-    ) as Microseconds;
-    const startPacket = await getAudioStartPacket(packetSink, prerollTimeMicroseconds);
-    const iterator = packetSink.packets(startPacket ?? undefined) as unknown as
-        MediaSampleIterator<EncodedPacket>;
-    run.audioIterator = iterator;
-    const decoder = await TrueHDSoftwareAudioDecoder.create(decoderCodec);
-    const outputStage = createDecodedAudioOutputStage(
-        run,
-        preparedAudioTrack,
-        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
-        TRUEHD_ACCESS_UNIT_ALLOWANCE_MICROSECONDS
-    );
-
-    try {
-        while (await waitForAudioSampleCredit(run)) {
-            const iteratorResult = await iterator.next();
-            if (isAudioAttemptStopped(run)) {
-                return;
-            }
-            if (iteratorResult.done) {
-                await postNormalizedAudioOutput(run, outputStage.finalize(), true);
-                return;
-            }
-            const packet = iteratorResult.value;
-            const decodedOutputs = decoder.decode(
-                packet.data,
-                requireMicroseconds(packet.microsecondTimestamp, 'Encoded TrueHD packet timestamp')
-            );
-            const normalizedOutputs: StreamingAudioResamplerOutput[] = [];
-            for (const output of decodedOutputs) {
-                normalizedOutputs.push(...normalizeBundledAudioOutput(
-                    output,
-                    preparedAudioTrack,
-                    request.startTimeMicroseconds,
-                    outputStage,
-                    audioDownmixAlgorithm,
-                    downmixSettings,
-                    run.audioDownmixSettings
-                ));
-            }
-            if (!await postNormalizedAudioOutput(run, normalizedOutputs, true)) {
-                return;
-            }
-        }
-    } finally {
-        decoder.close();
-    }
+    attempt.finish();
+    await waitForAudioDecodeAttemptFinished(run, attempt);
 }
 
 function takeOwnedArrayBuffer(data: Uint8Array): ArrayBuffer {
@@ -3684,7 +3696,7 @@ async function streamNativeAudioPackets(
                 sequenceNumber: packet.sequenceNumber,
                 timestampMicroseconds: requireMicroseconds(
                     packet.microsecondTimestamp,
-                    'Encoded audio packet timestamp'
+                    ENCODED_AUDIO_PACKET_TIMESTAMP
                 ),
                 type: packet.type
             });
@@ -3709,18 +3721,7 @@ function streamPreparedAudio(
 ): Promise<void> {
     switch (preparedAudioTrack.outputMode) {
         case 'decoded-pcm':
-            switch (preparedAudioTrack.decoderBackend) {
-                case 'dts':
-                    return streamDTSAudioPackets(run, request, preparedAudioTrack);
-                case 'eac3':
-                    return streamEAC3AudioPackets(run, request, preparedAudioTrack);
-                case 'mlp':
-                case 'truehd':
-                    return streamTrueHDAudioPackets(run, request, preparedAudioTrack);
-                case 'mediabunny':
-                    return streamAudioSamples(run, request, preparedAudioTrack);
-            }
-            throw new UnsupportedCustomDecodeSourceError('The selected audio decoder backend is unsupported');
+            return streamDecodedAudio(run, request, preparedAudioTrack);
         case 'native-media':
             return streamNativeAudioPackets(run, request, preparedAudioTrack);
     }
@@ -3745,6 +3746,19 @@ function createAudioAttemptTrack(
 }
 
 /**
+ * Takes a pending resync for the next audio attempt: its epoch, its channel, its gains, and its layout.
+ * The replaced attempt closed as the resync arrived, so the next one opens with the resync's channel.
+ */
+function takeAudioAttemptControl(run: DecodeRun, control: AudioAttemptControl): void {
+    run.pendingAudioControl = null;
+    run.audioEpoch = control.audioEpoch;
+    closeAudioDecodeAttempt(run);
+    run.pendingAudioOutput = control.audioOutput;
+    run.audioStreamFinished = false;
+    run.latestAudioDownmixSettings = control.audioDownmixSettings ?? run.latestAudioDownmixSettings;
+}
+
+/**
  * Streams audio as restartable attempts so an output layout change never touches video.
  * A later attempt starts at its resync target with a rebuilt output stage, and a finished track still accepts a resync until video finishes too.
  */
@@ -3758,21 +3772,15 @@ async function streamAudioAttempts(
     while (!run.cancelled) {
         const control = run.pendingAudioControl;
         if (control) {
-            run.pendingAudioControl = null;
-            run.audioEpoch = control.audioEpoch;
-            run.audioSampleCredits = control.audioSampleCredits;
-            run.audioStreamFinished = false;
+            takeAudioAttemptControl(run, control);
             attemptTrack = createAudioAttemptTrack(preparedAudioTrack, control.decodedAudioOutputChannelCount);
             attemptRequest = {
                 ...request,
                 audioDownmixAlgorithm: control.audioDownmixAlgorithm
                     ?? request.audioDownmixAlgorithm,
-                audioDownmixSettings: control.audioDownmixSettings
-                    ?? request.audioDownmixSettings,
                 decodedAudioOutputChannelCount: control.decodedAudioOutputChannelCount,
                 startTimeMicroseconds: control.targetTimeMicroseconds
             };
-            run.audioDownmixSettings = createStreamingAudioDownmixSettings(run, attemptRequest, attemptTrack);
         }
 
         run.audioAttemptCancelled = false;
@@ -3809,14 +3817,36 @@ async function streamAudioAttempts(
     }
 }
 
+/**
+ * Frees the worker frames of a run that stopped or failed.
+ * The page still presents the tail of a run that ended on its own, and releases each frame after `stopped`.
+ */
+function releaseUnendedRunFrames(run: DecodeRun, runEnded: boolean): void {
+    if (!runEnded) {
+        workerFrameStore.releaseGeneration(run.generation);
+    }
+}
+
+/**
+ * Runs one generation from its start to its `stopped`, which always comes last.
+ * The worker outlives the run: everything the run opened is released before `stopped`, and the next run starts only after it.
+ * Only the worker frames of a run that ended on its own outlive it, until the page releases them or the next run starts.
+ */
 async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest, { type: 'start' }>): Promise<void> {
     let reportDecodeStreamFailure = false;
-    if (request.timingTrace === true) {
+    let runEnded = false;
+    // Frames an earlier run that ended on its own left to the page are released by now, as a new generation retires its own
+    workerFrameStore.releaseOtherGenerations(run.generation);
+    if (request.timingTrace === true && !run.cancelled) {
         startWorkerTimingTrace((events): void => {
             postResponse({ events, generation: run.generation, type: 'timing-trace' });
         });
     }
     try {
+        // A run stopped while its predecessor unwound never opens its input
+        if (run.cancelled) {
+            return;
+        }
         const input = new Input({
             formats: withMatroskaBlockAdditions(CUSTOM_DECODE_INPUT_FORMATS),
             source: new UrlSource(request.url, {
@@ -3855,7 +3885,6 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
             return;
         }
 
-        run.audioDownmixSettings = createStreamingAudioDownmixSettings(run, request, preparedAudioTrack);
         postReadyResponse(run, preparedVideoTrack, preparedAudioTrack, containerDurationMicroseconds);
         run.audioStreamFinished = preparedAudioTrack === null;
         const streamPromises: Array<Promise<void>> = [];
@@ -3875,6 +3904,7 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
             stopRun(run);
         });
         if (!run.cancelled) {
+            runEnded = true;
             postResponse({ generation: run.generation, type: 'ended' });
         }
     } catch (error) {
@@ -3892,14 +3922,73 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
         if (run.iteratorRetirementPromise) {
             await run.iteratorRetirementPromise;
         }
+        // The audio decode worker released each attempt's decoder, output stage, and worklet channel
+        await Promise.all(run.audioDecodeAttemptClosures);
         await waitForHEVCSoftwareVideoDecoderShutdown();
+        releaseUnendedRunFrames(run, runEnded);
         if (currentRun === run) {
             currentRun = null;
         }
-        // The page drops a worker's messages once it stops, so its last timing events go first
+        // The page drops a retired run's messages once it stops, so its last timing events go first
         stopWorkerTimingTrace();
-        postResponse({ generation: run.generation, type: 'stopped' });
+        postResponse({
+            generation: run.generation,
+            ...(isWorkerReplacementRequired() ? { replaceWorker: true } : {}),
+            type: 'stopped'
+        });
     }
+}
+
+/** Whether a decoder whose call failed may still be open, or the audio decode worker was lost; either way a fresh worker serves the next run. */
+function isWorkerReplacementRequired(): boolean {
+    return unclosedDecoderSuspected || (audioDecodeWorkerClient !== null && audioDecodeWorkerClient.failure !== null);
+}
+
+function createDecodeRun(request: Extract<DecodeWorkerRequest, { type: 'start' }>): DecodeRun {
+    return {
+        audioAttemptCancelled: false,
+        audioDecodeAttempt: null,
+        audioDecodeAttemptClosures: [],
+        audioEpoch: 0,
+        audioIterator: null,
+        audioOutputAttached: false,
+        audioSampleCredits: request.audioSampleCredits,
+        audioStreamFinished: false,
+        cancelled: false,
+        decodedVideoGeometry: null,
+        enhancementPacketPairer: null,
+        frameCredits: request.frameCredits,
+        generation: request.generation,
+        input: null,
+        iteratorRetirementPromise: null,
+        latestAudioDownmixSettings: request.audioDownmixSettings,
+        maximumCodedHeight: request.maximumCodedHeight,
+        maximumCodedWidth: request.maximumCodedWidth,
+        metadataAbortController: null,
+        nativeHDRTransfer: request.nativeHDRTransfer,
+        neutralizeHDRColorMetadata: request.neutralizeHDRColorMetadata,
+        outstandingRawFrameBufferCount: 0,
+        pendingAudioControl: null,
+        pendingAudioOutput: null,
+        pendingVideoControl: null,
+        presentationMode: request.presentationMode ?? 'main',
+        rawFrameBufferPool: createRawFrameBufferPool(request.videoOutputMode),
+        rawVideoFrameFormat: request.rawVideoFrameFormat,
+        videoAttemptCancelled: false,
+        videoAttemptConsumedCreditCount: 0,
+        videoAttemptPostedFrameCount: 0,
+        videoDecoderBackend: request.videoDecoderBackend,
+        videoEpoch: 0,
+        videoOutputMode: request.videoOutputMode,
+        videoIterator: null,
+        videoStreamFinished: false,
+        videoTrackEnded: false,
+        wakeAudioControlWaiters: [],
+        wakeAudioCreditWaiters: [],
+        wakeFrameCreditWaiters: [],
+        wakeVideoControlWaiters: [],
+        wakeVideoDecodeWaiters: []
+    };
 }
 
 function registerRequiredVideoDecoder(request: Extract<DecodeWorkerRequest, { type: 'start' }>): void {
@@ -3929,6 +4018,7 @@ function handleVideoControlRequest(
 
 function handleAudioControlRequest(request: Extract<DecodeWorkerRequest, { type: 'resync-audio' }>): void {
     if (currentRun?.generation !== request.generation) {
+        request.audioOutput.port.close();
         return;
     }
 
@@ -3936,10 +4026,106 @@ function handleAudioControlRequest(request: Extract<DecodeWorkerRequest, { type:
         audioDownmixAlgorithm: request.audioDownmixAlgorithm,
         audioDownmixSettings: request.audioDownmixSettings,
         audioEpoch: request.audioEpoch,
-        audioSampleCredits: request.audioSampleCredits,
+        audioOutput: request.audioOutput,
         decodedAudioOutputChannelCount: request.decodedAudioOutputChannelCount,
         targetTimeMicroseconds: request.targetTimeMicroseconds
     });
+}
+
+/**
+ * Hands the initial decoded attempt its channel to the worklet, or keeps the channel until the attempt opens.
+ * A channel for a run or an attempt that will never open it is closed.
+ */
+function attachAudioOutput(request: Extract<DecodeWorkerRequest, { type: 'attach-audio-output' }>): void {
+    const run = currentRun;
+    if (run?.generation !== request.generation
+        || run.cancelled
+        || run.audioEpoch !== request.audioEpoch
+        || run.pendingAudioControl
+        || run.pendingAudioOutput
+        || run.audioOutputAttached) {
+        request.audioOutput.port.close();
+        return;
+    }
+    const attempt = run.audioDecodeAttempt;
+    if (!attempt) {
+        run.pendingAudioOutput = request.audioOutput;
+        return;
+    }
+    attempt.attachOutput(request.audioOutput);
+    run.audioOutputAttached = true;
+}
+
+/** Applies live downmix gains to the run's open stereo attempt, and keeps them for the attempts it opens later. */
+function updateAudioDownmixSettings(request: Extract<DecodeWorkerRequest, { type: 'update-audio-downmix-settings' }>): void {
+    const run = currentRun;
+    if (run?.generation !== request.generation || run.cancelled) {
+        return;
+    }
+    run.latestAudioDownmixSettings = request.audioDownmixSettings;
+    // A pending resync carries older gains than this update
+    if (run.pendingAudioControl) {
+        run.pendingAudioControl.audioDownmixSettings = request.audioDownmixSettings;
+    }
+    audioDecodeWorkerClient?.updateDownmixSettings(request.generation, request.audioDownmixSettings);
+}
+
+/**
+ * Starts the renderer of the page's attachment, which holds for the worker's life, and answers once its device and canvas context exist or cannot.
+ * A worker takes one attachment, so a further one is declined.
+ */
+function attachRenderer(request: Extract<DecodeWorkerRequest, { type: 'attach-renderer' }>): void {
+    if (workerPresentationRenderer) {
+        declineWorkerPresentationAttachment(request.port);
+        postResponse({
+            available: false,
+            generation: request.generation,
+            reason: WORKER_RENDERER_ATTACHED_REASON,
+            type: 'renderer-status'
+        });
+        return;
+    }
+    const renderer = new WorkerPresentationRenderer({
+        canvas: request.canvas,
+        frameStore: workerFrameStore,
+        port: request.port
+    });
+    workerPresentationRenderer = renderer;
+    void renderer.start().then((unavailableReason: PresentationFallbackReason | null): void => {
+        postResponse({
+            available: unavailableReason === null,
+            generation: request.generation,
+            reason: unavailableReason,
+            type: 'renderer-status'
+        });
+    });
+}
+
+/** Frees the worker frames the page released, presented or discarded; only frames the store still kept return credits, as `pull` does. */
+function releaseWorkerFrames(request: Extract<DecodeWorkerRequest, { type: 'release-frames' }>): void {
+    const releasedFrameCount = workerFrameStore.release(request.generation, request.frameIds);
+    if (currentRun?.generation !== request.generation || currentRun.cancelled) {
+        return;
+    }
+    addFrameCredits(currentRun, releasedFrameCount);
+}
+
+/** Replaces the current run with a new generation's, which starts once the previous run posted `stopped`. */
+function startDecodeRun(request: Extract<DecodeWorkerRequest, { type: 'start' }>): void {
+    if (currentRun) {
+        stopRun(currentRun);
+    }
+    registerRequiredVideoDecoder(request);
+    if (request.audioTrackIndex !== null && (request.audioOutputMode ?? 'decoded-pcm') === 'decoded-pcm') {
+        // Its script loads while the run opens its input
+        getAudioDecodeWorkerClient();
+    }
+
+    const run = createDecodeRun(request);
+    currentRun = run;
+    // A stopping run waits for every bundled HEVC decoder in the worker, so the next run starts only once it posted `stopped`
+    const startRun = (): Promise<void> => decodeMedia(run, request);
+    previousRunCompletion = previousRunCompletion.then(startRun, startRun);
 }
 
 function handleRequest(requestValue: unknown): void {
@@ -3948,55 +4134,18 @@ function handleRequest(requestValue: unknown): void {
     }
 
     switch (requestValue.type) {
-        case 'start': {
-            if (currentRun) {
-                stopRun(currentRun);
-            }
-            registerRequiredVideoDecoder(requestValue);
-
-            const run: DecodeRun = {
-                audioAttemptCancelled: false,
-                audioDownmixSettings: null,
-                audioEpoch: 0,
-                audioIterator: null,
-                audioSampleCredits: requestValue.audioSampleCredits,
-                audioStreamFinished: false,
-                cancelled: false,
-                decodedVideoGeometry: null,
-                enhancementPacketPairer: null,
-                frameCredits: requestValue.frameCredits,
-                generation: requestValue.generation,
-                input: null,
-                iteratorRetirementPromise: null,
-                maximumCodedHeight: requestValue.maximumCodedHeight,
-                maximumCodedWidth: requestValue.maximumCodedWidth,
-                metadataAbortController: null,
-                nativeHDRTransfer: requestValue.nativeHDRTransfer,
-                neutralizeHDRColorMetadata: requestValue.neutralizeHDRColorMetadata,
-                outstandingRawFrameBufferCount: 0,
-                pendingAudioControl: null,
-                pendingVideoControl: null,
-                rawFrameBufferPool: createRawFrameBufferPool(requestValue.videoOutputMode),
-                rawVideoFrameFormat: requestValue.rawVideoFrameFormat,
-                videoAttemptCancelled: false,
-                videoAttemptConsumedCreditCount: 0,
-                videoAttemptPostedFrameCount: 0,
-                videoDecoderBackend: requestValue.videoDecoderBackend,
-                videoEpoch: 0,
-                videoOutputMode: requestValue.videoOutputMode,
-                videoIterator: null,
-                videoStreamFinished: false,
-                videoTrackEnded: false,
-                wakeAudioControlWaiters: [],
-                wakeAudioCreditWaiters: [],
-                wakeFrameCreditWaiters: [],
-                wakeVideoControlWaiters: [],
-                wakeVideoDecodeWaiters: []
-            };
-            currentRun = run;
-            void decodeMedia(run, requestValue);
+        case 'attach-audio-output':
+            attachAudioOutput(requestValue);
             break;
-        }
+        case 'attach-renderer':
+            attachRenderer(requestValue);
+            break;
+        case 'release-frames':
+            releaseWorkerFrames(requestValue);
+            break;
+        case 'start':
+            startDecodeRun(requestValue);
+            break;
         case 'pull':
             if (
                 currentRun?.generation === requestValue.generation
@@ -4006,7 +4155,7 @@ function handleRequest(requestValue: unknown): void {
             }
             break;
         case 'pull-audio':
-            // Credits returned for a replaced attempt's samples were already reset
+            // Native media segment credits; decoded PCM credits return from the audio decode worker
             if (
                 currentRun?.generation === requestValue.generation
                 && (requestValue.audioEpoch ?? 0) === currentRun.audioEpoch
@@ -4020,9 +4169,10 @@ function handleRequest(requestValue: unknown): void {
                 && currentRun.videoOutputMode === 'raw-planes'
                 && !currentRun.cancelled
                 && currentRun.outstandingRawFrameBufferCount > 0
-                && currentRun.rawFrameBufferPool?.recycle(requestValue.buffer)
             ) {
                 currentRun.outstandingRawFrameBufferCount -= 1;
+                // The returned buffer becomes a spare for the next drained frame or copy; the pool drops it past its bound
+                currentRun.rawFrameBufferPool?.release(requestValue.buffer);
                 addFrameCredits(currentRun, 1);
             }
             break;
@@ -4039,7 +4189,7 @@ function handleRequest(requestValue: unknown): void {
             }
             break;
         case 'update-audio-downmix-settings':
-            currentRun?.audioDownmixSettings?.update(requestValue.generation, requestValue.audioDownmixSettings);
+            updateAudioDownmixSettings(requestValue);
             break;
     }
 }
@@ -4047,6 +4197,8 @@ function handleRequest(requestValue: unknown): void {
 workerScope.addEventListener('message', event => {
     handleRequest(event.data);
 });
-suppressHandledDecodeFailureRejections(self);
+suppressHandledDecodeFailureRejections(self, (): void => {
+    unclosedDecoderSuspected = true;
+});
 
 /* eslint-enable no-restricted-globals */

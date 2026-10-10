@@ -13,6 +13,7 @@ import type HDR10PlusFrameMetadataQueue from '../hdr/HDR10PlusFrameMetadataQueue
 import type { HDR10PlusFrameMetadata } from '../hdr/HDR10PlusMetadata';
 import {
     RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT,
+    type PreparedRawVideoFrameSource,
     type RawVideoFrameGeometry
 } from '../RawVideoFrameCopy';
 
@@ -32,6 +33,11 @@ export type OwnedDecodedVideoSource =
     | {
         kind: 'planar-sample'
         sample: VideoSample
+    }
+    // A software decoder's frame, written into the aligned raw layout while the decoder held its planes
+    | {
+        frame: PreparedRawVideoFrameSource
+        kind: 'prepared-raw-frame'
     }
     // A Mediabunny sample that wraps a WebCodecs VideoFrame
     | {
@@ -127,8 +133,20 @@ export function getOwnedDecodedVideoTiming(source: OwnedDecodedVideoSource): {
     durationMicroseconds: Microseconds
     mediaTimeMicroseconds: Microseconds
 } {
-    const durationMicrosecondsValue = source.kind === 'native-frame' ? source.frame.duration ?? 0 : source.sample.microsecondDuration;
-    const mediaTimeMicrosecondsValue = source.kind === 'native-frame' ? source.frame.timestamp : source.sample.microsecondTimestamp;
+    let durationMicrosecondsValue: number;
+    let mediaTimeMicrosecondsValue: number;
+    switch (source.kind) {
+        case 'native-frame':
+        case 'prepared-raw-frame':
+            durationMicrosecondsValue = source.frame.duration ?? 0;
+            mediaTimeMicrosecondsValue = source.frame.timestamp;
+            break;
+        case 'planar-sample':
+        case 'video-sample':
+            durationMicrosecondsValue = source.sample.microsecondDuration;
+            mediaTimeMicrosecondsValue = source.sample.microsecondTimestamp;
+            break;
+    }
     const durationMicroseconds = requireMicroseconds(durationMicrosecondsValue, 'Owned decoded video frame duration');
     if (durationMicroseconds < 0) {
         throw new RangeError('Owned decoded video frame duration must not be negative');
@@ -143,6 +161,7 @@ export function closeOwnedDecodedVideoSource(source: OwnedDecodedVideoSource | n
     try {
         switch (source?.kind) {
             case 'native-frame':
+            case 'prepared-raw-frame':
                 source.frame.close();
                 break;
             case 'planar-sample':
@@ -183,18 +202,42 @@ export function createOwnedVideoFrameMetadataSource(
     };
 }
 
+/** Returns the format and geometry a decoded source's raw copy reads. */
+function getDecodedSourceFormatAndGeometry(source: OwnedDecodedVideoSource): {
+    format: string | null
+    geometry: RawVideoFrameGeometry
+} {
+    switch (source.kind) {
+        case 'native-frame':
+            return { format: source.frame.format, geometry: source.geometry };
+        case 'prepared-raw-frame':
+            return {
+                format: source.frame.format,
+                geometry: {
+                    codedHeight: source.frame.codedHeight,
+                    codedWidth: source.frame.codedWidth,
+                    displayHeight: source.frame.displayHeight,
+                    displayWidth: source.frame.displayWidth
+                }
+            };
+        case 'planar-sample':
+        case 'video-sample':
+            // A sample reports the geometry its raw copy source takes, with square-pixel display dimensions
+            return {
+                format: source.sample.format,
+                geometry: {
+                    codedHeight: source.sample.codedHeight,
+                    codedWidth: source.sample.codedWidth,
+                    displayHeight: source.sample.squarePixelHeight,
+                    displayWidth: source.sample.squarePixelWidth
+                }
+            };
+    }
+}
+
 /** Returns whether a decoded EL has the format and geometry the compound raw copy requires of it. */
 function isComposableEnhancementSource(source: OwnedDecodedVideoSource, expectedGeometry: RawVideoFrameGeometry): boolean {
-    const format = source.kind === 'native-frame' ? source.frame.format : source.sample.format;
-    // A sample reports the geometry its raw copy source takes, with square-pixel display dimensions
-    const geometry: RawVideoFrameGeometry = source.kind === 'native-frame' ?
-        source.geometry :
-        {
-            codedHeight: source.sample.codedHeight,
-            codedWidth: source.sample.codedWidth,
-            displayHeight: source.sample.squarePixelHeight,
-            displayWidth: source.sample.squarePixelWidth
-        };
+    const { format, geometry } = getDecodedSourceFormatAndGeometry(source);
     // A null format is opaque, so the copy's requested format decides, as it does for the BL
     return (format === null || format === RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT)
         && geometry.codedWidth === expectedGeometry.codedWidth

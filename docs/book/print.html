@@ -39,7 +39,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-0bba3c6a.js";
+            window.path_to_searchindex_js = "searchindex-36a56e7f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c0e4fc60.js"></script>
@@ -465,8 +465,10 @@ The <code>&lt;video&gt;</code> element or hls.js decodes, and the media element 
 Frames go rVFC, <code>importExternalTexture</code>, identity WGSL, canvas.
 For HDR or unknown input the presenter is off and the <code>&lt;video&gt;</code> shows.</li>
 <li>(b) The custom pipeline, for eligible direct-play VOD.
-The worker posts <code>'frame'</code> messages (a <code>VideoFrame</code>, or raw planes in a pooled buffer, with Dolby Vision and HDR10+ metadata) and <code>'audio'</code> messages (f32 planar PCM, or fMP4 segments).
+The worker posts <code>'frame'</code> messages (a <code>VideoFrame</code>, or raw planes in a pooled buffer, with Dolby Vision and HDR10+ metadata), and fMP4 segments for native-media audio.
+Decoded PCM goes from the worker’s audio decode worker straight to the AudioWorklet, over a channel the page hands over, and the page learns only each chunk’s place and length (<code>audio-progress</code>).
 The host’s rAF loop takes the controller’s current frame and presents it.
+With presentation in the worker, the worker keeps each frame and posts only its descriptor, and the presenter asks the worker’s renderer to draw the selected frame into a canvas the worker owns.
 Decoded audio plays through an AudioWorklet in a pooled 48 kHz context, and AC-3 and E-AC-3 can play through a hidden <code>&lt;audio&gt;</code> element and MSE.</li>
 </ul>
 <p>The host player, its HTML backend with any hls.js runtime, and the rAF loop are host code.
@@ -502,7 +504,10 @@ The presenter enters push mode, and the host installs the shaders and authorizes
 <li><code>controller.play</code> creates a generation, resets the clock, emits <code>waiting</code>, and starts the startup bound.
 It samples the decode counters every second and fails after 20 s without progress, or at 60 s regardless.
 The fallback message names the counters it reached, so a timeout shows where startup stalled.
-<code>CustomDecodeSession.start</code> creates the prebuilt worker <code>libraries/webgpu-player/CustomDecode.worker.js</code>, keyed per build with <code>?v=</code>.
+<code>CustomDecodeSession.start</code> posts the generation’s <code>start</code> to the session’s decode worker, the prebuilt <code>libraries/webgpu-player/CustomDecode.worker.js</code> keyed per build with <code>?v=</code>, which the session’s first start creates.
+A new worker first gets the host’s renderer attachment, a canvas the presenter transferred and a channel to the presenter, and its first start waits for the renderer’s status, at most 2 s.
+An available renderer makes every start of that worker ask for presentation in the worker; otherwise the worker’s frames present on the page.
+The worker’s first start with decoded PCM audio spawns its audio decode worker, the prebuilt <code>CustomAudioDecode.worker.js</code> beside it, which it keeps for its life.
 Video gets 4 frame credits, or 2 for raw planes.</li>
 <li>The worker prepares its tracks (<code>canDecode</code>), scans the static HDR metadata of the first 16 access units or 8 MiB, and posts <code>ready</code>.
 It scans HEVC SEI on the native PQ route, and AV1 MDCV and CLL metadata OBUs when the first sequence header signals PQ and no RPU route is selected.
@@ -519,9 +524,10 @@ The host then starts its rAF loop.</li>
 </thead>
 <tbody>
 <tr><td>main</td><td>rAF loop, controller, session, presenter, audio bridges, sink manager, MSE <code>&lt;audio&gt;</code></td></tr>
-<tr><td>worker, one per generation</td><td>demux, decode, raw copy, Dolby Vision and HDR10+ metadata, PCM conversion, fMP4 remux</td></tr>
+<tr><td>worker, one per session</td><td>demux, video decode, raw copy, Dolby Vision and HDR10+ metadata, Mediabunny’s audio decoding (WebCodecs and <code>@mediabunny/ac3</code>), fMP4 remux; with presentation in the worker, the renderer’s uploads and draws</td></tr>
+<tr><td>audio decode worker, one per worker</td><td>the bundled E-AC-3, DTS, and TrueHD decoders, the downmix in JavaScript, the resampler and limiter in WebAssembly, and the producer that feeds the worklet</td></tr>
 <tr><td>AudioWorklet</td><td>1024-frame chunks in a 2 s ring, gain, play gate, periodic telemetry</td></tr>
-<tr><td>GPU</td><td>the presenter’s queue, which the authorization probes share</td></tr>
+<tr><td>GPU</td><td>the presenter’s queue, which the authorization probes share; with presentation in the worker, the renderer’s own device</td></tr>
 </tbody>
 </table>
 </div>
@@ -530,15 +536,53 @@ The host then starts its rAF loop.</li>
 <li><code>takeFrame</code> closes and re-credits older frames.</li>
 <li>A presented <code>VideoFrame</code> closes after <code>submit()</code>, but its credit returns only after <code>queue.onSubmittedWorkDone()</code>.
 This keeps the decoder’s surfaces from starving.</li>
-<li>In raw mode the pooled buffer is the credit, and it returns through <code>recycle-frame</code>.</li>
-<li>The owned HEVC, AV1, and VP9 paths read a packet only while they hold a credit.</li>
+<li>In raw mode the posted buffer is the credit, and it returns through <code>recycle-frame</code>.</li>
+<li>A worker frame keeps its credit until the page releases it with <code>release-frames</code>, once its draw completed or the page dropped or discarded it.
+Its descriptor holds the credit on the page, so the queued and the selected descriptors together stay within the start’s credits.</li>
+<li>The owned HEVC, AV1, and VP9 paths read a packet only while they hold a credit, then wait up to 10 ms for the decoder to return a frame before reading the next.
+The credit is spent only when a frame is posted, so without that wait a hardware decoder, which answers a few milliseconds after taking a packet, received a whole group of pictures at once (see <a href="#playback-robustness">Decisions</a>).
+Steady playback therefore decodes one packet per presented frame, while seek preroll still runs at decoder speed, because each returned frame ends the wait.</li>
+</ul>
+<p>Presentation in the worker:</p>
+<ul>
+<li>The session queues each <code>worker-frame</code> descriptor (frame ID, media time, duration, video epoch, display size) as it queues any frame, and the controller selects it with the same clock, lag, catch-up, starvation, and end policies.</li>
+<li><code>presentDecodedFrame</code> posts <code>present</code> with the frame’s ID on the renderer’s channel, after a <code>layout</code> whenever the canvas geometry changed.
+Its completion handler runs once the renderer answers <code>presented</code>, after the frame’s GPU work completed or failed, and the host then acknowledges or discards the frame.</li>
+<li>The presenter lays out the worker’s canvas as its own: CSS size and position, backing size, and texture transform.
+The renderer sizes the backing store, which a transferred canvas keeps in the worker.</li>
+<li><code>configureColorPipeline</code> prepares and authorizes the pipeline on the presenter’s device as before, sends its shader and route as <code>configure</code>, and resumes presentation once the renderer accepts it.
+Live HDR controls follow as <code>settings</code>.</li>
+<li>The renderer reports each frame’s Dolby Vision layer mode and HDR10+ result, which the presenter counts as it counts its own frames.</li>
+<li>One canvas shows at a time: the one that presented the latest frame.</li>
+<li>The session’s telemetry reports <code>presentationMode</code>, and <code>rendererUnavailableReason</code> when a worker that was offered a renderer presents on the page.</li>
+<li>In the worker, <code>WorkerFrameStore</code> keeps each frame under an ID unique for the worker’s life, with its Dolby Vision and HDR10+ metadata.
+The descriptor carries only a summary of that metadata, for the session’s telemetry.</li>
+<li>A raw frame’s planes upload into a texture slot of the renderer’s device as the frame is kept, so its buffer returns to the run’s pool at once.
+A Dolby Vision pair uploads its BL and EL into the slot’s two texture sets, and a released frame’s slot serves a later frame, with at most 2 spares kept.</li>
+<li>A kept <code>VideoFrame</code> waits in the store until it presents, and closes after <code>submit()</code>, as on the page.</li>
+<li>The renderer takes a device of its own through the presenter’s device request, configures the transferred canvas as the presenter configures its own, and accepts a <code>configure</code> only once its own authorization registries authorized the route on that device.</li>
+<li>Each <code>present</code> runs the presenter’s per-frame checks (color and descriptor, Dolby Vision RPU and layers, HDR10+ settings) and validates a new pipeline’s first submission.
+A frame that breaks its route posts <code>failed</code> with the presenter’s reason, and a frame the store no longer keeps answers <code>presented</code> with <code>ok</code> false.</li>
+<li>The renderer records each frame’s GPU wait as <code>gpu-work-done</code> in the worker’s timing trace.</li>
+</ul>
+<p>Raw planes:</p>
+<ul>
+<li>A decoded <code>VideoFrame</code> is copied into a buffer of 256-byte-aligned rows, which the <code>frame</code> message transfers to the page.</li>
+<li>The bundled HEVC decoder hands each frame over as it drains it, while its planes are in WASM memory.
+On the raw route the worker writes them into that aligned layout, and the transfer takes the buffer as it is; on the VideoFrame route it writes compact planes and constructs the <code>VideoFrame</code> with <code>transfer</code>.
+A frame is copied once on its way to the page, and a Dolby Vision BL and EL once more, into their compound buffer.</li>
+<li>A run keeps spare buffers: those the page recycled and those of frames closed unposted.
+A drained frame or a copy takes a spare of its byte length, or a new buffer when none fits, and at most 2 spares of each byte length are kept, as many as the page can hold; a 4K 10-bit frame is about 25 MB.</li>
 </ul>
 <p>Audio credits:</p>
 <ul>
-<li>PCM chunks are 40 ms to 12000 frames, with 8 credits, so the credits can never hold more than the 2 s worklet ring.
-One credit returns per chunk the worklet consumes.
-The worker reconciles decoder timestamps within 2 s before the resampler (see <a href="#audio-2">Decisions</a>), and fails the attempt as <code>decode-failed</code> beyond that.
-A gap, an overlap, or an overflow that reaches the bridge is therefore an engine fault, and raises <code>audio-output-failed</code>.</li>
+<li>Decoded PCM: the audio decode worker’s <code>WorkletPCMProducer</code> owns the worklet’s credit window.
+Chunks are 40 ms to 12000 frames, with 8 credits, so the credits can never hold more than the 2 s worklet ring.
+One credit returns per chunk the worklet consumes, with the chunk’s buffers, which later chunks reuse.
+The audio decode worker reconciles decoder timestamps within 2 s before the resampler (see <a href="#audio-2">Decisions</a>), and fails the attempt as <code>decode-failed</code> beyond that.
+A gap, an overlap, or an overflow that reaches the producer is therefore an engine fault, and raises <code>audio-output-failed</code>.</li>
+<li>The worker sends each decoded PCM attempt’s input in batches that close at 40 ms of media time or 64 inputs: compressed packets for a bundled decoder, or Mediabunny’s decoded samples cut to the start.
+4 batches are in flight at once, and each returns its credit once the audio decode worker has rendered it, so demux runs at most a few batches ahead of the worklet’s window.</li>
 <li>Native-media audio uses 2 MiB or 2 s segments, 2 credits, and appends at most 6 s ahead.</li>
 </ul>
 <p>Lag guard, in <code>CustomPlaybackController</code>:</p>
@@ -564,11 +608,12 @@ Video resyncs at once when visible, and on return when hidden.</li>
 <li>When audio outlasts the video track, the worker posts <code>video-ended</code> before the run’s <code>ended</code>, and the controller holds the last frame without waiting, stalling, suspending, or resyncing.</li>
 </ul>
 <p>Geometry: <code>WebGPUPresenter.bindLayoutHandling</code> invalidates layout on resize observers, class and style mutations of the video and its ancestors, CSS motion events, window resize, seek, and refresh.
-The backing size is the CSS size times the device pixel ratio, capped by <code>maxTextureDimension2D</code>.</p>
+The backing size is the CSS size times the device pixel ratio, capped by <code>maxTextureDimension2D</code>.
+A worker canvas gets the same layout, which the presenter posts to the renderer with a new revision whenever it changes.</p>
 <h2 id="transitions"><a class="header" href="#transitions">Transitions</a></h2>
 <ul>
 <li>
-<p>Seek: a new presentation generation, then <code>controller.seek</code>, then a new generation and a new worker at the target.
+<p>Seek: a new presentation generation, then <code>controller.seek</code>, which stops the running generation and starts a new one at the target in the same worker.
 The owned HEVC, AV1, and VP9 paths start at the preceding key packet.
 DTS and TrueHD use a 1 s preroll.
 The host drops stale seek results by its own revision.</p>
@@ -586,7 +631,7 @@ A request that keeps the layout only records its downmix for later restarts, and
 <li>The controller stops the output and picks a target 250 ms ahead of the clock (the current time when paused or waiting on an audio underflow).</li>
 <li><code>session.resyncAudio</code> stops the old bridge and advances the audio epoch.
 <code>BrowserCustomAudioOutput.reconfigure</code> retires the worklet, sets <code>destination.channelCount</code>, and leases a worklet with the new channel count on the same context and sink.</li>
-<li>The worker gets <code>resync-audio</code>: its audio attempt unwinds, and a new one starts at the target with a rebuilt downmix, resampler, and limiter (DTS and TrueHD keep their preroll).
+<li>The worker gets <code>resync-audio</code>: it closes the audio decode worker’s attempt, whose channel to the replaced worklet closes at once, and opens a new one at the target with the new worklet’s channel and a rebuilt downmix, resampler, and limiter (DTS and TrueHD keep their preroll).
 Samples and credits are tagged with the epoch, so stale ones are dropped.</li>
 <li>Once the new epoch has buffered 100 ms, the output starts when the clock reaches the target.
 Audio telemetry does not move the clock in between.
@@ -604,7 +649,10 @@ A playback rate other than 1 with audio falls back to the HTML player in the sam
 <li>
 <p>GPU device loss: one recovery per session.
 The new device must re-authorize the active HDR, Dolby Vision, or raw route before it draws.
-If that fails, <code>device-recovery-failed</code> falls back to HTML.</p>
+If that fails, <code>device-recovery-failed</code> falls back to HTML.
+The worker renderer’s device is its own, and a failure the renderer reports with <code>failed</code> falls back as the presenter’s own does.
+The renderer recovers one loss of its device for the worker’s life: a new device, the canvas configured with it, and the newest <code>configure</code> authorized and installed again.
+Frames uploaded to the lost device answer <code>presented</code> with <code>ok</code> false, and a second loss or a failed recovery posts <code>failed</code> with <code>device-recovery-failed</code>.</p>
 </li>
 <li>
 <p>Audio sink change (<code>WebGPUAudioOutputManager</code>): the default sink is <code>setSinkId('')</code>.
@@ -625,7 +673,7 @@ The rebuilt sink reports <code>sinkchange</code>, so a surround device switches 
 Chromium moves a default output to a new device without telling the page, which leaves a stale channel count until a rebuild.</p>
 </li>
 <li>
-<p>End of stream: the worker flushes the resampler and limiter tails and posts <code>ended</code>.
+<p>End of stream: the audio decode worker flushes the resampler and limiter tails, and the worker posts <code>ended</code>.
 The controller emits <code>ended</code> once the bridge and worklet queues are empty, the output time has reached the end, and the video queues are empty.</p>
 </li>
 <li>
@@ -636,7 +684,23 @@ The end also completes a start or audio resync that has no PCM left to wait for.
 A native-media session sends <code>endOfStream</code>, so <code>&lt;audio&gt;</code> plays out, and the clock then runs without the element.</p>
 </li>
 <li>
-<p>Stop: <code>controller.destroy</code> stops the worker (terminated after 1 s), releases the worklet and the sink lease (1.5 s cap), and ends the presenter session.</p>
+<p>Generation handoff: the session’s worker runs one generation at a time, and every run posts <code>stopped</code> last.
+A new <code>start</code> goes out only after the previous run acknowledged <code>stopped</code>, or after the session replaced a worker whose run did not acknowledge within 1 s.
+The worker also starts a run only after the previous one posted <code>stopped</code>, because a stopping run waits for every bundled HEVC decoder in the worker.
+A run’s <code>stopped</code> also waits until the audio decode worker released the run’s decoded PCM attempts.
+A worker is replaced, never reused, after a generation fails, a message fails validation, the worker crashes, or a run’s <code>stopped</code> asks for it with <code>replaceWorker</code>; a start on another video decoder backend also gets a new worker.
+A lost audio decode worker fails its run’s decoded PCM as <code>audio-output-failed</code>, and the run’s <code>stopped</code> asks for replacement.
+A worker’s renderer and canvas serve all its runs.
+A replacement worker gets a new attachment, whose canvas replaces the old one on the page and stays blank until its first frame presents.</p>
+</li>
+<li>
+<p>Worker frames at a handoff: a run’s frames outlive it until the page releases them, so the frames that finish a run still present.
+The session releases the frames a stopped, seeking, or failed generation leaves, and the worker’s next start frees any it still holds.
+A stopped or failed run also frees its own frames before its <code>stopped</code>, and the renderer’s <code>detach</code> frees every kept frame.
+A worker whose ended run asked for replacement stays until its generation retires, and a worker lost while the page still holds its frames fails the generation.</p>
+</li>
+<li>
+<p>Stop: <code>controller.destroy</code> stops the generation (its run has 1 s to acknowledge), terminates the decode worker and with it its audio decode worker, releases the worklet and the sink lease (1.5 s cap), and ends the presenter session.</p>
 </li>
 </ul>
 <h2 id="fallback-and-renegotiation"><a class="header" href="#fallback-and-renegotiation">Fallback and renegotiation</a></h2>
@@ -661,9 +725,9 @@ A native-media session sends <code>endOfStream</code>, so <code>&lt;audio&gt;</c
 <ul>
 <li>The host: its own generations and revisions.</li>
 <li>The controller: <code>activeGeneration</code> and <code>fallbackGeneration</code>.</li>
-<li>The session: one worker record per generation.</li>
+<li>The session: a generation record per generation, which its worker’s messages must match.</li>
 <li>The worklet: its flush generation.</li>
-<li>The presenter: <code>deviceResourceEpoch</code>, the color and layout revisions, and <code>fallbackLatched</code>.</li>
+<li>The presenter: <code>deviceResourceEpoch</code>, the color and layout revisions, <code>fallbackLatched</code>, and the renderer attachment a message arrives on.</li>
 </ul>
 <h2 id="gotchas"><a class="header" href="#gotchas">Gotchas</a></h2>
 <ul>
@@ -675,8 +739,8 @@ A frame with a colorSpace that is not neutral latches <code>decoded-frame-color-
 SDR also matches a <code>smpte170m</code> transfer, and HLG a <code>bt709</code> transfer on BT.2020 primaries.</li>
 <li>WebGPU presentation on the HTML path is SDR only: a <code>&lt;video&gt;</code> external texture is browser-converted sRGB.</li>
 <li>Worker track indices are container ordinals, not Jellyfin <code>MediaStream.Index</code>.</li>
-<li>Every seek, audio switch, and paused repaint starts a new worker that reopens the input.
-The 32 MiB read cache belongs to one worker.</li>
+<li>Every seek, audio switch, and paused repaint starts a new run in the session’s worker, and each run opens the input again.
+The 32 MiB read cache belongs to one run, so a seek reads its range anew.</li>
 <li>Decoded PCM gain (volume cubed times normalization) is applied after the limiter and is not capped, so a boost can clip; clipping is counted.
 The native-media route caps gain at 1.</li>
 <li><code>DecodedVideoGeometry</code> locks the first decoded size of a run, with a 64 px tolerance.
@@ -1137,8 +1201,16 @@ Each source file’s tests are at the same relative path under <code>test/</code
 </ul>
 <h2 id="presentation"><a class="header" href="#presentation">presentation/</a></h2>
 <ul>
-<li><code>WebGPUPresenter.ts</code>: the GPU device and canvas; rVFC and pushed-frame submission; installing the color pipeline; HDR and Dolby Vision authorization; device-loss recovery; the latched fallback.</li>
+<li><code>WebGPUPresenter.ts</code>: the GPU device and canvas; rVFC and pushed-frame submission; installing the color pipeline; HDR and Dolby Vision authorization; device-loss recovery; the latched fallback.
+For presentation in the worker it creates each worker’s transferred canvas and channel, forwards the authorized pipeline and live controls, lays the canvas out, and asks the renderer to draw each selected frame by its ID.</li>
+<li><code>WorkerPresentationProtocol.ts</code>: the channel between the presenter and the worker renderer (configure, settings, layout, present, and detach; status, configured, presented, and failed), its validators, the attachment and provider types, and the fallback reasons both sides report.</li>
+<li><code>WorkerPresentationRenderer.ts</code> [worker]: the decode worker’s renderer: a device of its own configured with the transferred canvas, each <code>configure</code> installed once its route is authorized on that device, each <code>present</code> of a kept frame drawn with the presenter’s per-frame checks, one device recovery, and <code>detach</code>.</li>
+<li><code>WorkerFrameStore.ts</code> [worker]: the frames worker-mode runs keep, by an ID unique for the worker’s life; raw planes upload into reusable texture slots as a frame is kept, and a release, a stopped or failed run, the next run’s start, or a <code>detach</code> frees frames.</li>
+<li><code>DecodedFramePresentation.ts</code>: the per-frame rules the presenter and the worker renderer share: color and descriptor checks, Dolby Vision RPU selection and layer composition, and HDR10+ frame settings.</li>
+<li><code>ExternalTextureGPURenderer.ts</code>: the external-texture pipeline and its import, bind, and draw, which the presenter and the worker renderer share.</li>
+<li><code>WebGPUResourceOperation.ts</code>: the 5 s bound on WebGPU requests and resource operations, and the presentation device request at the adapter’s texture limit.</li>
 <li><code>RawYUVGPURenderer.ts</code>: uploads raw YUV planes, and a Dolby Vision EL, into integer textures and draws them.
+The upload and the draw also run apart, for the worker renderer, which uploads a frame as it is kept.
 Authorization shares it.</li>
 <li><code>PresentationInput.ts</code>: MediaStream metadata to color metadata; Dolby Vision descriptors with their RPU route; declared and exact native base metadata; the presented video ordinal; the known-SDR gate.</li>
 <li><code>PresentationGeometry.ts</code>: pure object-fit and object-position math to viewport and texture transforms.</li>
@@ -1169,7 +1241,7 @@ Their vectors are in <code>capability/vectors/</code> and <code>bin/codec_vector
 <ul>
 <li><code>HEVCExactCapability{Probe,Probe.worker,Protocol,WorkerRuntime}.ts</code>: bundled HEVC (8-frame fingerprints).</li>
 <li><code>DTSExactCapability{Probe,Probe.worker,Protocol,Runner}.ts</code>: libdcadec (7 vectors, real-time factor of at least 2).</li>
-<li><code>TrueHDExactCapability{Probe,Probe.worker,Protocol,Runner}.ts</code>: TrueHD and MLP (4 vectors, major-sync recovery).
+<li><code>TrueHDExactCapability{Probe,Probe.worker,Protocol,Runner}.ts</code>: TrueHD and MLP (4 vectors, major-sync recovery), with decoders created to fingerprint their PCM, which playback decoders skip.
 Both requests carry the decoder binary, as the URL the playback worker also loads or as bytes the page fetched.</li>
 <li><code>JPEG2000ExactCapability{Probe,Probe.worker,Protocol}.ts</code>: OpenJPEG (a 960x540 RGBA fingerprint).</li>
 <li><code>MPEG2VC1ExactCapability{Probe,Probe.worker,Protocol}.ts</code>: MPEG-2 and VC-1 (12 frames, an I420 fingerprint).</li>
@@ -1197,11 +1269,18 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 <ul>
 <li><code>CustomPlaybackController.ts</code> [main]: lifecycle, generations, the clock, the startup (20 s without progress, 60 s ceiling), stall (10 s), and lag (2 s) policy, the live audio output layout switch, the end-of-stream and ended-track drains, the presentation timing counters, and the fallback disposition.</li>
 <li><code>CustomPlaybackControllerTypes.ts</code>: states, events, fallback reasons, and dispositions.</li>
-<li><code>CustomDecodeSession.ts</code> [main]: one worker per generation, the frame queue, credits, raw buffer recycling, readiness, audio-only resync epochs, the decoded source format, and an ended audio track completing a start, a resync, or a native-media stream.</li>
-<li><code>CustomDecode.worker.ts</code> [worker]: demux, decoder dispatch, raw copy, Dolby Vision and HDR metadata, the PCM pipeline as restartable audio attempts, fMP4 remux, and credit waits.</li>
+<li><code>CustomDecodeSession.ts</code> [main]: the session’s one decode worker, which the first start creates, each generation takes once the previous run stopped, a failure or an unacknowledged stop replaces, and <code>destroy</code> terminates; and per generation, the frame queue, credits, raw buffer recycling, readiness, audio-only resync epochs, the decoded source format, and an ended audio track completing a start, a resync, or a native-media stream.
+Each new worker gets the host’s renderer attachment, and its first start waits up to 2 s for the renderer’s status; the session queues the descriptors of the frames such a worker keeps and releases them.</li>
+<li><code>CustomDecode.worker.ts</code> [worker]: one run at a time, each ending with <code>stopped</code>: demux, decoder dispatch, raw copy, Dolby Vision and HDR metadata, decoded PCM as restartable audio attempts in its audio decode worker, fMP4 remux, and credit waits.</li>
+<li><code>CustomAudioDecode.worker.ts</code>, <code>AudioDecodeWorkerRuntime.ts</code> [worker]: the audio decode worker, which a decode worker spawns for its decoded PCM runs and keeps for its life.
+Each attempt has a bundled decoder (E-AC-3, DTS with its seek recovery, TrueHD, or none for samples Mediabunny decoded), an output stage, and a <code>WorkletPCMProducer</code>; it renders one batch at a time under the producer’s credit window and credits each batch back once rendered.
+A close shuts the attempt’s worklet channel at once and is acknowledged once the attempt released the rest, and a failure reports the kind the page acts on.</li>
+<li><code>AudioDecodeWorkerClient.ts</code> [worker]: the decode worker’s side: the audio decode worker’s spawn, each attempt’s open, input credits, outcome, and close, and the packet and sample batch builders.
+A worker that fails to start, throws, or answers out of contract fails every attempt as <code>audio-output-failed</code>.</li>
+<li><code>AudioDecodeWorkerProtocol.ts</code>: the messages between the two workers, their validators, the batch shapes and their transfers, and the batch and credit constants (4 batches, 40 ms or 64 inputs).</li>
 <li><code>CustomDecodeInputFormats.ts</code> [worker]: Mediabunny’s input formats with Matroska content decoding scoped to frames, so header-stripped laced audio demuxes intact.</li>
-<li><code>HandledDecodeFailures.ts</code> [worker]: marks the failures the worker catches, so the duplicate rejection Mediabunny leaves behind is not reported as unhandled.</li>
-<li><code>DecodeWorkerProtocol.ts</code>: messages, validators, credit constants (4, 2, 8), and the backend and output literals.</li>
+<li><code>HandledDecodeFailures.ts</code> [worker]: marks the failures the worker catches, so the duplicate rejection Mediabunny leaves behind is not reported as unhandled, and tells the worker when it suppressed one, because the failed decoder stays open.</li>
+<li><code>DecodeWorkerProtocol.ts</code>: messages, validators, credit constants (4, 2, 8), and the backend and output literals, the renderer attachment, worker-frame descriptors, and their release included.</li>
 <li><code>CustomDecodeTrackSelection.ts</code>, <code>ConcurrentDecodeStreams.ts</code>: track lookup by ordinal within one media type, and concurrent decode streams that cancel each other on the first failure and all drain before the worker reports that the generation stopped.</li>
 <li><code>MediaClock.ts</code> [main]: the generation-tagged clock; <code>synchronize</code> re-anchors it.</li>
 <li><code>MediaFetchPolicy.ts</code>: retries only transport errors and 408, 429, and 5xx.</li>
@@ -1211,9 +1290,10 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 <p>All worker code unless marked.</p>
 <ul>
 <li><code>DecodedVideoGeometry.ts</code> [main and worker]: the first-decoded-size lock.</li>
-<li><code>RawVideoFrameCopy.ts</code>: copies a <code>VideoFrame</code>, or a software decoder’s sample of CPU planes without one, into aligned plane buffers (NV12, and I420 to I444P12), up to 128 MiB per transfer.
-A Dolby Vision pair is a BL in any format from I420 to I444P12 and an I420P10 EL, in one compound buffer.</li>
-<li><code>RawFrameBufferPool.ts</code>: reusable raw buffers, bounded by the raw credits (2).</li>
+<li><code>RawVideoFrameCopy.ts</code>: copies a <code>VideoFrame</code>, or a software decoder’s sample of CPU planes without one, into aligned plane buffers (NV12, and I420 to I444P12).
+A Dolby Vision pair is a BL in any format from I420 to I444P12 and an I420P10 EL, in one compound buffer.
+A <code>PreparedRawVideoFrameSource</code> holds a frame its decoder already wrote in that layout, which a raw transfer takes as it is.</li>
+<li><code>RawFrameBufferPool.ts</code>: a run’s spare raw buffers, recycled by the page or left by frames closed unposted, which drained frames and raw copies take; it allocates when no spare fits and keeps at most 2 of each byte length.</li>
 <li><code>MatroskaVFWVideoConfiguration.ts</code>: extracts the VC-1 <code>WVC1</code> extradata.</li>
 <li><code>MatroskaBlockAdditions.ts</code>: wraps Mediabunny’s Matroska and WebM formats so their demuxers keep every BlockAdditional but alpha, and reads a packet’s additions, such as VP9 HDR10+.</li>
 </ul>
@@ -1232,8 +1312,11 @@ It also runs a single-layer attempt (<code>runOwnedSingleLayerVideoStream</code>
 <li><code>OwnedAV1VideoStream.ts</code>: one attempt of the owned AV1 path, which every AV1 track takes: each temporal unit’s Dolby Vision RPU and HDR10+ metadata, paired with its frame.</li>
 <li><code>OwnedVP9VideoStream.ts</code>: one attempt of the owned VP9 path, which every VP9 track takes: the HDR10+ in each packet’s container side data, paired with its frame.</li>
 <li><code>OwnedNativeHEVCVideoDecoder.ts</code>: the engine’s own WebCodecs HEVC decoder, built on <code>OwnedNativeVideoDecoder</code>: NAL order fix, leading RASL drop, optional SPS neutralization.</li>
-<li><code>HEVCSoftwareVideoDecoder.ts</code>: the <code>@hevcjs/core</code> decoder (I420 and I420P10) with a shutdown registry.</li>
-<li><code>HEVCDecoderBackend.ts</code>: the low-level <code>@hevcjs/core</code> WASM binding.</li>
+<li><code>HEVCSoftwareVideoDecoder.ts</code>: the <code>@hevcjs/core</code> decoder (I420 and I420P10) with a shutdown registry.
+The owned path takes each frame’s planes as the decoder drains them, and Mediabunny’s adapter takes packed <code>VideoSample</code>s.</li>
+<li><code>HEVCDecoderBackend.ts</code>: the low-level <code>@hevcjs/core</code> WASM binding, on one glue module per worker; a drained frame views its planes, with their strides, in WASM memory.</li>
+<li><code>HEVCFrameOutput.ts</code>: writes a bundled HEVC frame out while the decoder holds it: into the aligned raw layout, or into the compact planes of a <code>VideoFrame</code> it constructs with <code>transfer</code>.</li>
+<li><code>WorkerWASMInstanceCache.ts</code>: the one instance of a decoder kit that a worker’s decoders share, discarded after its code traps; the hevc.js, OpenJPEG, and MPEG-2/VC-1 modules and the libdovi parser use it.</li>
 <li><code>JPEG2000SoftwareVideoDecoder.ts</code>: OpenJPEG WASM to an RGBA <code>VideoFrame</code>.</li>
 <li><code>MPEG2VC1SoftwareVideoDecoder.ts</code>: FFmpeg WASM MPEG-2 and VC-1 to I420.</li>
 </ul>
@@ -1244,7 +1327,7 @@ It also runs a single-layer attempt (<code>runOwnedSingleLayerVideoStream</code>
 <li><code>DolbyVisionAV1Splitter.ts</code>: removes the Dolby Vision T.35 metadata OBUs from an AV1 temporal unit and returns their messages; other metadata, HDR10+ included, stays.</li>
 <li><code>DolbyVisionEncodedMetadata.ts</code>, <code>DolbyVisionEncodedMetadataProtocol.ts</code>: per-packet RPU parsing for HEVC and per-temporal-unit parsing for AV1, which removes the RPUs unparsed on a route without Dolby Vision, over one PTS-keyed window, and the transferable schema.</li>
 <li><code>DolbyVisionEncodedPacketPairer.ts</code>, <code>DolbyVisionFramePairQueue.ts</code>: BL and EL packet and frame pairing (1 us tolerance).</li>
-<li><code>DolbyVisionRPUParser.ts</code>, <code>DolbyVisionRPUParserSession.ts</code>, <code>DolbyVisionRPUDataLayout.ts</code>: the libdovi WASM parser with its HEVC and AV1 T.35 entry points, its per-run session, and the packed 3232-byte snapshot layout (schema 2: a mapping method per segment).</li>
+<li><code>DolbyVisionRPUParser.ts</code>, <code>DolbyVisionRPUParserSession.ts</code>, <code>DolbyVisionRPUDataLayout.ts</code>: the libdovi WASM parser with its HEVC and AV1 T.35 entry points, one instance per worker with a context for each parser, its per-run session, and the packed 3232-byte snapshot layout (schema 2: a mapping method per segment).</li>
 <li><code>ISOBaseMediaDolbyVisionSampleEntry.ts</code>: gives Mediabunny’s unmapped <code>dvh1</code>, <code>dvhe</code>, <code>dva1</code>, <code>dvav</code>, and <code>dav1</code> tracks their wrapped codec.</li>
 <li><code>MatroskaDolbyVisionHVCE.ts</code>, <code>ISOBaseMediaDolbyVisionConfiguration.ts</code>, <code>MPEGTransportStreamDolbyVisionConfiguration.ts</code>: find a P4 or P7 EL configuration in Matroska; in MP4, as a separate EL track or as <code>hvcE</code> beside the BL <code>hvcC</code> of one interleaved track; or in MPEG-TS and M2TS (any descriptor version).</li>
 <li><code>DolbyVisionGeometry.ts</code> [main and worker]: the P4 and P7 EL coded size (half the BL when the BL is wider than 1920).</li>
@@ -1289,8 +1372,11 @@ E-AC-3, DTS, and TrueHD report their channel layout, and the FFmpeg wrappers sta
 </ul>
 <h3 id="audioprocessing"><a class="header" href="#audioprocessing">audio/processing/</a></h3>
 <ul>
-<li><code>StreamingAudioResampler.ts</code>, <code>StreamingAudioLookaheadLimiter.ts</code>, <code>StreamingAudioOutputPipeline.ts</code>, <code>StreamingAudioDownmixSettings.ts</code> [worker]: the 48 kHz resampler with input timestamp reconciliation within 2 s (larger deviations throw, and a listener sees every correction) and a continuation across source rate changes, the 100 ms lookahead limiter, the pipeline that rebinds its source rate and enables the limiter late, and generation-scoped live gains that follow the decoded rate.</li>
-<li><code>DecodedAudioOutputStage.ts</code> [worker]: binds one audio attempt’s output stage to the decoded rate and layout, checks them against the decoded PCM routes, and reports each bound format.</li>
+<li><code>StreamingAudioResampler.ts</code>, <code>StreamingAudioLookaheadLimiter.ts</code>, <code>StreamingAudioOutputPipeline.ts</code>, <code>StreamingAudioDownmixSettings.ts</code> [worker]: the 48 kHz resampler with input timestamp reconciliation within 2 s (larger deviations throw, and a listener sees every correction) and a continuation across source rate changes, the 100 ms lookahead limiter, the pipeline that rebinds its source rate and enables the limiter late, and generation-scoped live gains that follow the decoded rate.
+The resampler’s and the limiter’s own storage and rendering are the JavaScript reference; given the output stage module, a kernel stores and renders instead, with the same bytes.</li>
+<li><code>AudioOutputStageModule.ts</code> [worker]: the <code>audio-output-stage</code> WebAssembly module, loaded once per audio decode worker on its first attempt, with a once-warned fallback to the reference when it does not load, and its resampler and limiter kernels, freed on finalize, on close, or after their owner is collected.</li>
+<li><code>PCMChannelPool.ts</code> [worker]: the spare channel buffers the worklet returns, each sized for the largest chunk, which the output stage writes later chunks into.</li>
+<li><code>DecodedAudioOutputStage.ts</code> [worker]: binds one audio attempt’s output stage to the decoded rate and layout, checks them against the decoded PCM routes, and reports each bound format; <code>close</code> frees a stopped attempt’s kernels.</li>
 <li><code>CustomAudioDownmix.ts</code>, <code>CustomAudioDownmixAlgorithm.ts</code>, <code>CustomAudioChannelLayout.ts</code>, <code>CustomWaveChannelLayout.ts</code>: downmix matrices per algorithm (three-channel beds have their own), algorithm IDs, layout tables with by-name mapping to 5.1 and 7.1 outputs, and WAVE mask mapping.</li>
 </ul>
 <h3 id="audiooutput"><a class="header" href="#audiooutput">audio/output/</a></h3>
@@ -1299,7 +1385,8 @@ E-AC-3, DTS, and TrueHD report their channel layout, and the FFmpeg wrappers sta
 <li><code>AudioOutputDevicePresence.ts</code> [main]: whether <code>enumerateDevices()</code> lists any audio output.</li>
 <li><code>BrowserAudioContextPool.ts</code>, <code>BrowserAudioContextPrewarm.ts</code>, <code>BrowserAudioWorkletPool.ts</code>, <code>BrowserAudioOperation.ts</code> [main]: the shared 48 kHz context (never pooled when created without an output device), the prewarm lease, the leased worklet node, and timeouts.</li>
 <li><code>BrowserCustomAudioOutput.ts</code> [main]: the production output: context, sink lease, worklet lease, the physical output time correction, in-place layout reconfiguration, and <code>sinkchange</code> reporting.</li>
-<li><code>CustomDecodeAudioBridge.ts</code> [main]: worker PCM to the worklet, with continuity checks and credits.</li>
+<li><code>CustomDecodeAudioBridge.ts</code> [main]: each generation’s flush and its new channel for the producer, the producer’s progress against the processor’s consumption, which the end-of-stream drain reads, and the processor’s overflow and stale-generation failures.</li>
+<li><code>WorkletPCMProducer.ts</code> [worker]: feeds one worklet processor over its own channel: it owns the credit window, checks each chunk’s layout, bounds, and continuity before posting it, and passes the buffers the processor returns to the channel pool.</li>
 <li><code>WebGPUAudioOutputManager.ts</code>: the page-wide sink router (<code>setSinkId</code>), with its fallback chain, <code>devicechange</code> handling, output recovery poll and sink rebuild, picker, and UI snapshot.</li>
 </ul>
 <h3 id="audionative"><a class="header" href="#audionative">audio/native/</a></h3>
@@ -1328,7 +1415,9 @@ E-AC-3, DTS, and TrueHD report their channel layout, and the FFmpeg wrappers sta
 <li><code>test/helpers/hdr10PlusVectors.ts</code>: the HDR10+ messages of <code>HDR10PlusVectors.ts</code>, and what the HDR10+ AV1 and VP9 vectors share: the <code>expectations.json</code> reader, the coded values in the engine’s units, and the check of a posted frame’s HDR10+ result.</li>
 <li><code>test/helpers/av1HDR10PlusVectors.ts</code>, <code>test/helpers/vp9HDR10PlusVectors.ts</code>: each set’s files and its codec’s known answers, such as the AV1 static HDR metadata and the VP9 BlockAddID.</li>
 <li><code>test/helpers/ownedVideoStreamFakes.ts</code>: a stream run, a packet iterator, and a decoder that outputs each frame at once or holds its frames until a flush, in decode or presentation order, for the owned decode path tests.</li>
-<li><code>test/helpers/decodeWorkerHarness.ts</code>: loads a fresh playback worker in a stand-in browser: a global scope that plays the session’s part, range responses for the media it plays, and a WebCodecs video decoder.</li>
+<li><code>test/helpers/decodeWorkerHarness.ts</code>: loads a fresh playback worker in a stand-in browser: a global scope that plays the session’s part and waits for each run’s <code>stopped</code>, so one worker can run several generations, range responses for the media it plays, a WebCodecs video decoder, and the audio decode worker run in-process (<code>inProcessAudioDecodeWorker.ts</code>) on a channel.</li>
+<li><code>test/helpers/fakeWorkletProcessor.ts</code>, <code>test/helpers/decodedAudioMedia.ts</code>: the worklet processor’s end of a producer channel, which records each chunk and returns it played, held, or dropped; and a Matroska file of the VP9 vector’s video and a stereo PCM tone, which Mediabunny decodes in Node.</li>
+<li><code>test/helpers/workerPresentationFakes.ts</code>: what the worker renderer finds in a browser, for Node: WebGPU devices that record their work and can be lost, the usage constants, a transferred canvas, the page’s end of the renderer’s channel, and decoded raw and <code>VideoFrame</code> frames.</li>
 <li><code>wasm/</code>: the decoder sources and build.
 See <a href="#webassembly-decoders">WebAssembly decoders</a>.</li>
 <li><code>vendor/</code>: the FFmpeg and dcadec submodules (<code>update = none</code>), which <code>make -C wasm sources</code> fetches.</li>
@@ -1338,11 +1427,11 @@ See <a href="#webassembly-decoders">WebAssembly decoders</a>.</li>
 See <a href="#codec-vectors">Codec vectors</a>.</li>
 <li><code>tools/</code>: browser probes, the DTS downmix report, and <code>constants.json</code>.
 See <a href="#tools">Tools</a>.</li>
-<li><code>bin/wasm/</code>: the decoder builds from <code>make -C wasm</code>, ignored:
+<li><code>bin/wasm/</code>: the decoder and audio output stage builds from <code>make -C wasm</code>, ignored:
 <ul>
 <li><code>ffmpeg-eac3/</code>, <code>ffmpeg-truehd/</code>, <code>libdcadec-dts/</code> [worker]: Emscripten ES module glue (<code>.mjs</code>), imported as <code>#wasm/&lt;kit&gt;/&lt;kit&gt;.mjs</code> through the <code>imports</code> map in <code>package.json</code> and bundled into the workers, and its <code>.wasm</code>, served from <code>libraries/&lt;kit&gt;/</code>.
 Their hand-written declarations are <code>wasm/&lt;kit&gt;/&lt;kit&gt;.d.mts</code>, which the map’s <code>types</code> condition resolves.</li>
-<li><code>ffmpeg-mpeg2-vc1/</code> and <code>libdovi/</code>: served from <code>libraries/</code>.</li>
+<li><code>ffmpeg-mpeg2-vc1/</code>, <code>libdovi/</code>, and <code>audio-output-stage/</code>: served from <code>libraries/</code>.</li>
 </ul>
 </li>
 <li><code>bin/codec_vector_assets/</code>: the generated codec vectors, the one committed folder in <code>bin/</code>:
@@ -1417,6 +1506,26 @@ configureEngineFeatureFlags({ isHDRToneMappingEnabled: () =&gt; Promise.resolve(
 <p>Pass <code>baseURL</code> to serve the assets from somewhere other than <code>libraries/</code>.</p>
 </li>
 </ol>
+<h2 id="presentation-in-the-worker"><a class="header" href="#presentation-in-the-worker">Presentation in the worker</a></h2>
+<p>A host that presents custom playback with <code>WebGPUPresenter</code> lets the decode worker draw its own frames with two changes.</p>
+<ol>
+<li>
+<p>Give the controller a renderer provider that asks the presenter for an attachment:</p>
+<pre><code class="language-ts">const controller = new CustomPlaybackController({
+    // The current generation at call time, since a seek advances it
+    presentationRendererProvider: () =&gt; presenter.createWorkerPresentationAttachment(currentPresentationGeneration),
+    ...otherOptions
+});
+</code></pre>
+<p>The session calls it once for each decode worker it creates.
+The presenter returns null outside push mode, without a surface, or where the page cannot transfer a canvas, and that worker then presents on the page.</p>
+</li>
+<li>
+<p>Treat a <code>'worker-frame'</code> as a <code>'video-frame'</code>: pass <code>presentDecodedFrame</code> a completion handler, and from it call <code>notifyFramePresented</code> when the GPU work completed, otherwise <code>notifyFrameDiscarded</code>.
+A worker frame has no payload, so there is nothing to close.</p>
+</li>
+</ol>
+<p>The worker’s canvas carries the presenter’s canvas classes from <code>style.scss</code>, so host styles for <code>.webgpuPlayerCanvas</code> apply to both.</p>
 <h2 id="how-assets-are-named-and-served"><a class="header" href="#how-assets-are-named-and-served">How assets are named and served</a></h2>
 <ul>
 <li><code>src/EngineAssets.ts</code> names every runtime asset, <code>scripts/library-assets.mjs</code> maps each served file to its source, and the <code>EngineAssets</code> test keeps the two in agreement.
@@ -1439,7 +1548,7 @@ Over plain HTTP on a LAN address, a host that still selects the WebGPU player pl
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="webassembly-decoders"><a class="header" href="#webassembly-decoders">WebAssembly decoders</a></h1>
-<p><code>wasm/</code> holds the sources and the build of the engine’s WebAssembly decoders.
+<p><code>wasm/</code> holds the sources and the build of the engine’s WebAssembly decoders, and of its decoded audio output stage.
 The build writes them to <code>bin/wasm/</code>, which is ignored like everything in <code>bin/</code> but <code>bin/codec_vector_assets/</code>.</p>
 <div class="table-wrapper">
 <table>
@@ -1452,6 +1561,7 @@ The build writes them to <code>bin/wasm/</code>, which is ignored like everythin
 <tr><td><code>ffmpeg-mpeg2-vc1</code></td><td><code>ffmpeg-mpeg2-vc1.js</code>, <code>ffmpeg-mpeg2-vc1.wasm</code></td><td>FFmpeg MPEG-2 Video and VC-1, LGPL-2.1-or-later</td><td><code>ffmpeg-mpeg2-vc1/ffmpeg_mpeg2_vc1_bridge.c</code></td></tr>
 <tr><td><code>libdcadec-dts</code></td><td><code>libdcadec-dts.mjs</code>, <code>libdcadec-dts.wasm</code></td><td><a href="https://github.com/foo86/dcadec">dcadec</a> DTS, DTS-HD High Resolution, and DTS-HD Master Audio, LGPL-2.1-or-later</td><td><code>libdcadec-dts/libdcadec_dts_bridge.c</code></td></tr>
 <tr><td><code>libdovi</code></td><td><code>dovi-rpu-parser.wasm</code></td><td>The <code>dolby_vision</code> crate from <a href="https://github.com/quietvoid/dovi_tool">dovi_tool</a>, vendored and patched, MIT</td><td><code>libdovi/</code></td></tr>
+<tr><td><code>audio-output-stage</code></td><td><code>audio-output-stage.wasm</code></td><td>None: the engine’s resampler and limiter kernels</td><td><code>audio-output-stage/audio_output_stage.c</code></td></tr>
 </tbody>
 </table>
 </div>
@@ -1460,7 +1570,10 @@ Their hand-written TypeScript declarations sit beside the bridges as <code>&lt;k
 Every <code>.wasm</code> file, and the <code>ffmpeg-mpeg2-vc1</code> glue, is served from <code>libraries/&lt;kit&gt;/</code>.
 An audio binary is fetched only when a worker creates its first decoder of that kit, and a probe worker and the playback worker fetch the same URL, so the browser caches it once.
 <code>src/DecoderWASMSource.ts</code> always passes the glue <code>locateFile</code>, because a bundled glue cannot resolve its own URL, or <code>wasmBinary</code> with bytes a caller already fetched.
-The OpenJPEG and hevc.js decoders come from npm packages, which <code>scripts/build.mjs</code> copies; nothing here builds them.</p>
+The OpenJPEG and hevc.js decoders come from npm packages, which <code>scripts/build.mjs</code> copies; nothing here builds them.
+<code>audio-output-stage</code> and <code>libdovi</code> have no glue: the engine instantiates each <code>.wasm</code> itself, <code>audio-output-stage</code> once per playback worker when its first decoded audio attempt starts.
+The playback worker also makes one instance of each video kit, hevc.js, OpenJPEG, <code>ffmpeg-mpeg2-vc1</code>, and <code>libdovi</code>, when its first decoder or parser needs it (<code>video/decoders/WorkerWASMInstanceCache.ts</code>).
+Every later decoder or parser in the worker creates its own native context in that instance and releases only that context when it closes, and an instance whose code traps is replaced for the next one.</p>
 <h2 id="you-need-2"><a class="header" href="#you-need-2">You need</a></h2>
 <ul>
 <li>GNU Make, Git, and a POSIX shell (Git Bash on Windows).
@@ -1514,13 +1627,32 @@ The <a href="#change-the-dolby-vision-parser">Recipes</a> cover a change.</p>
 <pre><code class="language-sh">cargo test --locked
 cargo clippy --locked --all-targets
 </code></pre>
+<h2 id="the-audio-output-stage"><a class="header" href="#the-audio-output-stage">The audio output stage</a></h2>
+<p><code>wasm/audio-output-stage/audio_output_stage.c</code> holds the decoded audio output stage’s two kernels: the resampler’s source history and windowed-sinc rendering, and the lookahead limiter’s history, attack envelope, and gain.
+Timeline reconciliation, timestamps, output chunking, and the downmix stay in TypeScript, in <code>audio/processing/</code>.
+Each kernel keeps its history in a ring, so a push copies only its own frames, and its SIMD (simd128) vectors hold channel pairs or neighboring frames, never neighboring taps.
+The kernels produce the same bytes as <code>StreamingAudioResampler</code> and <code>StreamingAudioLookaheadLimiter</code>, which stay as the reference and the fallback (see <a href="#audio-2">Decisions</a>).
+Three rules keep them exact:</p>
+<ul>
+<li><code>-ffp-contract=off</code>, so no multiply and add fuse.</li>
+<li>The filter table is built in JavaScript and copied in, because V8’s <code>Math.sin</code> and <code>Math.cos</code> need not match a C library’s.</li>
+<li>The limiter’s constants from <code>Math.pow</code> and <code>Math.exp</code> arrive as numbers, and its attack length reads the engine’s <code>Math.log10</code> through the module’s one import, <code>math.log10</code>.</li>
+</ul>
+<p>The kit links with <code>-sSTANDALONE_WASM</code> and emcc’s own <code>--no-entry</code>, so it has no JavaScript glue.
+It is a WASI reactor: <code>_initialize</code> runs the constructors that set up emmalloc’s heap, before any other export.
+It defines <code>emscripten_notify_memory_growth</code> itself, so <code>math.log10</code> is its only import.
+<code>audio/processing/AudioOutputStageModule.ts</code> instantiates it, refuses a module whose <code>audio_output_stage_abi_version</code> differs from its own, and wraps each kernel; raise the version with any change to an export’s meaning.</p>
+<p>After a change, rebuild the kit and run the equivalence suite, which compares both implementations byte for byte, from the engine root:</p>
+<pre><code class="language-sh">make -C wasm audio-output-stage
+npx vitest --watch=false test/audio/processing/AudioOutputStageModule.integration.test.ts
+</code></pre>
 <h2 id="licenses"><a class="header" href="#licenses">Licenses</a></h2>
 <ul>
-<li>The bridges and the <code>libdovi</code> crate are MIT, like the rest of the engine.
+<li>The bridges, the audio output stage, and the <code>libdovi</code> crate are MIT, like the rest of the engine.
 The vendored <code>dolby_vision</code> crate is MIT too and keeps its own <code>LICENSE</code>.</li>
 <li>FFmpeg and libdcadec are LGPL-2.1-or-later.
 <code>wasm/licenses/</code> holds their license texts.</li>
-<li><code>scripts/build.mjs</code> serves each LGPL decoder with its license, the bridge source, and the bridge license.
+<li><code>scripts/build.mjs</code> serves each LGPL decoder with its license, the bridge source, and the bridge license, and the audio output stage with the engine’s <code>LICENSE</code>.
 The Makefile pins the exact upstream commits.</li>
 <li>Attach the tarballs from <code>make source-archives</code> to every release: the exact FFmpeg and dcadec trees, and the engine’s <code>wasm/</code> sources.</li>
 </ul>
@@ -1532,7 +1664,7 @@ The Makefile pins the exact upstream commits.</li>
 </thead>
 <tbody>
 <tr><td><code>wasm/Makefile</code></td><td>The build</td></tr>
-<tr><td><code>wasm/&lt;kit&gt;/</code></td><td>A bridge source, and the TypeScript declarations of an ES module output</td></tr>
+<tr><td><code>wasm/&lt;kit&gt;/</code></td><td>A bridge or kernel source, and the TypeScript declarations of an ES module output</td></tr>
 <tr><td><code>wasm/libdovi/</code></td><td>The Rust crate that wraps the <code>dolby_vision</code> RPU parser</td></tr>
 <tr><td><code>wasm/libdovi/vendor/dolby_vision/</code></td><td>The vendored, patched <code>dolby_vision</code> crate and its <code>PATCHES.md</code></td></tr>
 <tr><td><code>wasm/licenses/</code></td><td>Upstream license texts</td></tr>
@@ -1884,8 +2016,8 @@ Every reader in <a href="#folder-names-live-in-one-file">Repository layout</a> f
 </ol>
 <h2 id="capture-a-timing-trace"><a class="header" href="#capture-a-timing-trace">Capture a timing trace</a></h2>
 <ol>
-<li>Call <code>startTimingTrace()</code> from <code>webgpu-player/TimingTrace</code> before the play request, so the decode worker the play starts is asked for its events.
-A worker started before the trace sends none.</li>
+<li>Call <code>startTimingTrace()</code> from <code>webgpu-player/TimingTrace</code> before the play request, so the decode run the play starts is asked for its events.
+A run started before the trace sends none; the next seek’s run does.</li>
 <li>Play the passage under investigation.</li>
 <li>Call <code>exportTimingTrace(metadata)</code> and save the result as JSON.
 <code>stopTimingTrace()</code> stops recording but keeps the events exportable until the next start or <code>clearTimingTrace()</code>.</li>
@@ -2055,7 +2187,20 @@ Its last case fails once Mediabunny itself reads such blocks correctly, and the 
 <li>A custom decoder’s failure is reported once (10-09).
 After a Mediabunny custom decoder rejects, Mediabunny 1.52.2 queues the decoder’s <code>close()</code> behind the failed call without a handler, so the same error resurfaces as an unhandled rejection and the decoder is never closed.
 The worker marks every failure it catches (<code>HandledDecodeFailures.ts</code>) and prevents the unhandled-rejection report of a marked error only, so any other unhandled rejection is still reported.
-The unclosed decoder ends with its worker, which the session terminates when the generation stops.</li>
+The unclosed decoder ends with its worker: the session replaces a worker whose run failed, and a worker that suppressed such a rejection asks for its replacement in its next <code>stopped</code>.</li>
+<li>A bundled HEVC frame is copied once (10-09).
+hevc.js stores 16-bit samples for Main as for Main 10, and a drained frame’s planes are views of its WASM memory, valid until the decoder’s next call.
+The worker used to pack them into a new buffer, <code>VideoSample</code> copied that buffer, and the raw copy or <code>VideoSample.toVideoFrame()</code> copied a third time.
+At 3840x2160 in Node 24, a 10-bit frame took about 5.9 ms and left about 50 MB of garbage, against about 0.9 ms for one row copy into a reused aligned buffer.
+The decoder now hands each frame to the owned path as it drains it, and the worker writes the planes into the buffer it posts, whatever the decoder’s row stride, narrowing 8-bit samples to bytes.
+Drained frames wait in the owned stream’s queues beyond the 2 raw credits, so their buffers come from a run’s pool of spares, which allocates when none fits.
+The pool keeps 2 spares of each byte length, as many as the page can hold, so a steady stream reuses every buffer.
+Mediabunny’s adapter still outputs packed <code>VideoSample</code>s, as its <code>registerDecoder</code> contract requires.
+A Dolby Vision BL and EL are still copied once more, into their compound buffer.</li>
+<li>Decoder instances are made once per worker (10-09).
+The hevc.js, FFmpeg MPEG-2/VC-1, and OpenJPEG modules were instantiated for each decoder, and the libdovi parser for each run, which a worker that outlives its runs would repeat at every seek.
+Each kit now has one instance per worker, in which every decoder or parser creates its own native context and releases only that context when it closes, so a Dolby Vision run’s BL and EL decoders share one hevc.js heap.
+An instance whose code traps is discarded, so the next decoder instantiates it again rather than trust its memory; an error its code returns keeps it.</li>
 <li>Decoder surfaces must not starve (08-08, <code>ecb5a4ec09</code>).
 Native frame credits return after <code>queue.onSubmittedWorkDone()</code>, not after <code>submit()</code>, because Chromium holds the decoder mailbox until the GPU completes and the D3D surface pool is finite.</li>
 <li>Rejected alternatives.
@@ -2129,7 +2274,8 @@ The hardware decoder behind <code>&lt;video&gt;</code> cannot feed the custom pi
 The bundled decoder runs on one core, about 20 fps at 4K on a fast CPU, so 4K plays below real time.
 This is left as is until Firefox enables WebCodecs HEVC on Windows.</li>
 <li>A <code>VideoFrame</code> cannot be constructed in a high-bit-depth format (10-07): the constructor rejects <code>I420P10</code>.
-The worker copies the bundled decoders’ sample planes straight into the raw buffer instead of through <code>VideoSample.toVideoFrame()</code>, which also saves a copy in Chromium.
+The bundled HEVC decoder’s frames therefore never pass through a <code>VideoFrame</code> on the raw route: as the decoder drains a frame, the worker writes its planes from WASM memory into the aligned raw buffer it then transfers (10-09).
+On the VideoFrame route, which 8-bit SDR takes in Firefox, the worker writes each drained frame into compact I420 planes and constructs the <code>VideoFrame</code> itself with <code>transfer</code>, with the metadata <code>VideoSample.toVideoFrame()</code> gave it; a browser that ignores <code>transfer</code> copies the planes, and the worker writes the next frame into the same buffer.
 The external P5 authorization builds an <code>I420P10</code> frame and fails, but it needs WebCodecs HEVC regardless.</li>
 <li>10-bit AV1 decodes to 8-bit <code>BGRX</code>, and the 4K VP9 Profile 2 vector fails to decode (10-07), so raw HDR AV1 and VP9 do not qualify.</li>
 <li>The Vorbis decoder emits an empty <code>AudioData</code> for the priming packet before the decoded one (10-07).
@@ -2161,6 +2307,33 @@ A hardware HEVC decoder answered after a few milliseconds, by which time a whole
 On an Intel Arc laptop each burst delayed the GPU work of the frame being presented by 40 to 80 ms, a visible hitch twice a second, while every frame was still chosen on time.
 Each packet now waits, up to 10 ms, for the decoder to return a picture before the next packet is read, so decode follows presentation one packet per frame.
 A decoder that needs more packets to reorder gets the next one when the 10 ms pass.</li>
+<li>One decode worker per session (10-09).
+Every generation, which every seek, audio track switch, and paused repaint starts, used to create its own worker and paid worker startup, script evaluation, and WASM decoder instantiation each time.
+The session now creates its worker at the first start, runs every generation in it, and terminates it only on <code>destroy</code>.
+A persistent worker is also what presenting in the worker needs, since its GPU device and canvas must outlive a seek.
+Runs never overlap: the session sends a <code>start</code> only after the previous run acknowledged <code>stopped</code>, and the worker starts a run only after the previous one posted it.
+An overlap would stall the handoff, because a stopping run waits for every bundled HEVC decoder in its worker, the next run’s included, before it acknowledges.
+A worker is replaced rather than reused after a generation fails, a message fails validation, the worker crashes, or a retired run does not acknowledge within the 1 s stop bound.
+It is also replaced when a run’s <code>stopped</code> carries <code>replaceWorker</code>, which the worker sets once it suppressed the rejection of a custom decoder that Mediabunny left open.
+A start on another video decoder backend gets a new worker too, because Mediabunny keeps a decoder registration, such as the bundled HEVC adapter that <code>canDecode()</code> consults, for the worker’s life.
+Each run still opens its own input, so the read cache does not outlive a seek.
+After a run ends on its own, its generation stays current while the worker idles, so a native-media element that plays out after decode still ends the session.
+Before, the run’s <code>stopped</code> retired the worker and with it the generation, and such a session did not end.</li>
+<li>Presentation in the worker, stage 1 (10-09).
+Every decoded frame used to cross to the page: a <code>VideoFrame</code> transfer, or a raw buffer of about 25 MB per 4K 10-bit frame, which the main thread uploaded and whose GPU work it waited on.
+Frames now stay in the decode worker, which draws them with its own GPU device into a canvas the presenter transferred to it with <code>transferControlToOffscreen</code>.
+Frame selection stays on the main thread: the session queues each kept frame’s descriptor, which holds its credit, and the controller’s clock, lag, catch-up, starvation, and end policies apply unchanged.
+The presenter asks the renderer to draw a selected frame by its ID, posts the canvas layout it computes from the page, and returns the frame’s credit only after the renderer reports its GPU work done.
+The presenter prepares and authorizes each pipeline on its own device as before, hands the renderer the shader and route, and resumes presentation only after the renderer accepts them.
+The renderer authorizes the route again on its own device with the same registries before it accepts it, because an authorization holds for one device only.
+The presenter’s per-frame rules (color and descriptor checks, Dolby Vision RPU selection and layer composition, HDR10+ settings) and its external-texture draw are shared modules, so the renderer checks and draws a frame exactly as the page does.
+A raw frame’s planes upload into a texture slot of the renderer’s device as the worker keeps the frame, so its buffer returns to the decoders at once.
+The renderer recovers one loss of its device for the worker’s life, and frames uploaded to the lost device are not presented.
+Each new worker gets a new canvas, because a canvas transfers only once, and its first start waits up to 2 s for the renderer’s status.
+A page that cannot transfer a canvas, a worker without WebGPU, a renderer that does not answer in time, and a host without a provider all present on the page for the worker’s life, as before.
+A renderer failure falls back to HTML as a presenter failure does.
+A run’s frames outlive it until the page releases them, so the frames that finish a run still present.
+A stopped or failed run frees its own frames before <code>stopped</code>, the next run’s start frees what an earlier run left, and the renderer’s <code>detach</code> frees every frame.</li>
 </ul>
 <h2 id="audio-2"><a class="header" href="#audio-2">Audio</a></h2>
 <ul>
@@ -2241,7 +2414,7 @@ Within tolerance an input is absorbed, and a timestamp at or before the previous
 A gap up to 2 s is filled with silence, and an overlap up to 2 s is trimmed, or dropped when the remainder is within tolerance.
 A larger deviation fails the audio attempt as <code>decode-failed</code>, so playback renegotiates.
 The first design rebased the expectation instead, which shifted all later audio against video.
-The worker logs every correction over 100 ms and every failure with the input timestamp, the expected timestamp, and the correction.
+The audio decode worker logs every correction over 100 ms and every failure with the input timestamp, the expected timestamp, and the correction.
 Output time stays the anchor plus output frames at 48 kHz, so the bridge, limiter, worklet, and clock see one contiguous stream.
 Output chunks are capped at 12000 frames, the 2 s ring divided among the 8 credits, so even a filled burst fits the worklet ring.</li>
 <li>The FFmpeg wrappers stamp later frames of one packet themselves (10-07).
@@ -2271,6 +2444,37 @@ TrueHD writes the rate as a 32-bit integer, which reads back as 16.16.
 A DTS rate above 65535 Hz does not fit the 16-bit integer part, so muxers write zero, and the worker declares the 48 kHz core until the decoder reports the real rate.</li>
 <li>Normalization follows the metadata.
 Jellyfin fills track and album gain for audio libraries, not movies, so video sessions normally use unity gain.</li>
+<li>The resampler and the limiter render in WebAssembly, byte for byte as their JavaScript reference (10-09).
+On Node 24 the JavaScript resampler took 15 ms per second of 44.1 kHz stereo and 48 to 58 ms per second of 5.1 and 7.1, and the limiter 24 to 70 ms per second under sustained limiting.
+The time went to a bounds-checked call per filter tap, to reallocating and copying the retained history on every push, and to re-deriving the attack envelope over the whole 100 ms horizon for every output chunk.
+The <code>audio-output-stage</code> kit (C, simd128) keeps each history in a ring, sums each output frame’s taps in float64 in tap order with SIMD lanes across channel pairs and neighboring frames, and applies each peak’s attack once, when the peak arrives.
+That attack order is exact: the reference’s constraint for a frame is the minimum over every peak whose attack reaches it, and its horizon always covers the longest attack.
+Afterwards 44.1 kHz stereo took 1.6 ms per second, 5.1 and 7.1 4.3 to 4.8 ms, and sustained limiting 6 ms.
+<code>StreamingAudioResampler</code> and <code>StreamingAudioLookaheadLimiter</code> stay as the reference and the fallback, and <code>test/audio/processing/AudioOutputStageModule.integration.test.ts</code> requires the same chunks, timestamps, sample bytes, errors, and telemetry from both.
+It covers randomized timelines from 8 kHz to 768 kHz with fills, trims, drops, and rejections, one to eight channels, pushes from one frame to the 65536-frame protocol maximum, rate changes with continuation, finalize tails, and the limiter quiet, loud, and beside its ceiling.
+Exactness needs the filter table and the <code>Math.pow</code> and <code>Math.exp</code> constants computed in JavaScript, <code>Math.log10</code> imported, no fused multiply-add, the reference’s order of float64 operations, float32 rounding on store, and <code>Math.round</code> reproduced for the non-negative values it sees.
+NaN payload bits are implementation-defined in ECMAScript and WebAssembly alike, so the test requires NaN in the same samples, though on V8 x64 its bits matched too.
+A 48 kHz source only passes through, so it keeps the JavaScript path, which a staging copy into the module would only slow.
+The downmix and its live settings ramps stay in JavaScript: they cost little, and moving every algorithm would add risk without gain.
+Timeline reconciliation, timestamps, and output chunking stay in TypeScript too, so both paths share them.
+The audio decode worker loads the module once, on its first attempt.
+If it does not load or instantiate, that worker warns once and every output stage renders through the reference, and a kernel the module cannot allocate falls back the same way, so playback never fails for it.
+Each attempt frees its kernels when it ends, also when a seek or a resync stops it early, because the worker outlives its runs.</li>
+<li>Decoded PCM goes from the worker straight to the worklet (10-09).
+The page used to receive every chunk as an <code>'audio'</code> message and post it on to the worklet, so decoded audio waited on the page’s main thread.
+The page now creates the channel, hands the producer’s end over with <code>attach-audio-output</code> or <code>resync-audio</code>, and learns each chunk’s place and length from <code>audio-progress</code>, which readiness, telemetry, and the end-of-stream drain read.
+<code>WorkletPCMProducer</code> owns the credit window and checks each chunk as the page’s bridge did, so a gap, an overlap, or an overflow still fails as <code>audio-output-failed</code>.
+The worklet returns each played chunk’s buffers, and <code>PCMChannelPool</code> lends them to the output stage for later chunks.</li>
+<li>An audio decode worker decodes and renders decoded PCM (10-09).
+The worker spawns <code>CustomAudioDecode.worker.js</code> at its first decoded PCM start and keeps it for its life; terminating the worker terminates it too.
+It runs the bundled E-AC-3, DTS, and TrueHD decoders, the downmix, the output stage, and the producer, so a long software video decode never delays audio, and audio decoding never delays video.
+Demux stays in the worker, which reads the source once for both tracks.
+The worker sends compressed packets copied back to back, or Mediabunny’s decoded samples cut to the start, in batches that close at 40 ms of media time or 64 inputs, so TrueHD’s 1200 access units a second do not each cost a message.
+4 batches are in flight, and each returns its credit once rendered under the producer’s window, so demux runs at most a few batches ahead.
+Progress, the decoded format, an attempt’s end, and failures return through the worker, which keeps their order with <code>audio-ended</code> and <code>stopped</code> on its one channel to the page.
+A run’s <code>stopped</code> waits until the audio decode worker released the run’s attempts.
+Failures keep their kinds, and a lost audio decode worker fails the run as <code>audio-output-failed</code>, which falls back to HTML in the same session, and asks for a fresh worker.
+Mediabunny’s own decoding stays in the worker: WebCodecs decodes off the worker’s thread anyway, and <code>@mediabunny/ac3</code> exposes only its Mediabunny registration.</li>
 </ul>
 <h2 id="repository"><a class="header" href="#repository">Repository</a></h2>
 <ul>

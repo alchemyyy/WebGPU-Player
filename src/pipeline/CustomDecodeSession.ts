@@ -1,7 +1,14 @@
 import { createEngineWorker } from '../EngineAssets';
 import type { Microseconds } from '../MediaTime';
 import { ingestWorkerTimingEvents, isTimingTraceActive, recordTimingEvent } from '../TimingTrace';
-import type { DecodedPresentationFrame } from '../presentation/WebGPUPresenter';
+import type {
+    DecodedPresentationFrame,
+    DecodedWorkerPresentationFrame
+} from '../presentation/WebGPUPresenter';
+import type {
+    WorkerPresentationAttachment,
+    WorkerPresentationRendererProvider
+} from '../presentation/WorkerPresentationProtocol';
 import type CustomDecodeAudioBridge from '../audio/output/CustomDecodeAudioBridge';
 import type CustomDecodeNativeAudioBridge from '../audio/native/CustomDecodeNativeAudioBridge';
 import type { CustomAudioOutputChannelCount } from '../audio/processing/CustomAudioChannelLayout';
@@ -35,22 +42,30 @@ import {
     type CustomDecodeAudioOutputMode,
     type CustomDecodeDolbyVisionProfile,
     type CustomDecodeNativeHDRTransfer,
+    type CustomDecodePresentationMode,
     type CustomDecodeWorkerProgressPhase,
     type CustomDecodeRawVideoFrameFormat,
     type CustomDecodeVideoDecoderBackend,
     type CustomDecodeVideoOutputMode,
     type DecodeWorkerAudioConfiguration,
     type DecodeWorkerAudioEndedResponse,
-    type DecodeWorkerAudioResponse,
+    type DecodeWorkerAudioOutputAttachment,
+    type DecodeWorkerAudioProgressResponse,
     type DecodeWorkerAudioSourceFormatResponse,
+    type DecodeWorkerFrameDescriptorResponse,
+    type DecodeWorkerFrameMetadataSummary,
     type DecodeWorkerFrameResponse,
     type DecodeWorkerReadyResponse,
+    type DecodeWorkerRendererStatusResponse,
     type DecodeWorkerNativeAudioInitializationResponse,
     type DecodeWorkerNativeAudioMediaResponse,
     type DecodeWorkerNativeMediaAudioConfiguration,
     type DecodeWorkerReadyAudioConfiguration,
     type DecodeWorkerRequest,
+    type DecodeWorkerResponse,
     type DecodeWorkerResyncAudioRequest,
+    type DecodeWorkerStartRequest,
+    type DecodeWorkerStoppedResponse,
     type DecodeWorkerVideoEndedResponse,
     type DecodeWorkerVideoInterruptedResponse,
     type DecodeWorkerVideoInterruptionReason
@@ -65,7 +80,15 @@ import type {
 } from '../video/hdr/StaticHDRMetadata';
 
 const WORKER_STOP_TIMEOUT_MILLISECONDS = 1_000;
+// A worker's renderer reports its status while the first start waits; a silent one leaves the worker presenting on the page
+const RENDERER_STATUS_TIMEOUT_MILLISECONDS = 2_000;
 const MINIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS = 100_000;
+const FRAME_QUEUE_BOUND_FAILURE = 'The custom decode frame queue exceeded its bound';
+const UNEXPECTED_FRAME_OUTPUT_MODE_FAILURE = 'The custom decode worker returned an unexpected video output mode';
+// Why a worker the session offered a renderer presents on the page instead
+const RENDERER_ATTACHMENT_UNAVAILABLE_REASON = 'The presenter offered no renderer attachment';
+const RENDERER_ATTACHMENT_FAILED_REASON = 'Unable to hand the renderer attachment to the worker';
+const RENDERER_STATUS_TIMEOUT_REASON = 'The worker renderer did not report its status in time';
 
 export type CustomDecodeSessionStartOptions = {
     audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
@@ -170,6 +193,8 @@ export type CustomDecodeSessionTelemetry = {
     nativeAudioEnded: boolean
     peakFrameCount: number
     pendingFrameCount: number
+    /** Where the current generation's frames present, once its start reached the worker */
+    presentationMode: CustomDecodePresentationMode | null
     queuedFrameCount: number
     receivedAudioFrameCount: number
     receivedAudioSampleCount: number
@@ -184,6 +209,8 @@ export type CustomDecodeSessionTelemetry = {
     receivedNativeAudioSegmentCount: number
     receivedFrameCount: number
     recycledRawFrameCount: number
+    /** Why the generation presents on the page although the session offered its worker a renderer */
+    rendererUnavailableReason: string | null
     staleAudioSampleCount: number
     staleFrameCount: number
     state: 'configured' | 'ended' | 'error' | 'idle' | 'ready' | 'starting'
@@ -200,6 +227,8 @@ export type CustomDecodeSessionTelemetry = {
     videoProgressPhase: CustomDecodeWorkerProgressPhase | null
     videoResyncCount: number
     videoSuspensionCount: number
+    /** The current generation runs in the worker an earlier generation used */
+    workerReused: boolean
 };
 
 export type CustomDecodeSessionEventHandler = (event: CustomDecodeSessionEvent) => void;
@@ -210,11 +239,41 @@ export type CustomDecodeAudioBridgeFactory = (
 export type CustomDecodeNativeAudioBridgeFactory = () => CustomDecodeNativeAudioBridge;
 
 type QueuedFrame = {
+    generationRecord: GenerationRecord
     presentationFrame: DecodedPresentationFrame
-    workerRecord: WorkerRecord
 };
 
+// A frame the worker posts: a payload the page presents, or a descriptor of one the worker's renderer holds
+type DecodeWorkerFrameMessage = DecodeWorkerFrameDescriptorResponse | DecodeWorkerFrameResponse;
+
+/** The session's decode worker, which runs one generation at a time and outlives each of them. */
 type WorkerRecord = {
+    errorHandler: (event: ErrorEvent) => void
+    /** A generation's start already reached the worker */
+    hasRunGeneration: boolean
+    messageHandler: (event: MessageEvent<unknown>) => void
+    /** Where every generation of this worker presents; null while the starts wait for its renderer's status */
+    presentationMode: CustomDecodePresentationMode | null
+    /** The generation the renderer's status echoes */
+    rendererStatusGeneration: number | null
+    /** Bounds the renderer's status */
+    rendererStatusTimer: ReturnType<typeof globalThis.setTimeout> | null
+    /** Why the worker presents on the page although the session offered it a renderer */
+    rendererUnavailableReason: string | null
+    /** Runs no further generation: a run failed or broke the protocol, or the worker asked for it */
+    replacementRequired: boolean
+    /** The generation whose run the worker holds until it posts `stopped`; null while it is idle */
+    runningGeneration: GenerationRecord | null
+    /** Bounds the acknowledgement of a run the session asked to stop */
+    stopTimer: ReturnType<typeof globalThis.setTimeout> | null
+    terminated: boolean
+    /** Mediabunny keeps the decoders a backend registers for the worker's life, so another backend gets a new worker */
+    videoDecoderBackend: CustomDecodeVideoDecoderBackend
+    worker: Worker
+};
+
+/** One decode generation: its run in the worker, and the credits, epochs, readiness, and audio paths the page keeps for it. */
+type GenerationRecord = {
     audioConfiguration: DecodeWorkerReadyAudioConfiguration | null
     /** Latest requested audio attempt; samples from earlier epochs are stale */
     audioEpoch: number
@@ -230,22 +289,28 @@ type WorkerRecord = {
     decodeEnded: boolean
     decodedAudioOutputChannelCount: CustomAudioOutputChannelCount | null
     decodedVideoGeometry: RawVideoFrameGeometry | null
-    errorHandler: (event: ErrorEvent) => void
     generation: number
     maximumCodedHeight: number
     maximumCodedWidth: number
-    messageHandler: (event: MessageEvent<unknown>) => void
     nativeAudioBridgeStarted: boolean
     nativeAudioElementEnded: boolean
     nativeAudioEndOfStreamAccepted: boolean
     nativeAudioEndOfStreamRequested: boolean
-    resolveRetirement: (() => void) | null
-    retirementPromise: Promise<void> | null
-    retirementTimer: ReturnType<typeof globalThis.setTimeout> | null
+    /** Where the run's frames present, set when its start reaches the worker */
+    presentationMode: CustomDecodePresentationMode | null
+    resolveRetirement: () => void
+    /** Settles once the run posted `stopped` or its worker was terminated */
+    retirementPromise: Promise<void>
+    /** The run is over, or its start never reached a worker */
+    runStopped: boolean
+    startRequest: DecodeWorkerStartRequest
     startTimeMicroseconds: Microseconds
+    /** The session posted `stop` for the run */
+    stopRequested: boolean
     durationMicroseconds: Microseconds | null
     videoGeometry: RawVideoFrameGeometry | null
     videoCodec: string | null
+    videoDecoderBackend: CustomDecodeVideoDecoderBackend
     /** Latest requested video attempt; frames from earlier epochs are stale */
     videoEpoch: number
     videoMediaReady: boolean
@@ -253,7 +318,8 @@ type WorkerRecord = {
     staticHDRMetadata: StaticHDRMetadata | null
     /** The container's duration, reported only for a source the server never probed */
     containerDurationMicroseconds: Microseconds | null
-    worker: Worker
+    /** The worker that took the generation's start; null while the start waits for a free worker */
+    workerRecord: WorkerRecord | null
 };
 
 function createTelemetry(): CustomDecodeSessionTelemetry {
@@ -280,6 +346,7 @@ function createTelemetry(): CustomDecodeSessionTelemetry {
         nativeAudioEnded: false,
         peakFrameCount: 0,
         pendingFrameCount: 0,
+        presentationMode: null,
         queuedFrameCount: 0,
         receivedAudioFrameCount: 0,
         receivedAudioSampleCount: 0,
@@ -294,6 +361,7 @@ function createTelemetry(): CustomDecodeSessionTelemetry {
         receivedNativeAudioSegmentCount: 0,
         receivedFrameCount: 0,
         recycledRawFrameCount: 0,
+        rendererUnavailableReason: null,
         staleAudioSampleCount: 0,
         staleFrameCount: 0,
         state: 'idle',
@@ -308,7 +376,8 @@ function createTelemetry(): CustomDecodeSessionTelemetry {
         videoEpoch: 0,
         videoProgressPhase: null,
         videoResyncCount: 0,
-        videoSuspensionCount: 0
+        videoSuspensionCount: 0,
+        workerReused: false
     };
 }
 
@@ -394,6 +463,11 @@ function closePresentationFrame(presentationFrame: DecodedPresentationFrame): vo
     }
 }
 
+/** The output mode of a run's frames: descriptors when its worker presents them, else payloads in the requested mode. */
+function getExpectedFrameOutputMode(generationRecord: GenerationRecord): DecodeWorkerFrameMessage['outputMode'] {
+    return generationRecord.presentationMode === 'worker' ? 'worker-frame' : generationRecord.videoOutputMode;
+}
+
 function validateDecodedAudioOutputChannelCount(
     options: CustomDecodeSessionStartOptions,
     audioOutputMode: CustomDecodeAudioOutputMode
@@ -429,10 +503,10 @@ function validateAudioDownmixAlgorithm(options: CustomDecodeSessionStartOptions)
 }
 
 function getReadyAudioConfigurationError(
-    workerRecord: WorkerRecord,
+    generationRecord: GenerationRecord,
     audioConfiguration: DecodeWorkerReadyAudioConfiguration | null
 ): string | null {
-    if (workerRecord.audioRequested !== Boolean(audioConfiguration)) {
+    if (generationRecord.audioRequested !== Boolean(audioConfiguration)) {
         return 'Decoded audio configuration did not match the request';
     }
     if (!audioConfiguration) {
@@ -440,10 +514,10 @@ function getReadyAudioConfigurationError(
     }
 
     const responseOutputMode = isNativeMediaAudioConfiguration(audioConfiguration) ? 'native-media' : 'decoded-pcm';
-    if (responseOutputMode !== workerRecord.audioOutputMode) {
+    if (responseOutputMode !== generationRecord.audioOutputMode) {
         return 'Decoded audio output mode did not match the request';
     }
-    if (responseOutputMode === 'decoded-pcm' && audioConfiguration.channelCount !== workerRecord.decodedAudioOutputChannelCount) {
+    if (responseOutputMode === 'decoded-pcm' && audioConfiguration.channelCount !== generationRecord.decodedAudioOutputChannelCount) {
         return 'Decoded audio channel count did not match the request';
     }
     return null;
@@ -501,30 +575,41 @@ function validateHDRStartOptions(options: CustomDecodeSessionStartOptions): void
     }
 }
 
-/** Owns one bounded, generation-safe custom video decode worker session. */
+/**
+ * Owns one bounded, generation-safe custom decode session and its decode worker.
+ * The worker outlives generations: it runs one at a time, and a start waits until the previous run has stopped.
+ */
 export default class CustomDecodeSession {
     private activeAudioBridge: CustomDecodeAudioBridge | null = null;
     private activeNativeAudioBridge: CustomDecodeNativeAudioBridge | null = null;
     private readonly audioBridgeFactory: CustomDecodeAudioBridgeFactory | null;
     private readonly configuredAudioBridge: CustomDecodeAudioBridge | null;
+    private destroyed = false;
     private readonly eventHandler: CustomDecodeSessionEventHandler;
     private readonly nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null;
     private nativeAudioStopScheduled = false;
     private nativeAudioStopTail: Promise<void> = Promise.resolve();
-    private readonly retiringWorkers = new Set<WorkerRecord>();
+    private readonly presentationRendererProvider: WorkerPresentationRendererProvider | null;
     private readonly workerFactory: CustomDecodeWorkerFactory;
     private readonly queuedFrames: QueuedFrame[] = [];
-    private readonly pendingFrames = new Map<DecodedPresentationFrame, WorkerRecord>();
+    private readonly pendingFrames = new Map<DecodedPresentationFrame, GenerationRecord>();
 
-    private activeWorker: WorkerRecord | null = null;
+    private activeGeneration: GenerationRecord | null = null;
     private telemetry = createTelemetry();
+    /** Created by the first start, and replaced only after a failure or an unacknowledged stop */
+    private workerRecord: WorkerRecord | null = null;
 
+    /**
+     * Creates an idle session; its first start creates the decode worker.
+     * A renderer provider lets each worker present its frames itself, in a canvas the provider transfers to it.
+     */
     public constructor(
         eventHandler: CustomDecodeSessionEventHandler = () => undefined,
         workerFactory: CustomDecodeWorkerFactory = createDefaultWorker,
         audioBridge: CustomDecodeAudioBridge | null = null,
         audioBridgeFactory: CustomDecodeAudioBridgeFactory | null = null,
-        nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null = null
+        nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null = null,
+        presentationRendererProvider: WorkerPresentationRendererProvider | null = null
     ) {
         if (audioBridge && audioBridgeFactory) {
             throw new TypeError('Provide either a decoded audio bridge or a bridge factory, not both');
@@ -533,18 +618,25 @@ export default class CustomDecodeSession {
         this.configuredAudioBridge = audioBridge;
         this.eventHandler = eventHandler;
         this.nativeAudioBridgeFactory = nativeAudioBridgeFactory;
+        this.presentationRendererProvider = presentationRendererProvider;
         this.workerFactory = workerFactory;
     }
 
-    /** Starts a fresh worker and retires any previous generation. */
+    /**
+     * Starts a generation and retires any previous one.
+     * The worker takes the start once the previous run has posted `stopped`, or once the stop bound has replaced the worker.
+     */
     public start(options: CustomDecodeSessionStartOptions): void {
+        if (this.destroyed) {
+            throw new Error('The custom decode session is destroyed');
+        }
         this.validateStartOptions(options);
 
-        const previousWorker = this.activeWorker;
-        this.activeWorker = null;
-        this.stopActiveAudioPaths(previousWorker?.generation ?? null);
-        if (previousWorker) {
-            void this.beginWorkerRetirement(previousWorker);
+        const previousGeneration = this.activeGeneration;
+        this.activeGeneration = null;
+        this.stopActiveAudioPaths(previousGeneration?.generation ?? null);
+        if (previousGeneration) {
+            this.retireGeneration(previousGeneration);
         }
         this.closeQueuedFrames();
         this.clearPendingFrames();
@@ -553,90 +645,66 @@ export default class CustomDecodeSession {
         this.telemetry.activeGeneration = options.generation;
         this.telemetry.state = 'starting';
 
-        let worker: Worker;
+        let startRequest: DecodeWorkerStartRequest;
         try {
-            worker = this.workerFactory();
+            startRequest = this.createStartRequest(options);
         } catch {
-            this.failSession(options.generation, 'decode-failed', 'Unable to create the custom decode worker');
+            this.failSession(options.generation, 'decode-failed', 'Unable to start the custom decode worker');
             return;
         }
-
-        const workerRecord = this.createWorkerRecord(worker, options);
-        this.activeWorker = workerRecord;
-        worker.addEventListener('message', workerRecord.messageHandler);
-        worker.addEventListener('error', workerRecord.errorHandler);
-
-        try {
-            const startRequest: DecodeWorkerRequest = {
-                audioSampleCredits: 0,
-                audioTrackIndex: options.audioTrackIndex ?? null,
-                ...(options.discardDolbyVisionEnhancementLayer ? { discardDolbyVisionEnhancementLayer: true } : {}),
-                dolbyVisionProfile: options.dolbyVisionProfile,
-                dolbyVisionRPUParserWASMURL: resolveDolbyVisionRPUParserWASMURL(),
-                frameCredits: options.videoOutputMode === 'raw-planes' ? MAX_DECODED_RAW_FRAME_CREDITS : MAX_DECODED_FRAME_CREDITS,
-                generation: options.generation,
-                maximumCodedHeight: options.maximumCodedHeight,
-                maximumCodedWidth: options.maximumCodedWidth,
-                nativeHDRTransfer: options.nativeHDRTransfer,
-                neutralizeHDRColorMetadata: options.neutralizeHDRColorMetadata,
-                rawVideoFrameFormat: options.rawVideoFrameFormat,
-                ...(options.durationMicroseconds == null ? { reportContainerDuration: true } : {}),
-                startTimeMicroseconds: options.startTimeMicroseconds,
-                ...(isTimingTraceActive() ? { timingTrace: true } : {}),
-                type: 'start',
-                url: options.url,
-                videoDecoderBackend: options.videoDecoderBackend,
-                videoOutputMode: options.videoOutputMode,
-                videoTrackIndex: options.videoTrackIndex
-            };
-            if (options.audioDownmixSettings !== undefined) {
-                startRequest.audioDownmixSettings = { ...options.audioDownmixSettings };
-            }
-            if (workerRecord.audioOutputMode === 'native-media') {
-                startRequest.audioOutputMode = 'native-media';
-            }
-            if (workerRecord.audioOutputMode === 'decoded-pcm' && options.audioDownmixAlgorithm !== undefined) {
-                startRequest.audioDownmixAlgorithm = options.audioDownmixAlgorithm;
-            }
-            if (options.decodedAudioOutputChannelCount !== undefined) {
-                startRequest.decodedAudioOutputChannelCount = options.decodedAudioOutputChannelCount;
-            }
-            this.postRequest(workerRecord, startRequest);
-        } catch {
-            this.activeWorker = null;
-            this.finishWorker(workerRecord);
-            this.failSession(options.generation, 'decode-failed', 'Unable to start the custom decode worker');
-        }
+        this.activeGeneration = this.createGenerationRecord(options, startRequest);
+        this.startPendingGeneration();
     }
 
-    /** Stops decoding, closes queued frames, and terminates the worker after cleanup. */
+    /**
+     * Stops decoding and closes queued frames.
+     * Resolves once the worker has acknowledged the stop, or has been replaced after the bound, and keeps it for the next start.
+     */
     public stop(): Promise<void> {
-        const workerRecord = this.activeWorker;
-        this.activeWorker = null;
-        this.stopActiveAudioPaths(workerRecord?.generation ?? null);
+        const generationRecord = this.activeGeneration;
+        this.activeGeneration = null;
+        this.stopActiveAudioPaths(generationRecord?.generation ?? null);
         this.closeQueuedFrames();
         this.clearPendingFrames();
         this.telemetry.activeGeneration = null;
         this.telemetry.state = 'idle';
 
-        if (workerRecord) {
-            void this.beginWorkerRetirement(workerRecord);
+        if (generationRecord) {
+            this.retireGeneration(generationRecord);
         }
 
-        const retirementPromises: Promise<void>[] = [];
+        const stopPromises: Promise<void>[] = [];
         if (this.nativeAudioStopScheduled) {
-            retirementPromises.push(this.nativeAudioStopTail);
+            stopPromises.push(this.nativeAudioStopTail);
         }
-        for (const retiringWorker of this.retiringWorkers) {
-            retirementPromises.push(this.beginWorkerRetirement(retiringWorker));
+        // A start that waited for a retiring run leaves that run behind
+        const runningGeneration = this.workerRecord?.runningGeneration ?? null;
+        if (runningGeneration) {
+            stopPromises.push(runningGeneration.retirementPromise);
         }
-        switch (retirementPromises.length) {
+        switch (stopPromises.length) {
             case 0:
                 return Promise.resolve();
             case 1:
-                return retirementPromises[0];
+                return stopPromises[0];
             default:
-                return Promise.all(retirementPromises).then((): void => undefined);
+                return Promise.all(stopPromises).then((): void => undefined);
+        }
+    }
+
+    /**
+     * Stops decoding and terminates the worker at once; a later start throws.
+     * Call stop() first to give the run its bound to finish.
+     */
+    public destroy(): void {
+        if (this.destroyed) {
+            return;
+        }
+        this.destroyed = true;
+        void this.stop().catch((): void => undefined);
+        const workerRecord = this.workerRecord;
+        if (workerRecord) {
+            this.terminateWorker(workerRecord);
         }
     }
 
@@ -654,17 +722,17 @@ export default class CustomDecodeSession {
      */
     public updateAudioDownmixSettings(settings: AudioDownmixSettings): boolean {
         assertValidAudioDownmixSettings(settings);
-        const workerRecord = this.activeWorker;
-        if (!workerRecord
-            || !this.isWorkerCurrent(workerRecord)
-            || !workerRecord.configurationReceived
+        const generationRecord = this.activeGeneration;
+        if (!generationRecord
+            || !this.isGenerationCurrent(generationRecord)
+            || !generationRecord.configurationReceived
             || (this.telemetry.state !== 'configured' && this.telemetry.state !== 'ready')
-            || workerRecord.audioOutputMode !== 'decoded-pcm'
-            || workerRecord.decodedAudioOutputChannelCount !== 2) {
+            || generationRecord.audioOutputMode !== 'decoded-pcm'
+            || generationRecord.decodedAudioOutputChannelCount !== 2) {
             return false;
         }
 
-        const audioConfiguration = workerRecord.audioConfiguration;
+        const audioConfiguration = generationRecord.audioConfiguration;
         if (!audioConfiguration
             || isNativeMediaAudioConfiguration(audioConfiguration)
             || audioConfiguration.channelCount !== 2) {
@@ -672,9 +740,9 @@ export default class CustomDecodeSession {
         }
 
         try {
-            this.postRequest(workerRecord, {
+            this.postRequest(generationRecord, {
                 audioDownmixSettings: { ...settings },
-                generation: workerRecord.generation,
+                generation: generationRecord.generation,
                 type: 'update-audio-downmix-settings'
             });
             return true;
@@ -733,31 +801,15 @@ export default class CustomDecodeSession {
         }
         this.telemetry.queuedFrameCount = this.queuedFrames.length;
         this.telemetry.droppedFrameCount += consumedFrames.length;
-        for (let frameIndex = 0; frameIndex < consumedFrames.length; frameIndex += 1) {
-            const droppedFrame = consumedFrames[frameIndex];
-            recordTimingEvent('frame-dropped', {
-                mediaTimeMicroseconds: droppedFrame.presentationFrame.mediaTimeMicroseconds,
-                targetTimeMicroseconds
-            });
-            if (droppedFrame.presentationFrame.outputMode === 'video-frame') {
-                closePresentationFrame(droppedFrame.presentationFrame);
-                continue;
-            }
-            if (!this.recycleFrameBuffer(droppedFrame.workerRecord, droppedFrame.presentationFrame.frame.data)) {
-                this.abandonPresentationFrame(droppedFrame.presentationFrame);
-                for (let abandonedFrameIndex = frameIndex + 1; abandonedFrameIndex < consumedFrames.length; abandonedFrameIndex += 1) {
-                    this.abandonPresentationFrame(consumedFrames[abandonedFrameIndex].presentationFrame);
-                }
-                this.abandonPresentationFrame(selectedQueuedFrame.presentationFrame);
-                return null;
-            }
+        if (!this.releaseDroppedFrames(consumedFrames, selectedQueuedFrame, targetTimeMicroseconds)) {
+            return null;
         }
 
         this.telemetry.takenFrameCount += 1;
-        this.pendingFrames.set(selectedQueuedFrame.presentationFrame, selectedQueuedFrame.workerRecord);
+        this.pendingFrames.set(selectedQueuedFrame.presentationFrame, selectedQueuedFrame.generationRecord);
         this.telemetry.pendingFrameCount = this.pendingFrames.size;
         if (selectedQueuedFrame.presentationFrame.outputMode === 'video-frame') {
-            this.requestReplacementFrames(selectedQueuedFrame.workerRecord, consumedFrames.length);
+            this.requestReplacementFrames(selectedQueuedFrame.generationRecord, consumedFrames.length);
         }
 
         return selectedQueuedFrame.presentationFrame;
@@ -779,48 +831,48 @@ export default class CustomDecodeSession {
      */
     public resyncVideo(targetTimeMicroseconds: Microseconds): boolean {
         requireMicroseconds(targetTimeMicroseconds, 'Video resync target time');
-        const workerRecord = this.beginVideoEpoch();
-        if (!workerRecord) {
+        const generationRecord = this.beginVideoEpoch();
+        if (!generationRecord) {
             return false;
         }
 
         try {
-            this.postRequest(workerRecord, {
-                generation: workerRecord.generation,
+            this.postRequest(generationRecord, {
+                generation: generationRecord.generation,
                 targetTimeMicroseconds,
                 type: 'resync-video',
-                videoEpoch: workerRecord.videoEpoch
+                videoEpoch: generationRecord.videoEpoch
             });
         } catch {
-            this.handleDecodeProtocolFailure(workerRecord, 'Unable to resynchronize custom video decode');
+            this.handleDecodeProtocolFailure(generationRecord, 'Unable to resynchronize custom video decode');
             return false;
         }
         this.telemetry.videoResyncCount += 1;
-        this.discardQueuedVideoFrames(workerRecord);
+        this.discardQueuedVideoFrames(generationRecord);
         // Returning discarded credits can itself fail the session
-        return this.isWorkerCurrent(workerRecord);
+        return this.isGenerationCurrent(generationRecord);
     }
 
     /** Releases the video decoder until the next resync while audio continues. */
     public suspendVideo(): boolean {
-        const workerRecord = this.beginVideoEpoch();
-        if (!workerRecord) {
+        const generationRecord = this.beginVideoEpoch();
+        if (!generationRecord) {
             return false;
         }
 
         try {
-            this.postRequest(workerRecord, {
-                generation: workerRecord.generation,
+            this.postRequest(generationRecord, {
+                generation: generationRecord.generation,
                 type: 'suspend-video',
-                videoEpoch: workerRecord.videoEpoch
+                videoEpoch: generationRecord.videoEpoch
             });
         } catch {
-            this.handleDecodeProtocolFailure(workerRecord, 'Unable to suspend custom video decode');
+            this.handleDecodeProtocolFailure(generationRecord, 'Unable to suspend custom video decode');
             return false;
         }
         this.telemetry.videoSuspensionCount += 1;
-        this.discardQueuedVideoFrames(workerRecord);
-        return this.isWorkerCurrent(workerRecord);
+        this.discardQueuedVideoFrames(generationRecord);
+        return this.isGenerationCurrent(generationRecord);
     }
 
     /**
@@ -841,28 +893,28 @@ export default class CustomDecodeSession {
             assertValidAudioDownmixSettings(options.audioDownmixSettings);
         }
 
-        const workerRecord = this.activeWorker;
-        const audioConfiguration = workerRecord?.audioConfiguration ?? null;
-        if (!workerRecord
-            || !this.isWorkerCurrent(workerRecord)
+        const generationRecord = this.activeGeneration;
+        const audioConfiguration = generationRecord?.audioConfiguration ?? null;
+        if (!generationRecord
+            || !this.isGenerationCurrent(generationRecord)
             || this.telemetry.state !== 'ready'
-            || workerRecord.audioOutputMode !== 'decoded-pcm'
+            || generationRecord.audioOutputMode !== 'decoded-pcm'
             || !audioConfiguration
             || isNativeMediaAudioConfiguration(audioConfiguration)) {
             return null;
         }
 
         // A newer resync supersedes one still building its bridge
-        const audioEpoch = workerRecord.audioEpoch + 1;
-        workerRecord.audioEpoch = audioEpoch;
-        workerRecord.audioEpochSubmittedFrameCount = 0;
-        workerRecord.audioResyncPending = true;
-        workerRecord.audioTrackEnded = false;
+        const audioEpoch = generationRecord.audioEpoch + 1;
+        generationRecord.audioEpoch = audioEpoch;
+        generationRecord.audioEpochSubmittedFrameCount = 0;
+        generationRecord.audioResyncPending = true;
+        generationRecord.audioTrackEnded = false;
         this.telemetry.audioEnded = false;
         this.telemetry.audioEpoch = audioEpoch;
         this.telemetry.audioResyncPending = true;
         // PCM queued for the old layout is discarded with its bridge
-        this.activeAudioBridge?.stop(workerRecord.generation);
+        this.activeAudioBridge?.stop(generationRecord.generation);
         this.activeAudioBridge = null;
 
         const resyncedAudioConfiguration: DecodeWorkerAudioConfiguration = {
@@ -873,25 +925,63 @@ export default class CustomDecodeSession {
         try {
             audioBridge = await options.createAudioBridge(resyncedAudioConfiguration);
         } catch {
-            if (this.isAudioEpochCurrent(workerRecord, audioEpoch)) {
-                this.handleAudioOutputFailure(workerRecord, 'Unable to create the resynchronized audio output');
+            if (this.isAudioEpochCurrent(generationRecord, audioEpoch)) {
+                this.handleAudioOutputFailure(generationRecord, 'Unable to create the resynchronized audio output');
             }
             return null;
         }
-        if (!this.isAudioEpochCurrent(workerRecord, audioEpoch)) {
+        if (!this.isAudioEpochCurrent(generationRecord, audioEpoch)) {
             return null;
         }
         // Decode can finish while the bridge is built; the finished run never sees the resync, so the bridge starts empty and lets playback drain to its end
         const decodeEnded = this.isDecodeEnded();
 
-        workerRecord.audioConfiguration = resyncedAudioConfiguration;
-        workerRecord.decodedAudioOutputChannelCount = outputChannelCount;
+        generationRecord.audioConfiguration = resyncedAudioConfiguration;
+        generationRecord.decodedAudioOutputChannelCount = outputChannelCount;
         this.activeAudioBridge = audioBridge;
+        let audioOutput: DecodeWorkerAudioOutputAttachment;
+        try {
+            audioOutput = audioBridge.start({
+                audioConfiguration: resyncedAudioConfiguration,
+                callbacks: {
+                    onFailure: message => {
+                        if (generationRecord.audioEpoch === audioEpoch) {
+                            this.handleAudioOutputFailure(generationRecord, message);
+                        }
+                    }
+                },
+                decodeGeneration: generationRecord.generation,
+                startTimeMicroseconds: options.targetTimeMicroseconds
+            });
+        } catch {
+            this.handleAudioOutputFailure(generationRecord, 'Unable to resynchronize decoded audio');
+            return null;
+        }
+        if (decodeEnded) {
+            // The finished run takes no channel
+            audioOutput.port.close();
+            generationRecord.audioResyncPending = false;
+            this.telemetry.audioResyncPending = false;
+        } else if (!this.postAudioResync(generationRecord, audioEpoch, audioOutput, options)) {
+            return null;
+        }
+        this.telemetry.audioChannelCount = outputChannelCount;
+        this.telemetry.audioResyncCount += 1;
+        return audioEpoch;
+    }
+
+    /** Restarts the worker's audio attempt with the new worklet's channel; returns false once the failure is handled. */
+    private postAudioResync(
+        generationRecord: GenerationRecord,
+        audioEpoch: number,
+        audioOutput: DecodeWorkerAudioOutputAttachment,
+        options: CustomDecodeAudioResyncOptions
+    ): boolean {
         const resyncRequest: DecodeWorkerResyncAudioRequest = {
             audioEpoch,
-            audioSampleCredits: audioBridge.initialAudioSampleCredits,
-            decodedAudioOutputChannelCount: outputChannelCount,
-            generation: workerRecord.generation,
+            audioOutput,
+            decodedAudioOutputChannelCount: options.decodedAudioOutputChannelCount,
+            generation: generationRecord.generation,
             targetTimeMicroseconds: options.targetTimeMicroseconds,
             type: 'resync-audio'
         };
@@ -902,40 +992,18 @@ export default class CustomDecodeSession {
             resyncRequest.audioDownmixSettings = { ...options.audioDownmixSettings };
         }
         try {
-            audioBridge.start({
-                audioConfiguration: resyncedAudioConfiguration,
-                callbacks: {
-                    onCreditsReleased: audioSampleCredits => {
-                        this.requestReplacementAudioSamples(workerRecord, audioSampleCredits, audioEpoch);
-                    },
-                    onFailure: message => {
-                        if (workerRecord.audioEpoch === audioEpoch) {
-                            this.handleAudioOutputFailure(workerRecord, message);
-                        }
-                    }
-                },
-                decodeGeneration: workerRecord.generation,
-                startTimeMicroseconds: options.targetTimeMicroseconds
-            });
-            if (!decodeEnded) {
-                this.postRequest(workerRecord, resyncRequest);
-            }
+            this.postRequest(generationRecord, resyncRequest, [ audioOutput.port ]);
+            return true;
         } catch {
-            this.handleAudioOutputFailure(workerRecord, 'Unable to resynchronize decoded audio');
-            return null;
+            audioOutput.port.close();
+            this.handleAudioOutputFailure(generationRecord, 'Unable to resynchronize decoded audio');
+            return false;
         }
-        if (decodeEnded) {
-            workerRecord.audioResyncPending = false;
-            this.telemetry.audioResyncPending = false;
-        }
-        this.telemetry.audioChannelCount = outputChannelCount;
-        this.telemetry.audioResyncCount += 1;
-        return audioEpoch;
     }
 
-    private isAudioEpochCurrent(workerRecord: WorkerRecord, audioEpoch: number): boolean {
-        return this.isWorkerCurrent(workerRecord)
-            && workerRecord.audioEpoch === audioEpoch
+    private isAudioEpochCurrent(generationRecord: GenerationRecord, audioEpoch: number): boolean {
+        return this.isGenerationCurrent(generationRecord)
+            && generationRecord.audioEpoch === audioEpoch
             && (this.telemetry.state === 'ready' || this.isDecodeEnded());
     }
 
@@ -992,8 +1060,54 @@ export default class CustomDecodeSession {
         validateRawVideoFrameCopyLayout(options);
     }
 
-    private createWorkerRecord(worker: Worker, options: CustomDecodeSessionStartOptions): WorkerRecord {
-        const workerRecord: WorkerRecord = {
+    private createStartRequest(options: CustomDecodeSessionStartOptions): DecodeWorkerStartRequest {
+        const audioOutputMode = options.audioOutputMode ?? 'decoded-pcm';
+        const startRequest: DecodeWorkerStartRequest = {
+            audioSampleCredits: 0,
+            audioTrackIndex: options.audioTrackIndex ?? null,
+            ...(options.discardDolbyVisionEnhancementLayer ? { discardDolbyVisionEnhancementLayer: true } : {}),
+            dolbyVisionProfile: options.dolbyVisionProfile,
+            dolbyVisionRPUParserWASMURL: resolveDolbyVisionRPUParserWASMURL(),
+            frameCredits: options.videoOutputMode === 'raw-planes' ? MAX_DECODED_RAW_FRAME_CREDITS : MAX_DECODED_FRAME_CREDITS,
+            generation: options.generation,
+            maximumCodedHeight: options.maximumCodedHeight,
+            maximumCodedWidth: options.maximumCodedWidth,
+            nativeHDRTransfer: options.nativeHDRTransfer,
+            neutralizeHDRColorMetadata: options.neutralizeHDRColorMetadata,
+            rawVideoFrameFormat: options.rawVideoFrameFormat,
+            ...(options.durationMicroseconds == null ? { reportContainerDuration: true } : {}),
+            startTimeMicroseconds: options.startTimeMicroseconds,
+            ...(isTimingTraceActive() ? { timingTrace: true } : {}),
+            type: 'start',
+            url: options.url,
+            videoDecoderBackend: options.videoDecoderBackend,
+            videoOutputMode: options.videoOutputMode,
+            videoTrackIndex: options.videoTrackIndex
+        };
+        if (options.audioDownmixSettings !== undefined) {
+            startRequest.audioDownmixSettings = { ...options.audioDownmixSettings };
+        }
+        if (audioOutputMode === 'native-media') {
+            startRequest.audioOutputMode = 'native-media';
+        }
+        if (audioOutputMode === 'decoded-pcm' && options.audioDownmixAlgorithm !== undefined) {
+            startRequest.audioDownmixAlgorithm = options.audioDownmixAlgorithm;
+        }
+        if (options.decodedAudioOutputChannelCount !== undefined) {
+            startRequest.decodedAudioOutputChannelCount = options.decodedAudioOutputChannelCount;
+        }
+        return startRequest;
+    }
+
+    private createGenerationRecord(
+        options: CustomDecodeSessionStartOptions,
+        startRequest: DecodeWorkerStartRequest
+    ): GenerationRecord {
+        let resolveRetirement: () => void = (): void => undefined;
+        const retirementPromise = new Promise<void>(resolve => {
+            resolveRetirement = resolve;
+        });
+        return {
             audioConfiguration: null,
             audioEpoch: 0,
             audioEpochSubmittedFrameCount: 0,
@@ -1010,27 +1124,47 @@ export default class CustomDecodeSession {
                     options.decodedAudioOutputChannelCount ?? 2 :
                     null,
             decodedVideoGeometry: null,
-            errorHandler: (): void => undefined,
             generation: options.generation,
             maximumCodedHeight: options.maximumCodedHeight,
             maximumCodedWidth: options.maximumCodedWidth,
-            messageHandler: (): void => undefined,
             nativeAudioBridgeStarted: false,
             nativeAudioElementEnded: false,
             nativeAudioEndOfStreamAccepted: false,
             nativeAudioEndOfStreamRequested: false,
-            resolveRetirement: null,
-            retirementPromise: null,
-            retirementTimer: null,
+            presentationMode: null,
+            resolveRetirement,
+            retirementPromise,
+            runStopped: false,
+            startRequest,
             startTimeMicroseconds: options.startTimeMicroseconds,
+            stopRequested: false,
             durationMicroseconds: options.durationMicroseconds ?? null,
             videoCodec: null,
+            videoDecoderBackend: options.videoDecoderBackend,
             videoEpoch: 0,
             videoGeometry: null,
             videoMediaReady: false,
             videoOutputMode: options.videoOutputMode,
             staticHDRMetadata: null,
             containerDurationMicroseconds: null,
+            workerRecord: null
+        };
+    }
+
+    private createWorkerRecord(worker: Worker, videoDecoderBackend: CustomDecodeVideoDecoderBackend): WorkerRecord {
+        const workerRecord: WorkerRecord = {
+            errorHandler: (): void => undefined,
+            hasRunGeneration: false,
+            messageHandler: (): void => undefined,
+            presentationMode: 'main',
+            rendererStatusGeneration: null,
+            rendererStatusTimer: null,
+            rendererUnavailableReason: null,
+            replacementRequired: false,
+            runningGeneration: null,
+            stopTimer: null,
+            terminated: false,
+            videoDecoderBackend,
             worker
         };
 
@@ -1041,50 +1175,304 @@ export default class CustomDecodeSession {
             event.preventDefault();
             this.handleWorkerCrash(workerRecord);
         };
+        worker.addEventListener('message', workerRecord.messageHandler);
+        worker.addEventListener('error', workerRecord.errorHandler);
         return workerRecord;
+    }
+
+    /**
+     * Posts the active generation's start once the worker is free, creating the worker at the first start.
+     * A new worker first gets a renderer attachment, and its first start waits for the renderer's status, or its bound, which fixes where the worker's frames present.
+     * Overlapping runs are unsafe: a stopping run waits for every bundled HEVC decoder in its worker, the next run's included.
+     */
+    private startPendingGeneration(): void {
+        const generationRecord = this.activeGeneration;
+        if (!generationRecord || generationRecord.workerRecord || generationRecord.runStopped || this.destroyed) {
+            return;
+        }
+
+        let workerRecord = this.workerRecord;
+        if (workerRecord
+            && (workerRecord.replacementRequired || workerRecord.videoDecoderBackend !== generationRecord.videoDecoderBackend)) {
+            // A worker this generation will not reuse gives way at once, even while its run still stops
+            this.terminateWorker(workerRecord);
+            workerRecord = null;
+        }
+        if (workerRecord?.runningGeneration) {
+            // The previous run's acknowledgement, or its stop bound, resumes this start
+            return;
+        }
+
+        if (!workerRecord) {
+            try {
+                workerRecord = this.createWorkerRecord(this.workerFactory(), generationRecord.videoDecoderBackend);
+            } catch {
+                this.activeGeneration = null;
+                this.failSession(generationRecord.generation, 'decode-failed', 'Unable to create the custom decode worker');
+                return;
+            }
+            this.workerRecord = workerRecord;
+            this.attachPresentationRenderer(workerRecord, generationRecord.generation);
+        }
+        const presentationMode = workerRecord.presentationMode;
+        if (presentationMode === null) {
+            // The renderer's status, or its bound, resumes this start
+            return;
+        }
+
+        generationRecord.presentationMode = presentationMode;
+        generationRecord.workerRecord = workerRecord;
+        workerRecord.runningGeneration = generationRecord;
+        this.telemetry.presentationMode = presentationMode;
+        this.telemetry.rendererUnavailableReason = workerRecord.rendererUnavailableReason;
+        this.telemetry.workerReused = workerRecord.hasRunGeneration;
+        workerRecord.hasRunGeneration = true;
+        try {
+            this.postRequest(generationRecord, presentationMode === 'worker' ?
+                { ...generationRecord.startRequest, presentationMode } :
+                generationRecord.startRequest);
+        } catch {
+            this.failGenerationWithUnusableWorker(generationRecord, 'Unable to start the custom decode worker');
+        }
+    }
+
+    /**
+     * Offers a new worker a renderer: the provider's canvas and channel, so the worker can present its frames itself.
+     * The worker's starts then wait for the renderer's status; without a provider or an attachment, the worker presents on the page.
+     */
+    private attachPresentationRenderer(workerRecord: WorkerRecord, generation: number): void {
+        const presentationRendererProvider = this.presentationRendererProvider;
+        if (!presentationRendererProvider) {
+            return;
+        }
+
+        let attachment: WorkerPresentationAttachment | null;
+        try {
+            attachment = presentationRendererProvider();
+        } catch (error) {
+            console.warn('Unable to create the worker presentation attachment', error);
+            attachment = null;
+        }
+        if (!attachment) {
+            workerRecord.rendererUnavailableReason = RENDERER_ATTACHMENT_UNAVAILABLE_REASON;
+            return;
+        }
+        const attachRequest: DecodeWorkerRequest = {
+            canvas: attachment.canvas,
+            generation,
+            port: attachment.port,
+            type: 'attach-renderer'
+        };
+        try {
+            workerRecord.worker.postMessage(attachRequest, [ attachment.canvas, attachment.port ]);
+        } catch (error) {
+            console.warn('Unable to attach the worker presentation renderer', error);
+            workerRecord.rendererUnavailableReason = RENDERER_ATTACHMENT_FAILED_REASON;
+            return;
+        }
+
+        workerRecord.presentationMode = null;
+        workerRecord.rendererStatusGeneration = generation;
+        workerRecord.rendererStatusTimer = globalThis.setTimeout(() => {
+            workerRecord.rendererStatusTimer = null;
+            console.warn(`Custom decode worker renderer did not report its status within ${RENDERER_STATUS_TIMEOUT_MILLISECONDS} ms`);
+            this.settleRendererStatus(workerRecord, 'main', RENDERER_STATUS_TIMEOUT_REASON);
+        }, RENDERER_STATUS_TIMEOUT_MILLISECONDS);
+    }
+
+    /** Settles where a new worker's frames present from its renderer's answer; a late or unrequested answer changes nothing. */
+    private handleRendererStatus(workerRecord: WorkerRecord, message: DecodeWorkerRendererStatusResponse): void {
+        if (workerRecord.presentationMode !== null || message.generation !== workerRecord.rendererStatusGeneration) {
+            return;
+        }
+        if (message.available) {
+            this.settleRendererStatus(workerRecord, 'worker', null);
+            return;
+        }
+        this.settleRendererStatus(workerRecord, 'main', message.reason);
+    }
+
+    /** Fixes where the worker's frames present for its life, and resumes the start that waited for it. */
+    private settleRendererStatus(
+        workerRecord: WorkerRecord,
+        presentationMode: CustomDecodePresentationMode,
+        unavailableReason: string | null
+    ): void {
+        this.clearRendererStatusTimer(workerRecord);
+        workerRecord.presentationMode = presentationMode;
+        workerRecord.rendererStatusGeneration = null;
+        workerRecord.rendererUnavailableReason = unavailableReason;
+        this.startPendingGeneration();
+    }
+
+    /**
+     * Ends a generation's run.
+     * A start that never reached the worker is dropped; a running one gets `stop`, and its worker is terminated if it does not acknowledge within the bound.
+     */
+    private retireGeneration(generationRecord: GenerationRecord): void {
+        const workerRecord = generationRecord.workerRecord;
+        if (!workerRecord) {
+            this.completeRun(generationRecord);
+            return;
+        }
+        if (generationRecord.runStopped || generationRecord.stopRequested) {
+            // A worker kept to present the frames of a run that asked for its replacement gives way once the generation retires
+            if (workerRecord.replacementRequired && !workerRecord.runningGeneration) {
+                this.terminateWorker(workerRecord);
+            }
+            return;
+        }
+
+        generationRecord.stopRequested = true;
+        try {
+            this.postRequest(generationRecord, {
+                generation: generationRecord.generation,
+                type: 'stop'
+            });
+        } catch {
+            this.terminateWorker(workerRecord);
+            return;
+        }
+        workerRecord.stopTimer = globalThis.setTimeout(() => {
+            workerRecord.stopTimer = null;
+            console.warn(`Custom decode worker generation ${generationRecord.generation} did not acknowledge shutdown`);
+            this.terminateWorker(workerRecord);
+            this.startPendingGeneration();
+        }, WORKER_STOP_TIMEOUT_MILLISECONDS);
+    }
+
+    /** Frees the worker once its run posted `stopped`, finished or stopped, and hands it to a waiting start. */
+    private handleRunStopped(workerRecord: WorkerRecord, message: DecodeWorkerStoppedResponse): void {
+        const generationRecord = workerRecord.runningGeneration;
+        if (!generationRecord || generationRecord.generation !== message.generation) {
+            return;
+        }
+
+        if (message.replaceWorker === true) {
+            workerRecord.replacementRequired = true;
+        }
+        this.clearStopTimer(workerRecord);
+        workerRecord.runningGeneration = null;
+        this.completeRun(generationRecord);
+        if (workerRecord.replacementRequired && !this.isPresentingFromWorker(workerRecord)) {
+            this.terminateWorker(workerRecord);
+        }
+        this.startPendingGeneration();
+    }
+
+    /** Terminates a worker and ends the run it held; the next start creates a new worker. */
+    private terminateWorker(workerRecord: WorkerRecord): void {
+        if (workerRecord.terminated) {
+            return;
+        }
+
+        workerRecord.terminated = true;
+        this.clearStopTimer(workerRecord);
+        this.clearRendererStatusTimer(workerRecord);
+        workerRecord.worker.removeEventListener('message', workerRecord.messageHandler);
+        workerRecord.worker.removeEventListener('error', workerRecord.errorHandler);
+        workerRecord.worker.terminate();
+        if (this.workerRecord === workerRecord) {
+            this.workerRecord = null;
+        }
+        const runningGeneration = workerRecord.runningGeneration;
+        workerRecord.runningGeneration = null;
+        if (runningGeneration) {
+            this.completeRun(runningGeneration);
+        }
+    }
+
+    private clearStopTimer(workerRecord: WorkerRecord): void {
+        if (workerRecord.stopTimer === null) {
+            return;
+        }
+        globalThis.clearTimeout(workerRecord.stopTimer);
+        workerRecord.stopTimer = null;
+    }
+
+    private clearRendererStatusTimer(workerRecord: WorkerRecord): void {
+        if (workerRecord.rendererStatusTimer === null) {
+            return;
+        }
+        globalThis.clearTimeout(workerRecord.rendererStatusTimer);
+        workerRecord.rendererStatusTimer = null;
+    }
+
+    /**
+     * Keeps a worker from taking another generation: an idle one terminates at once, a busy one once its run stops.
+     * A worker whose frames the active generation still presents gives way once that generation retires.
+     */
+    private requireWorkerReplacement(workerRecord: WorkerRecord): void {
+        workerRecord.replacementRequired = true;
+        if (!workerRecord.runningGeneration && !this.isPresentingFromWorker(workerRecord)) {
+            this.terminateWorker(workerRecord);
+        }
+    }
+
+    /** The active generation presents frames this worker holds, which outlive the generation's run. */
+    private isPresentingFromWorker(workerRecord: WorkerRecord): boolean {
+        const generationRecord = this.activeGeneration;
+        return generationRecord !== null
+            && generationRecord.workerRecord === workerRecord
+            && generationRecord.presentationMode === 'worker'
+            && this.isGenerationCurrent(generationRecord);
+    }
+
+    /**
+     * Returns the active generation if it needs this worker: its run is there, frames it still has to present are there, or its start waits for the worker's renderer.
+     * Losing such a worker fails the generation.
+     */
+    private getDependentGeneration(workerRecord: WorkerRecord): GenerationRecord | null {
+        const generationRecord = this.activeGeneration;
+        if (!generationRecord) {
+            return null;
+        }
+        const holdsWorkerFrames = this.queuedFrames.length > 0 || this.pendingFrames.size > 0;
+        if (workerRecord.runningGeneration === generationRecord
+            || (holdsWorkerFrames && this.isPresentingFromWorker(workerRecord))) {
+            return generationRecord;
+        }
+        const startWaitsForRenderer = generationRecord.workerRecord === null
+            && this.workerRecord === workerRecord
+            && workerRecord.presentationMode === null;
+        return startWaitsForRenderer ? generationRecord : null;
+    }
+
+    private completeRun(generationRecord: GenerationRecord): void {
+        generationRecord.runStopped = true;
+        generationRecord.resolveRetirement();
     }
 
     private handleWorkerMessage(workerRecord: WorkerRecord, messageValue: unknown): void {
         if (!isDecodeWorkerResponse(messageValue)) {
             closeFrameFromUnknownMessage(messageValue);
-            if (this.activeWorker === workerRecord) {
-                this.activeWorker = null;
-                this.stopActiveAudioPaths(workerRecord.generation);
-                this.closeQueuedFrames();
-                this.clearPendingFrames();
-                void this.beginWorkerRetirement(workerRecord);
-                this.failSession(workerRecord.generation, 'decode-failed', 'The custom decode worker sent an invalid message');
-            }
+            this.handleWorkerFault(workerRecord, 'The custom decode worker sent an invalid message');
             return;
         }
 
-        if (messageValue.type === 'stopped') {
-            this.finishWorker(workerRecord);
-            return;
-        }
-        // A replaced worker's timing still explains the moments before its replacement
-        if (messageValue.type === 'timing-trace') {
-            ingestWorkerTimingEvents(messageValue.events);
-            return;
+        switch (messageValue.type) {
+            case 'stopped':
+                this.handleRunStopped(workerRecord, messageValue);
+                return;
+            case 'renderer-status':
+                this.handleRendererStatus(workerRecord, messageValue);
+                return;
+            case 'timing-trace':
+                // A retired generation's timing still explains the moments before its replacement
+                ingestWorkerTimingEvents(messageValue.events);
+                return;
+            default:
+                break;
         }
 
+        const generationRecord = this.activeGeneration;
         if (
-            this.activeWorker !== workerRecord
-            || messageValue.generation !== workerRecord.generation
-            || this.telemetry.activeGeneration !== workerRecord.generation
+            !generationRecord
+            || generationRecord.workerRecord !== workerRecord
+            || messageValue.generation !== generationRecord.generation
+            || this.telemetry.activeGeneration !== generationRecord.generation
         ) {
-            if (messageValue.type === 'frame') {
-                if (messageValue.outputMode === 'video-frame') {
-                    messageValue.frame.close();
-                } else {
-                    this.telemetry.abandonedRawFrameCount += 1;
-                }
-                this.telemetry.staleFrameCount += 1;
-            } else if (messageValue.type === 'audio'
-                || messageValue.type === 'native-audio-init'
-                || messageValue.type === 'native-audio-media') {
-                this.telemetry.staleAudioSampleCount += 1;
-            }
+            this.handleStaleMessage(workerRecord, messageValue);
             return;
         }
 
@@ -1094,111 +1482,160 @@ export default class CustomDecodeSession {
                 this.telemetry.videoProgressPhase = messageValue.phase;
                 break;
             case 'ready':
-                this.handleReadyResponse(workerRecord, messageValue);
+                this.handleReadyResponse(generationRecord, messageValue);
                 break;
             case 'frame':
-                this.handleFrameResponse(workerRecord, messageValue);
+                this.handleFrameResponse(generationRecord, messageValue);
                 break;
             case 'video-ended':
-                this.handleVideoEndedResponse(workerRecord, messageValue);
+                this.handleVideoEndedResponse(generationRecord, messageValue);
                 break;
             case 'audio-ended':
-                this.handleAudioEndedResponse(workerRecord, messageValue);
+                this.handleAudioEndedResponse(generationRecord, messageValue);
                 break;
             case 'audio-source-format':
-                this.handleAudioSourceFormatResponse(workerRecord, messageValue);
+                this.handleAudioSourceFormatResponse(generationRecord, messageValue);
                 break;
             case 'video-interrupted':
-                this.handleVideoInterruptedResponse(workerRecord, messageValue);
+                this.handleVideoInterruptedResponse(generationRecord, messageValue);
                 break;
-            case 'audio':
-                this.enqueueAudioSample(workerRecord, messageValue);
+            case 'audio-progress':
+                this.recordAudioProgress(generationRecord, messageValue);
                 break;
             case 'native-audio-init':
-                this.enqueueNativeAudioInitialization(workerRecord, messageValue);
+                this.enqueueNativeAudioInitialization(generationRecord, messageValue);
                 break;
             case 'native-audio-media':
-                this.enqueueNativeAudioMedia(workerRecord, messageValue);
+                this.enqueueNativeAudioMedia(generationRecord, messageValue);
                 break;
             case 'ended':
-                this.handleWorkerEnded(workerRecord);
+                this.handleWorkerEnded(generationRecord);
                 break;
             case 'error':
-                this.activeWorker = null;
-                this.stopActiveAudioPaths(workerRecord.generation);
-                this.closeQueuedFrames();
-                this.clearPendingFrames();
-                void this.beginWorkerRetirement(workerRecord);
-                this.failSession(messageValue.generation, messageValue.failureKind, messageValue.message);
+                this.failGeneration(generationRecord, messageValue.failureKind, messageValue.message);
                 break;
         }
     }
 
-    private handleReadyResponse(workerRecord: WorkerRecord, message: DecodeWorkerReadyResponse): void {
-        if (workerRecord.configurationReceived || this.telemetry.state !== 'starting') {
-            this.handleDecodeProtocolFailure(workerRecord, 'The custom decode worker sent duplicate readiness');
+    /** Drops a message of a retired generation; a run that failed still keeps its worker from taking another generation. */
+    private handleStaleMessage(workerRecord: WorkerRecord, message: DecodeWorkerResponse): void {
+        switch (message.type) {
+            case 'frame':
+                switch (message.outputMode) {
+                    case 'raw-planes':
+                        this.telemetry.abandonedRawFrameCount += 1;
+                        break;
+                    case 'video-frame':
+                        message.frame.close();
+                        break;
+                    case 'worker-frame':
+                        // The worker's next start frees a retired run's frames
+                        break;
+                }
+                this.telemetry.staleFrameCount += 1;
+                break;
+            case 'audio-progress':
+            case 'native-audio-init':
+            case 'native-audio-media':
+                this.telemetry.staleAudioSampleCount += 1;
+                break;
+            case 'error':
+                // A failed run may leave a decoder open
+                this.requireWorkerReplacement(workerRecord);
+                this.startPendingGeneration();
+                break;
+            default:
+                break;
+        }
+    }
+
+    /** Fails the active generation if it needs the misbehaving worker; the worker is replaced either way. */
+    private handleWorkerFault(workerRecord: WorkerRecord, message: string): void {
+        const dependentGeneration = this.getDependentGeneration(workerRecord);
+        this.requireWorkerReplacement(workerRecord);
+        if (dependentGeneration) {
+            this.failGeneration(dependentGeneration, 'decode-failed', message);
+            return;
+        }
+        this.startPendingGeneration();
+    }
+
+    private handleWorkerCrash(workerRecord: WorkerRecord): void {
+        const dependentGeneration = this.getDependentGeneration(workerRecord);
+        this.terminateWorker(workerRecord);
+        if (dependentGeneration) {
+            this.failGeneration(dependentGeneration, 'decode-failed', 'The custom decode worker crashed');
+            return;
+        }
+        // A start that waited for the crashed worker's run takes a new worker
+        this.startPendingGeneration();
+    }
+
+    private handleReadyResponse(generationRecord: GenerationRecord, message: DecodeWorkerReadyResponse): void {
+        if (generationRecord.configurationReceived || this.telemetry.state !== 'starting') {
+            this.handleDecodeProtocolFailure(generationRecord, 'The custom decode worker sent duplicate readiness');
             return;
         }
         if (exceedsNegotiatedCodedSize(
             message.codedWidth,
             message.codedHeight,
-            workerRecord.maximumCodedWidth,
-            workerRecord.maximumCodedHeight
+            generationRecord.maximumCodedWidth,
+            generationRecord.maximumCodedHeight
         )) {
-            this.handleDecodeProtocolFailure(workerRecord, 'The selected video track exceeds its negotiated decode route');
+            this.handleDecodeProtocolFailure(generationRecord, 'The selected video track exceeds its negotiated decode route');
             return;
         }
         const audioConfiguration = message.audio;
         const videoCodec = message.codec;
-        workerRecord.configurationReceived = true;
-        workerRecord.audioConfiguration = audioConfiguration;
-        workerRecord.videoGeometry = {
+        generationRecord.configurationReceived = true;
+        generationRecord.audioConfiguration = audioConfiguration;
+        generationRecord.videoGeometry = {
             codedHeight: message.codedHeight,
             codedWidth: message.codedWidth,
             displayHeight: message.displayHeight,
             displayWidth: message.displayWidth
         };
-        const audioConfigurationError = getReadyAudioConfigurationError(workerRecord, audioConfiguration);
+        const audioConfigurationError = getReadyAudioConfigurationError(generationRecord, audioConfiguration);
         if (audioConfigurationError) {
-            this.handleAudioOutputFailure(workerRecord, audioConfigurationError);
+            this.handleAudioOutputFailure(generationRecord, audioConfigurationError);
             return;
         }
 
-        workerRecord.videoCodec = videoCodec;
-        workerRecord.containerDurationMicroseconds = message.containerDurationMicroseconds ?? null;
+        generationRecord.videoCodec = videoCodec;
+        generationRecord.containerDurationMicroseconds = message.containerDurationMicroseconds ?? null;
         const staticHDRMetadataScan = message.staticHDRMetadataScan ?? null;
-        workerRecord.staticHDRMetadata = staticHDRMetadataScan?.metadata ?? null;
+        generationRecord.staticHDRMetadata = staticHDRMetadataScan?.metadata ?? null;
         this.telemetry.staticHDRMetadataFirstAccessUnitIndex = staticHDRMetadataScan?.firstMetadataAccessUnitIndex ?? null;
         this.telemetry.staticHDRMetadataScanAccessUnitCount = staticHDRMetadataScan?.accessUnitCount ?? 0;
         this.telemetry.staticHDRMetadataStatus = staticHDRMetadataScan?.status ?? null;
-        workerRecord.audioMediaReady = audioConfiguration === null;
+        generationRecord.audioMediaReady = audioConfiguration === null;
         this.telemetry.state = 'configured';
         this.emitEvent({
             audio: audioConfiguration,
             codec: videoCodec,
-            generation: workerRecord.generation,
-            ...(workerRecord.staticHDRMetadata ? { staticHDRMetadata: workerRecord.staticHDRMetadata } : {}),
+            generation: generationRecord.generation,
+            ...(generationRecord.staticHDRMetadata ? { staticHDRMetadata: generationRecord.staticHDRMetadata } : {}),
             type: 'configured'
         });
 
         if (!audioConfiguration) {
-            this.completeReady(workerRecord, videoCodec, null, null);
+            this.completeReady(generationRecord, videoCodec, null, null);
             return;
         }
 
         if (isNativeMediaAudioConfiguration(audioConfiguration)) {
-            this.completeNativeAudioReady(workerRecord, audioConfiguration);
+            this.completeNativeAudioReady(generationRecord, audioConfiguration);
             return;
         }
 
         if (this.configuredAudioBridge) {
-            this.completeReady(workerRecord, videoCodec, audioConfiguration, this.configuredAudioBridge);
+            this.completeReady(generationRecord, videoCodec, audioConfiguration, this.configuredAudioBridge);
             return;
         }
 
         const audioBridgeFactory = this.audioBridgeFactory;
         if (!audioBridgeFactory) {
-            this.handleAudioOutputFailure(workerRecord, 'Decoded audio has no configured output');
+            this.handleAudioOutputFailure(generationRecord, 'Decoded audio has no configured output');
             return;
         }
 
@@ -1206,51 +1643,51 @@ export default class CustomDecodeSession {
         try {
             audioBridgeResult = audioBridgeFactory(audioConfiguration);
         } catch {
-            this.handleAudioOutputFailure(workerRecord, 'Unable to create decoded audio output');
+            this.handleAudioOutputFailure(generationRecord, 'Unable to create decoded audio output');
             return;
         }
         void Promise.resolve(audioBridgeResult).then(
             audioBridge => {
-                if (!this.isWorkerCurrent(workerRecord)) {
+                if (!this.isGenerationCurrent(generationRecord)) {
                     return;
                 }
-                this.completeReady(workerRecord, videoCodec, audioConfiguration, audioBridge);
+                this.completeReady(generationRecord, videoCodec, audioConfiguration, audioBridge);
             },
             (): void => {
-                if (this.isWorkerCurrent(workerRecord)) {
-                    this.handleAudioOutputFailure(workerRecord, 'Unable to create decoded audio output');
+                if (this.isGenerationCurrent(generationRecord)) {
+                    this.handleAudioOutputFailure(generationRecord, 'Unable to create decoded audio output');
                 }
             }
         );
     }
 
     private completeNativeAudioReady(
-        workerRecord: WorkerRecord,
+        generationRecord: GenerationRecord,
         audioConfiguration: DecodeWorkerNativeMediaAudioConfiguration
     ): void {
-        void this.startNativeAudioBridge(workerRecord, audioConfiguration);
+        void this.startNativeAudioBridge(generationRecord, audioConfiguration);
     }
 
     private async startNativeAudioBridge(
-        workerRecord: WorkerRecord,
+        generationRecord: GenerationRecord,
         audioConfiguration: DecodeWorkerNativeMediaAudioConfiguration
     ): Promise<void> {
         const bridgeFactory = this.nativeAudioBridgeFactory;
-        const durationMicroseconds = workerRecord.durationMicroseconds;
+        const durationMicroseconds = generationRecord.durationMicroseconds;
         if (!bridgeFactory || durationMicroseconds === null) {
-            this.handleAudioOutputFailure(workerRecord, 'Native media audio has no configured output');
+            this.handleAudioOutputFailure(generationRecord, 'Native media audio has no configured output');
             return;
         }
 
         try {
             await this.nativeAudioStopTail;
         } catch {
-            if (this.isWorkerCurrent(workerRecord)) {
-                this.handleAudioOutputFailure(workerRecord, 'Unable to retire the previous native media audio output');
+            if (this.isGenerationCurrent(generationRecord)) {
+                this.handleAudioOutputFailure(generationRecord, 'Unable to retire the previous native media audio output');
             }
             return;
         }
-        if (!this.isWorkerCurrent(workerRecord)) {
+        if (!this.isGenerationCurrent(generationRecord)) {
             return;
         }
 
@@ -1258,7 +1695,7 @@ export default class CustomDecodeSession {
         try {
             nativeAudioBridge = bridgeFactory();
         } catch {
-            this.handleAudioOutputFailure(workerRecord, 'Unable to create native media audio output');
+            this.handleAudioOutputFailure(generationRecord, 'Unable to create native media audio output');
             return;
         }
         this.activeNativeAudioBridge = nativeAudioBridge;
@@ -1267,103 +1704,98 @@ export default class CustomDecodeSession {
                 audioConfiguration,
                 callbacks: {
                     onClockReady: generation => {
-                        if (this.isWorkerCurrent(workerRecord)
+                        if (this.isGenerationCurrent(generationRecord)
                             && this.activeNativeAudioBridge === nativeAudioBridge
-                            && generation === workerRecord.generation) {
+                            && generation === generationRecord.generation) {
                             this.telemetry.nativeAudioClockReady = true;
                         }
                     },
                     onCreditsReleased: audioSegmentCredits => {
-                        this.requestReplacementAudioSamples(workerRecord, audioSegmentCredits);
+                        this.requestReplacementAudioSamples(generationRecord, audioSegmentCredits);
                     },
                     onFailure: message => {
-                        this.handleAudioOutputFailure(workerRecord, message);
+                        this.handleAudioOutputFailure(generationRecord, message);
                     },
                     onEvent: event => {
                         if (event.type === 'ended'
-                            && this.isWorkerCurrent(workerRecord)
+                            && this.isGenerationCurrent(generationRecord)
                             && this.activeNativeAudioBridge === nativeAudioBridge
-                            && event.generation === workerRecord.generation) {
+                            && event.generation === generationRecord.generation) {
                             // Only an ended stream reaches the end of its media
-                            workerRecord.nativeAudioElementEnded = true;
+                            generationRecord.nativeAudioElementEnded = true;
                             this.telemetry.nativeAudioEnded = true;
-                            this.completeNativeAudioWorkerEndedIfReady(workerRecord);
+                            this.completeNativeAudioWorkerEndedIfReady(generationRecord);
                         }
                     }
                 },
                 durationMicroseconds,
-                generation: workerRecord.generation,
-                startTimeMicroseconds: workerRecord.startTimeMicroseconds
+                generation: generationRecord.generation,
+                startTimeMicroseconds: generationRecord.startTimeMicroseconds
             });
-            if (!started || !this.isWorkerCurrent(workerRecord) || this.activeNativeAudioBridge !== nativeAudioBridge) {
+            if (!started || !this.isGenerationCurrent(generationRecord) || this.activeNativeAudioBridge !== nativeAudioBridge) {
                 return;
             }
-            workerRecord.nativeAudioBridgeStarted = true;
-            this.requestReplacementAudioSamples(workerRecord, nativeAudioBridge.initialAudioSegmentCredits);
+            generationRecord.nativeAudioBridgeStarted = true;
+            this.requestReplacementAudioSamples(generationRecord, nativeAudioBridge.initialAudioSegmentCredits);
             // An audio track that ended while the output was opening completes now
-            this.completeEndedAudioTrack(workerRecord);
+            this.completeEndedAudioTrack(generationRecord);
         } catch {
-            if (this.isWorkerCurrent(workerRecord) && this.activeNativeAudioBridge === nativeAudioBridge) {
-                this.handleAudioOutputFailure(workerRecord, 'Unable to initialize native media audio output');
+            if (this.isGenerationCurrent(generationRecord) && this.activeNativeAudioBridge === nativeAudioBridge) {
+                this.handleAudioOutputFailure(generationRecord, 'Unable to initialize native media audio output');
             }
         }
     }
 
     private completeReady(
-        workerRecord: WorkerRecord,
+        generationRecord: GenerationRecord,
         videoCodec: string,
         audioConfiguration: DecodeWorkerAudioConfiguration | null,
         audioBridge: CustomDecodeAudioBridge | null
     ): void {
-        if (!this.isWorkerCurrent(workerRecord)) {
+        if (!this.isGenerationCurrent(generationRecord)) {
             return;
         }
 
         if (audioConfiguration && audioBridge) {
             this.activeAudioBridge = audioBridge;
+            let audioOutput: DecodeWorkerAudioOutputAttachment;
             try {
-                audioBridge.start({
+                audioOutput = audioBridge.start({
                     audioConfiguration,
                     callbacks: {
-                        onCreditsReleased: audioSampleCredits => {
-                            this.requestReplacementAudioSamples(workerRecord, audioSampleCredits);
-                        },
                         onFailure: message => {
-                            this.handleAudioOutputFailure(workerRecord, message);
+                            this.handleAudioOutputFailure(generationRecord, message);
                         }
                     },
-                    decodeGeneration: workerRecord.generation,
-                    startTimeMicroseconds: workerRecord.startTimeMicroseconds
+                    decodeGeneration: generationRecord.generation,
+                    startTimeMicroseconds: generationRecord.startTimeMicroseconds
                 });
             } catch {
-                this.handleAudioOutputFailure(workerRecord, 'Unable to initialize decoded audio output');
+                this.handleAudioOutputFailure(generationRecord, 'Unable to initialize decoded audio output');
                 return;
             }
-            this.requestReplacementAudioSamples(workerRecord, audioBridge.initialAudioSampleCredits);
-            if (!this.isWorkerCurrent(workerRecord)) {
-                return;
-            }
+            this.attachAudioOutput(generationRecord, audioOutput);
             // Wait for the first submitted PCM sample before starting the clock
             return;
         }
 
-        this.emitReadyEventIfMediaReady(workerRecord);
+        this.emitReadyEventIfMediaReady(generationRecord);
     }
 
-    private emitReadyEventIfMediaReady(workerRecord: WorkerRecord): void {
-        const videoCodec = workerRecord.videoCodec;
+    private emitReadyEventIfMediaReady(generationRecord: GenerationRecord): void {
+        const videoCodec = generationRecord.videoCodec;
         if (
-            !this.isWorkerCurrent(workerRecord)
+            !this.isGenerationCurrent(generationRecord)
             || this.telemetry.state !== 'configured'
-            || !workerRecord.configurationReceived
-            || !workerRecord.audioMediaReady
-            || !workerRecord.videoMediaReady
+            || !generationRecord.configurationReceived
+            || !generationRecord.audioMediaReady
+            || !generationRecord.videoMediaReady
             || !videoCodec
         ) {
             return;
         }
 
-        const audioConfiguration = workerRecord.audioConfiguration;
+        const audioConfiguration = generationRecord.audioConfiguration;
         this.telemetry.audioChannelCount = audioConfiguration?.channelCount ?? null;
         this.telemetry.audioCodec = audioConfiguration?.codec ?? null;
         this.telemetry.audioSampleRate = audioConfiguration?.sampleRate ?? null;
@@ -1374,82 +1806,103 @@ export default class CustomDecodeSession {
         }
         this.telemetry.state = 'ready';
         this.emitEvent({
-            audio: workerRecord.audioConfiguration,
+            audio: generationRecord.audioConfiguration,
             codec: videoCodec,
-            ...(workerRecord.containerDurationMicroseconds !== null ? {
-                containerDurationMicroseconds: workerRecord.containerDurationMicroseconds
+            ...(generationRecord.containerDurationMicroseconds !== null ? {
+                containerDurationMicroseconds: generationRecord.containerDurationMicroseconds
             } : {}),
-            generation: workerRecord.generation,
-            ...(workerRecord.staticHDRMetadata ? {
-                staticHDRMetadata: workerRecord.staticHDRMetadata
+            generation: generationRecord.generation,
+            ...(generationRecord.staticHDRMetadata ? {
+                staticHDRMetadata: generationRecord.staticHDRMetadata
             } : {}),
             type: 'ready'
         });
     }
 
-    private isWorkerCurrent(workerRecord: WorkerRecord): boolean {
-        return this.activeWorker === workerRecord && this.telemetry.activeGeneration === workerRecord.generation;
+    /** A generation stays current after its run stops on its own, so an ended session still drains and ends its native element. */
+    private isGenerationCurrent(generationRecord: GenerationRecord): boolean {
+        return this.activeGeneration === generationRecord && this.telemetry.activeGeneration === generationRecord.generation;
     }
 
-    /** Advances the video epoch of a live worker; an ended run cannot restart video. */
-    private beginVideoEpoch(): WorkerRecord | null {
-        const workerRecord = this.activeWorker;
-        if (!workerRecord || !this.isWorkerCurrent(workerRecord) || this.telemetry.state === 'ended') {
+    /**
+     * Advances the video epoch of a generation whose start reached the worker.
+     * A start still waiting for the worker has no video attempt to replace, and an ended run cannot restart video.
+     */
+    private beginVideoEpoch(): GenerationRecord | null {
+        const generationRecord = this.activeGeneration;
+        if (!generationRecord
+            || !this.isGenerationCurrent(generationRecord)
+            || !generationRecord.workerRecord
+            || this.telemetry.state === 'ended') {
             return null;
         }
 
-        workerRecord.videoEpoch += 1;
+        generationRecord.videoEpoch += 1;
         this.telemetry.videoEnded = false;
-        this.telemetry.videoEpoch = workerRecord.videoEpoch;
-        return workerRecord;
+        this.telemetry.videoEpoch = generationRecord.videoEpoch;
+        return generationRecord;
     }
 
     /** Discards queued frames of replaced video epochs and returns their decode credits. */
-    private discardQueuedVideoFrames(workerRecord: WorkerRecord): void {
+    private discardQueuedVideoFrames(generationRecord: GenerationRecord): void {
         const discardedFrames = this.queuedFrames.splice(0);
         this.telemetry.queuedFrameCount = 0;
         this.telemetry.staleFrameCount += discardedFrames.length;
         let releasedFrameCredits = 0;
+        const discardedWorkerFrameIds: number[] = [];
         for (const discardedFrame of discardedFrames) {
             const presentationFrame = discardedFrame.presentationFrame;
+            if (presentationFrame.outputMode === 'worker-frame') {
+                discardedWorkerFrameIds.push(presentationFrame.frameId);
+                continue;
+            }
             if (presentationFrame.outputMode === 'video-frame') {
                 closePresentationFrame(presentationFrame);
                 releasedFrameCredits += 1;
                 continue;
             }
-            if (!this.recycleFrameBuffer(discardedFrame.workerRecord, presentationFrame.frame.data)) {
+            if (!this.recycleFrameBuffer(discardedFrame.generationRecord, presentationFrame.frame.data)) {
                 this.abandonPresentationFrame(presentationFrame);
             }
         }
-        this.requestReplacementFrames(workerRecord, releasedFrameCredits);
+        this.requestReplacementFrames(generationRecord, releasedFrameCredits);
+        if (discardedWorkerFrameIds.length > 0) {
+            // Their credits return with the release
+            this.releaseWorkerFrames(generationRecord, discardedWorkerFrameIds);
+        }
     }
 
-    private handleFrameResponse(workerRecord: WorkerRecord, message: DecodeWorkerFrameResponse): void {
+    private handleFrameResponse(generationRecord: GenerationRecord, message: DecodeWorkerFrameMessage): void {
         // A mismatched output mode still reaches the enqueue protocol failure
-        if ((message.videoEpoch ?? 0) !== workerRecord.videoEpoch && message.outputMode === workerRecord.videoOutputMode) {
-            this.discardStaleEpochFrame(workerRecord, message);
+        if ((message.videoEpoch ?? 0) !== generationRecord.videoEpoch
+            && message.outputMode === getExpectedFrameOutputMode(generationRecord)) {
+            this.discardStaleEpochFrame(generationRecord, message);
             return;
         }
-        this.enqueueFrame(workerRecord, message);
+        if (message.outputMode === 'worker-frame') {
+            this.enqueueFrameDescriptor(generationRecord, message);
+            return;
+        }
+        this.enqueueFrame(generationRecord, message);
     }
 
-    private handleVideoEndedResponse(workerRecord: WorkerRecord, message: DecodeWorkerVideoEndedResponse): void {
+    private handleVideoEndedResponse(generationRecord: GenerationRecord, message: DecodeWorkerVideoEndedResponse): void {
         // A replaced epoch's end says nothing about the restarted video
-        if (message.videoEpoch === workerRecord.videoEpoch) {
+        if (message.videoEpoch === generationRecord.videoEpoch) {
             this.telemetry.videoEnded = true;
         }
     }
 
-    private handleAudioEndedResponse(workerRecord: WorkerRecord, message: DecodeWorkerAudioEndedResponse): void {
+    private handleAudioEndedResponse(generationRecord: GenerationRecord, message: DecodeWorkerAudioEndedResponse): void {
         // A replaced epoch's end says nothing about the restarted audio
-        if (message.audioEpoch !== workerRecord.audioEpoch) {
+        if (message.audioEpoch !== generationRecord.audioEpoch) {
             return;
         }
-        workerRecord.audioTrackEnded = true;
+        generationRecord.audioTrackEnded = true;
         this.telemetry.audioEnded = true;
-        this.completeEndedAudioTrack(workerRecord);
-        if (this.isWorkerCurrent(workerRecord)) {
-            this.emitEvent({ generation: workerRecord.generation, type: 'audio-ended' });
+        this.completeEndedAudioTrack(generationRecord);
+        if (this.isGenerationCurrent(generationRecord)) {
+            this.emitEvent({ generation: generationRecord.generation, type: 'audio-ended' });
         }
     }
 
@@ -1458,39 +1911,39 @@ export default class CustomDecodeSession {
      * It also ends a native-media stream, so its element plays out instead of stalling.
      * Waits until the epoch's output exists.
      */
-    private completeEndedAudioTrack(workerRecord: WorkerRecord): void {
-        if (!workerRecord.audioTrackEnded || !this.isWorkerCurrent(workerRecord)) {
+    private completeEndedAudioTrack(generationRecord: GenerationRecord): void {
+        if (!generationRecord.audioTrackEnded || !this.isGenerationCurrent(generationRecord)) {
             return;
         }
-        if (workerRecord.audioOutputMode === 'native-media') {
+        if (generationRecord.audioOutputMode === 'native-media') {
             const nativeAudioBridge = this.activeNativeAudioBridge;
-            if (!workerRecord.nativeAudioBridgeStarted || !nativeAudioBridge) {
+            if (!generationRecord.nativeAudioBridgeStarted || !nativeAudioBridge) {
                 return;
             }
-            this.requestNativeAudioEndOfStream(workerRecord, nativeAudioBridge);
+            this.requestNativeAudioEndOfStream(generationRecord, nativeAudioBridge);
         } else if (!this.activeAudioBridge) {
             return;
         }
-        if (workerRecord.audioResyncPending) {
-            workerRecord.audioResyncPending = false;
+        if (generationRecord.audioResyncPending) {
+            generationRecord.audioResyncPending = false;
             this.telemetry.audioResyncPending = false;
             this.emitEvent({
-                audioEpoch: workerRecord.audioEpoch,
-                generation: workerRecord.generation,
+                audioEpoch: generationRecord.audioEpoch,
+                generation: generationRecord.generation,
                 type: 'audio-resynced'
             });
             return;
         }
-        workerRecord.audioMediaReady = true;
-        this.emitReadyEventIfMediaReady(workerRecord);
+        generationRecord.audioMediaReady = true;
+        this.emitReadyEventIfMediaReady(generationRecord);
     }
 
     /** Records the decoded source format of the current audio epoch, which outranks the declared one. */
     private handleAudioSourceFormatResponse(
-        workerRecord: WorkerRecord,
+        generationRecord: GenerationRecord,
         message: DecodeWorkerAudioSourceFormatResponse
     ): void {
-        if (message.audioEpoch !== workerRecord.audioEpoch) {
+        if (message.audioEpoch !== generationRecord.audioEpoch) {
             return;
         }
         this.telemetry.decodedAudioSourceChannelCount = message.channelCount;
@@ -1500,50 +1953,54 @@ export default class CustomDecodeSession {
 
     /** Marks the native media stream complete once, so its element plays to the end of its media. */
     private requestNativeAudioEndOfStream(
-        workerRecord: WorkerRecord,
+        generationRecord: GenerationRecord,
         nativeAudioBridge: CustomDecodeNativeAudioBridge
     ): void {
-        if (workerRecord.nativeAudioEndOfStreamRequested) {
+        if (generationRecord.nativeAudioEndOfStreamRequested) {
             return;
         }
-        workerRecord.nativeAudioEndOfStreamRequested = true;
-        void nativeAudioBridge.endOfStream(workerRecord.generation).then(ended => {
-            if (!this.isWorkerCurrent(workerRecord) || this.activeNativeAudioBridge !== nativeAudioBridge) {
+        generationRecord.nativeAudioEndOfStreamRequested = true;
+        void nativeAudioBridge.endOfStream(generationRecord.generation).then(ended => {
+            if (!this.isGenerationCurrent(generationRecord) || this.activeNativeAudioBridge !== nativeAudioBridge) {
                 return;
             }
             if (!ended) {
-                this.handleAudioOutputFailure(workerRecord, 'Native audio output rejected end of stream');
+                this.handleAudioOutputFailure(generationRecord, 'Native audio output rejected end of stream');
                 return;
             }
-            workerRecord.nativeAudioEndOfStreamAccepted = true;
-            this.completeNativeAudioWorkerEndedIfReady(workerRecord);
+            generationRecord.nativeAudioEndOfStreamAccepted = true;
+            this.completeNativeAudioWorkerEndedIfReady(generationRecord);
         });
     }
 
     private handleVideoInterruptedResponse(
-        workerRecord: WorkerRecord,
+        generationRecord: GenerationRecord,
         message: DecodeWorkerVideoInterruptedResponse
     ): void {
         // An interruption of a replaced epoch is superseded by the pending request
-        if (message.videoEpoch !== workerRecord.videoEpoch) {
+        if (message.videoEpoch !== generationRecord.videoEpoch) {
             return;
         }
         this.emitEvent({
-            generation: workerRecord.generation,
+            generation: generationRecord.generation,
             reason: message.reason,
             type: 'video-interrupted'
         });
     }
 
     /** Drops a frame that was in flight when its video epoch was replaced. */
-    private discardStaleEpochFrame(workerRecord: WorkerRecord, message: DecodeWorkerFrameResponse): void {
+    private discardStaleEpochFrame(generationRecord: GenerationRecord, message: DecodeWorkerFrameMessage): void {
         this.telemetry.staleFrameCount += 1;
-        if (message.outputMode === 'video-frame') {
-            message.frame.close();
-            this.requestReplacementFrames(workerRecord, 1);
+        if (message.outputMode === 'worker-frame') {
+            this.releaseWorkerFrames(generationRecord, [ message.frameId ]);
             return;
         }
-        if (!this.recycleFrameBuffer(workerRecord, message.frame.data)) {
+        if (message.outputMode === 'video-frame') {
+            message.frame.close();
+            this.requestReplacementFrames(generationRecord, 1);
+            return;
+        }
+        if (!this.recycleFrameBuffer(generationRecord, message.frame.data)) {
             this.telemetry.abandonedRawFrameCount += 1;
         }
     }
@@ -1564,44 +2021,35 @@ export default class CustomDecodeSession {
         }
     }
 
-    private handleDecodeProtocolFailure(workerRecord: WorkerRecord, message: string): void {
-        if (!this.isWorkerCurrent(workerRecord)) {
+    private handleDecodeProtocolFailure(generationRecord: GenerationRecord, message: string): void {
+        if (!this.isGenerationCurrent(generationRecord)) {
             return;
         }
-
-        this.activeWorker = null;
-        this.stopActiveAudioPaths(workerRecord.generation);
-        this.closeQueuedFrames();
-        this.clearPendingFrames();
-        void this.beginWorkerRetirement(workerRecord);
-        this.failSession(workerRecord.generation, 'decode-failed', message);
+        this.failGeneration(generationRecord, 'decode-failed', message);
     }
 
-    private enqueueFrame(workerRecord: WorkerRecord, message: DecodeWorkerFrameResponse): void {
-        if (!this.validateRawFrameGeometry(workerRecord, message)) {
+    private enqueueFrame(generationRecord: GenerationRecord, message: DecodeWorkerFrameResponse): void {
+        if (!this.validateRawFrameGeometry(generationRecord, message)) {
             return;
         }
-        const maximumQueuedFrames = workerRecord.videoOutputMode === 'raw-planes' ?
+        const maximumQueuedFrames = generationRecord.videoOutputMode === 'raw-planes' ?
             MAX_DECODED_RAW_FRAME_CREDITS :
             MAX_DECODED_FRAME_CREDITS;
-        const boundedFrameCount = workerRecord.videoOutputMode === 'raw-planes' ?
+        const boundedFrameCount = generationRecord.videoOutputMode === 'raw-planes' ?
             this.queuedFrames.length + this.pendingFrames.size :
             this.queuedFrames.length;
-        if (message.outputMode !== workerRecord.videoOutputMode || boundedFrameCount >= maximumQueuedFrames) {
+        // A run its worker presents never posts a payload
+        const expectedOutputMode = getExpectedFrameOutputMode(generationRecord);
+        if (message.outputMode !== expectedOutputMode || boundedFrameCount >= maximumQueuedFrames) {
             if (message.outputMode === 'video-frame') {
                 message.frame.close();
             } else {
                 this.telemetry.abandonedRawFrameCount += 1;
             }
-            this.activeWorker = null;
-            this.stopActiveAudioPaths(workerRecord.generation);
-            this.closeQueuedFrames();
-            this.clearPendingFrames();
-            void this.beginWorkerRetirement(workerRecord);
-            const messageText = message.outputMode === workerRecord.videoOutputMode ?
-                'The custom decode frame queue exceeded its bound' :
-                'The custom decode worker returned an unexpected video output mode';
-            this.failSession(workerRecord.generation, 'decode-failed', messageText);
+            const messageText = message.outputMode === expectedOutputMode ?
+                FRAME_QUEUE_BOUND_FAILURE :
+                UNEXPECTED_FRAME_OUTPUT_MODE_FAILURE;
+            this.failGeneration(generationRecord, 'decode-failed', messageText);
             return;
         }
 
@@ -1629,9 +2077,66 @@ export default class CustomDecodeSession {
                 };
                 break;
         }
+        this.queueFrame(generationRecord, presentationFrame);
+        const dolbyVisionMetadata = message.encodedDolbyVisionMetadata;
+        if (dolbyVisionMetadata) {
+            this.recordDolbyVisionFrame(dolbyVisionMetadata.parsedRPUData.length, dolbyVisionMetadata.hasEnhancementLayerVCL);
+        }
+        this.recordHDR10PlusStatus(message.HDR10PlusMetadata?.status);
+        this.emitReadyEventIfMediaReady(generationRecord);
+    }
+
+    /**
+     * Queues a frame the worker's renderer holds; its credit returns when the page releases it.
+     * Every held frame keeps a credit, so the queued and selected frames together stay within the run's credits.
+     */
+    private enqueueFrameDescriptor(generationRecord: GenerationRecord, message: DecodeWorkerFrameDescriptorResponse): void {
+        if (generationRecord.presentationMode !== 'worker') {
+            this.failGeneration(generationRecord, 'decode-failed', UNEXPECTED_FRAME_OUTPUT_MODE_FAILURE);
+            return;
+        }
+        if (this.queuedFrames.length + this.pendingFrames.size >= generationRecord.startRequest.frameCredits) {
+            this.failGeneration(generationRecord, 'decode-failed', FRAME_QUEUE_BOUND_FAILURE);
+            return;
+        }
+        if (this.holdsWorkerFrame(message.frameId)) {
+            this.failGeneration(generationRecord, 'decode-failed', 'The custom decode worker reused the ID of a held frame');
+            return;
+        }
+
+        const presentationFrame: DecodedWorkerPresentationFrame = {
+            decodeGeneration: generationRecord.generation,
+            displayHeight: message.displayHeight,
+            displayWidth: message.displayWidth,
+            durationMicroseconds: message.durationMicroseconds,
+            frameId: message.frameId,
+            mediaTimeMicroseconds: message.mediaTimeMicroseconds,
+            outputMode: 'worker-frame'
+        };
+        this.queueFrame(generationRecord, presentationFrame);
+        this.recordFrameMetadataSummary(message.metadataSummary);
+        this.emitReadyEventIfMediaReady(generationRecord);
+    }
+
+    private holdsWorkerFrame(frameId: number): boolean {
+        for (const queuedFrame of this.queuedFrames) {
+            if (queuedFrame.presentationFrame.outputMode === 'worker-frame' && queuedFrame.presentationFrame.frameId === frameId) {
+                return true;
+            }
+        }
+        for (const presentationFrame of this.pendingFrames.keys()) {
+            if (presentationFrame.outputMode === 'worker-frame' && presentationFrame.frameId === frameId) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Inserts a frame in media-time order and records its arrival. */
+    private queueFrame(generationRecord: GenerationRecord, presentationFrame: DecodedPresentationFrame): void {
         const queuedFrame: QueuedFrame = {
-            presentationFrame,
-            workerRecord
+            generationRecord,
+            presentationFrame
         };
         let insertionIndex = this.queuedFrames.length;
         while (
@@ -1643,7 +2148,7 @@ export default class CustomDecodeSession {
         }
         this.queuedFrames.splice(insertionIndex, 0, queuedFrame);
 
-        workerRecord.videoMediaReady = true;
+        generationRecord.videoMediaReady = true;
         this.telemetry.firstFrameMediaTimeMicroseconds ??= presentationFrame.mediaTimeMicroseconds;
         this.telemetry.lastFrameMediaTimeMicroseconds = presentationFrame.mediaTimeMicroseconds;
         this.telemetry.lastFrameEndMediaTimeMicroseconds = addMicroseconds(
@@ -1659,26 +2164,27 @@ export default class CustomDecodeSession {
             pendingFrameCount: this.pendingFrames.size,
             queuedFrameCount: this.queuedFrames.length
         });
-        this.recordDolbyVisionMetadata(message);
-        this.recordHDR10PlusMetadata(message);
-        this.emitReadyEventIfMediaReady(workerRecord);
     }
 
-    private recordDolbyVisionMetadata(message: DecodeWorkerFrameResponse): void {
-        const metadata = message.encodedDolbyVisionMetadata;
-        if (!metadata) {
-            return;
+    /** Counts a held frame's metadata from the summary its descriptor carries. */
+    private recordFrameMetadataSummary(metadataSummary: DecodeWorkerFrameMetadataSummary | undefined): void {
+        const dolbyVisionSummary = metadataSummary?.dolbyVision;
+        if (dolbyVisionSummary) {
+            this.recordDolbyVisionFrame(dolbyVisionSummary.rpuCount, dolbyVisionSummary.enhancementLayerVCL);
         }
+        this.recordHDR10PlusStatus(metadataSummary?.HDR10PlusStatus);
+    }
 
+    private recordDolbyVisionFrame(rpuCount: number, enhancementLayerVCL: boolean): void {
         this.telemetry.receivedDolbyVisionFrameCount += 1;
-        this.telemetry.receivedDolbyVisionRPUCount += metadata.parsedRPUData.length;
-        if (metadata.hasEnhancementLayerVCL) {
+        this.telemetry.receivedDolbyVisionRPUCount += rpuCount;
+        if (enhancementLayerVCL) {
             this.telemetry.receivedDolbyVisionEnhancementFrameCount += 1;
         }
     }
 
-    private recordHDR10PlusMetadata(message: DecodeWorkerFrameResponse): void {
-        switch (message.HDR10PlusMetadata?.status) {
+    private recordHDR10PlusStatus(status: DecodeWorkerFrameMetadataSummary['HDR10PlusStatus']): void {
+        switch (status) {
             case 'absent':
                 this.telemetry.receivedHDR10PlusAbsentFrameCount += 1;
                 break;
@@ -1699,18 +2205,18 @@ export default class CustomDecodeSession {
         }
     }
 
-    private validateRawFrameGeometry(workerRecord: WorkerRecord, message: DecodeWorkerFrameResponse): boolean {
+    private validateRawFrameGeometry(generationRecord: GenerationRecord, message: DecodeWorkerFrameResponse): boolean {
         if (message.outputMode !== 'raw-planes') {
             return true;
         }
-        const videoGeometry = workerRecord.videoGeometry;
+        const videoGeometry = generationRecord.videoGeometry;
         if (!videoGeometry) {
             this.telemetry.abandonedRawFrameCount += 1;
-            this.handleDecodeProtocolFailure(workerRecord, 'Decoded raw frame arrived before video track configuration');
+            this.handleDecodeProtocolFailure(generationRecord, 'Decoded raw frame arrived before video track configuration');
             return false;
         }
         try {
-            workerRecord.decodedVideoGeometry = requireConsistentDecodedVideoGeometry(
+            generationRecord.decodedVideoGeometry = requireConsistentDecodedVideoGeometry(
                 {
                     codedHeight: message.frame.codedHeight,
                     codedWidth: message.frame.codedWidth,
@@ -1718,9 +2224,9 @@ export default class CustomDecodeSession {
                     displayWidth: message.frame.displayWidth
                 },
                 videoGeometry,
-                workerRecord.maximumCodedWidth,
-                workerRecord.maximumCodedHeight,
-                workerRecord.decodedVideoGeometry
+                generationRecord.maximumCodedWidth,
+                generationRecord.maximumCodedHeight,
+                generationRecord.decodedVideoGeometry
             );
             return true;
         } catch (error) {
@@ -1728,14 +2234,18 @@ export default class CustomDecodeSession {
             const messageText = error instanceof DecodedVideoGeometryError ?
                 error.message :
                 'Decoded raw frame geometry is invalid';
-            this.handleDecodeProtocolFailure(workerRecord, messageText);
+            this.handleDecodeProtocolFailure(generationRecord, messageText);
             return false;
         }
     }
 
-    private enqueueAudioSample(workerRecord: WorkerRecord, message: DecodeWorkerAudioResponse): void {
-        if ((message.audioEpoch ?? 0) !== workerRecord.audioEpoch) {
-            // The resync request already replaced this attempt's credit window
+    /**
+     * Accounts one chunk the worker's producer posted straight to the worklet.
+     * Readiness, telemetry, and the bridge's drain accounting follow the progress, since the PCM itself never passes this thread.
+     */
+    private recordAudioProgress(generationRecord: GenerationRecord, message: DecodeWorkerAudioProgressResponse): void {
+        if (message.audioEpoch !== generationRecord.audioEpoch) {
+            // A replaced attempt's chunks went to a channel its worklet flush detached
             this.telemetry.staleAudioSampleCount += 1;
             return;
         }
@@ -1743,76 +2253,61 @@ export default class CustomDecodeSession {
         this.telemetry.receivedAudioFrameCount += message.frameCount;
         this.telemetry.receivedAudioSampleCount += 1;
 
-        const audioConfiguration = workerRecord.audioConfiguration;
-        if (
-            !audioConfiguration
-            || !this.activeAudioBridge
-            || message.channelCount !== audioConfiguration.channelCount
-            || message.sampleRate !== audioConfiguration.sampleRate
-        ) {
-            this.handleAudioOutputFailure(workerRecord, 'Decoded audio did not match the configured output');
+        const audioConfiguration = generationRecord.audioConfiguration;
+        const audioBridge = this.activeAudioBridge;
+        if (!audioConfiguration || !audioBridge || message.sampleRate !== audioConfiguration.sampleRate) {
+            this.handleAudioOutputFailure(generationRecord, 'Decoded audio did not match the configured output');
             return;
         }
 
-        const enqueueResult = this.activeAudioBridge.enqueue(message, workerRecord.generation);
-        switch (enqueueResult.status) {
-            case 'submitted':
-                this.telemetry.submittedAudioFrameCount += enqueueResult.frameCount;
-                this.telemetry.submittedAudioSampleCount += 1;
-                if (workerRecord.audioResyncPending) {
-                    this.recordResyncedAudioSubmission(workerRecord, enqueueResult.frameCount, message.sampleRate);
-                    break;
-                }
-                workerRecord.audioMediaReady = audioFramesToMicroseconds(
-                    this.telemetry.submittedAudioFrameCount,
-                    message.sampleRate
-                ) >= MINIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS;
-                this.emitReadyEventIfMediaReady(workerRecord);
-                break;
-            case 'stale-generation':
-                this.telemetry.staleAudioSampleCount += 1;
-                if (this.activeWorker === workerRecord) {
-                    this.handleAudioOutputFailure(workerRecord, 'Decoded audio output generation became stale');
-                }
-                break;
-            case 'controller-rejected':
-            case 'output-capacity':
-            case 'timestamp-discontinuity':
-                // The bridge synchronously reports these failures through its callback
-                break;
+        if (audioBridge.recordSubmission(message, generationRecord.generation) === 'stale-generation') {
+            this.telemetry.staleAudioSampleCount += 1;
+            this.handleAudioOutputFailure(generationRecord, 'Decoded audio output generation became stale');
+            return;
         }
+        this.telemetry.submittedAudioFrameCount += message.frameCount;
+        this.telemetry.submittedAudioSampleCount += 1;
+        if (generationRecord.audioResyncPending) {
+            this.recordResyncedAudioSubmission(generationRecord, message.frameCount, message.sampleRate);
+            return;
+        }
+        generationRecord.audioMediaReady = audioFramesToMicroseconds(
+            this.telemetry.submittedAudioFrameCount,
+            message.sampleRate
+        ) >= MINIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS;
+        this.emitReadyEventIfMediaReady(generationRecord);
     }
 
     /** Reports a resynced epoch once it has buffered the same minimum as startup */
     private recordResyncedAudioSubmission(
-        workerRecord: WorkerRecord,
+        generationRecord: GenerationRecord,
         frameCount: number,
         sampleRate: number
     ): void {
-        workerRecord.audioEpochSubmittedFrameCount += frameCount;
+        generationRecord.audioEpochSubmittedFrameCount += frameCount;
         if (audioFramesToMicroseconds(
-            workerRecord.audioEpochSubmittedFrameCount,
+            generationRecord.audioEpochSubmittedFrameCount,
             sampleRate
         ) < MINIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS) {
             return;
         }
-        workerRecord.audioResyncPending = false;
+        generationRecord.audioResyncPending = false;
         this.telemetry.audioResyncPending = false;
         this.emitEvent({
-            audioEpoch: workerRecord.audioEpoch,
-            generation: workerRecord.generation,
+            audioEpoch: generationRecord.audioEpoch,
+            generation: generationRecord.generation,
             type: 'audio-resynced'
         });
     }
 
     private enqueueNativeAudioInitialization(
-        workerRecord: WorkerRecord,
+        generationRecord: GenerationRecord,
         message: DecodeWorkerNativeAudioInitializationResponse
     ): void {
         const nativeAudioBridge = this.activeNativeAudioBridge;
-        if (workerRecord.audioOutputMode !== 'native-media' || !nativeAudioBridge) {
+        if (generationRecord.audioOutputMode !== 'native-media' || !nativeAudioBridge) {
             this.handleDecodeProtocolFailure(
-                workerRecord,
+                generationRecord,
                 'The custom decode worker returned unexpected native audio initialization'
             );
             return;
@@ -1820,87 +2315,170 @@ export default class CustomDecodeSession {
         void nativeAudioBridge.enqueueInitialization(message);
     }
 
-    private enqueueNativeAudioMedia(workerRecord: WorkerRecord, message: DecodeWorkerNativeAudioMediaResponse): void {
+    private enqueueNativeAudioMedia(generationRecord: GenerationRecord, message: DecodeWorkerNativeAudioMediaResponse): void {
         const nativeAudioBridge = this.activeNativeAudioBridge;
-        if (workerRecord.audioOutputMode !== 'native-media' || !nativeAudioBridge) {
-            this.handleDecodeProtocolFailure(workerRecord, 'The custom decode worker returned unexpected native audio media');
+        if (generationRecord.audioOutputMode !== 'native-media' || !nativeAudioBridge) {
+            this.handleDecodeProtocolFailure(generationRecord, 'The custom decode worker returned unexpected native audio media');
             return;
         }
         this.telemetry.lastAudioMediaTimeMicroseconds = message.startTimeMicroseconds;
         this.telemetry.receivedAudioSampleCount += 1;
         this.telemetry.receivedNativeAudioSegmentCount += 1;
         void nativeAudioBridge.enqueueMedia(message).then(appended => {
-            if (appended && this.isWorkerCurrent(workerRecord) && this.activeNativeAudioBridge === nativeAudioBridge) {
-                workerRecord.audioMediaReady = true;
-                this.emitReadyEventIfMediaReady(workerRecord);
+            if (appended && this.isGenerationCurrent(generationRecord) && this.activeNativeAudioBridge === nativeAudioBridge) {
+                generationRecord.audioMediaReady = true;
+                this.emitReadyEventIfMediaReady(generationRecord);
             }
         });
     }
 
-    private handleWorkerEnded(workerRecord: WorkerRecord): void {
-        workerRecord.decodeEnded = true;
-        if (workerRecord.audioOutputMode !== 'native-media' || !workerRecord.audioRequested) {
-            this.completeWorkerEnded(workerRecord);
+    private handleWorkerEnded(generationRecord: GenerationRecord): void {
+        generationRecord.decodeEnded = true;
+        if (generationRecord.audioOutputMode !== 'native-media' || !generationRecord.audioRequested) {
+            this.completeWorkerEnded(generationRecord);
             return;
         }
         const nativeAudioBridge = this.activeNativeAudioBridge;
         if (!nativeAudioBridge) {
-            this.handleAudioOutputFailure(workerRecord, 'Native audio output ended without an active backend');
+            this.handleAudioOutputFailure(generationRecord, 'Native audio output ended without an active backend');
             return;
         }
         // The audio end usually requested end of stream already; a bridge still opening requests it once started
-        if (workerRecord.nativeAudioBridgeStarted) {
-            this.requestNativeAudioEndOfStream(workerRecord, nativeAudioBridge);
+        if (generationRecord.nativeAudioBridgeStarted) {
+            this.requestNativeAudioEndOfStream(generationRecord, nativeAudioBridge);
         }
-        this.completeNativeAudioWorkerEndedIfReady(workerRecord);
+        this.completeNativeAudioWorkerEndedIfReady(generationRecord);
     }
 
     /** Ends a native-media session once decode ended and the element played out its completed stream. */
-    private completeNativeAudioWorkerEndedIfReady(workerRecord: WorkerRecord): void {
+    private completeNativeAudioWorkerEndedIfReady(generationRecord: GenerationRecord): void {
         // Audio that ended before video ends its element first; video still plays on
-        if (!workerRecord.decodeEnded || !workerRecord.nativeAudioElementEnded || !workerRecord.nativeAudioEndOfStreamAccepted) {
+        if (!generationRecord.decodeEnded || !generationRecord.nativeAudioElementEnded || !generationRecord.nativeAudioEndOfStreamAccepted) {
             return;
         }
-        this.completeWorkerEnded(workerRecord);
+        this.completeWorkerEnded(generationRecord);
     }
 
-    private completeWorkerEnded(workerRecord: WorkerRecord): void {
-        if (!this.isWorkerCurrent(workerRecord) || this.telemetry.state === 'ended') {
+    private completeWorkerEnded(generationRecord: GenerationRecord): void {
+        if (!this.isGenerationCurrent(generationRecord) || this.telemetry.state === 'ended') {
             return;
         }
         this.telemetry.state = 'ended';
-        this.emitEvent({ generation: workerRecord.generation, type: 'ended' });
+        this.emitEvent({ generation: generationRecord.generation, type: 'ended' });
     }
 
-    private requestReplacementFrames(workerRecord: WorkerRecord, frameCredits: number): void {
-        if (!this.isWorkerCurrent(workerRecord) || frameCredits <= 0) {
+    private requestReplacementFrames(generationRecord: GenerationRecord, frameCredits: number): void {
+        if (!this.isGenerationCurrent(generationRecord) || frameCredits <= 0) {
             return;
         }
 
         try {
-            this.postRequest(workerRecord, {
+            this.postRequest(generationRecord, {
                 frameCredits,
-                generation: workerRecord.generation,
+                generation: generationRecord.generation,
                 type: 'pull'
             });
         } catch {
-            this.activeWorker = null;
-            this.stopActiveAudioPaths(workerRecord.generation);
-            this.closeQueuedFrames();
-            this.clearPendingFrames();
-            this.failSession(workerRecord.generation, 'decode-failed', 'Unable to request more decoded frames');
-            this.finishWorker(workerRecord);
+            this.failGenerationWithUnusableWorker(generationRecord, 'Unable to request more decoded frames');
         }
     }
 
-    private requestReplacementAudioSamples(
-        workerRecord: WorkerRecord,
-        audioSampleCredits: number,
-        audioEpoch = 0
-    ): void {
+    /**
+     * Gives back the frames a selection skipped: a VideoFrame closes, a raw buffer returns for reuse, and worker frames are released together.
+     * Returns false once a raw buffer or the release could not go back, after abandoning the rest of the selection.
+     */
+    private releaseDroppedFrames(
+        consumedFrames: readonly QueuedFrame[],
+        selectedQueuedFrame: QueuedFrame,
+        targetTimeMicroseconds: Microseconds
+    ): boolean {
+        const droppedWorkerFrameIds: number[] = [];
+        for (let frameIndex = 0; frameIndex < consumedFrames.length; frameIndex += 1) {
+            const droppedFrame = consumedFrames[frameIndex];
+            recordTimingEvent('frame-dropped', {
+                mediaTimeMicroseconds: droppedFrame.presentationFrame.mediaTimeMicroseconds,
+                targetTimeMicroseconds
+            });
+            if (droppedFrame.presentationFrame.outputMode === 'worker-frame') {
+                droppedWorkerFrameIds.push(droppedFrame.presentationFrame.frameId);
+                continue;
+            }
+            if (droppedFrame.presentationFrame.outputMode === 'video-frame') {
+                closePresentationFrame(droppedFrame.presentationFrame);
+                continue;
+            }
+            if (!this.recycleFrameBuffer(droppedFrame.generationRecord, droppedFrame.presentationFrame.frame.data)) {
+                this.abandonPresentationFrame(droppedFrame.presentationFrame);
+                for (let abandonedFrameIndex = frameIndex + 1; abandonedFrameIndex < consumedFrames.length; abandonedFrameIndex += 1) {
+                    this.abandonPresentationFrame(consumedFrames[abandonedFrameIndex].presentationFrame);
+                }
+                this.abandonPresentationFrame(selectedQueuedFrame.presentationFrame);
+                return false;
+            }
+        }
+        // The dropped worker frames' credits return with their release
+        return droppedWorkerFrameIds.length === 0
+            || this.releaseWorkerFrames(selectedQueuedFrame.generationRecord, droppedWorkerFrameIds);
+    }
+
+    /**
+     * Hands frames the current generation is done with back to its worker, which frees them and returns the credits of a running run.
+     * Returns false once a failed post has failed the generation.
+     */
+    private releaseWorkerFrames(generationRecord: GenerationRecord, frameIds: readonly number[]): boolean {
+        if (!this.isGenerationCurrent(generationRecord)) {
+            return true;
+        }
+
+        try {
+            this.postRequest(generationRecord, {
+                frameIds: [ ...frameIds ],
+                generation: generationRecord.generation,
+                type: 'release-frames'
+            });
+            return true;
+        } catch {
+            this.failGenerationWithUnusableWorker(generationRecord, 'Unable to release the decoded worker frames');
+            return false;
+        }
+    }
+
+    /**
+     * Releases the worker frames a retiring generation leaves unpresented, so its worker frees them before its next start.
+     * A worker that cannot take the release cannot take that start either, so it is replaced.
+     */
+    private releaseAbandonedWorkerFrames(heldFrames: Iterable<QueuedFrame>): void {
+        let generationRecord: GenerationRecord | null = null;
+        const frameIds: number[] = [];
+        for (const heldFrame of heldFrames) {
+            if (heldFrame.presentationFrame.outputMode !== 'worker-frame') {
+                continue;
+            }
+            // Every held frame belongs to the one generation a start or a stop retires
+            generationRecord = heldFrame.generationRecord;
+            frameIds.push(heldFrame.presentationFrame.frameId);
+        }
+        const workerRecord = generationRecord?.workerRecord ?? null;
+        if (!generationRecord || !workerRecord || workerRecord.terminated) {
+            return;
+        }
+
+        const releaseRequest: DecodeWorkerRequest = {
+            frameIds,
+            generation: generationRecord.generation,
+            type: 'release-frames'
+        };
+        try {
+            workerRecord.worker.postMessage(releaseRequest);
+        } catch {
+            this.terminateWorker(workerRecord);
+        }
+    }
+
+    /** Returns native media audio segment credits; decoded PCM takes its credits from the worker's producer. */
+    private requestReplacementAudioSamples(generationRecord: GenerationRecord, audioSampleCredits: number): void {
         if (
-            this.activeWorker !== workerRecord
-            || workerRecord.audioEpoch !== audioEpoch
+            this.activeGeneration !== generationRecord
             || audioSampleCredits <= 0
             || !Number.isSafeInteger(audioSampleCredits)
         ) {
@@ -1908,39 +2486,68 @@ export default class CustomDecodeSession {
         }
 
         try {
-            this.postRequest(workerRecord, {
-                ...(audioEpoch > 0 ? { audioEpoch } : {}),
+            this.postRequest(generationRecord, {
                 audioSampleCredits,
-                generation: workerRecord.generation,
+                generation: generationRecord.generation,
                 type: 'pull-audio'
             });
         } catch {
-            this.handleAudioOutputFailure(workerRecord, 'Unable to request more decoded audio');
+            this.handleAudioOutputFailure(generationRecord, 'Unable to request more decoded audio');
         }
     }
 
-    private handleAudioOutputFailure(workerRecord: WorkerRecord, message: string): void {
-        if (this.activeWorker !== workerRecord) {
+    /** Hands the worker's producer its channel to the worklet; the epoch's audio attempt starts once the channel arrives. */
+    private attachAudioOutput(generationRecord: GenerationRecord, audioOutput: DecodeWorkerAudioOutputAttachment): void {
+        try {
+            this.postRequest(generationRecord, {
+                audioEpoch: generationRecord.audioEpoch,
+                audioOutput,
+                generation: generationRecord.generation,
+                type: 'attach-audio-output'
+            }, [ audioOutput.port ]);
+        } catch {
+            audioOutput.port.close();
+            this.handleAudioOutputFailure(generationRecord, 'Unable to attach decoded audio output');
+        }
+    }
+
+    private handleAudioOutputFailure(generationRecord: GenerationRecord, message: string): void {
+        if (this.activeGeneration !== generationRecord) {
             return;
         }
-
-        this.activeWorker = null;
-        this.stopActiveAudioPaths(workerRecord.generation);
-        this.closeQueuedFrames();
-        this.clearPendingFrames();
-        void this.beginWorkerRetirement(workerRecord);
-        this.failSession(workerRecord.generation, 'audio-output-failed', message);
+        this.failGeneration(generationRecord, 'audio-output-failed', message);
     }
 
-    private handleWorkerCrash(workerRecord: WorkerRecord): void {
-        if (this.activeWorker === workerRecord) {
-            this.activeWorker = null;
-            this.stopActiveAudioPaths(workerRecord.generation);
-            this.closeQueuedFrames();
-            this.clearPendingFrames();
-            this.failSession(workerRecord.generation, 'decode-failed', 'The custom decode worker crashed');
+    /**
+     * Fails a generation: its outputs stop, its frames close, and its run retires.
+     * Its worker is replaced rather than reused, since a failed run may leave decoder state behind.
+     */
+    private failGeneration(
+        generationRecord: GenerationRecord,
+        failureKind: CustomDecodeFailureKind,
+        message: string
+    ): void {
+        if (this.activeGeneration === generationRecord) {
+            this.activeGeneration = null;
         }
-        this.finishWorker(workerRecord);
+        this.stopActiveAudioPaths(generationRecord.generation);
+        this.closeQueuedFrames();
+        this.clearPendingFrames();
+        this.retireGeneration(generationRecord);
+        const workerRecord = generationRecord.workerRecord;
+        if (workerRecord) {
+            this.requireWorkerReplacement(workerRecord);
+        }
+        this.failSession(generationRecord.generation, failureKind, message);
+    }
+
+    /** Fails a generation whose worker refused a message; a worker that cannot take messages cannot finish its run either. */
+    private failGenerationWithUnusableWorker(generationRecord: GenerationRecord, message: string): void {
+        const workerRecord = generationRecord.workerRecord;
+        if (workerRecord) {
+            this.terminateWorker(workerRecord);
+        }
+        this.failGeneration(generationRecord, 'decode-failed', message);
     }
 
     private failSession(
@@ -1962,11 +2569,16 @@ export default class CustomDecodeSession {
         }
     }
 
+    /** Posts to the worker that took the generation's start; an idle worker drops requests of a run that already stopped. */
     private postRequest(
-        workerRecord: WorkerRecord,
+        generationRecord: GenerationRecord,
         request: DecodeWorkerRequest,
         transfer?: Transferable[]
     ): void {
+        const workerRecord = generationRecord.workerRecord;
+        if (!workerRecord) {
+            throw new Error('The custom decode generation has not reached its worker');
+        }
         workerRecord.worker.postMessage(request, transfer ?? []);
     }
 
@@ -1980,6 +2592,7 @@ export default class CustomDecodeSession {
     }
 
     private closeQueuedFrames(): void {
+        this.releaseAbandonedWorkerFrames(this.queuedFrames);
         for (const queuedFrame of this.queuedFrames) {
             this.abandonPresentationFrame(queuedFrame.presentationFrame);
         }
@@ -1988,6 +2601,10 @@ export default class CustomDecodeSession {
     }
 
     private clearPendingFrames(): void {
+        this.releaseAbandonedWorkerFrames(Array.from(
+            this.pendingFrames,
+            ([ presentationFrame, generationRecord ]): QueuedFrame => ({ generationRecord, presentationFrame })
+        ));
         for (const presentationFrame of this.pendingFrames.keys()) {
             this.abandonPresentationFrame(presentationFrame);
         }
@@ -1996,89 +2613,43 @@ export default class CustomDecodeSession {
     }
 
     private releasePendingFrame(presentationFrame: DecodedPresentationFrame): boolean {
-        const workerRecord = this.pendingFrames.get(presentationFrame);
-        if (!workerRecord) {
+        const generationRecord = this.pendingFrames.get(presentationFrame);
+        if (!generationRecord) {
             return false;
         }
 
         this.pendingFrames.delete(presentationFrame);
         this.telemetry.pendingFrameCount = this.pendingFrames.size;
+        if (presentationFrame.outputMode === 'worker-frame') {
+            this.releaseWorkerFrames(generationRecord, [ presentationFrame.frameId ]);
+            return true;
+        }
         if (presentationFrame.outputMode === 'raw-planes') {
-            if (!this.recycleFrameBuffer(workerRecord, presentationFrame.frame.data)) {
+            if (!this.recycleFrameBuffer(generationRecord, presentationFrame.frame.data)) {
                 this.abandonPresentationFrame(presentationFrame);
             }
         } else {
-            this.requestReplacementFrames(workerRecord, 1);
+            this.requestReplacementFrames(generationRecord, 1);
         }
         return true;
     }
 
-    private recycleFrameBuffer(workerRecord: WorkerRecord, buffer: ArrayBuffer): boolean {
-        if (!this.isWorkerCurrent(workerRecord)) {
+    private recycleFrameBuffer(generationRecord: GenerationRecord, buffer: ArrayBuffer): boolean {
+        if (!this.isGenerationCurrent(generationRecord)) {
             return false;
         }
 
         try {
-            this.postRequest(workerRecord, {
+            this.postRequest(generationRecord, {
                 buffer,
-                generation: workerRecord.generation,
+                generation: generationRecord.generation,
                 type: 'recycle-frame'
             }, [ buffer ]);
             this.telemetry.recycledRawFrameCount += 1;
             return true;
         } catch {
-            this.activeWorker = null;
-            this.stopActiveAudioPaths(workerRecord.generation);
-            this.closeQueuedFrames();
-            this.clearPendingFrames();
-            this.failSession(workerRecord.generation, 'decode-failed', 'Unable to recycle the decoded raw frame buffer');
-            this.finishWorker(workerRecord);
+            this.failGenerationWithUnusableWorker(generationRecord, 'Unable to recycle the decoded raw frame buffer');
             return false;
         }
-    }
-
-    private beginWorkerRetirement(workerRecord: WorkerRecord): Promise<void> {
-        if (workerRecord.retirementPromise) {
-            return workerRecord.retirementPromise;
-        }
-
-        workerRecord.retirementPromise = new Promise<void>(resolve => {
-            workerRecord.resolveRetirement = resolve;
-        });
-        this.retiringWorkers.add(workerRecord);
-
-        try {
-            this.postRequest(workerRecord, {
-                generation: workerRecord.generation,
-                type: 'stop'
-            });
-        } catch {
-            this.finishWorker(workerRecord);
-            return workerRecord.retirementPromise;
-        }
-
-        workerRecord.retirementTimer = globalThis.setTimeout(() => {
-            console.warn(`Custom decode worker generation ${workerRecord.generation} did not acknowledge shutdown`);
-            this.finishWorker(workerRecord);
-        }, WORKER_STOP_TIMEOUT_MILLISECONDS);
-        return workerRecord.retirementPromise;
-    }
-
-    private finishWorker(workerRecord: WorkerRecord): void {
-        if (workerRecord.retirementTimer != null) {
-            globalThis.clearTimeout(workerRecord.retirementTimer);
-            workerRecord.retirementTimer = null;
-        }
-        workerRecord.worker.removeEventListener('message', workerRecord.messageHandler);
-        workerRecord.worker.removeEventListener('error', workerRecord.errorHandler);
-        workerRecord.worker.terminate();
-        if (this.activeWorker === workerRecord) {
-            this.activeWorker = null;
-        }
-        this.retiringWorkers.delete(workerRecord);
-
-        const resolveRetirement = workerRecord.resolveRetirement;
-        workerRecord.resolveRetirement = null;
-        resolveRetirement?.();
     }
 }

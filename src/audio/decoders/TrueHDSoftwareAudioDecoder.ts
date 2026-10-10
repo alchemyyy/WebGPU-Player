@@ -26,6 +26,9 @@ const TRUEHD_ATMOS_PROFILE = 30;
 const TRUEHD_FNV1A_OFFSET_BASIS = 2_166_136_261;
 const TRUEHD_FNV1A_PRIME = 16_777_619;
 const TRUEHD_SUPPORTED_BITS_PER_SAMPLE = new Set<number>([ 16, 20, 24 ]);
+// Multiplying by an exact power-of-two reciprocal is bit-identical to dividing by the full-scale value
+const TRUEHD_S16_SAMPLE_RECIPROCAL = 2 ** -15;
+const TRUEHD_S32_SAMPLE_RECIPROCAL = 2 ** -31;
 
 export const TRUEHD_CODEC_MLP = 0;
 export const TRUEHD_CODEC_TRUEHD = 1;
@@ -42,8 +45,14 @@ export type TrueHDDecodedAudioOutput = Readonly<{
     losslessChannelBed: true
     mediaTimeMicroseconds: Microseconds
     objectAudioRendered: false
-    pcmFingerprint: number
+    /** The FNV-1a hash of the decoder's packed PCM bytes, or null unless the decoder was created to compute it */
+    pcmFingerprint: number | null
     sampleRate: number
+}>;
+
+export type TrueHDDecoderOptions = Readonly<{
+    /** Hashes every decoded frame's packed PCM, which only the exact qualification reads; off for playback */
+    pcmFingerprint?: boolean
 }>;
 
 type FFmpegTrueHDFunctionTable = {
@@ -139,15 +148,17 @@ export default class TrueHDSoftwareAudioDecoder {
 
     private closed = false;
     private readonly codec: TrueHDDecoderCodec;
+    private readonly computesPCMFingerprint: boolean;
     private readonly decoder: number;
     private readonly functions: FFmpegTrueHDFunctionTable;
     private readonly module: FFmpegTrueHDModule;
 
-    private constructor(module: FFmpegTrueHDModule, codec: TrueHDDecoderCodec) {
+    private constructor(module: FFmpegTrueHDModule, codec: TrueHDDecoderCodec, options: TrueHDDecoderOptions) {
         this.module = module;
         this.functions = createFunctionTable(module);
         this.libraryVersion = requirePositiveSafeInteger(this.functions.getVersion(), 'FFmpeg libavcodec version');
         this.codec = codec;
+        this.computesPCMFingerprint = options.pcmFingerprint === true;
         this.decoder = this.functions.create(getCodecID(codec));
         if (!Number.isSafeInteger(this.decoder) || this.decoder <= 0) {
             throw new Error(`Unable to create the bundled ${codec} decoder`);
@@ -157,7 +168,8 @@ export default class TrueHDSoftwareAudioDecoder {
     /** Creates one decoder after lazy WebAssembly initialization. */
     public static async create(
         codec: TrueHDDecoderCodec = 'truehd',
-        moduleFactory: TrueHDDecoderModuleFactory = loadTrueHDDecoderModule
+        moduleFactory: TrueHDDecoderModuleFactory = loadTrueHDDecoderModule,
+        options: TrueHDDecoderOptions = {}
     ): Promise<TrueHDSoftwareAudioDecoder> {
         const module = await moduleFactory();
         if (!(module.HEAPU8 instanceof Uint8Array)
@@ -165,7 +177,7 @@ export default class TrueHDSoftwareAudioDecoder {
             || !(module.HEAP32 instanceof Int32Array)) {
             throw new Error('The bundled TrueHD decoder memory views are unavailable');
         }
-        return new TrueHDSoftwareAudioDecoder(module, codec);
+        return new TrueHDSoftwareAudioDecoder(module, codec, options);
     }
 
     /** Decodes one Mediabunny-demuxed access unit into zero or more owned PCM blocks. */
@@ -275,8 +287,10 @@ export default class TrueHDSoftwareAudioDecoder {
             throw new RangeError('Bundled TrueHD output is outside decoder memory');
         }
 
-        const outputBytes = new Uint8Array(byteLength);
-        outputBytes.set(this.module.HEAPU8.subarray(dataPointer, dataPointer + byteLength));
+        // The hash reads the decoder's memory in place; nothing writes it before this frame is consumed
+        const pcmFingerprint = this.computesPCMFingerprint ?
+            getPCMByteFingerprint(this.module.HEAPU8.subarray(dataPointer, dataPointer + byteLength)) :
+            null;
         const channelData: Float32Array[] = [];
         for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
             channelData.push(new Float32Array(frameCount));
@@ -284,11 +298,11 @@ export default class TrueHDSoftwareAudioDecoder {
         if (sampleFormat === TRUEHD_AV_SAMPLE_FORMAT_S16) {
             const firstSampleIndex = dataPointer / Int16Array.BYTES_PER_ELEMENT;
             const sourceSamples = this.module.HEAP16.subarray(firstSampleIndex, firstSampleIndex + interleavedSampleCount);
-            this.copyInterleavedPCM(sourceSamples, channelData, 2 ** 15);
+            this.copyInterleavedPCM(sourceSamples, channelData, TRUEHD_S16_SAMPLE_RECIPROCAL);
         } else {
             const firstSampleIndex = dataPointer / Int32Array.BYTES_PER_ELEMENT;
             const sourceSamples = this.module.HEAP32.subarray(firstSampleIndex, firstSampleIndex + interleavedSampleCount);
-            this.copyInterleavedPCM(sourceSamples, channelData, 2 ** 31);
+            this.copyInterleavedPCM(sourceSamples, channelData, TRUEHD_S32_SAMPLE_RECIPROCAL);
         }
 
         const decodedPTS = this.functions.getPTS(this.decoder);
@@ -306,7 +320,7 @@ export default class TrueHDSoftwareAudioDecoder {
             losslessChannelBed: true,
             mediaTimeMicroseconds,
             objectAudioRendered: false,
-            pcmFingerprint: getPCMByteFingerprint(outputBytes),
+            pcmFingerprint,
             sampleRate
         };
     }
@@ -314,14 +328,14 @@ export default class TrueHDSoftwareAudioDecoder {
     private copyInterleavedPCM(
         sourceSamples: Int16Array | Int32Array,
         channelData: readonly Float32Array[],
-        sampleScale: number
+        sampleReciprocal: number
     ): void {
         const channelCount = channelData.length;
         const frameCount = channelData[0]?.length ?? 0;
         for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
             const interleavedFrameOffset = frameIndex * channelCount;
             for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
-                channelData[channelIndex][frameIndex] = sourceSamples[interleavedFrameOffset + channelIndex] / sampleScale;
+                channelData[channelIndex][frameIndex] = sourceSamples[interleavedFrameOffset + channelIndex] * sampleReciprocal;
             }
         }
     }

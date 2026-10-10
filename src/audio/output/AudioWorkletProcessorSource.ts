@@ -1,7 +1,8 @@
 export const CUSTOM_AUDIO_WORKLET_PROCESSOR_NAME = 'jellyfin-custom-audio-output-v1';
 
 // This self-contained module is loaded through AudioWorklet.addModule().
-// It receives PCM in transferable ArrayBuffers, so it needs no shared memory
+// It receives PCM in transferable ArrayBuffers, so it needs no shared memory.
+// PCM arrives from a producer's own channel, or from the page on the node's port; control and telemetry stay on the node's port
 const CUSTOM_AUDIO_WORKLET_SOURCE = `'use strict';
 
 const MICROSECONDS_PER_SECOND = 1000000;
@@ -47,6 +48,8 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         this.leadingGapFrames = 0;
         this.leadingGapRenderedFrames = 0;
         this.leadingGapStartMicroseconds = 0;
+        // The current producer's end of its channel; a flush detaches it
+        this.producerPort = null;
         this.port.onmessage = messageEvent => this.handleMessage(messageEvent.data);
     }
 
@@ -56,11 +59,14 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         }
 
         switch (message.type) {
+            case 'attach-producer':
+                this.attachProducer(message.port, message.generation);
+                break;
             case 'deactivate':
                 this.deactivate(message.leaseId, message.generation);
                 break;
             case 'enqueue':
-                this.enqueue(message);
+                this.enqueue(message, null);
                 break;
             case 'flush':
                 this.flush(message.generation, message.mediaTimeMicroseconds);
@@ -72,12 +78,46 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
                 this.playing = message.playing === true;
                 break;
             case 'destroy':
+                this.detachProducer();
                 this.clearQueue();
                 this.destroyed = true;
                 break;
             default:
                 break;
         }
+    }
+
+    // Adopts a producer's channel for the generation the preceding flush started.
+    // An attachment that a later flush overtook is closed, so the producer it belongs to is stale
+    attachProducer(port, generation) {
+        this.detachProducer();
+        if (!port || typeof port.postMessage !== 'function') {
+            return;
+        }
+        if (this.destroyed || generation !== this.generation) {
+            port.close();
+            return;
+        }
+        this.producerPort = port;
+        port.onmessage = messageEvent => this.handleProducerMessage(port, messageEvent.data);
+    }
+
+    // Closes the producer's channel; chunks still in flight on it are discarded with it
+    detachProducer() {
+        const producerPort = this.producerPort;
+        if (!producerPort) {
+            return;
+        }
+        this.producerPort = null;
+        producerPort.onmessage = null;
+        producerPort.close();
+    }
+
+    handleProducerMessage(port, message) {
+        if (port !== this.producerPort || this.destroyed || !message || message.type !== 'enqueue') {
+            return;
+        }
+        this.enqueue(message, port);
     }
 
     deactivate(leaseId, generation) {
@@ -87,6 +127,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         }
 
         this.playing = false;
+        this.detachProducer();
         this.clearQueue();
         this.generation = generation;
         this.volume = 1;
@@ -111,12 +152,13 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         this.port.postMessage({leaseId, type: 'deactivated'});
     }
 
-    enqueue(message) {
+    // Queues one chunk from the page, or from the producer whose port is given, and releases a rejected one at once
+    enqueue(message, producerPort) {
         if (message.generation !== this.generation) {
             const staleFrameCount = this.getFrameCount(message.channelData);
             this.staleChunks += 1;
             this.droppedFrames += staleFrameCount;
-            this.releaseChannelData(message.channelData);
+            this.releaseChannelData(message.channelData, producerPort, message.sequence, 'stale-generation');
             this.postTelemetry('stale-generation', message.sequence);
             return;
         }
@@ -124,7 +166,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         const frameCount = this.getFrameCount(message.channelData);
         if (frameCount <= 0 || message.channelData.length !== this.channelCount) {
             this.droppedFrames += Math.max(0, frameCount);
-            this.releaseChannelData(message.channelData);
+            this.releaseChannelData(message.channelData, producerPort, message.sequence, 'invalid');
             this.postTelemetry('overflow', message.sequence);
             return;
         }
@@ -133,7 +175,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             const channel = message.channelData[channelIndex];
             if (!(channel instanceof Float32Array) || channel.length !== frameCount) {
                 this.droppedFrames += frameCount;
-                this.releaseChannelData(message.channelData);
+                this.releaseChannelData(message.channelData, producerPort, message.sequence, 'invalid');
                 this.postTelemetry('overflow', message.sequence);
                 return;
             }
@@ -143,7 +185,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             this.droppedFrames += frameCount;
             this.overflowFrames += frameCount;
             this.overflowEvents += 1;
-            this.releaseChannelData(message.channelData);
+            this.releaseChannelData(message.channelData, producerPort, message.sequence, 'overflow');
             this.postTelemetry('overflow', message.sequence);
             return;
         }
@@ -162,6 +204,8 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         this.chunks[this.tailChunkIndex] = {
             channelData: message.channelData,
             frameOffset: 0,
+            producerPort,
+            sequence: message.sequence,
             timestampMicroseconds: message.timestampMicroseconds
         };
         this.tailChunkIndex = (this.tailChunkIndex + 1) % this.maxChunks;
@@ -186,6 +230,8 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
     }
 
     flush(generation, mediaTimeMicroseconds) {
+        // The producer's chunks belong to the generation the flush ends
+        this.detachProducer();
         this.clearQueue();
         this.generation = generation;
         this.resetSignalTelemetry();
@@ -205,7 +251,8 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             this.chunks[this.headChunkIndex] = undefined;
             this.headChunkIndex = (this.headChunkIndex + 1) % this.maxChunks;
             this.chunkCount -= 1;
-            this.releaseChannelData(chunk.channelData);
+            // Every queue clear follows a detach, so a producer's chunk is dropped and only a page chunk returns
+            this.releaseChannelData(chunk.channelData, chunk.producerPort, chunk.sequence, 'consumed');
         }
         this.headChunkIndex = 0;
         this.tailChunkIndex = 0;
@@ -270,7 +317,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
                 this.chunks[this.headChunkIndex] = undefined;
                 this.headChunkIndex = (this.headChunkIndex + 1) % this.maxChunks;
                 this.chunkCount -= 1;
-                this.releaseChannelData(chunk.channelData);
+                this.releaseChannelData(chunk.channelData, chunk.producerPort, chunk.sequence, 'consumed');
             }
         }
 
@@ -351,23 +398,35 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             + Math.round((remainingFrames * MICROSECONDS_PER_SECOND) / sampleRate);
     }
 
-    releaseChannelData(channelData) {
-        if (!Array.isArray(channelData)) {
-            return;
-        }
+    // Returns a chunk's buffers to the realm that sent it, out of the persistent worklet realm.
+    // A producer's chunk goes back to its producer, which reuses the buffers and takes back the chunk's credit; a page chunk goes to the page to be reclaimed
+    releaseChannelData(channelData, producerPort, sequence, reason) {
         const channelBuffers = [];
-        for (const channel of channelData) {
-            if (channel instanceof Float32Array
-                && channel.buffer instanceof ArrayBuffer
-                && !channelBuffers.includes(channel.buffer)) {
-                channelBuffers.push(channel.buffer);
+        if (Array.isArray(channelData)) {
+            for (const channel of channelData) {
+                if (channel instanceof Float32Array
+                    && channel.buffer instanceof ArrayBuffer
+                    && !channelBuffers.includes(channel.buffer)) {
+                    channelBuffers.push(channel.buffer);
+                }
             }
+        }
+        if (producerPort) {
+            // A detached producer's chunks are dropped with it
+            if (producerPort !== this.producerPort) {
+                return;
+            }
+            try {
+                producerPort.postMessage({channelBuffers, reason, sequence, type: 'released'}, channelBuffers);
+            } catch {
+                // Audio output must continue if the producer's channel fails
+            }
+            return;
         }
         if (channelBuffers.length === 0) {
             return;
         }
         try {
-            // Move consumed PCM backing stores out of the persistent worklet realm so page garbage collection can reclaim them after receipt
             this.port.postMessage({channelBuffers, type: 'recycle'}, channelBuffers);
         } catch {
             // Audio output must continue if the diagnostic recycling path fails
