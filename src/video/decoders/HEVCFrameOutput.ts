@@ -63,7 +63,7 @@ function getCompactFrameLayout(frame: HEVCSoftwareDecodedFrame): CompactFrameLay
     };
 }
 
-/** Writes a decoded frame's planes into compact planes, narrowing 8-bit samples to bytes. */
+/** Writes a decoded frame's planes into compact planes, whose samples are bytes at 8 bits and 16-bit words at 10. */
 function writeCompactPlanes(frame: HEVCSoftwareDecodedFrame, compactLayout: CompactFrameLayout, buffer: ArrayBuffer): void {
     const compactPlanes: CompactPlane[] = [];
     compactPlanes.push({ height: frame.codedHeight, plane: frame.planes.luma, width: frame.codedWidth });

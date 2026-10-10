@@ -14,16 +14,17 @@ import type { HEVCSoftwareDecodedFrame } from 'webgpu-player/video/decoders/HEVC
 import RawFrameBufferPool, {
     MAXIMUM_SPARE_RAW_FRAME_BUFFERS_PER_BYTE_LENGTH
 } from 'webgpu-player/video/RawFrameBufferPool';
-import { PreparedRawVideoFrameSource } from 'webgpu-player/video/RawVideoFrameCopy';
+import { PreparedRawVideoFrameSource, type RawVideoPlaneDescriptor } from 'webgpu-player/video/RawVideoFrameCopy';
 
-// A 4x2 frame whose rows a decoder padded to 6 luma and 3 chroma samples
+// A 4x2 frame whose rows a decoder padded to 6 luma and 3 chroma samples, bytes at 8 bits and 16-bit words at 10
 const CODED_WIDTH = 4;
 const CODED_HEIGHT = 2;
 const CHROMA_WIDTH = 2;
 const CHROMA_HEIGHT = 1;
 const LUMA_STRIDE = 6;
 const CHROMA_STRIDE = 3;
-const PADDING_SAMPLE = 0xFFFF;
+const MAIN_PADDING_SAMPLE = 0xFF;
+const MAIN10_PADDING_SAMPLE = 0xFFFF;
 const LUMA_ROWS = [ [ 16, 17, 18, 19 ], [ 20, 21, 22, 23 ] ];
 const CHROMA_BLUE_ROW = [ 128, 129 ];
 const CHROMA_RED_ROW = [ 130, 131 ];
@@ -50,9 +51,14 @@ type CreatedVideoFrame = {
     planeBytes: number[]
 };
 
-function padRows(rows: readonly (readonly number[])[], stride: number, sampleOffset: number): HEVCFramePlane {
+/** Lays rows a stride apart in the samples a decoder returns for a format: bytes for I420 and 16-bit words for I420P10. */
+function padRows(rows: readonly (readonly number[])[], stride: number, format: 'I420' | 'I420P10'): HEVCFramePlane {
     const rowLength = rows[0].length;
-    const samples = new Uint16Array(((rows.length - 1) * stride) + rowLength).fill(PADDING_SAMPLE);
+    const sampleCount = ((rows.length - 1) * stride) + rowLength;
+    const samples = format === 'I420' ?
+        new Uint8Array(sampleCount).fill(MAIN_PADDING_SAMPLE) :
+        new Uint16Array(sampleCount).fill(MAIN10_PADDING_SAMPLE);
+    const sampleOffset = format === 'I420' ? 0 : TEN_BIT_SAMPLE_OFFSET;
     rows.forEach((row: readonly number[], rowIndex: number): void => {
         samples.set(row.map((sample: number): number => sample + sampleOffset), rowIndex * stride);
     });
@@ -64,7 +70,6 @@ function createDecodedFrame(
     durationMicroseconds: Microseconds = DURATION_MICROSECONDS,
     codedWidth: number = CODED_WIDTH
 ): HEVCSoftwareDecodedFrame {
-    const sampleOffset = format === 'I420' ? 0 : TEN_BIT_SAMPLE_OFFSET;
     const widthPadding = codedWidth - CODED_WIDTH;
     const lumaRows = LUMA_ROWS.map((row: readonly number[]): number[] => [ ...row, ...new Array<number>(widthPadding).fill(0) ]);
     const chromaPadding = new Array<number>(widthPadding / 2).fill(0);
@@ -79,9 +84,9 @@ function createDecodedFrame(
         durationMicroseconds,
         format,
         planes: {
-            chromaBlue: padRows([ [ ...CHROMA_BLUE_ROW, ...chromaPadding ] ], CHROMA_STRIDE + chromaPadding.length, sampleOffset),
-            chromaRed: padRows([ [ ...CHROMA_RED_ROW, ...chromaPadding ] ], CHROMA_STRIDE + chromaPadding.length, sampleOffset),
-            luma: padRows(lumaRows, LUMA_STRIDE + widthPadding, sampleOffset)
+            chromaBlue: padRows([ [ ...CHROMA_BLUE_ROW, ...chromaPadding ] ], CHROMA_STRIDE + chromaPadding.length, format),
+            chromaRed: padRows([ [ ...CHROMA_RED_ROW, ...chromaPadding ] ], CHROMA_STRIDE + chromaPadding.length, format),
+            luma: padRows(lumaRows, LUMA_STRIDE + widthPadding, format)
         },
         timestampMicroseconds: TIMESTAMP_MICROSECONDS
     };
@@ -249,6 +254,29 @@ describe('writeHEVCDecodedFrame', () => {
             displayHeight: DISPLAY_HEIGHT,
             displayWidth: DISPLAY_WIDTH
         })?.data).toBe(spareBuffer);
+    });
+
+    it('prepares an 8-bit frame from its byte planes, row by row into the aligned layout', () => {
+        const preparedFrame = prepareHEVCRawVideoFrame(createDecodedFrame('I420'), null);
+
+        const rawFrame = preparedFrame.takeRawFrame('I420', {
+            codedHeight: CODED_HEIGHT,
+            codedWidth: CODED_WIDTH,
+            displayHeight: DISPLAY_HEIGHT,
+            displayWidth: DISPLAY_WIDTH
+        });
+
+        expect(rawFrame).not.toBeNull();
+        const bytes = new Uint8Array(rawFrame?.data ?? new ArrayBuffer(0));
+        const planeRows = (rawFrame?.planes ?? []).map((plane: RawVideoPlaneDescriptor): number[][] => {
+            const rows: number[][] = [];
+            for (let rowIndex = 0; rowIndex < plane.height; rowIndex += 1) {
+                const rowOffset = plane.byteOffset + (rowIndex * plane.bytesPerRow);
+                rows.push(Array.from(bytes.subarray(rowOffset, rowOffset + plane.rowByteLength)));
+            }
+            return rows;
+        });
+        expect(planeRows).toEqual([ LUMA_ROWS, [ CHROMA_BLUE_ROW ], [ CHROMA_RED_ROW ] ]);
     });
 
     it('builds a VideoFrame with its own geometry on the VideoFrame route', () => {

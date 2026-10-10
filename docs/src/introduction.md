@@ -4,7 +4,7 @@ WebGPU Player is a media playback engine for the browser.
 It plays sources a browser cannot play natively, and presents HDR and Dolby Vision through its own color pipeline.
 
 - Demux: [Mediabunny](https://github.com/Vanilagy/mediabunny), in a worker.
-- Decode: WebCodecs, or WebAssembly decoders built from FFmpeg, libdcadec, hevc.js, and OpenJPEG.
+- Decode: WebCodecs, or WebAssembly decoders built from FFmpeg, libdcadec, and OpenJPEG.
 - Present: WebGPU, with tone mapping for HDR10, HDR10+, HLG, and Dolby Vision.
 - Audio: an AudioWorklet output that owns the playback clock.
 

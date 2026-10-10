@@ -117,7 +117,7 @@ The host maps it to a presenter input mode.
 
 | Route | Eligibility output | Input mode | Notes |
 | --- | --- | --- | --- |
-| VF-SDR | `video-frame`; `native`, or `bundled-hevc` (hevc.js) for Main only | `external-texture`, identity | |
+| VF-SDR | `video-frame`; `native`, or `bundled-hevc` (FFmpeg) for Main only | `external-texture`, identity | |
 | VF-PQ, VF-HLG | `video-frame`; `native`; SPS and VUI neutralized to BT.709; transfer `pq` or `hlg` | `external-hdr` | Chrome samples external textures at 8 bits per channel. PQ also applies static mastering metadata |
 | DV base PQ, DV base HLG | As VF-PQ or VF-HLG, with `dolbyVisionProfile` null | `external-hdr` | P7 and P8 only. RPU and EL discarded. Preferred over RAW-DV whenever authorized |
 | Declared base | An ordinary route, with `dolbyVisionProfile` null | As that route | Used only when no RPU route is selected. RPU and EL discarded |
@@ -149,7 +149,7 @@ Probes, all in `capability/CustomDecodeCapabilities.ts`:
 | `nativeDolbyVisionHEVC` | The `hev1.2.4.H150.B0` configuration plus Main 10 decode |
 | `rawHDRVideo.hevc` | An I420P10 `copyTo` fingerprint, or a bundled Main 10 qualification |
 | `rawHDRVideo.av1` | A 4K AV1 Main 10 keyframe decoded with `prefer-software` and its I420P10 `copyTo` fingerprint |
-| `bundledHEVC` | hevc.js Main and Main 10 qualifications with pinned fingerprints |
+| `bundledHEVC` | `ffmpeg-hevc` Main and Main 10 qualifications with pinned fingerprints |
 | `hevcRangeExtensions[variant]` | The exact configuration, the two-frame vector, the exact copy format, and pinned fingerprints |
 
 GPU authorizations, all in `validation/`:

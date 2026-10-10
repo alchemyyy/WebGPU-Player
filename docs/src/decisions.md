@@ -15,7 +15,7 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
   Nothing refuses media for its frame size, sample rate, or packet size alone.
   The bundled HEVC, JPEG 2000, and MPEG-2/VC-1 size caps, the raw-copy byte budget, the packet and container read caps, the 3 kHz to 192 kHz audio window, and the per-packet audio frame counts were removed.
   Above 192 kHz the resampler widens its kernel in proportion, so its band edge stays where the 192 kHz qualification put it.
-  The real bounds remain: the level's DPB, a representable copy layout, the WASM heap (4 GiB for MPEG-2/VC-1, 2 GiB in the prebuilt HEVC and OpenJPEG decoders), the adapter's texture limit, and what a browser decoder accepts.
+  The real bounds remain: the level's DPB, a representable copy layout, the WASM heap (4 GiB for HEVC and MPEG-2/VC-1, 2 GiB in the prebuilt OpenJPEG decoder), the adapter's texture limit, and what a browser decoder accepts.
   Limits that pace or chunk work stay as tuning: transfer credits, queue depths, pending windows, and output chunk sizes.
   So do guards against corrupt data that no real stream reaches, such as header and RPU size bounds and the 2 MiB audio packet bound.
 - Live performance adaptation is deferred to a separate runtime controller that would react to sustained drops, queue starvation, underruns, and A/V drift, with warm-up, hysteresis, and cooldown.
@@ -43,7 +43,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   WebCodecs HEVC Main 10 hardware frames are P010 surfaces with `VideoFrame.format === null`, so `copyTo()` and `allocationSize()` cannot expose planes.
   Exact planes come only from the bundled software HEVC decoder (WASM, CPU).
 - The software raw path is too slow for 4K.
-  The bundled HEVC decoder ran at about 15.3 fps on a 23.976 fps 4K source, and plane extraction plus upload cost about 2.4 ms per frame: low frame rate, then a freeze.
+  The bundled HEVC decoder that preceded FFmpeg's ran at about 15.3 fps on a 23.976 fps 4K source, and plane extraction plus upload cost about 2.4 ms per frame: low frame rate, then a freeze.
 - The GPUExternalTexture path is 8 bits per channel in stock Chrome.
   High-bit-depth frames go through an N32 (8 bpc) surface before page shaders see them (`third_party/blink/renderer/modules/webgpu/external_texture_helper.cc`).
   `copyExternalImageToTexture`, an F16 canvas, ImageBitmap, and WebGL RGBA16F take the same path, and no flag avoids it.
@@ -157,18 +157,31 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   After a Mediabunny custom decoder rejects, Mediabunny 1.52.2 queues the decoder's `close()` behind the failed call without a handler, so the same error resurfaces as an unhandled rejection and the decoder is never closed.
   The worker marks every failure it catches (`HandledDecodeFailures.ts`) and prevents the unhandled-rejection report of a marked error only, so any other unhandled rejection is still reported.
   The unclosed decoder ends with its worker: the session replaces a worker whose run failed, and a worker that suppressed such a rejection asks for its replacement in its next `stopped`.
+- The bundled HEVC decoder is FFmpeg's (10-10).
+  hevc.js (`@hevcjs/core`), the decoder before it, rejects the first slice of every stream that enables tiles (`tiles_enabled_flag`), and Ultra HD Blu-ray encodes commonly use tiles, as ATEME Titan's do.
+  Such sources failed on Firefox on Windows, which always takes the bundled route, and fell back to a server transcode.
+  hevc.js 1.4.8 fails the same way, and its roadmap says none of its test streams uses tiles.
+  The `ffmpeg-hevc` kit builds FFmpeg's `hevc` decoder for `--arch=wasm` with `-O3 -flto -msimd128`, so FFmpeg's simd128 HEVC code builds and the rest auto-vectorizes (see [WebAssembly decoders](decoders.md#how-the-build-works)).
+  It decodes the JCT-VC tiles conformance stream `TILES_B_Cisco_1` to the suite's MD5, and a tiled 4K HDR10 Ultra HD Blu-ray remux and the 4K qualification stream to native FFmpeg's MD5s, the remux at about 28 fps on one thread in Node.
+  The exact probe qualifies it with the same three vectors and pinned fingerprints, because conformant decoders output identical samples.
+  It runs on one thread (`--disable-pthreads`), because threads need cross-origin isolation, which Jellyfin Web does not have.
+  Its heap may grow to 4 GiB, where hevc.js kept Emscripten's 2 GiB default.
+  FFmpeg reads each packet as the container stores it, with the HVCC record as extradata, so no Annex B conversion copies it.
+  Each frame returns with its packet's timestamp and duration, so no queue sorts packet timings to match frames.
+  After a random-access point the decoder drops the leading RASL pictures and reports them dropped, as the native path does, so the stream discards their packets' Dolby Vision and HDR10+ metadata instead of waiting for frames that never come.
+  A Dolby Vision EL decoder reports every packet accepted, because its dropped leading pictures match the BL's, and a refused EL picture would end EL decoding.
 - A bundled HEVC frame is copied once (10-09).
-  hevc.js stores 16-bit samples for Main as for Main 10, and a drained frame's planes are views of its WASM memory, valid until the decoder's next call.
+  A drained frame's planes are views of the decoder's WASM memory, valid until its next call: bytes for Main and 16-bit words for Main 10.
   The worker used to pack them into a new buffer, `VideoSample` copied that buffer, and the raw copy or `VideoSample.toVideoFrame()` copied a third time.
   At 3840x2160 in Node 24, a 10-bit frame took about 5.9 ms and left about 50 MB of garbage, against about 0.9 ms for one row copy into a reused aligned buffer.
-  The decoder now hands each frame to the owned path as it drains it, and the worker writes the planes into the buffer it posts, whatever the decoder's row stride, narrowing 8-bit samples to bytes.
+  The decoder now hands each frame to the owned path as it drains it, and the worker writes the planes into the buffer it posts, whatever the decoder's row stride.
   Drained frames wait in the owned stream's queues beyond the 2 raw credits, so their buffers come from a run's pool of spares, which allocates when none fits.
   The pool keeps 2 spares of each byte length, as many as the page can hold, so a steady stream reuses every buffer.
   Mediabunny's adapter still outputs packed `VideoSample`s, as its `registerDecoder` contract requires.
   A Dolby Vision BL and EL are still copied once more, into their compound buffer.
 - Decoder instances are made once per worker (10-09).
-  The hevc.js, FFmpeg MPEG-2/VC-1, and OpenJPEG modules were instantiated for each decoder, and the libdovi parser for each run, which a worker that outlives its runs would repeat at every seek.
-  Each kit now has one instance per worker, in which every decoder or parser creates its own native context and releases only that context when it closes, so a Dolby Vision run's BL and EL decoders share one hevc.js heap.
+  The bundled HEVC, FFmpeg MPEG-2/VC-1, and OpenJPEG modules were instantiated for each decoder, and the libdovi parser for each run, which a worker that outlives its runs would repeat at every seek.
+  Each kit now has one instance per worker, in which every decoder or parser creates its own native context and releases only that context when it closes, so a Dolby Vision run's BL and EL decoders share one `ffmpeg-hevc` heap.
   An instance whose code traps is discarded, so the next decoder instantiates it again rather than trust its memory; an error its code returns keeps it.
 - Decoder surfaces must not starve (08-08, `ecb5a4ec09`).
   Native frame credits return after `queue.onSubmittedWorkDone()`, not after `submit()`, because Chromium holds the decoder mailbox until the GPU completes and the D3D surface pool is finite.
@@ -177,7 +190,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   `libmpv-wasm` is CPU FFmpeg plus WebGL.
   mpv's D3D11VA P010 path is the reference design but cannot be reached from a page.
   Threaded WASM needs COOP and COEP isolation, which was not pursued.
-  An FFmpeg HEVC WASM benchmark (the gate: at least 28.8 fps sustained, exact YUV420P10 hashes) was dropped when the native base route landed.
+  An FFmpeg HEVC WASM benchmark (the gate: at least 28.8 fps sustained, exact YUV420P10 hashes) was dropped when the native base route landed; FFmpeg's decoder became the bundled one later, for tiled streams rather than speed.
 - If exact 10-bit is ever required, the Chromium patch options are:
   - a P010 to RGBA16F GPU copy, the narrowest patch, which fixes the N32 TODO;
   - a zero-copy P010 external texture;
@@ -473,7 +486,7 @@ These were settled on Firefox 157 on Windows.
   With CRF, x265 enforces a requested level through VBV, which it reports as non-deterministic.
   The generator encodes without a level and writes `general_level_idc` 93 (Level 3.1) into the VPS and SPS itself.
   The slices were byte-identical either way.
-- Decoder kits are named for their library and codecs (10-06): `ffmpeg-eac3`, `ffmpeg-truehd`, `ffmpeg-mpeg2-vc1`, `libdcadec-dts`, and `libdovi`.
+- Decoder kits are named for their library and codecs (10-06): `ffmpeg-eac3`, `ffmpeg-truehd`, `ffmpeg-mpeg2-vc1`, `ffmpeg-hevc`, `libdcadec-dts`, and `libdovi`.
   Their classes follow the codecs too, as in `MPEG2VC1SoftwareVideoDecoder`, and a name that covers one codec only says so, as in `bundledMPEG2` beside `bundledVC1`.
 - Our sources in `wasm/` carry no license headers (10-06).
   The repository's `LICENSE` covers them.

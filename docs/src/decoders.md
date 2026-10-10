@@ -8,18 +8,20 @@ The build writes them to `bin/wasm/`, which is ignored like everything in `bin/`
 | `ffmpeg-eac3` | `ffmpeg-eac3.mjs`, `ffmpeg-eac3.wasm` | FFmpeg E-AC-3 and AC-3, LGPL-2.1-or-later | `ffmpeg-eac3/ffmpeg_eac3_bridge.c` |
 | `ffmpeg-truehd` | `ffmpeg-truehd.mjs`, `ffmpeg-truehd.wasm` | FFmpeg TrueHD and MLP, LGPL-2.1-or-later | `ffmpeg-truehd/ffmpeg_truehd_bridge.c` |
 | `ffmpeg-mpeg2-vc1` | `ffmpeg-mpeg2-vc1.js`, `ffmpeg-mpeg2-vc1.wasm` | FFmpeg MPEG-2 Video and VC-1, LGPL-2.1-or-later | `ffmpeg-mpeg2-vc1/ffmpeg_mpeg2_vc1_bridge.c` |
+| `ffmpeg-hevc` | `ffmpeg-hevc.js`, `ffmpeg-hevc.wasm` | FFmpeg HEVC Main and Main 10, LGPL-2.1-or-later | `ffmpeg-hevc/ffmpeg_hevc_bridge.c` |
 | `libdcadec-dts` | `libdcadec-dts.mjs`, `libdcadec-dts.wasm` | [dcadec](https://github.com/foo86/dcadec) DTS, DTS-HD High Resolution, and DTS-HD Master Audio, LGPL-2.1-or-later | `libdcadec-dts/libdcadec_dts_bridge.c` |
 | `libdovi` | `dovi-rpu-parser.wasm` | The `dolby_vision` crate from [dovi_tool](https://github.com/quietvoid/dovi_tool), vendored and patched, MIT | `libdovi/` |
 | `audio-output-stage` | `audio-output-stage.wasm` | None: the engine's resampler and limiter kernels | `audio-output-stage/audio_output_stage.c` |
 
 The `.mjs` outputs are the audio kits' ES module glue, which esbuild bundles into each worker that imports it.
 Their hand-written TypeScript declarations sit beside the bridges as `<kit>/<kit>.d.mts`, and the engine imports them as `#wasm/<kit>/<kit>.mjs` (see [Embedding the engine](embedding.md)).
-Every `.wasm` file, and the `ffmpeg-mpeg2-vc1` glue, is served from `libraries/<kit>/`.
+The `.js` outputs are the video kits' classic worker glue, which a worker loads with `importScripts`.
+Every `.wasm` file, and the `ffmpeg-mpeg2-vc1` and `ffmpeg-hevc` glue, is served from `libraries/<kit>/`.
 An audio binary is fetched only when a worker creates its first decoder of that kit, and a probe worker and the playback worker fetch the same URL, so the browser caches it once.
 `src/DecoderWASMSource.ts` always passes the glue `locateFile`, because a bundled glue cannot resolve its own URL, or `wasmBinary` with bytes a caller already fetched.
-The OpenJPEG and hevc.js decoders come from npm packages, which `scripts/build.mjs` copies; nothing here builds them.
+The OpenJPEG decoder comes from an npm package, which `scripts/build.mjs` copies; nothing here builds it.
 `audio-output-stage` and `libdovi` have no glue: the engine instantiates each `.wasm` itself, `audio-output-stage` once per playback worker when its first decoded audio attempt starts.
-The playback worker also makes one instance of each video kit, hevc.js, OpenJPEG, `ffmpeg-mpeg2-vc1`, and `libdovi`, when its first decoder or parser needs it (`video/decoders/WorkerWASMInstanceCache.ts`).
+The playback worker also makes one instance of each video kit, `ffmpeg-hevc`, OpenJPEG, `ffmpeg-mpeg2-vc1`, and `libdovi`, when its first decoder or parser needs it (`video/decoders/WorkerWASMInstanceCache.ts`).
 Every later decoder or parser in the worker creates its own native context in that instance and releases only that context when it closes, and an instance whose code traps is replaced for the next one.
 
 ## You need
@@ -56,8 +58,13 @@ A full `check` takes several minutes.
 - Fresh source trees.
   Each FFmpeg kit extracts a fresh copy of the pinned tree into `wasm/build/<kit>/` with `git archive`, then configures and builds it there with only that kit's decoders.
   Building outside a git checkout keeps FFmpeg's embedded version string and source paths stable.
+- Two FFmpeg targets.
+  The audio and MPEG-2/VC-1 kits configure FFmpeg's portable C (`--arch=x86_32 --disable-asm`).
+  `ffmpeg-hevc` configures `--arch=wasm` instead, so FFmpeg's own simd128 HEVC code builds: the inverse transforms at 8 and 10 bits, and the SAO band and edge filters at 8 bits.
+  It compiles and links with `-O3 -flto -msimd128`, so the rest of the decoder auto-vectorizes; the link needs `-msimd128` too, because link-time optimization generates the code there.
 - Configuration checks.
   The build fails unless configure enabled exactly the whitelisted decoders and kept the LGPL scope: no GPL, nonfree, or version 3 components.
+  `ffmpeg-hevc` also fails unless FFmpeg's `config.h` has `HAVE_SIMD128 1`, because configure drops the simd128 code without failing when its compile check fails.
 - A fixed environment.
   The build sets `SOURCE_DATE_EPOCH`, the locale, the time zone, and the Python hash seed, ignores compiler variables from the calling environment, and refuses any Emscripten other than 4.0.13.
 - Line endings.

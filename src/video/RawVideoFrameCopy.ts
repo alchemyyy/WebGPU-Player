@@ -732,9 +732,9 @@ export function copyRawVideoPlaneRows(
     }
 }
 
-/** One plane of a software decoder's frame: 16-bit samples whose rows start a stride apart, from the first sample to the end of the last row. */
+/** One plane of a software decoder's frame: samples whose rows start a stride apart, from the first sample to the end of the last row, counted in samples. */
 export type RawVideoSourcePlane = Readonly<{
-    samples: Uint16Array
+    samples: Uint8Array | Uint16Array
     stride: number
 }>;
 
@@ -763,7 +763,7 @@ function getPreparableFormatDefinition(format: SupportedRawVideoFrameFormat, sou
     return formatDefinition;
 }
 
-/** Writes one decoded plane's rows into its aligned plane, narrowing each sample to a byte in an 8-bit format. */
+/** Writes one decoded plane's rows into its aligned plane, narrowing 16-bit samples to bytes in an 8-bit format. */
 function writeSourcePlane(source: RawVideoSourcePlane, plane: RawVideoPlaneDescriptor, data: ArrayBuffer): void {
     if (
         !Number.isSafeInteger(source.stride)
@@ -846,7 +846,7 @@ export class PreparedRawVideoFrameSource implements RawVideoFrameSource {
     }
 
     /**
-     * Writes a software decoder's 16-bit planes, in luma then chroma order, into the aligned layout of the frame's format.
+     * Writes a software decoder's planes, in luma then chroma order, into the aligned layout of the frame's format.
      * The buffer comes from the pool, which allocates when no spare fits, or is allocated when there is no pool.
      */
     public static prepare(

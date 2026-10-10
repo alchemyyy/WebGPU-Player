@@ -19,7 +19,7 @@ EMSCRIPTEN_REVISION := 2659582941bef14008476903f48941909db1b196
 FFMPEG_COMMIT := a59498db085e3d635532397128550141ab87408a
 DCADEC_COMMIT := b93deed1a231dd6dd7e39b9fe7d2abe05aa00158
 
-KITS := ffmpeg-eac3 ffmpeg-truehd libdcadec-dts ffmpeg-mpeg2-vc1 libdovi audio-output-stage
+KITS := ffmpeg-eac3 ffmpeg-truehd libdcadec-dts ffmpeg-mpeg2-vc1 ffmpeg-hevc libdovi audio-output-stage
 
 empty :=
 space := $(empty) $(empty)
@@ -73,7 +73,11 @@ unexport AR CC CFLAGS CONFIG_SITE CPPFLAGS CXX CXXFLAGS EMCC_CFLAGS EMCC_FORCE_S
 	PKG_CONFIG PKG_CONFIG_LIBDIR PKG_CONFIG_PATH RANLIB
 
 # FFmpeg configure and link settings shared by the FFmpeg kits
+# The audio, MPEG-2, and VC-1 kits build FFmpeg's portable C
 FFMPEG_CONFIGURE_BASE := --target-os=none --arch=x86_32 --enable-cross-compile --disable-asm \
+	--disable-x86asm --disable-inline-asm --disable-programs --disable-doc --disable-debug
+# The HEVC kit builds for WebAssembly instead, so FFmpeg's simd128 HEVC transforms and SAO filters build too
+FFMPEG_CONFIGURE_WASM_BASE := --target-os=none --arch=wasm --enable-cross-compile \
 	--disable-x86asm --disable-inline-asm --disable-programs --disable-doc --disable-debug
 FFMPEG_CONFIGURE_TOOLS = --cc=$(EMCC) --cxx=$(EMXX) --ar=$(EMAR) --ranlib=$(EMRANLIB) \
 	--host-cc=$(HOST_CC) --nm=$(LLVM_NM)
@@ -148,6 +152,27 @@ FFMPEG_MPEG2_VC1_LINK_FLAGS := -O3 -flto -sWASM=1 -sWASM_BIGINT=1 -sFILESYSTEM=0
 	-sEXPORTED_FUNCTIONS=$(call comma_list,$(FFMPEG_MPEG2_VC1_EXPORTS)) \
 	-sEXPORTED_RUNTIME_METHODS=cwrap,HEAPU8 -Wl,--no-entry
 
+# HEVC Main and Main 10, as a classic worker module with a separate WASM file, like the MPEG-2 and VC-1 kit
+# simd128 at compile and link time, because link-time optimization generates the code at the link
+FFMPEG_HEVC_COMPONENTS := --disable-all --disable-everything --disable-gpl \
+	--disable-version3 --disable-nonfree --enable-avcodec --enable-decoder=hevc \
+	--disable-autodetect --disable-pthreads --disable-runtime-cpudetect --disable-iconv
+FFMPEG_HEVC_DECODERS := hevc
+FFMPEG_HEVC_CFLAGS := -DNDEBUG -O3 -flto -msimd128
+FFMPEG_HEVC_LDFLAGS := -O3 -flto -msimd128
+FFMPEG_HEVC_EXPORTS := _hevc_decoder_create _hevc_decoder_get_extradata _hevc_decoder_open \
+	_hevc_decoder_configure_packet _hevc_decoder_send_packet _hevc_decoder_start_drain \
+	_hevc_decoder_receive_frame _hevc_decoder_reset _hevc_decoder_get_bit_depth \
+	_hevc_decoder_get_plane _hevc_decoder_get_stride _hevc_decoder_get_width \
+	_hevc_decoder_get_height _hevc_decoder_get_timestamp _hevc_decoder_get_duration \
+	_hevc_decoder_error_again _hevc_decoder_error_eof _hevc_decoder_close
+FFMPEG_HEVC_LINK_FLAGS := -O3 -flto -msimd128 -sWASM=1 -sWASM_BIGINT=1 -sFILESYSTEM=0 \
+	-sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=4294967296 \
+	-sSTACK_SIZE=5242880 -sMODULARIZE=1 -sEXPORT_NAME=HEVCDecoderModule \
+	-sENVIRONMENT=worker,node -sASSERTIONS=0 -sMALLOC=emmalloc \
+	-sEXPORTED_FUNCTIONS=$(call comma_list,$(FFMPEG_HEVC_EXPORTS)) \
+	-sEXPORTED_RUNTIME_METHODS=HEAPU8 -Wl,--no-entry
+
 # libdcadec, compiled directly from its sources in this order
 DCADEC_SOURCES := bitstream.c core_decoder.c dca_context.c dca_frame.c dmix_tables.c \
 	exss_parser.c idct_fixed.c idct_float.c interpolator.c interpolator_fixed.c \
@@ -194,6 +219,7 @@ OUTPUTS_ffmpeg-eac3 := ffmpeg-eac3.mjs ffmpeg-eac3.wasm
 OUTPUTS_ffmpeg-truehd := ffmpeg-truehd.mjs ffmpeg-truehd.wasm
 OUTPUTS_libdcadec-dts := libdcadec-dts.mjs libdcadec-dts.wasm
 OUTPUTS_ffmpeg-mpeg2-vc1 := ffmpeg-mpeg2-vc1.js ffmpeg-mpeg2-vc1.wasm
+OUTPUTS_ffmpeg-hevc := ffmpeg-hevc.js ffmpeg-hevc.wasm
 OUTPUTS_libdovi := dovi-rpu-parser.wasm
 OUTPUTS_audio-output-stage := audio-output-stage.wasm
 
@@ -214,6 +240,7 @@ check: $(KITS:%=build-%)
 			ffmpeg-truehd) outputs="$(OUTPUTS_ffmpeg-truehd)" ;; \
 			libdcadec-dts) outputs="$(OUTPUTS_libdcadec-dts)" ;; \
 			ffmpeg-mpeg2-vc1) outputs="$(OUTPUTS_ffmpeg-mpeg2-vc1)" ;; \
+			ffmpeg-hevc) outputs="$(OUTPUTS_ffmpeg-hevc)" ;; \
 			libdovi) outputs="$(OUTPUTS_libdovi)" ;; \
 			audio-output-stage) outputs="$(OUTPUTS_audio-output-stage)" ;; \
 		esac; \
@@ -281,16 +308,16 @@ endef
 
 # Extracts a fresh copy of the pinned FFmpeg tree, then configures and builds FFmpeg in it.
 # Building outside a git checkout keeps the embedded version string and source paths stable
-# $(1): kit, $(2): configure components, $(3): compile flags, $(4): link flags, $(5): decoders
+# $(1): kit, $(2): configure base, $(3): configure components, $(4): compile flags, $(5): link flags, $(6): decoders
 define build_ffmpeg
 	$(call require_commit,$(FFMPEG_SUBMODULE),$(FFMPEG_COMMIT))
 	rm -rf $(BUILD)/$(1)
 	mkdir -p $(BUILD)/$(1)/source $(BUILD)/$(1)/output
 	git -C $(FFMPEG_SUBMODULE) -c core.autocrlf=false archive --format=tar \
 		--prefix=FFmpeg-$(FFMPEG_COMMIT)/ $(FFMPEG_COMMIT) | tar -x -C $(BUILD)/$(1)/source
-	cd $(BUILD)/$(1)/source/FFmpeg-$(FFMPEG_COMMIT) && ./configure $(FFMPEG_CONFIGURE_BASE) $(2) \
-		$(FFMPEG_CONFIGURE_TOOLS) '--extra-cflags=$(3) $(call prefix_maps,$(1))' '--extra-ldflags=$(4)'
-	$(call require_decoders,$(BUILD)/$(1)/source/FFmpeg-$(FFMPEG_COMMIT),$(5))
+	cd $(BUILD)/$(1)/source/FFmpeg-$(FFMPEG_COMMIT) && ./configure $(2) $(3) \
+		$(FFMPEG_CONFIGURE_TOOLS) '--extra-cflags=$(4) $(call prefix_maps,$(1))' '--extra-ldflags=$(5)'
+	$(call require_decoders,$(BUILD)/$(1)/source/FFmpeg-$(FFMPEG_COMMIT),$(6))
 	MAKEFLAGS= MFLAGS= make -C $(BUILD)/$(1)/source/FFmpeg-$(FFMPEG_COMMIT) -j$(JOBS)
 endef
 
@@ -312,6 +339,12 @@ define require_decoders
 	}
 endef
 
+# Fails unless configure kept FFmpeg's WebAssembly SIMD code, which it drops when its simd128 compile check fails
+# $(1): configured FFmpeg tree
+define require_simd128
+	@grep -q '^.define HAVE_SIMD128 1$$' $(1)/config.h || { echo "FFmpeg config.h lacks HAVE_SIMD128 1" >&2; exit 1; }
+endef
+
 # Emscripten on Windows writes CRLF into the JavaScript glue; bin/wasm holds LF on every host.
 # A glue links under its final name, so it names its WASM file after the kit, then moves aside to be normalized
 # $(1): raw output, $(2): normalized output
@@ -321,7 +354,7 @@ define normalize_line_endings
 endef
 
 build-ffmpeg-eac3: toolchain
-	$(call build_ffmpeg,ffmpeg-eac3,$(FFMPEG_EAC3_COMPONENTS),$(FFMPEG_AUDIO_CFLAGS),$(FFMPEG_AUDIO_LDFLAGS),$(FFMPEG_EAC3_DECODERS))
+	$(call build_ffmpeg,ffmpeg-eac3,$(FFMPEG_CONFIGURE_BASE),$(FFMPEG_EAC3_COMPONENTS),$(FFMPEG_AUDIO_CFLAGS),$(FFMPEG_AUDIO_LDFLAGS),$(FFMPEG_EAC3_DECODERS))
 	$(EMCC) $(WASM)/ffmpeg-eac3/ffmpeg_eac3_bridge.c \
 		$(BUILD)/ffmpeg-eac3/source/FFmpeg-$(FFMPEG_COMMIT)/libavcodec/libavcodec.a \
 		$(BUILD)/ffmpeg-eac3/source/FFmpeg-$(FFMPEG_COMMIT)/libavutil/libavutil.a \
@@ -334,7 +367,7 @@ build-ffmpeg-eac3: toolchain
 	$(call normalize_line_endings,$(BUILD)/ffmpeg-eac3/output/raw.mjs,$(BUILD)/ffmpeg-eac3/output/ffmpeg-eac3.mjs)
 
 build-ffmpeg-truehd: toolchain
-	$(call build_ffmpeg,ffmpeg-truehd,$(FFMPEG_TRUEHD_COMPONENTS),$(FFMPEG_AUDIO_CFLAGS),$(FFMPEG_AUDIO_LDFLAGS),$(FFMPEG_TRUEHD_DECODERS))
+	$(call build_ffmpeg,ffmpeg-truehd,$(FFMPEG_CONFIGURE_BASE),$(FFMPEG_TRUEHD_COMPONENTS),$(FFMPEG_AUDIO_CFLAGS),$(FFMPEG_AUDIO_LDFLAGS),$(FFMPEG_TRUEHD_DECODERS))
 	$(EMCC) $(WASM)/ffmpeg-truehd/ffmpeg_truehd_bridge.c \
 		$(BUILD)/ffmpeg-truehd/source/FFmpeg-$(FFMPEG_COMMIT)/libavcodec/libavcodec.a \
 		$(BUILD)/ffmpeg-truehd/source/FFmpeg-$(FFMPEG_COMMIT)/libavutil/libavutil.a \
@@ -347,7 +380,7 @@ build-ffmpeg-truehd: toolchain
 	$(call normalize_line_endings,$(BUILD)/ffmpeg-truehd/output/raw.mjs,$(BUILD)/ffmpeg-truehd/output/ffmpeg-truehd.mjs)
 
 build-ffmpeg-mpeg2-vc1: toolchain
-	$(call build_ffmpeg,ffmpeg-mpeg2-vc1,$(FFMPEG_MPEG2_VC1_COMPONENTS),$(FFMPEG_MPEG2_VC1_CFLAGS),$(FFMPEG_MPEG2_VC1_LDFLAGS),$(FFMPEG_MPEG2_VC1_DECODERS))
+	$(call build_ffmpeg,ffmpeg-mpeg2-vc1,$(FFMPEG_CONFIGURE_BASE),$(FFMPEG_MPEG2_VC1_COMPONENTS),$(FFMPEG_MPEG2_VC1_CFLAGS),$(FFMPEG_MPEG2_VC1_LDFLAGS),$(FFMPEG_MPEG2_VC1_DECODERS))
 	$(EMCC) $(WASM)/ffmpeg-mpeg2-vc1/ffmpeg_mpeg2_vc1_bridge.c \
 		$(BUILD)/ffmpeg-mpeg2-vc1/source/FFmpeg-$(FFMPEG_COMMIT)/libavcodec/libavcodec.a \
 		$(BUILD)/ffmpeg-mpeg2-vc1/source/FFmpeg-$(FFMPEG_COMMIT)/libavutil/libavutil.a \
@@ -355,6 +388,17 @@ build-ffmpeg-mpeg2-vc1: toolchain
 		$(FFMPEG_MPEG2_VC1_LINK_FLAGS) -o $(BUILD)/ffmpeg-mpeg2-vc1/output/ffmpeg-mpeg2-vc1.js
 	mv $(BUILD)/ffmpeg-mpeg2-vc1/output/ffmpeg-mpeg2-vc1.js $(BUILD)/ffmpeg-mpeg2-vc1/output/raw.js
 	$(call normalize_line_endings,$(BUILD)/ffmpeg-mpeg2-vc1/output/raw.js,$(BUILD)/ffmpeg-mpeg2-vc1/output/ffmpeg-mpeg2-vc1.js)
+
+build-ffmpeg-hevc: toolchain
+	$(call build_ffmpeg,ffmpeg-hevc,$(FFMPEG_CONFIGURE_WASM_BASE),$(FFMPEG_HEVC_COMPONENTS),$(FFMPEG_HEVC_CFLAGS),$(FFMPEG_HEVC_LDFLAGS),$(FFMPEG_HEVC_DECODERS))
+	$(call require_simd128,$(BUILD)/ffmpeg-hevc/source/FFmpeg-$(FFMPEG_COMMIT))
+	$(EMCC) $(WASM)/ffmpeg-hevc/ffmpeg_hevc_bridge.c \
+		$(BUILD)/ffmpeg-hevc/source/FFmpeg-$(FFMPEG_COMMIT)/libavcodec/libavcodec.a \
+		$(BUILD)/ffmpeg-hevc/source/FFmpeg-$(FFMPEG_COMMIT)/libavutil/libavutil.a \
+		-I$(BUILD)/ffmpeg-hevc/source/FFmpeg-$(FFMPEG_COMMIT) $(call prefix_maps,ffmpeg-hevc) \
+		$(FFMPEG_HEVC_LINK_FLAGS) -o $(BUILD)/ffmpeg-hevc/output/ffmpeg-hevc.js
+	mv $(BUILD)/ffmpeg-hevc/output/ffmpeg-hevc.js $(BUILD)/ffmpeg-hevc/output/raw.js
+	$(call normalize_line_endings,$(BUILD)/ffmpeg-hevc/output/raw.js,$(BUILD)/ffmpeg-hevc/output/ffmpeg-hevc.js)
 
 build-libdcadec-dts: toolchain
 	$(call require_commit,$(DCADEC_SUBMODULE),$(DCADEC_COMMIT))

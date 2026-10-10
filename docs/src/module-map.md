@@ -72,7 +72,7 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 - `HDR10PlusVectors.ts`: deterministic HDR10+ HEVC access units for the dynamic HDR tests.
 - `Base64.ts`: the base64 decoder the inline vectors share.
 - `qualification/`: streams served at runtime that no script generates: the HEVC Main 10 4K stream (`hevc/`) and the VC-1 stream (`vc1/`).
-- `test/`: inputs only tests and generators read: DTS samples, a TrueHD Matroska remux, Dolby Vision RPU payloads, and an hdr10plus_tool HDR10+ stream.
+- `test/`: inputs only tests and generators read: DTS samples, a TrueHD Matroska remux, Dolby Vision RPU payloads, an hdr10plus_tool HDR10+ stream, and a JCT-VC HEVC tiles conformance stream.
 
 ## pipeline/
 
@@ -121,11 +121,13 @@ All worker code unless marked.
 - `OwnedAV1VideoStream.ts`: one attempt of the owned AV1 path, which every AV1 track takes: each temporal unit's Dolby Vision RPU and HDR10+ metadata, paired with its frame.
 - `OwnedVP9VideoStream.ts`: one attempt of the owned VP9 path, which every VP9 track takes: the HDR10+ in each packet's container side data, paired with its frame.
 - `OwnedNativeHEVCVideoDecoder.ts`: the engine's own WebCodecs HEVC decoder, built on `OwnedNativeVideoDecoder`: NAL order fix, leading RASL drop, optional SPS neutralization.
-- `HEVCSoftwareVideoDecoder.ts`: the `@hevcjs/core` decoder (I420 and I420P10) with a shutdown registry.
+- `HEVCSoftwareVideoDecoder.ts`: the bundled HEVC decoder (I420 and I420P10) with a shutdown registry.
+  It sends FFmpeg each packet as the container stores it, length-prefixed or Annex B, and after a random-access point drops the leading RASL pictures and reports them dropped, as the native decoder does.
   The owned path takes each frame's planes as the decoder drains them, and Mediabunny's adapter takes packed `VideoSample`s.
-- `HEVCDecoderBackend.ts`: the low-level `@hevcjs/core` WASM binding, on one glue module per worker; a drained frame views its planes, with their strides, in WASM memory.
+- `HEVCDecoderBackend.ts`: the low-level binding of the `ffmpeg-hevc` bridge, on one glue module per worker; a decoder opens with the stream's HVCC record as FFmpeg extradata, or without one for Annex B packets.
+  A drained frame is cropped to its conformance window, carries its packet's timestamp and duration, and views its planes, with their strides, in WASM memory: bytes for Main and 16-bit words for Main 10.
 - `HEVCFrameOutput.ts`: writes a bundled HEVC frame out while the decoder holds it: into the aligned raw layout, or into the compact planes of a `VideoFrame` it constructs with `transfer`.
-- `WorkerWASMInstanceCache.ts`: the one instance of a decoder kit that a worker's decoders share, discarded after its code traps; the hevc.js, OpenJPEG, and MPEG-2/VC-1 modules and the libdovi parser use it.
+- `WorkerWASMInstanceCache.ts`: the one instance of a decoder kit that a worker's decoders share, discarded after its code traps; the HEVC, OpenJPEG, and MPEG-2/VC-1 modules and the libdovi parser use it.
 - `JPEG2000SoftwareVideoDecoder.ts`: OpenJPEG WASM to an RGBA `VideoFrame`.
 - `MPEG2VC1SoftwareVideoDecoder.ts`: FFmpeg WASM MPEG-2 and VC-1 to I420.
 
@@ -240,7 +242,7 @@ The authorization vectors are in `capability/vectors/`.
 - `bin/wasm/`: the decoder and audio output stage builds from `make -C wasm`, ignored:
   - `ffmpeg-eac3/`, `ffmpeg-truehd/`, `libdcadec-dts/` [worker]: Emscripten ES module glue (`.mjs`), imported as `#wasm/<kit>/<kit>.mjs` through the `imports` map in `package.json` and bundled into the workers, and its `.wasm`, served from `libraries/<kit>/`.
     Their hand-written declarations are `wasm/<kit>/<kit>.d.mts`, which the map's `types` condition resolves.
-  - `ffmpeg-mpeg2-vc1/`, `libdovi/`, and `audio-output-stage/`: served from `libraries/`.
+  - `ffmpeg-mpeg2-vc1/`, `ffmpeg-hevc/`, `libdovi/`, and `audio-output-stage/`: served from `libraries/`.
 - `bin/codec_vector_assets/`: the generated codec vectors, the one committed folder in `bin/`:
   - `dts/DTSExactCapabilityVectors.ts`, `truehd/TrueHDExactCapabilityVectors.ts`: access units and expected outputs, which `capability/exact/` imports as `#codec_vector_assets/*`.
     `truehd/` also holds the synthetic TrueHD and MLP streams the module embeds.

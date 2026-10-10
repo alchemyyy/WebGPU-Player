@@ -53,9 +53,8 @@ npm run build
 
 - [Mediabunny](https://github.com/Vanilagy/mediabunny) (MPL-2.0) demuxes media and remuxes audio to fragmented MP4.
   Its [`@mediabunny/ac3`](https://www.npmjs.com/package/@mediabunny/ac3) extension supplies the AC-3 decoder.
-- [FFmpeg](https://ffmpeg.org/) (LGPL-2.1-or-later) supplies the E-AC-3, TrueHD and MLP, MPEG-2 Video, and VC-1 decoders, built from a pinned revision.
+- [FFmpeg](https://ffmpeg.org/) (LGPL-2.1-or-later) supplies the E-AC-3, TrueHD and MLP, MPEG-2 Video, VC-1, and software HEVC decoders, built from a pinned revision.
 - [libdcadec](https://github.com/foo86/dcadec) (LGPL-2.1-or-later) supplies the DTS decoder, DTS-HD MA included.
-- [hevc.js](https://github.com/privaloops/hevc.js) (MIT) supplies the software HEVC decoder.
 - [OpenJPEG](https://www.openjpeg.org/) (BSD-2-Clause), through `@cornerstonejs/codec-openjpeg` (MIT), supplies the JPEG 2000 decoder.
 - The `dolby_vision` crate from [dovi_tool](https://github.com/quietvoid/dovi_tool) (MIT) parses Dolby Vision RPUs.
 

@@ -12,6 +12,7 @@ import {
 import { fetchCapabilityAsset, warmCapabilityAsset } from '../CapabilityAssetLoading';
 import { createHEVCExactCapabilityWorkerQualificationRequests } from '../vectors/HEVCExactCapabilityVectors';
 import {
+    getHEVCExactCapabilityDecodedFrameByteLength,
     HEVC_EXACT_CAPABILITY_VECTORS,
     HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS,
     HEVC_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS,
@@ -25,9 +26,9 @@ import {
     type HEVCExactCapabilityWorkerResponse
 } from './HEVCExactCapabilityProtocol';
 
-const HEVC_DECODER_GLUE_ASSET: EngineAssetPath = 'hevcjs/hevc-decode.js';
-const HEVC_DECODER_WASM_ASSET: EngineAssetPath = 'hevcjs/hevc-decode.wasm';
-const HEVC_MAIN10_4K_QUALIFICATION_ASSET: EngineAssetPath = 'hevcjs/main10-4k-qualification.bin';
+const HEVC_DECODER_GLUE_ASSET: EngineAssetPath = 'ffmpeg-hevc/ffmpeg-hevc.js';
+const HEVC_DECODER_WASM_ASSET: EngineAssetPath = 'ffmpeg-hevc/ffmpeg-hevc.wasm';
+const HEVC_MAIN10_4K_QUALIFICATION_ASSET: EngineAssetPath = 'ffmpeg-hevc/main10-4k-qualification.bin';
 const HEVC_EXACT_CAPABILITY_WORKER_ASSET: EngineWorkerPath = 'webgpu-player/HEVCExactCapabilityProbe.worker.js';
 
 export type BundledHEVCExactCapabilityStatus = 'supported' | 'unsupported';
@@ -110,12 +111,6 @@ function createDefaultEnvironment(): HEVCExactCapabilityProbeEnvironment {
     };
 }
 
-function getExpectedDecodedByteLength(definition: HEVCExactCapabilityVectorDefinition): number {
-    const chromaWidth = Math.ceil(definition.codedWidth / 2);
-    const chromaHeight = Math.ceil(definition.codedHeight / 2);
-    return ((definition.codedWidth * definition.codedHeight) + (2 * chromaWidth * chromaHeight)) * Uint16Array.BYTES_PER_ELEMENT;
-}
-
 function createQualification(
     definition: HEVCExactCapabilityVectorDefinition,
     reason: BundledHEVCExactCapabilityReason,
@@ -192,10 +187,10 @@ function workerResultMatchesDefinition(
             fingerprint === definition.decodedFrameFingerprints[frameIndex]
         ))
         && result.decodedFrameCount === definition.qualificationFrameCount
-        && result.decodedByteLength === getExpectedDecodedByteLength(definition)
+        && result.decodedByteLength === getHEVCExactCapabilityDecodedFrameByteLength(definition)
         && result.levelIDC === definition.levelIDC
         && result.profileIDC === definition.profileIDC
-        && result.totalDecodedByteLength === getExpectedDecodedByteLength(definition) * definition.qualificationFrameCount;
+        && result.totalDecodedByteLength === getHEVCExactCapabilityDecodedFrameByteLength(definition) * definition.qualificationFrameCount;
 }
 
 function createCapabilitiesFromResponse(response: HEVCExactCapabilityWorkerResponse): BundledHEVCExactCapabilities {

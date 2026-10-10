@@ -1,15 +1,14 @@
-import type {
-    HEVCFrame,
-    HEVCStreamInfo
-} from '@hevcjs/core';
-
 import {
     createHEVCDecoderModule,
+    type HEVCDecodedFrame,
     type HEVCDecoderBackend,
     type HEVCDecoderModule,
-    type HEVCDecoderModuleOptions
+    type HEVCDecoderModuleOptions,
+    type HEVCFramePlane
 } from '../../video/decoders/HEVCDecoderBackend';
+import { requireMicroseconds } from '../../TimeMath';
 import {
+    getHEVCExactCapabilityDecodedFrameByteLength,
     HEVC_EXACT_CAPABILITY_MAXIMUM_DECODED_BYTE_LENGTH,
     HEVC_EXACT_CAPABILITY_MAXIMUM_TOTAL_DECODED_BYTE_LENGTH,
     HEVC_EXACT_CAPABILITY_REQUEST_ID,
@@ -23,13 +22,16 @@ import {
 
 export type HEVCExactCapabilityWorkerRuntimeDependencies = Readonly<{
     createDecoderModule: (options: HEVCDecoderModuleOptions) => Promise<HEVCDecoderModule>
-    fingerprintFrame: (frame: HEVCFrame) => number
+    fingerprintFrame: (frame: HEVCDecodedFrame) => number
 }>;
 
 const DEFAULT_DEPENDENCIES: HEVCExactCapabilityWorkerRuntimeDependencies = Object.freeze({
     createDecoderModule: createHEVCDecoderModule,
     fingerprintFrame: createFrameFingerprint
 });
+
+// The access units carry no timing, so each is sent at its index with no duration
+const QUALIFICATION_FRAME_DURATION_MICROSECONDS = requireMicroseconds(0);
 
 type AnnexBStartCode = Readonly<{
     byteLength: 3 | 4
@@ -136,8 +138,10 @@ function createFailureResult(
     };
 }
 
-function getDecodedByteLength(frame: HEVCFrame): number {
-    const decodedByteLength = frame.y.byteLength + frame.cb.byteLength + frame.cr.byteLength;
+/** Returns the byte length of a decoded frame as compact planes: bytes at 8 bits and 16-bit words at 10. */
+function getDecodedByteLength(frame: HEVCDecodedFrame): number {
+    const bytesPerSample = frame.bitDepth === 8 ? Uint8Array.BYTES_PER_ELEMENT : Uint16Array.BYTES_PER_ELEMENT;
+    const decodedByteLength = ((frame.width * frame.height) + (2 * frame.chromaWidth * frame.chromaHeight)) * bytesPerSample;
     if (
         !Number.isSafeInteger(decodedByteLength)
         || decodedByteLength <= 0
@@ -159,9 +163,10 @@ function mixFingerprintValue(fingerprint: number, value: number): number {
     return mixedFingerprint;
 }
 
+/** Mixes a grid of a plane's samples, each as two bytes whatever the bit depth, so one fingerprint holds for any conformant decoder. */
 function mixPlaneFingerprint(
     fingerprint: number,
-    plane: Uint16Array,
+    plane: HEVCFramePlane,
     width: number,
     height: number
 ): number {
@@ -171,59 +176,39 @@ function mixPlaneFingerprint(
         const rowIndex = Math.floor(rowSampleIndex * (height - 1) / (FINGERPRINT_ROW_SAMPLE_COUNT - 1));
         for (let columnSampleIndex = 0; columnSampleIndex < FINGERPRINT_COLUMN_SAMPLE_COUNT; columnSampleIndex += 1) {
             const columnIndex = Math.floor(columnSampleIndex * (width - 1) / (FINGERPRINT_COLUMN_SAMPLE_COUNT - 1));
-            mixedFingerprint = mixFingerprintValue(mixedFingerprint, plane[(rowIndex * width) + columnIndex]);
+            mixedFingerprint = mixFingerprintValue(mixedFingerprint, plane.samples[(rowIndex * plane.stride) + columnIndex]);
         }
     }
     return mixedFingerprint;
 }
 
-function createFrameFingerprint(frame: HEVCFrame): number {
-    let fingerprint = mixPlaneFingerprint(FNV1A_OFFSET_BASIS, frame.y, frame.width, frame.height);
-    fingerprint = mixPlaneFingerprint(fingerprint, frame.cb, frame.chromaWidth, frame.chromaHeight);
-    return mixPlaneFingerprint(fingerprint, frame.cr, frame.chromaWidth, frame.chromaHeight);
+function createFrameFingerprint(frame: HEVCDecodedFrame): number {
+    let fingerprint = mixPlaneFingerprint(FNV1A_OFFSET_BASIS, frame.planes.luma, frame.width, frame.height);
+    fingerprint = mixPlaneFingerprint(fingerprint, frame.planes.chromaBlue, frame.chromaWidth, frame.chromaHeight);
+    return mixPlaneFingerprint(fingerprint, frame.planes.chromaRed, frame.chromaWidth, frame.chromaHeight);
 }
 
 function frameMatchesRequest(
-    frame: HEVCFrame,
-    streamInfo: HEVCStreamInfo | null,
+    frame: HEVCDecodedFrame,
     vectorMetadata: HEVCExactVectorMetadata,
     qualificationRequest: HEVCExactCapabilityWorkerQualificationRequest,
     decodedByteLength: number,
     decodedFrameFingerprint: number,
     outputFrameIndex: number
 ): boolean {
-    const expectedChromaWidth = Math.ceil(qualificationRequest.codedWidth / 2);
-    const expectedChromaHeight = Math.ceil(qualificationRequest.codedHeight / 2);
-    const expectedLumaSampleCount = qualificationRequest.codedWidth * qualificationRequest.codedHeight;
-    const expectedChromaSampleCount = expectedChromaWidth * expectedChromaHeight;
-    const expectedDecodedByteLength = (expectedLumaSampleCount + (2 * expectedChromaSampleCount)) * Uint16Array.BYTES_PER_ELEMENT;
     const definition = HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[qualificationRequest.vector];
 
     return frame.width === qualificationRequest.codedWidth
         && frame.height === qualificationRequest.codedHeight
-        && frame.chromaWidth === expectedChromaWidth
-        && frame.chromaHeight === expectedChromaHeight
+        && frame.chromaWidth === Math.ceil(qualificationRequest.codedWidth / 2)
+        && frame.chromaHeight === Math.ceil(qualificationRequest.codedHeight / 2)
         && frame.bitDepth === qualificationRequest.bitDepth
-        && frame.y.length === expectedLumaSampleCount
-        && frame.cb.length === expectedChromaSampleCount
-        && frame.cr.length === expectedChromaSampleCount
-        && decodedByteLength === expectedDecodedByteLength
+        && decodedByteLength === getHEVCExactCapabilityDecodedFrameByteLength(definition)
         && decodedFrameFingerprint === definition.decodedFrameFingerprints[outputFrameIndex]
         && vectorMetadata.levelIDC === qualificationRequest.levelIDC
         && vectorMetadata.mainTier
         && vectorMetadata.progressive
-        && vectorMetadata.profileIDC === qualificationRequest.profileIDC
-        && (
-            streamInfo === null
-            || (
-                streamInfo.width === qualificationRequest.codedWidth
-                && streamInfo.height === qualificationRequest.codedHeight
-                && streamInfo.bitDepth === qualificationRequest.bitDepth
-                && streamInfo.chromaFormat === 1
-                && (streamInfo.profile === 0 || streamInfo.profile === qualificationRequest.profileIDC)
-                && (streamInfo.level === 0 || streamInfo.level === qualificationRequest.levelIDC)
-            )
-        );
+        && vectorMetadata.profileIDC === qualificationRequest.profileIDC;
 }
 
 type HEVCExactOutputGeometry = Readonly<{
@@ -275,12 +260,11 @@ function createQualificationResult(
 }
 
 function consumeFrame(
-    frame: HEVCFrame,
-    streamInfo: HEVCStreamInfo | null,
+    frame: HEVCDecodedFrame,
     vectorMetadata: HEVCExactVectorMetadata,
     qualificationRequest: HEVCExactCapabilityWorkerQualificationRequest,
     state: HEVCExactQualificationState,
-    fingerprintFrame: (frame: HEVCFrame) => number
+    fingerprintFrame: (frame: HEVCDecodedFrame) => number
 ): void {
     const outputFrameIndex = state.decodedFrameCount;
     if (outputFrameIndex >= qualificationRequest.qualificationFrameCount) {
@@ -307,7 +291,6 @@ function consumeFrame(
     };
     state.outputMatches &&= frameMatchesRequest(
         frame,
-        streamInfo,
         vectorMetadata,
         qualificationRequest,
         decodedByteLength,
@@ -325,13 +308,17 @@ function probeQualification(
 
     try {
         const vectorMetadata = parseVectorMetadata(qualificationRequest.qualificationAccessUnits[0]);
-        decoder = decoderModule.createDecoder();
+        // The access units are Annex B with their parameter sets in band, so the decoder has no description
+        decoder = decoderModule.createDecoder(null);
         const state: HEVCExactQualificationState = {
             decodedFrameFingerprints: [],
             decodedFrameCount: 0,
             geometry: null,
             outputMatches: true,
             totalDecodedByteLength: 0
+        };
+        const handleFrame = (frame: HEVCDecodedFrame): void => {
+            consumeFrame(frame, vectorMetadata, qualificationRequest, state, dependencies.fingerprintFrame);
         };
         for (let accessUnitIndex = 0; accessUnitIndex < qualificationRequest.qualificationAccessUnits.length; accessUnitIndex += 1) {
             const definition = HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[qualificationRequest.vector];
@@ -342,16 +329,14 @@ function probeQualification(
             ) {
                 return createFailureResult(qualificationRequest, 'decode-error');
             }
-            decoder.feed(new Uint8Array(qualificationRequest.qualificationAccessUnits[accessUnitIndex]));
-            const streamInfo = decoder.info;
-            decoder.drain((frame: HEVCFrame): void => {
-                consumeFrame(frame, streamInfo, vectorMetadata, qualificationRequest, state, dependencies.fingerprintFrame);
-            });
+            decoder.decode(
+                new Uint8Array(qualificationRequest.qualificationAccessUnits[accessUnitIndex]),
+                requireMicroseconds(accessUnitIndex),
+                QUALIFICATION_FRAME_DURATION_MICROSECONDS,
+                handleFrame
+            );
         }
-        const finalStreamInfo = decoder.info;
-        decoder.flush((frame: HEVCFrame): void => {
-            consumeFrame(frame, finalStreamInfo, vectorMetadata, qualificationRequest, state, dependencies.fingerprintFrame);
-        });
+        decoder.flush(handleFrame);
         if (!state.geometry) {
             return createFailureResult(qualificationRequest, 'decode-error');
         }

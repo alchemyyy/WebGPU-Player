@@ -6,12 +6,33 @@ import {
     type HEVCExactCapabilityProbeWorker
 } from 'webgpu-player/capability/exact/HEVCExactCapabilityProbe';
 import {
+    HEVC_EXACT_CAPABILITY_QUALIFICATION_FRAME_COUNT,
+    HEVC_EXACT_CAPABILITY_VECTORS,
     HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS,
     HEVC_EXACT_CAPABILITY_REQUEST_ID,
     type HEVCExactCapabilityVector,
     type HEVCExactCapabilityWorkerQualificationResult,
     type HEVCExactCapabilityWorkerResponse
 } from 'webgpu-player/capability/exact/HEVCExactCapabilityProtocol';
+
+const ASSET_BASE_URL = 'https://example.test/web/libraries/';
+const DECODER_GLUE_URL = `${ASSET_BASE_URL}ffmpeg-hevc/ffmpeg-hevc.js`;
+const DECODER_WASM_URL = `${ASSET_BASE_URL}ffmpeg-hevc/ffmpeg-hevc.wasm`;
+const QUALIFICATION_BITSTREAM_URL = `${ASSET_BASE_URL}ffmpeg-hevc/main10-4k-qualification.bin`;
+const PROBE_WORKER_URL = `${ASSET_BASE_URL}webgpu-player/HEVCExactCapabilityProbe.worker.js`;
+const PRELOADED_DECODER_WASM_BYTE_LENGTH = 8;
+// Each vector transfers its single-frame access unit and its qualification access units
+const QUALIFICATION_TRANSFER_COUNT = HEVC_EXACT_CAPABILITY_VECTORS.length * (HEVC_EXACT_CAPABILITY_QUALIFICATION_FRAME_COUNT + 1);
+// Preloaded decoder bytes travel to the worker as one more transfer
+const DECODER_WASM_TRANSFER_COUNT = 1;
+// Compact 4:2:0 planes hold a byte per sample at 8 bits and two at 10
+const DECODED_FRAME_BYTE_LENGTHS: Readonly<Record<HEVCExactCapabilityVector, number>> = Object.freeze({
+    'main-1080p': 3_110_400,
+    'main10-1080p': 6_220_800,
+    'main10-4k': 24_883_200
+});
+// What a decoder that widens 8-bit samples to 16-bit words reports for a frame of the 8-bit vector
+const WIDENED_MAIN_1080P_DECODED_FRAME_BYTE_LENGTH = 6_220_800;
 
 type WorkerEventType = 'error' | 'message' | 'messageerror';
 type WorkerEventListener = (event: Event) => void;
@@ -64,14 +85,6 @@ class MockCapabilityWorker implements HEVCExactCapabilityProbeWorker {
     }
 }
 
-function getExpectedDecodedByteLength(vector: HEVCExactCapabilityVector): number {
-    const definition = HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[vector];
-    return (
-        (definition.codedWidth * definition.codedHeight)
-        + (2 * Math.ceil(definition.codedWidth / 2) * Math.ceil(definition.codedHeight / 2))
-    ) * Uint16Array.BYTES_PER_ELEMENT;
-}
-
 function createSuccessfulQualificationResult(
     vector: HEVCExactCapabilityVector,
     overrides: Partial<HEVCExactCapabilityWorkerQualificationResult> = {}
@@ -87,13 +100,13 @@ function createSuccessfulQualificationResult(
         codedHeight: definition.codedHeight,
         codedWidth: definition.codedWidth,
         decodedFrameCount: definition.qualificationFrameCount,
-        decodedByteLength: getExpectedDecodedByteLength(vector),
+        decodedByteLength: DECODED_FRAME_BYTE_LENGTHS[vector],
         vector,
         levelIDC: definition.levelIDC,
         profileIDC: definition.profileIDC,
         reason: 'decode-output-verified',
         supported: true,
-        totalDecodedByteLength: getExpectedDecodedByteLength(vector) * definition.qualificationFrameCount,
+        totalDecodedByteLength: DECODED_FRAME_BYTE_LENGTHS[vector] * definition.qualificationFrameCount,
         ...overrides,
         decodedFrameFingerprints
     };
@@ -125,7 +138,7 @@ function createEnvironment(
         loadQualificationBitstream: async (): Promise<ArrayBuffer> => (
             new ArrayBuffer(qualificationByteLength)
         ),
-        resolveAssetURL: (path: string): string => `https://example.test/web/libraries/${path}`,
+        resolveAssetURL: (path: string): string => `${ASSET_BASE_URL}${path}`,
         runtimeAvailable: true,
         setTimeout: (callback, milliseconds): ReturnType<typeof globalThis.setTimeout> => (
             globalThis.setTimeout(callback, milliseconds)
@@ -148,10 +161,10 @@ describe('BundledHEVCExactCapabilityProbe', () => {
         expect(secondPromise).toBe(firstPromise);
         await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
         expect(worker.postedMessages).toHaveLength(1);
-        expect(worker.postedTransfers[0]).toHaveLength(27);
+        expect(worker.postedTransfers[0]).toHaveLength(QUALIFICATION_TRANSFER_COUNT);
         expect(worker.postedMessages[0]).toMatchObject({
-            decoderGlueURL: 'https://example.test/web/libraries/hevcjs/hevc-decode.js',
-            decoderWASM: { kind: 'url', url: 'https://example.test/web/libraries/hevcjs/hevc-decode.wasm' },
+            decoderGlueURL: DECODER_GLUE_URL,
+            decoderWASM: { kind: 'url', url: DECODER_WASM_URL },
             requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
             type: 'probe'
         });
@@ -249,6 +262,33 @@ describe('BundledHEVCExactCapabilityProbe', () => {
         });
     });
 
+    it('rejects a worker success summary that counts two bytes per 8-bit sample', async () => {
+        const worker = new MockCapabilityWorker();
+        const probe = new BundledHEVCExactCapabilityProbe(createEnvironment(worker));
+        const resultPromise = probe.probe();
+        await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
+        const response = createSuccessfulResponse();
+        worker.emit('message', {
+            ...response,
+            results: [
+                createSuccessfulQualificationResult('main-1080p', {
+                    decodedByteLength: WIDENED_MAIN_1080P_DECODED_FRAME_BYTE_LENGTH,
+                    totalDecodedByteLength: WIDENED_MAIN_1080P_DECODED_FRAME_BYTE_LENGTH * HEVC_EXACT_CAPABILITY_QUALIFICATION_FRAME_COUNT
+                }),
+                response.results[1],
+                response.results[2]
+            ]
+        });
+
+        const capabilities = await resultPromise;
+        expect(capabilities.reason).toBe('partial');
+        expect(capabilities.qualifications['main-1080p']).toMatchObject({
+            reason: 'output-mismatch',
+            status: 'unsupported'
+        });
+        expect(capabilities.qualifications['main10-1080p'].status).toBe('supported');
+    });
+
     it.each([
         [ 'error', 'worker-error' ],
         [ 'messageerror', 'worker-message-invalid' ]
@@ -326,7 +366,7 @@ describe('BundledHEVCExactCapabilityProbe', () => {
 
         const capabilities = await probe.probe();
 
-        expect(loadQualificationBitstream).toHaveBeenCalledWith('https://example.test/web/libraries/hevcjs/main10-4k-qualification.bin');
+        expect(loadQualificationBitstream).toHaveBeenCalledWith(QUALIFICATION_BITSTREAM_URL);
         expect(capabilities.reason).toBe('failed');
         expect(capabilities.qualifications['main10-4k'].reason).toBe('asset-unavailable');
         // A failed download never starts a worker
@@ -338,7 +378,7 @@ describe('BundledHEVCExactCapabilityProbe', () => {
         const worker = new MockCapabilityWorker();
         const baseEnvironment = createEnvironment(worker);
         const qualificationBitstream = await baseEnvironment.loadQualificationBitstream('');
-        const decoderWASMBytes = new ArrayBuffer(8);
+        const decoderWASMBytes = new ArrayBuffer(PRELOADED_DECODER_WASM_BYTE_LENGTH);
         const vectorDownload: { resolve: ((bitstream: ArrayBuffer) => void) | null } = { resolve: null };
         const loadQualificationBitstream = vi.fn((): Promise<ArrayBuffer> => new Promise<ArrayBuffer>(resolve => {
             vectorDownload.resolve = resolve;
@@ -360,10 +400,10 @@ describe('BundledHEVCExactCapabilityProbe', () => {
         const resultPromise = probe.probe();
         await Promise.resolve();
 
-        expect(loadDecoderWASM).toHaveBeenCalledExactlyOnceWith('https://example.test/web/libraries/hevcjs/hevc-decode.wasm');
+        expect(loadDecoderWASM).toHaveBeenCalledExactlyOnceWith(DECODER_WASM_URL);
         expect(warmAsset.mock.calls).toEqual([
-            [ 'https://example.test/web/libraries/webgpu-player/HEVCExactCapabilityProbe.worker.js' ],
-            [ 'https://example.test/web/libraries/hevcjs/hevc-decode.js' ]
+            [ PROBE_WORKER_URL ],
+            [ DECODER_GLUE_URL ]
         ]);
         expect(createWorker).not.toHaveBeenCalled();
         expect(setTimeout).not.toHaveBeenCalled();
@@ -374,7 +414,7 @@ describe('BundledHEVCExactCapabilityProbe', () => {
         expect(worker.postedMessages[0]).toMatchObject({
             decoderWASM: { bytes: decoderWASMBytes, kind: 'bytes' }
         });
-        expect(worker.postedTransfers[0]).toHaveLength(28);
+        expect(worker.postedTransfers[0]).toHaveLength(QUALIFICATION_TRANSFER_COUNT + DECODER_WASM_TRANSFER_COUNT);
         expect(worker.postedTransfers[0]).toContain(decoderWASMBytes);
 
         worker.emit('message', createSuccessfulResponse());

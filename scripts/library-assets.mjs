@@ -50,10 +50,6 @@ export function getLibraryAssets() {
     const licenseFFmpeg = join(WASM_LICENSES_DIRECTORY, 'FFmpeg-COPYING.LGPLv2.1');
     const licenseEngine = join(ENGINE_ROOT, 'LICENSE');
     const assets = [
-        [ 'hevcjs/hevc-decode.js', packageFile('@hevcjs/core', 'dist/wasm/hevc-decode.js') ],
-        [ 'hevcjs/hevc-decode.wasm', packageFile('@hevcjs/core', 'dist/wasm/hevc-decode.wasm') ],
-        [ 'hevcjs/LICENSE.txt', packageFile('@hevcjs/core', 'LICENSE') ],
-        [ 'hevcjs/main10-4k-qualification.bin', join(QUALIFICATION_VECTORS_DIRECTORY, 'hevc', 'main10-4k-complex.hevc') ],
         [ 'libdovi/dovi-rpu-parser.wasm', join(WASM_OUTPUT_DIRECTORY, 'libdovi', 'dovi-rpu-parser.wasm') ],
         [ 'libdovi/LICENSE.txt', join(WASM_DIRECTORY, 'libdovi', 'LICENSE.libdovi.txt') ],
         [ 'mediabunny-ac3/LICENSE.txt', packageFile('@mediabunny/ac3', 'LICENSE') ],
@@ -86,6 +82,12 @@ export function getLibraryAssets() {
             'ffmpeg-mpeg2-vc1/vc1-advanced-progressive-1920x1080-qualification.bin',
             join(QUALIFICATION_VECTORS_DIRECTORY, 'vc1', 'vc1-advanced-progressive-1920x1080.mkv')
         ],
+        [ 'ffmpeg-hevc/ffmpeg-hevc.js', join(WASM_OUTPUT_DIRECTORY, 'ffmpeg-hevc', 'ffmpeg-hevc.js') ],
+        [ 'ffmpeg-hevc/ffmpeg-hevc.wasm', join(WASM_OUTPUT_DIRECTORY, 'ffmpeg-hevc', 'ffmpeg-hevc.wasm') ],
+        [ 'ffmpeg-hevc/LICENSE.ffmpeg.txt', licenseFFmpeg ],
+        [ 'ffmpeg-hevc/ffmpeg_hevc_bridge.c', join(WASM_DIRECTORY, 'ffmpeg-hevc', 'ffmpeg_hevc_bridge.c') ],
+        [ 'ffmpeg-hevc/LICENSE.bridge.txt', licenseEngine ],
+        [ 'ffmpeg-hevc/main10-4k-qualification.bin', join(QUALIFICATION_VECTORS_DIRECTORY, 'hevc', 'main10-4k-complex.hevc') ],
         [ 'openjpeg/openjpeg-decode.js', packageFile('@cornerstonejs/codec-openjpeg', 'dist/openjpegwasm_decode.js') ],
         [ 'openjpeg/openjpeg-decode.wasm', packageFile('@cornerstonejs/codec-openjpeg', 'dist/openjpegwasm_decode.wasm') ],
         [ 'openjpeg/LICENSE.wrapper.txt', packageFile('@cornerstonejs/codec-openjpeg', 'LICENSE') ],

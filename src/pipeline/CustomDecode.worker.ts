@@ -2202,16 +2202,33 @@ function createOwnedBundledHEVCVideoDecoderPort(
     });
     return {
         close: (): void => decoder.close(),
-        decode: (packet: EncodedPacket): boolean => {
-            decoder.decode(packet);
-            return true;
-        },
+        // False for a leading RASL picture the decoder drops, as the native decoder does
+        decode: (packet: EncodedPacket): boolean => decoder.decode(packet),
         flush: (): Promise<void> => {
             decoder.flush();
             return Promise.resolve();
         },
         getDecodeQueueSize: (): number => 0,
         init: (): Promise<void> => decoder.init()
+    };
+}
+
+/**
+ * Creates an owned port for the bundled HEVC decoder of a Dolby Vision EL, which reports every packet accepted.
+ * The EL's leading RASL pictures match the BL's, which the BL decoder drops too, so a dropped one leaves no BL frame waiting and is no failure.
+ */
+function createOwnedBundledHEVCEnhancementDecoderPort(
+    config: VideoDecoderConfig,
+    callbacks: OwnedVideoDecoderCallbacks,
+    frameOutput: HEVCFrameOutput
+): OwnedVideoDecoderPort {
+    const port = createOwnedBundledHEVCVideoDecoderPort(config, callbacks, frameOutput);
+    return {
+        ...port,
+        decode: (packet: EncodedPacket): boolean => {
+            port.decode(packet);
+            return true;
+        }
     };
 }
 
@@ -2647,7 +2664,7 @@ async function streamOwnedHEVCFrames(
         }
     );
     const enhancementDecoder = enhancementConfiguration ?
-        createOwnedBundledHEVCVideoDecoderPort(
+        createOwnedBundledHEVCEnhancementDecoderPort(
             enhancementConfiguration.decoderConfig,
             {
                 onError: (): void => {

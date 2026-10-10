@@ -1,72 +1,61 @@
-import type {
-    DecoderOptions,
-    HEVCFrame,
-    HEVCStreamInfo
-} from '@hevcjs/core';
-
+import type { Microseconds } from '../../MediaTime';
+import { requireMicroseconds } from '../../TimeMath';
 import WorkerWASMInstanceCache, { isWASMTrap } from './WorkerWASMInstanceCache';
 
-const DRAINED_FRAME_STRUCTURE_BYTE_LENGTH = 48;
-const STREAM_INFO_STRUCTURE_BYTE_LENGTH = 24;
+// The bridge's bound on a decoder description
+const MAXIMUM_DECODER_DESCRIPTION_BYTE_LENGTH = 1024 * 1024;
+const AV_NOPTS_VALUE = BigInt('-9223372036854775808');
+const LUMA_PLANE_INDEX = 0;
+const CHROMA_BLUE_PLANE_INDEX = 1;
+const CHROMA_RED_PLANE_INDEX = 2;
+/** The most frames one call hands over; a flush outputs at most a full picture buffer, 16 pictures, so this only stops a runaway output loop. */
 export const MAXIMUM_HEVC_DRAINED_FRAME_COUNT = 64;
 
-type EmscriptenReturnType = 'number' | null;
-
-type EmscriptenHEVCModule = {
-    readonly HEAPU16: Uint16Array
-    _free: (pointer: number) => void
-    _malloc: (byteLength: number) => number
-    cwrap: (
-        name: string,
-        returnType: EmscriptenReturnType,
-        argumentTypes: readonly string[]
-    ) => (...nativeArguments: number[]) => number
-    getValue: (pointer: number, type: '*' | 'i32') => number
+/* eslint-disable @typescript-eslint/naming-convention -- Mirrors the external WASM ABI */
+/** The exports of ffmpeg-hevc.wasm, FFmpeg's HEVC decoder behind the engine's bridge. */
+export type HEVCDecoderWASMModule = {
+    HEAPU8: Uint8Array
+    _hevc_decoder_close: (decoder: number) => void
+    _hevc_decoder_configure_packet: (decoder: number, packetByteLength: number) => number
+    _hevc_decoder_create: (extradataByteLength: number) => number
+    _hevc_decoder_error_again: () => number
+    _hevc_decoder_error_eof: () => number
+    _hevc_decoder_get_bit_depth: (decoder: number) => number
+    _hevc_decoder_get_duration: (decoder: number) => bigint
+    _hevc_decoder_get_extradata: (decoder: number) => number
+    _hevc_decoder_get_height: (decoder: number) => number
+    _hevc_decoder_get_plane: (decoder: number, plane: number) => number
+    _hevc_decoder_get_stride: (decoder: number, plane: number) => number
+    _hevc_decoder_get_timestamp: (decoder: number) => bigint
+    _hevc_decoder_get_width: (decoder: number) => number
+    _hevc_decoder_open: (decoder: number) => number
+    _hevc_decoder_receive_frame: (decoder: number) => number
+    _hevc_decoder_reset: (decoder: number) => void
+    _hevc_decoder_send_packet: (decoder: number, presentationTimestamp: bigint, duration: bigint) => number
+    _hevc_decoder_start_drain: (decoder: number) => number
 };
+/* eslint-enable @typescript-eslint/naming-convention */
 
-type EmscriptenHEVCModuleOptions = {
-    locateFile?: (path: string, scriptDirectory: string) => string
+type HEVCDecoderWASMModuleOptions = {
+    locateFile?: (path: string) => string
     wasmBinary?: ArrayBuffer
 };
 
-type EmscriptenHEVCModuleFactory = (options: EmscriptenHEVCModuleOptions) => Promise<EmscriptenHEVCModule>;
+type HEVCDecoderWASMModuleFactory = (options: HEVCDecoderWASMModuleOptions) => Promise<HEVCDecoderWASMModule>;
 
 type HEVCDecoderGlobal = typeof globalThis & {
     HEVCDecoderModule?: unknown
 };
 
-type HEVCNativeAPI = {
-    create: () => number
-    destroy: (decoderPointer: number) => number
-    drain: (decoderPointer: number, countPointer: number) => number
-    feed: (decoderPointer: number, dataPointer: number, byteLength: number) => number
-    flush: (decoderPointer: number) => number
-    getDrainedFrame: (decoderPointer: number, frameIndex: number, framePointer: number) => number
-    getInfo: (decoderPointer: number, infoPointer: number) => number
-};
+/** The bit depths of Main and Main 10, the profiles the decoder serves. */
+export type HEVCFrameBitDepth = 8 | 10;
 
-type HEVCPlaneLayout = {
-    height: number
-    pointer: number
-    stride: number
-    width: number
-};
-
-type HEVCFrameLayout = {
-    bitDepth: 8 | 10
-    chromaBlue: HEVCPlaneLayout
-    chromaHeight: number
-    chromaRed: HEVCPlaneLayout
-    chromaWidth: number
-    height: number
-    luma: HEVCPlaneLayout
-    poc: number
-    width: number
-};
-
-/** One plane of a drained frame: 16-bit samples whose rows start a stride apart, from the first sample to the end of the last row. */
+/**
+ * One plane of a decoded frame: its samples from the first to the end of the last row, whose rows start a stride apart.
+ * The samples are bytes at 8 bits and 16-bit words at 10 bits, and the stride counts them.
+ */
 export type HEVCFramePlane = Readonly<{
-    samples: Uint16Array
+    samples: Uint8Array | Uint16Array
     stride: number
 }>;
 
@@ -77,443 +66,300 @@ export type HEVCFramePlanes = Readonly<{
     luma: HEVCFramePlane
 }>;
 
-/**
- * A drained frame, whose planes view WASM memory only until the decoder's next call.
- * The WASM backend's frames also carry their strided planes, and make the compact y, cb, and cr only when they are read.
- */
-export type HEVCDecodedFrame = HEVCFrame & Readonly<{
-    planes?: HEVCFramePlanes
+/** A decoded 4:2:0 frame, cropped to its conformance window, whose planes view WASM memory only until the decoder's next call. */
+export type HEVCDecodedFrame = Readonly<{
+    bitDepth: HEVCFrameBitDepth
+    chromaHeight: number
+    chromaWidth: number
+    /** The duration its packet was sent with */
+    durationMicroseconds: Microseconds
+    height: number
+    planes: HEVCFramePlanes
+    /** The timestamp its packet was sent with */
+    timestampMicroseconds: Microseconds
+    width: number
 }>;
 
 /** Consumes a frame synchronously before the decoder may reuse its WASM planes. */
 export type HEVCDecodedFrameHandler = (frame: HEVCDecodedFrame) => void;
 
 export type HEVCDecoderBackend = {
-    readonly info: HEVCStreamInfo | null
+    /**
+     * Decodes one access unit, which carries the timestamp and duration of the frame it codes, and hands over every frame it made displayable, in display order.
+     * Returns how many it handed over.
+     */
+    decode: (
+        data: Uint8Array,
+        timestampMicroseconds: Microseconds,
+        durationMicroseconds: Microseconds,
+        frameHandler: HEVCDecodedFrameHandler
+    ) => number
     destroy: () => void
-    drain: (frameHandler: HEVCDecodedFrameHandler) => number
-    feed: (data: Uint8Array) => void
+    /** Hands over every frame the decoder holds, then readies it for the next random-access point; returns how many it handed over. */
     flush: (frameHandler: HEVCDecodedFrameHandler) => number
 };
 
-/** Locates hevc-decode.wasm by URL, or supplies its bytes so instantiation fetches nothing. */
+/** Locates ffmpeg-hevc.wasm by URL, or supplies its bytes so instantiation fetches nothing. */
 export type HEVCDecoderModuleOptions = Readonly<{
     wasmBinary?: ArrayBuffer
     wasmURL?: string
 }>;
 
-/** One instantiated hevc-decode.wasm module, which hosts successive decoders. */
-export type HEVCDecoderModule = Readonly<{
-    createDecoder: () => HEVCDecoderBackend
+/** What a playback decoder opens with: the binary's URL, and its stream's HEVCDecoderConfigurationRecord, or null for Annex B packets. */
+export type HEVCDecoderBackendOptions = Readonly<{
+    description: Uint8Array | null
+    wasmURL: string
 }>;
 
-function requireAllocation(module: EmscriptenHEVCModule, byteLength: number): number {
-    const pointer = module._malloc(byteLength);
-    if (!Number.isSafeInteger(pointer) || pointer <= 0) {
-        throw new Error('The HEVC WASM decoder could not allocate memory');
-    }
-    return pointer;
-}
+/** One instantiated ffmpeg-hevc.wasm module, which hosts successive decoders. */
+export type HEVCDecoderModule = Readonly<{
+    /** Opens a decoder for length-prefixed packets an HEVCDecoderConfigurationRecord describes, or for Annex B packets with null */
+    createDecoder: (description: Uint8Array | null) => HEVCDecoderBackend
+}>;
 
 function isPositiveSafeInteger(value: number): boolean {
     return Number.isSafeInteger(value) && value > 0;
 }
 
-function validatePlaneLayout(
-    module: EmscriptenHEVCModule,
-    pointer: number,
+/** Reads a returned pointer as a heap address; past 2 GiB the WASM i32 result arrives negative. */
+function toHeapAddress(pointer: number): number {
+    return pointer >>> 0;
+}
+
+/** Views one plane of the received frame in WASM memory, after checking that the plane lies inside it. */
+function viewPlane(
+    module: HEVCDecoderWASMModule,
+    decoder: number,
+    planeIndex: number,
     width: number,
     height: number,
-    stride: number
-): HEVCPlaneLayout {
-    const sampleCount = width * height;
+    bytesPerSample: 1 | 2
+): HEVCFramePlane {
+    const pointer = toHeapAddress(module._hevc_decoder_get_plane(decoder, planeIndex));
+    const strideByteLength = module._hevc_decoder_get_stride(decoder, planeIndex);
+    const rowByteLength = width * bytesPerSample;
+    const byteLength = ((height - 1) * strideByteLength) + rowByteLength;
     if (
-        !isPositiveSafeInteger(pointer)
-        || pointer % Uint16Array.BYTES_PER_ELEMENT !== 0
-        || !isPositiveSafeInteger(width)
-        || !isPositiveSafeInteger(height)
-        || !Number.isSafeInteger(stride)
-        || stride < width
-        || !Number.isSafeInteger(sampleCount)
+        pointer === 0
+        || pointer % bytesPerSample !== 0
+        || !Number.isSafeInteger(strideByteLength)
+        || strideByteLength < rowByteLength
+        || strideByteLength % bytesPerSample !== 0
+        || !Number.isSafeInteger(byteLength)
+        || pointer + byteLength > module.HEAPU8.byteLength
     ) {
-        throw new TypeError('The HEVC WASM decoder returned an invalid plane');
+        throw new TypeError('The HEVC WASM decoder returned a plane outside its memory');
     }
-
-    const baseSampleOffset = pointer / Uint16Array.BYTES_PER_ELEMENT;
-    const finalSourceEnd = baseSampleOffset + ((height - 1) * stride) + width;
-    if (!Number.isSafeInteger(finalSourceEnd) || finalSourceEnd > module.HEAPU16.length) {
-        throw new TypeError('The HEVC WASM decoder plane exceeds its memory');
+    if (bytesPerSample === 1) {
+        return {
+            samples: module.HEAPU8.subarray(pointer, pointer + byteLength),
+            stride: strideByteLength
+        };
     }
-    return { height, pointer, stride, width };
-}
-
-function validateFrameLayout(
-    module: EmscriptenHEVCModule,
-    frameValues: {
-        bitDepth: number
-        chromaBluePointer: number
-        chromaHeight: number
-        chromaRedPointer: number
-        chromaStride: number
-        chromaWidth: number
-        height: number
-        lumaPointer: number
-        lumaStride: number
-        poc: number
-        width: number
-    }
-): HEVCFrameLayout {
-    if (frameValues.bitDepth !== 8 && frameValues.bitDepth !== 10) {
-        throw new TypeError('The HEVC WASM decoder returned an unsupported bit depth');
-    }
-    if (
-        !isPositiveSafeInteger(frameValues.width)
-        || !isPositiveSafeInteger(frameValues.height)
-        || frameValues.chromaWidth !== Math.ceil(frameValues.width / 2)
-        || frameValues.chromaHeight !== Math.ceil(frameValues.height / 2)
-    ) {
-        throw new TypeError('The HEVC WASM decoder returned invalid 4:2:0 dimensions');
-    }
-
-    // Any frame size is accepted; each plane must lie within the WASM memory, which bounds the copy
-    const lumaSampleCount = frameValues.width * frameValues.height;
-    const chromaSampleCount = frameValues.chromaWidth * frameValues.chromaHeight;
-    const totalSampleCount = lumaSampleCount + (2 * chromaSampleCount);
-    const copiedByteLength = totalSampleCount * Uint16Array.BYTES_PER_ELEMENT;
-    if (
-        !Number.isSafeInteger(lumaSampleCount)
-        || !Number.isSafeInteger(chromaSampleCount)
-        || !Number.isSafeInteger(totalSampleCount)
-        || !Number.isSafeInteger(copiedByteLength)
-        || copiedByteLength <= 0
-    ) {
-        throw new TypeError('The HEVC WASM decoder frame size is invalid');
-    }
-
-    const luma = validatePlaneLayout(
-        module,
-        frameValues.lumaPointer,
-        frameValues.width,
-        frameValues.height,
-        frameValues.lumaStride
-    );
-    const chromaBlue = validatePlaneLayout(
-        module,
-        frameValues.chromaBluePointer,
-        frameValues.chromaWidth,
-        frameValues.chromaHeight,
-        frameValues.chromaStride
-    );
-    const chromaRed = validatePlaneLayout(
-        module,
-        frameValues.chromaRedPointer,
-        frameValues.chromaWidth,
-        frameValues.chromaHeight,
-        frameValues.chromaStride
-    );
     return {
-        bitDepth: frameValues.bitDepth,
-        chromaBlue,
-        chromaHeight: frameValues.chromaHeight,
-        chromaRed,
-        chromaWidth: frameValues.chromaWidth,
-        height: frameValues.height,
-        luma,
-        poc: frameValues.poc,
-        width: frameValues.width
+        samples: new Uint16Array(module.HEAPU8.buffer, pointer, byteLength / Uint16Array.BYTES_PER_ELEMENT),
+        stride: strideByteLength / Uint16Array.BYTES_PER_ELEMENT
     };
 }
 
-/** Views a plane from its first sample to the end of its last row, without copying it out of WASM memory. */
-function getPlaneView(module: EmscriptenHEVCModule, layout: HEVCPlaneLayout): HEVCFramePlane {
-    const baseSampleOffset = layout.pointer / Uint16Array.BYTES_PER_ELEMENT;
-    const finalSampleEnd = baseSampleOffset + ((layout.height - 1) * layout.stride) + layout.width;
+/** Reads a timing value the decoder carried from a packet to its frame. */
+function readFrameTime(value: bigint, label: string): Microseconds {
+    if (value === AV_NOPTS_VALUE) {
+        throw new TypeError(`The HEVC WASM decoder output a frame without a ${label}`);
+    }
+    return requireMicroseconds(Number(value), `HEVC decoded frame ${label}`);
+}
+
+/** Describes the frame the decoder just returned, viewing its planes where they lie in WASM memory. */
+function readDecodedFrame(module: HEVCDecoderWASMModule, decoder: number): HEVCDecodedFrame {
+    const bitDepth = module._hevc_decoder_get_bit_depth(decoder);
+    if (bitDepth !== 8 && bitDepth !== 10) {
+        throw new TypeError('The HEVC WASM decoder output is not 8-bit or 10-bit 4:2:0');
+    }
+    const width = module._hevc_decoder_get_width(decoder);
+    const height = module._hevc_decoder_get_height(decoder);
+    if (!isPositiveSafeInteger(width) || !isPositiveSafeInteger(height)) {
+        throw new TypeError('The HEVC WASM decoder returned invalid frame dimensions');
+    }
+    const chromaWidth = Math.ceil(width / 2);
+    const chromaHeight = Math.ceil(height / 2);
+    const bytesPerSample = bitDepth === 8 ? 1 : 2;
+    const durationMicroseconds = readFrameTime(module._hevc_decoder_get_duration(decoder), 'duration');
+    if (durationMicroseconds < 0) {
+        throw new RangeError('The HEVC WASM decoder output a frame with a negative duration');
+    }
     return {
-        samples: module.HEAPU16.subarray(baseSampleOffset, finalSampleEnd),
-        stride: layout.stride
+        bitDepth,
+        chromaHeight,
+        chromaWidth,
+        durationMicroseconds,
+        height,
+        planes: {
+            chromaBlue: viewPlane(module, decoder, CHROMA_BLUE_PLANE_INDEX, chromaWidth, chromaHeight, bytesPerSample),
+            chromaRed: viewPlane(module, decoder, CHROMA_RED_PLANE_INDEX, chromaWidth, chromaHeight, bytesPerSample),
+            luma: viewPlane(module, decoder, LUMA_PLANE_INDEX, width, height, bytesPerSample)
+        },
+        timestampMicroseconds: readFrameTime(module._hevc_decoder_get_timestamp(decoder), 'timestamp'),
+        width
     };
 }
 
-/** Returns a plane as compact rows: the plane itself when its stride is its width, or a copy of its rows. */
-function getCompactPlane(plane: HEVCFramePlane, width: number, height: number): Uint16Array {
-    if (plane.stride === width) {
-        return plane.samples;
+/** Creates and opens a native decoder, writing its description where the bridge reserved it. */
+function openNativeDecoder(module: HEVCDecoderWASMModule, description: Uint8Array | null): number {
+    const descriptionByteLength = description?.byteLength ?? 0;
+    if (descriptionByteLength > MAXIMUM_DECODER_DESCRIPTION_BYTE_LENGTH) {
+        throw new TypeError('The HEVC decoder description is too large');
     }
-
-    const output = new Uint16Array(width * height);
-    for (let rowIndex = 0; rowIndex < height; rowIndex += 1) {
-        const sourceOffset = rowIndex * plane.stride;
-        output.set(plane.samples.subarray(sourceOffset, sourceOffset + width), rowIndex * width);
+    const decoder = toHeapAddress(module._hevc_decoder_create(descriptionByteLength));
+    if (decoder === 0) {
+        throw new Error('The HEVC WASM decoder could not create a decoder');
     }
-    return output;
-}
-
-/** A drained frame that views its strided planes in WASM memory and makes its compact planes only when they are read. */
-class HEVCWASMDecodedFrame {
-    public readonly bitDepth: number;
-    public readonly chromaHeight: number;
-    public readonly chromaWidth: number;
-    public readonly height: number;
-    public readonly planes: HEVCFramePlanes;
-    public readonly poc: number;
-    public readonly width: number;
-    private compactChromaBlue: Uint16Array | null = null;
-    private compactChromaRed: Uint16Array | null = null;
-    private compactLuma: Uint16Array | null = null;
-
-    public constructor(layout: HEVCFrameLayout, planes: HEVCFramePlanes) {
-        this.bitDepth = layout.bitDepth;
-        this.chromaHeight = layout.chromaHeight;
-        this.chromaWidth = layout.chromaWidth;
-        this.height = layout.height;
-        this.planes = planes;
-        this.poc = layout.poc;
-        this.width = layout.width;
-    }
-
-    public get cb(): Uint16Array {
-        this.compactChromaBlue ??= getCompactPlane(this.planes.chromaBlue, this.chromaWidth, this.chromaHeight);
-        return this.compactChromaBlue;
-    }
-
-    public get cr(): Uint16Array {
-        this.compactChromaRed ??= getCompactPlane(this.planes.chromaRed, this.chromaWidth, this.chromaHeight);
-        return this.compactChromaRed;
-    }
-
-    public get y(): Uint16Array {
-        this.compactLuma ??= getCompactPlane(this.planes.luma, this.width, this.height);
-        return this.compactLuma;
-    }
-}
-
-/** Returns a frame's planes with their strides: the WASM views a backend frame carries, or its compact planes, whose stride is their width. */
-export function getHEVCFramePlanes(frame: HEVCDecodedFrame): HEVCFramePlanes {
-    return frame.planes ?? {
-        chromaBlue: { samples: frame.cb, stride: frame.chromaWidth },
-        chromaRed: { samples: frame.cr, stride: frame.chromaWidth },
-        luma: { samples: frame.y, stride: frame.width }
-    };
-}
-
-/** Reports a trap in a native call before rethrowing it, so a shared module whose code trapped is not reused. */
-function guardNativeFunction(
-    nativeFunction: (...nativeArguments: number[]) => number,
-    onTrap: () => void
-): (...nativeArguments: number[]) => number {
-    return (...nativeArguments: number[]): number => {
-        try {
-            return nativeFunction(...nativeArguments);
-        } catch (error) {
-            if (isWASMTrap(error)) {
-                onTrap();
+    try {
+        if (description && descriptionByteLength > 0) {
+            const descriptionPointer = toHeapAddress(module._hevc_decoder_get_extradata(decoder));
+            if (descriptionPointer === 0 || descriptionPointer + descriptionByteLength > module.HEAPU8.byteLength) {
+                throw new Error('The HEVC WASM decoder description allocation is invalid');
             }
-            throw error;
+            module.HEAPU8.set(description, descriptionPointer);
         }
-    };
+        const openResult = module._hevc_decoder_open(decoder);
+        if (openResult < 0) {
+            throw new Error(`The HEVC WASM decoder could not open, code ${openResult}`);
+        }
+    } catch (error) {
+        module._hevc_decoder_close(decoder);
+        throw error;
+    }
+    return decoder;
 }
 
 class HEVCWASMDecoderBackend implements HEVCDecoderBackend {
-    private decoderPointer: number;
-    private readonly nativeAPI: HEVCNativeAPI;
+    private decoder: number;
 
-    public constructor(private readonly module: EmscriptenHEVCModule, onTrap: () => void) {
-        const cwrap = (
-            name: string,
-            returnType: EmscriptenReturnType,
-            argumentTypes: readonly string[]
-        ): (...nativeArguments: number[]) => number => guardNativeFunction(
-            module.cwrap(name, returnType, argumentTypes),
-            onTrap
-        );
-        this.nativeAPI = {
-            create: cwrap('hevc_decoder_create', 'number', []) as () => number,
-            destroy: cwrap('hevc_decoder_destroy', null, [ 'number' ]) as (decoderPointer: number) => number,
-            drain: cwrap(
-                'hevc_decoder_drain',
-                'number',
-                [ 'number', 'number' ]
-            ) as (decoderPointer: number, countPointer: number) => number,
-            feed: cwrap(
-                'hevc_decoder_feed',
-                'number',
-                [ 'number', 'number', 'number' ]
-            ) as (decoderPointer: number, dataPointer: number, byteLength: number) => number,
-            flush: cwrap('hevc_decoder_flush', 'number', [ 'number' ]) as (decoderPointer: number) => number,
-            getDrainedFrame: cwrap(
-                'hevc_decoder_get_drained_frame',
-                'number',
-                [ 'number', 'number', 'number' ]
-            ) as (decoderPointer: number, frameIndex: number, framePointer: number) => number,
-            getInfo: cwrap(
-                'hevc_decoder_get_info',
-                'number',
-                [ 'number', 'number' ]
-            ) as (decoderPointer: number, infoPointer: number) => number
-        };
-        this.decoderPointer = this.nativeAPI.create();
-        if (!isPositiveSafeInteger(this.decoderPointer)) {
-            throw new Error('The HEVC WASM decoder could not create a decoder');
-        }
+    public constructor(
+        private readonly module: HEVCDecoderWASMModule,
+        description: Uint8Array | null,
+        private readonly onTrap: () => void
+    ) {
+        this.decoder = this.callNative((): number => openNativeDecoder(module, description));
     }
 
-    public get info(): HEVCStreamInfo | null {
-        this.requireOpen();
-        const infoPointer = requireAllocation(this.module, STREAM_INFO_STRUCTURE_BYTE_LENGTH);
-        try {
-            if (this.nativeAPI.getInfo(this.decoderPointer, infoPointer) !== 0) {
-                return null;
-            }
-            return {
-                bitDepth: this.module.getValue(infoPointer + 8, 'i32'),
-                chromaFormat: this.module.getValue(infoPointer + 12, 'i32'),
-                height: this.module.getValue(infoPointer + 4, 'i32'),
-                level: this.module.getValue(infoPointer + 20, 'i32'),
-                profile: this.module.getValue(infoPointer + 16, 'i32'),
-                width: this.module.getValue(infoPointer, 'i32')
-            };
-        } finally {
-            this.module._free(infoPointer);
+    public decode(
+        data: Uint8Array,
+        timestampMicroseconds: Microseconds,
+        durationMicroseconds: Microseconds,
+        frameHandler: HEVCDecodedFrameHandler
+    ): number {
+        const decoder = this.requireOpen();
+        if (data.byteLength === 0) {
+            throw new TypeError('The HEVC packet is empty');
         }
-    }
-
-    public feed(data: Uint8Array): void {
-        this.requireOpen();
-        const dataPointer = requireAllocation(this.module, data.byteLength);
-        try {
-            new Uint8Array(this.module.HEAPU16.buffer).set(data, dataPointer);
-            const result = this.nativeAPI.feed(this.decoderPointer, dataPointer, data.byteLength);
-            if (result !== 0) {
-                throw new Error(`The HEVC WASM decoder feed failed with code ${result}`);
+        return this.callNative((): number => {
+            const packetPointer = toHeapAddress(this.module._hevc_decoder_configure_packet(decoder, data.byteLength));
+            if (packetPointer === 0 || packetPointer + data.byteLength > this.module.HEAPU8.byteLength) {
+                throw new Error('The HEVC WASM decoder could not allocate a packet');
             }
-        } finally {
-            this.module._free(dataPointer);
-        }
-    }
-
-    public drain(frameHandler: HEVCDecodedFrameHandler): number {
-        this.requireOpen();
-        const countPointer = requireAllocation(this.module, 4);
-        try {
-            const result = this.nativeAPI.drain(this.decoderPointer, countPointer);
-            if (result !== 0) {
-                throw new Error(`The HEVC WASM decoder drain failed with code ${result}`);
+            this.module.HEAPU8.set(data, packetPointer);
+            const sendResult = this.module._hevc_decoder_send_packet(
+                decoder,
+                BigInt(timestampMicroseconds),
+                BigInt(durationMicroseconds)
+            );
+            if (sendResult < 0) {
+                throw new Error(`The HEVC WASM decoder rejected a packet, code ${sendResult}`);
             }
-            const frameCount = this.module.getValue(countPointer, 'i32');
-            if (!Number.isSafeInteger(frameCount) || frameCount < 0 || frameCount > MAXIMUM_HEVC_DRAINED_FRAME_COUNT) {
-                throw new TypeError('The HEVC WASM decoder returned an invalid frame count');
-            }
-
-            for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
-                const frame = this.extractDrainedFrame(frameIndex);
-                if (!frame) {
-                    throw new Error('The HEVC WASM decoder omitted a reported frame');
-                }
-                // The planes may view WASM memory, so the handler consumes this frame before the next extraction
-                frameHandler(frame);
-            }
-            return frameCount;
-        } finally {
-            this.module._free(countPointer);
-        }
+            return this.receiveFrames(decoder, frameHandler, false);
+        });
     }
 
     public flush(frameHandler: HEVCDecodedFrameHandler): number {
-        this.requireOpen();
-        const result = this.nativeAPI.flush(this.decoderPointer);
-        if (result !== 0) {
-            throw new Error(`The HEVC WASM decoder flush failed with code ${result}`);
-        }
-
-        for (let frameIndex = 0; frameIndex <= MAXIMUM_HEVC_DRAINED_FRAME_COUNT; frameIndex += 1) {
-            const frame = this.extractDrainedFrame(frameIndex);
-            if (!frame) {
-                return frameIndex;
+        const decoder = this.requireOpen();
+        return this.callNative((): number => {
+            const drainResult = this.module._hevc_decoder_start_drain(decoder);
+            if (drainResult < 0 && drainResult !== this.module._hevc_decoder_error_eof()) {
+                throw new Error(`The HEVC WASM decoder could not drain, code ${drainResult}`);
             }
-            if (frameIndex === MAXIMUM_HEVC_DRAINED_FRAME_COUNT) {
-                throw new Error('The HEVC WASM decoder flush exceeded its frame bound');
-            }
-            // Flush preserves display order without retaining a decoded frame batch
-            frameHandler(frame);
-        }
-        throw new Error('The HEVC WASM decoder flush exceeded its frame bound');
+            const frameCount = this.receiveFrames(decoder, frameHandler, true);
+            this.module._hevc_decoder_reset(decoder);
+            return frameCount;
+        });
     }
 
     public destroy(): void {
-        if (this.decoderPointer === 0) {
+        if (this.decoder === 0) {
             return;
         }
-        const decoderPointer = this.decoderPointer;
-        this.decoderPointer = 0;
-        this.nativeAPI.destroy(decoderPointer);
+        const decoder = this.decoder;
+        this.decoder = 0;
+        this.module._hevc_decoder_close(decoder);
     }
 
-    private extractDrainedFrame(frameIndex: number): HEVCDecodedFrame | null {
-        const framePointer = requireAllocation(this.module, DRAINED_FRAME_STRUCTURE_BYTE_LENGTH);
-        try {
-            if (this.nativeAPI.getDrainedFrame(this.decoderPointer, frameIndex, framePointer) !== 0) {
-                return null;
+    /** Hands over each frame the decoder returns until it needs another packet, or, draining, until it has none left. */
+    private receiveFrames(decoder: number, frameHandler: HEVCDecodedFrameHandler, draining: boolean): number {
+        const againResult = this.module._hevc_decoder_error_again();
+        const endResult = this.module._hevc_decoder_error_eof();
+        let frameCount = 0;
+        while (true) {
+            const receiveResult = this.module._hevc_decoder_receive_frame(decoder);
+            if (receiveResult === againResult) {
+                if (draining) {
+                    throw new Error('The HEVC WASM decoder drain ended before its last frame');
+                }
+                return frameCount;
             }
-
-            const lumaPointer = this.module.getValue(framePointer, '*');
-            const chromaBluePointer = this.module.getValue(framePointer + 4, '*');
-            const chromaRedPointer = this.module.getValue(framePointer + 8, '*');
-            const width = this.module.getValue(framePointer + 12, 'i32');
-            const height = this.module.getValue(framePointer + 16, 'i32');
-            const lumaStride = this.module.getValue(framePointer + 20, 'i32');
-            const chromaStride = this.module.getValue(framePointer + 24, 'i32');
-            const chromaWidth = this.module.getValue(framePointer + 28, 'i32');
-            const chromaHeight = this.module.getValue(framePointer + 32, 'i32');
-            const bitDepth = this.module.getValue(framePointer + 36, 'i32');
-            const poc = this.module.getValue(framePointer + 40, 'i32');
-            const frameLayout = validateFrameLayout(this.module, {
-                bitDepth,
-                chromaBluePointer,
-                chromaHeight,
-                chromaRedPointer,
-                chromaStride,
-                chromaWidth,
-                height,
-                lumaPointer,
-                lumaStride,
-                poc,
-                width
-            });
-            return new HEVCWASMDecodedFrame(frameLayout, {
-                chromaBlue: getPlaneView(this.module, frameLayout.chromaBlue),
-                chromaRed: getPlaneView(this.module, frameLayout.chromaRed),
-                luma: getPlaneView(this.module, frameLayout.luma)
-            });
-        } finally {
-            this.module._free(framePointer);
+            if (receiveResult === endResult) {
+                return frameCount;
+            }
+            if (receiveResult < 0) {
+                throw new Error(`The HEVC WASM decoder failed, code ${receiveResult}`);
+            }
+            if (frameCount >= MAXIMUM_HEVC_DRAINED_FRAME_COUNT) {
+                throw new Error('The HEVC WASM decoder output exceeded its frame bound');
+            }
+            frameCount += 1;
+            // The planes view WASM memory, so the handler consumes this frame before the next receive releases it
+            frameHandler(readDecodedFrame(this.module, decoder));
         }
     }
 
-    private requireOpen(): void {
-        if (this.decoderPointer === 0) {
+    /** Runs native calls, reporting a trap before rethrowing it, so a shared module whose code trapped is not reused. */
+    private callNative<Result>(call: () => Result): Result {
+        try {
+            return call();
+        } catch (error) {
+            if (isWASMTrap(error)) {
+                this.onTrap();
+            }
+            throw error;
+        }
+    }
+
+    private requireOpen(): number {
+        if (this.decoder === 0) {
             throw new Error('The HEVC WASM decoder is destroyed');
         }
+        return this.decoder;
     }
 }
 
 // The playback worker's decoders share one instance of the glue module
 const sharedDecoderModule = new WorkerWASMInstanceCache<HEVCDecoderModule>();
 
-function requireModuleFactory(): EmscriptenHEVCModuleFactory {
+function requireModuleFactory(): HEVCDecoderWASMModuleFactory {
     const decoderGlobal = globalThis as HEVCDecoderGlobal;
     if (typeof decoderGlobal.HEVCDecoderModule !== 'function') {
         throw new Error('The HEVC WASM decoder module factory is unavailable');
     }
-    return decoderGlobal.HEVCDecoderModule as EmscriptenHEVCModuleFactory;
+    return decoderGlobal.HEVCDecoderModule as HEVCDecoderWASMModuleFactory;
 }
 
 async function instantiateDecoderModule(
-    moduleFactory: EmscriptenHEVCModuleFactory,
+    moduleFactory: HEVCDecoderWASMModuleFactory,
     options: HEVCDecoderModuleOptions,
     onTrap: (decoderModule: HEVCDecoderModule) => void
 ): Promise<HEVCDecoderModule> {
-    // NOTE: The glue adopts this object as its Module and installs aborting getters on it, so every instantiation needs a fresh one
-    const moduleOptions: EmscriptenHEVCModuleOptions = {};
+    // NOTE: The glue adopts this object as its Module, so every instantiation needs a fresh one
+    const moduleOptions: HEVCDecoderWASMModuleOptions = {};
     const wasmURL = options.wasmURL;
     if (wasmURL) {
         moduleOptions.locateFile = (): string => wasmURL;
@@ -525,32 +371,36 @@ async function instantiateDecoderModule(
     const module = await moduleFactory(moduleOptions);
     // Each decoder owns only its native context, so destroying one leaves the module reusable
     const decoderModule: HEVCDecoderModule = Object.freeze({
-        createDecoder: (): HEVCDecoderBackend => new HEVCWASMDecoderBackend(module, (): void => {
-            onTrap(decoderModule);
-        })
+        createDecoder: (description: Uint8Array | null): HEVCDecoderBackend => new HEVCWASMDecoderBackend(
+            module,
+            description,
+            (): void => {
+                onTrap(decoderModule);
+            }
+        )
     });
     return decoderModule;
 }
 
-/** Instantiates the @hevcjs/core glue module loaded in this worker, as an instance of the caller's own, apart from the one its playback decoders share. */
+/** Instantiates the ffmpeg-hevc glue module loaded in this worker, as an instance of the caller's own, apart from the one its playback decoders share. */
 export async function createHEVCDecoderModule(options: HEVCDecoderModuleOptions): Promise<HEVCDecoderModule> {
     return instantiateDecoderModule(requireModuleFactory(), options, (): void => undefined);
 }
 
 /**
- * Creates a decoder on the one instance of the @hevcjs/core glue module that this worker's decoders share.
+ * Opens a decoder on the one instance of the ffmpeg-hevc glue module that this worker's decoders share.
  * The first decoder instantiates it, and a decoder whose native code traps makes the next one instantiate it again.
  */
-export async function createHEVCDecoderBackend(options: DecoderOptions): Promise<HEVCDecoderBackend> {
+export async function createHEVCDecoderBackend(options: HEVCDecoderBackendOptions): Promise<HEVCDecoderBackend> {
     const moduleFactory = requireModuleFactory();
     const decoderModule = await sharedDecoderModule.load(moduleFactory, (): Promise<HEVCDecoderModule> => (
         instantiateDecoderModule(
             moduleFactory,
-            { wasmURL: options.wasmBinaryUrl },
+            { wasmURL: options.wasmURL },
             (trappedModule: HEVCDecoderModule): void => {
                 sharedDecoderModule.discard(trappedModule);
             }
         )
     ));
-    return decoderModule.createDecoder();
+    return decoderModule.createDecoder(options.description);
 }

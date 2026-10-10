@@ -19,7 +19,7 @@ rectangle "Main thread (engine)" $BOX_MAIN {
 
 rectangle "CustomDecode.worker (engine)" $BOX_WORKER {
   rectangle "**Mediabunny demux**\nrange-validated fetch" as demux
-  rectangle "**Video decode**\nWebCodecs; owned HEVC, AV1, VP9;\nhevc.js WASM (+ Dolby Vision EL);\nOpenJPEG; FFmpeg MPEG-2 and VC-1" as videoDecoders
+  rectangle "**Video decode**\nWebCodecs; owned HEVC, AV1, VP9;\nFFmpeg HEVC WASM (+ Dolby Vision EL);\nOpenJPEG; FFmpeg MPEG-2 and VC-1" as videoDecoders
   rectangle "**Mediabunny audio decode**\nWebCodecs; @mediabunny/ac3" as audioDecoders
   rectangle "**fMP4 remux**\nAC-3, E-AC-3" as remux
 }

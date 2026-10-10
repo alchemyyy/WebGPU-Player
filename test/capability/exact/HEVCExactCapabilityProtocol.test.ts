@@ -8,15 +8,29 @@ import { describe, expect, it } from 'vitest';
 
 import { createHEVCExactCapabilityWorkerQualificationRequests } from 'webgpu-player/capability/vectors/HEVCExactCapabilityVectors';
 import {
+    getHEVCExactCapabilityDecodedFrameByteLength,
     HEVC_EXACT_CAPABILITY_REQUEST_ID,
+    HEVC_EXACT_CAPABILITY_VECTORS,
     HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS,
     isHEVCExactCapabilityWorkerRequest,
     isHEVCExactCapabilityWorkerResponse,
+    type HEVCExactCapabilityVector,
+    type HEVCExactCapabilityWorkerQualificationResult,
     type HEVCExactCapabilityWorkerRequest,
     type HEVCExactCapabilityWorkerResponse
 } from 'webgpu-player/capability/exact/HEVCExactCapabilityProtocol';
 
 const MAIN10_4K_QUALIFICATION_PATH = resolve(QUALIFICATION_VECTORS_DIRECTORY, 'hevc', 'main10-4k-complex.hevc');
+const DECODER_GLUE_URL = 'https://example.test/ffmpeg-hevc.js';
+const DECODER_WASM_URL = 'https://example.test/ffmpeg-hevc.wasm';
+const FILE_DECODER_WASM_URL = 'file:///ffmpeg-hevc.wasm';
+const PRELOADED_DECODER_WASM_BYTE_LENGTH = 8;
+const TRUNCATED_ACCESS_UNIT_BYTE_LENGTH = 1;
+const MISMATCHED_CODED_WIDTH = 1_280;
+// Compact 4:2:0 planes hold a byte per sample at 8 bits and two at 10
+const MAIN_1080P_DECODED_FRAME_BYTE_LENGTH = 3_110_400;
+const MAIN10_1080P_DECODED_FRAME_BYTE_LENGTH = 6_220_800;
+const MAIN10_4K_DECODED_FRAME_BYTE_LENGTH = 24_883_200;
 
 function loadMain10UltraHDQualificationBitstream(): ArrayBuffer {
     return Uint8Array.from(readFileSync(MAIN10_4K_QUALIFICATION_PATH)).buffer;
@@ -24,11 +38,55 @@ function loadMain10UltraHDQualificationBitstream(): ArrayBuffer {
 
 function createRequest(): HEVCExactCapabilityWorkerRequest {
     return {
-        decoderGlueURL: 'https://example.test/hevc-decode.js',
-        decoderWASM: { kind: 'url', url: 'https://example.test/hevc-decode.wasm' },
+        decoderGlueURL: DECODER_GLUE_URL,
+        decoderWASM: { kind: 'url', url: DECODER_WASM_URL },
         requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
         qualifications: createHEVCExactCapabilityWorkerQualificationRequests(loadMain10UltraHDQualificationBitstream()),
         type: 'probe'
+    };
+}
+
+/** Returns the summary of a vector whose every frame matched, with the byte length of one frame in compact planes. */
+function createVerifiedResult(
+    vector: HEVCExactCapabilityVector,
+    decodedByteLength: number
+): HEVCExactCapabilityWorkerQualificationResult {
+    const definition = HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[vector];
+    return {
+        bitDepth: definition.bitDepth,
+        chromaHeight: Math.ceil(definition.codedHeight / 2),
+        chromaWidth: Math.ceil(definition.codedWidth / 2),
+        codedHeight: definition.codedHeight,
+        codedWidth: definition.codedWidth,
+        decodedFrameFingerprints: definition.decodedFrameFingerprints,
+        decodedFrameCount: definition.qualificationFrameCount,
+        decodedByteLength,
+        levelIDC: definition.levelIDC,
+        profileIDC: definition.profileIDC,
+        reason: 'decode-output-verified',
+        supported: true,
+        vector,
+        totalDecodedByteLength: decodedByteLength * definition.qualificationFrameCount
+    };
+}
+
+/** Returns the summary of a vector whose decoder failed before it output a frame. */
+function createDecodeErrorResult(vector: HEVCExactCapabilityVector): HEVCExactCapabilityWorkerQualificationResult {
+    return {
+        bitDepth: null,
+        chromaHeight: null,
+        chromaWidth: null,
+        codedHeight: null,
+        codedWidth: null,
+        decodedFrameFingerprints: null,
+        decodedFrameCount: null,
+        decodedByteLength: null,
+        levelIDC: null,
+        profileIDC: null,
+        reason: 'decode-error',
+        supported: false,
+        vector,
+        totalDecodedByteLength: null
     };
 }
 
@@ -37,7 +95,7 @@ describe('exact HEVC capability vectors and protocol', () => {
         const firstRequests = createHEVCExactCapabilityWorkerQualificationRequests(loadMain10UltraHDQualificationBitstream());
         const secondRequests = createHEVCExactCapabilityWorkerQualificationRequests(loadMain10UltraHDQualificationBitstream());
 
-        expect(firstRequests).toHaveLength(3);
+        expect(firstRequests).toHaveLength(HEVC_EXACT_CAPABILITY_VECTORS.length);
         for (let requestIndex = 0; requestIndex < firstRequests.length; requestIndex += 1) {
             const request = firstRequests[requestIndex];
             const definition = HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[request.vector];
@@ -54,6 +112,16 @@ describe('exact HEVC capability vectors and protocol', () => {
         }
     });
 
+    it('counts a byte per sample at 8 bits and two at 10 in a decoded frame', () => {
+        expect(HEVC_EXACT_CAPABILITY_VECTORS.map((vector: HEVCExactCapabilityVector): number => (
+            getHEVCExactCapabilityDecodedFrameByteLength(HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[vector])
+        ))).toEqual([
+            MAIN_1080P_DECODED_FRAME_BYTE_LENGTH,
+            MAIN10_1080P_DECODED_FRAME_BYTE_LENGTH,
+            MAIN10_4K_DECODED_FRAME_BYTE_LENGTH
+        ]);
+    });
+
     it('accepts only the complete exact bounded worker request', () => {
         const request = createRequest();
         expect(isHEVCExactCapabilityWorkerRequest(request)).toBe(true);
@@ -68,7 +136,7 @@ describe('exact HEVC capability vectors and protocol', () => {
         expect(isHEVCExactCapabilityWorkerRequest({
             ...request,
             qualifications: [
-                { ...request.qualifications[0], codedWidth: 1_280 },
+                { ...request.qualifications[0], codedWidth: MISMATCHED_CODED_WIDTH },
                 request.qualifications[1],
                 request.qualifications[2]
             ]
@@ -79,7 +147,7 @@ describe('exact HEVC capability vectors and protocol', () => {
                 {
                     ...request.qualifications[0],
                     qualificationAccessUnits: [
-                        new ArrayBuffer(1),
+                        new ArrayBuffer(TRUNCATED_ACCESS_UNIT_BYTE_LENGTH),
                         ...request.qualifications[0].qualificationAccessUnits.slice(1)
                     ]
                 },
@@ -101,7 +169,7 @@ describe('exact HEVC capability vectors and protocol', () => {
         const request = createRequest();
         expect(isHEVCExactCapabilityWorkerRequest({
             ...request,
-            decoderWASM: { bytes: new ArrayBuffer(8), kind: 'bytes' }
+            decoderWASM: { bytes: new ArrayBuffer(PRELOADED_DECODER_WASM_BYTE_LENGTH), kind: 'bytes' }
         })).toBe(true);
         expect(isHEVCExactCapabilityWorkerRequest({
             ...request,
@@ -109,11 +177,11 @@ describe('exact HEVC capability vectors and protocol', () => {
         })).toBe(false);
         expect(isHEVCExactCapabilityWorkerRequest({
             ...request,
-            decoderWASM: { bytes: new Uint8Array(8), kind: 'bytes' }
+            decoderWASM: { bytes: new Uint8Array(PRELOADED_DECODER_WASM_BYTE_LENGTH), kind: 'bytes' }
         })).toBe(false);
         expect(isHEVCExactCapabilityWorkerRequest({
             ...request,
-            decoderWASM: { kind: 'url', url: 'file:///hevc-decode.wasm' }
+            decoderWASM: { kind: 'url', url: FILE_DECODER_WASM_URL }
         })).toBe(false);
         expect(isHEVCExactCapabilityWorkerRequest({
             ...request,
@@ -125,54 +193,9 @@ describe('exact HEVC capability vectors and protocol', () => {
         const validResponse: HEVCExactCapabilityWorkerResponse = {
             requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
             results: [
-                {
-                    bitDepth: 8,
-                    chromaHeight: 540,
-                    chromaWidth: 960,
-                    codedHeight: 1_080,
-                    codedWidth: 1_920,
-                    decodedFrameFingerprints: HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS['main-1080p'].decodedFrameFingerprints,
-                    decodedFrameCount: 8,
-                    decodedByteLength: 6_220_800,
-                    levelIDC: 120,
-                    profileIDC: 1,
-                    reason: 'decode-output-verified',
-                    supported: true,
-                    vector: 'main-1080p',
-                    totalDecodedByteLength: 49_766_400
-                },
-                {
-                    bitDepth: null,
-                    chromaHeight: null,
-                    chromaWidth: null,
-                    codedHeight: null,
-                    codedWidth: null,
-                    decodedFrameFingerprints: null,
-                    decodedFrameCount: null,
-                    decodedByteLength: null,
-                    levelIDC: null,
-                    profileIDC: null,
-                    reason: 'decode-error',
-                    supported: false,
-                    vector: 'main10-1080p',
-                    totalDecodedByteLength: null
-                },
-                {
-                    bitDepth: null,
-                    chromaHeight: null,
-                    chromaWidth: null,
-                    codedHeight: null,
-                    codedWidth: null,
-                    decodedFrameFingerprints: null,
-                    decodedFrameCount: null,
-                    decodedByteLength: null,
-                    levelIDC: null,
-                    profileIDC: null,
-                    reason: 'decode-error',
-                    supported: false,
-                    vector: 'main10-4k',
-                    totalDecodedByteLength: null
-                }
+                createVerifiedResult('main-1080p', MAIN_1080P_DECODED_FRAME_BYTE_LENGTH),
+                createDecodeErrorResult('main10-1080p'),
+                createDecodeErrorResult('main10-4k')
             ],
             type: 'result'
         };

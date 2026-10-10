@@ -1,11 +1,10 @@
 // @vitest-environment node
 
-import { NODE_MODULES_ROOT, QUALIFICATION_VECTORS_DIRECTORY } from '../../helpers/enginePaths';
+import { QUALIFICATION_VECTORS_DIRECTORY, WASM_OUTPUT_DIRECTORY } from '../../helpers/enginePaths';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, resolve } from 'node:path';
-import { runInThisContext } from 'node:vm';
+import { resolve } from 'node:path';
 
 import { EncodedPacket, type VideoCodec, type VideoSample } from 'mediabunny';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -41,15 +40,14 @@ import {
     type TransferableRawVideoFrame
 } from 'webgpu-player/video/RawVideoFrameCopy';
 
-const HEVC_GLUE_PATH = resolve(
-    NODE_MODULES_ROOT,
-    '@hevcjs/core/dist/wasm/hevc-decode.js'
-);
-const HEVC_WASM_PATH = resolve(
-    NODE_MODULES_ROOT,
-    '@hevcjs/core/dist/wasm/hevc-decode.wasm'
-);
+const HEVC_DECODER_DIRECTORY = resolve(WASM_OUTPUT_DIRECTORY, 'ffmpeg-hevc');
+const HEVC_GLUE_PATH = resolve(HEVC_DECODER_DIRECTORY, 'ffmpeg-hevc.js');
+const HEVC_WASM_PATH = resolve(HEVC_DECODER_DIRECTORY, 'ffmpeg-hevc.wasm');
+// What the pinned native FFmpeg writes for the Main 10 key frame with -f rawvideo -pix_fmt yuv420p10le
 const EXPECTED_PLANAR_FRAME_SHA256 = 'fa0c4d9ba5b220ecfc31556f485c6b6a82c2f9ba961efd9b294c141d9a93c217';
+// The key frame's packet timing, which its sample carries
+const KEY_FRAME_TIMESTAMP_SECONDS = 0;
+const KEY_FRAME_DURATION_SECONDS = 1;
 
 // One x265 Main10 640x360 IDR access unit with VPS, SPS, and PPS NAL units
 const MAIN10_ANNEX_B_KEY_FRAME = Buffer.from(
@@ -61,7 +59,7 @@ const MAIN10_ANNEX_B_KEY_FRAME = Buffer.from(
 // $params = 'bframes=0:repeat-headers=1:annexb=1:info=0:pools=1:frame-threads=1:wpp=0'
 // ffmpeg -f lavfi -i "testsrc2=s=76x58:r=25" -frames:v 1 -pix_fmt yuv420p -c:v libx265 -profile:v main -preset ultrafast -x265-params $params -f hevc -y main-76x58.hevc
 // and the same with -pix_fmt yuv420p10le -profile:v main10 for the Main 10 frame.
-// x265 codes 80x64 and crops it to 76x58, so hevc.js returns rows 80 and 40 samples apart, and the SPS describes no color
+// x265 codes 80x64 and crops it to 76x58, so the decoder returns rows 80 and 40 samples apart, and the SPS describes no color
 const CROPPED_MAIN_ANNEX_B_KEY_FRAME = Buffer.from(
     'AAAAAUABDAH//wFgAAADAJAAAAMAAAMAHroCQAAAAAFCAQEBYAAAAwCQAAADAAADAB6gKIEHcmW6SkwvAWgIAAADAAgAAAMAyEAAAAABRAHAc8CJAAABKAGsdqF9SOKa31ieFsSX+jMb9L6Yaf+FNRnLhpVqddhliRpSLAF3JnCAS1wlB3wgnLPKTe0oSJTFyPkMojc9Ulgu7pRWK/Fi/Z46gWZ//3luIlsiUG1mP4+oismGm6RXlHQSqoO0Z1+4+n3xmEQwvbvJiDqn/+35w7/MHPSAuTaytlmTm9rPpmfJYCWAdjgkbDmBE5THDVaXVgXDxa7JCgjGAM702y2BQVJOzE0m0T+POj/gciW+MR0DAuif3e0Yq9AroQpzqneEO422H/eb8XKonCOwHjsqeGGXAyCtpNbrC30R9/k034gtgtvCkEixs95xtWYXKY/39ieVmoebc7pm5HsyxKFcTulxKMjwmX9qVOgh3qAIQ9coVrLcq0VlOEXDvvWRXzAYx5CHjKEqA2avBwqJUqmvAwQZAJxioqxim5mNv4jepOCZmKnqnrFipxkS+B908LwMi6USOIKaaQhiPJl2aBK1O++Rz652T6U5kBB1YVciapscYs2/7pWhYNJlgOaXBFrmD28PL8EFtaoDbi6MwOFr9NewBitQ2/Rq7mAw+p/L/MOxSy7Jw0zzD2NbrhkIXJHRealIRFXR/yTuarCLLLAGxCRnT7eLAuOllsKJUxPuVJK6Oyyakj9FIAVjuoRT+xrkwshbf6KbXPetuBBOwxo0FCI7fJFRCP6VVqHN+0SDOcoqPFdx3M50TbFITKorq/rOeJurmDEgSnxP8C+4eoWlGMW+3QzXXldbRimYa1RueyUBO36fyHv1NfVAXGSIDzozvSKG//rL5MXgfb3Fi3eHREhdAlVOLCLNjMgf92NqET9eY6QgQdAJpsLar3N+Tcx7qMZQW2g5v2dcGmWFdur/ZTMCq3P0iu6JI4JjTZijTbTIcJ6fr0qMqPwRVsDKbfbrUhfQwsZliF+cOqGM6AjyoFVwIcbnZv47dIqD4DPBOnVqMGH8mouBObQTLGyC8xIrVtBrNvAqsjP/iSwNvbIHhDRfMaoxah8ViVIG9iO0OpvbBkhewQ/xZrTbP9FRQj85EeNeHxiltK12zTplCQ9d7jeHYwZalseoD9jRGS2wHwusyn0dKSOCfZkWaAxUOA87MEQWNToc7kSLKkc9kB+RhXeAoXevj4mHU37ysetlt1Ctyi6918JMTwBcreCAsbw=',
     'base64'
@@ -93,13 +91,8 @@ const FIRST_ACCESS_UNIT_COUNT = 1;
 
 type EmscriptenModuleFactory = (options: {
     locateFile?: (path: string, scriptDirectory: string) => string
+    wasmBinary?: ArrayBuffer
 }) => Promise<unknown>;
-
-type GlueLoader = (
-    requireFunction: ReturnType<typeof createRequire>,
-    filename: string,
-    directory: string
-) => EmscriptenModuleFactory;
 
 type MutableDecoderContract = {
     codec: VideoCodec
@@ -221,19 +214,9 @@ class RecordingVideoFrame {
     }
 }
 
+/** Loads the ffmpeg-hevc glue, a classic script that also exports its module factory to CommonJS. */
 function loadActualModuleFactory(): EmscriptenModuleFactory {
-    const glueSource = readFileSync(HEVC_GLUE_PATH, 'utf8');
-    const wrappedSource = [
-        '(function(require, __filename, __dirname) {',
-        glueSource,
-        'return HEVCDecoderModule;',
-        '})'
-    ].join('\n');
-    // eslint-disable-next-line sonarjs/code-eval -- Executes pinned local package glue in this Node-only test
-    const loadGlue = runInThisContext(wrappedSource, {
-        filename: HEVC_GLUE_PATH
-    }) as GlueLoader;
-    return loadGlue(createRequire(import.meta.url), HEVC_GLUE_PATH, dirname(HEVC_GLUE_PATH));
+    return createRequire(import.meta.url)(HEVC_GLUE_PATH) as EmscriptenModuleFactory;
 }
 
 function createDependencies(): HEVCSoftwareVideoDecoderDependencies {
@@ -444,7 +427,7 @@ afterEach(() => {
 });
 
 describe('HEVC software decoder integration', () => {
-    it('decodes a real Main10 access unit through the copied JS/WASM ABI', async () => {
+    it('decodes a real Main 10 access unit through the ffmpeg-hevc kit', async () => {
         vi.stubGlobal('HEVCDecoderModule', actualModuleFactory);
         const samples: VideoSample[] = [];
         const decoder = new HEVCSoftwareVideoDecoder(createDependencies());
@@ -457,8 +440,8 @@ describe('HEVC software decoder integration', () => {
             decoder.decode(new EncodedPacket(
                 new Uint8Array(MAIN10_ANNEX_B_KEY_FRAME),
                 'key',
-                0,
-                1,
+                KEY_FRAME_TIMESTAMP_SECONDS,
+                KEY_FRAME_DURATION_SECONDS,
                 0
             ));
             decoder.flush();
@@ -466,11 +449,11 @@ describe('HEVC software decoder integration', () => {
             expect(samples).toHaveLength(1);
             const sample = samples[0];
             expect(sample).toMatchObject({
-                codedHeight: 360,
-                codedWidth: 640,
-                duration: 1,
+                codedHeight: MAIN10_640X360_CODED_HEIGHT,
+                codedWidth: MAIN10_640X360_CODED_WIDTH,
+                duration: KEY_FRAME_DURATION_SECONDS,
                 format: 'I420P10',
-                timestamp: 0
+                timestamp: KEY_FRAME_TIMESTAMP_SECONDS
             });
             const planarFrame = new Uint8Array(sample.allocationSize());
             await sample.copyTo(planarFrame);

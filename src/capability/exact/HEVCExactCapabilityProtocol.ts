@@ -124,6 +124,14 @@ export const HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS: Readonly<Record<
     })
 });
 
+/** Returns the byte length of one decoded frame of a vector as compact planes: bytes at 8 bits and 16-bit words at 10. */
+export function getHEVCExactCapabilityDecodedFrameByteLength(definition: HEVCExactCapabilityVectorDefinition): number {
+    const bytesPerSample = definition.bitDepth === 8 ? Uint8Array.BYTES_PER_ELEMENT : Uint16Array.BYTES_PER_ELEMENT;
+    const chromaWidth = Math.ceil(definition.codedWidth / 2);
+    const chromaHeight = Math.ceil(definition.codedHeight / 2);
+    return ((definition.codedWidth * definition.codedHeight) + (2 * chromaWidth * chromaHeight)) * bytesPerSample;
+}
+
 export type HEVCExactCapabilityWorkerQualificationRequest = Readonly<{
     accessUnit: ArrayBuffer
     bitDepth: 8 | 10
@@ -138,7 +146,7 @@ export type HEVCExactCapabilityWorkerQualificationRequest = Readonly<{
 
 export type HEVCExactCapabilityWorkerRequest = Readonly<{
     decoderGlueURL: string
-    // hevc-decode.wasm: bytes the page already fetched, or the URL the worker fetches
+    // ffmpeg-hevc.wasm: bytes the page already fetched, or the URL the worker fetches
     decoderWASM: DecoderWASMSource
     requestID: typeof HEVC_EXACT_CAPABILITY_REQUEST_ID
     qualifications: readonly HEVCExactCapabilityWorkerQualificationRequest[]
@@ -282,14 +290,8 @@ export function isHEVCExactCapabilityWorkerRequest(value: unknown): value is HEV
             return false;
         }
         totalInputByteLength += qualificationInputByteLength;
-        const chromaWidth = Math.ceil(definition.codedWidth / 2);
-        const chromaHeight = Math.ceil(definition.codedHeight / 2);
-        const decodedFrameByteLength = (
-            (definition.codedWidth * definition.codedHeight)
-            + (2 * chromaWidth * chromaHeight)
-        ) * Uint16Array.BYTES_PER_ELEMENT;
         totalInputByteLength += qualificationRequest.accessUnit.byteLength;
-        totalDecodedByteLength += decodedFrameByteLength * definition.qualificationFrameCount;
+        totalDecodedByteLength += getHEVCExactCapabilityDecodedFrameByteLength(definition) * definition.qualificationFrameCount;
         if (
             !Number.isSafeInteger(totalInputByteLength)
             || totalInputByteLength > HEVC_EXACT_CAPABILITY_MAXIMUM_TOTAL_INPUT_BYTE_LENGTH

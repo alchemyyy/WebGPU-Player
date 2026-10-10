@@ -1,11 +1,10 @@
 // @vitest-environment node
 
-import { NODE_MODULES_ROOT, QUALIFICATION_VECTORS_DIRECTORY } from '../helpers/enginePaths';
+import { QUALIFICATION_VECTORS_DIRECTORY, WASM_OUTPUT_DIRECTORY } from '../helpers/enginePaths';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, resolve } from 'node:path';
-import { runInThisContext } from 'node:vm';
+import { resolve } from 'node:path';
 
 import {
     ALL_FORMATS,
@@ -38,6 +37,7 @@ import {
     MAX_DECODED_RAW_FRAME_CREDITS,
     type DecodeWorkerResponse
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
+import { parseHEVCNALUnits, type HEVCNALUnit } from 'webgpu-player/video/dolby-vision/DolbyVisionHEVCSplitter';
 import type { TransferringVideoFrameBufferInit } from 'webgpu-player/video/decoders/HEVCFrameOutput';
 import type { TransferableRawVideoFrame } from 'webgpu-player/video/RawVideoFrameCopy';
 
@@ -50,9 +50,11 @@ import {
     type DecodeWorkerFrameResponse,
     type FakeWorkerScope
 } from '../helpers/decodeWorkerHarness';
+import { encodeAnnexBNALUnits } from '../helpers/hevcNALUnits';
 
-const HEVC_GLUE_PATH = resolve(NODE_MODULES_ROOT, '@hevcjs/core/dist/wasm/hevc-decode.js');
-const HEVC_WASM_BYTES = Uint8Array.from(readFileSync(resolve(NODE_MODULES_ROOT, '@hevcjs/core/dist/wasm/hevc-decode.wasm'))).buffer;
+const HEVC_DECODER_DIRECTORY = resolve(WASM_OUTPUT_DIRECTORY, 'ffmpeg-hevc');
+const HEVC_GLUE_PATH = resolve(HEVC_DECODER_DIRECTORY, 'ffmpeg-hevc.js');
+const HEVC_WASM_BYTES = Uint8Array.from(readFileSync(resolve(HEVC_DECODER_DIRECTORY, 'ffmpeg-hevc.wasm'))).buffer;
 const MAIN10_4K_QUALIFICATION_BITSTREAM = Uint8Array.from(readFileSync(resolve(
     QUALIFICATION_VECTORS_DIRECTORY,
     'hevc', 'main10-4k-complex.hevc'
@@ -62,14 +64,14 @@ const MATROSKA_FILE_NAME = 'hevc-bundled.mkv';
 const FRAME_DURATION_SECONDS = 1 / 25;
 const MICROSECONDS_PER_SECOND = 1_000_000;
 const HEVC_IDR_N_LP_NAL_UNIT_TYPE = 20;
+const HEVC_MAXIMUM_VCL_NAL_UNIT_TYPE = 31;
+const HEVC_RASL_N_NAL_UNIT_TYPE = 8;
+// The first byte of a NAL unit header keeps its forbidden bit and the top bit of its layer ID around the six bits of its type
+const NAL_UNIT_HEADER_TYPE_PRESERVED_BITS = 0x81;
+// The trailing picture after the first IDR picture of a 1080p vector, whose next access unit is another IDR picture, so no other frame references it
+const LEADING_RASL_FRAME_INDEX = 1;
 
 type EmscriptenModuleFactory = (options: Record<string, unknown>) => Promise<unknown>;
-
-type GlueLoader = (
-    requireFunction: ReturnType<typeof createRequire>,
-    filename: string,
-    directory: string
-) => EmscriptenModuleFactory;
 
 /** What a VideoFrame reports, and the digest of its planes as compact rows of bytes. */
 type RecordedVideoFrame = {
@@ -136,20 +138,12 @@ class RecordingVideoFrame {
     }
 }
 
+/** Loads the built kit's glue, which exports its module factory to CommonJS when it runs in Node. */
 function loadActualModuleFactory(): EmscriptenModuleFactory {
-    const glueSource = readFileSync(HEVC_GLUE_PATH, 'utf8');
-    const wrappedSource = [
-        '(function(require, __filename, __dirname) {',
-        glueSource,
-        'return HEVCDecoderModule;',
-        '})'
-    ].join('\n');
-    // eslint-disable-next-line sonarjs/code-eval -- Executes pinned local package glue in this Node-only test
-    const loadGlue = runInThisContext(wrappedSource, { filename: HEVC_GLUE_PATH }) as GlueLoader;
-    return loadGlue(createRequire(import.meta.url), HEVC_GLUE_PATH, dirname(HEVC_GLUE_PATH));
+    return createRequire(import.meta.url)(HEVC_GLUE_PATH) as EmscriptenModuleFactory;
 }
 
-/** Gives the worker the bundled decoder's glue, which compiles the package's binary instead of fetching the served one. */
+/** Gives the worker the bundled decoder's glue, which compiles the kit's binary instead of fetching the served one. */
 function stubBundledDecoderGlue(): void {
     const moduleFactory = loadActualModuleFactory();
     vi.stubGlobal('HEVCDecoderModule', (options: Record<string, unknown>): Promise<unknown> => (
@@ -167,15 +161,35 @@ function getQualificationAccessUnits(vector: HEVCExactCapabilityVector): Uint8Ar
     return request.qualificationAccessUnits.map((accessUnit: ArrayBuffer): Uint8Array => new Uint8Array(accessUnit));
 }
 
-/** Muxes a qualification vector's access units as a Matroska HEVC track, its IDR access units as key packets. */
-async function createQualificationMatroska(vector: HEVCExactCapabilityVector): Promise<Uint8Array> {
+/**
+ * Relabels an Annex B access unit's pictures as RASL pictures, which a decode that starts at the random-access point before them skips.
+ * Only the NAL unit types change, since the decoder drops a leading RASL access unit before FFmpeg parses its slices.
+ */
+function relabelAsRASLAccessUnit(accessUnit: Uint8Array): Uint8Array {
+    return encodeAnnexBNALUnits(parseHEVCNALUnits(accessUnit, { kind: 'annex-b' }).map((nalUnit: HEVCNALUnit): Uint8Array => {
+        const data = nalUnit.data.slice();
+        if (nalUnit.type <= HEVC_MAXIMUM_VCL_NAL_UNIT_TYPE) {
+            data[0] = (data[0] & NAL_UNIT_HEADER_TYPE_PRESERVED_BITS) | (HEVC_RASL_N_NAL_UNIT_TYPE << 1);
+        }
+        return data;
+    }));
+}
+
+function getFrameMediaTimeMicroseconds(frameIndex: number): number {
+    return Math.round(frameIndex * FRAME_DURATION_SECONDS * MICROSECONDS_PER_SECOND);
+}
+
+/** Muxes a qualification vector's access units, or replacements for them, as a Matroska HEVC track whose IDR access units are key packets. */
+async function createQualificationMatroska(
+    vector: HEVCExactCapabilityVector,
+    accessUnits: readonly Uint8Array[] = getQualificationAccessUnits(vector)
+): Promise<Uint8Array> {
     const definition = HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS[vector];
     const target = new BufferTarget();
     const output = new Output({ format: new MkvOutputFormat(), target });
     const source = new EncodedVideoPacketSource('hevc');
     output.addVideoTrack(source);
     await output.start();
-    const accessUnits = getQualificationAccessUnits(vector);
     for (let frameIndex = 0; frameIndex < accessUnits.length; frameIndex += 1) {
         const packetType = definition.qualificationVCLNALUnitTypes[frameIndex] === HEVC_IDR_N_LP_NAL_UNIT_TYPE ? 'key' : 'delta';
         await source.add(
@@ -227,6 +241,12 @@ async function decodeMatroskaSamples(matroska: Uint8Array): Promise<VideoSample[
     return samples;
 }
 
+function closeSamples(samples: readonly VideoSample[]): void {
+    for (const sample of samples) {
+        sample.close();
+    }
+}
+
 function getByteDigest(data: ArrayBuffer): string {
     return createHash('sha256').update(new Uint8Array(data)).digest('hex');
 }
@@ -258,7 +278,7 @@ afterEach(() => {
 });
 
 describe('CustomDecode.worker bundled HEVC route', () => {
-    it('transfers each frame the decoder wrote at drain time as it is, reusing recycled buffers', async () => {
+    it('transfers each frame as the decoder wrote it out of WASM memory, reusing recycled buffers', async () => {
         const matroska = await createQualificationMatroska('main10-1080p');
         const { copyVideoFrameToRawPlanes, createVideoSampleRawFrameSource, PreparedRawVideoFrameSource } = await import(
             'webgpu-player/video/RawVideoFrameCopy'
@@ -290,9 +310,10 @@ describe('CustomDecode.worker bundled HEVC route', () => {
             expect(postedData.byteLength).toBe(expectedData.byteLength);
             expect(getByteDigest(postedData)).toBe(getByteDigest(expectedData));
         }
+        closeSamples(samples);
     });
 
-    it('posts each frame as the VideoFrame VideoSample.toVideoFrame made, built at drain time', async () => {
+    it('posts each frame as the VideoFrame VideoSample.toVideoFrame made, built while its planes were in WASM memory', async () => {
         const matroska = await createQualificationMatroska('main-1080p');
         const workerScope = await startDecodeWorker(new Map([ [ MATROSKA_FILE_NAME, matroska ] ]));
         stubBundledDecoderGlue();
@@ -312,7 +333,36 @@ describe('CustomDecode.worker bundled HEVC route', () => {
             }
             const expectedFrame = samples[frameIndex].toVideoFrame() as unknown as RecordingVideoFrame;
             expect((frameResponse.frame as unknown as RecordingVideoFrame).recorded).toEqual(expectedFrame.recorded);
-            expect(frameResponse.mediaTimeMicroseconds).toBe(Math.round(frameIndex * FRAME_DURATION_SECONDS * MICROSECONDS_PER_SECOND));
+            expect(frameResponse.mediaTimeMicroseconds).toBe(getFrameMediaTimeMicroseconds(frameIndex));
         });
+        closeSamples(samples);
+    });
+
+    it('reports a dropped leading RASL packet, so the run ends without metadata waiting on its frame', async () => {
+        const definition = HEVC_EXACT_CAPABILITY_VECTOR_DEFINITIONS['main-1080p'];
+        const accessUnits = getQualificationAccessUnits('main-1080p');
+        accessUnits[LEADING_RASL_FRAME_INDEX] = relabelAsRASLAccessUnit(accessUnits[LEADING_RASL_FRAME_INDEX]);
+        const matroska = await createQualificationMatroska('main-1080p', accessUnits);
+        const workerScope = await startDecodeWorker(new Map([ [ MATROSKA_FILE_NAME, matroska ] ]));
+        stubBundledDecoderGlue();
+        vi.stubGlobal('VideoFrame', RecordingVideoFrame);
+
+        // The packet's dynamic HDR entry, which no frame takes, would end the run with an error unless the drop gives it back
+        const responses = await decodeToEnd(workerScope, createWorkerStartRequest(MATROSKA_FILE_NAME, {
+            videoDecoderBackend: 'bundled-hevc'
+        }));
+
+        // Every frame but the dropped one arrives, at its own time
+        const expectedMediaTimesMicroseconds: number[] = [];
+        for (let frameIndex = 0; frameIndex < definition.qualificationFrameCount; frameIndex += 1) {
+            if (frameIndex === LEADING_RASL_FRAME_INDEX) {
+                continue;
+            }
+            expectedMediaTimesMicroseconds.push(getFrameMediaTimeMicroseconds(frameIndex));
+        }
+        const postedMediaTimesMicroseconds = getFrameResponses(responses).map(
+            (frameResponse: DecodeWorkerFrameResponse): number => frameResponse.mediaTimeMicroseconds
+        );
+        expect(postedMediaTimesMicroseconds).toEqual(expectedMediaTimesMicroseconds);
     });
 });

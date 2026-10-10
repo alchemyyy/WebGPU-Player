@@ -1,5 +1,7 @@
 // @vitest-environment node
 
+import { basename } from 'node:path';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -25,6 +27,14 @@ const AUDIO_DECODER_WASM_ASSETS = [ DTS_DECODER_WASM_ASSET, EAC3_DECODER_WASM_AS
 // The output stage is the engine's own code, so its folder carries the engine's license
 const AUDIO_OUTPUT_STAGE_LICENSE_ASSET = 'audio-output-stage/LICENSE.txt';
 const ENGINE_LICENSE_FILE_NAME = 'LICENSE';
+const HEVC_DECODER_GLUE_ASSET = 'ffmpeg-hevc/ffmpeg-hevc.js' satisfies EngineLibraryPath;
+const HEVC_DECODER_WASM_ASSET = 'ffmpeg-hevc/ffmpeg-hevc.wasm' satisfies EngineLibraryPath;
+// The HEVC decoder is FFmpeg under the LGPL, so its folder carries FFmpeg's license, and the bridge's source under the engine's license
+const HEVC_DECODER_FFMPEG_LICENSE_ASSET = 'ffmpeg-hevc/LICENSE.ffmpeg.txt';
+const HEVC_DECODER_BRIDGE_SOURCE_ASSET = 'ffmpeg-hevc/ffmpeg_hevc_bridge.c';
+const HEVC_DECODER_BRIDGE_LICENSE_ASSET = 'ffmpeg-hevc/LICENSE.bridge.txt';
+const FFMPEG_LICENSE_FILE_NAME = 'FFmpeg-COPYING.LGPLv2.1';
+const HEVC_DECODER_BRIDGE_SOURCE_FILE_NAME = 'ffmpeg_hevc_bridge.c';
 
 /** Resolves a path as the worker at the given asset path would, from its own URL. */
 function resolveInWorker(workerPath: EngineWorkerPath, path: EngineLibraryPath): string {
@@ -74,11 +84,27 @@ describe('engine asset manifest', () => {
         const license = assets.find(([ destination ]) => destination === AUDIO_OUTPUT_STAGE_LICENSE_ASSET);
         expect(license?.[1]).toMatch(new RegExp(`[\\\\/]${ENGINE_LICENSE_FILE_NAME}$`, 'u'));
     });
+
+    it('serves the HEVC decoder with FFmpeg\'s license and its bridge\'s source and license beside it', async () => {
+        const { getLibraryAssets } = await loadLibraryAssets();
+        const assets = getLibraryAssets();
+        // The file names of the sources the build copies to a path, of which a served path has one
+        const getSourceFileNames = (path: string): string[] => assets
+            .filter(([ destination ]) => destination === path)
+            .map((asset: readonly [ string, string ]): string => basename(asset[1]));
+
+        for (const path of [ HEVC_DECODER_GLUE_ASSET, HEVC_DECODER_WASM_ASSET ]) {
+            expect(getSourceFileNames(path)).toEqual([ basename(path) ]);
+        }
+        expect(getSourceFileNames(HEVC_DECODER_FFMPEG_LICENSE_ASSET)).toEqual([ FFMPEG_LICENSE_FILE_NAME ]);
+        expect(getSourceFileNames(HEVC_DECODER_BRIDGE_SOURCE_ASSET)).toEqual([ HEVC_DECODER_BRIDGE_SOURCE_FILE_NAME ]);
+        expect(getSourceFileNames(HEVC_DECODER_BRIDGE_LICENSE_ASSET)).toEqual([ ENGINE_LICENSE_FILE_NAME ]);
+    });
 });
 
 describe('engine asset URLs', () => {
     it('returns the bare path without a location', () => {
-        expect(resolveEngineAssetURL('hevcjs/hevc-decode.js')).toBe('hevcjs/hevc-decode.js');
+        expect(resolveEngineAssetURL(HEVC_DECODER_GLUE_ASSET)).toBe(HEVC_DECODER_GLUE_ASSET);
     });
 
     it('resolves against libraries/ beside the page by default', () => {
@@ -102,8 +128,8 @@ describe('engine asset URLs', () => {
         });
         vi.stubGlobal('importScripts', () => undefined);
         configureEngineAssets({ baseURL: 'https://ignored.example.test/', cacheKey: 'ignored' });
-        expect(resolveEngineAssetURL('hevcjs/hevc-decode.wasm')).toBe(
-            'https://example.test/web/libraries/hevcjs/hevc-decode.wasm?v=build-1'
+        expect(resolveEngineAssetURL(HEVC_DECODER_WASM_ASSET)).toBe(
+            `${ASSET_BASE_URL}${HEVC_DECODER_WASM_ASSET}?v=${CACHE_KEY}`
         );
     });
 

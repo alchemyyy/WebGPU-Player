@@ -241,6 +241,7 @@ They and both AV1 Dolby Vision generators take an option for each tool they run:
 | `src/capability/vectors/test/truehd/` | A Matroska remux of one generated TrueHD stream (`PROVENANCE.txt`) |
 | `src/capability/vectors/test/dolby-vision-rpu/` | RPU payloads, copied unmodified from dovi_tool `assets/tests` (MIT), for the RPU parser, color transform, and Dolby Vision integration tests and the AV1 Dolby Vision generators |
 | `src/capability/vectors/test/hdr10plus-tool/` | x265's `--dhdr10-opt` HDR10+ profile A sample and the metadata hdr10plus_tool extracts from it, copied unmodified from hdr10plus_tool `assets/hevc_tests` (MIT, `PROVENANCE.txt` pins the commit and SHA-256s), for the HDR10+ parser and carry tests |
+| `src/capability/vectors/test/hevc-tiles/` | The JCT-VC HEVC_v1 conformance stream `TILES_B_Cisco_1`, copied unmodified: HEVC Main at 1920x1080 with 5x5 non-uniform tiles over 100 frames, which `test/video/decoders/HEVCStreamDecodeIntegration.test.ts` decodes to the suite's decoded-YUV MD5 |
 
 ## Tests
 

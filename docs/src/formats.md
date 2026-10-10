@@ -28,7 +28,7 @@ The rows come from `capability/CustomContainerCodecSupport.ts`.
 | Codec | Plays | Decoder | Does not play |
 | --- | --- | --- | --- |
 | H.264 | Constrained Baseline, Baseline, Main, and High, at 8 bits 4:2:0 | WebCodecs | High 10, High 4:2:2, High 4:4:4, and every other profile |
-| HEVC | Main and Main 10: SDR, HDR10, HDR10+, HLG, and Dolby Vision; the 9 range extensions, 4:2:0, 4:2:2, and 4:4:4 at 8, 10, and 12 bits | WebCodecs, or hevc.js for Main and Main 10 | 14 and 16 bits, monochrome, Screen Content Coding, High Throughput, Main Still Picture, and the named Intra profiles |
+| HEVC | Main and Main 10: SDR, HDR10, HDR10+, HLG, and Dolby Vision; the 9 range extensions, 4:2:0, 4:2:2, and 4:4:4 at 8, 10, and 12 bits | WebCodecs, or FFmpeg for Main and Main 10 | 14 and 16 bits, monochrome, Screen Content Coding, High Throughput, Main Still Picture, and the named Intra profiles |
 | VP8 | Profile 0 | WebCodecs | |
 | VP9 | Profile 0 at 8 bits: SDR; Profile 2 at 10 bits: SDR, HDR10, HDR10+, and HLG | WebCodecs; Profile 2 in software | Profiles 1 and 3 (4:2:2 and 4:4:4) |
 | AV1 | Main at 8 bits: SDR; Main at 10 bits: SDR, HDR10, HDR10+, HLG, and Dolby Vision Profile 10 | WebCodecs; 10 bits in software | The High and Professional profiles |
@@ -37,7 +37,7 @@ The rows come from `capability/CustomContainerCodecSupport.ts`.
 | JPEG 2000 | 8 bits, in MOV and MJ2 | OpenJPEG | Other bit depths |
 
 Every other video codec is not supported, among them MPEG-4 Part 2 (DivX, Xvid), H.263, MS-MPEG4, MPEG-1, Theora, VVC, ProRes, DNxHD, and Motion JPEG.
-WebCodecs is the browser's own decoder; hevc.js, FFmpeg, and OpenJPEG run in the engine as WebAssembly.
+WebCodecs is the browser's own decoder; FFmpeg and OpenJPEG run in the engine as WebAssembly.
 
 | Property | Plays | Does not play |
 | --- | --- | --- |

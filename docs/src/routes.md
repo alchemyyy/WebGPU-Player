@@ -35,7 +35,7 @@ An ineligible result carries its reason, and the host falls back.
 ## Probes and caching
 
 - Main thread: WebCodecs configuration and decoded-output probes, raw `copyTo` fingerprints, the per-profile H.264 probe, and the MSE AC-3/E-AC-3 probe.
-- Dedicated workers: bundled HEVC (`@hevcjs/core`), DTS (libdcadec), TrueHD/MLP (FFmpeg), JPEG 2000 (OpenJPEG), and MPEG-2/VC-1 (FFmpeg).
+- Dedicated workers: bundled HEVC (FFmpeg), DTS (libdcadec), TrueHD/MLP (FFmpeg), JPEG 2000 (OpenJPEG), and MPEG-2/VC-1 (FFmpeg).
 - GPU: presentation authorization reads back renders of the production shaders.
   Results are cached per `GPUDevice`, canvas format, and shader signature, and dropped on device loss.
 - `selectCustomDecodeProbes(item)` picks the probes an item needs.
