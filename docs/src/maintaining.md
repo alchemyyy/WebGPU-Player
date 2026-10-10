@@ -7,9 +7,10 @@ It is built with [mdBook](https://github.com/rust-lang/mdBook) 0.5.
 
 1. Install mdBook once: `cargo install mdbook --version 0.5.4 --locked`.
 2. From the engine root, run `mdbook serve docs --open` while editing; it rebuilds on every save.
-3. Before committing, run `mdbook build docs`.
-   It fails on a broken `SUMMARY.md`, and it rewrites `docs/book/`, which is tracked.
-   Commit the rebuilt book with the chapters it was built from.
+3. Before committing, run `mdbook build docs`; it fails on a broken `SUMMARY.md`.
+   It writes the book to `docs/book/`, which is not tracked.
+
+A push to `master` that changes `docs/` publishes the book to <https://alchemyyy.github.io/WebGPU-Player/>, through `.github/workflows/docs.yml`; its `MDBOOK_VERSION` is the version in step 1.
 
 `docs/book.toml` holds the configuration, `docs/theme/` the stylesheets, and `docs/src/SUMMARY.md` the table of contents.
 The Jellyfin plugin's book imports these stylesheets from their source paths, so keep their file names stable.

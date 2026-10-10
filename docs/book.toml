@@ -13,3 +13,5 @@ preferred-dark-theme = "coal"
 additional-css = ["theme/content.css", "theme/sidebar.css", "theme/navigation.css", "theme/diagrams.css"]
 additional-js = ["theme/diagrams.js"]
 git-repository-url = "https://github.com/alchemyyy/WebGPU-Player"
+# The site's path on GitHub Pages; the 404 page's links resolve from it
+site-url = "/WebGPU-Player/"

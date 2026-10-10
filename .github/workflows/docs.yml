@@ -1,0 +1,71 @@
+# Publishes the book in docs/ to GitHub Pages when a push to master changes it, or when run by hand (Actions > Docs > Run workflow).
+# The build job builds the book with the pinned mdBook, and the deploy job publishes it.
+# NOTE: Pages must deploy from GitHub Actions (Settings > Pages > Source)
+name: Docs
+
+on:
+  push:
+    branches: [master]
+    # The book and this workflow; the book reads nothing outside docs/
+    paths:
+      - docs/**
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time; a newer push waits rather than cancelling one in progress
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # The version docs/src/maintaining.md installs
+  MDBOOK_VERSION: 0.5.4
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # The book needs none of the codec submodules, which checkout leaves out by default
+      - name: Check out the engine
+        uses: actions/checkout@v7
+
+      - name: Install mdBook
+        run: |
+          mdbook_directory="$RUNNER_TEMP/mdbook"
+          mkdir -p "$mdbook_directory"
+          curl --fail --silent --show-error --location \
+            "https://github.com/rust-lang/mdBook/releases/download/v$MDBOOK_VERSION/mdbook-v$MDBOOK_VERSION-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar --extract --gzip --directory "$mdbook_directory"
+          echo "$mdbook_directory" >> "$GITHUB_PATH"
+
+      - name: Build the book
+        run: mdbook build docs
+
+      - name: Upload the book
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/book
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # deploy-pages publishes with an OIDC token
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish the book
+        id: deployment
+        uses: actions/deploy-pages@v5

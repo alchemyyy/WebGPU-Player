@@ -10,3 +10,6 @@ __pycache__/
 # Codec build trees and the Rust target directory
 wasm/build/
 wasm/libdovi/target/
+
+# The built book; .github/workflows/docs.yml builds and publishes it
+/docs/book/
