@@ -52,6 +52,7 @@ A full `check` takes several minutes.
 - Pinned sources.
   FFmpeg and dcadec are git submodules in the engine's `vendor/`, pinned to exact commits.
   They are shallow and marked `update = none`, so a recursive clone of the engine, or of a host that embeds it, skips them until `make sources` fetches them.
+  `make sources` fetches only each recorded commit, at depth 1, because `git submodule update --depth 1` would first clone the tip of the default branch.
 - Fresh source trees.
   Each FFmpeg kit extracts a fresh copy of the pinned tree into `wasm/build/<kit>/` with `git archive`, then configures and builds it there with only that kit's decoders.
   Building outside a git checkout keeps FFmpeg's embedded version string and source paths stable.

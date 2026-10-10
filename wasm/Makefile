@@ -238,7 +238,8 @@ toolchain:
 	}
 
 sources:
-	git -C $(ENGINE) submodule update --init --checkout --depth 1 -- $(FFMPEG_SOURCE) $(DCADEC_SOURCE)
+	$(call fetch_source,$(FFMPEG_SOURCE))
+	$(call fetch_source,$(DCADEC_SOURCE))
 	$(call require_commit,$(FFMPEG_SUBMODULE),$(FFMPEG_COMMIT))
 	$(call require_commit,$(DCADEC_SUBMODULE),$(DCADEC_COMMIT))
 
@@ -254,6 +255,24 @@ source-archives: sources
 			--prefix=webgpu-player-wasm-$$revision/ \
 			-o $(ARCHIVES)/webgpu-player-wasm-$$revision.tar.gz HEAD wasm
 	ls -l $(ARCHIVES)
+
+# Checks out a source submodule at the commit the engine records, fetching only that commit when it is missing.
+# git submodule update --depth 1 would first clone the tip of the submodule's default branch, then fetch the commit.
+# The submodule's name is its path, as in .gitmodules.
+# absorbgitdirs moves a new git directory to where git submodule keeps it
+# $(1): submodule path, relative to the engine
+define fetch_source
+	git -C $(ENGINE) submodule init -- $(1)
+	test -e $(ENGINE)/$(1)/.git || { git init -q $(ENGINE)/$(1) && \
+		git -C $(ENGINE)/$(1) remote add origin "$$(git -C $(ENGINE) config submodule.$(1).url)"; }
+	commit=$$(git -C $(ENGINE) rev-parse :$(1)) && \
+		if [ "$$(git -C $(ENGINE)/$(1) rev-parse -q --verify HEAD)" != "$$commit" ]; then \
+			{ git -C $(ENGINE)/$(1) cat-file -e "$$commit^{commit}" 2>/dev/null || \
+				git -C $(ENGINE)/$(1) fetch --depth 1 origin "$$commit"; } && \
+			git -C $(ENGINE)/$(1) checkout -q --detach "$$commit"; \
+		fi
+	git -C $(ENGINE) submodule absorbgitdirs -- $(1)
+endef
 
 # $(1): submodule directory, $(2): pinned commit
 define require_commit

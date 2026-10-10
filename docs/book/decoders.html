@@ -38,7 +38,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-0da99646.js";
+            window.path_to_searchindex_js = "searchindex-f7b68116.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c0e4fc60.js"></script>
@@ -231,7 +231,8 @@ A full <code>check</code> takes several minutes.</p>
 <ul>
 <li>Pinned sources.
 FFmpeg and dcadec are git submodules in the engine’s <code>vendor/</code>, pinned to exact commits.
-They are shallow and marked <code>update = none</code>, so a recursive clone of the engine, or of a host that embeds it, skips them until <code>make sources</code> fetches them.</li>
+They are shallow and marked <code>update = none</code>, so a recursive clone of the engine, or of a host that embeds it, skips them until <code>make sources</code> fetches them.
+<code>make sources</code> fetches only each recorded commit, at depth 1, because <code>git submodule update --depth 1</code> would first clone the tip of the default branch.</li>
 <li>Fresh source trees.
 Each FFmpeg kit extracts a fresh copy of the pinned tree into <code>wasm/build/&lt;kit&gt;/</code> with <code>git archive</code>, then configures and builds it there with only that kit’s decoders.
 Building outside a git checkout keeps FFmpeg’s embedded version string and source paths stable.</li>
