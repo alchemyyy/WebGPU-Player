@@ -42,13 +42,8 @@ import type {
     CustomPlaybackFallbackRequest,
     CustomPlaybackPlayOptions,
     CustomPlaybackStartResult,
-    CustomVideoDecodeSession,
-    CustomVideoDecodeSessionFactory
+    CustomVideoDecodeSession
 } from 'webgpu-player/pipeline/CustomPlaybackControllerTypes';
-import type {
-    WorkerPresentationAttachment,
-    WorkerPresentationRendererProvider
-} from 'webgpu-player/presentation/WorkerPresentationProtocol';
 
 const ULTRA_HD_8K_CODED_WIDTH = 7_680;
 const ULTRA_HD_8K_CODED_HEIGHT = 4_320;
@@ -134,7 +129,6 @@ function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
         nativeAudioEnded: false,
         peakFrameCount: 0,
         pendingFrameCount: 0,
-        presentationMode: null,
         queuedFrameCount: 0,
         receivedAudioFrameCount: 0,
         receivedAudioSampleCount: 0,
@@ -149,7 +143,6 @@ function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
         receivedFrameCount: 0,
         receivedNativeAudioSegmentCount: 0,
         recycledRawFrameCount: 0,
-        rendererUnavailableReason: null,
         staleAudioSampleCount: 0,
         staleFrameCount: 0,
         state: 'idle',
@@ -2873,29 +2866,6 @@ describe('CustomPlaybackController', () => {
         // The stop gives the last run its bound to finish before the worker goes
         const lastStopCallOrder = harness.videoDecodeSession.stop.mock.invocationCallOrder.at(-1) ?? Number.POSITIVE_INFINITY;
         expect(lastStopCallOrder).toBeLessThan(harness.videoDecodeSession.destroy.mock.invocationCallOrder[0]);
-    });
-
-    it('hands the decode session the host\'s worker presentation renderer provider', async () => {
-        const presentationRendererProvider = vi.fn((): WorkerPresentationAttachment | null => null);
-        const sessionProviders: Array<WorkerPresentationRendererProvider | null> = [];
-        const videoDecodeSessionFactory: CustomVideoDecodeSessionFactory = (
-            eventHandler,
-            audioBridgeFactory,
-            _nativeAudioBridgeFactory,
-            sessionProvider
-        ): CustomVideoDecodeSession => {
-            sessionProviders.push(sessionProvider);
-            return new FakeVideoDecodeSession(eventHandler, audioBridgeFactory);
-        };
-
-        const providingController = new CustomPlaybackController({ presentationRendererProvider, videoDecodeSessionFactory });
-        const pageController = new CustomPlaybackController({ videoDecodeSessionFactory });
-
-        expect(sessionProviders).toEqual([ presentationRendererProvider, null ]);
-        // The session asks for an attachment only when it creates a worker
-        expect(presentationRendererProvider).not.toHaveBeenCalled();
-        await providingController.destroy();
-        await pageController.destroy();
     });
 
     it('bounds an unresolved audio suspension before preparing a replacement generation', async () => {

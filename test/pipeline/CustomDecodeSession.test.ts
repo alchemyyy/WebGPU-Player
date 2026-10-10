@@ -47,10 +47,6 @@ import type {
     TransferableRawVideoFrame
 } from 'webgpu-player/video/RawVideoFrameCopy';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
-import type {
-    DecodedPresentationFrame,
-    DecodedWorkerPresentationFrame
-} from 'webgpu-player/presentation/WebGPUPresenter';
 import { parseHEVCHDR10PlusMetadata } from 'webgpu-player/video/hdr/HDR10PlusMetadata';
 
 import { createHDR10PlusHEVCVector } from '../../src/capability/vectors/HDR10PlusVectors';
@@ -150,16 +146,6 @@ function getPostedStartGenerations(worker: MockWorker): number[] {
         }
     }
     return generations;
-}
-
-/** Narrows a taken frame to one whose payload reached the page; a worker frame fails the test. */
-function requirePayloadFrame(
-    presentationFrame: DecodedPresentationFrame | null
-): Exclude<DecodedPresentationFrame, DecodedWorkerPresentationFrame> | null {
-    if (presentationFrame?.outputMode === 'worker-frame') {
-        throw new TypeError('The taken frame stayed in the worker');
-    }
-    return presentationFrame;
 }
 
 function createFrame(): VideoFrame & { close: ReturnType<typeof vi.fn> } {
@@ -898,7 +884,7 @@ describe('CustomDecodeSession', () => {
             type: 'frame'
         });
 
-        const presentationFrame = requirePayloadFrame(session.takeFrame(secondsToMicroseconds(1.1)));
+        const presentationFrame = session.takeFrame(secondsToMicroseconds(1.1));
         expect(presentationFrame?.encodedDolbyVisionMetadata).toBe(encodedDolbyVisionMetadata);
         expect(session.getTelemetry()).toMatchObject({
             receivedDolbyVisionEnhancementFrameCount: 1,
@@ -940,8 +926,8 @@ describe('CustomDecodeSession', () => {
             type: 'frame'
         });
 
-        const validFrame = requirePayloadFrame(session.takeFrame(secondsToMicroseconds(1.1)));
-        const malformedFrame = requirePayloadFrame(session.takeFrame(secondsToMicroseconds(1.2)));
+        const validFrame = session.takeFrame(secondsToMicroseconds(1.1));
+        const malformedFrame = session.takeFrame(secondsToMicroseconds(1.2));
         expect(validFrame?.HDR10PlusMetadata).toBe(validMetadata);
         expect(malformedFrame?.HDR10PlusMetadata).toEqual({
             metadata: null,
@@ -1127,7 +1113,7 @@ describe('CustomDecodeSession', () => {
         emitFrame(worker, 7, 1_300_000);
         emitFrame(worker, 7, 1_400_000);
 
-        const presentationFrame = requirePayloadFrame(session.takeFrame(secondsToMicroseconds(1.25)));
+        const presentationFrame = session.takeFrame(secondsToMicroseconds(1.25));
         expect(presentationFrame?.frame).toBe(selectedFrame);
         expect(firstFrame.close).toHaveBeenCalledOnce();
         expect(selectedFrame.close).not.toHaveBeenCalled();
@@ -1941,7 +1927,7 @@ describe('CustomDecodeSession', () => {
         expect(session.getTelemetry().workerReused).toBe(false);
         const pendingOldFrame = emitFrame(worker, 1, 1_000_000);
         const queuedOldFrame = emitFrame(worker, 1, 1_100_000);
-        expect(requirePayloadFrame(session.takeFrame(secondsToMicroseconds(1)))?.frame).toBe(pendingOldFrame);
+        expect(session.takeFrame(secondsToMicroseconds(1))?.frame).toBe(pendingOldFrame);
         startSession(session, 2);
 
         expect(pendingOldFrame.close).toHaveBeenCalledOnce();
@@ -1959,7 +1945,7 @@ describe('CustomDecodeSession', () => {
         expect(worker.terminate).not.toHaveBeenCalled();
 
         const currentFrame = emitFrame(worker, 2, 1_000_000);
-        expect(requirePayloadFrame(session.takeFrame(secondsToMicroseconds(1)))?.frame).toBe(currentFrame);
+        expect(session.takeFrame(secondsToMicroseconds(1))?.frame).toBe(currentFrame);
         const stopPromise = session.stop();
         expect(currentFrame.close).toHaveBeenCalledOnce();
         expect(worker.postedMessages.at(-1)).toEqual({ generation: 2, type: 'stop' });
@@ -2725,7 +2711,7 @@ describe('CustomDecodeSession', () => {
 
         const currentFrame = emitFrame(worker, 63, 5_000_000, 1);
         expect(currentFrame.close).not.toHaveBeenCalled();
-        expect(requirePayloadFrame(session.takeFrame(secondsToMicroseconds(5)))?.frame).toBe(currentFrame);
+        expect(session.takeFrame(secondsToMicroseconds(5))?.frame).toBe(currentFrame);
         expect(session.getTelemetry()).toMatchObject({
             receivedFrameCount: 1,
             staleFrameCount: 1,

@@ -38,7 +38,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-36a56e7f.js";
+            window.path_to_searchindex_js = "searchindex-0da99646.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c0e4fc60.js"></script>
@@ -196,16 +196,8 @@ Each source file’s tests are at the same relative path under <code>test/</code
 </ul>
 <h2 id="presentation"><a class="header" href="#presentation">presentation/</a></h2>
 <ul>
-<li><code>WebGPUPresenter.ts</code>: the GPU device and canvas; rVFC and pushed-frame submission; installing the color pipeline; HDR and Dolby Vision authorization; device-loss recovery; the latched fallback.
-For presentation in the worker it creates each worker’s transferred canvas and channel, forwards the authorized pipeline and live controls, lays the canvas out, and asks the renderer to draw each selected frame by its ID.</li>
-<li><code>WorkerPresentationProtocol.ts</code>: the channel between the presenter and the worker renderer (configure, settings, layout, present, and detach; status, configured, presented, and failed), its validators, the attachment and provider types, and the fallback reasons both sides report.</li>
-<li><code>WorkerPresentationRenderer.ts</code> [worker]: the decode worker’s renderer: a device of its own configured with the transferred canvas, each <code>configure</code> installed once its route is authorized on that device, each <code>present</code> of a kept frame drawn with the presenter’s per-frame checks, one device recovery, and <code>detach</code>.</li>
-<li><code>WorkerFrameStore.ts</code> [worker]: the frames worker-mode runs keep, by an ID unique for the worker’s life; raw planes upload into reusable texture slots as a frame is kept, and a release, a stopped or failed run, the next run’s start, or a <code>detach</code> frees frames.</li>
-<li><code>DecodedFramePresentation.ts</code>: the per-frame rules the presenter and the worker renderer share: color and descriptor checks, Dolby Vision RPU selection and layer composition, and HDR10+ frame settings.</li>
-<li><code>ExternalTextureGPURenderer.ts</code>: the external-texture pipeline and its import, bind, and draw, which the presenter and the worker renderer share.</li>
-<li><code>WebGPUResourceOperation.ts</code>: the 5 s bound on WebGPU requests and resource operations, and the presentation device request at the adapter’s texture limit.</li>
+<li><code>WebGPUPresenter.ts</code>: the GPU device and canvas; rVFC and pushed-frame submission; installing the color pipeline; HDR and Dolby Vision authorization; device-loss recovery; the latched fallback.</li>
 <li><code>RawYUVGPURenderer.ts</code>: uploads raw YUV planes, and a Dolby Vision EL, into integer textures and draws them.
-The upload and the draw also run apart, for the worker renderer, which uploads a frame as it is kept.
 Authorization shares it.</li>
 <li><code>PresentationInput.ts</code>: MediaStream metadata to color metadata; Dolby Vision descriptors with their RPU route; declared and exact native base metadata; the presented video ordinal; the known-SDR gate.</li>
 <li><code>PresentationGeometry.ts</code>: pure object-fit and object-position math to viewport and texture transforms.</li>
@@ -264,8 +256,7 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 <ul>
 <li><code>CustomPlaybackController.ts</code> [main]: lifecycle, generations, the clock, the startup (20 s without progress, 60 s ceiling), stall (10 s), and lag (2 s) policy, the live audio output layout switch, the end-of-stream and ended-track drains, the presentation timing counters, and the fallback disposition.</li>
 <li><code>CustomPlaybackControllerTypes.ts</code>: states, events, fallback reasons, and dispositions.</li>
-<li><code>CustomDecodeSession.ts</code> [main]: the session’s one decode worker, which the first start creates, each generation takes once the previous run stopped, a failure or an unacknowledged stop replaces, and <code>destroy</code> terminates; and per generation, the frame queue, credits, raw buffer recycling, readiness, audio-only resync epochs, the decoded source format, and an ended audio track completing a start, a resync, or a native-media stream.
-Each new worker gets the host’s renderer attachment, and its first start waits up to 2 s for the renderer’s status; the session queues the descriptors of the frames such a worker keeps and releases them.</li>
+<li><code>CustomDecodeSession.ts</code> [main]: the session’s one decode worker, which the first start creates, each generation takes once the previous run stopped, a failure or an unacknowledged stop replaces, and <code>destroy</code> terminates; and per generation, the frame queue, credits, raw buffer recycling, readiness, audio-only resync epochs, the decoded source format, and an ended audio track completing a start, a resync, or a native-media stream.</li>
 <li><code>CustomDecode.worker.ts</code> [worker]: one run at a time, each ending with <code>stopped</code>: demux, decoder dispatch, raw copy, Dolby Vision and HDR metadata, decoded PCM as restartable audio attempts in its audio decode worker, fMP4 remux, and credit waits.</li>
 <li><code>CustomAudioDecode.worker.ts</code>, <code>AudioDecodeWorkerRuntime.ts</code> [worker]: the audio decode worker, which a decode worker spawns for its decoded PCM runs and keeps for its life.
 Each attempt has a bundled decoder (E-AC-3, DTS with its seek recovery, TrueHD, or none for samples Mediabunny decoded), an output stage, and a <code>WorkletPCMProducer</code>; it renders one batch at a time under the producer’s credit window and credits each batch back once rendered.
@@ -275,7 +266,7 @@ A worker that fails to start, throws, or answers out of contract fails every att
 <li><code>AudioDecodeWorkerProtocol.ts</code>: the messages between the two workers, their validators, the batch shapes and their transfers, and the batch and credit constants (4 batches, 40 ms or 64 inputs).</li>
 <li><code>CustomDecodeInputFormats.ts</code> [worker]: Mediabunny’s input formats with Matroska content decoding scoped to frames, so header-stripped laced audio demuxes intact.</li>
 <li><code>HandledDecodeFailures.ts</code> [worker]: marks the failures the worker catches, so the duplicate rejection Mediabunny leaves behind is not reported as unhandled, and tells the worker when it suppressed one, because the failed decoder stays open.</li>
-<li><code>DecodeWorkerProtocol.ts</code>: messages, validators, credit constants (4, 2, 8), and the backend and output literals, the renderer attachment, worker-frame descriptors, and their release included.</li>
+<li><code>DecodeWorkerProtocol.ts</code>: messages, validators, credit constants (4, 2, 8), and the backend and output literals.</li>
 <li><code>CustomDecodeTrackSelection.ts</code>, <code>ConcurrentDecodeStreams.ts</code>: track lookup by ordinal within one media type, and concurrent decode streams that cancel each other on the first failure and all drain before the worker reports that the generation stopped.</li>
 <li><code>MediaClock.ts</code> [main]: the generation-tagged clock; <code>synchronize</code> re-anchors it.</li>
 <li><code>MediaFetchPolicy.ts</code>: retries only transport errors and 408, 429, and 5xx.</li>
@@ -412,7 +403,6 @@ The resampler’s and the limiter’s own storage and rendering are the JavaScri
 <li><code>test/helpers/ownedVideoStreamFakes.ts</code>: a stream run, a packet iterator, and a decoder that outputs each frame at once or holds its frames until a flush, in decode or presentation order, for the owned decode path tests.</li>
 <li><code>test/helpers/decodeWorkerHarness.ts</code>: loads a fresh playback worker in a stand-in browser: a global scope that plays the session’s part and waits for each run’s <code>stopped</code>, so one worker can run several generations, range responses for the media it plays, a WebCodecs video decoder, and the audio decode worker run in-process (<code>inProcessAudioDecodeWorker.ts</code>) on a channel.</li>
 <li><code>test/helpers/fakeWorkletProcessor.ts</code>, <code>test/helpers/decodedAudioMedia.ts</code>: the worklet processor’s end of a producer channel, which records each chunk and returns it played, held, or dropped; and a Matroska file of the VP9 vector’s video and a stereo PCM tone, which Mediabunny decodes in Node.</li>
-<li><code>test/helpers/workerPresentationFakes.ts</code>: what the worker renderer finds in a browser, for Node: WebGPU devices that record their work and can be lost, the usage constants, a transferred canvas, the page’s end of the renderer’s channel, and decoded raw and <code>VideoFrame</code> frames.</li>
 <li><code>wasm/</code>: the decoder sources and build.
 See <a href="decoders.html">WebAssembly decoders</a>.</li>
 <li><code>vendor/</code>: the FFmpeg and dcadec submodules (<code>update = none</code>), which <code>make -C wasm sources</code> fetches.</li>

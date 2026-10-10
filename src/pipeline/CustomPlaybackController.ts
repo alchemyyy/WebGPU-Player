@@ -4,7 +4,6 @@ import {
     type Microseconds
 } from '../MediaTime';
 import type { DecodedPresentationFrame } from '../presentation/WebGPUPresenter';
-import type { WorkerPresentationRendererProvider } from '../presentation/WorkerPresentationProtocol';
 import AudioWorkletController from '../audio/output/AudioWorkletController';
 import type { AudioWorkletTelemetry } from '../audio/output/AudioWorkletProtocol';
 import { assertSupportedCustomAudioOutputLayout } from '../audio/CustomAudioOutputPolicy';
@@ -148,17 +147,9 @@ const NOOP_FALLBACK_HOOK: CustomPlaybackHTMLFallbackHook = (): void => undefined
 function createVideoDecodeSession(
     eventHandler: (event: CustomDecodeSessionEvent) => void,
     audioBridgeFactory: CustomDecodeAudioBridgeFactory | null,
-    nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null,
-    presentationRendererProvider: WorkerPresentationRendererProvider | null
+    nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null
 ): CustomVideoDecodeSession {
-    return new CustomDecodeSession(
-        eventHandler,
-        undefined,
-        null,
-        audioBridgeFactory,
-        nativeAudioBridgeFactory,
-        presentationRendererProvider
-    );
+    return new CustomDecodeSession(eventHandler, undefined, null, audioBridgeFactory, nativeAudioBridgeFactory);
 }
 
 function defaultMonotonicTimeSource(): Microseconds {
@@ -551,8 +542,7 @@ export default class CustomPlaybackController {
         this.videoDecodeSession = videoDecodeSessionFactory(
             this.handleVideoDecodeEvent,
             this.audioOutputFactory ? this.createAudioBridge : null,
-            this.nativeAudioBridgeFactory,
-            options.presentationRendererProvider ?? null
+            this.nativeAudioBridgeFactory
         );
     }
 

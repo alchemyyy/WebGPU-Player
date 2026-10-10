@@ -8,7 +8,6 @@ import {
     isDecodeWorkerResponse,
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
-    type DecodeWorkerFrameDescriptorResponse,
     type DecodeWorkerFrameResponse,
     type DecodeWorkerResponse,
     type DecodeWorkerStartRequest,
@@ -18,7 +17,7 @@ import type DolbyVisionRPUParserSession from 'webgpu-player/video/dolby-vision/D
 
 import { createInProcessAudioDecodeWorkerConstructor, InProcessAudioDecodeWorker } from './inProcessAudioDecodeWorker';
 
-export type { DecodeWorkerFrameDescriptorResponse, DecodeWorkerFrameResponse };
+export type { DecodeWorkerFrameResponse };
 export type DecodeWorkerReadyResponse = Extract<DecodeWorkerResponse, { type: 'ready' }>;
 
 const WORKER_URL = 'https://example.test/web/libraries/webgpu-player/CustomDecode.worker.js';
@@ -203,28 +202,19 @@ export class FakeWorkerScope extends EventTarget {
         this.dispatchEvent(new MessageEvent('message', { data: request }));
     }
 
-    // The session recycles a raw frame's buffer once uploaded, returns a VideoFrame's credit once presented, and releases a worker frame once its renderer presented it
-    private returnFrameCredit(message: DecodeWorkerFrameDescriptorResponse | DecodeWorkerFrameResponse): void {
-        switch (message.outputMode) {
-            case 'raw-planes': {
-                const buffer = message.frame.data;
-                void Promise.resolve().then((): void => {
-                    this.dispatchRequest({ buffer, generation: message.generation, type: 'recycle-frame' });
-                });
-                return;
-            }
-            case 'video-frame':
-                (message.frame as unknown as FakeDecodedVideoFrame).close();
-                void Promise.resolve().then((): void => {
-                    this.dispatchRequest({ frameCredits: RETURNED_FRAME_CREDITS, generation: message.generation, type: 'pull' });
-                });
-                return;
-            case 'worker-frame':
-                void Promise.resolve().then((): void => {
-                    this.dispatchRequest({ frameIds: [ message.frameId ], generation: message.generation, type: 'release-frames' });
-                });
-                return;
+    // The session recycles a raw frame's buffer once uploaded, and returns a VideoFrame's credit once presented
+    private returnFrameCredit(message: DecodeWorkerFrameResponse): void {
+        if (message.outputMode === 'raw-planes') {
+            const buffer = message.frame.data;
+            void Promise.resolve().then((): void => {
+                this.dispatchRequest({ buffer, generation: message.generation, type: 'recycle-frame' });
+            });
+            return;
         }
+        (message.frame as unknown as FakeDecodedVideoFrame).close();
+        void Promise.resolve().then((): void => {
+            this.dispatchRequest({ frameCredits: RETURNED_FRAME_CREDITS, generation: message.generation, type: 'pull' });
+        });
     }
 }
 
@@ -345,18 +335,8 @@ export async function decodeToEnd(workerScope: FakeWorkerScope, request: DecodeW
     return responses;
 }
 
-/** Returns the frames whose payload crossed to the page, which a worker-mode run never posts. */
 export function getFrameResponses(responses: readonly DecodeWorkerResponse[]): DecodeWorkerFrameResponse[] {
-    return responses.filter((response: DecodeWorkerResponse): response is DecodeWorkerFrameResponse => (
-        response.type === 'frame' && response.outputMode !== 'worker-frame'
-    ));
-}
-
-/** Returns the descriptors of the frames a worker-mode run kept for its renderer. */
-export function getFrameDescriptorResponses(responses: readonly DecodeWorkerResponse[]): DecodeWorkerFrameDescriptorResponse[] {
-    return responses.filter((response: DecodeWorkerResponse): response is DecodeWorkerFrameDescriptorResponse => (
-        response.type === 'frame' && response.outputMode === 'worker-frame'
-    ));
+    return responses.filter((response: DecodeWorkerResponse): response is DecodeWorkerFrameResponse => response.type === 'frame');
 }
 
 export function getReadyResponse(responses: readonly DecodeWorkerResponse[]): DecodeWorkerReadyResponse {

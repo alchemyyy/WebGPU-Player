@@ -83,16 +83,12 @@ import {
     type CustomDecodeDolbyVisionProfile,
     type CustomDecodeFailureKind,
     type CustomDecodeNativeHDRTransfer,
-    type CustomDecodePresentationMode,
     type CustomDecodeRawVideoFrameFormat,
     type CustomDecodeVideoDecoderBackend,
     type CustomDecodeVideoOutputMode,
     type CustomDecodeWorkerProgressPhase,
     type DecodeWorkerAudioOutputAttachment,
     type DecodeWorkerNativeMediaAudioConfiguration,
-    type DecodeWorkerFrameDescriptorResponse,
-    type DecodeWorkerFrameMetadataSummary,
-    type DecodeWorkerFrameResponse,
     type DecodeWorkerReadyAudioConfiguration,
     type DecodeWorkerRequest,
     type DecodeWorkerResponse
@@ -115,8 +111,7 @@ import {
 import {
     getDolbyVisionEncodedMetadataTransferList,
     takeTransferableDolbyVisionEncodedFrameMetadata,
-    type DolbyVisionEncodedFrameMetadata,
-    type TransferableDolbyVisionEncodedFrameMetadata
+    type DolbyVisionEncodedFrameMetadata
 } from '../video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
 import { DolbyVisionRPUParseError } from '../video/dolby-vision/DolbyVisionRPUParser';
 import DolbyVisionRPUParserSession from '../video/dolby-vision/DolbyVisionRPUParserSession';
@@ -159,14 +154,8 @@ import {
     getRawVideoFrameTransferList,
     PreparedRawVideoFrameSource,
     type RawVideoFrameGeometry,
-    type RawVideoFrameSource,
-    type TransferableRawVideoFrame
+    type RawVideoFrameSource
 } from '../video/RawVideoFrameCopy';
-import WorkerFrameStore, { type WorkerFrameDescription } from '../presentation/WorkerFrameStore';
-import WorkerPresentationRenderer, {
-    declineWorkerPresentationAttachment
-} from '../presentation/WorkerPresentationRenderer';
-import type { PresentationFallbackReason } from '../presentation/WorkerPresentationProtocol';
 import { requireMicroseconds } from '../TimeMath';
 import NativeMediaAudioFMP4Remuxer, {
     type NativeMediaAudioFMP4Codec,
@@ -307,8 +296,6 @@ type DecodeRun = {
     pendingAudioOutput: DecodeWorkerAudioOutputAttachment | null
     /** Latest unprocessed resync or suspension request for the video stream */
     pendingVideoControl: VideoAttemptControl | null
-    /** In worker mode the run keeps its frames for the renderer and posts their descriptors */
-    presentationMode: CustomDecodePresentationMode
     rawFrameBufferPool: RawFrameBufferPool | null
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
     /** Ends the current video attempt without stopping audio or the run */
@@ -419,11 +406,6 @@ let previousRunCompletion: Promise<void> = Promise.resolve();
 let unclosedDecoderSuspected = false;
 // The audio decode worker this worker spawns for its first decoded PCM run and keeps for every later one; a lost one asks for this worker's replacement
 let audioDecodeWorkerClient: AudioDecodeWorkerClient | null = null;
-const WORKER_RENDERER_ATTACHED_REASON = 'This worker already has a renderer';
-// The frames worker-mode runs keep for the renderer, which outlives every run
-const workerFrameStore = new WorkerFrameStore();
-// The renderer the page attached; a worker takes one for its life
-let workerPresentationRenderer: WorkerPresentationRenderer | null = null;
 
 function postResponse(response: DecodeWorkerResponse, transfer?: Transferable[]): void {
     workerScope.postMessage(response, transfer);
@@ -1744,8 +1726,7 @@ function takeOwnedRawVideoFrameSource(output: OwnedDecodedVideoOutput): TakenDec
     }
 }
 
-// A frame whose payload crosses to the page; a worker-frame descriptor carries no metadata to attach
-type MutableDecodeWorkerFrameResponse = DecodeWorkerFrameResponse;
+type MutableDecodeWorkerFrameResponse = Extract<DecodeWorkerResponse, { type: 'frame' }>;
 
 function attachDolbyVisionEncodedMetadata(
     response: MutableDecodeWorkerFrameResponse,
@@ -1765,138 +1746,6 @@ function attachHDR10PlusMetadata(
     if (metadata) {
         response.HDR10PlusMetadata = metadata;
     }
-}
-
-/** A raw frame a worker-mode run keeps for its renderer, with its timing and metadata. */
-type WorkerRawFrameKeepRequest = {
-    durationMicroseconds: Microseconds
-    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null
-    /** Absent off a Dolby Vision pair route, and null for a pair whose EL did not decode */
-    enhancementFrame?: TransferableRawVideoFrame | null
-    frame: TransferableRawVideoFrame
-    HDR10PlusMetadata: HDR10PlusFrameMetadata | null | undefined
-    mediaTimeMicroseconds: Microseconds
-};
-
-/** Counts what a kept frame's metadata holds, for the session's telemetry; the metadata stays with the frame. */
-function getWorkerFrameMetadataSummary(
-    encodedDolbyVisionMetadata: TransferableDolbyVisionEncodedFrameMetadata | null,
-    HDR10PlusMetadata: HDR10PlusFrameMetadata | null
-): DecodeWorkerFrameMetadataSummary | null {
-    if (!encodedDolbyVisionMetadata && !HDR10PlusMetadata) {
-        return null;
-    }
-    const metadataSummary: DecodeWorkerFrameMetadataSummary = {};
-    if (encodedDolbyVisionMetadata) {
-        metadataSummary.dolbyVision = {
-            enhancementLayerVCL: encodedDolbyVisionMetadata.hasEnhancementLayerVCL,
-            rpuCount: encodedDolbyVisionMetadata.parsedRPUData.length
-        };
-    }
-    if (HDR10PlusMetadata) {
-        metadataSummary.HDR10PlusStatus = HDR10PlusMetadata.status;
-    }
-    return metadataSummary;
-}
-
-function createWorkerFrameDescription(
-    run: DecodeRun,
-    durationMicroseconds: Microseconds,
-    mediaTimeMicroseconds: Microseconds,
-    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null,
-    HDR10PlusMetadata: HDR10PlusFrameMetadata | null | undefined
-): WorkerFrameDescription {
-    return {
-        durationMicroseconds,
-        encodedDolbyVisionMetadata: takeTransferableDolbyVisionEncodedFrameMetadata(encodedDolbyVisionMetadata),
-        generation: run.generation,
-        HDR10PlusMetadata: HDR10PlusMetadata ?? null,
-        mediaTimeMicroseconds
-    };
-}
-
-/** Refuses a frame past those a run's credits let it keep, as the page refuses a raw buffer past its window. */
-function requireWorkerFrameWindow(run: DecodeRun): void {
-    const maximumFrameCount = run.videoOutputMode === 'raw-planes' ? MAX_DECODED_RAW_FRAME_CREDITS : MAX_DECODED_FRAME_CREDITS;
-    if (workerFrameStore.getFrameCount(run.generation) >= maximumFrameCount) {
-        throw new UnsupportedCustomDecodeSourceError('The worker frame window exceeded its bound');
-    }
-}
-
-/** Posts the descriptor of a frame the run keeps, which the page selects and presents through the renderer by its ID. */
-function postWorkerFrameDescriptor(
-    run: DecodeRun,
-    frameId: number,
-    description: WorkerFrameDescription,
-    displayWidth: number,
-    displayHeight: number
-): void {
-    const metadataSummary = getWorkerFrameMetadataSummary(
-        description.encodedDolbyVisionMetadata,
-        description.HDR10PlusMetadata
-    );
-    const response: DecodeWorkerFrameDescriptorResponse = {
-        displayHeight,
-        displayWidth,
-        durationMicroseconds: description.durationMicroseconds,
-        frameId,
-        generation: run.generation,
-        mediaTimeMicroseconds: description.mediaTimeMicroseconds,
-        ...(metadataSummary ? { metadataSummary } : {}),
-        outputMode: 'worker-frame',
-        type: 'frame',
-        videoEpoch: run.videoEpoch
-    };
-    recordVideoAttemptFramePosted(run, description.mediaTimeMicroseconds);
-    postResponse(response);
-}
-
-/**
- * Keeps a raw frame for the renderer, which uploads its planes, and posts its descriptor.
- * The upload copied the planes, so the buffer returns to the run's pool at once.
- */
-function keepWorkerRawFrame(run: DecodeRun, request: WorkerRawFrameKeepRequest): void {
-    try {
-        requireWorkerFrameWindow(run);
-        const description = createWorkerFrameDescription(
-            run,
-            request.durationMicroseconds,
-            request.mediaTimeMicroseconds,
-            request.encodedDolbyVisionMetadata,
-            request.HDR10PlusMetadata
-        );
-        const frameId = workerFrameStore.keepRawFrame(description, request.frame, request.enhancementFrame);
-        postWorkerFrameDescriptor(run, frameId, description, request.frame.displayWidth, request.frame.displayHeight);
-    } finally {
-        run.rawFrameBufferPool?.release(request.frame.data);
-    }
-}
-
-/** Keeps a VideoFrame for the renderer, which imports it when the page presents it, and posts its descriptor. */
-function keepWorkerVideoFrame(
-    run: DecodeRun,
-    frame: VideoFrame,
-    durationMicroseconds: Microseconds,
-    mediaTimeMicroseconds: Microseconds,
-    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null,
-    HDR10PlusMetadata: HDR10PlusFrameMetadata | null | undefined
-): void {
-    requireWorkerFrameWindow(run);
-    const description = createWorkerFrameDescription(
-        run,
-        durationMicroseconds,
-        mediaTimeMicroseconds,
-        encodedDolbyVisionMetadata,
-        HDR10PlusMetadata
-    );
-    const frameId = workerFrameStore.keepVideoFrame(description, frame);
-    postWorkerFrameDescriptor(
-        run,
-        frameId,
-        description,
-        frame.displayWidth || frame.codedWidth,
-        frame.displayHeight || frame.codedHeight
-    );
 }
 
 async function postRawVideoFrame(
@@ -1932,16 +1781,6 @@ async function postRawVideoFrame(
     }
     if (rawFrame.timestampMicroseconds !== mediaTimeMicroseconds) {
         throw new UnsupportedCustomDecodeSourceError('The decoded raw frame timestamp did not match its media sample');
-    }
-    if (run.presentationMode === 'worker') {
-        keepWorkerRawFrame(run, {
-            durationMicroseconds: rawFrame.durationMicroseconds ?? durationMicroseconds,
-            encodedDolbyVisionMetadata,
-            frame: rawFrame,
-            HDR10PlusMetadata,
-            mediaTimeMicroseconds
-        });
-        return;
     }
     if (run.outstandingRawFrameBufferCount >= MAX_DECODED_RAW_FRAME_CREDITS) {
         throw new UnsupportedCustomDecodeSourceError('The raw video frame buffer window exceeded its bound');
@@ -2030,17 +1869,6 @@ async function postRawVideoFramePair(run: DecodeRun, request: RawVideoFramePairP
                 break;
         }
     }
-    if (run.presentationMode === 'worker') {
-        keepWorkerRawFrame(run, {
-            durationMicroseconds: rawFramePair.baseFrame.durationMicroseconds ?? durationMicroseconds,
-            encodedDolbyVisionMetadata,
-            enhancementFrame: rawFramePair.enhancementFrame,
-            frame: rawFramePair.baseFrame,
-            HDR10PlusMetadata,
-            mediaTimeMicroseconds
-        });
-        return;
-    }
     if (run.outstandingRawFrameBufferCount >= MAX_DECODED_RAW_FRAME_CREDITS) {
         throw new UnsupportedCustomDecodeSourceError('The compound raw video frame buffer window exceeded its bound');
     }
@@ -2064,7 +1892,6 @@ async function postRawVideoFramePair(run: DecodeRun, request: RawVideoFramePairP
     postResponse(response, transferables);
 }
 
-/** Transfers a VideoFrame to the page, or in worker mode keeps it for the renderer; either way the caller no longer owns it. */
 function postTransferredVideoFrame(
     run: DecodeRun,
     frame: VideoFrame,
@@ -2073,17 +1900,6 @@ function postTransferredVideoFrame(
     encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null,
     HDR10PlusMetadata: HDR10PlusFrameMetadata | null | undefined
 ): void {
-    if (run.presentationMode === 'worker') {
-        keepWorkerVideoFrame(
-            run,
-            frame,
-            durationMicroseconds,
-            mediaTimeMicroseconds,
-            encodedDolbyVisionMetadata,
-            HDR10PlusMetadata
-        );
-        return;
-    }
     const response: MutableDecodeWorkerFrameResponse = {
         durationMicroseconds,
         frame,
@@ -3818,25 +3634,11 @@ async function streamAudioAttempts(
 }
 
 /**
- * Frees the worker frames of a run that stopped or failed.
- * The page still presents the tail of a run that ended on its own, and releases each frame after `stopped`.
- */
-function releaseUnendedRunFrames(run: DecodeRun, runEnded: boolean): void {
-    if (!runEnded) {
-        workerFrameStore.releaseGeneration(run.generation);
-    }
-}
-
-/**
  * Runs one generation from its start to its `stopped`, which always comes last.
  * The worker outlives the run: everything the run opened is released before `stopped`, and the next run starts only after it.
- * Only the worker frames of a run that ended on its own outlive it, until the page releases them or the next run starts.
  */
 async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest, { type: 'start' }>): Promise<void> {
     let reportDecodeStreamFailure = false;
-    let runEnded = false;
-    // Frames an earlier run that ended on its own left to the page are released by now, as a new generation retires its own
-    workerFrameStore.releaseOtherGenerations(run.generation);
     if (request.timingTrace === true && !run.cancelled) {
         startWorkerTimingTrace((events): void => {
             postResponse({ events, generation: run.generation, type: 'timing-trace' });
@@ -3904,7 +3706,6 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
             stopRun(run);
         });
         if (!run.cancelled) {
-            runEnded = true;
             postResponse({ generation: run.generation, type: 'ended' });
         }
     } catch (error) {
@@ -3925,7 +3726,6 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
         // The audio decode worker released each attempt's decoder, output stage, and worklet channel
         await Promise.all(run.audioDecodeAttemptClosures);
         await waitForHEVCSoftwareVideoDecoderShutdown();
-        releaseUnendedRunFrames(run, runEnded);
         if (currentRun === run) {
             currentRun = null;
         }
@@ -3971,7 +3771,6 @@ function createDecodeRun(request: Extract<DecodeWorkerRequest, { type: 'start' }
         pendingAudioControl: null,
         pendingAudioOutput: null,
         pendingVideoControl: null,
-        presentationMode: request.presentationMode ?? 'main',
         rawFrameBufferPool: createRawFrameBufferPool(request.videoOutputMode),
         rawVideoFrameFormat: request.rawVideoFrameFormat,
         videoAttemptCancelled: false,
@@ -4070,46 +3869,6 @@ function updateAudioDownmixSettings(request: Extract<DecodeWorkerRequest, { type
     audioDecodeWorkerClient?.updateDownmixSettings(request.generation, request.audioDownmixSettings);
 }
 
-/**
- * Starts the renderer of the page's attachment, which holds for the worker's life, and answers once its device and canvas context exist or cannot.
- * A worker takes one attachment, so a further one is declined.
- */
-function attachRenderer(request: Extract<DecodeWorkerRequest, { type: 'attach-renderer' }>): void {
-    if (workerPresentationRenderer) {
-        declineWorkerPresentationAttachment(request.port);
-        postResponse({
-            available: false,
-            generation: request.generation,
-            reason: WORKER_RENDERER_ATTACHED_REASON,
-            type: 'renderer-status'
-        });
-        return;
-    }
-    const renderer = new WorkerPresentationRenderer({
-        canvas: request.canvas,
-        frameStore: workerFrameStore,
-        port: request.port
-    });
-    workerPresentationRenderer = renderer;
-    void renderer.start().then((unavailableReason: PresentationFallbackReason | null): void => {
-        postResponse({
-            available: unavailableReason === null,
-            generation: request.generation,
-            reason: unavailableReason,
-            type: 'renderer-status'
-        });
-    });
-}
-
-/** Frees the worker frames the page released, presented or discarded; only frames the store still kept return credits, as `pull` does. */
-function releaseWorkerFrames(request: Extract<DecodeWorkerRequest, { type: 'release-frames' }>): void {
-    const releasedFrameCount = workerFrameStore.release(request.generation, request.frameIds);
-    if (currentRun?.generation !== request.generation || currentRun.cancelled) {
-        return;
-    }
-    addFrameCredits(currentRun, releasedFrameCount);
-}
-
 /** Replaces the current run with a new generation's, which starts once the previous run posted `stopped`. */
 function startDecodeRun(request: Extract<DecodeWorkerRequest, { type: 'start' }>): void {
     if (currentRun) {
@@ -4136,12 +3895,6 @@ function handleRequest(requestValue: unknown): void {
     switch (requestValue.type) {
         case 'attach-audio-output':
             attachAudioOutput(requestValue);
-            break;
-        case 'attach-renderer':
-            attachRenderer(requestValue);
-            break;
-        case 'release-frames':
-            releaseWorkerFrames(requestValue);
             break;
         case 'start':
             startDecodeRun(requestValue);

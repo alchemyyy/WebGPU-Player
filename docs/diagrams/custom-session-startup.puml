@@ -34,15 +34,12 @@ note right of controller
 end note
 controller -> session : start
 session -> worker : the first start creates CustomDecode.worker.js?v=<build key>
-session -> presenter : createWorkerPresentationAttachment,\nthrough the host's renderer provider
-session -> worker : 'attach-renderer': the transferred canvas\nand a channel to the presenter
-worker --> session : 'renderer-status', or the 2 s bound
-session -> worker : 'start', once the previous run stopped;\nworker presentation when the renderer is available;\ncredits: 4 frames, or 2 raw-plane buffers
+session -> worker : 'start', once the previous run stopped;\ncredits: 4 frames, or 2 raw-plane buffers
 worker -> audioWorker : the first decoded PCM start\ncreates CustomAudioDecode.worker.js
 worker -> worker : prepare tracks (canDecode);\nscan static HDR metadata\n(first 16 access units or 8 MiB)
 worker --> session : 'ready'
 par video
-  worker --> session : 'frame', or its descriptor (credit-limited)
+  worker --> session : 'frame' (credit-limited)
 else decoded PCM
   worker -> audioWorker : open the attempt; packet or sample\nbatches, 4 in flight
   session -> worker : 'attach-audio-output': the worklet's channel

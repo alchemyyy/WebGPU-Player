@@ -22,7 +22,6 @@ rectangle "CustomDecode.worker (engine)" $BOX_WORKER {
   rectangle "**Video decode**\nWebCodecs; owned HEVC, AV1, VP9;\nhevc.js WASM (+ Dolby Vision EL);\nOpenJPEG; FFmpeg MPEG-2 and VC-1" as videoDecoders
   rectangle "**Mediabunny audio decode**\nWebCodecs; @mediabunny/ac3" as audioDecoders
   rectangle "**fMP4 remux**\nAC-3, E-AC-3" as remux
-  rectangle "**WorkerPresentationRenderer**\nown GPUDevice; transferred\ncanvas; kept frames" as workerRenderer
 }
 
 rectangle "CustomAudioDecode.worker (engine)" $BOX_WORKER {
@@ -54,10 +53,7 @@ demux -right-> bundledAudioDecoders : packet batches
 audioDecoders -right-> pcmPipeline : sample batches
 bundledAudioDecoders -down-> pcmPipeline
 pcmPipeline -down-> producer
-videoDecoders -up-> session : 'frame', or its\ndescriptor
-videoDecoders -right-> workerRenderer : kept frames
-presenter -down-> workerRenderer : present by ID,\nlayout, pipeline
-workerRenderer -right-> upload : worker\npresentation
+videoDecoders -up-> session : 'frame'
 producer -down-> processor : PCM chunks
 producer ..> session : progress, through\nthe decode worker
 remux -up-> nativeBridge : fMP4 segments

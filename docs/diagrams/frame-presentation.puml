@@ -22,18 +22,16 @@ partition "Each tick" {
       after 10 s, audio-clocked native decode suspends video; <<$HL_NAVY>>
     endif
     :takeFrame picks the newest frame at or before the clock,
-    older frames close, or the worker releases them, and return their credits; <<$HL_AMBER>>
+    older frames close and return their credits; <<$HL_AMBER>>
     if (Frame more than 2 s behind the clock?) then (yes)
       :Discard and re-credit it, then start a video wait; <<$HL_RED>>
     elseif (Queue empty for 100 ms while playing?) then (yes)
       :Start a video wait; <<$HL_RED>>
     else (no)
       :presenter.presentDecodedFrame:
-      external texture or raw planes, fused color WGSL,
-      on the page or by the worker's renderer; <<$HL_GREEN>>
+      external texture or raw planes, fused color WGSL; <<$HL_GREEN>>
       :VideoFrame closes after submit(),
-      its credit returns after onSubmittedWorkDone,
-      and a worker frame's once its draw completed; <<$HL_AMBER>>
+      its credit returns after onSubmittedWorkDone; <<$HL_AMBER>>
     endif
     if (A wait lasted 10 s?) then (yes)
       :Fail with playback-stalled; <<$HL_RED>>

@@ -277,7 +277,6 @@ These were settled on Firefox 157 on Windows.
 - One decode worker per session (10-09).
   Every generation, which every seek, audio track switch, and paused repaint starts, used to create its own worker and paid worker startup, script evaluation, and WASM decoder instantiation each time.
   The session now creates its worker at the first start, runs every generation in it, and terminates it only on `destroy`.
-  A persistent worker is also what presenting in the worker needs, since its GPU device and canvas must outlive a seek.
   Runs never overlap: the session sends a `start` only after the previous run acknowledged `stopped`, and the worker starts a run only after the previous one posted it.
   An overlap would stall the handoff, because a stopping run waits for every bundled HEVC decoder in its worker, the next run's included, before it acknowledges.
   A worker is replaced rather than reused after a generation fails, a message fails validation, the worker crashes, or a retired run does not acknowledge within the 1 s stop bound.
@@ -286,21 +285,13 @@ These were settled on Firefox 157 on Windows.
   Each run still opens its own input, so the read cache does not outlive a seek.
   After a run ends on its own, its generation stays current while the worker idles, so a native-media element that plays out after decode still ends the session.
   Before, the run's `stopped` retired the worker and with it the generation, and such a session did not end.
-- Presentation in the worker, stage 1 (10-09).
-  Every decoded frame used to cross to the page: a `VideoFrame` transfer, or a raw buffer of about 25 MB per 4K 10-bit frame, which the main thread uploaded and whose GPU work it waited on.
-  Frames now stay in the decode worker, which draws them with its own GPU device into a canvas the presenter transferred to it with `transferControlToOffscreen`.
-  Frame selection stays on the main thread: the session queues each kept frame's descriptor, which holds its credit, and the controller's clock, lag, catch-up, starvation, and end policies apply unchanged.
-  The presenter asks the renderer to draw a selected frame by its ID, posts the canvas layout it computes from the page, and returns the frame's credit only after the renderer reports its GPU work done.
-  The presenter prepares and authorizes each pipeline on its own device as before, hands the renderer the shader and route, and resumes presentation only after the renderer accepts them.
-  The renderer authorizes the route again on its own device with the same registries before it accepts it, because an authorization holds for one device only.
-  The presenter's per-frame rules (color and descriptor checks, Dolby Vision RPU selection and layer composition, HDR10+ settings) and its external-texture draw are shared modules, so the renderer checks and draws a frame exactly as the page does.
-  A raw frame's planes upload into a texture slot of the renderer's device as the worker keeps the frame, so its buffer returns to the decoders at once.
-  The renderer recovers one loss of its device for the worker's life, and frames uploaded to the lost device are not presented.
-  Each new worker gets a new canvas, because a canvas transfers only once, and its first start waits up to 2 s for the renderer's status.
-  A page that cannot transfer a canvas, a worker without WebGPU, a renderer that does not answer in time, and a host without a provider all present on the page for the worker's life, as before.
-  A renderer failure falls back to HTML as a presenter failure does.
-  A run's frames outlive it until the page releases them, so the frames that finish a run still present.
-  A stopped or failed run frees its own frames before `stopped`, the next run's start frees what an earlier run left, and the renderer's `detach` frees every frame.
+- Presentation stays on the page; presentation in the worker was removed (10-09).
+  Its first stage (`be2cd76`) kept each decoded frame in the decode worker, which drew it with a GPU device of its own into a canvas transferred with `transferControlToOffscreen`, so no `VideoFrame` or 25 MB 4K 10-bit raw buffer crossed to the page.
+  In field use it felt less responsive than the page presenter, and on an Intel Arc laptop (Meteor Lake iGPU beside an RTX 4060) 4K HDR10+ playback dropped frames after a few minutes, which the engine before it (`a3bba75`) did not.
+  The cause was not isolated.
+  The suspects: every draw waited on the decode worker's event loop, which also demuxes, decodes, and copies; each session took a second device on the same adapter and authorized its route again there; and a frame's credit returned only after the renderer's GPU work and the page's release.
+  The persistent worker, the bundled HEVC single copy, and the audio decode worker, which landed with it, stay.
+  Presentation off the main thread should return only with a measured cause, and on a thread of its own rather than the decode worker's.
 
 ## Audio
 

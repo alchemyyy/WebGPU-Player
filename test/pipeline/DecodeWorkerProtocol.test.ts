@@ -15,7 +15,6 @@ import {
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
-    MAXIMUM_RENDERER_STATUS_REASON_LENGTH,
     MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT,
     type DecodeWorkerAudioOutputAttachment
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
@@ -36,7 +35,6 @@ import { parseHEVCHDR10PlusMetadata } from 'webgpu-player/video/hdr/HDR10PlusMet
 import { MAXIMUM_TIMING_TRACE_EVENTS_PER_MESSAGE } from 'webgpu-player/TimingTrace';
 
 import { createHDR10PlusHEVCVector } from '../../src/capability/vectors/HDR10PlusVectors';
-import { createWorkerStartRequest } from '../helpers/decodeWorkerHarness';
 
 const DOLBY_VISION_RPU_PARSER_WASM_URL = 'https://example.test/libraries/libdovi/dovi-rpu-parser.wasm';
 // Any positive epoch time; worker events carry the shared epoch clock
@@ -103,17 +101,6 @@ const UNTARGETED_DISPLAY_LUMINANCE_NITS = 0;
 const STOPPED_RUN_GENERATION = 3;
 // Replacement is a yes-or-no request, so any other value is malformed
 const MALFORMED_REPLACE_WORKER_VALUE = 'yes';
-
-const PRESENTATION_MEDIA_FILE_NAME = 'presentation.mp4';
-const RENDERER_GENERATION = 4;
-const WORKER_FRAME_ID = 9;
-const WORKER_FRAME_DISPLAY_WIDTH = 1_920;
-const WORKER_FRAME_DISPLAY_HEIGHT = 1_080;
-const RENDERER_UNAVAILABLE_REASON = 'WebGPU is unavailable in workers';
-// Malformed worker presentation values
-const MALFORMED_PRESENTATION_MODE = 'gpu';
-const MALFORMED_FRAME_ID = -1;
-const MALFORMED_HDR10_PLUS_STATUS = 'present';
 
 function createPackedRPUData(): ArrayBuffer {
     return createDolbyVisionAuthorizationRPUVector();
@@ -1231,104 +1218,6 @@ describe('DecodeWorkerProtocol', () => {
             generation: STOPPED_RUN_GENERATION,
             replaceWorker: MALFORMED_REPLACE_WORKER_VALUE,
             type: 'stopped'
-        })).toBe(false);
-    });
-
-    it('accepts a start that asks for worker presentation only with a known mode', () => {
-        const startRequest = createWorkerStartRequest(PRESENTATION_MEDIA_FILE_NAME);
-        expect(isDecodeWorkerRequest(startRequest)).toBe(true);
-        expect(isDecodeWorkerRequest({ ...startRequest, presentationMode: 'worker' })).toBe(true);
-        expect(isDecodeWorkerRequest({ ...startRequest, presentationMode: 'main' })).toBe(true);
-        expect(isDecodeWorkerRequest({ ...startRequest, presentationMode: MALFORMED_PRESENTATION_MODE })).toBe(false);
-    });
-
-    it('accepts a renderer attachment only with a transferred canvas and a message port', () => {
-        class TestOffscreenCanvas {}
-        vi.stubGlobal('OffscreenCanvas', TestOffscreenCanvas);
-        const channel = new MessageChannel();
-        try {
-            const attachRequest = {
-                canvas: new TestOffscreenCanvas(),
-                generation: RENDERER_GENERATION,
-                port: channel.port2,
-                type: 'attach-renderer'
-            };
-            expect(isDecodeWorkerRequest(attachRequest)).toBe(true);
-            expect(isDecodeWorkerRequest({ ...attachRequest, canvas: document.createElement('canvas') })).toBe(false);
-            expect(isDecodeWorkerRequest({ ...attachRequest, port: channel })).toBe(false);
-            expect(isDecodeWorkerRequest({ ...attachRequest, generation: 0 })).toBe(false);
-        } finally {
-            channel.port1.close();
-            channel.port2.close();
-            vi.unstubAllGlobals();
-        }
-    });
-
-    it('accepts a release of distinct frame IDs within the frame credits', () => {
-        const releaseRequest = { frameIds: [ 0, WORKER_FRAME_ID ], generation: RENDERER_GENERATION, type: 'release-frames' };
-        expect(isDecodeWorkerRequest(releaseRequest)).toBe(true);
-        expect(isDecodeWorkerRequest({
-            ...releaseRequest,
-            frameIds: Array.from({ length: MAX_DECODED_FRAME_CREDITS }, (_value: unknown, frameIndex: number): number => frameIndex)
-        })).toBe(true);
-        expect(isDecodeWorkerRequest({ ...releaseRequest, frameIds: [] })).toBe(false);
-        expect(isDecodeWorkerRequest({
-            ...releaseRequest,
-            frameIds: Array.from({ length: MAX_DECODED_FRAME_CREDITS + 1 }, (_value: unknown, frameIndex: number): number => frameIndex)
-        })).toBe(false);
-        expect(isDecodeWorkerRequest({ ...releaseRequest, frameIds: [ WORKER_FRAME_ID, WORKER_FRAME_ID ] })).toBe(false);
-        expect(isDecodeWorkerRequest({ ...releaseRequest, frameIds: [ MALFORMED_FRAME_ID ] })).toBe(false);
-        expect(isDecodeWorkerRequest({ ...releaseRequest, frameIds: WORKER_FRAME_ID })).toBe(false);
-    });
-
-    it('accepts a worker frame descriptor only without its payload and with bounded metadata counts', () => {
-        const descriptor = {
-            displayHeight: WORKER_FRAME_DISPLAY_HEIGHT,
-            displayWidth: WORKER_FRAME_DISPLAY_WIDTH,
-            durationMicroseconds: 41_708,
-            frameId: WORKER_FRAME_ID,
-            generation: RENDERER_GENERATION,
-            mediaTimeMicroseconds: 500_000,
-            outputMode: 'worker-frame',
-            type: 'frame'
-        };
-        expect(isDecodeWorkerResponse(descriptor)).toBe(true);
-        expect(isDecodeWorkerResponse({ ...descriptor, videoEpoch: 2 })).toBe(true);
-        expect(isDecodeWorkerResponse({
-            ...descriptor,
-            metadataSummary: {
-                dolbyVision: { enhancementLayerVCL: true, rpuCount: 1 },
-                HDR10PlusStatus: 'valid'
-            }
-        })).toBe(true);
-        expect(isDecodeWorkerResponse({ ...descriptor, metadataSummary: {} })).toBe(true);
-
-        // The payload and its metadata stay in the worker
-        expect(isDecodeWorkerResponse({ ...descriptor, frame: { close: vi.fn() } })).toBe(false);
-        expect(isDecodeWorkerResponse({ ...descriptor, encodedDolbyVisionMetadata: undefined })).toBe(false);
-        expect(isDecodeWorkerResponse({ ...descriptor, HDR10PlusMetadata: undefined })).toBe(false);
-        expect(isDecodeWorkerResponse({ ...descriptor, enhancementFrame: undefined })).toBe(false);
-
-        expect(isDecodeWorkerResponse({ ...descriptor, displayWidth: 0 })).toBe(false);
-        expect(isDecodeWorkerResponse({ ...descriptor, frameId: MALFORMED_FRAME_ID })).toBe(false);
-        expect(isDecodeWorkerResponse({
-            ...descriptor,
-            metadataSummary: { dolbyVision: { enhancementLayerVCL: false, rpuCount: MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT + 1 } }
-        })).toBe(false);
-        expect(isDecodeWorkerResponse({ ...descriptor, metadataSummary: { HDR10PlusStatus: MALFORMED_HDR10_PLUS_STATUS } })).toBe(false);
-    });
-
-    it('requires a bounded reason exactly when the worker renderer is unavailable', () => {
-        const readyStatus = { available: true, generation: RENDERER_GENERATION, reason: null, type: 'renderer-status' };
-        expect(isDecodeWorkerResponse(readyStatus)).toBe(true);
-        expect(isDecodeWorkerResponse({ ...readyStatus, available: false, reason: RENDERER_UNAVAILABLE_REASON })).toBe(true);
-        expect(isDecodeWorkerResponse({ ...readyStatus, reason: RENDERER_UNAVAILABLE_REASON })).toBe(false);
-        expect(isDecodeWorkerResponse({ ...readyStatus, available: false })).toBe(false);
-        expect(isDecodeWorkerResponse({ ...readyStatus, available: false, reason: '' })).toBe(false);
-        expect(isDecodeWorkerResponse({
-            ...readyStatus,
-            available: false,
-            reason: 'x'.repeat(MAXIMUM_RENDERER_STATUS_REASON_LENGTH + 1)
         })).toBe(false);
     });
 

@@ -17,15 +17,7 @@ Each source file's tests are at the same relative path under `test/`, and integr
 ## presentation/
 
 - `WebGPUPresenter.ts`: the GPU device and canvas; rVFC and pushed-frame submission; installing the color pipeline; HDR and Dolby Vision authorization; device-loss recovery; the latched fallback.
-  For presentation in the worker it creates each worker's transferred canvas and channel, forwards the authorized pipeline and live controls, lays the canvas out, and asks the renderer to draw each selected frame by its ID.
-- `WorkerPresentationProtocol.ts`: the channel between the presenter and the worker renderer (configure, settings, layout, present, and detach; status, configured, presented, and failed), its validators, the attachment and provider types, and the fallback reasons both sides report.
-- `WorkerPresentationRenderer.ts` [worker]: the decode worker's renderer: a device of its own configured with the transferred canvas, each `configure` installed once its route is authorized on that device, each `present` of a kept frame drawn with the presenter's per-frame checks, one device recovery, and `detach`.
-- `WorkerFrameStore.ts` [worker]: the frames worker-mode runs keep, by an ID unique for the worker's life; raw planes upload into reusable texture slots as a frame is kept, and a release, a stopped or failed run, the next run's start, or a `detach` frees frames.
-- `DecodedFramePresentation.ts`: the per-frame rules the presenter and the worker renderer share: color and descriptor checks, Dolby Vision RPU selection and layer composition, and HDR10+ frame settings.
-- `ExternalTextureGPURenderer.ts`: the external-texture pipeline and its import, bind, and draw, which the presenter and the worker renderer share.
-- `WebGPUResourceOperation.ts`: the 5 s bound on WebGPU requests and resource operations, and the presentation device request at the adapter's texture limit.
 - `RawYUVGPURenderer.ts`: uploads raw YUV planes, and a Dolby Vision EL, into integer textures and draws them.
-  The upload and the draw also run apart, for the worker renderer, which uploads a frame as it is kept.
   Authorization shares it.
 - `PresentationInput.ts`: MediaStream metadata to color metadata; Dolby Vision descriptors with their RPU route; declared and exact native base metadata; the presented video ordinal; the known-SDR gate.
 - `PresentationGeometry.ts`: pure object-fit and object-position math to viewport and texture transforms.
@@ -87,7 +79,6 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 - `CustomPlaybackController.ts` [main]: lifecycle, generations, the clock, the startup (20 s without progress, 60 s ceiling), stall (10 s), and lag (2 s) policy, the live audio output layout switch, the end-of-stream and ended-track drains, the presentation timing counters, and the fallback disposition.
 - `CustomPlaybackControllerTypes.ts`: states, events, fallback reasons, and dispositions.
 - `CustomDecodeSession.ts` [main]: the session's one decode worker, which the first start creates, each generation takes once the previous run stopped, a failure or an unacknowledged stop replaces, and `destroy` terminates; and per generation, the frame queue, credits, raw buffer recycling, readiness, audio-only resync epochs, the decoded source format, and an ended audio track completing a start, a resync, or a native-media stream.
-  Each new worker gets the host's renderer attachment, and its first start waits up to 2 s for the renderer's status; the session queues the descriptors of the frames such a worker keeps and releases them.
 - `CustomDecode.worker.ts` [worker]: one run at a time, each ending with `stopped`: demux, decoder dispatch, raw copy, Dolby Vision and HDR metadata, decoded PCM as restartable audio attempts in its audio decode worker, fMP4 remux, and credit waits.
 - `CustomAudioDecode.worker.ts`, `AudioDecodeWorkerRuntime.ts` [worker]: the audio decode worker, which a decode worker spawns for its decoded PCM runs and keeps for its life.
   Each attempt has a bundled decoder (E-AC-3, DTS with its seek recovery, TrueHD, or none for samples Mediabunny decoded), an output stage, and a `WorkletPCMProducer`; it renders one batch at a time under the producer's credit window and credits each batch back once rendered.
@@ -97,7 +88,7 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 - `AudioDecodeWorkerProtocol.ts`: the messages between the two workers, their validators, the batch shapes and their transfers, and the batch and credit constants (4 batches, 40 ms or 64 inputs).
 - `CustomDecodeInputFormats.ts` [worker]: Mediabunny's input formats with Matroska content decoding scoped to frames, so header-stripped laced audio demuxes intact.
 - `HandledDecodeFailures.ts` [worker]: marks the failures the worker catches, so the duplicate rejection Mediabunny leaves behind is not reported as unhandled, and tells the worker when it suppressed one, because the failed decoder stays open.
-- `DecodeWorkerProtocol.ts`: messages, validators, credit constants (4, 2, 8), and the backend and output literals, the renderer attachment, worker-frame descriptors, and their release included.
+- `DecodeWorkerProtocol.ts`: messages, validators, credit constants (4, 2, 8), and the backend and output literals.
 - `CustomDecodeTrackSelection.ts`, `ConcurrentDecodeStreams.ts`: track lookup by ordinal within one media type, and concurrent decode streams that cancel each other on the first failure and all drain before the worker reports that the generation stopped.
 - `MediaClock.ts` [main]: the generation-tagged clock; `synchronize` re-anchors it.
 - `MediaFetchPolicy.ts`: retries only transport errors and 408, 429, and 5xx.
@@ -237,7 +228,6 @@ The authorization vectors are in `capability/vectors/`.
 - `test/helpers/ownedVideoStreamFakes.ts`: a stream run, a packet iterator, and a decoder that outputs each frame at once or holds its frames until a flush, in decode or presentation order, for the owned decode path tests.
 - `test/helpers/decodeWorkerHarness.ts`: loads a fresh playback worker in a stand-in browser: a global scope that plays the session's part and waits for each run's `stopped`, so one worker can run several generations, range responses for the media it plays, a WebCodecs video decoder, and the audio decode worker run in-process (`inProcessAudioDecodeWorker.ts`) on a channel.
 - `test/helpers/fakeWorkletProcessor.ts`, `test/helpers/decodedAudioMedia.ts`: the worklet processor's end of a producer channel, which records each chunk and returns it played, held, or dropped; and a Matroska file of the VP9 vector's video and a stereo PCM tone, which Mediabunny decodes in Node.
-- `test/helpers/workerPresentationFakes.ts`: what the worker renderer finds in a browser, for Node: WebGPU devices that record their work and can be lost, the usage constants, a transferred canvas, the page's end of the renderer's channel, and decoded raw and `VideoFrame` frames.
 - `wasm/`: the decoder sources and build.
   See [WebAssembly decoders](decoders.md).
 - `vendor/`: the FFmpeg and dcadec submodules (`update = none`), which `make -C wasm sources` fetches.

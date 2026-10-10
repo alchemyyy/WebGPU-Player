@@ -1,6 +1,5 @@
 import type { Microseconds } from '../MediaTime';
 import type { DecodedPresentationFrame } from '../presentation/WebGPUPresenter';
-import type { WorkerPresentationRendererProvider } from '../presentation/WorkerPresentationProtocol';
 import type {
     AudioTelemetryListener,
     AudioWorkletControllerOptions
@@ -151,8 +150,7 @@ export type CustomVideoDecodeSession = {
 export type CustomVideoDecodeSessionFactory = (
     eventHandler: CustomDecodeSessionEventHandler,
     audioBridgeFactory: CustomDecodeAudioBridgeFactory | null,
-    nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null,
-    presentationRendererProvider: WorkerPresentationRendererProvider | null
+    nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null
 ) => CustomVideoDecodeSession;
 
 export type CustomPlaybackClock = {
@@ -290,11 +288,6 @@ export type CustomPlaybackControllerOptions = {
     maximumVideoDecodeLagMicroseconds?: Microseconds
     pipelineStopTimeoutMicroseconds?: Microseconds
     playbackStallTimeoutMicroseconds?: Microseconds
-    /**
-     * Supplies each new decode worker a canvas and a channel to the presenter, so the worker presents the frames it decodes.
-     * Called once per worker; null, or no provider, keeps presentation on the page.
-     */
-    presentationRendererProvider?: WorkerPresentationRendererProvider
     /** Longest startup overall, even while it progresses; never shorter than startupTimeoutMicroseconds */
     startupCeilingMicroseconds?: Microseconds
     /** Longest startup period without progress */

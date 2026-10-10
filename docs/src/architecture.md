@@ -17,7 +17,6 @@ A session takes one of two paths:
   The worker posts `'frame'` messages (a `VideoFrame`, or raw planes in a pooled buffer, with Dolby Vision and HDR10+ metadata), and fMP4 segments for native-media audio.
   Decoded PCM goes from the worker's audio decode worker straight to the AudioWorklet, over a channel the page hands over, and the page learns only each chunk's place and length (`audio-progress`).
   The host's rAF loop takes the controller's current frame and presents it.
-  With presentation in the worker, the worker keeps each frame and posts only its descriptor, and the presenter asks the worker's renderer to draw the selected frame into a canvas the worker owns.
   Decoded audio plays through an AudioWorklet in a pooled 48 kHz context, and AC-3 and E-AC-3 can play through a hidden `<audio>` element and MSE.
 
 The host player, its HTML backend with any hls.js runtime, and the rAF loop are host code.
@@ -56,8 +55,6 @@ Video is pulled: each rAF draws the newest frame at or before the clock.
    It samples the decode counters every second and fails after 20 s without progress, or at 60 s regardless.
    The fallback message names the counters it reached, so a timeout shows where startup stalled.
    `CustomDecodeSession.start` posts the generation's `start` to the session's decode worker, the prebuilt `libraries/webgpu-player/CustomDecode.worker.js` keyed per build with `?v=`, which the session's first start creates.
-   A new worker first gets the host's renderer attachment, a canvas the presenter transferred and a channel to the presenter, and its first start waits for the renderer's status, at most 2 s.
-   An available renderer makes every start of that worker ask for presentation in the worker; otherwise the worker's frames present on the page.
    The worker's first start with decoded PCM audio spawns its audio decode worker, the prebuilt `CustomAudioDecode.worker.js` beside it, which it keeps for its life.
    Video gets 4 frame credits, or 2 for raw planes.
 5. The worker prepares its tracks (`canDecode`), scans the static HDR metadata of the first 16 access units or 8 MiB, and posts `ready`.
@@ -72,10 +69,10 @@ Video is pulled: each rAF draws the newest frame at or before the clock.
 | Thread | Work |
 | --- | --- |
 | main | rAF loop, controller, session, presenter, audio bridges, sink manager, MSE `<audio>` |
-| worker, one per session | demux, video decode, raw copy, Dolby Vision and HDR10+ metadata, Mediabunny's audio decoding (WebCodecs and `@mediabunny/ac3`), fMP4 remux; with presentation in the worker, the renderer's uploads and draws |
+| worker, one per session | demux, video decode, raw copy, Dolby Vision and HDR10+ metadata, Mediabunny's audio decoding (WebCodecs and `@mediabunny/ac3`), fMP4 remux |
 | audio decode worker, one per worker | the bundled E-AC-3, DTS, and TrueHD decoders, the downmix in JavaScript, the resampler and limiter in WebAssembly, and the producer that feeds the worklet |
 | AudioWorklet | 1024-frame chunks in a 2 s ring, gain, play gate, periodic telemetry |
-| GPU | the presenter's queue, which the authorization probes share; with presentation in the worker, the renderer's own device |
+| GPU | the presenter's queue, which the authorization probes share |
 
 Video credits:
 
@@ -83,33 +80,9 @@ Video credits:
 - A presented `VideoFrame` closes after `submit()`, but its credit returns only after `queue.onSubmittedWorkDone()`.
   This keeps the decoder's surfaces from starving.
 - In raw mode the posted buffer is the credit, and it returns through `recycle-frame`.
-- A worker frame keeps its credit until the page releases it with `release-frames`, once its draw completed or the page dropped or discarded it.
-  Its descriptor holds the credit on the page, so the queued and the selected descriptors together stay within the start's credits.
 - The owned HEVC, AV1, and VP9 paths read a packet only while they hold a credit, then wait up to 10 ms for the decoder to return a frame before reading the next.
   The credit is spent only when a frame is posted, so without that wait a hardware decoder, which answers a few milliseconds after taking a packet, received a whole group of pictures at once (see [Decisions](decisions.md#playback-robustness)).
   Steady playback therefore decodes one packet per presented frame, while seek preroll still runs at decoder speed, because each returned frame ends the wait.
-
-Presentation in the worker:
-
-- The session queues each `worker-frame` descriptor (frame ID, media time, duration, video epoch, display size) as it queues any frame, and the controller selects it with the same clock, lag, catch-up, starvation, and end policies.
-- `presentDecodedFrame` posts `present` with the frame's ID on the renderer's channel, after a `layout` whenever the canvas geometry changed.
-  Its completion handler runs once the renderer answers `presented`, after the frame's GPU work completed or failed, and the host then acknowledges or discards the frame.
-- The presenter lays out the worker's canvas as its own: CSS size and position, backing size, and texture transform.
-  The renderer sizes the backing store, which a transferred canvas keeps in the worker.
-- `configureColorPipeline` prepares and authorizes the pipeline on the presenter's device as before, sends its shader and route as `configure`, and resumes presentation once the renderer accepts it.
-  Live HDR controls follow as `settings`.
-- The renderer reports each frame's Dolby Vision layer mode and HDR10+ result, which the presenter counts as it counts its own frames.
-- One canvas shows at a time: the one that presented the latest frame.
-- The session's telemetry reports `presentationMode`, and `rendererUnavailableReason` when a worker that was offered a renderer presents on the page.
-- In the worker, `WorkerFrameStore` keeps each frame under an ID unique for the worker's life, with its Dolby Vision and HDR10+ metadata.
-  The descriptor carries only a summary of that metadata, for the session's telemetry.
-- A raw frame's planes upload into a texture slot of the renderer's device as the frame is kept, so its buffer returns to the run's pool at once.
-  A Dolby Vision pair uploads its BL and EL into the slot's two texture sets, and a released frame's slot serves a later frame, with at most 2 spares kept.
-- A kept `VideoFrame` waits in the store until it presents, and closes after `submit()`, as on the page.
-- The renderer takes a device of its own through the presenter's device request, configures the transferred canvas as the presenter configures its own, and accepts a `configure` only once its own authorization registries authorized the route on that device.
-- Each `present` runs the presenter's per-frame checks (color and descriptor, Dolby Vision RPU and layers, HDR10+ settings) and validates a new pipeline's first submission.
-  A frame that breaks its route posts `failed` with the presenter's reason, and a frame the store no longer keeps answers `presented` with `ok` false.
-- The renderer records each frame's GPU wait as `gpu-work-done` in the worker's timing trace.
 
 Raw planes:
 
@@ -155,7 +128,6 @@ Hidden page, through `setPageVisibility` and `drainBackgroundVideo`:
 
 Geometry: `WebGPUPresenter.bindLayoutHandling` invalidates layout on resize observers, class and style mutations of the video and its ancestors, CSS motion events, window resize, seek, and refresh.
 The backing size is the CSS size times the device pixel ratio, capped by `maxTextureDimension2D`.
-A worker canvas gets the same layout, which the presenter posts to the renderer with a new revision whenever it changes.
 
 ## Transitions
 
@@ -187,9 +159,6 @@ A worker canvas gets the same layout, which the presenter posts to the renderer 
 - GPU device loss: one recovery per session.
   The new device must re-authorize the active HDR, Dolby Vision, or raw route before it draws.
   If that fails, `device-recovery-failed` falls back to HTML.
-  The worker renderer's device is its own, and a failure the renderer reports with `failed` falls back as the presenter's own does.
-  The renderer recovers one loss of its device for the worker's life: a new device, the canvas configured with it, and the newest `configure` authorized and installed again.
-  Frames uploaded to the lost device answer `presented` with `ok` false, and a second loss or a failed recovery posts `failed` with `device-recovery-failed`.
 - Audio sink change (`WebGPUAudioOutputManager`): the default sink is `setSinkId('')`.
   The fallback chain is the selected device, then the default, then the first enumerated device.
   A route whose sink ID is unchanged is left alone, because browsers ignore a same-ID `setSinkId`.
@@ -215,12 +184,6 @@ A worker canvas gets the same layout, which the presenter posts to the renderer 
   A run's `stopped` also waits until the audio decode worker released the run's decoded PCM attempts.
   A worker is replaced, never reused, after a generation fails, a message fails validation, the worker crashes, or a run's `stopped` asks for it with `replaceWorker`; a start on another video decoder backend also gets a new worker.
   A lost audio decode worker fails its run's decoded PCM as `audio-output-failed`, and the run's `stopped` asks for replacement.
-  A worker's renderer and canvas serve all its runs.
-  A replacement worker gets a new attachment, whose canvas replaces the old one on the page and stays blank until its first frame presents.
-- Worker frames at a handoff: a run's frames outlive it until the page releases them, so the frames that finish a run still present.
-  The session releases the frames a stopped, seeking, or failed generation leaves, and the worker's next start frees any it still holds.
-  A stopped or failed run also frees its own frames before its `stopped`, and the renderer's `detach` frees every kept frame.
-  A worker whose ended run asked for replacement stays until its generation retires, and a worker lost while the page still holds its frames fails the generation.
 - Stop: `controller.destroy` stops the generation (its run has 1 s to acknowledge), terminates the decode worker and with it its audio decode worker, releases the worklet and the sink lease (1.5 s cap), and ends the presenter session.
 
 ## Fallback and renegotiation
@@ -242,7 +205,7 @@ Every stale callback is dropped by a generation or revision check:
 - The controller: `activeGeneration` and `fallbackGeneration`.
 - The session: a generation record per generation, which its worker's messages must match.
 - The worklet: its flush generation.
-- The presenter: `deviceResourceEpoch`, the color and layout revisions, `fallbackLatched`, and the renderer attachment a message arrives on.
+- The presenter: `deviceResourceEpoch`, the color and layout revisions, and `fallbackLatched`.
 
 ## Gotchas
 
