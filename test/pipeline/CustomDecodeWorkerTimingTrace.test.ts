@@ -61,8 +61,13 @@ describe('the playback worker with a timing trace', () => {
         expect(fetchEvents.every(event => event.fields.status === SUCCESSFUL_RANGE_STATUS)).toBe(true);
         expect(events.some(event => event.kind === 'video-read' && event.fields.source === 'packet')).toBe(true);
         // Every posted frame has its output event, in posting order
+        const postedMediaTimes = getFrameResponses(responses).map(response => response.mediaTimeMicroseconds);
         expect(events.filter(event => event.kind === 'video-frame-output').map(event => event.fields.mediaTimeMicroseconds)).toEqual(
-            getFrameResponses(responses).map(response => response.mediaTimeMicroseconds)
+            postedMediaTimes
+        );
+        // The owned VP9 path also reports when its decoder returned each frame
+        expect(events.filter(event => event.kind === 'video-decoded').map(event => event.fields.mediaTimeMicroseconds)).toEqual(
+            postedMediaTimes
         );
     });
 

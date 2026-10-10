@@ -107,7 +107,7 @@ All worker code unless marked.
 
 ### video/decoders/
 
-- `OwnedVideoDecodeStream.ts`: the codec-neutral state of one owned decode attempt: decoded outputs matched with their packets' metadata, the pre-start rule, BL and EL pairing, frame credits, and the packet pump.
+- `OwnedVideoDecodeStream.ts`: the codec-neutral state of one owned decode attempt: decoded outputs matched with their packets' metadata, the pre-start rule, BL and EL pairing, frame credits, and the packet pump, which waits briefly after each packet for the decoder's next output.
   It pairs a path's Dolby Vision and HDR10+ queues into the metadata its frames take (`createOwnedVideoFrameMetadataSource`).
   It also runs a single-layer attempt (`runOwnedSingleLayerVideoStream`), given a per-packet metadata step.
 - `OwnedNativeVideoDecoder.ts`: an owned WebCodecs decoder for packets that decode unchanged, used for AV1 and VP9.

@@ -54,13 +54,19 @@ function wakeWaiters(waiters: Array<() => void>): void {
     }
 }
 
-/** A run that posts single-layer native frames, recording each, and hands out frame credits. */
+/**
+ * A run that posts single-layer native frames, recording each, and hands out frame credits.
+ * Its sleeps end at once unless held, when they end only at their release.
+ */
 export class FakeStreamRun implements OwnedVideoStreamRun {
+    public holdSleeps = false;
     public readonly postedFrames: PostedFrame[] = [];
     public readonly progress: Array<[OwnedVideoStreamProgressPhase, number, number]> = [];
+    public readonly sleepDurations: number[] = [];
     public stopped = false;
     private readonly creditWaiters: Array<() => void> = [];
     private readonly progressWaiters: Array<() => void> = [];
+    private readonly sleepWaiters: Array<() => void> = [];
 
     public constructor(private credits: number) {}
 
@@ -97,6 +103,16 @@ export class FakeStreamRun implements OwnedVideoStreamRun {
         this.progress.push([ phase, packetCount, mediaTimeMicroseconds ]);
     };
 
+    public readonly sleep = (milliseconds: number): Promise<void> => {
+        this.sleepDurations.push(milliseconds);
+        if (!this.holdSleeps) {
+            return Promise.resolve();
+        }
+        return new Promise<void>(resolve => {
+            this.sleepWaiters.push(resolve);
+        });
+    };
+
     public readonly waitForDecoderProgress = (): Promise<void> => new Promise<void>(resolve => {
         this.progressWaiters.push(resolve);
     });
@@ -119,10 +135,16 @@ export class FakeStreamRun implements OwnedVideoStreamRun {
         wakeWaiters(this.creditWaiters);
     }
 
+    /** Ends every held sleep, as the pacing bound passing does. */
+    public releaseSleeps(): void {
+        wakeWaiters(this.sleepWaiters);
+    }
+
     public stop(): void {
         this.stopped = true;
         wakeWaiters(this.creditWaiters);
         wakeWaiters(this.progressWaiters);
+        wakeWaiters(this.sleepWaiters);
     }
 }
 

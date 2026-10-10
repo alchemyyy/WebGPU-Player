@@ -2,7 +2,7 @@ import type { EncodedPacket, VideoSample } from 'mediabunny';
 
 import type { Microseconds } from '../../MediaTime';
 import { requireMicroseconds } from '../../TimeMath';
-import { recordTimingWait, startTimingWait } from '../../TimingTrace';
+import { recordTimingEvent, recordTimingWait, startTimingWait } from '../../TimingTrace';
 import DolbyVisionFramePairQueue, {
     MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH
 } from '../dolby-vision/DolbyVisionFramePairQueue';
@@ -18,6 +18,9 @@ import {
 
 // Every queued packet becomes a frame that may wait in the pair queue for a credit, so the decode queue plus the decodes in flight must fit under that queue's bound
 const OWNED_VIDEO_DECODE_QUEUE_HIGH_WATER_MARK = MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH / 2;
+// A hardware decoder returns a picture a few milliseconds after it takes the packet.
+// Waiting up to this long for that picture before the next packet keeps decode at one packet per presented frame.
+export const OWNED_VIDEO_PACKET_PACING_MILLISECONDS = 10;
 
 export type OwnedDecodedVideoSource =
     | {
@@ -96,6 +99,8 @@ export type OwnedVideoStreamRun = {
         packetCount: number,
         mediaTimeMicroseconds: Microseconds
     ) => void
+    /** Resolves after the given time; the packet pacing waits on it. */
+    sleep: (milliseconds: number) => Promise<void>
     /** Resolves at the next decoder output, error, or dequeue, or when the run stops. */
     waitForDecoderProgress: () => Promise<void>
     /** Takes one frame credit; false when the run stopped first. */
@@ -208,6 +213,7 @@ export class OwnedVideoStreamState {
         OwnedDecodedVideoOutput,
         OwnedDecodedVideoOutput
     >(closeOwnedDecodedVideoOutput, closeOwnedDecodedVideoOutput);
+    private decodedOutputCount = 0;
     private firstPresentationOutputQueued = false;
     private frameCreditHeld = false;
     private preStartOutput: OwnedDecodedVideoOutput | null = null;
@@ -246,10 +252,13 @@ export class OwnedVideoStreamState {
      * Outputs before the start time are dropped except the latest one, which leads the first presented frame, so presentation does not start late.
      */
     public enqueueDecodedOutput(source: OwnedDecodedVideoSource): void {
+        // Counted before any check, so an output that fails or precedes the start still ends a pacing wait
+        this.decodedOutputCount += 1;
         let decodedOutput: OwnedDecodedVideoOutput | null = null;
         let sourceOwned = true;
         try {
             const timing = getOwnedDecodedVideoTiming(source);
+            recordTimingEvent('video-decoded', { mediaTimeMicroseconds: timing.mediaTimeMicroseconds });
             const frameMetadata = this.frameMetadata.takeFrameMetadata(timing.mediaTimeMicroseconds);
             decodedOutput = {
                 durationMicroseconds: timing.durationMicroseconds,
@@ -407,6 +416,31 @@ export class OwnedVideoStreamState {
         this.throwDecoderFailure();
     }
 
+    /** Returns how many BL outputs the decoder has returned, including those dropped before the start. */
+    public getDecodedOutputCount(): number {
+        return this.decodedOutputCount;
+    }
+
+    /**
+     * Waits until the decoder returns an output after the given count, the run stops, a decoder fails, or the pacing bound passes.
+     * Reading on at once would hand a hardware decoder a whole group of pictures, whose decode then delays presentation on the same GPU.
+     * A decoder that needs further pictures to reorder before its next output gets the next packet once the bound passes.
+     */
+    public async waitForPacedOutput(decodedOutputCountBeforePacket: number): Promise<void> {
+        let pacingElapsed = false;
+        const pacing = this.stream.sleep(OWNED_VIDEO_PACKET_PACING_MILLISECONDS).then((): void => {
+            pacingElapsed = true;
+        });
+        while (
+            !pacingElapsed
+            && this.decodedOutputCount === decodedOutputCountBeforePacket
+            && this.decoderFailure === null
+            && !this.stream.isStopped()
+        ) {
+            await Promise.race([ this.stream.waitForDecoderProgress(), pacing ]);
+        }
+    }
+
     public close(): void {
         closeOwnedDecodedVideoOutput(this.preStartOutput);
         this.preStartOutput = null;
@@ -469,6 +503,7 @@ export async function readNextVideoPacket(packetIterator: OwnedVideoPacketIterat
  * Pumps one owned attempt until it stops or every frame is posted.
  * Ready frames are posted first.
  * A packet is read only while a frame credit is held and the decoders are under their queue bound.
+ * Each packet then waits, up to the pacing bound, for the decoder to return a picture, so decode work follows presentation instead of arriving in bursts.
  * The end of the track flushes the decoders.
  */
 export async function pumpOwnedVideoFrames(
@@ -516,10 +551,12 @@ export async function pumpOwnedVideoFrames(
             'Owned video packet timestamp'
         );
         stream.postStartupProgress('video-packet-started', packetCount, packetMediaTimeMicroseconds);
+        const decodedOutputCountBeforePacket = state.getDecodedOutputCount();
         if (!await decodePacket(packetResult.value, packetMediaTimeMicroseconds)) {
             return;
         }
         stream.postStartupProgress('video-packet-decoded', packetCount, packetMediaTimeMicroseconds);
+        await state.waitForPacedOutput(decodedOutputCountBeforePacket);
     }
 }
 

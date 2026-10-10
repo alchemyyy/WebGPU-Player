@@ -2377,6 +2377,9 @@ function createOwnedVideoStreamRun(
         ): void => {
             postVideoStartupProgress(run, phase, packetCount, mediaTimeMicroseconds);
         },
+        sleep: (milliseconds: number): Promise<void> => new Promise<void>(resolve => {
+            setTimeout(resolve, milliseconds);
+        }),
         waitForDecoderProgress: (): Promise<void> => new Promise<void>(resolve => {
             run.wakeVideoDecodeWaiters.push(resolve);
         }),

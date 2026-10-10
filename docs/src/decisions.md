@@ -251,9 +251,15 @@ These were settled on Firefox 157 on Windows.
 - Timing trace and presentation counters (10-09).
   Video that crawled and caught up in waves showed no dropped frames, because a frame shown late is not dropped and a clock re-anchor is not counted.
   The telemetry now counts frames shown later than their own duration while playing, the worst lag, and clock re-anchors of 16 ms or more with the largest jump, and hosts report stale discards beside skipped frames.
-  `TimingTrace.ts` records render ticks, clock syncs, frame arrivals and outputs, frame credit and read waits, fetches, GPU completion, audio clock mappings, and long tasks, but only while a host runs a trace.
-  Without one, each hook costs a null check and allocates nothing.
+  `TimingTrace.ts` records render ticks, clock syncs, frame arrivals, decodes, and outputs, frame credit and read waits, fetches, GPU completion, audio clock mappings, and long tasks, but only while a host runs a trace.
+  Without one, a hook costs a null check and, at most, its small field object.
   Worker events carry epoch times, `performance.timeOrigin` plus `performance.now()`, and reach the page on their own `timing-trace` message, which is merged even from a replaced generation because it explains the moments before the replacement.
+- Owned decode paces its packets (10-09).
+  A frame credit was held, not spent, while packets were read, so with no decoded frame waiting the pump read packets until the first output came back.
+  A hardware HEVC decoder answered after a few milliseconds, by which time a whole group of pictures had reached it: 12 4K packets in 6 ms, every 12 frames.
+  On an Intel Arc laptop each burst delayed the GPU work of the frame being presented by 40 to 80 ms, a visible hitch twice a second, while every frame was still chosen on time.
+  Each packet now waits, up to 10 ms, for the decoder to return a picture before the next packet is read, so decode follows presentation one packet per frame.
+  A decoder that needs more packets to reorder gets the next one when the 10 ms pass.
 
 ## Audio
 

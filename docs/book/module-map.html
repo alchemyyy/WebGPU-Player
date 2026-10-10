@@ -38,7 +38,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-70c28fe2.js";
+            window.path_to_searchindex_js = "searchindex-0bba3c6a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c0e4fc60.js"></script>
@@ -284,7 +284,7 @@ A Dolby Vision pair is a BL in any format from I420 to I444P12 and an I420P10 EL
 </ul>
 <h3 id="videodecoders"><a class="header" href="#videodecoders">video/decoders/</a></h3>
 <ul>
-<li><code>OwnedVideoDecodeStream.ts</code>: the codec-neutral state of one owned decode attempt: decoded outputs matched with their packets’ metadata, the pre-start rule, BL and EL pairing, frame credits, and the packet pump.
+<li><code>OwnedVideoDecodeStream.ts</code>: the codec-neutral state of one owned decode attempt: decoded outputs matched with their packets’ metadata, the pre-start rule, BL and EL pairing, frame credits, and the packet pump, which waits briefly after each packet for the decoder’s next output.
 It pairs a path’s Dolby Vision and HDR10+ queues into the metadata its frames take (<code>createOwnedVideoFrameMetadataSource</code>).
 It also runs a single-layer attempt (<code>runOwnedSingleLayerVideoStream</code>), given a per-packet metadata step.</li>
 <li><code>OwnedNativeVideoDecoder.ts</code>: an owned WebCodecs decoder for packets that decode unchanged, used for AV1 and VP9.</li>

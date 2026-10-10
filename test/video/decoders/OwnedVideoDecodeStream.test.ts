@@ -2,15 +2,30 @@ import { EncodedPacket } from 'mediabunny';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Microseconds } from 'webgpu-player/MediaTime';
+import { clearTimingTrace, exportTimingTrace, startTimingTrace } from 'webgpu-player/TimingTrace';
 import type { RawVideoFrameGeometry } from 'webgpu-player/video/RawVideoFrameCopy';
 import {
+    OWNED_VIDEO_PACKET_PACING_MILLISECONDS,
     OwnedVideoStreamState,
+    runOwnedSingleLayerVideoStream,
     type OwnedDecodedVideoOutput,
     type OwnedDecodedVideoSource,
     type OwnedVideoDecoderPort,
+    type OwnedVideoFrameMetadata,
     type OwnedVideoFrameMetadataSource,
-    type OwnedVideoStreamRun
+    type OwnedVideoStreamRun,
+    type ProcessedOwnedVideoPacket
 } from 'webgpu-player/video/decoders/OwnedVideoDecodeStream';
+
+import {
+    AMPLE_FRAME_CREDITS,
+    createFramePacket,
+    createOwnedVideoStreamFakes,
+    FRAME_DURATION_MICROSECONDS as FAKE_FRAME_DURATION_MICROSECONDS,
+    KEY_PACKET_MEDIA_TIME_MICROSECONDS,
+    settle,
+    type OwnedVideoStreamFakes
+} from '../../helpers/ownedVideoStreamFakes';
 
 const FRAME_DURATION_MICROSECONDS = 31_250;
 const FRAME_GEOMETRY: RawVideoFrameGeometry = {
@@ -55,6 +70,7 @@ function createHarness(hasEnhancementLayer: boolean): StateHarness {
             postedPairs.push([ output, enhancementOutput ]);
         },
         postStartupProgress: vi.fn(),
+        sleep: async (): Promise<void> => undefined,
         waitForDecoderProgress: async (): Promise<void> => undefined,
         waitForFrameCredit: async (): Promise<boolean> => true
     };
@@ -220,5 +236,94 @@ describe('OwnedVideoStreamState', () => {
         expect(harness.postedPairs).toHaveLength(0);
         harness.state.close();
         expect(harness.frameMetadata.clear).toHaveBeenCalledOnce();
+    });
+});
+
+const PACED_PACKET_COUNT = 4;
+const START_TIME_MICROSECONDS = 0 as Microseconds;
+
+const pacedFrameMetadata: OwnedVideoFrameMetadataSource = {
+    clear: (): void => undefined,
+    requireDrained: (): void => undefined,
+    takeFrameMetadata: (): OwnedVideoFrameMetadata => ({ encodedDolbyVisionMetadata: null })
+};
+
+async function processPacketWithoutMetadata(packet: EncodedPacket): Promise<ProcessedOwnedVideoPacket> {
+    return { decoderPacket: packet, hasFrame: true };
+}
+
+function createPacedStream(): { fakes: OwnedVideoStreamFakes, streamPromise: Promise<void> } {
+    const packets = Array.from(
+        { length: PACED_PACKET_COUNT },
+        (_value: unknown, frameIndex: number): EncodedPacket => createFramePacket(frameIndex, [ frameIndex ])
+    );
+    // A held decoder returns its frames only when released, as a hardware decoder returns them some time after taking the packets
+    const fakes = createOwnedVideoStreamFakes(packets, AMPLE_FRAME_CREDITS, 'held');
+    fakes.run.holdSleeps = true;
+    const streamPromise = runOwnedSingleLayerVideoStream(
+        fakes.run,
+        fakes.packetIterator,
+        pacedFrameMetadata,
+        processPacketWithoutMetadata,
+        fakes.createDecoder,
+        START_TIME_MICROSECONDS,
+        KEY_PACKET_MEDIA_TIME_MICROSECONDS
+    );
+    return { fakes, streamPromise };
+}
+
+describe('pumpOwnedVideoFrames pacing', () => {
+    it('waits for each packet\'s frame before it reads the next packet', async () => {
+        const { fakes, streamPromise } = createPacedStream();
+
+        await settle();
+        expect(fakes.packetIterator.nextCallCount).toBe(1);
+        fakes.requireDecoder().releaseHeldFrames();
+        await settle();
+        expect(fakes.run.postedFrames).toHaveLength(1);
+        expect(fakes.packetIterator.nextCallCount).toBe(2);
+
+        fakes.run.holdSleeps = false;
+        fakes.run.releaseSleeps();
+        await streamPromise;
+        expect(fakes.run.postedFrames.map(postedFrame => postedFrame.mediaTimeMicroseconds)).toEqual(
+            Array.from({ length: PACED_PACKET_COUNT }, (_value: unknown, frameIndex: number): number => (
+                frameIndex * FAKE_FRAME_DURATION_MICROSECONDS
+            ))
+        );
+        expect(new Set(fakes.run.sleepDurations)).toEqual(new Set([ OWNED_VIDEO_PACKET_PACING_MILLISECONDS ]));
+    });
+
+    it('gives a decoder that holds its frames the next packet once the pacing bound passes', async () => {
+        const { fakes, streamPromise } = createPacedStream();
+
+        await settle();
+        expect(fakes.packetIterator.nextCallCount).toBe(1);
+        fakes.run.releaseSleeps();
+        await settle();
+        expect(fakes.packetIterator.nextCallCount).toBe(2);
+        expect(fakes.run.postedFrames).toHaveLength(0);
+
+        fakes.run.stop();
+        await streamPromise;
+        expect(fakes.requireDecoder().close).toHaveBeenCalledOnce();
+    });
+
+    it('records each frame the decoder returns while a timing trace runs', async () => {
+        startTimingTrace();
+        try {
+            const { fakes, streamPromise } = createPacedStream();
+            fakes.run.holdSleeps = false;
+            fakes.run.releaseSleeps();
+            fakes.requireDecoder().releaseHeldFrames();
+            await streamPromise;
+
+            const decodedTimes = exportTimingTrace()?.events
+                .filter(event => event.kind === 'video-decoded')
+                .map(event => event.fields.mediaTimeMicroseconds);
+            expect(decodedTimes).toEqual(fakes.run.postedFrames.map(postedFrame => postedFrame.mediaTimeMicroseconds));
+        } finally {
+            clearTimingTrace();
+        }
     });
 });
