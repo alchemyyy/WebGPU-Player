@@ -16,7 +16,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "lint": "eslint",
+    "lint": "eslint --concurrency=auto",
     "test": "vitest --watch=false",
     "typecheck": "tsc --noEmit"
   },
