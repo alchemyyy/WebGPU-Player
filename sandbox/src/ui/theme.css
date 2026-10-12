@@ -1,5 +1,7 @@
 /* The sandbox's shared look: every panel stylesheet reads these variables instead of restating colors and sizes */
 :root {
+    /* Native controls follow the dark look too, such as a select's option list and scrollbars */
+    color-scheme: dark;
     --sandbox-font: 12px/1.4 system-ui, sans-serif;
     --sandbox-monospace-font: 11px/1.35 ui-monospace, Consolas, monospace;
     --sandbox-text: #e8e8e8;
@@ -15,6 +17,8 @@
     --sandbox-gap: 8px;
     --sandbox-control-background: rgba(255, 255, 255, 0.08);
     --sandbox-control-hover: rgba(255, 255, 255, 0.16);
+    /* A select's option list draws apart from the page, so it needs an opaque color near a control's look over a panel */
+    --sandbox-menu-background: #232326;
 }
 
 html,
