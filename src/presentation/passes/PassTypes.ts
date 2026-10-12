@@ -293,11 +293,39 @@ export type PlannedPass = {
     workgroupCounts: readonly [number, number, number] | null
 };
 
+/**
+ * The check that kept a user pass out of a plan; every reason but 'condition-false' is a failure.
+ * The presenter adds 'header-invalid' and 'compile-error', since it parses headers and compiles plans.
+ */
+export type PassRejectionReason =
+    | 'compile-error'
+    | 'condition-false'
+    | 'condition-invalid'
+    | 'domain-unreachable'
+    | 'duplicate-name'
+    | 'extra-scaler'
+    | 'header-invalid'
+    | 'input-after-hook'
+    | 'input-reserved'
+    | 'input-unknown'
+    | 'output-missing'
+    | 'output-size'
+    | 'replaced-function-missing'
+    | 'replaced-function-taken'
+    | 'sdr-on-hdr-output'
+    | 'workgroup-count'
+    | 'workgroup-missing';
+
+/** A user pass left out of a plan: the failed check and a terse detail with the failing values. */
+export type PassRejection = {
+    detail: string
+    name: string
+    reason: PassRejectionReason
+};
+
 export type PlanReport = {
     activePasses: readonly string[]
-    /** Domain conflicts and other reasons a preset cannot run as written. */
-    conflicts: readonly string[]
-    inactivePasses: readonly { name: string; reason: string }[]
+    inactivePasses: readonly PassRejection[]
 };
 
 /** One user pass's parameters; its `parameters` uniform holds them as PassResources lays them out. */

@@ -489,7 +489,7 @@ const HOOK_AND_DOMAIN_ERROR_CASES: readonly ErrorCase[] = [
         headerLines: [ NAME_LINE, '//! shape: kernel', '//! hook: MAIN' ],
         label: 'an unknown hook',
         line: 3,
-        message: "Unknown hook 'MAIN'; expected OUTPUT, PRESCALE, RGB, SCALE"
+        message: "Unknown hook 'MAIN'; expected RGB, PRESCALE, SCALE, OUTPUT"
     },
     {
         headerLines: [ NAME_LINE, '//! shape: scaler', '//! hook: OUTPUT' ],

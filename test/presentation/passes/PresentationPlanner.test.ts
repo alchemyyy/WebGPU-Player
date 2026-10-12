@@ -37,6 +37,7 @@ const SDR_STEP_ENTRY_POINTS: readonly string[] = [
     DITHER_ENTRY_POINT
 ];
 const SIGNAL_ENTRY_POINT = 'sampleBuiltinSignal';
+const TONE_MAP_NAME = 'builtin.tone-map';
 const PROFILE_4_BYPASS = 'isDolbyVisionFEL()';
 
 const COLOR_BODY = `
@@ -246,7 +247,7 @@ describe('planPresentation with color passes', () => {
     });
 
     it('replaces a built-in color function in its place on the track', () => {
-        const replacement = createColorPass({ domain: 'any', hook: null, name: 'Tone map', replaces: 'builtin.tone-map' });
+        const replacement = createColorPass({ domain: 'any', hook: null, name: 'Tone map', replaces: TONE_MAP_NAME });
         const [ pass ] = plan(createHDRChain(), [ replacement ]).passes;
 
         expect(getStepCalls(pass)).toEqual([
@@ -260,11 +261,11 @@ describe('planPresentation with color passes', () => {
     });
 
     it('rejects replacing a function the route does not run', () => {
-        const replacement = createColorPass({ domain: 'any', hook: null, name: 'Tone map', replaces: 'builtin.tone-map' });
+        const replacement = createColorPass({ domain: 'any', hook: null, name: 'Tone map', replaces: TONE_MAP_NAME });
         const presentationPlan = plan(createIdentityChain(), [ replacement ]);
 
         expect(presentationPlan.report.activePasses).toEqual([]);
-        expect(presentationPlan.report.conflicts).toEqual([ 'Tone map: This route runs no \'builtin.tone-map\' to replace' ]);
+        expect(presentationPlan.report.inactivePasses).toEqual([ { detail: TONE_MAP_NAME, name: 'Tone map', reason: 'replaced-function-missing' } ]);
     });
 
     it('rejects a linear pass after a display kernel, since tone mapping cannot be undone', () => {
@@ -273,9 +274,7 @@ describe('planPresentation with color passes', () => {
         const presentationPlan = plan(createHDRChain(), [ kernel, linearPass ]);
 
         expect(presentationPlan.report.activePasses).toEqual([ 'Sharpen' ]);
-        expect(presentationPlan.report.inactivePasses).toEqual([
-            { name: 'Exposure', reason: 'Its linear domain cannot be reached from the display values its input holds' }
-        ]);
+        expect(presentationPlan.report.inactivePasses).toEqual([ { detail: 'linear from display', name: 'Exposure', reason: 'domain-unreachable' } ]);
     });
 });
 
@@ -336,7 +335,7 @@ describe('planPresentation with kernels, scalers, and compute passes', () => {
         const presentationPlan = plan(createHDRChain(), [ firstScaler, secondScaler ]);
 
         expect(presentationPlan.report.activePasses).toEqual([ 'First' ]);
-        expect(presentationPlan.report.conflicts).toEqual([ 'Second: Only one scaler runs, and \'First\' comes first' ]);
+        expect(presentationPlan.report.inactivePasses).toEqual([ { detail: '\'First\' runs', name: 'Second', reason: 'extra-scaler' } ]);
     });
 
     it('dispatches a compute pass into a storage texture, which a final pass presents', () => {
@@ -419,35 +418,36 @@ describe('planPresentation reports', () => {
     it('leaves out a pass whose condition is false, without a conflict', () => {
         const presentationPlan = plan(createHDRChain(), [ createColorPass({ when: parsePassExpression('output.width < source.width') }) ]);
 
-        expect(presentationPlan.report.inactivePasses).toEqual([ { name: 'Saturation', reason: 'Its condition is false' } ]);
-        expect(presentationPlan.report.conflicts).toEqual([]);
+        expect(presentationPlan.report.inactivePasses).toEqual([ { detail: '', name: 'Saturation', reason: 'condition-false' } ]);
         expect(presentationPlan.passes).toHaveLength(1);
     });
 
     it('rejects an SDR pass on an HDR output', () => {
         const presentationPlan = plan(createHDRChain(), [ createKernelPass({ domain: 'sdr' }) ], createFacts({ hdrOutput: true }));
 
-        expect(presentationPlan.report.conflicts).toEqual([ 'Copy: It requires SDR values, and the output is HDR' ]);
+        expect(presentationPlan.report.inactivePasses).toEqual([ { detail: 'sdr', name: 'Copy', reason: 'sdr-on-hdr-output' } ]);
     });
 
     it('rejects a second pass with the same name', () => {
         const presentationPlan = plan(createHDRChain(), [ createColorPass(), createColorPass() ]);
 
         expect(presentationPlan.report.activePasses).toEqual([ 'Saturation' ]);
-        expect(presentationPlan.report.conflicts).toEqual([ 'Saturation: Another pass is named \'Saturation\'' ]);
+        expect(presentationPlan.report.inactivePasses).toEqual([ { detail: 'position 2', name: 'Saturation', reason: 'duplicate-name' } ]);
     });
 
     it('rejects an input that no earlier pass saves', () => {
         const presentationPlan = plan(createHDRChain(), [ createKernelPass({ inputs: [ { historyOffset: 0, name: 'missing' } ] }) ]);
 
-        expect(presentationPlan.report.conflicts).toEqual([ 'Copy: It reads \'missing\', which no earlier pass saves' ]);
+        expect(presentationPlan.report.inactivePasses).toEqual([ { detail: '\'missing\'', name: 'Copy', reason: 'input-unknown' } ]);
     });
 
     it('rejects an output size beyond the device limit', () => {
         const oversized = createKernelPass({ output: { ...HOOKED_SIZE_OUTPUT, width: parsePassExpression(`${MAXIMUM_TEXTURE_DIMENSION + 1}`) } });
         const presentationPlan = plan(createHDRChain(), [ oversized ]);
 
-        expect(presentationPlan.report.conflicts).toEqual([ `Copy: Its output width is ${MAXIMUM_TEXTURE_DIMENSION + 1}, outside 1 to ${MAXIMUM_TEXTURE_DIMENSION}` ]);
+        expect(presentationPlan.report.inactivePasses).toEqual([
+            { detail: `width ${MAXIMUM_TEXTURE_DIMENSION + 1} outside [1, ${MAXIMUM_TEXTURE_DIMENSION}]`, name: 'Copy', reason: 'output-size' }
+        ]);
         expect(presentationPlan.passes).toHaveLength(1);
     });
 });
