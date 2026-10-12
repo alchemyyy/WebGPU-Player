@@ -13,10 +13,12 @@ You need:
 
 Steps:
 
-1. From the engine root, run `npm run sandbox`.
-   It builds the served assets with `node scripts/build.mjs`, then starts the Vite dev server from `sandbox/vite.config.ts` on port 5180.
-   Inside a host workspace, run `npm run sandbox -w webgpu-player` from the host root.
-2. Open `http://localhost:5180/`.
+1. From the engine root, run `./sandbox.sh`, in Git Bash on Windows.
+   It checks that the npm dependencies are installed, then runs `npm run sandbox`, which builds the served assets with `node scripts/build.mjs` and starts the Vite dev server from `sandbox/vite.config.ts` on port 5180.
+   It opens the sandbox in the default browser, or in the one `BROWSER` names, unless you pass `--no-open`.
+   Its other options go to Vite, such as `--port 5190`.
+   Without the script, run `npm run sandbox` in the engine root, or `npm run sandbox -w webgpu-player` from a host's root.
+2. When no browser opened, open `http://localhost:5180/`.
    `localhost` is a secure context, so WebGPU works without HTTPS.
 3. Click Pick folder and choose a folder of media.
 
