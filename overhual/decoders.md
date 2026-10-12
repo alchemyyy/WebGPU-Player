@@ -56,13 +56,17 @@ fn parse_frame_header() {
 | `dispatch` | Entry points in order, each with a workgroup count expression or `indirect <buffer>` |
 | `vector` | The conformance vector, the frames to check, and the expected hash |
 
+The vector's hash is the SHA-256 of the checked frames in presentation order, frame after frame.
+Each frame contributes its luma plane, then its two chroma planes, at the stream's coded size, rows tightly packed and 16-bit samples little-endian.
+That is FFmpeg's rawvideo output of those frames in the decoder's planar format, such as `yuv422p10le`, when the coded size is the visible size.
+
 The generated prelude binds:
-- `packet_bytes`: the ring of packets, read-only;
+- `packetBytes`: the ring of packets, read-only;
 - `packet`: the packet's offset, size, index, keyframe and reset flags, and output slot, through one uniform buffer with dynamic offsets, so a packet never creates a bind group;
 - `config`: the codec private data from the container;
 - `stream`: the stream facts, including each plane's offset and row pitch within a slot;
 - `state`: the persistent state buffer;
-- `pool`: the frame pool, with helpers that write samples to the output slot and read reference slots;
+- `framePool`: the frame pool, with helpers that write samples to the output slot and read reference slots;
 - `status`: errors, freed slots, and header-parse facts, read back asynchronously;
 - the named scratch buffers.
 
@@ -91,6 +95,8 @@ Dispatch counts that depend on the bitstream come from `dispatchWorkgroupsIndire
   By default engine routes come first, and user decoders take streams no engine route plays, unless the user prefers a decoder.
 - The vector check works like route authorization: decode the vector, read back the planes, and compare them with the declared hash.
   The result is cached per device and decoder hash, and checked again after a device loss.
+- The caller demuxes the vector file and hands the check its packets, which a session decodes on the presenter's device.
+- A check passes with the hash it computed, or names the check that failed: `hash-mismatch`, `frames-missing`, `frames-dropped` when the decoder reorders deeper than it declares, `slots-exhausted` when the pool stays full, or the session's failure code.
 - A decoder without a vector runs only when the user forces it, and reports as unverified.
 - Stream facts the planner needs (size, plane format, color description) come from the container, or from one readback of the decoder's header parse when the stream starts; nothing is read back per frame.
 - The demuxer must pass through packets of codecs it does not recognize, with the container's codec identifier and private data.
@@ -105,7 +111,9 @@ Dispatch counts that depend on the bitstream come from `dispatchWorkgroupsIndire
 - WGSL is bounds-checked, so a malformed bitstream cannot corrupt memory, but it can make a decoder loop until the GPU watchdog fires and the device is lost.
 - A decoder shares the presenter's device, so its fault takes presentation down too.
   Recovery rebuilds without the decoder and disables it for the session, and the session falls back as any failed route does.
-- An error the decoder reports in its status buffer ends the attempt the same way, without a device loss.
+- An error the decoder reports in its status buffer ends the attempt the same way, without a device loss, even when a seek made that readback stale.
+- Every failure carries a code and a terse detail with the failing value, such as `packet-size: 4194305 > 4194304`; a manifest error also carries its line.
+- Error scopes around the decoder's shader module and allocations turn its compile and allocation errors into session failures, so they never reach the presenter's uncaptured error handler, which would fall presentation back.
 
 ## Out of scope
 
