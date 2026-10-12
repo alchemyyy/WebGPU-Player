@@ -341,18 +341,26 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
     };
 }
 
+/** Throws `external-hdr: <field> <value>, expected <values>` unless metadata is the limited-range 10-bit BT.2020 PQ or HLG the neutralization recovers. */
+function assertExternalHDRMetadata(metadata: InputColorMetadata): void {
+    const fields: readonly (readonly [string, number | string, readonly (number | string)[]])[] = [
+        [ 'bitDepth', metadata.bitDepth, [ EXTERNAL_HDR_BIT_DEPTH ] ],
+        [ 'matrix', metadata.matrix, [ 'bt2020-ncl' ] ],
+        [ 'primaries', metadata.primaries, [ 'bt2020' ] ],
+        [ 'range', metadata.range, [ 'limited' ] ],
+        [ 'transfer', metadata.transfer, [ 'pq', 'hlg' ] ]
+    ];
+    for (const [ field, value, expectedValues ] of fields) {
+        if (!expectedValues.includes(value)) {
+            throw new RangeError(`external-hdr: ${field} ${value}, expected ${expectedValues.join(' or ')}`);
+        }
+    }
+}
+
 /** Returns the recovery of neutralized 10-bit HDR YUV from Chromium's opaque BT.709 texture, converted to encoded RGB. */
 export function createExternalHDRSignal(metadata: InputColorMetadata): SignalDefinition {
     assertValidInputColorMetadata(metadata);
-    if (
-        metadata.bitDepth !== EXTERNAL_HDR_BIT_DEPTH
-        || metadata.matrix !== 'bt2020-ncl'
-        || metadata.primaries !== 'bt2020'
-        || metadata.range !== 'limited'
-        || (metadata.transfer !== 'pq' && metadata.transfer !== 'hlg')
-    ) {
-        throw new RangeError('External HDR presentation requires limited-range 10-bit BT.2020 PQ or HLG metadata');
-    }
+    assertExternalHDRMetadata(metadata);
 
     const entryWGSL = `
 fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
@@ -413,8 +421,9 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
 /** Returns the manual bilinear YUV read of raw planes in format, normalized by the metadata's range and converted by its matrix. */
 export function createRawYUVSignal(format: SupportedRawVideoFrameFormat, metadata: InputColorMetadata): SignalDefinition {
     assertValidInputColorMetadata(metadata);
-    if (metadata.bitDepth !== getRawFormatBitDepth(format)) {
-        throw new RangeError('Raw frame format bit depth does not match color metadata');
+    const formatBitDepth = getRawFormatBitDepth(format);
+    if (metadata.bitDepth !== formatBitDepth) {
+        throw new RangeError(`bit-depth: ${format} is ${formatBitDepth}-bit, metadata ${metadata.bitDepth}-bit`);
     }
 
     const entryWGSL = `

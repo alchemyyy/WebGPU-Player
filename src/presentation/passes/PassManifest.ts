@@ -5,6 +5,7 @@ import {
     MAXIMUM_WORKGROUP_SIZE,
     RENDER_OUTPUT_FORMATS,
     STORAGE_OUTPUT_FORMATS,
+    U32_VALUE_COUNT,
     WORKGROUP_AXIS_NAMES
 } from '../WebGPUConstants';
 import { BUILTIN_COLOR_FUNCTION_NAMES } from './builtin/BuiltinColorFunctions';
@@ -123,7 +124,7 @@ const DEFAULT_AXIS_VALUE = 1;
 
 const I32_MINIMUM = -2_147_483_648;
 const I32_MAXIMUM = 2_147_483_647;
-const U32_MAXIMUM = 4_294_967_295;
+const U32_MAXIMUM = U32_VALUE_COUNT - 1;
 
 const LINE_BREAK_PATTERN = /\r?\n/;
 const WHITESPACE_PATTERN = /\s+/;
