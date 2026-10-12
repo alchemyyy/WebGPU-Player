@@ -1,4 +1,4 @@
-/** A temporal kernel that blends the RGB stage toward its previous frame while history is valid, for integration tests. */
+/** A temporal kernel that blends the RGB stage toward its previous frame while history is valid; an example, which the presenter tests also run. */
 export const TEMPORAL_BLEND_KERNEL_PASS = /* wgsl */ `//! name: Temporal blend
 //! shape: kernel
 //! hook: RGB

@@ -1,4 +1,4 @@
-/** A color pass that scales chroma around BT.709 luma by one parameter, for integration tests. */
+/** A color pass that scales chroma around BT.709 luma by one parameter; an example, which the presenter tests also run. */
 export const SATURATION_COLOR_PASS = /* wgsl */ `//! name: Saturation
 //! shape: color
 //! hook: OUTPUT

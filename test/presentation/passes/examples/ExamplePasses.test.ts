@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
+import { EXAMPLE_PASSES } from 'webgpu-player/presentation/passes/examples/ExamplePasses';
+import { TEMPORAL_BLEND_KERNEL_PASS } from 'webgpu-player/presentation/passes/examples/TemporalBlendKernelPass';
 import { parsePassManifest } from 'webgpu-player/presentation/passes/PassManifest';
 import type { PassInput, PassShape } from 'webgpu-player/presentation/passes/PassTypes';
-
-import { SATURATION_COLOR_PASS } from './SaturationColorPass';
-import { SHARPEN_KERNEL_PASS } from './SharpenKernelPass';
-import { TEMPORAL_BLEND_KERNEL_PASS } from './TemporalBlendKernelPass';
 
 const ENTRY_POINTS: Readonly<Record<PassShape, string>> = {
     color: 'fn apply(color: vec4f, position: vec2f) -> vec4f {',
@@ -29,17 +27,8 @@ const TEMPORAL_INPUTS: readonly PassInput[] = [
     { historyOffset: -1, name: 'RGB' }
 ];
 const HISTORY_VALID_READ = 'presentation.historyValid';
-
-type ExamplePass = {
-    label: string
-    source: string
-};
-
-const EXAMPLE_PASSES: readonly ExamplePass[] = [
-    { label: 'saturation color pass', source: SATURATION_COLOR_PASS },
-    { label: 'sharpen kernel', source: SHARPEN_KERNEL_PASS },
-    { label: 'temporal blend kernel', source: TEMPORAL_BLEND_KERNEL_PASS }
-];
+// The examples a host lists, in order
+const EXAMPLE_IDS: readonly string[] = [ 'saturation', 'sharpen', 'temporal-blend', 'catmull-rom' ];
 
 function sortNames(names: Iterable<string>): string[] {
     return [ ...names ].sort((first: string, second: string): number => first.localeCompare(second));
@@ -50,8 +39,18 @@ function getAccessorPrefix(input: PassInput): string {
     return input.historyOffset === 0 ? input.name : `${input.name}${HISTORY_ACCESSOR_INFIX}${-input.historyOffset}`;
 }
 
-describe.each(EXAMPLE_PASSES)('the $label', ({ source }) => {
+describe('the example catalog', () => {
+    it('lists each example once, by a stable id', () => {
+        expect(EXAMPLE_PASSES.map(example => example.id)).toEqual(EXAMPLE_IDS);
+    });
+});
+
+describe.each(EXAMPLE_PASSES)('the $id example', ({ name, source }) => {
     const manifest = parsePassManifest(source);
+
+    it('takes its name from its header', () => {
+        expect(name).toBe(manifest.name);
+    });
 
     it('separates its header from its body with a blank line', () => {
         expect(manifest.body.startsWith(BODY_START)).toBe(true);
