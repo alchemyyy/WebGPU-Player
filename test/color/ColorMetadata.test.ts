@@ -15,14 +15,14 @@ describe('ColorMetadata', () => {
     it.each([ 0, 0.5, 10_001, Number.POSITIVE_INFINITY, Number.NaN ])(
         'rejects unsafe nominal peak luminance %s',
         nominalPeakNits => {
-            expect(() => createHLGColorMetadata({ nominalPeakNits })).toThrow('Nominal peak luminance');
+            expect(() => createHLGColorMetadata({ nominalPeakNits })).toThrow(`nominalPeakNits: ${nominalPeakNits} outside [1, 10000]`);
         }
     );
 
     it.each([ 0, 0.5, 10_001, Number.POSITIVE_INFINITY, Number.NaN ])(
         'rejects unsafe SDR reference white %s',
         sdrReferenceWhiteNits => {
-            expect(() => createPQColorMetadata({ sdrReferenceWhiteNits })).toThrow('SDR reference white');
+            expect(() => createPQColorMetadata({ sdrReferenceWhiteNits })).toThrow(`sdrReferenceWhiteNits: ${sdrReferenceWhiteNits} outside [1, 10000]`);
         }
     );
 });
