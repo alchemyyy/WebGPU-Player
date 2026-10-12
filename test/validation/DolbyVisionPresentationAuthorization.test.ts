@@ -76,6 +76,9 @@ const RENDER_SETTINGS_LABEL = 'Presentation render settings';
 const DOLBY_VISION_RPU_LABEL = 'Presentation Dolby Vision RPU';
 const BASE_PLANES_LABEL = 'Raw video';
 const ENHANCEMENT_PLANES_LABEL = 'Raw Dolby Vision enhancement';
+// A rejection names its worst error and the 3/255 bound in 8-bit steps, and the sample where it is; two scenarios also name theirs
+const SINGLE_SCENARIO_MISMATCH_PATTERN = /^\d+(\.\d)?\/255 > 3\/255 at \(0, 0\)$/;
+const SECOND_SCENARIO_MISMATCH_PATTERN = /^scenario 2: \d+(\.\d)?\/255 > 3\/255 at \(0, 0\)$/;
 
 let restoreWebGPUGlobals: () => void = (): void => undefined;
 
@@ -281,11 +284,32 @@ describe('Dolby Vision presentation authorization', () => {
         const harness = createDeviceHarness(mutateFirstObservation(createExpectedObservations()));
         const runner = new DolbyVisionPresentationAuthorizationRunner();
 
-        await expect(runner.validate(harness.device, TARGET_FORMAT)).resolves.toMatchObject({
+        const decision = await runner.validate(harness.device, TARGET_FORMAT);
+
+        expect(decision).toMatchObject({
             failureReason: 'pixel-mismatch',
             status: 'rejected'
         });
+        expect(decision.failureDetail).toMatch(SINGLE_SCENARIO_MISMATCH_PATTERN);
         expectEveryResourceDestroyed(harness);
+    });
+
+    it('names the scenario a dual-layer mismatch happens in', async () => {
+        const settings = createSettings();
+        const harness = createDeviceHarness(
+            createExpectedDolbyVisionAuthorizationObservations(createDolbyVisionAuthorizationRPUVector(7, 'mel'), settings),
+            mutateFirstObservation(createExpectedDolbyVisionAuthorizationObservations(
+                createDolbyVisionAuthorizationRPUVector(7, 'fel'),
+                settings,
+                'fel-hdr10-base'
+            ))
+        );
+        const runner = new DolbyVisionPresentationAuthorizationRunner('profile7-base');
+
+        const decision = await runner.validate(harness.device, TARGET_FORMAT);
+
+        expect(decision.failureReason).toBe('pixel-mismatch');
+        expect(decision.failureDetail).toMatch(SECOND_SCENARIO_MISMATCH_PATTERN);
     });
 
     it('rejects unsupported targets before allocating resources', async () => {
@@ -293,6 +317,7 @@ describe('Dolby Vision presentation authorization', () => {
         const runner = new DolbyVisionPresentationAuthorizationRunner();
 
         await expect(runner.validate(harness.device, UNREADABLE_TARGET_FORMAT)).resolves.toMatchObject({
+            failureDetail: UNREADABLE_TARGET_FORMAT,
             failureReason: 'target-format-unsupported',
             status: 'rejected'
         });
@@ -306,19 +331,38 @@ describe('Dolby Vision presentation authorization', () => {
         const validate = vi.spyOn(runner, 'validate');
         const registry = new DolbyVisionPresentationAuthorizationRegistry(runner);
 
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'I420P10')).toBe(`unprobed: ${DOLBY_VISION_AUTHORIZATION_ROUTE_KEY}`);
         const firstDecision = registry.authorize(harness.device, TARGET_FORMAT);
         const secondDecision = registry.authorize(harness.device, TARGET_FORMAT);
         expect(secondDecision).toBe(firstDecision);
         expect(registry.getTelemetry(harness.device, TARGET_FORMAT).status).toBe('pending');
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'I420P10')).toBe(`pending: ${DOLBY_VISION_AUTHORIZATION_ROUTE_KEY}`);
 
         const decision: DolbyVisionAuthorizationDecision = await firstDecision;
         expect(decision.status).toBe('authorized');
         expect(validate).toHaveBeenCalledTimes(1);
         expect(registry.isAuthorized(harness.device, TARGET_FORMAT, 'I420P10')).toBe(true);
         expect(registry.isAuthorized(harness.device, TARGET_FORMAT, 'I420P12')).toBe(false);
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'I420P12'))
+            .toBe(`format-unauthorized: I420P12, ${DOLBY_VISION_AUTHORIZATION_ROUTE_KEY} covers I420P10`);
         expect(registry.getTelemetry(harness.device, TARGET_FORMAT)).toMatchObject({
+            failureDetail: null,
             status: 'authorized',
             targetFormat: TARGET_FORMAT
+        });
+    });
+
+    it('reports a rejected route with its failure reason and detail', async () => {
+        const harness = createDeviceHarness(mutateFirstObservation(createExpectedObservations()));
+        const registry = new DolbyVisionPresentationAuthorizationRegistry();
+
+        const decision = await registry.authorize(harness.device, TARGET_FORMAT);
+
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'I420P10'))
+            .toBe(`pixel-mismatch: ${DOLBY_VISION_AUTHORIZATION_ROUTE_KEY} ${decision.failureDetail}`);
+        expect(registry.getTelemetry(harness.device, TARGET_FORMAT)).toMatchObject({
+            failureDetail: decision.failureDetail,
+            failureReason: 'pixel-mismatch'
         });
     });
 

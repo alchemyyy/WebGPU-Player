@@ -60,6 +60,9 @@ const RENDERED_PASS_COUNT = 2;
 const RENDER_SETTINGS_LABEL = 'Presentation render settings';
 const DOLBY_VISION_RPU_LABEL = 'Presentation Dolby Vision RPU';
 const SIMULATED_IMPORT_FAILURE = 'simulated import failure';
+// The output compares in 8-bit steps against 8/255, and the recovered input in 10-bit steps against 8/1023
+const PIXEL_MISMATCH_DETAIL_PATTERN = /^\d+(\.\d)?\/255 > 8\/255 at \(\d+, \d+\)$/;
+const INPUT_MISMATCH_DETAIL_PATTERN = /^\d+(\.\d)?\/1023 > 8\/1023 at \(0, 0\)$/;
 
 let restoreWebGPUGlobals: () => void = (): void => undefined;
 
@@ -227,12 +230,15 @@ describe('External Dolby Vision presentation authorization', () => {
         const harness = createDeviceHarness(createExpectedObservations(), inputObservations);
         const runner = new ExternalDolbyVisionPresentationAuthorizationRunner((): VideoFrame => createFrame(vi.fn()));
 
-        await expect(runner.validate(harness.device, TARGET_FORMAT)).resolves.toMatchObject({
+        const decision = await runner.validate(harness.device, TARGET_FORMAT);
+
+        expect(decision).toMatchObject({
             failureReason: 'input-mismatch',
             maximumChannelError: null,
             maximumInputChannelError: expect.any(Number),
             status: 'rejected'
         });
+        expect(decision.failureDetail).toMatch(INPUT_MISMATCH_DETAIL_PATTERN);
     });
 
     it('rejects a bounded pixel mismatch and still closes the frame', async () => {
@@ -240,10 +246,13 @@ describe('External Dolby Vision presentation authorization', () => {
         const close = vi.fn();
         const runner = new ExternalDolbyVisionPresentationAuthorizationRunner((): VideoFrame => createFrame(close));
 
-        await expect(runner.validate(harness.device, TARGET_FORMAT)).resolves.toMatchObject({
+        const decision = await runner.validate(harness.device, TARGET_FORMAT);
+
+        expect(decision).toMatchObject({
             failureReason: 'pixel-mismatch',
             status: 'rejected'
         });
+        expect(decision.failureDetail).toMatch(PIXEL_MISMATCH_DETAIL_PATTERN);
         expect(close).toHaveBeenCalledOnce();
     });
 
@@ -259,6 +268,7 @@ describe('External Dolby Vision presentation authorization', () => {
         const runner = new ExternalDolbyVisionPresentationAuthorizationRunner((): VideoFrame => createFrame(close));
 
         await expect(runner.validate(harness.device, TARGET_FORMAT)).resolves.toMatchObject({
+            failureDetail: `import: ${SIMULATED_IMPORT_FAILURE}`,
             failureReason: 'frame-import-failed',
             status: 'rejected'
         });
@@ -277,15 +287,35 @@ describe('External Dolby Vision presentation authorization', () => {
         const secondDecision = registry.authorize(harness.device, TARGET_FORMAT);
         expect(secondDecision).toBe(firstDecision);
         expect(registry.getTelemetry(harness.device, TARGET_FORMAT).status).toBe('pending');
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT)).toBe(`pending: ${EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY}`);
 
         const decision: ExternalDolbyVisionAuthorizationDecision = await firstDecision;
         expect(decision.status).toBe('authorized');
         expect(validate).toHaveBeenCalledOnce();
         expect(registry.isAuthorized(harness.device, TARGET_FORMAT)).toBe(true);
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT)).toBeNull();
         expect(registry.isAuthorized(createDeviceHarness(createExpectedObservations()).device, TARGET_FORMAT)).toBe(false);
+        expect(registry.getAuthorizationFailure(createDeviceHarness(createExpectedObservations()).device, TARGET_FORMAT))
+            .toBe(`unprobed: ${EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY}`);
         expect(registry.getTelemetry(harness.device, TARGET_FORMAT)).toMatchObject({
+            failureDetail: null,
             status: 'authorized',
             targetFormat: TARGET_FORMAT
+        });
+    });
+
+    it('reports a rejected route with its failure reason and detail', async () => {
+        const harness = createDeviceHarness(offsetFirstObservation(createExpectedObservations(), CORRUPTED_SIGNAL_OFFSET));
+        const runner = new ExternalDolbyVisionPresentationAuthorizationRunner((): VideoFrame => createFrame(vi.fn()));
+        const registry = new ExternalDolbyVisionPresentationAuthorizationRegistry(runner);
+
+        const decision = await registry.authorize(harness.device, TARGET_FORMAT);
+
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT))
+            .toBe(`pixel-mismatch: ${EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY} ${decision.failureDetail}`);
+        expect(registry.getTelemetry(harness.device, TARGET_FORMAT)).toMatchObject({
+            failureDetail: decision.failureDetail,
+            failureReason: 'pixel-mismatch'
         });
     });
 
@@ -295,6 +325,7 @@ describe('External Dolby Vision presentation authorization', () => {
         const runner = new ExternalDolbyVisionPresentationAuthorizationRunner(createFrameFactory);
 
         await expect(runner.validate(harness.device, INPUT_PROBE_FORMAT)).resolves.toMatchObject({
+            failureDetail: INPUT_PROBE_FORMAT,
             failureReason: 'target-format-unsupported',
             status: 'rejected'
         });

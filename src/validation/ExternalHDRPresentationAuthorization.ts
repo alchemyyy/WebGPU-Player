@@ -28,29 +28,29 @@ import {
     EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION
 } from '../capability/vectors/ExternalHDRAuthorizationVector';
 import GPUAuthorizationDeadline from './GPUAuthorizationDeadline';
-import {
-    GPUCanvasPixelReader,
-    getValidationTextureUsage
-} from './GPUCanvasReadback';
+import { GPUCanvasPixelReader } from './GPUCanvasReadback';
 import { discardErrorScope } from './GPUErrorScope';
 import {
     calculateRawHDRAuthorizationOutputDither,
     createAuthorizationExecutor,
     createAuthorizationReferencePlan,
+    describeAuthorizationDecision,
+    describeAuthorizationError,
+    describeReadbackFailure,
     encodeAuthorizationFrame,
     evaluateRawHDRVectorObservations,
+    getAuthorizationTargetUsage,
+    isAuthorizationTargetFormat,
+    READBACK_CODE_SCALE,
     type AuthorizationReferencePlan,
+    type AuthorizationStep,
     type RawHDRVectorObservation
 } from './RawHDRPresentationAuthorization';
 
 const EXTERNAL_HDR_CODEC = 'hvc1.2.4.L120.B0';
-const EXTERNAL_HDR_AUTHORIZATION_TOLERANCE = 10 / 255;
+const EXTERNAL_HDR_AUTHORIZATION_TOLERANCE = 10 / READBACK_CODE_SCALE;
 const MAXIMUM_10_BIT_CODE = 1_023;
 const PROBE_KEY_SEPARATOR = '\u0000';
-const AUTHORIZED_TARGET_FORMATS = new Set<GPUTextureFormat>([
-    'bgra8unorm',
-    'rgba8unorm'
-]);
 
 export type ExternalHDRAuthorizationRouteKey =
     | 'external-hevc-main10-bt709-limited:hlg-v1'
@@ -81,6 +81,8 @@ export type ExternalHDRAuthorizationFailureReason =
 export type ExternalHDRRouteAuthorizationDecision = {
     authorizedRouteKeys: readonly ExternalHDRAuthorizationRouteKey[]
     device: GPUDevice
+    /** The failing value of a rejection, such as `14/255 > 10/255 at (3, 7)`; null when authorized */
+    failureDetail: string | null
     failureReason: ExternalHDRAuthorizationFailureReason | null
     vectorVersion: typeof EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION
     maximumChannelError: number | null
@@ -94,6 +96,7 @@ export type ExternalHDRRouteAuthorizationDecision = {
 
 export type ExternalHDRAuthorizationTelemetry = {
     authorizedRouteKeys: readonly ExternalHDRAuthorizationRouteKey[]
+    failureDetails: Readonly<Partial<Record<ExternalHDRAuthorizationRouteKey, string>>>
     failureReasons: Readonly<Partial<Record<
         ExternalHDRAuthorizationRouteKey,
         ExternalHDRAuthorizationFailureReason
@@ -124,10 +127,17 @@ type DeviceProbeCache = {
     routes: Map<string, CachedRouteProbe>
 };
 
-type AuthorizationPhase = 'frame-create' | 'frame-import' | 'gpu-render';
+/** The device, target, route, and reference shader one probe renders, which every decision of the probe carries. */
+type RouteProbeIdentity = {
+    device: GPUDevice
+    routeKey: ExternalHDRAuthorizationRouteKey
+    shaderSignature: string
+    targetFormat: GPUTextureFormat
+};
 
 type TelemetryAccumulator = {
     authorizedRouteKeys: ExternalHDRAuthorizationRouteKey[]
+    failureDetails: Partial<Record<ExternalHDRAuthorizationRouteKey, string>>
     failureReasons: Partial<Record<
         ExternalHDRAuthorizationRouteKey,
         ExternalHDRAuthorizationFailureReason
@@ -397,7 +407,7 @@ export function createExpectedExternalHDRAuthorizationObservations(
     });
 }
 
-function classifyFailure(error: unknown, phase: AuthorizationPhase): ExternalHDRAuthorizationFailureReason {
+function classifyFailure(error: unknown, step: AuthorizationStep): ExternalHDRAuthorizationFailureReason {
     switch (getErrorMessage(error)) {
         case 'decode-failed':
             return 'decode-failed';
@@ -414,37 +424,38 @@ function classifyFailure(error: unknown, phase: AuthorizationPhase): ExternalHDR
         default:
             break;
     }
-    switch (phase) {
-        case 'frame-create':
+    switch (step) {
+        case 'frame':
             return 'decode-failed';
-        case 'frame-import':
+        case 'import':
             return 'frame-import-failed';
-        case 'gpu-render':
+        case 'executor':
+        case 'readback':
+        case 'render':
             return 'unexpected-error';
     }
 }
 
 function createRejectedDecision(
-    device: GPUDevice,
-    targetFormat: GPUTextureFormat,
-    routeKey: ExternalHDRAuthorizationRouteKey,
-    shaderSignature: string,
+    probe: RouteProbeIdentity,
     failureReason: ExternalHDRAuthorizationFailureReason,
+    failureDetail: string,
     sampleCount = 0,
     maximumChannelError: number | null = null
 ): ExternalHDRRouteAuthorizationDecision {
     return {
         authorizedRouteKeys: [],
-        device,
+        device: probe.device,
+        failureDetail,
         failureReason,
         vectorVersion: EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION,
         maximumChannelError,
         renderSettingsVersion: RENDER_SETTINGS_VERSION,
-        routeKey,
+        routeKey: probe.routeKey,
         sampleCount,
-        shaderSignature,
+        shaderSignature: probe.shaderSignature,
         status: 'rejected',
-        targetFormat
+        targetFormat: probe.targetFormat
     };
 }
 
@@ -463,30 +474,25 @@ export class ExternalHDRPresentationAuthorizationRunner {
         const metadata = createMetadata(routeKey);
         const settings = createSettings(metadata);
         const reference = createExternalHDRReferencePlan(device, targetFormat, routeKey);
-        const shaderSignature = createExternalHDRShaderSignature(targetFormat, routeKey, reference.shaderCode);
+        const probe: RouteProbeIdentity = {
+            device,
+            routeKey,
+            shaderSignature: createExternalHDRShaderSignature(targetFormat, routeKey, reference.shaderCode),
+            targetFormat
+        };
         if (!EXTERNAL_HDR_AUTHORIZATION_ROUTE_KEYS.includes(routeKey)) {
-            return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'route-unsupported');
+            return createRejectedDecision(probe, 'route-unsupported', routeKey);
         }
-        if (!AUTHORIZED_TARGET_FORMATS.has(targetFormat)) {
-            return createRejectedDecision(
-                device,
-                targetFormat,
-                routeKey,
-                shaderSignature,
-                'target-format-unsupported'
-            );
+        if (!isAuthorizationTargetFormat(targetFormat)) {
+            return createRejectedDecision(probe, 'target-format-unsupported', targetFormat);
         }
-        const targetUsage = getValidationTextureUsage();
-        if (
-            targetUsage === null
-            || typeof GPUBufferUsage === 'undefined'
-            || typeof GPUTextureUsage === 'undefined'
-        ) {
-            return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'gpu-api-unavailable');
+        const targetUsage = getAuthorizationTargetUsage();
+        if (targetUsage.usage === null) {
+            return createRejectedDecision(probe, 'gpu-api-unavailable', targetUsage.failure);
         }
         const plan = reference.plan;
         if (!plan) {
-            return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'unexpected-error');
+            return createRejectedDecision(probe, 'unexpected-error', reference.failure ?? routeKey);
         }
 
         let targetTexture: GPUTexture | null = null;
@@ -495,7 +501,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
         let frame: VideoFrame | null = null;
         let frameAbortController: AbortController | null = null;
         let errorScopePushed = false;
-        let phase: AuthorizationPhase = 'gpu-render';
+        let step: AuthorizationStep = 'executor';
         const deadline = new GPUAuthorizationDeadline(device);
         try {
             executor = await createAuthorizationExecutor(device, plan, deadline);
@@ -503,7 +509,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
                 executor.writeRenderSettings(createRenderSettingsUniformData(settings).buffer);
             }
 
-            phase = 'frame-create';
+            step = 'frame';
             // eslint-disable-next-line compat/compat -- WebGPU custom decode targets modern Chromium
             frameAbortController = new AbortController();
             const activeFrameAbortController = frameAbortController;
@@ -524,13 +530,13 @@ export class ExternalHDRPresentationAuthorizationRunner {
                     height: frame.displayHeight,
                     width: frame.displayWidth
                 },
-                usage: targetUsage
+                usage: targetUsage.usage
             });
 
             device.pushErrorScope('validation');
             errorScopePushed = true;
             // The executor imports the frame while it encodes, so an encode failure is an import failure
-            phase = 'frame-import';
+            step = 'import';
             const commandBuffer = encodeAuthorizationFrame(
                 device,
                 executor,
@@ -538,21 +544,16 @@ export class ExternalHDRPresentationAuthorizationRunner {
                 targetTexture,
                 'WebGPU external HDR authorization commands'
             );
-            phase = 'gpu-render';
+            step = 'render';
             device.queue.submit([ commandBuffer ]);
             await deadline.wait(device.queue.onSubmittedWorkDone());
             const validationError = await deadline.wait(device.popErrorScope());
             errorScopePushed = false;
             if (validationError) {
-                return createRejectedDecision(
-                    device,
-                    targetFormat,
-                    routeKey,
-                    shaderSignature,
-                    'gpu-validation-failed'
-                );
+                return createRejectedDecision(probe, 'gpu-validation-failed', validationError.message);
             }
 
+            step = 'readback';
             pixelReader = new GPUCanvasPixelReader({
                 device,
                 format: targetFormat,
@@ -563,7 +564,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
                 (): void => pixelReader?.destroy()
             );
             if (readback.failure || !readback.linearRGB) {
-                return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'readback-failed');
+                return createRejectedDecision(probe, 'readback-failed', describeReadbackFailure(readback.failure));
             }
             const actualObservations: RawHDRVectorObservation[] = [];
             for (let sampleIndex = 0;
@@ -582,13 +583,11 @@ export class ExternalHDRPresentationAuthorizationRunner {
                 actualObservations,
                 EXTERNAL_HDR_AUTHORIZATION_TOLERANCE
             );
-            if (!comparison.accepted) {
+            if (comparison.failureDetail !== null) {
                 return createRejectedDecision(
-                    device,
-                    targetFormat,
-                    routeKey,
-                    shaderSignature,
+                    probe,
                     'pixel-mismatch',
+                    comparison.failureDetail,
                     actualObservations.length,
                     comparison.maximumChannelError
                 );
@@ -596,24 +595,19 @@ export class ExternalHDRPresentationAuthorizationRunner {
             return {
                 authorizedRouteKeys: [ routeKey ],
                 device,
+                failureDetail: null,
                 failureReason: null,
                 vectorVersion: EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION,
                 maximumChannelError: comparison.maximumChannelError,
                 renderSettingsVersion: RENDER_SETTINGS_VERSION,
                 routeKey,
                 sampleCount: actualObservations.length,
-                shaderSignature,
+                shaderSignature: probe.shaderSignature,
                 status: 'authorized',
                 targetFormat
             };
         } catch (error) {
-            return createRejectedDecision(
-                device,
-                targetFormat,
-                routeKey,
-                shaderSignature,
-                classifyFailure(error, phase)
-            );
+            return createRejectedDecision(probe, classifyFailure(error, step), describeAuthorizationError(step, error));
         } finally {
             deadline.destroy();
             frameAbortController?.abort();
@@ -625,6 +619,28 @@ export class ExternalHDRPresentationAuthorizationRunner {
             executor?.destroy();
             targetTexture?.destroy();
         }
+    }
+}
+
+function recordDecisionTelemetry(
+    accumulator: TelemetryAccumulator,
+    routeKey: ExternalHDRAuthorizationRouteKey,
+    decision: ExternalHDRRouteAuthorizationDecision
+): void {
+    if (decision.maximumChannelError !== null) {
+        accumulator.maximumChannelErrors[routeKey] = decision.maximumChannelError;
+    }
+    accumulator.sampleCounts[routeKey] = decision.sampleCount;
+    if (decision.status === 'authorized') {
+        accumulator.authorizedRouteKeys.push(routeKey);
+        return;
+    }
+    accumulator.rejectedRouteKeys.push(routeKey);
+    if (decision.failureReason) {
+        accumulator.failureReasons[routeKey] = decision.failureReason;
+    }
+    if (decision.failureDetail) {
+        accumulator.failureDetails[routeKey] = decision.failureDetail;
     }
 }
 
@@ -687,13 +703,16 @@ export class ExternalHDRPresentationAuthorizationRegistry {
                 probe.decision = decision;
                 return decision;
             },
-            (): ExternalHDRRouteAuthorizationDecision => {
+            (error: unknown): ExternalHDRRouteAuthorizationDecision => {
                 const decision = createRejectedDecision(
-                    device,
-                    targetFormat,
-                    routeKey,
-                    this.getReferenceSignature(device, targetFormat, routeKey),
-                    'unexpected-error'
+                    {
+                        device,
+                        routeKey,
+                        shaderSignature: this.getReferenceSignature(device, targetFormat, routeKey),
+                        targetFormat
+                    },
+                    'unexpected-error',
+                    getErrorMessage(error)
                 );
                 probe.decision = decision;
                 return decision;
@@ -709,16 +728,36 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         targetFormat: GPUTextureFormat,
         metadata: InputColorMetadata
     ): boolean {
+        return this.getAuthorizationFailure(device, targetFormat, metadata) === null;
+    }
+
+    /**
+     * Returns why this device, target format, and metadata's route are not authorized, as `<state>: <route key>` with the failing value, or null when they are.
+     * Metadata no probe covers reports `route-unsupported` with its bit depth and color description.
+     */
+    public getAuthorizationFailure(
+        device: GPUDevice,
+        targetFormat: GPUTextureFormat,
+        metadata: InputColorMetadata
+    ): string | null {
         const routeKey = getExternalHDRAuthorizationRouteKey(metadata);
         if (!routeKey) {
-            return false;
+            return `route-unsupported: ${metadata.bitDepth}-bit ${metadata.matrix}:${metadata.primaries}:${metadata.range}:${metadata.transfer}`;
         }
-        const decision = this.getCachedProbe(device, targetFormat, routeKey)?.decision;
-        return decision?.status === 'authorized'
-            && decision.device === device
-            && decision.targetFormat === targetFormat
-            && decision.authorizedRouteKeys.includes(routeKey)
-            && decision.shaderSignature === this.getReferenceSignature(device, targetFormat, routeKey);
+        const probe = this.getCachedProbe(device, targetFormat, routeKey);
+        const decision = probe?.decision ?? null;
+        if (
+            decision?.status === 'authorized'
+            && (decision.device !== device || decision.targetFormat !== targetFormat || !decision.authorizedRouteKeys.includes(routeKey))
+        ) {
+            return `decision-mismatch: ${routeKey}`;
+        }
+        return describeAuthorizationDecision(
+            routeKey,
+            probe !== undefined,
+            decision,
+            (): string => this.getReferenceSignature(device, targetFormat, routeKey)
+        );
     }
 
     /** Returns bounded diagnostics without exposing retained decoder or GPU objects. */
@@ -728,6 +767,7 @@ export class ExternalHDRPresentationAuthorizationRegistry {
     ): ExternalHDRAuthorizationTelemetry {
         const accumulator: TelemetryAccumulator = {
             authorizedRouteKeys: [],
+            failureDetails: {},
             failureReasons: {},
             maximumChannelErrors: {},
             pendingRouteKeys: [],
@@ -753,18 +793,7 @@ export class ExternalHDRPresentationAuthorizationRegistry {
                 accumulator.pendingRouteKeys.push(routeKey);
                 continue;
             }
-            if (probe.decision.maximumChannelError !== null) {
-                accumulator.maximumChannelErrors[routeKey] = probe.decision.maximumChannelError;
-            }
-            accumulator.sampleCounts[routeKey] = probe.decision.sampleCount;
-            if (probe.decision.status === 'authorized') {
-                accumulator.authorizedRouteKeys.push(routeKey);
-            } else {
-                accumulator.rejectedRouteKeys.push(routeKey);
-                if (probe.decision.failureReason) {
-                    accumulator.failureReasons[routeKey] = probe.decision.failureReason;
-                }
-            }
+            recordDecisionTelemetry(accumulator, routeKey, probe.decision);
         }
         return {
             ...accumulator,

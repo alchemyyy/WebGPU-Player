@@ -33,23 +33,26 @@ import type { PresentationExecutor } from '../presentation/passes/PresentationEx
 import type { DolbyVisionReconstructionProfile } from '../presentation/PresentationInput';
 import { createDolbyVisionAuthorizationRPUVector } from '../capability/vectors/DolbyVisionAuthorizationVector';
 import GPUAuthorizationDeadline from './GPUAuthorizationDeadline';
-import {
-    GPUCanvasPixelReader,
-    getValidationTextureUsage
-} from './GPUCanvasReadback';
+import { GPUCanvasPixelReader } from './GPUCanvasReadback';
 import { discardErrorScope } from './GPUErrorScope';
 import {
     calculateRawHDRAuthorizationOutputDither,
     createAuthorizationExecutor,
     createAuthorizationReferencePlan,
     createRawHDRAuthorizationVector,
+    describeAuthorizationDecision,
+    describeAuthorizationError,
+    describeReadbackFailure,
     encodeAuthorizationFrame,
     evaluateRawHDRVectorObservations,
+    getAuthorizationTargetUsage,
+    isAuthorizationTargetFormat,
     RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
     RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES,
     RAW_HDR_AUTHORIZATION_VECTOR_WIDTH,
     sampleRawI420P10Frame,
     type AuthorizationReferencePlan,
+    type AuthorizationStep,
     type RawHDRAuthorizationRouteKey,
     type RawHDRVectorObservation
 } from './RawHDRPresentationAuthorization';
@@ -75,11 +78,6 @@ export type DolbyVisionAuthorizationRouteKey =
     | `${RawDolbyVisionFrameFormat}:dovi-profile7-fel-v1`
     | `${RawDolbyVisionFrameFormat}:dovi-rpu-v1`;
 
-const AUTHORIZED_TARGET_FORMATS = new Set<GPUTextureFormat>([
-    'bgra8unorm',
-    'rgba8unorm'
-]);
-
 export type DolbyVisionAuthorizationFailureReason =
     | 'device-lost'
     | 'gpu-api-unavailable'
@@ -93,6 +91,8 @@ export type DolbyVisionAuthorizationFailureReason =
 
 export type DolbyVisionAuthorizationDecision = {
     device: GPUDevice
+    /** The failing value of a rejection, such as `scenario 2: 14/255 > 3/255 at (3, 7)`; null when authorized */
+    failureDetail: string | null
     failureReason: DolbyVisionAuthorizationFailureReason | null
     vectorVersion: typeof DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION
     maximumChannelError: number | null
@@ -105,6 +105,7 @@ export type DolbyVisionAuthorizationDecision = {
 };
 
 export type DolbyVisionAuthorizationTelemetry = {
+    failureDetail: string | null
     failureReason: DolbyVisionAuthorizationFailureReason | null
     vectorVersion: typeof DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION
     maximumChannelError: number | null
@@ -627,27 +628,39 @@ function classifyFailure(error: unknown): DolbyVisionAuthorizationFailureReason 
     }
 }
 
+/** The device, target, route, and reference shader one probe renders, which every decision of the probe carries. */
+type RouteProbeIdentity = {
+    device: GPUDevice
+    routeKey: DolbyVisionAuthorizationRouteKey
+    shaderSignature: string
+    targetFormat: GPUTextureFormat
+};
+
 function createRejectedDecision(
-    device: GPUDevice,
-    targetFormat: GPUTextureFormat,
-    shaderSignature: string,
-    routeKey: DolbyVisionAuthorizationRouteKey,
+    probe: RouteProbeIdentity,
     failureReason: DolbyVisionAuthorizationFailureReason,
+    failureDetail: string,
     sampleCount = 0,
     maximumChannelError: number | null = null
 ): DolbyVisionAuthorizationDecision {
     return {
-        device,
+        device: probe.device,
+        failureDetail,
         failureReason,
         vectorVersion: DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION,
         maximumChannelError,
         renderSettingsVersion: RENDER_SETTINGS_VERSION,
-        routeKey,
+        routeKey: probe.routeKey,
         sampleCount,
-        shaderSignature,
+        shaderSignature: probe.shaderSignature,
         status: 'rejected',
-        targetFormat
+        targetFormat: probe.targetFormat
     };
+}
+
+/** Prefixes a scenario's detail with its number when a route renders more than one scenario. */
+function describeScenarioFailure(detail: string, scenarioIndex: number, scenarioCount: number): string {
+    return scenarioCount > 1 ? `scenario ${scenarioIndex + 1}: ${detail}` : detail;
 }
 
 /** Renders a route's vectors through its built-in default chain, reads them back, and compares them with the CPU reference. */
@@ -664,27 +677,29 @@ export class DolbyVisionPresentationAuthorizationRunner {
     public async validate(device: GPUDevice, targetFormat: GPUTextureFormat): Promise<DolbyVisionAuthorizationDecision> {
         const settings = createSettings();
         const reference = createDolbyVisionReferencePlan(device, targetFormat, this.route, this.format);
-        const shaderSignature = createDolbyVisionShaderSignature(targetFormat, reference.shaderCode);
-        if (!AUTHORIZED_TARGET_FORMATS.has(targetFormat)) {
-            return createRejectedDecision(device, targetFormat, shaderSignature, this.routeKey, 'target-format-unsupported');
+        const probe: RouteProbeIdentity = {
+            device,
+            routeKey: this.routeKey,
+            shaderSignature: createDolbyVisionShaderSignature(targetFormat, reference.shaderCode),
+            targetFormat
+        };
+        if (!isAuthorizationTargetFormat(targetFormat)) {
+            return createRejectedDecision(probe, 'target-format-unsupported', targetFormat);
         }
-        const targetUsage = getValidationTextureUsage();
-        if (
-            targetUsage === null
-            || typeof GPUBufferUsage === 'undefined'
-            || typeof GPUTextureUsage === 'undefined'
-        ) {
-            return createRejectedDecision(device, targetFormat, shaderSignature, this.routeKey, 'gpu-api-unavailable');
+        const targetUsage = getAuthorizationTargetUsage();
+        if (targetUsage.usage === null) {
+            return createRejectedDecision(probe, 'gpu-api-unavailable', targetUsage.failure);
         }
         const plan = reference.plan;
         if (!plan) {
-            return createRejectedDecision(device, targetFormat, shaderSignature, this.routeKey, 'unexpected-error');
+            return createRejectedDecision(probe, 'unexpected-error', reference.failure ?? this.routeKey);
         }
 
         let targetTexture: GPUTexture | null = null;
         let executor: PresentationExecutor | null = null;
         let pixelReader: GPUCanvasPixelReader | null = null;
         let errorScopePushed = false;
+        let step: AuthorizationStep = 'executor';
         const deadline = new GPUAuthorizationDeadline(device);
         try {
             const scenarios = createAuthorizationScenarios(this.route, this.format, settings);
@@ -702,7 +717,7 @@ export class DolbyVisionPresentationAuthorizationRunner {
                     height: frame.displayHeight,
                     width: frame.displayWidth
                 },
-                usage: targetUsage
+                usage: targetUsage.usage
             });
             pixelReader = new GPUCanvasPixelReader({
                 device,
@@ -711,7 +726,9 @@ export class DolbyVisionPresentationAuthorizationRunner {
             });
             let maximumChannelError = 0;
             let sampleCount = 0;
-            for (const scenario of scenarios) {
+            for (let scenarioIndex = 0; scenarioIndex < scenarios.length; scenarioIndex += 1) {
+                const scenario = scenarios[scenarioIndex];
+                step = 'render';
                 executor.writeDolbyVisionRPU(scenario.packedRPUData);
                 device.pushErrorScope('validation');
                 errorScopePushed = true;
@@ -727,16 +744,25 @@ export class DolbyVisionPresentationAuthorizationRunner {
                 errorScopePushed = false;
                 const validationError = await deadline.wait(validationPromise);
                 if (validationError) {
-                    return createRejectedDecision(device, targetFormat, shaderSignature, this.routeKey, 'gpu-validation-failed');
+                    return createRejectedDecision(
+                        probe,
+                        'gpu-validation-failed',
+                        describeScenarioFailure(validationError.message, scenarioIndex, scenarios.length)
+                    );
                 }
 
+                step = 'readback';
                 const readback = await deadline.wait(
                     pixelReader.readPixels(RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES, targetTexture),
                     (): void => pixelReader?.destroy()
                 );
                 const actualObservations: RawHDRVectorObservation[] = [];
                 if (readback.failure || !readback.linearRGB) {
-                    return createRejectedDecision(device, targetFormat, shaderSignature, this.routeKey, 'readback-failed');
+                    return createRejectedDecision(
+                        probe,
+                        'readback-failed',
+                        describeScenarioFailure(describeReadbackFailure(readback.failure), scenarioIndex, scenarios.length)
+                    );
                 }
                 for (let sampleIndex = 0; sampleIndex < RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES.length; sampleIndex += 1) {
                     const sample = RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES[sampleIndex];
@@ -749,13 +775,11 @@ export class DolbyVisionPresentationAuthorizationRunner {
                 const comparison = evaluateRawHDRVectorObservations(scenario.expectedObservations, actualObservations);
                 sampleCount += actualObservations.length;
                 maximumChannelError = Math.max(maximumChannelError, comparison.maximumChannelError);
-                if (!comparison.accepted) {
+                if (comparison.failureDetail !== null) {
                     return createRejectedDecision(
-                        device,
-                        targetFormat,
-                        shaderSignature,
-                        this.routeKey,
+                        probe,
                         'pixel-mismatch',
+                        describeScenarioFailure(comparison.failureDetail, scenarioIndex, scenarios.length),
                         sampleCount,
                         maximumChannelError
                     );
@@ -763,18 +787,19 @@ export class DolbyVisionPresentationAuthorizationRunner {
             }
             return {
                 device,
+                failureDetail: null,
                 failureReason: null,
                 vectorVersion: DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION,
                 maximumChannelError,
                 renderSettingsVersion: RENDER_SETTINGS_VERSION,
                 routeKey: this.routeKey,
                 sampleCount,
-                shaderSignature,
+                shaderSignature: probe.shaderSignature,
                 status: 'authorized',
                 targetFormat
             };
         } catch (error) {
-            return createRejectedDecision(device, targetFormat, shaderSignature, this.routeKey, classifyFailure(error));
+            return createRejectedDecision(probe, classifyFailure(error), describeAuthorizationError(step, error));
         } finally {
             deadline.destroy();
             if (errorScopePushed) {
@@ -830,13 +855,16 @@ export class DolbyVisionPresentationAuthorizationRegistry {
                 probe.decision = decision;
                 return decision;
             },
-            (): DolbyVisionAuthorizationDecision => {
+            (error: unknown): DolbyVisionAuthorizationDecision => {
                 const decision = createRejectedDecision(
-                    device,
-                    targetFormat,
-                    this.getReferenceSignature(device, targetFormat),
-                    this.runner.routeKey,
-                    'unexpected-error'
+                    {
+                        device,
+                        routeKey: this.runner.routeKey,
+                        shaderSignature: this.getReferenceSignature(device, targetFormat),
+                        targetFormat
+                    },
+                    'unexpected-error',
+                    getErrorMessage(error)
                 );
                 probe.decision = decision;
                 return decision;
@@ -855,19 +883,38 @@ export class DolbyVisionPresentationAuthorizationRegistry {
         targetFormat: GPUTextureFormat,
         format: SupportedRawVideoFrameFormat
     ): boolean {
+        return this.getAuthorizationFailure(device, targetFormat, format) === null;
+    }
+
+    /**
+     * Returns why this device and target format are not authorized for a BL format, as `<state>: <route key>` with the failing value, or null when they are.
+     * A format other than the runner's reports `format-unauthorized` with both formats.
+     */
+    public getAuthorizationFailure(
+        device: GPUDevice,
+        targetFormat: GPUTextureFormat,
+        format: SupportedRawVideoFrameFormat
+    ): string | null {
         if (format !== this.runner.format) {
-            return false;
+            return `format-unauthorized: ${format}, ${this.runner.routeKey} covers ${this.runner.format}`;
         }
-        const decision = this.getCachedProbe(device, targetFormat)?.decision;
-        return decision?.status === 'authorized'
-            && decision.device === device
-            && decision.targetFormat === targetFormat
-            && decision.shaderSignature === this.getReferenceSignature(device, targetFormat);
+        const probe = this.getCachedProbe(device, targetFormat);
+        const decision = probe?.decision ?? null;
+        if (decision?.status === 'authorized' && (decision.device !== device || decision.targetFormat !== targetFormat)) {
+            return `decision-mismatch: ${this.runner.routeKey}`;
+        }
+        return describeAuthorizationDecision(
+            this.runner.routeKey,
+            probe !== undefined,
+            decision,
+            (): string => this.getReferenceSignature(device, targetFormat)
+        );
     }
 
     /** Returns bounded diagnostics without exposing retained GPU objects. */
     public getTelemetry(device: GPUDevice | null, targetFormat: GPUTextureFormat | null): DolbyVisionAuthorizationTelemetry {
         const unavailable: DolbyVisionAuthorizationTelemetry = {
+            failureDetail: null,
             failureReason: null,
             vectorVersion: DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION,
             maximumChannelError: null,
@@ -888,6 +935,7 @@ export class DolbyVisionPresentationAuthorizationRegistry {
             return { ...unavailable, status: 'pending' };
         }
         return {
+            failureDetail: probe.decision.failureDetail,
             failureReason: probe.decision.failureReason,
             vectorVersion: probe.decision.vectorVersion,
             maximumChannelError: probe.decision.maximumChannelError,
