@@ -4,7 +4,8 @@ import {
     FLOAT32_FILTERABLE_FEATURE,
     FLOAT32_TEXTURE_FORMATS,
     INTERMEDIATE_TEXTURE_FORMAT,
-    MAXIMUM_WORKGROUP_COUNT
+    MAXIMUM_WORKGROUP_COUNT,
+    WORKGROUP_AXIS_NAMES
 } from '../WebGPUConstants';
 import { evaluatePassExpression, PassExpressionError } from './PassExpression';
 import {
@@ -81,7 +82,6 @@ const COLOR_LABEL = `${LABEL_PREFIX} color`;
 const OUTPUT_LABEL = `${LABEL_PREFIX} output`;
 
 const PRESENTATION_BINDING = 0;
-const AXIS_NAMES: readonly string[] = [ 'x', 'y', 'z' ];
 
 /** A user pass that survived its condition, with the prefix that keeps its identifiers apart from other code in a module. */
 type ActivePass = {
@@ -217,7 +217,7 @@ function evaluateWorkgroupCounts(workgroup: PassWorkgroup, facts: PassExpression
     const counts = workgroup.dispatch.map((expression: PassExpression, axisIndex: number): number => {
         const count = Math.ceil(evaluateExpression(expression, facts, 'workgroup-count'));
         if (count < 1 || count > MAXIMUM_WORKGROUP_COUNT) {
-            throw new PassPlacementError('workgroup-count', `${AXIS_NAMES[axisIndex]} ${count} outside [1, ${MAXIMUM_WORKGROUP_COUNT}]`);
+            throw new PassPlacementError('workgroup-count', `${WORKGROUP_AXIS_NAMES[axisIndex]} ${count} outside [1, ${MAXIMUM_WORKGROUP_COUNT}]`);
         }
         return count;
     });

@@ -9,6 +9,7 @@ import {
 import type { TexturePresentationGeometry } from '../PresentationGeometry';
 import { RENDER_SETTINGS_UNIFORM_BYTE_LENGTH } from '../RenderSettings';
 import {
+    BYTES_PER_WORD,
     CANVAS_ALPHA_MODE,
     CANVAS_COLOR_SPACE,
     EXTERNAL_TEXTURE_COLOR_SPACE,
@@ -69,7 +70,7 @@ const VIEWPORT_MAXIMUM_DEPTH = 1;
 const INDIRECT_DISPATCH_BYTE_OFFSET = 0;
 const MICROSECONDS_PER_SECOND = 1_000_000;
 // Every parameter is one 32-bit scalar
-const PARAMETER_BYTE_LENGTH = 4;
+const PARAMETER_BYTE_LENGTH = BYTES_PER_WORD;
 const ENHANCEMENT_ABSENT = 0;
 const ENHANCEMENT_PRESENT = 1;
 // Names engine-generated code in a compile error summary, where a user pass would be named

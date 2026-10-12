@@ -1,15 +1,14 @@
 // The engine-owned bindings of every pass: their WGSL declarations, their bind group layout entries, and the byte layouts of the uniforms the engine writes.
 // Built-in code reads these bindings by the variable names declared here, and the planner assigns their binding numbers.
 import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../../video/dolby-vision/DolbyVisionRPUParser';
+import { BYTES_PER_WORD, UNIFORM_BUFFER_OFFSET_ALIGNMENT } from '../WebGPUConstants';
 import type { EngineBindingResource, EngineResource } from './PassTypes';
-
-const BYTES_PER_WORD = 4;
 
 /** The bytes of one pass's `presentation` uniform. */
 export const PRESENTATION_UNIFORM_BYTE_LENGTH = 64;
 
 /** The stride of per-pass uniform slots in one buffer, the minimum uniform buffer offset alignment WebGPU guarantees. */
-export const UNIFORM_SLOT_BYTE_LENGTH = 256;
+export const UNIFORM_SLOT_BYTE_LENGTH = UNIFORM_BUFFER_OFFSET_ALIGNMENT;
 
 /** The bytes of the Dolby Vision enhancement uniform. */
 export const ENHANCEMENT_UNIFORM_BYTE_LENGTH = 16;
