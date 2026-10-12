@@ -16,5 +16,5 @@
       "webgpu-player/*": ["src/*"]
     }
   },
-  "include": ["src", "test"]
+  "include": ["src", "test", "sandbox/src"]
 }

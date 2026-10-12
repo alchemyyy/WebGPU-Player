@@ -17,6 +17,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "lint": "eslint --concurrency=auto",
+    "sandbox": "node scripts/build.mjs && vite --config sandbox/vite.config.ts",
     "test": "vitest --watch=false",
     "typecheck": "tsc --noEmit"
   },

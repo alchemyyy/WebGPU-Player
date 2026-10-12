@@ -138,7 +138,7 @@ export default tseslint.config(
     // Build scripts and tools run on Node, so browser compatibility does not apply
     // NOTE: Directory patterns need /** here, because ignores beside other keys match file paths
     {
-        ignores: [ `${LAYOUT.sourceDirectory}/**`, `${LAYOUT.testDirectory}/**` ],
+        ignores: [ `${LAYOUT.sourceDirectory}/**`, `${LAYOUT.testDirectory}/**`, `${LAYOUT.sandboxDirectory}/src/**` ],
         languageOptions: {
             globals: {
                 ...globals.node
@@ -149,11 +149,12 @@ export default tseslint.config(
         }
     },
 
-    // Engine sources and tests
+    // Engine sources, tests, and the sandbox
     {
         files: [
             `${LAYOUT.sourceDirectory}/**/*.ts`,
-            `${LAYOUT.testDirectory}/**/*.ts`
+            `${LAYOUT.testDirectory}/**/*.ts`,
+            `${LAYOUT.sandboxDirectory}/src/**/*.ts`
         ],
         languageOptions: {
             parserOptions: {
