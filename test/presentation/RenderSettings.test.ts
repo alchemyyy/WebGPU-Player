@@ -69,37 +69,37 @@ describe('RenderSettings', () => {
     it('rejects invalid HDR luminance and desaturation settings', () => {
         expect(() => createHDRToSDRRenderSettings({
             toneMapping: { outputPeakNits: 0 }
-        })).toThrow('peak luminance');
+        })).toThrow('outputPeakNits: 0 outside [1, 10000]');
         expect(() => createHDRToSDRRenderSettings({
             toneMapping: { inputPeakNits: 10_001 }
-        })).toThrow('peak luminance');
+        })).toThrow('inputPeakNits: 10001 outside [1, 10000]');
         expect(() => createHDRToSDRRenderSettings({
             toneMapping: { outputPeakNits: 10_001 }
-        })).toThrow('peak luminance');
+        })).toThrow('outputPeakNits: 10001 outside [1, 10000]');
         expect(() => createHDRToSDRRenderSettings({
             toneMapping: { inputPeakNits: 100, paperWhiteNits: 203 }
-        })).toThrow('Paper white');
+        })).toThrow('paperWhiteNits: 203 above inputPeakNits 100');
         expect(() => createHDRToSDRRenderSettings({
             toneMapping: { exposure: 16.1 }
-        })).toThrow('Exposure');
+        })).toThrow('exposure: 16.1 outside [-16, 16]');
         expect(() => createHDRToSDRRenderSettings({
             toneMapping: { exposure: -16.1 }
-        })).toThrow('Exposure');
+        })).toThrow('exposure: -16.1 outside [-16, 16]');
         expect(() => createHDRToSDRRenderSettings({
             toneMapping: { desaturationStrength: 1.1 }
-        })).toThrow('Desaturation');
+        })).toThrow('desaturationStrength: 1.1 outside [0, 1]');
         expect(() => createHDRToSDRRenderSettings({
             display: { brightness: 1.1 }
-        })).toThrow('brightness');
+        })).toThrow('brightness: 1.1 outside [-1, 1]');
         expect(() => createHDRToSDRRenderSettings({
             display: { contrast: -1 }
-        })).toThrow('contrast');
+        })).toThrow('contrast: -1 outside [0, 4]');
         expect(() => createHDRToSDRRenderSettings({
             display: { saturation: 4.1 }
-        })).toThrow('saturation');
+        })).toThrow('saturation: 4.1 outside [0, 4]');
         expect(() => createHDRToSDRRenderSettings({
             outputTransfer: 'bt709' as 'srgb'
-        })).toThrow('output transfer');
+        })).toThrow('outputTransfer: unsupported \'bt709\'');
     });
 
     it('serializes all live controls into the aligned versioned uniform layout', () => {
@@ -205,7 +205,7 @@ describe('RenderSettings', () => {
             inputPeakNits: 100,
             targetedSystemDisplayMaximumLuminanceNits: 1_000,
             toneMapping: null
-        })).toThrow('Dynamic HDR10+');
+        })).toThrow('dynamic inputPeakNits: 100 outside [203, 10000]');
         expect(() => createRenderSettingsUniformData(settings, {
             averageNits: 100,
             inputPeakNits: 1_000,
@@ -215,7 +215,7 @@ describe('RenderSettings', () => {
                 kneePointX: 0.5,
                 kneePointY: 0.5
             }
-        })).toThrow('Dynamic HDR10+');
+        })).toThrow('dynamic anchors: none for a curve');
         // A curve adapts from its targeted display, so it needs one
         expect(() => createRenderSettingsUniformData(settings, {
             averageNits: 100,
@@ -226,6 +226,6 @@ describe('RenderSettings', () => {
                 kneePointX: 0.5,
                 kneePointY: 0.25
             }
-        })).toThrow('Dynamic HDR10+');
+        })).toThrow(/^dynamic targetedSystemDisplayMaximumLuminanceNits: \S+ outside \[1, 10000\]$/);
     });
 });

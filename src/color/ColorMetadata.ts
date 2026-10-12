@@ -2,6 +2,8 @@ export const COLOR_METADATA_VERSION = 1;
 
 const MAXIMUM_LUMINANCE_NITS = 10_000;
 const MINIMUM_LUMINANCE_NITS = 1;
+const MINIMUM_BIT_DEPTH = 8;
+const MAXIMUM_BIT_DEPTH = 16;
 
 // The BT.601 members use the WebCodecs names (SMPTE 170M for 525-line, BT.470 BG for 625-line), so they compare directly with VideoFrame.colorSpace
 export type ColorPrimaries = 'bt2020' | 'bt470bg' | 'bt709' | 'smpte170m';
@@ -22,10 +24,17 @@ export type InputColorMetadata = {
 
 export type InputColorMetadataOverrides = Partial<Omit<InputColorMetadata, 'version'>>;
 
-/** Throws when input metadata cannot drive the reference color pipeline. */
+/** Throws `<name>: <value> outside [<minimum>, <maximum>]` unless value is a finite number in the range. */
+export function requireSettingRange(name: string, value: number, minimum: number, maximum: number): void {
+    if (!Number.isFinite(value) || value < minimum || value > maximum) {
+        throw new RangeError(`${name}: ${value} outside [${minimum}, ${maximum}]`);
+    }
+}
+
+/** Throws `<field>: <value> <problem>` when input metadata cannot drive the reference color pipeline. */
 export function assertValidInputColorMetadata(metadata: InputColorMetadata): void {
     if (metadata.version !== COLOR_METADATA_VERSION) {
-        throw new RangeError('Unsupported input color metadata version');
+        throw new RangeError(`metadata version: ${metadata.version}, expected ${COLOR_METADATA_VERSION}`);
     }
     switch (metadata.matrix) {
         case 'bt2020-ncl':
@@ -34,7 +43,7 @@ export function assertValidInputColorMetadata(metadata: InputColorMetadata): voi
         case 'smpte170m':
             break;
         default:
-            throw new RangeError('Unsupported YUV matrix');
+            throw new RangeError(`matrix: unsupported '${String(metadata.matrix)}'`);
     }
     switch (metadata.primaries) {
         case 'bt2020':
@@ -43,14 +52,14 @@ export function assertValidInputColorMetadata(metadata: InputColorMetadata): voi
         case 'smpte170m':
             break;
         default:
-            throw new RangeError('Unsupported color primaries');
+            throw new RangeError(`primaries: unsupported '${String(metadata.primaries)}'`);
     }
     switch (metadata.range) {
         case 'full':
         case 'limited':
             break;
         default:
-            throw new RangeError('Unsupported color range');
+            throw new RangeError(`range: unsupported '${String(metadata.range)}'`);
     }
     switch (metadata.transfer) {
         case 'hlg':
@@ -58,21 +67,13 @@ export function assertValidInputColorMetadata(metadata: InputColorMetadata): voi
         case 'sdr':
             break;
         default:
-            throw new RangeError('Unsupported color transfer');
+            throw new RangeError(`transfer: unsupported '${String(metadata.transfer)}'`);
     }
-    if (!Number.isInteger(metadata.bitDepth) || metadata.bitDepth < 8 || metadata.bitDepth > 16) {
-        throw new RangeError('Input bit depth must be an integer from 8 through 16');
+    if (!Number.isInteger(metadata.bitDepth) || metadata.bitDepth < MINIMUM_BIT_DEPTH || metadata.bitDepth > MAXIMUM_BIT_DEPTH) {
+        throw new RangeError(`bitDepth: ${metadata.bitDepth} outside integers [${MINIMUM_BIT_DEPTH}, ${MAXIMUM_BIT_DEPTH}]`);
     }
-    if (!Number.isFinite(metadata.nominalPeakNits)
-        || metadata.nominalPeakNits < MINIMUM_LUMINANCE_NITS
-        || metadata.nominalPeakNits > MAXIMUM_LUMINANCE_NITS) {
-        throw new RangeError('Nominal peak luminance must be from 1 through 10000 nits');
-    }
-    if (!Number.isFinite(metadata.sdrReferenceWhiteNits)
-        || metadata.sdrReferenceWhiteNits < MINIMUM_LUMINANCE_NITS
-        || metadata.sdrReferenceWhiteNits > MAXIMUM_LUMINANCE_NITS) {
-        throw new RangeError('SDR reference white must be from 1 through 10000 nits');
-    }
+    requireSettingRange('nominalPeakNits', metadata.nominalPeakNits, MINIMUM_LUMINANCE_NITS, MAXIMUM_LUMINANCE_NITS);
+    requireSettingRange('sdrReferenceWhiteNits', metadata.sdrReferenceWhiteNits, MINIMUM_LUMINANCE_NITS, MAXIMUM_LUMINANCE_NITS);
 }
 
 /** Creates BT.709 SDR metadata for reference processing and tests. */
