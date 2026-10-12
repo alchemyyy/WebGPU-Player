@@ -23,26 +23,6 @@
     font-weight: 600;
 }
 
-.shader-panel select,
-.shader-panel button,
-.shader-panel input {
-    border: 1px solid var(--sandbox-panel-border);
-    border-radius: var(--sandbox-panel-radius);
-    background: var(--sandbox-control-background);
-    color: var(--sandbox-text);
-    font: inherit;
-}
-
-.shader-panel button:not(:disabled):hover,
-.shader-panel select:not(:disabled):hover {
-    background: var(--sandbox-control-hover);
-}
-
-.shader-panel button:disabled,
-.shader-panel select:disabled {
-    color: var(--sandbox-text-muted);
-}
-
 .shader-panel-hint {
     margin: 0;
     color: var(--sandbox-text-muted);
@@ -70,17 +50,21 @@
 }
 
 .shader-pass-name {
-    flex: none;
-    max-width: 40%;
+    flex: 1 1 auto;
+    min-width: 0;
     overflow: hidden;
     font-weight: 600;
     white-space: nowrap;
     text-overflow: ellipsis;
 }
 
+.shader-pass-actions {
+    display: flex;
+    flex: none;
+    gap: calc(var(--sandbox-gap) / 2);
+}
+
 .shader-pass-state {
-    flex: 1 1 auto;
-    min-width: 0;
     font: var(--sandbox-monospace-font);
     overflow-wrap: anywhere;
 }
@@ -99,12 +83,6 @@
 
 .shader-pass-state[data-tone='muted'] {
     color: var(--sandbox-text-muted);
-}
-
-.shader-pass-actions {
-    display: flex;
-    flex: none;
-    gap: calc(var(--sandbox-gap) / 2);
 }
 
 /* Name, input, and range columns line up across a pass's parameters */

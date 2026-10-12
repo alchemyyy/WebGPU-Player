@@ -2,7 +2,6 @@
 import type { PlanReport } from 'webgpu-player/presentation/passes/PassTypes';
 
 import type {
-    ExampleShaderPass,
     SandboxSessionCommands,
     SandboxShaderPass,
     SandboxState
@@ -17,13 +16,15 @@ import { createTupleSelector } from '../diagnostics/TupleSelector';
 import { createElement } from '../dom';
 import type { Panel, PanelContext } from '../Panel';
 import { subscribeSelection } from '../Store';
+import { createChoiceSelect, type Choice } from './ChoiceSelect';
 
 import './ShaderPanel.css';
 
 // The drag data type of dropped files
 const FILES_DRAG_TYPE = 'Files';
 const DRAG_ACTIVE_CLASS = 'shader-panel-drag-active';
-const NO_EXAMPLE_VALUE = '';
+// The example selector's placeholder choice
+const NO_EXAMPLE = null;
 const ANY_STEP = 'any';
 const MOVE_UP_OFFSET = -1;
 const MOVE_DOWN_OFFSET = 1;
@@ -73,15 +74,6 @@ export function createShaderPanel(context: PanelContext): Panel {
 }
 
 function createHeader(session: SandboxSessionCommands): HTMLElement {
-    const exampleSelect = createExampleSelect(session.getExampleShaderPasses());
-    exampleSelect.addEventListener('change', (): void => {
-        const exampleId = exampleSelect.value;
-        // The placeholder comes back, so choosing the same example again adds another copy
-        exampleSelect.value = NO_EXAMPLE_VALUE;
-        if (exampleId !== NO_EXAMPLE_VALUE) {
-            session.addExampleShaderPass(exampleId).catch(reportCommandRejection);
-        }
-    });
     const fileInput = createElement('input', { attributes: { multiple: '', type: 'file' }, className: 'shader-panel-file-input' });
     fileInput.hidden = true;
     fileInput.addEventListener('change', (): void => {
@@ -97,21 +89,31 @@ function createHeader(session: SandboxSessionCommands): HTMLElement {
     });
     return createElement('div', { className: 'shader-panel-header' }, [
         createElement('h3', { className: 'shader-panel-title', text: TITLE_TEXT }),
-        exampleSelect,
+        createExampleSelect(session),
         openButton,
         fileInput
     ]);
 }
 
-function createExampleSelect(examples: readonly ExampleShaderPass[]): HTMLSelectElement {
-    const options: Node[] = [];
-    options.push(createElement('option', { attributes: { value: NO_EXAMPLE_VALUE }, text: EXAMPLE_PLACEHOLDER_TEXT }));
+/** Lists the session's examples under a placeholder, which comes back after each pick, so picking one example again adds another copy. */
+function createExampleSelect(session: SandboxSessionCommands): HTMLSelectElement {
+    const examples = session.getExampleShaderPasses();
+    const exampleSelect = createChoiceSelect<string | null>((exampleId: string | null): void => {
+        exampleSelect.setValue(NO_EXAMPLE);
+        if (exampleId !== NO_EXAMPLE) {
+            session.addExampleShaderPass(exampleId).catch(reportCommandRejection);
+        }
+    });
+    const choices: Choice<string | null>[] = [];
+    choices.push({ label: EXAMPLE_PLACEHOLDER_TEXT, value: NO_EXAMPLE });
     for (const example of examples) {
-        options.push(createElement('option', { attributes: { value: example.id }, text: example.name }));
+        choices.push({ label: example.name, value: example.id });
     }
-    const select = createElement('select', { className: 'shader-panel-examples' }, options);
-    select.disabled = examples.length === 0;
-    return select;
+    exampleSelect.setChoices(choices);
+    exampleSelect.setValue(NO_EXAMPLE);
+    exampleSelect.element.className = 'shader-panel-examples';
+    exampleSelect.element.disabled = examples.length === 0;
+    return exampleSelect.element;
 }
 
 /** Hands every file dropped on the panel to the session, which reports the ones that are not WGSL passes. */
@@ -196,7 +198,7 @@ function renderRows(
 
 function createRowView(row: ShaderPassRow, session: SandboxSessionCommands): PassRowView {
     const name = createElement('span', { attributes: { title: row.origin }, className: 'shader-pass-name' });
-    const state = createElement('span', { className: 'shader-pass-state' });
+    const state = createElement('div', { className: 'shader-pass-state' });
     const moveUp = createButton(MOVE_UP_TEXT, (): void => {
         session.moveShaderPass(row.id, MOVE_UP_OFFSET).catch(reportCommandRejection);
     });
@@ -220,12 +222,13 @@ function createRowView(row: ShaderPassRow, session: SandboxSessionCommands): Pas
             createElement('span', { className: 'shader-pass-parameter-range', text: `[${field.minimum}, ${field.maximum}]` })
         ]));
     }
+    // The state goes on its own line, since a report detail is too long to share one with the name in the narrow column
     const element = createElement('li', { className: 'shader-pass' }, [
         createElement('div', { className: 'shader-pass-header' }, [
             name,
-            state,
             createElement('span', { className: 'shader-pass-actions' }, [ moveUp, moveDown, remove ])
         ]),
+        state,
         createElement('div', { className: 'shader-pass-parameters' }, parameterFields)
     ]);
     return { element, moveDown, moveUp, name, parameterInputs, state };

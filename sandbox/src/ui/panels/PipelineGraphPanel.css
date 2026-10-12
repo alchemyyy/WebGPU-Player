@@ -15,11 +15,6 @@
     position: relative;
 }
 
-.pipeline-graph-empty {
-    margin: 0;
-    color: var(--sandbox-text-muted);
-}
-
 .pipeline-graph-edges {
     position: absolute;
     top: 0;
