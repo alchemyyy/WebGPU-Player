@@ -5,11 +5,14 @@ const webSettingsMockState = vi.hoisted(() => ({
 }));
 const rawHDRAuthorizationMockState = vi.hoisted(() => ({
     authorized: true,
+    // The failure a rejected raw route reports, which the presenter's fallback detail carries
+    failure: 'pixel-mismatch: I420P10:bt2020-ncl:bt2020:limited:pq 9/255 > 3/255 at (0, 0)',
     prewarmCalls: [] as Array<{ device: GPUDevice, targetFormat: GPUTextureFormat }>
 }));
 const externalHDRAuthorizationMockState = vi.hoisted(() => ({
     authorizeCalls: [] as GPUDevice[],
     authorized: true,
+    failure: 'pixel-mismatch: external-hevc-main10-bt709-limited:pq-v1 14/255 > 10/255 at (3, 7)',
     prewarmCalls: [] as Array<{ device: GPUDevice, targetFormat: GPUTextureFormat }>
 }));
 const dolbyVisionAuthorizationMockState = vi.hoisted(() => ({
@@ -22,6 +25,12 @@ const dolbyVisionAuthorizationMockState = vi.hoisted(() => ({
     rejectedRouteNames: new Set<string>(),
     waitRouteNames: [] as string[]
 }));
+
+// The real planner runs behind a spy, so tests can read the plan requests
+vi.mock('webgpu-player/presentation/passes/PresentationPlanner', async importOriginal => {
+    const originalModule = await importOriginal<typeof import('webgpu-player/presentation/passes/PresentationPlanner')>();
+    return { ...originalModule, planPresentation: vi.fn(originalModule.planPresentation) };
+});
 
 vi.mock('webgpu-player/EngineConfiguration', () => ({
     isHDRToneMappingEnabled: vi.fn((): Promise<boolean> => Promise.resolve(webSettingsMockState.hdrToneMappingEnabled))
@@ -47,6 +56,10 @@ vi.mock('webgpu-player/validation/RawHDRPresentationAuthorization', () => ({
         waitForPending = vi.fn((): Promise<void> => Promise.resolve());
 
         isAuthorized = vi.fn((): boolean => rawHDRAuthorizationMockState.authorized);
+
+        getAuthorizationFailure = vi.fn((): string | null => (
+            rawHDRAuthorizationMockState.authorized ? null : rawHDRAuthorizationMockState.failure
+        ));
 
         getTelemetry = vi.fn((_device: GPUDevice | null, targetFormat: GPUTextureFormat | null) => ({
             authorizedRouteKeys: rawHDRAuthorizationMockState.authorized ?
@@ -100,6 +113,10 @@ vi.mock('webgpu-player/validation/ExternalHDRPresentationAuthorization', () => (
 
         isAuthorized = vi.fn((): boolean => externalHDRAuthorizationMockState.authorized);
 
+        getAuthorizationFailure = vi.fn((): string | null => (
+            externalHDRAuthorizationMockState.authorized ? null : externalHDRAuthorizationMockState.failure
+        ));
+
         getTelemetry = vi.fn((_device: GPUDevice | null, targetFormat: GPUTextureFormat | null) => ({
             authorizedRouteKeys: externalHDRAuthorizationMockState.authorized ? [
                 'external-hevc-main10-bt709-limited:pq-v1',
@@ -132,6 +149,8 @@ vi.mock('webgpu-player/validation/ExternalDolbyVisionPresentationAuthorization',
         waitForPending = vi.fn((): Promise<void> => Promise.resolve());
 
         isAuthorized = vi.fn((): boolean => true);
+
+        getAuthorizationFailure = vi.fn((): string | null => null);
 
         getTelemetry = vi.fn((_device: GPUDevice | null, targetFormat: GPUTextureFormat | null) => ({
             failureReason: null,
@@ -168,6 +187,10 @@ vi.mock('webgpu-player/validation/DolbyVisionPresentationAuthorization', () => (
         });
 
         isAuthorized = vi.fn((): boolean => this.isRouteAuthorized());
+
+        getAuthorizationFailure = vi.fn((): string | null => (
+            this.isRouteAuthorized() ? null : `pixel-mismatch: ${this.routeName}`
+        ));
 
         getTelemetry = vi.fn((_device: GPUDevice | null, targetFormat: GPUTextureFormat | null) => ({
             failureReason: this.isRouteAuthorized() ? null : 'pixel-mismatch',
@@ -213,7 +236,8 @@ import {
     parseHEVCHDR10PlusMetadata,
     type HDR10PlusFrameMetadata
 } from 'webgpu-player/video/hdr/HDR10PlusMetadata';
-import { microsecondsToMilliseconds, secondsToMicroseconds } from 'webgpu-player/MediaTime';
+import { type Microseconds, microsecondsToMilliseconds, secondsToMicroseconds } from 'webgpu-player/MediaTime';
+import { addMicroseconds, requireMicroseconds } from 'webgpu-player/TimeMath';
 import {
     createDefaultRenderSettings,
     createHDRToSDRRenderSettings,
@@ -225,8 +249,17 @@ import WebGPUPresenter, {
     type PresentationSurface,
     WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS
 } from 'webgpu-player/presentation/WebGPUPresenter';
+import type { PresentationFrameInput } from 'webgpu-player/presentation/passes/PassTypes';
+import { PresentationExecutor } from 'webgpu-player/presentation/passes/PresentationExecutor';
+import { planPresentation } from 'webgpu-player/presentation/passes/PresentationPlanner';
 
 import { createHDR10PlusHEVCVector } from '../../src/capability/vectors/HDR10PlusVectors';
+import {
+    createDeferred,
+    createWebGPUDeviceHarness,
+    installWebGPUGlobals,
+    type WebGPUDeviceHarness
+} from '../helpers/webGPUDeviceHarness';
 
 type MockFunction = ReturnType<typeof vi.fn>;
 
@@ -246,11 +279,42 @@ const CURVE_DYNAMIC_MODE = 2;
 const HDR10_PLUS_VECTOR_SCENE_PEAK_NITS = 834.75;
 const HDR10_PLUS_VECTOR_CURVE_TARGET_NITS = 1_000;
 
-type Deferred<Value> = {
-    promise: Promise<Value>
-    reject: (error: unknown) => void
-    resolve: (value: Value) => void
-};
+// The failures these tests simulate, and the details the presenter's fallbacks report for them
+const SIMULATED_DEVICE_REQUEST_FAILURE = 'simulated device request failure';
+const SIMULATED_PIPELINE_CREATION_FAILURE = 'simulated pipeline creation failure';
+const SIMULATED_CANVAS_CONFIGURATION_FAILURE = 'simulated canvas configuration failure';
+const SIMULATED_FRAME_CALLBACK_FAILURE = 'simulated frame callback request failure';
+const SIMULATED_NEXT_FRAME_CALLBACK_FAILURE = 'simulated next frame callback request failure';
+const INSECURE_CONTEXT_DETAIL = 'isSecureContext false';
+const ADAPTER_NULL_DETAIL = 'requestAdapter: null';
+const RESOURCE_TIMEOUT_DETAIL = `timeout after ${microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS)} ms`;
+// The executor's labels for the buffers these tests inspect
+const RENDER_SETTINGS_BUFFER_LABEL = 'Presentation render settings';
+const PRESENTATION_UNIFORMS_BUFFER_LABEL = 'Presentation uniforms';
+const DOLBY_VISION_RPU_BUFFER_LABEL = 'Presentation Dolby Vision RPU';
+const DOLBY_VISION_ENHANCEMENT_BUFFER_LABEL = 'Presentation Dolby Vision enhancement uniforms';
+// A presentation uniform starts with the texture scale and offset, two floats each
+const PRESENTATION_COORDINATE_COUNT = 4;
+// A row stride below the 256-byte alignment raw planes upload with
+const MISALIGNED_BYTES_PER_ROW = 128;
+// A second device loss finds the one recovery attempt used
+const RECOVERY_ATTEMPTS_USED_DETAIL = 'recovery: 1 of 1 attempts used';
+const HDR_TONE_MAPPING_DISABLED_DETAIL = 'hdrToneMappingEnabled false';
+const SIMULATED_INVALID_SUBMISSION = 'simulated invalid submission';
+const SIMULATED_LATE_VALIDATION_ERROR = 'simulated late validation error';
+const SIMULATED_IMPORT_FAILURE = 'simulated import failure';
+
+// The raw test frames' timing, and steps from it that do and do not follow on
+const RAW_FRAME_TIMESTAMP_MICROSECONDS = secondsToMicroseconds(2);
+const RAW_FRAME_DURATION_MICROSECONDS = secondsToMicroseconds(1 / 24);
+const NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS = addMicroseconds(RAW_FRAME_TIMESTAMP_MICROSECONDS, RAW_FRAME_DURATION_MICROSECONDS);
+// Three frame durations, past the 2.5 that history tolerates
+const DISCONTINUOUS_FRAME_STEP_MICROSECONDS = requireMicroseconds(RAW_FRAME_DURATION_MICROSECONDS * 3);
+const FIRST_VIDEO_EPOCH = 0;
+const SECOND_VIDEO_EPOCH = 1;
+// The facts a plan takes before any frame or canvas measures a size
+const UNMEASURED_PLAN_DIMENSION = 1;
+const PREFERRED_CANVAS_FORMAT: GPUTextureFormat = 'bgra8unorm';
 
 type CanvasContextHarness = {
     context: GPUCanvasContext
@@ -259,26 +323,7 @@ type CanvasContextHarness = {
     unconfigure: MockFunction
 };
 
-type DeviceHarness = {
-    createBindGroup: MockFunction
-    createBuffer: MockFunction
-    createShaderModule: MockFunction
-    createTexture: MockFunction
-    createRenderPipelineAsync: MockFunction
-    device: GPUDevice
-    dispatchUncapturedError: (error: GPUError) => boolean
-    destroy: MockFunction
-    importExternalTexture: MockFunction
-    lost: Deferred<GPUDeviceLostInfo>
-    popErrorScope: MockFunction
-    pushErrorScope: MockFunction
-    queueOnSubmittedWorkDone: MockFunction
-    queueSubmit: MockFunction
-    queueWriteBuffer: MockFunction
-    queueWriteTexture: MockFunction
-    renderPassSetViewport: MockFunction
-    textureDestroy: MockFunction
-};
+type DeviceHarness = WebGPUDeviceHarness;
 
 type GPUHarness = {
     devices: DeviceHarness[]
@@ -384,26 +429,11 @@ function notifyMutationObservers(target: Node): number {
 const originalCanvasGetContext = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'getContext');
 const originalDevicePixelRatio = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio');
 const originalGPU = Object.getOwnPropertyDescriptor(navigator, 'gpu');
-const originalGPUBufferUsage = Object.getOwnPropertyDescriptor(globalThis, 'GPUBufferUsage');
-const originalGPUTextureUsage = Object.getOwnPropertyDescriptor(globalThis, 'GPUTextureUsage');
+let restoreWebGPUGlobals: () => void = (): void => undefined;
 const originalGPUValidationError = Object.getOwnPropertyDescriptor(globalThis, 'GPUValidationError');
 const originalMutationObserver = Object.getOwnPropertyDescriptor(globalThis, 'MutationObserver');
 const originalResizeObserver = Object.getOwnPropertyDescriptor(globalThis, 'ResizeObserver');
 const originalSecureContext = Object.getOwnPropertyDescriptor(window, 'isSecureContext');
-
-function createDeferred<Value>(): Deferred<Value> {
-    let rejectPromise: (error: unknown) => void = () => {
-        throw new Error('Deferred promise was not initialized');
-    };
-    let resolvePromise: (value: Value) => void = () => {
-        throw new Error('Deferred promise was not initialized');
-    };
-    const promise = new Promise<Value>((resolve, reject) => {
-        rejectPromise = reject;
-        resolvePromise = resolve;
-    });
-    return { promise, reject: rejectPromise, resolve: resolvePromise };
-}
 
 function createCanvasContextHarness(): CanvasContextHarness {
     const configure = vi.fn();
@@ -420,102 +450,10 @@ function createCanvasContextHarness(): CanvasContextHarness {
     return { configure, context, getCurrentTexture, unconfigure };
 }
 
-function createDeviceHarness(): DeviceHarness {
-    const deviceEventTarget = new EventTarget();
-    const lost = createDeferred<GPUDeviceLostInfo>();
-    const renderPassSetViewport = vi.fn();
-    const renderPass = {
-        draw: vi.fn(),
-        end: vi.fn(),
-        setBindGroup: vi.fn(),
-        setPipeline: vi.fn(),
-        setViewport: renderPassSetViewport
-    };
-    const commandEncoder = {
-        beginRenderPass: vi.fn(() => renderPass),
-        finish: vi.fn(() => ({}))
-    };
-    const pipeline = {
-        getBindGroupLayout: vi.fn(() => ({}))
-    };
-    const queueSubmit = vi.fn();
-    const queueOnSubmittedWorkDone = vi.fn(() => Promise.resolve());
-    const queueWriteBuffer = vi.fn();
-    const queueWriteTexture = vi.fn();
-    const importExternalTexture = vi.fn(() => ({}));
-    const createRenderPipelineAsync = vi.fn(() => Promise.resolve(pipeline));
-    const createShaderModule = vi.fn(() => ({}));
-    const createBindGroup = vi.fn(() => ({}));
-    const createBuffer = vi.fn((descriptor: GPUBufferDescriptor) => ({
-        destroy: vi.fn(),
-        label: descriptor.label
-    }));
-    const textureDestroy = vi.fn();
-    const createTexture = vi.fn((descriptor: GPUTextureDescriptor) => ({
-        createView: vi.fn(() => ({ label: descriptor.label })),
-        destroy: textureDestroy,
-        label: descriptor.label
-    }));
-    const destroy = vi.fn();
-    const popErrorScope = vi.fn(() => Promise.resolve(null));
-    const pushErrorScope = vi.fn();
-    const device = {
-        addEventListener: deviceEventTarget.addEventListener.bind(deviceEventTarget),
-        createBindGroup,
-        createBuffer,
-        createCommandEncoder: vi.fn(() => commandEncoder),
-        createRenderPipelineAsync,
-        createSampler: vi.fn(() => ({})),
-        createShaderModule,
-        createTexture,
-        destroy,
-        features: new Set<GPUFeatureName>(),
-        importExternalTexture,
-        label: '',
-        limits: { maxTextureDimension2D: 8_192 },
-        lost: lost.promise,
-        popErrorScope,
-        pushErrorScope,
-        queue: {
-            onSubmittedWorkDone: queueOnSubmittedWorkDone,
-            submit: queueSubmit,
-            writeBuffer: queueWriteBuffer,
-            writeTexture: queueWriteTexture
-        },
-        removeEventListener: deviceEventTarget.removeEventListener.bind(deviceEventTarget)
-    } as unknown as GPUDevice;
-    const dispatchUncapturedError = (error: GPUError): boolean => {
-        const event = new Event('uncapturederror', { cancelable: true });
-        Object.defineProperty(event, 'error', { value: error });
-        return deviceEventTarget.dispatchEvent(event);
-    };
-
-    return {
-        createBindGroup,
-        createBuffer,
-        createShaderModule,
-        createTexture,
-        createRenderPipelineAsync,
-        device,
-        dispatchUncapturedError,
-        destroy,
-        importExternalTexture,
-        lost,
-        popErrorScope,
-        pushErrorScope,
-        queueOnSubmittedWorkDone,
-        queueSubmit,
-        queueWriteBuffer,
-        queueWriteTexture,
-        renderPassSetViewport,
-        textureDestroy
-    };
-}
-
 function createGPUHarness(deviceCount = 1): GPUHarness {
     const devices: DeviceHarness[] = [];
     for (let deviceIndex = 0; deviceIndex < deviceCount; deviceIndex += 1) {
-        devices.push(createDeviceHarness());
+        devices.push(createWebGPUDeviceHarness());
     }
 
     let requestedDeviceIndex = 0;
@@ -778,6 +716,28 @@ function createDolbyVisionEncodedMetadata(
     };
 }
 
+function toBytes(data: unknown): Uint8Array<ArrayBuffer> {
+    if (data instanceof ArrayBuffer) {
+        return new Uint8Array(data.slice(0));
+    }
+    const view = data as ArrayBufferView;
+    return new Uint8Array(view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength) as ArrayBuffer);
+}
+
+/** Returns the first pass's texture scale and offset in each presentation uniform write since the queue mock was last cleared. */
+function getPresentationCoordinateWrites(deviceHarness: DeviceHarness): number[][] {
+    return deviceHarness.queueWriteBuffer.mock.calls
+        .filter((call: unknown[]): boolean => (call[0] as { label?: string }).label === PRESENTATION_UNIFORMS_BUFFER_LABEL)
+        .map((call: unknown[]): number[] => Array.from(new Float32Array(toBytes(call[2]).buffer, 0, PRESENTATION_COORDINATE_COUNT)));
+}
+
+/** Returns the writes to the executor's render settings uniform since the queue mock was last cleared, as bytes. */
+function getRenderSettingsWrites(deviceHarness: DeviceHarness): Uint8Array<ArrayBuffer>[] {
+    return deviceHarness.queueWriteBuffer.mock.calls
+        .filter((call: unknown[]): boolean => (call[0] as { label?: string }).label === RENDER_SETTINGS_BUFFER_LABEL)
+        .map((call: unknown[]): Uint8Array<ArrayBuffer> => toBytes(call[2]));
+}
+
 function installGPU(gpu: GPU): void {
     Object.defineProperty(navigator, 'gpu', {
         configurable: true,
@@ -870,21 +830,10 @@ describe('WebGPUPresenter', () => {
             configurable: true,
             value: 1
         });
-        Object.defineProperty(globalThis, 'GPUBufferUsage', {
-            configurable: true,
-            // WebGPU defines these external names
-            // eslint-disable-next-line @typescript-eslint/naming-convention
-            value: { COPY_DST: 8, STORAGE: 128, UNIFORM: 64 }
-        });
+        restoreWebGPUGlobals = installWebGPUGlobals();
         Object.defineProperty(globalThis, 'GPUValidationError', {
             configurable: true,
             value: class extends Error {}
-        });
-        Object.defineProperty(globalThis, 'GPUTextureUsage', {
-            configurable: true,
-            // WebGPU defines these external names
-            // eslint-disable-next-line @typescript-eslint/naming-convention
-            value: { COPY_DST: 2, TEXTURE_BINDING: 4 }
         });
         Object.defineProperty(globalThis, 'MutationObserver', {
             configurable: true,
@@ -904,8 +853,7 @@ describe('WebGPUPresenter', () => {
         }
         restoreProperty(HTMLCanvasElement.prototype, 'getContext', originalCanvasGetContext);
         restoreProperty(navigator, 'gpu', originalGPU);
-        restoreProperty(globalThis, 'GPUBufferUsage', originalGPUBufferUsage);
-        restoreProperty(globalThis, 'GPUTextureUsage', originalGPUTextureUsage);
+        restoreWebGPUGlobals();
         restoreProperty(globalThis, 'GPUValidationError', originalGPUValidationError);
         restoreProperty(globalThis, 'MutationObserver', originalMutationObserver);
         restoreProperty(globalThis, 'ResizeObserver', originalResizeObserver);
@@ -924,7 +872,7 @@ describe('WebGPUPresenter', () => {
         presenter.startSession(1);
 
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'insecure-context');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'insecure-context', INSECURE_CONTEXT_DETAIL);
         expect(document.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry().state).toBe('fallback');
     });
@@ -939,7 +887,7 @@ describe('WebGPUPresenter', () => {
         presenter.startSession(1);
 
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'adapter-unavailable');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'adapter-unavailable', ADAPTER_NULL_DETAIL);
         expect(gpuHarness.requestDevice).not.toHaveBeenCalled();
         expect(presenter.getTelemetry().state).toBe('fallback');
     });
@@ -956,14 +904,14 @@ describe('WebGPUPresenter', () => {
         await vi.advanceTimersByTimeAsync(microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS));
 
         expect(fallbackHandler).toHaveBeenCalledOnce();
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'adapter-unavailable');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'adapter-unavailable', `requestAdapter: ${RESOURCE_TIMEOUT_DETAIL}`);
         expect(gpuHarness.requestDevice).not.toHaveBeenCalled();
         expect(presenter.getTelemetry().state).toBe('fallback');
     });
 
     it('falls back when WebGPU device acquisition fails', async () => {
         const gpuHarness = createGPUHarness();
-        gpuHarness.requestDevice.mockRejectedValue(new Error('simulated device request failure'));
+        gpuHarness.requestDevice.mockRejectedValue(new Error(SIMULATED_DEVICE_REQUEST_FAILURE));
         installGPU(gpuHarness.gpu);
         const fallbackHandler = vi.fn();
         const presenter = new WebGPUPresenter(fallbackHandler);
@@ -971,7 +919,7 @@ describe('WebGPUPresenter', () => {
         presenter.startSession(1);
 
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-request-failed');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-request-failed', `requestDevice: ${SIMULATED_DEVICE_REQUEST_FAILURE}`);
         expect(presenter.getTelemetry().state).toBe('fallback');
     });
 
@@ -991,7 +939,7 @@ describe('WebGPUPresenter', () => {
     it('destroys the device and falls back when pipeline creation fails', async () => {
         const gpuHarness = createGPUHarness();
         const deviceHarness = gpuHarness.devices[0];
-        deviceHarness.createRenderPipelineAsync.mockRejectedValue(new Error('simulated pipeline creation failure'));
+        deviceHarness.createRenderPipelineAsync.mockRejectedValue(new Error(SIMULATED_PIPELINE_CREATION_FAILURE));
         installGPU(gpuHarness.gpu);
         const fallbackHandler = vi.fn();
         const presenter = new WebGPUPresenter(fallbackHandler);
@@ -999,7 +947,7 @@ describe('WebGPUPresenter', () => {
         presenter.startSession(1);
 
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'pipeline-creation-failed');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'pipeline-creation-failed', `executor: ${SIMULATED_PIPELINE_CREATION_FAILURE}`);
         expect(deviceHarness.destroy).toHaveBeenCalledOnce();
         expect(presenter.getTelemetry().state).toBe('fallback');
     });
@@ -1009,7 +957,7 @@ describe('WebGPUPresenter', () => {
         const contextHarness = createCanvasContextHarness();
         const surfaceHarness = createSurfaceHarness();
         contextHarness.configure.mockImplementation(() => {
-            throw new Error('simulated canvas configuration failure');
+            throw new Error(SIMULATED_CANVAS_CONFIGURATION_FAILURE);
         });
         installGPU(gpuHarness.gpu);
         installCanvasContext(contextHarness.context);
@@ -1020,7 +968,7 @@ describe('WebGPUPresenter', () => {
         presenter.attach(surfaceHarness.surface, 1);
 
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'canvas-configuration-failed');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'canvas-configuration-failed', `configure: ${SIMULATED_CANVAS_CONFIGURATION_FAILURE}`);
         expect(contextHarness.unconfigure).toHaveBeenCalledOnce();
         expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry().state).toBe('fallback');
@@ -1031,7 +979,7 @@ describe('WebGPUPresenter', () => {
         const contextHarness = createCanvasContextHarness();
         const surfaceHarness = createSurfaceHarness();
         surfaceHarness.requestVideoFrameCallback.mockImplementation(() => {
-            throw new Error('simulated frame callback request failure');
+            throw new Error(SIMULATED_FRAME_CALLBACK_FAILURE);
         });
         installGPU(gpuHarness.gpu);
         installCanvasContext(contextHarness.context);
@@ -1042,7 +990,11 @@ describe('WebGPUPresenter', () => {
         presenter.attach(surfaceHarness.surface, 1);
 
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'request-video-frame-callback-unavailable');
+        expect(fallbackHandler).toHaveBeenCalledWith(
+            1,
+            'request-video-frame-callback-unavailable',
+            `requestVideoFrameCallback: ${SIMULATED_FRAME_CALLBACK_FAILURE}`
+        );
         expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry().state).toBe('fallback');
     });
@@ -1060,14 +1012,18 @@ describe('WebGPUPresenter', () => {
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
         surfaceHarness.requestVideoFrameCallback.mockImplementation(() => {
-            throw new Error('simulated next frame callback request failure');
+            throw new Error(SIMULATED_NEXT_FRAME_CALLBACK_FAILURE);
         });
 
         surfaceHarness.callbacks.get(1)?.(performance.now(), createFrameMetadata());
 
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
         expect(fallbackHandler).toHaveBeenCalledOnce();
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'request-video-frame-callback-unavailable');
+        expect(fallbackHandler).toHaveBeenCalledWith(
+            1,
+            'request-video-frame-callback-unavailable',
+            `requestVideoFrameCallback: ${SIMULATED_NEXT_FRAME_CALLBACK_FAILURE}`
+        );
         expect(gpuHarness.devices[0].queueSubmit).toHaveBeenCalledOnce();
         expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry().state).toBe('fallback');
@@ -1869,7 +1825,6 @@ describe('WebGPUPresenter', () => {
                     rowsPerImage: plane.height
                 });
                 expect(upload[3]).toEqual({
-                    depthOrArrayLayers: 1,
                     height: plane.height,
                     width: plane.width
                 });
@@ -1922,14 +1877,8 @@ describe('WebGPUPresenter', () => {
         await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
 
         const getLastRenderSettingsWrite = (): Uint8Array<ArrayBuffer> => {
-            const renderSettingsWrites = deviceHarness.queueWriteBuffer.mock.calls
-                .map((call: unknown[]): unknown => call[2])
-                .filter((value: unknown): value is Uint8Array<ArrayBuffer> => (
-                    value instanceof Uint8Array
-                    && value.byteLength === RENDER_SETTINGS_UNIFORM_BYTE_LENGTH
-                ));
-            const renderSettingsWrite = renderSettingsWrites.at(-1);
-            expect(renderSettingsWrite).toBeDefined();
+            const renderSettingsWrite = getRenderSettingsWrites(deviceHarness).at(-1);
+            expect(renderSettingsWrite?.byteLength).toBe(RENDER_SETTINGS_UNIFORM_BYTE_LENGTH);
             return renderSettingsWrite as Uint8Array<ArrayBuffer>;
         };
         let renderSettingsWrite = getLastRenderSettingsWrite();
@@ -2014,14 +1963,8 @@ describe('WebGPUPresenter', () => {
         }, 1)).toBe(true);
         await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
 
-        const renderSettingsWrites = deviceHarness.queueWriteBuffer.mock.calls
-            .map((call: unknown[]): unknown => call[2])
-            .filter((value: unknown): value is Uint8Array<ArrayBuffer> => (
-                value instanceof Uint8Array
-                && value.byteLength === RENDER_SETTINGS_UNIFORM_BYTE_LENGTH
-            ));
-        const renderSettingsWrite = renderSettingsWrites.at(-1);
-        expect(renderSettingsWrite).toBeDefined();
+        const renderSettingsWrite = getRenderSettingsWrites(deviceHarness).at(-1);
+        expect(renderSettingsWrite?.byteLength).toBe(RENDER_SETTINGS_UNIFORM_BYTE_LENGTH);
         const uniformData = renderSettingsWrite as Uint8Array<ArrayBuffer>;
         expect(new Uint32Array(uniformData.buffer)[3]).toBe(2);
         expect(new Float32Array(uniformData.buffer)[6]).toBe(4_000);
@@ -2076,14 +2019,8 @@ describe('WebGPUPresenter', () => {
             }, 1)).toBe(true);
             presentedFrameCount += 1;
             await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(presentedFrameCount));
-            const renderSettingsWrite = deviceHarness.queueWriteBuffer.mock.calls
-                .map((call: unknown[]): unknown => call[2])
-                .filter((value: unknown): value is Uint8Array<ArrayBuffer> => (
-                    value instanceof Uint8Array
-                    && value.byteLength === RENDER_SETTINGS_UNIFORM_BYTE_LENGTH
-                ))
-                .at(-1);
-            expect(renderSettingsWrite).toBeDefined();
+            const renderSettingsWrite = getRenderSettingsWrites(deviceHarness).at(-1);
+            expect(renderSettingsWrite?.byteLength).toBe(RENDER_SETTINGS_UNIFORM_BYTE_LENGTH);
             const uniformBuffer = (renderSettingsWrite as Uint8Array<ArrayBuffer>).buffer;
             return { floatValues: new Float32Array(uniformBuffer), integerValues: new Uint32Array(uniformBuffer) };
         };
@@ -2163,8 +2100,7 @@ describe('WebGPUPresenter', () => {
         }, 1)).toBe(true);
 
         expect(deviceHarness.queueWriteBuffer).toHaveBeenCalledOnce();
-        const presentationUniforms = deviceHarness.queueWriteBuffer.mock.calls[0][2] as Float32Array<ArrayBuffer>;
-        expect(Array.from(presentationUniforms)).toEqual([ 0.5, 1, 0.25, 0 ]);
+        expect(getPresentationCoordinateWrites(deviceHarness)).toEqual([ [ 0.5, 1, 0.25, 0 ] ]);
         expect(deviceHarness.createTexture).toHaveBeenCalledTimes(3);
 
         const recycleChannel = new MessageChannel();
@@ -2226,7 +2162,7 @@ describe('WebGPUPresenter', () => {
         const deviceHarness = gpuHarness.devices[0];
         const RPUBufferCallIndex = deviceHarness.createBuffer.mock.calls.findIndex(
             (call: unknown[]) => (
-                (call[0] as GPUBufferDescriptor).label === 'WebGPU Dolby Vision per-frame RPU'
+                (call[0] as GPUBufferDescriptor).label === DOLBY_VISION_RPU_BUFFER_LABEL
             )
         );
         expect(RPUBufferCallIndex).toBeGreaterThanOrEqual(0);
@@ -2355,7 +2291,7 @@ describe('WebGPUPresenter', () => {
         const deviceHarness = gpuHarness.devices[0];
         const fullFELShader = deviceHarness.createShaderModule.mock.calls
             .map((call: unknown[]) => call[0] as { code: string })
-            .find(descriptor => descriptor.code.includes('@group(0) @binding(9) var<uniform> enhancement'));
+            .find(descriptor => descriptor.code.includes('var<uniform> enhancement: DolbyVisionEnhancementUniforms'));
         expect(fullFELShader?.code).toContain(
             'reconstructDolbyVisionBT2020PQWithEnhancement'
         );
@@ -2593,7 +2529,7 @@ describe('WebGPUPresenter', () => {
             mediaTimeMicroseconds: frame.timestampMicroseconds,
             outputMode: 'raw-planes'
         }, 1)).toBe(false);
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'dolby-vision-metadata-invalid');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'dolby-vision-metadata-invalid', 'rpu-bit-depth: 10, expected 12');
     });
 
     /** Pushes one raw Dolby Vision frame with its RPU, and its paired EL when one is given. */
@@ -2691,7 +2627,7 @@ describe('WebGPUPresenter', () => {
             expect(configured).toBe(true);
             const felShader = deviceHarness.createShaderModule.mock.calls
                 .map((call: unknown[]) => call[0] as { code: string })
-                .find(descriptor => descriptor.code.includes('@binding(9) var<uniform> enhancement'));
+                .find(descriptor => descriptor.code.includes('var<uniform> enhancement: DolbyVisionEnhancementUniforms'));
             expect(felShader?.code).toContain(baseNormalization);
 
             const bitDepth = getRawFormatBitDepth(rawFrameFormat);
@@ -2743,7 +2679,7 @@ describe('WebGPUPresenter', () => {
         const { configured, fallbackHandler } = await createRawDolbyVisionPresenter(7, 'I422P12');
 
         expect(configured).toBe(false);
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'hdr-authorization-unavailable');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'hdr-authorization-unavailable', 'pixel-mismatch: I422P12:profile7-base');
     });
 
     it('presents an FEL frame as its base when the BL format\'s FEL key is not authorized', async () => {
@@ -2794,7 +2730,11 @@ describe('WebGPUPresenter', () => {
                 createDolbyVisionAuthorizationRPUVector(8, 'single-layer', baseLayerBitDepth)
             ))).toBe(accepted);
             if (!accepted) {
-                expect(fallbackHandler).toHaveBeenCalledWith(1, 'dolby-vision-metadata-invalid');
+                expect(fallbackHandler).toHaveBeenCalledWith(
+                    1,
+                    'dolby-vision-metadata-invalid',
+                    `rpu-bit-depth: ${baseLayerBitDepth}, expected 8`
+                );
                 return;
             }
             await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
@@ -2813,16 +2753,18 @@ describe('WebGPUPresenter', () => {
             'discarded-mel',
             true
         ))).toBe(false);
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'dolby-vision-metadata-invalid');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'dolby-vision-metadata-invalid', 'rpu-bit-depth: 10, expected 12');
     });
 
     it.each([
         {
+            expectedDetail: 'metadata: missing',
             name: 'missing metadata',
             profile: 8 as const,
             toMetadata: (): TransferableDolbyVisionEncodedFrameMetadata | undefined => undefined
         },
         {
+            expectedDetail: 'rpu-count: 2, expected 1',
             name: 'multiple RPUs',
             profile: 8 as const,
             toMetadata: (): TransferableDolbyVisionEncodedFrameMetadata => ({
@@ -2834,6 +2776,7 @@ describe('WebGPUPresenter', () => {
             })
         },
         {
+            expectedDetail: 'enhancement-layer: discarded-mel with single-layer RPU',
             name: 'discarded enhancement-layer data',
             profile: 8 as const,
             toMetadata: (): TransferableDolbyVisionEncodedFrameMetadata => ({
@@ -2843,6 +2786,7 @@ describe('WebGPUPresenter', () => {
             })
         },
         {
+            expectedDetail: `metadata-schema: 1, expected ${DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION}`,
             name: 'an incompatible protocol schema',
             profile: 8 as const,
             toMetadata: (): TransferableDolbyVisionEncodedFrameMetadata => ({
@@ -2851,6 +2795,7 @@ describe('WebGPUPresenter', () => {
             } as unknown as TransferableDolbyVisionEncodedFrameMetadata)
         },
         {
+            expectedDetail: 'rpu-profile: 7, expected 5 or 8',
             name: 'a dual-layer RPU in a single-layer session',
             profile: 5 as const,
             toMetadata: (): TransferableDolbyVisionEncodedFrameMetadata => (
@@ -2858,6 +2803,7 @@ describe('WebGPUPresenter', () => {
             )
         },
         {
+            expectedDetail: 'rpu-profile: 7, expected 4',
             name: 'a Profile 7 RPU in a Profile 4 session',
             profile: 4 as const,
             toMetadata: (): TransferableDolbyVisionEncodedFrameMetadata => (
@@ -2869,6 +2815,7 @@ describe('WebGPUPresenter', () => {
             )
         },
         {
+            expectedDetail: 'enhancement-layer: discarded-fel, expected absent',
             name: 'a discarded FEL disposition without EL VCL',
             profile: 7 as const,
             toMetadata: (): TransferableDolbyVisionEncodedFrameMetadata => (
@@ -2880,6 +2827,7 @@ describe('WebGPUPresenter', () => {
             )
         },
         {
+            expectedDetail: 'enhancement-layer: discarded-fel with mel RPU',
             name: 'a Profile 7 layer disposition mismatch',
             profile: 7 as const,
             toMetadata: (): TransferableDolbyVisionEncodedFrameMetadata => (
@@ -2890,7 +2838,7 @@ describe('WebGPUPresenter', () => {
                 )
             )
         }
-    ])('fails closed for $name in a Dolby Vision frame', async ({ profile, toMetadata }) => {
+    ])('fails closed for $name in a Dolby Vision frame', async ({ expectedDetail, profile, toMetadata }) => {
         webSettingsMockState.hdrToneMappingEnabled = true;
         const gpuHarness = createGPUHarness();
         const contextHarness = createCanvasContextHarness();
@@ -2921,7 +2869,7 @@ describe('WebGPUPresenter', () => {
             mediaTimeMicroseconds: rawFrame.timestampMicroseconds,
             outputMode: 'raw-planes'
         }, 1)).toBe(false);
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'dolby-vision-metadata-invalid');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'dolby-vision-metadata-invalid', expectedDetail);
         expect(gpuHarness.devices[0].queueWriteTexture).not.toHaveBeenCalled();
     });
 
@@ -2950,7 +2898,7 @@ describe('WebGPUPresenter', () => {
         }, 1);
         const rawFrame = createRawFrame('I420P10', metadata);
         const firstPlane = rawFrame.planes[0];
-        rawFrame.planes = [{ ...firstPlane, bytesPerRow: 128 }, ...rawFrame.planes.slice(1) ];
+        rawFrame.planes = [{ ...firstPlane, bytesPerRow: MISALIGNED_BYTES_PER_ROW }, ...rawFrame.planes.slice(1) ];
 
         expect(presenter.presentDecodedFrame({
             durationMicroseconds: rawFrame.durationMicroseconds ?? secondsToMicroseconds(0),
@@ -2960,7 +2908,12 @@ describe('WebGPUPresenter', () => {
         }, 1)).toBe(false);
         expect(gpuHarness.devices[0].createTexture).not.toHaveBeenCalled();
         expect(gpuHarness.devices[0].queueWriteTexture).not.toHaveBeenCalled();
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'decoded-frame-color-mismatch');
+        // The refusal names the layout check that failed and its values
+        expect(fallbackHandler).toHaveBeenCalledWith(
+            1,
+            'decoded-frame-color-mismatch',
+            `layout: plane y: bytesPerRow ${MISALIGNED_BYTES_PER_ROW}, expected ${firstPlane.bytesPerRow}`
+        );
     });
 
     it('does not inspect or upload a raw frame from a stale generation', async () => {
@@ -3056,7 +3009,7 @@ describe('WebGPUPresenter', () => {
             reason: 'unknown'
         } as GPUDeviceLostInfo);
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed', RECOVERY_ATTEMPTS_USED_DETAIL);
     });
 
     it('reauthorizes external HDR presentation on one replacement device', async () => {
@@ -3116,7 +3069,7 @@ describe('WebGPUPresenter', () => {
             reason: 'unknown'
         } as GPUDeviceLostInfo);
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed', RECOVERY_ATTEMPTS_USED_DETAIL);
     });
 
     it('reauthorizes Dolby Vision presentation on one replacement device', async () => {
@@ -3162,7 +3115,7 @@ describe('WebGPUPresenter', () => {
         expect(gpuHarness.devices[1].createBuffer.mock.calls.some(
             (call: unknown[]) => (
                 (call[0] as GPUBufferDescriptor).label
-                === 'WebGPU Dolby Vision per-frame RPU'
+                === DOLBY_VISION_RPU_BUFFER_LABEL
             )
         )).toBe(true);
         expect(fallbackHandler).not.toHaveBeenCalled();
@@ -3182,7 +3135,7 @@ describe('WebGPUPresenter', () => {
             reason: 'unknown'
         } as GPUDeviceLostInfo);
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed', RECOVERY_ATTEMPTS_USED_DETAIL);
     });
 
     it('reauthorizes a Profile 7 FEL route over I422P10 planes on one replacement device', async () => {
@@ -3240,8 +3193,8 @@ describe('WebGPUPresenter', () => {
             (call: unknown[]) => (call[0] as GPUBufferDescriptor).label
         );
         expect(recoveredBufferLabels).toEqual(expect.arrayContaining([
-            'WebGPU Dolby Vision per-frame RPU',
-            'WebGPU Dolby Vision enhancement uniforms'
+            DOLBY_VISION_RPU_BUFFER_LABEL,
+            DOLBY_VISION_ENHANCEMENT_BUFFER_LABEL
         ]));
         expect(fallbackHandler).not.toHaveBeenCalled();
 
@@ -3254,7 +3207,7 @@ describe('WebGPUPresenter', () => {
             reason: 'unknown'
         } as GPUDeviceLostInfo);
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed', RECOVERY_ATTEMPTS_USED_DETAIL);
     });
 
     it('closes but never imports a pushed decoded frame from a stale generation', async () => {
@@ -3315,7 +3268,7 @@ describe('WebGPUPresenter', () => {
         }, 1);
 
         expect(configured).toBe(false);
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'hdr-tone-mapping-disabled');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'hdr-tone-mapping-disabled', HDR_TONE_MAPPING_DISABLED_DETAIL);
         expect(surfaceHarness.surface.container.children).toHaveLength(1);
         expect(surfaceHarness.surface.container.firstChild).toBe(surfaceHarness.surface.video);
         expect(presenter.getTelemetry()).toMatchObject({
@@ -3350,8 +3303,10 @@ describe('WebGPUPresenter', () => {
             settings: createHDRToSDRRenderSettings()
         }, 1)).resolves.toBe(false);
 
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'hdr-authorization-unavailable');
+        // The fallback carries the registry's account of the rejected route
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'hdr-authorization-unavailable', rawHDRAuthorizationMockState.failure);
         expect(presenter.getTelemetry()).toMatchObject({
+            fallbackDetail: rawHDRAuthorizationMockState.failure,
             fallbackReason: 'hdr-authorization-unavailable',
             state: 'fallback'
         });
@@ -3416,7 +3371,7 @@ describe('WebGPUPresenter', () => {
         });
     });
 
-    it('bounds a retained-device pipeline rebuild and rejects its late result', async () => {
+    it('bounds a retained-device executor rebuild and destroys its late result', async () => {
         webSettingsMockState.hdrToneMappingEnabled = true;
         const gpuHarness = createGPUHarness();
         const contextHarness = createCanvasContextHarness();
@@ -3440,7 +3395,6 @@ describe('WebGPUPresenter', () => {
             rawFrameFormat: 'I420P10',
             settings: createHDRToSDRRenderSettings()
         }, 1)).resolves.toBe(true);
-        const retainedPipeline = (presenter as unknown as { pipeline: GPURenderPipeline | null }).pipeline;
         const latePipeline = {
             getBindGroupLayout: vi.fn(() => ({}))
         } as unknown as GPURenderPipeline;
@@ -3452,15 +3406,21 @@ describe('WebGPUPresenter', () => {
         presenter.startSession(3);
         await vi.advanceTimersByTimeAsync(microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS));
 
+        // The identity executor of the new session is the third build, after the first session's identity and raw ones
         expect(deviceHarness.createRenderPipelineAsync).toHaveBeenCalledTimes(3);
         expect(fallbackHandler).toHaveBeenCalledOnce();
-        expect(fallbackHandler).toHaveBeenCalledWith(3, 'pipeline-creation-failed');
-        expect((presenter as unknown as { pipeline: GPURenderPipeline | null }).pipeline).toBe(retainedPipeline);
+        expect(fallbackHandler).toHaveBeenCalledWith(3, 'pipeline-creation-failed', `executor: ${RESOURCE_TIMEOUT_DETAIL}`);
+        expect((presenter as unknown as { executor: unknown }).executor).toBeNull();
+        const presentationBufferCount = deviceHarness.buffers.filter(
+            (buffer): boolean => buffer.label === PRESENTATION_UNIFORMS_BUFFER_LABEL
+        ).length;
 
         pipelineResult.resolve(latePipeline);
-        await pipelineResult.promise;
-        await Promise.resolve();
-        expect((presenter as unknown as { pipeline: GPURenderPipeline | null }).pipeline).toBe(retainedPipeline);
+        await vi.waitFor(() => expect(deviceHarness.buffers.filter(
+            (buffer): boolean => buffer.label === PRESENTATION_UNIFORMS_BUFFER_LABEL
+        )).toHaveLength(presentationBufferCount + 1));
+        await vi.waitFor(() => expect(deviceHarness.buffers.at(-1)?.destroy).toHaveBeenCalledOnce());
+        expect((presenter as unknown as { executor: unknown }).executor).toBeNull();
         expect(fallbackHandler).toHaveBeenCalledOnce();
     });
 
@@ -3512,9 +3472,9 @@ describe('WebGPUPresenter', () => {
         expect(deviceHarness.queueWriteBuffer).toHaveBeenCalledOnce();
         const uniformWrite = deviceHarness.queueWriteBuffer.mock.calls[0];
         expect(uniformWrite[0]).toMatchObject({
-            label: 'WebGPU video render settings uniforms'
+            label: RENDER_SETTINGS_BUFFER_LABEL
         });
-        const uniformData = uniformWrite[2] as Uint8Array<ArrayBuffer>;
+        const uniformData = toBytes(uniformWrite[2]);
         const integerValues = new Uint32Array(uniformData.buffer);
         const floatValues = new Float32Array(uniformData.buffer);
         expect(integerValues[1]).toBe(1);
@@ -3560,7 +3520,7 @@ describe('WebGPUPresenter', () => {
         }, 1)).toBe(false);
         expect(gpuHarness.devices[0].importExternalTexture).not.toHaveBeenCalled();
         expect(gpuHarness.devices[0].queueWriteTexture).not.toHaveBeenCalled();
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'decoded-frame-color-mismatch');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'decoded-frame-color-mismatch', 'primaries: bt709, expected bt2020');
     });
 
     it.each([
@@ -3590,7 +3550,7 @@ describe('WebGPUPresenter', () => {
             await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
             expect(fallbackHandler).not.toHaveBeenCalled();
         } else {
-            expect(fallbackHandler).toHaveBeenCalledWith(1, 'decoded-frame-color-mismatch');
+            expect(fallbackHandler).toHaveBeenCalledWith(1, 'decoded-frame-color-mismatch', `transfer: ${transfer}, expected hlg`);
         }
     });
 
@@ -3788,7 +3748,7 @@ describe('WebGPUPresenter', () => {
         const contextHarness = createCanvasContextHarness();
         const surfaceHarness = createSurfaceHarness();
         const deviceHarness = gpuHarness.devices[0];
-        deviceHarness.popErrorScope.mockResolvedValueOnce(new GPUValidationError('simulated invalid submission'));
+        deviceHarness.popErrorScope.mockResolvedValueOnce(new GPUValidationError(SIMULATED_INVALID_SUBMISSION));
         installGPU(gpuHarness.gpu);
         installCanvasContext(contextHarness.context);
         const fallbackHandler = vi.fn();
@@ -3806,7 +3766,7 @@ describe('WebGPUPresenter', () => {
         expect(presenter.getTelemetry().presentedFrameCount).toBe(0);
         expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce();
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'frame-render-failed');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'frame-render-failed', `validation: ${SIMULATED_INVALID_SUBMISSION}`);
         expect(presenter.getTelemetry()).toMatchObject({
             fallbackReason: 'frame-render-failed',
             presentedFrameCount: 0,
@@ -3834,7 +3794,7 @@ describe('WebGPUPresenter', () => {
 
         await vi.advanceTimersByTimeAsync(microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS));
         expect(fallbackHandler).toHaveBeenCalledOnce();
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'frame-render-failed');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'frame-render-failed', `validation: ${RESOURCE_TIMEOUT_DETAIL}`);
         expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry()).toMatchObject({
             fallbackReason: 'frame-render-failed',
@@ -3873,12 +3833,12 @@ describe('WebGPUPresenter', () => {
         expect(presenter.getTelemetry().presentedFrameCount).toBe(2);
 
         const wasNotCancelled = deviceHarness.dispatchUncapturedError(
-            new GPUValidationError('simulated late validation error')
+            new GPUValidationError(SIMULATED_LATE_VALIDATION_ERROR)
         );
 
         expect(wasNotCancelled).toBe(false);
         expect(fallbackHandler).toHaveBeenCalledOnce();
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'frame-render-failed');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'frame-render-failed', `uncaptured: ${SIMULATED_LATE_VALIDATION_ERROR}`);
         expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry().state).toBe('fallback');
     });
@@ -3946,7 +3906,7 @@ describe('WebGPUPresenter', () => {
         installGPU(gpuHarness.gpu);
         installCanvasContext(contextHarness.context);
         gpuHarness.devices[0].importExternalTexture.mockImplementation(() => {
-            throw new Error('simulated import failure');
+            throw new Error(SIMULATED_IMPORT_FAILURE);
         });
         const fallbackHandler = vi.fn();
         const presenter = new WebGPUPresenter(fallbackHandler);
@@ -3956,7 +3916,7 @@ describe('WebGPUPresenter', () => {
         await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
         surfaceHarness.callbacks.get(1)?.(performance.now(), createFrameMetadata());
 
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'frame-import-failed');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'frame-import-failed', SIMULATED_IMPORT_FAILURE);
         expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce();
         expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry().fallbackReason).toBe('frame-import-failed');
@@ -4013,7 +3973,7 @@ describe('WebGPUPresenter', () => {
             reason: 'unknown'
         } as GPUDeviceLostInfo);
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed', RECOVERY_ATTEMPTS_USED_DETAIL);
         expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
     });
 
@@ -4044,7 +4004,11 @@ describe('WebGPUPresenter', () => {
         await vi.advanceTimersByTimeAsync(microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS));
 
         expect(fallbackHandler).toHaveBeenCalledOnce();
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed');
+        expect(fallbackHandler).toHaveBeenCalledWith(
+            1,
+            'device-recovery-failed',
+            `device: device-request-failed: requestDevice: ${RESOURCE_TIMEOUT_DETAIL}`
+        );
         expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
     });
 
@@ -4245,7 +4209,154 @@ describe('WebGPUPresenter', () => {
         presenter.attach(surfaceHarness.surface, 1);
 
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'canvas-context-unavailable');
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'canvas-context-unavailable', 'getContext: webgpu null');
         expect(surfaceHarness.surface.container.children).toHaveLength(1);
     });
+
+    it('plans the identity route before any size is known, with 1x1 facts and SDR canvas output', async () => {
+        const gpuHarness = createGPUHarness();
+        installGPU(gpuHarness.gpu);
+        const presenter = new WebGPUPresenter(vi.fn());
+
+        presenter.startSession(1);
+
+        await vi.waitFor(() => expect(planPresentation).toHaveBeenCalledOnce());
+        expect(vi.mocked(planPresentation).mock.calls[0][0]).toMatchObject({
+            device: { maximumTextureDimension: gpuHarness.devices[0].device.limits.maxTextureDimension2D },
+            facts: {
+                frameRate: null,
+                hdrOutput: false,
+                hdrSource: false,
+                outputHeight: UNMEASURED_PLAN_DIMENSION,
+                outputWidth: UNMEASURED_PLAN_DIMENSION,
+                sourceHeight: UNMEASURED_PLAN_DIMENSION,
+                sourceWidth: UNMEASURED_PLAN_DIMENSION
+            },
+            output: { colorSpace: 'srgb', format: PREFERRED_CANVAS_FORMAT, toneMapping: 'standard' },
+            passes: []
+        });
+        // The default plan is one pass that reads the source and writes the canvas
+        expect(gpuHarness.devices[0].createShaderModule).toHaveBeenCalledOnce();
+    });
+
+    it('configures the canvas for the plan output and reuses the executor when a route plans the same passes', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+
+        presenter.startSession(1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+        expect(contextHarness.configure).toHaveBeenCalledWith({
+            alphaMode: 'opaque',
+            colorSpace: 'srgb',
+            device: gpuHarness.devices[0].device,
+            format: PREFERRED_CANVAS_FORMAT,
+            toneMapping: { mode: 'standard' }
+        });
+
+        await expect(presenter.configureColorPipeline({ settings: createDefaultRenderSettings() }, 1)).resolves.toBe(true);
+
+        expect(gpuHarness.devices[0].createShaderModule).toHaveBeenCalledOnce();
+        expect(gpuHarness.devices[0].createRenderPipelineAsync).toHaveBeenCalledOnce();
+    });
+
+    it('starts history over for an epoch change, a timestamp that goes back, a jump past 2.5 frame durations, and a seek', async () => {
+        const resetHistory = vi.spyOn(PresentationExecutor.prototype, 'resetHistory');
+        const metadata = createPQColorMetadata();
+        const { presenter } = await startRawRoutePresentation(metadata, 'I420P10', createHDRToSDRRenderSettings());
+        resetHistory.mockClear();
+        let presentedFrameCount = 0;
+        const presentAt = async (timestampMicroseconds: Microseconds, videoEpoch = FIRST_VIDEO_EPOCH): Promise<void> => {
+            const frame = { ...createRawFrame('I420P10', metadata), timestampMicroseconds };
+            expect(presenter.presentDecodedFrame({
+                durationMicroseconds: RAW_FRAME_DURATION_MICROSECONDS,
+                frame,
+                mediaTimeMicroseconds: timestampMicroseconds,
+                outputMode: 'raw-planes',
+                videoEpoch
+            }, 1)).toBe(true);
+            presentedFrameCount += 1;
+            await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(presentedFrameCount));
+        };
+
+        await presentAt(RAW_FRAME_TIMESTAMP_MICROSECONDS);
+        await presentAt(NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS);
+        expect(resetHistory).not.toHaveBeenCalled();
+
+        await presentAt(addMicroseconds(NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS, DISCONTINUOUS_FRAME_STEP_MICROSECONDS));
+        expect(resetHistory).toHaveBeenCalledTimes(1);
+        await presentAt(RAW_FRAME_TIMESTAMP_MICROSECONDS);
+        expect(resetHistory).toHaveBeenCalledTimes(2);
+        await presentAt(NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS, SECOND_VIDEO_EPOCH);
+        expect(resetHistory).toHaveBeenCalledTimes(3);
+
+        presenter.seek(2);
+        expect(resetHistory).toHaveBeenCalledTimes(4);
+    });
+
+    it('records new frames with their timestamps and redraws a layout change without advancing history', async () => {
+        const encode = vi.spyOn(PresentationExecutor.prototype, 'encode');
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+
+        presenter.startSession(1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+        const metadata = createFrameMetadata();
+        surfaceHarness.callbacks.get(1)?.(performance.now(), metadata);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+
+        presenter.refresh(1);
+
+        const frameInputs = encode.mock.calls.map((call: unknown[]): PresentationFrameInput => call[1] as PresentationFrameInput);
+        expect(frameInputs.map((frameInput: PresentationFrameInput) => [ frameInput.newFrame, frameInput.timestampMicroseconds ])).toEqual([
+            [ true, secondsToMicroseconds(metadata.mediaTime) ],
+            [ false, secondsToMicroseconds(metadata.mediaTime) ]
+        ]);
+        expect(frameInputs.every((frameInput: PresentationFrameInput): boolean => frameInput.skippedFrameCount === 0)).toBe(true);
+        // One submit per frame, the redraw included
+        expect(gpuHarness.devices[0].queueSubmit).toHaveBeenCalledTimes(2);
+    });
+
+    it('reports why a dual-layer route presents FEL frames as their base', async () => {
+        dolbyVisionAuthorizationMockState.rejectedRouteNames = new Set([ 'I420P10:profile7-fel' ]);
+
+        const { configured, presenter } = await createRawDolbyVisionPresenterForTelemetry();
+
+        expect(configured).toBe(true);
+        expect(presenter.getTelemetry().dolbyVisionFELAuthorizationFailure).toBe('pixel-mismatch: I420P10:profile7-fel');
+    });
+
+    /** Configures a Profile 7 I420P10 session and returns whether it configured. */
+    async function createRawDolbyVisionPresenterForTelemetry(): Promise<{ configured: boolean, presenter: WebGPUPresenter }> {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        const configured = await presenter.configureColorPipeline({
+            inputMode: 'raw-dolby-vision',
+            profile: 7,
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
+        }, 1);
+        return { configured, presenter };
+    }
 });

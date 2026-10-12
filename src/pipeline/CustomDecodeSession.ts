@@ -1874,6 +1874,7 @@ export default class CustomDecodeSession {
 
         let presentationFrame: DecodedPresentationFrame;
         switch (message.outputMode) {
+            // A frame carries its video epoch, so presentation starts temporal history over when the epoch changes
             case 'raw-planes':
                 presentationFrame = {
                     durationMicroseconds: message.durationMicroseconds,
@@ -1882,7 +1883,8 @@ export default class CustomDecodeSession {
                     enhancementFrame: message.enhancementFrame,
                     frame: message.frame,
                     mediaTimeMicroseconds: message.mediaTimeMicroseconds,
-                    outputMode: message.outputMode
+                    outputMode: message.outputMode,
+                    videoEpoch: generationRecord.videoEpoch
                 };
                 break;
             case 'video-frame':
@@ -1892,7 +1894,8 @@ export default class CustomDecodeSession {
                     HDR10PlusMetadata: message.HDR10PlusMetadata,
                     frame: message.frame,
                     mediaTimeMicroseconds: message.mediaTimeMicroseconds,
-                    outputMode: message.outputMode
+                    outputMode: message.outputMode,
+                    videoEpoch: generationRecord.videoEpoch
                 };
                 break;
         }

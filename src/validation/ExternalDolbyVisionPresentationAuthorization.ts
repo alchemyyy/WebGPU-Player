@@ -22,7 +22,7 @@ import type {
     PresentationFrameSource
 } from '../presentation/passes/PassTypes';
 import type { PresentationExecutor } from '../presentation/passes/PresentationExecutor';
-import { INTERMEDIATE_TEXTURE_FORMAT } from '../presentation/WebGPUConstants';
+import { INTERMEDIATE_TEXTURE_FORMAT, VALIDATION_ERROR_FILTER } from '../presentation/WebGPUConstants';
 import { createDolbyVisionAuthorizationRPUVector } from '../capability/vectors/DolbyVisionAuthorizationVector';
 import GPUAuthorizationDeadline from './GPUAuthorizationDeadline';
 import {
@@ -493,7 +493,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
                 usage: targetUsage.usage
             });
 
-            device.pushErrorScope('validation');
+            device.pushErrorScope(VALIDATION_ERROR_FILTER);
             errorScopePushed = true;
             // Each executor imports the frame while it encodes, so an encode failure is an import failure
             step = 'import';

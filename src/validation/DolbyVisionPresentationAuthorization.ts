@@ -30,6 +30,7 @@ import type {
     RawDolbyVisionFrameFormat
 } from '../presentation/passes/PassTypes';
 import type { PresentationExecutor } from '../presentation/passes/PresentationExecutor';
+import { VALIDATION_ERROR_FILTER } from '../presentation/WebGPUConstants';
 import type { DolbyVisionReconstructionProfile } from '../presentation/PresentationInput';
 import { createDolbyVisionAuthorizationRPUVector } from '../capability/vectors/DolbyVisionAuthorizationVector';
 import GPUAuthorizationDeadline from './GPUAuthorizationDeadline';
@@ -730,7 +731,7 @@ export class DolbyVisionPresentationAuthorizationRunner {
                 const scenario = scenarios[scenarioIndex];
                 step = 'render';
                 executor.writeDolbyVisionRPU(scenario.packedRPUData);
-                device.pushErrorScope('validation');
+                device.pushErrorScope(VALIDATION_ERROR_FILTER);
                 errorScopePushed = true;
                 device.queue.submit([ encodeAuthorizationFrame(
                     device,
