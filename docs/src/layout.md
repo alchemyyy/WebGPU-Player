@@ -7,6 +7,7 @@
 | `src/EngineConfiguration.ts` | The feature flags a host can set |
 | `src/capability/vectors/` | Hand-made vectors: embedded TypeScript vectors, qualification streams fetched at runtime (`qualification/`), and inputs that only tests and generators read (`test/`) |
 | `test/` | The Vitest suites, mirroring `src/`, and shared helpers in `test/helpers/` |
+| `sandbox/` | The testing sandbox, a local web app that plays media from a picked folder through the engine: its Vite config, page, and sources in `src/`. See [Sandbox](sandbox.md) |
 | `wasm/` | The decoder sources and build: C bridges and their TypeScript declarations, the `libdovi` crate, license texts, and the Makefile. See [WebAssembly decoders](decoders.md) |
 | `vendor/` | The FFmpeg and dcadec submodules, fetched only by `make -C wasm sources` |
 | `scripts/` | `build.mjs` (the served assets), `library-assets.mjs` (which file is served from where), and the codec vector generators. See [Codec vectors](codec-vectors.md) |
@@ -36,6 +37,7 @@ Read a path from it instead of spelling it out, so moving a folder is a one-line
 | `scripts/codec_vector_assets/` | `engine_layout.py`, which re-exports `tools/constants.py` |
 | Tests | `test/helpers/enginePaths.ts` |
 | `vitest.config.ts` | A JSON import |
+| `sandbox/vite.config.ts` and `sandbox/src/main.ts` | A JSON import |
 | `wasm/Makefile` | `node -p`, which is why decoder builds need Node.js |
 | Hosts | The file itself, at `<engine>/tools/constants.json` |
 

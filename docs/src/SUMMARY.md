@@ -24,6 +24,7 @@
 - [WebAssembly decoders](decoders.md)
 - [Codec vectors](codec-vectors.md)
 - [Tools](tools.md)
+- [Sandbox](sandbox.md)
 
 # Reference
 
