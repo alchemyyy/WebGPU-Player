@@ -18,6 +18,7 @@ The book in `docs/` remains the reference for what the engine does today.
 
 | File | Covers |
 | --- | --- |
+| [architecture.puml](architecture.puml) | A concise PlantUML flow of the core as built, kept as a conceptual self-check |
 | [principles.md](principles.md) | The target workload and the efficiency rules every part follows |
 | [pipeline.md](pipeline.md) | The stage spine, ingress, authorization, scaling, output, and the replaceable boundary |
 | [color.md](color.md) | Color states, transitions, tone mapping placement, dithering, and HDR output |

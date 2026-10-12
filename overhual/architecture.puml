@@ -1,0 +1,66 @@
+@startuml architecture
+' The presentation core's flow, kept concise as a conceptual self-check while the core is built
+title Presentation core
+
+skinparam shadowing false
+skinparam defaultFontSize 11
+skinparam NoteBackgroundColor #FFFFF0
+
+start
+
+partition "Plan time: route, preset, settings, or output size changes" {
+    :BuiltinChains.createBuiltinChain(route)
+    = fixed signal + default color functions;
+    note right
+        Authorization renders this default chain
+        through the same planner and executor,
+        so a preset never changes the route
+    end note
+    :PassManifest.parsePassManifest(each user source)
+    failure: header-invalid;
+    :PresentationPlanner.planPresentation(chain, passes, facts, device, output);
+    note right
+        **Self-check**
+        * No user passes: one pass, byte-identical to the legacy shaders
+        * Color track: source -> linear -> display-linear -> display
+        * A pass's domain pulls track steps before it; the rest fuse into the output pass
+        * Dither runs only in the pass that writes the canvas
+        * Kernels, compute, and user scalers read textures, so their input is materialized
+        * The built-in bilinear scaler over the signal fuses into the source read
+        * X[-N] gives X a ring of N + 1 textures; history never holds a VideoFrame
+        * A bypassing signal (Profile 4) completes the track to display in its own pass
+        * A pass that cannot run is left out with a code and a detail
+    end note
+    :PassPrelude, per pass module
+    bindings, input accessors, renamed user bodies, entry stages;
+    :PresentationExecutor.create(device, plan)
+    shader modules, pipelines, rings, bind groups per ring phase;
+    if (compile errors?) then (yes)
+        :drop the named passes (compile-error) and replan;
+    endif
+}
+
+partition "Frame time: each presented frame" {
+    split
+        :external route
+        VideoFrame -> importExternalTexture;
+    split again
+        :plane route
+        worker copy -> writeTexture into uint planes;
+    split again
+        :GPU decode route
+        packet -> GPUVideoDecodeSession compute -> frame pool slot;
+    end split
+    :PresentationExecutor.encode(encoder, frame)
+    one uniform write, one encode per pass, no submit;
+    :SIGNAL, fixed and authorized: source -> 'source' RGB;
+    :RGB and PRESCALE passes, at source size;
+    :SCALE: built-in bilinear or one user scaler -> the output rectangle;
+    :OUTPUT passes, at output size;
+    :remaining color steps + dither -> canvas;
+    :presenter submits once
+    new frames advance history, redraws do not;
+}
+
+stop
+@enduml
