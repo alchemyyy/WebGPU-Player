@@ -1,5 +1,6 @@
 // Generates the WGSL around pass code: input accessors, entry points, and the renaming that keeps each user body's identifiers apart.
 // overhual/passes.md in the engine root describes the prelude a user pass sees.
+import { TARGET_ACCESSOR_PREFIX } from './PassLanguage';
 import type { PassLineMapping, PassParameter } from './PassTypes';
 
 /** The vertex stage of every render pass: two triangles over the target, with normalized target coordinates. */
@@ -41,12 +42,6 @@ export const FRAGMENT_POSITION = 'input.position.xy';
 
 /** The color a fragment or a compute store carries through its color steps. */
 export const STEP_COLOR = 'color';
-
-/** The storage target accessors of a compute pass, by the name user code calls them. */
-export const TARGET_ACCESSOR_PREFIX = 'TARGET';
-
-/** The parameters variable that user code reads its declared parameters through. */
-export const PARAMETERS_VARIABLE = 'parameters';
 
 const LINE_COMMENT_START = '//';
 const BLOCK_COMMENT_START = '/*';

@@ -387,7 +387,7 @@ function createPlan(plan: Partial<PresentationPlan>): PresentationPlan {
         output: OUTPUT,
         parameterSets: [],
         passes: [],
-        report: { activePasses: [], conflicts: [], inactivePasses: [] },
+        report: { activePasses: [], inactivePasses: [] },
         sourceKind: 'external',
         textures: [],
         usesRenderSettings: false,

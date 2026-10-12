@@ -9,6 +9,16 @@ import {
 import type { TexturePresentationGeometry } from '../PresentationGeometry';
 import { RENDER_SETTINGS_UNIFORM_BYTE_LENGTH } from '../RenderSettings';
 import {
+    CANVAS_ALPHA_MODE,
+    CANVAS_COLOR_SPACE,
+    EXTERNAL_TEXTURE_COLOR_SPACE,
+    FLOAT32_FILTERABLE_FEATURE,
+    FLOAT32_TEXTURE_FORMATS,
+    HDR_CANVAS_FORMAT,
+    HDR_TONE_MAPPING_MODE,
+    SDR_TONE_MAPPING_MODE
+} from '../WebGPUConstants';
+import {
     ENHANCEMENT_UNIFORM_BYTE_LENGTH,
     FRAME_POOL_LAYOUT_BYTE_LENGTH,
     getEngineBindingLayout,
@@ -57,8 +67,6 @@ const CLEAR_COLOR: GPUColorDict = { a: 1, b: 0, g: 0, r: 0 };
 const VIEWPORT_MINIMUM_DEPTH = 0;
 const VIEWPORT_MAXIMUM_DEPTH = 1;
 const INDIRECT_DISPATCH_BYTE_OFFSET = 0;
-// The browser's plain conversion, which the fixed signal step inverts where it must
-const EXTERNAL_TEXTURE_COLOR_SPACE: PredefinedColorSpace = 'srgb';
 const MICROSECONDS_PER_SECOND = 1_000_000;
 // Every parameter is one 32-bit scalar
 const PARAMETER_BYTE_LENGTH = 4;
@@ -66,9 +74,6 @@ const ENHANCEMENT_ABSENT = 0;
 const ENHANCEMENT_PRESENT = 1;
 // Names engine-generated code in a compile error summary, where a user pass would be named
 const ENGINE_CODE_NAME = 'engine';
-// 32-bit float textures filter only on devices with this feature
-const FLOAT32_FILTERABLE_FEATURE = 'float32-filterable';
-const FLOAT32_TEXTURE_FORMATS: ReadonlySet<GPUTextureFormat> = new Set<GPUTextureFormat>([ 'r32float', 'rg32float', 'rgba32float' ]);
 
 const PRESENTATION_UNIFORMS_LABEL = 'Presentation uniforms';
 const PARAMETERS_LABEL = 'Presentation parameters';
@@ -1206,10 +1211,17 @@ export class PresentationExecutor {
 /** Configures the canvas for a plan's output: its format, color space, and tone mapping mode, opaque. */
 export function configurePresentationCanvas(context: GPUCanvasContext, device: GPUDevice, output: PlannedOutput): void {
     context.configure({
-        alphaMode: 'opaque',
+        alphaMode: CANVAS_ALPHA_MODE,
         colorSpace: output.colorSpace,
         device,
         format: output.format,
         toneMapping: { mode: output.toneMapping }
     });
+}
+
+/** Returns the canvas configuration a plan renders for: the HDR canvas, or an SDR canvas in sdrCanvasFormat. */
+export function createPlannedOutput(hdrOutput: boolean, sdrCanvasFormat: GPUTextureFormat): PlannedOutput {
+    return hdrOutput ?
+        { colorSpace: CANVAS_COLOR_SPACE, format: HDR_CANVAS_FORMAT, toneMapping: HDR_TONE_MAPPING_MODE } :
+        { colorSpace: CANVAS_COLOR_SPACE, format: sdrCanvasFormat, toneMapping: SDR_TONE_MAPPING_MODE };
 }

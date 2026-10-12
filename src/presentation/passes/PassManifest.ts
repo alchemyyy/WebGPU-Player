@@ -1,6 +1,25 @@
 // Parses the `//!` header of a user pass into its PassManifest; overhual/passes.md documents the grammar.
+import {
+    INTERMEDIATE_TEXTURE_FORMAT,
+    MAXIMUM_WORKGROUP_INVOCATIONS,
+    MAXIMUM_WORKGROUP_SIZE,
+    RENDER_OUTPUT_FORMATS,
+    STORAGE_OUTPUT_FORMATS
+} from '../WebGPUConstants';
 import { BUILTIN_COLOR_FUNCTION_NAMES } from './builtin/BuiltinColorFunctions';
 import { collectPassExpressionIdentifiers, parsePassExpression, PassExpressionError } from './PassExpression';
+import {
+    GLOBAL_FACT_NAMES,
+    GLOBAL_SIZE_NAMES,
+    HEIGHT_SUFFIX,
+    HISTORY_ACCESSOR_INFIX,
+    HOOKED_INPUT_NAME,
+    MAXIMUM_HISTORY_DEPTH,
+    SCALER_STAGE,
+    SIZE_SUFFIX,
+    STAGE_ORDER,
+    WIDTH_SUFFIX
+} from './PassLanguage';
 import type {
     ColorDomain,
     PassExpression,
@@ -69,16 +88,11 @@ const PARAMETER_KEYWORD = 'param';
 // A missing directive has no line of its own
 const MISSING_DIRECTIVE_LINE = 1;
 
-const HOOKED = 'HOOKED';
-const SCALER_HOOK: PresentationStage = 'SCALE';
 const DEFAULT_DOMAIN: ColorDomain = 'any';
 const MAXIMUM_NAME_LENGTH = 64;
-/** The deepest history an input can read, as in `RGB[-8]`. */
-const MAXIMUM_HISTORY_DEPTH = 8;
 const MAXIMUM_PARAMETER_COUNT = 32;
 
 const SHAPES: readonly PassShape[] = [ 'color', 'kernel', 'scaler', 'compute' ];
-const STAGES: readonly PresentationStage[] = [ 'OUTPUT', 'PRESCALE', 'RGB', 'SCALE' ];
 const DOMAINS: readonly ColorDomain[] = [ 'any', 'display', 'linear', 'sdr', 'source' ];
 const PARAMETER_TYPES: readonly PassParameterType[] = [ 'f32', 'i32', 'u32' ];
 const COMPONENT_COUNTS: readonly ComponentCount[] = [ 1, 2, 3, 4 ];
@@ -103,39 +117,7 @@ const DIRECTIVE_SHAPES: Readonly<Record<Directive, readonly PassShape[]>> = {
 };
 const REPEATABLE_DIRECTIVES: readonly Directive[] = [ 'input' ];
 
-// The plan-time facts every expression may read
-const GLOBAL_FACTS: readonly string[] = [
-    'source.width',
-    'source.height',
-    'output.width',
-    'output.height',
-    'frame.rate',
-    'hdr.source',
-    'hdr.output'
-];
-// The global sizes; a texture with one of these names would shadow its facts
-const GLOBAL_SIZE_NAMES: readonly string[] = [ 'source', 'output' ];
-const WIDTH_SUFFIX = '.width';
-const HEIGHT_SUFFIX = '.height';
-const SIZE_SUFFIX = '.size';
-
-const KERNEL_OUTPUT_FORMATS: readonly GPUTextureFormat[] = [
-    'rgba16float',
-    'rg16float',
-    'r16float',
-    'rgba32float',
-    'r32float',
-    'rgb10a2unorm',
-    'rgba8unorm'
-];
-// A compute pass writes through a storage texture, so its format must be a core WebGPU storage format
-const COMPUTE_OUTPUT_FORMATS: readonly GPUTextureFormat[] = [ 'rgba16float', 'rgba32float', 'r32float', 'rgba8unorm' ];
-const DEFAULT_KERNEL_OUTPUT_FORMAT: GPUTextureFormat = 'rgba16float';
-
 const AXIS_NAMES: readonly string[] = [ 'x', 'y', 'z' ];
-// WebGPU's default maxComputeWorkgroupSizeX, Y, and Z, and maxComputeInvocationsPerWorkgroup
-const MAXIMUM_WORKGROUP_SIZE: readonly number[] = [ 256, 256, 64 ];
-const MAXIMUM_WORKGROUP_INVOCATIONS = 256;
 // The value of a workgroup size or a dispatch count that a header omits
 const DEFAULT_AXIS_VALUE = 1;
 
@@ -148,7 +130,7 @@ const WHITESPACE_PATTERN = /\s+/;
 const IDENTIFIER_PATTERN = /^[A-Za-z_]\w*$/;
 const HISTORY_INPUT_PATTERN = /^([A-Za-z_]\w*)\s*\[\s*-\s*(\d+)\s*\]$/;
 // History input NAME[-N] has the accessors of NAME_historyN, so no texture name may end like that
-const HISTORY_ACCESSOR_SUFFIX_PATTERN = /_history\d+$/;
+const HISTORY_ACCESSOR_SUFFIX_PATTERN = new RegExp(`${HISTORY_ACCESSOR_INFIX}\\d+$`);
 const SIZE_REFERENCE_PATTERN = /^([A-Za-z_]\w*)\.size$/;
 const PARAMETER_DECLARATION_PATTERN = /^(\w+)\s*=\s*(\S+)\s+in\s*\[([^\]]*)\]$/;
 const NUMBER_PATTERN = /^[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
@@ -164,8 +146,8 @@ const MALFORMED_DISPATCH_MESSAGE = "Expected 'dispatch: <x>[, <y>[, <z>]]'";
 const UNBALANCED_PARENTHESIS_MESSAGE = 'Unbalanced parenthesis';
 const REPLACING_HOOK_MESSAGE = 'A color pass with replaces cannot declare a hook';
 const REPLACING_DOMAIN_MESSAGE = 'A color pass with replaces cannot declare a domain';
-const SCALER_HOOK_MESSAGE = `A scaler must hook ${SCALER_HOOK}`;
-const SCALER_INPUT_MESSAGE = `A scaler reads only ${HOOKED}`;
+const SCALER_HOOK_MESSAGE = `A scaler must hook ${SCALER_STAGE}`;
+const SCALER_INPUT_MESSAGE = `A scaler reads only ${HOOKED_INPUT_NAME}`;
 const PARAMETER_COUNT_MESSAGE = `A pass declares at most ${MAXIMUM_PARAMETER_COUNT} parameters`;
 
 /** Narrows a header word to one of the words a directive allows. */
@@ -311,7 +293,7 @@ function parseExpression(text: string, identifiers: readonly string[], line: num
 
 /** Returns HOOKED and each input's base name once: the textures whose sizes output and dispatch expressions read. */
 function getSizedInputNames(inputs: readonly PassInput[]): string[] {
-    const names: string[] = [ HOOKED ];
+    const names: string[] = [ HOOKED_INPUT_NAME ];
     for (const input of inputs) {
         if (!names.includes(input.name)) {
             names.push(input.name);
@@ -322,7 +304,7 @@ function getSizedInputNames(inputs: readonly PassInput[]): string[] {
 
 /** Returns the identifiers output and dispatch expressions may read: the global facts and the input sizes. */
 function getSizeExpressionIdentifiers(inputs: readonly PassInput[]): string[] {
-    const identifiers: string[] = [ ...GLOBAL_FACTS ];
+    const identifiers: string[] = [ ...GLOBAL_FACT_NAMES ];
     for (const name of getSizedInputNames(inputs)) {
         identifiers.push(name + WIDTH_SUFFIX, name + HEIGHT_SUFFIX);
     }
@@ -376,8 +358,8 @@ function readHook(header: PassHeader, shape: PassShape, replaces: string | null)
         return null;
     }
     const entry = requireEntry(header, 'hook');
-    const hook = readWord(entry, STAGES, 'hook');
-    if (shape === 'scaler' && hook !== SCALER_HOOK) {
+    const hook = readWord(entry, STAGE_ORDER, 'hook');
+    if (shape === 'scaler' && hook !== SCALER_STAGE) {
         throw new PassManifestError(SCALER_HOOK_MESSAGE, entry.line);
     }
     return hook;
@@ -429,7 +411,7 @@ function readInputs(header: PassHeader, shape: PassShape): PassInput[] {
     }
     const entries = header.entries.get('input') ?? [];
     if (entries.length === 0) {
-        return [ { historyOffset: 0, name: HOOKED } ];
+        return [ { historyOffset: 0, name: HOOKED_INPUT_NAME } ];
     }
     const inputs: PassInput[] = [];
     for (const entry of entries) {
@@ -437,7 +419,7 @@ function readInputs(header: PassHeader, shape: PassShape): PassInput[] {
         if (inputs.some((declared: PassInput): boolean => declared.name === input.name && declared.historyOffset === input.historyOffset)) {
             throw new PassManifestError(`Duplicate input '${entry.value}'`, entry.line);
         }
-        if (shape === 'scaler' && (input.name !== HOOKED || input.historyOffset !== 0)) {
+        if (shape === 'scaler' && (input.name !== HOOKED_INPUT_NAME || input.historyOffset !== 0)) {
             throw new PassManifestError(SCALER_INPUT_MESSAGE, entry.line);
         }
         inputs.push(input);
@@ -453,7 +435,7 @@ function readSave(header: PassHeader): string | null {
     if (!IDENTIFIER_PATTERN.test(entry.value)) {
         throw new PassManifestError(`Save name '${entry.value}' is not an identifier`, entry.line);
     }
-    if (entry.value === HOOKED || isOneOf(STAGES, entry.value)) {
+    if (entry.value === HOOKED_INPUT_NAME || isOneOf(STAGE_ORDER, entry.value)) {
         throw new PassManifestError(`Cannot save to the stage name '${entry.value}'`, entry.line);
     }
     requireTextureName(entry.value, entry.line);
@@ -494,7 +476,7 @@ function parseOutput(entry: HeaderEntry, shape: PassShape, inputs: readonly Pass
     const parts = splitTopLevel(entry.value, entry.line);
     const { height, width } = readOutputSize(parts.slice(0, -1), inputs, entry.line);
     const format = parts[parts.length - 1];
-    const formats = shape === 'compute' ? COMPUTE_OUTPUT_FORMATS : KERNEL_OUTPUT_FORMATS;
+    const formats = shape === 'compute' ? STORAGE_OUTPUT_FORMATS : RENDER_OUTPUT_FORMATS;
     if (!isOneOf(formats, format)) {
         throw new PassManifestError(`Format '${format}' is not a ${shape} output format; expected ${formats.join(', ')}`, entry.line);
     }
@@ -511,9 +493,9 @@ function readOutput(header: PassHeader, shape: PassShape, inputs: readonly PassI
             const entry = getEntry(header, 'output');
             if (!entry) {
                 return {
-                    format: DEFAULT_KERNEL_OUTPUT_FORMAT,
-                    height: createIdentifier(HOOKED + HEIGHT_SUFFIX),
-                    width: createIdentifier(HOOKED + WIDTH_SUFFIX)
+                    format: INTERMEDIATE_TEXTURE_FORMAT,
+                    height: createIdentifier(HOOKED_INPUT_NAME + HEIGHT_SUFFIX),
+                    width: createIdentifier(HOOKED_INPUT_NAME + WIDTH_SUFFIX)
                 };
             }
             return parseOutput(entry, shape, inputs);
@@ -537,7 +519,7 @@ function readComponents(header: PassHeader): ComponentCount | null {
 
 function readWhen(header: PassHeader): PassExpression | null {
     const entry = getEntry(header, 'when');
-    return entry ? parseExpression(entry.value, GLOBAL_FACTS, entry.line) : null;
+    return entry ? parseExpression(entry.value, GLOBAL_FACT_NAMES, entry.line) : null;
 }
 
 /** Parses `<x>[, <y>[, <z>]]` positive integers within WebGPU's default workgroup limits; omitted sizes are 1. */

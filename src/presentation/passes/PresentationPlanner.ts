@@ -1,5 +1,11 @@
 // Builds presentation plans: it arranges a route's built-in chain and the user passes on the spatial spine and the color track, then generates each pass's WGSL.
 // overhual/planning.md, overhual/color.md, and overhual/temporal.md in the engine root describe the rules it implements.
+import {
+    FLOAT32_FILTERABLE_FEATURE,
+    FLOAT32_TEXTURE_FORMATS,
+    INTERMEDIATE_TEXTURE_FORMAT,
+    MAXIMUM_WORKGROUP_COUNT
+} from '../WebGPUConstants';
 import { evaluatePassExpression, PassExpressionError } from './PassExpression';
 import {
     collectTopLevelDeclarations,
@@ -9,12 +15,21 @@ import {
     createStorageTargetWGSL,
     createTextureAccessorsWGSL,
     FRAGMENT_COORDINATE,
-    PARAMETERS_VARIABLE,
     renameWGSLIdentifiers,
     ShaderModuleBuilder,
-    TARGET_ACCESSOR_PREFIX,
     VERTEX_STAGE_WGSL
 } from './PassPrelude';
+import {
+    ENTRY_POINTS,
+    getAccessorPrefix,
+    GLOBAL_FACTS,
+    HEIGHT_SUFFIX,
+    HOOKED_INPUT_NAME,
+    PARAMETERS_VARIABLE,
+    STAGE_ORDER,
+    TARGET_ACCESSOR_PREFIX,
+    WIDTH_SUFFIX
+} from './PassLanguage';
 import {
     createEngineBindingWGSL,
     createEngineStructsWGSL,
@@ -35,7 +50,8 @@ import type {
     PassInput,
     PassManifest,
     PassOutput,
-    PassShape,
+    PassRejection,
+    PassRejectionReason,
     PassWorkgroup,
     PlanFacts,
     PlannedBinding,
@@ -46,11 +62,7 @@ import type {
     PresentationStage
 } from './PassTypes';
 
-// The spatial spine after the fixed signal step, in pipeline order
-const STAGE_ORDER: readonly PresentationStage[] = [ 'RGB', 'PRESCALE', 'SCALE', 'OUTPUT' ];
 const STAGE_NAMES: ReadonlySet<string> = new Set<string>(STAGE_ORDER);
-const HOOKED_INPUT_NAME = 'HOOKED';
-const HISTORY_ACCESSOR_INFIX = '_history';
 
 const SIGNAL_TEXTURE_ID = 'signal';
 const SCALE_TEXTURE_ID = 'scale';
@@ -68,23 +80,8 @@ const SCALE_LABEL = `${LABEL_PREFIX} scale`;
 const COLOR_LABEL = `${LABEL_PREFIX} color`;
 const OUTPUT_LABEL = `${LABEL_PREFIX} output`;
 
-// Intermediates hold linear light and HDR values without clipping
-const INTERMEDIATE_FORMAT: GPUTextureFormat = 'rgba16float';
-// 32-bit float textures filter only on devices with this feature
-const FLOAT32_FILTERABLE_FEATURE = 'float32-filterable';
-const FLOAT32_TEXTURE_FORMATS: ReadonlySet<GPUTextureFormat> = new Set<GPUTextureFormat>([ 'r32float', 'rg32float', 'rgba32float' ]);
-// WebGPU's default limit on the workgroups of one dispatch dimension
-const MAXIMUM_WORKGROUP_COUNT = 65_535;
 const PRESENTATION_BINDING = 0;
-
-const CONDITION_FALSE_REASON = 'Its condition is false';
-
-const ENTRY_POINTS: Readonly<Record<PassShape, string>> = {
-    color: 'apply',
-    compute: 'compute',
-    kernel: 'kernel',
-    scaler: 'scale'
-};
+const AXIS_NAMES: readonly string[] = [ 'x', 'y', 'z' ];
 
 /** A user pass that survived its condition, with the prefix that keeps its identifiers apart from other code in a module. */
 type ActivePass = {
@@ -150,11 +147,16 @@ type Size = { height: number; width: number };
 /** A planned texture while the plan is built, whose history depth grows with the reads that resolve to it. */
 type DraftTexture = { -readonly [Key in keyof PlannedTexture]: PlannedTexture[Key] };
 
-/** Why a pass cannot run as written; the planner reports it and plans without the pass. */
+/** The check a pass failed, with a terse detail; the planner reports it and plans without the pass. */
 class PassPlacementError extends Error {
-    constructor(message: string) {
-        super(message);
+    readonly detail: string;
+    readonly reason: PassRejectionReason;
+
+    constructor(reason: PassRejectionReason, detail: string) {
+        super(`${reason}: ${detail}`);
         this.name = 'PassPlacementError';
+        this.detail = detail;
+        this.reason = reason;
     }
 }
 
@@ -170,56 +172,52 @@ function compareStages(first: PresentationStage, second: PresentationStage): num
     return STAGE_ORDER.indexOf(first) - STAGE_ORDER.indexOf(second);
 }
 
-/** Returns the accessor prefix of an input: its name, with `_history<N>` for the frame N back. */
-function getAccessorPrefix(input: PassInput): string {
-    return input.historyOffset === 0 ? input.name : `${input.name}${HISTORY_ACCESSOR_INFIX}${-input.historyOffset}`;
-}
-
 function createEngineInput(textureId: string): DraftInput {
     return { accessorPrefix: ENGINE_INPUT_PREFIX, historyOffset: 0, source: { kind: 'texture', textureId } };
 }
 
 function createGlobalFacts(facts: PlanFacts): Map<string, number> {
     return new Map<string, number>([
-        [ 'source.width', facts.sourceWidth ],
-        [ 'source.height', facts.sourceHeight ],
-        [ 'output.width', facts.outputWidth ],
-        [ 'output.height', facts.outputHeight ],
-        [ 'frame.rate', facts.frameRate ?? 0 ],
-        [ 'hdr.source', facts.hdrSource ? 1 : 0 ],
-        [ 'hdr.output', facts.hdrOutput ? 1 : 0 ]
+        [ GLOBAL_FACTS.sourceWidth, facts.sourceWidth ],
+        [ GLOBAL_FACTS.sourceHeight, facts.sourceHeight ],
+        [ GLOBAL_FACTS.outputWidth, facts.outputWidth ],
+        [ GLOBAL_FACTS.outputHeight, facts.outputHeight ],
+        [ GLOBAL_FACTS.frameRate, facts.frameRate ?? 0 ],
+        [ GLOBAL_FACTS.hdrSource, facts.hdrSource ? 1 : 0 ],
+        [ GLOBAL_FACTS.hdrOutput, facts.hdrOutput ? 1 : 0 ]
     ]);
 }
 
 function setSizeFacts(facts: Map<string, number>, name: string, size: Size): void {
-    facts.set(`${name}.width`, size.width);
-    facts.set(`${name}.height`, size.height);
+    facts.set(name + WIDTH_SUFFIX, size.width);
+    facts.set(name + HEIGHT_SUFFIX, size.height);
 }
 
-function evaluateExpression(expression: PassExpression, facts: PassExpressionFacts): number {
+/** Evaluates an expression; an evaluation failure fails the check that needed the value. */
+function evaluateExpression(expression: PassExpression, facts: PassExpressionFacts, reason: PassRejectionReason): number {
     try {
         return evaluatePassExpression(expression, facts);
     } catch (error) {
         if (error instanceof PassExpressionError) {
-            throw new PassPlacementError(error.message);
+            throw new PassPlacementError(reason, error.message);
         }
         throw error;
     }
 }
 
 function evaluateDimension(expression: PassExpression, facts: PassExpressionFacts, maximumDimension: number, axis: string): number {
-    const value = Math.round(evaluateExpression(expression, facts));
+    const value = Math.round(evaluateExpression(expression, facts, 'output-size'));
     if (value < 1 || value > maximumDimension) {
-        throw new PassPlacementError(`Its output ${axis} is ${value}, outside 1 to ${maximumDimension}`);
+        throw new PassPlacementError('output-size', `${axis} ${value} outside [1, ${maximumDimension}]`);
     }
     return value;
 }
 
 function evaluateWorkgroupCounts(workgroup: PassWorkgroup, facts: PassExpressionFacts): readonly [number, number, number] {
-    const counts = workgroup.dispatch.map((expression: PassExpression): number => {
-        const count = Math.ceil(evaluateExpression(expression, facts));
+    const counts = workgroup.dispatch.map((expression: PassExpression, axisIndex: number): number => {
+        const count = Math.ceil(evaluateExpression(expression, facts, 'workgroup-count'));
         if (count < 1 || count > MAXIMUM_WORKGROUP_COUNT) {
-            throw new PassPlacementError(`It dispatches ${count} workgroups on one axis, outside 1 to ${MAXIMUM_WORKGROUP_COUNT}`);
+            throw new PassPlacementError('workgroup-count', `${AXIS_NAMES[axisIndex]} ${count} outside [1, ${MAXIMUM_WORKGROUP_COUNT}]`);
         }
         return count;
     });
@@ -236,7 +234,7 @@ function requireTexture(textures: ReadonlyMap<string, DraftTexture>, textureId: 
 
 function requireOutput(manifest: PassManifest): PassOutput {
     if (!manifest.output) {
-        throw new PassPlacementError('It declares no output');
+        throw new PassPlacementError('output-missing', manifest.shape);
     }
     return manifest.output;
 }
@@ -266,10 +264,9 @@ function collectNamedStages(passes: readonly ActivePass[]): Set<PresentationStag
 /** Walks the spine and the color track for one request and records the passes, textures, and report of its plan. */
 class PresentationPlanBuilder {
     private readonly activePasses = new Set<ActivePass>();
-    private readonly conflicts: string[] = [];
     private readonly drafts: DraftPass[] = [];
     private readonly facts: Map<string, number>;
-    private readonly inactivePasses: { name: string; reason: string }[] = [];
+    private readonly inactivePasses: PassRejection[] = [];
     private readonly initialState: ColorState;
     private readonly request: PlanRequest;
     private readonly savedTextures = new Map<string, string>();
@@ -303,9 +300,8 @@ class PresentationPlanBuilder {
         return this.createPlan(candidates);
     }
 
-    private reject(name: string, reason: string): void {
-        this.inactivePasses.push({ name, reason });
-        this.conflicts.push(`${name}: ${reason}`);
+    private reject(name: string, reason: PassRejectionReason, detail: string): void {
+        this.inactivePasses.push({ detail, name, reason });
     }
 
     /** Returns the passes whose conditions hold, rejecting duplicate names and SDR passes on an HDR output. */
@@ -315,7 +311,7 @@ class PresentationPlanBuilder {
         for (let index = 0; index < this.request.passes.length; index += 1) {
             const manifest = this.request.passes[index];
             if (names.has(manifest.name)) {
-                this.reject(manifest.name, `Another pass is named '${manifest.name}'`);
+                this.reject(manifest.name, 'duplicate-name', `position ${index + 1}`);
                 continue;
             }
             names.add(manifest.name);
@@ -328,7 +324,7 @@ class PresentationPlanBuilder {
 
     private isSelectable(manifest: PassManifest): boolean {
         if (manifest.domain === 'sdr' && this.request.facts.hdrOutput) {
-            this.reject(manifest.name, 'It requires SDR values, and the output is HDR');
+            this.reject(manifest.name, 'sdr-on-hdr-output', manifest.domain);
             return false;
         }
         if (manifest.when === null) {
@@ -338,9 +334,9 @@ class PresentationPlanBuilder {
             if (evaluatePassExpression(manifest.when, this.facts) !== 0) {
                 return true;
             }
-            this.inactivePasses.push({ name: manifest.name, reason: CONDITION_FALSE_REASON });
+            this.reject(manifest.name, 'condition-false', '');
         } catch (error) {
-            this.reject(manifest.name, `Its condition cannot be evaluated: ${getErrorMessage(error)}`);
+            this.reject(manifest.name, 'condition-invalid', getErrorMessage(error));
         }
         return false;
     }
@@ -348,7 +344,8 @@ class PresentationPlanBuilder {
     /** Builds the color track from the chain's functions with replacements in place; returns the passes the spine walk places. */
     private createTrack(candidates: readonly ActivePass[]): ActivePass[] {
         this.track = this.request.chain.colorFunctions.map(createBuiltinTrackEntry);
-        const replacedNames = new Set<string>();
+        // The pass that replaced each built-in function
+        const replacingPasses = new Map<string, string>();
         const walkedPasses: ActivePass[] = [];
         for (const pass of candidates) {
             const replacedName = pass.manifest.replaces;
@@ -357,12 +354,13 @@ class PresentationPlanBuilder {
                 continue;
             }
             const entryIndex = this.track.findIndex((entry: TrackEntry): boolean => entry.name === replacedName);
+            const replacingPass = replacingPasses.get(replacedName);
             if (entryIndex < 0) {
-                this.reject(pass.manifest.name, `This route runs no '${replacedName}' to replace`);
-            } else if (replacedNames.has(replacedName)) {
-                this.reject(pass.manifest.name, `Another pass already replaces '${replacedName}'`);
+                this.reject(pass.manifest.name, 'replaced-function-missing', replacedName);
+            } else if (replacingPass !== undefined) {
+                this.reject(pass.manifest.name, 'replaced-function-taken', `${replacedName} by '${replacingPass}'`);
             } else {
-                replacedNames.add(replacedName);
+                replacingPasses.set(replacedName, pass.manifest.name);
                 this.track[entryIndex] = { ...this.track[entryIndex], step: { kind: 'user', pass } };
                 this.activePasses.add(pass);
             }
@@ -399,7 +397,7 @@ class PresentationPlanBuilder {
             if (!(error instanceof PassPlacementError)) {
                 throw error;
             }
-            this.reject(pass.manifest.name, error.message);
+            this.reject(pass.manifest.name, error.reason, error.detail);
             return false;
         }
         this.activePasses.add(pass);
@@ -411,7 +409,7 @@ class PresentationPlanBuilder {
         let placedScaler: ActivePass | null = null;
         for (const scaler of scalers) {
             if (placedScaler !== null) {
-                this.reject(scaler.manifest.name, `Only one scaler runs, and '${placedScaler.manifest.name}' comes first`);
+                this.reject(scaler.manifest.name, 'extra-scaler', `'${placedScaler.manifest.name}' runs`);
             } else if (this.tryPlace(scaler, (): void => this.placeUserScaler(scaler))) {
                 placedScaler = scaler;
             }
@@ -471,7 +469,7 @@ class PresentationPlanBuilder {
     private placeSpatialPass(pass: ActivePass, stage: PresentationStage): void {
         const manifest = pass.manifest;
         if (manifest.shape === 'compute' && manifest.inputs.some((input: PassInput): boolean => input.name === TARGET_ACCESSOR_PREFIX)) {
-            throw new PassPlacementError(`A compute pass cannot read an input named ${TARGET_ACCESSOR_PREFIX}, which names its storage target`);
+            throw new PassPlacementError('input-reserved', TARGET_ACCESSOR_PREFIX);
         }
         const targetCursor = this.findPlacementCursor(manifest.domain, this.current === null);
         const output = requireOutput(manifest);
@@ -483,7 +481,7 @@ class PresentationPlanBuilder {
         };
         const workgroupCounts = manifest.workgroup ? evaluateWorkgroupCounts(manifest.workgroup, inputFacts) : null;
         if (manifest.shape === 'compute' && workgroupCounts === null) {
-            throw new PassPlacementError('A compute pass needs a workgroup');
+            throw new PassPlacementError('workgroup-missing', manifest.shape);
         }
         // Every check has passed, so the plan changes from here
         this.advanceTo(targetCursor);
@@ -593,7 +591,6 @@ class PresentationPlanBuilder {
             passes,
             report: {
                 activePasses: includedPasses.map((pass: ActivePass): string => pass.manifest.name),
-                conflicts: this.conflicts,
                 inactivePasses: this.inactivePasses
             },
             sourceKind: this.request.chain.signal.sourceKind,
@@ -648,7 +645,7 @@ class PresentationPlanBuilder {
         }
         const cursor = this.findCursor(domain, startCursor);
         if (cursor === null) {
-            throw new PassPlacementError(`Its ${domain} domain cannot be reached from the ${this.getStateAt(startCursor)} values its input holds`);
+            throw new PassPlacementError('domain-unreachable', `${domain} from ${this.getStateAt(startCursor)}`);
         }
         return cursor;
     }
@@ -675,7 +672,7 @@ class PresentationPlanBuilder {
         const sourceTextureId = this.materializeCurrent();
         const textureId = `${COPY_TEXTURE_ID_PREFIX}${this.copyCount}`;
         this.copyCount += 1;
-        this.addTexture(textureId, this.getTextureSize(sourceTextureId), INTERMEDIATE_FORMAT, false);
+        this.addTexture(textureId, this.getTextureSize(sourceTextureId), INTERMEDIATE_TEXTURE_FORMAT, false);
         return this.pushDraft({
             core: { kind: 'sample' },
             coordinateMapping: 'identity',
@@ -689,7 +686,7 @@ class PresentationPlanBuilder {
     /** Makes the current image a texture and returns it: the signal gets a pass at source size, and an open scale pass a target at output size. */
     private materializeCurrent(): string {
         if (this.current === null) {
-            this.addTexture(SIGNAL_TEXTURE_ID, this.getSourceSize(), INTERMEDIATE_FORMAT, false);
+            this.addTexture(SIGNAL_TEXTURE_ID, this.getSourceSize(), INTERMEDIATE_TEXTURE_FORMAT, false);
             this.current = this.pushDraft({
                 core: { kind: 'signal' },
                 coordinateMapping: 'identity',
@@ -703,7 +700,7 @@ class PresentationPlanBuilder {
             return SIGNAL_TEXTURE_ID;
         }
         if (this.current.targetTextureId === null) {
-            this.addTexture(SCALE_TEXTURE_ID, this.getOutputSize(), INTERMEDIATE_FORMAT, false);
+            this.addTexture(SCALE_TEXTURE_ID, this.getOutputSize(), INTERMEDIATE_TEXTURE_FORMAT, false);
             this.current.targetTextureId = SCALE_TEXTURE_ID;
         }
         return this.current.targetTextureId;
@@ -784,13 +781,13 @@ class PresentationPlanBuilder {
         if (isStage(input.name)) {
             const order = compareStages(input.name, stage);
             if (order > 0) {
-                throw new PassPlacementError(`It reads the ${input.name} stage, which comes after its ${stage} hook`);
+                throw new PassPlacementError('input-after-hook', `${input.name} at ${stage}`);
             }
             return order === 0 ? this.getCurrentImageSize() : this.getTextureSize(this.requireStageTexture(input.name));
         }
         const savedTextureId = this.savedTextures.get(input.name);
         if (savedTextureId === undefined) {
-            throw new PassPlacementError(`It reads '${input.name}', which no earlier pass saves`);
+            throw new PassPlacementError('input-unknown', `'${input.name}'`);
         }
         return this.getTextureSize(savedTextureId);
     }
