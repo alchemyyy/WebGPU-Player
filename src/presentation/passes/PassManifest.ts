@@ -4,7 +4,8 @@ import {
     MAXIMUM_WORKGROUP_INVOCATIONS,
     MAXIMUM_WORKGROUP_SIZE,
     RENDER_OUTPUT_FORMATS,
-    STORAGE_OUTPUT_FORMATS
+    STORAGE_OUTPUT_FORMATS,
+    WORKGROUP_AXIS_NAMES
 } from '../WebGPUConstants';
 import { BUILTIN_COLOR_FUNCTION_NAMES } from './builtin/BuiltinColorFunctions';
 import { collectPassExpressionIdentifiers, parsePassExpression, PassExpressionError } from './PassExpression';
@@ -117,7 +118,6 @@ const DIRECTIVE_SHAPES: Readonly<Record<Directive, readonly PassShape[]>> = {
 };
 const REPEATABLE_DIRECTIVES: readonly Directive[] = [ 'input' ];
 
-const AXIS_NAMES: readonly string[] = [ 'x', 'y', 'z' ];
 // The value of a workgroup size or a dispatch count that a header omits
 const DEFAULT_AXIS_VALUE = 1;
 
@@ -525,7 +525,7 @@ function readWhen(header: PassHeader): PassExpression | null {
 /** Parses `<x>[, <y>[, <z>]]` positive integers within WebGPU's default workgroup limits; omitted sizes are 1. */
 function parseWorkgroupSize(entry: HeaderEntry): PassWorkgroup['size'] {
     const parts = splitTopLevel(entry.value, entry.line);
-    if (parts.length > AXIS_NAMES.length) {
+    if (parts.length > WORKGROUP_AXIS_NAMES.length) {
         throw new PassManifestError(MALFORMED_WORKGROUP_MESSAGE, entry.line);
     }
     const size: [number, number, number] = [ DEFAULT_AXIS_VALUE, DEFAULT_AXIS_VALUE, DEFAULT_AXIS_VALUE ];
@@ -536,7 +536,7 @@ function parseWorkgroupSize(entry: HeaderEntry): PassWorkgroup['size'] {
         const axisSize = Number(part);
         if (axisSize > MAXIMUM_WORKGROUP_SIZE[axisIndex]) {
             throw new PassManifestError(
-                `Workgroup ${AXIS_NAMES[axisIndex]} size ${axisSize} exceeds ${MAXIMUM_WORKGROUP_SIZE[axisIndex]}`,
+                `Workgroup ${WORKGROUP_AXIS_NAMES[axisIndex]} size ${axisSize} exceeds ${MAXIMUM_WORKGROUP_SIZE[axisIndex]}`,
                 entry.line
             );
         }
@@ -555,7 +555,7 @@ function parseWorkgroupSize(entry: HeaderEntry): PassWorkgroup['size'] {
 /** Parses `<x>[, <y>[, <z>]]` workgroup count expressions; omitted counts are 1. */
 function parseDispatch(entry: HeaderEntry, inputs: readonly PassInput[]): PassWorkgroup['dispatch'] {
     const parts = splitTopLevel(entry.value, entry.line);
-    if (parts.length > AXIS_NAMES.length) {
+    if (parts.length > WORKGROUP_AXIS_NAMES.length) {
         throw new PassManifestError(MALFORMED_DISPATCH_MESSAGE, entry.line);
     }
     const identifiers = getSizeExpressionIdentifiers(inputs);
