@@ -1,78 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-type MockFunction = ReturnType<typeof vi.fn>;
-
-type MockExecutor = {
-    destroy: MockFunction
-    encode: MockFunction
-    plan: PresentationPlan
-    writeDolbyVisionRPU: MockFunction
-    writeRenderSettings: MockFunction
-};
-
-const passMocks = vi.hoisted(() => {
-    const executors: MockExecutor[] = [];
-    return {
-        createExecutor(plan: PresentationPlan): MockExecutor {
-            const executor: MockExecutor = {
-                destroy: vi.fn(),
-                encode: vi.fn(),
-                plan,
-                writeDolbyVisionRPU: vi.fn(),
-                writeRenderSettings: vi.fn()
-            };
-            executors.push(executor);
-            return executor;
-        },
-        executors
-    };
+// The real built-in library and planner run behind spies, and the real executor runs on a mock device
+vi.mock('webgpu-player/presentation/passes/builtin/BuiltinChains', async importOriginal => {
+    const originalModule = await importOriginal<typeof import('webgpu-player/presentation/passes/builtin/BuiltinChains')>();
+    return { ...originalModule, createBuiltinChain: vi.fn(originalModule.createBuiltinChain) };
 });
 
-vi.mock('webgpu-player/presentation/passes/builtin/BuiltinChains', () => ({
-    createBuiltinChain: vi.fn((configuration: BuiltinChainConfiguration): BuiltinChain => ({
-        colorFunctions: [],
-        signal: {
-            bypassCondition: null,
-            code: '',
-            entryPoint: 'readSignal',
-            name: configuration.route,
-            resources: [],
-            sourceKind: 'planes'
-        },
-        sourceIsDisplay: false
-    }))
-}));
-
-vi.mock('webgpu-player/presentation/passes/PresentationPlanner', () => ({
-    // One fused pass whose code names its route and target, as the default chain plans
-    planPresentation: vi.fn((planRequest: PlanRequest): PresentationPlan => ({
-        buffers: [],
-        output: planRequest.output,
-        parameterSets: [],
-        passes: [ {
-            bindings: [],
-            code: `${planRequest.chain.signal.name}:${planRequest.output.format}`,
-            coordinateMapping: 'object-fit',
-            indirectBufferId: null,
-            inputTextureId: null,
-            kind: 'render',
-            label: planRequest.chain.signal.name,
-            lineMap: [],
-            target: { kind: 'output' },
-            workgroupCounts: null
-        } ],
-        report: { activePasses: [], conflicts: [], inactivePasses: [] },
-        sourceKind: planRequest.chain.signal.sourceKind,
-        textures: [],
-        usesRenderSettings: true
-    }))
-}));
-
-vi.mock('webgpu-player/presentation/passes/PresentationExecutor', () => ({
-    PresentationExecutor: {
-        create: vi.fn((_device: GPUDevice, plan: PresentationPlan) => Promise.resolve(passMocks.createExecutor(plan)))
-    }
-}));
+vi.mock('webgpu-player/presentation/passes/PresentationPlanner', async importOriginal => {
+    const originalModule = await importOriginal<typeof import('webgpu-player/presentation/passes/PresentationPlanner')>();
+    return { ...originalModule, planPresentation: vi.fn(originalModule.planPresentation) };
+});
 
 import {
     createDefaultRenderSettings,
@@ -87,16 +24,10 @@ import {
 } from 'webgpu-player/color/ColorMetadata';
 import type { ColorTriplet } from 'webgpu-player/color/ColorPipeline';
 import { createBuiltinChain } from 'webgpu-player/presentation/passes/builtin/BuiltinChains';
-import type {
-    BuiltinChain,
-    BuiltinChainConfiguration,
-    PlanRequest,
-    PresentationFrameInput,
-    PresentationPlan
-} from 'webgpu-player/presentation/passes/PassTypes';
+import type { PlannedPass, PresentationPlan } from 'webgpu-player/presentation/passes/PassTypes';
 import { PresentationExecutor } from 'webgpu-player/presentation/passes/PresentationExecutor';
 import { planPresentation } from 'webgpu-player/presentation/passes/PresentationPlanner';
-import type { TransferableRawVideoFrame } from 'webgpu-player/video/RawVideoFrameCopy';
+import type { SupportedRawVideoFrameFormat, TransferableRawVideoFrame } from 'webgpu-player/video/RawVideoFrameCopy';
 import {
     createExpectedRawHDRVectorObservations,
     createRawHDRAuthorizationVector,
@@ -114,42 +45,38 @@ import {
     type RawHDRRouteAuthorizationDecision
 } from 'webgpu-player/validation/RawHDRPresentationAuthorization';
 
-type MockBuffer = GPUBuffer & {
-    bytes: Uint8Array
-};
-
-type DeviceHarness = {
-    bufferDestroy: MockFunction
-    device: GPUDevice
-    lostResolve: (info: GPUDeviceLostInfo) => void
-    popErrorScope: MockFunction
-    queueSubmit: MockFunction
-    textureDestroy: MockFunction
-};
+import {
+    createWebGPUDeviceHarness,
+    DEFAULT_MAXIMUM_TEXTURE_DIMENSION,
+    getBufferWrites,
+    getBuffers,
+    getShaderCodes,
+    installWebGPUGlobals,
+    type MockGPUTexture,
+    type ReadbackTexel,
+    type WebGPUDeviceHarness
+} from '../helpers/webGPUDeviceHarness';
 
 const PQ_ROUTE_KEY: RawHDRAuthorizationRouteKey = 'I420P10:bt2020-ncl:bt2020:limited:pq';
 const TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
 const UNREADABLE_TARGET_FORMAT: GPUTextureFormat = 'rgba16float';
 const OTHER_TARGET_FORMAT: GPUTextureFormat = 'rgba8unorm';
-// The reference shader code the mocked planner gives every raw route at the target format
-const RAW_REFERENCE_SHADER_CODE = `raw-yuv:${TARGET_FORMAT}`;
+// The authorization joins a reference plan's pass modules with this separator before signing them
+const PLAN_SHADER_CODE_SEPARATOR = '\u0000';
+const SUPERSEDED_REFERENCE_SHADER_CODE = 'superseded reference shader';
 const AUTHORIZATION_TIMEOUT_MILLISECONDS = 5_000;
+const VECTOR_SAMPLE_COUNT = 9;
+const RENDER_VERTEX_COUNT = 6;
+// One submission renders the vector, and one copies its samples back
+const AUTHORIZATION_SUBMISSION_COUNT = 2;
+const SIMULATED_PLANNING_FAILURE = 'simulated planning failure';
+const SIMULATED_VALIDATION_ERROR = 'invalid bind group';
+// The labels of the buffers the executor and the readback create
+const RENDER_SETTINGS_LABEL = 'Presentation render settings';
+const READBACK_BUFFER_LABEL = 'WebGPU color validation readback';
+const TARGET_TEXTURE_LABEL = 'WebGPU raw HDR authorization target';
 
-const originalGPUBufferUsage = Object.getOwnPropertyDescriptor(globalThis, 'GPUBufferUsage');
-const originalGPUMapMode = Object.getOwnPropertyDescriptor(globalThis, 'GPUMapMode');
-const originalGPUTextureUsage = Object.getOwnPropertyDescriptor(globalThis, 'GPUTextureUsage');
-
-function restoreProperty(
-    target: object,
-    propertyName: PropertyKey,
-    descriptor: PropertyDescriptor | undefined
-): void {
-    if (descriptor) {
-        Object.defineProperty(target, propertyName, descriptor);
-    } else {
-        Reflect.deleteProperty(target, propertyName);
-    }
-}
+let restoreWebGPUGlobals: () => void = (): void => undefined;
 
 function getRouteMetadata(routeKey: RawHDRAuthorizationRouteKey): InputColorMetadata {
     const format = routeKey.slice(0, routeKey.indexOf(':'));
@@ -178,6 +105,36 @@ function getRouteSettings(metadata: InputColorMetadata) {
         });
 }
 
+function getPlanShaderCode(plan: PresentationPlan): string {
+    return plan.passes.map((pass: PlannedPass): string => pass.code).join(PLAN_SHADER_CODE_SEPARATOR);
+}
+
+/** Plans a raw route's default chain as its authorization does, for the code its signature covers. */
+function planRawReferenceShaderCode(routeKey: RawHDRAuthorizationRouteKey): string {
+    const metadata = getRouteMetadata(routeKey);
+    return getPlanShaderCode(planPresentation({
+        chain: createBuiltinChain({
+            format: routeKey.slice(0, routeKey.indexOf(':')) as SupportedRawVideoFrameFormat,
+            hdrOutput: false,
+            metadata,
+            route: 'raw-yuv',
+            settings: getRouteSettings(metadata)
+        }),
+        device: { features: new Set<string>(), maximumTextureDimension: DEFAULT_MAXIMUM_TEXTURE_DIMENSION },
+        facts: {
+            frameRate: null,
+            hdrOutput: false,
+            hdrSource: metadata.transfer !== 'sdr',
+            outputHeight: RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
+            outputWidth: RAW_HDR_AUTHORIZATION_VECTOR_WIDTH,
+            sourceHeight: RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
+            sourceWidth: RAW_HDR_AUTHORIZATION_VECTOR_WIDTH
+        },
+        output: { colorSpace: 'srgb', format: TARGET_FORMAT, toneMapping: 'standard' },
+        passes: []
+    }));
+}
+
 function createRouteObservations(
     routeKey: RawHDRAuthorizationRouteKey,
     metadata = getRouteMetadata(routeKey),
@@ -186,90 +143,19 @@ function createRouteObservations(
     return createExpectedRawHDRVectorObservations(frame, metadata, getRouteSettings(metadata));
 }
 
+/** Creates a device whose readbacks of the authorization target return the observations. */
 function createDeviceHarness(
     observations: readonly RawHDRVectorObservation[],
-    mapAsyncFactory?: () => Promise<void>
-): DeviceHarness {
+    mapAsync?: () => Promise<void>
+): WebGPUDeviceHarness {
     const observationMap = new Map<string, ColorTriplet>();
     for (const observation of observations) {
         observationMap.set(`${observation.sampleX}:${observation.sampleY}`, observation.linearRGB);
     }
-
-    let lostResolve: (info: GPUDeviceLostInfo) => void = (): void => undefined;
-    const lost = new Promise<GPUDeviceLostInfo>(resolve => {
-        lostResolve = resolve;
+    return createWebGPUDeviceHarness({
+        mapAsync,
+        readPixel: (texel: ReadbackTexel): ColorTriplet | undefined => observationMap.get(`${texel.sampleX}:${texel.sampleY}`)
     });
-    const bufferDestroy = vi.fn();
-    const textureDestroy = vi.fn();
-    const popErrorScope = vi.fn(() => Promise.resolve(null));
-    const queueSubmit = vi.fn();
-    const device = {
-        createBuffer: vi.fn((descriptor: GPUBufferDescriptor) => {
-            const bytes = new Uint8Array(Number(descriptor.size));
-            return {
-                bytes,
-                destroy: bufferDestroy,
-                getMappedRange: vi.fn((offset = 0, size = bytes.byteLength) => bytes.buffer.slice(offset, offset + size)),
-                mapAsync: vi.fn(() => mapAsyncFactory?.() ?? Promise.resolve()),
-                unmap: vi.fn()
-            } as unknown as MockBuffer;
-        }),
-        createCommandEncoder: vi.fn(() => ({
-            copyTextureToBuffer: vi.fn((source: GPUTexelCopyTextureInfo, destination: GPUTexelCopyBufferInfo) => {
-                const origin = source.origin as GPUOrigin3DDict;
-                const sampleX = Number(origin.x ?? 0);
-                const sampleY = Number(origin.y ?? 0);
-                const linearRGB = observationMap.get(`${sampleX}:${sampleY}`);
-                if (!linearRGB) {
-                    throw new Error('Unexpected readback coordinate');
-                }
-                const destinationBuffer = destination.buffer as MockBuffer;
-                const byteOffset = Number(destination.offset ?? 0);
-                destinationBuffer.bytes[byteOffset] = Math.round(linearRGB[2] * 255);
-                destinationBuffer.bytes[byteOffset + 1] = Math.round(linearRGB[1] * 255);
-                destinationBuffer.bytes[byteOffset + 2] = Math.round(linearRGB[0] * 255);
-                destinationBuffer.bytes[byteOffset + 3] = 255;
-            }),
-            finish: vi.fn(() => ({}))
-        })),
-        createTexture: vi.fn((descriptor: GPUTextureDescriptor) => ({
-            createView: vi.fn(() => ({})),
-            depthOrArrayLayers: 1,
-            destroy: textureDestroy,
-            format: descriptor.format,
-            height: Number((descriptor.size as GPUExtent3DDict).height ?? 1),
-            usage: descriptor.usage,
-            width: Number((descriptor.size as GPUExtent3DDict).width ?? 1)
-        })),
-        features: new Set<string>(),
-        limits: { maxTextureDimension2D: 8_192 },
-        lost,
-        popErrorScope,
-        pushErrorScope: vi.fn(),
-        queue: {
-            onSubmittedWorkDone: vi.fn(() => Promise.resolve()),
-            submit: queueSubmit,
-            writeBuffer: vi.fn()
-        }
-    } as unknown as GPUDevice;
-    return {
-        bufferDestroy,
-        device,
-        lostResolve,
-        popErrorScope,
-        queueSubmit,
-        textureDestroy
-    };
-}
-
-function getOnlyExecutor(): MockExecutor {
-    expect(passMocks.executors).toHaveLength(1);
-    return passMocks.executors[0];
-}
-
-function getEncodedFrame(executor: MockExecutor): PresentationFrameInput {
-    expect(executor.encode).toHaveBeenCalledOnce();
-    return executor.encode.mock.calls[0][1] as PresentationFrameInput;
 }
 
 function swapVectorChroma(frame: TransferableRawVideoFrame): TransferableRawVideoFrame {
@@ -314,11 +200,25 @@ function createAuthorizedDecision(
         maximumChannelError: 0,
         renderSettingsVersion: getRouteSettings(getRouteMetadata(routeKey)).version,
         routeKey,
-        sampleCount: 9,
+        sampleCount: VECTOR_SAMPLE_COUNT,
         shaderSignature: createRawHDRShaderSignature(targetFormat, shaderCode),
         status: 'authorized',
         targetFormat
     };
+}
+
+/** Returns the plane uploads of a vector: each plane from the vector's own buffer, at its own offset and stride. */
+function getExpectedPlaneUploads(frame: TransferableRawVideoFrame): GPUTexelCopyBufferLayout[] {
+    return frame.planes.map(plane => ({ bytesPerRow: plane.bytesPerRow, offset: plane.byteOffset, rowsPerImage: plane.height }));
+}
+
+function expectEveryResourceDestroyed(harness: WebGPUDeviceHarness): void {
+    for (const buffer of harness.buffers) {
+        expect(buffer.destroy, buffer.label).toHaveBeenCalled();
+    }
+    for (const texture of harness.textures) {
+        expect(texture.destroy, texture.label).toHaveBeenCalledOnce();
+    }
 }
 
 const SDR_AUTHORIZATION_ROUTE_KEYS = RAW_HDR_AUTHORIZATION_ROUTE_KEYS.filter(
@@ -330,31 +230,14 @@ const HDR_AUTHORIZATION_ROUTE_KEYS = RAW_HDR_AUTHORIZATION_ROUTE_KEYS.filter(
 
 describe('RawHDRPresentationAuthorization', () => {
     beforeEach(() => {
-        passMocks.executors.length = 0;
-        Object.defineProperty(globalThis, 'GPUBufferUsage', {
-            configurable: true,
-            // WebGPU defines these external names
-            // eslint-disable-next-line @typescript-eslint/naming-convention
-            value: { COPY_DST: 8, MAP_READ: 1, UNIFORM: 64 }
-        });
-        Object.defineProperty(globalThis, 'GPUMapMode', {
-            configurable: true,
-            value: { READ: 1 }
-        });
-        Object.defineProperty(globalThis, 'GPUTextureUsage', {
-            configurable: true,
-            // WebGPU defines these external names
-            // eslint-disable-next-line @typescript-eslint/naming-convention
-            value: { COPY_DST: 2, COPY_SRC: 1, RENDER_ATTACHMENT: 16, TEXTURE_BINDING: 4 }
-        });
+        restoreWebGPUGlobals = installWebGPUGlobals();
+        vi.spyOn(PresentationExecutor, 'create');
     });
 
     afterEach(() => {
         vi.useRealTimers();
         vi.clearAllMocks();
-        restoreProperty(globalThis, 'GPUBufferUsage', originalGPUBufferUsage);
-        restoreProperty(globalThis, 'GPUMapMode', originalGPUMapMode);
-        restoreProperty(globalThis, 'GPUTextureUsage', originalGPUTextureUsage);
+        restoreWebGPUGlobals();
     });
 
     it('whitelists exact format, bit-depth, chromaticity, range, and transfer tuples', () => {
@@ -406,16 +289,17 @@ describe('RawHDRPresentationAuthorization', () => {
             expect(decision).toMatchObject({
                 failureReason: null,
                 routeKey,
-                sampleCount: 9,
+                sampleCount: VECTOR_SAMPLE_COUNT,
                 status: 'authorized'
             });
-            const executor = getOnlyExecutor();
-            expect(executor.writeRenderSettings).not.toHaveBeenCalled();
-            expect(getEncodedFrame(executor).source).toStrictEqual({
-                enhancementFrame: null,
-                frame: createRawHDRAuthorizationVector(routeKey),
-                kind: 'planes'
-            });
+            // The identity SDR chain binds no render settings
+            expect(getBuffers(harness, RENDER_SETTINGS_LABEL)).toEqual([]);
+            const vector = createRawHDRAuthorizationVector(routeKey);
+            expect(harness.textureWrites.map(write => write.dataLayout)).toEqual(getExpectedPlaneUploads(vector));
+            for (const write of harness.textureWrites) {
+                expect(new Uint8Array(write.data as ArrayBuffer)).toEqual(new Uint8Array(vector.data));
+            }
+            expect(harness.importExternalTexture).not.toHaveBeenCalled();
         }
     );
 
@@ -428,12 +312,13 @@ describe('RawHDRPresentationAuthorization', () => {
 
             const decision = await runner.validate(harness.device, TARGET_FORMAT, routeKey);
 
+            // The signature covers exactly the modules the executor compiled
             expect(decision).toMatchObject({
                 authorizedRouteKeys: [ routeKey ],
                 failureReason: null,
                 routeKey,
-                sampleCount: 9,
-                shaderSignature: createRawHDRShaderSignature(TARGET_FORMAT, RAW_REFERENCE_SHADER_CODE),
+                sampleCount: VECTOR_SAMPLE_COUNT,
+                shaderSignature: createRawHDRShaderSignature(TARGET_FORMAT, getShaderCodes(harness).join(PLAN_SHADER_CODE_SEPARATOR)),
                 status: 'authorized',
                 targetFormat: TARGET_FORMAT
             });
@@ -447,7 +332,7 @@ describe('RawHDRPresentationAuthorization', () => {
             expect(planPresentation).toHaveBeenCalledOnce();
             const planRequest = vi.mocked(planPresentation).mock.calls[0][0];
             expect(planRequest).toMatchObject({
-                device: { maximumTextureDimension: 8_192 },
+                device: { maximumTextureDimension: DEFAULT_MAXIMUM_TEXTURE_DIMENSION },
                 facts: {
                     frameRate: null,
                     hdrOutput: false,
@@ -460,30 +345,22 @@ describe('RawHDRPresentationAuthorization', () => {
                 output: { colorSpace: 'srgb', format: TARGET_FORMAT, toneMapping: 'standard' },
                 passes: []
             });
-            const executor = getOnlyExecutor();
-            expect(PresentationExecutor.create).toHaveBeenCalledWith(harness.device, executor.plan);
-            expect(executor.writeRenderSettings).toHaveBeenCalledOnce();
-            expect((executor.writeRenderSettings.mock.calls[0][0] as ArrayBuffer).byteLength)
-                .toBe(RENDER_SETTINGS_UNIFORM_BYTE_LENGTH);
-            expect(getEncodedFrame(executor)).toMatchObject({
-                geometry: {
-                    textureOffsetX: 0,
-                    textureOffsetY: 0,
-                    textureScaleX: 1,
-                    textureScaleY: 1,
-                    viewportHeight: RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
-                    viewportWidth: RAW_HDR_AUTHORIZATION_VECTOR_WIDTH,
-                    viewportX: 0,
-                    viewportY: 0
-                },
-                newFrame: true,
-                skippedFrameCount: 0,
-                timestampMicroseconds: 0
+            const plan = vi.mocked(planPresentation).mock.results[0].value as PresentationPlan;
+            expect(getShaderCodes(harness).join(PLAN_SHADER_CODE_SEPARATOR)).toBe(planRawReferenceShaderCode(routeKey));
+            expect(PresentationExecutor.create).toHaveBeenCalledWith(harness.device, plan);
+            const renderSettingsWrites = getBufferWrites(harness, RENDER_SETTINGS_LABEL);
+            expect(renderSettingsWrites).toHaveLength(1);
+            expect(renderSettingsWrites[0].bytes.byteLength).toBe(RENDER_SETTINGS_UNIFORM_BYTE_LENGTH);
+            // One pass draws the vector 1:1 into the whole target
+            expect(harness.renderPasses).toHaveLength(1);
+            expect(harness.renderPasses[0]).toMatchObject({
+                drawVertexCounts: [ RENDER_VERTEX_COUNT ],
+                viewport: [ 0, 0, RAW_HDR_AUTHORIZATION_VECTOR_WIDTH, RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT, 0, 1 ]
             });
-            expect(harness.queueSubmit).toHaveBeenCalledTimes(2);
-            expect(executor.destroy).toHaveBeenCalledOnce();
-            expect(harness.textureDestroy).toHaveBeenCalledOnce();
-            expect(harness.bufferDestroy).toHaveBeenCalledOnce();
+            expect(harness.textureWrites.map(write => write.dataLayout))
+                .toEqual(getExpectedPlaneUploads(createRawHDRAuthorizationVector(routeKey)));
+            expect(harness.queueSubmit).toHaveBeenCalledTimes(AUTHORIZATION_SUBMISSION_COUNT);
+            expectEveryResourceDestroyed(harness);
         }
     );
 
@@ -534,9 +411,8 @@ describe('RawHDRPresentationAuthorization', () => {
             failureReason: 'pixel-mismatch',
             status: 'rejected'
         });
-        expect(getOnlyExecutor().destroy).toHaveBeenCalledOnce();
-        expect(harness.textureDestroy).toHaveBeenCalledOnce();
-        expect(harness.bufferDestroy).toHaveBeenCalledOnce();
+        expect(PresentationExecutor.create).toHaveBeenCalledOnce();
+        expectEveryResourceDestroyed(harness);
     });
 
     it('rejects an unreadable production target format before creating resources', async () => {
@@ -548,12 +424,12 @@ describe('RawHDRPresentationAuthorization', () => {
             status: 'rejected'
         });
         expect(PresentationExecutor.create).not.toHaveBeenCalled();
-        expect(harness.textureDestroy).not.toHaveBeenCalled();
+        expect(harness.textures).toEqual([]);
     });
 
     it('rejects a reference chain that cannot be planned before creating resources', async () => {
         vi.mocked(planPresentation).mockImplementationOnce((): PresentationPlan => {
-            throw new Error('simulated planning failure');
+            throw new Error(SIMULATED_PLANNING_FAILURE);
         });
         vi.spyOn(console, 'warn').mockImplementation(() => undefined);
         const harness = createDeviceHarness([]);
@@ -568,16 +444,16 @@ describe('RawHDRPresentationAuthorization', () => {
 
     it('rejects a GPU validation error and releases every created resource', async () => {
         const harness = createDeviceHarness(createRouteObservations(PQ_ROUTE_KEY));
-        harness.popErrorScope.mockResolvedValueOnce(new Error('invalid bind group'));
+        harness.popErrorScope.mockResolvedValueOnce(new Error(SIMULATED_VALIDATION_ERROR));
         const runner = new RawHDRPresentationAuthorizationRunner();
 
         await expect(runner.validate(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY)).resolves.toMatchObject({
             failureReason: 'gpu-validation-failed',
             status: 'rejected'
         });
-        expect(getOnlyExecutor().destroy).toHaveBeenCalledOnce();
-        expect(harness.textureDestroy).toHaveBeenCalledOnce();
-        expect(harness.bufferDestroy).not.toHaveBeenCalled();
+        expect(getBuffers(harness, READBACK_BUFFER_LABEL)).toEqual([]);
+        expect(harness.textures.filter((texture: MockGPUTexture): boolean => texture.label === TARGET_TEXTURE_LABEL)).toHaveLength(1);
+        expectEveryResourceDestroyed(harness);
     });
 
     it('rejects a bounded executor creation timeout and destroys the late executor', async () => {
@@ -602,7 +478,7 @@ describe('RawHDRPresentationAuthorization', () => {
         if (!resolveExecutor) {
             throw new Error('The late executor resolver was not initialized');
         }
-        const lateExecutor = passMocks.createExecutor({} as PresentationPlan);
+        const lateExecutor = { destroy: vi.fn(), encode: vi.fn() };
         resolveExecutor(lateExecutor as unknown as PresentationExecutor);
         await vi.waitFor(() => expect(lateExecutor.destroy).toHaveBeenCalledOnce());
         expect(lateExecutor.encode).not.toHaveBeenCalled();
@@ -623,9 +499,8 @@ describe('RawHDRPresentationAuthorization', () => {
             failureReason: 'timeout',
             status: 'rejected'
         });
-        expect(harness.textureDestroy).toHaveBeenCalledOnce();
-        expect(harness.bufferDestroy).toHaveBeenCalled();
-        expect(getOnlyExecutor().destroy).toHaveBeenCalledOnce();
+        expect(getBuffers(harness, READBACK_BUFFER_LABEL)).toHaveLength(1);
+        expectEveryResourceDestroyed(harness);
     });
 
     it('rejects device loss without waiting for the timeout', async () => {
@@ -634,7 +509,7 @@ describe('RawHDRPresentationAuthorization', () => {
         const runner = new RawHDRPresentationAuthorizationRunner();
         const decisionPromise = runner.validate(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
 
-        harness.lostResolve({
+        harness.lost.resolve({
             message: 'authorization device lost',
             reason: 'unknown'
         } as GPUDeviceLostInfo);
@@ -679,7 +554,7 @@ describe('RawHDRPresentationAuthorization', () => {
             status: 'pending'
         });
 
-        const decision = createAuthorizedDecision(firstHarness.device, PQ_ROUTE_KEY, TARGET_FORMAT, RAW_REFERENCE_SHADER_CODE);
+        const decision = createAuthorizedDecision(firstHarness.device, PQ_ROUTE_KEY, TARGET_FORMAT, planRawReferenceShaderCode(PQ_ROUTE_KEY));
         resolveDecision(decision);
         await expect(firstPromise).resolves.toBe(decision);
 
@@ -694,7 +569,7 @@ describe('RawHDRPresentationAuthorization', () => {
             'I420P10'
         )).toBe(false);
 
-        firstHarness.lostResolve({
+        firstHarness.lost.resolve({
             message: 'test loss',
             reason: 'unknown'
         } as GPUDeviceLostInfo);
@@ -704,7 +579,7 @@ describe('RawHDRPresentationAuthorization', () => {
 
     it('authorizes only decisions rendered through the current reference shader, planned once per device', async () => {
         const harness = createDeviceHarness([]);
-        const staleDecision = createAuthorizedDecision(harness.device, PQ_ROUTE_KEY, TARGET_FORMAT, 'superseded reference shader');
+        const staleDecision = createAuthorizedDecision(harness.device, PQ_ROUTE_KEY, TARGET_FORMAT, SUPERSEDED_REFERENCE_SHADER_CODE);
         const runner = {
             validate: vi.fn(() => Promise.resolve(staleDecision))
         } as RawHDRPresentationAuthorizationRunner;

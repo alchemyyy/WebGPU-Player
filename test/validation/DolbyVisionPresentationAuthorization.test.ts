@@ -1,84 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-type MockFunction = ReturnType<typeof vi.fn>;
-
-type MockExecutor = {
-    destroy: MockFunction
-    encode: MockFunction
-    plan: PresentationPlan
-    writeDolbyVisionRPU: MockFunction
-    writeRenderSettings: MockFunction
-};
-
-const passMocks = vi.hoisted(() => {
-    const state = {
-        encodeCount: 0,
-        executors: [] as MockExecutor[]
-    };
-    return {
-        createExecutor(plan: PresentationPlan): MockExecutor {
-            const executor: MockExecutor = {
-                destroy: vi.fn(),
-                // Each encode renders one scenario, which the readback harness follows
-                encode: vi.fn((): void => {
-                    state.encodeCount += 1;
-                }),
-                plan,
-                writeDolbyVisionRPU: vi.fn(),
-                writeRenderSettings: vi.fn()
-            };
-            state.executors.push(executor);
-            return executor;
-        },
-        state
-    };
+// The real built-in library and planner run behind spies, and the real executor runs on a mock device
+vi.mock('webgpu-player/presentation/passes/builtin/BuiltinChains', async importOriginal => {
+    const originalModule = await importOriginal<typeof import('webgpu-player/presentation/passes/builtin/BuiltinChains')>();
+    return { ...originalModule, createBuiltinChain: vi.fn(originalModule.createBuiltinChain) };
 });
 
-vi.mock('webgpu-player/presentation/passes/builtin/BuiltinChains', () => ({
-    createBuiltinChain: vi.fn((configuration: BuiltinChainConfiguration): BuiltinChain => ({
-        colorFunctions: [],
-        signal: {
-            bypassCondition: null,
-            code: '',
-            entryPoint: 'readSignal',
-            name: configuration.route,
-            resources: [],
-            sourceKind: 'planes'
-        },
-        sourceIsDisplay: false
-    }))
-}));
-
-vi.mock('webgpu-player/presentation/passes/PresentationPlanner', () => ({
-    // One fused pass whose code names its route and target, as the default chain plans
-    planPresentation: vi.fn((planRequest: PlanRequest): PresentationPlan => ({
-        buffers: [],
-        output: planRequest.output,
-        parameterSets: [],
-        passes: [ {
-            bindings: [],
-            code: `${planRequest.chain.signal.name}:${planRequest.output.format}`,
-            coordinateMapping: 'object-fit',
-            indirectBufferId: null,
-            inputTextureId: null,
-            kind: 'render',
-            label: planRequest.chain.signal.name,
-            lineMap: [],
-            target: { kind: 'output' },
-            workgroupCounts: null
-        } ],
-        report: { activePasses: [], conflicts: [], inactivePasses: [] },
-        sourceKind: planRequest.chain.signal.sourceKind,
-        textures: [],
-        usesRenderSettings: true
-    }))
-}));
-
-vi.mock('webgpu-player/presentation/passes/PresentationExecutor', () => ({
-    PresentationExecutor: {
-        create: vi.fn((_device: GPUDevice, plan: PresentationPlan) => Promise.resolve(passMocks.createExecutor(plan)))
-    }
-}));
+vi.mock('webgpu-player/presentation/passes/PresentationPlanner', async importOriginal => {
+    const originalModule = await importOriginal<typeof import('webgpu-player/presentation/passes/PresentationPlanner')>();
+    return { ...originalModule, planPresentation: vi.fn(originalModule.planPresentation) };
+});
 
 import {
     createDefaultRenderSettings,
@@ -88,16 +19,9 @@ import { processEncodedYUV, type ColorTriplet } from 'webgpu-player/color/ColorP
 import { decodeDolbyVisionRPUSnapshot } from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParser';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 import { createBuiltinChain } from 'webgpu-player/presentation/passes/builtin/BuiltinChains';
-import type {
-    BuiltinChain,
-    BuiltinChainConfiguration,
-    PlanRequest,
-    PresentationFrameInput,
-    PresentationFrameSource,
-    PresentationPlan,
-    RawDolbyVisionFrameFormat
-} from 'webgpu-player/presentation/passes/PassTypes';
+import type { RawDolbyVisionFrameFormat } from 'webgpu-player/presentation/passes/PassTypes';
 import { PresentationExecutor } from 'webgpu-player/presentation/passes/PresentationExecutor';
+import { planPresentation } from 'webgpu-player/presentation/passes/PresentationPlanner';
 import type { TransferableRawVideoFrame } from 'webgpu-player/video/RawVideoFrameCopy';
 import {
     createDolbyVisionShaderSignature,
@@ -114,48 +38,46 @@ import {
 } from 'webgpu-player/validation/DolbyVisionPresentationAuthorization';
 import {
     createRawHDRAuthorizationVector,
-    RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
-    RAW_HDR_AUTHORIZATION_VECTOR_WIDTH,
     sampleRawI420P10Frame,
     type RawHDRAuthorizationRouteKey,
     type RawHDRVectorObservation
 } from 'webgpu-player/validation/RawHDRPresentationAuthorization';
 import { createSDRColorMetadata } from 'webgpu-player/color/ColorMetadata';
 
-type MockBuffer = GPUBuffer & {
-    bytes: Uint8Array
-};
+import {
+    createWebGPUDeviceHarness,
+    getBufferWrites,
+    getShaderCodes,
+    getTextures,
+    installWebGPUGlobals,
+    type MockGPUTexture,
+    type ReadbackTexel,
+    type RecordedBufferWrite,
+    type RecordedTextureWrite,
+    type WebGPUDeviceHarness
+} from '../helpers/webGPUDeviceHarness';
 
-type DeviceHarness = {
-    bufferDescriptors: GPUBufferDescriptor[]
-    device: GPUDevice
-    textureDestroy: MockFunction
-};
-
-type PlanesFrameSource = Extract<PresentationFrameSource, { kind: 'planes' }>;
+/** A plane texture's label and size, which show the layer and format an authorization uploaded. */
+type PlaneGeometry = [string, number, number];
 
 const TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
+const UNREADABLE_TARGET_FORMAT: GPUTextureFormat = 'rgba16float';
 const SINGLE_SCENARIO_SAMPLE_COUNT = 9;
 const DUAL_SCENARIO_SAMPLE_COUNT = 18;
 // The size the reduced-resolution FEL probe composes beside the 16x8 BL vector
 const ENHANCEMENT_LAYER_WIDTH = 8;
 const ENHANCEMENT_LAYER_HEIGHT = 4;
+// The EL is always I420P10, whose planes upload as 16-bit single-component textures
+const ENHANCEMENT_PLANE_TEXTURE_FORMAT: GPUTextureFormat = 'r16uint';
+// The authorization joins a reference plan's pass modules with this separator before signing them
+const PLAN_SHADER_CODE_SEPARATOR = '\u0000';
+// The labels of the resources the executor creates
+const RENDER_SETTINGS_LABEL = 'Presentation render settings';
+const DOLBY_VISION_RPU_LABEL = 'Presentation Dolby Vision RPU';
+const BASE_PLANES_LABEL = 'Raw video';
+const ENHANCEMENT_PLANES_LABEL = 'Raw Dolby Vision enhancement';
 
-const originalGPUBufferUsage = Object.getOwnPropertyDescriptor(globalThis, 'GPUBufferUsage');
-const originalGPUMapMode = Object.getOwnPropertyDescriptor(globalThis, 'GPUMapMode');
-const originalGPUTextureUsage = Object.getOwnPropertyDescriptor(globalThis, 'GPUTextureUsage');
-
-function restoreProperty(
-    target: object,
-    propertyName: PropertyKey,
-    descriptor: PropertyDescriptor | undefined
-): void {
-    if (descriptor) {
-        Object.defineProperty(target, propertyName, descriptor);
-    } else {
-        Reflect.deleteProperty(target, propertyName);
-    }
-}
+let restoreWebGPUGlobals: () => void = (): void => undefined;
 
 function createSettings() {
     return createHDRToSDRRenderSettings({
@@ -167,105 +89,43 @@ function createExpectedObservations(): readonly RawHDRVectorObservation[] {
     return createExpectedDolbyVisionAuthorizationObservations(createDolbyVisionAuthorizationRPUVector(), createSettings());
 }
 
-function createDeviceHarness(...observationSets: Array<readonly RawHDRVectorObservation[]>): DeviceHarness {
+/** Creates a device whose readbacks return one observation set per rendered scenario, in render order. */
+function createDeviceHarness(...observationSets: Array<readonly RawHDRVectorObservation[]>): WebGPUDeviceHarness {
     const observationMaps: Array<Map<string, ColorTriplet>> = [];
     for (const observations of observationSets) {
         const observationMap = new Map<string, ColorTriplet>();
         for (const observation of observations) {
-            observationMap.set(
-                `${observation.sampleX}:${observation.sampleY}`,
-                observation.linearRGB
-            );
+            observationMap.set(`${observation.sampleX}:${observation.sampleY}`, observation.linearRGB);
         }
         observationMaps.push(observationMap);
     }
-    const textureDestroy = vi.fn();
-    const bufferDescriptors: GPUBufferDescriptor[] = [];
-    const device = {
-        createBuffer: vi.fn((descriptor: GPUBufferDescriptor) => {
-            bufferDescriptors.push(descriptor);
-            const bytes = new Uint8Array(Number(descriptor.size));
-            return {
-                bytes,
-                destroy: vi.fn(),
-                getMappedRange: vi.fn((offset = 0, size = bytes.byteLength) => (
-                    bytes.buffer.slice(offset, offset + size)
-                )),
-                mapAsync: vi.fn(() => Promise.resolve()),
-                unmap: vi.fn()
-            } as unknown as MockBuffer;
-        }),
-        createCommandEncoder: vi.fn(() => ({
-            copyTextureToBuffer: vi.fn((
-                source: GPUTexelCopyTextureInfo,
-                destination: GPUTexelCopyBufferInfo
-            ) => {
-                const origin = source.origin as GPUOrigin3DDict;
-                const sampleX = Number(origin.x ?? 0);
-                const sampleY = Number(origin.y ?? 0);
-                const renderIndex = Math.max(passMocks.state.encodeCount - 1, 0);
-                const observationMap = observationMaps[
-                    Math.min(renderIndex, observationMaps.length - 1)
-                ];
-                const linearRGB = observationMap.get(`${sampleX}:${sampleY}`);
-                if (!linearRGB) {
-                    throw new Error('Unexpected readback coordinate');
-                }
-                const destinationBuffer = destination.buffer as MockBuffer;
-                const byteOffset = Number(destination.offset ?? 0);
-                destinationBuffer.bytes[byteOffset] = Math.round(linearRGB[2] * 255);
-                destinationBuffer.bytes[byteOffset + 1] = Math.round(linearRGB[1] * 255);
-                destinationBuffer.bytes[byteOffset + 2] = Math.round(linearRGB[0] * 255);
-                destinationBuffer.bytes[byteOffset + 3] = 255;
-            }),
-            finish: vi.fn(() => ({}))
-        })),
-        createTexture: vi.fn((descriptor: GPUTextureDescriptor) => ({
-            createView: vi.fn(() => ({})),
-            depthOrArrayLayers: 1,
-            destroy: textureDestroy,
-            format: descriptor.format,
-            height: Number((descriptor.size as GPUExtent3DDict).height ?? 1),
-            usage: descriptor.usage,
-            width: Number((descriptor.size as GPUExtent3DDict).width ?? 1)
-        })),
-        features: new Set<string>(),
-        limits: { maxTextureDimension2D: 8_192 },
-        lost: new Promise<GPUDeviceLostInfo>(() => undefined),
-        popErrorScope: vi.fn(() => Promise.resolve(null)),
-        pushErrorScope: vi.fn(),
-        queue: {
-            onSubmittedWorkDone: vi.fn(() => Promise.resolve()),
-            submit: vi.fn(),
-            writeBuffer: vi.fn()
+    return createWebGPUDeviceHarness({
+        readPixel: (texel: ReadbackTexel): ColorTriplet | undefined => {
+            // Each scenario renders one pass, and its readback follows
+            const renderIndex = Math.max(texel.renderPassCount - 1, 0);
+            const observationMap = observationMaps[Math.min(renderIndex, observationMaps.length - 1)];
+            return observationMap.get(`${texel.sampleX}:${texel.sampleY}`);
         }
-    } as unknown as GPUDevice;
-    return {
-        bufferDescriptors,
-        device,
-        textureDestroy
-    };
-}
-
-function getOnlyExecutor(): MockExecutor {
-    expect(passMocks.state.executors).toHaveLength(1);
-    return passMocks.state.executors[0];
-}
-
-/** Returns the plane sources an authorization encoded, one per rendered scenario. */
-function getEncodedSources(executor: MockExecutor): PlanesFrameSource[] {
-    return executor.encode.mock.calls.map((call: unknown[]): PlanesFrameSource => (
-        (call[1] as PresentationFrameInput).source as PlanesFrameSource
-    ));
+    });
 }
 
 /** Returns the RPU vectors an authorization wrote, one per rendered scenario. */
-function getWrittenRPUVectors(executor: MockExecutor): Uint8Array[] {
-    return executor.writeDolbyVisionRPU.mock.calls.map((call: unknown[]): Uint8Array => new Uint8Array(call[0] as ArrayBuffer));
+function getWrittenRPUVectors(harness: WebGPUDeviceHarness): Uint8Array[] {
+    return getBufferWrites(harness, DOLBY_VISION_RPU_LABEL).map((write: RecordedBufferWrite): Uint8Array => write.bytes);
 }
 
-function getFrameGeometry(frame: TransferableRawVideoFrame): [string, number, number] {
-    return [ frame.format, frame.codedWidth, frame.codedHeight ];
+/** Returns the label and size of each plane texture of one layer, in creation order. */
+function getPlaneGeometries(harness: WebGPUDeviceHarness, labelPrefix: string): PlaneGeometry[] {
+    return getTextures(harness, labelPrefix).map((texture: MockGPUTexture): PlaneGeometry => [ texture.label, texture.width, texture.height ]);
+}
+
+/** Returns the plane textures a frame uploads into: its layer's label per plane, at each plane's size. */
+function getExpectedPlaneGeometries(frame: TransferableRawVideoFrame, labelPrefix: string): PlaneGeometry[] {
+    return frame.planes.map((plane): PlaneGeometry => [ `${labelPrefix} ${plane.kind.toUpperCase()} plane`, plane.width, plane.height ]);
+}
+
+function getPlaneUploads(harness: WebGPUDeviceHarness, labelPrefix: string): RecordedTextureWrite[] {
+    return harness.textureWrites.filter((write: RecordedTextureWrite): boolean => write.texture.label.startsWith(labelPrefix));
 }
 
 function mutateFirstObservation(observations: readonly RawHDRVectorObservation[]): readonly RawHDRVectorObservation[] {
@@ -279,34 +139,24 @@ function mutateFirstObservation(observations: readonly RawHDRVectorObservation[]
     } : observation);
 }
 
+function expectEveryResourceDestroyed(harness: WebGPUDeviceHarness): void {
+    for (const buffer of harness.buffers) {
+        expect(buffer.destroy, buffer.label).toHaveBeenCalled();
+    }
+    for (const texture of harness.textures) {
+        expect(texture.destroy, texture.label).toHaveBeenCalledOnce();
+    }
+}
+
 describe('Dolby Vision presentation authorization', () => {
     beforeEach(() => {
-        passMocks.state.encodeCount = 0;
-        passMocks.state.executors.length = 0;
-        Object.defineProperty(globalThis, 'GPUBufferUsage', {
-            configurable: true,
-            // WebGPU defines these external names
-            // eslint-disable-next-line @typescript-eslint/naming-convention
-            value: { COPY_DST: 1, MAP_READ: 2, STORAGE: 4, UNIFORM: 8 }
-        });
-        Object.defineProperty(globalThis, 'GPUMapMode', {
-            configurable: true,
-            value: { READ: 1 }
-        });
-        Object.defineProperty(globalThis, 'GPUTextureUsage', {
-            configurable: true,
-            // WebGPU defines these external names
-            // eslint-disable-next-line @typescript-eslint/naming-convention
-            value: { COPY_DST: 1, COPY_SRC: 2, RENDER_ATTACHMENT: 4, TEXTURE_BINDING: 8 }
-        });
+        restoreWebGPUGlobals = installWebGPUGlobals();
+        vi.spyOn(PresentationExecutor, 'create');
     });
 
     afterEach(() => {
         vi.clearAllMocks();
-        restoreProperty(globalThis, 'GPUBufferUsage', originalGPUBufferUsage);
-        restoreProperty(globalThis, 'GPUMapMode', originalGPUMapMode);
-        restoreProperty(globalThis, 'GPUTextureUsage', originalGPUTextureUsage);
-        vi.restoreAllMocks();
+        restoreWebGPUGlobals();
     });
 
     it('builds a schema-valid vector covering polynomial and MMR mapping', () => {
@@ -360,11 +210,12 @@ describe('Dolby Vision presentation authorization', () => {
 
         const decision = await runner.validate(harness.device, TARGET_FORMAT);
 
+        // The signature covers exactly the modules the executor compiled
         expect(decision).toMatchObject({
             failureReason: null,
             routeKey: DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
             sampleCount: SINGLE_SCENARIO_SAMPLE_COUNT,
-            shaderSignature: createDolbyVisionShaderSignature(TARGET_FORMAT, `raw-dolby-vision:${TARGET_FORMAT}`),
+            shaderSignature: createDolbyVisionShaderSignature(TARGET_FORMAT, getShaderCodes(harness).join(PLAN_SHADER_CODE_SEPARATOR)),
             status: 'authorized'
         });
         expect(createBuiltinChain).toHaveBeenCalledWith({
@@ -375,13 +226,12 @@ describe('Dolby Vision presentation authorization', () => {
             route: 'raw-dolby-vision',
             settings: createSettings()
         });
-        const executor = getOnlyExecutor();
-        expect(executor.plan.output).toEqual({ colorSpace: 'srgb', format: TARGET_FORMAT, toneMapping: 'standard' });
-        expect(executor.writeRenderSettings).toHaveBeenCalledOnce();
-        expect(getWrittenRPUVectors(executor)).toEqual([ new Uint8Array(createDolbyVisionAuthorizationRPUVector()) ]);
-        expect(getEncodedSources(executor).map(source => source.enhancementFrame)).toEqual([ null ]);
-        expect(executor.destroy).toHaveBeenCalledOnce();
-        expect(harness.textureDestroy).toHaveBeenCalledOnce();
+        expect(vi.mocked(planPresentation).mock.calls[0][0].output).toEqual({ colorSpace: 'srgb', format: TARGET_FORMAT, toneMapping: 'standard' });
+        expect(getBufferWrites(harness, RENDER_SETTINGS_LABEL)).toHaveLength(1);
+        expect(getWrittenRPUVectors(harness)).toEqual([ new Uint8Array(createDolbyVisionAuthorizationRPUVector()) ]);
+        expect(getTextures(harness, ENHANCEMENT_PLANES_LABEL)).toEqual([]);
+        expect(PresentationExecutor.create).toHaveBeenCalledOnce();
+        expectEveryResourceDestroyed(harness);
     });
 
     it('authorizes both Profile 7 MEL reconstruction and FEL HDR10-base fallback', async () => {
@@ -402,7 +252,7 @@ describe('Dolby Vision presentation authorization', () => {
             sampleCount: DUAL_SCENARIO_SAMPLE_COUNT,
             status: 'authorized'
         });
-        expect(getOnlyExecutor().encode).toHaveBeenCalledTimes(2);
+        expect(harness.renderPasses).toHaveLength(2);
     });
 
     it('separately authorizes reduced-resolution Profile 7 FEL composition', async () => {
@@ -418,9 +268,13 @@ describe('Dolby Vision presentation authorization', () => {
             status: 'authorized'
         });
         expect(createBuiltinChain).toHaveBeenCalledWith(expect.objectContaining({ felReconstruction: true, profile: 7 }));
-        const [ source ] = getEncodedSources(getOnlyExecutor());
-        expect(source.enhancementFrame).not.toBeNull();
-        expect(source.enhancementFrame?.data).toBe(source.frame.data);
+        // The EL uploads from the BL's compound buffer
+        const baseUploads = getPlaneUploads(harness, BASE_PLANES_LABEL);
+        const enhancementUploads = getPlaneUploads(harness, ENHANCEMENT_PLANES_LABEL);
+        expect(enhancementUploads).toHaveLength(3);
+        for (const upload of enhancementUploads) {
+            expect(upload.data).toBe(baseUploads[0].data);
+        }
     });
 
     it('rejects a bounded pixel mismatch', async () => {
@@ -431,18 +285,18 @@ describe('Dolby Vision presentation authorization', () => {
             failureReason: 'pixel-mismatch',
             status: 'rejected'
         });
-        expect(getOnlyExecutor().destroy).toHaveBeenCalledOnce();
+        expectEveryResourceDestroyed(harness);
     });
 
     it('rejects unsupported targets before allocating resources', async () => {
         const harness = createDeviceHarness(createExpectedObservations());
         const runner = new DolbyVisionPresentationAuthorizationRunner();
 
-        await expect(runner.validate(harness.device, 'rgba16float')).resolves.toMatchObject({
+        await expect(runner.validate(harness.device, UNREADABLE_TARGET_FORMAT)).resolves.toMatchObject({
             failureReason: 'target-format-unsupported',
             status: 'rejected'
         });
-        expect(harness.bufferDescriptors).toHaveLength(0);
+        expect(harness.buffers).toEqual([]);
         expect(PresentationExecutor.create).not.toHaveBeenCalled();
     });
 
@@ -511,7 +365,7 @@ describe('Dolby Vision presentation authorization', () => {
             status: 'authorized'
         });
         expect(createBuiltinChain).toHaveBeenCalledWith(expect.objectContaining({ felReconstruction: true, profile: 4 }));
-        expect(getEncodedSources(getOnlyExecutor())[0].enhancementFrame).not.toBeNull();
+        expect(getPlaneUploads(harness, ENHANCEMENT_PLANES_LABEL)).toHaveLength(3);
     });
 
     it('presents the Profile 4 SDR base exactly, without tone mapping or dither', () => {
@@ -564,9 +418,10 @@ describe('Dolby Vision presentation authorization', () => {
             routeKey: `${format}:dovi-rpu-v1`,
             status: 'authorized'
         });
-        expect(getEncodedSources(getOnlyExecutor()).map(source => getFrameGeometry(source.frame))).toEqual([
-            [ format, RAW_HDR_AUTHORIZATION_VECTOR_WIDTH, RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT ]
-        ]);
+        expect(getPlaneGeometries(harness, BASE_PLANES_LABEL)).toEqual(getExpectedPlaneGeometries(frame, BASE_PLANES_LABEL));
+        for (const upload of getPlaneUploads(harness, BASE_PLANES_LABEL)) {
+            expect(new Uint8Array(upload.data as ArrayBuffer)).toEqual(new Uint8Array(frame.data));
+        }
         expect(registry.isAuthorized(harness.device, TARGET_FORMAT, format)).toBe(true);
         expect(registry.isAuthorized(harness.device, TARGET_FORMAT, 'I420P10')).toBe(false);
     });
@@ -604,7 +459,7 @@ describe('Dolby Vision presentation authorization', () => {
             status: 'authorized'
         });
 
-        expect(getWrittenRPUVectors(getOnlyExecutor())).toEqual([
+        expect(getWrittenRPUVectors(harness)).toEqual([
             new Uint8Array(createDolbyVisionAuthorizationRPUVector(7, 'mel')),
             new Uint8Array(createDolbyVisionAuthorizationRPUVector(7, 'fel'))
         ]);
@@ -627,11 +482,6 @@ describe('Dolby Vision presentation authorization', () => {
         bitDepth
     ) => {
         const settings = createSettings();
-        const baseGeometry: [string, number, number] = [
-            format,
-            RAW_HDR_AUTHORIZATION_VECTOR_WIDTH,
-            RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT
-        ];
 
         it.each([
             [ 4, 'profile4-base', 'fel-sdr-base' ],
@@ -663,12 +513,12 @@ describe('Dolby Vision presentation authorization', () => {
                     route: 'raw-dolby-vision',
                     settings
                 });
-                const executor = getOnlyExecutor();
-                const sources = getEncodedSources(executor);
-                expect(sources.map(source => getFrameGeometry(source.frame))).toEqual([ baseGeometry, baseGeometry ]);
-                expect(sources.map(source => source.enhancementFrame)).toEqual([ null, null ]);
+                // Both scenarios upload the BL vector into one set of plane textures, without an EL
+                expect(getPlaneGeometries(harness, BASE_PLANES_LABEL)).toEqual(getExpectedPlaneGeometries(frame, BASE_PLANES_LABEL));
+                expect(getPlaneUploads(harness, BASE_PLANES_LABEL)).toHaveLength(frame.planes.length * 2);
+                expect(getTextures(harness, ENHANCEMENT_PLANES_LABEL)).toEqual([]);
                 // Both RPU vectors declare the BL format's own depth, as the per-frame checks require
-                expect(getWrittenRPUVectors(executor)).toEqual([
+                expect(getWrittenRPUVectors(harness)).toEqual([
                     new Uint8Array(melRPUData),
                     new Uint8Array(felRPUData)
                 ]);
@@ -708,17 +558,21 @@ describe('Dolby Vision presentation authorization', () => {
                     format,
                     profile
                 }));
-                const executor = getOnlyExecutor();
-                const [ source ] = getEncodedSources(executor);
-                expect(getFrameGeometry(source.frame)).toEqual(baseGeometry);
-                expect(source.enhancementFrame && getFrameGeometry(source.enhancementFrame)).toEqual([
-                    'I420P10',
-                    ENHANCEMENT_LAYER_WIDTH,
-                    ENHANCEMENT_LAYER_HEIGHT
+                expect(getPlaneGeometries(harness, BASE_PLANES_LABEL))
+                    .toEqual(getExpectedPlaneGeometries(createRawHDRAuthorizationVector(vectorKey), BASE_PLANES_LABEL));
+                // The EL is 10-bit 4:2:0 at half the BL's size, whatever the BL format
+                const enhancementGeometries = getPlaneGeometries(harness, ENHANCEMENT_PLANES_LABEL);
+                expect(enhancementGeometries).toEqual([
+                    [ `${ENHANCEMENT_PLANES_LABEL} Y plane`, ENHANCEMENT_LAYER_WIDTH, ENHANCEMENT_LAYER_HEIGHT ],
+                    [ `${ENHANCEMENT_PLANES_LABEL} U plane`, ENHANCEMENT_LAYER_WIDTH / 2, ENHANCEMENT_LAYER_HEIGHT / 2 ],
+                    [ `${ENHANCEMENT_PLANES_LABEL} V plane`, ENHANCEMENT_LAYER_WIDTH / 2, ENHANCEMENT_LAYER_HEIGHT / 2 ]
                 ]);
-                const writtenRPUVectors = getWrittenRPUVectors(executor);
+                for (const texture of getTextures(harness, ENHANCEMENT_PLANES_LABEL)) {
+                    expect(texture.format).toBe(ENHANCEMENT_PLANE_TEXTURE_FORMAT);
+                }
+                const writtenRPUVectors = getWrittenRPUVectors(harness);
                 expect(writtenRPUVectors).toHaveLength(1);
-                expect(decodeDolbyVisionRPUSnapshot(writtenRPUVectors[0].buffer as ArrayBuffer)).toMatchObject({
+                expect(decodeDolbyVisionRPUSnapshot(writtenRPUVectors[0].slice().buffer)).toMatchObject({
                     baseLayerBitDepth: bitDepth,
                     enhancementLayerBitDepth: 10,
                     layerMode: 'fel',
