@@ -1,0 +1,40 @@
+/* The sandbox's shared look: every panel stylesheet reads these variables instead of restating colors and sizes */
+:root {
+    --sandbox-font: 12px/1.4 system-ui, sans-serif;
+    --sandbox-monospace-font: 11px/1.35 ui-monospace, Consolas, monospace;
+    --sandbox-text: #e8e8e8;
+    --sandbox-text-muted: #9a9a9a;
+    --sandbox-accent: #6cb4ff;
+    --sandbox-success: #7ad08a;
+    --sandbox-warning: #e6c25b;
+    --sandbox-failure: #ef7b72;
+    --sandbox-panel-background: rgba(16, 16, 18, 0.82);
+    --sandbox-panel-border: rgba(255, 255, 255, 0.12);
+    --sandbox-panel-radius: 6px;
+    --sandbox-panel-padding: 8px;
+    --sandbox-gap: 8px;
+    --sandbox-control-background: rgba(255, 255, 255, 0.08);
+    --sandbox-control-hover: rgba(255, 255, 255, 0.16);
+}
+
+html,
+body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: #000;
+    color: var(--sandbox-text);
+    font: var(--sandbox-font);
+}
+
+#sandbox-surface {
+    position: fixed;
+    inset: 0;
+}
+
+/* The overlay passes pointer events through to the surface except where a panel sits */
+#sandbox-overlay {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+}

@@ -4,6 +4,7 @@
   "qualificationVectorsDirectory": "src/capability/vectors/qualification",
   "testVectorsDirectory": "src/capability/vectors/test",
   "testDirectory": "test",
+  "sandboxDirectory": "sandbox",
   "scriptsDirectory": "scripts",
   "codecVectorScriptsDirectory": "scripts/codec_vector_assets",
   "wasmDirectory": "wasm",
