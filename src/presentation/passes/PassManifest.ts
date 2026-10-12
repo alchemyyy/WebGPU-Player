@@ -120,6 +120,8 @@ const DIRECTIVE_SHAPES: Readonly<Record<Directive, readonly PassShape[]>> = {
     when: SHAPES,
     workgroup: [ 'compute' ]
 };
+// Own keys only, so a prototype name such as toString is not a directive
+const DIRECTIVE_NAMES: ReadonlySet<string> = new Set<string>(Object.keys(DIRECTIVE_SHAPES));
 const REPEATABLE_DIRECTIVES: readonly Directive[] = [ 'input' ];
 
 // The value of a workgroup size or a dispatch count that a header omits
@@ -160,7 +162,7 @@ function isOneOf<Word extends string>(words: readonly Word[], value: string): va
 }
 
 function isDirective(key: string): key is Directive {
-    return Object.hasOwn(DIRECTIVE_SHAPES, key);
+    return DIRECTIVE_NAMES.has(key);
 }
 
 function createIdentifier(name: string): PassExpression {
