@@ -1,8 +1,7 @@
-@startuml architecture
-' The presentation core's flow, kept concise as a conceptual self-check while the core is built
-' Check it with: java -jar bin/plantuml/plantuml-mit-<version>.jar -checkonly overhual/architecture.puml
-!include ../docs/diagrams/diagram-theme.puml
-title Presentation core
+@startuml presentation-pipeline
+' The presentation pipeline's flow, kept concise as a conceptual self-check of the pipeline
+!include diagram-theme.puml
+title Presentation pipeline
 
 start
 

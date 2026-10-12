@@ -2,7 +2,7 @@
 
 This folder designs a user-extensible WGSL presentation pipeline for the engine.
 It is a design, not an implementation; nothing here describes shipped behavior unless it says so.
-The book in `docs/` remains the reference for what the engine does today.
+The book in `docs/` remains the reference for what the engine does today; its architecture chapter has the pipeline's flow as built, from `docs/diagrams/presentation-pipeline.puml`.
 
 ## Decisions
 
@@ -18,7 +18,6 @@ The book in `docs/` remains the reference for what the engine does today.
 
 | File | Covers |
 | --- | --- |
-| [architecture.puml](architecture.puml) | A concise PlantUML flow of the core as built, kept as a conceptual self-check |
 | [principles.md](principles.md) | The target workload and the efficiency rules every part follows |
 | [pipeline.md](pipeline.md) | The stage spine, ingress, authorization, scaling, output, and the replaceable boundary |
 | [color.md](color.md) | Color states, transitions, tone mapping placement, dithering, and HDR output |

@@ -129,6 +129,27 @@ Hidden page, through `setPageVisibility` and `drainBackgroundVideo`:
 Geometry: `WebGPUPresenter.bindLayoutHandling` invalidates layout on resize observers, class and style mutations of the video and its ancestors, CSS motion events, window resize, seek, and refresh.
 The backing size is the CSS size times the device pixel ratio, capped by `maxTextureDimension2D`.
 
+## Presentation
+
+<div class="diagram">
+<a class="diagram-light" href="diagrams/presentation-pipeline.light.svg"><img src="diagrams/presentation-pipeline.light.svg" alt="The presentation pipeline: plan time builds a route's chain, user passes, a plan, and an executor; frame time encodes each frame through it"></a>
+<a class="diagram-dark" href="diagrams/presentation-pipeline.dark.svg"><img src="diagrams/presentation-pipeline.dark.svg" alt="The presentation pipeline: plan time builds a route's chain, user passes, a plan, and an executor; frame time encodes each frame through it"></a>
+</div>
+
+- Every route presents through the pipeline in `src/presentation/passes/`.
+- A route's built-in chain is its fixed signal, which reads the source and reconstructs Dolby Vision, and its default color functions: transfer decode, tone mapping, output encode, display controls, and dither.
+- `planPresentation` arranges the chain and any user passes into GPU passes.
+  Without user passes every route is one pass, which renders exactly as the legacy fused shaders did.
+- `PresentationExecutor` owns a plan's pipelines, textures, history rings, and bind groups.
+  A frame costs one uniform write, the source's import or upload, and one encode per pass, and the presenter submits once.
+- A new plan compiles while the previous executor keeps presenting, and replaces it when ready.
+- User passes come from `WebGPUPresenter.setPresentationPreset`.
+  A pass that cannot run is left out of the plan, and `getPresentationPlanReport` names it with a reason code and a terse detail.
+- Temporal history advances only on new frames.
+  It resets on a seek, a new generation, a video epoch change, and a frame whose timestamp goes back or jumps past 2.5 frame durations.
+- Authorization renders the default chain through the same planner and executor, so a preset never changes the route.
+- With HDR output enabled by the host, an HDR source presents extended-range values on an `rgba16float` canvas.
+
 ## Transitions
 
 - Seek: a new presentation generation, then `controller.seek`, which stops the running generation and starts a new one at the target in the same worker.
