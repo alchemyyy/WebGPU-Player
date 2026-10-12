@@ -227,6 +227,8 @@ export class MockGPUDevice {
     compilationMessages: MockCompilationMessage[] = [];
     readonly dispatches: MockDispatch[] = [];
     dispatchHandler: MockDispatchHandler = (): void => undefined;
+    /** Returns the message of the error a popped scope captured, or null; it sees each popped scope's filter in pop order. */
+    errorScopeHandler: (filter: GPUErrorFilter) => string | null = (): string | null => null;
     /** When set, createBuffer throws for a label that contains this text, as an allocation the device refuses. */
     failingBufferLabel: string | null = null;
     readonly features: Set<string>;
@@ -263,6 +265,7 @@ export class MockGPUDevice {
     readonly shaderModuleCodes: string[] = [];
     submitCount = 0;
     writeBufferCount = 0;
+    private readonly errorScopes: GPUErrorFilter[] = [];
     private readonly pendingMaps: PendingMap[] = [];
     private resolveLost: (info: GPUDeviceLostInfo) => void = (): void => undefined;
 
@@ -333,6 +336,24 @@ export class MockGPUDevice {
             throw new Error(`Expected one buffer labeled ${label}, found ${matches.length}`);
         }
         return matches[0];
+    }
+
+    pushErrorScope(filter: GPUErrorFilter): void {
+        this.errorScopes.push(filter);
+    }
+
+    popErrorScope(): Promise<{ message: string } | null> {
+        const filter = this.errorScopes.pop();
+        if (filter === undefined) {
+            return Promise.reject(new Error('popErrorScope: the error scope stack is empty'));
+        }
+        const message = this.errorScopeHandler(filter);
+        return Promise.resolve(message === null ? null : { message });
+    }
+
+    /** Returns the error scopes pushed and not yet popped. */
+    getErrorScopeDepth(): number {
+        return this.errorScopes.length;
     }
 
     loseDevice(message: string): void {

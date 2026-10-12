@@ -80,7 +80,7 @@ export type GPUDecodePacket = {
 
 /**
  * The check a GPU decode session failed; every failure ends the route's attempt.
- * - Creation: 'codec-private-size', 'coded-size', 'compile-error', 'dispatch-count', 'feature-missing', 'pipeline-error', 'pool-size', 'slot-count', 'storage-buffer-count', 'visible-rectangle'.
+ * - Creation: 'codec-private-size', 'coded-size', 'compile-error', 'dispatch-count', 'feature-missing', 'out-of-memory', 'pipeline-error', 'pool-size', 'slot-count', 'storage-buffer-count', 'validation-error', 'visible-rectangle'.
  * - Decoding: 'decoder-error', which the decoder reported in its status, 'device-lost', 'packet-size', and 'readback-failed'.
  */
 export type GPUVideoDecodeFailureCode =
@@ -91,12 +91,14 @@ export type GPUVideoDecodeFailureCode =
     | 'device-lost'
     | 'dispatch-count'
     | 'feature-missing'
+    | 'out-of-memory'
     | 'packet-size'
     | 'pipeline-error'
     | 'pool-size'
     | 'readback-failed'
     | 'slot-count'
     | 'storage-buffer-count'
+    | 'validation-error'
     | 'visible-rectangle';
 
 /** A failed check and a terse detail with the failing value, such as `packet-size: 4194305 > 4194304`. */

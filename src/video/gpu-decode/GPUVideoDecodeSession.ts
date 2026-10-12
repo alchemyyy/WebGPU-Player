@@ -6,8 +6,10 @@ import type { FramePoolFrame, PassExpression } from '../../presentation/passes/P
 import {
     BYTES_PER_WORD,
     INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH,
+    OUT_OF_MEMORY_ERROR_FILTER,
     U32_VALUE_COUNT,
     UNIFORM_BUFFER_OFFSET_ALIGNMENT,
+    VALIDATION_ERROR_FILTER,
     WORKGROUP_AXIS_NAMES
 } from '../../presentation/WebGPUConstants';
 import { getGPUDecoderFormatFacts, type GPUDecoderOutputFormat } from './GPUDecodeFormats';
@@ -337,8 +339,9 @@ export default class GPUVideoDecodeSession {
 
     /**
      * Compiles a decoder on a device and allocates its pool and buffers.
-     * Rejects with a GPUVideoDecodeError whose failure names the check: 'codec-private-size', 'coded-size', 'visible-rectangle', 'feature-missing', 'storage-buffer-count', 'dispatch-count', 'compile-error', 'pipeline-error', 'slot-count', or 'pool-size'.
+     * Rejects with a GPUVideoDecodeError whose failure names the check: 'codec-private-size', 'coded-size', 'visible-rectangle', 'feature-missing', 'storage-buffer-count', 'dispatch-count', 'compile-error', 'pipeline-error', 'slot-count', 'pool-size', 'out-of-memory', or 'validation-error'.
      * A 'compile-error' carries every compile message, with lines that point into the decoder's source.
+     * The decoder shares the presenter's device, so error scopes keep its compile and allocation errors from presentation's uncaptured error handler.
      */
     static async create(options: GPUVideoDecodeSessionOptions): Promise<GPUVideoDecodeSession> {
         const { device, manifest, stream } = options;
@@ -356,17 +359,54 @@ export default class GPUVideoDecodeSession {
         const dispatchPlans = planDispatches(manifest, stream, device.limits.maxComputeWorkgroupsPerDimension);
 
         const decoderModule = createGPUDecoderModule(manifest);
+        // Invalid WGSL also raises a validation error, which the scope captures; each scope opens and closes synchronously, so it nests inside any other
+        device.pushErrorScope(VALIDATION_ERROR_FILTER);
         const shaderModule = device.createShaderModule({ code: decoderModule.code, label: `GPU decoder ${manifest.name}` });
+        const shaderModuleError = device.popErrorScope();
         const compilationInfo = await shaderModule.getCompilationInfo();
+        const shaderModuleValidationError = await shaderModuleError;
         const errors = mapCompilationMessages(compilationInfo.messages, decoderModule.firstBodyLine, manifest.bodyFirstLine);
         if (errors.length > 0) {
             throw new GPUVideoDecodeError({ code: 'compile-error', detail: describeCompileMessage(errors[0]) }, errors);
         }
+        if (shaderModuleValidationError) {
+            throw new GPUVideoDecodeError({ code: 'compile-error', detail: shaderModuleValidationError.message });
+        }
         const bindGroupLayout = device.createBindGroupLayout({ entries: layoutEntries, label: `GPU decoder ${manifest.name}` });
         const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [ bindGroupLayout ], label: `GPU decoder ${manifest.name}` });
         const pipelines = await createPipelines(device, manifest, shaderModule, pipelineLayout);
-        const session = new GPUVideoDecodeSession(options, manifest.outputFormat, { bindGroupLayout, dispatchPlans, pipelines });
+        const session = await GPUVideoDecodeSession.allocate(options, { bindGroupLayout, dispatchPlans, pipelines });
         session.observeDeviceLoss();
+        return session;
+    }
+
+    /** Constructs a session inside out-of-memory and validation scopes, so a refused allocation fails the session instead of presentation. */
+    private static async allocate(options: GPUVideoDecodeSessionOptions, resources: SessionResources): Promise<GPUVideoDecodeSession> {
+        const device = options.device;
+        device.pushErrorScope(OUT_OF_MEMORY_ERROR_FILTER);
+        device.pushErrorScope(VALIDATION_ERROR_FILTER);
+        let session: GPUVideoDecodeSession | null = null;
+        let constructionError: unknown = null;
+        try {
+            session = new GPUVideoDecodeSession(options, options.manifest.outputFormat, resources);
+        } catch (error) {
+            constructionError = error;
+        }
+        const validationScope = device.popErrorScope();
+        const memoryScope = device.popErrorScope();
+        const [ validationError, memoryError ] = await Promise.all([ validationScope, memoryScope ]);
+        // A constructor that threw destroyed what it built
+        if (session === null) {
+            throw constructionError;
+        }
+        if (memoryError) {
+            session.destroy();
+            throw new GPUVideoDecodeError({ code: 'out-of-memory', detail: memoryError.message });
+        }
+        if (validationError) {
+            session.destroy();
+            throw new GPUVideoDecodeError({ code: 'validation-error', detail: validationError.message });
+        }
         return session;
     }
 
