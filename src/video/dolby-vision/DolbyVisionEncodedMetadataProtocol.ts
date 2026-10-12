@@ -73,42 +73,70 @@ function isEnhancementLayerDisposition(value: unknown): value is DolbyVisionEnha
     }
 }
 
-/** Validates encoded Dolby Vision metadata received across the worker boundary. */
-export function isTransferableDolbyVisionEncodedFrameMetadata(value: unknown): value is TransferableDolbyVisionEncodedFrameMetadata {
-    if (!value || typeof value !== 'object') {
-        return false;
+/** Returns the layer mode an EL disposition requires of the frame's one RPU, or null when it requires none. */
+function getDispositionLayerMode(disposition: DolbyVisionEnhancementLayerDisposition): 'fel' | 'mel' | null {
+    switch (disposition) {
+        case 'absent':
+            return null;
+        case 'decoded-fel':
+        case 'discarded-fel':
+            return 'fel';
+        case 'decoded-mel':
+        case 'discarded-mel':
+            return 'mel';
     }
-    const metadata = value as Partial<TransferableDolbyVisionEncodedFrameMetadata>;
-    if (
-        metadata.schemaVersion !== DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
-        || !isEnhancementLayerDisposition(metadata.enhancementLayerDisposition)
-        || typeof metadata.hasEnhancementLayerVCL !== 'boolean'
-        || !Array.isArray(metadata.parsedRPUData)
-        || metadata.parsedRPUData.length === 0
-        || metadata.parsedRPUData.length > MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT
-        || (metadata.enhancementLayerDisposition === 'absent' && metadata.hasEnhancementLayerVCL)
-    ) {
-        return false;
+}
+
+/** Returns which field of the metadata's shape is invalid, before its RPUs are decoded, or null. */
+function getMetadataShapeFailure(metadata: Partial<TransferableDolbyVisionEncodedFrameMetadata>): string | null {
+    if (metadata.schemaVersion !== DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION) {
+        return `metadata-schema: ${String(metadata.schemaVersion)}, expected ${DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION}`;
+    }
+    if (!isEnhancementLayerDisposition(metadata.enhancementLayerDisposition)) {
+        return `enhancement-layer: unknown disposition ${String(metadata.enhancementLayerDisposition)}`;
+    }
+    if (typeof metadata.hasEnhancementLayerVCL !== 'boolean') {
+        return `enhancement-layer: VCL flag ${String(metadata.hasEnhancementLayerVCL)} is not boolean`;
+    }
+    if (!Array.isArray(metadata.parsedRPUData)) {
+        return 'rpu-count: no RPU list';
+    }
+    if (metadata.parsedRPUData.length === 0 || metadata.parsedRPUData.length > MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT) {
+        return `rpu-count: ${metadata.parsedRPUData.length}, expected 1 to ${MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT}`;
+    }
+    return metadata.enhancementLayerDisposition === 'absent' && metadata.hasEnhancementLayerVCL ?
+        'enhancement-layer: absent with EL VCL' :
+        null;
+}
+
+/** Returns which check encoded Dolby Vision metadata from across the worker boundary fails, as `<check>: <detail>`, or null when it is valid. */
+export function getDolbyVisionEncodedFrameMetadataFailure(value: unknown): string | null {
+    if (!value || typeof value !== 'object') {
+        return 'metadata: missing';
+    }
+    const metadata = value as TransferableDolbyVisionEncodedFrameMetadata;
+    const shapeFailure = getMetadataShapeFailure(metadata);
+    if (shapeFailure !== null) {
+        return shapeFailure;
     }
 
     const layerModes: string[] = [];
     for (const packedRPUData of metadata.parsedRPUData) {
         try {
-            const snapshot = decodeDolbyVisionRPUSnapshot(packedRPUData);
-            layerModes.push(snapshot.layerMode);
-        } catch {
-            return false;
+            layerModes.push(decodeDolbyVisionRPUSnapshot(packedRPUData).layerMode);
+        } catch (error) {
+            return `rpu: ${error instanceof Error ? error.message : String(error)}`;
         }
     }
 
-    switch (metadata.enhancementLayerDisposition) {
-        case 'absent':
-            return true;
-        case 'decoded-fel':
-        case 'discarded-fel':
-            return layerModes.length === 1 && layerModes[0] === 'fel';
-        case 'decoded-mel':
-        case 'discarded-mel':
-            return layerModes.length === 1 && layerModes[0] === 'mel';
+    const requiredLayerMode = getDispositionLayerMode(metadata.enhancementLayerDisposition);
+    if (requiredLayerMode !== null && (layerModes.length !== 1 || layerModes[0] !== requiredLayerMode)) {
+        return `enhancement-layer: ${metadata.enhancementLayerDisposition} with ${layerModes.join(', ')} RPU`;
     }
+    return null;
+}
+
+/** Validates encoded Dolby Vision metadata received across the worker boundary. */
+export function isTransferableDolbyVisionEncodedFrameMetadata(value: unknown): value is TransferableDolbyVisionEncodedFrameMetadata {
+    return getDolbyVisionEncodedFrameMetadataFailure(value) === null;
 }

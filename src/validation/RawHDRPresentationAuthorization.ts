@@ -26,7 +26,7 @@ import type {
 import { createPlannedOutput, PresentationExecutor } from '../presentation/passes/PresentationExecutor';
 import { planPresentation } from '../presentation/passes/PresentationPlanner';
 import type { TexturePresentationGeometry } from '../presentation/PresentationGeometry';
-import { READBACK_CANVAS_FORMATS } from '../presentation/WebGPUConstants';
+import { READBACK_CANVAS_FORMATS, VALIDATION_ERROR_FILTER } from '../presentation/WebGPUConstants';
 import {
     RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
     type RawVideoFrameColorSpace,
@@ -967,7 +967,7 @@ export class RawHDRPresentationAuthorizationRunner {
                 },
                 usage: targetUsage.usage
             });
-            device.pushErrorScope('validation');
+            device.pushErrorScope(VALIDATION_ERROR_FILTER);
             errorScopePushed = true;
             device.queue.submit([ encodeAuthorizationFrame(
                 device,

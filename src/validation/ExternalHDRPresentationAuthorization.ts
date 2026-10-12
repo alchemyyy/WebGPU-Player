@@ -17,6 +17,7 @@ import { rewriteHEVCAccessUnitColorDescriptionToBT709 } from '../video/dolby-vis
 import { createBuiltinChain } from '../presentation/passes/builtin/BuiltinChains';
 import type { BuiltinChain, BuiltinChainConfiguration } from '../presentation/passes/PassTypes';
 import type { PresentationExecutor } from '../presentation/passes/PresentationExecutor';
+import { VALIDATION_ERROR_FILTER } from '../presentation/WebGPUConstants';
 import {
     createExternalHDRAuthorizationAccessUnit,
     EXTERNAL_HDR_AUTHORIZATION_CODED_HEIGHT,
@@ -533,7 +534,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
                 usage: targetUsage.usage
             });
 
-            device.pushErrorScope('validation');
+            device.pushErrorScope(VALIDATION_ERROR_FILTER);
             errorScopePushed = true;
             // The executor imports the frame while it encodes, so an encode failure is an import failure
             step = 'import';
