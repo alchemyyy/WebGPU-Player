@@ -17,6 +17,7 @@ import {
     HISTORY_ACCESSOR_INFIX,
     HOOKED_INPUT_NAME,
     MAXIMUM_HISTORY_DEPTH,
+    MAXIMUM_PARAMETER_COUNT,
     SCALER_STAGE,
     SIZE_SUFFIX,
     STAGE_ORDER,
@@ -95,7 +96,6 @@ const MISSING_DIRECTIVE_LINE = 1;
 
 const DEFAULT_DOMAIN: ColorDomain = 'any';
 const MAXIMUM_NAME_LENGTH = 64;
-const MAXIMUM_PARAMETER_COUNT = 32;
 
 const SHAPES: readonly PassShape[] = [ 'color', 'kernel', 'scaler', 'compute' ];
 const DOMAINS: readonly ColorDomain[] = [ 'any', 'display', 'linear', 'sdr', 'source' ];

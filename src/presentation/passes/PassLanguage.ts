@@ -24,6 +24,9 @@ export const ENTRY_POINTS: Readonly<Record<PassShape, string>> = Object.freeze({
     scaler: 'scale'
 });
 
+/** The parameters a pass declares at most. */
+export const MAXIMUM_PARAMETER_COUNT = 32;
+
 /** The variable user code reads its declared parameters through. */
 export const PARAMETERS_VARIABLE = 'parameters';
 
