@@ -28,6 +28,9 @@ export const DURATION_TEXT = '5025.678901';
 export const DURATION_MICROSECONDS = 5_025_678_901;
 export const FRAME_RATE_TEXT = '24000/1001';
 export const FRAME_RATE = 24_000 / 1_001;
+// AVERROR_INVALIDDATA, as ffprobe -show_error prints it
+export const INVALID_DATA_ERROR_CODE = -1_094_995_529;
+export const INVALID_DATA_ERROR_MESSAGE = 'Invalid data found when processing input';
 
 export type FFprobeJSON = Record<string, unknown>;
 
@@ -108,6 +111,11 @@ export function createProbeJSON(streams: readonly FFprobeJSON[], formatOverrides
         format: { duration: DURATION_TEXT, format_name: 'matroska,webm', ...formatOverrides },
         streams
     });
+}
+
+/** What `ffprobe -show_error -of json` prints for a file it cannot read. */
+export function createErrorJSON(): string {
+    return JSON.stringify({ error: { code: INVALID_DATA_ERROR_CODE, string: INVALID_DATA_ERROR_MESSAGE } });
 }
 
 /** The first video frame, as `ffprobe -show_frames -of json` prints it, with the given side data types. */

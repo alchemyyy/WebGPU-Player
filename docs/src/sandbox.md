@@ -71,6 +71,8 @@ About ffmpeg.wasm:
 
 - Its core is about 32 MB of WebAssembly, which loads on the first probe.
 - It runs in its own worker, one command at a time, and each command reads the file in place through a WORKERFS mount instead of copying it into memory.
+- It reports -1 for every ffprobe run that returns, failed or not, because only FFmpeg's `exit_program` sets the exit code.
+  So the probe passes `-show_error`, and a failed probe is the error section in ffprobe's output, recorded as `ffprobe-error` with FFmpeg's message.
 - `@ffmpeg/ffmpeg` and `@ffmpeg/core` are dev dependencies of the engine.
   `@ffmpeg/core` is GPL-2.0-or-later, and only the sandbox serves it, so nothing that ships includes it.
 

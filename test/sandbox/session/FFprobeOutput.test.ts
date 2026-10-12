@@ -15,6 +15,7 @@ import {
     AUDIO_RAW_SAMPLE_DEPTH,
     COVER_PICTURE_STREAM_INDEX,
     createAudioStreamJSON,
+    createErrorJSON,
     createFramesJSON,
     createProbeJSON,
     createVideoStreamJSON,
@@ -24,6 +25,8 @@ import {
     FRAME_RATE,
     FRAME_RATE_TEXT,
     HDR10_COMPATIBILITY_ID,
+    INVALID_DATA_ERROR_CODE,
+    INVALID_DATA_ERROR_MESSAGE,
     VIDEO_STREAM_INDEX
 } from './ffprobeTestOutput';
 
@@ -59,6 +62,13 @@ describe('FFprobeOutput', () => {
     it('rejects output that is not an object', () => {
         expect(() => parseFFprobeOutput('[]')).toThrow('ffprobe-output-invalid');
         expect(() => parseFFprobeFrames('null')).toThrow('ffprobe-output-invalid');
+    });
+
+    it('throws the error section ffprobe prints for a file it cannot read', () => {
+        const expectedMessage = `ffprobe-error: ${INVALID_DATA_ERROR_MESSAGE} (${INVALID_DATA_ERROR_CODE})`;
+
+        expect(() => parseFFprobeOutput(createErrorJSON())).toThrow(expectedMessage);
+        expect(() => parseFFprobeFrames(createErrorJSON())).toThrow(expectedMessage);
     });
 
     it('reads each frame\'s side data types', () => {
