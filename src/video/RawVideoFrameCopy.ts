@@ -1,9 +1,11 @@
 import { type VideoSample } from 'mediabunny';
 
 import { type Microseconds } from '../MediaTime';
+import { COPY_BYTES_PER_ROW_ALIGNMENT } from '../presentation/WebGPUConstants';
 import type RawFrameBufferPool from './RawFrameBufferPool';
 
-export const RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT = 256;
+// Rows are padded so the page uploads each plane straight from the copy
+export const RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT = COPY_BYTES_PER_ROW_ALIGNMENT;
 
 export const RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT = 1;
 export const RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT = 2;

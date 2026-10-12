@@ -186,7 +186,7 @@ describe('createBuiltinChain', () => {
             metadata: createPQColorMetadata({ bitDepth: NON_NEUTRALIZED_BIT_DEPTH }),
             route: 'external-hdr',
             settings: createHDRToSDRRenderSettings()
-        })).toThrow('limited-range 10-bit BT.2020');
+        })).toThrow(`external-hdr: bitDepth ${NON_NEUTRALIZED_BIT_DEPTH}, expected 10`);
     });
 
     it('rejects metadata whose bit depth differs from the raw frame format', () => {
@@ -196,7 +196,7 @@ describe('createBuiltinChain', () => {
             metadata: createPQColorMetadata(),
             route: 'raw-yuv',
             settings: createHDRToSDRRenderSettings()
-        })).toThrow('Raw frame format bit depth does not match color metadata');
+        })).toThrow(`bit-depth: ${MISMATCHED_RAW_FORMAT} is 12-bit, metadata 10-bit`);
     });
 });
 
