@@ -158,7 +158,11 @@ export type BuiltinColorFunction = {
 
 /** The fixed, decode-equivalent step of a route: it reads the source and produces 'source' RGB. */
 export type SignalDefinition = {
-    /** A WGSL bool expression; while it holds, the frame skips every color function (Dolby Vision Profile 4 FEL without its EL). */
+    /**
+     * A WGSL bool expression; while it holds, the frame skips every color function (Dolby Vision Profile 4 FEL without its EL).
+     * It may call functions of the signal's code, so only the pass that reads the signal evaluates it.
+     * A pass that materializes such a signal for user passes therefore completes the color track to display first.
+     */
     bypassCondition: string | null
     code: string
     /** `fn <entryPoint>(coordinate: vec2f) -> vec4f`, bilinear at a normalized source coordinate, returning 'source' RGB. */
@@ -263,7 +267,7 @@ export type PlannedBinding =
 
 export type PassTarget = { kind: 'output' } | { kind: 'texture'; textureId: string };
 
-/** Generated lines that came from one user pass's body. */
+/** Generated lines that came from one user pass's body; lines are 1-based, like the browser's compile messages. */
 export type PassLineMapping = {
     firstGeneratedLine: number
     firstSourceLine: number

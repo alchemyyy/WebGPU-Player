@@ -175,7 +175,10 @@ const ENGINE_RESOURCE_BINDINGS: Readonly<Record<EngineResource, readonly EngineB
     'sampler-linear': [ 'sampler-linear' ]
 };
 
-/** The `presentation` uniform every pass binds: its coordinate mapping and the frame globals. */
+/**
+ * The `presentation` uniform every pass binds: its coordinate mapping and the frame globals.
+ * `historyValid` counts the earlier frames history holds: 0 after a reset, rising by one per new frame to the plan's deepest history.
+ */
 export const PRESENTATION_UNIFORMS_WGSL = `struct PresentationUniforms {
     textureScale: vec2f,
     textureOffset: vec2f,
