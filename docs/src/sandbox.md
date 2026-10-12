@@ -62,6 +62,17 @@ The key is ignored while an input, a select, or a text area has focus, and it is
   The session then restarts the media at the current time on that route.
   The panel shows the route the session plays and the reason for its choice.
 
+## Diagnostics
+
+- The pipeline graph draws the active presentation plan from left to right: the source with its route, one node per planned pass with its kind, targets, and color steps, and the canvas with its format and tone mapping.
+  Edges follow each texture from the pass that writes it to every pass that reads it, and history reads are dashed and labeled with their offset, such as `[-1]`.
+  The passes the plan left out are listed beside the graph as `reason: detail`.
+- Playback info groups the media and its tracks, the route and the override, the clock, video decode, audio, presentation, authorization, and the failure log, newest first.
+  Its sections collapse, and stay collapsed across refreshes.
+- The shader panel adds passes from the examples, from files, or by dropping files on it.
+  It lists each pass with its plan state, its order controls, and an input per parameter, which applies when committed.
+- Files dropped anywhere but the shader panel are ignored, so a stray drop never navigates away from the sandbox.
+
 ## How it is built
 
 | Path | Holds |
@@ -72,6 +83,7 @@ The key is ignored while an input, a select, or a text area has focus, and it is
 | `sandbox/src/session/` | The playback session, which drives the engine |
 | `sandbox/src/ui/App.ts` | The layout, which mounts each panel into its region and toggles them |
 | `sandbox/src/ui/panels/` | One module per panel, each with its own stylesheet |
+| `sandbox/src/ui/diagnostics/` | What the diagnostics panels show, as pure functions of the state: the graph layout, the playback info sections, and the shader pass rows |
 | `sandbox/src/ui/theme.css` | The shared variables every stylesheet reads instead of restating colors |
 | `test/sandbox/` | The sandbox's unit tests, which `npm test` runs with the engine's |
 

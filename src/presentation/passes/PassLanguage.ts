@@ -27,6 +27,9 @@ export const ENTRY_POINTS: Readonly<Record<PassShape, string>> = Object.freeze({
 /** The parameters a pass declares at most. */
 export const MAXIMUM_PARAMETER_COUNT = 32;
 
+/** The file extension of a pass source, as file pickers filter by it. */
+export const PASS_FILE_EXTENSION = '.wgsl';
+
 /** The variable user code reads its declared parameters through. */
 export const PARAMETERS_VARIABLE = 'parameters';
 
