@@ -42,6 +42,12 @@ export const RENDER_OUTPUT_FORMATS: readonly GPUTextureFormat[] = [
 /** The core WebGPU storage formats among the output formats, the only ones a compute pass can write. */
 export const STORAGE_OUTPUT_FORMATS: readonly GPUTextureFormat[] = [ 'rgba16float', 'rgba32float', 'r32float', 'rgba8unorm' ];
 
+/** The integer formats raw planes upload into: one or two 8-bit or 16-bit components per texel, read with textureLoad. */
+export const PLANE_R8_FORMAT: GPUTextureFormat = 'r8uint';
+export const PLANE_RG8_FORMAT: GPUTextureFormat = 'rg8uint';
+export const PLANE_R16_FORMAT: GPUTextureFormat = 'r16uint';
+export const PLANE_RG16_FORMAT: GPUTextureFormat = 'rg16uint';
+
 /** The canvas formats authorization renders into and reads back. */
 export const READBACK_CANVAS_FORMATS: readonly GPUTextureFormat[] = [ 'bgra8unorm', 'rgba8unorm' ];
 
