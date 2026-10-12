@@ -57,8 +57,8 @@ fn parse_frame_header() {
 | `vector` | The conformance vector, the frames to check, and the expected hash |
 
 The vector's hash is the SHA-256 of the checked frames in presentation order, frame after frame.
-Each frame contributes its luma plane, then its two chroma planes, at the stream's coded size, rows tightly packed and 16-bit samples little-endian.
-That is FFmpeg's rawvideo output of those frames in the decoder's planar format, such as `yuv422p10le`, when the coded size is the visible size.
+Each frame contributes its luma plane, then its two chroma planes, cropped to the stream's visible rectangle, rows tightly packed and 16-bit samples little-endian.
+That is FFmpeg's rawvideo output of those frames in the decoder's planar format, such as `yuv422p10le`.
 
 The generated prelude binds:
 - `packetBytes`: the ring of packets, read-only;

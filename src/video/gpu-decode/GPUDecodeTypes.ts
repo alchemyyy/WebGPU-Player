@@ -25,8 +25,8 @@ export type GPUDecoderVector = {
     lastFrame: number
     /**
      * The lowercase hexadecimal SHA-256 of the checked frames' planes, frame after frame.
-     * Each frame contributes its luma plane, then its two chroma planes, at the stream's coded size, rows tightly packed and 16-bit samples little-endian.
-     * That is FFmpeg's rawvideo output of those frames in the decoder's planar format, such as yuv422p10le, when the coded size is the visible size.
+     * Each frame contributes its luma plane, then its two chroma planes, cropped to the stream's visible rectangle, rows tightly packed and 16-bit samples little-endian.
+     * That is FFmpeg's rawvideo output of those frames in the decoder's planar format, such as yuv422p10le.
      */
     sha256: string
 };
