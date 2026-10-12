@@ -122,6 +122,7 @@ export type MediaDescription = Readonly<{
     audioTracks: readonly AudioTrackDescription[]
     container: string
     durationMicroseconds: Microseconds | null
+    /** The library path, SandboxMediaFile.path, by which the track selector finds the subtitle files beside the media */
     path: string
     sizeBytes: number
     subtitleTracks: readonly SubtitleTrackDescription[]
@@ -252,6 +253,17 @@ export type SandboxState = Readonly<{
 
 /** The failures the state keeps; older ones drop first. */
 export const MAXIMUM_SANDBOX_FAILURE_COUNT = 50;
+
+/** Returns an error's terse failure detail: a DOMException's name, such as NotFoundError, or else its message. */
+export function describeError(error: unknown): string {
+    if (error instanceof DOMException) {
+        return error.name;
+    }
+    if (error instanceof Error) {
+        return error.message === '' ? error.name : error.message;
+    }
+    return String(error);
+}
 
 /** Returns the failures with one appended, dropping the oldest beyond MAXIMUM_SANDBOX_FAILURE_COUNT. */
 export function appendSandboxFailure(failures: readonly SandboxFailure[], failure: SandboxFailure): readonly SandboxFailure[] {
