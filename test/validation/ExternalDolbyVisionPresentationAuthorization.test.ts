@@ -1,90 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-type MockFunction = ReturnType<typeof vi.fn>;
-
-type MockExecutor = {
-    destroy: MockFunction
-    encode: MockFunction
-    plan: PresentationPlan
-    writeDolbyVisionRPU: MockFunction
-    writeRenderSettings: MockFunction
-};
-
-const passMocks = vi.hoisted(() => {
-    const executors: MockExecutor[] = [];
-    return {
-        createExecutor(plan: PresentationPlan): MockExecutor {
-            const executor: MockExecutor = {
-                destroy: vi.fn(),
-                encode: vi.fn(),
-                plan,
-                writeDolbyVisionRPU: vi.fn(),
-                writeRenderSettings: vi.fn()
-            };
-            executors.push(executor);
-            return executor;
-        },
-        executors
-    };
+// The real built-in library and planner run behind spies, and the real executors run on a mock device
+vi.mock('webgpu-player/presentation/passes/builtin/BuiltinChains', async importOriginal => {
+    const originalModule = await importOriginal<typeof import('webgpu-player/presentation/passes/builtin/BuiltinChains')>();
+    return { ...originalModule, createBuiltinChain: vi.fn(originalModule.createBuiltinChain) };
 });
 
-vi.mock('webgpu-player/presentation/passes/builtin/BuiltinChains', () => ({
-    createBuiltinChain: vi.fn((configuration: BuiltinChainConfiguration): BuiltinChain => ({
-        colorFunctions: [],
-        signal: {
-            bypassCondition: null,
-            code: '',
-            entryPoint: 'readSignal',
-            name: configuration.route,
-            resources: [],
-            sourceKind: 'external'
-        },
-        sourceIsDisplay: false
-    }))
-}));
-
-vi.mock('webgpu-player/presentation/passes/PresentationPlanner', () => ({
-    // One fused pass whose code names its signal and target, as a default chain plans
-    planPresentation: vi.fn((planRequest: PlanRequest): PresentationPlan => ({
-        buffers: [],
-        output: planRequest.output,
-        parameterSets: [],
-        passes: [ {
-            bindings: [],
-            code: `${planRequest.chain.signal.name}:${planRequest.output.format}`,
-            coordinateMapping: 'object-fit',
-            indirectBufferId: null,
-            inputTextureId: null,
-            kind: 'render',
-            label: planRequest.chain.signal.name,
-            lineMap: [],
-            target: { kind: 'output' },
-            workgroupCounts: null
-        } ],
-        report: { activePasses: [], conflicts: [], inactivePasses: [] },
-        sourceKind: planRequest.chain.signal.sourceKind,
-        textures: [],
-        usesRenderSettings: !planRequest.chain.sourceIsDisplay
-    }))
-}));
-
-vi.mock('webgpu-player/presentation/passes/PresentationExecutor', () => ({
-    PresentationExecutor: {
-        create: vi.fn((_device: GPUDevice, plan: PresentationPlan) => Promise.resolve(passMocks.createExecutor(plan)))
-    }
-}));
+vi.mock('webgpu-player/presentation/passes/PresentationPlanner', async importOriginal => {
+    const originalModule = await importOriginal<typeof import('webgpu-player/presentation/passes/PresentationPlanner')>();
+    return { ...originalModule, planPresentation: vi.fn(originalModule.planPresentation) };
+});
 
 import { createHDRToSDRRenderSettings } from 'webgpu-player/presentation/RenderSettings';
 import type { ColorTriplet } from 'webgpu-player/color/ColorPipeline';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 import { createBuiltinChain } from 'webgpu-player/presentation/passes/builtin/BuiltinChains';
-import type {
-    BuiltinChain,
-    BuiltinChainConfiguration,
-    PlanRequest,
-    PresentationFrameInput,
-    PresentationPlan
-} from 'webgpu-player/presentation/passes/PassTypes';
+import type { PlanRequest } from 'webgpu-player/presentation/passes/PassTypes';
 import { PresentationExecutor } from 'webgpu-player/presentation/passes/PresentationExecutor';
 import { planPresentation } from 'webgpu-player/presentation/passes/PresentationPlanner';
 import {
@@ -103,23 +34,17 @@ import {
     type RawHDRVectorObservation
 } from 'webgpu-player/validation/RawHDRPresentationAuthorization';
 
-type MockBuffer = GPUBuffer & {
-    bytes: Uint8Array
-};
+import {
+    createWebGPUDeviceHarness,
+    getBufferWrites,
+    getShaderCodes,
+    installWebGPUGlobals,
+    type ReadbackTexel,
+    type RecordedBufferWrite,
+    type WebGPUDeviceHarness
+} from '../helpers/webGPUDeviceHarness';
 
-type Float16DataView = DataView & {
-    setFloat16: (byteOffset: number, value: number, littleEndian?: boolean) => void
-};
-
-type MockTexture = GPUTexture & {
-    label: string
-};
-
-type DeviceHarness = {
-    device: GPUDevice
-    queueSubmit: MockFunction
-    textureDestroy: MockFunction
-};
+type MockFunction = ReturnType<typeof vi.fn>;
 
 const TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
 const INPUT_PROBE_FORMAT: GPUTextureFormat = 'rgba16float';
@@ -128,22 +53,15 @@ const VECTOR_SAMPLE_COUNT = 9;
 // Within the probe's 8/1023 input bound, and far outside it
 const PRESERVED_INPUT_OFFSET = 4 / 1_023;
 const CORRUPTED_SIGNAL_OFFSET = 0.1;
+// The color space the executors import frames in
+const EXTERNAL_TEXTURE_COLOR_SPACE: PredefinedColorSpace = 'srgb';
+// The probe and the output each render one pass of the one submission
+const RENDERED_PASS_COUNT = 2;
+const RENDER_SETTINGS_LABEL = 'Presentation render settings';
+const DOLBY_VISION_RPU_LABEL = 'Presentation Dolby Vision RPU';
+const SIMULATED_IMPORT_FAILURE = 'simulated import failure';
 
-const originalGPUBufferUsage = Object.getOwnPropertyDescriptor(globalThis, 'GPUBufferUsage');
-const originalGPUMapMode = Object.getOwnPropertyDescriptor(globalThis, 'GPUMapMode');
-const originalGPUTextureUsage = Object.getOwnPropertyDescriptor(globalThis, 'GPUTextureUsage');
-
-function restoreProperty(
-    target: object,
-    propertyName: PropertyKey,
-    descriptor: PropertyDescriptor | undefined
-): void {
-    if (descriptor) {
-        Object.defineProperty(target, propertyName, descriptor);
-    } else {
-        Reflect.deleteProperty(target, propertyName);
-    }
-}
+let restoreWebGPUGlobals: () => void = (): void => undefined;
 
 function createSettings() {
     return createHDRToSDRRenderSettings({
@@ -181,83 +99,19 @@ function createObservationMap(observations: readonly RawHDRVectorObservation[]):
     return observationMap;
 }
 
+/** Creates a device whose readbacks return the input observations from the probe's target and the observations from the output's. */
 function createDeviceHarness(
     observations: readonly RawHDRVectorObservation[],
     inputObservations: readonly RawHDRVectorObservation[] = createExpectedExternalDolbyVisionInputObservations()
-): DeviceHarness {
+): WebGPUDeviceHarness {
     const observationMap = createObservationMap(observations);
     const inputObservationMap = createObservationMap(inputObservations);
-    const textureDestroy = vi.fn();
-    const queueSubmit = vi.fn();
-    const device = {
-        createBuffer: vi.fn((descriptor: GPUBufferDescriptor) => {
-            const bytes = new Uint8Array(Number(descriptor.size));
-            return {
-                bytes,
-                destroy: vi.fn(),
-                getMappedRange: vi.fn((offset = 0, size = bytes.byteLength) => bytes.buffer.slice(offset, offset + size)),
-                mapAsync: vi.fn(() => Promise.resolve()),
-                unmap: vi.fn()
-            } as unknown as MockBuffer;
-        }),
-        createCommandEncoder: vi.fn(() => ({
-            copyTextureToBuffer: vi.fn((source: GPUTexelCopyTextureInfo, destination: GPUTexelCopyBufferInfo) => {
-                const origin = source.origin as GPUOrigin3DDict;
-                const sampleX = Number(origin.x ?? 0);
-                const sampleY = Number(origin.y ?? 0);
-                const sourceTexture = source.texture as MockTexture;
-                const sourceMap = sourceTexture.format === INPUT_PROBE_FORMAT ? inputObservationMap : observationMap;
-                const linearRGB = sourceMap.get(`${sampleX}:${sampleY}`);
-                if (!linearRGB) {
-                    throw new Error('Unexpected readback coordinate');
-                }
-                const destinationBuffer = destination.buffer as MockBuffer;
-                const byteOffset = Number(destination.offset ?? 0);
-                if (sourceTexture.format === INPUT_PROBE_FORMAT) {
-                    const view = new DataView(
-                        destinationBuffer.bytes.buffer,
-                        destinationBuffer.bytes.byteOffset,
-                        destinationBuffer.bytes.byteLength
-                    ) as Float16DataView;
-                    view.setFloat16(byteOffset, linearRGB[0], true);
-                    view.setFloat16(byteOffset + 2, linearRGB[1], true);
-                    view.setFloat16(byteOffset + 4, linearRGB[2], true);
-                    view.setFloat16(byteOffset + 6, 1, true);
-                } else {
-                    destinationBuffer.bytes[byteOffset] = Math.round(linearRGB[2] * 255);
-                    destinationBuffer.bytes[byteOffset + 1] = Math.round(linearRGB[1] * 255);
-                    destinationBuffer.bytes[byteOffset + 2] = Math.round(linearRGB[0] * 255);
-                    destinationBuffer.bytes[byteOffset + 3] = 255;
-                }
-            }),
-            finish: vi.fn(() => ({}))
-        })),
-        createTexture: vi.fn((descriptor: GPUTextureDescriptor) => ({
-            createView: vi.fn(() => ({})),
-            depthOrArrayLayers: 1,
-            destroy: textureDestroy,
-            format: descriptor.format,
-            height: Number((descriptor.size as GPUExtent3DDict).height ?? 1),
-            label: descriptor.label ?? '',
-            usage: descriptor.usage,
-            width: Number((descriptor.size as GPUExtent3DDict).width ?? 1)
-        })),
-        features: new Set<string>(),
-        limits: { maxTextureDimension2D: 8_192 },
-        lost: new Promise<GPUDeviceLostInfo>(() => undefined),
-        popErrorScope: vi.fn(() => Promise.resolve(null)),
-        pushErrorScope: vi.fn(),
-        queue: {
-            onSubmittedWorkDone: vi.fn(() => Promise.resolve()),
-            submit: queueSubmit,
-            writeBuffer: vi.fn()
+    return createWebGPUDeviceHarness({
+        readPixel: (texel: ReadbackTexel): ColorTriplet | undefined => {
+            const sourceMap = texel.texture.format === INPUT_PROBE_FORMAT ? inputObservationMap : observationMap;
+            return sourceMap.get(`${texel.sampleX}:${texel.sampleY}`);
         }
-    } as unknown as GPUDevice;
-    return {
-        device,
-        queueSubmit,
-        textureDestroy
-    };
+    });
 }
 
 function offsetFirstObservation(
@@ -274,32 +128,24 @@ function offsetFirstObservation(
     } : observation);
 }
 
+function expectEveryResourceDestroyed(harness: WebGPUDeviceHarness): void {
+    for (const buffer of harness.buffers) {
+        expect(buffer.destroy, buffer.label).toHaveBeenCalled();
+    }
+    for (const texture of harness.textures) {
+        expect(texture.destroy, texture.label).toHaveBeenCalledOnce();
+    }
+}
+
 describe('External Dolby Vision presentation authorization', () => {
     beforeEach(() => {
-        passMocks.executors.length = 0;
-        Object.defineProperty(globalThis, 'GPUBufferUsage', {
-            configurable: true,
-            // WebGPU defines these external names
-            // eslint-disable-next-line @typescript-eslint/naming-convention
-            value: { COPY_DST: 1, MAP_READ: 2, STORAGE: 4, UNIFORM: 8 }
-        });
-        Object.defineProperty(globalThis, 'GPUMapMode', {
-            configurable: true,
-            value: { READ: 1 }
-        });
-        Object.defineProperty(globalThis, 'GPUTextureUsage', {
-            configurable: true,
-            // WebGPU defines these external names
-            // eslint-disable-next-line @typescript-eslint/naming-convention
-            value: { COPY_SRC: 1, RENDER_ATTACHMENT: 2 }
-        });
+        restoreWebGPUGlobals = installWebGPUGlobals();
+        vi.spyOn(PresentationExecutor, 'create');
     });
 
     afterEach(() => {
         vi.clearAllMocks();
-        restoreProperty(globalThis, 'GPUBufferUsage', originalGPUBufferUsage);
-        restoreProperty(globalThis, 'GPUMapMode', originalGPUMapMode);
-        restoreProperty(globalThis, 'GPUTextureUsage', originalGPUTextureUsage);
+        restoreWebGPUGlobals();
         vi.restoreAllMocks();
     });
 
@@ -311,16 +157,14 @@ describe('External Dolby Vision presentation authorization', () => {
 
         const decision = await runner.validate(harness.device, TARGET_FORMAT);
 
+        // The output executor compiles first, then the input probe's, and the signature covers both modules
+        const [ outputShaderCode, inputProbeShaderCode ] = getShaderCodes(harness);
         expect(decision).toMatchObject({
             failureReason: null,
             maximumInputChannelError: expect.any(Number),
             routeKey: EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
             sampleCount: VECTOR_SAMPLE_COUNT,
-            shaderSignature: createExternalDolbyVisionShaderSignature(
-                TARGET_FORMAT,
-                `external-dolby-vision:${TARGET_FORMAT}`,
-                `${INPUT_PROBE_SIGNAL_NAME}:${INPUT_PROBE_FORMAT}`
-            ),
+            shaderSignature: createExternalDolbyVisionShaderSignature(TARGET_FORMAT, outputShaderCode, inputProbeShaderCode),
             status: 'authorized'
         });
         expect(createBuiltinChain).toHaveBeenCalledWith({
@@ -350,22 +194,20 @@ describe('External Dolby Vision presentation authorization', () => {
             passes: []
         });
 
-        expect(passMocks.executors).toHaveLength(2);
-        const [ outputExecutor, inputProbeExecutor ] = passMocks.executors;
-        expect(outputExecutor.writeRenderSettings).toHaveBeenCalledOnce();
-        expect(inputProbeExecutor.writeRenderSettings).not.toHaveBeenCalled();
-        expect(new Uint8Array(outputExecutor.writeDolbyVisionRPU.mock.calls[0][0] as ArrayBuffer))
-            .toEqual(new Uint8Array(createDolbyVisionAuthorizationRPUVector(5)));
-        for (const executor of passMocks.executors) {
-            expect(executor.encode).toHaveBeenCalledOnce();
-            expect((executor.encode.mock.calls[0][1] as PresentationFrameInput).source)
-                .toEqual({ kind: 'external', source: frame });
-            expect(executor.destroy).toHaveBeenCalledOnce();
-        }
+        expect(PresentationExecutor.create).toHaveBeenCalledTimes(2);
+        // Only the output binds render settings and the RPU
+        expect(getBufferWrites(harness, RENDER_SETTINGS_LABEL)).toHaveLength(1);
+        expect(getBufferWrites(harness, DOLBY_VISION_RPU_LABEL).map((write: RecordedBufferWrite): Uint8Array => write.bytes))
+            .toEqual([ new Uint8Array(createDolbyVisionAuthorizationRPUVector(5)) ]);
+        expect(harness.importExternalTexture.mock.calls).toEqual([
+            [ { colorSpace: EXTERNAL_TEXTURE_COLOR_SPACE, source: frame } ],
+            [ { colorSpace: EXTERNAL_TEXTURE_COLOR_SPACE, source: frame } ]
+        ]);
         // The probe and the output render in one submission before the two readbacks
-        expect(harness.queueSubmit.mock.calls[0][0]).toHaveLength(2);
+        expect(harness.renderPasses).toHaveLength(RENDERED_PASS_COUNT);
+        expect(harness.queueSubmit.mock.calls[0][0]).toHaveLength(RENDERED_PASS_COUNT);
         expect(close).toHaveBeenCalledOnce();
-        expect(harness.textureDestroy).toHaveBeenCalledTimes(2);
+        expectEveryResourceDestroyed(harness);
     });
 
     it('drives the output reference from bounded browser-recovered input', async () => {
@@ -407,14 +249,12 @@ describe('External Dolby Vision presentation authorization', () => {
 
     it('classifies a frame the output executor cannot import and closes the frame', async () => {
         const harness = createDeviceHarness(createExpectedObservations());
-        // The output executor is created first, and encodes after the input probe
-        vi.mocked(PresentationExecutor.create).mockImplementationOnce((_device: GPUDevice, plan: PresentationPlan) => {
-            const executor = passMocks.createExecutor(plan);
-            executor.encode.mockImplementation(() => {
-                throw new Error('simulated import failure');
+        // The input probe imports the frame first, and the output's import fails
+        harness.importExternalTexture
+            .mockImplementationOnce((descriptor: GPUExternalTextureDescriptor) => ({ descriptor }))
+            .mockImplementationOnce(() => {
+                throw new Error(SIMULATED_IMPORT_FAILURE);
             });
-            return Promise.resolve(executor as unknown as PresentationExecutor);
-        });
         const close = vi.fn();
         const runner = new ExternalDolbyVisionPresentationAuthorizationRunner((): VideoFrame => createFrame(close));
 
@@ -423,9 +263,8 @@ describe('External Dolby Vision presentation authorization', () => {
             status: 'rejected'
         });
         expect(close).toHaveBeenCalledOnce();
-        for (const executor of passMocks.executors) {
-            expect(executor.destroy).toHaveBeenCalledOnce();
-        }
+        expect(harness.queueSubmit).not.toHaveBeenCalled();
+        expectEveryResourceDestroyed(harness);
     });
 
     it('deduplicates exact-device authorization and exposes settled state', async () => {
