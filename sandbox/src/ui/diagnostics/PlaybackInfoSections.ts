@@ -77,6 +77,8 @@ type AuthorizationStatus = DolbyVisionAuthorizationTelemetry['status'];
 
 const NONE_TEXT = 'none';
 const SELECTED_TEXT = 'selected';
+const DEFAULT_TRACK_TEXT = 'default';
+const FORCED_TRACK_TEXT = 'forced';
 // Labels a row that continues the row above it, such as one route key of an authorization
 const CONTINUATION_LABEL = '';
 const GAIN_DECIMALS = 2;
@@ -241,7 +243,7 @@ function describeAudioTracksSection(audioTracks: readonly AudioTrackDescription[
             formatSampleRate(track.sampleRate),
             track.language,
             formatTrackName(track.name),
-            track.default ? 'default' : null,
+            track.default ? DEFAULT_TRACK_TEXT : null,
             tracks.audioTrackIndex === track.index ? SELECTED_TEXT : null
         ])));
     }
@@ -257,6 +259,8 @@ function describeSubtitlesSection(subtitleTracks: readonly SubtitleTrackDescript
             track.codec,
             track.language,
             formatTrackName(track.name),
+            track.default ? DEFAULT_TRACK_TEXT : null,
+            track.forced ? FORCED_TRACK_TEXT : null,
             track.textBased ? 'text' : 'not shown',
             selected ? SELECTED_TEXT : null
         ])));

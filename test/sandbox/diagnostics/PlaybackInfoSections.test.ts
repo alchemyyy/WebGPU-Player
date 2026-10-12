@@ -320,14 +320,17 @@ describe('describePlaybackInfo', () => {
     it('describes subtitle tracks and a selected subtitle file', () => {
         const initialState = createInitialSandboxState();
         const state = createState({
-            media: createMediaDescription({ subtitleTracks: [ createSubtitleTrack({ language: SUBTITLE_LANGUAGE }), createSubtitleTrack({ index: 3, textBased: false }) ] }),
+            media: createMediaDescription({ subtitleTracks: [
+                createSubtitleTrack({ default: true, language: SUBTITLE_LANGUAGE }),
+                createSubtitleTrack({ forced: true, index: 3, textBased: false })
+            ] }),
             tracks: { ...initialState.tracks, subtitle: { kind: 'file', path: SUBTITLE_PATH } }
         });
         const section = requireSection(describePlaybackInfo(state), SUBTITLES_SECTION_ID);
 
         expect(section.rows.map((row: InfoRow): string => row.value)).toEqual([
-            `subrip, ${SUBTITLE_LANGUAGE}, text`,
-            'subrip, not shown',
+            `subrip, ${SUBTITLE_LANGUAGE}, default, text`,
+            'subrip, forced, not shown',
             `${SUBTITLE_PATH}, selected`
         ]);
     });

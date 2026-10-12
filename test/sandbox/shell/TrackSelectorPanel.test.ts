@@ -29,10 +29,10 @@ const AUDIO_TRACKS: readonly AudioTrackDescription[] = [
     { channelCount: STEREO_CHANNEL_COUNT, codec: 'aac', codecString: null, default: false, index: 5, language: null, name: 'Commentary', sampleRate: SAMPLE_RATE }
 ];
 const SUBTITLE_TRACKS: readonly SubtitleTrackDescription[] = [
-    { codec: 'subrip', index: TEXT_TRACK_INDEX, language: 'eng', name: null, textBased: true },
+    { codec: 'subrip', default: true, forced: false, index: TEXT_TRACK_INDEX, language: 'eng', name: null, textBased: true },
     // Image subtitles have no text for the overlay
-    { codec: 'hdmv_pgs_subtitle', index: IMAGE_TRACK_INDEX, language: 'eng', name: null, textBased: false },
-    { codec: 'ass', index: OTHER_TEXT_TRACK_INDEX, language: null, name: 'Signs', textBased: true }
+    { codec: 'hdmv_pgs_subtitle', default: false, forced: false, index: IMAGE_TRACK_INDEX, language: 'eng', name: null, textBased: false },
+    { codec: 'ass', default: false, forced: true, index: OTHER_TEXT_TRACK_INDEX, language: null, name: 'Signs', textBased: true }
 ];
 const MEDIA: MediaDescription = {
     audioTracks: AUDIO_TRACKS,
@@ -68,8 +68,8 @@ describe('TrackSelectorPanel choices', () => {
     it('offers off, the text-based tracks, then the subtitle files beside the media', () => {
         expect(listSubtitleChoices(MEDIA, LIBRARY_FILE)).toEqual([
             { label: 'Off', value: null },
-            { label: '#2 subrip eng', value: EMBEDDED_SELECTION },
-            { label: '#4 ass Signs', value: OTHER_EMBEDDED_SELECTION },
+            { label: '#2 subrip eng default', value: EMBEDDED_SELECTION },
+            { label: '#4 ass Signs forced', value: OTHER_EMBEDDED_SELECTION },
             { label: 'episode.en.srt', value: FILE_SELECTION }
         ]);
         expect(listSubtitleChoices(MEDIA, null)).toHaveLength(3);

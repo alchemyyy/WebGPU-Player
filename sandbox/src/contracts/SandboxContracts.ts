@@ -111,6 +111,9 @@ export type AudioTrackDescription = Readonly<{
 
 export type SubtitleTrackDescription = Readonly<{
     codec: string
+    default: boolean
+    /** Shown even without a subtitle selection, such as signs and foreign dialogue */
+    forced: boolean
     index: number
     language: string | null
     name: string | null
