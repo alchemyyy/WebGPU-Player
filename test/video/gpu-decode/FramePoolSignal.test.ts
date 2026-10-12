@@ -6,15 +6,16 @@ import {
     createSDRColorMetadata,
     type InputColorMetadata
 } from 'webgpu-player/color/ColorMetadata';
-import { createRawYUVColorPipelineWGSL, type RawYUVVideoFrameFormat } from 'webgpu-player/color/ColorPipelineShader';
+import { createRawYUVSignal } from 'webgpu-player/presentation/passes/builtin/BuiltinSignals';
 import { createEngineStructsWGSL } from 'webgpu-player/presentation/passes/PassResources';
-import { createDefaultRenderSettings, createHDRToSDRRenderSettings } from 'webgpu-player/presentation/RenderSettings';
 import { createFramePoolSignal, FRAME_POOL_SIGNAL_ENTRY_POINT } from 'webgpu-player/video/gpu-decode/FramePoolSignal';
+import type { GPUDecoderOutputFormat } from 'webgpu-player/video/gpu-decode/GPUDecodeFormats';
 
 const TWELVE_BIT_DEPTH = 12;
+const FRAME_POOL_SIGNAL_NAME = 'gpu-decode.signal.frame-pool.I420P10';
 
 type SignalCase = {
-    format: RawYUVVideoFrameFormat
+    format: GPUDecoderOutputFormat
     metadata: InputColorMetadata
 };
 
@@ -38,12 +39,7 @@ function extractFunction(code: string, functionName: string): string {
     return code.slice(start + `fn ${functionName}`.length, end + 2);
 }
 
-function createRawPlaneShader(signalCase: SignalCase): string {
-    const settings = signalCase.metadata.transfer === 'sdr' ? createDefaultRenderSettings() : createHDRToSDRRenderSettings();
-    return createRawYUVColorPipelineWGSL(signalCase.metadata, settings, signalCase.format);
-}
-
-/** Rewrites the raw plane shader's luma sampler in terms of the frame pool's plane layout and sample loads. */
+/** Rewrites the raw YUV signal's luma sampler in terms of the frame pool's plane layout and sample loads. */
 function rewriteRawLumaSamplerForPool(rawSampler: string): string {
     return rawSampler
         .replace('(textureCoordinate: vec2f) -> f32 {', '(planeIndex: u32, textureCoordinate: vec2f) -> f32 {\n    let plane = framePoolLayout.planes[planeIndex];')
@@ -57,6 +53,7 @@ describe('createFramePoolSignal', () => {
         const signal = createFramePoolSignal('I420P10', createPQColorMetadata());
 
         expect(signal.entryPoint).toBe(FRAME_POOL_SIGNAL_ENTRY_POINT);
+        expect(signal.name).toBe(FRAME_POOL_SIGNAL_NAME);
         expect(signal.sourceKind).toBe('frame-pool');
         expect(signal.resources).toEqual([ 'frame-pool' ]);
         expect(signal.bypassCondition).toBeNull();
@@ -76,24 +73,25 @@ describe('createFramePoolSignal', () => {
         expect(signal.code).toMatch(/\bframePool\[/);
     });
 
-    it.each(SIGNAL_CASES)('normalizes and converts $format with the raw plane shader math', (signalCase: SignalCase) => {
-        const rawShader = createRawPlaneShader(signalCase);
+    it.each(SIGNAL_CASES)('converts $format with the raw YUV signal\'s range, matrix, and entry', (signalCase: SignalCase) => {
+        const rawSignal = createRawYUVSignal(signalCase.format, signalCase.metadata);
         const signal = createFramePoolSignal(signalCase.format, signalCase.metadata);
 
-        expect(extractFunction(signal.code, 'framePoolNormalizeYUV')).toBe(extractFunction(rawShader, 'normalizeRawYUV'));
-        expect(extractFunction(signal.code, 'framePoolConvertYUVToEncodedRGB')).toBe(
-            extractFunction(rawShader, 'convertRawYUVToEncodedRGB')
+        expect(extractFunction(signal.code, 'normalizeRawYUV')).toBe(extractFunction(rawSignal.code, 'normalizeRawYUV'));
+        expect(extractFunction(signal.code, 'convertRawYUVToEncodedRGB')).toBe(extractFunction(rawSignal.code, 'convertRawYUVToEncodedRGB'));
+        expect(extractFunction(signal.code, signal.entryPoint).replace('framePoolSampleYUV(', 'sampleRawYUV(')).toBe(
+            extractFunction(rawSignal.code, rawSignal.entryPoint)
         );
     });
 
-    it.each(SIGNAL_CASES)('samples $format bilinearly with the raw plane shader chroma siting', (signalCase: SignalCase) => {
-        const rawShader = createRawPlaneShader(signalCase);
+    it.each(SIGNAL_CASES)('samples $format bilinearly with the raw YUV signal\'s chroma siting', (signalCase: SignalCase) => {
+        const rawSignal = createRawYUVSignal(signalCase.format, signalCase.metadata);
         const signal = createFramePoolSignal(signalCase.format, signalCase.metadata);
 
         expect(extractFunction(signal.code, 'framePoolSamplePlane')).toBe(
-            rewriteRawLumaSamplerForPool(extractFunction(rawShader, 'sampleLuma'))
+            rewriteRawLumaSamplerForPool(extractFunction(rawSignal.code, 'sampleLuma'))
         );
-        const rawPlaneSampling = extractFunction(rawShader, 'sampleRawYUV')
+        const rawPlaneSampling = extractFunction(rawSignal.code, 'sampleRawYUV')
             .replace('sampleLuma(', 'framePoolSamplePlane(0u, ')
             .replace(/sampleChromaU\(/g, 'framePoolSamplePlane(1u, ')
             .replace(/sampleChromaV\(/g, 'framePoolSamplePlane(2u, ')

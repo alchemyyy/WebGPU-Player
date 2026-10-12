@@ -1,29 +1,18 @@
 // The fixed signal step of the GPU decode route: it samples a decoded pool slot in place and returns 'source' RGB.
-// Its sampling, range, and matrix math are the raw plane route's (createRawYUVColorPipelineWGSL), read from the pool buffer instead of integer textures.
-// Function names carry a framePool prefix so they never collide with the built-in library's.
+// It is the raw YUV signal read from the pool buffer instead of integer textures: the same bilinear sample, chroma siting, range, and matrix.
+// Its sampling functions carry a framePool prefix; the range and matrix functions are the raw YUV signal's, which never shares a chain with it.
 import { assertValidInputColorMetadata, type InputColorMetadata } from '../../color/ColorMetadata';
-import type { SignalDefinition } from '../../presentation/passes/PassTypes';
+import { createRawYUVMatrixWGSL, createRawYUVRangeWGSL, hasLeftSitedChroma } from '../../presentation/passes/builtin/BuiltinSignals';
+import { joinWGSL } from '../../presentation/passes/builtin/BuiltinWGSL';
+import type { EngineResource, SignalDefinition } from '../../presentation/passes/PassTypes';
 import type { SupportedRawVideoFrameFormat } from '../RawVideoFrameCopy';
 import { getGPUDecoderFormatFacts, isGPUDecoderOutputFormat, type GPUDecoderFormatFacts } from './GPUDecodeFormats';
 
 /** The signal's entry point: `fn framePoolSignal(coordinate: vec2f) -> vec4f`. */
 export const FRAME_POOL_SIGNAL_ENTRY_POINT = 'framePoolSignal';
 
-const FRAME_POOL_SIGNAL_NAME = 'frame-pool';
-const DECIMAL_PLACES = 9;
-const EIGHT_BIT_CODE_SCALE_DEPTH = 8;
-const NEUTRAL_CHROMA_EIGHT_BIT_CODE = 128;
-const LIMITED_BLACK_EIGHT_BIT_CODE = 16;
-const LIMITED_LUMA_EIGHT_BIT_RANGE = 219;
-const LIMITED_CHROMA_EIGHT_BIT_RANGE = 224;
-
-// The same formatting as ColorPipelineShader, so the range math is the same text
-function toWGSLFloat(value: number): string {
-    if (!Number.isFinite(value)) {
-        throw new RangeError('WGSL constants must be finite');
-    }
-    return value.toFixed(DECIMAL_PLACES);
-}
+const FRAME_POOL_SIGNAL_NAME_PREFIX = 'gpu-decode.signal.frame-pool';
+const FRAME_POOL_RESOURCES: readonly EngineResource[] = Object.freeze([ 'frame-pool' ]);
 
 function createLoadSampleWGSL(bytesPerSample: GPUDecoderFormatFacts['bytesPerSample']): string {
     const sampleMask = bytesPerSample === 1 ? '0xFFu' : '0xFFFFu';
@@ -36,7 +25,7 @@ fn framePoolLoadSample(planeIndex: u32, position: vec2i) -> f32 {
 }`;
 }
 
-// The raw plane shader's manual bilinear sample, with the plane's size from the layout uniform in place of textureDimensions
+// The raw YUV signal's manual bilinear sample, with the plane's size from the layout uniform in place of textureDimensions
 const SAMPLE_PLANE_WGSL = `
 fn framePoolSamplePlane(planeIndex: u32, textureCoordinate: vec2f) -> f32 {
     let plane = framePoolLayout.planes[planeIndex];
@@ -52,9 +41,8 @@ fn framePoolSamplePlane(planeIndex: u32, textureCoordinate: vec2f) -> f32 {
     return mix(mix(topLeft, topRight, fraction.x), mix(bottomLeft, bottomRight, fraction.x), fraction.y);
 }`;
 
-function createSampleYUVWGSL(formatFacts: GPUDecoderFormatFacts): string {
-    // HEVC defaults subsampled chroma to horizontal left siting when no location is signaled, as the raw plane shader assumes
-    const chromaTextureCoordinate = formatFacts.chromaWidthDivisor === 2 ?
+function createSampleYUVWGSL(format: SupportedRawVideoFrameFormat): string {
+    const chromaTextureCoordinate = hasLeftSitedChroma(format) ?
         'textureCoordinate + vec2f(0.5 / f32(framePoolLayout.planes[0].width), 0.0)' :
         'textureCoordinate';
     return `
@@ -65,66 +53,6 @@ fn framePoolSampleYUV(textureCoordinate: vec2f) -> vec3f {
         framePoolSamplePlane(2u, ${chromaTextureCoordinate})
     );
 }`;
-}
-
-// The body of the raw plane shader's normalizeRawYUV
-function createNormalizeYUVWGSL(metadata: InputColorMetadata): string {
-    const codeScale = 2 ** (metadata.bitDepth - EIGHT_BIT_CODE_SCALE_DEPTH);
-    const maximumCode = (2 ** metadata.bitDepth) - 1;
-    if (metadata.range === 'full') {
-        return `
-fn framePoolNormalizeYUV(rawYUV: vec3f) -> vec3f {
-    return vec3f(
-        rawYUV.x / ${toWGSLFloat(maximumCode)},
-        (rawYUV.y - ${toWGSLFloat(NEUTRAL_CHROMA_EIGHT_BIT_CODE * codeScale)}) / ${toWGSLFloat(maximumCode)},
-        (rawYUV.z - ${toWGSLFloat(NEUTRAL_CHROMA_EIGHT_BIT_CODE * codeScale)}) / ${toWGSLFloat(maximumCode)}
-    );
-}`;
-    }
-
-    return `
-fn framePoolNormalizeYUV(rawYUV: vec3f) -> vec3f {
-    return vec3f(
-        (rawYUV.x - ${toWGSLFloat(LIMITED_BLACK_EIGHT_BIT_CODE * codeScale)}) / ${toWGSLFloat(LIMITED_LUMA_EIGHT_BIT_RANGE * codeScale)},
-        (rawYUV.y - ${toWGSLFloat(NEUTRAL_CHROMA_EIGHT_BIT_CODE * codeScale)}) / ${toWGSLFloat(LIMITED_CHROMA_EIGHT_BIT_RANGE * codeScale)},
-        (rawYUV.z - ${toWGSLFloat(NEUTRAL_CHROMA_EIGHT_BIT_CODE * codeScale)}) / ${toWGSLFloat(LIMITED_CHROMA_EIGHT_BIT_RANGE * codeScale)}
-    );
-}`;
-}
-
-// The body of the raw plane shader's convertRawYUVToEncodedRGB
-function createConvertYUVWGSL(metadata: InputColorMetadata): string {
-    switch (metadata.matrix) {
-        case 'bt709':
-            return `
-fn framePoolConvertYUVToEncodedRGB(normalizedYUV: vec3f) -> vec3f {
-    return vec3f(
-        normalizedYUV.x + 1.5748 * normalizedYUV.z,
-        normalizedYUV.x - 0.187324 * normalizedYUV.y - 0.468124 * normalizedYUV.z,
-        normalizedYUV.x + 1.8556 * normalizedYUV.y
-    );
-}`;
-        case 'bt2020-ncl':
-            return `
-fn framePoolConvertYUVToEncodedRGB(normalizedYUV: vec3f) -> vec3f {
-    return vec3f(
-        normalizedYUV.x + 1.4746 * normalizedYUV.z,
-        normalizedYUV.x - 0.164553 * normalizedYUV.y - 0.571353 * normalizedYUV.z,
-        normalizedYUV.x + 1.8814 * normalizedYUV.y
-    );
-}`;
-        // BT.601 uses Kr 0.299 and Kb 0.114 for both its 525 and 625-line systems
-        case 'bt470bg':
-        case 'smpte170m':
-            return `
-fn framePoolConvertYUVToEncodedRGB(normalizedYUV: vec3f) -> vec3f {
-    return vec3f(
-        normalizedYUV.x + 1.402 * normalizedYUV.z,
-        normalizedYUV.x - 0.344136 * normalizedYUV.y - 0.714136 * normalizedYUV.z,
-        normalizedYUV.x + 1.772 * normalizedYUV.y
-    );
-}`;
-    }
 }
 
 /**
@@ -140,23 +68,25 @@ export function createFramePoolSignal(format: SupportedRawVideoFrameFormat, meta
     if (metadata.bitDepth !== formatFacts.bitDepth) {
         throw new RangeError('Frame pool format bit depth does not match color metadata');
     }
-    const code = [
-        createLoadSampleWGSL(formatFacts.bytesPerSample),
-        SAMPLE_PLANE_WGSL,
-        createSampleYUVWGSL(formatFacts),
-        createNormalizeYUVWGSL(metadata),
-        createConvertYUVWGSL(metadata),
-        `
+    const entryWGSL = `
 fn ${FRAME_POOL_SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
-    return vec4f(framePoolConvertYUVToEncodedRGB(framePoolNormalizeYUV(framePoolSampleYUV(coordinate))), 1.0);
-}`
-    ].join('\n');
+    let normalizedYUV = normalizeRawYUV(framePoolSampleYUV(coordinate));
+    let encodedRGB = convertRawYUVToEncodedRGB(normalizedYUV);
+    return vec4f(encodedRGB, 1.0);
+}`;
     return {
         bypassCondition: null,
-        code,
+        code: joinWGSL([
+            createLoadSampleWGSL(formatFacts.bytesPerSample),
+            SAMPLE_PLANE_WGSL,
+            createSampleYUVWGSL(format),
+            createRawYUVRangeWGSL(metadata),
+            createRawYUVMatrixWGSL(metadata),
+            entryWGSL
+        ]),
         entryPoint: FRAME_POOL_SIGNAL_ENTRY_POINT,
-        name: FRAME_POOL_SIGNAL_NAME,
-        resources: [ 'frame-pool' ],
+        name: `${FRAME_POOL_SIGNAL_NAME_PREFIX}.${format}`,
+        resources: FRAME_POOL_RESOURCES,
         sourceKind: 'frame-pool'
     };
 }

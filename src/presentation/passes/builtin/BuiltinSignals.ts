@@ -228,11 +228,17 @@ function getRawFormatBitDepth(format: SupportedRawVideoFrameFormat): number {
     }
 }
 
+/**
+ * Returns whether the raw signals treat a format's chroma as left-sited: each chroma sample lies on its left luma sample, half a luma sample left of its texel center.
+ * HEVC defaults horizontally subsampled planar chroma to left siting when no location is signaled.
+ */
+export function hasLeftSitedChroma(format: SupportedRawVideoFrameFormat): boolean {
+    return format.startsWith('I420') || format.startsWith('I422');
+}
+
 /** Generates the manual bilinear reads of the plane textures, which PassResources declares, as one YUV code triplet. */
 function createRawYUVSamplingWGSL(format: SupportedRawVideoFrameFormat): string {
-    // HEVC defaults subsampled chroma to horizontal left siting when no location is signaled
-    const leftSitedSubsampledChroma = format.startsWith('I420') || format.startsWith('I422');
-    const chromaTextureCoordinate = leftSitedSubsampledChroma ?
+    const chromaTextureCoordinate = hasLeftSitedChroma(format) ?
         'textureCoordinate + vec2f(0.5 / f32(textureDimensions(lumaTexture).x), 0.0)' :
         'textureCoordinate';
     if (format === 'NV12') {
@@ -253,7 +259,8 @@ fn sampleRawYUV(textureCoordinate: vec2f) -> vec3f {
 }` ]);
 }
 
-function createRawYUVRangeWGSL(metadata: InputColorMetadata): string {
+/** Returns `fn normalizeRawYUV(rawYUV: vec3f) -> vec3f`, which maps YUV codes of the metadata's bit depth and range to normalized YUV. */
+export function createRawYUVRangeWGSL(metadata: InputColorMetadata): string {
     const codeScale = 2 ** (metadata.bitDepth - REFERENCE_CODE_BIT_DEPTH);
     const maximumCode = (2 ** metadata.bitDepth) - 1;
     if (metadata.range === 'full') {
@@ -277,7 +284,8 @@ fn normalizeRawYUV(rawYUV: vec3f) -> vec3f {
 }`;
 }
 
-function createRawYUVMatrixWGSL(metadata: InputColorMetadata): string {
+/** Returns `fn convertRawYUVToEncodedRGB(normalizedYUV: vec3f) -> vec3f`, the metadata's YUV to RGB matrix. */
+export function createRawYUVMatrixWGSL(metadata: InputColorMetadata): string {
     switch (metadata.matrix) {
         case 'bt709':
             return BT709_MATRIX_WGSL;
