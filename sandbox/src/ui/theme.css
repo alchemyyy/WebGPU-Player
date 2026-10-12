@@ -32,6 +32,15 @@ body {
     inset: 0;
 }
 
+/* The presenter draws over the video's box, so the video fills the surface; it plays nothing itself, so it stays invisible */
+#sandbox-surface > video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    visibility: hidden;
+}
+
 /* The overlay passes pointer events through to the surface except where a panel sits */
 #sandbox-overlay {
     position: fixed;

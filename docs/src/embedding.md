@@ -38,7 +38,7 @@ Read the engine's folders from `tools/constants.json` (`sourceDirectory`, `scrip
    ```ts
    import { configureEngineAssets } from 'webgpu-player/EngineAssets';
    import { configureEngineFeatureFlags } from 'webgpu-player/EngineConfiguration';
-   import 'webgpu-player/style.scss';
+   import 'webgpu-player/style.css';
 
    // assetKey comes from <engine>/bin/build-info.json, written by the asset build
    configureEngineAssets({ cacheKey: assetKey });
@@ -66,3 +66,5 @@ Read the engine's folders from `tools/constants.json` (`sourceDirectory`, `scrip
 - A bundler dev server that runs the asset build at configuration load must be restarted after an engine worker changes.
 - WebGPU needs a secure context.
   Over plain HTTP on a LAN address, a host that still selects the WebGPU player plays HTML pass-through only, which proves nothing.
+- The presenter places its canvas over the surface's video element and fits frames by that element's CSS `object-fit`, so the element needs a layout box.
+  Hide it with `visibility: hidden` or cover it, but never with `display: none` or the `hidden` attribute, which leave every frame undrawn as `surface-empty`.

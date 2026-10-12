@@ -79,4 +79,4 @@ Everything else downmixes to stereo.
 ## Subtitles
 
 The engine reads no subtitle track and renders no subtitles, and a source's subtitle tracks never affect its eligibility.
-The host draws subtitles over the video: `style.scss` keeps the host's subtitle layers (`.videoSubtitles`, libass canvases, and other canvases) above the WebGPU canvas.
+The host draws subtitles over the video: `style.css` keeps the host's subtitle layers (`.videoSubtitles`, libass canvases, and other canvases) above the WebGPU canvas.

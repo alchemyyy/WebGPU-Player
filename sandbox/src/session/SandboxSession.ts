@@ -191,8 +191,8 @@ function describeRoute(eligibility: EligibleCustomPlayback, override: RouteOverr
 
 export function createSandboxSession(options: SandboxSessionOptions): SandboxSessionCommands {
     const { store } = options;
+    // The presenter places its canvas over the video's box and fits frames by its object-fit, so the video stays in the layout; theme.css hides it
     const video = document.createElement('video');
-    video.hidden = true;
     video.muted = true;
     options.surfaceContainer.append(video);
     const surface: PresentationSurface = { container: options.surfaceContainer, video };

@@ -12,7 +12,7 @@ Each source file's tests are at the same relative path under `test/`, and integr
 - `MediaTime.ts`: branded integer microseconds and conversions to Jellyfin ticks.
 - `TimeMath.ts`: safe-integer microsecond math.
 - `TimingTrace.ts`: the opt-in playback timing trace: the page's ring buffer, the decode worker's batches stamped on the shared epoch clock, long tasks, and the JSON export; every hook is one null check until a host starts a trace.
-- `style.scss`: presenter and overlay styles, imported by the host.
+- `style.css`: presenter and overlay styles, imported by the host; plain CSS, so a host needs no preprocessor.
 
 ## presentation/
 

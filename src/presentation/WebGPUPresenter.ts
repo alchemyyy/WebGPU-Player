@@ -98,6 +98,9 @@ import {
 
 const CANVAS_CLASS = 'webgpuPlayerCanvas';
 const CANVAS_VISIBLE_CLASS = 'webgpuPlayerCanvas-visible';
+// Why a frame goes undrawn: the surface's video element has no layout box, or the source reports no size
+const SURFACE_EMPTY_SKIP_REASON = 'surface-empty';
+const SOURCE_SIZE_EMPTY_SKIP_REASON = 'source-size-empty';
 const LAYOUT_MOTION_END_EVENTS = [
     'animationcancel',
     'animationend',
@@ -208,6 +211,8 @@ export type PresentationTelemetry = {
     lastHDR10PlusMetadataStatus: HDR10PlusFrameMetadata['status'] | null
     mode: RenderMode
     nativeFrameCount: number
+    /** Why the last frame went undrawn, as `code: detail`, such as `surface-empty: video box 0x0`; null once a frame draws. */
+    presentationSkipReason: string | null
     presentationSource: 'decoded' | 'native' | null
     presentedFrameCount: number
     staticFallbackHDR10PlusFrameCount: number
@@ -640,6 +645,7 @@ function createTelemetry(settings: RenderSettings): PresentationTelemetry {
         lastHDR10PlusMetadataStatus: null,
         mode: settings.mode,
         nativeFrameCount: 0,
+        presentationSkipReason: null,
         presentationSource: null,
         presentedFrameCount: 0,
         sessionStartedMicroseconds: getMonotonicMicroseconds(),
@@ -3225,6 +3231,8 @@ export default class WebGPUPresenter {
         const containerRectangle = surface.container.getBoundingClientRect();
         const videoRectangle = surface.video.getBoundingClientRect();
         if (videoRectangle.width <= 0 || videoRectangle.height <= 0) {
+            // The canvas covers the video's box, which a video with display: none lacks
+            this.telemetry.presentationSkipReason = `${SURFACE_EMPTY_SKIP_REASON}: video box ${videoRectangle.width}x${videoRectangle.height}`;
             return null;
         }
 
@@ -3279,6 +3287,7 @@ export default class WebGPUPresenter {
     ): CachedPresentationLayout | null {
         if (sourceWidth <= 0 || sourceHeight <= 0) {
             this.invalidatePresentationLayout();
+            this.telemetry.presentationSkipReason = `${SOURCE_SIZE_EMPTY_SKIP_REASON}: ${sourceWidth}x${sourceHeight}`;
             return null;
         }
 
@@ -3353,6 +3362,7 @@ export default class WebGPUPresenter {
         this.telemetry.lastCallbackTimeMicroseconds = callbackTimeMicroseconds;
         this.telemetry.lastExpectedDisplayTimeMicroseconds = expectedDisplayTimeMicroseconds;
         this.telemetry.lastPresentedMediaTimeMicroseconds = mediaTimeMicroseconds;
+        this.telemetry.presentationSkipReason = null;
         this.telemetry.presentationSource = presentationSource;
         this.telemetry.presentedFrameCount += 1;
         switch (presentationSource) {
