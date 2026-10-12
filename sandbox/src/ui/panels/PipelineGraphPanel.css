@@ -1,0 +1,119 @@
+/* The pipeline graph: pass nodes positioned over an SVG of texture edges, with the passes the plan left out beside it */
+.pipeline-graph-panel {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sandbox-gap);
+}
+
+.pipeline-graph-scroller {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+}
+
+.pipeline-graph {
+    position: relative;
+}
+
+.pipeline-graph-empty {
+    margin: 0;
+    color: var(--sandbox-text-muted);
+}
+
+.pipeline-graph-edges {
+    position: absolute;
+    top: 0;
+    left: 0;
+    overflow: visible;
+}
+
+.pipeline-graph-edge {
+    fill: none;
+    stroke: var(--sandbox-text-muted);
+    stroke-width: 1.5;
+}
+
+/* History reads: the previous frames of a texture */
+.pipeline-graph-edge[data-history] {
+    stroke: var(--sandbox-warning);
+    stroke-dasharray: 4 3;
+}
+
+.pipeline-graph-arrow {
+    fill: var(--sandbox-text-muted);
+}
+
+.pipeline-graph-edge-label {
+    fill: var(--sandbox-warning);
+    font: var(--sandbox-monospace-font);
+    text-anchor: middle;
+    dominant-baseline: central;
+}
+
+/* Geometry comes inline from the layout; the frame is a shadow, so it takes none of the layout's room */
+.pipeline-graph-node {
+    position: absolute;
+    box-sizing: border-box;
+    overflow: hidden;
+    border-radius: var(--sandbox-panel-radius);
+    background: var(--sandbox-control-background);
+    box-shadow: inset 0 0 0 1px var(--sandbox-panel-border);
+    font: var(--sandbox-monospace-font);
+}
+
+.pipeline-graph-node[data-kind='source'],
+.pipeline-graph-node[data-kind='canvas'] {
+    box-shadow: inset 0 0 0 1px var(--sandbox-accent);
+}
+
+.pipeline-graph-line {
+    overflow: hidden;
+    color: var(--sandbox-text-muted);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.pipeline-graph-line[data-role='title'] {
+    color: var(--sandbox-text);
+    font-weight: 600;
+}
+
+.pipeline-graph-line[data-role='step'] {
+    color: var(--sandbox-accent);
+}
+
+.pipeline-graph-left-out {
+    flex: 0 1 auto;
+    max-width: 40ch;
+}
+
+.pipeline-graph-left-out-title {
+    margin: 0 0 calc(var(--sandbox-gap) / 2);
+    color: var(--sandbox-text-muted);
+    font: inherit;
+}
+
+.pipeline-graph-left-out-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.pipeline-graph-left-out-pass {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: calc(var(--sandbox-gap) / 2);
+}
+
+.pipeline-graph-left-out-reason {
+    font: var(--sandbox-monospace-font);
+    overflow-wrap: anywhere;
+}
+
+.pipeline-graph-left-out-pass[data-tone='failure'] .pipeline-graph-left-out-reason {
+    color: var(--sandbox-failure);
+}
+
+.pipeline-graph-left-out-pass[data-tone='muted'] .pipeline-graph-left-out-reason {
+    color: var(--sandbox-text-muted);
+}
