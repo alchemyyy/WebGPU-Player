@@ -1,0 +1,315 @@
+// The contracts shared by the pass manifest, the built-in passes, the planner, the executor, and the GPU decode route.
+// overhual/ in the engine root describes the design they implement.
+import type { TexturePresentationGeometry } from '../PresentationGeometry';
+import type { TransferableRawVideoFrame } from '../../video/RawVideoFrameCopy';
+
+/** A stage of the spatial spine that user passes hook, in pipeline order; the fixed signal step comes before all of them. */
+export type PresentationStage = 'OUTPUT' | 'PRESCALE' | 'RGB' | 'SCALE';
+
+/**
+ * A state on the color track.
+ * - 'source': encoded RGB in the source's primaries and transfer function, which the fixed signal step produces.
+ * - 'linear': linear light in nits, in the source's primaries.
+ * - 'display-linear': linear light in nits, mapped to the display's range and primaries.
+ * - 'display': values encoded for the output target, ready for the canvas.
+ */
+export type ColorState = 'display' | 'display-linear' | 'linear' | 'source';
+
+/** The color domain a pass requires on input; 'sdr' is satisfied by 'display' while the output is SDR. */
+export type ColorDomain = 'any' | 'display' | 'linear' | 'sdr' | 'source';
+
+/**
+ * - 'color': `fn apply(color: vec4f, position: vec2f) -> vec4f`, per pixel, always fused into a neighboring pass.
+ * - 'kernel': `fn kernel(coordinate: vec2f) -> vec4f`, reading neighboring pixels of its inputs.
+ * - 'scaler': `fn scale(coordinate: vec2f) -> vec4f`, the one pass that writes exactly the output rectangle.
+ * - 'compute': `fn compute(id: vec3u)`, dispatched over its declared workgroups.
+ * A coordinate is a normalized position in the hooked input; a position is the target pixel center in pixels.
+ */
+export type PassShape = 'color' | 'compute' | 'kernel' | 'scaler';
+
+export type PassExpressionBinaryOperator =
+    | '!='
+    | '%'
+    | '&&'
+    | '*'
+    | '+'
+    | '-'
+    | '/'
+    | '<'
+    | '<='
+    | '=='
+    | '>'
+    | '>='
+    | '||';
+
+export type PassExpressionFunction = 'abs' | 'ceil' | 'floor' | 'max' | 'min' | 'round';
+
+/** A parsed size or condition expression of a pass or decoder header. */
+export type PassExpression =
+    | { kind: 'binary'; left: PassExpression; operator: PassExpressionBinaryOperator; right: PassExpression }
+    | { arguments: readonly PassExpression[]; kind: 'call'; name: PassExpressionFunction }
+    | { kind: 'identifier'; name: string }
+    | { kind: 'number'; value: number }
+    | { kind: 'unary'; operand: PassExpression; operator: '!' | '-' };
+
+/**
+ * Identifier values for expressions; booleans are 1 or 0.
+ * The planner provides `source.width`, `source.height`, `output.width`, `output.height`, `frame.rate` (0 when unknown), `hdr.source`, and `hdr.output`, plus `<input>.width` and `<input>.height` for each input of a pass, `HOOKED` included.
+ */
+export type PassExpressionFacts = ReadonlyMap<string, number>;
+
+export type PassInput = {
+    /** 0 reads the current frame, -1 the previous frame, and so on. */
+    historyOffset: number
+    /** 'HOOKED', a stage name, or a name an earlier pass saved. */
+    name: string
+};
+
+export type PassParameterType = 'f32' | 'i32' | 'u32';
+
+export type PassParameter = {
+    defaultValue: number
+    maximum: number
+    minimum: number
+    name: string
+    type: PassParameterType
+};
+
+export type PassOutput = {
+    format: GPUTextureFormat
+    height: PassExpression
+    width: PassExpression
+};
+
+export type PassWorkgroup = {
+    dispatch: readonly [PassExpression, PassExpression, PassExpression]
+    size: readonly [number, number, number]
+};
+
+/** A parsed user pass: its `//!` header and its WGSL body. */
+export type PassManifest = {
+    /** The WGSL after the header. */
+    body: string
+    /** The 1-based source line of the body's first line, for compile error mapping. */
+    bodyFirstLine: number
+    components: 1 | 2 | 3 | 4 | null
+    domain: ColorDomain
+    hook: PresentationStage
+    inputs: readonly PassInput[]
+    name: string
+    output: PassOutput | null
+    parameters: readonly PassParameter[]
+    /** The built-in color function a color pass replaces, such as 'builtin.tone-map'; a scaler always replaces the built-in scaler. */
+    replaces: string | null
+    save: string | null
+    shape: PassShape
+    when: PassExpression | null
+    workgroup: PassWorkgroup | null
+};
+
+/** A group of engine-owned bindings that built-in code reads; PassResources expands each into its bindings. */
+export type EngineResource =
+    | 'dolby-vision-enhancement'
+    | 'dolby-vision-rpu'
+    | 'external-texture'
+    | 'frame-pool'
+    | 'planes-nv12'
+    | 'planes-yuv'
+    | 'render-settings'
+    | 'sampler-linear';
+
+/** One engine-owned binding, with a fixed WGSL variable name in PassResources. */
+export type EngineBindingResource =
+    | 'dolby-vision-rpu'
+    | 'enhancement-chroma-u'
+    | 'enhancement-chroma-v'
+    | 'enhancement-luma'
+    | 'enhancement-uniform'
+    | 'external-texture'
+    | 'frame-pool'
+    | 'frame-pool-layout'
+    | 'plane-chroma'
+    | 'plane-chroma-u'
+    | 'plane-chroma-v'
+    | 'plane-luma'
+    | 'render-settings'
+    | 'sampler-linear';
+
+export type PresentationSourceKind = 'external' | 'frame-pool' | 'planes';
+
+/** A built-in per-pixel step of the color track. */
+export type BuiltinColorFunction = {
+    /** WGSL definitions, including the entry point; built-in names never collide. */
+    code: string
+    /** `fn <entryPoint>(color: vec4f, position: vec2f) -> vec4f`, where position is the output pixel center. */
+    entryPoint: string
+    inputState: ColorState
+    name: string
+    outputState: ColorState
+    /** Runs only in the last pass, at output resolution, such as dither. */
+    pinnedToOutput: boolean
+    resources: readonly EngineResource[]
+};
+
+/** The fixed, decode-equivalent step of a route: it reads the source and produces 'source' RGB. */
+export type SignalDefinition = {
+    /** A WGSL bool expression; while it holds, the frame skips every color function (Dolby Vision Profile 4 FEL without its EL). */
+    bypassCondition: string | null
+    code: string
+    /** `fn <entryPoint>(coordinate: vec2f) -> vec4f`, bilinear at a normalized source coordinate, returning 'source' RGB. */
+    entryPoint: string
+    name: string
+    resources: readonly EngineResource[]
+    sourceKind: PresentationSourceKind
+};
+
+/** A route's built-in chain; its scaler is the implicit bilinear read of the signal. */
+export type BuiltinChain = {
+    /** The default color functions, in color-track order. */
+    colorFunctions: readonly BuiltinColorFunction[]
+    signal: SignalDefinition
+    /** True when 'source' values are already display values (identity SDR), so the chain may be empty. */
+    sourceIsDisplay: boolean
+};
+
+/** The canvas configuration a plan renders for. */
+export type PlannedOutput = {
+    colorSpace: PredefinedColorSpace
+    format: GPUTextureFormat
+    toneMapping: GPUCanvasToneMappingMode
+};
+
+export type PlanFacts = {
+    frameRate: number | null
+    hdrOutput: boolean
+    hdrSource: boolean
+    /** The output rectangle in device pixels, letterboxing excluded. */
+    outputHeight: number
+    outputWidth: number
+    /** The visible source size in pixels. */
+    sourceHeight: number
+    sourceWidth: number
+};
+
+export type PlanDevice = {
+    features: ReadonlySet<string>
+    maximumTextureDimension: number
+};
+
+export type PlanRequest = {
+    chain: BuiltinChain
+    device: PlanDevice
+    facts: PlanFacts
+    output: PlannedOutput
+    /** User passes in preset order. */
+    passes: readonly PassManifest[]
+};
+
+export type PlannedTexture = {
+    format: GPUTextureFormat
+    height: number
+    /** A ring holds historyDepth + 1 textures; 0 is a texture without history. */
+    historyDepth: number
+    id: string
+    /** Written by a compute pass, so it needs storage usage. */
+    storage: boolean
+    width: number
+};
+
+export type PlannedBuffer = {
+    byteLength: number
+    id: string
+    indirect: boolean
+    /** Kept across frames, such as a state buffer; otherwise it may be reused within a frame. */
+    persistent: boolean
+};
+
+/**
+ * How a render pass maps its target pixels to coordinates in its input; the executor computes the mapping each frame.
+ * - 'object-fit': the output rectangle from the source through the CSS object-fit mapping, and a raw frame's visible rectangle.
+ * - 'identity': target pixels map 1:1 onto the whole input.
+ */
+export type PassCoordinateMapping = 'identity' | 'object-fit';
+
+export type PlannedBinding =
+    | { binding: number; kind: 'engine'; resource: EngineBindingResource }
+    | { access: 'read-only-storage' | 'storage' | 'uniform'; binding: number; bufferId: string; kind: 'buffer' }
+    /** The pass's `presentation` uniform: its coordinate mapping and the frame globals. */
+    | { binding: number; kind: 'presentation' }
+    /** The pass's `parameters` uniform, holding its declared parameters. */
+    | { binding: number; kind: 'parameters'; passName: string }
+    | { access: 'sampled' | 'storage'; binding: number; historyOffset: number; kind: 'texture'; textureId: string };
+
+export type PassTarget = { kind: 'output' } | { kind: 'texture'; textureId: string };
+
+/** Generated lines that came from one user pass's body. */
+export type PassLineMapping = {
+    firstGeneratedLine: number
+    firstSourceLine: number
+    lineCount: number
+    passName: string
+};
+
+/** One GPU pass of a plan; every binding is in group 0. */
+export type PlannedPass = {
+    bindings: readonly PlannedBinding[]
+    /** A complete WGSL module: `vertexMain` and `fragmentMain` for a render pass, `computeMain` for a compute pass. */
+    code: string
+    coordinateMapping: PassCoordinateMapping
+    indirectBufferId: string | null
+    /** The texture whose size fills `presentation.inputSize`, or null when the pass reads the source. */
+    inputTextureId: string | null
+    kind: 'compute' | 'render'
+    label: string
+    lineMap: readonly PassLineMapping[]
+    /** Render passes only; the 'output' target is drawn inside the output rectangle after clearing the target. */
+    target: PassTarget | null
+    /** Compute passes without an indirect buffer only. */
+    workgroupCounts: readonly [number, number, number] | null
+};
+
+export type PlanReport = {
+    activePasses: readonly string[]
+    /** Domain conflicts and other reasons a preset cannot run as written. */
+    conflicts: readonly string[]
+    inactivePasses: readonly { name: string; reason: string }[]
+};
+
+/** An immutable plan: passes in execution order and the resources they use. */
+export type PresentationPlan = {
+    buffers: readonly PlannedBuffer[]
+    output: PlannedOutput
+    passes: readonly PlannedPass[]
+    report: PlanReport
+    sourceKind: PresentationSourceKind
+    textures: readonly PlannedTexture[]
+    /** Whether the plan binds the render settings uniform. */
+    usesRenderSettings: boolean
+};
+
+/** Where the plane data of a frame in the GPU decode route's frame pool lives. */
+export type FramePoolFrame = {
+    codedHeight: number
+    codedWidth: number
+    /** The pool's layout uniform, which names the frame's slot. */
+    layout: GPUBuffer
+    pool: GPUBuffer
+    visibleRectangle: { height: number; width: number; x: number; y: number }
+};
+
+export type PresentationFrameSource =
+    | { frame: FramePoolFrame; kind: 'frame-pool' }
+    | { enhancementFrame: TransferableRawVideoFrame | null; frame: TransferableRawVideoFrame; kind: 'planes' }
+    | { kind: 'external'; source: HTMLVideoElement | VideoFrame };
+
+/** What the executor needs to record one frame. */
+export type PresentationFrameInput = {
+    geometry: TexturePresentationGeometry
+    /** True advances history; false redraws the same frame. */
+    newFrame: boolean
+    /** Frames dropped since the previous new frame. */
+    skippedFrameCount: number
+    source: PresentationFrameSource
+    target: GPUTextureView
+    timestampMicroseconds: number
+};
