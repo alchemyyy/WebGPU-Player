@@ -1,0 +1,18 @@
+/* The track selectors: label above select, side by side beside the transport bar */
+.track-selector-panel {
+    display: flex;
+    flex: none;
+    gap: var(--sandbox-gap);
+}
+
+.track-selector {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    color: var(--sandbox-text-muted);
+}
+
+.track-selector select {
+    max-width: 14rem;
+    color: var(--sandbox-text);
+}

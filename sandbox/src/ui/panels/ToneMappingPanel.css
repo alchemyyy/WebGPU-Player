@@ -1,0 +1,52 @@
+/* The tone mapping controls: one row per setting, label, slider, then number */
+.tone-mapping-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.tone-mapping-header {
+    display: flex;
+    align-items: center;
+    gap: var(--sandbox-gap);
+    font-weight: 600;
+}
+
+.tone-mapping-mode {
+    flex: 1 1 auto;
+    color: var(--sandbox-text-muted);
+    font: var(--sandbox-monospace-font);
+}
+
+.tone-mapping-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.tone-mapping-row {
+    display: grid;
+    grid-template-columns: 7.5rem minmax(4rem, 1fr) 4.5rem;
+    align-items: center;
+    gap: 4px;
+}
+
+/* The operator row has a select in place of the slider and number */
+.tone-mapping-row select {
+    grid-column: 2 / 4;
+}
+
+.tone-mapping-row input[type='range'] {
+    min-width: 0;
+    margin: 0;
+}
+
+.tone-mapping-row input[type='number'] {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.tone-mapping-validation {
+    color: var(--sandbox-failure);
+    font: var(--sandbox-monospace-font);
+}
