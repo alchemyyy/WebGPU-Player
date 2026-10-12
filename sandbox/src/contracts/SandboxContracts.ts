@@ -253,6 +253,12 @@ export type SandboxState = Readonly<{
 /** The failures the state keeps; older ones drop first. */
 export const MAXIMUM_SANDBOX_FAILURE_COUNT = 50;
 
+/** Returns the failures with one appended, dropping the oldest beyond MAXIMUM_SANDBOX_FAILURE_COUNT. */
+export function appendSandboxFailure(failures: readonly SandboxFailure[], failure: SandboxFailure): readonly SandboxFailure[] {
+    const appended: SandboxFailure[] = [ ...failures, failure ];
+    return appended.slice(Math.max(0, appended.length - MAXIMUM_SANDBOX_FAILURE_COUNT));
+}
+
 export function createInitialSandboxState(): SandboxState {
     return {
         failures: [],
