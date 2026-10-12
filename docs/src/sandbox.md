@@ -80,6 +80,8 @@ About ffmpeg.wasm:
 
 - Clicking the video outside the panels pauses it while it plays, and resumes it while it is paused.
   The decision is `getSurfaceClickAction` in `sandbox/src/ui/SurfaceClick.ts`.
+- Scrolling over a slider or a value box moves it and applies the value at once, as a drag or a committed entry does.
+  A notch moves a slider a fiftieth of its range, or a five-hundredth with Shift, and a value box one step, never past its limits; `sandbox/src/ui/ControlWheel.ts` holds the rules.
 - The timeline seeks on click.
   While it is dragged, it seeks at most once per `SCRUB_SEEK_INTERVAL_MILLISECONDS`, in `sandbox/src/ui/panels/TransportBarPanel.ts`, and once more where the drag ends.
 - The playhead and the time follow the session clock every animation frame, while the rest of the state refreshes a few times a second.
