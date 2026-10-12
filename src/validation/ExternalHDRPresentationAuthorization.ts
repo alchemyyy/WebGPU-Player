@@ -1,5 +1,6 @@
 import {
     createHDRToSDRRenderSettings,
+    createRenderSettingsUniformData,
     RENDER_SETTINGS_VERSION,
     type HDRToSDRRenderSettings
 } from '../presentation/RenderSettings';
@@ -12,12 +13,10 @@ import {
     processEncodedYUV,
     type ColorTriplet
 } from '../color/ColorPipeline';
-import { createExternalHDRColorPipelineWGSL } from '../color/ColorPipelineShader';
 import { rewriteHEVCAccessUnitColorDescriptionToBT709 } from '../video/dolby-vision/DolbyVisionHEVCSplitter';
-import {
-    createRawYUVRenderSettingsUniformBuffer,
-    writeRawYUVRenderSettingsUniform
-} from '../presentation/RawYUVGPURenderer';
+import { createBuiltinChain } from '../presentation/passes/builtin/BuiltinChains';
+import type { BuiltinChain, BuiltinChainConfiguration } from '../presentation/passes/PassTypes';
+import type { PresentationExecutor } from '../presentation/passes/PresentationExecutor';
 import {
     createExternalHDRAuthorizationAccessUnit,
     EXTERNAL_HDR_AUTHORIZATION_CODED_HEIGHT,
@@ -36,15 +35,18 @@ import {
 import { discardErrorScope } from './GPUErrorScope';
 import {
     calculateRawHDRAuthorizationOutputDither,
+    createAuthorizationExecutor,
+    createAuthorizationReferencePlan,
+    encodeAuthorizationFrame,
     evaluateRawHDRVectorObservations,
+    type AuthorizationReferencePlan,
     type RawHDRVectorObservation
 } from './RawHDRPresentationAuthorization';
 
 const EXTERNAL_HDR_CODEC = 'hvc1.2.4.L120.B0';
 const EXTERNAL_HDR_AUTHORIZATION_TOLERANCE = 10 / 255;
-const FLOATS_PER_PRESENTATION_UNIFORM = 4;
 const MAXIMUM_10_BIT_CODE = 1_023;
-const VERTEX_COUNT = 6;
+const PROBE_KEY_SEPARATOR = '\u0000';
 const AUTHORIZED_TARGET_FORMATS = new Set<GPUTextureFormat>([
     'bgra8unorm',
     'rgba8unorm'
@@ -117,6 +119,8 @@ type CachedRouteProbe = {
 };
 
 type DeviceProbeCache = {
+    /** The reference chain's shader signature per target format and route, which planning makes stable per device */
+    referenceSignatures: Map<string, string>
     routes: Map<string, CachedRouteProbe>
 };
 
@@ -177,7 +181,31 @@ export function getExternalHDRAuthorizationRouteKey(metadata: InputColorMetadata
     }
 }
 
-/** Creates a stable identity for the exact native frame and production shader route. */
+function createExternalHDRReferencePlan(
+    device: GPUDevice,
+    targetFormat: GPUTextureFormat,
+    routeKey: ExternalHDRAuthorizationRouteKey
+): AuthorizationReferencePlan {
+    const metadata = createMetadata(routeKey);
+    const configuration: BuiltinChainConfiguration = {
+        hdrOutput: false,
+        metadata,
+        route: 'external-hdr',
+        settings: createSettings(metadata)
+    };
+    return createAuthorizationReferencePlan(device, (): BuiltinChain => createBuiltinChain(configuration), {
+        format: targetFormat,
+        hdrSource: true,
+        height: EXTERNAL_HDR_AUTHORIZATION_DISPLAY_HEIGHT,
+        width: EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH
+    });
+}
+
+function createProbeKey(targetFormat: GPUTextureFormat, routeKey: ExternalHDRAuthorizationRouteKey): string {
+    return `${targetFormat}${PROBE_KEY_SEPARATOR}${routeKey}`;
+}
+
+/** Creates a stable identity for the exact native frame and the route's reference chain. */
 export function createExternalHDRShaderSignature(
     targetFormat: GPUTextureFormat,
     routeKey: ExternalHDRAuthorizationRouteKey,
@@ -420,28 +448,7 @@ function createRejectedDecision(
     };
 }
 
-function createRenderPipeline(
-    device: GPUDevice,
-    targetFormat: GPUTextureFormat,
-    shaderCode: string
-): Promise<GPURenderPipeline> {
-    const shaderModule = device.createShaderModule({ code: shaderCode });
-    return device.createRenderPipelineAsync({
-        fragment: {
-            entryPoint: 'fragmentMain',
-            module: shaderModule,
-            targets: [{ format: targetFormat }]
-        },
-        layout: 'auto',
-        primitive: { topology: 'triangle-list' },
-        vertex: {
-            entryPoint: 'vertexMain',
-            module: shaderModule
-        }
-    });
-}
-
-/** Runs native decode, external import, production shader, draw, and readback. */
+/** Runs native decode, external import, the route's built-in default chain, and readback. */
 export class ExternalHDRPresentationAuthorizationRunner {
     public constructor(
         private readonly createFrame: ExternalHDRAuthorizationFrameFactory =
@@ -455,8 +462,8 @@ export class ExternalHDRPresentationAuthorizationRunner {
     ): Promise<ExternalHDRRouteAuthorizationDecision> {
         const metadata = createMetadata(routeKey);
         const settings = createSettings(metadata);
-        const shaderCode = createExternalHDRColorPipelineWGSL(metadata, settings);
-        const shaderSignature = createExternalHDRShaderSignature(targetFormat, routeKey, shaderCode);
+        const reference = createExternalHDRReferencePlan(device, targetFormat, routeKey);
+        const shaderSignature = createExternalHDRShaderSignature(targetFormat, routeKey, reference.shaderCode);
         if (!EXTERNAL_HDR_AUTHORIZATION_ROUTE_KEYS.includes(routeKey)) {
             return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'route-unsupported');
         }
@@ -477,10 +484,13 @@ export class ExternalHDRPresentationAuthorizationRunner {
         ) {
             return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'gpu-api-unavailable');
         }
+        const plan = reference.plan;
+        if (!plan) {
+            return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'unexpected-error');
+        }
 
         let targetTexture: GPUTexture | null = null;
-        let presentationUniformBuffer: GPUBuffer | null = null;
-        let renderSettingsUniformBuffer: GPUBuffer | null = null;
+        let executor: PresentationExecutor | null = null;
         let pixelReader: GPUCanvasPixelReader | null = null;
         let frame: VideoFrame | null = null;
         let frameAbortController: AbortController | null = null;
@@ -488,19 +498,10 @@ export class ExternalHDRPresentationAuthorizationRunner {
         let phase: AuthorizationPhase = 'gpu-render';
         const deadline = new GPUAuthorizationDeadline(device);
         try {
-            const pipeline = await deadline.wait(createRenderPipeline(device, targetFormat, shaderCode));
-            const sampler = device.createSampler({
-                magFilter: 'linear',
-                minFilter: 'linear'
-            });
-            presentationUniformBuffer = device.createBuffer({
-                label: 'WebGPU external HDR authorization presentation uniforms',
-                size: FLOATS_PER_PRESENTATION_UNIFORM * Float32Array.BYTES_PER_ELEMENT,
-                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM
-            });
-            device.queue.writeBuffer(presentationUniformBuffer, 0, new Float32Array([ 1, 1, 0, 0 ]));
-            renderSettingsUniformBuffer = createRawYUVRenderSettingsUniformBuffer(device);
-            writeRawYUVRenderSettingsUniform(device, renderSettingsUniformBuffer, settings);
+            executor = await createAuthorizationExecutor(device, plan, deadline);
+            if (plan.usesRenderSettings) {
+                executor.writeRenderSettings(createRenderSettingsUniformData(settings).buffer);
+            }
 
             phase = 'frame-create';
             // eslint-disable-next-line compat/compat -- WebGPU custom decode targets modern Chromium
@@ -528,46 +529,17 @@ export class ExternalHDRPresentationAuthorizationRunner {
 
             device.pushErrorScope('validation');
             errorScopePushed = true;
+            // The executor imports the frame while it encodes, so an encode failure is an import failure
             phase = 'frame-import';
-            const externalTexture = device.importExternalTexture({
-                colorSpace: 'srgb',
-                source: frame
-            });
+            const commandBuffer = encodeAuthorizationFrame(
+                device,
+                executor,
+                { kind: 'external', source: frame },
+                targetTexture,
+                'WebGPU external HDR authorization commands'
+            );
             phase = 'gpu-render';
-            const bindGroup = device.createBindGroup({
-                entries: [{
-                    binding: 0,
-                    resource: sampler
-                }, {
-                    binding: 1,
-                    resource: externalTexture
-                }, {
-                    binding: 2,
-                    resource: { buffer: presentationUniformBuffer }
-                }, {
-                    binding: 3,
-                    resource: { buffer: renderSettingsUniformBuffer }
-                }],
-                layout: pipeline.getBindGroupLayout(0)
-            });
-            const commandEncoder = device.createCommandEncoder({
-                label: 'WebGPU external HDR authorization commands'
-            });
-            const renderPass = commandEncoder.beginRenderPass({
-                colorAttachments: [{
-                    clearValue: { a: 1, b: 0, g: 0, r: 0 },
-                    loadOp: 'clear',
-                    storeOp: 'store',
-                    view: targetTexture.createView()
-                }],
-                label: 'WebGPU external HDR authorization pass'
-            });
-            renderPass.setPipeline(pipeline);
-            renderPass.setBindGroup(0, bindGroup);
-            renderPass.setViewport(0, 0, frame.displayWidth, frame.displayHeight, 0, 1);
-            renderPass.draw(VERTEX_COUNT);
-            renderPass.end();
-            device.queue.submit([ commandEncoder.finish() ]);
+            device.queue.submit([ commandBuffer ]);
             await deadline.wait(device.queue.onSubmittedWorkDone());
             const validationError = await deadline.wait(device.popErrorScope());
             errorScopePushed = false;
@@ -650,8 +622,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
             }
             frame?.close();
             pixelReader?.destroy();
-            presentationUniformBuffer?.destroy();
-            renderSettingsUniformBuffer?.destroy();
+            executor?.destroy();
             targetTexture?.destroy();
         }
     }
@@ -700,7 +671,7 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         targetFormat: GPUTextureFormat,
         routeKey: ExternalHDRAuthorizationRouteKey
     ): Promise<ExternalHDRRouteAuthorizationDecision> {
-        const cacheKey = this.createCacheKey(targetFormat, routeKey);
+        const cacheKey = createProbeKey(targetFormat, routeKey);
         const deviceCache = this.getDeviceCache(device);
         const cachedProbe = deviceCache.routes.get(cacheKey);
         if (cachedProbe) {
@@ -717,13 +688,11 @@ export class ExternalHDRPresentationAuthorizationRegistry {
                 return decision;
             },
             (): ExternalHDRRouteAuthorizationDecision => {
-                const metadata = createMetadata(routeKey);
-                const shaderCode = createExternalHDRColorPipelineWGSL(metadata, createSettings(metadata));
                 const decision = createRejectedDecision(
                     device,
                     targetFormat,
                     routeKey,
-                    createExternalHDRShaderSignature(targetFormat, routeKey, shaderCode),
+                    this.getReferenceSignature(device, targetFormat, routeKey),
                     'unexpected-error'
                 );
                 probe.decision = decision;
@@ -734,25 +703,22 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         return probe.promise;
     }
 
-    /** Checks only settled exact shader evidence and never waits optimistically. */
+    /** Checks only settled evidence for the route's current reference shader and never waits optimistically. */
     public isAuthorized(
         device: GPUDevice,
         targetFormat: GPUTextureFormat,
-        metadata: InputColorMetadata,
-        settings: HDRToSDRRenderSettings
+        metadata: InputColorMetadata
     ): boolean {
         const routeKey = getExternalHDRAuthorizationRouteKey(metadata);
         if (!routeKey) {
             return false;
         }
-        const shaderCode = createExternalHDRColorPipelineWGSL(metadata, settings);
-        const shaderSignature = createExternalHDRShaderSignature(targetFormat, routeKey, shaderCode);
         const decision = this.getCachedProbe(device, targetFormat, routeKey)?.decision;
         return decision?.status === 'authorized'
             && decision.device === device
             && decision.targetFormat === targetFormat
-            && decision.shaderSignature === shaderSignature
-            && decision.authorizedRouteKeys.includes(routeKey);
+            && decision.authorizedRouteKeys.includes(routeKey)
+            && decision.shaderSignature === this.getReferenceSignature(device, targetFormat, routeKey);
     }
 
     /** Returns bounded diagnostics without exposing retained decoder or GPU objects. */
@@ -809,14 +775,24 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         };
     }
 
-    private createCacheKey(targetFormat: GPUTextureFormat, routeKey: ExternalHDRAuthorizationRouteKey): string {
-        const metadata = createMetadata(routeKey);
-        const shaderCode = createExternalHDRColorPipelineWGSL(metadata, createSettings(metadata));
-        return `${targetFormat}\u0000${routeKey}\u0000${createExternalHDRShaderSignature(
+    private getReferenceSignature(
+        device: GPUDevice,
+        targetFormat: GPUTextureFormat,
+        routeKey: ExternalHDRAuthorizationRouteKey
+    ): string {
+        const referenceSignatures = this.getDeviceCache(device).referenceSignatures;
+        const signatureKey = createProbeKey(targetFormat, routeKey);
+        const cachedSignature = referenceSignatures.get(signatureKey);
+        if (cachedSignature !== undefined) {
+            return cachedSignature;
+        }
+        const signature = createExternalHDRShaderSignature(
             targetFormat,
             routeKey,
-            shaderCode
-        )}`;
+            createExternalHDRReferencePlan(device, targetFormat, routeKey).shaderCode
+        );
+        referenceSignatures.set(signatureKey, signature);
+        return signature;
     }
 
     private getCachedProbe(
@@ -824,7 +800,7 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         targetFormat: GPUTextureFormat,
         routeKey: ExternalHDRAuthorizationRouteKey
     ): CachedRouteProbe | undefined {
-        return this.devices.get(device)?.routes.get(this.createCacheKey(targetFormat, routeKey));
+        return this.devices.get(device)?.routes.get(createProbeKey(targetFormat, routeKey));
     }
 
     private getDeviceCache(device: GPUDevice): DeviceProbeCache {
@@ -832,7 +808,7 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         if (cached) {
             return cached;
         }
-        const created: DeviceProbeCache = { routes: new Map() };
+        const created: DeviceProbeCache = { referenceSignatures: new Map(), routes: new Map() };
         this.devices.set(device, created);
         void device.lost.then((): void => {
             this.devices.delete(device);

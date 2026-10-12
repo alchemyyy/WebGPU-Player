@@ -1373,7 +1373,7 @@ export default class WebGPUPresenter {
         if (
             !device
             || !targetFormat
-            || !this.externalDolbyVisionAuthorization.isAuthorized(device, targetFormat, configuration.settings)
+            || !this.externalDolbyVisionAuthorization.isAuthorized(device, targetFormat)
         ) {
             this.failColorConfiguration(pendingConfiguration, 'hdr-authorization-unavailable');
             return null;
@@ -1437,8 +1437,7 @@ export default class WebGPUPresenter {
             || !this.externalHDRAuthorization.isAuthorized(
                 device,
                 targetFormat,
-                configuration.metadata,
-                configuration.settings
+                configuration.metadata
             )
         ) {
             this.failColorConfiguration(pendingConfiguration, 'hdr-authorization-unavailable');
@@ -1495,7 +1494,6 @@ export default class WebGPUPresenter {
                 device,
                 targetFormat,
                 configuration.metadata,
-                configuration.settings,
                 configuration.rawFrameFormat
             )
         ) {
@@ -1570,7 +1568,6 @@ export default class WebGPUPresenter {
             || !authorizations.base.isAuthorized(
                 device,
                 targetFormat,
-                configuration.settings,
                 configuration.rawFrameFormat
             )
         ) {
@@ -1583,7 +1580,6 @@ export default class WebGPUPresenter {
             && authorizations.fel.isAuthorized(
                 device,
                 targetFormat,
-                configuration.settings,
                 configuration.rawFrameFormat
             );
         try {
@@ -1687,7 +1683,7 @@ export default class WebGPUPresenter {
         const targetFormat = this.canvasFormat;
         return device !== null
             && targetFormat !== null
-            && this.rawHDRAuthorization.isAuthorized(device, targetFormat, metadata, this.settings, format);
+            && this.rawHDRAuthorization.isAuthorized(device, targetFormat, metadata, format);
     }
 
     private isActiveExternalHDRAuthorized(metadata: InputColorMetadata): boolean {
@@ -1696,7 +1692,7 @@ export default class WebGPUPresenter {
         return this.settings.mode === 'hdr-to-sdr'
             && device !== null
             && targetFormat !== null
-            && this.externalHDRAuthorization.isAuthorized(device, targetFormat, metadata, this.settings);
+            && this.externalHDRAuthorization.isAuthorized(device, targetFormat, metadata);
     }
 
     private createRawDolbyVisionShader(
@@ -1805,7 +1801,6 @@ export default class WebGPUPresenter {
             && this.getRawDolbyVisionAuthorizations(profile, format).base.isAuthorized(
                 device,
                 targetFormat,
-                this.settings,
                 format
             );
     }
@@ -1816,7 +1811,7 @@ export default class WebGPUPresenter {
         return this.settings.mode === 'hdr-to-sdr'
             && device !== null
             && targetFormat !== null
-            && this.externalDolbyVisionAuthorization.isAuthorized(device, targetFormat, this.settings);
+            && this.externalDolbyVisionAuthorization.isAuthorized(device, targetFormat);
     }
 
     private suspendForColorConfiguration(): void {
@@ -3396,7 +3391,6 @@ export default class WebGPUPresenter {
             device,
             targetFormat,
             metadata,
-            this.settings,
             rawFrameFormat
         );
     }
@@ -3427,7 +3421,7 @@ export default class WebGPUPresenter {
         ) {
             return false;
         }
-        return this.externalHDRAuthorization.isAuthorized(device, targetFormat, metadata, this.settings);
+        return this.externalHDRAuthorization.isAuthorized(device, targetFormat, metadata);
     }
 
     private async reauthorizeDolbyVisionPresentation(generation: number): Promise<boolean> {
@@ -3445,7 +3439,7 @@ export default class WebGPUPresenter {
                 && !this.fallbackLatched
                 && this.device === device
                 && externalDecision.status === 'authorized'
-                && this.externalDolbyVisionAuthorization.isAuthorized(device, targetFormat, this.settings);
+                && this.externalDolbyVisionAuthorization.isAuthorized(device, targetFormat);
         }
         if (!rawFrameFormat || !isRawDolbyVisionVideoFrameFormat(rawFrameFormat) || activeProfile === null) {
             return false;
@@ -3474,9 +3468,9 @@ export default class WebGPUPresenter {
                 return false;
             }
         }
-        return rawAuthorizations.base.isAuthorized(device, targetFormat, this.settings, rawFrameFormat) && (
+        return rawAuthorizations.base.isAuthorized(device, targetFormat, rawFrameFormat) && (
             felAuthorization === null
-            || felAuthorization.isAuthorized(device, targetFormat, this.settings, rawFrameFormat)
+            || felAuthorization.isAuthorized(device, targetFormat, rawFrameFormat)
         );
     }
 
