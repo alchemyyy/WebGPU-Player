@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { FRAME_POOL_LAYOUT_BYTE_LENGTH } from 'webgpu-player/presentation/passes/PassResources';
+import { U32_VALUE_COUNT } from 'webgpu-player/presentation/WebGPUConstants';
 import { GPU_FRAME_POOL_MAXIMUM_SLOT_COUNT } from 'webgpu-player/video/gpu-decode/GPUDecodeLimits';
 import GPUFramePool, {
     createGPUFramePoolLayout,
@@ -28,7 +29,6 @@ const SIXTEEN_BIT_UHD_BYTES_PER_ROW = 7680;
 const REFERENCES = 4;
 const REORDER = 2;
 const SLOT_COUNT = 3;
-const ADDRESS_SPACE_BYTE_LENGTH = 2 ** 32;
 const VISIBLE_RECTANGLE = { height: FULL_HD_HEIGHT, width: FULL_HD_WIDTH, x: 0, y: 0 };
 const POOL_USAGE = 128 | 4 | 8;
 const LAYOUT_USAGE = 64 | 8;
@@ -107,7 +107,7 @@ describe('frame pool layout', () => {
     it('checks a pool against both storage buffer limits', () => {
         const layout = createGPUFramePoolLayout('I420P10', UHD_WIDTH, UHD_HEIGHT, SLOT_COUNT);
 
-        expect(layout.byteLength).toBeLessThan(ADDRESS_SPACE_BYTE_LENGTH);
+        expect(layout.byteLength).toBeLessThan(U32_VALUE_COUNT);
         expect(isGPUFramePoolWithinLimits(layout, { maxBufferSize: layout.byteLength, maxStorageBufferBindingSize: layout.byteLength })).toBe(true);
         expect(isGPUFramePoolWithinLimits(layout, { maxBufferSize: layout.byteLength - 1, maxStorageBufferBindingSize: layout.byteLength })).toBe(false);
         expect(isGPUFramePoolWithinLimits(layout, { maxBufferSize: layout.byteLength, maxStorageBufferBindingSize: layout.byteLength - 1 })).toBe(false);

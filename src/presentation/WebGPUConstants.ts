@@ -53,3 +53,39 @@ export const MAXIMUM_WORKGROUP_INVOCATIONS = 256;
 
 /** WebGPU's default maxComputeWorkgroupsPerDimension. */
 export const MAXIMUM_WORKGROUP_COUNT = 65_535;
+
+/** The workgroup axes in dispatch order, which name an axis in a failure detail. */
+export const WORKGROUP_AXIS_NAMES: readonly string[] = Object.freeze([ 'x', 'y', 'z' ]);
+
+/** The bytes of a WGSL 32-bit scalar; buffer copies, clears, and writes take sizes and offsets in multiples of it. */
+export const BYTES_PER_WORD = 4;
+
+/** The values a WGSL u32 holds: u32 arithmetic wraps at it, and a buffer that WGSL addresses in u32 bytes stays within it. */
+export const U32_VALUE_COUNT = 2 ** 32;
+
+/** The bytes `dispatchWorkgroupsIndirect` reads: one u32 workgroup count per axis. */
+export const INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH = WORKGROUP_AXIS_NAMES.length * BYTES_PER_WORD;
+
+/** WebGPU's default minUniformBufferOffsetAlignment, the coarsest a device may require, so dynamic offsets in its multiples bind on every device. */
+export const UNIFORM_BUFFER_OFFSET_ALIGNMENT = 256;
+
+/** WebGPU's default minStorageBufferOffsetAlignment, the coarsest a device may require. */
+export const STORAGE_BUFFER_OFFSET_ALIGNMENT = 256;
+
+/** The bytesPerRow alignment of copies between buffers and textures. */
+export const COPY_BYTES_PER_ROW_ALIGNMENT = 256;
+
+/** WebGPU's default maxStorageBufferBindingSize, 128 MiB. */
+export const MAXIMUM_STORAGE_BUFFER_BINDING_SIZE = 134_217_728;
+
+/** The device feature that enables the WGSL `f16` extension. */
+export const SHADER_F16_FEATURE: GPUFeatureName = 'shader-f16';
+
+/** The device feature that enables the WGSL `subgroups` extension. */
+export const SUBGROUPS_FEATURE: GPUFeatureName = 'subgroups';
+
+/** The WGSL extension each device feature enables, which a module names in an `enable` directive before using it. */
+export const WGSL_FEATURE_EXTENSIONS: ReadonlyMap<string, string> = new Map<string, string>([
+    [ SHADER_F16_FEATURE, 'f16' ],
+    [ SUBGROUPS_FEATURE, 'subgroups' ]
+]);

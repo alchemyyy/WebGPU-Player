@@ -3,16 +3,21 @@ import { describe, expect, it } from 'vitest';
 import { evaluatePassExpression } from 'webgpu-player/presentation/passes/PassExpression';
 import type { PassExpression } from 'webgpu-player/presentation/passes/PassTypes';
 import {
+    INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH,
+    SHADER_F16_FEATURE,
+    SUBGROUPS_FEATURE
+} from 'webgpu-player/presentation/WebGPUConstants';
+import { KIBIBYTE, MEBIBYTE } from 'webgpu-player/video/gpu-decode/GPUDecodeLimits';
+import {
+    GPU_DECODER_STREAM_FACTS,
     GPUDecoderManifestError,
     parseGPUDecoderManifest
 } from 'webgpu-player/video/gpu-decode/GPUDecoderManifest';
 
 const DECODER_NAME = 'ProRes 422';
-const MEBIBYTE = 1024 * 1024;
-const KIBIBYTE = 1024;
 const PACKET_MEBIBYTES = 16;
 const STATE_KIBIBYTES = 64;
-const SLICE_DISPATCH_BYTE_LENGTH = 12;
+const SLICE_DISPATCH_BYTE_LENGTH = INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH;
 const COEFFICIENT_MEBIBYTES = 2;
 const REFERENCES = 2;
 const REORDER = 1;
@@ -50,7 +55,7 @@ const COMPLETE_HEADER: readonly string[] = [
     `//! state: ${STATE_KIBIBYTES} KiB`,
     `//! buffer: sliceDispatch, indirect, ${SLICE_DISPATCH_BYTE_LENGTH}`,
     `//! buffer: coefficients, ${COEFFICIENT_MEBIBYTES} MiB`,
-    '//! requires: subgroups, shader-f16',
+    `//! requires: ${SUBGROUPS_FEATURE}, ${SHADER_F16_FEATURE}`,
     '//! dispatch: parseFrameHeader, 1',
     '//! dispatch: decodeSlices, indirect sliceDispatch',
     `//! dispatch: inverseTransform, ceil(stream.width / ${BLOCK_SIZE}), max(stream.height / ${BLOCK_SIZE}, 1)`,
@@ -71,9 +76,9 @@ function createSource(header: readonly string[], body: string = BODY): string {
 
 function createStreamFacts(width: number, height: number, bitDepth: number): ReadonlyMap<string, number> {
     return new Map([
-        [ 'stream.width', width ],
-        [ 'stream.height', height ],
-        [ 'stream.bitDepth', bitDepth ]
+        [ GPU_DECODER_STREAM_FACTS.width, width ],
+        [ GPU_DECODER_STREAM_FACTS.height, height ],
+        [ GPU_DECODER_STREAM_FACTS.bitDepth, bitDepth ]
     ]);
 }
 
@@ -108,7 +113,7 @@ describe('parseGPUDecoderManifest', () => {
             { byteLength: SLICE_DISPATCH_BYTE_LENGTH, indirect: true, name: 'sliceDispatch' },
             { byteLength: COEFFICIENT_MEBIBYTES * MEBIBYTE, indirect: false, name: 'coefficients' }
         ]);
-        expect(manifest.requiredFeatures).toEqual([ 'subgroups', 'shader-f16' ]);
+        expect(manifest.requiredFeatures).toEqual([ SUBGROUPS_FEATURE, SHADER_F16_FEATURE ]);
         expect(manifest.dispatches.map(dispatch => dispatch.entryPoint)).toEqual([
             'parseFrameHeader',
             'decodeSlices',

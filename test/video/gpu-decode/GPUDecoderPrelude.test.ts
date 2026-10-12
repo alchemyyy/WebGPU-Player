@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import {
+    BYTES_PER_WORD,
+    INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH,
+    SHADER_F16_FEATURE,
+    SUBGROUPS_FEATURE
+} from 'webgpu-player/presentation/WebGPUConstants';
 import { parseGPUDecoderManifest } from 'webgpu-player/video/gpu-decode/GPUDecoderManifest';
 import {
     createGPUDecoderBindGroupLayoutEntries,
@@ -20,7 +26,6 @@ import type { GPUDecoderManifest } from 'webgpu-player/video/gpu-decode/GPUDecod
 
 import { installWebGPUGlobals } from './webGPUGlobals';
 
-const BYTES_PER_WORD = 4;
 const COMPUTE_STAGE = 4;
 const PACKET_BYTE_OFFSET = 1024;
 const PACKET_BYTE_LENGTH = 777;
@@ -44,6 +49,9 @@ const HEADER_WIDTH = 1920;
 const HEADER_HEIGHT = 1088;
 const HEADER_BIT_DEPTH = 10;
 const HEADER_VISIBLE_HEIGHT = 1080;
+// A feature without a WGSL extension, which opens no enable directive
+const FEATURE_WITHOUT_EXTENSION = 'timestamp-query';
+const EXPECTED_ENABLE_DIRECTIVES = 'enable f16;\nenable subgroups;\n';
 const BODY = `
 @compute @workgroup_size(64)
 fn copyPlanes(@builtin(global_invocation_id) id: vec3u) {
@@ -90,7 +98,7 @@ describe('createGPUDecoderPrelude', () => {
 
     it('declares the engine bindings in binding order and the scratch buffers after them', () => {
         const prelude = createGPUDecoderPrelude(createManifest('I420', [
-            '//! buffer: sliceDispatch, indirect, 12',
+            `//! buffer: sliceDispatch, indirect, ${INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH}`,
             '//! buffer: coefficients, 4 KiB'
         ]));
 
@@ -137,10 +145,12 @@ describe('createGPUDecoderPrelude', () => {
     });
 
     it('opens with the enable directives of the required features that have WGSL extensions', () => {
-        const prelude = createGPUDecoderPrelude(createManifest('I420', [ '//! requires: timestamp-query, shader-f16, subgroups' ]));
+        const prelude = createGPUDecoderPrelude(createManifest('I420', [
+            `//! requires: ${FEATURE_WITHOUT_EXTENSION}, ${SHADER_F16_FEATURE}, ${SUBGROUPS_FEATURE}`
+        ]));
 
-        expect(prelude.startsWith('enable f16;\nenable subgroups;\n')).toBe(true);
-        expect(prelude).not.toContain('timestamp');
+        expect(prelude.startsWith(EXPECTED_ENABLE_DIRECTIVES)).toBe(true);
+        expect(prelude).not.toContain(FEATURE_WITHOUT_EXTENSION);
     });
 
     it('rejects a semi-planar output format', () => {
