@@ -22,39 +22,39 @@ const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
 const ARROW_MARKER_ID = 'pipeline-graph-arrow';
 // The arrowhead's length and width in CSS pixels; its tip sits on the edge's end
 const ARROW_SIZE = 8;
-const NO_PLAN_TEXT = 'No active plan; the presenter installs one with the first frame';
 const LEFT_OUT_TITLE = 'Left out';
 const LINE_SEPARATOR = '\n';
 
 type GraphInputs = readonly [plan: PresentationPlan | null, planReport: PlanReport, route: ActiveRoute | null];
 
+/** The graph shows once the presenter installs a plan; with neither a plan nor a left-out pass, the panel takes no room. */
 export function createPipelineGraphPanel(context: PanelContext): Panel {
     const graph = createElement('div', { className: 'pipeline-graph' });
+    const scroller = createElement('div', { className: 'pipeline-graph-scroller' }, [ graph ]);
     const leftOutList = createElement('ul', { className: 'pipeline-graph-left-out-list' });
     const leftOut = createElement('aside', { className: 'pipeline-graph-left-out' }, [
         createElement('h3', { className: 'pipeline-graph-left-out-title', text: LEFT_OUT_TITLE }),
         leftOutList
     ]);
-    const element = createElement('section', { className: 'pipeline-graph-panel' }, [
-        createElement('div', { className: 'pipeline-graph-scroller' }, [ graph ]),
-        leftOut
-    ]);
+    const element = createElement('section', { className: 'pipeline-graph-panel' }, [ scroller, leftOut ]);
     const destroy = subscribeSelection(
         context.store,
         createTupleSelector((state: SandboxState): GraphInputs => [ state.presentation.plan, state.presentation.report, state.route.active ]),
         ([ plan, planReport, route ]: GraphInputs): void => {
+            scroller.hidden = plan === null;
+            leftOut.hidden = planReport.inactivePasses.length === 0;
+            element.hidden = scroller.hidden && leftOut.hidden;
             renderGraph(graph, plan, route);
-            renderLeftOutPasses(leftOut, leftOutList, planReport.inactivePasses);
+            renderLeftOutPasses(leftOutList, planReport.inactivePasses);
         }
     );
     return { destroy, element };
 }
 
+/** Draws the plan's layout, sized to it; without a plan the graph is empty. */
 function renderGraph(graph: HTMLElement, plan: PresentationPlan | null, route: ActiveRoute | null): void {
     if (plan === null) {
-        graph.style.width = '';
-        graph.style.height = '';
-        replaceChildren(graph, [ createElement('p', { className: 'pipeline-graph-empty', text: NO_PLAN_TEXT }) ]);
+        replaceChildren(graph, []);
         return;
     }
     const layout = layoutPipelineGraph(plan, route);
@@ -68,8 +68,7 @@ function renderGraph(graph: HTMLElement, plan: PresentationPlan | null, route: A
     replaceChildren(graph, children);
 }
 
-function renderLeftOutPasses(container: HTMLElement, list: HTMLElement, rejections: readonly PassRejection[]): void {
-    container.hidden = rejections.length === 0;
+function renderLeftOutPasses(list: HTMLElement, rejections: readonly PassRejection[]): void {
     const items: Node[] = [];
     for (const rejection of rejections) {
         items.push(createElement('li', { attributes: { 'data-tone': getPassRejectionTone(rejection) }, className: 'pipeline-graph-left-out-pass' }, [
