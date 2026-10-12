@@ -96,8 +96,10 @@ export type PassManifest = {
     /** The 1-based source line of the body's first line, for compile error mapping. */
     bodyFirstLine: number
     components: 1 | 2 | 3 | 4 | null
+    /** 'any' for a color pass with `replaces`, which takes the replaced function's color states. */
     domain: ColorDomain
-    hook: PresentationStage
+    /** Null for a color pass with `replaces`, which runs in the replaced function's place. */
+    hook: PresentationStage | null
     inputs: readonly PassInput[]
     name: string
     output: PassOutput | null
