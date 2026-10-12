@@ -25,8 +25,8 @@ const IMAGE_TRACK_INDEX = 3;
 const OTHER_TEXT_TRACK_INDEX = 4;
 
 const AUDIO_TRACKS: readonly AudioTrackDescription[] = [
-    { channelCount: SURROUND_CHANNEL_COUNT, codec: 'eac3', codecString: 'ec-3', default: true, index: 1, language: 'eng', name: null, sampleRate: SAMPLE_RATE },
-    { channelCount: STEREO_CHANNEL_COUNT, codec: 'aac', codecString: null, default: false, index: 5, language: null, name: 'Commentary', sampleRate: SAMPLE_RATE }
+    { channelCount: SURROUND_CHANNEL_COUNT, codec: 'eac3', default: true, index: 1, language: 'eng', name: null, profile: null, sampleRate: SAMPLE_RATE },
+    { channelCount: STEREO_CHANNEL_COUNT, codec: 'aac', default: false, index: 5, language: null, name: 'Commentary', profile: 'LC', sampleRate: SAMPLE_RATE }
 ];
 const SUBTITLE_TRACKS: readonly SubtitleTrackDescription[] = [
     { codec: 'subrip', default: true, forced: false, index: TEXT_TRACK_INDEX, language: 'eng', name: null, textBased: true },

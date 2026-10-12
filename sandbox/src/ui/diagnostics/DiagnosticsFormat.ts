@@ -140,7 +140,7 @@ export function formatNormalizedError(error: number): string {
     return Number.isFinite(error) ? error.toFixed(NORMALIZED_ERROR_DECIMALS) : UNBOUNDED_ERROR_TEXT;
 }
 
-/** Formats a codec with its parameter string when it says more, such as hevc (hvc1.2.4.L153.B0). */
-export function formatCodec(codec: string, codecString: string | null): string {
-    return codecString === null || codecString === codec ? codec : `${codec} (${codecString})`;
+/** Formats a codec with its profile, such as hevc (Main 10). */
+export function formatCodec(codec: string, profile: string | null): string {
+    return profile === null ? codec : `${codec} (${profile})`;
 }
