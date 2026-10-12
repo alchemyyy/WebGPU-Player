@@ -349,7 +349,8 @@ const MISSING_PASS_NAME = 'Missing';
 const UNDECLARED_PARAMETER_NAME = 'radius';
 // A header without its required name, which fails on line 1 before any name is known, so the report names it by its preset index
 const UNNAMED_PASS_SOURCE = [ '//! shape: color', '//! hook: OUTPUT', '', 'fn apply(color: vec4f, position: vec2f) -> vec4f {', '    return color;', '}' ].join('\n');
-const UNNAMED_PASS_REPORT_NAME = 'pass 0';
+// The unnamed pass is the first of its preset, counted from 1 like the planner's positions
+const UNNAMED_PASS_REPORT_NAME = 'pass 1';
 const UNNAMED_PASS_DETAIL = "line 1: Missing required directive 'name'";
 // A header that names its pass before an unknown shape on line 2
 const UNKNOWN_SHAPE_PASS_NAME = 'Blur';
@@ -4487,6 +4488,36 @@ describe('WebGPUPresenter', () => {
         expect(frameInputs.every((frameInput: PresentationFrameInput): boolean => frameInput.skippedFrameCount === 0)).toBe(true);
         // One submit per frame, the redraw included
         expect(gpuHarness.devices[0].queueSubmit).toHaveBeenCalledTimes(2);
+    });
+
+    it('presents a frame the host pushes again for a layout refresh as a redraw, which leaves history alone', async () => {
+        const encode = vi.spyOn(PresentationExecutor.prototype, 'encode');
+        const metadata = createPQColorMetadata();
+        const { presenter } = await startRawRoutePresentation(metadata, 'I420P10', createHDRToSDRRenderSettings());
+        encode.mockClear();
+        const pushFrame = async (timestampMicroseconds: Microseconds, expectedPresentedFrameCount: number): Promise<void> => {
+            const frame = { ...createRawFrame('I420P10', metadata), timestampMicroseconds };
+            expect(presenter.presentDecodedFrame({
+                durationMicroseconds: RAW_FRAME_DURATION_MICROSECONDS,
+                frame,
+                mediaTimeMicroseconds: timestampMicroseconds,
+                outputMode: 'raw-planes',
+                videoEpoch: FIRST_VIDEO_EPOCH
+            }, 1)).toBe(true);
+            await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(expectedPresentedFrameCount));
+        };
+        const presentedFrameCount = presenter.getTelemetry().presentedFrameCount;
+
+        await pushFrame(RAW_FRAME_TIMESTAMP_MICROSECONDS, presentedFrameCount + 1);
+        await pushFrame(RAW_FRAME_TIMESTAMP_MICROSECONDS, presentedFrameCount + 2);
+        await pushFrame(NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS, presentedFrameCount + 3);
+
+        const frameInputs = encode.mock.calls.map((call: unknown[]): PresentationFrameInput => call[1] as PresentationFrameInput);
+        expect(frameInputs.map((frameInput: PresentationFrameInput) => [ frameInput.newFrame, frameInput.timestampMicroseconds ])).toEqual([
+            [ true, RAW_FRAME_TIMESTAMP_MICROSECONDS ],
+            [ false, RAW_FRAME_TIMESTAMP_MICROSECONDS ],
+            [ true, NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS ]
+        ]);
     });
 
     it('reports why a dual-layer route presents FEL frames as their base', async () => {

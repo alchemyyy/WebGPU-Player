@@ -524,7 +524,7 @@ function createPresetPass(presetPass: PresentationPresetPass, index: number, cla
         }
         return createExcludedPresetPass(null, {
             detail: `line ${error.line}: ${error.message}`,
-            name: error.passName ?? `${UNNAMED_PRESET_PASS_PREFIX}${index}`,
+            name: error.passName ?? `${UNNAMED_PRESET_PASS_PREFIX}${index + 1}`,
             reason: 'header-invalid'
         });
     }
@@ -950,15 +950,6 @@ function getDualLayerPresentation(
         return 'mel';
     }
     return composedEnhancementFrame ? 'fel' : 'fel-base-fallback';
-}
-
-function getDecodedFrameTiming(decodedFrame: DecodedPresentationFrame): FrameTiming {
-    return {
-        durationMicroseconds: decodedFrame.durationMicroseconds,
-        newFrame: true,
-        timestampMicroseconds: decodedFrame.mediaTimeMicroseconds,
-        videoEpoch: decodedFrame.videoEpoch ?? null
-    };
 }
 
 /** Presents frames from an owned HTML video without taking over playback. */
@@ -1632,7 +1623,7 @@ export default class WebGPUPresenter {
 
     /**
      * Replaces the user passes every plan includes, in preset order, and resolves with the plan report once an executor for them is installed, or at once outside a session.
-     * A pass that cannot run is left out and reported: 'header-invalid', named `pass <index>` when its header failed before declaring a name; 'duplicate-name'; a preset value its header does not declare ('parameter-unknown') or that is not finite ('parameter-invalid'); or 'compile-error', after which the plan is rebuilt without it.
+     * A pass that cannot run is left out and reported: 'header-invalid', named `pass <position>`, counted from 1, when its header failed before declaring a name; 'duplicate-name'; a preset value its header does not declare ('parameter-unknown') or that is not finite ('parameter-invalid'); or 'compile-error', after which the plan is rebuilt without it.
      * The preset outlives sessions, so the host sets it again only when it changes.
      */
     async setPresentationPreset(passes: readonly PresentationPresetPass[]): Promise<PlanReport> {
@@ -2815,7 +2806,7 @@ export default class WebGPUPresenter {
 
         const frameWidth = frame.displayWidth || frame.codedWidth;
         const frameHeight = frame.displayHeight || frame.codedHeight;
-        return this.submitFrame({ kind: 'external', source: frame }, frameWidth, frameHeight, getDecodedFrameTiming(decodedFrame));
+        return this.submitFrame({ kind: 'external', source: frame }, frameWidth, frameHeight, this.getDecodedFrameTiming(decodedFrame));
     }
 
     private renderDecodedRawFrame(
@@ -2859,7 +2850,7 @@ export default class WebGPUPresenter {
             { enhancementFrame: null, frame, kind: 'planes' },
             frame.displayWidth,
             frame.displayHeight,
-            getDecodedFrameTiming(decodedFrame)
+            this.getDecodedFrameTiming(decodedFrame)
         );
     }
 
@@ -2929,7 +2920,7 @@ export default class WebGPUPresenter {
             { enhancementFrame, frame, kind: 'planes' },
             frame.displayWidth,
             frame.displayHeight,
-            getDecodedFrameTiming(decodedFrame)
+            this.getDecodedFrameTiming(decodedFrame)
         );
         if (!submission || !dualLayerRPUData) {
             return submission;
@@ -3032,6 +3023,24 @@ export default class WebGPUPresenter {
         if (epochChanged || elapsedMicroseconds < 0 || jumped) {
             executor.resetHistory();
         }
+    }
+
+    /**
+     * Returns a pushed frame's timing.
+     * The host re-pushes the frame it last presented for a layout refresh; that frame is a redraw, which never advances history.
+     */
+    private getDecodedFrameTiming(decodedFrame: DecodedPresentationFrame): FrameTiming {
+        const videoEpoch = decodedFrame.videoEpoch ?? null;
+        const lastNewFrame = this.lastNewFrame;
+        const repeatsLastNewFrame = lastNewFrame !== null
+            && lastNewFrame.timestampMicroseconds === decodedFrame.mediaTimeMicroseconds
+            && lastNewFrame.videoEpoch === videoEpoch;
+        return {
+            durationMicroseconds: decodedFrame.durationMicroseconds,
+            newFrame: !repeatsLastNewFrame,
+            timestampMicroseconds: decodedFrame.mediaTimeMicroseconds,
+            videoEpoch
+        };
     }
 
     /** Starts temporal history over for a seek or a new generation; the next frame follows nothing. */
