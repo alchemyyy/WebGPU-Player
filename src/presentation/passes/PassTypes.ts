@@ -284,6 +284,8 @@ export type PlannedPass = {
     bindings: readonly PlannedBinding[]
     /** A complete WGSL module: `vertexMain` and `fragmentMain` for a render pass, `computeMain` for a compute pass. */
     code: string
+    /** The color steps the pass runs after its core, in order: built-in function names such as 'builtin.tone-map', and user pass names. */
+    colorSteps: readonly string[]
     coordinateMapping: PassCoordinateMapping
     indirectBufferId: string | null
     /** The texture whose size fills `presentation.inputSize`, or null when the pass reads the source. */

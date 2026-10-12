@@ -399,6 +399,7 @@ function createRenderPass(label: string, pass: Partial<PlannedPass>): PlannedPas
     return {
         bindings: [],
         code: `// ${label}`,
+        colorSteps: [],
         coordinateMapping: 'object-fit',
         indirectBufferId: null,
         inputTextureId: null,
