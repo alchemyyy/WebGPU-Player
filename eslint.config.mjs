@@ -51,8 +51,8 @@ export default tseslint.config(
             'array-callback-return': ['error', { 'checkForEach': true }],
             'curly': ['error', 'multi-line', 'consistent'],
             'default-case-last': 'error',
-            // Specifiers the node resolver cannot read, which tsc checks: the tsconfig path alias that tests import engine modules through, and package.json imports such as #wasm/
-            'import/no-unresolved': ['error', { 'ignore': ['^webgpu-player/', '^#'] }],
+            // Specifiers the node resolver cannot read, which tsc checks: the tsconfig path alias that tests import engine modules through, package.json imports such as #wasm/, and the sandbox's Vite asset URLs such as @ffmpeg/core?url
+            'import/no-unresolved': ['error', { 'ignore': ['^webgpu-player/', '^#', String.raw`\?url$`] }],
             'max-params': ['error', 7],
             'new-cap': [
                 'error',

@@ -59,7 +59,8 @@ const MEDIA_SIZE_TEXT = '1.50 GiB';
 const MEDIA_DURATION_MICROSECONDS = 3_723_456_000;
 const MEDIA_DURATION_TEXT = '1:02:03.456';
 const VIDEO_CODEC = 'hevc';
-const VIDEO_CODEC_STRING = 'hvc1.2.4.L153.B0';
+const VIDEO_PROFILE = 'Main 10';
+const VIDEO_LEVEL = 153;
 const DISPLAY_WIDTH = 3840;
 const DISPLAY_HEIGHT = 2160;
 const CODED_HEIGHT = 2176;
@@ -75,7 +76,7 @@ const SURROUND_CHANNEL_COUNT = 6;
 const STEREO_CHANNEL_COUNT = 2;
 const SAMPLE_RATE = 48_000;
 const SURROUND_CODEC = 'eac3';
-const SURROUND_CODEC_STRING = 'ec-3';
+const SURROUND_PROFILE = 'Dolby Digital Plus + Dolby Atmos';
 const COMMENTARY_NAME = 'Commentary';
 const SUBTITLE_PATH = 'films/Example (2024).en.srt';
 const SUBTITLE_LANGUAGE = 'eng';
@@ -264,7 +265,6 @@ describe('describePlaybackInfo', () => {
                 videoTracks: [ createVideoTrack({
                     bitDepth: BIT_DEPTH,
                     codec: VIDEO_CODEC,
-                    codecString: VIDEO_CODEC_STRING,
                     codedHeight: CODED_HEIGHT,
                     codedWidth: DISPLAY_WIDTH,
                     color: { matrix: 'bt2020-ncl', primaries: 'bt2020', range: 'limited', transfer: 'pq' },
@@ -274,7 +274,9 @@ describe('describePlaybackInfo', () => {
                     dynamicRange: 'dolby-vision',
                     frameRate: FRAME_RATE,
                     language: VIDEO_LANGUAGE,
-                    name: VIDEO_NAME
+                    level: VIDEO_LEVEL,
+                    name: VIDEO_NAME,
+                    profile: VIDEO_PROFILE
                 }) ]
             }),
             tracks: { ...initialState.tracks, videoTrackIndex: 0 }
@@ -282,7 +284,7 @@ describe('describePlaybackInfo', () => {
         const section = requireSection(describePlaybackInfo(state), VIDEO_SECTION_ID);
 
         expect(section.title).toBe('Video #0, selected');
-        expect(requireRow(section, 'Codec').value).toBe(`${VIDEO_CODEC} (${VIDEO_CODEC_STRING})`);
+        expect(requireRow(section, 'Codec').value).toBe(`${VIDEO_CODEC} (${VIDEO_PROFILE}), level ${VIDEO_LEVEL}`);
         expect(requireRow(section, 'Size').value).toBe(`${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}, coded ${DISPLAY_WIDTH}x${CODED_HEIGHT}`);
         expect(requireRow(section, 'Frame rate').value).toBe(FRAME_RATE_TEXT);
         expect(requireRow(section, 'Bit depth').value).toBe(`${BIT_DEPTH}-bit`);
@@ -299,10 +301,10 @@ describe('describePlaybackInfo', () => {
         const surroundTrack = createAudioTrack({
             channelCount: SURROUND_CHANNEL_COUNT,
             codec: SURROUND_CODEC,
-            codecString: SURROUND_CODEC_STRING,
             default: true,
             index: 1,
-            language: VIDEO_LANGUAGE
+            language: VIDEO_LANGUAGE,
+            profile: SURROUND_PROFILE
         });
         const commentaryTrack = createAudioTrack({ index: 2, name: COMMENTARY_NAME });
         const state = createState({
@@ -312,7 +314,7 @@ describe('describePlaybackInfo', () => {
         const section = requireSection(describePlaybackInfo(state), AUDIO_TRACKS_SECTION_ID);
 
         expect(section.rows.map((row: InfoRow): string => row.value)).toEqual([
-            `${SURROUND_CODEC} (${SURROUND_CODEC_STRING}), ${SURROUND_CHANNEL_COUNT} ch, 48 kHz, ${VIDEO_LANGUAGE}, default`,
+            `${SURROUND_CODEC} (${SURROUND_PROFILE}), ${SURROUND_CHANNEL_COUNT} ch, 48 kHz, ${VIDEO_LANGUAGE}, default`,
             `${commentaryTrack.codec}, ${commentaryTrack.channelCount} ch, 48 kHz, '${COMMENTARY_NAME}', selected`
         ]);
     });

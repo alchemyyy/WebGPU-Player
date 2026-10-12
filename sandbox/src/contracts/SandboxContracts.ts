@@ -83,8 +83,6 @@ export type DynamicRange = 'dolby-vision' | 'hdr10' | 'hdr10-plus' | 'hlg' | 'sd
 export type VideoTrackDescription = Readonly<{
     bitDepth: number | null
     codec: string
-    /** The codec parameter string, such as hvc1.2.4.L153.B0 */
-    codecString: string | null
     codedHeight: number
     codedWidth: number
     color: ColorDescription | null
@@ -95,17 +93,22 @@ export type VideoTrackDescription = Readonly<{
     frameRate: number | null
     index: number
     language: string | null
+    /** The codec level as ffprobe reports it, such as 153 for HEVC level 5.1 */
+    level: number | null
     name: string | null
+    /** The codec profile, such as Main 10 */
+    profile: string | null
 }>;
 
 export type AudioTrackDescription = Readonly<{
     channelCount: number
     codec: string
-    codecString: string | null
     default: boolean
     index: number
     language: string | null
     name: string | null
+    /** The codec profile, such as DTS-HD MA */
+    profile: string | null
     sampleRate: number
 }>;
 

@@ -280,7 +280,6 @@ export function createVideoTrack(overrides: Partial<VideoTrackDescription> = {})
     return {
         bitDepth: null,
         codec: TEST_VIDEO_CODEC,
-        codecString: null,
         codedHeight: TEST_HEIGHT,
         codedWidth: TEST_WIDTH,
         color: null,
@@ -291,7 +290,9 @@ export function createVideoTrack(overrides: Partial<VideoTrackDescription> = {})
         frameRate: null,
         index: 0,
         language: null,
+        level: null,
         name: null,
+        profile: null,
         ...overrides
     };
 }
@@ -300,7 +301,7 @@ export function createAudioTrack(overrides: Partial<AudioTrackDescription> = {})
     return {
         channelCount: TEST_CHANNEL_COUNT,
         codec: TEST_AUDIO_CODEC,
-        codecString: null,
+        profile: null,
         default: false,
         index: 1,
         language: null,

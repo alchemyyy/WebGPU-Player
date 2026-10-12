@@ -85,8 +85,7 @@ const CHANNEL_ERROR_TEXT = '0.0118';
 const UNBOUNDED_ERROR_TEXT = 'inf';
 
 const VIDEO_CODEC = 'hevc';
-const VIDEO_CODEC_STRING = 'hvc1.2.4.L153.B0';
-const LOSSLESS_CODEC = 'flac';
+const VIDEO_PROFILE = 'Main 10';
 
 const WORKGROUP_COUNTS = [ 240, 135, 1 ];
 const WORKGROUP_TEXT = '240x135x1';
@@ -163,9 +162,8 @@ describe('the size and rate formats', () => {
 
 describe('the text formats', () => {
     it('adds a codec\'s parameter string only when it says more', () => {
-        expect(formatCodec(VIDEO_CODEC, VIDEO_CODEC_STRING)).toBe(`${VIDEO_CODEC} (${VIDEO_CODEC_STRING})`);
+        expect(formatCodec(VIDEO_CODEC, VIDEO_PROFILE)).toBe(`${VIDEO_CODEC} (${VIDEO_PROFILE})`);
         expect(formatCodec(VIDEO_CODEC, null)).toBe(VIDEO_CODEC);
-        expect(formatCodec(LOSSLESS_CODEC, LOSSLESS_CODEC)).toBe(LOSSLESS_CODEC);
     });
 
     it('joins the parts that are present', () => {

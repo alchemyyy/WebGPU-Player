@@ -185,7 +185,7 @@ function describeMediaSection(media: MediaDescription): InfoSection {
 
 function describeVideoTrackSection(track: VideoTrackDescription, tracks: TrackState): InfoSection {
     const rows: InfoRow[] = [];
-    rows.push(createRow('Codec', formatCodec(track.codec, track.codecString)));
+    rows.push(createRow('Codec', joinPresentValues([ formatCodec(track.codec, track.profile), track.level === null ? null : `level ${track.level}` ])));
     rows.push(createRow('Size', describeVideoSize(track)));
     rows.push(createRow('Frame rate', track.frameRate === null ? MISSING_VALUE_TEXT : formatFrameRate(track.frameRate)));
     rows.push(createRow('Bit depth', track.bitDepth === null ? MISSING_VALUE_TEXT : `${track.bitDepth}-bit`));
@@ -238,7 +238,7 @@ function describeAudioTracksSection(audioTracks: readonly AudioTrackDescription[
     const rows: InfoRow[] = [];
     for (const track of audioTracks) {
         rows.push(createRow(`#${track.index}`, joinPresentValues([
-            formatCodec(track.codec, track.codecString),
+            formatCodec(track.codec, track.profile),
             `${track.channelCount} ch`,
             formatSampleRate(track.sampleRate),
             track.language,

@@ -5,6 +5,7 @@ import { createBuiltinChain } from 'webgpu-player/presentation/passes/builtin/Bu
 import { parsePassManifest } from 'webgpu-player/presentation/passes/PassManifest';
 import type { PlannedPass, PresentationPlan } from 'webgpu-player/presentation/passes/PassTypes';
 import { planPresentation } from 'webgpu-player/presentation/passes/PresentationPlanner';
+import { TEMPORAL_BLEND_KERNEL_PASS } from 'webgpu-player/presentation/passes/examples/TemporalBlendKernelPass';
 import { createDefaultRenderSettings } from 'webgpu-player/presentation/RenderSettings';
 
 import {
@@ -15,7 +16,6 @@ import {
     type PipelineGraphLayout,
     type PipelineGraphNode
 } from '../../../sandbox/src/ui/diagnostics/PipelineGraphLayout';
-import { TEMPORAL_BLEND_KERNEL_PASS } from '../../presentation/passes/examples/TemporalBlendKernelPass';
 import {
     createActiveRoute,
     createPlannedPass,

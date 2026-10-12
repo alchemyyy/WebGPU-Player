@@ -29,6 +29,8 @@
   "devDependencies": {
     "@eslint-community/eslint-plugin-eslint-comments": "4.7.2",
     "@eslint/js": "9.39.5",
+    "@ffmpeg/core": "0.12.10",
+    "@ffmpeg/ffmpeg": "0.12.15",
     "@stylistic/eslint-plugin": "4.4.1",
     "@types/node": "20.11.4",
     "@webgpu/types": "0.1.71",

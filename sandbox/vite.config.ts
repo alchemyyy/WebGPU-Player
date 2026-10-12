@@ -11,6 +11,8 @@ const SANDBOX_ROOT = fileURLToPath(new URL('.', import.meta.url));
 const SANDBOX_PORT = 5180;
 
 export default defineConfig({
+    // ffmpeg.wasm starts its worker from a URL relative to its own module, which pre-bundling would move
+    optimizeDeps: { exclude: [ '@ffmpeg/ffmpeg' ] },
     // The engine's default asset base is libraries/ beside the page, which this maps to the asset build in bin/libraries/
     publicDir: `${ENGINE_ROOT}${LAYOUT.outputDirectory}`,
     resolve: {
@@ -20,5 +22,7 @@ export default defineConfig({
     server: {
         fs: { allow: [ searchForWorkspaceRoot(process.cwd()), ENGINE_ROOT ] },
         port: SANDBOX_PORT
-    }
+    },
+    // ffmpeg.wasm's worker is an ES module
+    worker: { format: 'es' }
 });
