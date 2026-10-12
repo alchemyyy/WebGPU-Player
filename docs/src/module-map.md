@@ -39,6 +39,7 @@ The presentation pipeline: each route's fixed signal and default color track, us
 - `PresentationExecutor.ts`: compiles a plan, owns its textures, history rings, buffers, and bind groups, and records each frame without submitting.
 - `PlaneTextureSource.ts`: the plane route's ingress: layout validation that names the failed check, one integer texture per plane, and the uploads.
 - `builtin/`: the built-in signals (`BuiltinSignals.ts`), color functions (`BuiltinColorFunctions.ts`), and route chains (`BuiltinChains.ts`), and a Catmull-Rom scaler in the user pass format.
+- `examples/`: example user passes (a saturation color pass, a sharpen kernel, and a temporal blend kernel), which the presenter tests also run, and `ExamplePasses.ts`, the catalog a host offers: each example and the Catmull-Rom scaler, with a stable id and the name its header declares.
 
 ## color/
 

@@ -12,9 +12,9 @@ import type {
     PassWorkgroup
 } from 'webgpu-player/presentation/passes/PassTypes';
 
-import { SATURATION_COLOR_PASS } from './examples/SaturationColorPass';
-import { SHARPEN_KERNEL_PASS } from './examples/SharpenKernelPass';
-import { TEMPORAL_BLEND_KERNEL_PASS } from './examples/TemporalBlendKernelPass';
+import { SATURATION_COLOR_PASS } from 'webgpu-player/presentation/passes/examples/SaturationColorPass';
+import { SHARPEN_KERNEL_PASS } from 'webgpu-player/presentation/passes/examples/SharpenKernelPass';
+import { TEMPORAL_BLEND_KERNEL_PASS } from 'webgpu-player/presentation/passes/examples/TemporalBlendKernelPass';
 
 const LF = '\n';
 const CRLF = '\r\n';

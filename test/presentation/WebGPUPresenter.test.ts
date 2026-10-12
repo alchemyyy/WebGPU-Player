@@ -265,8 +265,8 @@ import {
     type RecordedBufferWrite,
     type WebGPUDeviceHarness
 } from '../helpers/webGPUDeviceHarness';
-import { SATURATION_COLOR_PASS } from './passes/examples/SaturationColorPass';
-import { SHARPEN_KERNEL_PASS } from './passes/examples/SharpenKernelPass';
+import { SATURATION_COLOR_PASS } from 'webgpu-player/presentation/passes/examples/SaturationColorPass';
+import { SHARPEN_KERNEL_PASS } from 'webgpu-player/presentation/passes/examples/SharpenKernelPass';
 
 type MockFunction = ReturnType<typeof vi.fn>;
 
