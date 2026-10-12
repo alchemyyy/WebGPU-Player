@@ -38,11 +38,14 @@ import type {
 /** A pass header that cannot be parsed, with the 1-based source line it failed on. */
 export class PassManifestError extends Error {
     readonly line: number;
+    /** The pass's name when the header declared one before the check that failed, otherwise null. */
+    readonly passName: string | null;
 
-    constructor(message: string, line: number) {
+    constructor(message: string, line: number, passName: string | null = null) {
         super(message);
         this.name = 'PassManifestError';
         this.line = line;
+        this.passName = passName;
     }
 }
 
@@ -654,10 +657,8 @@ function readParameters(entries: readonly ParameterEntry[]): PassParameter[] {
     return parameters;
 }
 
-/** Parses and validates a user pass's `//!` header into a typed manifest. */
-export function parsePassManifest(source: string): PassManifest {
-    const header = readHeader(source);
-    const name = readName(header);
+/** Reads every directive after the name into the manifest. */
+function readManifest(header: PassHeader, name: string): PassManifest {
     const shape = readWord(requireEntry(header, 'shape'), SHAPES, 'shape');
     requireDirectivesOfShape(header, shape);
     const replaces = readReplaces(header);
@@ -686,4 +687,21 @@ export function parsePassManifest(source: string): PassManifest {
         when,
         workgroup
     };
+}
+
+/**
+ * Parses and validates a user pass's `//!` header into a typed manifest.
+ * A failure after the name was read carries that name, so a report can name the pass.
+ */
+export function parsePassManifest(source: string): PassManifest {
+    const header = readHeader(source);
+    const name = readName(header);
+    try {
+        return readManifest(header, name);
+    } catch (error) {
+        if (error instanceof PassManifestError) {
+            throw new PassManifestError(error.message, error.line, name);
+        }
+        throw error;
+    }
 }

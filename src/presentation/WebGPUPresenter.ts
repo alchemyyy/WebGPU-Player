@@ -46,11 +46,18 @@ import {
     type HDR10PlusFrameMetadata
 } from '../video/hdr/HDR10PlusMetadata';
 import { createBuiltinChain } from './passes/builtin/BuiltinChains';
+import { parsePassManifest, PassManifestError } from './passes/PassManifest';
 import type {
     BuiltinChainConfiguration,
+    PassManifest,
+    PassParameter,
+    PassRejection,
     PlanFacts,
     PlannedOutput,
+    PlannedParameterSet,
+    PlanReport,
     PlanRequest,
+    PresentationCompileMessage,
     PresentationFrameSource,
     PresentationPlan
 } from './passes/PassTypes';
@@ -116,6 +123,10 @@ const UNKNOWN_PLAN_DIMENSION = 1;
 // The native and identity SDR route: the browser's own conversion, presented as it is
 const EXTERNAL_IDENTITY_CHAIN_CONFIGURATION: BuiltinChainConfiguration = { route: 'external-identity' };
 const NEUTRAL_BT709_COLOR_DESCRIPTION = 'bt709:bt709:bt709:limited';
+// Names a preset pass whose header failed before it declared a name, followed by the pass's 0-based preset index
+const UNNAMED_PRESET_PASS_PREFIX = 'pass ';
+// Marks a compile error in engine-generated code, whose line is in the generated module rather than in a pass source
+const ENGINE_COMPILE_DETAIL_PREFIX = 'engine ';
 
 function waitForWebGPUResourceOperation<Value>(
     promise: Promise<Value>
@@ -262,6 +273,12 @@ export type ExternalHDRColorPipelineConfiguration = {
     settings: HDRToSDRRenderSettings
 };
 
+/** One pass of a presentation preset: its WGSL source with its `//!` header, and the parameter values the host stored for it. */
+export type PresentationPresetPass = {
+    parameters: Readonly<Record<string, number>>
+    source: string
+};
+
 export type PresentationColorPipelineConfiguration = (
     | ExternalDolbyVisionColorPipelineConfiguration
     | ExternalHDRColorPipelineConfiguration
@@ -381,16 +398,32 @@ type PresentedFrameTiming = {
     videoEpoch: number | null
 };
 
-/** An executor built for the current plan inputs, the active executor when it already renders them, or what failed. */
+/**
+ * An executor built for the current plan inputs, the active executor when it already renders them, or what failed.
+ * A result names the preset it planned, which the plan report reads its planner results against.
+ */
 type ExecutorBuildResult =
-    | { executor: PresentationExecutor; kind: 'built'; plan: PresentationPlan; planKey: string }
+    | { executor: PresentationExecutor; kind: 'built'; plan: PresentationPlan; planKey: string; presetPasses: readonly PresetPass[] }
     | { detail: string; kind: 'failed' }
-    | { kind: 'current' };
+    | { kind: 'current'; presetPasses: readonly PresetPass[] };
+
+type BuiltExecutor = Extract<ExecutorBuildResult, { kind: 'built' }>;
 
 type ExecutorBuild = {
     device: GPUDevice
     promise: Promise<string | null>
     revision: number
+};
+
+/** A preset pass as plans take it: its manifest and current parameter values, or the presenter's check that keeps it out of every plan. */
+type PresetPass = {
+    /** Why plans leave the pass out: its header, its name, its preset values, or its compile errors; null while plans include it. */
+    exclusion: PassRejection | null
+    /** Null when the header failed to parse. */
+    manifest: PassManifest | null
+    name: string
+    /** The preset's values, then each live change; a parameter without one keeps its declared default. */
+    parameterValues: Map<string, number>
 };
 
 function getMonotonicMicroseconds(): Microseconds {
@@ -463,6 +496,127 @@ function describeExecutorCreationError(error: unknown): string {
             'compile: no messages';
     }
     return `executor: ${getErrorMessage(error)}`;
+}
+
+/** Returns a route's chain configuration with HDR output selected while it is active; the identity route has no HDR output. */
+function withHDROutput(configuration: BuiltinChainConfiguration, hdrOutput: boolean): BuiltinChainConfiguration {
+    if (!hdrOutput || configuration.route === 'external-identity') {
+        return configuration;
+    }
+    return { ...configuration, hdrOutput };
+}
+
+function createExcludedPresetPass(manifest: PassManifest | null, exclusion: PassRejection): PresetPass {
+    return { exclusion, manifest, name: exclusion.name, parameterValues: new Map<string, number>() };
+}
+
+/**
+ * Parses one preset pass and checks its preset values.
+ * A header that fails to parse, a name an earlier pass holds, or a value its header does not declare or that is not finite keeps it out of every plan.
+ */
+function createPresetPass(presetPass: PresentationPresetPass, index: number, claimedNames: Set<string>): PresetPass {
+    let manifest: PassManifest;
+    try {
+        manifest = parsePassManifest(presetPass.source);
+    } catch (error) {
+        if (!(error instanceof PassManifestError)) {
+            throw error;
+        }
+        return createExcludedPresetPass(null, {
+            detail: `line ${error.line}: ${error.message}`,
+            name: error.passName ?? `${UNNAMED_PRESET_PASS_PREFIX}${index}`,
+            reason: 'header-invalid'
+        });
+    }
+    const name = manifest.name;
+    if (claimedNames.has(name)) {
+        return createExcludedPresetPass(manifest, { detail: `position ${index + 1}`, name, reason: 'duplicate-name' });
+    }
+    claimedNames.add(name);
+    const parameterValues = new Map<string, number>();
+    for (const [ parameterName, value ] of Object.entries(presetPass.parameters)) {
+        if (!manifest.parameters.some((parameter: PassParameter): boolean => parameter.name === parameterName)) {
+            return createExcludedPresetPass(manifest, { detail: `'${parameterName}'`, name, reason: 'parameter-unknown' });
+        }
+        if (!Number.isFinite(value)) {
+            return createExcludedPresetPass(manifest, { detail: `'${parameterName}' ${value}`, name, reason: 'parameter-invalid' });
+        }
+        parameterValues.set(parameterName, value);
+    }
+    return { exclusion: null, manifest, name, parameterValues };
+}
+
+function isPlannedPresetPass(presetPass: PresetPass): presetPass is PresetPass & { manifest: PassManifest } {
+    return presetPass.manifest !== null && presetPass.exclusion === null;
+}
+
+/** Returns the preset pass plans know by a name: the first one that parsed, since later passes of its name stay out of plans. */
+function findPresetPass(presetPasses: readonly PresetPass[], passName: string): PresetPass | undefined {
+    return presetPasses.find((presetPass: PresetPass): boolean => presetPass.manifest !== null && presetPass.name === passName);
+}
+
+/** Writes the preset's value of each parameter the plan declares; a parameter without one keeps its declared default. */
+function applyParameterValues(executor: PresentationExecutor, plan: PresentationPlan, presetPasses: readonly PresetPass[]): void {
+    for (const parameterSet of plan.parameterSets) {
+        const parameterValues = findPresetPass(presetPasses, parameterSet.passName)?.parameterValues;
+        for (const parameter of parameterSet.parameters) {
+            const value = parameterValues?.get(parameter.name);
+            if (value !== undefined) {
+                executor.setParameter(parameterSet.passName, parameter.name, value);
+            }
+        }
+    }
+}
+
+/** Returns the manifests of the preset passes plans include, in preset order. */
+function getPlannedManifests(presetPasses: readonly PresetPass[]): PassManifest[] {
+    const manifests: PassManifest[] = [];
+    for (const presetPass of presetPasses) {
+        if (isPlannedPresetPass(presetPass)) {
+            manifests.push(presetPass.manifest);
+        }
+    }
+    return manifests;
+}
+
+function formatCompileDetail(message: PresentationCompileMessage): string {
+    return `line ${message.line}:${message.column}: ${message.message}`;
+}
+
+/**
+ * Excludes each preset pass a plan's compile errors name, with its first message, and returns whether it excluded any.
+ * Errors only in engine code exclude every user pass of the plan: such code calls into the user bodies fused beside it, and without them the plan is the default plan.
+ */
+function excludeCompileFailures(error: PresentationCompileError, plan: PresentationPlan, presetPasses: readonly PresetPass[]): boolean {
+    const details = new Map<string, string>();
+    for (const message of error.messages) {
+        if (message.passName !== null && !details.has(message.passName)) {
+            details.set(message.passName, formatCompileDetail(message));
+        }
+    }
+    const engineMessage = error.messages.find((message: PresentationCompileMessage): boolean => message.passName === null);
+    if (details.size === 0 && engineMessage !== undefined) {
+        for (const passName of plan.report.activePasses) {
+            details.set(passName, `${ENGINE_COMPILE_DETAIL_PREFIX}${formatCompileDetail(engineMessage)}`);
+        }
+    }
+    let excluded = false;
+    for (const presetPass of presetPasses) {
+        const detail = details.get(presetPass.name);
+        if (detail !== undefined && isPlannedPresetPass(presetPass)) {
+            presetPass.exclusion = { detail, name: presetPass.name, reason: 'compile-error' };
+            excluded = true;
+        }
+    }
+    return excluded;
+}
+
+/** Returns whether two layouts give a plan the same output and source sizes. */
+function layoutPlanSizesMatch(first: CachedPresentationLayout, second: CachedPresentationLayout): boolean {
+    return first.presentation.viewportHeight === second.presentation.viewportHeight
+        && first.presentation.viewportWidth === second.presentation.viewportWidth
+        && first.videoHeight === second.videoHeight
+        && first.videoWidth === second.videoWidth;
 }
 
 function createTelemetry(settings: RenderSettings): PresentationTelemetry {
@@ -845,9 +999,13 @@ export default class WebGPUPresenter {
     private executorBuild: ExecutorBuild | null = null;
     private executorPlan: PresentationPlan | null = null;
     private executorPlanKey: string | null = null;
+    // The preset the active executor's plan was built from, so the report never reads one preset's plan against another
+    private executorPresetPasses: readonly PresetPass[] | null = null;
     // The plan revision the active executor answers
     private executorRevision = -1;
     private fallbackLatched = false;
+    // The host's HDR output choice, which applies to HDR sources only and outlives sessions
+    private hdrOutputEnabled = false;
     private initializationFailureDetail = 'navigator.gpu undefined';
     private initializationFailureReason: PresentationFallbackReason = 'gpu-unavailable';
     private initializationPromise: Promise<boolean> | null = null;
@@ -858,9 +1016,13 @@ export default class WebGPUPresenter {
     private pendingFrameCallback: PendingFrameCallback | null = null;
     private pendingColorConfiguration: PendingColorConfiguration | null = null;
     private pendingSubmissionValidation: PendingSubmissionValidation | null = null;
-    // Advances whenever a plan input changes: the route, the device, or the output
+    // The running rebuild for changed plan inputs, which builds for the newest revision before it ends
+    private planInputsApplication: Promise<void> | null = null;
+    // Advances whenever a plan input changes: the route, the device, the output, the preset, or a size a preset pass reads
     private planRevision = 0;
     private presentationLayoutDirty = true;
+    // The host's preset, in preset order, which outlives sessions
+    private presetPasses: readonly PresetPass[] = [];
     // The render settings uniform the active route last wrote, which a new executor takes over
     private renderSettingsData: ArrayBuffer | null = null;
     private resizeObserver: ResizeObserver | null = null;
@@ -1466,6 +1628,132 @@ export default class WebGPUPresenter {
         this.automaticInputPeakNits = automaticInputPeakNits;
         this.requestDecodedPresentationRefresh(generation);
         return true;
+    }
+
+    /**
+     * Replaces the user passes every plan includes, in preset order, and resolves with the plan report once an executor for them is installed, or at once outside a session.
+     * A pass that cannot run is left out and reported: 'header-invalid', named `pass <index>` when its header failed before declaring a name; 'duplicate-name'; a preset value its header does not declare ('parameter-unknown') or that is not finite ('parameter-invalid'); or 'compile-error', after which the plan is rebuilt without it.
+     * The preset outlives sessions, so the host sets it again only when it changes.
+     */
+    async setPresentationPreset(passes: readonly PresentationPresetPass[]): Promise<PlanReport> {
+        const claimedNames = new Set<string>();
+        const presetPasses: PresetPass[] = [];
+        for (let index = 0; index < passes.length; index += 1) {
+            presetPasses.push(createPresetPass(passes[index], index, claimedNames));
+        }
+        this.presetPasses = presetPasses;
+        this.planRevision += 1;
+        await this.applyPlanInputs();
+        return this.getPresentationPlanReport();
+    }
+
+    /**
+     * Changes one parameter of a preset pass live, without replanning: the active executor takes it from the next frame, a paused frame redraws, and later executors keep it.
+     * Integer parameters round and values outside the declared range clamp.
+     * A pass outside the preset ('pass-unknown'), an undeclared parameter ('parameter-unknown'), or a value that is not finite ('parameter-invalid') throws a RangeError.
+     */
+    setPresentationParameter(passName: string, parameterName: string, value: number): void {
+        const presetPass = findPresetPass(this.presetPasses, passName);
+        if (!presetPass?.manifest) {
+            throw new RangeError(`pass-unknown: '${passName}'`);
+        }
+        if (!presetPass.manifest.parameters.some((parameter: PassParameter): boolean => parameter.name === parameterName)) {
+            throw new RangeError(`parameter-unknown: '${passName}' '${parameterName}'`);
+        }
+        if (!Number.isFinite(value)) {
+            throw new RangeError(`parameter-invalid: '${passName}' '${parameterName}' ${value}`);
+        }
+        presetPass.parameterValues.set(parameterName, value);
+        const executor = this.executor;
+        // An executor still running an earlier preset may hold a pass of this name without the parameter
+        const parameterSet = this.executorPlan?.parameterSets.find(
+            (candidate: PlannedParameterSet): boolean => candidate.passName === passName
+        );
+        if (!executor || !parameterSet?.parameters.some((parameter: PassParameter): boolean => parameter.name === parameterName)) {
+            return;
+        }
+        executor.setParameter(passName, parameterName, value);
+        this.redrawCurrentFrame(this.activeGeneration);
+    }
+
+    /**
+     * Returns the active plan's report over every preset pass, in preset order: the passes it runs, and each pass it leaves out with the failed check and a terse detail.
+     * Passes the presenter keeps out of every plan are reported as well, and only those while no active plan was built from the current preset.
+     */
+    getPresentationPlanReport(): PlanReport {
+        const planReport = this.executorPresetPasses === this.presetPasses ? this.executorPlan?.report : undefined;
+        const plannerRejections = new Map<string, PassRejection>();
+        for (const rejection of planReport?.inactivePasses ?? []) {
+            plannerRejections.set(rejection.name, rejection);
+        }
+        const inactivePasses: PassRejection[] = [];
+        for (const presetPass of this.presetPasses) {
+            const rejection = presetPass.exclusion ?? plannerRejections.get(presetPass.name);
+            if (rejection) {
+                inactivePasses.push({ ...rejection });
+            }
+        }
+        return { activePasses: [ ...planReport?.activePasses ?? [] ], inactivePasses };
+    }
+
+    /**
+     * Selects HDR output, off by default: an HDR source then presents on an rgba16float canvas with extended tone mapping, mapped to the render settings' outputPeakNits as the display peak and paperWhiteNits as SDR white.
+     * SDR sources keep the SDR canvas. The choice outlives sessions and resolves once an executor for it is installed.
+     */
+    async setHDROutputEnabled(enabled: boolean): Promise<void> {
+        if (enabled === this.hdrOutputEnabled) {
+            return;
+        }
+        this.hdrOutputEnabled = enabled;
+        this.planRevision += 1;
+        await this.applyPlanInputs();
+    }
+
+    /**
+     * Builds the executor for changed plan inputs during a session and redraws with it; concurrent callers share one run, which builds for the newest revision before it ends.
+     * Outside a session, or before the device exists, the next executor built takes the inputs, so nothing is built ahead of a play request; a failed build falls the session back.
+     */
+    private applyPlanInputs(): Promise<void> {
+        if (!this.sessionActive) {
+            return Promise.resolve();
+        }
+        this.planInputsApplication ??= this.runPlanInputsApplication();
+        return this.planInputsApplication;
+    }
+
+    private async runPlanInputsApplication(): Promise<void> {
+        const generation = this.activeGeneration;
+        const previousExecutor = this.executor;
+        let failure: string | null = null;
+        try {
+            do {
+                failure = await this.ensureDesiredExecutor();
+            } while (failure === null && this.executorRevision !== this.planRevision);
+        } finally {
+            // Cleared in the same microtask as the last revision check, so a later change starts a run of its own
+            this.planInputsApplication = null;
+        }
+        if (this.device === null || !this.isCurrent(generation) || this.fallbackLatched) {
+            return;
+        }
+        if (failure !== null) {
+            this.fallback(generation, 'pipeline-creation-failed', failure);
+            return;
+        }
+        if (this.executor !== previousExecutor) {
+            this.redrawCurrentFrame(generation);
+        }
+    }
+
+    /** Redraws the presented frame after a change to its pixels: a pushed session asks the host to present again, and a paused element redraws its frame. */
+    private redrawCurrentFrame(generation: number): void {
+        if (this.decodedFramePushActive) {
+            this.requestDecodedPresentationRefresh(generation);
+            return;
+        }
+        if (this.surface?.video.paused) {
+            this.renderCurrentFrameOrFallback(generation);
+        }
     }
 
     private async prepareColorPipeline(
@@ -2106,6 +2394,7 @@ export default class WebGPUPresenter {
         switch (result.kind) {
             case 'current':
                 this.executorRevision = revision;
+                this.executorPresetPasses = result.presetPasses;
                 return null;
             case 'failed':
                 return result.detail;
@@ -2114,62 +2403,78 @@ export default class WebGPUPresenter {
                     result.executor.destroy();
                     return null;
                 }
-                this.installExecutor(result.executor, result.plan, result.planKey, revision);
+                this.installExecutor(result, revision);
                 return null;
         }
     }
 
-    /** Plans the route's chain for the current facts and creates its executor, unless the active executor already renders that plan. */
+    /**
+     * Plans the route's chain and the preset for the current facts and creates its executor, unless the active executor already renders that plan.
+     * A preset pass that fails to compile is excluded with its error, and the plan is rebuilt without it.
+     */
     private async buildExecutor(device: GPUDevice, canvasFormat: GPUTextureFormat): Promise<ExecutorBuildResult> {
-        let plan: PresentationPlan;
-        try {
-            plan = planPresentation(this.createPlanRequest(device, canvasFormat));
-        } catch (error) {
-            return { detail: `plan: ${getErrorMessage(error)}`, kind: 'failed' };
+        // A preset replaced during the build excludes nothing from its successor
+        const presetPasses = this.presetPasses;
+        for (;;) {
+            let plan: PresentationPlan;
+            try {
+                plan = planPresentation(this.createPlanRequest(device, canvasFormat, presetPasses));
+            } catch (error) {
+                return { detail: `plan: ${getErrorMessage(error)}`, kind: 'failed' };
+            }
+            const planKey = getPlanKey(plan);
+            if (this.executor && this.device === device && this.executorPlanKey === planKey) {
+                return { kind: 'current', presetPasses };
+            }
+            const executorPromise = PresentationExecutor.create(device, plan);
+            let executorResult: PresentationExecutor | typeof WEBGPU_RESOURCE_OPERATION_TIMEOUT;
+            try {
+                executorResult = await waitForWebGPUResourceOperation(executorPromise);
+            } catch (error) {
+                if (error instanceof PresentationCompileError && excludeCompileFailures(error, plan, presetPasses)) {
+                    continue;
+                }
+                return { detail: describeExecutorCreationError(error), kind: 'failed' };
+            }
+            if (executorResult === WEBGPU_RESOURCE_OPERATION_TIMEOUT) {
+                void executorPromise.then((lateExecutor: PresentationExecutor): void => {
+                    lateExecutor.destroy();
+                }, (): void => undefined);
+                return {
+                    detail: `executor: timeout after ${microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS)} ms`,
+                    kind: 'failed'
+                };
+            }
+            return { executor: executorResult, kind: 'built', plan, planKey, presetPasses };
         }
-        const planKey = getPlanKey(plan);
-        if (this.executor && this.device === device && this.executorPlanKey === planKey) {
-            return { kind: 'current' };
-        }
-        const executorPromise = PresentationExecutor.create(device, plan);
-        let executorResult: PresentationExecutor | typeof WEBGPU_RESOURCE_OPERATION_TIMEOUT;
-        try {
-            executorResult = await waitForWebGPUResourceOperation(executorPromise);
-        } catch (error) {
-            return { detail: describeExecutorCreationError(error), kind: 'failed' };
-        }
-        if (executorResult === WEBGPU_RESOURCE_OPERATION_TIMEOUT) {
-            void executorPromise.then((lateExecutor: PresentationExecutor): void => {
-                lateExecutor.destroy();
-            }, (): void => undefined);
-            return {
-                detail: `executor: timeout after ${microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS)} ms`,
-                kind: 'failed'
-            };
-        }
-        return { executor: executorResult, kind: 'built', plan, planKey };
     }
 
-    /** Returns the plan request of the route's chain: SDR output in the canvas format, and the best-known facts. */
-    private createPlanRequest(device: GPUDevice, canvasFormat: GPUTextureFormat): PlanRequest {
+    /** Returns the plan request of the route's chain and the planned preset passes: the canvas output, HDR while HDR output is active, and the best-known facts. */
+    private createPlanRequest(device: GPUDevice, canvasFormat: GPUTextureFormat, presetPasses: readonly PresetPass[]): PlanRequest {
+        const hdrOutput = this.isHDROutputActive();
         return {
-            chain: createBuiltinChain(this.desiredChainConfiguration),
+            chain: createBuiltinChain(withHDROutput(this.desiredChainConfiguration, hdrOutput)),
             device: {
                 features: device.features,
                 maximumTextureDimension: device.limits.maxTextureDimension2D
             },
-            facts: this.getPlanFacts(),
-            output: createPlannedOutput(false, canvasFormat),
-            passes: []
+            facts: this.getPlanFacts(hdrOutput),
+            output: createPlannedOutput(hdrOutput, canvasFormat),
+            passes: getPlannedManifests(presetPasses)
         };
     }
 
+    /** Returns whether plans present on the HDR canvas: the host selected HDR output and the route reads an HDR signal. */
+    private isHDROutputActive(): boolean {
+        return this.hdrOutputEnabled && isHDRSourceConfiguration(this.desiredChainConfiguration);
+    }
+
     /** Returns the plan facts the presenter knows: the last measured source and output sizes, 1x1 until a frame measures them. */
-    private getPlanFacts(): PlanFacts {
+    private getPlanFacts(hdrOutput: boolean): PlanFacts {
         const layout = this.cachedPresentationLayout;
         return {
             frameRate: null,
-            hdrOutput: false,
+            hdrOutput,
             hdrSource: isHDRSourceConfiguration(this.desiredChainConfiguration),
             outputHeight: layout ? Math.max(layout.presentation.viewportHeight, UNKNOWN_PLAN_DIMENSION) : UNKNOWN_PLAN_DIMENSION,
             outputWidth: layout ? Math.max(layout.presentation.viewportWidth, UNKNOWN_PLAN_DIMENSION) : UNKNOWN_PLAN_DIMENSION,
@@ -2178,18 +2483,27 @@ export default class WebGPUPresenter {
         };
     }
 
-    /** Swaps in a new executor: it takes over the render settings and the canvas output, and the old one is destroyed. */
-    private installExecutor(executor: PresentationExecutor, plan: PresentationPlan, planKey: string, revision: number): void {
+    /**
+     * Swaps in a new executor: it takes over the render settings and its preset's parameter values, the old one is destroyed, and an attached canvas is configured for its output.
+     * A canvas that cannot take the new output falls the session back.
+     */
+    private installExecutor(build: BuiltExecutor, revision: number): void {
         const previousExecutor = this.executor;
+        const executor = build.executor;
         this.executor = executor;
-        this.executorPlan = plan;
-        this.executorPlanKey = planKey;
+        this.executorPlan = build.plan;
+        this.executorPlanKey = build.planKey;
+        this.executorPresetPasses = build.presetPasses;
         this.executorRevision = revision;
         this.submissionValidated = false;
         if (this.renderSettingsData) {
             executor.writeRenderSettings(this.renderSettingsData);
         }
+        applyParameterValues(executor, build.plan, build.presetPasses);
         previousExecutor?.destroy();
+        if (this.canvasContext && !this.createAndConfigureCanvas()) {
+            this.fallback(this.activeGeneration, this.initializationFailureReason, this.initializationFailureDetail);
+        }
     }
 
     private releaseExecutor(): void {
@@ -2197,6 +2511,7 @@ export default class WebGPUPresenter {
         this.executor = null;
         this.executorPlan = null;
         this.executorPlanKey = null;
+        this.executorPresetPasses = null;
         this.executorRevision = -1;
         executor?.destroy();
     }
@@ -2287,7 +2602,7 @@ export default class WebGPUPresenter {
         this.renderSettingsData = this.settings.mode === 'hdr-to-sdr' ?
             createRenderSettingsUniformData(this.settings).buffer :
             null;
-        this.installExecutor(result.executor, result.plan, result.planKey, revision);
+        this.installExecutor(result, revision);
         this.rawHDRAuthorization.prewarmSDR(device, canvasFormat);
         void isHDRToneMappingEnabled().then((enabled: boolean): void => {
             if (enabled && this.device === device && this.canvasFormat === canvasFormat) {
@@ -2981,7 +3296,19 @@ export default class WebGPUPresenter {
         };
         this.cachedPresentationLayout = layout;
         this.presentationLayoutDirty = false;
+        if (!cachedLayout || !layoutPlanSizesMatch(cachedLayout, layout)) {
+            this.replanForLayoutSizes();
+        }
         return layout;
+    }
+
+    /** Replans for new output or source sizes while preset passes take part in plans, whose sizes and conditions read them; default plans never depend on sizes. */
+    private replanForLayoutSizes(): void {
+        if (!this.presetPasses.some(isPlannedPresetPass)) {
+            return;
+        }
+        this.planRevision += 1;
+        void this.applyPlanInputs();
     }
 
     private calculateTexturePresentation(
