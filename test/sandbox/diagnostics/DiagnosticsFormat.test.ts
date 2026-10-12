@@ -98,6 +98,7 @@ const SECOND_PART = 'second';
 
 const COMPILE_ERROR_REJECTION: PassRejection = { detail: 'line 4: unknown identifier', name: 'Broken', reason: 'compile-error' };
 const CONDITION_FALSE_REJECTION: PassRejection = { detail: 'hdr.source', name: 'HDR only', reason: 'condition-false' };
+const DETAILLESS_REJECTION: PassRejection = { detail: '', name: 'Twin', reason: 'duplicate-name' };
 
 describe('formatPreciseMediaTime', () => {
     it('adds truncated milliseconds to the media time', () => {
@@ -170,10 +171,13 @@ describe('the text formats', () => {
     it('joins the parts that are present', () => {
         expect(joinPresentValues([ FIRST_PART, null, SECOND_PART ])).toBe(`${FIRST_PART}, ${SECOND_PART}`);
         expect(joinPresentValues([ null ])).toBe(MISSING_VALUE_TEXT);
+        // An empty part is no value either, so it leaves no stray separator
+        expect(joinPresentValues([ FIRST_PART, '', SECOND_PART ])).toBe(`${FIRST_PART}, ${SECOND_PART}`);
     });
 
     it('formats a left-out pass as its reason and detail, a failure unless its condition was false', () => {
         expect(formatPassRejection(COMPILE_ERROR_REJECTION)).toBe(`${COMPILE_ERROR_REJECTION.reason}: ${COMPILE_ERROR_REJECTION.detail}`);
+        expect(formatPassRejection(DETAILLESS_REJECTION)).toBe(DETAILLESS_REJECTION.reason);
         expect(getPassRejectionTone(COMPILE_ERROR_REJECTION)).toBe('failure');
         expect(getPassRejectionTone(CONDITION_FALSE_REJECTION)).toBe('muted');
     });

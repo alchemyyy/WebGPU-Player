@@ -7,7 +7,7 @@ import {
     type PlaybackInfoState
 } from '../diagnostics/PlaybackInfoSections';
 import { createTupleSelector } from '../diagnostics/TupleSelector';
-import { createElement } from '../dom';
+import { createElement, reconcileKeyedChildren, setTextContent } from '../dom';
 import type { Panel, PanelContext } from '../Panel';
 import { subscribeSelection } from '../Store';
 
@@ -53,41 +53,15 @@ export function createPlaybackInfoPanel(context: PanelContext): Panel {
         ]),
         ([ failures, media, playback, presentation, route, telemetry, tracks ]: PlaybackInfoSlices): void => {
             const sections = describePlaybackInfo({ failures, media, playback, presentation, route, telemetry, tracks });
-            sectionViews = renderSections(element, sectionViews, sections);
+            sectionViews = reconcileKeyedChildren(element, sectionViews, sections, {
+                createView: createSectionView,
+                getElement: (view: SectionView): Element => view.element,
+                getKey: (section: InfoSection): string => section.id,
+                updateView: updateSectionView
+            });
         }
     );
     return { destroy, element };
-}
-
-/**
- * Brings the panel to the sections' order, reusing each section's elements by its id.
- * Stale sections go first, so sections that stay are moved only when the order changed.
- */
-function renderSections(
-    container: HTMLElement,
-    previousViews: ReadonlyMap<string, SectionView>,
-    sections: readonly InfoSection[]
-): Map<string, SectionView> {
-    const views = new Map<string, SectionView>();
-    const placements: (readonly [InfoSection, SectionView])[] = [];
-    for (const section of sections) {
-        const view = previousViews.get(section.id) ?? createSectionView();
-        views.set(section.id, view);
-        placements.push([ section, view ]);
-    }
-    for (const [ sectionId, view ] of previousViews) {
-        if (!views.has(sectionId)) {
-            container.removeChild(view.element);
-        }
-    }
-    for (const [ index, [ section, view ] ] of placements.entries()) {
-        updateSectionView(view, section);
-        const currentChild = container.children.item(index);
-        if (currentChild !== view.element) {
-            container.insertBefore(view.element, currentChild);
-        }
-    }
-    return views;
 }
 
 function createSectionView(): SectionView {
@@ -100,7 +74,7 @@ function createSectionView(): SectionView {
 
 /** Updates a section's rows by position, changing only the text that changed. */
 function updateSectionView(view: SectionView, section: InfoSection): void {
-    setText(view.summary, section.title);
+    setTextContent(view.summary, section.title);
     for (const [ index, row ] of section.rows.entries()) {
         let rowView = view.rows.at(index);
         if (rowView === undefined) {
@@ -126,15 +100,9 @@ function createRowView(): RowView {
 }
 
 function updateRowView(view: RowView, row: InfoRow): void {
-    setText(view.label, row.label);
-    setText(view.value, row.value);
+    setTextContent(view.label, row.label);
+    setTextContent(view.value, row.value);
     if (view.element.dataset.tone !== row.tone) {
         view.element.dataset.tone = row.tone;
-    }
-}
-
-function setText(element: HTMLElement, text: string): void {
-    if (element.textContent !== text) {
-        element.textContent = text;
     }
 }

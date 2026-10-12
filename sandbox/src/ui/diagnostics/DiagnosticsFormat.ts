@@ -8,6 +8,7 @@ import {
 import type { PassRejection } from 'webgpu-player/presentation/passes/PassTypes';
 import { audioFramesToMicroseconds } from 'webgpu-player/TimeMath';
 
+import { joinTextParts } from '../panels/PanelText';
 import { formatMediaTime } from '../TimeFormat';
 
 /** How a value reads, which the panels color it by: plain, de-emphasized, healthy, suspicious, or failed. */
@@ -52,9 +53,9 @@ export function formatDimensions(width: number, height: number): string {
     return formatExtent([ width, height ]);
 }
 
-/** Formats a pass the plan left out as its check and detail, as the presenter reports them. */
+/** Formats a pass the plan left out as its check and detail, as the presenter reports them, or the check alone without a detail. */
 export function formatPassRejection(rejection: PassRejection): string {
-    return `${rejection.reason}: ${rejection.detail}`;
+    return rejection.detail === '' ? rejection.reason : `${rejection.reason}: ${rejection.detail}`;
 }
 
 /** Every reason but 'condition-false' is a failure; a false condition only switches the pass off. */
@@ -62,15 +63,10 @@ export function getPassRejectionTone(rejection: PassRejection): DiagnosticTone {
     return rejection.reason === 'condition-false' ? 'muted' : 'failure';
 }
 
-/** Joins the parts that are present, or returns MISSING_VALUE_TEXT when none is. */
+/** Joins the parts that are present with VALUE_SEPARATOR, or returns MISSING_VALUE_TEXT when none is. */
 export function joinPresentValues(parts: readonly (string | null)[]): string {
-    const presentParts: string[] = [];
-    for (const part of parts) {
-        if (part !== null) {
-            presentParts.push(part);
-        }
-    }
-    return presentParts.length > 0 ? presentParts.join(VALUE_SEPARATOR) : MISSING_VALUE_TEXT;
+    const text = joinTextParts(parts, VALUE_SEPARATOR);
+    return text === '' ? MISSING_VALUE_TEXT : text;
 }
 
 /** Formats a media time like formatMediaTime, with milliseconds, such as 1:02:03.456; truncated, as formatMediaTime truncates. */

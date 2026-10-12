@@ -1,5 +1,5 @@
 // The overlay layout: it mounts every panel into its region above the full-window player surface.
-import { createElement } from './dom';
+import { carriesFiles, createElement } from './dom';
 import { isOverlayToggle } from './OverlayToggle';
 import type { Panel, PanelContext } from './Panel';
 import { createFileTreePanel } from './panels/FileTreePanel';
@@ -34,6 +34,17 @@ const REGION_PANELS: Readonly<Record<RegionName, readonly PanelFactory[]>> = {
 // Hides every region; the subtitle slot stays, since cues belong to the video
 const PANELS_HIDDEN_CLASS = 'sandbox-panels-hidden';
 
+/** Keeps files dropped outside a drop target from navigating away from the sandbox, since the browser would open them in place of the page. */
+function guardWindowFileDrops(): void {
+    for (const type of [ 'dragover', 'drop' ]) {
+        window.addEventListener(type, (event: Event): void => {
+            if (event instanceof DragEvent && carriesFiles(event)) {
+                event.preventDefault();
+            }
+        });
+    }
+}
+
 /** Mounts the layout and every panel into the overlay, for the page's lifetime. */
 export function mountSandboxApp(context: SandboxAppContext): void {
     const panelContext: PanelContext = { library: context.library, session: context.session, store: context.store };
@@ -44,6 +55,7 @@ export function mountSandboxApp(context: SandboxAppContext): void {
     }
     layout.append(createElement('div', { className: 'sandbox-subtitle-slot' }, [ createSubtitleOverlay(panelContext).element ]));
     context.overlay.append(layout);
+    guardWindowFileDrops();
     window.addEventListener('keydown', (event: KeyboardEvent): void => {
         if (isOverlayToggle(event)) {
             layout.classList.toggle(PANELS_HIDDEN_CLASS);
