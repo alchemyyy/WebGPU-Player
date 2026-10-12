@@ -15,7 +15,7 @@ import {
     createHDRToSDRRenderSettings,
     RENDER_SETTINGS_UNIFORM_BYTE_LENGTH
 } from 'webgpu-player/presentation/RenderSettings';
-import { createHLGColorMetadata, createPQColorMetadata } from 'webgpu-player/color/ColorMetadata';
+import { createHLGColorMetadata, createPQColorMetadata, createSDRColorMetadata } from 'webgpu-player/color/ColorMetadata';
 import type { ColorTriplet } from 'webgpu-player/color/ColorPipeline';
 import {
     EXTERNAL_HDR_AUTHORIZATION_DISPLAY_HEIGHT,
@@ -60,6 +60,9 @@ const PLAN_SHADER_CODE_SEPARATOR = '\u0000';
 const EXTERNAL_TEXTURE_COLOR_SPACE: PredefinedColorSpace = 'srgb';
 const RENDER_SETTINGS_LABEL = 'Presentation render settings';
 const SIMULATED_IMPORT_FAILURE = 'simulated import failure';
+// A rejection names its worst error and the 10/255 bound in 8-bit steps, and the sample where it is
+const PIXEL_MISMATCH_DETAIL_PATTERN = /^\d+(\.\d)?\/255 > 10\/255 at \(\d+, \d+\)$/;
+const SDR_ROUTE_UNSUPPORTED_FAILURE = 'route-unsupported: 8-bit bt709:bt709:limited:sdr';
 
 let restoreWebGPUGlobals: () => void = (): void => undefined;
 
@@ -214,10 +217,13 @@ describe('External HDR presentation authorization', () => {
         const close = vi.fn();
         const runner = new ExternalHDRPresentationAuthorizationRunner(async (): Promise<VideoFrame> => createFrame(close));
 
-        await expect(runner.validate(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY)).resolves.toMatchObject({
+        const decision = await runner.validate(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
+
+        expect(decision).toMatchObject({
             failureReason: 'pixel-mismatch',
             status: 'rejected'
         });
+        expect(decision.failureDetail).toMatch(PIXEL_MISMATCH_DETAIL_PATTERN);
         expect(close).toHaveBeenCalledOnce();
     });
 
@@ -230,6 +236,7 @@ describe('External HDR presentation authorization', () => {
         const runner = new ExternalHDRPresentationAuthorizationRunner(async (): Promise<VideoFrame> => createFrame(close));
 
         await expect(runner.validate(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY)).resolves.toMatchObject({
+            failureDetail: `import: ${SIMULATED_IMPORT_FAILURE}`,
             failureReason: 'frame-import-failed',
             status: 'rejected'
         });
@@ -255,6 +262,7 @@ describe('External HDR presentation authorization', () => {
         await vi.advanceTimersByTimeAsync(AUTHORIZATION_TIMEOUT_MILLISECONDS);
 
         await expect(decisionPromise).resolves.toMatchObject({
+            failureDetail: 'frame',
             failureReason: 'timeout',
             status: 'rejected'
         });
@@ -278,17 +286,33 @@ describe('External HDR presentation authorization', () => {
         const secondDecision = registry.authorize(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
         expect(secondDecision).toBe(firstDecision);
         expect(registry.getTelemetry(harness.device, TARGET_FORMAT).status).toBe('pending');
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, createPQColorMetadata())).toBe(`pending: ${PQ_ROUTE_KEY}`);
 
         const decision: ExternalHDRRouteAuthorizationDecision = await firstDecision;
         expect(decision.status).toBe('authorized');
         expect(validate).toHaveBeenCalledOnce();
         expect(registry.isAuthorized(harness.device, TARGET_FORMAT, createPQColorMetadata())).toBe(true);
         expect(registry.isAuthorized(harness.device, TARGET_FORMAT, createHLGColorMetadata())).toBe(false);
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, createHLGColorMetadata())).toBe(`unprobed: ${HLG_ROUTE_KEY}`);
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, createSDRColorMetadata())).toBe(SDR_ROUTE_UNSUPPORTED_FAILURE);
         expect(registry.getTelemetry(harness.device, TARGET_FORMAT)).toMatchObject({
             authorizedRouteKeys: [ PQ_ROUTE_KEY ],
+            failureDetails: {},
             status: 'authorized',
             targetFormat: TARGET_FORMAT
         });
+    });
+
+    it('reports a rejected route with its failure reason and detail', async () => {
+        const harness = createDeviceHarness(mutateFirstObservation(createExpectedObservations(PQ_ROUTE_KEY)));
+        const runner = new ExternalHDRPresentationAuthorizationRunner(async (): Promise<VideoFrame> => createFrame(vi.fn()));
+        const registry = new ExternalHDRPresentationAuthorizationRegistry(runner);
+
+        const decision = await registry.authorize(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
+
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, createPQColorMetadata()))
+            .toBe(`pixel-mismatch: ${PQ_ROUTE_KEY} ${decision.failureDetail}`);
+        expect(registry.getTelemetry(harness.device, TARGET_FORMAT).failureDetails).toEqual({ [PQ_ROUTE_KEY]: decision.failureDetail });
     });
 
     it('scopes authorization to exact GPUDevice identity', async () => {
@@ -312,6 +336,7 @@ describe('External HDR presentation authorization', () => {
         const runner = new ExternalHDRPresentationAuthorizationRunner(createFrameFactory);
 
         await expect(runner.validate(harness.device, UNREADABLE_TARGET_FORMAT, PQ_ROUTE_KEY)).resolves.toMatchObject({
+            failureDetail: UNREADABLE_TARGET_FORMAT,
             failureReason: 'target-format-unsupported',
             status: 'rejected'
         });

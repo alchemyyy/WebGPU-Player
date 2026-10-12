@@ -71,6 +71,14 @@ const RENDER_VERTEX_COUNT = 6;
 const AUTHORIZATION_SUBMISSION_COUNT = 2;
 const SIMULATED_PLANNING_FAILURE = 'simulated planning failure';
 const SIMULATED_VALIDATION_ERROR = 'invalid bind group';
+// A rejection names its worst error and the 3/255 bound in 8-bit steps, and the sample where it is
+const PIXEL_MISMATCH_DETAIL_PATTERN = /^\d+(\.\d)?\/255 > 3\/255 at \(\d+, \d+\)$/;
+const FIRST_SAMPLE_MISMATCH_DETAIL_PATTERN = /^\d+(\.\d)?\/255 > 3\/255 at \(0, 0\)$/;
+// A sample moved to a coordinate the vector does not sample, and a channel the readback could not decode
+const MISPLACED_SAMPLE_INDEX = 2;
+const MISPLACED_SAMPLE_X = 99;
+const NON_FINITE_CHANNEL_VALUE = Number.NaN;
+const RAW_HDR_ROUTE_UNSUPPORTED_FAILURE = 'route-unsupported: I420P10 10-bit bt2020-ncl:bt2020:full:pq';
 // The labels of the buffers the executor and the readback create
 const RENDER_SETTINGS_LABEL = 'Presentation render settings';
 const READBACK_BUFFER_LABEL = 'WebGPU color validation readback';
@@ -195,6 +203,7 @@ function createAuthorizedDecision(
     return {
         authorizedRouteKeys: [ routeKey ],
         device,
+        failureDetail: null,
         failureReason: null,
         vectorVersion: RAW_HDR_AUTHORIZATION_VECTOR_VERSION,
         maximumChannelError: 0,
@@ -411,8 +420,18 @@ describe('RawHDRPresentationAuthorization', () => {
             failureReason: 'pixel-mismatch',
             status: 'rejected'
         });
+        expect(decision.failureDetail).toMatch(PIXEL_MISMATCH_DETAIL_PATTERN);
         expect(PresentationExecutor.create).toHaveBeenCalledOnce();
         expectEveryResourceDestroyed(harness);
+    });
+
+    it('names the corrupted sample in a pixel mismatch', async () => {
+        const harness = createDeviceHarness(mutateFirstPixel(createRouteObservations(PQ_ROUTE_KEY)));
+        const runner = new RawHDRPresentationAuthorizationRunner();
+
+        const decision = await runner.validate(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
+
+        expect(decision.failureDetail).toMatch(FIRST_SAMPLE_MISMATCH_DETAIL_PATTERN);
     });
 
     it('rejects an unreadable production target format before creating resources', async () => {
@@ -420,6 +439,7 @@ describe('RawHDRPresentationAuthorization', () => {
         const runner = new RawHDRPresentationAuthorizationRunner();
 
         await expect(runner.validate(harness.device, UNREADABLE_TARGET_FORMAT, PQ_ROUTE_KEY)).resolves.toMatchObject({
+            failureDetail: UNREADABLE_TARGET_FORMAT,
             failureReason: 'target-format-unsupported',
             status: 'rejected'
         });
@@ -427,15 +447,28 @@ describe('RawHDRPresentationAuthorization', () => {
         expect(harness.textures).toEqual([]);
     });
 
-    it('rejects a reference chain that cannot be planned before creating resources', async () => {
-        vi.mocked(planPresentation).mockImplementationOnce((): PresentationPlan => {
-            throw new Error(SIMULATED_PLANNING_FAILURE);
-        });
-        vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    it('names the WebGPU global a probe is missing', async () => {
+        Reflect.deleteProperty(globalThis, 'GPUBufferUsage');
         const harness = createDeviceHarness([]);
         const runner = new RawHDRPresentationAuthorizationRunner();
 
         await expect(runner.validate(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY)).resolves.toMatchObject({
+            failureDetail: 'GPUBufferUsage undefined',
+            failureReason: 'gpu-api-unavailable',
+            status: 'rejected'
+        });
+        expect(PresentationExecutor.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a reference chain that cannot be planned before creating resources', async () => {
+        vi.mocked(planPresentation).mockImplementationOnce((): PresentationPlan => {
+            throw new Error(SIMULATED_PLANNING_FAILURE);
+        });
+        const harness = createDeviceHarness([]);
+        const runner = new RawHDRPresentationAuthorizationRunner();
+
+        await expect(runner.validate(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY)).resolves.toMatchObject({
+            failureDetail: `reference-plan: ${SIMULATED_PLANNING_FAILURE}`,
             failureReason: 'unexpected-error',
             status: 'rejected'
         });
@@ -448,6 +481,7 @@ describe('RawHDRPresentationAuthorization', () => {
         const runner = new RawHDRPresentationAuthorizationRunner();
 
         await expect(runner.validate(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY)).resolves.toMatchObject({
+            failureDetail: SIMULATED_VALIDATION_ERROR,
             failureReason: 'gpu-validation-failed',
             status: 'rejected'
         });
@@ -471,6 +505,7 @@ describe('RawHDRPresentationAuthorization', () => {
         await vi.advanceTimersByTimeAsync(AUTHORIZATION_TIMEOUT_MILLISECONDS);
 
         await expect(decisionPromise).resolves.toMatchObject({
+            failureDetail: 'executor',
             failureReason: 'timeout',
             status: 'rejected'
         });
@@ -496,6 +531,7 @@ describe('RawHDRPresentationAuthorization', () => {
         await vi.advanceTimersByTimeAsync(AUTHORIZATION_TIMEOUT_MILLISECONDS);
 
         await expect(decisionPromise).resolves.toMatchObject({
+            failureDetail: 'readback',
             failureReason: 'timeout',
             status: 'rejected'
         });
@@ -515,6 +551,7 @@ describe('RawHDRPresentationAuthorization', () => {
         } as GPUDeviceLostInfo);
 
         await expect(decisionPromise).resolves.toMatchObject({
+            failureDetail: 'executor',
             failureReason: 'device-lost',
             status: 'rejected'
         });
@@ -523,9 +560,31 @@ describe('RawHDRPresentationAuthorization', () => {
     it('detects independently corrupted expected observations', () => {
         const expected = createRouteObservations(PQ_ROUTE_KEY);
         expect(evaluateRawHDRVectorObservations(expected, expected)).toMatchObject({
-            accepted: true
+            accepted: true,
+            failureDetail: null
         });
         expect(evaluateRawHDRVectorObservations(expected, mutateFirstPixel(expected))).toMatchObject({ accepted: false });
+    });
+
+    it('names what a rejected comparison found: the sample count, a misplaced sample, a non-finite channel, or the worst error', () => {
+        const expected = createRouteObservations(PQ_ROUTE_KEY);
+        const misplaced = expected.map((observation, observationIndex) => observationIndex === MISPLACED_SAMPLE_INDEX ?
+            { ...observation, sampleX: MISPLACED_SAMPLE_X } :
+            observation);
+        const nonFinite = expected.map((observation, observationIndex) => observationIndex === 0 ?
+            { ...observation, linearRGB: [ NON_FINITE_CHANNEL_VALUE, observation.linearRGB[1], observation.linearRGB[2] ] as ColorTriplet } :
+            observation);
+        const misplacedExpected = expected[MISPLACED_SAMPLE_INDEX];
+
+        expect(evaluateRawHDRVectorObservations(expected, expected.slice(1)).failureDetail)
+            .toBe(`sample count ${expected.length - 1}, expected ${expected.length}`);
+        expect(evaluateRawHDRVectorObservations(expected, misplaced).failureDetail).toBe(
+            `sample ${MISPLACED_SAMPLE_INDEX} at (${MISPLACED_SAMPLE_X}, ${misplacedExpected.sampleY}), `
+            + `expected (${misplacedExpected.sampleX}, ${misplacedExpected.sampleY})`
+        );
+        expect(evaluateRawHDRVectorObservations(expected, nonFinite).failureDetail).toBe('non-finite channel 0 at (0, 0)');
+        expect(evaluateRawHDRVectorObservations(expected, mutateFirstPixel(expected)).failureDetail)
+            .toMatch(FIRST_SAMPLE_MISMATCH_DETAIL_PATTERN);
     });
 
     it('deduplicates probes and never authorizes a stale device identity', async () => {
@@ -544,6 +603,8 @@ describe('RawHDRPresentationAuthorization', () => {
         } as RawHDRPresentationAuthorizationRunner;
         const registry = new RawHDRPresentationAuthorizationRegistry(runner);
 
+        const metadata = createPQColorMetadata();
+        expect(registry.getAuthorizationFailure(firstHarness.device, TARGET_FORMAT, metadata, 'I420P10')).toBe(`unprobed: ${PQ_ROUTE_KEY}`);
         const firstPromise = registry.authorize(firstHarness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
         const secondPromise = registry.authorize(firstHarness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
         expect(firstPromise).toBe(secondPromise);
@@ -553,13 +614,14 @@ describe('RawHDRPresentationAuthorization', () => {
             pendingRouteKeys: [ PQ_ROUTE_KEY ],
             status: 'pending'
         });
+        expect(registry.getAuthorizationFailure(firstHarness.device, TARGET_FORMAT, metadata, 'I420P10')).toBe(`pending: ${PQ_ROUTE_KEY}`);
 
         const decision = createAuthorizedDecision(firstHarness.device, PQ_ROUTE_KEY, TARGET_FORMAT, planRawReferenceShaderCode(PQ_ROUTE_KEY));
         resolveDecision(decision);
         await expect(firstPromise).resolves.toBe(decision);
 
-        const metadata = createPQColorMetadata();
         expect(registry.isAuthorized(firstHarness.device, TARGET_FORMAT, metadata, 'I420P10')).toBe(true);
+        expect(registry.getAuthorizationFailure(firstHarness.device, TARGET_FORMAT, metadata, 'I420P10')).toBeNull();
         expect(registry.isAuthorized(secondHarness.device, TARGET_FORMAT, metadata, 'I420P10')).toBe(false);
         expect(registry.isAuthorized(firstHarness.device, OTHER_TARGET_FORMAT, metadata, 'I420P10')).toBe(false);
         expect(registry.isAuthorized(
@@ -568,6 +630,12 @@ describe('RawHDRPresentationAuthorization', () => {
             createPQColorMetadata({ range: 'full' }),
             'I420P10'
         )).toBe(false);
+        expect(registry.getAuthorizationFailure(
+            firstHarness.device,
+            TARGET_FORMAT,
+            createPQColorMetadata({ range: 'full' }),
+            'I420P10'
+        )).toBe(RAW_HDR_ROUTE_UNSUPPORTED_FAILURE);
 
         firstHarness.lost.resolve({
             message: 'test loss',
@@ -588,7 +656,22 @@ describe('RawHDRPresentationAuthorization', () => {
         await registry.authorize(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
 
         expect(registry.isAuthorized(harness.device, TARGET_FORMAT, createPQColorMetadata(), 'I420P10')).toBe(false);
-        expect(registry.isAuthorized(harness.device, TARGET_FORMAT, createPQColorMetadata(), 'I420P10')).toBe(false);
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, createPQColorMetadata(), 'I420P10'))
+            .toBe(`signature-stale: ${PQ_ROUTE_KEY}`);
         expect(planPresentation).toHaveBeenCalledOnce();
+    });
+
+    it('reports a rejected route with its failure reason and detail', async () => {
+        const harness = createDeviceHarness(mutateFirstPixel(createRouteObservations(PQ_ROUTE_KEY)));
+        const registry = new RawHDRPresentationAuthorizationRegistry();
+
+        const decision = await registry.authorize(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
+
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, createPQColorMetadata(), 'I420P10'))
+            .toBe(`pixel-mismatch: ${PQ_ROUTE_KEY} ${decision.failureDetail}`);
+        expect(registry.getTelemetry(harness.device, TARGET_FORMAT)).toMatchObject({
+            failureDetails: { [PQ_ROUTE_KEY]: decision.failureDetail },
+            failureReasons: { [PQ_ROUTE_KEY]: 'pixel-mismatch' }
+        });
     });
 });
