@@ -5,7 +5,7 @@ A source plays when its container, its video track, and its selected audio track
 Anything else is ineligible, and the host falls back.
 [HEVC and Dolby Vision support](codec-support.md) holds the full HEVC and Dolby Vision matrix, and [Eligibility and routes](routes.md) the checks, routes, and evidence behind every row.
 
-The pipeline plays a direct-play file over http(s).
+The pipeline plays a direct-play file over http(s), or a local `File` the host holds.
 It does not play live streams, HLS or DASH, or a server transcode.
 
 ## Containers

@@ -104,6 +104,7 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 - `CustomDecodeInputFormats.ts` [worker]: Mediabunny's input formats with Matroska content decoding scoped to frames, so header-stripped laced audio demuxes intact.
 - `HandledDecodeFailures.ts` [worker]: marks the failures the worker catches, so the duplicate rejection Mediabunny leaves behind is not reported as unhandled, and tells the worker when it suppressed one, because the failed decoder stays open.
 - `DecodeWorkerProtocol.ts`: messages, validators, credit constants (4, 2, 8), and the backend and output literals.
+- `CustomDecodeMediaSource.ts`: the media a playback reads, a URL that the worker fetches in byte ranges or a `File` that crosses to it by structured clone, and its validator.
 - `CustomDecodeTrackSelection.ts`, `ConcurrentDecodeStreams.ts`: track lookup by ordinal within one media type, and concurrent decode streams that cancel each other on the first failure and all drain before the worker reports that the generation stopped.
 - `MediaClock.ts` [main]: the generation-tagged clock; `synchronize` re-anchors it.
 - `MediaFetchPolicy.ts`: retries only transport errors and 408, 429, and 5xx.

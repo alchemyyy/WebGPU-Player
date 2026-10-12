@@ -371,9 +371,9 @@ function createWorkerValidationExpression(configuration) {
                 maximumCodedHeight: ${configuration.expectedBaseHeight},
                 maximumCodedWidth: ${configuration.expectedBaseWidth},
                 rawVideoFrameFormat: 'I420P10',
+                source: { kind: 'url', url: ${JSON.stringify(configuration.mediaURL)} },
                 startTimeMicroseconds: 0,
                 type: 'start',
-                url: ${JSON.stringify(configuration.mediaURL)},
                 videoDecoderBackend: 'bundled-hevc',
                 videoOutputMode: 'raw-planes',
                 videoTrackIndex: 0

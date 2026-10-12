@@ -20,7 +20,7 @@ A host calls these, in this order, for each playback:
 
 `getCustomPlaybackEligibility` checks in order:
 
-1. `parsePlaybackSource`: DirectPlay, not live, a custom container, and an http(s) URL.
+1. `parsePlaybackSource`: DirectPlay, not live, a custom container, and a media `source`: a `File`, or a credential-free http(s) URL, which it resolves against the page.
    A missing or zero `RunTimeTicks` is an unknown duration, not a rejection.
    Playback then ends with the streams, audio takes the decoded-PCM route because the native media backend needs a duration, and the worker reports the container's duration on `ready`.
 2. `selectVideoStream`.

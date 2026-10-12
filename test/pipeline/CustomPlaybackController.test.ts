@@ -569,7 +569,7 @@ function createPlayOptions(audioTrackIndex: number | null = null): CustomPlaybac
         neutralizeHDRColorMetadata: false,
         rawVideoFrameFormat: null,
         startTimeMicroseconds: secondsToMicroseconds(5),
-        url: 'http://localhost/video.mkv?ApiKey=secret',
+        source: { kind: 'url', url: 'http://localhost/video.mkv?ApiKey=secret' },
         videoDecoderBackend: 'native',
         videoOutputMode: 'video-frame',
         videoTrackIndex: 0

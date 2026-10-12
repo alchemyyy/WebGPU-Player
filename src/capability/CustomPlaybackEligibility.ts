@@ -72,6 +72,7 @@ import type {
     CustomDecodeVideoDecoderBackend,
     CustomDecodeVideoOutputMode
 } from '../pipeline/DecodeWorkerProtocol';
+import { isCustomDecodeMediaSource, type CustomDecodeMediaSource } from '../pipeline/CustomDecodeMediaSource';
 import { requireMicroseconds } from '../TimeMath';
 import {
     hasRawVideoFrameCopyLayout,
@@ -172,7 +173,8 @@ type PlaybackOptions = {
     mediaSource?: MediaSource
     playMethod?: unknown
     playerStartPositionTicks?: unknown
-    url?: unknown
+    /** The media the worker reads, a CustomDecodeMediaSource */
+    source?: unknown
 };
 
 type PlaybackSelectionItem = MediaSource & {
@@ -189,9 +191,9 @@ type ParsedPlaybackSource = {
     durationMicroseconds: Microseconds | null
     mediaSource: MediaSource
     parsed: true
+    source: CustomDecodeMediaSource
     startTimeMicroseconds: Microseconds
     streams: MediaStream[]
-    url: string
 };
 
 type PlaybackSourceParseResult = ParsedPlaybackSource | (IneligibleCustomPlayback & {
@@ -327,8 +329,9 @@ export type EligibleCustomPlayback = {
     nativeHDRTransfer?: Exclude<CustomDecodeNativeHDRTransfer, null>
     neutralizeHDRColorMetadata: boolean
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
+    /** The media to play: the input's file, or its URL resolved against the page */
+    source: CustomDecodeMediaSource
     startTimeMicroseconds: Microseconds
-    url: string
     videoDecoderBackend: CustomDecodeVideoDecoderBackend
     videoOutputMode: CustomDecodeVideoOutputMode
     /** Zero-based ordinal within container video tracks, not MediaStream.Index. */
@@ -351,8 +354,8 @@ function normalizeMetadataValue(value: unknown): string | null {
     return normalizedValue || null;
 }
 
-function getHTTPURL(value: unknown): string | null {
-    if (typeof value !== 'string' || !value.trim()) {
+function getHTTPURL(value: string): string | null {
+    if (!value.trim()) {
         return null;
     }
 
@@ -370,6 +373,18 @@ function getHTTPURL(value: unknown): string | null {
         }
     } catch {
         return null;
+    }
+}
+
+/** Returns a URL source resolved against the page, or null when its URL is not a credential-free http(s) URL; a file source plays as it is. */
+function resolvePlaybackMediaSource(source: CustomDecodeMediaSource): CustomDecodeMediaSource | null {
+    switch (source.kind) {
+        case 'file':
+            return source;
+        case 'url': {
+            const url = getHTTPURL(source.url);
+            return url ? { kind: 'url', url } : null;
+        }
     }
 }
 
@@ -1516,8 +1531,11 @@ function parsePlaybackSource(
         return { eligible: false, parsed: false, reason: 'invalid-options' };
     }
 
-    const url = getHTTPURL(playbackOptions.url);
-    if (!url) {
+    if (!isCustomDecodeMediaSource(playbackOptions.source)) {
+        return { eligible: false, parsed: false, reason: 'invalid-options' };
+    }
+    const source = resolvePlaybackMediaSource(playbackOptions.source);
+    if (!source) {
         return { eligible: false, parsed: false, reason: 'url-unsupported' };
     }
 
@@ -1526,9 +1544,9 @@ function parsePlaybackSource(
         durationMicroseconds,
         mediaSource,
         parsed: true,
+        source,
         startTimeMicroseconds,
-        streams: getStreams(mediaSource),
-        url
+        streams: getStreams(mediaSource)
     };
 }
 
@@ -1995,8 +2013,8 @@ export function getCustomPlaybackEligibility(
         ...getNativeHDRTransferResult(videoOutput),
         neutralizeHDRColorMetadata: videoOutput.neutralizeHDRColorMetadata,
         rawVideoFrameFormat: videoOutput.rawVideoFrameFormat,
+        source: parsedSource.source,
         startTimeMicroseconds: parsedSource.startTimeMicroseconds,
-        url: parsedSource.url,
         videoDecoderBackend: videoOutput.videoDecoderBackend,
         videoOutputMode: videoOutput.videoOutputMode,
         videoTrackIndex: selectedVideo.trackOrdinal

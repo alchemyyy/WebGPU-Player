@@ -132,3 +132,23 @@ describe('the playback worker across generations', () => {
         expect(secondResponses.at(-1)).toEqual({ generation: SECOND_RUN_GENERATION, replaceWorker: true, type: 'stopped' });
     });
 });
+
+describe('the playback worker\'s media source', () => {
+    it('decodes a File to the frames its URL decodes', async () => {
+        const workerScope = await startDecodeWorker(MEDIA_FILES);
+        // A copy into its own ArrayBuffer, which a File part requires
+        const file = new File([ new Uint8Array(readVP9HDR10PlusVector(LIFECYCLE_VECTOR.fileName)) ], LIFECYCLE_VECTOR.fileName);
+
+        const urlResponses = await decodeToEnd(workerScope, createWorkerStartRequest(LIFECYCLE_VECTOR.fileName, {
+            generation: FIRST_RUN_GENERATION
+        }));
+        const fileResponses = await decodeToEnd(workerScope, createWorkerStartRequest(LIFECYCLE_VECTOR.fileName, {
+            generation: SECOND_RUN_GENERATION,
+            source: { file, kind: 'file' }
+        }));
+
+        expect(getFrameResponses(fileResponses).map(response => response.mediaTimeMicroseconds)).toEqual(
+            getFrameResponses(urlResponses).map(response => response.mediaTimeMicroseconds)
+        );
+    });
+});

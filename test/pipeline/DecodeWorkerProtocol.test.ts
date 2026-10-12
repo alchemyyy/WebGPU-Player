@@ -37,6 +37,9 @@ import { MAXIMUM_TIMING_TRACE_EVENTS_PER_MESSAGE } from 'webgpu-player/TimingTra
 import { createHDR10PlusHEVCVector } from '../../src/capability/vectors/HDR10PlusVectors';
 
 const DOLBY_VISION_RPU_PARSER_WASM_URL = 'https://example.test/libraries/libdovi/dovi-rpu-parser.wasm';
+const MEDIA_FILE_NAME = 'video.mkv';
+const MEDIA_URL = 'http://localhost/video.mkv';
+const UNKNOWN_MEDIA_SOURCE_KIND = 'stream';
 // Any positive epoch time; worker events carry the shared epoch clock
 const TIMING_TRACE_EVENT_EPOCH_MILLISECONDS = 1_791_000_000_000;
 
@@ -335,7 +338,7 @@ describe('DecodeWorkerProtocol', () => {
             reportContainerDuration: true,
             startTimeMicroseconds: 0,
             type: 'start',
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -359,6 +362,35 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerResponse({ ...readyResponse, containerDurationMicroseconds: -1 })).toBe(false);
     });
 
+    it('accepts a start request that reads a File or a non-empty URL', () => {
+        const request = {
+            audioSampleCredits: 0,
+            audioTrackIndex: null,
+            dolbyVisionProfile: null,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
+            frameCredits: MAX_DECODED_FRAME_CREDITS,
+            generation: 1,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: null,
+            source: { file: new File([], MEDIA_FILE_NAME), kind: 'file' },
+            startTimeMicroseconds: 0,
+            type: 'start',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        } as const;
+
+        expect(isDecodeWorkerRequest(request)).toBe(true);
+        // A Blob that is not a File, an empty URL, an unknown kind, and a missing source
+        expect(isDecodeWorkerRequest({ ...request, source: { file: new Blob(), kind: 'file' } })).toBe(false);
+        expect(isDecodeWorkerRequest({ ...request, source: { kind: 'url', url: '' } })).toBe(false);
+        expect(isDecodeWorkerRequest({ ...request, source: { kind: UNKNOWN_MEDIA_SOURCE_KIND, url: MEDIA_URL } })).toBe(false);
+        expect(isDecodeWorkerRequest({ ...request, source: undefined })).toBe(false);
+    });
+
     it('validates the timing trace request and its event batches', () => {
         const request = {
             audioSampleCredits: 0,
@@ -375,7 +407,7 @@ describe('DecodeWorkerProtocol', () => {
             startTimeMicroseconds: 0,
             timingTrace: true,
             type: 'start',
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -413,7 +445,7 @@ describe('DecodeWorkerProtocol', () => {
             rawVideoFrameFormat: null,
             startTimeMicroseconds: 0,
             type: 'start',
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'ffmpeg-mpeg2-vc1',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -454,7 +486,7 @@ describe('DecodeWorkerProtocol', () => {
             rawVideoFrameFormat: null,
             startTimeMicroseconds: 0,
             type: 'start',
-            url: 'http://localhost/video.mj2',
+            source: { kind: 'url', url: 'http://localhost/video.mj2' },
             videoDecoderBackend: 'openjpeg',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -487,7 +519,7 @@ describe('DecodeWorkerProtocol', () => {
             rawVideoFrameFormat: null,
             startTimeMicroseconds: -1_000_000,
             type: 'start',
-            url: 'http://localhost/video.mp4',
+            source: { kind: 'url', url: 'http://localhost/video.mp4' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -565,7 +597,7 @@ describe('DecodeWorkerProtocol', () => {
             rawVideoFrameFormat: 'I420P10',
             startTimeMicroseconds: 0,
             type: 'start',
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'bundled-hevc',
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
@@ -750,7 +782,7 @@ describe('DecodeWorkerProtocol', () => {
             rawVideoFrameFormat,
             startTimeMicroseconds: 0,
             type: 'start',
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend,
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
@@ -773,7 +805,7 @@ describe('DecodeWorkerProtocol', () => {
             rawVideoFrameFormat: 'I420P10',
             startTimeMicroseconds: 0,
             type: 'start',
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
@@ -926,7 +958,7 @@ describe('DecodeWorkerProtocol', () => {
             neutralizeHDRColorMetadata: false,
             startTimeMicroseconds: 0,
             type: 'start',
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'native',
             videoTrackIndex: 0
         } as const;
@@ -991,7 +1023,7 @@ describe('DecodeWorkerProtocol', () => {
             rawVideoFrameFormat: null,
             startTimeMicroseconds: 0,
             type: 'start',
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -1045,7 +1077,7 @@ describe('DecodeWorkerProtocol', () => {
             rawVideoFrameFormat: null,
             startTimeMicroseconds: 0,
             type: 'start',
-            url: 'http://localhost/video.mp4',
+            source: { kind: 'url', url: 'http://localhost/video.mp4' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -1086,7 +1118,7 @@ describe('DecodeWorkerProtocol', () => {
             rawVideoFrameFormat: 'I420P10',
             startTimeMicroseconds: 0,
             type: 'start',
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'bundled-hevc',
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
@@ -1129,7 +1161,7 @@ describe('DecodeWorkerProtocol', () => {
             rawVideoFrameFormat: 'I420P10',
             startTimeMicroseconds: 0,
             type: 'start',
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
@@ -1163,7 +1195,7 @@ describe('DecodeWorkerProtocol', () => {
             rawVideoFrameFormat: 'I420P10',
             startTimeMicroseconds: 0,
             type: 'start',
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
@@ -1297,7 +1329,7 @@ describe('DecodeWorkerProtocol', () => {
             rawVideoFrameFormat: null,
             startTimeMicroseconds: 0,
             type: 'start',
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -1377,7 +1409,7 @@ describe('DecodeWorkerProtocol', () => {
             rawVideoFrameFormat: null,
             startTimeMicroseconds: 0,
             type: 'start',
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -1443,7 +1475,7 @@ describe('DecodeWorkerProtocol', () => {
             rawVideoFrameFormat: null,
             startTimeMicroseconds: 0,
             type: 'start',
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0

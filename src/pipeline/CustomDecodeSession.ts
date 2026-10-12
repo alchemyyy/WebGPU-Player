@@ -63,6 +63,7 @@ import {
     hasRawVideoFrameCopyLayout,
     type RawVideoFrameGeometry
 } from '../video/RawVideoFrameCopy';
+import { isCustomDecodeMediaSource, type CustomDecodeMediaSource } from './CustomDecodeMediaSource';
 import type {
     StaticHDRMetadata,
     StaticHDRMetadataScanStatus
@@ -88,8 +89,8 @@ export type CustomDecodeSessionStartOptions = {
     nativeHDRTransfer: CustomDecodeNativeHDRTransfer
     neutralizeHDRColorMetadata: boolean
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
+    source: CustomDecodeMediaSource
     startTimeMicroseconds: Microseconds
-    url: string
     videoDecoderBackend: CustomDecodeVideoDecoderBackend
     videoOutputMode: CustomDecodeVideoOutputMode
     videoTrackIndex: number
@@ -988,8 +989,8 @@ export default class CustomDecodeSession {
             throw new TypeError('Custom decode Dolby Vision profile is invalid');
         }
         requireMicroseconds(options.startTimeMicroseconds, 'Custom decode start time');
-        if (typeof options.url !== 'string' || !options.url) {
-            throw new TypeError('Custom decode URL must be a non-empty string');
+        if (!isCustomDecodeMediaSource(options.source)) {
+            throw new TypeError('Custom decode media source must be a File or a non-empty URL');
         }
         if (!isValidCodedDimension(options.maximumCodedWidth) || !isValidCodedDimension(options.maximumCodedHeight)) {
             throw new RangeError('Custom decode coded dimensions must be positive safe integers');
@@ -1045,10 +1046,10 @@ export default class CustomDecodeSession {
             neutralizeHDRColorMetadata: options.neutralizeHDRColorMetadata,
             rawVideoFrameFormat: options.rawVideoFrameFormat,
             ...(options.durationMicroseconds == null ? { reportContainerDuration: true } : {}),
+            source: options.source,
             startTimeMicroseconds: options.startTimeMicroseconds,
             ...(isTimingTraceActive() ? { timingTrace: true } : {}),
             type: 'start',
-            url: options.url,
             videoDecoderBackend: options.videoDecoderBackend,
             videoOutputMode: options.videoOutputMode,
             videoTrackIndex: options.videoTrackIndex
