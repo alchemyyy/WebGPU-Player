@@ -168,6 +168,18 @@ function readInteger(record: Record<string, unknown>, key: string): number | nul
     return null;
 }
 
+/** Parses ffprobe's JSON output as an object, and throws the error section `-show_error` prints for a file ffprobe cannot read. */
+function readFFprobeJSON(text: string): Record<string, unknown> {
+    const output: unknown = JSON.parse(text);
+    if (!isRecord(output)) {
+        throw new TypeError('ffprobe-output-invalid: not an object');
+    }
+    if (isRecord(output.error)) {
+        throw new Error(`ffprobe-error: ${readString(output.error, 'string') ?? 'no message'} (${readInteger(output.error, 'code') ?? 'no code'})`);
+    }
+    return output;
+}
+
 function readRecordList(record: Record<string, unknown>, key: string): Record<string, unknown>[] {
     const value = record[key];
     const records: Record<string, unknown>[] = [];
@@ -276,10 +288,7 @@ function readStream(record: Record<string, unknown>): FFprobeStream | null {
 
 /** Parses `ffprobe -show_format -show_streams -of json` output; a stream without an index is skipped. */
 export function parseFFprobeOutput(text: string): FFprobeOutput {
-    const output: unknown = JSON.parse(text);
-    if (!isRecord(output)) {
-        throw new TypeError('ffprobe-output-invalid: not an object');
-    }
+    const output = readFFprobeJSON(text);
     const format = isRecord(output.format) ? output.format : {};
     const streams: FFprobeStream[] = [];
     for (const streamRecord of readRecordList(output, 'streams')) {
@@ -296,11 +305,8 @@ export function parseFFprobeOutput(text: string): FFprobeOutput {
 
 /** Parses `ffprobe -show_frames -of json` output into each frame's side data types. */
 export function parseFFprobeFrames(text: string): FFprobeFrame[] {
-    const output: unknown = JSON.parse(text);
+    const output = readFFprobeJSON(text);
     const frames: FFprobeFrame[] = [];
-    if (!isRecord(output)) {
-        throw new TypeError('ffprobe-output-invalid: not an object');
-    }
     for (const frameRecord of readRecordList(output, 'frames')) {
         const streamIndex = readInteger(frameRecord, 'stream_index');
         if (streamIndex === null) {

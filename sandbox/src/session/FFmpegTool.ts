@@ -7,11 +7,17 @@ import wasmURL from '@ffmpeg/core/wasm?url';
 const MOUNT_DIRECTORY_PREFIX = '/input-';
 const OUTPUT_PATH = '/output';
 const TEXT_ENCODING = 'utf8';
-const SUCCESS_EXIT_CODE = 0;
+// ffmpeg ends through exit_program, which reports its exit code
+const FFMPEG_SUCCESS_EXIT_CODES: ReadonlySet<number> = new Set<number>([ 0 ]);
+// NOTE: ffmpeg.wasm reports -1 whenever ffprobe returns from main, failed or not, because only exit_program sets the code
+const FFPROBE_RETURNED_EXIT_CODE = -1;
+const FFPROBE_SUCCESS_EXIT_CODES: ReadonlySet<number> = new Set<number>([ 0, FFPROBE_RETURNED_EXIT_CODE ]);
 // A failure's detail keeps the last lines the tool logged, where FFmpeg names what failed
 const MAXIMUM_FAILURE_LOG_LINES = 3;
 const LOG_LINE_SEPARATOR = ' | ';
 const QUIET_LOG_LEVEL = [ '-v', 'error' ];
+// So ffprobe prints a file it cannot read as an error section in its output, which the output parsers throw
+const SHOW_ERROR = '-show_error';
 const JSON_OUTPUT_FORMAT = [ '-of', 'json' ];
 const WEBVTT_OUTPUT = [ '-c:s', 'webvtt', '-f', 'webvtt' ];
 // A subtitle file's first subtitle stream
@@ -19,7 +25,7 @@ const FIRST_SUBTITLE_STREAM = '0:s:0';
 
 /** Runs ffprobe and ffmpeg over local files; one command runs at a time, in call order. */
 export type FFmpegTool = Readonly<{
-    /** Returns what ffprobe prints for a file: the given options, then JSON output */
+    /** Returns what ffprobe prints for a file as JSON with the given options, which is an error section when ffprobe cannot read the file */
     probe: (file: File, options: readonly string[]) => Promise<string>
     /** Returns a subtitle stream of a media file, or the first subtitle stream of a subtitle file when the index is null, as WebVTT text */
     convertSubtitleToWebVTT: (file: File, streamIndex: number | null) => Promise<string>
@@ -70,11 +76,12 @@ export function createFFmpegTool(): FFmpegTool {
 
     /**
      * Runs one command over a mounted file and returns its output file as text.
-     * A failed command rejects with `<tool> exit <code>: <last logged lines>`.
+     * An exit code outside the tool's successful ones rejects with `<tool> exit <code>: <last logged lines>`, and a missing output with `<tool> wrote no output: <last logged lines>`.
      */
     const runCommand = (
         file: File,
         toolName: string,
+        successExitCodes: ReadonlySet<number>,
         runTool: (ffmpeg: FFmpeg, inputPath: string) => Promise<number>
     ): Promise<string> => enqueue(async (): Promise<string> => {
         const ffmpeg = await loadFFmpeg();
@@ -89,17 +96,20 @@ export function createFFmpegTool(): FFmpegTool {
         ffmpeg.on('log', onLog);
         try {
             const exitCode = await runTool(ffmpeg, mountedFile.path);
-            if (exitCode !== SUCCESS_EXIT_CODE) {
+            if (!successExitCodes.has(exitCode)) {
                 throw new Error(`${toolName} exit ${exitCode}: ${loggedLines.join(LOG_LINE_SEPARATOR)}`);
             }
-            const output = await ffmpeg.readFile(OUTPUT_PATH, TEXT_ENCODING);
-            await ffmpeg.deleteFile(OUTPUT_PATH);
+            const output = await ffmpeg.readFile(OUTPUT_PATH, TEXT_ENCODING).catch((): never => {
+                throw new Error(`${toolName} wrote no output: ${loggedLines.join(LOG_LINE_SEPARATOR)}`);
+            });
             if (typeof output !== 'string') {
                 throw new TypeError(`${toolName} output is not text`);
             }
             return output;
         } finally {
             ffmpeg.off('log', onLog);
+            // A command that failed before writing left no output, and no later command may read a stale one
+            await ffmpeg.deleteFile(OUTPUT_PATH).catch((): boolean => false);
             await unmountFile(ffmpeg, mountedFile);
         }
     });
@@ -108,6 +118,7 @@ export function createFFmpegTool(): FFmpegTool {
         convertSubtitleToWebVTT: (file: File, streamIndex: number | null): Promise<string> => runCommand(
             file,
             'ffmpeg',
+            FFMPEG_SUCCESS_EXIT_CODES,
             (ffmpeg: FFmpeg, inputPath: string): Promise<number> => ffmpeg.exec([
                 ...QUIET_LOG_LEVEL,
                 '-i',
@@ -121,8 +132,10 @@ export function createFFmpegTool(): FFmpegTool {
         probe: (file: File, options: readonly string[]): Promise<string> => runCommand(
             file,
             'ffprobe',
+            FFPROBE_SUCCESS_EXIT_CODES,
             (ffmpeg: FFmpeg, inputPath: string): Promise<number> => ffmpeg.ffprobe([
                 ...QUIET_LOG_LEVEL,
+                SHOW_ERROR,
                 ...options,
                 ...JSON_OUTPUT_FORMAT,
                 inputPath,
