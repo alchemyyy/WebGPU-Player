@@ -284,7 +284,12 @@ struct DolbyVisionRPUData {
 }
 
 @group(0) @binding(${binding}) var<storage, read> dolbyVisionRPU: DolbyVisionRPUData;
+${createDolbyVisionColorFunctionsWGSL()}`;
+}
 
+/** Generates the reshape stage's functions alone, which read the `dolbyVisionRPU` binding and struct that PassResources declares. */
+export function createDolbyVisionColorFunctionsWGSL(): string {
+    return /* wgsl */ `
 fn loadDolbyVisionFloat(wordOffset: u32) -> f32 {
     return bitcast<f32>(dolbyVisionRPU.words[wordOffset]);
 }
