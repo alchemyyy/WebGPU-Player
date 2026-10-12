@@ -313,6 +313,8 @@ export function createAudioTrack(overrides: Partial<AudioTrackDescription> = {})
 export function createSubtitleTrack(overrides: Partial<SubtitleTrackDescription> = {}): SubtitleTrackDescription {
     return {
         codec: TEST_SUBTITLE_CODEC,
+        default: false,
+        forced: false,
         index: 2,
         language: null,
         name: null,

@@ -22,6 +22,7 @@ import './TrackSelectorPanel.css';
 
 const OFF_LABEL = 'Off';
 const DEFAULT_TRACK_LABEL = 'default';
+const FORCED_TRACK_LABEL = 'forced';
 const CHANNEL_COUNT_SUFFIX = 'ch';
 
 function formatAudioTrackLabel(track: AudioTrackDescription): string {
@@ -36,7 +37,14 @@ function formatAudioTrackLabel(track: AudioTrackDescription): string {
 }
 
 function formatSubtitleTrackLabel(track: SubtitleTrackDescription): string {
-    return joinTextParts([ `#${track.index}`, track.codec, track.language, track.name ]);
+    return joinTextParts([
+        `#${track.index}`,
+        track.codec,
+        track.language,
+        track.name,
+        track.default ? DEFAULT_TRACK_LABEL : null,
+        track.forced ? FORCED_TRACK_LABEL : null
+    ]);
 }
 
 /** Lists the audio choices: off, then every audio track of the media. */
