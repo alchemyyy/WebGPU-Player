@@ -218,9 +218,7 @@ import {
 } from 'webgpu-player/color/ColorMetadata';
 import {
     getRawFormatBitDepth,
-    type RawDolbyVisionVideoFrameFormat
-} from 'webgpu-player/color/ColorPipelineShader';
-import {
+    type RawDolbyVisionVideoFrameFormat,
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
 } from 'webgpu-player/video/RawVideoFrameCopy';

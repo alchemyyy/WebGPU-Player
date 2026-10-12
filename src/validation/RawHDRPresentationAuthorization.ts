@@ -28,6 +28,7 @@ import { planPresentation } from '../presentation/passes/PresentationPlanner';
 import type { TexturePresentationGeometry } from '../presentation/PresentationGeometry';
 import { READBACK_CANVAS_FORMATS, VALIDATION_ERROR_FILTER } from '../presentation/WebGPUConstants';
 import {
+    getRawFormatBitDepth,
     RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
     type RawVideoFrameColorSpace,
     type RawVideoPlaneDescriptor,
@@ -308,23 +309,6 @@ export function describeAuthorizationDecision(
         return parts.join(' ');
     }
     return decision.shaderSignature === getReferenceSignature() ? null : `signature-stale: ${routeKey}`;
-}
-
-function getRawFormatBitDepth(format: AuthorizedRawSDRFormat): RawVideoBitDepth {
-    switch (format) {
-        case 'I420':
-        case 'I422':
-        case 'I444':
-            return 8;
-        case 'I420P10':
-        case 'I422P10':
-        case 'I444P10':
-            return 10;
-        case 'I420P12':
-        case 'I422P12':
-        case 'I444P12':
-            return 12;
-    }
 }
 
 function getRawFrameTransfer(metadata: InputColorMetadata): RawVideoFrameColorSpace['transfer'] {

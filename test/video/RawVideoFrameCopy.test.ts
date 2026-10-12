@@ -9,9 +9,11 @@ import {
     copyVideoFramePairToRawPlanes,
     copyVideoFrameToRawPlanes,
     createVideoSampleRawFrameSource,
+    getRawFormatBitDepth,
     getRawVideoFramePairTransferList,
     getRawVideoFrameTransferList,
     hasRawVideoFrameCopyLayout,
+    isRawDolbyVisionVideoFrameFormat,
     PreparedRawVideoFrameSource,
     RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT,
     RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
@@ -21,7 +23,7 @@ import {
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
 } from 'webgpu-player/video/RawVideoFrameCopy';
-import { hasValidRawVideoFrameLayout } from 'webgpu-player/presentation/RawYUVGPURenderer';
+import { getRawPlaneLayoutFailure } from 'webgpu-player/presentation/passes/PlaneTextureSource';
 
 type MockFunction = ReturnType<typeof vi.fn>;
 
@@ -31,6 +33,22 @@ const MISMATCHED_SPARE_BYTE_LENGTH = 512;
 const ALLOCATION_FAILURE_MESSAGE = 'Array buffer allocation failed';
 // The spec rejects any non-RGB format in copy options, even the frame's own
 const EXPLICIT_PLANAR_FORMAT_REJECTION_MESSAGE = 'I420P10 is unsupported in ParseVideoFrameCopyToOptions';
+// What a layout check reports for a pair copy that returned no EL
+const MISSING_ENHANCEMENT_FRAME_DETAIL = 'enhancement-frame: null';
+// Each format's code bit depth, and whether RPU reconstruction samples it; semi-planar NV12 has no RPU route
+const RAW_FORMAT_FACTS: readonly (readonly [SupportedRawVideoFrameFormat, number, boolean])[] = [
+    [ 'I420', 8, true ],
+    [ 'I420P10', 10, true ],
+    [ 'I420P12', 12, true ],
+    [ 'I422', 8, true ],
+    [ 'I422P10', 10, true ],
+    [ 'I422P12', 12, true ],
+    [ 'I444', 8, true ],
+    [ 'I444P10', 10, true ],
+    [ 'I444P12', 12, true ],
+    [ 'NV12', 8, false ]
+];
+const UNSUPPORTED_RAW_FORMAT = 'RGBA';
 
 const ULTRA_HD_8K_GEOMETRY = {
     codedHeight: 4_320,
@@ -344,7 +362,7 @@ describe('copyVideoFrameToRawPlanes', () => {
             expect(result.planes.map(plane => plane.rowByteLength)).toEqual(
                 expectedRowByteLengths
             );
-            expect(hasValidRawVideoFrameLayout(result)).toBe(true);
+            expect(getRawPlaneLayoutFailure(result)).toBeNull();
             expect(frameHarness.close).toHaveBeenCalledOnce();
         }
     );
@@ -368,7 +386,7 @@ describe('copyVideoFrameToRawPlanes', () => {
                 expectedRowByteLengths
             );
             expect(result.planes.map(plane => plane.height)).toEqual(expectedPlaneHeights);
-            expect(hasValidRawVideoFrameLayout(result)).toBe(true);
+            expect(getRawPlaneLayoutFailure(result)).toBeNull();
         }
     );
 
@@ -398,8 +416,8 @@ describe('copyVideoFrameToRawPlanes', () => {
             x: 1,
             y: 1
         });
-        expect(hasValidRawVideoFrameLayout(subsampled422Result)).toBe(true);
-        expect(hasValidRawVideoFrameLayout(fullChroma444Result)).toBe(true);
+        expect(getRawPlaneLayoutFailure(subsampled422Result)).toBeNull();
+        expect(getRawPlaneLayoutFailure(fullChroma444Result)).toBeNull();
     });
 
     it('rejects only the subsampled axes with misaligned crop offsets', async () => {
@@ -1237,8 +1255,8 @@ describe('copyVideoFramePairToRawPlanes', () => {
             expect(result.enhancementFrame?.planes.map(plane => plane.bytesPerComponent)).toEqual([ 2, 2, 2 ]);
             expect(result.enhancementFrame?.data).toBe(result.baseFrame.data);
             expect(result.baseFrame.data.byteLength).toBe(baseByteLength + wideEnhancementByteLength);
-            expect(hasValidRawVideoFrameLayout(result.baseFrame)).toBe(true);
-            expect(result.enhancementFrame && hasValidRawVideoFrameLayout(result.enhancementFrame)).toBe(true);
+            expect(getRawPlaneLayoutFailure(result.baseFrame)).toBeNull();
+            expect(result.enhancementFrame ? getRawPlaneLayoutFailure(result.enhancementFrame) : MISSING_ENHANCEMENT_FRAME_DETAIL).toBeNull();
             // Both layers already decode in their requested formats, so neither copy names one
             expect(baseHarness.copyTo.mock.calls[0]?.[1]).not.toHaveProperty('format');
             expect(enhancementHarness.copyTo.mock.calls[0]?.[1]).not.toHaveProperty('format');
@@ -1312,5 +1330,16 @@ describe('copyVideoFramePairToRawPlanes', () => {
 
         expect(enhancementHarness.copyTo.mock.calls[0]?.[1]).toMatchObject({ format: 'I420P10' });
         expect(result.enhancementFrame).toMatchObject({ bitDepth: 10, format: 'I420P10' });
+    });
+});
+
+describe('raw frame format facts', () => {
+    it.each(RAW_FORMAT_FACTS)('gives %s a %i-bit code depth, Dolby Vision base layer %s', (format, bitDepth, dolbyVisionBaseLayer) => {
+        expect(getRawFormatBitDepth(format)).toBe(bitDepth);
+        expect(isRawDolbyVisionVideoFrameFormat(format)).toBe(dolbyVisionBaseLayer);
+    });
+
+    it('names no other format a Dolby Vision base layer', () => {
+        expect(isRawDolbyVisionVideoFrameFormat(UNSUPPORTED_RAW_FORMAT)).toBe(false);
     });
 });

@@ -35,8 +35,8 @@ rectangle "AudioWorklet (engine)" $BOX_WORKLET {
 }
 
 rectangle "GPU" $BOX_GPU {
-  rectangle "**Upload**\nexternal texture, or\nRawYUVGPURenderer" as upload
-  rectangle "**Color**\nfused WGSL; identity\nfor HTML frames" as colorShader
+  rectangle "**Ingress**\nexternal texture, or\nPlaneTextureSource" as upload
+  rectangle "**Passes**\nplanned built-in chain\nand user passes" as colorShader
 }
 
 hostPlayer -right-> htmlBackend : (a) known-SDR\nHTML decode

@@ -1,7 +1,11 @@
 // The contracts shared by the pass manifest, the built-in passes, the planner, the executor, and the GPU decode route.
 // overhual/ in the engine root describes the design they implement.
 import type { InputColorMetadata } from '../../color/ColorMetadata';
-import type { SupportedRawVideoFrameFormat, TransferableRawVideoFrame } from '../../video/RawVideoFrameCopy';
+import type {
+    RawDolbyVisionVideoFrameFormat,
+    SupportedRawVideoFrameFormat,
+    TransferableRawVideoFrame
+} from '../../video/RawVideoFrameCopy';
 import type { DolbyVisionReconstructionProfile } from '../PresentationInput';
 import type { TexturePresentationGeometry } from '../PresentationGeometry';
 import type { HDRToSDRRenderSettings, RenderSettings } from '../RenderSettings';
@@ -182,7 +186,7 @@ export type BuiltinChain = {
 };
 
 /** The Dolby Vision base layer formats RPU reconstruction samples. */
-export type RawDolbyVisionFrameFormat = Exclude<SupportedRawVideoFrameFormat, 'NV12'>;
+export type RawDolbyVisionFrameFormat = RawDolbyVisionVideoFrameFormat;
 
 /**
  * A route the built-in library builds a chain for.

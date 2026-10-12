@@ -26,6 +26,21 @@ export type SupportedRawVideoFrameFormat =
     | 'I444P12'
     | 'NV12';
 
+/** Planar formats whose raw codes the RPU reshapes per pixel; the RPU's own BL bit depth normalizes them. */
+export type RawDolbyVisionVideoFrameFormat = Exclude<SupportedRawVideoFrameFormat, 'NV12'>;
+
+const RAW_DOLBY_VISION_VIDEO_FRAME_FORMATS: ReadonlySet<string> = new Set<RawDolbyVisionVideoFrameFormat>([
+    'I420',
+    'I420P10',
+    'I420P12',
+    'I422',
+    'I422P10',
+    'I422P12',
+    'I444',
+    'I444P10',
+    'I444P12'
+]);
+
 export type RawVideoFrameCopyOptions = {
     /** Supplies the destination, which it allocates when no spare fits; without one the copy allocates its own */
     bufferPool?: RawFrameBufferPool | null
@@ -364,6 +379,30 @@ function getFormatDefinition(format: string | null): RawVideoFormatDefinition {
             };
         default:
             throw new RawVideoFrameCopyError('unsupported-format', `Raw VideoFrame format ${String(format)} is not supported`);
+    }
+}
+
+/** Returns whether RPU reconstruction can sample a raw frame format. */
+export function isRawDolbyVisionVideoFrameFormat(format: string): format is RawDolbyVisionVideoFrameFormat {
+    return RAW_DOLBY_VISION_VIDEO_FRAME_FORMATS.has(format);
+}
+
+/** Returns the code bit depth of one raw planar or semi-planar YUV format. */
+export function getRawFormatBitDepth(format: SupportedRawVideoFrameFormat): TransferableRawVideoFrame['bitDepth'] {
+    switch (format) {
+        case 'I420':
+        case 'I422':
+        case 'I444':
+        case 'NV12':
+            return 8;
+        case 'I420P10':
+        case 'I422P10':
+        case 'I444P10':
+            return 10;
+        case 'I420P12':
+        case 'I422P12':
+        case 'I444P12':
+            return 12;
     }
 }
 

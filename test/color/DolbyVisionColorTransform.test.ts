@@ -29,12 +29,13 @@ import DolbyVisionRPUParser, {
 import type { ColorTriplet } from 'webgpu-player/color/ColorPipeline';
 import {
     composeDolbyVisionEnhancementSignal,
-    createDolbyVisionColorTransformWGSL,
+    createDolbyVisionColorFunctionsWGSL,
     reconstructDolbyVisionBT2020PQ,
     reconstructDolbyVisionBT2020PQWithEnhancement,
     reshapeDolbyVisionSignal
 } from 'webgpu-player/color/DolbyVisionColorTransform';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
+import { createEngineBindingWGSL, createEngineStructsWGSL } from 'webgpu-player/presentation/passes/PassResources';
 
 const PARSER_WASM_PATH = resolve(WASM_OUTPUT_DIRECTORY, 'libdovi', 'dovi-rpu-parser.wasm');
 const RPU_VECTOR_DIRECTORY = resolve(TEST_VECTORS_DIRECTORY, 'dolby-vision-rpu');
@@ -43,6 +44,8 @@ const REFERENCE_DECIMAL_PRECISION = 6;
 const LIBPLACEBO_REFERENCE_MAXIMUM_ABSOLUTE_ERROR = 0.000_01;
 const BYTES_PER_PACKED_WORD = Uint32Array.BYTES_PER_ELEMENT;
 const PACKED_BYTES_PER_MMR_VECTOR = 4 * Float32Array.BYTES_PER_ELEMENT;
+// Any binding index; the declaration takes the index it is given
+const RPU_BINDING = 5;
 
 interface LibplaceboReferenceSample {
     input: ColorTriplet;
@@ -244,13 +247,11 @@ describe('Dolby Vision CPU color reconstruction', () => {
     });
 });
 
-describe('createDolbyVisionColorTransformWGSL', () => {
+describe('createDolbyVisionColorFunctionsWGSL', () => {
     it('generates the fixed-schema libplacebo-equivalent reconstruction order', () => {
-        const shader = createDolbyVisionColorTransformWGSL(5);
+        const shader = createDolbyVisionColorFunctionsWGSL();
         const reconstruction = shader.slice(shader.indexOf('fn reconstructDolbyVisionBT2020PQ'));
 
-        expect(shader).toContain('@binding(5) var<storage, read> dolbyVisionRPU');
-        expect(shader).toContain(`array<u32, ${DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH / 4}>`);
         expect(shader).toContain(`dolbyVisionRPU.words[0] == ${DOLBY_VISION_RPU_SCHEMA_MAGIC}u`);
         expect(shader).toContain(`dolbyVisionRPU.words[1] == ${DOLBY_VISION_RPU_SCHEMA_VERSION}u`);
         expect(shader).toContain(`dolbyVisionRPU.words[2] == ${DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH}u`);
@@ -281,8 +282,15 @@ describe('createDolbyVisionColorTransformWGSL', () => {
         );
     });
 
+    it('reads the RPU binding that PassResources declares at the packed schema length', () => {
+        expect(createEngineBindingWGSL('dolby-vision-rpu', RPU_BINDING)).toContain(`@binding(${RPU_BINDING}) var<storage, read> dolbyVisionRPU`);
+        expect(createEngineStructsWGSL([ 'dolby-vision-rpu' ])).toContain(
+            `array<u32, ${DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH / BYTES_PER_PACKED_WORD}>`
+        );
+    });
+
     it('selects each segment method from that segment, as the CPU reference does', () => {
-        const shader = createDolbyVisionColorTransformWGSL(5);
+        const shader = createDolbyVisionColorFunctionsWGSL();
         const reshape = shader.slice(
             shader.indexOf('fn reshapeDolbyVisionComponent'),
             shader.indexOf('fn applyDolbyVisionPQEOTF')
@@ -299,10 +307,5 @@ describe('createDolbyVisionColorTransformWGSL', () => {
         // The component flags do not select one method for every segment
         expect(reshape).not.toContain('componentWordOffset + 2u');
         expect(shader).toContain('u32(loadDolbyVisionFloat(segmentWordOffset + 3u))');
-    });
-
-    it('rejects invalid storage bindings', () => {
-        expect(() => createDolbyVisionColorTransformWGSL(-1)).toThrow('Dolby Vision RPU binding must be a non-negative integer');
-        expect(() => createDolbyVisionColorTransformWGSL(1.5)).toThrow('Dolby Vision RPU binding must be a non-negative integer');
     });
 });

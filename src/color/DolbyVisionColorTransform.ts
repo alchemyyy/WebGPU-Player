@@ -23,7 +23,6 @@ import type { ColorTriplet } from './ColorPipeline';
 
 const BYTES_PER_PACKED_WORD = Uint32Array.BYTES_PER_ELEMENT;
 const PACKED_WORDS_PER_MMR_VECTOR = 4;
-const DOLBY_VISION_RPU_PACKED_WORD_COUNT = DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH / BYTES_PER_PACKED_WORD;
 const COMPONENT_PIVOT_WORD_OFFSET = DOLBY_VISION_RPU_PACKED_COMPONENT_PIVOT_OFFSET / BYTES_PER_PACKED_WORD;
 const COMPONENT_SEGMENT_WORD_OFFSET = DOLBY_VISION_RPU_PACKED_COMPONENT_SEGMENT_OFFSET / BYTES_PER_PACKED_WORD;
 const COMPONENT_MMR_WORD_OFFSET = DOLBY_VISION_RPU_PACKED_COMPONENT_MMR_OFFSET / BYTES_PER_PACKED_WORD;
@@ -268,26 +267,7 @@ export function composeDolbyVisionEnhancementSignal(
     return reconstructedSignal;
 }
 
-function requireBinding(binding: number): number {
-    if (!Number.isSafeInteger(binding) || binding < 0) {
-        throw new RangeError('Dolby Vision RPU binding must be a non-negative integer');
-    }
-    return binding;
-}
-
-/** Generates the fixed-storage-buffer libplacebo-equivalent reshape stage. */
-export function createDolbyVisionColorTransformWGSL(bindingValue: number): string {
-    const binding = requireBinding(bindingValue);
-    return /* wgsl */ `
-struct DolbyVisionRPUData {
-    words: array<u32, ${DOLBY_VISION_RPU_PACKED_WORD_COUNT}>,
-}
-
-@group(0) @binding(${binding}) var<storage, read> dolbyVisionRPU: DolbyVisionRPUData;
-${createDolbyVisionColorFunctionsWGSL()}`;
-}
-
-/** Generates the reshape stage's functions alone, which read the `dolbyVisionRPU` binding and struct that PassResources declares. */
+/** Generates the libplacebo-equivalent reshape stage's functions, which read the `dolbyVisionRPU` binding and struct that PassResources declares. */
 export function createDolbyVisionColorFunctionsWGSL(): string {
     return /* wgsl */ `
 fn loadDolbyVisionFloat(wordOffset: u32) -> f32 {
