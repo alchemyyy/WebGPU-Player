@@ -125,6 +125,8 @@ const CALLBACK_TIME_MICROSECONDS = 1_000_000;
 const EXPECTED_DISPLAY_TIME_MICROSECONDS = 1_016_667;
 const DISPLAY_LEAD_TEXT = 'display expected 16.7 ms after its callback';
 const PLAN_TEXTURE_SIZE = 64;
+// The presenter's reason for a frame it could not draw on a video element without a layout box
+const SURFACE_EMPTY_REASON = 'surface-empty: video box 0x0';
 
 const RAW_HDR_ROUTE_KEY = RAW_HDR_AUTHORIZATION_ROUTE_KEYS[0];
 const EXTERNAL_HDR_ROUTE_KEY = EXTERNAL_HDR_AUTHORIZATION_ROUTE_KEYS[0];
@@ -481,7 +483,7 @@ describe('describePlaybackInfo', () => {
         expect(requireRow(section, 'Native audio').value).toBe('clock not ready, 0 segments');
     });
 
-    it('describes the presenter\'s state, fallback, metadata counters, frame timing, and the plan', () => {
+    it('describes the presenter\'s state, fallback, undrawn frames, metadata counters, frame timing, and the plan', () => {
         const renderSettings = createHDRToSDRRenderSettings();
         const initialState = createInitialSandboxState();
         const plan = createPresentationPlan({
@@ -500,7 +502,8 @@ describe('describePlaybackInfo', () => {
                     lastExpectedDisplayTimeMicroseconds: microseconds(EXPECTED_DISPLAY_TIME_MICROSECONDS),
                     lastHDR10PlusInputPeakNits: HDR10_PLUS_PEAK_NITS,
                     lastHDR10PlusMetadataStatus: 'valid',
-                    lastPresentedMediaTimeMicroseconds: microseconds(PRESENTED_TIME_MICROSECONDS)
+                    lastPresentedMediaTimeMicroseconds: microseconds(PRESENTED_TIME_MICROSECONDS),
+                    presentationSkipReason: SURFACE_EMPTY_REASON
                 })
             }
         });
@@ -508,6 +511,7 @@ describe('describePlaybackInfo', () => {
         const toneMapping = renderSettings.toneMapping;
 
         expect(requireRow(section, 'Fallback')).toEqual({ label: 'Fallback', tone: 'failure', value: `frame-render-failed: ${PRESENTER_FALLBACK_DETAIL}` });
+        expect(requireRow(section, 'Not drawn')).toEqual({ label: 'Not drawn', tone: 'failure', value: SURFACE_EMPTY_REASON });
         expect(requireRow(section, 'Last frame').value).toBe(`0:10.000, ${DISPLAY_LEAD_TEXT}`);
         expect(requireRow(section, 'HDR10+').value).toBe('0 applied, 0 carried, 0 static fallback, last valid, peak 1000 nits');
         expect(requireRow(section, 'FEL authorization')).toEqual({ label: 'FEL authorization', tone: 'failure', value: FEL_FAILURE });

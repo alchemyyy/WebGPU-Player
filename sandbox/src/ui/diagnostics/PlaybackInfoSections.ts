@@ -583,6 +583,9 @@ function describePresenterRows(presenter: PresentationTelemetry): InfoRow[] {
         presenter.presentationSource === null ? null : `${presenter.presentationSource} source`
     ])));
     rows.push(createRow('Frames', `${presenter.presentedFrameCount} presented${VALUE_SEPARATOR}${presenter.decodedFrameCount} decoded${VALUE_SEPARATOR}${presenter.nativeFrameCount} native`));
+    rows.push(presenter.presentationSkipReason === null ?
+        createRow('Not drawn', NONE_TEXT, 'muted') :
+        createRow('Not drawn', presenter.presentationSkipReason, 'failure'));
     rows.push(createRow('First frame', presenter.firstFrameLatencyMicroseconds === null ?
         MISSING_VALUE_TEXT :
         `${formatMilliseconds(presenter.firstFrameLatencyMicroseconds)} after start${VALUE_SEPARATOR}at ${formatPreciseMediaTime(presenter.firstPresentedMediaTimeMicroseconds)}`));

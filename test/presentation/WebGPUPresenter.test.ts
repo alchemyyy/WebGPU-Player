@@ -293,6 +293,8 @@ const SIMULATED_CANVAS_CONFIGURATION_FAILURE = 'simulated canvas configuration f
 const SIMULATED_FRAME_CALLBACK_FAILURE = 'simulated frame callback request failure';
 const SIMULATED_NEXT_FRAME_CALLBACK_FAILURE = 'simulated next frame callback request failure';
 const INSECURE_CONTEXT_DETAIL = 'isSecureContext false';
+// What a frame on a video element without a layout box, such as one with display: none, reports
+const EMPTY_SURFACE_SKIP_REASON = 'surface-empty: video box 0x0';
 const ADAPTER_NULL_DETAIL = 'requestAdapter: null';
 const RESOURCE_TIMEOUT_DETAIL = `timeout after ${microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS)} ms`;
 // The executor's labels for the buffers these tests inspect
@@ -1283,6 +1285,39 @@ describe('WebGPUPresenter', () => {
             lastPresentedMediaTimeMicroseconds: 2_000_000,
             presentationSource: 'decoded'
         });
+    });
+
+    it('reports a decoded frame left undrawn while the video has no layout box, and draws once it has one', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+        const closeUndrawnFrame = vi.fn();
+        const presentFrame = (close: () => void): boolean => presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame: { close, codedHeight: 1_080, codedWidth: 1_920, displayHeight: 1_080, displayWidth: 1_920 } as unknown as VideoFrame,
+            mediaTimeMicroseconds: secondsToMicroseconds(2),
+            outputMode: 'video-frame'
+        }, 1);
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        resizeSurface(surfaceHarness, 0, 0);
+
+        expect(presentFrame(closeUndrawnFrame)).toBe(false);
+        expect(closeUndrawnFrame).toHaveBeenCalledOnce();
+        expect(presenter.getTelemetry()).toMatchObject({ presentationSkipReason: EMPTY_SURFACE_SKIP_REASON, presentedFrameCount: 0 });
+
+        resizeSurface(surfaceHarness, 1_920, 1_080);
+        expect(presentFrame(vi.fn())).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+        expect(presenter.getTelemetry().presentationSkipReason).toBeNull();
     });
 
     it('holds decoded VideoFrame backpressure until submitted GPU work finishes', async () => {

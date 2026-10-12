@@ -10,6 +10,8 @@ import { mountSandboxApp } from './ui/App';
 import { requireElement } from './ui/dom';
 import { createStore } from './ui/Store';
 
+// The presenter's canvas styles, which every host imports
+import 'webgpu-player/style.css';
 import './ui/theme.css';
 
 // The dev server serves the engine's output folder at its root, so the build info sits at its path below that folder

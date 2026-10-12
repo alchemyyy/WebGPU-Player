@@ -161,6 +161,7 @@ export function createPresenterTelemetry(overrides: Partial<PresentationTelemetr
         lastPresentedMediaTimeMicroseconds: null,
         mode: 'identity-sdr',
         nativeFrameCount: 0,
+        presentationSkipReason: null,
         presentationSource: null,
         presentedFrameCount: 0,
         sessionStartedMicroseconds: ZERO_MICROSECONDS,
