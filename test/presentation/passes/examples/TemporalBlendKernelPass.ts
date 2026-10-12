@@ -12,6 +12,6 @@ fn kernel(coordinate: vec2f) -> vec4f {
     let current = HOOKED_tex(coordinate);
     // historyValid counts the earlier frames the ring holds, so after a reset the pass presents the current frame alone
     let previousWeight = select(0.0, parameters.blend, presentation.historyValid >= 1u);
-    return mix(current, RGB_1_tex(coordinate), previousWeight);
+    return mix(current, RGB_history1_tex(coordinate), previousWeight);
 }
 `;
