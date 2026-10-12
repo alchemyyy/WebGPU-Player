@@ -1,5 +1,6 @@
 // The overlay layout: it mounts every panel into its region above the full-window player surface.
 import { reportCommandRejection } from './commands';
+import { bindControlWheel } from './ControlWheel';
 import { carriesFiles, createElement } from './dom';
 import { isOverlayToggle } from './OverlayToggle';
 import type { Panel, PanelContext } from './Panel';
@@ -59,6 +60,7 @@ export function mountSandboxApp(context: SandboxAppContext): void {
     }
     layout.append(createElement('div', { className: 'sandbox-subtitle-slot' }, [ createSubtitleOverlay(panelContext).element ]));
     context.overlay.append(layout);
+    bindControlWheel(layout);
     guardWindowFileDrops();
     window.addEventListener('keydown', (event: KeyboardEvent): void => {
         if (isOverlayToggle(event)) {
