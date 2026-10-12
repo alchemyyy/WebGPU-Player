@@ -1,0 +1,24 @@
+/* The route override: two selects, then the active route as terse monospace lines */
+.route-override-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.route-override-header {
+    font-weight: 600;
+}
+
+.route-override-row {
+    display: grid;
+    grid-template-columns: 7.5rem minmax(0, 1fr);
+    align-items: center;
+    gap: 4px;
+}
+
+.route-override-active {
+    color: var(--sandbox-text-muted);
+    font: var(--sandbox-monospace-font);
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+}

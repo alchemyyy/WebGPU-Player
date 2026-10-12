@@ -1,0 +1,73 @@
+/* The library panel: a fixed width, so expanding folders never shifts the layout */
+.file-tree-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sandbox-gap);
+    width: 17rem;
+}
+
+.file-tree-header {
+    display: flex;
+    align-items: center;
+    gap: var(--sandbox-gap);
+}
+
+.file-tree-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-tree-status {
+    color: var(--sandbox-text-muted);
+}
+
+.file-tree-rows {
+    display: flex;
+    flex-direction: column;
+}
+
+.file-tree-panel .file-tree-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 4px 1px calc(4px + var(--file-tree-depth) * 12px);
+    border: 0;
+    background: none;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.file-tree-panel .file-tree-row:hover {
+    background: var(--sandbox-control-hover);
+}
+
+.file-tree-panel .file-tree-row.is-selected {
+    background: var(--sandbox-control-background);
+    color: var(--sandbox-accent);
+}
+
+/* Folder rows carry aria-expanded; the escapes are the right- and down-pointing triangles */
+.file-tree-row[aria-expanded]::before {
+    content: '\25B8';
+    color: var(--sandbox-text-muted);
+}
+
+.file-tree-row[aria-expanded='true']::before {
+    content: '\25BE';
+}
+
+.file-tree-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.file-tree-badge {
+    flex: none;
+    color: var(--sandbox-text-muted);
+    font: var(--sandbox-monospace-font);
+}

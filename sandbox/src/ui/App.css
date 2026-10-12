@@ -1,0 +1,111 @@
+/* The overlay layout: panel regions around the full-window surface, which shows through everywhere else */
+.sandbox-layout {
+    position: absolute;
+    inset: 0;
+    box-sizing: border-box;
+    display: grid;
+    grid-template-areas:
+        "library info graph controls"
+        "library info . controls"
+        "transport transport transport transport";
+    /* Side columns fit their panels up to a cap, and collapse when their region is empty */
+    grid-template-columns: fit-content(18rem) fit-content(24rem) minmax(0, 1fr) fit-content(22rem);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: var(--sandbox-gap);
+    padding: var(--sandbox-gap);
+    color-scheme: dark;
+    accent-color: var(--sandbox-accent);
+}
+
+/* Panels toggle elements with the hidden attribute, which must win over their display rules */
+.sandbox-layout [hidden] {
+    display: none !important;
+}
+
+.sandbox-region {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sandbox-gap);
+    min-width: 0;
+    min-height: 0;
+}
+
+.sandbox-region-library {
+    grid-area: library;
+}
+
+.sandbox-region-info {
+    grid-area: info;
+}
+
+.sandbox-region-graph {
+    grid-area: graph;
+}
+
+.sandbox-region-controls {
+    grid-area: controls;
+}
+
+.sandbox-region-transport {
+    grid-area: transport;
+    flex-direction: row;
+}
+
+/* Every panel's box; zero specificity, so a panel stylesheet overrides any of it */
+:where(.sandbox-region) > * {
+    box-sizing: border-box;
+    max-height: 100%;
+    min-height: 0;
+    overflow: auto;
+    padding: var(--sandbox-panel-padding);
+    border: 1px solid var(--sandbox-panel-border);
+    border-radius: var(--sandbox-panel-radius);
+    background: var(--sandbox-panel-background);
+    pointer-events: auto;
+}
+
+/* A panel with nothing to show takes no room */
+:where(.sandbox-region) > :empty {
+    display: none;
+}
+
+/* Hidden panels leave the surface unobstructed, and the subtitle slot then reaches the bottom */
+.sandbox-panels-hidden .sandbox-region {
+    display: none;
+}
+
+/* Bottom center of the area above the transport bar, across every column, so cues center on the video */
+.sandbox-subtitle-slot {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    align-self: end;
+    justify-self: center;
+    max-width: 80%;
+    pointer-events: none;
+}
+
+/* The shared control look; zero specificity, so a panel stylesheet overrides any of it */
+:where(.sandbox-layout) :where(button, input, select) {
+    color: inherit;
+    font: inherit;
+}
+
+:where(.sandbox-layout) :where(button, select, input[type='number']) {
+    padding: 2px 6px;
+    border: 1px solid var(--sandbox-panel-border);
+    border-radius: var(--sandbox-panel-radius);
+    background: var(--sandbox-control-background);
+}
+
+:where(.sandbox-layout) :where(button) {
+    cursor: pointer;
+}
+
+:where(.sandbox-layout) :where(button, select):hover {
+    background: var(--sandbox-control-hover);
+}
+
+:where(.sandbox-layout) :where(button, input, select):disabled {
+    cursor: default;
+    opacity: 0.5;
+}
