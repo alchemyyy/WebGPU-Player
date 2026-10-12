@@ -1,0 +1,52 @@
+/* Detailed playback info: collapsible sections of label and value rows, toned by what each value says */
+
+/* The root sets no display, so App.css hides it while it has no sections */
+.playback-info-section + .playback-info-section {
+    margin-top: calc(var(--sandbox-gap) / 2);
+}
+
+.playback-info-title {
+    color: var(--sandbox-accent);
+    font-weight: 600;
+    cursor: pointer;
+}
+
+/* Labels line up across a section's rows */
+.playback-info-rows {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 1px var(--sandbox-gap);
+    margin: calc(var(--sandbox-gap) / 2) 0 0;
+}
+
+.playback-info-row {
+    display: contents;
+}
+
+.playback-info-label {
+    margin: 0;
+    color: var(--sandbox-text-muted);
+    white-space: nowrap;
+}
+
+.playback-info-value {
+    margin: 0;
+    font: var(--sandbox-monospace-font);
+    overflow-wrap: anywhere;
+}
+
+.playback-info-row[data-tone='success'] .playback-info-value {
+    color: var(--sandbox-success);
+}
+
+.playback-info-row[data-tone='warning'] .playback-info-value {
+    color: var(--sandbox-warning);
+}
+
+.playback-info-row[data-tone='failure'] .playback-info-value {
+    color: var(--sandbox-failure);
+}
+
+.playback-info-row[data-tone='muted'] .playback-info-value {
+    color: var(--sandbox-text-muted);
+}
