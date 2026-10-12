@@ -153,12 +153,6 @@ describe('createGPUDecoderPrelude', () => {
         expect(prelude).not.toContain(FEATURE_WITHOUT_EXTENSION);
     });
 
-    it('rejects a semi-planar output format', () => {
-        const manifest: GPUDecoderManifest = { ...createManifest('I420'), outputFormat: 'NV12' };
-
-        expect(() => createGPUDecoderPrelude(manifest)).toThrow('A GPU decoder cannot write NV12');
-    });
-
     it('starts the body on the line the module reports', () => {
         const manifest = createManifest('I420');
 
@@ -264,6 +258,6 @@ describe('decoder uniform and status layouts', () => {
         words[3] = HEADER_WIDTH;
 
         expect(readGPUDecoderStatus(words).headerFacts).toBeNull();
-        expect(() => readGPUDecoderStatus(new Uint32Array(1))).toThrow('too short');
+        expect(() => readGPUDecoderStatus(new Uint32Array(1))).toThrow(`status: ${BYTES_PER_WORD} < ${GPU_DECODER_STATUS_BYTE_LENGTH}`);
     });
 });

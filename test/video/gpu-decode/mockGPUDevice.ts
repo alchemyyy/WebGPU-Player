@@ -227,11 +227,17 @@ export class MockGPUDevice {
     compilationMessages: MockCompilationMessage[] = [];
     readonly dispatches: MockDispatch[] = [];
     dispatchHandler: MockDispatchHandler = (): void => undefined;
+    /** When set, createBuffer throws for a label that contains this text, as an allocation the device refuses. */
+    failingBufferLabel: string | null = null;
     readonly features: Set<string>;
     readonly limits: MockGPULimits;
     readonly lost: Promise<GPUDeviceLostInfo>;
     /** When true, mapAsync settles only through settlePendingMaps(). */
     manualMaps = false;
+    /** When set, every mapAsync rejects with this error. */
+    mapFailure: Error | null = null;
+    /** When set, createComputePipelineAsync rejects with this error. */
+    pipelineFailure: Error | null = null;
     readonly pipelines: MockComputePipeline[] = [];
     readonly queue = {
         onSubmittedWorkDone: (): Promise<void> => Promise.resolve(),
@@ -284,6 +290,9 @@ export class MockGPUDevice {
     }
 
     createBuffer(descriptor: GPUBufferDescriptor): MockGPUBuffer {
+        if (this.failingBufferLabel !== null && (descriptor.label ?? '').includes(this.failingBufferLabel)) {
+            throw new RangeError(`createBuffer: refused '${descriptor.label ?? ''}'`);
+        }
         const buffer = new MockGPUBuffer(this, descriptor);
         this.buffers.push(buffer);
         return buffer;
@@ -294,6 +303,9 @@ export class MockGPUDevice {
     }
 
     createComputePipelineAsync(descriptor: { compute: { entryPoint?: string }; label?: string }): Promise<MockComputePipeline> {
+        if (this.pipelineFailure) {
+            return Promise.reject(this.pipelineFailure);
+        }
         const pipeline: MockComputePipeline = { entryPoint: descriptor.compute.entryPoint ?? '', label: descriptor.label ?? '' };
         this.pipelines.push(pipeline);
         return Promise.resolve(pipeline);
@@ -364,6 +376,11 @@ export class MockGPUDevice {
         if (pending.buffer.destroyed) {
             pending.buffer.mapState = 'unmapped';
             pending.reject(new Error('The buffer was destroyed while mapping'));
+            return;
+        }
+        if (this.mapFailure) {
+            pending.buffer.mapState = 'unmapped';
+            pending.reject(this.mapFailure);
             return;
         }
         pending.buffer.mapState = 'mapped';

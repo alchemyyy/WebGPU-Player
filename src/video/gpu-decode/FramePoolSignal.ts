@@ -61,12 +61,12 @@ fn framePoolSampleYUV(textureCoordinate: vec2f) -> vec3f {
  */
 export function createFramePoolSignal(format: SupportedRawVideoFrameFormat, metadata: InputColorMetadata): SignalDefinition {
     if (!isGPUDecoderOutputFormat(format)) {
-        throw new RangeError(`A frame pool never holds ${format}`);
+        throw new RangeError(`format: unsupported '${format}'`);
     }
     assertValidInputColorMetadata(metadata);
     const formatFacts = getGPUDecoderFormatFacts(format);
     if (metadata.bitDepth !== formatFacts.bitDepth) {
-        throw new RangeError('Frame pool format bit depth does not match color metadata');
+        throw new RangeError(`bitDepth: ${metadata.bitDepth}, expected ${formatFacts.bitDepth} for ${format}`);
     }
     const entryWGSL = `
 fn ${FRAME_POOL_SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {

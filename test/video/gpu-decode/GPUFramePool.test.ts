@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { FRAME_POOL_LAYOUT_BYTE_LENGTH } from 'webgpu-player/presentation/passes/PassResources';
 import { U32_VALUE_COUNT } from 'webgpu-player/presentation/WebGPUConstants';
 import { GPU_FRAME_POOL_MAXIMUM_SLOT_COUNT } from 'webgpu-player/video/gpu-decode/GPUDecodeLimits';
+import { GPUVideoDecodeError, type GPUVideoDecodeFailure } from 'webgpu-player/video/gpu-decode/GPUDecodeTypes';
 import GPUFramePool, {
     createGPUFramePoolLayout,
     getGPUFramePoolSlotCount,
@@ -35,6 +36,26 @@ const LAYOUT_USAGE = 64 | 8;
 const SLOT_BYTE_OFFSET_WORD = 12;
 const BYTES_PER_COMPONENT_WORD = 13;
 const PLANE_COUNT_WORD = 14;
+const FRACTIONAL_WIDTH = FULL_HD_WIDTH + 0.5;
+// A 4:2:0 8-bit size whose 32-slot pool runs past what u32 addresses: 1.5 bytes per pixel at 256-byte aligned rows
+const UNADDRESSABLE_DIMENSION = 16_384;
+const UNADDRESSABLE_POOL_BYTE_LENGTH = UNADDRESSABLE_DIMENSION * UNADDRESSABLE_DIMENSION * 3 / 2 * GPU_FRAME_POOL_MAXIMUM_SLOT_COUNT;
+
+/** A layout the pool refuses: a description, the coded size, the slot count, and the failure. */
+type LayoutRejectionCase = readonly [string, number, number, number, GPUVideoDecodeFailure];
+
+/** Returns the failure a pool call throws. */
+function getFailure(work: () => unknown): GPUVideoDecodeFailure {
+    try {
+        work();
+    } catch (error) {
+        if (error instanceof GPUVideoDecodeError) {
+            return error.failure;
+        }
+        throw error;
+    }
+    throw new Error('The call did not fail');
+}
 
 describe('frame pool layout', () => {
     it('counts references, reorder depth, presentation slots, and spares only for references', () => {
@@ -94,14 +115,26 @@ describe('frame pool layout', () => {
         expect(uhdLayout.slotByteLength).toBe(3 * SIXTEEN_BIT_UHD_BYTES_PER_ROW * UHD_HEIGHT);
     });
 
-    it.each([
-        [ 'an empty size', 0, FULL_HD_HEIGHT, SLOT_COUNT, 'positive integer coded size' ],
-        [ 'a fractional size', FULL_HD_WIDTH + 0.5, FULL_HD_HEIGHT, SLOT_COUNT, 'positive integer coded size' ],
-        [ 'no slots', FULL_HD_WIDTH, FULL_HD_HEIGHT, 0, 'holds 1 to 32 slots' ],
-        [ 'more slots than a freed-slot mask names', FULL_HD_WIDTH, FULL_HD_HEIGHT, GPU_FRAME_POOL_MAXIMUM_SLOT_COUNT + 1, 'holds 1 to 32 slots' ],
-        [ 'more bytes than WGSL addresses', 16_384, 16_384, GPU_FRAME_POOL_MAXIMUM_SLOT_COUNT, 'exceeds what WGSL addresses' ]
-    ])('rejects %s', (_description: string, width: number, height: number, slotCount: number, message: string) => {
-        expect(() => createGPUFramePoolLayout('I420', width, height, slotCount)).toThrow(message);
+    it.each<LayoutRejectionCase>([
+        [ 'an empty size', 0, FULL_HD_HEIGHT, SLOT_COUNT, { code: 'coded-size', detail: `0x${FULL_HD_HEIGHT}` } ],
+        [ 'a fractional size', FRACTIONAL_WIDTH, FULL_HD_HEIGHT, SLOT_COUNT, { code: 'coded-size', detail: `${FRACTIONAL_WIDTH}x${FULL_HD_HEIGHT}` } ],
+        [ 'no slots', FULL_HD_WIDTH, FULL_HD_HEIGHT, 0, { code: 'slot-count', detail: `0 outside [1, ${GPU_FRAME_POOL_MAXIMUM_SLOT_COUNT}]` } ],
+        [
+            'more slots than a freed-slot mask names',
+            FULL_HD_WIDTH,
+            FULL_HD_HEIGHT,
+            GPU_FRAME_POOL_MAXIMUM_SLOT_COUNT + 1,
+            { code: 'slot-count', detail: `${GPU_FRAME_POOL_MAXIMUM_SLOT_COUNT + 1} outside [1, ${GPU_FRAME_POOL_MAXIMUM_SLOT_COUNT}]` }
+        ],
+        [
+            'more bytes than WGSL addresses',
+            UNADDRESSABLE_DIMENSION,
+            UNADDRESSABLE_DIMENSION,
+            GPU_FRAME_POOL_MAXIMUM_SLOT_COUNT,
+            { code: 'pool-size', detail: `${UNADDRESSABLE_POOL_BYTE_LENGTH} > ${U32_VALUE_COUNT}` }
+        ]
+    ])('rejects %s with its failure', (_description: string, width: number, height: number, slotCount: number, failure: GPUVideoDecodeFailure) => {
+        expect(getFailure(() => createGPUFramePoolLayout('I420', width, height, slotCount))).toEqual(failure);
     });
 
     it('checks a pool against both storage buffer limits', () => {
@@ -163,7 +196,10 @@ describe('GPUFramePool', () => {
         const layout = createGPUFramePoolLayout('I420', FULL_HD_WIDTH, FULL_HD_HEIGHT, SLOT_COUNT);
         const device = new MockGPUDevice([], { maxStorageBufferBindingSize: layout.byteLength - 1 });
 
-        expect(() => new GPUFramePool(device.asDevice(), layout, VISIBLE_RECTANGLE)).toThrow("beyond the device's storage buffer limits");
+        expect(getFailure(() => new GPUFramePool(device.asDevice(), layout, VISIBLE_RECTANGLE))).toEqual({
+            code: 'pool-size',
+            detail: `${layout.byteLength} > ${layout.byteLength - 1}`
+        });
     });
 
     it('frees an output slot of a decoder without references when presentation releases it', () => {
@@ -214,8 +250,8 @@ describe('GPUFramePool', () => {
     it('rejects a slot outside the pool', () => {
         const pool = createPool(new MockGPUDevice());
 
-        expect(() => pool.releaseOutput(SLOT_COUNT)).toThrow(`Frame pool slot ${SLOT_COUNT} does not exist`);
-        expect(() => pool.getFrame(-1)).toThrow('does not exist');
+        expect(() => pool.releaseOutput(SLOT_COUNT)).toThrow(`slot: ${SLOT_COUNT} outside [0, ${SLOT_COUNT - 1}]`);
+        expect(() => pool.getFrame(-1)).toThrow(`slot: -1 outside [0, ${SLOT_COUNT - 1}]`);
     });
 
     it('destroys its buffers', () => {

@@ -3,23 +3,29 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
     BYTES_PER_WORD,
     INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH,
+    MAXIMUM_WORKGROUP_COUNT,
     SHADER_F16_FEATURE,
-    UNIFORM_BUFFER_OFFSET_ALIGNMENT
+    UNIFORM_BUFFER_OFFSET_ALIGNMENT,
+    WORKGROUP_AXIS_NAMES
 } from 'webgpu-player/presentation/WebGPUConstants';
 import { GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH, GPU_DECODE_PACKET_RING_PACKET_COUNT } from 'webgpu-player/video/gpu-decode/GPUDecodeLimits';
 import { parseGPUDecoderManifest } from 'webgpu-player/video/gpu-decode/GPUDecoderManifest';
 import {
+    createGPUDecoderBindGroupLayoutEntries,
     createGPUDecoderModule,
     GPU_DECODER_BINDINGS,
     GPU_DECODER_FIRST_BUFFER_BINDING,
     GPU_DECODER_PACKET_UNIFORM_BYTE_LENGTH
 } from 'webgpu-player/video/gpu-decode/GPUDecoderPrelude';
-import type { GPUDecodePacket, GPUDecoderManifest, GPUDecodeStreamFacts } from 'webgpu-player/video/gpu-decode/GPUDecodeTypes';
-import { getGPUFramePoolSlotCount } from 'webgpu-player/video/gpu-decode/GPUFramePool';
-import GPUVideoDecodeSession, {
-    GPUDecoderCompileError,
-    type GPUDecodedFrame
-} from 'webgpu-player/video/gpu-decode/GPUVideoDecodeSession';
+import {
+    type GPUDecodePacket,
+    type GPUDecoderManifest,
+    type GPUDecodeStreamFacts,
+    GPUVideoDecodeError,
+    type GPUVideoDecodeFailure
+} from 'webgpu-player/video/gpu-decode/GPUDecodeTypes';
+import { createGPUFramePoolLayout, getGPUFramePoolSlotCount } from 'webgpu-player/video/gpu-decode/GPUFramePool';
+import GPUVideoDecodeSession, { type GPUDecodedFrame } from 'webgpu-player/video/gpu-decode/GPUVideoDecodeSession';
 
 import { getBoundBuffer, MockGPUDevice, type MockCompilationMessage, type MockDispatch, type MockGPULimits } from './mockGPUDevice';
 import { installWebGPUGlobals } from './webGPUGlobals';
@@ -86,9 +92,22 @@ const COMPILE_ERROR_PRELUDE_LINE = 3;
 const COMPILE_ERROR_COLUMN = 7;
 const COMPILE_ERROR_MESSAGE = "unresolved identifier 'sampel'";
 const COMPILE_WARNING_MESSAGE = 'unused variable';
-const FRACTIONAL_DISPATCH = `${COPY_ENTRY_POINT}, stream.width / 3`;
+// A width divisor whose quotient is fractional, so the workgroup count is not an integer
+const FRACTIONAL_DIVISOR = 3;
+const FRACTIONAL_DISPATCH = `${COPY_ENTRY_POINT}, stream.width / ${FRACTIONAL_DIVISOR}`;
 const SMALL_WORKGROUP_LIMIT = 8;
 const SMALL_STORAGE_BUFFER_LIMIT = 6;
+const TWO_SCRATCH_BUFFERS = [ 'first, 4', 'second, 4' ];
+// A visible rectangle shifted right by an even offset, so it runs past the coded frame
+const SHIFTED_VISIBLE_X = 2;
+const LOST_DEVICE_REASON = 'unknown';
+const LOST_DEVICE_MESSAGE = 'GPU process crashed';
+const BROWSER_ERROR_NAME = 'OperationError';
+const BROWSER_ERROR_MESSAGE = 'The operation failed';
+const REFUSED_BUFFER_LABEL = 'status readback';
+
+/** A session creation the session refuses: a description, the decoder, the stream, the device limits, and the failure. */
+type CreationRejectionCase = readonly [string, GPUDecoderManifest, GPUDecodeStreamFacts, Partial<MockGPULimits>, GPUVideoDecodeFailure];
 
 type DecoderOptions = {
     buffers?: readonly string[]
@@ -189,16 +208,33 @@ function requireFrame(frame: GPUDecodedFrame | null): GPUDecodedFrame {
     return frame;
 }
 
-async function getCreateError(promise: Promise<GPUVideoDecodeSession>): Promise<Error> {
+async function getCreateError(promise: Promise<GPUVideoDecodeSession>): Promise<GPUVideoDecodeError> {
     try {
         await promise;
     } catch (error) {
-        if (error instanceof Error) {
+        if (error instanceof GPUVideoDecodeError) {
             return error;
         }
         throw error;
     }
     throw new Error('The session was created');
+}
+
+/** Returns an error as the browser raises one, with a DOMException-style name. */
+function createBrowserError(): Error {
+    const error = new Error(BROWSER_ERROR_MESSAGE);
+    error.name = BROWSER_ERROR_NAME;
+    return error;
+}
+
+/** Returns the storage buffers a decoder with bufferCount scratch buffers binds, counted from its bind group layout. */
+function countStorageBuffers(bufferCount: number): number {
+    return createGPUDecoderBindGroupLayoutEntries(bufferCount).filter(entry => entry.buffer?.type !== 'uniform').length;
+}
+
+/** Returns the bytes of the default test stream's pool. */
+function getDefaultPoolByteLength(): number {
+    return createGPUFramePoolLayout('I420', CODED_WIDTH, CODED_HEIGHT, getGPUFramePoolSlotCount(0, 0)).byteLength;
 }
 
 describe('GPUVideoDecodeSession', () => {
@@ -279,66 +315,97 @@ describe('GPUVideoDecodeSession', () => {
 
             const error = await getCreateError(createSession(device, manifest));
 
-            expect(error).toBeInstanceOf(GPUDecoderCompileError);
             const sourceLine = manifest.bodyFirstLine + COMPILE_ERROR_BODY_LINE_OFFSET;
-            expect((error as GPUDecoderCompileError).messages).toEqual([
+            expect(error.compileMessages).toEqual([
                 { column: COMPILE_ERROR_COLUMN, line: sourceLine, message: COMPILE_ERROR_MESSAGE, source: 'decoder' },
                 { column: 1, line: COMPILE_ERROR_PRELUDE_LINE, message: COMPILE_ERROR_MESSAGE, source: 'prelude' }
             ]);
-            expect(error.message).toBe(`The decoder '${DECODER_NAME}' does not compile: line ${sourceLine}: ${COMPILE_ERROR_MESSAGE}`);
+            expect(error.failure).toEqual({ code: 'compile-error', detail: `line ${sourceLine}:${COMPILE_ERROR_COLUMN} ${COMPILE_ERROR_MESSAGE}` });
+            expect(error.message).toBe(`compile-error: line ${sourceLine}:${COMPILE_ERROR_COLUMN} ${COMPILE_ERROR_MESSAGE}`);
             expect(device.pipelines).toEqual([]);
         });
 
-        it.each([
-            [ 'a device without a required feature', createManifest({ requires: FEATURE_NAME }), STREAM, {}, `lacks the decoder's required features: ${FEATURE_NAME}` ],
-            [
-                'more storage buffers than the device allows',
-                createManifest({ buffers: [ 'first, 4', 'second, 4' ] }),
-                STREAM,
-                { maxStorageBuffersPerShaderStage: SMALL_STORAGE_BUFFER_LIMIT },
-                'binds 7 storage buffers; the device allows 6'
-            ],
+        it('names a compile error in the prelude as a prelude line', async () => {
+            const device = new MockGPUDevice();
+            device.compilationMessages = [ { lineNum: COMPILE_ERROR_PRELUDE_LINE, linePos: 1, message: COMPILE_ERROR_MESSAGE, type: 'error' } ];
+
+            const error = await getCreateError(createSession(device));
+
+            expect(error.failure).toEqual({ code: 'compile-error', detail: `prelude line ${COMPILE_ERROR_PRELUDE_LINE}:1 ${COMPILE_ERROR_MESSAGE}` });
+        });
+
+        it.each<CreationRejectionCase>([
+            [ 'a device without a required feature', createManifest({ requires: FEATURE_NAME }), STREAM, {}, { code: 'feature-missing', detail: FEATURE_NAME } ],
             [
                 'a workgroup count that is not an integer',
                 createManifest({ dispatches: [ FRACTIONAL_DISPATCH ] }),
                 STREAM,
                 {},
-                'round it with ceil or floor'
+                {
+                    code: 'dispatch-count',
+                    detail: `${COPY_ENTRY_POINT} ${WORKGROUP_AXIS_NAMES[0]} ${CODED_WIDTH / FRACTIONAL_DIVISOR} outside integers [0, ${MAXIMUM_WORKGROUP_COUNT}]`
+                }
             ],
             [
                 'a workgroup count beyond the device limit',
                 createManifest(),
                 STREAM,
                 { maxComputeWorkgroupsPerDimension: SMALL_WORKGROUP_LIMIT },
-                `it must be an integer from 0 to ${SMALL_WORKGROUP_LIMIT}`
+                { code: 'dispatch-count', detail: `${COPY_ENTRY_POINT} ${WORKGROUP_AXIS_NAMES[1]} ${CODED_HEIGHT} outside integers [0, ${SMALL_WORKGROUP_LIMIT}]` }
+            ],
+            [
+                'an empty coded size',
+                createManifest(),
+                { ...STREAM, codedWidth: 0 },
+                {},
+                { code: 'coded-size', detail: `0x${CODED_HEIGHT}` }
+            ],
+            [
+                'a visible rectangle without area',
+                createManifest(),
+                { ...STREAM, visibleRectangle: { height: CODED_HEIGHT, width: 0, x: 0, y: 0 } },
+                {},
+                { code: 'visible-rectangle', detail: `0,0 0x${CODED_HEIGHT} is not a nonempty integer rectangle` }
             ],
             [
                 'a visible rectangle outside the coded frame',
                 createManifest(),
-                { ...STREAM, visibleRectangle: { height: CODED_HEIGHT, width: CODED_WIDTH, x: 2, y: 0 } },
+                { ...STREAM, visibleRectangle: { height: CODED_HEIGHT, width: CODED_WIDTH, x: SHIFTED_VISIBLE_X, y: 0 } },
                 {},
-                'inside the coded frame'
+                { code: 'visible-rectangle', detail: `${SHIFTED_VISIBLE_X},0 ${CODED_WIDTH}x${CODED_HEIGHT} exceeds ${CODED_WIDTH}x${CODED_HEIGHT}` }
             ],
             [
                 'a pool beyond the device limits',
                 createManifest(),
                 STREAM,
                 { maxStorageBufferBindingSize: SMALL_PACKET_BYTE_LENGTH },
-                "beyond the device's storage buffer limits"
+                { code: 'pool-size', detail: `${getDefaultPoolByteLength()} > ${SMALL_PACKET_BYTE_LENGTH}` }
             ]
-        ])('rejects %s', async (
+        ])('rejects %s with its failure', async (
             _description: string,
             manifest: GPUDecoderManifest,
             stream: GPUDecodeStreamFacts,
             limits: Partial<MockGPULimits>,
-            message: string
+            failure: GPUVideoDecodeFailure
         ) => {
             const device = new MockGPUDevice([], limits);
 
             const error = await getCreateError(createSession(device, manifest, stream));
 
-            expect(error).toBeInstanceOf(RangeError);
-            expect(error.message).toContain(message);
+            expect(error.failure).toEqual(failure);
+            expect(error.message).toBe(`${failure.code}: ${failure.detail}`);
+            expect(error.compileMessages).toEqual([]);
+        });
+
+        it('rejects more storage buffers than the device allows, counted from the bind group layout', async () => {
+            const device = new MockGPUDevice([], { maxStorageBuffersPerShaderStage: SMALL_STORAGE_BUFFER_LIMIT });
+
+            const error = await getCreateError(createSession(device, createManifest({ buffers: TWO_SCRATCH_BUFFERS })));
+
+            expect(error.failure).toEqual({
+                code: 'storage-buffer-count',
+                detail: `${countStorageBuffers(TWO_SCRATCH_BUFFERS.length)} > ${SMALL_STORAGE_BUFFER_LIMIT}`
+            });
         });
 
         it('rejects codec private data beyond the limit', async () => {
@@ -346,7 +413,30 @@ describe('GPUVideoDecodeSession', () => {
 
             const error = await getCreateError(createSession(new MockGPUDevice(), createManifest(), STREAM, codecPrivate));
 
-            expect(error.message).toContain('codec private data exceeds');
+            expect(error.failure).toEqual({
+                code: 'codec-private-size',
+                detail: `${GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH + 1} > ${GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH}`
+            });
+        });
+
+        it('reports a pipeline the device cannot build with its entry point and the browser error', async () => {
+            const device = new MockGPUDevice();
+            device.pipelineFailure = createBrowserError();
+
+            const error = await getCreateError(createSession(device));
+
+            expect(error.failure).toEqual({ code: 'pipeline-error', detail: `${COPY_ENTRY_POINT} ${BROWSER_ERROR_NAME}: ${BROWSER_ERROR_MESSAGE}` });
+        });
+
+        it('destroys what it allocated when an allocation after the pool fails, and rethrows', async () => {
+            const device = new MockGPUDevice();
+            device.failingBufferLabel = REFUSED_BUFFER_LABEL;
+
+            const creation = createSession(device);
+
+            await expect(creation).rejects.toThrow(RangeError);
+            expect(device.buffers.length).toBeGreaterThan(0);
+            expect(device.buffers.every(buffer => buffer.destroyed)).toBe(true);
         });
     });
 
@@ -411,7 +501,7 @@ describe('GPUVideoDecodeSession', () => {
             session.queuePacket(createPacket(OVERSIZED_PACKET_BYTE_LENGTH, 0));
             session.submitPendingDecodeWork();
 
-            expect(session.getFailure()?.kind).toBe('invalid-packet');
+            expect(session.getFailure()).toEqual({ code: 'packet-size', detail: `${OVERSIZED_PACKET_BYTE_LENGTH} > ${PACKET_BYTE_LENGTH}` });
             expect(device.submitCount).toBe(0);
         });
     });
@@ -519,14 +609,66 @@ describe('GPUVideoDecodeSession', () => {
             await session.waitForStatusReadbacks();
             session.submitPendingDecodeWork();
 
-            expect(session.getFailure()).toEqual({
-                code: DECODER_ERROR_CODE,
-                kind: 'decoder-error',
-                message: `The decoder '${DECODER_NAME}' reported error ${DECODER_ERROR_CODE}`
-            });
+            expect(session.getFailure()).toEqual({ code: 'decoder-error', detail: String(DECODER_ERROR_CODE) });
             expect(device.submitCount).toBe(1);
             expect(session.takeNextFrame()).toBeNull();
             expect(session.getPendingPacketCount()).toBe(0);
+        });
+
+        it('fails on an error that a readback taken before a reset reports, though it frees no slots', async () => {
+            const device = new MockGPUDevice();
+            device.manualMaps = true;
+            const session = await createSession(device, createManifest({ references: REFERENCES }));
+            device.dispatchHandler = (dispatch: MockDispatch): void => {
+                reportStatus(dispatch, 0, DECODER_ERROR_CODE);
+            };
+
+            session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, 0, true));
+            session.submitPendingDecodeWork();
+            session.reset();
+            device.settlePendingMaps();
+            await session.waitForStatusReadbacks();
+
+            expect(session.getFailure()).toEqual({ code: 'decoder-error', detail: String(DECODER_ERROR_CODE) });
+        });
+
+        it('reads back the error of a packet that skipped its readback when the status is flushed', async () => {
+            const device = new MockGPUDevice();
+            device.manualMaps = true;
+            const session = await createSession(device);
+            // Three packets take every readback, so the fourth, which reports the error, skips its own
+            const packetCount = 4;
+            device.dispatchHandler = (dispatch: MockDispatch): void => {
+                if (readPacketUniform(dispatch).index === packetCount - 1) {
+                    reportStatus(dispatch, 0, DECODER_ERROR_CODE);
+                }
+            };
+            for (let packetIndex = 0; packetIndex < packetCount; packetIndex += 1) {
+                session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, packetIndex * FRAME_DURATION_MICROSECONDS, packetIndex === 0));
+                session.submitPendingDecodeWork();
+                drainFrames(session);
+            }
+
+            device.settlePendingMaps();
+            await session.waitForStatusReadbacks();
+            const failureBeforeFlush = session.getFailure();
+            device.manualMaps = false;
+            await session.flushStatusReadbacks();
+
+            expect(failureBeforeFlush).toBeNull();
+            expect(session.getFailure()).toEqual({ code: 'decoder-error', detail: String(DECODER_ERROR_CODE) });
+        });
+
+        it('fails when a status readback cannot map, with the browser error', async () => {
+            const device = new MockGPUDevice();
+            device.mapFailure = createBrowserError();
+            const session = await createSession(device);
+
+            session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, 0, true));
+            session.submitPendingDecodeWork();
+            await session.waitForStatusReadbacks();
+
+            expect(session.getFailure()).toEqual({ code: 'readback-failed', detail: `${BROWSER_ERROR_NAME}: ${BROWSER_ERROR_MESSAGE}` });
         });
 
         it('keeps the header facts the first reporting readback carries', async () => {
@@ -718,12 +860,10 @@ describe('GPUVideoDecodeSession', () => {
         it('fails when the device is lost', async () => {
             const device = new MockGPUDevice();
             const session = await createSession(device);
-            const lostMessage = 'GPU process crashed';
-
-            device.loseDevice(lostMessage);
+            device.loseDevice(LOST_DEVICE_MESSAGE);
             await device.lost;
 
-            expect(session.getFailure()).toEqual({ kind: 'device-lost', message: lostMessage });
+            expect(session.getFailure()).toEqual({ code: 'device-lost', detail: `${LOST_DEVICE_REASON}: ${LOST_DEVICE_MESSAGE}` });
         });
 
         it('destroys every buffer, including the pool, and ignores calls after', async () => {

@@ -13,6 +13,7 @@ import {
 } from '../../presentation/WebGPUConstants';
 import { getGPUDecoderFormatFacts, type GPUDecoderOutputFormat } from './GPUDecodeFormats';
 import { GPU_FRAME_POOL_MAXIMUM_SLOT_COUNT } from './GPUDecodeLimits';
+import { GPUVideoDecodeError } from './GPUDecodeTypes';
 
 /** The alignment of every row pitch, plane offset, and slot stride in the pool, so a slot can be bound as a storage buffer or copied to a texture on its own. */
 export const GPU_FRAME_POOL_ALIGNMENT = Math.max(STORAGE_BUFFER_OFFSET_ALIGNMENT, COPY_BYTES_PER_ROW_ALIGNMENT);
@@ -53,18 +54,26 @@ export function getGPUFramePoolSlotCount(references: number, reorder: number): n
     return references + reorder + GPU_FRAME_POOL_PRESENTATION_SLOT_COUNT + spareSlotCount;
 }
 
-/** Lays out a pool of slotCount slots of one coded size, with rows and planes aligned to GPU_FRAME_POOL_ALIGNMENT. */
+/** Throws the 'coded-size' failure unless the coded size is a positive integer size. */
+export function requireGPUFramePoolCodedSize(codedWidth: number, codedHeight: number): void {
+    if (!isPositiveSafeInteger(codedWidth) || !isPositiveSafeInteger(codedHeight)) {
+        throw new GPUVideoDecodeError({ code: 'coded-size', detail: `${codedWidth}x${codedHeight}` });
+    }
+}
+
+/**
+ * Lays out a pool of slotCount slots of one coded size, with rows and planes aligned to GPU_FRAME_POOL_ALIGNMENT.
+ * Throws a GPUVideoDecodeError: 'coded-size', 'slot-count', or 'pool-size' when WGSL cannot address the pool.
+ */
 export function createGPUFramePoolLayout(
     format: GPUDecoderOutputFormat,
     codedWidth: number,
     codedHeight: number,
     slotCount: number
 ): GPUFramePoolLayout {
-    if (!isPositiveSafeInteger(codedWidth) || !isPositiveSafeInteger(codedHeight)) {
-        throw new RangeError('A frame pool needs a positive integer coded size');
-    }
+    requireGPUFramePoolCodedSize(codedWidth, codedHeight);
     if (!Number.isSafeInteger(slotCount) || slotCount < 1 || slotCount > GPU_FRAME_POOL_MAXIMUM_SLOT_COUNT) {
-        throw new RangeError(`A frame pool holds 1 to ${GPU_FRAME_POOL_MAXIMUM_SLOT_COUNT} slots`);
+        throw new GPUVideoDecodeError({ code: 'slot-count', detail: `${slotCount} outside [1, ${GPU_FRAME_POOL_MAXIMUM_SLOT_COUNT}]` });
     }
     const formatFacts = getGPUDecoderFormatFacts(format);
     const chromaWidth = Math.ceil(codedWidth / formatFacts.chromaWidthDivisor);
@@ -84,7 +93,7 @@ export function createGPUFramePoolLayout(
     const byteLength = slotByteLength * slotCount;
     // WGSL addresses pool bytes in u32 arithmetic
     if (byteLength > U32_VALUE_COUNT) {
-        throw new RangeError(`A frame pool of ${byteLength} bytes exceeds what WGSL addresses`);
+        throw new GPUVideoDecodeError({ code: 'pool-size', detail: `${byteLength} > ${U32_VALUE_COUNT}` });
     }
     return {
         byteLength,
@@ -98,9 +107,14 @@ export function createGPUFramePoolLayout(
     };
 }
 
+/** Returns the largest pool a device's limits allow, which must fit one buffer and one storage binding. */
+export function getGPUFramePoolByteLimit(limits: GPUFramePoolLimits): number {
+    return Math.min(limits.maxBufferSize, limits.maxStorageBufferBindingSize);
+}
+
 /** Returns whether a device's limits allow the pool's buffer; a stream whose pool they do not allow is not eligible for the decoder. */
 export function isGPUFramePoolWithinLimits(layout: GPUFramePoolLayout, limits: GPUFramePoolLimits): boolean {
-    return layout.byteLength <= limits.maxBufferSize && layout.byteLength <= limits.maxStorageBufferBindingSize;
+    return layout.byteLength <= getGPUFramePoolByteLimit(limits);
 }
 
 /**
@@ -116,12 +130,13 @@ export default class GPUFramePool {
     private readonly outputHeld: boolean[];
     private readonly referenceHeld: boolean[];
 
-    /** Creates the pool buffer and one layout uniform per slot, which naming a slot's frame needs no per-frame write. */
+    /**
+     * Creates the pool buffer and one layout uniform per slot, which naming a slot's frame needs no per-frame write.
+     * Throws the 'pool-size' GPUVideoDecodeError when the device's limits do not allow the pool.
+     */
     constructor(device: GPUDevice, layout: GPUFramePoolLayout, visibleRectangle: FramePoolFrame['visibleRectangle']) {
         if (!isGPUFramePoolWithinLimits(layout, device.limits)) {
-            throw new RangeError(
-                `The frame pool needs ${layout.byteLength} bytes, beyond the device's storage buffer limits`
-            );
+            throw new GPUVideoDecodeError({ code: 'pool-size', detail: `${layout.byteLength} > ${getGPUFramePoolByteLimit(device.limits)}` });
         }
         this.layout = layout;
         this.buffer = device.createBuffer({
@@ -229,7 +244,7 @@ export default class GPUFramePool {
 
     private requireSlot(slot: number): void {
         if (!Number.isSafeInteger(slot) || slot < 0 || slot >= this.layout.slotCount) {
-            throw new RangeError(`Frame pool slot ${slot} does not exist`);
+            throw new RangeError(`slot: ${slot} outside [0, ${this.layout.slotCount - 1}]`);
         }
     }
 }

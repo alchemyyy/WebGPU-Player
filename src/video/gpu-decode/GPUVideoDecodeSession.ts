@@ -10,7 +10,7 @@ import {
     UNIFORM_BUFFER_OFFSET_ALIGNMENT,
     WORKGROUP_AXIS_NAMES
 } from '../../presentation/WebGPUConstants';
-import { getGPUDecoderFormatFacts, isGPUDecoderOutputFormat, type GPUDecoderOutputFormat } from './GPUDecodeFormats';
+import { getGPUDecoderFormatFacts, type GPUDecoderOutputFormat } from './GPUDecodeFormats';
 import { GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH, GPU_DECODE_PACKET_RING_PACKET_COUNT } from './GPUDecodeLimits';
 import {
     createGPUDecoderBindGroupLayoutEntries,
@@ -26,8 +26,20 @@ import {
     writeGPUDecoderStreamUniform
 } from './GPUDecoderPrelude';
 import { GPU_DECODER_STREAM_FACTS } from './GPUDecoderManifest';
-import GPUFramePool, { alignTo, createGPUFramePoolLayout, getGPUFramePoolSlotCount } from './GPUFramePool';
-import type { GPUDecodePacket, GPUDecoderManifest, GPUDecodeStreamFacts } from './GPUDecodeTypes';
+import GPUFramePool, {
+    alignTo,
+    createGPUFramePoolLayout,
+    getGPUFramePoolSlotCount,
+    requireGPUFramePoolCodedSize
+} from './GPUFramePool';
+import {
+    type GPUDecodePacket,
+    type GPUDecoderCompileMessage,
+    type GPUDecoderManifest,
+    type GPUDecodeStreamFacts,
+    GPUVideoDecodeError,
+    type GPUVideoDecodeFailure
+} from './GPUDecodeTypes';
 
 // Each packet's uniform takes the next slot of one buffer at a dynamic offset, so a packet never creates a bind group
 const PACKET_UNIFORM_SLOT_COUNT = 8;
@@ -35,8 +47,6 @@ const PACKET_UNIFORM_SLOT_COUNT = 8;
 const PACKET_UNIFORM_STRIDE = UNIFORM_BUFFER_OFFSET_ALIGNMENT;
 // Readbacks in flight at once; a packet submitted while all are mapping skips its readback, so nothing waits on one
 const STATUS_READBACK_COUNT = 3;
-// The engine-owned storage bindings: packetBytes, config, state, framePool, and status
-const ENGINE_STORAGE_BUFFER_COUNT = 5;
 
 /** What a session decodes and where. */
 export type GPUVideoDecodeSessionOptions = {
@@ -57,33 +67,6 @@ export type GPUDecodedFrame = {
     slot: number
     timestampMicroseconds: number
 };
-
-/** Why a session stopped decoding; any failure ends the route's attempt. */
-export type GPUVideoDecodeFailure =
-    | { code: number; kind: 'decoder-error'; message: string }
-    | { kind: 'device-lost'; message: string }
-    | { kind: 'invalid-packet'; message: string }
-    | { kind: 'readback-failed'; message: string };
-
-/** A shader compile message, mapped to the decoder's source line or to the generated prelude. */
-export type GPUDecoderCompileMessage = {
-    column: number
-    /** The line in the decoder's source, or in the generated module for the prelude. */
-    line: number
-    message: string
-    source: 'decoder' | 'prelude'
-};
-
-/** A decoder whose module did not compile or whose pipelines could not be built. */
-export class GPUDecoderCompileError extends Error {
-    readonly messages: readonly GPUDecoderCompileMessage[];
-
-    constructor(message: string, messages: readonly GPUDecoderCompileMessage[]) {
-        super(message);
-        this.name = 'GPUDecoderCompileError';
-        this.messages = messages;
-    }
-}
 
 type DecodedFrameEntry = {
     durationMicroseconds: number
@@ -119,10 +102,11 @@ function getStreamFacts(stream: GPUDecodeStreamFacts): ReadonlyMap<string, numbe
     ]);
 }
 
+/** Evaluates one workgroup count, which must be an integer the device dispatches; `<entry point> <axis>` prefixes its failure detail. */
 function evaluateWorkgroupCount(
     count: PassExpression,
     facts: ReadonlyMap<string, number>,
-    description: string,
+    subject: string,
     maximum: number
 ): number {
     let value: number;
@@ -130,12 +114,12 @@ function evaluateWorkgroupCount(
         value = evaluatePassExpression(count, facts);
     } catch (error) {
         if (error instanceof PassExpressionError) {
-            throw new RangeError(`${description} cannot be evaluated: ${error.message}`);
+            throw new GPUVideoDecodeError({ code: 'dispatch-count', detail: `${subject} ${error.message}` });
         }
         throw error;
     }
     if (!Number.isInteger(value) || value < 0 || value > maximum) {
-        throw new RangeError(`${description} evaluated to ${value}; it must be an integer from 0 to ${maximum}, so round it with ceil or floor`);
+        throw new GPUVideoDecodeError({ code: 'dispatch-count', detail: `${subject} ${value} outside integers [0, ${maximum}]` });
     }
     return value;
 }
@@ -145,21 +129,22 @@ function planDispatches(manifest: GPUDecoderManifest, stream: GPUDecodeStreamFac
     const facts = getStreamFacts(stream);
     const plans: DispatchPlan[] = [];
     for (const dispatch of manifest.dispatches) {
+        // The manifest parser guarantees one of the two dispatch forms and a declared indirect buffer
         if (dispatch.indirectBuffer !== null) {
             const bufferIndex = manifest.buffers.findIndex(buffer => buffer.name === dispatch.indirectBuffer && buffer.indirect);
             if (bufferIndex < 0) {
-                throw new RangeError(`The dispatch of '${dispatch.entryPoint}' reads no declared indirect buffer`);
+                throw new RangeError(`dispatch: '${dispatch.entryPoint}' reads undeclared indirect buffer '${dispatch.indirectBuffer}'`);
             }
             plans.push({ bufferIndex, entryPoint: dispatch.entryPoint, kind: 'indirect' });
             continue;
         }
         if (!dispatch.workgroupCounts) {
-            throw new RangeError(`The dispatch of '${dispatch.entryPoint}' has no workgroup counts`);
+            throw new RangeError(`dispatch: '${dispatch.entryPoint}' has no workgroup counts`);
         }
         const counts = dispatch.workgroupCounts.map((count, axisIndex): number => evaluateWorkgroupCount(
             count,
             facts,
-            `The ${WORKGROUP_AXIS_NAMES[axisIndex]} workgroup count of '${dispatch.entryPoint}'`,
+            `${dispatch.entryPoint} ${WORKGROUP_AXIS_NAMES[axisIndex]}`,
             maximumCount
         ));
         plans.push({ entryPoint: dispatch.entryPoint, kind: 'direct', workgroupCounts: [ counts[0], counts[1], counts[2] ] });
@@ -170,29 +155,32 @@ function planDispatches(manifest: GPUDecoderManifest, stream: GPUDecodeStreamFac
 /** Requires a visible rectangle of whole pixels inside the coded frame, which the executor maps presentation onto. */
 function requireVisibleRectangle(stream: GPUDecodeStreamFacts): void {
     const rectangle = stream.visibleRectangle;
+    const description = `${rectangle.x},${rectangle.y} ${rectangle.width}x${rectangle.height}`;
     const values = [ rectangle.x, rectangle.y, rectangle.width, rectangle.height ];
-    if (
-        !values.every(value => Number.isSafeInteger(value) && value >= 0)
-        || rectangle.width === 0
-        || rectangle.height === 0
-        || rectangle.x + rectangle.width > stream.codedWidth
-        || rectangle.y + rectangle.height > stream.codedHeight
-    ) {
-        throw new RangeError('The visible rectangle must be a nonempty rectangle of whole pixels inside the coded frame');
+    if (!values.every(value => Number.isSafeInteger(value) && value >= 0) || rectangle.width === 0 || rectangle.height === 0) {
+        throw new GPUVideoDecodeError({ code: 'visible-rectangle', detail: `${description} is not a nonempty integer rectangle` });
+    }
+    if (rectangle.x + rectangle.width > stream.codedWidth || rectangle.y + rectangle.height > stream.codedHeight) {
+        throw new GPUVideoDecodeError({ code: 'visible-rectangle', detail: `${description} exceeds ${stream.codedWidth}x${stream.codedHeight}` });
     }
 }
 
-function requireDeviceSupport(device: GPUDevice, manifest: GPUDecoderManifest): void {
+/** Requires the decoder's features, and a device that binds every storage buffer of the decoder's bind group layout. */
+function requireDeviceSupport(device: GPUDevice, manifest: GPUDecoderManifest, layoutEntries: readonly GPUBindGroupLayoutEntry[]): void {
     const missingFeatures = manifest.requiredFeatures.filter(feature => !device.features.has(feature));
     if (missingFeatures.length > 0) {
-        throw new RangeError(`The device lacks the decoder's required features: ${missingFeatures.join(', ')}`);
+        throw new GPUVideoDecodeError({ code: 'feature-missing', detail: missingFeatures.join(', ') });
     }
-    const storageBufferCount = ENGINE_STORAGE_BUFFER_COUNT + manifest.buffers.length;
-    if (storageBufferCount > device.limits.maxStorageBuffersPerShaderStage) {
-        throw new RangeError(
-            `The decoder binds ${storageBufferCount} storage buffers; the device allows ${device.limits.maxStorageBuffersPerShaderStage}`
-        );
+    const storageBufferCount = layoutEntries.filter(entry => entry.buffer !== undefined && entry.buffer.type !== 'uniform').length;
+    const storageBufferLimit = device.limits.maxStorageBuffersPerShaderStage;
+    if (storageBufferCount > storageBufferLimit) {
+        throw new GPUVideoDecodeError({ code: 'storage-buffer-count', detail: `${storageBufferCount} > ${storageBufferLimit}` });
     }
+}
+
+/** Returns an error's name and message, the detail of a failure the browser raised. */
+function describeError(error: unknown): string {
+    return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
 
 /** Maps compile messages past the prelude to the decoder's own source lines. */
@@ -213,9 +201,10 @@ function mapCompilationMessages(
             { column: message.linePos, line: message.lineNum, message: message.message, source: 'prelude' }));
 }
 
-function describeCompileMessage(decoderName: string, message: GPUDecoderCompileMessage): string {
-    const location = message.source === 'decoder' ? `line ${message.line}` : `prelude line ${message.line}`;
-    return `The decoder '${decoderName}' does not compile: ${location}: ${message.message}`;
+/** Returns `line <line>:<column> <message>`, with `prelude` before a line of the generated prelude. */
+function describeCompileMessage(message: GPUDecoderCompileMessage): string {
+    const location = `line ${message.line}:${message.column}`;
+    return message.source === 'decoder' ? `${location} ${message.message}` : `prelude ${location} ${message.message}`;
 }
 
 async function createPipelines(
@@ -233,8 +222,7 @@ async function createPipelines(
                 layout: pipelineLayout
             });
         } catch (error) {
-            const reason = error instanceof Error ? error.message : String(error);
-            throw new GPUDecoderCompileError(`The decoder '${manifest.name}' entry point '${entryPoint}' cannot be built: ${reason}`, []);
+            throw new GPUVideoDecodeError({ code: 'pipeline-error', detail: `${entryPoint} ${describeError(error)}` });
         }
     }));
     return new Map(entryPoints.map((entryPoint, index) => [ entryPoint, pipelines[index] ]));
@@ -294,68 +282,77 @@ export default class GPUVideoDecodeSession {
             ),
             stream.visibleRectangle
         );
-        this.packetRingByteLength = alignTo(manifest.packetByteLength, BYTES_PER_WORD) * GPU_DECODE_PACKET_RING_PACKET_COUNT;
-        this.packetRing = this.createBuffer('packet ring', this.packetRingByteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
-        this.packetUniforms = this.createBuffer(
-            'packet uniforms',
-            PACKET_UNIFORM_STRIDE * PACKET_UNIFORM_SLOT_COUNT,
-            GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
-        );
-        const configBuffer = this.createConfigBuffer(options.codecPrivate);
-        const streamBuffer = this.createStreamBuffer(stream, outputFormat, options.codecPrivate?.byteLength ?? 0);
-        this.stateBuffer = this.createBuffer(
-            'state',
-            Math.max(BYTES_PER_WORD, alignTo(manifest.stateByteLength, BYTES_PER_WORD)),
-            GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
-        );
-        this.statusBuffer = this.createBuffer(
-            'status',
-            GPU_DECODER_STATUS_BYTE_LENGTH,
-            GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
-        );
-        const scratchBuffers = manifest.buffers.map(buffer => this.createBuffer(
-            `buffer ${buffer.name}`,
-            alignTo(buffer.byteLength, BYTES_PER_WORD),
-            GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
-        ));
-        for (let readbackIndex = 0; readbackIndex < STATUS_READBACK_COUNT; readbackIndex += 1) {
-            this.freeReadbacks.push({
-                buffer: this.createBuffer(`status readback ${readbackIndex}`, GPU_DECODER_STATUS_BYTE_LENGTH, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST),
-                epoch: 0
-            });
+        try {
+            this.packetRingByteLength = alignTo(manifest.packetByteLength, BYTES_PER_WORD) * GPU_DECODE_PACKET_RING_PACKET_COUNT;
+            this.packetRing = this.createBuffer('packet ring', this.packetRingByteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+            this.packetUniforms = this.createBuffer(
+                'packet uniforms',
+                PACKET_UNIFORM_STRIDE * PACKET_UNIFORM_SLOT_COUNT,
+                GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+            );
+            const configBuffer = this.createConfigBuffer(options.codecPrivate);
+            const streamBuffer = this.createStreamBuffer(stream, outputFormat, options.codecPrivate?.byteLength ?? 0);
+            this.stateBuffer = this.createBuffer(
+                'state',
+                Math.max(BYTES_PER_WORD, alignTo(manifest.stateByteLength, BYTES_PER_WORD)),
+                GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+            );
+            this.statusBuffer = this.createBuffer(
+                'status',
+                GPU_DECODER_STATUS_BYTE_LENGTH,
+                GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
+            );
+            const scratchBuffers = manifest.buffers.map(buffer => this.createBuffer(
+                `buffer ${buffer.name}`,
+                alignTo(buffer.byteLength, BYTES_PER_WORD),
+                GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
+            ));
+            for (let readbackIndex = 0; readbackIndex < STATUS_READBACK_COUNT; readbackIndex += 1) {
+                this.freeReadbacks.push({
+                    buffer: this.createBuffer(`status readback ${readbackIndex}`, GPU_DECODER_STATUS_BYTE_LENGTH, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST),
+                    epoch: 0
+                });
+            }
+            this.dispatches = this.prepareDispatches(resources, scratchBuffers);
+            const entries: GPUBindGroupEntry[] = [];
+            entries.push(
+                { binding: GPU_DECODER_BINDINGS.packetBytes, resource: { buffer: this.packetRing } },
+                { binding: GPU_DECODER_BINDINGS.packet, resource: { buffer: this.packetUniforms, size: GPU_DECODER_PACKET_UNIFORM_BYTE_LENGTH } },
+                { binding: GPU_DECODER_BINDINGS.config, resource: { buffer: configBuffer } },
+                { binding: GPU_DECODER_BINDINGS.stream, resource: { buffer: streamBuffer } },
+                { binding: GPU_DECODER_BINDINGS.state, resource: { buffer: this.stateBuffer } },
+                { binding: GPU_DECODER_BINDINGS.framePool, resource: { buffer: this.pool.buffer } },
+                { binding: GPU_DECODER_BINDINGS.status, resource: { buffer: this.statusBuffer } }
+            );
+            for (let bufferIndex = 0; bufferIndex < scratchBuffers.length; bufferIndex += 1) {
+                entries.push({ binding: GPU_DECODER_FIRST_BUFFER_BINDING + bufferIndex, resource: { buffer: scratchBuffers[bufferIndex] } });
+            }
+            this.bindGroup = device.createBindGroup({ entries, label: `GPU decoder ${manifest.name}`, layout: resources.bindGroupLayout });
+        } catch (error) {
+            // A session that never existed leaves no buffers behind; the error still reaches the caller
+            this.destroy();
+            throw error;
         }
-        this.dispatches = this.prepareDispatches(resources, scratchBuffers);
-        const entries: GPUBindGroupEntry[] = [];
-        entries.push(
-            { binding: GPU_DECODER_BINDINGS.packetBytes, resource: { buffer: this.packetRing } },
-            { binding: GPU_DECODER_BINDINGS.packet, resource: { buffer: this.packetUniforms, size: GPU_DECODER_PACKET_UNIFORM_BYTE_LENGTH } },
-            { binding: GPU_DECODER_BINDINGS.config, resource: { buffer: configBuffer } },
-            { binding: GPU_DECODER_BINDINGS.stream, resource: { buffer: streamBuffer } },
-            { binding: GPU_DECODER_BINDINGS.state, resource: { buffer: this.stateBuffer } },
-            { binding: GPU_DECODER_BINDINGS.framePool, resource: { buffer: this.pool.buffer } },
-            { binding: GPU_DECODER_BINDINGS.status, resource: { buffer: this.statusBuffer } }
-        );
-        for (let bufferIndex = 0; bufferIndex < scratchBuffers.length; bufferIndex += 1) {
-            entries.push({ binding: GPU_DECODER_FIRST_BUFFER_BINDING + bufferIndex, resource: { buffer: scratchBuffers[bufferIndex] } });
-        }
-        this.bindGroup = device.createBindGroup({ entries, label: `GPU decoder ${manifest.name}`, layout: resources.bindGroupLayout });
     }
 
     /**
      * Compiles a decoder on a device and allocates its pool and buffers.
-     * Rejects with a GPUDecoderCompileError, whose lines point into the decoder's source, when the module does not compile.
-     * Rejects with a RangeError when the device lacks a required feature or limit, when the stream facts are malformed, or when the stream's pool exceeds the device's limits.
+     * Rejects with a GPUVideoDecodeError whose failure names the check: 'codec-private-size', 'coded-size', 'visible-rectangle', 'feature-missing', 'storage-buffer-count', 'dispatch-count', 'compile-error', 'pipeline-error', 'slot-count', or 'pool-size'.
+     * A 'compile-error' carries every compile message, with lines that point into the decoder's source.
      */
     static async create(options: GPUVideoDecodeSessionOptions): Promise<GPUVideoDecodeSession> {
         const { device, manifest, stream } = options;
-        if (!isGPUDecoderOutputFormat(manifest.outputFormat)) {
-            throw new RangeError(`A GPU decoder cannot write ${manifest.outputFormat}`);
+        const codecPrivateByteLength = options.codecPrivate?.byteLength ?? 0;
+        if (codecPrivateByteLength > GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH) {
+            throw new GPUVideoDecodeError({
+                code: 'codec-private-size',
+                detail: `${codecPrivateByteLength} > ${GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH}`
+            });
         }
-        if (options.codecPrivate && options.codecPrivate.byteLength > GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH) {
-            throw new RangeError('The codec private data exceeds what a decoder takes');
-        }
+        requireGPUFramePoolCodedSize(stream.codedWidth, stream.codedHeight);
         requireVisibleRectangle(stream);
-        requireDeviceSupport(device, manifest);
+        const layoutEntries = createGPUDecoderBindGroupLayoutEntries(manifest.buffers.length);
+        requireDeviceSupport(device, manifest, layoutEntries);
         const dispatchPlans = planDispatches(manifest, stream, device.limits.maxComputeWorkgroupsPerDimension);
 
         const decoderModule = createGPUDecoderModule(manifest);
@@ -363,12 +360,9 @@ export default class GPUVideoDecodeSession {
         const compilationInfo = await shaderModule.getCompilationInfo();
         const errors = mapCompilationMessages(compilationInfo.messages, decoderModule.firstBodyLine, manifest.bodyFirstLine);
         if (errors.length > 0) {
-            throw new GPUDecoderCompileError(describeCompileMessage(manifest.name, errors[0]), errors);
+            throw new GPUVideoDecodeError({ code: 'compile-error', detail: describeCompileMessage(errors[0]) }, errors);
         }
-        const bindGroupLayout = device.createBindGroupLayout({
-            entries: createGPUDecoderBindGroupLayoutEntries(manifest.buffers.length),
-            label: `GPU decoder ${manifest.name}`
-        });
+        const bindGroupLayout = device.createBindGroupLayout({ entries: layoutEntries, label: `GPU decoder ${manifest.name}` });
         const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [ bindGroupLayout ], label: `GPU decoder ${manifest.name}` });
         const pipelines = await createPipelines(device, manifest, shaderModule, pipelineLayout);
         const session = new GPUVideoDecodeSession(options, manifest.outputFormat, { bindGroupLayout, dispatchPlans, pipelines });
@@ -382,10 +376,7 @@ export default class GPUVideoDecodeSession {
             return;
         }
         if (packet.data.byteLength > this.manifest.packetByteLength) {
-            this.fail({
-                kind: 'invalid-packet',
-                message: `A ${packet.data.byteLength}-byte packet exceeds the decoder's ${this.manifest.packetByteLength}-byte packet size`
-            });
+            this.fail({ code: 'packet-size', detail: `${packet.data.byteLength} > ${this.manifest.packetByteLength}` });
             return;
         }
         this.pendingPackets.push(packet);
@@ -486,6 +477,19 @@ export default class GPUVideoDecodeSession {
         }
     }
 
+    /**
+     * Resolves once the status of every submitted packet has been read back and applied, including reports a skipped readback left uncaptured.
+     * A conformance check calls it after the last packet, so a decoder error that packet reports is never missed.
+     */
+    async flushStatusReadbacks(): Promise<void> {
+        await this.waitForStatusReadbacks();
+        if (this.destroyed || this.failure) {
+            return;
+        }
+        this.submitOwedStatusReadback();
+        await this.waitForStatusReadbacks();
+    }
+
     getDroppedFrameCount(): number {
         return this.droppedFrameCount;
     }
@@ -529,7 +533,7 @@ export default class GPUVideoDecodeSession {
 
     /**
      * Drops every decoder reference, as a reset clears the decoder's state, and makes the status readbacks taken before it stale.
-     * A stale readback must not apply, because the slots it reports freed may already be references of the new epoch.
+     * A stale readback frees no slots, because the slots it reports freed may already be references of the new epoch; its error still ends the attempt.
      */
     private beginDecoderEpoch(): void {
         this.epoch += 1;
@@ -540,7 +544,7 @@ export default class GPUVideoDecodeSession {
     /** A lost device takes the decoder with it; recovery rebuilds without the decoder. */
     private observeDeviceLoss(): void {
         void this.device.lost.then((info: GPUDeviceLostInfo): void => {
-            this.fail({ kind: 'device-lost', message: info.message });
+            this.fail({ code: 'device-lost', detail: info.message.length > 0 ? `${info.reason}: ${info.message}` : info.reason });
         });
     }
 
@@ -736,8 +740,9 @@ export default class GPUVideoDecodeSession {
                 this.applyStatusReadback(readback);
             },
             (error: unknown): void => {
+                // Destroying the session aborts its maps, which is no failure
                 if (!this.destroyed) {
-                    this.fail({ kind: 'readback-failed', message: error instanceof Error ? error.message : String(error) });
+                    this.fail({ code: 'readback-failed', detail: describeError(error) });
                 }
             }
         ).finally((): void => {
@@ -753,13 +758,17 @@ export default class GPUVideoDecodeSession {
         const words = new Uint32Array(readback.buffer.getMappedRange(0, GPU_DECODER_STATUS_BYTE_LENGTH).slice(0));
         readback.buffer.unmap();
         this.freeReadbacks.push(readback);
-        if (readback.epoch !== this.epoch || this.failure) {
+        if (this.failure) {
             return;
         }
         const status = readGPUDecoderStatus(words);
         this.headerFacts ??= status.headerFacts;
+        // An error ends the attempt whichever epoch reported it
         if (status.errorCode !== 0) {
-            this.fail({ code: status.errorCode, kind: 'decoder-error', message: `The decoder '${this.manifest.name}' reported error ${status.errorCode}` });
+            this.fail({ code: 'decoder-error', detail: String(status.errorCode) });
+            return;
+        }
+        if (readback.epoch !== this.epoch) {
             return;
         }
         for (let slot = 0; slot < this.pool.layout.slotCount; slot += 1) {
