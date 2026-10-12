@@ -7,8 +7,15 @@ import {
     PassExpressionError
 } from '../../presentation/passes/PassExpression';
 import type { PassExpression } from '../../presentation/passes/PassTypes';
+import { INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH, MAXIMUM_STORAGE_BUFFER_BINDING_SIZE } from '../../presentation/WebGPUConstants';
 import { isGPUDecoderOutputFormat, type GPUDecoderOutputFormat } from './GPUDecodeFormats';
-import { GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH } from './GPUDecodeLimits';
+import {
+    GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH,
+    GPU_DECODER_MAXIMUM_REFERENCES,
+    GPU_DECODER_MAXIMUM_REORDER,
+    KIBIBYTE,
+    MEBIBYTE
+} from './GPUDecodeLimits';
 import { GPU_DECODER_RESERVED_IDENTIFIERS } from './GPUDecoderPrelude';
 import type {
     GPUDecoderAcceptance,
@@ -18,20 +25,19 @@ import type {
     GPUDecoderVector
 } from './GPUDecodeTypes';
 
-/** The identifiers a decoder's accepts constraint and dispatch counts may read. */
-export const GPU_DECODER_STREAM_IDENTIFIERS: readonly string[] = [ 'stream.width', 'stream.height', 'stream.bitDepth' ];
+/** The stream facts a decoder's accepts constraint and dispatch counts read, by their expression names. */
+export const GPU_DECODER_STREAM_FACTS = Object.freeze({
+    bitDepth: 'stream.bitDepth',
+    height: 'stream.height',
+    width: 'stream.width'
+});
 
-/** The most reference slots a decoder may keep. */
-export const GPU_DECODER_MAXIMUM_REFERENCES = 16;
-
-/** The most frames presentation order may trail decode order. */
-export const GPU_DECODER_MAXIMUM_REORDER = 8;
-
-/** The largest state or scratch buffer a decoder may declare, WebGPU's default storage binding size. */
-export const GPU_DECODER_MAXIMUM_BUFFER_BYTE_LENGTH = 128 * 1024 * 1024;
-
-/** The bytes an indirect buffer needs for the three workgroup counts of `dispatchWorkgroupsIndirect`. */
-export const GPU_DECODER_INDIRECT_ARGUMENTS_BYTE_LENGTH = 12;
+/** Every stream fact name a decoder expression may read. */
+export const GPU_DECODER_STREAM_IDENTIFIERS: readonly string[] = Object.freeze([
+    GPU_DECODER_STREAM_FACTS.width,
+    GPU_DECODER_STREAM_FACTS.height,
+    GPU_DECODER_STREAM_FACTS.bitDepth
+]);
 
 const HEADER_PREFIX = '//!';
 const DIRECTIVE_PATTERN = /^\/\/!\s*([A-Za-z]+)\s*:(.*)$/;
@@ -47,8 +53,6 @@ const BINDING_ATTRIBUTE_PATTERN = /@(group|binding)\s*\(/;
 const ENABLE_DIRECTIVE_PATTERN = /^[ \t]*enable\s/m;
 const COMPUTE_ATTRIBUTE = '@compute';
 const QUOTE = '"';
-const KIBIBYTE = 1024;
-const MEBIBYTE = 1024 * 1024;
 const MINIMUM_DISPATCH_COUNT_COUNT = 1;
 const MAXIMUM_DISPATCH_COUNT_COUNT = 3;
 const DECLARATION_BOUNDARY_PATTERN = /[;}]/g;
@@ -244,11 +248,11 @@ function parseBuffer(value: string, line: number, existingBuffers: readonly GPUD
     if (sizeTexts.length !== 1 || indirectCount > 1) {
         throw new GPUDecoderManifestError('buffer must read `<name>, <size>`, optionally with `indirect`', line);
     }
-    const byteLength = parseSize(sizeTexts[0], line, `The size of buffer '${name}'`, GPU_DECODER_MAXIMUM_BUFFER_BYTE_LENGTH);
+    const byteLength = parseSize(sizeTexts[0], line, `The size of buffer '${name}'`, MAXIMUM_STORAGE_BUFFER_BINDING_SIZE);
     const indirect = indirectCount === 1;
-    if (indirect && byteLength < GPU_DECODER_INDIRECT_ARGUMENTS_BYTE_LENGTH) {
+    if (indirect && byteLength < INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH) {
         throw new GPUDecoderManifestError(
-            `The indirect buffer '${name}' needs at least ${GPU_DECODER_INDIRECT_ARGUMENTS_BYTE_LENGTH} bytes`,
+            `The indirect buffer '${name}' needs at least ${INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH} bytes`,
             line
         );
     }
@@ -365,7 +369,7 @@ function applyDirective(draft: ManifestDraft, directive: HeaderDirective): void 
             draft.packetByteLength = parseSize(value, line, 'The packet size', GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
             return;
         case 'state':
-            draft.stateByteLength = parseSize(value, line, 'The state size', GPU_DECODER_MAXIMUM_BUFFER_BYTE_LENGTH);
+            draft.stateByteLength = parseSize(value, line, 'The state size', MAXIMUM_STORAGE_BUFFER_BINDING_SIZE);
             return;
         case 'buffer':
             draft.buffers.push(parseBuffer(value, line, draft.buffers));

@@ -3,6 +3,7 @@
 // A dispatch directive counts workgroups, which leaves the workgroup size to the module alone.
 // overhual/decoders.md in the engine root describes the module format.
 import type { FramePoolPlaneLayout } from '../../presentation/passes/PassResources';
+import { BYTES_PER_WORD, WGSL_FEATURE_EXTENSIONS } from '../../presentation/WebGPUConstants';
 import {
     getGPUDecoderFormatFacts,
     GPU_DECODER_OUTPUT_PLANE_COUNT,
@@ -11,7 +12,6 @@ import {
 } from './GPUDecodeFormats';
 import type { GPUDecoderManifest, GPUDecodeStreamFacts } from './GPUDecodeTypes';
 
-const BYTES_PER_WORD = 4;
 const PLANE_UNIFORM_WORD_COUNT = 4;
 const PLANE_ARRAY_WORD_COUNT = GPU_DECODER_OUTPUT_PLANE_COUNT * PLANE_UNIFORM_WORD_COUNT;
 
@@ -218,23 +218,12 @@ export type GPUDecoderModule = {
     firstBodyLine: number
 };
 
-/** Returns the WGSL extension a required device feature enables, or null when the feature has none. */
-function getFeatureExtension(feature: string): string | null {
-    switch (feature) {
-        case 'shader-f16':
-            return 'f16';
-        case 'subgroups':
-            return 'subgroups';
-        default:
-            return null;
-    }
-}
-
+/** Returns the enable directives of the required features that have a WGSL extension, in requirement order. */
 function createEnableDirectivesWGSL(requiredFeatures: readonly string[]): string[] {
     const directives: string[] = [];
     for (const feature of requiredFeatures) {
-        const extension = getFeatureExtension(feature);
-        if (extension) {
+        const extension = WGSL_FEATURE_EXTENSIONS.get(feature);
+        if (extension !== undefined) {
             directives.push(`enable ${extension};`);
         }
     }

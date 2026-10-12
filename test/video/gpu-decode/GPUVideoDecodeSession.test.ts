@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH } from 'webgpu-player/video/gpu-decode/GPUDecodeLimits';
+import {
+    BYTES_PER_WORD,
+    INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH,
+    SHADER_F16_FEATURE,
+    UNIFORM_BUFFER_OFFSET_ALIGNMENT
+} from 'webgpu-player/presentation/WebGPUConstants';
+import { GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH, GPU_DECODE_PACKET_RING_PACKET_COUNT } from 'webgpu-player/video/gpu-decode/GPUDecodeLimits';
 import { parseGPUDecoderManifest } from 'webgpu-player/video/gpu-decode/GPUDecoderManifest';
 import {
     createGPUDecoderModule,
@@ -21,7 +27,6 @@ import { installWebGPUGlobals } from './webGPUGlobals';
 const DECODER_NAME = 'Session test';
 const BUFFER_LABEL_PREFIX = `GPU decoder ${DECODER_NAME}`;
 const CODEC_IDENTIFIER = 'V_TEST';
-const BYTES_PER_WORD = 4;
 
 // A small coded frame, so pools stay small
 const CODED_WIDTH = 64;
@@ -36,7 +41,7 @@ const STREAM: GPUDecodeStreamFacts = {
 
 // The declared packet size; the ring holds two packets
 const PACKET_BYTE_LENGTH = 64;
-const RING_BYTE_LENGTH = 2 * PACKET_BYTE_LENGTH;
+const RING_BYTE_LENGTH = GPU_DECODE_PACKET_RING_PACKET_COUNT * PACKET_BYTE_LENGTH;
 // Packets whose word-aligned sizes are 32, 64, and 52 bytes, so the third wraps to the ring's start
 const FIRST_PACKET_BYTE_LENGTH = 30;
 const SECOND_PACKET_BYTE_LENGTH = 61;
@@ -45,7 +50,7 @@ const SECOND_PACKET_RING_OFFSET = 32;
 const OVERSIZED_PACKET_BYTE_LENGTH = PACKET_BYTE_LENGTH + 1;
 const SMALL_PACKET_BYTE_LENGTH = 8;
 
-const PACKET_UNIFORM_STRIDE = 256;
+const PACKET_UNIFORM_STRIDE = UNIFORM_BUFFER_OFFSET_ALIGNMENT;
 const PACKET_UNIFORM_SLOT_COUNT = 8;
 const FRAME_DURATION_MICROSECONDS = 40_000;
 
@@ -75,7 +80,7 @@ const STATUS_WORD_COUNT = 12;
 // Word offsets of the packet uniform, in GPUDecodePacket order
 const PACKET_UNIFORM_WORD_COUNT = GPU_DECODER_PACKET_UNIFORM_BYTE_LENGTH / BYTES_PER_WORD;
 
-const FEATURE_NAME = 'shader-f16';
+const FEATURE_NAME = SHADER_F16_FEATURE;
 const COMPILE_ERROR_BODY_LINE_OFFSET = 2;
 const COMPILE_ERROR_PRELUDE_LINE = 3;
 const COMPILE_ERROR_COLUMN = 7;
@@ -211,7 +216,7 @@ describe('GPUVideoDecodeSession', () => {
         it('compiles the prelude and body once, builds one pipeline per entry point, and binds the engine buffers in order', async () => {
             const device = new MockGPUDevice();
             const manifest = createManifest({
-                buffers: [ `${INDIRECT_BUFFER_NAME}, indirect, 12`, `${SCRATCH_BUFFER_NAME}, ${SCRATCH_BUFFER_BYTE_LENGTH}` ],
+                buffers: [ `${INDIRECT_BUFFER_NAME}, indirect, ${INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH}`, `${SCRATCH_BUFFER_NAME}, ${SCRATCH_BUFFER_BYTE_LENGTH}` ],
                 dispatches: [ `${PARSE_ENTRY_POINT}, 1`, `${FILL_ENTRY_POINT}, indirect ${INDIRECT_BUFFER_NAME}`, `${PARSE_ENTRY_POINT}, 1` ],
                 references: REFERENCES,
                 reorder: REORDER
@@ -415,7 +420,7 @@ describe('GPUVideoDecodeSession', () => {
         it('runs an indirect dispatch from a copy of the counts an earlier entry point wrote', async () => {
             const device = new MockGPUDevice();
             const session = await createSession(device, createManifest({
-                buffers: [ `${INDIRECT_BUFFER_NAME}, indirect, 12` ],
+                buffers: [ `${INDIRECT_BUFFER_NAME}, indirect, ${INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH}` ],
                 dispatches: [ `${PARSE_ENTRY_POINT}, 1`, `${FILL_ENTRY_POINT}, indirect ${INDIRECT_BUFFER_NAME}` ]
             }));
             device.dispatchHandler = (dispatch: MockDispatch): void => {

@@ -1,13 +1,27 @@
 // A WebGPU device whose buffers hold real bytes and whose queue runs copies, clears, and dispatches in submission order.
 // A dispatch runs no WGSL; a test plays the decoder's part through the device's dispatch handler.
+import {
+    BYTES_PER_WORD,
+    INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH,
+    MAXIMUM_STORAGE_BUFFER_BINDING_SIZE,
+    MAXIMUM_WORKGROUP_COUNT,
+    STORAGE_BUFFER_OFFSET_ALIGNMENT,
+    UNIFORM_BUFFER_OFFSET_ALIGNMENT
+} from 'webgpu-player/presentation/WebGPUConstants';
+import { MEBIBYTE } from 'webgpu-player/video/gpu-decode/GPUDecodeLimits';
+
+// WebGPU's default maxBufferSize and maxStorageBuffersPerShaderStage, which the engine does not otherwise name
+const DEFAULT_MAXIMUM_BUFFER_SIZE = 256 * MEBIBYTE;
+const DEFAULT_MAXIMUM_STORAGE_BUFFERS_PER_SHADER_STAGE = 8;
+const INDIRECT_ARGUMENT_COUNT = INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH / BYTES_PER_WORD;
 
 const DEFAULT_LIMITS = {
-    maxBufferSize: 256 * 1024 * 1024,
-    maxComputeWorkgroupsPerDimension: 65_535,
-    maxStorageBufferBindingSize: 128 * 1024 * 1024,
-    maxStorageBuffersPerShaderStage: 8,
-    minStorageBufferOffsetAlignment: 256,
-    minUniformBufferOffsetAlignment: 256
+    maxBufferSize: DEFAULT_MAXIMUM_BUFFER_SIZE,
+    maxComputeWorkgroupsPerDimension: MAXIMUM_WORKGROUP_COUNT,
+    maxStorageBufferBindingSize: MAXIMUM_STORAGE_BUFFER_BINDING_SIZE,
+    maxStorageBuffersPerShaderStage: DEFAULT_MAXIMUM_STORAGE_BUFFERS_PER_SHADER_STAGE,
+    minStorageBufferOffsetAlignment: STORAGE_BUFFER_OFFSET_ALIGNMENT,
+    minUniformBufferOffsetAlignment: UNIFORM_BUFFER_OFFSET_ALIGNMENT
 };
 
 export type MockGPULimits = typeof DEFAULT_LIMITS;
@@ -107,14 +121,14 @@ export class MockGPUBuffer {
 
     /** Reads little-endian 32-bit words from a byte offset. */
     readWords(byteOffset: number, wordCount: number): Uint32Array {
-        return new Uint32Array(this.data.slice(byteOffset, byteOffset + wordCount * 4).buffer);
+        return new Uint32Array(this.data.slice(byteOffset, byteOffset + wordCount * BYTES_PER_WORD).buffer);
     }
 
     /** Writes little-endian 32-bit words at a byte offset, as a dispatch would. */
     writeWords(byteOffset: number, words: readonly number[]): void {
         const view = new DataView(this.data.buffer);
         for (let wordIndex = 0; wordIndex < words.length; wordIndex += 1) {
-            view.setUint32(byteOffset + wordIndex * 4, words[wordIndex] >>> 0, true);
+            view.setUint32(byteOffset + wordIndex * BYTES_PER_WORD, words[wordIndex] >>> 0, true);
         }
     }
 }
@@ -234,7 +248,7 @@ export class MockGPUDevice {
             const bytes = data instanceof ArrayBuffer ?
                 new Uint8Array(data, dataOffset, size ?? data.byteLength - dataOffset) :
                 new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-            if (bufferOffset % 4 !== 0 || bytes.byteLength % 4 !== 0) {
+            if (bufferOffset % BYTES_PER_WORD !== 0 || bytes.byteLength % BYTES_PER_WORD !== 0) {
                 throw new Error('writeBuffer offsets and sizes must be multiples of 4');
             }
             buffer.data.set(bytes, bufferOffset);
@@ -387,7 +401,7 @@ function readIndirectCounts(buffer: MockGPUBuffer | null, offset: number): reado
     if (!buffer) {
         throw new Error('An indirect dispatch needs its buffer');
     }
-    const words = buffer.readWords(offset, 3);
+    const words = buffer.readWords(offset, INDIRECT_ARGUMENT_COUNT);
     return [ words[0], words[1], words[2] ];
 }
 

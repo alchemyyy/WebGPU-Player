@@ -12,7 +12,7 @@ import {
 } from 'webgpu-player/video/gpu-decode/examples/UncompressedPlanarDecoder.wgsl';
 import { getGPUDecoderFormatFacts, type GPUDecoderOutputFormat } from 'webgpu-player/video/gpu-decode/GPUDecodeFormats';
 import { GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH } from 'webgpu-player/video/gpu-decode/GPUDecodeLimits';
-import { parseGPUDecoderManifest } from 'webgpu-player/video/gpu-decode/GPUDecoderManifest';
+import { GPU_DECODER_STREAM_FACTS, parseGPUDecoderManifest } from 'webgpu-player/video/gpu-decode/GPUDecoderManifest';
 
 const OUTPUT_FORMATS: readonly GPUDecoderOutputFormat[] = [
     'I420',
@@ -40,9 +40,9 @@ const TEN_BIT_DEPTH = 10;
 
 function createStreamFacts(width: number, height: number, bitDepth: number): ReadonlyMap<string, number> {
     return new Map([
-        [ 'stream.width', width ],
-        [ 'stream.height', height ],
-        [ 'stream.bitDepth', bitDepth ]
+        [ GPU_DECODER_STREAM_FACTS.width, width ],
+        [ GPU_DECODER_STREAM_FACTS.height, height ],
+        [ GPU_DECODER_STREAM_FACTS.bitDepth, bitDepth ]
     ]);
 }
 

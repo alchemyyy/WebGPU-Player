@@ -3,8 +3,15 @@
 // overhual/decoders.md in the engine root describes the route.
 import { evaluatePassExpression, PassExpressionError } from '../../presentation/passes/PassExpression';
 import type { FramePoolFrame, PassExpression } from '../../presentation/passes/PassTypes';
+import {
+    BYTES_PER_WORD,
+    INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH,
+    U32_VALUE_COUNT,
+    UNIFORM_BUFFER_OFFSET_ALIGNMENT,
+    WORKGROUP_AXIS_NAMES
+} from '../../presentation/WebGPUConstants';
 import { getGPUDecoderFormatFacts, isGPUDecoderOutputFormat, type GPUDecoderOutputFormat } from './GPUDecodeFormats';
-import { GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH } from './GPUDecodeLimits';
+import { GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH, GPU_DECODE_PACKET_RING_PACKET_COUNT } from './GPUDecodeLimits';
 import {
     createGPUDecoderBindGroupLayoutEntries,
     createGPUDecoderModule,
@@ -18,23 +25,18 @@ import {
     writeGPUDecoderPacketUniform,
     writeGPUDecoderStreamUniform
 } from './GPUDecoderPrelude';
-import { GPU_DECODER_INDIRECT_ARGUMENTS_BYTE_LENGTH } from './GPUDecoderManifest';
-import GPUFramePool, { createGPUFramePoolLayout, getGPUFramePoolSlotCount } from './GPUFramePool';
+import { GPU_DECODER_STREAM_FACTS } from './GPUDecoderManifest';
+import GPUFramePool, { alignTo, createGPUFramePoolLayout, getGPUFramePoolSlotCount } from './GPUFramePool';
 import type { GPUDecodePacket, GPUDecoderManifest, GPUDecodeStreamFacts } from './GPUDecodeTypes';
 
-const BYTES_PER_WORD = 4;
-// The ring holds two packets, so consecutive packets occupy different regions
-const PACKET_RING_PACKET_COUNT = 2;
-// WebGPU's largest minUniformBufferOffsetAlignment, so every device accepts the dynamic offsets
-const PACKET_UNIFORM_STRIDE = 256;
 // Each packet's uniform takes the next slot of one buffer at a dynamic offset, so a packet never creates a bind group
 const PACKET_UNIFORM_SLOT_COUNT = 8;
+// Packet uniforms sit one offset alignment apart, so every device accepts the dynamic offsets
+const PACKET_UNIFORM_STRIDE = UNIFORM_BUFFER_OFFSET_ALIGNMENT;
 // Readbacks in flight at once; a packet submitted while all are mapping skips its readback, so nothing waits on one
 const STATUS_READBACK_COUNT = 3;
 // The engine-owned storage bindings: packetBytes, config, state, framePool, and status
 const ENGINE_STORAGE_BUFFER_COUNT = 5;
-const PACKET_INDEX_MODULUS = 2 ** 32;
-const AXIS_NAMES = [ 'x', 'y', 'z' ] as const;
 
 /** What a session decodes and where. */
 export type GPUVideoDecodeSessionOptions = {
@@ -109,15 +111,11 @@ type SessionResources = {
     pipelines: ReadonlyMap<string, GPUComputePipeline>
 };
 
-function alignTo(value: number, alignment: number): number {
-    return Math.ceil(value / alignment) * alignment;
-}
-
 function getStreamFacts(stream: GPUDecodeStreamFacts): ReadonlyMap<string, number> {
-    return new Map([
-        [ 'stream.width', stream.codedWidth ],
-        [ 'stream.height', stream.codedHeight ],
-        [ 'stream.bitDepth', stream.bitDepth ]
+    return new Map<string, number>([
+        [ GPU_DECODER_STREAM_FACTS.width, stream.codedWidth ],
+        [ GPU_DECODER_STREAM_FACTS.height, stream.codedHeight ],
+        [ GPU_DECODER_STREAM_FACTS.bitDepth, stream.bitDepth ]
     ]);
 }
 
@@ -161,7 +159,7 @@ function planDispatches(manifest: GPUDecoderManifest, stream: GPUDecodeStreamFac
         const counts = dispatch.workgroupCounts.map((count, axisIndex): number => evaluateWorkgroupCount(
             count,
             facts,
-            `The ${AXIS_NAMES[axisIndex]} workgroup count of '${dispatch.entryPoint}'`,
+            `The ${WORKGROUP_AXIS_NAMES[axisIndex]} workgroup count of '${dispatch.entryPoint}'`,
             maximumCount
         ));
         plans.push({ entryPoint: dispatch.entryPoint, kind: 'direct', workgroupCounts: [ counts[0], counts[1], counts[2] ] });
@@ -296,7 +294,7 @@ export default class GPUVideoDecodeSession {
             ),
             stream.visibleRectangle
         );
-        this.packetRingByteLength = alignTo(manifest.packetByteLength, BYTES_PER_WORD) * PACKET_RING_PACKET_COUNT;
+        this.packetRingByteLength = alignTo(manifest.packetByteLength, BYTES_PER_WORD) * GPU_DECODE_PACKET_RING_PACKET_COUNT;
         this.packetRing = this.createBuffer('packet ring', this.packetRingByteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         this.packetUniforms = this.createBuffer(
             'packet uniforms',
@@ -595,7 +593,7 @@ export default class GPUVideoDecodeSession {
             return {
                 indirectMirror: this.createBuffer(
                     `indirect arguments ${dispatchIndex}`,
-                    GPU_DECODER_INDIRECT_ARGUMENTS_BYTE_LENGTH,
+                    INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH,
                     GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST
                 ),
                 indirectSource: scratchBuffers[plan.bufferIndex],
@@ -667,7 +665,7 @@ export default class GPUVideoDecodeSession {
         this.encodeDispatches(encoder, uniformOffset);
         const readback = this.encodeStatusReadback(encoder);
         this.device.queue.submit([ encoder.finish() ]);
-        this.packetIndex = (this.packetIndex + 1) % PACKET_INDEX_MODULUS;
+        this.packetIndex = (this.packetIndex + 1) % U32_VALUE_COUNT;
         // The status accumulates until a readback captures it, so a later capture covers this packet's reports
         this.statusCaptureOwed = readback === null;
         if (readback) {
@@ -705,7 +703,7 @@ export default class GPUVideoDecodeSession {
                     break;
                 case 'indirect':
                     pass.end();
-                    encoder.copyBufferToBuffer(dispatch.indirectSource, 0, dispatch.indirectMirror, 0, GPU_DECODER_INDIRECT_ARGUMENTS_BYTE_LENGTH);
+                    encoder.copyBufferToBuffer(dispatch.indirectSource, 0, dispatch.indirectMirror, 0, INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH);
                     pass = this.beginComputePass(encoder, uniformOffset);
                     pass.setPipeline(dispatch.pipeline);
                     pass.dispatchWorkgroupsIndirect(dispatch.indirectMirror, 0);

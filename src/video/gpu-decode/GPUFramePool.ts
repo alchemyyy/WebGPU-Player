@@ -6,23 +6,22 @@ import {
     type FramePoolPlaneLayout
 } from '../../presentation/passes/PassResources';
 import type { FramePoolFrame } from '../../presentation/passes/PassTypes';
+import {
+    COPY_BYTES_PER_ROW_ALIGNMENT,
+    STORAGE_BUFFER_OFFSET_ALIGNMENT,
+    U32_VALUE_COUNT
+} from '../../presentation/WebGPUConstants';
 import { getGPUDecoderFormatFacts, type GPUDecoderOutputFormat } from './GPUDecodeFormats';
 import { GPU_FRAME_POOL_MAXIMUM_SLOT_COUNT } from './GPUDecodeLimits';
 
-/**
- * The alignment of every row pitch, plane offset, and slot stride in the pool.
- * 256 bytes is WebGPU's default minStorageBufferOffsetAlignment and the bytesPerRow alignment of copyBufferToTexture, so a slot can be bound or copied on its own.
- */
-export const GPU_FRAME_POOL_ALIGNMENT = 256;
+/** The alignment of every row pitch, plane offset, and slot stride in the pool, so a slot can be bound as a storage buffer or copied to a texture on its own. */
+export const GPU_FRAME_POOL_ALIGNMENT = Math.max(STORAGE_BUFFER_OFFSET_ALIGNMENT, COPY_BYTES_PER_ROW_ALIGNMENT);
 
 /** Slots presentation needs: the frame on screen, the frame replacing it, and one frame decoded ahead. */
 export const GPU_FRAME_POOL_PRESENTATION_SLOT_COUNT = 3;
 
 /** Spare slots of a decoder with references, which cover the frames its freed slots take to read back asynchronously. */
 export const GPU_FRAME_POOL_STATUS_SPARE_SLOT_COUNT = 2;
-
-// WGSL addresses pool bytes in u32 arithmetic
-const MAXIMUM_ADDRESSABLE_BYTE_LENGTH = 2 ** 32;
 
 /** Where one slot's planes live, the same in every slot of a pool. */
 export type GPUFramePoolLayout = {
@@ -39,7 +38,8 @@ export type GPUFramePoolLayout = {
 
 export type GPUFramePoolLimits = Pick<GPUSupportedLimits, 'maxBufferSize' | 'maxStorageBufferBindingSize'>;
 
-function alignTo(value: number, alignment: number): number {
+/** Rounds value up to a multiple of alignment. */
+export function alignTo(value: number, alignment: number): number {
     return Math.ceil(value / alignment) * alignment;
 }
 
@@ -82,7 +82,8 @@ export function createGPUFramePoolLayout(
         slotByteLength += bytesPerRow * planeSize.height;
     }
     const byteLength = slotByteLength * slotCount;
-    if (byteLength > MAXIMUM_ADDRESSABLE_BYTE_LENGTH) {
+    // WGSL addresses pool bytes in u32 arithmetic
+    if (byteLength > U32_VALUE_COUNT) {
         throw new RangeError(`A frame pool of ${byteLength} bytes exceeds what WGSL addresses`);
     }
     return {

@@ -1,7 +1,9 @@
 // The proof decoder of the GPU decode route: each packet is one uncompressed planar frame, which it copies into the output slot.
 // A packet holds the planes in order, luma then the two chroma planes, rows tightly packed and 16-bit samples little-endian, as FFmpeg's rawvideo stores yuv420p and yuv420p10le.
 // It exercises the packet ring, the dispatch sequence, slots, and presentation order without any codec of its own.
+import { BYTES_PER_WORD } from '../../../presentation/WebGPUConstants';
 import { getGPUDecoderFormatFacts, GPU_DECODER_OUTPUT_PLANE_COUNT, type GPUDecoderOutputFormat } from '../GPUDecodeFormats';
+import { MEBIBYTE } from '../GPUDecodeLimits';
 
 /** The Matroska codec ID of uncompressed video. */
 export const UNCOMPRESSED_PLANAR_CODEC_IDENTIFIER = 'V_UNCOMPRESSED';
@@ -16,8 +18,6 @@ export const UNCOMPRESSED_PLANAR_MAXIMUM_HEIGHT = 2304;
 export const UNCOMPRESSED_PLANAR_PACKET_SIZE_ERROR = 1;
 
 const COPY_WORKGROUP_SIZE = 64;
-const BYTES_PER_WORD = 4;
-const MEBIBYTE = 1024 * 1024;
 
 /** Returns the bytes of one packed frame of a format and size. */
 export function getUncompressedPlanarFrameByteLength(format: GPUDecoderOutputFormat, width: number, height: number): number {
