@@ -6,6 +6,7 @@ import {
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
 } from '../../video/RawVideoFrameCopy';
+import { PLANE_R16_FORMAT, PLANE_R8_FORMAT, PLANE_RG16_FORMAT, PLANE_RG8_FORMAT } from '../WebGPUConstants';
 
 /** One plane's texture, whose sample type is uint whatever its bit depth. */
 export type PlaneTexture = {
@@ -183,9 +184,9 @@ export function isPlaneTextureSetCompatible(
 function getPlaneTextureFormat(plane: RawVideoPlaneDescriptor): GPUTextureFormat {
     switch (plane.bytesPerComponent) {
         case 1:
-            return plane.componentsPerTexel === 2 ? 'rg8uint' : 'r8uint';
+            return plane.componentsPerTexel === 2 ? PLANE_RG8_FORMAT : PLANE_R8_FORMAT;
         case 2:
-            return plane.componentsPerTexel === 2 ? 'rg16uint' : 'r16uint';
+            return plane.componentsPerTexel === 2 ? PLANE_RG16_FORMAT : PLANE_R16_FORMAT;
     }
 }
 
