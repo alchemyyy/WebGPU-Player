@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     createPlaneTextureSet,
     destroyPlaneTextureSet,
+    getRawPlaneLayoutFailure,
     hasValidRawPlaneLayout,
     isPlaneTextureSetCompatible,
     uploadPlanes
@@ -110,22 +111,24 @@ describe('hasValidRawPlaneLayout', () => {
         expect(hasValidRawPlaneLayout(await copyFrame('I420', INSET_RECTANGLE))).toBe(true);
     });
 
-    it('refuses visible rectangles that leave the coded frame or split a chroma sample', async () => {
+    it('refuses visible rectangles that leave the coded frame or split a chroma sample, naming the failed check', async () => {
         const frame = await copyFrame('I420');
 
         expect(hasValidRawPlaneLayout({ ...frame, visibleRectangle: OVERFLOWING_RECTANGLE })).toBe(false);
-        expect(hasValidRawPlaneLayout({ ...frame, visibleRectangle: CHROMA_MISALIGNED_RECTANGLE })).toBe(false);
+        expect(getRawPlaneLayoutFailure({ ...frame, visibleRectangle: OVERFLOWING_RECTANGLE })).toMatch(/^geometry: visible .* exceeds coded /);
+        expect(getRawPlaneLayoutFailure({ ...frame, visibleRectangle: CHROMA_MISALIGNED_RECTANGLE })).toMatch(/^geometry: visible origin .* is not chroma-aligned for I420$/);
     });
 
-    it('refuses planes that are unaligned, apart, missing, reordered, or past the buffer', async () => {
+    it('refuses planes that are unaligned, apart, missing, reordered, or past the buffer, naming the failed check', async () => {
         const frame = await copyFrame('I420');
         const [ lumaPlane, chromaUPlane, chromaVPlane ] = frame.planes;
 
-        expect(hasValidRawPlaneLayout(shiftPlanes(frame, UNALIGNED_BYTE_OFFSET, 0))).toBe(false);
-        expect(hasValidRawPlaneLayout(shiftPlanes(frame, PLANE_GAP_BYTE_LENGTH, 1))).toBe(false);
-        expect(hasValidRawPlaneLayout({ ...frame, planes: [ lumaPlane, chromaUPlane ] })).toBe(false);
-        expect(hasValidRawPlaneLayout({ ...frame, planes: [ lumaPlane, { ...chromaVPlane, byteOffset: chromaUPlane.byteOffset }, chromaUPlane ] })).toBe(false);
-        expect(hasValidRawPlaneLayout({ ...frame, data: new ArrayBuffer(frame.data.byteLength - 1) })).toBe(false);
+        expect(getRawPlaneLayoutFailure(shiftPlanes(frame, UNALIGNED_BYTE_OFFSET, 0))).toMatch(/^plane-offset: \d+ is not a multiple of \d+$/);
+        expect(getRawPlaneLayoutFailure(shiftPlanes(frame, PLANE_GAP_BYTE_LENGTH, 1))).toMatch(/^plane u: byteOffset \d+, expected \d+$/);
+        expect(getRawPlaneLayoutFailure({ ...frame, planes: [ lumaPlane, chromaUPlane ] })).toBe('plane-count: 2, expected 3');
+        expect(getRawPlaneLayoutFailure({ ...frame, planes: [ lumaPlane, { ...chromaVPlane, byteOffset: chromaUPlane.byteOffset }, chromaUPlane ] }))
+            .toBe('plane u: kind v, expected u');
+        expect(getRawPlaneLayoutFailure({ ...frame, data: new ArrayBuffer(frame.data.byteLength - 1) })).toMatch(/^buffer-length: planes end at \d+, buffer holds \d+$/);
     });
 
     it('accepts planes shifted together to an aligned offset', async () => {

@@ -1117,7 +1117,7 @@ describe('PresentationExecutor', () => {
 
         const executor = await PresentationExecutor.create(harness.device, plan);
 
-        expect(() => encodeFrame(executor, createPlanesInput(truncatedFrame))).toThrow('Raw video frame layout is invalid');
+        expect(() => encodeFrame(executor, createPlanesInput(truncatedFrame))).toThrow(/^raw-layout: buffer-length: planes end at \d+, buffer holds 256$/);
         expect(() => encodeFrame(executor, createExternalFrameInput())).toThrow('The plan presents a planes source');
     });
 
@@ -1197,7 +1197,7 @@ describe('PresentationExecutor', () => {
         const executor = await PresentationExecutor.create(harness.device, plan);
 
         expect(() => encodeFrame(executor, createPlanesInput(pair.baseFrame, separateEnhancementFrame))).toThrow(
-            'Raw Dolby Vision enhancement frame layout is invalid'
+            'enhancement-buffer: not the base layer\'s buffer'
         );
     });
 
