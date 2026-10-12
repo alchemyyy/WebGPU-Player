@@ -97,6 +97,11 @@
     background: var(--sandbox-control-background);
 }
 
+:where(.sandbox-layout) :where(option) {
+    background: var(--sandbox-menu-background);
+    color: var(--sandbox-text);
+}
+
 :where(.sandbox-layout) :where(button) {
     cursor: pointer;
 }

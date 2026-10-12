@@ -78,6 +78,8 @@ About ffmpeg.wasm:
 
 ## Playback controls
 
+- Clicking the video outside the panels pauses it while it plays, and resumes it while it is paused.
+  The decision is `getSurfaceClickAction` in `sandbox/src/ui/SurfaceClick.ts`.
 - The timeline seeks on click.
   While it is dragged, it seeks at most once per `SCRUB_SEEK_INTERVAL_MILLISECONDS`, in `sandbox/src/ui/panels/TransportBarPanel.ts`, and once more where the drag ends.
 - The playhead and the time follow the session clock every animation frame, while the rest of the state refreshes a few times a second.
@@ -122,7 +124,7 @@ It is in `sandbox/src/session/RouteOverride.ts`.
 | `sandbox/src/ui/Store.ts` | One immutable state object, shallow-merged updates, and selector subscriptions |
 | `sandbox/src/library/` | The media library: the folder pickers, the scan, the tree, and the remembered folder |
 | `sandbox/src/session/` | The playback session, which drives the engine, and the ffprobe probe with its translation into the engine's media description |
-| `sandbox/src/ui/App.ts` | The layout, which mounts each panel into its region and toggles them |
+| `sandbox/src/ui/App.ts` | The layout, which mounts each panel into its region, toggles them, and binds the click on the video |
 | `sandbox/src/ui/panels/` | One module per panel, each with its own stylesheet |
 | `sandbox/src/ui/diagnostics/` | What the diagnostics panels show, as pure functions of the state: the graph layout, the playback info sections, and the shader pass rows |
 | `sandbox/src/ui/theme.css` | The shared variables every stylesheet reads instead of restating colors |

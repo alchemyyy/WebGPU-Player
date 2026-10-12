@@ -35,9 +35,10 @@ async function startSandbox(): Promise<void> {
     configureEngineAssets({ cacheKey: await readAssetKey() });
     configureEngineFeatureFlags({ isHDRToneMappingEnabled: () => Promise.resolve(true) });
     const store = createStore<SandboxState>(createInitialSandboxState());
-    const session = createSandboxSession({ store, surfaceContainer: requireElement<HTMLDivElement>(document, SURFACE_SELECTOR) });
+    const surface = requireElement<HTMLDivElement>(document, SURFACE_SELECTOR);
+    const session = createSandboxSession({ store, surfaceContainer: surface });
     const library = createMediaLibrary(store);
-    mountSandboxApp({ library, overlay: requireElement<HTMLElement>(document, OVERLAY_SELECTOR), session, store });
+    mountSandboxApp({ library, overlay: requireElement<HTMLElement>(document, OVERLAY_SELECTOR), session, store, surface });
     await library.restore(false);
 }
 

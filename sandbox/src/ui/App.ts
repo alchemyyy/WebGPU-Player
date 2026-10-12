@@ -1,4 +1,5 @@
 // The overlay layout: it mounts every panel into its region above the full-window player surface.
+import { reportCommandRejection } from './commands';
 import { carriesFiles, createElement } from './dom';
 import { isOverlayToggle } from './OverlayToggle';
 import type { Panel, PanelContext } from './Panel';
@@ -11,11 +12,14 @@ import { createSubtitleOverlay } from './panels/SubtitleOverlay';
 import { createToneMappingPanel } from './panels/ToneMappingPanel';
 import { createTrackSelectorPanel } from './panels/TrackSelectorPanel';
 import { createTransportBarPanel } from './panels/TransportBarPanel';
+import { getSurfaceClickAction } from './SurfaceClick';
 
 import './App.css';
 
 export type SandboxAppContext = PanelContext & Readonly<{
     overlay: HTMLElement
+    /** The full-window element the video fills */
+    surface: HTMLElement
 }>;
 
 type PanelFactory = (context: PanelContext) => Panel;
@@ -59,6 +63,19 @@ export function mountSandboxApp(context: SandboxAppContext): void {
     window.addEventListener('keydown', (event: KeyboardEvent): void => {
         if (isOverlayToggle(event)) {
             layout.classList.toggle(PANELS_HIDDEN_CLASS);
+        }
+    });
+    // The overlay, the canvas, and the hidden video let clicks through, so a click on the video outside the panels lands on the surface
+    context.surface.addEventListener('click', (): void => {
+        switch (getSurfaceClickAction(context.store.getState().playback.status)) {
+            case 'pause':
+                context.session.pause();
+                break;
+            case 'resume':
+                context.session.play().catch(reportCommandRejection);
+                break;
+            case null:
+                break;
         }
     });
 }
