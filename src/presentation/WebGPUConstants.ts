@@ -78,6 +78,12 @@ export const COPY_BYTES_PER_ROW_ALIGNMENT = 256;
 /** WebGPU's default maxStorageBufferBindingSize, 128 MiB. */
 export const MAXIMUM_STORAGE_BUFFER_BINDING_SIZE = 134_217_728;
 
+/** The error scope filter of validation errors, such as invalid WGSL. */
+export const VALIDATION_ERROR_FILTER: GPUErrorFilter = 'validation';
+
+/** The error scope filter of allocations the device refuses. */
+export const OUT_OF_MEMORY_ERROR_FILTER: GPUErrorFilter = 'out-of-memory';
+
 /** The device feature that enables the WGSL `f16` extension. */
 export const SHADER_F16_FEATURE: GPUFeatureName = 'shader-f16';
 

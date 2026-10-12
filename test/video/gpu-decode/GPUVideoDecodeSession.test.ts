@@ -4,8 +4,10 @@ import {
     BYTES_PER_WORD,
     INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH,
     MAXIMUM_WORKGROUP_COUNT,
+    OUT_OF_MEMORY_ERROR_FILTER,
     SHADER_F16_FEATURE,
     UNIFORM_BUFFER_OFFSET_ALIGNMENT,
+    VALIDATION_ERROR_FILTER,
     WORKGROUP_AXIS_NAMES
 } from 'webgpu-player/presentation/WebGPUConstants';
 import { GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH, GPU_DECODE_PACKET_RING_PACKET_COUNT } from 'webgpu-player/video/gpu-decode/GPUDecodeLimits';
@@ -105,6 +107,7 @@ const LOST_DEVICE_MESSAGE = 'GPU process crashed';
 const BROWSER_ERROR_NAME = 'OperationError';
 const BROWSER_ERROR_MESSAGE = 'The operation failed';
 const REFUSED_BUFFER_LABEL = 'status readback';
+const SCOPE_ERROR_MESSAGE = 'Allocation of 4294967296 bytes failed';
 
 /** A session creation the session refuses: a description, the decoder, the stream, the device limits, and the failure. */
 type CreationRejectionCase = readonly [string, GPUDecoderManifest, GPUDecodeStreamFacts, Partial<MockGPULimits>, GPUVideoDecodeFailure];
@@ -278,6 +281,7 @@ describe('GPUVideoDecodeSession', () => {
             expect(decoderBindGroup?.entries[GPU_DECODER_BINDINGS.packet].resource.size).toBe(GPU_DECODER_PACKET_UNIFORM_BYTE_LENGTH);
             expect(device.findBuffer(`${BUFFER_LABEL_PREFIX} packet ring`).size).toBe(RING_BYTE_LENGTH);
             expect(device.findBuffer(`${BUFFER_LABEL_PREFIX} buffer ${SCRATCH_BUFFER_NAME}`).size % BYTES_PER_WORD).toBe(0);
+            expect(device.getErrorScopeDepth()).toBe(0);
         });
 
         it('writes the codec private data zero-padded to whole words and the stream uniform from the pool layout', async () => {
@@ -426,6 +430,47 @@ describe('GPUVideoDecodeSession', () => {
             const error = await getCreateError(createSession(device));
 
             expect(error.failure).toEqual({ code: 'pipeline-error', detail: `${COPY_ENTRY_POINT} ${BROWSER_ERROR_NAME}: ${BROWSER_ERROR_MESSAGE}` });
+        });
+
+        it('reports invalid WGSL that the browser raises only as a validation error as a compile error, inside a closed scope', async () => {
+            const device = new MockGPUDevice();
+            device.errorScopeHandler = (filter: GPUErrorFilter): string | null => (filter === VALIDATION_ERROR_FILTER ? SCOPE_ERROR_MESSAGE : null);
+
+            const error = await getCreateError(createSession(device));
+
+            expect(error.failure).toEqual({ code: 'compile-error', detail: SCOPE_ERROR_MESSAGE });
+            expect(device.getErrorScopeDepth()).toBe(0);
+            expect(device.pipelines).toEqual([]);
+        });
+
+        it('fails with the out-of-memory error of an allocation the device refuses, and destroys its buffers', async () => {
+            const device = new MockGPUDevice();
+            device.errorScopeHandler = (filter: GPUErrorFilter): string | null => (filter === OUT_OF_MEMORY_ERROR_FILTER ? SCOPE_ERROR_MESSAGE : null);
+
+            const error = await getCreateError(createSession(device));
+
+            expect(error.failure).toEqual({ code: 'out-of-memory', detail: SCOPE_ERROR_MESSAGE });
+            expect(device.buffers.every(buffer => buffer.destroyed)).toBe(true);
+            expect(device.getErrorScopeDepth()).toBe(0);
+        });
+
+        it('fails with a validation error its own allocations raise, after the module compiled', async () => {
+            const device = new MockGPUDevice();
+            let validationScopeCount = 0;
+            device.errorScopeHandler = (filter: GPUErrorFilter): string | null => {
+                if (filter !== VALIDATION_ERROR_FILTER) {
+                    return null;
+                }
+                validationScopeCount += 1;
+                // The first validation scope wraps the shader module, the second the allocations
+                return validationScopeCount === 2 ? SCOPE_ERROR_MESSAGE : null;
+            };
+
+            const error = await getCreateError(createSession(device));
+
+            expect(error.failure).toEqual({ code: 'validation-error', detail: SCOPE_ERROR_MESSAGE });
+            expect(device.buffers.every(buffer => buffer.destroyed)).toBe(true);
+            expect(device.getErrorScopeDepth()).toBe(0);
         });
 
         it('destroys what it allocated when an allocation after the pool fails, and rethrows', async () => {
