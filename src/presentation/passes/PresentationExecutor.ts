@@ -50,7 +50,7 @@ import type {
 import {
     createPlaneTextureSet,
     destroyPlaneTextureSet,
-    hasValidRawPlaneLayout,
+    getRawPlaneLayoutFailure,
     isPlaneTextureSetCompatible,
     type PlaneTextureSet,
     uploadPlanes
@@ -1116,8 +1116,9 @@ export class PresentationExecutor {
         if (!newFrame && frame === this.uploadedFrame && enhancementFrame === this.uploadedEnhancementFrame) {
             return;
         }
-        if (!hasValidRawPlaneLayout(frame)) {
-            throw new RangeError('Raw video frame layout is invalid');
+        const layoutFailure = getRawPlaneLayoutFailure(frame);
+        if (layoutFailure !== null) {
+            throw new RangeError(`raw-layout: ${layoutFailure}`);
         }
         this.uploadedFrame = null;
         let planeTextures = this.planeTextures;
@@ -1159,12 +1160,15 @@ export class PresentationExecutor {
             return null;
         }
         // The EL bindings read 10-bit 4:2:0 planes whatever the BL format, from the BL's compound buffer
-        if (
-            enhancementFrame.format !== RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT
-            || enhancementFrame.data !== frame.data
-            || !hasValidRawPlaneLayout(enhancementFrame)
-        ) {
-            throw new RangeError('Raw Dolby Vision enhancement frame layout is invalid');
+        if (enhancementFrame.format !== RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT) {
+            throw new RangeError(`enhancement-format: ${enhancementFrame.format}, expected ${RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT}`);
+        }
+        if (enhancementFrame.data !== frame.data) {
+            throw new RangeError('enhancement-buffer: not the base layer\'s buffer');
+        }
+        const layoutFailure = getRawPlaneLayoutFailure(enhancementFrame);
+        if (layoutFailure !== null) {
+            throw new RangeError(`enhancement-layout: ${layoutFailure}`);
         }
         let enhancementTextures = this.enhancementTextures;
         if (!isPlaneTextureSetCompatible(enhancementTextures, enhancementFrame)) {

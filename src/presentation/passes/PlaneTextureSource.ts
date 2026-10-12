@@ -80,75 +80,93 @@ function alignBytesPerRow(rowByteLength: number): number {
     return Math.ceil(rowByteLength / RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT) * RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT;
 }
 
-function hasValidFrameGeometry(frame: TransferableRawVideoFrame): boolean {
+/** Returns the frame geometry check that fails, as `geometry: <detail>`, or null. */
+function getFrameGeometryFailure(frame: TransferableRawVideoFrame): string | null {
     const rectangle = frame.visibleRectangle;
     const geometry = getPlanarFormatGeometry(frame.format);
-    const integerValues = [
-        frame.codedHeight,
-        frame.codedWidth,
-        frame.displayHeight,
-        frame.displayWidth,
-        rectangle.height,
-        rectangle.width,
-        rectangle.x,
-        rectangle.y
+    const positiveValues: readonly (readonly [string, number])[] = [
+        [ 'codedWidth', frame.codedWidth ],
+        [ 'codedHeight', frame.codedHeight ],
+        [ 'displayWidth', frame.displayWidth ],
+        [ 'displayHeight', frame.displayHeight ],
+        [ 'visible width', rectangle.width ],
+        [ 'visible height', rectangle.height ]
     ];
-    return integerValues.every((value: number): boolean => Number.isSafeInteger(value))
-        && frame.codedHeight > 0
-        && frame.codedWidth > 0
-        && frame.displayHeight > 0
-        && frame.displayWidth > 0
-        && rectangle.height > 0
-        && rectangle.width > 0
-        && rectangle.x >= 0
-        && rectangle.y >= 0
-        && rectangle.x % geometry.chromaWidthDivisor === 0
-        && rectangle.y % geometry.chromaHeightDivisor === 0
-        && rectangle.x + rectangle.width <= frame.codedWidth
-        && rectangle.y + rectangle.height <= frame.codedHeight;
+    for (const [ name, value ] of positiveValues) {
+        if (!Number.isSafeInteger(value) || value <= 0) {
+            return `geometry: ${name} ${value} is not a positive integer`;
+        }
+    }
+    if (!Number.isSafeInteger(rectangle.x) || !Number.isSafeInteger(rectangle.y) || rectangle.x < 0 || rectangle.y < 0) {
+        return `geometry: visible origin ${rectangle.x},${rectangle.y} is not a non-negative integer`;
+    }
+    if (rectangle.x % geometry.chromaWidthDivisor !== 0 || rectangle.y % geometry.chromaHeightDivisor !== 0) {
+        return `geometry: visible origin ${rectangle.x},${rectangle.y} is not chroma-aligned for ${frame.format}`;
+    }
+    if (rectangle.x + rectangle.width > frame.codedWidth || rectangle.y + rectangle.height > frame.codedHeight) {
+        return `geometry: visible ${rectangle.x},${rectangle.y} ${rectangle.width}x${rectangle.height} exceeds coded ${frame.codedWidth}x${frame.codedHeight}`;
+    }
+    return null;
 }
 
-function planeMatches(plane: RawVideoPlaneDescriptor, expectedPlane: ExpectedPlane, expectedByteOffset: number): boolean {
+/** Returns the first field of a plane that differs from the layout the uploads read, as `plane <kind>: <field> <actual>, expected <value>`. */
+function getPlaneFailure(plane: RawVideoPlaneDescriptor, expectedPlane: ExpectedPlane, expectedByteOffset: number): string | null {
     const rowByteLength = expectedPlane.width * expectedPlane.componentsPerTexel * expectedPlane.bytesPerComponent;
     const bytesPerRow = alignBytesPerRow(rowByteLength);
-    return plane.byteLength === bytesPerRow * expectedPlane.height
-        && plane.byteOffset === expectedByteOffset
-        && plane.bytesPerComponent === expectedPlane.bytesPerComponent
-        && plane.bytesPerRow === bytesPerRow
-        && plane.componentsPerTexel === expectedPlane.componentsPerTexel
-        && plane.height === expectedPlane.height
-        && plane.kind === expectedPlane.kind
-        && plane.rowByteLength === rowByteLength
-        && plane.width === expectedPlane.width;
+    const fields: readonly (readonly [string, number | string, number | string])[] = [
+        [ 'kind', plane.kind, expectedPlane.kind ],
+        [ 'width', plane.width, expectedPlane.width ],
+        [ 'height', plane.height, expectedPlane.height ],
+        [ 'componentsPerTexel', plane.componentsPerTexel, expectedPlane.componentsPerTexel ],
+        [ 'bytesPerComponent', plane.bytesPerComponent, expectedPlane.bytesPerComponent ],
+        [ 'rowByteLength', plane.rowByteLength, rowByteLength ],
+        [ 'bytesPerRow', plane.bytesPerRow, bytesPerRow ],
+        [ 'byteOffset', plane.byteOffset, expectedByteOffset ],
+        [ 'byteLength', plane.byteLength, bytesPerRow * expectedPlane.height ]
+    ];
+    for (const [ field, actual, expected ] of fields) {
+        if (actual !== expected) {
+            return `plane ${expectedPlane.kind}: ${field} ${actual}, expected ${expected}`;
+        }
+    }
+    return null;
 }
 
-/** Returns whether a raw frame has the exact padded plane layout the uploads read: planes in order, back to back, at aligned rows. */
-export function hasValidRawPlaneLayout(frame: TransferableRawVideoFrame): boolean {
-    if (!hasValidFrameGeometry(frame)) {
-        return false;
+/**
+ * Returns which check a raw frame's layout fails, as a terse `<check>: <detail>`, or null for the exact layout the uploads read.
+ * That layout is the planes in order, back to back from an aligned offset, at aligned rows, inside the frame's buffer.
+ */
+export function getRawPlaneLayoutFailure(frame: TransferableRawVideoFrame): string | null {
+    const geometryFailure = getFrameGeometryFailure(frame);
+    if (geometryFailure !== null) {
+        return geometryFailure;
     }
     const expectedPlanes = createExpectedPlanes(frame.format, frame.codedWidth, frame.codedHeight);
-    const firstPlane = frame.planes[0];
-    if (
-        frame.planes.length !== expectedPlanes.length
-        || !firstPlane
-        || !Number.isSafeInteger(firstPlane.byteOffset)
-        || firstPlane.byteOffset < 0
-        || firstPlane.byteOffset % RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT !== 0
-    ) {
-        return false;
+    if (frame.planes.length !== expectedPlanes.length) {
+        return `plane-count: ${frame.planes.length}, expected ${expectedPlanes.length}`;
     }
-    let expectedByteOffset = firstPlane.byteOffset;
+    const firstByteOffset = frame.planes[0].byteOffset;
+    if (!Number.isSafeInteger(firstByteOffset) || firstByteOffset < 0 || firstByteOffset % RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT !== 0) {
+        return `plane-offset: ${firstByteOffset} is not a multiple of ${RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT}`;
+    }
+    let expectedByteOffset = firstByteOffset;
     for (let planeIndex = 0; planeIndex < expectedPlanes.length; planeIndex += 1) {
         const plane = frame.planes[planeIndex];
-        if (!planeMatches(plane, expectedPlanes[planeIndex], expectedByteOffset)) {
-            return false;
+        const planeFailure = getPlaneFailure(plane, expectedPlanes[planeIndex], expectedByteOffset);
+        if (planeFailure !== null) {
+            return planeFailure;
         }
         expectedByteOffset += plane.byteLength;
     }
-    return Number.isSafeInteger(expectedByteOffset)
-        && expectedByteOffset > firstPlane.byteOffset
-        && expectedByteOffset <= frame.data.byteLength;
+    if (expectedByteOffset > frame.data.byteLength) {
+        return `buffer-length: planes end at ${expectedByteOffset}, buffer holds ${frame.data.byteLength}`;
+    }
+    return null;
+}
+
+/** Returns whether a raw frame has the exact padded plane layout the uploads read. */
+export function hasValidRawPlaneLayout(frame: TransferableRawVideoFrame): boolean {
+    return getRawPlaneLayoutFailure(frame) === null;
 }
 
 /** Returns whether a texture set holds a frame's format at its coded size, so the frame uploads into it. */
@@ -188,7 +206,7 @@ export function createPlaneTextureSet(device: GPUDevice, frame: TransferableRawV
     try {
         for (const plane of frame.planes) {
             if (plane.width > maximumTextureDimension || plane.height > maximumTextureDimension) {
-                throw new RangeError('Raw video plane exceeds the GPU texture limit');
+                throw new RangeError(`plane-size: ${plane.kind} ${plane.width}x${plane.height} exceeds ${maximumTextureDimension}`);
             }
             const texture = device.createTexture({
                 format: getPlaneTextureFormat(plane),
@@ -211,7 +229,7 @@ export function uploadPlanes(device: GPUDevice, textureSet: PlaneTextureSet, fra
         const plane = frame.planes[planeIndex];
         const planeTexture = textureSet.planes[planeIndex];
         if (planeTexture.kind !== plane.kind) {
-            throw new Error('Raw video plane texture order changed unexpectedly');
+            throw new Error(`plane-order: plane ${planeIndex} is ${plane.kind}, its texture holds ${planeTexture.kind}`);
         }
         device.queue.writeTexture(
             { texture: planeTexture.texture },
