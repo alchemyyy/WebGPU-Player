@@ -51,9 +51,10 @@ import { isRawDolbyVisionVideoFrameFormat } from 'webgpu-player/video/RawVideoFr
 
 import {
     appendSandboxFailure,
+    DEFAULT_SUBTITLE_SELECTION,
     describeError,
+    getDefaultAudioTrackIndex,
     type ActiveRoute,
-    type AudioTrackDescription,
     type AuthorizationTelemetry,
     type ExampleShaderPass,
     type PlaybackState,
@@ -163,12 +164,6 @@ function describeShaderPass(id: string, origin: string, source: string, paramete
         }
         return { headerFailure: `line ${error.line}: ${error.message}`, id, manifest: null, origin, parameters, source };
     }
-}
-
-/** Returns the audio track playback starts on: the track marked default, else the first. */
-function getDefaultAudioTrackIndex(probe: ProbedMedia): number | null {
-    const audioTracks = probe.description.audioTracks;
-    return (audioTracks.find((track: AudioTrackDescription): boolean => track.default) ?? audioTracks.at(0))?.index ?? null;
 }
 
 function getFirstVideoTrackIndex(probe: ProbedMedia): number | null {
@@ -729,7 +724,11 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
             store.setState({
                 media: probe.description,
                 playback: { ...store.getState().playback, durationMicroseconds: probe.description.durationMicroseconds },
-                tracks: { audioTrackIndex: getDefaultAudioTrackIndex(probe), subtitle: null, videoTrackIndex: getFirstVideoTrackIndex(probe) }
+                tracks: {
+                    audioTrackIndex: getDefaultAudioTrackIndex(probe.description),
+                    subtitle: DEFAULT_SUBTITLE_SELECTION,
+                    videoTrackIndex: getFirstVideoTrackIndex(probe)
+                }
             });
             startTelemetry();
             await startRoute(current, START_TIME, audioPrewarm);

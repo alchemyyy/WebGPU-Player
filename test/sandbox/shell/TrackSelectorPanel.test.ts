@@ -8,10 +8,12 @@ import type {
     SubtitleTrackDescription
 } from '../../../sandbox/src/contracts/SandboxContracts';
 import {
+    createTrackSelectorPanel,
     isSameSubtitleSelection,
     listAudioChoices,
     listSubtitleChoices
 } from '../../../sandbox/src/ui/panels/TrackSelectorPanel';
+import { createFakePanelContext } from './sandboxFakes';
 
 const MEDIA_PATH = 'Shows/episode.mkv';
 const SUBTITLE_FILE_PATH = 'Shows/episode.en.srt';
@@ -54,6 +56,12 @@ const EMBEDDED_SELECTION: SubtitleSelection = { kind: 'embedded', trackIndex: TE
 const OTHER_EMBEDDED_SELECTION: SubtitleSelection = { kind: 'embedded', trackIndex: OTHER_TEXT_TRACK_INDEX };
 const FILE_SELECTION: SubtitleSelection = { kind: 'file', path: SUBTITLE_FILE_PATH };
 const OTHER_FILE_SELECTION: SubtitleSelection = { kind: 'file', path: OTHER_SUBTITLE_FILE_PATH };
+// The media opens on its track marked default, with subtitles off
+const DEFAULT_AUDIO_TRACK_INDEX = 1;
+const COMMENTARY_TRACK_INDEX = 5;
+const DEFAULT_AUDIO_TITLE = 'Default: #1 eac3 6ch eng default';
+const DEFAULT_SUBTITLE_TITLE = 'Default: Off';
+const DEFAULT_BUTTON_SELECTOR = '.default-button';
 
 describe('TrackSelectorPanel choices', () => {
     it('offers off, then every audio track with its known details', () => {
@@ -85,5 +93,31 @@ describe('TrackSelectorPanel choices', () => {
         expect(isSameSubtitleSelection(EMBEDDED_SELECTION, FILE_SELECTION)).toBe(false);
         expect(isSameSubtitleSelection(FILE_SELECTION, null)).toBe(false);
         expect(isSameSubtitleSelection(null, EMBEDDED_SELECTION)).toBe(false);
+    });
+});
+
+describe('TrackSelectorPanel default buttons', () => {
+    it('return the audio track and the subtitles to what opening the file selects, sending only a change', () => {
+        const context = createFakePanelContext();
+        const panel = createTrackSelectorPanel(context);
+        const [ audioDefaultButton, subtitleDefaultButton ] = panel.element.querySelectorAll<HTMLButtonElement>(DEFAULT_BUTTON_SELECTOR);
+        expect(audioDefaultButton.disabled).toBe(true);
+
+        context.store.setState({ media: MEDIA, tracks: { audioTrackIndex: COMMENTARY_TRACK_INDEX, subtitle: EMBEDDED_SELECTION, videoTrackIndex: null } });
+        audioDefaultButton.click();
+        subtitleDefaultButton.click();
+
+        expect(audioDefaultButton.title).toBe(DEFAULT_AUDIO_TITLE);
+        expect(subtitleDefaultButton.title).toBe(DEFAULT_SUBTITLE_TITLE);
+        expect(context.session.selectAudioTrack).toHaveBeenCalledWith(DEFAULT_AUDIO_TRACK_INDEX);
+        expect(context.session.selectSubtitle).toHaveBeenCalledWith(null);
+
+        context.store.setState({ tracks: { audioTrackIndex: DEFAULT_AUDIO_TRACK_INDEX, subtitle: null, videoTrackIndex: null } });
+        audioDefaultButton.click();
+        subtitleDefaultButton.click();
+
+        expect(context.session.selectAudioTrack).toHaveBeenCalledOnce();
+        expect(context.session.selectSubtitle).toHaveBeenCalledOnce();
+        panel.destroy();
     });
 });

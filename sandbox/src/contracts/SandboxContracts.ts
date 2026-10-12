@@ -260,6 +260,18 @@ export type SandboxState = Readonly<{
 /** The failures the state keeps; older ones drop first. */
 export const MAXIMUM_SANDBOX_FAILURE_COUNT = 50;
 
+// The values the state starts with, which the panels' default buttons return to
+export const DEFAULT_VOLUME = 1;
+export const DEFAULT_ROUTE_OVERRIDE: RouteOverride = Object.freeze({ decoder: 'auto', transport: 'auto' });
+// A file opens with subtitles off
+export const DEFAULT_SUBTITLE_SELECTION: SubtitleSelection | null = null;
+
+/** Returns the audio track a file opens on: the track marked default, else the first, or null without audio tracks. */
+export function getDefaultAudioTrackIndex(media: MediaDescription): number | null {
+    const audioTracks = media.audioTracks;
+    return (audioTracks.find((track: AudioTrackDescription): boolean => track.default) ?? audioTracks.at(0))?.index ?? null;
+}
+
 /** Returns an error's terse failure detail: a DOMException's name, such as NotFoundError, or else its message. */
 export function describeError(error: unknown): string {
     if (error instanceof DOMException) {
@@ -282,7 +294,7 @@ export function createInitialSandboxState(): SandboxState {
         failures: [],
         library: { root: null, selectedPath: null, status: 'empty' },
         media: null,
-        playback: { durationMicroseconds: null, muted: false, status: 'idle', volume: 1 },
+        playback: { durationMicroseconds: null, muted: false, status: 'idle', volume: DEFAULT_VOLUME },
         presentation: {
             hdrOutput: false,
             passes: [],
@@ -290,14 +302,14 @@ export function createInitialSandboxState(): SandboxState {
             renderSettings: null,
             report: { activePasses: [], inactivePasses: [] }
         },
-        route: { active: null, override: { decoder: 'auto', transport: 'auto' } },
+        route: { active: null, override: DEFAULT_ROUTE_OVERRIDE },
         subtitleCues: [],
         telemetry: {
             authorization: { dolbyVision: null, externalDolbyVision: null, externalHDR: null, rawHDR: null },
             controller: null,
             presenter: null
         },
-        tracks: { audioTrackIndex: null, subtitle: null, videoTrackIndex: null }
+        tracks: { audioTrackIndex: null, subtitle: DEFAULT_SUBTITLE_SELECTION, videoTrackIndex: null }
     };
 }
 

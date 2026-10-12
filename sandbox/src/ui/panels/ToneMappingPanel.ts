@@ -14,6 +14,7 @@ import { createElement } from '../dom';
 import type { Panel, PanelContext } from '../Panel';
 import { subscribeSelection } from '../Store';
 import { createChoiceSelect, listRecordChoices } from './ChoiceSelect';
+import { createDefaultButton } from './DefaultButton';
 
 import './ToneMappingPanel.css';
 
@@ -78,8 +79,10 @@ function withRangedSetting(settings: HDRToSDRRenderSettings, name: RangedSetting
 
 export function createToneMappingPanel(context: PanelContext): Panel {
     const { session, store } = context;
+    // The engine's defaults, which Reset and each default button return to
+    const defaults: HDRToSDRRenderSettings = createHDRToSDRRenderSettings();
     // The settings the controls show: the presenter's while it tone-maps, else the last ones sent, or the engine's defaults
-    let settings: HDRToSDRRenderSettings = createHDRToSDRRenderSettings();
+    let settings: HDRToSDRRenderSettings = defaults;
     const controls: RangedSettingControl[] = [];
 
     const modeElement = createElement('span', { className: 'tone-mapping-mode' });
@@ -88,12 +91,15 @@ export function createToneMappingPanel(context: PanelContext): Panel {
     const validationElement = createElement('div', { className: 'tone-mapping-validation' });
     validationElement.hidden = true;
 
-    const renderControls = (): void => {
+    /** Shows the settings in the controls; a refresh keeps the value being typed in a box until Enter or leaving the box commits it. */
+    const renderControls = (keepTypedValue: boolean): void => {
         operatorSelect.setValue(settings.toneMapping.operator);
         for (const control of controls) {
             const value = String(readRangedSetting(settings, control.name));
             control.rangeInput.value = value;
-            control.numberInput.value = value;
+            if (!keepTypedValue || control.numberInput !== document.activeElement) {
+                control.numberInput.value = value;
+            }
         }
     };
 
@@ -104,19 +110,23 @@ export function createToneMappingPanel(context: PanelContext): Panel {
         } catch (error) {
             validationElement.textContent = error instanceof Error ? error.message : String(error);
             validationElement.hidden = false;
-            renderControls();
+            renderControls(false);
             return;
         }
         validationElement.hidden = true;
         settings = nextSettings;
         session.setRenderSettings(nextSettings);
-        renderControls();
+        renderControls(false);
     };
 
     const operatorSelect = createChoiceSelect<ToneMapOperator>((operator: ToneMapOperator): void => {
         applySettings({ ...settings, toneMapping: { ...settings.toneMapping, operator } });
     });
     operatorSelect.setChoices(listRecordChoices(TONE_MAP_OPERATOR_LABELS));
+    const defaultOperator = defaults.toneMapping.operator;
+    const operatorDefaultButton = createDefaultButton(TONE_MAP_OPERATOR_LABELS[defaultOperator], (): void => {
+        applySettings({ ...settings, toneMapping: { ...settings.toneMapping, operator: defaultOperator } });
+    });
 
     const rows: HTMLElement[] = [];
     for (const [ settingName, label ] of Object.entries(RANGED_SETTING_LABELS)) {
@@ -136,12 +146,16 @@ export function createToneMappingPanel(context: PanelContext): Panel {
         numberInput.addEventListener('change', (): void => {
             applySettings(withRangedSetting(settings, name, numberInput.valueAsNumber));
         });
+        const defaultValue = readRangedSetting(defaults, name);
+        const defaultButton = createDefaultButton(String(defaultValue), (): void => {
+            applySettings(withRangedSetting(settings, name, defaultValue));
+        });
         controls.push({ name, numberInput, rangeInput });
-        rows.push(createElement('label', { className: 'tone-mapping-row' }, [ createElement('span', { text: label }), rangeInput, numberInput ]));
+        rows.push(createElement('label', { className: 'tone-mapping-row' }, [ createElement('span', { text: label }), rangeInput, numberInput, defaultButton ]));
     }
 
     resetButton.addEventListener('click', (): void => {
-        applySettings(createHDRToSDRRenderSettings());
+        applySettings(defaults);
     });
     hdrOutputInput.addEventListener('change', (): void => {
         session.setHDROutputEnabled(hdrOutputInput.checked).catch((error: unknown): void => {
@@ -153,7 +167,7 @@ export function createToneMappingPanel(context: PanelContext): Panel {
     const element = createElement('section', { className: 'tone-mapping-panel' }, [
         createElement('header', { className: 'tone-mapping-header' }, [ createElement('span', { text: 'Tone mapping' }), modeElement, resetButton ]),
         createElement('label', { className: 'tone-mapping-toggle' }, [ hdrOutputInput, createElement('span', { text: 'HDR output' }) ]),
-        createElement('label', { className: 'tone-mapping-row' }, [ createElement('span', { text: 'Operator' }), operatorSelect.element ]),
+        createElement('label', { className: 'tone-mapping-row' }, [ createElement('span', { text: 'Operator' }), operatorSelect.element, operatorDefaultButton ]),
         ...rows,
         validationElement
     ]);
@@ -164,7 +178,8 @@ export function createToneMappingPanel(context: PanelContext): Panel {
             if (renderSettings?.mode === 'hdr-to-sdr') {
                 settings = renderSettings;
             }
-            renderControls();
+            // The presenter's settings refresh several times a second, which must not overwrite a value being typed
+            renderControls(true);
         }),
         subscribeSelection(store, (state: SandboxState): boolean => state.presentation.hdrOutput, (hdrOutput: boolean): void => {
             hdrOutputInput.checked = hdrOutput;
