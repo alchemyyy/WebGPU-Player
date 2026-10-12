@@ -23,6 +23,24 @@ Each source file's tests are at the same relative path under `test/`, and integr
 - `PresentationGeometry.ts`: pure object-fit and object-position math to viewport and texture transforms.
 - `RenderSettings.ts`: versioned (v7) HDR-to-SDR settings and their 144-byte uniform, HDR10+ fields included.
 - `identity.wgsl.ts`: the passthrough `texture_external` shader with crop.
+- `WebGPUConstants.ts`: the WebGPU values presentation and GPU decode share: canvas configuration, texture formats, features, and default limits.
+
+### presentation/passes/
+
+The presentation pipeline: each route's fixed signal and default color track, user WGSL passes, the planner that arranges them, and the executor that records frames.
+
+- `PassTypes.ts`: the contracts of the pipeline: pass manifests, built-in chains, plans, and frame input.
+- `PassLanguage.ts`: the names that headers, the prelude, and the planner share: stages, `HOOKED`, history accessors, entry points, and plan-time facts.
+- `PassExpression.ts`: the size and condition expressions of pass and decoder headers.
+- `PassManifest.ts`: parses a user pass's `//!` header into a manifest; a failure names its line.
+- `PassResources.ts`: the engine-owned bindings, their WGSL declarations and layout entries, and the byte layouts of the uniforms the engine writes.
+- `PassPrelude.ts`: the WGSL around pass code: input accessors, entry stages, and the renaming that keeps each user body's names apart.
+- `PresentationPlanner.ts`: arranges a route's built-in chain and the user passes on the stage spine and the color track, then generates each pass's module.
+  A pass that cannot run is left out with a reason code and a terse detail.
+  Without user passes every route plans one pass, which renders exactly as the legacy fused shaders did.
+- `PresentationExecutor.ts`: compiles a plan, owns its textures, history rings, buffers, and bind groups, and records each frame without submitting.
+- `PlaneTextureSource.ts`: the plane route's ingress: layout validation that names the failed check, one integer texture per plane, and the uploads.
+- `builtin/`: the built-in signals (`BuiltinSignals.ts`), color functions (`BuiltinColorFunctions.ts`), and route chains (`BuiltinChains.ts`), and a Catmull-Rom scaler in the user pass format.
 
 ## color/
 
@@ -142,6 +160,20 @@ All worker code unless marked.
 - `ISOBaseMediaDolbyVisionSampleEntry.ts`: gives Mediabunny's unmapped `dvh1`, `dvhe`, `dva1`, `dvav`, and `dav1` tracks their wrapped codec.
 - `MatroskaDolbyVisionHVCE.ts`, `ISOBaseMediaDolbyVisionConfiguration.ts`, `MPEGTransportStreamDolbyVisionConfiguration.ts`: find a P4 or P7 EL configuration in Matroska; in MP4, as a separate EL track or as `hvcE` beside the BL `hvcC` of one interleaved track; or in MPEG-TS and M2TS (any descriptor version).
 - `DolbyVisionGeometry.ts` [main and worker]: the P4 and P7 EL coded size (half the BL when the BL is wider than 1920).
+
+### video/gpu-decode/
+
+User WGSL compute decoders, which write decoded frames into a pool on the presenter's device.
+The player does not create GPU decode sessions.
+
+- `GPUDecodeTypes.ts` [main]: the decoder manifest, stream facts, packets, and coded failures.
+- `GPUDecoderManifest.ts`, `GPUDecoderPrelude.ts` [main]: parse a decoder's `//!` header, and generate its bindings and helpers.
+- `GPUFramePool.ts` [main]: the pool buffer, its slot layout, and slot lifetimes.
+- `GPUVideoDecodeSession.ts` [main]: runs a decoder: the packet ring, dispatches, status readbacks, reordering, and slot release.
+- `FramePoolSignal.ts` [main]: the signal that reads a pool slot, which the frame-pool route's built-in chain takes.
+- `GPUDecoderVectorCheck.ts` [main]: the per-device conformance check of a decoder's vector, and its cache.
+- `GPUDecodeFormats.ts`, `GPUDecodeLimits.ts` [main]: the planar formats a decoder may write, and the route's bounds.
+- `examples/UncompressedPlanarDecoder.wgsl.ts` [main]: a proof decoder that copies uncompressed planar packets into the pool.
 
 ### video/hdr/
 
