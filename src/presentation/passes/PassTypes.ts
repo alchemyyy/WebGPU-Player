@@ -1,7 +1,10 @@
 // The contracts shared by the pass manifest, the built-in passes, the planner, the executor, and the GPU decode route.
 // overhual/ in the engine root describes the design they implement.
+import type { InputColorMetadata } from '../../color/ColorMetadata';
+import type { SupportedRawVideoFrameFormat, TransferableRawVideoFrame } from '../../video/RawVideoFrameCopy';
+import type { DolbyVisionReconstructionProfile } from '../PresentationInput';
 import type { TexturePresentationGeometry } from '../PresentationGeometry';
-import type { TransferableRawVideoFrame } from '../../video/RawVideoFrameCopy';
+import type { HDRToSDRRenderSettings, RenderSettings } from '../RenderSettings';
 
 /** A stage of the spatial spine that user passes hook, in pipeline order; the fixed signal step comes before all of them. */
 export type PresentationStage = 'OUTPUT' | 'PRESCALE' | 'RGB' | 'SCALE';
@@ -172,6 +175,22 @@ export type BuiltinChain = {
     sourceIsDisplay: boolean
 };
 
+/** The Dolby Vision base layer formats RPU reconstruction samples. */
+export type RawDolbyVisionFrameFormat = Exclude<SupportedRawVideoFrameFormat, 'NV12'>;
+
+/**
+ * A route the built-in library builds a chain for.
+ * `hdrOutput` selects the extended-range output encode in place of the SDR encode, display controls, and dither.
+ * The frame pool route takes its signal from the GPU decode route and the color functions from the library.
+ */
+export type BuiltinChainConfiguration =
+    | { felReconstruction: boolean; format: RawDolbyVisionFrameFormat; hdrOutput: boolean; profile: DolbyVisionReconstructionProfile; route: 'raw-dolby-vision'; settings: HDRToSDRRenderSettings }
+    | { format: SupportedRawVideoFrameFormat; hdrOutput: boolean; metadata: InputColorMetadata; route: 'raw-yuv'; settings: RenderSettings }
+    | { hdrOutput: boolean; metadata: InputColorMetadata; route: 'external-hdr'; settings: HDRToSDRRenderSettings }
+    | { hdrOutput: boolean; metadata: InputColorMetadata; route: 'frame-pool'; settings: RenderSettings; signal: SignalDefinition }
+    | { hdrOutput: boolean; route: 'external-dolby-vision'; settings: HDRToSDRRenderSettings }
+    | { route: 'external-identity' };
+
 /** The canvas configuration a plan renders for. */
 export type PlannedOutput = {
     colorSpace: PredefinedColorSpace
@@ -275,16 +294,33 @@ export type PlanReport = {
     inactivePasses: readonly { name: string; reason: string }[]
 };
 
+/** One user pass's parameters; its `parameters` uniform holds them as PassResources lays them out. */
+export type PlannedParameterSet = {
+    parameters: readonly PassParameter[]
+    passName: string
+};
+
 /** An immutable plan: passes in execution order and the resources they use. */
 export type PresentationPlan = {
     buffers: readonly PlannedBuffer[]
     output: PlannedOutput
+    parameterSets: readonly PlannedParameterSet[]
     passes: readonly PlannedPass[]
     report: PlanReport
     sourceKind: PresentationSourceKind
     textures: readonly PlannedTexture[]
     /** Whether the plan binds the render settings uniform. */
     usesRenderSettings: boolean
+};
+
+/** A shader compile message, mapped back to the user pass it came from. */
+export type PresentationCompileMessage = {
+    column: number
+    /** The line in the user pass's source, or in the generated module when passName is null. */
+    line: number
+    message: string
+    /** The user pass the line belongs to, or null for engine-generated code. */
+    passName: string | null
 };
 
 /** Where the plane data of a frame in the GPU decode route's frame pool lives. */

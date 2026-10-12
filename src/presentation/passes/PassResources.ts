@@ -226,6 +226,17 @@ export type FramePoolLayoutValues = {
     slotByteOffset: number
 };
 
+/** Returns a parameter's byte offset in its pass's `parameters` uniform: declared scalars in order, 4 bytes apart. */
+export function getParameterByteOffset(parameterIndex: number): number {
+    return parameterIndex * BYTES_PER_WORD;
+}
+
+/** Returns the byte length of a `parameters` uniform holding parameterCount scalars, rounded up to 16 bytes. */
+export function getParametersByteLength(parameterCount: number): number {
+    const minimumByteLength = 16;
+    return Math.max(minimumByteLength, Math.ceil((parameterCount * BYTES_PER_WORD) / minimumByteLength) * minimumByteLength);
+}
+
 /** Returns the bindings an engine resource group expands into, in binding order. */
 export function expandEngineResource(resource: EngineResource): readonly EngineBindingResource[] {
     return ENGINE_RESOURCE_BINDINGS[resource];
