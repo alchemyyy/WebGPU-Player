@@ -7,7 +7,7 @@ import {
     type InputColorMetadata
 } from '../../../color/ColorMetadata';
 import { createDolbyVisionColorFunctionsWGSL } from '../../../color/DolbyVisionColorTransform';
-import type { SupportedRawVideoFrameFormat } from '../../../video/RawVideoFrameCopy';
+import { getRawFormatBitDepth, type SupportedRawVideoFrameFormat } from '../../../video/RawVideoFrameCopy';
 import type { DolbyVisionReconstructionProfile } from '../../PresentationInput';
 import type { EngineResource, RawDolbyVisionFrameFormat, SignalDefinition } from '../PassTypes';
 import { joinWGSL, toWGSLFloat } from './BuiltinWGSL';
@@ -208,25 +208,6 @@ fn sampleChromaV(textureCoordinate: vec2f) -> f32 {
     let bottomRight = f32(textureLoad(chromaVTexture, clamp(basePosition + vec2i(1), vec2i(0), maximumPosition), 0).r);
     return mix(mix(topLeft, topRight, fraction.x), mix(bottomLeft, bottomRight, fraction.x), fraction.y);
 }`;
-
-/** Returns the code bit depth of one raw planar or semi-planar YUV format. */
-function getRawFormatBitDepth(format: SupportedRawVideoFrameFormat): number {
-    switch (format) {
-        case 'I420':
-        case 'I422':
-        case 'I444':
-        case 'NV12':
-            return 8;
-        case 'I420P10':
-        case 'I422P10':
-        case 'I444P10':
-            return 10;
-        case 'I420P12':
-        case 'I422P12':
-        case 'I444P12':
-            return 12;
-    }
-}
 
 /**
  * Returns whether the raw signals treat a format's chroma as left-sited: each chroma sample lies on its left luma sample, half a luma sample left of its texel center.

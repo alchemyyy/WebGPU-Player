@@ -22,17 +22,15 @@ import {
     type InputColorMetadata
 } from '../color/ColorMetadata';
 import {
-    getRawFormatBitDepth,
-    isRawDolbyVisionVideoFrameFormat,
-    type RawDolbyVisionVideoFrameFormat
-} from '../color/ColorPipelineShader';
-import {
     isDolbyVisionDualLayerProfile,
     type DolbyVisionReconstructionProfile
 } from './PresentationInput';
 import { decodeDolbyVisionRPUSnapshot } from '../video/dolby-vision/DolbyVisionRPUParser';
 import {
+    getRawFormatBitDepth,
+    isRawDolbyVisionVideoFrameFormat,
     RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT,
+    type RawDolbyVisionVideoFrameFormat,
     type RawVideoFrameColorSpace,
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame

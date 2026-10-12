@@ -11,7 +11,7 @@ A session takes one of two paths:
 
 - (a) HTML decode with WebGPU presentation, for known-SDR input only.
   The `<video>` element or hls.js decodes, and the media element is the clock.
-  Frames go rVFC, `importExternalTexture`, identity WGSL, canvas.
+  Frames go rVFC, `importExternalTexture`, the identity route's one-pass plan, canvas.
   For HDR or unknown input the presenter is off and the `<video>` shows.
 - (b) The custom pipeline, for eligible direct-play VOD.
   The worker posts `'frame'` messages (a `VideoFrame`, or raw planes in a pooled buffer, with Dolby Vision and HDR10+ metadata), and fMP4 segments for native-media audio.

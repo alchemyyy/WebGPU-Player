@@ -3,8 +3,8 @@ import {
     microsecondsToMilliseconds,
     millisecondsToMicroseconds
 } from '../MediaTime';
+import { COPY_BYTES_PER_ROW_ALIGNMENT, VALIDATION_ERROR_FILTER } from '../presentation/WebGPUConstants';
 
-export const COPY_BYTES_PER_ROW_ALIGNMENT = 256;
 export const GPU_CANVAS_READBACK_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(5_000);
 const GPU_CANVAS_READBACK_OPERATION_DESTROYED = Symbol('gpu-canvas-readback-operation-destroyed');
 const GPU_CANVAS_READBACK_OPERATION_TIMEOUT = Symbol('gpu-canvas-readback-operation-timeout');
@@ -415,7 +415,7 @@ export class GPUCanvasPixelReader {
         let errorScopePushed = false;
         let mapped = false;
         try {
-            this.device.pushErrorScope('validation');
+            this.device.pushErrorScope(VALIDATION_ERROR_FILTER);
             errorScopePushed = true;
             buffer = this.device.createBuffer({
                 label: 'WebGPU color validation readback',

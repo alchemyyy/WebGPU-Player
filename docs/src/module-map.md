@@ -16,13 +16,10 @@ Each source file's tests are at the same relative path under `test/`, and integr
 
 ## presentation/
 
-- `WebGPUPresenter.ts`: the GPU device and canvas; rVFC and pushed-frame submission; installing the color pipeline; HDR and Dolby Vision authorization; device-loss recovery; the latched fallback.
-- `RawYUVGPURenderer.ts`: uploads raw YUV planes, and a Dolby Vision EL, into integer textures and draws them.
-  Authorization shares it.
+- `WebGPUPresenter.ts`: the GPU device and canvas; rVFC and pushed-frame submission; each route's built-in chain, planned and recorded through `passes/`; HDR and Dolby Vision authorization; device-loss recovery; the latched fallback.
 - `PresentationInput.ts`: MediaStream metadata to color metadata; Dolby Vision descriptors with their RPU route; declared and exact native base metadata; the presented video ordinal; the known-SDR gate.
 - `PresentationGeometry.ts`: pure object-fit and object-position math to viewport and texture transforms.
 - `RenderSettings.ts`: versioned (v7) HDR-to-SDR settings and their 144-byte uniform, HDR10+ fields included.
-- `identity.wgsl.ts`: the passthrough `texture_external` shader with crop.
 - `WebGPUConstants.ts`: the WebGPU values presentation and GPU decode share: canvas configuration, texture formats, features, and default limits.
 
 ### presentation/passes/
@@ -37,7 +34,7 @@ The presentation pipeline: each route's fixed signal and default color track, us
 - `PassPrelude.ts`: the WGSL around pass code: input accessors, entry stages, and the renaming that keeps each user body's names apart.
 - `PresentationPlanner.ts`: arranges a route's built-in chain and the user passes on the stage spine and the color track, then generates each pass's module.
   A pass that cannot run is left out with a reason code and a terse detail.
-  Without user passes every route plans one pass, which renders exactly as the legacy fused shaders did.
+  Without user passes every route plans one pass, which reads the source and writes the canvas.
 - `PresentationExecutor.ts`: compiles a plan, owns its textures, history rings, buffers, and bind groups, and records each frame without submitting.
 - `PlaneTextureSource.ts`: the plane route's ingress: layout validation that names the failed check, one integer texture per plane, and the uploads.
 - `builtin/`: the built-in signals (`BuiltinSignals.ts`), color functions (`BuiltinColorFunctions.ts`), and route chains (`BuiltinChains.ts`), and a Catmull-Rom scaler in the user pass format.
@@ -45,8 +42,7 @@ The presentation pipeline: each route's fixed signal and default color track, us
 ## color/
 
 - `ColorMetadata.ts`: the input color schema, validation, and SDR, PQ, and HLG factories.
-- `ColorPipeline.ts`: the CPU reference of range, matrix, transfer, gamut, tone mapping, and display controls, and the luminance, YUV matrix, gamut, and IPT tables for BT.709, BT.2020, and BT.601 that the shaders share.
-- `ColorPipelineShader.ts`: WGSL generators for raw YUV, external HDR code recovery, and external and raw Dolby Vision (FEL included), plus the shared `processColor`.
+- `ColorPipeline.ts`: the CPU reference of range, matrix, transfer, gamut, tone mapping, and display controls, and the luminance, YUV matrix, gamut, and IPT tables for BT.709, BT.2020, and BT.601 that the built-in color functions share.
 - `DolbyVisionColorTransform.ts`: RPU reshaping (polynomial and MMR, chosen per segment), the FEL NLQ residual, and reconstruction to BT.2020 PQ, as a CPU reference and as WGSL.
 
 ## capability/
@@ -120,6 +116,7 @@ All worker code unless marked.
 - `RawVideoFrameCopy.ts`: copies a `VideoFrame`, or a software decoder's sample of CPU planes without one, into aligned plane buffers (NV12, and I420 to I444P12).
   A Dolby Vision pair is a BL in any format from I420 to I444P12 and an I420P10 EL, in one compound buffer.
   A `PreparedRawVideoFrameSource` holds a frame its decoder already wrote in that layout, which a raw transfer takes as it is.
+  It also names each format's bit depth and the BL formats Dolby Vision reconstruction samples, which the presenter and the host check.
 - `RawFrameBufferPool.ts`: a run's spare raw buffers, recycled by the page or left by frames closed unposted, which drained frames and raw copies take; it allocates when no spare fits and keeps at most 2 of each byte length.
 - `MatroskaVFWVideoConfiguration.ts`: extracts the VC-1 `WVC1` extradata.
 - `MatroskaBlockAdditions.ts`: wraps Mediabunny's Matroska and WebM formats so their demuxers keep every BlockAdditional but alpha, and reads a packet's additions, such as VP9 HDR10+.
@@ -244,7 +241,7 @@ AC-3 and E-AC-3 through a hidden `<audio>` and MSE.
 
 The authorization vectors are in `capability/vectors/`.
 
-- `RawHDRPresentationAuthorization.ts`: raw route keys, readback through the production raw shader, and the per-device registry.
+- `RawHDRPresentationAuthorization.ts`: raw route keys, readback of the route's default plan, and the per-device registry.
 - `ExternalHDRPresentationAuthorization.ts`: external PQ and HLG route keys, checked with the neutralized Main 10 vector.
 - `DolbyVisionPresentationAuthorization.ts`, `ExternalDolbyVisionPresentationAuthorization.ts`: raw Dolby Vision keys (per raw format: single-layer, the P4 and P7 bases, and the P4 and P7 FEL) and the external P5 key, checked with synthetic RPU vectors.
 - `GPUAuthorizationDeadline.ts`: the shared 5 s timeout, cancelled on device loss.

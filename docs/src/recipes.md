@@ -15,8 +15,8 @@ Each assumes a checkout set up as in [Set up a checkout](setup.md).
      The asset build serves every vector in that folder, and the `EngineAssets` test checks that the two agree.
 2. Presentation:
    - add the route key to `src/validation/RawHDRPresentationAuthorization.ts`, or to the external or Dolby Vision authorization beside it;
-   - add the shader to `src/color/ColorPipelineShader.ts`;
-   - add the uploads to `src/presentation/RawYUVGPURenderer.ts` and `src/video/RawVideoFrameCopy.ts`;
+   - add the route's built-in signal to `src/presentation/passes/builtin/BuiltinSignals.ts` and its chain to `BuiltinChains.ts`;
+   - add the plane uploads to `src/presentation/passes/PlaneTextureSource.ts`, and the raw copy to `src/video/RawVideoFrameCopy.ts`;
    - add any new raw format to `src/pipeline/DecodeWorkerProtocol.ts`.
 3. Runtime.
    `src/capability/CustomPlaybackEligibility.ts` selects the route, and `src/presentation/PresentationInput.ts` parses the color and Dolby Vision descriptors.
