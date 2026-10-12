@@ -299,7 +299,8 @@ export type PlannedPass = {
 
 /**
  * The check that kept a user pass out of a plan; every reason but 'condition-false' is a failure.
- * The presenter adds 'header-invalid' and 'compile-error', since it parses headers and compiles plans.
+ * The presenter adds 'header-invalid', 'compile-error', and the parameter checks, since it parses headers, applies preset values, and compiles plans.
+ * It also reports 'duplicate-name' itself, by preset position, so the planner never receives two passes of one name.
  */
 export type PassRejectionReason =
     | 'compile-error'
@@ -314,6 +315,8 @@ export type PassRejectionReason =
     | 'input-unknown'
     | 'output-missing'
     | 'output-size'
+    | 'parameter-invalid'
+    | 'parameter-unknown'
     | 'replaced-function-missing'
     | 'replaced-function-taken'
     | 'sdr-on-hdr-output'

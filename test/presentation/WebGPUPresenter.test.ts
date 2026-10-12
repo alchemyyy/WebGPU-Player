@@ -247,7 +247,12 @@ import WebGPUPresenter, {
     type PresentationSurface,
     WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS
 } from 'webgpu-player/presentation/WebGPUPresenter';
-import type { PresentationFrameInput } from 'webgpu-player/presentation/passes/PassTypes';
+import type {
+    BuiltinColorFunction,
+    PassManifest,
+    PlanRequest,
+    PresentationFrameInput
+} from 'webgpu-player/presentation/passes/PassTypes';
 import { PresentationExecutor } from 'webgpu-player/presentation/passes/PresentationExecutor';
 import { planPresentation } from 'webgpu-player/presentation/passes/PresentationPlanner';
 
@@ -255,9 +260,13 @@ import { createHDR10PlusHEVCVector } from '../../src/capability/vectors/HDR10Plu
 import {
     createDeferred,
     createWebGPUDeviceHarness,
+    getBufferWrites,
     installWebGPUGlobals,
+    type RecordedBufferWrite,
     type WebGPUDeviceHarness
 } from '../helpers/webGPUDeviceHarness';
+import { SATURATION_COLOR_PASS } from './passes/examples/SaturationColorPass';
+import { SHARPEN_KERNEL_PASS } from './passes/examples/SharpenKernelPass';
 
 type MockFunction = ReturnType<typeof vi.fn>;
 
@@ -313,6 +322,86 @@ const SECOND_VIDEO_EPOCH = 1;
 // The facts a plan takes before any frame or canvas measures a size
 const UNMEASURED_PLAN_DIMENSION = 1;
 const PREFERRED_CANVAS_FORMAT: GPUTextureFormat = 'bgra8unorm';
+const PARAMETERS_BUFFER_LABEL = 'Presentation parameters';
+// The render settings uniform's display peak and SDR white, as float indices
+const UNIFORM_OUTPUT_PEAK_INDEX = 7;
+const UNIFORM_PAPER_WHITE_INDEX = 8;
+// The plan outputs and canvas configurations of SDR output in the preferred format and of HDR output
+const HDR_OUTPUT_FORMAT: GPUTextureFormat = 'rgba16float';
+const SDR_PLANNED_OUTPUT = { colorSpace: 'srgb', format: PREFERRED_CANVAS_FORMAT, toneMapping: 'standard' };
+const HDR_PLANNED_OUTPUT = { colorSpace: 'srgb', format: HDR_OUTPUT_FORMAT, toneMapping: 'extended' };
+const SDR_CANVAS_CONFIGURATION = { alphaMode: 'opaque', colorSpace: 'srgb', format: PREFERRED_CANVAS_FORMAT, toneMapping: { mode: 'standard' } };
+const HDR_CANVAS_CONFIGURATION = { alphaMode: 'opaque', colorSpace: 'srgb', format: HDR_OUTPUT_FORMAT, toneMapping: { mode: 'extended' } };
+// HDR output's color track: decode, tone map to the display peak, and encode extended sRGB, without display controls or dither
+const HDR_OUTPUT_COLOR_FUNCTION_NAMES: readonly string[] = [ 'builtin.transfer-decode', 'builtin.tone-map', 'builtin.output-encode' ];
+const HDR_DISPLAY_PEAK_NITS = 600;
+const HDR_SDR_WHITE_NITS = 203;
+
+// The preset passes the engine API tests apply, by the names their headers declare
+const SATURATION_PASS_NAME = 'Saturation';
+const SATURATION_PARAMETER_NAME = 'saturation';
+const PRESET_SATURATION = 0.75;
+const LIVE_SATURATION = 1.5;
+const SHARPEN_PASS_NAME = 'Sharpen';
+const SHARPEN_PARAMETER_NAME = 'strength';
+const LIVE_SHARPEN_STRENGTH = 0.25;
+const MISSING_PASS_NAME = 'Missing';
+const UNDECLARED_PARAMETER_NAME = 'radius';
+// A header without its required name, which fails on line 1 before any name is known, so the report names it by its preset index
+const UNNAMED_PASS_SOURCE = [ '//! shape: color', '//! hook: OUTPUT', '', 'fn apply(color: vec4f, position: vec2f) -> vec4f {', '    return color;', '}' ].join('\n');
+const UNNAMED_PASS_REPORT_NAME = 'pass 0';
+const UNNAMED_PASS_DETAIL = "line 1: Missing required directive 'name'";
+// A header that names its pass before an unknown shape on line 2
+const UNKNOWN_SHAPE_PASS_NAME = 'Blur';
+const UNKNOWN_SHAPE_PASS_SOURCE = [ `//! name: ${UNKNOWN_SHAPE_PASS_NAME}`, '//! shape: blur', '', 'fn apply(color: vec4f) -> vec4f {', '    return color;', '}' ].join('\n');
+const UNKNOWN_SHAPE_PASS_DETAIL = "line 2: Unknown shape 'blur'; expected color, kernel, scaler, compute";
+// A pass that runs only on HDR output, so an SDR plan leaves it out with an empty detail
+const HDR_ONLY_PASS_NAME = 'HDR only';
+const HDR_ONLY_PASS_SOURCE = [
+    `//! name: ${HDR_ONLY_PASS_NAME}`,
+    '//! shape: color',
+    '//! hook: OUTPUT',
+    '//! when: hdr.output',
+    '',
+    'fn apply(color: vec4f, position: vec2f) -> vec4f {',
+    '    return color;',
+    '}'
+].join('\n');
+// A pass whose preset value is not finite
+const GAIN_PASS_NAME = 'Gain';
+const GAIN_PARAMETER_NAME = 'gain';
+const GAIN_PASS_SOURCE = [
+    `//! name: ${GAIN_PASS_NAME}`,
+    '//! shape: color',
+    '//! hook: OUTPUT',
+    `//! param ${GAIN_PARAMETER_NAME}: f32 = 1 in [0, 4]`,
+    '',
+    'fn apply(color: vec4f, position: vec2f) -> vec4f {',
+    `    return vec4f(color.rgb * parameters.${GAIN_PARAMETER_NAME}, color.a);`,
+    '}'
+].join('\n');
+// A pass that reads an identifier no module declares, which the mock compiler rejects on that line
+const BROKEN_PASS_NAME = 'Broken';
+const UNDECLARED_IDENTIFIER = 'undeclaredGain';
+const BROKEN_PASS_SOURCE_LINES: readonly string[] = [
+    `//! name: ${BROKEN_PASS_NAME}`,
+    '//! shape: color',
+    '//! hook: OUTPUT',
+    '//! domain: display',
+    '',
+    'fn apply(color: vec4f, position: vec2f) -> vec4f {',
+    `    return color * ${UNDECLARED_IDENTIFIER};`,
+    '}'
+];
+const BROKEN_PASS_SOURCE = BROKEN_PASS_SOURCE_LINES.join('\n');
+const BROKEN_PASS_ERROR_LINE = BROKEN_PASS_SOURCE_LINES.findIndex((line: string): boolean => line.includes(UNDECLARED_IDENTIFIER)) + 1;
+const COMPILE_ERROR_COLUMN = 20;
+const COMPILE_ERROR_MESSAGE = `unresolved value '${UNDECLARED_IDENTIFIER}'`;
+// The surface sizes the resize test moves through, from the harness's 1280x720
+const FIRST_RESIZED_WIDTH = 960;
+const FIRST_RESIZED_HEIGHT = 540;
+const SECOND_RESIZED_WIDTH = 640;
+const SECOND_RESIZED_HEIGHT = 360;
 
 type CanvasContextHarness = {
     context: GPUCanvasContext
@@ -764,12 +853,19 @@ function restoreProperty(
 
 const VIDEO_READY_STATE_CURRENT_DATA = 2;
 
-/** Starts a pushed-frame session with a configured raw route and returns the presenter and its fallback handler. */
+type RawRoutePresentation = {
+    contextHarness: CanvasContextHarness
+    deviceHarness: DeviceHarness
+    fallbackHandler: MockFunction
+    presenter: WebGPUPresenter
+};
+
+/** Starts a pushed-frame session with a configured raw route and returns the presenter, its fallback handler, and its harnesses. */
 async function startRawRoutePresentation(
     metadata: InputColorMetadata,
     rawFrameFormat: SupportedRawVideoFrameFormat,
     settings: RenderSettings
-): Promise<{ fallbackHandler: MockFunction, presenter: WebGPUPresenter }> {
+): Promise<RawRoutePresentation> {
     webSettingsMockState.hdrToneMappingEnabled = true;
     const gpuHarness = createGPUHarness();
     const contextHarness = createCanvasContextHarness();
@@ -791,7 +887,76 @@ async function startRawRoutePresentation(
         rawFrameFormat,
         settings
     }, 1)).resolves.toBe(true);
-    return { fallbackHandler, presenter };
+    return { contextHarness, deviceHarness: gpuHarness.devices[0], fallbackHandler, presenter };
+}
+
+type IdentityPresentation = {
+    contextHarness: CanvasContextHarness
+    deviceHarness: DeviceHarness
+    presenter: WebGPUPresenter
+    surfaceHarness: SurfaceHarness
+};
+
+/** Starts an identity session on an attached surface whose element reports paused, and waits for its first frame callback request. */
+async function startIdentityPresentation(paused: boolean): Promise<IdentityPresentation> {
+    const gpuHarness = createGPUHarness();
+    const contextHarness = createCanvasContextHarness();
+    const surfaceHarness = createSurfaceHarness();
+    Object.defineProperty(surfaceHarness.surface.video, 'paused', { configurable: true, value: paused });
+    installGPU(gpuHarness.gpu);
+    installCanvasContext(contextHarness.context);
+    const presenter = new WebGPUPresenter(vi.fn());
+
+    presenter.startSession(1);
+    presenter.attach(surfaceHarness.surface, 1);
+    await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+    return { contextHarness, deviceHarness: gpuHarness.devices[0], presenter, surfaceHarness };
+}
+
+function getLastPlanRequest(): PlanRequest {
+    const request = vi.mocked(planPresentation).mock.calls.at(-1)?.[0];
+    if (!request) {
+        throw new Error('No plan was requested');
+    }
+    return request;
+}
+
+function getPlannedPassNames(request: PlanRequest): string[] {
+    return request.passes.map((manifest: PassManifest): string => manifest.name);
+}
+
+/** Returns the first float of each write to the executors' parameters uniforms, in queue order; the tests' passes declare one parameter. */
+function readParameterWrites(deviceHarness: DeviceHarness): number[] {
+    return getBufferWrites(deviceHarness, PARAMETERS_BUFFER_LABEL).map((write: RecordedBufferWrite): number => (
+        new DataView(write.bytes.buffer, write.bytes.byteOffset, write.bytes.byteLength).getFloat32(0, true)
+    ));
+}
+
+/** Rejects a module on the line that reads the undeclared identifier, as a WGSL compiler would. */
+function rejectUndeclaredIdentifier(descriptor: GPUShaderModuleDescriptor): GPUCompilationMessage[] {
+    const lineIndex = descriptor.code.split('\n').findIndex((line: string): boolean => line.includes(UNDECLARED_IDENTIFIER));
+    if (lineIndex < 0) {
+        return [];
+    }
+    return [ {
+        length: UNDECLARED_IDENTIFIER.length,
+        lineNum: lineIndex + 1,
+        linePos: COMPILE_ERROR_COLUMN,
+        message: COMPILE_ERROR_MESSAGE,
+        offset: 0,
+        type: 'error'
+    } as unknown as GPUCompilationMessage ];
+}
+
+/** Gives the surface's container and video a new layout size, which the next layout measurement reads. */
+function resizeSurface(surfaceHarness: SurfaceHarness, width: number, height: number): void {
+    const container = surfaceHarness.surface.container;
+    Object.defineProperties(container, {
+        clientHeight: { configurable: true, value: height },
+        clientWidth: { configurable: true, value: width }
+    });
+    container.getBoundingClientRect = vi.fn(() => createRectangle(0, 0, width, height));
+    surfaceHarness.surface.video.getBoundingClientRect = vi.fn(() => createRectangle(0, 0, width, height));
 }
 
 function presentRawFrame(presenter: WebGPUPresenter, frame: TransferableRawVideoFrame): boolean {
@@ -4331,6 +4496,197 @@ describe('WebGPUPresenter', () => {
 
         expect(configured).toBe(true);
         expect(presenter.getTelemetry().dolbyVisionFELAuthorizationFailure).toBe('pixel-mismatch: I420P10:profile7-fel');
+    });
+
+    it('reports preset passes whose headers fail to parse, by name when the header declared one, and plans the rest', async () => {
+        const { presenter } = await startIdentityPresentation(true);
+
+        const report = await presenter.setPresentationPreset([
+            { parameters: {}, source: UNNAMED_PASS_SOURCE },
+            { parameters: {}, source: UNKNOWN_SHAPE_PASS_SOURCE },
+            { parameters: {}, source: SATURATION_COLOR_PASS }
+        ]);
+
+        expect(report).toEqual({
+            activePasses: [ SATURATION_PASS_NAME ],
+            inactivePasses: [
+                { detail: UNNAMED_PASS_DETAIL, name: UNNAMED_PASS_REPORT_NAME, reason: 'header-invalid' },
+                { detail: UNKNOWN_SHAPE_PASS_DETAIL, name: UNKNOWN_SHAPE_PASS_NAME, reason: 'header-invalid' }
+            ]
+        });
+        expect(getPlannedPassNames(getLastPlanRequest())).toEqual([ SATURATION_PASS_NAME ]);
+        expect(presenter.getPresentationPlanReport()).toEqual(report);
+    });
+
+    it('builds nothing for a preset set before any session, reports only its own checks until then, and plans it in the first session', async () => {
+        const gpuHarness = createGPUHarness();
+        installGPU(gpuHarness.gpu);
+        const presenter = new WebGPUPresenter(vi.fn());
+        const unnamedPassRejection = { detail: UNNAMED_PASS_DETAIL, name: UNNAMED_PASS_REPORT_NAME, reason: 'header-invalid' };
+
+        const report = await presenter.setPresentationPreset([
+            { parameters: {}, source: UNNAMED_PASS_SOURCE },
+            { parameters: {}, source: SATURATION_COLOR_PASS }
+        ]);
+
+        expect(report).toEqual({ activePasses: [], inactivePasses: [ unnamedPassRejection ] });
+        expect(gpuHarness.requestAdapter).not.toHaveBeenCalled();
+
+        presenter.startSession(1);
+
+        await vi.waitFor(() => expect(presenter.getPresentationPlanReport()).toEqual({
+            activePasses: [ SATURATION_PASS_NAME ],
+            inactivePasses: [ unnamedPassRejection ]
+        }));
+        expect(getPlannedPassNames(getLastPlanRequest())).toEqual([ SATURATION_PASS_NAME ]);
+    });
+
+    it('drops a preset pass that fails to compile, reports its source line, and rebuilds the plan without it', async () => {
+        const { deviceHarness, presenter, surfaceHarness } = await startIdentityPresentation(false);
+        deviceHarness.compileMessages = rejectUndeclaredIdentifier;
+
+        const report = await presenter.setPresentationPreset([
+            { parameters: {}, source: BROKEN_PASS_SOURCE },
+            { parameters: {}, source: SATURATION_COLOR_PASS }
+        ]);
+
+        expect(report).toEqual({
+            activePasses: [ SATURATION_PASS_NAME ],
+            inactivePasses: [ {
+                detail: `line ${BROKEN_PASS_ERROR_LINE}:${COMPILE_ERROR_COLUMN}: ${COMPILE_ERROR_MESSAGE}`,
+                name: BROKEN_PASS_NAME,
+                reason: 'compile-error'
+            } ]
+        });
+        const plannedPassNames = vi.mocked(planPresentation).mock.calls.map((call: [ PlanRequest ]): string[] => getPlannedPassNames(call[0]));
+        expect(plannedPassNames.slice(-2)).toEqual([ [ BROKEN_PASS_NAME, SATURATION_PASS_NAME ], [ SATURATION_PASS_NAME ] ]);
+
+        // The rebuilt plan presents, and the dropped pass stays out of later plans
+        surfaceHarness.callbacks.get(1)?.(performance.now(), createFrameMetadata());
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+        expect(presenter.getTelemetry().fallbackReason).toBeNull();
+        await presenter.setHDROutputEnabled(true);
+        expect(getPlannedPassNames(getLastPlanRequest())).toEqual([ SATURATION_PASS_NAME ]);
+    });
+
+    it('reports every preset pass in preset order, with the planner\'s rejections and the presenter\'s own checks', async () => {
+        const { presenter } = await startIdentityPresentation(true);
+
+        const report = await presenter.setPresentationPreset([
+            { parameters: { [SATURATION_PARAMETER_NAME]: PRESET_SATURATION }, source: SATURATION_COLOR_PASS },
+            { parameters: {}, source: SATURATION_COLOR_PASS },
+            { parameters: {}, source: HDR_ONLY_PASS_SOURCE },
+            { parameters: { [UNDECLARED_PARAMETER_NAME]: LIVE_SHARPEN_STRENGTH }, source: SHARPEN_KERNEL_PASS },
+            { parameters: { [GAIN_PARAMETER_NAME]: Number.NaN }, source: GAIN_PASS_SOURCE }
+        ]);
+
+        expect(report).toEqual({
+            activePasses: [ SATURATION_PASS_NAME ],
+            inactivePasses: [
+                { detail: 'position 2', name: SATURATION_PASS_NAME, reason: 'duplicate-name' },
+                { detail: '', name: HDR_ONLY_PASS_NAME, reason: 'condition-false' },
+                { detail: `'${UNDECLARED_PARAMETER_NAME}'`, name: SHARPEN_PASS_NAME, reason: 'parameter-unknown' },
+                { detail: `'${GAIN_PARAMETER_NAME}' NaN`, name: GAIN_PASS_NAME, reason: 'parameter-invalid' }
+            ]
+        });
+        // The planner receives one pass per name, and none the presenter keeps out
+        expect(getPlannedPassNames(getLastPlanRequest())).toEqual([ SATURATION_PASS_NAME, HDR_ONLY_PASS_NAME ]);
+    });
+
+    it('applies preset values after create and a live parameter change without replanning, redrawing a paused frame', async () => {
+        const encode = vi.spyOn(PresentationExecutor.prototype, 'encode');
+        const { deviceHarness, presenter, surfaceHarness } = await startIdentityPresentation(true);
+
+        await presenter.setPresentationPreset([
+            { parameters: { [SATURATION_PARAMETER_NAME]: PRESET_SATURATION }, source: SATURATION_COLOR_PASS }
+        ]);
+
+        expect(readParameterWrites(deviceHarness).at(-1)).toBe(Math.fround(PRESET_SATURATION));
+        // The new executor redraws the paused frame, then the element's frame callbacks resume
+        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledTimes(2));
+        const planCount = vi.mocked(planPresentation).mock.calls.length;
+        const parameterWriteCount = readParameterWrites(deviceHarness).length;
+        encode.mockClear();
+
+        presenter.setPresentationParameter(SATURATION_PASS_NAME, SATURATION_PARAMETER_NAME, LIVE_SATURATION);
+
+        expect(readParameterWrites(deviceHarness).slice(parameterWriteCount)).toEqual([ Math.fround(LIVE_SATURATION) ]);
+        expect(planPresentation).toHaveBeenCalledTimes(planCount);
+        expect(encode.mock.calls.map((call: unknown[]): boolean => (call[1] as PresentationFrameInput).newFrame)).toEqual([ false ]);
+
+        expect(() => presenter.setPresentationParameter(MISSING_PASS_NAME, SATURATION_PARAMETER_NAME, LIVE_SATURATION))
+            .toThrow(`pass-unknown: '${MISSING_PASS_NAME}'`);
+        expect(() => presenter.setPresentationParameter(SATURATION_PASS_NAME, UNDECLARED_PARAMETER_NAME, LIVE_SATURATION))
+            .toThrow(`parameter-unknown: '${SATURATION_PASS_NAME}' '${UNDECLARED_PARAMETER_NAME}'`);
+        expect(() => presenter.setPresentationParameter(SATURATION_PASS_NAME, SATURATION_PARAMETER_NAME, Number.NaN))
+            .toThrow(`parameter-invalid: '${SATURATION_PASS_NAME}' '${SATURATION_PARAMETER_NAME}' NaN`);
+    });
+
+    it('replans for a new output size only while preset passes take part in plans, keeping live parameter values', async () => {
+        const { deviceHarness, presenter, surfaceHarness } = await startIdentityPresentation(false);
+        surfaceHarness.callbacks.get(1)?.(performance.now(), createFrameMetadata());
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+        const defaultPlanCount = vi.mocked(planPresentation).mock.calls.length;
+        const submitCount = deviceHarness.queueSubmit.mock.calls.length;
+
+        resizeSurface(surfaceHarness, FIRST_RESIZED_WIDTH, FIRST_RESIZED_HEIGHT);
+        window.dispatchEvent(new Event('resize'));
+
+        // The new layout redraws through the default plan, which no size reaches
+        expect(deviceHarness.queueSubmit).toHaveBeenCalledTimes(submitCount + 1);
+        expect(planPresentation).toHaveBeenCalledTimes(defaultPlanCount);
+
+        await presenter.setPresentationPreset([ { parameters: {}, source: SHARPEN_KERNEL_PASS } ]);
+        presenter.setPresentationParameter(SHARPEN_PASS_NAME, SHARPEN_PARAMETER_NAME, LIVE_SHARPEN_STRENGTH);
+        expect(getLastPlanRequest().facts).toMatchObject({ outputHeight: FIRST_RESIZED_HEIGHT, outputWidth: FIRST_RESIZED_WIDTH });
+        const parameterWriteCount = readParameterWrites(deviceHarness).length;
+
+        resizeSurface(surfaceHarness, SECOND_RESIZED_WIDTH, SECOND_RESIZED_HEIGHT);
+        window.dispatchEvent(new Event('resize'));
+
+        await vi.waitFor(() => expect(readParameterWrites(deviceHarness).length).toBeGreaterThan(parameterWriteCount));
+        expect(getLastPlanRequest().facts).toMatchObject({ outputHeight: SECOND_RESIZED_HEIGHT, outputWidth: SECOND_RESIZED_WIDTH });
+        // The size's executor writes the declared default, then the live value
+        expect(readParameterWrites(deviceHarness).at(-1)).toBe(Math.fround(LIVE_SHARPEN_STRENGTH));
+        expect(presenter.getPresentationPlanReport()).toEqual({ activePasses: [ SHARPEN_PASS_NAME ], inactivePasses: [] });
+    });
+
+    it('presents an HDR source on an extended rgba16float canvas through the HDR output chain once HDR output is enabled', async () => {
+        const { contextHarness, deviceHarness, presenter } = await startRawRoutePresentation(
+            createPQColorMetadata(),
+            'I420P10',
+            createHDRToSDRRenderSettings({ toneMapping: { outputPeakNits: HDR_DISPLAY_PEAK_NITS, paperWhiteNits: HDR_SDR_WHITE_NITS } })
+        );
+        expect(contextHarness.configure).toHaveBeenLastCalledWith({ ...SDR_CANVAS_CONFIGURATION, device: deviceHarness.device });
+
+        await presenter.setHDROutputEnabled(true);
+
+        expect(contextHarness.configure).toHaveBeenLastCalledWith({ ...HDR_CANVAS_CONFIGURATION, device: deviceHarness.device });
+        const request = getLastPlanRequest();
+        expect(request.output).toEqual(HDR_PLANNED_OUTPUT);
+        expect(request.facts).toMatchObject({ hdrOutput: true, hdrSource: true });
+        expect(request.chain.colorFunctions.map((colorFunction: BuiltinColorFunction): string => colorFunction.name))
+            .toEqual(HDR_OUTPUT_COLOR_FUNCTION_NAMES);
+        const pipelineDescriptor = deviceHarness.createRenderPipelineAsync.mock.calls.at(-1)?.[0] as GPURenderPipelineDescriptor;
+        expect(pipelineDescriptor.fragment?.targets).toEqual([ { format: HDR_OUTPUT_FORMAT } ]);
+        // The new executor takes the render settings, whose output peak and paper white are the display peak and SDR white
+        const renderSettings = new Float32Array(getRenderSettingsWrites(deviceHarness).at(-1)?.buffer ?? new ArrayBuffer(0));
+        expect([ renderSettings[UNIFORM_OUTPUT_PEAK_INDEX], renderSettings[UNIFORM_PAPER_WHITE_INDEX] ])
+            .toEqual([ HDR_DISPLAY_PEAK_NITS, HDR_SDR_WHITE_NITS ]);
+
+        await presenter.setHDROutputEnabled(false);
+
+        expect(contextHarness.configure).toHaveBeenLastCalledWith({ ...SDR_CANVAS_CONFIGURATION, device: deviceHarness.device });
+        expect(getLastPlanRequest()).toMatchObject({ facts: { hdrOutput: false }, output: SDR_PLANNED_OUTPUT });
+    });
+
+    it('keeps an SDR source on the SDR canvas while HDR output is enabled', async () => {
+        const { contextHarness, presenter } = await startIdentityPresentation(true);
+
+        await presenter.setHDROutputEnabled(true);
+
+        expect(getLastPlanRequest()).toMatchObject({ facts: { hdrOutput: false }, output: SDR_PLANNED_OUTPUT });
+        expect(contextHarness.configure).toHaveBeenCalledOnce();
     });
 
     /** Configures a Profile 7 I420P10 session and returns whether it configured. */

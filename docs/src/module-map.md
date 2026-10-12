@@ -17,6 +17,7 @@ Each source file's tests are at the same relative path under `test/`, and integr
 ## presentation/
 
 - `WebGPUPresenter.ts`: the GPU device and canvas; rVFC and pushed-frame submission; each route's built-in chain, planned and recorded through `passes/`; HDR and Dolby Vision authorization; device-loss recovery; the latched fallback.
+  It also holds the engine API for presentation: the host's preset of user passes, live parameter changes, the plan report, and HDR output for HDR sources.
 - `PresentationInput.ts`: MediaStream metadata to color metadata; Dolby Vision descriptors with their RPU route; declared and exact native base metadata; the presented video ordinal; the known-SDR gate.
 - `PresentationGeometry.ts`: pure object-fit and object-position math to viewport and texture transforms.
 - `RenderSettings.ts`: versioned (v7) HDR-to-SDR settings and their 144-byte uniform, HDR10+ fields included.

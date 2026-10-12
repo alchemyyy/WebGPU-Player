@@ -35,6 +35,10 @@ const EXAMPLE_HEADER_END = '\n\n';
 
 const PASS_NAME = 'Test pass';
 const NAME_LINE = `//! name: ${PASS_NAME}`;
+// A well-formed line whose shape the parser checks after the name
+const UNKNOWN_SHAPE_LINE = '//! shape: blur';
+// A line the header reader rejects before any directive is checked
+const UNKNOWN_DIRECTIVE_LINE = '//! sampler: linear';
 // A kernel header after its name line
 const KERNEL_DIRECTIVES: readonly string[] = [ '//! shape: kernel', '//! hook: OUTPUT' ];
 const KERNEL_HEADER: readonly string[] = [ NAME_LINE, ...KERNEL_DIRECTIVES ];
@@ -1030,6 +1034,13 @@ describe('pass manifest errors', () => {
 
         expect(error).toBeInstanceOf(Error);
         expect(error.name).toBe('PassManifestError');
+    });
+
+    it('carries the pass name when the header declared it before the failing check', () => {
+        expect(captureManifestError(createSource([ NAME_LINE, UNKNOWN_SHAPE_LINE ])).passName).toBe(PASS_NAME);
+        // A malformed line fails while the header is read, before any directive is
+        expect(captureManifestError(createSource([ ...KERNEL_HEADER, UNKNOWN_DIRECTIVE_LINE ])).passName).toBeNull();
+        expect(captureManifestError(createSource(KERNEL_DIRECTIVES)).passName).toBeNull();
     });
 
     describe.each([
