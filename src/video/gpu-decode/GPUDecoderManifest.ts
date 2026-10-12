@@ -39,6 +39,48 @@ export const GPU_DECODER_STREAM_IDENTIFIERS: readonly string[] = Object.freeze([
     GPU_DECODER_STREAM_FACTS.bitDepth
 ]);
 
+/** The check a decoder's header or body failed, named after the directive or part it concerns. */
+export type GPUDecoderManifestErrorCode =
+    | 'accepts-expression'
+    | 'accepts-identifier'
+    | 'accepts-syntax'
+    | 'body-binding'
+    | 'body-enable'
+    | 'buffer-duplicate'
+    | 'buffer-name'
+    | 'buffer-reserved'
+    | 'buffer-size'
+    | 'buffer-syntax'
+    | 'codec-duplicate'
+    | 'codec-empty'
+    | 'decoder-kind'
+    | 'directive-missing'
+    | 'directive-repeated'
+    | 'directive-unknown'
+    | 'dispatch-buffer'
+    | 'dispatch-expression'
+    | 'dispatch-identifier'
+    | 'dispatch-indirect'
+    | 'dispatch-syntax'
+    | 'entry-point-missing'
+    | 'entry-point-stage'
+    | 'header-missing'
+    | 'header-syntax'
+    | 'name-empty'
+    | 'output-format'
+    | 'packet-size'
+    | 'packet-syntax'
+    | 'references-limit'
+    | 'references-syntax'
+    | 'reorder-limit'
+    | 'reorder-syntax'
+    | 'requires-duplicate'
+    | 'requires-syntax'
+    | 'state-size'
+    | 'state-syntax'
+    | 'vector-frames'
+    | 'vector-syntax';
+
 const HEADER_PREFIX = '//!';
 const DIRECTIVE_PATTERN = /^\/\/!\s*([A-Za-z]+)\s*:(.*)$/;
 const IDENTIFIER_PATTERN = /^[A-Za-z_]\w*$/;
@@ -46,6 +88,8 @@ const SIZE_PATTERN = /^(\d+)\s*(B|KiB|MiB)?$/;
 const COUNT_PATTERN = /^\d+$/;
 const ACCEPTS_PATTERN = /^codec\s+in\s+\[([^\]]*)\]\s*(?:,(.*))?$/;
 const INDIRECT_DISPATCH_PATTERN = /^indirect\s+(\S+)$/;
+// The buffer attribute that makes a scratch buffer usable for indirect dispatch
+const INDIRECT_ATTRIBUTE = 'indirect';
 const VECTOR_FRAMES_PATTERN = /^frames\s+(\d+)\s*-\s*(\d+)$/;
 const VECTOR_HASH_PATTERN = /^sha256\s+([0-9A-Fa-f]{64})$/;
 const FEATURE_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -56,18 +100,28 @@ const QUOTE = '"';
 const MINIMUM_DISPATCH_COUNT_COUNT = 1;
 const MAXIMUM_DISPATCH_COUNT_COUNT = 3;
 const DECLARATION_BOUNDARY_PATTERN = /[;}]/g;
+const VECTOR_PART_COUNT = 3;
+// A buffer, the state, and a packet hold at least one byte; an indirect buffer holds its arguments
+const MINIMUM_BYTE_LENGTH = 1;
+const EMPTY_STATE_BYTE_LENGTH = 0;
 
 const REPEATABLE_DIRECTIVES: ReadonlySet<string> = new Set([ 'buffer', 'dispatch' ]);
 
 const REQUIRED_DIRECTIVES: readonly string[] = [ 'name', 'decoder', 'accepts', 'output', 'packet', 'dispatch' ];
 
-/** A malformed decoder header or body, with the 1-based source line it concerns. */
+const VIDEO_DECODER_KIND = 'video';
+
+/** A malformed decoder header or body: the failed check, a terse detail with the failing value, and the 1-based source line. */
 export class GPUDecoderManifestError extends Error {
+    readonly code: GPUDecoderManifestErrorCode;
+    readonly detail: string;
     readonly line: number;
 
-    constructor(message: string, line: number) {
-        super(message);
+    constructor(code: GPUDecoderManifestErrorCode, detail: string, line: number) {
+        super(`${code}: ${detail}`);
         this.name = 'GPUDecoderManifestError';
+        this.code = code;
+        this.detail = detail;
         this.line = line;
     }
 }
@@ -83,6 +137,18 @@ type LocatedDispatch = {
     line: number
 };
 
+/** The codes of one expression directive's checks. */
+type ExpressionCodes = {
+    expression: GPUDecoderManifestErrorCode
+    identifier: GPUDecoderManifestErrorCode
+};
+
+/** The codes of one size directive's checks. */
+type SizeCodes = {
+    size: GPUDecoderManifestErrorCode
+    syntax: GPUDecoderManifestErrorCode
+};
+
 type ManifestDraft = {
     accepts: GPUDecoderAcceptance | null
     buffers: GPUDecoderBuffer[]
@@ -96,6 +162,16 @@ type ManifestDraft = {
     stateByteLength: number
     vector: GPUDecoderVector | null
 };
+
+const ACCEPTS_EXPRESSION_CODES: ExpressionCodes = { expression: 'accepts-expression', identifier: 'accepts-identifier' };
+const DISPATCH_EXPRESSION_CODES: ExpressionCodes = { expression: 'dispatch-expression', identifier: 'dispatch-identifier' };
+const PACKET_SIZE_CODES: SizeCodes = { size: 'packet-size', syntax: 'packet-syntax' };
+const STATE_SIZE_CODES: SizeCodes = { size: 'state-size', syntax: 'state-syntax' };
+
+/** Quotes header text in a detail, so an empty or spaced value stays visible. */
+function quote(text: string): string {
+    return `'${text}'`;
+}
 
 function getUnitByteLength(unit: string | undefined): number {
     switch (unit) {
@@ -143,53 +219,77 @@ function splitTopLevel(text: string): string[] {
     return parts;
 }
 
-function parseSize(text: string, line: number, subject: string, maximum: number): number {
+/** Parses a byte count with an optional B, KiB, or MiB unit. */
+function parseByteLength(text: string, line: number, code: GPUDecoderManifestErrorCode): number {
     const match = SIZE_PATTERN.exec(text);
     if (!match) {
-        throw new GPUDecoderManifestError(`${subject} must be a byte count with an optional B, KiB, or MiB unit, not '${text}'`, line);
+        throw new GPUDecoderManifestError(code, quote(text), line);
     }
-    const byteLength = Number(match[1]) * getUnitByteLength(match[2]);
+    return Number(match[1]) * getUnitByteLength(match[2]);
+}
+
+/** Requires a byte length within [minimum, maximum], reporting `<subject> <value> < <minimum>` or `<subject> <value> > <maximum>`. */
+function requireByteRange(
+    byteLength: number,
+    minimum: number,
+    maximum: number,
+    line: number,
+    code: GPUDecoderManifestErrorCode,
+    subject: string
+): void {
+    const prefix = subject.length > 0 ? `${subject} ` : '';
+    if (byteLength < minimum) {
+        throw new GPUDecoderManifestError(code, `${prefix}${byteLength} < ${minimum}`, line);
+    }
     if (byteLength > maximum) {
-        throw new GPUDecoderManifestError(`${subject} of ${byteLength} bytes exceeds the ${maximum}-byte limit`, line);
+        throw new GPUDecoderManifestError(code, `${prefix}${byteLength} > ${maximum}`, line);
     }
+}
+
+function parseSize(text: string, line: number, codes: SizeCodes, minimum: number, maximum: number): number {
+    const byteLength = parseByteLength(text, line, codes.syntax);
+    requireByteRange(byteLength, minimum, maximum, line, codes.size, '');
     return byteLength;
 }
 
-function parseCount(text: string, line: number, subject: string, maximum: number): number {
+function parseCount(
+    text: string,
+    line: number,
+    syntaxCode: GPUDecoderManifestErrorCode,
+    limitCode: GPUDecoderManifestErrorCode,
+    maximum: number
+): number {
     if (!COUNT_PATTERN.test(text)) {
-        throw new GPUDecoderManifestError(`${subject} must be a non-negative integer, not '${text}'`, line);
+        throw new GPUDecoderManifestError(syntaxCode, quote(text), line);
     }
     const count = Number(text);
     if (count > maximum) {
-        throw new GPUDecoderManifestError(`${subject} of ${count} exceeds the limit of ${maximum}`, line);
+        throw new GPUDecoderManifestError(limitCode, `${count} > ${maximum}`, line);
     }
     return count;
 }
 
-function requireIdentifier(text: string, line: number, subject: string): string {
+function requireIdentifier(text: string, line: number, code: GPUDecoderManifestErrorCode): string {
     if (!IDENTIFIER_PATTERN.test(text)) {
-        throw new GPUDecoderManifestError(`${subject} '${text}' is not a WGSL identifier`, line);
+        throw new GPUDecoderManifestError(code, quote(text), line);
     }
     return text;
 }
 
 /** Parses a header expression that reads stream facts only. */
-function parseStreamExpression(text: string, line: number, subject: string): PassExpression {
+function parseStreamExpression(text: string, line: number, codes: ExpressionCodes): PassExpression {
     let expression: PassExpression;
     try {
         expression = parsePassExpression(text);
     } catch (error) {
         if (error instanceof PassExpressionError) {
-            throw new GPUDecoderManifestError(`${subject} '${text}' is malformed: ${error.message}`, line);
+            throw new GPUDecoderManifestError(codes.expression, `${quote(text)} ${error.message}`, line);
         }
         throw error;
     }
     for (const identifier of collectPassExpressionIdentifiers(expression)) {
         if (!GPU_DECODER_STREAM_IDENTIFIERS.includes(identifier)) {
-            throw new GPUDecoderManifestError(
-                `${subject} reads '${identifier}'; only ${GPU_DECODER_STREAM_IDENTIFIERS.join(', ')} are available`,
-                line
-            );
+            throw new GPUDecoderManifestError(codes.identifier, quote(identifier), line);
         }
     }
     return expression;
@@ -201,13 +301,13 @@ function unquote(text: string): string {
 
 function parseCodecIdentifiers(listText: string, line: number): string[] {
     const codecs: string[] = [];
-    for (const item of splitTopLevel(listText)) {
+    for (const [ itemIndex, item ] of splitTopLevel(listText).entries()) {
         const codec = unquote(item);
         if (codec.length === 0) {
-            throw new GPUDecoderManifestError('The accepted codec list has an empty identifier', line);
+            throw new GPUDecoderManifestError('codec-empty', `position ${itemIndex + 1}`, line);
         }
         if (codecs.includes(codec)) {
-            throw new GPUDecoderManifestError(`The accepted codec list names '${codec}' twice`, line);
+            throw new GPUDecoderManifestError('codec-duplicate', quote(codec), line);
         }
         codecs.push(codec);
     }
@@ -218,7 +318,7 @@ function parseCodecIdentifiers(listText: string, line: number): string[] {
 function parseAccepts(value: string, line: number): GPUDecoderAcceptance {
     const match = ACCEPTS_PATTERN.exec(value);
     if (!match) {
-        throw new GPUDecoderManifestError('accepts must read `codec in [<identifiers>]`, optionally followed by conditions', line);
+        throw new GPUDecoderManifestError('accepts-syntax', quote(value), line);
     }
     const codecs = parseCodecIdentifiers(match[1], line);
     const conditionsText = match[2]?.trim() ?? '';
@@ -227,7 +327,7 @@ function parseAccepts(value: string, line: number): GPUDecoderAcceptance {
     }
     let constraint: PassExpression | null = null;
     for (const conditionText of splitTopLevel(conditionsText)) {
-        const condition = parseStreamExpression(conditionText, line, 'The accepts condition');
+        const condition = parseStreamExpression(conditionText, line, ACCEPTS_EXPRESSION_CODES);
         constraint = constraint ? { kind: 'binary', left: constraint, operator: '&&', right: condition } : condition;
     }
     return { codecs, constraint };
@@ -236,48 +336,41 @@ function parseAccepts(value: string, line: number): GPUDecoderAcceptance {
 /** Parses `<name>, <size>` with an optional `indirect` in any position after the name. */
 function parseBuffer(value: string, line: number, existingBuffers: readonly GPUDecoderBuffer[]): GPUDecoderBuffer {
     const [ nameText, ...attributes ] = splitTopLevel(value);
-    const name = requireIdentifier(nameText, line, 'The buffer name');
+    const name = requireIdentifier(nameText, line, 'buffer-name');
     if (GPU_DECODER_RESERVED_IDENTIFIERS.has(name)) {
-        throw new GPUDecoderManifestError(`The buffer name '${name}' is reserved by the prelude`, line);
+        throw new GPUDecoderManifestError('buffer-reserved', quote(name), line);
     }
     if (existingBuffers.some(buffer => buffer.name === name)) {
-        throw new GPUDecoderManifestError(`The buffer '${name}' is declared twice`, line);
+        throw new GPUDecoderManifestError('buffer-duplicate', quote(name), line);
     }
-    const sizeTexts = attributes.filter(attribute => attribute !== 'indirect');
+    const sizeTexts = attributes.filter(attribute => attribute !== INDIRECT_ATTRIBUTE);
     const indirectCount = attributes.length - sizeTexts.length;
     if (sizeTexts.length !== 1 || indirectCount > 1) {
-        throw new GPUDecoderManifestError('buffer must read `<name>, <size>`, optionally with `indirect`', line);
+        throw new GPUDecoderManifestError('buffer-syntax', quote(value), line);
     }
-    const byteLength = parseSize(sizeTexts[0], line, `The size of buffer '${name}'`, MAXIMUM_STORAGE_BUFFER_BINDING_SIZE);
+    const byteLength = parseByteLength(sizeTexts[0], line, 'buffer-syntax');
     const indirect = indirectCount === 1;
-    if (indirect && byteLength < INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH) {
-        throw new GPUDecoderManifestError(
-            `The indirect buffer '${name}' needs at least ${INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH} bytes`,
-            line
-        );
-    }
-    if (byteLength === 0) {
-        throw new GPUDecoderManifestError(`The buffer '${name}' is empty`, line);
-    }
+    const minimumByteLength = indirect ? INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH : MINIMUM_BYTE_LENGTH;
+    requireByteRange(byteLength, minimumByteLength, MAXIMUM_STORAGE_BUFFER_BINDING_SIZE, line, 'buffer-size', quote(name));
     return { byteLength, indirect, name };
 }
 
 /** Parses `<entry point>, <count>[, <count>[, <count>]]` or `<entry point>, indirect <buffer>`. */
 function parseDispatch(value: string, line: number): GPUDecoderDispatch {
     const [ entryPointText, ...countTexts ] = splitTopLevel(value);
-    const entryPoint = requireIdentifier(entryPointText, line, 'The dispatch entry point');
+    const entryPoint = requireIdentifier(entryPointText, line, 'dispatch-syntax');
     const indirectMatch = countTexts.length === 1 ? INDIRECT_DISPATCH_PATTERN.exec(countTexts[0]) : null;
     if (indirectMatch) {
         return {
             entryPoint,
-            indirectBuffer: requireIdentifier(indirectMatch[1], line, 'The indirect buffer'),
+            indirectBuffer: requireIdentifier(indirectMatch[1], line, 'dispatch-syntax'),
             workgroupCounts: null
         };
     }
     if (countTexts.length < MINIMUM_DISPATCH_COUNT_COUNT || countTexts.length > MAXIMUM_DISPATCH_COUNT_COUNT) {
-        throw new GPUDecoderManifestError('dispatch must read `<entry point>, <1 to 3 workgroup counts>` or `<entry point>, indirect <buffer>`', line);
+        throw new GPUDecoderManifestError('dispatch-syntax', quote(value), line);
     }
-    const counts: PassExpression[] = countTexts.map(countText => parseStreamExpression(countText, line, 'The workgroup count'));
+    const counts: PassExpression[] = countTexts.map(countText => parseStreamExpression(countText, line, DISPATCH_EXPRESSION_CODES));
     while (counts.length < MAXIMUM_DISPATCH_COUNT_COUNT) {
         counts.push({ kind: 'number', value: 1 });
     }
@@ -291,15 +384,15 @@ function parseDispatch(value: string, line: number): GPUDecoderDispatch {
 /** Parses `<file>, frames <first>-<last>, sha256 <hex>`. */
 function parseVector(value: string, line: number): GPUDecoderVector {
     const parts = splitTopLevel(value);
-    const framesMatch = parts.length === 3 ? VECTOR_FRAMES_PATTERN.exec(parts[1]) : null;
-    const hashMatch = parts.length === 3 ? VECTOR_HASH_PATTERN.exec(parts[2]) : null;
+    const framesMatch = parts.length === VECTOR_PART_COUNT ? VECTOR_FRAMES_PATTERN.exec(parts[1]) : null;
+    const hashMatch = parts.length === VECTOR_PART_COUNT ? VECTOR_HASH_PATTERN.exec(parts[2]) : null;
     if (!framesMatch || !hashMatch || parts[0].length === 0) {
-        throw new GPUDecoderManifestError('vector must read `<file>, frames <first>-<last>, sha256 <64 hexadecimal digits>`', line);
+        throw new GPUDecoderManifestError('vector-syntax', quote(value), line);
     }
     const firstFrame = Number(framesMatch[1]);
     const lastFrame = Number(framesMatch[2]);
     if (lastFrame < firstFrame) {
-        throw new GPUDecoderManifestError(`The vector's last frame ${lastFrame} precedes its first frame ${firstFrame}`, line);
+        throw new GPUDecoderManifestError('vector-frames', `${firstFrame} > ${lastFrame}`, line);
     }
     return {
         file: unquote(parts[0]),
@@ -313,10 +406,10 @@ function parseRequiredFeatures(value: string, line: number): string[] {
     const features: string[] = [];
     for (const feature of splitTopLevel(value)) {
         if (!FEATURE_PATTERN.test(feature)) {
-            throw new GPUDecoderManifestError(`'${feature}' is not a device feature name`, line);
+            throw new GPUDecoderManifestError('requires-syntax', quote(feature), line);
         }
         if (features.includes(feature)) {
-            throw new GPUDecoderManifestError(`The feature '${feature}' is required twice`, line);
+            throw new GPUDecoderManifestError('requires-duplicate', quote(feature), line);
         }
         features.push(feature);
     }
@@ -325,21 +418,21 @@ function parseRequiredFeatures(value: string, line: number): string[] {
 
 function parseOutputFormat(value: string, line: number): GPUDecoderOutputFormat {
     if (!isGPUDecoderOutputFormat(value)) {
-        throw new GPUDecoderManifestError(`'${value}' is not a planar output format such as I420 or I422P10`, line);
+        throw new GPUDecoderManifestError('output-format', quote(value), line);
     }
     return value;
 }
 
 function parseName(value: string, line: number): string {
     if (value.length === 0) {
-        throw new GPUDecoderManifestError('The decoder name is empty', line);
+        throw new GPUDecoderManifestError('name-empty', quote(value), line);
     }
     return value;
 }
 
 function requireVideoDecoder(value: string, line: number): void {
-    if (value !== 'video') {
-        throw new GPUDecoderManifestError(`decoder must be 'video', not '${value}'`, line);
+    if (value !== VIDEO_DECODER_KIND) {
+        throw new GPUDecoderManifestError('decoder-kind', quote(value), line);
     }
 }
 
@@ -360,16 +453,16 @@ function applyDirective(draft: ManifestDraft, directive: HeaderDirective): void 
             draft.outputFormat = parseOutputFormat(value, line);
             return;
         case 'references':
-            draft.references = parseCount(value, line, 'references', GPU_DECODER_MAXIMUM_REFERENCES);
+            draft.references = parseCount(value, line, 'references-syntax', 'references-limit', GPU_DECODER_MAXIMUM_REFERENCES);
             return;
         case 'reorder':
-            draft.reorder = parseCount(value, line, 'reorder', GPU_DECODER_MAXIMUM_REORDER);
+            draft.reorder = parseCount(value, line, 'reorder-syntax', 'reorder-limit', GPU_DECODER_MAXIMUM_REORDER);
             return;
         case 'packet':
-            draft.packetByteLength = parseSize(value, line, 'The packet size', GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
+            draft.packetByteLength = parseSize(value, line, PACKET_SIZE_CODES, MINIMUM_BYTE_LENGTH, GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
             return;
         case 'state':
-            draft.stateByteLength = parseSize(value, line, 'The state size', MAXIMUM_STORAGE_BUFFER_BINDING_SIZE);
+            draft.stateByteLength = parseSize(value, line, STATE_SIZE_CODES, EMPTY_STATE_BYTE_LENGTH, MAXIMUM_STORAGE_BUFFER_BINDING_SIZE);
             return;
         case 'buffer':
             draft.buffers.push(parseBuffer(value, line, draft.buffers));
@@ -384,7 +477,7 @@ function applyDirective(draft: ManifestDraft, directive: HeaderDirective): void 
             draft.vector = parseVector(value, line);
             return;
         default:
-            throw new GPUDecoderManifestError(`Unknown directive '${directive.name}'`, line);
+            throw new GPUDecoderManifestError('directive-unknown', quote(directive.name), line);
     }
 }
 
@@ -400,7 +493,7 @@ function readHeader(lines: readonly string[]): { bodyFirstLine: number; directiv
         const match = DIRECTIVE_PATTERN.exec(text);
         const line = lineIndex + 1;
         if (!match) {
-            throw new GPUDecoderManifestError('A header line must read `//! <directive>: <value>`', line);
+            throw new GPUDecoderManifestError('header-syntax', quote(text), line);
         }
         directives.push({ line, name: match[1], value: match[2].trim() });
     }
@@ -411,13 +504,13 @@ function requireDirectiveSet(directives: readonly HeaderDirective[], bodyFirstLi
     const seen = new Set<string>();
     for (const directive of directives) {
         if (seen.has(directive.name) && !REPEATABLE_DIRECTIVES.has(directive.name)) {
-            throw new GPUDecoderManifestError(`The directive '${directive.name}' appears twice`, directive.line);
+            throw new GPUDecoderManifestError('directive-repeated', quote(directive.name), directive.line);
         }
         seen.add(directive.name);
     }
     for (const required of REQUIRED_DIRECTIVES) {
         if (!seen.has(required)) {
-            throw new GPUDecoderManifestError(`The header has no '${required}' directive`, Math.max(1, bodyFirstLine - 1));
+            throw new GPUDecoderManifestError('directive-missing', quote(required), Math.max(1, bodyFirstLine - 1));
         }
     }
 }
@@ -438,7 +531,7 @@ function requireComputeEntryPoint(body: string, located: LocatedDispatch): void 
     // Entry points are validated identifiers, so they are safe inside a pattern
     const declaration = new RegExp(String.raw`\bfn\s+${entryPoint}\s*\(`).exec(body);
     if (!declaration) {
-        throw new GPUDecoderManifestError(`The body has no entry point 'fn ${entryPoint}('`, located.line);
+        throw new GPUDecoderManifestError('entry-point-missing', quote(entryPoint), located.line);
     }
     // The attributes of a declaration follow the previous declaration's ';' or '}'
     let attributesStart = 0;
@@ -446,7 +539,7 @@ function requireComputeEntryPoint(body: string, located: LocatedDispatch): void 
         attributesStart = (boundary.index ?? 0) + 1;
     }
     if (!body.slice(attributesStart, declaration.index).includes(COMPUTE_ATTRIBUTE)) {
-        throw new GPUDecoderManifestError(`The entry point '${entryPoint}' is not declared with ${COMPUTE_ATTRIBUTE}`, located.line);
+        throw new GPUDecoderManifestError('entry-point-stage', quote(entryPoint), located.line);
     }
 }
 
@@ -457,36 +550,47 @@ function requireIndirectBuffer(buffers: readonly GPUDecoderBuffer[], located: Lo
     }
     const buffer = buffers.find(candidate => candidate.name === bufferName);
     if (!buffer) {
-        throw new GPUDecoderManifestError(`The dispatch reads the undeclared buffer '${bufferName}'`, located.line);
+        throw new GPUDecoderManifestError('dispatch-buffer', quote(bufferName), located.line);
     }
     if (!buffer.indirect) {
-        throw new GPUDecoderManifestError(`The buffer '${bufferName}' is not declared indirect`, located.line);
+        throw new GPUDecoderManifestError('dispatch-indirect', quote(bufferName), located.line);
     }
+}
+
+/** Returns the trimmed text of the body line that starts at characterIndex. */
+function getLineText(body: string, characterIndex: number): string {
+    const lineEnd = body.indexOf('\n', characterIndex);
+    return body.slice(characterIndex, lineEnd < 0 ? body.length : lineEnd).trim();
 }
 
 function requirePreludeOwnedDeclarations(body: string, bodyFirstLine: number): void {
     const binding = BINDING_ATTRIBUTE_PATTERN.exec(body);
     if (binding) {
-        throw new GPUDecoderManifestError(
-            'The prelude owns every binding; declare scratch buffers with the buffer directive',
-            getBodyLine(body, bodyFirstLine, binding.index)
-        );
+        throw new GPUDecoderManifestError('body-binding', quote(`@${binding[1]}`), getBodyLine(body, bodyFirstLine, binding.index));
     }
     const enable = ENABLE_DIRECTIVE_PATTERN.exec(body);
     if (enable) {
-        throw new GPUDecoderManifestError(
-            'The prelude writes enable directives; declare the device feature with the requires directive',
-            getBodyLine(body, bodyFirstLine, enable.index)
-        );
+        throw new GPUDecoderManifestError('body-enable', quote(getLineText(body, enable.index)), getBodyLine(body, bodyFirstLine, enable.index));
     }
 }
 
-/** Parses and validates a decoder's `//!` header, and checks its body against the dispatch sequence. */
+/** Returns a directive's value that requireDirectiveSet guarantees, for the type checker. */
+function requireParsed<Value>(value: Value | null, directive: string, line: number): Value {
+    if (value === null) {
+        throw new GPUDecoderManifestError('directive-missing', quote(directive), line);
+    }
+    return value;
+}
+
+/**
+ * Parses and validates a decoder's `//!` header, and checks its body against the dispatch sequence.
+ * Throws a GPUDecoderManifestError with the failed check's code, a terse detail, and the source line.
+ */
 export function parseGPUDecoderManifest(source: string): GPUDecoderManifest {
     const lines = source.split(/\r?\n/);
     const { bodyFirstLine, directives } = readHeader(lines);
     if (directives.length === 0) {
-        throw new GPUDecoderManifestError(`A decoder starts with a ${HEADER_PREFIX} header`, 1);
+        throw new GPUDecoderManifestError('header-missing', quote(lines[0] ?? ''), 1);
     }
     requireDirectiveSet(directives, bodyFirstLine);
 
@@ -513,21 +617,15 @@ export function parseGPUDecoderManifest(source: string): GPUDecoderManifest {
         requireIndirectBuffer(draft.buffers, located);
         requireComputeEntryPoint(body, located);
     }
-    if (!draft.accepts || !draft.outputFormat) {
-        throw new GPUDecoderManifestError('The header is incomplete', 1);
-    }
-    if (draft.packetByteLength === 0) {
-        throw new GPUDecoderManifestError('The packet size must be at least 1 byte', directives.find(directive => directive.name === 'packet')?.line ?? 1);
-    }
 
     return {
-        accepts: draft.accepts,
+        accepts: requireParsed(draft.accepts, 'accepts', 1),
         body,
         bodyFirstLine,
         buffers: draft.buffers,
         dispatches: draft.dispatches.map(located => located.dispatch),
         name: draft.name,
-        outputFormat: draft.outputFormat,
+        outputFormat: requireParsed(draft.outputFormat, 'output', 1),
         packetByteLength: draft.packetByteLength,
         references: draft.references,
         reorder: draft.reorder,

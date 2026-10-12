@@ -7,7 +7,6 @@ import { BYTES_PER_WORD, WGSL_FEATURE_EXTENSIONS } from '../../presentation/WebG
 import {
     getGPUDecoderFormatFacts,
     GPU_DECODER_OUTPUT_PLANE_COUNT,
-    isGPUDecoderOutputFormat,
     type GPUDecoderFormatFacts
 } from './GPUDecodeFormats';
 import type { GPUDecoderManifest, GPUDecodeStreamFacts } from './GPUDecodeTypes';
@@ -294,9 +293,6 @@ ${createSampleWriteHelperWGSL(formatFacts.bytesPerSample)}`;
 
 /** Returns the prelude a decoder's body is compiled after: enable directives, structs, bindings, and helpers. */
 export function createGPUDecoderPrelude(manifest: GPUDecoderManifest): string {
-    if (!isGPUDecoderOutputFormat(manifest.outputFormat)) {
-        throw new RangeError(`A GPU decoder cannot write ${manifest.outputFormat}`);
-    }
     const sections: string[] = [];
     const enableDirectives = createEnableDirectivesWGSL(manifest.requiredFeatures);
     if (enableDirectives.length > 0) {
@@ -355,7 +351,7 @@ export function writeGPUDecoderPacketUniform(target: Uint32Array, values: GPUDec
 /** Writes the stream uniform, in the field order of GPUDecodeStream. */
 export function writeGPUDecoderStreamUniform(target: Uint32Array, values: GPUDecoderStreamUniformValues): void {
     if (values.planes.length !== GPU_DECODER_OUTPUT_PLANE_COUNT) {
-        throw new RangeError(`A GPU decoder slot holds ${GPU_DECODER_OUTPUT_PLANE_COUNT} planes`);
+        throw new RangeError(`planes: ${values.planes.length}, expected ${GPU_DECODER_OUTPUT_PLANE_COUNT}`);
     }
     for (let planeIndex = 0; planeIndex < values.planes.length; planeIndex += 1) {
         const plane = values.planes[planeIndex];
@@ -378,7 +374,7 @@ export function writeGPUDecoderStreamUniform(target: Uint32Array, values: GPUDec
 /** Reads one status readback, in the field order of GPUDecodeStatus. */
 export function readGPUDecoderStatus(words: Uint32Array): GPUDecoderStatusValues {
     if (words.length * BYTES_PER_WORD < GPU_DECODER_STATUS_BYTE_LENGTH) {
-        throw new RangeError('A GPU decoder status readback is too short');
+        throw new RangeError(`status: ${words.length * BYTES_PER_WORD} < ${GPU_DECODER_STATUS_BYTE_LENGTH}`);
     }
     const headerFacts: GPUDecodeStreamFacts | null = words[STATUS_HEADER_VALID_WORD] === 0 ?
         null :

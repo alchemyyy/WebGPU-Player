@@ -1,16 +1,24 @@
 import { describe, expect, it } from 'vitest';
 
-import { evaluatePassExpression } from 'webgpu-player/presentation/passes/PassExpression';
+import { evaluatePassExpression, parsePassExpression, PassExpressionError } from 'webgpu-player/presentation/passes/PassExpression';
 import type { PassExpression } from 'webgpu-player/presentation/passes/PassTypes';
 import {
     INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH,
+    MAXIMUM_STORAGE_BUFFER_BINDING_SIZE,
     SHADER_F16_FEATURE,
     SUBGROUPS_FEATURE
 } from 'webgpu-player/presentation/WebGPUConstants';
-import { KIBIBYTE, MEBIBYTE } from 'webgpu-player/video/gpu-decode/GPUDecodeLimits';
+import {
+    GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH,
+    GPU_DECODER_MAXIMUM_REFERENCES,
+    GPU_DECODER_MAXIMUM_REORDER,
+    KIBIBYTE,
+    MEBIBYTE
+} from 'webgpu-player/video/gpu-decode/GPUDecodeLimits';
 import {
     GPU_DECODER_STREAM_FACTS,
     GPUDecoderManifestError,
+    type GPUDecoderManifestErrorCode,
     parseGPUDecoderManifest
 } from 'webgpu-player/video/gpu-decode/GPUDecoderManifest';
 
@@ -32,6 +40,34 @@ const UHD_HEIGHT = 2160;
 const OVERSIZED_WIDTH = 10_240;
 const TEN_BIT_DEPTH = 10;
 const BLOCK_SIZE = 16;
+
+// Values one past each bound, and malformed values, for the rejection table
+const OVERSIZED_PACKET_MEBIBYTES = 65;
+const OVERSIZED_STATE_MEBIBYTES = 129;
+const EXCESS_REFERENCES = GPU_DECODER_MAXIMUM_REFERENCES + 1;
+const EXCESS_REORDER = GPU_DECODER_MAXIMUM_REORDER + 1;
+const SHORT_INDIRECT_BYTE_LENGTH = 8;
+const SCRATCH_BYTE_LENGTH = 64;
+const MALFORMED_SIZE = '4 GB';
+const MALFORMED_STATE_SIZE = 'lots';
+const MALFORMED_COUNT = '-1';
+const MALFORMED_FEATURE = 'Shader F16';
+const MALFORMED_CONDITION = 'stream.width <';
+const UNKNOWN_DIRECTIVE = 'workgroup';
+const AUDIO_DECODER_KIND = 'audio';
+const SEMI_PLANAR_FORMAT = 'NV12';
+const FOREIGN_FACT = 'output.width';
+const RESERVED_BUFFER_NAME = 'state';
+const SCRATCH_BUFFER_NAME = 'scratch';
+const INVALID_BUFFER_NAME = '1scratch';
+const MISSING_BUFFER_NAME = 'missing';
+const MISSING_ENTRY_POINT = 'missingEntry';
+const DUPLICATE_CODEC = 'apch';
+// The 1-based position of the empty item in `codec in [apch, ]`
+const EMPTY_CODEC_POSITION = 2;
+const ENTRY_POINT = 'parseFrameHeader';
+const BODY_ENABLE_DIRECTIVE = 'enable f16;';
+
 const BODY = `
 @compute @workgroup_size(1)
 fn parseFrameHeader() {
@@ -67,8 +103,15 @@ const MINIMAL_HEADER: readonly string[] = [
     '//! accepts: codec in [V_UNCOMPRESSED]',
     '//! output: I420',
     '//! packet: 4096',
-    '//! dispatch: parseFrameHeader, 1'
+    `//! dispatch: ${ENTRY_POINT}, 1`
 ];
+// The lines of MINIMAL_HEADER's directives, and the line a directive appended to it takes
+const DECODER_LINE = 2;
+const ACCEPTS_LINE = 3;
+const OUTPUT_LINE = 4;
+const PACKET_LINE = 5;
+const DISPATCH_LINE = 6;
+const APPENDED_LINE = MINIMAL_HEADER.length + 1;
 
 function createSource(header: readonly string[], body: string = BODY): string {
     return `${header.join('\n')}\n${body}`;
@@ -86,6 +129,23 @@ function replaceHeaderLine(header: readonly string[], directive: string, replace
     return header.map(line => (line.startsWith(`//! ${directive}:`) ? replacement : line));
 }
 
+function quote(text: string): string {
+    return `'${text}'`;
+}
+
+/** Returns the expression parser's message for malformed text, which a manifest error detail carries after the text. */
+function getExpressionErrorMessage(text: string): string {
+    try {
+        parsePassExpression(text);
+    } catch (error) {
+        if (error instanceof PassExpressionError) {
+            return error.message;
+        }
+        throw error;
+    }
+    throw new Error(`'${text}' parsed`);
+}
+
 function getParseError(source: string): GPUDecoderManifestError {
     try {
         parseGPUDecoderManifest(source);
@@ -97,6 +157,151 @@ function getParseError(source: string): GPUDecoderManifestError {
     }
     throw new Error('The source parsed without an error');
 }
+
+/** A header the parser rejects: a description, the header lines, and the line, code, and detail of the error. */
+type RejectionCase = readonly [string, readonly string[], number, GPUDecoderManifestErrorCode, string];
+
+const REJECTION_CASES: readonly RejectionCase[] = [
+    [ 'an unknown directive', [ ...MINIMAL_HEADER, `//! ${UNKNOWN_DIRECTIVE}: 64` ], APPENDED_LINE, 'directive-unknown', quote(UNKNOWN_DIRECTIVE) ],
+    [ 'a repeated single directive', [ ...MINIMAL_HEADER, '//! output: I444' ], APPENDED_LINE, 'directive-repeated', quote('output') ],
+    [ 'a malformed header line', [ ...MINIMAL_HEADER, '//! output I444' ], APPENDED_LINE, 'header-syntax', quote('//! output I444') ],
+    [ 'an empty name', replaceHeaderLine(MINIMAL_HEADER, 'name', '//! name:'), 1, 'name-empty', quote('') ],
+    [ 'an audio decoder', replaceHeaderLine(MINIMAL_HEADER, 'decoder', `//! decoder: ${AUDIO_DECODER_KIND}`), DECODER_LINE, 'decoder-kind', quote(AUDIO_DECODER_KIND) ],
+    [ 'semi-planar output', replaceHeaderLine(MINIMAL_HEADER, 'output', `//! output: ${SEMI_PLANAR_FORMAT}`), OUTPUT_LINE, 'output-format', quote(SEMI_PLANAR_FORMAT) ],
+    [ 'a size with an unknown unit', replaceHeaderLine(MINIMAL_HEADER, 'packet', `//! packet: ${MALFORMED_SIZE}`), PACKET_LINE, 'packet-syntax', quote(MALFORMED_SIZE) ],
+    [
+        'an oversized packet',
+        replaceHeaderLine(MINIMAL_HEADER, 'packet', `//! packet: ${OVERSIZED_PACKET_MEBIBYTES} MiB`),
+        PACKET_LINE,
+        'packet-size',
+        `${OVERSIZED_PACKET_MEBIBYTES * MEBIBYTE} > ${GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH}`
+    ],
+    [ 'an empty packet', replaceHeaderLine(MINIMAL_HEADER, 'packet', '//! packet: 0'), PACKET_LINE, 'packet-size', '0 < 1' ],
+    [
+        'too many references',
+        [ ...MINIMAL_HEADER, `//! references: ${EXCESS_REFERENCES}` ],
+        APPENDED_LINE,
+        'references-limit',
+        `${EXCESS_REFERENCES} > ${GPU_DECODER_MAXIMUM_REFERENCES}`
+    ],
+    [ 'a negative reorder depth', [ ...MINIMAL_HEADER, `//! reorder: ${MALFORMED_COUNT}` ], APPENDED_LINE, 'reorder-syntax', quote(MALFORMED_COUNT) ],
+    [ 'too deep a reorder', [ ...MINIMAL_HEADER, `//! reorder: ${EXCESS_REORDER}` ], APPENDED_LINE, 'reorder-limit', `${EXCESS_REORDER} > ${GPU_DECODER_MAXIMUM_REORDER}` ],
+    [ 'a malformed state size', [ ...MINIMAL_HEADER, `//! state: ${MALFORMED_STATE_SIZE}` ], APPENDED_LINE, 'state-syntax', quote(MALFORMED_STATE_SIZE) ],
+    [
+        'an oversized state',
+        [ ...MINIMAL_HEADER, `//! state: ${OVERSIZED_STATE_MEBIBYTES} MiB` ],
+        APPENDED_LINE,
+        'state-size',
+        `${OVERSIZED_STATE_MEBIBYTES * MEBIBYTE} > ${MAXIMUM_STORAGE_BUFFER_BINDING_SIZE}`
+    ],
+    [ 'accepts without a codec list', replaceHeaderLine(MINIMAL_HEADER, 'accepts', '//! accepts: stream.width <= 4096'), ACCEPTS_LINE, 'accepts-syntax', quote('stream.width <= 4096') ],
+    [
+        'an accepts condition on another fact',
+        replaceHeaderLine(MINIMAL_HEADER, 'accepts', `//! accepts: codec in [apch], ${FOREIGN_FACT} > 0`),
+        ACCEPTS_LINE,
+        'accepts-identifier',
+        quote(FOREIGN_FACT)
+    ],
+    [
+        'a malformed accepts condition',
+        replaceHeaderLine(MINIMAL_HEADER, 'accepts', `//! accepts: codec in [apch], ${MALFORMED_CONDITION}`),
+        ACCEPTS_LINE,
+        'accepts-expression',
+        `${quote(MALFORMED_CONDITION)} ${getExpressionErrorMessage(MALFORMED_CONDITION)}`
+    ],
+    [ 'an empty codec identifier', replaceHeaderLine(MINIMAL_HEADER, 'accepts', '//! accepts: codec in [apch, ]'), ACCEPTS_LINE, 'codec-empty', `position ${EMPTY_CODEC_POSITION}` ],
+    [
+        'a repeated codec identifier',
+        replaceHeaderLine(MINIMAL_HEADER, 'accepts', `//! accepts: codec in [${DUPLICATE_CODEC}, ${DUPLICATE_CODEC}]`),
+        ACCEPTS_LINE,
+        'codec-duplicate',
+        quote(DUPLICATE_CODEC)
+    ],
+    [
+        'a buffer named after a prelude binding',
+        [ ...MINIMAL_HEADER, `//! buffer: ${RESERVED_BUFFER_NAME}, ${SCRATCH_BYTE_LENGTH}` ],
+        APPENDED_LINE,
+        'buffer-reserved',
+        quote(RESERVED_BUFFER_NAME)
+    ],
+    [
+        'a buffer name that is not an identifier',
+        [ ...MINIMAL_HEADER, `//! buffer: ${INVALID_BUFFER_NAME}, ${SCRATCH_BYTE_LENGTH}` ],
+        APPENDED_LINE,
+        'buffer-name',
+        quote(INVALID_BUFFER_NAME)
+    ],
+    [
+        'a repeated buffer',
+        [ ...MINIMAL_HEADER, `//! buffer: ${SCRATCH_BUFFER_NAME}, ${SCRATCH_BYTE_LENGTH}`, `//! buffer: ${SCRATCH_BUFFER_NAME}, ${SCRATCH_BYTE_LENGTH}` ],
+        APPENDED_LINE + 1,
+        'buffer-duplicate',
+        quote(SCRATCH_BUFFER_NAME)
+    ],
+    [
+        'a buffer without a size',
+        [ ...MINIMAL_HEADER, `//! buffer: ${SCRATCH_BUFFER_NAME}, indirect` ],
+        APPENDED_LINE,
+        'buffer-syntax',
+        quote(`${SCRATCH_BUFFER_NAME}, indirect`)
+    ],
+    [
+        'a short indirect buffer',
+        [ ...MINIMAL_HEADER, `//! buffer: ${SCRATCH_BUFFER_NAME}, indirect, ${SHORT_INDIRECT_BYTE_LENGTH}` ],
+        APPENDED_LINE,
+        'buffer-size',
+        `${quote(SCRATCH_BUFFER_NAME)} ${SHORT_INDIRECT_BYTE_LENGTH} < ${INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH}`
+    ],
+    [ 'an empty buffer', [ ...MINIMAL_HEADER, `//! buffer: ${SCRATCH_BUFFER_NAME}, 0` ], APPENDED_LINE, 'buffer-size', `${quote(SCRATCH_BUFFER_NAME)} 0 < 1` ],
+    [ 'a malformed feature', [ ...MINIMAL_HEADER, `//! requires: ${MALFORMED_FEATURE}` ], APPENDED_LINE, 'requires-syntax', quote(MALFORMED_FEATURE) ],
+    [
+        'a repeated feature',
+        [ ...MINIMAL_HEADER, `//! requires: ${SUBGROUPS_FEATURE}, ${SUBGROUPS_FEATURE}` ],
+        APPENDED_LINE,
+        'requires-duplicate',
+        quote(SUBGROUPS_FEATURE)
+    ],
+    [
+        'four workgroup counts',
+        replaceHeaderLine(MINIMAL_HEADER, 'dispatch', `//! dispatch: ${ENTRY_POINT}, 1, 1, 1, 1`),
+        DISPATCH_LINE,
+        'dispatch-syntax',
+        quote(`${ENTRY_POINT}, 1, 1, 1, 1`)
+    ],
+    [
+        'a workgroup count on another fact',
+        replaceHeaderLine(MINIMAL_HEADER, 'dispatch', `//! dispatch: ${ENTRY_POINT}, ${FOREIGN_FACT}`),
+        DISPATCH_LINE,
+        'dispatch-identifier',
+        quote(FOREIGN_FACT)
+    ],
+    [
+        'an indirect dispatch of an undeclared buffer',
+        replaceHeaderLine(MINIMAL_HEADER, 'dispatch', `//! dispatch: ${ENTRY_POINT}, indirect ${MISSING_BUFFER_NAME}`),
+        DISPATCH_LINE,
+        'dispatch-buffer',
+        quote(MISSING_BUFFER_NAME)
+    ],
+    [
+        'an indirect dispatch of a plain buffer',
+        [
+            ...replaceHeaderLine(MINIMAL_HEADER, 'dispatch', `//! dispatch: ${ENTRY_POINT}, indirect ${SCRATCH_BUFFER_NAME}`),
+            `//! buffer: ${SCRATCH_BUFFER_NAME}, ${SCRATCH_BYTE_LENGTH}`
+        ],
+        DISPATCH_LINE,
+        'dispatch-indirect',
+        quote(SCRATCH_BUFFER_NAME)
+    ],
+    [
+        'a dispatch of a missing entry point',
+        replaceHeaderLine(MINIMAL_HEADER, 'dispatch', `//! dispatch: ${MISSING_ENTRY_POINT}, 1`),
+        DISPATCH_LINE,
+        'entry-point-missing',
+        quote(MISSING_ENTRY_POINT)
+    ],
+    [ 'a malformed vector', [ ...MINIMAL_HEADER, '//! vector: clip.mkv, frames 0-2' ], APPENDED_LINE, 'vector-syntax', quote('clip.mkv, frames 0-2') ],
+    [ 'a vector whose frames run backwards', [ ...MINIMAL_HEADER, `//! vector: clip.mkv, frames 2-1, sha256 ${VECTOR_HASH}` ], APPENDED_LINE, 'vector-frames', '2 > 1' ]
+];
 
 describe('parseGPUDecoderManifest', () => {
     it('parses every directive of a complete header', () => {
@@ -179,69 +384,68 @@ describe('parseGPUDecoderManifest', () => {
         ]);
     });
 
-    it.each([
-        [ 'an unknown directive', [ ...MINIMAL_HEADER, '//! workgroup: 64' ], MINIMAL_HEADER.length + 1, "Unknown directive 'workgroup'" ],
-        [ 'a repeated single directive', [ ...MINIMAL_HEADER, '//! output: I444' ], MINIMAL_HEADER.length + 1, "The directive 'output' appears twice" ],
-        [ 'a malformed header line', [ ...MINIMAL_HEADER, '//! output I444' ], MINIMAL_HEADER.length + 1, 'A header line must read' ],
-        [ 'an audio decoder', replaceHeaderLine(MINIMAL_HEADER, 'decoder', '//! decoder: audio'), 2, "decoder must be 'video'" ],
-        [ 'semi-planar output', replaceHeaderLine(MINIMAL_HEADER, 'output', '//! output: NV12'), 4, "'NV12' is not a planar output format" ],
-        [ 'a size with an unknown unit', replaceHeaderLine(MINIMAL_HEADER, 'packet', '//! packet: 4 GB'), 5, 'must be a byte count' ],
-        [ 'an oversized packet', replaceHeaderLine(MINIMAL_HEADER, 'packet', '//! packet: 65 MiB'), 5, 'exceeds the 67108864-byte limit' ],
-        [ 'too many references', [ ...MINIMAL_HEADER, '//! references: 17' ], MINIMAL_HEADER.length + 1, 'references of 17 exceeds the limit of 16' ],
-        [ 'a negative reorder depth', [ ...MINIMAL_HEADER, '//! reorder: -1' ], MINIMAL_HEADER.length + 1, 'reorder must be a non-negative integer' ],
-        [ 'accepts without a codec list', replaceHeaderLine(MINIMAL_HEADER, 'accepts', '//! accepts: stream.width <= 4096'), 3, 'accepts must read' ],
-        [ 'an accepts condition on another fact', replaceHeaderLine(MINIMAL_HEADER, 'accepts', '//! accepts: codec in [apch], output.width > 0'), 3, "reads 'output.width'" ],
-        [ 'a malformed accepts condition', replaceHeaderLine(MINIMAL_HEADER, 'accepts', '//! accepts: codec in [apch], stream.width <'), 3, 'is malformed' ],
-        [ 'an empty codec identifier', replaceHeaderLine(MINIMAL_HEADER, 'accepts', '//! accepts: codec in [apch, ]'), 3, 'empty identifier' ],
-        [ 'a repeated codec identifier', replaceHeaderLine(MINIMAL_HEADER, 'accepts', '//! accepts: codec in [apch, apch]'), 3, "names 'apch' twice" ],
-        [ 'a buffer named after a prelude binding', [ ...MINIMAL_HEADER, '//! buffer: state, 64' ], MINIMAL_HEADER.length + 1, "'state' is reserved" ],
-        [ 'a repeated buffer', [ ...MINIMAL_HEADER, '//! buffer: scratch, 64', '//! buffer: scratch, 64' ], MINIMAL_HEADER.length + 2, "'scratch' is declared twice" ],
-        [ 'a buffer without a size', [ ...MINIMAL_HEADER, '//! buffer: scratch, indirect' ], MINIMAL_HEADER.length + 1, 'buffer must read' ],
-        [ 'a short indirect buffer', [ ...MINIMAL_HEADER, '//! buffer: scratch, indirect, 8' ], MINIMAL_HEADER.length + 1, 'needs at least 12 bytes' ],
-        [ 'a malformed feature', [ ...MINIMAL_HEADER, '//! requires: Shader F16' ], MINIMAL_HEADER.length + 1, 'is not a device feature name' ],
-        [ 'four workgroup counts', replaceHeaderLine(MINIMAL_HEADER, 'dispatch', '//! dispatch: parseFrameHeader, 1, 1, 1, 1'), 6, 'dispatch must read' ],
-        [ 'an indirect dispatch of an undeclared buffer', replaceHeaderLine(MINIMAL_HEADER, 'dispatch', '//! dispatch: parseFrameHeader, indirect missing'), 6, "undeclared buffer 'missing'" ],
-        [ 'an indirect dispatch of a plain buffer', [ ...replaceHeaderLine(MINIMAL_HEADER, 'dispatch', '//! dispatch: parseFrameHeader, indirect scratch'), '//! buffer: scratch, 64' ], 6, "'scratch' is not declared indirect" ],
-        [ 'a dispatch of a missing entry point', replaceHeaderLine(MINIMAL_HEADER, 'dispatch', '//! dispatch: missingEntry, 1'), 6, "no entry point 'fn missingEntry('" ],
-        [ 'a malformed vector', [ ...MINIMAL_HEADER, '//! vector: clip.mkv, frames 0-2' ], MINIMAL_HEADER.length + 1, 'vector must read' ],
-        [ 'a vector whose frames run backwards', [ ...MINIMAL_HEADER, `//! vector: clip.mkv, frames 2-1, sha256 ${VECTOR_HASH}` ], MINIMAL_HEADER.length + 1, 'precedes its first frame' ]
-    ])('rejects %s on its line', (_description: string, header: readonly string[], line: number, message: string) => {
+    it.each(REJECTION_CASES)('rejects %s with its code, detail, and line', (
+        _description: string,
+        header: readonly string[],
+        line: number,
+        code: GPUDecoderManifestErrorCode,
+        detail: string
+    ) => {
         const error = getParseError(createSource(header));
 
-        expect(error.line).toBe(line);
-        expect(error.message).toContain(message);
+        expect({ code: error.code, detail: error.detail, line: error.line }).toEqual({ code, detail, line });
+        expect(error.message).toBe(`${code}: ${detail}`);
     });
 
     it.each([ 'name', 'decoder', 'accepts', 'output', 'packet', 'dispatch' ])('requires the %s directive', (directive: string) => {
         const header = MINIMAL_HEADER.filter(line => !line.startsWith(`//! ${directive}:`));
 
-        expect(getParseError(createSource(header)).message).toContain(`no '${directive}' directive`);
+        const error = getParseError(createSource(header));
+
+        expect({ code: error.code, detail: error.detail }).toEqual({ code: 'directive-missing', detail: quote(directive) });
     });
 
-    it('rejects a source without a header', () => {
-        expect(getParseError(BODY.trimStart()).line).toBe(1);
+    it('rejects a source without a header on its first line', () => {
+        const source = BODY.trimStart();
+
+        const error = getParseError(source);
+
+        expect({ code: error.code, detail: error.detail, line: error.line }).toEqual({
+            code: 'header-missing',
+            detail: quote(source.split('\n')[0]),
+            line: 1
+        });
     });
 
     it('rejects an entry point declared without @compute', () => {
-        const body = '\nfn parseFrameHeader() {\n}';
+        const body = `\nfn ${ENTRY_POINT}() {\n}`;
 
         const error = getParseError(createSource(MINIMAL_HEADER, body));
 
-        expect(error.line).toBe(MINIMAL_HEADER.length);
-        expect(error.message).toContain('is not declared with @compute');
+        expect({ code: error.code, detail: error.detail, line: error.line }).toEqual({
+            code: 'entry-point-stage',
+            detail: quote(ENTRY_POINT),
+            line: DISPATCH_LINE
+        });
     });
 
     it('rejects bindings and enable directives in the body on their body lines', () => {
         const bindingBody = `${BODY}\n@group(0) @binding(9) var<storage, read_write> extra: array<u32>;`;
-        const enableBody = `\nenable f16;${BODY}`;
+        const enableBody = `\n${BODY_ENABLE_DIRECTIVE}${BODY}`;
         const bodyFirstLine = MINIMAL_HEADER.length + 1;
 
         const bindingError = getParseError(createSource(MINIMAL_HEADER, bindingBody));
         const enableError = getParseError(createSource(MINIMAL_HEADER, enableBody));
 
-        expect(bindingError.message).toContain('The prelude owns every binding');
-        expect(bindingError.line).toBe(bodyFirstLine + BODY.split('\n').length);
-        expect(enableError.message).toContain('requires directive');
-        expect(enableError.line).toBe(bodyFirstLine + 1);
+        expect({ code: bindingError.code, detail: bindingError.detail, line: bindingError.line }).toEqual({
+            code: 'body-binding',
+            detail: quote('@group'),
+            line: bodyFirstLine + BODY.split('\n').length
+        });
+        expect({ code: enableError.code, detail: enableError.detail, line: enableError.line }).toEqual({
+            code: 'body-enable',
+            detail: quote(BODY_ENABLE_DIRECTIVE),
+            line: bodyFirstLine + 1
+        });
     });
 });

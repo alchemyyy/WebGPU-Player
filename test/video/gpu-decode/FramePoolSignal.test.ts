@@ -12,6 +12,11 @@ import { createFramePoolSignal, FRAME_POOL_SIGNAL_ENTRY_POINT } from 'webgpu-pla
 import type { GPUDecoderOutputFormat } from 'webgpu-player/video/gpu-decode/GPUDecodeFormats';
 
 const TWELVE_BIT_DEPTH = 12;
+const EIGHT_BIT_DEPTH = 8;
+// createPQColorMetadata's default bit depth
+const PQ_BIT_DEPTH = 10;
+const SEMI_PLANAR_FORMAT = 'NV12';
+const UNSUPPORTED_RANGE = 'studio';
 const FRAME_POOL_SIGNAL_NAME = 'gpu-decode.signal.frame-pool.I420P10';
 
 type SignalCase = {
@@ -109,11 +114,11 @@ describe('createFramePoolSignal', () => {
         expect(sixteenBitLoad).toContain('& 0xFFFFu');
     });
 
-    it('rejects a semi-planar format, a mismatched bit depth, and invalid metadata', () => {
-        expect(() => createFramePoolSignal('NV12', createSDRColorMetadata())).toThrow('A frame pool never holds NV12');
-        expect(() => createFramePoolSignal('I420', createPQColorMetadata())).toThrow('bit depth does not match');
-        expect(() => createFramePoolSignal('I420', { ...createSDRColorMetadata(), range: 'studio' as 'limited' })).toThrow(
-            "range: unsupported 'studio'"
+    it('rejects a semi-planar format, a mismatched bit depth, and invalid metadata with the failing value', () => {
+        expect(() => createFramePoolSignal(SEMI_PLANAR_FORMAT, createSDRColorMetadata())).toThrow(`format: unsupported '${SEMI_PLANAR_FORMAT}'`);
+        expect(() => createFramePoolSignal('I420', createPQColorMetadata())).toThrow(`bitDepth: ${PQ_BIT_DEPTH}, expected ${EIGHT_BIT_DEPTH} for I420`);
+        expect(() => createFramePoolSignal('I420', { ...createSDRColorMetadata(), range: UNSUPPORTED_RANGE as 'limited' })).toThrow(
+            `range: unsupported '${UNSUPPORTED_RANGE}'`
         );
     });
 });
