@@ -30,6 +30,7 @@ import type {
     DecodeWorkerAudioConfiguration
 } from './DecodeWorkerProtocol';
 import type { MediaClockSnapshot, MonotonicTimeSource } from './MediaClock';
+import type { CustomDecodeMediaSource } from './CustomDecodeMediaSource';
 import type { StaticHDRMetadata } from '../video/hdr/StaticHDRMetadata';
 
 export type CustomPlaybackState =
@@ -71,8 +72,8 @@ export type CustomPlaybackPlayOptions = {
     nativeHDRTransfer: CustomDecodeNativeHDRTransfer
     neutralizeHDRColorMetadata: boolean
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
+    source: CustomDecodeMediaSource
     startTimeMicroseconds: Microseconds
-    url: string
     videoDecoderBackend: CustomDecodeVideoDecoderBackend
     videoOutputMode: CustomDecodeVideoOutputMode
     videoTrackIndex: number

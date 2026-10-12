@@ -68,6 +68,13 @@ const PQ_AUTHORIZATION = {
     runtimeAvailability: AVAILABLE_RUNTIME
 };
 
+// A Jellyfin stream path, which eligibility resolves against the page
+const STREAM_URL = '/Videos/item/stream.mp4?api_key=secret';
+const LOCAL_FILE_NAME = 'movie.mp4';
+const FILE_URL = 'file:///movie.mkv';
+const CREDENTIAL_URL = 'http://user:password@localhost/movie.mkv';
+const EMPTY_URL = '';
+
 const ULTRA_HD_CODED_WIDTH = 3_840;
 const ULTRA_HD_CODED_HEIGHT = 2_160;
 const DCI_4K_CODED_WIDTH = 4_096;
@@ -415,7 +422,7 @@ function createOptions(overrides: Record<string, unknown> = {}): Record<string, 
         },
         playMethod: 'DirectPlay',
         playerStartPositionTicks: 10_000_000,
-        url: '/Videos/item/stream.mp4?api_key=secret',
+        source: { kind: 'url', url: STREAM_URL },
         ...overrides
     };
 }
@@ -2758,7 +2765,7 @@ describe('CustomPlaybackEligibility', () => {
                 ],
                 RunTimeTicks: 82_800_000_000
             },
-            url: '/Videos/item/stream.mkv?api_key=secret'
+            source: { kind: 'url', url: '/Videos/item/stream.mkv?api_key=secret' }
         });
 
         expect(getCustomPlaybackEligibility(options, createCapabilities(), PQ_AUTHORIZATION)).toMatchObject({
@@ -3180,7 +3187,7 @@ describe('CustomPlaybackEligibility', () => {
                 ],
                 RunTimeTicks: 36_000_000_000
             },
-            url: '/Videos/item/stream.mkv'
+            source: { kind: 'url', url: '/Videos/item/stream.mkv' }
         });
 
         expect(getCustomPlaybackEligibility(
@@ -3249,7 +3256,7 @@ describe('CustomPlaybackEligibility', () => {
                     ],
                     RunTimeTicks: 36_000_000_000
                 },
-                url: '/Videos/item/stream.mkv'
+                source: { kind: 'url', url: '/Videos/item/stream.mkv' }
             });
 
             expect(getCustomPlaybackEligibility(
@@ -3334,7 +3341,7 @@ describe('CustomPlaybackEligibility', () => {
                     ],
                     RunTimeTicks: 36_000_000_000
                 },
-                url: '/Videos/item/stream.mkv'
+                source: { kind: 'url', url: '/Videos/item/stream.mkv' }
             });
 
             expect(getCustomPlaybackEligibility(
@@ -4292,14 +4299,37 @@ describe('CustomPlaybackEligibility', () => {
     it.each([
         [ { playMethod: 'Transcode' }, 'play-method-unsupported' ],
         [ { mediaSource: { Container: 'avi', MediaStreams: [], RunTimeTicks: 1 } }, 'container-unsupported' ],
-        [ { url: 'file:///movie.mkv' }, 'url-unsupported' ],
-        [ { url: 'http://user:password@localhost/movie.mkv' }, 'url-unsupported' ]
+        [ { source: { kind: 'url', url: FILE_URL } }, 'url-unsupported' ],
+        [ { source: { kind: 'url', url: CREDENTIAL_URL } }, 'url-unsupported' ],
+        [ { source: { kind: 'url', url: EMPTY_URL } }, 'invalid-options' ],
+        [ { source: { file: LOCAL_FILE_NAME, kind: 'file' } }, 'invalid-options' ],
+        [ { source: undefined }, 'invalid-options' ]
     ])('rejects unsafe source overrides %#', (overrides, reason) => {
         expect(getCustomPlaybackEligibility(
             createOptions(overrides),
             createCapabilities(),
             { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
         )).toEqual({ eligible: false, reason });
+    });
+
+    it('resolves a URL source against the page', () => {
+        expect(getCustomPlaybackEligibility(
+            createOptions(),
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toMatchObject({ eligible: true, source: { kind: 'url', url: new URL(STREAM_URL, globalThis.location.href).href } });
+    });
+
+    it('plays a file source as it is', () => {
+        const source = { file: new File([], LOCAL_FILE_NAME), kind: 'file' };
+
+        const eligibility = getCustomPlaybackEligibility(
+            createOptions({ source }),
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        );
+
+        expect(eligibility.eligible && eligibility.source).toBe(source);
     });
 
     it('requires the full runtime and measured selected codecs', () => {

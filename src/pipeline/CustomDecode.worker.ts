@@ -1,6 +1,7 @@
 /* eslint-disable no-restricted-globals */
 import {
     AudioSampleSink,
+    BlobSource,
     EncodedPacketSink,
     Input,
     UrlSource,
@@ -10,6 +11,7 @@ import {
     type EncodedPacket,
     type InputAudioTrack,
     type InputVideoTrack,
+    type Source,
     type VideoCodec,
     type VideoSample
 } from 'mediabunny';
@@ -94,6 +96,7 @@ import {
     type DecodeWorkerResponse
 } from './DecodeWorkerProtocol';
 import { getTrackByOrdinal } from './CustomDecodeTrackSelection';
+import type { CustomDecodeMediaSource } from './CustomDecodeMediaSource';
 import {
     DecodedVideoGeometryError,
     exceedsNegotiatedCodedSize,
@@ -204,7 +207,8 @@ import {
     type StaticHDRMetadataScanResult
 } from '../video/hdr/StaticHDRMetadata';
 
-const URL_SOURCE_CACHE_BYTES = 32 * 1024 * 1024;
+// A run's read cache, whether it reads a URL or a file
+const MEDIA_SOURCE_CACHE_BYTES = 32 * 1024 * 1024;
 const URL_SOURCE_PARALLELISM = 2;
 const MAX_NETWORK_RETRY_ATTEMPTS = 2;
 const NETWORK_RETRY_BASE_SECONDS = 0.25;
@@ -483,6 +487,21 @@ const validatedRangeFetch: typeof fetch = async (input: RequestInfo | URL, reque
     requireValidByteRangeResponse(requestHeaders.get('Range'), response);
     return response;
 };
+
+/** Opens a run's media: a URL through ranged requests under the fetch policy, or a file through reads of its own bytes. */
+function createMediaSource(source: CustomDecodeMediaSource): Source {
+    switch (source.kind) {
+        case 'file':
+            return new BlobSource(source.file, { maxCacheSize: MEDIA_SOURCE_CACHE_BYTES });
+        case 'url':
+            return new UrlSource(source.url, {
+                fetchFn: validatedRangeFetch,
+                getRetryDelay,
+                maxCacheSize: MEDIA_SOURCE_CACHE_BYTES,
+                parallelism: URL_SOURCE_PARALLELISM
+            });
+    }
+}
 
 function wakeWaiters(waiters: Array<() => void>): void {
     const activeWaiters = waiters.splice(0);
@@ -2425,9 +2444,31 @@ async function decodeOwnedHEVCPacket(
     return true;
 }
 
+/** Reads the inclusive byte range of a run's media: a ranged request for a URL, a slice for a file. */
+async function readMediaByteRange(
+    source: CustomDecodeMediaSource,
+    abortController: AbortController,
+    offset: number,
+    lastByte: number
+): Promise<Uint8Array> {
+    switch (source.kind) {
+        case 'file':
+            return new Uint8Array(await source.file.slice(offset, lastByte + 1).arrayBuffer());
+        case 'url': {
+            const response = await validatedRangeFetch(source.url, {
+                headers: {
+                    Range: `bytes=${offset}-${lastByte}`
+                },
+                signal: abortController.signal
+            });
+            return new Uint8Array(await response.arrayBuffer());
+        }
+    }
+}
+
 async function readDolbyVisionMetadataByteRange(
     run: DecodeRun,
-    url: string,
+    source: CustomDecodeMediaSource,
     abortController: AbortController,
     offset: number,
     byteLength: number
@@ -2445,14 +2486,9 @@ async function readDolbyVisionMetadataByteRange(
     if (!Number.isSafeInteger(lastByte)) {
         return null;
     }
-    const response = await validatedRangeFetch(url, {
-        headers: {
-            Range: `bytes=${offset}-${lastByte}`
-        },
-        signal: abortController.signal
-    });
-    const data = new Uint8Array(await response.arrayBuffer());
-    if (data.byteLength === 0 || data.byteLength > byteLength) {
+    const data = await readMediaByteRange(source, abortController, offset, lastByte);
+    // A file read cannot be aborted, so a run stopped meanwhile drops its result
+    if (isVideoAttemptStopped(run) || data.byteLength === 0 || data.byteLength > byteLength) {
         return null;
     }
     return data;
@@ -2475,7 +2511,7 @@ async function readContainerDolbyVisionTrackConfiguration(
             byteLength: number
         ): Promise<Uint8Array | null> => readDolbyVisionMetadataByteRange(
             run,
-            request.url,
+            request.source,
             abortController,
             offset,
             byteLength
@@ -3668,12 +3704,7 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
         }
         const input = new Input({
             formats: withMatroskaBlockAdditions(CUSTOM_DECODE_INPUT_FORMATS),
-            source: new UrlSource(request.url, {
-                fetchFn: validatedRangeFetch,
-                getRetryDelay,
-                maxCacheSize: URL_SOURCE_CACHE_BYTES,
-                parallelism: URL_SOURCE_PARALLELISM
-            })
+            source: createMediaSource(request.source)
         });
         run.input = input;
         const preparedTrackPromises: [

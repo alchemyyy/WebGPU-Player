@@ -33,6 +33,7 @@ import {
     type CustomDecodeAudioOutputMode,
     type DecodeWorkerAudioConfiguration
 } from './DecodeWorkerProtocol';
+import { isCustomDecodeMediaSource } from './CustomDecodeMediaSource';
 import MediaClock from './MediaClock';
 import { hasRawVideoFrameCopyLayout } from '../video/RawVideoFrameCopy';
 import { addMicroseconds, requireMicroseconds } from '../TimeMath';
@@ -330,8 +331,8 @@ function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
             throw new RangeError('Playback duration cannot be negative');
         }
     }
-    if (typeof options.url !== 'string' || options.url.length === 0) {
-        throw new TypeError('Custom playback URL must be a non-empty string');
+    if (!isCustomDecodeMediaSource(options.source)) {
+        throw new TypeError('Custom playback media source must be a File or a non-empty URL');
     }
     validateVideoDecoderRoute(options);
     validateHDRColorNeutralization(options);
@@ -368,8 +369,8 @@ function copyPlayOptions(options: CustomPlaybackPlayOptions): CustomPlaybackPlay
         nativeHDRTransfer: options.nativeHDRTransfer,
         neutralizeHDRColorMetadata: options.neutralizeHDRColorMetadata,
         rawVideoFrameFormat: options.rawVideoFrameFormat,
+        source: { ...options.source },
         startTimeMicroseconds: options.startTimeMicroseconds,
-        url: options.url,
         videoDecoderBackend: options.videoDecoderBackend,
         videoOutputMode: options.videoOutputMode,
         videoTrackIndex: options.videoTrackIndex
@@ -1461,8 +1462,8 @@ export default class CustomPlaybackController {
                 nativeHDRTransfer: activeOptions.nativeHDRTransfer,
                 neutralizeHDRColorMetadata: activeOptions.neutralizeHDRColorMetadata,
                 rawVideoFrameFormat: activeOptions.rawVideoFrameFormat,
+                source: activeOptions.source,
                 startTimeMicroseconds: activeOptions.startTimeMicroseconds,
-                url: activeOptions.url,
                 videoDecoderBackend: activeOptions.videoDecoderBackend,
                 videoOutputMode: activeOptions.videoOutputMode,
                 videoTrackIndex: activeOptions.videoTrackIndex

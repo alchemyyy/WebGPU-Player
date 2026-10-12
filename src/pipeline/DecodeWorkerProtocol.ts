@@ -44,6 +44,7 @@ import {
 } from '../audio/processing/CustomAudioDownmixAlgorithm';
 import { isSupportedCustomAudioSampleRate } from '../audio/CustomAudioSampleRate';
 import { isDolbyVisionDualLayerProfile } from '../video/dolby-vision/DolbyVisionProfiles';
+import { isCustomDecodeMediaSource, type CustomDecodeMediaSource } from './CustomDecodeMediaSource';
 
 export const MAX_DECODED_FRAME_CREDITS = 4;
 export const MAX_DECODED_RAW_FRAME_CREDITS = MAXIMUM_OUTSTANDING_RAW_FRAME_TRANSFER_COUNT;
@@ -171,11 +172,11 @@ export type DecodeWorkerStartRequest = {
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
     /** Asks for the container's duration in the ready response, because the server reported none */
     reportContainerDuration?: boolean
+    source: CustomDecodeMediaSource
     startTimeMicroseconds: Microseconds
     /** Asks the worker to send its timing events, because the page records a timing trace */
     timingTrace?: boolean
     type: 'start'
-    url: string
     videoDecoderBackend: CustomDecodeVideoDecoderBackend
     videoOutputMode: CustomDecodeVideoOutputMode
     /** Zero-based ordinal within input.getVideoTracks(), not a Jellyfin stream index. */
@@ -1043,8 +1044,7 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                     && value.dolbyVisionProfile === null
                     && value.neutralizeHDRColorMetadata === false
                     && value.nativeHDRTransfer === null);
-            return typeof value.url === 'string'
-                && value.url.length > 0
+            return isCustomDecodeMediaSource(value.source)
                 && isOptionalBoolean(value.reportContainerDuration)
                 && isOptionalBoolean(value.timingTrace)
                 && isDolbyVisionProfile(value.dolbyVisionProfile)

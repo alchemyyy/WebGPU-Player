@@ -293,7 +293,7 @@ function startSession(
         neutralizeHDRColorMetadata,
         rawVideoFrameFormat: videoOutputMode === 'raw-planes' ? 'I420P10' : null,
         startTimeMicroseconds: secondsToMicroseconds(1),
-        url: 'http://localhost/video.mp4?ApiKey=secret',
+        source: { kind: 'url', url: 'http://localhost/video.mp4?ApiKey=secret' },
         videoDecoderBackend: videoOutputMode === 'raw-planes' ? 'bundled-hevc' : 'native',
         videoOutputMode,
         videoTrackIndex: 0
@@ -594,7 +594,7 @@ function startNativeAudioSession(generation: number, backendOpened: Promise<void
         neutralizeHDRColorMetadata: false,
         rawVideoFrameFormat: null,
         startTimeMicroseconds: secondsToMicroseconds(1),
-        url: 'http://localhost/video.mp4?ApiKey=secret',
+        source: { kind: 'url', url: 'http://localhost/video.mp4?ApiKey=secret' },
         videoDecoderBackend: 'native',
         videoOutputMode: 'video-frame',
         videoTrackIndex: 0
@@ -649,7 +649,7 @@ describe('CustomDecodeSession', () => {
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             startTimeMicroseconds: secondsToMicroseconds(1),
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'ffmpeg-mpeg2-vc1',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -732,7 +732,7 @@ describe('CustomDecodeSession', () => {
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: 'I420P10',
             startTimeMicroseconds: secondsToMicroseconds(0),
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
@@ -761,7 +761,7 @@ describe('CustomDecodeSession', () => {
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: 'I420P10',
             startTimeMicroseconds: secondsToMicroseconds(0),
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
@@ -788,7 +788,7 @@ describe('CustomDecodeSession', () => {
             nativeHDRTransfer: null,
             neutralizeHDRColorMetadata: false,
             startTimeMicroseconds: secondsToMicroseconds(0),
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'native',
             videoTrackIndex: 0
         } as const;
@@ -956,7 +956,7 @@ describe('CustomDecodeSession', () => {
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: 'I420P10',
             startTimeMicroseconds: secondsToMicroseconds(0),
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
@@ -995,7 +995,7 @@ describe('CustomDecodeSession', () => {
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             startTimeMicroseconds: secondsToMicroseconds(1),
-            url: 'http://localhost/video.mp4?ApiKey=secret',
+            source: { kind: 'url', url: 'http://localhost/video.mp4?ApiKey=secret' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -1054,7 +1054,7 @@ describe('CustomDecodeSession', () => {
             reportContainerDuration: true,
             startTimeMicroseconds: 1_000_000,
             type: 'start',
-            url: 'http://localhost/video.mp4?ApiKey=secret',
+            source: { kind: 'url', url: 'http://localhost/video.mp4?ApiKey=secret' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -1247,7 +1247,7 @@ describe('CustomDecodeSession', () => {
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             startTimeMicroseconds: secondsToMicroseconds(1),
-            url: 'http://localhost/video.mkv?ApiKey=secret',
+            source: { kind: 'url', url: 'http://localhost/video.mkv?ApiKey=secret' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -1380,7 +1380,7 @@ describe('CustomDecodeSession', () => {
                 neutralizeHDRColorMetadata: false,
                 rawVideoFrameFormat: null,
                 startTimeMicroseconds: secondsToMicroseconds(1),
-                url: 'http://localhost/video.mkv?ApiKey=secret',
+                source: { kind: 'url', url: 'http://localhost/video.mkv?ApiKey=secret' },
                 videoDecoderBackend: 'native',
                 videoOutputMode: 'video-frame',
                 videoTrackIndex: 0
@@ -1438,7 +1438,7 @@ describe('CustomDecodeSession', () => {
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             startTimeMicroseconds: secondsToMicroseconds(1),
-            url: 'http://localhost/video.mp4?ApiKey=secret',
+            source: { kind: 'url', url: 'http://localhost/video.mp4?ApiKey=secret' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -1499,7 +1499,7 @@ describe('CustomDecodeSession', () => {
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             startTimeMicroseconds: secondsToMicroseconds(1),
-            url: 'http://localhost/video.mkv?ApiKey=secret',
+            source: { kind: 'url', url: 'http://localhost/video.mkv?ApiKey=secret' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -1717,7 +1717,7 @@ describe('CustomDecodeSession', () => {
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             startTimeMicroseconds: secondsToMicroseconds(1),
-            url: 'http://localhost/video.mp4',
+            source: { kind: 'url', url: 'http://localhost/video.mp4' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -1759,7 +1759,7 @@ describe('CustomDecodeSession', () => {
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             startTimeMicroseconds: secondsToMicroseconds(1),
-            url: 'http://localhost/video.mkv',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -1885,7 +1885,7 @@ describe('CustomDecodeSession', () => {
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: 'I420P10',
             startTimeMicroseconds: secondsToMicroseconds(1),
-            url: 'http://localhost/video.mp4',
+            source: { kind: 'url', url: 'http://localhost/video.mp4' },
             videoDecoderBackend: 'bundled-hevc',
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
@@ -2409,7 +2409,7 @@ describe('CustomDecodeSession', () => {
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             startTimeMicroseconds: secondsToMicroseconds(1),
-            url: 'http://localhost/video.mp4?ApiKey=secret',
+            source: { kind: 'url', url: 'http://localhost/video.mp4?ApiKey=secret' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
@@ -3777,7 +3777,7 @@ describe('CustomDecodeSession', () => {
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             startTimeMicroseconds: secondsToMicroseconds(1),
-            url: 'http://localhost/video.mp4?ApiKey=secret',
+            source: { kind: 'url', url: 'http://localhost/video.mp4?ApiKey=secret' },
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
