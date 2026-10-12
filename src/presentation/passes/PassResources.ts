@@ -188,10 +188,6 @@ export const PRESENTATION_UNIFORMS_WGSL = `struct PresentationUniforms {
     skippedFrames: u32,
     padding0: u32,
     padding1: u32,
-    padding2: u32,
-    padding3: u32,
-    padding4: u32,
-    padding5: u32,
 }`;
 
 /** The values of one pass's `presentation` uniform. */
