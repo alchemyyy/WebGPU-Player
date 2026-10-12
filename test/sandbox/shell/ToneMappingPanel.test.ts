@@ -1,14 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createHDRToSDRRenderSettings, type HDRToSDRRenderSettings } from 'webgpu-player/presentation/RenderSettings';
+import { createHDRToSDRRenderSettings, type HDRToSDRRenderSettings, type ToneMapOperator } from 'webgpu-player/presentation/RenderSettings';
 
 import { createToneMappingPanel } from '../../../sandbox/src/ui/panels/ToneMappingPanel';
 import { createFakePanelContext } from './sandboxFakes';
 
 const EXPOSURE_LABEL = 'Exposure';
 const PAPER_WHITE_LABEL = 'Paper white nits';
+const OPERATOR_LABEL = 'Operator';
 const RAISED_EXPOSURE = 1.5;
 const PRESENTER_EXPOSURE = 2;
+// A value typed into the exposure box before it is committed
+const TYPED_EXPOSURE = 3;
+// An operator other than the default spline, and its option's label
+const OTHER_OPERATOR: ToneMapOperator = 'reinhard';
+const OTHER_OPERATOR_LABEL = 'Reinhard';
+const DEFAULT_BUTTON_SELECTOR = '.default-button';
 const DEFAULT_SETTINGS: HDRToSDRRenderSettings = createHDRToSDRRenderSettings();
 // One nit above the default input peak, which the engine rejects for paper white
 const PAPER_WHITE_ABOVE_PEAK_NITS = DEFAULT_SETTINGS.toneMapping.inputPeakNits + 1;
@@ -29,6 +36,33 @@ function findSettingInputs(panelElement: HTMLElement, label: string): SettingInp
         }
     }
     throw new Error(`missing-row: ${label}`);
+}
+
+/** Finds the row a label names. */
+function findRow(panelElement: HTMLElement, label: string): Element {
+    const row = [ ...panelElement.querySelectorAll('.tone-mapping-row') ].find((candidate: Element): boolean => candidate.firstElementChild?.textContent === label);
+    if (row === undefined) {
+        throw new Error(`missing-row: ${label}`);
+    }
+    return row;
+}
+
+function findDefaultButton(panelElement: HTMLElement, label: string): HTMLButtonElement {
+    const button = findRow(panelElement, label).querySelector<HTMLButtonElement>(DEFAULT_BUTTON_SELECTOR);
+    if (button === null) {
+        throw new Error(`missing-default-button: ${label}`);
+    }
+    return button;
+}
+
+/** Picks the option with a label in the operator select, which fires change. */
+function chooseOperator(panelElement: HTMLElement, optionLabel: string): void {
+    const select = findRow(panelElement, OPERATOR_LABEL).querySelector('select');
+    if (select === null) {
+        throw new Error('missing-operator-select');
+    }
+    select.selectedIndex = [ ...select.options ].findIndex((option: HTMLOptionElement): boolean => option.text === optionLabel);
+    select.dispatchEvent(new Event('change'));
 }
 
 /** Types a value into a number input and commits it, which fires change. */
@@ -63,6 +97,44 @@ describe('ToneMappingPanel', () => {
         expect(validationElement?.hidden).toBe(false);
         expect(validationElement?.textContent).toBe(PAPER_WHITE_REJECTION);
         expect(paperWhiteInputs.numberInput.value).toBe(String(DEFAULT_SETTINGS.toneMapping.paperWhiteNits));
+    });
+
+    it('returns one setting, and the operator, to its default with the button beside it', () => {
+        const context = createFakePanelContext();
+        const panel = createToneMappingPanel(context);
+        commitNumber(findSettingInputs(panel.element, EXPOSURE_LABEL).numberInput, RAISED_EXPOSURE);
+        chooseOperator(panel.element, OTHER_OPERATOR_LABEL);
+
+        findDefaultButton(panel.element, EXPOSURE_LABEL).click();
+        expect(context.session.setRenderSettings).toHaveBeenLastCalledWith({
+            ...DEFAULT_SETTINGS,
+            toneMapping: { ...DEFAULT_SETTINGS.toneMapping, operator: OTHER_OPERATOR }
+        });
+        findDefaultButton(panel.element, OPERATOR_LABEL).click();
+        expect(context.session.setRenderSettings).toHaveBeenLastCalledWith(DEFAULT_SETTINGS);
+        expect(findDefaultButton(panel.element, EXPOSURE_LABEL).title).toBe(`Default: ${DEFAULT_SETTINGS.toneMapping.exposure}`);
+    });
+
+    it('keeps a value being typed while the presenter settings refresh, and applies it only once committed', () => {
+        const context = createFakePanelContext();
+        const panel = createToneMappingPanel(context);
+        document.body.append(panel.element);
+        const exposureInputs = findSettingInputs(panel.element, EXPOSURE_LABEL);
+        const presenterSettings = createHDRToSDRRenderSettings({ toneMapping: { exposure: PRESENTER_EXPOSURE } });
+        exposureInputs.numberInput.focus();
+        exposureInputs.numberInput.value = String(TYPED_EXPOSURE);
+
+        context.store.setState((state) => ({ presentation: { ...state.presentation, renderSettings: presenterSettings } }));
+
+        expect(exposureInputs.numberInput.value).toBe(String(TYPED_EXPOSURE));
+        expect(exposureInputs.rangeInput.value).toBe(String(PRESENTER_EXPOSURE));
+        expect(context.session.setRenderSettings).not.toHaveBeenCalled();
+        exposureInputs.numberInput.dispatchEvent(new Event('change'));
+        expect(context.session.setRenderSettings).toHaveBeenCalledWith({
+            ...presenterSettings,
+            toneMapping: { ...presenterSettings.toneMapping, exposure: TYPED_EXPOSURE }
+        });
+        panel.element.remove();
     });
 
     it('follows the presenter settings and HDR output, and sends the HDR output toggle', () => {

@@ -16,3 +16,10 @@
     max-width: 14rem;
     color: var(--sandbox-text);
 }
+
+/* Each select with its default button beside it */
+.track-selector-control {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}

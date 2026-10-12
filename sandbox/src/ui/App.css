@@ -97,6 +97,13 @@
     background: var(--sandbox-control-background);
 }
 
+/* A default button sits beside its control, quieter than it */
+:where(.sandbox-layout) :where(.default-button) {
+    padding: 0 4px;
+    color: var(--sandbox-text-muted);
+    font-size: 11px;
+}
+
 :where(.sandbox-layout) :where(option) {
     background: var(--sandbox-menu-background);
     color: var(--sandbox-text);

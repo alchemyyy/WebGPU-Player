@@ -1,13 +1,15 @@
 // The track selectors: the open media's audio track, and its subtitle track or a subtitle file beside it.
-import type {
-    AudioTrackDescription,
-    LibraryDirectory,
-    LibraryFile,
-    MediaDescription,
-    SandboxState,
-    SubtitleSelection,
-    SubtitleTrackDescription,
-    TrackState
+import {
+    DEFAULT_SUBTITLE_SELECTION,
+    getDefaultAudioTrackIndex,
+    type AudioTrackDescription,
+    type LibraryDirectory,
+    type LibraryFile,
+    type MediaDescription,
+    type SandboxState,
+    type SubtitleSelection,
+    type SubtitleTrackDescription,
+    type TrackState
 } from '../../contracts/SandboxContracts';
 import { getLibraryEntryName } from '../../library/LibraryFiles';
 import { findLibraryFile } from '../../library/LibraryTree';
@@ -16,6 +18,7 @@ import { createElement } from '../dom';
 import type { Panel, PanelContext } from '../Panel';
 import { subscribeSelection } from '../Store';
 import { type Choice, createChoiceSelect } from './ChoiceSelect';
+import { createDefaultButton, setDefaultButtonText } from './DefaultButton';
 import { joinTextParts } from './PanelText';
 
 import './TrackSelectorPanel.css';
@@ -72,6 +75,11 @@ export function listSubtitleChoices(media: MediaDescription | null, libraryFile:
     return choices;
 }
 
+/** Returns the label of the choice that holds a value, or the off label when none does. */
+function findChoiceLabel<Value>(choices: readonly Choice<Value>[], isMatch: (value: Value) => boolean): string {
+    return choices.find((choice: Choice<Value>): boolean => isMatch(choice.value))?.label ?? OFF_LABEL;
+}
+
 /** Returns whether two subtitle selections name the same source. */
 export function isSameSubtitleSelection(firstSelection: SubtitleSelection | null, secondSelection: SubtitleSelection | null): boolean {
     if (firstSelection === null || secondSelection === null) {
@@ -106,18 +114,48 @@ export function createTrackSelectorPanel(context: PanelContext): Panel {
     const subtitleSelect = createChoiceSelect<SubtitleSelection | null>((selection: SubtitleSelection | null): void => {
         session.selectSubtitle(selection).catch(restoreSelections);
     }, isSameSubtitleSelection);
+    // The defaults are what opening the file selects; a track change restarts the media, so a default button sends only a change
+    const audioDefaultButton = createDefaultButton(OFF_LABEL, (): void => {
+        const { media, tracks } = store.getState();
+        if (media === null) {
+            return;
+        }
+        const trackIndex = getDefaultAudioTrackIndex(media);
+        if (trackIndex !== tracks.audioTrackIndex) {
+            session.selectAudioTrack(trackIndex).catch(restoreSelections);
+        }
+    });
+    const subtitleDefaultButton = createDefaultButton(OFF_LABEL, (): void => {
+        if (!isSameSubtitleSelection(store.getState().tracks.subtitle, DEFAULT_SUBTITLE_SELECTION)) {
+            session.selectSubtitle(DEFAULT_SUBTITLE_SELECTION).catch(restoreSelections);
+        }
+    });
     const element = createElement('section', { className: 'track-selector-panel' }, [
-        createElement('label', { className: 'track-selector' }, [ createElement('span', { text: 'Audio' }), audioSelect.element ]),
-        createElement('label', { className: 'track-selector' }, [ createElement('span', { text: 'Subtitles' }), subtitleSelect.element ])
+        createElement('label', { className: 'track-selector' }, [
+            createElement('span', { text: 'Audio' }),
+            createElement('span', { className: 'track-selector-control' }, [ audioSelect.element, audioDefaultButton ])
+        ]),
+        createElement('label', { className: 'track-selector' }, [
+            createElement('span', { text: 'Subtitles' }),
+            createElement('span', { className: 'track-selector-control' }, [ subtitleSelect.element, subtitleDefaultButton ])
+        ])
     ]);
 
     const renderChoices = (): void => {
         const { library, media } = store.getState();
         const libraryFile = media === null || library.root === null ? null : findLibraryFile(library.root, media.path);
-        audioSelect.setChoices(listAudioChoices(media));
-        subtitleSelect.setChoices(listSubtitleChoices(media, libraryFile));
-        audioSelect.element.disabled = media === null;
-        subtitleSelect.element.disabled = media === null;
+        const audioChoices = listAudioChoices(media);
+        const subtitleChoices = listSubtitleChoices(media, libraryFile);
+        const defaultTrackIndex = media === null ? null : getDefaultAudioTrackIndex(media);
+        audioSelect.setChoices(audioChoices);
+        subtitleSelect.setChoices(subtitleChoices);
+        setDefaultButtonText(audioDefaultButton, findChoiceLabel(audioChoices, (trackIndex: number | null): boolean => trackIndex === defaultTrackIndex));
+        setDefaultButtonText(subtitleDefaultButton, findChoiceLabel(subtitleChoices, (selection: SubtitleSelection | null): boolean => (
+            isSameSubtitleSelection(selection, DEFAULT_SUBTITLE_SELECTION)
+        )));
+        for (const control of [ audioSelect.element, subtitleSelect.element, audioDefaultButton, subtitleDefaultButton ]) {
+            control.disabled = media === null;
+        }
         renderSelections();
     };
 

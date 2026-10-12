@@ -11,7 +11,7 @@
 
 .route-override-row {
     display: grid;
-    grid-template-columns: 7.5rem minmax(0, 1fr);
+    grid-template-columns: 7.5rem minmax(0, 1fr) max-content;
     align-items: center;
     gap: 4px;
 }

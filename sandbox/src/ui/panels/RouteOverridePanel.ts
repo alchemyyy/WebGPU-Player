@@ -1,16 +1,18 @@
 // The route override: forces the video decoder and the frame transport, and shows the route the session plays.
-import type {
-    ActiveRoute,
-    DecoderOverride,
-    FrameTransportOverride,
-    RouteOverride,
-    SandboxState
+import {
+    DEFAULT_ROUTE_OVERRIDE,
+    type ActiveRoute,
+    type DecoderOverride,
+    type FrameTransportOverride,
+    type RouteOverride,
+    type SandboxState
 } from '../../contracts/SandboxContracts';
 import { reportCommandRejection } from '../commands';
 import { createElement } from '../dom';
 import type { Panel, PanelContext } from '../Panel';
 import { subscribeSelection } from '../Store';
 import { createChoiceSelect, listRecordChoices } from './ChoiceSelect';
+import { createDefaultButton } from './DefaultButton';
 import { joinTextParts } from './PanelText';
 
 import './RouteOverridePanel.css';
@@ -69,12 +71,25 @@ export function createRouteOverridePanel(context: PanelContext): Panel {
         sendOverride({ ...store.getState().route.override, transport });
     });
     transportSelect.setChoices(listRecordChoices(TRANSPORT_OVERRIDE_LABELS));
+    // An override change restarts the media, so a default button sends only a change
+    const decoderDefaultButton = createDefaultButton(DECODER_OVERRIDE_LABELS[DEFAULT_ROUTE_OVERRIDE.decoder], (): void => {
+        const override = store.getState().route.override;
+        if (override.decoder !== DEFAULT_ROUTE_OVERRIDE.decoder) {
+            sendOverride({ ...override, decoder: DEFAULT_ROUTE_OVERRIDE.decoder });
+        }
+    });
+    const transportDefaultButton = createDefaultButton(TRANSPORT_OVERRIDE_LABELS[DEFAULT_ROUTE_OVERRIDE.transport], (): void => {
+        const override = store.getState().route.override;
+        if (override.transport !== DEFAULT_ROUTE_OVERRIDE.transport) {
+            sendOverride({ ...override, transport: DEFAULT_ROUTE_OVERRIDE.transport });
+        }
+    });
     const activeRouteElement = createElement('div', { className: 'route-override-active' });
 
     const element = createElement('section', { className: 'route-override-panel' }, [
         createElement('header', { className: 'route-override-header', text: 'Route' }),
-        createElement('label', { className: 'route-override-row' }, [ createElement('span', { text: 'Decoder' }), decoderSelect.element ]),
-        createElement('label', { className: 'route-override-row' }, [ createElement('span', { text: 'Transport' }), transportSelect.element ]),
+        createElement('label', { className: 'route-override-row' }, [ createElement('span', { text: 'Decoder' }), decoderSelect.element, decoderDefaultButton ]),
+        createElement('label', { className: 'route-override-row' }, [ createElement('span', { text: 'Transport' }), transportSelect.element, transportDefaultButton ]),
         activeRouteElement
     ]);
 

@@ -37,6 +37,7 @@ const ROW_SELECTOR = '.shader-pass';
 const NAME_SELECTOR = '.shader-pass-name';
 const STATE_SELECTOR = '.shader-pass-state';
 const PARAMETER_INPUT_SELECTOR = '.shader-pass-parameter-input';
+const DEFAULT_BUTTON_SELECTOR = '.default-button';
 const EXAMPLE_SELECTOR = '.shader-panel-examples';
 const FILE_INPUT_SELECTOR = '.shader-panel-file-input';
 const DRAG_ACTIVE_CLASS = 'shader-panel-drag-active';
@@ -238,6 +239,19 @@ describe('createShaderPanel', () => {
         input.dispatchEvent(new Event('change'));
 
         expect(context.session.setShaderParameter).toHaveBeenCalledWith(GAIN_PASS_ID, GAIN_PARAMETER, COMMITTED_GAIN);
+        panel.destroy();
+    });
+
+    it('returns a parameter to its manifest default with the button beside it', () => {
+        const context = createFakePanelContext();
+        const panel = createShaderPanel(context);
+
+        publishPasses(context, createPasses({ [GAIN_PARAMETER]: STORED_GAIN }));
+        const defaultButton = getRows(panel)[0].querySelector<HTMLButtonElement>(DEFAULT_BUTTON_SELECTOR);
+        defaultButton?.click();
+
+        expect(defaultButton?.title).toBe(`Default: ${GAIN_DEFAULT}`);
+        expect(context.session.setShaderParameter).toHaveBeenCalledWith(GAIN_PASS_ID, GAIN_PARAMETER, GAIN_DEFAULT);
         panel.destroy();
     });
 

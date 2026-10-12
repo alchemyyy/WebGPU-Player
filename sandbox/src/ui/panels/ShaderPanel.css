@@ -88,7 +88,7 @@
 /* Name, input, and range columns line up across a pass's parameters */
 .shader-pass-parameters {
     display: grid;
-    grid-template-columns: max-content minmax(0, 8em) max-content;
+    grid-template-columns: max-content minmax(0, 8em) max-content max-content;
     gap: calc(var(--sandbox-gap) / 2) var(--sandbox-gap);
     align-items: center;
 }

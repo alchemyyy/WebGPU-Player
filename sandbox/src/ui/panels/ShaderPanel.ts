@@ -18,6 +18,7 @@ import { carriesFiles, createElement, reconcileKeyedChildren, setTextContent } f
 import type { Panel, PanelContext } from '../Panel';
 import { subscribeSelection } from '../Store';
 import { createChoiceSelect, type Choice } from './ChoiceSelect';
+import { createDefaultButton } from './DefaultButton';
 
 import './ShaderPanel.css';
 
@@ -192,7 +193,10 @@ function createRowView(row: ShaderPassRow, session: SandboxSessionCommands): Pas
         }, [
             createElement('span', { className: 'shader-pass-parameter-name', text: field.name }),
             input,
-            createElement('span', { className: 'shader-pass-parameter-range', text: `[${field.minimum}, ${field.maximum}]` })
+            createElement('span', { className: 'shader-pass-parameter-range', text: `[${field.minimum}, ${field.maximum}]` }),
+            createDefaultButton(String(field.defaultValue), (): void => {
+                session.setShaderParameter(row.id, field.name, field.defaultValue);
+            })
         ]));
     }
     // The state goes on its own line, since a report detail is too long to share one with the name in the narrow column

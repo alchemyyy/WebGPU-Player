@@ -83,6 +83,10 @@ About ffmpeg.wasm:
   The decision is `getSurfaceClickAction` in `sandbox/src/ui/SurfaceClick.ts`.
 - Scrolling over a slider or a value box moves it and applies the value at once, as a drag or a committed entry does.
   A notch moves a slider a fiftieth of its range, or a five-hundredth with Shift, and a value box one step, never past its limits; `sandbox/src/ui/ControlWheel.ts` holds the rules.
+- A value typed into a box applies only when Enter or leaving the box commits it, and the panels' refreshes leave a value being typed alone.
+- Each slider, value box, and select has a Default button beside it, whose title names the default.
+  The defaults are what a file opens with: the engine's tone mapping settings, the pass manifest's parameter default, full volume, Auto routes, the media's default audio track, and subtitles off.
+  A route or audio track change restarts the media, so those buttons do nothing at the default.
 - The timeline seeks on click.
   While it is dragged, it seeks at most once per `SCRUB_SEEK_INTERVAL_MILLISECONDS`, in `sandbox/src/ui/panels/TransportBarPanel.ts`, and once more where the drag ends.
 - The playhead and the time follow the session clock every animation frame, while the rest of the state refreshes a few times a second.

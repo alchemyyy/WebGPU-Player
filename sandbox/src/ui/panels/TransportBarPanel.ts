@@ -1,7 +1,13 @@
 // The transport bar: play and pause, a timeline that seeks on click and drag, the current and total time, and volume.
 import type { Microseconds } from 'webgpu-player/MediaTime';
 
-import type { MediaDescription, PlaybackState, PlaybackStatus, SandboxState } from '../../contracts/SandboxContracts';
+import {
+    DEFAULT_VOLUME,
+    type MediaDescription,
+    type PlaybackState,
+    type PlaybackStatus,
+    type SandboxState
+} from '../../contracts/SandboxContracts';
 import { createAnimationLoop } from '../AnimationLoop';
 import { reportCommandRejection } from '../commands';
 import { createElement } from '../dom';
@@ -9,6 +15,7 @@ import { OVERLAY_TOGGLE_KEY } from '../OverlayToggle';
 import type { Panel, PanelContext } from '../Panel';
 import { subscribeSelection } from '../Store';
 import { formatMediaTime } from '../TimeFormat';
+import { createDefaultButton } from './DefaultButton';
 import { getPointerFraction, getTimeAtFraction, getTimeFraction } from './TimelinePosition';
 
 import './TransportBarPanel.css';
@@ -72,6 +79,9 @@ export function createTransportBarPanel(context: PanelContext): Panel {
             createElement('span', { className: 'transport-spacer' }),
             muteButton,
             volumeInput,
+            createDefaultButton(String(DEFAULT_VOLUME), (): void => {
+                session.setVolume(DEFAULT_VOLUME);
+            }),
             createElement('span', { className: 'transport-hint', text: `${OVERLAY_TOGGLE_KEY.toUpperCase()} hides panels` })
         ])
     ]);

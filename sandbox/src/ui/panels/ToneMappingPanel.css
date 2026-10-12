@@ -1,4 +1,4 @@
-/* The tone mapping controls: one row per setting, label, slider, then number */
+/* The tone mapping controls: one row per setting, label, slider, number, then its default button */
 .tone-mapping-panel {
     display: flex;
     flex-direction: column;
@@ -26,7 +26,7 @@
 
 .tone-mapping-row {
     display: grid;
-    grid-template-columns: 7.5rem minmax(4rem, 1fr) 4.5rem;
+    grid-template-columns: 7.5rem minmax(4rem, 1fr) 4.5rem max-content;
     align-items: center;
     gap: 4px;
 }
