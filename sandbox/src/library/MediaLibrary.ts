@@ -1,6 +1,7 @@
 // The media library: a picked folder's playable files as a tree, remembered across reloads where the browser keeps directory handles.
 import {
     appendSandboxFailure,
+    describeError,
     type LibraryState,
     type SandboxLibraryCommands,
     type SandboxMediaFile,
@@ -9,7 +10,7 @@ import {
 import type { SandboxStore } from '../ui/Panel';
 import type { AccessibleDirectoryHandle, FileSystemHandlePermissionDescriptor } from './FileSystemAccess';
 import { type FolderPick, hasDirectoryPicker, pickFolder } from './FolderPicker';
-import { describeError, type LibraryFailureCode } from './LibraryFailures';
+import type { LibraryFailureCode } from './LibraryFailures';
 import {
     type LibraryFileSource,
     type LibraryScan,

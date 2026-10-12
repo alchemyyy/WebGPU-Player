@@ -42,7 +42,7 @@
 
 | Command | Covers | Needs `bin/wasm/` |
 | --- | --- | --- |
-| `npm run typecheck` | `tsc --noEmit` over `src/` and `test/` | No |
+| `npm run typecheck` | `tsc --noEmit` over `src/`, `test/`, and `sandbox/src/` | No |
 | `npm run lint` | The engine's ESLint config, adapted from Jellyfin Web's | No |
 | `npm test` | The Vitest suites (jsdom). Decoder integration tests run the builds in `bin/wasm/` under Node | Yes |
 | `npm run build` | The served assets in `bin/libraries/` and `bin/build-info.json`. `npm run build -- --production` minifies the workers | Yes |

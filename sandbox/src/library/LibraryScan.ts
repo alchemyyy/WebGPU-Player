@@ -1,6 +1,7 @@
 // Reads a picked folder's media and subtitle files: a directory handle walked with an explicit work list, or the files a folder input chose.
+import { describeError } from '../contracts/SandboxContracts';
 import type { AccessibleDirectoryHandle } from './FileSystemAccess';
-import { describeError, type LibraryFailureReporter } from './LibraryFailures';
+import type { LibraryFailureReporter } from './LibraryFailures';
 import {
     classifyLibraryFileName,
     formatLibraryPathDetail,
