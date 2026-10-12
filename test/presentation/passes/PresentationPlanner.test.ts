@@ -451,3 +451,18 @@ describe('planPresentation reports', () => {
         expect(presentationPlan.passes).toHaveLength(1);
     });
 });
+
+describe('planPresentation color step names', () => {
+    it('names each pass\'s color steps in order, built-in functions by name and user passes by manifest name', () => {
+        const presentationPlan = plan(createHDRChain(), [ createColorPass() ]);
+
+        expect(presentationPlan.passes[0].colorSteps).toEqual([
+            'builtin.transfer-decode',
+            'builtin.tone-map',
+            'builtin.output-encode',
+            'Saturation',
+            'builtin.display-controls',
+            'builtin.dither'
+        ]);
+    });
+});

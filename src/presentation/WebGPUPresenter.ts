@@ -1667,6 +1667,11 @@ export default class WebGPUPresenter {
         this.redrawCurrentFrame(this.activeGeneration);
     }
 
+    /** Returns the plan the active executor renders, or null before one is installed. */
+    getActivePresentationPlan(): PresentationPlan | null {
+        return this.executorPlan;
+    }
+
     /**
      * Returns the active plan's report over every preset pass, in preset order: the passes it runs, and each pass it leaves out with the failed check and a terse detail.
      * Passes the presenter keeps out of every plan are reported as well, and only those while no active plan was built from the current preset.

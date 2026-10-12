@@ -877,6 +877,9 @@ class PassCodeGenerator {
         return {
             bindings: bindingList.bindings,
             code: module.code,
+            colorSteps: draft.postSteps.map((step: ColorStep): string => (
+                step.kind === 'builtin' ? step.colorFunction.name : step.pass.manifest.name
+            )),
             coordinateMapping: draft.coordinateMapping,
             indirectBufferId: null,
             inputTextureId: draft.hookedTextureId,
