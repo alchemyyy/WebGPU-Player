@@ -12,7 +12,9 @@
 - A color function is `fn apply(color: vec4f, position: vec2f) -> vec4f`, and it is always fused into a neighboring pass.
 - A compute pass can write storage buffers, which is how per-frame statistics stay on the GPU.
 - Compute passes cannot use `textureSample`, but can use `textureSampleLevel` and `textureLoad`.
+- In core WebGPU, `r16float`, `rg16float`, and `rgb10a2unorm` cannot be storage textures, so a compute pass writes `rgba16float`, `r32float`, or a buffer instead.
 - WebGPU allows 256 invocations per workgroup by default.
+- Decoders are a separate kind of module, described in [decoders.md](decoders.md).
 
 ## File format
 

@@ -25,6 +25,7 @@
   External textures expire, and a held frame would keep one of the decoder's frame credits, which are 4 for `VideoFrame` output and 2 for raw planes.
 - On the external route, the planner materializes the earliest stage that a temporal pass reads, at source resolution, into the ring.
   That render is the only cost temporal support adds, and it exists only while a temporal pass is active.
+- On the GPU decode route, decoded frames are already owned: a temporal pass reads pool slots directly, and the pool keeps a slot until neither the decoder nor history needs it.
 
 ## Memory
 

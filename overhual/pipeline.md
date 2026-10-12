@@ -9,7 +9,7 @@ A pass hooks a stage of the spine and declares the color domain it requires, and
 
 | Stage | Resolution | Contents | Built-in default | Replaceable |
 | --- | --- | --- | --- | --- |
-| `SOURCE` | coded | What ingress delivers: an external texture, or YUV planes and a Dolby Vision enhancement layer | Ingress | No |
+| `SOURCE` | coded | What ingress delivers: an external texture, YUV planes and a Dolby Vision enhancement layer, or a user decoder's planes in GPU memory | Ingress | No |
 | `SIGNAL` | source | Decoded code values: YUV planes, or code values recovered from the external RGB | Neutralization inverse, Dolby Vision reshaping and composing | No |
 | `RGB` | source | RGB in the source's primaries and transfer function | YUV to RGB matrix and range | Yes |
 | prescalers | fixed ratios | Fixed-ratio upscalers, such as luma doublers | None | Yes |
@@ -27,6 +27,7 @@ A pass hooks a stage of the spine and declares the color domain it requires, and
 Everything up to `SIGNAL` is equivalent to decoding, so it is fixed.
 Everything after it is presentation, so it is replaceable.
 Route authorization checks only the fixed part, so a user preset never changes which route a session takes.
+A user decoder replaces decoding itself for the streams it takes: it produces the planes that `SIGNAL` reads, and its conformance vector stands in for authorization (see [decoders.md](decoders.md)).
 
 ## Ingress
 
@@ -37,6 +38,7 @@ Route authorization checks only the fixed part, so a user preset never changes w
 - Plane route: the worker copies the decoded frame into a buffer of 256-byte-aligned rows and transfers it, and the page uploads each plane with `queue.writeTexture` into integer textures (`r8uint`, `rg8uint`, `r16uint`).
   - Chroma arrives at native resolution.
   - Dolby Vision with an enhancement layer uses this route, with both layers in one compound buffer.
+- GPU decode route: a user WGSL decoder writes planes into a frame pool on the presenter's device, and the only transfer is the compressed packet (see [decoders.md](decoders.md)).
 - The plane route's round trip (hardware decode, `copyTo`, upload) is the largest copy left on a laptop.
   WebGPU exposes no GPU-side access to a `VideoFrame`'s planes, and a mapped GPU buffer cannot be handed to the decode worker.
   So this design cannot remove that copy; it only never adds to it and never forces the plane route without need.

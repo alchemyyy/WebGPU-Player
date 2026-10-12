@@ -10,7 +10,7 @@
 
 1. Evaluate each pass's `when` condition.
 2. Resolve what each active pass reads, and drop everything nothing reads.
-3. Choose the cheapest source that satisfies the reads: the external route unless an active pass needs native-resolution chroma.
+3. Take the source the session's route provides; on a WebCodecs route, prefer the external route unless an active pass needs native-resolution chroma.
 4. Place the color transitions (see [color.md](color.md)).
 5. Fuse color-function chains into the neighboring kernels.
 6. Size each intermediate from its `output` expression, and pick the smallest format that meets its components and precision.
@@ -36,6 +36,9 @@
 | Encoded 10-bit RGB, when a pass accepts it | `rgb10a2unorm` |
 | Only on request | `rgba32float` |
 
+Fragment passes can render to every format here.
+Compute passes can write only core storage formats, which among these are `rgba16float` and `rgba32float`, so a compute pass that needs luma alone writes `r32float` or a buffer.
+
 ## Executor
 
 For each new frame:
@@ -44,6 +47,8 @@ For each new frame:
 3. Encode the passes in plan order, the last one into the canvas texture.
 4. Submit once.
 5. Release the frame as today: a `VideoFrame` closes after `submit()`, and its credit returns after `queue.onSubmittedWorkDone()`.
+
+On the GPU decode route, decode work goes in separate submissions, paced as described in [decoders.md](decoders.md).
 
 ## Invalidation
 

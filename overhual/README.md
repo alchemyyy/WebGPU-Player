@@ -10,6 +10,8 @@ The book in `docs/` remains the reference for what the engine does today.
 - Presentation steps are replaceable, including the built-in scaler and tone mapper.
 - Presets belong to each user's browser: the engine exposes an API, and the host stores and supplies presets.
 - Temporal passes, which read earlier frames, are in scope.
+- Users can drop in WGSL compute decoders for video; they run on the presenter's device, so decoded frames never leave the GPU.
+  Audio is out of scope.
 - The design target is 4K UHD Blu-ray content on a modern laptop: no avoidable copies and no avoidable CPU work.
 
 ## Files
@@ -22,6 +24,7 @@ The book in `docs/` remains the reference for what the engine does today.
 | [passes.md](passes.md) | Pass shapes, the shader file format, the generated prelude, and failure handling |
 | [planning.md](planning.md) | The planner, the per-frame executor, formats, and invalidation |
 | [temporal.md](temporal.md) | History rings, persistent state, and reset rules |
+| [decoders.md](decoders.md) | User WGSL compute decoders for video: the module, the route, verification, and failures |
 | [scenarios.md](scenarios.md) | Worked plans for typical inputs and displays |
 | [implementation.md](implementation.md) | The code it changes, proposed modules, migration phases, and validation |
 
@@ -34,3 +37,5 @@ The book in `docs/` remains the reference for what the engine does today.
 4. The versioning policy of the metadata contract that user shaders bind to.
 5. 3D LUT assets in the first version.
 6. Display knowledge for HDR output: settings for the display peak and SDR white, or values the browser exposes.
+7. Whether the demuxer can pass through packets of codecs it does not recognize, which decides the containers user decoders can read.
+8. Whether decoders without a conformance vector are allowed at all, or only when the user forces them.

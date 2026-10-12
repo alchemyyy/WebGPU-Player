@@ -25,6 +25,8 @@
 3. One encode per active pass.
 4. One `submit`.
 
+On the GPU decode route, each frame adds one packet write, at compressed size, and the decoder's dispatches.
+
 `CustomDecodeSession.takeFrame` already hands each frame out once: it returns a frame only when a newer one is due, and drops older due frames.
 So the presenter receives 24 frames a second for 23.976 fps content, whatever the panel's refresh rate.
 
