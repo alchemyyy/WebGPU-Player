@@ -19,6 +19,7 @@ Each source file's tests are at the same relative path under `test/`, and integr
 - `WebGPUPresenter.ts`: the GPU device and canvas; rVFC and pushed-frame submission; each route's built-in chain, planned and recorded through `passes/`; HDR and Dolby Vision authorization; device-loss recovery; the latched fallback.
   It also holds the engine API for presentation: the host's preset of user passes, live parameter changes, the plan report, and HDR output for HDR sources.
 - `PresentationInput.ts`: MediaStream metadata to color metadata; Dolby Vision descriptors with their RPU route; declared and exact native base metadata; the presented video ordinal; the known-SDR gate.
+- `PresentationSetup.ts`: what a host calls around the eligibility, without state of its own: the play options' presentation input, the authorizations that gate the eligibility's presentation routes, the presenter's color pipeline for the chosen route, Dolby Vision bases included, and static HDR metadata updates.
 - `PresentationGeometry.ts`: pure object-fit and object-position math to viewport and texture transforms.
 - `RenderSettings.ts`: versioned (v7) HDR-to-SDR settings and their 144-byte uniform, HDR10+ fields included.
 - `WebGPUConstants.ts`: the WebGPU values presentation and GPU decode share: canvas configuration, texture formats, features, and default limits.
@@ -94,6 +95,7 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 
 - `CustomPlaybackController.ts` [main]: lifecycle, generations, the clock, the startup (20 s without progress, 60 s ceiling), stall (10 s), and lag (2 s) policy, the live audio output layout switch, the end-of-stream and ended-track drains, the presentation timing counters, and the fallback disposition.
 - `CustomPlaybackControllerTypes.ts`: states, events, fallback reasons, and dispositions.
+- `CustomPlaybackFrameLoop.ts` [main]: the frame loop a host runs per playback: each animation frame presents the controller's current frame and acknowledges its credit, and a hidden page drains decoded video every 25 ms instead.
 - `CustomDecodeSession.ts` [main]: the session's one decode worker, which the first start creates, each generation takes once the previous run stopped, a failure or an unacknowledged stop replaces, and `destroy` terminates; and per generation, the frame queue, credits, raw buffer recycling, readiness, audio-only resync epochs, the decoded source format, and an ended audio track completing a start, a resync, or a native-media stream.
 - `CustomDecode.worker.ts` [worker]: one run at a time, each ending with `stopped`: demux, decoder dispatch, raw copy, Dolby Vision and HDR metadata, decoded PCM as restartable audio attempts in its audio decode worker, fMP4 remux, and credit waits.
 - `CustomAudioDecode.worker.ts`, `AudioDecodeWorkerRuntime.ts` [worker]: the audio decode worker, which a decode worker spawns for its decoded PCM runs and keeps for its life.

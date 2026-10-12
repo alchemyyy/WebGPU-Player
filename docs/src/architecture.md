@@ -16,10 +16,11 @@ A session takes one of two paths:
 - (b) The custom pipeline, for eligible direct-play VOD.
   The worker posts `'frame'` messages (a `VideoFrame`, or raw planes in a pooled buffer, with Dolby Vision and HDR10+ metadata), and fMP4 segments for native-media audio.
   Decoded PCM goes from the worker's audio decode worker straight to the AudioWorklet, over a channel the page hands over, and the page learns only each chunk's place and length (`audio-progress`).
-  The host's rAF loop takes the controller's current frame and presents it.
+  The frame loop, `CustomPlaybackFrameLoop`, takes the controller's current frame each animation frame and presents it.
   Decoded audio plays through an AudioWorklet in a pooled 48 kHz context, and AC-3 and E-AC-3 can play through a hidden `<audio>` element and MSE.
 
-The host player, its HTML backend with any hls.js runtime, and the rAF loop are host code.
+The host player and its HTML backend with any hls.js runtime are host code.
+A host drives the custom pipeline through `PresentationSetup`, which gates the eligibility's presentation routes and configures the presenter for the chosen one, and runs one `CustomPlaybackFrameLoop` per playback.
 Everything else in the diagram is engine code.
 The plugin's book follows the Jellyfin host's half of a session.
 
@@ -62,7 +63,7 @@ Video is pulled: each rAF draws the newest frame at or before the clock.
    Video and audio then stream concurrently.
 6. The session is ready when the first frame is queued and at least 100 ms of PCM has been submitted, or, on the native-media audio route, when the first segment is appended.
 7. `completeStartupIfReady` starts audio, resumes the clock, and emits `ready` and `playing`.
-   The host then starts its rAF loop.
+   The host then starts the frame loop.
 
 ## Steady state
 
