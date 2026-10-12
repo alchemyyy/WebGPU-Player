@@ -48,19 +48,56 @@ The key is ignored while an input, a select, or a text area has focus, and it is
 - Elsewhere, as in Firefox, the library picks the folder through a folder file input (`webkitdirectory`), and nothing is remembered across reloads.
 - A folder or file that cannot be read is recorded as a failure and left out, and the scan goes on.
 
+## How a file plays
+
+1. Clicking a file opens an audio context while the click's user activation lasts, since the probe's waits would outlast it.
+2. The session probes the file with ffprobe compiled to WebAssembly, from ffmpeg.wasm.
+   One command reads the streams and the container format, and a second reads the first video frame's side data, where HDR10+ metadata shows.
+   A first frame that cannot be read is recorded as `first-frame-unreadable`, and the file plays without HDR10+.
+3. `sandbox/src/session/PlaybackMediaSource.ts` turns the probe into the media description the engine's eligibility reads: the container, and each video and audio stream with its codec, profile, level, size, bit depth, color, and dynamic range.
+   The dynamic range is Dolby Vision when the stream has a Dolby Vision configuration record, else PQ, HLG, or SDR from its transfer, and PQ is HDR10+ when the first frame carries HDR10+ metadata.
+4. The route starts on the audio track marked default, else the first, through the engine modules a host uses: the capability probes, the presentation authorizations and color pipeline from `presentation/PresentationSetup.ts`, the eligibility, `CustomPlaybackController`, and `CustomPlaybackFrameLoop`.
+   The controller reads the picked file itself, as a `file` source, and takes the duration from the container.
+
+When things go wrong:
+
+- A route that fails to start records why, and stops with everything it set up.
+- The controller's request to fall back to a browser player, which the sandbox does not have, is recorded as `fallback` with its reason and media time, and stops the route.
+- Changing the audio track or the route override restarts the media where its clock stopped, after a fallback too.
+
+About ffmpeg.wasm:
+
+- Its core is about 32 MB of WebAssembly, which loads on the first probe.
+- It runs in its own worker, one command at a time, and each command reads the file in place through a WORKERFS mount instead of copying it into memory.
+- `@ffmpeg/ffmpeg` and `@ffmpeg/core` are dev dependencies of the engine.
+  `@ffmpeg/core` is GPL-2.0-or-later, and only the sandbox serves it, so nothing that ships includes it.
+
 ## Playback controls
 
 - The timeline seeks on click.
   While it is dragged, it seeks at most once per `SCRUB_SEEK_INTERVAL_MILLISECONDS`, in `sandbox/src/ui/panels/TransportBarPanel.ts`, and once more where the drag ends.
 - The playhead and the time follow the session clock every animation frame, while the rest of the state refreshes a few times a second.
 - The audio selector lists the media's audio tracks.
-  The subtitle selector lists its text-based subtitle tracks and the subtitle files beside it.
+  The subtitle selector lists its text-based subtitle tracks and the subtitle files beside it, and leaves out image-based tracks such as PGS and DVD subtitles.
   Both have an Off choice.
+- A selected subtitle track or file is converted to WebVTT with ffmpeg and shows as plain-text cues, without styling tags.
 - The tone mapping panel edits `HDRToSDRRenderSettings` within `HDR_RENDER_SETTING_RANGES`, both from `presentation/RenderSettings.ts`, and switches HDR output.
   It checks every change with `assertValidRenderSettings` before sending it, and shows the engine's reason for a value it rejects.
-- The route override forces the video decoder, WebCodecs or the bundled software decoder, and the frame transport, raw planes or a `VideoFrame`.
-  The session then restarts the media at the current time on that route.
+- The route override asks for a frame transport, raw planes or a `VideoFrame`, and a video decoder, WebCodecs or the bundled software decoder.
+  The session then restarts the media where its clock stopped.
   The panel shows the route the session plays and the reason for its choice.
+
+## The route override
+
+The override narrows what the engine's eligibility may choose from rather than replacing its choice, so the eligibility still validates every route the session plays.
+It is in `sandbox/src/session/RouteOverride.ts`.
+
+- A transport override withdraws the presentation authorizations of the other transport.
+  `VideoFrame` withdraws every raw-plane route, Dolby Vision reconstruction included, and raw planes withdraw the native HDR, native Dolby Vision, and external HDR routes.
+  An SDR `VideoFrame` route needs no authorization, so raw planes cannot withdraw it.
+- A decoder override marks the capabilities of the other decoder unsupported.
+  It chooses only among the decoders the capability probes qualified for the file, so it cannot force a decoder the probes rejected.
+- When the chosen route leaves part of the override unmet, the session records `route-override-unmet` with what was asked and what was chosen, and plays the route anyway.
 
 ## Diagnostics
 
@@ -80,7 +117,7 @@ The key is ignored while an input, a select, or a text area has focus, and it is
 | `sandbox/src/contracts/SandboxContracts.ts` | The contract between the layers: the state the session and the library publish, and the commands the panels send |
 | `sandbox/src/ui/Store.ts` | One immutable state object, shallow-merged updates, and selector subscriptions |
 | `sandbox/src/library/` | The media library: the folder pickers, the scan, the tree, and the remembered folder |
-| `sandbox/src/session/` | The playback session, which drives the engine |
+| `sandbox/src/session/` | The playback session, which drives the engine, and the ffprobe probe with its translation into the engine's media description |
 | `sandbox/src/ui/App.ts` | The layout, which mounts each panel into its region and toggles them |
 | `sandbox/src/ui/panels/` | One module per panel, each with its own stylesheet |
 | `sandbox/src/ui/diagnostics/` | What the diagnostics panels show, as pure functions of the state: the graph layout, the playback info sections, and the shader pass rows |
