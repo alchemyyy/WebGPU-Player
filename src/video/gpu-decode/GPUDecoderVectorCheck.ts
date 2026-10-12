@@ -1,5 +1,6 @@
 // The conformance check of a user decoder: decode its vector on a device, read back the checked frames' planes, and compare their SHA-256 with the declared hash.
 // The caller demuxes the vector file and hands over its packets; overhual/decoders.md in the engine root describes verification.
+import { getGPUDecoderFormatFacts } from './GPUDecodeFormats';
 import type { GPUFramePoolLayout } from './GPUFramePool';
 import {
     type GPUDecodePacket,
@@ -65,24 +66,59 @@ export function hashGPUDecoderSource(source: string): Promise<string> {
     return computeSHA256(new TextEncoder().encode(source));
 }
 
-/** Returns the bytes one frame contributes to the vector hash: every plane at its size, rows tightly packed. */
-export function getGPUDecoderVectorFrameByteLength(layout: GPUFramePoolLayout): number {
+type VisibleRectangle = GPUDecodeStreamFacts['visibleRectangle'];
+
+/** The part of one slot plane the vector hash reads: its visible rows, each from its first visible sample. */
+type HashedPlaneRegion = {
+    byteOffset: number
+    bytesPerRow: number
+    rowByteLength: number
+    rowCount: number
+};
+
+/**
+ * Returns each plane's visible region, luma first.
+ * A chroma region is the visible rectangle divided by the format's subsampling, with sizes rounded up as FFmpeg sizes chroma planes.
+ */
+function getHashedPlaneRegions(layout: GPUFramePoolLayout, visibleRectangle: VisibleRectangle): HashedPlaneRegion[] {
+    const formatFacts = getGPUDecoderFormatFacts(layout.format);
+    return layout.planes.map((plane, planeIndex: number): HashedPlaneRegion => {
+        const widthDivisor = planeIndex === 0 ? 1 : formatFacts.chromaWidthDivisor;
+        const heightDivisor = planeIndex === 0 ? 1 : formatFacts.chromaHeightDivisor;
+        const firstColumn = Math.floor(visibleRectangle.x / widthDivisor);
+        const firstRow = Math.floor(visibleRectangle.y / heightDivisor);
+        return {
+            byteOffset: plane.byteOffset + firstRow * plane.bytesPerRow + firstColumn * layout.bytesPerSample,
+            bytesPerRow: plane.bytesPerRow,
+            rowByteLength: Math.ceil(visibleRectangle.width / widthDivisor) * layout.bytesPerSample,
+            rowCount: Math.ceil(visibleRectangle.height / heightDivisor)
+        };
+    });
+}
+
+/** Returns the bytes one frame contributes to the vector hash: every plane's visible region, rows tightly packed. */
+export function getGPUDecoderVectorFrameByteLength(layout: GPUFramePoolLayout, visibleRectangle: VisibleRectangle): number {
     let byteLength = 0;
-    for (const plane of layout.planes) {
-        byteLength += plane.width * plane.height * layout.bytesPerSample;
+    for (const region of getHashedPlaneRegions(layout, visibleRectangle)) {
+        byteLength += region.rowByteLength * region.rowCount;
     }
     return byteLength;
 }
 
-/** Writes a slot's planes into target at targetOffset as the vector hash reads them: luma then chroma, each row without its padding. */
-export function packGPUDecoderVectorFrame(layout: GPUFramePoolLayout, slotBytes: Uint8Array, target: Uint8Array, targetOffset: number): void {
+/** Writes a slot's visible planes into target at targetOffset as the vector hash reads them: luma then chroma, each row without padding. */
+export function packGPUDecoderVectorFrame(
+    layout: GPUFramePoolLayout,
+    visibleRectangle: VisibleRectangle,
+    slotBytes: Uint8Array,
+    target: Uint8Array,
+    targetOffset: number
+): void {
     let writeOffset = targetOffset;
-    for (const plane of layout.planes) {
-        const rowByteLength = plane.width * layout.bytesPerSample;
-        for (let row = 0; row < plane.height; row += 1) {
-            const rowStart = plane.byteOffset + row * plane.bytesPerRow;
-            target.set(slotBytes.subarray(rowStart, rowStart + rowByteLength), writeOffset);
-            writeOffset += rowByteLength;
+    for (const region of getHashedPlaneRegions(layout, visibleRectangle)) {
+        for (let row = 0; row < region.rowCount; row += 1) {
+            const rowStart = region.byteOffset + row * region.bytesPerRow;
+            target.set(slotBytes.subarray(rowStart, rowStart + region.rowByteLength), writeOffset);
+            writeOffset += region.rowByteLength;
         }
     }
 }
@@ -202,11 +238,11 @@ async function decodeAndHashVector(
     device: GPUDevice,
     session: GPUVideoDecodeSession,
     vector: GPUDecoderVector,
-    packets: readonly GPUDecodePacket[]
+    input: GPUDecoderVectorInput
 ): Promise<GPUDecoderVectorCheckResult> {
     const readbacks: Promise<Uint8Array>[] = [];
     try {
-        const decodeFailure = await decodeVectorFrames(device, session, vector, packets, readbacks);
+        const decodeFailure = await decodeVectorFrames(device, session, vector, input.packets, readbacks);
         if (decodeFailure) {
             return decodeFailure;
         }
@@ -217,10 +253,11 @@ async function decodeAndHashVector(
             return { code: 'readback-failed', detail: describeError(error) };
         }
         const layout = session.pool.layout;
-        const frameByteLength = getGPUDecoderVectorFrameByteLength(layout);
+        const visibleRectangle = input.stream.visibleRectangle;
+        const frameByteLength = getGPUDecoderVectorFrameByteLength(layout, visibleRectangle);
         const checkedPlanes = new Uint8Array(slotCopies.length * frameByteLength);
         for (let frameIndex = 0; frameIndex < slotCopies.length; frameIndex += 1) {
-            packGPUDecoderVectorFrame(layout, slotCopies[frameIndex], checkedPlanes, frameIndex * frameByteLength);
+            packGPUDecoderVectorFrame(layout, visibleRectangle, slotCopies[frameIndex], checkedPlanes, frameIndex * frameByteLength);
         }
         const sha256 = await computeSHA256(checkedPlanes);
         return sha256 === vector.sha256 ? { code: 'passed', detail: sha256 } : { code: 'hash-mismatch', detail: `${sha256} != ${vector.sha256}` };
@@ -253,7 +290,7 @@ export async function checkGPUDecoderVector(
         throw error;
     }
     try {
-        return await decodeAndHashVector(device, session, vector, input.packets);
+        return await decodeAndHashVector(device, session, vector, input);
     } finally {
         session.destroy();
     }

@@ -33,6 +33,8 @@ const STREAM: GPUDecodeStreamFacts = {
     codedWidth: CODED_WIDTH,
     visibleRectangle: { height: CODED_HEIGHT, width: CODED_WIDTH, x: 0, y: 0 }
 };
+// A visible rectangle inside the coded frame, at chroma-aligned offsets, whose planes the hash reads
+const CROPPED_VISIBLE_RECTANGLE = { height: 30, width: 58, x: 4, y: 2 };
 const FRAME_DURATION_MICROSECONDS = 40_000;
 const ENTRY_POINT = 'copyPlanes';
 const VECTOR_FILE = 'vector.mkv';
@@ -135,6 +137,44 @@ function hashFrames(frameIndices: readonly number[]): string {
     return hash.digest('hex');
 }
 
+/** Returns one frame's packed planes cropped to a visible rectangle, rows tightly packed, by an implementation independent of the engine's. */
+function cropFrameBytes(frameBytes: Uint8Array, rectangle: typeof CROPPED_VISIBLE_RECTANGLE): Uint8Array {
+    const formatFacts = getGPUDecoderFormatFacts(OUTPUT_FORMAT);
+    const chromaWidth = Math.ceil(CODED_WIDTH / formatFacts.chromaWidthDivisor);
+    const chromaHeight = Math.ceil(CODED_HEIGHT / formatFacts.chromaHeightDivisor);
+    const lumaByteLength = CODED_WIDTH * CODED_HEIGHT;
+    const planes = [
+        { byteOffset: 0, heightDivisor: 1, width: CODED_WIDTH, widthDivisor: 1 },
+        { byteOffset: lumaByteLength, heightDivisor: formatFacts.chromaHeightDivisor, width: chromaWidth, widthDivisor: formatFacts.chromaWidthDivisor },
+        {
+            byteOffset: lumaByteLength + chromaWidth * chromaHeight,
+            heightDivisor: formatFacts.chromaHeightDivisor,
+            width: chromaWidth,
+            widthDivisor: formatFacts.chromaWidthDivisor
+        }
+    ];
+    const croppedBytes: number[] = [];
+    for (const plane of planes) {
+        const left = rectangle.x / plane.widthDivisor;
+        const top = rectangle.y / plane.heightDivisor;
+        const width = Math.ceil(rectangle.width / plane.widthDivisor);
+        const height = Math.ceil(rectangle.height / plane.heightDivisor);
+        for (let row = 0; row < height; row += 1) {
+            const rowStart = plane.byteOffset + (top + row) * plane.width + left;
+            croppedBytes.push(...frameBytes.subarray(rowStart, rowStart + width));
+        }
+    }
+    return Uint8Array.from(croppedBytes);
+}
+
+function hashCroppedFrames(frameIndices: readonly number[], rectangle: typeof CROPPED_VISIBLE_RECTANGLE): string {
+    const hash = createHash('sha256');
+    for (const frameIndex of frameIndices) {
+        hash.update(cropFrameBytes(createFrameBytes(frameIndex), rectangle));
+    }
+    return hash.digest('hex');
+}
+
 function createManifest(options: VectorDecoderOptions = {}): GPUDecoderManifest {
     const sha256 = options.sha256 === undefined ? hashFrames([ 0, 1, 2 ]) : options.sha256;
     return parseGPUDecoderManifest(createDecoderSource(options, sha256));
@@ -192,6 +232,22 @@ describe('checkGPUDecoderVector', () => {
 
         expect(result).toEqual({ code: 'passed', detail: expectedHash });
         expect(device.buffers.every(buffer => buffer.destroyed)).toBe(true);
+    });
+
+    it('hashes the checked frames cropped to the stream\'s visible rectangle, as FFmpeg writes rawvideo', async () => {
+        const device = new MockGPUDevice();
+        playUncompressedDecoder(device);
+        const expectedHash = hashCroppedFrames([ 0, 1, 2 ], CROPPED_VISIBLE_RECTANGLE);
+        const input: GPUDecoderVectorInput = {
+            codecPrivate: null,
+            packets: createSequentialPackets(PACKET_COUNT),
+            stream: { ...STREAM, visibleRectangle: CROPPED_VISIBLE_RECTANGLE }
+        };
+
+        const result = await checkGPUDecoderVector(device.asDevice(), createManifest({ sha256: expectedHash }), input);
+
+        expect(expectedHash).not.toBe(hashFrames([ 0, 1, 2 ]));
+        expect(result).toEqual({ code: 'passed', detail: expectedHash });
     });
 
     it('checks the frames from the first checked frame on, in presentation order', async () => {
