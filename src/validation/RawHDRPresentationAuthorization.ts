@@ -1,6 +1,7 @@
 import {
     createDefaultRenderSettings,
     createHDRToSDRRenderSettings,
+    createRenderSettingsUniformData,
     RENDER_SETTINGS_VERSION,
     type RenderSettings
 } from '../presentation/RenderSettings';
@@ -14,16 +15,17 @@ import {
     processEncodedYUV,
     type ColorTriplet
 } from '../color/ColorPipeline';
-import { createRawYUVColorPipelineWGSL } from '../color/ColorPipelineShader';
 import { millisecondsToMicroseconds } from '../MediaTime';
-import {
-    createRawYUVRenderPipeline,
-    createRawYUVRenderResources,
-    destroyRawPlaneTextureSet,
-    renderRawYUVFrame,
-    type RawPlaneTextureSet,
-    type RawYUVTexturePresentation
-} from '../presentation/RawYUVGPURenderer';
+import { createBuiltinChain } from '../presentation/passes/builtin/BuiltinChains';
+import type {
+    BuiltinChain,
+    BuiltinChainConfiguration,
+    PresentationFrameSource,
+    PresentationPlan
+} from '../presentation/passes/PassTypes';
+import { PresentationExecutor } from '../presentation/passes/PresentationExecutor';
+import { planPresentation } from '../presentation/passes/PresentationPlanner';
+import type { TexturePresentationGeometry } from '../presentation/PresentationGeometry';
 import {
     RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
     type RawVideoFrameColorSpace,
@@ -41,9 +43,14 @@ import { discardErrorScope } from './GPUErrorScope';
 export const RAW_HDR_AUTHORIZATION_VECTOR_VERSION = 2;
 export const RAW_HDR_AUTHORIZATION_TIMEOUT_MICROSECONDS = GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS;
 
-const VECTOR_HEIGHT = 8;
-const VECTOR_WIDTH = 16;
+export const RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT = 8;
+export const RAW_HDR_AUTHORIZATION_VECTOR_WIDTH = 16;
 const AUTHORIZATION_TOLERANCE = 3 / 255;
+const PROBE_KEY_SEPARATOR = '\u0000';
+// Joins a reference plan's pass modules into the code its shader signature covers
+const PLAN_SHADER_CODE_SEPARATOR = '\u0000';
+// The code a signature covers when a reference chain cannot be planned, so its decision never matches a planned one
+const UNPLANNED_SHADER_CODE = 'unplanned';
 const AUTHORIZED_TARGET_FORMATS = new Set<GPUTextureFormat>([
     'bgra8unorm',
     'rgba8unorm'
@@ -156,7 +163,25 @@ type CachedRouteProbe = {
 
 type DeviceProbeCache = {
     lossObserved: boolean
+    /** The reference chain's shader signature per target format and route, which planning makes stable per device */
+    referenceSignatures: Map<string, string>
     routes: Map<string, CachedRouteProbe>
+};
+
+/** The vector frame an authorization renders, mapped 1:1 onto a target texture of the same size. */
+export type AuthorizationRenderTarget = {
+    format: GPUTextureFormat
+    /** Whether the vector carries an HDR signal, the planner's `hdr.source` fact */
+    hdrSource: boolean
+    height: number
+    width: number
+};
+
+/** A route's default chain planned for authorization; the plan is null when the chain cannot be built or planned. */
+export type AuthorizationReferencePlan = {
+    plan: PresentationPlan | null
+    /** The plan's pass modules, which the route's shader signature covers */
+    shaderCode: string
 };
 
 type TelemetryAccumulator = {
@@ -177,17 +202,6 @@ export const RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES: readonly VectorSample[] = [
     { sampleX: 12, sampleY: 6 },
     { sampleX: 15, sampleY: 6 }
 ];
-
-const FULL_FRAME_PRESENTATION: RawYUVTexturePresentation = {
-    textureOffsetX: 0,
-    textureOffsetY: 0,
-    textureScaleX: 1,
-    textureScaleY: 1,
-    viewportHeight: VECTOR_HEIGHT,
-    viewportWidth: VECTOR_WIDTH,
-    viewportX: 0,
-    viewportY: 0
-};
 
 function alignTo(value: number, alignment: number): number {
     return Math.ceil(value / alignment) * alignment;
@@ -306,6 +320,120 @@ export function createRawHDRShaderSignature(targetFormat: GPUTextureFormat, shad
     return `fnv1a32-${hash.toString(16).padStart(8, '0')}`;
 }
 
+function createIdentityGeometry(width: number, height: number): TexturePresentationGeometry {
+    return {
+        textureOffsetX: 0,
+        textureOffsetY: 0,
+        textureScaleX: 1,
+        textureScaleY: 1,
+        viewportHeight: height,
+        viewportWidth: width,
+        viewportX: 0,
+        viewportY: 0
+    };
+}
+
+/**
+ * Plans a default chain for authorization: no user passes, SDR output in the target format, and facts sized to the vector frame.
+ * A chain that cannot be built or planned yields a null plan, so its probe rejects instead of throwing.
+ */
+export function createAuthorizationReferencePlan(
+    device: GPUDevice,
+    createChain: () => BuiltinChain,
+    target: AuthorizationRenderTarget
+): AuthorizationReferencePlan {
+    try {
+        const plan = planPresentation({
+            chain: createChain(),
+            device: {
+                features: device.features,
+                maximumTextureDimension: device.limits.maxTextureDimension2D
+            },
+            facts: {
+                frameRate: null,
+                hdrOutput: false,
+                hdrSource: target.hdrSource,
+                outputHeight: target.height,
+                outputWidth: target.width,
+                sourceHeight: target.height,
+                sourceWidth: target.width
+            },
+            output: {
+                colorSpace: 'srgb',
+                format: target.format,
+                toneMapping: 'standard'
+            },
+            passes: []
+        });
+        return {
+            plan,
+            shaderCode: plan.passes.map((pass: PresentationPlan['passes'][number]): string => pass.code).join(PLAN_SHADER_CODE_SEPARATOR)
+        };
+    } catch (error) {
+        console.warn('WebGPU authorization reference chain could not be planned', error);
+        return { plan: null, shaderCode: UNPLANNED_SHADER_CODE };
+    }
+}
+
+/** Creates an authorization's executor within its deadline; an executor that arrives after the deadline is destroyed. */
+export function createAuthorizationExecutor(
+    device: GPUDevice,
+    plan: PresentationPlan,
+    deadline: GPUAuthorizationDeadline
+): Promise<PresentationExecutor> {
+    const executorPromise = PresentationExecutor.create(device, plan);
+    return deadline.wait(executorPromise, (): void => {
+        void executorPromise.then((lateExecutor: PresentationExecutor): void => {
+            lateExecutor.destroy();
+        }, (): void => undefined);
+    });
+}
+
+/** Records one vector frame through an executor into a target texture, mapped 1:1, and returns the finished commands. */
+export function encodeAuthorizationFrame(
+    device: GPUDevice,
+    executor: PresentationExecutor,
+    source: PresentationFrameSource,
+    targetTexture: GPUTexture,
+    label: string
+): GPUCommandBuffer {
+    const commandEncoder = device.createCommandEncoder({ label });
+    executor.encode(commandEncoder, {
+        geometry: createIdentityGeometry(targetTexture.width, targetTexture.height),
+        newFrame: true,
+        skippedFrameCount: 0,
+        source,
+        target: targetTexture.createView(),
+        timestampMicroseconds: 0
+    });
+    return commandEncoder.finish();
+}
+
+function createRawHDRReferencePlan(
+    device: GPUDevice,
+    targetFormat: GPUTextureFormat,
+    routeKey: RawHDRAuthorizationRouteKey
+): AuthorizationReferencePlan {
+    const metadata = createMetadata(routeKey);
+    const configuration: BuiltinChainConfiguration = {
+        format: getRouteFormat(routeKey),
+        hdrOutput: false,
+        metadata,
+        route: 'raw-yuv',
+        settings: createSettings(metadata)
+    };
+    return createAuthorizationReferencePlan(device, (): BuiltinChain => createBuiltinChain(configuration), {
+        format: targetFormat,
+        hdrSource: metadata.transfer !== 'sdr',
+        height: RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
+        width: RAW_HDR_AUTHORIZATION_VECTOR_WIDTH
+    });
+}
+
+function createProbeKey(targetFormat: GPUTextureFormat, routeKey: RawHDRAuthorizationRouteKey): string {
+    return `${targetFormat}${PROBE_KEY_SEPARATOR}${routeKey}`;
+}
+
 function createPlaneDescriptor(
     kind: RawVideoPlaneDescriptor['kind'],
     width: number,
@@ -350,10 +478,10 @@ function populateVectorLuma(
     bitDepth: RawVideoBitDepth
 ): void {
     const codeScale = 2 ** (bitDepth - 8);
-    for (let y = 0; y < VECTOR_HEIGHT; y += 1) {
-        for (let x = 0; x < VECTOR_WIDTH; x += 1) {
-            const rampCode = (16 * codeScale) + Math.round((219 * codeScale * x) / (VECTOR_WIDTH - 1));
-            const lumaCode = y < VECTOR_HEIGHT / 2 ?
+    for (let y = 0; y < RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT; y += 1) {
+        for (let x = 0; x < RAW_HDR_AUTHORIZATION_VECTOR_WIDTH; x += 1) {
+            const rampCode = (16 * codeScale) + Math.round((219 * codeScale * x) / (RAW_HDR_AUTHORIZATION_VECTOR_WIDTH - 1));
+            const lumaCode = y < RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT / 2 ?
                 rampCode :
                 Math.round((120 + (x * 4.5)) * codeScale);
             setPlaneCode(data, lumaPlane, x, y, lumaCode);
@@ -367,10 +495,10 @@ function getVectorChromaCodes(
     bitDepth: RawVideoBitDepth
 ): readonly [number, number] {
     const codeScale = 2 ** (bitDepth - 8);
-    if (y < VECTOR_HEIGHT / 4) {
+    if (y < RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT / 4) {
         return [ 128 * codeScale, 128 * codeScale ];
     }
-    return x < VECTOR_WIDTH / 4 ?
+    return x < RAW_HDR_AUTHORIZATION_VECTOR_WIDTH / 4 ?
         [ 153 * codeScale, 103 * codeScale ] :
         [ 103 * codeScale, 153 * codeScale ];
 }
@@ -397,12 +525,12 @@ export function createRawHDRAuthorizationVector(routeKey: RawHDRAuthorizationRou
     const bytesPerComponent: 1 | 2 = metadata.bitDepth === 8 ? 1 : 2;
     const chromaWidthDivisor = format.startsWith('I444') ? 1 : 2;
     const chromaHeightDivisor = format.startsWith('I420') ? 2 : 1;
-    const chromaWidth = VECTOR_WIDTH / chromaWidthDivisor;
-    const chromaHeight = VECTOR_HEIGHT / chromaHeightDivisor;
+    const chromaWidth = RAW_HDR_AUTHORIZATION_VECTOR_WIDTH / chromaWidthDivisor;
+    const chromaHeight = RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT / chromaHeightDivisor;
     const lumaPlane = createPlaneDescriptor(
         'y',
-        VECTOR_WIDTH,
-        VECTOR_HEIGHT,
+        RAW_HDR_AUTHORIZATION_VECTOR_WIDTH,
+        RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
         0,
         bytesPerComponent
     );
@@ -426,8 +554,8 @@ export function createRawHDRAuthorizationVector(routeKey: RawHDRAuthorizationRou
 
     return {
         bitDepth: metadata.bitDepth as RawVideoBitDepth,
-        codedHeight: VECTOR_HEIGHT,
-        codedWidth: VECTOR_WIDTH,
+        codedHeight: RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
+        codedWidth: RAW_HDR_AUTHORIZATION_VECTOR_WIDTH,
         colorSpace: {
             fullRange: metadata.range === 'full',
             matrix: metadata.matrix,
@@ -435,15 +563,15 @@ export function createRawHDRAuthorizationVector(routeKey: RawHDRAuthorizationRou
             transfer: getRawFrameTransfer(metadata)
         },
         data,
-        displayHeight: VECTOR_HEIGHT,
-        displayWidth: VECTOR_WIDTH,
+        displayHeight: RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
+        displayWidth: RAW_HDR_AUTHORIZATION_VECTOR_WIDTH,
         durationMicroseconds: null,
         format,
         planes: [ lumaPlane, chromaUPlane, chromaVPlane ],
         timestampMicroseconds: millisecondsToMicroseconds(0),
         visibleRectangle: {
-            height: VECTOR_HEIGHT,
-            width: VECTOR_WIDTH,
+            height: RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
+            width: RAW_HDR_AUTHORIZATION_VECTOR_WIDTH,
             x: 0,
             y: 0
         }
@@ -632,11 +760,7 @@ function getCachedRouteProbe(
     targetFormat: GPUTextureFormat,
     routeKey: RawHDRAuthorizationRouteKey
 ): CachedRouteProbe | undefined {
-    const metadata = createMetadata(routeKey);
-    const settings = createSettings(metadata);
-    const shaderCode = createRawYUVColorPipelineWGSL(metadata, settings, getRouteFormat(routeKey));
-    const signature = createRawHDRShaderSignature(targetFormat, shaderCode);
-    return deviceCache?.routes.get(`${targetFormat}\u0000${signature}\u0000${routeKey}`);
+    return deviceCache?.routes.get(createProbeKey(targetFormat, routeKey));
 }
 
 function recordRouteTelemetry(
@@ -673,7 +797,7 @@ function getAuthorizationTelemetryStatus(accumulator: TelemetryAccumulator): Raw
     return accumulator.rejectedRouteKeys.length > 0 ? 'rejected' : 'unavailable';
 }
 
-/** Runs the production raw upload, binding, shader, viewport, and draw path. */
+/** Renders a route's vector through its built-in default chain, reads it back, and compares it with the CPU reference. */
 export class RawHDRPresentationAuthorizationRunner {
     public async validate(
         device: GPUDevice,
@@ -682,9 +806,8 @@ export class RawHDRPresentationAuthorizationRunner {
     ): Promise<RawHDRRouteAuthorizationDecision> {
         const metadata = createMetadata(routeKey);
         const settings = createSettings(metadata);
-        const format = getRouteFormat(routeKey);
-        const shaderCode = createRawYUVColorPipelineWGSL(metadata, settings, format);
-        const shaderSignature = createRawHDRShaderSignature(targetFormat, shaderCode);
+        const reference = createRawHDRReferencePlan(device, targetFormat, routeKey);
+        const shaderSignature = createRawHDRShaderSignature(targetFormat, reference.shaderCode);
         if (!AUTHORIZED_TARGET_FORMATS.has(targetFormat)) {
             return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'target-format-unsupported');
         }
@@ -696,19 +819,21 @@ export class RawHDRPresentationAuthorizationRunner {
         ) {
             return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'gpu-api-unavailable');
         }
+        const plan = reference.plan;
+        if (!plan) {
+            return createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'unexpected-error');
+        }
 
         let targetTexture: GPUTexture | null = null;
-        let textureSet: RawPlaneTextureSet | null = null;
-        let presentationUniformBuffer: GPUBuffer | null = null;
-        let renderSettingsUniformBuffer: GPUBuffer | null = null;
+        let executor: PresentationExecutor | null = null;
         let pixelReader: GPUCanvasPixelReader | null = null;
         let errorScopePushed = false;
         const deadline = new GPUAuthorizationDeadline(device, RAW_HDR_AUTHORIZATION_TIMEOUT_MICROSECONDS);
         try {
-            const pipeline = await deadline.wait(createRawYUVRenderPipeline(device, targetFormat, shaderCode));
-            const resources = createRawYUVRenderResources(device, pipeline, settings);
-            presentationUniformBuffer = resources.presentationUniformBuffer;
-            renderSettingsUniformBuffer = resources.renderSettingsUniformBuffer;
+            executor = await createAuthorizationExecutor(device, plan, deadline);
+            if (settings.mode === 'hdr-to-sdr' && plan.usesRenderSettings) {
+                executor.writeRenderSettings(createRenderSettingsUniformData(settings).buffer);
+            }
             const frame = createRawHDRAuthorizationVector(routeKey);
             targetTexture = device.createTexture({
                 dimension: '2d',
@@ -716,22 +841,20 @@ export class RawHDRPresentationAuthorizationRunner {
                 label: 'WebGPU raw HDR authorization target',
                 size: {
                     depthOrArrayLayers: 1,
-                    height: VECTOR_HEIGHT,
-                    width: VECTOR_WIDTH
+                    height: RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
+                    width: RAW_HDR_AUTHORIZATION_VECTOR_WIDTH
                 },
                 usage: targetUsage
             });
             device.pushErrorScope('validation');
             errorScopePushed = true;
-            const renderResult = renderRawYUVFrame({
-                ...resources,
+            device.queue.submit([ encodeAuthorizationFrame(
                 device,
-                frame,
-                presentation: FULL_FRAME_PRESENTATION,
-                targetView: targetTexture.createView(),
-                textureSet
-            });
-            textureSet = renderResult.textureSet;
+                executor,
+                { enhancementFrame: null, frame, kind: 'planes' },
+                targetTexture,
+                'WebGPU raw HDR authorization commands'
+            ) ]);
             await deadline.wait(device.queue.onSubmittedWorkDone());
             const validationPromise = device.popErrorScope();
             errorScopePushed = false;
@@ -795,15 +918,13 @@ export class RawHDRPresentationAuthorizationRunner {
                 discardErrorScope(device);
             }
             pixelReader?.destroy();
-            destroyRawPlaneTextureSet(textureSet);
-            presentationUniformBuffer?.destroy();
-            renderSettingsUniformBuffer?.destroy();
+            executor?.destroy();
             targetTexture?.destroy();
         }
     }
 }
 
-/** Caches raw YUV authorization decisions per device, keyed by target format, shader signature, and route. */
+/** Caches raw YUV authorization decisions per device, keyed by target format and route; a decision holds only for the current reference shader. */
 export class RawHDRPresentationAuthorizationRegistry {
     private readonly devices = new WeakMap<GPUDevice, DeviceProbeCache>();
     private readonly runner: RawHDRPresentationAuthorizationRunner;
@@ -854,12 +975,7 @@ export class RawHDRPresentationAuthorizationRegistry {
         targetFormat: GPUTextureFormat,
         routeKey: RawHDRAuthorizationRouteKey
     ): Promise<RawHDRRouteAuthorizationDecision> {
-        const metadata = createMetadata(routeKey);
-        const settings = createSettings(metadata);
-        const format = getRouteFormat(routeKey);
-        const shaderCode = createRawYUVColorPipelineWGSL(metadata, settings, format);
-        const shaderSignature = createRawHDRShaderSignature(targetFormat, shaderCode);
-        const cacheKey = `${targetFormat}\u0000${shaderSignature}\u0000${routeKey}`;
+        const cacheKey = createProbeKey(targetFormat, routeKey);
         const deviceCache = this.getDeviceCache(device);
         const cachedProbe = deviceCache.routes.get(cacheKey);
         if (cachedProbe) {
@@ -875,7 +991,13 @@ export class RawHDRPresentationAuthorizationRegistry {
                 return decision;
             },
             (): RawHDRRouteAuthorizationDecision => {
-                const decision = createRejectedDecision(device, targetFormat, routeKey, shaderSignature, 'unexpected-error');
+                const decision = createRejectedDecision(
+                    device,
+                    targetFormat,
+                    routeKey,
+                    this.getReferenceSignature(device, targetFormat, routeKey),
+                    'unexpected-error'
+                );
                 probe.decision = decision;
                 return decision;
             }
@@ -884,27 +1006,26 @@ export class RawHDRPresentationAuthorizationRegistry {
         return probe.promise;
     }
 
-    /** Returns true only when a settled probe authorized this device, target format, and shader; a pending probe counts as unauthorized. */
+    /**
+     * Returns true only when a settled probe authorized this device, target format, and route through the current reference shader.
+     * A pending probe counts as unauthorized.
+     */
     public isAuthorized(
         device: GPUDevice,
         targetFormat: GPUTextureFormat,
         metadata: InputColorMetadata,
-        settings: RenderSettings,
         format: SupportedRawVideoFrameFormat
     ): boolean {
         const routeKey = getRawHDRAuthorizationRouteKey(format, metadata);
         if (!routeKey) {
             return false;
         }
-        const shaderCode = createRawYUVColorPipelineWGSL(metadata, settings, format);
-        const shaderSignature = createRawHDRShaderSignature(targetFormat, shaderCode);
-        const cacheKey = `${targetFormat}\u0000${shaderSignature}\u0000${routeKey}`;
-        const decision = this.devices.get(device)?.routes.get(cacheKey)?.decision;
+        const decision = this.devices.get(device)?.routes.get(createProbeKey(targetFormat, routeKey))?.decision;
         return decision?.status === 'authorized'
             && decision.device === device
             && decision.targetFormat === targetFormat
-            && decision.shaderSignature === shaderSignature
-            && decision.authorizedRouteKeys.includes(routeKey);
+            && decision.authorizedRouteKeys.includes(routeKey)
+            && decision.shaderSignature === this.getReferenceSignature(device, targetFormat, routeKey);
     }
 
     /** Returns bounded state for diagnostics without exposing GPU objects. */
@@ -945,6 +1066,25 @@ export class RawHDRPresentationAuthorizationRegistry {
         };
     }
 
+    private getReferenceSignature(
+        device: GPUDevice,
+        targetFormat: GPUTextureFormat,
+        routeKey: RawHDRAuthorizationRouteKey
+    ): string {
+        const referenceSignatures = this.getDeviceCache(device).referenceSignatures;
+        const signatureKey = createProbeKey(targetFormat, routeKey);
+        const cachedSignature = referenceSignatures.get(signatureKey);
+        if (cachedSignature !== undefined) {
+            return cachedSignature;
+        }
+        const signature = createRawHDRShaderSignature(
+            targetFormat,
+            createRawHDRReferencePlan(device, targetFormat, routeKey).shaderCode
+        );
+        referenceSignatures.set(signatureKey, signature);
+        return signature;
+    }
+
     private getDeviceCache(device: GPUDevice): DeviceProbeCache {
         const existingCache = this.devices.get(device);
         if (existingCache) {
@@ -952,6 +1092,7 @@ export class RawHDRPresentationAuthorizationRegistry {
         }
         const deviceCache: DeviceProbeCache = {
             lossObserved: false,
+            referenceSignatures: new Map<string, string>(),
             routes: new Map<string, CachedRouteProbe>()
         };
         this.devices.set(device, deviceCache);

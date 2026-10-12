@@ -1,5 +1,6 @@
 import {
     createHDRToSDRRenderSettings,
+    createRenderSettingsUniformData,
     RENDER_SETTINGS_VERSION,
     type HDRToSDRRenderSettings
 } from '../presentation/RenderSettings';
@@ -8,20 +9,19 @@ import {
     processEncodedRGB,
     type ColorTriplet
 } from '../color/ColorPipeline';
-import {
-    createExternalDolbyVisionColorPipelineWGSL,
-    createExternalDolbyVisionInputProbeWGSL
-} from '../color/ColorPipelineShader';
 import { reconstructDolbyVisionBT2020PQ } from '../color/DolbyVisionColorTransform';
 import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../video/dolby-vision/DolbyVisionRPUParser';
 import type {
     RawVideoPlaneDescriptor,
     TransferableRawVideoFrame
 } from '../video/RawVideoFrameCopy';
-import {
-    createRawYUVRenderSettingsUniformBuffer,
-    writeRawYUVRenderSettingsUniform
-} from '../presentation/RawYUVGPURenderer';
+import { createBuiltinChain } from '../presentation/passes/builtin/BuiltinChains';
+import type {
+    BuiltinChain,
+    BuiltinChainConfiguration,
+    PresentationFrameSource
+} from '../presentation/passes/PassTypes';
+import type { PresentationExecutor } from '../presentation/passes/PresentationExecutor';
 import { createDolbyVisionAuthorizationRPUVector } from '../capability/vectors/DolbyVisionAuthorizationVector';
 import GPUAuthorizationDeadline from './GPUAuthorizationDeadline';
 import {
@@ -32,25 +32,61 @@ import {
 import { discardErrorScope } from './GPUErrorScope';
 import {
     calculateRawHDRAuthorizationOutputDither,
+    createAuthorizationExecutor,
+    createAuthorizationReferencePlan,
     createRawHDRAuthorizationVector,
+    encodeAuthorizationFrame,
     evaluateRawHDRVectorObservations,
+    RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
     RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES,
+    RAW_HDR_AUTHORIZATION_VECTOR_WIDTH,
+    type AuthorizationReferencePlan,
     type RawHDRVectorObservation
 } from './RawHDRPresentationAuthorization';
 
 export const EXTERNAL_DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION = 2;
 export const EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY = 'external-I420P10-bt709-limited:dovi-p5-rpu-v1';
 
-const FLOATS_PER_PRESENTATION_UNIFORM = 4;
 const MAXIMUM_10_BIT_CODE = 1_023;
 const EXTERNAL_AUTHORIZATION_TOLERANCE = 8 / 255;
 const EXTERNAL_INPUT_PROBE_TARGET_FORMAT: GPUTextureFormat = 'rgba16float';
 const EXTERNAL_INPUT_SIGNAL_TOLERANCE = 8 / MAXIMUM_10_BIT_CODE;
-const VERTEX_COUNT = 6;
 const AUTHORIZED_TARGET_FORMATS = new Set<GPUTextureFormat>([
     'bgra8unorm',
     'rgba8unorm'
 ]);
+
+/**
+ * The input probe's signal step: the browser's BT.709 limited-range texture back to the vector's 10-bit codes, normalized.
+ * It reads the external texture and sampler through their PassResources names.
+ */
+const EXTERNAL_INPUT_PROBE_SIGNAL_CODE = /* wgsl */ `
+fn recoverExternalDolbyVisionBaseSignal(coordinate: vec2f) -> vec4f {
+    let encodedBT709RGB = textureSampleBaseClampToEdge(videoTexture, videoSampler, coordinate).rgb;
+    let normalizedLuma = dot(encodedBT709RGB, vec3f(0.2126, 0.7152, 0.0722));
+    let normalizedChromaBlue = (encodedBT709RGB.b - normalizedLuma) / 1.8556;
+    let normalizedChromaRed = (encodedBT709RGB.r - normalizedLuma) / 1.5748;
+    let recoveredBaseSignal = vec3f(
+        (normalizedLuma * 876.0) + 64.0,
+        (normalizedChromaBlue * 896.0) + 512.0,
+        (normalizedChromaRed * 896.0) + 512.0
+    );
+    return vec4f(recoveredBaseSignal / 1023.0, 1.0);
+}`;
+
+// Planned like a route's chain, so the probe renders through the same planner and executor as the output it checks
+const EXTERNAL_INPUT_PROBE_CHAIN: BuiltinChain = {
+    colorFunctions: [],
+    signal: {
+        bypassCondition: null,
+        code: EXTERNAL_INPUT_PROBE_SIGNAL_CODE,
+        entryPoint: 'recoverExternalDolbyVisionBaseSignal',
+        name: 'external-dolby-vision-input-probe',
+        resources: [ 'external-texture', 'sampler-linear' ],
+        sourceKind: 'external'
+    },
+    sourceIsDisplay: true
+};
 
 type ExtendedVideoFrameBufferInit = Omit<VideoFrameBufferInit, 'format'> & {
     format: 'I420P10'
@@ -62,7 +98,15 @@ type CachedProbe = {
 };
 
 type DeviceProbeCache = {
-    probes: Map<string, CachedProbe>
+    probes: Map<GPUTextureFormat, CachedProbe>
+    /** The reference chains' shader signature per target format, which planning makes stable per device */
+    referenceSignatures: Map<GPUTextureFormat, string>
+};
+
+/** The two plans one probe renders: the input probe that measures the browser bridge, and the route's output. */
+type ExternalDolbyVisionReferencePlans = {
+    inputProbe: AuthorizationReferencePlan
+    output: AuthorizationReferencePlan
 };
 
 type AuthorizationPhase =
@@ -223,11 +267,11 @@ export function createExpectedExternalDolbyVisionAuthorizationObservations(
     );
 }
 
-/** Creates a stable identity for the exact external-texture production route. */
+/** Creates a stable identity for the exact external-texture route's reference chain and its input probe. */
 export function createExternalDolbyVisionShaderSignature(
     targetFormat: GPUTextureFormat,
     shaderCode: string,
-    inputProbeShaderCode = createExternalDolbyVisionInputProbeWGSL()
+    inputProbeShaderCode: string
 ): string {
     const signatureInput = [
         `vector=${EXTERNAL_DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION}`,
@@ -326,39 +370,36 @@ function createRejectedDecision(
     };
 }
 
-function createAuthorizationShaderSignature(
-    targetFormat: GPUTextureFormat,
-    settings: HDRToSDRRenderSettings
-): string {
-    return createExternalDolbyVisionShaderSignature(
-        targetFormat,
-        createExternalDolbyVisionColorPipelineWGSL(settings),
-        createExternalDolbyVisionInputProbeWGSL()
-    );
-}
-
-function createRenderPipeline(
+function createExternalDolbyVisionReferencePlans(
     device: GPUDevice,
-    targetFormat: GPUTextureFormat,
-    shaderCode: string
-): Promise<GPURenderPipeline> {
-    const shaderModule = device.createShaderModule({ code: shaderCode });
-    return device.createRenderPipelineAsync({
-        fragment: {
-            entryPoint: 'fragmentMain',
-            module: shaderModule,
-            targets: [{ format: targetFormat }]
-        },
-        layout: 'auto',
-        primitive: { topology: 'triangle-list' },
-        vertex: {
-            entryPoint: 'vertexMain',
-            module: shaderModule
-        }
-    });
+    targetFormat: GPUTextureFormat
+): ExternalDolbyVisionReferencePlans {
+    const configuration: BuiltinChainConfiguration = {
+        hdrOutput: false,
+        route: 'external-dolby-vision',
+        settings: createSettings()
+    };
+    return {
+        inputProbe: createAuthorizationReferencePlan(device, (): BuiltinChain => EXTERNAL_INPUT_PROBE_CHAIN, {
+            format: EXTERNAL_INPUT_PROBE_TARGET_FORMAT,
+            hdrSource: false,
+            height: RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
+            width: RAW_HDR_AUTHORIZATION_VECTOR_WIDTH
+        }),
+        output: createAuthorizationReferencePlan(device, (): BuiltinChain => createBuiltinChain(configuration), {
+            format: targetFormat,
+            hdrSource: true,
+            height: RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
+            width: RAW_HDR_AUTHORIZATION_VECTOR_WIDTH
+        })
+    };
 }
 
-/** Runs the exact external texture, Profile 5 shader, binding, and draw path. */
+function createReferenceShaderSignature(targetFormat: GPUTextureFormat, plans: ExternalDolbyVisionReferencePlans): string {
+    return createExternalDolbyVisionShaderSignature(targetFormat, plans.output.shaderCode, plans.inputProbe.shaderCode);
+}
+
+/** Runs the exact external texture through the Profile 5 default chain and the input probe, then reads both back. */
 export class ExternalDolbyVisionPresentationAuthorizationRunner {
     private readonly createFrame: ExternalDolbyVisionAuthorizationFrameFactory;
 
@@ -374,13 +415,8 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
         targetFormat: GPUTextureFormat
     ): Promise<ExternalDolbyVisionAuthorizationDecision> {
         const settings = createSettings();
-        const shaderCode = createExternalDolbyVisionColorPipelineWGSL(settings);
-        const inputProbeShaderCode = createExternalDolbyVisionInputProbeWGSL();
-        const shaderSignature = createExternalDolbyVisionShaderSignature(
-            targetFormat,
-            shaderCode,
-            inputProbeShaderCode
-        );
+        const plans = createExternalDolbyVisionReferencePlans(device, targetFormat);
+        const shaderSignature = createReferenceShaderSignature(targetFormat, plans);
         if (!AUTHORIZED_TARGET_FORMATS.has(targetFormat)) {
             return createRejectedDecision(device, targetFormat, shaderSignature, 'target-format-unsupported');
         }
@@ -392,12 +428,16 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
         ) {
             return createRejectedDecision(device, targetFormat, shaderSignature, 'gpu-api-unavailable');
         }
+        const outputPlan = plans.output.plan;
+        const inputProbePlan = plans.inputProbe.plan;
+        if (!outputPlan || !inputProbePlan) {
+            return createRejectedDecision(device, targetFormat, shaderSignature, 'unexpected-error');
+        }
 
         let targetTexture: GPUTexture | null = null;
         let inputProbeTexture: GPUTexture | null = null;
-        let presentationUniformBuffer: GPUBuffer | null = null;
-        let renderSettingsUniformBuffer: GPUBuffer | null = null;
-        let RPUStorageBuffer: GPUBuffer | null = null;
+        let executor: PresentationExecutor | null = null;
+        let inputProbeExecutor: PresentationExecutor | null = null;
         let pixelReader: GPUCanvasPixelReader | null = null;
         let inputPixelReader: GPUCanvasPixelReader | null = null;
         let frame: VideoFrame | null = null;
@@ -405,33 +445,13 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
         let phase: AuthorizationPhase = 'gpu-render';
         const deadline = new GPUAuthorizationDeadline(device);
         try {
-            const pipelines = await deadline.wait(
-                Promise.all([
-                    createRenderPipeline(device, targetFormat, shaderCode),
-                    createRenderPipeline(device, EXTERNAL_INPUT_PROBE_TARGET_FORMAT, inputProbeShaderCode)
-                ])
-            );
-            const pipeline: GPURenderPipeline = pipelines[0];
-            const inputProbePipeline: GPURenderPipeline = pipelines[1];
-            const sampler = device.createSampler({
-                magFilter: 'linear',
-                minFilter: 'linear'
-            });
-            presentationUniformBuffer = device.createBuffer({
-                label: 'WebGPU external Dolby Vision authorization presentation uniforms',
-                size: FLOATS_PER_PRESENTATION_UNIFORM * Float32Array.BYTES_PER_ELEMENT,
-                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM
-            });
-            device.queue.writeBuffer(presentationUniformBuffer, 0, new Float32Array([ 1, 1, 0, 0 ]));
-            renderSettingsUniformBuffer = createRawYUVRenderSettingsUniformBuffer(device);
-            writeRawYUVRenderSettingsUniform(device, renderSettingsUniformBuffer, settings);
+            executor = await createAuthorizationExecutor(device, outputPlan, deadline);
+            inputProbeExecutor = await createAuthorizationExecutor(device, inputProbePlan, deadline);
+            if (outputPlan.usesRenderSettings) {
+                executor.writeRenderSettings(createRenderSettingsUniformData(settings).buffer);
+            }
             const packedRPUData = createDolbyVisionAuthorizationRPUVector(5);
-            RPUStorageBuffer = device.createBuffer({
-                label: 'WebGPU external Dolby Vision authorization RPU',
-                size: packedRPUData.byteLength,
-                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE
-            });
-            device.queue.writeBuffer(RPUStorageBuffer, 0, packedRPUData);
+            executor.writeDolbyVisionRPU(packedRPUData);
 
             phase = 'frame-create';
             frame = this.createFrame();
@@ -460,76 +480,25 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
 
             device.pushErrorScope('validation');
             errorScopePushed = true;
+            // Each executor imports the frame while it encodes, so an encode failure is an import failure
             phase = 'frame-import';
-            const externalTexture = device.importExternalTexture({
-                colorSpace: 'srgb',
-                source: frame
-            });
+            const source: PresentationFrameSource = { kind: 'external', source: frame };
+            const inputProbeCommandBuffer = encodeAuthorizationFrame(
+                device,
+                inputProbeExecutor,
+                source,
+                inputProbeTexture,
+                'WebGPU external Dolby Vision authorization input probe commands'
+            );
+            const commandBuffer = encodeAuthorizationFrame(
+                device,
+                executor,
+                source,
+                targetTexture,
+                'WebGPU external Dolby Vision authorization commands'
+            );
             phase = 'gpu-render';
-            const bindGroup = device.createBindGroup({
-                entries: [{
-                    binding: 0,
-                    resource: sampler
-                }, {
-                    binding: 1,
-                    resource: externalTexture
-                }, {
-                    binding: 2,
-                    resource: { buffer: presentationUniformBuffer }
-                }, {
-                    binding: 3,
-                    resource: { buffer: renderSettingsUniformBuffer }
-                }, {
-                    binding: 4,
-                    resource: { buffer: RPUStorageBuffer }
-                }],
-                layout: pipeline.getBindGroupLayout(0)
-            });
-            const inputProbeBindGroup = device.createBindGroup({
-                entries: [{
-                    binding: 0,
-                    resource: sampler
-                }, {
-                    binding: 1,
-                    resource: externalTexture
-                }, {
-                    binding: 2,
-                    resource: { buffer: presentationUniformBuffer }
-                }],
-                layout: inputProbePipeline.getBindGroupLayout(0)
-            });
-            const commandEncoder = device.createCommandEncoder({
-                label: 'WebGPU external Dolby Vision authorization commands'
-            });
-            const inputProbeRenderPass = commandEncoder.beginRenderPass({
-                colorAttachments: [{
-                    clearValue: { a: 1, b: 0, g: 0, r: 0 },
-                    loadOp: 'clear',
-                    storeOp: 'store',
-                    view: inputProbeTexture.createView()
-                }],
-                label: 'WebGPU external Dolby Vision authorization input probe pass'
-            });
-            inputProbeRenderPass.setPipeline(inputProbePipeline);
-            inputProbeRenderPass.setBindGroup(0, inputProbeBindGroup);
-            inputProbeRenderPass.setViewport(0, 0, frame.displayWidth, frame.displayHeight, 0, 1);
-            inputProbeRenderPass.draw(VERTEX_COUNT);
-            inputProbeRenderPass.end();
-            const renderPass = commandEncoder.beginRenderPass({
-                colorAttachments: [{
-                    clearValue: { a: 1, b: 0, g: 0, r: 0 },
-                    loadOp: 'clear',
-                    storeOp: 'store',
-                    view: targetTexture.createView()
-                }],
-                label: 'WebGPU external Dolby Vision authorization pass'
-            });
-            renderPass.setPipeline(pipeline);
-            renderPass.setBindGroup(0, bindGroup);
-            renderPass.setViewport(0, 0, frame.displayWidth, frame.displayHeight, 0, 1);
-            renderPass.draw(VERTEX_COUNT);
-            renderPass.end();
-            device.queue.submit([ commandEncoder.finish() ]);
+            device.queue.submit([ inputProbeCommandBuffer, commandBuffer ]);
             await deadline.wait(device.queue.onSubmittedWorkDone());
             const validationPromise = device.popErrorScope();
             errorScopePushed = false;
@@ -647,9 +616,8 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
             frame?.close();
             inputPixelReader?.destroy();
             pixelReader?.destroy();
-            presentationUniformBuffer?.destroy();
-            renderSettingsUniformBuffer?.destroy();
-            RPUStorageBuffer?.destroy();
+            inputProbeExecutor?.destroy();
+            executor?.destroy();
             inputProbeTexture?.destroy();
             targetTexture?.destroy();
         }
@@ -678,14 +646,13 @@ export class ExternalDolbyVisionPresentationAuthorizationRegistry {
         }
     }
 
-    /** Returns a deduplicated decision for one exact device, target, and shader. */
+    /** Returns a deduplicated decision for one exact device and target. */
     public authorize(
         device: GPUDevice,
         targetFormat: GPUTextureFormat
     ): Promise<ExternalDolbyVisionAuthorizationDecision> {
-        const cacheKey = this.createCacheKey(targetFormat);
         const deviceCache = this.getDeviceCache(device);
-        const cachedProbe = deviceCache.probes.get(cacheKey);
+        const cachedProbe = deviceCache.probes.get(targetFormat);
         if (cachedProbe) {
             return cachedProbe.promise;
         }
@@ -702,29 +669,24 @@ export class ExternalDolbyVisionPresentationAuthorizationRegistry {
                 const decision = createRejectedDecision(
                     device,
                     targetFormat,
-                    createAuthorizationShaderSignature(targetFormat, createSettings()),
+                    this.getReferenceSignature(device, targetFormat),
                     'unexpected-error'
                 );
                 probe.decision = decision;
                 return decision;
             }
         );
-        deviceCache.probes.set(cacheKey, probe);
+        deviceCache.probes.set(targetFormat, probe);
         return probe.promise;
     }
 
-    /** Checks only settled authorization and never waits optimistically. */
-    public isAuthorized(
-        device: GPUDevice,
-        targetFormat: GPUTextureFormat,
-        settings: HDRToSDRRenderSettings
-    ): boolean {
-        const shaderSignature = createAuthorizationShaderSignature(targetFormat, settings);
+    /** Checks only settled authorization of the current reference shaders and never waits optimistically. */
+    public isAuthorized(device: GPUDevice, targetFormat: GPUTextureFormat): boolean {
         const decision = this.getCachedProbe(device, targetFormat)?.decision;
         return decision?.status === 'authorized'
             && decision.device === device
             && decision.targetFormat === targetFormat
-            && decision.shaderSignature === shaderSignature;
+            && decision.shaderSignature === this.getReferenceSignature(device, targetFormat);
     }
 
     /** Returns bounded diagnostics without exposing retained GPU objects. */
@@ -766,15 +728,22 @@ export class ExternalDolbyVisionPresentationAuthorizationRegistry {
         };
     }
 
-    private createCacheKey(targetFormat: GPUTextureFormat): string {
-        return `${targetFormat}\u0000${createAuthorizationShaderSignature(
+    private getReferenceSignature(device: GPUDevice, targetFormat: GPUTextureFormat): string {
+        const referenceSignatures = this.getDeviceCache(device).referenceSignatures;
+        const cachedSignature = referenceSignatures.get(targetFormat);
+        if (cachedSignature !== undefined) {
+            return cachedSignature;
+        }
+        const signature = createReferenceShaderSignature(
             targetFormat,
-            createSettings()
-        )}`;
+            createExternalDolbyVisionReferencePlans(device, targetFormat)
+        );
+        referenceSignatures.set(targetFormat, signature);
+        return signature;
     }
 
     private getCachedProbe(device: GPUDevice, targetFormat: GPUTextureFormat): CachedProbe | undefined {
-        return this.devices.get(device)?.probes.get(this.createCacheKey(targetFormat));
+        return this.devices.get(device)?.probes.get(targetFormat);
     }
 
     private getDeviceCache(device: GPUDevice): DeviceProbeCache {
@@ -782,7 +751,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRegistry {
         if (cached) {
             return cached;
         }
-        const created: DeviceProbeCache = { probes: new Map() };
+        const created: DeviceProbeCache = { probes: new Map(), referenceSignatures: new Map() };
         this.devices.set(device, created);
         return created;
     }

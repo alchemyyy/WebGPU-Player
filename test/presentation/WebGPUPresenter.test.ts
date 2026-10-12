@@ -123,6 +123,24 @@ vi.mock('webgpu-player/validation/ExternalHDRPresentationAuthorization', () => (
     }
 }));
 
+vi.mock('webgpu-player/validation/ExternalDolbyVisionPresentationAuthorization', () => ({
+    ExternalDolbyVisionPresentationAuthorizationRegistry: class MockExternalDolbyVisionAuthorizationRegistry {
+        authorize = vi.fn(async () => ({ status: 'authorized' }));
+
+        prewarm = vi.fn();
+
+        waitForPending = vi.fn((): Promise<void> => Promise.resolve());
+
+        isAuthorized = vi.fn((): boolean => true);
+
+        getTelemetry = vi.fn((_device: GPUDevice | null, targetFormat: GPUTextureFormat | null) => ({
+            failureReason: null,
+            status: 'authorized',
+            targetFormat
+        }));
+    }
+}));
+
 vi.mock('webgpu-player/validation/DolbyVisionPresentationAuthorization', () => ({
     DolbyVisionPresentationAuthorizationRegistry: class MockDolbyVisionAuthorizationRegistry {
         readonly routeName: string;
@@ -3365,7 +3383,7 @@ describe('WebGPUPresenter', () => {
 
         expect(configured).toBe(true);
         expect(fallbackHandler).not.toHaveBeenCalled();
-        expect(gpuHarness.devices[0].createShaderModule).toHaveBeenCalledTimes(4);
+        expect(gpuHarness.devices[0].createShaderModule).toHaveBeenCalledTimes(2);
         const hdrShaderDescriptor = gpuHarness.devices[0].createShaderModule.mock.calls
             .map((call: unknown[]) => call[0] as { code: string })
             .find(descriptor => descriptor.code.includes('lumaTexture'));
@@ -3434,7 +3452,7 @@ describe('WebGPUPresenter', () => {
         presenter.startSession(3);
         await vi.advanceTimersByTimeAsync(microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS));
 
-        expect(deviceHarness.createRenderPipelineAsync).toHaveBeenCalledTimes(5);
+        expect(deviceHarness.createRenderPipelineAsync).toHaveBeenCalledTimes(3);
         expect(fallbackHandler).toHaveBeenCalledOnce();
         expect(fallbackHandler).toHaveBeenCalledWith(3, 'pipeline-creation-failed');
         expect((presenter as unknown as { pipeline: GPURenderPipeline | null }).pipeline).toBe(retainedPipeline);
@@ -3470,7 +3488,7 @@ describe('WebGPUPresenter', () => {
         }, 1);
 
         const deviceHarness = gpuHarness.devices[0];
-        expect(deviceHarness.createShaderModule).toHaveBeenCalledTimes(4);
+        expect(deviceHarness.createShaderModule).toHaveBeenCalledTimes(2);
         deviceHarness.queueWriteBuffer.mockClear();
         const updated = presenter.updateRenderSettings(
             createHDRToSDRRenderSettings({
@@ -3489,8 +3507,8 @@ describe('WebGPUPresenter', () => {
         );
 
         expect(updated).toBe(true);
-        expect(deviceHarness.createShaderModule).toHaveBeenCalledTimes(4);
-        expect(deviceHarness.createRenderPipelineAsync).toHaveBeenCalledTimes(4);
+        expect(deviceHarness.createShaderModule).toHaveBeenCalledTimes(2);
+        expect(deviceHarness.createRenderPipelineAsync).toHaveBeenCalledTimes(2);
         expect(deviceHarness.queueWriteBuffer).toHaveBeenCalledOnce();
         const uniformWrite = deviceHarness.queueWriteBuffer.mock.calls[0];
         expect(uniformWrite[0]).toMatchObject({
@@ -3761,7 +3779,7 @@ describe('WebGPUPresenter', () => {
 
         await expect(configuration).resolves.toBe(false);
         expect(fallbackHandler).not.toHaveBeenCalled();
-        expect(gpuHarness.devices[0].createShaderModule).toHaveBeenCalledTimes(3);
+        expect(gpuHarness.devices[0].createShaderModule).toHaveBeenCalledTimes(1);
         expect(presenter.getTelemetry().mode).toBe('identity-sdr');
     });
 
