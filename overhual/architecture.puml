@@ -12,7 +12,9 @@ partition "Plan time: route, preset, settings, or output size changes" {
     note right
         Authorization renders this default chain
         through the same planner and executor,
-        so a preset never changes the route
+        so a preset never changes the route;
+        a user decoder's vector check stands in
+        for it on the GPU decode route
     end note
     :PassManifest.parsePassManifest(each user source)
     failure: header-invalid; <<$HL_BLUE>>
