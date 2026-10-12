@@ -2,6 +2,7 @@
 import { type Mock, vi } from 'vitest';
 
 import type { Microseconds } from 'webgpu-player/MediaTime';
+import { parsePassManifest } from 'webgpu-player/presentation/passes/PassManifest';
 import type {
     PlannedBinding,
     PlannedOutput,
@@ -18,6 +19,7 @@ import {
     type SandboxLibraryCommands,
     type SandboxMediaFile,
     type SandboxSessionCommands,
+    type SandboxShaderPass,
     type SandboxState
 } from '../../../sandbox/src/contracts/SandboxContracts';
 import type { PanelContext } from '../../../sandbox/src/ui/Panel';
@@ -132,6 +134,11 @@ export function createPresentationPlan(overrides: Partial<PresentationPlan> & Pi
         usesRenderSettings: false,
         ...overrides
     };
+}
+
+/** A preset pass parsed from its source, as the session publishes one, with no stored parameter values. */
+export function createTestShaderPass(id: string, source: string, overrides: Partial<SandboxShaderPass> = {}): SandboxShaderPass {
+    return { headerFailure: null, id, manifest: parsePassManifest(source), origin: `${id}.wgsl`, parameters: {}, source, ...overrides };
 }
 
 export function createActiveRoute(overrides: Partial<ActiveRoute> = {}): ActiveRoute {

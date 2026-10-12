@@ -1,0 +1,129 @@
+/* The shader panel: example and file controls, the preset's passes with their state and parameters, and the drop target */
+.shader-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sandbox-gap);
+}
+
+.shader-panel-drag-active {
+    outline: 1px dashed var(--sandbox-accent);
+    outline-offset: calc(var(--sandbox-gap) / -2);
+}
+
+.shader-panel-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sandbox-gap);
+}
+
+.shader-panel-title {
+    margin: 0;
+    font: inherit;
+    font-weight: 600;
+}
+
+.shader-panel select,
+.shader-panel button,
+.shader-panel input {
+    border: 1px solid var(--sandbox-panel-border);
+    border-radius: var(--sandbox-panel-radius);
+    background: var(--sandbox-control-background);
+    color: var(--sandbox-text);
+    font: inherit;
+}
+
+.shader-panel button:not(:disabled):hover,
+.shader-panel select:not(:disabled):hover {
+    background: var(--sandbox-control-hover);
+}
+
+.shader-panel button:disabled,
+.shader-panel select:disabled {
+    color: var(--sandbox-text-muted);
+}
+
+.shader-panel-hint {
+    margin: 0;
+    color: var(--sandbox-text-muted);
+}
+
+.shader-pass-list {
+    display: flex;
+    flex-direction: column;
+    gap: calc(var(--sandbox-gap) / 2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.shader-pass {
+    padding: calc(var(--sandbox-gap) / 2);
+    border: 1px solid var(--sandbox-panel-border);
+    border-radius: var(--sandbox-panel-radius);
+}
+
+.shader-pass-header {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sandbox-gap);
+}
+
+.shader-pass-name {
+    flex: none;
+    max-width: 40%;
+    overflow: hidden;
+    font-weight: 600;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.shader-pass-state {
+    flex: 1 1 auto;
+    min-width: 0;
+    font: var(--sandbox-monospace-font);
+    overflow-wrap: anywhere;
+}
+
+.shader-pass-state[data-tone='success'] {
+    color: var(--sandbox-success);
+}
+
+.shader-pass-state[data-tone='warning'] {
+    color: var(--sandbox-warning);
+}
+
+.shader-pass-state[data-tone='failure'] {
+    color: var(--sandbox-failure);
+}
+
+.shader-pass-state[data-tone='muted'] {
+    color: var(--sandbox-text-muted);
+}
+
+.shader-pass-actions {
+    display: flex;
+    flex: none;
+    gap: calc(var(--sandbox-gap) / 2);
+}
+
+/* Name, input, and range columns line up across a pass's parameters */
+.shader-pass-parameters {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 8em) max-content;
+    gap: calc(var(--sandbox-gap) / 2) var(--sandbox-gap);
+    align-items: center;
+}
+
+.shader-pass-parameters:not(:empty) {
+    margin-top: calc(var(--sandbox-gap) / 2);
+}
+
+.shader-pass-parameter {
+    display: contents;
+}
+
+.shader-pass-parameter-range {
+    color: var(--sandbox-text-muted);
+    font: var(--sandbox-monospace-font);
+}
