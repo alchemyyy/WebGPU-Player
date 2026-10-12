@@ -48,6 +48,7 @@ The key is ignored while an input, a select, or a text area has focus, and it is
 - Where the browser has `showDirectoryPicker`, as Chromium does, the picked folder's handle is remembered in IndexedDB.
   After a reload the library reopens it, or shows Grant access when the browser wants a click before it allows reading again.
 - Elsewhere, as in Firefox, the library picks the folder through a folder file input (`webkitdirectory`), and nothing is remembered across reloads.
+  NOTE: Brave turns `showDirectoryPicker` off by default, so it takes the folder input and its browser-enforced "Upload" confirmation; `brave://flags/#file-system-access-api` turns the directory picker back on.
 - A folder or file that cannot be read is recorded as a failure and left out, and the scan goes on.
 
 ## How a file plays
