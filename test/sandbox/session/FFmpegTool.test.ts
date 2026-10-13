@@ -63,10 +63,11 @@ vi.mock('@ffmpeg/ffmpeg', () => ({
 }));
 
 const MEDIA_FILE_NAME = 'feature.mkv';
-// The first command of a tool mounts its file in the first input folder
-const MOUNT_DIRECTORY = '/input-1';
+// Every command mounts its file in the input folder of its own core
+const MOUNT_DIRECTORY = '/input';
 const OUTPUT_PATH = '/output';
 const STREAM_PROBE_OPTIONS = [ '-show_format', '-show_streams' ];
+const FIRST_FRAME_PROBE_OPTIONS = [ '-select_streams', 'v:0', '-read_intervals', '%+#1', '-show_frames' ];
 const PROBE_OUTPUT = createProbeJSON([ createVideoStreamJSON() ]);
 const WEBVTT_OUTPUT = 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nBonjour.\n';
 const SUBTITLE_STREAM_INDEX = 2;
@@ -95,7 +96,7 @@ describe('FFmpegTool', () => {
         ffmpegMocks.output = null;
     });
 
-    it('reads ffprobe output after the -1 a returned ffprobe reports, and removes the output and the mount', async () => {
+    it('reads ffprobe output after the -1 a returned ffprobe reports, and terminates the core', async () => {
         ffmpegMocks.exitCode = FFPROBE_RETURNED_EXIT_CODE;
         ffmpegMocks.output = PROBE_OUTPUT;
 
@@ -103,6 +104,7 @@ describe('FFmpegTool', () => {
 
         expect(output).toBe(PROBE_OUTPUT);
         const ffmpeg = getFFmpeg();
+        expect(ffmpeg.mount).toHaveBeenCalledWith('WORKERFS', { files: [ expect.any(File) ] }, MOUNT_DIRECTORY);
         expect(ffmpeg.ffprobe).toHaveBeenCalledWith([
             '-v',
             'error',
@@ -114,12 +116,26 @@ describe('FFmpegTool', () => {
             '-o',
             OUTPUT_PATH
         ]);
-        expect(ffmpegMocks.files.size).toBe(0);
-        expect(ffmpeg.unmount).toHaveBeenCalledWith(MOUNT_DIRECTORY);
-        expect(ffmpeg.deleteDir).toHaveBeenCalledWith(MOUNT_DIRECTORY);
+        expect(ffmpeg.terminate).toHaveBeenCalledTimes(1);
     });
 
-    it('rejects an exit code exit_program reported with the last logged lines, and removes the output it left', async () => {
+    it('runs every command on a fresh core, since ffprobe keeps its options in globals between runs', async () => {
+        ffmpegMocks.exitCode = FFPROBE_RETURNED_EXIT_CODE;
+        ffmpegMocks.output = PROBE_OUTPUT;
+        const tool = createFFmpegTool();
+
+        await tool.probe(createMediaFile(), FIRST_FRAME_PROBE_OPTIONS);
+        await tool.probe(createMediaFile(), STREAM_PROBE_OPTIONS);
+
+        expect(ffmpegMocks.instances).toHaveLength(2);
+        for (const ffmpeg of ffmpegMocks.instances) {
+            expect(ffmpeg.load).toHaveBeenCalledTimes(1);
+            expect(ffmpeg.ffprobe).toHaveBeenCalledTimes(1);
+            expect(ffmpeg.terminate).toHaveBeenCalledTimes(1);
+        }
+    });
+
+    it('rejects an exit code exit_program reported with the last logged lines, and terminates the core', async () => {
         ffmpegMocks.exitCode = EXIT_PROGRAM_FAILURE_CODE;
         ffmpegMocks.loggedLines = [ ...LOGGED_LINES ];
         ffmpegMocks.output = PROBE_OUTPUT;
@@ -128,8 +144,7 @@ describe('FFmpegTool', () => {
             `ffprobe exit ${EXIT_PROGRAM_FAILURE_CODE}: ${LAST_LOGGED_LINES}`
         );
 
-        expect(ffmpegMocks.files.size).toBe(0);
-        expect(getFFmpeg().unmount).toHaveBeenCalledWith(MOUNT_DIRECTORY);
+        expect(getFFmpeg().terminate).toHaveBeenCalledTimes(1);
     });
 
     it('rejects a command that wrote no output with the last logged lines', async () => {
