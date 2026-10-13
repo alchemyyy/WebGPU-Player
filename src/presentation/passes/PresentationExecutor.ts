@@ -775,6 +775,21 @@ export class PresentationExecutor {
         this.device.queue.writeBuffer(this.parametersBuffer, byteOffset, this.parameterView.buffer, byteOffset, PARAMETER_BYTE_LENGTH);
     }
 
+    /** Writes every parameter's declared default, which a new executor starts from; it does nothing when the plan has no parameters. */
+    writeDefaultParameters(): void {
+        this.requireUsable();
+        if (!this.parametersBuffer) {
+            return;
+        }
+        for (const slot of this.parameterSlots.values()) {
+            for (let parameterIndex = 0; parameterIndex < slot.parameters.length; parameterIndex += 1) {
+                const parameter = slot.parameters[parameterIndex];
+                writeParameterValue(this.parameterView, slot.byteOffset + getParameterByteOffset(parameterIndex), parameter, parameter.defaultValue);
+            }
+        }
+        this.device.queue.writeBuffer(this.parametersBuffer, 0, this.parameterView.buffer);
+    }
+
     /** Restarts history: the next new frame writes the first ring slots and sees `historyValid` 0. */
     resetHistory(): void {
         this.historyFrameCount = 0;
@@ -895,19 +910,6 @@ export class PresentationExecutor {
                 | (buffer.indirect ? GPUBufferUsage.INDIRECT : 0);
             this.plannedBuffers.set(buffer.id, this.createOwnedBuffer(buffer.id, buffer.byteLength, usage));
         }
-    }
-
-    private writeDefaultParameters(): void {
-        if (!this.parametersBuffer) {
-            return;
-        }
-        for (const slot of this.parameterSlots.values()) {
-            for (let parameterIndex = 0; parameterIndex < slot.parameters.length; parameterIndex += 1) {
-                const parameter = slot.parameters[parameterIndex];
-                writeParameterValue(this.parameterView, slot.byteOffset + getParameterByteOffset(parameterIndex), parameter, parameter.defaultValue);
-            }
-        }
-        this.device.queue.writeBuffer(this.parametersBuffer, 0, this.parameterView.buffer);
     }
 
     private requireRing(textureId: string): HistoryRing {

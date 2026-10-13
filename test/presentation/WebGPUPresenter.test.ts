@@ -344,6 +344,8 @@ const SATURATION_PASS_NAME = 'Saturation';
 const SATURATION_PARAMETER_NAME = 'saturation';
 const PRESET_SATURATION = 0.75;
 const LIVE_SATURATION = 1.5;
+// A later preset's value for the same pass
+const NEXT_PRESET_SATURATION = 0.5;
 const SHARPEN_PASS_NAME = 'Sharpen';
 const SHARPEN_PARAMETER_NAME = 'strength';
 const LIVE_SHARPEN_STRENGTH = 0.25;
@@ -4734,6 +4736,33 @@ describe('WebGPUPresenter', () => {
             .toThrow(`parameter-unknown: '${SATURATION_PASS_NAME}' '${UNDECLARED_PARAMETER_NAME}'`);
         expect(() => presenter.setPresentationParameter(SATURATION_PASS_NAME, SATURATION_PARAMETER_NAME, Number.NaN))
             .toThrow(`parameter-invalid: '${SATURATION_PASS_NAME}' '${SATURATION_PARAMETER_NAME}' NaN`);
+    });
+
+    it('keeps the executor for a preset that adds no pass to its plan, reporting the preset\'s passes and applying its values', async () => {
+        const encode = vi.spyOn(PresentationExecutor.prototype, 'encode');
+        const { deviceHarness, presenter } = await startIdentityPresentation(true);
+        await presenter.setPresentationPreset([
+            { parameters: { [SATURATION_PARAMETER_NAME]: PRESET_SATURATION }, source: SATURATION_COLOR_PASS }
+        ]);
+        const shaderModuleCount = deviceHarness.createShaderModule.mock.calls.length;
+        encode.mockClear();
+
+        // The SDR plan leaves the added pass out, so the plan is the active executor's
+        const report = await presenter.setPresentationPreset([
+            { parameters: { [SATURATION_PARAMETER_NAME]: NEXT_PRESET_SATURATION }, source: SATURATION_COLOR_PASS },
+            { parameters: {}, source: HDR_ONLY_PASS_SOURCE }
+        ]);
+
+        const expectedReport = {
+            activePasses: [ SATURATION_PASS_NAME ],
+            inactivePasses: [ { detail: '', name: HDR_ONLY_PASS_NAME, reason: 'condition-false' } ]
+        };
+        expect(report).toEqual(expectedReport);
+        expect(presenter.getPresentationPlanReport()).toEqual(expectedReport);
+        expect(deviceHarness.createShaderModule).toHaveBeenCalledTimes(shaderModuleCount);
+        expect(readParameterWrites(deviceHarness).at(-1)).toBe(Math.fround(NEXT_PRESET_SATURATION));
+        // The paused frame redraws with the new value
+        expect(encode.mock.calls.map((call: unknown[]): boolean => (call[1] as PresentationFrameInput).newFrame)).toEqual([ false ]);
     });
 
     it('replans for a new output size only while preset passes take part in plans, keeping live parameter values', async () => {

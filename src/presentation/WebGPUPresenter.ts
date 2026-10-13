@@ -408,15 +408,16 @@ type PresentedFrameTiming = {
 };
 
 /**
- * An executor built for the current plan inputs, the active executor when it already renders them, or what failed.
+ * An executor built for the current plan inputs, the active executor when it already renders their plan, or what failed.
  * A result names the preset it planned, which the plan report reads its planner results against.
  */
 type ExecutorBuildResult =
     | { executor: PresentationExecutor; kind: 'built'; plan: PresentationPlan; planKey: string; presetPasses: readonly PresetPass[] }
     | { detail: string; kind: 'failed' }
-    | { kind: 'current'; presetPasses: readonly PresetPass[] };
+    | { executor: PresentationExecutor; kind: 'current'; plan: PresentationPlan; presetPasses: readonly PresetPass[] };
 
 type BuiltExecutor = Extract<ExecutorBuildResult, { kind: 'built' }>;
+type CurrentExecutor = Extract<ExecutorBuildResult, { kind: 'current' }>;
 
 type ExecutorBuild = {
     device: GPUDevice
@@ -1752,6 +1753,7 @@ export default class WebGPUPresenter {
     private async runPlanInputsApplication(): Promise<void> {
         const generation = this.activeGeneration;
         const previousExecutor = this.executor;
+        const previousPresetPasses = this.executorPresetPasses;
         let failure: string | null = null;
         try {
             do {
@@ -1768,7 +1770,8 @@ export default class WebGPUPresenter {
             this.fallback(generation, 'pipeline-creation-failed', failure);
             return;
         }
-        if (this.executor !== previousExecutor) {
+        // A kept executor redraws as well when it took a new preset's values
+        if (this.executor !== previousExecutor || this.executorPresetPasses !== previousPresetPasses) {
             this.redrawCurrentFrame(generation);
         }
     }
@@ -2421,8 +2424,10 @@ export default class WebGPUPresenter {
         const result = await this.buildExecutor(device, canvasFormat);
         switch (result.kind) {
             case 'current':
-                this.executorRevision = revision;
-                this.executorPresetPasses = result.presetPasses;
+                // The executor may have been released or replaced since the plan matched it
+                if (this.executor === result.executor) {
+                    this.adoptPlan(result, revision);
+                }
                 return null;
             case 'failed':
                 return result.detail;
@@ -2452,7 +2457,7 @@ export default class WebGPUPresenter {
             }
             const planKey = getPlanKey(plan);
             if (this.executor && this.device === device && this.executorPlanKey === planKey) {
-                return { kind: 'current', presetPasses };
+                return { executor: this.executor, kind: 'current', plan, presetPasses };
             }
             const executorPromise = PresentationExecutor.create(device, plan);
             let executorResult: PresentationExecutor | typeof WEBGPU_RESOURCE_OPERATION_TIMEOUT;
@@ -2532,6 +2537,20 @@ export default class WebGPUPresenter {
         if (this.canvasContext && !this.createAndConfigureCanvas()) {
             this.fallback(this.activeGeneration, this.initializationFailureReason, this.initializationFailureDetail);
         }
+    }
+
+    /**
+     * Hands the active executor a plan of its key, which differs from its own plan only in the report, as when a new preset adds no pass to the plan.
+     * A new preset's values replace the executor's over the declared defaults, as a new executor would take them.
+     */
+    private adoptPlan(current: CurrentExecutor, revision: number): void {
+        if (this.executorPresetPasses !== current.presetPasses) {
+            current.executor.writeDefaultParameters();
+            applyParameterValues(current.executor, current.plan, current.presetPasses);
+        }
+        this.executorPlan = current.plan;
+        this.executorPresetPasses = current.presetPasses;
+        this.executorRevision = revision;
     }
 
     private releaseExecutor(): void {
