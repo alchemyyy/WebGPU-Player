@@ -70,7 +70,8 @@ When things go wrong:
 
 About ffmpeg.wasm:
 
-- Its core is about 32 MB of WebAssembly, which loads on the first probe.
+- Its core is about 32 MB of WebAssembly, and every command loads a fresh core and terminates it, about 50 ms once the browser caches the core.
+  A core keeps a command's state for the next: ffprobe keeps its options in globals, so on a used core a stream probe kept the first-frame probe's `-show_frames` and walked every frame of the next file, which never ended for a large one.
 - It runs in its own worker, one command at a time, and each command reads the file in place through a WORKERFS mount instead of copying it into memory.
 - It reports -1 for every ffprobe run that returns, failed or not, because only FFmpeg's `exit_program` sets the exit code.
   So the probe passes `-show_error`, and a failed probe is the error section in ffprobe's output, recorded as `ffprobe-error` with FFmpeg's message.

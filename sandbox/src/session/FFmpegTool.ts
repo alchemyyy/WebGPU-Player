@@ -1,10 +1,10 @@
-// ffmpeg.wasm, loaded on first use: ffprobe tells what a local file holds, and ffmpeg converts its subtitles to WebVTT.
+// ffmpeg.wasm, a fresh core per command: ffprobe tells what a local file holds, and ffmpeg converts its subtitles to WebVTT.
 import { FFFSType, FFmpeg, type LogEvent } from '@ffmpeg/ffmpeg';
 import coreURL from '@ffmpeg/core?url';
 import wasmURL from '@ffmpeg/core/wasm?url';
 
-// Each command reads its file through a fresh WORKERFS mount, which reads the file lazily instead of copying it into memory
-const MOUNT_DIRECTORY_PREFIX = '/input-';
+// The command reads its file through a WORKERFS mount, which reads the file lazily instead of copying it into memory
+const MOUNT_DIRECTORY = '/input';
 const OUTPUT_PATH = '/output';
 const TEXT_ENCODING = 'utf8';
 // ffmpeg ends through exit_program, which reports its exit code
@@ -31,51 +31,33 @@ export type FFmpegTool = Readonly<{
     convertSubtitleToWebVTT: (file: File, streamIndex: number | null) => Promise<string>
 }>;
 
-type MountedFile = Readonly<{
-    directory: string
-    path: string
-}>;
+/**
+ * Loads a core for one command, since a core keeps a command's state for the next.
+ * NOTE: ffprobe keeps its options in globals, so on a used core a stream probe kept the frame probe's -show_frames and walked every frame of its file, which never ends for a large one
+ */
+async function loadFFmpeg(): Promise<FFmpeg> {
+    const ffmpeg = new FFmpeg();
+    try {
+        await ffmpeg.load({ coreURL, wasmURL });
+    } catch (error) {
+        ffmpeg.terminate();
+        throw error;
+    }
+    return ffmpeg;
+}
 
 export function createFFmpegTool(): FFmpegTool {
-    let loadedFFmpeg: Promise<FFmpeg> | null = null;
     let queue: Promise<unknown> = Promise.resolve();
-    let mountCount = 0;
 
-    /** Loads the core once; a failed load is retried by the next command. */
-    const loadFFmpeg = (): Promise<FFmpeg> => {
-        if (loadedFFmpeg === null) {
-            const ffmpeg = new FFmpeg();
-            loadedFFmpeg = ffmpeg.load({ coreURL, wasmURL }).then((): FFmpeg => ffmpeg, (error: unknown): never => {
-                loadedFFmpeg = null;
-                ffmpeg.terminate();
-                throw error;
-            });
-        }
-        return loadedFFmpeg;
-    };
-
-    /** Runs commands one at a time, since one core runs one command at a time. */
+    /** Runs commands one at a time, so only one core holds its memory at a time. */
     const enqueue = <Result>(task: () => Promise<Result>): Promise<Result> => {
         const run = queue.then(task, task);
         queue = run.catch((): void => undefined);
         return run;
     };
 
-    const mountFile = async (ffmpeg: FFmpeg, file: File): Promise<MountedFile> => {
-        mountCount += 1;
-        const directory = `${MOUNT_DIRECTORY_PREFIX}${mountCount}`;
-        await ffmpeg.createDir(directory);
-        await ffmpeg.mount(FFFSType.WORKERFS, { files: [ file ] }, directory);
-        return { directory, path: `${directory}/${file.name}` };
-    };
-
-    const unmountFile = async (ffmpeg: FFmpeg, mountedFile: MountedFile): Promise<void> => {
-        await ffmpeg.unmount(mountedFile.directory);
-        await ffmpeg.deleteDir(mountedFile.directory);
-    };
-
     /**
-     * Runs one command over a mounted file and returns its output file as text.
+     * Runs one command over a mounted file on a fresh core and returns its output file as text.
      * An exit code outside the tool's successful ones rejects with `<tool> exit <code>: <last logged lines>`, and a missing output with `<tool> wrote no output: <last logged lines>`.
      */
     const runCommand = (
@@ -86,16 +68,16 @@ export function createFFmpegTool(): FFmpegTool {
     ): Promise<string> => enqueue(async (): Promise<string> => {
         const ffmpeg = await loadFFmpeg();
         const loggedLines: string[] = [];
-        const onLog = (event: LogEvent): void => {
+        ffmpeg.on('log', (event: LogEvent): void => {
             loggedLines.push(event.message);
             if (loggedLines.length > MAXIMUM_FAILURE_LOG_LINES) {
                 loggedLines.shift();
             }
-        };
-        const mountedFile = await mountFile(ffmpeg, file);
-        ffmpeg.on('log', onLog);
+        });
         try {
-            const exitCode = await runTool(ffmpeg, mountedFile.path);
+            await ffmpeg.createDir(MOUNT_DIRECTORY);
+            await ffmpeg.mount(FFFSType.WORKERFS, { files: [ file ] }, MOUNT_DIRECTORY);
+            const exitCode = await runTool(ffmpeg, `${MOUNT_DIRECTORY}/${file.name}`);
             if (!successExitCodes.has(exitCode)) {
                 throw new Error(`${toolName} exit ${exitCode}: ${loggedLines.join(LOG_LINE_SEPARATOR)}`);
             }
@@ -107,10 +89,8 @@ export function createFFmpegTool(): FFmpegTool {
             }
             return output;
         } finally {
-            ffmpeg.off('log', onLog);
-            // A command that failed before writing left no output, and no later command may read a stale one
-            await ffmpeg.deleteFile(OUTPUT_PATH).catch((): boolean => false);
-            await unmountFile(ffmpeg, mountedFile);
+            // The core goes with its mount, its output, and its state
+            ffmpeg.terminate();
         }
     });
 
