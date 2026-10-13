@@ -31,7 +31,7 @@ The presentation pipeline: each route's fixed signal and default color track, us
 - `PassTypes.ts`: the contracts of the pipeline: pass manifests, built-in chains, plans, and frame input.
 - `PassLanguage.ts`: the names that headers, the prelude, and the planner share: stages, `HOOKED`, history accessors, entry points, and plan-time facts.
 - `PassExpression.ts`: the size and condition expressions of pass and decoder headers.
-- `PassManifest.ts`: parses a user pass's `//!` header into a manifest; a failure names its line.
+- `PassManifest.ts`: parses a pass file, whose passes each start with a `//!` header as in mpv's user shaders, into manifests in file order; a failure names its line in the file.
 - `PassResources.ts`: the engine-owned bindings, their WGSL declarations and layout entries, and the byte layouts of the uniforms the engine writes.
 - `PassPrelude.ts`: the WGSL around pass code: input accessors, entry stages, and the renaming that keeps each user body's names apart.
 - `PresentationPlanner.ts`: arranges a route's built-in chain and the user passes on the stage spine and the color track, then generates each pass's module.

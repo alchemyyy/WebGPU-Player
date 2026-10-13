@@ -1,4 +1,4 @@
-// The shader panel's rows: each preset pass's name, its state in the plan report, and its parameter fields.
+// The shader panel's rows: each preset file's name, the state of each of its passes in the plan report, and its parameter fields.
 import type {
     PassParameter,
     PassParameterType,
@@ -7,7 +7,7 @@ import type {
     PlanReport
 } from 'webgpu-player/presentation/passes/PassTypes';
 
-import type { SandboxShaderPass } from '../../contracts/SandboxContracts';
+import type { SandboxFilePass, SandboxShaderFile } from '../../contracts/SandboxContracts';
 import {
     formatPassRejection,
     getPassRejectionTone,
@@ -39,43 +39,58 @@ export type ShaderParameterField = Readonly<{
     value: number
 }>;
 
-export type ShaderPassRow = Readonly<{
+/** One pass of a row's file: its state, as text that names the pass when the file holds several. */
+export type ShaderPassStateLine = Readonly<{
+    state: ShaderPassState
+    text: string
+    tone: DiagnosticTone
+}>;
+
+export type ShaderFileRow = Readonly<{
     id: string
-    /** The manifest's name, or the pass's origin when its header failed */
+    /** The name of the file's only pass, or the file's origin for a file of several passes or a header failure */
     name: string
     origin: string
+    /** The parameters of the file's passes, each name once, since the passes share its value */
     parameters: readonly ShaderParameterField[]
-    state: ShaderPassState
-    stateText: string
-    stateTone: DiagnosticTone
+    /** One line per pass of the file, in file order */
+    states: readonly ShaderPassStateLine[]
 }>;
 
 // The presenter names a header failure by preset position, so the rows show the header failure the pass itself carries
 const HEADER_INVALID_REASON: PassRejectionReason = 'header-invalid';
 const ACTIVE_STATE_TEXT = 'active';
 const PENDING_STATE_TEXT = 'pending';
+// Labels a pass of a several-pass file whose header failed before it declared a name, followed by its place in the file
+const UNNAMED_FILE_PASS_PREFIX = 'pass ';
 const INTEGER_PARAMETER_STEP = 1;
 const FLOAT_PARAMETER_STEPS_PER_RANGE = 100;
 
 /**
- * Describes the preset's passes in order, matching each to the plan report by name.
+ * Describes the preset's files in order, matching each of their passes to the plan report by name.
  * Among passes of one name, the first takes the name's active entry and the rest take its rejections in report order, as the presenter reports duplicates by preset position.
  */
-export function describeShaderPasses(passes: readonly SandboxShaderPass[], planReport: PlanReport): ShaderPassRow[] {
+export function describeShaderFiles(files: readonly SandboxShaderFile[], planReport: PlanReport): ShaderFileRow[] {
     const activeNames = new Set<string>(planReport.activePasses);
     const rejectionsByName = groupRejectionsByName(planReport.inactivePasses);
     const claimedActiveNames = new Set<string>();
-    const rows: ShaderPassRow[] = [];
-    for (const pass of passes) {
-        const state = getPassState(pass, activeNames, claimedActiveNames, rejectionsByName);
+    const rows: ShaderFileRow[] = [];
+    for (const file of files) {
+        const severalPasses = file.passes.length > 1;
+        const states: ShaderPassStateLine[] = [];
+        for (const [ passIndex, filePass ] of file.passes.entries()) {
+            const state = getPassState(filePass, activeNames, claimedActiveNames, rejectionsByName);
+            const stateText = formatShaderPassState(state);
+            const label = filePass.manifest?.name ?? `${UNNAMED_FILE_PASS_PREFIX}${passIndex + 1}`;
+            states.push({ state, text: severalPasses ? `${label}: ${stateText}` : stateText, tone: getShaderPassStateTone(state) });
+        }
+        const onlyManifest = severalPasses ? null : file.passes.at(0)?.manifest ?? null;
         rows.push({
-            id: pass.id,
-            name: pass.manifest?.name ?? pass.origin,
-            origin: pass.origin,
-            parameters: describeParameters(pass),
-            state,
-            stateText: formatShaderPassState(state),
-            stateTone: getShaderPassStateTone(state)
+            id: file.id,
+            name: onlyManifest?.name ?? file.origin,
+            origin: file.origin,
+            parameters: describeParameters(file),
+            states
         });
     }
     return rows;
@@ -95,15 +110,15 @@ function groupRejectionsByName(rejections: readonly PassRejection[]): Map<string
 }
 
 function getPassState(
-    pass: SandboxShaderPass,
+    filePass: SandboxFilePass,
     activeNames: ReadonlySet<string>,
     claimedActiveNames: Set<string>,
     rejectionsByName: ReadonlyMap<string, PassRejection[]>
 ): ShaderPassState {
-    if (pass.manifest === null) {
-        return { failure: pass.headerFailure ?? MISSING_VALUE_TEXT, kind: 'header-failure' };
+    if (filePass.manifest === null) {
+        return { failure: filePass.headerFailure ?? MISSING_VALUE_TEXT, kind: 'header-failure' };
     }
-    const name = pass.manifest.name;
+    const name = filePass.manifest.name;
     if (activeNames.has(name) && !claimedActiveNames.has(name)) {
         claimedActiveNames.add(name);
         return { kind: 'active' };
@@ -138,9 +153,14 @@ function getShaderPassStateTone(state: ShaderPassState): DiagnosticTone {
     }
 }
 
-function describeParameters(pass: SandboxShaderPass): ShaderParameterField[] {
+function describeParameters(file: SandboxShaderFile): ShaderParameterField[] {
     const fields: ShaderParameterField[] = [];
-    for (const parameter of pass.manifest?.parameters ?? []) {
+    // The parser rejects a parameter that a file's passes declare differently, so each name's first declaration stands for all of them
+    const parameters = file.passes.flatMap((filePass: SandboxFilePass): readonly PassParameter[] => filePass.manifest?.parameters ?? []);
+    for (const parameter of parameters) {
+        if (fields.some((field: ShaderParameterField): boolean => field.name === parameter.name)) {
+            continue;
+        }
         fields.push({
             defaultValue: parameter.defaultValue,
             maximum: parameter.maximum,
@@ -148,7 +168,7 @@ function describeParameters(pass: SandboxShaderPass): ShaderParameterField[] {
             name: parameter.name,
             step: getParameterStep(parameter),
             type: parameter.type,
-            value: Object.hasOwn(pass.parameters, parameter.name) ? pass.parameters[parameter.name] : parameter.defaultValue
+            value: Object.hasOwn(file.parameters, parameter.name) ? file.parameters[parameter.name] : parameter.defaultValue
         });
     }
     return fields;

@@ -362,18 +362,19 @@ describe('SandboxSession', () => {
         expect(harness.store.getState().subtitleCues).toEqual([ { endMicroseconds: 2_000_000, startMicroseconds: 1_000_000, text: SUBTITLE_TEXT } ]);
     });
 
-    it('adds shader passes from WGSL files, reports other files, and applies the preset', async () => {
+    it('adds shader files from WGSL files, reports other files, and applies the preset', async () => {
         const harness = createHarness();
 
-        await harness.session.addShaderPasses([
+        await harness.session.addShaderFiles([
             new File([ EXAMPLE_PASSES[0].source ], PASS_FILE_NAME),
             new File([ 'not a pass' ], TEXT_FILE_NAME)
         ]);
 
         expect(getFailures(harness)).toEqual([ { code: 'shader-file-unsupported', detail: TEXT_FILE_NAME, layer: 'shader' } ]);
         const presentation = harness.store.getState().presentation;
-        expect(presentation.passes).toHaveLength(1);
-        expect(presentation.passes[0]).toMatchObject({ headerFailure: null, origin: PASS_FILE_NAME });
+        expect(presentation.files).toHaveLength(1);
+        expect(presentation.files[0]).toMatchObject({ origin: PASS_FILE_NAME });
+        expect(presentation.files[0].passes).toEqual([ { headerFailure: null, manifest: expect.objectContaining({ name: 'Saturation' }) } ]);
         expect(presentation.report.activePasses).toEqual([ 'Saturation' ]);
         expect(engineMocks.presenters[0].setPresentationPreset).toHaveBeenCalledWith([ { parameters: {}, source: EXAMPLE_PASSES[0].source } ]);
     });
@@ -381,17 +382,17 @@ describe('SandboxSession', () => {
     it('applies a parameter live, and keeps it for a pass that is not running', async () => {
         const harness = createHarness();
         await harness.session.addExampleShaderPass(EXAMPLE_PASSES[0].id);
-        const passId = harness.store.getState().presentation.passes[0].id;
+        const fileId = harness.store.getState().presentation.files[0].id;
         const presenter = engineMocks.presenters[0];
 
-        harness.session.setShaderParameter(passId, SATURATION_PARAMETER, CHANGED_SATURATION);
+        harness.session.setShaderParameter(fileId, SATURATION_PARAMETER, CHANGED_SATURATION);
         presenter.setPresentationParameter.mockImplementation((): void => {
             throw new RangeError(PENDING_PARAMETER_ERROR);
         });
-        harness.session.setShaderParameter(passId, SATURATION_PARAMETER, CHANGED_SATURATION);
+        harness.session.setShaderParameter(fileId, SATURATION_PARAMETER, CHANGED_SATURATION);
 
         expect(presenter.setPresentationParameter).toHaveBeenCalledWith(EXAMPLE_PASSES[0].name, SATURATION_PARAMETER, CHANGED_SATURATION);
-        expect(harness.store.getState().presentation.passes[0].parameters).toEqual({ [SATURATION_PARAMETER]: CHANGED_SATURATION });
+        expect(harness.store.getState().presentation.files[0].parameters).toEqual({ [SATURATION_PARAMETER]: CHANGED_SATURATION });
         expect(getFailures(harness)).toEqual([ { code: 'shader-parameter-pending', detail: PENDING_PARAMETER_ERROR, layer: 'shader' } ]);
     });
 

@@ -1,4 +1,4 @@
-// Parses the `//!` header of a user pass into its PassManifest; overhual/passes.md documents the grammar.
+// Parses a pass file, whose passes each start with a `//!` header, into PassManifests; overhual/passes.md documents the grammar.
 import {
     INTERMEDIATE_TEXTURE_FORMAT,
     MAXIMUM_WORKGROUP_INVOCATIONS,
@@ -82,8 +82,28 @@ type PassHeader = {
     bodyFirstLine: number
     /** Each directive's entries in source order; only `input` repeats. */
     entries: ReadonlyMap<Directive, readonly HeaderEntry[]>
+    /** The 1-based line of the header's first line, where a missing directive is reported. */
+    firstLine: number
     parameters: readonly ParameterEntry[]
 };
+
+/** One pass's lines in its file, as 0-based line indices: its header from headerStart, and its body from bodyStart up to bodyEnd. */
+type PassBlock = {
+    bodyEnd: number
+    bodyStart: number
+    headerStart: number
+};
+
+/** A parameter an earlier pass of the file declared, which a later declaration of its name must match. */
+type FileParameter = {
+    parameter: PassParameter
+    passName: string
+};
+
+/** One pass of a pass file, in file order: its manifest, or the header error that keeps it from parsing. */
+export type PassFileEntry =
+    | Readonly<{ error: null; manifest: PassManifest }>
+    | Readonly<{ error: PassManifestError; manifest: null }>;
 
 type ComponentCount = NonNullable<PassManifest['components']>;
 
@@ -91,8 +111,8 @@ type OutputSize = Pick<PassOutput, 'height' | 'width'>;
 
 const HEADER_PREFIX = '//!';
 const PARAMETER_KEYWORD = 'param';
-// A missing directive has no line of its own
-const MISSING_DIRECTIVE_LINE = 1;
+// A missing header has no line of its own
+const MISSING_HEADER_LINE = 1;
 
 const DEFAULT_DOMAIN: ColorDomain = 'any';
 const MAXIMUM_NAME_LENGTH = 64;
@@ -155,6 +175,8 @@ const REPLACING_DOMAIN_MESSAGE = 'A color pass with replaces cannot declare a do
 const SCALER_HOOK_MESSAGE = `A scaler must hook ${SCALER_STAGE}`;
 const SCALER_INPUT_MESSAGE = `A scaler reads only ${HOOKED_INPUT_NAME}`;
 const PARAMETER_COUNT_MESSAGE = `A pass declares at most ${MAXIMUM_PARAMETER_COUNT} parameters`;
+// The number of passes parsePassManifest takes
+const SINGLE_PASS_COUNT = 1;
 
 /** Narrows a header word to one of the words a directive allows. */
 function isOneOf<Word extends string>(words: readonly Word[], value: string): value is Word {
@@ -203,34 +225,59 @@ function readHeaderLine(text: string, line: number, entries: Map<Directive, Head
     entries.set(key, directiveEntries);
 }
 
-/** Splits a source into its header entries and its body, after optional leading blank lines. */
-function readHeader(source: string): PassHeader {
-    const lines = source.split(LINE_BREAK_PATTERN);
+function isHeaderLine(line: string): boolean {
+    return line.startsWith(HEADER_PREFIX);
+}
+
+/**
+ * Splits a file's lines into its passes, as mpv splits its user shaders: each pass is a run of header lines, then its body up to the next header line.
+ * Only blank lines may come before the first header; a file that starts any other way has no passes.
+ */
+function findPassBlocks(lines: readonly string[]): PassBlock[] {
     let lineIndex = 0;
     while (lineIndex < lines.length && lines[lineIndex].trim() === '') {
         lineIndex += 1;
     }
-    const headerStartIndex = lineIndex;
+    const blocks: PassBlock[] = [];
+    while (lineIndex < lines.length && isHeaderLine(lines[lineIndex])) {
+        const headerStart = lineIndex;
+        while (lineIndex < lines.length && isHeaderLine(lines[lineIndex])) {
+            lineIndex += 1;
+        }
+        const bodyStart = lineIndex;
+        while (lineIndex < lines.length && !isHeaderLine(lines[lineIndex])) {
+            lineIndex += 1;
+        }
+        blocks.push({ bodyEnd: lineIndex, bodyStart, headerStart });
+    }
+    return blocks;
+}
+
+/** Reads one pass's header entries and its body, with lines counted from the file's first line. */
+function readHeader(lines: readonly string[], block: PassBlock): PassHeader {
     const entries = new Map<Directive, HeaderEntry[]>();
     const parameters: ParameterEntry[] = [];
-    for (; lineIndex < lines.length && lines[lineIndex].startsWith(HEADER_PREFIX); lineIndex += 1) {
+    for (let lineIndex = block.headerStart; lineIndex < block.bodyStart; lineIndex += 1) {
         readHeaderLine(lines[lineIndex].slice(HEADER_PREFIX.length).trim(), lineIndex + 1, entries, parameters);
     }
-    if (lineIndex === headerStartIndex) {
-        throw new PassManifestError(MISSING_HEADER_MESSAGE, MISSING_DIRECTIVE_LINE);
-    }
-    // lineIndex is the 0-based index of the first body line
-    return { body: lines.slice(lineIndex).join('\n'), bodyFirstLine: lineIndex + 1, entries, parameters };
+    return {
+        body: lines.slice(block.bodyStart, block.bodyEnd).join('\n'),
+        bodyFirstLine: block.bodyStart + 1,
+        entries,
+        firstLine: block.headerStart + 1,
+        parameters
+    };
 }
 
 function getEntry(header: PassHeader, directive: Directive): HeaderEntry | null {
     return header.entries.get(directive)?.[0] ?? null;
 }
 
+/** Returns a required directive's entry; a missing one has no line of its own, so it is reported on the header's first line. */
 function requireEntry(header: PassHeader, directive: Directive): HeaderEntry {
     const entry = getEntry(header, directive);
     if (!entry) {
-        throw new PassManifestError(`Missing required directive '${directive}'`, MISSING_DIRECTIVE_LINE);
+        throw new PassManifestError(`Missing required directive '${directive}'`, header.firstLine);
     }
     return entry;
 }
@@ -691,19 +738,89 @@ function readManifest(header: PassHeader, name: string): PassManifest {
     };
 }
 
-/**
- * Parses and validates a user pass's `//!` header into a typed manifest.
- * A failure after the name was read carries that name, so a report can name the pass.
- */
-export function parsePassManifest(source: string): PassManifest {
-    const header = readHeader(source);
+function parametersMatch(first: PassParameter, second: PassParameter): boolean {
+    return first.type === second.type
+        && first.defaultValue === second.defaultValue
+        && first.minimum === second.minimum
+        && first.maximum === second.maximum;
+}
+
+/** Rejects a parameter that an earlier pass of the file declared differently, since a file's passes share each parameter's value; then records the pass's parameters. */
+function requireFileParameters(header: PassHeader, manifest: PassManifest, fileParameters: Map<string, FileParameter>): void {
+    for (const [ parameterIndex, parameter ] of manifest.parameters.entries()) {
+        const declared = fileParameters.get(parameter.name);
+        if (declared && !parametersMatch(declared.parameter, parameter)) {
+            throw new PassManifestError(
+                `Parameter '${parameter.name}' differs from its declaration in '${declared.passName}'`,
+                header.parameters[parameterIndex].line
+            );
+        }
+    }
+    for (const parameter of manifest.parameters) {
+        if (!fileParameters.has(parameter.name)) {
+            fileParameters.set(parameter.name, { parameter, passName: manifest.name });
+        }
+    }
+}
+
+/** Parses and validates one pass of a file; a failure after the name was read carries that name, so a report can name the pass. */
+function parsePassBlock(lines: readonly string[], block: PassBlock, fileParameters: Map<string, FileParameter>): PassManifest {
+    const header = readHeader(lines, block);
     const name = readName(header);
     try {
-        return readManifest(header, name);
+        const manifest = readManifest(header, name);
+        requireFileParameters(header, manifest, fileParameters);
+        return manifest;
     } catch (error) {
         if (error instanceof PassManifestError) {
             throw new PassManifestError(error.message, error.line, name);
         }
         throw error;
     }
+}
+
+function createMissingHeaderError(): PassManifestError {
+    return new PassManifestError(MISSING_HEADER_MESSAGE, MISSING_HEADER_LINE);
+}
+
+/**
+ * Parses a pass file into its passes in file order, each a `//!` header and the body up to the next header line, as in mpv's user shaders.
+ * Each pass parses on its own, so a malformed header leaves the file's other passes in place, and every line counts from the file's first line.
+ * A file whose first non-blank line is not a header is one entry, with the missing header error.
+ */
+export function parsePassFile(source: string): PassFileEntry[] {
+    const lines = source.split(LINE_BREAK_PATTERN);
+    const blocks = findPassBlocks(lines);
+    if (blocks.length === 0) {
+        return [ { error: createMissingHeaderError(), manifest: null } ];
+    }
+    const fileParameters = new Map<string, FileParameter>();
+    const entries: PassFileEntry[] = [];
+    for (const block of blocks) {
+        try {
+            entries.push({ error: null, manifest: parsePassBlock(lines, block, fileParameters) });
+        } catch (error) {
+            if (!(error instanceof PassManifestError)) {
+                throw error;
+            }
+            entries.push({ error, manifest: null });
+        }
+    }
+    return entries;
+}
+
+/**
+ * Parses and validates a source that holds exactly one pass into a typed manifest.
+ * A source of several passes fails on the second pass's first line; parsePassFile reads such files.
+ */
+export function parsePassManifest(source: string): PassManifest {
+    const lines = source.split(LINE_BREAK_PATTERN);
+    const blocks = findPassBlocks(lines);
+    if (blocks.length === 0) {
+        throw createMissingHeaderError();
+    }
+    if (blocks.length > SINGLE_PASS_COUNT) {
+        throw new PassManifestError(`The source holds ${blocks.length} passes; expected one`, blocks[SINGLE_PASS_COUNT].headerStart + 1);
+    }
+    return parsePassBlock(lines, blocks[0], new Map<string, FileParameter>());
 }

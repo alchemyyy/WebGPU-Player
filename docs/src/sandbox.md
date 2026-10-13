@@ -121,7 +121,7 @@ It is in `sandbox/src/session/RouteOverride.ts`.
 - Playback info groups the media and its tracks, the route and the override, the clock, video decode, audio, presentation, authorization, and the failure log, newest first.
   Its sections collapse, and stay collapsed across refreshes.
 - The shader panel adds passes from the examples, from files, or by dropping files on it.
-  It lists each pass with its plan state, its order controls, and an input per parameter, which applies when committed.
+  It lists each file with its order controls, a plan state per pass, which names the pass when the file holds several, and an input per parameter, which applies when committed to every pass of the file that declares it.
 - Files dropped anywhere but the shader panel are ignored, so a stray drop never navigates away from the sandbox.
 
 ## How it is built
@@ -134,7 +134,7 @@ It is in `sandbox/src/session/RouteOverride.ts`.
 | `sandbox/src/session/` | The playback session, which drives the engine, and the ffprobe probe with its translation into the engine's media description |
 | `sandbox/src/ui/App.ts` | The layout, which mounts each panel into its region, toggles them, and binds the click on the video |
 | `sandbox/src/ui/panels/` | One module per panel, each with its own stylesheet |
-| `sandbox/src/ui/diagnostics/` | What the diagnostics panels show, as pure functions of the state: the graph layout, the playback info sections, and the shader pass rows |
+| `sandbox/src/ui/diagnostics/` | What the diagnostics panels show, as pure functions of the state: the graph layout, the playback info sections, and the shader file rows |
 | `sandbox/src/ui/theme.css` | The shared variables every stylesheet reads instead of restating colors |
 | `test/sandbox/` | The sandbox's unit tests, which `npm test` runs with the engine's |
 

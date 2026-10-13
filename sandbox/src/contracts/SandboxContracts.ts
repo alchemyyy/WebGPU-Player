@@ -193,15 +193,22 @@ export type SubtitleCue = Readonly<{
 
 // Presentation
 
-export type SandboxShaderPass = Readonly<{
-    /** The header error, as `line N: message`, or null when the header parses */
+/** One pass of a preset file. */
+export type SandboxFilePass = Readonly<{
+    /** The header error, as `line N: message` with the file's line, or null when the header parses */
     headerFailure: string | null
-    /** Stable for the pass's lifetime in the preset */
-    id: string
     manifest: PassManifest | null
+}>;
+
+/** One file of the preset: WGSL whose passes run in file order and share its parameter values. */
+export type SandboxShaderFile = Readonly<{
+    /** Stable for the file's lifetime in the preset */
+    id: string
     /** The file it was dropped from, or the example it came from */
     origin: string
     parameters: Readonly<Record<string, number>>
+    /** The file's passes in file order; a file that does not start with a header is one pass with its header failure */
+    passes: readonly SandboxFilePass[]
     source: string
 }>;
 
@@ -213,8 +220,9 @@ export type AuthorizationTelemetry = Readonly<{
 }>;
 
 export type PresentationState = Readonly<{
+    /** The preset's files, in preset order */
+    files: readonly SandboxShaderFile[]
     hdrOutput: boolean
-    passes: readonly SandboxShaderPass[]
     /** The installed plan, which the pipeline graph draws; null before the first frame */
     plan: PresentationPlan | null
     renderSettings: RenderSettings | null
@@ -296,8 +304,8 @@ export function createInitialSandboxState(): SandboxState {
         media: null,
         playback: { durationMicroseconds: null, muted: false, status: 'idle', volume: DEFAULT_VOLUME },
         presentation: {
+            files: [],
             hdrOutput: false,
-            passes: [],
             plan: null,
             renderSettings: null,
             report: { activePasses: [], inactivePasses: [] }
@@ -335,17 +343,17 @@ export type ExampleShaderPass = Readonly<{
 /** What the panels ask of the session; it publishes every state but library. */
 export type SandboxSessionCommands = {
     addExampleShaderPass: (exampleId: string) => Promise<void>
-    addShaderPasses: (files: readonly File[]) => Promise<void>
+    addShaderFiles: (files: readonly File[]) => Promise<void>
     /** The examples addExampleShaderPass takes */
     getExampleShaderPasses: () => readonly ExampleShaderPass[]
     /** The playback clock, cheap enough for every animation frame, which subtitles and the timeline read */
     getCurrentTimeMicroseconds: () => Microseconds
-    moveShaderPass: (passId: string, offset: -1 | 1) => Promise<void>
+    moveShaderFile: (fileId: string, offset: -1 | 1) => Promise<void>
     /** Probes and plays a file from the start, replacing any open media */
     openMedia: (media: SandboxMediaFile) => Promise<void>
     pause: () => void
     play: () => Promise<void>
-    removeShaderPass: (passId: string) => Promise<void>
+    removeShaderFile: (fileId: string) => Promise<void>
     seek: (timeMicroseconds: Microseconds) => void
     /** Restarts the media on the track, at the current time */
     selectAudioTrack: (trackIndex: number | null) => Promise<void>
@@ -355,6 +363,6 @@ export type SandboxSessionCommands = {
     setRenderSettings: (settings: HDRToSDRRenderSettings) => void
     /** Restarts the media on the route the override selects, at the current time */
     setRouteOverride: (override: RouteOverride) => Promise<void>
-    setShaderParameter: (passId: string, parameterName: string, value: number) => void
+    setShaderParameter: (fileId: string, parameterName: string, value: number) => void
     setVolume: (volume: number) => void
 };

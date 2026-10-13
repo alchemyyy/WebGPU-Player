@@ -2,11 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { PlanReport } from 'webgpu-player/presentation/passes/PassTypes';
 
-import type { ExampleShaderPass, SandboxShaderPass } from '../../../sandbox/src/contracts/SandboxContracts';
+import type { ExampleShaderPass, SandboxShaderFile } from '../../../sandbox/src/contracts/SandboxContracts';
 import type { Panel, PanelContext } from '../../../sandbox/src/ui/Panel';
 import { createShaderPanel } from '../../../sandbox/src/ui/panels/ShaderPanel';
 import { createFakePanelContext } from '../shell/sandboxFakes';
-import { createTestShaderPass } from './diagnosticsTestState';
+import { createTestShaderFile } from './diagnosticsTestState';
 
 const GAIN_PASS_NAME = 'Gain';
 const TINT_PASS_NAME = 'Tint';
@@ -15,8 +15,8 @@ const GAIN_DEFAULT = 1;
 const STORED_GAIN = 1.25;
 const TYPED_GAIN = 1.75;
 const COMMITTED_GAIN = 0.5;
-const GAIN_PASS_ID = 'gain-pass';
-const TINT_PASS_ID = 'tint-pass';
+const GAIN_FILE_ID = 'gain-file';
+const TINT_FILE_ID = 'tint-file';
 const EXAMPLES: readonly ExampleShaderPass[] = [
     { id: 'sharpen', name: 'Sharpen kernel', source: '' },
     { id: 'temporal', name: 'Temporal blend', source: '' }
@@ -60,15 +60,15 @@ function createColorPassSource(name: string): string {
     ].join('\n');
 }
 
-function createPasses(gainParameters: Readonly<Record<string, number>> = {}): SandboxShaderPass[] {
+function createFiles(gainParameters: Readonly<Record<string, number>> = {}): SandboxShaderFile[] {
     return [
-        createTestShaderPass(GAIN_PASS_ID, createColorPassSource(GAIN_PASS_NAME), { parameters: gainParameters }),
-        createTestShaderPass(TINT_PASS_ID, createColorPassSource(TINT_PASS_NAME))
+        createTestShaderFile(GAIN_FILE_ID, createColorPassSource(GAIN_PASS_NAME), { parameters: gainParameters }),
+        createTestShaderFile(TINT_FILE_ID, createColorPassSource(TINT_PASS_NAME))
     ];
 }
 
-function publishPasses(context: PanelContext, passes: readonly SandboxShaderPass[], planReport?: PlanReport): void {
-    context.store.setState(state => ({ presentation: { ...state.presentation, passes, report: planReport ?? state.presentation.report } }));
+function publishFiles(context: PanelContext, files: readonly SandboxShaderFile[], planReport?: PlanReport): void {
+    context.store.setState(state => ({ presentation: { ...state.presentation, files, report: planReport ?? state.presentation.report } }));
 }
 
 /** A fake context whose session offers the examples. */
@@ -151,7 +151,7 @@ describe('createShaderPanel', () => {
 
         panel.element.dispatchEvent(drop);
 
-        expect(context.session.addShaderPasses).toHaveBeenCalledWith([ DROPPED_WGSL_FILE, DROPPED_TEXT_FILE ]);
+        expect(context.session.addShaderFiles).toHaveBeenCalledWith([ DROPPED_WGSL_FILE, DROPPED_TEXT_FILE ]);
         expect(drop.defaultPrevented).toBe(true);
         panel.destroy();
     });
@@ -163,7 +163,7 @@ describe('createShaderPanel', () => {
 
         panel.element.dispatchEvent(drop);
 
-        expect(context.session.addShaderPasses).not.toHaveBeenCalled();
+        expect(context.session.addShaderFiles).not.toHaveBeenCalled();
         expect(drop.defaultPrevented).toBe(false);
         panel.destroy();
     });
@@ -197,7 +197,7 @@ describe('createShaderPanel', () => {
         Object.defineProperty(fileInput, 'files', { configurable: true, value: [ DROPPED_WGSL_FILE ] });
         fileInput.dispatchEvent(new Event('change'));
 
-        expect(context.session.addShaderPasses).toHaveBeenCalledWith([ DROPPED_WGSL_FILE ]);
+        expect(context.session.addShaderFiles).toHaveBeenCalledWith([ DROPPED_WGSL_FILE ]);
         panel.destroy();
     });
 
@@ -205,7 +205,7 @@ describe('createShaderPanel', () => {
         const context = createFakePanelContext();
         const panel = createShaderPanel(context);
 
-        publishPasses(context, createPasses(), {
+        publishFiles(context, createFiles(), {
             activePasses: [ GAIN_PASS_NAME ],
             inactivePasses: [ { detail: COMPILE_ERROR_DETAIL, name: TINT_PASS_NAME, reason: 'compile-error' } ]
         });
@@ -222,8 +222,8 @@ describe('createShaderPanel', () => {
         getButtons(tintRow)[MOVE_UP_BUTTON_INDEX].click();
         getButtons(tintRow)[REMOVE_BUTTON_INDEX].click();
 
-        expect(vi.mocked(context.session.moveShaderPass).mock.calls).toEqual([ [ GAIN_PASS_ID, MOVE_DOWN_OFFSET ], [ TINT_PASS_ID, MOVE_UP_OFFSET ] ]);
-        expect(context.session.removeShaderPass).toHaveBeenCalledWith(TINT_PASS_ID);
+        expect(vi.mocked(context.session.moveShaderFile).mock.calls).toEqual([ [ GAIN_FILE_ID, MOVE_DOWN_OFFSET ], [ TINT_FILE_ID, MOVE_UP_OFFSET ] ]);
+        expect(context.session.removeShaderFile).toHaveBeenCalledWith(TINT_FILE_ID);
         panel.destroy();
     });
 
@@ -231,14 +231,14 @@ describe('createShaderPanel', () => {
         const context = createFakePanelContext();
         const panel = createShaderPanel(context);
 
-        publishPasses(context, createPasses({ [GAIN_PARAMETER]: STORED_GAIN }));
+        publishFiles(context, createFiles({ [GAIN_PARAMETER]: STORED_GAIN }));
         const input = requireInput(getRows(panel)[0]);
 
         expect(input.valueAsNumber).toBe(STORED_GAIN);
         input.value = String(COMMITTED_GAIN);
         input.dispatchEvent(new Event('change'));
 
-        expect(context.session.setShaderParameter).toHaveBeenCalledWith(GAIN_PASS_ID, GAIN_PARAMETER, COMMITTED_GAIN);
+        expect(context.session.setShaderParameter).toHaveBeenCalledWith(GAIN_FILE_ID, GAIN_PARAMETER, COMMITTED_GAIN);
         panel.destroy();
     });
 
@@ -246,12 +246,12 @@ describe('createShaderPanel', () => {
         const context = createFakePanelContext();
         const panel = createShaderPanel(context);
 
-        publishPasses(context, createPasses({ [GAIN_PARAMETER]: STORED_GAIN }));
+        publishFiles(context, createFiles({ [GAIN_PARAMETER]: STORED_GAIN }));
         const defaultButton = getRows(panel)[0].querySelector<HTMLButtonElement>(DEFAULT_BUTTON_SELECTOR);
         defaultButton?.click();
 
         expect(defaultButton?.title).toBe(`Default: ${GAIN_DEFAULT}`);
-        expect(context.session.setShaderParameter).toHaveBeenCalledWith(GAIN_PASS_ID, GAIN_PARAMETER, GAIN_DEFAULT);
+        expect(context.session.setShaderParameter).toHaveBeenCalledWith(GAIN_FILE_ID, GAIN_PARAMETER, GAIN_DEFAULT);
         panel.destroy();
     });
 
@@ -260,34 +260,34 @@ describe('createShaderPanel', () => {
         const panel = createShaderPanel(context);
         document.body.append(panel.element);
 
-        publishPasses(context, createPasses());
+        publishFiles(context, createFiles());
         const [ gainRow, tintRow ] = getRows(panel);
         const gainInput = requireInput(gainRow);
         gainInput.focus();
         gainInput.value = String(TYPED_GAIN);
-        publishPasses(context, createPasses({ [GAIN_PARAMETER]: STORED_GAIN }));
+        publishFiles(context, createFiles({ [GAIN_PARAMETER]: STORED_GAIN }));
 
         expect(getRows(panel)).toEqual([ gainRow, tintRow ]);
         expect(gainInput.valueAsNumber).toBe(TYPED_GAIN);
         expect(document.activeElement).toBe(gainInput);
         gainInput.blur();
-        publishPasses(context, createPasses({ [GAIN_PARAMETER]: STORED_GAIN }));
+        publishFiles(context, createFiles({ [GAIN_PARAMETER]: STORED_GAIN }));
 
         expect(gainInput.valueAsNumber).toBe(STORED_GAIN);
         panel.destroy();
         panel.element.remove();
     });
 
-    it('reorders its rows with the preset and drops the rows of removed passes', () => {
+    it('reorders its rows with the preset and drops the rows of removed files', () => {
         const context = createFakePanelContext();
         const panel = createShaderPanel(context);
 
-        publishPasses(context, createPasses());
+        publishFiles(context, createFiles());
         const [ gainRow, tintRow ] = getRows(panel);
-        publishPasses(context, [ ...createPasses() ].reverse());
+        publishFiles(context, [ ...createFiles() ].reverse());
 
         expect(getRows(panel)).toEqual([ tintRow, gainRow ]);
-        publishPasses(context, createPasses().slice(1));
+        publishFiles(context, createFiles().slice(1));
 
         expect(getRows(panel)).toEqual([ tintRow ]);
         panel.destroy();

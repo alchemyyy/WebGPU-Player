@@ -18,8 +18,9 @@
 
 ## File format
 
-A pass is one WGSL file whose header is a block of `//!` lines.
-The engine parses the header and never parses WGSL itself.
+A pass is a header, a block of `//!` lines, and its WGSL body.
+A pass file holds one or more passes in sequence, as mpv's user shaders do, so a network of several passes ships as one file.
+The engine parses the headers and never parses WGSL itself.
 
 ```wgsl
 //! name: Adaptive sharpen
@@ -42,7 +43,7 @@ fn kernel(coordinate: vec2f) -> vec4f {
 | --- | --- | --- |
 | `name` | All, required | The name in reports and errors |
 | `shape` | All, required | `color`, `kernel`, `scaler`, or `compute` |
-| `hook` | All, required without `replaces` | The stage it attaches to; passes on one hook run in preset order |
+| `hook` | All, required without `replaces` | The stage it attaches to; passes on one hook run in preset order, and a file's passes in file order |
 | `replaces` | Color | The built-in color function it runs in place of, such as `builtin.tone-map` |
 | `domain` | All | The color domain it requires on input |
 | `input` | Kernel, scaler, compute | What it reads: `HOOKED`, another stage, a saved name, or history such as `RGB[-1]` |
@@ -56,10 +57,14 @@ fn kernel(coordinate: vec2f) -> vec4f {
 
 ## Header grammar
 
-- The header is the run of lines that start with `//!` after any blank lines, the body starts on the line after it, and `\r\n` line endings read as `\n`.
+- A pass's header is a run of lines that start with `//!`, its body starts on the line after it and runs up to the next line that starts with `//!`, and `\r\n` line endings read as `\n`.
+- A line that starts with `//!` always starts or continues a header, so a body never holds one, and only blank lines may come before a file's first header.
+- A file's passes run in file order and stay together in the preset, as one entry with one set of parameter values.
+- Each pass of a file parses on its own, so a malformed header leaves the file's other passes in place.
 - A header line is `//! <directive>: <value>` or `//! param <name>: <type> = <default> in [<minimum>, <maximum>]`, with any whitespace around the tokens.
 - Only `input` and `param` repeat, and an unknown, repeated, or empty directive is an error, as is a directive that the shape does not take.
-- An error carries the line of its directive, or line 1 for a missing required directive.
+- An error carries the line of its directive, or the header's first line for a missing required directive, counted from the file's first line.
+- The passes of a file share each parameter's value, so passes that declare one parameter must declare it alike.
 - An identifier is `[A-Za-z_]\w*`.
 - `name` is at most 64 characters.
 - `hook` is `OUTPUT`, `PRESCALE`, `RGB`, or `SCALE`, and a scaler hooks `SCALE`.

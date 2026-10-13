@@ -36,7 +36,7 @@ A new folder that tools or tests name goes into `tools/constants.json`.
 
 ## Engine API
 
-- `setPresentationPreset(preset)`: an ordered list of pass sources with parameter values; the host stores presets.
+- `setPresentationPreset(files)`: an ordered list of pass files, each a source of one or more passes with parameter values; the host stores presets.
 - `setPresentationParameter(passName, parameterName, value)`: a live parameter change.
 - `getPresentationPlanReport()`: active passes, passes a condition turned off, domain conflicts, compile errors, and per-pass GPU time.
 - `setGPUDecoders(decoders)`: decoder sources with their conformance vectors; the host stores them.

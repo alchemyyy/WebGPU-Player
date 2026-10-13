@@ -1,5 +1,5 @@
 // Builders of the plans, routes, and preset passes the diagnostics tests feed the panels and their helpers.
-import { parsePassManifest } from 'webgpu-player/presentation/passes/PassManifest';
+import { parsePassFile, type PassFileEntry } from 'webgpu-player/presentation/passes/PassManifest';
 import type {
     PlannedBinding,
     PlannedOutput,
@@ -8,7 +8,7 @@ import type {
     PresentationPlan
 } from 'webgpu-player/presentation/passes/PassTypes';
 
-import type { ActiveRoute, SandboxShaderPass } from '../../../sandbox/src/contracts/SandboxContracts';
+import type { ActiveRoute, SandboxFilePass, SandboxShaderFile } from '../../../sandbox/src/contracts/SandboxContracts';
 
 /** One sampled texture binding of a pass. */
 export type TextureRead = Readonly<{
@@ -67,9 +67,13 @@ export function createPresentationPlan(overrides: Partial<PresentationPlan> & Pi
     };
 }
 
-/** A preset pass parsed from its source, as the session publishes one, with no stored parameter values. */
-export function createTestShaderPass(id: string, source: string, overrides: Partial<SandboxShaderPass> = {}): SandboxShaderPass {
-    return { headerFailure: null, id, manifest: parsePassManifest(source), origin: `${id}.wgsl`, parameters: {}, source, ...overrides };
+/** A preset file parsed from its source, as the session publishes one, with no stored parameter values. */
+export function createTestShaderFile(id: string, source: string, overrides: Partial<SandboxShaderFile> = {}): SandboxShaderFile {
+    const passes = parsePassFile(source).map((entry: PassFileEntry): SandboxFilePass => ({
+        headerFailure: entry.error === null ? null : `line ${entry.error.line}: ${entry.error.message}`,
+        manifest: entry.manifest
+    }));
+    return { id, origin: `${id}.wgsl`, parameters: {}, passes, source, ...overrides };
 }
 
 export function createActiveRoute(overrides: Partial<ActiveRoute> = {}): ActiveRoute {
