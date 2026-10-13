@@ -22,7 +22,8 @@ import type {
 import CustomPlaybackFrameLoop from 'webgpu-player/pipeline/CustomPlaybackFrameLoop';
 import { EXAMPLE_PASSES } from 'webgpu-player/presentation/passes/examples/ExamplePasses';
 import { PASS_FILE_EXTENSION } from 'webgpu-player/presentation/passes/PassLanguage';
-import { parsePassManifest, PassManifestError } from 'webgpu-player/presentation/passes/PassManifest';
+import { parsePassFile, type PassFileEntry } from 'webgpu-player/presentation/passes/PassManifest';
+import type { PassParameter } from 'webgpu-player/presentation/passes/PassTypes';
 import {
     alignPresentationInputBitDepth,
     configurePresentationColorPipeline,
@@ -42,7 +43,7 @@ import {
 } from 'webgpu-player/presentation/RenderSettings';
 import WebGPUPresenter, {
     type PresentationFallbackReason,
-    type PresentationPresetPass,
+    type PresentationPresetFile,
     type PresentationSurface
 } from 'webgpu-player/presentation/WebGPUPresenter';
 import { requireMicroseconds } from 'webgpu-player/TimeMath';
@@ -61,9 +62,10 @@ import {
     type PlaybackStatus,
     type RouteOverride,
     type SandboxFailure,
+    type SandboxFilePass,
     type SandboxMediaFile,
     type SandboxSessionCommands,
-    type SandboxShaderPass,
+    type SandboxShaderFile,
     type SandboxState,
     type SubtitleSelection
 } from '../contracts/SandboxContracts';
@@ -110,8 +112,8 @@ const HIDDEN_DOCUMENT_STATE = 'hidden';
 const VISIBILITY_CHANGE_EVENT = 'visibilitychange';
 // What a route chosen without an override says about its choice
 const ELIGIBILITY_SELECTION = 'eligibility';
-const PASS_ID_PREFIX = 'pass-';
-const FIRST_PASS_NUMBER = 1;
+const FILE_ID_PREFIX = 'file-';
+const FIRST_FILE_NUMBER = 1;
 const SINGLE_LAYER_AUTHORIZATION_ROUTE: DolbyVisionAuthorizationRoute = 'single-layer';
 const DUAL_LAYER_AUTHORIZATION_ROUTES: ReadonlyMap<number, DolbyVisionAuthorizationRoute> = new Map<number, DolbyVisionAuthorizationRoute>([
     [ 4, 'profile4-fel' ],
@@ -154,16 +156,14 @@ function createAutomaticRenderSettings(detectedInputPeakNits: number): HDRToSDRR
     });
 }
 
-/** Describes a pass for the shader panel: its manifest when the header parses, else the header failure. */
-function describeShaderPass(id: string, origin: string, source: string, parameters: Readonly<Record<string, number>>): SandboxShaderPass {
-    try {
-        return { headerFailure: null, id, manifest: parsePassManifest(source), origin, parameters, source };
-    } catch (error) {
-        if (!(error instanceof PassManifestError)) {
-            throw error;
-        }
-        return { headerFailure: `line ${error.line}: ${error.message}`, id, manifest: null, origin, parameters, source };
-    }
+/** Describes a preset file for the shader panel: each of its passes, with its manifest when its header parses, else its header failure. */
+function describeShaderFile(id: string, origin: string, source: string, parameters: Readonly<Record<string, number>>): SandboxShaderFile {
+    const passes = parsePassFile(source).map((entry: PassFileEntry): SandboxFilePass => (
+        entry.manifest === null ?
+            { headerFailure: `line ${entry.error.line}: ${entry.error.message}`, manifest: null } :
+            { headerFailure: null, manifest: entry.manifest }
+    ));
+    return { id, origin, parameters, passes, source };
 }
 
 function getFirstVideoTrackIndex(probe: ProbedMedia): number | null {
@@ -196,8 +196,8 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
     let presentationGeneration = 0;
     let openRevision = 0;
     let subtitleRevision = 0;
-    let passNumber = FIRST_PASS_NUMBER;
-    let passes: SandboxShaderPass[] = [];
+    let fileNumber = FIRST_FILE_NUMBER;
+    let files: SandboxShaderFile[] = [];
     // The tone mapping panel's settings, which replace the automatic ones until media changes
     let renderSettingsOverride: HDRToSDRRenderSettings | null = null;
     let telemetryTimer: ReturnType<typeof globalThis.setInterval> | null = null;
@@ -604,22 +604,22 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
     };
 
     const applyPreset = async (): Promise<void> => {
-        store.setState((state: SandboxState): Partial<SandboxState> => ({ presentation: { ...state.presentation, passes } }));
-        const report = await presenter.setPresentationPreset(passes.map((pass: SandboxShaderPass): PresentationPresetPass => (
-            { parameters: pass.parameters, source: pass.source }
+        store.setState((state: SandboxState): Partial<SandboxState> => ({ presentation: { ...state.presentation, files } }));
+        const report = await presenter.setPresentationPreset(files.map((file: SandboxShaderFile): PresentationPresetFile => (
+            { parameters: file.parameters, source: file.source }
         )));
-        store.setState((state: SandboxState): Partial<SandboxState> => ({ presentation: { ...state.presentation, passes, report } }));
+        store.setState((state: SandboxState): Partial<SandboxState> => ({ presentation: { ...state.presentation, files, report } }));
     };
 
-    const addPass = (origin: string, source: string): void => {
-        passes = [ ...passes, describeShaderPass(`${PASS_ID_PREFIX}${passNumber}`, origin, source, {}) ];
-        passNumber += 1;
+    const addFile = (origin: string, source: string): void => {
+        files = [ ...files, describeShaderFile(`${FILE_ID_PREFIX}${fileNumber}`, origin, source, {}) ];
+        fileNumber += 1;
     };
 
-    const requirePassIndex = (passId: string, code: string): number => {
-        const index = passes.findIndex((pass: SandboxShaderPass): boolean => pass.id === passId);
+    const requireFileIndex = (fileId: string, code: string): number => {
+        const index = files.findIndex((file: SandboxShaderFile): boolean => file.id === fileId);
         if (index < 0) {
-            throw failCommand('shader', code, `no pass ${passId}`);
+            throw failCommand('shader', code, `no file ${fileId}`);
         }
         return index;
     };
@@ -647,30 +647,30 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
             if (!example) {
                 return Promise.reject(failCommand('shader', 'example-unknown', exampleId));
             }
-            addPass(example.name, example.source);
+            addFile(example.name, example.source);
             return applyPreset();
         },
-        addShaderPasses: async (files: readonly File[]): Promise<void> => {
-            for (const file of files) {
-                if (!file.name.toLowerCase().endsWith(PASS_FILE_EXTENSION)) {
-                    recordFailure('shader', 'shader-file-unsupported', file.name);
+        addShaderFiles: async (chosenFiles: readonly File[]): Promise<void> => {
+            for (const chosenFile of chosenFiles) {
+                if (!chosenFile.name.toLowerCase().endsWith(PASS_FILE_EXTENSION)) {
+                    recordFailure('shader', 'shader-file-unsupported', chosenFile.name);
                     continue;
                 }
-                addPass(file.name, await file.text());
+                addFile(chosenFile.name, await chosenFile.text());
             }
             await applyPreset();
         },
         getCurrentTimeMicroseconds: (): Microseconds => playback?.controller?.currentTimeMicroseconds ?? playback?.lastTimeMicroseconds ?? START_TIME,
         getExampleShaderPasses: (): readonly ExampleShaderPass[] => EXAMPLE_PASSES,
-        moveShaderPass: (passId: string, offset: -1 | 1): Promise<void> => {
-            const index = requirePassIndex(passId, 'shader-move-failed');
+        moveShaderFile: (fileId: string, offset: -1 | 1): Promise<void> => {
+            const index = requireFileIndex(fileId, 'shader-move-failed');
             const targetIndex = index + offset;
-            if (targetIndex < 0 || targetIndex >= passes.length) {
+            if (targetIndex < 0 || targetIndex >= files.length) {
                 return Promise.resolve();
             }
-            const reordered = [ ...passes ];
+            const reordered = [ ...files ];
             [ reordered[index], reordered[targetIndex] ] = [ reordered[targetIndex], reordered[index] ];
-            passes = reordered;
+            files = reordered;
             return applyPreset();
         },
         openMedia: async (media: SandboxMediaFile): Promise<void> => {
@@ -744,9 +744,9 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
             controller.resume();
             return Promise.resolve();
         },
-        removeShaderPass: (passId: string): Promise<void> => {
-            const index = requirePassIndex(passId, 'shader-remove-failed');
-            passes = passes.filter((_pass: SandboxShaderPass, passIndex: number): boolean => passIndex !== index);
+        removeShaderFile: (fileId: string): Promise<void> => {
+            const index = requireFileIndex(fileId, 'shader-remove-failed');
+            files = files.filter((_file: SandboxShaderFile, fileIndex: number): boolean => fileIndex !== index);
             return applyPreset();
         },
         seek: (timeMicroseconds: Microseconds): void => {
@@ -812,21 +812,25 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
             store.setState((state: SandboxState): Partial<SandboxState> => ({ route: { ...state.route, override } }));
             return playback ? restartRoute('route-override-failed') : Promise.resolve();
         },
-        setShaderParameter: (passId: string, parameterName: string, value: number): void => {
-            const index = requirePassIndex(passId, 'shader-parameter-failed');
-            const pass = passes[index];
-            passes = passes.map((candidate: SandboxShaderPass, passIndex: number): SandboxShaderPass => (
-                passIndex === index ? { ...candidate, parameters: { ...candidate.parameters, [parameterName]: value } } : candidate
+        setShaderParameter: (fileId: string, parameterName: string, value: number): void => {
+            const index = requireFileIndex(fileId, 'shader-parameter-failed');
+            const changedFile = files[index];
+            files = files.map((candidate: SandboxShaderFile, fileIndex: number): SandboxShaderFile => (
+                fileIndex === index ? { ...candidate, parameters: { ...candidate.parameters, [parameterName]: value } } : candidate
             ));
-            store.setState((state: SandboxState): Partial<SandboxState> => ({ presentation: { ...state.presentation, passes } }));
-            if (!pass.manifest) {
-                return;
-            }
-            try {
-                presenter.setPresentationParameter(pass.manifest.name, parameterName, value);
-            } catch (error) {
-                // A pass that is not running takes the stored value when the preset next applies
-                recordFailure('shader', 'shader-parameter-pending', describeError(error));
+            store.setState((state: SandboxState): Partial<SandboxState> => ({ presentation: { ...state.presentation, files } }));
+            // The file's passes share the value, so each pass that declares the parameter takes it
+            for (const filePass of changedFile.passes) {
+                const manifest = filePass.manifest;
+                if (!manifest?.parameters.some((parameter: PassParameter): boolean => parameter.name === parameterName)) {
+                    continue;
+                }
+                try {
+                    presenter.setPresentationParameter(manifest.name, parameterName, value);
+                } catch (error) {
+                    // A pass that is not running takes the stored value when the preset next applies
+                    recordFailure('shader', 'shader-parameter-pending', describeError(error));
+                }
             }
         },
         setVolume: (volume: number): void => {

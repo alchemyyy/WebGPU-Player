@@ -46,7 +46,8 @@ import {
     type HDR10PlusFrameMetadata
 } from '../video/hdr/HDR10PlusMetadata';
 import { createBuiltinChain } from './passes/builtin/BuiltinChains';
-import { parsePassManifest, PassManifestError } from './passes/PassManifest';
+import { getPresetPassPosition } from './passes/PassLanguage';
+import { parsePassFile, type PassFileEntry } from './passes/PassManifest';
 import type {
     BuiltinChainConfiguration,
     PassManifest,
@@ -126,7 +127,7 @@ const UNKNOWN_PLAN_DIMENSION = 1;
 // The native and identity SDR route: the browser's own conversion, presented as it is
 const EXTERNAL_IDENTITY_CHAIN_CONFIGURATION: BuiltinChainConfiguration = { route: 'external-identity' };
 const NEUTRAL_BT709_COLOR_DESCRIPTION = 'bt709:bt709:bt709:limited';
-// Names a preset pass whose header failed before it declared a name, followed by the pass's 0-based preset index
+// Names a preset pass whose header failed before it declared a name, followed by its preset position
 const UNNAMED_PRESET_PASS_PREFIX = 'pass ';
 // Marks a compile error in engine-generated code, whose line is in the generated module rather than in a pass source
 const ENGINE_COMPILE_DETAIL_PREFIX = 'engine ';
@@ -278,8 +279,11 @@ export type ExternalHDRColorPipelineConfiguration = {
     settings: HDRToSDRRenderSettings
 };
 
-/** One pass of a presentation preset: its WGSL source with its `//!` header, and the parameter values the host stored for it. */
-export type PresentationPresetPass = {
+/**
+ * One file of a presentation preset: its WGSL source, holding one or more passes that each start with a `//!` header, and the parameter values the host stored for it.
+ * The file's passes run in file order, and each value applies to every pass of the file that declares its parameter.
+ */
+export type PresentationPresetFile = {
     parameters: Readonly<Record<string, number>>
     source: string
 };
@@ -515,40 +519,61 @@ function createExcludedPresetPass(manifest: PassManifest | null, exclusion: Pass
     return { exclusion, manifest, name: exclusion.name, parameterValues: new Map<string, number>() };
 }
 
-/**
- * Parses one preset pass and checks its preset values.
- * A header that fails to parse, a name an earlier pass holds, or a value its header does not declare or that is not finite keeps it out of every plan.
- */
-function createPresetPass(presetPass: PresentationPresetPass, index: number, claimedNames: Set<string>): PresetPass {
-    let manifest: PassManifest;
-    try {
-        manifest = parsePassManifest(presetPass.source);
-    } catch (error) {
-        if (!(error instanceof PassManifestError)) {
-            throw error;
-        }
-        return createExcludedPresetPass(null, {
-            detail: `line ${error.line}: ${error.message}`,
-            name: error.passName ?? `${UNNAMED_PRESET_PASS_PREFIX}${index + 1}`,
-            reason: 'header-invalid'
-        });
-    }
-    const name = manifest.name;
-    if (claimedNames.has(name)) {
-        return createExcludedPresetPass(manifest, { detail: `position ${index + 1}`, name, reason: 'duplicate-name' });
-    }
-    claimedNames.add(name);
-    const parameterValues = new Map<string, number>();
-    for (const [ parameterName, value ] of Object.entries(presetPass.parameters)) {
-        if (!manifest.parameters.some((parameter: PassParameter): boolean => parameter.name === parameterName)) {
-            return createExcludedPresetPass(manifest, { detail: `'${parameterName}'`, name, reason: 'parameter-unknown' });
+/** Returns the check that a preset file's values fail for every pass of the file: a value no pass declares, or one that is not finite. */
+function checkPresetValues(presetFile: PresentationPresetFile, entries: readonly PassFileEntry[]): Omit<PassRejection, 'name'> | null {
+    for (const [ parameterName, value ] of Object.entries(presetFile.parameters)) {
+        const declared = entries.some((entry: PassFileEntry): boolean => entry.manifest !== null && entry.manifest.parameters.some(
+            (parameter: PassParameter): boolean => parameter.name === parameterName
+        ));
+        if (!declared) {
+            return { detail: `'${parameterName}'`, reason: 'parameter-unknown' };
         }
         if (!Number.isFinite(value)) {
-            return createExcludedPresetPass(manifest, { detail: `'${parameterName}' ${value}`, name, reason: 'parameter-invalid' });
+            return { detail: `'${parameterName}' ${value}`, reason: 'parameter-invalid' };
         }
-        parameterValues.set(parameterName, value);
     }
-    return { exclusion: null, manifest, name, parameterValues };
+    return null;
+}
+
+/**
+ * Parses one preset file into its passes, in file order, and checks the file's preset values.
+ * A header that fails to parse, a name an earlier pass holds, or a value no pass of the file declares or that is not finite keeps a pass out of every plan.
+ */
+function createPresetPasses(presetFile: PresentationPresetFile, fileIndex: number, claimedNames: Set<string>): PresetPass[] {
+    const entries = parsePassFile(presetFile.source);
+    const valueFailure = checkPresetValues(presetFile, entries);
+    const presetPasses: PresetPass[] = [];
+    for (const [ passIndex, entry ] of entries.entries()) {
+        const position = getPresetPassPosition(fileIndex, passIndex, entries.length);
+        if (entry.manifest === null) {
+            presetPasses.push(createExcludedPresetPass(null, {
+                detail: `line ${entry.error.line}: ${entry.error.message}`,
+                name: entry.error.passName ?? `${UNNAMED_PRESET_PASS_PREFIX}${position}`,
+                reason: 'header-invalid'
+            }));
+            continue;
+        }
+        const manifest = entry.manifest;
+        const name = manifest.name;
+        if (claimedNames.has(name)) {
+            presetPasses.push(createExcludedPresetPass(manifest, { detail: `position ${position}`, name, reason: 'duplicate-name' }));
+            continue;
+        }
+        claimedNames.add(name);
+        if (valueFailure !== null) {
+            presetPasses.push(createExcludedPresetPass(manifest, { ...valueFailure, name }));
+            continue;
+        }
+        // Each pass takes the file's values of the parameters it declares
+        const parameterValues = new Map<string, number>();
+        for (const [ parameterName, value ] of Object.entries(presetFile.parameters)) {
+            if (manifest.parameters.some((parameter: PassParameter): boolean => parameter.name === parameterName)) {
+                parameterValues.set(parameterName, value);
+            }
+        }
+        presetPasses.push({ exclusion: null, manifest, name, parameterValues });
+    }
+    return presetPasses;
 }
 
 function isPlannedPresetPass(presetPass: PresetPass): presetPass is PresetPass & { manifest: PassManifest } {
@@ -1629,14 +1654,15 @@ export default class WebGPUPresenter {
 
     /**
      * Replaces the user passes every plan includes, in preset order, and resolves with the plan report once an executor for them is installed, or at once outside a session.
-     * A pass that cannot run is left out and reported: 'header-invalid', named `pass <position>`, counted from 1, when its header failed before declaring a name; 'duplicate-name'; a preset value its header does not declare ('parameter-unknown') or that is not finite ('parameter-invalid'); or 'compile-error', after which the plan is rebuilt without it.
+     * Each file contributes its passes in file order, so the passes of one file stay together and in order.
+     * A pass that cannot run is left out and reported: 'header-invalid', named `pass <position>` when its header failed before declaring a name, where the position counts from 1 and is `<file>.<pass>` within a file of several passes; 'duplicate-name'; a preset value no pass of its file declares ('parameter-unknown') or that is not finite ('parameter-invalid'), which leaves out every pass of the file; or 'compile-error', after which the plan is rebuilt without it.
      * The preset outlives sessions, so the host sets it again only when it changes.
      */
-    async setPresentationPreset(passes: readonly PresentationPresetPass[]): Promise<PlanReport> {
+    async setPresentationPreset(files: readonly PresentationPresetFile[]): Promise<PlanReport> {
         const claimedNames = new Set<string>();
         const presetPasses: PresetPass[] = [];
-        for (let index = 0; index < passes.length; index += 1) {
-            presetPasses.push(createPresetPass(passes[index], index, claimedNames));
+        for (const [ fileIndex, file ] of files.entries()) {
+            presetPasses.push(...createPresetPasses(file, fileIndex, claimedNames));
         }
         this.presetPasses = presetPasses;
         this.planRevision += 1;

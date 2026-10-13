@@ -1,18 +1,18 @@
-// The panel that shows the WGSL pass preset: examples, dropped files, order, parameters, and the plan report.
+// The panel that shows the WGSL preset's pass files: examples, dropped files, order, parameters, and the plan report.
 import { PASS_FILE_EXTENSION } from 'webgpu-player/presentation/passes/PassLanguage';
 import type { PlanReport } from 'webgpu-player/presentation/passes/PassTypes';
 
 import type {
     SandboxSessionCommands,
-    SandboxShaderPass,
+    SandboxShaderFile,
     SandboxState
 } from '../../contracts/SandboxContracts';
 import { reportCommandRejection } from '../commands';
 import {
-    describeShaderPasses,
-    type ShaderParameterField,
-    type ShaderPassRow
-} from '../diagnostics/ShaderPassRows';
+    describeShaderFiles,
+    type ShaderFileRow,
+    type ShaderParameterField
+} from '../diagnostics/ShaderFileRows';
 import { createTupleSelector } from '../diagnostics/TupleSelector';
 import { carriesFiles, createElement, reconcileKeyedChildren, setTextContent } from '../dom';
 import type { Panel, PanelContext } from '../Panel';
@@ -37,40 +37,41 @@ const REMOVE_TEXT = 'Remove';
 const EMPTY_PRESET_TEXT = 'No passes: the route presents through its built-in chain';
 const DROP_HINT_TEXT = 'Drop WGSL files here to add passes';
 
-type ShaderInputs = readonly [passes: readonly SandboxShaderPass[], planReport: PlanReport];
+type ShaderInputs = readonly [files: readonly SandboxShaderFile[], planReport: PlanReport];
 
-/** One pass's row, kept across updates so a focused parameter input keeps its focus and its typing. */
-type PassRowView = Readonly<{
+/** One file's row, kept across updates so a focused parameter input keeps its focus and its typing. */
+type FileRowView = Readonly<{
     element: HTMLLIElement
     moveDown: HTMLButtonElement
     moveUp: HTMLButtonElement
     name: HTMLElement
     parameterInputs: ReadonlyMap<string, HTMLInputElement>
-    state: HTMLElement
+    /** One line per pass of the file, whose passes are fixed for the row's lifetime */
+    states: readonly HTMLElement[]
 }>;
 
 export function createShaderPanel(context: PanelContext): Panel {
     const session = context.session;
-    const passList = createElement('ol', { className: 'shader-pass-list' });
+    const fileList = createElement('ol', { className: 'shader-pass-list' });
     const emptyHint = createElement('p', { className: 'shader-panel-hint', text: EMPTY_PRESET_TEXT });
     const element = createElement('section', { className: 'shader-panel' }, [
         createHeader(session),
-        passList,
+        fileList,
         emptyHint,
         createElement('p', { className: 'shader-panel-hint', text: DROP_HINT_TEXT })
     ]);
     listenForDroppedFiles(element, session);
-    let rowViews = new Map<string, PassRowView>();
+    let rowViews = new Map<string, FileRowView>();
     const destroy = subscribeSelection(
         context.store,
-        createTupleSelector((state: SandboxState): ShaderInputs => [ state.presentation.passes, state.presentation.report ]),
-        ([ passes, planReport ]: ShaderInputs): void => {
-            const rows = describeShaderPasses(passes, planReport);
-            rowViews = reconcileKeyedChildren(passList, rowViews, rows, {
-                createView: (row: ShaderPassRow): PassRowView => createRowView(row, session),
-                getElement: (view: PassRowView): Element => view.element,
-                getKey: (row: ShaderPassRow): string => row.id,
-                updateView: (view: PassRowView, row: ShaderPassRow, index: number): void => {
+        createTupleSelector((state: SandboxState): ShaderInputs => [ state.presentation.files, state.presentation.report ]),
+        ([ files, planReport ]: ShaderInputs): void => {
+            const rows = describeShaderFiles(files, planReport);
+            rowViews = reconcileKeyedChildren(fileList, rowViews, rows, {
+                createView: (row: ShaderFileRow): FileRowView => createRowView(row, session),
+                getElement: (view: FileRowView): Element => view.element,
+                getKey: (row: ShaderFileRow): string => row.id,
+                updateView: (view: FileRowView, row: ShaderFileRow, index: number): void => {
                     updateRowView(view, row, index, rows.length);
                 }
             });
@@ -91,7 +92,7 @@ function createHeader(session: SandboxSessionCommands): HTMLElement {
         // Clearing the input lets the same files be chosen again
         fileInput.value = '';
         if (files.length > 0) {
-            session.addShaderPasses(files).catch(reportCommandRejection);
+            session.addShaderFiles(files).catch(reportCommandRejection);
         }
     });
     const openButton = createButton(OPEN_FILES_TEXT, (): void => {
@@ -126,7 +127,7 @@ function createExampleSelect(session: SandboxSessionCommands): HTMLSelectElement
     return exampleSelect.element;
 }
 
-/** Hands every file dropped on the panel to the session, which reports the ones that are not WGSL passes. */
+/** Hands every file dropped on the panel to the session, which reports the ones that are not WGSL pass files. */
 function listenForDroppedFiles(element: HTMLElement, session: SandboxSessionCommands): void {
     // Entering and leaving child elements fires in pairs, so the panel is left once the count returns to zero
     let dragDepth = 0;
@@ -165,22 +166,22 @@ function listenForDroppedFiles(element: HTMLElement, session: SandboxSessionComm
         element.classList.remove(DRAG_ACTIVE_CLASS);
         const files = Array.from(event.dataTransfer.files);
         if (files.length > 0) {
-            session.addShaderPasses(files).catch(reportCommandRejection);
+            session.addShaderFiles(files).catch(reportCommandRejection);
         }
     });
 }
 
-function createRowView(row: ShaderPassRow, session: SandboxSessionCommands): PassRowView {
+function createRowView(row: ShaderFileRow, session: SandboxSessionCommands): FileRowView {
     const name = createElement('span', { attributes: { title: row.origin }, className: 'shader-pass-name' });
-    const state = createElement('div', { className: 'shader-pass-state' });
+    const states = row.states.map((): HTMLElement => createElement('div', { className: 'shader-pass-state' }));
     const moveUp = createButton(MOVE_UP_TEXT, (): void => {
-        session.moveShaderPass(row.id, MOVE_UP_OFFSET).catch(reportCommandRejection);
+        session.moveShaderFile(row.id, MOVE_UP_OFFSET).catch(reportCommandRejection);
     });
     const moveDown = createButton(MOVE_DOWN_TEXT, (): void => {
-        session.moveShaderPass(row.id, MOVE_DOWN_OFFSET).catch(reportCommandRejection);
+        session.moveShaderFile(row.id, MOVE_DOWN_OFFSET).catch(reportCommandRejection);
     });
     const remove = createButton(REMOVE_TEXT, (): void => {
-        session.removeShaderPass(row.id).catch(reportCommandRejection);
+        session.removeShaderFile(row.id).catch(reportCommandRejection);
     });
     const parameterInputs = new Map<string, HTMLInputElement>();
     const parameterFields: Node[] = [];
@@ -199,19 +200,19 @@ function createRowView(row: ShaderPassRow, session: SandboxSessionCommands): Pas
             })
         ]));
     }
-    // The state goes on its own line, since a report detail is too long to share one with the name in the narrow column
+    // Each state goes on its own line, since a report detail is too long to share one with the name in the narrow column
     const element = createElement('li', { className: 'shader-pass' }, [
         createElement('div', { className: 'shader-pass-header' }, [
             name,
             createElement('span', { className: 'shader-pass-actions' }, [ moveUp, moveDown, remove ])
         ]),
-        state,
+        ...states,
         createElement('div', { className: 'shader-pass-parameters' }, parameterFields)
     ]);
-    return { element, moveDown, moveUp, name, parameterInputs, state };
+    return { element, moveDown, moveUp, name, parameterInputs, states };
 }
 
-function createParameterInput(passId: string, field: ShaderParameterField, session: SandboxSessionCommands): HTMLInputElement {
+function createParameterInput(fileId: string, field: ShaderParameterField, session: SandboxSessionCommands): HTMLInputElement {
     const input = createElement('input', {
         attributes: {
             max: String(field.maximum),
@@ -223,15 +224,18 @@ function createParameterInput(passId: string, field: ShaderParameterField, sessi
     });
     // A cleared input commits NaN, which the session reports as an invalid parameter
     input.addEventListener('change', (): void => {
-        session.setShaderParameter(passId, field.name, input.valueAsNumber);
+        session.setShaderParameter(fileId, field.name, input.valueAsNumber);
     });
     return input;
 }
 
-function updateRowView(view: PassRowView, row: ShaderPassRow, index: number, rowCount: number): void {
+function updateRowView(view: FileRowView, row: ShaderFileRow, index: number, rowCount: number): void {
     setTextContent(view.name, row.name);
-    setTextContent(view.state, row.stateText);
-    view.state.dataset.tone = row.stateTone;
+    for (const [ stateIndex, stateLine ] of row.states.entries()) {
+        const state = view.states[stateIndex];
+        setTextContent(state, stateLine.text);
+        state.dataset.tone = stateLine.tone;
+    }
     view.moveUp.disabled = index === 0;
     view.moveDown.disabled = index === rowCount - 1;
     for (const field of row.parameters) {

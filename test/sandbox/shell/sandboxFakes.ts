@@ -17,14 +17,14 @@ const START_TIME = 0 as Microseconds;
 export function createFakeSession(): SandboxSessionCommands {
     return {
         addExampleShaderPass: vi.fn((): Promise<void> => Promise.resolve()),
-        addShaderPasses: vi.fn((): Promise<void> => Promise.resolve()),
+        addShaderFiles: vi.fn((): Promise<void> => Promise.resolve()),
         getCurrentTimeMicroseconds: vi.fn((): Microseconds => START_TIME),
         getExampleShaderPasses: vi.fn((): [] => []),
-        moveShaderPass: vi.fn((): Promise<void> => Promise.resolve()),
+        moveShaderFile: vi.fn((): Promise<void> => Promise.resolve()),
         openMedia: vi.fn((): Promise<void> => Promise.resolve()),
         pause: vi.fn(),
         play: vi.fn((): Promise<void> => Promise.resolve()),
-        removeShaderPass: vi.fn((): Promise<void> => Promise.resolve()),
+        removeShaderFile: vi.fn((): Promise<void> => Promise.resolve()),
         seek: vi.fn(),
         selectAudioTrack: vi.fn((): Promise<void> => Promise.resolve()),
         selectSubtitle: vi.fn((): Promise<void> => Promise.resolve()),

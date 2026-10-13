@@ -373,16 +373,29 @@ const HDR_ONLY_PASS_SOURCE = [
 // A pass whose preset value is not finite
 const GAIN_PASS_NAME = 'Gain';
 const GAIN_PARAMETER_NAME = 'gain';
-const GAIN_PASS_SOURCE = [
-    `//! name: ${GAIN_PASS_NAME}`,
-    '//! shape: color',
-    '//! hook: OUTPUT',
-    `//! param ${GAIN_PARAMETER_NAME}: f32 = 1 in [0, 4]`,
-    '',
-    'fn apply(color: vec4f, position: vec2f) -> vec4f {',
-    `    return vec4f(color.rgb * parameters.${GAIN_PARAMETER_NAME}, color.a);`,
-    '}'
-].join('\n');
+
+function createGainPassLines(name: string): string[] {
+    return [
+        `//! name: ${name}`,
+        '//! shape: color',
+        '//! hook: OUTPUT',
+        `//! param ${GAIN_PARAMETER_NAME}: f32 = 1 in [0, 4]`,
+        '',
+        'fn apply(color: vec4f, position: vec2f) -> vec4f {',
+        `    return vec4f(color.rgb * parameters.${GAIN_PARAMETER_NAME}, color.a);`,
+        '}'
+    ];
+}
+
+const GAIN_PASS_LINES: readonly string[] = createGainPassLines(GAIN_PASS_NAME);
+const GAIN_PASS_SOURCE = GAIN_PASS_LINES.join('\n');
+// A file of three passes: the gain pass, a pass without a name, and a second pass that shares the gain parameter
+const SECOND_GAIN_PASS_NAME = 'Second gain';
+const GAIN_FILE_SOURCE = [ GAIN_PASS_SOURCE, UNNAMED_PASS_SOURCE, createGainPassLines(SECOND_GAIN_PASS_NAME).join('\n') ].join('\n');
+const PRESET_GAIN = 2;
+// The unnamed pass is the second pass of the preset's first entry, and its header starts on the line after the gain pass
+const UNNAMED_FILE_PASS_REPORT_NAME = 'pass 1.2';
+const UNNAMED_FILE_PASS_DETAIL = `line ${GAIN_PASS_LINES.length + 1}: Missing required directive 'name'`;
 // A pass that reads an identifier no module declares, which the mock compiler rejects on that line
 const BROKEN_PASS_NAME = 'Broken';
 const UNDECLARED_IDENTIFIER = 'undeclaredGain';
@@ -4657,6 +4670,41 @@ describe('WebGPUPresenter', () => {
         });
         // The planner receives one pass per name, and none the presenter keeps out
         expect(getPlannedPassNames(getLastPlanRequest())).toEqual([ SATURATION_PASS_NAME, HDR_ONLY_PASS_NAME ]);
+    });
+
+    it('plans a file\'s passes in file order with the file\'s shared preset values, naming an unnamed pass by its entry and file position', async () => {
+        const { deviceHarness, presenter } = await startIdentityPresentation(true);
+
+        const report = await presenter.setPresentationPreset([
+            { parameters: { [GAIN_PARAMETER_NAME]: PRESET_GAIN }, source: GAIN_FILE_SOURCE },
+            { parameters: {}, source: SATURATION_COLOR_PASS }
+        ]);
+
+        expect(report).toEqual({
+            activePasses: [ GAIN_PASS_NAME, SECOND_GAIN_PASS_NAME, SATURATION_PASS_NAME ],
+            inactivePasses: [ { detail: UNNAMED_FILE_PASS_DETAIL, name: UNNAMED_FILE_PASS_REPORT_NAME, reason: 'header-invalid' } ]
+        });
+        expect(getPlannedPassNames(getLastPlanRequest())).toEqual([ GAIN_PASS_NAME, SECOND_GAIN_PASS_NAME, SATURATION_PASS_NAME ]);
+        // Both passes that declare the gain take the file's value
+        expect(readParameterWrites(deviceHarness).slice(-2)).toEqual([ Math.fround(PRESET_GAIN), Math.fround(PRESET_GAIN) ]);
+    });
+
+    it('leaves out every pass of a file for a preset value that none of them declares', async () => {
+        const { presenter } = await startIdentityPresentation(true);
+
+        const report = await presenter.setPresentationPreset([
+            { parameters: { [UNDECLARED_PARAMETER_NAME]: PRESET_GAIN }, source: GAIN_FILE_SOURCE }
+        ]);
+
+        const undeclaredDetail = `'${UNDECLARED_PARAMETER_NAME}'`;
+        expect(report).toEqual({
+            activePasses: [],
+            inactivePasses: [
+                { detail: undeclaredDetail, name: GAIN_PASS_NAME, reason: 'parameter-unknown' },
+                { detail: UNNAMED_FILE_PASS_DETAIL, name: UNNAMED_FILE_PASS_REPORT_NAME, reason: 'header-invalid' },
+                { detail: undeclaredDetail, name: SECOND_GAIN_PASS_NAME, reason: 'parameter-unknown' }
+            ]
+        });
     });
 
     it('applies preset values after create and a live parameter change without replanning, redrawing a paused frame', async () => {

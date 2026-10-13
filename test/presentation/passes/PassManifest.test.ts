@@ -3,7 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { BUILTIN_COLOR_FUNCTION_NAMES } from 'webgpu-player/presentation/passes/builtin/BuiltinColorFunctions';
 import catmullRomScalerShader from 'webgpu-player/presentation/passes/builtin/CatmullRomScaler.wgsl';
 import { parsePassExpression } from 'webgpu-player/presentation/passes/PassExpression';
-import { parsePassManifest, PassManifestError } from 'webgpu-player/presentation/passes/PassManifest';
+import {
+    parsePassFile,
+    parsePassManifest,
+    PassManifestError,
+    type PassFileEntry
+} from 'webgpu-player/presentation/passes/PassManifest';
 import type {
     PassExpression,
     PassInput,
@@ -28,13 +33,15 @@ const BODY_LINES: readonly string[] = [
 const EXPECTED_BODY = [ '', ...BODY_LINES ].join(LF);
 // Whitespace-only lines count as blank before the header
 const LEADING_BLANK_LINES: readonly string[] = [ '', '   ', '\t' ];
-// A missing directive has no line of its own
+// A missing directive is reported on its header's first line, which is line 1 in createSource's sources, and so is a missing header
 const MISSING_DIRECTIVE_LINE = 1;
+const MISSING_HEADER_LINE = 1;
 // The text that ends an example's header: its last line break, then a blank line
 const EXAMPLE_HEADER_END = '\n\n';
 
 const PASS_NAME = 'Test pass';
 const NAME_LINE = `//! name: ${PASS_NAME}`;
+const SECOND_PASS_NAME = 'Second pass';
 // A well-formed line whose shape the parser checks after the name
 const UNKNOWN_SHAPE_LINE = '//! shape: blur';
 // A line the header reader rejects before any directive is checked
@@ -42,6 +49,12 @@ const UNKNOWN_DIRECTIVE_LINE = '//! sampler: linear';
 // A kernel header after its name line
 const KERNEL_DIRECTIVES: readonly string[] = [ '//! shape: kernel', '//! hook: OUTPUT' ];
 const KERNEL_HEADER: readonly string[] = [ NAME_LINE, ...KERNEL_DIRECTIVES ];
+const SECOND_KERNEL_HEADER: readonly string[] = [ `//! name: ${SECOND_PASS_NAME}`, ...KERNEL_DIRECTIVES ];
+// createSource's lines for a kernel header: the header, a blank line, and the body
+const KERNEL_SOURCE_LINE_COUNT = KERNEL_HEADER.length + 1 + BODY_LINES.length;
+const SHARED_PARAMETER_LINE = '//! param strength: f32 = 0.5 in [0, 1]';
+// The shared parameter with another default
+const CONFLICTING_PARAMETER_LINE = '//! param strength: f32 = 0.25 in [0, 1]';
 const COLOR_HEADER: readonly string[] = [ NAME_LINE, '//! shape: color', '//! hook: OUTPUT' ];
 const REPLACED_FUNCTION = 'builtin.tone-map';
 const REPLACING_COLOR_HEADER: readonly string[] = [ NAME_LINE, '//! shape: color', `//! replaces: ${REPLACED_FUNCTION}` ];
@@ -85,6 +98,9 @@ const GLOBAL_FACT_LIST = 'source.width, source.height, output.width, output.heig
 const HOOKED_SIZE_FACT_LIST = `${GLOBAL_FACT_LIST}, HOOKED.width, HOOKED.height`;
 
 const MISSING_HEADER_MESSAGE = 'The pass has no //! header';
+const MISSING_NAME_MESSAGE = "Missing required directive 'name'";
+const CONFLICTING_PARAMETER_MESSAGE = `Parameter 'strength' differs from its declaration in '${PASS_NAME}'`;
+const TWO_PASSES_MESSAGE = 'The source holds 2 passes; expected one';
 const MALFORMED_LINE_MESSAGE = "Expected '<directive>: <value>' or 'param <name>: <type> = <default> in [<minimum>, <maximum>]'";
 const MALFORMED_PARAMETER_MESSAGE = "Expected 'param <name>: <type> = <default> in [<minimum>, <maximum>]'";
 const MALFORMED_OUTPUT_MESSAGE = "Expected '<NAME>.size, <format>' or '<width>, <height>, <format>'";
@@ -1011,13 +1027,75 @@ describe('pass manifest line accounting', () => {
     });
 
     it('ends the header at the first line without the prefix', () => {
-        // After the blank line, a //! line is a WGSL comment in the body, and its directive does not apply
-        const bodyLines = [ '', '//! domain: linear', ...BODY_LINES ];
-        const manifest = parsePassManifest([ ...KERNEL_HEADER, ...bodyLines ].join(LF));
+        const manifest = parsePassManifest([ ...KERNEL_HEADER, '', ...BODY_LINES ].join(LF));
 
         expect(manifest.domain).toBe(DEFAULT_KERNEL_MANIFEST.domain);
         expect(manifest.bodyFirstLine).toBe(KERNEL_HEADER.length + 1);
-        expect(manifest.body).toBe(bodyLines.join(LF));
+        expect(manifest.body).toBe(EXPECTED_BODY);
+    });
+});
+
+describe('pass files', () => {
+    it('splits a file into its passes in file order, each with the body up to the next header', () => {
+        const entries = parsePassFile([ createSource(KERNEL_HEADER), createSource(SECOND_KERNEL_HEADER) ].join(LF));
+
+        expect(entries.map((entry: PassFileEntry): string | undefined => entry.manifest?.name)).toEqual([ PASS_NAME, SECOND_PASS_NAME ]);
+        expect(entries.map((entry: PassFileEntry): string | undefined => entry.manifest?.body)).toEqual([ EXPECTED_BODY, EXPECTED_BODY ]);
+        expect(entries.map((entry: PassFileEntry): number | undefined => entry.manifest?.bodyFirstLine)).toEqual([
+            KERNEL_HEADER.length + 1,
+            KERNEL_SOURCE_LINE_COUNT + SECOND_KERNEL_HEADER.length + 1
+        ]);
+    });
+
+    it('starts a pass at any header line after a body, as mpv does, and reports its missing directives on its first line', () => {
+        // The //! line after the blank line begins a second pass, which has no name
+        const entries = parsePassFile([ ...KERNEL_HEADER, '', '//! domain: linear', ...BODY_LINES ].join(LF));
+
+        expect(entries).toHaveLength(2);
+        expect(entries[0].manifest?.body).toBe('');
+        expect(entries[1].error?.message).toBe(MISSING_NAME_MESSAGE);
+        expect(entries[1].error?.line).toBe(KERNEL_HEADER.length + 2);
+    });
+
+    it('parses each pass on its own, so a malformed header leaves the file\'s other passes, with lines counted from the file\'s start', () => {
+        const entries = parsePassFile([ createSource(KERNEL_HEADER), createSource([ ...SECOND_KERNEL_HEADER, UNKNOWN_DIRECTIVE_LINE ]) ].join(LF));
+
+        expect(entries[0].manifest?.name).toBe(PASS_NAME);
+        expect(entries[1].error?.message).toBe(UNKNOWN_DIRECTIVE_MESSAGE);
+        expect(entries[1].error?.line).toBe(KERNEL_SOURCE_LINE_COUNT + SECOND_KERNEL_HEADER.length + 1);
+    });
+
+    it('lets a file\'s passes share a parameter they declare alike, and rejects a later declaration that differs on its line', () => {
+        const sharedEntries = parsePassFile([
+            createSource([ ...KERNEL_HEADER, SHARED_PARAMETER_LINE ]),
+            createSource([ ...SECOND_KERNEL_HEADER, SHARED_PARAMETER_LINE ])
+        ].join(LF));
+        const conflictingEntries = parsePassFile([
+            createSource([ ...KERNEL_HEADER, SHARED_PARAMETER_LINE ]),
+            createSource([ ...SECOND_KERNEL_HEADER, CONFLICTING_PARAMETER_LINE ])
+        ].join(LF));
+
+        expect(sharedEntries.map((entry: PassFileEntry): PassManifestError | null => entry.error)).toEqual([ null, null ]);
+        expect(conflictingEntries[0].error).toBeNull();
+        expect(conflictingEntries[1].error?.message).toBe(CONFLICTING_PARAMETER_MESSAGE);
+        // The first pass's source is one line longer for its parameter
+        expect(conflictingEntries[1].error?.line).toBe(KERNEL_SOURCE_LINE_COUNT + 1 + SECOND_KERNEL_HEADER.length + 1);
+        expect(conflictingEntries[1].error?.passName).toBe(SECOND_PASS_NAME);
+    });
+
+    it('returns one entry with the missing header error for a file that does not start with a header', () => {
+        const entries = parsePassFile(BODY_LINES.join(LF));
+
+        expect(entries).toHaveLength(1);
+        expect(entries[0].error?.message).toBe(MISSING_HEADER_MESSAGE);
+        expect(entries[0].error?.line).toBe(MISSING_HEADER_LINE);
+    });
+
+    it('rejects a file of several passes in parsePassManifest, on the second pass\'s first line', () => {
+        const error = captureManifestError([ createSource(KERNEL_HEADER), createSource(SECOND_KERNEL_HEADER) ].join(LF));
+
+        expect(error.message).toBe(TWO_PASSES_MESSAGE);
+        expect(error.line).toBe(KERNEL_SOURCE_LINE_COUNT + 1);
     });
 });
 

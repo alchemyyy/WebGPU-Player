@@ -66,6 +66,15 @@ export const WIDTH_SUFFIX = '.width';
 export const HEIGHT_SUFFIX = '.height';
 export const SIZE_SUFFIX = '.size';
 
+/** Joins a preset file's position and a pass's place in the file, as in 3.2. */
+export const PASS_POSITION_SEPARATOR = '.';
+
+/** Returns a pass's preset position, counted from 1, by which reports name an unnamed pass: its file's, with its place in a file of several passes. */
+export function getPresetPassPosition(fileIndex: number, passIndex: number, passCount: number): string {
+    const filePosition = String(fileIndex + 1);
+    return passCount === 1 ? filePosition : `${filePosition}${PASS_POSITION_SEPARATOR}${passIndex + 1}`;
+}
+
 /** Returns the accessor prefix of an input: its name, with `_history<N>` for the frame N back. */
 export function getAccessorPrefix(input: PassInput): string {
     return input.historyOffset === 0 ? input.name : `${input.name}${HISTORY_ACCESSOR_INFIX}${-input.historyOffset}`;
