@@ -1,0 +1,6 @@
+{
+    "decoder": "vc1.wgsl",
+    "vectors": [
+        { "format": "I420", "root": "qualificationVectorsDirectory", "path": "vc1/vc1-advanced-progressive-1920x1080.mkv" }
+    ]
+}
