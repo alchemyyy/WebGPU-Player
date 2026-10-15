@@ -23,7 +23,7 @@ import {
     createDefaultRenderSettings,
     createHDRToSDRRenderSettings
 } from 'webgpu-player/presentation/RenderSettings';
-import type { SupportedRawVideoFrameFormat } from 'webgpu-player/video/RawVideoFrameCopy';
+import type { SupportedRawVideoFrameFormat } from 'webgpu-player/decode/video/RawVideoFrameCopy';
 
 const ENGINE_RESOURCES: readonly EngineResource[] = [
     'dolby-vision-enhancement',

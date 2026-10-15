@@ -1,4 +1,6 @@
 * text=auto eol=lf
 
-# The codec vector assets must match their generators byte for byte, so git never converts their line endings
+# The codec vector assets and the decoder projects' self-test vectors and media must match their generators byte for byte, so git never converts their line endings
 /bin/codec_vector_assets/** -text
+/decoders/*/*.vectors -text
+/decoders/*/vectors/** -text

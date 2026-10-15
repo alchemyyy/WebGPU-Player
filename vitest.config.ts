@@ -8,7 +8,8 @@ export default defineConfig({
     plugins: [ tsconfigPaths() ],
     test: {
         environment: 'jsdom',
-        include: [ `${LAYOUT.testDirectory}/**/*.test.ts` ],
+        // The engine's tests, and each decoder project's own beside its sources
+        include: [ `${LAYOUT.testDirectory}/**/*.test.ts`, `${LAYOUT.decodersDirectory}/*/test/**/*.test.ts` ],
         restoreMocks: true
     }
 });

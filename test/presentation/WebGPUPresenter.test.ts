@@ -221,19 +221,19 @@ import {
     type RawDolbyVisionVideoFrameFormat,
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
-} from 'webgpu-player/video/RawVideoFrameCopy';
+} from 'webgpu-player/decode/video/RawVideoFrameCopy';
 import {
     DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION,
     type TransferableDolbyVisionEncodedFrameMetadata
-} from 'webgpu-player/video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
-import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParser';
+} from 'webgpu-player/demux/dolby-vision/DolbyVisionEncodedMetadataProtocol';
+import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParser';
 import {
     DOLBY_VISION_RPU_ENHANCEMENT_LAYER_BIT_DEPTH_WORD_OFFSET
-} from 'webgpu-player/video/dolby-vision/DolbyVisionRPUDataLayout';
+} from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUDataLayout';
 import {
     parseHEVCHDR10PlusMetadata,
     type HDR10PlusFrameMetadata
-} from 'webgpu-player/video/hdr/HDR10PlusMetadata';
+} from 'webgpu-player/demux/hdr/HDR10PlusMetadata';
 import { type Microseconds, microsecondsToMilliseconds, secondsToMicroseconds } from 'webgpu-player/MediaTime';
 import { addMicroseconds, requireMicroseconds } from 'webgpu-player/TimeMath';
 import {

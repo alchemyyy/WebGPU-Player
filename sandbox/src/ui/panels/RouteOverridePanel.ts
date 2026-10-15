@@ -20,8 +20,8 @@ import './RouteOverridePanel.css';
 // The record types make each list cover every override the contract declares
 const DECODER_OVERRIDE_LABELS: Readonly<Record<DecoderOverride, string>> = {
     auto: 'Auto',
-    native: 'Native (WebCodecs)',
-    software: 'Software (bundled)'
+    gpu: 'GPU (package)',
+    native: 'Native (WebCodecs)'
 };
 const TRANSPORT_OVERRIDE_LABELS: Readonly<Record<FrameTransportOverride, string>> = {
     auto: 'Auto',
@@ -39,7 +39,7 @@ export function describeActiveRoute(route: ActiveRoute | null): string {
         return NO_ROUTE_TEXT;
     }
     return [
-        joinTextParts([ 'decoder', route.videoDecoderBackend ]),
+        joinTextParts([ 'decoder', route.videoDecoderBackend, route.gpuVideoDecoder?.decoderId ?? null ]),
         joinTextParts([ 'transport', route.videoOutputMode, route.rawVideoFrameFormat ]),
         joinTextParts([ 'audio', route.audioOutputMode ?? NONE_TEXT ]),
         joinTextParts([ 'dolby vision', route.dolbyVisionProfile ?? NONE_TEXT ]),

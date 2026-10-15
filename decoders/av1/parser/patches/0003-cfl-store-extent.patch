@@ -1,0 +1,93 @@
+Keep the CfL buffer extent without storing samples.
+
+The parse-only pass runs no reconstruction, so cfl_store_tx() and
+cfl_store_block() never run and the CfL context's buf_width and buf_height,
+which decide how far a chroma-from-luma prediction pads its luma, go stale.
+av1_parser_cfl_store_tx_extent() and av1_parser_cfl_store_block_extent()
+update them as those functions would, through the same offset adjustment for
+blocks narrower or shorter than 8 and the same block extent within the frame,
+without touching the frame buffer. The parser bridge calls them where the
+decoder stored CfL luma, and writes the extent into each chroma-from-luma job
+of the GPU record. av1_parser_cfl_alpha() hands it each chroma plane's alpha
+as the prediction derives it from the block's coded index and joint sign.
+
+--- a/av1/common/cfl.h
++++ b/av1/common/cfl.h
+@@ -80,6 +80,20 @@
+ void cfl_store_tx(MACROBLOCKD *const xd, int row, int col, TX_SIZE tx_size,
+                   BLOCK_SIZE bsize);
+
++// WebGPU Player parser: the CfL buffer extent (buf_width, buf_height) that
++// cfl_store_tx() and cfl_store_block() leave, without storing samples, for
++// the parse-only pass, whose frame buffers hold no samples
++void av1_parser_cfl_store_tx_extent(MACROBLOCKD *const xd, int row, int col,
++                                    TX_SIZE tx_size, BLOCK_SIZE bsize);
++
++void av1_parser_cfl_store_block_extent(MACROBLOCKD *const xd,
++                                       BLOCK_SIZE bsize, TX_SIZE tx_size);
++
++// WebGPU Player parser: a chroma plane's CfL alpha in Q3, as the prediction
++// reads it from the block's coded index and joint sign
++int av1_parser_cfl_alpha(uint8_t alpha_idx, int8_t joint_sign,
++                         CFL_PRED_TYPE pred_type);
++
+ void cfl_store_dc_pred(MACROBLOCKD *const xd, const uint8_t *input,
+                        CFL_PRED_TYPE pred_plane, int width);
+
+--- a/av1/common/cfl.c
++++ b/av1/common/cfl.c
+@@ -433,3 +433,54 @@
+   cfl_store(cfl, pd->dst.buf, pd->dst.stride, row, col, tx_size,
+             is_cur_buf_hbd(xd));
+ }
++
++// WebGPU Player parser: the bookkeeping of cfl_store() without its samples:
++// the parameters go stale and the stored surface grows over the block
++static void parser_cfl_store_extent(CFL_CTX *cfl, int row, int col,
++                                    TX_SIZE tx_size) {
++  const int width = tx_size_wide[tx_size];
++  const int height = tx_size_high[tx_size];
++  const int tx_off_log2 = MI_SIZE_LOG2;
++  const int sub_x = cfl->subsampling_x;
++  const int sub_y = cfl->subsampling_y;
++  const int store_row = row << (tx_off_log2 - sub_y);
++  const int store_col = col << (tx_off_log2 - sub_x);
++  const int store_height = height >> sub_y;
++  const int store_width = width >> sub_x;
++
++  cfl->are_parameters_computed = 0;
++  if (col == 0 && row == 0) {
++    cfl->buf_width = store_width;
++    cfl->buf_height = store_height;
++  } else {
++    cfl->buf_width = OD_MAXI(store_col + store_width, cfl->buf_width);
++    cfl->buf_height = OD_MAXI(store_row + store_height, cfl->buf_height);
++  }
++}
++
++void av1_parser_cfl_store_tx_extent(MACROBLOCKD *const xd, int row, int col,
++                                    TX_SIZE tx_size, BLOCK_SIZE bsize) {
++  CFL_CTX *const cfl = &xd->cfl;
++  if (block_size_high[bsize] == 4 || block_size_wide[bsize] == 4) {
++    sub8x8_adjust_offset(cfl, xd->mi_row, xd->mi_col, &row, &col);
++  }
++  parser_cfl_store_extent(cfl, row, col, tx_size);
++}
++
++void av1_parser_cfl_store_block_extent(MACROBLOCKD *const xd,
++                                       BLOCK_SIZE bsize, TX_SIZE tx_size) {
++  CFL_CTX *const cfl = &xd->cfl;
++  int row = 0;
++  int col = 0;
++  if (block_size_high[bsize] == 4 || block_size_wide[bsize] == 4) {
++    sub8x8_adjust_offset(cfl, xd->mi_row, xd->mi_col, &row, &col);
++  }
++  const int width = max_intra_block_width(xd, bsize, AOM_PLANE_Y, tx_size);
++  const int height = max_intra_block_height(xd, bsize, AOM_PLANE_Y, tx_size);
++  parser_cfl_store_extent(cfl, row, col, get_tx_size(width, height));
++}
++
++int av1_parser_cfl_alpha(uint8_t alpha_idx, int8_t joint_sign,
++                         CFL_PRED_TYPE pred_type) {
++  return cfl_idx_to_alpha(alpha_idx, joint_sign, pred_type);
++}

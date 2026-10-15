@@ -2,7 +2,6 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import type { DecoderWASMSource } from 'webgpu-player/DecoderWASMSource';
 import type { EngineLibraryPath } from 'webgpu-player/EngineAssets';
 
 import { SCRIPTS_DIRECTORY } from './enginePaths';
@@ -14,6 +13,9 @@ export type LibraryAssetsModule = Readonly<{
     getWorkerEntryPoints: () => LibraryAssetTable
 }>;
 
+/** A served binary as bytes, as a caller that already fetched it would pass it. */
+export type LibraryAssetBytesSource = Readonly<{ bytes: ArrayBuffer, kind: 'bytes' }>;
+
 /** Loads the asset build's tables, which map each served file to its source. */
 export async function loadLibraryAssets(): Promise<LibraryAssetsModule> {
     // Imported by URL, because the build tables are plain JavaScript without declarations
@@ -22,10 +24,10 @@ export async function loadLibraryAssets(): Promise<LibraryAssetsModule> {
 }
 
 /**
- * Reads a served decoder binary from the file the asset build copies it from.
+ * Reads a served binary from the file the asset build copies it from.
  * Tests pass it as bytes, as a caller that already fetched the binary would, because Node has no server for its URL.
  */
-export async function readDecoderWASMSource(path: EngineLibraryPath): Promise<DecoderWASMSource> {
+export async function readLibraryAssetSource(path: EngineLibraryPath): Promise<LibraryAssetBytesSource> {
     const { getLibraryAssets } = await loadLibraryAssets();
     const asset = getLibraryAssets().find(([ destination ]) => destination === path);
     if (!asset) {

@@ -3,7 +3,7 @@
 // The audio decode worker decodes, renders, and feeds the worklet, and reports what the page must learn back through the decode worker
 
 import type { Microseconds } from '../MediaTime';
-import type { TrueHDDecoderCodec } from '../audio/decoders/TrueHDSoftwareAudioDecoder';
+import { isAudioDecoderPackageSelection, type AudioDecoderPackageSelection } from '../decode/audio/AudioDecoderPackageInstance';
 import type { CustomAudioOutputChannelCount } from '../audio/processing/CustomAudioChannelLayout';
 import type { AudioDownmixSettings } from '../audio/processing/CustomAudioDownmix';
 import {
@@ -33,8 +33,8 @@ export const MAXIMUM_AUDIO_DECODE_WORKER_PACKET_BATCH_BYTE_LENGTH = 1024 * 1024;
 export const MAXIMUM_AUDIO_DECODE_WORKER_FAILURE_MESSAGE_LENGTH = 512;
 const MAXIMUM_ROUTE_CODEC_LENGTH = 64;
 
-/** The decoder an attempt's input feeds: a bundled decoder takes packets, and `pcm` takes samples Mediabunny already decoded */
-export type AudioDecodeWorkerDecoderBackend = 'dts' | 'eac3' | 'pcm' | TrueHDDecoderCodec;
+/** The decoder an attempt's input feeds: `package` takes packets for a host's audio decoder package, and `pcm` takes samples Mediabunny already decoded */
+export type AudioDecodeWorkerDecoderBackend = 'package' | 'pcm';
 
 /** Names one decoded audio attempt: its run's generation and its audio epoch */
 export type AudioDecodeWorkerAttemptKey = {
@@ -51,6 +51,8 @@ export type AudioDecodeWorkerOpenAttemptRequest = AudioDecodeWorkerAttemptKey & 
     audioOutput: DecodeWorkerAudioOutputAttachment | null
     decoderBackend: AudioDecodeWorkerDecoderBackend
     outputChannelCount: CustomAudioOutputChannelCount
+    /** The package of a `package` attempt, and null for every other backend */
+    packageDecoder: AudioDecoderPackageSelection | null
     /** The codec name the decoded PCM route tables qualify */
     routeCodec: string
     /** The declared rate, at which live gains ramp until the first decoded output binds its own */
@@ -67,7 +69,7 @@ export type AudioDecodeWorkerAttachOutputRequest = AudioDecodeWorkerAttemptKey &
     type: 'attach-output'
 };
 
-/** Compressed packets for a bundled decoder, back to back in one buffer */
+/** Compressed packets for a package decoder, back to back in one buffer */
 export type AudioDecodeWorkerPacketBatch = {
     data: ArrayBuffer
     kind: 'packets'
@@ -191,16 +193,15 @@ function hasAttemptKey(value: Record<string, unknown>): boolean {
 }
 
 function isDecoderBackend(value: unknown): value is AudioDecodeWorkerDecoderBackend {
-    switch (value) {
-        case 'dts':
-        case 'eac3':
-        case 'mlp':
-        case 'pcm':
-        case 'truehd':
-            return true;
-        default:
-            return false;
+    return value === 'package' || value === 'pcm';
+}
+
+/** A `package` attempt carries its package, and no other attempt does. */
+function hasBackendPackage(value: Record<string, unknown>): boolean {
+    if (value.decoderBackend === 'package') {
+        return isAudioDecoderPackageSelection(value.packageDecoder);
     }
+    return value.packageDecoder === null;
 }
 
 function isOpenAttemptRequest(value: Record<string, unknown>): boolean {
@@ -208,6 +209,7 @@ function isOpenAttemptRequest(value: Record<string, unknown>): boolean {
         && isAudioDownmixSettings(value.audioDownmixSettings)
         && (value.audioOutput === null || isAudioOutputAttachment(value.audioOutput))
         && isDecoderBackend(value.decoderBackend)
+        && hasBackendPackage(value)
         && isDecodedAudioOutputChannelCount(value.outputChannelCount)
         && typeof value.routeCodec === 'string'
         && value.routeCodec.length > 0

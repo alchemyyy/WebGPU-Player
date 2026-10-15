@@ -1,6 +1,10 @@
-import { createDecoderWASMURLSource, type DecoderWASMSource } from '../../DecoderWASMSource';
-import { AUDIO_OUTPUT_STAGE_WASM_ASSET } from '../../EngineAssets';
+import { AUDIO_OUTPUT_STAGE_WASM_ASSET, resolveEngineAssetURL } from '../../EngineAssets';
 import type PCMChannelPool from './PCMChannelPool';
+
+/** Where the module's binary comes from: a URL to fetch, or bytes a caller already fetched, as tests pass them. */
+export type AudioOutputStageModuleSource =
+    | Readonly<{ kind: 'url', url: string }>
+    | Readonly<{ bytes: ArrayBuffer, kind: 'bytes' }>;
 
 // The kernel interface this wrapper reads; a module built for another one is refused
 const AUDIO_OUTPUT_STAGE_ABI_VERSION = 1;
@@ -425,7 +429,7 @@ export default class AudioOutputStageModule {
     }
 }
 
-async function readModuleBytes(source: DecoderWASMSource): Promise<ArrayBuffer> {
+async function readModuleBytes(source: AudioOutputStageModuleSource): Promise<ArrayBuffer> {
     switch (source.kind) {
         case 'bytes':
             return source.bytes;
@@ -446,8 +450,8 @@ let playbackModulePromise: Promise<AudioOutputStageModule | null> | null = null;
  * Instantiates the module once per worker, when the first output stage needs it.
  * It fetches the served binary unless the first caller passes another source, and a failed load is forgotten so that a later call retries it.
  */
-export function loadAudioOutputStageModule(source?: DecoderWASMSource): Promise<AudioOutputStageModule> {
-    modulePromise ??= readModuleBytes(source ?? createDecoderWASMURLSource(AUDIO_OUTPUT_STAGE_WASM_ASSET))
+export function loadAudioOutputStageModule(source?: AudioOutputStageModuleSource): Promise<AudioOutputStageModule> {
+    modulePromise ??= readModuleBytes(source ?? { kind: 'url', url: resolveEngineAssetURL(AUDIO_OUTPUT_STAGE_WASM_ASSET) })
         .then(bytes => AudioOutputStageModule.instantiate(bytes))
         .catch((error: unknown) => {
             modulePromise = null;

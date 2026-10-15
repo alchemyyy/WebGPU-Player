@@ -8,3 +8,8 @@
 	url = https://github.com/foo86/dcadec.git
 	shallow = true
 	update = none
+[submodule "vendor/aom"]
+	path = vendor/aom
+	url = https://aomedia.googlesource.com/aom
+	shallow = true
+	update = none

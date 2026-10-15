@@ -11,8 +11,10 @@ import {
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
+    MAX_GPU_DECODE_PACKET_CREDITS,
     type CustomDecodeVideoOutputMode
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
+import type { GPUVideoDecodeFeedTelemetry } from 'webgpu-player/decode/video/gpu/GPUVideoDecodeFeed';
 import type { MediaClockSnapshot } from 'webgpu-player/pipeline/MediaClock';
 import type { HDRToSDRRenderSettings, RenderSettings } from 'webgpu-player/presentation/RenderSettings';
 import type { PresentationTelemetry } from 'webgpu-player/presentation/WebGPUPresenter';
@@ -275,7 +277,7 @@ function describeSubtitlesSection(subtitleTracks: readonly SubtitleTrackDescript
 
 function describeRouteSection(active: ActiveRoute, override: RouteOverride): InfoSection {
     const rows: InfoRow[] = [];
-    rows.push(createRow('Decoder', active.videoDecoderBackend));
+    rows.push(createRow('Decoder', joinPresentValues([ active.videoDecoderBackend, active.gpuVideoDecoder?.decoderId ?? null ])));
     rows.push(createRow('Transport', joinPresentValues([ active.videoOutputMode, active.rawVideoFrameFormat ])));
     rows.push(createRow('Dolby Vision', active.dolbyVisionProfile === null ? NONE_TEXT : `profile ${active.dolbyVisionProfile} reconstruction`));
     rows.push(createRow('Native HDR', active.nativeHDRTransfer ?? NONE_TEXT));
@@ -360,6 +362,9 @@ function describeVideoDecodeSection(
     ]), decode.failureKind === null ? 'normal' : 'failure'));
     rows.push(createRow('Queue', `${decode.queuedFrameCount} queued${VALUE_SEPARATOR}${decode.pendingFrameCount} pending${VALUE_SEPARATOR}peak ${decode.peakFrameCount}`));
     rows.push(createRow('Credits', describeFrameCredits(route?.videoOutputMode ?? null, decode)));
+    if (decode.gpuVideoDecode !== null) {
+        rows.push(describeGPUVideoDecode(decode.gpuVideoDecode));
+    }
     rows.push(createRow('Frames', `${decode.receivedFrameCount} decoded${VALUE_SEPARATOR}${decode.takenFrameCount} taken${VALUE_SEPARATOR}${presenter?.presentedFrameCount ?? MISSING_VALUE_TEXT} presented`));
     rows.push(createRow(
         'Dropped',
@@ -405,10 +410,15 @@ function describeVideoDecodeSection(
     return { id: 'video-decode', rows, title: 'Video decode' };
 }
 
-/** The decode credits the page holds: a frame keeps its credit from its arrival until the presenter releases it. */
+/**
+ * The decode credits the page holds: a frame keeps its credit from its arrival until the presenter releases it.
+ * On the frame-pool route a packet holds the credit until its GPU decode work is submitted, and decoded frames hold pool slots instead.
+ */
 function describeFrameCredits(outputMode: CustomDecodeVideoOutputMode | null, decode: CustomDecodeSessionTelemetry): string {
     const heldCredits = decode.queuedFrameCount + decode.pendingFrameCount;
     switch (outputMode) {
+        case 'frame-pool':
+            return `${decode.gpuVideoDecode?.queuedPacketCount ?? 0} of ${MAX_GPU_DECODE_PACKET_CREDITS} packets queued`;
         case 'raw-planes':
             return `${heldCredits} of ${MAX_DECODED_RAW_FRAME_CREDITS} held`;
         case 'video-frame':
@@ -416,6 +426,23 @@ function describeFrameCredits(outputMode: CustomDecodeVideoOutputMode | null, de
         case null:
             return `${heldCredits} held`;
     }
+}
+
+/** The frame-pool route's GPU decoder: its state and failure, its pool's free slots, its packets and frames in flight, and its session reuses and stream changes. */
+function describeGPUVideoDecode(gpuVideoDecode: GPUVideoDecodeFeedTelemetry): InfoRow {
+    const slots = gpuVideoDecode.slotCount === null ?
+        null :
+        `${gpuVideoDecode.freeSlotCount ?? MISSING_VALUE_TEXT} of ${gpuVideoDecode.slotCount} slots free`;
+    return createRow('GPU decoder', joinPresentValues([
+        gpuVideoDecode.decoderName,
+        gpuVideoDecode.state,
+        gpuVideoDecode.failure,
+        slots,
+        `${gpuVideoDecode.submittedPacketCount} packets decoded`,
+        `${gpuVideoDecode.heldBackFrameCount} held back`,
+        `${gpuVideoDecode.reuseCount} reuses`,
+        `${gpuVideoDecode.streamChangeCount} stream changes`
+    ]), gpuVideoDecode.failure === null ? 'normal' : 'failure');
 }
 
 /** The last time a frame arrived after its target; after a seek, that is the decoder catching up. */

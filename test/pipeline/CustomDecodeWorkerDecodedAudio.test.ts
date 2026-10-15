@@ -30,7 +30,7 @@ import {
     type FakeWorkletProcessor
 } from '../helpers/fakeWorkletProcessor';
 import { InProcessAudioDecodeWorker } from '../helpers/inProcessAudioDecodeWorker';
-import { readDecoderWASMSource } from '../helpers/libraryAssets';
+import { readLibraryAssetSource } from '../helpers/libraryAssets';
 
 type AudioProgressResponse = Extract<DecodeWorkerResponse, { type: 'audio-progress' }>;
 
@@ -93,7 +93,7 @@ async function startWorker(): Promise<FakeWorkerScope> {
     const workerScope = await startDecodeWorker(mediaFiles);
     // The module instance the worker imported, since both load after the same reset
     const { loadAudioOutputStageModule } = await import('webgpu-player/audio/processing/AudioOutputStageModule');
-    await loadAudioOutputStageModule(await readDecoderWASMSource(AUDIO_OUTPUT_STAGE_WASM_ASSET));
+    await loadAudioOutputStageModule(await readLibraryAssetSource(AUDIO_OUTPUT_STAGE_WASM_ASSET));
     return workerScope;
 }
 

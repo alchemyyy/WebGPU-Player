@@ -23,7 +23,7 @@ import {
 } from 'webgpu-player/presentation/passes/PresentationExecutor';
 import type { TexturePresentationGeometry } from 'webgpu-player/presentation/PresentationGeometry';
 import { RENDER_SETTINGS_UNIFORM_BYTE_LENGTH } from 'webgpu-player/presentation/RenderSettings';
-import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParser';
+import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParser';
 import {
     copyVideoFramePairToRawPlanes,
     copyVideoFrameToRawPlanes,
@@ -31,7 +31,7 @@ import {
     type RawVideoFrameSource,
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
-} from 'webgpu-player/video/RawVideoFrameCopy';
+} from 'webgpu-player/decode/video/RawVideoFrameCopy';
 
 type MockFunction = ReturnType<typeof vi.fn>;
 

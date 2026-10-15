@@ -7,9 +7,14 @@ __pycache__/
 # The generated codec vector assets are committed, so every change to them shows in review
 !/bin/codec_vector_assets/
 
-# Codec build trees and the Rust target directory
+# Build trees and the Rust target directories of the engine's WebAssembly and of the decoder projects
 wasm/build/
 wasm/libdovi/target/
+/decoders/build/
+/decoders/*/*/target/
 
 # The built book; .github/workflows/docs.yml builds and publishes it
 /docs/book/
+
+# A Vite build of the sandbox, which only ever runs locally
+/sandbox/dist/

@@ -16,13 +16,13 @@ import {
     createHDRToSDRRenderSettings
 } from 'webgpu-player/presentation/RenderSettings';
 import { processEncodedYUV, type ColorTriplet } from 'webgpu-player/color/ColorPipeline';
-import { decodeDolbyVisionRPUSnapshot } from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParser';
+import { decodeDolbyVisionRPUSnapshot } from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParser';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 import { createBuiltinChain } from 'webgpu-player/presentation/passes/builtin/BuiltinChains';
 import type { RawDolbyVisionFrameFormat } from 'webgpu-player/presentation/passes/PassTypes';
 import { PresentationExecutor } from 'webgpu-player/presentation/passes/PresentationExecutor';
 import { planPresentation } from 'webgpu-player/presentation/passes/PresentationPlanner';
-import type { TransferableRawVideoFrame } from 'webgpu-player/video/RawVideoFrameCopy';
+import type { TransferableRawVideoFrame } from 'webgpu-player/decode/video/RawVideoFrameCopy';
 import {
     createDolbyVisionShaderSignature,
     createExpectedDolbyVisionAuthorizationObservations,

@@ -69,7 +69,7 @@ function waitBeforeRetry(milliseconds: number, signal: AbortSignal): Promise<voi
 }
 
 /**
- * Downloads a served capability asset, such as a qualification vector or a decoder binary.
+ * Downloads a served capability asset, such as a range extension probe's stream.
  * A network error, 408, 429, or 5xx is retried after each delay in CAPABILITY_ASSET_RETRY_DELAYS_MILLISECONDS; any other failure is final.
  */
 export async function fetchCapabilityAsset(url: string): Promise<ArrayBuffer> {
@@ -88,12 +88,4 @@ export async function fetchCapabilityAsset(url: string): Promise<ArrayBuffer> {
         throw attempt.error;
     }
     return attempt.bytes;
-}
-
-/**
- * Downloads a worker script or decoder glue into the HTTP cache.
- * The worker that loads it later, inside its probe's timeout, then reads it from the cache.
- */
-export async function warmCapabilityAsset(url: string): Promise<void> {
-    await fetchCapabilityAsset(url);
 }

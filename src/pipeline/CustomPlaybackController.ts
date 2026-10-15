@@ -8,6 +8,7 @@ import AudioWorkletController from '../audio/output/AudioWorkletController';
 import type { AudioWorkletTelemetry } from '../audio/output/AudioWorkletProtocol';
 import { assertSupportedCustomAudioOutputLayout } from '../audio/CustomAudioOutputPolicy';
 import { selectCustomAudioOutputChannelCountForMaximum } from '../audio/NativeMultichannelAudioOutput';
+import type { AudioDecoderPackageSelection } from '../decode/audio/AudioDecoderPackageInstance';
 import {
     assertValidAudioDownmixSettings,
     type AudioDownmixSettings
@@ -30,12 +31,14 @@ import CustomDecodeSession, {
 import {
     getDolbyVisionRawFrameLayerCount,
     isDolbyVisionProfile,
+    isRawVideoFrameFormat,
     type CustomDecodeAudioOutputMode,
     type DecodeWorkerAudioConfiguration
 } from './DecodeWorkerProtocol';
-import { isCustomDecodeMediaSource } from './CustomDecodeMediaSource';
+import { isCustomDecodeMediaSource } from '../demux/CustomDecodeMediaSource';
+import type { GPUVideoDecodeSessionFactory } from '../decode/video/gpu/GPUVideoDecodeFeed';
 import MediaClock from './MediaClock';
-import { hasRawVideoFrameCopyLayout } from '../video/RawVideoFrameCopy';
+import { hasRawVideoFrameCopyLayout } from '../decode/video/RawVideoFrameCopy';
 import { addMicroseconds, requireMicroseconds } from '../TimeMath';
 import { isTimingTraceActive, recordTimingEvent } from '../TimingTrace';
 import type {
@@ -148,9 +151,10 @@ const NOOP_FALLBACK_HOOK: CustomPlaybackHTMLFallbackHook = (): void => undefined
 function createVideoDecodeSession(
     eventHandler: (event: CustomDecodeSessionEvent) => void,
     audioBridgeFactory: CustomDecodeAudioBridgeFactory | null,
-    nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null
+    nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null,
+    gpuVideoDecodeSessionFactory: GPUVideoDecodeSessionFactory | null
 ): CustomVideoDecodeSession {
-    return new CustomDecodeSession(eventHandler, undefined, null, audioBridgeFactory, nativeAudioBridgeFactory);
+    return new CustomDecodeSession(eventHandler, undefined, null, audioBridgeFactory, nativeAudioBridgeFactory, gpuVideoDecodeSessionFactory);
 }
 
 function defaultMonotonicTimeSource(): Microseconds {
@@ -281,21 +285,29 @@ function validateHDRColorNeutralization(options: CustomPlaybackPlayOptions): voi
     }
 }
 
+/** An audio decoder package decodes a track to PCM on the decoded PCM route alone. */
+function validateAudioDecoderRoute(options: CustomPlaybackPlayOptions): void {
+    if (options.audioDecoder !== undefined
+        && (options.audioTrackIndex === null || (options.audioOutputMode ?? 'decoded-pcm') !== 'decoded-pcm')) {
+        throw new TypeError('An audio decoder package requires an audio track on the decoded PCM route');
+    }
+}
+
 function validateVideoDecoderRoute(options: CustomPlaybackPlayOptions): void {
+    if ((options.videoDecoderBackend === 'gpu') !== (options.gpuVideoDecoder !== undefined)) {
+        throw new TypeError('A GPU video decoder requires the gpu decoder backend, and that backend requires one');
+    }
     switch (options.videoDecoderBackend) {
-        case 'bundled-hevc':
         case 'native':
             return;
-        case 'ffmpeg-mpeg2-vc1':
-        case 'openjpeg':
+        case 'gpu':
             if (
-                options.videoOutputMode !== 'video-frame'
-                || options.rawVideoFrameFormat !== null
+                options.videoOutputMode !== 'frame-pool'
                 || options.dolbyVisionProfile !== null
                 || options.neutralizeHDRColorMetadata
                 || options.nativeHDRTransfer !== null
             ) {
-                throw new TypeError('Software video playback requires an SDR VideoFrame route');
+                throw new TypeError('GPU video playback requires the frame-pool route without Dolby Vision reconstruction or native color handling');
             }
             return;
         default:
@@ -335,12 +347,18 @@ function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
         throw new TypeError('Custom playback media source must be a File or a non-empty URL');
     }
     validateVideoDecoderRoute(options);
+    validateAudioDecoderRoute(options);
     validateHDRColorNeutralization(options);
     validateCodedDimension(options.maximumCodedWidth, 'Maximum coded width');
     validateCodedDimension(options.maximumCodedHeight, 'Maximum coded height');
     validateTrackIndex(options.videoTrackIndex, 'Video track index');
     validateAudioPlayOptions(options);
     switch (options.videoOutputMode) {
+        case 'frame-pool':
+            if (options.videoDecoderBackend !== 'gpu' || !isRawVideoFrameFormat(options.rawVideoFrameFormat)) {
+                throw new TypeError('Frame-pool custom playback requires the gpu decoder backend and a planar frame format');
+            }
+            break;
         case 'raw-planes':
             validateRawVideoFrameCopyLayout(options);
             break;
@@ -356,14 +374,15 @@ function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
 
 function copyPlayOptions(options: CustomPlaybackPlayOptions): CustomPlaybackPlayOptions {
     return {
+        ...(options.audioDecoder ? { audioDecoder: { ...options.audioDecoder } } : {}),
         audioDownmixAlgorithm: options.audioDownmixAlgorithm,
         audioDownmixSettings: options.audioDownmixSettings ? { ...options.audioDownmixSettings } : undefined,
         audioOutputMode: options.audioOutputMode,
         audioTrackIndex: options.audioTrackIndex,
         decodedAudioOutputChannelCount: options.decodedAudioOutputChannelCount,
-        discardDolbyVisionEnhancementLayer: options.discardDolbyVisionEnhancementLayer,
         durationMicroseconds: options.durationMicroseconds,
         dolbyVisionProfile: options.dolbyVisionProfile,
+        ...(options.gpuVideoDecoder ? { gpuVideoDecoder: { ...options.gpuVideoDecoder } } : {}),
         maximumCodedHeight: options.maximumCodedHeight,
         maximumCodedWidth: options.maximumCodedWidth,
         nativeHDRTransfer: options.nativeHDRTransfer,
@@ -543,7 +562,8 @@ export default class CustomPlaybackController {
         this.videoDecodeSession = videoDecodeSessionFactory(
             this.handleVideoDecodeEvent,
             this.audioOutputFactory ? this.createAudioBridge : null,
-            this.nativeAudioBridgeFactory
+            this.nativeAudioBridgeFactory,
+            options.gpuVideoDecodeSessionFactory ?? null
         );
     }
 
@@ -742,14 +762,18 @@ export default class CustomPlaybackController {
         return this.audioOutputFactory !== null || this.nativeAudioBridgeFactory !== null;
     }
 
-    /** Restarts decode generations with the selected owned audio route. */
+    /**
+     * Restarts decode generations with the selected owned audio route.
+     * The previous track's audio decoder package does not carry over: the eligibility of the new track selects its own, or none.
+     */
     public setAudioStreamIndex(
         audioStreamIndex: number,
         audioOutputMode: CustomDecodeAudioOutputMode =
         this.currentSource?.audioOutputMode ?? 'decoded-pcm',
         decodedAudioOutputChannelCount = this.currentSource?.decodedAudioOutputChannelCount,
         audioDownmixSettings: AudioDownmixSettings | undefined =
-        this.currentSource?.audioDownmixSettings
+        this.currentSource?.audioDownmixSettings,
+        audioDecoder: AudioDecoderPackageSelection | undefined = undefined
     ): Promise<CustomPlaybackStartResult> {
         this.requireUsable();
         validateTrackIndex(audioStreamIndex, 'Audio stream index');
@@ -767,6 +791,9 @@ export default class CustomPlaybackController {
         const switchTimeMicroseconds = this.currentTimeMicroseconds;
         const switchOptions: CustomPlaybackPlayOptions = {
             ...this.currentSource,
+            audioDecoder: audioOutputMode === 'decoded-pcm' ?
+                audioDecoder :
+                undefined,
             audioDownmixSettings: audioOutputMode === 'decoded-pcm' ?
                 audioDownmixSettings :
                 undefined,
@@ -1447,16 +1474,17 @@ export default class CustomPlaybackController {
                 return;
             }
             this.videoDecodeSession.start({
+                audioDecoder: activeOptions.audioDecoder,
                 audioDownmixAlgorithm: activeOptions.audioDownmixAlgorithm,
                 audioDownmixSettings: activeOptions.audioDownmixSettings,
                 audioOutputMode: activeOptions.audioOutputMode,
                 audioTrackIndex: activeOptions.audioTrackIndex,
                 decodedAudioOutputChannelCount:
                     activeOptions.decodedAudioOutputChannelCount,
-                discardDolbyVisionEnhancementLayer: activeOptions.discardDolbyVisionEnhancementLayer,
                 durationMicroseconds: activeOptions.durationMicroseconds,
                 dolbyVisionProfile: activeOptions.dolbyVisionProfile,
                 generation,
+                gpuVideoDecoder: activeOptions.gpuVideoDecoder,
                 maximumCodedHeight: activeOptions.maximumCodedHeight,
                 maximumCodedWidth: activeOptions.maximumCodedWidth,
                 nativeHDRTransfer: activeOptions.nativeHDRTransfer,
@@ -2738,7 +2766,7 @@ export default class CustomPlaybackController {
 
     /**
      * Only audio-clocked native decode is released while hidden.
-     * Software decoders keep draining because a keyframe resync is costly for them.
+     * A GPU decoder keeps draining because a keyframe resync is costly for it.
      * An ended video track has already released its decoder, and once the audio track ended only video can reach the end of the stream.
      */
     private canSuspendBackgroundVideo(): boolean {

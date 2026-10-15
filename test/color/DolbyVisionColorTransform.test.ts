@@ -18,14 +18,14 @@ import {
     DOLBY_VISION_RPU_PACKED_COMPONENT_MMR_OFFSET,
     DOLBY_VISION_RPU_PACKED_COMPONENT_PIVOT_OFFSET,
     DOLBY_VISION_RPU_PACKED_COMPONENT_SEGMENT_OFFSET
-} from 'webgpu-player/video/dolby-vision/DolbyVisionRPUDataLayout';
+} from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUDataLayout';
 import DolbyVisionRPUParser, {
     DOLBY_VISION_RPU_PARSER_REVISION_PREFIX,
     DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
     DOLBY_VISION_RPU_SCHEMA_MAGIC,
     DOLBY_VISION_RPU_SCHEMA_VERSION,
     type DolbyVisionRPUParserDependencies
-} from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParser';
+} from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParser';
 import type { ColorTriplet } from 'webgpu-player/color/ColorPipeline';
 import {
     composeDolbyVisionEnhancementSignal,

@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
     CUSTOM_AUDIO_CODECS,
+    CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS,
     CUSTOM_NATIVE_SURROUND_AUDIO_CODECS,
     CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS,
+    CUSTOM_PACKAGE_AUDIO_CODECS,
     type CustomNativeSurroundAudioCodec,
     type CustomNativeSurroundAudioCodecCapability,
     type CustomNativeUltraHDVideoCodec,
@@ -18,8 +20,10 @@ import {
 import {
     getCustomPlaybackEligibility,
     getDolbyVisionReconstructionRawFrameFormat,
+    getGPUVideoDecodeTarget,
     hasEligibleCustomVideoRoute,
-    hasPotentialCustomPlaybackVideoRoute
+    hasPotentialCustomPlaybackVideoRoute,
+    type CustomPlaybackEligibilityOptions
 } from 'webgpu-player/capability/CustomPlaybackEligibility';
 import {
     HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS,
@@ -42,6 +46,13 @@ import {
     H264_PROFILES,
     type H264ProfileCapabilities
 } from 'webgpu-player/capability/H264ProfileCapabilities';
+import type { VideoDecoderPackage } from 'webgpu-player/decode/packages/DecoderPackage';
+import type { GPUDecoderOutputFormat } from 'webgpu-player/decode/video/gpu/GPUDecodeFormats';
+import { MEBIBYTE } from 'webgpu-player/decode/video/gpu/GPUDecodeLimits';
+import { createGPUVideoDecoderOffer, type GPUVideoDecoderOffer } from 'webgpu-player/decode/video/gpu/GPUVideoDecoderCatalog';
+
+import { createAudioDecoderPackageForTest } from '../helpers/audioDecoderPackageStubs';
+import { createDecoderProjectVideoPackageForTest, createVideoDecoderPackageForTest, createVideoDecoderSource } from '../helpers/decoderPackages';
 
 const AVAILABLE_RUNTIME: CustomPlaybackRuntimeAvailability = {
     available: true,
@@ -70,6 +81,8 @@ const PQ_AUTHORIZATION = {
 
 // A Jellyfin stream path, which eligibility resolves against the page
 const STREAM_URL = '/Videos/item/stream.mp4?api_key=secret';
+// The path pattern a host sets on a URL source whose cross-origin 206 responses hide Content-Range
+const HIDDEN_CONTENT_RANGE_PATH_PATTERN = /\/Videos\/[^/]+\/stream(?:\.[^/]+)?$/i;
 const LOCAL_FILE_NAME = 'movie.mp4';
 const FILE_URL = 'file:///movie.mkv';
 const CREDENTIAL_URL = 'http://user:password@localhost/movie.mkv';
@@ -93,6 +106,44 @@ const DOUBLE_DXD_SAMPLE_RATE = 705_600;
 const ZERO_SAMPLE_RATE = 0;
 const FRACTIONAL_SAMPLE_RATE = 48_000.5;
 
+// A device whose largest buffer holds 2 GiB
+const LARGE_FRAME_POOL_BYTE_LIMIT = 2 ** 31;
+// Decoder packages a host offers for the codecs no engine decoder decodes, declaring the codecs their decoder projects accept
+const MPEG2_VIDEO_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ codecs: [ 'mpeg2video' ], id: 'mpeg2', name: 'MPEG-2', outputFormats: [ 'I420' ] }));
+// MPEG-2 packages as the decoder project builds them, writing every chroma format the codec has
+const MPEG2_CHROMA_VIDEO_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({
+    codecs: [ 'mpeg2video' ],
+    id: 'mpeg2-chroma',
+    name: 'MPEG-2 4:2:0, 4:2:2, and 4:4:4',
+    outputFormats: [ 'I420', 'I422', 'I444' ]
+}));
+const MPEG_VIDEO_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({
+    codecs: [ 'mpeg2video', 'mpeg1video' ],
+    id: 'mpeg',
+    name: 'MPEG-1 and MPEG-2',
+    outputFormats: [ 'I420', 'I422', 'I444' ]
+}));
+const JPEG2000_DEEP_VIDEO_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({
+    codecs: [ 'jpeg2000' ],
+    id: 'jpeg2000-deep',
+    name: 'JPEG 2000 at 10 bits',
+    outputFormats: [ 'I444P10' ]
+}));
+const VC1_VIDEO_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ codecs: [ 'vc1' ], id: 'vc1', name: 'VC-1', outputFormats: [ 'I420' ] }));
+const JPEG2000_VIDEO_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ codecs: [ 'jpeg2000' ], id: 'jpeg2000', name: 'JPEG 2000', outputFormats: [ 'I420' ] }));
+// The engine's HEVC decoder project, whose stream limits and output formats the GPU route checks, and which declares 4:0:0
+const HEVC_DECODER_PROJECT = 'hevc';
+const HEVC_VIDEO_PACKAGE = createDecoderProjectVideoPackageForTest(HEVC_DECODER_PROJECT);
+// The engine's JPEG 2000 decoder project, whose parser fails greyscale pictures as colourSpace, so it declares no 4:0:0
+const JPEG2000_DECODER_PROJECT = 'jpeg2000';
+const JPEG2000_PROJECT_VIDEO_PACKAGE = createDecoderProjectVideoPackageForTest(JPEG2000_DECODER_PROJECT);
+// The header line by which a decoder takes 4:0:0 streams
+const MONOCHROME_DIRECTIVE_LINE = '//! monochrome: yes';
+const DOLBY_AUDIO_PACKAGE = createAudioDecoderPackageForTest('E-AC-3', [ 'eac3', 'ac3' ], 'eac3');
+const DTS_AUDIO_PACKAGE = createAudioDecoderPackageForTest('DTS', [ 'dts' ], 'dts');
+const TRUEHD_AUDIO_PACKAGE = createAudioDecoderPackageForTest('TrueHD', [ 'mlp', 'truehd' ], 'truehd');
+const AUDIO_PACKAGES = [ DOLBY_AUDIO_PACKAGE, DTS_AUDIO_PACKAGE, TRUEHD_AUDIO_PACKAGE ] as const;
+
 function createCapability<Codec extends CustomAudioCodec | CustomVideoCodec>(
     codec: Codec,
     supported: boolean
@@ -102,6 +153,32 @@ function createCapability<Codec extends CustomAudioCodec | CustomVideoCodec>(
         codecString: codec,
         reason: supported ? 'config-supported' : 'config-unsupported',
         status: supported ? 'supported' : 'unsupported'
+    };
+}
+
+// The capability of a codec only a decoder package decodes, which no probe settles
+function createNoEngineDecoderCapability<Codec extends CustomAudioCodec | CustomVideoCodec>(codec: Codec): CustomDecodeCodecCapability<Codec> {
+    return {
+        codec,
+        codecString: codec,
+        reason: 'no-engine-decoder',
+        status: 'unsupported'
+    };
+}
+
+/** Offers every format a video package writes on a device with a large frame pool limit. */
+function createVideoDecoderOffers(decoderPackage: VideoDecoderPackage): GPUVideoDecoderOffer[] {
+    return decoderPackage.manifest.outputFormats.map((format: GPUDecoderOutputFormat): GPUVideoDecoderOffer =>
+        createGPUVideoDecoderOffer(decoderPackage, format, LARGE_FRAME_POOL_BYTE_LIMIT));
+}
+
+/** The GPU route a video package's offer selects. */
+function createPackageVideoRoute(decoderPackage: VideoDecoderPackage, codec: CustomVideoCodec): Record<string, unknown> {
+    return {
+        eligible: true,
+        gpuVideoDecoder: { codec, decoderId: decoderPackage.id, package: decoderPackage },
+        videoDecoderBackend: 'gpu',
+        videoOutputMode: 'frame-pool'
     };
 }
 
@@ -122,138 +199,24 @@ function createH264ProfileCapabilities(): H264ProfileCapabilities {
     return Object.freeze(capabilities);
 }
 
-function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['bundledHEVC']> {
-    return {
-        qualifications: {
-            'main-1080p': {
-                bitDepth: 8,
-                codecString: 'hvc1.1.6.L120.B0',
-                vector: 'main-1080p',
-                format: 'I420',
-                profile: 'main',
-                reason: 'decode-output-verified',
-                status: 'supported'
-            },
-            'main10-1080p': {
-                bitDepth: 10,
-                codecString: 'hvc1.2.4.L120.B0',
-                vector: 'main10-1080p',
-                format: 'I420P10',
-                profile: 'main10',
-                reason: 'decode-output-verified',
-                status: 'supported'
-            },
-            'main10-4k': {
-                bitDepth: 10,
-                codecString: 'hvc1.2.4.L153.B0',
-                vector: 'main10-4k',
-                format: 'I420P10',
-                profile: 'main10',
-                reason: 'decode-output-verified',
-                status: 'supported'
-            }
-        },
-        reason: 'complete'
-    };
-}
-
-function createBundledDTSCapability(): NonNullable<CustomDecodeCapabilities['bundledDTS']> {
-    return Object.freeze({
-        channelBedOnly: true,
-        codec: 'dts',
-        codecString: 'dts',
-        decodeMilliseconds: 8,
-        libraryVersion: 131_073,
-        maximumChannelCount: 8,
-        measuredRealTimeFactor: 32,
-        objectAudioRendered: false,
-        profiles: Object.freeze([
-            'core',
-            'core-96-24',
-            'es',
-            'hd-hra',
-            'hd-ma'
-        ] as const),
-        reason: 'decode-output-verified',
-        sampleRates: Object.freeze([ 48_000, 96_000, 192_000 ] as const),
-        status: 'supported',
-        verifiedVectorCount: 7,
-        verifiedProfileMask: 0x1f
-    });
-}
-
-function createBundledTrueHDCapability(): NonNullable<CustomDecodeCapabilities['bundledTrueHD']> {
-    return Object.freeze({
-        channelBedOnly: true,
-        channelCounts: Object.freeze([ 2, 6 ] as const),
-        codecs: Object.freeze([ 'truehd', 'mlp' ] as const),
-        decodeMilliseconds: 12,
-        library: 'ffmpeg-libavcodec',
-        libraryVersion: 4_079_728,
-        majorSyncRecoveryVerified: true,
-        measuredRealTimeFactor: 12,
-        objectAudioRendered: false,
-        passthrough: false,
-        reason: 'decode-output-verified',
-        sampleRates: Object.freeze([ 48_000, 96_000, 192_000 ] as const),
-        status: 'supported',
-        verifiedChannelCountMask: (1 << 2) | (1 << 6),
-        verifiedCodecMask: 0x03,
-        verifiedVectorCount: 4,
-        verifiedSampleRateMask: 0x07
-    });
-}
-
-function createBundledJPEG2000Capability(): NonNullable<CustomDecodeCapabilities['bundledJPEG2000']> {
-    return Object.freeze({
-        bitDepth: 8,
-        codec: 'jpeg2000',
-        codecString: 'mjp2',
-        decodedRGBAByteLength: 2_073_600,
-        decodedRGBAFingerprint: 1_076_220_778,
-        reason: 'decode-output-verified',
-        status: 'supported'
-    });
-}
-
-function createBundledMPEG2Capability(): NonNullable<CustomDecodeCapabilities['bundledMPEG2']> {
-    return Object.freeze({
-        codec: 'mpeg2video',
-        decodedFrameByteLength: 3_110_400,
-        decodedFrameCount: 12,
-        decodedI420Fingerprint: 544_635_241,
-        decodedTotalByteLength: 37_324_800,
-        reason: 'decode-output-verified',
-        status: 'supported'
-    });
-}
-
-function createBundledVC1Capability(): NonNullable<CustomDecodeCapabilities['bundledVC1']> {
-    return Object.freeze({
-        ...createBundledMPEG2Capability(),
-        codec: 'vc1',
-        decodedI420Fingerprint: 182_587_665
-    });
-}
-
 function createCapabilities(): CustomDecodeCapabilities {
     const createRawHDRCapability = (codec: CustomRawHDRVideoCodec): CustomRawHDRVideoCodecCapability => ({
         bitDepth: 10,
         codec,
         codecString: codec === 'hevc' ? 'hvc1.2.4.L153.B0' : codec,
         format: 'I420P10',
-        reason: codec === 'hevc' ? 'bundled-software-decoder' : 'output-copy-supported',
+        reason: 'output-copy-supported',
         status: 'supported'
     });
     const audio = {} as Record<CustomAudioCodec, CustomDecodeCodecCapability<CustomAudioCodec>>;
     for (const codec of CUSTOM_AUDIO_CODECS) {
         audio[codec] = createCapability(codec, true);
     }
+    for (const codec of CUSTOM_PACKAGE_AUDIO_CODECS) {
+        audio[codec] = createNoEngineDecoderCapability(codec);
+    }
     return {
         audio,
-        bundledDTS: createBundledDTSCapability(),
-        bundledHEVC: createBundledHEVCCapabilities(),
-        bundledTrueHD: createBundledTrueHDCapability(),
         h264Profiles: createH264ProfileCapabilities(),
         nativeDolbyVisionHEVC: {
             bitDepth: 10,
@@ -277,7 +240,7 @@ function createCapabilities(): CustomDecodeCapabilities {
         },
         telemetry: {
             audioProbeCount: 5,
-            bundledAudioCodecCount: 2,
+            mediabunnyAudioCodecCount: CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS.length,
             nativeSurroundAudioProbeCount: 0,
             nativeHDRVideoProbeCount: 1,
             nativeUltraHDVideoProbeCount: 0,
@@ -300,13 +263,25 @@ function createCapabilities(): CustomDecodeCapabilities {
             av1: createCapability('av1', true),
             h264: createCapability('h264', true),
             hevc: createCapability('hevc', true),
-            jpeg2000: createCapability('jpeg2000', false),
-            mpeg2video: createCapability('mpeg2video', false),
-            vc1: createCapability('vc1', false),
+            jpeg2000: createNoEngineDecoderCapability('jpeg2000'),
+            mpeg1video: createNoEngineDecoderCapability('mpeg1video'),
+            mpeg2video: createNoEngineDecoderCapability('mpeg2video'),
+            vc1: createNoEngineDecoderCapability('vc1'),
             vp8: createCapability('vp8', true),
+            wmv3: createNoEngineDecoderCapability('wmv3'),
             vp9: createCapability('vp9', true)
         }
     };
+}
+
+function createCapabilitiesWithoutNativeHEVC(): CustomDecodeCapabilities {
+    const capabilities = createCapabilities();
+    capabilities.nativeHDRHEVC = undefined;
+    capabilities.video = {
+        ...capabilities.video,
+        hevc: createCapability('hevc', false)
+    };
+    return capabilities;
 }
 
 function createNativeSurroundAudioCapabilities(
@@ -671,6 +646,27 @@ describe('CustomPlaybackEligibility', () => {
         expect(hasPotentialCustomPlaybackVideoRoute(item)).toBe(true);
     });
 
+    // Only a decoder package decodes these, so the prefilter leaves profile, chroma, and depth to the host's packages
+    it.each([
+        [ '4:2:2 MPEG-2', { BitDepth: 8, Codec: 'MPEG2VIDEO', PixelFormat: 'yuv422p', Profile: '4:2:2' }, 'mkv' ],
+        [ 'profile-less 4:4:4 MPEG-2', { BitDepth: 8, Codec: 'MPEG2VIDEO', PixelFormat: 'yuv444p', Profile: null }, 'mkv' ],
+        [ '12-bit JPEG 2000', { BitDepth: 12, Codec: 'JPEG2000', PixelFormat: 'yuv444p12le' }, 'mj2' ],
+        [ 'PQ JPEG 2000', {
+            BitDepth: 12,
+            Codec: 'JPEG2000',
+            ColorPrimaries: 'bt2020',
+            ColorSpace: 'bt2020nc',
+            ColorTransfer: 'smpte2084',
+            VideoRangeType: 'HDR10'
+        }, 'mov' ]
+    ])('keeps %s potential for its decoder packages', (_label, videoStream, container) => {
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem(videoStream, container))).toBe(true);
+    });
+
+    it('rejects a VC-1 stream with a WMV3 profile, which FFmpeg names wmv3', () => {
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ BitDepth: 8, Codec: 'VC1', Profile: 'Main' }))).toBe(false);
+    });
+
     it('uses the requested media source instead of an unrelated supported alternate', () => {
         const unsupportedSource = (
             createPlaybackSelectionItem({
@@ -732,17 +728,8 @@ describe('CustomPlaybackEligibility', () => {
     });
 
     it.each([ 'MPEG2VIDEO', 'MPEG2', 'MPEG-2' ])(
-        'selects the exact progressive MPEG-2 Matroska route for %s metadata',
+        'decodes progressive Matroska MPEG-2 named %s only on an offered decoder package',
         (codecName) => {
-            const baseCapabilities = createCapabilities();
-            const capabilities: CustomDecodeCapabilities = {
-                ...baseCapabilities,
-                bundledMPEG2: createBundledMPEG2Capability(),
-                video: {
-                    ...baseCapabilities.video,
-                    mpeg2video: createCapability('mpeg2video', true)
-                }
-            };
             const options = createOptions();
             const mediaSource = options.mediaSource as {
                 Container: string
@@ -765,28 +752,27 @@ describe('CustomPlaybackEligibility', () => {
 
             expect(getCustomPlaybackEligibility(
                 options,
-                capabilities,
+                createCapabilities(),
                 { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                {
+                    allowRawHDR: false,
+                    gpuVideoDecoders: createVideoDecoderOffers(MPEG2_VIDEO_PACKAGE),
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
             )).toMatchObject({
-                eligible: true,
+                ...createPackageVideoRoute(MPEG2_VIDEO_PACKAGE, 'mpeg2video'),
                 maximumCodedHeight: 1_080,
                 maximumCodedWidth: 1_920,
-                videoDecoderBackend: 'ffmpeg-mpeg2-vc1',
-                videoOutputMode: 'video-frame'
+                rawVideoFrameFormat: 'I420'
             });
         }
     );
 
-    it('selects the exact progressive Advanced VC-1 Matroska route', () => {
-        const baseCapabilities = createCapabilities();
-        const capabilities: CustomDecodeCapabilities = {
-            ...baseCapabilities,
-            bundledVC1: createBundledVC1Capability(),
-            video: {
-                ...baseCapabilities.video,
-                vc1: createCapability('vc1', true)
-            }
-        };
+    it('composes a VC-1 decoder package with an AC-3 audio decoder package', () => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             Container: string
@@ -815,28 +801,23 @@ describe('CustomPlaybackEligibility', () => {
 
         expect(getCustomPlaybackEligibility(
             options,
-            capabilities,
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            createCapabilities(),
+            {
+                allowRawHDR: false,
+                audioDecoders: AUDIO_PACKAGES,
+                gpuVideoDecoders: createVideoDecoderOffers(VC1_VIDEO_PACKAGE),
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
         )).toMatchObject({
+            ...createPackageVideoRoute(VC1_VIDEO_PACKAGE, 'vc1'),
+            audioDecoder: { codec: 'ac3', source: { manifest: DOLBY_AUDIO_PACKAGE.manifest } },
             audioOutputMode: 'decoded-pcm',
-            eligible: true,
             maximumCodedHeight: 1_080,
-            maximumCodedWidth: 1_920,
-            videoDecoderBackend: 'ffmpeg-mpeg2-vc1',
-            videoOutputMode: 'video-frame'
+            maximumCodedWidth: 1_920
         });
     });
 
-    it('composes exact VC-1 and DTS software decoders without a pairwise blacklist', () => {
-        const baseCapabilities = createCapabilities();
-        const capabilities: CustomDecodeCapabilities = {
-            ...baseCapabilities,
-            bundledVC1: createBundledVC1Capability(),
-            video: {
-                ...baseCapabilities.video,
-                vc1: createCapability('vc1', true)
-            }
-        };
+    it('composes a VC-1 decoder package with a 5.1 DTS audio decoder package', () => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             Container: string
@@ -866,27 +847,22 @@ describe('CustomPlaybackEligibility', () => {
 
         expect(getCustomPlaybackEligibility(
             options,
-            capabilities,
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            createCapabilities(),
+            {
+                allowRawHDR: false,
+                audioDecoders: AUDIO_PACKAGES,
+                gpuVideoDecoders: createVideoDecoderOffers(VC1_VIDEO_PACKAGE),
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
         )).toMatchObject({
+            ...createPackageVideoRoute(VC1_VIDEO_PACKAGE, 'vc1'),
+            audioDecoder: { codec: 'dts', source: { manifest: DTS_AUDIO_PACKAGE.manifest } },
             audioOutputMode: 'decoded-pcm',
-            audioSourceChannelCount: 6,
-            eligible: true,
-            videoDecoderBackend: 'ffmpeg-mpeg2-vc1',
-            videoOutputMode: 'video-frame'
+            audioSourceChannelCount: 6
         });
     });
 
-    it('composes exact VC-1 and TrueHD software decoders without a pairwise blacklist', () => {
-        const baseCapabilities = createCapabilities();
-        const capabilities: CustomDecodeCapabilities = {
-            ...baseCapabilities,
-            bundledVC1: createBundledVC1Capability(),
-            video: {
-                ...baseCapabilities.video,
-                vc1: createCapability('vc1', true)
-            }
-        };
+    it('composes a VC-1 decoder package with a TrueHD audio decoder package', () => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             Container: string
@@ -915,27 +891,22 @@ describe('CustomPlaybackEligibility', () => {
 
         expect(getCustomPlaybackEligibility(
             options,
-            capabilities,
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            createCapabilities(),
+            {
+                allowRawHDR: false,
+                audioDecoders: AUDIO_PACKAGES,
+                gpuVideoDecoders: createVideoDecoderOffers(VC1_VIDEO_PACKAGE),
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
         )).toMatchObject({
+            ...createPackageVideoRoute(VC1_VIDEO_PACKAGE, 'vc1'),
+            audioDecoder: { codec: 'truehd', source: { manifest: TRUEHD_AUDIO_PACKAGE.manifest } },
             audioOutputMode: 'decoded-pcm',
-            audioSourceChannelCount: 2,
-            eligible: true,
-            videoDecoderBackend: 'ffmpeg-mpeg2-vc1',
-            videoOutputMode: 'video-frame'
+            audioSourceChannelCount: 2
         });
     });
 
-    it('composes exact OpenJPEG video and PCM audio without a pairwise blacklist', () => {
-        const baseCapabilities = createCapabilities();
-        const capabilities: CustomDecodeCapabilities = {
-            ...baseCapabilities,
-            bundledJPEG2000: createBundledJPEG2000Capability(),
-            video: {
-                ...baseCapabilities.video,
-                jpeg2000: createCapability('jpeg2000', true)
-            }
-        };
+    it('composes a JPEG 2000 decoder package with Mediabunny PCM audio', () => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             Container: string
@@ -961,27 +932,33 @@ describe('CustomPlaybackEligibility', () => {
             Type: 'Audio'
         };
 
-        expect(getCustomPlaybackEligibility(
+        const eligibility = getCustomPlaybackEligibility(
             options,
-            capabilities,
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-        )).toMatchObject({
+            createCapabilities(),
+            {
+                allowRawHDR: false,
+                gpuVideoDecoders: createVideoDecoderOffers(JPEG2000_VIDEO_PACKAGE),
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        );
+
+        expect(eligibility).toMatchObject({
+            ...createPackageVideoRoute(JPEG2000_VIDEO_PACKAGE, 'jpeg2000'),
             audioOutputMode: 'decoded-pcm',
-            audioSourceChannelCount: 2,
-            eligible: true,
-            videoDecoderBackend: 'openjpeg',
-            videoOutputMode: 'video-frame'
+            audioSourceChannelCount: 2
         });
+        expect(eligibility).not.toHaveProperty('audioDecoder');
     });
 
+    // A decoder package's own stream constraint, not the stream's profile, bounds what it takes
     it.each([
-        [ 'unqualified runtime', { AverageFrameRate: 24 }, 'mkv', false, false ],
+        [ 'no offered package', { AverageFrameRate: 24 }, 'mkv', false, false ],
         [ 'high frame rate', { AverageFrameRate: 120 }, 'mkv', true, true ],
         [ 'larger width', { AverageFrameRate: 24, Width: 7_680 }, 'mkv', true, true ],
         [ 'larger height', { AverageFrameRate: 24, Height: 4_320 }, 'mkv', true, true ],
-        [ 'high bit depth', { AverageFrameRate: 24, BitDepth: 10 }, 'mkv', true, false ],
-        [ 'non-Main profile', { AverageFrameRate: 24, Profile: 'Simple' }, 'mkv', true, false ],
-        [ 'missing profile', { AverageFrameRate: 24, Profile: null }, 'mkv', true, false ],
+        [ 'a bit depth the package does not write', { AverageFrameRate: 24, BitDepth: 10 }, 'mkv', true, false ],
+        [ 'non-Main profile', { AverageFrameRate: 24, Profile: 'Simple' }, 'mkv', true, true ],
+        [ 'missing profile', { AverageFrameRate: 24, Profile: null }, 'mkv', true, true ],
         [ 'interlaced frames', { AverageFrameRate: 24, IsInterlaced: true }, 'mkv', true, false ],
         [ 'MPEG-TS container', { AverageFrameRate: 24 }, 'ts', true, false ],
         [ 'MPEG-TS alias container', { AverageFrameRate: 24 }, 'mpegts', true, false ],
@@ -996,14 +973,7 @@ describe('CustomPlaybackEligibility', () => {
         [ 'other container', { AverageFrameRate: 24 }, 'webm', true, false ]
     ] as const)(
         'handles MPEG-2 with %s',
-        (_label, metadataOverride, container, includeCapability, expectedEligible) => {
-            const baseCapabilities = createCapabilities();
-            const capabilities: CustomDecodeCapabilities = {
-                ...baseCapabilities,
-                ...(includeCapability ? {
-                    bundledMPEG2: createBundledMPEG2Capability()
-                } : {})
-            };
+        (_label, metadataOverride, container, offerPackage, expectedEligible) => {
             const options = createOptions();
             const mediaSource = options.mediaSource as {
                 Container: string
@@ -1025,24 +995,208 @@ describe('CustomPlaybackEligibility', () => {
 
             expect(getCustomPlaybackEligibility(
                 options,
-                capabilities,
-                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+                createCapabilities(),
+                {
+                    allowRawHDR: false,
+                    gpuVideoDecoders: offerPackage ? createVideoDecoderOffers(MPEG2_VIDEO_PACKAGE) : [],
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
             ).eligible).toBe(expectedEligible);
         }
     );
 
+    // The pixel format names the chroma subsampling a package must write
+    it.each([
+        [ 'yuv420p', 'Main', 'I420' ],
+        [ 'yuv422p', '4:2:2', 'I422' ],
+        [ 'yuv444p', null, 'I444' ]
+    ] as const)('decodes MPEG-2 in %s into the frame pool format holding it', (pixelFormat, profile, format) => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'mkv';
+        mediaSource.MediaStreams[0] = {
+            AverageFrameRate: 25,
+            BitDepth: 8,
+            Codec: 'MPEG2VIDEO',
+            Height: 576,
+            Index: 0,
+            IsInterlaced: false,
+            PixelFormat: pixelFormat,
+            Profile: profile,
+            Type: 'Video',
+            VideoRangeType: 'SDR',
+            Width: 720
+        };
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            {
+                allowRawHDR: false,
+                gpuVideoDecoders: createVideoDecoderOffers(MPEG2_CHROMA_VIDEO_PACKAGE),
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        )).toMatchObject({
+            ...createPackageVideoRoute(MPEG2_CHROMA_VIDEO_PACKAGE, 'mpeg2video'),
+            rawVideoFrameFormat: format
+        });
+    });
+
+    it.each([
+        [ 'a package that writes only 4:2:0', MPEG2_VIDEO_PACKAGE, { PixelFormat: 'yuv422p' } ],
+        [ 'a pixel format no frame pool holds', MPEG2_CHROMA_VIDEO_PACKAGE, { PixelFormat: 'yuv411p' } ],
+        [ 'a BitDepth its pixel format contradicts', MPEG2_CHROMA_VIDEO_PACKAGE, { BitDepth: 10, PixelFormat: 'yuv422p' } ]
+    ] as const)('leaves 4:2:2 MPEG-2 ineligible with %s', (_label, decoderPackage, metadataOverride) => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'mkv';
+        mediaSource.MediaStreams[0] = {
+            AverageFrameRate: 25,
+            BitDepth: 8,
+            Codec: 'MPEG2VIDEO',
+            Height: 576,
+            Index: 0,
+            IsInterlaced: false,
+            Profile: '4:2:2',
+            Type: 'Video',
+            VideoRangeType: 'SDR',
+            Width: 720,
+            ...metadataOverride
+        };
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            {
+                allowRawHDR: false,
+                gpuVideoDecoders: createVideoDecoderOffers(decoderPackage),
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        ).eligible).toBe(false);
+    });
+
+    // MPEG-1 is its own codec, as FFmpeg names it, so a package that accepts only MPEG-2 is never offered it
+    it.each([
+        [ 'a package that accepts MPEG-1', MPEG_VIDEO_PACKAGE, true ],
+        [ 'a package that accepts only MPEG-2', MPEG2_CHROMA_VIDEO_PACKAGE, false ]
+    ] as const)('decodes Matroska MPEG-1 only on %s', (_label, decoderPackage, expectedEligible) => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'mkv';
+        mediaSource.MediaStreams[0] = {
+            AverageFrameRate: 25,
+            BitDepth: 8,
+            Codec: 'mpeg1video',
+            Height: 288,
+            Index: 0,
+            IsInterlaced: false,
+            PixelFormat: 'yuv420p',
+            Type: 'Video',
+            VideoRangeType: 'SDR',
+            Width: 352
+        };
+
+        const eligibility = getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            {
+                allowRawHDR: false,
+                gpuVideoDecoders: createVideoDecoderOffers(decoderPackage),
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        );
+        if (expectedEligible) {
+            expect(eligibility).toMatchObject({ ...createPackageVideoRoute(decoderPackage, 'mpeg1video'), rawVideoFrameFormat: 'I420' });
+        } else {
+            expect(eligibility.eligible).toBe(false);
+        }
+    });
+
+    // A 9-bit stream decodes into 10-bit planes, its samples shifted up; an 11-bit one would present dark in 12-bit planes, so it has no route
+    it.each([
+        [ '9-bit samples in 10-bit planes', 9, 'yuv444p9le', true ],
+        [ '11-bit samples in 12-bit planes', 11, 'yuv444p12le', false ]
+    ] as const)('decides JPEG 2000 with %s', (_label, bitDepth, pixelFormat, expectedEligible) => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'mj2';
+        mediaSource.MediaStreams[0] = {
+            AverageFrameRate: 24,
+            BitDepth: bitDepth,
+            Codec: 'JPEG2000',
+            Height: 1_080,
+            Index: 0,
+            IsInterlaced: false,
+            PixelFormat: pixelFormat,
+            Type: 'Video',
+            VideoRangeType: 'SDR',
+            Width: 1_920
+        };
+
+        const eligibility = getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            {
+                allowRawHDR: false,
+                gpuVideoDecoders: createVideoDecoderOffers(JPEG2000_DEEP_VIDEO_PACKAGE),
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        );
+        if (expectedEligible) {
+            expect(eligibility).toMatchObject({ ...createPackageVideoRoute(JPEG2000_DEEP_VIDEO_PACKAGE, 'jpeg2000'), rawVideoFrameFormat: 'I444P10' });
+        } else {
+            expect(eligibility.eligible).toBe(false);
+        }
+    });
+
+    it('takes the pixel format\'s depth when the stream declares no BitDepth', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'mj2';
+        mediaSource.MediaStreams[0] = {
+            AverageFrameRate: 24,
+            Codec: 'JPEG2000',
+            Height: 1_080,
+            Index: 0,
+            IsInterlaced: false,
+            PixelFormat: 'yuv444p10le',
+            Type: 'Video',
+            VideoRangeType: 'SDR',
+            Width: 1_920
+        };
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            {
+                allowRawHDR: false,
+                gpuVideoDecoders: createVideoDecoderOffers(JPEG2000_DEEP_VIDEO_PACKAGE),
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        )).toMatchObject({
+            ...createPackageVideoRoute(JPEG2000_DEEP_VIDEO_PACKAGE, 'jpeg2000'),
+            rawVideoFrameFormat: 'I444P10'
+        });
+    });
+
     it.each([ 'JPEG2000', 'JPEG 2000', 'J2K' ])(
-        'selects the exact OpenJPEG MJ2 route for %s metadata',
+        'decodes MJ2 JPEG 2000 named %s only on an offered decoder package',
         (codecName) => {
-            const baseCapabilities = createCapabilities();
-            const capabilities: CustomDecodeCapabilities = {
-                ...baseCapabilities,
-                bundledJPEG2000: createBundledJPEG2000Capability(),
-                video: {
-                    ...baseCapabilities.video,
-                    jpeg2000: createCapability('jpeg2000', true)
-                }
-            };
             const options = createOptions();
             const mediaSource = options.mediaSource as {
                 Container: string
@@ -1063,35 +1217,36 @@ describe('CustomPlaybackEligibility', () => {
 
             expect(getCustomPlaybackEligibility(
                 options,
-                capabilities,
+                createCapabilities(),
                 { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                {
+                    allowRawHDR: false,
+                    gpuVideoDecoders: createVideoDecoderOffers(JPEG2000_VIDEO_PACKAGE),
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
             )).toMatchObject({
-                eligible: true,
+                ...createPackageVideoRoute(JPEG2000_VIDEO_PACKAGE, 'jpeg2000'),
                 maximumCodedHeight: 540,
                 maximumCodedWidth: 960,
-                videoDecoderBackend: 'openjpeg',
-                videoOutputMode: 'video-frame'
+                rawVideoFrameFormat: 'I420'
             });
         }
     );
 
     it.each([
-        [ 'unqualified runtime', { AverageFrameRate: 24 }, 'mj2', false, false ],
+        [ 'no offered package', { AverageFrameRate: 24 }, 'mj2', false, false ],
         [ 'high frame rate', { AverageFrameRate: 120 }, 'mj2', true, true ],
         [ 'larger width', { AverageFrameRate: 24, Width: 7_680 }, 'mj2', true, true ],
         [ 'larger height', { AverageFrameRate: 24, Height: 4_320 }, 'mj2', true, true ],
-        [ 'high bit depth', { AverageFrameRate: 24, BitDepth: 10 }, 'mj2', true, false ],
+        [ 'a bit depth the package does not write', { AverageFrameRate: 24, BitDepth: 10 }, 'mj2', true, false ],
         [ 'unqualified container', { AverageFrameRate: 24 }, 'mp4', true, false ]
     ] as const)(
         'handles JPEG 2000 with %s',
-        (_label, metadataOverride, container, includeCapability, expectedEligible) => {
-            const baseCapabilities = createCapabilities();
-            const capabilities: CustomDecodeCapabilities = {
-                ...baseCapabilities,
-                ...(includeCapability ? {
-                    bundledJPEG2000: createBundledJPEG2000Capability()
-                } : {})
-            };
+        (_label, metadataOverride, container, offerPackage, expectedEligible) => {
             const options = createOptions();
             const mediaSource = options.mediaSource as {
                 Container: string
@@ -1112,8 +1267,12 @@ describe('CustomPlaybackEligibility', () => {
 
             expect(getCustomPlaybackEligibility(
                 options,
-                capabilities,
-                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+                createCapabilities(),
+                {
+                    allowRawHDR: false,
+                    gpuVideoDecoders: offerPackage ? createVideoDecoderOffers(JPEG2000_VIDEO_PACKAGE) : [],
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
             ).eligible).toBe(expectedEligible);
         }
     );
@@ -1121,15 +1280,7 @@ describe('CustomPlaybackEligibility', () => {
     it.each([
         [ 'missing', undefined ],
         [ 'arbitrarily high', 1_500_000_000 ]
-    ])('uses the exact bundled HEVC Main qualification with %s source bitrate', (_label, bitrate) => {
-        const baseCapabilities = createCapabilities();
-        const capabilities: CustomDecodeCapabilities = {
-            ...baseCapabilities,
-            video: {
-                ...baseCapabilities.video,
-                hevc: createCapability('hevc', false)
-            }
-        };
+    ])('decodes HEVC Main that no native route takes on the HEVC decoder package with %s source bitrate', (_label, bitrate) => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             MediaStreams: Array<Record<string, unknown>>
@@ -1151,30 +1302,25 @@ describe('CustomPlaybackEligibility', () => {
 
         expect(getCustomPlaybackEligibility(
             options,
-            capabilities,
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            createCapabilitiesWithoutNativeHEVC(),
+            {
+                allowRawHDR: false,
+                gpuVideoDecoders: createVideoDecoderOffers(HEVC_VIDEO_PACKAGE),
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
         )).toMatchObject({
-            eligible: true,
-            videoDecoderBackend: 'bundled-hevc',
-            videoOutputMode: 'video-frame'
+            ...createPackageVideoRoute(HEVC_VIDEO_PACKAGE, 'hevc'),
+            rawVideoFrameFormat: 'I420'
         });
     });
 
     it.each([
         [ 'missing frame rate', { AverageFrameRate: undefined } ],
         [ 'non-finite frame rate', { AverageFrameRate: Number.NaN } ],
-        [ 'frame rate beyond the qualification vector', { AverageFrameRate: 120 } ],
+        [ 'high frame rate', { AverageFrameRate: 120 } ],
         [ 'missing level', { Level: undefined } ],
-        [ 'level beyond the qualification vector', { Level: 186 } ]
-    ])('accepts bundled HEVC Main independently of %s', (_label, metadataOverride) => {
-        const baseCapabilities = createCapabilities();
-        const capabilities: CustomDecodeCapabilities = {
-            ...baseCapabilities,
-            video: {
-                ...baseCapabilities.video,
-                hevc: createCapability('hevc', false)
-            }
-        };
+        [ 'high level', { Level: 186 } ]
+    ])('decodes HEVC Main on the HEVC decoder package independently of %s', (_label, metadataOverride) => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             MediaStreams: Array<Record<string, unknown>>
@@ -1197,30 +1343,29 @@ describe('CustomPlaybackEligibility', () => {
 
         expect(getCustomPlaybackEligibility(
             options,
-            capabilities,
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            createCapabilitiesWithoutNativeHEVC(),
+            {
+                allowRawHDR: false,
+                gpuVideoDecoders: createVideoDecoderOffers(HEVC_VIDEO_PACKAGE),
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
         )).toMatchObject({
-            eligible: true,
-            videoDecoderBackend: 'bundled-hevc',
-            videoOutputMode: 'video-frame'
+            ...createPackageVideoRoute(HEVC_VIDEO_PACKAGE, 'hevc'),
+            rawVideoFrameFormat: 'I420'
         });
     });
 
     it.each([
         { height: ULTRA_HD_CODED_HEIGHT, label: 'UHD', width: ULTRA_HD_CODED_WIDTH },
-        { height: DCI_4K_CODED_HEIGHT, label: 'DCI 4K', width: DCI_4K_CODED_WIDTH },
-        { height: ULTRA_HD_8K_CODED_HEIGHT, label: '8K', width: ULTRA_HD_8K_CODED_WIDTH },
-        { height: ULTRA_HD_16K_CODED_HEIGHT, label: '16K', width: ULTRA_HD_16K_CODED_WIDTH }
-    ])('takes the bundled HEVC decoder for a $label frame', ({ height, width }) => {
-        // Neither HEVC Main nor the raw Main 10 planes decode natively, so both routes need the bundled decoder.
-        // It takes any frame size, as the raw frame copy does
-        const baseCapabilities = createCapabilities();
-        const capabilities: CustomDecodeCapabilities = {
-            ...baseCapabilities,
-            video: {
-                ...baseCapabilities.video,
-                hevc: createCapability('hevc', false)
-            }
+        { height: DCI_4K_CODED_HEIGHT, label: 'DCI 4K', width: DCI_4K_CODED_WIDTH }
+    ])('takes a $label frame that no native route decodes on the HEVC decoder package', ({ height, width }) => {
+        // Neither HEVC Main nor Main 10 decodes natively, and the raw Main 10 planes need a presentation authorization
+        const capabilities = createCapabilitiesWithoutNativeHEVC();
+        const eligibilityOptions = {
+            allowFramePoolHDR: true,
+            allowRawHDR: false,
+            gpuVideoDecoders: createVideoDecoderOffers(HEVC_VIDEO_PACKAGE),
+            runtimeAvailability: AVAILABLE_RUNTIME
         };
         const createHEVCOptions = (videoStream: Record<string, unknown>): Record<string, unknown> => {
             const options = createOptions();
@@ -1242,12 +1387,13 @@ describe('CustomPlaybackEligibility', () => {
         expect(getCustomPlaybackEligibility(
             createHEVCOptions({ BitDepth: 8, Profile: 'Main', VideoRangeType: 'SDR' }),
             capabilities,
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            eligibilityOptions
         )).toMatchObject({
-            eligible: true,
+            ...createPackageVideoRoute(HEVC_VIDEO_PACKAGE, 'hevc'),
+            hdr: false,
             maximumCodedHeight: height,
             maximumCodedWidth: width,
-            videoDecoderBackend: 'bundled-hevc'
+            rawVideoFrameFormat: 'I420'
         });
         expect(getCustomPlaybackEligibility(
             createHEVCOptions({
@@ -1260,11 +1406,11 @@ describe('CustomPlaybackEligibility', () => {
                 VideoRangeType: 'HDR10'
             }),
             capabilities,
-            PQ_AUTHORIZATION
+            eligibilityOptions
         )).toMatchObject({
-            eligible: true,
-            videoDecoderBackend: 'bundled-hevc',
-            videoOutputMode: 'raw-planes'
+            ...createPackageVideoRoute(HEVC_VIDEO_PACKAGE, 'hevc'),
+            hdr: true,
+            rawVideoFrameFormat: 'I420P10'
         });
     });
 
@@ -1395,9 +1541,15 @@ describe('CustomPlaybackEligibility', () => {
         });
     });
 
-    it.each([ 'ac3', 'AC-3', 'eac3', 'E-AC-3', 'ec-3' ])(
-        'accepts bundled Dolby audio alias %s',
-        audioCodec => {
+    it.each([
+        { audioCodec: 'ac3', codec: 'ac3' },
+        { audioCodec: 'AC-3', codec: 'ac3' },
+        { audioCodec: 'eac3', codec: 'eac3' },
+        { audioCodec: 'E-AC-3', codec: 'eac3' },
+        { audioCodec: 'ec-3', codec: 'eac3' }
+    ])(
+        'decodes Dolby audio named $audioCodec only on an audio decoder package',
+        ({ audioCodec, codec }) => {
             const options = createOptions();
             const mediaSource = options.mediaSource as {
                 MediaStreams: Array<{ Codec: string }>
@@ -1408,7 +1560,14 @@ describe('CustomPlaybackEligibility', () => {
                 options,
                 createCapabilities(),
                 { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toEqual({ eligible: false, reason: 'audio-codec-unsupported' });
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
             )).toMatchObject({
+                audioDecoder: { codec, source: { manifest: DOLBY_AUDIO_PACKAGE.manifest } },
+                audioOutputMode: 'decoded-pcm',
                 audioTrackIndex: 0,
                 eligible: true
             });
@@ -1542,7 +1701,7 @@ describe('CustomPlaybackEligibility', () => {
             expect(getCustomPlaybackEligibility(
                 options,
                 createCapabilities(),
-                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+                { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
             )).toEqual({ eligible: false, reason: 'container-unsupported' });
         }
     );
@@ -2386,7 +2545,7 @@ describe('CustomPlaybackEligibility', () => {
             eligible: true,
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: 'I420P10',
-            videoDecoderBackend: 'bundled-hevc',
+            videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes'
         });
     });
@@ -2540,7 +2699,7 @@ describe('CustomPlaybackEligibility', () => {
             dolbyVisionProfile: 8,
             eligible: true,
             rawVideoFrameFormat: 'I420P10',
-            videoDecoderBackend: 'bundled-hevc',
+            videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes'
         });
     });
@@ -2593,7 +2752,7 @@ describe('CustomPlaybackEligibility', () => {
             eligible: true,
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: 'I420P10',
-            videoDecoderBackend: 'bundled-hevc',
+            videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes'
         });
     });
@@ -2666,7 +2825,7 @@ describe('CustomPlaybackEligibility', () => {
             eligible: true,
             hdr: true,
             rawVideoFrameFormat: 'I420P10',
-            videoDecoderBackend: 'bundled-hevc',
+            videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
         });
@@ -2702,7 +2861,7 @@ describe('CustomPlaybackEligibility', () => {
         });
     });
 
-    it('direct plays the first independent 4K HDR10 track with selected AC3 audio', () => {
+    it('direct plays the first independent 4K HDR10 track with selected AC3 audio on an audio decoder package', () => {
         const options = createOptions({
             mediaSource: {
                 Container: 'mkv',
@@ -2768,7 +2927,12 @@ describe('CustomPlaybackEligibility', () => {
             source: { kind: 'url', url: '/Videos/item/stream.mkv?api_key=secret' }
         });
 
-        expect(getCustomPlaybackEligibility(options, createCapabilities(), PQ_AUTHORIZATION)).toMatchObject({
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { ...PQ_AUTHORIZATION, audioDecoders: AUDIO_PACKAGES }
+        )).toMatchObject({
+            audioDecoder: { codec: 'ac3', source: { manifest: DOLBY_AUDIO_PACKAGE.manifest } },
             audioOutputMode: 'decoded-pcm',
             audioSourceChannelCount: 6,
             audioTrackIndex: 1,
@@ -2777,7 +2941,7 @@ describe('CustomPlaybackEligibility', () => {
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
             rawVideoFrameFormat: 'I420P10',
-            videoDecoderBackend: 'bundled-hevc',
+            videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
         });
@@ -2956,21 +3120,8 @@ describe('CustomPlaybackEligibility', () => {
 
     it('does not treat a Main10 qualification vector as a 4K source ceiling', () => {
         const baseCapabilities = createCapabilities();
-        const bundledHEVC = createBundledHEVCCapabilities();
         const capabilities: CustomDecodeCapabilities = {
             ...baseCapabilities,
-            bundledHEVC: {
-                ...bundledHEVC,
-                reason: 'partial',
-                qualifications: {
-                    ...bundledHEVC.qualifications,
-                    'main10-4k': {
-                        ...bundledHEVC.qualifications['main10-4k'],
-                        reason: 'output-mismatch',
-                        status: 'unsupported'
-                    }
-                }
-            },
             rawHDRVideo: {
                 ...baseCapabilities.rawHDRVideo,
                 hevc: {
@@ -3007,7 +3158,7 @@ describe('CustomPlaybackEligibility', () => {
             eligible: true,
             maximumCodedHeight: 1_080,
             maximumCodedWidth: 1_920,
-            videoDecoderBackend: 'bundled-hevc'
+            videoDecoderBackend: 'native'
         });
 
         const mediaSource = options.mediaSource as {
@@ -3019,7 +3170,7 @@ describe('CustomPlaybackEligibility', () => {
             eligible: true,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
-            videoDecoderBackend: 'bundled-hevc'
+            videoDecoderBackend: 'native'
         });
     });
 
@@ -3193,8 +3344,9 @@ describe('CustomPlaybackEligibility', () => {
         expect(getCustomPlaybackEligibility(
             options,
             capabilities,
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
         )).toMatchObject({
+            audioDecoder: { codec: 'eac3' },
             audioOutputMode: 'decoded-pcm',
             audioSourceChannelCount: 6,
             audioTrackIndex: 0,
@@ -3262,8 +3414,9 @@ describe('CustomPlaybackEligibility', () => {
             expect(getCustomPlaybackEligibility(
                 options,
                 capabilities,
-                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+                { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
             )).toMatchObject({
+                audioDecoder: { codec: 'eac3' },
                 audioOutputMode: 'decoded-pcm',
                 audioSourceChannelCount: 6,
                 audioTrackIndex: 0,
@@ -3347,8 +3500,9 @@ describe('CustomPlaybackEligibility', () => {
             expect(getCustomPlaybackEligibility(
                 options,
                 capabilities,
-                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+                { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
             )).toMatchObject({
+                audioDecoder: { codec: 'eac3' },
                 audioOutputMode: 'decoded-pcm',
                 audioSourceChannelCount: 6,
                 audioTrackIndex: 0,
@@ -3438,8 +3592,8 @@ describe('CustomPlaybackEligibility', () => {
     });
 
     it('uses only source-path-specific runtime requirements', () => {
-        const bundledOptions = createOptions();
-        const mediaSource = bundledOptions.mediaSource as {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
             Container: string
             MediaStreams: Array<Record<string, unknown>>
         };
@@ -3462,7 +3616,8 @@ describe('CustomPlaybackEligibility', () => {
             Width: 3_840
         };
         mediaSource.MediaStreams[1].Codec = 'ac3';
-        const bundledRuntime: CustomPlaybackRuntimeAvailability = {
+        // Packages decode without the browser's decoders
+        const packageRuntime: CustomPlaybackRuntimeAvailability = {
             available: true,
             environment: {
                 ...AVAILABLE_RUNTIME.environment,
@@ -3472,47 +3627,45 @@ describe('CustomPlaybackEligibility', () => {
             },
             reason: null
         };
-        const baseCapabilities = createCapabilities();
-        const bundledCapabilities: CustomDecodeCapabilities = {
-            ...baseCapabilities,
-            video: {
-                ...baseCapabilities.video,
-                hevc: createCapability('hevc', false)
+        // Neither a VideoFrame nor a raw route decodes the HEVC, so it takes the GPU decoder
+        const capabilities = createCapabilitiesWithoutNativeHEVC();
+        capabilities.rawHDRVideo = {
+            ...capabilities.rawHDRVideo,
+            hevc: {
+                ...capabilities.rawHDRVideo.hevc,
+                reason: 'output-copy-unsupported',
+                status: 'unsupported'
             }
         };
+        const eligibilityOptions = {
+            allowFramePoolHDR: true,
+            allowRawHDR: true,
+            audioDecoders: AUDIO_PACKAGES,
+            authorizedRawHDRRouteKeys: PQ_AUTHORIZATION.authorizedRawHDRRouteKeys,
+            gpuVideoDecoders: createVideoDecoderOffers(HEVC_VIDEO_PACKAGE),
+            runtimeAvailability: packageRuntime
+        };
 
-        expect(getCustomPlaybackEligibility(
-            bundledOptions,
-            bundledCapabilities,
-            {
-                allowRawHDR: true,
-                authorizedRawHDRRouteKeys: PQ_AUTHORIZATION.authorizedRawHDRRouteKeys,
-                runtimeAvailability: bundledRuntime
-            }
-        )).toMatchObject({ eligible: true, videoOutputMode: 'raw-planes' });
+        expect(getCustomPlaybackEligibility(options, capabilities, eligibilityOptions)).toMatchObject({
+            audioDecoder: { codec: 'ac3' },
+            eligible: true,
+            videoOutputMode: 'frame-pool'
+        });
 
         mediaSource.MediaStreams[1].Codec = 'aac';
         expect(getCustomPlaybackEligibility(
-            bundledOptions,
-            bundledCapabilities,
-            {
-                allowRawHDR: true,
-                authorizedRawHDRRouteKeys: PQ_AUTHORIZATION.authorizedRawHDRRouteKeys,
-                runtimeAvailability: bundledRuntime
-            }
+            options,
+            capabilities,
+            eligibilityOptions
         )).toEqual({ eligible: false, reason: 'runtime-unavailable' });
 
         mediaSource.MediaStreams.splice(1, 1);
         mediaSource.MediaStreams[0].Codec = 'vp9';
         mediaSource.MediaStreams[0].Profile = 'Profile 2';
         expect(getCustomPlaybackEligibility(
-            bundledOptions,
-            bundledCapabilities,
-            {
-                allowRawHDR: true,
-                authorizedRawHDRRouteKeys: PQ_AUTHORIZATION.authorizedRawHDRRouteKeys,
-                runtimeAvailability: bundledRuntime
-            }
+            options,
+            capabilities,
+            eligibilityOptions
         )).toEqual({ eligible: false, reason: 'runtime-unavailable' });
     });
 
@@ -3623,33 +3776,39 @@ describe('CustomPlaybackEligibility', () => {
 
         expect(getCustomPlaybackEligibility(options, createCapabilities(), {
             allowRawHDR: false,
+            audioDecoders: AUDIO_PACKAGES,
             nativeMediaAudioCapabilities: createNativeMediaAudioCapabilities(new Set([ 'ac3:2:48000' ])),
             runtimeAvailability: AVAILABLE_RUNTIME
         })).toMatchObject({
+            audioDecoder: { codec: 'ac3' },
             audioOutputMode: 'decoded-pcm',
             durationMicroseconds: null,
             eligible: true
         });
     });
 
-    it('prefers qualified native media over bundled PCM for the same layout', () => {
+    it('prefers qualified native media over an audio decoder package for the same layout', () => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             MediaStreams: Array<Record<string, unknown>>
         };
         mediaSource.MediaStreams[1].Codec = 'ac3';
 
-        expect(getCustomPlaybackEligibility(options, createCapabilities(), {
+        const eligibility = getCustomPlaybackEligibility(options, createCapabilities(), {
             allowRawHDR: false,
+            audioDecoders: AUDIO_PACKAGES,
             nativeMediaAudioCapabilities: createNativeMediaAudioCapabilities(new Set([ 'ac3:2:48000' ])),
             runtimeAvailability: AVAILABLE_RUNTIME
-        })).toMatchObject({
+        });
+
+        expect(eligibility).toMatchObject({
             audioOutputMode: 'native-media',
             eligible: true
         });
+        expect(eligibility).not.toHaveProperty('audioDecoder');
     });
 
-    it('selects decoded PCM for qualified 5.1 AC-3 input', () => {
+    it('selects an audio decoder package for 5.1 AC-3 and E-AC-3 input', () => {
         for (const codec of [ 'ac3', 'eac3' ] as const) {
             const options = createOptions();
             const mediaSource = options.mediaSource as {
@@ -3661,8 +3820,9 @@ describe('CustomPlaybackEligibility', () => {
             expect(getCustomPlaybackEligibility(
                 options,
                 createCapabilities(),
-                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+                { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
             )).toMatchObject({
+                audioDecoder: { codec },
                 audioOutputMode: 'decoded-pcm',
                 audioSourceChannelCount: 6,
                 audioTrackIndex: 0,
@@ -3671,30 +3831,9 @@ describe('CustomPlaybackEligibility', () => {
         }
     });
 
-    it('selects decoded PCM for exact standard 7.1 E-AC-3 metadata', () => {
-        const options = createOptions();
-        const mediaSource = options.mediaSource as {
-            MediaStreams: Array<Record<string, unknown>>
-        };
-        mediaSource.MediaStreams[1].ChannelLayout = '7.1';
-        mediaSource.MediaStreams[1].Channels = 8;
-        mediaSource.MediaStreams[1].Codec = 'eac3';
-
-        expect(getCustomPlaybackEligibility(
-            options,
-            createCapabilities(),
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-        )).toMatchObject({
-            audioOutputMode: 'decoded-pcm',
-            audioSourceChannelCount: 8,
-            audioTrackIndex: 0,
-            eligible: true
-        });
-    });
-
-    // Jellyfin cuts 7.1(wide) to 7.1, so the decoder's speaker mask screens wide beds
-    it.each([ undefined, '8 channels', '5.1' ] as const)(
-        'rejects ambiguous eight-channel E-AC-3 metadata layout %s',
+    // Jellyfin cuts 7.1(wide) to 7.1, so the package's decoded speaker mask, not the metadata, screens wide beds
+    it.each([ '7.1', undefined, '8 channels', '5.1' ] as const)(
+        'leaves eight-channel E-AC-3 with metadata layout %s to the package\'s speaker mask',
         channelLayout => {
             const options = createOptions();
             const mediaSource = options.mediaSource as {
@@ -3707,8 +3846,13 @@ describe('CustomPlaybackEligibility', () => {
             expect(getCustomPlaybackEligibility(
                 options,
                 createCapabilities(),
-                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-            )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+                { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toMatchObject({
+                audioDecoder: { codec: 'eac3' },
+                audioOutputMode: 'decoded-pcm',
+                audioSourceChannelCount: 8,
+                eligible: true
+            });
         }
     );
 
@@ -3725,7 +3869,7 @@ describe('CustomPlaybackEligibility', () => {
         [ 'DTS-HD MA + DTS:X', 8, 48_000 ],
         [ 'DTS', 6, 12_345 ]
     ] as const)(
-        'selects the qualified Matroska DTS channel-bed route for %s',
+        'selects the DTS audio decoder package for Matroska %s',
         (profile, channelCount, sampleRate) => {
             const options = createOptions();
             const mediaSource = options.mediaSource as {
@@ -3737,7 +3881,8 @@ describe('CustomPlaybackEligibility', () => {
             mediaSource.MediaStreams[1].Codec = 'dts';
             mediaSource.MediaStreams[1].Profile = profile;
             mediaSource.MediaStreams[1].SampleRate = sampleRate;
-            const bundledRuntime: CustomPlaybackRuntimeAvailability = {
+            // A package decodes without the browser's audio decoder
+            const packageRuntime: CustomPlaybackRuntimeAvailability = {
                 available: true,
                 environment: {
                     ...AVAILABLE_RUNTIME.environment,
@@ -3750,8 +3895,9 @@ describe('CustomPlaybackEligibility', () => {
             expect(getCustomPlaybackEligibility(
                 options,
                 createCapabilities(),
-                { allowRawHDR: false, runtimeAvailability: bundledRuntime }
+                { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: packageRuntime }
             )).toMatchObject({
+                audioDecoder: { codec: 'dts', source: { manifest: DTS_AUDIO_PACKAGE.manifest } },
                 audioOutputMode: 'decoded-pcm',
                 audioTrackIndex: 0,
                 eligible: true
@@ -3759,7 +3905,7 @@ describe('CustomPlaybackEligibility', () => {
         }
     );
 
-    it('rejects DTS-ES after the reported 6.1 route failed runtime geometry validation', () => {
+    it('rejects DTS-ES, whose reported 6.1 layout failed runtime geometry validation', () => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             Container: string
@@ -3774,11 +3920,11 @@ describe('CustomPlaybackEligibility', () => {
         expect(getCustomPlaybackEligibility(
             options,
             createCapabilities(),
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
         )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
     });
 
-    it('accepts the Matroska DCA alias through the same DTS route', () => {
+    it('accepts the Matroska DCA alias through the same DTS package', () => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             Container: string
@@ -3792,42 +3938,13 @@ describe('CustomPlaybackEligibility', () => {
         expect(getCustomPlaybackEligibility(
             options,
             createCapabilities(),
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
         )).toMatchObject({
+            audioDecoder: { codec: 'dts' },
             audioOutputMode: 'decoded-pcm',
             eligible: true
         });
     });
-
-    it.each([ 96_001, 192_000 ])(
-        'limits %i Hz DTS to the 5.1-channel Master Audio bed',
-        sampleRate => {
-            const options = createOptions();
-            const mediaSource = options.mediaSource as {
-                Container: string
-                MediaStreams: Array<Record<string, unknown>>
-            };
-            mediaSource.Container = 'mkv';
-            mediaSource.MediaStreams[1].Channels = 8;
-            mediaSource.MediaStreams[1].Codec = 'dts';
-            mediaSource.MediaStreams[1].Profile = 'DTS-HD MA';
-            mediaSource.MediaStreams[1].SampleRate = sampleRate;
-
-            expect(getCustomPlaybackEligibility(
-                options,
-                createCapabilities(),
-                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-            )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
-
-            mediaSource.MediaStreams[1].Channels = 6;
-            mediaSource.MediaStreams[1].Profile = 'DTS-HD HRA';
-            expect(getCustomPlaybackEligibility(
-                options,
-                createCapabilities(),
-                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-            )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
-        }
-    );
 
     it.each([ 'm2ts', 'mts', 'ts' ] as const)(
         'does not advertise DTS in the unsupported Mediabunny %s demux route',
@@ -3845,12 +3962,12 @@ describe('CustomPlaybackEligibility', () => {
             expect(getCustomPlaybackEligibility(
                 options,
                 createCapabilities(),
-                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+                { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
             )).toEqual({ eligible: false, reason: 'container-unsupported' });
         }
     );
 
-    it('rejects unqualified DTS profiles and missing exact decoder evidence', () => {
+    it('rejects DTS without an audio decoder package', () => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             Container: string
@@ -3859,34 +3976,12 @@ describe('CustomPlaybackEligibility', () => {
         mediaSource.Container = 'mkv';
         mediaSource.MediaStreams[1].Channels = 8;
         mediaSource.MediaStreams[1].Codec = 'dts';
-        mediaSource.MediaStreams[1].Profile = 'DTS-UHD';
+        mediaSource.MediaStreams[1].Profile = 'DTS-HD MA';
 
         expect(getCustomPlaybackEligibility(
             options,
             createCapabilities(),
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-        )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
-
-        mediaSource.MediaStreams[1].Profile = 'DTS-HD MA';
-        const baseCapabilities = createCapabilities();
-        const unqualifiedCapabilities: CustomDecodeCapabilities = {
-            ...baseCapabilities,
-            audio: {
-                ...baseCapabilities.audio,
-                dts: createCapability('dts', false)
-            },
-            bundledDTS: {
-                ...createBundledDTSCapability(),
-                reason: 'output-mismatch',
-                status: 'unsupported',
-                verifiedVectorCount: 5,
-                verifiedProfileMask: 0x0f
-            }
-        };
-        expect(getCustomPlaybackEligibility(
-            options,
-            unqualifiedCapabilities,
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            { allowRawHDR: false, audioDecoders: [ DOLBY_AUDIO_PACKAGE, TRUEHD_AUDIO_PACKAGE ], runtimeAvailability: AVAILABLE_RUNTIME }
         )).toEqual({ eligible: false, reason: 'audio-codec-unsupported' });
     });
 
@@ -3896,7 +3991,7 @@ describe('CustomPlaybackEligibility', () => {
         [ 'mkv', 'truehd', 'Dolby TrueHD + Dolby Atmos', 8, 48_000, '7.1' ],
         [ 'mkv', 'mlp', undefined, 2, 48_000, undefined ]
     ] as const)(
-        'selects the qualified %s/%s TrueHD channel-bed route',
+        'selects the TrueHD audio decoder package for %s/%s',
         (container, codec, profile, channelCount, sampleRate, channelLayout) => {
             const options = createOptions();
             const mediaSource = options.mediaSource as {
@@ -3909,7 +4004,8 @@ describe('CustomPlaybackEligibility', () => {
             mediaSource.MediaStreams[1].Profile = profile;
             mediaSource.MediaStreams[1].SampleRate = sampleRate;
             mediaSource.MediaStreams[1].ChannelLayout = channelLayout;
-            const bundledRuntime: CustomPlaybackRuntimeAvailability = {
+            // A package decodes without the browser's audio decoder
+            const packageRuntime: CustomPlaybackRuntimeAvailability = {
                 available: true,
                 environment: {
                     ...AVAILABLE_RUNTIME.environment,
@@ -3922,8 +4018,9 @@ describe('CustomPlaybackEligibility', () => {
             expect(getCustomPlaybackEligibility(
                 options,
                 createCapabilities(),
-                { allowRawHDR: false, runtimeAvailability: bundledRuntime }
+                { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: packageRuntime }
             )).toMatchObject({
+                audioDecoder: { codec, source: { manifest: TRUEHD_AUDIO_PACKAGE.manifest } },
                 audioOutputMode: 'decoded-pcm',
                 audioTrackIndex: 0,
                 eligible: true
@@ -3931,60 +4028,31 @@ describe('CustomPlaybackEligibility', () => {
         }
     );
 
-    it('rejects unqualified TrueHD layouts and missing exact decoder evidence', () => {
+    it('rejects TrueHD layouts without a presentation path, and TrueHD without an audio decoder package', () => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             Container: string
             MediaStreams: Array<Record<string, unknown>>
         };
         mediaSource.Container = 'mkv';
+        mediaSource.MediaStreams[1].ChannelLayout = '7.1';
         mediaSource.MediaStreams[1].Channels = 8;
         mediaSource.MediaStreams[1].Codec = 'truehd';
         mediaSource.MediaStreams[1].Profile = 'Dolby TrueHD + Dolby Atmos';
-        mediaSource.MediaStreams[1].SampleRate = 48_000;
-
-        expect(getCustomPlaybackEligibility(
-            options,
-            createCapabilities(),
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-        )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
-
-        mediaSource.MediaStreams[1].ChannelLayout = '8 channels';
-        expect(getCustomPlaybackEligibility(
-            options,
-            createCapabilities(),
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-        )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
-
-        mediaSource.MediaStreams[1].ChannelLayout = '7.1';
         mediaSource.MediaStreams[1].SampleRate = 96_000;
+
         expect(getCustomPlaybackEligibility(
             options,
             createCapabilities(),
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
         )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
 
         mediaSource.MediaStreams[1].Channels = 6;
         mediaSource.MediaStreams[1].ChannelLayout = undefined;
         mediaSource.MediaStreams[1].SampleRate = 48_000;
-        const baseCapabilities = createCapabilities();
-        const capabilitiesWithoutExactEvidence: CustomDecodeCapabilities = {
-            ...baseCapabilities,
-            audio: {
-                ...baseCapabilities.audio,
-                truehd: createCapability('truehd', false)
-            },
-            bundledTrueHD: {
-                ...createBundledTrueHDCapability(),
-                majorSyncRecoveryVerified: false,
-                reason: 'major-sync-recovery-failed',
-                status: 'unsupported',
-                verifiedVectorCount: 3
-            }
-        };
         expect(getCustomPlaybackEligibility(
             options,
-            capabilitiesWithoutExactEvidence,
+            createCapabilities(),
             { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
         )).toEqual({ eligible: false, reason: 'audio-codec-unsupported' });
     });
@@ -3996,7 +4064,7 @@ describe('CustomPlaybackEligibility', () => {
         [ 'mov,mp4,m4a,3gp,3g2,mj2', 'truehd', 'Dolby TrueHD', 6, 96_000, undefined ],
         [ 'm4v', 'truehd', 'Dolby TrueHD + Dolby Atmos', 8, 48_000, '7.1' ]
     ] as const)(
-        'selects the %s %s route through the mapped ISO BMFF sample entry',
+        'selects the %s %s package route through the mapped ISO BMFF sample entry',
         (container, codec, profile, channelCount, sampleRate, channelLayout) => {
             const options = createOptions();
             const mediaSource = options.mediaSource as {
@@ -4013,8 +4081,9 @@ describe('CustomPlaybackEligibility', () => {
             expect(getCustomPlaybackEligibility(
                 options,
                 createCapabilities(),
-                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+                { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
             )).toMatchObject({
+                audioDecoder: { codec },
                 audioOutputMode: 'decoded-pcm',
                 audioSourceChannelCount: channelCount,
                 audioTrackIndex: 0,
@@ -4034,7 +4103,7 @@ describe('CustomPlaybackEligibility', () => {
         expect(getCustomPlaybackEligibility(
             options,
             createCapabilities(),
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
         )).toEqual({ eligible: false, reason: 'container-unsupported' });
     });
 
@@ -4063,7 +4132,7 @@ describe('CustomPlaybackEligibility', () => {
             expect(getCustomPlaybackEligibility(
                 options,
                 createCapabilities(),
-                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+                { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
             )).toMatchObject({
                 audioOutputMode: 'decoded-pcm',
                 audioSourceChannelCount: 1,
@@ -4072,14 +4141,14 @@ describe('CustomPlaybackEligibility', () => {
         }
     );
 
-    // Jellyfin cuts 3.0(back) to 3.0, which only a decoder speaker mask can tell apart
+    // Jellyfin cuts 3.0(back) to 3.0, which only a decoder speaker mask can tell apart, so a package's three-channel DTS needs no layout
     it.each([
         [ 'dts', 'DTS-HD MA', '2.1', true ],
         [ 'dts', 'DTS-HD MA', '3.0', true ],
         [ 'dts', 'DTS-HD MA + DTS:X', '3.0', true ],
-        [ 'dts', 'DTS-HD MA', '3 channels', false ],
-        [ 'dts', 'DTS-HD MA', undefined, false ],
-        [ 'dts', 'DTS', '3.0', false ],
+        [ 'dts', 'DTS-HD MA', '3 channels', true ],
+        [ 'dts', 'DTS-HD MA', undefined, true ],
+        [ 'dts', 'DTS', '3.0', true ],
         [ 'flac', undefined, '3.0', true ],
         [ 'aac', undefined, '3.0', true ],
         [ 'opus', undefined, '3.0', true ],
@@ -4107,7 +4176,7 @@ describe('CustomPlaybackEligibility', () => {
             const eligibility = getCustomPlaybackEligibility(
                 options,
                 createCapabilities(),
-                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+                { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
             );
 
             expect(eligibility).toEqual(eligible ?
@@ -4132,7 +4201,7 @@ describe('CustomPlaybackEligibility', () => {
             expect(getCustomPlaybackEligibility(
                 options,
                 createCapabilities(),
-                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+                { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
             )).toEqual({ eligible: false, reason: 'container-unsupported' });
         }
     );
@@ -4318,6 +4387,23 @@ describe('CustomPlaybackEligibility', () => {
             createCapabilities(),
             { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
         )).toMatchObject({ eligible: true, source: { kind: 'url', url: new URL(STREAM_URL, globalThis.location.href).href } });
+    });
+
+    it('keeps the host\'s path pattern for responses that hide Content-Range, and adds none of its own', () => {
+        const resolvedURL = new URL(STREAM_URL, globalThis.location.href).href;
+        const withPattern = getCustomPlaybackEligibility(
+            createOptions({ source: { hiddenContentRangePathPattern: HIDDEN_CONTENT_RANGE_PATH_PATTERN, kind: 'url', url: STREAM_URL } }),
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        );
+        const withoutPattern = getCustomPlaybackEligibility(
+            createOptions(),
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        );
+
+        expect(withPattern.eligible && withPattern.source).toEqual({ hiddenContentRangePathPattern: HIDDEN_CONTENT_RANGE_PATH_PATTERN, kind: 'url', url: resolvedURL });
+        expect(withoutPattern.eligible && withoutPattern.source).toEqual({ kind: 'url', url: resolvedURL });
     });
 
     it('plays a file source as it is', () => {
@@ -4713,22 +4799,7 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
     });
 
     it('fails closed without an RPU route or a declared base', () => {
-        // The bundled decoder's Main qualification is the only evidence for raw 8-bit Main planes
-        const capabilities = createCapabilities();
-        const bundledHEVC = createBundledHEVCCapabilities();
-        capabilities.bundledHEVC = {
-            ...bundledHEVC,
-            qualifications: {
-                ...bundledHEVC.qualifications,
-                'main-1080p': {
-                    ...bundledHEVC.qualifications['main-1080p'],
-                    reason: 'output-mismatch',
-                    status: 'unsupported'
-                }
-            },
-            reason: 'partial'
-        };
-
+        // No native raw route reads 8-bit Main planes, and the GPU route reconstructs no RPU
         expect(getCustomPlaybackEligibility(
             createDolbyVisionOptions({
                 BitDepth: 8,
@@ -4737,43 +4808,14 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
                 Profile: 'Main',
                 VideoRangeType: 'DOVIInvalid'
             }),
-            capabilities,
-            {
-                allowDolbyVision: true,
-                allowRawHDR: false,
-                runtimeAvailability: AVAILABLE_RUNTIME
-            }
-        )).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
-    });
-
-    it.each([
-        { height: DCI_4K_CODED_HEIGHT, width: DCI_4K_CODED_WIDTH },
-        { height: ULTRA_HD_8K_CODED_HEIGHT, width: ULTRA_HD_8K_CODED_WIDTH },
-        { height: ULTRA_HD_16K_CODED_HEIGHT, width: ULTRA_HD_16K_CODED_WIDTH }
-    ])('reconstructs 8-bit Main through the bundled decoder at $width x $height', ({ height, width }) => {
-        // Only the bundled decoder reads 8-bit Main raw planes, and it takes any frame size
-        expect(getCustomPlaybackEligibility(
-            createDolbyVisionOptions({
-                BitDepth: 8,
-                DvBlSignalCompatibilityId: 0,
-                DvProfile: 8,
-                Height: height,
-                Profile: 'Main',
-                VideoRangeType: 'DOVIInvalid',
-                Width: width
-            }),
             createCapabilities(),
             {
                 allowDolbyVision: true,
                 allowRawHDR: false,
+                gpuVideoDecoders: createVideoDecoderOffers(HEVC_VIDEO_PACKAGE),
                 runtimeAvailability: AVAILABLE_RUNTIME
             }
-        )).toMatchObject({
-            dolbyVisionProfile: 8,
-            eligible: true,
-            rawVideoFrameFormat: 'I420',
-            videoDecoderBackend: 'bundled-hevc'
-        });
+        )).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
     });
 
     it.each([
@@ -5090,82 +5132,38 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
 
     describe('8-bit HEVC Main', () => {
         const MAIN_STREAM = { BitDepth: 8, Profile: 'Main' } as const;
-        const BUNDLED_RAW_I420_ROUTE = {
-            eligible: true,
-            hdr: true,
-            neutralizeHDRColorMetadata: false,
-            rawVideoFrameFormat: 'I420',
-            videoDecoderBackend: 'bundled-hevc',
-            videoOutputMode: 'raw-planes'
-        } as const;
-        const RUNTIME_WITHOUT_VIDEO_DECODER: CustomPlaybackRuntimeAvailability = {
-            ...AVAILABLE_RUNTIME,
-            environment: { ...AVAILABLE_RUNTIME.environment, videoDecoder: false }
-        };
 
         it.each([
-            { colors: {}, compatibilityID: 0, profile: 5, rangeType: 'DOVI' },
-            { colors: {}, compatibilityID: 0, profile: 8, rangeType: 'DOVIInvalid' },
-            { colors: SDR_BASE_COLORS, compatibilityID: 2, profile: 8, rangeType: 'DOVIWithSDR' }
-        ])('reconstructs Profile $profile with compatibility ID $compatibilityID from bundled raw I420', ({
-            colors,
+            { compatibilityID: 0, dualLayer: false, profile: 5, rangeType: 'DOVI' },
+            { compatibilityID: 0, dualLayer: false, profile: 8, rangeType: 'DOVIInvalid' },
+            { compatibilityID: 0, dualLayer: true, profile: 7, rangeType: 'DOVIWithEL' }
+        ])('fails closed for Profile $profile without a declared base, since no native raw route reads I420', ({
             compatibilityID,
+            dualLayer,
             profile,
             rangeType
         }) => {
             const options = createDolbyVisionOptions({
                 ...MAIN_STREAM,
-                ...colors,
                 DvBlSignalCompatibilityId: compatibilityID,
                 DvProfile: profile,
+                ElPresentFlag: dualLayer,
                 VideoRangeType: rangeType
             });
 
-            expect(hasPotentialCustomPlaybackVideoRoute({
-                MediaSources: [ (options as { mediaSource: unknown }).mediaSource ]
-            })).toBe(true);
             expect(getDolbyVisionReconstructionRawFrameFormat(options)).toBe('I420');
-            // The native Profile 5 route is 10-bit only, and the bundled decoder needs no WebCodecs decoder
+            // The native Profile 5 route is 10-bit only
             expect(getCustomPlaybackEligibility(
                 options,
                 createCapabilities(),
                 {
                     allowDolbyVision: true,
+                    allowDolbyVisionProfile7: true,
                     allowNativeDolbyVision: true,
-                    allowRawHDR: false,
-                    runtimeAvailability: RUNTIME_WITHOUT_VIDEO_DECODER
-                }
-            )).toMatchObject({ ...BUNDLED_RAW_I420_ROUTE, dolbyVisionProfile: profile });
-        });
-
-        it.each([
-            { compatibilityID: 2, profile: 4, rangeType: 'SDR' },
-            { compatibilityID: 0, profile: 7, rangeType: 'DOVIWithEL' }
-        ])('reconstructs dual-layer Profile $profile from a bundled raw I420 base layer', ({
-            compatibilityID,
-            profile,
-            rangeType
-        }) => {
-            const options = createDolbyVisionOptions({
-                ...MAIN_STREAM,
-                ...SDR_BASE_COLORS,
-                DvBlSignalCompatibilityId: compatibilityID,
-                DvProfile: profile,
-                ElPresentFlag: true,
-                VideoRangeType: rangeType
-            });
-
-            expect(getDolbyVisionReconstructionRawFrameFormat(options)).toBe('I420');
-            expect(getCustomPlaybackEligibility(
-                options,
-                createCapabilities(),
-                {
-                    allowDolbyVisionProfile4: profile === 4,
-                    allowDolbyVisionProfile7: profile === 7,
                     allowRawHDR: false,
                     runtimeAvailability: AVAILABLE_RUNTIME
                 }
-            )).toMatchObject({ ...BUNDLED_RAW_I420_ROUTE, dolbyVisionProfile: profile });
+            )).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
         });
 
         it.each([
@@ -5330,62 +5328,27 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
         });
     });
 
-    describe('dual-layer reconstruction without the bundled Main 10 qualification', () => {
-        // The bundled decoder decodes every EL, so without its Main 10 qualification the route discards the EL
-        function createCapabilitiesWithoutBundledMain10(): CustomDecodeCapabilities {
-            const capabilities = createRangeExtensionCapabilities();
-            const bundledHEVC = createBundledHEVCCapabilities();
-            capabilities.bundledHEVC = {
-                qualifications: {
-                    ...bundledHEVC.qualifications,
-                    'main10-1080p': {
-                        ...bundledHEVC.qualifications['main10-1080p'],
-                        reason: 'output-mismatch',
-                        status: 'unsupported'
-                    },
-                    'main10-4k': {
-                        ...bundledHEVC.qualifications['main10-4k'],
-                        reason: 'output-mismatch',
-                        status: 'unsupported'
-                    }
-                },
-                reason: 'partial'
-            };
-            // Native copy still qualifies raw Main 10 planes for the base layer
-            capabilities.rawHDRVideo = {
-                ...capabilities.rawHDRVideo,
-                hevc: {
-                    ...capabilities.rawHDRVideo.hevc,
-                    reason: 'output-copy-supported'
+    describe('dual-layer reconstruction from the base layer alone', () => {
+        // No decoder decodes an EL: MEL reconstructs exactly without it, and FEL presents its base
+
+        it('reconstructs Profile 7 instead of presenting its declared PQ base', () => {
+            const eligibility = getCustomPlaybackEligibility(
+                createDolbyVisionOptions({
+                    ...PQ_BASE_COLORS,
+                    DvBlSignalCompatibilityId: 6,
+                    DvProfile: 7,
+                    ElPresentFlag: true,
+                    VideoRange: 'HDR',
+                    VideoRangeType: 'DOVIWithEL'
+                }),
+                createRangeExtensionCapabilities(),
+                {
+                    ...PQ_AUTHORIZATION,
+                    allowDolbyVisionProfile7: true
                 }
-            };
-            return capabilities;
-        }
+            );
 
-        it('reconstructs Profile 7 without its EL instead of presenting its declared PQ base', () => {
-            const options = createDolbyVisionOptions({
-                ...PQ_BASE_COLORS,
-                DvBlSignalCompatibilityId: 6,
-                DvProfile: 7,
-                ElPresentFlag: true,
-                VideoRange: 'HDR',
-                VideoRangeType: 'DOVIWithEL'
-            });
-            const eligibilityOptions = {
-                ...PQ_AUTHORIZATION,
-                allowDolbyVisionProfile7: true
-            };
-
-            const qualified = getCustomPlaybackEligibility(options, createCapabilities(), eligibilityOptions);
-            expect(qualified).toMatchObject({ dolbyVisionProfile: 7, eligible: true });
-            expect(qualified).not.toHaveProperty('discardDolbyVisionEnhancementLayer');
-            // MEL reconstructs exactly without the EL, and FEL presents its base either way
-            expect(getCustomPlaybackEligibility(
-                options,
-                createCapabilitiesWithoutBundledMain10(),
-                eligibilityOptions
-            )).toMatchObject({
-                discardDolbyVisionEnhancementLayer: true,
+            expect(eligibility).toMatchObject({
                 dolbyVisionProfile: 7,
                 eligible: true,
                 hdr: true,
@@ -5393,9 +5356,10 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
                 videoDecoderBackend: 'native',
                 videoOutputMode: 'raw-planes'
             });
+            expect(eligibility).not.toHaveProperty('discardDolbyVisionEnhancementLayer');
         });
 
-        it('reconstructs Profile 4 without its EL instead of presenting its declared SDR base', () => {
+        it('reconstructs Profile 4 instead of presenting its declared SDR base', () => {
             expect(getCustomPlaybackEligibility(
                 createDolbyVisionOptions({
                     ...SDR_BASE_COLORS,
@@ -5404,14 +5368,13 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
                     ElPresentFlag: true,
                     VideoRangeType: 'SDR'
                 }),
-                createCapabilitiesWithoutBundledMain10(),
+                createRangeExtensionCapabilities(),
                 {
                     allowDolbyVisionProfile4: true,
                     allowRawHDR: false,
                     runtimeAvailability: AVAILABLE_RUNTIME
                 }
             )).toMatchObject({
-                discardDolbyVisionEnhancementLayer: true,
                 dolbyVisionProfile: 4,
                 eligible: true,
                 hdr: true,
@@ -5435,28 +5398,27 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
                     VideoRangeType: 'DOVIWithEL',
                     ...videoStream
                 }),
-                createCapabilitiesWithoutBundledMain10(),
+                createRangeExtensionCapabilities(),
                 {
                     allowDolbyVisionProfile7: true,
                     allowRawHDR: false,
                     runtimeAvailability: AVAILABLE_RUNTIME
                 }
             )).toMatchObject({
-                discardDolbyVisionEnhancementLayer: true,
                 dolbyVisionProfile: 7,
                 eligible: true,
                 rawVideoFrameFormat: format
             });
         });
 
-        it('keeps single-layer reconstruction, which decodes no EL', () => {
+        it('keeps single-layer reconstruction, which has no EL', () => {
             const eligibility = getCustomPlaybackEligibility(
                 createDolbyVisionOptions({
                     DvBlSignalCompatibilityId: 0,
                     DvProfile: 8,
                     VideoRangeType: 'DOVIInvalid'
                 }),
-                createCapabilitiesWithoutBundledMain10(),
+                createRangeExtensionCapabilities(),
                 {
                     allowDolbyVision: true,
                     allowRawHDR: false,
@@ -5528,16 +5490,6 @@ describe('10-bit raw SDR route', () => {
         });
     }
 
-    function createCapabilitiesWithoutNativeHEVC(): CustomDecodeCapabilities {
-        const capabilities = createCapabilities();
-        capabilities.nativeHDRHEVC = undefined;
-        capabilities.video = {
-            ...capabilities.video,
-            hevc: createCapability('hevc', false)
-        };
-        return capabilities;
-    }
-
     it.each([
         { codec: 'av1', colorRange: 'tv', profile: 'Main' },
         { codec: 'vp9', colorRange: 'pc', profile: 'Profile 2' }
@@ -5562,7 +5514,7 @@ describe('10-bit raw SDR route', () => {
         )).toMatchObject({ ...RAW_SDR_ROUTE, videoDecoderBackend: 'native' });
     });
 
-    it('decodes HEVC Main 10 SDR to bundled raw I420P10 without native HEVC', () => {
+    it('decodes HEVC Main 10 SDR to native raw I420P10 without a native VideoFrame route', () => {
         const options = createSDROptions({ Codec: 'hevc', Profile: 'Main 10' });
 
         expect(getCustomPlaybackEligibility(
@@ -5570,7 +5522,12 @@ describe('10-bit raw SDR route', () => {
             createCapabilitiesWithoutNativeHEVC(),
             { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
         )).toEqual({ eligible: false, reason: 'codec-unsupported' });
-        // The bundled decoder needs no WebCodecs decoder
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilitiesWithoutNativeHEVC(),
+            RAW_SDR_AUTHORIZATION
+        )).toMatchObject({ ...RAW_SDR_ROUTE, videoDecoderBackend: 'native' });
+        // The raw route decodes with the browser's decoder
         expect(getCustomPlaybackEligibility(
             options,
             createCapabilitiesWithoutNativeHEVC(),
@@ -5581,7 +5538,7 @@ describe('10-bit raw SDR route', () => {
                     environment: { ...AVAILABLE_RUNTIME.environment, videoDecoder: false }
                 }
             }
-        )).toMatchObject({ ...RAW_SDR_ROUTE, videoDecoderBackend: 'bundled-hevc' });
+        )).toEqual({ eligible: false, reason: 'runtime-unavailable' });
     });
 
     it('keeps HEVC Main 10 SDR on the native VideoFrame route when native decode qualifies', () => {
@@ -5611,7 +5568,7 @@ describe('10-bit raw SDR route', () => {
             }),
             createCapabilitiesWithoutNativeHEVC(),
             RAW_SDR_AUTHORIZATION
-        )).toMatchObject({ ...RAW_SDR_ROUTE, videoDecoderBackend: 'bundled-hevc' });
+        )).toMatchObject({ ...RAW_SDR_ROUTE, videoDecoderBackend: 'native' });
     });
 
     it.each([
@@ -5698,5 +5655,475 @@ describe('10-bit raw SDR route', () => {
             maximumCodedWidth: ULTRA_HD_16K_CODED_WIDTH,
             videoOutputMode: 'raw-planes'
         });
+    });
+});
+
+describe('GPU video decode route', () => {
+    // A device with WebGPU's default 256 MiB, which a 2160p Main 10 pool outgrows
+    const DEFAULT_FRAME_POOL_BYTE_LIMIT = 256 * MEBIBYTE;
+    // A scratch buffer of 40 bytes a coded sample: 334 MB at 3840x2176, past the default 256 MiB and within 2 GiB, while a pool of three slots fits either
+    const LARGE_SCRATCH_BYTES_PER_SAMPLE = 40;
+    const FULL_HD_CODED_WIDTH = 1_920;
+    const FULL_HD_CODED_HEIGHT = 1_080;
+    const HEVC_PACKAGE = HEVC_VIDEO_PACKAGE;
+    const HEVC_GPU_DECODER = { codec: 'hevc', decoderId: HEVC_PACKAGE.id, package: HEVC_PACKAGE } as const;
+    // Decoders a host may list before the one a stream takes: one of another codec, and one of another output format
+    const VP9_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ codecs: [ 'vp9' ], id: 'vp9', name: 'VP9', outputFormats: [ 'I420P10' ] }));
+    const EIGHT_BIT_HEVC_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ id: 'hevc-8-bit', name: 'HEVC 8-bit', outputFormats: [ 'I420' ] }));
+    const FIRST_TEN_BIT_HEVC_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ id: 'hevc-10-bit', name: 'HEVC 10-bit', outputFormats: [ 'I420P10' ] }));
+    const SECOND_TEN_BIT_HEVC_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ id: 'hevc-10-bit-too', name: 'HEVC 10-bit too', outputFormats: [ 'I420P10' ] }));
+    const UNSUPPORTED_VIDEO_CODEC = 'mpeg4';
+    const HDR10_STREAM = {
+        ColorPrimaries: 'bt2020',
+        ColorSpace: 'bt2020nc',
+        ColorTransfer: 'smpte2084',
+        VideoRange: 'HDR',
+        VideoRangeType: 'HDR10'
+    } as const;
+    const GPU_ROUTE = {
+        eligible: true,
+        gpuVideoDecoder: HEVC_GPU_DECODER,
+        neutralizeHDRColorMetadata: false,
+        videoDecoderBackend: 'gpu',
+        videoOutputMode: 'frame-pool'
+    } as const;
+
+    function createGPUOptions(videoStream: Record<string, unknown>): Record<string, unknown> {
+        return createOptions({
+            mediaSource: {
+                Container: 'mkv',
+                DefaultAudioStreamIndex: 1,
+                MediaStreams: [
+                    {
+                        BitDepth: 10,
+                        Codec: 'hevc',
+                        ColorPrimaries: 'bt709',
+                        ColorRange: 'tv',
+                        ColorSpace: 'bt709',
+                        ColorTransfer: 'bt709',
+                        Height: ULTRA_HD_CODED_HEIGHT,
+                        Index: 0,
+                        IsInterlaced: false,
+                        Profile: 'Main 10',
+                        Type: 'Video',
+                        VideoRange: 'SDR',
+                        VideoRangeType: 'SDR',
+                        Width: ULTRA_HD_CODED_WIDTH,
+                        ...videoStream
+                    },
+                    {
+                        Channels: 2,
+                        Codec: 'aac',
+                        Index: 1,
+                        SampleRate: 48_000,
+                        Type: 'Audio'
+                    }
+                ],
+                RunTimeTicks: 60_000_000
+            }
+        });
+    }
+
+    /** The HEVC decoder's offer of every format it writes on a device with the given pool limit. */
+    function createHEVCOffers(maximumPoolByteLength: number): GPUVideoDecoderOffer[] {
+        return HEVC_PACKAGE.manifest.outputFormats.map((format: GPUDecoderOutputFormat): GPUVideoDecoderOffer =>
+            createGPUVideoDecoderOffer(HEVC_PACKAGE, format, maximumPoolByteLength));
+    }
+
+    function createOffer(decoderPackage: VideoDecoderPackage, format: GPUDecoderOutputFormat): GPUVideoDecoderOffer {
+        return createGPUVideoDecoderOffer(decoderPackage, format, LARGE_FRAME_POOL_BYTE_LIMIT);
+    }
+
+    function createGPUEligibilityOptions(maximumPoolByteLength = LARGE_FRAME_POOL_BYTE_LIMIT) {
+        return {
+            allowRawHDR: false,
+            gpuVideoDecoders: createHEVCOffers(maximumPoolByteLength),
+            runtimeAvailability: AVAILABLE_RUNTIME
+        };
+    }
+
+    it('decodes HEVC that no native route takes on the offered GPU decoder', () => {
+        const options = createGPUOptions({});
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilitiesWithoutNativeHEVC(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilitiesWithoutNativeHEVC(),
+            createGPUEligibilityOptions()
+        )).toMatchObject({
+            ...GPU_ROUTE,
+            hdr: false,
+            maximumCodedHeight: ULTRA_HD_CODED_HEIGHT,
+            maximumCodedWidth: ULTRA_HD_CODED_WIDTH,
+            rawVideoFrameFormat: 'I420P10'
+        });
+    });
+
+    it('keeps a native raw route ahead of the GPU decoder', () => {
+        const eligibility = getCustomPlaybackEligibility(
+            createGPUOptions({}),
+            createCapabilitiesWithoutNativeHEVC(),
+            {
+                ...createGPUEligibilityOptions(),
+                allowRawSDR: true,
+                authorizedRawHDRRouteKeys: [ 'I420P10:bt709:bt709:limited:sdr' ] as const
+            }
+        );
+
+        expect(eligibility).toMatchObject({ videoDecoderBackend: 'native', videoOutputMode: 'raw-planes' });
+        expect(eligibility).not.toHaveProperty('gpuVideoDecoder');
+    });
+
+    it('needs neither a raw presentation authorization nor a WebCodecs decoder', () => {
+        expect(getCustomPlaybackEligibility(
+            createGPUOptions({}),
+            createCapabilitiesWithoutNativeHEVC(),
+            {
+                ...createGPUEligibilityOptions(),
+                runtimeAvailability: {
+                    ...AVAILABLE_RUNTIME,
+                    environment: { ...AVAILABLE_RUNTIME.environment, videoDecoder: false }
+                }
+            }
+        )).toMatchObject({ ...GPU_ROUTE, rawVideoFrameFormat: 'I420P10' });
+    });
+
+    it('keeps a native route ahead of the GPU decoder', () => {
+        const eligibility = getCustomPlaybackEligibility(createGPUOptions({}), createCapabilities(), createGPUEligibilityOptions());
+
+        expect(eligibility).toMatchObject({ videoDecoderBackend: 'native', videoOutputMode: 'video-frame' });
+        expect(eligibility).not.toHaveProperty('gpuVideoDecoder');
+    });
+
+    it('presents GPU-decoded HDR only when the host tone-maps it', () => {
+        const options = createGPUOptions(HDR10_STREAM);
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilitiesWithoutNativeHEVC(),
+            createGPUEligibilityOptions()
+        )).toEqual({ eligible: false, reason: 'hdr-presentation-unavailable' });
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilitiesWithoutNativeHEVC(),
+            { ...createGPUEligibilityOptions(), allowFramePoolHDR: true }
+        )).toMatchObject({ ...GPU_ROUTE, hdr: true, rawVideoFrameFormat: 'I420P10' });
+    });
+
+    it.each([
+        { format: 'I420', videoStream: { BitDepth: 8, Profile: 'Main' } },
+        { format: 'I422P10', videoStream: { PixelFormat: 'yuv422p10le', Profile: 'Rext' } },
+        { format: 'I444P12', videoStream: { BitDepth: 12, PixelFormat: 'yuv444p12le', Profile: 'Rext' } }
+    ] as const)('decodes to $format, the format of the stream\'s depth and chroma', ({ format, videoStream }) => {
+        expect(getCustomPlaybackEligibility(
+            createGPUOptions(videoStream),
+            createCapabilitiesWithoutNativeHEVC(),
+            createGPUEligibilityOptions()
+        )).toMatchObject({ ...GPU_ROUTE, rawVideoFrameFormat: format });
+    });
+
+    it.each([
+        { format: 'I420', videoStream: { BitDepth: 8, PixelFormat: 'gray', Profile: 'Rext' } },
+        { format: 'I420P10', videoStream: { BitDepth: 10, PixelFormat: 'gray10le', Profile: 'Rext' } },
+        { format: 'I420P12', videoStream: { BitDepth: 12, PixelFormat: 'gray12le', Profile: 'Rext' } }
+    ] as const)('decodes 4:0:0 HEVC in $videoStream.PixelFormat to $format, which no native route takes', ({ format, videoStream }) => {
+        expect(getCustomPlaybackEligibility(
+            createGPUOptions(videoStream),
+            createCapabilities(),
+            createGPUEligibilityOptions()
+        )).toMatchObject({ ...GPU_ROUTE, rawVideoFrameFormat: format });
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ ...videoStream, Codec: 'HEVC' }))).toBe(true);
+    });
+
+    it('passes over a GPU decoder whose frame pool the device cannot hold', () => {
+        expect(getCustomPlaybackEligibility(
+            createGPUOptions({}),
+            createCapabilitiesWithoutNativeHEVC(),
+            createGPUEligibilityOptions(DEFAULT_FRAME_POOL_BYTE_LIMIT)
+        )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+        expect(getCustomPlaybackEligibility(
+            createGPUOptions({ Height: FULL_HD_CODED_HEIGHT, Width: FULL_HD_CODED_WIDTH }),
+            createCapabilitiesWithoutNativeHEVC(),
+            createGPUEligibilityOptions(DEFAULT_FRAME_POOL_BYTE_LIMIT)
+        )).toMatchObject({ ...GPU_ROUTE, maximumCodedHeight: FULL_HD_CODED_HEIGHT, maximumCodedWidth: FULL_HD_CODED_WIDTH });
+    });
+
+    it('offers a 4:0:0 stream only to a decoder whose header declares monochrome', () => {
+        const monochromePackage = createVideoDecoderPackageForTest(createVideoDecoderSource({
+            extraDirectives: [ MONOCHROME_DIRECTIVE_LINE ],
+            id: 'hevc-monochrome',
+            name: 'HEVC 10-bit with 4:0:0',
+            outputFormats: [ 'I420P10' ]
+        }));
+        const options = createGPUOptions({ PixelFormat: 'gray10le', Profile: 'Rext' });
+        const withOffers = (offers: GPUVideoDecoderOffer[]): CustomPlaybackEligibilityOptions => ({ ...createGPUEligibilityOptions(), gpuVideoDecoders: offers });
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            withOffers([ createOffer(FIRST_TEN_BIT_HEVC_PACKAGE, 'I420P10') ])
+        )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            withOffers([ createOffer(FIRST_TEN_BIT_HEVC_PACKAGE, 'I420P10'), createOffer(monochromePackage, 'I420P10') ])
+        )).toMatchObject({ ...GPU_ROUTE, gpuVideoDecoder: { codec: 'hevc', decoderId: monochromePackage.id, package: monochromePackage }, rawVideoFrameFormat: 'I420P10' });
+        // A stream of a 4:2:0 pixel format still goes to the first offer
+        expect(getCustomPlaybackEligibility(
+            createGPUOptions({ PixelFormat: 'yuv420p10le' }),
+            createCapabilitiesWithoutNativeHEVC(),
+            withOffers([ createOffer(FIRST_TEN_BIT_HEVC_PACKAGE, 'I420P10'), createOffer(monochromePackage, 'I420P10') ])
+        )).toMatchObject({ ...GPU_ROUTE, gpuVideoDecoder: { decoderId: FIRST_TEN_BIT_HEVC_PACKAGE.id }, rawVideoFrameFormat: 'I420P10' });
+    });
+
+    it('offers grey JPEG 2000 to no package, since the JPEG 2000 decoder project does not declare monochrome', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'mj2';
+        mediaSource.MediaStreams[0] = {
+            AverageFrameRate: 24,
+            BitDepth: 8,
+            Codec: 'JPEG2000',
+            Height: 540,
+            Index: 0,
+            IsInterlaced: false,
+            PixelFormat: 'gray',
+            Type: 'Video',
+            VideoRangeType: 'SDR',
+            Width: 960
+        };
+        const eligibilityOptions: CustomPlaybackEligibilityOptions = {
+            allowRawHDR: false,
+            gpuVideoDecoders: createVideoDecoderOffers(JPEG2000_PROJECT_VIDEO_PACKAGE),
+            runtimeAvailability: AVAILABLE_RUNTIME
+        };
+
+        expect(JPEG2000_PROJECT_VIDEO_PACKAGE.manifest.monochrome).toBe(false);
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), eligibilityOptions)).toEqual({ eligible: false, reason: 'codec-unsupported' });
+        mediaSource.MediaStreams[0].PixelFormat = 'yuv420p';
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), eligibilityOptions))
+            .toMatchObject({ ...createPackageVideoRoute(JPEG2000_PROJECT_VIDEO_PACKAGE, 'jpeg2000'), rawVideoFrameFormat: 'I420' });
+    });
+
+    it('passes over a GPU decoder whose scratch buffer the device cannot hold at the stream\'s size', () => {
+        const scratchHungryPackage = createVideoDecoderPackageForTest(createVideoDecoderSource({
+            extraDirectives: [ `//! buffer: scratch, ${LARGE_SCRATCH_BYTES_PER_SAMPLE} * stream.width * stream.height` ],
+            id: 'hevc-scratch',
+            name: 'HEVC with a large scratch buffer',
+            outputFormats: [ 'I420P10' ]
+        }));
+        const createOptionsWithLimit = (maximumBufferByteLength: number): CustomPlaybackEligibilityOptions => ({
+            ...createGPUEligibilityOptions(),
+            gpuVideoDecoders: [ createGPUVideoDecoderOffer(scratchHungryPackage, 'I420P10', maximumBufferByteLength) ]
+        });
+
+        expect(getCustomPlaybackEligibility(
+            createGPUOptions({}),
+            createCapabilitiesWithoutNativeHEVC(),
+            createOptionsWithLimit(DEFAULT_FRAME_POOL_BYTE_LIMIT)
+        )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+        expect(getCustomPlaybackEligibility(
+            createGPUOptions({}),
+            createCapabilitiesWithoutNativeHEVC(),
+            createOptionsWithLimit(LARGE_FRAME_POOL_BYTE_LIMIT)
+        )).toMatchObject({ ...GPU_ROUTE, gpuVideoDecoder: { codec: 'hevc', decoderId: scratchHungryPackage.id, package: scratchHungryPackage } });
+    });
+
+    it('passes over a GPU decoder whose stream limits reject the picture', () => {
+        expect(getCustomPlaybackEligibility(
+            createGPUOptions({ Height: ULTRA_HD_8K_CODED_HEIGHT, Width: ULTRA_HD_8K_CODED_WIDTH }),
+            createCapabilitiesWithoutNativeHEVC(),
+            createGPUEligibilityOptions()
+        )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+    });
+
+    it('offers a GPU decoder only to its own codec', () => {
+        const capabilities = createCapabilities();
+        capabilities.rawHDRVideo = {
+            ...capabilities.rawHDRVideo,
+            vp9: { ...capabilities.rawHDRVideo.vp9, reason: 'output-copy-unsupported', status: 'unsupported' }
+        };
+
+        expect(getCustomPlaybackEligibility(
+            createGPUOptions({ Codec: 'vp9', Profile: 'Profile 2' }),
+            capabilities,
+            createGPUEligibilityOptions()
+        )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+    });
+
+    it('chooses the first offer in the host\'s order that decodes the codec into the stream\'s format, with that offer\'s package', () => {
+        const offers = [
+            createOffer(VP9_PACKAGE, 'I420P10'),
+            createOffer(EIGHT_BIT_HEVC_PACKAGE, 'I420'),
+            createOffer(FIRST_TEN_BIT_HEVC_PACKAGE, 'I420P10'),
+            createOffer(SECOND_TEN_BIT_HEVC_PACKAGE, 'I420P10')
+        ];
+
+        expect(getCustomPlaybackEligibility(
+            createGPUOptions({ Height: FULL_HD_CODED_HEIGHT, Width: FULL_HD_CODED_WIDTH }),
+            createCapabilitiesWithoutNativeHEVC(),
+            { ...createGPUEligibilityOptions(), gpuVideoDecoders: offers }
+        )).toMatchObject({
+            ...GPU_ROUTE,
+            gpuVideoDecoder: { codec: 'hevc', decoderId: FIRST_TEN_BIT_HEVC_PACKAGE.id, package: FIRST_TEN_BIT_HEVC_PACKAGE },
+            rawVideoFrameFormat: 'I420P10'
+        });
+    });
+
+    describe('getGPUVideoDecodeTarget', () => {
+        it.each([
+            { codec: 'hevc', format: 'I420P10', subject: 'Main 10 SDR', videoStream: {} },
+            { codec: 'hevc', format: 'I420', subject: 'Main', videoStream: { BitDepth: 8, Profile: 'Main' } },
+            { codec: 'hevc', format: 'I422P10', subject: 'a 4:2:2 range extension', videoStream: { PixelFormat: 'yuv422p10le', Profile: 'Rext' } },
+            { codec: 'hevc', format: 'I420P10', subject: 'HDR10, by its depth alone', videoStream: HDR10_STREAM },
+            { codec: 'vp9', format: 'I420P10', subject: 'VP9 Profile 2', videoStream: { Codec: 'vp9', Profile: 'Profile 2' } }
+        ] as const)('decodes $subject as $codec into $format, as the route would', ({ codec, format, videoStream }) => {
+            expect(getGPUVideoDecodeTarget(createGPUOptions(videoStream))).toEqual({ codec, format });
+        });
+
+        it('names no target without a media source, or for a codec the engine has no name for', () => {
+            expect(getGPUVideoDecodeTarget(createGPUOptions({ Codec: UNSUPPORTED_VIDEO_CODEC }))).toBeNull();
+            expect(getGPUVideoDecodeTarget({ ...createGPUOptions({}), mediaSource: undefined })).toBeNull();
+            expect(getGPUVideoDecodeTarget(null)).toBeNull();
+        });
+    });
+});
+
+describe('AV1 on a decoder package', () => {
+    const AV1_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({
+        codecs: [ 'av1' ],
+        id: 'av1',
+        name: 'AV1',
+        outputFormats: [ 'I420', 'I420P10', 'I420P12', 'I422', 'I422P10', 'I422P12', 'I444', 'I444P10', 'I444P12' ]
+    }));
+    const AV1_PACKAGE_ROUTE = createPackageVideoRoute(AV1_PACKAGE, 'av1');
+    const BT709_SDR_STREAM = {
+        ColorPrimaries: 'bt709',
+        ColorRange: 'tv',
+        ColorSpace: 'bt709',
+        ColorTransfer: 'bt709',
+        VideoRange: 'SDR',
+        VideoRangeType: 'SDR'
+    } as const;
+    const BT601_SDR_STREAM = {
+        ColorPrimaries: 'smpte170m',
+        ColorSpace: 'smpte170m',
+        ColorTransfer: 'smpte170m'
+    } as const;
+    const HDR10_STREAM = {
+        ColorPrimaries: 'bt2020',
+        ColorSpace: 'bt2020nc',
+        ColorTransfer: 'smpte2084',
+        VideoRange: 'HDR',
+        VideoRangeType: 'HDR10'
+    } as const;
+    // Variants only a package decodes: native routes take AV1 Main at 4:2:0, 8 or 10 bits
+    const PACKAGE_ONLY_STREAMS = [
+        { format: 'I444', subject: 'High 4:4:4', videoStream: { BitDepth: 8, PixelFormat: 'yuv444p', Profile: 'High' } },
+        { format: 'I444P10', subject: 'High 10-bit 4:4:4', videoStream: { BitDepth: 10, PixelFormat: 'yuv444p10le', Profile: 'High' } },
+        { format: 'I422', subject: 'Professional 4:2:2', videoStream: { BitDepth: 8, PixelFormat: 'yuv422p', Profile: 'Professional' } },
+        { format: 'I422P12', subject: 'Professional 12-bit 4:2:2', videoStream: { BitDepth: 12, PixelFormat: 'yuv422p12le', Profile: 'Professional' } },
+        { format: 'I420P12', subject: 'Professional 12-bit 4:2:0', videoStream: { BitDepth: 12, PixelFormat: 'yuv420p12le', Profile: 'Professional' } }
+    ] as const;
+    // Main at 10 bits outside the raw SDR keys, which are BT.709 only: no native route takes it, while the browser's own player does
+    const UNROUTED_MAIN_STREAM = { format: 'I420P10', subject: 'Main 10-bit BT.601 SDR', videoStream: { ...BT601_SDR_STREAM, BitDepth: 10, Profile: 'Main' } } as const;
+
+    function createAV1Options(videoStream: Record<string, unknown>): Record<string, unknown> {
+        return createOptions({
+            mediaSource: {
+                Container: 'mkv',
+                DefaultAudioStreamIndex: 1,
+                MediaStreams: [
+                    {
+                        ...BT709_SDR_STREAM,
+                        BitDepth: 8,
+                        Codec: 'av1',
+                        Height: 1_080,
+                        Index: 0,
+                        IsInterlaced: false,
+                        Profile: 'Main',
+                        Type: 'Video',
+                        Width: 1_920,
+                        ...videoStream
+                    },
+                    {
+                        Channels: 2,
+                        Codec: 'aac',
+                        Index: 1,
+                        SampleRate: 48_000,
+                        Type: 'Audio'
+                    }
+                ],
+                RunTimeTicks: 60_000_000
+            }
+        });
+    }
+
+    function createAV1EligibilityOptions(): CustomPlaybackEligibilityOptions {
+        return { allowRawHDR: false, gpuVideoDecoders: createVideoDecoderOffers(AV1_PACKAGE), runtimeAvailability: AVAILABLE_RUNTIME };
+    }
+
+    it.each([ ...PACKAGE_ONLY_STREAMS, UNROUTED_MAIN_STREAM ])('decodes AV1 $subject, which no native route takes, on an offered package as $format', ({ format, videoStream }) => {
+        const options = createAV1Options(videoStream);
+
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }))
+            .toMatchObject({ eligible: false });
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), createAV1EligibilityOptions()))
+            .toMatchObject({ ...AV1_PACKAGE_ROUTE, hdr: false, rawVideoFrameFormat: format });
+    });
+
+    it.each(PACKAGE_ONLY_STREAMS)('keeps AV1 $subject potential for wrapper selection, since a package may take it', ({ videoStream }) => {
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ ...videoStream, Codec: 'AV1' }))).toBe(true);
+    });
+
+    it('leaves AV1 Main at 10 bits outside the raw SDR keys to the HTML player, which decodes Main', () => {
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ ...UNROUTED_MAIN_STREAM.videoStream, Codec: 'AV1' }))).toBe(false);
+    });
+
+    it('decodes 10-bit AV1 HDR10 on the package when raw HDR is unavailable and the host tone-maps frame-pool HDR', () => {
+        const options = createAV1Options({ ...HDR10_STREAM, BitDepth: 10 });
+
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), createAV1EligibilityOptions()))
+            .toEqual({ eligible: false, reason: 'hdr-presentation-unavailable' });
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), { ...createAV1EligibilityOptions(), allowFramePoolHDR: true }))
+            .toMatchObject({ ...AV1_PACKAGE_ROUTE, hdr: true, rawVideoFrameFormat: 'I420P10' });
+    });
+
+    it('decodes 12-bit 4:0:0 AV1 only on a package that declares monochrome', () => {
+        const monochromeAV1Package = createVideoDecoderPackageForTest(createVideoDecoderSource({
+            codecs: [ 'av1' ],
+            extraDirectives: [ MONOCHROME_DIRECTIVE_LINE ],
+            id: 'av1-monochrome',
+            name: 'AV1 with 4:0:0',
+            outputFormats: [ 'I420', 'I420P10', 'I420P12' ]
+        }));
+        const options = createAV1Options({ BitDepth: 12, PixelFormat: 'gray12le', Profile: 'Professional' });
+
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), createAV1EligibilityOptions()))
+            .toEqual({ eligible: false, reason: 'codec-unsupported' });
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { ...createAV1EligibilityOptions(), gpuVideoDecoders: [ ...createVideoDecoderOffers(AV1_PACKAGE), ...createVideoDecoderOffers(monochromeAV1Package) ] }
+        )).toMatchObject({ ...createPackageVideoRoute(monochromeAV1Package, 'av1'), rawVideoFrameFormat: 'I420P12' });
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ BitDepth: 12, Codec: 'AV1', PixelFormat: 'gray12le', Profile: 'Professional' }))).toBe(true);
+    });
+
+    it('keeps the native AV1 Main route ahead of the package', () => {
+        const eligibility = getCustomPlaybackEligibility(createAV1Options({}), createCapabilities(), createAV1EligibilityOptions());
+
+        expect(eligibility).toMatchObject({ videoDecoderBackend: 'native', videoOutputMode: 'video-frame' });
+        expect(eligibility).not.toHaveProperty('gpuVideoDecoder');
+    });
+
+    it('rules out AV1 whose pixel format no frame pool holds, such as RGB', () => {
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ BitDepth: 8, Codec: 'AV1', PixelFormat: 'gbrp', Profile: 'High' }))).toBe(false);
     });
 });

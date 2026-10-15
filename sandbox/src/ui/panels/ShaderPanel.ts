@@ -14,7 +14,8 @@ import {
     type ShaderParameterField
 } from '../diagnostics/ShaderFileRows';
 import { createTupleSelector } from '../diagnostics/TupleSelector';
-import { carriesFiles, createElement, reconcileKeyedChildren, setTextContent } from '../dom';
+import { createElement, reconcileKeyedChildren, setTextContent } from '../dom';
+import { listenForDroppedFiles } from '../FileDrop';
 import type { Panel, PanelContext } from '../Panel';
 import { subscribeSelection } from '../Store';
 import { createChoiceSelect, type Choice } from './ChoiceSelect';
@@ -60,7 +61,10 @@ export function createShaderPanel(context: PanelContext): Panel {
         emptyHint,
         createElement('p', { className: 'shader-panel-hint', text: DROP_HINT_TEXT })
     ]);
-    listenForDroppedFiles(element, session);
+    // The session reports each dropped file that is not a WGSL pass file
+    listenForDroppedFiles(element, DRAG_ACTIVE_CLASS, (files: File[]): void => {
+        session.addShaderFiles(files).catch(reportCommandRejection);
+    });
     let rowViews = new Map<string, FileRowView>();
     const destroy = subscribeSelection(
         context.store,
@@ -125,50 +129,6 @@ function createExampleSelect(session: SandboxSessionCommands): HTMLSelectElement
     exampleSelect.element.className = 'shader-panel-examples';
     exampleSelect.element.disabled = examples.length === 0;
     return exampleSelect.element;
-}
-
-/** Hands every file dropped on the panel to the session, which reports the ones that are not WGSL pass files. */
-function listenForDroppedFiles(element: HTMLElement, session: SandboxSessionCommands): void {
-    // Entering and leaving child elements fires in pairs, so the panel is left once the count returns to zero
-    let dragDepth = 0;
-    element.addEventListener('dragenter', (event: DragEvent): void => {
-        if (!carriesFiles(event)) {
-            return;
-        }
-        event.preventDefault();
-        dragDepth += 1;
-        element.classList.add(DRAG_ACTIVE_CLASS);
-    });
-    element.addEventListener('dragover', (event: DragEvent): void => {
-        if (!carriesFiles(event) || event.dataTransfer === null) {
-            return;
-        }
-        // Cancelling dragover is what makes the panel a drop target
-        event.preventDefault();
-        event.dataTransfer.dropEffect = 'copy';
-    });
-    element.addEventListener('dragleave', (event: DragEvent): void => {
-        if (!carriesFiles(event)) {
-            return;
-        }
-        dragDepth = Math.max(0, dragDepth - 1);
-        if (dragDepth === 0) {
-            element.classList.remove(DRAG_ACTIVE_CLASS);
-        }
-    });
-    element.addEventListener('drop', (event: DragEvent): void => {
-        if (!carriesFiles(event) || event.dataTransfer === null) {
-            return;
-        }
-        event.preventDefault();
-        event.stopPropagation();
-        dragDepth = 0;
-        element.classList.remove(DRAG_ACTIVE_CLASS);
-        const files = Array.from(event.dataTransfer.files);
-        if (files.length > 0) {
-            session.addShaderFiles(files).catch(reportCommandRejection);
-        }
-    });
 }
 
 function createRowView(row: ShaderFileRow, session: SandboxSessionCommands): FileRowView {

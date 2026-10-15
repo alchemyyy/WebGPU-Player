@@ -1,0 +1,49 @@
+@startuml
+!include diagram-theme.puml
+skinparam sequenceMessageAlign left
+
+box "CustomDecode.worker (engine)" $BOX_WORKER
+participant "Audio track" as track
+end box
+box "CustomAudioDecode.worker (engine)" $BOX_WORKER
+participant "PackageSoftwareAudioDecoder" as decoder
+participant "Package\ninstance" as instance
+participant "PCM pipeline" as pipeline
+end box
+
+== Attempt start: every start and seek, after the eligibility selected the package for the track's codec ==
+track -> decoder : start: package backend, the selection\n(codec, module, memory limits, manifest)
+decoder -> instance : instantiate with a new env.memory;\nrun _initialize when exported
+decoder -> instance : audio_decoder_abi_version() == 1\naudio_decoder_create(index of the codec in accepts) -> handle != 0
+opt the track has codec private data
+  decoder -> instance : audio_decoder_reserve_input(handle, n), copy it,\naudio_decoder_configure(handle, n) -> 0
+end
+opt an option the manifest names
+  decoder -> instance : audio_decoder_set_option(handle, key, value) -> 0
+end
+
+== Each packet, in decode order ==
+track -> decoder : packet, timestamp in microseconds
+decoder -> instance : audio_decoder_reserve_input(handle, n), copy the packet,\naudio_decoder_send(handle, n, timestamp)
+alt 1: dropped, or 2: awaiting sync
+  decoder -> decoder : no output, no failure
+else 0: accepted
+  loop until audio_decoder_receive(handle) returns 0
+    instance --> decoder : 1: a block is ready
+    decoder -> instance : frame_count, sample_rate, channel_count, channel_mask,\nchannel_pointer(c) per channel, timestamp, attribute(key) per manifest key
+    decoder -> decoder : copy the planar float block out of the instance's memory
+  end
+  decoder -> pipeline : blocks with a qualified WAVE channel mask:\ndownmix, resample to 48 kHz, limit
+end
+
+== Failure ==
+instance --> decoder : -1 from configure, set_option, send, or receive
+decoder -> instance : audio_decoder_error_code, audio_decoder_error_value
+decoder --> track : the attempt fails: audio decoder <error name>: <value>
+
+== Attempt end: the track ended, a seek, a track switch, or a stop ==
+decoder -> instance : audio_decoder_destroy(handle); the instance and its memory go
+note over track, pipeline
+  A seek starts a new attempt on a new instance, so a decoder never sees a jump in its packets.
+end note
+@enduml

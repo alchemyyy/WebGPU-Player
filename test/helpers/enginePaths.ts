@@ -13,6 +13,9 @@ export const TEST_VECTORS_DIRECTORY = join(ENGINE_ROOT, LAYOUT.testVectorsDirect
 export const CODEC_VECTOR_ASSETS_DIRECTORY = join(ENGINE_ROOT, LAYOUT.codecVectorAssetsDirectory);
 export const SCRIPTS_DIRECTORY = join(ENGINE_ROOT, LAYOUT.scriptsDirectory);
 export const WASM_OUTPUT_DIRECTORY = join(ENGINE_ROOT, LAYOUT.wasmOutputDirectory);
+export const LIBRARY_OUTPUT_DIRECTORY = join(ENGINE_ROOT, LAYOUT.libraryOutputDirectory);
+export const DECODERS_DIRECTORY = join(ENGINE_ROOT, LAYOUT.decodersDirectory);
+export const DECODER_OUTPUT_DIRECTORY = join(ENGINE_ROOT, LAYOUT.decoderOutputDirectory);
 
 // A dependency every engine install has; tool caches can create node_modules without it
 const INSTALLED_DEPENDENCY_MARKER = join('mediabunny', 'package.json');

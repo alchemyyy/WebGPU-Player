@@ -1,0 +1,14 @@
+{
+    "decoder": "jpeg2000.wgsl",
+    "vectors": [
+        { "format": "I420", "root": "decodersDirectory", "path": "jpeg2000/vectors/native-97-tiles-layers-lrcp-420.mov", "decoderOptions": [ "-flags", "bitexact" ] },
+        { "format": "I420P10", "root": "decodersDirectory", "path": "jpeg2000/vectors/openjpeg-97-rpcl-420p10.mov", "decoderOptions": [ "-flags", "bitexact" ] },
+        { "format": "I420P12", "root": "decodersDirectory", "path": "jpeg2000/vectors/native-53-tiles-pcrl-420p12.mov" },
+        { "format": "I422", "root": "decodersDirectory", "path": "jpeg2000/vectors/openjpeg-53-cprl-422.mov" },
+        { "format": "I422P10", "root": "decodersDirectory", "path": "jpeg2000/vectors/native-97-layers-rlcp-422p10.mj2", "decoderOptions": [ "-flags", "bitexact" ] },
+        { "format": "I422P12", "root": "decodersDirectory", "path": "jpeg2000/vectors/openjpeg-97-lrcp-422p12.mov", "decoderOptions": [ "-flags", "bitexact" ] },
+        { "format": "I444", "root": "decodersDirectory", "path": "jpeg2000/vectors/openjpeg-53-rct-rlcp-444.mov" },
+        { "format": "I444P10", "root": "decodersDirectory", "path": "jpeg2000/vectors/native-97-tiles-cprl-444p10.mov", "decoderOptions": [ "-flags", "bitexact" ] },
+        { "format": "I444P12", "root": "decodersDirectory", "path": "jpeg2000/vectors/openjpeg-97-ict-pcrl-444p12.mj2", "decoderOptions": [ "-flags", "bitexact" ] }
+    ]
+}

@@ -5,7 +5,7 @@ import type {
     RawDolbyVisionVideoFrameFormat,
     SupportedRawVideoFrameFormat,
     TransferableRawVideoFrame
-} from '../../video/RawVideoFrameCopy';
+} from '../../decode/video/RawVideoFrameCopy';
 import type { DolbyVisionReconstructionProfile } from '../PresentationInput';
 import type { TexturePresentationGeometry } from '../PresentationGeometry';
 import type { HDRToSDRRenderSettings, RenderSettings } from '../RenderSettings';

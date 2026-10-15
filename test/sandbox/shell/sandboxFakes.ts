@@ -16,6 +16,7 @@ const START_TIME = 0 as Microseconds;
 
 export function createFakeSession(): SandboxSessionCommands {
     return {
+        addDecoderPackages: vi.fn((): Promise<void> => Promise.resolve()),
         addExampleShaderPass: vi.fn((): Promise<void> => Promise.resolve()),
         addShaderFiles: vi.fn((): Promise<void> => Promise.resolve()),
         getCurrentTimeMicroseconds: vi.fn((): Microseconds => START_TIME),
@@ -24,6 +25,7 @@ export function createFakeSession(): SandboxSessionCommands {
         openMedia: vi.fn((): Promise<void> => Promise.resolve()),
         pause: vi.fn(),
         play: vi.fn((): Promise<void> => Promise.resolve()),
+        removeDecoderPackage: vi.fn((): Promise<void> => Promise.resolve()),
         removeShaderFile: vi.fn((): Promise<void> => Promise.resolve()),
         seek: vi.fn(),
         selectAudioTrack: vi.fn((): Promise<void> => Promise.resolve()),
@@ -33,7 +35,8 @@ export function createFakeSession(): SandboxSessionCommands {
         setRenderSettings: vi.fn(),
         setRouteOverride: vi.fn((): Promise<void> => Promise.resolve()),
         setShaderParameter: vi.fn(),
-        setVolume: vi.fn()
+        setVolume: vi.fn(),
+        verifyDecoderPackage: vi.fn((): Promise<void> => Promise.resolve())
     };
 }
 

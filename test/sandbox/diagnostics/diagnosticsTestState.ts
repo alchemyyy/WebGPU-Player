@@ -80,6 +80,7 @@ export function createActiveRoute(overrides: Partial<ActiveRoute> = {}): ActiveR
     return {
         audioOutputMode: 'decoded-pcm',
         dolbyVisionProfile: null,
+        gpuVideoDecoder: null,
         nativeHDRTransfer: null,
         neutralizeHDRColorMetadata: false,
         rawVideoFrameFormat: null,

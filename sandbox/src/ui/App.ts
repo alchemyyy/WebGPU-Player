@@ -4,6 +4,7 @@ import { bindControlWheel } from './ControlWheel';
 import { carriesFiles, createElement } from './dom';
 import { isOverlayToggle } from './OverlayToggle';
 import type { Panel, PanelContext } from './Panel';
+import { createDecoderPackagePanel } from './panels/DecoderPackagePanel';
 import { createFileTreePanel } from './panels/FileTreePanel';
 import { createPipelineGraphPanel } from './panels/PipelineGraphPanel';
 import { createPlaybackInfoPanel } from './panels/PlaybackInfoPanel';
@@ -33,7 +34,7 @@ const REGION_PANELS: Readonly<Record<RegionName, readonly PanelFactory[]>> = {
     library: [ createFileTreePanel ],
     info: [ createPlaybackInfoPanel ],
     graph: [ createPipelineGraphPanel ],
-    controls: [ createToneMappingPanel, createRouteOverridePanel, createShaderPanel ],
+    controls: [ createToneMappingPanel, createRouteOverridePanel, createDecoderPackagePanel, createShaderPanel ],
     transport: [ createTransportBarPanel, createTrackSelectorPanel ]
 };
 // Hides every region; the subtitle slot stays, since cues belong to the video

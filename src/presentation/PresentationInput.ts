@@ -8,8 +8,8 @@ import {
     type InputColorMetadata,
     type YUVMatrix
 } from '../color/ColorMetadata';
-import { getDolbyVisionEnhancementDimensions } from '../video/dolby-vision/DolbyVisionGeometry';
-import { isDolbyVisionDualLayerProfile } from '../video/dolby-vision/DolbyVisionProfiles';
+import { getDolbyVisionEnhancementDimensions } from './DolbyVisionGeometry';
+import { isDolbyVisionDualLayerProfile } from '../demux/dolby-vision/DolbyVisionProfiles';
 
 type MediaStreamMetadata = {
     AverageFrameRate?: unknown

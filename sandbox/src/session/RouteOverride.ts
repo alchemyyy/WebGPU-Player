@@ -1,64 +1,49 @@
 // The route override: it narrows what the engine's eligibility may choose from, so the eligibility still validates every route it picks.
-// The transport narrows the presentation authorizations; the decoder narrows the probed capabilities to one backend, which can only choose among what the probes qualified.
+// The transport narrows the presentation authorizations; the decoder narrows the probed capabilities and decides whether the eligibility is offered the GPU decoder packages.
 import type { CustomDecodeCapabilities } from 'webgpu-player/capability/CustomDecodeCapabilities';
 import type { EligibleCustomPlayback } from 'webgpu-player/capability/CustomPlaybackEligibility';
 import type { CustomPresentationEligibilityOptions } from 'webgpu-player/presentation/PresentationSetup';
 
 import type { DecoderOverride, FrameTransportOverride, RouteOverride } from '../contracts/SandboxContracts';
 
-// A capability the bundled decoder qualified, rather than the browser's WebCodecs decoder
-const BUNDLED_DECODER_REASON = 'bundled-software-decoder';
 const UNSUPPORTED_STATUS = 'unsupported';
 const SUPPORTED_STATUS = 'supported';
 const NATIVE_DECODER_BACKEND = 'native';
+const GPU_DECODER_BACKEND = 'gpu';
 const ROUTE_OVERRIDE_UNMET = 'route-override-unmet';
 
-type CapabilityStatus = Readonly<{ reason: string; status: string }>;
+type CapabilityStatus = Readonly<{ status: string }>;
 
-/** Returns a capability marked unsupported when the decoder override excludes its backend. */
-function narrowCapability<Capability extends CapabilityStatus>(capability: Capability, decoder: DecoderOverride): Capability {
-    const bundled = capability.reason === BUNDLED_DECODER_REASON;
-    const excluded = decoder === 'native' ? bundled : !bundled;
-    return excluded && capability.status === SUPPORTED_STATUS ? { ...capability, status: UNSUPPORTED_STATUS } : capability;
-}
-
-function narrowCapabilityRecord<Key extends string, Capability extends CapabilityStatus>(
-    record: Readonly<Record<Key, Capability>>,
-    decoder: DecoderOverride
+/** Returns the record with every supported capability marked unsupported. */
+function withdrawCapabilityRecord<Key extends string, Capability extends CapabilityStatus>(
+    record: Readonly<Record<Key, Capability>>
 ): Readonly<Record<Key, Capability>> {
     const entries: Array<[string, Capability]> = [];
     for (const [ key, capability ] of Object.entries<Capability>(record)) {
-        entries.push([ key, narrowCapability(capability, decoder) ]);
+        entries.push([ key, capability.status === SUPPORTED_STATUS ? { ...capability, status: UNSUPPORTED_STATUS } : capability ]);
     }
     return Object.fromEntries(entries) as Record<Key, Capability>;
 }
 
 /**
- * Returns the capabilities with the video decoders a decoder override excludes marked unsupported.
- * Native keeps the WebCodecs routes and drops the bundled decoders; software keeps the bundled decoders and drops every WebCodecs route.
+ * Returns the capabilities with the video decoders a decoder override excludes withdrawn.
+ * The GPU override withdraws every WebCodecs route, so only a GPU decoder package remains; the others keep them all.
  */
 export function narrowCapabilitiesForDecoder(capabilities: CustomDecodeCapabilities, decoder: DecoderOverride): CustomDecodeCapabilities {
     switch (decoder) {
         case 'auto':
-            return capabilities;
         case 'native':
+            return capabilities;
+        case 'gpu':
             return {
                 ...capabilities,
-                bundledHEVC: undefined,
-                bundledJPEG2000: undefined,
-                bundledMPEG2: undefined,
-                bundledVC1: undefined,
-                rawHDRVideo: narrowCapabilityRecord(capabilities.rawHDRVideo, decoder),
-                video: narrowCapabilityRecord(capabilities.video, decoder)
-            };
-        case 'software':
-            return {
-                ...capabilities,
-                nativeDolbyVisionHEVC: capabilities.nativeDolbyVisionHEVC && narrowCapability(capabilities.nativeDolbyVisionHEVC, decoder),
-                nativeHDRHEVC: capabilities.nativeHDRHEVC && narrowCapability(capabilities.nativeHDRHEVC, decoder),
-                nativeUltraHDVideo: capabilities.nativeUltraHDVideo && narrowCapabilityRecord(capabilities.nativeUltraHDVideo, decoder),
-                rawHDRVideo: narrowCapabilityRecord(capabilities.rawHDRVideo, decoder),
-                video: narrowCapabilityRecord(capabilities.video, decoder)
+                h264Profiles: undefined,
+                hevcRangeExtensions: undefined,
+                nativeDolbyVisionHEVC: undefined,
+                nativeHDRHEVC: undefined,
+                nativeUltraHDVideo: undefined,
+                rawHDRVideo: withdrawCapabilityRecord(capabilities.rawHDRVideo),
+                video: withdrawCapabilityRecord(capabilities.video)
             };
     }
 }
@@ -97,14 +82,36 @@ export function narrowPresentationOptionsForTransport(
     }
 }
 
+/** Returns whether an override lets the eligibility choose a GPU decoder package: every override but Native, which keeps to WebCodecs. */
+export function allowsGPUVideoDecoders(decoder: DecoderOverride): boolean {
+    switch (decoder) {
+        case 'auto':
+        case 'gpu':
+            return true;
+        case 'native':
+            return false;
+    }
+}
+
+/** Returns whether a route's decoder backend is the one a decoder override asks for. */
+function meetsDecoderOverride(decoder: DecoderOverride, videoDecoderBackend: EligibleCustomPlayback['videoDecoderBackend']): boolean {
+    switch (decoder) {
+        case 'auto':
+            return true;
+        case 'gpu':
+            return videoDecoderBackend === GPU_DECODER_BACKEND;
+        case 'native':
+            return videoDecoderBackend === NATIVE_DECODER_BACKEND;
+    }
+}
+
 /** Returns what the chosen route left unmet of an override, as `route-override-unmet: <detail>`, or null when it met it. */
 export function describeUnmetRouteOverride(override: RouteOverride, route: Pick<EligibleCustomPlayback, 'videoDecoderBackend' | 'videoOutputMode'>): string | null {
     const unmet: string[] = [];
     if (override.transport !== 'auto' && override.transport !== route.videoOutputMode) {
         unmet.push(`transport ${override.transport}, chose ${route.videoOutputMode}`);
     }
-    const nativeDecoder = route.videoDecoderBackend === NATIVE_DECODER_BACKEND;
-    if ((override.decoder === 'native' && !nativeDecoder) || (override.decoder === 'software' && nativeDecoder)) {
+    if (!meetsDecoderOverride(override.decoder, route.videoDecoderBackend)) {
         unmet.push(`decoder ${override.decoder}, chose ${route.videoDecoderBackend}`);
     }
     return unmet.length === 0 ? null : `${ROUTE_OVERRIDE_UNMET}: ${unmet.join('; ')}`;

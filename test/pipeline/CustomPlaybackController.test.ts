@@ -10,6 +10,7 @@ import type {
     DecodedPresentationFrame,
     DecodedVideoPresentationFrame
 } from 'webgpu-player/presentation/WebGPUPresenter';
+import type { AudioDecoderPackageSelection } from 'webgpu-player/decode/audio/AudioDecoderPackageInstance';
 import type { AudioWorkletTelemetry } from 'webgpu-player/audio/output/AudioWorkletProtocol';
 import { CUSTOM_AUDIO_DOWNMIX_ALGORITHMS } from 'webgpu-player/audio/processing/CustomAudioDownmixAlgorithm';
 import type { AudioDownmixSettings } from 'webgpu-player/audio/processing/CustomAudioDownmix';
@@ -44,6 +45,9 @@ import type {
     CustomPlaybackStartResult,
     CustomVideoDecodeSession
 } from 'webgpu-player/pipeline/CustomPlaybackControllerTypes';
+import type { GPUVideoDecoderSelection } from 'webgpu-player/decode/video/gpu/GPUVideoDecoderCatalog';
+
+import { createDecoderProjectVideoPackageForTest } from '../helpers/decoderPackages';
 
 const ULTRA_HD_8K_CODED_WIDTH = 7_680;
 const ULTRA_HD_8K_CODED_HEIGHT = 4_320;
@@ -53,8 +57,19 @@ const ULTRA_HD_16K_CODED_HEIGHT = 8_640;
 const UNREPRESENTABLE_CODED_WIDTH = Number.MAX_SAFE_INTEGER;
 const UNREPRESENTABLE_CODED_HEIGHT = 2;
 const UNREPRESENTABLE_RAW_PLAYBACK_ERROR = 'Raw custom playback frames have no representable copy layout';
+// The HEVC decoder's package, which the controller hands its decode session unchanged
+const HEVC_PACKAGE = createDecoderProjectVideoPackageForTest('hevc');
+const GPU_VIDEO_DECODER: GPUVideoDecoderSelection = { codec: 'hevc', decoderId: HEVC_PACKAGE.id, package: HEVC_PACKAGE };
+const GPU_DECODER_BACKEND_ERROR = 'A GPU video decoder requires the gpu decoder backend, and that backend requires one';
+const GPU_ROUTE_ERROR = 'GPU video playback requires the frame-pool route without Dolby Vision reconstruction or native color handling';
+const FRAME_POOL_ROUTE_ERROR = 'Frame-pool custom playback requires the gpu decoder backend and a planar frame format';
 const MAIN10_LEVEL_6_1_CODEC_STRING = 'hvc1.2.6.L183.B0';
 const WORKER_REUSE_SEEK_TARGET_MICROSECONDS = secondsToMicroseconds(42);
+// Audio decoder package selections of two tracks, which the controller hands its decode session without reading them
+const FIRST_TRACK_AUDIO_DECODER = { codec: 'dts', source: {} } as unknown as AudioDecoderPackageSelection;
+const SECOND_TRACK_AUDIO_DECODER = { codec: 'truehd', source: {} } as unknown as AudioDecoderPackageSelection;
+const PACKAGE_DECODED_AUDIO_TRACK_INDEX = 2;
+const BROWSER_DECODED_AUDIO_TRACK_INDEX = 3;
 
 type ControllerDecodeWorkerMessageHandler = (event: MessageEvent<unknown>) => void;
 
@@ -122,6 +137,7 @@ function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
         droppedFrameCount: 0,
         failureKind: null,
         firstFrameMediaTimeMicroseconds: null,
+        gpuVideoDecode: null,
         lastAudioMediaTimeMicroseconds: null,
         lastFrameEndMediaTimeMicroseconds: null,
         lastFrameMediaTimeMicroseconds: null,
@@ -718,39 +734,6 @@ function requireAudioOutput(harness: ControllerHarness): FakeAudioOutput {
 }
 
 describe('CustomPlaybackController', () => {
-    it.each([ 'ffmpeg-mpeg2-vc1', 'openjpeg' ] as const)(
-        'starts the qualified %s SDR VideoFrame route',
-        async videoDecoderBackend => {
-            const harness = createControllerHarness(false);
-            const startPromise = harness.controller.play({
-                ...createPlayOptions(),
-                videoDecoderBackend
-            });
-            await flushAsyncWork();
-            const generation = harness.videoDecodeSession.starts[0]?.generation;
-            if (!generation) {
-                throw new Error('Software video decode did not start');
-            }
-
-            expect(harness.videoDecodeSession.starts[0]).toMatchObject({
-                generation,
-                videoDecoderBackend,
-                videoOutputMode: 'video-frame'
-            });
-            harness.videoDecodeSession.emit({
-                audio: null,
-                codec: videoDecoderBackend === 'openjpeg' ? 'mjp2' : 'mpeg2video',
-                generation,
-                type: 'ready'
-            });
-            await expect(startPromise).resolves.toMatchObject({
-                generation,
-                status: 'started'
-            });
-            await harness.controller.destroy();
-        }
-    );
-
     it('forwards native HDR metadata neutralization to the decode session', async () => {
         const harness = createControllerHarness(false);
         const startPromise = harness.controller.play({
@@ -786,16 +769,15 @@ describe('CustomPlaybackController', () => {
         await harness.controller.destroy();
     });
 
-    it('forwards the selected Dolby Vision profile and its discarded EL to the decode session', async () => {
+    it('forwards the selected Dolby Vision profile to the decode session', async () => {
         const harness = createControllerHarness(false);
         const startPromise = harness.controller.play({
             ...createPlayOptions(),
-            discardDolbyVisionEnhancementLayer: true,
             dolbyVisionProfile: 7,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
             rawVideoFrameFormat: 'I420P10',
-            videoDecoderBackend: 'bundled-hevc',
+            videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes'
         });
         await flushAsyncWork();
@@ -805,12 +787,12 @@ describe('CustomPlaybackController', () => {
         }
 
         expect(harness.videoDecodeSession.starts[0]).toMatchObject({
-            discardDolbyVisionEnhancementLayer: true,
             dolbyVisionProfile: 7,
             generation,
-            videoDecoderBackend: 'bundled-hevc',
+            videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes'
         });
+        expect(harness.videoDecodeSession.starts[0]).not.toHaveProperty('discardDolbyVisionEnhancementLayer');
         harness.videoDecodeSession.emit({
             audio: null,
             codec: 'hev1.2.4.L153.B0',
@@ -875,6 +857,39 @@ describe('CustomPlaybackController', () => {
         })).toThrow(UNREPRESENTABLE_RAW_PLAYBACK_ERROR);
         expect(harness.videoDecodeSession.starts).toEqual([]);
         await harness.controller.destroy();
+    });
+
+    it('plays the frame-pool route only with the gpu backend, its GPU decoder, and a planar format', async () => {
+        const harness = createControllerHarness(false);
+        const framePoolOptions: CustomPlaybackPlayOptions = {
+            ...createPlayOptions(),
+            gpuVideoDecoder: GPU_VIDEO_DECODER,
+            rawVideoFrameFormat: 'I420P10',
+            videoDecoderBackend: 'gpu',
+            videoOutputMode: 'frame-pool'
+        };
+
+        expect(() => harness.controller.play({ ...framePoolOptions, gpuVideoDecoder: undefined })).toThrow(GPU_DECODER_BACKEND_ERROR);
+        expect(() => harness.controller.play({ ...framePoolOptions, videoDecoderBackend: 'native' })).toThrow(GPU_DECODER_BACKEND_ERROR);
+        expect(() => harness.controller.play({ ...framePoolOptions, videoOutputMode: 'raw-planes' })).toThrow(GPU_ROUTE_ERROR);
+        expect(() => harness.controller.play({ ...framePoolOptions, dolbyVisionProfile: 8 })).toThrow(GPU_ROUTE_ERROR);
+        expect(() => harness.controller.play({ ...framePoolOptions, rawVideoFrameFormat: null })).toThrow(FRAME_POOL_ROUTE_ERROR);
+        expect(() => harness.controller.play({ ...createPlayOptions(), rawVideoFrameFormat: 'I420P10', videoOutputMode: 'frame-pool' })).toThrow(
+            FRAME_POOL_ROUTE_ERROR
+        );
+        expect(harness.videoDecodeSession.starts).toEqual([]);
+
+        const startPromise = harness.controller.play(framePoolOptions);
+        await flushAsyncWork();
+
+        expect(harness.videoDecodeSession.starts[0]).toMatchObject({
+            gpuVideoDecoder: GPU_VIDEO_DECODER,
+            rawVideoFrameFormat: 'I420P10',
+            videoDecoderBackend: 'gpu',
+            videoOutputMode: 'frame-pool'
+        });
+        await harness.controller.destroy();
+        await expect(startPromise).resolves.toMatchObject({ status: 'stopped' });
     });
 
     it('forwards the selected decoded audio layout and downmix algorithm', async () => {
@@ -1009,6 +1024,32 @@ describe('CustomPlaybackController', () => {
         });
         await harness.controller.destroy();
         await expect(switchPromise).resolves.toMatchObject({ status: 'stopped' });
+    });
+
+    it('switches audio tracks with the audio decoder package given for the new track, never the previous track\'s', async () => {
+        const harness = createControllerHarness(true);
+        await startReadyPlayback(harness, true, { audioDecoder: FIRST_TRACK_AUDIO_DECODER });
+
+        expect(harness.videoDecodeSession.starts.at(-1)?.audioDecoder).toEqual(FIRST_TRACK_AUDIO_DECODER);
+        const packageSwitchPromise = harness.controller.setAudioStreamIndex(
+            PACKAGE_DECODED_AUDIO_TRACK_INDEX,
+            'decoded-pcm',
+            undefined,
+            undefined,
+            SECOND_TRACK_AUDIO_DECODER
+        );
+        await flushAsyncWork();
+        expect(harness.videoDecodeSession.starts.at(-1)).toMatchObject({
+            audioDecoder: SECOND_TRACK_AUDIO_DECODER,
+            audioTrackIndex: PACKAGE_DECODED_AUDIO_TRACK_INDEX
+        });
+        const browserSwitchPromise = harness.controller.setAudioStreamIndex(BROWSER_DECODED_AUDIO_TRACK_INDEX);
+        await flushAsyncWork();
+        expect(harness.videoDecodeSession.starts.at(-1)?.audioTrackIndex).toBe(BROWSER_DECODED_AUDIO_TRACK_INDEX);
+        expect(harness.videoDecodeSession.starts.at(-1)?.audioDecoder).toBeUndefined();
+
+        await harness.controller.destroy();
+        await Promise.all([ packageSwitchPromise, browserSwitchPromise ]);
     });
 
     it('owns decode, PCM output, clock controls, events, and telemetry', async () => {
@@ -3076,14 +3117,23 @@ describe('CustomPlaybackController', () => {
     });
 
     it.each([
-        { label: 'bundled software video', videoDecoderBackend: 'bundled-hevc', withAudio: true },
-        { label: 'native video without audio', videoDecoderBackend: 'native', withAudio: false }
+        {
+            label: 'GPU-decoded video',
+            playOptions: {
+                gpuVideoDecoder: GPU_VIDEO_DECODER,
+                rawVideoFrameFormat: 'I420P10',
+                videoDecoderBackend: 'gpu',
+                videoOutputMode: 'frame-pool'
+            },
+            withAudio: true
+        },
+        { label: 'native video without audio', playOptions: { videoDecoderBackend: 'native' }, withAudio: false }
     ] as const)('keeps draining hidden $label instead of suspending it', async ({
-        videoDecoderBackend,
+        playOptions,
         withAudio
     }) => {
         const harness = createControllerHarness(withAudio);
-        await startReadyPlayback(harness, withAudio, { videoDecoderBackend });
+        await startReadyPlayback(harness, withAudio, playOptions);
         harness.controller.setPageVisibility(false);
         const dueFrame = createDecodedFrame(secondsToMicroseconds(25));
         harness.videoDecodeSession.queueFrame(dueFrame);

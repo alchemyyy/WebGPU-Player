@@ -15,14 +15,14 @@ import {
     reconstructDolbyVisionBT2020PQ,
     reconstructDolbyVisionBT2020PQWithEnhancement
 } from '../color/DolbyVisionColorTransform';
-import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../video/dolby-vision/DolbyVisionRPUParser';
+import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../demux/dolby-vision/DolbyVisionRPUParser';
 import {
     RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT,
     RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
     type RawVideoPlaneDescriptor,
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
-} from '../video/RawVideoFrameCopy';
+} from '../decode/video/RawVideoFrameCopy';
 import { createBuiltinChain } from '../presentation/passes/builtin/BuiltinChains';
 import type {
     BuiltinChain,

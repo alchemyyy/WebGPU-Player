@@ -13,7 +13,7 @@ import {
     type DecodeWorkerStartRequest,
     type DecodeWorkerStoppedResponse
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
-import type DolbyVisionRPUParserSession from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParserSession';
+import type DolbyVisionRPUParserSession from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParserSession';
 
 import { createInProcessAudioDecodeWorkerConstructor, InProcessAudioDecodeWorker } from './inProcessAudioDecodeWorker';
 
@@ -258,7 +258,7 @@ function createMediaFetch(files: ReadonlyMap<string, Uint8Array>): typeof fetch 
  * Call it after vi.resetModules().
  */
 export async function spyOnRPUParserSessions(): Promise<MockInstance<typeof DolbyVisionRPUParserSession.create>> {
-    const { default: RPUParserSession } = await import('webgpu-player/video/dolby-vision/DolbyVisionRPUParserSession');
+    const { default: RPUParserSession } = await import('webgpu-player/demux/dolby-vision/DolbyVisionRPUParserSession');
     return vi.spyOn(RPUParserSession, 'create');
 }
 

@@ -1,6 +1,6 @@
 // The HDR10+ AV1 test vectors, the known answers their generator wrote, and the static HDR metadata the engine reads from them
 
-import type { StaticHDRMetadata } from 'webgpu-player/video/hdr/StaticHDRMetadata';
+import type { StaticHDRMetadata } from 'webgpu-player/demux/hdr/StaticHDRMetadata';
 
 import {
     readHDR10PlusVectorExpectations,

@@ -11,11 +11,12 @@ import { getCustomPlaybackEligibility, type EligibleCustomPlayback } from 'webgp
 import { getCustomPlaybackRuntimeAvailability } from 'webgpu-player/capability/CustomPlaybackRuntime';
 import { probeCachedNativeMediaAudioCapabilities } from 'webgpu-player/capability/NativeMediaAudioCapabilities';
 import { type Microseconds } from 'webgpu-player/MediaTime';
-import type { CustomDecodeMediaSource } from 'webgpu-player/pipeline/CustomDecodeMediaSource';
+import type { CustomDecodeMediaSource } from 'webgpu-player/demux/CustomDecodeMediaSource';
 import CustomPlaybackController from 'webgpu-player/pipeline/CustomPlaybackController';
 import type {
     CustomPlaybackControllerEvent,
     CustomPlaybackFallbackRequest,
+    CustomPlaybackPlayOptions,
     CustomPlaybackStartResult,
     CustomPlaybackState
 } from 'webgpu-player/pipeline/CustomPlaybackControllerTypes';
@@ -27,9 +28,11 @@ import type { PassParameter } from 'webgpu-player/presentation/passes/PassTypes'
 import {
     alignPresentationInputBitDepth,
     configurePresentationColorPipeline,
+    createGPUVideoDecodeSessionFactory,
     DEFAULT_DOLBY_VISION_RAW_FRAME_FORMAT,
     EMPTY_PRESENTATION_INPUT,
     getCustomPresentationEligibilityOptions,
+    getGPUVideoDecoderOffers,
     getStaticHDRRenderSettings,
     isWebGPUPresentationInput,
     readPresentationInput,
@@ -48,7 +51,7 @@ import WebGPUPresenter, {
 } from 'webgpu-player/presentation/WebGPUPresenter';
 import { requireMicroseconds } from 'webgpu-player/TimeMath';
 import type { DolbyVisionAuthorizationRoute } from 'webgpu-player/validation/DolbyVisionPresentationAuthorization';
-import { isRawDolbyVisionVideoFrameFormat } from 'webgpu-player/video/RawVideoFrameCopy';
+import { isRawDolbyVisionVideoFrameFormat } from 'webgpu-player/decode/video/RawVideoFrameCopy';
 
 import {
     appendSandboxFailure,
@@ -70,11 +73,17 @@ import {
     type SubtitleSelection
 } from '../contracts/SandboxContracts';
 import type { SandboxStore } from '../ui/Panel';
+import { createSandboxDecoderPackages } from './DecoderPackages';
 import { createFFmpegTool, type FFmpegTool } from './FFmpegTool';
 import { isContainerVideoStream, type FFprobeStream } from './FFprobeOutput';
 import { probeMedia, type ProbedMedia } from './MediaProbe';
 import { createPlaybackMediaSource } from './PlaybackMediaSource';
-import { describeUnmetRouteOverride, narrowCapabilitiesForDecoder, narrowPresentationOptionsForTransport } from './RouteOverride';
+import {
+    allowsGPUVideoDecoders,
+    describeUnmetRouteOverride,
+    narrowCapabilitiesForDecoder,
+    narrowPresentationOptionsForTransport
+} from './RouteOverride';
 import { parseWebVTTCues } from './WebVTTCues';
 
 export type SandboxSessionOptions = Readonly<{
@@ -166,6 +175,38 @@ function describeShaderFile(id: string, origin: string, source: string, paramete
     return { id, origin, parameters, passes, source };
 }
 
+/** Returns the controller's play options for the eligibility's route from a time; decoded PCM takes the default downmix and the widest output the device has. */
+function createPlayOptions(
+    eligibility: EligibleCustomPlayback,
+    startTimeMicroseconds: Microseconds,
+    decodedAudio: boolean,
+    maximumChannelCount: number | null
+): CustomPlaybackPlayOptions {
+    return {
+        ...(eligibility.audioDecoder ? { audioDecoder: eligibility.audioDecoder } : {}),
+        audioDownmixAlgorithm: decodedAudio ? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM : undefined,
+        audioDownmixSettings: decodedAudio ? createDefaultAudioDownmixSettings() : undefined,
+        audioOutputMode: eligibility.audioOutputMode ?? undefined,
+        audioTrackIndex: eligibility.audioTrackIndex,
+        decodedAudioOutputChannelCount: decodedAudio ?
+            selectCustomAudioOutputChannelCountForMaximum(maximumChannelCount, eligibility.audioSourceChannelCount) :
+            undefined,
+        dolbyVisionProfile: eligibility.dolbyVisionProfile,
+        durationMicroseconds: eligibility.durationMicroseconds,
+        ...(eligibility.gpuVideoDecoder ? { gpuVideoDecoder: eligibility.gpuVideoDecoder } : {}),
+        maximumCodedHeight: eligibility.maximumCodedHeight,
+        maximumCodedWidth: eligibility.maximumCodedWidth,
+        nativeHDRTransfer: eligibility.nativeHDRTransfer ?? null,
+        neutralizeHDRColorMetadata: eligibility.neutralizeHDRColorMetadata,
+        rawVideoFrameFormat: eligibility.rawVideoFrameFormat,
+        source: eligibility.source,
+        startTimeMicroseconds,
+        videoDecoderBackend: eligibility.videoDecoderBackend,
+        videoOutputMode: eligibility.videoOutputMode,
+        videoTrackIndex: eligibility.videoTrackIndex
+    };
+}
+
 function getFirstVideoTrackIndex(probe: ProbedMedia): number | null {
     return probe.output.streams.find((stream: FFprobeStream): boolean => isContainerVideoStream(stream))?.index ?? null;
 }
@@ -175,6 +216,7 @@ function describeRoute(eligibility: EligibleCustomPlayback, override: RouteOverr
     return {
         audioOutputMode: eligibility.audioOutputMode,
         dolbyVisionProfile: eligibility.dolbyVisionProfile,
+        gpuVideoDecoder: eligibility.gpuVideoDecoder ?? null,
         nativeHDRTransfer: eligibility.nativeHDRTransfer ?? null,
         neutralizeHDRColorMetadata: eligibility.neutralizeHDRColorMetadata,
         rawVideoFrameFormat: eligibility.rawVideoFrameFormat,
@@ -427,6 +469,20 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
     };
 
     const presenter = new WebGPUPresenter(handlePresentationFallback, handleDecodedPresentationRefresh);
+    // The frame-pool route decodes on the presenter's device, so its sessions come from the presenter
+    const gpuVideoDecodeSessionFactory = createGPUVideoDecodeSessionFactory(presenter);
+    // The user's decoder packages, which playbacks prefer to the engine's, kept across reloads
+    const decoderPackages = createSandboxDecoderPackages({
+        publish: (packages): void => {
+            store.setState({ decoders: { packages } });
+        },
+        recordFailure: (code: string, detail: string): void => {
+            recordFailure('decoders', code, detail);
+        }
+    });
+    decoderPackages.restore().catch((error: unknown): void => {
+        recordFailure('decoders', 'package-restore-failed', describeError(error));
+    });
     // A hidden page gets no animation frames, so the frame loop drains decoded video on a timer until it returns
     document.addEventListener(VISIBILITY_CHANGE_EVENT, (): void => {
         playback?.frameLoop?.synchronizePageVisibility(isPageVisible());
@@ -447,6 +503,7 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
                     handleFallback(current, reference.controller, fallbackRequest);
                 }
             },
+            gpuVideoDecodeSessionFactory,
             nativeAudioBridgeFactory: hasAudio ? (): CustomDecodeNativeAudioBridge => new CustomDecodeNativeAudioBridge() : undefined
         });
         reference.controller = controller;
@@ -489,8 +546,16 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
         if (!presentationOptions || !isCurrent()) {
             return;
         }
+        const gpuVideoDecoders = allowsGPUVideoDecoders(override.decoder) ?
+            await getGPUVideoDecoderOffers(presenter, decoderPackages.getVideoDecoders(), playOptions) :
+            [];
+        if (!isCurrent()) {
+            return;
+        }
         const eligibility = getCustomPlaybackEligibility(playOptions, narrowCapabilitiesForDecoder(capabilities, override.decoder), {
             ...narrowPresentationOptionsForTransport(presentationOptions, override.transport),
+            audioDecoders: decoderPackages.getAudioDecoders(),
+            gpuVideoDecoders,
             nativeMediaAudioCapabilities,
             runtimeAvailability: getCustomPlaybackRuntimeAvailability()
         });
@@ -545,28 +610,7 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
         current.frameLoop = frameLoop;
         frameLoop.synchronizePageVisibility(isPageVisible());
         const maximumChannelCount = audioPrewarm?.audioContext.destination.maxChannelCount ?? null;
-        const result = await controller.play({
-            audioDownmixAlgorithm: decodedAudio ? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM : undefined,
-            audioDownmixSettings: decodedAudio ? createDefaultAudioDownmixSettings() : undefined,
-            audioOutputMode: eligibility.audioOutputMode ?? undefined,
-            audioTrackIndex: eligibility.audioTrackIndex,
-            decodedAudioOutputChannelCount: decodedAudio ?
-                selectCustomAudioOutputChannelCountForMaximum(maximumChannelCount, eligibility.audioSourceChannelCount) :
-                undefined,
-            ...(eligibility.discardDolbyVisionEnhancementLayer ? { discardDolbyVisionEnhancementLayer: true } : {}),
-            dolbyVisionProfile: eligibility.dolbyVisionProfile,
-            durationMicroseconds: eligibility.durationMicroseconds,
-            maximumCodedHeight: eligibility.maximumCodedHeight,
-            maximumCodedWidth: eligibility.maximumCodedWidth,
-            nativeHDRTransfer: eligibility.nativeHDRTransfer ?? null,
-            neutralizeHDRColorMetadata: eligibility.neutralizeHDRColorMetadata,
-            rawVideoFrameFormat: eligibility.rawVideoFrameFormat,
-            source: eligibility.source,
-            startTimeMicroseconds,
-            videoDecoderBackend: eligibility.videoDecoderBackend,
-            videoOutputMode: eligibility.videoOutputMode,
-            videoTrackIndex: eligibility.videoTrackIndex
-        });
+        const result = await controller.play(createPlayOptions(eligibility, startTimeMicroseconds, decodedAudio, maximumChannelCount));
         handleStartResult(current, controller, result);
     };
 
@@ -642,6 +686,7 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
     };
 
     return {
+        addDecoderPackages: (chosenFiles: readonly File[]): Promise<void> => decoderPackages.add(chosenFiles),
         addExampleShaderPass: (exampleId: string): Promise<void> => {
             const example = EXAMPLE_PASSES.find((candidate: ExampleShaderPass): boolean => candidate.id === exampleId);
             if (!example) {
@@ -744,6 +789,7 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
             controller.resume();
             return Promise.resolve();
         },
+        removeDecoderPackage: (packageId: string): Promise<void> => decoderPackages.remove(packageId),
         removeShaderFile: (fileId: string): Promise<void> => {
             const index = requireFileIndex(fileId, 'shader-remove-failed');
             files = files.filter((_file: SandboxShaderFile, fileIndex: number): boolean => fileIndex !== index);
@@ -836,6 +882,13 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
         setVolume: (volume: number): void => {
             playback?.controller?.setVolume(volume);
             publishPlayback({ volume });
+        },
+        verifyDecoderPackage: async (packageId: string): Promise<void> => {
+            const device = await presenter.getGPUVideoDecodeDevice();
+            if (!device) {
+                throw failCommand('decoders', 'package-verify-failed', 'the presenter has no device');
+            }
+            await decoderPackages.verify(packageId, device);
         }
     };
 }

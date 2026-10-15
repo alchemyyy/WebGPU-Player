@@ -2,10 +2,9 @@
 
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { createTrueHDExactCapabilityVectors } from '#codec_vector_assets/truehd/TrueHDExactCapabilityVectors';
-import { AUDIO_OUTPUT_STAGE_WASM_ASSET, TRUEHD_DECODER_WASM_ASSET } from 'webgpu-player/EngineAssets';
+import { AUDIO_OUTPUT_STAGE_WASM_ASSET } from 'webgpu-player/EngineAssets';
 import type { Microseconds } from 'webgpu-player/MediaTime';
-import { loadTrueHDDecoderModule } from 'webgpu-player/audio/decoders/TrueHDSoftwareAudioDecoder';
+import { parseAudioDecoderManifest } from 'webgpu-player/decode/audio/AudioDecoderManifest';
 import { loadAudioOutputStageModule } from 'webgpu-player/audio/processing/AudioOutputStageModule';
 import { createDefaultAudioDownmixSettings } from 'webgpu-player/audio/processing/CustomAudioDownmix';
 import { DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM } from 'webgpu-player/audio/processing/CustomAudioDownmixAlgorithm';
@@ -22,16 +21,31 @@ import {
     type AudioDecodeWorkerRequest,
     type AudioDecodeWorkerResponse
 } from 'webgpu-player/pipeline/AudioDecodeWorkerProtocol';
+import { CUSTOM_WAVE_CHANNEL_MASK_STEREO } from 'webgpu-player/audio/processing/CustomWaveChannelLayout';
 import { startAudioDecodeWorkerRuntime } from 'webgpu-player/pipeline/AudioDecodeWorkerRuntime';
 import type { DecodeWorkerAudioOutputAttachment } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 
+import { getAudioDecoderErrorCode } from '../helpers/audioDecoderPackageResults';
 import { getDecodedAudioMediaSample } from '../helpers/decodedAudioMedia';
 import {
     openFakeWorkletChannel,
     type FakeWorkletChannelOptions,
     type FakeWorkletProcessor
 } from '../helpers/fakeWorkletProcessor';
-import { readDecoderWASMSource } from '../helpers/libraryAssets';
+import { readLibraryAssetSource } from '../helpers/libraryAssets';
+import { ScriptedAudioDecoderModule, type ScriptedAudioPacket } from '../helpers/scriptedAudioDecoderModule';
+
+// Package attempts instantiate the scripted modules their sources carry
+vi.mock('webgpu-player/decode/packages/DecoderPackageImports', async (importOriginal) => {
+    const original = await importOriginal<typeof import('webgpu-player/decode/packages/DecoderPackageImports')>();
+    return {
+        ...original,
+        instantiateDecoderPackage: async (module: WebAssembly.Module) => {
+            const { instantiateScriptedAudioDecoderModule } = await import('../helpers/scriptedAudioDecoderModule');
+            return instantiateScriptedAudioDecoderModule(module);
+        }
+    };
+});
 
 type ProgressResponse = Extract<AudioDecodeWorkerResponse, { type: 'progress' }>;
 
@@ -47,7 +61,20 @@ const STEREO_CHANNEL_COUNT = 2;
 const UNQUALIFIED_CHANNEL_COUNT = 4;
 const SAMPLE_RATE = 48_000;
 const PCM_ROUTE_CODEC = 'pcm-s16';
-const TRUEHD_ROUTE_CODEC = 'truehd';
+const PACKAGE_ROUTE_CODEC = 'truehd';
+const PACKAGE_BACKEND = 'package';
+const PACKAGE_CONVERT_ERROR = 'convert';
+const PACKAGE_CONVERT_ERROR_CODE = 3;
+// A packet's failure value, which the runtime reports with the manifest's name of its error
+const PACKAGE_FAILURE_VALUE = 1;
+const PACKAGE_FAILURE = `audio decoder ${PACKAGE_CONVERT_ERROR}: ${PACKAGE_FAILURE_VALUE}`;
+const PACKAGE_MANIFEST = parseAudioDecoderManifest([
+    '//! id: scripted',
+    '//! name: Scripted',
+    '//! decoder: audio',
+    `//! accepts: codec in [${PACKAGE_ROUTE_CODEC}]`,
+    `//! error: ${PACKAGE_CONVERT_ERROR_CODE}, ${PACKAGE_CONVERT_ERROR}`
+].join('\n'));
 // Matroska timestamps count milliseconds
 const MATROSKA_TIME_RESOLUTION = 1_000;
 const START_TIME_MICROSECONDS = 0 as Microseconds;
@@ -64,7 +91,6 @@ const COMPARED_FRAME_COUNT = 64;
 const SETTLE_MILLISECONDS = 50;
 const WAIT_OPTIONS = { interval: 1, timeout: 5_000 } as const;
 const PACKET_BYTE_LENGTH = 16;
-const TRUEHD_PACKETS_PER_BATCH = 48;
 const DROPPED_SAMPLE_FAILURE = 'The audio worklet dropped a decoded sample';
 const INPUT_CREDIT_FAILURE = 'Decoded audio input exceeded its credits';
 const INPUT_KIND_FAILURE = 'Decoded audio input does not match the attempt decoder';
@@ -100,9 +126,8 @@ const openedChannels: RuntimeChannel[] = [];
 const openedProcessors: FakeWorkletProcessor[] = [];
 
 beforeAll(async () => {
-    // The served binaries, which every runtime of this file reuses
-    await loadAudioOutputStageModule(await readDecoderWASMSource(AUDIO_OUTPUT_STAGE_WASM_ASSET));
-    await loadTrueHDDecoderModule(await readDecoderWASMSource(TRUEHD_DECODER_WASM_ASSET));
+    // The served output stage, which every runtime of this file reuses
+    await loadAudioOutputStageModule(await readLibraryAssetSource(AUDIO_OUTPUT_STAGE_WASM_ASSET));
 });
 
 afterEach(() => {
@@ -142,6 +167,7 @@ function createOpenRequest(overrides: Partial<AudioDecodeWorkerOpenAttemptReques
         audioOutput: null,
         decoderBackend: 'pcm',
         outputChannelCount: STEREO_CHANNEL_COUNT,
+        packageDecoder: null,
         routeCodec: PCM_ROUTE_CODEC,
         sourceSampleRate: SAMPLE_RATE,
         startTimeMicroseconds: START_TIME_MICROSECONDS,
@@ -233,6 +259,57 @@ function waitForSettled(): Promise<void> {
     return new Promise(resolve => {
         setTimeout(resolve, SETTLE_MILLISECONDS);
     });
+}
+
+/** A scripted package whose every packet decodes to the tone sample of its position, as one stereo block at the sample's time. */
+function createTonePackage(): ScriptedAudioDecoderModule {
+    const packets: ScriptedAudioPacket[] = [];
+    for (let sampleIndex = 0; sampleIndex < SAMPLES_PER_BATCH * BATCH_COUNT; sampleIndex += 1) {
+        const sample = createToneSample(sampleIndex);
+        packets.push({
+            blocks: [ {
+                channelData: sample.channelData.map((plane: Float32Array): number[] => Array.from(plane)),
+                channelMask: CUSTOM_WAVE_CHANNEL_MASK_STEREO,
+                sampleRate: sample.sampleRate,
+                timestampMicroseconds: sample.mediaTimeMicroseconds
+            } ],
+            kind: 'decoded'
+        });
+    }
+    return new ScriptedAudioDecoderModule({ manifest: PACKAGE_MANIFEST, packets });
+}
+
+/** Batches one packet per tone sample at the sample's time, as the decode worker batches a track's packets. */
+function createTonePacketBatches(): AudioDecodeWorkerPacketBatch[] {
+    const batches: AudioDecodeWorkerPacketBatch[] = [];
+    for (let batchIndex = 0; batchIndex < BATCH_COUNT; batchIndex += 1) {
+        const packetTimestampsMicroseconds: Microseconds[] = [];
+        for (let sampleOffset = 0; sampleOffset < SAMPLES_PER_BATCH; sampleOffset += 1) {
+            packetTimestampsMicroseconds.push((((batchIndex * SAMPLES_PER_BATCH) + sampleOffset) * SAMPLE_DURATION_MICROSECONDS) as Microseconds);
+        }
+        batches.push({
+            data: new ArrayBuffer(PACKET_BYTE_LENGTH * SAMPLES_PER_BATCH),
+            kind: 'packets',
+            packetByteLengths: packetTimestampsMicroseconds.map((): number => PACKET_BYTE_LENGTH),
+            packetTimestampsMicroseconds
+        });
+    }
+    return batches;
+}
+
+/** Runs an attempt on a runtime of its own until it finishes, fed the batches, with the decoder the overrides choose. */
+async function runAttempt(
+    batches: readonly AudioDecodeWorkerInputBatch[],
+    overrides: Partial<AudioDecodeWorkerOpenAttemptRequest>
+): Promise<{ channel: RuntimeChannel; processor: FakeWorkletProcessor }> {
+    const channel = openRuntime();
+    const { attachment, processor } = openWorklet();
+    channel.send(createOpenRequest({ audioOutput: attachment, ...overrides }), [ attachment.port ]);
+
+    await sendBatchesOnCredits(channel, batches);
+    channel.send({ ...ATTEMPT_KEY, type: 'finish-attempt' });
+    await waitForResponse(channel, { ...ATTEMPT_KEY, type: 'attempt-finished' });
+    return { channel, processor };
 }
 
 describe('the audio decode worker runtime', () => {
@@ -414,48 +491,59 @@ describe('the audio decode worker runtime', () => {
         });
     });
 
-    it('decodes a TrueHD attempt\'s packet batches with the bundled decoder', async () => {
-        const vector = createTrueHDExactCapabilityVectors().find(candidate => (
-            candidate.codec === 'truehd' && candidate.sampleRate === SAMPLE_RATE && candidate.channelCount === STEREO_CHANNEL_COUNT
-        ));
-        if (!vector) {
-            throw new Error('The TrueHD vectors have no 48 kHz stereo stream');
-        }
-        const batches: AudioDecodeWorkerPacketBatch[] = [];
-        for (let firstIndex = 0; firstIndex < vector.accessUnits.length; firstIndex += TRUEHD_PACKETS_PER_BATCH) {
-            const accessUnits = vector.accessUnits.slice(firstIndex, firstIndex + TRUEHD_PACKETS_PER_BATCH);
-            const data = new Uint8Array(accessUnits.reduce((byteLength, accessUnit) => byteLength + accessUnit.byteLength, 0));
-            let byteOffset = 0;
-            for (const accessUnit of accessUnits) {
-                data.set(accessUnit, byteOffset);
-                byteOffset += accessUnit.byteLength;
-            }
-            batches.push({
-                data: data.buffer,
-                kind: 'packets',
-                packetByteLengths: accessUnits.map(accessUnit => accessUnit.byteLength),
-                packetTimestampsMicroseconds: vector.expectedOutputs
-                    .slice(firstIndex, firstIndex + TRUEHD_PACKETS_PER_BATCH)
-                    .map(expected => expected.mediaTimeMicroseconds as Microseconds)
-            });
-        }
-        const decodedFrameCount = vector.expectedOutputs.reduce((frameCount, expected) => frameCount + expected.frameCount, 0);
+    it('decodes a package attempt with the host\'s package, which renders what the same samples render as PCM', async () => {
+        const tonePackage = createTonePackage();
+
+        const decodedPCM = await runAttempt(createToneBatches(BATCH_COUNT), {});
+        const packaged = await runAttempt(createTonePacketBatches(), {
+            decoderBackend: PACKAGE_BACKEND,
+            packageDecoder: { codec: PACKAGE_ROUTE_CODEC, source: tonePackage.source },
+            routeCodec: PACKAGE_ROUTE_CODEC
+        });
+
+        expect(getFailures(packaged.channel)).toEqual([]);
+        await vi.waitFor(() => {
+            expect(decodedPCM.processor.receivedFrameCount).toBe(TOTAL_FRAME_COUNT);
+            expect(packaged.processor.receivedFrameCount).toBe(TOTAL_FRAME_COUNT);
+        }, WAIT_OPTIONS);
+        expect(tonePackage.sentPackets.map(packet => packet.timestampMicroseconds))
+            .toEqual(createTonePacketBatches().flatMap(batch => batch.packetTimestampsMicroseconds));
+        expect(packaged.channel.responses.filter(response => response.type === 'source-format')).toEqual([
+            { ...ATTEMPT_KEY, channelCount: STEREO_CHANNEL_COUNT, sampleRate: SAMPLE_RATE, type: 'source-format' }
+        ]);
+        expect(getProgress(packaged.channel)).toEqual(getProgress(decodedPCM.channel));
+        expect(packaged.processor.chunks.map(chunk => chunk.channelData)).toEqual(decodedPCM.processor.chunks.map(chunk => chunk.channelData));
+    });
+
+    it('fails a package attempt with its package\'s named error when a packet fails to decode', async () => {
+        const failingPackage = new ScriptedAudioDecoderModule({
+            manifest: PACKAGE_MANIFEST,
+            packets: [ {
+                failure: { code: getAudioDecoderErrorCode(PACKAGE_MANIFEST, PACKAGE_CONVERT_ERROR), value: PACKAGE_FAILURE_VALUE },
+                kind: 'failed'
+            } ]
+        });
         const channel = openRuntime();
-        const { attachment, processor } = openWorklet();
+        const { attachment } = openWorklet();
         channel.send(createOpenRequest({
             audioOutput: attachment,
-            decoderBackend: 'truehd',
-            routeCodec: TRUEHD_ROUTE_CODEC
+            decoderBackend: PACKAGE_BACKEND,
+            packageDecoder: { codec: PACKAGE_ROUTE_CODEC, source: failingPackage.source },
+            routeCodec: PACKAGE_ROUTE_CODEC
         }), [ attachment.port ]);
 
-        await sendBatchesOnCredits(channel, batches);
-        channel.send({ ...ATTEMPT_KEY, type: 'finish-attempt' });
+        sendBatch(channel, {
+            data: new ArrayBuffer(PACKET_BYTE_LENGTH),
+            kind: 'packets',
+            packetByteLengths: [ PACKET_BYTE_LENGTH ],
+            packetTimestampsMicroseconds: [ START_TIME_MICROSECONDS ]
+        });
 
-        await waitForResponse(channel, { ...ATTEMPT_KEY, type: 'attempt-finished' });
-        expect(getFailures(channel)).toEqual([]);
-        await vi.waitFor(() => {
-            expect(processor.receivedFrameCount).toBe(decodedFrameCount);
-        }, WAIT_OPTIONS);
-        expect(getProgress(channel).reduce((frameCount, response) => frameCount + response.frameCount, 0)).toBe(decodedFrameCount);
+        await waitForResponse(channel, {
+            ...ATTEMPT_KEY,
+            failureKind: 'decode-failed',
+            message: PACKAGE_FAILURE,
+            type: 'attempt-failed'
+        });
     });
 });

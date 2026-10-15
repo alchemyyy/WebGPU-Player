@@ -13,8 +13,8 @@ import {
     HDR10_PLUS_METADATA_SCHEMA_VERSION,
     type HDR10PlusFrameMetadata,
     type HDR10PlusMetadata
-} from 'webgpu-player/video/hdr/HDR10PlusMetadata';
-import { parseHEVCSEIMessages } from 'webgpu-player/video/hevc/HEVCSEI';
+} from 'webgpu-player/demux/hdr/HDR10PlusMetadata';
+import { parseHEVCSEIMessages } from 'webgpu-player/demux/hevc/HEVCSEI';
 
 import { CODEC_VECTOR_ASSETS_DIRECTORY } from './enginePaths';
 

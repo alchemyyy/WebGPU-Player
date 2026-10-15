@@ -2,7 +2,7 @@
 // Sources are deterministic synthetic tones; see src/capability/vectors/test/truehd/PROVENANCE.txt
 
 import type { Microseconds } from '../../../src/MediaTime';
-import type { TrueHDDecoderCodec } from '../../../src/audio/decoders/TrueHDSoftwareAudioDecoder';
+import type { TrueHDAudioCodec } from '../../../src/demux/CustomAudioTrackMetadata';
 
 export type TrueHDExactCapabilityExpectedOutput = Readonly<{
     frameCount: number
@@ -15,7 +15,7 @@ export type TrueHDExactCapabilityVector = Readonly<{
     bitsPerSample: 24
     channelCount: 2 | 6
     channelMask: number
-    codec: TrueHDDecoderCodec
+    codec: TrueHDAudioCodec
     expectedOutputs: readonly TrueHDExactCapabilityExpectedOutput[]
     majorSyncRecoveryStartIndex: 1
     sampleRate: 48_000 | 96_000 | 192_000

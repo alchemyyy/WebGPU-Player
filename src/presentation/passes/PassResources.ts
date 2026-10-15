@@ -1,6 +1,6 @@
 // The engine-owned bindings of every pass: their WGSL declarations, their bind group layout entries, and the byte layouts of the uniforms the engine writes.
 // Built-in code reads these bindings by the variable names declared here, and the planner assigns their binding numbers.
-import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../../video/dolby-vision/DolbyVisionRPUParser';
+import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../../demux/dolby-vision/DolbyVisionRPUParser';
 import { BYTES_PER_WORD, UNIFORM_BUFFER_OFFSET_ALIGNMENT } from '../WebGPUConstants';
 import type { EngineBindingResource, EngineResource } from './PassTypes';
 
@@ -49,7 +49,7 @@ struct FramePoolLayoutUniforms {
     slotByteOffset: u32,
     bytesPerComponent: u32,
     planeCount: u32,
-    padding0: u32,
+    bitDepth: u32,
 }`,
     RenderSettingsUniforms: `struct RenderSettingsUniforms {
     version: u32,
@@ -218,7 +218,9 @@ export type FramePoolPlaneLayout = {
     width: number
 };
 
+/** A slot's layout: its planes, where it starts in the pool, and its output format's sample size and bit depth, which the frame pool signal reads per frame. */
 export type FramePoolLayoutValues = {
+    bitDepth: number
     bytesPerComponent: 1 | 2
     planes: readonly FramePoolPlaneLayout[]
     slotByteOffset: number
@@ -303,4 +305,5 @@ export function writeFramePoolLayout(target: DataView, values: FramePoolLayoutVa
     target.setUint32(48, values.slotByteOffset, true);
     target.setUint32(52, values.bytesPerComponent, true);
     target.setUint32(56, values.planes.length, true);
+    target.setUint32(60, values.bitDepth, true);
 }

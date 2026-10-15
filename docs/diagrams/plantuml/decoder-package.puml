@@ -1,0 +1,49 @@
+@startuml
+!include diagram-theme.puml
+skinparam nodesep 40
+skinparam ranksep 60
+
+rectangle "Host" $BOX_HOST {
+  rectangle "**Host**\nfetches or stores package files,\nthen loadDecoderPackage(bytes)" as host
+}
+
+rectangle "Decoder package: one .wasm file" $SURFACE_ALT {
+  rectangle "**WebAssembly module**\nimports: env.memory, inert WASI calls\nexports: parser_* (video parser),\naudio_decoder_* (audio), or none" as module
+  rectangle "**webgpu-player.decoder**\nUTF-8 text: the //! header,\nthen a video decoder's WGSL body" as decoderSection
+  rectangle "**webgpu-player.vectors**\noptional, video only:\nself-test vectors" as vectorsSection
+}
+
+rectangle "Main thread (engine)" $BOX_MAIN {
+  rectangle "**loadDecoderPackage**\ncompiles the module; checks imports,\nmemory, header, exports, vectors;\nid = the header's id: line,\ncontent hash = SHA-256 of the file" as loader
+  rectangle "**verifyGPUDecoderPackage**\nruns a self-test vector,\nonly when a host calls it" as verification
+  rectangle "**Eligibility**\ngpuVideoDecoders offers,\naudioDecoders packages" as eligibility
+  rectangle "**GPUVideoDecodeSession**\nthe prelude, then the WGSL body,\nper output format; packet ring,\ndispatches, slots" as session
+}
+
+rectangle "Workers (engine)" $BOX_WORKER {
+  rectangle "**CustomAudioDecode.worker**\ninstantiates an audio package:\nconfigure, send, receive" as audioWorker
+  rectangle "**CustomDecode.worker**\ndemuxes the tracks" as decodeWorker
+  rectangle "**GPUDecoderCoordinator.worker**\ninstantiates the parser\nas the coordinator:\nconfigure, plan, finish" as coordinatorWorker
+  rectangle "**GPUDecoderParse.worker** (1 to 6)\neach instantiates the parser:\nparse" as parseWorkers
+}
+
+note bottom of parseWorkers
+  Every instance gets a new env.memory.
+end note
+
+rectangle "GPU" $BOX_GPU {
+  rectangle "**Frame pool**\nslots the WGSL writes;\npresentation reads them in place" as framePool
+}
+
+host -right-> loader : bytes
+module -down-> loader
+decoderSection -down-> loader
+vectorsSection -down-> verification
+loader -down-> eligibility : packages
+eligibility -right-> session : the selected\nvideo package
+session -right-> framePool : dispatches
+decodeWorker -up-> session : packets, or one GPU record\nper picture with output events
+decodeWorker -right-> coordinatorWorker : packets
+coordinatorWorker -right-> parseWorkers : plans
+decodeWorker -left-> audioWorker : audio packets
+@enduml

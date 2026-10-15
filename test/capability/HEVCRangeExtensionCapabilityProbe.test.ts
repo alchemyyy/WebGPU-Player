@@ -47,12 +47,6 @@ function createEnvironment(
     return {
         environment: {
             audioDecoder: null,
-            bundledDTSExactProbe: null,
-            bundledHEVCExactProbe: null,
-            bundledJPEG2000ExactProbe: null,
-            bundledMPEG2ExactProbe: null,
-            bundledTrueHDExactProbe: null,
-            bundledVC1ExactProbe: null,
             h264ProfileProbe: null,
             hevcRangeExtensionVectorLoader: vectorLoader,
             nativeAudioOutputProbe: null,

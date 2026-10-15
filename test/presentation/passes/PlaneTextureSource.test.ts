@@ -14,7 +14,7 @@ import {
     type RawVideoFrameRectangle,
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
-} from 'webgpu-player/video/RawVideoFrameCopy';
+} from 'webgpu-player/decode/video/RawVideoFrameCopy';
 
 type MockFunction = ReturnType<typeof vi.fn>;
 

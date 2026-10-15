@@ -1,0 +1,39 @@
+Export a block's deblocking filter level.
+
+get_filter_level() is the loop filter's derivation of a block's level for a
+plane and an edge direction: the frame's base level with delta LF, the
+segment's feature, and the reference and mode deltas, or the frame's
+precomputed table once av1_loop_filter_frame_init() ran. The parse-only pass
+runs no loop filter, so av1_parser_filter_level() hands the derivation to the
+parser bridge, which writes each block's levels into the GPU record, where
+the compute shaders deblock.
+
+--- a/av1/common/av1_loopfilter.h
++++ b/av1/common/av1_loopfilter.h
+@@ -107,6 +107,12 @@
+ void av1_loop_filter_frame_init(struct AV1Common *cm, int plane_start,
+                                 int plane_end);
+
++// WebGPU Player parser: a block's deblocking filter level for a plane and an
++// edge direction (0 vertical, 1 horizontal), as the loop filter derives it
++// once av1_loop_filter_frame_init() ran for the frame
++uint8_t av1_parser_filter_level(const struct AV1Common *cm, int dir_idx,
++                                int plane, const MB_MODE_INFO *mbmi);
++
+ void av1_filter_block_plane_vert(const struct AV1Common *const cm,
+                                  const MACROBLOCKD *const xd, const int plane,
+                                  const MACROBLOCKD_PLANE *const plane_ptr,
+--- a/av1/common/av1_loopfilter.c
++++ b/av1/common/av1_loopfilter.c
+@@ -107,6 +107,11 @@
+   }
+ }
+
++uint8_t av1_parser_filter_level(const AV1_COMMON *cm, int dir_idx, int plane,
++                                const MB_MODE_INFO *mbmi) {
++  return get_filter_level(cm, &cm->lf_info, dir_idx, plane, mbmi);
++}
++
+ void av1_loop_filter_init(AV1_COMMON *cm) {
+   assert(MB_MODE_COUNT == NELEMENTS(mode_lf_lut));
+   loop_filter_info_n *lfi = &cm->lf_info;

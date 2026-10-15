@@ -1,0 +1,327 @@
+Parse every frame without reconstructing or filtering it.
+
+The decoder parses each superblock with decode_partition()'s parse-only flag
+(0x1) through the single superblock coding block buffer, and hands each
+transform block and each coding block to the WebGPU Player parser bridge,
+which writes them into the frame's GPU record and clears the coefficients.
+Prediction, reconstruction, the monochrome neutral chroma, deblocking, CDEF,
+super-resolution, and loop restoration are skipped; the compute shaders run
+them. Super-resolution keeps the frame buffer's upscaled geometry, so later
+frames see the reference's upscaled size, and a reference lost in error
+resilient mode goes to the bridge instead of being filled with grey, which
+leaves set_planes_to_neutral_grey() unused, so it goes.
+Everything later frames' parsing reads is kept: motion vectors, segment ids,
+CDFs, global motion, and the reference map.
+
+--- a/av1/decoder/decodeframe.c
++++ b/av1/decoder/decodeframe.c
+@@ -69,6 +69,7 @@
+ #include "av1/decoder/decoder.h"
+ #include "av1/decoder/decodetxb.h"
+ #include "av1/decoder/detokenize.h"
++#include "av1/decoder/parser_hooks.h"
+ #if CONFIG_INSPECTION
+ #include "av1/decoder/inspection.h"
+ #endif
+@@ -97,35 +98,8 @@
+   return 0;
+ }
+
+-// Use only_chroma = 1 to only set the chroma planes
+-static inline void set_planes_to_neutral_grey(
+-    const SequenceHeader *const seq_params, const YV12_BUFFER_CONFIG *const buf,
+-    int only_chroma) {
+-  if (seq_params->use_highbitdepth) {
+-    const int val = 1 << (seq_params->bit_depth - 1);
+-    for (int plane = only_chroma; plane < MAX_MB_PLANE; plane++) {
+-      const int is_uv = plane > 0;
+-      uint16_t *const base = CONVERT_TO_SHORTPTR(buf->buffers[plane]);
+-      // Set the first row to neutral grey. Then copy the first row to all
+-      // subsequent rows.
+-      if (buf->crop_heights[is_uv] > 0) {
+-        aom_memset16(base, val, buf->crop_widths[is_uv]);
+-        for (int row_idx = 1; row_idx < buf->crop_heights[is_uv]; row_idx++) {
+-          memcpy(&base[row_idx * buf->strides[is_uv]], base,
+-                 sizeof(*base) * buf->crop_widths[is_uv]);
+-        }
+-      }
+-    }
+-  } else {
+-    for (int plane = only_chroma; plane < MAX_MB_PLANE; plane++) {
+-      const int is_uv = plane > 0;
+-      for (int row_idx = 0; row_idx < buf->crop_heights[is_uv]; row_idx++) {
+-        memset(&buf->buffers[plane][row_idx * buf->strides[is_uv]], 1 << 7,
+-               buf->crop_widths[is_uv]);
+-      }
+-    }
+-  }
+-}
++// WebGPU Player parser: the neutral grey fills of frame buffers moved to the
++// GPU, so set_planes_to_neutral_grey() is gone
+
+ static inline void loop_restoration_read_sb_coeffs(const AV1_COMMON *const cm,
+                                                    MACROBLOCKD *xd,
+@@ -1219,6 +1193,9 @@
+   if (mbmi->skip_txfm) av1_reset_entropy_context(xd, bsize, num_planes);
+
+   decode_token_recon_block(pbi, td, r, bsize);
++  // WebGPU Player parser: the block's mode info, palette, transform sizes,
++  // and coefficients are complete
++  av1_parser_block_parsed(pbi, td, mi_row, mi_col, bsize);
+ #if CONFIG_COLLECT_COMPONENT_TIMING
+   end_timing(pbi, parse_decode_block_time);
+ #endif
+@@ -2763,6 +2740,12 @@
+     td->predict_inter_block_visit = predict_inter_block;
+     td->cfl_store_inter_block_visit = cfl_store_inter_block;
+   }
++  if (parse_decode_flag == 0x1) {
++    // WebGPU Player parser: the bridge takes each transform block where its
++    // reconstruction would run, and clears its coefficients
++    td->predict_and_recon_intra_block_visit = av1_parser_intra_transform_block;
++    td->inverse_tx_inter_block_visit = av1_parser_inter_transform_block;
++  }
+ }
+
+ static inline void decode_tile(AV1Decoder *pbi, ThreadData *const td,
+@@ -2796,9 +2779,9 @@
+ #if CONFIG_INSPECTION
+       const int start_bits = aom_reader_tell(td->bit_reader);
+ #endif
+-      // Bit-stream parsing and decoding of the superblock
++      // Bit-stream parsing of the superblock; the GPU reconstructs it
+       decode_partition(pbi, td, mi_row, mi_col, td->bit_reader,
+-                       cm->seq_params->sb_size, 0x3);
++                       cm->seq_params->sb_size, 0x1);
+ #if CONFIG_INSPECTION
+       const int end_bits = aom_reader_tell(td->bit_reader);
+ #endif
+@@ -2917,7 +2900,7 @@
+   }
+ #endif
+
+-  set_decode_func_pointers(&pbi->td, 0x3);
++  set_decode_func_pointers(&pbi->td, 0x1);
+
+   // Load all tile information into thread_data.
+   td->dcb = pbi->dcb;
+@@ -4912,7 +4895,8 @@
+           // by the loss of some frames of data, this code adds a neutral grey
+           // buffer in place of missing frames, i.e.
+           //
+-          set_planes_to_neutral_grey(seq_params, &buf->buf, 0);
++          // WebGPU Player parser: the GPU fills it
++          av1_parser_missing_reference(pbi, buf);
+           //
+           // and allows the frames to be used for referencing, i.e.
+           //
+@@ -5252,7 +5236,24 @@
+   if (!av1_superres_scaled(cm)) return;
+   assert(!cm->features.all_lossless);
+
+-  av1_superres_upscale(cm, pool, 0);
++  // WebGPU Player parser: the GPU upscales. The frame buffer only takes the
++  // upscaled geometry, as av1_superres_upscale() reallocates it, so later
++  // frames see the reference's upscaled size
++  const SequenceHeader *const seq_params = cm->seq_params;
++  aom_codec_frame_buffer_t *const fb = &cm->cur_frame->raw_frame_buffer;
++  lock_buffer_pool(pool);
++  if (pool->release_fb_cb(pool->cb_priv, fb) ||
++      aom_realloc_frame_buffer(
++          &cm->cur_frame->buf, cm->superres_upscaled_width,
++          cm->superres_upscaled_height, seq_params->subsampling_x,
++          seq_params->subsampling_y, seq_params->use_highbitdepth,
++          AOM_BORDER_IN_PIXELS, cm->features.byte_alignment, fb,
++          pool->get_fb_cb, pool->cb_priv, false, 0)) {
++    unlock_buffer_pool(pool);
++    aom_internal_error(cm->error, AOM_CODEC_MEM_ERROR,
++                       "Failed to resize the frame buffer for superres");
++  }
++  unlock_buffer_pool(pool);
+ }
+
+ uint32_t av1_decode_frame_headers_and_setup(AV1Decoder *pbi,
+@@ -5342,7 +5343,8 @@
+   if (cm->rst_info[0].frame_restoration_type != RESTORE_NONE ||
+       cm->rst_info[1].frame_restoration_type != RESTORE_NONE ||
+       cm->rst_info[2].frame_restoration_type != RESTORE_NONE) {
+-    av1_alloc_restoration_buffers(cm, /*is_sgr_enabled =*/true);
++    // WebGPU Player parser: the GPU restores, so only the units' parameters
++    // are allocated, without the filters' line buffers
+     for (int p = 0; p < av1_num_planes(cm); p++) {
+       av1_alloc_restoration_struct(cm, &cm->rst_info[p], p > 0);
+     }
+@@ -5388,101 +5390,17 @@
+   end_timing(pbi, decode_tiles_time);
+ #endif
+
+-  // If the bit stream is monochrome, set the U and V buffers to a constant.
+-  if (num_planes < 3) {
+-    set_planes_to_neutral_grey(cm->seq_params, xd->cur_buf, 1);
+-  }
++  // WebGPU Player parser: the GPU writes the neutral chroma of a monochrome
++  // stream, deblocks, applies CDEF, upscales, and restores. Only the frame's
++  // upscaled geometry is kept here
++  (void)num_planes;
+
+   if (end_tile != tiles->rows * tiles->cols - 1) {
+     return;
+   }
+
+-  av1_alloc_cdef_buffers(cm, &pbi->cdef_worker, &pbi->cdef_sync,
+-                         pbi->num_workers, 1);
+-  av1_alloc_cdef_sync(cm, &pbi->cdef_sync, pbi->num_workers);
+-
+   if (!cm->features.allow_intrabc && !tiles->single_tile_decoding) {
+-#if CONFIG_COLLECT_COMPONENT_TIMING
+-    start_timing(pbi, av1_loop_filter_frame_time);
+-#endif
+-    if (cm->lf.filter_level[0] || cm->lf.filter_level[1]) {
+-      av1_loop_filter_frame_mt(&cm->cur_frame->buf, cm, &pbi->dcb.xd, 0,
+-                               num_planes, 0, pbi->tile_workers,
+-                               pbi->num_workers, &pbi->lf_row_sync, 0);
+-    }
+-#if CONFIG_COLLECT_COMPONENT_TIMING
+-    end_timing(pbi, av1_loop_filter_frame_time);
+-#endif
+-
+-    const int do_cdef =
+-        !pbi->skip_loop_filter && !cm->features.coded_lossless &&
+-        (cm->cdef_info.cdef_bits || cm->cdef_info.cdef_strengths[0] ||
+-         cm->cdef_info.cdef_uv_strengths[0]);
+-    const int do_superres = av1_superres_scaled(cm);
+-    const int optimized_loop_restoration = !do_cdef && !do_superres;
+-    const int do_loop_restoration =
+-        cm->rst_info[0].frame_restoration_type != RESTORE_NONE ||
+-        cm->rst_info[1].frame_restoration_type != RESTORE_NONE ||
+-        cm->rst_info[2].frame_restoration_type != RESTORE_NONE;
+-    // Frame border extension is not required in the decoder
+-    // as it happens in extend_mc_border().
+-    int do_extend_border_mt = 0;
+-
+-#if CONFIG_COLLECT_COMPONENT_TIMING
+-    start_timing(pbi, cdef_and_lr_time);
+-#endif
+-    if (!optimized_loop_restoration) {
+-      if (do_loop_restoration)
+-        av1_loop_restoration_save_boundary_lines(&pbi->common.cur_frame->buf,
+-                                                 cm, 0);
+-
+-      if (do_cdef) {
+-        if (pbi->num_workers > 1) {
+-          av1_cdef_frame_mt(cm, &pbi->dcb.xd, pbi->cdef_worker,
+-                            pbi->tile_workers, &pbi->cdef_sync,
+-                            pbi->num_workers, av1_cdef_init_fb_row_mt,
+-                            do_extend_border_mt);
+-        } else {
+-          av1_cdef_frame(&pbi->common.cur_frame->buf, cm, &pbi->dcb.xd,
+-                         av1_cdef_init_fb_row);
+-        }
+-      }
+-
+-      superres_post_decode(pbi);
+-
+-      if (do_loop_restoration) {
+-        av1_loop_restoration_save_boundary_lines(&pbi->common.cur_frame->buf,
+-                                                 cm, 1);
+-        if (pbi->num_workers > 1) {
+-          av1_loop_restoration_filter_frame_mt(
+-              (YV12_BUFFER_CONFIG *)xd->cur_buf, cm, optimized_loop_restoration,
+-              pbi->tile_workers, pbi->num_workers, &pbi->lr_row_sync,
+-              &pbi->lr_ctxt, do_extend_border_mt);
+-        } else {
+-          av1_loop_restoration_filter_frame((YV12_BUFFER_CONFIG *)xd->cur_buf,
+-                                            cm, optimized_loop_restoration,
+-                                            &pbi->lr_ctxt);
+-        }
+-      }
+-    } else {
+-      // In no cdef and no superres case. Provide an optimized version of
+-      // loop_restoration_filter.
+-      if (do_loop_restoration) {
+-        if (pbi->num_workers > 1) {
+-          av1_loop_restoration_filter_frame_mt(
+-              (YV12_BUFFER_CONFIG *)xd->cur_buf, cm, optimized_loop_restoration,
+-              pbi->tile_workers, pbi->num_workers, &pbi->lr_row_sync,
+-              &pbi->lr_ctxt, do_extend_border_mt);
+-        } else {
+-          av1_loop_restoration_filter_frame((YV12_BUFFER_CONFIG *)xd->cur_buf,
+-                                            cm, optimized_loop_restoration,
+-                                            &pbi->lr_ctxt);
+-        }
+-      }
+-    }
+-#if CONFIG_COLLECT_COMPONENT_TIMING
+-    end_timing(pbi, cdef_and_lr_time);
+-#endif
++    superres_post_decode(pbi);
+   }
+
+   if (!pbi->dcb.corrupted) {
+@@ -5511,6 +5429,10 @@
+     ++cm->current_frame.frame_number;
+   }
+
++  // WebGPU Player parser: every tile is parsed; the references still hold
++  // the frames this one predicts from
++  av1_parser_frame_parsed(pbi);
++
+ #if CONFIG_COLLECT_COMPONENT_TIMING
+   end_timing(pbi, av1_decode_tg_tiles_and_wrapup_time);
+ #endif
+--- /dev/null
++++ b/av1/decoder/parser_hooks.h
+@@ -0,0 +1,53 @@
++/*
++ * WebGPU Player parser hooks.
++ *
++ * The WebGPU Player engine's AV1 decoder package runs libaom's decoder as a
++ * parser: its parse-only pass reads every frame, and the package's compute
++ * shaders reconstruct and filter. The patched decoder calls these hooks where
++ * its reconstruction, filtering, and frame buffer writes used to run; the
++ * parser bridge in the engine's decoders/av1/parser/ implements them.
++ */
++
++#ifndef AOM_AV1_DECODER_PARSER_HOOKS_H_
++#define AOM_AV1_DECODER_PARSER_HOOKS_H_
++
++#include "av1/decoder/decoder.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++// An intra transform block of the block in dcb->xd.mi[0], in decode order,
++// whether or not it has coefficients. Its coefficients are at the coding
++// block's current offsets, and the hook clears them.
++void av1_parser_intra_transform_block(const AV1_COMMON *cm,
++                                      DecoderCodingBlock *dcb, aom_reader *r,
++                                      int plane, int row, int col,
++                                      TX_SIZE tx_size);
++
++// A transform block of an inter or IntraBC block that is not skipped: a leaf
++// of its transform partition, in decode order, whether or not it has
++// coefficients. The hook clears its coefficients.
++void av1_parser_inter_transform_block(const AV1_COMMON *cm,
++                                      DecoderCodingBlock *dcb, aom_reader *r,
++                                      int plane, int row, int col,
++                                      TX_SIZE tx_size);
++
++// A coding block whose mode info, palette, transform sizes, and coefficients
++// were read.
++void av1_parser_block_parsed(AV1Decoder *pbi, ThreadData *td, int mi_row,
++                             int mi_col, BLOCK_SIZE bsize);
++
++// The frame's last tile group was parsed. The reference map still holds the
++// frames this frame predicts from; the refresh follows.
++void av1_parser_frame_parsed(AV1Decoder *pbi);
++
++// A reference the bitstream lost, which error resilient mode replaces with a
++// frame of neutral grey.
++void av1_parser_missing_reference(AV1Decoder *pbi, RefCntBuffer *buffer);
++
++#ifdef __cplusplus
++}  // extern "C"
++#endif
++
++#endif  // AOM_AV1_DECODER_PARSER_HOOKS_H_

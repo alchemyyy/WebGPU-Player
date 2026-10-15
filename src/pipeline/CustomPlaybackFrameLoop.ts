@@ -147,7 +147,8 @@ export default class CustomPlaybackFrameLoop {
             this.onFailure(new Error(FRAME_NOT_SUBMITTED_MESSAGE));
             return 'failed';
         }
-        if (decodedFrame.outputMode === 'raw-planes' && !this.controller.notifyFramePresented(decodedFrame)) {
+        // Raw planes were uploaded, and a pool slot's later decode work queues behind this submit, so both release now
+        if (decodedFrame.outputMode !== 'video-frame' && !this.controller.notifyFramePresented(decodedFrame)) {
             this.onFailure(new Error(FRAME_NOT_SUBMITTED_MESSAGE));
             return 'failed';
         }

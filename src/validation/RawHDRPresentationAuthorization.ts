@@ -34,7 +34,7 @@ import {
     type RawVideoPlaneDescriptor,
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
-} from '../video/RawVideoFrameCopy';
+} from '../decode/video/RawVideoFrameCopy';
 import {
     GPUCanvasPixelReader,
     getValidationTextureUsage,

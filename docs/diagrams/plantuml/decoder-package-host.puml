@@ -1,0 +1,56 @@
+@startuml
+!include diagram-theme.puml
+
+start
+partition "When the host gets a package" {
+  :Read the file's bytes: a user's pick, the host's own asset,
+  or DecoderPackageStore.loadAll; <<$HL_BLUE>>
+  :loadDecoderPackage(bytes); <<$HL_AMBER>>
+  if (DecoderPackageError?) then (yes)
+    :Report its code and detail,
+    such as package-import: env.abort function; <<$HL_RED>>
+    stop
+  endif
+  :Keep the VideoDecoderPackage or AudioDecoderPackage,
+  in the order the host prefers them; <<$HL_GREEN>>
+  if (The host wants a video package checked on the device?) then (yes)
+    :verifyGPUDecoderPackage(device, package, format)
+    for each of getGPUDecoderVectorFormats(package); <<$HL_NAVY>>
+    if (passed?) then (no)
+      :The host may leave the package out,
+      as the engine never decides for it; <<$HL_RED>>
+    endif
+  endif
+}
+partition "Each playback" {
+  :getGPUVideoDecoderOffers(presenter, video packages, options):
+  packages whose accepts names the stream's codec and whose output
+  lists its format, with the device's buffer limit; <<$HL_AMBER>>
+  :getCustomPlaybackEligibility(options, capabilities,
+  { gpuVideoDecoders: offers, audioDecoders: audio packages, ... }); <<$HL_AMBER>>
+  if (Native WebCodecs video route?) then (yes)
+    :The native route; packages unused; <<$HL_GREEN>>
+  elseif (An offer whose constraint takes the stream and whose\npool, state, scratch buffers, and packet ring fit the device?) then (yes)
+    :frame-pool route, videoDecoderBackend gpu,
+    gpuVideoDecoder: the first such offer; <<$HL_GREEN>>
+  else (no)
+    :Ineligible: no video route; <<$HL_RED>>
+    stop
+  endif
+  if (Audio the browser decodes or passes through?) then (yes)
+    :The browser's route; <<$HL_GREEN>>
+  elseif (An audio package that accepts the codec?) then (yes)
+    :decoded PCM route, audioDecoder: the first such package; <<$HL_GREEN>>
+  else (no)
+    :Ineligible: audio-codec-unsupported; <<$HL_RED>>
+    stop
+  endif
+  :new CustomPlaybackController({ gpuVideoDecodeSessionFactory:
+  createGPUVideoDecodeSessionFactory(presenter), ... }); <<$HL_NAVY>>
+  :controller.play({ gpuVideoDecoder, audioDecoder, ... })
+  from the eligibility; <<$HL_NAVY>>
+  :An audio track switch passes the new track's eligibility.audioDecoder
+  to setAudioStreamIndex, or none; <<$HL_NAVY>>
+}
+stop
+@enduml

@@ -3,6 +3,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Microseconds } from 'webgpu-player/MediaTime';
+import { parseAudioDecoderManifest } from 'webgpu-player/decode/audio/AudioDecoderManifest';
+import type { AudioDecoderPackageSelection } from 'webgpu-player/decode/audio/AudioDecoderPackageInstance';
 import { createDefaultAudioDownmixSettings } from 'webgpu-player/audio/processing/CustomAudioDownmix';
 import { DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM } from 'webgpu-player/audio/processing/CustomAudioDownmixAlgorithm';
 import AudioDecodeWorkerClient, {
@@ -23,6 +25,8 @@ import {
     type AudioDecodeWorkerResponse
 } from 'webgpu-player/pipeline/AudioDecodeWorkerProtocol';
 import type { DecodeWorkerAudioOutputAttachment } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
+
+import { encodeWebAssemblyModule } from '../helpers/webAssemblyModuleEncoder';
 
 const GENERATION = 9;
 const AUDIO_EPOCH = 1;
@@ -45,7 +49,7 @@ const WORKER_UNAVAILABLE_MESSAGE = 'Workers are unavailable';
 const WORKER_START_FAILURE_MESSAGE = `Unable to start the audio decode worker: ${WORKER_UNAVAILABLE_MESSAGE}`;
 const INVALID_RESPONSE_MESSAGE = 'The audio decode worker sent an invalid response';
 const UNKNOWN_RESPONSE_TYPE = 'attempt-unknown';
-const DECODE_FAILURE_MESSAGE = 'Bundled DTS synchronization was not recovered by the seek target';
+const DECODE_FAILURE_MESSAGE = 'The audio decoder did not recover synchronization by the seek target';
 // A DTS core frame of 512 samples at 48 kHz lasts 10.67 ms
 const DTS_PACKET_BYTE_LENGTH = 2_012;
 const DTS_PACKET_DURATION_MICROSECONDS = 10_667;
@@ -65,6 +69,14 @@ const BYTE_VALUE_COUNT = 256;
 const FIRST_PACKET_SEED = 1;
 const SECOND_PACKET_SEED = 2;
 const FILLER_PACKET_SEED = 0;
+// A host's audio decoder package, which a package attempt carries to the audio decode worker
+const PACKAGE_CODEC = 'eac3';
+const PACKAGE_MANIFEST_SOURCE = [
+    '//! id: test-decoder',
+    '//! name: Test decoder',
+    '//! decoder: audio',
+    `//! accepts: codec in [${PACKAGE_CODEC}]`
+].join('\n');
 
 /** A dedicated Worker as the decode worker sees it: posted requests, their transfers, and the events it fires */
 class FakeAudioDecodeWorker {
@@ -111,9 +123,10 @@ function createOptions(audioOutput: DecodeWorkerAudioOutputAttachment | null = n
         audioDownmixAlgorithm: DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
         audioDownmixSettings: createDefaultAudioDownmixSettings(),
         audioOutput,
-        decoderBackend: 'dts',
+        decoderBackend: 'pcm',
         outputChannelCount: STEREO_CHANNEL_COUNT,
-        routeCodec: 'dts',
+        packageDecoder: null,
+        routeCodec: 'pcm-s16',
         sourceSampleRate: SAMPLE_RATE,
         startTimeMicroseconds: START_TIME_MICROSECONDS,
         timeResolution: MATROSKA_TIME_RESOLUTION
@@ -199,6 +212,30 @@ describe('the audio decode worker client', () => {
             'attach-output',
             'finish-attempt'
         ]);
+    });
+
+    it('sends a package attempt\'s package with its open request, which clones the module instead of transferring it', () => {
+        const { client, worker } = openClient();
+        const packageDecoder: AudioDecoderPackageSelection = {
+            codec: PACKAGE_CODEC,
+            source: {
+                manifest: parseAudioDecoderManifest(PACKAGE_MANIFEST_SOURCE),
+                memory: null,
+                module: new WebAssembly.Module(encodeWebAssemblyModule({}))
+            }
+        };
+        const options: AudioDecodeWorkerAttemptOptions = {
+            ...createOptions(),
+            decoderBackend: 'package',
+            packageDecoder,
+            routeCodec: PACKAGE_CODEC
+        };
+
+        client.openAttempt(options, createListener());
+
+        expect(worker.requests).toEqual([ { ...options, type: 'open-attempt' } ]);
+        expect((worker.requests[0] as { packageDecoder: unknown }).packageDecoder).toBe(packageDecoder);
+        expect(worker.transfers).toEqual([ [] ]);
     });
 
     it('relays an open attempt\'s progress, format, finish, and failure, and settles its closure on the worker\'s answer', async () => {

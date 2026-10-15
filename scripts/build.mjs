@@ -19,8 +19,8 @@ const WORKER_TARGET = 'es2022';
 
 function copyAsset(destination, source) {
     if (!existsSync(source)) {
-        // A decoder build from before a kit gained an output lacks that output
-        const remedy = source.startsWith(WASM_OUTPUT_DIRECTORY) ? '; rebuild the decoders with make -C wasm sources all' : '';
+        // A WebAssembly build from before a kit gained an output lacks that output
+        const remedy = source.startsWith(WASM_OUTPUT_DIRECTORY) ? '; rebuild the engine\'s WebAssembly with make -C wasm all' : '';
         throw new Error(`Missing engine asset for libraries/${destination}: ${source}${remedy}`);
     }
     const target = join(LIBRARY_OUTPUT_DIRECTORY, destination);
@@ -46,10 +46,10 @@ function computeAssetKey() {
     return hash.digest('hex').slice(0, ASSET_KEY_LENGTH);
 }
 
-// The decoders are build outputs too, from a separate toolchain, so a fresh checkout builds them once
+// The engine's WebAssembly is a build output too, from a separate toolchain, so a fresh checkout builds it once
 if (!existsSync(WASM_OUTPUT_DIRECTORY)) {
-    throw new Error(`The WebAssembly decoders are not built in ${WASM_OUTPUT_DIRECTORY}. `
-        + 'Run make -C wasm sources all from the engine root; docs/src/decoders.md lists the toolchain.');
+    throw new Error(`The engine's WebAssembly is not built in ${WASM_OUTPUT_DIRECTORY}. `
+        + 'Run make -C wasm all from the engine root; docs/src/decoders.md lists the toolchain.');
 }
 
 rmSync(LIBRARY_OUTPUT_DIRECTORY, { force: true, recursive: true });
@@ -57,7 +57,7 @@ for (const [ destination, source ] of getLibraryAssets()) {
     copyAsset(destination, source);
 }
 
-// Classic workers, because the decoder glue loads through importScripts
+// Classic workers, which find the engine's assets from their own URL
 await build({
     absWorkingDir: ENGINE_ROOT,
     bundle: true,
@@ -67,8 +67,6 @@ await build({
     })),
     format: 'iife',
     logLevel: 'warning',
-    // The audio decoder glue reads import.meta.url only to locate its WASM, which the engine always locates for it
-    logOverride: { 'empty-import-meta': 'silent' },
     minify: PRODUCTION,
     outdir: LIBRARY_OUTPUT_DIRECTORY,
     platform: 'browser',

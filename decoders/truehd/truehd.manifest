@@ -1,0 +1,18 @@
+//! id: truehd
+//! name: TrueHD
+//! decoder: audio
+//! accepts: codec in [mlp, truehd]
+//! packet: 2 MiB
+//! attribute: 1, bitsPerSample
+//! attribute: 2, profile
+//! attribute: 3, pcmFingerprint
+//! attribute: 4, libraryVersion
+//! option: 1, pcmFingerprint
+//! error: 1, input
+//! error: 2, send
+//! error: 3, receive
+//! error: 4, sampleFormat
+//! error: 5, option
+//! error: 6, output
+
+The manifest of the TrueHD decoder package; the keys and codes are the ones ffmpeg_truehd_bridge.c declares.

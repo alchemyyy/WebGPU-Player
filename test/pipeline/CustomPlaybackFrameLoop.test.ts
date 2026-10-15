@@ -9,6 +9,7 @@ const FIRST_GENERATION = 3;
 const NEXT_GENERATION = 4;
 const RAW_PLANES_FRAME = { outputMode: 'raw-planes' } as unknown as DecodedPresentationFrame;
 const VIDEO_FRAME = { outputMode: 'video-frame' } as unknown as DecodedPresentationFrame;
+const FRAME_POOL_FRAME = { outputMode: 'frame-pool' } as unknown as DecodedPresentationFrame;
 const DRAIN_FAILURE = new Error('drain-failed: worker closed');
 const NOT_SUBMITTED_MESSAGE = 'Decoded frame did not reach WebGPU submission';
 const RELEASE_UNACKNOWLEDGED_MESSAGE = 'Decoded frame GPU release could not be acknowledged';
@@ -131,6 +132,18 @@ describe('CustomPlaybackFrameLoop', () => {
 
         expect(presenter.presentDecodedFrame).toHaveBeenCalledTimes(1);
         expect(animationFrames.size).toBe(0);
+    });
+
+    it('acknowledges a frame-pool frame right after its submit, since later decode work queues behind it', () => {
+        const { controller, failures, loop, presenter } = createHarness();
+        controller.takeCurrentFrame.mockReturnValue(FRAME_POOL_FRAME);
+
+        loop.schedule(false);
+        runAnimationFrames();
+
+        expect(presenter.presentDecodedFrame).toHaveBeenCalledWith(FRAME_POOL_FRAME, FIRST_GENERATION, undefined);
+        expect(controller.notifyFramePresented).toHaveBeenCalledWith(FRAME_POOL_FRAME);
+        expect(failures).toEqual([]);
     });
 
     it('acknowledges a VideoFrame once the GPU releases it, presented or discarded', () => {
