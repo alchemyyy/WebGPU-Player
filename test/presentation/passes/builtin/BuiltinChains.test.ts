@@ -9,6 +9,7 @@ import {
     createBuiltinChain,
     getBuiltinColorFunctionNames
 } from 'webgpu-player/presentation/passes/builtin/BuiltinChains';
+import { INTERLACED_SIGNAL_CONDITION } from 'webgpu-player/presentation/passes/builtin/BuiltinSignals';
 import type {
     BuiltinChain,
     BuiltinChainConfiguration,
@@ -63,6 +64,18 @@ const FRAME_POOL_SIGNAL: SignalDefinition = {
     resources: [ 'frame-pool' ],
     sourceKind: 'frame-pool'
 };
+
+const INTERLACED_FRAME_POOL_SIGNAL: SignalDefinition = { ...FRAME_POOL_SIGNAL, name: 'test.frame-pool-signal.interlaced-chroma' };
+const INTERLACED_CHROMA_NAME_SUFFIX = '.interlaced-chroma';
+const EIGHT_BIT_DEPTH = 8;
+const TEN_BIT_DEPTH = 10;
+// The raw formats whose chroma has half the luma's rows, which an interlaced frame's two fields share
+const VERTICALLY_SUBSAMPLED_FORMATS = [
+    { bitDepth: EIGHT_BIT_DEPTH, format: 'I420' },
+    { bitDepth: TEN_BIT_DEPTH, format: 'I420P10' },
+    { bitDepth: EIGHT_BIT_DEPTH, format: 'NV12' }
+] as const;
+const FULL_HEIGHT_CHROMA_FORMATS = [ 'I422', 'I444' ] as const;
 
 /** The routes with a color track, which take hdrOutput. */
 type ColorTrackConfiguration = Exclude<BuiltinChainConfiguration, { route: 'external-identity' }>;
@@ -197,6 +210,54 @@ describe('createBuiltinChain', () => {
             route: 'raw-yuv',
             settings: createHDRToSDRRenderSettings()
         })).toThrow(`bit-depth: ${MISMATCHED_RAW_FORMAT} is 12-bit, metadata 10-bit`);
+    });
+});
+
+describe('field-aware chroma for deinterlacing plans', () => {
+    const settings = createDefaultRenderSettings();
+
+    it.each(VERTICALLY_SUBSAMPLED_FORMATS)('reads $format chroma within each field of a frame marked interlaced', ({ bitDepth, format }) => {
+        const metadata = createSDRColorMetadata({ bitDepth });
+        const progressiveChain = createBuiltinChain({ format, hdrOutput: false, metadata, route: 'raw-yuv', settings });
+        const interlacedChain = createBuiltinChain({ format, hdrOutput: false, interlacedChroma: true, metadata, route: 'raw-yuv', settings });
+
+        expect(interlacedChain.signal.name).toBe(`${progressiveChain.signal.name}${INTERLACED_CHROMA_NAME_SUFFIX}`);
+        expect(interlacedChain.signal.code).toContain(`if (${INTERLACED_SIGNAL_CONDITION}) {`);
+        expect(interlacedChain.signal.resources).toEqual(progressiveChain.signal.resources);
+        expect(interlacedChain.colorFunctions).toEqual(progressiveChain.colorFunctions);
+        expect(progressiveChain.signal.code).not.toContain(INTERLACED_SIGNAL_CONDITION);
+    });
+
+    it.each(FULL_HEIGHT_CHROMA_FORMATS)('keeps the one %s read, whose chroma rows no two fields share', format => {
+        const metadata = createSDRColorMetadata();
+
+        expect(createBuiltinChain({ format, hdrOutput: false, interlacedChroma: true, metadata, route: 'raw-yuv', settings }))
+            .toEqual(createBuiltinChain({ format, hdrOutput: false, metadata, route: 'raw-yuv', settings }));
+    });
+
+    it('takes the frame pool route\'s interlaced signal only with interlaced chroma', () => {
+        const metadata = createSDRColorMetadata();
+
+        expect(createBuiltinChain({
+            hdrOutput: false,
+            interlacedSignal: INTERLACED_FRAME_POOL_SIGNAL,
+            metadata,
+            route: 'frame-pool',
+            settings,
+            signal: FRAME_POOL_SIGNAL
+        }).signal).toBe(FRAME_POOL_SIGNAL);
+        expect(createBuiltinChain({
+            hdrOutput: false,
+            interlacedChroma: true,
+            interlacedSignal: INTERLACED_FRAME_POOL_SIGNAL,
+            metadata,
+            route: 'frame-pool',
+            settings,
+            signal: FRAME_POOL_SIGNAL
+        }).signal).toBe(INTERLACED_FRAME_POOL_SIGNAL);
+        // A configuration without an interlaced signal keeps its own
+        expect(createBuiltinChain({ hdrOutput: false, interlacedChroma: true, metadata, route: 'frame-pool', settings, signal: FRAME_POOL_SIGNAL }).signal)
+            .toBe(FRAME_POOL_SIGNAL);
     });
 });
 

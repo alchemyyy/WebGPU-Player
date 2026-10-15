@@ -39,6 +39,7 @@ The engine's sources follow the stages a custom session runs: `src/demux/` reads
   An audio track that ends before the video hands the clock to the `MediaClock` once its tail has played out.
 
 Video is pulled: each rAF draws the newest frame at or before the clock.
+While a plan deinterlaces, each rAF takes frames one frame ahead of the clock, the presenter shows the frame before the newest, and a tick that takes no frame draws a held frame's next field from history (see [Presentation](#presentation)).
 
 <div class="diagram">
 <a class="diagram-light" href="diagrams/frame-presentation.light.svg"><img src="diagrams/frame-presentation.light.svg" alt="How the clock is chosen and how each tick selects, presents, or waits for a frame"></a>
@@ -163,6 +164,27 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
 - Authorization renders the default chain through the same planner and executor, so a preset never changes the route.
 - With HDR output enabled by the host, an HDR source presents extended-range values on an `rgba16float` canvas.
 
+### Deinterlacing
+
+- An interlaced stream presents through `Presentation deinterlace`, the engine's yadif pass (`passes/builtin/DeinterlacePass.ts`; see [Decisions](decisions.md#deinterlacing)).
+- The presenter asks for it (`PlanRequest.deinterlace`) once the stream's facts or any frame call the video interlaced, while the mode is not `off`.
+  A Dolby Vision route never asks, since its profiles are progressive.
+- The planner places it before every stage: the signal renders into `signal`, a ring of three frames at the frame's visible size in `rgba16float`, and the pass reads the frame it shows, the one before it, and the one after it, and writes `deinterlace` at the same size, which the rest of the spine takes.
+- It deinterlaces the signal's 'source' RGB per channel in f32, so one pass serves every route but Dolby Vision's, 8 to 12 bits and every chroma format.
+- A progressive frame passes through untouched, as does a frame beside a progressive one that repeats a field, as yadif's `deint=interlaced` does.
+- The `presentation` uniform's `fieldState` word (`PRESENTATION_FIELD_STATE`) names what shows: whether the pass interpolates, the field shown, whether it is its frame's second, whether the shown frame is the one before the newest, and whether the frame the signal reads now is interlaced.
+- On the raw and frame-pool routes a deinterlacing plan's signal reads an interlaced frame's 4:2:0 chroma within each field, at MPEG-2's interlaced siting, so a field never takes the other field's colors.
+  A native `VideoFrame` arrives as an external texture whose chroma the browser upsampled progressively, so its fields share chroma rows.
+- Each frame carries its own fields (`VideoFrameFields`): a GPU decoder's `reportPictureFields` report, else its parser's `parser_picture_fields` word, else the container's scan, Matroska's FlagInterlaced and FieldOrder or an MP4 sample entry's `fiel` box.
+  A frame without fields takes the stream's scan from the host's facts, `FieldOrder` and then `IsInterlaced`; a frame of unknown scan presents as it is.
+- `DeinterlaceTimeline` mirrors the ring and picks the draw for a clock time: a frame's first field at its own time, and at double rate, the default, its second field halfway to the next frame's time, rounded down to a whole microsecond.
+  Single rate shows each frame's first field only, and `off` presents frames woven, as decoded.
+- Deinterlacing reads the frame after the one it shows, so the frame loop takes frames one frame ahead of the clock (`getFrameLookaheadMicroseconds`), and the presenter shows the frame before the newest.
+  The clock and audio never move: decoding runs one frame further ahead.
+  After a reset the first frame shows at once without a frame after it, and at the end of a stream, or while decoding falls behind, the newest frame shows once the clock reaches it, as FFmpeg's yadif repeats its last frame.
+- A tick that takes no frame draws the held frame's next field from history (`presentHeldFields`), without a source, so passes that read the source are skipped.
+- `setDeinterlaceMode` switches between double rate, single rate, and off; only a switch to or from `off` builds a new plan.
+
 ## Transitions
 
 - Seek: a new presentation generation, then `controller.seek`, which stops the running generation and starts a new one at the target in the same worker.
@@ -252,6 +274,7 @@ Every stale callback is dropped by a generation or revision check:
 - The raw route checks each frame's colorSpace against the metadata, and a null member is unspecified, so it never contradicts.
   SDR also matches a `smpte170m` transfer, and HLG a `bt709` transfer on BT.2020 primaries.
 - WebGPU presentation on the HTML path is SDR only: a `<video>` external texture is browser-converted sRGB.
+- A deinterlaced native frame's chroma is the browser's progressive upsampling, which blends the two fields' chroma rows; only the raw and frame-pool routes read chroma within each field.
 - Worker track indices are container ordinals, not Jellyfin `MediaStream.Index`.
 - Every seek, audio switch, and paused repaint starts a new run in the session's worker, and each run opens the input again.
   The 32 MiB read cache belongs to one run, so a seek reads its range anew.

@@ -95,7 +95,7 @@ It is a minimal project that builds one package and runs nowhere on its own.
 | `hevc` | HEVC Main, Main 10, and the range extensions, on the GPU | The Rust parser in `parser/` | The nine HEVC range extension vectors | None, MIT |
 | `jpeg2000` | JPEG 2000 YUV pictures at 4:2:0, 4:2:2, and 4:4:4, 8 to 12 bits, on the GPU | The Rust parser in `parser/` | One stream per output format in `vectors/`, from FFmpeg's and OpenJPEG's encoders | None, MIT |
 | `mpeg2` | MPEG-1 and MPEG-2 Video at 4:2:0, 4:2:2, and 4:4:4, on the GPU | None | One stream per chroma format in `vectors/`, from its own syntax exerciser | None, MIT |
-| `vc1` | VC-1 Advanced and WMV3 (Simple, Main, and Complex), on the GPU | None | The VC-1 Advanced stream in `src/capability/vectors/qualification/vc1/` | None, MIT |
+| `vc1` | VC-1 Advanced and WMV3 (Simple, Main, and Complex), on the GPU | The Rust parser in `parser/` | The VC-1 Advanced stream in `src/capability/vectors/qualification/vc1/` | None, MIT |
 | `uncompressed` | Uncompressed planar packets, on the GPU | None | None | None, MIT; the template of a WGSL-only decoder |
 | `eac3` | AC-3 and E-AC-3 | FFmpeg's AC-3 and E-AC-3 decoders | None | FFmpeg, LGPL-2.1-or-later |
 | `truehd` | MLP and TrueHD | FFmpeg's MLP and TrueHD decoders | None | FFmpeg, LGPL-2.1-or-later |
@@ -185,6 +185,31 @@ cd decoders/jpeg2000/parser && cargo test --locked
 npx vitest --watch=false decoders/jpeg2000
 ```
 
+### The VC-1 parser
+
+`decoders/vc1/parser/` is our crate: the CPU half of the VC-1 package, whose WGSL back end is `decoders/vc1/vc1.wgsl`.
+It parses each packet's picture as FFmpeg's `vc1` decoder does: the segments and their escapes, entry points, the frame, field, and slice headers, bitplanes, the intensity compensation lookups, and the macroblock layer, with motion vector prediction, coefficients, and intra DC and AC prediction, scan, and dequantization.
+`configure` takes the codec private data the engine passes for `vc1` and `wmv3` (see [Codec private data](decoder-packages.md#codec-private-data)) and reports the Advanced profile's `MAX_CODED_WIDTH` and `MAX_CODED_HEIGHT`, or the Simple and Main profiles' coded size, as the largest picture.
+One parse unit is one slice or one field, so the parse workers split a picture by its slices and fields; a picture without slices parses on one worker.
+Each picture's record holds its header, each field's parameter block, the lookup sets those read, and per macroblock its flags, transform types, motion compensation operations, and dequantized coefficients at their raster positions.
+`expandRecord` writes them into the buffers the reconstruction, overlap smoothing, and loop filter passes read, one workgroup per macroblock.
+An IntraX8 picture decodes entirely in the parser, its prediction, transform, and loop filter included, and its record carries the picture's samples, which `copyPicture` writes.
+A B picture's direct mode reads the next anchor's motion, which only that anchor's parse yields, so its plan reports `blocked` until every earlier anchor finished, then carries that motion.
+Output events follow FFmpeg's: a B or BI picture, and any picture of a low-delay stream, presents at once, and an anchor presents the anchor before it, so the header declares `reorder: 1`.
+An entry point that changes the coded size drops the anchor waiting to present and every reference, as FFmpeg's decoder does when it reinitializes, and the next record tells the WGSL to release its anchors.
+A picture reports its coded size as its visible size, and `parser_picture_fields` reports its fields from FCM, TFF, and RFF.
+As for HEVC, the WGSL declares the record's layout and the error codes once, and `build.rs` generates the Rust constants from them and fails unless the two agree, and every packet is one picture of version 2 of the parser interface.
+The damage of a packet, `pictureHeader`, `bitplane`, `startCodes`, `macroblockLayer`, `bitsExhausted`, and `pictureTooShort` (a field picture of one macroblock row, FFmpeg's "image too short"), resyncs.
+The configuration, the sequence header, an unsupported feature, an invalid record, and `pictureSize`, a size beyond the pool or the package's 16384 macroblocks, end the attempt, since the pictures after it would fail the same way and a resync would hold the last good frame for good.
+
+After a change, from the engine root:
+
+```sh
+npm run decoders -- vc1
+cd decoders/vc1/parser && cargo test --locked
+npx vitest --watch=false decoders/vc1
+```
+
 ### The AV1 parser
 
 `decoders/av1/` decodes AV1 with libaom's decoder as its parser and WGSL for everything after the syntax.
@@ -222,7 +247,7 @@ npx vitest --watch=false decoders/av1
 
 ### Licenses
 
-- The engine's modules, the bridges, the HEVC and JPEG 2000 parsers, the decoder sources, and the `libdovi` crate are MIT, like the rest of the engine.
+- The engine's modules, the bridges, the HEVC, JPEG 2000, and VC-1 parsers, the decoder sources, and the `libdovi` crate are MIT, like the rest of the engine.
   The vendored `dolby_vision` crate is MIT too and keeps its own `LICENSE`.
 - FFmpeg and libdcadec are LGPL-2.1-or-later, and only the `eac3`, `truehd`, and `dts` packages contain them.
   `decoders/licenses/` holds their license texts.

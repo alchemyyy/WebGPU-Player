@@ -7,6 +7,7 @@ import type {
     BuiltinChain,
     PassManifest,
     PlanFacts,
+    PlanRequest,
     PlannedBinding,
     PlannedOutput,
     PlannedPass,
@@ -464,5 +465,85 @@ describe('planPresentation color step names', () => {
             'builtin.display-controls',
             'builtin.dither'
         ]);
+    });
+});
+
+describe('planPresentation with deinterlacing', () => {
+    // An anamorphic 576i frame, which displays wider than its samples
+    const FRAME_WIDTH = 720;
+    const FRAME_HEIGHT = 576;
+    const DISPLAY_WIDTH = 1024;
+    const DEINTERLACE_BIT_DEPTH = 10;
+    const DEINTERLACE = { bitDepth: DEINTERLACE_BIT_DEPTH, frameHeight: FRAME_HEIGHT, frameWidth: FRAME_WIDTH } as const;
+    const SIGNAL_LABEL = 'Presentation signal';
+    const DEINTERLACE_LABEL = 'Presentation deinterlace';
+    const SCALE_LABEL = 'Presentation scale';
+    const DEINTERLACE_SCORE_BIAS_LITERAL = `0x1p-${DEINTERLACE_BIT_DEPTH}f`;
+    // The pass runs no color step, which the scaler's pass takes
+    const DEINTERLACE_CORE = 'let color = applyBuiltinDeinterlace(input.position.xy);';
+
+    function planDeinterlaced(chain: BuiltinChain, passes: readonly PassManifest[], deinterlace: PlanRequest['deinterlace'] = DEINTERLACE): PresentationPlan {
+        return planPresentation({
+            chain,
+            deinterlace,
+            device: { features: new Set<string>(), maximumTextureDimension: MAXIMUM_TEXTURE_DIMENSION },
+            facts: createFacts({ sourceHeight: FRAME_HEIGHT, sourceWidth: DISPLAY_WIDTH }),
+            output: SDR_OUTPUT,
+            passes
+        });
+    }
+
+    it('makes the signal a ring of the frame\'s own size, which the deinterlacing pass reads three frames deep before the scaler', () => {
+        const presentationPlan = planDeinterlaced(createHDRChain(), []);
+
+        expect(presentationPlan.passes.map((pass: PlannedPass): string => pass.label)).toEqual([ SIGNAL_LABEL, DEINTERLACE_LABEL, SCALE_LABEL ]);
+        expect(presentationPlan.deinterlace).toEqual(DEINTERLACE);
+        expect(presentationPlan.textures).toEqual([
+            { format: 'rgba16float', height: FRAME_HEIGHT, historyDepth: 2, id: 'signal', storage: false, width: FRAME_WIDTH },
+            { format: 'rgba16float', height: FRAME_HEIGHT, historyDepth: 0, id: 'deinterlace', storage: false, width: FRAME_WIDTH }
+        ]);
+        const [ signalPass, deinterlacePass, scalePass ] = presentationPlan.passes;
+        expect(signalPass.target).toEqual({ kind: 'texture', textureId: 'signal' });
+        expect(signalPass.coordinateMapping).toBe('identity');
+        expect(getStepCalls(signalPass)).toEqual([]);
+        expect(deinterlacePass.target).toEqual({ kind: 'texture', textureId: 'deinterlace' });
+        expect(deinterlacePass.inputTextureId).toBe('signal');
+        expect(getTextureBindings(deinterlacePass).map(binding => [ binding.textureId, binding.historyOffset ])).toEqual([ [ 'signal', 0 ], [ 'signal', -1 ], [ 'signal', -2 ] ]);
+        expect(deinterlacePass.code).toContain(DEINTERLACE_CORE);
+        expect(deinterlacePass.code).toContain(DEINTERLACE_SCORE_BIAS_LITERAL);
+        expect(deinterlacePass.code).toContain('var deinterlaceSignal_history2_texture: texture_2d<f32>;');
+        expect(scalePass.inputTextureId).toBe('deinterlace');
+        expect(scalePass.target).toEqual({ kind: 'output' });
+        expect(getStepCalls(scalePass)).toEqual(SDR_STEP_ENTRY_POINTS);
+    });
+
+    it('hands user passes at RGB the deinterlaced image at the frame\'s size', () => {
+        const presentationPlan = planDeinterlaced(createHDRChain(), [ createKernelPass({ domain: 'source', hook: 'RGB' }) ]);
+
+        expect(presentationPlan.report.activePasses).toEqual([ 'Copy' ]);
+        const copyPass = presentationPlan.passes.find((pass: PlannedPass): boolean => pass.label === 'Presentation pass \'Copy\'');
+        expect(copyPass?.inputTextureId).toBe('deinterlace');
+        expect(presentationPlan.textures.find(texture => texture.id === 'pass:Copy')).toMatchObject({ height: FRAME_HEIGHT, width: FRAME_WIDTH });
+    });
+
+    it('plans no deinterlacing without a request, or for a signal whose bypass skips the color track', () => {
+        const profile4Chain = createBuiltinChain({
+            felReconstruction: false,
+            format: HDR_FORMAT,
+            hdrOutput: false,
+            profile: 4,
+            route: 'raw-dolby-vision',
+            settings: createHDRToSDRRenderSettings()
+        });
+
+        expect(planDeinterlaced(createHDRChain(), [], null).deinterlace).toBeNull();
+        expect(planDeinterlaced(createHDRChain(), [], null).passes).toHaveLength(1);
+        expect(planDeinterlaced(profile4Chain, []).deinterlace).toBeNull();
+        expect(planDeinterlaced(profile4Chain, []).passes).toHaveLength(1);
+    });
+
+    it('fails on a frame size the device cannot hold', () => {
+        expect(() => planDeinterlaced(createHDRChain(), [], { ...DEINTERLACE, frameWidth: MAXIMUM_TEXTURE_DIMENSION + 1 }))
+            .toThrow(`deinterlace-size: frame width ${MAXIMUM_TEXTURE_DIMENSION + 1} outside [1, ${MAXIMUM_TEXTURE_DIMENSION}]`);
     });
 });

@@ -1,7 +1,67 @@
-// The contracts of the GPU decode route: a user WGSL compute decoder's manifest, its frame pool, and its failures.
+// The contracts of the GPU decode route: a user WGSL compute decoder's manifest, its frame pool, its failures, and its recoveries.
 // The engine book's decoder packages chapter describes the design they implement.
 import type { PassExpression } from '../../../presentation/passes/PassTypes';
+import type { VideoFrameFields } from '../VideoFields';
 import type { GPUDecoderOutputFormat } from './GPUDecodeFormats';
+
+/**
+ * How a package recovers from an error its header names: it conceals the damage and the picture presents, the picture drops,
+ * or the picture and every picture up to the next key packet drop while the last good frame holds; an error without one ends the attempt.
+ */
+export type GPUDecoderErrorRecovery = 'conceal' | 'drop' | 'resync';
+
+/** The recoveries in rising severity; the prelude ranks each by its position plus one, and a fatal error 0. */
+export const GPU_DECODER_ERROR_RECOVERIES: readonly GPUDecoderErrorRecovery[] = Object.freeze([ 'conceal', 'drop', 'resync' ]);
+
+/** Returns whether header text names a recovery. */
+export function isGPUDecoderErrorRecovery(value: string): value is GPUDecoderErrorRecovery {
+    return (GPU_DECODER_ERROR_RECOVERIES as readonly string[]).includes(value);
+}
+
+/**
+ * What the engine did about a recoverable error instead of failing the attempt: the concealed picture presented,
+ * the picture dropped, or the picture and every picture up to the next key packet dropped while the last good frame held.
+ */
+export type GPUVideoDecodeRecoveryCode = 'concealed' | 'dropped' | 'resynced';
+
+/** The recovery code of each header recovery. */
+export const GPU_VIDEO_DECODE_RECOVERY_CODES: Readonly<Record<GPUDecoderErrorRecovery, GPUVideoDecodeRecoveryCode>> = Object.freeze({
+    conceal: 'concealed',
+    drop: 'dropped',
+    resync: 'resynced'
+});
+
+/** One recovery: its code, the error's name as the header names it, with `parser ` before a parser's failure, and the failing value. */
+export type GPUVideoDecodeRecovery = Readonly<{
+    code: GPUVideoDecodeRecoveryCode
+    errorName: string
+    value: number
+}>;
+
+/** How often one kind of recovery happened, counted per code and error name, with the latest one's detail, `<error name>: <value>`. */
+export type GPUVideoDecodeRecoveryCount = Readonly<{
+    code: GPUVideoDecodeRecoveryCode
+    count: number
+    detail: string
+}>;
+
+/** Returns a recovery's detail, `<error name>: <value>`. */
+export function describeGPUVideoDecodeRecovery(recovery: GPUVideoDecodeRecovery): string {
+    return `${recovery.errorName}: ${recovery.value}`;
+}
+
+/** Returns whether a value crossing a worker boundary is a recovery. */
+export function isGPUVideoDecodeRecovery(value: unknown): value is GPUVideoDecodeRecovery {
+    if (typeof value !== 'object' || value === null) {
+        return false;
+    }
+    const recovery = value as Record<string, unknown>;
+    return (recovery.code === 'concealed' || recovery.code === 'dropped' || recovery.code === 'resynced')
+        && typeof recovery.errorName === 'string'
+        && typeof recovery.value === 'number'
+        && Number.isSafeInteger(recovery.value)
+        && recovery.value >= 0;
+}
 
 /** A named scratch buffer a decoder declares. */
 export type GPUDecoderBuffer = {
@@ -47,6 +107,8 @@ export type GPUDecoderManifest = {
     bodyFirstLine: number
     buffers: readonly GPUDecoderBuffer[]
     dispatches: readonly GPUDecoderDispatch[]
+    /** The recovery of each error code whose line declares one; a code without one is fatal. */
+    errorRecoveries: ReadonlyMap<number, GPUDecoderErrorRecovery>
     /** The names of its error codes, the high byte of a status error word, which its parser reports too. */
     errors: ReadonlyMap<number, string>
     /** The package's id, which its versions share, and which hosts store it by. */
@@ -114,18 +176,24 @@ export function isGPUDecoderRepeatCounts(value: unknown): value is readonly numb
 export type GPUDecodePacket = {
     data: ArrayBuffer
     durationMicroseconds: number
+    /** The frame's fields as the CPU side knows them, the parser's report or else the container's scan; a decoder's own report replaces them. */
+    fields: VideoFrameFields | null
+    /** A packet whose picture is lost, as after a parser's recoverable failure: it decodes nothing, and its frame repeats the last good frame at its time. */
+    hold: boolean
     keyframe: boolean
     /**
      * The parser's output decisions since the previous picture, as GPU_DECODER_OUTPUT_EVENT words: which earlier pictures, or this one, present or drop.
      * Null for a decoder without a parser, whose frames present in timestamp order behind its reorder depth.
      */
     outputEvents: Uint32Array | null
+    /** The recovery a held packet begins, such as the parser failure that lost its picture, which the session counts; null for none. */
+    recovery: GPUVideoDecodeRecovery | null
     /**
      * How many times the picture's record runs each `repeat:` directive, in header order, each capped by the directive's count for the stream;
      * null runs every directive its count for the stream, as a decoder without a parser does.
      */
     repeatCounts: readonly number[] | null
-    /** Set on the first packet after a seek or start, which clears the decoder's state. */
+    /** Set on the first packet after a seek or start, or after a parser restarted, which clears the decoder's state and restarts the picture numbering. */
     reset: boolean
     timestampMicroseconds: number
     /** The picture's own visible size, which its frame presents; null keeps the stream's visible rectangle. */
@@ -157,7 +225,8 @@ export const GPU_DECODER_OUTPUT_EVENT = Object.freeze({
 /**
  * The check a GPU decode session failed; every failure ends the route's attempt.
  * - Creation: 'buffer-size', 'codec-private-size', 'coded-size', 'compile-error', 'decoder-unknown', 'device-unavailable', 'dispatch-count', 'feature-missing', 'format-unsupported', 'out-of-memory', 'packet-size' for a packet ring the device cannot bind, 'pipeline-error', 'pool-size', 'slot-count', 'state-size', 'storage-buffer-count', 'validation-error', 'visible-rectangle'.
- * - Decoding: 'decoder-error', which the decoder reported in its status, 'device-lost', 'dispatch-count' for a picture's repeat counts that do not match the header, 'output-event', 'packet-size', 'readback-failed', and 'visible-rectangle' for a header rectangle or a picture's visible size outside the pool.
+ * - Decoding: 'decoder-error', a fatal error the decoder reported in its status, 'device-lost', 'dispatch-count' for a picture's repeat counts that do not match the header, 'output-event', 'packet-size', 'readback-failed', and 'visible-rectangle' for a header rectangle or a picture's visible size outside the pool.
+ * An error whose header line declares a recovery is no failure: the session recovers and counts it.
  */
 export type GPUVideoDecodeFailureCode =
     | 'accepts'

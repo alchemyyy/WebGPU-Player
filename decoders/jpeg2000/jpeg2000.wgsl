@@ -10,8 +10,8 @@
 //! buffer: coefficients, 4 * stream.width * stream.height * (1 + 2 / (output.chromaWidthDivisor * output.chromaHeightDivisor))
 //! buffer: transformScratch, 4 * stream.width * stream.height * (1 + 2 / (output.chromaWidthDivisor * output.chromaHeightDivisor))
 //! error: 1, recordInvalid
-//! error: 2, codestreamMissing
-//! error: 3, markerSegment
+//! error: 2, codestreamMissing, resync
+//! error: 3, markerSegment, resync
 //! error: 4, imageSize
 //! error: 5, componentCount
 //! error: 6, colourSpace
@@ -20,18 +20,18 @@
 //! error: 9, codingStyle
 //! error: 10, quantization
 //! error: 11, progressionOrder
-//! error: 12, tilePart
-//! error: 13, passCount
+//! error: 12, tilePart, resync
+//! error: 13, passCount, resync
 //! error: 14, unsupportedFeature
 //! error: 15, outputFormat
 //! error: 16, pictureSize
 //! error: 17, resourceLimit
 //! error: 18, regionOfInterest
-//! error: 19, tileMissing
-//! error: 20, lengthBits
-//! error: 21, magnitudeBits
-//! error: 22, packetData
-//! error: 23, codeBlockLength
+//! error: 19, tileMissing, resync
+//! error: 20, lengthBits, resync
+//! error: 21, magnitudeBits, resync
+//! error: 22, packetData, resync
+//! error: 23, codeBlockLength, resync
 //! error: 24, pictureArea
 //! dispatch: beginPicture, 1
 //! dispatch: clearCoefficients, indirect control

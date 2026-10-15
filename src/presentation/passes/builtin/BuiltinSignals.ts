@@ -9,6 +9,7 @@ import {
 import { createDolbyVisionColorFunctionsWGSL } from '../../../color/DolbyVisionColorTransform';
 import { getRawFormatBitDepth, type SupportedRawVideoFrameFormat } from '../../../decode/video/RawVideoFrameCopy';
 import type { DolbyVisionReconstructionProfile } from '../../PresentationInput';
+import { PRESENTATION_FIELD_STATE } from '../PassResources';
 import type { EngineResource, RawDolbyVisionFrameFormat, SignalDefinition } from '../PassTypes';
 import { joinWGSL, toWGSLFloat } from './BuiltinWGSL';
 
@@ -17,6 +18,8 @@ type DolbyVisionDualLayerBaseFallback = 'hdr10' | 'sdr';
 
 const SIGNAL_ENTRY_POINT = 'sampleBuiltinSignal';
 const SIGNAL_NAME_PREFIX = 'builtin.signal';
+// Names a signal that reads interlaced chroma within each field
+const INTERLACED_CHROMA_NAME_SUFFIX = '.interlaced-chroma';
 
 const EXTERNAL_RESOURCES: readonly EngineResource[] = Object.freeze([ 'sampler-linear', 'external-texture' ]);
 const EXTERNAL_DOLBY_VISION_RESOURCES: readonly EngineResource[] = Object.freeze([
@@ -220,16 +223,112 @@ export function hasLeftSitedChroma(format: SupportedRawVideoFrameFormat): boolea
     return format.startsWith('I420') || format.startsWith('I422');
 }
 
-/** Generates the manual bilinear reads of the plane textures, which PassResources declares, as one YUV code triplet. */
-function createRawYUVSamplingWGSL(format: SupportedRawVideoFrameFormat): string {
+/** Returns whether a format's chroma has half the luma's rows, whose rows an interlaced frame's two fields share. */
+function hasVerticallySubsampledChroma(format: SupportedRawVideoFrameFormat): boolean {
+    return format === 'NV12' || format.startsWith('I420');
+}
+
+/**
+ * The condition under which a deinterlacing plan's signal reads chroma within each field: the presentation uniform marks the frame interlaced.
+ * Each 4:2:0 field carries its own chroma rows, alternating with the other field's, so a progressive read would blend the two fields' colors.
+ */
+export const INTERLACED_SIGNAL_CONDITION = `(presentation.fieldState & ${PRESENTATION_FIELD_STATE.interlacedSignal}u) != 0u`;
+
+/**
+ * Returns the WGSL of a field-aware bilinear chroma read: the luma row a coordinate falls on names its field, and the read takes that field's chroma rows,
+ * every other row of the plane, at the field's own siting, MPEG-2's for interlaced 4:2:0: the top field's chroma lies a quarter of a field row below its
+ * luma rows, the bottom field's three quarters, so a still frame's chroma sits where a progressive frame's does.
+ * The horizontal read is the progressive one; dimensions, lumaHeight, and the load are WGSL expressions of the plane it reads.
+ */
+export function createInterlacedChromaReadWGSL(
+    signature: string,
+    dimensions: string,
+    lumaHeight: string,
+    load: (column: string, row: string) => string
+): string {
+    return `
+fn ${signature} {
+    let dimensions = ${dimensions};
+    let lumaHeight = ${lumaHeight};
+    let lumaRow = clamp(i32(floor(textureCoordinate.y * f32(lumaHeight))), 0, lumaHeight - 1);
+    let field = lumaRow & 1;
+    let lastFieldRow = max((dimensions.y - field + 1) / 2 - 1, 0);
+    let fieldPosition = (f32(lumaRow >> 1u) - 0.25 - 0.5 * f32(field)) * 0.5;
+    let fieldRow = i32(floor(fieldPosition));
+    let rowFraction = fieldPosition - floor(fieldPosition);
+    let topRow = min(clamp(fieldRow, 0, lastFieldRow) * 2 + field, dimensions.y - 1);
+    let bottomRow = min(clamp(fieldRow + 1, 0, lastFieldRow) * 2 + field, dimensions.y - 1);
+    let columnPosition = textureCoordinate.x * f32(dimensions.x) - 0.5;
+    let leftColumn = clamp(i32(floor(columnPosition)), 0, dimensions.x - 1);
+    let rightColumn = clamp(i32(floor(columnPosition)) + 1, 0, dimensions.x - 1);
+    let columnFraction = fract(columnPosition);
+    let topLeft = ${load('leftColumn', 'topRow')};
+    let topRight = ${load('rightColumn', 'topRow')};
+    let bottomLeft = ${load('leftColumn', 'bottomRow')};
+    let bottomRight = ${load('rightColumn', 'bottomRow')};
+    return mix(mix(topLeft, topRight, columnFraction), mix(bottomLeft, bottomRight, columnFraction), rowFraction);
+}`;
+}
+
+const LUMA_TEXTURE_HEIGHT = 'i32(textureDimensions(lumaTexture).y)';
+
+function createTextureInterlacedChromaReadWGSL(functionName: string, textureName: string, valueType: 'f32' | 'vec2f'): string {
+    const channels = valueType === 'f32' ? '.r' : '.rg';
+    return createInterlacedChromaReadWGSL(
+        `${functionName}(textureCoordinate: vec2f) -> ${valueType}`,
+        `vec2i(textureDimensions(${textureName}))`,
+        LUMA_TEXTURE_HEIGHT,
+        (column: string, row: string): string => `${valueType}(textureLoad(${textureName}, vec2i(${column}, ${row}), 0)${channels})`
+    );
+}
+
+/**
+ * Generates the manual bilinear reads of the plane textures, which PassResources declares, as one YUV code triplet.
+ * With interlacedChroma, a 4:2:0 format's reads take chroma within each field of a frame the presentation uniform marks interlaced.
+ */
+function createRawYUVSamplingWGSL(format: SupportedRawVideoFrameFormat, interlacedChroma: boolean = false): string {
     const chromaTextureCoordinate = hasLeftSitedChroma(format) ?
         'textureCoordinate + vec2f(0.5 / f32(textureDimensions(lumaTexture).x), 0.0)' :
         'textureCoordinate';
+    const fieldAware = interlacedChroma && hasVerticallySubsampledChroma(format);
     if (format === 'NV12') {
+        if (fieldAware) {
+            return joinWGSL([ LUMA_SAMPLING_WGSL, NV12_CHROMA_SAMPLING_WGSL, createTextureInterlacedChromaReadWGSL('sampleInterlacedChroma', 'chromaTexture', 'vec2f'), `
+fn sampleRawYUV(textureCoordinate: vec2f) -> vec3f {
+    var chroma = sampleChroma(${chromaTextureCoordinate});
+    if (${INTERLACED_SIGNAL_CONDITION}) {
+        chroma = sampleInterlacedChroma(${chromaTextureCoordinate});
+    }
+    return vec3f(sampleLuma(textureCoordinate), chroma.x, chroma.y);
+}` ]);
+        }
         return joinWGSL([ LUMA_SAMPLING_WGSL, NV12_CHROMA_SAMPLING_WGSL, `
 fn sampleRawYUV(textureCoordinate: vec2f) -> vec3f {
     let chroma = sampleChroma(${chromaTextureCoordinate});
     return vec3f(sampleLuma(textureCoordinate), chroma.x, chroma.y);
+}` ]);
+    }
+
+    if (fieldAware) {
+        return joinWGSL([
+            LUMA_SAMPLING_WGSL,
+            PLANAR_CHROMA_SAMPLING_WGSL,
+            createTextureInterlacedChromaReadWGSL('sampleInterlacedChromaU', 'chromaUTexture', 'f32'),
+            createTextureInterlacedChromaReadWGSL('sampleInterlacedChromaV', 'chromaVTexture', 'f32'),
+            `
+fn sampleRawYUV(textureCoordinate: vec2f) -> vec3f {
+    if (${INTERLACED_SIGNAL_CONDITION}) {
+        return vec3f(
+            sampleLuma(textureCoordinate),
+            sampleInterlacedChromaU(${chromaTextureCoordinate}),
+            sampleInterlacedChromaV(${chromaTextureCoordinate})
+        );
+    }
+    return vec3f(
+        sampleLuma(textureCoordinate),
+        sampleChromaU(${chromaTextureCoordinate}),
+        sampleChromaV(${chromaTextureCoordinate})
+    );
 }` ]);
     }
 
@@ -424,8 +523,11 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
     };
 }
 
-/** Returns the manual bilinear YUV read of raw planes in format, normalized by the metadata's range and converted by its matrix. */
-export function createRawYUVSignal(format: SupportedRawVideoFrameFormat, metadata: InputColorMetadata): SignalDefinition {
+/**
+ * Returns the manual bilinear YUV read of raw planes in format, normalized by the metadata's range and converted by its matrix.
+ * With interlacedChroma, as a deinterlacing plan's signal, 4:2:0 chroma is read within each field of a frame the presentation uniform marks interlaced.
+ */
+export function createRawYUVSignal(format: SupportedRawVideoFrameFormat, metadata: InputColorMetadata, interlacedChroma: boolean = false): SignalDefinition {
     assertValidInputColorMetadata(metadata);
     const formatBitDepth = getRawFormatBitDepth(format);
     if (metadata.bitDepth !== formatBitDepth) {
@@ -438,16 +540,18 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
     let encodedRGB = convertRawYUVToEncodedRGB(normalizedYUV);
     return vec4f(encodedRGB, 1.0);
 }`;
+    // Only 4:2:0 chroma has rows the two fields share, so other formats keep their one read
+    const fieldAwareChroma = interlacedChroma && hasVerticallySubsampledChroma(format);
     return {
         bypassCondition: null,
         code: joinWGSL([
-            createRawYUVSamplingWGSL(format),
+            createRawYUVSamplingWGSL(format, fieldAwareChroma),
             createRawYUVRangeWGSL(metadata),
             createRawYUVMatrixWGSL(metadata),
             entryWGSL
         ]),
         entryPoint: SIGNAL_ENTRY_POINT,
-        name: `${SIGNAL_NAME_PREFIX}.raw-yuv.${format}`,
+        name: `${SIGNAL_NAME_PREFIX}.raw-yuv.${format}${fieldAwareChroma ? INTERLACED_CHROMA_NAME_SUFFIX : ''}`,
         resources: format === 'NV12' ? NV12_RESOURCES : PLANAR_RESOURCES,
         sourceKind: 'planes'
     };

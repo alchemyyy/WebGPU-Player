@@ -145,10 +145,14 @@ import {
 } from '../decode/video/RawVideoFrameCopy';
 import { requireMicroseconds } from '../TimeMath';
 import { GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH, MAXIMUM_GPU_DECODE_OUTPUT_EVENTS } from '../decode/video/gpu/GPUDecodeLimits';
-import type { GPUDecoderParserOutput, GPUDecoderParserPicture } from '../decode/video/gpu/GPUDecoderParser';
+import {
+    getGPUDecoderParserFailureRecovery,
+    type GPUDecoderParserOutput,
+    type GPUDecoderParserPicture
+} from '../decode/video/gpu/GPUDecoderParser';
 import type { GPUDecoderParserRemotePipeline } from '../decode/video/gpu/GPUDecoderCoordinatorHost';
 import type { GPUDecoderOutputFormat } from '../decode/video/gpu/GPUDecodeFormats';
-import type { GPUDecoderPictureSize } from '../decode/video/gpu/GPUDecodeTypes';
+import type { GPUDecoderPictureSize, GPUVideoDecodeRecovery } from '../decode/video/gpu/GPUDecodeTypes';
 import { openGPUDecoderParser } from '../decode/video/gpu/GPUDecoderWorkerCoordinator';
 import NativeMediaAudioFMP4Remuxer, {
     type NativeMediaAudioFMP4Codec,
@@ -194,6 +198,8 @@ import {
     withMatroskaBlockAdditions,
     type MatroskaBlockAddition
 } from '../demux/MatroskaBlockAdditions';
+import { readContainerVideoScan, withMatroskaVideoFieldOrder } from '../demux/ContainerVideoScan';
+import { getScanFrameFields, type VideoFrameFields } from '../decode/video/VideoFields';
 import {
     MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT,
     type StaticHDRMetadataScanResult
@@ -217,6 +223,8 @@ const GPU_DECODE_PACKET_OPTIONS = {
     metadataOnly: false,
     verifyKeyPackets: true
 } as const;
+// The packets a parser's restart holds, whose timing alone reaches the page
+const GPU_DECODE_HOLD_PACKET_OPTIONS = { metadataOnly: true } as const;
 // Pictures a GPU decoder's CPU parser makes ahead of the credits, so its parse workers keep working while the page decodes; a packet still parsing counts as one
 const GPU_DECODE_PARSER_READ_AHEAD = 8;
 const STATIC_HDR_METADATA_SCAN_MAXIMUM_BYTE_LENGTH = 8 * 1024 * 1024;
@@ -301,6 +309,8 @@ type DecodeRun = {
     videoDecoderBackend: CustomDecodeVideoDecoderBackend
     /** Tags posted frames so the session can drop frames from replaced attempts */
     videoEpoch: number
+    /** The fields of the video track's container scan, which every posted frame and picture without its own carries; null while the container names none */
+    videoFrameFields: VideoFrameFields | null
     videoOutputMode: CustomDecodeVideoOutputMode
     videoIterator: MediaSampleIterator<EncodedPacket> | MediaSampleIterator<VideoSample> | null
     /** Set once the video stream unwinds so finished audio stops waiting for a resync */
@@ -1613,6 +1623,13 @@ function attachHDR10PlusMetadata(
     }
 }
 
+/** Attaches the container's fields, which a frame of a native decoder carries since it reports none of its own. */
+function attachVideoFrameFields(response: MutableDecodeWorkerFrameResponse, fields: VideoFrameFields | null): void {
+    if (fields) {
+        response.fields = fields;
+    }
+}
+
 async function postRawVideoFrame(
     run: DecodeRun,
     frame: RawVideoFrameSource,
@@ -1659,6 +1676,7 @@ async function postRawVideoFrame(
     };
     const transferables = getRawVideoFrameTransferList(rawFrame);
     attachHDR10PlusMetadata(response, HDR10PlusMetadata);
+    attachVideoFrameFields(response, run.videoFrameFields);
     transferables.push(...attachDolbyVisionEncodedMetadata(response, encodedDolbyVisionMetadata));
     recordVideoAttemptFramePosted(run, mediaTimeMicroseconds);
     postResponse(response, transferables);
@@ -1748,6 +1766,7 @@ async function postRawVideoFramePair(run: DecodeRun, request: RawVideoFramePairP
     };
     const transferables = getRawVideoFramePairTransferList(rawFramePair);
     attachHDR10PlusMetadata(response, HDR10PlusMetadata);
+    attachVideoFrameFields(response, run.videoFrameFields);
     transferables.push(...attachDolbyVisionEncodedMetadata(response, encodedDolbyVisionMetadata));
     recordVideoAttemptFramePosted(run, mediaTimeMicroseconds);
     postResponse(response, transferables);
@@ -1771,6 +1790,7 @@ function postTransferredVideoFrame(
         videoEpoch: run.videoEpoch
     };
     attachHDR10PlusMetadata(response, HDR10PlusMetadata);
+    attachVideoFrameFields(response, run.videoFrameFields);
     const transferables: Transferable[] = [ frame as unknown as Transferable ];
     transferables.push(...attachDolbyVisionEncodedMetadata(response, encodedDolbyVisionMetadata));
     recordVideoAttemptFramePosted(run, mediaTimeMicroseconds);
@@ -2596,6 +2616,8 @@ async function streamOwnedVP9Frames(
 /** One picture the page's decoder reads: the packet's bytes, or a GPU record its parser made, with the parser's output events, repeat counts, and visible size. */
 type GPUDecodeOutgoingPicture = {
     data: ArrayBuffer
+    /** The fields the picture's parser reported, or null */
+    fields: VideoFrameFields | null
     format: GPUDecoderOutputFormat | null
     maximumPictureSize: GPUDecoderPictureSize | null
     outputEvents: Uint32Array | null
@@ -2615,6 +2637,8 @@ type GPUDecodeOutgoingPacket = {
     durationMicroseconds: Microseconds
     HDR10PlusMetadata: HDR10PlusFrameMetadata | null
     keyframe: boolean
+    /** The demuxed packet, from which a parser's restart after a failure on it finds the next key packet */
+    packet: EncodedPacket
     /** The pictures the parser made of the packet, once it did; a packet still parsing counts as one picture toward the read-ahead */
     pictureCount: number | null
     timestampMicroseconds: Microseconds
@@ -2626,9 +2650,13 @@ type GPUDecodePacketQueue = {
     ended: boolean
     iterator: OwnedVideoPacketIterator
     outgoing: GPUDecodeOutgoingPacket[]
+    /** The track's packets, which a parser's restart reads again from the next key packet */
+    packetSink: EncodedPacketSink
     // The decoder package's parser, which turns each packet into what the decoder reads
     pipeline: GPUDecoderParserRemotePipeline | null
     readAheadDepth: number
+    /** Set by a parser's restart: the next posted picture, its new parser's first, resets the page's decoder */
+    resetPending: boolean
 };
 
 /** Returns the pictures a parser made of a packet as the page's decoder reads them. */
@@ -2636,6 +2664,7 @@ function getOutgoingParserData(output: GPUDecoderParserOutput): GPUDecodeOutgoin
     return {
         pictures: output.pictures.map((picture: GPUDecoderParserPicture): GPUDecodeOutgoingPicture => ({
             data: picture.record,
+            fields: picture.fields,
             format: picture.format,
             maximumPictureSize: picture.maximumPictureSize,
             outputEvents: picture.events,
@@ -2651,7 +2680,7 @@ function submitGPUDecodePacket(pipeline: GPUDecoderParserRemotePipeline | null, 
     const bytes = packet.data.slice().buffer;
     if (!pipeline) {
         return Promise.resolve({
-            pictures: [ { data: bytes, format: null, maximumPictureSize: null, outputEvents: null, repeatCounts: null, visibleSize: null } ],
+            pictures: [ { data: bytes, fields: null, format: null, maximumPictureSize: null, outputEvents: null, repeatCounts: null, visibleSize: null } ],
             trailingEvents: null
         });
     }
@@ -2730,30 +2759,37 @@ async function openGPUDecodePacketQueue(
         ended: false,
         iterator,
         outgoing: [],
+        packetSink,
         pipeline,
         // A parser parses ahead of the credits, so its workers stay busy while the page decodes
-        readAheadDepth: pipeline ? GPU_DECODE_PARSER_READ_AHEAD : 1
+        readAheadDepth: pipeline ? GPU_DECODE_PARSER_READ_AHEAD : 1,
+        resetPending: false
     };
 }
 
 /**
  * Posts one picture of a packet of the frame-pool route with the output events it carries; its data and events transfer to the page.
  * Every picture takes its packet's timing and keyframe flag, and the packet's first picture carries its HDR10+ state.
+ * The first picture after a parser's restart resets the page's decoder.
  */
 function postGPUDecodePicture(
     run: DecodeRun,
     packet: GPUDecodeOutgoingPacket,
     picture: GPUDecodeOutgoingPicture,
     events: Uint32Array | null,
-    firstPicture: boolean
+    firstPicture: boolean,
+    reset: boolean
 ): void {
     const transfer: Transferable[] = [ picture.data ];
     if (events && events.byteLength > 0) {
         transfer.push(events.buffer);
     }
+    // A parser's own report outranks the container's, and a decoder's status report outranks both on the page
+    const fields = picture.fields ?? run.videoFrameFields;
     postResponse({
         data: picture.data,
         durationMicroseconds: packet.durationMicroseconds,
+        ...(fields ? { fields } : {}),
         generation: run.generation,
         ...(picture.format ? { format: picture.format } : {}),
         ...(firstPicture && packet.HDR10PlusMetadata ? { HDR10PlusMetadata: packet.HDR10PlusMetadata } : {}),
@@ -2761,11 +2797,83 @@ function postGPUDecodePicture(
         ...(picture.maximumPictureSize ? { maximumPictureSize: picture.maximumPictureSize } : {}),
         ...(events ? { outputEvents: events } : {}),
         ...(picture.repeatCounts ? { repeatCounts: picture.repeatCounts } : {}),
+        ...(reset ? { reset: true } : {}),
         timestampMicroseconds: packet.timestampMicroseconds,
         type: 'packet',
         videoEpoch: run.videoEpoch,
         ...(picture.visibleSize ? { visibleSize: picture.visibleSize } : {})
     }, transfer);
+}
+
+/**
+ * Posts a held packet: one whose picture a parser's failure lost, which decodes nothing and whose frame repeats the last good frame at its time.
+ * The first held packet of a restart carries the failure as its recovery.
+ */
+function postGPUDecodeHold(run: DecodeRun, packet: EncodedPacket, recovery: GPUVideoDecodeRecovery | null): Microseconds {
+    const timestampMicroseconds = requireMicroseconds(packet.microsecondTimestamp, 'GPU decode held packet timestamp');
+    postResponse({
+        data: new ArrayBuffer(0),
+        durationMicroseconds: requireMicroseconds(Math.max(0, packet.microsecondDuration), 'GPU decode held packet duration'),
+        generation: run.generation,
+        hold: true,
+        keyframe: packet.type === 'key',
+        ...(recovery ? { recovery } : {}),
+        timestampMicroseconds,
+        type: 'packet',
+        videoEpoch: run.videoEpoch
+    });
+    return timestampMicroseconds;
+}
+
+/**
+ * Restarts the parser after a recoverable failure on a packet: the failed parser closes, the failed packet and every packet up to the next key packet
+ * post as held packets, each spending its credit, and a new parser parses from the key packet, whose first picture resets the page's decoder.
+ * Without a later key packet the packets up to the track's end hold, and the track ends.
+ * Returns false once the attempt stopped.
+ */
+async function restartGPUDecodeParser(
+    run: DecodeRun,
+    parser: NonNullable<Extract<DecodeWorkerRequest, { type: 'start' }>['gpuVideoParser']>,
+    preparedVideoTrack: PreparedVideoTrack,
+    queue: GPUDecodePacketQueue,
+    failedPacket: EncodedPacket,
+    recovery: GPUVideoDecodeRecovery
+): Promise<boolean> {
+    queue.pipeline?.close();
+    queue.pipeline = null;
+    // The packets read ahead went to the failed parser, which made nothing of them
+    queue.outgoing.length = 0;
+    const previousIterator = run.videoIterator;
+    run.videoIterator = null;
+    await retireIterator(previousIterator);
+    const keyPacket = await queue.packetSink.getNextKeyPacket(failedPacket, GPU_DECODE_PACKET_OPTIONS);
+    let carriedRecovery: GPUVideoDecodeRecovery | null = recovery;
+    for await (const heldPacket of queue.packetSink.packets(failedPacket, keyPacket ?? undefined, GPU_DECODE_HOLD_PACKET_OPTIONS)) {
+        if (!(await waitForFrameCredit(run))) {
+            return false;
+        }
+        const timestampMicroseconds = postGPUDecodeHold(run, heldPacket, carriedRecovery);
+        carriedRecovery = null;
+        recordVideoAttemptFramePosted(run, timestampMicroseconds);
+    }
+    if (isVideoAttemptStopped(run)) {
+        return false;
+    }
+    if (!keyPacket) {
+        queue.ended = true;
+        return true;
+    }
+    const iterator = queue.packetSink.packets(keyPacket, undefined, GPU_DECODE_PACKET_OPTIONS);
+    queue.iterator = iterator;
+    // The read ahead may have reached the track's end before the failure surfaced; the new parser reads it again
+    queue.ended = false;
+    run.videoIterator = iterator;
+    queue.pipeline = await openGPUDecoderParser(parser.parser, parser.packageVersion, copyDecoderDescription(preparedVideoTrack.decoderConfig.description));
+    if (isVideoAttemptStopped(run)) {
+        return false;
+    }
+    queue.resetPending = true;
+    return true;
 }
 
 /** Reads packets into the queue until its pictures reach its read-ahead depth or the track ends; returns false once the attempt stopped. */
@@ -2789,6 +2897,7 @@ async function fillGPUDecodePacketQueue(run: DecodeRun, queue: GPUDecodePacketQu
             durationMicroseconds: requireMicroseconds(Math.max(0, packet.microsecondDuration), 'GPU decode packet duration'),
             HDR10PlusMetadata,
             keyframe: packet.type === 'key',
+            packet,
             pictureCount: null,
             timestampMicroseconds
         };
@@ -2824,6 +2933,7 @@ function joinOutputEvents(carriedEvents: readonly number[], outputEvents: Uint32
  * Streams one attempt of the frame-pool route: the selected track's compressed packets, in decode order, from the key packet preceding the start time.
  * A decoder package with a parser receives what the parser makes of each packet instead, such as the HEVC decoder's GPU records, one per picture, with the parser's output events;
  * the parser works ahead of the credits on packets it may parse in parallel, and a parser call without a picture posts nothing, its events going with the next picture.
+ * A parser failure whose code the header declares recoverable restarts the parser at the next key packet, the packets before it holding the last good frame.
  * Each posted picture spends a video credit, which the page returns once its GPU decode work is submitted; a packet's first picture carries its HDR10+ state.
  */
 async function streamGPUDecodePackets(
@@ -2835,6 +2945,7 @@ async function streamGPUDecodePackets(
     if (!queue) {
         return;
     }
+    const parser = request.gpuVideoParser;
     let postedPictureCount = 0;
     let carriedEvents: number[] = [];
     try {
@@ -2845,27 +2956,84 @@ async function streamGPUDecodePackets(
                 run.videoTrailingOutputEvents = joinOutputEvents(carriedEvents, null);
                 return;
             }
-            const { pictures, trailingEvents } = await next.data;
-            if (isVideoAttemptStopped(run)) {
+            const data = await readGPUDecodeOutgoingData(run, parser, preparedVideoTrack, queue, next);
+            if (data === GPU_DECODE_PARSER_RESTARTED) {
+                // The failed parser's events decide nothing any more: the page presents its undecided frames when the holds begin
+                carriedEvents = [];
+                continue;
+            }
+            if (data === GPU_DECODE_ATTEMPT_STOPPED || isVideoAttemptStopped(run)) {
                 return;
             }
-            for (const [ pictureIndex, picture ] of pictures.entries()) {
-                if (!(await waitForFrameCredit(run))) {
-                    return;
-                }
-                postGPUDecodePicture(run, next, picture, joinOutputEvents(carriedEvents, picture.outputEvents), pictureIndex === 0);
-                carriedEvents = [];
-                recordVideoAttemptFramePosted(run, next.timestampMicroseconds);
-                postedPictureCount += 1;
-                postVideoStartupProgress(run, 'video-packet-started', postedPictureCount, next.timestampMicroseconds);
+            const postedCount = await postGPUDecodePictures(run, queue, next, data.pictures, carriedEvents, postedPictureCount);
+            if (postedCount === null) {
+                return;
             }
+            if (data.pictures.length > 0) {
+                carriedEvents = [];
+            }
+            postedPictureCount = postedCount;
             // A parser call without a picture, such as one for a skipped leading picture, posts nothing and spends no credit
-            carriedEvents.push(...(trailingEvents ?? []));
+            carriedEvents.push(...(data.trailingEvents ?? []));
             requireOutputEventCount(carriedEvents.length);
         }
     } finally {
         queue.pipeline?.close();
     }
+}
+
+// What reading a packet's parsed data comes to instead of the data: its parser failed and restarted at the next key packet, or the attempt stopped
+const GPU_DECODE_PARSER_RESTARTED = 'parser-restarted';
+const GPU_DECODE_ATTEMPT_STOPPED = 'attempt-stopped';
+
+/**
+ * Reads what the parser made of a packet. A parser failure whose code the header declares recoverable restarts the parser at the next key packet;
+ * any other failure rejects, which ends the attempt.
+ */
+async function readGPUDecodeOutgoingData(
+    run: DecodeRun,
+    parser: Extract<DecodeWorkerRequest, { type: 'start' }>['gpuVideoParser'],
+    preparedVideoTrack: PreparedVideoTrack,
+    queue: GPUDecodePacketQueue,
+    packet: GPUDecodeOutgoingPacket
+): Promise<GPUDecodeOutgoingData | typeof GPU_DECODE_PARSER_RESTARTED | typeof GPU_DECODE_ATTEMPT_STOPPED> {
+    try {
+        return await packet.data;
+    } catch (error) {
+        const recovery = parser ? getGPUDecoderParserFailureRecovery(parser.parser, error) : null;
+        if (!parser || recovery === null) {
+            throw error;
+        }
+        const restarted = await restartGPUDecodeParser(run, parser, preparedVideoTrack, queue, packet.packet, recovery);
+        return restarted ? GPU_DECODE_PARSER_RESTARTED : GPU_DECODE_ATTEMPT_STOPPED;
+    }
+}
+
+/**
+ * Posts a packet's pictures, each once a video credit is free; the first carries the events earlier calls without a picture left, and the first after a
+ * parser's restart resets the page's decoder. Returns the pictures posted since the attempt began, or null once the attempt stopped.
+ */
+async function postGPUDecodePictures(
+    run: DecodeRun,
+    queue: GPUDecodePacketQueue,
+    packet: GPUDecodeOutgoingPacket,
+    pictures: readonly GPUDecodeOutgoingPicture[],
+    carriedEvents: readonly number[],
+    postedPictureCount: number
+): Promise<number | null> {
+    let postedCount = postedPictureCount;
+    for (const [ pictureIndex, picture ] of pictures.entries()) {
+        if (!(await waitForFrameCredit(run))) {
+            return null;
+        }
+        const firstPicture = pictureIndex === 0;
+        postGPUDecodePicture(run, packet, picture, joinOutputEvents(firstPicture ? carriedEvents : [], picture.outputEvents), firstPicture, queue.resetPending);
+        queue.resetPending = false;
+        recordVideoAttemptFramePosted(run, packet.timestampMicroseconds);
+        postedCount += 1;
+        postVideoStartupProgress(run, 'video-packet-started', postedCount, packet.timestampMicroseconds);
+    }
+    return postedCount;
 }
 
 /** Reads the next decoded sample, recording the wait as a `video-read` when a timing trace runs. */
@@ -3441,6 +3609,8 @@ async function prepareRunTracks(
     if (run.cancelled) {
         return null;
     }
+    // The container's field order, which Mediabunny's parse of the track already read, goes with every frame that reports none of its own
+    run.videoFrameFields = getScanFrameFields(await readContainerVideoScan(preparedVideoTrack.videoTrack));
     const containerDurationMicroseconds = request.reportContainerDuration === true ?
         await readContainerDurationMicroseconds(input, preparedVideoTrack.videoTrack) :
         null;
@@ -3472,7 +3642,7 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
             return;
         }
         const input = new Input({
-            formats: withMatroskaBlockAdditions(CUSTOM_DECODE_INPUT_FORMATS),
+            formats: withMatroskaVideoFieldOrder(withMatroskaBlockAdditions(CUSTOM_DECODE_INPUT_FORMATS)),
             source: createMediaSource(request.source)
         });
         run.input = input;
@@ -3572,6 +3742,7 @@ function createDecodeRun(request: Extract<DecodeWorkerRequest, { type: 'start' }
         videoAttemptPostedFrameCount: 0,
         videoDecoderBackend: request.videoDecoderBackend,
         videoEpoch: 0,
+        videoFrameFields: null,
         videoOutputMode: request.videoOutputMode,
         videoIterator: null,
         videoStreamFinished: false,

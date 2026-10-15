@@ -81,6 +81,64 @@ function encodeLengthPrefixedNALUnits(nalUnits: readonly Uint8Array[]): Uint8Arr
     return output;
 }
 
+// The NAL unit type of a trailing picture, which a delta packet's slice takes in place of the sample's IDR type, so key packet verification finds no IRAP picture in it
+const HEVC_TRAIL_R_NAL_UNIT_TYPE = 1;
+const HEVC_FIRST_IRAP_NAL_UNIT_TYPE = 16;
+const HEVC_LAST_IRAP_NAL_UNIT_TYPE = 23;
+
+/** Returns a NAL unit whose IRAP type, if it has one, became a trailing picture's. */
+function demoteIRAPNALUnit(nalUnit: HEVCNALUnit): Uint8Array {
+    if (nalUnit.type < HEVC_FIRST_IRAP_NAL_UNIT_TYPE || nalUnit.type > HEVC_LAST_IRAP_NAL_UNIT_TYPE) {
+        return nalUnit.data;
+    }
+    const data = nalUnit.data.slice();
+    // nal_unit_type is bits 1 to 6 of the header's first byte, after forbidden_zero_bit
+    data[0] = (data[0] & 0x81) | (HEVC_TRAIL_R_NAL_UNIT_TYPE << 1);
+    return data;
+}
+
+/**
+ * Muxes the x265 sample's first access unit once per entry of keyframes, length-prefixed with an hvcC: a key packet as it is, a delta packet with its IDR slice
+ * retyped as a trailing picture's, which a parser stub never reads, each packet one frame duration after the one before.
+ */
+export async function createHEVCMatroskaWithKeyframes(keyframes: readonly boolean[]): Promise<Uint8Array> {
+    const nalUnits = parseHEVCNALUnits(new Uint8Array(readFileSync(X265_SAMPLE_PATH)), { kind: 'annex-b' });
+    const secondDelimiterIndex = nalUnits.findIndex(
+        (nalUnit: HEVCNALUnit, nalUnitIndex: number): boolean => nalUnitIndex > 0 && nalUnit.type === HEVC_AUD_NAL_UNIT_TYPE
+    );
+    const firstAccessUnit = nalUnits.slice(0, secondDelimiterIndex);
+    const sequenceParameterSet = firstAccessUnit.find((nalUnit: HEVCNALUnit): boolean => nalUnit.type === HEVC_SPS_NAL_UNIT_TYPE);
+    if (!sequenceParameterSet) {
+        throw new Error('The x265 sample\'s first access unit has no SPS');
+    }
+    const { codedHeight, codedWidth } = parseHEVCSPS(sequenceParameterSet.data);
+    const pictureNALUnits = firstAccessUnit.filter((nalUnit: HEVCNALUnit): boolean => !HEVC_PARAMETER_SET_NAL_UNIT_TYPES.includes(nalUnit.type));
+    const keyData = encodeLengthPrefixedNALUnits(pictureNALUnits.map((nalUnit: HEVCNALUnit): Uint8Array => nalUnit.data));
+    const deltaData = encodeLengthPrefixedNALUnits(pictureNALUnits.map(demoteIRAPNALUnit));
+    const decoderConfig: VideoDecoderConfig = {
+        codec: HEVC_MAIN_10_CODEC,
+        codedHeight,
+        codedWidth,
+        description: createHEVCDecoderConfigurationRecord(firstAccessUnit)
+    };
+
+    const target = new BufferTarget();
+    const output = new Output({ format: new MkvOutputFormat(), target });
+    const source = new EncodedVideoPacketSource('hevc');
+    output.addVideoTrack(source);
+    await output.start();
+    for (const [ packetIndex, keyframe ] of keyframes.entries()) {
+        const packet = new EncodedPacket(keyframe ? keyData : deltaData, keyframe ? 'key' : 'delta', packetIndex * FRAME_DURATION_SECONDS, FRAME_DURATION_SECONDS);
+        await source.add(packet, packetIndex === 0 ? { decoderConfig } : undefined);
+    }
+    source.close();
+    await output.finalize();
+    if (!target.buffer) {
+        throw new Error('Mediabunny did not finalize the Matroska vector');
+    }
+    return new Uint8Array(target.buffer);
+}
+
 /** Muxes the x265 sample's first access unit as a one-frame Matroska HEVC Main 10 track without Dolby Vision. */
 export async function createHEVCMatroska(packetFormat: HEVCMatroskaPacketFormat = 'annex-b'): Promise<Uint8Array> {
     const nalUnits = parseHEVCNALUnits(new Uint8Array(readFileSync(X265_SAMPLE_PATH)), { kind: 'annex-b' });

@@ -2,7 +2,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { GPUDecoderParserModule, GPUDecoderParserOutput, GPUDecoderParserPicture } from 'webgpu-player/decode/video/gpu/GPUDecoderParser';
+import {
+    GPUDecoderParserError,
+    type GPUDecoderParserModule,
+    type GPUDecoderParserOutput,
+    type GPUDecoderParserPicture
+} from 'webgpu-player/decode/video/gpu/GPUDecoderParser';
 import GPUDecoderCoordinatorHost, { type GPUDecoderParserRemotePipeline } from 'webgpu-player/decode/video/gpu/GPUDecoderCoordinatorHost';
 import type { GPUDecoderCoordinatorRequest, GPUDecoderCoordinatorResponse } from 'webgpu-player/decode/video/gpu/GPUDecoderCoordinatorProtocol';
 import { GPU_DECODER_PARSER_WATCHDOG_MILLISECONDS } from 'webgpu-player/decode/video/gpu/GPUDecoderParseWorkerPool';
@@ -10,8 +15,14 @@ import type { GPUDecoderPictureSize } from 'webgpu-player/decode/video/gpu/GPUDe
 
 import { encodeWebAssemblyModule } from '../../../helpers/webAssemblyModuleEncoder';
 
+// The parser's checks: a configuration it refuses, and slice data it cannot parse, which its header lets the engine recover from
+const CONFIGURATION_ERROR_CODE = 1;
+const CONFIGURATION_ERROR_VALUE = 4;
+const SLICE_DATA_ERROR_CODE = 11;
+const SLICE_DATA_ERROR_VALUE = 7;
 const PARSER_MODULE: GPUDecoderParserModule = {
-    errorNames: new Map([ [ 1, 'configuration' ] ]),
+    errorNames: new Map([ [ CONFIGURATION_ERROR_CODE, 'configuration' ], [ SLICE_DATA_ERROR_CODE, 'sliceData' ] ]),
+    errorRecoveries: new Map([ [ SLICE_DATA_ERROR_CODE, 'resync' ] ]),
     memory: { initialPages: 1, maximumPages: 16 },
     module: new WebAssembly.Module(encodeWebAssemblyModule({})),
     repeatDirectiveCount: 0
@@ -26,8 +37,10 @@ const WATCHDOG_MILLISECONDS = 2_000;
 const IDLE_SPAN_COUNT = 10;
 const FIRST_EVENTS = Uint32Array.of(0);
 const SECOND_EVENTS = Uint32Array.of(1, 0x8000_0002);
-const CONFIGURE_FAILURE_MESSAGE = 'parser configuration: 4';
-const PACKET_FAILURE_MESSAGE = 'parser sliceData: 7';
+const CONFIGURE_FAILURE_MESSAGE = `parser configuration: ${CONFIGURATION_ERROR_VALUE}`;
+const PACKET_FAILURE_MESSAGE = `parser sliceData: ${SLICE_DATA_ERROR_VALUE}`;
+// A failure that is no check of the parser, as the coordinator reports without a code
+const UNCODED_FAILURE_MESSAGE = 'parser plan: RuntimeError: unreachable';
 const WORKER_ERROR_MESSAGE = 'Script failed to load';
 const UNKNOWN_PIPELINE_ID = 41;
 // The largest picture an opened pipeline's codec private data declares, and one no picture can have
@@ -37,10 +50,12 @@ const PICTURE_SIZE: GPUDecoderPictureSize = { height: 288, width: 352 };
 const REPEAT_COUNTS = [ 3 ];
 // The output format a picture reported, as a stream that changes format mid-stream does
 const PICTURE_FORMAT = 'I444P12';
+// The fields a picture reported, which cross the worker boundary with it
+const PICTURE_FIELDS = { repeatFirstField: false, scan: 'bottom-first' } as const;
 
 /** A packet's result of one picture with its events, or of no picture, its events trailing. */
 function createResult(sequence: number, events: Uint32Array, record: ArrayBuffer | null): GPUDecoderCoordinatorResponse {
-    const pictures: GPUDecoderParserPicture[] = record ? [ { events, format: null, maximumPictureSize: null, record, repeatCounts: [], visibleSize: null } ] : [];
+    const pictures: GPUDecoderParserPicture[] = record ? [ { events, fields: null, format: null, maximumPictureSize: null, record, repeatCounts: [], visibleSize: null } ] : [];
     return { pictures, pipelineId: 0, sequence, trailingEvents: record ? new Uint32Array(0) : events, type: 'result' };
 }
 
@@ -183,7 +198,7 @@ describe('GPUDecoderCoordinatorHost', () => {
             { request: { packet: secondPacket, pipelineId: 0, sequence: 1, type: 'submit' }, transfer: [ secondPacket ] }
         ]);
         await expect(first).resolves.toEqual({
-            pictures: [ { events: FIRST_EVENTS, format: null, maximumPictureSize: null, record, repeatCounts: [], visibleSize: null } ],
+            pictures: [ { events: FIRST_EVENTS, fields: null, format: null, maximumPictureSize: null, record, repeatCounts: [], visibleSize: null } ],
             trailingEvents: new Uint32Array(0)
         } satisfies GPUDecoderParserOutput);
         await expect(second).resolves.toEqual({ pictures: [], trailingEvents: SECOND_EVENTS } satisfies GPUDecoderParserOutput);
@@ -194,6 +209,7 @@ describe('GPUDecoderCoordinatorHost', () => {
         const pipeline = await openPipeline(harness);
         const hidden: GPUDecoderParserPicture = {
             events: FIRST_EVENTS,
+            fields: null,
             format: null,
             maximumPictureSize: null,
             record: new ArrayBuffer(RECORD_BYTE_LENGTH),
@@ -202,6 +218,7 @@ describe('GPUDecoderCoordinatorHost', () => {
         };
         const shown: GPUDecoderParserPicture = {
             events: SECOND_EVENTS,
+            fields: PICTURE_FIELDS,
             format: PICTURE_FORMAT,
             maximumPictureSize: MAXIMUM_PICTURE_SIZE,
             record: new ArrayBuffer(RECORD_BYTE_LENGTH),
@@ -215,19 +232,47 @@ describe('GPUDecoderCoordinatorHost', () => {
         await expect(packet).resolves.toEqual({ pictures: [ hidden, shown ], trailingEvents: new Uint32Array(0) });
     });
 
-    it('rejects a packet the worker failed, and an open whose configure failed, with the worker\'s message', async () => {
+    it('rejects a packet the worker failed, and an open whose configure failed, with the parser\'s check, code, and value', async () => {
         const harness = createHost();
         const pipeline = await openPipeline(harness);
         const packet = capture(pipeline.submit(new ArrayBuffer(PACKET_BYTE_LENGTH)));
-        harness.workers[0].respond({ message: PACKET_FAILURE_MESSAGE, pipelineId: 0, sequence: 0, type: 'failed' });
+        harness.workers[0].respond({
+            code: SLICE_DATA_ERROR_CODE,
+            message: PACKET_FAILURE_MESSAGE,
+            pipelineId: 0,
+            sequence: 0,
+            type: 'failed',
+            value: SLICE_DATA_ERROR_VALUE
+        });
 
         const opening = capture(harness.host.open(PARSER_MODULE, PACKAGE_VERSION, CODEC_PRIVATE));
-        harness.workers[0].respond({ message: CONFIGURE_FAILURE_MESSAGE, pipelineId: 1, sequence: null, type: 'failed' });
+        harness.workers[0].respond({
+            code: CONFIGURATION_ERROR_CODE,
+            message: CONFIGURE_FAILURE_MESSAGE,
+            pipelineId: 1,
+            sequence: null,
+            type: 'failed',
+            value: CONFIGURATION_ERROR_VALUE
+        });
 
-        expect(await packet).toEqual(new Error(PACKET_FAILURE_MESSAGE));
-        expect(await opening).toEqual(new Error(CONFIGURE_FAILURE_MESSAGE));
+        const packetFailure = await packet;
+        expect(packetFailure).toBeInstanceOf(GPUDecoderParserError);
+        expect(packetFailure).toMatchObject({ code: SLICE_DATA_ERROR_CODE, message: PACKET_FAILURE_MESSAGE, value: SLICE_DATA_ERROR_VALUE });
+        expect(await opening).toMatchObject({ code: CONFIGURATION_ERROR_CODE, message: CONFIGURE_FAILURE_MESSAGE, value: CONFIGURATION_ERROR_VALUE });
         expect(harness.workers[0].requests.at(-1)).toEqual({ pipelineId: 1, type: 'close' });
         expect(harness.workers).toHaveLength(1);
+    });
+
+    it('rejects a packet with the worker\'s message alone when its failure is no check of the parser', async () => {
+        const harness = createHost();
+        const pipeline = await openPipeline(harness);
+        const packet = capture(pipeline.submit(new ArrayBuffer(PACKET_BYTE_LENGTH)));
+
+        harness.workers[0].respond({ code: 0, message: UNCODED_FAILURE_MESSAGE, pipelineId: 0, sequence: 0, type: 'failed', value: 0 });
+
+        const failure = await packet;
+        expect(failure).not.toBeInstanceOf(GPUDecoderParserError);
+        expect(failure).toEqual(new Error(UNCODED_FAILURE_MESSAGE));
     });
 
     it('replaces an open pipeline: the packets it owed reject, and the worker closes it', async () => {

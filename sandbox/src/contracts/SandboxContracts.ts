@@ -10,6 +10,7 @@ import type {
     CustomDecodeVideoDecoderBackend,
     CustomDecodeVideoOutputMode
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
+import { DEFAULT_DEINTERLACE_MODE, type DeinterlaceMode } from 'webgpu-player/presentation/DeinterlaceTimeline';
 import type { PassManifest, PlanReport, PresentationPlan } from 'webgpu-player/presentation/passes/PassTypes';
 import type { GPUVideoDecoderSelection } from 'webgpu-player/decode/video/gpu/GPUVideoDecoderCatalog';
 import type { HDRToSDRRenderSettings, RenderSettings } from 'webgpu-player/presentation/RenderSettings';
@@ -223,6 +224,8 @@ export type AuthorizationTelemetry = Readonly<{
 }>;
 
 export type PresentationState = Readonly<{
+    /** How interlaced frames present, which the pipeline panel switches; the presenter keeps it across playbacks */
+    deinterlaceMode: DeinterlaceMode
     /** The preset's files, in preset order */
     files: readonly SandboxShaderFile[]
     hdrOutput: boolean
@@ -343,6 +346,7 @@ export function createInitialSandboxState(): SandboxState {
         media: null,
         playback: { durationMicroseconds: null, muted: false, status: 'idle', volume: DEFAULT_VOLUME },
         presentation: {
+            deinterlaceMode: DEFAULT_DEINTERLACE_MODE,
             files: [],
             hdrOutput: false,
             plan: null,
@@ -401,6 +405,8 @@ export type SandboxSessionCommands = {
     /** Restarts the media on the track, at the current time */
     selectAudioTrack: (trackIndex: number | null) => Promise<void>
     selectSubtitle: (selection: SubtitleSelection | null) => Promise<void>
+    /** Selects how interlaced frames present: a frame per field, a frame per frame, or woven as decoded */
+    setDeinterlaceMode: (mode: DeinterlaceMode) => Promise<void>
     setHDROutputEnabled: (enabled: boolean) => Promise<void>
     setMuted: (muted: boolean) => void
     setRenderSettings: (settings: HDRToSDRRenderSettings) => void

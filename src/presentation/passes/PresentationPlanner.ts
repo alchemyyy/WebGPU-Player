@@ -16,6 +16,7 @@ import {
     createStorageTargetWGSL,
     createTextureAccessorsWGSL,
     FRAGMENT_COORDINATE,
+    FRAGMENT_POSITION,
     renameWGSLIdentifiers,
     ShaderModuleBuilder,
     VERTEX_STAGE_WGSL
@@ -38,11 +39,18 @@ import {
     expandEngineResource,
     PRESENTATION_UNIFORMS_WGSL
 } from './PassResources';
+import {
+    createDeinterlaceWGSL,
+    DEINTERLACE_ENTRY_POINT,
+    DEINTERLACE_HISTORY_DEPTH,
+    DEINTERLACE_SIGNAL_INPUT_NAME
+} from './builtin/DeinterlacePass';
 import type {
     BuiltinChain,
     BuiltinColorFunction,
     ColorDomain,
     ColorState,
+    DeinterlaceRequest,
     EngineBindingResource,
     EngineResource,
     PassCoordinateMapping,
@@ -66,6 +74,7 @@ import type {
 const STAGE_NAMES: ReadonlySet<string> = new Set<string>(STAGE_ORDER);
 
 const SIGNAL_TEXTURE_ID = 'signal';
+const DEINTERLACE_TEXTURE_ID = 'deinterlace';
 const SCALE_TEXTURE_ID = 'scale';
 const PASS_TEXTURE_ID_PREFIX = 'pass:';
 const COPY_TEXTURE_ID_PREFIX = 'copy:';
@@ -77,6 +86,7 @@ const SAMPLER_VARIABLE = 'videoSampler';
 
 const LABEL_PREFIX = 'Presentation';
 const SIGNAL_LABEL = `${LABEL_PREFIX} signal`;
+const DEINTERLACE_LABEL = `${LABEL_PREFIX} deinterlace`;
 const SCALE_LABEL = `${LABEL_PREFIX} scale`;
 const COLOR_LABEL = `${LABEL_PREFIX} color`;
 const OUTPUT_LABEL = `${LABEL_PREFIX} output`;
@@ -113,11 +123,13 @@ type DraftInput = {
 
 /**
  * What a pass computes before its color steps.
+ * - 'deinterlace': the built-in deinterlacing pass over the signal's history, at the stream's bit depth.
  * - 'signal': the route's signal, read from the source at the pass's coordinate.
  * - 'sample': a bilinear read of the pass's one input texture.
  * - 'user': a user kernel, scaler, or compute body.
  */
 type DraftCore =
+    | { bitDepth: number; kind: 'deinterlace' }
     | { kind: 'sample' }
     | { kind: 'signal' }
     | { kind: 'user'; pass: ActivePass };
@@ -273,6 +285,7 @@ class PresentationPlanBuilder {
     private readonly stageTextures = new Map<PresentationStage, string>();
     private readonly textures = new Map<string, DraftTexture>();
     private copyCount = 0;
+    private deinterlace: DeinterlaceRequest | null = null;
     // The producer of the spine's current image; null while that image is the signal, which no pass has read yet
     private current: DraftPass | null = null;
     // Track entries before the cursor have run
@@ -292,6 +305,12 @@ class PresentationPlanBuilder {
         const candidates = this.selectPasses();
         const walkedPasses = this.createTrack(candidates);
         this.namedStages = collectNamedStages(walkedPasses);
+        const deinterlace = this.request.deinterlace ?? null;
+        // A signal with a bypass skips the color track in the pass that reads it, which a deinterlaced signal never reaches
+        if (deinterlace !== null && this.request.chain.signal.bypassCondition === null) {
+            this.placeDeinterlace(deinterlace);
+            this.deinterlace = deinterlace;
+        }
         for (const stage of STAGE_ORDER) {
             this.placeStage(stage, walkedPasses);
         }
@@ -366,6 +385,48 @@ class PresentationPlanBuilder {
             }
         }
         return walkedPasses;
+    }
+
+    /**
+     * Places the deinterlacing pass before every stage: the signal becomes a ring of the frame's visible size, which the pass reads at the history
+     * depth it needs, and its output at that size is the spine's current image, which user passes, the scaler, and the color track take from there.
+     */
+    private placeDeinterlace(deinterlace: DeinterlaceRequest): void {
+        const maximumDimension = this.request.device.maximumTextureDimension;
+        const frameSize: Size = { height: deinterlace.frameHeight, width: deinterlace.frameWidth };
+        for (const [ axis, value ] of [ [ 'width', frameSize.width ], [ 'height', frameSize.height ] ] as const) {
+            if (!Number.isSafeInteger(value) || value < 1 || value > maximumDimension) {
+                throw new RangeError(`deinterlace-size: frame ${axis} ${value} outside [1, ${maximumDimension}]`);
+            }
+        }
+        this.addTexture(SIGNAL_TEXTURE_ID, frameSize, INTERMEDIATE_TEXTURE_FORMAT, false);
+        this.pushDraft({
+            core: { kind: 'signal' },
+            coordinateMapping: 'identity',
+            hookedTextureId: null,
+            inputs: [],
+            label: SIGNAL_LABEL,
+            postSteps: this.signalSteps,
+            targetTextureId: SIGNAL_TEXTURE_ID
+        });
+        this.signalSteps = [];
+        const inputs: DraftInput[] = [];
+        for (let historyOffset = 0; historyOffset >= -DEINTERLACE_HISTORY_DEPTH; historyOffset -= 1) {
+            inputs.push({
+                accessorPrefix: getAccessorPrefix({ historyOffset, name: DEINTERLACE_SIGNAL_INPUT_NAME }),
+                historyOffset,
+                source: { kind: 'texture', textureId: SIGNAL_TEXTURE_ID }
+            });
+        }
+        this.addTexture(DEINTERLACE_TEXTURE_ID, frameSize, INTERMEDIATE_TEXTURE_FORMAT, false);
+        this.current = this.pushDraft({
+            core: { bitDepth: deinterlace.bitDepth, kind: 'deinterlace' },
+            coordinateMapping: 'identity',
+            hookedTextureId: SIGNAL_TEXTURE_ID,
+            inputs,
+            label: DEINTERLACE_LABEL,
+            targetTextureId: DEINTERLACE_TEXTURE_ID
+        });
     }
 
     private placeStage(stage: PresentationStage, passes: readonly ActivePass[]): void {
@@ -584,6 +645,7 @@ class PresentationPlanBuilder {
         const includedPasses = candidates.filter((pass: ActivePass): boolean => this.activePasses.has(pass));
         return {
             buffers: [],
+            deinterlace: this.deinterlace === null ? null : { ...this.deinterlace },
             output: this.request.output,
             parameterSets: includedPasses
                 .filter((pass: ActivePass): boolean => pass.manifest.parameters.length > 0)
@@ -866,6 +928,9 @@ class PassCodeGenerator {
         if (draft.core.kind === 'signal') {
             builder.appendEngineCode(this.chain.signal.code);
         }
+        if (draft.core.kind === 'deinterlace') {
+            builder.appendEngineCode(createDeinterlaceWGSL(draft.core.bitDepth));
+        }
         for (const colorFunction of getBuiltinFunctions(draft)) {
             builder.appendEngineCode(colorFunction.code);
         }
@@ -961,6 +1026,8 @@ class PassCodeGenerator {
 
     private getCoreExpression(core: DraftCore): string {
         switch (core.kind) {
+            case 'deinterlace':
+                return `${DEINTERLACE_ENTRY_POINT}(${FRAGMENT_POSITION})`;
             case 'sample':
                 return `${ENGINE_INPUT_PREFIX}_tex(${FRAGMENT_COORDINATE})`;
             case 'signal':

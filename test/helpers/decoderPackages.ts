@@ -15,7 +15,11 @@ import {
 import { DECODER_PACKAGE_MAXIMUM_MEMORY_PAGES } from 'webgpu-player/decode/packages/DecoderPackageImports';
 import type { GPUDecoderOutputFormat } from 'webgpu-player/decode/video/gpu/GPUDecodeFormats';
 import { GPU_DECODER_PARSER_ABI_VERSION } from 'webgpu-player/decode/video/gpu/GPUDecodeLimits';
-import { GPU_DECODER_PARSER_EXPORTS, GPU_DECODER_PARSER_STATUS } from 'webgpu-player/decode/video/gpu/GPUDecoderParser';
+import {
+    GPU_DECODER_PARSER_EXPORTS,
+    GPU_DECODER_PARSER_OPTIONAL_EXPORTS,
+    GPU_DECODER_PARSER_STATUS
+} from 'webgpu-player/decode/video/gpu/GPUDecoderParser';
 import { parseGPUDecoderManifest } from 'webgpu-player/decode/video/gpu/GPUDecoderManifest';
 import { GPU_DECODER_MAXIMUM_REPEAT_COUNT, GPU_DECODER_PICTURE_FORMAT } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
 
@@ -52,6 +56,8 @@ export type ParserStubOptions = Readonly<{
     /** Whether it imports env.memory, as the interface requires */
     importsMemory?: boolean
     omittedExports?: readonly ParserExportKey[]
+    /** The picture fields word the optional `parser_picture_fields` returns; without it, the stub leaves that export out */
+    pictureFields?: number
     /** Results an export returns call after call, the last one repeating, in place of its constant; they live in the stub's memory */
     resultSequences?: Partial<Readonly<Record<ParserExportKey, readonly number[]>>>
     results?: Partial<Readonly<Record<ParserExportKey, number>>>
@@ -221,6 +227,9 @@ export function createParserStubDefinition(options: ParserStubOptions = {}): Web
         if (!omittedExports.has(key) && !sequencedNames.has(GPU_DECODER_PARSER_EXPORTS[key])) {
             exportedResults.set(GPU_DECODER_PARSER_EXPORTS[key], results[key]);
         }
+    }
+    if (options.pictureFields !== undefined) {
+        exportedResults.set(GPU_DECODER_PARSER_OPTIONAL_EXPORTS.pictureFields, options.pictureFields);
     }
     return {
         dataSegments: [ ...(options.dataSegments ?? []), ...sequences.dataSegments ],

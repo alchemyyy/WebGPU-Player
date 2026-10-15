@@ -9,7 +9,7 @@ A host calls these, in this order, for each playback:
 
 1. `CustomPlaybackEligibility.hasPotentialCustomPlaybackVideoRoute`, the metadata-only prefilter, when it chooses a player.
    The prefilter declines a source whose containers no route in `CUSTOM_CONTAINER_CODEC_RULES` carries, such as AVI, FLV, ASF, or an MPEG program stream.
-   It also declines a video codec no route decodes, such as MPEG-4 Part 2 (DivX, Xvid), H.263, MS-MPEG4, MPEG-1, or Theora, and interlaced or rotated video.
+   It also declines a video codec no route decodes, such as MPEG-4 Part 2 (DivX, Xvid), H.263, MS-MPEG4, MPEG-1, or Theora, rotated video, and interlaced HEVC and JPEG 2000, which code their fields apart (see [Interlaced video](#interlaced-video)).
 2. `CustomPlaybackRuntime.getCustomPlaybackRuntimeAvailability`, which fails without a secure context, Worker, `navigator.gpu`, or `VideoFrame`.
 3. `probeCustomDecodeCapabilities(item)`, the native-media audio probe, and the GPU authorizations the item needs (5 s each), before it advertises anything; see [Probes and caching](#probes-and-caching).
 4. `hasEligibleCustomVideoRoute`, to ask whether the runtime would present one item with the measured capabilities and authorizations.
@@ -27,8 +27,8 @@ A host calls these, in this order, for each playback:
    A missing or zero `RunTimeTicks` is an unknown duration, not a rejection.
    Playback then ends with the streams, audio takes the decoded-PCM route because the native media backend needs a duration, and the worker reports the container's duration on `ready`.
 2. `selectVideoStream`.
-3. Rotation 0 and `IsInterlaced === false`.
-4. `selectVideoOutput` (below).
+3. Rotation 0, and a codec that keeps an interlaced stream's fields together in frames (`codesInterlacedFieldsApart`).
+4. `selectVideoOutput` (below), and a route that presents the stream's scan (`refusesVideoScan`).
 5. `selectPlaybackAudio`.
 6. `supportsCustomContainerCodecCombination`.
 7. The runtime budget.
@@ -132,6 +132,25 @@ A package's self-test vectors run only when a host calls `verifyGPUDecoderPackag
 
 An AV1, VP9, or HEVC range-extension source presents HDR only through raw planes, so a host must settle the raw HDR keys for it whatever the external result.
 The Dolby Vision keys a source needs on first use (Profile 4 in any format, or Profile 7 or single-layer reconstruction in a format other than I420P10) must settle before eligibility.
+
+## Interlaced video
+
+Every route but Dolby Vision's presents interlaced video through the deinterlacing pass (see [Architecture](architecture.md#deinterlacing)), so eligibility refuses interlaced video only where no route can present it, as `interlaced-video-unsupported`:
+
+- `IsInterlaced` true on HEVC, which codes interlaced video as field pictures, and on JPEG 2000, which codes a codestream per field: no decoder weaves their fields into frames, and the pass deinterlaces frames whose rows alternate between the fields.
+  The check runs before route selection, and the prefilter declines the same streams.
+- A Dolby Vision route, whose profiles are progressive and which never deinterlaces, unless `IsInterlaced` is false.
+  A Dolby Vision stream whose declared base layer takes an ordinary route presents through that route's deinterlacing.
+
+H.264, MPEG-2, VC-1, and WMV3 decode interlaced video into woven frames, so they are eligible whatever `IsInterlaced` says, and a missing or malformed `IsInterlaced` is an unknown scan, which each frame's own fields settle.
+MPEG-1, VP8, VP9, and AV1 have no interlaced coding.
+
+| Route | Interlaced video | Field order from |
+| --- | --- | --- |
+| Native `VideoFrame` (`external-texture`, `external-hdr`) | Deinterlaced; the browser upsampled its chroma progressively | The container's scan, else the host's `FieldOrder` and `IsInterlaced` |
+| Raw planes (`raw-yuv`) | Deinterlaced, 4:2:0 chroma read within each field | As the native route |
+| GPU (`frame-pool`) | Deinterlaced, 4:2:0 chroma read within each field | The decoder's `reportPictureFields`, else its parser's `parser_picture_fields`, else as the native route |
+| Dolby Vision (`external-dolby-vision`, `raw-dolby-vision`) | Refused unless `IsInterlaced` is false | None |
 
 ## Route keys
 

@@ -46,7 +46,7 @@ A package's frames take the format that holds the stream's pixel format, so 4:2:
 
 | Property | Plays | Does not play |
 | --- | --- | --- |
-| Scan | Progressive | Interlaced, in any codec |
+| Scan | Progressive; interlaced H.264, MPEG-2, VC-1, and WMV3, deinterlaced at double or single rate (see [Architecture](architecture.md#deinterlacing)) | Interlaced HEVC, coded as field pictures, interlaced JPEG 2000, coded as a codestream per field, and interlaced video on a Dolby Vision route |
 | Rotation | 0 | Any other rotation |
 | Frame size, frame rate, level, and bitrate | Whatever the decoder accepts; none of them is a gate | |
 | Color | BT.709, BT.601, and BT.2020 primaries and matrices; an unknown or unspecified tag takes its transfer's default | Any other tag value, and 10-bit SDR AV1 or VP9 outside BT.709, whose only route is raw planes |

@@ -10,7 +10,8 @@ import type { GPUDecoderOutputFormat } from 'webgpu-player/decode/video/gpu/GPUD
 import {
     GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH,
     GPU_DECODER_ERROR_CODE_SHIFT,
-    GPU_DECODER_MAXIMUM_DISPATCHES
+    GPU_DECODER_MAXIMUM_DISPATCHES,
+    GPU_DECODER_PARSER_ABI_VERSION
 } from 'webgpu-player/decode/video/gpu/GPUDecodeLimits';
 import {
     describeGPUDecoderErrorWord,
@@ -20,7 +21,7 @@ import {
     parseGPUDecoderManifest
 } from 'webgpu-player/decode/video/gpu/GPUDecoderManifest';
 import { createGPUDecoderBindGroupLayoutEntries, createGPUDecoderModule } from 'webgpu-player/decode/video/gpu/GPUDecoderPrelude';
-import type { GPUDecoderDispatch, GPUDecoderManifest } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
+import type { GPUDecoderDispatch, GPUDecoderErrorRecovery, GPUDecoderManifest } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
 import { getGPUDecoderVectorFormats } from 'webgpu-player/decode/video/gpu/GPUDecoderVerification';
 
 import { loadDecoderProjectVideoPackage, readDecoderProjectSource } from '../../../test/helpers/decoderPackages';
@@ -32,11 +33,11 @@ const PROJECT_FILE_NAME = 'decoder.json';
 // FFmpeg's vc1 decoder decodes both codecs: vc1, the Advanced profile, and wmv3, the Simple and Main profiles
 const ACCEPTED_CODECS = [ 'vc1', 'wmv3' ];
 const OUTPUT_FORMAT: GPUDecoderOutputFormat = 'I420';
-// Two anchors, the forward and backward references of a B picture, and the B pictures a sequence may place between them
+// Two anchors, the forward and backward references of a B picture
 const ANCHOR_REFERENCE_COUNT = 2;
-const MAXIMUM_B_PICTURE_REORDER = 7;
+// The parser's events present a B picture at once and an anchor once the next anchor is planned, so one frame at most waits undecided
+const ANCHOR_OUTPUT_DELAY = 1;
 const SCRATCH_BUFFER_NAMES = [ 'pictureState', 'macroblocks', 'blockData' ];
-const INDIRECT_BUFFER_NAME = 'pictureState';
 // WebGPU's default storage buffers per shader stage, which the decoder's bindings must fit
 const DEFAULT_STORAGE_BUFFERS_PER_STAGE = 8;
 // WebGPU's default maxComputeWorkgroupsPerDimension
@@ -58,25 +59,14 @@ const FULL_HD_FRAME_LINE_COLUMN_WORKGROUPS = 30;
 const FULL_HD_FRAME_LINE_ROW_WORKGROUPS = 9;
 const EIGHT_BIT_DEPTH = 8;
 const TEN_BIT_DEPTH = 10;
-const TABLE_CHUNK_WORKGROUPS = 128;
 const MINIMUM_BUFFER_BYTE_LENGTH = 1;
 const EMPTY_STATE_BYTE_LENGTH = 0;
 const FAILING_VALUE = 1234;
 const UNKNOWN_ERROR_CODE = 200;
 const MACROBLOCK_LAYER_ERROR_NAME = 'macroblockLayer';
-const SLICE_ENTRY_POINTS = [
-    'decodeSimpleIntraSlices',
-    'decodeAdvancedIntraSlices',
-    'decodePSlices',
-    'decodeFieldPSlices',
-    'decodeFramePSlices',
-    'decodeBSlices',
-    'decodeFieldBSlices',
-    'decodeFrameBSlices',
-    'decodeX8Slices'
-];
+// The picture setup from the record, the passes of a field, and the frame-only filter passes
+const SETUP_ENTRY_POINTS = [ 'beginPicture', 'expandRecord', 'copyPicture' ];
 const PASS_ENTRY_POINTS = [
-    'predictIntraBlocks',
     'reconstruct',
     'overlapVerticalEdges',
     'overlapHorizontalEdges',
@@ -87,9 +77,12 @@ const PASS_ENTRY_POINTS = [
     'filterVerticalSubblockEdges'
 ];
 const FRAME_LINE_ENTRY_POINTS = [ 'filterFrameHorizontalLines', 'filterFrameVerticalLines' ];
-const HEADER_ENTRY_POINTS = [ 'preparePicture', 'findStartCodes', 'prefixEscapes', 'unescapePacket', 'beginPicture' ];
-const INDIRECT_ENTRY_POINTS = new Set([ 'findStartCodes', 'unescapePacket', ...SLICE_ENTRY_POINTS ]);
-const TABLE_ENTRY_POINT_PATTERN = /^loadTables\d+$/;
+// The parse entry points the parser replaced, none of which the body may keep
+const REMOVED_ENTRY_POINTS = [ 'preparePicture', 'findStartCodes', 'unescapePacket', 'decodePSlices', 'decodeX8Slices', 'predictIntraBlocks', 'loadTables0' ];
+// Errors of damaged packets, after which the parser restarts at the next key packet.
+// The configuration, the sequence, an unsupported feature, the record, and a size beyond the pool or the package's limit, which later pictures repeat, are fatal
+const RESYNC_ERROR_NAMES = [ 'pictureHeader', 'bitplane', 'startCodes', 'macroblockLayer', 'bitsExhausted', 'pictureTooShort' ];
+const RESYNC_RECOVERY: GPUDecoderErrorRecovery = 'resync';
 // The body declares each error code once as `const ERROR_<NAME>: u32 = <code>u;`, beside the shift of the code in a status word
 const ERROR_DECLARATION_PATTERN = /^const ERROR_([A-Z_]+): u32 = (\d+)u;$/gm;
 const ERROR_CODE_SHIFT_NAME = 'CODE_SHIFT';
@@ -147,26 +140,37 @@ function readProjectVectorFormats(): string[] {
     return (declaration.vectors ?? []).map(vector => vector.format);
 }
 
-describe('the WGSL VC-1 decoder', () => {
+function findErrorCode(manifest: GPUDecoderManifest, errorName: string): number {
+    const code = [ ...manifest.errors ].find(([ , name ]) => name === errorName)?.[0];
+    if (code === undefined) {
+        throw new Error(`The decoder names no ${errorName} error`);
+    }
+    return code;
+}
+
+describe('the VC-1 decoder package', () => {
     const source = readDecoderProjectSource(PROJECT);
     const manifest = parseGPUDecoderManifest(source);
 
-    it('parses into an 8-bit 4:2:0 decoder of VC-1 and WMV3 with two anchors and seven B pictures of reordering, reading container packets', () => {
+    it('parses into an 8-bit 4:2:0 decoder of VC-1 and WMV3 driven by its parser, with two anchors and one anchor of output delay', () => {
         expect(manifest.accepts.codecs).toEqual(ACCEPTED_CODECS);
         expect(manifest.outputFormats).toEqual([ OUTPUT_FORMAT ]);
-        expect(manifest.parser).toBeNull();
+        expect(manifest.parser).toBe(GPU_DECODER_PARSER_ABI_VERSION);
         expect(manifest.references).toBe(ANCHOR_REFERENCE_COUNT);
-        expect(manifest.reorder).toBe(MAXIMUM_B_PICTURE_REORDER);
+        expect(manifest.reorder).toBe(ANCHOR_OUTPUT_DELAY);
         expect(manifest.packetByteLength).toBeLessThanOrEqual(GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
     });
 
-    it('composes with the prelude of its output format, its body declaring every entry point it dispatches', () => {
+    it('composes with the prelude of its output format, its body declaring every entry point it dispatches and none of the parse stage', () => {
         const decoderModule = createGPUDecoderModule(manifest, OUTPUT_FORMAT);
 
         expect(decoderModule.code.endsWith(manifest.body)).toBe(true);
         expect(decoderModule.code.split('\n').slice(decoderModule.firstBodyLine - 1).join('\n')).toBe(manifest.body);
         for (const entryPoint of new Set(manifest.dispatches.map(dispatch => dispatch.entryPoint))) {
             expect(manifest.body).toMatch(new RegExp(String.raw`@compute @workgroup_size\([^)]*\)\s*fn ${entryPoint}\(`));
+        }
+        for (const entryPoint of REMOVED_ENTRY_POINTS) {
+            expect(manifest.body).not.toMatch(new RegExp(String.raw`\bfn ${entryPoint}\(`));
         }
     });
 
@@ -194,7 +198,7 @@ describe('the WGSL VC-1 decoder', () => {
             expect(manifest.buffers.map(buffer => buffer.name)).toEqual(SCRATCH_BUFFER_NAMES);
             for (const buffer of manifest.buffers) {
                 expect(evaluateGPUDecoderByteLength(buffer.byteLength, facts, MINIMUM_BUFFER_BYTE_LENGTH, MAXIMUM_STORAGE_BUFFER_BINDING_SIZE).kind).toBe('size');
-                expect(buffer.indirect).toBe(buffer.name === INDIRECT_BUFFER_NAME);
+                expect(buffer.indirect).toBe(false);
             }
             expect(evaluateGPUDecoderByteLength(manifest.stateByteLength, facts, EMPTY_STATE_BYTE_LENGTH, MAXIMUM_STORAGE_BUFFER_BINDING_SIZE).kind).toBe('size');
         }
@@ -226,14 +230,9 @@ describe('the WGSL VC-1 decoder', () => {
         }
     });
 
-    it('dispatches the tables, the header stage, the slice passes, both field passes through the same pipelines, and the picture\'s end in order', () => {
-        const entryPoints = manifest.dispatches.map(dispatch => dispatch.entryPoint);
-        const tableEntryPoints = entryPoints.filter(entryPoint => TABLE_ENTRY_POINT_PATTERN.test(entryPoint));
+    it('dispatches the picture setup from its record, both field passes through the same pipelines, and the picture\'s end in order, all directly', () => {
         const expected = [
-            ...tableEntryPoints,
-            ...HEADER_ENTRY_POINTS,
-            ...SLICE_ENTRY_POINTS,
-            'copyPicture',
+            ...SETUP_ENTRY_POINTS,
             ...PASS_ENTRY_POINTS,
             ...FRAME_LINE_ENTRY_POINTS,
             'nextPass',
@@ -241,21 +240,18 @@ describe('the WGSL VC-1 decoder', () => {
             'finishPicture'
         ];
 
-        expect(tableEntryPoints.length).toBeGreaterThan(0);
-        expect(entryPoints).toEqual(expected);
-        for (const dispatch of manifest.dispatches) {
-            expect(dispatch.indirectBuffer).toBe(INDIRECT_ENTRY_POINTS.has(dispatch.entryPoint) ? INDIRECT_BUFFER_NAME : null);
-        }
+        expect(manifest.dispatches.map(dispatch => dispatch.entryPoint)).toEqual(expected);
+        expect(manifest.dispatches.every(dispatch => dispatch.indirectBuffer === null)).toBe(true);
     });
 
     it('covers every macroblock and every interlaced frame line segment of a 1080p stream', () => {
         const facts = createStreamFacts(FULL_HD_WIDTH, FULL_HD_PADDED_HEIGHT, EIGHT_BIT_DEPTH);
 
+        expect(evaluateCounts(requireDispatch(manifest, 'expandRecord'), facts)).toEqual([ FULL_HD_MACROBLOCK_COLUMNS, FULL_HD_MACROBLOCK_ROWS, 1 ]);
         expect(evaluateCounts(requireDispatch(manifest, 'reconstruct'), facts)).toEqual([ FULL_HD_MACROBLOCK_COLUMNS, FULL_HD_MACROBLOCK_ROWS, 1 ]);
         expect(evaluateCounts(requireDispatch(manifest, 'filterFrameHorizontalLines'), facts)).toEqual([ FULL_HD_FRAME_LINE_COLUMN_WORKGROUPS, 1, 1 ]);
         expect(evaluateCounts(requireDispatch(manifest, 'filterFrameVerticalLines'), facts)).toEqual([ FULL_HD_FRAME_LINE_ROW_WORKGROUPS, 1, 1 ]);
-        expect(evaluateCounts(requireDispatch(manifest, 'loadTables0'), facts)).toEqual([ TABLE_CHUNK_WORKGROUPS, 1, 1 ]);
-        expect(evaluateCounts(requireDispatch(manifest, 'predictIntraBlocks'), facts)).toEqual([ 1, 1, 1 ]);
+        expect(evaluateCounts(requireDispatch(manifest, 'beginPicture'), facts)).toEqual([ 1, 1, 1 ]);
         expect(evaluateCounts(requireDispatch(manifest, 'nextPass'), facts)).toEqual([ 1, 1, 1 ]);
     });
 
@@ -274,12 +270,19 @@ describe('the WGSL VC-1 decoder', () => {
         expect(codeShift).toBe(GPU_DECODER_ERROR_CODE_SHIFT);
     });
 
+    it('resyncs after the errors of damaged packets and ends the attempt on the others', () => {
+        const byCode = (first: number, second: number): number => first - second;
+        const resyncCodes: number[] = RESYNC_ERROR_NAMES.map((name: string): number => findErrorCode(manifest, name));
+        const recoveryCodes: number[] = [ ...manifest.errorRecoveries.keys() ];
+
+        resyncCodes.sort(byCode);
+        recoveryCodes.sort(byCode);
+        expect(recoveryCodes).toEqual(resyncCodes);
+        expect([ ...manifest.errorRecoveries.values() ].every((recovery: GPUDecoderErrorRecovery): boolean => recovery === RESYNC_RECOVERY)).toBe(true);
+    });
+
     it('describes a status error word by its error name and failing value', () => {
-        const macroblockLayerCode = [ ...manifest.errors ].find(([ , name ]) => name === MACROBLOCK_LAYER_ERROR_NAME)?.[0];
-        if (macroblockLayerCode === undefined) {
-            throw new Error(`The decoder names no ${MACROBLOCK_LAYER_ERROR_NAME} error`);
-        }
-        const word = (macroblockLayerCode << GPU_DECODER_ERROR_CODE_SHIFT) | FAILING_VALUE;
+        const word = (findErrorCode(manifest, MACROBLOCK_LAYER_ERROR_NAME) << GPU_DECODER_ERROR_CODE_SHIFT) | FAILING_VALUE;
 
         expect(describeGPUDecoderErrorWord(manifest.errors, word)).toBe(`${MACROBLOCK_LAYER_ERROR_NAME}: ${FAILING_VALUE}`);
         expect(describeGPUDecoderErrorWord(manifest.errors, (UNKNOWN_ERROR_CODE << GPU_DECODER_ERROR_CODE_SHIFT) >>> 0)).toBe(`code ${UNKNOWN_ERROR_CODE}: 0`);
@@ -289,6 +292,7 @@ describe('the WGSL VC-1 decoder', () => {
         const decoderPackage = await loadDecoderProjectVideoPackage(PROJECT);
 
         expect(decoderPackage.manifest.accepts.codecs).toEqual(ACCEPTED_CODECS);
+        expect(decoderPackage.module).not.toBeNull();
         expect(getGPUDecoderVectorFormats(decoderPackage)).toEqual(readProjectVectorFormats());
     });
 });

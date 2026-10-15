@@ -6,6 +6,7 @@ import type { GPUDecoderVector } from './GPUDecoderVectorSet';
 import { getGPUDecoderFormatFacts } from './GPUDecodeFormats';
 import type { GPUFramePoolLayout } from './GPUFramePool';
 import {
+    describeGPUVideoDecodeRecovery,
     type GPUDecodePacket,
     type GPUDecoderManifest,
     type GPUDecodeStreamFacts,
@@ -18,6 +19,7 @@ import GPUVideoDecodeSession, { type GPUDecodedFrame } from './GPUVideoDecodeSes
  * The outcome of a vector check: 'passed' or the check that failed.
  * - 'unverified': the package carries no vector for the format, so there was nothing to check.
  * - 'parser-failed': the package's parser failed on the vector's packets.
+ * - 'decoder-recovered': the decoder reported a recoverable error, which an undamaged vector never causes; the detail names the first.
  * - 'frames-dropped': the decoder reordered deeper than it declared, so frames left presentation order.
  * - 'frames-missing': fewer frames came out than the vector checks.
  * - 'slots-exhausted': the pool stayed full, as when a decoder never frees its references.
@@ -25,6 +27,7 @@ import GPUVideoDecodeSession, { type GPUDecodedFrame } from './GPUVideoDecodeSes
  * - A session failure code, when the session could not be created or failed while decoding the vector.
  */
 export type GPUDecoderVectorCheckCode =
+    | 'decoder-recovered'
     | 'frames-dropped'
     | 'frames-missing'
     | 'hash-mismatch'
@@ -60,8 +63,11 @@ function createVectorStream(vector: GPUDecoderVector, parserOutputs: readonly GP
             packets.push({
                 data: packet.data,
                 durationMicroseconds: packet.durationMicroseconds,
+                fields: null,
+                hold: false,
                 keyframe: packet.keyframe,
                 outputEvents: null,
+                recovery: null,
                 repeatCounts: null,
                 reset: packets.length === 0,
                 timestampMicroseconds: packet.timestampMicroseconds,
@@ -73,8 +79,11 @@ function createVectorStream(vector: GPUDecoderVector, parserOutputs: readonly GP
             packets.push({
                 data: picture.record,
                 durationMicroseconds: packet.durationMicroseconds,
+                fields: null,
+                hold: false,
                 keyframe: packet.keyframe,
                 outputEvents: Uint32Array.from([ ...carriedEvents, ...picture.events ]),
+                recovery: null,
                 repeatCounts: picture.repeatCounts,
                 reset: packets.length === 0,
                 timestampMicroseconds: packet.timestampMicroseconds,
@@ -219,7 +228,10 @@ function presentVectorFrames(
     return frameCount;
 }
 
-/** Returns the check a finished decode failed: a failure the last packets reported, a dropped frame, or a missing frame; null when none. */
+/**
+ * Returns the check a finished decode failed: a failure the last packets reported, a recovered error, a dropped frame, or a missing frame;
+ * null when none.
+ */
 async function getFinishedDecodeFailure(
     device: GPUDevice,
     session: GPUVideoDecodeSession,
@@ -232,6 +244,10 @@ async function getFinishedDecodeFailure(
     const failure = session.getFailure();
     if (failure) {
         return { ...failure };
+    }
+    const recovery = session.takeRecoveries().at(0);
+    if (recovery) {
+        return { code: 'decoder-recovered', detail: `${recovery.code} ${describeGPUVideoDecodeRecovery(recovery)}` };
     }
     const droppedFrameCount = session.getDroppedFrameCount();
     if (droppedFrameCount > 0) {

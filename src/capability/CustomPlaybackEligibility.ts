@@ -526,6 +526,39 @@ function hasUnsupportedRotation(stream: MediaStream): boolean {
     return !Number.isFinite(Number(stream.Rotation)) || Number(stream.Rotation) !== 0;
 }
 
+/**
+ * Returns whether an interlaced stream's codec codes its fields apart, as no route presents them: HEVC as field pictures and JPEG 2000 as a codestream per field,
+ * which no decoder weaves into frames.
+ * The deinterlacing presentation pass takes frames whose rows alternate between the fields, as the other codecs' decoders output them.
+ */
+function codesInterlacedFieldsApart(codec: CustomVideoCodec, stream: MediaStream): boolean {
+    if (stream.IsInterlaced !== true) {
+        return false;
+    }
+    switch (codec) {
+        case 'hevc':
+        case 'jpeg2000':
+            return true;
+        case 'av1':
+        case 'h264':
+        case 'mpeg1video':
+        case 'mpeg2video':
+        case 'vc1':
+        case 'vp8':
+        case 'vp9':
+        case 'wmv3':
+            return false;
+    }
+}
+
+/**
+ * Returns whether a selected route cannot present the stream's scan: the deinterlacing pass runs on every route but Dolby Vision's, whose profiles are
+ * progressive, so a Dolby Vision route takes only a stream its metadata calls progressive.
+ */
+function refusesVideoScan(videoOutput: Extract<VideoOutputSelection, { status: 'selected' }>, stream: MediaStream): boolean {
+    return videoOutput.dolbyVisionProfile !== undefined && stream.IsInterlaced !== false;
+}
+
 function getRawVideoFrameFormat(bitDepth: number): CustomDecodeRawVideoFrameFormat | null {
     switch (bitDepth) {
         case 10:
@@ -1783,12 +1816,9 @@ function hasPotentialCustomVideoRoute(mediaSource: MediaSource): boolean {
         return codecSelection.status === 'unknown';
     }
     const codec: CustomVideoCodec = codecSelection.codec;
-    if (selectedVideo.stream.IsInterlaced === true
+    if (codesInterlacedFieldsApart(codec, selectedVideo.stream)
         || hasUnsupportedRotation(selectedVideo.stream)) {
         return false;
-    }
-    if (selectedVideo.stream.IsInterlaced !== false) {
-        return true;
     }
 
     const dolbyVisionDescriptor = getDolbyVisionPresentationDescriptor(playbackOptions);
@@ -1985,17 +2015,18 @@ export function hasEligibleCustomVideoRoute(
     if (
         !videoCodec
         || hasUnsupportedRotation(selectedVideo.stream)
-        || selectedVideo.stream.IsInterlaced !== false
+        || codesInterlacedFieldsApart(videoCodec, selectedVideo.stream)
     ) {
         return false;
     }
-    return selectVideoOutput(
+    const videoOutput = selectVideoOutput(
         options,
         capabilities,
         eligibilityOptions as CustomPlaybackEligibilityOptions,
         videoCodec,
         selectedVideo.stream
-    ).status === 'selected';
+    );
+    return videoOutput.status === 'selected' && !refusesVideoScan(videoOutput, selectedVideo.stream);
 }
 
 /** Returns the custom playback route for a direct-play VOD source, or the reason the probed pipeline cannot own it. */
@@ -2021,7 +2052,7 @@ export function getCustomPlaybackEligibility(
     if (hasUnsupportedRotation(selectedVideo.stream)) {
         return { eligible: false, reason: 'rotation-unsupported' };
     }
-    if (selectedVideo.stream.IsInterlaced !== false) {
+    if (codesInterlacedFieldsApart(videoCodec, selectedVideo.stream)) {
         return { eligible: false, reason: 'interlaced-video-unsupported' };
     }
 
@@ -2034,6 +2065,9 @@ export function getCustomPlaybackEligibility(
     );
     if (videoOutput.status === 'invalid') {
         return { eligible: false, reason: videoOutput.reason };
+    }
+    if (refusesVideoScan(videoOutput, selectedVideo.stream)) {
+        return { eligible: false, reason: 'interlaced-video-unsupported' };
     }
 
     const audioSelection = selectPlaybackAudio(

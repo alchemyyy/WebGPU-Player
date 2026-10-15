@@ -4,13 +4,20 @@
 // The engine book's decoder packages chapter describes the module format.
 import type { FramePoolPlaneLayout } from '../../../presentation/passes/PassResources';
 import { BYTES_PER_WORD, WGSL_FEATURE_EXTENSIONS } from '../../../presentation/WebGPUConstants';
+import { PICTURE_FIELDS_WORD } from '../VideoFields';
 import {
     getGPUDecoderFormatFacts,
     GPU_DECODER_OUTPUT_PLANE_COUNT,
     type GPUDecoderFormatFacts,
     type GPUDecoderOutputFormat
 } from './GPUDecodeFormats';
-import type { GPUDecoderManifest, GPUDecodeStreamFacts } from './GPUDecodeTypes';
+import { GPU_DECODER_ERROR_CODE_SHIFT } from './GPUDecodeLimits';
+import {
+    GPU_DECODER_ERROR_RECOVERIES,
+    type GPUDecoderErrorRecovery,
+    type GPUDecoderManifest,
+    type GPUDecodeStreamFacts
+} from './GPUDecodeTypes';
 
 const PLANE_UNIFORM_WORD_COUNT = 4;
 const PLANE_ARRAY_WORD_COUNT = GPU_DECODER_OUTPUT_PLANE_COUNT * PLANE_UNIFORM_WORD_COUNT;
@@ -35,23 +42,36 @@ export const GPU_DECODER_PACKET_UNIFORM_BYTE_LENGTH = 32;
 /** The bytes of the stream uniform. */
 export const GPU_DECODER_STREAM_UNIFORM_BYTE_LENGTH = 80;
 
-/** The bytes of the status buffer the engine reads back. */
+/** The bytes of the status buffer the engine reads back, after each packet. */
 export const GPU_DECODER_STATUS_BYTE_LENGTH = 48;
 
-/** The byte offset of the freed-slot mask in the status buffer, which the engine clears after each readback copy. */
-export const GPU_DECODER_STATUS_FREED_SLOT_MASK_BYTE_OFFSET = 4;
+/**
+ * Word indices of GPUDecodeStatus: the fatal error and the header facts last until a reset clears the status;
+ * the packet's block, from the freed slots on, holds one packet's reports, and the engine clears it after each packet's copy.
+ */
+export const GPU_DECODER_STATUS_WORDS = Object.freeze({
+    errorCode: 0,
+    freedSlotMask: 9,
+    headerBitDepth: 4,
+    headerHeight: 3,
+    headerValid: 1,
+    headerVisibleHeight: 8,
+    headerVisibleWidth: 7,
+    headerVisibleX: 5,
+    headerVisibleY: 6,
+    headerWidth: 2,
+    pictureError: 10,
+    pictureFields: 11
+});
 
-// Word indices of GPUDecodeStatus
-const STATUS_ERROR_CODE_WORD = 0;
-const STATUS_FREED_SLOT_MASK_WORD = 1;
-const STATUS_HEADER_VALID_WORD = 2;
-const STATUS_HEADER_WIDTH_WORD = 3;
-const STATUS_HEADER_HEIGHT_WORD = 4;
-const STATUS_HEADER_BIT_DEPTH_WORD = 5;
-const STATUS_HEADER_VISIBLE_X_WORD = 6;
-const STATUS_HEADER_VISIBLE_Y_WORD = 7;
-const STATUS_HEADER_VISIBLE_WIDTH_WORD = 8;
-const STATUS_HEADER_VISIBLE_HEIGHT_WORD = 9;
+/** The byte offset of the packet's block in the status buffer: its freed slots, its picture's error, and its picture's fields. */
+export const GPU_DECODER_STATUS_PACKET_BLOCK_BYTE_OFFSET = GPU_DECODER_STATUS_WORDS.freedSlotMask * BYTES_PER_WORD;
+
+/** The bytes of the packet's block, which runs to the end of the status. */
+export const GPU_DECODER_STATUS_PACKET_BLOCK_BYTE_LENGTH = GPU_DECODER_STATUS_BYTE_LENGTH - GPU_DECODER_STATUS_PACKET_BLOCK_BYTE_OFFSET;
+
+/** The rank the prelude gives a fatal error; each recovery ranks its position in GPU_DECODER_ERROR_RECOVERIES plus one. */
+const FATAL_RECOVERY_RANK = 0;
 
 // Word indices of GPUDecodePacket
 const PACKET_BYTE_OFFSET_WORD = 0;
@@ -74,11 +94,26 @@ const STREAM_CONFIG_BYTE_LENGTH_WORD = PLANE_ARRAY_WORD_COUNT + 7;
 const PRELUDE_STRUCT_NAMES = [ 'GPUDecodePacket', 'GPUDecodePlane', 'GPUDecodeStatus', 'GPUDecodeStream' ] as const;
 // The output format's facts, declared for the format a session decodes into, so one decoder source serves every format it lists
 const PRELUDE_FORMAT_CONSTANT_NAMES = [ 'OUTPUT_BIT_DEPTH', 'OUTPUT_CHROMA_FORMAT', 'SAMPLE_BYTES', 'SAMPLES_PER_WORD', 'SAMPLE_MASK' ] as const;
+// The status helpers' constants: the recovery ranks, fatal first, and the bits of the picture fields word
+const RECOVERY_RANK_CONSTANT_NAMES: Readonly<Record<GPUDecoderErrorRecovery | 'fatal', string>> = Object.freeze({
+    conceal: 'DECODE_ERROR_RECOVERY_CONCEAL',
+    drop: 'DECODE_ERROR_RECOVERY_DROP',
+    fatal: 'DECODE_ERROR_RECOVERY_FATAL',
+    resync: 'DECODE_ERROR_RECOVERY_RESYNC'
+});
+const PICTURE_FIELDS_CONSTANT_NAMES = Object.freeze({
+    interlacedBit: 'PICTURE_FIELDS_INTERLACED_BIT',
+    repeatFirstFieldBit: 'PICTURE_FIELDS_REPEAT_FIRST_FIELD_BIT',
+    reportedBit: 'PICTURE_FIELDS_REPORTED_BIT',
+    topFieldFirstBit: 'PICTURE_FIELDS_TOP_FIELD_FIRST_BIT'
+});
+const PRELUDE_STATUS_CONSTANT_NAMES = [ ...Object.values(RECOVERY_RANK_CONSTANT_NAMES), ...Object.values(PICTURE_FIELDS_CONSTANT_NAMES) ];
 // chroma_format_idc: 4:2:0, 4:2:2, and 4:4:4
 const CHROMA_FORMAT_420 = 1;
 const CHROMA_FORMAT_422 = 2;
 const CHROMA_FORMAT_444 = 3;
 const PRELUDE_HELPER_NAMES = [
+    'getDecodeErrorRecovery',
     'getSampleByteAddress',
     'readConfigByte',
     'readOutputSample',
@@ -89,6 +124,7 @@ const PRELUDE_HELPER_NAMES = [
     'releaseReferenceSlot',
     'reportDecodeError',
     'reportHeaderFacts',
+    'reportPictureFields',
     'writeOutputSamples16',
     'writeOutputSamples8'
 ] as const;
@@ -98,7 +134,8 @@ export const GPU_DECODER_RESERVED_IDENTIFIERS: ReadonlySet<string> = new Set<str
     ...Object.keys(GPU_DECODER_BINDINGS),
     ...PRELUDE_STRUCT_NAMES,
     ...PRELUDE_HELPER_NAMES,
-    ...PRELUDE_FORMAT_CONSTANT_NAMES
+    ...PRELUDE_FORMAT_CONSTANT_NAMES,
+    ...PRELUDE_STATUS_CONSTANT_NAMES
 ]);
 
 const PRELUDE_STRUCTS_WGSL = `struct GPUDecodePacket {
@@ -133,7 +170,6 @@ struct GPUDecodeStream {
 
 struct GPUDecodeStatus {
     errorCode: atomic<u32>,
-    freedSlotMask: atomic<u32>,
     headerValid: u32,
     headerWidth: u32,
     headerHeight: u32,
@@ -142,8 +178,9 @@ struct GPUDecodeStatus {
     headerVisibleY: u32,
     headerVisibleWidth: u32,
     headerVisibleHeight: u32,
-    padding0: u32,
-    padding1: u32,
+    freedSlotMask: atomic<u32>,
+    pictureError: atomic<u32>,
+    pictureFields: u32,
 }`;
 
 const PACKET_HELPERS_WGSL = `// Reads one byte of the current packet
@@ -162,9 +199,27 @@ fn readConfigByte(byteIndex: u32) -> u32 {
     return (config[byteIndex >> 2u] >> ((byteIndex & 3u) * 8u)) & 0xFFu;
 }`;
 
-const STATUS_HELPERS_WGSL = `// Ends the attempt once the engine reads the status back; the highest code reported wins
-fn reportDecodeError(code: u32) {
-    atomicMax(&status.errorCode, max(code, 1u));
+const STATUS_FIXED_HELPERS_WGSL = `// Reports an error word, (code << ${GPU_DECODER_ERROR_CODE_SHIFT}) | value. A code the header declares recoverable marks the packet's picture,
+// which keeps its most severe word, by recovery and then by word; any other ends the attempt once the engine reads the status back, the highest word winning
+fn reportDecodeError(word: u32) {
+    let errorWord = max(word, 1u);
+    let recovery = getDecodeErrorRecovery(errorWord >> ${GPU_DECODER_ERROR_CODE_SHIFT}u);
+    if (recovery == ${RECOVERY_RANK_CONSTANT_NAMES.fatal}) {
+        atomicMax(&status.errorCode, errorWord);
+        return;
+    }
+    var current = atomicLoad(&status.pictureError);
+    loop {
+        let currentRecovery = getDecodeErrorRecovery(current >> ${GPU_DECODER_ERROR_CODE_SHIFT}u);
+        if (current != 0u && (currentRecovery > recovery || (currentRecovery == recovery && current >= errorWord))) {
+            return;
+        }
+        let exchange = atomicCompareExchangeWeak(&status.pictureError, current, errorWord);
+        if (exchange.exchanged) {
+            return;
+        }
+        current = exchange.old_value;
+    }
 }
 
 // Hands a reference slot back to the engine; a decoder with references holds every output slot until it releases it
@@ -182,7 +237,65 @@ fn reportHeaderFacts(width: u32, height: u32, bitDepth: u32, visibleRectangle: v
     status.headerVisibleWidth = visibleRectangle.z;
     status.headerVisibleHeight = visibleRectangle.w;
     status.headerValid = 1u;
+}
+
+// Reports the packet's picture fields: whether its frame is interlaced, which field comes first, and whether a progressive frame repeats its
+// first field; call it from one invocation; a packet that reports none keeps the fields its container or parser gave
+fn reportPictureFields(interlaced: bool, topFieldFirst: bool, repeatFirstField: bool) {
+    status.pictureFields = ${PICTURE_FIELDS_CONSTANT_NAMES.reportedBit}
+        | select(0u, ${PICTURE_FIELDS_CONSTANT_NAMES.interlacedBit}, interlaced)
+        | select(0u, ${PICTURE_FIELDS_CONSTANT_NAMES.topFieldFirstBit}, topFieldFirst)
+        | select(0u, ${PICTURE_FIELDS_CONSTANT_NAMES.repeatFirstFieldBit}, repeatFirstField);
 }`;
+
+/** Returns a recovery's rank in the prelude: its position among the recoveries plus one, so a fatal error ranks lowest. */
+export function getGPUDecoderErrorRecoveryRank(recovery: GPUDecoderErrorRecovery | null): number {
+    return recovery === null ? FATAL_RECOVERY_RANK : GPU_DECODER_ERROR_RECOVERIES.indexOf(recovery) + 1;
+}
+
+/** Declares the recovery ranks and the picture fields bits the status helpers use. */
+function createStatusConstantsWGSL(): string {
+    const lines: string[] = [ '// The recovery of an error code, in rising severity, and the bits of the picture fields word' ];
+    lines.push(`const ${RECOVERY_RANK_CONSTANT_NAMES.fatal}: u32 = ${FATAL_RECOVERY_RANK}u;`);
+    for (const recovery of GPU_DECODER_ERROR_RECOVERIES) {
+        lines.push(`const ${RECOVERY_RANK_CONSTANT_NAMES[recovery]}: u32 = ${getGPUDecoderErrorRecoveryRank(recovery)}u;`);
+    }
+    lines.push(`const ${PICTURE_FIELDS_CONSTANT_NAMES.reportedBit}: u32 = ${PICTURE_FIELDS_WORD.reportedBit}u;`);
+    lines.push(`const ${PICTURE_FIELDS_CONSTANT_NAMES.interlacedBit}: u32 = ${PICTURE_FIELDS_WORD.interlacedBit}u;`);
+    lines.push(`const ${PICTURE_FIELDS_CONSTANT_NAMES.topFieldFirstBit}: u32 = ${PICTURE_FIELDS_WORD.topFieldFirstBit}u;`);
+    lines.push(`const ${PICTURE_FIELDS_CONSTANT_NAMES.repeatFirstFieldBit}: u32 = ${PICTURE_FIELDS_WORD.repeatFirstFieldBit}u;`);
+    return lines.join('\n');
+}
+
+/** Generates getDecodeErrorRecovery from the header's error lines: each recovery's codes in one case, every other code fatal. */
+function createErrorRecoveryWGSL(errorRecoveries: ReadonlyMap<number, GPUDecoderErrorRecovery>): string {
+    const lines: string[] = [ '// The recovery the header declares for an error code; a code without one is fatal' ];
+    lines.push('fn getDecodeErrorRecovery(code: u32) -> u32 {');
+    lines.push('    switch (code) {');
+    for (const recovery of GPU_DECODER_ERROR_RECOVERIES) {
+        const selectors = [ ...errorRecoveries ]
+            .filter(([ , codeRecovery ]: [ number, GPUDecoderErrorRecovery ]): boolean => codeRecovery === recovery)
+            .map(([ code ]: [ number, GPUDecoderErrorRecovery ]): number => code)
+            .sort((first: number, second: number): number => first - second)
+            .map((code: number): string => String(code) + 'u');
+        if (selectors.length > 0) {
+            lines.push(`        case ${selectors.join(', ')}: {`);
+            lines.push(`            return ${RECOVERY_RANK_CONSTANT_NAMES[recovery]};`);
+            lines.push('        }');
+        }
+    }
+    lines.push('        default: {');
+    lines.push(`            return ${RECOVERY_RANK_CONSTANT_NAMES.fatal};`);
+    lines.push('        }');
+    lines.push('    }');
+    lines.push('}');
+    return lines.join('\n');
+}
+
+/** Returns the status helpers of a decoder: its constants, its generated recovery lookup, and the fixed helpers. */
+function createStatusHelpersWGSL(manifest: GPUDecoderManifest): string {
+    return [ createStatusConstantsWGSL(), createErrorRecoveryWGSL(manifest.errorRecoveries), STATUS_FIXED_HELPERS_WGSL ].join('\n\n');
+}
 
 /** The values of the per-packet uniform. */
 export type GPUDecoderPacketUniformValues = {
@@ -208,14 +321,18 @@ export type GPUDecoderStreamUniformValues = {
     width: number
 };
 
-/** What one status readback reports. */
+/** What one packet's status readback reports. */
 export type GPUDecoderStatusValues = {
-    /** 0 while the decoder reported no error. */
+    /** The highest fatal error word since the last reset, 0 while the decoder reported none. */
     errorCode: number
-    /** Bit n set means slot n left the decoder's references since the previous readback. */
+    /** Bit n set means slot n left the decoder's references during the packet. */
     freedSlotMask: number
     /** Stream facts the decoder parsed from a header, or null when it reported none. */
     headerFacts: GPUDecodeStreamFacts | null
+    /** The most severe recoverable error word the packet's picture reported, or 0. */
+    pictureError: number
+    /** The picture fields word the packet reported, 0 for none. */
+    pictureFields: number
 };
 
 /** A generated decoder module and where the decoder's body starts in it. */
@@ -327,7 +444,7 @@ export function createGPUDecoderPrelude(manifest: GPUDecoderManifest, format: GP
     sections.push(createBindingsWGSL(manifest.buffers.map(buffer => buffer.name)));
     sections.push(PACKET_HELPERS_WGSL);
     sections.push(POOL_HELPERS_WGSL);
-    sections.push(STATUS_HELPERS_WGSL);
+    sections.push(createStatusHelpersWGSL(manifest));
     return sections.join('\n\n');
 }
 
@@ -400,22 +517,24 @@ export function readGPUDecoderStatus(words: Uint32Array): GPUDecoderStatusValues
     if (words.length * BYTES_PER_WORD < GPU_DECODER_STATUS_BYTE_LENGTH) {
         throw new RangeError(`status: ${words.length * BYTES_PER_WORD} < ${GPU_DECODER_STATUS_BYTE_LENGTH}`);
     }
-    const headerFacts: GPUDecodeStreamFacts | null = words[STATUS_HEADER_VALID_WORD] === 0 ?
+    const headerFacts: GPUDecodeStreamFacts | null = words[GPU_DECODER_STATUS_WORDS.headerValid] === 0 ?
         null :
         {
-            bitDepth: words[STATUS_HEADER_BIT_DEPTH_WORD],
-            codedHeight: words[STATUS_HEADER_HEIGHT_WORD],
-            codedWidth: words[STATUS_HEADER_WIDTH_WORD],
+            bitDepth: words[GPU_DECODER_STATUS_WORDS.headerBitDepth],
+            codedHeight: words[GPU_DECODER_STATUS_WORDS.headerHeight],
+            codedWidth: words[GPU_DECODER_STATUS_WORDS.headerWidth],
             visibleRectangle: {
-                height: words[STATUS_HEADER_VISIBLE_HEIGHT_WORD],
-                width: words[STATUS_HEADER_VISIBLE_WIDTH_WORD],
-                x: words[STATUS_HEADER_VISIBLE_X_WORD],
-                y: words[STATUS_HEADER_VISIBLE_Y_WORD]
+                height: words[GPU_DECODER_STATUS_WORDS.headerVisibleHeight],
+                width: words[GPU_DECODER_STATUS_WORDS.headerVisibleWidth],
+                x: words[GPU_DECODER_STATUS_WORDS.headerVisibleX],
+                y: words[GPU_DECODER_STATUS_WORDS.headerVisibleY]
             }
         };
     return {
-        errorCode: words[STATUS_ERROR_CODE_WORD],
-        freedSlotMask: words[STATUS_FREED_SLOT_MASK_WORD],
-        headerFacts
+        errorCode: words[GPU_DECODER_STATUS_WORDS.errorCode],
+        freedSlotMask: words[GPU_DECODER_STATUS_WORDS.freedSlotMask],
+        headerFacts,
+        pictureError: words[GPU_DECODER_STATUS_WORDS.pictureError],
+        pictureFields: words[GPU_DECODER_STATUS_WORDS.pictureFields]
     };
 }

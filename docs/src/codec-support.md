@@ -120,6 +120,23 @@ Every AV1 stream falls back last to GPU, in its own format, when the host offers
 `hasPotentialCustomPlaybackVideoRoute` keeps AV1 outside Main 4:2:0 potential for this fallback, and leaves Main at 10 bits outside the raw SDR keys to the host's own player, which decodes Main.
 On GPU the decoder receives the track's av1C (see [Codec private data](decoder-packages.md#codec-private-data)).
 
+## Interlaced video
+
+The deinterlacing pass presents interlaced frames on every route but Dolby Vision's (see [Architecture](architecture.md#deinterlacing) and [Eligibility and routes](routes.md#interlaced-video)).
+This table covers every codec, beyond this chapter's HEVC and Dolby Vision.
+
+| Codec | Interlaced | Route | Each frame's fields |
+| --- | --- | --- | --- |
+| H.264 (PAFF field pairs and MBAFF) | Yes | VF-SDR native, deinterlaced; the browser upsampled its chroma progressively | The container's scan, else the host's `FieldOrder` and `IsInterlaced` |
+| MPEG-2, field and frame pictures, at 4:2:0, 4:2:2, and 4:4:4 | Yes | GPU, deinterlaced, 4:2:0 chroma read within each field | The decoder's `reportPictureFields`, per picture, from `progressive_frame`, `top_field_first`, and `repeat_first_field` as FFmpeg reads them |
+| VC-1 Advanced, field and frame interlace | Yes | GPU, deinterlaced, 4:2:0 chroma read within each field | The parser's `parser_picture_fields`, per picture, from FCM, TFF, and RFF as FFmpeg reads them |
+| HEVC | No: `interlaced-video-unsupported` | None; field pictures need a weave the engine lacks | None |
+| JPEG 2000 | No: `interlaced-video-unsupported` | None; a codestream per field needs a weave the engine lacks | None |
+| Any codec on a Dolby Vision route | Only when `IsInterlaced` is false | The Dolby Vision routes never deinterlace; a declared base layer's ordinary route does | None |
+
+A stream whose metadata calls it interlaced but whose frames report progressive presents them untouched, and a frame without any fields takes the stream's scan.
+The decoder's and the parser's reports override the container's: an MPEG-2 or VC-1 stream whose Matroska header calls it progressive still deinterlaces each picture it reports interlaced.
+
 ## Rejected
 
 | Variant | Reason |
@@ -213,7 +230,7 @@ Other conditions:
 - Monochrome range extensions outside GPU.
 - High Throughput 4:4:4 profiles, Screen Content Coding (`Screen-Extended`) profiles, Main Still Picture, and named Intra aliases such as `Main 4:4:4 10 Intra`.
   Generic Rext with an intra constraint is the ordinary variant.
-- Interlaced HEVC of any profile or range.
+- Interlaced HEVC of any profile or range: HEVC codes interlaced video as field pictures, which no decoder weaves into the frames the deinterlacing pass takes (see [Interlaced video](#interlaced-video)).
 - Dolby Vision:
   - the configurations in [Rejected](#rejected);
   - RPU reconstruction for AVC Profile 9, and for AV1 Profile 10 at 8 bits or outside the Main profile;

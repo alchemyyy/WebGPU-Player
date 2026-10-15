@@ -94,7 +94,7 @@ A header is the source's leading lines that start with `//!`, one `name: value` 
 | `state` | No | The size of the persistent state buffer; empty by default |
 | `buffer` | Repeatable | `<name>, <size>[, indirect]`: a scratch buffer; `indirect` makes it usable for indirect dispatch |
 | `requires` | No | Device features it needs, such as `shader-f16` or `subgroups`, which the prelude enables |
-| `error` | Repeatable | `<code>, <name>`: names an error code from 1 to 255 |
+| `error` | Repeatable | `<code>, <name>[, <recovery>]`: names an error code from 1 to 255, and how a playback recovers from it, `conceal`, `drop`, or `resync`, as [Errors and recovery](#errors-and-recovery) describes; a code without one ends the attempt |
 
 The codecs in `accepts` are the engine's codec names, which are FFmpeg's: `av1`, `h264`, `hevc`, `jpeg2000`, `mpeg1video`, `mpeg2video`, `vc1`, `vp8`, `vp9`, and `wmv3`.
 A size is a byte count with an optional `B`, `KiB`, or `MiB`, or an expression the session evaluates for each stream.
@@ -171,7 +171,7 @@ Every binding is in group 0.
 | 3 | `stream` | The stream: three `planes`, each a `byteOffset` and `bytesPerRow` within a slot and a `width` and `height`; `width`, `height`, `bitDepth`, `bytesPerSample`, `planeCount`, `slotByteLength`, `slotCount`, and `configByteLength` |
 | 4 | `state` | The persistent state buffer |
 | 5 | `framePool` | The frame pool's slots |
-| 6 | `status` | What the engine reads back: the error word, the freed slots, and the header's stream facts |
+| 6 | `status` | What the engine reads back after each packet: the fatal error word and the header's stream facts, then the packet's block, its freed slots, its picture's most severe recoverable error word, and its picture fields |
 | 7 on | The `buffer` names | The scratch buffers, in declaration order |
 
 | Helper | Does |
@@ -184,11 +184,13 @@ Every binding is in group 0.
 | `readReferenceSample(slot, plane, x, y)`, `readSlotSample(slot, plane, x, y)` | Read a reference slot's sample |
 | `getSampleByteAddress(slot, plane, x, y)` | The byte address of a sample in the pool |
 | `releaseReferenceSlot(slot)` | Hands a reference slot back to the engine |
-| `reportDecodeError(word)` | Ends the attempt with an error word; the highest word reported wins |
+| `reportDecodeError(word)` | Reports an error word: a code the header gives a recovery marks the packet's picture, which keeps its most severe word; any other ends the attempt, the highest such word winning |
 | `reportHeaderFacts(width, height, bitDepth, visibleRectangle)` | Reports stream facts parsed from a header, from one invocation |
+| `reportPictureFields(interlaced, topFieldFirst, repeatFirstField)` | Reports the packet's frame's fields, from one invocation: whether it is interlaced, which field comes first, and whether a progressive frame repeats its first field; a packet that reports none keeps what its container or parser gave |
 
 An error word holds an error code the header names in its high byte and the failing value in its low 24 bits: `(code << 24) | value`.
-The session fails with `decoder-error` and the word, which the route describes by the code's name and the value, such as `sliceHeader: 12`.
+A code without a recovery fails the session with `decoder-error` and the word, which the route describes by the code's name and the value, such as `sliceHeader: 12`.
+A code with one recovers, as [Errors and recovery](#errors-and-recovery) describes.
 
 ### Codec private data
 
@@ -224,8 +226,38 @@ The `config` binding holds what the decode worker reads from the track for its c
 - Without a parser, frames present in timestamp order once `reorder` frames wait; a frame earlier than one already presented is dropped, as `frames-dropped`.
 - With a parser, its output events present or drop each frame, as the next section describes.
 - A frame presents its visible rectangle scaled into the stream's display area: the visible size its picture reported, at the slot's top left, or the stream's visible rectangle.
-- The status reads back asynchronously, never per frame; an error word ends the attempt.
+- Every packet's status reads back asynchronously, and the packet's frame presents only once it has, as the next section describes.
 - A picture the session cannot hold, of another output format or beyond its pool, goes to a session of its own, as [Stream changes](#stream-changes) describes.
+
+### Errors and recovery
+
+A damaged packet need not end a playback: a decoder that can go on past an error says how in its `error:` lines, and the engine counts each recovery.
+
+| Recovery | The packet's frame | Then |
+| --- | --- | --- |
+| `conceal` | Presents: the decoder concealed the damage, as FFmpeg's error resilience conceals damaged macroblocks | Decoding goes on |
+| `drop` | Never presents | Decoding goes on from the decoder's state |
+| `resync` | Never presents, nor does any later frame before the next key packet; the last good frame repeats in their place | The next key packet decodes from a reset |
+| None | Never presents | The attempt ends with `decoder-error` |
+
+- The session submits a packet only when a status readback buffer is free for it, and copies the status into it after the packet's dispatches.
+- The fatal error word and the header's stream facts last until a reset clears the status; the packet's block, its freed slots, its picture's error word, and its picture fields, holds one packet's reports, and the engine clears it after each copy.
+- A frame presents only once its packet's readback applied, so a recovery always applies before its frame could present.
+- `reportDecodeError` keeps the packet's most severe recoverable word: `resync` over `drop` over `conceal`, then the highest word.
+- A resync replaces each frame of the damaged packet, and of the packets after it that already decoded, with a repeat of the last good frame: of the earlier packets' frames that the session or presentation still holds, the one with the latest timestamp.
+  Each packet up to the next key packet repeats it too, at its own time, without running the decoder.
+  The repeats share that frame's slot, on which the pool counts holds; without a good frame they drop.
+  The decoder's references end with the old epoch, and the key packet decodes with `reset`.
+- With a parser, the session numbers repeated pictures as it numbers decoded ones, so the parser's events keep naming them; an event for a repeated picture changes nothing.
+- A parser call that fails with a code its header gives any recovery resyncs, since the failed call made no picture and left its instance unusable.
+  The decode worker closes the parser, posts the failed packet and those before the next key packet as held packets, which carry no data and repeat the last good frame, and opens a new parser at the key packet, whose first picture carries `reset`.
+  The session presents the frames the old parser left undecided in timestamp order, since no event will decide them.
+  Without a later key packet, the packets up to the track's end hold, and the track ends.
+  A failed call whose code has no recovery, or a failed check of the interface, ends the attempt.
+- A recovery's detail is the error's name and value, `parser ` before a parser's error name, such as `coefficients: 90112` or `parser sliceHeader: 3`.
+  The feed's telemetry counts recoveries since the page loaded as `recoveries`, one entry per code, `concealed`, `dropped`, or `resynced`, and error name, with the latest detail.
+- A self-test vector that recovers fails its check as `decoder-recovered`, since a vector is undamaged.
+- Without a recovery for its codes, a decoder ends the attempt on every error, as before recoveries existed; the route then falls back as any failed route does.
 
 ### Stream changes
 
@@ -279,6 +311,7 @@ Every export but the first two takes the handle `parser_create` returned; pointe
 | `parser_picture_width(handle)`, `parser_picture_height(handle)` | A size | Read right after a finish, decode, or decode_next that output a picture: its visible size, or 0 and 0 for none |
 | `parser_picture_format(handle)` | A format | Read right after the same calls: the output format the picture decodes into, its chroma format as `chroma_format_idc` counts it, 0 for 4:0:0, which decodes into 4:2:0, shifted left 8, ORed with its bit depth, 8, 10, or 12; 0 for the session's format |
 | `parser_picture_repeat_count(handle, repeat)` | A count | Read right after the same calls, once for each `repeat:` directive, `repeat` counting them from 0 in header order: how many times the picture's record runs it |
+| `parser_picture_fields(handle)` | A picture fields word | Optional. Read right after the same calls: the picture's fields as `reportPictureFields` stores them, bit 0 reported, bit 1 interlaced, bit 2 top field first, bit 3 a progressive picture's repeat first field; 0 reports none |
 | `parser_decode(handle, byteLength)` | Status | Plans, parses, and finishes the first picture of the packet in the input on this instance |
 | `parser_decode_next(handle)` | Status | Plans, parses, and finishes the packet's next picture on this instance; it reads no input |
 | `parser_output_pointer(handle)`, `parser_output_byte_length(handle)` | | The last call's output |
@@ -293,6 +326,9 @@ Every export but the first two takes the handle `parser_create` returned; pointe
 | 3 | A picture, and more of the packet's pictures follow: the engine calls plan_next, or decode_next on one instance |
 | -1 | A failure, with its code and value |
 
+A failure's code decides what follows: a code the header gives any recovery resyncs at the next key packet with a new parser, as [Errors and recovery](#errors-and-recovery) describes, and any other ends the attempt.
+A parser that can go on past damage, as FFmpeg's decoders conceal it, outputs the picture's record with the damage marked and lets its WGSL conceal it and report a `conceal` code, rather than fail.
+
 The engine calls plan_next after every 3 until a call returns 0, 1, or -1, and plans no later packet before; a packet holds at most 64 pictures.
 A plan without units parses nothing, so its finish receives no jobs.
 `parser_decode` and `parser_decode_next` run a packet on one instance, as a decoder project's tests do; every earlier picture finished there, so a blocked decode fails.
@@ -302,6 +338,7 @@ Presentation scales each frame's own visible rectangle into the stream's display
 A repeat count above the directive's count for the stream runs the directive's count, so a parser without a smaller one returns 4294967295, and 0 skips the run.
 The largest picture the codec private data declares sizes the session, as [How a session decodes](#how-a-session-decodes) describes; the decode worker opens its first attempt's parser before the track is ready, so the ready response carries it.
 A picture's format and its sequence's largest picture decide whether it needs a session of its own, as [Stream changes](#stream-changes) describes; a format no output format holds, such as 4:2:0 at 9 bits, fails the attempt as `parser picture format 0x109`.
+A picture's fields word travels with its record to the frame, which the deinterlacing pass reads (see [Architecture](architecture.md#deinterlacing)); a parser without `parser_picture_fields` reports none, so its frames keep their container's fields, and a word that sets a bit beyond the four, or any without bit 0, fails the attempt as `parser picture fields 0x12`.
 The engine copies each output and event list out of the instance's memory before its next call on that instance, and fails the attempt when a pointer and length leave the memory.
 
 The engine runs a parser on these instances, each with its own memory:
@@ -335,7 +372,7 @@ The engine runs one only when a host calls `verifyGPUDecoderPackage(device, pack
 A check decodes the vector's packets in a session on the device, through the parser when the package has one, reads back frames `firstFrame` to `lastFrame` in presentation order, and compares their SHA-256 with the vector's.
 The hash covers each checked frame's luma plane, then its two chroma planes, cropped to its visible rectangle, rows tightly packed and 16-bit samples little-endian: FFmpeg's rawvideo output of those frames in the vector's format, such as `yuv422p10le`.
 A frame's visible rectangle is the visible size its picture reported, at the top left, or the vector's, so a vector whose frame size changes checks each frame at its own size.
-A check returns `passed` with the hash, `unverified` when the package carries no vector for the format, or the check that failed: `parser-failed`, `frames-dropped`, `frames-missing`, `slots-exhausted`, `hash-mismatch`, or the session's failure code.
+A check returns `passed` with the hash, `unverified` when the package carries no vector for the format, or the check that failed: `parser-failed`, `decoder-recovered` with the first recovery, such as `decoder-recovered: concealed coefficients: 90112`, `frames-dropped`, `frames-missing`, `slots-exhausted`, `hash-mismatch`, or the session's failure code.
 
 The section is little-endian `u32` words, names and data padded to whole words; `src/decode/video/gpu/GPUDecoderVectorSet.ts` reads and writes it.
 
@@ -461,7 +498,8 @@ Each call decodes again, so a host that keeps results keys them itself, by the p
 Every failure carries a code and a terse detail with the failing value.
 
 - Loading: the `DecoderPackageError` codes above, such as `package-manifest: id-syntax: 'AV1' (line 1)`.
-- A video session: its failure code, such as `compile-error` with the body's line, `dispatch-count`, `decoder-error` with the error's name and value, `output-event`, `packet-size: ring 1073741824 > 268435456`, or `visible-rectangle: picture 1920x1088 exceeds 1280x768`, which ends the route's attempt as any failed route does.
+- A video session: its failure code, such as `compile-error` with the body's line, `dispatch-count`, `decoder-error` with the name and value of an error without a recovery, `output-event`, `packet-size: ring 1073741824 > 268435456`, or `visible-rectangle: picture 1920x1088 exceeds 1280x768`, which ends the route's attempt as any failed route does.
+- A recovery is no failure: its code and detail, such as `concealed coefficients: 90112` or `resynced parser sliceHeader: 3`, count in the feed's telemetry, and the playback goes on.
 - A stream change: `accepts: picture 4096x2160 in pool 4096x2176 at 8 bits` when the decoder takes no pool for the picture, or the new session's creation failure, such as `format-unsupported: I444P12 not in I420, I420P10`, which ends the attempt as the first session's would.
 - A parser: `parser <error name>: <value>`, or the step that failed, such as `parser reserve_input refused 4096 bytes`, `parser events 300 > 256`, `parser pictures 65 > 64 in one packet`, `parser plan_next status 7`, `parser picture format 0x109`, or `parser maximum picture size 1920x0`.
 - An audio decoder: `audio decoder <error name>: <value>`, which ends the audio attempt.

@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { DECODER_PACKAGE_MAXIMUM_MEMORY_PAGES } from 'webgpu-player/decode/packages/DecoderPackageImports';
+import { createPictureFieldsWord, PICTURE_FIELDS_WORD } from 'webgpu-player/decode/video/VideoFields';
 import {
     GPU_DECODER_PARSER_ABI_VERSION,
     MAXIMUM_GPU_DECODE_OUTPUT_EVENTS,
@@ -74,6 +75,11 @@ const UNHELD_FORMAT_CODES: readonly number[] = [
 const CODEC_PRIVATE = Uint8Array.of(0x81, 0x00, 0x0C, 0x00);
 // A status no call of the interface returns
 const UNKNOWN_STATUS = 7;
+// Picture fields words a parser may not report: interlaced without the reported bit, and a reported word with a bit beyond those defined
+const UNDEFINED_PICTURE_FIELDS_WORDS: readonly number[] = [
+    PICTURE_FIELDS_WORD.interlacedBit,
+    PICTURE_FIELDS_WORD.reportedBit | 0x10
+];
 
 /** Instantiates a stub module as a package of it would be: its memory as the loader bounds it, the test's error names, and the header's repeats. */
 function createStubInstance(options: ParserStubOptions = {}, memory: GPUDecoderParserModule['memory'] = {
@@ -82,6 +88,7 @@ function createStubInstance(options: ParserStubOptions = {}, memory: GPUDecoderP
 }, repeatDirectiveCount: number = NO_REPEATS): Promise<GPUDecoderParserInstance> {
     return GPUDecoderParserInstance.create({
         errorNames: ERROR_NAMES,
+        errorRecoveries: new Map(),
         memory,
         module: new WebAssembly.Module(createParserStubModuleBinary(options)),
         repeatDirectiveCount
@@ -258,6 +265,25 @@ describe('GPUDecoderParserInstance', () => {
         expect(() => unheld.finish(STUB_PACKET)).toThrow(new RangeError(`parser picture format 0x${code.toString(16)}`));
     });
 
+    it('reads a picture\'s fields from the optional parser_picture_fields, and none from a parser without it or a word of none', async () => {
+        const bottomFirst = await createStubInstance({ pictureFields: createPictureFieldsWord(true, false, false) });
+        const repeating = await createStubInstance({ pictureFields: createPictureFieldsWord(false, true, true) });
+        const unreported = await createStubInstance({ pictureFields: PICTURE_FIELDS_WORD.none });
+        const withoutExport = await createStubInstance();
+
+        expect(bottomFirst.finish(STUB_PACKET).fields).toEqual({ repeatFirstField: false, scan: 'bottom-first' });
+        expect(bottomFirst.decode(STUB_PACKET).pictures[0].fields).toEqual({ repeatFirstField: false, scan: 'bottom-first' });
+        expect(repeating.finish(STUB_PACKET).fields).toEqual({ repeatFirstField: true, scan: 'progressive' });
+        expect(unreported.finish(STUB_PACKET).fields).toBeNull();
+        expect(withoutExport.finish(STUB_PACKET).fields).toBeNull();
+    });
+
+    it.each(UNDEFINED_PICTURE_FIELDS_WORDS)('fails a picture fields word that sets an undefined bit or reports nothing: 0x%s', async (word: number) => {
+        const malformed = await createStubInstance({ pictureFields: word });
+
+        expect(() => malformed.finish(STUB_PACKET)).toThrow(new RangeError(`parser picture fields 0x${word.toString(16)}`));
+    });
+
     it('reads the largest picture of each picture\'s sequence after it, as after configure', async () => {
         const declaring = await createStubInstance({ results: { maximumPictureHeight: MAXIMUM_PICTURE_HEIGHT, maximumPictureWidth: MAXIMUM_PICTURE_WIDTH } });
         const silent = await createStubInstance();
@@ -312,7 +338,7 @@ describe('GPUDecoderParserInstance', () => {
 
         expect(() => instance.decode(STUB_PACKET)).toThrow(new RangeError(`parser reserve_input refused ${STUB_PACKET.byteLength} bytes`));
         expect(instance.decode(new Uint8Array(0))).toEqual({
-            pictures: [ { events: new Uint32Array(0), format: null, maximumPictureSize: null, record: new ArrayBuffer(0), repeatCounts: [], visibleSize: null } ],
+            pictures: [ { events: new Uint32Array(0), fields: null, format: null, maximumPictureSize: null, record: new ArrayBuffer(0), repeatCounts: [], visibleSize: null } ],
             trailingEvents: new Uint32Array(0)
         });
     });

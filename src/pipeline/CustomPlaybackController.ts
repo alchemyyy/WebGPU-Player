@@ -987,10 +987,17 @@ export default class CustomPlaybackController {
         return true;
     }
 
-    /** Supplies the renderer with the newest decoded frame for its target time. */
-    public takeFrame(targetTimeMicroseconds: Microseconds): DecodedPresentationFrame | null {
+    /**
+     * Supplies the renderer with the newest decoded frame for its target time.
+     * A lookahead takes frames that far ahead of the target, as a deinterlacing presenter reads the frame after the one it shows; lag still counts from the target.
+     */
+    public takeFrame(
+        targetTimeMicroseconds: Microseconds,
+        lookaheadMicroseconds: Microseconds = ZERO_MICROSECONDS
+    ): DecodedPresentationFrame | null {
         requireMicroseconds(targetTimeMicroseconds, 'Presentation target time');
-        const presentationFrame = this.takeFrameForTarget(targetTimeMicroseconds);
+        requireMicroseconds(lookaheadMicroseconds, 'Presentation lookahead');
+        const presentationFrame = this.takeFrameForTarget(targetTimeMicroseconds, lookaheadMicroseconds);
         this.recordRenderTick(targetTimeMicroseconds, presentationFrame);
         return presentationFrame;
     }
@@ -1026,7 +1033,10 @@ export default class CustomPlaybackController {
         });
     }
 
-    private takeFrameForTarget(targetTimeMicroseconds: Microseconds): DecodedPresentationFrame | null {
+    private takeFrameForTarget(
+        targetTimeMicroseconds: Microseconds,
+        lookaheadMicroseconds: Microseconds
+    ): DecodedPresentationFrame | null {
         const generation = this.activeGeneration;
         if (generation === null
             || (this.state !== 'playing' && this.state !== 'paused')) {
@@ -1036,7 +1046,7 @@ export default class CustomPlaybackController {
             return null;
         }
 
-        const presentationFrame = this.videoDecodeSession.takeFrame(targetTimeMicroseconds);
+        const presentationFrame = this.videoDecodeSession.takeFrame(addMicroseconds(targetTimeMicroseconds, lookaheadMicroseconds));
         if (!presentationFrame && this.state === 'playing') {
             this.handleMissingVideoFrame(generation);
         } else if (presentationFrame) {
@@ -1070,9 +1080,19 @@ export default class CustomPlaybackController {
             || (this.state === 'playing' && this.hasPlaybackStallExceeded(generation));
     }
 
-    /** Takes a frame against the controller's application-owned clock. */
-    public takeCurrentFrame(): DecodedPresentationFrame | null {
-        return this.takeFrame(this.getCurrentPresentationTargetTime());
+    /** Takes a frame against the controller's application-owned clock, a lookahead ahead of it. */
+    public takeCurrentFrame(lookaheadMicroseconds: Microseconds = ZERO_MICROSECONDS): DecodedPresentationFrame | null {
+        return this.takeFrame(this.getCurrentPresentationTargetTime(), lookaheadMicroseconds);
+    }
+
+    /** Returns the media time frames present at now: the clock, or the time video starvation holds. */
+    public getPresentationTargetTime(): Microseconds {
+        return this.getCurrentPresentationTargetTime();
+    }
+
+    /** Returns whether the current video epoch decoded its last frame, so no later frame will arrive. */
+    public isVideoDecodeEnded(): boolean {
+        return this.videoDecodeSession.getTelemetry().videoEnded;
     }
 
     /**

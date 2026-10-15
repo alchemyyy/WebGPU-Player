@@ -1,6 +1,8 @@
-// Runs one user WGSL video decoder on the presenter's device: the packet ring, the dispatch sequence, pacing, presentation order, and slot release.
+// Runs one user WGSL video decoder on the presenter's device: the packet ring, the dispatch sequence, pacing, presentation order, slot release,
+// and the recoveries from errors its header declares recoverable.
 // The compressed packet is the only CPU to GPU transfer; decoded planes stay in the frame pool, which the signal step reads in place.
 // The engine book's decoder packages chapter describes the route.
+import { getDecoderErrorName } from '../../packages/DecoderHeader';
 import type { DecoderPackageVersion } from '../../packages/DecoderPackageIdentity';
 import { evaluatePassExpression, PassExpressionError } from '../../../presentation/passes/PassExpression';
 import type { FramePoolFrame, PassExpression } from '../../../presentation/passes/PassTypes';
@@ -13,9 +15,11 @@ import {
     VALIDATION_ERROR_FILTER,
     WORKGROUP_AXIS_NAMES
 } from '../../../presentation/WebGPUConstants';
+import { decodePictureFieldsWord, type VideoFrameFields } from '../VideoFields';
 import { getGPUDecoderFormatFacts, type GPUDecoderOutputFormat } from './GPUDecodeFormats';
 import {
     GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH,
+    GPU_DECODER_ERROR_CODE_SHIFT,
     GPU_DECODER_MAXIMUM_DISPATCHES
 } from './GPUDecodeLimits';
 import {
@@ -25,7 +29,8 @@ import {
     GPU_DECODER_FIRST_BUFFER_BINDING,
     GPU_DECODER_PACKET_UNIFORM_BYTE_LENGTH,
     GPU_DECODER_STATUS_BYTE_LENGTH,
-    GPU_DECODER_STATUS_FREED_SLOT_MASK_BYTE_OFFSET,
+    GPU_DECODER_STATUS_PACKET_BLOCK_BYTE_LENGTH,
+    GPU_DECODER_STATUS_PACKET_BLOCK_BYTE_OFFSET,
     GPU_DECODER_STREAM_UNIFORM_BYTE_LENGTH,
     readGPUDecoderStatus,
     writeGPUDecoderPacketUniform,
@@ -49,6 +54,7 @@ import GPUFramePool, {
 } from './GPUFramePool';
 import {
     GPU_DECODER_OUTPUT_EVENT,
+    GPU_VIDEO_DECODE_RECOVERY_CODES,
     type GPUDecodePacket,
     type GPUDecoderCompileMessage,
     type GPUDecoderDispatch,
@@ -57,15 +63,18 @@ import {
     type GPUDecoderPictureSize,
     type GPUDecodeStreamFacts,
     GPUVideoDecodeError,
-    type GPUVideoDecodeFailure
+    type GPUVideoDecodeFailure,
+    type GPUVideoDecodeRecovery
 } from './GPUDecodeTypes';
 
 // Each packet's uniform takes the next slot of one buffer at a dynamic offset, so a packet never creates a bind group
 const PACKET_UNIFORM_SLOT_COUNT = 8;
 // Packet uniforms sit one offset alignment apart, so every device accepts the dynamic offsets
 const PACKET_UNIFORM_STRIDE = UNIFORM_BUFFER_OFFSET_ALIGNMENT;
-// Readbacks in flight at once; a packet submitted while all are mapping skips its readback, so nothing waits on one
+// Readbacks in flight at once; every packet's status is read back, so a packet waits for a free one as it waits for a free slot
 const STATUS_READBACK_COUNT = 3;
+// The value bits of an error word, below its code
+const ERROR_VALUE_MASK = (1 << GPU_DECODER_ERROR_CODE_SHIFT) - 1;
 // A picture index the parser names at most half the index range behind the newest picture is an earlier one, which may have left already
 const PICTURE_INDEX_HALF_RANGE = GPU_DECODER_OUTPUT_EVENT.pictureIndexModulus / 2;
 // The live sessions of each device, which its loss fails
@@ -90,6 +99,8 @@ export type GPUDecodedFrame = {
     /** Due frames dropped when this frame was taken, for a temporal pass's soft reset. */
     droppedFrameCount: number
     durationMicroseconds: number
+    /** The frame's fields: the decoder's own report, else what its packet carried, or null when nobody reported them. */
+    fields: VideoFrameFields | null
     /** The slot's planes, with the frame's visible rectangle: its picture's own size, or the stream's. */
     frame: FramePoolFrame
     slot: number
@@ -99,12 +110,31 @@ export type GPUDecodedFrame = {
 };
 
 type DecodedFrameEntry = {
+    /** Set once its packet's status readback applied, or at once for a repeat; only confirmed frames present */
+    confirmed: boolean
     durationMicroseconds: number
+    fields: VideoFrameFields | null
+    /** A repeat of the last good frame during a resync, which shares that frame's slot */
+    held: boolean
+    /** The packet's serial in submission order, counted since the session started, from which a resync replaces frames */
+    packetSerial: number
     /** The picture's index in decode order, which a parser's output events name. */
     pictureIndex: number
     slot: number
     timestampMicroseconds: number
     visibleSize: GPUDecoderPictureSize | null
+};
+
+/** The last good frame a resync holds: the slot its repeats present, which the resync keeps an output hold on, and the frame's facts. */
+type HeldFrame = Readonly<{
+    fields: VideoFrameFields | null
+    slot: number
+    visibleSize: GPUDecoderPictureSize | null
+}>;
+
+/** A resync in progress, which ends at the next packet that decodes, a key packet, from a reset; null holds nothing, when no frame was left. */
+type ResyncState = {
+    heldFrame: HeldFrame | null
 };
 
 type PreparedDispatch =
@@ -128,6 +158,8 @@ type DispatchRun<Dispatch> = {
 
 type StatusReadback = {
     buffer: GPUBuffer
+    /** The frame of the packet whose status the readback captured, until the readback applies */
+    entry: DecodedFrameEntry | null
     /** The reset epoch the readback was taken in; a readback of an earlier epoch is stale. */
     epoch: number
 };
@@ -427,7 +459,9 @@ async function compileDecoder(
 
 /**
  * Decodes compressed packets into frame pool slots on the presenter's device.
- * Packets queue in decode order; submitPendingDecodeWork() encodes one packet's dispatches at a time, as far ahead as free slots allow.
+ * Packets queue in decode order; submitPendingDecodeWork() encodes one packet's dispatches at a time, as far ahead as free slots and readbacks allow.
+ * Every packet's status is read back, and its frame presents only once that readback applied: a fatal error ends the attempt,
+ * and a recoverable one presents the concealed picture, drops it, or resyncs at the next key packet while the last good frame holds.
  * A decoder without a parser releases its frames in timestamp order once its declared reorder depth is filled;
  * a decoder with one releases or drops each frame when its parser's output events say so.
  * Each frame holds its slot until presentation releases it.
@@ -453,6 +487,8 @@ export default class GPUVideoDecodeSession {
     private headerFacts: GPUDecodeStreamFacts | null = null;
     private readonly inFlightReadbacks = new Set<Promise<void>>();
     private lastReleasedTimestampMicroseconds = Number.NEGATIVE_INFINITY;
+    // The serial the next consumed packet takes, counted in submission order since the session started
+    private nextPacketSerial = 0;
     // The index the next submitted picture takes, counted in decode order since the last reset
     private nextPictureIndex = 0;
     private readonly ownedBuffers: GPUBuffer[] = [];
@@ -465,13 +501,14 @@ export default class GPUVideoDecodeSession {
     private readonly packetUniforms: GPUBuffer;
     private readonly pendingPackets: GPUDecodePacket[] = [];
     private readonly presentableFrames: DecodedFrameEntry[] = [];
+    // Recoveries since takeRecoveries() last took them
+    private readonly recoveries: GPUVideoDecodeRecovery[] = [];
     private readonly reorderFrames: DecodedFrameEntry[] = [];
     private resetPending = true;
+    private resync: ResyncState | null = null;
     private ringByteOffset = 0;
     private readonly stateBuffer: GPUBuffer;
     private readonly statusBuffer: GPUBuffer;
-    // Set while the status holds reports of a packet that skipped its readback, which no readback has captured since
-    private statusCaptureOwed = false;
     private readonly takenFrames = new Set<GPUDecodedFrame>();
 
     private constructor(options: GPUVideoDecodeSessionOptions, resources: SessionResources) {
@@ -519,6 +556,7 @@ export default class GPUVideoDecodeSession {
             for (let readbackIndex = 0; readbackIndex < STATUS_READBACK_COUNT; readbackIndex += 1) {
                 this.freeReadbacks.push({
                     buffer: this.createBuffer(`status readback ${readbackIndex}`, GPU_DECODER_STATUS_BYTE_LENGTH, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST),
+                    entry: null,
                     epoch: 0
                 });
             }
@@ -634,24 +672,22 @@ export default class GPUVideoDecodeSession {
     }
 
     /**
-     * Encodes and submits at most one packet's decode work, when a packet waits and a slot is free; returns whether it submitted one.
+     * Consumes at most one packet: it encodes and submits a packet's decode work when a slot and a readback are free, or consumes a held packet,
+     * which decodes nothing; returns whether it consumed one.
      * The caller paces the calls, so presentation never queues behind more than one frame of decode work.
-     * Without a packet to submit, it reads back the status a skipped readback left uncaptured, since slots it frees may be what the next packet waits for.
      */
     submitPendingDecodeWork(): boolean {
         if (this.destroyed || this.failure) {
             return false;
         }
         const submitted = this.submitNextPacket();
-        if (!submitted) {
-            this.submitOwedStatusReadback();
-        }
         this.flushEndOfStreamIfDecoded();
         return submitted;
     }
 
     /**
      * Returns the newest decoded frame due at the target time, and releases older due frames as dropped.
+     * Frames leave in presentation order, and only once their packet's status confirmed them.
      * The frame holds its slot until releaseFrame(); null when no frame is due or the session failed.
      */
     takeFrame(targetTimeMicroseconds: number): GPUDecodedFrame | null {
@@ -660,7 +696,8 @@ export default class GPUVideoDecodeSession {
         }
         let selectedIndex = -1;
         for (let frameIndex = 0; frameIndex < this.presentableFrames.length; frameIndex += 1) {
-            if (this.presentableFrames[frameIndex].timestampMicroseconds > targetTimeMicroseconds) {
+            const entry = this.presentableFrames[frameIndex];
+            if (!entry.confirmed || entry.timestampMicroseconds > targetTimeMicroseconds) {
                 break;
             }
             selectedIndex = frameIndex;
@@ -677,13 +714,17 @@ export default class GPUVideoDecodeSession {
         return this.createTakenFrame(selectedFrame, consumedFrames.length - 1);
     }
 
-    /** Returns the earliest decoded frame regardless of time, as a conformance check reads every frame. */
+    /** Returns the earliest decoded frame regardless of time, as a conformance check reads every frame, once its packet's status confirmed it. */
     takeNextFrame(): GPUDecodedFrame | null {
         if (this.destroyed || this.failure) {
             return null;
         }
-        const nextFrame = this.presentableFrames.shift();
-        return nextFrame ? this.createTakenFrame(nextFrame, 0) : null;
+        const nextFrame = this.presentableFrames.at(0);
+        if (!nextFrame || !nextFrame.confirmed) {
+            return null;
+        }
+        this.presentableFrames.shift();
+        return this.createTakenFrame(nextFrame, 0);
     }
 
     /** Ends presentation's hold on a taken frame's slot; the slot is free once the decoder holds no reference to it. */
@@ -713,6 +754,7 @@ export default class GPUVideoDecodeSession {
         this.parserFrames.length = 0;
         this.reorderFrames.length = 0;
         this.presentableFrames.length = 0;
+        this.releaseHeldFrame();
         this.endOfStreamPending = false;
         this.endOfStreamEvents = null;
         this.lastReleasedTimestampMicroseconds = Number.NEGATIVE_INFINITY;
@@ -747,20 +789,20 @@ export default class GPUVideoDecodeSession {
     }
 
     /**
-     * Resolves once the status of every submitted packet has been read back and applied, including reports a skipped readback left uncaptured.
+     * Resolves once the status of every submitted packet has been read back and applied; each packet's status is captured with its decode work.
      * A conformance check calls it after the last packet, so a decoder error that packet reports is never missed.
      */
     async flushStatusReadbacks(): Promise<void> {
-        await this.waitForStatusReadbacks();
-        if (this.destroyed || this.failure) {
-            return;
-        }
-        this.submitOwedStatusReadback();
         await this.waitForStatusReadbacks();
     }
 
     getDroppedFrameCount(): number {
         return this.droppedFrameCount;
+    }
+
+    /** Returns the recoveries since the previous call, in the order they happened: each recoverable error the decoder or its parser reported. */
+    takeRecoveries(): GPUVideoDecodeRecovery[] {
+        return this.recoveries.splice(0);
     }
 
     getFailure(): GPUVideoDecodeFailure | null {
@@ -808,7 +850,6 @@ export default class GPUVideoDecodeSession {
      */
     private beginDecoderEpoch(): void {
         this.epoch += 1;
-        this.statusCaptureOwed = false;
         this.pool.releaseAllReferences();
     }
 
@@ -914,10 +955,23 @@ export default class GPUVideoDecodeSession {
         }
     }
 
-    /** Submits the first queued packet into a free slot and queues its frame; returns false when no packet waits or no slot is free. */
+    /**
+     * Consumes the first queued packet: it submits its decode work into a free slot, with a free readback for its status, and queues its frame,
+     * or holds the last good frame for a packet that decodes nothing; returns false when no packet waits, or no slot or readback is free.
+     */
     private submitNextPacket(): boolean {
         const packet = this.pendingPackets.at(0);
         if (!packet) {
+            return false;
+        }
+        // A packet whose picture is lost, or one a resync passes over on its way to a key packet, decodes nothing
+        if (packet.hold || (this.resync !== null && !packet.keyframe && !packet.reset)) {
+            this.pendingPackets.shift();
+            this.holdPacket(packet);
+            return true;
+        }
+        const readback = this.freeReadbacks.at(-1);
+        if (!readback) {
             return false;
         }
         // A packet that resets the decoder drops its references before taking a slot, which may be one of them
@@ -930,24 +984,173 @@ export default class GPUVideoDecodeSession {
             return false;
         }
         this.pendingPackets.shift();
+        this.freeReadbacks.pop();
         if (packet.reset) {
             this.restartPictureNumbering();
         }
-        this.submitPacket(packet, slot);
+        // The packet that decodes after a resync is its key packet, which decodes from the reset the resync made pending
+        this.endResync();
         const entry: DecodedFrameEntry = {
+            confirmed: false,
             durationMicroseconds: packet.durationMicroseconds,
-            pictureIndex: this.nextPictureIndex,
+            fields: packet.fields,
+            held: false,
+            packetSerial: this.takePacketSerial(),
+            pictureIndex: this.takePictureIndex(),
             slot,
             timestampMicroseconds: packet.timestampMicroseconds,
             visibleSize: packet.visibleSize
         };
-        this.nextPictureIndex = (this.nextPictureIndex + 1) % GPU_DECODER_OUTPUT_EVENT.pictureIndexModulus;
+        this.submitPacket(packet, slot, readback, entry);
         if (this.parserOutput) {
             this.receiveParserFrame(entry, packet.outputEvents);
         } else {
             this.receiveDecodedFrame(entry);
         }
         return true;
+    }
+
+    private takePacketSerial(): number {
+        const packetSerial = this.nextPacketSerial;
+        this.nextPacketSerial += 1;
+        return packetSerial;
+    }
+
+    private takePictureIndex(): number {
+        const pictureIndex = this.nextPictureIndex;
+        this.nextPictureIndex = (pictureIndex + 1) % GPU_DECODER_OUTPUT_EVENT.pictureIndexModulus;
+        return pictureIndex;
+    }
+
+    /**
+     * Consumes a packet that decodes nothing: a held packet, whose picture its parser lost, or one a resync passes over.
+     * Its frame repeats the last good frame at its own time; a parser's picture still applies its output events, which decide earlier pictures.
+     * A held packet that finds no resync begins one, since its parser restarted, and counts the recovery it carries.
+     */
+    private holdPacket(packet: GPUDecodePacket): void {
+        if (packet.recovery !== null) {
+            this.recoveries.push(packet.recovery);
+        }
+        if (packet.hold && this.resync === null) {
+            this.beginResync(null);
+        }
+        const packetSerial = this.takePacketSerial();
+        const pictureIndex = this.takePictureIndex();
+        if (this.parserOutput && !packet.hold) {
+            for (const event of packet.outputEvents ?? []) {
+                if (!this.applyOutputEvent(event)) {
+                    return;
+                }
+            }
+        }
+        const heldFrame = this.resync?.heldFrame ?? null;
+        if (heldFrame === null || !this.pool.holdOutput(heldFrame.slot)) {
+            return;
+        }
+        this.receiveDecodedFrame({
+            confirmed: true,
+            durationMicroseconds: packet.durationMicroseconds,
+            fields: heldFrame.fields,
+            held: true,
+            packetSerial,
+            pictureIndex,
+            slot: heldFrame.slot,
+            timestampMicroseconds: packet.timestampMicroseconds,
+            visibleSize: heldFrame.visibleSize
+        });
+    }
+
+    /**
+     * Begins a resync, the last good frame holding until the next key packet decodes from a reset.
+     * The frames of packets from firstDroppedSerial on decoded from a broken state, so each becomes a repeat of the last good frame, or drops when none is left;
+     * null replaces none, as when a parser restarted, whose undecided frames present first in timestamp order, since no event will decide them.
+     * The last good frame is the one of an earlier packet with the latest timestamp that the session or presentation still holds.
+     */
+    private beginResync(firstDroppedSerial: number | null): void {
+        if (firstDroppedSerial === null && this.parserOutput) {
+            const undecidedFrames = this.parserFrames.splice(0);
+            undecidedFrames.sort((first: DecodedFrameEntry, second: DecodedFrameEntry): number => first.timestampMicroseconds - second.timestampMicroseconds);
+            for (const entry of undecidedFrames) {
+                this.releaseToPresentation(entry);
+            }
+        }
+        this.releaseHeldFrame();
+        const source = this.findLastGoodFrame(firstDroppedSerial);
+        const heldFrame = source !== null && this.pool.holdOutput(source.slot) ? source : null;
+        this.resync = { heldFrame };
+        if (firstDroppedSerial !== null) {
+            for (const frames of [ this.parserFrames, this.reorderFrames, this.presentableFrames ]) {
+                this.replaceBrokenFrames(frames, firstDroppedSerial, heldFrame);
+            }
+        }
+        // The decoder's references are broken, and the next packet it decodes, the key packet, decodes from a reset
+        this.beginDecoderEpoch();
+        this.resetPending = true;
+    }
+
+    /** Returns the frame with the latest timestamp that the session or presentation holds of a packet before firstDroppedSerial, any packet's for null. */
+    private findLastGoodFrame(firstDroppedSerial: number | null): HeldFrame | null {
+        let source: HeldFrame | null = null;
+        let sourceTimestampMicroseconds = Number.NEGATIVE_INFINITY;
+        for (const entry of [ ...this.parserFrames, ...this.reorderFrames, ...this.presentableFrames ]) {
+            const good = firstDroppedSerial === null || entry.packetSerial < firstDroppedSerial;
+            if (good && entry.timestampMicroseconds > sourceTimestampMicroseconds) {
+                source = { fields: entry.fields, slot: entry.slot, visibleSize: entry.visibleSize };
+                sourceTimestampMicroseconds = entry.timestampMicroseconds;
+            }
+        }
+        for (const frame of this.takenFrames) {
+            if (frame.timestampMicroseconds > sourceTimestampMicroseconds) {
+                source = { fields: frame.fields, slot: frame.slot, visibleSize: frame.visibleSize };
+                sourceTimestampMicroseconds = frame.timestampMicroseconds;
+            }
+        }
+        return source;
+    }
+
+    /** Replaces each frame of a packet from firstDroppedSerial on with a repeat of the held frame, in place, or drops it when there is none. */
+    private replaceBrokenFrames(frames: DecodedFrameEntry[], firstDroppedSerial: number, heldFrame: HeldFrame | null): void {
+        for (let frameIndex = frames.length - 1; frameIndex >= 0; frameIndex -= 1) {
+            const entry = frames[frameIndex];
+            if (entry.held || entry.packetSerial < firstDroppedSerial) {
+                continue;
+            }
+            this.pool.releaseOutput(entry.slot);
+            if (heldFrame === null || !this.pool.holdOutput(heldFrame.slot)) {
+                frames.splice(frameIndex, 1);
+                continue;
+            }
+            entry.confirmed = true;
+            entry.fields = heldFrame.fields;
+            entry.held = true;
+            entry.slot = heldFrame.slot;
+            entry.visibleSize = heldFrame.visibleSize;
+        }
+    }
+
+    /**
+     * Ends a resync at the packet that decodes after it: a parser session's repeats, which wait behind the reorder depth outside its parser's decisions,
+     * present in timestamp order, and the resync's own hold on the last good frame ends.
+     */
+    private endResync(): void {
+        if (this.resync === null) {
+            return;
+        }
+        if (this.parserOutput) {
+            for (const entry of this.reorderFrames.splice(0)) {
+                this.releaseToPresentation(entry);
+            }
+        }
+        this.releaseHeldFrame();
+    }
+
+    /** Ends the resync's own hold on the last good frame, if a resync holds one, and the resync. */
+    private releaseHeldFrame(): void {
+        const heldFrame = this.resync?.heldFrame ?? null;
+        this.resync = null;
+        if (heldFrame !== null) {
+            this.pool.releaseOutput(heldFrame.slot);
+        }
     }
 
     /**
@@ -1013,7 +1216,8 @@ export default class GPUVideoDecodeSession {
         return true;
     }
 
-    private submitPacket(packet: GPUDecodePacket, slot: number): void {
+    /** Writes a packet into the ring and submits its decode work into a slot, ending with the copy of its status into its readback. */
+    private submitPacket(packet: GPUDecodePacket, slot: number, readback: StatusReadback, entry: DecodedFrameEntry): void {
         const alignedByteLength = alignTo(packet.data.byteLength, BYTES_PER_WORD);
         const byteOffset = this.ringByteOffset + alignedByteLength > this.packetRingByteLength ? 0 : this.ringByteOffset;
         this.ringByteOffset = byteOffset + alignedByteLength;
@@ -1039,26 +1243,9 @@ export default class GPUVideoDecodeSession {
             encoder.clearBuffer(this.statusBuffer);
         }
         this.encodeDispatches(encoder, uniformOffset, packet.repeatCounts);
-        const readback = this.encodeStatusReadback(encoder);
+        this.encodeStatusCopy(encoder, readback, entry);
         this.device.queue.submit([ encoder.finish() ]);
         this.packetIndex = (this.packetIndex + 1) % U32_VALUE_COUNT;
-        // The status accumulates until a readback captures it, so a later capture covers this packet's reports
-        this.statusCaptureOwed = readback === null;
-        if (readback) {
-            this.mapStatusReadback(readback);
-        }
-    }
-
-    /** Submits a readback of its own for the status a skipped readback left uncaptured, once a readback buffer is free. */
-    private submitOwedStatusReadback(): void {
-        const readback = this.statusCaptureOwed ? this.freeReadbacks.pop() : undefined;
-        if (!readback) {
-            return;
-        }
-        const encoder = this.device.createCommandEncoder({ label: `GPU decoder ${this.manifest.name} status` });
-        this.encodeStatusCopy(encoder, readback);
-        this.device.queue.submit([ encoder.finish() ]);
-        this.statusCaptureOwed = false;
         this.mapStatusReadback(readback);
     }
 
@@ -1097,21 +1284,15 @@ export default class GPUVideoDecodeSession {
         pass.end();
     }
 
-    /** Encodes a status copy into a free readback buffer; returns null while every readback is mapping. */
-    private encodeStatusReadback(encoder: GPUCommandEncoder): StatusReadback | null {
-        const readback = this.freeReadbacks.pop();
-        if (!readback) {
-            return null;
-        }
-        this.encodeStatusCopy(encoder, readback);
-        return readback;
-    }
-
-    /** Copies the status into a readback buffer and clears the freed-slot mask it captured, so each freed slot is reported once. */
-    private encodeStatusCopy(encoder: GPUCommandEncoder, readback: StatusReadback): void {
+    /**
+     * Copies the status into the packet's readback and clears the packet's block, so each freed slot is reported once
+     * and the next packet's picture reports start from none.
+     */
+    private encodeStatusCopy(encoder: GPUCommandEncoder, readback: StatusReadback, entry: DecodedFrameEntry): void {
         readback.epoch = this.epoch;
+        readback.entry = entry;
         encoder.copyBufferToBuffer(this.statusBuffer, 0, readback.buffer, 0, GPU_DECODER_STATUS_BYTE_LENGTH);
-        encoder.clearBuffer(this.statusBuffer, GPU_DECODER_STATUS_FREED_SLOT_MASK_BYTE_OFFSET, BYTES_PER_WORD);
+        encoder.clearBuffer(this.statusBuffer, GPU_DECODER_STATUS_PACKET_BLOCK_BYTE_OFFSET, GPU_DECODER_STATUS_PACKET_BLOCK_BYTE_LENGTH);
     }
 
     private mapStatusReadback(readback: StatusReadback): void {
@@ -1131,12 +1312,19 @@ export default class GPUVideoDecodeSession {
         this.inFlightReadbacks.add(readbackPromise);
     }
 
+    /**
+     * Applies one packet's status: a fatal error ends the attempt in any epoch; in the current epoch the freed slots leave the references,
+     * the decoder's fields replace the frame's, the frame is confirmed for presentation, and a recoverable error applies its recovery.
+     * A readback taken before a reset or a resync applies nothing else, since its frame already left.
+     */
     private applyStatusReadback(readback: StatusReadback): void {
         if (this.destroyed) {
             return;
         }
         const words = new Uint32Array(readback.buffer.getMappedRange(0, GPU_DECODER_STATUS_BYTE_LENGTH).slice(0));
         readback.buffer.unmap();
+        const entry = readback.entry;
+        readback.entry = null;
         this.freeReadbacks.push(readback);
         if (this.failure) {
             return;
@@ -1144,7 +1332,7 @@ export default class GPUVideoDecodeSession {
         const status = readGPUDecoderStatus(words);
         const firstHeaderFacts = this.headerFacts === null ? status.headerFacts : null;
         this.headerFacts ??= status.headerFacts;
-        // An error ends the attempt whichever epoch reported it
+        // A fatal error ends the attempt whichever epoch reported it
         if (status.errorCode !== 0) {
             this.fail({ code: 'decoder-error', detail: String(status.errorCode) });
             return;
@@ -1159,13 +1347,59 @@ export default class GPUVideoDecodeSession {
             });
             return;
         }
-        if (readback.epoch !== this.epoch) {
+        if (readback.epoch !== this.epoch || entry === null) {
             return;
         }
         for (let slot = 0; slot < this.pool.layout.slotCount; slot += 1) {
             // Unsigned shift, since slot 31 sets the sign bit
             if (((status.freedSlotMask >>> slot) & 1) === 1) {
                 this.pool.releaseReference(slot);
+            }
+        }
+        entry.fields = decodePictureFieldsWord(status.pictureFields) ?? entry.fields;
+        entry.confirmed = true;
+        if (status.pictureError !== 0) {
+            this.applyPictureError(entry, status.pictureError);
+        }
+    }
+
+    /**
+     * Applies the recovery the header declares for a recoverable error the packet's picture reported, and counts it:
+     * the concealed picture presents, the picture drops, or a resync begins at it.
+     */
+    private applyPictureError(entry: DecodedFrameEntry, errorWord: number): void {
+        const code = errorWord >>> GPU_DECODER_ERROR_CODE_SHIFT;
+        const recovery = this.manifest.errorRecoveries.get(code);
+        // The prelude reports only recoverable codes in the picture's word, so another code ends the attempt as a fatal one does
+        if (recovery === undefined) {
+            this.fail({ code: 'decoder-error', detail: String(errorWord) });
+            return;
+        }
+        this.recoveries.push({
+            code: GPU_VIDEO_DECODE_RECOVERY_CODES[recovery],
+            errorName: getDecoderErrorName(this.manifest.errors, code),
+            value: errorWord & ERROR_VALUE_MASK
+        });
+        switch (recovery) {
+            case 'conceal':
+                return;
+            case 'drop':
+                this.dropFrame(entry);
+                return;
+            case 'resync':
+                this.beginResync(entry.packetSerial);
+                return;
+        }
+    }
+
+    /** Drops a frame wherever it waits, freeing its output hold; a frame that already left changes nothing. */
+    private dropFrame(entry: DecodedFrameEntry): void {
+        for (const frames of [ this.parserFrames, this.reorderFrames, this.presentableFrames ]) {
+            const frameIndex = frames.indexOf(entry);
+            if (frameIndex >= 0) {
+                frames.splice(frameIndex, 1);
+                this.pool.releaseOutput(entry.slot);
+                return;
             }
         }
     }
@@ -1183,11 +1417,16 @@ export default class GPUVideoDecodeSession {
         }
     }
 
-    /** Queues a frame for presentation; a frame earlier than one already released means the stream reorders deeper than declared, so it is dropped. */
+    /**
+     * Queues a frame for presentation; a frame earlier than one already released means the stream reorders deeper than declared, so it is dropped,
+     * and counted unless it repeats a held frame.
+     */
     private releaseToPresentation(entry: DecodedFrameEntry): void {
         if (entry.timestampMicroseconds < this.lastReleasedTimestampMicroseconds) {
             this.pool.releaseOutput(entry.slot);
-            this.droppedFrameCount += 1;
+            if (!entry.held) {
+                this.droppedFrameCount += 1;
+            }
             return;
         }
         this.lastReleasedTimestampMicroseconds = entry.timestampMicroseconds;
@@ -1211,6 +1450,8 @@ export default class GPUVideoDecodeSession {
         for (const entry of [ ...undecidedFrames, ...this.reorderFrames.splice(0) ]) {
             this.releaseToPresentation(entry);
         }
+        // No key packet follows the end, so a resync in progress ends with it
+        this.releaseHeldFrame();
     }
 
     /** Returns a frame taken for presentation; a picture that reported its own visible size presents its top-left samples of that size. */
@@ -1220,6 +1461,7 @@ export default class GPUVideoDecodeSession {
         const frame: GPUDecodedFrame = {
             droppedFrameCount,
             durationMicroseconds: entry.durationMicroseconds,
+            fields: entry.fields,
             frame: visibleSize ? { ...poolFrame, visibleRectangle: { height: visibleSize.height, width: visibleSize.width, x: 0, y: 0 } } : poolFrame,
             slot: entry.slot,
             timestampMicroseconds: entry.timestampMicroseconds,

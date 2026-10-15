@@ -239,7 +239,7 @@ function createParserPicture(
     events: readonly number[],
     visibleSize: GPUDecoderParserPicture['visibleSize'] = null
 ): GPUDecoderParserPicture {
-    return { events: Uint32Array.from(events), format: null, maximumPictureSize: null, record: record.buffer, repeatCounts: [], visibleSize };
+    return { events: Uint32Array.from(events), fields: null, format: null, maximumPictureSize: null, record: record.buffer, repeatCounts: [], visibleSize };
 }
 
 /** Returns a parser's output for one packet: one picture's record with the output events it decided, or no picture, whose events trail. */

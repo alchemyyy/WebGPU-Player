@@ -57,6 +57,7 @@ export function createPlannedTexture(overrides: Partial<PlannedTexture> & Pick<P
 export function createPresentationPlan(overrides: Partial<PresentationPlan> & Pick<PresentationPlan, 'passes'>): PresentationPlan {
     return {
         buffers: [],
+        deinterlace: null,
         output: TEST_CANVAS_OUTPUT,
         parameterSets: [],
         report: { activePasses: [], inactivePasses: [] },

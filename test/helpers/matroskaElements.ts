@@ -17,8 +17,12 @@ export type SyntheticMatroskaVideoTrack = Readonly<{
     /** The track's CodecPrivate, or null for a track without one */
     codecPrivate: Uint8Array | null
     defaultDurationMilliseconds: number
+    /** Elements of the segment's Info element after its TimestampScale, such as MuxingApp */
+    infoElements?: readonly Uint8Array[]
     pixelHeight: number
     pixelWidth: number
+    /** Elements of the track's Video element after its pixel size, such as FlagInterlaced and FieldOrder */
+    videoElements?: readonly Uint8Array[]
 }>;
 
 export const MATROSKA_MILLISECOND_TIMESTAMP_SCALE = 1_000_000;
@@ -148,7 +152,10 @@ export function createVideoTrackMatroska(track: SyntheticMatroskaVideoTrack): Ui
             createUnsignedIntegerElement(DOC_TYPE_READ_VERSION_ID, MATROSKA_DOC_TYPE_READ_VERSION)
         ])),
         createElement(SEGMENT_ID, concatenate([
-            createElement(INFO_ID, createUnsignedIntegerElement(TIMESTAMP_SCALE_ID, MATROSKA_MILLISECOND_TIMESTAMP_SCALE)),
+            createElement(INFO_ID, concatenate([
+                createUnsignedIntegerElement(TIMESTAMP_SCALE_ID, MATROSKA_MILLISECOND_TIMESTAMP_SCALE),
+                ...(track.infoElements ?? [])
+            ])),
             createElement(TRACKS_ID, createElement(TRACK_ENTRY_ID, concatenate([
                 createUnsignedIntegerElement(TRACK_NUMBER_ID, MATROSKA_TRACK_NUMBER),
                 createUnsignedIntegerElement(TRACK_UID_ID, MATROSKA_TRACK_UID),
@@ -158,7 +165,8 @@ export function createVideoTrackMatroska(track: SyntheticMatroskaVideoTrack): Ui
                 createUnsignedIntegerElement(DEFAULT_DURATION_ID, track.defaultDurationMilliseconds * NANOSECONDS_PER_MILLISECOND),
                 createElement(VIDEO_ID, concatenate([
                     createUnsignedIntegerElement(PIXEL_WIDTH_ID, track.pixelWidth),
-                    createUnsignedIntegerElement(PIXEL_HEIGHT_ID, track.pixelHeight)
+                    createUnsignedIntegerElement(PIXEL_HEIGHT_ID, track.pixelHeight),
+                    ...(track.videoElements ?? [])
                 ]))
             ]))),
             createElement(CLUSTER_ID, concatenate([

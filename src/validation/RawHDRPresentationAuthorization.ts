@@ -17,6 +17,7 @@ import {
 } from '../color/ColorPipeline';
 import { millisecondsToMicroseconds } from '../MediaTime';
 import { createBuiltinChain } from '../presentation/passes/builtin/BuiltinChains';
+import { PRESENTATION_FIELD_STATE } from '../presentation/passes/PassResources';
 import type {
     BuiltinChain,
     BuiltinChainConfiguration,
@@ -474,6 +475,8 @@ export function encodeAuthorizationFrame(
 ): GPUCommandBuffer {
     const commandEncoder = device.createCommandEncoder({ label });
     executor.encode(commandEncoder, {
+        // Authorization renders the fixed chain, which no field state changes
+        fieldState: PRESENTATION_FIELD_STATE.none,
         geometry: createIdentityGeometry(targetTexture.width, targetTexture.height),
         newFrame: true,
         skippedFrameCount: 0,

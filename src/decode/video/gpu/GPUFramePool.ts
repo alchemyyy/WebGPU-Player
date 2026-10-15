@@ -133,7 +133,8 @@ export function isGPUFramePoolWithinLimits(layout: GPUFramePoolLayout, limits: G
 
 /**
  * The pool buffer and its slots' lifetimes.
- * A slot holds an output, from decode through presentation until presentation releases it, and, for a decoder with references, a reference until the decoder reports it freed.
+ * A slot holds outputs, from decode through presentation until presentation releases each, and, for a decoder with references, a reference until the decoder reports it freed.
+ * A slot holds more than one output while frames that repeat it, as during a resync, present it too.
  * A slot is free when it holds neither.
  */
 export default class GPUFramePool {
@@ -141,7 +142,7 @@ export default class GPUFramePool {
     readonly layout: GPUFramePoolLayout;
     private readonly frames: readonly FramePoolFrame[];
     private readonly layoutBuffers: readonly GPUBuffer[];
-    private readonly outputHeld: boolean[];
+    private readonly outputHoldCounts: number[];
     private readonly referenceHeld: boolean[];
 
     /**
@@ -185,15 +186,15 @@ export default class GPUFramePool {
         }
         this.frames = frames;
         this.layoutBuffers = layoutBuffers;
-        this.outputHeld = new Array<boolean>(layout.slotCount).fill(false);
+        this.outputHoldCounts = new Array<number>(layout.slotCount).fill(0);
         this.referenceHeld = new Array<boolean>(layout.slotCount).fill(false);
     }
 
     /** Takes the lowest free slot for a decode's output, also held as a reference when the decoder keeps references; null when none is free. */
     acquireSlot(heldAsReference: boolean): number | null {
         for (let slot = 0; slot < this.layout.slotCount; slot += 1) {
-            if (!this.outputHeld[slot] && !this.referenceHeld[slot]) {
-                this.outputHeld[slot] = true;
+            if (this.outputHoldCounts[slot] === 0 && !this.referenceHeld[slot]) {
+                this.outputHoldCounts[slot] = 1;
                 this.referenceHeld[slot] = heldAsReference;
                 return slot;
             }
@@ -201,12 +202,24 @@ export default class GPUFramePool {
         return null;
     }
 
-    /** Ends a slot's output hold; returns false when it held none. */
+    /** Adds an output hold to a slot that holds one, for a frame that repeats its picture; returns false, holding nothing, for a slot without one. */
+    holdOutput(slot: number): boolean {
+        this.requireSlot(slot);
+        if (this.outputHoldCounts[slot] === 0) {
+            return false;
+        }
+        this.outputHoldCounts[slot] += 1;
+        return true;
+    }
+
+    /** Ends one of a slot's output holds; returns false when it held none. */
     releaseOutput(slot: number): boolean {
         this.requireSlot(slot);
-        const held = this.outputHeld[slot];
-        this.outputHeld[slot] = false;
-        return held;
+        if (this.outputHoldCounts[slot] === 0) {
+            return false;
+        }
+        this.outputHoldCounts[slot] -= 1;
+        return true;
     }
 
     /** Ends a slot's reference hold; returns false when it held none. */
@@ -231,7 +244,7 @@ export default class GPUFramePool {
     getFreeSlotCount(): number {
         let freeSlotCount = 0;
         for (let slot = 0; slot < this.layout.slotCount; slot += 1) {
-            if (!this.outputHeld[slot] && !this.referenceHeld[slot]) {
+            if (this.outputHoldCounts[slot] === 0 && !this.referenceHeld[slot]) {
                 freeSlotCount += 1;
             }
         }

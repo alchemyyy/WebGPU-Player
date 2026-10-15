@@ -12,15 +12,15 @@
 //! buffer: frames, 20 * stream.width * stream.height * (1 + 2 / (output.chromaWidthDivisor * output.chromaHeightDivisor))
 //! buffer: frameData, stream.width * stream.height / 4 + 24 * (ceil(stream.height / 64) + 2) * stream.width + 655360
 //! error: 1, configuration
-//! error: 2, bitstreamCorrupt
+//! error: 2, bitstreamCorrupt, resync
 //! error: 3, bitstreamUnsupported
 //! error: 4, parserMemory
-//! error: 5, parserError
+//! error: 5, parserError, resync
 //! error: 6, recordSize
 //! error: 7, pictureSize
 //! error: 8, streamFormat
 //! error: 9, recordInvalid
-//! error: 10, referenceInvalid
+//! error: 10, referenceInvalid, resync
 //! error: 11, frameBuffers
 //! dispatch: loadTables, 64
 //! dispatch: beginFrame, 1

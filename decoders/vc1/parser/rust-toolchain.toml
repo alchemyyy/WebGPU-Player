@@ -1,0 +1,4 @@
+# The parser builds reproducibly only with this toolchain, the one libdovi pins
+[toolchain]
+channel = "1.96.1"
+targets = [ "wasm32-unknown-unknown" ]

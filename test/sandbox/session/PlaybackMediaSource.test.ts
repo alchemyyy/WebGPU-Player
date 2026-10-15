@@ -33,8 +33,9 @@ const SOURCE_ID = 'movies/feature.mkv';
 const SDR_COMPATIBILITY_ID = 2;
 const ROTATION_DEGREES = -90;
 const PCM_SAMPLE_DEPTH = 16;
-// ffprobe's field order for top field first
+// ffprobe's field order for top field first, and for a bottom field coded first and shown second
 const TOP_FIELD_FIRST = 'tt';
+const BOTTOM_CODED_TOP_SHOWN_FIRST = 'bt';
 
 /** The eligibility's stream for one ffprobe stream, with the first frame carrying the given side data. */
 function createStream(streamJSON: FFprobeJSON, frameSideDataTypes: readonly string[] = []): PlaybackMediaStream {
@@ -104,6 +105,12 @@ describe('PlaybackMediaSource', () => {
     it('reads interlacing from a coded field order, and treats a missing one as progressive', () => {
         expect(createStream(createVideoStreamJSON({ field_order: TOP_FIELD_FIRST })).IsInterlaced).toBe(true);
         expect(createStream(createVideoStreamJSON({ field_order: undefined })).IsInterlaced).toBe(false);
+    });
+
+    it('carries ffprobe\'s field order, which names the first field presentation deinterlaces from', () => {
+        expect(createStream(createVideoStreamJSON({ field_order: BOTTOM_CODED_TOP_SHOWN_FIRST })).FieldOrder).toBe(BOTTOM_CODED_TOP_SHOWN_FIRST);
+        expect(createStream(createVideoStreamJSON({ field_order: undefined })).FieldOrder).toBeNull();
+        expect(createStream(createAudioStreamJSON()).FieldOrder).toBeNull();
     });
 
     it('reads the depth from the pixel format when ffprobe reports no raw sample depth', () => {

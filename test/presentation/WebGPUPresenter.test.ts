@@ -254,7 +254,9 @@ import type {
     PresentationFrameInput
 } from 'webgpu-player/presentation/passes/PassTypes';
 import { PresentationExecutor } from 'webgpu-player/presentation/passes/PresentationExecutor';
+import { PRESENTATION_FIELD_STATE } from 'webgpu-player/presentation/passes/PassResources';
 import { planPresentation } from 'webgpu-player/presentation/passes/PresentationPlanner';
+import type { VideoStreamFields } from 'webgpu-player/decode/video/VideoFields';
 
 import { createHDR10PlusHEVCVector } from '../../src/capability/vectors/HDR10PlusVectors';
 import {
@@ -321,6 +323,15 @@ const NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS = addMicroseconds(RAW_FRAME_TIMESTAM
 const DISCONTINUOUS_FRAME_STEP_MICROSECONDS = requireMicroseconds(RAW_FRAME_DURATION_MICROSECONDS * 3);
 const FIRST_VIDEO_EPOCH = 0;
 const SECOND_VIDEO_EPOCH = 1;
+// An interlaced stream of raw test frames, top field first, its fields' signal, and its first frame's second field, halfway to the next frame
+const INTERLACED_FRAME_WIDTH = 8;
+const INTERLACED_FRAME_HEIGHT = 4;
+const INTERLACED_STREAM_FIELDS: VideoStreamFields = { frameHeight: INTERLACED_FRAME_HEIGHT, frameWidth: INTERLACED_FRAME_WIDTH, scan: 'top-first' };
+const INTERLACED_CHROMA_SIGNAL_SUFFIX = '.interlaced-chroma';
+const SECOND_FIELD_TIMESTAMP_MICROSECONDS = addMicroseconds(
+    RAW_FRAME_TIMESTAMP_MICROSECONDS,
+    requireMicroseconds(Math.floor(RAW_FRAME_DURATION_MICROSECONDS / 2))
+);
 // The facts a plan takes before any frame or canvas measures a size
 const UNMEASURED_PLAN_DIMENSION = 1;
 const PREFERRED_CANVAS_FORMAT: GPUTextureFormat = 'bgra8unorm';
@@ -878,11 +889,12 @@ type RawRoutePresentation = {
     presenter: WebGPUPresenter
 };
 
-/** Starts a pushed-frame session with a configured raw route and returns the presenter, its fallback handler, and its harnesses. */
+/** Starts a pushed-frame session with a configured raw route, with the stream's field facts when given, and returns the presenter, its fallback handler, and its harnesses. */
 async function startRawRoutePresentation(
     metadata: InputColorMetadata,
     rawFrameFormat: SupportedRawVideoFrameFormat,
-    settings: RenderSettings
+    settings: RenderSettings,
+    videoFields?: VideoStreamFields
 ): Promise<RawRoutePresentation> {
     webSettingsMockState.hdrToneMappingEnabled = true;
     const gpuHarness = createGPUHarness();
@@ -903,7 +915,8 @@ async function startRawRoutePresentation(
         inputMode: 'raw-yuv',
         metadata,
         rawFrameFormat,
-        settings
+        settings,
+        ...(videoFields ? { videoFields } : {})
     }, 1)).resolves.toBe(true);
     return { contextHarness, deviceHarness: gpuHarness.devices[0], fallbackHandler, presenter };
 }
@@ -4568,6 +4581,69 @@ describe('WebGPUPresenter', () => {
             [ false, RAW_FRAME_TIMESTAMP_MICROSECONDS ],
             [ true, NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS ]
         ]);
+    });
+
+    it('deinterlaces a stream its facts call interlaced: at the frame size with field-aware chroma, a frame ahead, and each field in turn', async () => {
+        const encode = vi.spyOn(PresentationExecutor.prototype, 'encode');
+        const metadata = createPQColorMetadata();
+        const { presenter } = await startRawRoutePresentation(metadata, 'I420P10', createHDRToSDRRenderSettings(), INTERLACED_STREAM_FIELDS);
+        const request = getLastPlanRequest();
+        expect(request.deinterlace).toEqual({ bitDepth: metadata.bitDepth, frameHeight: INTERLACED_FRAME_HEIGHT, frameWidth: INTERLACED_FRAME_WIDTH });
+        expect(request.chain.signal.name.endsWith(INTERLACED_CHROMA_SIGNAL_SUFFIX)).toBe(true);
+        expect(presenter.getFrameLookaheadMicroseconds()).toBe(0);
+        encode.mockClear();
+        const presentedFrameCount = presenter.getTelemetry().presentedFrameCount;
+        const pushFrame = async (timestampMicroseconds: Microseconds, targetTimeMicroseconds: Microseconds, expectedPresentedFrameCount: number): Promise<void> => {
+            const frame = { ...createRawFrame('I420P10', metadata, INTERLACED_FRAME_WIDTH, INTERLACED_FRAME_HEIGHT), timestampMicroseconds };
+            expect(presenter.presentDecodedFrame({
+                durationMicroseconds: RAW_FRAME_DURATION_MICROSECONDS,
+                frame,
+                mediaTimeMicroseconds: timestampMicroseconds,
+                outputMode: 'raw-planes',
+                videoEpoch: FIRST_VIDEO_EPOCH
+            }, 1, undefined, targetTimeMicroseconds)).toBe(true);
+            await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(expectedPresentedFrameCount));
+        };
+
+        // The first frame shows at once, without a frame after it, and the frame loop then takes frames a frame ahead of the clock
+        await pushFrame(RAW_FRAME_TIMESTAMP_MICROSECONDS, RAW_FRAME_TIMESTAMP_MICROSECONDS, presentedFrameCount + 1);
+        expect(presenter.getFrameLookaheadMicroseconds()).toBe(RAW_FRAME_DURATION_MICROSECONDS);
+        await pushFrame(NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS, RAW_FRAME_TIMESTAMP_MICROSECONDS, presentedFrameCount + 2);
+        // Halfway to the next frame, the first frame's bottom field draws from history, once
+        expect(presenter.presentHeldFields(1, SECOND_FIELD_TIMESTAMP_MICROSECONDS)).toBe(true);
+        expect(presenter.presentHeldFields(1, SECOND_FIELD_TIMESTAMP_MICROSECONDS)).toBe(false);
+
+        const frameInputs = encode.mock.calls.map((call: unknown[]): PresentationFrameInput => call[1] as PresentationFrameInput);
+        expect(frameInputs.map((frameInput: PresentationFrameInput) => [
+            frameInput.newFrame,
+            frameInput.source === null,
+            frameInput.fieldState,
+            frameInput.timestampMicroseconds
+        ])).toEqual([
+            [ true, false, PRESENTATION_FIELD_STATE.deinterlace | PRESENTATION_FIELD_STATE.interlacedSignal, RAW_FRAME_TIMESTAMP_MICROSECONDS ],
+            [
+                true,
+                false,
+                PRESENTATION_FIELD_STATE.deinterlace | PRESENTATION_FIELD_STATE.currentIsPrevious | PRESENTATION_FIELD_STATE.interlacedSignal,
+                RAW_FRAME_TIMESTAMP_MICROSECONDS
+            ],
+            [
+                false,
+                true,
+                PRESENTATION_FIELD_STATE.deinterlace
+                    | PRESENTATION_FIELD_STATE.currentIsPrevious
+                    | PRESENTATION_FIELD_STATE.secondField
+                    | PRESENTATION_FIELD_STATE.bottomFieldShown,
+                SECOND_FIELD_TIMESTAMP_MICROSECONDS
+            ]
+        ]);
+
+        // Off presents frames woven: plans neither deinterlace nor read chroma by field, and frames come at the clock's time
+        await presenter.setDeinterlaceMode('off');
+        expect(getLastPlanRequest().deinterlace).toBeNull();
+        expect(getLastPlanRequest().chain.signal.name.endsWith(INTERLACED_CHROMA_SIGNAL_SUFFIX)).toBe(false);
+        expect(presenter.getFrameLookaheadMicroseconds()).toBe(0);
+        expect(presenter.presentHeldFields(1, NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS)).toBe(false);
     });
 
     it('reports why a dual-layer route presents FEL frames as their base', async () => {

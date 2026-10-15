@@ -21,6 +21,7 @@ import type {
     CustomPlaybackState
 } from 'webgpu-player/pipeline/CustomPlaybackControllerTypes';
 import CustomPlaybackFrameLoop from 'webgpu-player/pipeline/CustomPlaybackFrameLoop';
+import type { DeinterlaceMode } from 'webgpu-player/presentation/DeinterlaceTimeline';
 import { EXAMPLE_PASSES } from 'webgpu-player/presentation/passes/examples/ExamplePasses';
 import { PASS_FILE_EXTENSION } from 'webgpu-player/presentation/passes/PassLanguage';
 import { parsePassFile, type PassFileEntry } from 'webgpu-player/presentation/passes/PassManifest';
@@ -835,6 +836,14 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
             if (revision === subtitleRevision && playback === current) {
                 store.setState({ subtitleCues: parseWebVTTCues(text) });
             }
+        },
+        setDeinterlaceMode: async (mode: DeinterlaceMode): Promise<void> => {
+            try {
+                await presenter.setDeinterlaceMode(mode);
+            } catch (error) {
+                throw failCommand('presenter', 'deinterlace-mode-failed', describeError(error));
+            }
+            store.setState((state: SandboxState): Partial<SandboxState> => ({ presentation: { ...state.presentation, deinterlaceMode: mode } }));
         },
         setHDROutputEnabled: async (enabled: boolean): Promise<void> => {
             try {

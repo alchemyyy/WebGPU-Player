@@ -16,8 +16,10 @@ Each source file's tests are at the same relative path under `test/`, and integr
 ## presentation/
 
 - `WebGPUPresenter.ts`: the GPU device and canvas; rVFC and pushed-frame submission; each route's built-in chain, planned and recorded through `passes/`; HDR and Dolby Vision authorization; device-loss recovery; the latched fallback.
-  It also holds the engine API for presentation: the host's preset of user passes, live parameter changes, the plan report, and HDR output for HDR sources.
-- `PresentationInput.ts`: MediaStream metadata to color metadata; Dolby Vision descriptors with their RPU route; declared and exact native base metadata; the presented video ordinal; the known-SDR gate.
+  It also holds the engine API for presentation: the host's preset of user passes, live parameter changes, the plan report, HDR output for HDR sources, and the deinterlacing mode.
+  While a plan deinterlaces it shows the frame before the newest, tells the frame loop its lookahead, and draws held fields from history.
+- `DeinterlaceTimeline.ts`: the frames a deinterlacing plan's history holds and the draw a clock time picks: the field shown, of which frame, and its time, at double or single rate, with yadif's passthrough of progressive frames.
+- `PresentationInput.ts`: MediaStream metadata to color metadata; Dolby Vision descriptors with their RPU route; declared and exact native base metadata; the presented video ordinal; the known-SDR gate; the stream's fields from its `FieldOrder` or `IsInterlaced` and its size, which `PresentationSetup.ts` hands the presenter.
 - `DolbyVisionGeometry.ts`: the P4 and P7 EL coded size (half the BL when the BL is wider than 1920).
 - `PresentationSetup.ts`: what a host calls around the eligibility, without state of its own: the play options' presentation input, the authorizations that gate the eligibility's presentation routes, the offers of the host's GPU decoder packages for a stream (`getGPUVideoDecoderOffers`) and the factory of their sessions on the presenter's device, the presenter's color pipeline for the chosen route, Dolby Vision bases included, and static HDR metadata updates.
 - `PresentationGeometry.ts`: pure object-fit and object-position math to viewport and texture transforms.
@@ -39,7 +41,8 @@ The presentation pipeline: each route's fixed signal and default color track, us
   Without user passes every route plans one pass, which reads the source and writes the canvas.
 - `PresentationExecutor.ts`: compiles a plan, owns its textures, history rings, buffers, and bind groups, and records each frame without submitting.
 - `PlaneTextureSource.ts`: the plane route's ingress: layout validation that names the failed check, one integer texture per plane, and the uploads.
-- `builtin/`: the built-in signals (`BuiltinSignals.ts`, and `FramePoolSignal.ts`, which reads a pool slot of any output format, as its layout says, for the frame-pool route's chain), color functions (`BuiltinColorFunctions.ts`), and route chains (`BuiltinChains.ts`), and a Catmull-Rom scaler in the user pass format.
+- `builtin/`: the built-in signals (`BuiltinSignals.ts`, and `FramePoolSignal.ts`, which reads a pool slot of any output format, as its layout says, for the frame-pool route's chain), color functions (`BuiltinColorFunctions.ts`), and route chains (`BuiltinChains.ts`), the deinterlacing pass (`DeinterlacePass.ts`, yadif over the signal's ring), and a Catmull-Rom scaler in the user pass format.
+  A deinterlacing plan's raw and frame pool signals read an interlaced frame's 4:2:0 chroma within each field.
 - `examples/`: example user passes (a saturation color pass, a sharpen kernel, and a temporal blend kernel), which the presenter tests also run, and `ExamplePasses.ts`, the catalog a host offers: each example and the Catmull-Rom scaler, with a stable id and the name its header declares.
 
 ## color/
@@ -83,10 +86,10 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 
 - `CustomPlaybackController.ts` [main]: lifecycle, generations, the clock, the startup (20 s without progress, 60 s ceiling), stall (10 s), and lag (2 s) policy, the live audio output layout switch, the end-of-stream and ended-track drains, the presentation timing counters, and the fallback disposition.
 - `CustomPlaybackControllerTypes.ts`: states, events, fallback reasons, and dispositions.
-- `CustomPlaybackFrameLoop.ts` [main]: the frame loop a host runs per playback: each animation frame presents the controller's current frame and acknowledges its credit, and a hidden page drains decoded video every 25 ms instead.
+- `CustomPlaybackFrameLoop.ts` [main]: the frame loop a host runs per playback: each animation frame presents the controller's current frame, taken the presenter's lookahead ahead of the clock, and acknowledges its credit, or draws a held field when no frame is due, and a hidden page drains decoded video every 25 ms instead.
 - `CustomDecodeSession.ts` [main]: the session's one decode worker, which the first start creates, each generation takes once the previous run stopped, a failure or an unacknowledged stop replaces, and `destroy` terminates; and per generation, the frame queue, credits, raw buffer recycling, the frame-pool route's GPU decode feed, readiness, audio-only resync epochs, the decoded source format, and an ended audio track completing a start, a resync, or a native-media stream.
 - `CustomDecode.worker.ts` [worker]: one run at a time, each ending with `stopped`: demux, decoder dispatch, raw copy, Dolby Vision and HDR metadata, decoded PCM as restartable audio attempts in its audio decode worker, fMP4 remux, and credit waits.
-  On the frame-pool route it posts compressed packets, or the records of the package's parser, with their HDR10+ state, and the track's codec private data on `ready`.
+  On the frame-pool route it posts compressed packets, or the records of the package's parser, with their HDR10+ state, and the track's codec private data on `ready`; after a parser's recoverable failure it posts held packets up to the next key packet and restarts the parser there.
 - `CustomAudioDecode.worker.ts`, `AudioDecodeWorkerRuntime.ts` [worker]: the audio decode worker, which a decode worker spawns for its decoded PCM runs and keeps for its life.
   Each attempt has an audio decoder package's instance, or none for samples Mediabunny decoded, an output stage, and a `WorkletPCMProducer`; it renders one batch at a time under the producer's credit window and credits each batch back once rendered.
   A close shuts the attempt's worklet channel at once and is acknowledged once the attempt released the rest, and a failure reports the kind the page acts on.
@@ -108,6 +111,7 @@ All worker code unless marked.
 - `HTTPRangeResponse.ts`: validates Range responses, a cross-origin 206 that hides `Content-Range` included, from the paths the source's pattern names.
 - `CustomDecodeInputFormats.ts`: Mediabunny's input formats with Matroska content decoding scoped to frames, so header-stripped laced audio demuxes intact, and Motion JPEG 2000 added, whose JP2 signature box precedes its ftyp.
 - `MatroskaBlockAdditions.ts`: wraps Mediabunny's Matroska and WebM formats so their demuxers keep every BlockAdditional but alpha, and reads a packet's additions, such as VP9 HDR10+.
+- `ContainerVideoScan.ts`: a video track's scan as its container declares it: Matroska's FlagInterlaced and FieldOrder, recorded while Mediabunny's demuxer parses the track entry, or an ISO base media sample entry's `fiel` box.
 - `CustomDecodeTrackSelection.ts`: track lookup by ordinal within one media type.
 - `CustomAudioTrackMetadata.ts`: the Matroska and ISO BMFF DTS and TrueHD tracks, whose codec Mediabunny does not map, declared-rate recovery for their sample entries, and the decoded audio timestamp tolerance.
 - `AudioStartPacket.ts`: the packet an audio attempt starts from, without Mediabunny's proof scans when the track starts late.
@@ -173,6 +177,7 @@ What both video routes share.
   It also names each format's bit depth and the BL formats Dolby Vision reconstruction samples, which the presenter and the host check.
 - `RawFrameBufferPool.ts`: a run's spare raw buffers, recycled by the page or left by frames closed unposted, which drained frames and raw copies take; it allocates when no spare fits and keeps at most 2 of each byte length.
 - `DecodedVideoGeometry.ts` [main and worker]: the first-decoded-size lock.
+- `VideoFields.ts` [main and worker]: a stream's scan, a frame's fields, and the picture fields word GPU decoders and parsers report them in.
 - `HDR10PlusFrameMetadataQueue.ts`, `HEVCDynamicHDRMetadataQueue.ts`: PTS matching of each packet's HDR10+ result to its decoded frame, for any codec, with the last metadata carried in decode order to frames without their own, and the HEVC packet step that feeds it.
 
 ### decode/video/native/
@@ -198,14 +203,14 @@ The engine holds no decoder; the decoder projects in `decoders/` build packages.
 - `GPUDecodeTypes.ts` [main]: the decoder manifest, stream facts, packets, output events, and coded failures.
 - `GPUVideoDecoderCatalog.ts` [main]: the offer of one video decoder package for one output format, with the device's buffer limit, which the eligibility selects from.
 - `GPUDecoderStreamFit.ts` [main]: whether a decoder fits a stream on a device (its `accepts` on the picture size, pool, state, scratch buffers, and packet ring), which eligibility checks at the container's size, and the pool a session codes at: a first session's at the largest picture its parser declared when the decoder fits it, a stream change's at its sequence's requirement or the old pool grown to the picture.
-- `GPUDecoderManifest.ts`, `GPUDecoderPrelude.ts` [main]: parse a decoder's `//!` header, and generate its bindings and helpers.
+- `GPUDecoderManifest.ts`, `GPUDecoderPrelude.ts` [main]: parse a decoder's `//!` header, its error codes' recoveries among it, and generate its bindings and helpers, the status a packet reports into among them.
 - `GPUDecoderEntryPointModules.ts` [main]: splits a decoder's module into one module per entry point, of the declarations it reaches, each kept character at its line and column, or leaves code it does not understand whole.
-- `GPUFramePool.ts` [main]: the pool buffer, its slot layout, and slot lifetimes.
-- `GPUVideoDecodeSession.ts` [main]: runs a decoder: the packet ring, dispatches with each picture's repeat counts, status readbacks, reordering or a parser's output events, slot release, and the visible rectangle its first header or each picture reports.
+- `GPUFramePool.ts` [main]: the pool buffer, its slot layout, and slot lifetimes, with counted holds on a frame a resync repeats.
+- `GPUVideoDecodeSession.ts` [main]: runs a decoder: the packet ring, dispatches with each picture's repeat counts, every packet's status readback, which its frame waits for, a recoverable error's recovery, reordering or a parser's output events, slot release, and the visible rectangle its first header or each picture reports.
 - `GPUDecoderPipelineCache.ts` [main]: the compiled decoders a device keeps for later sessions, by package id and output format, with the package's content hash as their version, so a package's new version replaces its old one's.
-- `GPUVideoDecodeFeed.ts` [main]: the frame-pool route's page side: it creates or reuses a GPU decode session per generation, hands a picture its session cannot hold to a session made for it (a stream change), submits one packet at a time after the previous submission completed, returns packet credits, turns decoded frames into presentation frames, and reports the session's failure and its drained end.
+- `GPUVideoDecodeFeed.ts` [main]: the frame-pool route's page side: it creates or reuses a GPU decode session per generation, hands a picture its session cannot hold to a session made for it (a stream change), submits one packet at a time after the previous submission completed, returns packet credits, turns decoded frames into presentation frames, counts the session's recoveries, and reports its failure and its drained end.
 - `GPUDecodeFormats.ts` [main], `GPUDecodeLimits.ts` [main and worker]: the planar formats a decoder may write and the FFmpeg pixel formats each holds, and the route's bounds.
-- `GPUDecoderParser.ts`: one instance of a package's parser module, with its configure, plan, plan_next, parse, finish, and decode calls, and each picture's record, output events, visible size, repeat counts, output format, and sequence maximum.
+- `GPUDecoderParser.ts`: one instance of a package's parser module, with its configure, plan, plan_next, parse, finish, and decode calls, each picture's record, output events, visible size, repeat counts, output format, and sequence maximum, and whether a failure resyncs.
 - `GPUDecoderParserPipeline.ts`: an attempt's parser on its coordinator instance: it plans each packet's pictures, splits a picture's units into parse jobs, retries a blocked plan or plan_next, and finishes the pictures in decode order.
 - `GPUDecoderCoordinator.worker.ts`, `GPUDecoderParse.worker.ts`: a video decoder package's coordinator worker, which a decode worker starts with its first attempt that needs one and keeps for its life, and its parse workers, which the coordinator worker keeps while the package's id and content hash stay; they run `GPUDecoderCoordinatorWorkerRuntime.ts` and `GPUDecoderParseWorkerRuntime.ts`.
 - `GPUDecoderWorkerCoordinator.ts`, `GPUDecoderCoordinatorHost.ts`, `GPUDecoderCoordinatorProtocol.ts`, `GPUDecoderCoordinatorWorkerRuntime.ts`: the decode worker's coordinator worker, shared by its attempts, with its 30 s watchdog; its messages; and its runtime, which runs one pipeline at a time.

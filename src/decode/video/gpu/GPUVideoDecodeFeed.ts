@@ -6,15 +6,19 @@ import type { Microseconds } from '../../../MediaTime';
 import { isSameDecoderPackageVersion } from '../../packages/DecoderPackageIdentity';
 import type { DecodedFramePoolPresentationFrame } from '../../../presentation/WebGPUPresenter';
 import { requireMicroseconds } from '../../../TimeMath';
+import type { VideoFrameFields } from '../VideoFields';
 import { getGPUDecoderFormatFacts, type GPUDecoderOutputFormat } from './GPUDecodeFormats';
 import { chooseGPUDecodeSessionStream } from './GPUDecoderStreamFit';
 import {
+    describeGPUVideoDecodeRecovery,
     GPU_DECODER_OUTPUT_EVENT,
     GPUVideoDecodeError,
     type GPUDecodePacket,
     type GPUDecoderPictureSize,
     type GPUDecodeStreamFacts,
-    type GPUVideoDecodeFailure
+    type GPUVideoDecodeFailure,
+    type GPUVideoDecodeRecovery,
+    type GPUVideoDecodeRecoveryCount
 } from './GPUDecodeTypes';
 import type { GPUVideoDecoderSelection } from './GPUVideoDecoderCatalog';
 import type GPUVideoDecodeSession from './GPUVideoDecodeSession';
@@ -52,20 +56,31 @@ export type GPUVideoDecodeHandle = Readonly<{
 /** Creates a frame-pool generation's GPU decode session; rejects with a GPUVideoDecodeError that names the failed check. */
 export type GPUVideoDecodeSessionFactory = (request: GPUVideoDecodeSessionRequest) => Promise<GPUVideoDecodeHandle>;
 
-/** A compressed packet the worker posted for the GPU decoder, or the GPU record of one picture the decoder's parser made of a packet, with its output events. */
+/**
+ * A compressed packet the worker posted for the GPU decoder, or the GPU record of one picture the decoder's parser made of a packet, with its output events,
+ * or a held packet, whose picture the parser lost and whose frame repeats the last good frame.
+ */
 export type GPUVideoDecodeFeedPacket = Readonly<{
     data: ArrayBuffer
     durationMicroseconds: Microseconds
+    /** The picture's fields as the worker knew them, its parser's or its container's, or null; its decoder's own report replaces them */
+    fields: VideoFrameFields | null
     /** The output format the picture decodes into, or null for its session's */
     format: GPUDecoderOutputFormat | null
     HDR10PlusMetadata: HDR10PlusFrameMetadata | null
+    /** A packet whose picture its parser lost, which decodes nothing */
+    hold: boolean
     keyframe: boolean
     /** The largest picture of the picture's sequence, or null for none reported */
     maximumPictureSize: GPUDecoderPictureSize | null
     /** The parser's output events since the previous picture, or null for a decoder without a parser */
     outputEvents: Uint32Array | null
+    /** The recovery a held packet begins, such as the parser failure that lost its picture, or null */
+    recovery: GPUVideoDecodeRecovery | null
     /** How many times the picture's record runs each repeat of the decoder's header, or null for the header's counts */
     repeatCounts: readonly number[] | null
+    /** The first picture of a parser that restarted after a failure, which numbers its pictures from 0 and resets the decoder */
+    reset: boolean
     timestampMicroseconds: Microseconds
     /** The picture's own visible size, or null for the stream's visible rectangle */
     visibleSize: GPUDecoderPictureSize | null
@@ -100,6 +115,8 @@ export type GPUVideoDecodeFeedTelemetry = Readonly<{
     heldBackFrameCount: number
     /** Packets on the page that wait for the decoder */
     queuedPacketCount: number
+    /** Recoveries since the page loaded, counted per code and error name, each with its latest detail, in the order each kind first happened */
+    recoveries: readonly GPUVideoDecodeRecoveryCount[]
     /** Session reuses since the page loaded, each one a seek or a restart that kept the compiled decoder */
     reuseCount: number
     slotCount: number | null
@@ -338,6 +355,8 @@ export default class GPUVideoDecodeFeed {
     private generation: FeedGeneration | null = null;
     private handle: GPUVideoDecodeHandle | null = null;
     private readonly heldFrames = new Map<DecodedFramePoolPresentationFrame, HeldFrame>();
+    // Recoveries since the page loaded, keyed by code and error name
+    private readonly recoveryCounts = new Map<string, GPUVideoDecodeRecoveryCount>();
     // Sessions a stream change replaced, kept until presentation releases their last frame
     private readonly retiredHandles = new Set<GPUVideoDecodeHandle>();
     private reuseCount = 0;
@@ -410,6 +429,7 @@ export default class GPUVideoDecodeFeed {
     /**
      * Takes one of the current video epoch's packets, in decode order.
      * A picture its session cannot hold starts a stream change; it and the packets after it wait for the session made for it.
+     * A packet that resets, the first of a parser that restarted, numbers the pictures from 0 again, as that parser does.
      */
     queuePacket(packet: GPUVideoDecodeFeedPacket): void {
         const generation = this.generation;
@@ -418,6 +438,9 @@ export default class GPUVideoDecodeFeed {
         }
         if (packet.HDR10PlusMetadata) {
             generation.frameMetadata.set(packet.timestampMicroseconds, packet.HDR10PlusMetadata);
+        }
+        if (packet.reset) {
+            generation.nextPictureIndex = 0;
         }
         const pictureIndex = generation.nextPictureIndex;
         generation.nextPictureIndex = (pictureIndex + 1) % GPU_DECODER_OUTPUT_EVENT.pictureIndexModulus;
@@ -517,6 +540,9 @@ export default class GPUVideoDecodeFeed {
     getTelemetry(): GPUVideoDecodeFeedTelemetry {
         const handle = this.handle;
         const session = handle?.session ?? null;
+        if (handle) {
+            this.collectRecoveries(handle);
+        }
         const changedPacketCount = countStreamChangePackets(this.generation?.streamChanges ?? []);
         let state: GPUVideoDecodeFeedTelemetry['state'] = 'idle';
         if (this.failure !== null) {
@@ -532,6 +558,7 @@ export default class GPUVideoDecodeFeed {
             freeSlotCount: session?.getFreeSlotCount() ?? null,
             heldBackFrameCount: session?.getQueuedFrameCount() ?? 0,
             queuedPacketCount: (this.generation?.waitingPictures.length ?? 0) + changedPacketCount + (session?.getPendingPacketCount() ?? 0),
+            recoveries: [ ...this.recoveryCounts.values() ],
             reuseCount: this.reuseCount,
             slotCount: session?.pool.layout.slotCount ?? null,
             state,
@@ -664,6 +691,7 @@ export default class GPUVideoDecodeFeed {
                 return;
             }
             this.deliverFrames(handle, generation);
+            this.collectRecoveries(handle);
             this.retireHandle(handle);
             generation.streamChanges.shift();
             const changeHandle = change.handle;
@@ -707,15 +735,27 @@ export default class GPUVideoDecodeFeed {
         const decodePacket: GPUDecodePacket = {
             data: packet.data,
             durationMicroseconds: packet.durationMicroseconds,
+            fields: packet.fields,
+            hold: packet.hold,
             keyframe: packet.keyframe,
             outputEvents: packet.outputEvents,
+            recovery: packet.recovery,
             repeatCounts: packet.repeatCounts,
-            reset: generation.resetPending,
+            reset: generation.resetPending || packet.reset,
             timestampMicroseconds: packet.timestampMicroseconds,
             visibleSize: packet.visibleSize
         };
         generation.resetPending = false;
         handle.session.queuePacket(decodePacket);
+    }
+
+    /** Counts the recoveries a session made since the feed last asked, per code and error name, keeping each kind's latest detail. */
+    private collectRecoveries(handle: GPUVideoDecodeHandle): void {
+        for (const recovery of handle.session.takeRecoveries()) {
+            const key = `${recovery.code} ${recovery.errorName}`;
+            const count = this.recoveryCounts.get(key)?.count ?? 0;
+            this.recoveryCounts.set(key, { code: recovery.code, count: count + 1, detail: describeGPUVideoDecodeRecovery(recovery) });
+        }
     }
 
     /**
@@ -734,6 +774,7 @@ export default class GPUVideoDecodeFeed {
         }
         const session = handle.session;
         const submitted = session.submitPendingDecodeWork();
+        this.collectRecoveries(handle);
         if (this.reportSessionFailure(handle, generation)) {
             return;
         }
@@ -781,6 +822,7 @@ export default class GPUVideoDecodeFeed {
                 displayHeight: displaySize?.displayHeight ?? visibleRectangle.height,
                 displayWidth: displaySize?.displayWidth ?? visibleRectangle.width,
                 durationMicroseconds: requireMicroseconds(decodedFrame.durationMicroseconds, 'GPU decoded frame duration'),
+                ...(decodedFrame.fields ? { fields: decodedFrame.fields } : {}),
                 frame: decodedFrame.frame,
                 ...(metadata ? { HDR10PlusMetadata: metadata } : {}),
                 mediaTimeMicroseconds: requireMicroseconds(decodedFrame.timestampMicroseconds, 'GPU decoded frame timestamp'),
@@ -830,6 +872,9 @@ export default class GPUVideoDecodeFeed {
 
     /** Destroys the current session and drops the one being created; frames still held keep naming the destroyed session, which ignores their release. */
     private releaseSession(): void {
+        if (this.handle) {
+            this.collectRecoveries(this.handle);
+        }
         this.handle?.session.destroy();
         this.handle = null;
         this.sessionRequest = null;

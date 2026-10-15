@@ -1,4 +1,6 @@
 // The loop that presents a custom playback's decoded frames: each animation frame takes the controller's current frame and submits it to the presenter, and a hidden page, which gets no animation frames, drains decoded video on a timer instead.
+import type { Microseconds } from '../MediaTime';
+import { requireMicroseconds } from '../TimeMath';
 import type WebGPUPresenter from '../presentation/WebGPUPresenter';
 import type { DecodedPresentationFrame } from '../presentation/WebGPUPresenter';
 import type CustomPlaybackController from './CustomPlaybackController';
@@ -110,14 +112,25 @@ export default class CustomPlaybackFrameLoop {
         this.stopBackgroundDrain();
     }
 
+    /**
+     * Takes the frame due at the clock, a lookahead ahead of it while the presenter deinterlaces, and presents it;
+     * a tick without a frame lets the presenter redraw the field or frame the clock reached from its history.
+     */
     private handleAnimationFrame(generation: number, continueWhilePlaying: boolean): void {
         this.frameCallback = null;
         if (!this.isCurrent() || this.presentationGeneration !== generation) {
             return;
         }
 
-        const decodedFrame = this.controller.takeCurrentFrame();
-        const presentation: FramePresentation = decodedFrame ? this.presentFrame(generation, decodedFrame) : 'no-frame';
+        const targetTimeMicroseconds = this.controller.getPresentationTargetTime();
+        const lookaheadMicroseconds = requireMicroseconds(this.presenter.getFrameLookaheadMicroseconds(), 'Presentation lookahead');
+        const decodedFrame = this.controller.takeFrame(targetTimeMicroseconds, lookaheadMicroseconds);
+        let presentation: FramePresentation = 'no-frame';
+        if (decodedFrame) {
+            presentation = this.presentFrame(generation, decodedFrame, targetTimeMicroseconds);
+        } else if (this.presenter.presentHeldFields(generation, targetTimeMicroseconds)) {
+            presentation = 'presented';
+        }
         if (presentation === 'failed') {
             return;
         }
@@ -126,19 +139,26 @@ export default class CustomPlaybackFrameLoop {
             this.schedule(true);
             return;
         }
-        if ((presentation === 'no-frame' || presentation === 'temporarily-busy') && this.controller.playbackState === 'paused') {
-            // A paused seek still needs to wait for and display its first frame
+        // A paused seek still needs to wait for and display its first frame, and a deinterlaced one the frame after it, which deinterlacing reads
+        const awaitsFrame = presentation === 'no-frame'
+            || presentation === 'temporarily-busy'
+            || (this.presenter.awaitsLookaheadFrame() && !this.controller.isVideoDecodeEnded());
+        if (awaitsFrame && this.controller.playbackState === 'paused') {
             this.schedule(false);
         }
     }
 
-    private presentFrame(generation: number, decodedFrame: DecodedPresentationFrame): 'failed' | 'presented' | 'temporarily-busy' {
+    private presentFrame(
+        generation: number,
+        decodedFrame: DecodedPresentationFrame,
+        targetTimeMicroseconds: Microseconds
+    ): 'failed' | 'presented' | 'temporarily-busy' {
         const videoFrameSubmissionCompleted = decodedFrame.outputMode === 'video-frame' ?
             (gpuWorkCompleted: boolean): void => {
                 this.acknowledgeVideoFrameRelease(generation, decodedFrame, gpuWorkCompleted);
             } :
             undefined;
-        const frameSubmitted = this.presenter.presentDecodedFrame(decodedFrame, generation, videoFrameSubmissionCompleted);
+        const frameSubmitted = this.presenter.presentDecodedFrame(decodedFrame, generation, videoFrameSubmissionCompleted, targetTimeMicroseconds);
         if (!frameSubmitted) {
             const frameDiscarded = this.controller.notifyFrameDiscarded(decodedFrame);
             if (frameDiscarded && this.presenter.getTelemetry().state === 'initializing') {

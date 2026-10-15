@@ -11,6 +11,7 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
   Width, Height, VideoLevel, VideoFramerate, startup throughput benchmarks, and FPS or headroom tiers were removed from every custom route (`db8dbc7622`).
   A capability means the path implements the codec, profile, and output contract, and vector geometry is output evidence only.
   The real limits stay: codec and profile, bit depth, interlacing, container, and exact decoder acceptance.
+  Since 10-15 interlacing limits only HEVC, JPEG 2000, and the Dolby Vision routes (see [Deinterlacing](#deinterlacing)).
 - No artificial size limits (10-08).
   Nothing refuses media for its frame size, sample rate, or packet size alone.
   The bundled HEVC, JPEG 2000, and MPEG-2/VC-1 size caps, the raw-copy byte budget, the packet and container read caps, the 3 kHz to 192 kHz audio window, and the per-packet audio frame counts were removed.
@@ -310,6 +311,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Correctness never rests on the split: code it does not understand compiles whole, and an entry point's module that reports an error makes the whole module compile, whose errors are reported or which serves every pipeline when it has none.
   On Dawn's D3D12 backend in Node on the RTX 5080, with every compile salted so the driver's cache missed and a fresh device per run, median of 5 at I420, session start fell from 3.21 to 2.62 s for AV1, 14.8 to 13.2 s for VC-1, 2.29 to 2.24 s for MPEG-2, 0.81 to 0.78 s for HEVC, and 0.62 to 0.58 s for JPEG 2000.
   Every split module of every package compiled without an error in every output format, 445 modules, and every package's vectors decode bit-exact through it.
+  The VC-1 times predate its parser (10-15), which took the parse stage out of its module.
 - A header's `packet:` may declare up to 512 MiB (10-14).
   The 64 MiB bound kept a ring of two packets within WebGPU's default storage binding of 128 MiB on every device.
   A record such as a lossless 2160p 4:4:4 HEVC picture's needs more, and the presenter requests the adapter's largest limits, so a header may declare up to 512 MiB; offers skip a package whose ring the device's buffer limit does not hold, and a session fails as `packet-size`.
@@ -320,6 +322,22 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
 - The frame-pool route keeps one packet of decode work in flight (10-12).
   Decode shares the presenter's queue, so `GPUVideoDecodeFeed` submits a packet only after the previous submission completed and its status readbacks applied, and a presented frame waits behind at most one packet's decode work.
   A presented slot returns to the decoder right after its presentation submit, because the queue orders later decode work behind it.
+- Every packet's status reads back, and its frame presents only once it has (10-15).
+  Until 10-15 a session copied the status out only when a readback buffer was free, so one readback could cover several packets, and frames presented without waiting for theirs.
+  A recoverable error belongs to one packet's frame, though, as do the field flags a decoder reports for the deinterlacer, so concealment and the deinterlacer designed the status together.
+  It keeps its 48 bytes: the fatal error word and the header's stream facts last until a reset, and words 9 to 11, the freed slots, the picture's most severe recoverable word, and its fields, hold one packet's reports and clear after each packet's copy.
+  The session submits a packet only when a readback buffer is free for it, so every packet's block is captured, and a frame presents only once its packet's readback applied, so a recovery always reaches its frame first.
+  Decoding lost no throughput, since the feed already waited for each packet's readbacks before the next submit.
+  One block per packet serves both, and a later per-picture fact appends to it.
+  Rejected: a fields word per output slot, the deinterlacer's first design at 176 bytes, which misattributes once a slot is reused before its capture, as AV1's discarded hidden frames are; status-wide words, which hold the union of every packet since the previous capture; a ring of per-packet records, machinery for batching that playback never does; and the pass reading the decoder's status buffer, since the presenter must know on the CPU which frames are interlaced to time their second fields.
+- A damaged packet ends no playback (10-15).
+  Until 10-15 every error a GPU decoder reported ended the attempt, so one damaged packet ended a playback that FFmpeg would have concealed and continued.
+  Each `error:` line now declares how a playback recovers from its code: `conceal`, where the decoder concealed the damage and its frame presents; `drop`, where the frame never presents and decoding goes on; or `resync`, where the last good frame repeats until the next key packet decodes from a reset.
+  Only the decoder knows what its state survives, so the recovery is its to declare: MPEG-2's damage within a picture conceals as FFmpeg's error resilience does, the bitstream and slice damage of HEVC, AV1, JPEG 2000, and VC-1 resyncs, and the uncompressed decoder drops a packet of the wrong size.
+  A code without a recovery ends the attempt as before: a change the pool cannot follow, an unsupported feature, or a resource limit, which a stream could keep hitting, so a resync would hold the last good frame for the rest of it.
+  A resync repeats the last good frame rather than present frames decoded from broken references, and the session repeats it at each lost frame's time, so presentation's queue keeps its timing and the controller's starvation rules never see a gap.
+  A parser's failed call made no picture and leaves its instance unusable, so a failure whose code has any recovery restarts the parser at the next key packet, with no new export; a parser that can conceal outputs its record with the damage marked and lets its WGSL report a `conceal` code.
+  Recoveries count in the feed's telemetry by code and error name, with the latest detail, and never as failures; a self-test vector that recovers fails, since a vector is undamaged.
 - The pool takes the container's coded size rounded up to 64 (10-12).
   Containers declare the cropped picture, such as 1080 rows, while a decoder writes whole coding blocks, 1088 rows; the first header's conformance window then replaces the visible rectangle.
 - A decoder's vector, not a presentation authorization, vouches for its frames (10-12, 10-13).
@@ -342,25 +360,39 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Decoding stayed within 2% either way, with no consistent direction, on a 1080p 10-bit stream with B-frames, a 2160p all-intra stream, and a 1080p 4:4:4 10-bit stream; a form that read the column count's parity instead, without the early return, decoded up to 2% slower.
   Every package vector, those three streams against FFmpeg, and the 4:0:0 checks decode bit-exact with it.
 - The WGSL VC-1 decoder mirrors FFmpeg (10-13).
-  It matches FFmpeg's frames bit for bit on FFmpeg's VC-1 conformance streams and its WMV3 and VC-1 samples: Simple, Main, and Advanced profiles, progressive, field, and frame pictures, B and BI pictures, intensity compensation, range reduction, overlap smoothing, the loop filter, the simple IDCT of streams without RES_FASTTX, and IntraX8 pictures.
+  It matches FFmpeg's frames bit for bit on FFmpeg's VC-1 conformance streams and its WMV3 and VC-1 samples: Simple, Main, and Advanced profiles, progressive, field, and frame pictures, B and BI pictures, intensity compensation, overlap smoothing, the loop filter, the simple IDCT of streams without RES_FASTTX, and IntraX8 pictures.
   Its references come from an FFmpeg with commit `ec8411e854`: before it, FFmpeg conceals a valid last macroblock of a Simple or Main P picture that costs one bit, and every frame after it differs up to the next keyframe.
-  A mid-stream change of coded size fails with `pictureSize`, because the session sizes its pool once.
-  Since 10-14 a parser can size the pool from a declared maximum and present each picture at its own size, but the VC-1 package has no parser, so the failure stays until one declares the Advanced profile's `MAX_CODED_WIDTH` and `MAX_CODED_HEIGHT` and reports each picture's size.
+  The package of 10-15, whose parser runs on the CPU, matches the same streams bit for bit again.
+  FFmpeg's trace finds no picture with RANGEREDFRM in any of them, nor in FATE's WMV3 DRM sample, so range reduction is implemented but unverified.
+  Until 10-15 a mid-stream change of coded size failed with `pictureSize`, because the session sized its pool once and the package had no parser to declare a larger picture.
+  Since 10-15 its parser declares the Advanced profile's `MAX_CODED_WIDTH` and `MAX_CODED_HEIGHT`, which size the pool, and reports each picture's size, so rtvc1's pictures of 352x288, 352x224, and 352x144 decode in one session.
+  At such a change FFmpeg's decoder reinitializes, which drops the anchor waiting to present and every reference, and the parser drops them too.
+  rtvc1 also holds pictures FFmpeg conceals and invalid AC codes it skips without concealing, after which its frames depend on stale AC predictors; the parser fails those pictures as damage, which resyncs, until VC-1 conceals as FFmpeg does.
 - The VC-1 parse is serial, and only the parse (10-13).
   Entropy decoding has no parallelism inside a slice, so one invocation decodes each parse unit, a slice or a field, and units run at once.
   The parse keeps only what its bits depend on: motion vector prediction, since hybrid prediction reads a bit, and coded block prediction.
   Intra blocks leave their DC differential and AC levels by scan index, and one workgroup predicts, scans, and dequantizes them afterwards in anti-diagonal order, so each macroblock follows its left, top, and top-left neighbors.
   That cut a 1080p I picture from 156 ms to 34 ms.
   IntraX8 cannot split this way: its orientation code is read only when the reconstructed edge samples span a wide range, so one workgroup decodes its blocks in order, one invocation parsing and all of them sharing each block's prediction, transform, and filter.
+  On 10-15 the parse, intra prediction, and IntraX8 moved to the CPU, as "The VC-1 decoder parses on the CPU" below describes.
 - A lone invocation's costs set the parse's layout (10-13, RTX 5080, D3D12 through Dawn).
   A dependent instruction costs about 4 cycles, a storage read-modify-write about 30 ns, and a workgroup one about 8 ns.
   A private array indexed at run time lives in local memory, where a load after a store waits about 150 ns, and an integer division costs about 35 ns.
   So the parse stages its macroblock in workgroup memory and stores the record once, writes coefficients as it decodes them, addresses the block grid with a power-of-two stride, and reads each code's run, level, and sign from one lookup and one window.
   1080p progressive decodes in about 23 ms per frame on average, 14 to 40 ms for P pictures; interlaced 1080 at broadcast rates in 17 to 25 ms.
+  The parse left the GPU on 10-15, so these costs now bound only the reconstruction, overlap, and loop filter passes that stayed.
 - VC-1 pipelines are many and small (10-13).
   Backends inline every call and fold no constant argument, so each picture kind has its own slice pipeline, a helper on the hot path has one call site, and the field passes share pipelines that read their pass from the picture state.
   Tint copies a constant array at each place an index reads it, and a D3D12 pipeline holds at most 64 KiB of constants, so large tables live in the decoder state, which `loadTables` entry points of 8192 words fill at each reset.
   The 31 pipelines compile in about 10 s together on Dawn, once per browser shader cache.
+  On 10-15 the slice pipelines, `predictIntraBlocks`, the header stage, and the `loadTables` entry points left with the parse, and 15 entry points remain, the field passes still sharing theirs.
+- The VC-1 decoder parses on the CPU (10-15).
+  Real VC-1 and WMV3 streams carry no slices, so the GPU parse ran each picture's whole macroblock layer on one invocation, and `predictIntraBlocks` ran each picture's intra prediction in one workgroup.
+  The package's parser (`decoders/vc1/parser/`) does the serial work instead: the headers, bitplanes, and lookups, the macroblock layer with motion vector prediction, and intra DC and AC prediction, scan, and dequantization, which read each macroblock's left, top, and top-left neighbors.
+  The WGSL keeps reconstruction, overlap smoothing, and the loop filter as they were, and `expandRecord` writes each record's macroblocks into the buffers they read; the module fell from 789,633 bytes and 34 entry points to 107,099 bytes and 15.
+  IntraX8 pictures decode entirely in the parser, and their record carries the samples: X8's orientation code is read only when the reconstructed edge samples span a wide range, so its parse needs its own reconstruction, and a GPU kernel would have kept the bit reader, X8's code lookups, and a serial workgroup in the WGSL.
+  A B picture's direct prediction reads the next anchor's motion, which that anchor's parse derives, so a B picture's plan waits until every earlier anchor finished, and the plan carries the motion to the parse workers.
+  The output events follow FFmpeg's one anchor of delay, so the header declares `reorder: 1` where presentation in timestamp order needed 7.
 - WMV3 is a codec of its own (10-13).
   The engine's codec names are FFmpeg's, and a host builds its direct-play codec lists from them, so as an alias of `vc1` WMV3 could never be advertised under `wmv3`, the name a media server reports, and every WMV3 file would transcode.
   It mirrors FFmpeg's one decoder with two codec IDs: the `vc1` project's package accepts `[vc1, wmv3]`, and a package that decodes only the Advanced profile is never offered WMV3, whose codec private data and packets differ.
@@ -415,10 +447,30 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
 - The WGSL MPEG-2 decoder follows FFmpeg's simple IDCT (10-13).
   FFmpeg's default IDCT on x86-64 is its SSE2 simple IDCT, which equals the C one except where intermediates overflow 16 bits, which valid streams never reach.
   The vectors pin `-idct simple`, and the generator checks that each decodes the same with `-cpuflags 0`, so the known answers hold on every platform.
-- Known differences between the WGSL MPEG-2 decoder and FFmpeg (10-13).
-  A packet that holds no picture FFmpeg outputs, such as a skipped open-GOP B picture or the first field of a pair split across packets, repeats the latest reference, or gray before one, because a decoder without a parser outputs a frame for every packet.
-  Damaged slices, slice gaps or overlaps, and motion vectors outside the reference end the attempt with the error and the failing value, where FFmpeg conceals and continues.
-  Interlaced pictures present woven: the decoder reads the field flags, but no deinterlacer runs and no flag reaches presentation, so eligibility still refuses interlaced streams.
+- The WGSL MPEG-2 decoder conceals as FFmpeg's error resilience does (10-15).
+  A damaged slice ends at its damage and decoding resumes at the next slice, and the macroblocks a damaged, missing, or overrun slice leaves are concealed.
+  `composeMacroblocks` gives each macroblock the status FFmpeg's `ff_er_add_slice` calls leave it in slice order, which needs every slice's end, so it runs after the slices decode in parallel, an invocation per macroblock, so a packet of many slices spreads over the device.
+  When two slices decoded one macroblock their records raced, so `redecodeSlices` runs every slice again, each writing only the macroblocks it decoded last.
+  `markSegments` runs `ff_er_frame_end`'s marking passes, which reset at each slice start, one segment per invocation, and `decideConcealment` decides `is_intra_more_likely` on the reconstructed picture.
+  FFmpeg's MPEG-2 decoder keeps no motion vectors for its error resilience, so a damaged macroblock taken for an inter one predicts from the same place, both ways in a B picture.
+  One taken for an intra one gets `guess_dc`'s DCs, `filter181` over luma's, and `put_dc`'s flat blocks; then `h_block_filter` and `v_block_filter` smooth each damaged edge with an intra side.
+  A picture whose slices all ended, covering it once, runs none of it: the concealment dispatches are indirect and get no workgroups.
+  Header damage follows FFmpeg too: a damaged sequence header is ignored, a zero in a quantizer matrix stops that matrix, an invalid picture type takes the picture coding extension's guess or skips the picture, and a picture header after a frame picture is ignored, its slices decoding into that frame.
+  A change of size or chroma format still ends the attempt, and a picture before any sequence size, a packet whose start codes or pictures overflow the decoder's tables, or a field that does not pair resyncs.
+  Against FFmpeg's C code paths on one thread, 162 damaged streams decoded with no failure, and every frame picture of the 4:2:0 streams matched FFmpeg bit for bit apart from the differences the next entry lists; a 4:2:2 broadcast sample whose damaged P picture FFmpeg conceals matched over all 50 frames.
+- Known differences between the WGSL MPEG-2 decoder and FFmpeg (10-13, 10-15).
+  A packet that holds no picture FFmpeg outputs, such as a skipped open-GOP B picture, repeats the latest reference, or gray before one, because a decoder without a parser outputs a frame for every packet.
+  Since 10-15 the first field of a pair split across packets presents with its other field concealed, which the next packet's second field replaces; FFmpeg outputs the pair once, with the second packet.
+  Until 10-15 damaged slices, slice gaps or overlaps, and motion vectors outside the reference ended the attempt with the error and the failing value, where FFmpeg conceals and continues.
+  Since then the decoder conceals as the previous entry describes, and differs from FFmpeg only where FFmpeg's own output is undefined or misplaced.
+  FFmpeg's error resilience skips field pictures, which keep what its frame buffer held; the decoder conceals them as it does frame pictures, on their own lines, from the references' fields of their parity.
+  It addresses the chroma of 4:2:2 and 4:4:4 as if it were 4:2:0, concealing and smoothing the top-left quarter of other macroblocks' chroma, while the decoder conceals each macroblock's own chroma blocks.
+  A slice too short or below the picture makes FFmpeg abandon the rest of the packet, which it neither conceals nor outputs; the decoder skips that slice and conceals what it would have decoded.
+  Its motion guess stops at the reference's visible height, so a damaged row of macroblocks below it keeps what the buffer held; the decoder conceals it, and later pictures predict from it.
+  A motion vector outside the reference makes FFmpeg skip the prediction and add the residual to what the buffer held; the decoder predicts from the reference's clamped edge and counts the macroblock as concealed.
+  Damaged coefficients beyond the standard's range overflow FFmpeg's default SSE2 IDCT differently from its C one, which the decoder follows, as the IDCT entry above describes.
+  Until 10-15 interlaced pictures presented woven: the decoder read the field flags, but no deinterlacer ran and no flag reached presentation, so eligibility refused interlaced streams.
+  Since 10-15 the decoder reports each picture's fields and the deinterlacing pass presents them (see [Deinterlacing](#deinterlacing)).
 - The AV1 package's parser is libaom's decoder running its parse-only pass (10-14).
   `vendor/aom` pins libaom v3.15.2, and the `av1` project builds its decoder alone to WebAssembly with four small patches: every tile parses with the parse-only flag, hooks hand each transform block, block, frame, and missing reference to a C bridge, and the decoder exports its intra edge counts, its CfL buffer extent, and its deblocking levels.
   A parser of our own would repeat libaom's entropy decoding, motion vector prediction, and reference and segmentation bookkeeping, which nothing on the GPU could check; libaom's are the reference's own.
@@ -457,6 +509,44 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   So the parser lists the transform jobs with a 64-point side after the others and records where they start, `inverseTransform` runs the jobs before that index, and `inverseTransformLarge` runs the rest on the same grid.
   The two kernels compile in 0.69 and 0.88 s side by side, and on the GPU the pair matches the single kernel, the pass with no jobs of its own costing 6 us.
   The large kernel runs DCT_DCT only, since libaom codes no other transform type across a 64-point side; a record that carries one, or a job on the wrong side of the index, fails as `recordInvalid` with value 10, and the job writes nothing.
+
+## Deinterlacing
+
+- Interlaced video deinterlaces in presentation, with yadif (10-15).
+  Until 10-15 eligibility refused every stream whose metadata did not call it progressive, and the GPU decoders presented interlaced pictures woven.
+  yadif is FFmpeg's default deinterlacer and fully defined, so FFmpeg's output is a known answer: it predicts each missing sample from its own field along the best of five edge directions, then clamps that around the mean of the neighbouring frames by how much the area moves, so still areas keep their full vertical detail and moving ones the spatial prediction.
+  The pass, `Presentation deinterlace`, implements it from the algorithm with FFmpeg's options: `mode=send_field` or `send_frame`, `parity=auto`, `deint=interlaced`, and the spatial interlacing check of mode 0.
+  A CPU reference, `test/helpers/yadifReference.ts`, matches FFmpeg's yadif bit for bit in integer arithmetic on FFmpeg-woven 576i and 480i, 1080i at 10 bits, 4:2:2, and a 9x10 4:4:4 frame, at both rates, and the WGSL pass matches its f32 arithmetic exactly on Dawn.
+- It deinterlaces the signal's RGB, per channel in f32, at the frame's visible size (10-15).
+  The signal is where every route's frames first meet in one form, before tone mapping and scaling, so one pass serves native `VideoFrame`s, raw planes, and frame pool slots, at 8 to 12 bits and every chroma format.
+  Deinterlacing the YUV planes, as FFmpeg does, would need a pass for each plane layout, and an external texture exposes no planes at all.
+  The signal renders into a ring of three `rgba16float` frames, and yadif's integer score bias of one code becomes 2^-bitDepth, one code at the signal's depth.
+  The output's luma agrees with FFmpeg's YUV-domain yadif at 42 to 55 dB PSNR on MPEG-2 576i, VC-1 1080i, and H.264 1080i; the difference is yadif's clamps and edge choices, taken per channel.
+- A deinterlacing plan reads 4:2:0 chroma within each field on the raw and frame-pool routes (10-15).
+  An interlaced 4:2:0 frame's chroma rows alternate between its fields, so the progressive read blends the other field's colors into every row, which bleeds at moving edges once yadif keeps one field.
+  The signal reads a row's own field's chroma rows at MPEG-2's interlaced siting, a quarter of a field row below the top field's luma and three quarters below the bottom field's, whenever the frame it reads is interlaced (`fieldState`'s `interlacedSignal` bit), so a progressive frame of the same stream keeps the progressive read.
+  Only a deinterlacing plan's signal carries the branch, so every other plan stays as it was.
+  An external texture cannot: the browser upsampled its chroma progressively before the page sees it.
+- Double rate is the default (10-15).
+  An interlaced frame's fields are two moments, 20 ms apart at 50 Hz, so a frame per field keeps the motion of broadcast video, where single rate halves it.
+  Single rate (`send_frame`) and off, woven frames as decoded, stay a host's choice through `setDeinterlaceMode`.
+- Deinterlacing takes one frame of lookahead, and the clock stays (10-15).
+  yadif reads the frame after the one it shows, so the frame loop takes frames one frame duration ahead of the clock and the presenter shows the frame before the newest.
+  The clock, and with it audio, never moves: decoding runs one frame further ahead within the same credits.
+  A frame's second field presents at its time plus half the interval to the next frame, rounded down to a whole microsecond, as FFmpeg's yadif stamps it.
+  After a reset the first frame shows at once without a next frame, and the last frame shows with itself as its next, as FFmpeg's yadif ends.
+  A field drawn between new frames is a draw from history: no source, no upload, one encode.
+- Each frame carries its own fields, from where they are known first (10-15).
+  The picture fields word is the same in WGSL and parsers: bit 0 reported, so a reported progressive picture differs from none, bit 1 interlaced, bit 2 top field first, bit 3 repeat first field (`PICTURE_FIELDS_WORD`).
+  A frame's fields are its GPU decoder's `reportPictureFields` report, else its parser's optional `parser_picture_fields` word, else its container's scan: Matroska's FlagInterlaced and FieldOrder, read while Mediabunny parses the track entry as block additions are, or an MP4 sample entry's `fiel` box.
+  A GPU decoder's report reaches its frame through the decoder status's per-packet block, as "Every packet's status reads back" above describes.
+  The field order codes follow FFmpeg's mapping: 9 stores the top field first and shows the bottom first, and 14 the reverse.
+  A file whose MuxingApp names libavformat 57.36.100 to 57.51.100 holds 9 and 14 swapped, as that muxer wrote them, so they are read swapped back, as FFmpeg's demuxer does.
+  A frame without fields takes the stream's scan from the host's `FieldOrder`, in ffprobe's names, else its `IsInterlaced`; an interlaced frame of unknown order presents top field first, as yadif's `parity=auto` does, and a frame of unknown scan presents as it is.
+- Eligibility refuses interlaced video only where no route presents it (10-15).
+  HEVC codes interlaced video as field pictures and JPEG 2000 as a codestream per field; no decoder weaves them into the frames the pass takes, so `IsInterlaced` true refuses them.
+  A Dolby Vision route never deinterlaces, since the profiles are progressive, so it keeps requiring `IsInterlaced` false; a declared base layer's ordinary route deinterlaces.
+  Every other codec's interlaced or unknown scan is eligible.
 
 ## Firefox
 

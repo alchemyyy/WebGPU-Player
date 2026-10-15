@@ -60,6 +60,7 @@ The key is ignored while an input, a select, or a text area has focus, and it is
    A first frame that cannot be read is recorded as `first-frame-unreadable`, and the file plays without HDR10+.
 3. `sandbox/src/session/PlaybackMediaSource.ts` turns the probe into the media description the engine's eligibility reads: the container, and each video and audio stream with its codec, profile, level, size, bit depth, color, and dynamic range.
    The dynamic range is Dolby Vision when the stream has a Dolby Vision configuration record, else PQ, HLG, or SDR from its transfer, and PQ is HDR10+ when the first frame carries HDR10+ metadata.
+   ffprobe's field order passes as `FieldOrder`, and any order but `progressive` makes the stream `IsInterlaced`.
 4. The route starts on the audio track marked default, else the first, through the engine modules a host uses: the capability probes, the presentation authorizations and color pipeline from `presentation/PresentationSetup.ts`, the eligibility, `CustomPlaybackController`, and `CustomPlaybackFrameLoop`.
    The controller reads the picked file itself, as a `file` source, and takes the duration from the container.
 
@@ -139,6 +140,8 @@ It is in `sandbox/src/ui/panels/DecoderPackagePanel.ts`, over `sandbox/src/sessi
 - The pipeline graph draws the active presentation plan from left to right: the source with its route, one node per planned pass with its kind, targets, and color steps, and the canvas with its format and tone mapping.
   Edges follow each texture from the pass that writes it to every pass that reads it, and history reads are dashed and labeled with their offset, such as `[-1]`.
   The passes the plan left out are listed beside the graph as `reason: detail`.
+- An interlaced file's plan shows `Presentation deinterlace` after the signal, reading the signal's frame, `[-1]`, and `[-2]`.
+  The Deinterlacing select above the graph switches between Double rate, the default, Single rate, and Off, through `WebGPUPresenter.setDeinterlaceMode`, and keeps its mode across files.
 - Playback info groups the media and its tracks, the route and the override, the clock, video decode, audio, presentation, authorization, and the failure log, newest first.
   Its sections collapse, and stay collapsed across refreshes.
   On the frame-pool route, video decode adds a GPU decoder row: its name, state, and failure, its pool's free slots, and its decoded, held-back, reused, and stream change counts.

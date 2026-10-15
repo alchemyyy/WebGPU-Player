@@ -39,6 +39,7 @@ const PASSED_RESULT: GPUDecoderVectorCheckResult = { code: 'passed', detail: VEC
 const PARSER_OUTPUTS: GPUDecoderParserOutput[] = [ {
     pictures: [ {
         events: Uint32Array.of(0),
+        fields: null,
         format: null,
         maximumPictureSize: null,
         record: new ArrayBuffer(VECTOR_PACKET_BYTES.length),

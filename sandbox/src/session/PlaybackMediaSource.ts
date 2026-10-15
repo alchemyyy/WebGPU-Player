@@ -32,6 +32,8 @@ export type PlaybackMediaStream = Readonly<{
     DvVersionMajor: number | null
     DvVersionMinor: number | null
     ElPresentFlag: number | null
+    /** ffprobe's field order, such as tt or progressive, which names an interlaced stream's first field; null when ffprobe reports none */
+    FieldOrder: string | null
     Hdr10PlusPresentFlag: boolean
     Height: number | null
     Index: number
@@ -156,6 +158,7 @@ function createVideoStream(stream: FFprobeStream, frames: readonly FFprobeFrame[
         DvVersionMajor: dolbyVision?.dvVersionMajor ?? null,
         DvVersionMinor: dolbyVision?.dvVersionMinor ?? null,
         ElPresentFlag: dolbyVision?.elPresentFlag ?? null,
+        FieldOrder: stream.fieldOrder,
         Hdr10PlusPresentFlag: hdr10Plus,
         Height: stream.height,
         Index: stream.index,
@@ -195,6 +198,7 @@ function createAudioStream(stream: FFprobeStream): PlaybackMediaStream {
         DvVersionMajor: null,
         DvVersionMinor: null,
         ElPresentFlag: null,
+        FieldOrder: null,
         Hdr10PlusPresentFlag: false,
         Height: null,
         Index: stream.index,
