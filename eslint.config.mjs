@@ -34,7 +34,14 @@ export default tseslint.config(
             LAYOUT.outputDirectory,
             // The WebAssembly build has no JavaScript of its own, only generated glue in its build trees
             LAYOUT.wasmDirectory,
+            // The decoder projects' build trees and crate targets, which hold sources and glue that are not the engine's
+            LAYOUT.decoderBuildDirectory,
+            `${LAYOUT.decodersDirectory}/*/*/target`,
             LAYOUT.playbackSmokeMediaDirectory,
+            // A Vite build of the sandbox, which bundles its dependencies
+            LAYOUT.sandboxOutputDirectory,
+            // Local verification harnesses and tools, excluded from git
+            LAYOUT.scratchDirectory,
             LAYOUT.vendorDirectory,
             // The built book carries mdBook's own scripts
             LAYOUT.documentationOutputDirectory
@@ -51,7 +58,7 @@ export default tseslint.config(
             'array-callback-return': ['error', { 'checkForEach': true }],
             'curly': ['error', 'multi-line', 'consistent'],
             'default-case-last': 'error',
-            // Specifiers the node resolver cannot read, which tsc checks: the tsconfig path alias that tests import engine modules through, package.json imports such as #wasm/, and the sandbox's Vite asset URLs such as @ffmpeg/core?url
+            // Specifiers the node resolver cannot read, which tsc checks: the tsconfig path alias that tests import engine modules through, package.json imports such as #codec_vector_assets/, and the sandbox's Vite asset URLs such as @ffmpeg/core?url
             'import/no-unresolved': ['error', { 'ignore': ['^webgpu-player/', '^#', String.raw`\?url$`] }],
             'max-params': ['error', 7],
             'new-cap': [
@@ -138,7 +145,12 @@ export default tseslint.config(
     // Build scripts and tools run on Node, so browser compatibility does not apply
     // NOTE: Directory patterns need /** here, because ignores beside other keys match file paths
     {
-        ignores: [ `${LAYOUT.sourceDirectory}/**`, `${LAYOUT.testDirectory}/**`, `${LAYOUT.sandboxDirectory}/src/**` ],
+        ignores: [
+            `${LAYOUT.sourceDirectory}/**`,
+            `${LAYOUT.testDirectory}/**`,
+            `${LAYOUT.decodersDirectory}/*/test/**`,
+            `${LAYOUT.sandboxDirectory}/src/**`
+        ],
         languageOptions: {
             globals: {
                 ...globals.node
@@ -149,11 +161,12 @@ export default tseslint.config(
         }
     },
 
-    // Engine sources, tests, and the sandbox
+    // Engine sources, tests, the decoder projects' tests, and the sandbox
     {
         files: [
             `${LAYOUT.sourceDirectory}/**/*.ts`,
             `${LAYOUT.testDirectory}/**/*.ts`,
+            `${LAYOUT.decodersDirectory}/*/test/**/*.ts`,
             `${LAYOUT.sandboxDirectory}/src/**/*.ts`
         ],
         languageOptions: {

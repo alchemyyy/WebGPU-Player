@@ -8,13 +8,13 @@ import {
 } from 'mediabunny';
 
 import { secondsToMicroseconds } from '../src/MediaTime';
-import { getHEVCNALFormat } from '../src/video/dolby-vision/DolbyVisionEncodedMetadata';
+import { getHEVCNALFormat } from '../src/demux/dolby-vision/DolbyVisionEncodedMetadata';
 import {
     getHDR10PlusSceneLuminance,
     parseHEVCHDR10PlusMetadata,
     type HDR10PlusFrameMetadataStatus,
     type HDR10PlusMetadata
-} from '../src/video/hdr/HDR10PlusMetadata';
+} from '../src/demux/hdr/HDR10PlusMetadata';
 
 const DEFAULT_MAXIMUM_ACCESS_UNIT_COUNT = 100_000;
 const MAXIMUM_RECORDED_STATUS_TRANSITION_COUNT = 256;

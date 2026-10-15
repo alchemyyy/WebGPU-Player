@@ -8,14 +8,14 @@ import {
     DOLBY_VISION_RPU_PACKED_COMPONENT_MMR_OFFSET,
     DOLBY_VISION_RPU_PACKED_COMPONENT_PIVOT_OFFSET,
     DOLBY_VISION_RPU_PACKED_COMPONENT_SEGMENT_OFFSET
-} from '../../video/dolby-vision/DolbyVisionRPUDataLayout';
+} from '../../demux/dolby-vision/DolbyVisionRPUDataLayout';
 import {
     decodeDolbyVisionRPUSnapshot,
     DOLBY_VISION_RPU_PARSER_REVISION_PREFIX,
     DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
     DOLBY_VISION_RPU_SCHEMA_MAGIC,
     DOLBY_VISION_RPU_SCHEMA_VERSION
-} from '../../video/dolby-vision/DolbyVisionRPUParser';
+} from '../../demux/dolby-vision/DolbyVisionRPUParser';
 
 const BYTES_PER_WORD = Uint32Array.BYTES_PER_ELEMENT;
 const DEFAULT_COLOR_METADATA_FLAG = 1 << 8;

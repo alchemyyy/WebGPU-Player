@@ -5,7 +5,7 @@ import {
     DOLBY_VISION_RPU_COMPONENT_WORD_STRIDE,
     DOLBY_VISION_RPU_PACKED_COMPONENT_PIVOT_OFFSET,
     DOLBY_VISION_RPU_PACKED_COMPONENT_SEGMENT_OFFSET
-} from 'webgpu-player/video/dolby-vision/DolbyVisionRPUDataLayout';
+} from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUDataLayout';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 
 const BYTES_PER_PACKED_WORD = Uint32Array.BYTES_PER_ELEMENT;

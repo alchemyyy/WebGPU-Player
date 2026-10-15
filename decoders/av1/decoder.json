@@ -1,0 +1,20 @@
+{
+    "decoder": [
+        "av1.wgsl",
+        "wgsl/transform.wgsl",
+        "wgsl/intra.wgsl",
+        "wgsl/inter.wgsl",
+        "wgsl/filters.wgsl"
+    ],
+    "vectors": [
+        { "format": "I420", "root": "decodersDirectory", "path": "av1/vectors/av1-420-250x186.mkv", "decoderOptions": [ "-c:v", "libdav1d" ] },
+        { "format": "I420P10", "root": "decodersDirectory", "path": "av1/vectors/av1-420p10-253x187.mkv", "decoderOptions": [ "-c:v", "libdav1d" ] },
+        { "format": "I420P12", "root": "decodersDirectory", "path": "av1/vectors/av1-420p12-256x192-sb128.mkv", "decoderOptions": [ "-c:v", "libdav1d" ] },
+        { "format": "I422", "root": "decodersDirectory", "path": "av1/vectors/av1-422-254x190.mkv", "decoderOptions": [ "-c:v", "libdav1d" ] },
+        { "format": "I422P10", "root": "decodersDirectory", "path": "av1/vectors/av1-422p10-249x183-sb128.mkv", "decoderOptions": [ "-c:v", "libdav1d" ] },
+        { "format": "I422P12", "root": "decodersDirectory", "path": "av1/vectors/av1-422p12-256x192.mkv", "decoderOptions": [ "-c:v", "libdav1d" ] },
+        { "format": "I444", "root": "decodersDirectory", "path": "av1/vectors/av1-444-251x189-sb128.mkv", "decoderOptions": [ "-c:v", "libdav1d" ] },
+        { "format": "I444P10", "root": "decodersDirectory", "path": "av1/vectors/av1-444p10-256x188.mkv", "decoderOptions": [ "-c:v", "libdav1d" ] },
+        { "format": "I444P12", "root": "decodersDirectory", "path": "av1/vectors/av1-444p12-247x191.mkv", "decoderOptions": [ "-c:v", "libdav1d" ] }
+    ]
+}

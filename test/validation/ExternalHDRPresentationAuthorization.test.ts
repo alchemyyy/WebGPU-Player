@@ -24,7 +24,7 @@ import {
 import { createBuiltinChain } from 'webgpu-player/presentation/passes/builtin/BuiltinChains';
 import { PresentationExecutor } from 'webgpu-player/presentation/passes/PresentationExecutor';
 import { planPresentation } from 'webgpu-player/presentation/passes/PresentationPlanner';
-import { parseHEVCSPS } from 'webgpu-player/video/hevc/HEVCSPSParser';
+import { parseHEVCSPS } from 'webgpu-player/demux/hevc/HEVCSPSParser';
 import {
     createExpectedExternalHDRAuthorizationObservations,
     createExternalHDRAuthorizationFrame,

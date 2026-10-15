@@ -5,7 +5,7 @@ import {
     secondsToMicroseconds,
     type Microseconds
 } from 'webgpu-player/MediaTime';
-import { audioFramesToMicroseconds } from 'webgpu-player/TimeMath';
+import { audioFramesToMicroseconds, requireMicroseconds } from 'webgpu-player/TimeMath';
 import {
     clearTimingTrace,
     exportTimingTrace,
@@ -31,13 +31,16 @@ import {
     isDecodeWorkerRequest,
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
+    MAX_GPU_DECODE_PACKET_CREDITS,
     type CustomDecodeDolbyVisionProfile,
     type CustomDecodeRawVideoFrameFormat,
     type DecodeWorkerAudioOutputAttachment,
-    type DecodeWorkerResyncAudioRequest
+    type DecodeWorkerResyncAudioRequest,
+    type DecodeWorkerStartRequest
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
-import { DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION } from 'webgpu-player/video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
-import { resolveDolbyVisionRPUParserWASMURL } from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParser';
+import type { GPUVideoDecoderSelection } from 'webgpu-player/decode/video/gpu/GPUVideoDecoderCatalog';
+import { DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION } from 'webgpu-player/demux/dolby-vision/DolbyVisionEncodedMetadataProtocol';
+import { resolveDolbyVisionRPUParserWASMURL } from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParser';
 import type {
     OwnedNativeMediaAudioEventHandler,
     OwnedNativeMediaAudioTelemetry
@@ -45,11 +48,13 @@ import type {
 import type {
     RawVideoFrameGeometry,
     TransferableRawVideoFrame
-} from 'webgpu-player/video/RawVideoFrameCopy';
+} from 'webgpu-player/decode/video/RawVideoFrameCopy';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
-import { parseHEVCHDR10PlusMetadata } from 'webgpu-player/video/hdr/HDR10PlusMetadata';
+import { parseHEVCHDR10PlusMetadata } from 'webgpu-player/demux/hdr/HDR10PlusMetadata';
 
 import { createHDR10PlusHEVCVector } from '../../src/capability/vectors/HDR10PlusVectors';
+import { createDecoderProjectVideoPackageForTest, createVideoDecoderPackageForTest, createVideoDecoderSource } from '../helpers/decoderPackages';
+import { createFakeGPUVideoDecodeSessionFactory, type FakeGPUVideoDecodeSessionFactory } from '../helpers/fakeGPUVideoDecode';
 
 type MessageHandler = (event: MessageEvent<unknown>) => void;
 type ErrorHandler = (event: ErrorEvent) => void;
@@ -294,7 +299,7 @@ function startSession(
         rawVideoFrameFormat: videoOutputMode === 'raw-planes' ? 'I420P10' : null,
         startTimeMicroseconds: secondsToMicroseconds(1),
         source: { kind: 'url', url: 'http://localhost/video.mp4?ApiKey=secret' },
-        videoDecoderBackend: videoOutputMode === 'raw-planes' ? 'bundled-hevc' : 'native',
+        videoDecoderBackend: 'native',
         videoOutputMode,
         videoTrackIndex: 0
     });
@@ -633,35 +638,6 @@ function startNativeAudioSession(generation: number, backendOpened: Promise<void
 }
 
 describe('CustomDecodeSession', () => {
-    it('forwards the qualified FFmpeg MPEG-2/VC-1 backend to the worker', () => {
-        const worker = new MockWorker();
-        const session = new CustomDecodeSession(
-            () => undefined,
-            () => worker as unknown as Worker
-        );
-
-        session.start({
-            dolbyVisionProfile: null,
-            generation: 5,
-            maximumCodedHeight: 1_080,
-            maximumCodedWidth: 1_920,
-            nativeHDRTransfer: null,
-            neutralizeHDRColorMetadata: false,
-            rawVideoFrameFormat: null,
-            startTimeMicroseconds: secondsToMicroseconds(1),
-            source: { kind: 'url', url: 'http://localhost/video.mkv' },
-            videoDecoderBackend: 'ffmpeg-mpeg2-vc1',
-            videoOutputMode: 'video-frame',
-            videoTrackIndex: 0
-        });
-
-        expect(worker.postedMessages[0]).toMatchObject({
-            generation: 5,
-            videoDecoderBackend: 'ffmpeg-mpeg2-vc1',
-            videoOutputMode: 'video-frame'
-        });
-    });
-
     it('forwards the selected Dolby Vision profile to the worker', () => {
         const worker = new MockWorker();
         const session = new CustomDecodeSession(
@@ -674,9 +650,10 @@ describe('CustomDecodeSession', () => {
         expect(worker.postedMessages[0]).toMatchObject({
             dolbyVisionProfile: 7,
             generation: 6,
-            videoDecoderBackend: 'bundled-hevc',
+            videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes'
         });
+        expect(worker.postedMessages[0]).not.toHaveProperty('discardDolbyVisionEnhancementLayer');
     });
 
     it('asks the worker for timing events while a trace runs and merges them, even from a retired generation', () => {
@@ -885,15 +862,15 @@ describe('CustomDecodeSession', () => {
         });
 
         const presentationFrame = session.takeFrame(secondsToMicroseconds(1.1));
-        expect(presentationFrame?.encodedDolbyVisionMetadata).toBe(encodedDolbyVisionMetadata);
+        if (!presentationFrame || presentationFrame.outputMode !== 'video-frame') {
+            throw new Error('Expected a transferred decoded video frame');
+        }
+        expect(presentationFrame.encodedDolbyVisionMetadata).toBe(encodedDolbyVisionMetadata);
         expect(session.getTelemetry()).toMatchObject({
             receivedDolbyVisionEnhancementFrameCount: 1,
             receivedDolbyVisionFrameCount: 1,
             receivedDolbyVisionRPUCount: 1
         });
-        if (!presentationFrame || presentationFrame.outputMode !== 'video-frame') {
-            throw new Error('Expected a transferred decoded video frame');
-        }
         expect(session.acknowledgeFrame(presentationFrame)).toBe(true);
         presentationFrame.frame.close();
     });
@@ -944,39 +921,6 @@ describe('CustomDecodeSession', () => {
             expect(session.acknowledgeFrame(presentationFrame)).toBe(true);
             presentationFrame.frame.close();
         }
-    });
-
-    it('asks the worker to discard a dual-layer EL only when the route discards it', () => {
-        const startOptions = {
-            dolbyVisionProfile: 7,
-            durationMicroseconds: secondsToMicroseconds(60),
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_840,
-            nativeHDRTransfer: null,
-            neutralizeHDRColorMetadata: false,
-            rawVideoFrameFormat: 'I420P10',
-            startTimeMicroseconds: secondsToMicroseconds(0),
-            source: { kind: 'url', url: 'http://localhost/video.mkv' },
-            videoDecoderBackend: 'native',
-            videoOutputMode: 'raw-planes',
-            videoTrackIndex: 0
-        } as const;
-        const postedRequests = [ false, true ].map((discardDolbyVisionEnhancementLayer: boolean, index: number) => {
-            const worker = new MockWorker();
-            new CustomDecodeSession(() => undefined, () => worker as unknown as Worker).start({
-                ...startOptions,
-                discardDolbyVisionEnhancementLayer,
-                generation: index + 1
-            });
-            return worker.postedMessages[0];
-        });
-
-        expect(postedRequests[0]).not.toHaveProperty('discardDolbyVisionEnhancementLayer');
-        expect(postedRequests[1]).toMatchObject({
-            discardDolbyVisionEnhancementLayer: true,
-            dolbyVisionProfile: 7,
-            type: 'start'
-        });
     });
 
     it('asks for the container duration only without a server duration and forwards it on ready', () => {
@@ -1886,7 +1830,7 @@ describe('CustomDecodeSession', () => {
             rawVideoFrameFormat: 'I420P10',
             startTimeMicroseconds: secondsToMicroseconds(1),
             source: { kind: 'url', url: 'http://localhost/video.mp4' },
-            videoDecoderBackend: 'bundled-hevc',
+            videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
         });
@@ -4161,22 +4105,44 @@ describe('CustomDecodeSession worker lifecycle', () => {
 
     it('gives a start on another video decoder backend a new worker', async () => {
         const pool = createWorkerPool();
-        const session = new CustomDecodeSession(() => undefined, pool.createWorker);
+        const session = new CustomDecodeSession(
+            () => undefined,
+            pool.createWorker,
+            null,
+            null,
+            null,
+            createFakeGPUVideoDecodeSessionFactory().factory
+        );
         startSession(session, FIRST_LIFECYCLE_GENERATION);
         const [ nativeWorker ] = pool.workers;
         const stopPromise = session.stop();
         nativeWorker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
         await stopPromise;
 
-        // This helper's raw-plane route takes the bundled HEVC decoder, which Mediabunny keeps registered for the worker's life
-        startSession(session, SECOND_LIFECYCLE_GENERATION, undefined, 'raw-planes');
+        // A worker serves one video decoder backend for its life
+        const decoderPackage = createVideoDecoderPackageForTest(createVideoDecoderSource({ outputFormats: [ 'I420P10' ] }));
+        session.start({
+            dolbyVisionProfile: null,
+            generation: SECOND_LIFECYCLE_GENERATION,
+            gpuVideoDecoder: { codec: 'hevc', decoderId: decoderPackage.id, package: decoderPackage },
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: 'I420P10',
+            startTimeMicroseconds: secondsToMicroseconds(1),
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
+            videoDecoderBackend: 'gpu',
+            videoOutputMode: 'frame-pool',
+            videoTrackIndex: 0
+        });
 
         expect(nativeWorker.terminate).toHaveBeenCalledOnce();
         expect(pool.workers).toHaveLength(2);
         expect(pool.workers[1].postedMessages[0]).toMatchObject({
             generation: SECOND_LIFECYCLE_GENERATION,
             type: 'start',
-            videoDecoderBackend: 'bundled-hevc'
+            videoDecoderBackend: 'gpu'
         });
     });
 
@@ -4253,5 +4219,266 @@ describe('CustomDecodeSession worker lifecycle', () => {
             expect(harness.session.getTelemetry().state).toBe('ended');
         });
         expect(harness.events.at(-1)).toEqual({ generation: FIRST_LIFECYCLE_GENERATION, type: 'ended' });
+    });
+});
+
+describe('CustomDecodeSession frame-pool route', () => {
+    const FRAME_POOL_GENERATION = 301;
+    // The HEVC decoder's package, whose parser turns the worker's packets into GPU records
+    const HEVC_PACKAGE = createDecoderProjectVideoPackageForTest('hevc');
+    const GPU_VIDEO_DECODER: GPUVideoDecoderSelection = { codec: 'hevc', decoderId: HEVC_PACKAGE.id, package: HEVC_PACKAGE };
+    // A decoder whose WGSL reads the container's packets, without a parser
+    const PACKET_READING_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ name: 'Packet reader', outputFormats: [ 'I420P10' ] }));
+    // The parser's output events of a packet: its own picture, presented
+    const PACKET_OUTPUT_EVENTS = Uint32Array.of(0);
+    // The events of a track's last packets, which had no picture to carry them: the first picture dropped after all
+    const TRAILING_OUTPUT_EVENTS = Uint32Array.of(0x8000_0000);
+    // A 1080p HEVC Main 10 track, whose pool rounds 1080 rows up to whole 64-row coding blocks
+    const TRACK_CODED_WIDTH = 1_920;
+    const TRACK_CODED_HEIGHT = 1_080;
+    const POOL_CODED_HEIGHT = 1_088;
+    const CODEC_PRIVATE_BYTES = [ 1, 2, 3, 4 ];
+    const PACKET_DURATION_MICROSECONDS = 41_708;
+    const FIRST_PACKET_TIME_MICROSECONDS = 1_000_000;
+    const DECODER_ERROR_WORD = 7;
+    const RESYNC_TARGET_MICROSECONDS = secondsToMicroseconds(5);
+
+    type FramePoolHarness = FakeGPUVideoDecodeSessionFactory & {
+        events: CustomDecodeSessionEvent[]
+        session: CustomDecodeSession
+        worker: MockWorker
+    };
+
+    /** Starts a frame-pool generation and answers its start with a ready that carries the track's codec private data. */
+    function startReadyFramePoolSession(gpuVideoDecoder: GPUVideoDecoderSelection = GPU_VIDEO_DECODER): FramePoolHarness {
+        const worker = new MockWorker();
+        const events: CustomDecodeSessionEvent[] = [];
+        const sessionFactory = createFakeGPUVideoDecodeSessionFactory();
+        const session = new CustomDecodeSession(event => events.push(event), () => worker as unknown as Worker, null, null, null, sessionFactory.factory);
+        session.start({
+            dolbyVisionProfile: null,
+            generation: FRAME_POOL_GENERATION,
+            gpuVideoDecoder,
+            maximumCodedHeight: TRACK_CODED_HEIGHT,
+            maximumCodedWidth: TRACK_CODED_WIDTH,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: 'I420P10',
+            startTimeMicroseconds: secondsToMicroseconds(1),
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
+            videoDecoderBackend: 'gpu',
+            videoOutputMode: 'frame-pool',
+            videoTrackIndex: 0
+        });
+        worker.emitMessage({
+            audio: null,
+            codec: 'hvc1.2.4.L120.B0',
+            codecPrivate: new Uint8Array(CODEC_PRIVATE_BYTES).buffer,
+            codedHeight: TRACK_CODED_HEIGHT,
+            codedWidth: TRACK_CODED_WIDTH,
+            displayHeight: TRACK_CODED_HEIGHT,
+            displayWidth: TRACK_CODED_WIDTH,
+            generation: FRAME_POOL_GENERATION,
+            type: 'ready'
+        });
+        return { ...sessionFactory, events, session, worker };
+    }
+
+    function emitPacket(worker: MockWorker, packetIndex: number, videoEpoch = 0, outputEvents?: Uint32Array): void {
+        worker.emitMessage({
+            data: new ArrayBuffer(16),
+            durationMicroseconds: PACKET_DURATION_MICROSECONDS,
+            generation: FRAME_POOL_GENERATION,
+            keyframe: packetIndex === 0,
+            ...(outputEvents ? { outputEvents } : {}),
+            timestampMicroseconds: FIRST_PACKET_TIME_MICROSECONDS + packetIndex * PACKET_DURATION_MICROSECONDS,
+            type: 'packet',
+            videoEpoch
+        });
+    }
+
+    it('starts the worker on packet credits with the codec its GPU decoder takes and the parser of its package', () => {
+        const { worker } = startReadyFramePoolSession();
+        const startRequest = worker.postedMessages[0] as DecodeWorkerStartRequest;
+
+        expect(isDecodeWorkerRequest(startRequest)).toBe(true);
+        expect(startRequest).toMatchObject({
+            frameCredits: MAX_GPU_DECODE_PACKET_CREDITS,
+            gpuVideoCodec: GPU_VIDEO_DECODER.codec,
+            gpuVideoParser: {
+                packageVersion: { contentHash: HEVC_PACKAGE.contentHash, id: HEVC_PACKAGE.id },
+                parser: { errorNames: HEVC_PACKAGE.manifest.errors, memory: HEVC_PACKAGE.memory }
+            },
+            rawVideoFrameFormat: 'I420P10',
+            videoDecoderBackend: 'gpu',
+            videoOutputMode: 'frame-pool'
+        });
+        expect(startRequest.gpuVideoParser?.parser.module).toBe(HEVC_PACKAGE.module);
+        // Only the package's id and content hash cross, not the package itself
+        expect(startRequest.gpuVideoParser?.packageVersion).toEqual({ contentHash: HEVC_PACKAGE.contentHash, id: HEVC_PACKAGE.id });
+    });
+
+    it('starts the worker without a parser for a decoder that reads the container\'s packets', () => {
+        const { worker } = startReadyFramePoolSession({ codec: 'hevc', decoderId: PACKET_READING_PACKAGE.id, package: PACKET_READING_PACKAGE });
+        const startRequest = worker.postedMessages[0];
+
+        expect(isDecodeWorkerRequest(startRequest)).toBe(true);
+        expect(startRequest).toMatchObject({ gpuVideoCodec: 'hevc', videoOutputMode: 'frame-pool' });
+        expect(startRequest).not.toHaveProperty('gpuVideoParser');
+    });
+
+    it('sizes the decoder\'s pool from the track padded to whole coding blocks, cropped to the track', async () => {
+        const harness = startReadyFramePoolSession();
+
+        await vi.waitFor((): void => {
+            expect(harness.requests).toHaveLength(1);
+        });
+        expect(harness.requests[0]).toEqual({
+            codecPrivate: new Uint8Array(CODEC_PRIVATE_BYTES),
+            decoder: GPU_VIDEO_DECODER,
+            format: 'I420P10',
+            maximumPictureSize: null,
+            stream: {
+                bitDepth: 10,
+                codedHeight: POOL_CODED_HEIGHT,
+                codedWidth: TRACK_CODED_WIDTH,
+                visibleRectangle: { height: TRACK_CODED_HEIGHT, width: TRACK_CODED_WIDTH, x: 0, y: 0 }
+            }
+        });
+    });
+
+    it('decodes a packet on the page, returns its credit once submitted, and its slot once its frame is presented', async () => {
+        const harness = startReadyFramePoolSession();
+        await vi.waitFor((): void => {
+            expect(harness.sessions).toHaveLength(1);
+        });
+
+        emitPacket(harness.worker, 0, 0, PACKET_OUTPUT_EVENTS);
+
+        expect(harness.session.getTelemetry().state).toBe('ready');
+        expect(harness.worker.postedMessages.at(-1)).toEqual({ frameCredits: 1, generation: FRAME_POOL_GENERATION, type: 'pull' });
+        // The parser's output events go to the decoder with the packet's record
+        expect(harness.sessions[0].submittedPackets[0].outputEvents).toEqual(PACKET_OUTPUT_EVENTS);
+        const presentationFrame = harness.session.takeFrame(requireMicroseconds(FIRST_PACKET_TIME_MICROSECONDS));
+        expect(presentationFrame).toMatchObject({
+            displayHeight: TRACK_CODED_HEIGHT,
+            displayWidth: TRACK_CODED_WIDTH,
+            mediaTimeMicroseconds: FIRST_PACKET_TIME_MICROSECONDS,
+            outputMode: 'frame-pool'
+        });
+        if (!presentationFrame) {
+            throw new Error('Expected a decoded frame-pool frame');
+        }
+        expect(harness.session.acknowledgeFrame(presentationFrame)).toBe(true);
+        expect(harness.sessions[0].releasedFrames).toHaveLength(1);
+        expect(harness.session.getTelemetry().gpuVideoDecode).toMatchObject({ state: 'ready', submittedPacketCount: 1 });
+    });
+
+    it('returns the credit of a replaced epoch\'s packet without decoding it', async () => {
+        const harness = startReadyFramePoolSession();
+        await vi.waitFor((): void => {
+            expect(harness.sessions).toHaveLength(1);
+        });
+
+        expect(harness.session.resyncVideo(RESYNC_TARGET_MICROSECONDS)).toBe(true);
+        emitPacket(harness.worker, 0);
+
+        expect(harness.sessions[0].resetCount).toBe(1);
+        expect(harness.sessions[0].queuedPackets).toHaveLength(0);
+        expect(harness.worker.postedMessages.at(-1)).toEqual({ frameCredits: 1, generation: FRAME_POOL_GENERATION, type: 'pull' });
+    });
+
+    it('ends only once the GPU decoder drained the frames of the worker\'s last packets', async () => {
+        const harness = startReadyFramePoolSession();
+        await vi.waitFor((): void => {
+            expect(harness.sessions).toHaveLength(1);
+        });
+        emitPacket(harness.worker, 0);
+        emitPacket(harness.worker, 1);
+
+        harness.worker.emitMessage({ generation: FRAME_POOL_GENERATION, type: 'video-ended', videoEpoch: 0 });
+        harness.worker.emitMessage({ generation: FRAME_POOL_GENERATION, type: 'ended' });
+        const stateBeforeDrain = harness.session.getTelemetry().state;
+
+        expect(stateBeforeDrain).toBe('ready');
+        await vi.waitFor((): void => {
+            // Each completed submission lets the next packet's decode work submit
+            harness.queue.completeAll();
+            expect(harness.session.getTelemetry().state).toBe('ended');
+        });
+        expect(harness.sessions[0].submittedPackets).toHaveLength(2);
+        expect(harness.events.at(-1)).toEqual({ generation: FRAME_POOL_GENERATION, type: 'ended' });
+    });
+
+    it('hands the GPU decoder the output events the worker\'s video end carries, and none for an end without them', async () => {
+        const withEvents = startReadyFramePoolSession();
+        const withoutEvents = startReadyFramePoolSession();
+        await vi.waitFor((): void => {
+            expect(withEvents.sessions).toHaveLength(1);
+            expect(withoutEvents.sessions).toHaveLength(1);
+        });
+        emitPacket(withEvents.worker, 0);
+        emitPacket(withoutEvents.worker, 0);
+
+        withEvents.worker.emitMessage({ generation: FRAME_POOL_GENERATION, outputEvents: TRAILING_OUTPUT_EVENTS, type: 'video-ended', videoEpoch: 0 });
+        withoutEvents.worker.emitMessage({ generation: FRAME_POOL_GENERATION, type: 'video-ended', videoEpoch: 0 });
+
+        expect(withEvents.sessions[0].endOfStreamEvents).toEqual([ TRAILING_OUTPUT_EVENTS ]);
+        expect(withoutEvents.sessions[0].endOfStreamEvents).toEqual([ null ]);
+    });
+
+    it('fails the generation with the check the GPU decoder failed', async () => {
+        const harness = startReadyFramePoolSession();
+        await vi.waitFor((): void => {
+            expect(harness.sessions).toHaveLength(1);
+        });
+        harness.sessions[0].failure = { code: 'decoder-error', detail: String(DECODER_ERROR_WORD) };
+
+        emitPacket(harness.worker, 0);
+
+        expect(harness.events.at(-1)).toEqual({
+            failureKind: 'decode-failed',
+            generation: FRAME_POOL_GENERATION,
+            message: `gpu-decode decoder-error: ${DECODER_ERROR_WORD}`,
+            type: 'error'
+        });
+        expect(harness.session.getTelemetry().gpuVideoDecode).toMatchObject({ state: 'failed' });
+    });
+
+    it('refuses a frame-pool start without a GPU decoder or a session factory', () => {
+        const worker = new MockWorker();
+        const sessionWithoutFactory = new CustomDecodeSession(() => undefined, () => worker as unknown as Worker);
+        const framePoolOptions = {
+            dolbyVisionProfile: null,
+            generation: FRAME_POOL_GENERATION,
+            gpuVideoDecoder: GPU_VIDEO_DECODER,
+            maximumCodedHeight: TRACK_CODED_HEIGHT,
+            maximumCodedWidth: TRACK_CODED_WIDTH,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: 'I420P10',
+            startTimeMicroseconds: secondsToMicroseconds(1),
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
+            videoDecoderBackend: 'gpu',
+            videoOutputMode: 'frame-pool',
+            videoTrackIndex: 0
+        } as const;
+
+        expect(() => sessionWithoutFactory.start(framePoolOptions)).toThrow('Frame-pool custom decode requires a GPU decode session factory');
+        const sessionWithFactory = new CustomDecodeSession(
+            () => undefined,
+            () => worker as unknown as Worker,
+            null,
+            null,
+            null,
+            createFakeGPUVideoDecodeSessionFactory().factory
+        );
+        expect(() => sessionWithFactory.start({ ...framePoolOptions, gpuVideoDecoder: undefined })).toThrow(
+            'The frame-pool route, and it alone, takes the gpu decoder backend and a GPU decoder'
+        );
+        expect(() => sessionWithFactory.start({ ...framePoolOptions, rawVideoFrameFormat: null })).toThrow(
+            'Frame-pool custom decode requires a planar format a GPU decoder writes'
+        );
+        expect(worker.postedMessages).toHaveLength(0);
     });
 });

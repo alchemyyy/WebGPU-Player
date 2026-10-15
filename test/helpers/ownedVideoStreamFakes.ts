@@ -11,9 +11,9 @@ import type {
     OwnedVideoPacketIterator,
     OwnedVideoStreamProgressPhase,
     OwnedVideoStreamRun
-} from 'webgpu-player/video/decoders/OwnedVideoDecodeStream';
-import type { DolbyVisionEncodedFrameMetadata } from 'webgpu-player/video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
-import type { HDR10PlusFrameMetadata } from 'webgpu-player/video/hdr/HDR10PlusMetadata';
+} from 'webgpu-player/decode/video/native/OwnedVideoDecodeStream';
+import type { DolbyVisionEncodedFrameMetadata } from 'webgpu-player/demux/dolby-vision/DolbyVisionEncodedMetadataProtocol';
+import type { HDR10PlusFrameMetadata } from 'webgpu-player/demux/hdr/HDR10PlusMetadata';
 
 // A power-of-two frame rate keeps every timestamp exact in seconds and in microseconds
 const FRAMES_PER_SECOND = 32;

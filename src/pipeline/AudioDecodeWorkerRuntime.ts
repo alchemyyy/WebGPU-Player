@@ -7,11 +7,8 @@ import {
     CUSTOM_AUDIO_OUTPUT_BUFFERED_SECONDS,
     CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
 } from '../audio/CustomAudioOutputPolicy';
-import { getAudioTimestampToleranceMicroseconds } from '../audio/CustomAudioTrackMetadata';
-import DTSSeekRecovery from '../audio/decoders/DTSSeekRecovery';
-import DTSSoftwareAudioDecoder, { type DTSDecodedAudioOutput } from '../audio/decoders/DTSSoftwareAudioDecoder';
-import EAC3SoftwareAudioDecoder from '../audio/decoders/EAC3SoftwareAudioDecoder';
-import TrueHDSoftwareAudioDecoder from '../audio/decoders/TrueHDSoftwareAudioDecoder';
+import { getAudioTimestampToleranceMicroseconds } from '../demux/CustomAudioTrackMetadata';
+import PackageSoftwareAudioDecoder, { type PackageDecodedAudioOutput } from '../decode/audio/PackageSoftwareAudioDecoder';
 import WorkletPCMProducer, { WorkletPCMProducerError } from '../audio/output/WorkletPCMProducer';
 import {
     loadPlaybackAudioOutputStageModule,
@@ -91,27 +88,6 @@ export type AudioDecodeWorkerScope = {
     addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void
     postMessage(message: AudioDecodeWorkerResponse, transfer: Transferable[]): void
 };
-
-/** The fields the output stage reads from any bundled decoder's output */
-type BundledDecodedAudioOutput = Pick<
-    DTSDecodedAudioOutput,
-    'channelData' | 'channelLayout' | 'frameCount' | 'mediaTimeMicroseconds' | 'sampleRate'
->;
-
-type BundledAudioDecoder =
-    | {
-        backend: 'dts'
-        decoder: DTSSoftwareAudioDecoder
-        seekRecovery: DTSSeekRecovery
-    }
-    | {
-        backend: 'eac3'
-        decoder: EAC3SoftwareAudioDecoder
-    }
-    | {
-        backend: 'truehd'
-        decoder: TrueHDSoftwareAudioDecoder
-    };
 
 type AudioDecodeAttempt = {
     readonly audioEpoch: number
@@ -195,45 +171,46 @@ function getFailureMessage(error: unknown): string {
     return message.slice(0, MAXIMUM_AUDIO_DECODE_WORKER_FAILURE_MESSAGE_LENGTH);
 }
 
-/** Returns the timestamp tolerance an attempt's codec and container timestamps need. */
-function getTimestampToleranceMicroseconds(options: AudioDecodeWorkerOpenAttemptRequest): number {
-    switch (options.decoderBackend) {
+/** Returns the timestamp tolerance of a codec's packets: DTS lace phases wander further, and a TrueHD or MLP access unit can decode to no PCM. */
+function getCodecTimestampToleranceMicroseconds(codec: string, timeResolution: number): number {
+    switch (codec) {
         case 'dts':
             return getAudioTimestampToleranceMicroseconds(
-                options.timeResolution,
+                timeResolution,
                 DTS_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
                 NO_ACCESS_UNIT_ALLOWANCE_MICROSECONDS
             );
         case 'mlp':
         case 'truehd':
             return getAudioTimestampToleranceMicroseconds(
-                options.timeResolution,
+                timeResolution,
                 DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
                 TRUEHD_ACCESS_UNIT_ALLOWANCE_MICROSECONDS
             );
-        case 'eac3':
-        case 'pcm':
+        default:
             return getAudioTimestampToleranceMicroseconds(
-                options.timeResolution,
+                timeResolution,
                 DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
                 NO_ACCESS_UNIT_ALLOWANCE_MICROSECONDS
             );
     }
 }
 
-/** Creates the attempt's bundled decoder, loading its kit on first use, or returns null for samples Mediabunny decoded. */
-async function createBundledAudioDecoder(options: AudioDecodeWorkerOpenAttemptRequest): Promise<BundledAudioDecoder | null> {
+/** Returns the timestamp tolerance an attempt's codec and container timestamps need; a package's follows the codec it decodes. */
+function getTimestampToleranceMicroseconds(options: AudioDecodeWorkerOpenAttemptRequest): number {
+    return getCodecTimestampToleranceMicroseconds(options.routeCodec, options.timeResolution);
+}
+
+/** Creates the attempt's package decoder, loading its package on first use, or returns null for samples Mediabunny decoded. */
+async function createPackageAudioDecoder(options: AudioDecodeWorkerOpenAttemptRequest): Promise<PackageSoftwareAudioDecoder | null> {
     switch (options.decoderBackend) {
-        case 'dts': {
-            // The recovery checks the start first, so an invalid start fails before the kit loads
-            const seekRecovery = new DTSSeekRecovery(options.startTimeMicroseconds);
-            return { backend: 'dts', decoder: await DTSSoftwareAudioDecoder.create(), seekRecovery };
+        case 'package': {
+            const packageDecoder = options.packageDecoder;
+            if (!packageDecoder) {
+                throw new TypeError(INPUT_KIND_MESSAGE);
+            }
+            return PackageSoftwareAudioDecoder.create(packageDecoder.source, packageDecoder.codec);
         }
-        case 'eac3':
-            return { backend: 'eac3', decoder: await EAC3SoftwareAudioDecoder.create() };
-        case 'mlp':
-        case 'truehd':
-            return { backend: 'truehd', decoder: await TrueHDSoftwareAudioDecoder.create(options.decoderBackend) };
         case 'pcm':
             return null;
     }
@@ -450,7 +427,7 @@ class AudioDecodeWorkerRuntime {
      * The decoder and output stage go with the run, and the producer stays open until the attempt closes, so the worklet plays out what it holds.
      */
     private async runAttempt(attempt: AudioDecodeAttempt): Promise<void> {
-        let decoder: BundledAudioDecoder | null = null;
+        let decoder: PackageSoftwareAudioDecoder | null = null;
         let outputStage: DecodedAudioOutputStage | null = null;
         try {
             const options = attempt.options;
@@ -460,7 +437,7 @@ class AudioDecodeWorkerRuntime {
                 null;
             // Loads beside the decoder; a failed load resolves null and the JavaScript output stage renders
             const outputStageModulePromise = loadPlaybackAudioOutputStageModule();
-            decoder = await createBundledAudioDecoder(options);
+            decoder = await createPackageAudioDecoder(options);
             const outputStageModule = await outputStageModulePromise;
             if (attempt.cancelled) {
                 return;
@@ -477,9 +454,6 @@ class AudioDecodeWorkerRuntime {
             if (attempt.cancelled) {
                 return;
             }
-            if (decoder?.backend === 'dts') {
-                decoder.seekRecovery.requireSynchronizationRecovered();
-            }
             if (!await this.submitOutputs(attempt, outputStage.finalize(), false)) {
                 return;
             }
@@ -495,7 +469,7 @@ class AudioDecodeWorkerRuntime {
                 });
             }
         } finally {
-            decoder?.decoder.close();
+            decoder?.close();
             // The worker outlives the attempt, so its output stage's WebAssembly memory is freed now
             outputStage?.close();
         }
@@ -550,7 +524,7 @@ class AudioDecodeWorkerRuntime {
     private renderInputBatch(
         attempt: AudioDecodeAttempt,
         batch: AudioDecodeWorkerInputBatch,
-        decoder: BundledAudioDecoder | null,
+        decoder: PackageSoftwareAudioDecoder | null,
         outputStage: DecodedAudioOutputStage
     ): Promise<boolean> {
         switch (batch.kind) {
@@ -571,7 +545,7 @@ class AudioDecodeWorkerRuntime {
     private async renderPackets(
         attempt: AudioDecodeAttempt,
         batch: AudioDecodeWorkerPacketBatch,
-        decoder: BundledAudioDecoder,
+        decoder: PackageSoftwareAudioDecoder,
         outputStage: DecodedAudioOutputStage
     ): Promise<boolean> {
         let byteOffset = 0;
@@ -598,36 +572,16 @@ class AudioDecodeWorkerRuntime {
 
     private decodePacket(
         attempt: AudioDecodeAttempt,
-        decoder: BundledAudioDecoder,
+        decoder: PackageSoftwareAudioDecoder,
         outputStage: DecodedAudioOutputStage,
         packetData: Uint8Array,
         packetTimeMicroseconds: Microseconds
     ): StreamingAudioResamplerOutput[] {
-        switch (decoder.backend) {
-            case 'dts': {
-                const seekRecovery = decoder.seekRecovery;
-                seekRecovery.requireSynchronizationRecoveredBefore(packetTimeMicroseconds);
-                let output: DTSDecodedAudioOutput;
-                try {
-                    output = decoder.decoder.decode(packetData, packetTimeMicroseconds);
-                } catch (error) {
-                    if (!seekRecovery.shouldIgnore(error, packetTimeMicroseconds)) {
-                        throw error;
-                    }
-                    return [];
-                }
-                seekRecovery.markDecodeSucceeded();
-                return this.normalizeDecodedOutput(attempt, outputStage, output);
-            }
-            case 'eac3':
-            case 'truehd': {
-                const normalizedOutputs: StreamingAudioResamplerOutput[] = [];
-                for (const output of decoder.decoder.decode(packetData, packetTimeMicroseconds)) {
-                    normalizedOutputs.push(...this.normalizeDecodedOutput(attempt, outputStage, output));
-                }
-                return normalizedOutputs;
-            }
+        const normalizedOutputs: StreamingAudioResamplerOutput[] = [];
+        for (const output of decoder.decode(packetData, packetTimeMicroseconds)) {
+            normalizedOutputs.push(...this.normalizeDecodedOutput(attempt, outputStage, output));
         }
+        return normalizedOutputs;
     }
 
     /** Renders a batch's samples in order, each under one output credit; returns false once the attempt closed. */
@@ -647,11 +601,11 @@ class AudioDecodeWorkerRuntime {
         return true;
     }
 
-    /** Normalizes one DTS, E-AC-3, or TrueHD output, whose decoder reports its speaker layout. */
+    /** Normalizes one package output, whose decoder reports its speaker layout. */
     private normalizeDecodedOutput(
         attempt: AudioDecodeAttempt,
         outputStage: DecodedAudioOutputStage,
-        output: BundledDecodedAudioOutput
+        output: PackageDecodedAudioOutput
     ): StreamingAudioResamplerOutput[] {
         const boundInput = outputStage.bind({
             channelCount: output.channelData.length,

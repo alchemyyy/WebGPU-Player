@@ -7,7 +7,7 @@ import {
     type InputColorMetadata
 } from '../../../color/ColorMetadata';
 import { createDolbyVisionColorFunctionsWGSL } from '../../../color/DolbyVisionColorTransform';
-import { getRawFormatBitDepth, type SupportedRawVideoFrameFormat } from '../../../video/RawVideoFrameCopy';
+import { getRawFormatBitDepth, type SupportedRawVideoFrameFormat } from '../../../decode/video/RawVideoFrameCopy';
 import type { DolbyVisionReconstructionProfile } from '../../PresentationInput';
 import type { EngineResource, RawDolbyVisionFrameFormat, SignalDefinition } from '../PassTypes';
 import { joinWGSL, toWGSLFloat } from './BuiltinWGSL';
@@ -42,6 +42,9 @@ const LIMITED_LUMA_BLACK_CODE = 16;
 const LIMITED_LUMA_EXCURSION = 219;
 const CHROMA_CENTER_CODE = 128;
 const LIMITED_CHROMA_EXCURSION = 224;
+// The indentation of a range expression's closing line in a function body, and in a switch clause's body
+const FUNCTION_BODY_INDENTATION = '    ';
+const CASE_BODY_INDENTATION = '            ';
 
 // The Profile 4 frames that present their SDR base unmodified: FEL frames whose EL is missing, or every FEL frame when the signal does not reconstruct FEL
 const FEL_WITHOUT_ENHANCEMENT_CONDITION = 'isDolbyVisionFEL() && enhancement.enhancementPresent == 0u';
@@ -240,28 +243,50 @@ fn sampleRawYUV(textureCoordinate: vec2f) -> vec3f {
 }` ]);
 }
 
-/** Returns `fn normalizeRawYUV(rawYUV: vec3f) -> vec3f`, which maps YUV codes of the metadata's bit depth and range to normalized YUV. */
-export function createRawYUVRangeWGSL(metadata: InputColorMetadata): string {
+/** Returns the vec3f expression that maps `rawYUV`, codes of the metadata's bit depth and range, to normalized YUV, its lines indented by `indentation`. */
+function createRawYUVRangeExpression(metadata: InputColorMetadata, indentation: string): string {
     const codeScale = 2 ** (metadata.bitDepth - REFERENCE_CODE_BIT_DEPTH);
     const maximumCode = (2 ** metadata.bitDepth) - 1;
-    if (metadata.range === 'full') {
-        return `
-fn normalizeRawYUV(rawYUV: vec3f) -> vec3f {
-    return vec3f(
-        rawYUV.x / ${toWGSLFloat(maximumCode)},
-        (rawYUV.y - ${toWGSLFloat(CHROMA_CENTER_CODE * codeScale)}) / ${toWGSLFloat(maximumCode)},
-        (rawYUV.z - ${toWGSLFloat(CHROMA_CENTER_CODE * codeScale)}) / ${toWGSLFloat(maximumCode)}
-    );
-}`;
-    }
+    const components = metadata.range === 'full' ?
+        [
+            `rawYUV.x / ${toWGSLFloat(maximumCode)}`,
+            `(rawYUV.y - ${toWGSLFloat(CHROMA_CENTER_CODE * codeScale)}) / ${toWGSLFloat(maximumCode)}`,
+            `(rawYUV.z - ${toWGSLFloat(CHROMA_CENTER_CODE * codeScale)}) / ${toWGSLFloat(maximumCode)}`
+        ] :
+        [
+            `(rawYUV.x - ${toWGSLFloat(LIMITED_LUMA_BLACK_CODE * codeScale)}) / ${toWGSLFloat(LIMITED_LUMA_EXCURSION * codeScale)}`,
+            `(rawYUV.y - ${toWGSLFloat(CHROMA_CENTER_CODE * codeScale)}) / ${toWGSLFloat(LIMITED_CHROMA_EXCURSION * codeScale)}`,
+            `(rawYUV.z - ${toWGSLFloat(CHROMA_CENTER_CODE * codeScale)}) / ${toWGSLFloat(LIMITED_CHROMA_EXCURSION * codeScale)}`
+        ];
+    const componentLines = components.map((component: string): string => `${indentation}    ${component}`);
+    return `vec3f(\n${componentLines.join(',\n')}\n${indentation})`;
+}
 
+/** Returns `fn normalizeRawYUV(rawYUV: vec3f) -> vec3f`, which maps YUV codes of the metadata's bit depth and range to normalized YUV. */
+export function createRawYUVRangeWGSL(metadata: InputColorMetadata): string {
     return `
 fn normalizeRawYUV(rawYUV: vec3f) -> vec3f {
-    return vec3f(
-        (rawYUV.x - ${toWGSLFloat(LIMITED_LUMA_BLACK_CODE * codeScale)}) / ${toWGSLFloat(LIMITED_LUMA_EXCURSION * codeScale)},
-        (rawYUV.y - ${toWGSLFloat(CHROMA_CENTER_CODE * codeScale)}) / ${toWGSLFloat(LIMITED_CHROMA_EXCURSION * codeScale)},
-        (rawYUV.z - ${toWGSLFloat(CHROMA_CENTER_CODE * codeScale)}) / ${toWGSLFloat(LIMITED_CHROMA_EXCURSION * codeScale)}
-    );
+    return ${createRawYUVRangeExpression(metadata, FUNCTION_BODY_INDENTATION)};
+}`;
+}
+
+/**
+ * Returns `fn normalizeRawYUV(rawYUV: vec3f) -> vec3f` for codes of any of the given bit depths, which a WGSL `u32` expression picks at run time,
+ * such as a frame pool slot's, at the metadata's range: one branch per depth, each createRawYUVRangeWGSL's arithmetic for it, so results stay bit for bit
+ * those of a signal compiled for that depth. The last depth takes every other value.
+ */
+export function createSelectedBitDepthRawYUVRangeWGSL(metadata: InputColorMetadata, bitDepths: readonly number[], bitDepthExpression: string): string {
+    const branches = bitDepths.map((bitDepth: number, depthIndex: number): string => {
+        const selector = depthIndex === bitDepths.length - 1 ? 'default' : `case ${bitDepth}u`;
+        return `        ${selector}: {
+            return ${createRawYUVRangeExpression({ ...metadata, bitDepth }, CASE_BODY_INDENTATION)};
+        }`;
+    });
+    return `
+fn normalizeRawYUV(rawYUV: vec3f) -> vec3f {
+    switch (${bitDepthExpression}) {
+${branches.join('\n')}
+    }
 }`;
 }
 

@@ -15,6 +15,8 @@ A session takes one of two paths:
   For HDR or unknown input the presenter is off and the `<video>` shows.
 - (b) The custom pipeline, for eligible direct-play VOD.
   The worker posts `'frame'` messages (a `VideoFrame`, or raw planes in a pooled buffer, with Dolby Vision and HDR10+ metadata), and fMP4 segments for native-media audio.
+  On the frame-pool route it decodes no video and posts compressed `'packet'` messages instead, which a GPU decoder package's WGSL decodes on the presenter's device into a frame pool that the presenter reads in place.
+  For a package with a parser, such as the HEVC decoder project's, each `'packet'` carries one picture's record instead, which the package's parser writes on the worker's coordinator worker and its parse workers; a packet that holds several pictures, such as an AV1 temporal unit with hidden frames, posts one `'packet'` for each.
   Decoded PCM goes from the worker's audio decode worker straight to the AudioWorklet, over a channel the page hands over, and the page learns only each chunk's place and length (`audio-progress`).
   The frame loop, `CustomPlaybackFrameLoop`, takes the controller's current frame each animation frame and presents it.
   Decoded audio plays through an AudioWorklet in a pooled 48 kHz context, and AC-3 and E-AC-3 can play through a hidden `<audio>` element and MSE.
@@ -23,6 +25,9 @@ The host player and its HTML backend with any hls.js runtime are host code.
 A host drives the custom pipeline through `PresentationSetup`, which gates the eligibility's presentation routes and configures the presenter for the chosen one, and runs one `CustomPlaybackFrameLoop` per playback.
 Everything else in the diagram is engine code.
 The plugin's book follows the Jellyfin host's half of a session.
+
+The engine's sources follow the stages a custom session runs: `src/demux/` reads the container and shapes each track's packets and the metadata they carry, and `src/decode/` turns the packets into frames and PCM.
+`src/presentation/` and `src/audio/` present the frames and play the PCM, and `src/pipeline/` runs the stages for each session (see [Module map](module-map.md)).
 
 ## Clock
 
@@ -57,8 +62,12 @@ Video is pulled: each rAF draws the newest frame at or before the clock.
    The fallback message names the counters it reached, so a timeout shows where startup stalled.
    `CustomDecodeSession.start` posts the generation's `start` to the session's decode worker, the prebuilt `libraries/webgpu-player/CustomDecode.worker.js` keyed per build with `?v=`, which the session's first start creates.
    The worker's first start with decoded PCM audio spawns its audio decode worker, the prebuilt `CustomAudioDecode.worker.js` beside it, which it keeps for its life.
-   Video gets 4 frame credits, or 2 for raw planes.
+   Its first start for a package with a parser spawns its coordinator worker, the prebuilt `GPUDecoderCoordinator.worker.js`, which it keeps for its life too; that worker spawns the parse workers, the prebuilt `GPUDecoderParse.worker.js`, and keeps them while the package plays.
+   Video gets 4 frame credits, 2 for raw planes, or 8 packet credits on the frame-pool route.
 5. The worker prepares its tracks (`canDecode`), scans the static HDR metadata of the first 16 access units or 8 MiB, and posts `ready`.
+   The frame-pool route skips `canDecode`, requires the codec its GPU decoder takes, and adds the track's decoder configuration record, such as an hvcC, as `codecPrivate`.
+   With a parser it opens the attempt's parser before `ready`, which then carries the largest picture the parser declared in the codec private data.
+   The session then creates the GPU decode session, or reuses the previous generation's when its decoder, format, coded size, bit depth, codec private data, and declared maximum match.
    It scans HEVC SEI on the native PQ route, and AV1 MDCV and CLL metadata OBUs when the first sequence header signals PQ and no RPU route is selected.
    Video and audio then stream concurrently.
 6. The session is ready when the first frame is queued and at least 100 ms of PCM has been submitted, or, on the native-media audio route, when the first segment is appended.
@@ -70,10 +79,12 @@ Video is pulled: each rAF draws the newest frame at or before the clock.
 | Thread | Work |
 | --- | --- |
 | main | rAF loop, controller, session, presenter, audio bridges, sink manager, MSE `<audio>` |
-| worker, one per session | demux, video decode, raw copy, Dolby Vision and HDR10+ metadata, Mediabunny's audio decoding (WebCodecs and `@mediabunny/ac3`), fMP4 remux |
-| audio decode worker, one per worker | the bundled E-AC-3, DTS, and TrueHD decoders, the downmix in JavaScript, the resampler and limiter in WebAssembly, and the producer that feeds the worklet |
+| worker, one per session | demux, video decode, raw copy, Dolby Vision and HDR10+ metadata, Mediabunny's audio decoding (WebCodecs and PCM), and fMP4 remux |
+| audio decode worker, one per worker | audio decoder packages, the downmix in JavaScript, the resampler and limiter in WebAssembly, and the producer that feeds the worklet |
+| coordinator worker, one per worker | a video decoder package's parser: each picture's plan and finish in decode order, such as the HEVC parser's motion derivation |
+| parse workers, up to six per coordinator worker, two cores fewer than the device has | the units of a parser's pictures, such as HEVC's CABAC slice data, in parallel |
 | AudioWorklet | 1024-frame chunks in a 2 s ring, gain, play gate, periodic telemetry |
-| GPU | the presenter's queue, which the authorization probes share |
+| GPU | the presenter's queue, which the authorization probes and the frame-pool route's decoder share |
 
 Video credits:
 
@@ -81,16 +92,17 @@ Video credits:
 - A presented `VideoFrame` closes after `submit()`, but its credit returns only after `queue.onSubmittedWorkDone()`.
   This keeps the decoder's surfaces from starving.
 - In raw mode the posted buffer is the credit, and it returns through `recycle-frame`.
+- On the frame-pool route a credit is a packet queued on the page, and it returns once the packet's decode work is submitted.
+  `GPUVideoDecodeFeed` submits the next packet only after the previous submission completed and its status readbacks applied, so presentation queues behind at most one packet of decode work.
+  With a parser, a credit is one picture: the worker reads packets until their pictures run 8 ahead of the credits, a packet still parsing counting as one, so its parse workers stay busy, and a packet without a picture, such as a skipped leading picture, spends none.
+  A presented frame returns its pool slot right after its submit, because the queue orders later decode work behind it.
 - The owned HEVC, AV1, and VP9 paths read a packet only while they hold a credit, then wait up to 10 ms for the decoder to return a frame before reading the next.
   The credit is spent only when a frame is posted, so without that wait a hardware decoder, which answers a few milliseconds after taking a packet, received a whole group of pictures at once (see [Decisions](decisions.md#playback-robustness)).
   Steady playback therefore decodes one packet per presented frame, while seek preroll still runs at decoder speed, because each returned frame ends the wait.
 
 Raw planes:
 
-- A decoded `VideoFrame` is copied into a buffer of 256-byte-aligned rows, which the `frame` message transfers to the page.
-- The bundled HEVC decoder hands each frame over as it drains it, while its planes are in WASM memory.
-  On the raw route the worker writes them into that aligned layout, and the transfer takes the buffer as it is; on the VideoFrame route it writes compact planes and constructs the `VideoFrame` with `transfer`.
-  A frame is copied once on its way to the page, and a Dolby Vision BL and EL once more, into their compound buffer.
+- A decoded `VideoFrame` is copied once, into a buffer of 256-byte-aligned rows, which the `frame` message transfers to the page.
 - A run keeps spare buffers: those the page recycled and those of frames closed unposted.
   A drained frame or a copy takes a spare of its byte length, or a new buffer when none fits, and at most 2 spares of each byte length are kept, as many as the page can hold; a 4K 10-bit frame is about 25 MB.
 
@@ -101,7 +113,7 @@ Audio credits:
   One credit returns per chunk the worklet consumes, with the chunk's buffers, which later chunks reuse.
   The audio decode worker reconciles decoder timestamps within 2 s before the resampler (see [Decisions](decisions.md#audio)), and fails the attempt as `decode-failed` beyond that.
   A gap, an overlap, or an overflow that reaches the producer is therefore an engine fault, and raises `audio-output-failed`.
-- The worker sends each decoded PCM attempt's input in batches that close at 40 ms of media time or 64 inputs: compressed packets for a bundled decoder, or Mediabunny's decoded samples cut to the start.
+- The worker sends each decoded PCM attempt's input in batches that close at 40 ms of media time or 64 inputs: compressed packets for a decoder package, or Mediabunny's decoded samples cut to the start.
   4 batches are in flight at once, and each returns its credit once the audio decode worker has rendered it, so demux runs at most a few batches ahead of the worklet's window.
 - Native-media audio uses 2 MiB or 2 s segments, 2 credits, and appends at most 6 s ahead.
 
@@ -181,6 +193,7 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
 - GPU device loss: one recovery per session.
   The new device must re-authorize the active HDR, Dolby Vision, or raw route before it draws.
   If that fails, `device-recovery-failed` falls back to HTML.
+  The frame-pool route never recovers, because its decoder's references lived on the lost device, so it falls back the same way.
 - Audio sink change (`WebGPUAudioOutputManager`): the default sink is `setSinkId('')`.
   The fallback chain is the selected device, then the default, then the first enumerated device.
   A route whose sink ID is unchanged is left alone, because browsers ignore a same-ID `setSinkId`.
@@ -195,6 +208,7 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
   Chromium moves a default output to a new device without telling the page, which leaves a stale channel count until a rebuild.
 - End of stream: the audio decode worker flushes the resampler and limiter tails, and the worker posts `ended`.
   The controller emits `ended` once the bridge and worklet queues are empty, the output time has reached the end, and the video queues are empty.
+  On the frame-pool route the worker's last packets still decode on the page, so the session ends its video only once the GPU decoder drained its last frame.
 - Audio ends first: the worker posts `audio-ended` (epoch-tagged) when an audio attempt finishes while video continues, and ends the run only once the video track itself has ended.
   The worklet's final underflow releases the audio tail instead of starting an audio wait that would end in `playback-stalled`.
   Unlike the end of stream drain, video waits stay in force and an uncorrelated output does not pause the clock; once the tail is out, video starvation holds the clock.
@@ -202,7 +216,7 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
   A native-media session sends `endOfStream`, so `<audio>` plays out, and the clock then runs without the element.
 - Generation handoff: the session's worker runs one generation at a time, and every run posts `stopped` last.
   A new `start` goes out only after the previous run acknowledged `stopped`, or after the session replaced a worker whose run did not acknowledge within 1 s.
-  The worker also starts a run only after the previous one posted `stopped`, because a stopping run waits for every bundled HEVC decoder in the worker.
+  The worker also starts a run only after the previous one posted `stopped`, because a stopping run releases its decoders and audio attempts first.
   A run's `stopped` also waits until the audio decode worker released the run's decoded PCM attempts.
   A worker is replaced, never reused, after a generation fails, a message fails validation, the worker crashes, or a run's `stopped` asks for it with `replaceWorker`; a start on another video decoder backend also gets a new worker.
   A lost audio decode worker fails its run's decoded PCM as `audio-output-failed`, and the run's `stopped` asks for replacement.
@@ -247,5 +261,6 @@ Every stale callback is dropped by a generation or revision check:
   A later size change fails the session.
 - The negotiated `maximumCoded*` is Jellyfin's cropped `Width` and `Height`, while containers and decoders report block-aligned sizes (mkvmerge can declare 2080 lines for a 2076-line HEVC picture).
   Route checks allow the same 64 px through `exceedsNegotiatedCodedSize`.
-- Jellyfin's cross-origin 206 hides `Content-Range`.
-  It is accepted only for `/Videos/{id}/stream` with a bounded `Content-Length` (`pipeline/HTTPRangeResponse.ts`).
+- A media server's cross-origin 206 may hide `Content-Range`, as Jellyfin's stream endpoint does.
+  Such a response passes only from a path the URL source's `hiddenContentRangePathPattern` names, which the host sets, and only with a `Content-Length` within the requested range (`demux/HTTPRangeResponse.ts`); a source without a pattern needs every 206 to show its `Content-Range`.
+  The Jellyfin plugin sets the pattern of `/Videos/{id}/stream` on the stream URL it plays.

@@ -27,13 +27,15 @@ class GeneratorStep:
 # Every generator whose output is committed.
 # The local playback media generators are run by hand
 GENERATOR_STEPS: Final = (
-    GeneratorStep("generate_dts_capability_vectors.py"),
     # Re-encodes the source streams and compares them with the committed ones before building the module from them
     GeneratorStep("generate_truehd_capability_vectors.py", ("--regenerate-sources",)),
     GeneratorStep("generate_seven_point_one_downmix_reference.py"),
-    GeneratorStep("generate_jpeg2000_capability_vector.py"),
-    GeneratorStep("generate_mpeg2_capability_vector.py"),
     GeneratorStep("generate_HEVC_range_extension_vectors.py"),
+    GeneratorStep("generate_mpeg2_decoder_vectors.py"),
+    GeneratorStep("generate_jpeg2000_decoder_vectors.py"),
+    GeneratorStep("generate_av1_decoder_vectors.py"),
+    # The decoder projects' self-test vectors read the range-extension vectors and the projects' own media above, so they generate after them
+    GeneratorStep("generate_decoder_package_vectors.py"),
     GeneratorStep("generate_dolby_vision_AV1_vectors.py"),
     GeneratorStep("generate_HDR10_plus_AV1_vectors.py"),
     GeneratorStep("generate_HDR10_plus_VP9_vectors.py"),

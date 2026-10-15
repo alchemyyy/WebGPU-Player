@@ -9,11 +9,11 @@ import {
 import {
     isTransferableDolbyVisionEncodedFrameMetadata,
     type TransferableDolbyVisionEncodedFrameMetadata
-} from '../video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
+} from '../demux/dolby-vision/DolbyVisionEncodedMetadataProtocol';
 import {
     isHDR10PlusFrameMetadata,
     type HDR10PlusFrameMetadata
-} from '../video/hdr/HDR10PlusMetadata';
+} from '../demux/hdr/HDR10PlusMetadata';
 import {
     MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH,
     MAXIMUM_NATIVE_AUDIO_SEGMENT_DURATION_MICROSECONDS
@@ -28,11 +28,11 @@ import {
     type RawVideoPlaneDescriptor,
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
-} from '../video/RawVideoFrameCopy';
+} from '../decode/video/RawVideoFrameCopy';
 import {
     isStaticHDRMetadataScanResult,
     type StaticHDRMetadataScanResult
-} from '../video/hdr/StaticHDRMetadata';
+} from '../demux/hdr/StaticHDRMetadata';
 import type { CustomAudioOutputChannelCount } from '../audio/processing/CustomAudioChannelLayout';
 import {
     assertValidAudioDownmixSettings,
@@ -43,18 +43,40 @@ import {
     type CustomAudioDownmixAlgorithm
 } from '../audio/processing/CustomAudioDownmixAlgorithm';
 import { isSupportedCustomAudioSampleRate } from '../audio/CustomAudioSampleRate';
-import { isDolbyVisionDualLayerProfile } from '../video/dolby-vision/DolbyVisionProfiles';
-import { isCustomDecodeMediaSource, type CustomDecodeMediaSource } from './CustomDecodeMediaSource';
+import { isAudioDecoderPackageSelection, type AudioDecoderPackageSelection } from '../decode/audio/AudioDecoderPackageInstance';
+import { isDecoderPackageVersion, type DecoderPackageVersion } from '../decode/packages/DecoderPackageIdentity';
+import { isDolbyVisionDualLayerProfile } from '../demux/dolby-vision/DolbyVisionProfiles';
+import {
+    GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH,
+    GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH,
+    MAXIMUM_GPU_DECODE_OUTPUT_EVENTS
+} from '../decode/video/gpu/GPUDecodeLimits';
+import { isGPUDecoderOutputFormat, type GPUDecoderOutputFormat } from '../decode/video/gpu/GPUDecodeFormats';
+import type { GPUDecoderParserModule } from '../decode/video/gpu/GPUDecoderParser';
+import { isGPUDecoderParserModule } from '../decode/video/gpu/GPUDecoderParseProtocol';
+import { isGPUDecoderPictureSize, isGPUDecoderRepeatCounts, type GPUDecoderPictureSize } from '../decode/video/gpu/GPUDecodeTypes';
+import { isCustomDecodeMediaSource, type CustomDecodeMediaSource } from '../demux/CustomDecodeMediaSource';
 
 export const MAX_DECODED_FRAME_CREDITS = 4;
 export const MAX_DECODED_RAW_FRAME_CREDITS = MAXIMUM_OUTSTANDING_RAW_FRAME_TRANSFER_COUNT;
+/**
+ * Compressed packets, or a parser's pictures, the GPU decode route keeps queued on the page ahead of its decoder;
+ * each returns its credit once its decode work is submitted.
+ */
+export const MAX_GPU_DECODE_PACKET_CREDITS = 8;
+/** The most video credits any route holds, which bounds a returned credit count before the route is known. */
+const MAXIMUM_VIDEO_CREDITS = Math.max(MAX_DECODED_FRAME_CREDITS, MAX_DECODED_RAW_FRAME_CREDITS, MAX_GPU_DECODE_PACKET_CREDITS);
 export const MAX_DECODED_AUDIO_SAMPLE_CREDITS = 8;
 export const MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE = 65_536;
 export const MAX_DECODED_AUDIO_CHANNELS = 32;
 export const MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT = 512;
 const MAXIMUM_CODEC_ASSET_URL_LENGTH = 2_048;
 
-export type CustomDecodeVideoOutputMode = 'raw-planes' | 'video-frame';
+/**
+ * How decoded video reaches the presenter: a VideoFrame, raw planes in a transferred buffer, or a GPU decoder's frame pool on the presenter's device.
+ * On the frame-pool route the worker decodes nothing; it posts compressed packets.
+ */
+export type CustomDecodeVideoOutputMode = 'frame-pool' | 'raw-planes' | 'video-frame';
 export type CustomDecodeRawVideoFrameFormat =
     | 'I420'
     | 'I420P10'
@@ -65,11 +87,8 @@ export type CustomDecodeRawVideoFrameFormat =
     | 'I444'
     | 'I444P10'
     | 'I444P12';
-export type CustomDecodeVideoDecoderBackend =
-    | 'bundled-hevc'
-    | 'ffmpeg-mpeg2-vc1'
-    | 'native'
-    | 'openjpeg';
+/** The video decoder of a route: the browser's WebCodecs decoder, or a GPU decoder package on the presenter's device, which the frame-pool route alone uses. */
+export type CustomDecodeVideoDecoderBackend = 'gpu' | 'native';
 export type CustomDecodeAudioOutputMode = 'decoded-pcm' | 'native-media';
 /** An RPU reconstruction route: Profiles 4 and 7 are dual-layer, Profiles 5 and 8 single-layer. */
 export type CustomDecodeDolbyVisionProfile = 4 | 5 | 7 | 8 | null;
@@ -103,37 +122,44 @@ function requiresSoftwareRawPlaneDecode(videoCodec: VideoCodec | null): boolean 
  */
 export function getCustomDecodeHardwareAcceleration(
     videoOutputMode: CustomDecodeVideoOutputMode,
-    videoDecoderBackend: CustomDecodeVideoDecoderBackend = 'native',
     hardwareOutputRequired = false,
     videoCodec: VideoCodec | null = null
 ): HardwareAcceleration {
-    if (videoDecoderBackend !== 'native') {
-        return 'prefer-software';
-    }
     switch (videoOutputMode) {
         case 'raw-planes':
             return requiresSoftwareRawPlaneDecode(videoCodec) ? 'prefer-software' : 'no-preference';
         case 'video-frame':
             return hardwareOutputRequired ? 'prefer-hardware' : 'no-preference';
+        case 'frame-pool':
+            // The frame-pool route decodes on the presenter's GPU and opens no WebCodecs decoder
+            return 'no-preference';
+    }
+}
+
+/** Returns the video credits a route holds: frames in flight to the page, or, on the frame-pool route, packets queued ahead of its GPU decoder. */
+export function getVideoCreditLimit(videoOutputMode: CustomDecodeVideoOutputMode): number {
+    switch (videoOutputMode) {
+        case 'frame-pool':
+            return MAX_GPU_DECODE_PACKET_CREDITS;
+        case 'raw-planes':
+            return MAX_DECODED_RAW_FRAME_CREDITS;
+        case 'video-frame':
+            return MAX_DECODED_FRAME_CREDITS;
     }
 }
 
 /**
  * Returns the acceleration preference of a start request's video route on its track's codec.
- * The codec is null for a bundled decoder outside WebCodecs.
+ * The codec is null for a track Mediabunny maps no codec to, which only a GPU decoder reads.
  * On a native VideoFrame route, neutralized color marks the external HDR route and the native Dolby Vision base, and a Dolby Vision profile marks external Profile 5.
  * Both present the decoder's opaque hardware output.
  */
 export function getCustomDecodeRequestHardwareAcceleration(
-    request: Pick<
-        DecodeWorkerStartRequest,
-        'dolbyVisionProfile' | 'neutralizeHDRColorMetadata' | 'videoDecoderBackend' | 'videoOutputMode'
-    >,
+    request: Pick<DecodeWorkerStartRequest, 'dolbyVisionProfile' | 'neutralizeHDRColorMetadata' | 'videoOutputMode'>,
     videoCodec: VideoCodec | null
 ): HardwareAcceleration {
     return getCustomDecodeHardwareAcceleration(
         request.videoOutputMode,
-        request.videoDecoderBackend,
         request.neutralizeHDRColorMetadata || request.dolbyVisionProfile !== null,
         videoCodec
     );
@@ -154,17 +180,22 @@ export type DecodeWorkerStartRequest = {
     audioDownmixSettings?: AudioDownmixSettings
     /** Defaults to decoded-pcm. */
     audioOutputMode?: CustomDecodeAudioOutputMode
+    /** The host's audio decoder package that decodes the decoded PCM route's track, and the codec it decodes it as; absent for the engine's own decoders */
+    audioPackageDecoder?: AudioDecoderPackageSelection
     audioSampleCredits: number
     /** Zero-based ordinal within input.getAudioTracks(), not a Jellyfin stream index. */
     audioTrackIndex: number | null
     /** Defaults to stereo and is valid only for decoded PCM audio. */
     decodedAudioOutputChannelCount?: CustomAudioOutputChannelCount
-    /** Asks a dual-layer route to leave its EL undecoded, because no qualified decoder decodes it. */
-    discardDolbyVisionEnhancementLayer?: boolean
     dolbyVisionProfile: CustomDecodeDolbyVisionProfile
     dolbyVisionRPUParserWASMURL: string
+    /** The route's video credits: frames on the decoding routes, packets on the frame-pool route */
     frameCredits: number
     generation: number
+    /** The codec family the GPU decoder takes, by the engine's codec names, which the track must have; set exactly on the frame-pool route */
+    gpuVideoCodec?: string
+    /** The decoder package's parser, which turns the frame-pool route's packets into what its GPU decoder reads; absent for a decoder that reads packets */
+    gpuVideoParser?: DecodeWorkerGPUVideoParser
     maximumCodedHeight: number
     maximumCodedWidth: number
     nativeHDRTransfer: CustomDecodeNativeHDRTransfer
@@ -305,6 +336,8 @@ export type DecodeWorkerReadyAudioConfiguration =
 export type DecodeWorkerReadyResponse = {
     audio: DecodeWorkerReadyAudioConfiguration | null
     codec: string
+    /** The track's decoder configuration record, such as an hvcC, which the GPU decoder reads; sent on the frame-pool route when the track has one */
+    codecPrivate?: ArrayBuffer
     codedHeight: number
     codedWidth: number
     /** The duration in the container's metadata, sent only when the start request asked for it */
@@ -312,6 +345,11 @@ export type DecodeWorkerReadyResponse = {
     displayHeight: number
     displayWidth: number
     generation: number
+    /**
+     * The largest picture the track's codec private data declares, such as an AV1 sequence header's maximum frame size, which the decoder package's parser read;
+     * sent on the frame-pool route when the parser declared one, so the session may size its pool for it
+     */
+    maximumPictureSize?: GPUDecoderPictureSize
     staticHDRMetadataScan?: StaticHDRMetadataScanResult
     type: 'ready'
 };
@@ -342,6 +380,40 @@ export type DecodeWorkerRawFrameResponse = DecodeWorkerFrameResponseBase & {
 export type DecodeWorkerFrameResponse =
     | DecodeWorkerRawFrameResponse
     | DecodeWorkerVideoFrameResponse;
+
+/** A decoder package's parser as the decode worker runs it: its module, its memory and error names, and the package's id and content hash. */
+export type DecodeWorkerGPUVideoParser = Readonly<{
+    packageVersion: DecoderPackageVersion
+    parser: GPUDecoderParserModule
+}>;
+
+/**
+ * A compressed packet of the frame-pool route, in decode order, which the page's GPU decoder decodes, or the GPU record of one picture the decoder's parser made of one.
+ * Every picture of a packet takes the packet's timestamp, duration, and keyframe flag.
+ * It spends one video credit, which returns once its decode work is submitted.
+ */
+export type DecodeWorkerPacketResponse = {
+    data: ArrayBuffer
+    durationMicroseconds: Microseconds
+    /** The output format the picture decodes into, when its parser reported one; a format other than the session's starts a session for it */
+    format?: GPUDecoderOutputFormat
+    generation: number
+    /** The HDR10+ state of the packet, with the last metadata of the run carried in decode order; on a packet's first picture */
+    HDR10PlusMetadata?: HDR10PlusFrameMetadata
+    keyframe: boolean
+    /** The largest picture of the picture's sequence, when its parser reported one; a session too small for it is replaced */
+    maximumPictureSize?: GPUDecoderPictureSize
+    /** The parser's output events since the previous picture; present exactly when the decoder has a parser */
+    outputEvents?: Uint32Array
+    /** How many times the picture's record runs each `repeat:` directive of the decoder's header; present exactly when the decoder has a parser */
+    repeatCounts?: readonly number[]
+    timestampMicroseconds: Microseconds
+    type: 'packet'
+    /** Omitted epochs mean the initial video attempt, epoch zero. */
+    videoEpoch?: number
+    /** The picture's own visible size, which its frame presents; omitted for a picture that keeps the stream's visible rectangle */
+    visibleSize?: GPUDecoderPictureSize
+};
 
 /** Reports one chunk the producer posted to the AudioWorklet processor, without its PCM, for readiness, telemetry, and the end-of-stream drain */
 export type DecodeWorkerAudioProgressResponse = {
@@ -412,6 +484,8 @@ export type DecodeWorkerVideoInterruptedResponse = {
 /** Reports the video track's end while audio may still continue. */
 export type DecodeWorkerVideoEndedResponse = {
     generation: number
+    /** On the frame-pool route, the output events the parser decided in the last packets, which had no picture to carry them */
+    outputEvents?: Uint32Array
     type: 'video-ended'
     videoEpoch: number
 };
@@ -448,6 +522,7 @@ export type DecodeWorkerResponse =
     | DecodeWorkerFrameResponse
     | DecodeWorkerNativeAudioInitializationResponse
     | DecodeWorkerNativeAudioMediaResponse
+    | DecodeWorkerPacketResponse
     | DecodeWorkerProgressResponse
     | DecodeWorkerReadyResponse
     | DecodeWorkerStoppedResponse
@@ -467,8 +542,9 @@ function isMicroseconds(value: unknown): value is Microseconds {
     return Number.isSafeInteger(value);
 }
 
-function isFrameCredit(value: unknown): value is number {
-    return Number.isSafeInteger(value) && Number(value) > 0 && Number(value) <= MAX_DECODED_FRAME_CREDITS;
+/** Validates returned video credits; the worker caps them at its route's own limit. */
+function isVideoCredit(value: unknown): value is number {
+    return Number.isSafeInteger(value) && Number(value) > 0 && Number(value) <= MAXIMUM_VIDEO_CREDITS;
 }
 
 function isAudioSampleCredit(value: unknown, allowZero: boolean): value is number {
@@ -515,12 +591,14 @@ function isCodedDimension(value: unknown): value is number {
     return isPositiveInteger(value);
 }
 
-function isVideoOutputMode(value: unknown): value is CustomDecodeVideoOutputMode {
-    return value === 'raw-planes' || value === 'video-frame';
+/** Validates a video output mode received across a module or worker boundary. */
+export function isVideoOutputMode(value: unknown): value is CustomDecodeVideoOutputMode {
+    return value === 'frame-pool' || value === 'raw-planes' || value === 'video-frame';
 }
 
-function isVideoDecoderBackend(value: unknown): value is CustomDecodeVideoDecoderBackend {
-    return value === 'bundled-hevc' || value === 'ffmpeg-mpeg2-vc1' || value === 'native' || value === 'openjpeg';
+/** Validates a video decoder backend received across a module or worker boundary. */
+export function isVideoDecoderBackend(value: unknown): value is CustomDecodeVideoDecoderBackend {
+    return value === 'gpu' || value === 'native';
 }
 
 function isNativeHDRTransfer(value: unknown): value is CustomDecodeNativeHDRTransfer {
@@ -972,12 +1050,55 @@ function hasValidOptionalAudioDownmix(value: Record<string, unknown>): boolean {
         && (value.audioDownmixSettings === undefined || isAudioDownmixSettings(value.audioDownmixSettings));
 }
 
-/** Only a dual-layer route has an EL to discard. */
-function hasValidDiscardedEnhancementLayer(value: Record<string, unknown>): boolean {
-    return isOptionalBoolean(value.discardDolbyVisionEnhancementLayer)
-        && (value.discardDolbyVisionEnhancementLayer !== true
-            || (isDolbyVisionProfile(value.dolbyVisionProfile)
-                && isDolbyVisionDualLayerProfile(value.dolbyVisionProfile)));
+/** The output mode's frame format: a planar format for raw planes and the frame pool, none for a VideoFrame. */
+function hasValidVideoOutputFormat(value: Record<string, unknown>): boolean {
+    switch (value.videoOutputMode) {
+        case 'frame-pool':
+        case 'raw-planes':
+            return isRawVideoFrameFormat(value.rawVideoFrameFormat);
+        case 'video-frame':
+            return value.rawVideoFrameFormat === null;
+        default:
+            return false;
+    }
+}
+
+/**
+ * The frame-pool route, and it alone, takes the GPU decoder backend and names the codec family its decoder takes.
+ * It presents planes without Dolby Vision reconstruction or native color handling.
+ */
+function hasValidFramePoolRoute(value: Record<string, unknown>): boolean {
+    const framePool = value.videoOutputMode === 'frame-pool';
+    if (framePool !== (value.videoDecoderBackend === 'gpu')) {
+        return false;
+    }
+    if (!framePool) {
+        return value.gpuVideoCodec === undefined && value.gpuVideoParser === undefined;
+    }
+    const parser = value.gpuVideoParser;
+    return typeof value.gpuVideoCodec === 'string'
+        && value.gpuVideoCodec.length > 0
+        && (parser === undefined || (isRecord(parser) && isDecoderPackageVersion(parser.packageVersion) && isGPUDecoderParserModule(parser.parser)))
+        && value.dolbyVisionProfile === null
+        && value.neutralizeHDRColorMetadata === false
+        && value.nativeHDRTransfer === null;
+}
+
+/** A start grants its route's whole credit window: the raw and frame-pool windows exactly, at most the VideoFrame one. */
+function hasValidStartVideoCredits(value: Record<string, unknown>): boolean {
+    if (!isVideoCredit(value.frameCredits)) {
+        return false;
+    }
+    switch (value.videoOutputMode) {
+        case 'frame-pool':
+            return value.frameCredits === MAX_GPU_DECODE_PACKET_CREDITS;
+        case 'raw-planes':
+            return value.frameCredits === MAX_DECODED_RAW_FRAME_CREDITS;
+        case 'video-frame':
+            return value.frameCredits <= MAX_DECODED_FRAME_CREDITS;
+        default:
+            return false;
+    }
 }
 
 function isAudioPullRequest(value: Record<string, unknown>): boolean {
@@ -1028,27 +1149,11 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
             const audioOutputMode = value.audioOutputMode ?? 'decoded-pcm';
             const hasValidDecodedAudioOutput = isValidDecodedAudioOutputSelection(value, audioOutputMode, hasAudioTrack);
             const hasValidAudioDownmixAlgorithm = isValidAudioDownmixAlgorithmSelection(value, audioOutputMode, hasAudioTrack);
-            const hasValidVideoOutput = value.videoOutputMode === 'raw-planes' ?
-                isRawVideoFrameFormat(value.rawVideoFrameFormat) :
-                value.videoOutputMode === 'video-frame'
-                    && value.rawVideoFrameFormat === null;
-            const hasValidOpenJPEGRoute = value.videoDecoderBackend !== 'openjpeg'
-                || (value.videoOutputMode === 'video-frame'
-                    && value.rawVideoFrameFormat === null
-                    && value.dolbyVisionProfile === null
-                    && value.neutralizeHDRColorMetadata === false
-                    && value.nativeHDRTransfer === null);
-            const hasValidMPEG2VC1Route = value.videoDecoderBackend !== 'ffmpeg-mpeg2-vc1'
-                || (value.videoOutputMode === 'video-frame'
-                    && value.rawVideoFrameFormat === null
-                    && value.dolbyVisionProfile === null
-                    && value.neutralizeHDRColorMetadata === false
-                    && value.nativeHDRTransfer === null);
+            const hasValidVideoOutput = hasValidVideoOutputFormat(value);
             return isCustomDecodeMediaSource(value.source)
                 && isOptionalBoolean(value.reportContainerDuration)
                 && isOptionalBoolean(value.timingTrace)
                 && isDolbyVisionProfile(value.dolbyVisionProfile)
-                && hasValidDiscardedEnhancementLayer(value)
                 && isCodecAssetURL(value.dolbyVisionRPUParserWASMURL)
                 && isMicroseconds(value.startTimeMicroseconds)
                 && isTrackIndex(value.videoTrackIndex)
@@ -1066,14 +1171,14 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                     value.nativeHDRTransfer === null)
                 && hasValidVideoOutput
                 && hasValidRawVideoCopyLayout(value)
-                && hasValidOpenJPEGRoute
-                && hasValidMPEG2VC1Route
-                && isFrameCredit(value.frameCredits)
-                && (value.videoOutputMode !== 'raw-planes' || value.frameCredits === MAX_DECODED_RAW_FRAME_CREDITS)
+                && hasValidFramePoolRoute(value)
+                && hasValidStartVideoCredits(value)
                 && (hasAudioTrack || hasNoAudioTrack)
                 && isAudioOutputMode(audioOutputMode)
                 && hasValidDecodedAudioOutput
                 && hasValidAudioDownmixAlgorithm
+                && (value.audioPackageDecoder === undefined
+                    || (hasAudioTrack && audioOutputMode === 'decoded-pcm' && isAudioDecoderPackageSelection(value.audioPackageDecoder)))
                 && (hasAudioTrack || value.audioOutputMode === undefined)
                 && hasValidAudioCredits
                 && (hasAudioTrack || Number(value.audioSampleCredits) === 0);
@@ -1081,7 +1186,7 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
         case 'attach-audio-output':
             return isAudioOutputAttachRequest(value);
         case 'pull':
-            return isFrameCredit(value.frameCredits);
+            return isVideoCredit(value.frameCredits);
         case 'pull-audio':
             return isAudioPullRequest(value);
         case 'recycle-frame':
@@ -1132,6 +1237,66 @@ function isDecodeWorkerFrameResponse(value: Record<string, unknown>): boolean {
     }
 }
 
+/** A decoder configuration record within the GPU decode route's codec private bound. */
+function isCodecPrivate(value: unknown): value is ArrayBuffer {
+    return value instanceof ArrayBuffer
+        && value.byteLength > 0
+        && value.byteLength <= GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH;
+}
+
+function isDecodeWorkerPacketResponse(value: Record<string, unknown>): boolean {
+    return value.data instanceof ArrayBuffer
+        && value.data.byteLength > 0
+        && value.data.byteLength <= GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH
+        && isMicroseconds(value.timestampMicroseconds)
+        && isMicroseconds(value.durationMicroseconds)
+        && Number(value.durationMicroseconds) >= 0
+        && typeof value.keyframe === 'boolean'
+        && (value.format === undefined || (typeof value.format === 'string' && isGPUDecoderOutputFormat(value.format)))
+        && hasValidOptionalHDR10PlusMetadata(value)
+        && (value.maximumPictureSize === undefined || isGPUDecoderPictureSize(value.maximumPictureSize))
+        && hasValidOptionalOutputEvents(value)
+        && (value.repeatCounts === undefined || isGPUDecoderRepeatCounts(value.repeatCounts))
+        && (value.visibleSize === undefined || isGPUDecoderPictureSize(value.visibleSize))
+        && (value.videoEpoch === undefined || isVideoEpoch(value.videoEpoch, true));
+}
+
+/** A parser's output events, when a message carries any, fit the bound a packet's do. */
+function hasValidOptionalOutputEvents(value: Record<string, unknown>): boolean {
+    return value.outputEvents === undefined
+        || (value.outputEvents instanceof Uint32Array && value.outputEvents.length <= MAXIMUM_GPU_DECODE_OUTPUT_EVENTS);
+}
+
+function isDecodeWorkerReadyResponse(value: Record<string, unknown>): boolean {
+    return typeof value.codec === 'string'
+        && value.codec.length > 0
+        && isPositiveInteger(value.codedHeight)
+        && isPositiveInteger(value.codedWidth)
+        && isPositiveInteger(value.displayHeight)
+        && isPositiveInteger(value.displayWidth)
+        && (value.audio === null || isAudioConfiguration(value.audio))
+        && (!Object.prototype.hasOwnProperty.call(value, 'containerDurationMicroseconds')
+            || (isMicroseconds(value.containerDurationMicroseconds)
+                && Number(value.containerDurationMicroseconds) > 0))
+        && (!Object.prototype.hasOwnProperty.call(value, 'staticHDRMetadataScan')
+            || isStaticHDRMetadataScanResult(value.staticHDRMetadataScan))
+        && (value.codecPrivate === undefined || isCodecPrivate(value.codecPrivate))
+        && (value.maximumPictureSize === undefined || isGPUDecoderPictureSize(value.maximumPictureSize));
+}
+
+function isNativeAudioMediaResponse(value: Record<string, unknown>): boolean {
+    if (!(value.data instanceof ArrayBuffer)
+        || value.data.byteLength <= 0
+        || value.data.byteLength > MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH
+        || !isMicroseconds(value.startTimeMicroseconds)
+        || !isMicroseconds(value.endTimeMicroseconds)) {
+        return false;
+    }
+    const durationMicroseconds = Number(value.endTimeMicroseconds) - Number(value.startTimeMicroseconds);
+    return durationMicroseconds > 0
+        && durationMicroseconds <= MAXIMUM_NATIVE_AUDIO_SEGMENT_DURATION_MICROSECONDS;
+}
+
 /** Validates a worker response before it mutates the active session. */
 export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerResponse {
     if (!isRecord(value) || !isGeneration(value.generation)) {
@@ -1140,38 +1305,19 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
 
     switch (value.type) {
         case 'ready':
-            return typeof value.codec === 'string'
-                && value.codec.length > 0
-                && isPositiveInteger(value.codedHeight)
-                && isPositiveInteger(value.codedWidth)
-                && isPositiveInteger(value.displayHeight)
-                && isPositiveInteger(value.displayWidth)
-                && (value.audio === null || isAudioConfiguration(value.audio))
-                && (!Object.prototype.hasOwnProperty.call(value, 'containerDurationMicroseconds')
-                    || (isMicroseconds(value.containerDurationMicroseconds)
-                        && Number(value.containerDurationMicroseconds) > 0))
-                && (!Object.prototype.hasOwnProperty.call(value, 'staticHDRMetadataScan')
-                    || isStaticHDRMetadataScanResult(value.staticHDRMetadataScan));
+            return isDecodeWorkerReadyResponse(value);
         case 'frame':
             return isDecodeWorkerFrameResponse(value);
+        case 'packet':
+            return isDecodeWorkerPacketResponse(value);
         case 'audio-progress':
             return isAudioProgressResponse(value);
         case 'native-audio-init':
             return value.data instanceof ArrayBuffer
                 && value.data.byteLength > 0
                 && value.data.byteLength <= MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH;
-        case 'native-audio-media': {
-            if (!(value.data instanceof ArrayBuffer)
-                || value.data.byteLength <= 0
-                || value.data.byteLength > MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH
-                || !isMicroseconds(value.startTimeMicroseconds)
-                || !isMicroseconds(value.endTimeMicroseconds)) {
-                return false;
-            }
-            const durationMicroseconds = Number(value.endTimeMicroseconds) - Number(value.startTimeMicroseconds);
-            return durationMicroseconds > 0
-                && durationMicroseconds <= MAXIMUM_NATIVE_AUDIO_SEGMENT_DURATION_MICROSECONDS;
-        }
+        case 'native-audio-media':
+            return isNativeAudioMediaResponse(value);
         case 'progress':
             return isCustomDecodeWorkerProgressPhase(value.phase)
                 && isVideoStartupProgressPacketCount(value.packetCount)
@@ -1190,7 +1336,7 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
                 && Number(value.channelCount) <= MAX_DECODED_AUDIO_CHANNELS
                 && isSupportedCustomAudioSampleRate(value.sampleRate);
         case 'video-ended':
-            return isVideoEpoch(value.videoEpoch, true);
+            return isVideoEpoch(value.videoEpoch, true) && hasValidOptionalOutputEvents(value);
         case 'video-interrupted':
             return value.reason === 'decoder-reclaimed' && isVideoEpoch(value.videoEpoch, true);
         case 'timing-trace':

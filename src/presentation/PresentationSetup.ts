@@ -2,6 +2,7 @@
 // A host calls these around the engine's eligibility; they keep no state, so the host's play options, eligibility, and generations stay its own.
 import {
     getDolbyVisionReconstructionRawFrameFormat,
+    getGPUVideoDecodeTarget,
     type CustomPlaybackEligibility,
     type CustomPlaybackEligibilityOptions
 } from '../capability/CustomPlaybackEligibility';
@@ -12,12 +13,12 @@ import type {
     CustomDecodeRawVideoFrameFormat,
     CustomDecodeVideoOutputMode
 } from '../pipeline/DecodeWorkerProtocol';
-import { getStaticHDRToneMappingPeakNits, type StaticHDRMetadata } from '../video/hdr/StaticHDRMetadata';
+import { getStaticHDRToneMappingPeakNits, type StaticHDRMetadata } from '../demux/hdr/StaticHDRMetadata';
 import {
     getRawFormatBitDepth,
     isRawDolbyVisionVideoFrameFormat,
     type RawDolbyVisionVideoFrameFormat
-} from '../video/RawVideoFrameCopy';
+} from '../decode/video/RawVideoFrameCopy';
 import { getExternalHDRAuthorizationRouteKey, type ExternalHDRAuthorizationRouteKey } from '../validation/ExternalHDRPresentationAuthorization';
 import type { RawHDRAuthorizationRouteKey } from '../validation/RawHDRPresentationAuthorization';
 import {
@@ -34,6 +35,19 @@ import {
     isKnownSDRPresentationInput,
     type DolbyVisionPresentationDescriptor
 } from './PresentationInput';
+import type {
+    GPUVideoDecodeHandle,
+    GPUVideoDecodeSessionFactory,
+    GPUVideoDecodeSessionRequest
+} from '../decode/video/gpu/GPUVideoDecodeFeed';
+import { isGPUDecoderOutputFormat } from '../decode/video/gpu/GPUDecodeFormats';
+import type { VideoDecoderPackage } from '../decode/packages/DecoderPackage';
+import { describeGPUDecoderErrorWord } from '../decode/video/gpu/GPUDecoderManifest';
+import { selectGPUDecodeSessionStream } from '../decode/video/gpu/GPUDecoderStreamFit';
+import { GPUVideoDecodeError } from '../decode/video/gpu/GPUDecodeTypes';
+import { getGPUFramePoolByteLimit } from '../decode/video/gpu/GPUFramePool';
+import { createGPUVideoDecoderOffer, type GPUVideoDecoderOffer } from '../decode/video/gpu/GPUVideoDecoderCatalog';
+import GPUVideoDecodeSession from '../decode/video/gpu/GPUVideoDecodeSession';
 import { createDefaultRenderSettings, type HDRToSDRRenderSettings, type RenderSettings } from './RenderSettings';
 import type WebGPUPresenter from './WebGPUPresenter';
 import type { DolbyVisionReconstructionTarget } from './WebGPUPresenter';
@@ -62,6 +76,7 @@ export type CustomPresentationEligibilityOptions = Pick<
     | 'allowDolbyVision'
     | 'allowDolbyVisionProfile4'
     | 'allowDolbyVisionProfile7'
+    | 'allowFramePoolHDR'
     | 'allowNativeDolbyVision'
     | 'allowNativeDolbyVisionProfile7HDR10Base'
     | 'allowNativeDolbyVisionProfile8HDR10Base'
@@ -135,6 +150,7 @@ export const DOLBY_VISION_HLG_BASE_COLOR_METADATA = Object.freeze(createHLGColor
 export const UNAUTHORIZED_PRESENTATION_ELIGIBILITY_OPTIONS: CustomPresentationEligibilityOptions = Object.freeze({
     allowDolbyVision: false,
     allowDolbyVisionProfile7: false,
+    allowFramePoolHDR: false,
     allowNativeDolbyVision: false,
     allowNativeHDR: false,
     allowRawHDR: false,
@@ -328,6 +344,7 @@ function createSDRPresentationOptions(
     return {
         allowDolbyVision: false,
         allowDolbyVisionProfile7: false,
+        allowFramePoolHDR: false,
         allowNativeDolbyVision: false,
         allowNativeHDR: false,
         allowRawHDR: false,
@@ -400,6 +417,8 @@ export async function getCustomPresentationEligibilityOptions(
     );
     return {
         ...getRawDolbyVisionRouteFlags(presenter, input.dolbyVisionDescriptor, reconstructionTarget),
+        // A GPU decoder's vector stands in for authorization, so its HDR needs only the host's tone mapping
+        allowFramePoolHDR: rawHDRRequested,
         allowNativeDolbyVision: dolbyVisionRequested && presenter.isExternalDolbyVisionPresentationAuthorized(),
         allowNativeDolbyVisionProfile7HDR10Base: profile7HDR10BaseRequested
             && hasAuthorizedDolbyVisionBaseRoute(DOLBY_VISION_HDR10_BASE_COLOR_METADATA, authorizedExternalHDRRouteKeys),
@@ -477,6 +496,28 @@ function configureDolbyVisionColorPipeline(
     }, generation);
 }
 
+/** Presents a GPU decoder's frame pool in its output format: SDR as decoded, HDR through the host's render configuration. */
+function configureFramePoolColorPipeline(
+    presenter: WebGPUPresenter,
+    request: ColorPipelineRequest,
+    metadata: InputColorMetadata
+): Promise<boolean> {
+    const format = request.rawVideoFrameFormat;
+    if (format === null || !isGPUDecoderOutputFormat(format) || getRawFormatBitDepth(format) !== metadata.bitDepth) {
+        return Promise.resolve(false);
+    }
+    if (metadata.transfer === 'sdr') {
+        request.clearDetectedInputPeak();
+        return presenter.configureColorPipeline({ format, inputMode: 'frame-pool', metadata, settings: createDefaultRenderSettings() }, request.generation);
+    }
+    return presenter.configureColorPipeline({
+        ...request.createHDRRenderConfiguration(metadata.nominalPeakNits),
+        format,
+        inputMode: 'frame-pool',
+        metadata
+    }, request.generation);
+}
+
 function configureColorMetadataPipeline(
     presenter: WebGPUPresenter,
     request: ColorPipelineRequest,
@@ -485,6 +526,9 @@ function configureColorMetadataPipeline(
     const { generation, rawVideoFrameFormat, videoOutputMode } = request;
     if (!metadata) {
         return Promise.resolve(false);
+    }
+    if (videoOutputMode === 'frame-pool') {
+        return configureFramePoolColorPipeline(presenter, request, metadata);
     }
     if (metadata.transfer === 'sdr') {
         request.clearDetectedInputPeak();
@@ -571,6 +615,70 @@ export function configurePresentationColorPipeline(presenter: WebGPUPresenter, r
         return Promise.resolve(false);
     }
     return configureDolbyVisionColorPipeline(presenter, request, request.dolbyVisionProfile);
+}
+
+/**
+ * Returns the GPU decoders a playback of the options' video may choose on the presenter's device, the eligibility's gpuVideoDecoders option.
+ * Only the packages that decode the stream's codec into its output format are offered, in the order the host lists them, so a host lists the ones it prefers first.
+ * Nothing is verified here: a host that wants a package checked on the device calls verifyGPUDecoderPackage before it lists the package.
+ * None when the stream has no GPU decode target or the device allows no frame pool.
+ */
+export async function getGPUVideoDecoderOffers(
+    presenter: WebGPUPresenter,
+    packages: readonly VideoDecoderPackage[],
+    options: unknown
+): Promise<readonly GPUVideoDecoderOffer[]> {
+    const target = getGPUVideoDecodeTarget(options);
+    if (target === null) {
+        return [];
+    }
+    const candidates = packages.filter((decoderPackage: VideoDecoderPackage): boolean => decoderPackage.manifest.accepts.codecs.includes(target.codec)
+        && decoderPackage.manifest.outputFormats.includes(target.format));
+    if (candidates.length === 0) {
+        return [];
+    }
+    // The device's largest whole storage binding bounds the frame pool and each of the decoder's buffers alike
+    const maximumBufferByteLength = await presenter.getGPUFramePoolByteLimit();
+    if (maximumBufferByteLength === null) {
+        return [];
+    }
+    return candidates.map((decoderPackage: VideoDecoderPackage): GPUVideoDecoderOffer => createGPUVideoDecoderOffer(decoderPackage, target.format, maximumBufferByteLength));
+}
+
+/**
+ * Returns the factory a controller's frame-pool route creates its GPU decode sessions with: the selected package's decoder for the stream's format, compiled on the presenter's device.
+ * The device keeps the compiled decoder under the package's id and output format, so a later session of the same package version and format compiles nothing.
+ * A session takes the largest picture the decoder's parser declared, rounded up to whole coding blocks, when the decoder fits it on the device, and the container's size otherwise.
+ */
+export function createGPUVideoDecodeSessionFactory(presenter: WebGPUPresenter): GPUVideoDecodeSessionFactory {
+    return async (request: GPUVideoDecodeSessionRequest): Promise<GPUVideoDecodeHandle> => {
+        const manifest = request.decoder.package.manifest;
+        const device = await presenter.getGPUVideoDecodeDevice();
+        if (!device) {
+            throw new GPUVideoDecodeError({ code: 'device-unavailable', detail: 'the presenter has no device' });
+        }
+        const stream = selectGPUDecodeSessionStream(
+            manifest,
+            request.format,
+            request.stream,
+            request.maximumPictureSize,
+            getGPUFramePoolByteLimit(device.limits),
+            request.fallbackPictureSize ?? null
+        );
+        const session = await GPUVideoDecodeSession.create({
+            codecPrivate: request.codecPrivate,
+            decoderPackage: request.decoder.package,
+            device,
+            format: request.format,
+            manifest,
+            stream
+        });
+        return {
+            describeDecoderError: (errorWord: number): string => describeGPUDecoderErrorWord(manifest.errors, errorWord),
+            device,
+            session
+        };
+    };
 }
 
 /**

@@ -13,7 +13,7 @@ import {
     processEncodedYUV,
     type ColorTriplet
 } from '../color/ColorPipeline';
-import { rewriteHEVCAccessUnitColorDescriptionToBT709 } from '../video/dolby-vision/DolbyVisionHEVCSplitter';
+import { rewriteHEVCAccessUnitColorDescriptionToBT709 } from '../demux/dolby-vision/DolbyVisionHEVCSplitter';
 import { createBuiltinChain } from '../presentation/passes/builtin/BuiltinChains';
 import type { BuiltinChain, BuiltinChainConfiguration } from '../presentation/passes/PassTypes';
 import type { PresentationExecutor } from '../presentation/passes/PresentationExecutor';

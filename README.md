@@ -4,7 +4,8 @@
 
 A WebGPU and WebCodecs media playback engine for the browser.
 It plays sources that browsers cannot play natively, and presents HDR10, HDR10+, HLG, and Dolby Vision through its own color pipeline.
-Every route is qualified in the running browser before a host may offer it.
+Every native route is qualified in the running browser before a host may offer it.
+Codecs no browser decodes play through decoder packages a host loads at runtime: WGSL video decoders that run on the GPU, and WebAssembly audio decoders.
 
 The documentation is a book in [docs/](docs/src/SUMMARY.md), written for [mdBook](https://github.com/rust-lang/mdBook).
 Read the Markdown in place, or build and serve it:
@@ -20,11 +21,11 @@ Required:
 
 - Node.js 24 or later and npm 11 or later.
 - Git, GNU Make, and a POSIX shell (Git Bash on Windows).
-- Emscripten 4.0.13 and rustup, to build the WebAssembly decoders once per checkout.
+- Emscripten 4.0.13 and rustup, to build the engine's WebAssembly modules and the decoder projects' packages once per checkout.
   - Activate Emscripten with `emsdk_env`, or name it with `EMSDK`.
   - The repository pins Rust 1.96.1 with the `wasm32-unknown-unknown` target.
 - On Windows, long path support.
-  - The decoder build's FFmpeg and cargo trees pass 260 characters in a nested checkout.
+  - The decoder projects' FFmpeg and cargo trees pass 260 characters in a nested checkout.
   - Enable `LongPathsEnabled` and Git's `core.longpaths`.
   - GNU Make and the MSVC linker that cargo uses must accept long paths too.
 
@@ -34,13 +35,15 @@ Only for specific tasks:
 - MKVToolNix, for the Dolby Vision smoke media scripts.
 - mdBook 0.5.4, to build the documentation.
 - Chrome, Edge, or Firefox with WebGPU and WebCodecs, on a secure context (HTTPS or `localhost`), to run the engine.
-  Firefox on Windows decodes HEVC in software only, which is below real time at 4K.
+  Firefox on Windows has no WebCodecs HEVC, so HEVC plays there only through a GPU decoder package.
 
 ## Quick start
 
 ```sh
 npm ci
-make -C wasm sources all   # The WebAssembly decoders, once per checkout
+make -C wasm all           # The engine's WebAssembly modules, once per checkout
+make -C decoders sources   # The pinned FFmpeg and dcadec, once per checkout
+npm run decoders           # The decoder packages, which their projects' tests load
 npm run typecheck
 npm run lint
 npm test
@@ -52,14 +55,12 @@ npm run build
 ## Credits
 
 - [Mediabunny](https://github.com/Vanilagy/mediabunny) (MPL-2.0) demuxes media and remuxes audio to fragmented MP4.
-  Its [`@mediabunny/ac3`](https://www.npmjs.com/package/@mediabunny/ac3) extension supplies the AC-3 decoder.
-- [FFmpeg](https://ffmpeg.org/) (LGPL-2.1-or-later) supplies the E-AC-3, TrueHD and MLP, MPEG-2 Video, VC-1, and software HEVC decoders, built from a pinned revision.
-- [libdcadec](https://github.com/foo86/dcadec) (LGPL-2.1-or-later) supplies the DTS decoder, DTS-HD MA included.
-- [OpenJPEG](https://www.openjpeg.org/) (BSD-2-Clause), through `@cornerstonejs/codec-openjpeg` (MIT), supplies the JPEG 2000 decoder.
+- [FFmpeg](https://ffmpeg.org/) (LGPL-2.1-or-later), built from a pinned revision, is the AC-3 and E-AC-3 and the TrueHD and MLP decoder packages.
+- [libdcadec](https://github.com/foo86/dcadec) (LGPL-2.1-or-later) is the DTS decoder package, DTS-HD MA included.
 - The `dolby_vision` crate from [dovi_tool](https://github.com/quietvoid/dovi_tool) (MIT) parses Dolby Vision RPUs.
 
 ## License
 
 The engine's own code is MIT; see [LICENSE](LICENSE).
-Bundled third-party decoders keep their own licenses, and their license texts ship beside each decoder in the served assets.
-The corresponding source of the LGPL decoders is published with each release; see [WebAssembly decoders](docs/src/decoders.md#licenses).
+The engine ships no decoder.
+The decoder packages built from FFmpeg and libdcadec are LGPL-2.1-or-later, and whoever distributes them offers their corresponding source; see [WebAssembly build](docs/src/decoders.md#licenses).

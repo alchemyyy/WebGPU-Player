@@ -27,7 +27,7 @@ import { createBuiltinChain } from 'webgpu-player/presentation/passes/builtin/Bu
 import type { PlannedPass, PresentationPlan } from 'webgpu-player/presentation/passes/PassTypes';
 import { PresentationExecutor } from 'webgpu-player/presentation/passes/PresentationExecutor';
 import { planPresentation } from 'webgpu-player/presentation/passes/PresentationPlanner';
-import type { SupportedRawVideoFrameFormat, TransferableRawVideoFrame } from 'webgpu-player/video/RawVideoFrameCopy';
+import type { SupportedRawVideoFrameFormat, TransferableRawVideoFrame } from 'webgpu-player/decode/video/RawVideoFrameCopy';
 import {
     createExpectedRawHDRVectorObservations,
     createRawHDRAuthorizationVector,

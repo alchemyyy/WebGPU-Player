@@ -1,7 +1,8 @@
 # Codec vectors
 
 A codec vector is a known input with a known answer.
-Qualification vectors ship to the browser, where the capability probes check decoders against them before a route is advertised.
+Qualification vectors ship to the browser, where the capability probes check native decoders against them before a route is advertised.
+A decoder package's self-test vectors ship inside the package, and run only when a host verifies it (see [Decoder packages](decoder-packages.md#self-test-vectors)).
 Test vectors only feed tests and generators.
 
 The generators are Python 3.10 or later, in `scripts/codec_vector_assets/`, with their tests in `scripts/codec_vector_assets/test/`.
@@ -28,35 +29,34 @@ It does not run the local playback media generators.
 
 Every committed asset reproduces with FFmpeg and FFprobe `2026-03-01-git-862338fe31-full_build-www.gyan.dev` on PATH.
 The HEVC range-extension, AV1 Dolby Vision, HDR10+ AV1, and HDR10+ VP9 generators refuse any other build.
-The MPEG-2 vector was first encoded by Jellyfin FFmpeg 8.1.2, which writes the same bytes.
-Pass another executable to its generator with `--ffmpeg`.
 
 ## Committed assets
 
 | Script | Writes, in `bin/codec_vector_assets/` |
 | --- | --- |
-| `generate_dts_capability_vectors.py` | `dts/DTSExactCapabilityVectors.ts`, from the public-domain samples in `src/capability/vectors/test/dts/` |
 | `generate_truehd_capability_vectors.py` | `truehd/TrueHDExactCapabilityVectors.ts`, from the synthetic streams in `truehd/`. `--regenerate-sources` re-encodes those streams first |
 | `generate_seven_point_one_downmix_reference.py` | `downmix-reference/seven-point-one.json`. `--verify-external` also runs the referenced mpv and FFmpeg builds against it |
-| `generate_jpeg2000_capability_vector.py` | `jpeg2000/srgb-960x540.jp2` |
-| `generate_mpeg2_capability_vector.py` | `mpeg2/mpeg2-progressive-1920x1080.mkv` |
 | `generate_HEVC_range_extension_vectors.py` | `hevc-range-extension/*.hevc`. `--inspect` prints the evidence that `capability/HEVCRangeExtensionCapabilities.ts` records |
+| `generate_mpeg2_decoder_vectors.py` | Outside `bin/`: `decoders/mpeg2/vectors/`, one Matroska MPEG-2 stream per chroma format from a deterministic syntax exerciser, since no available encoder writes field pictures, dual prime, 16x8 motion, concealment vectors, and 4:4:4 together; FFmpeg checks each stream |
+| `generate_jpeg2000_decoder_vectors.py` | Outside `bin/`: `decoders/jpeg2000/vectors/`, one stream per output format from FFmpeg's native and OpenJPEG encoders, across both wavelets, tiles, quality layers, every progression order, and SOP and EPH markers, in QuickTime files and in Motion JPEG 2000 files it muxes itself |
+| `generate_av1_decoder_vectors.py` | Outside `bin/`: `decoders/av1/vectors/`, one Matroska stream per output format from FFmpeg's libaom-av1 encoder, as [AV1 decoder vectors](#av1-decoder-vectors) describes |
+| `generate_decoder_package_vectors.py` | Outside `bin/`: each decoder project's `decoders/<project>/<project>.vectors`, from the streams its `decoder.json` lists, demuxed with FFprobe and hashed from FFmpeg's decode, so a project's vectors are FFmpeg's known answers |
 | `generate_dolby_vision_AV1_vectors.py` | `dolby-vision-av1/profile10.{0,1,2,4}.{mp4,mkv}` and `expectations.json`, from the RPU payloads in `src/capability/vectors/test/dolby-vision-rpu/` |
 | `generate_HDR10_plus_AV1_vectors.py` | `hdr10plus-av1/hdr10plus.{mp4,mkv}` and `expectations.json` |
 | `generate_HDR10_plus_VP9_vectors.py` | `hdr10plus-vp9/hdr10plus.{webm,mkv}` and `expectations.json` |
 
 Two helpers serve them: `generated_output.py` (shared write, check, and install helpers) and `engine_layout.py` (the engine's folders, read from `tools/constants.json` through `tools/constants.py`).
-The DTS and TrueHD generators compute the TypeScript import paths they embed from the same constants, so moving a folder only needs a rerun.
+The TrueHD generator computes the TypeScript import paths it embeds from the same constants, so moving a folder only needs a rerun.
 
 The AV1 Dolby Vision and both HDR10+ generators take the error they raise, the pinned FFmpeg check, JSON comparison, and bit packing from `media_tools.py`.
 Both HDR10+ generators take the HDR10+ frame model, its ITU-T T.35 serialization, and its known answers for `expectations.json` and FFprobe from `HDR10_plus_metadata.py`.
 
-The engine imports the two generated TypeScript modules as `#codec_vector_assets/*`, and `scripts/library-assets.mjs` serves the qualification streams.
+The `truehd` decoder project's tests import the TrueHD module as `#codec_vector_assets/*`, and `scripts/library-assets.mjs` serves the range extension streams.
 
 The generators work in one of three modes:
 
-- Deterministic generators rewrite their output, and with `--check` fail when a committed file differs from a fresh run: the DTS and TrueHD modules, and the 7.1 downmix reference.
-- Encoder-dependent generators compare a fresh encode with the committed bytes: the JPEG 2000 and MPEG-2 vectors, and the TrueHD source streams under `--regenerate-sources`.
+- Deterministic generators rewrite their output, and with `--check` fail when a committed file differs from a fresh run: the TrueHD module, the 7.1 downmix reference, the MPEG-2 decoder streams, and the decoder projects' vectors files.
+- Encoder-dependent generators compare a fresh encode with the committed bytes: the JPEG 2000 and AV1 decoder streams and the TrueHD source streams under `--regenerate-sources`.
   Another encoder build writes different bytes, so a differing encode never replaces a committed asset, while a missing one is installed.
   With `--check`, a missing asset fails as well.
 - The HEVC range-extension, AV1 Dolby Vision, HDR10+ AV1, and HDR10+ VP9 generators refuse any FFmpeg build but the pinned one.
@@ -122,6 +122,55 @@ Fingerprints use the production 32-bit FNV-1a sampler in `capability/CustomDecod
 Re-encoding with another toolchain may not be byte-identical.
 Do not update an access-unit length, a constraint string, or a fingerprint until the static vector tests and the decoded raw output have been inspected together.
 
+## AV1 decoder vectors
+
+These are the `av1` decoder project's self-test media, one Matroska stream per output format.
+`decoders/av1/decoder.json` lists them with the decoder options `-c:v libdav1d`, so the package's known answers are libdav1d's decode, film grain included.
+libaom's decoder decodes every frame of every stream to the same bytes as libdav1d.
+`generate_av1_decoder_vectors.py --print-declarations` prints that list.
+
+FFmpeg's libaom-av1 encoder encodes each stream in one thread at speed 0 and CRF 50, and the generator runs the nine encodes at once.
+Each stream is 13 frames at 24 frames per second with a key frame every 12, so it holds two key frames.
+A 19-frame lookahead makes four hidden alternate references, three or four of which `show_existing_frame` shows.
+
+The source is a lavfi canvas of 256x192 that rotates, zooms, and pans as a whole, from the identity at the first frame, which libaom codes with global and local warped motion:
+
+- a frozen 64x64 Game of Life pattern of two colours at (0, 0), copied to (128, 64) and (128, 128), where IntraBC may copy it;
+- a second pattern at (64, 0), for palette;
+- two `testsrc2` pictures, whose moving parts give OBMC, compound, and inter-intra prediction;
+- smooth planes that `geq` draws at (192, 64), drifting each frame, for 64-point transforms.
+  lavfi's `gradients` source draws random points whatever its seed, so it is not used.
+
+libaom lets an IntraBC block copy only from more than four 64x64 superblocks back in its tile, in raster order.
+With 64x64 superblocks the tiles are 3+1 columns and 2+1 rows of superblocks, so the copy at (128, 64) and the pattern at (0, 0) share a tile three superblocks wide.
+With 128x128 superblocks there is one tile, and the copy at (128, 128) is one superblock row below the pattern.
+
+Every encode also asks for screen content tools (`tune-content=screen`), segmentation (`-aq-mode 1`), delta quantizer and loop filter levels, and quantization matrices.
+It turns off the temporal filtering of key frames, which blurs the copies IntraBC needs.
+
+| File | Format | Superblocks and tiles | Film grain |
+| --- | --- | --- | --- |
+| `av1-420-250x186.mkv` | I420 | 64x64, four non-uniform tiles | Schedule A |
+| `av1-420p10-253x187.mkv` | I420P10 | 64x64, four non-uniform tiles | libaom test table 3 |
+| `av1-420p12-256x192-sb128.mkv` | I420P12 | 128x128, one tile | Schedule B |
+| `av1-422-254x190.mkv` | I422 | 64x64, four non-uniform tiles | libaom test table 1 |
+| `av1-422p10-249x183-sb128.mkv` | I422P10 | 128x128, one tile | Schedule A |
+| `av1-422p12-256x192.mkv` | I422P12 | 64x64, four non-uniform tiles | libaom test table 6 |
+| `av1-444-251x189-sb128.mkv` | I444 | 128x128, one tile | Schedule B |
+| `av1-444p10-256x188.mkv` | I444P10 | 64x64, four non-uniform tiles | libaom test table 14 |
+| `av1-444p12-247x191.mkv` | I444P12 | 64x64, four non-uniform tiles | Schedule A |
+
+A schedule is a libaom film grain table the generator writes beside the encode, one entry per range of frames:
+
+- schedule A: autoregression lag 0 with chroma scaled from luma, then no grain, then lag 1 without overlap, then lag 3;
+- schedule B: lag 2 with chroma scaled from luma and without overlap, then lag 3, then no grain, then lag 1.
+
+The table has bare line feeds, because libaom's reader stops at a carriage return without an error and the encode then has no grain.
+libaom's test tables carry no lag 0 or 1, but they clip to the restricted range, which a table cannot ask for.
+
+The streams hold no super-resolution, reference scaling, dual filters, lossless frames, intra-only frames, or switch frames, so a self-test does not cover them.
+The pinned FFmpeg cannot ask its libaom for super-resolution or a frame size change, because that libaom takes no `superres-mode` or `resize-mode` key-value option, and libaom's speed features disable dual filters at every speed.
+
 ## AV1 Dolby Vision vectors
 
 These test vectors are Dolby Vision Profile 10 in MP4 and in Matroska, one pair per sub-profile: 10.0 (CCID 0), 10.1 (CCID 1, BT.2020 PQ base), 10.2 (CCID 2, BT.709 base), and 10.4 (CCID 4, BT.2020 HLG base).
@@ -149,7 +198,7 @@ Before writing, it checks:
 - what FFprobe reads back from both containers;
 - that FFmpeg parses the same Dolby Vision metadata from each T.35 OBU as from the same RPU carried as HEVC NAL 62.
 
-`test/video/dolby-vision/DolbyVisionAV1DemuxIntegration.test.ts` opens every vector with Mediabunny, splits each temporal unit with the engine's splitter, and requires the parser's packed output to equal the HEVC parse of the source RPU.
+`test/demux/dolby-vision/DolbyVisionAV1DemuxIntegration.test.ts` opens every vector with Mediabunny, splits each temporal unit with the engine's splitter, and requires the parser's packed output to equal the HEVC parse of the source RPU.
 The vectors prove the demux, the split, and the parse; they prove nothing about decode or presentation.
 
 ## HDR10+ AV1 vectors
@@ -173,7 +222,7 @@ Before writing, the generator checks:
 - the codec, color, packet sizes, and key flags FFprobe reads from the stream and from both containers, and that neither container carries static HDR metadata of its own;
 - the side data FFmpeg decodes for every frame of both containers, the independent oracle: libdav1d reports the MDCV and CLL on every frame from the first key frame on, and HDR10+ only on the frame whose unit carries it.
 
-`test/video/hdr/AV1HDR10PlusDemuxIntegration.test.ts` reads both vectors with Mediabunny's `EncodedPacketSink` and requires the engine's extraction and static scan to read every frame as recorded.
+`test/demux/hdr/AV1HDR10PlusDemuxIntegration.test.ts` reads both vectors with Mediabunny's `EncodedPacketSink` and requires the engine's extraction and static scan to read every frame as recorded.
 `test/pipeline/CustomDecodeWorkerAV1Route.test.ts` plays them through the worker with a stand-in WebCodecs decoder, and requires every posted frame to carry its recorded HDR10+ result.
 The vectors prove the demux, the extraction, and the routing; they prove nothing about decode or presentation.
 
@@ -203,8 +252,8 @@ Before writing, the generator checks:
 - every block's BlockAdditionals, read back with its own EBML walk, against the frame's ST 2094-40 serialization in `HDR10_plus_metadata.py`, and the DocType, Colour, BlockAdditionMapping, key frames, and clusters of each container;
 - the codec, profile, color, key flags, and HDR10+ side data FFprobe reads from every packet of both containers, the independent oracle.
 
-`test/video/MatroskaBlockAdditions.test.ts` reads both vectors through the engine's Mediabunny hook, and fails when Mediabunny's internals no longer let it read every block's additions as recorded.
-`test/video/hdr/HDR10PlusVP9DemuxIntegration.test.ts` plays both through the owned VP9 path with a stand-in decoder, from the start and from the second key frame, and requires every frame's HDR10+ result to be the recorded one.
+`test/demux/MatroskaBlockAdditions.test.ts` reads both vectors through the engine's Mediabunny hook, and fails when Mediabunny's internals no longer let it read every block's additions as recorded.
+`test/demux/hdr/HDR10PlusVP9DemuxIntegration.test.ts` plays both through the owned VP9 path with a stand-in decoder, from the start and from the second key frame, and requires every frame's HDR10+ result to be the recorded one.
 `test/pipeline/CustomDecodeWorkerOwnedVP9.test.ts` plays them through the worker with a stand-in WebCodecs decoder, and requires every posted frame to carry its recorded HDR10+ result.
 The vectors prove the demux, the hook, the extraction, and the routing; they prove nothing about decode or presentation.
 
@@ -235,17 +284,15 @@ They and both AV1 Dolby Vision generators take an option for each tool they run:
 
 | Folder | Holds |
 | --- | --- |
-| `src/capability/vectors/qualification/hevc/` | The HEVC Main 10 4K qualification stream |
-| `src/capability/vectors/qualification/vc1/` | The VC-1 qualification stream |
+| `src/capability/vectors/qualification/vc1/` | The VC-1 Advanced stream that the `vc1` decoder project's vector holds |
 | `src/capability/vectors/test/dts/` | Public-domain dcadec samples, packet tables, and reference WAVs (`PROVENANCE.txt`) |
 | `src/capability/vectors/test/truehd/` | A Matroska remux of one generated TrueHD stream (`PROVENANCE.txt`) |
 | `src/capability/vectors/test/dolby-vision-rpu/` | RPU payloads, copied unmodified from dovi_tool `assets/tests` (MIT), for the RPU parser, color transform, and Dolby Vision integration tests and the AV1 Dolby Vision generators |
 | `src/capability/vectors/test/hdr10plus-tool/` | x265's `--dhdr10-opt` HDR10+ profile A sample and the metadata hdr10plus_tool extracts from it, copied unmodified from hdr10plus_tool `assets/hevc_tests` (MIT, `PROVENANCE.txt` pins the commit and SHA-256s), for the HDR10+ parser and carry tests |
-| `src/capability/vectors/test/hevc-tiles/` | The JCT-VC HEVC_v1 conformance stream `TILES_B_Cisco_1`, copied unmodified: HEVC Main at 1920x1080 with 5x5 non-uniform tiles over 100 frames, which `test/video/decoders/HEVCStreamDecodeIntegration.test.ts` decodes to the suite's decoded-YUV MD5 |
 
 ## Tests
 
-Most scripts have a test module in `scripts/codec_vector_assets/test/`; the DTS, TrueHD, 7.1 downmix reference, and JPEG 2000 generators have none.
+Most scripts have a test module in `scripts/codec_vector_assets/test/`; the TrueHD, 7.1 downmix reference, and decoder package vector generators have none.
 A test adds the generator folder to the import path, so it also runs on its own:
 
 ```sh

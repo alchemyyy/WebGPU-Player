@@ -1,0 +1,22 @@
+[package]
+name = "webgpu-player-hevc-parser"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95.0"
+license = "MIT"
+publish = false
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = "symbols"
+
+# Native test builds keep overflow checks, so an arithmetic slip fails a test instead of wrapping
+[profile.test]
+opt-level = 1

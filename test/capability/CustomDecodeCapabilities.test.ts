@@ -6,15 +6,17 @@ import CustomDecodeCapabilityProbe, {
     createNativeHDRVideoOutputProbe,
     createNativeVideoOutputProbe,
     createRawHDRVideoOutputProbe,
-    CUSTOM_BUNDLED_AUDIO_CODECS,
     CUSTOM_DECODE_AUDIO_PROBES,
     CUSTOM_DECODE_VIDEO_PROBES,
+    CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS,
     CUSTOM_NATIVE_SURROUND_AUDIO_CODECS,
+    CUSTOM_PACKAGE_AUDIO_CODECS,
     CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS,
     CUSTOM_RAW_HDR_VIDEO_CODECS,
     CUSTOM_VIDEO_CODECS,
     CUSTOM_WEB_CODECS_AUDIO_CODECS,
     hasProbedCustomDecodeSelection,
+    isCustomPackageVideoCodec,
     selectCustomDecodeProbes,
     type CustomDecodeCapabilities,
     type NativeDolbyVisionVideoOutputProbeRequest,
@@ -22,11 +24,6 @@ import CustomDecodeCapabilityProbe, {
     type RawHDRVideoOutputProbeResult,
     type WebCodecsCapabilityEnvironment
 } from 'webgpu-player/capability/CustomDecodeCapabilities';
-import type {
-    BundledHEVCExactCapabilities,
-    BundledHEVCExactQualification
-} from 'webgpu-player/capability/exact/HEVCExactCapabilityProbe';
-import type { HEVCExactCapabilityVector } from 'webgpu-player/capability/exact/HEVCExactCapabilityProtocol';
 
 type CapabilityEnvironmentHarness = {
     audioProbe: ReturnType<typeof vi.fn>
@@ -55,128 +52,12 @@ const UHD_I420P10_PLANE_LAYOUTS: readonly PlaneLayout[] = [
 ];
 // The spec rejects any non-RGB format in copy options, even the frame's own
 const EXPLICIT_PLANAR_FORMAT_REJECTION_MESSAGE = 'I420P10 is unsupported in ParseVideoFrameCopyToOptions';
-
-function getBundledHEVCCodecString(vector: HEVCExactCapabilityVector): BundledHEVCExactQualification['codecString'] {
-    switch (vector) {
-        case 'main-1080p':
-            return 'hvc1.1.6.L120.B0';
-        case 'main10-1080p':
-            return 'hvc1.2.4.L120.B0';
-        case 'main10-4k':
-            return 'hvc1.2.4.L153.B0';
-    }
-}
-
-function createBundledHEVCQualification(vector: HEVCExactCapabilityVector, supported: boolean): BundledHEVCExactQualification {
-    const main10 = vector !== 'main-1080p';
-    return Object.freeze({
-        bitDepth: main10 ? 10 : 8,
-        codecString: getBundledHEVCCodecString(vector),
-        vector,
-        format: main10 ? 'I420P10' : 'I420',
-        profile: main10 ? 'main10' : 'main',
-        reason: supported ? 'decode-output-verified' : 'decode-error',
-        status: supported ? 'supported' : 'unsupported'
-    });
-}
-
-function createBundledHEVCCapabilities(
-    mainSupported = true,
-    main10FullHDSupported = true,
-    main10UltraHDSupported = true
-): BundledHEVCExactCapabilities {
-    const supportedCount = Number(mainSupported) + Number(main10FullHDSupported) + Number(main10UltraHDSupported);
-    let reason: BundledHEVCExactCapabilities['reason'] = 'failed';
-    if (supportedCount === 3) {
-        reason = 'complete';
-    } else if (supportedCount > 0) {
-        reason = 'partial';
-    }
-    return Object.freeze({
-        qualifications: Object.freeze({
-            'main-1080p': createBundledHEVCQualification('main-1080p', mainSupported),
-            'main10-1080p': createBundledHEVCQualification('main10-1080p', main10FullHDSupported),
-            'main10-4k': createBundledHEVCQualification('main10-4k', main10UltraHDSupported)
-        }),
-        reason
-    });
-}
-
-const BUNDLED_HEVC_EXACT_CAPABILITIES = createBundledHEVCCapabilities();
-const SUPPORTED_DTS_EXACT_CAPABILITY = Object.freeze({
-    channelBedOnly: true as const,
-    codec: 'dts' as const,
-    codecString: 'dts' as const,
-    decodeMilliseconds: 8,
-    libraryVersion: 131_073,
-    maximumChannelCount: 8 as const,
-    measuredRealTimeFactor: 32,
-    objectAudioRendered: false as const,
-    profiles: Object.freeze([
-        'core',
-        'core-96-24',
-        'es',
-        'hd-hra',
-        'hd-ma'
-    ] as const),
-    reason: 'decode-output-verified' as const,
-    sampleRates: Object.freeze([ 48_000, 96_000, 192_000 ] as const),
-    status: 'supported' as const,
-    verifiedVectorCount: 7,
-    verifiedProfileMask: 0x1f
-});
-const SUPPORTED_TRUEHD_EXACT_CAPABILITY = Object.freeze({
-    channelBedOnly: true as const,
-    channelCounts: Object.freeze([ 2, 6 ] as const),
-    codecs: Object.freeze([ 'truehd', 'mlp' ] as const),
-    decodeMilliseconds: 12,
-    library: 'ffmpeg-libavcodec' as const,
-    libraryVersion: 4_079_728,
-    majorSyncRecoveryVerified: true,
-    measuredRealTimeFactor: 12,
-    objectAudioRendered: false as const,
-    passthrough: false as const,
-    reason: 'decode-output-verified' as const,
-    sampleRates: Object.freeze([ 48_000, 96_000, 192_000 ] as const),
-    status: 'supported' as const,
-    verifiedChannelCountMask: (1 << 2) | (1 << 6),
-    verifiedCodecMask: 0x03,
-    verifiedVectorCount: 4,
-    verifiedSampleRateMask: 0x07
-});
-const UNSUPPORTED_JPEG2000_EXACT_CAPABILITY = Object.freeze({
-    bitDepth: 8 as const,
-    codec: 'jpeg2000' as const,
-    codecString: 'mjp2' as const,
-    decodedRGBAByteLength: 2_073_600,
-    decodedRGBAFingerprint: 1_076_220_778,
-    reason: 'output-mismatch' as const,
-    status: 'unsupported' as const
-});
-const SUPPORTED_MPEG2_EXACT_CAPABILITY = Object.freeze({
-    codec: 'mpeg2video' as const,
-    decodedFrameByteLength: 3_110_400,
-    decodedFrameCount: 12,
-    decodedI420Fingerprint: 544_635_241,
-    decodedTotalByteLength: 37_324_800,
-    reason: 'decode-output-verified' as const,
-    status: 'supported' as const
-});
-const UNSUPPORTED_MPEG2_EXACT_CAPABILITY = Object.freeze({
-    ...SUPPORTED_MPEG2_EXACT_CAPABILITY,
-    reason: 'output-mismatch' as const,
-    status: 'unsupported' as const
-});
-const SUPPORTED_VC1_EXACT_CAPABILITY = Object.freeze({
-    ...SUPPORTED_MPEG2_EXACT_CAPABILITY,
-    codec: 'vc1' as const,
-    decodedI420Fingerprint: 182_587_665
-});
-const UNSUPPORTED_VC1_EXACT_CAPABILITY = Object.freeze({
-    ...SUPPORTED_VC1_EXACT_CAPABILITY,
-    reason: 'output-mismatch' as const,
-    status: 'unsupported' as const
-});
+// The video codecs WebCodecs probes settle, and those only a GPU decoder package decodes
+const WEB_CODECS_VIDEO_CODECS = [ 'h264', 'hevc', 'vp8', 'vp9', 'av1' ] as const;
+const PACKAGE_VIDEO_CODECS = [ 'jpeg2000', 'mpeg1video', 'mpeg2video', 'vc1', 'wmv3' ] as const;
+const JPEG2000_CODEC_STRING = 'mjp2';
+// The raw HEVC probe, which an SDR HEVC item does not select
+const RAW_HEVC_PROBE = 'raw:hevc';
 
 function createEnvironment(
     videoSupport: ReadonlySet<string>,
@@ -226,24 +107,6 @@ function createEnvironment(
         audioProbe,
         environment: {
             audioDecoder: { isConfigSupported: audioProbe },
-            bundledDTSExactProbe: {
-                probe: vi.fn(async () => SUPPORTED_DTS_EXACT_CAPABILITY)
-            },
-            bundledHEVCExactProbe: {
-                probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
-            },
-            bundledJPEG2000ExactProbe: {
-                probe: vi.fn(async () => UNSUPPORTED_JPEG2000_EXACT_CAPABILITY)
-            },
-            bundledMPEG2ExactProbe: {
-                probe: vi.fn(async () => UNSUPPORTED_MPEG2_EXACT_CAPABILITY)
-            },
-            bundledVC1ExactProbe: {
-                probe: vi.fn(async () => UNSUPPORTED_VC1_EXACT_CAPABILITY)
-            },
-            bundledTrueHDExactProbe: {
-                probe: vi.fn(async () => SUPPORTED_TRUEHD_EXACT_CAPABILITY)
-            },
             nativeAudioOutputProbe,
             nativeDolbyVisionVideoOutputProbe,
             nativeHDRVideoOutputProbe,
@@ -266,7 +129,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         vi.unstubAllGlobals();
     });
 
-    it('serializes decoder-backed output and exact capability probes', async () => {
+    it('serializes decoder-backed output probes', async () => {
         const harness = createEnvironment(new Set<string>(), new Set<string>());
         let activeHeavyProbeCount = 0;
         let heavyProbeInvocationCount = 0;
@@ -293,24 +156,6 @@ describe('CustomDecodeCapabilityProbe', () => {
                 config,
                 supported: true
             }))
-        };
-        harness.environment.bundledDTSExactProbe = {
-            probe: vi.fn(() => observeHeavyProbe(SUPPORTED_DTS_EXACT_CAPABILITY))
-        };
-        harness.environment.bundledHEVCExactProbe = {
-            probe: vi.fn(() => observeHeavyProbe(BUNDLED_HEVC_EXACT_CAPABILITIES))
-        };
-        harness.environment.bundledJPEG2000ExactProbe = {
-            probe: vi.fn(() => observeHeavyProbe(UNSUPPORTED_JPEG2000_EXACT_CAPABILITY))
-        };
-        harness.environment.bundledMPEG2ExactProbe = {
-            probe: vi.fn(() => observeHeavyProbe(UNSUPPORTED_MPEG2_EXACT_CAPABILITY))
-        };
-        harness.environment.bundledVC1ExactProbe = {
-            probe: vi.fn(() => observeHeavyProbe(UNSUPPORTED_VC1_EXACT_CAPABILITY))
-        };
-        harness.environment.bundledTrueHDExactProbe = {
-            probe: vi.fn(() => observeHeavyProbe(SUPPORTED_TRUEHD_EXACT_CAPABILITY))
         };
         harness.environment.nativeAudioOutputProbe = vi.fn(() => observeHeavyProbe(true));
         harness.environment.nativeDolbyVisionVideoOutputProbe = vi.fn(
@@ -354,12 +199,6 @@ describe('CustomDecodeCapabilityProbe', () => {
             }
             return Promise.resolve(true);
         });
-        harness.environment.bundledDTSExactProbe = null;
-        harness.environment.bundledHEVCExactProbe = null;
-        harness.environment.bundledJPEG2000ExactProbe = null;
-        harness.environment.bundledMPEG2ExactProbe = null;
-        harness.environment.bundledVC1ExactProbe = null;
-        harness.environment.bundledTrueHDExactProbe = null;
         harness.environment.h264ProfileProbe = null;
         harness.environment.nativeAudioOutputProbe = nativeAudioOutputProbe;
         const probePromise = new CustomDecodeCapabilityProbe(harness.environment).probe();
@@ -488,20 +327,17 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(capabilities.audio.flac.status).toBe('supported');
         expect(capabilities.audio.ac3).toMatchObject({
             codecString: 'ac-3',
-            reason: 'bundled-software-decoder',
-            status: 'supported'
+            reason: 'no-engine-decoder',
+            status: 'unsupported'
         });
         expect(capabilities.audio.eac3).toMatchObject({
             codecString: 'ec-3',
-            reason: 'bundled-software-decoder',
-            status: 'supported'
+            reason: 'no-engine-decoder',
+            status: 'unsupported'
         });
         expect(capabilities.rawHDRVideo).toMatchObject({
             av1: { reason: 'config-unsupported', status: 'unsupported' },
-            hevc: {
-                reason: 'bundled-software-decoder',
-                status: 'supported'
-            },
+            hevc: { reason: 'config-unsupported', status: 'unsupported' },
             vp9: {
                 reason: 'output-copy-supported',
                 status: 'supported'
@@ -520,24 +356,24 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(harness.rawHDRVideoOutputProbe.mock.calls[0][0].encodedChunks[0].data).toHaveLength(2_957);
         expect(capabilities.telemetry).toEqual({
             audioProbeCount: 5,
-            bundledAudioCodecCount: CUSTOM_BUNDLED_AUDIO_CODECS.length,
+            mediabunnyAudioCodecCount: CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS.length,
             nativeHDRVideoProbeCount: 1,
             nativeSurroundAudioProbeCount: 4,
             nativeUltraHDVideoProbeCount: 3,
             rawHDRVideoProbeCount: 3,
             reason: 'complete',
-            supportedAudioCodecCount: CUSTOM_BUNDLED_AUDIO_CODECS.length + 2,
+            supportedAudioCodecCount: CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS.length + 2,
             supportedNativeHDRVideoCodecCount: 0,
             supportedNativeSurroundAudioCodecCount: 0,
             supportedNativeUltraHDVideoCodecCount: 1,
-            supportedRawHDRVideoCodecCount: 2,
-            supportedVideoCodecCount: 2,
+            supportedRawHDRVideoCodecCount: 1,
+            supportedVideoCodecCount: 1,
             unknownAudioCodecCount: 0,
             unknownNativeHDRVideoCodecCount: 0,
             unknownNativeSurroundAudioCodecCount: 0,
             unknownNativeUltraHDVideoCodecCount: 0,
             unknownVideoCodecCount: 0,
-            videoProbeCount: 13
+            videoProbeCount: 10
         });
         expect(capabilities.nativeUltraHDVideo).toMatchObject({
             av1: {
@@ -557,6 +393,13 @@ describe('CustomDecodeCapabilityProbe', () => {
         });
     });
 
+    it('names exactly the video codecs only a decoder package decodes', () => {
+        const packageCodecs: readonly string[] = PACKAGE_VIDEO_CODECS;
+        for (const codec of CUSTOM_VIDEO_CODECS) {
+            expect(isCustomPackageVideoCodec(codec)).toBe(packageCodecs.includes(codec));
+        }
+    });
+
     it('caches concurrent and subsequent probe requests', async () => {
         const harness = createEnvironment(new Set(), new Set());
         const probe = new CustomDecodeCapabilityProbe(harness.environment);
@@ -567,7 +410,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(first).toBe(second);
         expect(second).toBe(third);
         expect(harness.videoProbe).toHaveBeenCalledTimes(
-            CUSTOM_VIDEO_CODECS.length - 3
+            CUSTOM_VIDEO_CODECS.length - PACKAGE_VIDEO_CODECS.length
                 + CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS.length
                 + CUSTOM_RAW_HDR_VIDEO_CODECS.length
                 + 2
@@ -919,21 +762,6 @@ describe('CustomDecodeCapabilityProbe', () => {
         });
         const capabilities = await new CustomDecodeCapabilityProbe({
             audioDecoder: { isConfigSupported: audioProbe },
-            bundledDTSExactProbe: {
-                probe: vi.fn(async () => SUPPORTED_DTS_EXACT_CAPABILITY)
-            },
-            bundledHEVCExactProbe: {
-                probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
-            },
-            bundledJPEG2000ExactProbe: {
-                probe: vi.fn(async () => UNSUPPORTED_JPEG2000_EXACT_CAPABILITY)
-            },
-            bundledVC1ExactProbe: {
-                probe: vi.fn(async () => UNSUPPORTED_VC1_EXACT_CAPABILITY)
-            },
-            bundledTrueHDExactProbe: {
-                probe: vi.fn(async () => SUPPORTED_TRUEHD_EXACT_CAPABILITY)
-            },
             videoDecoder: { isConfigSupported: videoProbe }
         }).probe();
 
@@ -948,7 +776,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(capabilities.video.h264.status).toBe('unsupported');
         expect(capabilities.telemetry.reason).toBe('probe-exceptions');
         expect(capabilities.telemetry.unknownAudioCodecCount).toBe(1);
-        expect(capabilities.telemetry.unknownVideoCodecCount).toBe(2);
+        expect(capabilities.telemetry.unknownVideoCodecCount).toBe(1);
     });
 
     it('bounds decoder capability APIs that never settle', async () => {
@@ -960,12 +788,6 @@ describe('CustomDecodeCapabilityProbe', () => {
         ));
         const probePromise = new CustomDecodeCapabilityProbe({
             audioDecoder: { isConfigSupported: audioProbe },
-            bundledHEVCExactProbe: {
-                probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
-            },
-            bundledTrueHDExactProbe: {
-                probe: vi.fn(async () => SUPPORTED_TRUEHD_EXACT_CAPABILITY)
-            },
             rawHDRVideoOutputProbe,
             videoDecoder: { isConfigSupported: videoProbe }
         }).probe();
@@ -986,8 +808,8 @@ describe('CustomDecodeCapabilityProbe', () => {
             status: 'unknown'
         });
         expect(capabilities.rawHDRVideo.hevc).toMatchObject({
-            reason: 'bundled-software-decoder',
-            status: 'supported'
+            reason: 'probe-timeout',
+            status: 'unknown'
         });
         expect(capabilities.telemetry.reason).toBe('probe-exceptions');
         expect(rawHDRVideoOutputProbe).not.toHaveBeenCalled();
@@ -996,22 +818,19 @@ describe('CustomDecodeCapabilityProbe', () => {
     it('uses unknown API-unavailable results without making support claims', async () => {
         const capabilities = await new CustomDecodeCapabilityProbe({
             audioDecoder: null,
-            bundledDTSExactProbe: {
-                probe: vi.fn(async () => SUPPORTED_DTS_EXACT_CAPABILITY)
-            },
-            bundledHEVCExactProbe: {
-                probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
-            },
-            bundledTrueHDExactProbe: {
-                probe: vi.fn(async () => SUPPORTED_TRUEHD_EXACT_CAPABILITY)
-            },
             videoDecoder: null
         }).probe();
 
-        for (const codec of CUSTOM_VIDEO_CODECS) {
+        for (const codec of WEB_CODECS_VIDEO_CODECS) {
             expect(capabilities.video[codec]).toMatchObject({
                 reason: 'api-unavailable',
                 status: 'unknown'
+            });
+        }
+        for (const codec of PACKAGE_VIDEO_CODECS) {
+            expect(capabilities.video[codec]).toMatchObject({
+                reason: 'no-engine-decoder',
+                status: 'unsupported'
             });
         }
         for (const codec of CUSTOM_WEB_CODECS_AUDIO_CODECS) {
@@ -1020,19 +839,25 @@ describe('CustomDecodeCapabilityProbe', () => {
                 status: 'unknown'
             });
         }
-        for (const codec of CUSTOM_BUNDLED_AUDIO_CODECS) {
+        for (const codec of CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS) {
             expect(capabilities.audio[codec]).toMatchObject({
-                reason: 'bundled-software-decoder',
+                reason: 'mediabunny-decoder',
                 status: 'supported'
+            });
+        }
+        for (const codec of CUSTOM_PACKAGE_AUDIO_CODECS) {
+            expect(capabilities.audio[codec]).toMatchObject({
+                reason: 'no-engine-decoder',
+                status: 'unsupported'
             });
         }
         expect(capabilities.telemetry).toMatchObject({
             audioProbeCount: 0,
-            bundledAudioCodecCount: CUSTOM_BUNDLED_AUDIO_CODECS.length,
+            mediabunnyAudioCodecCount: CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS.length,
             rawHDRVideoProbeCount: 0,
             reason: 'api-unavailable',
-            supportedAudioCodecCount: CUSTOM_BUNDLED_AUDIO_CODECS.length,
-            supportedRawHDRVideoCodecCount: 1,
+            supportedAudioCodecCount: CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS.length,
+            supportedRawHDRVideoCodecCount: 0,
             videoProbeCount: 0
         });
     });
@@ -1041,15 +866,6 @@ describe('CustomDecodeCapabilityProbe', () => {
         const harness = createEnvironment(new Set([ 'vp8' ]), new Set());
         const capabilities = await new CustomDecodeCapabilityProbe({
             audioDecoder: null,
-            bundledDTSExactProbe: {
-                probe: vi.fn(async () => SUPPORTED_DTS_EXACT_CAPABILITY)
-            },
-            bundledHEVCExactProbe: {
-                probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
-            },
-            bundledTrueHDExactProbe: {
-                probe: vi.fn(async () => SUPPORTED_TRUEHD_EXACT_CAPABILITY)
-            },
             nativeVideoOutputProbe: harness.nativeVideoOutputProbe,
             videoDecoder: harness.environment.videoDecoder
         }).probe();
@@ -1059,190 +875,30 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(capabilities.video.vp8.status).toBe('supported');
     });
 
-    it('gates bundled DTS on exact decoded-output qualification', async () => {
-        const unavailable = await new CustomDecodeCapabilityProbe({
-            bundledDTSExactProbe: null
-        }).probe();
-        const outputMismatch = await new CustomDecodeCapabilityProbe({
-            bundledDTSExactProbe: {
-                probe: vi.fn(async () => Object.freeze({
-                    ...SUPPORTED_DTS_EXACT_CAPABILITY,
-                    decodeMilliseconds: null,
-                    measuredRealTimeFactor: null,
-                    reason: 'output-mismatch' as const,
-                    status: 'unsupported' as const,
-                    verifiedVectorCount: 5,
-                    verifiedProfileMask: 0x0f
-                }))
-            }
-        }).probe();
-        const supported = await new CustomDecodeCapabilityProbe({
-            bundledDTSExactProbe: {
-                probe: vi.fn(async () => SUPPORTED_DTS_EXACT_CAPABILITY)
-            }
-        }).probe();
+    it('never claims a codec only a decoder package decodes, whatever WebCodecs accepts', async () => {
+        const harness = createEnvironment(new Set<string>(), new Set<string>());
+        harness.environment.audioDecoder = {
+            isConfigSupported: vi.fn(async (config: AudioDecoderConfig) => ({ config, supported: true }))
+        };
+        harness.environment.videoDecoder = {
+            isConfigSupported: vi.fn(async (config: VideoDecoderConfig) => ({ config, supported: true }))
+        };
 
-        expect(unavailable.audio.dts).toMatchObject({
-            reason: 'api-unavailable',
-            status: 'unknown'
-        });
-        expect(unavailable.bundledDTS).toBeUndefined();
-        expect(outputMismatch.audio.dts).toMatchObject({
-            reason: 'decode-output-missing',
-            status: 'unsupported'
-        });
-        expect(supported.audio.dts).toMatchObject({
-            codecString: 'dts',
-            reason: 'bundled-software-decoder',
-            status: 'supported'
-        });
-        expect(supported.bundledDTS).toBe(SUPPORTED_DTS_EXACT_CAPABILITY);
-    });
+        const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
 
-    it('gates bundled TrueHD on exact decoded-output qualification', async () => {
-        const unavailable = await new CustomDecodeCapabilityProbe({
-            bundledTrueHDExactProbe: null
-        }).probe();
-        const outputMismatch = await new CustomDecodeCapabilityProbe({
-            bundledTrueHDExactProbe: {
-                probe: vi.fn(async () => Object.freeze({
-                    ...SUPPORTED_TRUEHD_EXACT_CAPABILITY,
-                    decodeMilliseconds: null,
-                    majorSyncRecoveryVerified: false,
-                    measuredRealTimeFactor: null,
-                    reason: 'major-sync-recovery-failed' as const,
-                    status: 'unsupported' as const
-                }))
-            }
-        }).probe();
-        const supported = await new CustomDecodeCapabilityProbe({
-            bundledTrueHDExactProbe: {
-                probe: vi.fn(async () => SUPPORTED_TRUEHD_EXACT_CAPABILITY)
-            }
-        }).probe();
-
-        expect(unavailable.audio.truehd).toMatchObject({
-            reason: 'api-unavailable',
-            status: 'unknown'
-        });
-        expect(unavailable.bundledTrueHD).toBeUndefined();
-        expect(outputMismatch.audio.truehd).toMatchObject({
-            reason: 'decode-output-missing',
-            status: 'unsupported'
-        });
-        expect(supported.audio.truehd).toMatchObject({
-            codecString: 'truehd',
-            reason: 'bundled-software-decoder',
-            status: 'supported'
-        });
-        expect(supported.bundledTrueHD).toBe(SUPPORTED_TRUEHD_EXACT_CAPABILITY);
-    });
-
-    it('gates bundled MPEG-2 on exact decoded-output qualification', async () => {
-        const unavailable = await new CustomDecodeCapabilityProbe({
-            bundledMPEG2ExactProbe: null
-        }).probe();
-        const outputMismatch = await new CustomDecodeCapabilityProbe({
-            bundledMPEG2ExactProbe: {
-                probe: vi.fn(async () => UNSUPPORTED_MPEG2_EXACT_CAPABILITY)
-            }
-        }).probe();
-        const supported = await new CustomDecodeCapabilityProbe({
-            bundledMPEG2ExactProbe: {
-                probe: vi.fn(async () => SUPPORTED_MPEG2_EXACT_CAPABILITY)
-            }
-        }).probe();
-
-        expect(unavailable.video.mpeg2video).toMatchObject({
-            reason: 'api-unavailable',
-            status: 'unknown'
-        });
-        expect(unavailable.bundledMPEG2).toBeUndefined();
-        expect(outputMismatch.video.mpeg2video).toMatchObject({
-            reason: 'decode-output-missing',
-            status: 'unsupported'
-        });
-        expect(supported.video.mpeg2video).toMatchObject({
-            codecString: 'mpeg2video',
-            reason: 'bundled-software-decoder',
-            status: 'supported'
-        });
-        expect(supported.bundledMPEG2).toBe(SUPPORTED_MPEG2_EXACT_CAPABILITY);
-    });
-
-    it('gates bundled Advanced VC-1 on exact decoded-output qualification', async () => {
-        const unavailable = await new CustomDecodeCapabilityProbe({
-            bundledVC1ExactProbe: null
-        }).probe();
-        const outputMismatch = await new CustomDecodeCapabilityProbe({
-            bundledVC1ExactProbe: {
-                probe: vi.fn(async () => UNSUPPORTED_VC1_EXACT_CAPABILITY)
-            }
-        }).probe();
-        const supported = await new CustomDecodeCapabilityProbe({
-            bundledVC1ExactProbe: {
-                probe: vi.fn(async () => SUPPORTED_VC1_EXACT_CAPABILITY)
-            }
-        }).probe();
-
-        expect(unavailable.video.vc1).toMatchObject({
-            reason: 'api-unavailable',
-            status: 'unknown'
-        });
-        expect(unavailable.bundledVC1).toBeUndefined();
-        expect(outputMismatch.video.vc1).toMatchObject({
-            reason: 'decode-output-missing',
-            status: 'unsupported'
-        });
-        expect(supported.video.vc1).toMatchObject({
-            codecString: 'vc1',
-            reason: 'bundled-software-decoder',
-            status: 'supported'
-        });
-        expect(supported.bundledVC1).toBe(SUPPORTED_VC1_EXACT_CAPABILITY);
-    });
-
-    it('gates bundled HEVC on exact decoded-output qualification', async () => {
-        const unavailable = await new CustomDecodeCapabilityProbe({
-            bundledHEVCExactProbe: null
-        }).probe();
-        const mainOnly = await new CustomDecodeCapabilityProbe({
-            bundledHEVCExactProbe: {
-                probe: vi.fn(async () => createBundledHEVCCapabilities(true, false, false))
-            }
-        }).probe();
-        const main10FullHDOnly = await new CustomDecodeCapabilityProbe({
-            bundledHEVCExactProbe: {
-                probe: vi.fn(async () => createBundledHEVCCapabilities(false, true, false))
-            }
-        }).probe();
-        const allQualifications = await new CustomDecodeCapabilityProbe({
-            bundledHEVCExactProbe: {
-                probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
-            }
-        }).probe();
-
-        expect(unavailable.rawHDRVideo.hevc).toMatchObject({
-            reason: 'runtime-unavailable',
-            status: 'unknown'
-        });
-        expect(mainOnly.bundledHEVC?.qualifications['main-1080p']).toMatchObject({
-            reason: 'decode-output-verified',
-            status: 'supported'
-        });
-        expect(mainOnly.rawHDRVideo.hevc).toMatchObject({
-            reason: 'output-copy-unsupported',
-            status: 'unsupported'
-        });
-        expect(main10FullHDOnly.rawHDRVideo.hevc).toMatchObject({
-            codecString: 'hvc1.2.4.L120.B0',
-            reason: 'bundled-software-decoder',
-            status: 'supported'
-        });
-        expect(allQualifications.rawHDRVideo.hevc).toMatchObject({
-            reason: 'bundled-software-decoder',
-            status: 'supported'
-        });
+        for (const codec of PACKAGE_VIDEO_CODECS) {
+            expect(capabilities.video[codec]).toMatchObject({
+                reason: 'no-engine-decoder',
+                status: 'unsupported'
+            });
+        }
+        for (const codec of CUSTOM_PACKAGE_AUDIO_CODECS) {
+            expect(capabilities.audio[codec]).toMatchObject({
+                reason: 'no-engine-decoder',
+                status: 'unsupported'
+            });
+        }
+        expect(capabilities.video.jpeg2000.codecString).toBe(JPEG2000_CODEC_STRING);
     });
 
     it('measures raw AV1 and VP9 planes on the software decoders and raw HEVC with no preference', async () => {
@@ -1278,7 +934,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         ]));
     });
 
-    it('prefers qualified native HEVC raw output over the bundled decoder', async () => {
+    it('qualifies native HEVC raw output at Ultra HD', async () => {
         const harness = createEnvironment(new Set([ 'hvc1.2.4.L153.B0' ]), new Set(), new Set([ 'hevc' ]));
 
         const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
@@ -2714,7 +2370,6 @@ describe('item-scoped capability probe selection', () => {
 
     it('selects only the video probes an SDR HEVC item needs', () => {
         expect(getSelectedVideoProbes(createItem([ SDR_HEVC_STREAM, FLAC_STREAM ]))).toEqual(new Set([
-            'bundled-hevc',
             'native-sdr:hevc',
             'native-ultra-hd:hevc'
         ]));
@@ -2724,7 +2379,6 @@ describe('item-scoped capability probe selection', () => {
         const videoProbes = getSelectedVideoProbes(createItem([ HDR10_PLUS_HEVC_STREAM ]));
 
         for (const probe of [
-            'bundled-hevc',
             'native-hdr-hevc',
             'native-sdr:av1',
             'native-sdr:hevc',
@@ -2736,9 +2390,6 @@ describe('item-scoped capability probe selection', () => {
             expect(videoProbes).toContain(probe);
         }
         for (const probe of [
-            'bundled-jpeg2000',
-            'bundled-mpeg2',
-            'bundled-vc1',
             'h264-profiles',
             'hevc-range-extension:main422-10'
         ]) {
@@ -2758,9 +2409,13 @@ describe('item-scoped capability probe selection', () => {
     });
 
     it('unions the video streams of every source of an item', () => {
-        const videoProbes = getSelectedVideoProbes(createItem([ SDR_H264_STREAM ], [ SDR_MPEG2_STREAM ]));
+        const videoProbes = getSelectedVideoProbes(createItem([ SDR_H264_STREAM ], [ SDR_HEVC_STREAM ]));
 
-        expect(videoProbes).toEqual(new Set([ 'bundled-mpeg2', 'h264-profiles' ]));
+        expect(videoProbes).toEqual(new Set([ 'h264-profiles', 'native-sdr:hevc', 'native-ultra-hd:hevc' ]));
+    });
+
+    it('selects no video probe for a codec only a decoder package decodes', () => {
+        expect(getSelectedVideoProbes(createItem([ SDR_MPEG2_STREAM ]))).toEqual(new Set());
     });
 
     it('selects no video probe for an item without video streams', () => {
@@ -2782,95 +2437,41 @@ describe('item-scoped capability probe selection', () => {
 
         const capabilities = await new CustomDecodeCapabilityProbe(environment).probe(createItem([ SDR_HEVC_STREAM, FLAC_STREAM ]));
 
-        expect(environment.bundledHEVCExactProbe?.probe).toHaveBeenCalledOnce();
-        expect(environment.bundledDTSExactProbe?.probe).toHaveBeenCalledOnce();
-        expect(environment.bundledTrueHDExactProbe?.probe).toHaveBeenCalledOnce();
-        expect(environment.bundledJPEG2000ExactProbe?.probe).not.toHaveBeenCalled();
-        expect(environment.bundledMPEG2ExactProbe?.probe).not.toHaveBeenCalled();
-        expect(environment.bundledVC1ExactProbe?.probe).not.toHaveBeenCalled();
         expect(harness.rawHDRVideoOutputProbe).not.toHaveBeenCalled();
-        for (const codec of [ 'h264', 'jpeg2000', 'mpeg2video', 'vc1' ] as const) {
-            expect(capabilities.video[codec]).toMatchObject({ reason: 'not-probed', status: 'not-probed' });
+        expect(capabilities.video.h264).toMatchObject({ reason: 'not-probed', status: 'not-probed' });
+        for (const codec of PACKAGE_VIDEO_CODECS) {
+            expect(capabilities.video[codec]).toMatchObject({ reason: 'no-engine-decoder', status: 'unsupported' });
         }
         expect(capabilities.video.hevc.status).not.toBe('not-probed');
-        expect(capabilities.bundledMPEG2).toBeUndefined();
         expect(capabilities.h264Profiles).toBeUndefined();
-        expect(capabilities.bundledHEVC).toBe(BUNDLED_HEVC_EXACT_CAPABILITIES);
-        expect(capabilities.bundledDTS).toBe(SUPPORTED_DTS_EXACT_CAPABILITY);
         expect(Object.values(capabilities.hevcRangeExtensions ?? {}).map(
             (capability: { status: string }): string => capability.status
         )).toEqual(new Array(9).fill('not-probed'));
         expect(capabilities.probeStates).toMatchObject({
-            'bundled-dts': 'probed',
-            'bundled-hevc': 'probed',
-            'bundled-mpeg2': 'not-probed',
-            'h264-profiles': 'not-probed'
+            'h264-profiles': 'not-probed',
+            'native-audio': 'probed',
+            'native-sdr:hevc': 'probed'
         });
+        expect(capabilities.probeStates?.[RAW_HEVC_PROBE]).toBe('not-probed');
     });
 
     it('starts each probe once per page across items', async () => {
         const harness = createEnvironment(new Set(), new Set());
-        const environment = harness.environment;
-        const probe = new CustomDecodeCapabilityProbe(environment);
+        const probe = new CustomDecodeCapabilityProbe(harness.environment);
 
         const hevcCapabilities = await probe.probe(createItem([ SDR_HEVC_STREAM ]));
         const mpeg2Capabilities = await probe.probe(createItem([ SDR_MPEG2_STREAM ]));
         const repeatedCapabilities = await probe.probe(createItem([ SDR_HEVC_STREAM ]));
 
         expect(repeatedCapabilities).toBe(hevcCapabilities);
-        expect(environment.bundledHEVCExactProbe?.probe).toHaveBeenCalledOnce();
-        expect(environment.bundledMPEG2ExactProbe?.probe).toHaveBeenCalledOnce();
-        expect(environment.bundledDTSExactProbe?.probe).toHaveBeenCalledOnce();
-        expect(environment.bundledTrueHDExactProbe?.probe).toHaveBeenCalledOnce();
-        expect(mpeg2Capabilities.bundledMPEG2).toBe(UNSUPPORTED_MPEG2_EXACT_CAPABILITY);
-        expect(mpeg2Capabilities.bundledDTS).toBe(SUPPORTED_DTS_EXACT_CAPABILITY);
+        expect(harness.audioProbe).toHaveBeenCalledTimes(
+            CUSTOM_WEB_CODECS_AUDIO_CODECS.length
+                + CUSTOM_NATIVE_SURROUND_AUDIO_CODECS.length
+        );
+        // The SDR and Ultra HD configurations of the HEVC item
+        expect(harness.videoProbe).toHaveBeenCalledTimes(2);
+        expect(mpeg2Capabilities.audio.aac).toBe(hevcCapabilities.audio.aac);
         expect(mpeg2Capabilities.video.hevc.status).toBe('not-probed');
-    });
-
-    it('starts the downloads of every selected exact probe before the first one runs', async () => {
-        const harness = createEnvironment(new Set(), new Set());
-        const environment = harness.environment;
-        const probeDTS = vi.fn(async () => SUPPORTED_DTS_EXACT_CAPABILITY);
-        const prepares = {
-            dts: vi.fn(),
-            hevc: vi.fn(),
-            jpeg2000: vi.fn(),
-            mpeg2: vi.fn(),
-            truehd: vi.fn(),
-            vc1: vi.fn()
-        };
-        environment.bundledDTSExactProbe = { prepare: prepares.dts, probe: probeDTS };
-        environment.bundledHEVCExactProbe = {
-            prepare: prepares.hevc,
-            probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
-        };
-        environment.bundledJPEG2000ExactProbe = {
-            prepare: prepares.jpeg2000,
-            probe: vi.fn(async () => UNSUPPORTED_JPEG2000_EXACT_CAPABILITY)
-        };
-        environment.bundledMPEG2ExactProbe = {
-            prepare: prepares.mpeg2,
-            probe: vi.fn(async () => UNSUPPORTED_MPEG2_EXACT_CAPABILITY)
-        };
-        environment.bundledTrueHDExactProbe = {
-            prepare: prepares.truehd,
-            probe: vi.fn(async () => SUPPORTED_TRUEHD_EXACT_CAPABILITY)
-        };
-        environment.bundledVC1ExactProbe = {
-            prepare: prepares.vc1,
-            probe: vi.fn(async () => UNSUPPORTED_VC1_EXACT_CAPABILITY)
-        };
-
-        await new CustomDecodeCapabilityProbe(environment).probe(createItem([ SDR_HEVC_STREAM ]));
-
-        for (const prepare of [ prepares.dts, prepares.truehd, prepares.hevc ]) {
-            expect(prepare).toHaveBeenCalledOnce();
-            // DTS is the first exact probe in the heavy queue
-            expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(probeDTS.mock.invocationCallOrder[0]);
-        }
-        for (const prepare of [ prepares.jpeg2000, prepares.mpeg2, prepares.vc1 ]) {
-            expect(prepare).not.toHaveBeenCalled();
-        }
     });
 
     it('reports whether a result covers an item or media source', async () => {
@@ -2881,8 +2482,10 @@ describe('item-scoped capability probe selection', () => {
 
         expect(hasProbedCustomDecodeSelection(capabilities, hevcItem)).toBe(true);
         expect(hasProbedCustomDecodeSelection(capabilities, { MediaStreams: [ SDR_HEVC_STREAM ] })).toBe(true);
-        expect(hasProbedCustomDecodeSelection(capabilities, createItem([ SDR_MPEG2_STREAM ]))).toBe(false);
+        expect(hasProbedCustomDecodeSelection(capabilities, createItem([ SDR_H264_STREAM ]))).toBe(false);
+        // An MPEG-2 item selects only the audio probes, which every result runs
+        expect(hasProbedCustomDecodeSelection(capabilities, createItem([ SDR_MPEG2_STREAM ]))).toBe(true);
         expect(hasProbedCustomDecodeSelection(capabilities, {})).toBe(false);
-        expect(hasProbedCustomDecodeSelection(unscopedCapabilities, createItem([ SDR_MPEG2_STREAM ]))).toBe(true);
+        expect(hasProbedCustomDecodeSelection(unscopedCapabilities, createItem([ SDR_H264_STREAM ]))).toBe(true);
     });
 });

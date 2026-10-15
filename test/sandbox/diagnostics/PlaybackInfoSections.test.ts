@@ -345,17 +345,17 @@ describe('describePlaybackInfo', () => {
             dolbyVisionProfile: DOLBY_VISION_PROFILE,
             rawVideoFrameFormat: RAW_FORMAT,
             selection: ROUTE_SELECTION,
-            videoDecoderBackend: 'bundled-hevc',
+            videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes'
         });
-        const forcedState = createState({ route: { active: route, override: { decoder: 'software', transport: 'auto' } } });
+        const forcedState = createState({ route: { active: route, override: { decoder: 'native', transport: 'auto' } } });
         const section = requireSection(describePlaybackInfo(forcedState), ROUTE_SECTION_ID);
 
-        expect(requireRow(section, 'Decoder').value).toBe('bundled-hevc');
+        expect(requireRow(section, 'Decoder').value).toBe('native');
         expect(requireRow(section, 'Transport').value).toBe(`raw-planes, ${RAW_FORMAT}`);
         expect(requireRow(section, 'Dolby Vision').value).toBe(`profile ${DOLBY_VISION_PROFILE} reconstruction`);
         expect(requireRow(section, 'Selection').value).toBe(ROUTE_SELECTION);
-        expect(requireRow(section, 'Override')).toEqual({ label: 'Override', tone: 'warning', value: 'decoder software, transport auto' });
+        expect(requireRow(section, 'Override')).toEqual({ label: 'Override', tone: 'warning', value: 'decoder native, transport auto' });
         expect(getRow(createState({ route: { ...initialState.route, active: route } }), ROUTE_SECTION_ID, 'Override').tone).toBe('normal');
     });
 

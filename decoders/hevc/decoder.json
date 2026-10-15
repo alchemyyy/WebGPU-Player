@@ -1,0 +1,14 @@
+{
+    "decoder": "hevc.wgsl",
+    "vectors": [
+        { "format": "I420", "root": "codecVectorAssetsDirectory", "path": "hevc-range-extension/rext420-8.hevc" },
+        { "format": "I420P10", "root": "codecVectorAssetsDirectory", "path": "hevc-range-extension/rext420-10.hevc" },
+        { "format": "I420P12", "root": "codecVectorAssetsDirectory", "path": "hevc-range-extension/main12-420.hevc" },
+        { "format": "I422", "root": "codecVectorAssetsDirectory", "path": "hevc-range-extension/main422-8.hevc" },
+        { "format": "I422P10", "root": "codecVectorAssetsDirectory", "path": "hevc-range-extension/main422-10.hevc" },
+        { "format": "I422P12", "root": "codecVectorAssetsDirectory", "path": "hevc-range-extension/main422-12.hevc" },
+        { "format": "I444", "root": "codecVectorAssetsDirectory", "path": "hevc-range-extension/main444-8.hevc" },
+        { "format": "I444P10", "root": "codecVectorAssetsDirectory", "path": "hevc-range-extension/main444-10.hevc" },
+        { "format": "I444P12", "root": "codecVectorAssetsDirectory", "path": "hevc-range-extension/main444-12.hevc" }
+    ]
+}

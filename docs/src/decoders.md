@@ -1,84 +1,50 @@
-# WebAssembly decoders
+# WebAssembly build
 
-`wasm/` holds the sources and the build of the engine's WebAssembly decoders, and of its decoded audio output stage.
-The build writes them to `bin/wasm/`, which is ignored like everything in `bin/` but `bin/codec_vector_assets/`.
-
-| Kit | Output in `bin/wasm/<kit>/` | Library and license | Our source (MIT) |
-| --- | --- | --- | --- |
-| `ffmpeg-eac3` | `ffmpeg-eac3.mjs`, `ffmpeg-eac3.wasm` | FFmpeg E-AC-3 and AC-3, LGPL-2.1-or-later | `ffmpeg-eac3/ffmpeg_eac3_bridge.c` |
-| `ffmpeg-truehd` | `ffmpeg-truehd.mjs`, `ffmpeg-truehd.wasm` | FFmpeg TrueHD and MLP, LGPL-2.1-or-later | `ffmpeg-truehd/ffmpeg_truehd_bridge.c` |
-| `ffmpeg-mpeg2-vc1` | `ffmpeg-mpeg2-vc1.js`, `ffmpeg-mpeg2-vc1.wasm` | FFmpeg MPEG-2 Video and VC-1, LGPL-2.1-or-later | `ffmpeg-mpeg2-vc1/ffmpeg_mpeg2_vc1_bridge.c` |
-| `ffmpeg-hevc` | `ffmpeg-hevc.js`, `ffmpeg-hevc.wasm` | FFmpeg HEVC Main and Main 10, LGPL-2.1-or-later | `ffmpeg-hevc/ffmpeg_hevc_bridge.c` |
-| `libdcadec-dts` | `libdcadec-dts.mjs`, `libdcadec-dts.wasm` | [dcadec](https://github.com/foo86/dcadec) DTS, DTS-HD High Resolution, and DTS-HD Master Audio, LGPL-2.1-or-later | `libdcadec-dts/libdcadec_dts_bridge.c` |
-| `libdovi` | `dovi-rpu-parser.wasm` | The `dolby_vision` crate from [dovi_tool](https://github.com/quietvoid/dovi_tool), vendored and patched, MIT | `libdovi/` |
-| `audio-output-stage` | `audio-output-stage.wasm` | None: the engine's resampler and limiter kernels | `audio-output-stage/audio_output_stage.c` |
-
-The `.mjs` outputs are the audio kits' ES module glue, which esbuild bundles into each worker that imports it.
-Their hand-written TypeScript declarations sit beside the bridges as `<kit>/<kit>.d.mts`, and the engine imports them as `#wasm/<kit>/<kit>.mjs` (see [Embedding the engine](embedding.md)).
-The `.js` outputs are the video kits' classic worker glue, which a worker loads with `importScripts`.
-Every `.wasm` file, and the `ffmpeg-mpeg2-vc1` and `ffmpeg-hevc` glue, is served from `libraries/<kit>/`.
-An audio binary is fetched only when a worker creates its first decoder of that kit, and a probe worker and the playback worker fetch the same URL, so the browser caches it once.
-`src/DecoderWASMSource.ts` always passes the glue `locateFile`, because a bundled glue cannot resolve its own URL, or `wasmBinary` with bytes a caller already fetched.
-The OpenJPEG decoder comes from an npm package, which `scripts/build.mjs` copies; nothing here builds it.
-`audio-output-stage` and `libdovi` have no glue: the engine instantiates each `.wasm` itself, `audio-output-stage` once per playback worker when its first decoded audio attempt starts.
-The playback worker also makes one instance of each video kit, `ffmpeg-hevc`, OpenJPEG, `ffmpeg-mpeg2-vc1`, and `libdovi`, when its first decoder or parser needs it (`video/decoders/WorkerWASMInstanceCache.ts`).
-Every later decoder or parser in the worker creates its own native context in that instance and releases only that context when it closes, and an instance whose code traps is replaced for the next one.
+The repository holds two kinds of WebAssembly.
+`wasm/` holds the engine's own modules: the Dolby Vision RPU parser and the decoded audio output stage.
+`decoders/` holds the decoder projects, each of which builds one [decoder package](decoder-packages.md).
+The engine never loads a decoder project's output by itself: a host supplies packages at runtime, and the engine names no project.
+Both builds write into `bin/`, which is ignored like everything in `bin/` but `bin/codec_vector_assets/`.
 
 ## You need
 
 - GNU Make, Git, and a POSIX shell (Git Bash on Windows).
   No container is involved.
-- Node.js: the Makefile reads the engine's folders from `tools/constants.json`.
+- Node.js: the Makefiles read the engine's folders from `tools/constants.json`.
 - Emscripten 4.0.13 (revision `2659582941bef14008476903f48941909db1b196`), activated with `emsdk_env` or named with `EMSDK=/path/to/emsdk`.
-- rustup, for `libdovi`.
-  Its `rust-toolchain.toml` selects Rust 1.96.1 with the `wasm32-unknown-unknown` target.
+  The audio output stage and the C decoder projects need it.
+- rustup, for `libdovi` and the Rust decoder projects.
+  Their `rust-toolchain.toml` files select the same Rust, 1.96.1, with the `wasm32-unknown-unknown` target.
 
-## Commands
+## The engine's modules
+
+| Kit | Output in `bin/wasm/<kit>/` | Library and license | Our source (MIT) |
+| --- | --- | --- | --- |
+| `libdovi` | `dovi-rpu-parser.wasm` | The `dolby_vision` crate from [dovi_tool](https://github.com/quietvoid/dovi_tool), vendored and patched, MIT | `libdovi/` |
+| `audio-output-stage` | `audio-output-stage.wasm` | None: the engine's resampler and limiter kernels | `audio-output-stage/audio_output_stage.c` |
+
+Each is served from `libraries/<kit>/` and has no JavaScript glue: the engine instantiates each `.wasm` itself.
+The playback worker makes one instance of `libdovi` when its first parser needs it (`demux/dolby-vision/WorkerWASMInstanceCache.ts`), and every later parser creates its own native context in that instance.
+The audio decode worker instantiates `audio-output-stage` once, when its first decoded audio attempt starts.
 
 Run from the engine root:
 
 ```sh
-make -C wasm sources            # Fetch the pinned FFmpeg and dcadec, once
-make -C wasm all                # Build every decoder into bin/wasm
-make -C wasm check              # Rebuild every decoder and compare it with bin/wasm
-make -C wasm ffmpeg-eac3        # Rebuild one kit
-make -C wasm source-archives    # Write the release source tarballs to wasm/build/source-archives
+make -C wasm all                  # Build both modules into bin/wasm
+make -C wasm check                # Rebuild both and compare them with bin/wasm
+make -C wasm audio-output-stage   # Rebuild one kit
 make -C wasm clean
 ```
 
-`-j5` builds the kits in parallel, and `JOBS` sets the parallelism inside each FFmpeg build.
-A full `check` takes several minutes.
+The build sets `SOURCE_DATE_EPOCH`, the locale, the time zone, and the Python hash seed, ignores compiler variables from the calling environment, and refuses any Emscripten other than 4.0.13.
+Panics embed source paths, so the `libdovi` build maps the cargo home, crate, and target directories to fixed names.
+With the `rust-src` component installed, rustc rewrites the standard library's `/rustc/<commit>` paths to the toolchain's local copy, so the build maps that copy back too.
+`make check` rebuilds both modules and compares them byte for byte with the existing `bin/wasm/`; copy another machine's `bin/wasm/` in first to check that two machines build the same bytes.
 
-## How the build works
-
-- Pinned sources.
-  FFmpeg and dcadec are git submodules in the engine's `vendor/`, pinned to exact commits.
-  They are shallow and marked `update = none`, so a recursive clone of the engine, or of a host that embeds it, skips them until `make sources` fetches them.
-  `make sources` fetches only each recorded commit, at depth 1, because `git submodule update --depth 1` would first clone the tip of the default branch.
-- Fresh source trees.
-  Each FFmpeg kit extracts a fresh copy of the pinned tree into `wasm/build/<kit>/` with `git archive`, then configures and builds it there with only that kit's decoders.
-  Building outside a git checkout keeps FFmpeg's embedded version string and source paths stable.
-- Two FFmpeg targets.
-  The audio and MPEG-2/VC-1 kits configure FFmpeg's portable C (`--arch=x86_32 --disable-asm`).
-  `ffmpeg-hevc` configures `--arch=wasm` instead, so FFmpeg's own simd128 HEVC code builds: the inverse transforms at 8 and 10 bits, and the SAO band and edge filters at 8 bits.
-  It compiles and links with `-O3 -flto -msimd128`, so the rest of the decoder auto-vectorizes; the link needs `-msimd128` too, because link-time optimization generates the code there.
-- Configuration checks.
-  The build fails unless configure enabled exactly the whitelisted decoders and kept the LGPL scope: no GPL, nonfree, or version 3 components.
-  `ffmpeg-hevc` also fails unless FFmpeg's `config.h` has `HAVE_SIMD128 1`, because configure drops the simd128 code without failing when its compile check fails.
-- A fixed environment.
-  The build sets `SOURCE_DATE_EPOCH`, the locale, the time zone, and the Python hash seed, ignores compiler variables from the calling environment, and refuses any Emscripten other than 4.0.13.
-- Line endings.
-  Emscripten on Windows writes CRLF into its JavaScript glue; the build converts it to LF, so the output does not depend on the host.
-- Rust panic paths.
-  Panics embed source paths, so the `libdovi` build maps the cargo home, crate, and target directories to fixed names.
-  With the `rust-src` component installed, rustc rewrites the standard library's `/rustc/<commit>` paths to the toolchain's local copy, so the build maps that copy back too.
-- `make check` rebuilds everything and compares it byte for byte with the existing `bin/wasm/`.
-  Copy another machine's `bin/wasm/` in first to check that two machines build the same bytes.
-
-## The Dolby Vision parser crate
+### The Dolby Vision parser crate
 
 `wasm/libdovi/` is our crate.
-`src/lib.rs` wraps the `dolby_vision` crate and packs each RPU into the fixed snapshot layout the engine reads (`video/dolby-vision/DolbyVisionRPUDataLayout.ts`, schema 2).
+`src/lib.rs` wraps the `dolby_vision` crate and packs each RPU into the fixed snapshot layout the engine reads (`demux/dolby-vision/DolbyVisionRPUDataLayout.ts`, schema 2).
 It has two entry points over one parser state: `dovi_parser_parse` reads an HEVC RPU NAL unit (type 62), and `dovi_parser_parse_av1_t35` reads an AV1 ITU-T T.35 metadata message, from the country code to the end of its OBU payload.
 The playback worker loads `dovi-rpu-parser.wasm` only for an owned HEVC or AV1 attempt on a Dolby Vision route; any other route removes the RPUs without parsing them.
 
@@ -94,7 +60,7 @@ cargo test --locked
 cargo clippy --locked --all-targets
 ```
 
-## The audio output stage
+### The audio output stage
 
 `wasm/audio-output-stage/audio_output_stage.c` holds the decoded audio output stage's two kernels: the resampler's source history and windowed-sinc rendering, and the lookahead limiter's history, attack envelope, and gain.
 Timeline reconciliation, timestamps, output chunking, and the downmix stay in TypeScript, in `audio/processing/`.
@@ -118,23 +84,164 @@ make -C wasm audio-output-stage
 npx vitest --watch=false test/audio/processing/AudioOutputStageModule.integration.test.ts
 ```
 
-## Licenses
+## Decoder projects
 
-- The bridges, the audio output stage, and the `libdovi` crate are MIT, like the rest of the engine.
+A decoder project is a folder of `decoders/` with a `decoder.json`.
+It is a minimal project that builds one package and runs nowhere on its own.
+
+| Project | Decodes | Module | Self-test vectors | Library and license |
+| --- | --- | --- | --- | --- |
+| `av1` | AV1 Main, High, and Professional at 8 to 12 bits, 4:0:0 to 4:4:4, on the GPU | libaom's decoder, running its parse-only pass, and the C bridge in `parser/` | One stream per output format in `vectors/`, from FFmpeg's libaom encoder | [libaom](https://aomedia.googlesource.com/aom), BSD-2-Clause with the Alliance for Open Media patent license |
+| `hevc` | HEVC Main, Main 10, and the range extensions, on the GPU | The Rust parser in `parser/` | The nine HEVC range extension vectors | None, MIT |
+| `jpeg2000` | JPEG 2000 YUV pictures at 4:2:0, 4:2:2, and 4:4:4, 8 to 12 bits, on the GPU | The Rust parser in `parser/` | One stream per output format in `vectors/`, from FFmpeg's and OpenJPEG's encoders | None, MIT |
+| `mpeg2` | MPEG-1 and MPEG-2 Video at 4:2:0, 4:2:2, and 4:4:4, on the GPU | None | One stream per chroma format in `vectors/`, from its own syntax exerciser | None, MIT |
+| `vc1` | VC-1 Advanced and WMV3 (Simple, Main, and Complex), on the GPU | None | The VC-1 Advanced stream in `src/capability/vectors/qualification/vc1/` | None, MIT |
+| `uncompressed` | Uncompressed planar packets, on the GPU | None | None | None, MIT; the template of a WGSL-only decoder |
+| `eac3` | AC-3 and E-AC-3 | FFmpeg's AC-3 and E-AC-3 decoders | None | FFmpeg, LGPL-2.1-or-later |
+| `truehd` | MLP and TrueHD | FFmpeg's MLP and TrueHD decoders | None | FFmpeg, LGPL-2.1-or-later |
+| `dts` | DTS core, DTS-HD High Resolution, and DTS-HD Master Audio | libdcadec | None | [dcadec](https://github.com/foo86/dcadec), LGPL-2.1-or-later |
+
+`decoder.json` names the project's decoder source, the WGSL file or audio manifest the package carries, under `decoder`.
+Each project's header declares the project's name as its package id, such as `//! id: hevc`, so a rebuilt package replaces the one a host stored before.
+A WGSL decoder may name a list of files instead, which the build joins in order into the one source the package carries: each later file follows a `// Decoder source: <file>` line, so a compile message leads back to its file, and only the first file may hold header lines.
+A video project lists its self-test vectors under `vectors`, each with its output `format`, the layout key of its `root` folder in `tools/constants.json`, its `path` there, and optionally the FFmpeg `decoderOptions` of the reference decode.
+A project with a `Makefile` builds its module with `make module`, which writes `decoders/build/<project>/module.wasm`; a project without one packs an empty module, as a decoder without a parser does.
+Each `Makefile` includes `decoders/rules.mk`, which pins the toolchain, FFmpeg, dcadec, and libaom, and holds the rules to build an FFmpeg audio module, a libdcadec module, libaom, and a Rust module.
+`decoders/include/audio_decoder_interface.h` declares the [audio decoder interface](decoder-packages.md#the-audio-decoder-interface) for C modules.
+
+Run from the engine root:
+
+```sh
+make -C decoders sources                  # Fetch the pinned FFmpeg, dcadec, and libaom, once, for the audio and AV1 projects
+npm run decoders                          # Build every project into bin/decoders/<project>.wasm
+npm run decoders -- hevc vc1              # Build some projects
+npm run decoders -- --check               # Rebuild every project into a scratch folder and compare it with bin/decoders
+make -C decoders source-archives          # Write the corresponding source of the LGPL projects
+make -C decoders clean
+```
+
+`scripts/decoder-packages.mjs` iterates over the projects without naming any.
+It builds a project's module, packs the module, the decoder source, and the project's vectors file with `tools/decoder-package-format.mjs`, and loads the result with the engine's own loader, as any host would, before it writes the package.
+`tools/pack-decoder-package.mjs` packs one package by hand from the same parts.
+
+### How the build works
+
+- Pinned sources.
+  FFmpeg, dcadec, and libaom are git submodules in the engine's `vendor/`, pinned to exact commits.
+  They are shallow and marked `update = none`, so a recursive clone of the engine, or of a host that embeds it, skips them until `make -C decoders sources` fetches them.
+  It fetches only each recorded commit, at depth 1, because `git submodule update --depth 1` would first clone the tip of the default branch.
+- Fresh source trees.
+  An FFmpeg project extracts a fresh copy of the pinned tree into `decoders/build/<project>/source/` with `git archive`, then configures and builds it there with only that project's decoders and FFmpeg's portable C.
+  Building outside a git checkout keeps FFmpeg's embedded version string and source paths stable.
+  The AV1 project extracts and builds libaom the same way, after applying its patches (see [The AV1 parser](#the-av1-parser)).
+- Configuration checks.
+  The build fails unless configure enabled exactly the whitelisted decoders and kept the LGPL scope: no GPL, nonfree, or version 3 components.
+- A fixed environment, as for the engine's modules, and Rust panic paths mapped to fixed names.
+- Audio modules link as standalone reactors with `-sIMPORTED_MEMORY`, so each imports its memory and exports version 1 of the audio decoder interface.
+
+### Self-test vectors
+
+`scripts/codec_vector_assets/generate_decoder_package_vectors.py` reads the vectors each `decoder.json` lists and writes `decoders/<project>/<project>.vectors`, the set the package carries in its vectors section (see [Self-test vectors](decoder-packages.md#self-test-vectors)).
+A project whose streams no script elsewhere writes keeps them in its own `vectors/`, from a generator of its own: `generate_mpeg2_decoder_vectors.py`, `generate_jpeg2000_decoder_vectors.py`, and `generate_av1_decoder_vectors.py`.
+The files are committed, byte for byte (`.gitattributes` marks them `-text`), and `--check` fails unless they match what the generators write.
+`scripts/generate_all_codec_vector_assets.py` runs them with the other generators, a project's own media first.
+
+### The HEVC parser
+
+`decoders/hevc/parser/` is our crate: the CPU half of the HEVC package, whose WGSL back end is `decoders/hevc/hevc.wgsl`.
+It parses each packet into one GPU record: the picture's parameters and slices, and per CTB its SAO, its prediction units with their motion, its transform jobs and coefficients, its deblocking edges, and its PCM samples.
+The WGSL expands the record and reconstructs and filters the picture on the GPU (see [Decisions](decisions.md#gpu-decode)).
+It implements version 2 of the engine's [parser interface](decoder-packages.md#the-parser-interface): `plan`, `parse`, and `finish`, with `decode` running all three on one instance.
+Every packet is one picture, so `plan_next` and `decode_next` report no more pictures, and a picture reports no visible size, repeat counts, or declared maximum of its own.
+A 4:0:0 picture decodes into the 4:2:0 format of its depth with neutral chroma, so the header declares `monochrome: yes`.
+
+`hevc.wgsl` declares the record's layout and the error codes once, as `const RECORD_<NAME>: u32` and `const ERROR_<NAME>: u32` lines.
+`build.rs` reads them into Rust constants and fails unless the header's `//! error:` lines name exactly the error codes the WGSL declares, so the module and the WGSL of one package always agree.
+A failed check reports one of the decoder's error codes and its failing value, as a failure on the GPU does.
+
+After a change, from the engine root:
+
+```sh
+npm run decoders -- hevc
+cd decoders/hevc/parser && cargo test --locked
+npx vitest --watch=false decoders/hevc
+```
+
+### The JPEG 2000 parser
+
+`decoders/jpeg2000/parser/` is our crate: the CPU half of the JPEG 2000 package, whose WGSL back end is `decoders/jpeg2000/jpeg2000.wgsl`.
+It reads a JP2 file, a `jp2c` box, or a bare codestream, picks the pixel format as FFmpeg does, runs tier-2, and writes one GPU record per picture: the code blocks with their bytes, terminations, and dequantization, the wavelet tables, and the output planes.
+One parse unit is one tile, so the parse workers split a picture by its tiles.
+The WGSL decodes each code block in one 32-lane workgroup, runs the inverse wavelet, and writes the output planes.
+As for HEVC, the WGSL declares the record's layout and the error codes once, and `build.rs` generates the Rust constants from them and fails unless the two agree, and every packet is one picture of version 2 of the parser interface.
+The parser bounds what a crafted codestream can make it allocate and parse, and fails such a stream as `resourceLimit`.
+It fails greyscale pictures as `colourSpace`, so the header declares no `monochrome`, and eligibility never offers the package a 4:0:0 stream.
+
+After a change, from the engine root:
+
+```sh
+npm run decoders -- jpeg2000
+cd decoders/jpeg2000/parser && cargo test --locked
+npx vitest --watch=false decoders/jpeg2000
+```
+
+### The AV1 parser
+
+`decoders/av1/` decodes AV1 with libaom's decoder as its parser and WGSL for everything after the syntax.
+libaom v3.15.2 is the git submodule `vendor/aom`, pinned in `decoders/rules.mk` (`AOM_COMMIT`), shallow and marked `update = none`, as FFmpeg and dcadec are.
+The build extracts the pinned tree with `git archive`, applies the patches in `decoders/av1/parser/patches/` in order with `patch --fuzz=0`, and builds the decoder alone with libaom's CMake and Emscripten's toolchain file: generic C, one thread, and WebAssembly exception handling for libaom's `longjmp` error path (`-sSUPPORT_LONGJMP=wasm`), so the module needs no JavaScript glue.
+The patches turn the decoder into a parser:
+
+- `0001-parse-only-decoding.patch` parses every tile with libaom's parse-only flag, so the decoder reads modes, motion, palettes, transform sizes, coefficients, CDEF indices, and restoration units, and runs no prediction, reconstruction, or filter; hooks hand each transform block, block, frame, and missing reference to the bridge.
+- `0002-intra-edge-parameters.patch` exports the edge sample counts and the edge filter type that intra prediction derives.
+- `0003-cfl-store-extent.patch` keeps the extent of the chroma-from-luma buffer the decoder would have stored, and exports CfL's alpha.
+- `0004-filter-level.patch` exports a block's deblocking level.
+
+libaom's frame buffers point at an address no module memory maps, so the parser holds no samples, and a stray sample access traps.
+
+`parser/av1_parser.c` implements version 2 of the [parser interface](decoder-packages.md#the-parser-interface).
+`plan` parses a temporal unit's frames, one picture per frame, hidden frames and `show_existing_frame` included, and `plan_next` hands out the rest.
+The unit's last shown frame presents and the others drop, as libaom and FFmpeg's libdav1d output one frame per temporal unit at operating point 0.
+A picture reports its visible size, the upscaled width and the frame height, its intra wave pairs, its output format, and its sequence header's maximum frame size, and `configure` reports the configured sequence header's maximum.
+So a picture of a new sequence that changes the bit depth or the chroma format, or raises the maximum past the pool, moves the engine to a new session, from that sequence's key frame on.
+After a start or a reset, temporal units before the first key frame make no picture.
+`parser/av1_record.c` writes each frame's GPU record: the blocks with their motion, warps, transform partitions, and palettes; each superblock's intra jobs per plane in decode order, with their edges; transform jobs with libaom's dequantized coefficients, dense or sparse, those with a 64-point side last; and the restoration units, CDEF indices, deblocking levels, references with their scale factors, global motion, and film grain.
+`av1.wgsl` declares the record's layout and the error codes once, as `const RECORD_<NAME>: u32` and `const ERROR_<NAME>: u32` lines, and `parser/record_layout.mjs` turns them and the header's `packet:` bound into the bridge's C header, and fails unless the `//! error:` lines name exactly the error codes the WGSL declares.
+
+`decoder.json` lists `av1.wgsl` first, with the header, which declares `id: av1`, the record layout, the frame store, and the entry points, then the four family files: `wgsl/transform.wgsl` (inverse transforms, film grain, and the output copy), `wgsl/intra.wgsl`, `wgsl/inter.wgsl`, and `wgsl/filters.wgsl` (deblocking, CDEF, super-resolution, and loop restoration).
+Each record runs validation, inter prediction per 16x16 tile, the transforms in two passes, the transforms with a 64-point side in a kernel of their own, an intra wavefront over superblocks for intra, inter-intra, and IntraBC blocks, deblocking, CDEF, super-resolution, loop restoration, and the output copy with film grain.
+References stay in the package's own `frames` buffer, ten 16-bit frame buffers the parser assigns, so the header declares `references: 0`, and only shown frames reach the frame pool.
+A 4:0:0 stream decodes into the 4:2:0 format of its depth with neutral chroma, so the header declares `monochrome: yes`.
+
+After a change, from the engine root:
+
+```sh
+npm run decoders -- av1      # About 3 minutes
+npx vitest --watch=false decoders/av1
+```
+
+### Licenses
+
+- The engine's modules, the bridges, the HEVC and JPEG 2000 parsers, the decoder sources, and the `libdovi` crate are MIT, like the rest of the engine.
   The vendored `dolby_vision` crate is MIT too and keeps its own `LICENSE`.
-- FFmpeg and libdcadec are LGPL-2.1-or-later.
-  `wasm/licenses/` holds their license texts.
-- `scripts/build.mjs` serves each LGPL decoder with its license, the bridge source, and the bridge license, and the audio output stage with the engine's `LICENSE`.
-  The Makefile pins the exact upstream commits.
-- Attach the tarballs from `make source-archives` to every release: the exact FFmpeg and dcadec trees, and the engine's `wasm/` sources.
+- FFmpeg and libdcadec are LGPL-2.1-or-later, and only the `eac3`, `truehd`, and `dts` packages contain them.
+  `decoders/licenses/` holds their license texts.
+- libaom is BSD-2-Clause with the Alliance for Open Media Patent License 1.0, and only the `av1` package contains it.
+  `decoders/licenses/` holds its `LICENSE` and `PATENTS` as `libaom-LICENSE` and `libaom-PATENTS`.
+- The engine ships no decoder package.
+  Whoever distributes the LGPL packages must offer their corresponding source: `make -C decoders source-archives` writes the exact FFmpeg and dcadec trees, and the engine's `decoders/` sources, to `decoders/build/source-archives/`.
 
 ## Layout
 
 | Path | Holds |
 | --- | --- |
-| `wasm/Makefile` | The build |
-| `wasm/<kit>/` | A bridge or kernel source, and the TypeScript declarations of an ES module output |
-| `wasm/libdovi/` | The Rust crate that wraps the `dolby_vision` RPU parser |
-| `wasm/libdovi/vendor/dolby_vision/` | The vendored, patched `dolby_vision` crate and its `PATCHES.md` |
-| `wasm/licenses/` | Upstream license texts |
-| `wasm/build/` | Build trees and source archives, ignored |
+| `wasm/Makefile` | The engine modules' build |
+| `wasm/libdovi/` | The Rust crate that wraps the `dolby_vision` RPU parser, and its vendored, patched copy of that crate |
+| `wasm/audio-output-stage/` | The audio output stage's kernels |
+| `wasm/build/` | The engine modules' build trees, ignored |
+| `decoders/Makefile` | The decoder projects' shared jobs: the pinned sources, the source archives, and clean |
+| `decoders/rules.mk` | The rules every decoder project's `Makefile` includes |
+| `decoders/<project>/` | One decoder project: its `decoder.json`, decoder source, vectors file, module sources, and tests in `test/` |
+| `decoders/include/` | The audio decoder interface for C modules |
+| `decoders/licenses/` | Upstream license texts |
+| `decoders/build/` | The decoder projects' build trees and source archives, ignored |

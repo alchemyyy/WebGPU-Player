@@ -1,7 +1,18 @@
+import type { AudioDecoderPackageSelection } from '../decode/audio/AudioDecoderPackageInstance';
 import { createEngineWorker } from '../EngineAssets';
 import type { Microseconds } from '../MediaTime';
 import { ingestWorkerTimingEvents, isTimingTraceActive, recordTimingEvent } from '../TimingTrace';
-import type { DecodedPresentationFrame } from '../presentation/WebGPUPresenter';
+import type { DecodedFramePoolPresentationFrame, DecodedPresentationFrame } from '../presentation/WebGPUPresenter';
+import { isGPUDecoderOutputFormat } from '../decode/video/gpu/GPUDecodeFormats';
+import { getGPUDecoderParserModule } from '../decode/video/gpu/GPUDecoderParser';
+import { createGPUDecodeStreamFacts } from '../decode/video/gpu/GPUFramePool';
+import type { GPUVideoDecoderSelection } from '../decode/video/gpu/GPUVideoDecoderCatalog';
+import type { HDR10PlusFrameMetadata } from '../demux/hdr/HDR10PlusMetadata';
+import GPUVideoDecodeFeed, {
+    type GPUVideoDecodeFeedCallbacks,
+    type GPUVideoDecodeFeedTelemetry,
+    type GPUVideoDecodeSessionFactory
+} from '../decode/video/gpu/GPUVideoDecodeFeed';
 import type CustomDecodeAudioBridge from '../audio/output/CustomDecodeAudioBridge';
 import type CustomDecodeNativeAudioBridge from '../audio/native/CustomDecodeNativeAudioBridge';
 import type { CustomAudioOutputChannelCount } from '../audio/processing/CustomAudioChannelLayout';
@@ -17,8 +28,8 @@ import {
     DecodedVideoGeometryError,
     exceedsNegotiatedCodedSize,
     requireConsistentDecodedVideoGeometry
-} from '../video/DecodedVideoGeometry';
-import { resolveDolbyVisionRPUParserWASMURL } from '../video/dolby-vision/DolbyVisionRPUParser';
+} from '../decode/video/DecodedVideoGeometry';
+import { resolveDolbyVisionRPUParserWASMURL } from '../demux/dolby-vision/DolbyVisionRPUParser';
 import {
     addMicroseconds,
     audioFramesToMicroseconds,
@@ -26,9 +37,12 @@ import {
 } from '../TimeMath';
 import {
     getDolbyVisionRawFrameLayerCount,
+    getVideoCreditLimit,
     isDecodeWorkerResponse,
     isDolbyVisionProfile,
     isRawVideoFrameFormat,
+    isVideoDecoderBackend,
+    isVideoOutputMode,
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
     type CustomDecodeFailureKind,
@@ -45,10 +59,12 @@ import {
     type DecodeWorkerAudioProgressResponse,
     type DecodeWorkerAudioSourceFormatResponse,
     type DecodeWorkerFrameResponse,
+    type DecodeWorkerGPUVideoParser,
     type DecodeWorkerReadyResponse,
     type DecodeWorkerNativeAudioInitializationResponse,
     type DecodeWorkerNativeAudioMediaResponse,
     type DecodeWorkerNativeMediaAudioConfiguration,
+    type DecodeWorkerPacketResponse,
     type DecodeWorkerReadyAudioConfiguration,
     type DecodeWorkerRequest,
     type DecodeWorkerResponse,
@@ -62,12 +78,12 @@ import {
 import {
     hasRawVideoFrameCopyLayout,
     type RawVideoFrameGeometry
-} from '../video/RawVideoFrameCopy';
-import { isCustomDecodeMediaSource, type CustomDecodeMediaSource } from './CustomDecodeMediaSource';
+} from '../decode/video/RawVideoFrameCopy';
+import { isCustomDecodeMediaSource, type CustomDecodeMediaSource } from '../demux/CustomDecodeMediaSource';
 import type {
     StaticHDRMetadata,
     StaticHDRMetadataScanStatus
-} from '../video/hdr/StaticHDRMetadata';
+} from '../demux/hdr/StaticHDRMetadata';
 
 const WORKER_STOP_TIMEOUT_MILLISECONDS = 1_000;
 const MINIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS = 100_000;
@@ -80,10 +96,13 @@ export type CustomDecodeSessionStartOptions = {
     audioOutputMode?: CustomDecodeAudioOutputMode
     audioTrackIndex?: number | null
     decodedAudioOutputChannelCount?: CustomAudioOutputChannelCount
-    discardDolbyVisionEnhancementLayer?: boolean
     durationMicroseconds?: Microseconds | null
     dolbyVisionProfile: CustomDecodeDolbyVisionProfile
+    /** The host's audio decoder package that decodes the decoded PCM route's track, in place of the engine's decoders */
+    audioDecoder?: AudioDecoderPackageSelection
     generation: number
+    /** The frame-pool route's GPU decoder; set exactly on that route */
+    gpuVideoDecoder?: GPUVideoDecoderSelection
     maximumCodedHeight: number
     maximumCodedWidth: number
     nativeHDRTransfer: CustomDecodeNativeHDRTransfer
@@ -169,6 +188,8 @@ export type CustomDecodeSessionTelemetry = {
     droppedFrameCount: number
     failureKind: CustomDecodeFailureKind | null
     firstFrameMediaTimeMicroseconds: Microseconds | null
+    /** The frame-pool route's GPU decoder, or null on the routes that decode in the worker */
+    gpuVideoDecode: GPUVideoDecodeFeedTelemetry | null
     lastAudioMediaTimeMicroseconds: Microseconds | null
     lastFrameEndMediaTimeMicroseconds: Microseconds | null
     lastFrameMediaTimeMicroseconds: Microseconds | null
@@ -236,7 +257,7 @@ type WorkerRecord = {
     /** Bounds the acknowledgement of a run the session asked to stop */
     stopTimer: ReturnType<typeof globalThis.setTimeout> | null
     terminated: boolean
-    /** Mediabunny keeps the decoders a backend registers for the worker's life, so another backend gets a new worker */
+    /** Another backend gets a new worker, so nothing one backend set up in a worker, such as a package parser's workers, outlives it */
     videoDecoderBackend: CustomDecodeVideoDecoderBackend
     worker: Worker
 };
@@ -258,7 +279,10 @@ type GenerationRecord = {
     decodeEnded: boolean
     decodedAudioOutputChannelCount: CustomAudioOutputChannelCount | null
     decodedVideoGeometry: RawVideoFrameGeometry | null
+    /** The frame-pool route's video epoch left the GPU decoder after its end, so the run's end can complete */
+    framePoolVideoDrained: boolean
     generation: number
+    gpuVideoDecoder: GPUVideoDecoderSelection | null
     maximumCodedHeight: number
     maximumCodedWidth: number
     nativeAudioBridgeStarted: boolean
@@ -306,6 +330,7 @@ function createTelemetry(): CustomDecodeSessionTelemetry {
         droppedFrameCount: 0,
         failureKind: null,
         firstFrameMediaTimeMicroseconds: null,
+        gpuVideoDecode: null,
         lastAudioMediaTimeMicroseconds: null,
         lastFrameEndMediaTimeMicroseconds: null,
         lastFrameMediaTimeMicroseconds: null,
@@ -366,14 +391,6 @@ function isValidOptionalTrackIndex(value: number | null | undefined): boolean {
     return value == null || isValidTrackIndex(value);
 }
 
-function isValidVideoOutputMode(value: string): value is CustomDecodeVideoOutputMode {
-    return value === 'raw-planes' || value === 'video-frame';
-}
-
-function isValidVideoDecoderBackend(value: string): value is CustomDecodeVideoDecoderBackend {
-    return value === 'bundled-hevc' || value === 'ffmpeg-mpeg2-vc1' || value === 'native' || value === 'openjpeg';
-}
-
 function isNativeMediaAudioConfiguration(
     configuration: DecodeWorkerReadyAudioConfiguration
 ): configuration is DecodeWorkerNativeMediaAudioConfiguration {
@@ -382,11 +399,52 @@ function isNativeMediaAudioConfiguration(
 
 function hasValidRawVideoFrameFormat(options: CustomDecodeSessionStartOptions): boolean {
     switch (options.videoOutputMode) {
+        case 'frame-pool':
+            return options.rawVideoFrameFormat !== null && isGPUDecoderOutputFormat(options.rawVideoFrameFormat);
         case 'raw-planes':
             return isRawVideoFrameFormat(options.rawVideoFrameFormat);
         case 'video-frame':
             return options.rawVideoFrameFormat === null;
     }
+}
+
+function describeInvalidFrameFormat(videoOutputMode: CustomDecodeVideoOutputMode): string {
+    switch (videoOutputMode) {
+        case 'frame-pool':
+            return 'Frame-pool custom decode requires a planar format a GPU decoder writes';
+        case 'raw-planes':
+            return 'Raw custom decode requires a requested raw frame format';
+        case 'video-frame':
+            return 'VideoFrame custom decode cannot request a raw frame format';
+    }
+}
+
+/** The frame-pool route, and it alone, decodes with a GPU decoder, which needs the session's GPU decode feed. */
+function validateGPUVideoDecodeStartOptions(options: CustomDecodeSessionStartOptions, gpuVideoDecodeAvailable: boolean): void {
+    const framePool = options.videoOutputMode === 'frame-pool';
+    if (framePool !== (options.videoDecoderBackend === 'gpu') || framePool !== (options.gpuVideoDecoder !== undefined)) {
+        throw new TypeError('The frame-pool route, and it alone, takes the gpu decoder backend and a GPU decoder');
+    }
+    if (framePool && !gpuVideoDecodeAvailable) {
+        throw new Error('Frame-pool custom decode requires a GPU decode session factory');
+    }
+    if (framePool && (options.dolbyVisionProfile !== null || options.neutralizeHDRColorMetadata)) {
+        throw new TypeError('Frame-pool custom decode presents planes without Dolby Vision reconstruction or native color handling');
+    }
+}
+
+/** Returns the start request's parser field for a decoder package with a parser, which the decode worker runs on its parser coordinator worker. */
+function getGPUVideoParserStartField(decoder: GPUVideoDecoderSelection): { gpuVideoParser?: DecodeWorkerGPUVideoParser } {
+    const decoderPackage = decoder.package;
+    if (decoderPackage.manifest.parser === null) {
+        return {};
+    }
+    return {
+        gpuVideoParser: {
+            packageVersion: { contentHash: decoderPackage.contentHash, id: decoderPackage.id },
+            parser: getGPUDecoderParserModule(decoderPackage)
+        }
+    };
 }
 
 function validateRawVideoFrameCopyLayout(options: CustomDecodeSessionStartOptions): void {
@@ -550,11 +608,15 @@ export default class CustomDecodeSession {
     private nativeAudioStopScheduled = false;
     private nativeAudioStopTail: Promise<void> = Promise.resolve();
     private readonly workerFactory: CustomDecodeWorkerFactory;
+    /** Drives the frame-pool route's GPU decoder, or null when the session cannot create one */
+    private readonly gpuVideoDecodeFeed: GPUVideoDecodeFeed | null;
     private readonly queuedFrames: QueuedFrame[] = [];
     private readonly pendingFrames = new Map<DecodedPresentationFrame, GenerationRecord>();
 
     private activeGeneration: GenerationRecord | null = null;
     private telemetry = createTelemetry();
+    /** The generation the telemetry describes runs the frame-pool route */
+    private telemetryFramePool = false;
     /** Created by the first start, and replaced only after a failure or an unacknowledged stop */
     private workerRecord: WorkerRecord | null = null;
 
@@ -564,7 +626,8 @@ export default class CustomDecodeSession {
         workerFactory: CustomDecodeWorkerFactory = createDefaultWorker,
         audioBridge: CustomDecodeAudioBridge | null = null,
         audioBridgeFactory: CustomDecodeAudioBridgeFactory | null = null,
-        nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null = null
+        nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null = null,
+        gpuVideoDecodeSessionFactory: GPUVideoDecodeSessionFactory | null = null
     ) {
         if (audioBridge && audioBridgeFactory) {
             throw new TypeError('Provide either a decoded audio bridge or a bridge factory, not both');
@@ -572,6 +635,7 @@ export default class CustomDecodeSession {
         this.audioBridgeFactory = audioBridgeFactory;
         this.configuredAudioBridge = audioBridge;
         this.eventHandler = eventHandler;
+        this.gpuVideoDecodeFeed = gpuVideoDecodeSessionFactory ? new GPUVideoDecodeFeed(gpuVideoDecodeSessionFactory) : null;
         this.nativeAudioBridgeFactory = nativeAudioBridgeFactory;
         this.workerFactory = workerFactory;
     }
@@ -592,12 +656,15 @@ export default class CustomDecodeSession {
         if (previousGeneration) {
             this.retireGeneration(previousGeneration);
         }
+        // The GPU decoder stops before frames release their slots, so no release decodes the retired generation's packets
+        this.gpuVideoDecodeFeed?.stop();
         this.closeQueuedFrames();
         this.clearPendingFrames();
 
         this.telemetry = createTelemetry();
         this.telemetry.activeGeneration = options.generation;
         this.telemetry.state = 'starting';
+        this.telemetryFramePool = options.videoOutputMode === 'frame-pool';
 
         let startRequest: DecodeWorkerStartRequest;
         try {
@@ -606,7 +673,11 @@ export default class CustomDecodeSession {
             this.failSession(options.generation, 'decode-failed', 'Unable to start the custom decode worker');
             return;
         }
-        this.activeGeneration = this.createGenerationRecord(options, startRequest);
+        const generationRecord = this.createGenerationRecord(options, startRequest);
+        this.activeGeneration = generationRecord;
+        if (generationRecord.videoOutputMode === 'frame-pool') {
+            this.gpuVideoDecodeFeed?.start(this.createGPUVideoDecodeFeedCallbacks(generationRecord), generationRecord.videoEpoch);
+        }
         this.startPendingGeneration();
     }
 
@@ -618,6 +689,7 @@ export default class CustomDecodeSession {
         const generationRecord = this.activeGeneration;
         this.activeGeneration = null;
         this.stopActiveAudioPaths(generationRecord?.generation ?? null);
+        this.gpuVideoDecodeFeed?.stop();
         this.closeQueuedFrames();
         this.clearPendingFrames();
         this.telemetry.activeGeneration = null;
@@ -656,6 +728,7 @@ export default class CustomDecodeSession {
         }
         this.destroyed = true;
         void this.stop().catch((): void => undefined);
+        this.gpuVideoDecodeFeed?.destroy();
         const workerRecord = this.workerRecord;
         if (workerRecord) {
             this.terminateWorker(workerRecord);
@@ -666,6 +739,8 @@ export default class CustomDecodeSession {
     public getTelemetry(): CustomDecodeSessionTelemetry {
         return {
             ...this.telemetry,
+            // A failed frame-pool generation keeps showing its GPU decoder, whose failure names the check
+            gpuVideoDecode: this.telemetryFramePool ? this.gpuVideoDecodeFeed?.getTelemetry() ?? null : null,
             queuedFrameCount: this.queuedFrames.length
         };
     }
@@ -761,11 +836,7 @@ export default class CustomDecodeSession {
                 mediaTimeMicroseconds: droppedFrame.presentationFrame.mediaTimeMicroseconds,
                 targetTimeMicroseconds
             });
-            if (droppedFrame.presentationFrame.outputMode === 'video-frame') {
-                closePresentationFrame(droppedFrame.presentationFrame);
-                continue;
-            }
-            if (!this.recycleFrameBuffer(droppedFrame.generationRecord, droppedFrame.presentationFrame.frame.data)) {
+            if (!this.releaseDroppedFrame(droppedFrame)) {
                 this.abandonPresentationFrame(droppedFrame.presentationFrame);
                 for (let abandonedFrameIndex = frameIndex + 1; abandonedFrameIndex < consumedFrames.length; abandonedFrameIndex += 1) {
                     this.abandonPresentationFrame(consumedFrames[abandonedFrameIndex].presentationFrame);
@@ -1003,29 +1074,16 @@ export default class CustomDecodeSession {
             Boolean(this.configuredAudioBridge || this.audioBridgeFactory),
             this.nativeAudioBridgeFactory !== null
         );
-        if (!isValidVideoOutputMode(options.videoOutputMode)) {
+        if (!isVideoOutputMode(options.videoOutputMode)) {
             throw new TypeError('Custom decode video output mode is invalid');
         }
-        if (!isValidVideoDecoderBackend(options.videoDecoderBackend)) {
+        if (!isVideoDecoderBackend(options.videoDecoderBackend)) {
             throw new TypeError('Custom decode video decoder backend is invalid');
         }
-        if (
-            (options.videoDecoderBackend === 'ffmpeg-mpeg2-vc1'
-                || options.videoDecoderBackend === 'openjpeg')
-            && (options.videoOutputMode !== 'video-frame'
-                || options.rawVideoFrameFormat !== null
-                || options.dolbyVisionProfile !== null
-                || options.neutralizeHDRColorMetadata
-                || options.nativeHDRTransfer !== null)
-        ) {
-            throw new TypeError('Software video decode requires an SDR VideoFrame route');
-        }
+        validateGPUVideoDecodeStartOptions(options, this.gpuVideoDecodeFeed !== null);
         validateHDRStartOptions(options);
         if (!hasValidRawVideoFrameFormat(options)) {
-            const message = options.videoOutputMode === 'raw-planes' ?
-                'Raw custom decode requires a requested raw frame format' :
-                'VideoFrame custom decode cannot request a raw frame format';
-            throw new TypeError(message);
+            throw new TypeError(describeInvalidFrameFormat(options.videoOutputMode));
         }
         validateRawVideoFrameCopyLayout(options);
     }
@@ -1035,11 +1093,12 @@ export default class CustomDecodeSession {
         const startRequest: DecodeWorkerStartRequest = {
             audioSampleCredits: 0,
             audioTrackIndex: options.audioTrackIndex ?? null,
-            ...(options.discardDolbyVisionEnhancementLayer ? { discardDolbyVisionEnhancementLayer: true } : {}),
             dolbyVisionProfile: options.dolbyVisionProfile,
             dolbyVisionRPUParserWASMURL: resolveDolbyVisionRPUParserWASMURL(),
-            frameCredits: options.videoOutputMode === 'raw-planes' ? MAX_DECODED_RAW_FRAME_CREDITS : MAX_DECODED_FRAME_CREDITS,
+            frameCredits: getVideoCreditLimit(options.videoOutputMode),
             generation: options.generation,
+            ...(options.videoOutputMode === 'frame-pool' && options.gpuVideoDecoder ? { gpuVideoCodec: options.gpuVideoDecoder.codec } : {}),
+            ...(options.videoOutputMode === 'frame-pool' && options.gpuVideoDecoder ? getGPUVideoParserStartField(options.gpuVideoDecoder) : {}),
             maximumCodedHeight: options.maximumCodedHeight,
             maximumCodedWidth: options.maximumCodedWidth,
             nativeHDRTransfer: options.nativeHDRTransfer,
@@ -1062,6 +1121,9 @@ export default class CustomDecodeSession {
         }
         if (audioOutputMode === 'decoded-pcm' && options.audioDownmixAlgorithm !== undefined) {
             startRequest.audioDownmixAlgorithm = options.audioDownmixAlgorithm;
+        }
+        if (audioOutputMode === 'decoded-pcm' && options.audioDecoder !== undefined) {
+            startRequest.audioPackageDecoder = options.audioDecoder;
         }
         if (options.decodedAudioOutputChannelCount !== undefined) {
             startRequest.decodedAudioOutputChannelCount = options.decodedAudioOutputChannelCount;
@@ -1094,7 +1156,9 @@ export default class CustomDecodeSession {
                     options.decodedAudioOutputChannelCount ?? 2 :
                     null,
             decodedVideoGeometry: null,
+            framePoolVideoDrained: false,
             generation: options.generation,
+            gpuVideoDecoder: options.gpuVideoDecoder ?? null,
             maximumCodedHeight: options.maximumCodedHeight,
             maximumCodedWidth: options.maximumCodedWidth,
             nativeAudioBridgeStarted: false,
@@ -1147,7 +1211,7 @@ export default class CustomDecodeSession {
 
     /**
      * Posts the active generation's start once the worker is free, creating the worker at the first start.
-     * Overlapping runs are unsafe: a stopping run waits for every bundled HEVC decoder in its worker, the next run's included.
+     * Overlapping runs are unsafe: a stopping run releases its decoders and audio attempts before the next run may start in its worker.
      */
     private startPendingGeneration(): void {
         const generationRecord = this.activeGeneration;
@@ -1329,6 +1393,9 @@ export default class CustomDecodeSession {
             case 'frame':
                 this.handleFrameResponse(generationRecord, messageValue);
                 break;
+            case 'packet':
+                this.handlePacketResponse(generationRecord, messageValue);
+                break;
             case 'video-ended':
                 this.handleVideoEndedResponse(generationRecord, messageValue);
                 break;
@@ -1371,6 +1438,9 @@ export default class CustomDecodeSession {
                         message.frame.close();
                         break;
                 }
+                this.telemetry.staleFrameCount += 1;
+                break;
+            case 'packet':
                 this.telemetry.staleFrameCount += 1;
                 break;
             case 'audio-progress':
@@ -1441,6 +1511,9 @@ export default class CustomDecodeSession {
         }
 
         generationRecord.videoCodec = videoCodec;
+        if (generationRecord.videoOutputMode === 'frame-pool' && !this.configureGPUVideoDecode(generationRecord, message)) {
+            return;
+        }
         generationRecord.containerDurationMicroseconds = message.containerDurationMicroseconds ?? null;
         const staticHDRMetadataScan = message.staticHDRMetadataScan ?? null;
         generationRecord.staticHDRMetadata = staticHDRMetadataScan?.metadata ?? null;
@@ -1498,6 +1571,95 @@ export default class CustomDecodeSession {
                 }
             }
         );
+    }
+
+    /** Prepares the frame-pool route's GPU decoder for the track the worker described; returns false once the failure is handled. */
+    private configureGPUVideoDecode(generationRecord: GenerationRecord, message: DecodeWorkerReadyResponse): boolean {
+        const feed = this.gpuVideoDecodeFeed;
+        const decoder = generationRecord.gpuVideoDecoder;
+        const format = generationRecord.startRequest.rawVideoFrameFormat;
+        if (!feed || !decoder || format === null || !isGPUDecoderOutputFormat(format)) {
+            this.handleDecodeProtocolFailure(generationRecord, 'The frame-pool route has no GPU decoder for its stream');
+            return false;
+        }
+        feed.configure({
+            codecPrivate: message.codecPrivate ? new Uint8Array(message.codecPrivate) : null,
+            decoder,
+            format,
+            maximumPictureSize: message.maximumPictureSize ?? null,
+            stream: createGPUDecodeStreamFacts(message.codedWidth, message.codedHeight, format)
+        }, { displayHeight: message.displayHeight, displayWidth: message.displayWidth });
+        return true;
+    }
+
+    /** How the GPU decode feed reaches one frame-pool generation; each callback concerns that generation alone. */
+    private createGPUVideoDecodeFeedCallbacks(generationRecord: GenerationRecord): GPUVideoDecodeFeedCallbacks {
+        return {
+            onCreditsReleased: (credits: number): void => {
+                this.requestReplacementFrames(generationRecord, credits);
+            },
+            onFailure: (detail: string): void => {
+                if (this.isGenerationCurrent(generationRecord)) {
+                    this.failGeneration(generationRecord, 'decode-failed', `gpu-decode ${detail}`);
+                }
+            },
+            onFrame: (presentationFrame: DecodedFramePoolPresentationFrame): void => {
+                this.enqueueFramePoolFrame(generationRecord, presentationFrame);
+            },
+            onVideoDrained: (): void => {
+                this.handleFramePoolVideoDrained(generationRecord);
+            }
+        };
+    }
+
+    /** Hands a frame-pool packet of the current video epoch to the GPU decoder; a replaced epoch's packet returns its credit unused. */
+    private handlePacketResponse(generationRecord: GenerationRecord, message: DecodeWorkerPacketResponse): void {
+        const feed = this.gpuVideoDecodeFeed;
+        if (generationRecord.videoOutputMode !== 'frame-pool' || !feed) {
+            this.handleDecodeProtocolFailure(generationRecord, 'The custom decode worker sent a packet outside the frame-pool route');
+            return;
+        }
+        if ((message.videoEpoch ?? 0) !== generationRecord.videoEpoch) {
+            this.telemetry.staleFrameCount += 1;
+            this.requestReplacementFrames(generationRecord, 1);
+            return;
+        }
+        feed.queuePacket({
+            data: message.data,
+            durationMicroseconds: message.durationMicroseconds,
+            format: message.format ?? null,
+            HDR10PlusMetadata: message.HDR10PlusMetadata ?? null,
+            keyframe: message.keyframe,
+            maximumPictureSize: message.maximumPictureSize ?? null,
+            outputEvents: message.outputEvents ?? null,
+            repeatCounts: message.repeatCounts ?? null,
+            timestampMicroseconds: message.timestampMicroseconds,
+            visibleSize: message.visibleSize ?? null
+        });
+    }
+
+    /** Queues a frame the GPU decoder made presentable; a frame of a replaced generation or epoch returns its slot. */
+    private enqueueFramePoolFrame(generationRecord: GenerationRecord, presentationFrame: DecodedFramePoolPresentationFrame): void {
+        if (!this.isGenerationCurrent(generationRecord) || (presentationFrame.videoEpoch ?? 0) !== generationRecord.videoEpoch) {
+            this.telemetry.staleFrameCount += 1;
+            this.gpuVideoDecodeFeed?.releaseFrame(presentationFrame);
+            return;
+        }
+        this.queueDecodedFrame(generationRecord, presentationFrame);
+        this.recordHDR10PlusMetadata(presentationFrame.HDR10PlusMetadata);
+        this.emitReadyEventIfMediaReady(generationRecord);
+    }
+
+    /** Ends the frame-pool route's video once its last frame left the GPU decoder, and completes a run end that waited for it. */
+    private handleFramePoolVideoDrained(generationRecord: GenerationRecord): void {
+        if (!this.isGenerationCurrent(generationRecord)) {
+            return;
+        }
+        generationRecord.framePoolVideoDrained = true;
+        this.telemetry.videoEnded = true;
+        if (generationRecord.decodeEnded) {
+            this.handleWorkerEnded(generationRecord);
+        }
     }
 
     private completeNativeAudioReady(
@@ -1679,6 +1841,11 @@ export default class CustomDecodeSession {
         generationRecord.videoEpoch += 1;
         this.telemetry.videoEnded = false;
         this.telemetry.videoEpoch = generationRecord.videoEpoch;
+        if (generationRecord.videoOutputMode === 'frame-pool') {
+            // The GPU decoder drops the replaced epoch's packets before its queued frames release their slots
+            generationRecord.framePoolVideoDrained = false;
+            this.gpuVideoDecodeFeed?.beginVideoEpoch(generationRecord.videoEpoch);
+        }
         return generationRecord;
     }
 
@@ -1693,6 +1860,10 @@ export default class CustomDecodeSession {
             if (presentationFrame.outputMode === 'video-frame') {
                 closePresentationFrame(presentationFrame);
                 releasedFrameCredits += 1;
+                continue;
+            }
+            if (presentationFrame.outputMode === 'frame-pool') {
+                this.gpuVideoDecodeFeed?.releaseFrame(presentationFrame);
                 continue;
             }
             if (!this.recycleFrameBuffer(discardedFrame.generationRecord, presentationFrame.frame.data)) {
@@ -1714,9 +1885,15 @@ export default class CustomDecodeSession {
 
     private handleVideoEndedResponse(generationRecord: GenerationRecord, message: DecodeWorkerVideoEndedResponse): void {
         // A replaced epoch's end says nothing about the restarted video
-        if (message.videoEpoch === generationRecord.videoEpoch) {
-            this.telemetry.videoEnded = true;
+        if (message.videoEpoch !== generationRecord.videoEpoch) {
+            return;
         }
+        // The frame-pool route's last packets still decode on the page, so its video ends once the GPU decoder drains
+        if (generationRecord.videoOutputMode === 'frame-pool') {
+            this.gpuVideoDecodeFeed?.endVideo(message.outputEvents ?? null);
+            return;
+        }
+        this.telemetry.videoEnded = true;
     }
 
     private handleAudioEndedResponse(generationRecord: GenerationRecord, message: DecodeWorkerAudioEndedResponse): void {
@@ -1900,6 +2077,14 @@ export default class CustomDecodeSession {
                 };
                 break;
         }
+        this.queueDecodedFrame(generationRecord, presentationFrame);
+        this.recordDolbyVisionMetadata(message);
+        this.recordHDR10PlusMetadata(message.HDR10PlusMetadata);
+        this.emitReadyEventIfMediaReady(generationRecord);
+    }
+
+    /** Inserts a decoded frame in presentation order, which makes video ready, and accounts it. */
+    private queueDecodedFrame(generationRecord: GenerationRecord, presentationFrame: DecodedPresentationFrame): void {
         const queuedFrame: QueuedFrame = {
             generationRecord,
             presentationFrame
@@ -1930,9 +2115,6 @@ export default class CustomDecodeSession {
             pendingFrameCount: this.pendingFrames.size,
             queuedFrameCount: this.queuedFrames.length
         });
-        this.recordDolbyVisionMetadata(message);
-        this.recordHDR10PlusMetadata(message);
-        this.emitReadyEventIfMediaReady(generationRecord);
     }
 
     private recordDolbyVisionMetadata(message: DecodeWorkerFrameResponse): void {
@@ -1948,8 +2130,8 @@ export default class CustomDecodeSession {
         }
     }
 
-    private recordHDR10PlusMetadata(message: DecodeWorkerFrameResponse): void {
-        switch (message.HDR10PlusMetadata?.status) {
+    private recordHDR10PlusMetadata(metadata: HDR10PlusFrameMetadata | undefined): void {
+        switch (metadata?.status) {
             case 'absent':
                 this.telemetry.receivedHDR10PlusAbsentFrameCount += 1;
                 break;
@@ -2099,6 +2281,10 @@ export default class CustomDecodeSession {
 
     private handleWorkerEnded(generationRecord: GenerationRecord): void {
         generationRecord.decodeEnded = true;
+        // The worker posted the frame-pool route's last packet, but its frames end only once the GPU decoder drains
+        if (generationRecord.videoOutputMode === 'frame-pool' && !generationRecord.framePoolVideoDrained) {
+            return;
+        }
         if (generationRecord.audioOutputMode !== 'native-media' || !generationRecord.audioRequested) {
             this.completeWorkerEnded(generationRecord);
             return;
@@ -2204,6 +2390,9 @@ export default class CustomDecodeSession {
             this.activeGeneration = null;
         }
         this.stopActiveAudioPaths(generationRecord.generation);
+        if (generationRecord.videoOutputMode === 'frame-pool') {
+            this.gpuVideoDecodeFeed?.stop();
+        }
         this.closeQueuedFrames();
         this.clearPendingFrames();
         this.retireGeneration(generationRecord);
@@ -2256,12 +2445,17 @@ export default class CustomDecodeSession {
     }
 
     private abandonPresentationFrame(presentationFrame: DecodedPresentationFrame): void {
-        if (presentationFrame.outputMode === 'raw-planes') {
-            this.telemetry.abandonedRawFrameCount += 1;
-            return;
+        switch (presentationFrame.outputMode) {
+            case 'frame-pool':
+                this.gpuVideoDecodeFeed?.releaseFrame(presentationFrame);
+                return;
+            case 'raw-planes':
+                this.telemetry.abandonedRawFrameCount += 1;
+                return;
+            case 'video-frame':
+                closePresentationFrame(presentationFrame);
+                return;
         }
-
-        closePresentationFrame(presentationFrame);
     }
 
     private closeQueuedFrames(): void {
@@ -2280,6 +2474,24 @@ export default class CustomDecodeSession {
         this.telemetry.pendingFrameCount = 0;
     }
 
+    /**
+     * Releases a frame that a newer due frame skipped: a VideoFrame closes, a pool frame returns its slot, and raw planes recycle their buffer.
+     * Returns false when the buffer cannot return to the worker.
+     */
+    private releaseDroppedFrame(droppedFrame: QueuedFrame): boolean {
+        const presentationFrame = droppedFrame.presentationFrame;
+        switch (presentationFrame.outputMode) {
+            case 'frame-pool':
+                this.gpuVideoDecodeFeed?.releaseFrame(presentationFrame);
+                return true;
+            case 'raw-planes':
+                return this.recycleFrameBuffer(droppedFrame.generationRecord, presentationFrame.frame.data);
+            case 'video-frame':
+                closePresentationFrame(presentationFrame);
+                return true;
+        }
+    }
+
     private releasePendingFrame(presentationFrame: DecodedPresentationFrame): boolean {
         const generationRecord = this.pendingFrames.get(presentationFrame);
         if (!generationRecord) {
@@ -2288,12 +2500,19 @@ export default class CustomDecodeSession {
 
         this.pendingFrames.delete(presentationFrame);
         this.telemetry.pendingFrameCount = this.pendingFrames.size;
-        if (presentationFrame.outputMode === 'raw-planes') {
-            if (!this.recycleFrameBuffer(generationRecord, presentationFrame.frame.data)) {
-                this.abandonPresentationFrame(presentationFrame);
-            }
-        } else {
-            this.requestReplacementFrames(generationRecord, 1);
+        switch (presentationFrame.outputMode) {
+            case 'frame-pool':
+                // The slot is the GPU decoder's again; its packet's credit returned when its decode was submitted
+                this.gpuVideoDecodeFeed?.releaseFrame(presentationFrame);
+                break;
+            case 'raw-planes':
+                if (!this.recycleFrameBuffer(generationRecord, presentationFrame.frame.data)) {
+                    this.abandonPresentationFrame(presentationFrame);
+                }
+                break;
+            case 'video-frame':
+                this.requestReplacementFrames(generationRecord, 1);
+                break;
         }
         return true;
     }

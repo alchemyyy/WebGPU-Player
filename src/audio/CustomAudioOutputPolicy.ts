@@ -18,6 +18,7 @@ import {
     EAC3_SUPPORTED_INPUT_ROUTES,
     TRUEHD_SUPPORTED_INPUT_ROUTES,
     hasCustomAudioMetadataLayout,
+    isDTSDirectPlayProfileToken,
     isSupportedTrueHDInputRoute
 } from './CustomCompressedAudioRoute';
 import { isSupportedCustomAudioSampleRate } from './CustomAudioSampleRate';
@@ -70,14 +71,19 @@ const CUSTOM_SURROUND_INPUT_CHANNEL_COUNTS: readonly number[] = [
     CUSTOM_THREE_CHANNEL_INPUT_CHANNEL_COUNT,
     CUSTOM_SURROUND_INPUT_CHANNEL_COUNT
 ];
-// AC-3 2/1 and 3/0 both reach Jellyfin as "3.0", which drops the "(back)" suffix, and the browser decoder reports no speaker mask, so three-channel AC-3 transcodes
+// Three-channel AC-3 transcodes: 2/1 and 3/0 both reach Jellyfin as "3.0", which drops the "(back)" suffix, and no evidence covers either bed
 const CUSTOM_AC3_INPUT_CHANNEL_COUNTS: readonly number[] = [
     CUSTOM_MONO_INPUT_CHANNEL_COUNT,
     CUSTOM_STEREO_INPUT_CHANNEL_COUNT,
     CUSTOM_SURROUND_INPUT_CHANNEL_COUNT
 ];
 const CUSTOM_EAC3_INPUT_CHANNEL_COUNTS = getSortedChannelCounts(EAC3_SUPPORTED_INPUT_ROUTES.map(route => route.channelCount));
-const CUSTOM_DTS_INPUT_CHANNEL_COUNTS = getSortedChannelCounts(DTS_SUPPORTED_INPUT_ROUTES.map(route => route.channelCount));
+// DTS-ES holds the only 6.1 route, whose reported geometry failed validation, so seven channels have no presentation path
+const CUSTOM_DTS_INPUT_CHANNEL_COUNTS = getSortedChannelCounts(
+    DTS_SUPPORTED_INPUT_ROUTES
+        .filter(route => route.profileTokens.some(isDTSDirectPlayProfileToken))
+        .map(route => route.channelCount)
+);
 const CUSTOM_TRUEHD_INPUT_CHANNEL_COUNTS = getSortedChannelCounts(
     TRUEHD_SUPPORTED_INPUT_ROUTES
         .filter(route => route.codec === 'truehd')

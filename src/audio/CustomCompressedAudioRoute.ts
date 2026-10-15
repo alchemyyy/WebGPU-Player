@@ -232,57 +232,6 @@ export function hasCustomAudioMetadataLayout(channelLayout: unknown, metadataLay
     return metadataLayouts.includes(channelLayout.trim().toLowerCase());
 }
 
-/**
- * Accepts production-qualified DTS profile/layout pairs at any bounded source rate.
- * A three-channel route also needs Jellyfin's 2.1 or 3.0 layout, the beds whose decoded speaker masks the shared mixer implements.
- */
-export function isSupportedDTSInputRoute(
-    channelCount: unknown,
-    sampleRate: unknown,
-    profileToken: string | null,
-    channelLayout?: unknown
-): boolean {
-    if (profileToken === null || !isSupportedCustomAudioSampleRate(sampleRate)) {
-        return false;
-    }
-    // DTS-ES stays in the decoder vector, but its reported 6.1 route failed geometry validation
-    if (!isDTSDirectPlayProfileToken(profileToken)) {
-        return false;
-    }
-    if (sampleRate > 96_000
-        && (channelCount !== 6
-            || (profileToken !== 'DTSHDMA' && profileToken !== 'DTSHDMADTSX'))) {
-        return false;
-    }
-    for (const route of DTS_SUPPORTED_INPUT_ROUTES) {
-        const routeProfileTokens: readonly DTSProfileToken[] = route.profileTokens;
-        if (route.channelCount === channelCount
-            && routeProfileTokens.includes(profileToken)
-            && hasCustomAudioMetadataLayout(channelLayout, route.metadataLayouts)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/** Accepts only E-AC-3 routes whose eight-channel metadata identifies standard 7.1. */
-export function isSupportedEAC3InputRoute(
-    channelCount: unknown,
-    sampleRate: unknown,
-    channelLayout: unknown
-): boolean {
-    if (!isSupportedCustomAudioSampleRate(sampleRate)) {
-        return false;
-    }
-    for (const route of EAC3_SUPPORTED_INPUT_ROUTES) {
-        if (route.channelCount !== channelCount) {
-            continue;
-        }
-        return hasCustomAudioMetadataLayout(channelLayout, route.metadataLayouts);
-    }
-    return false;
-}
-
 function doesTrueHDInputRouteMatch(
     route: TrueHDInputRoute,
     codec: string,
@@ -313,25 +262,6 @@ export function isSupportedTrueHDInputRoute(
         if (doesTrueHDInputRouteMatch(route, codec, channelCount, sampleRate)) {
             return true;
         }
-    }
-    return false;
-}
-
-/** Adds Jellyfin channel-layout metadata qualification to a supported TrueHD route. */
-export function isSupportedTrueHDMetadataRoute(
-    codec: string,
-    channelCount: unknown,
-    sampleRate: unknown,
-    channelLayout: unknown
-): boolean {
-    if (!isSupportedCustomAudioSampleRate(sampleRate)) {
-        return false;
-    }
-    for (const route of TRUEHD_SUPPORTED_INPUT_ROUTES) {
-        if (!doesTrueHDInputRouteMatch(route, codec, channelCount, sampleRate)) {
-            continue;
-        }
-        return hasCustomAudioMetadataLayout(channelLayout, route.metadataLayouts);
     }
     return false;
 }

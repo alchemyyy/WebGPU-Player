@@ -8,6 +8,7 @@ import {
     getCustomDecodeHardwareAcceleration,
     getCustomDecodeRequestHardwareAcceleration,
     getDolbyVisionRawFrameLayerCount,
+    getVideoCreditLimit,
     isDecodeWorkerRequest,
     isDecodeWorkerResponse,
     MAX_DECODED_AUDIO_CHANNELS,
@@ -15,28 +16,39 @@ import {
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
+    MAX_GPU_DECODE_PACKET_CREDITS,
     MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT,
-    type DecodeWorkerAudioOutputAttachment
+    type DecodeWorkerAudioOutputAttachment,
+    type DecodeWorkerGPUVideoParser
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
+import { DECODER_PACKAGE_MAXIMUM_MEMORY_PAGES } from 'webgpu-player/decode/packages/DecoderPackageImports';
+import {
+    GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH,
+    GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH,
+    MAXIMUM_GPU_DECODE_OUTPUT_EVENTS
+} from 'webgpu-player/decode/video/gpu/GPUDecodeLimits';
 import { CUSTOM_AUDIO_DOWNMIX_ALGORITHMS } from 'webgpu-player/audio/processing/CustomAudioDownmixAlgorithm';
 import {
     DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION,
     MAXIMUM_DOLBY_VISION_FRAME_RPU_COUNT
-} from 'webgpu-player/video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
-import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParser';
+} from 'webgpu-player/demux/dolby-vision/DolbyVisionEncodedMetadataProtocol';
+import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParser';
 import { MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH } from 'webgpu-player/audio/native/NativeMediaAudioLimits';
 import {
     type RawVideoPlaneDescriptor,
     type TransferableRawVideoFrame
-} from 'webgpu-player/video/RawVideoFrameCopy';
+} from 'webgpu-player/decode/video/RawVideoFrameCopy';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
-import { parseHEVCHDR10PlusMetadata } from 'webgpu-player/video/hdr/HDR10PlusMetadata';
+import { parseHEVCHDR10PlusMetadata } from 'webgpu-player/demux/hdr/HDR10PlusMetadata';
 
 import { MAXIMUM_TIMING_TRACE_EVENTS_PER_MESSAGE } from 'webgpu-player/TimingTrace';
 
 import { createHDR10PlusHEVCVector } from '../../src/capability/vectors/HDR10PlusVectors';
+import { createParserStubModuleBinary, STUB_MODULE_MEMORY_PAGES } from '../helpers/decoderPackages';
 
 const DOLBY_VISION_RPU_PARSER_WASM_URL = 'https://example.test/libraries/libdovi/dovi-rpu-parser.wasm';
+// The CPU decoder backends decoder packages replaced, and a name no backend ever had
+const REMOVED_VIDEO_DECODER_BACKENDS = [ 'bundled-hevc', 'ffmpeg-mpeg2-vc1', 'openjpeg', 'software' ] as const;
 const MEDIA_FILE_NAME = 'video.mkv';
 const MEDIA_URL = 'http://localhost/video.mkv';
 const UNKNOWN_MEDIA_SOURCE_KIND = 'stream';
@@ -104,6 +116,35 @@ const UNTARGETED_DISPLAY_LUMINANCE_NITS = 0;
 const STOPPED_RUN_GENERATION = 3;
 // Replacement is a yes-or-no request, so any other value is malformed
 const MALFORMED_REPLACE_WORKER_VALUE = 'yes';
+
+// A 2160p HEVC Main 10 track on the frame-pool route, whose pool rounds 2160 up to whole 64-pixel blocks
+const GPU_VIDEO_CODEC = 'hevc';
+// A decoder package's parser as the start request carries it: its compiled module, memory, and error names, and the package's id and content hash
+const GPU_PARSER_MODULE_BINARY = createParserStubModuleBinary();
+const GPU_VIDEO_PARSER: DecodeWorkerGPUVideoParser = {
+    packageVersion: { contentHash: '0f'.repeat(32), id: 'hevc' },
+    parser: {
+        errorNames: new Map([ [ 1, 'configuration' ] ]),
+        memory: { initialPages: STUB_MODULE_MEMORY_PAGES, maximumPages: DECODER_PACKAGE_MAXIMUM_MEMORY_PAGES },
+        module: new WebAssembly.Module(GPU_PARSER_MODULE_BINARY),
+        repeatDirectiveCount: 1
+    }
+};
+// A picture's own visible size and repeat counts, and the largest picture a parser read in the codec private data
+const GPU_PICTURE_SIZE = { height: 1_080, width: 1_920 };
+const GPU_PICTURE_REPEAT_COUNTS = [ 0, 0xFFFF_FFFF ];
+const GPU_MAXIMUM_PICTURE_SIZE = { height: 4_320, width: 7_680 };
+// The parser field's form before decoder packages: a codec name
+const GPU_VIDEO_PARSER_NAME = 'hevc';
+const GPU_VIDEO_GENERATION = 6;
+const GPU_POOL_CODED_WIDTH = 3_840;
+const GPU_POOL_CODED_HEIGHT = 2_176;
+const GPU_PACKET_BYTE_LENGTH = 4_096;
+const GPU_CODEC_PRIVATE_BYTE_LENGTH = 128;
+const GPU_PACKET_DURATION_MICROSECONDS = 41_708;
+const GPU_PACKET_TIMESTAMP_MICROSECONDS = -500_000;
+// A parser's output events for a packet: an earlier picture dropped, then the packet's own presented
+const GPU_PACKET_OUTPUT_EVENTS = Uint32Array.of(0x8000_0000, 1);
 
 function createPackedRPUData(): ArrayBuffer {
     return createDolbyVisionAuthorizationRPUVector();
@@ -212,29 +253,28 @@ describe('DecodeWorkerProtocol', () => {
         })).toBe(false);
     });
 
-    it('selects acceleration for native raw output and the bundled HEVC backend', () => {
+    it('selects no preference for raw planes of any codec and for the frame-pool route', () => {
         expect(getCustomDecodeHardwareAcceleration('raw-planes')).toBe('no-preference');
-        expect(getCustomDecodeHardwareAcceleration('raw-planes', 'native', true)).toBe('no-preference');
-        expect(getCustomDecodeHardwareAcceleration('video-frame', 'bundled-hevc')).toBe('prefer-software');
-        expect(getCustomDecodeHardwareAcceleration('video-frame', 'openjpeg')).toBe('prefer-software');
-        expect(getCustomDecodeHardwareAcceleration('video-frame', 'ffmpeg-mpeg2-vc1')).toBe('prefer-software');
+        expect(getCustomDecodeHardwareAcceleration('raw-planes', true)).toBe('no-preference');
+        // The frame-pool route opens no WebCodecs decoder
+        expect(getCustomDecodeHardwareAcceleration('frame-pool', true)).toBe('no-preference');
     });
 
     it('prefers hardware only for native VideoFrames whose opaque hardware output is presented', () => {
         // The SDR probes qualify with no preference, so a codec without a hardware decoder still plays
         expect(getCustomDecodeHardwareAcceleration('video-frame')).toBe('no-preference');
-        expect(getCustomDecodeHardwareAcceleration('video-frame', 'native', true)).toBe('prefer-hardware');
+        expect(getCustomDecodeHardwareAcceleration('video-frame', true)).toBe('prefer-hardware');
     });
 
     it('prefers software only for raw AV1 and VP9 planes, whose hardware output is opaque', () => {
-        expect(getCustomDecodeHardwareAcceleration('raw-planes', 'native', false, 'av1')).toBe('prefer-software');
-        expect(getCustomDecodeHardwareAcceleration('raw-planes', 'native', true, 'av1')).toBe('prefer-software');
-        expect(getCustomDecodeHardwareAcceleration('raw-planes', 'native', false, 'vp9')).toBe('prefer-software');
+        expect(getCustomDecodeHardwareAcceleration('raw-planes', false, 'av1')).toBe('prefer-software');
+        expect(getCustomDecodeHardwareAcceleration('raw-planes', true, 'av1')).toBe('prefer-software');
+        expect(getCustomDecodeHardwareAcceleration('raw-planes', false, 'vp9')).toBe('prefer-software');
         // Chromium has no software HEVC decoder
-        expect(getCustomDecodeHardwareAcceleration('raw-planes', 'native', false, 'hevc')).toBe('no-preference');
-        expect(getCustomDecodeHardwareAcceleration('video-frame', 'native', false, 'av1')).toBe('no-preference');
-        expect(getCustomDecodeHardwareAcceleration('video-frame', 'native', false, 'vp9')).toBe('no-preference');
-        expect(getCustomDecodeHardwareAcceleration('video-frame', 'native', true, 'av1')).toBe('prefer-hardware');
+        expect(getCustomDecodeHardwareAcceleration('raw-planes', false, 'hevc')).toBe('no-preference');
+        expect(getCustomDecodeHardwareAcceleration('video-frame', false, 'av1')).toBe('no-preference');
+        expect(getCustomDecodeHardwareAcceleration('video-frame', false, 'vp9')).toBe('no-preference');
+        expect(getCustomDecodeHardwareAcceleration('video-frame', true, 'av1')).toBe('prefer-hardware');
     });
 
     it.each([
@@ -299,22 +339,12 @@ describe('DecodeWorkerProtocol', () => {
             videoCodec: 'vp9'
         },
         {
-            expected: 'prefer-software',
-            request: {
-                dolbyVisionProfile: 7,
-                neutralizeHDRColorMetadata: false,
-                videoDecoderBackend: 'bundled-hevc',
-                videoOutputMode: 'raw-planes'
-            },
-            videoCodec: 'hevc'
-        },
-        {
-            expected: 'prefer-software',
+            expected: 'no-preference',
             request: {
                 dolbyVisionProfile: null,
                 neutralizeHDRColorMetadata: false,
-                videoDecoderBackend: 'openjpeg',
-                videoOutputMode: 'video-frame'
+                videoDecoderBackend: 'gpu',
+                videoOutputMode: 'frame-pool'
             },
             videoCodec: null
         }
@@ -430,7 +460,7 @@ describe('DecodeWorkerProtocol', () => {
         })).toBe(false);
     });
 
-    it('accepts only the SDR VideoFrame shape for FFmpeg MPEG-2/VC-1 video', () => {
+    it.each(REMOVED_VIDEO_DECODER_BACKENDS)('refuses the %s video decoder backend, which only native and gpu replace', (videoDecoderBackend) => {
         const request = {
             audioSampleCredits: 0,
             audioTrackIndex: null,
@@ -446,62 +476,13 @@ describe('DecodeWorkerProtocol', () => {
             startTimeMicroseconds: 0,
             type: 'start',
             source: { kind: 'url', url: 'http://localhost/video.mkv' },
-            videoDecoderBackend: 'ffmpeg-mpeg2-vc1',
+            videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
         } as const;
 
         expect(isDecodeWorkerRequest(request)).toBe(true);
-        expect(isDecodeWorkerRequest({
-            ...request,
-            rawVideoFrameFormat: 'I420P10',
-            videoOutputMode: 'raw-planes'
-        })).toBe(false);
-        expect(isDecodeWorkerRequest({
-            ...request,
-            dolbyVisionProfile: 8
-        })).toBe(false);
-        expect(isDecodeWorkerRequest({
-            ...request,
-            nativeHDRTransfer: 'pq'
-        })).toBe(false);
-        expect(isDecodeWorkerRequest({
-            ...request,
-            neutralizeHDRColorMetadata: true
-        })).toBe(false);
-    });
-
-    it('accepts only the SDR VideoFrame shape for OpenJPEG', () => {
-        const request = {
-            audioSampleCredits: 0,
-            audioTrackIndex: null,
-            dolbyVisionProfile: null,
-            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
-            frameCredits: MAX_DECODED_FRAME_CREDITS,
-            generation: 1,
-            maximumCodedHeight: 540,
-            maximumCodedWidth: 960,
-            nativeHDRTransfer: null,
-            neutralizeHDRColorMetadata: false,
-            rawVideoFrameFormat: null,
-            startTimeMicroseconds: 0,
-            type: 'start',
-            source: { kind: 'url', url: 'http://localhost/video.mj2' },
-            videoDecoderBackend: 'openjpeg',
-            videoOutputMode: 'video-frame',
-            videoTrackIndex: 0
-        } as const;
-
-        expect(isDecodeWorkerRequest(request)).toBe(true);
-        expect(isDecodeWorkerRequest({
-            ...request,
-            rawVideoFrameFormat: 'I420P10',
-            videoOutputMode: 'raw-planes'
-        })).toBe(false);
-        expect(isDecodeWorkerRequest({
-            ...request,
-            dolbyVisionProfile: 8
-        })).toBe(false);
+        expect(isDecodeWorkerRequest({ ...request, videoDecoderBackend })).toBe(false);
     });
 
     it('accepts integer-microsecond start and frame messages', () => {
@@ -598,7 +579,7 @@ describe('DecodeWorkerProtocol', () => {
             startTimeMicroseconds: 0,
             type: 'start',
             source: { kind: 'url', url: 'http://localhost/video.mkv' },
-            videoDecoderBackend: 'bundled-hevc',
+            videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
         } as const;
@@ -734,16 +715,10 @@ describe('DecodeWorkerProtocol', () => {
             videoDecoderBackend: 'native'
         },
         {
-            description: 'single-layer 8-bit Main Dolby Vision',
-            dolbyVisionProfile: 5,
+            description: 'a single-layer 8-bit range-extension BL',
+            dolbyVisionProfile: 8,
             rawVideoFrameFormat: 'I420',
-            videoDecoderBackend: 'bundled-hevc'
-        },
-        {
-            description: 'dual-layer 8-bit Main Dolby Vision',
-            dolbyVisionProfile: 7,
-            rawVideoFrameFormat: 'I420',
-            videoDecoderBackend: 'bundled-hevc'
+            videoDecoderBackend: 'native'
         },
         {
             description: 'a dual-layer range-extension BL',
@@ -756,12 +731,6 @@ describe('DecodeWorkerProtocol', () => {
             dolbyVisionProfile: null,
             rawVideoFrameFormat: 'I420P10',
             videoDecoderBackend: 'native'
-        },
-        {
-            description: 'bundled raw 10-bit SDR',
-            dolbyVisionProfile: null,
-            rawVideoFrameFormat: 'I420P10',
-            videoDecoderBackend: 'bundled-hevc'
         }
     ] as const)('accepts $description at 4K', ({
         dolbyVisionProfile,
@@ -787,37 +756,6 @@ describe('DecodeWorkerProtocol', () => {
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
         })).toBe(true);
-    });
-
-    it('accepts a discarded Dolby Vision EL only on a dual-layer route', () => {
-        const request = {
-            audioSampleCredits: 0,
-            audioTrackIndex: null,
-            discardDolbyVisionEnhancementLayer: true,
-            dolbyVisionProfile: 7,
-            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
-            frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
-            generation: 2,
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_840,
-            nativeHDRTransfer: null,
-            neutralizeHDRColorMetadata: false,
-            rawVideoFrameFormat: 'I420P10',
-            startTimeMicroseconds: 0,
-            type: 'start',
-            source: { kind: 'url', url: 'http://localhost/video.mkv' },
-            videoDecoderBackend: 'native',
-            videoOutputMode: 'raw-planes',
-            videoTrackIndex: 0
-        } as const;
-
-        expect(isDecodeWorkerRequest(request)).toBe(true);
-        expect(isDecodeWorkerRequest({ ...request, dolbyVisionProfile: 4 })).toBe(true);
-        expect(isDecodeWorkerRequest({ ...request, discardDolbyVisionEnhancementLayer: false })).toBe(true);
-        // A single-layer route has no EL to discard
-        expect(isDecodeWorkerRequest({ ...request, dolbyVisionProfile: 8 })).toBe(false);
-        expect(isDecodeWorkerRequest({ ...request, dolbyVisionProfile: null })).toBe(false);
-        expect(isDecodeWorkerRequest({ ...request, discardDolbyVisionEnhancementLayer: 'yes' })).toBe(false);
     });
 
     it('accepts only versioned and bounded encoded Dolby Vision frame metadata', () => {
@@ -1045,7 +983,7 @@ describe('DecodeWorkerProtocol', () => {
         })).toBe(false);
         expect(isDecodeWorkerRequest({
             ...nativeFrameRequest,
-            videoDecoderBackend: 'bundled-hevc'
+            videoDecoderBackend: 'gpu'
         })).toBe(false);
         expect(isDecodeWorkerRequest({
             ...nativeFrameRequest,
@@ -1119,7 +1057,7 @@ describe('DecodeWorkerProtocol', () => {
             startTimeMicroseconds: 0,
             type: 'start',
             source: { kind: 'url', url: 'http://localhost/video.mkv' },
-            videoDecoderBackend: 'bundled-hevc',
+            videoDecoderBackend: 'native',
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
         } as const;
@@ -2089,5 +2027,180 @@ describe('DecodeWorkerProtocol', () => {
                 audioEpoch: invalidAudioEpoch
             })).toBe(false);
         }
+    });
+
+    describe('frame-pool route', () => {
+        const framePoolStartRequest = {
+            audioSampleCredits: 0,
+            audioTrackIndex: null,
+            dolbyVisionProfile: null,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
+            frameCredits: MAX_GPU_DECODE_PACKET_CREDITS,
+            generation: GPU_VIDEO_GENERATION,
+            gpuVideoCodec: GPU_VIDEO_CODEC,
+            maximumCodedHeight: GPU_POOL_CODED_HEIGHT,
+            maximumCodedWidth: GPU_POOL_CODED_WIDTH,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: 'I420P10',
+            startTimeMicroseconds: 0,
+            type: 'start',
+            source: { kind: 'url', url: MEDIA_URL },
+            videoDecoderBackend: 'gpu',
+            videoOutputMode: 'frame-pool',
+            videoTrackIndex: 0
+        } as const;
+        const packetResponse = {
+            data: new ArrayBuffer(GPU_PACKET_BYTE_LENGTH),
+            durationMicroseconds: GPU_PACKET_DURATION_MICROSECONDS,
+            generation: GPU_VIDEO_GENERATION,
+            keyframe: true,
+            timestampMicroseconds: GPU_PACKET_TIMESTAMP_MICROSECONDS,
+            type: 'packet',
+            videoEpoch: 0
+        } as const;
+
+        it('grants packets, not frames, as its video credits', () => {
+            expect(getVideoCreditLimit('frame-pool')).toBe(MAX_GPU_DECODE_PACKET_CREDITS);
+            expect(getVideoCreditLimit('raw-planes')).toBe(MAX_DECODED_RAW_FRAME_CREDITS);
+            expect(getVideoCreditLimit('video-frame')).toBe(MAX_DECODED_FRAME_CREDITS);
+            expect(isDecodeWorkerRequest({ frameCredits: MAX_GPU_DECODE_PACKET_CREDITS, generation: GPU_VIDEO_GENERATION, type: 'pull' })).toBe(true);
+            expect(isDecodeWorkerRequest({ frameCredits: MAX_GPU_DECODE_PACKET_CREDITS + 1, generation: GPU_VIDEO_GENERATION, type: 'pull' })).toBe(false);
+        });
+
+        it('accepts a start with the GPU backend, the codec its decoder takes, a planar format, and the whole packet window', () => {
+            expect(isDecodeWorkerRequest(framePoolStartRequest)).toBe(true);
+            expect(isDecodeWorkerRequest({ ...framePoolStartRequest, gpuVideoCodec: undefined })).toBe(false);
+            expect(isDecodeWorkerRequest({ ...framePoolStartRequest, gpuVideoCodec: '' })).toBe(false);
+            expect(isDecodeWorkerRequest({ ...framePoolStartRequest, videoDecoderBackend: 'native' })).toBe(false);
+            expect(isDecodeWorkerRequest({ ...framePoolStartRequest, rawVideoFrameFormat: null })).toBe(false);
+            expect(isDecodeWorkerRequest({ ...framePoolStartRequest, rawVideoFrameFormat: 'NV12' })).toBe(false);
+            expect(isDecodeWorkerRequest({ ...framePoolStartRequest, frameCredits: MAX_GPU_DECODE_PACKET_CREDITS - 1 })).toBe(false);
+        });
+
+        it('rejects a start that asks the frame pool for Dolby Vision or native color handling', () => {
+            expect(isDecodeWorkerRequest({ ...framePoolStartRequest, dolbyVisionProfile: 8 })).toBe(false);
+            expect(isDecodeWorkerRequest({ ...framePoolStartRequest, nativeHDRTransfer: 'pq', neutralizeHDRColorMetadata: true })).toBe(false);
+        });
+
+        it('keeps the GPU backend and its codec off every other route', () => {
+            const rawPlaneStartRequest = {
+                ...framePoolStartRequest,
+                frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
+                gpuVideoCodec: undefined,
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'raw-planes'
+            } as const;
+
+            expect(isDecodeWorkerRequest(rawPlaneStartRequest)).toBe(true);
+            expect(isDecodeWorkerRequest({ ...rawPlaneStartRequest, gpuVideoCodec: GPU_VIDEO_CODEC })).toBe(false);
+            expect(isDecodeWorkerRequest({ ...rawPlaneStartRequest, videoDecoderBackend: 'gpu' })).toBe(false);
+            expect(isDecodeWorkerRequest({ ...rawPlaneStartRequest, gpuVideoParser: GPU_VIDEO_PARSER })).toBe(false);
+        });
+
+        it('accepts a decoder package\'s parser: its compiled module, bounded memory, and error names, with the package\'s id and content hash', () => {
+            expect(isDecodeWorkerRequest({ ...framePoolStartRequest, gpuVideoParser: GPU_VIDEO_PARSER })).toBe(true);
+            expect(isDecodeWorkerRequest({
+                ...framePoolStartRequest,
+                gpuVideoParser: { ...GPU_VIDEO_PARSER, parser: { ...GPU_VIDEO_PARSER.parser, memory: null } }
+            })).toBe(true);
+        });
+
+        it.each([
+            { gpuVideoParser: GPU_VIDEO_PARSER_NAME, subject: 'a codec name' },
+            { gpuVideoParser: null, subject: 'no parser' },
+            { gpuVideoParser: { parser: GPU_VIDEO_PARSER.parser }, subject: 'a parser without its package version' },
+            {
+                gpuVideoParser: { ...GPU_VIDEO_PARSER, packageVersion: { id: GPU_VIDEO_PARSER.packageVersion.id } },
+                subject: 'a package version without its content hash'
+            },
+            { gpuVideoParser: { ...GPU_VIDEO_PARSER, parser: { ...GPU_VIDEO_PARSER.parser, module: GPU_PARSER_MODULE_BINARY } }, subject: 'module bytes' },
+            {
+                gpuVideoParser: { ...GPU_VIDEO_PARSER, parser: { ...GPU_VIDEO_PARSER.parser, errorNames: { 1: 'configuration' } } },
+                subject: 'error names as a plain object'
+            },
+            {
+                gpuVideoParser: {
+                    ...GPU_VIDEO_PARSER,
+                    parser: { ...GPU_VIDEO_PARSER.parser, memory: { initialPages: STUB_MODULE_MEMORY_PAGES, maximumPages: DECODER_PACKAGE_MAXIMUM_MEMORY_PAGES + 1 } }
+                },
+                subject: 'a memory past the engine\'s bound'
+            },
+            { gpuVideoParser: { ...GPU_VIDEO_PARSER, parser: { ...GPU_VIDEO_PARSER.parser, repeatDirectiveCount: undefined } }, subject: 'a parser without its header\'s repeat count' }
+        ])('rejects $subject as the decoder\'s parser', ({ gpuVideoParser }) => {
+            expect(isDecodeWorkerRequest({ ...framePoolStartRequest, gpuVideoParser })).toBe(false);
+        });
+
+        it('accepts a bounded compressed packet with integer-microsecond times', () => {
+            expect(isDecodeWorkerResponse(packetResponse)).toBe(true);
+            // An omitted epoch is the initial attempt
+            expect(isDecodeWorkerResponse({ ...packetResponse, videoEpoch: undefined })).toBe(true);
+            expect(isDecodeWorkerResponse({ ...packetResponse, data: new ArrayBuffer(0) })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...packetResponse, data: new ArrayBuffer(GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH + 1) })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...packetResponse, data: new Uint8Array(GPU_PACKET_BYTE_LENGTH) })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...packetResponse, timestampMicroseconds: 0.5 })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...packetResponse, durationMicroseconds: -1 })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...packetResponse, keyframe: 'true' })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...packetResponse, videoEpoch: -1 })).toBe(false);
+        });
+
+        it('accepts a packet\'s output events only as at most the bound of words', () => {
+            expect(isDecodeWorkerResponse({ ...packetResponse, outputEvents: GPU_PACKET_OUTPUT_EVENTS })).toBe(true);
+            expect(isDecodeWorkerResponse({ ...packetResponse, outputEvents: new Uint32Array(0) })).toBe(true);
+            expect(isDecodeWorkerResponse({ ...packetResponse, outputEvents: new Uint32Array(MAXIMUM_GPU_DECODE_OUTPUT_EVENTS) })).toBe(true);
+            expect(isDecodeWorkerResponse({ ...packetResponse, outputEvents: new Uint32Array(MAXIMUM_GPU_DECODE_OUTPUT_EVENTS + 1) })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...packetResponse, outputEvents: [ ...GPU_PACKET_OUTPUT_EVENTS ] })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...packetResponse, outputEvents: null })).toBe(false);
+        });
+
+        it('accepts a picture\'s own visible size as positive integers and its repeat counts as u32 values', () => {
+            expect(isDecodeWorkerResponse({ ...packetResponse, repeatCounts: GPU_PICTURE_REPEAT_COUNTS, visibleSize: GPU_PICTURE_SIZE })).toBe(true);
+            expect(isDecodeWorkerResponse({ ...packetResponse, repeatCounts: [] })).toBe(true);
+            expect(isDecodeWorkerResponse({ ...packetResponse, visibleSize: { ...GPU_PICTURE_SIZE, width: 0 } })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...packetResponse, visibleSize: { ...GPU_PICTURE_SIZE, height: 0.5 } })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...packetResponse, visibleSize: null })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...packetResponse, repeatCounts: [ -1 ] })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...packetResponse, repeatCounts: [ 0x1_0000_0000 ] })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...packetResponse, repeatCounts: Uint32Array.of(1) })).toBe(false);
+        });
+
+        it('accepts a video end with the output events of its last packets, which had no picture to carry them, within the bound', () => {
+            const videoEndedResponse = { generation: GPU_VIDEO_GENERATION, type: 'video-ended', videoEpoch: 0 } as const;
+
+            expect(isDecodeWorkerResponse(videoEndedResponse)).toBe(true);
+            expect(isDecodeWorkerResponse({ ...videoEndedResponse, outputEvents: GPU_PACKET_OUTPUT_EVENTS })).toBe(true);
+            expect(isDecodeWorkerResponse({ ...videoEndedResponse, outputEvents: new Uint32Array(MAXIMUM_GPU_DECODE_OUTPUT_EVENTS + 1) })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...videoEndedResponse, outputEvents: [ ...GPU_PACKET_OUTPUT_EVENTS ] })).toBe(false);
+        });
+
+        it('accepts a packet\'s HDR10+ state only when it is well formed', () => {
+            const HDR10PlusMetadata = parseHEVCHDR10PlusMetadata(createHDR10PlusHEVCVector('valid'), { kind: 'annex-b' });
+
+            expect(isDecodeWorkerResponse({ ...packetResponse, HDR10PlusMetadata })).toBe(true);
+            expect(isDecodeWorkerResponse({ ...packetResponse, HDR10PlusMetadata: { status: 'valid' } })).toBe(false);
+        });
+
+        it('accepts the track\'s codec private data on ready only within its bound', () => {
+            const readyResponse = {
+                audio: null,
+                codec: 'hvc1.2.4.L153.B0',
+                codecPrivate: new ArrayBuffer(GPU_CODEC_PRIVATE_BYTE_LENGTH),
+                codedHeight: 2_160,
+                codedWidth: GPU_POOL_CODED_WIDTH,
+                displayHeight: 2_160,
+                displayWidth: GPU_POOL_CODED_WIDTH,
+                generation: GPU_VIDEO_GENERATION,
+                type: 'ready'
+            } as const;
+
+            expect(isDecodeWorkerResponse(readyResponse)).toBe(true);
+            expect(isDecodeWorkerResponse({ ...readyResponse, codecPrivate: undefined })).toBe(true);
+            expect(isDecodeWorkerResponse({ ...readyResponse, codecPrivate: new ArrayBuffer(0) })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...readyResponse, codecPrivate: new ArrayBuffer(GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH + 1) })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...readyResponse, codecPrivate: new Uint8Array(GPU_CODEC_PRIVATE_BYTE_LENGTH) })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...readyResponse, maximumPictureSize: GPU_MAXIMUM_PICTURE_SIZE })).toBe(true);
+            expect(isDecodeWorkerResponse({ ...readyResponse, maximumPictureSize: { ...GPU_MAXIMUM_PICTURE_SIZE, height: 0 } })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...readyResponse, maximumPictureSize: null })).toBe(false);
+        });
     });
 });

@@ -1,11 +1,11 @@
 // Encodes frames from a presentation plan: it owns the plan's GPU resources, takes each frame's source, and records the passes in plan order.
 // overhual/planning.md and overhual/temporal.md in the engine root describe the design it implements.
-import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../../video/dolby-vision/DolbyVisionRPUParser';
+import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../../demux/dolby-vision/DolbyVisionRPUParser';
 import {
     RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT,
     type RawVideoPlaneKind,
     type TransferableRawVideoFrame
-} from '../../video/RawVideoFrameCopy';
+} from '../../decode/video/RawVideoFrameCopy';
 import type { TexturePresentationGeometry } from '../PresentationGeometry';
 import { RENDER_SETTINGS_UNIFORM_BYTE_LENGTH } from '../RenderSettings';
 import {

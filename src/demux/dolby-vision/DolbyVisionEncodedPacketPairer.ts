@@ -1,0 +1,61 @@
+import type { EncodedPacket } from 'mediabunny';
+
+import { requireMicroseconds } from '../../TimeMath';
+import { DOLBY_VISION_LAYER_PAIR_TOLERANCE_MICROSECONDS } from './DolbyVisionProfiles';
+
+export type DolbyVisionEncodedPacketIterator = {
+    next: () => Promise<IteratorResult<EncodedPacket>>
+    return?: () => Promise<IteratorResult<EncodedPacket>>
+};
+
+/** Pairs a forward-only EL packet stream with the BL packets, one EL packet per BL packet in decode order. */
+export default class DolbyVisionEncodedPacketPairer {
+    private ended = false;
+    private retirementPromise: Promise<void> | null = null;
+
+    public constructor(public readonly iterator: DolbyVisionEncodedPacketIterator) {}
+
+    /** Returns whether iterator retirement has started. */
+    public get retired(): boolean {
+        return this.retirementPromise !== null;
+    }
+
+    /** Takes the next decode-order EL packet and checks that its PTS matches the BL packet's. */
+    public async takeMatchingPacket(baseTimestampMicrosecondsValue: number): Promise<EncodedPacket | null> {
+        const baseTimestampMicroseconds = requireMicroseconds(baseTimestampMicrosecondsValue, 'Dolby Vision base packet timestamp');
+        if (this.ended) {
+            return null;
+        }
+        const iteratorResult = await this.iterator.next();
+        if (iteratorResult.done) {
+            this.ended = true;
+            return null;
+        }
+        const enhancementTimestampMicroseconds = requireMicroseconds(
+            iteratorResult.value.microsecondTimestamp,
+            'Dolby Vision enhancement packet timestamp'
+        );
+        if (Math.abs(enhancementTimestampMicroseconds - baseTimestampMicroseconds) > DOLBY_VISION_LAYER_PAIR_TOLERANCE_MICROSECONDS) {
+            throw new RangeError('Separate Dolby Vision packets are not aligned in decode order');
+        }
+        return iteratorResult.value;
+    }
+
+    /** Retires the iterator, which releases any packet it read ahead. Later calls return the first call's promise. */
+    public retire(): Promise<void> {
+        if (this.retirementPromise) {
+            return this.retirementPromise;
+        }
+        this.ended = true;
+        this.retirementPromise = this.retireIterator();
+        return this.retirementPromise;
+    }
+
+    private async retireIterator(): Promise<void> {
+        try {
+            await this.iterator.return?.();
+        } catch {
+            // Disposing the input cancels the iterator anyway, so a failed return() is ignored
+        }
+    }
+}

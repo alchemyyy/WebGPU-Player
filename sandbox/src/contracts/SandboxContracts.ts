@@ -11,6 +11,7 @@ import type {
     CustomDecodeVideoOutputMode
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 import type { PassManifest, PlanReport, PresentationPlan } from 'webgpu-player/presentation/passes/PassTypes';
+import type { GPUVideoDecoderSelection } from 'webgpu-player/decode/video/gpu/GPUVideoDecoderCatalog';
 import type { HDRToSDRRenderSettings, RenderSettings } from 'webgpu-player/presentation/RenderSettings';
 import type { PresentationTelemetry } from 'webgpu-player/presentation/WebGPUPresenter';
 import type { DolbyVisionAuthorizationTelemetry } from 'webgpu-player/validation/DolbyVisionPresentationAuthorization';
@@ -137,8 +138,8 @@ export type MediaDescription = Readonly<{
 
 // Route
 
-/** The video decoder a route uses: the engine's choice, the browser's WebCodecs decoder, or the engine's bundled software decoder for the codec. */
-export type DecoderOverride = 'auto' | 'native' | 'software';
+/** The video decoder a route uses: the engine's choice, the browser's WebCodecs decoder, or a GPU decoder package the user added. */
+export type DecoderOverride = 'auto' | 'gpu' | 'native';
 
 /** How decoded frames reach the GPU: the engine's choice, raw planes uploaded as textures, or a VideoFrame imported as an external texture. */
 export type FrameTransportOverride = 'auto' | 'raw-planes' | 'video-frame';
@@ -152,6 +153,8 @@ export type RouteOverride = Readonly<{
 export type ActiveRoute = Readonly<{
     audioOutputMode: CustomDecodeAudioOutputMode | null
     dolbyVisionProfile: CustomDecodeDolbyVisionProfile
+    /** The GPU decoder of the frame-pool route, or null on the routes that decode in the worker */
+    gpuVideoDecoder: GPUVideoDecoderSelection | null
     nativeHDRTransfer: CustomDecodeNativeHDRTransfer
     neutralizeHDRColorMetadata: boolean
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
@@ -236,13 +239,47 @@ export type TelemetryState = Readonly<{
     presenter: PresentationTelemetry | null
 }>;
 
+// Decoders
+
+/** A vector check of a video decoder package on the presenter's device: the format it checked, and the check's code and detail. */
+export type SandboxDecoderVerification = Readonly<{
+    code: string
+    detail: string
+    format: string
+}>;
+
+/** A decoder package the user added, which a playback may decode with. */
+export type SandboxDecoderPackage = Readonly<{
+    /** The codecs its manifest accepts */
+    codecs: readonly string[]
+    /** The SHA-256 of its file, which tells its versions apart */
+    contentHash: string
+    /** The file the user added it from */
+    fileName: string
+    /** The id its header declares, which keys it: adding another version of the id replaces it */
+    id: string
+    kind: 'audio' | 'video'
+    name: string
+    /** A video package's output formats; empty for an audio package */
+    outputFormats: readonly string[]
+    /** The vector checks of this version run on the device, by format, in the order they ran */
+    verifications: readonly SandboxDecoderVerification[]
+    /** A video package's formats it carries a self-test vector for */
+    vectorFormats: readonly string[]
+}>;
+
+export type DecoderPackagesState = Readonly<{
+    /** The user's packages, oldest first, which playbacks prefer in that order */
+    packages: readonly SandboxDecoderPackage[]
+}>;
+
 // Failures
 
 /** A failure the sandbox shows: which layer failed, its code, and a terse detail with the failing value. */
 export type SandboxFailure = Readonly<{
     code: string
     detail: string
-    layer: 'library' | 'presenter' | 'probe' | 'session' | 'shader' | 'subtitle'
+    layer: 'decoders' | 'library' | 'presenter' | 'probe' | 'session' | 'shader' | 'subtitle'
     /** performance.now() when it happened */
     timeMilliseconds: number
 }>;
@@ -250,6 +287,7 @@ export type SandboxFailure = Readonly<{
 // State
 
 export type SandboxState = Readonly<{
+    decoders: DecoderPackagesState
     /** Newest last, bounded */
     failures: readonly SandboxFailure[]
     library: LibraryState
@@ -299,6 +337,7 @@ export function appendSandboxFailure(failures: readonly SandboxFailure[], failur
 
 export function createInitialSandboxState(): SandboxState {
     return {
+        decoders: { packages: [] },
         failures: [],
         library: { root: null, selectedPath: null, status: 'empty' },
         media: null,
@@ -342,6 +381,8 @@ export type ExampleShaderPass = Readonly<{
 
 /** What the panels ask of the session; it publishes every state but library. */
 export type SandboxSessionCommands = {
+    /** Checks and stores decoder package files, which the next start of the media may decode with; a file the engine refuses is reported */
+    addDecoderPackages: (files: readonly File[]) => Promise<void>
     addExampleShaderPass: (exampleId: string) => Promise<void>
     addShaderFiles: (files: readonly File[]) => Promise<void>
     /** The examples addExampleShaderPass takes */
@@ -353,6 +394,8 @@ export type SandboxSessionCommands = {
     openMedia: (media: SandboxMediaFile) => Promise<void>
     pause: () => void
     play: () => Promise<void>
+    /** Deletes a package the user added */
+    removeDecoderPackage: (packageId: string) => Promise<void>
     removeShaderFile: (fileId: string) => Promise<void>
     seek: (timeMicroseconds: Microseconds) => void
     /** Restarts the media on the track, at the current time */
@@ -365,4 +408,6 @@ export type SandboxSessionCommands = {
     setRouteOverride: (override: RouteOverride) => Promise<void>
     setShaderParameter: (fileId: string, parameterName: string, value: number) => void
     setVolume: (volume: number) => void
+    /** Runs a video package's vector check of every format it declares a vector for, on the presenter's device */
+    verifyDecoderPackage: (packageId: string) => Promise<void>
 };

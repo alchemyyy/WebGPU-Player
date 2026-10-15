@@ -1,0 +1,78 @@
+@startuml
+!include diagram-theme.puml
+skinparam sequenceMessageAlign left
+
+box "CustomDecode.worker (engine)" $BOX_WORKER
+participant "Packet stream" as stream
+end box
+box "GPUDecoderCoordinator.worker (engine)" $BOX_WORKER
+participant "Pipeline" as pipeline
+participant "Coordinator\ninstance" as coordinator
+end box
+box "GPUDecoderParse.worker x N (engine)" $BOX_WORKER
+participant "Parse\ninstances" as parseInstances
+end box
+box "Main thread (engine)" $BOX_MAIN
+participant "GPUVideoDecodeSession" as session
+end box
+
+== Attempt start: every start and seek opens a pipeline ==
+stream -> pipeline : open(module, memory limits,\nerror names, codec private data)
+pipeline -> coordinator : instantiate with a new env.memory;\nrun _initialize when exported
+pipeline -> coordinator : parser_abi_version() == 2\nparser_create() -> handle != 0
+pipeline -> coordinator : parser_reserve_input(handle, n) -> pointer\ncopy the codec private data
+pipeline -> coordinator : parser_configure(handle, n) -> 0\nparser_maximum_picture_width / _height
+pipeline --> stream : opened, with the declared maximum picture
+stream -> session : ready carries the first attempt's maximum;\nthe session codes at it, rounded up to 64,\nwhen the decoder fits it on the device
+
+== Each packet, in decode order, while its pictures run up to 8 ahead of the credits ==
+stream -> pipeline : submit(packet bytes)
+pipeline -> coordinator : parser_reserve_input, copy the packet
+loop each call, until one returns 0, 1, or -1
+  pipeline -> coordinator : parser_plan(handle, n) first,\nthen parser_plan_next(handle)
+  alt status 1: no picture, or no more
+    coordinator --> pipeline : parser_event_pointer / parser_event_count
+    note right of pipeline
+      The call's events trail the packet:
+      they wait for the next picture,
+      or go with the end of the track.
+    end note
+  else status 2: blocked
+    pipeline -> pipeline : wait until every earlier picture finished;\nplan the packet again, or call plan_next again
+  else status 0 or 3: a picture, with more to come on 3
+    coordinator --> pipeline : the plan (parser_output_pointer / _byte_length),\nparser_plan_unit_count, the plan's events
+    opt the plan has units
+      pipeline -> parseInstances : parse(plan, first unit, unit count),\nup to N nearly equal contiguous groups
+      parseInstances -> parseInstances : parser_reserve_input, copy the plan,\nparser_parse(handle, n, first, count)
+      parseInstances --> pipeline : one job per group (the output)
+    end
+    pipeline -> pipeline : wait until every earlier picture finished
+    pipeline -> coordinator : parser_reserve_input, copy the jobs in unit order,\nparser_finish(handle, n)
+    coordinator --> pipeline : the GPU record (the output), the finish's events,\nparser_picture_width / _height,\nparser_picture_repeat_count for each repeat directive,\nparser_picture_format, parser_maximum_picture_width / _height
+  end
+end
+pipeline --> stream : the packet's pictures in decode order: record,\nplan events then finish events, visible size,\nrepeat counts, format, sequence maximum;\nthen the trailing events
+stream -> session : one packet and one credit per picture,\nwith the packet's timestamp, duration, and keyframe flag:\nthe record, carried events first, then its own (at most 256)
+note right of session
+  GPUVideoDecodeFeed hands a picture of another format,
+  or beyond the pool, to a new session made for it,
+  which takes over once this one presented its pictures.
+end note
+
+session -> session : write the record into the packet ring, encode the dispatches,\neach repeat min(the picture's count, the stream's) times,\nread the status back
+session -> session : each event presents or drops the undecided picture it names;\na frame's visible rectangle is its picture's reported size,\nscaled into the display area
+
+== End of the track ==
+stream -> session : video-ended with the events no picture carried
+session -> session : apply them, then present the undecided\nframes in timestamp order
+
+== Failure ==
+coordinator --> pipeline : status -1
+pipeline -> coordinator : parser_error_code, parser_error_value
+pipeline --> stream : rejects: parser <error name>: <value>
+note over stream, parseInstances
+  A worker that answers nothing for 30 s is ended, failing every pipeline on it.
+  An output or event span outside the instance's memory, more than 256 events,
+  or more than 64 pictures in one packet fails the attempt.
+end note
+@enduml

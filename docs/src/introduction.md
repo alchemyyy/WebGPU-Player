@@ -4,7 +4,7 @@ WebGPU Player is a media playback engine for the browser.
 It plays sources a browser cannot play natively, and presents HDR and Dolby Vision through its own color pipeline.
 
 - Demux: [Mediabunny](https://github.com/Vanilagy/mediabunny), in a worker.
-- Decode: WebCodecs, or WebAssembly decoders built from FFmpeg, libdcadec, and OpenJPEG.
+- Decode: WebCodecs, or the [decoder packages](decoder-packages.md) a host loads at runtime: WGSL video decoders that run on the GPU, and WebAssembly audio decoders.
 - Present: WebGPU, with tone mapping for HDR10, HDR10+, HLG, and Dolby Vision.
 - Audio: an AudioWorklet output that owns the playback clock.
 
@@ -16,8 +16,9 @@ The engine gives a host page two layers:
    Demux, decode, presentation, and audio all run in the engine.
 2. WebGPU presentation of frames the host's own `<video>` element decodes, for color control of SDR video.
 
-Nothing is offered until the running browser has proven it.
-A decode route is qualified by decoding a known stream and checking the exact output.
+Nothing native is offered until the running browser has proven it.
+A native decode route is qualified by decoding a known stream and checking the exact output.
+A decoder package carries its own vectors instead, which run only when the host verifies it.
 An HDR or Dolby Vision presentation is authorized by rendering a known input through the production shader on the current GPU device.
 
 The engine knows nothing about Jellyfin's player, server API, or UI; it reads Jellyfin's media metadata shapes as its input.
@@ -39,7 +40,7 @@ The add-on supplies the Jellyfin player, the device profile, the settings, and t
 ## Conventions
 
 - Engine paths are relative to the engine root.
-  Paths inside `src/` may drop the prefix; `capability/`, `pipeline/`, `audio/`, `video/`, `presentation/`, `color/`, and `validation/` are its domains.
+  Paths inside `src/` may drop the prefix; `demux/`, `decode/`, `presentation/`, `audio/`, `capability/`, `color/`, `validation/`, and `pipeline/` are its folders.
 - Symbols are written `file:symbol` or `Class.method`.
 
 ## Where to look
@@ -51,5 +52,6 @@ The add-on supplies the Jellyfin player, the device profile, the settings, and t
 | Follow a playback session | [Architecture](architecture.md) |
 | Learn why a source plays or not | [Eligibility and routes](routes.md), [HEVC and Dolby Vision support](codec-support.md) |
 | Put the engine in a page | [Embedding the engine](embedding.md) |
-| Change a decoder or a vector | [WebAssembly decoders](decoders.md), [Codec vectors](codec-vectors.md), [Recipes](recipes.md) |
+| Write or load a decoder | [Decoder packages](decoder-packages.md), [WebAssembly build](decoders.md) |
+| Change a module or a vector | [WebAssembly build](decoders.md), [Codec vectors](codec-vectors.md), [Recipes](recipes.md) |
 | Avoid repeating an investigation | [Decisions](decisions.md) |

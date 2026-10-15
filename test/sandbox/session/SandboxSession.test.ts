@@ -18,9 +18,17 @@ import {
 const engineMocks = vi.hoisted(() => ({
     configured: true,
     controllers: [] as Array<Record<string, unknown>>,
+    // How the session reports a decoder package failure, which it hands its decoder packages
+    decoderPackageFailureRecorder: null as ((code: string, detail: string) => void) | null,
     eligibility: null as Record<string, unknown> | null,
     eligibilityCalls: [] as unknown[],
     frameLoops: [] as Array<Record<string, unknown>>,
+    // The user's video decoder packages, which a playback may decode its video with
+    videoDecoderPackages: [] as unknown[],
+    // The presenter's device pool limit, null for a page without a device
+    gpuFramePoolByteLimit: null as number | null,
+    // What the probed HEVC Main 10 stream decodes as on a GPU decoder
+    gpuVideoDecodeTarget: { codec: 'hevc', format: 'I420P10' },
     prewarmLeases: [] as Array<{ close: Mock }>,
     presenterHandlers: null as { fallback: (generation: number, reason: string, detail: string) => void } | null,
     presenters: [] as Array<Record<string, Mock>>,
@@ -40,6 +48,8 @@ vi.mock('webgpu-player/presentation/WebGPUPresenter', () => ({
         getDolbyVisionAuthorizationTelemetry = vi.fn(() => null);
         getExternalDolbyVisionAuthorizationTelemetry = vi.fn(() => null);
         getExternalHDRAuthorizationTelemetry = vi.fn(() => null);
+        getGPUFramePoolByteLimit = vi.fn(() => Promise.resolve(engineMocks.gpuFramePoolByteLimit));
+        getGPUVideoDecodeDevice = vi.fn(() => Promise.resolve(null));
         getPresentationPlanReport = vi.fn(() => ({ activePasses: [], inactivePasses: [] }));
         getRawHDRAuthorizationTelemetry = vi.fn(() => null);
         getRenderSettings = vi.fn(() => ({ mode: 'identity-sdr' }));
@@ -103,7 +113,8 @@ vi.mock('webgpu-player/capability/CustomPlaybackEligibility', () => ({
     getCustomPlaybackEligibility: vi.fn((options: { source: unknown }) => {
         engineMocks.eligibilityCalls.push(options);
         return engineMocks.eligibility === null ? null : { source: options.source, ...engineMocks.eligibility };
-    })
+    }),
+    getGPUVideoDecodeTarget: vi.fn(() => engineMocks.gpuVideoDecodeTarget)
 }));
 vi.mock('webgpu-player/presentation/PresentationSetup', async () => {
     const actual = await vi.importActual<typeof import('webgpu-player/presentation/PresentationSetup')>('webgpu-player/presentation/PresentationSetup');
@@ -131,12 +142,28 @@ vi.mock('webgpu-player/audio/native/CustomDecodeNativeAudioBridge', () => ({ def
 vi.mock('../../../sandbox/src/session/FFmpegTool', () => ({
     createFFmpegTool: vi.fn(() => engineMocks.tool)
 }));
+vi.mock('../../../sandbox/src/session/DecoderPackages', () => ({
+    createSandboxDecoderPackages: vi.fn((options: { recordFailure: (code: string, detail: string) => void }) => {
+        engineMocks.decoderPackageFailureRecorder = options.recordFailure;
+        return {
+            add: vi.fn(() => Promise.resolve()),
+            getAudioDecoders: vi.fn(() => []),
+            getVideoDecoders: vi.fn(() => engineMocks.videoDecoderPackages),
+            remove: vi.fn(() => Promise.resolve()),
+            restore: vi.fn(() => Promise.resolve()),
+            verify: vi.fn(() => Promise.resolve())
+        };
+    })
+}));
 
 import { createBrowserCustomAudioOutputFactory } from 'webgpu-player/audio/output/BrowserCustomAudioOutput';
 import { probeCustomDecodeCapabilities } from 'webgpu-player/capability/CustomDecodeCapabilities';
+import { getCustomPlaybackEligibility, type CustomPlaybackEligibilityOptions } from 'webgpu-player/capability/CustomPlaybackEligibility';
 import type { CustomPlaybackFallbackRequest } from 'webgpu-player/pipeline/CustomPlaybackControllerTypes';
 import { configurePresentationColorPipeline } from 'webgpu-player/presentation/PresentationSetup';
 import { requireMicroseconds } from 'webgpu-player/TimeMath';
+
+import { createDecoderProjectVideoPackageForTest } from '../../helpers/decoderPackages';
 
 const MEDIA_PATH = 'movies/feature.mkv';
 const RESUME_TIME_MICROSECONDS = 5_000_000;
@@ -160,7 +187,16 @@ const SATURATION_PARAMETER = 'saturation';
 const CHANGED_SATURATION = 1.5;
 const TEXT_FILE_NAME = 'notes.txt';
 const PASS_FILE_NAME = 'saturation.wgsl';
-const SOFTWARE_RAW_OVERRIDE: RouteOverride = { decoder: 'software', transport: 'raw-planes' };
+const GPU_RAW_OVERRIDE: RouteOverride = { decoder: 'gpu', transport: 'raw-planes' };
+const GPU_OVERRIDE: RouteOverride = { decoder: 'gpu', transport: 'auto' };
+// A device whose frame pool may take 2 GiB, as a desktop adapter allows
+const GPU_FRAME_POOL_BYTE_LIMIT = 2 ** 31;
+// The HEVC decoder project's package, which decodes the probed HEVC Main 10 stream
+const HEVC_PACKAGE = createDecoderProjectVideoPackageForTest('hevc');
+const GPU_VIDEO_DECODER = { codec: 'hevc', decoderId: HEVC_PACKAGE.id, package: HEVC_PACKAGE } as const;
+// A package file the page could not load, as the decoder packages report it
+const PACKAGE_FAILURE_CODE = 'package-invalid';
+const PACKAGE_FAILURE_DETAIL = 'vc1.wasm WebAssembly.compile(): expected magic word';
 const ELIGIBLE_ROUTE = {
     audioOutputMode: 'decoded-pcm',
     audioSourceChannelCount: 8,
@@ -205,10 +241,13 @@ function getLastController(): Record<string, Mock> {
 describe('SandboxSession', () => {
     beforeEach(() => {
         engineMocks.configured = true;
+        engineMocks.decoderPackageFailureRecorder = null;
+        engineMocks.videoDecoderPackages = [ HEVC_PACKAGE ];
         engineMocks.controllers.length = 0;
         engineMocks.eligibility = ELIGIBLE_ROUTE;
         engineMocks.eligibilityCalls.length = 0;
         engineMocks.frameLoops.length = 0;
+        engineMocks.gpuFramePoolByteLimit = null;
         engineMocks.prewarmLeases.length = 0;
         engineMocks.presenters.length = 0;
         engineMocks.tool = {
@@ -317,7 +356,7 @@ describe('SandboxSession', () => {
         expect(firstController.destroy).toHaveBeenCalled();
         expect(harness.session.getCurrentTimeMicroseconds()).toBe(FALLBACK_TIME_MICROSECONDS);
 
-        await harness.session.setRouteOverride(SOFTWARE_RAW_OVERRIDE);
+        await harness.session.setRouteOverride(GPU_RAW_OVERRIDE);
 
         expect(getLastController()).not.toBe(firstController);
         expect(getLastController().play).toHaveBeenCalledWith(expect.objectContaining({ startTimeMicroseconds: FALLBACK_TIME_MICROSECONDS }));
@@ -326,16 +365,76 @@ describe('SandboxSession', () => {
     it('reports an override the chosen route leaves unmet, and plays the route', async () => {
         const harness = createHarness();
 
-        await harness.session.setRouteOverride(SOFTWARE_RAW_OVERRIDE);
+        await harness.session.setRouteOverride(GPU_RAW_OVERRIDE);
         await openMedia(harness);
 
         expect(getFailures(harness)).toEqual([ {
             code: 'route-override-unmet',
-            detail: 'route-override-unmet: transport raw-planes, chose video-frame; decoder software, chose native',
+            detail: 'route-override-unmet: transport raw-planes, chose video-frame; decoder gpu, chose native',
             layer: 'session'
         } ]);
-        expect(harness.store.getState().route.active?.selection).toBe('override decoder software, transport raw-planes');
+        expect(harness.store.getState().route.active?.selection).toBe('override decoder gpu, transport raw-planes');
         expect(getLastController().play).toHaveBeenCalled();
+    });
+
+    it('offers the GPU decoder packages under Auto, and none without a device to hold a frame pool', async () => {
+        const harness = createHarness();
+
+        await openMedia(harness);
+        const withoutDeviceOptions = vi.mocked(getCustomPlaybackEligibility).mock.calls.at(-1)?.[2] as CustomPlaybackEligibilityOptions;
+        engineMocks.gpuFramePoolByteLimit = GPU_FRAME_POOL_BYTE_LIMIT;
+        await openMedia(harness);
+        const withDeviceOptions = vi.mocked(getCustomPlaybackEligibility).mock.calls.at(-1)?.[2] as CustomPlaybackEligibilityOptions;
+
+        expect(withoutDeviceOptions.gpuVideoDecoders).toEqual([]);
+        expect(withDeviceOptions.gpuVideoDecoders?.map(offer => offer.decoderId)).toEqual([ HEVC_PACKAGE.id ]);
+    });
+
+    it('offers no GPU decoder package under the native override', async () => {
+        const harness = createHarness();
+        engineMocks.gpuFramePoolByteLimit = GPU_FRAME_POOL_BYTE_LIMIT;
+
+        await harness.session.setRouteOverride({ decoder: 'native', transport: 'auto' });
+        await openMedia(harness);
+
+        const eligibilityOptions = vi.mocked(getCustomPlaybackEligibility).mock.calls.at(-1)?.[2] as CustomPlaybackEligibilityOptions;
+        expect(eligibilityOptions.gpuVideoDecoders).toEqual([]);
+    });
+
+    it('records a decoder package failure under the decoders layer', () => {
+        const harness = createHarness();
+
+        engineMocks.decoderPackageFailureRecorder?.(PACKAGE_FAILURE_CODE, PACKAGE_FAILURE_DETAIL);
+
+        expect(getFailures(harness)).toEqual([ { code: PACKAGE_FAILURE_CODE, detail: PACKAGE_FAILURE_DETAIL, layer: 'decoders' } ]);
+    });
+
+    it('offers every GPU decoder under the GPU override and plays the frame-pool route it chooses', async () => {
+        const harness = createHarness();
+        engineMocks.gpuFramePoolByteLimit = GPU_FRAME_POOL_BYTE_LIMIT;
+        engineMocks.eligibility = {
+            ...ELIGIBLE_ROUTE,
+            gpuVideoDecoder: GPU_VIDEO_DECODER,
+            rawVideoFrameFormat: 'I420P10',
+            videoDecoderBackend: 'gpu',
+            videoOutputMode: 'frame-pool'
+        };
+
+        await harness.session.setRouteOverride(GPU_OVERRIDE);
+        await openMedia(harness);
+
+        const eligibilityOptions = vi.mocked(getCustomPlaybackEligibility).mock.calls.at(-1)?.[2] as CustomPlaybackEligibilityOptions;
+        expect(eligibilityOptions.gpuVideoDecoders?.map(offer => offer.decoderId)).toEqual([ HEVC_PACKAGE.id ]);
+        expect(eligibilityOptions.gpuVideoDecoders?.[0].maximumBufferByteLength).toBe(GPU_FRAME_POOL_BYTE_LIMIT);
+        const controller = getLastController();
+        expect((controller.options as unknown as { gpuVideoDecodeSessionFactory: unknown }).gpuVideoDecodeSessionFactory).toEqual(expect.any(Function));
+        expect(controller.play).toHaveBeenCalledWith(expect.objectContaining({
+            gpuVideoDecoder: GPU_VIDEO_DECODER,
+            videoDecoderBackend: 'gpu',
+            videoOutputMode: 'frame-pool'
+        }));
+        expect(harness.store.getState().route.active?.gpuVideoDecoder).toEqual(GPU_VIDEO_DECODER);
+        expect(getFailures(harness)).toEqual([]);
     });
 
     it('restarts at the clock without audio when the audio track is turned off', async () => {

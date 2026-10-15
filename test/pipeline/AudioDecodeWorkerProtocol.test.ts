@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Microseconds } from 'webgpu-player/MediaTime';
+import type { AudioDecoderPackageSelection } from 'webgpu-player/decode/audio/AudioDecoderPackageInstance';
 import { createDefaultAudioDownmixSettings } from 'webgpu-player/audio/processing/CustomAudioDownmix';
 import { DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM } from 'webgpu-player/audio/processing/CustomAudioDownmixAlgorithm';
 import {
@@ -19,6 +20,8 @@ import {
 } from 'webgpu-player/pipeline/AudioDecodeWorkerProtocol';
 import type { DecodeWorkerAudioOutputAttachment } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 
+import { createAudioDecoderPackageForTest } from '../helpers/audioDecoderPackageStubs';
+
 const GENERATION = 4;
 const AUDIO_EPOCH = 2;
 const ATTEMPT_KEY = { audioEpoch: AUDIO_EPOCH, generation: GENERATION } as const;
@@ -34,14 +37,14 @@ const MAXIMUM_BUFFERED_FRAME_COUNT = 96_000;
 const WORKLET_GENERATION = 3;
 const PROGRESS_DURATION_MICROSECONDS = 10_000;
 const FAILURE_MESSAGE = 'The audio worklet dropped a decoded sample';
-const ROUTE_CODEC = 'truehd';
+const ROUTE_CODEC = 'pcm_s24le';
 const MATROSKA_TIME_RESOLUTION = 1_000;
 const START_TIME_MICROSECONDS = 0 as Microseconds;
 const ONE_INPUT_CREDIT = 1;
-// Malformed values: generations start at one, epochs at zero, and Mediabunny's decoding stays in the decode worker
+// Malformed values: generations start at one, epochs at zero, Mediabunny's decoding stays in the decode worker, and a codec's own backend became a package
 const INVALID_GENERATION = 0;
 const INVALID_AUDIO_EPOCH = -1;
-const PAGE_DECODER_BACKEND = 'mediabunny';
+const INVALID_DECODER_BACKENDS = [ 'mediabunny', 'truehd', 'dts', 'eac3' ] as const;
 const EMPTY_ROUTE_CODEC = '';
 const QUAD_OUTPUT_CHANNEL_COUNT = 4;
 const INVALID_TIME_RESOLUTION = 0;
@@ -51,6 +54,17 @@ const EMPTY_FRAME_COUNT = 0;
 const UNKNOWN_REQUEST_TYPE = 'unknown';
 const UNKNOWN_FAILURE_KIND = 'worker-lost';
 const OVERLONG_FAILURE_MESSAGE = 'x'.repeat(MAXIMUM_AUDIO_DECODE_WORKER_FAILURE_MESSAGE_LENGTH + 1);
+// A package attempt decodes as a codec its package's manifest lists, which the decoded PCM route then qualifies
+const PACKAGE_BACKEND = 'package';
+const PACKAGE_CODEC = 'ac3';
+const PACKAGE_UNLISTED_CODEC = 'dts';
+
+// A stub E-AC-3 package, as a host offers its audio decoder packages
+const DECODER_PACKAGE = createAudioDecoderPackageForTest('E-AC-3', [ 'eac3', PACKAGE_CODEC ]);
+const packageSelection: AudioDecoderPackageSelection = {
+    codec: PACKAGE_CODEC,
+    source: { manifest: DECODER_PACKAGE.manifest, memory: DECODER_PACKAGE.memory, module: DECODER_PACKAGE.module }
+};
 
 function createPacketBatch(overrides: Partial<AudioDecodeWorkerPacketBatch> = {}): AudioDecodeWorkerPacketBatch {
     return {
@@ -98,8 +112,9 @@ function createOpenRequest(overrides: Record<string, unknown> = {}): AudioDecode
         audioDownmixAlgorithm: DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
         audioDownmixSettings: createDefaultAudioDownmixSettings(),
         audioOutput: null,
-        decoderBackend: 'truehd',
+        decoderBackend: 'pcm',
         outputChannelCount: STEREO_CHANNEL_COUNT,
+        packageDecoder: null,
         routeCodec: ROUTE_CODEC,
         sourceSampleRate: SAMPLE_RATE,
         startTimeMicroseconds: START_TIME_MICROSECONDS,
@@ -141,11 +156,39 @@ describe('audio decode worker requests', () => {
     it('rejects an attempt without a valid key, backend, codec, layout, or time resolution', () => {
         expect(isAudioDecodeWorkerRequest(createOpenRequest({ generation: INVALID_GENERATION }))).toBe(false);
         expect(isAudioDecodeWorkerRequest(createOpenRequest({ audioEpoch: INVALID_AUDIO_EPOCH }))).toBe(false);
-        expect(isAudioDecodeWorkerRequest(createOpenRequest({ decoderBackend: PAGE_DECODER_BACKEND }))).toBe(false);
+        for (const decoderBackend of INVALID_DECODER_BACKENDS) {
+            expect(isAudioDecodeWorkerRequest(createOpenRequest({ decoderBackend })), decoderBackend).toBe(false);
+        }
         expect(isAudioDecodeWorkerRequest(createOpenRequest({ routeCodec: EMPTY_ROUTE_CODEC }))).toBe(false);
         expect(isAudioDecodeWorkerRequest(createOpenRequest({ outputChannelCount: QUAD_OUTPUT_CHANNEL_COUNT }))).toBe(false);
         expect(isAudioDecodeWorkerRequest(createOpenRequest({ timeResolution: INVALID_TIME_RESOLUTION }))).toBe(false);
         expect(isAudioDecodeWorkerRequest({ ...ATTEMPT_KEY, type: UNKNOWN_REQUEST_TYPE })).toBe(false);
+    });
+
+    it('accepts a package attempt with the package that decodes it', () => {
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({
+            decoderBackend: PACKAGE_BACKEND,
+            packageDecoder: packageSelection,
+            routeCodec: PACKAGE_CODEC
+        }))).toBe(true);
+    });
+
+    it('rejects a package attempt without a valid package, and any other attempt that carries one', () => {
+        const packageAttempt = { decoderBackend: PACKAGE_BACKEND, routeCodec: PACKAGE_CODEC };
+        const requestWithoutPackageField: Record<string, unknown> = { ...createOpenRequest() };
+        delete requestWithoutPackageField.packageDecoder;
+
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({ ...packageAttempt, packageDecoder: null }))).toBe(false);
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({
+            ...packageAttempt,
+            packageDecoder: { ...packageSelection, codec: PACKAGE_UNLISTED_CODEC }
+        }))).toBe(false);
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({
+            ...packageAttempt,
+            packageDecoder: { ...packageSelection, source: { ...packageSelection.source, module: null } }
+        }))).toBe(false);
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({ packageDecoder: packageSelection }))).toBe(false);
+        expect(isAudioDecodeWorkerRequest(requestWithoutPackageField)).toBe(false);
     });
 
     it('accepts an empty packet, which its decoder rejects, but no packet layout outside the batch', () => {

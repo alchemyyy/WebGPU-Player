@@ -1,5 +1,6 @@
 import type { Microseconds } from '../MediaTime';
 import type { DecodedPresentationFrame } from '../presentation/WebGPUPresenter';
+import type { AudioDecoderPackageSelection } from '../decode/audio/AudioDecoderPackageInstance';
 import type {
     AudioTelemetryListener,
     AudioWorkletControllerOptions
@@ -30,8 +31,10 @@ import type {
     DecodeWorkerAudioConfiguration
 } from './DecodeWorkerProtocol';
 import type { MediaClockSnapshot, MonotonicTimeSource } from './MediaClock';
-import type { CustomDecodeMediaSource } from './CustomDecodeMediaSource';
-import type { StaticHDRMetadata } from '../video/hdr/StaticHDRMetadata';
+import type { CustomDecodeMediaSource } from '../demux/CustomDecodeMediaSource';
+import type { GPUVideoDecodeSessionFactory } from '../decode/video/gpu/GPUVideoDecodeFeed';
+import type { GPUVideoDecoderSelection } from '../decode/video/gpu/GPUVideoDecoderCatalog';
+import type { StaticHDRMetadata } from '../demux/hdr/StaticHDRMetadata';
 
 export type CustomPlaybackState =
     | 'ended'
@@ -58,19 +61,22 @@ export type CustomPlaybackFallbackDisposition =
     | 'same-session-native';
 
 export type CustomPlaybackPlayOptions = {
+    /** The host's audio decoder package that decodes the decoded PCM route's track, in place of the engine's decoders */
+    audioDecoder?: AudioDecoderPackageSelection
     audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
     audioDownmixSettings?: AudioDownmixSettings
     audioOutputMode?: CustomDecodeAudioOutputMode
     audioTrackIndex: number | null
     decodedAudioOutputChannelCount?: CustomAudioOutputChannelCount
-    /** A dual-layer route reconstructs from its BL alone, because no qualified decoder decodes its EL */
-    discardDolbyVisionEnhancementLayer?: boolean
     durationMicroseconds: Microseconds | null
     dolbyVisionProfile: CustomDecodeDolbyVisionProfile
+    /** The frame-pool route's GPU decoder; set exactly on that route */
+    gpuVideoDecoder?: GPUVideoDecoderSelection
     maximumCodedHeight: number
     maximumCodedWidth: number
     nativeHDRTransfer: CustomDecodeNativeHDRTransfer
     neutralizeHDRColorMetadata: boolean
+    /** The decoded planar format of the raw-plane and frame-pool routes */
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
     source: CustomDecodeMediaSource
     startTimeMicroseconds: Microseconds
@@ -151,7 +157,8 @@ export type CustomVideoDecodeSession = {
 export type CustomVideoDecodeSessionFactory = (
     eventHandler: CustomDecodeSessionEventHandler,
     audioBridgeFactory: CustomDecodeAudioBridgeFactory | null,
-    nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null
+    nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null,
+    gpuVideoDecodeSessionFactory: GPUVideoDecodeSessionFactory | null
 ) => CustomVideoDecodeSession;
 
 export type CustomPlaybackClock = {
@@ -284,6 +291,8 @@ export type CustomPlaybackControllerOptions = {
     clock?: CustomPlaybackClock
     eventHandler?: CustomPlaybackControllerEventHandler
     fallbackHook?: CustomPlaybackHTMLFallbackHook
+    /** Creates the frame-pool route's GPU decode sessions on the presenter's device; that route is unavailable without it */
+    gpuVideoDecodeSessionFactory?: GPUVideoDecodeSessionFactory
     monotonicTimeSource?: MonotonicTimeSource
     nativeAudioBridgeFactory?: CustomDecodeNativeAudioBridgeFactory
     maximumVideoDecodeLagMicroseconds?: Microseconds

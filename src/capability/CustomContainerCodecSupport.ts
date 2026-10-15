@@ -2,6 +2,7 @@ import {
     CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS,
     CUSTOM_VIDEO_CODECS,
     CUSTOM_WEB_CODECS_AUDIO_CODECS,
+    isCustomPackageVideoCodec,
     type CustomAudioCodec,
     type CustomVideoCodec
 } from './CustomDecodeCapabilities';
@@ -52,14 +53,20 @@ const CUSTOM_MATROSKA_AUDIO_CODECS: readonly CustomAudioCodec[] = Object.freeze(
     'pcm_f64le'
 ]);
 const CUSTOM_NATIVE_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.freeze(
-    CUSTOM_VIDEO_CODECS.filter((codec: CustomVideoCodec): boolean => (
-        codec !== 'jpeg2000' && codec !== 'mpeg2video' && codec !== 'vc1'
-    ))
+    CUSTOM_VIDEO_CODECS.filter((codec: CustomVideoCodec): boolean => !isCustomPackageVideoCodec(codec))
 );
+// The worker reads VC-1 from vc-1 sample entries, as SMPTE RP 2025 binds it to ISO base media files
+const CUSTOM_ISO_BASE_MEDIA_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.freeze([
+    ...CUSTOM_NATIVE_VIDEO_CODECS,
+    'vc1'
+]);
+// The worker reads MPEG-1 and MPEG-2 from their own tracks, and VC-1 and WMV3 from Video for Windows tracks
 const CUSTOM_MATROSKA_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.freeze([
     ...CUSTOM_NATIVE_VIDEO_CODECS,
+    'mpeg1video',
     'mpeg2video',
-    'vc1'
+    'vc1',
+    'wmv3'
 ]);
 export const CUSTOM_MATROSKA_PROFILE_CONTAINER = 'mkv';
 
@@ -72,19 +79,19 @@ export const CUSTOM_CONTAINER_CODEC_RULES: readonly CustomContainerCodecRule[] =
         audioCodecs: CUSTOM_ISO_BASE_MEDIA_AUDIO_CODECS,
         containerAliases: Object.freeze([ '3gp', '3g2', 'mj2' ]),
         profileContainers: Object.freeze([ 'mp4', 'm4v', 'mov' ]),
-        videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
+        videoCodecs: CUSTOM_ISO_BASE_MEDIA_VIDEO_CODECS
     }),
     Object.freeze({
         audioCodecs: CUSTOM_ISO_BASE_MEDIA_PCM_AUDIO_CODECS,
         containerAliases: Object.freeze([]),
         profileContainers: Object.freeze([ 'mp4', 'm4v', 'mov' ]),
-        videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
+        videoCodecs: CUSTOM_ISO_BASE_MEDIA_VIDEO_CODECS
     }),
     Object.freeze({
         audioCodecs: CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS,
         containerAliases: Object.freeze([]),
         profileContainers: Object.freeze([ 'mov' ]),
-        videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
+        videoCodecs: CUSTOM_ISO_BASE_MEDIA_VIDEO_CODECS
     }),
     Object.freeze({
         audioCodecs: Object.freeze([

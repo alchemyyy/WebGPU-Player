@@ -8,22 +8,17 @@
     "node": ">=24"
   },
   "imports": {
-    "#wasm/*": {
-      "types": "./wasm/*",
-      "default": "./bin/wasm/*"
-    },
     "#codec_vector_assets/*": "./bin/codec_vector_assets/*.ts"
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "decoders": "node scripts/decoder-packages.mjs",
     "lint": "eslint --concurrency=auto",
     "sandbox": "node scripts/build.mjs && vite --config sandbox/vite.config.ts",
     "test": "vitest --watch=false",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@cornerstonejs/codec-openjpeg": "1.3.0",
-    "@mediabunny/ac3": "1.52.2",
     "mediabunny": "1.52.2"
   },
   "devDependencies": {

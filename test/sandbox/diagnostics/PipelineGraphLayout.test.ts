@@ -62,7 +62,7 @@ const FIRST_OF_TWO_PORTS = 1 / 3;
 const SECOND_OF_TWO_PORTS = 2 / 3;
 const HALF = 0.5;
 
-const ROUTE_DECODER = 'bundled-hevc';
+const ROUTE_DECODER = 'native';
 const ROUTE_TRANSPORT = 'raw-planes';
 const ROUTE_RAW_FORMAT = 'I420P10';
 const ROUTE_DOLBY_VISION_PROFILE = 8;

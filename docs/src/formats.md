@@ -2,6 +2,7 @@
 
 This chapter lists what the custom pipeline plays, and what it does not.
 A source plays when its container, its video track, and its selected audio track all appear below, and the running browser and GPU pass the route's evidence.
+A codec whose decoder is a package plays only when the host loaded a [decoder package](decoder-packages.md) for it.
 Anything else is ineligible, and the host falls back.
 [HEVC and Dolby Vision support](codec-support.md) holds the full HEVC and Dolby Vision matrix, and [Eligibility and routes](routes.md) the checks, routes, and evidence behind every row.
 
@@ -12,9 +13,9 @@ It does not play live streams, HLS or DASH, or a server transcode.
 
 | Container | Video | Audio |
 | --- | --- | --- |
-| Matroska | H.264, HEVC, VP8, VP9, AV1, MPEG-2, VC-1 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, MLP, PCM |
+| Matroska | H.264, HEVC, VP8, VP9, AV1, MPEG-1, MPEG-2, VC-1, WMV3 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, MLP, PCM |
 | WebM | VP8, VP9, AV1 | Opus, Vorbis |
-| MP4, M4V, MOV, 3GP, 3G2 | H.264, HEVC, VP8, VP9, AV1 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, PCM |
+| MP4, M4V, MOV, 3GP, 3G2 | H.264, HEVC, VP8, VP9, AV1, VC-1 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, PCM |
 | MOV, MJ2 | JPEG 2000 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, PCM |
 | MPEG-TS, M2TS, MTS | H.264, HEVC | AAC, MP3, AC-3, E-AC-3 |
 | AVI, FLV, ASF (WMV), MPEG program streams (MPG, VOB), Ogg, RealMedia, MXF, and every other container | Not supported | Not supported |
@@ -28,16 +29,20 @@ The rows come from `capability/CustomContainerCodecSupport.ts`.
 | Codec | Plays | Decoder | Does not play |
 | --- | --- | --- | --- |
 | H.264 | Constrained Baseline, Baseline, Main, and High, at 8 bits 4:2:0 | WebCodecs | High 10, High 4:2:2, High 4:4:4, and every other profile |
-| HEVC | Main and Main 10: SDR, HDR10, HDR10+, HLG, and Dolby Vision; the 9 range extensions, 4:2:0, 4:2:2, and 4:4:4 at 8, 10, and 12 bits | WebCodecs, or FFmpeg for Main and Main 10 | 14 and 16 bits, monochrome, Screen Content Coding, High Throughput, Main Still Picture, and the named Intra profiles |
+| HEVC | Main and Main 10: SDR, HDR10, HDR10+, HLG, and Dolby Vision; the 9 range extensions, 4:2:0, 4:2:2, and 4:4:4 at 8, 10, and 12 bits | WebCodecs, or a GPU decoder package | 14 and 16 bits, monochrome, Screen Content Coding, High Throughput, Main Still Picture, and the named Intra profiles |
 | VP8 | Profile 0 | WebCodecs | |
 | VP9 | Profile 0 at 8 bits: SDR; Profile 2 at 10 bits: SDR, HDR10, HDR10+, and HLG | WebCodecs; Profile 2 in software | Profiles 1 and 3 (4:2:2 and 4:4:4) |
 | AV1 | Main at 8 bits: SDR; Main at 10 bits: SDR, HDR10, HDR10+, HLG, and Dolby Vision Profile 10 | WebCodecs; 10 bits in software | The High and Professional profiles |
-| MPEG-2 | Main profile, in Matroska | FFmpeg | Other profiles, and other containers |
-| VC-1 | Advanced profile, in Matroska | FFmpeg | The Simple and Main profiles, and other containers |
-| JPEG 2000 | 8 bits, in MOV and MJ2 | OpenJPEG | Other bit depths |
+| MPEG-1 | In Matroska | A GPU decoder package | Program streams (MPG, VOB), which nothing demuxes |
+| MPEG-2 | Every profile, at 4:2:0, 4:2:2, and 4:4:4, in Matroska | A GPU decoder package | MPEG-TS, M2TS, MP4, and program streams, whose MPEG-2 streams Mediabunny does not read |
+| VC-1 | Advanced profile (`WVC1` and `WMVA`), in Matroska, MP4, and MOV | A GPU decoder package | MPEG-TS and M2TS, whose VC-1 stream Mediabunny drops |
+| WMV3 | The Simple, Main, and Complex profiles, in Matroska | A GPU decoder package | ASF (WMV) files, which nothing demuxes |
+| JPEG 2000 | YUV at 4:2:0, 4:2:2, and 4:4:4, at 8, 9, 10, and 12 bits, in MOV and MJ2 | A GPU decoder package | RGB, grey, XYZ, and palette pictures, 11-bit and deeper samples, 4:4:0, 4:1:1, and 4:1:0 chroma, and HTJ2K |
 
-Every other video codec is not supported, among them MPEG-4 Part 2 (DivX, Xvid), H.263, MS-MPEG4, MPEG-1, Theora, VVC, ProRes, DNxHD, and Motion JPEG.
-WebCodecs is the browser's own decoder; FFmpeg and OpenJPEG run in the engine as WebAssembly.
+Every other video codec is not supported, among them MPEG-4 Part 2 (DivX, Xvid), H.263, MS-MPEG4, WMV1, WMV2, Theora, VVC, ProRes, DNxHD, and Motion JPEG.
+WebCodecs is the browser's own decoder.
+A GPU decoder package is WGSL a host loads, which decodes on the presenter's device; it plays only what no native route plays, and the decoder projects in `decoders/` build one for HEVC, MPEG-1 with MPEG-2, VC-1 with WMV3, and JPEG 2000.
+A package's frames take the format that holds the stream's pixel format, so 4:2:2 and 4:4:4 streams keep their chroma.
 
 | Property | Plays | Does not play |
 | --- | --- | --- |
@@ -62,11 +67,11 @@ WebCodecs is the browser's own decoder; FFmpeg and OpenJPEG run in the engine as
 | AAC | Mono, stereo, 3.0, and 5.1 | WebCodecs | More than 6 channels |
 | Opus, FLAC, Vorbis | Mono, stereo, 3.0, and 5.1 | WebCodecs | More than 6 channels |
 | MP3 | Mono and stereo | WebCodecs | |
-| AC-3 | Mono, stereo, and 5.1 | FFmpeg (`@mediabunny/ac3`), or the browser's own decoder through MSE when it has one | Three channels, because 2/1 and 3/0 cannot be told apart |
-| E-AC-3 | Mono, stereo, 5.1, and 7.1; Dolby Atmos plays its channel bed | FFmpeg, or the browser's own decoder through MSE when it has one | Atmos objects |
-| DTS | Core and 96/24 in mono or 5.1; HRA in mono, 5.1, or 7.1; MA, and MA with DTS:X, in mono, stereo, three channels, 5.1, or 7.1 | libdcadec | DTS-ES, DTS Express, DTS-UHD, and above 96 kHz anything but 5.1 MA |
-| TrueHD | Mono, stereo, 5.1, and 7.1 at 48 kHz; Dolby Atmos plays its channel bed | FFmpeg | Atmos objects |
-| MLP | Mono and stereo, in Matroska | FFmpeg | |
+| AC-3 | Mono, stereo, and 5.1 | The browser's own decoder through MSE when it has one, or an audio decoder package | Three channels |
+| E-AC-3 | Mono, stereo, 5.1, and 7.1; Dolby Atmos plays its channel bed | The browser's own decoder through MSE when it has one, or an audio decoder package | Atmos objects |
+| DTS | Mono, stereo, three channels, 5.1, and 7.1, in every profile the package decodes; DTS:X plays its channel bed | An audio decoder package | DTS-ES (6.1), and DTS Express and DTS-UHD in MP4, whose sample entries the engine does not read |
+| TrueHD | Mono, stereo, and 5.1; 7.1 at 48 kHz; Dolby Atmos plays its channel bed | An audio decoder package | Atmos objects |
+| MLP | Mono and stereo, in Matroska | An audio decoder package | |
 | PCM | Integer, float, mu-law, and A-law PCM, in mono, stereo, 3.0, or 5.1 | Mediabunny | |
 
 Every other audio codec is not supported, among them MP2, WMA, ALAC, AMR, and Speex.

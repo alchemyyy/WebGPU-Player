@@ -23,7 +23,7 @@ A chapter that is not listed in `SUMMARY.md` is not built.
 
 ## Diagrams
 
-Diagrams are PlantUML sources in `docs/diagrams/`, rendered to SVG in `docs/src/diagrams/`.
+Diagrams are PlantUML sources in `docs/diagrams/plantuml/`, rendered to SVG in `docs/src/diagrams/`.
 Both folders are tracked, so a book builds without Java.
 Every diagram renders twice: a light variant for the rust theme and a dark variant for coal, and `docs/theme/diagrams.css` shows the one that matches the reader's theme.
 `docs/theme/diagrams.js` turns each embedded diagram into an in-page viewer: drag pans, Ctrl+wheel, a pinch, or a double-click zooms, and a toolbar zooms, fits, or opens the SVG; a plain wheel still scrolls the page.
@@ -32,7 +32,7 @@ Without JavaScript the diagram scales to the column and links to its SVG.
 You need Java 11 or later on PATH.
 The first render downloads the pinned PlantUML jar into `bin/plantuml/` and checks its SHA-256.
 
-1. Edit or add a source in `docs/diagrams/`.
+1. Edit or add a source in `docs/diagrams/plantuml/`.
    Start it with `@startuml` and `!include diagram-theme.puml`, and color activity nodes with the theme's semantic colors (`$HL_BLUE`, `$HL_GREEN`, `$HL_AMBER`, `$HL_NAVY`, `$HL_RED`).
    Never end a line inside a multi-line activity label with `;`, which ends the label.
 2. Run `node tools/render-diagrams.mjs` from the engine root.
@@ -56,7 +56,8 @@ Update the chapter in the same change that alters what it describes:
 
 - a route, a probe, a route key, or an eligibility rule: [Eligibility and routes](routes.md) and [HEVC and Dolby Vision support](codec-support.md);
 - a file added, moved, or removed: [Module map](module-map.md), and [Repository layout](layout.md) for a folder;
-- a decoder or a build step: [WebAssembly decoders](decoders.md);
+- the decoder package format or an interface a package implements: [Decoder packages](decoder-packages.md);
+- a decoder project, an engine module, or a build step: [WebAssembly build](decoders.md);
 - a vector or a generator: [Codec vectors](codec-vectors.md);
 - a settled investigation: [Decisions](decisions.md).
   Never delete an entry; revise it when its facts change, rather than adding one that contradicts it.

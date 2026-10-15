@@ -5,7 +5,7 @@ import {
     type RawVideoPlaneKind,
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
-} from '../../video/RawVideoFrameCopy';
+} from '../../decode/video/RawVideoFrameCopy';
 import { PLANE_R16_FORMAT, PLANE_R8_FORMAT, PLANE_RG16_FORMAT, PLANE_RG8_FORMAT } from '../WebGPUConstants';
 
 /** One plane's texture, whose sample type is uint whatever its bit depth. */

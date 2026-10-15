@@ -1,0 +1,82 @@
+@startuml
+!include diagram-theme.puml
+skinparam nodesep 25
+skinparam ranksep 45
+
+rectangle "Host (host code)" $BOX_HOST {
+  rectangle "**Host player**\nnegotiates the source,\nruns the rAF loop" as hostPlayer
+  rectangle "**HTML backend**\nvideo element, hls.js;\nevent and UI shell" as htmlBackend
+}
+
+rectangle "Main thread (engine)" $BOX_MAIN {
+  rectangle "**CustomPlaybackController**\nMediaClock; startup, stall,\nand lag policy; fallback" as controller
+  rectangle "**CustomDecodeSession**\none worker per session;\nframe queue; credits" as session
+  rectangle "**GPUVideoDecodeFeed**\nframe-pool route: a GPU decoder\npackage's session on the\npresenter's device" as gpuFeed
+  rectangle "**WebGPUPresenter**\nown GPUDevice; canvas\nover the backend video" as presenter
+  rectangle "**CustomDecodeAudioBridge**\nworklet channel; progress" as pcmBridge
+  rectangle "**CustomDecodeNativeAudioBridge**\nhidden audio element + MSE" as nativeBridge
+  rectangle "**WebGPUAudioOutputManager**\none per page; sink routing" as sinkManager
+}
+
+rectangle "CustomDecode.worker (engine)" $BOX_WORKER {
+  rectangle "**Mediabunny demux**\nrange-validated fetch" as demux
+  rectangle "**Video decode**\nWebCodecs; owned HEVC, AV1, VP9;\nframe-pool packets for a\nGPU decoder package" as videoDecoders
+  rectangle "**Mediabunny audio decode**\nWebCodecs; PCM" as audioDecoders
+  rectangle "**fMP4 remux**\nAC-3, E-AC-3" as remux
+}
+
+rectangle "GPUDecoderCoordinator.worker (engine)" $BOX_WORKER {
+  rectangle "**Package parser**\nplan and finish in decode order;\nparse workers in parallel" as parser
+}
+
+rectangle "CustomAudioDecode.worker (engine)" $BOX_WORKER {
+  rectangle "**Audio decoder packages**\none instance per attempt" as packageAudioDecoders
+  rectangle "**PCM pipeline**\ndownmix, resample to\n48 kHz, limiter" as pcmPipeline
+  rectangle "**WorkletPCMProducer**\ncredits; continuity" as producer
+}
+
+rectangle "AudioWorklet (engine)" $BOX_WORKLET {
+  rectangle "**Worklet processor**\n2 s ring; gain; play gate" as processor
+}
+
+rectangle "GPU" $BOX_GPU {
+  rectangle "**Package WGSL**\ndecodes into the frame pool" as gpuDecoder
+  rectangle "**Ingress**\nexternal texture,\nPlaneTextureSource, or\nthe frame pool in place" as upload
+  rectangle "**Passes**\nplanned built-in chain\nand user passes" as colorShader
+}
+
+hostPlayer -right-> htmlBackend : (a) known-SDR\nHTML decode
+hostPlayer -down-> controller : (b) eligible\ndirect-play VOD
+htmlBackend -down-> presenter : rVFC frames
+hostPlayer -down-> presenter : presentDecodedFrame
+
+controller -right-> session
+session -down-> demux : start, credits
+demux -down-> videoDecoders
+demux -down-> audioDecoders
+demux -down-> remux
+demux -right-> packageAudioDecoders : packet batches
+audioDecoders -right-> pcmPipeline : sample batches
+packageAudioDecoders -down-> pcmPipeline
+pcmPipeline -down-> producer
+videoDecoders -up-> session : 'frame', or\n'packet' on frame-pool
+videoDecoders -right-> parser : packets
+parser -left-> videoDecoders : records
+session -right-> gpuFeed : 'packet'
+gpuFeed -down-> gpuDecoder : dispatches
+gpuDecoder -right-> upload : pool slots
+producer -down-> processor : PCM chunks
+producer ..> session : progress, through\nthe decode worker
+remux -up-> nativeBridge : fMP4 segments
+pcmBridge -down-> processor : flush; the\nproducer's channel
+presenter -right-> upload
+upload -right-> colorShader
+sinkManager ..> processor : setSinkId
+sinkManager ..> nativeBridge : setSinkId
+
+' Layout: two rows in the main thread, and the worklet and GPU beside the workers
+controller -[hidden]down-> pcmBridge
+session -[hidden]down-> nativeBridge
+presenter -[hidden]down-> sinkManager
+processor -[hidden]right-> upload
+@enduml

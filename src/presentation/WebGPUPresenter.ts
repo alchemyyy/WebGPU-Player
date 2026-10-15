@@ -25,7 +25,7 @@ import {
     isDolbyVisionDualLayerProfile,
     type DolbyVisionReconstructionProfile
 } from './PresentationInput';
-import { decodeDolbyVisionRPUSnapshot } from '../video/dolby-vision/DolbyVisionRPUParser';
+import { decodeDolbyVisionRPUSnapshot } from '../demux/dolby-vision/DolbyVisionRPUParser';
 import {
     getRawFormatBitDepth,
     isRawDolbyVisionVideoFrameFormat,
@@ -34,22 +34,26 @@ import {
     type RawVideoFrameColorSpace,
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
-} from '../video/RawVideoFrameCopy';
+} from '../decode/video/RawVideoFrameCopy';
 import {
     getDolbyVisionEncodedFrameMetadataFailure,
     isTransferableDolbyVisionEncodedFrameMetadata,
     type TransferableDolbyVisionEncodedFrameMetadata
-} from '../video/dolby-vision/DolbyVisionEncodedMetadataProtocol';
+} from '../demux/dolby-vision/DolbyVisionEncodedMetadataProtocol';
 import {
     getHDR10PlusSceneLuminance,
     isHDR10PlusFrameMetadata,
     type HDR10PlusFrameMetadata
-} from '../video/hdr/HDR10PlusMetadata';
+} from '../demux/hdr/HDR10PlusMetadata';
+import { createFramePoolSignal } from './passes/builtin/FramePoolSignal';
+import type { GPUDecoderOutputFormat } from '../decode/video/gpu/GPUDecodeFormats';
+import { getGPUFramePoolByteLimit } from '../decode/video/gpu/GPUFramePool';
 import { createBuiltinChain } from './passes/builtin/BuiltinChains';
 import { getPresetPassPosition } from './passes/PassLanguage';
 import { parsePassFile, type PassFileEntry } from './passes/PassManifest';
 import type {
     BuiltinChainConfiguration,
+    FramePoolFrame,
     PassManifest,
     PassParameter,
     PassRejection,
@@ -60,7 +64,8 @@ import type {
     PlanRequest,
     PresentationCompileMessage,
     PresentationFrameSource,
-    PresentationPlan
+    PresentationPlan,
+    SignalDefinition
 } from './passes/PassTypes';
 import { getRawPlaneLayoutFailure } from './passes/PlaneTextureSource';
 import {
@@ -244,7 +249,22 @@ export type DecodedRawPresentationFrame = {
     videoEpoch?: number
 };
 
+/** A frame a GPU decoder wrote into a frame pool slot on the presenter's device. */
+export type DecodedFramePoolPresentationFrame = {
+    /** The size presentation fits the frame by, which carries the pixel aspect ratio the visible rectangle lacks */
+    displayHeight: number
+    displayWidth: number
+    durationMicroseconds: Microseconds
+    frame: FramePoolFrame
+    HDR10PlusMetadata?: HDR10PlusFrameMetadata
+    mediaTimeMicroseconds: Microseconds
+    outputMode: 'frame-pool'
+    /** The decode session's video epoch; a change starts temporal history over. */
+    videoEpoch?: number
+};
+
 export type DecodedPresentationFrame =
+    | DecodedFramePoolPresentationFrame
     | DecodedRawPresentationFrame
     | DecodedVideoPresentationFrame;
 
@@ -279,6 +299,14 @@ export type ExternalHDRColorPipelineConfiguration = {
     settings: HDRToSDRRenderSettings
 };
 
+/** The GPU decode route: planes a GPU decoder writes into its frame pool, whose conformance vector stands in for a presentation authorization. */
+export type FramePoolColorPipelineConfiguration = {
+    format: GPUDecoderOutputFormat
+    inputMode: 'frame-pool'
+    metadata: InputColorMetadata
+    settings: RenderSettings
+};
+
 /**
  * One file of a presentation preset: its WGSL source, holding one or more passes that each start with a `//!` header, and the parameter values the host stored for it.
  * The file's passes run in file order, and each value applies to every pass of the file that declares its parameter.
@@ -291,6 +319,7 @@ export type PresentationPresetFile = {
 export type PresentationColorPipelineConfiguration = (
     | ExternalDolbyVisionColorPipelineConfiguration
     | ExternalHDRColorPipelineConfiguration
+    | FramePoolColorPipelineConfiguration
     | IdentityColorPipelineConfiguration
     | RawDolbyVisionColorPipelineConfiguration
     | RawHDRColorPipelineConfiguration
@@ -303,6 +332,7 @@ type PresentationInputMode =
     | 'external-dolby-vision'
     | 'external-hdr'
     | 'external-texture'
+    | 'frame-pool'
     | 'raw-dolby-vision'
     | 'raw-yuv';
 
@@ -757,6 +787,41 @@ function getRawFrameColorFailure(frame: TransferableRawVideoFrame, metadata: Inp
         return `transfer: ${colorSpace.transfer}, expected ${metadata.transfer}`;
     }
     return null;
+}
+
+/**
+ * Returns why a planar route cannot present a stream, the raw route's or the GPU decode route's: invalid metadata or settings, a transfer the mode cannot render, or a depth the format cannot hold.
+ */
+function getPlanarColorConfigurationFailure(
+    metadata: InputColorMetadata,
+    format: SupportedRawVideoFrameFormat,
+    settings: RenderSettings
+): string | null {
+    try {
+        assertValidInputColorMetadata(metadata);
+        assertValidRenderSettings(settings);
+    } catch (error) {
+        return getErrorMessage(error);
+    }
+
+    let validTransfer: boolean;
+    switch (metadata.transfer) {
+        case 'hlg':
+        case 'pq':
+            validTransfer = settings.mode === 'hdr-to-sdr';
+            break;
+        case 'sdr':
+            validTransfer = settings.mode === 'identity-sdr';
+            break;
+    }
+    if (!validTransfer) {
+        return `mode: ${settings.mode} cannot present ${metadata.transfer}`;
+    }
+
+    const formatBitDepth = getRawFormatBitDepth(format);
+    return metadata.bitDepth === formatBitDepth ?
+        null :
+        `bit-depth: ${metadata.bitDepth}, ${format} holds ${formatBitDepth}`;
 }
 
 /** Returns how a raw frame's own timing contradicts the decoded frame that carries it, or null. */
@@ -1388,6 +1453,20 @@ export default class WebGPUPresenter {
             this.externalDolbyVisionAuthorization.getTelemetry(this.device, this.canvasFormat).status === 'authorized';
     }
 
+    /**
+     * Returns the device the GPU decode route decodes on, the presenter's own, creating it when needed; null when no device can be created.
+     * A decoder's frames never leave this device, so its loss ends the route.
+     */
+    async getGPUVideoDecodeDevice(): Promise<GPUDevice | null> {
+        return await this.ensureDevice() ? this.device : null;
+    }
+
+    /** Returns the largest frame pool the presenter's device allows, creating the device when needed; null when no device can be created. */
+    async getGPUFramePoolByteLimit(): Promise<number | null> {
+        const device = await this.getGPUVideoDecodeDevice();
+        return device ? getGPUFramePoolByteLimit(device.limits) : null;
+    }
+
     /** Selects clock-driven decoded-frame ticks before a surface is attached. */
     setDecodedFramePushMode(enabled: boolean, generation: number): void {
         if (!this.isCurrent(generation)) {
@@ -1442,6 +1521,11 @@ export default class WebGPUPresenter {
             let frameHeight: number;
             let submission: FrameSubmission | null;
             switch (decodedFrame.outputMode) {
+                case 'frame-pool':
+                    frameWidth = decodedFrame.displayWidth;
+                    frameHeight = decodedFrame.displayHeight;
+                    submission = this.renderDecodedFramePoolFrame(decodedFrame, generation);
+                    break;
                 case 'raw-planes': {
                     frameWidth = decodedFrame.frame.displayWidth;
                     frameHeight = decodedFrame.frame.displayHeight;
@@ -1575,6 +1659,7 @@ export default class WebGPUPresenter {
         let dynamicFrameSettings: HDR10PlusFrameRenderSettings | null = null;
         const supportsHDR10Plus = (
             this.activeInputMode === 'external-hdr'
+            || this.activeInputMode === 'frame-pool'
             || this.activeInputMode === 'raw-yuv'
         ) && this.activeInputColorMetadata?.transfer === 'pq';
         // An absent or malformed frame may carry its run's last metadata, which applies as a valid frame's own does
@@ -1797,6 +1882,8 @@ export default class WebGPUPresenter {
                     return this.prepareExternalDolbyVisionColorPipeline(configuration, pendingConfiguration);
                 case 'external-hdr':
                     return this.prepareExternalHDRColorPipeline(configuration, pendingConfiguration);
+                case 'frame-pool':
+                    return this.prepareFramePoolColorPipeline(configuration, pendingConfiguration);
                 case 'raw-dolby-vision':
                     return this.prepareRawDolbyVisionColorPipeline(configuration, pendingConfiguration);
                 case 'raw-yuv':
@@ -1957,11 +2044,67 @@ export default class WebGPUPresenter {
         };
     }
 
+    /** Prepares the GPU decode route's chain: the frame pool signal and the raw route's color track, without a presentation authorization. */
+    private async prepareFramePoolColorPipeline(
+        configuration: FramePoolColorPipelineConfiguration,
+        pendingConfiguration: PendingColorConfiguration
+    ): Promise<PreparedColorPipeline | null> {
+        const configurationFailure = getPlanarColorConfigurationFailure(configuration.metadata, configuration.format, configuration.settings);
+        if (configurationFailure !== null) {
+            this.failColorConfiguration(pendingConfiguration, 'hdr-color-configuration-invalid', configurationFailure);
+            return null;
+        }
+
+        const featureEnabled = configuration.settings.mode === 'identity-sdr'
+            || await isHDRToneMappingEnabled();
+        if (!this.isColorConfigurationCurrent(pendingConfiguration)) {
+            return null;
+        }
+        if (!featureEnabled) {
+            this.failColorConfiguration(pendingConfiguration, 'hdr-tone-mapping-disabled', 'hdrToneMappingEnabled false');
+            return null;
+        }
+        const initialized = await this.ensureDevice();
+        if (!initialized || !this.isColorConfigurationCurrent(pendingConfiguration)) {
+            return null;
+        }
+
+        let signal: SignalDefinition;
+        try {
+            signal = createFramePoolSignal(configuration.format, configuration.metadata);
+        } catch (error) {
+            this.failColorConfiguration(pendingConfiguration, 'hdr-color-configuration-invalid', `signal: ${getErrorMessage(error)}`);
+            return null;
+        }
+        const chainConfiguration: BuiltinChainConfiguration = {
+            hdrOutput: false,
+            metadata: { ...configuration.metadata },
+            route: 'frame-pool',
+            settings: configuration.settings,
+            signal
+        };
+        const chainFailure = this.validateChainConfiguration(chainConfiguration);
+        if (chainFailure !== null) {
+            this.failColorConfiguration(pendingConfiguration, 'hdr-color-configuration-invalid', chainFailure);
+            return null;
+        }
+        return {
+            chainConfiguration,
+            dolbyVisionFELAuthorizationFailure: null,
+            dolbyVisionFELReconstruction: false,
+            dolbyVisionProfile: null,
+            inputMode: 'frame-pool',
+            inputColorMetadata: { ...configuration.metadata },
+            rawFrameFormat: configuration.format,
+            settings: cloneRenderSettings(configuration.settings)
+        };
+    }
+
     private async prepareRawHDRColorPipeline(
         configuration: RawHDRColorPipelineConfiguration,
         pendingConfiguration: PendingColorConfiguration
     ): Promise<PreparedColorPipeline | null> {
-        const configurationFailure = this.getRawHDRColorConfigurationFailure(configuration);
+        const configurationFailure = getPlanarColorConfigurationFailure(configuration.metadata, configuration.rawFrameFormat, configuration.settings);
         if (configurationFailure !== null) {
             this.failColorConfiguration(pendingConfiguration, 'hdr-color-configuration-invalid', configurationFailure);
             return null;
@@ -2078,35 +2221,6 @@ export default class WebGPUPresenter {
             rawFrameFormat: format,
             settings: cloneRenderSettings(configuration.settings)
         };
-    }
-
-    /** Returns why a raw configuration cannot present: invalid metadata or settings, a transfer the mode cannot render, or a depth the format cannot hold. */
-    private getRawHDRColorConfigurationFailure(configuration: RawHDRColorPipelineConfiguration): string | null {
-        try {
-            assertValidInputColorMetadata(configuration.metadata);
-            assertValidRenderSettings(configuration.settings);
-        } catch (error) {
-            return getErrorMessage(error);
-        }
-
-        let validTransfer: boolean;
-        switch (configuration.metadata.transfer) {
-            case 'hlg':
-            case 'pq':
-                validTransfer = configuration.settings.mode === 'hdr-to-sdr';
-                break;
-            case 'sdr':
-                validTransfer = configuration.settings.mode === 'identity-sdr';
-                break;
-        }
-        if (!validTransfer) {
-            return `mode: ${configuration.settings.mode} cannot present ${configuration.metadata.transfer}`;
-        }
-
-        const formatBitDepth = getRawFormatBitDepth(configuration.rawFrameFormat);
-        return configuration.metadata.bitDepth === formatBitDepth ?
-            null :
-            `bit-depth: ${configuration.metadata.bitDepth}, ${configuration.rawFrameFormat} holds ${formatBitDepth}`;
     }
 
     private getRawHDRAuthorizationFailure(metadata: InputColorMetadata, format: SupportedRawVideoFrameFormat): string | null {
@@ -2600,9 +2714,13 @@ export default class WebGPUPresenter {
 
         let device: GPUDevice;
         try {
-            // A default device stops textures at 8192 texels; the adapter's own maximum takes any larger frame it can
+            // A default device stops textures at 8192 texels and buffers at 256 MiB; the adapter's own maxima take any larger frame, and a GPU decoder's frame pool, which is one buffer
             const devicePromise = adapter.requestDevice({
-                requiredLimits: { maxTextureDimension2D: adapter.limits.maxTextureDimension2D }
+                requiredLimits: {
+                    maxBufferSize: adapter.limits.maxBufferSize,
+                    maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+                    maxTextureDimension2D: adapter.limits.maxTextureDimension2D
+                }
             });
             const deviceResult = await waitForWebGPUResourceOperation(devicePromise);
             if (deviceResult === WEBGPU_RESOURCE_OPERATION_TIMEOUT) {
@@ -2854,6 +2972,9 @@ export default class WebGPUPresenter {
                 }
                 break;
             }
+            case 'frame-pool':
+                this.fallback(generation, 'decoded-frame-color-mismatch', 'input-mode: frame-pool takes frame pool slots, not a VideoFrame');
+                return null;
             case 'raw-dolby-vision':
             case 'raw-yuv':
                 this.fallback(generation, 'decoded-frame-color-mismatch', `input-mode: ${this.activeInputMode} takes raw planes, not a VideoFrame`);
@@ -2884,7 +3005,42 @@ export default class WebGPUPresenter {
             case 'external-texture':
                 this.fallback(generation, 'decoded-frame-color-mismatch', `input-mode: ${this.activeInputMode} takes a VideoFrame, not raw planes`);
                 return null;
+            case 'frame-pool':
+                this.fallback(generation, 'decoded-frame-color-mismatch', 'input-mode: frame-pool takes frame pool slots, not raw planes');
+                return null;
         }
+    }
+
+    /** Presents a GPU decoder's pool slot in place; its slot stays the decoder's to reuse once this submit is queued, since later decode work runs after it. */
+    private renderDecodedFramePoolFrame(
+        decodedFrame: DecodedFramePoolPresentationFrame,
+        generation: number
+    ): FrameSubmission | null {
+        const frame = decodedFrame.frame;
+        const rectangle = frame.visibleRectangle;
+        let frameFailure: string | null = null;
+        if (this.activeInputMode !== 'frame-pool') {
+            frameFailure = `input-mode: ${this.activeInputMode} takes no frame pool slots`;
+        } else if (this.activeInputColorMetadata === null) {
+            frameFailure = 'metadata: none configured';
+        } else if (
+            rectangle.width <= 0
+            || rectangle.height <= 0
+            || rectangle.x + rectangle.width > frame.codedWidth
+            || rectangle.y + rectangle.height > frame.codedHeight
+        ) {
+            frameFailure = `geometry: visible ${rectangle.x},${rectangle.y} ${rectangle.width}x${rectangle.height} exceeds coded ${frame.codedWidth}x${frame.codedHeight}`;
+        }
+        if (frameFailure !== null) {
+            this.fallback(generation, 'decoded-frame-color-mismatch', frameFailure);
+            return null;
+        }
+        return this.submitFrame(
+            { frame, kind: 'frame-pool' },
+            decodedFrame.displayWidth,
+            decodedFrame.displayHeight,
+            this.getDecodedFrameTiming(decodedFrame)
+        );
     }
 
     private renderDecodedRawYUVFrame(
@@ -3691,6 +3847,11 @@ export default class WebGPUPresenter {
 
         const generation = this.activeGeneration;
         if (!this.isCurrent(generation) || this.fallbackLatched) {
+            return;
+        }
+        // The GPU decoder's pool and pipelines died with the device, so its route ends rather than recovering
+        if (this.activeInputMode === 'frame-pool') {
+            this.fallback(generation, 'device-recovery-failed', 'gpu-decode: the decoder\'s device was lost');
             return;
         }
         this.telemetry.state = 'initializing';

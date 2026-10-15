@@ -8,7 +8,8 @@ It lives in `sandbox/` and never ships.
 
 You need:
 
-- A checkout set up as in [Set up a checkout](setup.md), with the decoders built, since the sandbox serves the engine's assets.
+- A checkout set up as in [Set up a checkout](setup.md), with the engine's modules built, since the sandbox serves the engine's assets.
+- To play codecs no browser decodes, decoder packages, such as the ones `npm run decoders` builds into `bin/decoders/`.
 - A browser with WebGPU and WebCodecs.
 
 Steps:
@@ -31,7 +32,7 @@ The library panel then lists the folder's playable files, and clicking one plays
 | Left | The library: the picked folder's tree of playable files |
 | Right of the library | Playback info |
 | Top | The pipeline graph of the active presentation plan |
-| Right | Tone mapping, the route override, and the WGSL shader passes |
+| Right | Tone mapping, the route override, the decoder packages, and the WGSL shader passes |
 | Bottom | The transport bar, with the audio and subtitle selectors |
 
 Subtitle cues show at the bottom center of the video, above the transport bar.
@@ -97,9 +98,9 @@ About ffmpeg.wasm:
 - A selected subtitle track or file is converted to WebVTT with ffmpeg and shows as plain-text cues, without styling tags.
 - The tone mapping panel edits `HDRToSDRRenderSettings` within `HDR_RENDER_SETTING_RANGES`, both from `presentation/RenderSettings.ts`, and switches HDR output.
   It checks every change with `assertValidRenderSettings` before sending it, and shows the engine's reason for a value it rejects.
-- The route override asks for a frame transport, raw planes or a `VideoFrame`, and a video decoder, WebCodecs or the bundled software decoder.
+- The route override asks for a frame transport, raw planes or a `VideoFrame`, and a video decoder: Native (WebCodecs), or GPU (package), which decodes on the presenter's device.
   The session then restarts the media where its clock stopped.
-  The panel shows the route the session plays and the reason for its choice.
+  The panel shows the route the session plays, with the GPU decoder's id on the frame-pool route, and the reason for its choice.
 
 ## The route override
 
@@ -109,9 +110,29 @@ It is in `sandbox/src/session/RouteOverride.ts`.
 - A transport override withdraws the presentation authorizations of the other transport.
   `VideoFrame` withdraws every raw-plane route, Dolby Vision reconstruction included, and raw planes withdraw the native HDR, native Dolby Vision, and external HDR routes.
   An SDR `VideoFrame` route needs no authorization, so raw planes cannot withdraw it.
-- A decoder override marks the capabilities of the other decoder unsupported.
-  It chooses only among the decoders the capability probes qualified for the file, so it cannot force a decoder the probes rejected.
+- A decoder override narrows the video decoders.
+  Native offers no GPU decoder package, so only WebCodecs remains, and it cannot force a route the capability probes rejected.
+  GPU withdraws every WebCodecs video route, so the file plays the frame-pool route whenever a package takes it and fits the device.
+  Auto offers the packages too, after the WebCodecs routes, as a host does.
+  Every package offered is the user's, verified or not; `allowsGPUVideoDecoders` and `narrowCapabilitiesForDecoder` hold the rules.
 - When the chosen route leaves part of the override unmet, the session records `route-override-unmet` with what was asked and what was chosen, and plays the route anyway.
+  The frame-pool route is neither transport, so GPU with a transport override always reports the transport unmet.
+
+## Decoder packages
+
+The sandbox has no decoders of its own; the decoder package panel holds the ones the user adds, which every later start of a file uses where WebCodecs cannot decode.
+It is in `sandbox/src/ui/panels/DecoderPackagePanel.ts`, over `sandbox/src/session/DecoderPackages.ts`.
+
+- Open packages, or drop `.wasm` files on the panel, to add them.
+  Load built packages adds every package in `bin/decoders/` at once: the dev server lists that folder's files at `/__sandbox/built-decoder-packages` (`sandbox/src/session/BuiltDecoderPackageRoute.ts`), and a static build of the sandbox, which has no such route, reports `built-packages-unavailable`.
+  Each file loads with the engine's checks before it is stored, and a file the engine refuses is recorded with the check's code, such as `package-import`, and skipped.
+- The packages stay in the sandbox's own IndexedDB database across reloads, through `DecoderPackageStore`, by the id each header declares.
+  A stored package that no longer loads, as after an engine change tightened a check, is recorded as `package-stale`.
+- Adding a package of an id the panel lists, such as a rebuilt one, replaces that package in its place, and its row drops the replaced version's vector results.
+- Each package shows its name, file, codecs, and output formats, the formats it carries self-test vectors for, and its version, the leading digits of its file's SHA-256; the name's tooltip holds the id and the whole hash.
+- Verify runs the package's vectors on the presenter's device, one format at a time, and shows each result: `passed`, or the failed check and its detail.
+  Nothing verifies a package unless you press it, and the results last until the page reloads or the package is replaced.
+- The eligibility takes the packages in the order they were added, and Remove deletes one.
 
 ## Diagnostics
 
@@ -120,9 +141,10 @@ It is in `sandbox/src/session/RouteOverride.ts`.
   The passes the plan left out are listed beside the graph as `reason: detail`.
 - Playback info groups the media and its tracks, the route and the override, the clock, video decode, audio, presentation, authorization, and the failure log, newest first.
   Its sections collapse, and stay collapsed across refreshes.
+  On the frame-pool route, video decode adds a GPU decoder row: its name, state, and failure, its pool's free slots, and its decoded, held-back, reused, and stream change counts.
 - The shader panel adds passes from the examples, from files, or by dropping files on it.
   It lists each file with its order controls, a plan state per pass, which names the pass when the file holds several, and an input per parameter, which applies when committed to every pass of the file that declares it.
-- Files dropped anywhere but the shader panel are ignored, so a stray drop never navigates away from the sandbox.
+- Files dropped anywhere but the shader panel and the decoder package panel are ignored, so a stray drop never navigates away from the sandbox.
 
 ## How it is built
 
@@ -131,7 +153,7 @@ It is in `sandbox/src/session/RouteOverride.ts`.
 | `sandbox/src/contracts/SandboxContracts.ts` | The contract between the layers: the state the session and the library publish, and the commands the panels send |
 | `sandbox/src/ui/Store.ts` | One immutable state object, shallow-merged updates, and selector subscriptions |
 | `sandbox/src/library/` | The media library: the folder pickers, the scan, the tree, and the remembered folder |
-| `sandbox/src/session/` | The playback session, which drives the engine, and the ffprobe probe with its translation into the engine's media description |
+| `sandbox/src/session/` | The playback session, which drives the engine, the user's decoder packages, and the ffprobe probe with its translation into the engine's media description |
 | `sandbox/src/ui/App.ts` | The layout, which mounts each panel into its region, toggles them, and binds the click on the video |
 | `sandbox/src/ui/panels/` | One module per panel, each with its own stylesheet |
 | `sandbox/src/ui/diagnostics/` | What the diagnostics panels show, as pure functions of the state: the graph layout, the playback info sections, and the shader file rows |

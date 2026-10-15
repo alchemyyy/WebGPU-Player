@@ -1,0 +1,91 @@
+/* The decoder package panel: the open control, each package with its codecs, formats, and vector checks, and the drop target */
+.decoder-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sandbox-gap);
+}
+
+.decoder-panel-drag-active {
+    outline: 1px dashed var(--sandbox-accent);
+    outline-offset: calc(var(--sandbox-gap) / -2);
+}
+
+.decoder-panel-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sandbox-gap);
+}
+
+.decoder-panel-title {
+    margin: 0;
+    font: inherit;
+    font-weight: 600;
+}
+
+.decoder-panel-hint {
+    margin: 0;
+    color: var(--sandbox-text-muted);
+}
+
+.decoder-package-list {
+    display: flex;
+    flex-direction: column;
+    gap: calc(var(--sandbox-gap) / 2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.decoder-package {
+    padding: calc(var(--sandbox-gap) / 2);
+    border: 1px solid var(--sandbox-panel-border);
+    border-radius: var(--sandbox-panel-radius);
+}
+
+.decoder-package-header {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sandbox-gap);
+}
+
+.decoder-package-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    font-weight: 600;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.decoder-package-actions {
+    display: flex;
+    flex: none;
+    gap: calc(var(--sandbox-gap) / 2);
+}
+
+.decoder-package-summary {
+    color: var(--sandbox-text-muted);
+    overflow-wrap: anywhere;
+}
+
+.decoder-package-state {
+    font: var(--sandbox-monospace-font);
+    overflow-wrap: anywhere;
+}
+
+.decoder-package-state[data-tone='success'] {
+    color: var(--sandbox-success);
+}
+
+.decoder-package-state[data-tone='warning'] {
+    color: var(--sandbox-warning);
+}
+
+.decoder-package-state[data-tone='failure'] {
+    color: var(--sandbox-failure);
+}
+
+.decoder-package-state[data-tone='muted'] {
+    color: var(--sandbox-text-muted);
+}

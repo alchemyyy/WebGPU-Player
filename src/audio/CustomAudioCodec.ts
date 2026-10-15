@@ -23,20 +23,22 @@ export const CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS = [
     'pcm_alaw'
 ] as const;
 
-export const CUSTOM_BUNDLED_AUDIO_CODECS = [
+/** The codecs the engine has no decoder of: the browser's media element plays them, or a host's decoder package decodes them to PCM. */
+export const CUSTOM_PACKAGE_AUDIO_CODECS = [
     'ac3',
     'eac3',
     'dts',
     'mlp',
-    'truehd',
-    ...CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS
+    'truehd'
 ] as const;
 
 export const CUSTOM_AUDIO_CODECS = [
     ...CUSTOM_WEB_CODECS_AUDIO_CODECS,
-    ...CUSTOM_BUNDLED_AUDIO_CODECS
+    ...CUSTOM_PACKAGE_AUDIO_CODECS,
+    ...CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS
 ] as const;
 
 export type CustomAudioCodec = typeof CUSTOM_AUDIO_CODECS[number];
-export type CustomBundledAudioCodec = typeof CUSTOM_BUNDLED_AUDIO_CODECS[number];
+export type CustomWebCodecsAudioCodec = typeof CUSTOM_WEB_CODECS_AUDIO_CODECS[number];
 export type CustomMediabunnyPCMAudioCodec = typeof CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS[number];
+export type CustomPackageAudioCodec = typeof CUSTOM_PACKAGE_AUDIO_CODECS[number];

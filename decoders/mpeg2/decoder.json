@@ -1,0 +1,8 @@
+{
+    "decoder": "mpeg2.wgsl",
+    "vectors": [
+        { "format": "I420", "root": "decodersDirectory", "path": "mpeg2/vectors/mpeg2-tools-420-200x118.mkv", "decoderOptions": [ "-idct", "simple" ] },
+        { "format": "I422", "root": "decodersDirectory", "path": "mpeg2/vectors/mpeg2-tools-422-152x104.mkv", "decoderOptions": [ "-idct", "simple" ] },
+        { "format": "I444", "root": "decodersDirectory", "path": "mpeg2/vectors/mpeg2-tools-444-136x72.mkv", "decoderOptions": [ "-idct", "simple" ] }
+    ]
+}

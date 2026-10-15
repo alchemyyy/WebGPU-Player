@@ -15,12 +15,15 @@ A host calls these, in this order, for each playback:
 4. `hasEligibleCustomVideoRoute`, to ask whether the runtime would present one item with the measured capabilities and authorizations.
 5. `getCustomPlaybackEligibility`, when the session starts, with the route flags and authorized keys of `CustomPlaybackEligibilityOptions`.
    `allowRawSDR` needs only a settled `:sdr` raw key.
+   `gpuVideoDecoders` holds the GPU decoder packages the host offers, from `PresentationSetup.getGPUVideoDecoderOffers`, and `allowFramePoolHDR` lets them present HDR; see [GPU decoders](#gpu-decoders).
+   `audioDecoders` holds the host's audio decoder packages; see [Audio routes](#audio-routes).
 
 ## Eligibility
 
 `getCustomPlaybackEligibility` checks in order:
 
 1. `parsePlaybackSource`: DirectPlay, not live, a custom container, and a media `source`: a `File`, or a credential-free http(s) URL, which it resolves against the page.
+   A URL source keeps the host's `hiddenContentRangePathPattern`, the paths whose cross-origin 206 hides `Content-Range` (see [Architecture](architecture.md)).
    A missing or zero `RunTimeTicks` is an unknown duration, not a rejection.
    Playback then ends with the streams, audio takes the decoded-PCM route because the native media backend needs a duration, and the worker reports the container's duration on `ready`.
 2. `selectVideoStream`.
@@ -35,20 +38,19 @@ An ineligible result carries its reason, and the host falls back.
 ## Probes and caching
 
 - Main thread: WebCodecs configuration and decoded-output probes, raw `copyTo` fingerprints, the per-profile H.264 probe, and the MSE AC-3/E-AC-3 probe.
-- Dedicated workers: bundled HEVC (FFmpeg), DTS (libdcadec), TrueHD/MLP (FFmpeg), JPEG 2000 (OpenJPEG), and MPEG-2/VC-1 (FFmpeg).
+  The engine has no decoder of its own to probe: Mediabunny's PCM decoding is always supported, and a codec only a package decodes reads `unsupported` with the reason `no-engine-decoder`.
 - GPU: presentation authorization reads back renders of the production shaders.
   Results are cached per `GPUDevice`, canvas format, and shader signature, and dropped on device loss.
 - `selectCustomDecodeProbes(item)` picks the probes an item needs.
   Every audio probe runs for every item, because a playing item can switch to any of its audio tracks.
-  The video probes follow the union of the video streams across the item's sources: the codec picks the native and bundled probes, a range extension picks its own variants, a stream beyond 8-bit SDR adds the raw-plane and native HDR probes, and a range that is neither SDR nor static HDR adds the Dolby Vision probe.
+  The video probes follow the union of the video streams across the item's sources: the codec picks its native probes, a range extension picks its own variants, a stream beyond 8-bit SDR adds the raw-plane and native HDR probes, and a range that is neither SDR nor static HDR adds the Dolby Vision probe.
+  JPEG 2000, MPEG-2, and VC-1 streams pick none, since only a GPU decoder package decodes them.
   An HDR item also runs the HEVC and AV1 probes, because an HDR transcode targets those codecs and their ranges bound it.
   An item without stream metadata, or with a video stream that names no codec, runs every probe.
-- A probe the item does not select reads `not-probed`, which no profile rule or eligibility check treats as support, and its exact result is absent; `probeStates` records which probes a result ran.
+- A probe the item does not select reads `not-probed`, which no profile rule or eligibility check treats as support, and its H.264 profile result is absent; `probeStates` records which probes a result ran.
   At eligibility, the host keeps the negotiated result when `hasProbedCustomDecodeSelection` says it covers the played source, and otherwise probes that source.
-- A run downloads every selected probe's assets at once when it starts: each exact probe's `prepare` fetches its qualification vector and decoder binary as bytes and warms its worker script and glue in the HTTP cache, and every selected range-extension vector starts downloading.
-  A probe's downloads finish before its decode timeout starts, under their own 30 s bound (`capability/CapabilityAssetLoading.ts`), so a slow link never reads as a slow decoder or trips the queue's timeout.
-  A download that fails with a network error, 408, 429, or 5xx is retried after 250 ms and again after 1 s, inside the same 30 s bound; any other HTTP failure, or the bound ending, is final.
-  The worker receives the binary as bytes through `DecoderWASMSource`; a failed download reports `asset-unavailable` with an unknown status.
+- A range-extension probe downloads its vector before its decode timeout starts, under its own 30 s bound (`capability/CapabilityAssetLoading.ts`), so a slow link never reads as a slow decoder or trips the queue's timeout.
+  A download that fails with a network error, 408, 429, or 5xx is retried after 250 ms and again after 1 s, inside the same 30 s bound; any other HTTP failure, or the bound ending, is final and reports `asset-unavailable` with an unknown status.
 - Each probe is one module-level promise for the page's lifetime and is never invalidated, so a later item runs only the probes no earlier item ran.
   `SerializedHeavyCapabilityProbeScheduler` runs the heavy probes one at a time, audio first; after one times out, later heavy probes report a timeout until the page reloads.
 
@@ -59,12 +61,9 @@ An ineligible result carries its reason, and the host falls back.
 | `native` SDR | `video-frame` | H.264 per-profile keyframes; HEVC 1080p access unit; VP8, VP9, AV1 64x64; 4K variants | `getOrdinarySDRVideoSelection` |
 | `native` HEVC Main 10 HDR, Dolby Vision base | `video-frame`, with `nativeHDRTransfer` pq or hlg, neutralized | 4K Main 10 access unit decode, plus external HDR or Dolby Vision GPU authorization | `supportsNativeMain10HEVC`, `selectNativeDolbyVisionBaseOutput` |
 | `native` raw | `raw-planes`: I420P10 for HDR, 10-bit SDR, and Dolby Vision (HEVC Main 10, AV1 Main, VP9 Profile 2), I420 to I444P12 for range extensions | `copyTo` plane fingerprints; nine 192x192 two-access-unit range-extension probes; raw GPU authorization | `supportsRawHDRVideo`, `selectHEVCRangeExtensionVideoOutput` |
-| `bundled-hevc` | `video-frame` (Main SDR), `raw-planes` I420 (Main Dolby Vision) and I420P10 | A worker probe: 8-frame fingerprints for main-1080p, main10-1080p, main10-4k | `hasSupportedBundledHEVCProfile`; native wins |
-| `ffmpeg-mpeg2-vc1` | `video-frame` I420 | MPEG-2 Main and VC-1 Advanced, 12 frames, Matroska only | `getMPEG2VC1SDRSelection` |
-| `openjpeg` | `video-frame` RGBA | A 960x540 sRGB vector, MOV/MJ2 | `getJPEG2000SDRVideoSelection` |
-| DTS, libdcadec | `decoded-pcm` | 7 vectors, downmix fingerprints, real-time factor of at least 2 | `isSupportedDTSInputRoute` |
-| TrueHD/MLP, FFmpeg | `decoded-pcm` | 4 vectors, major-sync recovery, real-time factor of at least 2 | `isSupportedTrueHDMetadataRoute` |
-| E-AC-3 (FFmpeg), AC-3 (Mediabunny), PCM | `decoded-pcm` | None at runtime; always marked supported | `isSupportedEAC3InputRoute` |
+| `gpu` | `frame-pool`: I420 to I444P12, the stream's own format | None at eligibility: a host offers its GPU decoder packages, whose own vectors run only when the host verifies one | `selectGPUVideoOutput`; native wins |
+| Audio decoder package | `decoded-pcm` | None at eligibility: a host offers its audio decoder packages | `findAudioDecoderPackage`, for a codec no engine decoder supports |
+| Mediabunny PCM | `decoded-pcm` | None at runtime; always marked supported | `isSupportedCustomAudioInputLayout` |
 | MSE AC-3/E-AC-3 bridge | `native-media` | `isTypeSupported`, an fMP4 append, playback advancing; 2 or 6 channels at 48 kHz | `getSupportedNativeMediaAudioRoute`, checked first |
 | WebCodecs aac, opus, flac, mp3, vorbis | `decoded-pcm` | Stereo 48 kHz silence vectors; separate 5.1 vectors | `capabilities.audio[codec]` |
 
@@ -88,12 +87,11 @@ An ineligible result carries its reason, and the host falls back.
       This needs exact BT.2020 limited base metadata with explicit transfer, primaries, and matrix.
       A separate-track P7 base is a standalone HDR10 track, so it qualifies whatever CCID the EL track reports.
    3. Raw RPU reconstruction.
-      The base layer decodes to `raw-planes` I420P10 for HEVC Main 10 and for AV1 Main at 10 bits (natively, through the engine's own AV1 path), I420 for HEVC Main at 8 bits (through the bundled decoder), or the exact format of any range-extension variant.
+      The base layer decodes natively to `raw-planes`: I420P10 for HEVC Main 10 and for AV1 Main at 10 bits, or the exact format of any range-extension variant.
+      HEVC Main at 8 bits has no native raw route, so its RPU route is ineligible.
       Single-layer routes (P5, P8, P10, P20) discard a signaled EL.
-      Dual-layer routes (P4, P7, HEVC only) pair that base layer with an I420P10 EL from the bundled decoder.
-      They run the FEL shader only when their FEL key is authorized.
-      Without that decoder's Main 10 qualification the route sets `discardDolbyVisionEnhancementLayer`, and the worker decodes no EL.
-      Without a paired EL frame, MEL is still exact and FEL presents its base layer.
+      No decoder decodes an EL, so dual-layer routes (P4, P7, HEVC only) reconstruct from the base layer alone: MEL is exact, and FEL presents its base layer.
+      The worker still pairs a separate EL track to read its RPUs, and the presenter keeps its FEL composition for an EL decoder, which no route reaches.
    4. The declared base layer (`getDolbyVisionBaseColorMetadata`), through the ordinary steps below.
       CCID 1 or 6 declares PQ, 4 HLG, and 2 SDR, never for P5 or a P20 that reconstructs as P5.
       An explicit ColorTransfer must agree with the CCID; VideoRange and VideoRangeType are ignored.
@@ -104,10 +102,33 @@ An ineligible result carries its reason, and the host falls back.
    The BT.2020 10 and 12-bit transfers read as SDR, SMPTE 170M and SMPTE 240M primaries as `smpte170m`, BT.470 BG primaries as `bt470bg`, and the SMPTE 170M and BT.470 BG matrices as BT.601.
    Any other value is unrecognized and fails.
 3. An HEVC range extension needs its exact variant capability and raw key.
-   A range extension never falls through to the steps below.
-4. SDR: `native`, native Main 10 SDR, `bundled-hevc` Main, `ffmpeg-mpeg2-vc1`, or `openjpeg`.
-   Then, for 10-bit 4:2:0 SDR that none of them decodes (AV1 Main, VP9 Profile 2, or HEVC Main 10 without native decode), raw I420P10 through the raw SDR keys, which are BT.709 only.
+   A range extension never falls through to steps 4 and 5.
+4. SDR: `native`, or native Main 10 SDR.
+   Then, for 10-bit 4:2:0 SDR that neither decodes (AV1 Main, VP9 Profile 2, or HEVC Main 10 without native decode), raw I420P10 through the raw SDR keys, which are BT.709 only.
+   JPEG 2000, MPEG-1, MPEG-2, VC-1, and WMV3 have no native route (`CUSTOM_PACKAGE_VIDEO_CODECS`).
 5. PQ or HLG: native external (`external-hevc-main10-bt709-limited:<pq|hlg>-v1`) first, then raw (`<I420P10|I420P12>:bt2020-ncl:bt2020:limited:<pq|hlg>`).
+6. When steps 3 to 5 chose no route, a GPU decoder package the host offers takes the stream, if one does; otherwise the source is ineligible with the reason those steps gave.
+
+## GPU decoders
+
+The `gpu` backend decodes on the presenter's device with a GPU decoder package's WGSL; the `frame-pool` output presents its pool slots without a copy.
+A package may carry a parser module (`//! parser:`), which the selection carries to the decode worker's start as `gpuVideoParser`: the HEVC decoder project's parser parses each packet into the GPU record its WGSL reads.
+`PresentationSetup.getGPUVideoDecoderOffers` offers the host's packages that accept the stream's codec and write its output format, in the host's order, with the presenter's buffer limit; it verifies nothing.
+`selectGPUVideoOutput` takes the first offer for the stream's codec that meets each of these:
+
+- The output format: a range extension's own, else the one that holds the stream's pixel format (`getGPUDecoderPixelFormatHolding`: yuv422p is I422, and 9-bit samples take the 10-bit format, shifted up), else 4:2:0 at the stream's bit depth.
+  An explicit BitDepth must agree with the pixel format's samples, and a pixel format no frame pool holds, such as RGB or 4:1:1, has no route.
+- For a 4:0:0 pixel format, such as gray10le, which takes the 4:2:0 format of its depth: a decoder whose header declares `monochrome`.
+- The decoder's stream constraint, over the pool's coded size and the format's bit depth.
+  The pool takes the container's coded size rounded up to 64 (`GPU_DECODE_POOL_CODED_SIZE_ALIGNMENT`), the largest coding block, and the decoder's header crops it, such as by a conformance window.
+  A session may code larger, at the largest picture its parser declares (see [How a session decodes](decoder-packages.md#how-a-session-decodes)), but eligibility checks the container's size.
+- The frame pool, the decoder's `state` and `buffer:`s, and its packet ring each fit the device's buffer limit (`maximumBufferByteLength`), the smaller of its largest buffer and its largest storage binding: the HEVC decoder project's package holds 29 slots, which in I420P10 at 3840x2176 is about 727 MB.
+  `findGPUDecoderStreamFitFailure` checks them.
+
+HDR needs `allowFramePoolHDR`, which the host sets when it tone-maps.
+The route carries no Dolby Vision reconstruction or native color handling, so a compatible Dolby Vision base layer reaches it through step 1.4, and Profile 5 never does.
+
+A package's self-test vectors run only when a host calls `verifyGPUDecoderPackage` (see [Decoder packages](decoder-packages.md)); eligibility never waits on them, and offering an unverified package is the host's choice.
 
 An AV1, VP9, or HEVC range-extension source presents HDR only through raw planes, so a host must settle the raw HDR keys for it whatever the external result.
 The Dolby Vision keys a source needs on first use (Profile 4 in any format, or Profile 7 or single-layer reconstruction in a format other than I420P10) must settle before eligibility.
@@ -130,7 +151,8 @@ The Dolby Vision keys a source needs on first use (Profile 4 in any format, or P
 - Track: `DefaultAudioStreamIndex`, else the first audio stream.
   Codec aliases: DCA is dts, EC-3 is eac3, TRUE-HD is truehd.
 - Order: the native-media MSE bridge for AC-3 and E-AC-3 (2 or 6 channels, exactly 48 kHz) comes first.
-  Otherwise `decoded-pcm`, when the codec capability and the input layout qualify.
+  Otherwise `decoded-pcm`: through the engine's own decoders when the codec capability and the input layout qualify, the browser's for WebCodecs codecs and Mediabunny's for PCM.
+  A codec no engine decoder supports, AC-3, E-AC-3, DTS, TrueHD, and MLP among them, takes the first of the host's audio decoder packages whose manifest accepts it.
 - Input channels, as declared by Jellyfin.
   The decoded format is authoritative at runtime, and any decoded layout maps to the output by channel name:
 
@@ -138,19 +160,17 @@ The Dolby Vision keys a source needs on first use (Profile 4 in any format, or P
   | --- | --- |
   | PCM | 1, 2, 3, 6 (3 needs a `3.0` layout) |
   | aac, flac, opus, vorbis | 1, 2, 3, 6 (3 needs a `3.0` layout; 3 and 6 are advertised only with the 5.1 probe, and 6 needs it) |
-  | ac3 | 1, 2, 6 (2/1 and 3/0 both arrive as `3.0`, and the decoder reports no speaker mask) |
-  | eac3 | 1, 2, 6, 8 (8 needs a `7.1` layout) |
+  | ac3 | 1, 2, 6 (2/1 and 3/0 both arrive as `3.0`, and no evidence covers either) |
+  | eac3 | 1, 2, 6, 8 |
   | mp3 | 1, 2 |
-  | dts | 1, 2, 3, 6, 8 (3 needs a `2.1` or `3.0` layout) |
-  | truehd | 1, 2, 6, 8 (8 only at 48 kHz with a `7.1` layout) |
+  | dts | 1, 2, 3, 6, 8 |
+  | truehd | 1, 2, 6, 8 (8 only at 48 kHz) |
   | mlp | 1, 2 |
 
   Jellyfin keeps only the part of FFmpeg's layout name before `(`, so `3.0(back)` arrives as `3.0` and `7.1(wide)` as `7.1`.
-  Only decoders that report a speaker mask (DTS, E-AC-3, TrueHD) tell them apart, at runtime: a DTS 3.0(back) plays with its back center on the surrounds, and a mask with no layout fails the attempt as `decode-failed`, which renegotiates.
-
-- DTS by profile: Core 1 or 6; 96/24 1 or 6; HRA 1, 6, or 8; MA and MA+X 1, 2, 3, 6, or 8.
-  DTS-ES is excluded, and above 96 kHz only 6-channel MA is allowed.
-  DTS and TrueHD play from Matroska and from MP4, M4V, and MOV (the `DTS `, `dtsc`, `dtsh`, `dtsl`, and `mlpa` sample entries); MLP plays only from Matroska.
+  A package reports each block's speaker mask, so the mask, not the declared layout, tells them apart at runtime: a DTS 3.0(back) plays with its back center on the surrounds, and a mask with no output layout fails the attempt as `decode-failed`, which renegotiates.
+  DTS-ES carries the only 6.1 bed, whose reported geometry failed validation, so seven channels have no route.
+- DTS and TrueHD play from Matroska and from MP4, M4V, and MOV (the `DTS `, `dtsc`, `dtsh`, `dtsl`, and `mlpa` sample entries); MLP plays only from Matroska.
 - Rates: any positive integer, resampled to 48 kHz.
   Past 192 kHz the resampler's kernel widens in proportion, so its band edge stays as sharp as at 192 kHz.
   A browser decoder judges its own rates per item, and a rate it refuses falls back.
@@ -168,5 +188,5 @@ The Dolby Vision keys a source needs on first use (Profile 4 in any format, or P
   One exception: 10-bit SDR HEVC has no probe of its own.
   The native HDR HEVC probe gates it with `prefer-hardware`, while the SDR route requests `no-preference`.
   Chromium decodes HEVC only in hardware, so both resolve to the same decoder.
-- These composed routes have no probe vector: DTS mono, DTS 2-channel MA, DTS 3-channel MA, DTS 6-channel HRA, TrueHD and MLP mono, and TrueHD 7.1 at 48 kHz.
+- Eligibility checks no audio profile: a stream a package cannot decode, such as DTS-UHD in a DTS package, fails its attempt at runtime as `decode-failed`.
 - The raw SDR keys are BT.709 only, so 10-bit SDR AV1 or VP9 tagged BT.601 or BT.2020 is not eligible.

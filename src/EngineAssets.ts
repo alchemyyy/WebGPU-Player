@@ -5,30 +5,14 @@
 export const ENGINE_WORKER_PATHS = Object.freeze([
     'webgpu-player/CustomAudioDecode.worker.js',
     'webgpu-player/CustomDecode.worker.js',
-    'webgpu-player/DTSExactCapabilityProbe.worker.js',
-    'webgpu-player/HEVCExactCapabilityProbe.worker.js',
-    'webgpu-player/JPEG2000ExactCapabilityProbe.worker.js',
-    'webgpu-player/MPEG2VC1ExactCapabilityProbe.worker.js',
-    'webgpu-player/TrueHDExactCapabilityProbe.worker.js'
+    'webgpu-player/GPUDecoderCoordinator.worker.js',
+    'webgpu-player/GPUDecoderParse.worker.js'
 ] as const);
 
-/** Decoders, the audio output stage, and qualification streams, relative to the asset base. */
+/** The audio output stage, the Dolby Vision RPU parser, and the native decoders' qualification streams, relative to the asset base. */
 export const ENGINE_LIBRARY_PATHS = Object.freeze([
     'audio-output-stage/audio-output-stage.wasm',
-    'ffmpeg-eac3/ffmpeg-eac3.wasm',
-    'ffmpeg-hevc/ffmpeg-hevc.js',
-    'ffmpeg-hevc/ffmpeg-hevc.wasm',
-    'ffmpeg-hevc/main10-4k-qualification.bin',
-    'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.js',
-    'ffmpeg-mpeg2-vc1/ffmpeg-mpeg2-vc1.wasm',
-    'ffmpeg-mpeg2-vc1/mpeg2-progressive-1920x1080-qualification.bin',
-    'ffmpeg-mpeg2-vc1/vc1-advanced-progressive-1920x1080-qualification.bin',
-    'ffmpeg-truehd/ffmpeg-truehd.wasm',
-    'libdcadec-dts/libdcadec-dts.wasm',
     'libdovi/dovi-rpu-parser.wasm',
-    'openjpeg/jpeg2000-960x540-qualification.bin',
-    'openjpeg/openjpeg-decode.js',
-    'openjpeg/openjpeg-decode.wasm',
     'webgpu-player/hevc-rext/main12-420.bin',
     'webgpu-player/hevc-rext/main422-10.bin',
     'webgpu-player/hevc-rext/main422-12.bin',
@@ -44,10 +28,6 @@ export type EngineWorkerPath = typeof ENGINE_WORKER_PATHS[number];
 export type EngineLibraryPath = typeof ENGINE_LIBRARY_PATHS[number];
 export type EngineAssetPath = EngineWorkerPath | EngineLibraryPath;
 
-// The bundled audio decoders' binaries; a probe worker and the playback worker resolve one URL, so the browser caches each once
-export const DTS_DECODER_WASM_ASSET = 'libdcadec-dts/libdcadec-dts.wasm' satisfies EngineLibraryPath;
-export const EAC3_DECODER_WASM_ASSET = 'ffmpeg-eac3/ffmpeg-eac3.wasm' satisfies EngineLibraryPath;
-export const TRUEHD_DECODER_WASM_ASSET = 'ffmpeg-truehd/ffmpeg-truehd.wasm' satisfies EngineLibraryPath;
 // The decoded audio output stage's resampler and limiter kernels, which the playback worker loads on its first decoded audio attempt
 export const AUDIO_OUTPUT_STAGE_WASM_ASSET = 'audio-output-stage/audio-output-stage.wasm' satisfies EngineLibraryPath;
 

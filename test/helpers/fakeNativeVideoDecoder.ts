@@ -2,7 +2,7 @@
 
 import { vi } from 'vitest';
 
-import type { NativeVideoDecoderPort } from 'webgpu-player/video/decoders/OwnedNativeVideoDecoder';
+import type { NativeVideoDecoderPort } from 'webgpu-player/decode/video/native/OwnedNativeVideoDecoder';
 
 // Mirrors Chromium: close() on a closed codec throws, and an error callback arrives after the codec closed itself
 export class FakeNativeVideoDecoder implements NativeVideoDecoderPort {

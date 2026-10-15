@@ -1,0 +1,67 @@
+@startuml presentation-pipeline
+' The presentation pipeline's flow, kept concise as a conceptual self-check of the pipeline
+!include diagram-theme.puml
+title Presentation pipeline
+
+start
+
+partition "Plan time: route, preset, settings, or output size changes" {
+    :BuiltinChains.createBuiltinChain(route)
+    fixed signal + default color functions; <<$HL_BLUE>>
+    note right
+        Authorization renders this default chain
+        through the same planner and executor,
+        so a preset never changes the route;
+        the GPU decode route has none, and a host
+        verifies a decoder package only if it chooses
+    end note
+    :PassManifest.parsePassManifest(each user source)
+    failure: header-invalid; <<$HL_BLUE>>
+    :PresentationPlanner.planPresentation(chain, passes, facts, device, output); <<$HL_AMBER>>
+    note right
+        **Self-check**
+        * No user passes: one pass, byte-identical to the legacy shaders
+        * Color track: source -> linear -> display-linear -> display
+        * A pass's domain pulls track steps before it; the rest fuse into the output pass
+        * Dither runs only in the pass that writes the canvas
+        * Kernels, compute, and user scalers read textures, so their input is materialized
+        * The built-in bilinear scaler over the signal fuses into the source read
+        * X[-N] gives X a ring of N + 1 textures; history never holds a VideoFrame
+        * A bypassing signal (Profile 4) completes the track to display in its own pass
+        * A pass that cannot run is left out with a reason code and a terse detail
+    end note
+    :PassPrelude, per pass module
+    bindings, input accessors, renamed user bodies, entry stages; <<$HL_AMBER>>
+    :PresentationExecutor.create(device, plan)
+    shader modules, pipelines, rings, bind groups per ring phase; <<$HL_AMBER>>
+    if (compile errors?) then (yes)
+        :drop the named passes (compile-error) and replan; <<$HL_RED>>
+    endif
+}
+
+partition "Frame time: each presented frame" {
+    split
+        :external route
+        VideoFrame -> importExternalTexture; <<$HL_BLUE>>
+    split again
+        :plane route
+        worker copy -> writeTexture into uint planes; <<$HL_BLUE>>
+    split again
+        :GPU decode route
+        packet, or a package parser's record (coordinator worker + parse workers)
+        -> GPUVideoDecodeFeed, one submission in flight
+        -> GPUVideoDecodeSession compute -> frame pool slot; <<$HL_BLUE>>
+    end split
+    :PresentationExecutor.encode(encoder, frame)
+    one uniform write, one encode per pass, no submit; <<$HL_AMBER>>
+    :SIGNAL, fixed and authorized: source -> 'source' RGB;
+    :RGB and PRESCALE passes, at source size;
+    :SCALE: built-in bilinear or one user scaler -> the output rectangle;
+    :OUTPUT passes, at output size;
+    :remaining color steps + dither -> canvas; <<$HL_GREEN>>
+    :presenter submits once
+    new frames advance history, redraws do not; <<$HL_NAVY>>
+}
+
+stop
+@enduml

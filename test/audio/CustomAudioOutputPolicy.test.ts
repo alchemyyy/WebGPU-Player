@@ -91,7 +91,6 @@ describe('CustomAudioOutputPolicy', () => {
             2,
             3,
             6,
-            7,
             8
         ]);
         for (const [ channelCount, sampleRate ] of [
@@ -100,7 +99,6 @@ describe('CustomAudioOutputPolicy', () => {
             [ 3, 48_000 ],
             [ 6, 48_000 ],
             [ 6, 12_345 ],
-            [ 7, 44_100 ],
             [ 8, 96_000 ],
             [ 8, 192_000 ]
         ] as const) {
@@ -108,6 +106,8 @@ describe('CustomAudioOutputPolicy', () => {
                 .toBe(true);
         }
         expect(isSupportedCustomAudioInputLayout('dts', 4, 48_000)).toBe(false);
+        // DTS-ES holds the only 6.1 route, whose reported geometry failed validation
+        expect(isSupportedCustomAudioInputLayout('dts', 7, 48_000)).toBe(false);
         expect(isSupportedCustomAudioInputLayout('dts', 8, ZERO_SAMPLE_RATE)).toBe(false);
         expect(isSupportedCustomAudioInputLayout('dts', 8, FRACTIONAL_SAMPLE_RATE)).toBe(false);
     });
@@ -144,7 +144,7 @@ describe('CustomAudioOutputPolicy', () => {
             .toBe(true);
         expect(isSupportedCustomAudioInputMetadataLayout('vorbis', 3, 44_100, '3.0')).toBe(true);
         expect(isSupportedCustomAudioInputMetadataLayout('aac', 3, 48_000, '2.1')).toBe(false);
-        // AC-3 3.0(back) also arrives as 3.0, and its decoder reports no speaker mask
+        // AC-3 3.0(back) also arrives as 3.0, and three-channel AC-3 has no route
         expect(isSupportedCustomAudioInputMetadataLayout('ac3', 3, 48_000, '3.0')).toBe(false);
         expect(isSupportedCustomAudioInputMetadataLayout('opus', 3, 48_000, undefined))
             .toBe(false);

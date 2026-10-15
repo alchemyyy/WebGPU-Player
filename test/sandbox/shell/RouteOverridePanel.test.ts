@@ -4,7 +4,7 @@ import type { RouteOverride } from '../../../sandbox/src/contracts/SandboxContra
 import { createRouteOverridePanel } from '../../../sandbox/src/ui/panels/RouteOverridePanel';
 import { createFakePanelContext } from './sandboxFakes';
 
-const FORCED_OVERRIDE: RouteOverride = { decoder: 'software', transport: 'raw-planes' };
+const FORCED_OVERRIDE: RouteOverride = { decoder: 'gpu', transport: 'raw-planes' };
 const AUTO_DEFAULT_TITLE = 'Default: Auto';
 const DEFAULT_BUTTON_SELECTOR = '.default-button';
 

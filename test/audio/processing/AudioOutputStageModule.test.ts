@@ -2,17 +2,17 @@
 
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import type { DecoderWASMSource } from 'webgpu-player/DecoderWASMSource';
 import { AUDIO_OUTPUT_STAGE_WASM_ASSET } from 'webgpu-player/EngineAssets';
 import AudioOutputStageModule, {
-    LIMITER_NON_FINITE_SAMPLE_MESSAGE
+    LIMITER_NON_FINITE_SAMPLE_MESSAGE,
+    type AudioOutputStageModuleSource
 } from 'webgpu-player/audio/processing/AudioOutputStageModule';
 import StreamingAudioResampler, {
     type StreamingAudioResamplerOptions
 } from 'webgpu-player/audio/processing/StreamingAudioResampler';
 import { requireMicroseconds } from 'webgpu-player/TimeMath';
 
-import { readDecoderWASMSource } from '../../helpers/libraryAssets';
+import { readLibraryAssetSource } from '../../helpers/libraryAssets';
 
 type AudioOutputStageModuleExports = typeof import('webgpu-player/audio/processing/AudioOutputStageModule');
 
@@ -44,7 +44,7 @@ const SERVED_MODULE_URL = 'https://example.test/web/libraries/audio-output-stage
 let moduleBytes: ArrayBuffer;
 
 beforeAll(async () => {
-    const source = await readDecoderWASMSource(AUDIO_OUTPUT_STAGE_WASM_ASSET);
+    const source = await readLibraryAssetSource(AUDIO_OUTPUT_STAGE_WASM_ASSET);
     if (source.kind !== 'bytes') {
         throw new Error('The test reads the output stage binary as bytes');
     }
@@ -111,7 +111,7 @@ describe('AudioOutputStageModule', () => {
 
     it('instantiates once per worker and retries a load that failed', async () => {
         const { loadAudioOutputStageModule } = await importFreshModuleFile();
-        const failedSource: DecoderWASMSource = { bytes: new Uint8Array([ 1, 2, 3, 4 ]).buffer, kind: 'bytes' };
+        const failedSource: AudioOutputStageModuleSource = { bytes: new Uint8Array([ 1, 2, 3, 4 ]).buffer, kind: 'bytes' };
         await expect(loadAudioOutputStageModule(failedSource)).rejects.toThrow();
 
         const loadedModule = await loadAudioOutputStageModule({ bytes: moduleBytes, kind: 'bytes' });

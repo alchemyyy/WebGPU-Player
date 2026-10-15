@@ -12,21 +12,22 @@ import {
     type DolbyVisionPresentationDescriptor,
     type DolbyVisionReconstructionProfile
 } from '../presentation/PresentationInput';
+import type { AudioDecoderPackageSelection } from '../decode/audio/AudioDecoderPackageInstance';
 import type { InputColorMetadata } from '../color/ColorMetadata';
+import type { AudioDecoderPackage } from '../decode/packages/DecoderPackage';
 import {
     jellyfinTicksToMicroseconds,
     type Microseconds
 } from '../MediaTime';
 import {
-    CUSTOM_BUNDLED_AUDIO_CODECS,
     CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
     hasSupportedNativeSDRVideoCodec,
+    isCustomPackageVideoCodec,
     type CustomAudioCodec,
     type CustomDecodeCapabilities,
     type CustomNativeHDRHEVCCapability,
     type CustomNativeSurroundAudioCodecCapability,
-    type CustomRawHDRVideoCodec,
-    type CustomRawHDRVideoCodecCapability,
+    type CustomPackageVideoCodec,
     type CustomVideoCodec
 } from './CustomDecodeCapabilities';
 import {
@@ -49,11 +50,6 @@ import {
     supportsCustomContainerCodecCombination
 } from './CustomContainerCodecSupport';
 import {
-    isSupportedDTSInputRoute,
-    isSupportedEAC3InputRoute,
-    isSupportedTrueHDMetadataRoute
-} from '../audio/CustomCompressedAudioRoute';
-import {
     getH264ProfileFromJellyfinValue,
     supportsH264JellyfinProfile
 } from './H264ProfileCapabilities';
@@ -72,21 +68,31 @@ import type {
     CustomDecodeVideoDecoderBackend,
     CustomDecodeVideoOutputMode
 } from '../pipeline/DecodeWorkerProtocol';
-import { isCustomDecodeMediaSource, type CustomDecodeMediaSource } from '../pipeline/CustomDecodeMediaSource';
+import { isCustomDecodeMediaSource, type CustomDecodeMediaSource } from '../demux/CustomDecodeMediaSource';
 import { requireMicroseconds } from '../TimeMath';
 import {
     hasRawVideoFrameCopyLayout,
     RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT,
     RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT,
     type RawVideoFrameGeometry
-} from '../video/RawVideoFrameCopy';
+} from '../decode/video/RawVideoFrameCopy';
 import {
     getHEVCRangeExtensionStreamDefinitionFromMetadata,
     type HEVCRangeExtensionProbeDefinition
 } from './HEVCRangeExtensionCapabilities';
+import {
+    getGPUDecoderPixelFormatHolding,
+    isGPUDecoderMonochromePixelFormat,
+    type GPUDecoderOutputFormat
+} from '../decode/video/gpu/GPUDecodeFormats';
+import { findGPUDecoderStreamFitFailure } from '../decode/video/gpu/GPUDecoderStreamFit';
+import { createGPUDecodeStreamFacts } from '../decode/video/gpu/GPUFramePool';
+import type {
+    GPUVideoDecoderOffer,
+    GPUVideoDecoderSelection
+} from '../decode/video/gpu/GPUVideoDecoderCatalog';
 
 const DIRECT_PLAY_METHOD = 'DIRECTPLAY';
-const BUNDLED_AUDIO_CODEC_SET = new Set<CustomAudioCodec>(CUSTOM_BUNDLED_AUDIO_CODECS);
 const VIDEO_CODEC_ALIASES: Readonly<Record<string, CustomVideoCodec>> = {
     AVC: 'h264',
     AVC1: 'h264',
@@ -97,14 +103,26 @@ const VIDEO_CODEC_ALIASES: Readonly<Record<string, CustomVideoCodec>> = {
     J2K: 'jpeg2000',
     'JPEG 2000': 'jpeg2000',
     JPEG2000: 'jpeg2000',
+    'MPEG-1': 'mpeg1video',
+    MPEG1: 'mpeg1video',
+    MPEG1VIDEO: 'mpeg1video',
     'MPEG-2': 'mpeg2video',
     MPEG2: 'mpeg2video',
     MPEG2VIDEO: 'mpeg2video',
     'VC-1': 'vc1',
     VC1: 'vc1',
     VP8: 'vp8',
-    VP9: 'vp9'
+    VP9: 'vp9',
+    // FFmpeg's name of the VC-1 Simple and Main profiles, which ffprobe reports for WMV3 streams
+    WMV3: 'wmv3'
 };
+// The VC-1 profiles of each codec, as ffprobe names them: vc1 is the Advanced profile, and wmv3 the Simple and Main profiles and the Complex profile, which FFmpeg decodes as Main
+const VC1_METADATA_PROFILES: Readonly<Record<'vc1' | 'wmv3', readonly string[]>> = Object.freeze({
+    vc1: Object.freeze([ 'ADVANCED' ]),
+    wmv3: Object.freeze([ 'SIMPLE', 'MAIN', 'COMPLEX' ])
+});
+// The frame pool formats of the AV1 streams native routes decode: Main at 4:2:0, 8 or 10 bits
+const NATIVE_AV1_OUTPUT_FORMATS: ReadonlySet<GPUDecoderOutputFormat> = new Set<GPUDecoderOutputFormat>([ 'I420', 'I420P10' ]);
 
 const AUDIO_CODEC_ALIASES = new Map<string, CustomAudioCodec>([
     [ 'AAC', 'aac' ],
@@ -211,8 +229,8 @@ type VideoStreamSelection =
 
 type VideoOutputSelection =
     | {
-        discardDolbyVisionEnhancementLayer?: true
         dolbyVisionProfile?: DolbyVisionReconstructionProfile
+        gpuVideoDecoder?: GPUVideoDecoderSelection
         hdr: boolean
         maximumCodedHeight: number
         maximumCodedWidth: number
@@ -233,6 +251,7 @@ type TypedStreamCandidate = {
 
 type AudioOutputSelection =
     | {
+        audioDecoder?: AudioDecoderPackageSelection
         outputMode: CustomDecodeAudioOutputMode
         status: 'selected'
     }
@@ -244,6 +263,7 @@ type AudioOutputSelection =
 type PlaybackAudioSelection =
     | {
         audioCodec: CustomAudioCodec | null
+        audioDecoder?: AudioDecoderPackageSelection
         audioOutputMode: CustomDecodeAudioOutputMode | null
         audioSourceChannelCount: number | null
         audioTrackIndex: number | null
@@ -263,12 +283,10 @@ function getNativeHDRTransferResult(
     return { nativeHDRTransfer: videoOutput.nativeHDRTransfer };
 }
 
-function getDiscardedEnhancementLayerResult(
+function getGPUVideoDecoderResult(
     videoOutput: Extract<VideoOutputSelection, { status: 'selected' }>
-): Pick<EligibleCustomPlayback, 'discardDolbyVisionEnhancementLayer'> {
-    return videoOutput.discardDolbyVisionEnhancementLayer ?
-        { discardDolbyVisionEnhancementLayer: true } :
-        {};
+): Pick<EligibleCustomPlayback, 'gpuVideoDecoder'> {
+    return videoOutput.gpuVideoDecoder ? { gpuVideoDecoder: videoOutput.gpuVideoDecoder } : {};
 }
 
 export type CustomPlaybackIneligibilityReason =
@@ -296,6 +314,8 @@ export type CustomPlaybackEligibilityOptions = {
     allowDolbyVisionProfile4?: boolean
     /** Profile 7 reconstruction is authorized for the stream's raw frame format. */
     allowDolbyVisionProfile7?: boolean
+    /** A GPU decoder may present HDR: the host tone-maps it, and the decoder's vector stands in for a presentation authorization. */
+    allowFramePoolHDR?: boolean
     allowNativeDolbyVision?: boolean
     allowNativeDolbyVisionProfile7HDR10Base?: boolean
     allowNativeDolbyVisionProfile8HDR10Base?: boolean
@@ -303,26 +323,32 @@ export type CustomPlaybackEligibilityOptions = {
     allowNativeHDR?: boolean
     allowRawHDR: boolean
     allowRawSDR?: boolean
+    /**
+     * The host's audio decoder packages, in preference order.
+     * The first that decodes the track's codec decodes it to PCM when neither the media element nor the engine's own decoders play it.
+     */
+    audioDecoders?: readonly AudioDecoderPackage[]
     authorizedExternalHDRRouteKeys?: readonly ExternalHDRAuthorizationRouteKey[]
     authorizedRawHDRRouteKeys?: readonly RawHDRAuthorizationRouteKey[]
+    /** The GPU decoders the host's policy lets the frame-pool route choose, on the presenter's device */
+    gpuVideoDecoders?: readonly GPUVideoDecoderOffer[]
     nativeMediaAudioCapabilities?: NativeMediaAudioCapabilities | null
     runtimeAvailability: CustomPlaybackRuntimeAvailability
 };
 
 export type EligibleCustomPlayback = {
+    /** The host's audio decoder package that decodes the decoded PCM route's track, which no engine decoder decodes */
+    audioDecoder?: AudioDecoderPackageSelection
     audioOutputMode: CustomDecodeAudioOutputMode | null
     audioSourceChannelCount: number | null
     /** Zero-based ordinal within container audio tracks, not MediaStream.Index. */
     audioTrackIndex: number | null
-    /**
-     * Set when a dual-layer route reconstructs without its EL, because no qualified decoder decodes it.
-     * MEL still reconstructs exactly, and FEL presents its base.
-     */
-    discardDolbyVisionEnhancementLayer?: true
     /** Null when the server has no runtime for the source */
     durationMicroseconds: Microseconds | null
     dolbyVisionProfile: DolbyVisionReconstructionProfile | null
     eligible: true
+    /** The frame-pool route's GPU decoder, which decodes on the presenter's device */
+    gpuVideoDecoder?: GPUVideoDecoderSelection
     hdr: boolean
     maximumCodedHeight: number
     maximumCodedWidth: number
@@ -376,14 +402,22 @@ function getHTTPURL(value: string): string | null {
     }
 }
 
-/** Returns a URL source resolved against the page, or null when its URL is not a credential-free http(s) URL; a file source plays as it is. */
+/**
+ * Returns a URL source resolved against the page, with the host's path pattern for responses that hide Content-Range,
+ * or null when its URL is not a credential-free http(s) URL; a file source plays as it is.
+ */
 function resolvePlaybackMediaSource(source: CustomDecodeMediaSource): CustomDecodeMediaSource | null {
     switch (source.kind) {
         case 'file':
             return source;
         case 'url': {
             const url = getHTTPURL(source.url);
-            return url ? { kind: 'url', url } : null;
+            if (!url) {
+                return null;
+            }
+            return source.hiddenContentRangePathPattern ?
+                { hiddenContentRangePathPattern: source.hiddenContentRangePathPattern, kind: 'url', url } :
+                { kind: 'url', url };
         }
     }
 }
@@ -535,30 +569,6 @@ function hasQualifiedDecodedPCMInputLayout(
     if (!isSupportedCustomAudioInputLayout(codec, stream.Channels, stream.SampleRate)) {
         return false;
     }
-    if (codec === 'eac3') {
-        return isSupportedEAC3InputRoute(stream.Channels, stream.SampleRate, stream.ChannelLayout);
-    }
-    if (codec === 'dts') {
-        const profile = normalizeMetadataToken(stream.Profile);
-        if (capabilities.bundledDTS?.status !== 'supported') {
-            return false;
-        }
-        return isSupportedDTSInputRoute(stream.Channels, stream.SampleRate, profile, stream.ChannelLayout);
-    }
-    if (codec === 'mlp' || codec === 'truehd') {
-        const exactCapability = capabilities.bundledTrueHD;
-        return exactCapability?.status === 'supported'
-            && exactCapability.channelBedOnly
-            && exactCapability.objectAudioRendered === false
-            && exactCapability.passthrough === false
-            && exactCapability.codecs.includes(codec)
-            && isSupportedTrueHDMetadataRoute(
-                codec,
-                stream.Channels,
-                stream.SampleRate,
-                stream.ChannelLayout
-            );
-    }
     // These decoders report no speaker mask, so three channels need Jellyfin's 3.0 layout
     if (!isSupportedCustomAudioInputMetadataLayout(
         codec,
@@ -576,8 +586,6 @@ function hasQualifiedDecodedPCMInputLayout(
     }
 
     switch (codec) {
-        case 'ac3':
-            return true;
         case 'aac':
         case 'flac':
         case 'opus':
@@ -587,18 +595,40 @@ function hasQualifiedDecodedPCMInputLayout(
             return surroundCapability?.status === 'supported'
                 && surroundCapability.inputChannelCount === stream.Channels;
         }
+        case 'ac3':
+        case 'dts':
+        case 'eac3':
+        case 'mlp':
         case 'mp3':
+        case 'truehd':
             return false;
     }
+}
+
+/** Returns the first of the host's audio decoder packages that decodes a codec no engine decoder decodes, as the codec it decodes it as. */
+function findAudioDecoderPackage(
+    codec: CustomAudioCodec,
+    capabilities: CustomDecodeCapabilities,
+    audioDecoders: readonly AudioDecoderPackage[]
+): AudioDecoderPackageSelection | null {
+    if (capabilities.audio[codec].status === 'supported') {
+        return null;
+    }
+    const decoderPackage = audioDecoders.find((candidate: AudioDecoderPackage): boolean => candidate.manifest.codecs.includes(codec));
+    if (!decoderPackage) {
+        return null;
+    }
+    return { codec, source: { manifest: decoderPackage.manifest, memory: decoderPackage.memory, module: decoderPackage.module } };
 }
 
 function selectAudioOutput(
     codec: CustomAudioCodec,
     stream: MediaStream,
     capabilities: CustomDecodeCapabilities,
-    nativeMediaAudioCapabilities: NativeMediaAudioCapabilities | null | undefined,
+    eligibilityOptions: CustomPlaybackEligibilityOptions,
     durationKnown: boolean
 ): AudioOutputSelection {
+    const nativeMediaAudioCapabilities = eligibilityOptions.nativeMediaAudioCapabilities;
     const nativeCodec = getNativeMediaAudioCodec(codec);
     // The native media backend sizes its MediaSource from the duration
     if (nativeCodec && nativeMediaAudioCapabilities && durationKnown) {
@@ -611,6 +641,14 @@ function selectAudioOutput(
         if (nativeRoute) {
             return { outputMode: 'native-media', status: 'selected' };
         }
+    }
+
+    // A package reports its decoded speaker layout, so the declared layout only has to have a decoded PCM presentation path
+    const audioDecoder = findAudioDecoderPackage(codec, capabilities, eligibilityOptions.audioDecoders ?? []);
+    if (audioDecoder) {
+        return isSupportedCustomAudioInputLayout(codec, stream.Channels, stream.SampleRate) ?
+            { audioDecoder, outputMode: 'decoded-pcm', status: 'selected' } :
+            { reason: 'audio-layout-unsupported', status: 'invalid' };
     }
 
     if (capabilities.audio[codec].status !== 'supported') {
@@ -627,15 +665,6 @@ function selectAudioOutput(
         return { reason: 'audio-layout-unsupported', status: 'invalid' };
     }
     return { outputMode: 'decoded-pcm', status: 'selected' };
-}
-
-function hasSupportedBundledHEVCProfile(
-    capabilities: CustomDecodeCapabilities,
-    profile: 'main' | 'main10'
-): boolean {
-    return Object.values(capabilities.bundledHEVC?.qualifications ?? {}).some(qualification => (
-        qualification.profile === profile && qualification.status === 'supported'
-    ));
 }
 
 function normalizeMetadataToken(value: unknown): string | null {
@@ -655,8 +684,10 @@ function hasSupportedNativeVideoProfile(codec: CustomVideoCodec, stream: MediaSt
             return profile === 'PROFILE0' || profile === '0';
         case 'av1':
             return profile === 'MAIN';
+        case 'mpeg1video':
         case 'mpeg2video':
         case 'vc1':
+        case 'wmv3':
         case 'jpeg2000':
             return false;
     }
@@ -673,65 +704,20 @@ function hasSupportedRawVideoProfile(codec: CustomVideoCodec, stream: MediaStrea
             return profile === 'MAIN';
         case 'h264':
         case 'jpeg2000':
+        case 'mpeg1video':
         case 'mpeg2video':
         case 'vc1':
         case 'vp8':
+        case 'wmv3':
             return false;
     }
 }
 
+// A VideoFrame route's coded size; its decoder is always the browser's own
 type SDRVideoSelection = {
     maximumCodedHeight: number
     maximumCodedWidth: number
-    videoDecoderBackend: CustomDecodeVideoDecoderBackend
 };
-
-function getJPEG2000SDRVideoSelection(
-    capabilities: CustomDecodeCapabilities,
-    stream: MediaStream,
-    bitDepth: number
-): SDRVideoSelection | null {
-    const capability = capabilities.bundledJPEG2000;
-    if (
-        capability?.status !== 'supported'
-        || capability.bitDepth !== bitDepth
-        || !isPositiveSafeInteger(stream.Width)
-        || !isPositiveSafeInteger(stream.Height)
-    ) {
-        return null;
-    }
-    return {
-        maximumCodedHeight: Number(stream.Height),
-        maximumCodedWidth: Number(stream.Width),
-        videoDecoderBackend: 'openjpeg'
-    };
-}
-
-function getMPEG2VC1SDRSelection(
-    capabilities: CustomDecodeCapabilities,
-    codec: 'mpeg2video' | 'vc1',
-    stream: MediaStream,
-    bitDepth: number
-): SDRVideoSelection | null {
-    const capability = codec === 'vc1' ?
-        capabilities.bundledVC1 :
-        capabilities.bundledMPEG2;
-    const requiredProfile = codec === 'vc1' ? 'ADVANCED' : 'MAIN';
-    if (
-        capability?.status !== 'supported'
-        || bitDepth !== CUSTOM_NATIVE_VIDEO_BIT_DEPTH
-        || normalizeMetadataToken(stream.Profile) !== requiredProfile
-        || !isPositiveSafeInteger(stream.Width)
-        || !isPositiveSafeInteger(stream.Height)
-    ) {
-        return null;
-    }
-    return {
-        maximumCodedHeight: Number(stream.Height),
-        maximumCodedWidth: Number(stream.Width),
-        videoDecoderBackend: 'ffmpeg-mpeg2-vc1'
-    };
-}
 
 function getHEVCSDRVideoSelection(
     capabilities: CustomDecodeCapabilities,
@@ -745,33 +731,25 @@ function getHEVCSDRVideoSelection(
     if (bitDepth === 10) {
         return supportsNativeMain10HEVC(capabilities.nativeHDRHEVC, 'hevc', stream) ? {
             maximumCodedHeight: stream.Height,
-            maximumCodedWidth: stream.Width,
-            videoDecoderBackend: 'native'
+            maximumCodedWidth: stream.Width
         } : null;
     }
-    if (bitDepth !== CUSTOM_NATIVE_VIDEO_BIT_DEPTH || !hasSupportedNativeVideoProfile('hevc', stream)) {
-        return null;
-    }
-    if (hasSupportedNativeSDRVideoCodec('hevc', capabilities)) {
-        return {
-            maximumCodedHeight: stream.Height,
-            maximumCodedWidth: stream.Width,
-            videoDecoderBackend: 'native'
-        };
-    }
-    if (!hasSupportedBundledHEVCProfile(capabilities, 'main')) {
+    if (
+        bitDepth !== CUSTOM_NATIVE_VIDEO_BIT_DEPTH
+        || !hasSupportedNativeVideoProfile('hevc', stream)
+        || !hasSupportedNativeSDRVideoCodec('hevc', capabilities)
+    ) {
         return null;
     }
     return {
         maximumCodedHeight: stream.Height,
-        maximumCodedWidth: stream.Width,
-        videoDecoderBackend: 'bundled-hevc'
+        maximumCodedWidth: stream.Width
     };
 }
 
 function getOrdinarySDRVideoSelection(
     capabilities: CustomDecodeCapabilities,
-    codec: Exclude<CustomVideoCodec, 'jpeg2000' | 'mpeg2video' | 'vc1'>,
+    codec: Exclude<CustomVideoCodec, CustomPackageVideoCodec>,
     stream: MediaStream,
     bitDepth: number
 ): SDRVideoSelection | null {
@@ -818,8 +796,7 @@ function getOrdinarySDRVideoSelection(
 
     return {
         maximumCodedHeight,
-        maximumCodedWidth,
-        videoDecoderBackend: 'native'
+        maximumCodedWidth
     };
 }
 
@@ -845,19 +822,14 @@ function hasStreamRawVideoFrameCopyLayout(
     return geometry !== null && hasRawVideoFrameCopyLayout(geometry, format, frameLayerCount);
 }
 
+/** Selects a native VideoFrame route; a codec only a GPU decoder package decodes has none. */
 function getSDRVideoSelection(
     capabilities: CustomDecodeCapabilities,
     codec: CustomVideoCodec,
     stream: MediaStream,
     bitDepth: number
 ): SDRVideoSelection | null {
-    if (codec === 'jpeg2000') {
-        return getJPEG2000SDRVideoSelection(capabilities, stream, bitDepth);
-    }
-    if (codec === 'mpeg2video' || codec === 'vc1') {
-        return getMPEG2VC1SDRSelection(capabilities, codec, stream, bitDepth);
-    }
-    return getOrdinarySDRVideoSelection(capabilities, codec, stream, bitDepth);
+    return isCustomPackageVideoCodec(codec) ? null : getOrdinarySDRVideoSelection(capabilities, codec, stream, bitDepth);
 }
 
 function supportsRawHDRVideo(
@@ -871,41 +843,28 @@ function supportsRawHDRVideo(
         return false;
     }
     const capability = capabilities.rawHDRVideo[codec];
-    if (capability.status !== 'supported'
-        || capability.format !== format
-        || capability.bitDepth !== stream.BitDepth
-        || !hasSupportedRawVideoProfile(codec, stream)
-        || !hasStreamRawVideoFrameCopyLayout(stream, format, frameLayerCount)) {
-        return false;
-    }
-    if (capability.reason !== 'bundled-software-decoder') {
-        return true;
-    }
-    return hasSupportedBundledHEVCProfile(capabilities, 'main10');
+    return capability.status === 'supported'
+        && capability.format === format
+        && capability.bitDepth === stream.BitDepth
+        && hasSupportedRawVideoProfile(codec, stream)
+        && hasStreamRawVideoFrameCopyLayout(stream, format, frameLayerCount);
 }
 
-/** Returns the decoder behind a raw capability: the bundled HEVC decoder when it qualified, else native. */
-function getRawVideoDecoderBackend(capability: CustomRawHDRVideoCodecCapability): CustomDecodeVideoDecoderBackend {
-    return capability.reason === 'bundled-software-decoder' ? 'bundled-hevc' : 'native';
-}
-
-/** Creates a raw-plane route decoded by a codec's raw capability. */
+/** Creates a raw-plane route, which the browser's own decoder decodes. */
 function createRawVideoOutputSelection(
-    capability: CustomRawHDRVideoCodecCapability,
     stream: MediaStream,
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat,
     hdr: boolean
 ): VideoOutputSelection {
-    const videoDecoderBackend = getRawVideoDecoderBackend(capability);
     return {
         hdr,
         maximumCodedHeight: Number(stream.Height),
         maximumCodedWidth: Number(stream.Width),
-        nativeVideoDecoderRequired: videoDecoderBackend === 'native',
+        nativeVideoDecoderRequired: true,
         neutralizeHDRColorMetadata: false,
         rawVideoFrameFormat,
         status: 'selected',
-        videoDecoderBackend,
+        videoDecoderBackend: 'native',
         videoOutputMode: 'raw-planes'
     };
 }
@@ -934,12 +893,7 @@ function selectRawSDRVideoOutput(
     ) {
         return null;
     }
-    return createRawVideoOutputSelection(
-        capabilities.rawHDRVideo[videoCodec as CustomRawHDRVideoCodec],
-        stream,
-        rawVideoFrameFormat,
-        false
-    );
+    return createRawVideoOutputSelection(stream, rawVideoFrameFormat, false);
 }
 
 /** Selects an SDR route: a VideoFrame route first, then raw planes for 10-bit SDR that none of them decodes. */
@@ -964,11 +918,11 @@ function selectSDRVideoOutput(
         hdr: false,
         maximumCodedHeight: sdrSelection.maximumCodedHeight,
         maximumCodedWidth: sdrSelection.maximumCodedWidth,
-        nativeVideoDecoderRequired: sdrSelection.videoDecoderBackend === 'native',
+        nativeVideoDecoderRequired: true,
         neutralizeHDRColorMetadata: false,
         rawVideoFrameFormat: null,
         status: 'selected',
-        videoDecoderBackend: sdrSelection.videoDecoderBackend,
+        videoDecoderBackend: 'native',
         videoOutputMode: 'video-frame'
     };
 }
@@ -1144,11 +1098,6 @@ function selectNativeDolbyVisionBaseOutput(
     };
 }
 
-type DolbyVisionReconstructionSource = {
-    format: CustomDecodeRawVideoFrameFormat
-    videoDecoderBackend: CustomDecodeVideoDecoderBackend
-};
-
 /** Returns an HEVC base layer's raw format: its range extension's own, I420 for Main, or I420P10 for Main 10. */
 function getHEVCDolbyVisionReconstructionFrameFormat(stream: MediaStream): CustomDecodeRawVideoFrameFormat | null {
     const rangeExtensionDefinition = getHEVCRangeExtensionStreamDefinitionFromMetadata(stream);
@@ -1184,10 +1133,12 @@ function getDolbyVisionReconstructionFrameFormat(
                 null;
         case 'h264':
         case 'jpeg2000':
+        case 'mpeg1video':
         case 'mpeg2video':
         case 'vc1':
         case 'vp8':
         case 'vp9':
+        case 'wmv3':
             return null;
     }
 }
@@ -1221,61 +1172,43 @@ export function getDolbyVisionReconstructionRawFrameFormat(options: unknown): Cu
 }
 
 /**
- * Returns the decoder of an HEVC base layer's raw planes.
+ * Returns whether a native raw route decodes an HEVC base layer's planes.
  * A range extension takes its exact variant capability, and Main 10 takes the raw HDR capability.
- * Main takes the bundled decoder's Main qualification, since it has no qualified native raw route.
+ * Main, the only I420 outside the range extensions, has no qualified native raw route.
  */
-function getHEVCDolbyVisionReconstructionSource(
+function supportsHEVCDolbyVisionReconstruction(
     capabilities: CustomDecodeCapabilities,
     stream: MediaStream,
     format: CustomDecodeRawVideoFrameFormat,
     frameLayerCount: number
-): DolbyVisionReconstructionSource | null {
+): boolean {
     const rangeExtensionDefinition = getHEVCRangeExtensionStreamDefinitionFromMetadata(stream);
     if (rangeExtensionDefinition) {
         return hasSupportedHEVCRangeExtensionVariant(capabilities, rangeExtensionDefinition)
-            && hasStreamRawVideoFrameCopyLayout(stream, format, frameLayerCount) ?
-            { format, videoDecoderBackend: 'native' } :
-            null;
+            && hasStreamRawVideoFrameCopyLayout(stream, format, frameLayerCount);
     }
-    // Outside the range extensions only HEVC Main is I420
-    if (format === 'I420') {
-        return hasSupportedBundledHEVCProfile(capabilities, 'main')
-            && hasStreamRawVideoFrameCopyLayout(stream, format, frameLayerCount) ?
-            { format, videoDecoderBackend: 'bundled-hevc' } :
-            null;
-    }
-    return supportsRawHDRVideo(capabilities, 'hevc', stream, format, frameLayerCount) ?
-        { format, videoDecoderBackend: getRawVideoDecoderBackend(capabilities.rawHDRVideo.hevc) } :
-        null;
+    return format !== 'I420' && supportsRawHDRVideo(capabilities, 'hevc', stream, format, frameLayerCount);
 }
 
 /**
- * Returns the decoder of a Dolby Vision base layer's raw planes for RPU reconstruction.
+ * Returns the raw format a native decoder decodes a Dolby Vision base layer into for RPU reconstruction, or null when none does.
  * A dual-layer route reserves its EL even when the descriptor omits it, because the EL is found in-band.
  */
-function getDolbyVisionReconstructionSource(
+function getDolbyVisionReconstructionSourceFormat(
     capabilities: CustomDecodeCapabilities,
     videoCodec: CustomVideoCodec,
     stream: MediaStream,
     dualLayer: boolean
-): DolbyVisionReconstructionSource | null {
+): CustomDecodeRawVideoFrameFormat | null {
     const format = getDolbyVisionReconstructionFrameFormat(videoCodec, stream, dualLayer);
     if (format === null) {
         return null;
     }
-    if (videoCodec === 'hevc') {
-        return getHEVCDolbyVisionReconstructionSource(
-            capabilities,
-            stream,
-            format,
-            dualLayer ? RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT : RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT
-        );
-    }
-    // AV1 decodes natively; the bundled decoder is HEVC only
-    return supportsRawHDRVideo(capabilities, videoCodec, stream, format) ?
-        { format, videoDecoderBackend: 'native' } :
-        null;
+    const frameLayerCount = dualLayer ? RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT : RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT;
+    const supported = videoCodec === 'hevc' ?
+        supportsHEVCDolbyVisionReconstruction(capabilities, stream, format, frameLayerCount) :
+        supportsRawHDRVideo(capabilities, videoCodec, stream, format);
+    return supported ? format : null;
 }
 
 /** Returns whether the host authorized the profile's reconstruction for the stream's raw frame format. */
@@ -1294,7 +1227,10 @@ function isDolbyVisionReconstructionAllowed(
     }
 }
 
-/** Selects raw-plane RPU reconstruction for any profile with an RPU route. */
+/**
+ * Selects raw-plane RPU reconstruction for any profile with an RPU route.
+ * No decoder decodes a dual-layer EL, so a dual-layer route reconstructs from its BL alone: exactly for MEL, and as its base for FEL.
+ */
 function selectDolbyVisionReconstructionOutput(
     descriptor: DolbyVisionPresentationDescriptor,
     capabilities: CustomDecodeCapabilities,
@@ -1307,33 +1243,28 @@ function selectDolbyVisionReconstructionOutput(
         return { reason: 'hdr-codec-unsupported', status: 'invalid' };
     }
     const presentationAllowed = isDolbyVisionReconstructionAllowed(reconstructionProfile, eligibilityOptions);
-    const source = getDolbyVisionReconstructionSource(
+    const sourceFormat = getDolbyVisionReconstructionSourceFormat(
         capabilities,
         videoCodec,
         videoStream,
         isDolbyVisionDualLayerProfile(reconstructionProfile)
     );
-    if (!presentationAllowed || !source) {
+    if (!presentationAllowed || sourceFormat === null) {
         return {
             reason: presentationAllowed ? 'hdr-codec-unsupported' : 'hdr-presentation-unavailable',
             status: 'invalid'
         };
     }
-    // The bundled HEVC decoder decodes every dual-layer EL.
-    // Without its Main 10 qualification the route reconstructs from the BL alone: exactly for MEL, and as its base for FEL
-    const discardEnhancementLayer = isDolbyVisionDualLayerProfile(reconstructionProfile)
-        && !hasSupportedBundledHEVCProfile(capabilities, 'main10');
     return {
-        ...(discardEnhancementLayer ? { discardDolbyVisionEnhancementLayer: true as const } : {}),
         dolbyVisionProfile: reconstructionProfile,
         hdr: true,
         maximumCodedHeight: Number(videoStream.Height),
         maximumCodedWidth: Number(videoStream.Width),
-        nativeVideoDecoderRequired: source.videoDecoderBackend === 'native',
+        nativeVideoDecoderRequired: true,
         neutralizeHDRColorMetadata: false,
-        rawVideoFrameFormat: source.format,
+        rawVideoFrameFormat: sourceFormat,
         status: 'selected',
-        videoDecoderBackend: source.videoDecoderBackend,
+        videoDecoderBackend: 'native',
         videoOutputMode: 'raw-planes'
     };
 }
@@ -1407,6 +1338,95 @@ function selectDolbyVisionVideoOutput(
     return getDolbyVisionBaseColorMetadata(options) === null ? reconstructionSelection : null;
 }
 
+/** The planar format a GPU decoder writes for a stream: a range extension's own, else 4:2:0 at the stream's depth. */
+function getGPUDecodeOutputFormat(
+    videoCodec: CustomVideoCodec,
+    stream: MediaStream,
+    colorMetadata: InputColorMetadata
+): GPUDecoderOutputFormat | null {
+    const rangeExtensionDefinition = videoCodec === 'hevc' ? getHEVCRangeExtensionStreamDefinitionFromMetadata(stream) : null;
+    if (rangeExtensionDefinition) {
+        return rangeExtensionDefinition.format;
+    }
+    const pixelFormat = typeof stream.PixelFormat === 'string' && stream.PixelFormat.trim() !== '' ? stream.PixelFormat : null;
+    if (pixelFormat === null) {
+        // Without a pixel format, the stream is 4:2:0 at its bit depth
+        switch (colorMetadata.bitDepth) {
+            case 8:
+                return 'I420';
+            case 10:
+                return 'I420P10';
+            case 12:
+                return 'I420P12';
+            default:
+                return null;
+        }
+    }
+    // The pixel format names the chroma subsampling, such as 4:2:2 MPEG-2, and a format no frame pool holds, such as RGB, has no route
+    const holding = getGPUDecoderPixelFormatHolding(pixelFormat);
+    if (holding === null) {
+        return null;
+    }
+    // An explicit BitDepth must agree with the pixel format's samples; without one, their depth stands if the transfer allows it
+    const bitDepthAgrees = typeof stream.BitDepth === 'number' ?
+        stream.BitDepth === holding.sampleBitDepth :
+        holding.sampleBitDepth >= colorMetadata.bitDepth;
+    return bitDepthAgrees ? holding.format : null;
+}
+
+/**
+ * Selects a GPU decoder the host offers for the stream: the codec, the output format, the decoder's stream conditions over the pool's coded size,
+ * and the device's limit on its frame pool, its state and scratch buffers, and its packet ring, so an offer the session would refuse is skipped.
+ * A 4:0:0 stream, by its pixel format, goes only to a decoder whose header declares `monochrome`.
+ * Its HDR needs the host's tone mapping; no presentation authorization gates it, and whether a package was verified is the host's choice.
+ */
+function selectGPUVideoOutput(
+    eligibilityOptions: CustomPlaybackEligibilityOptions,
+    videoCodec: CustomVideoCodec,
+    videoStream: MediaStream,
+    colorMetadata: InputColorMetadata
+): VideoOutputSelection | null {
+    const monochrome = typeof videoStream.PixelFormat === 'string' && isGPUDecoderMonochromePixelFormat(videoStream.PixelFormat);
+    const offers = (eligibilityOptions.gpuVideoDecoders ?? []).filter((offer: GPUVideoDecoderOffer): boolean => (
+        offer.codecs.includes(videoCodec) && (!monochrome || offer.package.manifest.monochrome)
+    ));
+    const format = getGPUDecodeOutputFormat(videoCodec, videoStream, colorMetadata);
+    const hdr = colorMetadata.transfer !== 'sdr';
+    if (
+        offers.length === 0
+        || format === null
+        || (hdr && eligibilityOptions.allowFramePoolHDR !== true)
+        || !isPositiveSafeInteger(videoStream.Width)
+        || !isPositiveSafeInteger(videoStream.Height)
+    ) {
+        return null;
+    }
+    // The pool takes the picture padded to whole coding blocks, which the container's cropped size omits
+    const stream = createGPUDecodeStreamFacts(videoStream.Width, videoStream.Height, format);
+    for (const offer of offers) {
+        if (offer.format !== format || findGPUDecoderStreamFitFailure(offer.package.manifest, stream, format, offer.maximumBufferByteLength) !== null) {
+            continue;
+        }
+        return {
+            gpuVideoDecoder: { codec: videoCodec, decoderId: offer.decoderId, package: offer.package },
+            hdr,
+            maximumCodedHeight: videoStream.Height,
+            maximumCodedWidth: videoStream.Width,
+            nativeVideoDecoderRequired: false,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: format,
+            status: 'selected',
+            videoDecoderBackend: 'gpu',
+            videoOutputMode: 'frame-pool'
+        };
+    }
+    return null;
+}
+
+/**
+ * Selects the video route of a stream with color metadata.
+ * A native WebCodecs route comes first, then a GPU decoder the host offers.
+ */
 function selectVideoOutput(
     options: unknown,
     capabilities: CustomDecodeCapabilities,
@@ -1429,6 +1449,21 @@ function selectVideoOutput(
     if (!colorMetadata) {
         return { reason: 'metadata-unsupported', status: 'invalid' };
     }
+    const nativeSelection = selectColorVideoOutput(capabilities, eligibilityOptions, videoCodec, videoStream, colorMetadata);
+    if (nativeSelection.status === 'selected') {
+        return nativeSelection;
+    }
+    return selectGPUVideoOutput(eligibilityOptions, videoCodec, videoStream, colorMetadata) ?? nativeSelection;
+}
+
+/** Selects the engine's own route for a stream's color: a range extension's exact variant, then the SDR routes, then the HDR routes. */
+function selectColorVideoOutput(
+    capabilities: CustomDecodeCapabilities,
+    eligibilityOptions: CustomPlaybackEligibilityOptions,
+    videoCodec: CustomVideoCodec,
+    videoStream: MediaStream,
+    colorMetadata: InputColorMetadata
+): VideoOutputSelection {
     const rangeExtensionSelection = selectHEVCRangeExtensionVideoOutput(
         capabilities,
         eligibilityOptions,
@@ -1484,12 +1519,7 @@ function selectVideoOutput(
     if (!supportsRawHDRVideo(capabilities, videoCodec, videoStream, rawVideoFrameFormat)) {
         return { reason: 'hdr-codec-unsupported', status: 'invalid' };
     }
-    return createRawVideoOutputSelection(
-        capabilities.rawHDRVideo[videoCodec as CustomRawHDRVideoCodec],
-        videoStream,
-        rawVideoFrameFormat,
-        true
-    );
+    return createRawVideoOutputSelection(videoStream, rawVideoFrameFormat, true);
 }
 
 function parsePlaybackSource(
@@ -1583,7 +1613,7 @@ function selectPlaybackAudio(
     mediaSource: MediaSource,
     streams: readonly MediaStream[],
     capabilities: CustomDecodeCapabilities,
-    nativeMediaAudioCapabilities: NativeMediaAudioCapabilities | null | undefined,
+    eligibilityOptions: CustomPlaybackEligibilityOptions,
     durationKnown: boolean
 ): PlaybackAudioSelection {
     const selectedAudio = getSelectedAudioStream(mediaSource, streams);
@@ -1608,7 +1638,7 @@ function selectPlaybackAudio(
         audioCodec,
         selectedAudio.stream,
         capabilities,
-        nativeMediaAudioCapabilities,
+        eligibilityOptions,
         durationKnown
     );
     if (audioOutput.status === 'invalid') {
@@ -1616,6 +1646,7 @@ function selectPlaybackAudio(
     }
     return {
         audioCodec,
+        ...(audioOutput.audioDecoder ? { audioDecoder: audioOutput.audioDecoder } : {}),
         audioOutputMode: audioOutput.outputMode,
         audioSourceChannelCount: Number(selectedAudio.stream.Channels),
         audioTrackIndex: selectedAudio.trackOrdinal,
@@ -1627,10 +1658,43 @@ function hasPotentialCustomVideoDimensions(stream: MediaStream): boolean {
     return isPositiveSafeInteger(stream.Width) && isPositiveSafeInteger(stream.Height);
 }
 
+/**
+ * A codec only a decoder package decodes has no native route to rule out, so the host's packages and their headers decide at eligibility.
+ * The container rules placed the codec already; FFmpeg names the VC-1 Advanced profile vc1 and the others wmv3, so a profile of the other codec has no route.
+ */
+function hasPotentialPackageVideoRoute(codec: CustomPackageVideoCodec, stream: MediaStream): boolean {
+    switch (codec) {
+        case 'vc1':
+        case 'wmv3': {
+            const profile = normalizeMetadataToken(stream.Profile);
+            return profile === null || VC1_METADATA_PROFILES[codec].includes(profile);
+        }
+        case 'jpeg2000':
+        case 'mpeg1video':
+        case 'mpeg2video':
+            return true;
+    }
+}
+
+/**
+ * Returns whether a stream of a codec with native routes is a variant only a decoder package decodes, in the frame pool format given:
+ * AV1 outside Main 4:2:0 at 8 or 10 bits, such as High 4:4:4, Professional 4:2:2, or 12-bit, and 4:0:0 HEVC, which neither its native nor its range extension routes take.
+ * The prefilter keeps such a stream potential, so the host's packages decide at eligibility.
+ */
+function isPackageOnlyVideoVariant(codec: CustomVideoCodec, stream: MediaStream, format: GPUDecoderOutputFormat): boolean {
+    switch (codec) {
+        case 'av1':
+            return !hasSupportedNativeVideoProfile(codec, stream) || !NATIVE_AV1_OUTPUT_FORMATS.has(format);
+        case 'hevc':
+            return typeof stream.PixelFormat === 'string' && isGPUDecoderMonochromePixelFormat(stream.PixelFormat);
+        default:
+            return false;
+    }
+}
+
 function hasPotentialSDRVideoRoute(
-    codec: CustomVideoCodec,
+    codec: Exclude<CustomVideoCodec, CustomPackageVideoCodec>,
     stream: MediaStream,
-    containerTokens: readonly string[],
     colorMetadata: InputColorMetadata
 ): boolean {
     // 10-bit 4:2:0 SDR has a raw I420P10 route, whose keys are BT.709 only; HEVC Main 10 also decodes natively
@@ -1643,14 +1707,6 @@ function hasPotentialSDRVideoRoute(
         return false;
     }
     switch (codec) {
-        case 'mpeg2video':
-        case 'vc1':
-            return containerTokens.some(container => container === 'MKV' || container === 'MATROSKA')
-                && normalizeMetadataToken(stream.Profile) === (codec === 'vc1' ? 'ADVANCED' : 'MAIN')
-                && hasPotentialCustomVideoDimensions(stream);
-        case 'jpeg2000':
-            return containerTokens.some(container => container === 'MJ2' || container === 'MOV')
-                && hasPotentialCustomVideoDimensions(stream);
         case 'h264':
             return getH264ProfileFromJellyfinValue(stream.Profile) !== null
                 && hasPotentialCustomVideoDimensions(stream);
@@ -1673,22 +1729,10 @@ function hasPotentialHDRVideoRoute(
         && hasPotentialCustomVideoDimensions(stream);
 }
 
-function hasCompletePotentialSDRVideoMetadata(codec: CustomVideoCodec, stream: MediaStream): boolean {
-    if (!isPositiveSafeInteger(stream.Width) || !isPositiveSafeInteger(stream.Height)) {
-        return false;
-    }
-    switch (codec) {
-        case 'jpeg2000':
-        case 'mpeg2video':
-        case 'vc1':
-            return codec === 'jpeg2000' || normalizeMetadataToken(stream.Profile) !== null;
-        case 'av1':
-        case 'h264':
-        case 'hevc':
-        case 'vp8':
-        case 'vp9':
-            return normalizeMetadataToken(stream.Profile) !== null;
-    }
+function hasCompletePotentialSDRVideoMetadata(stream: MediaStream): boolean {
+    return isPositiveSafeInteger(stream.Width)
+        && isPositiveSafeInteger(stream.Height)
+        && normalizeMetadataToken(stream.Profile) !== null;
 }
 
 function hasCompletePotentialHDRVideoMetadata(stream: MediaStream): boolean {
@@ -1753,15 +1797,13 @@ function hasPotentialCustomVideoRoute(mediaSource: MediaSource): boolean {
             playbackOptions,
             dolbyVisionDescriptor,
             codec,
-            selectedVideo.stream,
-            containerTokens
+            selectedVideo.stream
         );
     }
     return hasPotentialColorVideoRoute(
         getPresentationInputColorMetadata(playbackOptions),
         codec,
-        selectedVideo.stream,
-        containerTokens
+        selectedVideo.stream
     );
 }
 
@@ -1770,8 +1812,7 @@ function hasPotentialDolbyVisionVideoRoute(
     playbackOptions: { mediaSource: MediaSource },
     descriptor: DolbyVisionPresentationDescriptor,
     codec: CustomVideoCodec,
-    stream: MediaStream,
-    containerTokens: readonly string[]
+    stream: MediaStream
 ): boolean {
     if (!hasCompletePotentialHDRVideoMetadata(stream)) {
         return true;
@@ -1791,8 +1832,7 @@ function hasPotentialDolbyVisionVideoRoute(
     return baseColorMetadata !== null && hasPotentialColorVideoRoute(
         baseColorMetadata,
         codec,
-        stream,
-        containerTokens
+        stream
     );
 }
 
@@ -1800,11 +1840,17 @@ function hasPotentialDolbyVisionVideoRoute(
 function hasPotentialColorVideoRoute(
     colorMetadata: InputColorMetadata | null,
     codec: CustomVideoCodec,
-    stream: MediaStream,
-    containerTokens: readonly string[]
+    stream: MediaStream
 ): boolean {
     if (!colorMetadata) {
         return true;
+    }
+    if (isCustomPackageVideoCodec(codec)) {
+        return hasPotentialPackageVideoRoute(codec, stream);
+    }
+    const packageFormat = getGPUDecodeOutputFormat(codec, stream, colorMetadata);
+    if (packageFormat !== null && isPackageOnlyVideoVariant(codec, stream, packageFormat)) {
+        return hasPotentialCustomVideoDimensions(stream);
     }
     const rangeExtensionDefinition = codec === 'hevc' ?
         getHEVCRangeExtensionStreamDefinitionFromMetadata(stream) :
@@ -1815,10 +1861,10 @@ function hasPotentialColorVideoRoute(
                 || rangeExtensionDefinition.bitDepth >= 10);
     }
     if (colorMetadata.transfer === 'sdr') {
-        if (!hasCompletePotentialSDRVideoMetadata(codec, stream)) {
+        if (!hasCompletePotentialSDRVideoMetadata(stream)) {
             return true;
         }
-        return hasPotentialSDRVideoRoute(codec, stream, containerTokens, colorMetadata);
+        return hasPotentialSDRVideoRoute(codec, stream, colorMetadata);
     }
     if (!hasCompletePotentialHDRVideoMetadata(stream)) {
         return true;
@@ -1887,6 +1933,34 @@ export function hasPotentialCustomPlaybackVideoRoute(item: unknown, playOptions?
         return true;
     }
     return mediaSources.some(hasPotentialCustomVideoRoute);
+}
+
+/** The codec family and output format a GPU decoder would decode a playback's video into. */
+export type GPUVideoDecodeTarget = Readonly<{
+    codec: CustomVideoCodec
+    format: GPUDecoderOutputFormat
+}>;
+
+/**
+ * Returns the codec family and output format a GPU decoder would decode the options' presented video stream into, as the eligibility chooses them, or null when it has neither.
+ * A host verifies only the decoders that match it before eligibility runs.
+ */
+export function getGPUVideoDecodeTarget(options: unknown): GPUVideoDecodeTarget | null {
+    const mediaSource = options && typeof options === 'object' ? (options as { mediaSource?: unknown }).mediaSource : undefined;
+    if (!mediaSource || typeof mediaSource !== 'object') {
+        return null;
+    }
+    const selectedVideo = selectVideoStream(options, getStreams(mediaSource as MediaSource));
+    if (selectedVideo.status === 'invalid') {
+        return null;
+    }
+    const videoCodec = VIDEO_CODEC_ALIASES[normalizeMetadataValue(selectedVideo.stream.Codec) ?? ''];
+    const colorMetadata = getPresentationInputColorMetadata(options) ?? getDolbyVisionBaseColorMetadata(options);
+    if (!videoCodec || !colorMetadata) {
+        return null;
+    }
+    const format = getGPUDecodeOutputFormat(videoCodec, selectedVideo.stream, colorMetadata);
+    return format ? { codec: videoCodec, format } : null;
 }
 
 /**
@@ -1966,7 +2040,7 @@ export function getCustomPlaybackEligibility(
         parsedSource.mediaSource,
         parsedSource.streams,
         capabilities,
-        eligibilityOptions.nativeMediaAudioCapabilities,
+        eligibilityOptions,
         parsedSource.durationMicroseconds !== null
     );
     if (audioSelection.status === 'invalid') {
@@ -1986,9 +2060,11 @@ export function getCustomPlaybackEligibility(
 
     const runtimeRequirements: CustomPlaybackRuntimeRequirements = {
         audioOutput: audioOutputMode === 'decoded-pcm',
+        // Mediabunny decodes PCM and a package decodes its codec, so only the other decoded PCM tracks need the browser's decoder
         nativeAudioDecoder: audioOutputMode === 'decoded-pcm'
             && selectedAudioCodec !== null
-            && !BUNDLED_AUDIO_CODEC_SET.has(selectedAudioCodec),
+            && audioSelection.audioDecoder === undefined
+            && !isCustomMediabunnyPCMAudioCodec(selectedAudioCodec),
         nativeVideoDecoder: videoOutput.nativeVideoDecoderRequired
     };
     const sourceRuntimeAvailability = getCustomPlaybackRuntimeAvailability(
@@ -2000,13 +2076,14 @@ export function getCustomPlaybackEligibility(
     }
 
     return {
+        ...(audioSelection.audioDecoder ? { audioDecoder: audioSelection.audioDecoder } : {}),
         audioOutputMode,
         audioSourceChannelCount,
         audioTrackIndex,
-        ...getDiscardedEnhancementLayerResult(videoOutput),
         durationMicroseconds: parsedSource.durationMicroseconds,
         dolbyVisionProfile: videoOutput.dolbyVisionProfile ?? null,
         eligible: true,
+        ...getGPUVideoDecoderResult(videoOutput),
         hdr: videoOutput.hdr,
         maximumCodedHeight: videoOutput.maximumCodedHeight,
         maximumCodedWidth: videoOutput.maximumCodedWidth,

@@ -15,7 +15,8 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
   Nothing refuses media for its frame size, sample rate, or packet size alone.
   The bundled HEVC, JPEG 2000, and MPEG-2/VC-1 size caps, the raw-copy byte budget, the packet and container read caps, the 3 kHz to 192 kHz audio window, and the per-packet audio frame counts were removed.
   Above 192 kHz the resampler widens its kernel in proportion, so its band edge stays where the 192 kHz qualification put it.
-  The real bounds remain: the level's DPB, a representable copy layout, the WASM heap (4 GiB for HEVC and MPEG-2/VC-1, 2 GiB in the prebuilt OpenJPEG decoder), the adapter's texture limit, and what a browser decoder accepts.
+  The real bounds remain: the level's DPB, a representable copy layout, a decoder package's 1 GiB memory and its own header's limits, the device's largest storage binding for a frame pool, the adapter's texture limit, and what a browser decoder accepts.
+  Until the CPU decoders left (10-13), the WASM heap bounded them too: 4 GiB for HEVC and MPEG-2/VC-1, and 2 GiB in the prebuilt OpenJPEG decoder.
   Limits that pace or chunk work stay as tuning: transfer credits, queue depths, pending windows, and output chunk sizes.
   So do guards against corrupt data that no real stream reaches, such as header and RPU size bounds and the 2 MiB audio packet bound.
 - Live performance adaptation is deferred to a separate runtime controller that would react to sustained drops, queue starvation, underruns, and A/V drift, with warm-up, hysteresis, and cooldown.
@@ -33,7 +34,8 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
 - Probe downloads run in parallel and outside the decode timeouts (10-08).
   The exact probes armed their timeouts before downloading their vectors and binaries, and the range-extension probes downloaded inside the queue's 2 s timed slot, so a slow cold link failed a capable decoder as unsupported or timed out every later probe.
   A run now starts every selected probe's downloads at once and each probe decodes only once its own are done; decoding stays one probe at a time.
-  Worker scripts and glue are warmed in the HTTP cache rather than spawned early, so no worker or compile competes with a running probe's real-time-factor measurement.
+  Worker scripts and glue were warmed in the HTTP cache rather than spawned early, so no worker or compile competed with a running probe's real-time-factor measurement.
+  The exact probes and their measurements left with the CPU decoders (10-13), so only the range-extension probes download vectors, and nothing is warmed.
 
 ## Video decode and Dolby Vision
 
@@ -41,7 +43,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
 
 - Hardware decode output is opaque.
   WebCodecs HEVC Main 10 hardware frames are P010 surfaces with `VideoFrame.format === null`, so `copyTo()` and `allocationSize()` cannot expose planes.
-  Exact planes come only from the bundled software HEVC decoder (WASM, CPU).
+  Exact planes came only from the bundled software HEVC decoder (WASM, CPU), until GPU decoder packages replaced it (10-13); their frames stay in their frame pool.
 - The software raw path is too slow for 4K.
   The bundled HEVC decoder that preceded FFmpeg's ran at about 15.3 fps on a 23.976 fps 4K source, and plane extraction plus upload cost about 2.4 ms per frame: low frame rate, then a freeze.
 - The GPUExternalTexture path is 8 bits per channel in stock Chrome.
@@ -90,18 +92,22 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Raw-plane decode of AV1 and VP9 therefore requests `prefer-software`, in the raw probes and at runtime alike, so the raw HDR, raw SDR, and P10 routes qualify on GPUs with AV1 or VP9 hardware decode.
   HEVC keeps `no-preference`, because Chromium has no software HEVC decoder.
 - Dual-layer reconstruction runs in every raw format (10-08).
-  P4 and P7 over a range extension or 8-bit Main reconstruct with the BL in its own raw format and the EL in I420P10, the only format the bundled EL decoder is qualified for.
+  P4 and P7 over a range extension reconstruct with the BL in its own raw format and the EL in I420P10, the only format the bundled EL decoder was qualified for.
+  No decoder has decoded an EL since the CPU decoders left (10-13), so these routes reconstruct from the BL alone, and 8-bit Main, which only the bundled decoder read as raw planes, has no RPU route.
   An EL that decodes in another format or at another size than its configuration leaves the stream to its BL, as a failed EL decoder does.
   A frame whose RPU names an EL depth other than 10 bits presents without its EL, because the EL texture holds 10-bit codes.
   The FEL fallback presents the BL at the format's own depth, which the per-frame check holds equal to the RPU's BL depth.
   Each format has its own base and FEL keys; only the I420P10 Profile 7 keys are prewarmed.
-- The bundled EL decoder decides whether a dual-layer route decodes its EL (10-08).
-  The P4 and P7 EL is always decoded by the bundled HEVC decoder.
-  Without that decoder's Main 10 qualification, dual-layer reconstruction is still selected, with `discardDolbyVisionEnhancementLayer` set, so the worker creates no EL decoder: MEL reconstructs exactly from the BL, and FEL presents its base, which the declared base route would also present.
+- The bundled EL decoder decided whether a dual-layer route decodes its EL (10-08, 10-13).
+  The P4 and P7 EL was always decoded by the bundled HEVC decoder.
+  Without that decoder's Main 10 qualification, dual-layer reconstruction was still selected, with `discardDolbyVisionEnhancementLayer` set, so the worker created no EL decoder: MEL reconstructs exactly from the BL, and FEL presents its base, which the declared base route would also present.
   Before 10-08 the route started the unqualified decoder and dropped the EL only when it failed.
   Gating the route on the qualification instead would cost MEL its reconstruction and leave P7 with CCID 0 no route.
-- 8-bit Main Dolby Vision reconstructs through the bundled decoder (10-08).
-  Native HEVC Main decodes to hardware surfaces that no probe proves copyable, so an 8-bit Main base layer reconstructs from the bundled decoder's I420 planes, with the `I420:dovi-rpu-v1` key or the I420 dual-layer keys.
+  Since the CPU decoders left (10-13) no decoder decodes an EL, so every dual-layer route reconstructs from its BL alone, and the flag went with the qualification it read.
+  The worker still pairs a separate EL track to read its RPUs, and the presenter keeps its FEL composition for an EL decoder, which no route reaches.
+- 8-bit Main Dolby Vision reconstructed through the bundled decoder (10-08), until the CPU decoders left (10-13).
+  Native HEVC Main decodes to hardware surfaces that no probe proves copyable, so an 8-bit Main base layer reconstructed from the bundled decoder's I420 planes, with the `I420:dovi-rpu-v1` key or the I420 dual-layer keys.
+  It now has no RPU route, and a declared base plays through the ordinary routes, a GPU decoder package's included, which reconstructs no RPU.
 - 10-bit SDR has a raw route (10-08).
   AV1 Main and VP9 Profile 2 have no 10-bit VideoFrame route, and HEVC Main 10 has none without native decode, so 10-bit 4:2:0 SDR presents from raw I420P10 through the raw SDR keys.
   Those keys are BT.709 only, so BT.601 and BT.2020 SDR at 10 bits have no raw route.
@@ -143,7 +149,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   An upstream change would wait for a release, and a patch to the installed package is lost on every install, so `MatroskaBlockAdditions.ts` contains the fix, as `ISOBaseMediaDolbyVisionSampleEntry.ts` and `AV1DecoderConfiguration.ts` contain theirs.
   The worker's `Input` wraps its Matroska and WebM formats in place, and each demuxer they create records every finished BlockMore against its block, before it reads any cluster, at the point where Mediabunny resets its `currentBlockAdditional` field.
   A packet finds its block through the track backing's packet-to-cluster map, which Mediabunny keeps for its own navigation.
-  Each internal is shape-checked: when one differs, demuxing proceeds untouched and reads no additions, with one console warning, and `test/video/MatroskaBlockAdditions.test.ts` fails on the committed vectors.
+  Each internal is shape-checked: when one differs, demuxing proceeds untouched and reads no additions, with one console warning, and `test/demux/MatroskaBlockAdditions.test.ts` fails on the committed vectors.
   HDR10+ is recognized by its ITU-T T.35 header, not by BlockAddID, so no BlockAdditionMapping is needed: FFmpeg writes BlockAddID 4 with a mapping in Matroska and without one in WebM, and reads it either way.
   A laced block keeps no additions, because Mediabunny replaces it with one new block per frame; Matroska muxers lace audio, not video.
 - Header-stripped laced Matroska blocks are split before their content is decoded (10-09).
@@ -151,38 +157,38 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   The Matroska specification scopes a block's content encoding to its frames, excluding the lacing data, and FFmpeg reads it that way.
   Mediabunny 1.52.2, and 1.61.3 too, restores the stripped bytes ahead of a laced block's lace header, so it misreads the frame count and no frame decodes.
   `CustomDecodeInputFormats.ts` gives the worker a Matroska format whose demuxer splits such a block as stored and then restores each frame's bytes, contained as `MatroskaBlockAdditions.ts` is, which wraps it in turn.
-  When the internals differ, demuxing proceeds untouched with one console warning, and `test/pipeline/CustomDecodeInputFormats.test.ts` fails.
+  When the internals differ, demuxing proceeds untouched with one console warning, and `test/demux/CustomDecodeInputFormats.test.ts` fails.
   Its last case fails once Mediabunny itself reads such blocks correctly, and the replacement can then go.
 - A custom decoder's failure is reported once (10-09).
   After a Mediabunny custom decoder rejects, Mediabunny 1.52.2 queues the decoder's `close()` behind the failed call without a handler, so the same error resurfaces as an unhandled rejection and the decoder is never closed.
   The worker marks every failure it catches (`HandledDecodeFailures.ts`) and prevents the unhandled-rejection report of a marked error only, so any other unhandled rejection is still reported.
   The unclosed decoder ends with its worker: the session replaces a worker whose run failed, and a worker that suppressed such a rejection asks for its replacement in its next `stopped`.
-- The bundled HEVC decoder is FFmpeg's (10-10).
+- The bundled HEVC decoder was FFmpeg's (10-10), until the CPU decoders left (10-13).
   hevc.js (`@hevcjs/core`), the decoder before it, rejects the first slice of every stream that enables tiles (`tiles_enabled_flag`), and Ultra HD Blu-ray encodes commonly use tiles, as ATEME Titan's do.
-  Such sources failed on Firefox on Windows, which always takes the bundled route, and fell back to a server transcode.
+  Such sources failed on Firefox on Windows, which always took the bundled route, and fell back to a server transcode.
   hevc.js 1.4.8 fails the same way, and its roadmap says none of its test streams uses tiles.
-  The `ffmpeg-hevc` kit builds FFmpeg's `hevc` decoder for `--arch=wasm` with `-O3 -flto -msimd128`, so FFmpeg's simd128 HEVC code builds and the rest auto-vectorizes (see [WebAssembly decoders](decoders.md#how-the-build-works)).
-  It decodes the JCT-VC tiles conformance stream `TILES_B_Cisco_1` to the suite's MD5, and a tiled 4K HDR10 Ultra HD Blu-ray remux and the 4K qualification stream to native FFmpeg's MD5s, the remux at about 28 fps on one thread in Node.
-  The exact probe qualifies it with the same three vectors and pinned fingerprints, because conformant decoders output identical samples.
-  It runs on one thread (`--disable-pthreads`), because threads need cross-origin isolation, which Jellyfin Web does not have.
-  Its heap may grow to 4 GiB, where hevc.js kept Emscripten's 2 GiB default.
-  FFmpeg reads each packet as the container stores it, with the HVCC record as extradata, so no Annex B conversion copies it.
-  Each frame returns with its packet's timestamp and duration, so no queue sorts packet timings to match frames.
-  After a random-access point the decoder drops the leading RASL pictures and reports them dropped, as the native path does, so the stream discards their packets' Dolby Vision and HDR10+ metadata instead of waiting for frames that never come.
-  A Dolby Vision EL decoder reports every packet accepted, because its dropped leading pictures match the BL's, and a refused EL picture would end EL decoding.
-- A bundled HEVC frame is copied once (10-09).
-  A drained frame's planes are views of the decoder's WASM memory, valid until its next call: bytes for Main and 16-bit words for Main 10.
+  The `ffmpeg-hevc` kit built FFmpeg's `hevc` decoder for `--arch=wasm` with `-O3 -flto -msimd128`, so FFmpeg's simd128 HEVC code built and the rest auto-vectorized.
+  It decoded the JCT-VC tiles conformance stream `TILES_B_Cisco_1` to the suite's MD5, and a tiled 4K HDR10 Ultra HD Blu-ray remux and the 4K qualification stream to native FFmpeg's MD5s, the remux at about 28 fps on one thread in Node.
+  The exact probe qualified it with the same three vectors and pinned fingerprints, because conformant decoders output identical samples.
+  It ran on one thread (`--disable-pthreads`), because threads need cross-origin isolation, which Jellyfin Web does not have.
+  Its heap could grow to 4 GiB, where hevc.js kept Emscripten's 2 GiB default.
+  FFmpeg read each packet as the container stores it, with the HVCC record as extradata, so no Annex B conversion copied it.
+  Each frame returned with its packet's timestamp and duration, so no queue sorted packet timings to match frames.
+  After a random-access point the decoder dropped the leading RASL pictures and reported them dropped, as the native path does, so the stream discarded their packets' Dolby Vision and HDR10+ metadata instead of waiting for frames that never come.
+  A Dolby Vision EL decoder reported every packet accepted, because its dropped leading pictures matched the BL's, and a refused EL picture would have ended EL decoding.
+  The HEVC decoder project's package replaces it, on the GPU.
+- A bundled HEVC frame was copied once (10-09), until the CPU decoders left (10-13).
+  A drained frame's planes were views of the decoder's WASM memory, valid until its next call: bytes for Main and 16-bit words for Main 10.
   The worker used to pack them into a new buffer, `VideoSample` copied that buffer, and the raw copy or `VideoSample.toVideoFrame()` copied a third time.
   At 3840x2160 in Node 24, a 10-bit frame took about 5.9 ms and left about 50 MB of garbage, against about 0.9 ms for one row copy into a reused aligned buffer.
-  The decoder now hands each frame to the owned path as it drains it, and the worker writes the planes into the buffer it posts, whatever the decoder's row stride.
-  Drained frames wait in the owned stream's queues beyond the 2 raw credits, so their buffers come from a run's pool of spares, which allocates when none fits.
-  The pool keeps 2 spares of each byte length, as many as the page can hold, so a steady stream reuses every buffer.
-  Mediabunny's adapter still outputs packed `VideoSample`s, as its `registerDecoder` contract requires.
-  A Dolby Vision BL and EL are still copied once more, into their compound buffer.
+  The decoder then handed each frame to the owned path as it drained it, and the worker wrote the planes into the buffer it posted, whatever the decoder's row stride.
+  Drained frames waited in the owned stream's queues beyond the 2 raw credits, so their buffers came from a run's pool of spares, which allocates when none fits.
+  The pool, which raw copies still use, keeps 2 spares of each byte length, as many as the page can hold, so a steady stream reuses every buffer.
 - Decoder instances are made once per worker (10-09).
   The bundled HEVC, FFmpeg MPEG-2/VC-1, and OpenJPEG modules were instantiated for each decoder, and the libdovi parser for each run, which a worker that outlives its runs would repeat at every seek.
-  Each kit now has one instance per worker, in which every decoder or parser creates its own native context and releases only that context when it closes, so a Dolby Vision run's BL and EL decoders share one `ffmpeg-hevc` heap.
-  An instance whose code traps is discarded, so the next decoder instantiates it again rather than trust its memory; an error its code returns keeps it.
+  Each kit then had one instance per worker, in which every decoder or parser creates its own native context and releases only that context when it closes, so a Dolby Vision run's BL and EL decoders shared one `ffmpeg-hevc` heap.
+  Since the CPU decoders left (10-13) the libdovi parser is the one kit left in `WorkerWASMInstanceCache`; decoder packages make their instances as [Decoder packages](decoder-packages.md) describes.
+  An instance whose code traps is discarded, so the next parser instantiates it again rather than trust its memory; an error its code returns keeps it.
 - Decoder surfaces must not starve (08-08, `ecb5a4ec09`).
   Native frame credits return after `queue.onSubmittedWorkDone()`, not after `submit()`, because Chromium holds the decoder mailbox until the GPU completes and the D3D surface pool is finite.
 - Rejected alternatives.
@@ -190,7 +196,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   `libmpv-wasm` is CPU FFmpeg plus WebGL.
   mpv's D3D11VA P010 path is the reference design but cannot be reached from a page.
   Threaded WASM needs COOP and COEP isolation, which was not pursued.
-  An FFmpeg HEVC WASM benchmark (the gate: at least 28.8 fps sustained, exact YUV420P10 hashes) was dropped when the native base route landed; FFmpeg's decoder became the bundled one later, for tiled streams rather than speed.
+  An FFmpeg HEVC WASM benchmark (the gate: at least 28.8 fps sustained, exact YUV420P10 hashes) was dropped when the native base route landed; FFmpeg's decoder became the bundled one later, for tiled streams rather than speed, and left with the other CPU decoders (10-13).
 - If exact 10-bit is ever required, the Chromium patch options are:
   - a P010 to RGBA16F GPU copy, the narrowest patch, which fixes the N32 TODO;
   - a zero-copy P010 external texture;
@@ -228,7 +234,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   The parser maps every code to a WebCodecs name or to null, and only the native HDR route check is strict (limited range, BT.2020 primaries and non-constant-luminance matrix).
   Its transfer is the SEI value when the key access unit carries one and the VUI value otherwise; an HLG route also accepts VUI 14 or 15 without an SEI.
   SEI errors are not fatal, as in FFmpeg, so a malformed SEI counts as absent and the VUI alone must prove the route.
-  The bundled HEVC decoder compares the container and SPS color only where both specify it (BT.470 BG equals SMPTE 170M as a matrix, and SMPTE 170M equals BT.709 as a transfer) and fills SPS gaps from the container, so a container's HLG survives a VUI 14 SPS.
+  The bundled HEVC decoder compared the container and SPS color only where both specify it (BT.470 BG equals SMPTE 170M as a matrix, and SMPTE 170M equals BT.709 as a transfer) and filled SPS gaps from the container, so a container's HLG survived a VUI 14 SPS, until the CPU decoders left (10-13).
   Chrome is assumed to report a null `VideoFrame.colorSpace.transfer` for VUI 14 and 15; the raw HLG frame check also accepts `bt709` on a BT.2020 frame in case it does not, and a null frame color member never contradicts the metadata.
 - HDR10+ metadata carries forward in decode order, as in FFmpeg (10-09).
   FFmpeg keeps the last HDR10+ metadata until new metadata replaces it or the decoder flushes, also when a payload fails to parse, and hdr10plus_tool's extract fills its gaps the same way.
@@ -242,6 +248,216 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   A curve whose targeted display is 0 is neither profile: hdr10plus_tool's validation rejects it, FFmpeg exports it unchecked, and libplacebo clamps the target into the input range before following the curve.
   With no target to adapt the curve from, such a frame is `unsupported` and tone-maps statically.
 
+## GPU decode
+
+- GPU decoders replace the bundled CPU video decoders (10-12, 10-13).
+  Route selection tries native WebCodecs first, then a GPU decoder package the host offers.
+  On 10-12 a GPU decoder replaced a bundled decoder's route whenever it took the stream; on 10-13 the CPU video decoders (FFmpeg's HEVC, MPEG-2, and VC-1, and OpenJPEG) were dropped with no compatibility shim, so a codec without a native route plays only through a package.
+- Decoders are packages (10-13).
+  A decoder is one `.wasm` file a host hands the engine at runtime: its module, and custom sections that carry its manifest and, for video, its WGSL and its self-test vectors.
+  The engine has no decoder of its own and names none, so anyone can add a codec without changing it, and a package carries no JavaScript, so a host may load packages from anyone: the module imports only its bounded memory (1 GiB at most) and inert WASI calls.
+  The decoder projects in `decoders/` build packages without running on their own, and the engine's tests load them through the engine's loader, as a host does.
+  Demuxing, the container rules, and the native routes' vectors stay in the engine, because a package decodes what the engine's demuxer hands it.
+- A package's identity is the id its header declares (10-15).
+  Until 10-15 a package's id was its file's SHA-256, so a rebuilt package was another package: a host's store kept both, and every engine cache keyed by it needed a count limit to bound what old versions left behind.
+  Now every header declares `id:`, 1 to 64 lowercase letters, digits, and single hyphens, which its versions share, and the SHA-256 is the version, `contentHash`.
+  A host's store keeps one file per id, so adding a rebuilt package replaces the old one in its place, and the engine keys what it keeps for a package by id with the content hash inside the entry, so a new version replaces the old one's entry and no cache needs a limit.
+  The store's schema moved to version 2 without a migration: an earlier database opens empty.
+- A video package's CPU stage is its parser (10-14).
+  It was the front end until 10-14, when it took the name NVIDIA's NVDEC gives the same stage: CPU code that parses each packet's bitstream into the record the WGSL reconstructs from.
+  Its header directive is `//! parser:`, its exports are `parser_*`, and a decoder project keeps it in `parser/`.
+  The engine's worker that plans and finishes pictures on the coordinator instance is the coordinator worker, beside the parse workers.
+  The rename kept the interface at version 1; a package built before it fails to load as `package-manifest`, because its `front-end:` directive is unknown.
+- Parser interface 2 yields a packet's pictures one at a time (10-14).
+  Version 1 made at most one picture of a packet, but an AV1 temporal unit holds hidden frames beside the one it shows, and each decodes into a reference of its own.
+  So `parser_plan_next` and `parser_decode_next` take the packet's next picture until a call reports the last or none, and each picture is a session packet of its own: its record, events, output slot, and credit, with its packet's timestamp.
+  A blocked plan_next keeps its place, because a packet's later frames depend on its earlier ones, while a blocked plan still keeps nothing and plans the packet again.
+  A picture reports its visible size and its repeat counts, and configure reports the largest picture the codec private data declares, so AV1's frame size changes fit one pool and its wavefront runs only the waves a picture needs.
+  The engine dropped version 1 outright: a version 1 package fails to load as `package-manifest` (`parser-version: 1, expected 2`), and the HEVC and JPEG 2000 parsers moved to version 2, where every packet is one picture.
+- A session codes at the largest picture its parser declares, when the decoder fits it (10-14).
+  AV1 frames may change size within a sequence, up to its sequence header's maximum, and a session sizes its pool once, so it codes at that maximum, rounded up to 64.
+  A declaration can far exceed the frames: one corpus stream declares 16384x8704 for 640x360 frames.
+  When the decoder's `accepts` or the device does not take the maximum, the session keeps the container's size, and eligibility checks only the container's size, so a declaration never makes a stream ineligible.
+  Until 10-15 a frame that then outgrew the pool failed the session as `visible-rectangle`; since then it starts a session whose pool is the old one grown to it, as the next entry describes.
+- A picture its session cannot hold starts a session of its own (10-14), sized for its own sequence (10-15).
+  A session sizes its pool and compiles its pipelines for one output format once, but a later AV1 sequence header may raise the maximum frame size, as libaom's sizeup and sizedown vectors and Argon's joined sequences do, or change the bit depth or chroma subsampling, as Argon's profile switches do.
+  So a parser reports each picture's output format and its sequence's largest picture, and `GPUVideoDecodeFeed` creates a session for a picture its current one cannot hold, which takes over once the current one decoded and presented its own pictures.
+  Such a change comes only where the decoder needs no earlier picture, as at a key frame after a new sequence header, so the new session starts with a pool of its own while the old one's last frames still present.
+  The frame pool signal reads each frame's sample size, bit depth, and chroma subsampling from its slot instead of compiling them in, so one presentation chain shows every session's frames.
+  It picks the range arithmetic by the slot's bit depth among branches compiled for each depth, since computing it from the depth at run time differed from a compiled signal by an ULP on some codes on Dawn.
+  Until 10-15 the new session's pool also held the container's size, and a picture that needed exactly a maximum the decoder or device had refused started no session and failed as `visible-rectangle`.
+  So a later sequence large on one axis, beside a container large on the other, asked for a box no level allows, and a refused declared maximum ended the stream at its first picture beyond the pool.
+  Since 10-15 the new session takes the picture's requirement alone, the larger of its sequence's maximum and its own size, since it decodes only that sequence's pictures, and falls back to the old pool grown to the picture when the decoder or the device refuses that.
+  A picture its pool holds asks for no session the decoder refuses, so a stream whose sequences declare 16384x8704 for 640x360 frames decodes on in its first pool.
+  Only a picture that no pool the decoder takes can hold fails, as `accepts` with the fallback's picture size and pool.
+  The pictures queued while a session is created wait for it and are judged against the pool it got, since a device with small buffers can refuse the pool its request asks for, and a picture judged against that one would land beyond the smaller pool.
+  Through the feed, the old sizing ended 32 of Argon's 2,524 AV1 streams within `accepts` and one own encode, and these rules with `accepts` on the picture size end none; simulated alone, the sequence-alone sizing left 16 and the unrounded `accepts` 5.
+- A decoder's `accepts` judges pictures before the pool's rounding (10-15).
+  `stream.width` and `stream.height` are the pool's size, rounded up to 64, which a decoder's buffers and dispatches need, but a codec's levels bound the pictures themselves.
+  AV1's level 5.x allows 8,912,896 samples a picture, and a legal 7396x1205 picture of 8,912,180 samples rounds to a 7424x1216 pool of 9,027,584, which `accepts` on the pool refused.
+  Raising the bound to the largest rounded pool of a legal picture, 8192x1152, would have offered the package level 6 sizes such as 4096x2304, so `accepts` gained facts of its own instead.
+  `picture.width` and `picture.height` are the size before the rounding: the container's visible size at eligibility, and the size a session's pool is chosen for; size, state, and dispatch expressions cannot read them, so no fact means two things.
+  The device's limits still judge the rounded pool.
+- A device kept the four compiled decoders its sessions used last (10-14), until it kept one version of each package (10-15).
+  A decoder's module and pipelines depend only on its package and output format, while a new session comes with each file, each seek that cannot reuse the session, and each stream change.
+  Until 10-14 every session also stayed reachable from its device's lost promise after it was destroyed, which kept all its pipelines alive, so Dawn's own deduplication of identical pipelines made a second session cheap by accident and nothing bounded what stayed.
+  On 10-14 the device's lost promise came to hold only its live sessions, and `GPUDecoderPipelineCache.ts` kept compiled decoders by package id, then the file's SHA-256, and format, the four used last, which covered a playback and the formats its stream changes reach.
+  On 10-15 packages gained a stable id, and the cache keys each decoder by device, package id, and output format, with the content hash as its version: a package's new version replaces every decoder of its old one, so what a device keeps is bounded by the packages and formats it decoded, and the count limit and its least recently used order left.
+  On Dawn's D3D12 backend in Node on the RTX 5080, a 1080p session took 0.44 s to create again without the cache for HEVC, 1.1 s for MPEG-2, 8.7 s for VC-1, and 0.42 s for JPEG 2000, and 4 to 12 ms with it.
+- Each entry point compiles a module of only the declarations it reaches (10-15).
+  A pipeline processes its whole module, so every entry point of a large decoder paid for all of it: AV1's small entry points spent 60 to 130 ms each on its 560 KB module.
+  `GPUDecoderEntryPointModules.ts` reads the module scope with a tokenizer of its own, since comments nest and may hold braces, and keeps for each entry point what its names reach, blanking the rest while keeping every line break and the last line's width, so compile messages map as before.
+  Correctness never rests on the split: code it does not understand compiles whole, and an entry point's module that reports an error makes the whole module compile, whose errors are reported or which serves every pipeline when it has none.
+  On Dawn's D3D12 backend in Node on the RTX 5080, with every compile salted so the driver's cache missed and a fresh device per run, median of 5 at I420, session start fell from 3.21 to 2.62 s for AV1, 14.8 to 13.2 s for VC-1, 2.29 to 2.24 s for MPEG-2, 0.81 to 0.78 s for HEVC, and 0.62 to 0.58 s for JPEG 2000.
+  Every split module of every package compiled without an error in every output format, 445 modules, and every package's vectors decode bit-exact through it.
+- A header's `packet:` may declare up to 512 MiB (10-14).
+  The 64 MiB bound kept a ring of two packets within WebGPU's default storage binding of 128 MiB on every device.
+  A record such as a lossless 2160p 4:4:4 HEVC picture's needs more, and the presenter requests the adapter's largest limits, so a header may declare up to 512 MiB; offers skip a package whose ring the device's buffer limit does not hold, and a session fails as `packet-size`.
+- Self-test vectors run only on an explicit call (10-13).
+  A package carries at most one vector per output format, in a format it writes, and `verifyGPUDecoderPackage` runs one only when a host calls it.
+  Nothing caches or persists a result, because a verdict belongs to a package and a device, which the host keys itself.
+  Offers verify nothing, so playback never waits on a vector; the policy of 10-12, which offered a decoder only once its vector passed, left with the built-in decoders.
+- The frame-pool route keeps one packet of decode work in flight (10-12).
+  Decode shares the presenter's queue, so `GPUVideoDecodeFeed` submits a packet only after the previous submission completed and its status readbacks applied, and a presented frame waits behind at most one packet's decode work.
+  A presented slot returns to the decoder right after its presentation submit, because the queue orders later decode work behind it.
+- The pool takes the container's coded size rounded up to 64 (10-12).
+  Containers declare the cropped picture, such as 1080 rows, while a decoder writes whole coding blocks, 1088 rows; the first header's conformance window then replaces the visible rectangle.
+- A decoder's vector, not a presentation authorization, vouches for its frames (10-12, 10-13).
+  The frame-pool route presents HDR whenever the host tone-maps it (`allowFramePoolHDR`).
+  On 10-12 Auto offered a decoder only once its vector passed on the device, and the WGSL HEVC decoder declared no vector, so only a forced policy played it.
+  Since 10-13 the host decides whether to verify a package before it offers it, and the HEVC decoder project's package carries the nine range extension vectors.
+- The WGSL HEVC decoder parses on the CPU (10-13).
+  CABAC decodes each bin from the state the previous bin left, so a GPU parses a substream on one invocation, at about 200 ns a bin.
+  On a 66 Mbit/s 2160p stream with 16 tiles, parsing on the GPU took about 100 ms a picture even with each tile on its own invocation, while everything after the syntax took 3 to 4 ms.
+  The HEVC decoder project's parser (`decoders/hevc/parser/`) parses such a picture in about 40 ms on one core, and the engine's parse workers parse a picture's slices and tiles, and several pictures, at once.
+  It also derives the motion vectors, which read earlier pictures' motion in decode order, so the GPU record carries final motion, coefficients, and edges, and the GPU only reconstructs and filters.
+  A record holds one word per coefficient, 2 to 5 MB for such a picture; a lossless 2160p 4:4:4 picture can pass the 64 MiB packet bound, which compact coefficient blocks would lift.
+- Known differences between the WGSL HEVC decoder and FFmpeg (10-12).
+  Against FATE's conformance checksums, BUMPING_A, NoOutPrior_A, NoOutPrior_B, and RAP_B differ: the decoder outputs pictures that FFmpeg's output process drops, and every picture both output matches; the session has no way to decode a picture without presenting it.
+  EXT_A_ericsson_3 is not compared, since FFmpeg cannot decode it.
+  Against FFmpeg's decode of x265 streams, subsampled chroma that combines cu_transquant_bypass with SAO differs, because FFmpeg's `restore_tqb_pixels` passes the chroma width with the luma origin and so exempts only the CTB's top-left chroma quadrant from SAO; 4:4:4 matches.
+- The HEVC intra wavefront is one entry point (10-15).
+  Both dispatches of a wave pair run `predictIntra`: the even one has a workgroup column per CTB row and the odd one a column more, which returns at once, so each knows its wave counter and the wavefront compiles once, as AV1's does.
+  On Dawn's D3D12 backend in Node on the RTX 5080, over four sets of 5 to 25 alternating runs with salted cold compiles, session start fell by 4 to 7%, about 30 to 60 ms of 770 ms.
+  Decoding stayed within 2% either way, with no consistent direction, on a 1080p 10-bit stream with B-frames, a 2160p all-intra stream, and a 1080p 4:4:4 10-bit stream; a form that read the column count's parity instead, without the early return, decoded up to 2% slower.
+  Every package vector, those three streams against FFmpeg, and the 4:0:0 checks decode bit-exact with it.
+- The WGSL VC-1 decoder mirrors FFmpeg (10-13).
+  It matches FFmpeg's frames bit for bit on FFmpeg's VC-1 conformance streams and its WMV3 and VC-1 samples: Simple, Main, and Advanced profiles, progressive, field, and frame pictures, B and BI pictures, intensity compensation, range reduction, overlap smoothing, the loop filter, the simple IDCT of streams without RES_FASTTX, and IntraX8 pictures.
+  Its references come from an FFmpeg with commit `ec8411e854`: before it, FFmpeg conceals a valid last macroblock of a Simple or Main P picture that costs one bit, and every frame after it differs up to the next keyframe.
+  A mid-stream change of coded size fails with `pictureSize`, because the session sizes its pool once.
+  Since 10-14 a parser can size the pool from a declared maximum and present each picture at its own size, but the VC-1 package has no parser, so the failure stays until one declares the Advanced profile's `MAX_CODED_WIDTH` and `MAX_CODED_HEIGHT` and reports each picture's size.
+- The VC-1 parse is serial, and only the parse (10-13).
+  Entropy decoding has no parallelism inside a slice, so one invocation decodes each parse unit, a slice or a field, and units run at once.
+  The parse keeps only what its bits depend on: motion vector prediction, since hybrid prediction reads a bit, and coded block prediction.
+  Intra blocks leave their DC differential and AC levels by scan index, and one workgroup predicts, scans, and dequantizes them afterwards in anti-diagonal order, so each macroblock follows its left, top, and top-left neighbors.
+  That cut a 1080p I picture from 156 ms to 34 ms.
+  IntraX8 cannot split this way: its orientation code is read only when the reconstructed edge samples span a wide range, so one workgroup decodes its blocks in order, one invocation parsing and all of them sharing each block's prediction, transform, and filter.
+- A lone invocation's costs set the parse's layout (10-13, RTX 5080, D3D12 through Dawn).
+  A dependent instruction costs about 4 cycles, a storage read-modify-write about 30 ns, and a workgroup one about 8 ns.
+  A private array indexed at run time lives in local memory, where a load after a store waits about 150 ns, and an integer division costs about 35 ns.
+  So the parse stages its macroblock in workgroup memory and stores the record once, writes coefficients as it decodes them, addresses the block grid with a power-of-two stride, and reads each code's run, level, and sign from one lookup and one window.
+  1080p progressive decodes in about 23 ms per frame on average, 14 to 40 ms for P pictures; interlaced 1080 at broadcast rates in 17 to 25 ms.
+- VC-1 pipelines are many and small (10-13).
+  Backends inline every call and fold no constant argument, so each picture kind has its own slice pipeline, a helper on the hot path has one call site, and the field passes share pipelines that read their pass from the picture state.
+  Tint copies a constant array at each place an index reads it, and a D3D12 pipeline holds at most 64 KiB of constants, so large tables live in the decoder state, which `loadTables` entry points of 8192 words fill at each reset.
+  The 31 pipelines compile in about 10 s together on Dawn, once per browser shader cache.
+- WMV3 is a codec of its own (10-13).
+  The engine's codec names are FFmpeg's, and a host builds its direct-play codec lists from them, so as an alias of `vc1` WMV3 could never be advertised under `wmv3`, the name a media server reports, and every WMV3 file would transcode.
+  It mirrors FFmpeg's one decoder with two codec IDs: the `vc1` project's package accepts `[vc1, wmv3]`, and a package that decodes only the Advanced profile is never offered WMV3, whose codec private data and packets differ.
+  WMV3's codec private data is STRUCT_C, which holds no frame size; FFmpeg takes the size from the container, but a WGSL decoder sees only the pool's size, padded to 64.
+  The worker therefore puts a 40-byte BITMAPINFOHEADER of the track's coded size and the WMV3 FourCC before it, and the package refuses a bare STRUCT_C as `configuration`.
+  Eligibility accepts the Simple, Main, and Complex profiles, since the package matched FFmpeg on both Complex streams it was checked with.
+- Matroska VC-1 and WMV3 present in picture order (10-13).
+  A Video for Windows track stamps each block in decode order with the time of the picture a one-picture-delay decoder outputs at it, which FFmpeg reads as decode time, while the frame pool presents frames in timestamp order.
+  Every B-frame VC-1 or WMV3 stream in Matroska, VC-1 Blu-ray remuxes included, presented in decode order until `VC1PresentationOrder.ts` restamped the track by FFmpeg's rule: an I or P picture takes the next I or P picture's time, and a B picture keeps its own.
+  A key packet lookup steps back to the previous GOP when needed, because mkvmerge stamps the first two packets 0.
+  FFmpeg-made Matroska VC-1 without B pictures therefore presents one frame later, as FFmpeg-based players show it.
+- VC-1 in MP4 and MOV reads its `dvc1` box through Mediabunny's internals (10-13).
+  Mediabunny 1.52.2 lists a `vc-1` track and its samples but skips the `dvc1` box, so `ISOBaseMediaVC1Configuration.ts` reads it from the `moov` bytes Mediabunny keeps (`moovSlice`, `sampleTableByteOffset`), and the worker builds its packet track with the `InputVideoTrack` constructor.
+  Each internal is checked, and a change fails the track with a named check; only the Advanced profile's `dvc1` is read, as FFmpeg reads it.
+- AV1's codec private data reads through Mediabunny's internals too (10-14).
+  Mediabunny 1.52.2 reads an `av1C` box only for its codec string and keeps a Matroska `V_AV1` CodecPrivate without handing it on, so an AV1 package's parser saw no sequence header before the first temporal unit and could declare no maximum frame size.
+  On the frame-pool route `AV1CodecConfigurationRecord.ts` reads the CodecPrivate from the internal track, or the `av1C` box of an `av01` or `dav1` sample entry through the `moov` reader the `dvc1` path now shares (`ISOBaseMediaSampleEntryChildBox.ts`), and copies the record unchecked, as FFmpeg's demuxers do.
+  A container without one hands nothing, since temporal units carry their sequence headers, and a change in the internals fails the track with a named check.
+- VC-1 in MPEG-TS and M2TS is unreachable (10-13).
+  Mediabunny 1.52.2 drops stream type 0xEA, and its video setup and packet splitter handle only AVC and HEVC, in private methods the engine cannot wrap.
+  Once Mediabunny surfaces the stream, the engine needs only the codec ID, extradata from the first key packet, and `vc1` in the transport stream rule.
+  MPEG-2 in a transport stream is unreachable for the same reason.
+- A package's output format follows the stream's pixel format (10-13).
+  It was 4:2:0 at the stream's bit depth, so a 4:2:2 or 4:4:4 MPEG-2 stream reached the decoder as I420 and failed as `chromaFormat`.
+  The pixel format now names the chroma subsampling, an explicit BitDepth must agree with its samples, and one no frame pool holds, such as RGB, leaves the stream to its native routes.
+  9-bit samples take the 10-bit format, shifted up one bit as FFmpeg's converter shifts them.
+  11-bit JPEG 2000 has no route: FFmpeg, and so the package, leaves its samples unshifted in 12-bit planes, which would present one bit dark.
+- A 4:0:0 stream decodes into 4:2:0 only on a decoder that declares monochrome (10-14).
+  A 4:0:0 pixel format, `gray` to `gray12` in either byte order, takes the 4:2:0 output format of its depth, whose chroma planes the decoder fills with the neutral value, which shows FFmpeg's gray decode unchanged.
+  Mapping it alone offered 8-bit grey JPEG 2000 to the JPEG 2000 package, whose parser fails it as `colourSpace: 2`, so eligibility offers a 4:0:0 stream only to a decoder whose header declares `monochrome: yes`, and a header that says nothing takes none.
+  A directive keeps that silence a refusal; a stream fact for `accepts` would have made every existing condition take 4:0:0 unless it named the fact.
+  The HEVC package declares it: six x265 4:0:0 streams at 8, 10, and 12 bits, with conformance cropping, B-frames, scaling lists, transform skip, and weighted prediction, decode bit-exact on Dawn against FFmpeg's luma with neutral chroma.
+  The JPEG 2000 package does not, since it would need a parser that keeps greyscale pictures and vectors with neutral chroma.
+- The prefilter keeps the package-only variants of AV1 and 4:0:0 HEVC potential (10-14).
+  `hasPotentialCustomPlaybackVideoRoute` knows no host's packages, so it ruled out every AV1 stream outside Main and every 4:0:0 HEVC stream, which then never reached a package's fallback.
+  An AV1 stream outside Main 4:2:0 at 8 or 10 bits, such as High 4:4:4, Professional 4:2:2, or 12 bits, and a 4:0:0 HEVC stream now stay potential when a frame pool holds their format, and eligibility decides with the host's offers.
+  AV1 Main at 10 bits outside the raw SDR keys stays with the host's own player, which decodes Main, and the other codecs with native routes keep their prefilter, since no decoder project decodes their other variants.
+- Motion JPEG 2000 opens through the engine's own input format (10-13).
+  ISO/IEC 15444-3 puts the JP2 signature box ahead of `ftyp`, and Mediabunny 1.52.2 recognizes an ISO base media file only by an `ftyp` first, so no `.mj2` file opened.
+  `CustomDecodeInputFormats.ts` adds a format ahead of Mediabunny's own that takes the signature box and an `ftyp` of brand `mjp2`, and hands the file to Mediabunny's MP4 demuxer, which skips the signature box.
+  It reads the file's first bytes through Mediabunny's internal reader, contained the way the Matroska fix is: when the reader differs, it warns once and opens nothing.
+- The WGSL JPEG 2000 decoder follows FFmpeg's bitexact 9/7 path (10-13).
+  FFmpeg's default irreversible 9/7 transform runs in floating point, whose rounding follows the CPU's SIMD, which WGSL's `f32` cannot reproduce.
+  Its integer path, the one `-flags bitexact` selects, lifts in fixed point with defined rounding, so the decoder implements that, and the 9/7 vectors pin `-flags bitexact`.
+  Playback therefore equals FFmpeg's bitexact decode and differs from its default decode only in rounding.
+  Tier-1 runs on the GPU and tier-2 on the CPU, as measured: a native single-threaded CPU tier-1 and wavelet took 229 ms for a 249 Mbit/s 1080p picture, where the GPU takes about 6 ms and tier-2 1 to 7 ms.
+  RGB, grey, XYZ, and palette pictures fail as `colourSpace`, because the frame pool holds only YUV; they need planar RGB formats, a luma-only format, and the DCI XYZ transform in presentation.
+- MPEG-1 is a codec of its own (10-13).
+  FFmpeg names it `mpeg1video`, so as an alias of `mpeg2video` a host could not advertise it, and a package that decodes MPEG-2 alone would be offered it.
+  The `mpeg2` project's package accepts both, since its WGSL follows FFmpeg's MPEG-1 paths too.
+  A package carries one vector per output format, so its MPEG-1 decode has no vector of its own.
+- The WGSL MPEG-2 decoder follows FFmpeg's simple IDCT (10-13).
+  FFmpeg's default IDCT on x86-64 is its SSE2 simple IDCT, which equals the C one except where intermediates overflow 16 bits, which valid streams never reach.
+  The vectors pin `-idct simple`, and the generator checks that each decodes the same with `-cpuflags 0`, so the known answers hold on every platform.
+- Known differences between the WGSL MPEG-2 decoder and FFmpeg (10-13).
+  A packet that holds no picture FFmpeg outputs, such as a skipped open-GOP B picture or the first field of a pair split across packets, repeats the latest reference, or gray before one, because a decoder without a parser outputs a frame for every packet.
+  Damaged slices, slice gaps or overlaps, and motion vectors outside the reference end the attempt with the error and the failing value, where FFmpeg conceals and continues.
+  Interlaced pictures present woven: the decoder reads the field flags, but no deinterlacer runs and no flag reaches presentation, so eligibility still refuses interlaced streams.
+- The AV1 package's parser is libaom's decoder running its parse-only pass (10-14).
+  `vendor/aom` pins libaom v3.15.2, and the `av1` project builds its decoder alone to WebAssembly with four small patches: every tile parses with the parse-only flag, hooks hand each transform block, block, frame, and missing reference to a C bridge, and the decoder exports its intra edge counts, its CfL buffer extent, and its deblocking levels.
+  A parser of our own would repeat libaom's entropy decoding, motion vector prediction, and reference and segmentation bookkeeping, which nothing on the GPU could check; libaom's are the reference's own.
+  libaom's frame buffers point at an address no module memory maps, so the parser holds no samples, and a stray sample access traps.
+- An AV1 record carries libaom's decisions, not its syntax (10-14).
+  Each frame's record holds the blocks with their modes, motion, warps, transform partitions, and palettes; each superblock's intra jobs per plane in decode order, with libaom's edge counts; transform jobs with libaom's dequantized coefficients, dense or sparse, whichever is smaller; and the restoration units, CDEF indices, deblocking levels, references with their scale factors, global motion, and film grain.
+  The WGSL then needs no syntax, no probability models, and no decode order beyond the wavefront, and every value it reads is the one libaom's own reconstruction would have used.
+- Every AV1 frame is one picture, hidden frames included (10-14).
+  A temporal unit's hidden frames decode into references of their own, so the parser makes one picture per frame through parser interface 2, and the unit's last shown frame presents, as libaom and FFmpeg's libdav1d output one frame per temporal unit at operating point 0.
+  References stay in the package's own `frames` buffer, ten frame buffers the parser assigns, so the header declares `references: 0`, and only shown frames reach the frame pool.
+- AV1 reconstructs in 16-bit frame buffers at every bit depth (10-14).
+  Two samples per word keep every write owned by one invocation, since blocks and transforms start at multiples of 4 and no two filter footprints share a word; 8-bit streams pay twice the memory of 8-bit samples.
+- AV1's intra blocks reconstruct in a superblock wavefront (10-14).
+  Inter blocks predict per 16x16 tile, and the transform passes add their residuals first; then a superblock waits for its left, top, and top-right neighbors in its tile (slope 2; IntraBC's delay rule needs slope 5 with 64x64 superblocks and 3 with 128x128), chroma runs one wave behind luma for CfL, and tiles run side by side.
+  The parser reports each picture's wave pairs, so a frame without intra, IntraBC, or inter-intra blocks runs no wave.
+  Both dispatches of a pair run one entry point, which picks its wave counter by its workgroup count, so the wavefront compiles once; a second copy cost 0.3 to 0.4 s of pipeline creation.
+- After a seek, AV1 temporal units before the first key frame make no picture (10-14).
+  libaom cannot decode them without the references they predict from, so the parser waits for a key frame from its start or reset, as libaom's own interface does.
+  An inter frame after a resyncing intra-only frame that misses references makes no picture either, while a key frame's own failure is the bitstream's.
+- The WGSL AV1 decoder matches libdav1d bit for bit (10-14, 10-15).
+  Every frame matches FFmpeg's libdav1d on the package's nine vectors, libaom's 242 test vectors, 53 encodes of our own from libaom, SVT-AV1, and rav1e in every output format, and Argon's 2,524 conformance streams within level 5.x, 26,772 frames; stage dumps compared every decode picture's reconstruction and each filter stage with libaom's own.
+  The 239 Argon streams with a frame beyond level 5.x are outside `accepts`.
+  A stream that changes its output format midway, as Argon's profile switches do, or whose later sequence header raises the maximum frame size past the `av1C` a session was sized from, as libaom's sizeup and Argon's joined sequences do, continues on a session made for the change, as stream changes do since 10-14.
+  The runs of 10-14 decoded each run of one format on a session of its own, sized from the largest picture the parser reports; those of 10-15 go through `GPUVideoDecodeFeed` itself with the built package, an IVF without a size declaring its first frame.
+  There every frame the feed delivered matched, but the feed's pool sizing first ended 32 Argon streams, 22 as `accepts` and 10 as `visible-rectangle`, and one own encode whose sequences declare 16384x8704 for 640x360 frames: `accepts` judged pools rounded up to 64, which a legal level 5.x picture such as 7396x1205 crosses, and a refused pool ended the stream even where its pictures fit a smaller one.
+  With the sizing rules of 10-15 for stream changes and `accepts`, every stream of the four sets decodes through the feed, Argon's across 1,072 stream changes in 746 streams.
+- AV1's parser sets its pace (10-14).
+  On the RTX 5080 through Dawn, a 2160p50 10-bit SVT-AV1 stream takes 1.0 to 1.1 ms of GPU time a picture, 0.8 to 0.9 ms with 4x2 tiles, and 1080p50 8-bit streams 0.3 to 0.5 ms, while the parser takes 6.4 to 7.3 ms a picture at 2160p and 3.2 to 4.6 ms at 1080p.
+  libaom parses a frame's tiles in order on one instance, so a picture plans whole on the coordinator worker with no parse units, which bounds 2160p at about 100 frames a second, at about 1.5 pictures a frame.
+- AV1's pipelines take about 2.6 s to create cold (10-14, 10-15).
+  The package has 17 entry points; on Dawn's D3D12 backend, which compiles with DXC, a session creates them at once in about 3.2 s cold from the 560 KB module on the RTX 5080, with about two compiling at a time, and in 2.6 s since each compiles a module of only what it reaches.
+  The NVIDIA driver keeps compiled shaders on disk, so a compile it saw before is warm: the 2.0 to 2.2 s measured on 10-14 were partly warm, and a later session of a package version and format the device compiled compiles nothing.
+  On 10-14 the heaviest alone were the inverse transforms, 0.93 s, the tables, 0.55 s, and the wavefront, 0.47 s; since then the wavefront's two entry points became one, the 64-point transforms moved into a kernel of their own, and the inter and transform families each read their tables from one packed array at one site, which took their loaders from 0.26 and 0.19 s to about 0.1 s.
+- AV1's 64-point transforms run in a pass of their own (10-15).
+  The 64-point DCT's unrolled flow graph made the one inverse transform kernel the longest compile of the package, 1.16 s.
+  So the parser lists the transform jobs with a 64-point side after the others and records where they start, `inverseTransform` runs the jobs before that index, and `inverseTransformLarge` runs the rest on the same grid.
+  The two kernels compile in 0.69 and 0.88 s side by side, and on the GPU the pair matches the single kernel, the pass with no jobs of its own costing 6 us.
+  The large kernel runs DCT_DCT only, since libaom codes no other transform type across a 64-point side; a record that carries one, or a job on the wrong side of the index, fails as `recordInvalid` with value 10, and the job writes nothing.
+
 ## Firefox
 
 These were settled on Firefox 157 on Windows.
@@ -249,13 +465,14 @@ These were settled on Firefox 157 on Windows.
 - WebCodecs has no HEVC on Windows (10-07).
   `IsSupportedVideoCodec` in Firefox's `dom/media/webcodecs/WebCodecsUtils.cpp` accepts HEVC only on macOS and Linux, and only with both `dom.media.webcodecs.h265.enabled` (on by default only in Nightly) and `media.hevc.enabled`.
   That second pref, on by default, lets `<video>` and MSE play HEVC through the Windows HEVC extension.
-  HEVC therefore decodes in the bundled decoder, and the native HEVC, external HDR, and native Dolby Vision routes never qualify on Windows.
+  HEVC therefore decoded in the bundled decoder until the CPU decoders left (10-13), and now plays only through a GPU decoder package; the native HEVC, external HDR, and native Dolby Vision routes never qualify on Windows.
   The hardware decoder behind `<video>` cannot feed the custom pipeline, whose frames must reach WebGPU unconverted, while a `<video>` external texture arrives as SDR sRGB.
-  The bundled decoder runs on one core, about 20 fps at 4K on a fast CPU, so 4K plays below real time.
+  The bundled decoder ran on one core, about 20 fps at 4K on a fast CPU, so 4K played below real time.
   This is left as is until Firefox enables WebCodecs HEVC on Windows.
 - A `VideoFrame` cannot be constructed in a high-bit-depth format (10-07): the constructor rejects `I420P10`.
-  The bundled HEVC decoder's frames therefore never pass through a `VideoFrame` on the raw route: as the decoder drains a frame, the worker writes its planes from WASM memory into the aligned raw buffer it then transfers (10-09).
-  On the VideoFrame route, which 8-bit SDR takes in Firefox, the worker writes each drained frame into compact I420 planes and constructs the `VideoFrame` itself with `transfer`, with the metadata `VideoSample.toVideoFrame()` gave it; a browser that ignores `transfer` copies the planes, and the worker writes the next frame into the same buffer.
+  The bundled HEVC decoder's frames therefore never passed through a `VideoFrame` on the raw route: as the decoder drained a frame, the worker wrote its planes from WASM memory into the aligned raw buffer it then transferred (10-09).
+  On the VideoFrame route, which 8-bit SDR took in Firefox, the worker wrote each drained frame into compact I420 planes and constructed the `VideoFrame` itself with `transfer`, with the metadata `VideoSample.toVideoFrame()` gave it; a browser that ignored `transfer` copied the planes, and the worker wrote the next frame into the same buffer.
+  A GPU decoder package's frames never leave its frame pool, so the limit no longer matters to them (10-13).
   The external P5 authorization builds an `I420P10` frame and fails, but it needs WebCodecs HEVC regardless.
 - Copy options name a `format` only to convert (10-10).
   The spec accepts only RGB formats there, and Firefox enforces it, rejecting even a frame's own `I420P10` in `allocationSize` and `copyTo`.
@@ -273,7 +490,7 @@ These were settled on Firefox 157 on Windows.
   A hidden page stalled video at exhausted credits while audio ran on, and on return the lag guard replayed the backlog (frozen, then fast-forward) or tripped `playback-stalled`.
   The engine mirrors Chromium's background video track optimization: drain while hidden, release the decoder after 10 s, and on return restart video alone from the preceding keyframe.
   Audio is never touched.
-  Only `native` decode is suspended; software backends keep draining, because a keyframe resync costs up to a GOP of CPU decode.
+  Only `native` decode is suspended; the software backends kept draining, because a keyframe resync cost up to a GOP of CPU decode, and the `gpu` backend keeps draining too (10-13).
   A full seek was rejected because it restarts audio too.
 - Presenter geometry (08-07).
   Layout is invalidated on seek, resize, style and class mutations, and CSS motion events.
@@ -294,10 +511,10 @@ These were settled on Firefox 157 on Windows.
   Every generation, which every seek, audio track switch, and paused repaint starts, used to create its own worker and paid worker startup, script evaluation, and WASM decoder instantiation each time.
   The session now creates its worker at the first start, runs every generation in it, and terminates it only on `destroy`.
   Runs never overlap: the session sends a `start` only after the previous run acknowledged `stopped`, and the worker starts a run only after the previous one posted it.
-  An overlap would stall the handoff, because a stopping run waits for every bundled HEVC decoder in its worker, the next run's included, before it acknowledges.
+  An overlap stalled the handoff while the bundled HEVC decoders lived, because a stopping run waited for every one in its worker, the next run's included, before it acknowledged; runs still never overlap, because a stopping run releases its decoders and audio attempts first (10-13).
   A worker is replaced rather than reused after a generation fails, a message fails validation, the worker crashes, or a retired run does not acknowledge within the 1 s stop bound.
   It is also replaced when a run's `stopped` carries `replaceWorker`, which the worker sets once it suppressed the rejection of a custom decoder that Mediabunny left open.
-  A start on another video decoder backend gets a new worker too, because Mediabunny keeps a decoder registration, such as the bundled HEVC adapter that `canDecode()` consults, for the worker's life.
+  A start on another video decoder backend gets a new worker too, because Mediabunny kept a decoder registration, such as the bundled HEVC adapter that `canDecode()` consulted, for the worker's life; since the CPU decoders left (10-13), the new worker keeps what one backend set up, such as a package parser's workers, from outliving it.
   Each run still opens its own input, so the read cache does not outlive a seek.
   After a run ends on its own, its generation stays current while the worker idles, so a native-media element that plays out after decode still ends the session.
   Before, the run's `stopped` retired the worker and with it the generation, and such a session did not end.
@@ -306,8 +523,12 @@ These were settled on Firefox 157 on Windows.
   In field use it felt less responsive than the page presenter, and on an Intel Arc laptop (Meteor Lake iGPU beside an RTX 4060) 4K HDR10+ playback dropped frames after a few minutes, which the engine before it (`a3bba75`) did not.
   The cause was not isolated.
   The suspects: every draw waited on the decode worker's event loop, which also demuxes, decodes, and copies; each session took a second device on the same adapter and authorized its route again there; and a frame's credit returned only after the renderer's GPU work and the page's release.
-  The persistent worker, the bundled HEVC single copy, and the audio decode worker, which landed with it, stay.
+  The persistent worker, the bundled HEVC single copy, and the audio decode worker, which landed with it, stayed; the single copy left with the CPU decoders (10-13).
   Presentation off the main thread should return only with a measured cause, and on a thread of its own rather than the decode worker's.
+- The host names the paths whose cross-origin 206 hides `Content-Range` (10-14).
+  `Content-Range` is not CORS-safelisted, and Jellyfin's stream endpoint does not expose it, so the range check accepted a 206 with a bounded `Content-Length` from a hard-coded Jellyfin path, which bound the engine to one host.
+  A URL source now carries `hiddenContentRangePathPattern`, a RegExp without the global or sticky flag that crosses to the decode worker by structured clone, and without it every 206 must show its `Content-Range`.
+  The Jellyfin plugin sets the same `/Videos/{id}/stream` pattern on the stream URL it plays, so its playback is unchanged; the sandbox sets none.
 
 ## Audio
 
@@ -357,16 +578,19 @@ These were settled on Firefox 157 on Windows.
   Every decoded PCM route admits mono.
   Decoders without a speaker mask (AAC, FLAC, Opus, Vorbis, and PCM) deliver three channels as 3.0, so their three-channel routes need Jellyfin's 3.0 layout.
   Jellyfin keeps only the part of FFmpeg's layout name before `(` (`ProbeResultNormalizer.ParseChannelLayout`), so 3.0(back) arrives as 3.0 and 7.1(wide) as 7.1.
-  AC-3 2/1 and 3/0 are therefore indistinguishable, and the browser's AC-3 decoder reports no mask, so three-channel AC-3 is neither advertised nor admitted and transcodes.
+  AC-3 2/1 and 3/0 are therefore indistinguishable, and the AC-3 decoder of 10-07 reported no mask, so three-channel AC-3 is neither advertised nor admitted and transcodes.
+  An AC-3 package reports its mask (10-13), but no evidence covers either bed yet.
   AC-3 mono plays.
   A profile condition cannot express ChannelLayout, so any other three-channel layout, a 2.1 FLAC or WAV for example, is negotiated, fails eligibility when playback starts, and plays through the HTML player or renegotiates to a transcode.
   E-AC-3 and TrueHD admit mono only.
 - E-AC-3 7.1 needs the layout, not only the channel count: the decoder must report the decoded channel layout (`9ca70e11ad`).
-- The DTS envelope.
-  DTS-HD HRA is valid at 48 and 96 kHz only.
-  Above 96 kHz only 5.1 MA (or MA with a DTS:X bed) is admitted.
-  Stereo DTS-HD MA is admitted up to 96 kHz.
-  Mono is admitted for every direct-play profile, and three channels for MA and MA with DTS:X when Jellyfin reports a 2.1 or 3.0 layout, because libdcadec reports their speaker masks (0x4, 0xB, 0x7, and 0x103 for 3.0(back), which Jellyfin also reports as 3.0).
+  Eligibility also required a declared `7.1` layout until E-AC-3 became a package codec (10-13); a package reports every block's mask, which now decides alone.
+- The DTS envelope, until 10-13.
+  DTS-HD HRA was valid at 48 and 96 kHz only.
+  Above 96 kHz only 5.1 MA (or MA with a DTS:X bed) was admitted.
+  Stereo DTS-HD MA was admitted up to 96 kHz.
+  Mono was admitted for every direct-play profile, and three channels for MA and MA with DTS:X when Jellyfin reports a 2.1 or 3.0 layout, because libdcadec reports their speaker masks (0x4, 0xB, 0x7, and 0x103 for 3.0(back), which Jellyfin also reports as 3.0).
+  Since DTS decodes through a package (10-13), eligibility checks only the channel count, which still excludes DTS-ES's seven channels, and the package's speaker mask decides the layout at runtime.
 - Decoded format is authoritative (10-07).
   The declared format only screens a track at preparation.
   The output stage binds to the first decoded rate and layout and rebinds on a later change: the old resampler's tail goes through the still-running limiter, and a new resampler continues its output timeline and input expectation.
@@ -388,8 +612,9 @@ These were settled on Firefox 157 on Windows.
   The audio decode worker logs every correction over 100 ms and every failure with the input timestamp, the expected timestamp, and the correction.
   Output time stays the anchor plus output frames at 48 kHz, so the bridge, limiter, worklet, and clock see one contiguous stream.
   Output chunks are capped at 12000 frames, the 2 s ring divided among the 8 credits, so even a filled burst fits the worklet ring.
-- The FFmpeg wrappers stamp later frames of one packet themselves (10-07).
-  FFmpeg resets the packet timestamp after a partial consume, so the E-AC-3 and TrueHD wrappers stamp a frame without one at the packet time plus the frames the packet already produced.
+- The FFmpeg wrappers stamped later frames of one packet themselves (10-07).
+  FFmpeg resets the packet timestamp after a partial consume, so the E-AC-3 and TrueHD wrappers stamped a frame without one at the packet time plus the frames the packet already produced.
+  Since they became packages (10-13), the engine does it: a block that reports no timestamp of its own continues from its packet's earlier blocks.
 - A late first audio sample is padded, not followed (10-07).
   In two MKV files the video started at 0 s and the first audio block at 6.006 s or about 25.9 s.
   Setting the worklet's media time to the first chunk it rendered made the clock jump to the audio start and drop the earlier video (631 frames for 26.3 s at 23.976 fps).
@@ -409,7 +634,7 @@ These were settled on Firefox 157 on Windows.
   A hidden page keeps decoding video once the audio ended, and a released decoder restarts at the clock, because the worker ends the run only after the video track itself ended, not when it was suspended or interrupted.
 - DTS and TrueHD play from ISO BMFF too (10-07).
   Mediabunny maps no MP4 DTS or TrueHD sample entry but records it as the internal codec ID, so the worker treats `DTS ` (QuickTime's core entry, with a trailing space), `dtsc`, `dtsh`, and `dtsl` like `A_DTS` and `mlpa` like `A_TRUEHD`.
-  `dtse` (LBR) and `dtsx` (DTS-UHD) are unsupported because libdcadec cannot decode them.
+  `dtse` (LBR) and `dtsx` (DTS-UHD) are unsupported because libdcadec, which the `dts` decoder project builds, cannot decode them.
   Two sample-rate fields need recovery.
   TrueHD writes the rate as a 32-bit integer, which reads back as 16.16.
   A DTS rate above 65535 Hz does not fit the 16-bit integer part, so muxers write zero, and the worker declares the 48 kHz core until the decoder reports the real rate.
@@ -438,18 +663,24 @@ These were settled on Firefox 157 on Windows.
   The worklet returns each played chunk's buffers, and `PCMChannelPool` lends them to the output stage for later chunks.
 - An audio decode worker decodes and renders decoded PCM (10-09).
   The worker spawns `CustomAudioDecode.worker.js` at its first decoded PCM start and keeps it for its life; terminating the worker terminates it too.
-  It runs the bundled E-AC-3, DTS, and TrueHD decoders, the downmix, the output stage, and the producer, so a long software video decode never delays audio, and audio decoding never delays video.
+  It runs audio decoder packages (the bundled E-AC-3, DTS, and TrueHD decoders until 10-13), the downmix, the output stage, and the producer, so video work in the worker never delays audio, and audio decoding never delays video.
   Demux stays in the worker, which reads the source once for both tracks.
   The worker sends compressed packets copied back to back, or Mediabunny's decoded samples cut to the start, in batches that close at 40 ms of media time or 64 inputs, so TrueHD's 1200 access units a second do not each cost a message.
   4 batches are in flight, and each returns its credit once rendered under the producer's window, so demux runs at most a few batches ahead.
   Progress, the decoded format, an attempt's end, and failures return through the worker, which keeps their order with `audio-ended` and `stopped` on its one channel to the page.
   A run's `stopped` waits until the audio decode worker released the run's attempts.
   Failures keep their kinds, and a lost audio decode worker fails the run as `audio-output-failed`, which falls back to HTML in the same session, and asks for a fresh worker.
-  Mediabunny's own decoding stays in the worker: WebCodecs decodes off the worker's thread anyway, and `@mediabunny/ac3` exposes only its Mediabunny registration.
+  Mediabunny's own decoding stays in the worker: WebCodecs decodes off the worker's thread anyway, and `@mediabunny/ac3` exposed only its Mediabunny registration until AC-3 became a package codec (10-13).
+- Audio decoders are packages (10-13).
+  The E-AC-3 and AC-3, TrueHD and MLP, and DTS decoders left the engine and became decoder projects (`eac3`, `truehd`, and `dts` in `decoders/`), which build packages a host supplies; `@mediabunny/ac3` left too.
+  The order is the MSE bridge, then the engine's own decoders (WebCodecs and Mediabunny's PCM), then the first package whose manifest accepts the codec, so AC-3 without MSE needs a package.
+  Eligibility checks only the codec's input channel counts and rate, because a package reports every block's speaker mask, which the engine checks before it mixes, and the decoded format is authoritative anyway.
+  The profile, rate, and layout rules that gated the bundled decoders on their qualification vectors therefore no longer apply: a stream the package cannot decode, such as DTS-UHD, fails its attempt as `decode-failed` and renegotiates.
+  Every start and seek runs on a new instance of the package's module, so a decoder never sees a jump in its packets.
 
 ## Repository
 
-- The engine is its own repository (10-02): [WebGPU Player](https://github.com/alchemyyy/WebGPU-Player), MIT, with each vendored decoder under its own license.
+- The engine is its own repository (10-02): [WebGPU Player](https://github.com/alchemyyy/WebGPU-Player), MIT, with each vendored library under its own license.
   Hosts check it out as a git submodule and import it as `webgpu-player/*`.
   Its only host is the Jellyfin plugin's add-on.
 - The engine is an npm workspace of its host (10-02).
@@ -458,25 +689,25 @@ These were settled on Firefox 157 on Windows.
 - The Jellyfin player stays in the host (10-02).
   Moving it would make the engine Jellyfin-aware; the plugin's book records the decision.
 - Engine workers are prebuilt (10-02).
-  esbuild bundles them as classic workers, because the decoder glue loads through `importScripts`.
+  esbuild bundles them as classic workers, which the decoder glue's `importScripts` required until the CPU decoders left (10-13).
   They are served at stable URLs under `libraries/webgpu-player/` with a per-build `?v=` key, not as host bundler chunks.
 - Typed asset names replace hash pins (10-02).
   `src/EngineAssets.ts` is the typed manifest of runtime assets.
   The SHA-256 pins, verify scripts, vector registry, and per-file byte pins were removed; committed bytes and output oracle tests remain.
 - Decoders build with make (10-02).
-  `wasm/Makefile` (GNU Make) replaced the Python builders.
-  FFmpeg and dcadec are pinned, shallow, `update = none` submodules.
+  `wasm/Makefile` (GNU Make) replaced the Python builders, and since 10-13 each decoder project's `Makefile` builds its module with the rules in `decoders/rules.mk`.
+  FFmpeg and dcadec are pinned, shallow, `update = none` submodules, which `make -C decoders sources` fetches.
   There is no Docker and no Python of our own in the build.
-  `make check` verifies byte-reproducible outputs, and each release attaches the LGPL corresponding source from `make source-archives`.
+  `make -C wasm check` and `npm run decoders -- --check` verify byte-reproducible outputs, and whoever distributes the LGPL packages offers their corresponding source from `make -C decoders source-archives`.
 - Decoder builds are not committed (10-05).
-  `bin/` holds generated output, and only `bin/codec_vector_assets/` is committed, so `bin/wasm/` is ignored.
-  Each checkout builds the decoders with `make -C wasm sources all` before the tests and the asset build.
-  Their hand-written declarations live in `wasm/<kit>/`, and the `types` condition of the `#wasm/*` import resolves TypeScript to them, so type checks and lint need no build.
-- Audio decoder binaries are served files (10-08).
-  The DTS, TrueHD, and E-AC-3 kits link without `SINGLE_FILE`: esbuild bundles their ES module glue into the workers, and each `.wasm` is served from `libraries/<kit>/`.
+  `bin/` holds generated output, and only `bin/codec_vector_assets/` is committed, so `bin/wasm/` and `bin/decoders/` are ignored.
+  Each checkout builds the engine's modules with `make -C wasm all` before the asset build, and the decoder projects with `npm run decoders` before their tests.
+  The decoder glue's hand-written declarations lived in `wasm/<kit>/`, where the `types` condition of the `#wasm/*` import resolved TypeScript to them, until the CPU decoders left (10-13) and took the import with them.
+- Audio decoder binaries were served files (10-08), until the audio decoders became packages (10-13), which the engine does not serve.
+  The DTS, TrueHD, and E-AC-3 kits linked without `SINGLE_FILE`: esbuild bundled their ES module glue into the workers, and each `.wasm` was served from `libraries/<kit>/`.
   Embedded, the binaries were base64 in every worker that imported them: 1.4 MB of the playback worker for every session, and DTS and TrueHD downloaded a second time inside their probe workers.
-  A served binary is one cache entry for the probe and playback workers, compiles while it streams, and loads only when a decoder of its kit is created.
-  The glue always gets `locateFile`, or `wasmBinary` with bytes the page already fetched, through `src/DecoderWASMSource.ts`.
+  A served binary was one cache entry for the probe and playback workers, compiled while it streamed, and loaded only when a decoder of its kit was created.
+  The glue always got `locateFile`, or `wasmBinary` with bytes the page already fetched, through `src/DecoderWASMSource.ts`, which left with it.
 - Codec vectors are generated into a committed `bin/` folder (10-05).
   `bin/codec_vector_assets/` is the one committed folder in `bin/`, so every change to a qualification stream, generated module, or reference shows in review.
   The generators are all Python, in `scripts/codec_vector_assets/`.
@@ -485,13 +716,19 @@ These were settled on Firefox 157 on Windows.
 - Known-answer media is a "vector", never a "fixture" (10-05): qualification vectors ship to the browser, test vectors feed only tests.
 - Folder names live in `tools/constants.json` (10-05).
   Scripts, tests, the Makefile, and the host read paths from it instead of restating them.
+- The sources are laid out by stage (10-14).
+  `src/demux/` holds what reads the container and shapes packets: the media source and its fetch policy, the input formats, track selection, codec configuration records, packet restamping, and the bitstream metadata packets carry, with a folder per codec.
+  `src/decode/` holds what turns packets into frames and PCM: the owned WebCodecs paths, the GPU decoder package route with its coordinator and parse workers, the audio decoders, and the package loader that video and audio share.
+  A module goes where its work belongs, not where its name points: the HDR10+ frame queues pair packet metadata with decoded frames, so they are decoding, and the Dolby Vision EL geometry and the frame-pool signal, which only presentation reads, are presentation.
+  `src/video/`, `src/decoders/`, and `src/audio/decoders/` left without re-export stubs, and `test/` mirrors the new folders.
 - x265 gets no level-idc for the range-extension vectors (10-06).
   With CRF, x265 enforces a requested level through VBV, which it reports as non-deterministic.
   The generator encodes without a level and writes `general_level_idc` 93 (Level 3.1) into the VPS and SPS itself.
   The slices were byte-identical either way.
-- Decoder kits are named for their library and codecs (10-06): `ffmpeg-eac3`, `ffmpeg-truehd`, `ffmpeg-mpeg2-vc1`, `ffmpeg-hevc`, `libdcadec-dts`, and `libdovi`.
-  Their classes follow the codecs too, as in `MPEG2VC1SoftwareVideoDecoder`, and a name that covers one codec only says so, as in `bundledMPEG2` beside `bundledVC1`.
-- Our sources in `wasm/` carry no license headers (10-06).
+- Decoder kits were named for their library and codecs (10-06): `ffmpeg-eac3`, `ffmpeg-truehd`, `ffmpeg-mpeg2-vc1`, `ffmpeg-hevc`, `libdcadec-dts`, and `libdovi`.
+  Their classes followed the codecs too, as in `MPEG2VC1SoftwareVideoDecoder`, and a name that covered one codec only said so, as in `bundledMPEG2` beside `bundledVC1`.
+  Since 10-13 a decoder project is named for its codec, whatever library it builds (`eac3`, `truehd`, `dts`, `hevc`, `vc1`), and `libdovi` is the one kit left.
+- Our sources in `wasm/` and `decoders/` carry no license headers (10-06).
   The repository's `LICENSE` covers them.
 - Both repositories lint the engine (10-02).
   The engine has its own ESLint config adapted from Jellyfin Web's, and the host's lint also covers the engine's `src/` and `test/`, so the engine stays clean under both.

@@ -15,7 +15,7 @@ import {
 } from 'webgpu-player/presentation/PresentationSetup';
 import { createDefaultRenderSettings, createHDRToSDRRenderSettings } from 'webgpu-player/presentation/RenderSettings';
 import type WebGPUPresenter from 'webgpu-player/presentation/WebGPUPresenter';
-import type { StaticHDRMetadata } from 'webgpu-player/video/hdr/StaticHDRMetadata';
+import type { StaticHDRMetadata } from 'webgpu-player/demux/hdr/StaticHDRMetadata';
 
 const GENERATION = 7;
 const DOLBY_VISION_INPUT_PEAK_NITS = 4_000;
@@ -282,6 +282,7 @@ describe('PresentationSetup', () => {
             await expect(getCustomPresentationEligibilityOptions(asPresenter(presenter), request)).resolves.toEqual({
                 allowDolbyVision: false,
                 allowDolbyVisionProfile7: false,
+                allowFramePoolHDR: false,
                 allowNativeDolbyVision: false,
                 allowNativeHDR: false,
                 allowRawHDR: false,
@@ -296,6 +297,7 @@ describe('PresentationSetup', () => {
             const request = createAuthorizationRequest(HDR10_STREAM, { isHDRToneMappingEnabled: () => Promise.resolve(false) });
 
             await expect(getCustomPresentationEligibilityOptions(asPresenter(createPresenter()), request)).resolves.toMatchObject({
+                allowFramePoolHDR: false,
                 allowNativeHDR: false,
                 allowRawHDR: false,
                 authorizedExternalHDRRouteKeys: [],
@@ -307,6 +309,8 @@ describe('PresentationSetup', () => {
             const presenter = createPresenter();
 
             await expect(getCustomPresentationEligibilityOptions(asPresenter(presenter), createAuthorizationRequest(HDR10_STREAM))).resolves.toMatchObject({
+                // A GPU decoder's HDR needs only the host's tone mapping
+                allowFramePoolHDR: true,
                 allowNativeHDR: true,
                 allowRawHDR: true,
                 allowRawSDR: true,

@@ -1,0 +1,18 @@
+//! id: dts
+//! name: DTS
+//! decoder: audio
+//! accepts: codec in [dts]
+//! packet: 2 MiB
+//! attribute: 1, bitsPerSample
+//! attribute: 2, profile
+//! attribute: 3, parseStatus
+//! attribute: 4, filterStatus
+//! attribute: 5, libraryVersion
+//! error: 1, input
+//! error: 2, convert
+//! error: 3, parse
+//! error: 4, filter
+//! error: 5, option
+//! error: 6, output
+
+The manifest of the DTS decoder package; the keys and codes are the ones libdcadec_dts_bridge.c declares.

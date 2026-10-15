@@ -27,7 +27,7 @@ import {
     requireMicroseconds
 } from 'webgpu-player/TimeMath';
 
-import { readDecoderWASMSource } from '../../helpers/libraryAssets';
+import { readLibraryAssetSource } from '../../helpers/libraryAssets';
 
 // The output contract: 48 kHz, chunks of 40 ms up to the 12000 frames the 2 s worklet ring allows per credit
 const TARGET_SAMPLE_RATE = 48_000;
@@ -166,7 +166,7 @@ type LimiterPair = Readonly<{
 let outputStageModule: AudioOutputStageModule;
 
 beforeAll(async () => {
-    const source = await readDecoderWASMSource(AUDIO_OUTPUT_STAGE_WASM_ASSET);
+    const source = await readLibraryAssetSource(AUDIO_OUTPUT_STAGE_WASM_ASSET);
     if (source.kind !== 'bytes') {
         throw new Error('The test reads the output stage binary as bytes');
     }

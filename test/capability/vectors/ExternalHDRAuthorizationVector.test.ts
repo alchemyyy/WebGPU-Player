@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
-import { parseHEVCSPS } from 'webgpu-player/video/hevc/HEVCSPSParser';
+import { parseHEVCSPS } from 'webgpu-player/demux/hevc/HEVCSPSParser';
 import {
     createExternalHDRAuthorizationAccessUnit,
     EXTERNAL_HDR_AUTHORIZATION_CODED_HEIGHT,

@@ -14,7 +14,9 @@ Good fits:
 
 Poor fits:
 - H.264, HEVC, VP9, and AV1: their entropy decoding is serial within a slice, tile, or wavefront row, which many streams do not split, so a WGSL decoder is rarely real-time at 4K.
-  Those codecs keep their WebCodecs and WebAssembly routes.
+  Those codecs keep WebCodecs first, and GPU decoders replace their WebAssembly routes.
+  `src/video/gpu-decode/hevc/` is therefore a hybrid HEVC decoder: the engine's WebAssembly front end parses each packet's CABAC and derives its motion in the decode worker and its parse workers, and its WGSL back end reconstructs and filters the picture.
+  It matches FFmpeg apart from the differences the book's Decisions chapter lists.
 
 ## Module
 
@@ -76,6 +78,7 @@ Dispatch counts that depend on the bitstream come from `dispatchWorkgroupsIndire
 
 - Ingress: the worker demuxes as usual and posts compressed packets to the page instead of frames.
   The page writes each packet into a ring buffer on the GPU, which is the only CPU to GPU transfer, at compressed size.
+  The built-in HEVC decoder receives its front end's GPU record of each picture instead, a few megabytes at 2160p.
 - Placement: the decoder runs on the presenter's device, on the main thread, because decoded frames must stay in GPU memory; a decoder on any other device would need a readback.
 - Frames: decoded planes live in a frame pool, one storage buffer of slots, which the fixed `SIGNAL` stage reads directly, so a frame is never copied, not even on the GPU.
   - Core WebGPU has no 16-bit storage texture formats such as `r16uint`, which is why planes are buffers.
@@ -83,16 +86,18 @@ Dispatch counts that depend on the bitstream come from `dispatchWorkgroupsIndire
 - Timing: presentation times come from the container; with `reorder: N`, the engine presents slots in timestamp order, holding back up to N frames.
 - Slots: a decoder without references frees a slot when presentation releases it.
   A decoder with references reports freed slots in its status buffer, which the engine reads back asynchronously a few frames behind; the pool holds enough spare slots that nothing waits on that read.
-- Credits: free slots are the route's frame credits.
-- Pacing: the page submits decode work in per-frame units right after a presentation submit, and only as far ahead as the pool allows, so presentation never queues behind more than one frame of decode work on the shared queue.
+- Credits: the worker holds 8 packet credits; a packet's credit returns once its decode work is submitted, and free slots gate the submissions.
+- Pacing: the page submits one packet's decode work at a time, the next only after the previous submission completed and its status readbacks applied, so presentation never queues behind more than one packet of decode work on the shared queue.
+  A presented slot returns to the decoder right after its presentation submit, since the queue orders later decode work behind it.
 - Seeking: the worker restarts at the preceding keyframe from the container's index, and that packet carries the reset flag, which clears the decoder's state.
-- Metadata: per-frame metadata the decoder extracts, such as dynamic HDR metadata, goes to a buffer that presentation passes read on the GPU.
+- Metadata: the worker parses per-packet metadata, such as HDR10+, as on the other routes, and each decoded frame carries its packet's.
 - Temporal: presentation passes read the history of decoded frames from pool slots directly; the pool keeps a slot until neither the decoder nor history needs it.
 
 ## Selection and verification
 
 - A decoder takes a stream when the stream matches `accepts`, its vector passed on the current device, and policy allows it.
-  By default engine routes come first, and user decoders take streams no engine route plays, unless the user prefers a decoder.
+  Native WebCodecs routes come first, and a GPU decoder the policy offers comes before the bundled WebAssembly decoders, which it replaces.
+  Auto offers a decoder once its vector passed; forcing GPU decode, as the sandbox's GPU override does, offers unverified decoders too.
 - The vector check works like route authorization: decode the vector, read back the planes, and compare them with the declared hash.
   The result is cached per device and decoder hash, and checked again after a device loss.
 - The caller demuxes the vector file and hands the check its packets, which a session decodes on the presenter's device.
@@ -118,4 +123,4 @@ Dispatch counts that depend on the bitstream come from `dispatchWorkgroupsIndire
 ## Out of scope
 
 - Audio decoders.
-- Hybrid decoders, with entropy decoding in WebAssembly and reconstruction in WGSL, which need user code beyond WGSL.
+- User hybrid decoders, with entropy decoding in WebAssembly and reconstruction in WGSL, which need user code beyond WGSL; the built-in HEVC decoder is one, with an engine-owned front end.

@@ -1,39 +1,32 @@
 # Embedding the engine
 
-A host imports the engine's TypeScript, serves its prebuilt workers and decoders, and configures it once at startup.
+A host imports the engine's TypeScript, serves its prebuilt workers and WebAssembly modules, and configures it once at startup.
+Decoders are not among them: a host hands the engine the [decoder packages](decoder-packages.md) it loads, at runtime.
 Read the engine's folders from `tools/constants.json` (`sourceDirectory`, `scriptsDirectory`, `libraryOutputDirectory`, `buildInfoFile`) rather than restating them.
 
 ## You need
 
 - The engine as a git submodule of the host.
-- A bundler that reads a package's `imports` field: webpack 5, Vite, and esbuild do, without configuration.
-- The decoder toolchain from [Set up a checkout](setup.md), for the first build of each checkout.
+- The toolchain of the engine's modules from [WebAssembly build](decoders.md#you-need), for the first build of each checkout: Emscripten and rustup.
 
 ## Steps
 
 1. Make the sources resolvable.
    Map `webgpu-player/*` to the engine's `src/*` in the host's TypeScript `paths` and in its bundler alias.
-2. Resolve the engine's own imports.
-   The engine imports its decoder builds as `#wasm/*` and two generated vector modules as `#codec_vector_assets/*`, through the `imports` field of its `package.json`:
-   - `#wasm/*` points TypeScript (the `types` condition) at the declarations in `wasm/*`, so type checks need no decoder build, and points bundlers at the builds in `bin/wasm/*`.
-   - `#codec_vector_assets/*` points at `bin/codec_vector_assets/*.ts`.
-
-   TypeScript reads that field under `bundler`, `node16`, or `nodenext` module resolution.
-   A host on `node` resolution must map each entry in `paths`, using the `types` target where there is one: `#wasm/*` to `<engine>/wasm/*`, and `#codec_vector_assets/*` to `<engine>/bin/codec_vector_assets/*.ts`.
-   The host's TypeScript loader must transpile `bin/codec_vector_assets/` as well as `src/`.
-3. Install the engine's dependencies.
+   The sources import nothing through the `imports` field of the engine's `package.json`; only the decoder projects' tests do.
+2. Install the engine's dependencies.
    Add the engine to the host's npm `workspaces`, so npm installs them, `esbuild` for the asset build included.
    Without a workspace, install the engine's `dependencies` and `esbuild` in the host.
-4. Build the decoders once per checkout, and again after a decoder source changes: `make -C <engine>/wasm sources all`.
-   The asset build and the decoder tests read them from `<engine>/bin/wasm/`, and the asset build stops when that folder is missing.
-5. Build the served assets before bundling: `node <engine>/scripts/build.mjs`, with `--production` for a production build.
-   It bundles the six engine workers with esbuild as classic workers, because the decoder glue loads through `importScripts`.
-   It copies the decoders, their licenses, and the qualification streams into `<engine>/bin/libraries/`.
+3. Build the engine's modules once per checkout, and again after their sources change: `make -C <engine>/wasm all`.
+   The asset build reads them from `<engine>/bin/wasm/` and stops when that folder is missing.
+4. Build the served assets before bundling: `node <engine>/scripts/build.mjs`, with `--production` for a production build.
+   It bundles the four engine workers with esbuild as classic workers.
+   It copies the engine's modules, their licenses, and the native range extension probes' streams into `<engine>/bin/libraries/`.
    It also writes `<engine>/bin/build-info.json`, whose `assetKey` hashes every served file.
-6. Serve `<engine>/bin/libraries/` unmodified, and do not minify it again.
+5. Serve `<engine>/bin/libraries/` unmodified, and do not minify it again.
    The default asset base is `libraries/` beside the page.
    Workers live in its `webgpu-player/` folder and resolve the other assets relative to their own URL, so keep the layout intact.
-7. Configure the engine at startup:
+6. Configure the engine at startup:
 
    ```ts
    import { configureEngineAssets } from 'webgpu-player/EngineAssets';
@@ -54,15 +47,15 @@ Read the engine's folders from `tools/constants.json` (`sourceDirectory`, `scrip
 - Asset URLs are stable.
   The cache key is appended as `?v=`, so a browser never mixes files from two builds.
 - Engine workers are served at `libraries/webgpu-player/<Name>.worker.js`, not as host bundler chunks.
-- Qualification streams are served with a `.bin` extension, because Jellyfin's static file provider rejects unknown extensions.
-  The generated ones come from `bin/codec_vector_assets/`, the hand-made ones from `src/capability/vectors/qualification/`.
-- The served folder holds each decoder's license beside it.
-  The LGPL decoders' corresponding source is published with each release; see [WebAssembly decoders](decoders.md#licenses).
+- The range extension probes' streams are served with a `.bin` extension, because some static file servers reject unknown extensions.
+  They come from `bin/codec_vector_assets/`.
+- The served folder holds each module's license beside it.
+  The engine serves no LGPL code; whoever distributes the LGPL decoder packages offers their source (see [WebAssembly build](decoders.md#licenses)).
 
 ## Gotchas
 
 - Reload the page fully after deploying a new build.
-  Open pages keep their old bundles; engine workers and decoders change their `?v=` key with every build.
+  Open pages keep their old bundles; engine workers and modules change their `?v=` key with every build.
 - A bundler dev server that runs the asset build at configuration load must be restarted after an engine worker changes.
 - WebGPU needs a secure context.
   Over plain HTTP on a LAN address, a host that still selects the WebGPU player plays HTML pass-through only, which proves nothing.

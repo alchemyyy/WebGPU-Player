@@ -63,6 +63,7 @@ export function createDecodeSessionTelemetry(overrides: Partial<CustomDecodeSess
         droppedFrameCount: 0,
         failureKind: null,
         firstFrameMediaTimeMicroseconds: null,
+        gpuVideoDecode: null,
         lastAudioMediaTimeMicroseconds: null,
         lastFrameEndMediaTimeMicroseconds: null,
         lastFrameMediaTimeMicroseconds: null,

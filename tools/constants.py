@@ -22,10 +22,12 @@ TEST_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["testDirectory"]
 SCRIPTS_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["scriptsDirectory"]
 CODEC_VECTOR_SCRIPTS_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["codecVectorScriptsDirectory"]
 WASM_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["wasmDirectory"]
-WASM_LICENSES_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["wasmLicensesDirectory"]
+DECODERS_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["decodersDirectory"]
+DECODER_BUILD_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["decoderBuildDirectory"]
 OUTPUT_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["outputDirectory"]
 WASM_OUTPUT_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["wasmOutputDirectory"]
 LIBRARY_OUTPUT_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["libraryOutputDirectory"]
+DECODER_OUTPUT_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["decoderOutputDirectory"]
 CODEC_VECTOR_ASSETS_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["codecVectorAssetsDirectory"]
 PLAYBACK_SMOKE_MEDIA_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["playbackSmokeMediaDirectory"]
 BUILD_INFO_FILE: Final = ENGINE_ROOT / LAYOUT["buildInfoFile"]
@@ -39,6 +41,7 @@ PLANTUML_OUTPUT_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["plantUMLOutputDirectory
 VENDOR_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["vendorDirectory"]
 FFMPEG_SOURCE_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["ffmpegSourceDirectory"]
 DCADEC_SOURCE_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["dcadecSourceDirectory"]
+AOM_SOURCE_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["aomSourceDirectory"]
 
 
 def typescript_import_path(module_from_source: str, importing_directory: Path) -> str:

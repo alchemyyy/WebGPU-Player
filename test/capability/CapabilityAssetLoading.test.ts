@@ -8,7 +8,7 @@ import {
     fetchCapabilityAsset
 } from 'webgpu-player/capability/CapabilityAssetLoading';
 
-const ASSET_URL = 'https://example.test/web/libraries/ffmpeg-hevc/main10-4k-qualification.bin';
+const ASSET_URL = 'https://example.test/web/libraries/webgpu-player/hevc-rext/main422-10.bin';
 const ASSET_BYTES = Object.freeze([ 1, 2, 3, 4 ]);
 const FIRST_RETRY_DELAY_MILLISECONDS = 250;
 const SECOND_RETRY_DELAY_MILLISECONDS = 1_000;

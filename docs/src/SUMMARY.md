@@ -18,10 +18,11 @@
 # Integration
 
 - [Embedding the engine](embedding.md)
+- [Decoder packages](decoder-packages.md)
 
 # Build and test
 
-- [WebAssembly decoders](decoders.md)
+- [WebAssembly build](decoders.md)
 - [Codec vectors](codec-vectors.md)
 - [Tools](tools.md)
 - [Sandbox](sandbox.md)

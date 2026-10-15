@@ -17,20 +17,19 @@ With no book directory it renders this book; the Jellyfin plugin passes its own 
 It needs Java, and downloads the pinned PlantUML jar into `bin/plantuml/` on first use.
 See [Maintaining this book](maintaining.md#diagrams).
 
-## DTS downmix report
+## Decoder package tools
 
 ```sh
-npx --no-install vite-node --script tools/report_dts_downmix_reference.ts --check
+node tools/pack-decoder-package.mjs --decoder <source> [--module <module.wasm>] [--vectors <vectors>] --output <package.wasm>
 ```
 
-`report_dts_downmix_reference.ts` prints the DTS downmix fingerprint report.
-With `--check` it fails unless every decoded stereo fingerprint matches the qualification fingerprint in `src/capability/vectors/test/dts/packets.json`.
-It runs the DTS decoder from `bin/wasm/`, so build the decoders first.
+`pack-decoder-package.mjs` packs one [decoder package](decoder-packages.md) by hand: a decoder source, the module of its parser or audio decoder, and its vectors file.
+It checks the result with the engine's own loader, so a package it writes loads wherever the engine runs.
+`decoder-package-format.mjs` holds the writer it shares with `scripts/decoder-packages.mjs`, which builds the decoder projects (see [WebAssembly build](decoders.md#decoder-projects)).
 
 ## Browser probes
 
 | File | Does |
 | --- | --- |
-| `run-dolby-vision-worker-smoke.mjs` | Runs a Dolby Vision Profile 7 FEL decode in the prebuilt custom decode worker through Chromium remote debugging. The worker defaults to `libraries/webgpu-player/CustomDecode.worker.js`, relative to `--frontend-url` |
 | `probe-browser-runtime.mjs` | Configuration-only browser diagnostics |
 | `probe_dynamic_HDR_shader.py`, `probe-dynamic-HDR-shader-browser.mjs`, `emit_dynamic_HDR_shader.ts`, `probe_dynamic_HDR_vector.ts` | Compile the production HDR10+ WGSL in headless Chromium |

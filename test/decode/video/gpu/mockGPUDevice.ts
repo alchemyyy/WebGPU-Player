@@ -1,0 +1,463 @@
+// A WebGPU device whose buffers hold real bytes and whose queue runs copies, clears, and dispatches in submission order.
+// A dispatch runs no WGSL; a test plays the decoder's part through the device's dispatch handler.
+import {
+    BYTES_PER_WORD,
+    INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH,
+    MAXIMUM_STORAGE_BUFFER_BINDING_SIZE,
+    MAXIMUM_WORKGROUP_COUNT,
+    STORAGE_BUFFER_OFFSET_ALIGNMENT,
+    UNIFORM_BUFFER_OFFSET_ALIGNMENT
+} from 'webgpu-player/presentation/WebGPUConstants';
+import { MEBIBYTE } from 'webgpu-player/decode/video/gpu/GPUDecodeLimits';
+
+// WebGPU's default maxBufferSize and maxStorageBuffersPerShaderStage, which the engine does not otherwise name
+const DEFAULT_MAXIMUM_BUFFER_SIZE = 256 * MEBIBYTE;
+const DEFAULT_MAXIMUM_STORAGE_BUFFERS_PER_SHADER_STAGE = 8;
+const INDIRECT_ARGUMENT_COUNT = INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH / BYTES_PER_WORD;
+
+const DEFAULT_LIMITS = {
+    maxBufferSize: DEFAULT_MAXIMUM_BUFFER_SIZE,
+    maxComputeWorkgroupsPerDimension: MAXIMUM_WORKGROUP_COUNT,
+    maxStorageBufferBindingSize: MAXIMUM_STORAGE_BUFFER_BINDING_SIZE,
+    maxStorageBuffersPerShaderStage: DEFAULT_MAXIMUM_STORAGE_BUFFERS_PER_SHADER_STAGE,
+    minStorageBufferOffsetAlignment: STORAGE_BUFFER_OFFSET_ALIGNMENT,
+    minUniformBufferOffsetAlignment: UNIFORM_BUFFER_OFFSET_ALIGNMENT
+};
+
+export type MockGPULimits = typeof DEFAULT_LIMITS;
+
+export type MockCompilationMessage = {
+    lineNum: number
+    linePos: number
+    message: string
+    type: 'error' | 'info' | 'warning'
+};
+
+export type MockBindGroupEntry = {
+    binding: number
+    resource: { buffer: MockGPUBuffer; offset?: number; size?: number }
+};
+
+export type MockBindGroup = {
+    entries: readonly MockBindGroupEntry[]
+    label: string
+};
+
+export type MockComputePipeline = {
+    entryPoint: string
+    label: string
+    /** The code of the module the pipeline was created from */
+    moduleCode: string
+};
+
+/** A shader module, which keeps the code it was created from. */
+export type MockShaderModule = {
+    code: string
+    getCompilationInfo: () => Promise<{ messages: MockCompilationMessage[] }>
+};
+
+/** One dispatch as the queue ran it, with what was bound. */
+export type MockDispatch = {
+    bindGroup: MockBindGroup
+    dynamicOffsets: readonly number[]
+    entryPoint: string
+    indirectBuffer: MockGPUBuffer | null
+    /** The workgroup counts, read from the indirect buffer when the dispatch is indirect. */
+    workgroupCounts: readonly [number, number, number]
+};
+
+type MockCommand =
+    | { kind: 'clear'; buffer: MockGPUBuffer; offset: number; size: number }
+    | { kind: 'copy'; destination: MockGPUBuffer; destinationOffset: number; size: number; source: MockGPUBuffer; sourceOffset: number }
+    | {
+        bindGroup: MockBindGroup
+        dynamicOffsets: readonly number[]
+        indirectBuffer: MockGPUBuffer | null
+        indirectOffset: number
+        kind: 'dispatch'
+        pipeline: MockComputePipeline
+        workgroupCounts: readonly [number, number, number] | null
+    };
+
+export type MockCommandBuffer = {
+    commands: readonly MockCommand[]
+};
+
+export type MockDispatchHandler = (dispatch: MockDispatch, device: MockGPUDevice) => void;
+
+/** A buffer whose bytes the queue reads and writes. */
+export class MockGPUBuffer {
+    readonly data: Uint8Array;
+    destroyed = false;
+    readonly label: string;
+    mapState: 'mapped' | 'pending' | 'unmapped' = 'unmapped';
+    readonly size: number;
+    readonly usage: number;
+    private readonly device: MockGPUDevice;
+
+    constructor(device: MockGPUDevice, descriptor: GPUBufferDescriptor) {
+        this.device = device;
+        this.data = new Uint8Array(descriptor.size);
+        this.label = descriptor.label ?? '';
+        this.size = descriptor.size;
+        this.usage = descriptor.usage;
+    }
+
+    destroy(): void {
+        this.destroyed = true;
+        this.device.rejectPendingMap(this);
+    }
+
+    getMappedRange(offset = 0, size: number = this.size - offset): ArrayBuffer {
+        if (this.mapState !== 'mapped') {
+            throw new Error(`Buffer ${this.label} is not mapped`);
+        }
+        return this.data.slice(offset, offset + size).buffer;
+    }
+
+    mapAsync(): Promise<void> {
+        if (this.mapState !== 'unmapped' || this.destroyed) {
+            return Promise.reject(new Error(`Buffer ${this.label} cannot be mapped`));
+        }
+        this.mapState = 'pending';
+        return this.device.scheduleMap(this);
+    }
+
+    unmap(): void {
+        this.mapState = 'unmapped';
+    }
+
+    /** Reads little-endian 32-bit words from a byte offset. */
+    readWords(byteOffset: number, wordCount: number): Uint32Array {
+        return new Uint32Array(this.data.slice(byteOffset, byteOffset + wordCount * BYTES_PER_WORD).buffer);
+    }
+
+    /** Writes little-endian 32-bit words at a byte offset, as a dispatch would. */
+    writeWords(byteOffset: number, words: readonly number[]): void {
+        const view = new DataView(this.data.buffer);
+        for (let wordIndex = 0; wordIndex < words.length; wordIndex += 1) {
+            view.setUint32(byteOffset + wordIndex * BYTES_PER_WORD, words[wordIndex] >>> 0, true);
+        }
+    }
+}
+
+class MockComputePassEncoder {
+    private bindGroup: MockBindGroup | null = null;
+    private readonly commands: MockCommand[];
+    private dynamicOffsets: readonly number[] = [];
+    private pipeline: MockComputePipeline | null = null;
+
+    constructor(commands: MockCommand[]) {
+        this.commands = commands;
+    }
+
+    dispatchWorkgroups(workgroupCountX: number, workgroupCountY = 1, workgroupCountZ = 1): void {
+        this.pushDispatch([ workgroupCountX, workgroupCountY, workgroupCountZ ], null, 0);
+    }
+
+    dispatchWorkgroupsIndirect(indirectBuffer: MockGPUBuffer, indirectOffset: number): void {
+        this.pushDispatch(null, indirectBuffer, indirectOffset);
+    }
+
+    end(): void {
+        this.pipeline = null;
+    }
+
+    setBindGroup(index: number, bindGroup: MockBindGroup, dynamicOffsets: readonly number[] = []): void {
+        if (index !== 0) {
+            throw new Error('Decoder bind groups live in group 0');
+        }
+        this.bindGroup = bindGroup;
+        this.dynamicOffsets = [ ...dynamicOffsets ];
+    }
+
+    setPipeline(pipeline: MockComputePipeline): void {
+        this.pipeline = pipeline;
+    }
+
+    private pushDispatch(
+        workgroupCounts: readonly [number, number, number] | null,
+        indirectBuffer: MockGPUBuffer | null,
+        indirectOffset: number
+    ): void {
+        if (!this.pipeline || !this.bindGroup) {
+            throw new Error('A dispatch needs a pipeline and a bind group');
+        }
+        this.commands.push({
+            bindGroup: this.bindGroup,
+            dynamicOffsets: this.dynamicOffsets,
+            indirectBuffer,
+            indirectOffset,
+            kind: 'dispatch',
+            pipeline: this.pipeline,
+            workgroupCounts
+        });
+    }
+}
+
+class MockCommandEncoder {
+    private readonly commands: MockCommand[] = [];
+
+    beginComputePass(): MockComputePassEncoder {
+        return new MockComputePassEncoder(this.commands);
+    }
+
+    clearBuffer(buffer: MockGPUBuffer, offset = 0, size: number = buffer.size - offset): void {
+        this.commands.push({ buffer, kind: 'clear', offset, size });
+    }
+
+    copyBufferToBuffer(
+        source: MockGPUBuffer,
+        sourceOffset: number,
+        destination: MockGPUBuffer,
+        destinationOffset: number,
+        size: number
+    ): void {
+        this.commands.push({ destination, destinationOffset, kind: 'copy', size, source, sourceOffset });
+    }
+
+    finish(): MockCommandBuffer {
+        return { commands: [ ...this.commands ] };
+    }
+}
+
+type PendingMap = {
+    buffer: MockGPUBuffer
+    reject: (error: Error) => void
+    resolve: () => void
+};
+
+/** The device, its queue, and a record of what ran on it. */
+export class MockGPUDevice {
+    readonly bindGroupLayouts: GPUBindGroupLayoutDescriptor[] = [];
+    readonly bindGroups: MockBindGroup[] = [];
+    readonly buffers: MockGPUBuffer[] = [];
+    compilationMessages: MockCompilationMessage[] = [];
+    /** When set, the messages of a module whose code it returns messages for, in place of compilationMessages. */
+    compilationMessagesForCode: ((code: string) => MockCompilationMessage[] | null) | null = null;
+    readonly dispatches: MockDispatch[] = [];
+    dispatchHandler: MockDispatchHandler = (): void => undefined;
+    /** Returns the message of the error a popped scope captured, or null; it sees each popped scope's filter in pop order. */
+    errorScopeHandler: (filter: GPUErrorFilter) => string | null = (): string | null => null;
+    /** When set, createBuffer throws for a label that contains this text, as an allocation the device refuses. */
+    failingBufferLabel: string | null = null;
+    readonly features: Set<string>;
+    readonly limits: MockGPULimits;
+    readonly lost: Promise<GPUDeviceLostInfo>;
+    /** When true, mapAsync settles only through settlePendingMaps(). */
+    manualMaps = false;
+    /** When set, every mapAsync rejects with this error. */
+    mapFailure: Error | null = null;
+    /** When set, createComputePipelineAsync rejects with this error. */
+    pipelineFailure: Error | null = null;
+    readonly pipelines: MockComputePipeline[] = [];
+    readonly queue = {
+        onSubmittedWorkDone: (): Promise<void> => Promise.resolve(),
+        submit: (commandBuffers: readonly MockCommandBuffer[]): void => {
+            this.submitCount += 1;
+            for (const commandBuffer of commandBuffers) {
+                for (const command of commandBuffer.commands) {
+                    this.runCommand(command);
+                }
+            }
+        },
+        writeBuffer: (buffer: MockGPUBuffer, bufferOffset: number, data: ArrayBuffer | ArrayBufferView, dataOffset = 0, size?: number): void => {
+            this.writeBufferCount += 1;
+            const bytes = data instanceof ArrayBuffer ?
+                new Uint8Array(data, dataOffset, size ?? data.byteLength - dataOffset) :
+                new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+            if (bufferOffset % BYTES_PER_WORD !== 0 || bytes.byteLength % BYTES_PER_WORD !== 0) {
+                throw new Error('writeBuffer offsets and sizes must be multiples of 4');
+            }
+            buffer.data.set(bytes, bufferOffset);
+        }
+    };
+    readonly shaderModuleCodes: string[] = [];
+    submitCount = 0;
+    writeBufferCount = 0;
+    private readonly errorScopes: GPUErrorFilter[] = [];
+    private readonly pendingMaps: PendingMap[] = [];
+    private resolveLost: (info: GPUDeviceLostInfo) => void = (): void => undefined;
+
+    constructor(features: readonly string[] = [], limits: Partial<MockGPULimits> = {}) {
+        this.features = new Set(features);
+        this.limits = { ...DEFAULT_LIMITS, ...limits };
+        this.lost = new Promise<GPUDeviceLostInfo>(resolve => {
+            this.resolveLost = resolve;
+        });
+    }
+
+    asDevice(): GPUDevice {
+        return this as unknown as GPUDevice;
+    }
+
+    createBindGroup(descriptor: { entries: readonly MockBindGroupEntry[]; label?: string }): MockBindGroup {
+        const bindGroup: MockBindGroup = { entries: descriptor.entries, label: descriptor.label ?? '' };
+        this.bindGroups.push(bindGroup);
+        return bindGroup;
+    }
+
+    createBindGroupLayout(descriptor: GPUBindGroupLayoutDescriptor): GPUBindGroupLayoutDescriptor {
+        this.bindGroupLayouts.push(descriptor);
+        return descriptor;
+    }
+
+    createBuffer(descriptor: GPUBufferDescriptor): MockGPUBuffer {
+        if (this.failingBufferLabel !== null && (descriptor.label ?? '').includes(this.failingBufferLabel)) {
+            throw new RangeError(`createBuffer: refused '${descriptor.label ?? ''}'`);
+        }
+        const buffer = new MockGPUBuffer(this, descriptor);
+        this.buffers.push(buffer);
+        return buffer;
+    }
+
+    createCommandEncoder(): MockCommandEncoder {
+        return new MockCommandEncoder();
+    }
+
+    createComputePipelineAsync(descriptor: { compute: { entryPoint?: string; module: MockShaderModule }; label?: string }): Promise<MockComputePipeline> {
+        if (this.pipelineFailure) {
+            return Promise.reject(this.pipelineFailure);
+        }
+        const pipeline: MockComputePipeline = { entryPoint: descriptor.compute.entryPoint ?? '', label: descriptor.label ?? '', moduleCode: descriptor.compute.module.code };
+        this.pipelines.push(pipeline);
+        return Promise.resolve(pipeline);
+    }
+
+    createPipelineLayout(descriptor: GPUPipelineLayoutDescriptor): GPUPipelineLayoutDescriptor {
+        return descriptor;
+    }
+
+    createShaderModule(descriptor: { code: string }): MockShaderModule {
+        this.shaderModuleCodes.push(descriptor.code);
+        const messages = [ ...(this.compilationMessagesForCode?.(descriptor.code) ?? this.compilationMessages) ];
+        return { code: descriptor.code, getCompilationInfo: (): Promise<{ messages: MockCompilationMessage[] }> => Promise.resolve({ messages }) };
+    }
+
+    /** Returns the buffers whose label contains the text. */
+    findBuffers(labelText: string): MockGPUBuffer[] {
+        return this.buffers.filter(buffer => buffer.label.includes(labelText));
+    }
+
+    /** Returns the one buffer with exactly this label. */
+    findBuffer(label: string): MockGPUBuffer {
+        const matches = this.buffers.filter(buffer => buffer.label === label);
+        if (matches.length !== 1) {
+            throw new Error(`Expected one buffer labeled ${label}, found ${matches.length}`);
+        }
+        return matches[0];
+    }
+
+    pushErrorScope(filter: GPUErrorFilter): void {
+        this.errorScopes.push(filter);
+    }
+
+    popErrorScope(): Promise<{ message: string } | null> {
+        const filter = this.errorScopes.pop();
+        if (filter === undefined) {
+            return Promise.reject(new Error('popErrorScope: the error scope stack is empty'));
+        }
+        const message = this.errorScopeHandler(filter);
+        return Promise.resolve(message === null ? null : { message });
+    }
+
+    /** Returns the error scopes pushed and not yet popped. */
+    getErrorScopeDepth(): number {
+        return this.errorScopes.length;
+    }
+
+    loseDevice(message: string): void {
+        this.resolveLost({ message, reason: 'unknown' } as GPUDeviceLostInfo);
+    }
+
+    rejectPendingMap(buffer: MockGPUBuffer): void {
+        const pendingIndex = this.pendingMaps.findIndex(pending => pending.buffer === buffer);
+        if (pendingIndex >= 0) {
+            const [ pending ] = this.pendingMaps.splice(pendingIndex, 1);
+            buffer.mapState = 'unmapped';
+            pending.reject(new Error('The buffer was destroyed while mapping'));
+        }
+    }
+
+    scheduleMap(buffer: MockGPUBuffer): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            const pending: PendingMap = { buffer, reject, resolve };
+            if (this.manualMaps) {
+                this.pendingMaps.push(pending);
+                return;
+            }
+            void Promise.resolve().then((): void => {
+                this.settleMap(pending);
+            });
+        });
+    }
+
+    /** Settles every map waiting under manualMaps. */
+    settlePendingMaps(): void {
+        for (const pending of this.pendingMaps.splice(0)) {
+            this.settleMap(pending);
+        }
+    }
+
+    getPendingMapCount(): number {
+        return this.pendingMaps.length;
+    }
+
+    private settleMap(pending: PendingMap): void {
+        if (pending.buffer.destroyed) {
+            pending.buffer.mapState = 'unmapped';
+            pending.reject(new Error('The buffer was destroyed while mapping'));
+            return;
+        }
+        if (this.mapFailure) {
+            pending.buffer.mapState = 'unmapped';
+            pending.reject(this.mapFailure);
+            return;
+        }
+        pending.buffer.mapState = 'mapped';
+        pending.resolve();
+    }
+
+    private runCommand(command: MockCommand): void {
+        switch (command.kind) {
+            case 'clear':
+                command.buffer.data.fill(0, command.offset, command.offset + command.size);
+                return;
+            case 'copy':
+                command.destination.data.set(
+                    command.source.data.subarray(command.sourceOffset, command.sourceOffset + command.size),
+                    command.destinationOffset
+                );
+                return;
+            case 'dispatch': {
+                const workgroupCounts = command.workgroupCounts ?? readIndirectCounts(command.indirectBuffer, command.indirectOffset);
+                const dispatch: MockDispatch = {
+                    bindGroup: command.bindGroup,
+                    dynamicOffsets: command.dynamicOffsets,
+                    entryPoint: command.pipeline.entryPoint,
+                    indirectBuffer: command.indirectBuffer,
+                    workgroupCounts
+                };
+                this.dispatches.push(dispatch);
+                this.dispatchHandler(dispatch, this);
+            }
+        }
+    }
+}
+
+function readIndirectCounts(buffer: MockGPUBuffer | null, offset: number): readonly [number, number, number] {
+    if (!buffer) {
+        throw new Error('An indirect dispatch needs its buffer');
+    }
+    const words = buffer.readWords(offset, INDIRECT_ARGUMENT_COUNT);
+    return [ words[0], words[1], words[2] ];
+}
+
+/** Returns the buffer a dispatch bound at a binding. */
+export function getBoundBuffer(dispatch: MockDispatch, binding: number): MockGPUBuffer {
+    const entry = dispatch.bindGroup.entries.find(candidate => candidate.binding === binding);
+    if (!entry) {
+        throw new Error(`The dispatch bound nothing at binding ${binding}`);
+    }
+    return entry.resource.buffer;
+}

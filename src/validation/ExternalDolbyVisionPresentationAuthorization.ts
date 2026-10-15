@@ -10,11 +10,11 @@ import {
     type ColorTriplet
 } from '../color/ColorPipeline';
 import { reconstructDolbyVisionBT2020PQ } from '../color/DolbyVisionColorTransform';
-import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../video/dolby-vision/DolbyVisionRPUParser';
+import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../demux/dolby-vision/DolbyVisionRPUParser';
 import type {
     RawVideoPlaneDescriptor,
     TransferableRawVideoFrame
-} from '../video/RawVideoFrameCopy';
+} from '../decode/video/RawVideoFrameCopy';
 import { createBuiltinChain } from '../presentation/passes/builtin/BuiltinChains';
 import type {
     BuiltinChain,

@@ -13,7 +13,7 @@ import {
 } from 'vitest';
 
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
-import type DolbyVisionRPUParserSession from 'webgpu-player/video/dolby-vision/DolbyVisionRPUParserSession';
+import type DolbyVisionRPUParserSession from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParserSession';
 
 import {
     AV1_HDR10_PLUS_EXPECTATIONS,
