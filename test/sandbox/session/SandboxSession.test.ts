@@ -56,6 +56,7 @@ vi.mock('webgpu-player/presentation/WebGPUPresenter', () => ({
         getTelemetry = vi.fn(() => ({ state: 'presenting' }));
         seek = vi.fn();
         setDecodedFramePushMode = vi.fn();
+        setDeinterlaceMode = vi.fn(() => Promise.resolve());
         setHDROutputEnabled = vi.fn(() => Promise.resolve());
         setPresentationParameter = vi.fn();
         setPresentationPreset = vi.fn(() => Promise.resolve({ activePasses: [ 'Saturation' ], inactivePasses: [] }));
@@ -197,6 +198,8 @@ const GPU_VIDEO_DECODER = { codec: 'hevc', decoderId: HEVC_PACKAGE.id, package: 
 // A package file the page could not load, as the decoder packages report it
 const PACKAGE_FAILURE_CODE = 'package-invalid';
 const PACKAGE_FAILURE_DETAIL = 'vc1.wasm WebAssembly.compile(): expected magic word';
+// The presenter's refusal of a mode outside its modes
+const DEINTERLACE_MODE_REJECTION = "deinterlace-mode: 'weave'";
 const ELIGIBLE_ROUTE = {
     audioOutputMode: 'decoded-pcm',
     audioSourceChannelCount: 8,
@@ -281,6 +284,21 @@ describe('SandboxSession', () => {
         expect(state.tracks.audioTrackIndex).toBe(AUDIO_STREAM_INDEX);
         expect(state.route.active?.selection).toBe('eligibility');
         expect(state.failures).toEqual([]);
+    });
+
+    it('hands the presenter the deinterlacing mode and publishes it, and records a mode the presenter refuses', async () => {
+        const harness = createHarness();
+        const presenter = engineMocks.presenters[0];
+
+        await harness.session.setDeinterlaceMode('single-rate');
+
+        expect(presenter.setDeinterlaceMode).toHaveBeenCalledWith('single-rate');
+        expect(harness.store.getState().presentation.deinterlaceMode).toBe('single-rate');
+
+        presenter.setDeinterlaceMode.mockRejectedValueOnce(new RangeError(DEINTERLACE_MODE_REJECTION));
+        await expect(harness.session.setDeinterlaceMode('off')).rejects.toThrow('deinterlace-mode-failed');
+        expect(getFailures(harness)).toEqual([ { code: 'deinterlace-mode-failed', detail: DEINTERLACE_MODE_REJECTION, layer: 'presenter' } ]);
+        expect(harness.store.getState().presentation.deinterlaceMode).toBe('single-rate');
     });
 
     it('records a probe failure and rejects without starting a route', async () => {

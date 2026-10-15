@@ -17,6 +17,7 @@ import {
     type DecodeWorkerStartRequest
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 import { GPU_DECODER_PARSER_STATUS } from 'webgpu-player/decode/video/gpu/GPUDecoderParser';
+import type { GPUDecoderErrorRecovery } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
 import { findAV1SequenceHeader } from 'webgpu-player/demux/av1/AV1SequenceHeaderParser';
 
 import { AV1_HDR10_PLUS_EXPECTATIONS, readAV1HDR10PlusVector } from '../helpers/av1HDR10PlusVectors';
@@ -28,7 +29,7 @@ import {
     startDecodeWorker
 } from '../helpers/decodeWorkerHarness';
 import { createParserStubModuleBinary, type ParserStubOptions } from '../helpers/decoderPackages';
-import { createHEVCMatroska } from '../helpers/hevcMatroskaVector';
+import { createHEVCMatroska, createHEVCMatroskaWithKeyframes } from '../helpers/hevcMatroskaVector';
 import {
     createInProcessGPUDecoderWorkerConstructor,
     terminateInProcessGPUDecoderWorkers
@@ -81,6 +82,15 @@ const AV1_FRAME_POOL_ROUTE: Partial<DecodeWorkerStartRequest> = { ...FRAME_POOL_
 // An av1C opens with its marker bit and version 1, and its configOBUs follow its 4-byte header
 const AV1_CONFIGURATION_RECORD_MARKER_AND_VERSION = 0x81;
 const AV1_CONFIGURATION_RECORD_HEADER_BYTE_LENGTH = 4;
+// A track of six packets whose fourth is a key packet, and a parser whose second plan on each instance fails with slice data damage its header recovers from
+const RESYNC_FILE_NAME = 'hevc-resync.mkv';
+const RESYNC_KEYFRAMES = [ true, false, false, true, false, false ];
+const FRAME_DURATION_MICROSECONDS = 40_000;
+const SLICE_DATA_ERROR_CODE = 11;
+const SLICE_DATA_ERROR_NAME = 'sliceData';
+const SLICE_DATA_ERROR_VALUE = 7;
+const SLICE_DATA_ERROR_NAMES = new Map([ [ SLICE_DATA_ERROR_CODE, SLICE_DATA_ERROR_NAME ] ]);
+const SLICE_DATA_RECOVERY = { code: 'resynced', errorName: `parser ${SLICE_DATA_ERROR_NAME}`, value: SLICE_DATA_ERROR_VALUE };
 
 type PacketResponse = Extract<DecodeWorkerResponse, { type: 'packet' }>;
 
@@ -88,12 +98,28 @@ function getPacketResponses(responses: readonly DecodeWorkerResponse[]): PacketR
     return responses.filter((response: DecodeWorkerResponse): response is PacketResponse => response.type === 'packet');
 }
 
+/** The error lines of a stub parser's header: each code's name, and the recovery of those that declare one. */
+type StubParserErrors = Readonly<{
+    errorNames: ReadonlyMap<number, string>
+    errorRecoveries: ReadonlyMap<number, GPUDecoderErrorRecovery>
+}>;
+
+const CONFIGURATION_ERRORS: StubParserErrors = {
+    errorNames: new Map([ [ CONFIGURATION_ERROR_CODE, CONFIGURATION_ERROR_NAME ] ]),
+    errorRecoveries: new Map()
+};
+
 /** The start request's parser field for a stub parser, whose exports return the options' constants, with its input above its data. */
-function createStubParserField(options: ParserStubOptions, repeatDirectiveCount: number = 0): DecodeWorkerGPUVideoParser {
+function createStubParserField(
+    options: ParserStubOptions,
+    repeatDirectiveCount: number = 0,
+    errors: StubParserErrors = CONFIGURATION_ERRORS
+): DecodeWorkerGPUVideoParser {
     return {
         packageVersion: STUB_PACKAGE_VERSION,
         parser: {
-            errorNames: new Map([ [ CONFIGURATION_ERROR_CODE, CONFIGURATION_ERROR_NAME ] ]),
+            errorNames: errors.errorNames,
+            errorRecoveries: errors.errorRecoveries,
             // The engine may give a module more pages than it declares, as the package's memory limits do
             memory: { initialPages: STUB_PARSER_MEMORY_PAGES, maximumPages: DECODER_PACKAGE_MAXIMUM_MEMORY_PAGES },
             module: new WebAssembly.Module(createParserStubModuleBinary({ ...options, results: { reserveInput: STUB_INPUT_POINTER, ...options.results } })),
@@ -103,12 +129,16 @@ function createStubParserField(options: ParserStubOptions, repeatDirectiveCount:
 }
 
 /** A stub parser whose every picture finishes to the stub's record, with the options' other results. */
-function createRecordingParserField(options: ParserStubOptions, repeatDirectiveCount: number = 0): DecodeWorkerGPUVideoParser {
+function createRecordingParserField(
+    options: ParserStubOptions,
+    repeatDirectiveCount: number = 0,
+    errors: StubParserErrors = CONFIGURATION_ERRORS
+): DecodeWorkerGPUVideoParser {
     return createStubParserField({
         ...options,
         dataSegments: [ { bytes: STUB_RECORD, offset: STUB_OUTPUT_POINTER } ],
         results: { outputByteLength: STUB_RECORD.byteLength, outputPointer: STUB_OUTPUT_POINTER, ...options.results }
-    }, repeatDirectiveCount);
+    }, repeatDirectiveCount, errors);
 }
 
 /** A stub parser that plans three pictures of each packet, each finishing to the stub's record at its own visible size with its repeat count. */
@@ -287,6 +317,54 @@ describe('CustomDecode.worker frame-pool route', () => {
         expect(getReadyResponse(responses)).not.toHaveProperty('maximumPictureSize');
         expect(getPacketResponses(responses)[0]).not.toHaveProperty('repeatCounts');
         expect(getPacketResponses(responses)[0]).not.toHaveProperty('visibleSize');
+    });
+
+    it('restarts its parser at the next key packet after a recoverable failure, holding the packets before it, and holds to the end without one', async () => {
+        const workerScope = await startDecodeWorker(new Map([ [ RESYNC_FILE_NAME, await createHEVCMatroskaWithKeyframes(RESYNC_KEYFRAMES) ] ]));
+        serveGPUDecoderWorkers();
+        const recoveringParser = createRecordingParserField({
+            results: { errorCode: SLICE_DATA_ERROR_CODE, errorValue: SLICE_DATA_ERROR_VALUE },
+            resultSequences: { plan: [ GPU_DECODER_PARSER_STATUS.success, GPU_DECODER_PARSER_STATUS.failed ] }
+        }, 0, { errorNames: SLICE_DATA_ERROR_NAMES, errorRecoveries: new Map([ [ SLICE_DATA_ERROR_CODE, 'resync' ] ]) });
+
+        const responses = await decodeToEnd(workerScope, createWorkerStartRequest(RESYNC_FILE_NAME, { ...FRAME_POOL_ROUTE, gpuVideoParser: recoveringParser }));
+
+        const packets = getPacketResponses(responses);
+        // Each parser instance plans its first packet and fails on its second: packet 1 holds up to the key packet 3, whose parser fails on packet 4,
+        // which holds to the end, since no key packet follows
+        expect(packets.map(packet => [ packet.timestampMicroseconds / FRAME_DURATION_MICROSECONDS, packet.hold ?? false, packet.reset ?? false ])).toEqual([
+            [ 0, false, false ],
+            [ 1, true, false ],
+            [ 2, true, false ],
+            [ 3, false, true ],
+            [ 4, true, false ],
+            [ 5, true, false ]
+        ]);
+        expect(packets.map(packet => packet.recovery ?? null)).toEqual([ null, SLICE_DATA_RECOVERY, null, null, SLICE_DATA_RECOVERY, null ]);
+        expect(packets.filter(packet => packet.hold).every(packet => packet.data.byteLength === 0)).toBe(true);
+        expect(responses.some(response => response.type === 'error')).toBe(false);
+        expect(responses.some(response => response.type === 'video-ended')).toBe(true);
+    });
+
+    it('fails the run on a parser failure its header declares no recovery for', async () => {
+        const workerScope = await startDecodeWorker(new Map([ [ RESYNC_FILE_NAME, await createHEVCMatroskaWithKeyframes(RESYNC_KEYFRAMES) ] ]));
+        serveGPUDecoderWorkers();
+        const failingParser = createRecordingParserField({
+            results: { errorCode: SLICE_DATA_ERROR_CODE, errorValue: SLICE_DATA_ERROR_VALUE },
+            resultSequences: { plan: [ GPU_DECODER_PARSER_STATUS.success, GPU_DECODER_PARSER_STATUS.failed ] }
+        }, 0, { errorNames: SLICE_DATA_ERROR_NAMES, errorRecoveries: new Map() });
+        const request = createWorkerStartRequest(RESYNC_FILE_NAME, { ...FRAME_POOL_ROUTE, gpuVideoParser: failingParser });
+
+        workerScope.dispatchRequest(request);
+        await workerScope.waitForStopped(request.generation);
+
+        expect(workerScope.responses).toContainEqual({
+            failureKind: 'decode-failed',
+            generation: request.generation,
+            message: `parser ${SLICE_DATA_ERROR_NAME}: ${SLICE_DATA_ERROR_VALUE}`,
+            type: 'error'
+        });
+        expect(getPacketResponses(workerScope.responses).some(packet => packet.hold)).toBe(false);
     });
 
     it('fails the run with the check its parser\'s configure failed', async () => {

@@ -8,30 +8,32 @@
 //! packet: 8 MiB
 //! state: 64
 //! buffer: pictureState, 2394880, indirect
-//! buffer: macroblocks, stream.width * stream.height / 256 * 40
+//! buffer: macroblocks, stream.width * stream.height / 256 * 68
 //! buffer: coefficients, min(stream.width * stream.height * (4 + 8 / (output.chromaWidthDivisor * output.chromaHeightDivisor)), 134217728)
-//! error: 1, sequenceHeader
+//! error: 1, sequenceHeader, conceal
 //! error: 2, pictureSize
 //! error: 3, chromaFormat
-//! error: 4, pictureHeader
-//! error: 5, quantizerMatrix
-//! error: 6, startCodes
-//! error: 7, pictureCount
-//! error: 8, fieldPictures
-//! error: 9, sliceHeader
-//! error: 10, macroblockAddress
-//! error: 11, macroblockType
-//! error: 12, motionType
-//! error: 13, motionVector
-//! error: 14, codedBlockPattern
-//! error: 15, dcDifferential
-//! error: 16, coefficients
-//! error: 17, skippedMacroblock
-//! error: 18, sliceEnd
-//! error: 19, bitsExhausted
-//! error: 20, coefficientStorage
-//! error: 21, packetSize
-//! error: 22, sliceCoverage
+//! error: 4, pictureHeader, conceal
+//! error: 5, quantizerMatrix, conceal
+//! error: 6, startCodes, resync
+//! error: 7, pictureCount, resync
+//! error: 8, fieldPictures, resync
+//! error: 9, sliceHeader, conceal
+//! error: 10, macroblockAddress, conceal
+//! error: 11, macroblockType, conceal
+//! error: 12, motionType, conceal
+//! error: 13, motionVector, conceal
+//! error: 14, codedBlockPattern, conceal
+//! error: 15, dcDifferential, conceal
+//! error: 16, coefficients, conceal
+//! error: 17, skippedMacroblock, conceal
+//! error: 18, sliceEnd, conceal
+//! error: 19, bitsExhausted, conceal
+//! error: 20, coefficientStorage, conceal
+//! error: 21, packetSize, conceal
+//! error: 22, sliceCoverage, conceal
+//! error: 23, frameDimensions, resync
+//! error: 24, fieldMissing, conceal
 //! dispatch: loadLookups, 60
 //! dispatch: preparePacket, 1
 //! dispatch: countStartCodes, indirect pictureState
@@ -43,9 +45,23 @@
 //! dispatch: copyFrame, ceil(stream.width / 16), ceil(stream.height / 16)
 //! dispatch: decodeSlices, indirect pictureState
 //! dispatch: checkSlices, 1
+//! dispatch: composeMacroblocks, indirect pictureState
+//! dispatch: prepareRedecode, 1
+//! dispatch: redecodeSlices, indirect pictureState
+//! dispatch: markSegments, 1
 //! dispatch: reconstructPicture, ceil(stream.width / 16), ceil(stream.height / 16)
+//! dispatch: decideConcealment, 1
+//! dispatch: concealMacroblocks, indirect pictureState
+//! dispatch: concealIntra, indirect pictureState
+//! dispatch: deblockHorizontal, indirect pictureState
+//! dispatch: deblockVertical, indirect pictureState
 //! dispatch: nextPicture, 1
 //! dispatch: reconstructPicture, ceil(stream.width / 16), ceil(stream.height / 16)
+//! dispatch: decideConcealment, 1
+//! dispatch: concealMacroblocks, indirect pictureState
+//! dispatch: concealIntra, indirect pictureState
+//! dispatch: deblockHorizontal, indirect pictureState
+//! dispatch: deblockVertical, indirect pictureState
 //! dispatch: finishPacket, 1
 
 // The MPEG-2 Video decoder: ISO/IEC 13818-2 Main, High, and 4:2:2 profile streams, and 4:4:4 ones, entirely in compute shaders,
@@ -59,9 +75,14 @@
 // - prepareSlices parses each slice's header and first macroblock address; allocateSlices gives each its coefficient storage
 // - copyFrame copies a first field from an earlier packet, or fills a frame FFmpeg would not decode
 // - decodeSlices decodes each slice on its own invocation: macroblock types, motion vectors, and quantized coefficients
-// - checkSlices checks that the slices cover each picture once, in raster order
+// - checkSlices checks that the slices cover each picture once, in raster order; where they do not, or a slice failed, composeMacroblocks
+//   gives each macroblock the error status FFmpeg's ff_er_add_slice leaves it, and redecodeSlices rewrites the macroblocks two slices decoded
+// - markSegments marks the damaged macroblocks as ff_er_frame_end does before it conceals them
 // - reconstructPicture runs once per picture, one workgroup per macroblock: dequantization, the IDCT, motion compensation, output
+// - decideConcealment, concealMacroblocks, concealIntra, deblockHorizontal, and deblockVertical conceal a picture's damaged macroblocks
+//   as FFmpeg's error resilience does, after the picture's reconstruction
 // - finishPacket hands the slots that left the references back to the engine
+// A damaged slice ends at its damage, and decoding resumes at the next slice; damaged headers are ignored where FFmpeg ignores them
 
 // pictureState: the dispatch arguments, then the session context, then the packet's work
 // The words an indirect dispatch reads; every pass that precedes one writes them
@@ -119,6 +140,8 @@ const MAXIMUM_RELEASES: u32 = 6u;
 // The slot, plus one, of a frame whose first field an earlier packet decoded: this packet's second field writes into it too,
 // so the frame the engine presents for that packet is whole
 const PACKET_MIRROR_SLOT: u32 = 4144u;
+// Whether two slices decoded one macroblock, so redecodeSlices rewrites each macroblock from the slice that decoded it last
+const PACKET_REDECODE: u32 = 4145u;
 // Per scan workgroup: its start code count, then the start codes before it
 const BLOCK_COUNTS: u32 = 4160u;
 const BLOCK_OFFSETS: u32 = 6208u;
@@ -147,6 +170,13 @@ const PICTURE_BACKWARD_SLOT: u32 = 5u;
 const PICTURE_STARTED: u32 = 6u;
 const PICTURE_MACROBLOCK_COUNT: u32 = 7u;
 const PICTURE_D10: u32 = 8u;
+// Whether a slice of the picture failed, or its slices left a macroblock uncovered or covered twice, so the picture is concealed
+const PICTURE_CONCEALED: u32 = 9u;
+// Whether concealment takes the damaged macroblocks for intra ones, FFmpeg's is_intra_more_likely
+const PICTURE_CONCEAL_INTRA: u32 = 10u;
+// The picture's slices in the slice table: the first, and how many
+const PICTURE_FIRST_SLICE: u32 = 11u;
+const PICTURE_SLICE_COUNT: u32 = 12u;
 // The picture coding fields, at the same offsets from PICTURE_CODING_FIELDS and CONTEXT_PICTURE_FIELDS
 const PICTURE_CODING_FIELDS: u32 = 16u;
 const CODING_F_CODE_FORWARD_X: u32 = 0u;
@@ -176,11 +206,19 @@ const SLICE_END_BYTE: u32 = 1u;
 const SLICE_POSITION: u32 = 2u;
 // The first macroblock's column in bits 0 to 15 and the slice's quantizer scale above them
 const SLICE_FIRST_MACROBLOCK: u32 = 3u;
+// The bit its first macroblock starts at, or 0 for a slice whose header failed, which decodes nothing as FFmpeg's resync stays unset
 const SLICE_MACROBLOCK_BIT: u32 = 4u;
 const SLICE_ENTRY_BASE: u32 = 5u;
 const SLICE_ENTRY_LIMIT: u32 = 6u;
-// The macroblock after the slice's last one in its picture's raster order, which decodeSlices writes for checkSlices
+// How the slice ended in bits 30 and 31, and where in the bits below in its picture's raster order: after its last macroblock,
+// or at the macroblock it failed at; decodeSlices writes it for checkSlices
 const SLICE_END_MACROBLOCK: u32 = 7u;
+const SLICE_OUTCOME_SHIFT: u32 = 30u;
+const SLICE_END_INDEX_MASK: u32 = 0x3FFFFFFFu;
+// Slice outcomes: none yet, ended, and failed
+const SLICE_OUTCOME_NONE: u32 = 0u;
+const SLICE_OUTCOME_ENDED: u32 = 1u;
+const SLICE_OUTCOME_FAILED: u32 = 2u;
 // Slices dispatch in rows of this many workgroups, so a packet of many slices stays within the workgroup count limit
 const SLICE_DISPATCH_WIDTH: u32 = 256u;
 
@@ -195,9 +233,11 @@ const STATE_PENDING_SLOT: u32 = 5u;
 const STATE_PENDING_ANCHOR: u32 = 6u;
 const STATE_PENDING_STRUCTURE: u32 = 7u;
 const STATE_FACTS_REPORTED: u32 = 8u;
+// The pending frame's picture fields, which the packet that completes it reports again
+const STATE_PENDING_FIELDS: u32 = 9u;
 
 // macroblocks: one record per macroblock of the frame, at FFmpeg's mb_y and mb_x; field pictures interleave their rows by parity
-const MACROBLOCK_WORDS: u32 = 10u;
+const MACROBLOCK_WORDS: u32 = 17u;
 // The packet index of the packet that decoded the record, so a macroblock no slice covered is recognized
 const RECORD_SERIAL: u32 = 0u;
 const RECORD_FLAGS: u32 = 1u;
@@ -207,6 +247,12 @@ const RECORD_VECTORS: u32 = 2u;
 const RECORD_ENTRY_START: u32 = 6u;
 // Each block's coefficient entry count, a byte each, four to a word
 const RECORD_BLOCK_COUNTS: u32 = 7u;
+// A concealed picture's concealment status of the macroblock, the CONCEAL_* bits, with its owner above CONCEAL_OWNER_SHIFT
+const RECORD_CONCEALMENT: u32 = 10u;
+// The DC of each 8x8 block concealment computes or guesses, two signed 16-bit values to a word: luma, then blue, then red,
+// RECORD_DC_PLANE_WORDS words to a plane
+const RECORD_DC: u32 = 11u;
+const RECORD_DC_PLANE_WORDS: u32 = 2u;
 
 // Fields of a record's flags
 const FLAG_INTRA: u32 = 1u;
@@ -221,6 +267,19 @@ const CODED_BLOCKS_SHIFT: u32 = 10u;
 const CODED_BLOCKS_MASK: u32 = 0xFFFu;
 const QUANTIZER_SHIFT: u32 = 22u;
 const QUANTIZER_MASK: u32 = 0x7Fu;
+// A skipped macroblock, FFmpeg's mb_skipped
+const FLAG_SKIPPED: u32 = 0x20000000u;
+
+// The bits of a macroblock's concealment status, as FFmpeg's error_status_table holds them with each error and end kind as one:
+// a slice starts at the macroblock, a failed slice stopped at it, a slice ended at it, and it is damaged.
+// A macroblock no slice covered keeps all three of the first, as ff_er_frame_start fills the table
+const CONCEAL_SLICE_START: u32 = 1u;
+const CONCEAL_ERROR: u32 = 2u;
+const CONCEAL_END: u32 = 4u;
+const CONCEAL_UNCOVERED: u32 = 7u;
+const CONCEAL_DAMAGED: u32 = 8u;
+// The slice that decoded the macroblock last, plus one, whose record redecodeSlices rewrites
+const CONCEAL_OWNER_SHIFT: u32 = 8u;
 
 // Motion types of a record, FFmpeg's MV_TYPE_*: one vector per direction for the frame or the field picture's macroblock,
 // a vector per field of a frame picture's macroblock, a vector per half of a field picture's macroblock, and dual prime
@@ -340,11 +399,19 @@ const ERROR_BITS_EXHAUSTED: u32 = 19u;
 const ERROR_COEFFICIENT_STORAGE: u32 = 20u;
 const ERROR_PACKET_SIZE: u32 = 21u;
 const ERROR_SLICE_COVERAGE: u32 = 22u;
+const ERROR_FRAME_DIMENSIONS: u32 = 23u;
+const ERROR_FIELD_MISSING: u32 = 24u;
 
-// Reports a failure, the code in the high byte and the failing value below it, and stops the packet's later passes
+// Reports a failure, the code in the high byte and the failing value below it, and stops the packet's later passes.
+// Its codes are fatal or resync the decoder, so the packet's frame never presents
 fn reportFailure(code: u32, value: u32) {
     reportDecodeError((code << ERROR_CODE_SHIFT) | min(value, ERROR_VALUE_MASK));
     pictureState[PACKET_FAILED] = 1u;
+}
+
+// Reports damage the decoder conceals, the code in the high byte and the failing value below it; decoding goes on
+fn reportConcealment(code: u32, value: u32) {
+    reportDecodeError((code << ERROR_CODE_SHIFT) | min(value, ERROR_VALUE_MASK));
 }
 
 fn packetFailed() -> bool {
@@ -1073,10 +1140,14 @@ var<private> sliceCount: u32;
 var<private> frameStarted: bool;
 var<private> frameAnchor: bool;
 var<private> frameFirstStructure: u32;
-// Whether the packet's last decoded picture was a first field that no second field followed
+// Whether the packet's last decoded picture was a first field that no second field followed, and which picture
 var<private> openFirstField: bool;
 var<private> openFirstFieldStructure: u32;
+var<private> openFirstFieldPicture: u32;
+// The picture fields word of the frame this packet started
+var<private> frameFieldsWord: u32;
 
+// Ends the header stage on a fatal or resync failure
 fn failHeader(code: u32, value: u32) {
     if (!headerFailed) {
         reportFailure(code, value);
@@ -1129,13 +1200,14 @@ fn addRelease(slot: u32) {
 }
 
 // FFmpeg's load_matrix: 64 values in zigzag order into the luma matrix when lumaMatrix is set, and the chroma matrix;
-// an intra matrix's DC weight is always 8
+// an intra matrix's DC weight is always 8. A zero value is damage: the load stops there, keeping the values before it,
+// and the header reads on after the zero, as FFmpeg ignores load_matrix's failure
 fn loadMatrix(lumaMatrix: u32, chromaMatrix: u32, loadLuma: bool, intra: bool) {
     for (var index = 0u; index < COEFFICIENTS_PER_BLOCK; index += 1u) {
         let position = lookupWord(TABLE_ZIGZAG_SCAN + index);
         var value = readHeaderBits(8u);
         if (value == 0u) {
-            failHeader(ERROR_QUANTIZER_MATRIX, index);
+            reportConcealment(ERROR_QUANTIZER_MATRIX, index);
             return;
         }
         if (intra && index == 0u && value != 8u) {
@@ -1148,7 +1220,8 @@ fn loadMatrix(lumaMatrix: u32, chromaMatrix: u32, loadLuma: bool, intra: bool) {
     }
 }
 
-// FFmpeg's mpeg1_decode_sequence
+// FFmpeg's mpeg1_decode_sequence. A damaged header is ignored as FFmpeg ignores it: a missing marker before the matrices
+// leaves everything as it was, and a nonzero tail after them keeps the matrices it loaded but not its size or MPEG-1 parameters
 fn parseSequenceHeader() {
     let width = readHeaderBits(12u);
     let height = readHeaderBits(12u);
@@ -1157,7 +1230,7 @@ fn parseSequenceHeader() {
     readHeaderBits(4u);
     readHeaderBits(18u);
     if (!readHeaderFlag()) {
-        failHeader(ERROR_SEQUENCE_HEADER, headerBit >> 3u);
+        reportConcealment(ERROR_SEQUENCE_HEADER, headerBit >> 3u);
         return;
     }
     // vbv_buffer_size_value and constrained_parameters_flag
@@ -1172,9 +1245,6 @@ fn parseSequenceHeader() {
             pictureState[CONTEXT_MATRICES + MATRIX_CHROMA_INTRA + position] = value;
         }
     }
-    if (headerFailed) {
-        return;
-    }
     if (readHeaderFlag()) {
         loadMatrix(MATRIX_NON_INTRA, MATRIX_CHROMA_NON_INTRA, true, false);
     } else {
@@ -1183,13 +1253,10 @@ fn parseSequenceHeader() {
             pictureState[CONTEXT_MATRICES + MATRIX_CHROMA_NON_INTRA + position] = DEFAULT_NON_INTRA_WEIGHT;
         }
     }
-    if (headerFailed) {
-        return;
-    }
     // What follows the header up to the next start code must be zero
     let tail = peekHeaderBits(SEQUENCE_HEADER_TAIL_BITS);
     if (tail != 0u) {
-        failHeader(ERROR_SEQUENCE_HEADER, tail);
+        reportConcealment(ERROR_SEQUENCE_HEADER, tail);
         return;
     }
     pictureState[CONTEXT_SEQUENCE_WIDTH] = width;
@@ -1202,9 +1269,6 @@ fn parseSequenceHeader() {
     setCodingField(CODING_PICTURE_STRUCTURE, STRUCTURE_FRAME);
     setCodingField(CODING_FRAME_PRED_FRAME_DCT, 1u);
     state[STATE_FIRST_FIELD] = 0u;
-    if (headerSource == SOURCE_PACKET) {
-        state[STATE_SYNC] = 1u;
-    }
 }
 
 // The non-intra weight of the default matrix
@@ -1248,15 +1312,33 @@ fn parseQuantMatrixExtension() {
     if (readHeaderFlag()) {
         loadMatrix(MATRIX_INTRA, MATRIX_CHROMA_INTRA, true, true);
     }
-    if (!headerFailed && readHeaderFlag()) {
+    if (readHeaderFlag()) {
         loadMatrix(MATRIX_NON_INTRA, MATRIX_CHROMA_NON_INTRA, true, false);
     }
-    if (!headerFailed && readHeaderFlag()) {
+    if (readHeaderFlag()) {
         loadMatrix(MATRIX_INTRA, MATRIX_CHROMA_INTRA, false, true);
     }
-    if (!headerFailed && readHeaderFlag()) {
+    if (readHeaderFlag()) {
         loadMatrix(MATRIX_NON_INTRA, MATRIX_CHROMA_NON_INTRA, false, false);
     }
+}
+
+// The f_code a picture without motion in a direction carries, by which FFmpeg guesses a damaged picture header's type
+const UNUSED_F_CODE: u32 = 15u;
+
+// mpeg_decode_picture_coding_extension's guess for a picture whose header carried no valid type: an I picture codes no f_code,
+// a P picture only the forward ones
+fn guessPictureType() {
+    if (currentPictureType != PICTURE_TYPE_NONE || pictureState[CONTEXT_INITIALIZED] == 0u) {
+        return;
+    }
+    let forwardUnused = codingField(CODING_F_CODE_FORWARD_X) == UNUSED_F_CODE && codingField(CODING_F_CODE_FORWARD_Y) == UNUSED_F_CODE;
+    let backwardUnused = codingField(CODING_F_CODE_BACKWARD_X) == UNUSED_F_CODE && codingField(CODING_F_CODE_BACKWARD_Y) == UNUSED_F_CODE;
+    currentPictureType = PICTURE_TYPE_B;
+    if (backwardUnused) {
+        currentPictureType = select(PICTURE_TYPE_P, PICTURE_TYPE_I, forwardUnused);
+    }
+    pictureState[pictureBase(pictureCount - 1u) + PICTURE_TYPE] = currentPictureType;
 }
 
 // FFmpeg's mpeg_decode_picture_coding_extension
@@ -1359,13 +1441,13 @@ fn dropReferences() {
 // A picture start code, as decode_chunks handles PICTURE_START_CODE: the geometry, then FFmpeg's mpeg1_decode_picture
 fn handlePictureStartCode() {
     if (pictureStartCodeSeen && codingField(CODING_PICTURE_STRUCTURE) == STRUCTURE_FRAME) {
-        // FFmpeg ignores a picture after a frame picture and decodes its slices into that frame; a packet holds one frame here
-        failHeader(ERROR_PICTURE_COUNT, pictureCount + 1u);
+        // FFmpeg ignores a picture header after a frame picture, and the slices after it decode into that frame
         return;
     }
     pictureStartCodeSeen = true;
     if (pictureState[CONTEXT_SEQUENCE_WIDTH] == 0u || pictureState[CONTEXT_SEQUENCE_HEIGHT] == 0u) {
-        failHeader(ERROR_PICTURE_SIZE, 0u);
+        // No sequence header gave a size yet; FFmpeg decodes nothing until one does
+        failHeader(ERROR_FRAME_DIMENSIONS, (pictureState[CONTEXT_SEQUENCE_WIDTH] << 12u) | (pictureState[CONTEXT_SEQUENCE_HEIGHT] & 0xFFFu));
         return;
     }
     if (lastCode != LAST_CODE_NONE && lastCode != LAST_CODE_SLICE) {
@@ -1377,22 +1459,24 @@ fn handlePictureStartCode() {
     }
     // temporal_reference
     readHeaderBits(10u);
-    // FFmpeg decodes no picture of another type, MPEG-1's D pictures among them
+    // A type FFmpeg decodes no picture of, MPEG-1's D pictures among them, leaves the picture without one, as FFmpeg's pict_type 0:
+    // an MPEG-2 picture coding extension guesses it, and slices of a picture without one are skipped
     let codingType = readHeaderBits(3u);
-    if (codingType < PICTURE_TYPE_I || codingType > PICTURE_TYPE_B) {
-        failHeader(ERROR_PICTURE_HEADER, codingType);
-        return;
-    }
     currentPictureType = codingType;
-    // vbv_delay
-    readHeaderBits(16u);
-    if (codingType == PICTURE_TYPE_P || codingType == PICTURE_TYPE_B) {
+    if (codingType < PICTURE_TYPE_I || codingType > PICTURE_TYPE_B) {
+        reportConcealment(ERROR_PICTURE_HEADER, codingType);
+        currentPictureType = PICTURE_TYPE_NONE;
+    } else {
+        // vbv_delay
+        readHeaderBits(16u);
+    }
+    if (currentPictureType == PICTURE_TYPE_P || currentPictureType == PICTURE_TYPE_B) {
         setCodingField(CODING_FULL_PEL_FORWARD, readHeaderBits(1u));
         let forwardCode = max(readHeaderBits(3u), 1u);
         setCodingField(CODING_F_CODE_FORWARD_X, forwardCode);
         setCodingField(CODING_F_CODE_FORWARD_Y, forwardCode);
     }
-    if (codingType == PICTURE_TYPE_B) {
+    if (currentPictureType == PICTURE_TYPE_B) {
         setCodingField(CODING_FULL_PEL_BACKWARD, readHeaderBits(1u));
         let backwardCode = max(readHeaderBits(3u), 1u);
         setCodingField(CODING_F_CODE_BACKWARD_X, backwardCode);
@@ -1407,6 +1491,10 @@ fn handlePictureStartCode() {
     pictureState[picture + PICTURE_STARTED] = 0u;
     pictureState[picture + PICTURE_TYPE] = currentPictureType;
     pictureState[picture + PICTURE_MPEG2] = pictureState[CONTEXT_MPEG2];
+    pictureState[picture + PICTURE_CONCEALED] = 0u;
+    pictureState[picture + PICTURE_CONCEAL_INTRA] = 0u;
+    pictureState[picture + PICTURE_FIRST_SLICE] = sliceCount;
+    pictureState[picture + PICTURE_SLICE_COUNT] = 0u;
     pictureCount += 1u;
     lastCode = LAST_CODE_PICTURE;
 }
@@ -1425,6 +1513,7 @@ fn handleExtension() {
         case PICTURE_CODING_EXTENSION_ID: {
             if (lastCode == LAST_CODE_PICTURE) {
                 parsePictureCodingExtension();
+                guessPictureType();
             }
         }
         default: {
@@ -1452,6 +1541,23 @@ fn beginPictureSlices() {
 const MINIMUM_PICTURE_BITS_NUMERATOR: u32 = 11u;
 const MINIMUM_PICTURE_BITS_DENOMINATOR: u32 = 528u;
 
+// FFmpeg's flags of a frame starting with a picture of this structure, as the picture fields word: ff_mpv_frame_start's interlaced and
+// top field first, which mpeg_field_start also sets for a field pair whose first field is the top one, and its repeat_pict
+fn createFrameFieldsWord(structure: u32) -> u32 {
+    let progressiveSequence = pictureState[CONTEXT_PROGRESSIVE_SEQUENCE] != 0u;
+    let progressiveFrame = codingField(CODING_PROGRESSIVE_FRAME) != 0u;
+    let interlaced = !progressiveFrame && !progressiveSequence;
+    let topFieldFirst = codingField(CODING_TOP_FIELD_FIRST) != 0u || structure == STRUCTURE_TOP_FIELD;
+    let repeatFirstField = codingField(CODING_REPEAT_FIRST_FIELD) != 0u && (progressiveSequence || progressiveFrame);
+    return PICTURE_FIELDS_REPORTED_BIT | select(0u, PICTURE_FIELDS_INTERLACED_BIT, interlaced)
+        | select(0u, PICTURE_FIELDS_TOP_FIELD_FIRST_BIT, topFieldFirst) | select(0u, PICTURE_FIELDS_REPEAT_FIRST_FIELD_BIT, repeatFirstField);
+}
+
+fn reportFrameFields(word: u32) {
+    reportPictureFields((word & PICTURE_FIELDS_INTERLACED_BIT) != 0u, (word & PICTURE_FIELDS_TOP_FIELD_FIRST_BIT) != 0u,
+        (word & PICTURE_FIELDS_REPEAT_FIRST_FIELD_BIT) != 0u);
+}
+
 // A picture's first slice: whether FFmpeg decodes the picture, then mpeg_field_start: its frame, its references, and its parameters
 fn startPicture(pictureIndex: u32) {
     let picture = pictureBase(pictureIndex);
@@ -1469,10 +1575,15 @@ fn startPicture(pictureIndex: u32) {
     if (pictureState[CONTEXT_INITIALIZED] == 0u) {
         return;
     }
+    // A picture whose header carried no type and no coding extension guessed one: FFmpeg skips its slices
+    if (pictureType == PICTURE_TYPE_NONE) {
+        return;
+    }
     let macroblockWidth = pictureState[CONTEXT_MACROBLOCK_WIDTH];
     let macroblockHeight = pictureState[CONTEXT_MACROBLOCK_HEIGHT];
     if (macroblockWidth * macroblockHeight * MINIMUM_PICTURE_BITS_NUMERATOR / MINIMUM_PICTURE_BITS_DENOMINATOR > packet.byteLength) {
-        failHeader(ERROR_PACKET_SIZE, packet.byteLength);
+        // FFmpeg abandons the packet: the picture never starts, so the packet shows the latest anchor as one FFmpeg decodes nothing for
+        reportConcealment(ERROR_PACKET_SIZE, packet.byteLength);
         return;
     }
     let structure = codingField(CODING_PICTURE_STRUCTURE);
@@ -1486,8 +1597,14 @@ fn startPicture(pictureIndex: u32) {
         frameStarted = true;
         frameAnchor = pictureType != PICTURE_TYPE_B;
         frameFirstStructure = structure;
-        // A first field whose second field never came stays as FFmpeg leaves it: an anchor keeps its reference
+        frameFieldsWord = createFrameFieldsWord(structure);
+        reportFrameFields(frameFieldsWord);
+        // A first field whose second field never came stays as FFmpeg leaves it: an anchor keeps its reference. Its packet concealed
+        // the other field, which counts now that no second field replaced it
         let pendingSlot = state[STATE_PENDING_SLOT];
+        if (pendingSlot != 0u) {
+            reportConcealment(ERROR_FIELD_MISSING, STRUCTURE_FRAME - state[STATE_PENDING_STRUCTURE]);
+        }
         if (pendingSlot != 0u && state[STATE_PENDING_ANCHOR] == 0u) {
             addRelease(pendingSlot - 1u);
         }
@@ -1517,6 +1634,9 @@ fn startPicture(pictureIndex: u32) {
         frameStarted = true;
         frameAnchor = state[STATE_PENDING_ANCHOR] != 0u;
         frameFirstStructure = state[STATE_PENDING_STRUCTURE];
+        // This packet's slot holds the whole frame, which reports the flags its first field's packet reported
+        frameFieldsWord = state[STATE_PENDING_FIELDS];
+        reportFrameFields(frameFieldsWord);
         pictureState[PACKET_COPY_MODE] = COPY_FIELD;
         pictureState[PACKET_COPY_SOURCE] = pendingSlot;
         pictureState[PACKET_COPY_FIELD] = state[STATE_PENDING_STRUCTURE] - 1u;
@@ -1539,6 +1659,7 @@ fn startPicture(pictureIndex: u32) {
     }
     openFirstField = structure != STRUCTURE_FRAME && firstField != 0u;
     openFirstFieldStructure = structure;
+    openFirstFieldPicture = pictureIndex;
     pictureState[picture + PICTURE_DECODED] = 1u;
     pictureState[picture + PICTURE_FIRST_FIELD] = firstField;
     pictureState[picture + PICTURE_FORWARD_SLOT] = state[STATE_LAST_SLOT];
@@ -1581,7 +1702,9 @@ fn handleSlice(position: u32, code: u32, nextPosition: u32) {
         row += 1u;
     }
     if (packet.byteLength < position + START_CODE_BYTES + 2u || row >= macroblockHeight) {
-        failHeader(ERROR_SLICE_HEADER, row);
+        // FFmpeg abandons the rest of the packet at a slice too short or below the picture; this slice is skipped instead, decoding
+        // resumes at the next one, and concealment covers what it would have decoded
+        reportConcealment(ERROR_SLICE_HEADER, row);
         return;
     }
     let picture = pictureBase(pictureIndex);
@@ -1602,6 +1725,9 @@ fn handleSlice(position: u32, code: u32, nextPosition: u32) {
     pictureState[slice + SLICE_DATA_BYTE] = position + START_CODE_BYTES;
     pictureState[slice + SLICE_END_BYTE] = nextPosition;
     pictureState[slice + SLICE_POSITION] = pictureIndex | (row << 1u);
+    pictureState[slice + SLICE_MACROBLOCK_BIT] = 0u;
+    pictureState[slice + SLICE_END_MACROBLOCK] = SLICE_OUTCOME_NONE;
+    pictureState[picture + PICTURE_SLICE_COUNT] += 1u;
     sliceCount += 1u;
 }
 
@@ -1611,6 +1737,10 @@ fn handleStartCode(position: u32, nextPosition: u32) {
     if (code == SEQUENCE_HEADER_CODE) {
         if (lastCode == LAST_CODE_NONE) {
             parseSequenceHeader();
+            // A packet's sequence header syncs FFmpeg's decoder whether or not it was damaged
+            if (headerSource == SOURCE_PACKET) {
+                state[STATE_SYNC] = 1u;
+            }
         }
         return;
     }
@@ -1677,6 +1807,7 @@ fn parseHeaders() {
     frameStarted = false;
     frameAnchor = false;
     openFirstField = false;
+    frameFieldsWord = 0u;
     if (pictureState[CONTEXT_CONFIGURATION_PARSED] == 0u) {
         pictureState[CONTEXT_CONFIGURATION_PARSED] = 1u;
         if (stream.configByteLength > 0u) {
@@ -1718,6 +1849,8 @@ fn finishHeaders() {
         state[STATE_PENDING_SLOT] = outputSlot + 1u;
         state[STATE_PENDING_ANCHOR] = select(0u, 1u, frameAnchor);
         state[STATE_PENDING_STRUCTURE] = openFirstFieldStructure;
+        state[STATE_PENDING_FIELDS] = frameFieldsWord;
+        concealMissingField();
     } else if (!frameAnchor) {
         addRelease(outputSlot);
     }
@@ -1733,6 +1866,27 @@ fn finishHeaders() {
     }
     let rows = (sliceCount + SLICE_DISPATCH_WIDTH - 1u) / SLICE_DISPATCH_WIDTH;
     setDispatchArguments(min(sliceCount, SLICE_DISPATCH_WIDTH), rows, 1u);
+}
+
+// The packet ends with a first field, so its frame's other field holds whatever its slot held. That field is concealed as a field
+// picture without slices, every macroblock damaged, so the frame this packet presents is whole; a second field in the next packet
+// replaces it, as it completes the frame in this slot too. FFmpeg leaves the field as its buffer held it
+fn concealMissingField() {
+    let missingIndex = openFirstFieldPicture + 1u;
+    if (missingIndex >= MAXIMUM_PICTURES) {
+        return;
+    }
+    let first = pictureBase(openFirstFieldPicture);
+    let missing = pictureBase(missingIndex);
+    for (var word = 0u; word < PICTURE_WORDS; word += 1u) {
+        pictureState[missing + word] = pictureState[first + word];
+    }
+    pictureState[missing + PICTURE_CODING_FIELDS + CODING_PICTURE_STRUCTURE] = STRUCTURE_FRAME - openFirstFieldStructure;
+    pictureState[missing + PICTURE_FIRST_FIELD] = 0u;
+    pictureState[missing + PICTURE_CONCEALED] = 1u;
+    pictureState[missing + PICTURE_FIRST_SLICE] = sliceCount;
+    pictureState[missing + PICTURE_SLICE_COUNT] = 0u;
+    pictureCount = missingIndex + 1u;
 }
 
 // The slice reader: the bits of the packet from any position, a window of three big-endian words in registers, the third loaded a word
@@ -1831,7 +1985,8 @@ fn blocksPerMacroblock(chromaFormat: u32) -> u32 {
 }
 
 // Each slice's header and first macroblock address, which allocateSlices sizes the slice's coefficient storage from;
-// FFmpeg's mpeg_decode_slice up to its macroblock loop
+// FFmpeg's mpeg_decode_slice up to its macroblock loop. A damaged header leaves the slice unprepared: it decodes nothing and marks
+// nothing, as FFmpeg's slice fails before its resync position is set, and decoding resumes at the next slice
 @compute @workgroup_size(1)
 fn prepareSlices(@builtin(workgroup_id) workgroupId: vec3u) {
     let sliceIndex = workgroupId.y * SLICE_DISPATCH_WIDTH + workgroupId.x;
@@ -1848,18 +2003,18 @@ fn prepareSlices(@builtin(workgroup_id) workgroupId: vec3u) {
     }
     let quantizerScale = readQuantizerScale(pictureState[picture + PICTURE_CODING_FIELDS + CODING_Q_SCALE_TYPE]);
     if (quantizerScale == 0u) {
-        reportFailure(ERROR_SLICE_HEADER, row);
+        reportConcealment(ERROR_SLICE_HEADER, row);
         return;
     }
     // extra_bit_slice and its bytes, FFmpeg's skip_1stop_8data_bits
     if (bitsLeft() <= 0) {
-        reportFailure(ERROR_BITS_EXHAUSTED, row);
+        reportConcealment(ERROR_BITS_EXHAUSTED, row);
         return;
     }
     while (readBit() != 0u) {
         consumeBits(8u);
         if (bitsLeft() <= 0) {
-            reportFailure(ERROR_BITS_EXHAUSTED, row);
+            reportConcealment(ERROR_BITS_EXHAUSTED, row);
             return;
         }
     }
@@ -1867,7 +2022,7 @@ fn prepareSlices(@builtin(workgroup_id) workgroupId: vec3u) {
     while (bitsLeft() > 0) {
         let entry = readCode(LOOKUP_MACROBLOCK_ADDRESS_INCREMENT, LOOKUP_MACROBLOCK_ADDRESS_INCREMENT_BITS);
         if (codeLength(entry) == 0u) {
-            reportFailure(ERROR_MACROBLOCK_ADDRESS, row);
+            reportConcealment(ERROR_MACROBLOCK_ADDRESS, row);
             return;
         }
         let increment = codeSymbol(entry);
@@ -1881,11 +2036,16 @@ fn prepareSlices(@builtin(workgroup_id) workgroupId: vec3u) {
         }
     }
     if (column >= pictureState[CONTEXT_MACROBLOCK_WIDTH]) {
-        reportFailure(ERROR_MACROBLOCK_ADDRESS, column);
+        reportConcealment(ERROR_MACROBLOCK_ADDRESS, column);
         return;
     }
     pictureState[slice + SLICE_FIRST_MACROBLOCK] = column | (quantizerScale << 16u);
     pictureState[slice + SLICE_MACROBLOCK_BIT] = readerBit;
+}
+
+// Whether prepareSlices read the slice's header, so the slice decodes
+fn slicePrepared(slice: u32) -> bool {
+    return pictureState[slice + SLICE_MACROBLOCK_BIT] != 0u;
 }
 
 // FFmpeg's mpeg_get_qscale
@@ -1907,15 +2067,19 @@ fn sliceStart(slice: u32) -> u32 {
 }
 
 // The coefficient entries a slice may write: two bits code each, and its macroblocks up to the next slice's take 64 per block at most.
-// Summed over a packet, neither bound exceeds the coefficient buffer, which holds the smaller of the frame's blocks and the packet's bits
+// Summed over a packet, neither bound exceeds the coefficient buffer, which holds the smaller of the frame's blocks and the packet's bits;
+// slices out of raster order may exceed the frame's blocks, and allocateSlices clips them to the buffer
 fn sliceAllocation(sliceIndex: u32, sliceCount: u32) -> u32 {
     let slice = sliceBase(sliceIndex);
+    if (!slicePrepared(slice)) {
+        return 0u;
+    }
     let pictureIndex = pictureState[slice + SLICE_POSITION] & 1u;
     let start = sliceStart(slice);
     var end = pictureState[pictureBase(pictureIndex) + PICTURE_MACROBLOCK_COUNT];
     if (sliceIndex + 1u < sliceCount) {
         let next = sliceBase(sliceIndex + 1u);
-        if ((pictureState[next + SLICE_POSITION] & 1u) == pictureIndex) {
+        if ((pictureState[next + SLICE_POSITION] & 1u) == pictureIndex && slicePrepared(next)) {
             let nextStart = sliceStart(next);
             if (nextStart > start) {
                 end = nextStart;
@@ -2043,6 +2207,11 @@ var<private> motionType: u32;
 var<private> fieldDCT: bool;
 var<private> previousIntra: bool;
 var<private> sliceFailed: bool;
+// The macroblock the slice failed at, in its picture's raster order, FFmpeg's mb_x and mb_y when mpeg_decode_slice returns an error
+var<private> sliceFailureIndex: u32;
+// Whether redecodeSlices runs the slice again, writing only the records of the macroblocks it decoded last, and its index plus one
+var<private> sliceRedecoding: bool;
+var<private> sliceOwner: u32;
 // The slice's coefficient storage and the macroblock's entry counts, a byte per block
 var<private> entryCursor: u32;
 var<private> entryLimit: u32;
@@ -2050,9 +2219,13 @@ var<private> blockCountsLow: u32;
 var<private> blockCountsMiddle: u32;
 var<private> blockCountsHigh: u32;
 
+// Fails the slice at the current macroblock: it decodes no further, and concealment covers its damage
 fn failSlice(code: u32, value: u32) {
     if (!sliceFailed) {
-        reportFailure(code, value);
+        if (!sliceRedecoding) {
+            reportConcealment(code, value);
+        }
+        sliceFailureIndex = (macroblockY >> fieldPicture) * macroblockWidth + macroblockX;
     }
     sliceFailed = true;
 }
@@ -2278,12 +2451,15 @@ fn decodeNonIntraBlock() -> u32 {
     }
 }
 
-// FFmpeg's mpeg_decode_motion: a motion code against its prediction, wrapped to the f_code's range
+// What mpeg_decode_motion returns for bits no motion code starts, which it leaves unread
+const INVALID_MOTION_VALUE: i32 = 0xFFFF;
+
+// FFmpeg's mpeg_decode_motion: a motion code against its prediction, wrapped to the f_code's range.
+// An invalid code fails nothing: like FFmpeg, the macroblock decodes on with INVALID_MOTION_VALUE, whose prediction leaves the reference
 fn decodeMotion(fCode: u32, prediction: i32) -> i32 {
     let entry = readCode(LOOKUP_MOTION_CODE, LOOKUP_MOTION_CODE_BITS);
     if (codeLength(entry) == 0u) {
-        failSlice(ERROR_MOTION_VECTOR, macroblockPosition());
-        return 0;
+        return INVALID_MOTION_VALUE;
     }
     let code = codeSymbol(entry);
     if (code == 0u) {
@@ -2447,9 +2623,12 @@ fn packVector(vector: vec2i) -> u32 {
     return (bitcast<u32>(x) & 0xFFFFu) | (bitcast<u32>(y) << 16u);
 }
 
-// Writes the macroblock's record
+// Writes the macroblock's record; a slice running again writes only the macroblocks no later slice decoded
 fn storeMacroblock(flags: u32, codedBlocks: u32, entryStart: u32) {
     let record = (macroblockY * macroblockWidth + macroblockX) * MACROBLOCK_WORDS;
+    if (sliceRedecoding && (macroblocks[record + RECORD_CONCEALMENT] >> CONCEAL_OWNER_SHIFT) != sliceOwner) {
+        return;
+    }
     macroblocks[record + RECORD_SERIAL] = packet.index;
     macroblocks[record + RECORD_FLAGS] = flags | (fieldSelects << FIELD_SELECT_SHIFT) | (codedBlocks << CODED_BLOCKS_SHIFT)
         | (quantizerScale << QUANTIZER_SHIFT);
@@ -2497,7 +2676,7 @@ fn decodeSkippedMacroblock() {
     blockCountsLow = 0u;
     blockCountsMiddle = 0u;
     blockCountsHigh = 0u;
-    storeMacroblock(motionFlags(), 0u, entryCursor);
+    storeMacroblock(motionFlags() | FLAG_SKIPPED, 0u, entryCursor);
 }
 
 // A coded macroblock, FFmpeg's mpeg_decode_mb after its skip handling
@@ -2729,9 +2908,11 @@ fn checkSliceOverread() {
     }
 }
 
-// Records where the slice stopped: the macroblock after its last one, in its picture's raster order
-fn recordSliceEnd(slice: u32) {
-    pictureState[slice + SLICE_END_MACROBLOCK] = (macroblockY >> fieldPicture) * macroblockWidth + macroblockX;
+// Where an ended slice stopped: the macroblock after its last one, in its picture's raster order
+var<private> sliceEndIndex: u32;
+
+fn recordSliceEnd() {
+    sliceEndIndex = (macroblockY >> fieldPicture) * macroblockWidth + macroblockX;
 }
 
 // mpeg_decode_slice's last slice check: an interlaced picture may lack the slice of a last row below its visible height
@@ -2785,13 +2966,14 @@ fn decodeSlice(sliceIndex: u32) {
             macroblockX = 0u;
             macroblockY += 1u << fieldPicture;
             if (macroblockY >= macroblockHeight) {
+                // A failure here lies past the picture's last macroblock, where ff_er_add_slice marks no error
                 checkPictureEnd();
-                pictureState[slice + SLICE_END_MACROBLOCK] = pictureState[pictureBase(positionWord & 1u) + PICTURE_MACROBLOCK_COUNT];
+                sliceEndIndex = pictureState[pictureBase(positionWord & 1u) + PICTURE_MACROBLOCK_COUNT];
                 return;
             }
             if (missingLastSlice(skipRun)) {
                 checkSliceOverread();
-                recordSliceEnd(slice);
+                recordSliceEnd();
                 return;
             }
         }
@@ -2816,7 +2998,7 @@ fn decodeSlice(sliceIndex: u32) {
                         return;
                     }
                     checkSliceOverread();
-                    recordSliceEnd(slice);
+                    recordSliceEnd();
                     return;
                 }
             }
@@ -2831,53 +3013,309 @@ fn decodeSlice(sliceIndex: u32) {
     }
 }
 
+// Decodes a prepared slice; the first run records how it ended, which a run again repeats exactly
+fn runSlice(sliceIndex: u32, redecoding: bool) {
+    let slice = sliceBase(sliceIndex);
+    if (!slicePrepared(slice)) {
+        return;
+    }
+    sliceRedecoding = redecoding;
+    sliceOwner = sliceIndex + 1u;
+    decodeSlice(sliceIndex);
+    if (redecoding) {
+        return;
+    }
+    var outcome = SLICE_OUTCOME_ENDED;
+    var index = sliceEndIndex;
+    if (sliceFailed) {
+        outcome = SLICE_OUTCOME_FAILED;
+        index = sliceFailureIndex;
+    }
+    pictureState[slice + SLICE_END_MACROBLOCK] = (outcome << SLICE_OUTCOME_SHIFT) | min(index, SLICE_END_INDEX_MASK);
+}
+
 @compute @workgroup_size(1)
 fn decodeSlices(@builtin(workgroup_id) workgroupId: vec3u) {
     let sliceIndex = workgroupId.y * SLICE_DISPATCH_WIDTH + workgroupId.x;
     if (packetFailed() || sliceIndex >= pictureState[PACKET_SLICE_COUNT]) {
         return;
     }
-    decodeSlice(sliceIndex);
+    runSlice(sliceIndex, false);
 }
 
-// Slice coverage: a picture's slices occur in raster order, never overlap, and cover it. FFmpeg decodes slices one after another and
-// conceals macroblocks none covered; slices decoding in parallel would race on a macroblock two of them cover, so a slice must start
-// where the one before it in its picture stopped
+// Runs every slice again when two slices decoded one macroblock, since their records raced; each macroblock's record is then the one
+// of the slice that decoded it last, as FFmpeg's later slice overwrites an earlier one
+@compute @workgroup_size(1)
+fn redecodeSlices(@builtin(workgroup_id) workgroupId: vec3u) {
+    let sliceIndex = workgroupId.y * SLICE_DISPATCH_WIDTH + workgroupId.x;
+    if (packetFailed() || pictureState[PACKET_REDECODE] == 0u || sliceIndex >= pictureState[PACKET_SLICE_COUNT]) {
+        return;
+    }
+    runSlice(sliceIndex, true);
+}
+
+// Slice coverage and FFmpeg's error status. FFmpeg decodes slices one after another, and ff_er_add_slice records each in its
+// error_status_table. A picture whose slices all ended, in raster order, covering it once needs no concealment, as FFmpeg's error count
+// stays 0; an interlaced picture may also lack the slices of a last row below its visible height, which ff_er_frame_end ignores.
+// Otherwise the picture is concealed: composeMacroblocks gives each of its macroblocks the status ff_er_add_slice's calls leave it, in
+// slice order, and the slice that decoded it last, whose record redecodeSlices rewrites when two slices decoded it
 const CHECK_WORKGROUP_SIZE: u32 = 256u;
+const COMPOSE_WORKGROUP_SIZE: u32 = 64u;
+
+var<workgroup> concealedPictures: atomic<u32>;
+var<workgroup> checkTask: u32;
 
 @compute @workgroup_size(CHECK_WORKGROUP_SIZE)
 fn checkSlices(@builtin(local_invocation_index) localIndex: u32) {
-    if (packetFailed()) {
+    if (localIndex == 0u) {
+        // A missing field parseHeaders made up for is concealed whatever the slices do
+        var preset = 0u;
+        for (var pictureIndex = 0u; pictureIndex < min(pictureState[PACKET_PICTURE_COUNT], MAXIMUM_PICTURES); pictureIndex += 1u) {
+            preset |= (pictureState[pictureBase(pictureIndex) + PICTURE_CONCEALED] & 1u) << pictureIndex;
+        }
+        atomicStore(&concealedPictures, preset);
+        checkTask = select(1u, 0u, packetFailed());
+        setDispatchArguments(0u, 1u, 1u);
+        pictureState[PACKET_REDECODE] = 0u;
+    }
+    if (workgroupUniformLoad(&checkTask) == 0u) {
         return;
     }
     let sliceCount = min(pictureState[PACKET_SLICE_COUNT], MAXIMUM_SLICES);
     for (var sliceIndex = localIndex; sliceIndex < sliceCount; sliceIndex += CHECK_WORKGROUP_SIZE) {
-        checkSliceCoverage(sliceIndex, sliceCount);
+        if (sliceNeedsConcealment(sliceIndex, sliceCount)) {
+            atomicOr(&concealedPictures, 1u << (pictureState[sliceBase(sliceIndex) + SLICE_POSITION] & 1u));
+        }
+    }
+    workgroupBarrier();
+    if (localIndex != 0u) {
+        return;
+    }
+    let concealed = atomicLoad(&concealedPictures);
+    for (var pictureIndex = 0u; pictureIndex < min(pictureState[PACKET_PICTURE_COUNT], MAXIMUM_PICTURES); pictureIndex += 1u) {
+        pictureState[pictureBase(pictureIndex) + PICTURE_CONCEALED] = (concealed >> pictureIndex) & 1u;
+    }
+    if (concealed != 0u) {
+        let frameMacroblocks = pictureState[CONTEXT_MACROBLOCK_WIDTH] * pictureState[CONTEXT_MACROBLOCK_HEIGHT];
+        setDispatchArguments((frameMacroblocks + COMPOSE_WORKGROUP_SIZE - 1u) / COMPOSE_WORKGROUP_SIZE, 1u, 1u);
     }
 }
 
-fn checkSliceCoverage(sliceIndex: u32, sliceCount: u32) {
-    let slice = sliceBase(sliceIndex);
-    let pictureIndex = pictureState[slice + SLICE_POSITION] & 1u;
-    let start = sliceStart(slice);
-    let firstOfPicture = sliceIndex == 0u || (pictureState[sliceBase(sliceIndex - 1u) + SLICE_POSITION] & 1u) != pictureIndex;
-    if (firstOfPicture && start != 0u) {
-        reportFailure(ERROR_SLICE_COVERAGE, pictureMacroblockPosition(pictureIndex, start));
+// Composes the status of each macroblock of a concealed picture, one invocation per macroblock of the frame, so the work spreads over the
+// device however many slices a damaged packet holds: a frame picture's macroblock, or a field picture's of the row's parity
+@compute @workgroup_size(COMPOSE_WORKGROUP_SIZE)
+fn composeMacroblocks(@builtin(global_invocation_id) invocation: vec3u) {
+    let width = pictureState[CONTEXT_MACROBLOCK_WIDTH];
+    if (packetFailed() || invocation.x >= width * pictureState[CONTEXT_MACROBLOCK_HEIGHT]) {
         return;
     }
-    let end = pictureState[slice + SLICE_END_MACROBLOCK];
+    let frameRow = invocation.x / width;
+    let column = invocation.x % width;
+    for (var pictureIndex = 0u; pictureIndex < min(pictureState[PACKET_PICTURE_COUNT], MAXIMUM_PICTURES); pictureIndex += 1u) {
+        let picture = pictureBase(pictureIndex);
+        if (pictureState[picture + PICTURE_DECODED] == 0u || pictureState[picture + PICTURE_CONCEALED] == 0u) {
+            continue;
+        }
+        let structure = pictureState[picture + PICTURE_CODING_FIELDS + CODING_PICTURE_STRUCTURE];
+        if (structure == STRUCTURE_FRAME) {
+            composeMacroblockStatus(pictureIndex, frameRow * width + column);
+        } else if ((frameRow & 1u) == structure - 1u) {
+            composeMacroblockStatus(pictureIndex, (frameRow >> 1u) * width + column);
+        }
+    }
+}
+
+// Dispatches redecodeSlices over the slices when two slices decoded one macroblock, and over none otherwise
+@compute @workgroup_size(1)
+fn prepareRedecode() {
+    setDispatchArguments(0u, 1u, 1u);
+    if (packetFailed() || pictureState[PACKET_REDECODE] == 0u) {
+        return;
+    }
+    let sliceCount = min(pictureState[PACKET_SLICE_COUNT], MAXIMUM_SLICES);
+    setDispatchArguments(min(sliceCount, SLICE_DISPATCH_WIDTH), (sliceCount + SLICE_DISPATCH_WIDTH - 1u) / SLICE_DISPATCH_WIDTH, 1u);
+}
+
+// Whether a slice leaves its picture to concealment: it failed, its header did, or the slice after it in its picture does not start
+// where it ended; a gap or an overlap reports the macroblock it starts at
+fn sliceNeedsConcealment(sliceIndex: u32, sliceCount: u32) -> bool {
+    let slice = sliceBase(sliceIndex);
+    if (!slicePrepared(slice)) {
+        return true;
+    }
+    let outcomeWord = pictureState[slice + SLICE_END_MACROBLOCK];
+    if ((outcomeWord >> SLICE_OUTCOME_SHIFT) != SLICE_OUTCOME_ENDED) {
+        return true;
+    }
+    let pictureIndex = pictureState[slice + SLICE_POSITION] & 1u;
+    let picture = pictureBase(pictureIndex);
+    let start = sliceStart(slice);
+    if (sliceIndex == pictureState[picture + PICTURE_FIRST_SLICE] && start != 0u) {
+        reportConcealment(ERROR_SLICE_COVERAGE, pictureMacroblockPosition(pictureIndex, 0u));
+        return true;
+    }
+    let end = outcomeWord & SLICE_END_INDEX_MASK;
     if (sliceIndex + 1u < sliceCount) {
         let next = sliceBase(sliceIndex + 1u);
         if ((pictureState[next + SLICE_POSITION] & 1u) == pictureIndex) {
+            if (!slicePrepared(next)) {
+                return true;
+            }
             let nextStart = sliceStart(next);
             if (nextStart != end) {
-                reportFailure(ERROR_SLICE_COVERAGE, pictureMacroblockPosition(pictureIndex, nextStart));
+                reportConcealment(ERROR_SLICE_COVERAGE, pictureMacroblockPosition(pictureIndex, min(nextStart, end)));
+                return true;
             }
-            return;
+            return false;
         }
     }
-    if (end != pictureState[pictureBase(pictureIndex) + PICTURE_MACROBLOCK_COUNT] && !missingRowsTolerated(pictureIndex, end)) {
-        reportFailure(ERROR_SLICE_COVERAGE, pictureMacroblockPosition(pictureIndex, end));
+    if (end != pictureState[picture + PICTURE_MACROBLOCK_COUNT] && !missingRowsTolerated(pictureIndex, end)) {
+        reportConcealment(ERROR_SLICE_COVERAGE, pictureMacroblockPosition(pictureIndex, end));
+        return true;
+    }
+    return false;
+}
+
+// The record of the macroblock at an index of a picture's raster order
+fn pictureMacroblockRecord(pictureIndex: u32, index: u32) -> u32 {
+    let width = pictureState[CONTEXT_MACROBLOCK_WIDTH];
+    return (pictureMacroblockRow(pictureIndex, index / width) * width + index % width) * MACROBLOCK_WORDS;
+}
+
+// A macroblock's status after ff_er_add_slice's calls for the picture's slices in order. The last slice whose range covers it decides:
+// an ended slice covers through its last macroblock and marks an end there, a failed one through the macroblock it failed at and marks
+// an error there, a range past the picture marks nothing, and each slice marks its start. No slice covering it leaves it uncovered.
+// The slice that decoded it last owns its record; a second slice that decoded it means the slices raced on its record
+fn composeMacroblockStatus(pictureIndex: u32, index: u32) {
+    let picture = pictureBase(pictureIndex);
+    let firstSlice = pictureState[picture + PICTURE_FIRST_SLICE];
+    let count = pictureState[picture + PICTURE_MACROBLOCK_COUNT];
+    var status = CONCEAL_UNCOVERED;
+    var covered = false;
+    var owner = 0u;
+    var decoders = 0u;
+    var sliceIndex = firstSlice + pictureState[picture + PICTURE_SLICE_COUNT];
+    while (sliceIndex > firstSlice && decoders < 2u) {
+        sliceIndex -= 1u;
+        let slice = sliceBase(sliceIndex);
+        if (!slicePrepared(slice)) {
+            continue;
+        }
+        let outcomeWord = pictureState[slice + SLICE_END_MACROBLOCK];
+        let outcome = outcomeWord >> SLICE_OUTCOME_SHIFT;
+        let endIndex = outcomeWord & SLICE_END_INDEX_MASK;
+        let start = sliceStart(slice);
+        if (outcome == SLICE_OUTCOME_NONE || index < start) {
+            continue;
+        }
+        var last = endIndex;
+        var mark = CONCEAL_ERROR;
+        if (outcome == SLICE_OUTCOME_ENDED) {
+            last = endIndex - 1u;
+            mark = CONCEAL_END;
+        }
+        if (!covered && index <= last) {
+            covered = true;
+            status = select(0u, mark, index == last && last < count) | select(0u, CONCEAL_SLICE_START, index == start);
+        }
+        // The macroblocks it decoded: a failed slice decoded none at its failure
+        if (index < endIndex) {
+            decoders += 1u;
+            if (owner == 0u) {
+                owner = sliceIndex + 1u;
+            }
+        }
+    }
+    if (decoders > 1u) {
+        pictureState[PACKET_REDECODE] = 1u;
+    }
+    macroblocks[pictureMacroblockRecord(pictureIndex, index) + RECORD_CONCEALMENT] = status | (owner << CONCEAL_OWNER_SHIFT);
+}
+
+// The distance in decoded macroblocks before a damaged one that ff_er_frame_end's backward pass also marks damaged, and its reset value
+const DAMAGE_DISTANCE: u32 = 50u;
+const DAMAGE_DISTANCE_RESET: u32 = 9999999u;
+
+// Marks each concealed picture's damaged macroblocks as ff_er_frame_end does, on the statuses composeMacroblocks composed. Its passes reset
+// at each slice start, so each invocation takes the segments that start in its share of the macroblocks
+@compute @workgroup_size(CHECK_WORKGROUP_SIZE)
+fn markSegments(@builtin(local_invocation_index) localIndex: u32) {
+    if (packetFailed()) {
+        return;
+    }
+    let pictureCount = min(pictureState[PACKET_PICTURE_COUNT], MAXIMUM_PICTURES);
+    for (var pictureIndex = 0u; pictureIndex < pictureCount; pictureIndex += 1u) {
+        let picture = pictureBase(pictureIndex);
+        if (pictureState[picture + PICTURE_DECODED] == 0u || pictureState[picture + PICTURE_CONCEALED] == 0u) {
+            continue;
+        }
+        let count = pictureState[picture + PICTURE_MACROBLOCK_COUNT];
+        let share = (count + CHECK_WORKGROUP_SIZE - 1u) / CHECK_WORKGROUP_SIZE;
+        let first = min(localIndex * share, count);
+        let last = min(first + share, count);
+        for (var index = first; index < last; index += 1u) {
+            if ((macroblocks[pictureMacroblockRecord(pictureIndex, index) + RECORD_CONCEALMENT] & CONCEAL_SLICE_START) != 0u) {
+                markSegment(pictureIndex, index, count);
+            }
+        }
+    }
+}
+
+// Whether FFmpeg's mbskip_table holds a decoded macroblock as skipped, which the backward pass does not count: every macroblock of a
+// picture no other references, and a P picture's skipped ones
+fn decodedMacroblockSkipped(pictureIndex: u32, record: u32) -> bool {
+    let pictureType = pictureState[pictureBase(pictureIndex) + PICTURE_TYPE];
+    if (pictureType == PICTURE_TYPE_B) {
+        return true;
+    }
+    return pictureType == PICTURE_TYPE_P && (macroblocks[record + RECORD_FLAGS] & FLAG_SKIPPED) != 0u;
+}
+
+// ff_er_frame_end's passes over one segment, the macroblocks from a slice start to the next: those after its last end or error are
+// damaged, so are those up to DAMAGE_DISTANCE decoded macroblocks before a damaged one, and those after a damaged one
+fn markSegment(pictureIndex: u32, start: u32, count: u32) {
+    var end = start + 1u;
+    while (end < count && (macroblocks[pictureMacroblockRecord(pictureIndex, end) + RECORD_CONCEALMENT] & CONCEAL_SLICE_START) == 0u) {
+        end += 1u;
+    }
+    var lastMark = end;
+    for (var index = end; index > start;) {
+        index -= 1u;
+        if ((macroblocks[pictureMacroblockRecord(pictureIndex, index) + RECORD_CONCEALMENT] & (CONCEAL_ERROR | CONCEAL_END)) != 0u) {
+            lastMark = index;
+            break;
+        }
+    }
+    for (var index = start; index < end; index += 1u) {
+        let record = pictureMacroblockRecord(pictureIndex, index);
+        let status = macroblocks[record + RECORD_CONCEALMENT];
+        if ((status & CONCEAL_ERROR) != 0u || lastMark == end || index > lastMark) {
+            macroblocks[record + RECORD_CONCEALMENT] = status | CONCEAL_DAMAGED;
+        }
+    }
+    var distance = DAMAGE_DISTANCE_RESET;
+    for (var index = end; index > start;) {
+        index -= 1u;
+        let record = pictureMacroblockRecord(pictureIndex, index);
+        let status = macroblocks[record + RECORD_CONCEALMENT];
+        if (!decodedMacroblockSkipped(pictureIndex, record)) {
+            distance += 1u;
+        }
+        if ((status & CONCEAL_DAMAGED) != 0u) {
+            distance = 0u;
+        }
+        if (distance < DAMAGE_DISTANCE) {
+            macroblocks[record + RECORD_CONCEALMENT] = status | CONCEAL_DAMAGED;
+        }
+    }
+    var damaged = false;
+    for (var index = start; index < end; index += 1u) {
+        let record = pictureMacroblockRecord(pictureIndex, index);
+        let status = macroblocks[record + RECORD_CONCEALMENT];
+        damaged = damaged || (status & CONCEAL_DAMAGED) != 0u;
+        if (damaged) {
+            macroblocks[record + RECORD_CONCEALMENT] = status | CONCEAL_DAMAGED;
+        }
     }
 }
 
@@ -2913,7 +3351,7 @@ const MAXIMUM_BLOCKS: u32 = 12u;
 const BLOCK_ROWS: u32 = 8u;
 const LUMA_WORDS: u32 = 64u;
 
-var<workgroup> reconstructActive: u32;
+var<workgroup> macroblockTask: u32;
 var<workgroup> reconstructRecord: array<u32, MACROBLOCK_WORDS>;
 var<workgroup> blockCoefficients: array<i32, 768>;
 var<workgroup> blockParity: array<atomic<u32>, MAXIMUM_BLOCKS>;
@@ -2959,42 +3397,91 @@ var<private> recordFieldDCT: bool;
 var<private> macroblockColumn: u32;
 var<private> macroblockRow: u32;
 
-// Loads the workgroup's macroblock record, or one that conceals a macroblock no slice decoded; returns 1 when there is one
-fn loadReconstructRecord(column: u32, row: u32) -> u32 {
+// What a workgroup does for its macroblock: nothing, reconstructs a record, or computes its blocks' DCs for concealment
+const MACROBLOCK_TASK_NONE: u32 = 0u;
+const MACROBLOCK_TASK_RECONSTRUCT: u32 = 1u;
+const MACROBLOCK_TASK_DC: u32 = 2u;
+
+// The current picture's block, set by currentPictureMacroblock
+var<private> currentPicture: u32;
+
+// Whether the frame's macroblock at column and row belongs to the packet's current picture, which decoded
+fn currentPictureMacroblock(column: u32, row: u32) -> bool {
     if (packetFailed()) {
-        return 0u;
+        return false;
     }
     let pictureIndex = pictureState[PACKET_CURRENT_PICTURE];
     if (pictureIndex >= pictureState[PACKET_PICTURE_COUNT]) {
-        return 0u;
+        return false;
     }
-    let picture = pictureBase(pictureIndex);
-    let structure = pictureState[picture + PICTURE_CODING_FIELDS + CODING_PICTURE_STRUCTURE];
-    if (pictureState[picture + PICTURE_DECODED] == 0u || column >= pictureState[CONTEXT_MACROBLOCK_WIDTH]
+    currentPicture = pictureBase(pictureIndex);
+    let structure = pictureState[currentPicture + PICTURE_CODING_FIELDS + CODING_PICTURE_STRUCTURE];
+    if (pictureState[currentPicture + PICTURE_DECODED] == 0u || column >= pictureState[CONTEXT_MACROBLOCK_WIDTH]
         || row >= pictureState[CONTEXT_MACROBLOCK_HEIGHT]) {
-        return 0u;
+        return false;
     }
-    if (structure != STRUCTURE_FRAME && (row & 1u) != structure - 1u) {
-        return 0u;
-    }
-    let record = (row * pictureState[CONTEXT_MACROBLOCK_WIDTH] + column) * MACROBLOCK_WORDS;
-    if (macroblocks[record + RECORD_SERIAL] == packet.index) {
-        for (var word = 0u; word < MACROBLOCK_WORDS; word += 1u) {
-            reconstructRecord[word] = macroblocks[record + word];
-        }
-        return 1u;
-    }
-    // No slice covered the macroblock, which checkSlices allows only in a missing last row: it repeats the same place of the
-    // forward reference, or gray
+    return structure == STRUCTURE_FRAME || (row & 1u) == structure - 1u;
+}
+
+// Fills the workgroup's record with a macroblock that predicts from the same place, with no residual: forward, and for a B picture
+// backward too, from the references' fields of the picture's parity for a field picture
+fn loadZeroMotionRecord(directions: u32) {
     for (var word = 0u; word < MACROBLOCK_WORDS; word += 1u) {
         reconstructRecord[word] = 0u;
     }
-    var flags = FLAG_FORWARD;
+    let structure = pictureState[currentPicture + PICTURE_CODING_FIELDS + CODING_PICTURE_STRUCTURE];
+    var flags = directions;
     if (structure != STRUCTURE_FRAME) {
-        flags |= (MOTION_FIELD << MOTION_TYPE_SHIFT) | ((structure - 1u) << FIELD_SELECT_SHIFT);
+        let parity = structure - 1u;
+        flags |= (MOTION_FIELD << MOTION_TYPE_SHIFT) | (parity << FIELD_SELECT_SHIFT) | (parity << (FIELD_SELECT_SHIFT + 2u));
     }
     reconstructRecord[RECORD_FLAGS] = flags;
-    return 1u;
+}
+
+// Loads the workgroup's macroblock record for reconstructPicture: a concealed picture's damaged macroblocks are left to concealment.
+// A macroblock no slice decoded, which checkSlices lets an unconcealed picture lack only in a missing last row, repeats the same place
+// of the forward reference, or gray
+fn loadReconstructRecord(column: u32, row: u32) -> u32 {
+    if (!currentPictureMacroblock(column, row)) {
+        return MACROBLOCK_TASK_NONE;
+    }
+    let record = (row * pictureState[CONTEXT_MACROBLOCK_WIDTH] + column) * MACROBLOCK_WORDS;
+    let concealed = pictureState[currentPicture + PICTURE_CONCEALED] != 0u;
+    if (concealed && (macroblocks[record + RECORD_CONCEALMENT] & CONCEAL_DAMAGED) != 0u) {
+        return MACROBLOCK_TASK_NONE;
+    }
+    if (concealed || macroblocks[record + RECORD_SERIAL] == packet.index) {
+        for (var word = 0u; word < MACROBLOCK_WORDS; word += 1u) {
+            reconstructRecord[word] = macroblocks[record + word];
+        }
+        return MACROBLOCK_TASK_RECONSTRUCT;
+    }
+    loadZeroMotionRecord(FLAG_FORWARD);
+    return MACROBLOCK_TASK_RECONSTRUCT;
+}
+
+// The task of the workgroup's macroblock in concealMacroblocks: a damaged macroblock taken for an inter one predicts from the same
+// place, as ff_er_frame_end conceals one without motion vectors, MPEG-2's case: forward, both ways in a B picture. With damaged
+// macroblocks taken for intra ones, each undamaged macroblock computes its blocks' DCs, which concealIntra guesses theirs from
+fn loadConcealmentTask(column: u32, row: u32) -> u32 {
+    if (!currentPictureMacroblock(column, row) || pictureState[currentPicture + PICTURE_CONCEALED] == 0u) {
+        return MACROBLOCK_TASK_NONE;
+    }
+    let record = (row * pictureState[CONTEXT_MACROBLOCK_WIDTH] + column) * MACROBLOCK_WORDS;
+    let damaged = (macroblocks[record + RECORD_CONCEALMENT] & CONCEAL_DAMAGED) != 0u;
+    let intra = pictureState[currentPicture + PICTURE_CONCEAL_INTRA] != 0u;
+    if (!damaged) {
+        return select(MACROBLOCK_TASK_NONE, MACROBLOCK_TASK_DC, intra);
+    }
+    if (intra) {
+        return MACROBLOCK_TASK_NONE;
+    }
+    var directions = FLAG_FORWARD;
+    if (pictureState[currentPicture + PICTURE_TYPE] == PICTURE_TYPE_B) {
+        directions |= FLAG_BACKWARD;
+    }
+    loadZeroMotionRecord(directions);
+    return MACROBLOCK_TASK_RECONSTRUCT;
 }
 
 fn recordBlockEntryCount(block: u32) -> u32 {
@@ -3147,18 +3634,18 @@ fn residualIndex(plane: u32, x: u32, row: u32) -> vec2u {
 }
 
 // One reference sample at plane coordinates; field lines interleave in the reference frame. A slot of 0 or DUMMY_REFERENCE is gray.
-// Positions clamp to the plane, which only an out-of-picture vector FFmpeg skips would reach
+// Positions clamp to the plane, or to the field's lines, as edges extend; only a vector out of the picture, which concealment
+// predicts from the clamped edge, reaches past them
 fn referenceSample(reference: u32, field: u32, plane: u32, x: i32, line: i32) -> i32 {
     if (reference == 0u || reference == DUMMY_REFERENCE) {
         return i32(GRAY_SAMPLE);
     }
-    var frameLine = line;
-    if (field != REFERENCE_WHOLE_FRAME) {
-        frameLine = line * 2 + i32(field);
-    }
     let planeLayout = stream.planes[plane];
     let clampedX = u32(clamp(x, 0, i32(planeLayout.width) - 1));
-    let clampedLine = u32(clamp(frameLine, 0, i32(planeLayout.height) - 1));
+    var clampedLine = u32(clamp(line, 0, i32(planeLayout.height) - 1));
+    if (field != REFERENCE_WHOLE_FRAME) {
+        clampedLine = u32(clamp(line, 0, i32(planeLayout.height / 2u) - 1)) * 2u + field;
+    }
     return i32(readSlotSample(reference - 1u, plane, clampedX, clampedLine));
 }
 
@@ -3205,10 +3692,8 @@ fn predictOperation(reference: u32, field: u32, vector: vec2i, lumaLineBase: i32
     let yLimit = max(verticalEdge - (vector.y & 1) - lumaHeight + 1, 0);
     if (u32(lumaX) >= u32(xLimit) || u32(lumaY) >= u32(yLimit)) {
         // A vector may not leave the reference. FFmpeg skips such a prediction and keeps whatever its frame buffer held, which is no
-        // defined result, so the macroblock fails; its samples keep the slot's
-        reportFailure(ERROR_MOTION_VECTOR, (macroblockRow << 12u) | macroblockColumn);
-        prediction.valid = false;
-        return prediction;
+        // defined result; this one predicts from the reference's edge, which the clamped positions extend, and counts as concealed
+        reportConcealment(ERROR_MOTION_VECTOR, (macroblockRow << 12u) | macroblockColumn);
     }
     prediction.valid = true;
     if (plane == 0u || OUTPUT_CHROMA_FORMAT == CHROMA_444) {
@@ -3410,17 +3895,22 @@ fn writeMacroblockWord(word: u32) {
 @compute @workgroup_size(RECONSTRUCT_WORKGROUP_SIZE)
 fn reconstructPicture(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) localIndex: u32) {
     if (localIndex == 0u) {
-        reconstructActive = loadReconstructRecord(workgroupId.x, workgroupId.y);
+        macroblockTask = loadReconstructRecord(workgroupId.x, workgroupId.y);
     }
     if (localIndex < MAXIMUM_BLOCKS) {
         atomicStore(&blockParity[localIndex], 0u);
     }
-    let macroblockActive = workgroupUniformLoad(&reconstructActive);
-    if (macroblockActive == 0u) {
+    if (workgroupUniformLoad(&macroblockTask) != MACROBLOCK_TASK_RECONSTRUCT) {
         return;
     }
-    macroblockColumn = workgroupId.x;
-    macroblockRow = workgroupId.y;
+    reconstructMacroblock(workgroupId.x, workgroupId.y, localIndex);
+}
+
+// Reconstructs the workgroup's macroblock from the record its first invocation loaded: dequantization, the IDCT, prediction, output.
+// Call it from uniform control flow, after blockParity is cleared
+fn reconstructMacroblock(column: u32, row: u32, localIndex: u32) {
+    macroblockColumn = column;
+    macroblockRow = row;
     reconstructPictureBase = pictureBase(pictureState[PACKET_CURRENT_PICTURE]);
     reconstructStructure = pictureState[reconstructPictureBase + PICTURE_CODING_FIELDS + CODING_PICTURE_STRUCTURE];
     reconstructFieldPicture = reconstructStructure != STRUCTURE_FRAME;
@@ -3489,6 +3979,669 @@ fn reconstructPicture(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_
     let words = LUMA_WORDS + 2u * chromaWords;
     for (var word = localIndex; word < words; word += RECONSTRUCT_WORKGROUP_SIZE) {
         writeMacroblockWord(word);
+    }
+}
+
+// Concealment of a concealed picture's damaged macroblocks after its reconstruction, as FFmpeg's ff_er_frame_end conceals a frame
+// picture. FFmpeg's MPEG-2 decoder keeps no motion vectors for it, so every vector it guesses is zero: a damaged macroblock taken for an
+// inter one predicts from the same place; one taken for an intra one gets DCs guessed from the nearest undamaged blocks, filtered for
+// luma, as flat blocks; then the edges of damaged macroblocks with an intra side are smoothed.
+// FFmpeg leaves field pictures unconcealed, holding whatever its buffer held; they are concealed the same way here, on their own lines,
+// from the references' fields of their parity. FFmpeg also addresses 4:2:2 and 4:4:4 chroma as if it were 4:2:0, which leaves damaged
+// macroblocks' chroma unconcealed and overwrites other macroblocks'; here each macroblock's own chroma blocks are concealed
+const MACROBLOCK_SIZE: u32 = 16u;
+const LUMA_BLOCKS: u32 = 4u;
+// The words of an 8x8 block of 8-bit samples, and an 8-bit sample in each byte of a word
+const BLOCK_WORDS: u32 = 16u;
+const SAMPLE_REPLICATE: u32 = 0x01010101u;
+
+// The concealed picture: its block, its macroblock columns and rows, whether it is a field picture and its parity, and the slot, plus one,
+// of the frame its second field completes
+var<private> concealPicture: u32;
+var<private> concealWidth: u32;
+var<private> concealRows: u32;
+var<private> concealFieldPicture: bool;
+var<private> concealParity: u32;
+var<private> concealMirrorSlot: u32;
+
+fn loadConcealedPicture() {
+    concealPicture = pictureBase(pictureState[PACKET_CURRENT_PICTURE]);
+    let structure = pictureState[concealPicture + PICTURE_CODING_FIELDS + CODING_PICTURE_STRUCTURE];
+    concealFieldPicture = structure != STRUCTURE_FRAME;
+    concealParity = (structure - 1u) & 1u;
+    concealWidth = pictureState[CONTEXT_MACROBLOCK_WIDTH];
+    concealRows = pictureState[CONTEXT_MACROBLOCK_HEIGHT] >> select(0u, 1u, concealFieldPicture);
+    concealMirrorSlot = pictureState[PACKET_MIRROR_SLOT];
+}
+
+// The concealed picture's macroblock row of a frame macroblock row
+fn concealPictureRow(frameRow: u32) -> u32 {
+    return select(frameRow, frameRow >> 1u, concealFieldPicture);
+}
+
+// The frame line of a line of the concealed picture's plane
+fn concealFrameLine(line: u32) -> u32 {
+    return select(line, line * 2u + concealParity, concealFieldPicture);
+}
+
+// The record of the concealed picture's macroblock at a column and row of the picture
+fn concealRecord(column: u32, row: u32) -> u32 {
+    let frameRow = select(row, row * 2u + concealParity, concealFieldPicture);
+    return (frameRow * concealWidth + column) * MACROBLOCK_WORDS;
+}
+
+fn macroblockDamaged(record: u32) -> bool {
+    return (macroblocks[record + RECORD_CONCEALMENT] & CONCEAL_DAMAGED) != 0u;
+}
+
+// Whether ff_er_frame_end takes a macroblock for an intra one: a damaged one as decideConcealment guessed, an undamaged one as decoded
+fn macroblockConcealedIntra(record: u32) -> bool {
+    if (macroblockDamaged(record)) {
+        return pictureState[concealPicture + PICTURE_CONCEAL_INTRA] != 0u;
+    }
+    return (macroblocks[record + RECORD_FLAGS] & FLAG_INTRA) != 0u;
+}
+
+// Whether the frame's macroblock at column and row belongs to the current picture, which is concealed
+fn concealedPictureMacroblock(column: u32, row: u32) -> bool {
+    return currentPictureMacroblock(column, row) && pictureState[currentPicture + PICTURE_CONCEALED] != 0u;
+}
+
+// A sample of a slot, plus one, at a line of the concealed picture's plane; a missing or dummy reference is gray
+fn concealSample(slot: u32, plane: u32, x: u32, line: u32) -> i32 {
+    if (slot == 0u || slot == DUMMY_REFERENCE) {
+        return i32(GRAY_SAMPLE);
+    }
+    return i32(readSlotSample(slot - 1u, plane, x, concealFrameLine(line)));
+}
+
+// Four samples of the output slot at a line of the concealed picture's plane, from x, a multiple of 4
+fn readConcealedWord(plane: u32, x: u32, line: u32) -> u32 {
+    return framePool[getSampleByteAddress(packet.outputSlot, plane, x, concealFrameLine(line)) >> 2u];
+}
+
+// Writes four samples of the output slot, and of the frame a second field completes
+fn writeConcealedWord(plane: u32, x: u32, line: u32, word: u32) {
+    let frameLine = concealFrameLine(line);
+    framePool[getSampleByteAddress(packet.outputSlot, plane, x, frameLine) >> 2u] = word;
+    if (concealMirrorSlot != 0u) {
+        framePool[getSampleByteAddress(concealMirrorSlot - 1u, plane, x, frameLine) >> 2u] = word;
+    }
+}
+
+// The 8x8 blocks of a plane's macroblock across and down: luma's 2 by 2, and chroma's by the output's subsampling
+fn blocksAcrossMacroblock(plane: u32) -> u32 {
+    return select(1u, 2u, plane == 0u || OUTPUT_CHROMA_FORMAT == CHROMA_444);
+}
+
+fn blocksDownMacroblock(plane: u32) -> u32 {
+    return select(1u, 2u, plane == 0u || OUTPUT_CHROMA_FORMAT != CHROMA_420);
+}
+
+// The record of the macroblock a block of the concealed picture's plane lies in, and the block's index in the macroblock
+fn blockRecord(plane: u32, blockX: u32, blockY: u32) -> u32 {
+    return concealRecord(blockX / blocksAcrossMacroblock(plane), blockY / blocksDownMacroblock(plane));
+}
+
+fn blockInMacroblock(plane: u32, blockX: u32, blockY: u32) -> u32 {
+    let across = blocksAcrossMacroblock(plane);
+    return blockX % across + (blockY % blocksDownMacroblock(plane)) * across;
+}
+
+// The DC concealMacroblocks stored for a block of an undamaged macroblock, a signed 16-bit value as FFmpeg's dc_val holds it
+fn storedBlockDC(plane: u32, blockX: u32, blockY: u32) -> i32 {
+    let block = blockInMacroblock(plane, blockX, blockY);
+    let word = macroblocks[blockRecord(plane, blockX, blockY) + RECORD_DC + plane * RECORD_DC_PLANE_WORDS + (block >> 1u)];
+    return bitcast<i32>(word << (16u * (1u - (block & 1u)))) >> 16u;
+}
+
+const DECIDE_WORKGROUP_SIZE: u32 = 256u;
+// is_intra_more_likely takes damaged macroblocks for inter ones below this many undamaged ones, and samples about this many
+const INTRA_GUESS_MINIMUM_UNDAMAGED: u32 = 5u;
+const INTRA_GUESS_SAMPLES: u32 = 50u;
+
+var<workgroup> decideTask: u32;
+var<workgroup> decideForward: u32;
+var<workgroup> decideUndamaged: u32;
+var<workgroup> undamagedCount: atomic<u32>;
+var<workgroup> sampledCounts: array<u32, DECIDE_WORKGROUP_SIZE>;
+var<workgroup> intraVotes: atomic<i32>;
+
+// Decides whether the current picture's damaged macroblocks are taken for intra ones, as is_intra_more_likely does, and dispatches
+// the concealment passes over the frame's macroblocks when the picture is concealed
+@compute @workgroup_size(DECIDE_WORKGROUP_SIZE)
+fn decideConcealment(@builtin(local_invocation_index) localIndex: u32) {
+    if (localIndex == 0u) {
+        atomicStore(&undamagedCount, 0u);
+        atomicStore(&intraVotes, 0);
+        decideTask = 0u;
+        setDispatchArguments(0u, 1u, 1u);
+        let pictureIndex = pictureState[PACKET_CURRENT_PICTURE];
+        if (!packetFailed() && pictureIndex < min(pictureState[PACKET_PICTURE_COUNT], MAXIMUM_PICTURES)) {
+            let picture = pictureBase(pictureIndex);
+            if (pictureState[picture + PICTURE_DECODED] != 0u && pictureState[picture + PICTURE_CONCEALED] != 0u) {
+                decideTask = 1u;
+                decideForward = pictureState[picture + PICTURE_FORWARD_SLOT];
+                setDispatchArguments((stream.width + MACROBLOCK_SIZE - 1u) / MACROBLOCK_SIZE, (stream.height + MACROBLOCK_SIZE - 1u) / MACROBLOCK_SIZE, 1u);
+            }
+        }
+    }
+    if (workgroupUniformLoad(&decideTask) == 0u) {
+        return;
+    }
+    loadConcealedPicture();
+    let count = concealWidth * concealRows;
+    var undamaged = 0u;
+    for (var index = localIndex; index < count; index += DECIDE_WORKGROUP_SIZE) {
+        if (!macroblockDamaged(concealRecord(index % concealWidth, index / concealWidth))) {
+            undamaged += 1u;
+        }
+    }
+    atomicAdd(&undamagedCount, undamaged);
+    workgroupBarrier();
+    if (localIndex == 0u) {
+        decideUndamaged = atomicLoad(&undamagedCount);
+    }
+    let undamagedTotal = workgroupUniformLoad(&decideUndamaged);
+    let forward = workgroupUniformLoad(&decideForward);
+    // Without a previous picture concealment is spatial; with almost every macroblock damaged it is temporal
+    var intra = forward == 0u;
+    if (!intra && undamagedTotal >= INTRA_GUESS_MINIMUM_UNDAMAGED) {
+        // Every skipAmount-th undamaged macroblock above the last row votes, in raster order
+        let skipAmount = max(undamagedTotal / INTRA_GUESS_SAMPLES, 1u);
+        let candidates = (concealRows - 1u) * concealWidth;
+        let share = (candidates + DECIDE_WORKGROUP_SIZE - 1u) / DECIDE_WORKGROUP_SIZE;
+        let first = min(localIndex * share, candidates);
+        let last = min(first + share, candidates);
+        var shareUndamaged = 0u;
+        for (var index = first; index < last; index += 1u) {
+            if (!macroblockDamaged(concealRecord(index % concealWidth, index / concealWidth))) {
+                shareUndamaged += 1u;
+            }
+        }
+        sampledCounts[localIndex] = shareUndamaged;
+        workgroupBarrier();
+        var position = 0u;
+        for (var other = 0u; other < localIndex; other += 1u) {
+            position += sampledCounts[other];
+        }
+        var votes = 0;
+        for (var index = first; index < last; index += 1u) {
+            let column = index % concealWidth;
+            let row = index / concealWidth;
+            if (macroblockDamaged(concealRecord(column, row))) {
+                continue;
+            }
+            position += 1u;
+            if (position % skipAmount == 0u) {
+                votes += intraVote(column, row, forward);
+            }
+        }
+        atomicAdd(&intraVotes, votes);
+        workgroupBarrier();
+        intra = atomicLoad(&intraVotes) > 0;
+    }
+    if (localIndex == 0u) {
+        pictureState[concealPicture + PICTURE_CONCEAL_INTRA] = select(0u, 1u, intra);
+    }
+}
+
+// A sampled undamaged macroblock's vote: in an I picture, by how much more it differs from the previous picture than that picture
+// differs from itself a macroblock row down, the sums of absolute differences of their luma; otherwise 1 for intra and -1 for inter
+fn intraVote(column: u32, row: u32, forward: u32) -> i32 {
+    if (pictureState[concealPicture + PICTURE_TYPE] != PICTURE_TYPE_I) {
+        return select(-1, 1, (macroblocks[concealRecord(column, row) + RECORD_FLAGS] & FLAG_INTRA) != 0u);
+    }
+    let left = column * MACROBLOCK_SIZE;
+    let top = row * MACROBLOCK_SIZE;
+    var difference = 0;
+    for (var line = top; line < top + MACROBLOCK_SIZE; line += 1u) {
+        for (var x = left; x < left + MACROBLOCK_SIZE; x += 1u) {
+            let previous = concealSample(forward, 0u, x, line);
+            difference += abs(previous - concealSample(packet.outputSlot + 1u, 0u, x, line));
+            difference -= abs(previous - concealSample(forward, 0u, x, line + MACROBLOCK_SIZE));
+        }
+    }
+    return difference;
+}
+
+// Conceals the damaged macroblocks taken for inter ones by predicting them from the same place; with damaged macroblocks taken for
+// intra ones, stores each undamaged macroblock's block DCs instead, as ff_er_frame_end's fill pass computes them for guess_dc
+@compute @workgroup_size(RECONSTRUCT_WORKGROUP_SIZE)
+fn concealMacroblocks(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) localIndex: u32) {
+    if (localIndex == 0u) {
+        macroblockTask = loadConcealmentTask(workgroupId.x, workgroupId.y);
+    }
+    if (localIndex < MAXIMUM_BLOCKS) {
+        atomicStore(&blockParity[localIndex], 0u);
+    }
+    switch (workgroupUniformLoad(&macroblockTask)) {
+        case MACROBLOCK_TASK_RECONSTRUCT: {
+            reconstructMacroblock(workgroupId.x, workgroupId.y, localIndex);
+        }
+        case MACROBLOCK_TASK_DC: {
+            storeMacroblockDC(workgroupId.x, workgroupId.y, localIndex);
+        }
+        default: {
+        }
+    }
+}
+
+// FFmpeg's DC of an 8x8 block of 8-bit samples: their sum, rounded, over 8
+const DC_ROUNDING: u32 = 4u;
+const DC_SHIFT: u32 = 3u;
+
+// Stores the DC of each 8x8 block of an undamaged macroblock, summing a word of samples per invocation into blockParity's counters:
+// luma's blocks first, then each chroma plane's
+fn storeMacroblockDC(column: u32, frameRow: u32, localIndex: u32) {
+    loadConcealedPicture();
+    let row = concealPictureRow(frameRow);
+    let chromaBlocks = blocksAcrossMacroblock(1u) * blocksDownMacroblock(1u);
+    let taskCount = (LUMA_BLOCKS + 2u * chromaBlocks) * BLOCK_WORDS;
+    for (var task = localIndex; task < taskCount; task += RECONSTRUCT_WORKGROUP_SIZE) {
+        let counter = task / BLOCK_WORDS;
+        let wordInBlock = task % BLOCK_WORDS;
+        var plane = 0u;
+        var block = counter;
+        if (counter >= LUMA_BLOCKS) {
+            plane = 1u + (counter - LUMA_BLOCKS) / chromaBlocks;
+            block = (counter - LUMA_BLOCKS) % chromaBlocks;
+        }
+        let across = blocksAcrossMacroblock(plane);
+        let x = (column * across + block % across) * BLOCK_ROWS + (wordInBlock & 1u) * 4u;
+        let line = (row * blocksDownMacroblock(plane) + block / across) * BLOCK_ROWS + (wordInBlock >> 1u);
+        let word = readConcealedWord(plane, x, line);
+        atomicAdd(&blockParity[counter], (word & 0xFFu) + ((word >> 8u) & 0xFFu) + ((word >> 16u) & 0xFFu) + (word >> 24u));
+    }
+    workgroupBarrier();
+    if (localIndex != 0u) {
+        return;
+    }
+    var words = array<u32, 6>(0u, 0u, 0u, 0u, 0u, 0u);
+    for (var counter = 0u; counter < LUMA_BLOCKS + 2u * chromaBlocks; counter += 1u) {
+        var plane = 0u;
+        var block = counter;
+        if (counter >= LUMA_BLOCKS) {
+            plane = 1u + (counter - LUMA_BLOCKS) / chromaBlocks;
+            block = (counter - LUMA_BLOCKS) % chromaBlocks;
+        }
+        let dc = (atomicLoad(&blockParity[counter]) + DC_ROUNDING) >> DC_SHIFT;
+        words[plane * RECORD_DC_PLANE_WORDS + (block >> 1u)] |= dc << (16u * (block & 1u));
+    }
+    let record = concealRecord(column, row);
+    for (var word = 0u; word < 3u * RECORD_DC_PLANE_WORDS; word += 1u) {
+        macroblocks[record + RECORD_DC + word] = words[word];
+    }
+}
+
+// guess_dc's weights: 2^28 over the distance to the nearest undamaged block, at least 1, or a gray 1024 at distance 9999 without one;
+// the weighted average needs 64 bits, and its quotient, a DC, fits these bits
+const GUESS_WEIGHT_NUMERATOR: u32 = 268435456u;
+const GUESS_DEFAULT_COLOR: u32 = 1024u;
+const GUESS_DEFAULT_DISTANCE: u32 = 9999u;
+const GUESS_QUOTIENT_BITS: u32 = 12u;
+
+// 64-bit unsigned arithmetic on vec2u values, the low word first
+fn add64(first: vec2u, second: vec2u) -> vec2u {
+    let low = first.x + second.x;
+    return vec2u(low, first.y + second.y + select(0u, 1u, low < first.x));
+}
+
+fn subtract64(first: vec2u, second: vec2u) -> vec2u {
+    return vec2u(first.x - second.x, first.y - second.y - select(0u, 1u, first.x < second.x));
+}
+
+fn lessThan64(first: vec2u, second: vec2u) -> bool {
+    return first.y < second.y || (first.y == second.y && first.x < second.x);
+}
+
+fn shiftLeft64(value: vec2u, shift: u32) -> vec2u {
+    if (shift == 0u) {
+        return value;
+    }
+    return vec2u(value.x << shift, (value.y << shift) | (value.x >> (32u - shift)));
+}
+
+// A 32-bit value times one below 2^16, in 64 bits
+fn multiply64(value: u32, factor: u32) -> vec2u {
+    let upper = (value >> 16u) * factor;
+    return add64(vec2u(upper << 16u, upper >> 16u), vec2u((value & 0xFFFFu) * factor, 0u));
+}
+
+fn blockUndamaged(plane: u32, blockX: u32, blockY: u32) -> bool {
+    return !macroblockDamaged(blockRecord(plane, blockX, blockY));
+}
+
+// guess_dc for a block of a damaged macroblock: the nearest undamaged block to its left, right, top, and bottom in its plane's block
+// grid, weighted by the inverse of its distance, averaged with rounding
+fn guessBlockDC(plane: u32, blockX: u32, blockY: u32) -> i32 {
+    let across = concealWidth * blocksAcrossMacroblock(plane);
+    let down = concealRows * blocksDownMacroblock(plane);
+    var colors = array<u32, 4>(GUESS_DEFAULT_COLOR, GUESS_DEFAULT_COLOR, GUESS_DEFAULT_COLOR, GUESS_DEFAULT_COLOR);
+    var distances = array<u32, 4>(GUESS_DEFAULT_DISTANCE, GUESS_DEFAULT_DISTANCE, GUESS_DEFAULT_DISTANCE, GUESS_DEFAULT_DISTANCE);
+    for (var x = blockX; x > 0u;) {
+        x -= 1u;
+        if (blockUndamaged(plane, x, blockY)) {
+            colors[0] = u32(storedBlockDC(plane, x, blockY));
+            distances[0] = blockX - x;
+            break;
+        }
+    }
+    for (var x = blockX + 1u; x < across; x += 1u) {
+        if (blockUndamaged(plane, x, blockY)) {
+            colors[1] = u32(storedBlockDC(plane, x, blockY));
+            distances[1] = x - blockX;
+            break;
+        }
+    }
+    for (var y = blockY; y > 0u;) {
+        y -= 1u;
+        if (blockUndamaged(plane, blockX, y)) {
+            colors[2] = u32(storedBlockDC(plane, blockX, y));
+            distances[2] = blockY - y;
+            break;
+        }
+    }
+    for (var y = blockY + 1u; y < down; y += 1u) {
+        if (blockUndamaged(plane, blockX, y)) {
+            colors[3] = u32(storedBlockDC(plane, blockX, y));
+            distances[3] = y - blockY;
+            break;
+        }
+    }
+    var weightSum = 0u;
+    var weighted = vec2u(0u);
+    for (var direction = 0u; direction < 4u; direction += 1u) {
+        let weight = GUESS_WEIGHT_NUMERATOR / max(distances[direction], 1u);
+        weightSum += weight;
+        weighted = add64(weighted, multiply64(weight, colors[direction]));
+    }
+    var remainder = add64(weighted, vec2u(weightSum / 2u, 0u));
+    var quotient = 0u;
+    for (var bit = GUESS_QUOTIENT_BITS; bit > 0u;) {
+        bit -= 1u;
+        let divisor = shiftLeft64(vec2u(weightSum, 0u), bit);
+        if (!lessThan64(remainder, divisor)) {
+            remainder = subtract64(remainder, divisor);
+            quotient |= 1u << bit;
+        }
+    }
+    return i32(quotient);
+}
+
+// The DC concealment uses for a block: stored for an undamaged macroblock's, guessed for a damaged one's
+fn concealmentBlockDC(plane: u32, blockX: u32, blockY: u32) -> i32 {
+    if (blockUndamaged(plane, blockX, blockY)) {
+        return storedBlockDC(plane, blockX, blockY);
+    }
+    return guessBlockDC(plane, blockX, blockY);
+}
+
+// filter181's step on a DC and its neighbors in one direction, kept in 16 bits as FFmpeg's dc_val keeps it; the clip keeps the product
+// in 32 bits
+const FILTER_MINIMUM: i32 = -196602;
+const FILTER_MAXIMUM: i32 = 163834;
+const FILTER_SCALE: i32 = 10923;
+const FILTER_ROUNDING: i32 = 32768;
+const FILTER_SHIFT: u32 = 16u;
+
+fn filterDC(previous: i32, current: i32, next: i32) -> i32 {
+    let value = clamp(current * 8 - previous - next, FILTER_MINIMUM, FILTER_MAXIMUM);
+    return wrapInt16((value * FILTER_SCALE + FILTER_ROUNDING) >> FILTER_SHIFT);
+}
+
+// put_dc's clip of a DC before it divides it by 8 into a sample
+const MAXIMUM_DC: i32 = 2040;
+const DC_SAMPLE_SCALE: u32 = 8u;
+// The luma blocks around a macroblock's four, 4 by 4, which filter181 reads for them
+const LUMA_NEIGHBORHOOD_WIDTH: u32 = 4u;
+const LUMA_NEIGHBORHOOD_BLOCKS: u32 = 16u;
+
+var<workgroup> lumaNeighborhood: array<i32, LUMA_NEIGHBORHOOD_BLOCKS>;
+var<workgroup> chromaGuesses: array<i32, 8>;
+var<workgroup> lumaFiltered: array<i32, LUMA_BLOCKS>;
+
+// A luma DC of the workgroup's neighborhood, the blocks from one before its macroblock's to one after, both ways
+fn neighborhoodDC(blockX: u32, blockY: u32, column: u32, row: u32) -> i32 {
+    return lumaNeighborhood[(blockX + 1u - column * 2u) + (blockY + 1u - row * 2u) * LUMA_NEIGHBORHOOD_WIDTH];
+}
+
+// filter181's horizontal pass at a block, which skips the first and last rows and columns of the luma block grid
+fn horizontallyFilteredDC(blockX: u32, blockY: u32, column: u32, row: u32, down: u32) -> i32 {
+    if (blockY == 0u || blockY + 1u >= down) {
+        return neighborhoodDC(blockX, blockY, column, row);
+    }
+    return filterDC(neighborhoodDC(blockX - 1u, blockY, column, row), neighborhoodDC(blockX, blockY, column, row),
+        neighborhoodDC(blockX + 1u, blockY, column, row));
+}
+
+// filter181 at a block: its vertical pass over the horizontal pass's values, inside the grid's border
+fn filteredLumaDC(blockX: u32, blockY: u32, column: u32, row: u32, across: u32, down: u32) -> i32 {
+    if (blockX == 0u || blockX + 1u >= across || blockY == 0u || blockY + 1u >= down) {
+        return neighborhoodDC(blockX, blockY, column, row);
+    }
+    return filterDC(horizontallyFilteredDC(blockX, blockY - 1u, column, row, down), horizontallyFilteredDC(blockX, blockY, column, row, down),
+        horizontallyFilteredDC(blockX, blockY + 1u, column, row, down));
+}
+
+// Conceals a damaged macroblock taken for an intra one: guess_dc's DCs for its blocks and the luma ones around them, filter181 over
+// luma's, and put_dc's flat blocks
+@compute @workgroup_size(RECONSTRUCT_WORKGROUP_SIZE)
+fn concealIntra(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) localIndex: u32) {
+    if (localIndex == 0u) {
+        var task = MACROBLOCK_TASK_NONE;
+        if (concealedPictureMacroblock(workgroupId.x, workgroupId.y) && pictureState[currentPicture + PICTURE_CONCEAL_INTRA] != 0u) {
+            let record = (workgroupId.y * pictureState[CONTEXT_MACROBLOCK_WIDTH] + workgroupId.x) * MACROBLOCK_WORDS;
+            task = select(MACROBLOCK_TASK_NONE, MACROBLOCK_TASK_DC, macroblockDamaged(record));
+        }
+        macroblockTask = task;
+    }
+    if (workgroupUniformLoad(&macroblockTask) == MACROBLOCK_TASK_NONE) {
+        return;
+    }
+    loadConcealedPicture();
+    let column = workgroupId.x;
+    let row = concealPictureRow(workgroupId.y);
+    let lumaAcross = concealWidth * 2u;
+    let lumaDown = concealRows * 2u;
+    let chromaBlocks = blocksAcrossMacroblock(1u) * blocksDownMacroblock(1u);
+    if (localIndex < LUMA_NEIGHBORHOOD_BLOCKS) {
+        let blockX = i32(column * 2u + localIndex % LUMA_NEIGHBORHOOD_WIDTH) - 1;
+        let blockY = i32(row * 2u + localIndex / LUMA_NEIGHBORHOOD_WIDTH) - 1;
+        var value = 0;
+        if (blockX >= 0 && blockY >= 0 && u32(blockX) < lumaAcross && u32(blockY) < lumaDown) {
+            value = concealmentBlockDC(0u, u32(blockX), u32(blockY));
+        }
+        lumaNeighborhood[localIndex] = value;
+    } else if (localIndex < LUMA_NEIGHBORHOOD_BLOCKS + 2u * chromaBlocks) {
+        let chromaIndex = localIndex - LUMA_NEIGHBORHOOD_BLOCKS;
+        let plane = 1u + chromaIndex / chromaBlocks;
+        let block = chromaIndex % chromaBlocks;
+        let across = blocksAcrossMacroblock(plane);
+        chromaGuesses[chromaIndex] = guessBlockDC(plane, column * across + block % across, row * blocksDownMacroblock(plane) + block / across);
+    }
+    workgroupBarrier();
+    if (localIndex < LUMA_BLOCKS) {
+        lumaFiltered[localIndex] = filteredLumaDC(column * 2u + localIndex % 2u, row * 2u + localIndex / 2u, column, row, lumaAcross, lumaDown);
+    }
+    workgroupBarrier();
+    let taskCount = (LUMA_BLOCKS + 2u * chromaBlocks) * BLOCK_WORDS;
+    for (var task = localIndex; task < taskCount; task += RECONSTRUCT_WORKGROUP_SIZE) {
+        let counter = task / BLOCK_WORDS;
+        let wordInBlock = task % BLOCK_WORDS;
+        var plane = 0u;
+        var block = counter;
+        var dc = 0;
+        if (counter < LUMA_BLOCKS) {
+            dc = lumaFiltered[counter];
+        } else {
+            plane = 1u + (counter - LUMA_BLOCKS) / chromaBlocks;
+            block = (counter - LUMA_BLOCKS) % chromaBlocks;
+            dc = chromaGuesses[counter - LUMA_BLOCKS];
+        }
+        let across = blocksAcrossMacroblock(plane);
+        let x = (column * across + block % across) * BLOCK_ROWS + (wordInBlock & 1u) * 4u;
+        let line = (row * blocksDownMacroblock(plane) + block / across) * BLOCK_ROWS + (wordInBlock >> 1u);
+        writeConcealedWord(plane, x, line, (u32(clamp(dc, 0, MAXIMUM_DC)) / DC_SAMPLE_SCALE) * SAMPLE_REPLICATE);
+    }
+}
+
+// The deblocking ff_er_frame_end runs on a concealed picture, h_block_filter over the whole picture, then v_block_filter: at each 8x8
+// block edge with a damaged side and an intra side, the step across the edge, less half the steps beside it, spreads over the four
+// samples of each damaged side by these taps over 16, more strongly by 16 over 9 with one damaged side. Zero vectors leave the edges
+// between inter macroblocks alone. Each edge's samples are its own, so its edges filter in parallel
+const DEBLOCK_TAPS = array<i32, 4>(7, 5, 3, 1);
+const DEBLOCK_TAP_SHIFT: u32 = 4u;
+const DEBLOCK_ONE_SIDED_NUMERATOR: i32 = 16;
+const DEBLOCK_ONE_SIDED_DENOMINATOR: i32 = 9;
+
+// The step an edge spreads, from the two samples before it and the two after it
+fn deblockStep(beforeFar: i32, beforeNear: i32, afterNear: i32, afterFar: i32, bothDamaged: bool) -> i32 {
+    let before = beforeNear - beforeFar;
+    let across = afterNear - beforeNear;
+    let after = afterFar - afterNear;
+    var step = max(abs(across) - ((abs(before) + abs(after) + 1) >> 1u), 0);
+    if (across < 0) {
+        step = -step;
+    }
+    if (!bothDamaged) {
+        step = step * DEBLOCK_ONE_SIDED_NUMERATOR / DEBLOCK_ONE_SIDED_DENOMINATOR;
+    }
+    return step;
+}
+
+fn unpackSamples(word: u32) -> vec4i {
+    return vec4i(i32(word & 0xFFu), i32((word >> 8u) & 0xFFu), i32((word >> 16u) & 0xFFu), i32(word >> 24u));
+}
+
+fn packSamples(samples: vec4i) -> u32 {
+    return clipSample(samples.x) | (clipSample(samples.y) << 8u) | (clipSample(samples.z) << 16u) | (clipSample(samples.w) << 24u);
+}
+
+// Whether an edge between the macroblocks of two records filters: a side is damaged and a side is intra
+fn edgeFilters(firstRecord: u32, secondRecord: u32) -> bool {
+    return (macroblockDamaged(firstRecord) || macroblockDamaged(secondRecord))
+        && (macroblockConcealedIntra(firstRecord) || macroblockConcealedIntra(secondRecord));
+}
+
+// h_block_filter on one line of the edge after a block of a plane: the four samples either side, two words of the line
+fn filterVerticalEdge(plane: u32, leftBlockX: u32, line: u32) {
+    let blockY = line / BLOCK_ROWS;
+    let leftRecord = blockRecord(plane, leftBlockX, blockY);
+    let rightRecord = blockRecord(plane, leftBlockX + 1u, blockY);
+    if (!edgeFilters(leftRecord, rightRecord)) {
+        return;
+    }
+    let leftDamaged = macroblockDamaged(leftRecord);
+    let rightDamaged = macroblockDamaged(rightRecord);
+    let edge = (leftBlockX + 1u) * BLOCK_ROWS;
+    var left = unpackSamples(readConcealedWord(plane, edge - 4u, line));
+    var right = unpackSamples(readConcealedWord(plane, edge, line));
+    let step = deblockStep(left.z, left.w, right.x, right.y, leftDamaged && rightDamaged);
+    if (step == 0) {
+        return;
+    }
+    if (leftDamaged) {
+        for (var tap = 0u; tap < 4u; tap += 1u) {
+            left[3u - tap] += (step * DEBLOCK_TAPS[tap]) >> DEBLOCK_TAP_SHIFT;
+        }
+        writeConcealedWord(plane, edge - 4u, line, packSamples(left));
+    }
+    if (rightDamaged) {
+        for (var tap = 0u; tap < 4u; tap += 1u) {
+            right[tap] -= (step * DEBLOCK_TAPS[tap]) >> DEBLOCK_TAP_SHIFT;
+        }
+        writeConcealedWord(plane, edge, line, packSamples(right));
+    }
+}
+
+// v_block_filter on the four columns from x, a multiple of 4, of the edge below a block of a plane: the four lines either side
+fn filterHorizontalEdge(plane: u32, x: u32, topBlockY: u32) {
+    let blockX = x / BLOCK_ROWS;
+    let topRecord = blockRecord(plane, blockX, topBlockY);
+    let bottomRecord = blockRecord(plane, blockX, topBlockY + 1u);
+    if (!edgeFilters(topRecord, bottomRecord)) {
+        return;
+    }
+    let topDamaged = macroblockDamaged(topRecord);
+    let bottomDamaged = macroblockDamaged(bottomRecord);
+    let edge = (topBlockY + 1u) * BLOCK_ROWS;
+    var lines = array<vec4i, 8>();
+    for (var offset = 0u; offset < 8u; offset += 1u) {
+        lines[offset] = unpackSamples(readConcealedWord(plane, x, edge - 4u + offset));
+    }
+    for (var column = 0u; column < 4u; column += 1u) {
+        let step = deblockStep(lines[2][column], lines[3][column], lines[4][column], lines[5][column], topDamaged && bottomDamaged);
+        if (step == 0) {
+            continue;
+        }
+        for (var tap = 0u; tap < 4u; tap += 1u) {
+            if (topDamaged) {
+                lines[3u - tap][column] += (step * DEBLOCK_TAPS[tap]) >> DEBLOCK_TAP_SHIFT;
+            }
+            if (bottomDamaged) {
+                lines[4u + tap][column] -= (step * DEBLOCK_TAPS[tap]) >> DEBLOCK_TAP_SHIFT;
+            }
+        }
+    }
+    for (var offset = 0u; offset < 8u; offset += 1u) {
+        if ((offset < 4u && topDamaged) || (offset >= 4u && bottomDamaged)) {
+            writeConcealedWord(plane, x, edge - 4u + offset, packSamples(lines[offset]));
+        }
+    }
+}
+
+// h_block_filter for the edges after each block of the workgroup's macroblock, a line per invocation: luma's two edges of 16 lines,
+// then each chroma plane's
+@compute @workgroup_size(RECONSTRUCT_WORKGROUP_SIZE)
+fn deblockHorizontal(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) localIndex: u32) {
+    if (!concealedPictureMacroblock(workgroupId.x, workgroupId.y)) {
+        return;
+    }
+    loadConcealedPicture();
+    let row = concealPictureRow(workgroupId.y);
+    let lumaTasks = 2u * MACROBLOCK_SIZE;
+    let chromaTasks = blocksAcrossMacroblock(1u) * BLOCK_ROWS * blocksDownMacroblock(1u);
+    for (var task = localIndex; task < lumaTasks + 2u * chromaTasks; task += RECONSTRUCT_WORKGROUP_SIZE) {
+        var plane = 0u;
+        var planeTask = task;
+        if (task >= lumaTasks) {
+            plane = 1u + (task - lumaTasks) / chromaTasks;
+            planeTask = (task - lumaTasks) % chromaTasks;
+        }
+        let across = blocksAcrossMacroblock(plane);
+        let lines = BLOCK_ROWS * blocksDownMacroblock(plane);
+        let leftBlockX = workgroupId.x * across + planeTask / lines;
+        if (leftBlockX + 1u < concealWidth * across) {
+            filterVerticalEdge(plane, leftBlockX, row * lines + planeTask % lines);
+        }
+    }
+}
+
+// v_block_filter for the edges below each block of the workgroup's macroblock, four columns per invocation: luma's two edges of four
+// words, then each chroma plane's
+@compute @workgroup_size(RECONSTRUCT_WORKGROUP_SIZE)
+fn deblockVertical(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) localIndex: u32) {
+    if (!concealedPictureMacroblock(workgroupId.x, workgroupId.y)) {
+        return;
+    }
+    loadConcealedPicture();
+    let row = concealPictureRow(workgroupId.y);
+    let lumaTasks = 2u * MACROBLOCK_SIZE / 4u;
+    let chromaTasks = blocksDownMacroblock(1u) * BLOCK_ROWS * blocksAcrossMacroblock(1u) / 4u;
+    for (var task = localIndex; task < lumaTasks + 2u * chromaTasks; task += RECONSTRUCT_WORKGROUP_SIZE) {
+        var plane = 0u;
+        var planeTask = task;
+        if (task >= lumaTasks) {
+            plane = 1u + (task - lumaTasks) / chromaTasks;
+            planeTask = (task - lumaTasks) % chromaTasks;
+        }
+        let down = blocksDownMacroblock(plane);
+        let words = BLOCK_ROWS * blocksAcrossMacroblock(plane) / 4u;
+        let topBlockY = row * down + planeTask / words;
+        if (topBlockY + 1u < concealRows * down) {
+            filterHorizontalEdge(plane, workgroupId.x * words * 4u + (planeTask % words) * 4u, topBlockY);
+        }
     }
 }
 

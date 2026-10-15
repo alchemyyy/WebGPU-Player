@@ -29,6 +29,7 @@ partition "Plan time: route, preset, settings, or output size changes" {
         * X[-N] gives X a ring of N + 1 textures; history never holds a VideoFrame
         * A bypassing signal (Profile 4) completes the track to display in its own pass
         * A pass that cannot run is left out with a reason code and a terse detail
+        * An interlaced stream deinterlaces before every stage, over the signal's ring of 3 at frame size
     end note
     :PassPrelude, per pass module
     bindings, input accessors, renamed user bodies, entry stages; <<$HL_AMBER>>
@@ -55,6 +56,10 @@ partition "Frame time: each presented frame" {
     :PresentationExecutor.encode(encoder, frame)
     one uniform write, one encode per pass, no submit; <<$HL_AMBER>>
     :SIGNAL, fixed and authorized: source -> 'source' RGB;
+    if (interlaced stream, mode not off?) then (yes)
+        :DEINTERLACE: yadif over the signal's frames [0], [-1], [-2]
+        the field DeinterlaceTimeline picks, one frame of lookahead; <<$HL_AMBER>>
+    endif
     :RGB and PRESCALE passes, at source size;
     :SCALE: built-in bilinear or one user scaler -> the output rectangle;
     :OUTPUT passes, at output size;

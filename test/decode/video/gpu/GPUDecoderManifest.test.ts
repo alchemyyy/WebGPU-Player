@@ -65,6 +65,12 @@ const SLICE_ERROR_NAME = 'sliceData';
 const HEADER_ERROR_CODE = GPU_DECODER_MAXIMUM_ERROR_CODE;
 const HEADER_ERROR_NAME = 'frameHeader';
 const MINIMUM_ERROR_CODE = 1;
+// Errors a decoder resyncs from and one it cannot recover from, and a recovery no header may name
+const RESYNC_ERROR_CODE = 19;
+const RESYNC_ERROR_NAME = 'bitsExhausted';
+const FATAL_ERROR_CODE = 2;
+const FATAL_ERROR_NAME = 'pictureSize';
+const UNKNOWN_ERROR_RECOVERY = 'skip';
 const MAXIMUM_WIDTH = 8192;
 const MAXIMUM_HEIGHT = 4320;
 const UHD_WIDTH = 3840;
@@ -644,6 +650,20 @@ const REJECTION_CASES: readonly RejectionCase[] = [
         quote(`${HEADER_ERROR_CODE}, ${SLICE_ERROR_NAME}`)
     ],
     [
+        'an error recovery no header may name',
+        [ ...MINIMAL_HEADER, `//! error: ${SLICE_ERROR_CODE}, ${SLICE_ERROR_NAME}, ${UNKNOWN_ERROR_RECOVERY}` ],
+        APPENDED_LINE,
+        'error-recovery',
+        quote(UNKNOWN_ERROR_RECOVERY)
+    ],
+    [
+        'an error line with a part past its recovery',
+        [ ...MINIMAL_HEADER, `//! error: ${SLICE_ERROR_CODE}, ${SLICE_ERROR_NAME}, conceal, drop` ],
+        APPENDED_LINE,
+        'error-syntax',
+        quote(`${SLICE_ERROR_CODE}, ${SLICE_ERROR_NAME}, conceal, drop`)
+    ],
+    [
         'a vector directive, which a package\'s vectors section replaced',
         [ ...MINIMAL_HEADER, VECTOR_DIRECTIVE_LINE ],
         APPENDED_LINE,
@@ -781,6 +801,28 @@ describe('parseGPUDecoderManifest', () => {
             [ MINIMUM_ERROR_CODE, SLICE_ERROR_NAME ],
             [ GPU_DECODER_MAXIMUM_ERROR_CODE, HEADER_ERROR_NAME ]
         ]));
+        // An error line without a recovery is fatal
+        expect(manifest.errorRecoveries.size).toBe(0);
+    });
+
+    it('reads each error line\'s recovery, conceal, drop, or resync, and leaves a line without one fatal', () => {
+        const header = [
+            ...MINIMAL_HEADER,
+            `//! error: ${SLICE_ERROR_CODE}, ${SLICE_ERROR_NAME}, conceal`,
+            `//! error: ${HEADER_ERROR_CODE}, ${HEADER_ERROR_NAME}, drop`,
+            `//! error: ${RESYNC_ERROR_CODE}, ${RESYNC_ERROR_NAME},resync`,
+            `//! error: ${FATAL_ERROR_CODE}, ${FATAL_ERROR_NAME}`
+        ];
+
+        const manifest = parseGPUDecoderManifest(createSource(header));
+
+        expect(manifest.errorRecoveries).toEqual(new Map([
+            [ SLICE_ERROR_CODE, 'conceal' ],
+            [ HEADER_ERROR_CODE, 'drop' ],
+            [ RESYNC_ERROR_CODE, 'resync' ]
+        ]));
+        expect(manifest.errors.get(RESYNC_ERROR_CODE)).toBe(RESYNC_ERROR_NAME);
+        expect(manifest.errors.get(FATAL_ERROR_CODE)).toBe(FATAL_ERROR_NAME);
     });
 
     it('accepts an indirect flag after the buffer size and skips blank header lines', () => {

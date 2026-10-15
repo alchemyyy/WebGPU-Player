@@ -51,6 +51,14 @@ const HISTORY_DEPTH = 1;
 const WORKGROUP_COUNTS = [ 240, 135, 1 ] as const;
 const WORKGROUP_TEXT = '240x135x1';
 const TEMPORAL_PASS_NAME = 'Temporal blend';
+const DEINTERLACE_LABEL = 'Presentation deinterlace';
+const SDR_BIT_DEPTH = 8;
+// The deinterlacing pass reads the signal's newest frame, the one before it, and the one before that, the latter two labelled
+const DEINTERLACE_SIGNAL_READS: readonly [ string | null, number, string | null ][] = [
+    [ SIGNAL_TEXTURE_ID, 0, null ],
+    [ SIGNAL_TEXTURE_ID, -1, '[-1]' ],
+    [ SIGNAL_TEXTURE_ID, -2, '[-2]' ]
+];
 
 const SOURCE_NODE_ID = 'source';
 const CANVAS_NODE_ID = 'canvas';
@@ -407,5 +415,39 @@ describe('layoutPipelineGraph', () => {
         expect(historyEdges[0].fromNodeId).toBe(historyEdges[0].toNodeId);
         expect(requireNode(layout, historyEdges[0].toNodeId).lines[0].text).toContain(TEMPORAL_PASS_NAME);
         expect(findEdges(layout, SOURCE_NODE_ID, FIRST_PASS_NODE_ID)).toHaveLength(1);
+    });
+
+    it('draws the deinterlacing pass after the signal, reading the signal\'s frame and the two before it', () => {
+        const plan = planPresentation({
+            chain: createBuiltinChain({
+                format: 'I420',
+                hdrOutput: false,
+                interlacedChroma: true,
+                metadata: createSDRColorMetadata(),
+                route: 'raw-yuv',
+                settings: createDefaultRenderSettings()
+            }),
+            deinterlace: { bitDepth: SDR_BIT_DEPTH, frameHeight: SOURCE_HEIGHT, frameWidth: SOURCE_WIDTH },
+            device: { features: new Set<string>(), maximumTextureDimension: MAXIMUM_TEXTURE_DIMENSION },
+            facts: {
+                frameRate: null,
+                hdrOutput: false,
+                hdrSource: false,
+                outputHeight: OUTPUT_HEIGHT,
+                outputWidth: OUTPUT_WIDTH,
+                sourceHeight: SOURCE_HEIGHT,
+                sourceWidth: SOURCE_WIDTH
+            },
+            output: TEST_CANVAS_OUTPUT,
+            passes: []
+        });
+        const layout = layoutPipelineGraph(plan, null);
+        const signalReads = findEdges(layout, FIRST_PASS_NODE_ID, SECOND_PASS_NODE_ID);
+
+        expect(getLineTexts(requireNode(layout, FIRST_PASS_NODE_ID))[0]).toBe(SIGNAL_LABEL);
+        expect(getLineTexts(requireNode(layout, SECOND_PASS_NODE_ID))[0]).toBe(DEINTERLACE_LABEL);
+        expect(signalReads.map((edge: PipelineGraphEdge): [ string | null, number, string | null ] => [ edge.textureId, edge.historyOffset, edge.label ]))
+            .toEqual(expect.arrayContaining([ ...DEINTERLACE_SIGNAL_READS ]));
+        expect(signalReads).toHaveLength(DEINTERLACE_SIGNAL_READS.length);
     });
 });

@@ -6,12 +6,13 @@
 //! references: 0
 //! reorder: 0
 //! packet: 54 MiB
-//! error: 1, packetSize
+//! error: 1, packetSize, drop
 //! dispatch: copyPlanes, ceil(stream.width * output.bytesPerSample / 256), stream.height, 3
 
 // The smallest complete video decoder, and a template for new ones: each packet is one uncompressed planar frame, which it copies into the output slot.
 // A packet holds the planes in order, luma then the two chroma planes, rows tightly packed and 16-bit samples little-endian,
 // as FFmpeg's rawvideo stores yuv420p and yuv420p10le.
+// A packet of another size writes nothing, so its frame drops, as FFmpeg's rawvideo outputs no frame for it, and the next packet decodes on.
 // No demuxer maps a track to the uncompressed codec, so it decodes only the packets a test or a tool hands it.
 // One invocation writes one output word, a workgroup covers 64 words of one row, and each plane takes its own z.
 

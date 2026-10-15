@@ -33,6 +33,7 @@ import {
     isStaticHDRMetadataScanResult,
     type StaticHDRMetadataScanResult
 } from '../demux/hdr/StaticHDRMetadata';
+import { isVideoFrameFields, type VideoFrameFields } from '../decode/video/VideoFields';
 import type { CustomAudioOutputChannelCount } from '../audio/processing/CustomAudioChannelLayout';
 import {
     assertValidAudioDownmixSettings,
@@ -54,7 +55,13 @@ import {
 import { isGPUDecoderOutputFormat, type GPUDecoderOutputFormat } from '../decode/video/gpu/GPUDecodeFormats';
 import type { GPUDecoderParserModule } from '../decode/video/gpu/GPUDecoderParser';
 import { isGPUDecoderParserModule } from '../decode/video/gpu/GPUDecoderParseProtocol';
-import { isGPUDecoderPictureSize, isGPUDecoderRepeatCounts, type GPUDecoderPictureSize } from '../decode/video/gpu/GPUDecodeTypes';
+import {
+    isGPUDecoderPictureSize,
+    isGPUDecoderRepeatCounts,
+    isGPUVideoDecodeRecovery,
+    type GPUDecoderPictureSize,
+    type GPUVideoDecodeRecovery
+} from '../decode/video/gpu/GPUDecodeTypes';
 import { isCustomDecodeMediaSource, type CustomDecodeMediaSource } from '../demux/CustomDecodeMediaSource';
 
 export const MAX_DECODED_FRAME_CREDITS = 4;
@@ -357,6 +364,8 @@ export type DecodeWorkerReadyResponse = {
 type DecodeWorkerFrameResponseBase = {
     durationMicroseconds: Microseconds
     encodedDolbyVisionMetadata?: TransferableDolbyVisionEncodedFrameMetadata
+    /** The frame's fields, from its container's field order; omitted when the container names none */
+    fields?: VideoFrameFields
     HDR10PlusMetadata?: HDR10PlusFrameMetadata
     generation: number
     mediaTimeMicroseconds: Microseconds
@@ -395,6 +404,11 @@ export type DecodeWorkerGPUVideoParser = Readonly<{
 export type DecodeWorkerPacketResponse = {
     data: ArrayBuffer
     durationMicroseconds: Microseconds
+    /**
+     * The picture's fields: its parser's report, else its container's field order; omitted when neither names them.
+     * A decoder without a parser reports its own in its status, which replaces these.
+     */
+    fields?: VideoFrameFields
     /** The output format the picture decodes into, when its parser reported one; a format other than the session's starts a session for it */
     format?: GPUDecoderOutputFormat
     generation: number
@@ -403,10 +417,19 @@ export type DecodeWorkerPacketResponse = {
     keyframe: boolean
     /** The largest picture of the picture's sequence, when its parser reported one; a session too small for it is replaced */
     maximumPictureSize?: GPUDecoderPictureSize
+    /**
+     * A packet whose picture the decoder's parser lost, after a recoverable failure, up to the next key packet: its data is empty, it carries no picture facts,
+     * and its frame repeats the last good frame at its time
+     */
+    hold?: true
     /** The parser's output events since the previous picture; present exactly when the decoder has a parser */
     outputEvents?: Uint32Array
+    /** On the first held packet of a parser's restart, the failure that lost its picture, which the page counts */
+    recovery?: GPUVideoDecodeRecovery
     /** How many times the picture's record runs each `repeat:` directive of the decoder's header; present exactly when the decoder has a parser */
     repeatCounts?: readonly number[]
+    /** The first picture of a parser restarted at a key packet after a recoverable failure, which resets the decoder and numbers pictures from 0 again */
+    reset?: true
     timestampMicroseconds: Microseconds
     type: 'packet'
     /** Omitted epochs mean the initial video attempt, epoch zero. */
@@ -1212,6 +1235,7 @@ function isDecodeWorkerFrameResponse(value: Record<string, unknown>): boolean {
         || Number(value.durationMicroseconds) < 0
         || !hasValidOptionalDolbyVisionMetadata(value)
         || !hasValidOptionalHDR10PlusMetadata(value)
+        || (value.fields !== undefined && !isVideoFrameFields(value.fields))
         || (value.videoEpoch !== undefined && !isVideoEpoch(value.videoEpoch, true))
     ) {
         return false;
@@ -1244,10 +1268,38 @@ function isCodecPrivate(value: unknown): value is ArrayBuffer {
         && value.byteLength <= GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH;
 }
 
+/** A held packet carries no data and no picture facts, and only it may carry a recovery. */
+function hasValidPacketHold(value: Record<string, unknown>): boolean {
+    if (value.hold === undefined) {
+        return value.recovery === undefined;
+    }
+    return value.hold === true
+        && value.data instanceof ArrayBuffer
+        && value.data.byteLength === 0
+        && value.reset === undefined
+        && value.outputEvents === undefined
+        && value.repeatCounts === undefined
+        && value.format === undefined
+        && value.maximumPictureSize === undefined
+        && value.visibleSize === undefined
+        && value.fields === undefined
+        && (value.recovery === undefined || isGPUVideoDecodeRecovery(value.recovery));
+}
+
 function isDecodeWorkerPacketResponse(value: Record<string, unknown>): boolean {
+    if (value.hold !== undefined || value.recovery !== undefined) {
+        return hasValidPacketHold(value)
+            && isMicroseconds(value.timestampMicroseconds)
+            && isMicroseconds(value.durationMicroseconds)
+            && Number(value.durationMicroseconds) >= 0
+            && typeof value.keyframe === 'boolean'
+            && value.HDR10PlusMetadata === undefined
+            && (value.videoEpoch === undefined || isVideoEpoch(value.videoEpoch, true));
+    }
     return value.data instanceof ArrayBuffer
         && value.data.byteLength > 0
         && value.data.byteLength <= GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH
+        && (value.reset === undefined || value.reset === true)
         && isMicroseconds(value.timestampMicroseconds)
         && isMicroseconds(value.durationMicroseconds)
         && Number(value.durationMicroseconds) >= 0
@@ -1258,6 +1310,7 @@ function isDecodeWorkerPacketResponse(value: Record<string, unknown>): boolean {
         && hasValidOptionalOutputEvents(value)
         && (value.repeatCounts === undefined || isGPUDecoderRepeatCounts(value.repeatCounts))
         && (value.visibleSize === undefined || isGPUDecoderPictureSize(value.visibleSize))
+        && (value.fields === undefined || isVideoFrameFields(value.fields))
         && (value.videoEpoch === undefined || isVideoEpoch(value.videoEpoch, true));
 }
 

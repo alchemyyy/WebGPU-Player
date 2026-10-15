@@ -195,9 +195,27 @@ export type RawDolbyVisionFrameFormat = RawDolbyVisionVideoFrameFormat;
  */
 export type BuiltinChainConfiguration =
     | { felReconstruction: boolean; format: RawDolbyVisionFrameFormat; hdrOutput: boolean; profile: DolbyVisionReconstructionProfile; route: 'raw-dolby-vision'; settings: HDRToSDRRenderSettings }
-    | { format: SupportedRawVideoFrameFormat; hdrOutput: boolean; metadata: InputColorMetadata; route: 'raw-yuv'; settings: RenderSettings }
+    | {
+        format: SupportedRawVideoFrameFormat
+        hdrOutput: boolean
+        /** The signal reads 4:2:0 chroma within each field of a frame the presentation uniform marks interlaced, as a deinterlacing plan's does */
+        interlacedChroma?: boolean
+        metadata: InputColorMetadata
+        route: 'raw-yuv'
+        settings: RenderSettings
+    }
     | { hdrOutput: boolean; metadata: InputColorMetadata; route: 'external-hdr'; settings: HDRToSDRRenderSettings }
-    | { hdrOutput: boolean; metadata: InputColorMetadata; route: 'frame-pool'; settings: RenderSettings; signal: SignalDefinition }
+    | {
+        hdrOutput: boolean
+        /** The chain takes interlacedSignal, as a deinterlacing plan does */
+        interlacedChroma?: boolean
+        /** The route's signal that reads 4:2:0 chroma within each field of a frame the presentation uniform marks interlaced */
+        interlacedSignal?: SignalDefinition
+        metadata: InputColorMetadata
+        route: 'frame-pool'
+        settings: RenderSettings
+        signal: SignalDefinition
+    }
     | { hdrOutput: boolean; route: 'external-dolby-vision'; settings: HDRToSDRRenderSettings }
     | { route: 'external-identity' };
 
@@ -225,8 +243,21 @@ export type PlanDevice = {
     maximumTextureDimension: number
 };
 
+/**
+ * The deinterlacing pass a plan places first on the spine, over the route's signal in 'source' RGB.
+ * It runs at the decoded frame's visible size in samples, never the display size, so each row of the frame stays one row of one field.
+ */
+export type DeinterlaceRequest = {
+    /** The stream's bit depth, whose code value is what the spatial score gives away */
+    bitDepth: number
+    frameHeight: number
+    frameWidth: number
+};
+
 export type PlanRequest = {
     chain: BuiltinChain
+    /** The deinterlacing pass, or absent or null for none; a signal with a bypass condition never takes one */
+    deinterlace?: DeinterlaceRequest | null
     device: PlanDevice
     facts: PlanFacts
     output: PlannedOutput
@@ -346,6 +377,8 @@ export type PlannedParameterSet = {
 /** An immutable plan: passes in execution order and the resources they use. */
 export type PresentationPlan = {
     buffers: readonly PlannedBuffer[]
+    /** The deinterlacing pass the plan placed, or null for none */
+    deinterlace: DeinterlaceRequest | null
     output: PlannedOutput
     parameterSets: readonly PlannedParameterSet[]
     passes: readonly PlannedPass[]
@@ -383,12 +416,18 @@ export type PresentationFrameSource =
 
 /** What the executor needs to record one frame. */
 export type PresentationFrameInput = {
+    /** PRESENTATION_FIELD_STATE bits: which field of which held frame presents, and whether the signal's frame is interlaced. */
+    fieldState: number
     geometry: TexturePresentationGeometry
     /** True advances history; false redraws the same frame. */
     newFrame: boolean
     /** Frames dropped since the previous new frame. */
     skippedFrameCount: number
-    source: PresentationFrameSource
+    /**
+     * The frame's source, or null to draw from history alone, as a deinterlaced frame's second field does once its source was released.
+     * A draw from history skips the passes that read the source, so it needs a plan whose source passes write only history, and it redraws the last new frame.
+     */
+    source: PresentationFrameSource | null
     target: GPUTextureView
     timestampMicroseconds: number
 };

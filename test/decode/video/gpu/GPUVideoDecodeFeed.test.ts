@@ -10,11 +10,17 @@ import GPUVideoDecodeFeed, {
 } from 'webgpu-player/decode/video/gpu/GPUVideoDecodeFeed';
 import type { DecodedFramePoolPresentationFrame } from 'webgpu-player/presentation/WebGPUPresenter';
 import { requireMicroseconds } from 'webgpu-player/TimeMath';
-import { GPUVideoDecodeError, type GPUDecoderPictureSize, type GPUVideoDecodeFailure } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
+import {
+    GPUVideoDecodeError,
+    type GPUDecoderPictureSize,
+    type GPUVideoDecodeFailure,
+    type GPUVideoDecodeRecovery
+} from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
 import { selectGPUDecodeSessionStream } from 'webgpu-player/decode/video/gpu/GPUDecoderStreamFit';
 import { createGPUFramePoolLayout, getGPUFramePoolSlotCount } from 'webgpu-player/decode/video/gpu/GPUFramePool';
 import type { GPUVideoDecoderSelection } from 'webgpu-player/decode/video/gpu/GPUVideoDecoderCatalog';
 import type { HDR10PlusFrameMetadata } from 'webgpu-player/demux/hdr/HDR10PlusMetadata';
+import type { VideoFrameFields } from 'webgpu-player/decode/video/VideoFields';
 
 import { createVideoDecoderPackageForTest, createVideoDecoderSource, TEST_DECODER_CODEC } from '../../../helpers/decoderPackages';
 import {
@@ -96,6 +102,12 @@ const CHANGE_PICTURE_EVENTS = Uint32Array.of(EARLIER_PICTURE_EVENT, OWN_PICTURE_
 const FORMAT_FAILURE: GPUVideoDecodeFailure = { code: 'format-unsupported', detail: 'I444P12 not in I420' };
 // Submission completions that settle every packet of the stream-change tests
 const SETTLE_ROUND_COUNT = 8;
+// Recoveries a session reports: a concealed slice twice, the later with another value, and a parser's failure that resynced
+const CONCEALED_RECOVERY: GPUVideoDecodeRecovery = { code: 'concealed', errorName: 'sliceHeader', value: 12 };
+const LATER_CONCEALED_VALUE = 30;
+const PARSER_RECOVERY: GPUVideoDecodeRecovery = { code: 'resynced', errorName: 'parser sliceData', value: 7 };
+// A picture's fields as its parser or container named them, which its frame carries for the deinterlacing pass
+const BOTTOM_FIRST_FIELDS: VideoFrameFields = { repeatFirstField: false, scan: 'bottom-first' };
 
 type FeedHarness = FakeGPUVideoDecodeSessionFactory & {
     callbacks: GPUVideoDecodeFeedCallbacks & {
@@ -164,12 +176,16 @@ function createPacket(index: number, HDR10PlusMetadata: HDR10PlusFrameMetadata |
     return {
         data: new ArrayBuffer(16),
         durationMicroseconds: FRAME_DURATION_MICROSECONDS,
+        fields: null,
         format: null,
         HDR10PlusMetadata,
+        hold: false,
         keyframe: index === 0,
         maximumPictureSize: null,
         outputEvents: null,
+        recovery: null,
         repeatCounts: null,
+        reset: false,
         timestampMicroseconds,
         visibleSize: null
     };
@@ -243,6 +259,38 @@ describe('GPUVideoDecodeFeed', () => {
         expect(harness.callbacks.frames[0].frame.visibleRectangle).toEqual({ ...PICTURE_SIZE, x: 0, y: 0 });
     });
 
+    it('hands the session a held packet with its recovery, and resets the decoder at a restarted parser\'s first picture, numbering from 0', async () => {
+        const harness = createHarness();
+        startConfigured(harness);
+        await settle();
+
+        harness.feed.queuePacket(createPacket(0));
+        harness.feed.queuePacket({ ...createPacket(1), data: new ArrayBuffer(0), hold: true, recovery: PARSER_RECOVERY });
+        harness.feed.queuePacket({ ...createPacket(2), keyframe: true, reset: true });
+
+        expect(harness.sessions[0].queuedPackets.map(packet => [ packet.hold, packet.recovery, packet.reset ])).toEqual([
+            [ false, null, true ],
+            [ true, PARSER_RECOVERY, false ],
+            [ false, null, true ]
+        ]);
+    });
+
+    it('counts each session\'s recoveries per code and error name in its telemetry, with the latest detail', async () => {
+        const harness = createHarness();
+        startConfigured(harness);
+        await settle();
+        const session = harness.sessions[0];
+
+        session.recoveries.push(CONCEALED_RECOVERY, { ...CONCEALED_RECOVERY, value: LATER_CONCEALED_VALUE }, PARSER_RECOVERY);
+        harness.feed.queuePacket(createPacket(0));
+
+        expect(harness.feed.getTelemetry().recoveries).toEqual([
+            { code: 'concealed', count: 2, detail: `${CONCEALED_RECOVERY.errorName}: ${LATER_CONCEALED_VALUE}` },
+            { code: 'resynced', count: 1, detail: `${PARSER_RECOVERY.errorName}: ${PARSER_RECOVERY.value}` }
+        ]);
+        expect(harness.callbacks.failures).toEqual([]);
+    });
+
     it('spends and returns a credit for each picture of a packet, which all take its timing', async () => {
         const harness = createHarness();
         startConfigured(harness);
@@ -275,6 +323,22 @@ describe('GPUVideoDecodeFeed', () => {
         startConfigured(harness, createRequest(FIRST_CODEC_PRIVATE, null));
         await settle();
         expect(harness.factory).toHaveBeenCalledTimes(3);
+    });
+
+    it('hands each picture its packet\'s fields, which its frame carries, and a frame of a packet without fields none', async () => {
+        const harness = createHarness();
+        startConfigured(harness);
+        await settle();
+
+        harness.feed.queuePacket({ ...createPacket(0), fields: BOTTOM_FIRST_FIELDS });
+        harness.queue.completeAll();
+        await settle();
+        harness.feed.queuePacket(createPacket(1));
+
+        expect(harness.sessions[0].queuedPackets.map(packet => packet.fields)).toEqual([ BOTTOM_FIRST_FIELDS, null ]);
+        expect(harness.callbacks.frames).toHaveLength(2);
+        expect(harness.callbacks.frames[0].fields).toEqual(BOTTOM_FIRST_FIELDS);
+        expect(harness.callbacks.frames[1]).not.toHaveProperty('fields');
     });
 
     it('gives each frame the HDR10+ state of the packet it decodes', async () => {

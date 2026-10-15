@@ -13,19 +13,19 @@
 //! buffer: blockData, 16 * (stream.width * stream.height / 16 + (stream.width + stream.height) / 4 + 1 + 64)
 //! buffer: residualData, 4 * stream.width * stream.height * (1 + 2 / (output.chromaWidthDivisor * output.chromaHeightDivisor))
 //! error: 1, configuration
-//! error: 2, nalLength
-//! error: 3, parameterSetMissing
-//! error: 4, parameterSetInvalid
+//! error: 2, nalLength, resync
+//! error: 3, parameterSetMissing, resync
+//! error: 4, parameterSetInvalid, resync
 //! error: 5, unsupportedFormat
 //! error: 6, pictureSize
 //! error: 7, bitDepth
 //! error: 8, chromaFormat
-//! error: 9, sliceHeader
+//! error: 9, sliceHeader, resync
 //! error: 10, sliceSegmentLimit
-//! error: 11, sliceData
-//! error: 12, referencePictures
+//! error: 11, sliceData, resync
+//! error: 12, referencePictures, resync
 //! error: 13, multiplePictures
-//! error: 14, sliceDecodeIncomplete
+//! error: 14, sliceDecodeIncomplete, resync
 //! error: 15, recordInvalid
 //! dispatch: beginPicture, 1
 //! dispatch: clearPicture, ceil(stream.width / 16), ceil(stream.height / 16)

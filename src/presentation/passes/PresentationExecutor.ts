@@ -619,6 +619,7 @@ export class PresentationExecutor {
     private readonly sampler: GPUSampler | null;
     private readonly sourceKind: PresentationSourceKind;
     private readonly uniformValues: PresentationUniformValues = {
+        fieldState: 0,
         frameIndex: 0,
         historyValid: 0,
         inputHeight: 0,
@@ -795,37 +796,67 @@ export class PresentationExecutor {
         this.historyFrameCount = 0;
     }
 
+    /** Returns whether a frame can draw from history alone: every pass that reads the source writes history that later passes read, none the output. */
+    canDrawFromHistory(): boolean {
+        return this.passes.some((pass: ExecutorPass): boolean => pass.bindsSource)
+            && this.passes.every((pass: ExecutorPass): boolean => !pass.bindsSource || pass.recording.kind !== 'render' || pass.recording.target.kind === 'ring');
+    }
+
     /**
      * Records one frame into a command encoder that the caller submits.
      * A new frame advances history after recording; a redraw repeats the last new frame's ring slots and history state.
+     * A frame without a source redraws the last new frame from history, skipping the passes that read the source.
      */
     encode(commandEncoder: GPUCommandEncoder, frame: PresentationFrameInput): void {
         this.requireUsable();
+        this.requireFrameSource(frame);
         const source = frame.source;
-        if (source.kind !== this.sourceKind) {
-            throw new Error(`The plan presents a ${this.sourceKind} source, not a ${source.kind} source`);
-        }
         const historyFrameNumber = getRecordedFrameNumber(this.historyFrameCount, frame.newFrame);
-        const externalTexture = this.prepareSource(source, frame.newFrame);
+        const externalTexture = source === null ? null : this.prepareSource(source, frame.newFrame);
         this.writePresentationUniforms(frame, historyFrameNumber);
         for (const pass of this.passes) {
-            const phase = historyFrameNumber % pass.phaseCount;
-            const bindGroup = externalTexture && pass.bindsSource ?
-                this.createPassBindGroup(pass, phase, { 'external-texture': externalTexture }) :
-                pass.bindGroups[phase];
-            const recording = pass.recording;
-            switch (recording.kind) {
-                case 'compute':
-                    recordComputePass(commandEncoder, pass, recording, bindGroup);
-                    break;
-                case 'render':
-                    recordRenderPass(commandEncoder, pass, recording, bindGroup, phase, frame);
-                    break;
+            // A draw from history skips the passes that read the source
+            if (source === null && pass.bindsSource) {
+                continue;
             }
+            this.recordPass(commandEncoder, pass, historyFrameNumber % pass.phaseCount, externalTexture, frame);
         }
         if (frame.newFrame) {
             this.frameCount += 1;
             this.historyFrameCount += 1;
+        }
+    }
+
+    /** Throws unless the frame's source fits the plan: a source of the plan's kind, or none for a redraw from history the plan allows. */
+    private requireFrameSource(frame: PresentationFrameInput): void {
+        const source = frame.source;
+        if (source !== null && source.kind !== this.sourceKind) {
+            throw new Error(`The plan presents a ${this.sourceKind} source, not a ${source.kind} source`);
+        }
+        if (source === null && (frame.newFrame || !this.canDrawFromHistory())) {
+            throw new Error(`history-draw: ${frame.newFrame ? 'a new frame needs its source' : 'a pass reads the source at the output'}`);
+        }
+    }
+
+    /** Records one pass of a frame at its ring phase, binding the frame's external texture when the pass reads it. */
+    private recordPass(
+        commandEncoder: GPUCommandEncoder,
+        pass: ExecutorPass,
+        phase: number,
+        externalTexture: GPUExternalTexture | null,
+        frame: PresentationFrameInput
+    ): void {
+        const bindGroup = externalTexture && pass.bindsSource ?
+            this.createPassBindGroup(pass, phase, { 'external-texture': externalTexture }) :
+            pass.bindGroups[phase];
+        const recording = pass.recording;
+        switch (recording.kind) {
+            case 'compute':
+                recordComputePass(commandEncoder, pass, recording, bindGroup);
+                break;
+            case 'render':
+                recordRenderPass(commandEncoder, pass, recording, bindGroup, phase, frame);
+                break;
         }
     }
 
@@ -1193,18 +1224,21 @@ export class PresentationExecutor {
         this.writtenEnhancementPresent = value;
     }
 
-    /** Writes every pass's `presentation` uniform in one buffer write. */
+    /** Writes every pass's `presentation` uniform in one buffer write; a draw from history keeps the last source's size. */
     private writePresentationUniforms(frame: PresentationFrameInput, historyFrameNumber: number): void {
         const values = this.uniformValues;
         const geometry = frame.geometry;
-        setSourceSize(values, frame.source);
+        if (frame.source !== null) {
+            setSourceSize(values, frame.source);
+        }
+        values.fieldState = frame.fieldState;
         values.frameIndex = getRecordedFrameNumber(this.frameCount, frame.newFrame);
         values.historyValid = Math.min(historyFrameNumber, this.historySaturation);
         values.outputHeight = geometry.viewportHeight;
         values.outputWidth = geometry.viewportWidth;
         values.skippedFrames = frame.skippedFrameCount;
         values.timestampSeconds = frame.timestampMicroseconds / MICROSECONDS_PER_SECOND;
-        const visibleRegion = getVisibleRegion(frame.source);
+        const visibleRegion = frame.source === null ? null : getVisibleRegion(frame.source);
         for (const pass of this.passes) {
             values.inputHeight = pass.inputTexture ? pass.inputTexture.height : values.sourceHeight;
             values.inputWidth = pass.inputTexture ? pass.inputTexture.width : values.sourceWidth;

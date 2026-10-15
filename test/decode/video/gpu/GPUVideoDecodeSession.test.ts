@@ -25,7 +25,9 @@ import {
     createGPUDecoderModule,
     GPU_DECODER_BINDINGS,
     GPU_DECODER_FIRST_BUFFER_BINDING,
-    GPU_DECODER_PACKET_UNIFORM_BYTE_LENGTH
+    GPU_DECODER_PACKET_UNIFORM_BYTE_LENGTH,
+    GPU_DECODER_STATUS_BYTE_LENGTH,
+    GPU_DECODER_STATUS_WORDS
 } from 'webgpu-player/decode/video/gpu/GPUDecoderPrelude';
 import {
     GPU_DECODER_OUTPUT_EVENT,
@@ -33,8 +35,10 @@ import {
     type GPUDecoderManifest,
     type GPUDecodeStreamFacts,
     GPUVideoDecodeError,
-    type GPUVideoDecodeFailure
+    type GPUVideoDecodeFailure,
+    type GPUVideoDecodeRecovery
 } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
+import { createPictureFieldsWord, type VideoFrameFields } from 'webgpu-player/decode/video/VideoFields';
 import { createGPUFramePoolLayout, getGPUFramePoolSlotCount } from 'webgpu-player/decode/video/gpu/GPUFramePool';
 import GPUVideoDecodeSession, { type GPUDecodedFrame } from 'webgpu-player/decode/video/gpu/GPUVideoDecodeSession';
 
@@ -97,10 +101,36 @@ const HEADER_CODED_HEIGHT = 40;
 const HEADER_BIT_DEPTH = 10;
 
 // Word offsets of the status buffer, in GPUDecodeStatus order
-const STATUS_ERROR_CODE_WORD = 0;
-const STATUS_FREED_SLOT_MASK_WORD = 1;
-const STATUS_HEADER_VALID_WORD = 2;
-const STATUS_WORD_COUNT = 12;
+const STATUS_ERROR_CODE_WORD = GPU_DECODER_STATUS_WORDS.errorCode;
+const STATUS_FREED_SLOT_MASK_WORD = GPU_DECODER_STATUS_WORDS.freedSlotMask;
+const STATUS_HEADER_VALID_WORD = GPU_DECODER_STATUS_WORDS.headerValid;
+const STATUS_PICTURE_ERROR_WORD = GPU_DECODER_STATUS_WORDS.pictureError;
+const STATUS_PICTURE_FIELDS_WORD = GPU_DECODER_STATUS_WORDS.pictureFields;
+const STATUS_WORD_COUNT = GPU_DECODER_STATUS_BYTE_LENGTH / BYTES_PER_WORD;
+
+// Error lines a recovering decoder's header declares, by recovery, and the error words its dispatches report
+const CONCEALED_ERROR_CODE = 9;
+const CONCEALED_ERROR_NAME = 'sliceHeader';
+const DROPPED_ERROR_CODE = 4;
+const DROPPED_ERROR_NAME = 'pictureHeader';
+const RESYNCED_ERROR_CODE = 19;
+const RESYNCED_ERROR_NAME = 'bitsExhausted';
+const FATAL_ERROR_CODE = 2;
+const FATAL_ERROR_NAME = 'pictureSize';
+const RECOVERY_ERROR_LINES = [
+    `//! error: ${FATAL_ERROR_CODE}, ${FATAL_ERROR_NAME}`,
+    `//! error: ${DROPPED_ERROR_CODE}, ${DROPPED_ERROR_NAME}, drop`,
+    `//! error: ${CONCEALED_ERROR_CODE}, ${CONCEALED_ERROR_NAME}, conceal`,
+    `//! error: ${RESYNCED_ERROR_CODE}, ${RESYNCED_ERROR_NAME}, resync`
+];
+const ERROR_CODE_SHIFT = 24;
+const FAILING_VALUE = 1004;
+// A parser failure that lost a picture, as the decode worker reports it on its first held packet
+const PARSER_RECOVERY: GPUVideoDecodeRecovery = { code: 'resynced', errorName: 'parser sliceData', value: 7 };
+// Fields the container gave a packet, and the decoder's own report that replaces them
+const CONTAINER_FIELDS: VideoFrameFields = { repeatFirstField: false, scan: 'interlaced' };
+const DECODER_FIELDS_WORD = createPictureFieldsWord(true, false, false);
+const DECODER_FIELDS: VideoFrameFields = { repeatFirstField: false, scan: 'bottom-first' };
 // Word offsets of the packet uniform, in GPUDecodePacket order
 const PACKET_UNIFORM_WORD_COUNT = GPU_DECODER_PACKET_UNIFORM_BYTE_LENGTH / BYTES_PER_WORD;
 
@@ -212,6 +242,8 @@ type FormatSizingCase = readonly [GPUDecoderOutputFormat, number, number, readon
 type DecoderOptions = {
     buffers?: readonly string[]
     dispatches?: readonly string[]
+    /** Whole `//! error:` lines */
+    errors?: readonly string[]
     output?: string
     parser?: boolean
     references?: number
@@ -249,6 +281,7 @@ function createManifest(options: DecoderOptions = {}): GPUDecoderManifest {
         `//! packet: ${PACKET_BYTE_LENGTH}`,
         `//! state: ${options.state ?? 0}`,
         ...(options.requires ? [ `//! requires: ${options.requires}` ] : []),
+        ...(options.errors ?? []),
         ...(options.buffers ?? []).map(buffer => `//! buffer: ${buffer}`),
         ...sequence.map(item => (item.startsWith(REPEAT_DIRECTIVE_PREFIX) ? `//! ${item}` : `//! dispatch: ${item}`))
     ];
@@ -290,13 +323,17 @@ function createPackageSession(
 /** What a parser reports of a picture beyond its record and events: its repeat counts and visible size. */
 type PictureReport = Partial<Pick<GPUDecodePacket, 'repeatCounts' | 'visibleSize'>>;
 
-/** Returns a packet whose bytes count up from 1, so its position in the ring is visible, with the output events and the picture report a parser decided. */
+/**
+ * Returns a packet whose bytes count up from 1, so its position in the ring is visible, with the output events and the picture report a parser decided;
+ * a resetting packet is a key packet, and overrides set any other member.
+ */
 function createPacket(
     byteLength: number,
     timestampMicroseconds: number,
     reset = false,
     outputEvents: readonly number[] | null = null,
-    pictureReport: PictureReport = {}
+    pictureReport: PictureReport = {},
+    overrides: Partial<GPUDecodePacket> = {}
 ): GPUDecodePacket {
     const bytes = new Uint8Array(byteLength);
     for (let byteIndex = 0; byteIndex < byteLength; byteIndex += 1) {
@@ -305,27 +342,70 @@ function createPacket(
     return {
         data: bytes.buffer,
         durationMicroseconds: FRAME_DURATION_MICROSECONDS,
+        fields: null,
+        hold: false,
         keyframe: reset,
         outputEvents: outputEvents ? Uint32Array.from(outputEvents) : null,
+        recovery: null,
         repeatCounts: pictureReport.repeatCounts ?? null,
         reset,
         timestampMicroseconds,
-        visibleSize: pictureReport.visibleSize ?? null
+        visibleSize: pictureReport.visibleSize ?? null,
+        ...overrides
     };
 }
 
+/** Returns a held packet at a frame index: one whose picture its parser lost, carrying the recovery that began its hold or none. */
+function createHeldPacket(frameIndex: number, recovery: GPUVideoDecodeRecovery | null = null): GPUDecodePacket {
+    return createPacket(0, frameIndex * FRAME_DURATION_MICROSECONDS, false, null, {}, { hold: true, recovery });
+}
+
 /**
- * Submits the packets of a decoder with a parser one at a time, the first resetting, and returns the timestamps presented after each.
- * Each packet's timestamp counts frame durations, and every presented frame is taken and released at once.
+ * Submits the packets of a decoder with a parser one at a time, the first resetting, and returns the timestamps presented after each,
+ * once each packet's status readback applied. Each packet's timestamp counts frame durations, and every presented frame is taken and released at once.
  */
-function decodeParserPackets(session: GPUVideoDecodeSession, packets: readonly ParserPacket[]): number[][] {
+async function decodeParserPackets(session: GPUVideoDecodeSession, packets: readonly ParserPacket[]): Promise<number[][]> {
     const presented: number[][] = [];
     for (const [ packetIndex, [ frameIndex, outputEvents ] ] of packets.entries()) {
         session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, frameIndex * FRAME_DURATION_MICROSECONDS, packetIndex === 0, outputEvents));
         session.submitPendingDecodeWork();
+        await session.waitForStatusReadbacks();
         presented.push(drainFrames(session));
     }
     return presented;
+}
+
+/** Submits one packet's decode work and waits for its status readback to apply, as the feed paces a session. */
+async function submitAndWait(session: GPUVideoDecodeSession): Promise<boolean> {
+    const submitted = session.submitPendingDecodeWork();
+    await session.waitForStatusReadbacks();
+    return submitted;
+}
+
+/** Plays a decoder that reports an error word for the packets of the given indices in decode order. */
+function reportErrorAtPackets(device: MockGPUDevice, errorWordsByPacketIndex: ReadonlyMap<number, number>): void {
+    device.dispatchHandler = (dispatch: MockDispatch): void => {
+        const errorWord = errorWordsByPacketIndex.get(readPacketUniform(dispatch).index);
+        if (errorWord !== undefined) {
+            reportDecoderError(dispatch, errorWord);
+        }
+    };
+}
+
+/** Returns an error word, `(code << 24) | value`. */
+function createErrorWord(code: number, value: number = FAILING_VALUE): number {
+    return ((code << ERROR_CODE_SHIFT) | value) >>> 0;
+}
+
+/** Plays a decoder's reportDecodeError: a code the test header declares recoverable keeps the picture's most severe word, any other is fatal. */
+function reportDecoderError(dispatch: MockDispatch, errorWord: number): void {
+    const code = errorWord >>> ERROR_CODE_SHIFT;
+    if (code === FATAL_ERROR_CODE) {
+        reportStatus(dispatch, 0, errorWord);
+        return;
+    }
+    const status = getBoundBuffer(dispatch, GPU_DECODER_BINDINGS.status);
+    status.writeWords(STATUS_PICTURE_ERROR_WORD * BYTES_PER_WORD, [ errorWord ]);
 }
 
 /** Returns timestamps of frame indices, in frame durations. */
@@ -377,6 +457,20 @@ function releasePreviousOutputSlot(device: MockGPUDevice): void {
         }
         previousSlot = packet.outputSlot;
     };
+}
+
+/** Takes every presentable frame in order into frames, without releasing any, as a frame queue holds the frames it waits to show. */
+function takeFrames(session: GPUVideoDecodeSession, frames: GPUDecodedFrame[]): void {
+    for (let frame = session.takeNextFrame(); frame; frame = session.takeNextFrame()) {
+        frames.push(frame);
+    }
+}
+
+/** Releases frames presentation took. */
+function releaseFrames(session: GPUVideoDecodeSession, frames: readonly GPUDecodedFrame[]): void {
+    for (const frame of frames) {
+        session.releaseFrame(frame);
+    }
 }
 
 /** Takes every presentable frame in order, releasing each. */
@@ -879,7 +973,7 @@ describe('GPUVideoDecodeSession', () => {
 
             for (let packetIndex = 0; packetIndex < packetLengths.length; packetIndex += 1) {
                 session.queuePacket(createPacket(packetLengths[packetIndex], packetIndex * FRAME_DURATION_MICROSECONDS));
-                session.submitPendingDecodeWork();
+                await submitAndWait(session);
                 drainFrames(session);
             }
 
@@ -905,7 +999,7 @@ describe('GPUVideoDecodeSession', () => {
 
             for (let packetIndex = 0; packetIndex < packetCount; packetIndex += 1) {
                 session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, packetIndex * FRAME_DURATION_MICROSECONDS, packetIndex === 0));
-                session.submitPendingDecodeWork();
+                await submitAndWait(session);
                 drainFrames(session);
             }
 
@@ -965,7 +1059,7 @@ describe('GPUVideoDecodeSession', () => {
                 session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, packetIndex * FRAME_DURATION_MICROSECONDS, packetIndex === 0, [ packetIndex ], {
                     repeatCounts: counts
                 }));
-                session.submitPendingDecodeWork();
+                await submitAndWait(session);
                 drainFrames(session);
                 waveDispatchCounts.push(device.dispatches.slice(dispatchCountBefore).filter(dispatch => dispatch.entryPoint === WAVE_ENTRY_POINT).length);
             }
@@ -1031,9 +1125,9 @@ describe('GPUVideoDecodeSession', () => {
 
             session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, 0, true));
             session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, FRAME_DURATION_MICROSECONDS, true));
-            session.submitPendingDecodeWork();
+            await submitAndWait(session);
             drainFrames(session);
-            session.submitPendingDecodeWork();
+            await submitAndWait(session);
             drainFrames(session);
 
             // The second packet's reset dropped the first packet's reference before it took a slot, so it took that slot again
@@ -1055,9 +1149,9 @@ describe('GPUVideoDecodeSession', () => {
             session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, FRAME_DURATION_MICROSECONDS));
             session.submitPendingDecodeWork();
             session.submitPendingDecodeWork();
-            drainFrames(session);
             const freeBeforeReadback = session.getFreeSlotCount();
             await session.waitForStatusReadbacks();
+            drainFrames(session);
 
             expect(freeBeforeReadback).toBe(session.pool.layout.slotCount - 2);
             expect(session.getFreeSlotCount()).toBe(session.pool.layout.slotCount - 1);
@@ -1101,31 +1195,59 @@ describe('GPUVideoDecodeSession', () => {
             expect(session.getFailure()).toEqual({ code: 'decoder-error', detail: String(DECODER_ERROR_CODE) });
         });
 
-        it('reads back the error of a packet that skipped its readback when the status is flushed', async () => {
+        it('submits a packet only with a free readback, so each packet\'s status is read back on its own', async () => {
+            const device = new MockGPUDevice();
+            device.manualMaps = true;
+            // A reorder depth gives the pool more slots than readbacks, so readbacks alone hold the fourth packet back
+            const session = await createSession(device, createManifest({ reorder: REORDER }));
+            // Three packets take every readback, so the fourth waits for one
+            const packetCount = 4;
+            for (let packetIndex = 0; packetIndex < packetCount; packetIndex += 1) {
+                session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, packetIndex * FRAME_DURATION_MICROSECONDS, packetIndex === 0));
+            }
+
+            const submittedWhileMapping = [ 0, 1, 2, 3 ].map((): boolean => session.submitPendingDecodeWork());
+            const mapsWhileMapping = device.getPendingMapCount();
+            device.settlePendingMaps();
+            await session.waitForStatusReadbacks();
+            const submittedOnceFree = session.submitPendingDecodeWork();
+
+            expect(submittedWhileMapping).toEqual([ true, true, true, false ]);
+            expect(mapsWhileMapping).toBe(3);
+            expect(submittedOnceFree).toBe(true);
+            expect(device.dispatches).toHaveLength(packetCount);
+        });
+
+        it('presents a frame only once its packet\'s status readback applied', async () => {
             const device = new MockGPUDevice();
             device.manualMaps = true;
             const session = await createSession(device);
-            // Three packets take every readback, so the fourth, which reports the error, skips its own
-            const packetCount = 4;
-            device.dispatchHandler = (dispatch: MockDispatch): void => {
-                if (readPacketUniform(dispatch).index === packetCount - 1) {
-                    reportStatus(dispatch, 0, DECODER_ERROR_CODE);
-                }
-            };
-            for (let packetIndex = 0; packetIndex < packetCount; packetIndex += 1) {
-                session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, packetIndex * FRAME_DURATION_MICROSECONDS, packetIndex === 0));
-                session.submitPendingDecodeWork();
-                drainFrames(session);
-            }
+            session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, 0, true));
 
+            session.submitPendingDecodeWork();
+            const takenBeforeReadback = session.takeNextFrame();
+            const queuedBeforeReadback = session.getQueuedFrameCount();
             device.settlePendingMaps();
             await session.waitForStatusReadbacks();
-            const failureBeforeFlush = session.getFailure();
-            device.manualMaps = false;
-            await session.flushStatusReadbacks();
 
-            expect(failureBeforeFlush).toBeNull();
-            expect(session.getFailure()).toEqual({ code: 'decoder-error', detail: String(DECODER_ERROR_CODE) });
+            expect(takenBeforeReadback).toBeNull();
+            expect(queuedBeforeReadback).toBe(1);
+            expect(requireFrame(session.takeNextFrame()).timestampMicroseconds).toBe(0);
+        });
+
+        it('clears the packet\'s block after each copy, so one packet\'s picture report never reaches the next packet\'s frame', async () => {
+            const device = new MockGPUDevice();
+            const session = await createSession(device, createManifest({ errors: RECOVERY_ERROR_LINES }));
+            reportErrorAtPackets(device, new Map([ [ 0, createErrorWord(CONCEALED_ERROR_CODE) ] ]));
+
+            for (const frameIndex of [ 0, 1 ]) {
+                session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, frameIndex * FRAME_DURATION_MICROSECONDS, frameIndex === 0));
+                await submitAndWait(session);
+            }
+
+            expect(session.takeRecoveries()).toEqual([ { code: 'concealed', errorName: CONCEALED_ERROR_NAME, value: FAILING_VALUE } ]);
+            expect(device.findBuffer(`${BUFFER_LABEL_PREFIX} status`).readWords(0, STATUS_WORD_COUNT)[STATUS_PICTURE_ERROR_WORD]).toBe(0);
+            expect(drainFrames(session)).toEqual(toTimestamps([ 0, 1 ]));
         });
 
         it('fails when a status readback cannot map, with the browser error', async () => {
@@ -1221,34 +1343,194 @@ describe('GPUVideoDecodeSession', () => {
             expect(session.pool.isReferenceHeld(resetOutputSlot)).toBe(true);
         });
 
-        it('reads back the status a skipped readback left uncaptured once a readback is free', async () => {
+        it('gives a frame its packet\'s fields, and the decoder\'s own reported fields over them', async () => {
             const device = new MockGPUDevice();
-            device.manualMaps = true;
-            const session = await createSession(device, createManifest({ references: REFERENCES }));
-            releasePreviousOutputSlot(device);
-            const packetCount = 4;
+            const session = await createSession(device);
+            device.dispatchHandler = (dispatch: MockDispatch): void => {
+                if (readPacketUniform(dispatch).index === 1) {
+                    getBoundBuffer(dispatch, GPU_DECODER_BINDINGS.status).writeWords(STATUS_PICTURE_FIELDS_WORD * BYTES_PER_WORD, [ DECODER_FIELDS_WORD ]);
+                }
+            };
 
-            for (let packetIndex = 0; packetIndex < packetCount; packetIndex += 1) {
-                session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, packetIndex * FRAME_DURATION_MICROSECONDS, packetIndex === 0));
-                session.submitPendingDecodeWork();
-                drainFrames(session);
+            for (const frameIndex of [ 0, 1, 2 ]) {
+                session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, frameIndex * FRAME_DURATION_MICROSECONDS, frameIndex === 0, null, {}, {
+                    fields: frameIndex === 2 ? null : CONTAINER_FIELDS
+                }));
+                await submitAndWait(session);
             }
-            const mapsWhileSkipped = device.getPendingMapCount();
-            device.settlePendingMaps();
-            await session.waitForStatusReadbacks();
-            const heldBeforeCapture = session.pool.isReferenceHeld(2);
-            const submitsBeforeCapture = device.submitCount;
-            session.submitPendingDecodeWork();
-            device.settlePendingMaps();
-            await session.waitForStatusReadbacks();
 
-            // The fourth packet freed slot 2 while three readbacks were mapping
-            expect(mapsWhileSkipped).toBe(3);
-            expect(heldBeforeCapture).toBe(true);
-            expect(device.submitCount).toBe(submitsBeforeCapture + 1);
-            expect(device.dispatches).toHaveLength(packetCount);
-            expect(session.pool.isReferenceHeld(2)).toBe(false);
-            expect(session.getFreeSlotCount()).toBe(session.pool.layout.slotCount - 1);
+            const fields: Array<VideoFrameFields | null> = [];
+            for (let frame = session.takeNextFrame(); frame; frame = session.takeNextFrame()) {
+                fields.push(frame.fields);
+                session.releaseFrame(frame);
+            }
+            expect(fields).toEqual([ CONTAINER_FIELDS, DECODER_FIELDS, null ]);
+        });
+    });
+
+    describe('recovery', () => {
+        it('presents a picture its decoder concealed and counts the recovery', async () => {
+            const device = new MockGPUDevice();
+            const session = await createSession(device, createManifest({ errors: RECOVERY_ERROR_LINES }));
+            reportErrorAtPackets(device, new Map([ [ 1, createErrorWord(CONCEALED_ERROR_CODE) ] ]));
+
+            for (const frameIndex of [ 0, 1, 2 ]) {
+                session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, frameIndex * FRAME_DURATION_MICROSECONDS, frameIndex === 0));
+                await submitAndWait(session);
+            }
+
+            expect(session.getFailure()).toBeNull();
+            expect(drainFrames(session)).toEqual(toTimestamps([ 0, 1, 2 ]));
+            expect(session.takeRecoveries()).toEqual([ { code: 'concealed', errorName: CONCEALED_ERROR_NAME, value: FAILING_VALUE } ]);
+            expect(session.takeRecoveries()).toEqual([]);
+        });
+
+        it('drops a picture its decoder could not decode, frees its slot, and decodes on', async () => {
+            const device = new MockGPUDevice();
+            const session = await createSession(device, createManifest({ errors: RECOVERY_ERROR_LINES, reorder: REORDER }));
+            reportErrorAtPackets(device, new Map([ [ 1, createErrorWord(DROPPED_ERROR_CODE) ] ]));
+
+            for (const frameIndex of [ 0, 1, 2, 3 ]) {
+                session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, frameIndex * FRAME_DURATION_MICROSECONDS, frameIndex === 0));
+                await submitAndWait(session);
+            }
+            session.endOfStream();
+
+            expect(session.getFailure()).toBeNull();
+            expect(drainFrames(session)).toEqual(toTimestamps([ 0, 2, 3 ]));
+            expect(session.getFreeSlotCount()).toBe(session.pool.layout.slotCount);
+            expect(session.getDroppedFrameCount()).toBe(0);
+            expect(session.takeRecoveries()).toEqual([ { code: 'dropped', errorName: DROPPED_ERROR_NAME, value: FAILING_VALUE } ]);
+        });
+
+        it('fails the attempt on an error its header declares no recovery for, as before', async () => {
+            const device = new MockGPUDevice();
+            const session = await createSession(device, createManifest({ errors: RECOVERY_ERROR_LINES }));
+            reportErrorAtPackets(device, new Map([ [ 0, createErrorWord(FATAL_ERROR_CODE) ] ]));
+
+            session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, 0, true));
+            await submitAndWait(session);
+
+            expect(session.getFailure()).toEqual({ code: 'decoder-error', detail: String(createErrorWord(FATAL_ERROR_CODE)) });
+            expect(session.takeRecoveries()).toEqual([]);
+        });
+
+        it('resyncs at the next key packet: the damaged and skipped pictures repeat the last good frame, and the key packet decodes from a reset', async () => {
+            const device = new MockGPUDevice();
+            const session = await createSession(device, createManifest({ errors: RECOVERY_ERROR_LINES, references: REFERENCES, state: STATE_BYTE_LENGTH }));
+            reportErrorAtPackets(device, new Map([ [ 1, createErrorWord(RESYNCED_ERROR_CODE) ] ]));
+            const keyFrameIndex = 4;
+            // Presentation holds the frames it took, as the frame queue holds the frames it waits to show
+            const takenFrames: GPUDecodedFrame[] = [];
+
+            for (const frameIndex of [ 0, 1, 2, 3, keyFrameIndex, keyFrameIndex + 1 ]) {
+                session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, frameIndex * FRAME_DURATION_MICROSECONDS, frameIndex === 0, null, {}, {
+                    keyframe: frameIndex === 0 || frameIndex === keyFrameIndex
+                }));
+                await submitAndWait(session);
+                takeFrames(session, takenFrames);
+            }
+            const takenSlots = takenFrames.map(frame => frame.slot);
+            releaseFrames(session, takenFrames);
+
+            // Packets 2 and 3 decode nothing: two dispatches before the key packet, then the key packet, from a reset, and the one after it
+            expect(device.dispatches.map(dispatch => readPacketUniform(dispatch).reset)).toEqual([ 1, 0, 1, 0 ]);
+            expect(takenFrames.map(frame => frame.timestampMicroseconds)).toEqual(toTimestamps([ 0, 1, 2, 3, keyFrameIndex, keyFrameIndex + 1 ]));
+            // Frames 1 to 3 repeat frame 0's slot, the last good frame
+            expect(takenSlots.slice(1, 4)).toEqual([ takenSlots[0], takenSlots[0], takenSlots[0] ]);
+            expect(session.getFailure()).toBeNull();
+            expect(session.takeRecoveries()).toEqual([ { code: 'resynced', errorName: RESYNCED_ERROR_NAME, value: FAILING_VALUE } ]);
+            // Every hold ended: only the key packet's picture and the one after it remain the decoder's references
+            expect(session.getFreeSlotCount()).toBe(session.pool.layout.slotCount - 2);
+        });
+
+        it('keeps a parser session\'s picture numbering through a resync, applying the passed-over pictures\' events', async () => {
+            const device = new MockGPUDevice();
+            const session = await createSession(device, createManifest({ errors: RECOVERY_ERROR_LINES, parser: true, reorder: PARSER_REORDER }));
+            reportErrorAtPackets(device, new Map([ [ 1, createErrorWord(RESYNCED_ERROR_CODE) ] ]));
+            const packets: Array<readonly [number, readonly number[], boolean]> = [
+                [ 0, [ 0 ], true ],
+                [ 1, [], false ],
+                // A passed-over picture, whose event presents picture 1, the damaged one, which repeats the last good frame
+                [ 2, [ 1 ], false ],
+                // The key picture, numbered on: picture 3
+                [ 3, [ 2, 3 ], true ]
+            ];
+
+            const takenFrames: GPUDecodedFrame[] = [];
+            for (const [ frameIndex, events, keyframe ] of packets) {
+                session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, frameIndex * FRAME_DURATION_MICROSECONDS, frameIndex === 0, events, {}, { keyframe }));
+                await submitAndWait(session);
+                takeFrames(session, takenFrames);
+            }
+            const takenSlots = takenFrames.map(frame => frame.slot);
+            releaseFrames(session, takenFrames);
+
+            expect(session.getFailure()).toBeNull();
+            expect(takenFrames.map(frame => frame.timestampMicroseconds)).toEqual(toTimestamps([ 0, 1, 2, 3 ]));
+            // The damaged picture 1 and the passed-over picture 2 repeat picture 0
+            expect(takenSlots.slice(1, 3)).toEqual([ takenSlots[0], takenSlots[0] ]);
+            expect(session.getFreeSlotCount()).toBe(session.pool.layout.slotCount);
+        });
+
+        it('holds the last good frame for the packets a restarted parser lost, presenting its undecided frames first, then resets at its first picture', async () => {
+            const device = new MockGPUDevice();
+            const session = await createSession(device, createManifest({ parser: true, reorder: END_OF_STREAM_REORDER }));
+            const decoded = await decodeParserPackets(session, [ [ 1, [] ], [ 0, [] ] ]);
+
+            // The worker lost packets 2 and 3 to a parser failure, then restarted its parser at the key packet 4
+            session.queuePacket(createHeldPacket(2, PARSER_RECOVERY));
+            session.queuePacket(createHeldPacket(3));
+            session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, 4 * FRAME_DURATION_MICROSECONDS, true, [ 0 ]));
+            const presented: number[] = [];
+            const slots: number[] = [];
+            for (let call = 0; call < 3; call += 1) {
+                await submitAndWait(session);
+                for (let frame = session.takeNextFrame(); frame; frame = session.takeNextFrame()) {
+                    presented.push(frame.timestampMicroseconds);
+                    slots.push(frame.slot);
+                    session.releaseFrame(frame);
+                }
+            }
+
+            expect(decoded).toEqual([ [], [] ]);
+            // The undecided frames 0 and 1 present first, then frame 1, the latest, repeats for the held packets 2 and 3
+            expect(presented).toEqual(toTimestamps([ 0, 1, 2, 3, 4 ]));
+            expect(slots.slice(2, 4)).toEqual([ slots[1], slots[1] ]);
+            expect(device.dispatches.map(dispatch => readPacketUniform(dispatch).reset)).toEqual([ 1, 0, 1 ]);
+            expect(session.takeRecoveries()).toEqual([ PARSER_RECOVERY ]);
+            expect(session.getFreeSlotCount()).toBe(session.pool.layout.slotCount);
+        });
+
+        it('presents nothing for held packets when no good frame is left to hold', async () => {
+            const device = new MockGPUDevice();
+            const session = await createSession(device, createManifest({ parser: true }));
+
+            session.queuePacket(createHeldPacket(0, PARSER_RECOVERY));
+            session.queuePacket(createHeldPacket(1));
+            const consumed = [ await submitAndWait(session), await submitAndWait(session) ];
+
+            expect(consumed).toEqual([ true, true ]);
+            expect(session.takeNextFrame()).toBeNull();
+            expect(device.dispatches).toHaveLength(0);
+            expect(session.getFreeSlotCount()).toBe(session.pool.layout.slotCount);
+        });
+
+        it('drops a resync\'s holds with every other frame on a reset', async () => {
+            const device = new MockGPUDevice();
+            const session = await createSession(device, createManifest({ errors: RECOVERY_ERROR_LINES, reorder: REORDER }));
+            reportErrorAtPackets(device, new Map([ [ 1, createErrorWord(RESYNCED_ERROR_CODE) ] ]));
+
+            for (const frameIndex of [ 0, 1, 2 ]) {
+                session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, frameIndex * FRAME_DURATION_MICROSECONDS, frameIndex === 0));
+                await submitAndWait(session);
+            }
+            const queuedBeforeReset = session.getQueuedFrameCount();
+            session.reset();
+
+            expect(queuedBeforeReset).toBe(3);
+            expect(session.getQueuedFrameCount()).toBe(0);
+            expect(session.getFreeSlotCount()).toBe(session.pool.layout.slotCount);
         });
     });
 
@@ -1262,7 +1544,7 @@ describe('GPUVideoDecodeSession', () => {
 
             for (const timestamp of decodeOrderTimestamps) {
                 session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, timestamp, timestamp === 0));
-                session.submitPendingDecodeWork();
+                await submitAndWait(session);
                 queuedCounts.push(session.getQueuedFrameCount());
                 presentedTimestamps.push(...drainFrames(session));
             }
@@ -1297,6 +1579,7 @@ describe('GPUVideoDecodeSession', () => {
                 session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, frameIndex * FRAME_DURATION_MICROSECONDS, frameIndex === 0));
                 session.submitPendingDecodeWork();
             }
+            await session.waitForStatusReadbacks();
 
             const early = session.takeFrame(-1);
             const due = requireFrame(session.takeFrame(2 * FRAME_DURATION_MICROSECONDS + 1));
@@ -1320,6 +1603,7 @@ describe('GPUVideoDecodeSession', () => {
             session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, FRAME_DURATION_MICROSECONDS, false, [ 1 ]));
             session.submitPendingDecodeWork();
             session.submitPendingDecodeWork();
+            await session.waitForStatusReadbacks();
             const smaller = requireFrame(session.takeNextFrame());
             const full = requireFrame(session.takeNextFrame());
 
@@ -1342,7 +1626,7 @@ describe('GPUVideoDecodeSession', () => {
             }
 
             for (let callIndex = 0; callIndex < packetCount; callIndex += 1) {
-                submittedCalls.push(session.submitPendingDecodeWork());
+                submittedCalls.push(await submitAndWait(session));
             }
             const submitsWhileFull = device.submitCount;
             const frame = requireFrame(session.takeNextFrame());
@@ -1371,6 +1655,7 @@ describe('GPUVideoDecodeSession', () => {
             }
             session.submitPendingDecodeWork();
             session.submitPendingDecodeWork();
+            await session.waitForStatusReadbacks();
             const taken = requireFrame(session.takeNextFrame());
 
             session.reset();
@@ -1386,7 +1671,7 @@ describe('GPUVideoDecodeSession', () => {
             const session = await createSession(new MockGPUDevice());
 
             session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, 0, true, [ UNREAD_OUTPUT_EVENT ]));
-            session.submitPendingDecodeWork();
+            await submitAndWait(session);
 
             expect(session.getFailure()).toBeNull();
             expect(drainFrames(session)).toEqual(toTimestamps([ 0 ]));
@@ -1396,7 +1681,7 @@ describe('GPUVideoDecodeSession', () => {
             const session = await createSession(new MockGPUDevice(), createManifest({ reorder: REORDER }));
             for (const frameIndex of [ 0, 1 ]) {
                 session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, frameIndex * FRAME_DURATION_MICROSECONDS, frameIndex === 0));
-                session.submitPendingDecodeWork();
+                await submitAndWait(session);
             }
             const presentedBeforeEnd = drainFrames(session);
 
@@ -1413,7 +1698,7 @@ describe('GPUVideoDecodeSession', () => {
             const session = await createSession(new MockGPUDevice(), createManifest({ parser: true, reorder: PARSER_REORDER }));
 
             // Decode order 0, 2, 1, 3 by timestamp; each packet's events present the pictures the parser found next
-            const presented = decodeParserPackets(session, [
+            const presented = await decodeParserPackets(session, [
                 [ 0, [] ],
                 [ 2, [ 0 ] ],
                 [ 1, [ 2 ] ],
@@ -1429,7 +1714,7 @@ describe('GPUVideoDecodeSession', () => {
         it('drops a frame a discard event names, freeing its slot without counting it as dropped', async () => {
             const session = await createSession(new MockGPUDevice(), createManifest({ parser: true, reorder: PARSER_REORDER }));
 
-            const presented = decodeParserPackets(session, [
+            const presented = await decodeParserPackets(session, [
                 [ 0, [] ],
                 [ 1, [ createDiscardEvent(0), 1 ] ]
             ]);
@@ -1444,7 +1729,7 @@ describe('GPUVideoDecodeSession', () => {
             const session = await createSession(new MockGPUDevice(), createManifest({ parser: true }));
 
             // Three temporal units at frames 0, 1, and 2, as an AV1 parser makes them: hidden pictures drop by their own events
-            const presented = decodeParserPackets(session, [
+            const presented = await decodeParserPackets(session, [
                 [ 0, [ createDiscardEvent(0) ] ],
                 [ 0, [ 1 ] ],
                 [ 1, [ 2 ] ],
@@ -1462,7 +1747,7 @@ describe('GPUVideoDecodeSession', () => {
         it('presents the earliest undecided frame by timestamp once more frames are undecided than the reorder depth', async () => {
             const session = await createSession(new MockGPUDevice(), createManifest({ parser: true, reorder: SINGLE_FRAME_REORDER }));
 
-            const presented = decodeParserPackets(session, [ [ 2, null ], [ 0, null ], [ 1, [] ] ]);
+            const presented = await decodeParserPackets(session, [ [ 2, null ], [ 0, null ], [ 1, [] ] ]);
             session.endOfStream();
 
             expect(presented).toEqual([ [], toTimestamps([ 0 ]), toTimestamps([ 1 ]) ]);
@@ -1474,7 +1759,7 @@ describe('GPUVideoDecodeSession', () => {
             // Without a reorder depth every frame leaves as soon as its packet's events are applied
             const session = await createSession(new MockGPUDevice(), createManifest({ parser: true }));
 
-            const presented = decodeParserPackets(session, [ [ 0, [] ], [ 1, [ 0 ] ] ]);
+            const presented = await decodeParserPackets(session, [ [ 0, [] ], [ 1, [ 0 ] ] ]);
 
             expect(presented).toEqual([ toTimestamps([ 0 ]), toTimestamps([ 1 ]) ]);
             expect(session.getFailure()).toBeNull();
@@ -1491,10 +1776,12 @@ describe('GPUVideoDecodeSession', () => {
             session.endOfStream();
             const presentedBeforeDecoding = drainFrames(session);
             // One decode step per queued packet
-            const presentedWhileDecoding = frameIndices.map((): number[] => {
-                session.submitPendingDecodeWork();
-                return drainFrames(session);
-            });
+            const presentedWhileDecoding: number[][] = [];
+            const stepCount = frameIndices.length;
+            for (let step = 0; step < stepCount; step += 1) {
+                await submitAndWait(session);
+                presentedWhileDecoding.push(drainFrames(session));
+            }
 
             expect(presentedBeforeDecoding).toEqual([]);
             expect(presentedWhileDecoding).toEqual([ [], [], toTimestamps([ 0, 1, 2 ]) ]);
@@ -1504,7 +1791,7 @@ describe('GPUVideoDecodeSession', () => {
         it('drops an undecided frame earlier than a presented one at the end of the stream, freeing its slot', async () => {
             const session = await createSession(new MockGPUDevice(), createManifest({ parser: true, reorder: END_OF_STREAM_REORDER }));
 
-            const presented = decodeParserPackets(session, [ [ 1, [ 0 ] ], [ 0, [] ] ]);
+            const presented = await decodeParserPackets(session, [ [ 1, [ 0 ] ], [ 0, [] ] ]);
             session.endOfStream();
 
             expect(presented).toEqual([ toTimestamps([ 1 ]), [] ]);
@@ -1517,7 +1804,7 @@ describe('GPUVideoDecodeSession', () => {
             const device = new MockGPUDevice();
             const session = await createSession(device, createManifest({ parser: true, reorder: PARSER_REORDER }));
 
-            const presented = decodeParserPackets(session, [ [ 0, [ FUTURE_PICTURE_INDEX ] ], [ 1, [] ] ]);
+            const presented = await decodeParserPackets(session, [ [ 0, [ FUTURE_PICTURE_INDEX ] ], [ 1, [] ] ]);
 
             expect(session.getFailure()).toEqual({ code: 'output-event', detail: `picture ${FUTURE_PICTURE_INDEX} after 0` });
             expect(presented).toEqual([ [], [] ]);
@@ -1529,7 +1816,7 @@ describe('GPUVideoDecodeSession', () => {
         it('fails with output-event on an event that sets the reserved bit', async () => {
             const session = await createSession(new MockGPUDevice(), createManifest({ parser: true, reorder: PARSER_REORDER }));
 
-            const presented = decodeParserPackets(session, [ [ 0, [ RESERVED_BIT ] ] ]);
+            const presented = await decodeParserPackets(session, [ [ 0, [ RESERVED_BIT ] ] ]);
 
             expect(session.getFailure()).toEqual({ code: 'output-event', detail: `${RESERVED_BIT_EVENT_TEXT} sets the reserved bit` });
             expect(presented).toEqual([ [] ]);
@@ -1537,13 +1824,13 @@ describe('GPUVideoDecodeSession', () => {
 
         it('drops undecided frames on a reset and counts pictures from 0 again', async () => {
             const session = await createSession(new MockGPUDevice(), createManifest({ parser: true, reorder: END_OF_STREAM_REORDER }));
-            decodeParserPackets(session, [ [ 0, [] ], [ 1, [] ], [ 2, [] ] ]);
+            await decodeParserPackets(session, [ [ 0, [] ], [ 1, [] ], [ 2, [] ] ]);
             const queuedBeforeReset = session.getQueuedFrameCount();
 
             session.reset();
             const freeSlotsAfterReset = session.getFreeSlotCount();
             // Picture 0 of the new epoch; counted on from before the reset it would be picture 3, and the event would name a picture already gone
-            const presented = decodeParserPackets(session, [ [ 0, [ 0 ] ] ]);
+            const presented = await decodeParserPackets(session, [ [ 0, [ 0 ] ] ]);
 
             expect(queuedBeforeReset).toBe(END_OF_STREAM_REORDER);
             expect(freeSlotsAfterReset).toBe(session.pool.layout.slotCount);
@@ -1553,12 +1840,12 @@ describe('GPUVideoDecodeSession', () => {
 
         it('restarts picture numbering at a packet with the reset flag, dropping the undecided frames without presenting them', async () => {
             const session = await createSession(new MockGPUDevice(), createManifest({ parser: true, reorder: END_OF_STREAM_REORDER }));
-            const presented = decodeParserPackets(session, [ [ 0, [ 0 ] ], [ 1, [] ], [ 2, [] ] ]);
+            const presented = await decodeParserPackets(session, [ [ 0, [ 0 ] ], [ 1, [] ], [ 2, [] ] ]);
             const queuedBeforeResetPacket = session.getQueuedFrameCount();
 
             // A new sequence later in the stream, which its parser numbers from picture 0 again; no session reset precedes it
             session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, RESET_PACKET_FRAME_INDEX * FRAME_DURATION_MICROSECONDS, true, [ 0 ]));
-            session.submitPendingDecodeWork();
+            await submitAndWait(session);
             const presentedAfterResetPacket = drainFrames(session);
 
             expect(presented).toEqual([ toTimestamps([ 0 ]), [], [] ]);
@@ -1571,7 +1858,7 @@ describe('GPUVideoDecodeSession', () => {
 
         it('applies the end of stream\'s output events, then presents the frames still undecided in timestamp order', async () => {
             const session = await createSession(new MockGPUDevice(), createManifest({ parser: true, reorder: END_OF_STREAM_REORDER }));
-            decodeParserPackets(session, [ [ 0, [] ], [ 1, [] ], [ 2, [] ] ]);
+            await decodeParserPackets(session, [ [ 0, [] ], [ 1, [] ], [ 2, [] ] ]);
 
             // The last packets had no picture to carry their events: picture 1 drops, and picture 0 presents
             session.endOfStream(Uint32Array.of(createDiscardEvent(1), 0));
@@ -1583,7 +1870,7 @@ describe('GPUVideoDecodeSession', () => {
 
         it('applies the end of stream\'s output events before the undecided frames leave', async () => {
             const session = await createSession(new MockGPUDevice(), createManifest({ parser: true, reorder: END_OF_STREAM_REORDER }));
-            decodeParserPackets(session, [ [ 0, [] ], [ 1, [] ], [ 2, [] ] ]);
+            await decodeParserPackets(session, [ [ 0, [] ], [ 1, [] ], [ 2, [] ] ]);
 
             // Presenting the latest picture first leaves the two earlier undecided frames behind presentation order
             session.endOfStream(Uint32Array.of(LAST_QUEUED_PICTURE_INDEX));
@@ -1602,10 +1889,12 @@ describe('GPUVideoDecodeSession', () => {
             // The event names the last picture, which exists only once its packet decoded
             session.endOfStream(Uint32Array.of(createDiscardEvent(LAST_QUEUED_PICTURE_INDEX)));
             // One decode step per queued packet
-            const presentedWhileDecoding = frameIndices.map((): number[] => {
-                session.submitPendingDecodeWork();
-                return drainFrames(session);
-            });
+            const presentedWhileDecoding: number[][] = [];
+            const stepCount = frameIndices.length;
+            for (let step = 0; step < stepCount; step += 1) {
+                await submitAndWait(session);
+                presentedWhileDecoding.push(drainFrames(session));
+            }
 
             expect(presentedWhileDecoding).toEqual([ [], [], toTimestamps([ 0, 1 ]) ]);
             expect(session.getFailure()).toBeNull();
@@ -1613,7 +1902,7 @@ describe('GPUVideoDecodeSession', () => {
 
         it('fails with output-event on an end of stream event that names a picture never decoded, presenting nothing more', async () => {
             const session = await createSession(new MockGPUDevice(), createManifest({ parser: true, reorder: END_OF_STREAM_REORDER }));
-            decodeParserPackets(session, [ [ 0, [] ], [ 1, [] ] ]);
+            await decodeParserPackets(session, [ [ 0, [] ], [ 1, [] ] ]);
 
             session.endOfStream(Uint32Array.of(NEVER_DECODED_PICTURE_INDEX));
 
@@ -1653,15 +1942,20 @@ describe('GPUVideoDecodeSession', () => {
             const session = await createSession(device);
             session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, 0, true));
             session.submitPendingDecodeWork();
+            device.settlePendingMaps();
+            await session.waitForStatusReadbacks();
             const frame = requireFrame(session.takeNextFrame());
+            // A second packet's readback still maps when the session is destroyed
+            session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, FRAME_DURATION_MICROSECONDS));
+            session.submitPendingDecodeWork();
 
             session.destroy();
-            session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, FRAME_DURATION_MICROSECONDS));
+            session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, 2 * FRAME_DURATION_MICROSECONDS));
             session.submitPendingDecodeWork();
             await session.waitForStatusReadbacks();
 
             expect(device.buffers.every(buffer => buffer.destroyed)).toBe(true);
-            expect(device.submitCount).toBe(1);
+            expect(device.submitCount).toBe(2);
             expect(session.getFailure()).toBeNull();
             expect(session.releaseFrame(frame)).toBe(false);
         });

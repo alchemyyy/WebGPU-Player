@@ -1,7 +1,7 @@
 // The decode worker's side of its parser coordinator worker: it starts the worker on first use, opens one pipeline per attempt, and moves packets and outputs.
 // A package's module may loop forever, so a worker that leaves requests unanswered for the watchdog's span is ended, failing what it owed.
 import type { DecoderPackageVersion } from '../../packages/DecoderPackageIdentity';
-import type { GPUDecoderParserModule, GPUDecoderParserOutput } from './GPUDecoderParser';
+import { GPUDecoderParserError, type GPUDecoderParserModule, type GPUDecoderParserOutput } from './GPUDecoderParser';
 import {
     isGPUDecoderCoordinatorResponse,
     type GPUDecoderCoordinatorRequest,
@@ -16,6 +16,8 @@ type PendingRequest = {
 };
 
 type OpenPipeline = {
+    /** The parser's error names, which name a failed check the coordinator reports by its code */
+    errorNames: ReadonlyMap<number, string>
     opened: { reject: (error: Error) => void; resolve: (maximumPictureSize: GPUDecoderPictureSize | null) => void } | null
     pending: Map<number, PendingRequest>
 };
@@ -55,7 +57,7 @@ export default class GPUDecoderCoordinatorHost {
         const worker = this.requireWorker();
         const pipelineId = this.nextPipelineId;
         this.nextPipelineId += 1;
-        const pipeline: OpenPipeline = { opened: null, pending: new Map<number, PendingRequest>() };
+        const pipeline: OpenPipeline = { errorNames: parser.errorNames, opened: null, pending: new Map<number, PendingRequest>() };
         this.pipelines.set(pipelineId, pipeline);
         const opened = new Promise<GPUDecoderPictureSize | null>((resolve, reject): void => {
             pipeline.opened = { reject, resolve };
@@ -138,7 +140,8 @@ export default class GPUDecoderCoordinatorHost {
                 return;
             }
             case 'failed': {
-                const failure = new Error(message.message);
+                // A parser's failed check keeps its code, which decides whether the decode worker restarts the parser or ends the attempt
+                const failure = message.code === 0 ? new Error(message.message) : new GPUDecoderParserError(message.code, message.value, pipeline.errorNames);
                 if (message.sequence === null) {
                     this.closePipeline(message.pipelineId, failure);
                     return;

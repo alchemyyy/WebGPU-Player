@@ -28,6 +28,7 @@ import {
     getDolbyVisionProfile8HDR10BaseColorMetadata,
     getDolbyVisionProfile8HLGBaseColorMetadata,
     getPresentationInputColorMetadata,
+    getPresentationVideoFields,
     getPresentationVideoTrackOrdinal,
     isDolbyVisionProfile7HDR10BaseLayerDescriptor,
     isDolbyVisionProfile8HDR10BaseLayerDescriptor,
@@ -50,7 +51,7 @@ import { createGPUVideoDecoderOffer, type GPUVideoDecoderOffer } from '../decode
 import GPUVideoDecodeSession from '../decode/video/gpu/GPUVideoDecodeSession';
 import { createDefaultRenderSettings, type HDRToSDRRenderSettings, type RenderSettings } from './RenderSettings';
 import type WebGPUPresenter from './WebGPUPresenter';
-import type { DolbyVisionReconstructionTarget } from './WebGPUPresenter';
+import type { DolbyVisionReconstructionTarget, PresentationColorPipelineConfiguration } from './WebGPUPresenter';
 
 /** A playback's presentation input, read once from its play options. */
 export type PresentationInput = Readonly<{
@@ -133,6 +134,9 @@ type CustomPresentationAuthorizations = {
     authorizedExternalHDRRouteKeys: readonly ExternalHDRAuthorizationRouteKey[]
     authorizedRawHDRRouteKeys: readonly RawHDRAuthorizationRouteKey[]
 };
+
+/** The presenter as a route's color configuration uses it, which adds the stream's fields to every configuration. */
+type ColorPipelinePresenter = Pick<WebGPUPresenter, 'configureColorPipeline'>;
 
 /** The presentation input of no playback: no color, no Dolby Vision. */
 export const EMPTY_PRESENTATION_INPUT: PresentationInput = Object.freeze({
@@ -473,7 +477,7 @@ function getActiveDolbyVisionBaseColorMetadata(options: unknown, input: Presenta
 }
 
 function configureDolbyVisionColorPipeline(
-    presenter: WebGPUPresenter,
+    presenter: ColorPipelinePresenter,
     request: ColorPipelineRequest,
     dolbyVisionProfile: Exclude<CustomDecodeDolbyVisionProfile, null>
 ): Promise<boolean> {
@@ -498,7 +502,7 @@ function configureDolbyVisionColorPipeline(
 
 /** Presents a GPU decoder's frame pool in its output format: SDR as decoded, HDR through the host's render configuration. */
 function configureFramePoolColorPipeline(
-    presenter: WebGPUPresenter,
+    presenter: ColorPipelinePresenter,
     request: ColorPipelineRequest,
     metadata: InputColorMetadata
 ): Promise<boolean> {
@@ -519,7 +523,7 @@ function configureFramePoolColorPipeline(
 }
 
 function configureColorMetadataPipeline(
-    presenter: WebGPUPresenter,
+    presenter: ColorPipelinePresenter,
     request: ColorPipelineRequest,
     metadata: InputColorMetadata | null
 ): Promise<boolean> {
@@ -576,7 +580,7 @@ function configureColorMetadataPipeline(
  * Presents a Dolby Vision base layer without its RPU: the exact native Profile 7 and 8 bases through external HDR, and any other declared base through the ordinary route the eligibility selected.
  */
 function configureDolbyVisionBaseColorPipeline(
-    presenter: WebGPUPresenter,
+    presenter: ColorPipelinePresenter,
     request: ColorPipelineRequest,
     descriptor: DolbyVisionPresentationDescriptor
 ): Promise<boolean> {
@@ -601,20 +605,27 @@ function configureDolbyVisionBaseColorPipeline(
 
 /**
  * Configures the presenter's color pipeline for a route: Dolby Vision reconstruction, a Dolby Vision base layer, external HDR, raw YUV, or SDR.
+ * Every route's configuration carries the stream's declared fields, so an interlaced stream's plan deinterlaces from its first frame.
  * Resolves false when the route cannot present the stream's input.
  */
 export function configurePresentationColorPipeline(presenter: WebGPUPresenter, request: ColorPipelineRequest): Promise<boolean> {
+    const videoFields = getPresentationVideoFields(request.options);
+    const fieldsPresenter: ColorPipelinePresenter = {
+        configureColorPipeline: (configuration: PresentationColorPipelineConfiguration, generation: number): Promise<boolean> => (
+            presenter.configureColorPipeline({ ...configuration, videoFields }, generation)
+        )
+    };
     const descriptor = request.input.dolbyVisionDescriptor;
     if (!descriptor) {
-        return configureColorMetadataPipeline(presenter, request, request.input.colorMetadata);
+        return configureColorMetadataPipeline(fieldsPresenter, request, request.input.colorMetadata);
     }
     if (request.dolbyVisionProfile === null) {
-        return configureDolbyVisionBaseColorPipeline(presenter, request, descriptor);
+        return configureDolbyVisionBaseColorPipeline(fieldsPresenter, request, descriptor);
     }
     if (descriptor.reconstructionProfile !== request.dolbyVisionProfile) {
         return Promise.resolve(false);
     }
-    return configureDolbyVisionColorPipeline(presenter, request, request.dolbyVisionProfile);
+    return configureDolbyVisionColorPipeline(fieldsPresenter, request, request.dolbyVisionProfile);
 }
 
 /**

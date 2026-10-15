@@ -54,7 +54,7 @@ export function createBuiltinChain(configuration: BuiltinChainConfiguration): Bu
             );
         case 'raw-yuv':
             return createColorTrackChain(
-                createRawYUVSignal(configuration.format, configuration.metadata),
+                createRawYUVSignal(configuration.format, configuration.metadata, configuration.interlacedChroma === true),
                 configuration.metadata,
                 configuration.settings,
                 configuration.hdrOutput
@@ -69,7 +69,7 @@ export function createBuiltinChain(configuration: BuiltinChainConfiguration): Bu
         case 'frame-pool':
             // The GPU decode route supplies the signal, and the color track is the raw YUV route's
             return createColorTrackChain(
-                configuration.signal,
+                configuration.interlacedChroma === true && configuration.interlacedSignal ? configuration.interlacedSignal : configuration.signal,
                 configuration.metadata,
                 configuration.settings,
                 configuration.hdrOutput

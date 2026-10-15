@@ -3,7 +3,12 @@
 // It reads each frame's sample size, bit depth, and chroma subsampling from the slot's layout uniform, so frames of every output format share one signal,
 // as a stream that changes its format mid-stream needs. Its sampling functions carry a framePool prefix; the matrix function is the raw YUV signal's.
 import { assertValidInputColorMetadata, type InputColorMetadata } from '../../../color/ColorMetadata';
-import { createRawYUVMatrixWGSL, createSelectedBitDepthRawYUVRangeWGSL } from './BuiltinSignals';
+import {
+    createInterlacedChromaReadWGSL,
+    createRawYUVMatrixWGSL,
+    createSelectedBitDepthRawYUVRangeWGSL,
+    INTERLACED_SIGNAL_CONDITION
+} from './BuiltinSignals';
 import { joinWGSL } from './BuiltinWGSL';
 import type { EngineResource, SignalDefinition } from '../PassTypes';
 import type { SupportedRawVideoFrameFormat } from '../../../decode/video/RawVideoFrameCopy';
@@ -13,6 +18,8 @@ import { getGPUDecoderFormatFacts, GPU_DECODER_OUTPUT_BIT_DEPTHS, isGPUDecoderOu
 export const FRAME_POOL_SIGNAL_ENTRY_POINT = 'framePoolSignal';
 
 const FRAME_POOL_SIGNAL_NAME_PREFIX = 'gpu-decode.signal.frame-pool';
+// Names the signal that reads interlaced chroma within each field
+const INTERLACED_CHROMA_NAME_SUFFIX = '.interlaced-chroma';
 const FRAME_POOL_RESOURCES: readonly EngineResource[] = Object.freeze([ 'frame-pool' ]);
 // The slot's bit depth, which picks the normalization of its codes
 const FRAME_POOL_BIT_DEPTH_EXPRESSION = 'framePoolLayout.bitDepth';
@@ -57,12 +64,40 @@ fn framePoolSampleYUV(textureCoordinate: vec2f) -> vec3f {
     );
 }`;
 
+// A deinterlacing plan's read: 4:2:0 chroma of a frame the presentation uniform marks interlaced is read within each field
+const INTERLACED_SAMPLE_YUV_WGSL = `
+fn framePoolSampleYUV(textureCoordinate: vec2f) -> vec3f {
+    let lumaWidth = framePoolLayout.planes[0].width;
+    let chromaOffset = select(0.0, 0.5 / f32(lumaWidth), framePoolLayout.planes[1].width < lumaWidth);
+    let chromaTextureCoordinate = textureCoordinate + vec2f(chromaOffset, 0.0);
+    if (${INTERLACED_SIGNAL_CONDITION} && framePoolLayout.planes[1].height < framePoolLayout.planes[0].height) {
+        return vec3f(
+            framePoolSamplePlane(0u, textureCoordinate),
+            framePoolSampleInterlacedChroma(1u, chromaTextureCoordinate),
+            framePoolSampleInterlacedChroma(2u, chromaTextureCoordinate)
+        );
+    }
+    return vec3f(
+        framePoolSamplePlane(0u, textureCoordinate),
+        framePoolSamplePlane(1u, chromaTextureCoordinate),
+        framePoolSamplePlane(2u, chromaTextureCoordinate)
+    );
+}`;
+
+const SAMPLE_INTERLACED_CHROMA_WGSL = createInterlacedChromaReadWGSL(
+    'framePoolSampleInterlacedChroma(planeIndex: u32, textureCoordinate: vec2f) -> f32',
+    'vec2i(i32(framePoolLayout.planes[planeIndex].width), i32(framePoolLayout.planes[planeIndex].height))',
+    'i32(framePoolLayout.planes[0].height)',
+    (column: string, row: string): string => `framePoolLoadSample(planeIndex, vec2i(${column}, ${row}))`
+);
+
 /**
  * Returns the signal step that reads a frame pool slot: a bilinear sample of the slot's planes at a coordinate normalized over the coded frame, converted to 'source' RGB.
  * It binds the 'frame-pool' resource, whose framePool and framePoolLayout PassResources declares, so the built-in color functions apply unchanged.
  * The format and the metadata's bit depth describe the stream's first frames; each frame's own layout decides how its samples read.
+ * With interlacedChroma, as a deinterlacing plan's signal, a slot's 4:2:0 chroma is read within each field of a frame the presentation uniform marks interlaced.
  */
-export function createFramePoolSignal(format: SupportedRawVideoFrameFormat, metadata: InputColorMetadata): SignalDefinition {
+export function createFramePoolSignal(format: SupportedRawVideoFrameFormat, metadata: InputColorMetadata, interlacedChroma: boolean = false): SignalDefinition {
     if (!isGPUDecoderOutputFormat(format)) {
         throw new RangeError(`format: unsupported '${format}'`);
     }
@@ -82,13 +117,13 @@ fn ${FRAME_POOL_SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
         code: joinWGSL([
             LOAD_SAMPLE_WGSL,
             SAMPLE_PLANE_WGSL,
-            SAMPLE_YUV_WGSL,
+            ...(interlacedChroma ? [ SAMPLE_INTERLACED_CHROMA_WGSL, INTERLACED_SAMPLE_YUV_WGSL ] : [ SAMPLE_YUV_WGSL ]),
             createSelectedBitDepthRawYUVRangeWGSL(metadata, GPU_DECODER_OUTPUT_BIT_DEPTHS, FRAME_POOL_BIT_DEPTH_EXPRESSION),
             createRawYUVMatrixWGSL(metadata),
             entryWGSL
         ]),
         entryPoint: FRAME_POOL_SIGNAL_ENTRY_POINT,
-        name: `${FRAME_POOL_SIGNAL_NAME_PREFIX}.${format}`,
+        name: `${FRAME_POOL_SIGNAL_NAME_PREFIX}.${format}${interlacedChroma ? INTERLACED_CHROMA_NAME_SUFFIX : ''}`,
         resources: FRAME_POOL_RESOURCES,
         sourceKind: 'frame-pool'
     };

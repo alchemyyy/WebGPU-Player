@@ -6,7 +6,12 @@ import {
     createSDRColorMetadata,
     type InputColorMetadata
 } from 'webgpu-player/color/ColorMetadata';
-import { createRawYUVRangeWGSL, createRawYUVSignal, createSelectedBitDepthRawYUVRangeWGSL } from 'webgpu-player/presentation/passes/builtin/BuiltinSignals';
+import {
+    createRawYUVRangeWGSL,
+    createRawYUVSignal,
+    createSelectedBitDepthRawYUVRangeWGSL,
+    INTERLACED_SIGNAL_CONDITION
+} from 'webgpu-player/presentation/passes/builtin/BuiltinSignals';
 import { createEngineStructsWGSL } from 'webgpu-player/presentation/passes/PassResources';
 import { createFramePoolSignal, FRAME_POOL_SIGNAL_ENTRY_POINT } from 'webgpu-player/presentation/passes/builtin/FramePoolSignal';
 import { GPU_DECODER_OUTPUT_BIT_DEPTHS, type GPUDecoderOutputFormat } from 'webgpu-player/decode/video/gpu/GPUDecodeFormats';
@@ -18,6 +23,12 @@ const PQ_BIT_DEPTH = 10;
 const SEMI_PLANAR_FORMAT = 'NV12';
 const UNSUPPORTED_RANGE = 'studio';
 const FRAME_POOL_SIGNAL_NAME = 'gpu-decode.signal.frame-pool.I420P10';
+const INTERLACED_CHROMA_NAME_SUFFIX = '.interlaced-chroma';
+const INTERLACED_CHROMA_FUNCTION = 'framePoolSampleInterlacedChroma';
+// A slot whose chroma has fewer rows than its luma, which only 4:2:0 has
+const VERTICALLY_SUBSAMPLED_CHROMA_CONDITION = 'framePoolLayout.planes[1].height < framePoolLayout.planes[0].height';
+// The start of a sampling function's last return, its progressive read
+const FINAL_READ_START = 'return vec3f(';
 // The slot's bit depth, which the signal normalizes each frame's codes by
 const SLOT_BIT_DEPTH_EXPRESSION = 'framePoolLayout.bitDepth';
 const SIGNAL_RANGES = [ 'limited', 'full' ] as const;
@@ -131,6 +142,24 @@ describe('createFramePoolSignal', () => {
 
             expect(collapseWhitespace(extractFunction(signal.code, 'normalizeRawYUV'))).toContain(`${selector}: { ${collapseWhitespace(compiledExpression)} }`);
         }
+    });
+
+    it('reads a 4:2:0 slot\'s chroma within each field of a frame marked interlaced, as a deinterlacing plan\'s signal', () => {
+        const metadata = createPQColorMetadata();
+        const signal = createFramePoolSignal('I420P10', metadata);
+        const interlacedSignal = createFramePoolSignal('I420P10', metadata, true);
+
+        expect(interlacedSignal.name).toBe(`${FRAME_POOL_SIGNAL_NAME}${INTERLACED_CHROMA_NAME_SUFFIX}`);
+        expect(interlacedSignal.resources).toEqual(signal.resources);
+        const sampleYUV = extractFunction(interlacedSignal.code, 'framePoolSampleYUV');
+        const progressiveSampleYUV = extractFunction(signal.code, 'framePoolSampleYUV');
+        expect(sampleYUV).toContain(`if (${INTERLACED_SIGNAL_CONDITION} && ${VERTICALLY_SUBSAMPLED_CHROMA_CONDITION}) {`);
+        expect(sampleYUV).toContain(`${INTERLACED_CHROMA_FUNCTION}(1u, chromaTextureCoordinate)`);
+        expect(sampleYUV).toContain(`${INTERLACED_CHROMA_FUNCTION}(2u, chromaTextureCoordinate)`);
+        // Outside the interlaced branch, the read is the progressive signal's
+        expect(sampleYUV.slice(sampleYUV.lastIndexOf(FINAL_READ_START))).toBe(progressiveSampleYUV.slice(progressiveSampleYUV.lastIndexOf(FINAL_READ_START)));
+        expect(signal.code).not.toContain(INTERLACED_SIGNAL_CONDITION);
+        expect(signal.code).not.toContain(INTERLACED_CHROMA_FUNCTION);
     });
 
     it('rejects a semi-planar format, a mismatched bit depth, and invalid metadata with the failing value', () => {

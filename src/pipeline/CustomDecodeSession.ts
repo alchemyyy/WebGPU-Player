@@ -1627,12 +1627,16 @@ export default class CustomDecodeSession {
         feed.queuePacket({
             data: message.data,
             durationMicroseconds: message.durationMicroseconds,
+            fields: message.fields ?? null,
             format: message.format ?? null,
             HDR10PlusMetadata: message.HDR10PlusMetadata ?? null,
+            hold: message.hold === true,
             keyframe: message.keyframe,
             maximumPictureSize: message.maximumPictureSize ?? null,
             outputEvents: message.outputEvents ?? null,
+            recovery: message.recovery ?? null,
             repeatCounts: message.repeatCounts ?? null,
+            reset: message.reset === true,
             timestampMicroseconds: message.timestampMicroseconds,
             visibleSize: message.visibleSize ?? null
         });
@@ -2057,6 +2061,7 @@ export default class CustomDecodeSession {
                 presentationFrame = {
                     durationMicroseconds: message.durationMicroseconds,
                     encodedDolbyVisionMetadata: message.encodedDolbyVisionMetadata,
+                    ...(message.fields ? { fields: message.fields } : {}),
                     HDR10PlusMetadata: message.HDR10PlusMetadata,
                     enhancementFrame: message.enhancementFrame,
                     frame: message.frame,
@@ -2069,6 +2074,7 @@ export default class CustomDecodeSession {
                 presentationFrame = {
                     durationMicroseconds: message.durationMicroseconds,
                     encodedDolbyVisionMetadata: message.encodedDolbyVisionMetadata,
+                    ...(message.fields ? { fields: message.fields } : {}),
                     HDR10PlusMetadata: message.HDR10PlusMetadata,
                     frame: message.frame,
                     mediaTimeMicroseconds: message.mediaTimeMicroseconds,

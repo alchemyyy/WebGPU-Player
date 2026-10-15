@@ -75,6 +75,18 @@ const ULTRA_HD_16K_CODED_HEIGHT = 8_640;
 const UNREPRESENTABLE_CODED_WIDTH = Number.MAX_SAFE_INTEGER;
 const UNREPRESENTABLE_CODED_HEIGHT = 2;
 
+// A frame's fields as the worker posts them, and malformed ones: an unknown scan, which a frame never carries, a missing or mistyped flag, and no record
+const TOP_FIRST_FIELDS = { repeatFirstField: false, scan: 'top-first' } as const;
+const SOFT_TELECINE_FIELDS = { repeatFirstField: true, scan: 'progressive' } as const;
+const MALFORMED_FIELDS: readonly unknown[] = [
+    { repeatFirstField: false, scan: 'unknown' },
+    { scan: 'top-first' },
+    { repeatFirstField: 0, scan: 'progressive' },
+    { repeatFirstField: false, scan: 'field-sequential' },
+    null,
+    0x7
+];
+
 // Malformed rates; any positive integer rate is valid
 const ZERO_SAMPLE_RATE = 0;
 const NEGATIVE_SAMPLE_RATE = -1;
@@ -125,6 +137,7 @@ const GPU_VIDEO_PARSER: DecodeWorkerGPUVideoParser = {
     packageVersion: { contentHash: '0f'.repeat(32), id: 'hevc' },
     parser: {
         errorNames: new Map([ [ 1, 'configuration' ] ]),
+        errorRecoveries: new Map(),
         memory: { initialPages: STUB_MODULE_MEMORY_PAGES, maximumPages: DECODER_PACKAGE_MAXIMUM_MEMORY_PAGES },
         module: new WebAssembly.Module(GPU_PARSER_MODULE_BINARY),
         repeatDirectiveCount: 1
@@ -1602,6 +1615,34 @@ describe('DecodeWorkerProtocol', () => {
         }
     });
 
+    it('accepts a frame\'s fields only as a known scan and a repeat first field flag', () => {
+        const rawFrame = createRawFrame();
+        const videoFrameResponse = {
+            durationMicroseconds: rawFrame.durationMicroseconds,
+            frame: { close: vi.fn() },
+            generation: 1,
+            mediaTimeMicroseconds: rawFrame.timestampMicroseconds,
+            outputMode: 'video-frame',
+            type: 'frame'
+        } as const;
+        const rawFrameResponse = {
+            durationMicroseconds: rawFrame.durationMicroseconds,
+            frame: rawFrame,
+            generation: 1,
+            mediaTimeMicroseconds: rawFrame.timestampMicroseconds,
+            outputMode: 'raw-planes',
+            type: 'frame'
+        } as const;
+
+        for (const frameResponse of [ videoFrameResponse, rawFrameResponse ]) {
+            expect(isDecodeWorkerResponse({ ...frameResponse, fields: TOP_FIRST_FIELDS })).toBe(true);
+            expect(isDecodeWorkerResponse({ ...frameResponse, fields: SOFT_TELECINE_FIELDS })).toBe(true);
+            for (const fields of MALFORMED_FIELDS) {
+                expect(isDecodeWorkerResponse({ ...frameResponse, fields })).toBe(false);
+            }
+        }
+    });
+
     it('accepts only decoder reclamation interruptions with a valid video epoch', () => {
         const interruptedResponse = {
             generation: 2,
@@ -2142,6 +2183,18 @@ describe('DecodeWorkerProtocol', () => {
             expect(isDecodeWorkerResponse({ ...packetResponse, durationMicroseconds: -1 })).toBe(false);
             expect(isDecodeWorkerResponse({ ...packetResponse, keyframe: 'true' })).toBe(false);
             expect(isDecodeWorkerResponse({ ...packetResponse, videoEpoch: -1 })).toBe(false);
+        });
+
+        it('accepts a packet\'s fields only when well formed, and none on a held packet, which carries no picture', () => {
+            const heldPacketResponse = { ...packetResponse, data: new ArrayBuffer(0), hold: true } as const;
+
+            expect(isDecodeWorkerResponse({ ...packetResponse, fields: TOP_FIRST_FIELDS })).toBe(true);
+            expect(isDecodeWorkerResponse({ ...packetResponse, fields: SOFT_TELECINE_FIELDS })).toBe(true);
+            for (const fields of MALFORMED_FIELDS) {
+                expect(isDecodeWorkerResponse({ ...packetResponse, fields })).toBe(false);
+            }
+            expect(isDecodeWorkerResponse(heldPacketResponse)).toBe(true);
+            expect(isDecodeWorkerResponse({ ...heldPacketResponse, fields: TOP_FIRST_FIELDS })).toBe(false);
         });
 
         it('accepts a packet\'s output events only as at most the bound of words', () => {

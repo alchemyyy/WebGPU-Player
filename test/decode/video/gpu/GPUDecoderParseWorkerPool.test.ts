@@ -19,6 +19,7 @@ const SLICE_DATA_ERROR_CODE = 11;
 const SLICE_DATA_ERROR_VALUE = 7;
 const PARSER_MODULE: GPUDecoderParserModule = {
     errorNames: new Map([ [ SLICE_DATA_ERROR_CODE, 'sliceData' ] ]),
+    errorRecoveries: new Map(),
     memory: { initialPages: 1, maximumPages: 16 },
     module: new WebAssembly.Module(encodeWebAssemblyModule({})),
     repeatDirectiveCount: 0

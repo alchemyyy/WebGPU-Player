@@ -6,7 +6,12 @@ import type {
     GPUVideoDecodeSessionFactory,
     GPUVideoDecodeSessionRequest
 } from 'webgpu-player/decode/video/gpu/GPUVideoDecodeFeed';
-import type { GPUDecodePacket, GPUDecodeStreamFacts, GPUVideoDecodeFailure } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
+import type {
+    GPUDecodePacket,
+    GPUDecodeStreamFacts,
+    GPUVideoDecodeFailure,
+    GPUVideoDecodeRecovery
+} from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
 import { selectGPUDecodeSessionStream } from 'webgpu-player/decode/video/gpu/GPUDecoderStreamFit';
 import type GPUVideoDecodeSession from 'webgpu-player/decode/video/gpu/GPUVideoDecodeSession';
 import type { GPUDecodedFrame } from 'webgpu-player/decode/video/gpu/GPUVideoDecodeSession';
@@ -32,6 +37,8 @@ export class FakeGPUVideoDecodeSession {
     readonly pool: Readonly<{ layout: Readonly<{ codedHeight: number; codedWidth: number; slotCount: number }> }>;
     presentableFrames: GPUDecodedFrame[] = [];
     readonly queuedPackets: GPUDecodePacket[] = [];
+    /** Recoveries a test reports, which takeRecoveries() hands over as a session's are */
+    readonly recoveries: GPUVideoDecodeRecovery[] = [];
     readonly releasedFrames: GPUDecodedFrame[] = [];
     resetCount = 0;
     readonly submittedPackets: GPUDecodePacket[] = [];
@@ -98,6 +105,7 @@ export class FakeGPUVideoDecodeSession {
         this.presentableFrames.push({
             droppedFrameCount: 0,
             durationMicroseconds: packet.durationMicroseconds,
+            fields: packet.fields,
             frame: {
                 codedHeight: this.stream.codedHeight,
                 codedWidth: this.stream.codedWidth,
@@ -114,6 +122,10 @@ export class FakeGPUVideoDecodeSession {
 
     takeNextFrame(): GPUDecodedFrame | null {
         return this.presentableFrames.shift() ?? null;
+    }
+
+    takeRecoveries(): GPUVideoDecodeRecovery[] {
+        return this.recoveries.splice(0);
     }
 
     waitForStatusReadbacks(): Promise<void> {

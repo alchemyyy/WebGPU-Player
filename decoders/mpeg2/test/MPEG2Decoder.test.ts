@@ -62,8 +62,8 @@ const FULL_HD_MACROBLOCK_ROWS = 68;
 const EIGHT_BIT_DEPTH = 8;
 const TEN_BIT_DEPTH = 10;
 const MACROBLOCK_SIZE = 16;
-// A macroblock record's words, and a coefficient entry's: a word each
-const MACROBLOCK_RECORD_BYTE_LENGTH = 40;
+// A macroblock record's words, its concealment status, and its blocks' DCs, and a coefficient entry's: a word each
+const MACROBLOCK_RECORD_BYTE_LENGTH = 68;
 // A coefficient costs at least two bits, so a packet's bytes bound its coefficient entries
 const ENTRIES_PER_PACKET_BYTE = 4;
 const COEFFICIENTS_PER_BLOCK = 64;
@@ -75,6 +75,15 @@ const LOOKUP_WORKGROUP_SIZE = 64;
 const FAILING_VALUE = 1234;
 const UNKNOWN_ERROR_CODE = 200;
 const COEFFICIENTS_ERROR_NAME = 'coefficients';
+// A picture's reconstruction, then its concealment, which dispatches over the macroblocks only when the picture is concealed
+const PICTURE_ENTRY_POINTS = [
+    'reconstructPicture',
+    'decideConcealment',
+    'concealMacroblocks',
+    'concealIntra',
+    'deblockHorizontal',
+    'deblockVertical'
+];
 const ENTRY_POINTS = [
     'loadLookups',
     'preparePacket',
@@ -87,13 +96,52 @@ const ENTRY_POINTS = [
     'copyFrame',
     'decodeSlices',
     'checkSlices',
-    'reconstructPicture',
+    'composeMacroblocks',
+    'prepareRedecode',
+    'redecodeSlices',
+    'markSegments',
+    ...PICTURE_ENTRY_POINTS,
     'nextPicture',
-    'reconstructPicture',
+    ...PICTURE_ENTRY_POINTS,
     'finishPacket'
 ];
-const INDIRECT_ENTRY_POINTS = new Set([ 'countStartCodes', 'listStartCodes', 'prepareSlices', 'decodeSlices' ]);
+const INDIRECT_ENTRY_POINTS = new Set([
+    'countStartCodes',
+    'listStartCodes',
+    'prepareSlices',
+    'decodeSlices',
+    'composeMacroblocks',
+    'redecodeSlices',
+    'concealMacroblocks',
+    'concealIntra',
+    'deblockHorizontal',
+    'deblockVertical'
+]);
 const MACROBLOCK_GRID_ENTRY_POINTS = new Set([ 'copyFrame', 'reconstructPicture' ]);
+// The recovery of each error code: damage within a picture conceals, a packet the decoder cannot take apart resyncs,
+// and a change of the stream's size or chroma format, which the pool cannot follow, ends the attempt
+const CONCEALED_ERRORS = [
+    'sequenceHeader',
+    'pictureHeader',
+    'quantizerMatrix',
+    'sliceHeader',
+    'macroblockAddress',
+    'macroblockType',
+    'motionType',
+    'motionVector',
+    'codedBlockPattern',
+    'dcDifferential',
+    'coefficients',
+    'skippedMacroblock',
+    'sliceEnd',
+    'bitsExhausted',
+    'coefficientStorage',
+    'packetSize',
+    'sliceCoverage',
+    'fieldMissing'
+];
+const RESYNCED_ERRORS = [ 'startCodes', 'pictureCount', 'fieldPictures', 'frameDimensions' ];
+const FATAL_ERRORS = [ 'pictureSize', 'chromaFormat' ];
 // The body declares each error code once as `const ERROR_<NAME>: u32 = <code>u;`, beside the shift of the code in a status word
 const ERROR_DECLARATION_PATTERN = /^const ERROR_([A-Z_]+): u32 = (\d+)u;$/gm;
 const ERROR_CODE_SHIFT_NAME = 'CODE_SHIFT';
@@ -296,6 +344,27 @@ describe('the WGSL MPEG-2 decoder', () => {
             expect(storageEntries.length).toBeLessThanOrEqual(DEFAULT_STORAGE_BUFFERS_PER_STAGE);
         } finally {
             restoreGlobals();
+        }
+    });
+
+    it('conceals damage within a picture, resyncs on a packet it cannot take apart, and ends the attempt on a size or chroma format change', () => {
+        const recoveryOf = (name: string): string => {
+            const code = [ ...manifest.errors ].find(([ , errorName ]) => errorName === name)?.[0];
+            if (code === undefined) {
+                throw new Error(`The decoder names no ${name} error`);
+            }
+            return manifest.errorRecoveries.get(code) ?? 'fatal';
+        };
+
+        expect(CONCEALED_ERRORS.length + RESYNCED_ERRORS.length + FATAL_ERRORS.length).toBe(manifest.errors.size);
+        for (const name of CONCEALED_ERRORS) {
+            expect(recoveryOf(name)).toBe('conceal');
+        }
+        for (const name of RESYNCED_ERRORS) {
+            expect(recoveryOf(name)).toBe('resync');
+        }
+        for (const name of FATAL_ERRORS) {
+            expect(recoveryOf(name)).toBe('fatal');
         }
     });
 

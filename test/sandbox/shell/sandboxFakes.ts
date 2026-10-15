@@ -30,6 +30,7 @@ export function createFakeSession(): SandboxSessionCommands {
         seek: vi.fn(),
         selectAudioTrack: vi.fn((): Promise<void> => Promise.resolve()),
         selectSubtitle: vi.fn((): Promise<void> => Promise.resolve()),
+        setDeinterlaceMode: vi.fn((): Promise<void> => Promise.resolve()),
         setHDROutputEnabled: vi.fn((): Promise<void> => Promise.resolve()),
         setMuted: vi.fn(),
         setRenderSettings: vi.fn(),

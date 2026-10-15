@@ -37,14 +37,16 @@ fn to_error_constant_name(name: &str) -> String {
     constant
 }
 
-/// Returns each `//! error: <code>, <name>` line's constant name and code.
+/// Returns each `//! error: <code>, <name>[, <recovery>]` line's constant name and code; the recovery is the engine's, which no constant carries.
 fn read_error_directives(source: &str) -> BTreeMap<String, u32> {
     let mut directives: BTreeMap<String, u32> = BTreeMap::new();
     for line in source.lines().take_while(|line: &&str| line.starts_with("//!")) {
         let Some(value) = line.strip_prefix(ERROR_DIRECTIVE) else {
             continue;
         };
-        let (code_text, name) = value.split_once(',').expect("an error directive holds a code and a name");
+        let mut parts: std::str::Split<'_, char> = value.split(',');
+        let code_text: &str = parts.next().expect("an error directive holds a code");
+        let name: &str = parts.next().expect("an error directive holds a name");
         let code: u32 = code_text.trim().parse::<u32>().expect("an error directive's code is a number");
         directives.insert(to_error_constant_name(name.trim()), code);
     }

@@ -93,6 +93,7 @@ type ScriptedCoordinator = InstanceType<typeof scripted.ScriptedCoordinator>;
 
 const PARSER_MODULE: GPUDecoderParserModule = {
     errorNames: new Map([ [ 11, 'sliceData' ] ]),
+    errorRecoveries: new Map(),
     memory: { initialPages: 1, maximumPages: 16 },
     module: new WebAssembly.Module(encodeWebAssemblyModule({})),
     repeatDirectiveCount: 0
@@ -166,7 +167,7 @@ function createPicture(packetId: number, unitCount: number, events: Uint32Array 
 }
 
 function createFinished(events: Uint32Array = new Uint32Array(0)): GPUDecoderParserPicture {
-    return { events, format: null, maximumPictureSize: null, record: new ArrayBuffer(RECORD_BYTE_LENGTH), repeatCounts: [], visibleSize: null };
+    return { events, fields: null, format: null, maximumPictureSize: null, record: new ArrayBuffer(RECORD_BYTE_LENGTH), repeatCounts: [], visibleSize: null };
 }
 
 /** A packet's output of one picture, which the pipeline resolves with when the packet held only it. */
@@ -415,6 +416,7 @@ describe('GPUDecoderParserPipeline', () => {
         await expect(second).resolves.toEqual({
             pictures: [ {
                 events: Uint32Array.of(PRESENT_FIRST_EVENT),
+                fields: null,
                 format: null,
                 maximumPictureSize: null,
                 record: expect.any(ArrayBuffer),

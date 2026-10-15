@@ -4,9 +4,15 @@
 import { getDecoderErrorName } from '../../packages/DecoderHeader';
 import type { VideoDecoderPackage } from '../../packages/DecoderPackage';
 import { instantiateDecoderPackage, type DecoderPackageMemoryLimits } from '../../packages/DecoderPackageImports';
+import { decodePictureFieldsWord, isPictureFieldsWord, type VideoFrameFields } from '../VideoFields';
 import { findGPUDecoderOutputFormat, type GPUDecoderOutputFormat } from './GPUDecodeFormats';
 import { GPU_DECODER_PARSER_ABI_VERSION, MAXIMUM_GPU_DECODE_OUTPUT_EVENTS, MAXIMUM_GPU_DECODE_PACKET_PICTURES } from './GPUDecodeLimits';
-import { GPU_DECODER_PICTURE_FORMAT, type GPUDecoderPictureSize } from './GPUDecodeTypes';
+import {
+    GPU_DECODER_PICTURE_FORMAT,
+    type GPUDecoderErrorRecovery,
+    type GPUDecoderPictureSize,
+    type GPUVideoDecodeRecovery
+} from './GPUDecodeTypes';
 
 /** The exports version 2 of the parser interface requires; the module imports its memory as `env.memory`. */
 export const GPU_DECODER_PARSER_EXPORTS = Object.freeze({
@@ -35,6 +41,15 @@ export const GPU_DECODER_PARSER_EXPORTS = Object.freeze({
     planUnitCount: 'parser_plan_unit_count',
     reserveInput: 'parser_reserve_input',
     reset: 'parser_reset'
+});
+
+/**
+ * The exports a parser may leave out, each for facts some codecs lack.
+ * - pictureFields: `parser_picture_fields(handle) -> u32`, the picture fields word (VideoFields.ts PICTURE_FIELDS_WORD) of the picture the last call output;
+ *   without it, pictures report no fields and take their container's scan.
+ */
+export const GPU_DECODER_PARSER_OPTIONAL_EXPORTS = Object.freeze({
+    pictureFields: 'parser_picture_fields'
 });
 
 /**
@@ -85,6 +100,8 @@ export type GPUDecoderPlannedPicture =
  */
 export type GPUDecoderParserPicture = {
     events: Uint32Array
+    /** The picture's fields, from the optional `parser_picture_fields`; null when the parser reports none */
+    fields: VideoFrameFields | null
     /** Null for a picture that keeps the session's output format */
     format: GPUDecoderOutputFormat | null
     /** The largest picture of the picture's sequence, or null for none reported */
@@ -142,6 +159,21 @@ function readPictureFormat(result: number): GPUDecoderOutputFormat | null {
     return format;
 }
 
+/** Reads the fields word a picture reported: null for none; a word with an undefined bit, or bits without the reported bit, fails. */
+function readPictureFields(result: number): VideoFrameFields | null {
+    const word = result >>> 0;
+    if (!isPictureFieldsWord(word)) {
+        throw new RangeError(`parser picture fields 0x${word.toString(16)}`);
+    }
+    return decodePictureFieldsWord(word);
+}
+
+/** Returns an optional export of the module, or null when it leaves the export out. */
+function findOptionalExport(instance: WebAssembly.Instance, name: string): WASMFunction | null {
+    const value = (instance.exports as unknown as Record<string, unknown>)[name];
+    return typeof value === 'function' ? value as WASMFunction : null;
+}
+
 function requireExports(instance: WebAssembly.Instance): ParserExports {
     const exportsValue = instance.exports as unknown as Record<string, unknown>;
     const functions: Partial<ParserExports> = {};
@@ -158,21 +190,38 @@ function requireExports(instance: WebAssembly.Instance): ParserExports {
 /** The module and memory a parser instance needs, which the decode worker passes on to its parse workers, and what it reads of the package's header. */
 export type GPUDecoderParserModule = Readonly<{
     errorNames: ReadonlyMap<number, string>
+    /** The recovery of each error code whose header line declares one: a parser failure with such a code restarts the parser at the next key packet */
+    errorRecoveries: ReadonlyMap<number, GPUDecoderErrorRecovery>
     memory: DecoderPackageMemoryLimits | null
     module: WebAssembly.Module
     /** The `repeat:` directives of the package's header, whose count each picture reports */
     repeatDirectiveCount: number
 }>;
 
-/** Returns what a video package's parser instances need: its module, its memory limits, and its header's error names and repeat directive count. */
+/**
+ * Returns what a video package's parser instances need: its module, its memory limits, and its header's error names, error recoveries,
+ * and repeat directive count.
+ */
 export function getGPUDecoderParserModule(decoderPackage: VideoDecoderPackage): GPUDecoderParserModule {
     const manifest = decoderPackage.manifest;
     return {
         errorNames: manifest.errors,
+        errorRecoveries: manifest.errorRecoveries,
         memory: decoderPackage.memory,
         module: decoderPackage.module,
         repeatDirectiveCount: manifest.repeats.length
     };
+}
+
+/**
+ * Returns the recovery a parser's failure takes: one whose code the header declares recoverable restarts the parser at the next key packet,
+ * since the failed call made no picture and left the instance unusable; any other failure, the parser's own checks without one included, ends the attempt.
+ */
+export function getGPUDecoderParserFailureRecovery(parser: GPUDecoderParserModule, error: unknown): GPUVideoDecodeRecovery | null {
+    if (!(error instanceof GPUDecoderParserError) || !parser.errorRecoveries.has(error.code)) {
+        return null;
+    }
+    return { code: 'resynced', errorName: `parser ${getDecoderErrorName(parser.errorNames, error.code)}`, value: error.value };
 }
 
 /** One instance of a parser module, with its own bounded memory. */
@@ -182,10 +231,12 @@ export default class GPUDecoderParserInstance {
     private readonly exports: ParserExports;
     private readonly handle: number;
     private readonly memory: WebAssembly.Memory;
+    private readonly pictureFields: WASMFunction | null;
     private readonly repeatDirectiveCount: number;
 
     private constructor(instance: WebAssembly.Instance, memory: WebAssembly.Memory, parser: GPUDecoderParserModule) {
         this.exports = requireExports(instance);
+        this.pictureFields = findOptionalExport(instance, GPU_DECODER_PARSER_OPTIONAL_EXPORTS.pictureFields);
         this.memory = memory;
         this.errorNames = parser.errorNames;
         this.repeatDirectiveCount = parser.repeatDirectiveCount;
@@ -344,6 +395,7 @@ export default class GPUDecoderParserInstance {
     private takePicture(): GPUDecoderParserPicture {
         return {
             events: this.takeEvents(),
+            fields: this.pictureFields === null ? null : readPictureFields(this.pictureFields(this.handle)),
             format: readPictureFormat(this.exports.pictureFormat(this.handle)),
             maximumPictureSize: readPictureSize(this.exports.maximumPictureWidth(this.handle), this.exports.maximumPictureHeight(this.handle), 'maximum picture size'),
             record: this.takeOutput(),

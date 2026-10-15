@@ -175,8 +175,26 @@ const ENGINE_RESOURCE_BINDINGS: Readonly<Record<EngineResource, readonly EngineB
 };
 
 /**
+ * The bits of the `presentation` uniform's `fieldState`, which say how an interlaced frame presents now; 0 presents a frame as it is.
+ * - deinterlace: the shown frame is interlaced and its missing rows are interpolated.
+ * - bottomFieldShown: the shown field is the bottom one, the frame's odd rows; otherwise the top one.
+ * - secondField: the shown field is its frame's second in time.
+ * - currentIsPrevious: the shown frame is the one before the newest in history, and the newest is the frame after it; otherwise the newest is shown and has none after it.
+ * - interlacedSignal: the frame the signal reads now is interlaced, so 4:2:0 chroma is sampled within each field.
+ */
+export const PRESENTATION_FIELD_STATE = Object.freeze({
+    bottomFieldShown: 0x2,
+    currentIsPrevious: 0x8,
+    deinterlace: 0x1,
+    interlacedSignal: 0x10,
+    none: 0,
+    secondField: 0x4
+});
+
+/**
  * The `presentation` uniform every pass binds: its coordinate mapping and the frame globals.
  * `historyValid` counts the earlier frames history holds: 0 after a reset, rising by one per new frame to the plan's deepest history.
+ * `fieldState` holds PRESENTATION_FIELD_STATE bits.
  */
 export const PRESENTATION_UNIFORMS_WGSL = `struct PresentationUniforms {
     textureScale: vec2f,
@@ -188,12 +206,14 @@ export const PRESENTATION_UNIFORMS_WGSL = `struct PresentationUniforms {
     frameIndex: u32,
     historyValid: u32,
     skippedFrames: u32,
+    fieldState: u32,
     padding0: u32,
-    padding1: u32,
 }`;
 
 /** The values of one pass's `presentation` uniform. */
 export type PresentationUniformValues = {
+    /** PRESENTATION_FIELD_STATE bits */
+    fieldState: number
     frameIndex: number
     historyValid: number
     inputHeight: number
@@ -287,6 +307,7 @@ export function writePresentationUniform(target: DataView, byteOffset: number, v
     target.setUint32(byteOffset + 44, values.frameIndex, true);
     target.setUint32(byteOffset + 48, values.historyValid, true);
     target.setUint32(byteOffset + 52, values.skippedFrames, true);
+    target.setUint32(byteOffset + 56, values.fieldState, true);
 }
 
 /** Writes the frame pool layout uniform, in the field order of FramePoolLayoutUniforms. */

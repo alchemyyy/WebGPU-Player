@@ -24,14 +24,16 @@ import {
     MEBIBYTE
 } from './GPUDecodeLimits';
 import { GPU_DECODER_RESERVED_IDENTIFIERS } from './GPUDecoderPrelude';
-import type {
-    GPUDecodeStreamFacts,
-    GPUDecoderAcceptance,
-    GPUDecoderBuffer,
-    GPUDecoderDispatch,
-    GPUDecoderDispatchRepeat,
-    GPUDecoderManifest,
-    GPUDecoderPictureSize
+import {
+    type GPUDecodeStreamFacts,
+    type GPUDecoderAcceptance,
+    type GPUDecoderBuffer,
+    type GPUDecoderDispatch,
+    type GPUDecoderDispatchRepeat,
+    type GPUDecoderErrorRecovery,
+    type GPUDecoderManifest,
+    type GPUDecoderPictureSize,
+    isGPUDecoderErrorRecovery
 } from './GPUDecodeTypes';
 
 /** The stream facts a decoder's accepts constraint, dispatch counts, and sizes read, by their expression names. */
@@ -111,6 +113,7 @@ export type GPUDecoderManifestErrorCode =
     | 'entry-point-stage'
     | 'error-code'
     | 'error-duplicate'
+    | 'error-recovery'
     | 'error-syntax'
     | 'header-missing'
     | 'header-syntax'
@@ -157,7 +160,9 @@ const MAXIMUM_DISPATCH_COUNT_COUNT = 3;
 // The characters that end a declaration, after which the next declaration's attributes start
 const STATEMENT_END = ';';
 const BLOCK_END = '}';
+// An error line's parts: its code and name, then an optional recovery
 const ERROR_PART_COUNT = 2;
+const RECOVERABLE_ERROR_PART_COUNT = 3;
 const REPEAT_PART_COUNT = 2;
 const MINIMUM_REPEAT_DISPATCH_COUNT = 1;
 // A buffer, the state, and a packet hold at least one byte; an indirect buffer holds its arguments
@@ -217,6 +222,7 @@ type ManifestDraft = {
     accepts: GPUDecoderAcceptance | null
     buffers: GPUDecoderBuffer[]
     dispatches: LocatedDispatch[]
+    errorRecoveries: Map<number, GPUDecoderErrorRecovery>
     errors: Map<number, string>
     id: string
     monochrome: boolean
@@ -501,10 +507,24 @@ function addDispatch(draft: ManifestDraft, value: string, line: number): void {
     }
 }
 
-/** Parses `<code>, <name>`: a code from 1 to 255, the high byte of a status error word, and the identifier that names it. */
-function parseError(value: string, line: number, errors: ReadonlyMap<number, string>): [number, string] {
+/** An error line: its code, its name, and its recovery, or null for a fatal error. */
+type ParsedError = Readonly<{
+    code: number
+    name: string
+    recovery: GPUDecoderErrorRecovery | null
+}>;
+
+/**
+ * Parses `<code>, <name>[, <recovery>]`: a code from 1 to 255, the high byte of a status error word, the identifier that names it,
+ * and how the package recovers from it, `conceal`, `drop`, or `resync`; without one the error ends the attempt.
+ */
+function parseError(value: string, line: number, errors: ReadonlyMap<number, string>): ParsedError {
     const parts = splitTopLevel(value);
-    if (parts.length !== ERROR_PART_COUNT || !COUNT_PATTERN.test(parts[0]) || !IDENTIFIER_PATTERN.test(parts[1])) {
+    if (
+        (parts.length !== ERROR_PART_COUNT && parts.length !== RECOVERABLE_ERROR_PART_COUNT)
+        || !COUNT_PATTERN.test(parts[0])
+        || !IDENTIFIER_PATTERN.test(parts[1])
+    ) {
         throw new GPUDecoderManifestError('error-syntax', quote(value), line);
     }
     const code = Number(parts[0]);
@@ -514,7 +534,11 @@ function parseError(value: string, line: number, errors: ReadonlyMap<number, str
     if (errors.has(code) || [ ...errors.values() ].includes(parts[1])) {
         throw new GPUDecoderManifestError('error-duplicate', quote(value), line);
     }
-    return [ code, parts[1] ];
+    const recoveryText = parts.at(ERROR_PART_COUNT) ?? null;
+    if (recoveryText !== null && !isGPUDecoderErrorRecovery(recoveryText)) {
+        throw new GPUDecoderManifestError('error-recovery', quote(recoveryText), line);
+    }
+    return { code, name: parts[1], recovery: recoveryText };
 }
 
 function parseParserVersion(value: string, line: number): number {
@@ -635,8 +659,11 @@ function applyDirective(draft: ManifestDraft, directive: DecoderHeaderDirective)
             openRepeat(draft, value, line);
             return;
         case 'error': {
-            const [ code, name ] = parseError(value, line, draft.errors);
-            draft.errors.set(code, name);
+            const parsed = parseError(value, line, draft.errors);
+            draft.errors.set(parsed.code, parsed.name);
+            if (parsed.recovery !== null) {
+                draft.errorRecoveries.set(parsed.code, parsed.recovery);
+            }
             return;
         }
         case 'parser':
@@ -757,6 +784,7 @@ export function parseGPUDecoderManifest(source: string): GPUDecoderManifest {
         accepts: null,
         buffers: [],
         dispatches: [],
+        errorRecoveries: new Map<number, GPUDecoderErrorRecovery>(),
         errors: new Map<number, string>(),
         id: '',
         monochrome: false,
@@ -798,6 +826,7 @@ export function parseGPUDecoderManifest(source: string): GPUDecoderManifest {
         bodyFirstLine,
         buffers: draft.buffers,
         dispatches: draft.dispatches.map(located => located.dispatch),
+        errorRecoveries: draft.errorRecoveries,
         errors: draft.errors,
         id: draft.id,
         monochrome: draft.monochrome,

@@ -1,5 +1,6 @@
 // Messages between the decode worker and its parser coordinator worker, which runs a video decoder package's parser coordinator and parse workers.
 import { isDecoderPackageVersion, type DecoderPackageVersion } from '../../packages/DecoderPackageIdentity';
+import { isVideoFrameFields } from '../VideoFields';
 import { isGPUDecoderOutputFormat } from './GPUDecodeFormats';
 import type { GPUDecoderParserModule, GPUDecoderParserPicture } from './GPUDecoderParser';
 import { isGPUDecoderParserModule } from './GPUDecoderParseProtocol';
@@ -47,12 +48,17 @@ export type GPUDecoderCoordinatorResultResponse = Readonly<{
     type: 'result'
 }>;
 
-/** A failed open, with a null sequence, or a failed packet, after which every later packet fails too. */
+/**
+ * A failed open, with a null sequence, or a failed packet, after which every later packet fails too:
+ * the decoder error code and value of a parser's failed check, which decide its recovery, or code 0 with the error's message.
+ */
 export type GPUDecoderCoordinatorFailedResponse = Readonly<{
+    code: number
     message: string
     pipelineId: number
     sequence: number | null
     type: 'failed'
+    value: number
 }>;
 
 export type GPUDecoderCoordinatorResponse = GPUDecoderCoordinatorFailedResponse | GPUDecoderCoordinatorOpenedResponse | GPUDecoderCoordinatorResultResponse;
@@ -68,6 +74,7 @@ function isCount(value: unknown): value is number {
 function isParserPicture(value: unknown): value is GPUDecoderParserPicture {
     return isRecord(value)
         && value.events instanceof Uint32Array
+        && (value.fields === null || isVideoFrameFields(value.fields))
         && (value.format === null || (typeof value.format === 'string' && isGPUDecoderOutputFormat(value.format)))
         && (value.maximumPictureSize === null || isGPUDecoderPictureSize(value.maximumPictureSize))
         && value.record instanceof ArrayBuffer
@@ -106,7 +113,10 @@ export function isGPUDecoderCoordinatorResponse(value: unknown): value is GPUDec
                 && value.pictures.every(isParserPicture)
                 && value.trailingEvents instanceof Uint32Array;
         case 'failed':
-            return typeof value.message === 'string' && (value.sequence === null || isCount(value.sequence));
+            return typeof value.message === 'string'
+                && (value.sequence === null || isCount(value.sequence))
+                && isCount(value.code)
+                && isCount(value.value);
         default:
             return false;
     }

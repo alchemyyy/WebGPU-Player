@@ -22,6 +22,10 @@ const DOLBY_VISION_INPUT_PEAK_NITS = 4_000;
 const STATIC_PEAK_NITS = 1_600;
 const CURRENT_PEAK_NITS = 1_000;
 const RAW_SDR_ROUTE_KEY = 'I420:bt709:bt709:limited:sdr';
+// The fields a progressive stream without a size declares, and an interlaced 576-line stream's size
+const PROGRESSIVE_FIELDS = { frameHeight: null, frameWidth: null, scan: 'progressive' } as const;
+const INTERLACED_WIDTH = 720;
+const INTERLACED_HEIGHT = 576;
 const RAW_PQ_ROUTE_KEY = 'I420P10:bt2020-ncl:bt2020:limited:pq';
 const EXTERNAL_PQ_ROUTE_KEY = 'external-hevc-main10-bt709-limited:pq-v1';
 
@@ -191,8 +195,29 @@ describe('PresentationSetup', () => {
 
             await expect(configurePresentationColorPipeline(asPresenter(presenter), request)).resolves.toBe(true);
 
-            expect(presenter.configureColorPipeline).toHaveBeenCalledWith({ settings: createDefaultRenderSettings() }, GENERATION);
+            expect(presenter.configureColorPipeline).toHaveBeenCalledWith({ settings: createDefaultRenderSettings(), videoFields: PROGRESSIVE_FIELDS }, GENERATION);
             expect(request.clearDetectedInputPeak).toHaveBeenCalledTimes(1);
+        });
+
+        it('carries the stream\'s declared fields: its field order in ffprobe\'s names, or its interlaced flag, and its size', async () => {
+            const presenter = createPresenter();
+            const bottomFirstStream = { ...SDR_STREAM, FieldOrder: 'tb', Height: INTERLACED_HEIGHT, IsInterlaced: true, Width: INTERLACED_WIDTH };
+            const orderlessStream = { ...SDR_STREAM, IsInterlaced: true };
+            const undeclaredStream = { ...SDR_STREAM, IsInterlaced: undefined };
+
+            await configurePresentationColorPipeline(asPresenter(presenter), createColorPipelineRequest(bottomFirstStream));
+            await configurePresentationColorPipeline(asPresenter(presenter), createColorPipelineRequest(orderlessStream));
+            await configurePresentationColorPipeline(asPresenter(presenter), createColorPipelineRequest(undeclaredStream));
+
+            expect(presenter.configureColorPipeline).toHaveBeenNthCalledWith(1, expect.objectContaining({
+                videoFields: { frameHeight: INTERLACED_HEIGHT, frameWidth: INTERLACED_WIDTH, scan: 'bottom-first' }
+            }), GENERATION);
+            expect(presenter.configureColorPipeline).toHaveBeenNthCalledWith(2, expect.objectContaining({
+                videoFields: { frameHeight: null, frameWidth: null, scan: 'interlaced' }
+            }), GENERATION);
+            expect(presenter.configureColorPipeline).toHaveBeenNthCalledWith(3, expect.objectContaining({
+                videoFields: { frameHeight: null, frameWidth: null, scan: 'unknown' }
+            }), GENERATION);
         });
 
         it('presents HDR10 through raw YUV planes or as external HDR, from the stream\'s nominal peak', async () => {
@@ -208,12 +233,14 @@ describe('PresentationSetup', () => {
                 ...createHDRRenderConfiguration(metadata?.nominalPeakNits ?? 0),
                 inputMode: 'raw-yuv',
                 metadata,
-                rawFrameFormat: 'I420P10'
+                rawFrameFormat: 'I420P10',
+                videoFields: PROGRESSIVE_FIELDS
             }, GENERATION);
             expect(presenter.configureColorPipeline).toHaveBeenNthCalledWith(2, {
                 ...createHDRRenderConfiguration(metadata?.nominalPeakNits ?? 0),
                 inputMode: 'external-hdr',
-                metadata
+                metadata,
+                videoFields: PROGRESSIVE_FIELDS
             }, GENERATION);
         });
 
@@ -240,12 +267,14 @@ describe('PresentationSetup', () => {
                 ...createHDRRenderConfiguration(DOLBY_VISION_INPUT_PEAK_NITS),
                 inputMode: 'raw-dolby-vision',
                 profile: 8,
-                rawFrameFormat: 'I420P10'
+                rawFrameFormat: 'I420P10',
+                videoFields: PROGRESSIVE_FIELDS
             }, GENERATION);
             expect(presenter.configureColorPipeline).toHaveBeenNthCalledWith(2, {
                 ...createHDRRenderConfiguration(DOLBY_VISION_INPUT_PEAK_NITS),
                 inputMode: 'external-dolby-vision',
-                profile: 5
+                profile: 5,
+                videoFields: PROGRESSIVE_FIELDS
             }, GENERATION);
         });
 

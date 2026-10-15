@@ -14,19 +14,28 @@ const DRAIN_FAILURE = new Error('drain-failed: worker closed');
 const NOT_SUBMITTED_MESSAGE = 'Decoded frame did not reach WebGPU submission';
 const RELEASE_UNACKNOWLEDGED_MESSAGE = 'Decoded frame GPU release could not be acknowledged';
 const ANIMATION_FRAMES_UNAVAILABLE_MESSAGE = 'requestAnimationFrame is unavailable';
+// The clock time each tick presents at, and a deinterlacing presenter's lookahead: one frame of 25 fps video
+const TARGET_TIME_MICROSECONDS = 1_000_000;
+const NO_LOOKAHEAD_MICROSECONDS = 0;
+const FRAME_LOOKAHEAD_MICROSECONDS = 40_000;
 
 type FakeController = {
     drainBackgroundVideo: Mock
+    getPresentationTargetTime: Mock
+    isVideoDecodeEnded: Mock
     notifyFrameDiscarded: Mock
     notifyFramePresented: Mock
     playbackState: string
     setPageVisibility: Mock
-    takeCurrentFrame: Mock
+    takeFrame: Mock
 };
 
 type FakePresenter = {
+    awaitsLookaheadFrame: Mock
+    getFrameLookaheadMicroseconds: Mock
     getTelemetry: Mock
     presentDecodedFrame: Mock
+    presentHeldFields: Mock
 };
 
 type LoopHarness = Readonly<{
@@ -52,15 +61,20 @@ function runAnimationFrames(): void {
 function createHarness(): LoopHarness {
     const controller: FakeController = {
         drainBackgroundVideo: vi.fn(),
+        getPresentationTargetTime: vi.fn(() => TARGET_TIME_MICROSECONDS),
+        isVideoDecodeEnded: vi.fn(() => false),
         notifyFrameDiscarded: vi.fn(() => true),
         notifyFramePresented: vi.fn(() => true),
         playbackState: 'playing',
         setPageVisibility: vi.fn(() => false),
-        takeCurrentFrame: vi.fn(() => RAW_PLANES_FRAME)
+        takeFrame: vi.fn(() => RAW_PLANES_FRAME)
     };
     const presenter: FakePresenter = {
+        awaitsLookaheadFrame: vi.fn(() => false),
+        getFrameLookaheadMicroseconds: vi.fn(() => NO_LOOKAHEAD_MICROSECONDS),
         getTelemetry: vi.fn(() => ({ state: 'presenting' })),
-        presentDecodedFrame: vi.fn(() => true)
+        presentDecodedFrame: vi.fn(() => true),
+        presentHeldFields: vi.fn(() => false)
     };
     const current = { value: true };
     const failures: unknown[] = [];
@@ -115,7 +129,8 @@ describe('CustomPlaybackFrameLoop', () => {
         runAnimationFrames();
 
         expect(presenter.presentDecodedFrame).toHaveBeenCalledTimes(2);
-        expect(presenter.presentDecodedFrame).toHaveBeenLastCalledWith(RAW_PLANES_FRAME, FIRST_GENERATION, undefined);
+        expect(presenter.presentDecodedFrame).toHaveBeenLastCalledWith(RAW_PLANES_FRAME, FIRST_GENERATION, undefined, TARGET_TIME_MICROSECONDS);
+        expect(controller.takeFrame).toHaveBeenLastCalledWith(TARGET_TIME_MICROSECONDS, NO_LOOKAHEAD_MICROSECONDS);
         expect(controller.notifyFramePresented).toHaveBeenCalledTimes(2);
         expect(animationFrames.size).toBe(1);
     });
@@ -123,7 +138,7 @@ describe('CustomPlaybackFrameLoop', () => {
     it('polls while paused until a frame presents, then stops', () => {
         const { controller, loop, presenter } = createHarness();
         controller.playbackState = 'paused';
-        controller.takeCurrentFrame.mockReturnValueOnce(null);
+        controller.takeFrame.mockReturnValueOnce(null);
 
         loop.schedule(false);
         runAnimationFrames();
@@ -136,19 +151,19 @@ describe('CustomPlaybackFrameLoop', () => {
 
     it('acknowledges a frame-pool frame right after its submit, since later decode work queues behind it', () => {
         const { controller, failures, loop, presenter } = createHarness();
-        controller.takeCurrentFrame.mockReturnValue(FRAME_POOL_FRAME);
+        controller.takeFrame.mockReturnValue(FRAME_POOL_FRAME);
 
         loop.schedule(false);
         runAnimationFrames();
 
-        expect(presenter.presentDecodedFrame).toHaveBeenCalledWith(FRAME_POOL_FRAME, FIRST_GENERATION, undefined);
+        expect(presenter.presentDecodedFrame).toHaveBeenCalledWith(FRAME_POOL_FRAME, FIRST_GENERATION, undefined, TARGET_TIME_MICROSECONDS);
         expect(controller.notifyFramePresented).toHaveBeenCalledWith(FRAME_POOL_FRAME);
         expect(failures).toEqual([]);
     });
 
     it('acknowledges a VideoFrame once the GPU releases it, presented or discarded', () => {
         const { controller, failures, loop, presenter } = createHarness();
-        controller.takeCurrentFrame.mockReturnValue(VIDEO_FRAME);
+        controller.takeFrame.mockReturnValue(VIDEO_FRAME);
 
         loop.schedule(false);
         runAnimationFrames();
@@ -164,7 +179,7 @@ describe('CustomPlaybackFrameLoop', () => {
 
     it('reports a VideoFrame release the controller cannot acknowledge, but not one of an earlier generation', () => {
         const { controller, failures, loop, presenter } = createHarness();
-        controller.takeCurrentFrame.mockReturnValue(VIDEO_FRAME);
+        controller.takeFrame.mockReturnValue(VIDEO_FRAME);
         controller.notifyFramePresented.mockReturnValue(false);
 
         loop.schedule(false);
@@ -205,7 +220,43 @@ describe('CustomPlaybackFrameLoop', () => {
         runAnimationFrames();
 
         expect(loop.getPresentationGeneration()).toBe(NEXT_GENERATION);
-        expect(presenter.presentDecodedFrame).toHaveBeenCalledWith(RAW_PLANES_FRAME, NEXT_GENERATION, undefined);
+        expect(presenter.presentDecodedFrame).toHaveBeenCalledWith(RAW_PLANES_FRAME, NEXT_GENERATION, undefined, TARGET_TIME_MICROSECONDS);
+    });
+
+    it('takes frames the presenter\'s lookahead ahead of the clock, and lets it redraw held fields on ticks without a frame', () => {
+        const { controller, loop, presenter } = createHarness();
+        presenter.getFrameLookaheadMicroseconds.mockReturnValue(FRAME_LOOKAHEAD_MICROSECONDS);
+        controller.takeFrame.mockReturnValueOnce(RAW_PLANES_FRAME).mockReturnValue(null);
+        presenter.presentHeldFields.mockReturnValue(true);
+
+        loop.schedule(true);
+        runAnimationFrames();
+        runAnimationFrames();
+
+        expect(controller.takeFrame).toHaveBeenCalledWith(TARGET_TIME_MICROSECONDS, FRAME_LOOKAHEAD_MICROSECONDS);
+        expect(presenter.presentDecodedFrame).toHaveBeenCalledTimes(1);
+        expect(presenter.presentHeldFields).toHaveBeenCalledTimes(1);
+        expect(presenter.presentHeldFields).toHaveBeenCalledWith(FIRST_GENERATION, TARGET_TIME_MICROSECONDS);
+        expect(animationFrames.size).toBe(1);
+    });
+
+    it('polls while paused until a deinterlacing presenter holds the frame after the one it shows, or video decoding ended', () => {
+        const { controller, loop, presenter } = createHarness();
+        controller.playbackState = 'paused';
+        presenter.awaitsLookaheadFrame.mockReturnValue(true);
+
+        loop.schedule(false);
+        runAnimationFrames();
+        expect(animationFrames.size).toBe(1);
+        presenter.awaitsLookaheadFrame.mockReturnValue(false);
+        runAnimationFrames();
+        expect(animationFrames.size).toBe(0);
+
+        presenter.awaitsLookaheadFrame.mockReturnValue(true);
+        controller.isVideoDecodeEnded.mockReturnValue(true);
+        loop.schedule(false);
+        runAnimationFrames();
+        expect(animationFrames.size).toBe(0);
     });
 
     it('does nothing for a playback that is no longer current', () => {
@@ -216,7 +267,7 @@ describe('CustomPlaybackFrameLoop', () => {
         runAnimationFrames();
         loop.schedule(true);
 
-        expect(controller.takeCurrentFrame).not.toHaveBeenCalled();
+        expect(controller.takeFrame).not.toHaveBeenCalled();
         expect(animationFrames.size).toBe(0);
     });
 

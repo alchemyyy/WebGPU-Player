@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+    PRESENTATION_FIELD_STATE,
     PRESENTATION_UNIFORM_BYTE_LENGTH,
     type PresentationUniformValues,
     UNIFORM_SLOT_BYTE_LENGTH
@@ -203,6 +204,7 @@ const HISTORY_DEPTH = 1;
 
 // Byte offsets of the presentation uniform's fields, in PRESENTATION_UNIFORMS_WGSL order
 const PRESENTATION_FIELD_OFFSETS = {
+    fieldState: 56,
     frameIndex: 44,
     historyValid: 48,
     inputHeight: 36,
@@ -384,6 +386,7 @@ function createCompilationMessage(type: GPUCompilationMessageType, lineNum: numb
 function createPlan(plan: Partial<PresentationPlan>): PresentationPlan {
     return {
         buffers: [],
+        deinterlace: null,
         output: OUTPUT,
         parameterSets: [],
         passes: [],
@@ -430,6 +433,7 @@ function createVideoFrame(): VideoFrame {
 
 function createFrameInput(source: PresentationFrameSource, newFrame = true): PresentationFrameInput {
     return {
+        fieldState: PRESENTATION_FIELD_STATE.none,
         geometry: GEOMETRY,
         newFrame,
         skippedFrameCount: SKIPPED_FRAME_COUNT,
@@ -517,6 +521,7 @@ function getBufferWrites(harness: DeviceHarness, label: string): BufferWrite[] {
 function readPresentationSlot(bytes: ArrayBuffer, passIndex: number): PresentationUniformValues {
     const view = new DataView(bytes, passIndex * UNIFORM_SLOT_BYTE_LENGTH, PRESENTATION_UNIFORM_BYTE_LENGTH);
     return {
+        fieldState: view.getUint32(PRESENTATION_FIELD_OFFSETS.fieldState, true),
         frameIndex: view.getUint32(PRESENTATION_FIELD_OFFSETS.frameIndex, true),
         historyValid: view.getUint32(PRESENTATION_FIELD_OFFSETS.historyValid, true),
         inputHeight: view.getFloat32(PRESENTATION_FIELD_OFFSETS.inputHeight, true),
@@ -1040,6 +1045,65 @@ describe('PresentationExecutor', () => {
 
         expect(recordFrame(true)).toEqual([ 'history slot 0', 'history slot 0', 'history slot 1', 0 ]);
         expect(readLastPresentationSlot(harness, 1).frameIndex).toBe(3);
+    });
+
+    it('draws from history alone: skips the passes that read the source, repeats the last new frame\'s slots, and writes the field state', async () => {
+        const harness = createDeviceHarness();
+        const plan = createPlan({
+            passes: [
+                createRenderPass('Producer', {
+                    bindings: [ { binding: 0, kind: 'engine', resource: 'external-texture' } ],
+                    coordinateMapping: 'identity',
+                    target: { kind: 'texture', textureId: 'history' }
+                }),
+                createRenderPass('Temporal', {
+                    bindings: [
+                        { access: 'sampled', binding: 0, historyOffset: 0, kind: 'texture', textureId: 'history' },
+                        { access: 'sampled', binding: 1, historyOffset: -1, kind: 'texture', textureId: 'history' }
+                    ],
+                    inputTextureId: 'history'
+                })
+            ],
+            textures: [ createTexture('history', { historyDepth: HISTORY_DEPTH }) ]
+        });
+        const secondFieldState = PRESENTATION_FIELD_STATE.deinterlace | PRESENTATION_FIELD_STATE.bottomFieldShown | PRESENTATION_FIELD_STATE.secondField;
+        const executor = await PresentationExecutor.create(harness.device, plan);
+        expect(executor.canDrawFromHistory()).toBe(true);
+        encodeFrame(executor, createExternalFrameInput());
+        encodeFrame(executor, { ...createExternalFrameInput(), fieldState: PRESENTATION_FIELD_STATE.deinterlace });
+        expect(readLastPresentationSlot(harness, 1)).toMatchObject({ fieldState: PRESENTATION_FIELD_STATE.deinterlace, historyValid: 1 });
+        const importCount = harness.importExternalTexture.mock.calls.length;
+
+        const passes = encodeFrame(executor, { ...createExternalFrameInput(false), fieldState: secondFieldState, source: null });
+
+        expect(passes).toHaveLength(1);
+        expect([ getBoundLabel(passes[0], 0), getBoundLabel(passes[0], 1) ]).toEqual([ 'history slot 1', 'history slot 0' ]);
+        expect(harness.importExternalTexture).toHaveBeenCalledTimes(importCount);
+        expect(readLastPresentationSlot(harness, 1)).toMatchObject({ fieldState: secondFieldState, frameIndex: 1, historyValid: 1, sourceWidth: SOURCE_WIDTH });
+    });
+
+    it('refuses a history draw of a new frame, or of a plan whose source pass draws the output', async () => {
+        const harness = createDeviceHarness();
+        const historyPlan = createPlan({
+            passes: [
+                createRenderPass('Producer', {
+                    bindings: [ { binding: 0, kind: 'engine', resource: 'external-texture' } ],
+                    target: { kind: 'texture', textureId: 'history' }
+                }),
+                createRenderPass('Output', {
+                    bindings: [ { access: 'sampled', binding: 0, historyOffset: 0, kind: 'texture', textureId: 'history' } ],
+                    inputTextureId: 'history'
+                })
+            ],
+            textures: [ createTexture('history', {}) ]
+        });
+        const fusedPlan = createPlan({ passes: [ createRenderPass('Output', { bindings: [ { binding: 0, kind: 'engine', resource: 'external-texture' } ] }) ] });
+        const historyExecutor = await PresentationExecutor.create(harness.device, historyPlan);
+        const fusedExecutor = await PresentationExecutor.create(harness.device, fusedPlan);
+
+        expect(fusedExecutor.canDrawFromHistory()).toBe(false);
+        expect(() => encodeFrame(fusedExecutor, { ...createExternalFrameInput(false), source: null })).toThrow('history-draw: a pass reads the source at the output');
+        expect(() => encodeFrame(historyExecutor, { ...createExternalFrameInput(true), source: null })).toThrow('history-draw: a new frame needs its source');
     });
 
     it('imports the external texture per frame and creates nothing else in steady state', async () => {

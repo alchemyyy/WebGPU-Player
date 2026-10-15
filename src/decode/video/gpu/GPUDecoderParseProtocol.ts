@@ -1,6 +1,7 @@
 // Messages between a parser's coordinator and its parse workers, which parse planned pictures' units on their own parser instances.
 import { isDecoderPackageMemoryLimits } from '../../packages/DecoderPackageImports';
 import type { GPUDecoderParserModule } from './GPUDecoderParser';
+import { isGPUDecoderErrorRecovery } from './GPUDecodeTypes';
 
 /** Starts the worker on a package's parser module. */
 export type GPUDecoderParseStartRequest = Readonly<{
@@ -45,9 +46,31 @@ function isCount(value: unknown): value is number {
     return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
-/** Returns whether a value is a parser module message: a compiled module, its memory limits or null, its error names, and its header's repeat count. */
+/** Returns whether a value is error recoveries: each a code's recovery the header declared. */
+function isErrorRecoveries(value: unknown): boolean {
+    if (!(value instanceof Map)) {
+        return false;
+    }
+    for (const [ code, recovery ] of value) {
+        if (!isCount(code) || typeof recovery !== 'string' || !isGPUDecoderErrorRecovery(recovery)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Returns whether a value is a parser module message: a compiled module, its memory limits or null, its error names and recoveries,
+ * and its header's repeat count.
+ */
 export function isGPUDecoderParserModule(value: unknown): value is GPUDecoderParserModule {
-    if (!isRecord(value) || !(value.module instanceof WebAssembly.Module) || !(value.errorNames instanceof Map) || !isCount(value.repeatDirectiveCount)) {
+    if (
+        !isRecord(value)
+        || !(value.module instanceof WebAssembly.Module)
+        || !(value.errorNames instanceof Map)
+        || !isErrorRecoveries(value.errorRecoveries)
+        || !isCount(value.repeatDirectiveCount)
+    ) {
         return false;
     }
     return value.memory === null || isDecoderPackageMemoryLimits(value.memory);

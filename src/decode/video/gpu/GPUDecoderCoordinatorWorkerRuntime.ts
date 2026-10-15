@@ -2,8 +2,13 @@
 // The decode worker only moves packets and records, so a package's module that loops never blocks demux or audio; the decode worker's watchdog ends this worker instead.
 import { isSameDecoderPackageVersion, type DecoderPackageVersion } from '../../packages/DecoderPackageIdentity';
 import GPUDecoderParserPipeline from './GPUDecoderParserPipeline';
-import { isGPUDecoderCoordinatorRequest, type GPUDecoderCoordinatorOpenRequest, type GPUDecoderCoordinatorResponse } from './GPUDecoderCoordinatorProtocol';
-import type { GPUDecoderParserOutput } from './GPUDecoderParser';
+import {
+    isGPUDecoderCoordinatorRequest,
+    type GPUDecoderCoordinatorFailedResponse,
+    type GPUDecoderCoordinatorOpenRequest,
+    type GPUDecoderCoordinatorResponse
+} from './GPUDecoderCoordinatorProtocol';
+import { GPUDecoderParserError, type GPUDecoderParserOutput } from './GPUDecoderParser';
 import GPUDecoderParseWorkerPool from './GPUDecoderParseWorkerPool';
 
 /** The end of the channel the runtime answers on: the worker's global scope, or a message port in tests. */
@@ -30,6 +35,19 @@ type ActivePool = {
 
 function describeError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+}
+
+/** Returns the failed response of an open, with a null sequence, or of a packet: a parser's failed check keeps its code and value, which decide its recovery. */
+function createFailedResponse(error: unknown, pipelineId: number, sequence: number | null): GPUDecoderCoordinatorFailedResponse {
+    const parserError = error instanceof GPUDecoderParserError ? error : null;
+    return {
+        code: parserError?.code ?? 0,
+        message: describeError(error),
+        pipelineId,
+        sequence,
+        type: 'failed',
+        value: parserError?.value ?? 0
+    };
 }
 
 /**
@@ -96,7 +114,7 @@ export function startGPUDecoderCoordinatorWorkerRuntime(scope: GPUDecoderCoordin
             },
             (error: unknown): void => {
                 if (active === opening) {
-                    post({ message: describeError(error), pipelineId: request.pipelineId, sequence: null, type: 'failed' });
+                    post(createFailedResponse(error, request.pipelineId, null));
                 }
             }
         );
@@ -120,7 +138,7 @@ export function startGPUDecoderCoordinatorWorkerRuntime(scope: GPUDecoderCoordin
             case 'submit': {
                 const pipeline = active?.pipelineId === request.pipelineId ? active.pipeline : null;
                 if (!pipeline) {
-                    post({ message: 'parser pipeline not open', pipelineId: request.pipelineId, sequence: request.sequence, type: 'failed' });
+                    post(createFailedResponse(new Error('parser pipeline not open'), request.pipelineId, request.sequence));
                     return;
                 }
                 pipeline.submit(new Uint8Array(request.packet)).then(
@@ -134,7 +152,7 @@ export function startGPUDecoderCoordinatorWorkerRuntime(scope: GPUDecoderCoordin
                         }, getOutputTransfers(output));
                     },
                     (error: unknown): void => {
-                        post({ message: describeError(error), pipelineId: request.pipelineId, sequence: request.sequence, type: 'failed' });
+                        post(createFailedResponse(error, request.pipelineId, request.sequence));
                     }
                 );
                 return;

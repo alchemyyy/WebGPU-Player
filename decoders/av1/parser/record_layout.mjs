@@ -9,7 +9,8 @@ import { dirname, resolve } from 'node:path';
 
 const USAGE = 'Usage: node record_layout.mjs <decoder WGSL> <output header>';
 const CONSTANT_PATTERN = /^const ((?:RECORD|ERROR)_[A-Z0-9_]+): u32 = (\d+)u;$/;
-const ERROR_DIRECTIVE_PATTERN = /^\/\/! error:\s*(\d+)\s*,\s*([A-Za-z]\w*)\s*$/;
+// `//! error: <code>, <name>[, <recovery>]`; the recovery is the engine's, which the parser's constants do not carry
+const ERROR_DIRECTIVE_PATTERN = /^\/\/! error:\s*(\d+)\s*,\s*([A-Za-z]\w*)\s*(?:,\s*[a-z]+\s*)?$/;
 const PACKET_DIRECTIVE_PREFIX = '//! packet:';
 const DECIMAL_PATTERN = /^\d+$/;
 const WHITESPACE_PATTERN = /\s+/;
@@ -47,7 +48,7 @@ function readConstants(lines) {
     return constants;
 }
 
-/** Returns each `//! error: <code>, <name>` line's constant name and code. */
+/** Returns each `//! error: <code>, <name>[, <recovery>]` line's constant name and code. */
 function readErrorDirectives(lines) {
     const directives = new Map();
     for (const line of lines) {

@@ -10,6 +10,7 @@ import {
 } from '../color/ColorMetadata';
 import { getDolbyVisionEnhancementDimensions } from './DolbyVisionGeometry';
 import { isDolbyVisionDualLayerProfile } from '../demux/dolby-vision/DolbyVisionProfiles';
+import { UNKNOWN_VIDEO_STREAM_FIELDS, type VideoScan, type VideoStreamFields } from '../decode/video/VideoFields';
 
 type MediaStreamMetadata = {
     AverageFrameRate?: unknown
@@ -26,6 +27,8 @@ type MediaStreamMetadata = {
     DvVersionMajor?: unknown
     DvVersionMinor?: unknown
     ElPresentFlag?: unknown
+    /** The field order in ffprobe's names, which a host that knows it adds: progressive, tt, bb, tb, or bt */
+    FieldOrder?: unknown
     Hdr10PlusPresentFlag?: unknown
     IsInterlaced?: unknown
     RealFrameRate?: unknown
@@ -885,4 +888,50 @@ export function isKnownSDRPresentationInput(options: unknown): boolean {
     return videoStreams !== null
         && videoTrackOrdinal !== null
         && isKnownSDRVideoStream(videoStreams[videoTrackOrdinal]);
+}
+
+/**
+ * The scans of ffprobe's field order names, normalized: tb and bb show the bottom field first, tt and bt the top field.
+ * 'tb' is "top coded first, bottom displayed first", as FFmpeg's AVFieldOrder names it.
+ */
+const FIELD_ORDER_NAME_SCANS: ReadonlyMap<string, VideoScan> = new Map<string, VideoScan>([
+    [ 'BB', 'bottom-first' ],
+    [ 'BT', 'top-first' ],
+    [ 'PROGRESSIVE', 'progressive' ],
+    [ 'TB', 'bottom-first' ],
+    [ 'TT', 'top-first' ]
+]);
+
+/** Returns a stream's scan: its FieldOrder when the host names one, else its IsInterlaced flag, else unknown. */
+function parseVideoStreamScan(videoStream: MediaStreamMetadata): VideoScan {
+    const fieldOrderScan = FIELD_ORDER_NAME_SCANS.get(normalizeMetadataToken(videoStream.FieldOrder) ?? '');
+    if (fieldOrderScan !== undefined) {
+        return fieldOrderScan;
+    }
+    switch (videoStream.IsInterlaced) {
+        case true:
+            return 'interlaced';
+        case false:
+            return 'progressive';
+        default:
+            return 'unknown';
+    }
+}
+
+/**
+ * Returns what the presented video stream declares of its fields: its scan, from the host's FieldOrder or IsInterlaced, and its Width and Height,
+ * the visible size its frames decode at, which a deinterlacing plan runs at.
+ */
+export function getPresentationVideoFields(options: unknown): VideoStreamFields {
+    const videoStreams = getPlaybackVideoStreams(options);
+    const videoTrackOrdinal = getPresentationVideoTrackOrdinal(options);
+    if (videoStreams === null || videoTrackOrdinal === null) {
+        return UNKNOWN_VIDEO_STREAM_FIELDS;
+    }
+    const videoStream = videoStreams[videoTrackOrdinal];
+    return {
+        frameHeight: getPositiveSafeInteger(videoStream.Height),
+        frameWidth: getPositiveSafeInteger(videoStream.Width),
+        scan: parseVideoStreamScan(videoStream)
+    };
 }

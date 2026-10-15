@@ -6,24 +6,28 @@ import {
     SHADER_F16_FEATURE,
     SUBGROUPS_FEATURE
 } from 'webgpu-player/presentation/WebGPUConstants';
+import { PICTURE_FIELDS_WORD } from 'webgpu-player/decode/video/VideoFields';
 import { GPU_DECODER_OUTPUT_FORMATS, type GPUDecoderOutputFormat } from 'webgpu-player/decode/video/gpu/GPUDecodeFormats';
 import { parseGPUDecoderManifest } from 'webgpu-player/decode/video/gpu/GPUDecoderManifest';
 import {
     createGPUDecoderBindGroupLayoutEntries,
     createGPUDecoderModule,
     createGPUDecoderPrelude,
+    getGPUDecoderErrorRecoveryRank,
     GPU_DECODER_BINDINGS,
     GPU_DECODER_FIRST_BUFFER_BINDING,
     GPU_DECODER_PACKET_UNIFORM_BYTE_LENGTH,
     GPU_DECODER_RESERVED_IDENTIFIERS,
     GPU_DECODER_STATUS_BYTE_LENGTH,
-    GPU_DECODER_STATUS_FREED_SLOT_MASK_BYTE_OFFSET,
+    GPU_DECODER_STATUS_PACKET_BLOCK_BYTE_LENGTH,
+    GPU_DECODER_STATUS_PACKET_BLOCK_BYTE_OFFSET,
+    GPU_DECODER_STATUS_WORDS,
     GPU_DECODER_STREAM_UNIFORM_BYTE_LENGTH,
     readGPUDecoderStatus,
     writeGPUDecoderPacketUniform,
     writeGPUDecoderStreamUniform
 } from 'webgpu-player/decode/video/gpu/GPUDecoderPrelude';
-import type { GPUDecoderManifest } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
+import { GPU_DECODER_ERROR_RECOVERIES, type GPUDecoderManifest } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
 
 import { installWebGPUGlobals } from './webGPUGlobals';
 
@@ -46,6 +50,32 @@ const CONFIG_BYTE_LENGTH = 38;
 const EIGHT_BIT_DEPTH = 8;
 const ERROR_CODE = 7;
 const FREED_SLOT_MASK = 0b1010;
+// A recoverable picture error word and a reported interlaced, top field first fields word
+const PICTURE_ERROR_WORD = 0x0900_000C;
+const PICTURE_FIELDS = PICTURE_FIELDS_WORD.reportedBit | PICTURE_FIELDS_WORD.interlacedBit | PICTURE_FIELDS_WORD.topFieldFirstBit;
+// Error lines of each recovery and a fatal one, as a header declares them
+const CONCEALED_ERROR_CODES = [ 9, 12 ];
+const DROPPED_ERROR_CODE = 4;
+const RESYNCED_ERROR_CODE = 19;
+const FATAL_ERROR_CODE = 2;
+const RECOVERY_ERROR_LINES = [
+    `//! error: ${FATAL_ERROR_CODE}, pictureSize`,
+    `//! error: ${DROPPED_ERROR_CODE}, pictureHeader, drop`,
+    `//! error: ${CONCEALED_ERROR_CODES[0]}, sliceHeader, conceal`,
+    `//! error: ${CONCEALED_ERROR_CODES[1]}, motionType, conceal`,
+    `//! error: ${RESYNCED_ERROR_CODE}, bitsExhausted, resync`
+];
+const STATUS_HELPER_NAMES = [ 'getDecodeErrorRecovery', 'reportDecodeError', 'reportPictureFields', 'releaseReferenceSlot', 'reportHeaderFacts' ];
+const STATUS_CONSTANT_NAMES = [
+    'DECODE_ERROR_RECOVERY_FATAL',
+    'DECODE_ERROR_RECOVERY_CONCEAL',
+    'DECODE_ERROR_RECOVERY_DROP',
+    'DECODE_ERROR_RECOVERY_RESYNC',
+    'PICTURE_FIELDS_REPORTED_BIT',
+    'PICTURE_FIELDS_INTERLACED_BIT',
+    'PICTURE_FIELDS_TOP_FIELD_FIRST_BIT',
+    'PICTURE_FIELDS_REPEAT_FIRST_FIELD_BIT'
+];
 const HEADER_WIDTH = 1920;
 const HEADER_HEIGHT = 1088;
 const HEADER_BIT_DEPTH = 10;
@@ -131,6 +161,43 @@ function removeFormatConstants(prelude: string): string[] {
     return prelude.split('\n').filter(line => !FORMAT_CONSTANT_NAMES.some(name => line.startsWith(`const ${name}:`)));
 }
 
+/** Returns a struct's member names in order. */
+function getStructMemberNames(prelude: string, structName: string): string[] {
+    const structMatch = new RegExp(String.raw`struct ${structName} \{([^}]*)\}`).exec(prelude);
+    if (!structMatch) {
+        throw new Error(`The prelude declares no struct ${structName}`);
+    }
+    return structMatch[1].split('\n').map(text => text.trim()).filter(text => text.length > 0).map(member => member.split(':')[0]);
+}
+
+/** Returns the value a prelude constant is declared with. */
+function getConstantValue(prelude: string, name: string): number {
+    const match = new RegExp(String.raw`const ${name}: u32 = (\d+)u;`).exec(prelude);
+    if (!match) {
+        throw new Error(`The prelude declares no constant ${name}`);
+    }
+    return Number(match[1]);
+}
+
+/** Returns the recovery rank constant a case of getDecodeErrorRecovery returns for a code, or the default's for a code no case names. */
+function getRecoveryCaseResult(prelude: string, code: number): string {
+    const lookupMatch = /fn getDecodeErrorRecovery\(code: u32\) -> u32 \{([\s\S]*?)\n\}/.exec(prelude);
+    if (!lookupMatch) {
+        throw new Error('The prelude declares no getDecodeErrorRecovery');
+    }
+    for (const caseMatch of lookupMatch[1].matchAll(/case ([\du, ]+): \{\s+return (\w+);/g)) {
+        const codes = caseMatch[1].split(',').map(text => Number.parseInt(text.trim(), 10));
+        if (codes.includes(code)) {
+            return caseMatch[2];
+        }
+    }
+    const defaultMatch = /default: \{\s+return (\w+);/.exec(lookupMatch[1]);
+    if (!defaultMatch) {
+        throw new Error('getDecodeErrorRecovery has no default');
+    }
+    return defaultMatch[1];
+}
+
 describe('createGPUDecoderPrelude', () => {
     let restoreGlobals: () => void = (): void => undefined;
 
@@ -172,8 +239,66 @@ describe('createGPUDecoderPrelude', () => {
         expect(countStructWords(prelude, 'GPUDecodePacket') * BYTES_PER_WORD).toBe(GPU_DECODER_PACKET_UNIFORM_BYTE_LENGTH);
         expect(countStructWords(prelude, 'GPUDecodeStream') * BYTES_PER_WORD).toBe(GPU_DECODER_STREAM_UNIFORM_BYTE_LENGTH);
         expect(countStructWords(prelude, 'GPUDecodeStatus') * BYTES_PER_WORD).toBe(GPU_DECODER_STATUS_BYTE_LENGTH);
-        expect(prelude).toMatch(/struct GPUDecodeStatus \{\s+errorCode: atomic<u32>,\s+freedSlotMask: atomic<u32>,/);
-        expect(GPU_DECODER_STATUS_FREED_SLOT_MASK_BYTE_OFFSET).toBe(BYTES_PER_WORD);
+    });
+
+    it('declares the status members at the word indices the engine reads, with the packet\'s block from the freed slots to the end', () => {
+        const prelude = createGPUDecoderPrelude(createManifest(EIGHT_BIT_FORMAT), EIGHT_BIT_FORMAT);
+
+        const memberNames = getStructMemberNames(prelude, 'GPUDecodeStatus');
+        expect(memberNames.map((name: string): number => GPU_DECODER_STATUS_WORDS[name as keyof typeof GPU_DECODER_STATUS_WORDS])).toEqual(
+            memberNames.map((_name: string, wordIndex: number): number => wordIndex)
+        );
+        expect(Object.keys(GPU_DECODER_STATUS_WORDS)).toHaveLength(memberNames.length);
+        expect(prelude).toMatch(/freedSlotMask: atomic<u32>,\s+pictureError: atomic<u32>,\s+pictureFields: u32,\s+\}/);
+        expect(GPU_DECODER_STATUS_PACKET_BLOCK_BYTE_OFFSET).toBe(GPU_DECODER_STATUS_WORDS.freedSlotMask * BYTES_PER_WORD);
+        expect(GPU_DECODER_STATUS_PACKET_BLOCK_BYTE_OFFSET + GPU_DECODER_STATUS_PACKET_BLOCK_BYTE_LENGTH).toBe(GPU_DECODER_STATUS_BYTE_LENGTH);
+    });
+
+    it('generates the recovery of each error code from the header, every other code fatal, ranked fatal, conceal, drop, resync', () => {
+        const prelude = createGPUDecoderPrelude(createManifest(EIGHT_BIT_FORMAT, RECOVERY_ERROR_LINES), EIGHT_BIT_FORMAT);
+
+        expect(CONCEALED_ERROR_CODES.map((code: number): string => getRecoveryCaseResult(prelude, code))).toEqual([
+            'DECODE_ERROR_RECOVERY_CONCEAL',
+            'DECODE_ERROR_RECOVERY_CONCEAL'
+        ]);
+        expect(getRecoveryCaseResult(prelude, DROPPED_ERROR_CODE)).toBe('DECODE_ERROR_RECOVERY_DROP');
+        expect(getRecoveryCaseResult(prelude, RESYNCED_ERROR_CODE)).toBe('DECODE_ERROR_RECOVERY_RESYNC');
+        expect(getRecoveryCaseResult(prelude, FATAL_ERROR_CODE)).toBe('DECODE_ERROR_RECOVERY_FATAL');
+        expect(getConstantValue(prelude, 'DECODE_ERROR_RECOVERY_FATAL')).toBe(getGPUDecoderErrorRecoveryRank(null));
+        expect(GPU_DECODER_ERROR_RECOVERIES.map(recovery => getConstantValue(prelude, `DECODE_ERROR_RECOVERY_${recovery.toUpperCase()}`))).toEqual([ 1, 2, 3 ]);
+    });
+
+    it('makes every code fatal in a header that declares no recovery', () => {
+        const prelude = createGPUDecoderPrelude(createManifest(EIGHT_BIT_FORMAT, [ `//! error: ${FATAL_ERROR_CODE}, pictureSize` ]), EIGHT_BIT_FORMAT);
+
+        expect(prelude).not.toMatch(/fn getDecodeErrorRecovery[\s\S]*?case /);
+        expect(getRecoveryCaseResult(prelude, FATAL_ERROR_CODE)).toBe('DECODE_ERROR_RECOVERY_FATAL');
+    });
+
+    it('routes a fatal word to the error code and a recoverable one to the picture\'s most severe word', () => {
+        const prelude = createGPUDecoderPrelude(createManifest(EIGHT_BIT_FORMAT, RECOVERY_ERROR_LINES), EIGHT_BIT_FORMAT);
+
+        const helper = /fn reportDecodeError\(word: u32\) \{[\s\S]*?\n\}/.exec(prelude)?.[0] ?? '';
+        expect(helper).toContain('atomicMax(&status.errorCode, errorWord);');
+        expect(helper).toContain('atomicCompareExchangeWeak(&status.pictureError, current, errorWord)');
+        expect(helper).toContain('currentRecovery > recovery || (currentRecovery == recovery && current >= errorWord)');
+    });
+
+    it('declares the picture fields bits the decoders and parsers share', () => {
+        const prelude = createGPUDecoderPrelude(createManifest(EIGHT_BIT_FORMAT), EIGHT_BIT_FORMAT);
+
+        expect([
+            getConstantValue(prelude, 'PICTURE_FIELDS_REPORTED_BIT'),
+            getConstantValue(prelude, 'PICTURE_FIELDS_INTERLACED_BIT'),
+            getConstantValue(prelude, 'PICTURE_FIELDS_TOP_FIELD_FIRST_BIT'),
+            getConstantValue(prelude, 'PICTURE_FIELDS_REPEAT_FIRST_FIELD_BIT')
+        ]).toEqual([
+            PICTURE_FIELDS_WORD.reportedBit,
+            PICTURE_FIELDS_WORD.interlacedBit,
+            PICTURE_FIELDS_WORD.topFieldFirstBit,
+            PICTURE_FIELDS_WORD.repeatFirstFieldBit
+        ]);
+        expect(prelude).toContain('fn reportPictureFields(interlaced: bool, topFieldFirst: bool, repeatFirstField: bool)');
     });
 
     it.each(FORMAT_CONSTANTS_CASES)('declares the %s session\'s format constants once each', (
@@ -257,7 +382,9 @@ describe('createGPUDecoderPrelude', () => {
             'GPUDecodeStream',
             'writeOutputSamples8',
             'writeOutputSamples16',
-            ...FORMAT_CONSTANT_NAMES
+            ...FORMAT_CONSTANT_NAMES,
+            ...STATUS_HELPER_NAMES,
+            ...STATUS_CONSTANT_NAMES
         ];
 
         for (const name of preludeNames) {
@@ -333,9 +460,22 @@ describe('decoder uniform and status layouts', () => {
         ]);
     });
 
-    it('reads the error code, the freed slots, and reported header facts', () => {
+    it('reads the error code, the header facts, and the packet\'s freed slots, picture error, and picture fields', () => {
         const words = new Uint32Array(GPU_DECODER_STATUS_BYTE_LENGTH / BYTES_PER_WORD);
-        words.set([ ERROR_CODE, FREED_SLOT_MASK, 1, HEADER_WIDTH, HEADER_HEIGHT, HEADER_BIT_DEPTH, 0, 0, HEADER_WIDTH, HEADER_VISIBLE_HEIGHT ]);
+        words.set([
+            ERROR_CODE,
+            1,
+            HEADER_WIDTH,
+            HEADER_HEIGHT,
+            HEADER_BIT_DEPTH,
+            0,
+            0,
+            HEADER_WIDTH,
+            HEADER_VISIBLE_HEIGHT,
+            FREED_SLOT_MASK,
+            PICTURE_ERROR_WORD,
+            PICTURE_FIELDS
+        ]);
 
         expect(readGPUDecoderStatus(words)).toEqual({
             errorCode: ERROR_CODE,
@@ -345,13 +485,15 @@ describe('decoder uniform and status layouts', () => {
                 codedHeight: HEADER_HEIGHT,
                 codedWidth: HEADER_WIDTH,
                 visibleRectangle: { height: HEADER_VISIBLE_HEIGHT, width: HEADER_WIDTH, x: 0, y: 0 }
-            }
+            },
+            pictureError: PICTURE_ERROR_WORD,
+            pictureFields: PICTURE_FIELDS
         });
     });
 
     it('reports no header facts until the decoder marks them valid', () => {
         const words = new Uint32Array(GPU_DECODER_STATUS_BYTE_LENGTH / BYTES_PER_WORD);
-        words[3] = HEADER_WIDTH;
+        words[GPU_DECODER_STATUS_WORDS.headerWidth] = HEADER_WIDTH;
 
         expect(readGPUDecoderStatus(words).headerFacts).toBeNull();
         expect(() => readGPUDecoderStatus(new Uint32Array(1))).toThrow(`status: ${BYTES_PER_WORD} < ${GPU_DECODER_STATUS_BYTE_LENGTH}`);

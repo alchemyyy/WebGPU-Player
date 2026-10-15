@@ -3,50 +3,28 @@
 //! decoder: video
 //! accepts: codec in [vc1, wmv3], stream.width <= 4096, stream.height <= 4096, stream.width * stream.height <= 4194304, stream.bitDepth == 8
 //! output: I420
-//! error: 1, configuration
-//! error: 2, unsupportedProfile
-//! error: 3, unsupportedFeature
-//! error: 4, pictureSize
-//! error: 5, sequenceHeader
-//! error: 6, entryPoint
-//! error: 7, pictureHeader
-//! error: 8, bitplane
-//! error: 9, startCodes
-//! error: 10, parseUnits
-//! error: 11, macroblockLayer
-//! error: 12, invalidCode
-//! error: 13, bitsExhausted
-//! error: 14, packetSize
-//! error: 15, missingReference
+//! parser: 2
 //! references: 2
-//! reorder: 7
-//! packet: 8 MiB
-//! state: 728144
-//! buffer: pictureState, 11171084, indirect
-//! buffer: macroblocks, 7340032
+//! reorder: 1
+//! packet: 32 MiB
+//! state: 44
+//! buffer: pictureState, 24864
+//! buffer: macroblocks, 4194304
 //! buffer: blockData, 50331648
-//! dispatch: loadTables0, 128
-//! dispatch: loadTables1, 128
-//! dispatch: loadTables2, 128
-//! dispatch: loadTables3, 128
-//! dispatch: loadTables4, 128
-//! dispatch: loadTables5, 128
-//! dispatch: preparePicture, 1
-//! dispatch: findStartCodes, indirect pictureState
-//! dispatch: prefixEscapes, 1
-//! dispatch: unescapePacket, indirect pictureState
+//! error: 1, configuration
+//! error: 2, unsupportedFeature
+//! error: 3, pictureSize
+//! error: 4, sequenceHeader
+//! error: 5, pictureHeader, resync
+//! error: 6, bitplane, resync
+//! error: 7, startCodes, resync
+//! error: 8, macroblockLayer, resync
+//! error: 9, bitsExhausted, resync
+//! error: 10, recordInvalid
+//! error: 11, pictureTooShort, resync
 //! dispatch: beginPicture, 1
-//! dispatch: decodeSimpleIntraSlices, indirect pictureState
-//! dispatch: decodeAdvancedIntraSlices, indirect pictureState
-//! dispatch: decodePSlices, indirect pictureState
-//! dispatch: decodeFieldPSlices, indirect pictureState
-//! dispatch: decodeFramePSlices, indirect pictureState
-//! dispatch: decodeBSlices, indirect pictureState
-//! dispatch: decodeFieldBSlices, indirect pictureState
-//! dispatch: decodeFrameBSlices, indirect pictureState
-//! dispatch: decodeX8Slices, indirect pictureState
+//! dispatch: expandRecord, ceil(stream.width / 16), ceil(stream.height / 16)
 //! dispatch: copyPicture, ceil(stream.width / 16), ceil(stream.height / 16)
-//! dispatch: predictIntraBlocks, 1
 //! dispatch: reconstruct, ceil(stream.width / 16), ceil(stream.height / 16)
 //! dispatch: overlapVerticalEdges, ceil(stream.width / 16), ceil(stream.height / 16)
 //! dispatch: overlapHorizontalEdges, ceil(stream.width / 16), ceil(stream.height / 16)
@@ -58,7 +36,6 @@
 //! dispatch: filterFrameHorizontalLines, ceil(stream.width / 64)
 //! dispatch: filterFrameVerticalLines, ceil(stream.height / 128)
 //! dispatch: nextPass, 1
-//! dispatch: predictIntraBlocks, 1
 //! dispatch: reconstruct, ceil(stream.width / 16), ceil(stream.height / 16)
 //! dispatch: overlapVerticalEdges, ceil(stream.width / 16), ceil(stream.height / 16)
 //! dispatch: overlapHorizontalEdges, ceil(stream.width / 16), ceil(stream.height / 16)
@@ -69,3569 +46,276 @@
 //! dispatch: filterVerticalSubblockEdges, ceil(stream.width / 16), ceil(stream.height / 16)
 //! dispatch: finishPicture, 1
 
-// The VC-1 decoder: Simple, Main, and Advanced profile VC-1 and WMV3, IntraX8 included, entirely in compute shaders,
-// from the container's packets and codec private data alone. It mirrors FFmpeg's vc1 decoder step for step, so its frames match FFmpeg's.
-// The loadTables passes copy the code lookups below into the state buffer; every later pass reads them there.
+// The VC-1 decoder: Simple, Main, and Advanced profile VC-1 and WMV3, IntraX8 included, in compute shaders.
+// Its packets are the GPU records its CPU parser (parser/) makes of each picture: the parser parses the headers and the macroblock layer,
+// predicts intra blocks, and decodes IntraX8 pictures, so these passes set up the picture from its record, then reconstruct, smooth,
+// and filter it. Each step mirrors FFmpeg's vc1 decoder, so its frames match FFmpeg's.
+// A field picture's frame runs the passes twice, once per field; nextPass moves every stage on to the second field.
 
-// Layout, limits, and error codes
-const S_CONFIGURED: u32 = 0u;
-const S_SEQUENCE_VALID: u32 = 1u;
-const S_ENTRY_POINT_VALID: u32 = 2u;
-const S_PROFILE: u32 = 3u;
-const S_LEVEL: u32 = 4u;
-const S_CHROMA_FORMAT: u32 = 5u;
-const S_LOOP_FILTER: u32 = 6u;
-const S_RES_X8: u32 = 7u;
-const S_MULTIRES: u32 = 8u;
-const S_RES_FASTTX: u32 = 9u;
-const S_FASTUVMC: u32 = 10u;
-const S_EXTENDED_MV: u32 = 11u;
-const S_DQUANT: u32 = 12u;
-const S_VSTRANSFORM: u32 = 13u;
-const S_OVERLAP: u32 = 14u;
-const S_RESYNC_MARKER: u32 = 15u;
-const S_RANGERED: u32 = 16u;
-const S_MAX_B_FRAMES: u32 = 17u;
-const S_QUANTIZER_MODE: u32 = 18u;
-const S_FINTERPFLAG: u32 = 19u;
-const S_RES_SPRITE: u32 = 20u;
-const S_RES_RTM_FLAG: u32 = 21u;
-const S_POSTPROCFLAG: u32 = 22u;
-const S_MAX_CODED_WIDTH: u32 = 23u;
-const S_MAX_CODED_HEIGHT: u32 = 24u;
-const S_BROADCAST: u32 = 25u;
-const S_INTERLACE: u32 = 26u;
-const S_TFCNTRFLAG: u32 = 27u;
-const S_PSF: u32 = 28u;
-const S_HRD_PARAM_FLAG: u32 = 29u;
-const S_HRD_LEAKY_BUCKETS: u32 = 30u;
-const S_BROKEN_LINK: u32 = 31u;
-const S_CLOSED_ENTRY: u32 = 32u;
-const S_PANSCANFLAG: u32 = 33u;
-const S_REFDIST_FLAG: u32 = 34u;
-const S_EXTENDED_DMV: u32 = 35u;
-const S_RANGE_MAPY_FLAG: u32 = 36u;
-const S_RANGE_MAPY: u32 = 37u;
-const S_RANGE_MAPUV_FLAG: u32 = 38u;
-const S_RANGE_MAPUV: u32 = 39u;
-const S_CODED_WIDTH: u32 = 40u;
-const S_CODED_HEIGHT: u32 = 41u;
-const S_MB_WIDTH: u32 = 42u;
-const S_MB_HEIGHT: u32 = 43u;
-const S_RND: u32 = 44u;
-const S_MVRANGE: u32 = 45u;
-const S_LAST_SLOT: u32 = 46u;
-const S_NEXT_SLOT: u32 = 47u;
-const S_LAST_INTERLACED: u32 = 48u;
-const S_NEXT_INTERLACED: u32 = 49u;
-const S_NEXT_FIELD_PICTURE: u32 = 50u;
-const S_LUT_LAST: u32 = 51u;
-const S_LUT_NEXT: u32 = 52u;
-const S_LAST_USE_IC: u32 = 53u;
-const S_NEXT_USE_IC: u32 = 54u;
-const S_AUX_USE_IC: u32 = 55u;
-const S_ANCHOR_MOTION_VALID: u32 = 56u;
-const S_PICTURE_COUNT: u32 = 57u;
-const S_HEADER_FACTS_REPORTED: u32 = 58u;
-const S_TFF: u32 = 59u;
-const S_RPTFRM: u32 = 60u;
-const S_RFF: u32 = 61u;
-const S_DMVRANGE: u32 = 62u;
-const S_REFDIST: u32 = 63u;
-const S_DQPROFILE: u32 = 64u;
-const S_DQSBEDGE: u32 = 65u;
-const S_DQBILEVEL: u32 = 66u;
-const S_LUTS: u32 = 128u;
-const LUT_SET_WORDS: u32 = 1024u;
-const LUT_TABLE_WORDS: u32 = 256u;
-const LUT_AUX: u32 = 2u;
-const S_ANCHOR_MOTION: u32 = 3200u;
-const ANCHOR_WORDS_PER_BLOCK: u32 = 2u;
-const S_TABLES: u32 = 134272u;
-const NO_SLOT: u32 = 255u;
-const F_ARGUMENTS_X: u32 = 0u;
-const F_ARGUMENTS_Y: u32 = 1u;
-const F_ARGUMENTS_Z: u32 = 2u;
-const F_SCAN_MODE: u32 = 3u;
-const F_SCAN_LENGTH: u32 = 4u;
-const F_STREAM_LENGTH: u32 = 5u;
-const F_UNIT_COUNT: u32 = 6u;
-const F_PASS_COUNT: u32 = 7u;
-const F_CURRENT_PASS: u32 = 8u;
-const F_FRAME_TYPE: u32 = 9u;
-const F_RELEASED_ANCHOR: u32 = 10u;
-const F_SKIP_COPY: u32 = 11u;
-const P_VALID: u32 = 0u;
-const P_TYPE: u32 = 1u;
-const P_FCM: u32 = 2u;
-const P_FIELD_MODE: u32 = 3u;
-const P_SECOND_FIELD: u32 = 4u;
-const P_CURRENT_FIELD_TYPE: u32 = 5u;
-const P_SKIPPED: u32 = 6u;
-const P_PQ: u32 = 7u;
-const P_PQINDEX: u32 = 8u;
-const P_HALFPQ: u32 = 9u;
-const P_PQUANTIZER: u32 = 10u;
-const P_ALTPQ: u32 = 11u;
-const P_DQUANTFRM: u32 = 12u;
-const P_DQPROFILE: u32 = 13u;
-const P_DQSBEDGE: u32 = 14u;
-const P_DQBILEVEL: u32 = 15u;
-const P_MVRANGE: u32 = 16u;
-const P_DMVRANGE: u32 = 17u;
-const P_RANGE_X: u32 = 18u;
-const P_RANGE_Y: u32 = 19u;
-const P_K_X: u32 = 20u;
-const P_K_Y: u32 = 21u;
-const P_MV_MODE: u32 = 22u;
-const P_MV_MODE2: u32 = 23u;
-const P_QUARTER_SAMPLE: u32 = 24u;
-const P_MSPEL: u32 = 25u;
-const P_MV_TABLE_INDEX: u32 = 26u;
-const P_CBPTAB: u32 = 27u;
-const P_TTMBF: u32 = 28u;
-const P_TTFRM: u32 = 29u;
-const P_TT_INDEX: u32 = 30u;
-const P_C_AC_TABLE_INDEX: u32 = 31u;
-const P_Y_AC_TABLE_INDEX: u32 = 32u;
-const P_DC_TABLE_INDEX: u32 = 33u;
-const P_CODINGSET: u32 = 34u;
-const P_CODINGSET2: u32 = 35u;
-const P_RND: u32 = 36u;
-const P_CONDOVER: u32 = 37u;
-const P_FOURMVSWITCH: u32 = 38u;
-const P_INTCOMP: u32 = 39u;
-const P_MBMODETAB: u32 = 40u;
-const P_IMVTAB: u32 = 41u;
-const P_ICBPTAB: u32 = 42u;
-const P_TWOMVBPTAB: u32 = 43u;
-const P_FOURMVBPTAB: u32 = 44u;
-const P_NUMREF: u32 = 45u;
-const P_REFFIELD: u32 = 46u;
-const P_REFDIST: u32 = 47u;
-const P_FRFD: u32 = 48u;
-const P_BRFD: u32 = 49u;
-const P_BFRACTION: u32 = 50u;
-const P_RANGEREDFRM: u32 = 51u;
-const P_RESPIC: u32 = 52u;
-const P_X8_TYPE: u32 = 53u;
-const P_MVTYPE_PLANE: u32 = 54u;
-const P_SKIP_PLANE: u32 = 55u;
-const P_DIRECT_PLANE: u32 = 56u;
-const P_FORWARD_PLANE: u32 = 57u;
-const P_ACPRED_PLANE: u32 = 58u;
-const P_OVERFLAGS_PLANE: u32 = 59u;
-const P_FIELDTX_PLANE: u32 = 60u;
-const P_FORWARD_SLOT: u32 = 61u;
-const P_BACKWARD_SLOT: u32 = 62u;
-const P_FORWARD_INTERLACED: u32 = 63u;
-const P_BACKWARD_INTERLACED: u32 = 64u;
-const P_LAST_USE_IC: u32 = 65u;
-const P_NEXT_USE_IC: u32 = 66u;
-const P_CURRENT_USE_IC: u32 = 67u;
-const P_LUT_LAST: u32 = 68u;
-const P_LUT_NEXT: u32 = 69u;
-const P_LUT_CURRENT: u32 = 70u;
-const P_MB_ROWS: u32 = 71u;
-const P_ROW_OFFSET: u32 = 72u;
-const P_UNSIGNED_INTRA: u32 = 73u;
-const P_OVERLAP_ACTIVE: u32 = 74u;
-const P_LOOP_FILTER: u32 = 75u;
-const P_TFF: u32 = 76u;
-const P_BACKWARD_FIELD_PICTURE: u32 = 77u;
-const P_UVSAMP: u32 = 78u;
-const P_POSTPROC: u32 = 79u;
-const P_REF_FIELD_TYPE_FORWARD: u32 = 80u;
-const U_START_BIT: u32 = 81u;
-const U_SEGMENT_END_BIT: u32 = 82u;
-const U_START_ROW: u32 = 83u;
-const U_END_ROW: u32 = 84u;
-const U_PASS: u32 = 85u;
-const F_MARKERS: u32 = 64u;
-const MAXIMUM_MARKERS: u32 = 1024u;
-const F_SCAN_SUMMARIES: u32 = 1088u;
-const F_MARKER_MASKS: u32 = 9280u;
-const F_ESCAPE_MASKS: u32 = 271424u;
-const F_ESCAPE_TOTALS: u32 = 533568u;
-const F_ESCAPE_PREFIX: u32 = 537664u;
-const F_STREAM: u32 = 695616u;
-const F_PASSES: u32 = 541760u;
-const PASS_WORDS: u32 = 128u;
-const F_UNITS: u32 = 542016u;
-const UNIT_WORDS: u32 = 128u;
-const F_PASS_LUTS: u32 = 673088u;
-const PASS_LUT_WORDS: u32 = 3072u;
-const MAXIMUM_PARSE_UNITS: u32 = 1024u;
-const F_BITPLANES: u32 = 679232u;
-const SCAN_BYTES_PER_INVOCATION: u32 = 32u;
-const SCAN_WORKGROUP_SIZE: u32 = 64u;
-const PREFIX_WORKGROUP_SIZE: u32 = 256u;
-const INTRA_WORKGROUP_SIZE: u32 = 256u;
-const PREFIX_GROUPS_PER_INVOCATION: u32 = 16u;
-const M_FLAGS: u32 = 0u;
-const M_CBP: u32 = 1u;
-const M_TT: u32 = 2u;
-const M_IS_INTRA: u32 = 3u;
-const M_MV0_0: u32 = 4u;
-const M_MV0_1: u32 = 5u;
-const M_MV0_2: u32 = 6u;
-const M_MV0_3: u32 = 7u;
-const M_MV1_0: u32 = 8u;
-const M_MV1_1: u32 = 9u;
-const M_MV1_2: u32 = 10u;
-const M_MV1_3: u32 = 11u;
-const M_FIELD_FLAGS: u32 = 12u;
-const M_LOOP_FILTER_CHROMA_MV: u32 = 13u;
-const M_TRANSFORM_01: u32 = 14u;
-const M_TRANSFORM_23: u32 = 15u;
-const M_TRANSFORM_45: u32 = 16u;
-const M_COUNTS_0123: u32 = 17u;
-const M_COUNTS_45: u32 = 18u;
-const M_QSCALE: u32 = 19u;
-const M_OPERATIONS: u32 = 20u;
-const M_LUMA_OPS: u32 = 21u;
-const M_CHROMA_OPS: u32 = 37u;
-const LUMA_OPERATION_SLOTS: u32 = 8u;
-const OPERATION_WORDS: u32 = 2u;
-const MACROBLOCK_WORDS: u32 = 64u;
-const B_PREDICTION: u32 = 1048576u;
-const PREDICTION_WORDS: u32 = 48u;
-const PREDICTION_WORDS_PER_BLOCK: u32 = 8u;
-const MAXIMUM_MACROBLOCKS: u32 = 16384u;
-const GRID_STRIDE_SHIFT: u32 = 10u;
-const COEFFICIENTS_PER_BLOCK: u32 = 64u;
-const B_INTRA_SAMPLES: u32 = 6291456u;
+// The GPU record the parser writes for each picture: its magic and version, its limits, and the word offsets of its fields.
+// parser/build.rs reads these RECORD_ declarations and the ERROR_ codes below, so the parser and the passes share one layout
+const RECORD_MAGIC: u32 = 1378960214u;
+const RECORD_VERSION: u32 = 1u;
+const RECORD_MAXIMUM_MACROBLOCKS: u32 = 16384u;
+// A field picture's frame has two passes, one per field
+const RECORD_MAXIMUM_PASSES: u32 = 2u;
+
+// Words of the record header; the passes' parameter blocks follow it in order
+const RECORD_HEADER_MAGIC: u32 = 0u;
+const RECORD_HEADER_VERSION: u32 = 1u;
+const RECORD_HEADER_KIND: u32 = 2u;
+const RECORD_HEADER_FRAME_TYPE: u32 = 3u;
+const RECORD_HEADER_FCM: u32 = 4u;
+const RECORD_HEADER_FIELD_MODE: u32 = 5u;
+const RECORD_HEADER_MB_WIDTH: u32 = 6u;
+const RECORD_HEADER_MB_HEIGHT: u32 = 7u;
+const RECORD_HEADER_CODED_WIDTH: u32 = 8u;
+const RECORD_HEADER_CODED_HEIGHT: u32 = 9u;
+const RECORD_HEADER_PROFILE: u32 = 10u;
+const RECORD_HEADER_RES_FASTTX: u32 = 11u;
+const RECORD_HEADER_OVERLAP: u32 = 12u;
+const RECORD_HEADER_PASS_COUNT: u32 = 13u;
+// Word offsets in the record: the lookup sets, the macroblock offset table, and an IntraX8 picture's samples; 0 for none
+const RECORD_HEADER_LOOKUPS: u32 = 14u;
+const RECORD_HEADER_MACROBLOCKS: u32 = 15u;
+const RECORD_HEADER_SAMPLES: u32 = 16u;
+const RECORD_HEADER_FLAGS: u32 = 17u;
+const RECORD_HEADER_PASSES: u32 = 24u;
+const RECORD_HEADER_WORDS: u32 = 72u;
+// The parser dropped every reference since the last record, as FFmpeg's decoder does when a coded size change reinitializes it
+const RECORD_FLAG_RESET_ANCHORS: u32 = 1u;
+
+// What a picture's record holds: its macroblocks, an IntraX8 picture's samples, or nothing for a skipped P picture
+const RECORD_KIND_MACROBLOCKS: u32 = 0u;
+const RECORD_KIND_INTRAX8: u32 = 1u;
+const RECORD_KIND_SKIPPED: u32 = 2u;
+
+// Words of a pass's parameter block: its picture header's fields the passes read, its rows, and its intensity compensation
+const RECORD_PASS_TYPE: u32 = 0u;
+const RECORD_PASS_FCM: u32 = 1u;
+const RECORD_PASS_FIELD_MODE: u32 = 2u;
+const RECORD_PASS_CURRENT_FIELD_TYPE: u32 = 3u;
+const RECORD_PASS_PQ: u32 = 4u;
+const RECORD_PASS_MSPEL: u32 = 5u;
+const RECORD_PASS_RND: u32 = 6u;
+const RECORD_PASS_RANGEREDFRM: u32 = 7u;
+const RECORD_PASS_CONDOVER: u32 = 8u;
+const RECORD_PASS_UNSIGNED_INTRA: u32 = 9u;
+const RECORD_PASS_LOOP_FILTER: u32 = 10u;
+// The frame row of the pass's first macroblock row, and its macroblock rows
+const RECORD_PASS_ROW_OFFSET: u32 = 11u;
+const RECORD_PASS_MB_ROWS: u32 = 12u;
+const RECORD_PASS_LAST_USE_IC: u32 = 13u;
+const RECORD_PASS_NEXT_USE_IC: u32 = 14u;
+const RECORD_PASS_CURRENT_USE_IC: u32 = 15u;
+const RECORD_PASS_LUT_LAST: u32 = 16u;
+const RECORD_PASS_LUT_NEXT: u32 = 17u;
+const RECORD_PASS_LUT_CURRENT: u32 = 18u;
+// Bit n set: the record carries lookup set n for the pass
+const RECORD_PASS_LOOKUP_SETS: u32 = 19u;
+const RECORD_PASS_WORDS: u32 = 24u;
+
+// The intensity compensation lookup sets: two anchor sets and the B pictures' auxiliary set, each four tables of 256 entries packed
+// four to a word: luma of the top and bottom fields, then chroma of each
+const RECORD_LOOKUP_SET_COUNT: u32 = 3u;
+const RECORD_LOOKUP_SET_WORDS: u32 = 256u;
+
+// Words of a macroblock's record: its fixed words, then the words of its present operations in slot order, then its blocks'
+// coefficient entries in block order
+const RECORD_MACROBLOCK_FLAGS: u32 = 0u;
+// Four coded subblock bits per block
+const RECORD_MACROBLOCK_CBP: u32 = 1u;
+// Four transform type bits per block, FFmpeg's ttblk
+const RECORD_MACROBLOCK_TT: u32 = 2u;
+// FFmpeg's is_intra bits, which the loop filter reads
+const RECORD_MACROBLOCK_IS_INTRA: u32 = 3u;
+// The four luma blocks' motion_val[0], packed
+const RECORD_MACROBLOCK_MV0: u32 = 4u;
+// FFmpeg's mv_f[0] in bits 0 to 5
+const RECORD_MACROBLOCK_FIELD_FLAGS: u32 = 8u;
+const RECORD_MACROBLOCK_LOOP_FILTER_CHROMA_MV: u32 = 9u;
+// A transform half-word per block, two to a word
+const RECORD_MACROBLOCK_TRANSFORMS: u32 = 10u;
+// A coefficient count byte per block: blocks 0 to 3, then 4 and 5
+const RECORD_MACROBLOCK_COUNTS: u32 = 13u;
+// Bit n set: operation slot n is present, the luma slots then the chroma slots
+const RECORD_MACROBLOCK_OPERATIONS: u32 = 15u;
+const RECORD_MACROBLOCK_FIXED_WORDS: u32 = 16u;
+
+// Bits of a macroblock's flags word the passes read: bits 0 to 5 are its intra blocks
+const RECORD_MACROBLOCK_FIELDTX_BIT: u32 = 128u;
+const RECORD_MACROBLOCK_OVERFLAG_BIT: u32 = 256u;
+// The macroblock sits in the first or the last row of its slice, which overlap smoothing and the loop filter do not cross
+const RECORD_MACROBLOCK_SLICE_TOP_BIT: u32 = 33554432u;
+const RECORD_MACROBLOCK_SLICE_BOTTOM_BIT: u32 = 67108864u;
+
+// Operation slots: eight luma slots, a put and an averaging slot per 8x8 block, then eight chroma slots alike
+const RECORD_LUMA_OPERATION_SLOTS: u32 = 8u;
+// The flags word and the packed motion vector of an operation
+const RECORD_OPERATION_WORDS: u32 = 2u;
+
+// Fields of a block's transform half-word: the transform type, the coded subblocks, the DC-only subblocks, and whether the block is coded
+const RECORD_TRANSFORM_TYPE_MASK: u32 = 3u;
+const RECORD_TRANSFORM_8X8: u32 = 0u;
+const RECORD_TRANSFORM_8X4: u32 = 1u;
+const RECORD_TRANSFORM_4X8: u32 = 2u;
+const RECORD_TRANSFORM_4X4: u32 = 3u;
+const RECORD_TRANSFORM_CODED_SHIFT: u32 = 2u;
+const RECORD_TRANSFORM_DC_ONLY_SHIFT: u32 = 6u;
+const RECORD_TRANSFORM_PRESENT_BIT: u32 = 1024u;
+
+// Transform types, FFmpeg's TT_*
+const RECORD_TT_8X8: u32 = 0u;
+const RECORD_TT_8X4_BOTTOM: u32 = 1u;
+const RECORD_TT_8X4_TOP: u32 = 2u;
+const RECORD_TT_8X4: u32 = 3u;
+const RECORD_TT_4X8_RIGHT: u32 = 4u;
+const RECORD_TT_4X8_LEFT: u32 = 5u;
+const RECORD_TT_4X8: u32 = 6u;
+const RECORD_TT_4X4: u32 = 7u;
+
+// Fields of a motion compensation operation's flags word
+const RECORD_OPERATION_PRESENT: u32 = 1u;
+const RECORD_OPERATION_KIND_SHIFT: u32 = 1u;
+const RECORD_OPERATION_AVERAGE: u32 = 8u;
+const RECORD_OPERATION_SOURCE_SHIFT: u32 = 4u;
+const RECORD_OPERATION_BOTTOM_FIELD: u32 = 64u;
+const RECORD_OPERATION_FIELD_MV: u32 = 128u;
+
+// Luma operation kinds: mc_1mv's 16x16 block, mc_4mv_luma's 8x8 block, and interp_mc's averaging 16x16 block
+const RECORD_LUMA_KIND_1MV: u32 = 0u;
+const RECORD_LUMA_KIND_4MV: u32 = 1u;
+const RECORD_LUMA_KIND_INTERPOLATED: u32 = 2u;
+
+// Chroma operation kinds: the 8x8 blocks of mc_1mv, mc_4mv_chroma, and interp_mc, and mc_4mv_chroma4's 4x4 quarters
+const RECORD_CHROMA_KIND_1MV: u32 = 0u;
+const RECORD_CHROMA_KIND_4MV: u32 = 1u;
+const RECORD_CHROMA_KIND_INTERPOLATED: u32 = 2u;
+const RECORD_CHROMA_KIND_QUARTER: u32 = 3u;
+
+// Reference sources of an operation: the previous anchor, the next anchor, and the first field of the current frame
+const RECORD_SOURCE_LAST: u32 = 0u;
+const RECORD_SOURCE_NEXT: u32 = 1u;
+const RECORD_SOURCE_CURRENT: u32 = 2u;
+
+// A coefficient entry: its position in the block above this shift, its value in the low 16 bits; a block holds at most 64
+const RECORD_COEFFICIENT_POSITION_SHIFT: u32 = 16u;
+const RECORD_COEFFICIENTS_PER_BLOCK: u32 = 64u;
+
+// Profiles
+const RECORD_PROFILE_SIMPLE: u32 = 0u;
+const RECORD_PROFILE_MAIN: u32 = 1u;
+const RECORD_PROFILE_COMPLEX: u32 = 2u;
+const RECORD_PROFILE_ADVANCED: u32 = 3u;
+
+// Picture types; BI pictures decode as intra B pictures
+const RECORD_TYPE_I: u32 = 0u;
+const RECORD_TYPE_P: u32 = 1u;
+const RECORD_TYPE_B: u32 = 2u;
+const RECORD_TYPE_BI: u32 = 3u;
+
+// Frame coding modes
+const RECORD_FCM_PROGRESSIVE: u32 = 0u;
+const RECORD_FCM_FRAME: u32 = 1u;
+const RECORD_FCM_FIELD: u32 = 2u;
+
+// Conditional overlap of Advanced profile I pictures
+const RECORD_CONDOVER_NONE: u32 = 0u;
+const RECORD_CONDOVER_ALL: u32 = 1u;
+const RECORD_CONDOVER_SELECT: u32 = 2u;
+
+// Error codes, the high byte of a status error word, which the //! error lines name; the low 24 bits carry the failing value.
+// A size beyond the pool or the package's limit holds for the pictures after it too, so it ends the attempt.
+// A picture too short for field coding is damage, which FFmpeg drops ("image too short"), so it resyncs
 const ERROR_CODE_SHIFT: u32 = 24u;
 const ERROR_CONFIGURATION: u32 = 1u;
-const ERROR_UNSUPPORTED_PROFILE: u32 = 2u;
-const ERROR_UNSUPPORTED_FEATURE: u32 = 3u;
-const ERROR_PICTURE_SIZE: u32 = 4u;
-const ERROR_SEQUENCE_HEADER: u32 = 5u;
-const ERROR_ENTRY_POINT: u32 = 6u;
-const ERROR_PICTURE_HEADER: u32 = 7u;
-const ERROR_BITPLANE: u32 = 8u;
-const ERROR_START_CODES: u32 = 9u;
-const ERROR_PARSE_UNITS: u32 = 10u;
-const ERROR_MACROBLOCK_LAYER: u32 = 11u;
-const ERROR_INVALID_CODE: u32 = 12u;
-const ERROR_BITS_EXHAUSTED: u32 = 13u;
-const ERROR_PACKET_SIZE: u32 = 14u;
-const ERROR_MISSING_REFERENCE: u32 = 15u;
-// Code lookups and parameter tables
-const VLC_SUBTABLE_FLAG: u32 = 2147483648u;
-const VLC_LENGTH_SHIFT: u32 = 16u;
-const VLC_LENGTH_MASK: u32 = 15u;
-const VLC_SYMBOL_MASK: u32 = 65535u;
-const INVALID_CODE: u32 = 65535u;
-const VLC_SUBTABLE_BITS_SHIFT: u32 = 24u;
-const VLC_SUBTABLE_BITS_MASK: u32 = 7u;
-const VLC_OFFSET_MASK: u32 = 1048575u;
-const VLC_ROOT_BITS_SHIFT: u32 = 24u;
-const VLC_BASE_MASK: u32 = 1048575u;
-const VLC_BITPLANE_MODE: u32 = 67108864u;
-const VLC_NORM2: u32 = 50331664u;
-const VLC_NORM6: u32 = 134217752u;
-const VLC_INTRA_CBPCY: u32 = 134218078u;
-const VLC_CBPCY_P = array<u32, 4>(
-    134218396u, 134218684u, 134219004u, 134219300u
-);
-const VLC_INTERLACED_CBPCY = array<u32, 8>(
-    134219612u, 134220036u, 134220302u, 134220568u, 134220846u, 134221102u, 134221368u, 134221662u
-);
-const VLC_TTMB = array<u32, 3>(
-    134221948u, 134222222u, 134222478u
-);
-const VLC_TTBLK = array<u32, 3>(
-    83891094u, 67113910u, 67113926u
-);
-const VLC_SUBBLOCK_PATTERN = array<u32, 3>(
-    100668374u, 83891222u, 83891254u
-);
-const VLC_MV_DIFFERENTIAL = array<u32, 4>(
-    134222934u, 134223272u, 134223602u, 134223930u
-);
-const VLC_4MV_BLOCK_PATTERN = array<u32, 4>(
-    100669896u, 83892744u, 83892776u, 83892808u
-);
-const VLC_2MV_BLOCK_PATTERN = array<u32, 4>(
-    33561192u, 50338412u, 50338420u, 50338428u
-);
-const VLC_INTERLACED_FRAME_4MV_MBMODE = array<u32, 4>(
-    134224516u, 117447556u, 117447684u, 134225028u
-);
-const VLC_INTERLACED_FRAME_NON4MV_MBMODE = array<u32, 4>(
-    83893654u, 100670902u, 100670966u, 134225462u
-);
-const VLC_INTERLACED_FIELD_MIXED_MBMODE = array<u32, 8>(
-    100671286u, 83894134u, 100671382u, 100671446u, 100671510u, 100671574u, 83894422u, 100671670u
-);
-const VLC_INTERLACED_FIELD_1MV_MBMODE = array<u32, 8>(
-    83894518u, 83894550u, 83894582u, 83894614u, 67117430u, 67117446u, 83894678u, 83894710u
-);
-const VLC_ONE_REFERENCE_MVDATA = array<u32, 4>(
-    134226390u, 134226922u, 134227542u, 134228130u
-);
-const VLC_TWO_REFERENCE_MVDATA = array<u32, 8>(
-    134228460u, 134229038u, 134229598u, 134230024u, 134230886u, 134231452u, 134231934u, 134232698u
-);
-const VLC_DC_DIFFERENTIAL = array<u32, 4>(
-    134233972u, 134234810u, 134235478u, 134236696u
-);
+const ERROR_UNSUPPORTED_FEATURE: u32 = 2u;
+const ERROR_PICTURE_SIZE: u32 = 3u;
+const ERROR_SEQUENCE_HEADER: u32 = 4u;
+const ERROR_PICTURE_HEADER: u32 = 5u;
+const ERROR_BITPLANE: u32 = 6u;
+const ERROR_START_CODES: u32 = 7u;
+const ERROR_MACROBLOCK_LAYER: u32 = 8u;
+const ERROR_BITS_EXHAUSTED: u32 = 9u;
+const ERROR_RECORD_INVALID: u32 = 10u;
+const ERROR_PICTURE_TOO_SHORT: u32 = 11u;
+
+// The record check failure values of the passes: the header, the kind or pass count, a pass's rows or lookup sets, the macroblock
+// table or lookup sets beyond the record, a macroblock beyond it, and IntraX8 samples beyond it
+const INVALID_RECORD_HEADER: u32 = 1u;
+const INVALID_RECORD_KIND: u32 = 2u;
+const INVALID_RECORD_PASS: u32 = 3u;
+const INVALID_RECORD_TABLES: u32 = 4u;
+const INVALID_RECORD_MACROBLOCK: u32 = 5u;
+const INVALID_RECORD_SAMPLES: u32 = 6u;
+
+// The state buffer: the anchors' pool slots and whether each is interlaced, and the sequence facts of the latest picture
+const S_LAST_SLOT: u32 = 0u;
+const S_NEXT_SLOT: u32 = 1u;
+const S_LAST_INTERLACED: u32 = 2u;
+const S_NEXT_INTERLACED: u32 = 3u;
+const S_MB_WIDTH: u32 = 4u;
+const S_MB_HEIGHT: u32 = 5u;
+const S_CODED_WIDTH: u32 = 6u;
+const S_CODED_HEIGHT: u32 = 7u;
+const S_PROFILE: u32 = 8u;
+const S_RES_FASTTX: u32 = 9u;
+const S_OVERLAP: u32 = 10u;
+const NO_SLOT: u32 = 255u;
+
+// The picture state: how many passes reconstruct and the pass the stages work on, the picture's anchor facts and how it fills its slot,
+// each pass's parameter block, and each pass's snapshot of the lookup sets its intensity compensation reads
+const F_PASS_COUNT: u32 = 0u;
+const F_CURRENT_PASS: u32 = 1u;
+const F_FRAME_TYPE: u32 = 2u;
+const F_RELEASED_ANCHOR: u32 = 3u;
+const F_COPY_MODE: u32 = 4u;
+// The pool slot a slot copy reads, or the record word offset of the samples a sample copy reads
+const F_COPY_SOURCE: u32 = 5u;
+const F_PASSES: u32 = 8u;
+// A pass's parameter block: the record's pass words, then its references
+const PICTURE_PASS_WORDS: u32 = 32u;
+const P_FORWARD_SLOT: u32 = RECORD_PASS_WORDS;
+const P_BACKWARD_SLOT: u32 = RECORD_PASS_WORDS + 1u;
+const P_FORWARD_INTERLACED: u32 = RECORD_PASS_WORDS + 2u;
+const P_BACKWARD_INTERLACED: u32 = RECORD_PASS_WORDS + 3u;
+const F_PASS_LUTS: u32 = F_PASSES + RECORD_MAXIMUM_PASSES * PICTURE_PASS_WORDS;
+// A lookup set's snapshot holds one entry per word
+const LUT_TABLE_WORDS: u32 = 256u;
+const LUT_SET_WORDS: u32 = 1024u;
+const PASS_LUT_WORDS: u32 = RECORD_LOOKUP_SET_COUNT * LUT_SET_WORDS;
+const LOOKUP_ENTRIES_PER_WORD: u32 = 4u;
+
+// How copyPicture fills a picture that reconstructs nothing: not at all, from a pool slot, or from the record's samples
+const COPY_MODE_NONE: u32 = 0u;
+const COPY_MODE_SLOT: u32 = 1u;
+const COPY_MODE_SAMPLES: u32 = 2u;
+// The frame type of a packet whose record failed its check, which holds no reference
+const NO_FRAME_TYPE: u32 = 255u;
+
+// The macroblock buffer: one record per frame macroblock, the record's fixed words, then its operation slots, luma then chroma
+const M_LUMA_OPS: u32 = RECORD_MACROBLOCK_FIXED_WORDS;
+const M_CHROMA_OPS: u32 = M_LUMA_OPS + RECORD_LUMA_OPERATION_SLOTS * RECORD_OPERATION_WORDS;
+const OPERATION_SLOTS: u32 = 2u * RECORD_LUMA_OPERATION_SLOTS;
+const MACROBLOCK_WORDS: u32 = 64u;
+const MACROBLOCK_SIZE: u32 = 16u;
+const BLOCKS_PER_MACROBLOCK: u32 = 6u;
+// An IntraX8 picture's record samples per macroblock, four to a word: 256 luma and 64 of each chroma plane
+const INTRAX8_WORDS_PER_MACROBLOCK: u32 = 96u;
+// The block data buffer: the coefficient entries of each block of each frame macroblock, then the intra samples before overlap smoothing
+const B_INTRA_SAMPLES: u32 = RECORD_MAXIMUM_MACROBLOCKS * BLOCKS_PER_MACROBLOCK * RECORD_COEFFICIENTS_PER_BLOCK;
+const EXPAND_WORKGROUP_SIZE: u32 = 64u;
+
+// The quarter sample modes' shifts, indexed by the vector's fraction, FFmpeg's shift_value
 const MSPEL_SHIFT = array<u32, 4>(
     0u, 5u, 1u, 5u
 );
-const VLC_AC_COEFFICIENTS = array<u32, 8>(
-    134237608u, 134238972u, 134240100u, 134240598u, 134241670u, 134241994u, 134242318u, 134243342u
-);
-const AC_RUN_MASK: u32 = 63u;
-const AC_LEVEL_SHIFT: u32 = 6u;
-const AC_LEVEL_MASK: u32 = 63u;
-const AC_LAST_BIT: u32 = 4096u;
-const AC_ESCAPE_BIT: u32 = 8192u;
-const AC_DELTA_LEVEL_LENGTH: u32 = 31u;
-const AC_LAST_DELTA_LEVEL_LENGTH: u32 = 44u;
-const AC_DELTA_RUN_LENGTH: u32 = 57u;
-const AC_LAST_DELTA_RUN_LENGTH: u32 = 10u;
-const VLC_X8_ORIENT = array<u32, 6>(
-    100690774u, 117468054u, 100690966u, 83913814u, 100691062u, 83913910u
-);
-const X8_LOW_QUANTIZER_ORIENT_TABLES: u32 = 2u;
-const VLC_X8_DC = array<u32, 16>(
-    134245590u, 134245862u, 134246134u, 134246422u, 134246694u, 117469800u, 134247144u, 117470216u, 134247560u, 134247848u, 134248140u, 134248412u, 117471516u, 134248860u, 134249148u, 134249468u
-);
-const VLC_X8_AC = array<u32, 32>(
-    134249788u, 134250184u, 134250510u, 134250838u, 134251094u, 134251372u, 134251702u, 134252104u, 134252392u, 134252726u, 134253198u, 134253602u, 134253928u, 134254454u, 134254918u, 134255222u,
-    134255618u, 134256014u, 134256334u, 134256978u, 134257514u, 134257916u, 134258340u, 134258744u, 134259072u, 134259540u, 134260034u, 134260582u, 134261098u, 134261466u, 134262000u, 134262420u
-);
-const T_VLC_LOOKUP: u32 = S_TABLES + 0u;
-const T_AC_DELTA_LEVEL: u32 = S_TABLES + 45174u;
-const T_AC_LAST_DELTA_LEVEL: u32 = S_TABLES + 45422u;
-const T_AC_DELTA_RUN: u32 = S_TABLES + 45774u;
-const T_AC_LAST_DELTA_RUN: u32 = S_TABLES + 46230u;
-const T_X8_AC_DECODE: u32 = S_TABLES + 46310u;
-const T_X8_MIXED_RUN_LEVEL: u32 = S_TABLES + 46337u;
-const T_X8_DC_INDEX_OFFSET: u32 = S_TABLES + 46369u;
-const T_X8_QUANT_MATRIX: u32 = S_TABLES + 46386u;
-const T_X8_PREDICTION_ORIENTATIONS: u32 = S_TABLES + 46450u;
-const T_X8_ZERO_PREDICTION_WEIGHTS: u32 = S_TABLES + 46486u;
-const T_X8_SCANS: u32 = S_TABLES + 46614u;
-const T_BFRACTION_LUT: u32 = S_TABLES + 46806u;
-const T_PQUANT_IMPLICIT: u32 = S_TABLES + 46829u;
-const T_MV_PMODE_TABLE: u32 = S_TABLES + 46861u;
-const T_MV_PMODE_TABLE2: u32 = S_TABLES + 46871u;
-const T_TTBLK_TO_TT: u32 = S_TABLES + 46879u;
-const T_TTFRM_TO_TT: u32 = S_TABLES + 46903u;
-const T_MBMODE_INTFRP: u32 = S_TABLES + 46907u;
-const T_WMV3_DC_SCALE: u32 = S_TABLES + 46937u;
-const T_DQSCALE: u32 = S_TABLES + 46969u;
-const T_DC_PREDICTION: u32 = S_TABLES + 47032u;
-const T_FIELD_MVPRED_SCALES: u32 = S_TABLES + 47064u;
-const T_B_FIELD_MVPRED_SCALES: u32 = S_TABLES + 47120u;
-const T_FIELD_CHROMA_ROUNDING: u32 = S_TABLES + 47148u;
-const T_MV_OFFSET_TABLE: u32 = S_TABLES + 47164u;
-const T_MV_SIZE_TABLE: u32 = S_TABLES + 47182u;
-const T_LUMA_MV_PAIRS: u32 = S_TABLES + 47188u;
-const T_CHROMA_MV_PAIRS: u32 = S_TABLES + 47204u;
-const T_SCAN_8X8: u32 = S_TABLES + 47220u;
-const T_SCAN_8X4_SIMPLE: u32 = S_TABLES + 47540u;
-const T_SCAN_4X8_SIMPLE: u32 = S_TABLES + 47572u;
-const T_SCAN_8X4_ADVANCED: u32 = S_TABLES + 47604u;
-const T_SCAN_4X8_ADVANCED: u32 = S_TABLES + 47636u;
-const T_SCAN_4X4_PROGRESSIVE: u32 = S_TABLES + 47668u;
-const T_SCAN_8X4_INTERLACED: u32 = S_TABLES + 47684u;
-const T_SCAN_4X8_INTERLACED: u32 = S_TABLES + 47716u;
-const T_SCAN_4X4_INTERLACED: u32 = S_TABLES + 47748u;
-const TABLE_DATA_0 = array<u32, 8192>(
-    262144u, 262148u, 196610u, 196610u, 196613u, 196613u, 196614u, 196614u, 131073u, 131073u, 131073u, 131073u, 131075u, 131075u, 131075u, 131075u,
-    65536u, 65536u, 65536u, 65536u, 196609u, 196610u, 131075u, 131075u, 524291u, 524293u, 524294u, 524297u, 524298u, 524300u, 524305u, 524306u,
-    524308u, 524312u, 524321u, 524322u, 524324u, 524328u, 524336u, 0u, 2164261182u, 2164261120u, 2164261124u, 2164261128u, 2164261164u, 2164261168u, 2164261172u, 2164261176u,
-    2214592780u, 2147483972u, 2147483970u, 2147483964u, 393279u, 393279u, 393279u, 393279u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u,
-    262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u,
-    262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u,
-    262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u,
-    262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262176u, 262176u, 262176u, 262176u, 262176u, 262176u, 262176u, 262176u,
-    262176u, 262176u, 262176u, 262176u, 262176u, 262176u, 262176u, 262176u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 0u, 131109u, 131110u, 131079u, 0u, 131113u, 131114u, 131083u,
-    131116u, 131085u, 131086u, 0u, 327740u, 327738u, 327737u, 327734u, 327733u, 327731u, 327726u, 327725u, 327723u, 327719u, 327710u, 327709u,
-    327707u, 327703u, 327695u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 131121u, 131122u, 131091u, 131124u, 131093u, 131094u, 0u, 131128u, 131097u, 131098u, 0u,
-    131100u, 0u, 0u, 0u, 65583u, 65567u, 0u, 0u, 0u, 131107u, 65595u, 65591u, 65598u, 65597u, 524303u, 2147483960u,
-    458796u, 458796u, 393236u, 393236u, 393236u, 393236u, 393228u, 393228u, 393228u, 393228u, 2147483964u, 524348u, 458804u, 458804u, 327688u, 327688u,
-    327688u, 327688u, 327688u, 327688u, 327688u, 327688u, 327696u, 327696u, 327696u, 327696u, 327696u, 327696u, 327696u, 327696u, 458759u, 458759u,
-    2147483962u, 2147483904u, 458788u, 458788u, 458771u, 458771u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327684u, 327684u,
-    327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 2214592782u, 524330u, 458763u, 458763u, 458786u, 458786u, 2147483906u, 524311u, 458758u, 458758u,
-    524315u, 2147483958u, 458780u, 458780u, 524310u, 2181038382u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 393264u, 393264u,
-    393264u, 393264u, 393272u, 393272u, 393272u, 393272u, 458770u, 458770u, 2164261130u, 2147483912u, 393217u, 393217u, 393217u, 393217u, 262176u, 262176u,
-    262176u, 262176u, 262176u, 262176u, 262176u, 262176u, 262176u, 262176u, 262176u, 262176u, 262176u, 262176u, 262176u, 262176u, 393251u, 393251u,
-    393251u, 393251u, 458762u, 458762u, 2164261124u, 524302u, 393240u, 393240u, 393240u, 393240u, 393256u, 393256u, 393256u, 393256u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65595u, 65541u,
-    65545u, 65586u, 65549u, 65549u, 131134u, 131129u, 65582u, 65553u, 131093u, 131135u, 65562u, 65562u, 65575u, 65575u, 65575u, 65575u,
-    65575u, 65575u, 65575u, 65575u, 65575u, 65575u, 65575u, 65575u, 65575u, 65575u, 65575u, 65575u, 262181u, 262181u, 327705u, 327741u,
-    196637u, 196637u, 196637u, 196637u, 196653u, 196653u, 196653u, 196653u, 196661u, 196661u, 196661u, 196661u, 65579u, 65579u, 65579u, 65579u,
-    131102u, 131102u, 196649u, 196657u, 65590u, 65567u, 65594u, 65569u, 65574u, 65583u, 65587u, 65591u, 2214592768u, 524322u, 458792u, 458792u,
-    393248u, 393248u, 393248u, 393248u, 327696u, 327696u, 327696u, 327696u, 327696u, 327696u, 327696u, 327696u, 393264u, 393264u, 393264u, 393264u,
-    393224u, 393224u, 393224u, 393224u, 458776u, 458776u, 458756u, 458756u, 458788u, 458788u, 458754u, 458754u, 327736u, 327736u, 327736u, 327736u,
-    327736u, 327736u, 327736u, 327736u, 393236u, 393236u, 393236u, 393236u, 393268u, 393268u, 393268u, 393268u, 393228u, 393228u, 393228u, 393228u,
-    393244u, 393244u, 393244u, 393244u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 196668u, 196668u, 196668u, 196668u,
-    196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u,
-    196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 524306u, 524330u, 458762u, 458762u,
-    524346u, 524342u, 524302u, 524337u, 458798u, 458798u, 458782u, 458782u, 458769u, 458769u, 524345u, 524309u, 458805u, 458805u, 524301u, 524317u,
-    458797u, 458797u, 524343u, 524303u, 393275u, 393275u, 393275u, 393275u, 458799u, 458799u, 458783u, 458783u, 196670u, 196670u, 196670u, 196670u,
-    196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u,
-    196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196669u, 196669u, 196669u, 196669u,
-    196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u,
-    196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 131135u, 131135u, 131135u, 131135u,
-    131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u,
-    131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u,
-    131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u,
-    131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 327680u, 327730u, 327706u, 327686u,
-    327718u, 327702u, 327681u, 327713u, 327689u, 327721u, 327705u, 327685u, 327717u, 327683u, 262179u, 262179u, 262163u, 262163u, 262195u, 262195u,
-    262155u, 262155u, 262187u, 262187u, 262171u, 262171u, 262151u, 262151u, 262183u, 262183u, 262167u, 262167u, 2231369984u, 524290u, 524338u, 524298u,
-    393260u, 393260u, 393260u, 393260u, 327728u, 327728u, 327728u, 327728u, 327728u, 327728u, 327728u, 327728u, 262184u, 262184u, 262184u, 262184u,
-    262184u, 262184u, 262184u, 262184u, 262184u, 262184u, 262184u, 262184u, 262184u, 262184u, 262184u, 262184u, 196640u, 196640u, 196640u, 196640u,
-    196640u, 196640u, 196640u, 196640u, 196640u, 196640u, 196640u, 196640u, 196640u, 196640u, 196640u, 196640u, 196640u, 196640u, 196640u, 196640u,
-    196640u, 196640u, 196640u, 196640u, 196640u, 196640u, 196640u, 196640u, 196640u, 196640u, 196640u, 196640u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196616u, 196616u, 196616u, 196616u,
-    196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u,
-    196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 327704u, 327704u, 327704u, 327704u,
-    327704u, 327704u, 327704u, 327704u, 327736u, 327736u, 327736u, 327736u, 327736u, 327736u, 327736u, 327736u, 327716u, 327716u, 327716u, 327716u,
-    327716u, 327716u, 327716u, 327716u, 327732u, 327732u, 327732u, 327732u, 327732u, 327732u, 327732u, 327732u, 196612u, 196612u, 196612u, 196612u,
-    196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u,
-    196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 262164u, 262164u, 262164u, 262164u,
-    262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262156u, 262156u, 262156u, 262156u,
-    262156u, 262156u, 262156u, 262156u, 262156u, 262156u, 262156u, 262156u, 262156u, 262156u, 262156u, 262156u, 327708u, 327708u, 327708u, 327708u,
-    327708u, 327708u, 327708u, 327708u, 393276u, 393276u, 393276u, 393276u, 524346u, 524294u, 524342u, 524318u, 524321u, 524309u, 458761u, 458761u,
-    458793u, 458793u, 524341u, 524319u, 458781u, 458781u, 458815u, 458815u, 393277u, 393277u, 393277u, 393277u, 393216u, 393250u, 327698u, 327698u,
-    327722u, 327722u, 327706u, 327706u, 327718u, 327718u, 327702u, 327702u, 327694u, 327694u, 327726u, 327726u, 327742u, 327742u, 327681u, 327681u,
-    327697u, 327697u, 327729u, 327729u, 327705u, 327705u, 327737u, 327737u, 327685u, 327685u, 327717u, 327717u, 327693u, 327693u, 327725u, 327725u,
-    327683u, 327683u, 327715u, 327715u, 327699u, 327699u, 327731u, 327731u, 327691u, 327691u, 327723u, 327723u, 327707u, 327707u, 327739u, 327739u,
-    327687u, 327687u, 327719u, 327719u, 327703u, 327703u, 327735u, 327735u, 327695u, 327695u, 327727u, 327727u, 2214592768u, 524322u, 524298u, 524330u,
-    393240u, 393240u, 393240u, 393240u, 327712u, 327712u, 327712u, 327712u, 327712u, 327712u, 327712u, 327712u, 327696u, 327696u, 327696u, 327696u,
-    327696u, 327696u, 327696u, 327696u, 327728u, 327728u, 327728u, 327728u, 327728u, 327728u, 327728u, 327728u, 262152u, 262152u, 262152u, 262152u,
-    262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262184u, 262184u, 262184u, 262184u,
-    262184u, 262184u, 262184u, 262184u, 262184u, 262184u, 262184u, 262184u, 262184u, 262184u, 262184u, 262184u, 262200u, 262200u, 262200u, 262200u,
-    262200u, 262200u, 262200u, 262200u, 262200u, 262200u, 262200u, 262200u, 262200u, 262200u, 262200u, 262200u, 262148u, 262148u, 262148u, 262148u,
-    262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 393252u, 393252u, 393252u, 393252u,
-    393218u, 393218u, 393218u, 393218u, 327732u, 327732u, 327732u, 327732u, 327732u, 327732u, 327732u, 327732u, 262164u, 262164u, 262164u, 262164u,
-    262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 327692u, 327692u, 327692u, 327692u,
-    327692u, 327692u, 327692u, 327692u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 262172u, 262172u, 262172u, 262172u,
-    262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 196668u, 196668u, 196668u, 196668u,
-    196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u,
-    196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 458778u, 458778u, 524346u, 524302u,
-    458774u, 458774u, 458806u, 458806u, 524334u, 524289u, 458782u, 458782u, 458785u, 458785u, 2147483940u, 2147483936u, 327742u, 327742u, 327742u, 327742u,
-    327742u, 327742u, 327742u, 327742u, 393257u, 393257u, 393257u, 393257u, 524313u, 524293u, 458809u, 458809u, 524309u, 524301u, 458805u, 458805u,
-    458797u, 458797u, 524317u, 524291u, 327741u, 327741u, 327741u, 327741u, 327741u, 327741u, 327741u, 327741u, 524307u, 524299u, 2147483942u, 524347u,
-    524327u, 524311u, 2147483938u, 524319u, 327743u, 327743u, 327743u, 327743u, 327743u, 327743u, 327743u, 327743u, 327680u, 327686u, 327718u, 327717u,
-    327731u, 327707u, 262151u, 262151u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 65586u, 65586u, 65586u, 65586u,
-    65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65545u, 65571u, 65551u, 65583u,
-    65553u, 65585u, 65579u, 65591u, 2147483904u, 2147483944u, 2147483958u, 2147483936u, 2147483924u, 2147483952u, 2147483908u, 2147483932u, 2147483920u, 2147483948u, 2147483914u, 2147483940u,
-    2147483928u, 2147483956u, 2147483906u, 2147483930u, 2147483918u, 2147483946u, 2147483912u, 2147483938u, 2147483926u, 2147483954u, 2147483910u, 2147483934u, 2147483922u, 2147483950u, 2147483916u, 2147483942u,
-    524303u, 524335u, 524319u, 524351u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u,
-    131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u,
-    131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u,
-    131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u,
-    131104u, 131104u, 131104u, 131104u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u,
-    131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u,
-    131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u,
-    131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u,
-    131076u, 131076u, 131076u, 131076u, 65536u, 65584u, 65537u, 65569u, 65538u, 65570u, 65539u, 65571u, 65541u, 65573u, 65542u, 65574u,
-    65543u, 65575u, 65545u, 65577u, 65546u, 65578u, 65547u, 65579u, 65548u, 65580u, 65549u, 65581u, 65550u, 65582u, 65553u, 65585u,
-    65554u, 65586u, 65555u, 65587u, 65556u, 65588u, 65557u, 65589u, 65558u, 65590u, 65559u, 65591u, 65576u, 65560u, 65561u, 65593u,
-    65562u, 65594u, 65563u, 65595u, 65564u, 65596u, 65565u, 65597u, 65566u, 65598u, 65592u, 65572u, 196668u, 196668u, 196668u, 196668u,
-    196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u,
-    196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196668u, 196669u, 196669u, 196669u, 196669u,
-    196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u,
-    196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 524316u, 524317u, 524332u, 524333u,
-    524340u, 524341u, 524344u, 524345u, 2147484032u, 2147484044u, 524299u, 2147484042u, 2164261262u, 2181038482u, 524315u, 2164261282u, 524331u, 524335u, 2147484070u, 524339u,
-    524343u, 2181038466u, 458782u, 458782u, 458798u, 458798u, 458806u, 458806u, 458810u, 458810u, 2248147200u, 2181038490u, 196667u, 196667u, 196667u, 196667u,
-    196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u,
-    196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 65598u, 65598u, 65598u, 65598u,
-    65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u,
-    65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u,
-    65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u,
-    65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u,
-    65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u,
-    65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u,
-    65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u,
-    65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 262154u, 262154u, 262154u, 262154u,
-    262154u, 262154u, 262154u, 262154u, 262162u, 262162u, 262162u, 262162u, 262162u, 262162u, 262162u, 262162u, 262178u, 262178u, 262178u, 262178u,
-    262178u, 262178u, 262178u, 262178u, 393218u, 393218u, 458752u, 458753u, 327686u, 327686u, 327686u, 327686u, 131094u, 131094u, 131094u, 131094u,
-    131094u, 131094u, 131094u, 131094u, 131094u, 131094u, 131094u, 131094u, 131094u, 131094u, 131094u, 131094u, 131094u, 131094u, 131094u, 131094u,
-    131094u, 131094u, 131094u, 131094u, 131094u, 131094u, 131094u, 131094u, 131094u, 131094u, 131094u, 131094u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65539u, 65543u, 196612u, 196613u,
-    196616u, 196617u, 196624u, 196625u, 196640u, 196641u, 65548u, 65549u, 65551u, 65567u, 65555u, 65555u, 131092u, 131093u, 131095u, 131095u,
-    196632u, 196633u, 131107u, 131107u, 196644u, 196645u, 65586u, 65586u, 65586u, 65586u, 196634u, 196646u, 131114u, 131114u, 65575u, 65575u,
-    131112u, 131113u, 65584u, 65585u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u,
-    196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u, 196669u,
-    196669u, 196669u, 196669u, 196669u, 458768u, 458768u, 458769u, 458769u, 393247u, 393247u, 393247u, 393247u, 458784u, 458784u, 458785u, 458785u,
-    524322u, 2147483908u, 2147483910u, 2147483912u, 393243u, 393243u, 393243u, 393243u, 393259u, 393259u, 393259u, 393259u, 393267u, 393267u, 393267u, 393267u,
-    393271u, 393271u, 393271u, 393271u, 393227u, 393227u, 393227u, 393227u, 458764u, 458764u, 458765u, 458765u, 458766u, 458766u, 458771u, 458771u,
-    458791u, 458791u, 458800u, 458800u, 393263u, 393263u, 393263u, 393263u, 458801u, 458801u, 458802u, 458802u, 524308u, 524309u, 524310u, 524311u,
-    524323u, 524328u, 524329u, 524330u, 458780u, 458780u, 458781u, 458781u, 393246u, 393246u, 393246u, 393246u, 458796u, 458796u, 458797u, 458797u,
-    393262u, 393262u, 393262u, 393262u, 458804u, 458804u, 458805u, 458805u, 393270u, 393270u, 393270u, 393270u, 458808u, 458808u, 458809u, 458809u,
-    393274u, 393274u, 393274u, 393274u, 2147483904u, 2147483906u, 458752u, 458752u, 458753u, 458753u, 458755u, 458755u, 524292u, 524293u, 458759u, 458759u,
-    524296u, 524297u, 458767u, 458767u, 262204u, 262204u, 262204u, 262204u, 262204u, 262204u, 262204u, 262204u, 262204u, 262204u, 262204u, 262204u,
-    262204u, 262204u, 262204u, 262204u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u,
-    196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u,
-    196667u, 196667u, 196667u, 196667u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u,
-    131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u,
-    131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u,
-    131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u,
-    131134u, 131134u, 131134u, 131134u, 65538u, 65542u, 65546u, 65554u, 65560u, 65561u, 65562u, 65572u, 65573u, 65574u, 131134u, 131134u,
-    131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u,
-    131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u,
-    131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u,
-    131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 131134u, 196667u, 196667u,
-    196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u,
-    196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 262205u, 262205u,
-    262205u, 262205u, 262205u, 262205u, 262205u, 262205u, 262205u, 262205u, 262205u, 262205u, 262205u, 262205u, 262205u, 262205u, 327691u, 327691u,
-    327691u, 327691u, 327691u, 327691u, 327691u, 327691u, 327727u, 327727u, 327727u, 327727u, 327727u, 327727u, 327727u, 327727u, 393255u, 393255u,
-    393255u, 393255u, 393243u, 393243u, 393243u, 393243u, 393259u, 393259u, 393259u, 393259u, 393267u, 393267u, 393267u, 393267u, 393271u, 393271u,
-    393271u, 393271u, 458787u, 458787u, 458780u, 458780u, 393219u, 393219u, 393219u, 393219u, 393223u, 393223u, 393223u, 393223u, 393231u, 393231u,
-    393231u, 393231u, 393247u, 393247u, 393247u, 393247u, 458781u, 458781u, 458796u, 458796u, 393246u, 393246u, 393246u, 393246u, 458797u, 458797u,
-    458804u, 458804u, 393262u, 393262u, 393262u, 393262u, 458805u, 458805u, 458808u, 458808u, 393270u, 393270u, 393270u, 393270u, 393274u, 393274u,
-    393274u, 393274u, 458809u, 458809u, 458764u, 458764u, 393216u, 393216u, 393216u, 393216u, 393217u, 393217u, 393217u, 393217u, 327682u, 327682u,
-    327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 458765u, 458765u, 524308u, 524309u, 2147483908u, 2147483912u, 524328u, 524329u, 458800u, 458800u,
-    458801u, 458801u, 524292u, 524293u, 524296u, 524297u, 524304u, 524305u, 524320u, 524321u, 524310u, 2147483910u, 458766u, 458766u, 458802u, 458802u,
-    524330u, 2147483904u, 2147483906u, 524311u, 458771u, 458771u, 327740u, 327740u, 327740u, 327740u, 327740u, 327740u, 327740u, 327740u, 65542u, 65546u,
-    65554u, 65570u, 65560u, 65561u, 65562u, 65574u, 65572u, 65573u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u,
-    262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u,
-    262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u,
-    262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u,
-    262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 393239u, 393239u, 393239u, 393239u, 393251u, 393251u, 393251u, 393251u,
-    327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u,
-    262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u,
-    262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 458798u, 458798u, 458806u, 458806u, 458810u, 458810u, 458766u, 458766u,
-    327707u, 327707u, 327707u, 327707u, 327707u, 327707u, 327707u, 327707u, 327723u, 327723u, 327723u, 327723u, 327723u, 327723u, 327723u, 327723u,
-    327731u, 327731u, 327731u, 327731u, 327731u, 327731u, 327731u, 327731u, 327735u, 327735u, 327735u, 327735u, 327735u, 327735u, 327735u, 327735u,
-    2147483920u, 524310u, 458802u, 458802u, 524330u, 524290u, 524316u, 524317u, 393216u, 393216u, 393216u, 393216u, 393217u, 393217u, 393217u, 393217u,
-    524332u, 524333u, 524340u, 524341u, 524344u, 524345u, 2147483914u, 2147483924u, 327740u, 327740u, 327740u, 327740u, 327740u, 327740u, 327740u, 327740u,
-    327741u, 327741u, 327741u, 327741u, 327741u, 327741u, 327741u, 327741u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u,
-    196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u,
-    196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 262206u, 262206u, 262206u, 262206u, 262206u, 262206u, 262206u, 262206u,
-    262206u, 262206u, 262206u, 262206u, 262206u, 262206u, 262206u, 262206u, 524300u, 524301u, 524336u, 524337u, 2164261132u, 2147483904u, 2147483906u, 2147483908u,
-    2147483910u, 2147483912u, 2147483922u, 524318u, 393235u, 393235u, 393235u, 393235u, 65540u, 65541u, 65542u, 65544u, 65545u, 65546u, 65552u, 65553u,
-    65554u, 65568u, 65556u, 65557u, 131096u, 131097u, 131108u, 131109u, 65562u, 65574u, 65569u, 65570u, 65576u, 65577u, 393273u, 393273u,
-    393273u, 393273u, 458758u, 458758u, 458762u, 458762u, 458770u, 458770u, 458786u, 458786u, 393228u, 393228u, 393228u, 393228u, 393229u, 393229u,
-    393229u, 393229u, 458772u, 458772u, 458773u, 458773u, 524312u, 524313u, 524324u, 524325u, 458792u, 458792u, 458793u, 458793u, 393264u, 393264u,
-    393264u, 393264u, 393265u, 393265u, 393265u, 393265u, 458774u, 458774u, 458794u, 458794u, 393230u, 393230u, 393230u, 393230u, 393266u, 393266u,
-    393266u, 393266u, 524314u, 524326u, 458775u, 458775u, 327691u, 327691u, 327691u, 327691u, 327691u, 327691u, 327691u, 327691u, 327727u, 327727u,
-    327727u, 327727u, 327727u, 327727u, 327727u, 327727u, 393235u, 393235u, 393235u, 393235u, 393255u, 393255u, 393255u, 393255u, 327683u, 327683u,
-    327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327687u, 327687u, 327687u, 327687u, 327687u, 327687u, 327687u, 327687u, 327695u, 327695u,
-    327695u, 327695u, 327695u, 327695u, 327695u, 327695u, 327711u, 327711u, 327711u, 327711u, 327711u, 327711u, 327711u, 327711u, 262203u, 262203u,
-    262203u, 262203u, 262203u, 262203u, 262203u, 262203u, 262203u, 262203u, 262203u, 262203u, 262203u, 262203u, 262203u, 262203u, 196670u, 196670u,
-    196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u,
-    196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 327740u, 327740u,
-    327740u, 327740u, 327740u, 327740u, 327740u, 327740u, 327741u, 327741u, 327741u, 327741u, 327741u, 327741u, 327741u, 327741u, 393243u, 393243u,
-    393243u, 393243u, 393259u, 393259u, 393259u, 393259u, 393267u, 393267u, 393267u, 393267u, 393271u, 393271u, 393271u, 393271u, 458787u, 458787u,
-    458756u, 458756u, 458757u, 458757u, 458760u, 458760u, 458761u, 458761u, 458768u, 458768u, 458769u, 458769u, 458780u, 458780u, 458781u, 458781u,
-    458784u, 458784u, 393246u, 393246u, 393246u, 393246u, 458785u, 458785u, 458796u, 458796u, 458797u, 458797u, 458804u, 458804u, 393262u, 393262u,
-    393262u, 393262u, 458805u, 458805u, 458808u, 458808u, 393270u, 393270u, 393270u, 393270u, 393274u, 393274u, 393274u, 393274u, 393216u, 393216u,
-    393216u, 393216u, 393217u, 393217u, 393217u, 393217u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 196667u, 196667u,
-    196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u,
-    196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 262206u, 262206u,
-    262206u, 262206u, 262206u, 262206u, 262206u, 262206u, 262206u, 262206u, 262206u, 262206u, 262206u, 262206u, 262206u, 262206u, 262155u, 262155u,
-    262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 327699u, 327699u,
-    327699u, 327699u, 327699u, 327699u, 327699u, 327699u, 327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 262191u, 262191u,
-    262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 393239u, 393239u,
-    393239u, 393239u, 393251u, 393251u, 393251u, 393251u, 458810u, 458810u, 524310u, 2147483910u, 458766u, 458766u, 458802u, 458802u, 327707u, 327707u,
-    327707u, 327707u, 327707u, 327707u, 327707u, 327707u, 327723u, 327723u, 327723u, 327723u, 327723u, 327723u, 327723u, 327723u, 327731u, 327731u,
-    327731u, 327731u, 327731u, 327731u, 327731u, 327731u, 327735u, 327735u, 327735u, 327735u, 327735u, 327735u, 327735u, 327735u, 524330u, 524292u,
-    524293u, 524294u, 524296u, 524297u, 524298u, 524304u, 524305u, 524306u, 524320u, 524321u, 524322u, 524290u, 524316u, 524317u, 262147u, 262147u,
-    262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262151u, 262151u,
-    262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262159u, 262159u,
-    262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262175u, 262175u,
-    262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 393216u, 393216u,
-    393216u, 393216u, 393217u, 393217u, 393217u, 393217u, 524332u, 524333u, 524340u, 524341u, 524344u, 524345u, 524300u, 524301u, 524336u, 524337u,
-    2147483904u, 2164261122u, 2147483912u, 524318u, 524334u, 524342u, 393276u, 393276u, 393276u, 393276u, 393277u, 393277u, 393277u, 393277u, 65556u, 65557u,
-    131096u, 131097u, 131108u, 131109u, 65562u, 65574u, 65576u, 65577u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u,
-    196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u,
-    196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u,
-    196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u,
-    196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u,
-    196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u,
-    196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 524322u, 2147483932u, 2147483934u, 2147483938u, 393239u, 393239u, 393239u, 393239u,
-    327699u, 327699u, 327699u, 327699u, 327699u, 327699u, 327699u, 327699u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u,
-    262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u,
-    262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 327719u,
-    393251u, 393251u, 393251u, 393251u, 2147483940u, 524348u, 524349u, 524292u, 327707u, 327707u, 327707u, 327707u, 327707u, 327707u, 327707u, 327707u,
-    327723u, 327723u, 327723u, 327723u, 327723u, 327723u, 327723u, 327723u, 327731u, 327731u, 327731u, 327731u, 327731u, 327731u, 327731u, 327731u,
-    327735u, 327735u, 327735u, 327735u, 327735u, 327735u, 327735u, 327735u, 524293u, 524296u, 524297u, 524304u, 524305u, 524320u, 524321u, 2147483904u,
-    327739u, 327739u, 327739u, 327739u, 327739u, 327739u, 327739u, 327739u, 393216u, 393216u, 393216u, 393216u, 393217u, 393217u, 393217u, 393217u,
-    2147483908u, 2147483910u, 2147483936u, 2164261132u, 2181038352u, 2164261144u, 2147483906u, 2164261128u, 65594u, 65538u, 65542u, 65546u, 65598u, 65548u, 65549u, 65550u,
-    65554u, 65554u, 131101u, 131102u, 65586u, 65586u, 131092u, 131093u, 131094u, 131094u, 196632u, 196633u, 196634u, 196644u, 196645u, 196646u,
-    131112u, 131113u, 131114u, 131100u, 65580u, 65581u, 65582u, 65588u, 65584u, 65585u, 65589u, 65590u, 65592u, 65593u, 327735u, 327735u,
-    327735u, 327735u, 327735u, 327735u, 327735u, 327735u, 2147483930u, 2147483932u, 524300u, 524301u, 393216u, 393216u, 393216u, 393216u, 393217u, 393217u,
-    393217u, 393217u, 524302u, 524336u, 524337u, 524338u, 2147483908u, 2164261126u, 2164261130u, 2147483922u, 458758u, 458758u, 458762u, 458762u, 458770u, 458770u,
-    458786u, 458786u, 393239u, 393239u, 393239u, 393239u, 327699u, 327699u, 327699u, 327699u, 327699u, 327699u, 327699u, 327699u, 262155u, 262155u,
-    262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262191u, 262191u,
-    262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u, 327719u, 327719u,
-    327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 393251u, 393251u, 393251u, 393251u, 458756u, 458756u, 458757u, 458757u, 458760u, 458760u,
-    458761u, 458761u, 458768u, 458768u, 458769u, 458769u, 458784u, 458784u, 458785u, 458785u, 2147483924u, 2164261120u, 2164261134u, 2164261142u, 393275u, 393275u,
-    393275u, 393275u, 393243u, 393243u, 393243u, 393243u, 393259u, 393259u, 393259u, 393259u, 393267u, 393267u, 393267u, 393267u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196615u, 196615u,
-    196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u,
-    196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196623u, 196623u,
-    196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u,
-    196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196639u, 196639u,
-    196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u,
-    196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 65597u, 65597u,
-    131074u, 131100u, 65556u, 65557u, 65558u, 65558u, 131096u, 131097u, 131098u, 131108u, 131109u, 131110u, 131101u, 131102u, 131116u, 131117u,
-    65576u, 65577u, 65578u, 65596u, 131118u, 131124u, 131125u, 131126u, 65592u, 65593u, 65594u, 65598u, 131075u, 131075u, 131075u, 131075u,
-    131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u,
-    131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u,
-    131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u,
-    131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131078u, 131078u, 131078u, 131078u,
-    131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u,
-    131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u,
-    131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u,
-    131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 196615u, 196615u, 196615u, 196615u,
-    196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u,
-    196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 327688u, 327688u, 327688u, 327688u,
-    327688u, 327688u, 327688u, 327688u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327684u, 327684u, 327684u, 327684u,
-    327684u, 327684u, 327684u, 327684u, 393217u, 393217u, 393217u, 393217u, 2197815552u, 2147483920u, 458754u, 458754u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 262156u, 262157u, 196622u, 196622u,
-    131081u, 131081u, 131081u, 131081u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65551u, 65547u, 196614u, 196614u,
-    196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u,
-    196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 524303u, 524301u,
-    458762u, 458762u, 393228u, 393228u, 393228u, 393228u, 458761u, 458761u, 458766u, 458766u, 393227u, 393227u, 393227u, 393227u, 262146u, 262146u,
-    262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 196615u, 196615u,
-    196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u,
-    196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262147u, 262147u,
-    262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 262149u, 262149u,
-    262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262148u, 262148u,
-    262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 2181038336u, 524298u,
-    458766u, 458766u, 393227u, 393227u, 393227u, 393227u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 262150u, 262150u,
-    262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 196612u, 196612u,
-    196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u,
-    196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196613u, 196613u,
-    196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u,
-    196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 262146u, 262146u,
-    262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262151u, 262151u,
-    262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 196623u, 196620u,
-    131081u, 131081u, 65549u, 65549u, 65549u, 65549u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 327684u, 327685u, 327686u, 327687u, 196611u, 196611u, 196611u, 196611u, 131074u, 131074u,
-    131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 196609u, 196609u, 196610u, 196610u, 196611u, 196611u, 196612u, 196612u, 262150u, 262151u,
-    196613u, 196613u, 131072u, 131072u, 131072u, 131072u, 196609u, 196609u, 196610u, 196610u, 131072u, 131072u, 131072u, 131072u, 196611u, 196611u,
-    262150u, 262151u, 196612u, 196612u, 196613u, 196613u, 262154u, 262154u, 262154u, 262154u, 262156u, 262156u, 262156u, 262156u, 262150u, 262150u,
-    262150u, 262150u, 327691u, 327691u, 327682u, 327682u, 327689u, 327689u, 327684u, 327684u, 327687u, 327687u, 327683u, 327683u, 327681u, 327681u,
-    393221u, 393224u, 327680u, 327680u, 327693u, 327693u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 196609u, 196609u, 196609u, 196609u, 327685u, 327688u, 262155u, 262155u, 131086u, 131086u,
-    131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 262146u, 262146u, 262153u, 262153u, 262148u, 262148u, 327693u, 327686u, 327692u, 327690u,
-    262151u, 262151u, 262144u, 262144u, 262147u, 262147u, 327685u, 327688u, 262155u, 262155u, 262146u, 262146u, 262153u, 262153u, 196611u, 196611u,
-    196611u, 196611u, 196615u, 196615u, 196615u, 196615u, 262148u, 262148u, 327693u, 327692u, 196608u, 196608u, 196608u, 196608u, 196609u, 196609u,
-    196609u, 196609u, 327686u, 327690u, 262158u, 262158u, 393216u, 393216u, 393216u, 393216u, 458753u, 458753u, 458754u, 458754u, 524291u, 2231369984u,
-    458760u, 458760u, 393221u, 393221u, 393221u, 393221u, 327686u, 327686u, 327686u, 327686u, 327686u, 327686u, 327686u, 327686u, 393223u, 393223u,
-    393223u, 393223u, 393227u, 393227u, 393227u, 393227u, 393228u, 393228u, 393228u, 393228u, 393229u, 393229u, 393229u, 393229u, 524302u, 2164261184u,
-    458770u, 458770u, 458771u, 458771u, 458772u, 458772u, 2164261188u, 524314u, 524327u, 2147483976u, 393251u, 393251u, 393251u, 393251u, 327717u, 327717u,
-    327717u, 327717u, 327717u, 327717u, 327717u, 327717u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u,
-    196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u,
-    196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 393254u, 393254u, 393254u, 393254u, 458798u, 458798u, 2164261194u, 524342u, 327722u, 327722u,
-    327722u, 327722u, 327722u, 327722u, 327722u, 327722u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u,
-    262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262188u, 262188u, 262188u, 262188u, 262188u, 262188u, 262188u, 262188u, 262188u, 262188u,
-    262188u, 262188u, 262188u, 262188u, 262188u, 262188u, 327725u, 327725u, 327725u, 327725u, 327725u, 327725u, 327725u, 327725u, 393264u, 393264u,
-    393264u, 393264u, 393268u, 393268u, 393268u, 393268u, 327729u, 327729u, 327729u, 327729u, 327729u, 327729u, 327729u, 327729u, 327730u, 327730u,
-    327730u, 327730u, 327730u, 327730u, 327730u, 327730u, 327731u, 327731u, 327731u, 327731u, 327731u, 327731u, 327731u, 327731u, 327735u, 327735u,
-    327735u, 327735u, 327735u, 327735u, 327735u, 327735u, 327736u, 327736u, 327736u, 327736u, 327736u, 327736u, 327736u, 327736u, 327737u, 327737u,
-    327737u, 327737u, 327737u, 327737u, 327737u, 327737u, 458810u, 458810u, 458812u, 458812u, 458813u, 458813u, 458814u, 458814u, 458815u, 458815u,
-    458816u, 458816u, 524353u, 2147483982u, 524356u, 2147483984u, 196680u, 196680u, 196680u, 196680u, 196680u, 196680u, 196680u, 196680u, 196680u, 196680u,
-    196680u, 196680u, 196680u, 196680u, 196680u, 196680u, 196680u, 196680u, 196680u, 196680u, 196680u, 196680u, 196680u, 196680u, 196680u, 196680u,
-    196680u, 196680u, 196680u, 196680u, 196680u, 196680u, 393220u, 393225u, 393226u, 393237u, 393238u, 393245u, 393246u, 393247u, 327712u, 327712u,
-    327713u, 327713u, 327714u, 327714u, 327721u, 327721u, 131088u, 131088u, 131088u, 131088u, 131088u, 131088u, 131088u, 131088u, 131088u, 131088u,
-    131088u, 131088u, 131088u, 131088u, 131088u, 131088u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u,
-    65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u,
-    65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65553u, 65553u, 131095u, 131097u, 65560u, 65560u, 131099u, 131100u, 65576u, 65583u,
-    65589u, 65589u, 131131u, 131138u, 65603u, 65605u, 65606u, 65607u, 327680u, 327680u, 327680u, 327680u, 327680u, 327680u, 327680u, 327680u,
-    458753u, 458753u, 458754u, 458754u, 393219u, 393219u, 393219u, 393219u, 393220u, 393220u, 393220u, 393220u, 393223u, 393223u, 393223u, 393223u,
-    327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327686u, 327686u, 327686u, 327686u, 327686u, 327686u, 327686u, 327686u,
-    458760u, 458760u, 458762u, 458762u, 524299u, 524300u, 524301u, 2231369984u, 327689u, 327689u, 327689u, 327689u, 327689u, 327689u, 327689u, 327689u,
-    2147483968u, 524306u, 2147483970u, 2147483972u, 393254u, 393254u, 393254u, 393254u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u,
-    131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u,
-    131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u,
-    131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u,
-    131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u,
-    196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u,
-    196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 524327u, 524328u, 524333u, 524339u, 393257u, 393257u, 393257u, 393257u,
-    393260u, 393260u, 393260u, 393260u, 393262u, 393262u, 393262u, 393262u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u,
-    262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u,
-    196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u,
-    196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 393264u, 393264u, 393264u, 393264u, 393265u, 393265u, 393265u, 393265u,
-    393266u, 393266u, 393266u, 393266u, 524340u, 524341u, 458807u, 458807u, 458808u, 458808u, 524345u, 2147483974u, 458810u, 458810u, 524350u, 2147483976u,
-    327752u, 327752u, 327752u, 327752u, 327752u, 327752u, 327752u, 327752u, 393230u, 393235u, 393236u, 393239u, 393241u, 393242u, 393243u, 393244u,
-    393245u, 393246u, 393247u, 393248u, 393249u, 393250u, 393251u, 393270u, 327740u, 327740u, 327744u, 327744u, 327746u, 327746u, 327747u, 327747u,
-    327748u, 327748u, 327749u, 327749u, 327750u, 327750u, 327751u, 327751u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u,
-    65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u,
-    65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 65552u, 65553u, 65557u, 65558u, 65560u, 65583u, 65595u, 65597u,
-    65599u, 65601u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 2197815552u, 2181038352u, 2181038360u, 2181038368u, 2181038376u, 2181038384u, 2181038392u, 2181038400u, 327717u, 327717u, 327717u, 327717u, 327717u, 327717u,
-    327717u, 327717u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u,
-    262150u, 262150u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u,
-    196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u,
-    196613u, 196613u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u,
-    262186u, 262186u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u,
-    262187u, 262187u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u,
-    65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u,
-    65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u,
-    65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u,
-    65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u,
-    65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u,
-    65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u,
-    65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u,
-    65572u, 65572u, 262145u, 262146u, 262147u, 262148u, 196615u, 196615u, 196616u, 196616u, 196617u, 196617u, 196618u, 196618u, 196619u, 196619u,
-    196620u, 196620u, 196621u, 196622u, 196623u, 196624u, 196625u, 196626u, 196627u, 196628u, 196629u, 196630u, 196631u, 196632u, 196633u, 196634u,
-    196635u, 196636u, 196637u, 196638u, 196639u, 196640u, 196641u, 196642u, 196643u, 196646u, 196647u, 196648u, 196649u, 196652u, 196653u, 196654u,
-    196655u, 196656u, 196657u, 196658u, 196659u, 196660u, 196661u, 196662u, 196663u, 196664u, 196665u, 196666u, 196667u, 196668u, 196669u, 196670u,
-    196671u, 196672u, 196673u, 196674u, 196675u, 196676u, 196677u, 196678u, 196679u, 196680u, 2248147200u, 2181038464u, 2164261256u, 524328u, 458791u, 458791u,
-    2147484044u, 524335u, 327718u, 327718u, 327718u, 327718u, 327718u, 327718u, 327718u, 327718u, 262180u, 262180u, 262180u, 262180u, 262180u, 262180u,
-    262180u, 262180u, 262180u, 262180u, 262180u, 262180u, 262180u, 262180u, 262180u, 262180u, 262181u, 262181u, 262181u, 262181u, 262181u, 262181u,
-    262181u, 262181u, 262181u, 262181u, 262181u, 262181u, 262181u, 262181u, 262181u, 262181u, 327722u, 327722u, 327722u, 327722u, 327722u, 327722u,
-    327722u, 327722u, 327725u, 327725u, 327725u, 327725u, 327725u, 327725u, 327725u, 327725u, 196651u, 196651u, 196651u, 196651u, 196651u, 196651u,
-    196651u, 196651u, 196651u, 196651u, 196651u, 196651u, 196651u, 196651u, 196651u, 196651u, 196651u, 196651u, 196651u, 196651u, 196651u, 196651u,
-    196651u, 196651u, 196651u, 196651u, 196651u, 196651u, 196651u, 196651u, 196651u, 196651u, 262188u, 262188u, 262188u, 262188u, 262188u, 262188u,
-    262188u, 262188u, 262188u, 262188u, 262188u, 262188u, 262188u, 262188u, 262188u, 262188u, 393262u, 393262u, 393262u, 393262u, 393268u, 393268u,
-    393268u, 393268u, 327728u, 327728u, 327728u, 327728u, 327728u, 327728u, 327728u, 327728u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u,
-    262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 327731u, 327731u, 327731u, 327731u, 327731u, 327731u,
-    327731u, 327731u, 524341u, 524355u, 458806u, 458806u, 393274u, 393274u, 393274u, 393274u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u,
-    196658u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u,
-    196658u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u, 327735u, 327735u, 327735u, 327735u, 327735u, 327735u,
-    327735u, 327735u, 327736u, 327736u, 327736u, 327736u, 327736u, 327736u, 327736u, 327736u, 327737u, 327737u, 327737u, 327737u, 327737u, 327737u,
-    327737u, 327737u, 458811u, 458811u, 458813u, 458813u, 393278u, 393278u, 393278u, 393278u, 393279u, 393279u, 393279u, 393279u, 393280u, 393280u,
-    393280u, 393280u, 458817u, 458817u, 524356u, 524357u, 458822u, 458822u, 458823u, 458823u, 262216u, 262216u, 262216u, 262216u, 262216u, 262216u,
-    262216u, 262216u, 262216u, 262216u, 262216u, 262216u, 262216u, 262216u, 262216u, 262216u, 458752u, 458754u, 458755u, 458756u, 458757u, 458759u,
-    458764u, 458769u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u,
-    262152u, 262152u, 262154u, 262154u, 262154u, 262154u, 262154u, 262154u, 262154u, 262154u, 196617u, 196617u, 196617u, 196617u, 196617u, 196617u,
-    196617u, 196617u, 196617u, 196617u, 196617u, 196617u, 196617u, 196617u, 196617u, 196617u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u,
-    262155u, 262155u, 262157u, 262157u, 262157u, 262157u, 262157u, 262157u, 262157u, 262157u, 262158u, 262158u, 262158u, 262158u, 262158u, 262158u,
-    262158u, 262158u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u,
-    262160u, 262160u, 458770u, 458772u, 458780u, 458781u, 458782u, 458784u, 393250u, 393250u, 262163u, 262163u, 262163u, 262163u, 262163u, 262163u,
-    262163u, 262163u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 131093u, 131093u, 196630u, 196632u, 131097u, 131097u,
-    196634u, 196639u, 131099u, 131105u, 131107u, 131138u, 65577u, 65596u, 196619u, 196619u, 196619u, 196619u, 196619u, 196619u, 196619u, 196619u,
-    196621u, 196621u, 196621u, 196621u, 196621u, 196621u, 196621u, 196621u, 196622u, 196622u, 196622u, 196622u, 196622u, 196622u, 196622u, 196622u,
-    327684u, 327684u, 327688u, 327688u, 327680u, 327680u, 327686u, 327686u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u,
-    131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 327689u, 327689u, 327683u, 327683u, 327685u, 327685u, 327690u, 327690u,
-    327692u, 327692u, 393217u, 393218u, 262151u, 262151u, 262151u, 262151u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u,
-    262147u, 262147u, 262149u, 262149u, 262154u, 262154u, 262156u, 262156u, 262144u, 262144u, 327681u, 327682u, 327684u, 327688u, 262151u, 262151u,
-    262155u, 262155u, 262157u, 262157u, 262158u, 262158u, 327686u, 327689u, 196623u, 196623u, 196623u, 196623u, 262147u, 262147u, 262149u, 262149u,
-    262154u, 262154u, 262156u, 262156u, 262145u, 262145u, 262146u, 262146u, 262148u, 262148u, 262151u, 262151u, 262152u, 262152u, 262155u, 262155u,
-    262157u, 262157u, 262158u, 262158u, 327686u, 327689u, 262144u, 262144u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    262147u, 262147u, 262149u, 262149u, 262154u, 262154u, 262156u, 262156u, 327687u, 327691u, 327693u, 327694u, 262159u, 262159u, 262145u, 262145u,
-    262146u, 262146u, 262148u, 262148u, 262152u, 262152u, 327686u, 327689u, 131074u, 131073u, 131072u, 131075u, 131073u, 131073u, 196610u, 196611u,
-    65536u, 65536u, 65536u, 65536u, 131073u, 131073u, 196608u, 196610u, 65539u, 65539u, 65539u, 65539u, 131075u, 131075u, 196610u, 196609u,
-    65536u, 65536u, 65536u, 65536u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u,
-    131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u,
-    131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u,
-    131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u,
-    131074u, 131074u, 131074u, 131074u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u,
-    131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u,
-    131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u,
-    131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u,
-    131078u, 131078u, 131078u, 131078u, 393220u, 393220u, 393220u, 393220u, 524298u, 524297u, 458760u, 458760u, 327681u, 327681u, 327681u, 327681u,
-    327681u, 327681u, 327681u, 327681u, 327694u, 327694u, 327694u, 327694u, 327694u, 327694u, 327694u, 327694u, 327692u, 327692u, 327692u, 327692u,
-    327692u, 327692u, 327692u, 327692u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u,
-    262149u, 262149u, 262149u, 262149u, 327680u, 327680u, 327680u, 327680u, 327680u, 327680u, 327680u, 327680u, 458763u, 458763u, 458765u, 458765u,
-    393219u, 393219u, 393219u, 393219u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u,
-    196614u, 196614u, 196614u, 196614u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u,
-    196615u, 196615u, 196615u, 196615u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 262155u, 327692u, 327692u, 327692u, 327692u,
-    458766u, 458765u, 393225u, 393225u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 393226u, 393226u, 393217u, 393217u,
-    327684u, 327684u, 327684u, 327684u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u,
-    196613u, 196613u, 196613u, 196613u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u,
-    131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u,
-    131084u, 131084u, 131084u, 131084u, 327689u, 327689u, 327689u, 327689u, 327683u, 327683u, 327683u, 327683u, 458762u, 458756u, 393229u, 393229u,
-    327694u, 327694u, 327694u, 327694u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 327688u, 327688u, 327688u, 327688u,
-    327687u, 327687u, 327687u, 327687u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u,
-    131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u,
-    131078u, 131078u, 131078u, 131078u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 327682u, 327682u, 327682u, 327682u, 327691u, 327691u, 327691u, 327691u, 262144u, 262144u, 262144u, 262144u,
-    262144u, 262144u, 262144u, 262144u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 2147483920u, 524296u, 524298u, 2197815552u, 393222u, 393222u, 393222u, 393222u, 327685u, 327685u, 327685u, 327685u,
-    327685u, 327685u, 327685u, 327685u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u,
-    262144u, 262144u, 262144u, 262144u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65537u, 65537u, 65537u, 65537u, 65537u, 65537u, 65537u, 65537u, 131083u, 131083u, 131083u, 131083u,
-    196620u, 196620u, 262158u, 262153u, 65549u, 65540u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131078u, 131078u,
-    131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 327684u, 327683u, 262144u, 262144u, 262149u, 262149u, 327681u, 327688u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 262145u, 262145u, 262145u, 262145u, 393224u, 393218u, 327687u, 327687u, 196612u, 196612u,
-    196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u,
-    131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131075u,
-    131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 262149u, 262149u, 262149u, 262149u, 262151u, 262151u, 262151u, 262151u, 262146u, 262146u,
-    262146u, 262146u, 393220u, 393224u, 327683u, 327683u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131078u,
-    131078u, 131078u, 131078u, 131078u, 131078u, 131078u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 524296u, 524289u, 458756u, 458756u, 393222u, 393222u, 393222u, 393222u, 327685u, 327685u,
-    327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u,
-    262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u,
-    131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 393216u, 393217u, 327686u, 327686u, 262149u, 262149u, 262149u, 262149u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131074u,
-    131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 327680u, 327681u,
-    262150u, 262150u, 196610u, 196610u, 196610u, 196610u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 196611u, 196611u,
-    196611u, 196611u, 196612u, 196612u, 196612u, 196612u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u,
-    131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 393216u, 393217u, 327686u, 327686u, 262146u, 262146u, 262146u, 262146u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u,
-    131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u,
-    65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u,
-    65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196612u, 196612u
-);
-// Copies chunk 0 of the tables into the state, which a reset clears
-@compute @workgroup_size(64)
-fn loadTables0(@builtin(global_invocation_id) invocation: vec3u) {
-    if (packet.reset == 0u || invocation.x >= 8192u) {
-        return;
-    }
-    state[S_TABLES + 0u + invocation.x] = TABLE_DATA_0[invocation.x];
-}
-const TABLE_DATA_1 = array<u32, 8192>(
-    196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 393216u, 393217u,
-    327686u, 327686u, 262146u, 262146u, 262146u, 262146u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u,
-    65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 65543u,
-    65543u, 65543u, 65543u, 65543u, 65543u, 65543u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u,
-    131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 262150u, 262150u, 262150u, 262150u, 393216u, 393217u, 327682u, 327682u, 262147u, 262147u,
-    262147u, 262147u, 262148u, 262148u, 262148u, 262148u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u,
-    65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u,
-    65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 393216u, 393217u,
-    327682u, 327682u, 262150u, 262150u, 262150u, 262150u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131077u, 131077u,
-    131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 327680u, 327681u, 262150u, 262150u, 196615u, 196615u, 196615u, 196615u, 196610u, 196610u,
-    196610u, 196610u, 196611u, 196611u, 196611u, 196611u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 393216u, 393217u,
-    327685u, 327685u, 262151u, 262151u, 262151u, 262151u, 327680u, 327681u, 262149u, 262149u, 196611u, 196611u, 196611u, 196611u, 131076u, 131076u,
-    131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 327680u, 327681u, 262149u, 262149u, 196612u, 196612u, 196612u, 196612u, 131075u, 131075u,
-    131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65538u,
-    65538u, 65538u, 65538u, 65538u, 65538u, 65538u, 65539u, 65539u, 65539u, 65539u, 65539u, 65539u, 65539u, 65539u, 65539u, 65539u,
-    65539u, 65539u, 65539u, 65539u, 65539u, 65539u, 327680u, 327681u, 262148u, 262148u, 196613u, 196613u, 196613u, 196613u, 131074u, 131074u,
-    131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u,
-    65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 196613u, 196613u, 196613u, 196613u, 327680u, 327681u, 262147u, 262147u, 131074u, 131074u,
-    131074u, 131074u, 131074u, 131074u, 131074u, 131074u, 131077u, 131077u, 131077u, 131077u, 262144u, 262145u, 196611u, 196611u, 131074u, 131074u,
-    131074u, 131074u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 262144u, 262145u, 196610u, 196610u, 131075u, 131075u,
-    131075u, 131075u, 131077u, 131077u, 131077u, 131077u, 327680u, 327681u, 262147u, 262147u, 196610u, 196610u, 196610u, 196610u, 131077u, 131077u,
-    131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u,
-    65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 65541u,
-    65541u, 65541u, 65541u, 65541u, 65541u, 65541u, 327680u, 327681u, 262146u, 262146u, 196611u, 196611u, 196611u, 196611u, 131076u, 131076u,
-    131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 327691u, 327691u, 327691u, 327691u, 327691u, 327691u, 327691u, 327691u, 393237u, 393237u,
-    393237u, 393237u, 524335u, 524311u, 458780u, 458780u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u,
-    262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 524321u, 524336u,
-    458783u, 458783u, 393234u, 393234u, 393234u, 393234u, 524340u, 524320u, 2264924432u, 524324u, 393228u, 393228u, 393228u, 393228u, 393236u, 393236u,
-    393236u, 393236u, 458796u, 458796u, 524328u, 524315u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u,
-    262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 393235u, 393235u,
-    393235u, 393235u, 393251u, 393251u, 393251u, 393251u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 393221u, 393221u, 393221u, 393221u, 458781u, 458781u, 524302u, 2147483906u, 327690u, 327690u,
-    327690u, 327690u, 327690u, 327690u, 327690u, 327690u, 458759u, 458759u, 458782u, 458782u, 393242u, 393242u, 393242u, 393242u, 524326u, 524327u,
-    458758u, 458758u, 458774u, 458774u, 2147483912u, 2147483904u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 458765u, 458765u,
-    2147483910u, 2147483908u, 2147483914u, 2147484178u, 2164261132u, 524325u, 65551u, 65586u, 65596u, 65552u, 65560u, 65587u, 65561u, 65578u, 65570u, 65589u,
-    65597u, 65577u, 131131u, 131118u, 65579u, 65579u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u,
-    131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u,
-    131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u,
-    131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u,
-    131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u,
-    196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u,
-    196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 524353u, 524354u, 524355u, 524356u, 524357u, 524358u, 524359u, 2147484176u, 327734u, 327734u,
-    327734u, 327734u, 327734u, 327734u, 327734u, 327734u, 262199u, 262199u, 262199u, 262199u, 262199u, 262199u, 262199u, 262199u, 262199u, 262199u,
-    262199u, 262199u, 262199u, 262199u, 262199u, 262199u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u,
-    131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u,
-    131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u,
-    131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u,
-    131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u,
-    131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u,
-    131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u,
-    131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u,
-    131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 65599u, 65600u, 65585u, 65598u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u,
-    327700u, 327700u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 393238u, 393238u, 393238u, 393238u, 524327u, 2164261478u,
-    524326u, 2147484266u, 524294u, 2197815824u, 524324u, 2147484196u, 458782u, 458782u, 458780u, 458780u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u,
-    262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 327715u, 327715u, 327715u, 327715u, 327715u, 327715u,
-    327715u, 327715u, 458765u, 458765u, 2164261408u, 524311u, 393235u, 393235u, 393235u, 393235u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u,
-    262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u,
-    262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 327691u, 327691u, 327691u, 327691u, 327691u, 327691u,
-    327691u, 327691u, 458779u, 458779u, 458757u, 458757u, 458781u, 458781u, 524341u, 2231370278u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u,
-    262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 393234u, 393234u, 393234u, 393234u, 393228u, 393228u,
-    393228u, 393228u, 393237u, 393237u, 393237u, 393237u, 524319u, 2264924416u, 458796u, 458796u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u,
-    327683u, 327683u, 327690u, 327690u, 327690u, 327690u, 327690u, 327690u, 327690u, 327690u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u,
-    196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u,
-    196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u,
-    131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 131079u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u,
-    196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u,
-    196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 262198u, 262198u, 262198u, 262198u, 262198u, 262198u,
-    262198u, 262198u, 262198u, 262198u, 262198u, 262198u, 262198u, 262198u, 262198u, 262198u, 2197815808u, 524349u, 458814u, 458814u, 393268u, 393268u,
-    393268u, 393268u, 327738u, 327738u, 327738u, 327738u, 327738u, 327738u, 327738u, 327738u, 196673u, 196673u, 196674u, 196674u, 196675u, 196675u,
-    196676u, 196676u, 196677u, 196677u, 196678u, 196678u, 196679u, 196679u, 262207u, 262208u, 65568u, 65568u, 65568u, 65568u, 65568u, 65568u,
-    65568u, 65568u, 131087u, 131087u, 131087u, 131087u, 196633u, 196633u, 262160u, 262195u, 131113u, 131120u, 65560u, 65560u, 65582u, 65569u,
-    196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 196663u, 196663u, 196663u, 196663u, 196663u, 196663u, 196663u, 196663u,
-    262201u, 262201u, 262201u, 262201u, 393276u, 393259u, 327714u, 327714u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u, 196658u,
-    65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u,
-    65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u,
-    131121u, 131114u, 65576u, 65576u, 65583u, 65581u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u,
-    262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 393236u, 393236u,
-    393236u, 393236u, 393229u, 393229u, 393229u, 393229u, 2264924472u, 2147483942u, 524317u, 524304u, 393237u, 393237u, 393237u, 393237u, 327690u, 327690u,
-    327690u, 327690u, 327690u, 327690u, 327690u, 327690u, 458774u, 458774u, 2181038660u, 524312u, 458771u, 458771u, 458770u, 458770u, 327684u, 327684u,
-    327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u,
-    262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 393221u, 393221u, 393221u, 393221u, 2197815592u, 524311u, 458766u, 458766u, 327691u, 327691u,
-    327691u, 327691u, 327691u, 327691u, 327691u, 327691u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u,
-    262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u,
-    262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 327692u, 327692u, 327692u, 327692u, 327692u, 327692u, 327692u, 327692u, 2147483904u, 2164261154u,
-    458787u, 458787u, 524332u, 524303u, 2214592770u, 524294u, 65543u, 65561u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u,
-    65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 327731u, 327740u, 262185u, 262185u, 196657u, 196657u, 196657u, 196657u,
-    131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131110u, 131111u, 65564u, 65564u, 65567u, 65573u, 196642u, 196642u,
-    262198u, 262201u, 196654u, 196654u, 196640u, 196640u, 196653u, 196653u, 262202u, 262194u, 196656u, 196656u, 196664u, 196664u, 65572u, 65572u,
-    65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u,
-    65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u,
-    65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u,
-    65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u,
-    65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u,
-    65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u,
-    65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u,
-    65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 262187u, 262187u,
-    262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 262187u, 327742u, 327742u,
-    327742u, 327742u, 327742u, 327742u, 327742u, 327742u, 2164261440u, 2181038648u, 458804u, 458804u, 458811u, 458811u, 458813u, 458813u, 196650u, 196650u,
-    196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u,
-    196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 131105u, 131105u,
-    131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u,
-    131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u,
-    131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u,
-    131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131141u, 131141u,
-    131142u, 131142u, 131143u, 131143u, 196671u, 196672u, 131137u, 131138u, 131139u, 131140u, 196655u, 196648u, 131127u, 131127u, 65589u, 65589u,
-    65589u, 65589u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u,
-    262147u, 262147u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 393255u, 393255u, 393255u, 393255u, 393254u, 393254u, 393254u, 393254u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u,
-    327685u, 327685u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u,
-    262170u, 262170u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u,
-    262146u, 262146u, 458774u, 458774u, 458783u, 458783u, 393237u, 393237u, 393237u, 393237u, 524334u, 2231369992u, 458792u, 458792u, 393228u, 393228u,
-    393228u, 393228u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u,
-    196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u,
-    196616u, 196616u, 393244u, 393244u, 393244u, 393244u, 393246u, 393246u, 393246u, 393246u, 327689u, 327689u, 327689u, 327689u, 327689u, 327689u,
-    327689u, 327689u, 524320u, 524342u, 524335u, 524311u, 458766u, 458766u, 524313u, 524347u, 458788u, 458788u, 458759u, 458759u, 458805u, 458805u,
-    2147483908u, 524329u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u,
-    262161u, 262161u, 393234u, 393234u, 393234u, 393234u, 393245u, 393245u, 393245u, 393245u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u,
-    327684u, 327684u, 458789u, 458789u, 2147483910u, 524303u, 393260u, 393260u, 393260u, 393260u, 393235u, 393235u, 393235u, 393235u, 524312u, 524338u,
-    458765u, 458765u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u,
-    262144u, 262144u, 327715u, 327715u, 327715u, 327715u, 327715u, 327715u, 327715u, 327715u, 2147483904u, 524343u, 458779u, 458779u, 393227u, 393227u,
-    393227u, 393227u, 524336u, 524337u, 524304u, 2147483976u, 393236u, 393236u, 393236u, 393236u, 393226u, 393226u, 393226u, 393226u, 524333u, 2147483906u,
-    458758u, 458758u, 65569u, 65593u, 65578u, 65570u, 65598u, 65579u, 65592u, 65587u, 327745u, 327745u, 327746u, 327746u, 327747u, 327747u,
-    327748u, 327748u, 327749u, 327749u, 327750u, 327750u, 327751u, 327751u, 393279u, 393280u, 131124u, 131124u, 131124u, 131124u, 131124u, 131124u,
-    131124u, 131124u, 131124u, 131124u, 131124u, 131124u, 131124u, 131124u, 131124u, 131124u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u,
-    65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u,
-    65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65594u, 65596u, 327683u, 327683u, 327683u, 327683u,
-    327683u, 327683u, 327683u, 327683u, 458823u, 458823u, 2214593040u, 2214592924u, 458800u, 458800u, 458782u, 458782u, 393244u, 393244u, 393244u, 393244u,
-    2147484224u, 2147484174u, 458773u, 458773u, 327698u, 327698u, 327698u, 327698u, 327698u, 327698u, 327698u, 327698u, 327690u, 327690u, 327690u, 327690u,
-    327690u, 327690u, 327690u, 327690u, 327715u, 327715u, 327715u, 327715u, 327715u, 327715u, 327715u, 327715u, 458799u, 458799u, 524386u, 2197815628u,
-    393236u, 393236u, 393236u, 393236u, 393220u, 393220u, 393220u, 393220u, 2147484108u, 2197815856u, 524310u, 524377u, 393278u, 393278u, 393278u, 393278u,
-    524337u, 2214592892u, 458797u, 458797u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 524294u, 2214592812u, 524327u, 2147483946u,
-    458757u, 458757u, 524325u, 2214592778u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 262170u, 262170u, 262170u, 262170u,
-    262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 393235u, 393235u, 393235u, 393235u,
-    393228u, 393228u, 393228u, 393228u, 458781u, 458781u, 2231370190u, 2197815740u, 393243u, 393243u, 393243u, 393243u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 262144u, 262144u, 262144u, 262144u,
-    262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 327689u, 327689u, 327689u, 327689u,
-    327689u, 327689u, 327689u, 327689u, 458765u, 458765u, 2181038336u, 524324u, 458805u, 458805u, 2147483912u, 2214592860u, 327681u, 327681u, 327681u, 327681u,
-    327681u, 327681u, 327681u, 327681u, 393227u, 393227u, 393227u, 393227u, 524326u, 524334u, 524368u, 524302u, 262161u, 262161u, 262161u, 262161u,
-    262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 131079u, 131079u, 196660u, 196709u,
-    65599u, 65599u, 65599u, 65599u, 65551u, 65576u, 262240u, 262240u, 262246u, 262246u, 327803u, 327801u, 262187u, 262187u, 131127u, 131127u,
-    131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 262238u, 262238u, 262256u, 262256u, 196689u, 196689u, 196689u, 196689u, 131088u, 131088u,
-    131088u, 131088u, 131088u, 131088u, 131088u, 131088u, 65601u, 65559u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u, 131130u,
-    196682u, 196682u, 196682u, 196682u, 196683u, 196683u, 196683u, 196683u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u,
-    327805u, 327804u, 262231u, 262231u, 196684u, 196684u, 196684u, 196684u, 196693u, 196693u, 196633u, 196633u, 262248u, 262222u, 196718u, 196718u,
-    131131u, 131131u, 131131u, 131131u, 131114u, 131114u, 131114u, 131114u, 65567u, 65567u, 65567u, 65567u, 65567u, 65567u, 65567u, 65567u,
-    65567u, 65567u, 65567u, 65567u, 65567u, 65567u, 65567u, 65567u, 327791u, 327785u, 262221u, 262221u, 196678u, 196678u, 196678u, 196678u,
-    131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 327798u, 327795u, 262237u, 262237u, 196700u, 196700u, 196700u, 196700u,
-    262247u, 262247u, 262234u, 262234u, 196699u, 196699u, 196699u, 196699u, 65568u, 65568u, 65568u, 65568u, 65568u, 65568u, 65568u, 65568u,
-    65568u, 65568u, 65568u, 65568u, 65568u, 65568u, 65568u, 65568u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u,
-    262232u, 262232u, 262258u, 262258u, 327789u, 327797u, 262250u, 262250u, 65592u, 65592u, 65592u, 65592u, 65592u, 65592u, 65592u, 65592u,
-    65592u, 65592u, 65592u, 65592u, 65592u, 65592u, 65592u, 65592u, 196691u, 196691u, 262239u, 262178u, 131140u, 131140u, 131140u, 131140u,
-    65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65577u, 65587u, 262263u, 262263u, 262263u, 262263u, 393324u, 393295u,
-    327793u, 327793u, 196692u, 196692u, 196692u, 196692u, 196692u, 196692u, 196692u, 196692u, 131141u, 131141u, 131141u, 131141u, 131141u, 131141u,
-    131141u, 131141u, 131141u, 131141u, 131141u, 131141u, 131141u, 131141u, 131141u, 131141u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u,
-    65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u,
-    65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65586u, 65652u, 65590u, 131132u, 131132u, 131132u, 131132u,
-    131132u, 131132u, 131132u, 131132u, 131145u, 131145u, 131145u, 131145u, 131145u, 131145u, 131145u, 131145u, 196708u, 196708u, 196708u, 196708u,
-    327802u, 327777u, 262205u, 262205u, 131154u, 131154u, 131154u, 131154u, 131154u, 131154u, 131154u, 131154u, 262243u, 262264u, 196694u, 196694u,
-    131144u, 131144u, 131144u, 131144u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65603u, 65643u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 393219u, 393219u,
-    393219u, 393219u, 458773u, 458773u, 458781u, 458781u, 327690u, 327690u, 327690u, 327690u, 327690u, 327690u, 327690u, 327690u, 327699u, 327699u,
-    327699u, 327699u, 327699u, 327699u, 327699u, 327699u, 458764u, 458764u, 2214592912u, 524359u, 393227u, 393227u, 393227u, 393227u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 262170u, 262170u,
-    262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 327715u, 327715u,
-    327715u, 327715u, 327715u, 327715u, 327715u, 327715u, 458814u, 458814u, 2197815588u, 524336u, 524345u, 524301u, 2214592772u, 524343u, 327682u, 327682u,
-    327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 393236u, 393236u, 393236u, 393236u, 2197815840u, 2181038616u, 2147483980u, 524344u, 327698u, 327698u,
-    327698u, 327698u, 327698u, 327698u, 327698u, 327698u, 393260u, 393260u, 393260u, 393260u, 2231370192u, 2164261120u, 2181038608u, 524335u, 393243u, 393243u,
-    393243u, 393243u, 458788u, 458788u, 2197815612u, 524292u, 458790u, 458790u, 458780u, 458780u, 2214592878u, 2181038388u, 458805u, 458805u, 524334u, 2147484046u,
-    2214592944u, 524327u, 458789u, 458789u, 524333u, 2214592846u, 327689u, 327689u, 327689u, 327689u, 327689u, 327689u, 327689u, 327689u, 262161u, 262161u,
-    262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 131188u, 131077u,
-    65576u, 65576u, 196695u, 196695u, 196695u, 196695u, 196732u, 196732u, 196732u, 196732u, 131157u, 131157u, 131157u, 131157u, 131157u, 131157u,
-    131157u, 131157u, 196614u, 196614u, 196614u, 196614u, 196722u, 196722u, 196722u, 196722u, 327705u, 327732u, 327788u, 327798u, 196624u, 196624u,
-    196624u, 196624u, 131144u, 131144u, 131144u, 131144u, 262241u, 262240u, 196733u, 196733u, 196703u, 196703u, 196615u, 196615u, 131122u, 131122u,
-    131122u, 131122u, 131086u, 131086u, 196712u, 196694u, 131103u, 131103u, 131170u, 131170u, 131140u, 131140u, 131140u, 131140u, 262259u, 262250u,
-    196623u, 196623u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65558u, 65594u, 196690u, 196690u, 196690u, 196690u,
-    196702u, 196702u, 196702u, 196702u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 327722u, 327759u, 262245u, 262245u,
-    327791u, 327779u, 262167u, 262167u, 262249u, 262249u, 262236u, 262236u, 196649u, 196649u, 196649u, 196649u, 131148u, 131148u, 131148u, 131148u,
-    131148u, 131148u, 131148u, 131148u, 327789u, 327704u, 262265u, 262265u, 196667u, 196667u, 196667u, 196667u, 65616u, 65616u, 65616u, 65616u,
-    65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65566u, 65590u, 327799u, 327723u,
-    262254u, 262254u, 262234u, 262234u, 262235u, 262235u, 196677u, 196677u, 196677u, 196677u, 196640u, 196640u, 196640u, 196640u, 65599u, 65599u,
-    65599u, 65599u, 65599u, 65599u, 65599u, 65599u, 65599u, 65599u, 65599u, 65599u, 65599u, 65599u, 65599u, 65599u, 131146u, 131146u,
-    131146u, 131146u, 131146u, 131146u, 131146u, 131146u, 262232u, 262232u, 327713u, 327750u, 196685u, 196685u, 196685u, 196685u, 262257u, 262257u,
-    262204u, 262204u, 262266u, 262266u, 262195u, 262195u, 131147u, 131147u, 131147u, 131147u, 131147u, 131147u, 131147u, 131147u, 196710u, 196710u,
-    196710u, 196710u, 196710u, 196710u, 196710u, 196710u, 327741u, 327741u, 393250u, 393333u, 262222u, 262222u, 262222u, 262222u, 131145u, 131145u,
-    131145u, 131145u, 131145u, 131145u, 131145u, 131145u, 131145u, 131145u, 131145u, 131145u, 131145u, 131145u, 131145u, 131145u, 65602u, 65602u,
-    65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u,
-    65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65585u, 65585u,
-    65585u, 65585u, 196711u, 196731u, 131156u, 131156u, 65600u, 65600u, 65600u, 65600u, 131179u, 131179u, 196701u, 196689u, 65603u, 65603u,
-    65603u, 65603u, 65603u, 65603u, 65603u, 65603u, 131155u, 131155u, 131155u, 131155u, 196720u, 196720u, 262244u, 262264u, 524395u, 2164261228u,
-    458781u, 458781u, 458766u, 458766u, 458788u, 458788u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 327689u, 327689u,
-    327689u, 327689u, 327689u, 327689u, 327689u, 327689u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 2147483916u, 524337u,
-    524343u, 2197815604u, 458791u, 458791u, 524345u, 2147484008u, 393278u, 393278u, 393278u, 393278u, 524333u, 2164261160u, 524294u, 2164261120u, 262144u, 262144u,
-    262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 393236u, 393236u,
-    393236u, 393236u, 393228u, 393228u, 393228u, 393228u, 458832u, 458832u, 458780u, 458780u, 393220u, 393220u, 393220u, 393220u, 2181038380u, 2147483918u,
-    2214592840u, 2181038448u, 458773u, 458773u, 458790u, 458790u, 458789u, 458789u, 2181038456u, 524386u, 458823u, 458823u, 2197815568u, 524310u, 327715u, 327715u,
-    327715u, 327715u, 327715u, 327715u, 327715u, 327715u, 393227u, 393227u, 393227u, 393227u, 2181038498u, 524334u, 458779u, 458779u, 327682u, 327682u,
-    327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 524346u, 524344u, 458757u, 458757u, 2197815682u, 524335u, 458765u, 458765u, 393235u, 393235u,
-    393235u, 393235u, 393269u, 393269u, 393269u, 393269u, 393234u, 393234u, 393234u, 393234u, 524377u, 524336u, 2197815698u, 2181038368u, 393226u, 393226u,
-    393226u, 393226u, 2147484010u, 2164261188u, 2181038340u, 2147484032u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 262161u, 262161u,
-    262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 65543u, 65543u,
-    131195u, 131141u, 196690u, 196632u, 131148u, 131148u, 65551u, 65551u, 65551u, 65551u, 65552u, 65601u, 65611u, 65559u, 131157u, 131157u,
-    131157u, 131157u, 262187u, 262169u, 196714u, 196714u, 65567u, 65567u, 65567u, 65567u, 65567u, 65567u, 65567u, 65567u, 65566u, 65566u,
-    65566u, 65566u, 131136u, 131136u, 196730u, 196709u, 131114u, 131145u, 131104u, 131165u, 65622u, 65622u, 65622u, 65622u, 196720u, 196641u,
-    131142u, 131142u, 262244u, 262178u, 196699u, 196699u, 131124u, 131124u, 131124u, 131124u, 65604u, 65604u, 65604u, 65604u, 65604u, 65604u,
-    65604u, 65604u, 65576u, 65576u, 131123u, 131155u, 327797u, 327788u, 262234u, 262234u, 196696u, 196696u, 196696u, 196696u, 131168u, 131168u,
-    131168u, 131168u, 131168u, 131168u, 131168u, 131168u, 65577u, 65577u, 65577u, 65577u, 65577u, 65577u, 65577u, 65577u, 65577u, 65577u,
-    65577u, 65577u, 65577u, 65577u, 65577u, 65577u, 65586u, 65595u, 65652u, 65590u, 131156u, 131169u, 65596u, 65596u, 65610u, 65610u,
-    65610u, 65610u, 196700u, 196669u, 131153u, 131153u, 196687u, 196711u, 131197u, 131197u, 131135u, 131135u, 196703u, 196680u, 65602u, 65603u,
-    262263u, 262264u, 262243u, 262253u, 131150u, 131150u, 131150u, 131150u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u,
-    196710u, 196710u, 196722u, 196722u, 196712u, 196712u, 196729u, 196729u, 131159u, 131159u, 131159u, 131159u, 262254u, 262262u, 196721u, 196721u,
-    131187u, 131187u, 196719u, 196702u, 131177u, 131177u, 131196u, 131196u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 458756u, 458756u, 2147484500u, 524309u, 2214592994u, 2231370146u, 458788u, 458788u,
-    327699u, 327699u, 327699u, 327699u, 327699u, 327699u, 327699u, 327699u, 458814u, 458814u, 2231370018u, 524359u, 393227u, 393227u, 393227u, 393227u,
-    327690u, 327690u, 327690u, 327690u, 327690u, 327690u, 327690u, 327690u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 393244u, 393244u, 393244u, 393244u, 458781u, 458781u, 2147483904u, 2181038934u,
-    327715u, 327715u, 327715u, 327715u, 327715u, 327715u, 327715u, 327715u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u,
-    196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u,
-    196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 2248147524u, 2197816132u, 458789u, 458789u, 2231370242u, 524333u, 458772u, 458772u,
-    327698u, 327698u, 327698u, 327698u, 327698u, 327698u, 327698u, 327698u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u,
-    262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 524335u, 2214592770u, 458805u, 458805u, 458755u, 458755u, 2248147652u, 524334u,
-    393243u, 393243u, 393243u, 393243u, 393260u, 393260u, 393260u, 393260u, 327689u, 327689u, 327689u, 327689u, 327689u, 327689u, 327689u, 327689u,
-    524326u, 2231370082u, 2147484226u, 524300u, 393218u, 393218u, 393218u, 393218u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 65591u, 65541u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u,
-    131126u, 131126u, 262228u, 262228u, 327732u, 327775u, 196614u, 196614u, 196614u, 196614u, 196671u, 196671u, 196671u, 196671u, 327784u, 327788u,
-    327802u, 327723u, 327768u, 327789u, 327791u, 327772u, 196623u, 196623u, 196623u, 196623u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u,
-    196615u, 196615u, 196694u, 196694u, 196694u, 196694u, 196694u, 196694u, 196694u, 196694u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u,
-    131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 196720u, 196720u, 196720u, 196720u, 196720u, 196720u,
-    196720u, 196720u, 327793u, 327793u, 327750u, 327750u, 262237u, 262237u, 262237u, 262237u, 262194u, 262194u, 262194u, 262194u, 327712u, 327712u,
-    393326u, 393277u, 262167u, 262167u, 262167u, 262167u, 327740u, 327740u, 327803u, 327803u, 131137u, 131137u, 131137u, 131137u, 131137u, 131137u,
-    131137u, 131137u, 131137u, 131137u, 131137u, 131137u, 131137u, 131137u, 131137u, 131137u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u,
-    196639u, 196639u, 327696u, 327696u, 393322u, 393240u, 262234u, 262234u, 262234u, 262234u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u,
-    65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u,
-    65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 131139u, 131139u, 131139u, 131139u, 131139u, 131139u,
-    131139u, 131139u, 131139u, 131139u, 131139u, 131139u, 131139u, 131139u, 131139u, 131139u, 196691u, 196691u, 196691u, 196691u, 196691u, 196691u,
-    196691u, 196691u, 393312u, 393336u, 327781u, 327781u, 262249u, 262249u, 262249u, 262249u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u,
-    65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u,
-    65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 262261u, 262261u, 327705u, 327771u, 262218u, 262218u,
-    262238u, 262238u, 196676u, 196676u, 196676u, 196676u, 262217u, 262217u, 262226u, 262226u, 65634u, 65634u, 65634u, 65634u, 65634u, 65634u,
-    65634u, 65634u, 65634u, 65634u, 65634u, 65634u, 65634u, 65634u, 65634u, 65634u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u,
-    65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u,
-    65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 327801u, 327801u, 393250u, 393267u, 393294u, 393330u,
-    393249u, 393341u, 262247u, 262247u, 262247u, 262247u, 262231u, 262231u, 262231u, 262231u, 65575u, 65616u, 65576u, 65576u, 65576u, 65576u,
-    65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u,
-    65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u,
-    65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u,
-    65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 65576u, 262221u, 262221u, 262221u, 262221u,
-    262221u, 262221u, 262221u, 262221u, 327798u, 327798u, 327798u, 327798u, 393340u, 393340u, 458794u, 458831u, 196689u, 196689u, 196689u, 196689u,
-    196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 131138u, 131138u, 131138u, 131138u,
-    131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u,
-    131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 65584u, 65584u, 65584u, 65584u,
-    65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u,
-    65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u,
-    65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u,
-    65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 131121u, 131121u, 131121u, 131121u,
-    131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u,
-    131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 262243u, 262243u, 262243u, 262243u,
-    262243u, 262243u, 262243u, 262243u, 327721u, 327721u, 327721u, 327721u, 327780u, 327780u, 327780u, 327780u, 262219u, 262219u, 262219u, 262219u,
-    262219u, 262219u, 262219u, 262219u, 327782u, 327782u, 327782u, 327782u, 458867u, 458871u, 393313u, 393313u, 65592u, 65592u, 65592u, 65592u,
-    65592u, 65592u, 65592u, 65592u, 196684u, 196684u, 262213u, 262203u, 131179u, 131179u, 131179u, 131179u, 65594u, 65593u, 131188u, 131188u,
-    196680u, 196693u, 65625u, 65625u, 65625u, 65625u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 393269u, 393269u, 393269u, 393269u, 458809u, 458809u, 2164261394u, 2164261136u, 393229u, 393229u,
-    393229u, 393229u, 458788u, 458788u, 458792u, 458792u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u,
-    262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u,
-    262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 2181038638u, 524368u, 458783u, 458783u, 458799u, 458799u, 2197815552u, 2181038602u, 327715u, 327715u,
-    327715u, 327715u, 327715u, 327715u, 327715u, 327715u, 393237u, 393237u, 393237u, 393237u, 2214592944u, 524359u, 2181038630u, 524353u, 327683u, 327683u,
-    327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 458782u, 458782u, 524346u, 2181038484u, 393236u, 393236u, 393236u, 393236u, 393227u, 393227u,
-    393227u, 393227u, 458801u, 458801u, 458781u, 458781u, 393228u, 393228u, 393228u, 393228u, 458800u, 458800u, 524333u, 524343u, 393235u, 393235u,
-    393235u, 393235u, 393226u, 393226u, 393226u, 393226u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 458774u, 458774u,
-    524355u, 2181038594u, 458757u, 458757u, 458789u, 458789u, 458780u, 458780u, 524302u, 2164261292u, 393234u, 393234u, 393234u, 393234u, 327681u, 327681u,
-    327681u, 327681u, 327681u, 327681u, 327681u, 327681u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u,
-    262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 458791u, 458791u, 524295u, 524338u, 393225u, 393225u, 393225u, 393225u, 524354u, 2197815830u,
-    458790u, 458790u, 2214592976u, 2147484144u, 2197815708u, 524294u, 524334u, 2197815794u, 458814u, 458814u, 458779u, 458779u, 2248147220u, 524344u, 393220u, 393220u,
-    393220u, 393220u, 393260u, 393260u, 393260u, 393260u, 131166u, 131166u, 131166u, 131166u, 262234u, 262244u, 196700u, 196700u, 65551u, 65551u,
-    65551u, 65551u, 65551u, 65551u, 65551u, 65551u, 131188u, 131088u, 65599u, 65599u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u,
-    131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u,
-    131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 131161u, 196695u, 196695u, 196695u, 196695u, 196695u, 196695u,
-    196695u, 196695u, 196695u, 196695u, 196695u, 196695u, 196695u, 196695u, 196695u, 196695u, 393334u, 393334u, 458869u, 458860u, 327791u, 327791u,
-    327791u, 327791u, 262265u, 262265u, 262265u, 262265u, 262265u, 262265u, 262265u, 262265u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 196732u, 196705u, 131096u, 131096u, 65620u, 65620u,
-    65620u, 65620u, 196633u, 196633u, 196710u, 196710u, 262235u, 262259u, 196685u, 196685u, 65590u, 65590u, 65590u, 65590u, 65590u, 65590u,
-    65590u, 65590u, 65568u, 65568u, 131145u, 131124u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u,
-    65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 196686u, 196686u, 196686u, 196686u, 262240u, 262240u, 327790u, 327789u, 131105u, 131105u,
-    131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131142u, 131142u, 131142u, 131142u, 131142u, 131142u, 131142u, 131142u, 196669u, 196669u,
-    196669u, 196669u, 262178u, 262178u, 327779u, 327799u, 65587u, 65587u, 65587u, 65587u, 65587u, 65587u, 65587u, 65587u, 65587u, 65587u,
-    65587u, 65587u, 65587u, 65587u, 65587u, 65587u, 65600u, 65577u, 131131u, 131131u, 131131u, 131131u, 131170u, 131170u, 131170u, 131170u,
-    131114u, 131114u, 131114u, 131114u, 262257u, 262258u, 196651u, 196651u, 65604u, 65604u, 65604u, 65604u, 196703u, 196689u, 131132u, 131132u,
-    65605u, 65605u, 65605u, 65605u, 196713u, 196730u, 131160u, 131160u, 131176u, 131144u, 65621u, 65621u, 65611u, 65611u, 65611u, 65611u,
-    65611u, 65611u, 65611u, 65611u, 262264u, 262256u, 196701u, 196701u, 131155u, 131155u, 131155u, 131155u, 65612u, 65612u, 65612u, 65612u,
-    196687u, 196709u, 131158u, 131158u, 196731u, 196714u, 131154u, 131154u, 131175u, 131175u, 196733u, 196715u, 327690u, 327690u, 327690u, 327690u,
-    327690u, 327690u, 327690u, 327690u, 524342u, 524337u, 524319u, 524310u, 458772u, 458772u, 524345u, 524351u, 327742u, 327742u, 327742u, 327742u,
-    327742u, 327742u, 327742u, 327742u, 458850u, 458850u, 2147484112u, 2197815762u, 458841u, 458841u, 458788u, 458788u, 262153u, 262153u, 262153u, 262153u,
-    262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 458781u, 458781u, 524344u, 2214592786u,
-    393220u, 393220u, 393220u, 393220u, 327715u, 327715u, 327715u, 327715u, 327715u, 327715u, 327715u, 327715u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 327681u, 327681u, 327681u, 327681u,
-    327681u, 327681u, 327681u, 327681u, 393287u, 393287u, 393287u, 393287u, 524303u, 524353u, 458797u, 458797u, 262161u, 262161u, 262161u, 262161u,
-    262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 393296u, 393296u, 393296u, 393296u,
-    393228u, 393228u, 393228u, 393228u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 2197815610u, 2147483920u, 524327u, 2197815552u,
-    524354u, 2147484044u, 524295u, 2181038386u, 393218u, 393218u, 393218u, 393218u, 393243u, 393243u, 393243u, 393243u, 393227u, 393227u, 393227u, 393227u,
-    524309u, 2197815676u, 524318u, 2147484010u, 458780u, 458780u, 524326u, 2214592912u, 393234u, 393234u, 393234u, 393234u, 262144u, 262144u, 262144u, 262144u,
-    262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 458765u, 458765u, 524335u, 524325u,
-    393219u, 393219u, 393219u, 393219u, 458757u, 458757u, 524336u, 2197815660u, 2147484046u, 524294u, 524334u, 2214592842u, 458771u, 458771u, 2214592944u, 524302u,
-    393269u, 393269u, 393269u, 393269u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 65552u, 65552u, 65552u, 65552u,
-    65552u, 65552u, 65552u, 65552u, 196708u, 196708u, 196660u, 196660u, 196698u, 196698u, 262264u, 262257u, 65568u, 65559u, 131096u, 131096u,
-    131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 262250u, 262250u, 262268u, 262268u, 327759u, 327777u, 262249u, 262249u, 65604u, 65604u,
-    65604u, 65604u, 65604u, 65604u, 65604u, 65604u, 65604u, 65604u, 65604u, 65604u, 65604u, 65604u, 65604u, 65604u, 65594u, 65594u,
-    65594u, 65594u, 131148u, 131148u, 196633u, 196699u, 131105u, 131105u, 131105u, 131105u, 131158u, 131158u, 131158u, 131158u, 196702u, 196702u,
-    262240u, 262259u, 131123u, 131123u, 131123u, 131123u, 196709u, 196709u, 196709u, 196709u, 327789u, 327802u, 262178u, 262178u, 131157u, 131157u,
-    131157u, 131157u, 131157u, 131157u, 131157u, 131157u, 131144u, 131144u, 131144u, 131144u, 131144u, 131144u, 131144u, 131144u, 196707u, 196707u,
-    196707u, 196707u, 262222u, 262222u, 327768u, 327803u, 65652u, 65576u, 131154u, 131154u, 131154u, 131154u, 196711u, 196711u, 262265u, 262239u,
-    131113u, 131113u, 131113u, 131113u, 196710u, 196710u, 196650u, 196650u, 262256u, 262187u, 196701u, 196701u, 131145u, 131145u, 131145u, 131145u,
-    196695u, 196695u, 196712u, 196712u, 131141u, 131141u, 131141u, 131141u, 65586u, 65620u, 65600u, 65591u, 131131u, 131131u, 131131u, 131131u,
-    131131u, 131131u, 131131u, 131131u, 262263u, 262263u, 327790u, 327741u, 196668u, 196668u, 196668u, 196668u, 65643u, 65643u, 65643u, 65643u,
-    65643u, 65643u, 65643u, 65643u, 65643u, 65643u, 65643u, 65643u, 65643u, 65643u, 65643u, 65643u, 65603u, 65603u, 65603u, 65603u,
-    65603u, 65603u, 65603u, 65603u, 65603u, 65603u, 65603u, 65603u, 65603u, 65603u, 65603u, 65603u, 196678u, 196678u, 196678u, 196678u,
-    327794u, 327798u, 327791u, 327788u, 131153u, 131153u, 131153u, 131153u, 131153u, 131153u, 131153u, 131153u, 65610u, 65619u, 131149u, 131149u,
-    131149u, 131149u, 196700u, 196700u, 262261u, 262269u, 65611u, 65611u, 65611u, 65611u, 65611u, 65611u, 65611u, 65611u, 262170u, 262170u,
-    262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 393243u, 393243u,
-    393243u, 393243u, 524335u, 2231369984u, 2231370344u, 524325u, 393234u, 393234u, 393234u, 393234u, 524300u, 2181038400u, 524326u, 2214593198u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 262161u, 262161u,
-    262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 393260u, 393260u,
-    393260u, 393260u, 2164261592u, 2147484374u, 2181038798u, 2147484328u, 327681u, 327681u, 327681u, 327681u, 327681u, 327681u, 327681u, 327681u, 393251u, 393251u,
-    393251u, 393251u, 393218u, 393218u, 393218u, 393218u, 393226u, 393226u, 393226u, 393226u, 458771u, 458771u, 2214593244u, 524291u, 327689u, 327689u,
-    327689u, 327689u, 327689u, 327689u, 327689u, 327689u, 524341u, 2164261546u, 524350u, 524316u, 458763u, 458763u, 2264924488u, 524308u, 65544u, 65544u,
-    65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u,
-    65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u,
-    65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u,
-    65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u,
-    65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u,
-    65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u,
-    65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u,
-    65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65544u, 65540u, 65540u,
-    65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u,
-    65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 262166u, 262166u,
-    262166u, 262166u, 327782u, 327782u, 327712u, 327712u, 262228u, 262228u, 262228u, 262228u, 393329u, 393240u, 393250u, 393257u, 262167u, 262167u,
-    262167u, 262167u, 262202u, 262202u, 262202u, 262202u, 196691u, 196691u, 196691u, 196691u, 196691u, 196691u, 196691u, 196691u, 196658u, 196673u,
-    131077u, 131077u, 65566u, 65566u, 65566u, 65566u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u,
-    65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u,
-    65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u,
-    65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u,
-    65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u,
-    65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u,
-    65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u,
-    65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 65616u,
-    65616u, 65616u, 65616u, 65616u, 65616u, 65616u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u,
-    196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u,
-    196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 327787u, 327787u, 327787u, 327787u, 327787u, 327787u, 327787u, 327787u, 2214593096u, 524413u,
-    458842u, 458842u, 458846u, 458846u, 458848u, 458848u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u,
-    262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262159u,
-    262159u, 262159u, 262159u, 262159u, 262159u, 262159u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u,
-    262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 196697u, 196697u, 196697u, 196697u, 196697u, 196697u, 196697u, 196697u, 196697u, 196697u,
-    196697u, 196697u, 196697u, 196697u, 196697u, 196697u, 196697u, 196697u, 196697u, 196697u, 196697u, 196697u, 196697u, 196697u, 196697u, 196697u,
-    196697u, 196697u, 196697u, 196697u, 196697u, 196697u, 262255u, 262255u, 262256u, 262256u, 262258u, 262258u, 262259u, 262259u, 262263u, 262263u,
-    262264u, 262264u, 262266u, 262266u, 262267u, 262267u, 327705u, 327723u, 327740u, 327741u, 327750u, 327758u, 327759u, 327768u, 327771u, 327775u,
-    327777u, 327783u, 327786u, 327788u, 327789u, 327790u, 262203u, 262203u, 262203u, 262203u, 393285u, 393303u, 393309u, 393315u, 393316u, 393333u,
-    393334u, 393340u, 262151u, 262151u, 262151u, 262151u, 262158u, 262158u, 262158u, 262158u, 262160u, 262160u, 262160u, 262160u, 327713u, 327713u,
-    327722u, 327722u, 262229u, 262229u, 262229u, 262229u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u,
-    65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u,
-    65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65557u, 65575u, 131154u, 131136u, 65565u, 65565u, 65572u, 65572u, 65572u, 65572u,
-    65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 65572u, 196674u, 196674u, 196674u, 196674u,
-    262221u, 262221u, 327785u, 327720u, 196664u, 196664u, 196664u, 196664u, 262195u, 262195u, 262225u, 262225u, 196671u, 196665u, 131145u, 131145u,
-    65581u, 65581u, 65581u, 65581u, 65582u, 65607u, 65584u, 65584u, 131127u, 131121u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u,
-    131126u, 131126u, 327748u, 327755u, 327756u, 327766u, 262211u, 262211u, 327784u, 327732u, 131170u, 131170u, 131170u, 131170u, 131170u, 131170u,
-    131170u, 131170u, 196724u, 196724u, 196724u, 196724u, 327772u, 327801u, 327752u, 327781u, 327690u, 327690u, 327690u, 327690u, 327690u, 327690u,
-    327690u, 327690u, 2231370936u, 2147484920u, 524317u, 524341u, 524300u, 524325u, 2181038928u, 524308u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u,
-    262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u,
-    262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 524324u, 2231369984u, 524350u, 524335u, 2264924736u, 524334u,
-    458771u, 458771u, 2214593368u, 524333u, 458787u, 458787u, 393218u, 393218u, 393218u, 393218u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u,
-    196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u,
-    196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 393227u, 393227u, 393227u, 393227u, 2214593400u, 2264925112u,
-    2264924480u, 2214593432u, 327698u, 327698u, 327698u, 327698u, 327698u, 327698u, 327698u, 327698u, 327681u, 327681u, 327681u, 327681u, 327681u, 327681u,
-    327681u, 327681u, 393243u, 393243u, 393243u, 393243u, 458796u, 458796u, 524291u, 524316u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u,
-    131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131080u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u,
-    65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u,
-    65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 65540u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u,
-    131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 131077u, 196666u, 196666u, 196666u, 196666u, 196666u, 196666u,
-    196666u, 196666u, 262203u, 262203u, 262203u, 262203u, 327687u, 327687u, 393232u, 393320u, 327749u, 327749u, 327749u, 327749u, 327749u, 327749u,
-    327749u, 327749u, 327800u, 327800u, 327800u, 327800u, 327800u, 327800u, 327800u, 327800u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u,
-    262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 262175u, 196724u, 196724u, 196724u, 196724u, 196724u, 196724u,
-    196724u, 196724u, 196724u, 196724u, 196724u, 196724u, 196724u, 196724u, 196724u, 196724u, 196724u, 196724u, 196724u, 196724u, 196724u, 196724u,
-    196724u, 196724u, 196724u, 196724u, 196724u, 196724u, 196724u, 196724u, 196724u, 196724u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u,
-    131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u,
-    131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u,
-    131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u,
-    131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u,
-    131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u,
-    131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u,
-    131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u,
-    131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 327790u, 327790u, 327790u, 327790u, 327790u, 327790u,
-    327790u, 327790u, 327686u, 327686u, 327686u, 327686u, 327686u, 327686u, 327686u, 327686u, 327730u, 327730u, 327730u, 327730u, 327730u, 327730u,
-    327730u, 327730u, 524403u, 524411u, 524412u, 524413u, 393306u, 393306u, 393306u, 393306u, 196706u, 196706u, 196706u, 196706u, 196706u, 196706u,
-    196706u, 196706u, 196706u, 196706u, 196706u, 196706u, 196706u, 196706u, 196706u, 196706u, 196706u, 196706u, 196706u, 196706u, 196706u, 196706u,
-    196706u, 196706u, 196706u, 196706u, 196706u, 196706u, 196706u, 196706u, 196706u, 196706u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u,
-    131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u,
-    131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u,
-    131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u,
-    131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 131126u, 196681u, 196681u, 196681u, 196681u, 196681u, 196681u,
-    196681u, 196681u, 196681u, 196681u, 196681u, 196681u, 196681u, 196681u, 196681u, 196681u, 196681u, 196681u, 196681u, 196681u, 196681u, 196681u,
-    196681u, 196681u, 196681u, 196681u, 196681u, 196681u, 196681u, 196681u, 196681u, 196681u, 327791u, 327791u, 327791u, 327791u, 327791u, 327791u,
-    327791u, 327791u, 393321u, 393321u, 393321u, 393321u, 2197816128u, 524313u, 458775u, 458775u, 262246u, 262246u, 262246u, 262246u, 262246u, 262246u,
-    262246u, 262246u, 262246u, 262246u, 262246u, 262246u, 262246u, 262246u, 262246u, 262246u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u,
-    65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u,
-    65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u,
-    65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u,
-    65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u,
-    65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u,
-    65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u,
-    65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u,
-    65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 196716u, 196716u, 196717u, 196717u, 262168u, 262177u,
-    262178u, 262187u, 262195u, 262196u, 262214u, 262223u, 262232u, 262240u, 262241u, 262250u, 131129u, 131129u, 131086u, 131086u, 131161u, 131161u,
-    196727u, 196691u, 196657u, 196657u, 196657u, 196657u, 262265u, 262265u, 327797u, 327695u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u,
-    131102u, 131102u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u,
-    65601u, 65601u, 196648u, 196648u, 196648u, 196648u, 262229u, 262229u, 327766u, 327748u, 196683u, 196683u, 196683u, 196683u, 327767u, 327775u,
-    262166u, 262166u, 262228u, 262228u, 262225u, 262225u, 196688u, 196688u, 196688u, 196688u, 196709u, 196709u, 196709u, 196709u, 196700u, 196700u,
-    196700u, 196700u, 196679u, 196679u, 196679u, 196679u, 327712u, 327779u, 327802u, 327756u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u,
-    131138u, 131138u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 131120u, 131120u, 131120u, 131120u, 131120u, 131120u,
-    131120u, 131120u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u,
-    196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u, 196715u,
-    196715u, 196715u, 327783u, 327783u, 327783u, 327783u, 327783u, 327783u, 327783u, 327783u, 458812u, 458812u, 458864u, 458864u, 458865u, 458865u,
-    524330u, 524402u, 262216u, 262216u, 262216u, 262216u, 262216u, 262216u, 262216u, 262216u, 262216u, 262216u, 262216u, 262216u, 262216u, 262216u,
-    262216u, 262216u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u,
-    196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u,
-    196682u, 196682u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u,
-    196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u, 196690u,
-    196690u, 196690u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u,
-    65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u,
-    65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u,
-    65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u,
-    65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u,
-    65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u,
-    65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u,
-    65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u,
-    65574u, 65574u, 131139u, 131139u, 131139u, 131139u, 131139u, 131139u, 131139u, 131139u, 131139u, 131139u, 131139u, 131139u, 131139u, 131139u,
-    131139u, 131139u, 262221u, 262221u, 262221u, 262221u, 262244u, 262244u, 262244u, 262244u, 196699u, 196699u, 196699u, 196699u, 196699u, 196699u,
-    196699u, 196699u, 131128u, 131128u, 131128u, 131128u, 131128u, 131128u, 131128u, 131128u, 131128u, 131128u, 131128u, 131128u, 131128u, 131128u,
-    131128u, 131128u, 262237u, 262237u, 262237u, 262237u, 262238u, 262238u, 262238u, 262238u, 262185u, 262185u, 262185u, 262185u, 393277u, 393334u,
-    327758u, 327758u, 65599u, 65600u, 458760u, 458760u, 2231369984u, 524300u, 458761u, 458761u, 2264924486u, 524301u, 327683u, 327683u, 327683u, 327683u,
-    327683u, 327683u, 327683u, 327683u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u,
-    262146u, 262146u, 262146u, 262146u, 393222u, 393222u, 393222u, 393222u, 458762u, 458762u, 2164261184u, 524302u, 327684u, 327684u, 327684u, 327684u,
-    327684u, 327684u, 327684u, 327684u, 393223u, 393223u, 393223u, 393223u, 458763u, 458763u, 2147483972u, 524303u, 327685u, 327685u, 327685u, 327685u,
-    327685u, 327685u, 327685u, 327685u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u
-);
-// Copies chunk 1 of the tables into the state, which a reset clears
-@compute @workgroup_size(64)
-fn loadTables1(@builtin(global_invocation_id) invocation: vec3u) {
-    if (packet.reset == 0u || invocation.x >= 8192u) {
-        return;
-    }
-    state[S_TABLES + 8192u + invocation.x] = TABLE_DATA_1[invocation.x];
-}
-const TABLE_DATA_2 = array<u32, 8192>(
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 131092u, 131092u, 131092u, 131092u, 131092u, 131092u, 131092u, 131092u, 131092u, 131092u, 131092u, 131092u,
-    131092u, 131092u, 131092u, 131092u, 327709u, 327709u, 393250u, 393252u, 327711u, 327711u, 393255u, 393256u, 196633u, 196633u, 196633u, 196633u,
-    196633u, 196633u, 196633u, 196633u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u,
-    65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u,
-    65552u, 65552u, 65552u, 65552u, 65553u, 65553u, 131096u, 131094u, 65554u, 65555u, 393257u, 393257u, 393257u, 393257u, 524333u, 524332u,
-    524334u, 2264924742u, 393254u, 393254u, 393254u, 393254u, 393253u, 393253u, 393253u, 393253u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u,
-    262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 327710u, 327710u, 327710u, 327710u, 327710u, 327710u,
-    327710u, 327710u, 458794u, 458794u, 458795u, 458795u, 393251u, 393251u, 393251u, 393251u, 327712u, 327712u, 327712u, 327712u, 327712u, 327712u,
-    327712u, 327712u, 327713u, 327713u, 327713u, 327713u, 327713u, 327713u, 327713u, 327713u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u,
-    131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u,
-    131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u,
-    131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u,
-    131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 131093u, 196634u, 196634u, 196634u, 196634u, 196634u, 196634u,
-    196634u, 196634u, 196634u, 196634u, 196634u, 196634u, 196634u, 196634u, 196634u, 196634u, 196634u, 196634u, 196634u, 196634u, 196634u, 196634u,
-    196634u, 196634u, 196634u, 196634u, 196634u, 196634u, 196634u, 196634u, 196634u, 196634u, 196635u, 196635u, 196635u, 196635u, 196635u, 196635u,
-    196635u, 196635u, 196635u, 196635u, 196635u, 196635u, 196635u, 196635u, 196635u, 196635u, 196635u, 196635u, 196635u, 196635u, 196635u, 196635u,
-    196635u, 196635u, 196635u, 196635u, 196635u, 196635u, 196635u, 196635u, 196635u, 196635u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u,
-    65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u,
-    65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u,
-    65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u,
-    65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u,
-    65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u,
-    65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u,
-    65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u,
-    65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 524392u, 524393u, 524394u, 524395u, 524396u, 524397u,
-    524398u, 524399u, 524400u, 524401u, 524402u, 524403u, 524404u, 524405u, 524406u, 524407u, 458802u, 458802u, 458801u, 458801u, 458803u, 458803u,
-    458804u, 458804u, 458805u, 458805u, 458800u, 458800u, 458806u, 458806u, 458807u, 458807u, 458808u, 458808u, 458809u, 458809u, 458810u, 458810u,
-    458811u, 458811u, 458812u, 458812u, 458813u, 458813u, 458814u, 458814u, 458815u, 458815u, 458816u, 458816u, 458817u, 458817u, 458818u, 458818u,
-    458819u, 458819u, 458820u, 458820u, 458821u, 458821u, 458822u, 458822u, 458823u, 458823u, 458824u, 458824u, 458825u, 458825u, 458826u, 458826u,
-    458827u, 458827u, 458828u, 458828u, 458829u, 458829u, 458830u, 458830u, 458831u, 458831u, 458832u, 458832u, 458833u, 458833u, 458834u, 458834u,
-    458835u, 458835u, 458836u, 458836u, 458837u, 458837u, 458838u, 458838u, 458839u, 458839u, 458840u, 458840u, 458841u, 458841u, 458842u, 458842u,
-    458843u, 458843u, 458844u, 458844u, 458845u, 458845u, 458846u, 458846u, 458847u, 458847u, 458848u, 458848u, 458849u, 458849u, 458850u, 458850u,
-    458851u, 458851u, 458852u, 458852u, 458853u, 458853u, 458854u, 458854u, 458855u, 458855u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 524304u, 524308u, 2181038740u, 2147483904u, 393224u, 393224u,
-    393224u, 393224u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u,
-    262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 524309u, 2264924434u, 458766u, 458766u, 393225u, 393225u,
-    393225u, 393225u, 524305u, 524310u, 524306u, 2197815554u, 393227u, 393227u, 393227u, 393227u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u,
-    262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 393226u, 393226u, 393226u, 393226u, 393228u, 393228u,
-    393228u, 393228u, 327686u, 327686u, 327686u, 327686u, 327686u, 327686u, 327686u, 327686u, 524307u, 2147484306u, 458767u, 458767u, 393229u, 393229u,
-    393229u, 393229u, 327687u, 327687u, 327687u, 327687u, 327687u, 327687u, 327687u, 327687u, 65560u, 65559u, 65561u, 65561u, 65561u, 65561u,
-    65561u, 65561u, 65561u, 65561u, 262185u, 262187u, 196647u, 196647u, 196648u, 196648u, 196645u, 196645u, 262186u, 262186u, 262186u, 262186u,
-    262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 524335u, 2248147474u, 458798u, 458798u,
-    393261u, 393261u, 393261u, 393261u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 327724u, 196639u, 196639u, 196639u, 196639u,
-    196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u,
-    196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196639u, 196644u, 196644u, 196644u, 196644u,
-    196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u,
-    196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196642u, 196642u, 196642u, 196642u,
-    196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u,
-    196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 65562u, 65562u, 65562u, 65562u,
-    65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u,
-    65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u,
-    65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u,
-    65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u,
-    65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u,
-    65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u,
-    65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u,
-    65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 65562u, 458856u, 458857u, 458858u, 458859u,
-    458860u, 458861u, 458862u, 458863u, 458864u, 458865u, 458866u, 458867u, 458868u, 458869u, 458870u, 458871u, 393264u, 393264u, 393265u, 393265u,
-    393266u, 393266u, 393267u, 393267u, 393268u, 393268u, 393269u, 393269u, 393270u, 393270u, 393271u, 393271u, 393272u, 393272u, 393273u, 393273u,
-    393274u, 393274u, 393275u, 393275u, 393276u, 393276u, 393277u, 393277u, 393278u, 393278u, 393279u, 393279u, 393280u, 393280u, 393281u, 393281u,
-    393282u, 393282u, 393283u, 393283u, 393284u, 393284u, 393285u, 393285u, 393286u, 393286u, 393287u, 393287u, 393288u, 393288u, 393289u, 393289u,
-    393290u, 393290u, 393291u, 393291u, 393292u, 393292u, 393293u, 393293u, 393294u, 393294u, 393295u, 393295u, 393296u, 393296u, 393297u, 393297u,
-    393298u, 393298u, 393299u, 393299u, 393300u, 393300u, 393301u, 393301u, 393302u, 393302u, 393303u, 393303u, 393304u, 393304u, 393305u, 393305u,
-    393306u, 393306u, 393307u, 393307u, 393308u, 393308u, 393309u, 393309u, 393310u, 393310u, 393311u, 393311u, 393312u, 393312u, 393313u, 393313u,
-    393314u, 393314u, 393315u, 393315u, 393316u, 393316u, 393317u, 393317u, 393318u, 393318u, 393319u, 393319u, 65564u, 65563u, 196646u, 196643u,
-    196640u, 196641u, 131101u, 131101u, 131102u, 131102u, 393224u, 393224u, 393224u, 393224u, 524305u, 2264924416u, 524306u, 2264924804u, 327685u, 327685u,
-    327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 458765u, 458765u, 524307u, 2147484160u, 393225u, 393225u, 393225u, 393225u, 327686u, 327686u,
-    327686u, 327686u, 327686u, 327686u, 327686u, 327686u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u,
-    262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 458766u, 458766u, 524308u, 2248147458u, 393226u, 393226u, 393226u, 393226u, 458767u, 458767u,
-    2147484290u, 524309u, 393227u, 393227u, 393227u, 393227u, 327687u, 327687u, 327687u, 327687u, 327687u, 327687u, 327687u, 327687u, 458768u, 458768u,
-    524310u, 524311u, 393228u, 393228u, 393228u, 393228u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u,
-    262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u,
-    131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u,
-    131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u,
-    131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 131102u,
-    131102u, 131102u, 131102u, 131102u, 131102u, 131102u, 262182u, 262182u, 262182u, 262182u, 262182u, 262182u, 262182u, 262182u, 262182u, 262182u,
-    262182u, 262182u, 262182u, 262182u, 262182u, 262182u, 393264u, 393264u, 393264u, 393264u, 524343u, 524345u, 458803u, 458803u, 327722u, 327722u,
-    327722u, 327722u, 327722u, 327722u, 327722u, 327722u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u,
-    196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u,
-    196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65561u, 65562u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u,
-    65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u,
-    65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u,
-    65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u,
-    65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 262184u, 262184u, 262184u, 262184u, 262184u, 262184u, 262184u, 262184u,
-    262183u, 262183u, 262183u, 262183u, 262183u, 262183u, 262183u, 262183u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u,
-    196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 196644u, 327724u, 327724u, 327724u, 327724u, 393265u, 393265u, 458806u, 458804u,
-    262185u, 262185u, 262185u, 262185u, 262185u, 262185u, 262185u, 262185u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u,
-    196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 65564u, 65565u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u,
-    131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u,
-    131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u,
-    131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u,
-    131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131103u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u,
-    131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u,
-    131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u,
-    131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u,
-    131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 393262u, 393262u, 393262u, 393262u, 393263u, 393263u,
-    393263u, 393263u, 327723u, 327723u, 327723u, 327723u, 327723u, 327723u, 327723u, 327723u, 327725u, 327725u, 327725u, 327725u, 327725u, 327725u,
-    327725u, 327725u, 458802u, 458802u, 2264925070u, 2181038982u, 458805u, 458805u, 2147484548u, 524344u, 196643u, 196643u, 196643u, 196643u, 196643u, 196643u,
-    196643u, 196643u, 196643u, 196643u, 196643u, 196643u, 196643u, 196643u, 196643u, 196643u, 196643u, 196643u, 196643u, 196643u, 196643u, 196643u,
-    196643u, 196643u, 196643u, 196643u, 196643u, 196643u, 196643u, 196643u, 196643u, 196643u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u,
-    131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u,
-    131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u,
-    131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u,
-    131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 65596u, 65594u, 196672u, 196674u, 131134u, 131134u,
-    65595u, 65595u, 65595u, 65595u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u,
-    131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u,
-    131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u,
-    131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u, 131135u,
-    131135u, 131135u, 131135u, 131135u, 262211u, 262211u, 262211u, 262211u, 262211u, 262211u, 262211u, 262211u, 262211u, 262211u, 262211u, 262211u,
-    262211u, 262211u, 262211u, 262211u, 2164262042u, 2164262046u, 2164262050u, 2164262054u, 2164262058u, 2164262062u, 2164262066u, 2164262070u, 2164262074u, 2164262078u, 2147484816u, 2147484818u,
-    2147484820u, 2147484814u, 2147484822u, 2147484824u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u,
-    196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u,
-    196673u, 196673u, 196673u, 196673u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u,
-    65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u,
-    65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u,
-    65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u,
-    65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u,
-    65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u,
-    65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u,
-    65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u, 65597u,
-    65597u, 65597u, 65597u, 65597u, 65604u, 65611u, 65605u, 65606u, 65607u, 65608u, 65609u, 65610u, 65612u, 65613u, 65614u, 65615u,
-    131152u, 131153u, 131154u, 131155u, 131156u, 131157u, 131158u, 131159u, 131160u, 131161u, 131162u, 131163u, 131164u, 131165u, 131166u, 131167u,
-    131168u, 131169u, 131170u, 131171u, 131172u, 131173u, 131174u, 131175u, 131176u, 131177u, 131178u, 131179u, 131180u, 131181u, 131182u, 131183u,
-    131184u, 131185u, 131186u, 131187u, 131188u, 131189u, 131190u, 131191u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 393223u, 393223u, 393223u, 393223u, 458762u, 458762u, 524301u, 2231369984u,
-    327686u, 327686u, 327686u, 327686u, 327686u, 327686u, 327686u, 327686u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u,
-    262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 393224u, 393224u, 393224u, 393224u, 458763u, 458763u, 524302u, 2264924480u,
-    393225u, 393225u, 393225u, 393225u, 458764u, 458764u, 2231370576u, 524303u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u,
-    262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196629u, 196629u, 196629u, 196629u, 196629u, 196629u, 196629u, 196629u,
-    393247u, 393248u, 327709u, 327709u, 262170u, 262170u, 262170u, 262170u, 131091u, 131091u, 131091u, 131091u, 131091u, 131091u, 131091u, 131091u,
-    131091u, 131091u, 131091u, 131091u, 131091u, 131091u, 131091u, 131091u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u,
-    65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u,
-    65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65552u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 196630u, 196630u, 196630u, 196630u, 196630u, 196630u, 196630u, 196630u,
-    196630u, 196630u, 196630u, 196630u, 196630u, 196630u, 196630u, 196630u, 196630u, 196630u, 196630u, 196630u, 196630u, 196630u, 196630u, 196630u,
-    196630u, 196630u, 196630u, 196630u, 196630u, 196630u, 196630u, 196630u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u,
-    262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 458789u, 458789u, 2264924736u, 524327u, 524328u, 524329u, 524324u, 524331u,
-    524332u, 524333u, 458785u, 458785u, 458794u, 458794u, 458790u, 458790u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u,
-    196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u,
-    196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u,
-    196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u,
-    196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u,
-    131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u,
-    131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u,
-    131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u,
-    131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 2147484480u, 2147484482u, 2147484484u, 2147484486u, 2147484488u, 2147484490u, 2147484492u, 2147484494u,
-    524336u, 524337u, 524338u, 524339u, 524340u, 524341u, 524342u, 524343u, 524344u, 524345u, 524346u, 524347u, 524348u, 524349u, 524350u, 524351u,
-    524352u, 524353u, 524354u, 524355u, 524356u, 524357u, 524358u, 524359u, 524360u, 524361u, 524362u, 524363u, 524364u, 524365u, 524366u, 524367u,
-    524368u, 524369u, 524370u, 524371u, 524372u, 524373u, 524374u, 524375u, 524376u, 524377u, 524378u, 524379u, 524380u, 524381u, 524382u, 524383u,
-    524384u, 524385u, 524386u, 524387u, 524388u, 524389u, 524390u, 524391u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u,
-    65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u,
-    65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u,
-    65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u,
-    65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u,
-    65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u,
-    65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u,
-    65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u,
-    65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65640u, 65641u, 65642u, 65643u, 65644u, 65645u, 65646u, 65647u,
-    65648u, 65649u, 65650u, 65651u, 65652u, 65653u, 65654u, 65655u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 131092u, 131092u, 131092u, 131092u, 131092u, 131092u, 131092u, 131092u,
-    131092u, 131092u, 131092u, 131092u, 131092u, 131092u, 131092u, 131092u, 196633u, 196633u, 196633u, 196633u, 196633u, 196633u, 196633u, 196633u,
-    393250u, 393251u, 327710u, 327710u, 262172u, 262172u, 262172u, 262172u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u,
-    262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 458945u, 458945u, 2248147924u, 524736u, 2147484498u, 528454u, 2231370450u, 528455u,
-    327746u, 327746u, 327746u, 327746u, 327746u, 327746u, 327746u, 327746u, 524545u, 524361u, 458882u, 458882u, 2248147410u, 2147483904u, 458822u, 458822u,
-    2214593620u, 2248148148u, 459136u, 459136u, 528456u, 528461u, 2248147266u, 528457u, 393284u, 393284u, 393284u, 393284u, 2197816628u, 524362u, 458823u, 458823u,
-    393536u, 393536u, 393536u, 393536u, 2231370644u, 2248147538u, 2197816644u, 524800u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 327809u, 327809u, 327809u, 327809u, 327809u, 327809u, 327809u, 327809u,
-    462916u, 462916u, 462976u, 462976u, 2231370580u, 528458u, 528459u, 2231369986u, 327936u, 327936u, 327936u, 327936u, 327936u, 327936u, 327936u, 327936u,
-    327747u, 327747u, 327747u, 327747u, 327747u, 327747u, 327747u, 327747u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u,
-    196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u,
-    196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 397378u, 397378u, 397378u, 397378u, 524482u, 524363u, 462917u, 462917u,
-    331841u, 331841u, 331841u, 331841u, 331841u, 331841u, 331841u, 331841u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u,
-    262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u,
-    266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 458883u, 458883u, 458824u, 458824u, 393285u, 393285u, 393285u, 393285u,
-    2197815746u, 2231370868u, 2231370514u, 528460u, 397379u, 397379u, 397379u, 397379u, 73728u, 66112u, 131209u, 131209u, 131209u, 131209u, 131209u, 131209u,
-    131209u, 131209u, 131209u, 131209u, 131209u, 131209u, 131209u, 131209u, 131209u, 131209u, 200960u, 200960u, 200960u, 200960u, 200960u, 200960u,
-    200960u, 200960u, 266374u, 266374u, 266374u, 266374u, 397413u, 397633u, 393481u, 397696u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u,
-    66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u,
-    66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 131776u, 131776u, 131776u, 131776u, 131776u, 131776u,
-    131776u, 131776u, 131776u, 131776u, 131776u, 131776u, 131776u, 131776u, 131776u, 131776u, 131776u, 131776u, 131776u, 131776u, 131776u, 131776u,
-    131776u, 131776u, 131776u, 131776u, 131776u, 131776u, 131776u, 131776u, 131776u, 131776u, 197440u, 197440u, 197440u, 197440u, 197440u, 197440u,
-    197440u, 197440u, 197440u, 197440u, 197440u, 197440u, 197440u, 197440u, 197440u, 197440u, 327822u, 327822u, 327822u, 327822u, 393309u, 393309u,
-    458846u, 459713u, 266327u, 266327u, 266327u, 266327u, 266327u, 266327u, 266327u, 266327u, 196747u, 196747u, 196747u, 196747u, 196747u, 196747u,
-    196747u, 196747u, 196747u, 196747u, 196747u, 196747u, 196747u, 196747u, 196747u, 196747u, 196746u, 196746u, 196746u, 196746u, 196746u, 196746u,
-    196746u, 196746u, 196746u, 196746u, 196746u, 196746u, 196746u, 196746u, 196746u, 196746u, 200897u, 200897u, 200897u, 200897u, 200897u, 200897u,
-    200897u, 200897u, 200897u, 200897u, 200897u, 200897u, 200897u, 200897u, 200897u, 200897u, 332096u, 332096u, 332096u, 332096u, 393307u, 393307u,
-    393922u, 393922u, 266434u, 266434u, 266434u, 266434u, 266434u, 266434u, 266434u, 266434u, 200845u, 200845u, 196806u, 196806u, 131208u, 131208u,
-    131208u, 131208u, 196689u, 196689u, 262228u, 266331u, 131840u, 131840u, 131840u, 131840u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u,
-    65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u,
-    65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u,
-    65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u,
-    65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 65612u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u,
-    131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u,
-    131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 331911u, 331911u, 331911u, 331911u, 331868u, 331868u,
-    331868u, 331868u, 263040u, 263040u, 263040u, 263040u, 263040u, 263040u, 263040u, 263040u, 393858u, 393858u, 459649u, 458896u, 332033u, 332033u,
-    332033u, 332033u, 327884u, 327884u, 327884u, 327884u, 393423u, 393423u, 397571u, 397571u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u,
-    69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u,
-    69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u,
-    69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u,
-    69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 69711u, 266333u, 266333u, 266333u, 266333u, 266333u, 266333u,
-    266333u, 266333u, 331912u, 331912u, 331912u, 331912u, 327882u, 327882u, 327882u, 327882u, 263104u, 263104u, 263104u, 263104u, 263104u, 263104u,
-    263104u, 263104u, 266435u, 266435u, 266435u, 266435u, 266435u, 266435u, 266435u, 266435u, 266330u, 266330u, 266330u, 266330u, 266330u, 266330u,
-    266330u, 266330u, 262785u, 262785u, 262785u, 262785u, 262785u, 262785u, 262785u, 262785u, 459140u, 458958u, 393479u, 393479u, 331914u, 331914u,
-    331914u, 331914u, 327768u, 327768u, 327768u, 327768u, 328258u, 328258u, 328258u, 328258u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u,
-    65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u,
-    65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 196930u, 196930u, 196930u, 196930u, 196930u, 196930u,
-    196930u, 196930u, 327880u, 327880u, 331871u, 331871u, 327941u, 327941u, 328194u, 328194u, 266328u, 266328u, 266328u, 266328u, 266329u, 266329u,
-    266329u, 266329u, 397570u, 394368u, 328704u, 328704u, 266325u, 266325u, 266325u, 266325u, 65921u, 65921u, 65921u, 65921u, 65921u, 65921u,
-    65921u, 65921u, 65921u, 65921u, 65921u, 65921u, 65921u, 65921u, 65921u, 65921u, 65921u, 65921u, 65921u, 65921u, 65921u, 65921u,
-    65921u, 65921u, 65921u, 65921u, 65921u, 65921u, 65921u, 65921u, 65921u, 65921u, 196994u, 196994u, 196994u, 196994u, 196994u, 196994u,
-    196994u, 196994u, 331913u, 331913u, 328768u, 328768u, 331919u, 331919u, 394432u, 397412u, 196813u, 196813u, 196813u, 196813u, 196813u, 196813u,
-    196813u, 196813u, 262345u, 262345u, 262345u, 262345u, 331872u, 331872u, 331918u, 331918u, 69761u, 65857u, 262404u, 262404u, 262404u, 262404u,
-    331915u, 331915u, 393480u, 393308u, 196931u, 196931u, 196931u, 196931u, 196931u, 196931u, 196931u, 196931u, 135248u, 135248u, 135248u, 135248u,
-    135248u, 135248u, 135248u, 135248u, 135248u, 135248u, 135248u, 135248u, 135248u, 135248u, 135248u, 135248u, 131331u, 131331u, 131331u, 131331u,
-    131331u, 131331u, 131331u, 131331u, 131331u, 131331u, 131331u, 131331u, 131331u, 131331u, 131331u, 131331u, 131521u, 131521u, 131521u, 131521u,
-    131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 197121u, 197121u, 197121u, 197121u,
-    197121u, 197121u, 197121u, 197121u, 393541u, 393540u, 327883u, 327883u, 266373u, 266373u, 266373u, 266373u, 196688u, 196688u, 196688u, 196688u,
-    196688u, 196688u, 196688u, 196688u, 327769u, 327769u, 327767u, 327767u, 331870u, 331870u, 331874u, 331874u, 69710u, 69710u, 69710u, 69710u,
-    69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u,
-    69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 65668u, 65668u, 65668u, 65668u,
-    65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u,
-    65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u,
-    65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u,
-    65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 196804u, 196804u, 196804u, 196804u,
-    196804u, 196804u, 196804u, 196804u, 196804u, 196804u, 196804u, 196804u, 196804u, 196804u, 196804u, 196804u, 262721u, 262721u, 262721u, 262721u,
-    262721u, 262721u, 262721u, 262721u, 393478u, 393478u, 397411u, 397411u, 393306u, 393306u, 459522u, 463044u, 131330u, 131330u, 131330u, 131330u,
-    131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u,
-    131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131207u, 131207u, 131207u, 131207u,
-    131207u, 131207u, 131207u, 131207u, 327766u, 327765u, 328385u, 331916u, 200787u, 200787u, 200787u, 200787u, 135298u, 135298u, 135298u, 135298u,
-    135298u, 135298u, 135298u, 135298u, 131151u, 131151u, 131151u, 131151u, 131151u, 131151u, 131151u, 131151u, 135249u, 135249u, 135249u, 135249u,
-    135249u, 135249u, 135249u, 135249u, 135249u, 135249u, 135249u, 135249u, 135249u, 135249u, 135249u, 135249u, 393795u, 393859u, 328449u, 328449u,
-    328195u, 328195u, 331873u, 331873u, 200836u, 200836u, 200836u, 200836u, 200836u, 200836u, 200836u, 200836u, 69824u, 69824u, 69824u, 69824u,
-    69824u, 69824u, 69824u, 69824u, 69824u, 69824u, 69824u, 69824u, 69824u, 69824u, 69824u, 69824u, 69824u, 69824u, 69824u, 69824u,
-    69824u, 69824u, 69824u, 69824u, 69824u, 69824u, 69824u, 69824u, 69824u, 69824u, 69824u, 69824u, 328131u, 328131u, 328131u, 328131u,
-    394049u, 394049u, 459459u, 458897u, 262226u, 262226u, 262226u, 262226u, 262226u, 262226u, 262226u, 262226u, 266326u, 266326u, 266326u, 266326u,
-    266326u, 266326u, 266326u, 266326u, 262227u, 262227u, 262227u, 262227u, 262227u, 262227u, 262227u, 262227u, 135299u, 135299u, 135299u, 135299u,
-    135299u, 135299u, 135299u, 135299u, 135299u, 135299u, 135299u, 135299u, 135299u, 135299u, 135299u, 135299u, 135299u, 135299u, 135299u, 135299u,
-    135299u, 135299u, 135299u, 135299u, 135299u, 135299u, 135299u, 135299u, 135299u, 135299u, 135299u, 135299u, 65669u, 65669u, 65669u, 65669u,
-    65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u,
-    65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u,
-    65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u,
-    65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 196805u, 196805u, 200786u, 200786u,
-    262343u, 262594u, 196748u, 196748u, 65731u, 65731u, 65731u, 65731u, 65731u, 65731u, 65731u, 65731u, 65670u, 65670u, 65670u, 65670u,
-    65670u, 65670u, 65670u, 65670u, 131213u, 131213u, 131213u, 131213u, 262531u, 262287u, 200788u, 200788u, 196672u, 196672u, 196672u, 196672u,
-    196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u,
-    196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 462920u, 462920u, 2164261966u, 524359u,
-    2214593454u, 524419u, 528459u, 2248147598u, 327746u, 327746u, 327746u, 327746u, 327746u, 327746u, 327746u, 327746u, 262272u, 262272u, 262272u, 262272u,
-    262272u, 262272u, 262272u, 262272u, 262272u, 262272u, 262272u, 262272u, 262272u, 262272u, 262272u, 262272u, 262209u, 262209u, 262209u, 262209u,
-    262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 393472u, 393472u, 393472u, 393472u,
-    528513u, 528460u, 2147483904u, 528461u, 327872u, 327872u, 327872u, 327872u, 327872u, 327872u, 327872u, 327872u, 200768u, 200768u, 200768u, 200768u,
-    200768u, 200768u, 200768u, 200768u, 200768u, 200768u, 200768u, 200768u, 200768u, 200768u, 200768u, 200768u, 200768u, 200768u, 200768u, 200768u,
-    200768u, 200768u, 200768u, 200768u, 200768u, 200768u, 200768u, 200768u, 200768u, 200768u, 200768u, 200768u, 458882u, 458882u, 2248147266u, 524361u,
-    458945u, 458945u, 2181038534u, 2164261970u, 331843u, 331843u, 331843u, 331843u, 331843u, 331843u, 331843u, 331843u, 266305u, 266305u, 266305u, 266305u,
-    266305u, 266305u, 266305u, 266305u, 266305u, 266305u, 266305u, 266305u, 266305u, 266305u, 266305u, 266305u, 528462u, 524360u, 524736u, 2248147918u,
-    393284u, 393284u, 393284u, 393284u, 397440u, 397440u, 397440u, 397440u, 397382u, 397382u, 397382u, 397382u, 458822u, 458822u, 462922u, 462922u,
-    2147484774u, 2248147470u, 524545u, 2231369986u, 2164261314u, 2231370190u, 459136u, 459136u, 397383u, 397383u, 397383u, 397383u, 327747u, 327747u, 327747u, 327747u,
-    327747u, 327747u, 327747u, 327747u, 331844u, 331844u, 331844u, 331844u, 331844u, 331844u, 331844u, 331844u, 266306u, 266306u, 266306u, 266306u,
-    266306u, 266306u, 266306u, 266306u, 266306u, 266306u, 266306u, 266306u, 266306u, 266306u, 266306u, 266306u, 393285u, 393285u, 393285u, 393285u,
-    528576u, 2214593422u, 2197816406u, 2248147726u, 331845u, 331845u, 331845u, 331845u, 331845u, 331845u, 331845u, 331845u, 327809u, 327809u, 327809u, 327809u,
-    327809u, 327809u, 327809u, 327809u, 397385u, 397385u, 397385u, 397385u, 393536u, 393536u, 393536u, 393536u, 66048u, 69762u, 66112u, 66112u,
-    66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u,
-    66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 66112u, 200838u, 200838u,
-    200838u, 200838u, 200838u, 200838u, 200838u, 200838u, 266377u, 266377u, 266377u, 266377u, 262229u, 262229u, 262229u, 262229u, 196744u, 196744u,
-    196744u, 196744u, 196744u, 196744u, 196744u, 196744u, 393302u, 397824u, 331972u, 331972u, 266435u, 266435u, 266435u, 266435u, 131148u, 131148u,
-    131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u,
-    131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 196804u, 196804u,
-    196804u, 196804u, 196804u, 196804u, 196804u, 196804u, 196804u, 196804u, 196804u, 196804u, 196804u, 196804u, 196804u, 196804u, 266434u, 266434u,
-    266434u, 266434u, 266434u, 266434u, 266434u, 266434u, 263040u, 263040u, 263040u, 263040u, 263040u, 263040u, 263040u, 263040u, 131712u, 131712u,
-    131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u,
-    131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 131712u, 332160u, 332160u,
-    332160u, 332160u, 394432u, 394432u, 393857u, 393857u, 262225u, 262225u, 262225u, 262225u, 262225u, 262225u, 262225u, 262225u, 327941u, 327941u,
-    327941u, 327941u, 463424u, 460160u, 397406u, 397406u, 331914u, 331914u, 331914u, 331914u, 328768u, 328768u, 328768u, 328768u, 69711u, 69711u,
-    131776u, 131207u, 135251u, 135251u, 197376u, 196692u, 135250u, 135250u, 135300u, 135300u, 393479u, 393540u, 327881u, 327881u, 397409u, 393921u,
-    331872u, 331872u, 197440u, 197440u, 197440u, 197440u, 197440u, 197440u, 197440u, 197440u, 262657u, 262657u, 262657u, 262657u, 328832u, 328832u,
-    393303u, 393304u, 196930u, 196930u, 196930u, 196930u, 196930u, 196930u, 196930u, 196930u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u,
-    65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u,
-    65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u,
-    196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 328257u, 328257u, 328257u, 328257u, 331874u, 331874u,
-    331874u, 331874u, 397570u, 397570u, 463046u, 458955u, 394496u, 394496u, 460224u, 458896u, 263104u, 263104u, 263104u, 263104u, 263104u, 263104u,
-    263104u, 263104u, 266332u, 266332u, 266332u, 266332u, 266332u, 266332u, 266332u, 266332u, 196687u, 196687u, 196687u, 196687u, 196687u, 196687u,
-    196687u, 196687u, 196687u, 196687u, 196687u, 196687u, 196687u, 196687u, 196687u, 196687u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u,
-    69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u,
-    69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u,
-    69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u,
-    69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 69763u, 200792u, 200792u, 200792u, 200792u, 200792u, 200792u,
-    200792u, 200792u, 200792u, 200792u, 200792u, 200792u, 200792u, 200792u, 200792u, 200792u, 393416u, 393416u, 393603u, 393603u, 327879u, 327879u,
-    327879u, 327879u, 328704u, 328704u, 328704u, 328704u, 459203u, 463169u, 397451u, 397451u, 196745u, 196745u, 196745u, 196745u, 196745u, 196745u,
-    196745u, 196745u, 196745u, 196745u, 196745u, 196745u, 196745u, 196745u, 196745u, 196745u, 262282u, 262282u, 262282u, 262282u, 262282u, 262282u,
-    262282u, 262282u, 397405u, 397405u, 393666u, 393666u, 327819u, 327819u, 327819u, 327819u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u,
-    65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u,
-    65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u,
-    65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u,
-    65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u,
-    69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u,
-    69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u,
-    69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u,
-    69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 69713u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u,
-    131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u,
-    131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 394560u, 394560u, 459266u, 458895u, 393541u, 393541u,
-    393358u, 393358u, 332224u, 332224u, 332224u, 332224u, 393418u, 393418u, 393305u, 393305u, 262342u, 262342u, 262342u, 262342u, 262342u, 262342u,
-    262342u, 262342u, 327820u, 327820u, 327820u, 327820u, 397412u, 397412u, 393478u, 393478u, 135301u, 135301u, 135301u, 135301u, 135301u, 135301u,
-    135301u, 135301u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 200795u, 200795u, 200795u, 200795u, 327821u, 331916u,
-    266381u, 266381u, 197057u, 197057u, 197057u, 197057u, 266330u, 266330u, 262467u, 262467u, 135248u, 135248u, 135248u, 135248u, 135248u, 135248u,
-    135248u, 135248u, 266326u, 266326u, 328066u, 332033u, 331871u, 327940u, 266375u, 266375u, 65730u, 65730u, 65730u, 65730u, 65730u, 65730u,
-    65730u, 65730u, 65730u, 65730u, 65730u, 65730u, 65730u, 65730u, 65730u, 65730u, 200803u, 200803u, 200803u, 200803u, 200803u, 200803u,
-    200803u, 200803u, 200803u, 200803u, 200803u, 200803u, 200803u, 200803u, 200803u, 200803u, 200793u, 200793u, 200793u, 200793u, 200793u, 200793u,
-    200793u, 200793u, 200793u, 200793u, 200793u, 200793u, 200793u, 200793u, 200793u, 200793u, 331918u, 331918u, 331918u, 331918u, 463107u, 458842u,
-    397509u, 397509u, 266376u, 266376u, 266376u, 266376u, 266376u, 266376u, 266376u, 266376u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u,
-    196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 135424u, 135424u, 135424u, 135424u, 135424u, 135424u,
-    135424u, 135424u, 135424u, 135424u, 135424u, 135424u, 135424u, 135424u, 135424u, 135424u, 135424u, 135424u, 135424u, 135424u, 135424u, 135424u,
-    135424u, 135424u, 135424u, 135424u, 135424u, 135424u, 135424u, 135424u, 135424u, 135424u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u,
-    131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u,
-    131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 65610u, 65610u, 131267u, 131147u, 65669u, 65669u,
-    135253u, 131206u, 135361u, 135361u, 135361u, 135361u, 131149u, 131149u, 131149u, 131149u, 262227u, 262226u, 201024u, 201024u, 200791u, 200791u,
-    196688u, 196688u, 69716u, 73728u, 462915u, 462915u, 2214592872u, 528454u, 458945u, 458945u, 528455u, 524361u, 524736u, 2214592840u, 2147484144u, 524545u,
-    458822u, 458822u, 2197815592u, 528457u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u,
-    262209u, 262209u, 262209u, 262209u, 327746u, 327746u, 327746u, 327746u, 327746u, 327746u, 327746u, 327746u, 458882u, 458882u, 528456u, 2164261120u,
-    466944u, 466944u, 528461u, 2214592944u, 459136u, 459136u, 2197815704u, 528458u, 524362u, 2181038504u, 458823u, 458823u, 393284u, 393284u, 393284u, 393284u,
-    2197815572u, 2197815608u, 462916u, 462916u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 393536u, 393536u, 393536u, 393536u, 462976u, 462976u, 462917u, 462917u, 327809u, 327809u, 327809u, 327809u,
-    327809u, 327809u, 327809u, 327809u, 331841u, 331841u, 331841u, 331841u, 331841u, 331841u, 331841u, 331841u, 528459u, 2197815776u, 524800u, 2197815760u,
-    458883u, 458883u, 524482u, 2197815556u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u,
-    266304u, 266304u, 266304u, 266304u, 327936u, 327936u, 327936u, 327936u, 327936u, 327936u, 327936u, 327936u, 327747u, 327747u, 327747u, 327747u,
-    327747u, 327747u, 327747u, 327747u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u,
-    196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u,
-    196736u, 196736u, 196736u, 196736u, 524363u, 524420u, 458824u, 458824u, 397378u, 397378u, 397378u, 397378u, 528513u, 2164261156u, 528460u, 2197815688u,
-    393285u, 393285u, 393285u, 393285u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u,
-    262336u, 262336u, 262336u, 262336u, 66112u, 66112u, 135299u, 131209u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u,
-    131521u, 131521u, 131521u, 131521u, 196691u, 196691u, 266377u, 266378u, 131776u, 131776u, 131776u, 131776u, 196994u, 196994u, 200786u, 200786u,
-    196813u, 196813u, 262594u, 266374u, 131331u, 131331u, 131331u, 131331u, 131268u, 131840u, 69824u, 69824u, 65669u, 65669u, 65669u, 65669u,
-    65669u, 65669u, 65669u, 65669u, 200787u, 200787u, 262721u, 266324u, 262531u, 266327u, 197440u, 197440u, 65670u, 65670u, 65670u, 65670u,
-    65670u, 65670u, 65670u, 65670u, 131213u, 131213u, 131213u, 131213u, 262785u, 266328u, 197504u, 197504u, 65857u, 65857u, 65857u, 65857u,
-    65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 65857u, 200897u, 200897u, 200897u, 200897u,
-    263104u, 263104u, 332033u, 327942u, 262404u, 262404u, 327764u, 328385u, 331916u, 328004u, 262346u, 262346u, 131207u, 131207u, 131207u, 131207u,
-    131207u, 131207u, 131207u, 131207u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 131330u, 196805u, 196805u, 196805u, 196805u,
-    200784u, 200784u, 200784u, 200784u, 196747u, 196747u, 196747u, 196747u, 331862u, 328704u, 331866u, 328194u, 65921u, 65921u, 65921u, 65921u,
-    65921u, 65921u, 65921u, 65921u, 196807u, 196807u, 266434u, 262348u, 135249u, 135249u, 135249u, 135249u, 196806u, 196806u, 197121u, 197121u,
-    200845u, 200845u, 266329u, 262347u, 131151u, 131151u, 131151u, 131151u, 131150u, 131150u, 131150u, 131150u, 69711u, 69711u, 69711u, 69711u,
-    196930u, 196931u, 131208u, 131208u, 65731u, 65731u, 65731u, 65731u, 65731u, 65731u, 65731u, 65731u, 65731u, 65731u, 65731u, 65731u,
-    65731u, 65731u, 65731u, 65731u, 328131u, 331912u, 266325u, 266325u, 196748u, 196748u, 196748u, 196748u, 262287u, 262287u, 262226u, 262226u,
-    196688u, 196688u, 196688u, 196688u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 200837u, 200837u, 200960u, 200960u,
-    200836u, 200836u, 262405u, 262344u, 135298u, 135298u, 135298u, 135298u, 131210u, 131210u, 131210u, 131210u, 196809u, 196809u, 196689u, 196689u,
-    266435u, 262286u, 266375u, 266379u, 65613u, 65612u, 2248147684u, 2147484716u, 462922u, 462922u, 524361u, 2231370668u, 2214592964u, 2231370732u, 393283u, 393283u,
-    393283u, 393283u, 458822u, 458822u, 2248147556u, 528463u, 397382u, 397382u, 397382u, 397382u, 462924u, 462924u, 2231370596u, 2248147268u, 397383u, 397383u,
-    397383u, 397383u, 397385u, 397385u, 397385u, 397385u, 331843u, 331843u, 331843u, 331843u, 331843u, 331843u, 331843u, 331843u, 462923u, 462923u,
-    462926u, 462926u, 462925u, 462925u, 458944u, 458944u, 2181039012u, 2231370212u, 458823u, 458823u, 397384u, 397384u, 397384u, 397384u, 327746u, 327746u,
-    327746u, 327746u, 327746u, 327746u, 327746u, 327746u, 266306u, 266306u, 266306u, 266306u, 266306u, 266306u, 266306u, 266306u, 266306u, 266306u,
-    266306u, 266306u, 266306u, 266306u, 266306u, 266306u, 266305u, 266305u, 266305u, 266305u, 266305u, 266305u, 266305u, 266305u, 266305u, 266305u,
-    266305u, 266305u, 266305u, 266305u, 266305u, 266305u, 331845u, 331845u, 331845u, 331845u, 331845u, 331845u, 331845u, 331845u, 393284u, 393284u,
-    393284u, 393284u, 2147484718u, 524418u, 458881u, 458881u, 331844u, 331844u, 331844u, 331844u, 331844u, 331844u, 331844u, 331844u, 393285u, 393285u,
-    393285u, 393285u, 2164261184u, 524362u, 528464u, 524544u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u,
-    196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u,
-    196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 327808u, 327808u, 327808u, 327808u, 327808u, 327808u, 327808u, 327808u, 462976u, 462976u,
-    2231369984u, 528465u, 2231370276u, 524364u, 458824u, 458824u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u,
-    262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u,
-    135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u,
-    135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u,
-    135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 135232u,
-    135232u, 135232u, 135232u, 135232u, 135232u, 135232u, 65856u, 65856u, 65856u, 65856u, 65856u, 65856u, 65856u, 65856u, 65856u, 65856u,
-    65856u, 65856u, 65856u, 65856u, 65856u, 65856u, 65856u, 65856u, 65856u, 65856u, 65856u, 65856u, 65856u, 65856u, 65856u, 65856u,
-    65856u, 65856u, 65856u, 65856u, 65856u, 65856u, 331970u, 331970u, 393416u, 397414u, 266433u, 266433u, 266433u, 266433u, 262720u, 262720u,
-    262720u, 262720u, 331873u, 331873u, 331876u, 331876u, 135360u, 135360u, 135360u, 135360u, 135360u, 135360u, 135360u, 135360u, 135360u, 135360u,
-    135360u, 135360u, 135360u, 135360u, 135360u, 135360u, 69761u, 69761u, 131456u, 135255u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u,
-    69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u,
-    69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u,
-    69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u,
-    69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 69723u, 135260u, 135260u, 135260u, 135260u, 135260u, 135260u,
-    135260u, 135260u, 135260u, 135260u, 135260u, 135260u, 135260u, 135260u, 135260u, 135260u, 135260u, 135260u, 135260u, 135260u, 135260u, 135260u,
-    135260u, 135260u, 135260u, 135260u, 135260u, 135260u, 135260u, 135260u, 135260u, 135260u, 327878u, 327878u, 327878u, 327878u, 393538u, 393538u,
-    459648u, 459329u, 331874u, 331874u, 331874u, 331874u, 393729u, 393729u, 397632u, 397632u, 197056u, 197056u, 197056u, 197056u, 197056u, 197056u,
-    197056u, 197056u, 197056u, 197056u, 197056u, 197056u, 197056u, 197056u, 197056u, 197056u, 262284u, 262284u, 262227u, 262227u, 196692u, 196692u,
-    196692u, 196692u, 331911u, 331913u, 262656u, 262656u, 262229u, 262229u, 328065u, 331882u, 73728u, 73728u, 73728u, 73728u, 73728u, 73728u,
-    73728u, 73728u, 73728u, 73728u, 73728u, 73728u, 73728u, 73728u, 73728u, 73728u, 65729u, 65729u, 65729u, 65729u, 65729u, 65729u,
-    65729u, 65729u, 65729u, 65729u, 65729u, 65729u, 65729u, 65729u, 65729u, 65729u, 65729u, 65729u, 65729u, 65729u, 65729u, 65729u,
-    65729u, 65729u, 65729u, 65729u, 65729u, 65729u, 65729u, 65729u, 65729u, 65729u, 328320u, 328320u, 327766u, 327766u, 327767u, 327767u,
-    393309u, 393420u, 196747u, 196747u, 196747u, 196747u, 196747u, 196747u, 196747u, 196747u, 266374u, 266374u, 266374u, 266374u, 262233u, 262233u,
-    262233u, 262233u, 331881u, 331881u, 327879u, 327879u, 262402u, 262402u, 262402u, 262402u, 327823u, 327823u, 327883u, 327883u, 266336u, 266336u,
-    266336u, 266336u, 266380u, 266380u, 266380u, 266380u, 262341u, 262341u, 262341u, 262341u, 200837u, 200837u, 200837u, 200837u, 200837u, 200837u,
-    200837u, 200837u, 200797u, 200797u, 200797u, 200797u, 200797u, 200797u, 200797u, 200797u, 328129u, 328129u, 394048u, 393476u, 262340u, 262340u,
-    262340u, 262340u, 331883u, 331883u, 397415u, 393477u, 331915u, 331915u, 328384u, 328384u, 135254u, 135254u, 135254u, 135254u, 135254u, 135254u,
-    135254u, 135254u, 135254u, 135254u, 135254u, 135254u, 135254u, 135254u, 135254u, 135254u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u,
-    65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u,
-    65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u,
-    65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u,
-    65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 65613u, 135256u, 135256u, 135256u, 135256u, 135256u, 135256u,
-    135256u, 135256u, 135256u, 135256u, 135256u, 135256u, 135256u, 135256u, 135256u, 135256u, 135256u, 135256u, 135256u, 135256u, 135256u, 135256u,
-    135256u, 135256u, 135256u, 135256u, 135256u, 135256u, 135256u, 135256u, 135256u, 135256u, 266334u, 266334u, 266334u, 266334u, 266334u, 266334u,
-    266334u, 266334u, 331912u, 331912u, 331912u, 331912u, 463043u, 458954u, 393984u, 393984u, 200835u, 200835u, 200835u, 200835u, 200835u, 200835u,
-    200835u, 200835u, 200835u, 200835u, 200835u, 200835u, 200835u, 200835u, 200835u, 200835u, 135257u, 135257u, 135257u, 135257u, 135257u, 135257u,
-    135257u, 135257u, 135257u, 135257u, 135257u, 135257u, 135257u, 135257u, 135257u, 135257u, 135257u, 135257u, 135257u, 135257u, 135257u, 135257u,
-    135257u, 135257u, 135257u, 135257u, 135257u, 135257u, 135257u, 135257u, 135257u, 135257u, 196688u, 196688u, 196688u, 196688u, 196688u, 196688u,
-    196688u, 196688u, 196688u, 196688u, 196688u, 196688u, 196688u, 196688u, 196688u, 196688u, 196802u, 196802u, 196802u, 196802u, 196802u, 196802u,
-    196802u, 196802u, 196802u, 196802u, 196802u, 196802u, 196802u, 196802u, 196802u, 196802u, 196742u, 196742u, 196742u, 196742u, 196742u, 196742u,
-    196742u, 196742u, 196742u, 196742u, 196742u, 196742u, 196742u, 196742u, 196742u, 196742u, 266372u, 266372u, 266372u, 266372u, 266372u, 266372u,
-    266372u, 266372u, 332032u, 332032u, 332032u, 332032u, 397450u, 397450u, 462991u, 463105u, 196743u, 196743u, 196743u, 196743u, 196743u, 196743u,
-    196743u, 196743u, 196743u, 196743u, 196743u, 196743u, 196743u, 196743u, 196743u, 196743u, 196865u, 196865u, 196865u, 196865u, 196865u, 196865u,
-    196865u, 196865u, 196865u, 196865u, 196865u, 196865u, 196865u, 196865u, 196865u, 196865u, 135258u, 135258u, 135258u, 135258u, 135258u, 135258u,
-    135258u, 135258u, 135258u, 135258u, 135258u, 135258u, 135258u, 135258u, 135258u, 135258u, 262282u, 262282u, 262282u, 262282u, 262236u, 262236u,
-    262236u, 262236u, 262465u, 262465u, 262465u, 262465u, 393417u, 397413u, 327822u, 327822u, 69714u, 69714u, 69714u, 69714u, 69714u, 69714u,
-    69714u, 69714u, 69714u, 69714u, 69714u, 69714u, 69714u, 69714u, 69714u, 69714u, 69714u, 69714u, 69714u, 69714u, 69714u, 69714u,
-    69714u, 69714u, 69714u, 69714u, 69714u, 69714u, 69714u, 69714u, 69714u, 69714u, 196745u, 200803u, 196744u, 196689u, 65667u, 65667u,
-    65667u, 65667u, 135253u, 135253u, 135253u, 135253u, 135253u, 135253u, 135253u, 135253u, 135253u, 135253u, 135253u, 135253u, 135253u, 135253u,
-    135253u, 135253u, 266335u, 266335u, 266335u, 266335u, 262339u, 262339u, 262339u, 262339u, 327768u, 327768u, 397454u, 397453u, 262226u, 262226u,
-    262226u, 262226u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u,
-    69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u, 69716u,
-    69716u, 69716u, 135298u, 135298u, 135298u, 135298u, 135298u, 135298u, 135298u, 135298u, 135298u, 135298u, 135298u, 135298u, 135298u, 135298u,
-    135298u, 135298u, 196699u, 196699u, 196699u, 196699u, 196699u, 196699u, 196699u, 196699u, 262234u, 262234u, 262234u, 262234u, 327821u, 327821u,
-    397416u, 393475u, 131204u, 131204u, 131204u, 131204u, 131204u, 131204u, 131204u, 131204u, 131204u, 131204u, 131204u, 131204u, 131204u, 131204u,
-    131204u, 131204u, 131205u, 131205u, 131205u, 131205u, 131205u, 131205u, 131205u, 131205u, 131205u, 131205u, 131205u, 131205u, 131205u, 131205u,
-    131205u, 131205u, 65611u, 65614u, 69715u, 65615u, 2181038350u, 2164261178u, 2164261170u, 2164261130u, 2181038358u, 2197815582u, 466944u, 466944u, 2164261126u, 2147483970u,
-    2147483968u, 2147483966u, 2147483960u, 2147483958u, 2147483952u, 2147483950u, 2147483908u, 2147483906u, 2147483904u, 528456u, 528455u, 528454u, 528576u, 524362u, 524361u, 524360u,
-    528457u, 524419u, 524545u, 525056u, 524992u, 524928u, 462916u, 462916u, 462915u, 462915u, 458822u, 458822u, 462917u, 462917u, 458823u, 458823u,
-    458882u, 458882u, 458945u, 458945u, 459328u, 459328u, 397440u, 397440u, 397440u, 397440u, 393285u, 393285u, 393285u, 393285u, 397378u, 397378u,
-    397378u, 397378u, 397377u, 397377u, 397377u, 397377u, 393284u, 393284u, 393284u, 393284u, 393283u, 393283u, 393283u, 393283u, 393728u, 393728u,
-    393728u, 393728u, 393664u, 393664u, 393664u, 393664u, 393345u, 393345u, 393345u, 393345u, 393600u, 393600u, 393600u, 393600u, 327746u, 327746u,
-    327746u, 327746u, 327746u, 327746u, 327746u, 327746u, 328000u, 328000u, 328000u, 328000u, 328000u, 328000u, 328000u, 328000u, 327936u, 327936u,
-    327936u, 327936u, 327936u, 327936u, 327936u, 327936u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u,
-    266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u,
-    196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u,
-    196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u,
-    262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u,
-    262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 66432u, 66368u, 65668u, 66496u, 65857u, 66560u, 132224u, 132160u, 69710u, 69710u,
-    131330u, 131521u, 132352u, 132288u, 0u, 0u, 0u, 0u, 201152u, 201088u, 198016u, 197952u, 198080u, 198144u, 197121u, 196745u,
-    200835u, 200836u, 200783u, 200784u, 263744u, 263808u, 263872u, 262721u, 262342u, 262785u, 262466u, 262343u, 262222u, 266752u, 266373u, 266374u,
-    266321u, 266322u, 266323u, 266324u, 65730u, 65921u, 65669u, 65731u, 131269u, 131208u, 131268u, 131331u, 65671u, 65670u, 65612u, 65611u,
-    135298u, 135361u, 135488u, 131149u, 69761u, 69888u, 69707u, 69706u, 69709u, 69708u, 2181038342u, 2164261184u, 2164261164u, 2164261142u, 2181038350u, 2197815578u,
-    466944u, 466944u, 2164261122u, 2147483966u, 2147483964u, 2147483962u, 2147483960u, 2147483958u, 2147483956u, 2147483954u, 2147483952u, 2147483946u, 2147483904u, 528464u, 528463u, 528462u,
-    528461u, 528460u, 528459u, 528458u, 528457u, 524366u, 524365u, 524418u, 524481u, 524608u, 462920u, 462920u, 462919u, 462919u, 462918u, 462918u,
-    462917u, 462917u, 458828u, 458828u, 458827u, 458827u, 458826u, 458826u, 459008u, 459008u, 397380u, 397380u, 397380u, 397380u, 397379u, 397379u,
-    397379u, 397379u, 397378u, 397378u, 397378u, 397378u, 397377u, 397377u, 397377u, 397377u, 393289u, 393289u, 393289u, 393289u, 393288u, 393288u,
-    393288u, 393288u, 393287u, 393287u, 393287u, 393287u, 393286u, 393286u, 393286u, 393286u, 393345u, 393345u, 393345u, 393345u, 393408u, 393408u,
-    393408u, 393408u, 327749u, 327749u, 327749u, 327749u, 327749u, 327749u, 327749u, 327749u, 327748u, 327748u, 327748u, 327748u, 327748u, 327748u,
-    327748u, 327748u, 327747u, 327747u, 327747u, 327747u, 327747u, 327747u, 327747u, 327747u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u,
-    266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 266304u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u,
-    196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u,
-    196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 262210u, 262210u, 262210u, 262210u, 262210u, 262210u,
-    262210u, 262210u, 262210u, 262210u, 262210u, 262210u, 262210u, 262210u, 262210u, 262210u, 262272u, 262272u, 262272u, 262272u, 262272u, 262272u,
-    262272u, 262272u, 262272u, 262272u, 262272u, 262272u, 262272u, 262272u, 262272u, 262272u, 65984u, 65920u, 131648u, 131584u, 69720u, 69720u,
-    0u, 0u, 0u, 0u, 200833u, 200896u, 197312u, 197248u, 197376u, 196929u, 196695u, 196696u, 200797u, 200798u, 200799u, 200800u,
-    131205u, 131267u, 131266u, 131329u, 262529u, 262402u, 262340u, 262341u, 262342u, 262282u, 262233u, 262234u, 266337u, 266338u, 266339u, 266340u,
-    266341u, 266342u, 266343u, 266344u, 65668u, 65667u, 131209u, 131208u, 131207u, 131206u, 65616u, 65615u, 65618u, 65617u, 65620u, 65619u
-);
-// Copies chunk 2 of the tables into the state, which a reset clears
-@compute @workgroup_size(64)
-fn loadTables2(@builtin(global_invocation_id) invocation: vec3u) {
-    if (packet.reset == 0u || invocation.x >= 8192u) {
-        return;
-    }
-    state[S_TABLES + 16384u + invocation.x] = TABLE_DATA_2[invocation.x];
-}
-const TABLE_DATA_3 = array<u32, 8192>(
-    65622u, 65621u, 69713u, 69760u, 69715u, 69714u, 69717u, 69716u, 69719u, 69718u, 135260u, 135259u, 135258u, 135257u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 327746u, 327746u,
-    327746u, 327746u, 327746u, 327746u, 327746u, 327746u, 524359u, 2214593080u, 458821u, 458821u, 459712u, 459712u, 2231370408u, 525568u, 262400u, 262400u,
-    262400u, 262400u, 262400u, 262400u, 262400u, 262400u, 262400u, 262400u, 262400u, 262400u, 262400u, 262400u, 262400u, 262400u, 196736u, 196736u,
-    196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u,
-    196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 327809u, 327809u,
-    327809u, 327809u, 327809u, 327809u, 327809u, 327809u, 393856u, 393856u, 393856u, 393856u, 2197815848u, 2197815612u, 459648u, 459648u, 262209u, 262209u,
-    262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 393283u, 393283u,
-    393283u, 393283u, 393409u, 393409u, 393409u, 393409u, 2164261412u, 525504u, 2197815960u, 2164261880u, 528450u, 524673u, 2197815596u, 524482u, 328064u, 328064u,
-    328064u, 328064u, 328064u, 328064u, 328064u, 328064u, 393792u, 393792u, 393792u, 393792u, 2214593028u, 2164261884u, 459584u, 459584u, 2197815796u, 525440u,
-    2147483946u, 524419u, 459009u, 459009u, 458882u, 458882u, 2264924904u, 524358u, 458820u, 458820u, 2181038370u, 525376u, 459520u, 459520u, 262336u, 262336u,
-    262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 262336u, 328000u, 328000u,
-    328000u, 328000u, 328000u, 328000u, 328000u, 328000u, 393728u, 393728u, 393728u, 393728u, 2197816296u, 2231370328u, 2147483936u, 525312u, 462912u, 462912u,
-    2248147316u, 524609u, 466944u, 466944u, 459456u, 459456u, 2214592852u, 2214592768u, 528449u, 2181038412u, 393664u, 393664u, 393664u, 393664u, 66880u, 66880u,
-    66880u, 66880u, 66880u, 66880u, 66880u, 66880u, 66880u, 66880u, 66880u, 66880u, 66880u, 66880u, 66880u, 66880u, 196743u, 196743u,
-    196743u, 196743u, 327758u, 328131u, 262342u, 262342u, 135239u, 135239u, 135239u, 135239u, 135239u, 135239u, 135239u, 135239u, 69700u, 66944u,
-    200781u, 199104u, 132992u, 132992u, 67008u, 67008u, 67008u, 67008u, 69701u, 67072u, 197505u, 197505u, 266371u, 265408u, 199232u, 199232u,
-    196931u, 196931u, 67136u, 67136u, 67136u, 67136u, 67136u, 67136u, 67136u, 67136u, 135243u, 135243u, 135243u, 135243u, 199360u, 199360u,
-    265472u, 263361u, 67200u, 67200u, 67200u, 67200u, 67200u, 67200u, 67200u, 67200u, 69699u, 69699u, 69699u, 69699u, 200833u, 196994u,
-    132800u, 132800u, 198912u, 198912u, 198912u, 198912u, 196683u, 196683u, 196683u, 196683u, 132864u, 132864u, 132864u, 132864u, 132864u, 132864u,
-    132864u, 132864u, 131145u, 131145u, 131145u, 131145u, 131145u, 131145u, 131145u, 131145u, 331856u, 331200u, 262658u, 262658u, 200780u, 200780u,
-    200780u, 200780u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u,
-    132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u, 132928u,
-    132928u, 132928u, 265088u, 265088u, 265088u, 265088u, 265088u, 265088u, 265088u, 265088u, 263169u, 263169u, 263169u, 263169u, 263169u, 263169u,
-    263169u, 263169u, 328961u, 328961u, 328961u, 328961u, 462989u, 462987u, 393417u, 393417u, 265024u, 265024u, 265024u, 265024u, 265024u, 265024u,
-    265024u, 265024u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u,
-    65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u,
-    65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u,
-    65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u, 65985u,
-    65985u, 65985u, 65608u, 65608u, 65608u, 65608u, 65608u, 65608u, 65608u, 65608u, 199168u, 199168u, 265344u, 265280u, 133056u, 133056u,
-    133056u, 133056u, 328005u, 328068u, 262722u, 262722u, 196684u, 196684u, 196684u, 196684u, 133120u, 133120u, 133120u, 133120u, 133120u, 133120u,
-    133120u, 133120u, 66049u, 66049u, 66049u, 66049u, 66049u, 66049u, 66049u, 66049u, 66049u, 66049u, 66049u, 66049u, 66049u, 66049u,
-    66049u, 66049u, 133184u, 131331u, 65731u, 65731u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 65669u, 262282u, 262468u,
-    196744u, 196744u, 133248u, 133248u, 133248u, 133248u, 265536u, 265536u, 262786u, 262786u, 200834u, 200834u, 200834u, 200834u, 327819u, 331911u,
-    265600u, 265600u, 200782u, 200782u, 200782u, 200782u, 133312u, 133312u, 133312u, 133312u, 133312u, 133312u, 133312u, 133312u, 131841u, 131841u,
-    131841u, 131841u, 131841u, 131841u, 131841u, 131841u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u,
-    65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 65668u,
-    65668u, 65668u, 65668u, 65668u, 65668u, 65668u, 199040u, 199040u, 199040u, 199040u, 199040u, 199040u, 199040u, 199040u, 397448u, 397450u,
-    331264u, 331264u, 265152u, 265152u, 265152u, 265152u, 197441u, 197441u, 197441u, 197441u, 197441u, 197441u, 197441u, 197441u, 198976u, 198976u,
-    198976u, 198976u, 198976u, 198976u, 198976u, 198976u, 263297u, 262343u, 199296u, 199296u, 200896u, 200896u, 262405u, 266319u, 69760u, 69760u,
-    69760u, 69760u, 69760u, 69760u, 69760u, 69760u, 66113u, 66113u, 66113u, 66113u, 66113u, 66113u, 66113u, 66113u, 66113u, 66113u,
-    66113u, 66113u, 66113u, 66113u, 66113u, 66113u, 66113u, 66113u, 66113u, 66113u, 66113u, 66113u, 66113u, 66113u, 66113u, 66113u,
-    66113u, 66113u, 66113u, 66113u, 66113u, 66113u, 199424u, 199424u, 199424u, 199424u, 199424u, 199424u, 199424u, 199424u, 197569u, 197569u,
-    197569u, 197569u, 197569u, 197569u, 197569u, 197569u, 397449u, 397506u, 331910u, 331910u, 266372u, 266372u, 266372u, 266372u, 196868u, 196868u,
-    196868u, 196868u, 196868u, 196868u, 196868u, 196868u, 197058u, 197058u, 197058u, 197058u, 197058u, 197058u, 197058u, 197058u, 197058u, 197058u,
-    197058u, 197058u, 197058u, 197058u, 197058u, 197058u, 197058u, 197058u, 197058u, 197058u, 197058u, 197058u, 197058u, 197058u, 197058u, 197058u,
-    197058u, 197058u, 197058u, 197058u, 197058u, 197058u, 331909u, 331909u, 331909u, 331909u, 331909u, 331909u, 331909u, 331909u, 327880u, 327880u,
-    327880u, 327880u, 327880u, 327880u, 327880u, 327880u, 458893u, 458893u, 528526u, 528524u, 393356u, 393356u, 393356u, 393356u, 331969u, 331969u,
-    331969u, 331969u, 331969u, 331969u, 331969u, 331969u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u,
-    131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u,
-    131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u,
-    131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u,
-    131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u,
-    135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u,
-    135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u,
-    135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 135242u,
-    135242u, 135242u, 135242u, 135242u, 135242u, 135242u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u,
-    196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 196805u,
-    196805u, 196805u, 196805u, 196805u, 196805u, 196805u, 265216u, 265216u, 265216u, 265216u, 265216u, 265216u, 265216u, 265216u, 265216u, 265216u,
-    265216u, 265216u, 265216u, 265216u, 265216u, 265216u, 327942u, 327942u, 327942u, 327942u, 327942u, 327942u, 327942u, 327942u, 332032u, 332032u,
-    332032u, 332032u, 332032u, 332032u, 332032u, 332032u, 263233u, 262281u, 262221u, 262531u, 131713u, 131713u, 131713u, 131713u, 135240u, 135240u,
-    135240u, 135240u, 131394u, 131394u, 131394u, 131394u, 69702u, 69702u, 131777u, 131268u, 131146u, 135241u, 65794u, 65794u, 196736u, 196736u,
-    196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u,
-    196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 196736u, 327936u, 327936u,
-    327936u, 327936u, 327936u, 327936u, 327936u, 327936u, 462918u, 462918u, 2214594036u, 2147483970u, 397378u, 397378u, 397378u, 397378u, 393286u, 393286u,
-    393286u, 393286u, 459200u, 459200u, 2181039936u, 528457u, 327748u, 327748u, 327748u, 327748u, 327748u, 327748u, 327748u, 327748u, 458824u, 458824u,
-    462917u, 462917u, 524482u, 524362u, 2214594328u, 524864u, 393536u, 393536u, 393536u, 393536u, 397377u, 397377u, 397377u, 397377u, 327809u, 327809u,
-    327809u, 327809u, 327809u, 327809u, 327809u, 327809u, 2264924580u, 2264925716u, 2147483968u, 2214592900u, 462916u, 462916u, 528456u, 524800u, 196673u, 196673u,
-    196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u,
-    196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u,
-    131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 131136u, 262210u, 262210u,
-    262210u, 262210u, 262210u, 262210u, 262210u, 262210u, 262210u, 262210u, 262210u, 262210u, 262210u, 262210u, 262210u, 262210u, 458823u, 458823u,
-    2248148340u, 2147485502u, 393285u, 393285u, 393285u, 393285u, 327747u, 327747u, 327747u, 327747u, 327747u, 327747u, 327747u, 327747u, 459136u, 459136u,
-    524419u, 2264925172u, 528455u, 524545u, 466944u, 466944u, 524361u, 2231369984u, 462915u, 462915u, 2147485496u, 2231370052u, 458945u, 458945u, 327872u, 327872u,
-    327872u, 327872u, 327872u, 327872u, 327872u, 327872u, 2164262714u, 2264924900u, 458882u, 458882u, 397376u, 397376u, 397376u, 397376u, 266432u, 266432u,
-    266432u, 266432u, 397446u, 393415u, 327878u, 327878u, 200788u, 200788u, 200788u, 200788u, 200788u, 200788u, 200788u, 200788u, 131267u, 131267u,
-    131267u, 131267u, 131267u, 131267u, 131267u, 131267u, 131267u, 131267u, 131267u, 131267u, 131267u, 131267u, 131267u, 131267u, 66176u, 66176u,
-    66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u,
-    66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 66176u, 69709u, 66240u,
-    65613u, 66304u, 262228u, 262228u, 262228u, 262228u, 329408u, 329408u, 393355u, 393603u, 196930u, 196930u, 196930u, 196930u, 196930u, 196930u,
-    196930u, 196930u, 131904u, 131904u, 131904u, 131904u, 131904u, 131904u, 131904u, 131904u, 131904u, 131904u, 131904u, 131904u, 131904u, 131904u,
-    131904u, 131904u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u,
-    69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u, 69706u,
-    69706u, 69706u, 196804u, 196804u, 196804u, 196804u, 266331u, 266331u, 331969u, 327767u, 131968u, 131968u, 131968u, 131968u, 131968u, 131968u,
-    131968u, 131968u, 135248u, 135248u, 135248u, 135248u, 135248u, 135248u, 135248u, 135248u, 200790u, 200790u, 200790u, 200790u, 196688u, 196688u,
-    196688u, 196688u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u,
-    69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u,
-    69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u,
-    69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u,
-    69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u,
-    69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u,
-    69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u,
-    69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u, 69710u,
-    69710u, 69710u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u,
-    132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u,
-    132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u,
-    132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u, 132032u,
-    132032u, 132032u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u,
-    197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u, 197824u,
-    197824u, 197824u, 393478u, 393478u, 393478u, 393478u, 2231370404u, 528524u, 462985u, 462985u, 329600u, 329600u, 329600u, 329600u, 329600u, 329600u,
-    329600u, 329600u, 262281u, 262281u, 262281u, 262281u, 262281u, 262281u, 262281u, 262281u, 262281u, 262281u, 262281u, 262281u, 262281u, 262281u,
-    262281u, 262281u, 131218u, 131218u, 131218u, 131218u, 131218u, 131218u, 131218u, 131218u, 131218u, 131218u, 131218u, 131218u, 131218u, 131218u,
-    131218u, 131218u, 331926u, 331926u, 397467u, 397466u, 266389u, 266389u, 266389u, 266389u, 200851u, 200851u, 200851u, 200851u, 200851u, 200851u,
-    200851u, 200851u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u,
-    69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u, 69774u,
-    69774u, 69774u, 262280u, 262280u, 262280u, 262280u, 262280u, 262280u, 262280u, 262280u, 262280u, 262280u, 262280u, 262280u, 262280u, 262280u,
-    262280u, 262280u, 331908u, 331908u, 331908u, 331908u, 331908u, 331908u, 331908u, 331908u, 328003u, 328003u, 328003u, 328003u, 328003u, 328003u,
-    328003u, 328003u, 263488u, 263488u, 263488u, 263488u, 263488u, 263488u, 263488u, 263488u, 263488u, 263488u, 263488u, 263488u, 263488u, 263488u,
-    263488u, 263488u, 328130u, 328130u, 328130u, 328130u, 328130u, 328130u, 328130u, 328130u, 327940u, 327940u, 327940u, 327940u, 327940u, 327940u,
-    327940u, 327940u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u,
-    131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u,
-    131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u,
-    131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u, 131457u,
-    131457u, 131457u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u,
-    135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u,
-    135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u,
-    135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u, 135247u,
-    135247u, 135247u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u,
-    197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u, 197632u,
-    197632u, 197632u, 328385u, 328385u, 328385u, 328385u, 328385u, 328385u, 328385u, 328385u, 2197816292u, 528579u, 463042u, 463042u, 458952u, 458952u,
-    462983u, 462983u, 262227u, 262227u, 262227u, 262227u, 262227u, 262227u, 262227u, 262227u, 262227u, 262227u, 262227u, 262227u, 262227u, 262227u,
-    262227u, 262227u, 69773u, 69773u, 69773u, 69773u, 69773u, 69773u, 69773u, 69773u, 135312u, 135312u, 135312u, 135312u, 262293u, 266385u,
-    262294u, 266386u, 329472u, 329472u, 329472u, 329472u, 329472u, 329472u, 329472u, 329472u, 2248148212u, 524430u, 462984u, 462984u, 393477u, 393477u,
-    393477u, 393477u, 262530u, 262530u, 262530u, 262530u, 262530u, 262530u, 262530u, 262530u, 262530u, 262530u, 262530u, 262530u, 262530u, 262530u,
-    262530u, 262530u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u,
-    197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u, 197696u,
-    197696u, 197696u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u,
-    131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u,
-    131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u,
-    131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u, 131150u,
-    131150u, 131150u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u,
-    69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u,
-    69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u,
-    69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u,
-    69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u,
-    69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u,
-    69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u,
-    69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u, 69707u,
-    69707u, 69707u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u,
-    131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u, 131217u,
-    131217u, 131217u, 266388u, 266388u, 266388u, 266388u, 266388u, 266388u, 266388u, 266388u, 331927u, 331927u, 331927u, 331927u, 463004u, 463000u,
-    397465u, 397465u, 196756u, 196756u, 196756u, 196756u, 196756u, 196756u, 196756u, 196756u, 196756u, 196756u, 196756u, 196756u, 196756u, 196756u,
-    196756u, 196756u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u,
-    65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u,
-    65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u,
-    65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u, 65679u,
-    65679u, 65679u, 263616u, 263616u, 263616u, 263616u, 263616u, 263616u, 263616u, 263616u, 331869u, 331869u, 331869u, 331869u, 329536u, 329536u,
-    329536u, 329536u, 197760u, 197760u, 197760u, 197760u, 197760u, 197760u, 197760u, 197760u, 197760u, 197760u, 197760u, 197760u, 197760u, 197760u,
-    197760u, 197760u, 266371u, 266371u, 266371u, 266371u, 266371u, 266371u, 266371u, 266371u, 393540u, 393540u, 458893u, 462987u, 328449u, 328449u,
-    328449u, 328449u, 196743u, 196743u, 196743u, 196743u, 196743u, 196743u, 196743u, 196743u, 196743u, 196743u, 196743u, 196743u, 196743u, 196743u,
-    196743u, 196743u, 197121u, 197121u, 197121u, 197121u, 197121u, 197121u, 197121u, 197121u, 197121u, 197121u, 197121u, 197121u, 197121u, 197121u,
-    197121u, 197121u, 262229u, 262229u, 262229u, 262229u, 262229u, 262229u, 262229u, 262229u, 266329u, 266329u, 266329u, 266329u, 266329u, 266329u,
-    266329u, 266329u, 200789u, 200789u, 200789u, 200789u, 200789u, 200789u, 200789u, 200789u, 200789u, 200789u, 200789u, 200789u, 200789u, 200789u,
-    200789u, 200789u, 263552u, 263552u, 263552u, 263552u, 263552u, 263552u, 263552u, 263552u, 266330u, 266330u, 266330u, 266330u, 266330u, 266330u,
-    266330u, 266330u, 135251u, 135251u, 135251u, 135251u, 135251u, 135251u, 135251u, 135251u, 197185u, 197185u, 197185u, 197185u, 263808u, 263808u,
-    332032u, 331909u, 131151u, 131151u, 131151u, 131151u, 131151u, 131151u, 131151u, 131151u, 197888u, 197888u, 197888u, 197888u, 328194u, 329728u,
-    328513u, 327768u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u,
-    196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u, 196689u,
-    196689u, 196689u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u,
-    196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u, 196867u,
-    196867u, 196867u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u,
-    131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u,
-    131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u,
-    131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u, 131206u,
-    131206u, 131206u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u,
-    131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u,
-    131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u,
-    131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u, 131521u,
-    131521u, 131521u, 262341u, 262341u, 262341u, 262341u, 262341u, 262341u, 262341u, 262341u, 262341u, 262341u, 262341u, 262341u, 262341u, 262341u,
-    262341u, 262341u, 327818u, 327818u, 327818u, 327818u, 327818u, 327818u, 327818u, 327818u, 393356u, 393356u, 393356u, 393356u, 2164262676u, 528522u,
-    458953u, 458953u, 263680u, 263680u, 263680u, 263680u, 263680u, 263680u, 263680u, 263680u, 263680u, 263680u, 263680u, 263680u, 263680u, 263680u,
-    263680u, 263680u, 262785u, 262785u, 262785u, 262785u, 262785u, 262785u, 262785u, 262785u, 262785u, 262785u, 262785u, 262785u, 262785u, 262785u,
-    262785u, 262785u, 135311u, 131219u, 65680u, 65680u, 329664u, 331870u, 262230u, 262230u, 200791u, 200791u, 200791u, 200791u, 135297u, 135297u,
-    135297u, 135297u, 135297u, 135297u, 135297u, 135297u, 263744u, 263744u, 266332u, 266332u, 200834u, 200834u, 200834u, 200834u, 135249u, 135249u,
-    135249u, 135249u, 135249u, 135249u, 135249u, 135249u, 65668u, 65857u, 131330u, 131205u, 65611u, 65611u, 69708u, 65612u, 196690u, 200792u,
-    135250u, 135250u, 69760u, 69760u, 69760u, 69760u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 393221u, 393223u,
-    327686u, 327686u, 393224u, 393225u, 393226u, 393227u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 327683u, 327683u, 327683u, 327683u, 327684u, 327684u, 327684u, 327684u, 458757u, 458759u,
-    393222u, 393222u, 458760u, 458761u, 458762u, 458763u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 65536u,
-    65536u, 65536u, 65536u, 65536u, 65536u, 65536u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 262147u, 262147u, 262147u, 262147u, 262148u, 262148u, 262148u, 262148u, 393221u, 393223u,
-    327686u, 327686u, 393224u, 393225u, 393226u, 393227u, 327680u, 327681u, 327682u, 327686u, 262149u, 262149u, 262152u, 262152u, 131075u, 131075u,
-    131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 196615u, 196615u,
-    196615u, 196615u, 262153u, 262153u, 327690u, 327691u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 393221u, 393222u,
-    327687u, 327687u, 393224u, 393225u, 393226u, 393227u, 196608u, 196608u, 196608u, 196608u, 262145u, 262145u, 262146u, 262146u, 131075u, 131075u,
-    131075u, 131075u, 131075u, 131075u, 131075u, 131075u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 131076u, 327685u, 327686u,
-    262151u, 262151u, 327688u, 327689u, 327690u, 327691u, 327680u, 327680u, 327680u, 327680u, 327680u, 327680u, 327680u, 327680u, 327683u, 327683u,
-    327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u,
-    262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327686u, 327686u,
-    327686u, 327686u, 327686u, 327686u, 327686u, 327686u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u,
-    262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 327687u, 327687u, 327687u, 327687u, 327687u, 327687u, 327687u, 327687u, 458760u, 458760u,
-    458761u, 458761u, 2197815552u, 524312u, 458775u, 458775u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u,
-    196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u,
-    196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u,
-    196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u,
-    196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u,
-    262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 327701u, 327701u, 327701u, 327701u, 327701u, 327701u, 327701u, 327701u, 327702u, 327702u,
-    327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 262154u, 262155u, 262156u, 262157u, 262158u, 262159u, 262160u, 262169u, 262170u, 262171u,
-    262172u, 262173u, 262174u, 262175u, 262176u, 262177u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u,
-    262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u,
-    262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u,
-    196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u,
-    196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u,
-    262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u,
-    262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 393224u, 393224u, 393224u, 393224u, 458761u, 458761u, 458762u, 458762u, 2181038336u, 2181038344u,
-    458775u, 458775u, 393233u, 393233u, 393233u, 393233u, 262162u, 262162u, 262162u, 262162u, 262162u, 262162u, 262162u, 262162u, 262162u, 262162u,
-    262162u, 262162u, 262162u, 262162u, 262162u, 262162u, 327699u, 327699u, 327699u, 327699u, 327699u, 327699u, 327699u, 327699u, 327700u, 327700u,
-    327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 393237u, 393237u, 393237u, 393237u, 458776u, 458776u, 458778u, 458778u, 327702u, 327702u,
-    327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 196619u, 196620u, 196621u, 196622u, 196623u, 196624u, 196633u, 196635u, 196636u, 196637u,
-    196638u, 196639u, 131104u, 131104u, 131105u, 131105u, 458752u, 458752u, 458753u, 458753u, 393218u, 393218u, 393218u, 393218u, 458755u, 458755u,
-    458757u, 458757u, 393220u, 393220u, 393220u, 393220u, 524294u, 524295u, 2214592768u, 524310u, 393237u, 393237u, 393237u, 393237u, 327700u, 327700u,
-    327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u,
-    196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u,
-    196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 327688u, 327689u, 327690u, 327691u, 327692u, 327693u, 327694u, 327695u, 262160u, 262160u,
-    262167u, 262167u, 262168u, 262168u, 262169u, 262169u, 262170u, 262170u, 262171u, 262171u, 262172u, 262172u, 262173u, 262173u, 262174u, 262174u,
-    262175u, 262175u, 262176u, 262176u, 262177u, 262177u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u,
-    262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u,
-    262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u,
-    262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 327688u, 327688u, 327688u, 327688u, 327688u, 327688u, 327688u, 327688u, 327689u, 327689u,
-    327689u, 327689u, 327689u, 327689u, 327689u, 327689u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u,
-    196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u,
-    196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u,
-    196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196614u,
-    196614u, 196614u, 196614u, 196614u, 196614u, 196614u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u,
-    196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u,
-    196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 458762u, 458762u, 2181038336u, 2181038344u, 458770u, 458770u, 458773u, 458773u, 327697u, 327697u,
-    327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 393235u, 393235u, 393235u, 393235u, 393236u, 393236u, 393236u, 393236u, 458774u, 458774u,
-    458775u, 458775u, 458776u, 458776u, 458780u, 458780u, 196619u, 196620u, 196621u, 196622u, 196623u, 196624u, 196633u, 196634u, 196635u, 196637u,
-    196638u, 196639u, 131104u, 131104u, 131105u, 131105u, 524288u, 2147483904u, 458753u, 458753u, 458754u, 458754u, 458755u, 458755u, 524293u, 2231369986u,
-    458774u, 458774u, 393237u, 393237u, 393237u, 393237u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u,
-    262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u,
-    196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u,
-    196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u,
-    131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u,
-    131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u,
-    131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u,
-    131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65540u, 65542u, 393223u, 393224u, 393225u, 393226u, 393227u, 393228u, 393229u, 393230u,
-    327695u, 327695u, 327696u, 327696u, 327704u, 327704u, 327705u, 327705u, 327706u, 327706u, 327707u, 327707u, 327708u, 327708u, 327709u, 327709u,
-    327710u, 327710u, 327711u, 327711u, 327712u, 327712u, 327713u, 327713u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 458752u, 458753u, 393218u, 393218u, 393219u, 393219u, 393220u, 393220u,
-    393221u, 393221u, 393222u, 393222u, 393223u, 393223u, 393224u, 393224u, 393225u, 393225u, 393226u, 393226u, 393227u, 393227u, 393228u, 393228u,
-    393229u, 393229u, 393230u, 393230u, 393231u, 393231u, 393232u, 393232u, 393233u, 393233u, 393234u, 393234u, 393235u, 393235u, 393236u, 393236u,
-    393237u, 393237u, 393238u, 393238u, 393239u, 393239u, 393240u, 393240u, 393241u, 393241u, 393242u, 393242u, 393244u, 393244u, 393245u, 393245u,
-    393246u, 393246u, 393247u, 393247u, 393248u, 393248u, 393249u, 393249u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u,
-    65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u,
-    65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u,
-    65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u,
-    65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 65563u, 327680u, 327680u, 327680u, 327680u, 327680u, 327680u, 327680u, 327680u,
-    327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u,
-    393220u, 393220u, 393220u, 393220u, 393222u, 393222u, 393222u, 393222u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u,
-    393223u, 393223u, 393223u, 393223u, 524296u, 524297u, 2214592768u, 524311u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u,
-    131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u,
-    131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u,
-    131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u,
-    131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u,
-    196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u,
-    196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u,
-    262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 327701u, 327701u, 327701u, 327701u, 327701u, 327701u, 327701u, 327701u,
-    327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327690u, 327691u, 327692u, 327693u, 327694u, 327695u, 327696u, 327705u,
-    327706u, 327707u, 327708u, 327709u, 327710u, 327711u, 327712u, 327713u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 458752u, 458753u, 458754u, 458755u, 458756u, 458757u, 458758u, 458759u,
-    458760u, 458761u, 458762u, 458763u, 458764u, 458765u, 458766u, 458767u, 458768u, 458771u, 458772u, 458773u, 458774u, 458775u, 458776u, 458777u,
-    458778u, 458779u, 458780u, 458781u, 458782u, 458783u, 458784u, 458785u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 327680u, 327680u, 327680u, 327680u, 327680u, 327680u, 327680u, 327680u,
-    327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u,
-    327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u,
-    393222u, 393222u, 393222u, 393222u, 393223u, 393223u, 393223u, 393223u, 524296u, 524297u, 2214592768u, 524311u, 393238u, 393238u, 393238u, 393238u,
-    327701u, 327701u, 327701u, 327701u, 327701u, 327701u, 327701u, 327701u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u,
-    262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u,
-    196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u,
-    196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u,
-    131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u,
-    131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u,
-    131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u,
-    131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131089u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 327690u, 327691u, 327692u, 327693u, 327694u, 327695u, 327696u, 327705u,
-    327706u, 327707u, 327708u, 327709u, 327710u, 327711u, 327712u, 327713u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u,
-    262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u,
-    262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u,
-    262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u,
-    262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u,
-    196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u,
-    196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u,
-    196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u,
-    196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 196615u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u,
-    262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262152u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u,
-    262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 262153u, 327690u, 327690u, 327690u, 327690u, 327690u, 327690u, 327690u, 327690u,
-    393227u, 393227u, 393227u, 393227u, 2147483904u, 2214592770u, 458772u, 458772u, 393233u, 393233u, 393233u, 393233u, 393234u, 393234u, 393234u, 393234u,
-    393235u, 393235u, 393235u, 393235u, 458774u, 458774u, 524311u, 2147483938u, 65548u, 65549u, 327694u, 327695u, 327696u, 327705u, 327706u, 327707u,
-    262172u, 262172u, 262173u, 262173u, 262175u, 262175u, 262176u, 262176u, 262177u, 262177u, 65557u, 65557u, 65557u, 65557u, 65557u, 65557u,
-    65557u, 65557u, 65557u, 65557u, 65557u, 65557u, 65557u, 65557u, 65557u, 65557u, 65560u, 65566u, 262144u, 262144u, 262144u, 262144u,
-    262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262147u, 262147u, 262147u, 262147u,
-    262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 262148u, 262148u, 262148u, 262148u,
-    262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262149u, 262149u, 262149u, 262149u,
-    262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262150u, 262150u, 262150u, 262150u,
-    262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262151u, 262151u, 262151u, 262151u,
-    262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 393224u, 393224u, 393224u, 393224u,
-    393225u, 393225u, 393225u, 393225u, 458762u, 458762u, 458763u, 458763u, 2197815552u, 524312u, 458775u, 458775u, 262161u, 262161u, 262161u, 262161u,
-    262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 196626u, 196626u, 196626u, 196626u,
-    196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u,
-    196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 262163u, 262163u, 262163u, 262163u,
-    262163u, 262163u, 262163u, 262163u, 262163u, 262163u, 262163u, 262163u, 262163u, 262163u, 262163u, 262163u, 327700u, 327700u, 327700u, 327700u,
-    327700u, 327700u, 327700u, 327700u, 393237u, 393237u, 393237u, 393237u, 393238u, 393238u, 393238u, 393238u, 262156u, 262157u, 262158u, 262159u,
-    262160u, 262169u, 262170u, 262171u, 262172u, 262173u, 262174u, 262175u, 196640u, 196640u, 196641u, 196641u, 262144u, 262144u, 262144u, 262144u,
-    262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262150u, 262150u, 262150u, 262150u,
-    262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 262150u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 196611u, 196611u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196612u, 196612u, 196612u, 196612u,
-    196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u,
-    196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196612u, 196613u, 196613u, 196613u, 196613u,
-    196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u,
-    196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 196613u, 262151u, 262151u, 262151u, 262151u,
-    262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 262151u, 393224u, 393224u, 393224u, 393224u,
-    393225u, 393225u, 393225u, 393225u, 458762u, 458762u, 524299u, 2231369984u, 458770u, 458770u, 524307u, 524308u, 393228u, 393229u, 393230u, 393231u,
-    327696u, 327696u, 327701u, 327701u, 327702u, 327702u, 327703u, 327703u, 327704u, 327704u, 327705u, 327705u, 327706u, 327706u, 327707u, 327707u,
-    327708u, 327708u, 327709u, 327709u, 327710u, 327710u, 327711u, 327711u, 327712u, 327712u, 327713u, 327713u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 458752u, 458753u, 458754u, 458755u,
-    458756u, 458757u, 458758u, 458759u, 458760u, 458761u, 458762u, 458763u, 458764u, 458765u, 458766u, 458767u, 458768u, 458771u, 458772u, 458773u,
-    458774u, 458775u, 458776u, 458777u, 458778u, 458779u, 458780u, 458781u, 458782u, 458783u, 458784u, 458785u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 327680u, 327680u, 327680u, 327680u,
-    327680u, 327680u, 327680u, 327680u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 393219u, 393219u, 393219u, 393219u,
-    393220u, 393220u, 393220u, 393220u, 393221u, 393221u, 393221u, 393221u, 458758u, 458758u, 458760u, 458760u, 393223u, 393223u, 393223u, 393223u,
-    393225u, 393225u, 393225u, 393225u, 524298u, 524300u, 458763u, 458763u, 2214592768u, 524309u, 458772u, 458772u, 196625u, 196625u, 196625u, 196625u,
-    196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u,
-    196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196625u, 196627u, 196627u, 196627u, 196627u,
-    196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u,
-    196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 196627u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u,
-    65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 65554u, 327693u, 327694u, 327695u, 327696u,
-    327703u, 327704u, 327705u, 327706u, 327707u, 327708u, 327709u, 327710u, 327711u, 327712u, 262177u, 262177u, 65558u, 65558u, 65558u, 65558u,
-    65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 65558u, 262144u, 262144u, 262144u, 262144u,
-    262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262148u, 262148u, 262148u, 262148u,
-    262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 262148u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u,
-    131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 131073u, 196611u, 196611u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u,
-    196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 196611u, 262149u, 262149u, 262149u, 262149u,
-    262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 262149u, 327686u, 327686u, 327686u, 327686u,
-    327686u, 327686u, 327686u, 327686u, 393223u, 393223u, 393223u, 393223u, 458760u, 458760u, 458761u, 458761u, 524298u, 2231369984u, 524309u, 524310u,
-    393236u, 393236u, 393236u, 393236u, 327699u, 327699u, 327699u, 327699u, 327699u, 327699u, 327699u, 327699u, 262161u, 262161u, 262161u, 262161u,
-    262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 262161u, 196626u, 196626u, 196626u, 196626u,
-    196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u,
-    196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 196626u, 393227u, 393228u, 393231u, 393232u,
-    393239u, 393240u, 393241u, 393242u, 393243u, 393244u, 393245u, 393246u, 393247u, 393248u, 327713u, 327713u, 131085u, 131085u, 131085u, 131085u,
-    131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 393216u, 393216u, 393216u, 393216u,
-    393217u, 393217u, 393217u, 393217u, 393218u, 393218u, 393218u, 393218u, 458755u, 458755u, 458756u, 458756u, 393221u, 393221u, 393221u, 393221u,
-    393222u, 393222u, 393222u, 393222u, 393223u, 393223u, 393223u, 393223u, 458760u, 458760u, 524297u, 524298u, 2231369984u, 524311u, 458774u, 458774u,
-    393237u, 393237u, 393237u, 393237u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 262163u, 262163u, 262163u, 262163u,
-    262163u, 262163u, 262163u, 262163u, 262163u, 262163u, 262163u, 262163u, 262163u, 262163u, 262163u, 262163u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u,
-    131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 131090u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u,
-    65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65553u, 65547u, 65547u, 65547u, 65547u,
-    65547u, 65547u, 65547u, 65547u, 65547u, 65547u, 65547u, 65547u, 65547u, 65547u, 65547u, 65547u, 65547u, 65547u, 65547u, 65547u,
-    65547u, 65547u, 65547u, 65547u, 65547u, 65547u, 65547u, 65547u, 65547u, 65547u, 65547u, 65547u, 131084u, 131084u, 131084u, 131084u,
-    131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 393229u, 393230u, 393231u, 393232u,
-    393240u, 393241u, 393242u, 393243u, 393244u, 393245u, 393246u, 393247u, 327712u, 327712u, 327713u, 327713u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 393218u, 393218u, 393218u, 393218u,
-    393219u, 393219u, 393219u, 393219u, 458756u, 458756u, 2248147200u, 524295u, 393221u, 393221u, 393221u, 393221u, 2147484032u, 2147484034u, 458772u, 458772u,
-    393233u, 393233u, 393233u, 393233u, 327696u, 327696u, 327696u, 327696u, 327696u, 327696u, 327696u, 327696u, 458773u, 458773u, 524317u, 524321u,
-    393244u, 393244u, 393244u, 393244u, 327707u, 327707u, 327707u, 327707u, 327707u, 327707u, 327707u, 327707u, 196632u, 196632u, 196632u, 196632u,
-    196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u,
-    196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 262169u, 262169u, 262169u, 262169u,
-    262169u, 262169u, 262169u, 262169u, 262169u, 262169u, 262169u, 262169u, 262169u, 262169u, 262169u, 262169u, 262170u, 262170u, 262170u, 262170u,
-    262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 458782u, 458782u, 458784u, 458784u,
-    393247u, 393247u, 393247u, 393247u, 458787u, 458787u, 458788u, 458788u, 458789u, 458789u, 2147484036u, 524330u, 327719u, 327719u, 327719u, 327719u,
-    327719u, 327719u, 327719u, 327719u, 393256u, 393256u, 393256u, 393256u, 2147484038u, 524336u, 2147484040u, 2147484042u, 458758u, 458760u, 458762u, 458764u,
-    458765u, 458766u, 393231u, 393231u, 393250u, 393250u, 393261u, 393261u, 393262u, 393262u, 393263u, 393263u, 393265u, 393265u, 393266u, 393266u,
-    393267u, 393267u, 393268u, 393268u, 393269u, 393269u, 393270u, 393270u, 393271u, 393271u, 393272u, 393272u, 393273u, 393273u, 393274u, 393274u,
-    393276u, 393276u, 393277u, 393277u, 393278u, 393278u, 393279u, 393279u, 393280u, 393280u, 393281u, 393281u, 393283u, 393283u, 393285u, 393285u,
-    393286u, 393286u, 393287u, 393287u, 393288u, 393288u, 393290u, 393290u, 393291u, 393291u, 393292u, 393292u, 65545u, 65545u, 65545u, 65545u,
-    65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u,
-    65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u,
-    65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u,
-    65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65547u, 65554u, 65555u, 65558u,
-    65574u, 65577u, 65579u, 65580u, 65595u, 65602u, 65604u, 65609u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u,
-    262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u,
-    393220u, 393220u, 393220u, 393220u, 393221u, 393221u, 393221u, 393221u, 393222u, 393222u, 393222u, 393222u, 393223u, 393223u, 393223u, 393223u,
-    458760u, 458760u, 524297u, 524298u, 524299u, 524300u, 2231369984u, 524320u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u,
-    262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u,
-    393234u, 393234u, 393234u, 393234u, 458771u, 458771u, 458783u, 458783u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u,
-    393237u, 393237u, 393237u, 393237u, 393242u, 393242u, 393242u, 393242u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u,
-    327704u, 327704u, 327704u, 327704u, 327704u, 327704u, 327704u, 327704u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u,
-    262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 327705u, 327705u, 327705u, 327705u, 327705u, 327705u, 327705u, 327705u,
-    393243u, 393243u, 393243u, 393243u, 393244u, 393244u, 393244u, 393244u, 393245u, 393245u, 393245u, 393245u, 393246u, 393246u, 393246u, 393246u,
-    524321u, 524326u, 458786u, 458786u, 458787u, 458787u, 458788u, 458788u, 458789u, 458789u, 458791u, 458791u, 458792u, 458792u, 524329u, 524330u,
-    524331u, 2147483968u, 524341u, 524346u, 393273u, 393273u, 393273u, 393273u, 327728u, 327728u, 327728u, 327728u, 327728u, 327728u, 327728u, 327728u,
-    327732u, 327732u, 327732u, 327732u, 327732u, 327732u, 327732u, 327732u, 458811u, 458811u, 524348u, 2147483970u, 524350u, 524353u, 2147483972u, 524362u,
-    327753u, 327753u, 327753u, 327753u, 327753u, 327753u, 327753u, 327753u, 393229u, 393260u, 393263u, 393266u, 393267u, 393270u, 393271u, 393272u,
-    393279u, 393280u, 393283u, 393284u, 393285u, 393286u, 393288u, 393292u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u,
-    131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u,
-    131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u
-);
-// Copies chunk 3 of the tables into the state, which a reset clears
-@compute @workgroup_size(64)
-fn loadTables3(@builtin(global_invocation_id) invocation: vec3u) {
-    if (packet.reset == 0u || invocation.x >= 8192u) {
-        return;
-    }
-    state[S_TABLES + 24576u + invocation.x] = TABLE_DATA_3[invocation.x];
-}
-const TABLE_DATA_4 = array<u32, 8192>(
-    131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 65582u, 65585u, 65597u, 65602u, 65607u, 65611u, 262144u, 262144u,
-    262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 327681u, 327681u,
-    327681u, 327681u, 327681u, 327681u, 327681u, 327681u, 2197815552u, 2181038352u, 2181038360u, 2181038368u, 2181038376u, 2181038384u, 2181038392u, 2181038400u, 327705u, 327705u,
-    327705u, 327705u, 327705u, 327705u, 327705u, 327705u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327707u, 327707u,
-    327707u, 327707u, 327707u, 327707u, 327707u, 327707u, 327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 131096u, 131096u,
-    131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u,
-    131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u,
-    131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u,
-    131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 262146u, 262147u,
-    262148u, 262149u, 262150u, 262151u, 262152u, 262153u, 262154u, 262155u, 196620u, 196620u, 196621u, 196621u, 196622u, 196622u, 196623u, 196624u,
-    196625u, 196626u, 196627u, 196628u, 196629u, 196630u, 196636u, 196637u, 196638u, 196639u, 196640u, 196641u, 196642u, 196643u, 196644u, 196645u,
-    196646u, 196648u, 196649u, 196650u, 196651u, 196652u, 196653u, 196654u, 196655u, 196656u, 196657u, 196658u, 196659u, 196660u, 196661u, 196662u,
-    196663u, 196664u, 196665u, 196666u, 196667u, 196668u, 196669u, 196670u, 196671u, 196672u, 196673u, 196674u, 196675u, 196676u, 196677u, 196678u,
-    196679u, 196680u, 196681u, 196682u, 196683u, 196684u, 524288u, 524289u, 524290u, 524291u, 524292u, 524293u, 524294u, 524295u, 524296u, 524297u,
-    524298u, 524299u, 524300u, 524301u, 524302u, 524303u, 524304u, 524305u, 524306u, 524307u, 524308u, 524309u, 524310u, 524312u, 458777u, 458777u,
-    458778u, 458778u, 458779u, 458779u, 458780u, 458780u, 458781u, 458781u, 458782u, 458782u, 458783u, 458783u, 458784u, 458784u, 458785u, 458785u,
-    458786u, 458786u, 458787u, 458787u, 458788u, 458788u, 458789u, 458789u, 458790u, 458790u, 458791u, 458791u, 458792u, 458792u, 458793u, 458793u,
-    458794u, 458794u, 458795u, 458795u, 458796u, 458796u, 458797u, 458797u, 458798u, 458798u, 458799u, 458799u, 458800u, 458800u, 458801u, 458801u,
-    458802u, 458802u, 458803u, 458803u, 458804u, 458804u, 458805u, 458805u, 458806u, 458806u, 458807u, 458807u, 458808u, 458808u, 458809u, 458809u,
-    458810u, 458810u, 458811u, 458811u, 458812u, 458812u, 458813u, 458813u, 458814u, 458814u, 458815u, 458815u, 458816u, 458816u, 458817u, 458817u,
-    458818u, 458818u, 458819u, 458819u, 458820u, 458820u, 458821u, 458821u, 458822u, 458822u, 458823u, 458823u, 458824u, 458824u, 458825u, 458825u,
-    458826u, 458826u, 458827u, 458827u, 458828u, 458828u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 2147483904u, 2147483906u, 2147483908u, 2147483910u, 2147483912u, 2147483914u, 2147483916u, 2147483918u, 2147483920u, 2147483922u,
-    2147483924u, 524310u, 524313u, 524314u, 524315u, 524316u, 524317u, 524318u, 524319u, 524320u, 524321u, 524322u, 524323u, 524324u, 524325u, 524326u,
-    524327u, 524328u, 524329u, 524330u, 524331u, 524332u, 524333u, 524334u, 524335u, 524336u, 524337u, 524338u, 524339u, 524340u, 524341u, 524342u,
-    524343u, 524344u, 524345u, 524346u, 524347u, 524348u, 524349u, 524350u, 524351u, 524352u, 524353u, 524354u, 524355u, 524356u, 524357u, 524358u,
-    524359u, 524360u, 524361u, 524362u, 524363u, 524364u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65560u,
-    65560u, 65560u, 65560u, 65560u, 65560u, 65560u, 65536u, 65537u, 65538u, 65539u, 65540u, 65541u, 65542u, 65543u, 65544u, 65545u,
-    65546u, 65547u, 65548u, 65549u, 65550u, 65551u, 65552u, 65553u, 65554u, 65555u, 65556u, 65557u, 2164261120u, 2164261124u, 2164261128u, 2164261132u,
-    2164261136u, 2147483924u, 2147483926u, 2147483928u, 2147483930u, 2147483932u, 2147483934u, 2147483936u, 2147483938u, 2147483940u, 2147483942u, 2147483944u, 2147483946u, 2147483948u, 2147483950u, 2147483952u,
-    2147483954u, 2147483956u, 2147483958u, 2147483960u, 2147483962u, 2147483964u, 2147483966u, 2147483968u, 2147483970u, 2147483972u, 2147483974u, 2147483976u, 196632u, 196632u, 196632u, 196632u,
-    196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u,
-    196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 131099u, 131099u, 131099u, 131099u,
-    131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u,
-    131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u,
-    131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u,
-    131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 131099u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 131072u, 131073u, 131074u, 131075u,
-    131076u, 131077u, 131078u, 131079u, 131080u, 131081u, 131082u, 131083u, 131084u, 131085u, 131086u, 131087u, 131088u, 131089u, 131090u, 131091u,
-    65556u, 65557u, 65558u, 65561u, 65562u, 65564u, 65565u, 65566u, 65567u, 65568u, 65569u, 65570u, 65571u, 65572u, 65573u, 65574u,
-    65575u, 65576u, 65577u, 65578u, 65579u, 65580u, 65581u, 65582u, 65583u, 65584u, 65585u, 65586u, 65587u, 65588u, 65589u, 65590u,
-    65591u, 65592u, 65593u, 65594u, 65595u, 65596u, 65597u, 65598u, 65599u, 65600u, 65601u, 65602u, 65603u, 65604u, 65605u, 65606u,
-    65607u, 65608u, 65609u, 65610u, 65611u, 65612u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327683u, 327683u,
-    327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 393220u, 393220u, 393220u, 393220u, 393221u, 393221u, 393221u, 393221u, 458758u, 458758u,
-    524295u, 524296u, 524297u, 2147483904u, 2164261122u, 2248147206u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 393234u, 393234u,
-    393234u, 393234u, 393235u, 393235u, 393235u, 393235u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u,
-    262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 458773u, 458773u, 458776u, 458776u, 458777u, 458777u, 458778u, 458778u, 327702u, 327702u,
-    327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327703u, 327703u, 327703u, 327703u, 327703u, 327703u, 327703u, 327703u, 524315u, 524318u,
-    458780u, 458780u, 458781u, 458781u, 524319u, 524320u, 524321u, 524322u, 524323u, 524324u, 524326u, 524327u, 524328u, 2164261254u, 2164261258u, 524346u,
-    2164261262u, 524353u, 393264u, 393264u, 393264u, 393264u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u,
-    262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 393269u, 393269u, 393269u, 393269u, 393273u, 393273u, 393273u, 393273u, 327753u, 327753u,
-    327753u, 327753u, 327753u, 327753u, 327753u, 327753u, 65546u, 65547u, 131084u, 131086u, 65549u, 65549u, 458767u, 458794u, 458798u, 458802u,
-    458803u, 458807u, 393272u, 393272u, 393275u, 393275u, 393277u, 393277u, 393278u, 393278u, 393279u, 393279u, 393280u, 393280u, 393284u, 393284u,
-    393285u, 393285u, 393286u, 393286u, 393287u, 393287u, 393288u, 393288u, 393291u, 393291u, 393292u, 393292u, 131115u, 131115u, 131115u, 131115u,
-    131115u, 131115u, 131115u, 131115u, 131115u, 131115u, 131115u, 131115u, 131115u, 131115u, 131115u, 131115u, 131115u, 131115u, 131115u, 131115u,
-    131115u, 131115u, 131115u, 131115u, 131115u, 131115u, 131115u, 131115u, 131115u, 131115u, 131115u, 131115u, 65573u, 65573u, 65573u, 65573u,
-    65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u,
-    65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u,
-    65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u,
-    65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65577u, 65577u, 131116u, 131117u,
-    131119u, 131126u, 65585u, 65585u, 131132u, 131138u, 131139u, 131146u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u,
-    327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 393220u, 393220u, 393220u, 393220u, 524293u, 2214592768u, 458758u, 458758u,
-    393223u, 393223u, 393223u, 393223u, 458760u, 458760u, 524298u, 524299u, 524303u, 524319u, 458770u, 458770u, 393235u, 393235u, 393235u, 393235u,
-    327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u,
-    262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 393236u, 393236u, 393236u, 393236u, 458773u, 458773u, 524324u, 524325u,
-    393238u, 393238u, 393238u, 393238u, 393243u, 393243u, 393243u, 393243u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u,
-    196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u,
-    196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 327704u, 327704u, 327704u, 327704u, 327704u, 327704u, 327704u, 327704u,
-    327705u, 327705u, 327705u, 327705u, 327705u, 327705u, 327705u, 327705u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u,
-    262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 393244u, 393244u, 393244u, 393244u, 393245u, 393245u, 393245u, 393245u,
-    327710u, 327710u, 327710u, 327710u, 327710u, 327710u, 327710u, 327710u, 393248u, 393248u, 393248u, 393248u, 393249u, 393249u, 393249u, 393249u,
-    393250u, 393250u, 393250u, 393250u, 393251u, 393251u, 393251u, 393251u, 458790u, 458790u, 458792u, 458792u, 458793u, 458793u, 458795u, 458795u,
-    327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 524332u, 524340u, 458800u, 458800u, 458801u, 458801u, 524345u, 524348u,
-    458811u, 458811u, 524353u, 524359u, 393289u, 393289u, 393289u, 393289u, 327689u, 327692u, 327693u, 327694u, 327722u, 327725u, 327726u, 327727u,
-    327730u, 327731u, 327733u, 327734u, 327735u, 327736u, 327738u, 327741u, 327742u, 327743u, 327744u, 327746u, 327747u, 327748u, 327749u, 327750u,
-    262216u, 262216u, 262218u, 262218u, 262219u, 262219u, 262220u, 262220u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u,
-    327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u,
-    327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 393222u, 393222u, 393222u, 393222u, 458759u, 458759u, 458761u, 458761u,
-    393224u, 393224u, 393224u, 393224u, 524298u, 524301u, 458763u, 458763u, 458764u, 458764u, 524302u, 2147483904u, 393233u, 393233u, 393233u, 393233u,
-    393234u, 393234u, 393234u, 393234u, 458771u, 458771u, 524309u, 2147483906u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u,
-    262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u,
-    393238u, 393238u, 393238u, 393238u, 393242u, 393242u, 393242u, 393242u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u,
-    262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u,
-    262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 327705u, 327705u, 327705u, 327705u, 327705u, 327705u, 327705u, 327705u,
-    393243u, 393243u, 393243u, 393243u, 393244u, 393244u, 393244u, 393244u, 393245u, 393245u, 393245u, 393245u, 458782u, 458782u, 458783u, 458783u,
-    458784u, 458784u, 458785u, 458785u, 458786u, 458786u, 458787u, 458787u, 458788u, 458788u, 458789u, 458789u, 458790u, 458790u, 458791u, 458791u,
-    458792u, 458792u, 2231369988u, 524335u, 393262u, 393262u, 393262u, 393262u, 327728u, 327728u, 327728u, 327728u, 327728u, 327728u, 327728u, 327728u,
-    458801u, 458801u, 2147483972u, 2164261190u, 458804u, 458804u, 458809u, 458809u, 458811u, 458811u, 524348u, 524350u, 458815u, 458815u, 458817u, 458817u,
-    458818u, 458818u, 2164261194u, 524363u, 393289u, 393289u, 393289u, 393289u, 65551u, 65577u, 65578u, 65579u, 196652u, 196652u, 196652u, 196652u,
-    196652u, 196652u, 196652u, 196652u, 393270u, 393271u, 393272u, 393280u, 393285u, 393286u, 393288u, 393292u, 131125u, 131125u, 131125u, 131125u,
-    131125u, 131125u, 131125u, 131125u, 131125u, 131125u, 131125u, 131125u, 131125u, 131125u, 131125u, 131125u, 65581u, 65581u, 65581u, 65581u,
-    65581u, 65581u, 65581u, 65581u, 65581u, 65581u, 65581u, 65581u, 65581u, 65581u, 65581u, 65581u, 65581u, 65581u, 65581u, 65581u,
-    65581u, 65581u, 65581u, 65581u, 65581u, 65581u, 65581u, 65581u, 65581u, 65581u, 65581u, 65581u, 65586u, 65587u, 131130u, 131139u,
-    65597u, 65597u, 131140u, 131143u, 65610u, 65610u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327683u, 327683u,
-    327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 393220u, 393220u, 393220u, 393220u, 458757u, 458757u, 458758u, 458758u, 458759u, 458759u,
-    524296u, 2147483904u, 2147483906u, 2248147204u, 458771u, 458771u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 393234u, 393234u,
-    393234u, 393234u, 393239u, 393239u, 393239u, 393239u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u,
-    262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 327701u, 327701u, 327701u, 327701u, 327701u, 327701u, 327701u, 327701u, 458776u, 458776u,
-    458777u, 458777u, 524314u, 524315u, 458780u, 458780u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u,
-    262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 524317u, 524319u, 2147484036u, 2147484038u, 2181038472u, 2181038480u, 524337u, 524342u, 393264u, 393264u,
-    393264u, 393264u, 458805u, 458805u, 524346u, 2231370136u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u,
-    262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 327737u, 327737u, 327737u, 327737u, 327737u, 327737u, 327737u, 327737u, 327753u, 327753u,
-    327753u, 327753u, 327753u, 327753u, 327753u, 327753u, 65545u, 65546u, 65547u, 65548u, 458765u, 458794u, 458796u, 458797u, 458798u, 458799u,
-    458802u, 458803u, 458808u, 458813u, 458814u, 458815u, 458816u, 458818u, 393283u, 393283u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u,
-    196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u,
-    131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u,
-    131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u,
-    65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u,
-    65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u,
-    65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u,
-    65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65566u, 65568u, 65569u, 65570u, 65571u, 131108u, 131108u,
-    196645u, 196646u, 65575u, 65575u, 65575u, 65575u, 65576u, 65576u, 65576u, 65576u, 196649u, 196663u, 131115u, 131115u, 196667u, 196667u,
-    196667u, 196667u, 196667u, 196667u, 196667u, 196667u, 393284u, 393285u, 393286u, 393287u, 393288u, 393290u, 393291u, 393292u, 131132u, 131132u,
-    131132u, 131132u, 131132u, 131132u, 131132u, 131132u, 131132u, 131132u, 131132u, 131132u, 131132u, 131132u, 131132u, 131132u, 65601u, 65601u,
-    65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u,
-    65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 65601u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262146u, 262146u,
-    262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 327683u, 327683u,
-    327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 393220u, 393220u, 393220u, 393220u, 458757u, 458757u, 458759u, 458759u, 393222u, 393222u,
-    393222u, 393222u, 2147483904u, 524298u, 2248147202u, 524319u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 458770u, 458770u,
-    458771u, 458771u, 393237u, 393237u, 393237u, 393237u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 262164u, 262164u,
-    262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262167u, 262167u,
-    262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262168u, 262168u,
-    262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 327705u, 327705u,
-    327705u, 327705u, 327705u, 327705u, 327705u, 327705u, 393242u, 393242u, 393242u, 393242u, 393243u, 393243u, 393243u, 393243u, 393244u, 393244u,
-    393244u, 393244u, 393245u, 393245u, 393245u, 393245u, 458782u, 458782u, 458784u, 458784u, 524321u, 524323u, 2164261250u, 2147484038u, 393255u, 393255u,
-    393255u, 393255u, 458792u, 458792u, 524331u, 2164261256u, 458800u, 458800u, 2147484044u, 524341u, 393273u, 393273u, 393273u, 393273u, 327732u, 327732u,
-    327732u, 327732u, 327732u, 327732u, 327732u, 327732u, 2164261262u, 524353u, 2147484050u, 524362u, 393289u, 393289u, 393289u, 393289u, 65544u, 65545u,
-    458763u, 458765u, 458766u, 458767u, 458798u, 458799u, 458802u, 458803u, 393270u, 393270u, 393271u, 393271u, 393272u, 393272u, 393278u, 393278u,
-    393279u, 393279u, 393280u, 393280u, 393282u, 393282u, 393283u, 393283u, 393285u, 393285u, 393286u, 393286u, 393288u, 393288u, 393292u, 393292u,
-    131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u,
-    131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u, 131106u,
-    65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u,
-    65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u,
-    65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u,
-    65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u, 65548u,
-    65572u, 65572u, 131109u, 131110u, 65577u, 65578u, 131116u, 131132u, 65581u, 65581u, 65585u, 65594u, 65595u, 65595u, 131133u, 131140u,
-    65607u, 65611u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u,
-    327683u, 327683u, 393220u, 393220u, 393220u, 393220u, 393221u, 393221u, 393221u, 393221u, 458758u, 458758u, 458759u, 458759u, 393224u, 393224u,
-    393224u, 393224u, 393225u, 393225u, 393225u, 393225u, 458762u, 458762u, 458763u, 458763u, 2147483904u, 524303u, 458766u, 458766u, 393233u, 393233u,
-    393233u, 393233u, 327696u, 327696u, 327696u, 327696u, 327696u, 327696u, 327696u, 327696u, 2147483906u, 524320u, 458771u, 458771u, 393236u, 393236u,
-    393236u, 393236u, 458773u, 458773u, 458774u, 458774u, 393243u, 393243u, 393243u, 393243u, 327705u, 327705u, 327705u, 327705u, 327705u, 327705u,
-    327705u, 327705u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u,
-    196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u,
-    196631u, 196631u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u,
-    196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u,
-    196632u, 196632u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 393244u, 393244u, 393244u, 393244u, 393245u, 393245u,
-    393245u, 393245u, 458782u, 458782u, 458783u, 458783u, 524321u, 524322u, 524323u, 524329u, 458788u, 458788u, 458790u, 458790u, 393253u, 393253u,
-    393253u, 393253u, 458791u, 458791u, 2231369988u, 524337u, 393256u, 393256u, 393256u, 393256u, 458798u, 458798u, 458800u, 458800u, 524340u, 524345u,
-    458812u, 458812u, 393275u, 393275u, 393275u, 393275u, 2147483972u, 524361u, 458815u, 458815u, 393278u, 393278u, 393278u, 393278u, 458817u, 458817u,
-    458818u, 458818u, 65548u, 65549u, 65554u, 65578u, 393259u, 393260u, 393261u, 393266u, 393267u, 393269u, 327734u, 327734u, 327735u, 327735u,
-    327736u, 327736u, 327738u, 327738u, 327744u, 327744u, 327747u, 327747u, 327748u, 327748u, 327749u, 327749u, 327750u, 327750u, 327751u, 327751u,
-    327752u, 327752u, 327754u, 327754u, 327756u, 327756u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u,
-    65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65583u,
-    65583u, 65583u, 65583u, 65583u, 65583u, 65583u, 65597u, 65611u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u,
-    327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 393220u, 393220u, 393220u, 393220u, 393221u, 393221u, 393221u, 393221u,
-    458758u, 458758u, 458759u, 458759u, 458760u, 458760u, 524297u, 2147483904u, 2248147202u, 524320u, 458771u, 458771u, 393234u, 393234u, 393234u, 393234u,
-    327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u,
-    262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 393237u, 393237u, 393237u, 393237u, 393238u, 393238u, 393238u, 393238u,
-    327704u, 327704u, 327704u, 327704u, 327704u, 327704u, 327704u, 327704u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u,
-    262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 393241u, 393241u, 393241u, 393241u, 393242u, 393242u, 393242u, 393242u,
-    393243u, 393243u, 393243u, 393243u, 458780u, 458780u, 458781u, 458781u, 458782u, 458782u, 458783u, 458783u, 524321u, 524322u, 524323u, 524324u,
-    524325u, 2164261250u, 458791u, 458791u, 524328u, 2164261254u, 524337u, 2164261258u, 393264u, 393264u, 393264u, 393264u, 393268u, 393268u, 393268u, 393268u,
-    458809u, 458809u, 2248147342u, 524353u, 393289u, 393289u, 393289u, 393289u, 65546u, 65547u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u,
-    131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u,
-    131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u,
-    131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u,
-    131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u,
-    131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u,
-    131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 458767u, 458802u, 458803u, 458806u, 458807u, 458808u,
-    458813u, 458816u, 262189u, 262189u, 262189u, 262189u, 262189u, 262189u, 262189u, 262189u, 262191u, 262191u, 262191u, 262191u, 262191u, 262191u,
-    262191u, 262191u, 262202u, 262202u, 262202u, 262202u, 262202u, 262202u, 262202u, 262202u, 131110u, 131115u, 65577u, 65577u, 65578u, 65578u,
-    131116u, 131118u, 65589u, 65589u, 131131u, 131132u, 262206u, 262206u, 262206u, 262206u, 262206u, 262206u, 262206u, 262206u, 458819u, 458821u,
-    458822u, 458823u, 393288u, 393288u, 393292u, 393292u, 196671u, 196671u, 196671u, 196671u, 196671u, 196671u, 196671u, 196671u, 196671u, 196671u,
-    196671u, 196671u, 196671u, 196671u, 196671u, 196671u, 262212u, 262212u, 262212u, 262212u, 262212u, 262212u, 262212u, 262212u, 262218u, 262218u,
-    262218u, 262218u, 262218u, 262218u, 262218u, 262218u, 196683u, 196683u, 196683u, 196683u, 196683u, 196683u, 196683u, 196683u, 196683u, 196683u,
-    196683u, 196683u, 196683u, 196683u, 196683u, 196683u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u,
-    65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u,
-    65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u,
-    65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 65602u,
-    65602u, 65602u, 65602u, 65602u, 65602u, 65602u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u,
-    262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327684u, 327684u,
-    327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 393221u, 393221u, 393221u, 393221u, 458758u, 458758u, 524295u, 2181038336u, 2248147208u, 524320u,
-    458771u, 458771u, 393234u, 393234u, 393234u, 393234u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u,
-    262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327700u, 327700u,
-    327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 458773u, 458773u, 458783u, 458783u, 393238u, 393238u, 393238u, 393238u, 327705u, 327705u,
-    327705u, 327705u, 327705u, 327705u, 327705u, 327705u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u,
-    262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u,
-    196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u,
-    196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327707u, 327707u,
-    327707u, 327707u, 327707u, 327707u, 327707u, 327707u, 327708u, 327708u, 327708u, 327708u, 327708u, 327708u, 327708u, 327708u, 393245u, 393245u,
-    393245u, 393245u, 393246u, 393246u, 393246u, 393246u, 524321u, 524322u, 458787u, 458787u, 524324u, 524329u, 458792u, 458792u, 327719u, 327719u,
-    327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 524330u, 2164261256u, 458795u, 458795u, 2147484044u, 2231370126u, 458800u, 458800u, 458804u, 458804u,
-    458809u, 458809u, 524353u, 2147484110u, 458825u, 458825u, 196616u, 196618u, 131083u, 131083u, 65545u, 65545u, 65545u, 65545u, 196620u, 196620u,
-    196620u, 196620u, 196620u, 196620u, 196620u, 196620u, 196620u, 196620u, 196620u, 196620u, 196620u, 196620u, 196620u, 196620u, 458765u, 458766u,
-    458767u, 458799u, 458801u, 458802u, 458803u, 458806u, 393271u, 393271u, 393272u, 393272u, 393274u, 393274u, 393279u, 393279u, 196646u, 196646u,
-    196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196661u, 196661u,
-    196661u, 196661u, 196661u, 196661u, 196661u, 196661u, 196661u, 196661u, 196661u, 196661u, 196661u, 196661u, 196661u, 196661u, 65573u, 65573u,
-    65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u,
-    65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u,
-    65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u,
-    65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 65573u, 131116u, 131132u,
-    65581u, 65581u, 65582u, 65595u, 131133u, 131133u, 131133u, 131133u, 131133u, 131133u, 131133u, 131133u, 131133u, 131133u, 131133u, 131133u,
-    131133u, 131133u, 131133u, 131133u, 393280u, 393283u, 393284u, 393285u, 393286u, 393288u, 393291u, 393292u, 196674u, 196674u, 196674u, 196674u,
-    196674u, 196674u, 196674u, 196674u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u,
-    65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u,
-    65598u, 65598u, 65598u, 65598u, 65607u, 65610u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u,
-    262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327684u, 327684u,
-    327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327686u, 327686u,
-    327686u, 327686u, 327686u, 327686u, 327686u, 327686u, 393223u, 393223u, 393223u, 393223u, 458760u, 458760u, 458762u, 458762u, 327689u, 327689u,
-    327689u, 327689u, 327689u, 327689u, 327689u, 327689u, 2214592768u, 2197815584u, 458764u, 458764u, 458766u, 458766u, 458770u, 458770u, 393233u, 393233u,
-    393233u, 393233u, 458771u, 458771u, 458773u, 458773u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u,
-    262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 327702u, 327702u,
-    327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 393239u, 393239u, 393239u, 393239u, 393240u, 393240u, 393240u, 393240u, 458777u, 458777u,
-    458779u, 458779u, 393242u, 393242u, 393242u, 393242u, 458780u, 458780u, 458782u, 458782u, 458783u, 458783u, 458787u, 458787u, 458788u, 458788u,
-    458791u, 458791u, 393263u, 393263u, 393263u, 393263u, 327726u, 327726u, 327726u, 327726u, 327726u, 327726u, 327726u, 327726u, 327729u, 327729u,
-    327729u, 327729u, 327729u, 327729u, 327729u, 327729u, 262192u, 262192u, 262192u, 262192u, 262192u, 262192u, 262192u, 262192u, 262192u, 262192u,
-    262192u, 262192u, 262192u, 262192u, 262192u, 262192u, 458803u, 458803u, 458827u, 458827u, 393273u, 393273u, 393273u, 393273u, 327732u, 327732u,
-    327732u, 327732u, 327732u, 327732u, 327732u, 327732u, 393275u, 393275u, 393275u, 393275u, 393281u, 393281u, 393281u, 393281u, 327753u, 327753u,
-    327753u, 327753u, 327753u, 327753u, 327753u, 327753u, 327691u, 327693u, 327695u, 327709u, 327712u, 327713u, 262178u, 262178u, 262181u, 262181u,
-    262182u, 262182u, 262184u, 262184u, 262185u, 262185u, 262186u, 262186u, 262187u, 262187u, 262188u, 262188u, 262189u, 262189u, 262194u, 262194u,
-    262197u, 262197u, 262198u, 262198u, 262199u, 262199u, 262200u, 262202u, 262204u, 262205u, 262206u, 262207u, 262208u, 262210u, 262211u, 262212u,
-    262213u, 262214u, 262215u, 262216u, 262218u, 262220u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 393219u, 393219u,
-    393219u, 393219u, 393220u, 393220u, 393220u, 393220u, 524293u, 524294u, 524295u, 2248147200u, 393233u, 393233u, 393233u, 393233u, 458770u, 458770u,
-    524309u, 524310u, 393244u, 393244u, 393244u, 393244u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u,
-    262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 327705u, 327705u,
-    327705u, 327705u, 327705u, 327705u, 327705u, 327705u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327707u, 327707u,
-    327707u, 327707u, 327707u, 327707u, 327707u, 327707u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u,
-    196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u,
-    196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 393245u, 393245u, 393245u, 393245u, 524318u, 524319u, 2147484032u, 524321u, 458786u, 458786u,
-    524323u, 524329u, 458792u, 458792u, 2147484034u, 524331u, 327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 327719u, 2164261252u, 524336u,
-    524340u, 2147484040u, 524347u, 2147484042u, 458825u, 458825u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 196616u,
-    196616u, 196616u, 196616u, 196616u, 196616u, 196616u, 458761u, 458762u, 458763u, 458764u, 458765u, 458766u, 458767u, 458790u, 458798u, 458799u,
-    458802u, 458803u, 458805u, 458806u, 458807u, 458808u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u,
-    196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 458810u, 458813u, 458814u, 458815u, 458816u, 458818u, 458819u, 458820u, 458821u, 458822u,
-    393288u, 393288u, 393291u, 393291u, 393292u, 393292u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u,
-    65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u,
-    65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u,
-    65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65555u,
-    65555u, 65555u, 65555u, 65555u, 65555u, 65555u, 65568u, 65572u, 65578u, 65580u, 65581u, 65581u, 131121u, 131143u, 65593u, 65596u,
-    65601u, 65610u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u,
-    262146u, 262146u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 393220u, 393220u, 393220u, 393220u, 458757u, 458757u,
-    458758u, 458758u, 458759u, 458759u, 2164261120u, 524297u, 524298u, 524299u, 2164261124u, 2164261128u, 458769u, 458769u, 458773u, 458773u, 393236u, 393236u,
-    393236u, 393236u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u,
-    262160u, 262160u, 458774u, 458774u, 458784u, 458784u, 393244u, 393244u, 393244u, 393244u, 327705u, 327705u, 327705u, 327705u, 327705u, 327705u,
-    327705u, 327705u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u,
-    262167u, 262167u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u,
-    262168u, 262168u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327707u, 327707u, 327707u, 327707u, 327707u, 327707u,
-    327707u, 327707u, 393245u, 393245u, 393245u, 393245u, 393246u, 393246u, 393246u, 393246u, 393247u, 393247u, 393247u, 393247u, 458785u, 458785u,
-    458786u, 458786u, 458787u, 458787u, 458788u, 458788u, 458789u, 458789u, 458790u, 458790u, 524327u, 2231369996u, 524340u, 2231370060u, 458811u, 458811u,
-    524348u, 524349u, 65544u, 65544u, 131084u, 131085u, 131086u, 131087u, 65554u, 65554u, 131091u, 131113u, 65576u, 65576u, 393258u, 393259u,
-    393260u, 393261u, 393263u, 393265u, 393266u, 393267u, 393269u, 393270u, 393271u, 393272u, 393274u, 393279u, 393280u, 393281u, 131118u, 131118u,
-    131118u, 131118u, 131118u, 131118u, 131118u, 131118u, 131118u, 131118u, 131118u, 131118u, 131118u, 131118u, 131118u, 131118u, 65584u, 65584u,
-    65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u,
-    65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 131129u, 131129u,
-    131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 131129u, 393282u, 393283u,
-    393284u, 393285u, 393286u, 393287u, 327752u, 327752u, 327753u, 327753u, 327754u, 327754u, 327755u, 327755u, 327756u, 327756u, 65598u, 65598u,
-    65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u,
-    65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 327681u, 327681u,
-    327681u, 327681u, 327681u, 327681u, 327681u, 327681u, 458754u, 458754u, 524293u, 524294u, 393219u, 393219u, 393219u, 393219u, 393220u, 393220u,
-    393220u, 393220u, 524295u, 2231369984u, 458762u, 458762u, 393232u, 393232u, 393232u, 393232u, 524305u, 524307u, 458782u, 458782u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u,
-    131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 131095u, 196632u, 196632u,
-    196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u,
-    196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 327705u, 327705u,
-    327705u, 327705u, 327705u, 327705u, 327705u, 327705u, 393245u, 393245u, 393245u, 393245u, 458783u, 458783u, 458784u, 458784u, 262170u, 262170u,
-    262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262171u, 262171u,
-    262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 262172u, 262172u,
-    262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 262172u, 458785u, 458785u,
-    524322u, 524328u, 458787u, 458787u, 524330u, 524331u, 393252u, 393252u, 393252u, 393252u, 393253u, 393253u, 393253u, 393253u, 393254u, 393254u,
-    393254u, 393254u, 393255u, 393255u, 393255u, 393255u, 524332u, 524336u, 458817u, 458817u, 393275u, 393275u, 393275u, 393275u, 393224u, 393225u,
-    393227u, 393228u, 393229u, 393230u, 393231u, 393234u, 393236u, 393237u, 393238u, 393257u, 393261u, 393262u, 393263u, 393265u, 393266u, 393267u,
-    327732u, 327732u, 327733u, 327733u, 327734u, 327734u, 327735u, 327735u, 327736u, 327736u, 327737u, 327737u, 327738u, 327738u, 327740u, 327740u,
-    327741u, 327741u, 327742u, 327742u, 327743u, 327743u, 327744u, 327744u, 327746u, 327746u, 327747u, 327747u, 327748u, 327748u, 327749u, 327749u,
-    327750u, 327750u, 327751u, 327751u, 327752u, 327752u, 327753u, 327753u, 327754u, 327754u, 327755u, 327755u, 327756u, 327756u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u,
-    196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 196610u, 262147u, 262147u,
-    262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 327684u, 327684u,
-    327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 393222u, 393222u,
-    393222u, 393222u, 393223u, 393223u, 393223u, 393223u, 458760u, 458760u, 458761u, 458761u, 458762u, 458762u, 524299u, 524300u, 524301u, 2264924416u,
-    524306u, 2147484160u, 393233u, 393233u, 393233u, 393233u, 393236u, 393236u, 393236u, 393236u, 524310u, 524326u, 458779u, 458779u, 262160u, 262160u,
-    262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 327703u, 327703u,
-    327703u, 327703u, 327703u, 327703u, 327703u, 327703u, 393240u, 393240u, 393240u, 393240u, 393241u, 393241u, 393241u, 393241u, 393242u, 393242u,
-    393242u, 393242u, 458780u, 458780u, 458781u, 458781u, 458782u, 458782u, 458783u, 458783u, 458784u, 458784u, 458785u, 458785u, 458786u, 458786u,
-    458787u, 458787u, 458788u, 458788u, 458789u, 458789u, 524334u, 2248147458u, 524340u, 2147484290u, 458811u, 458811u, 524348u, 524349u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u,
-    65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 65550u, 131087u, 131087u,
-    131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u,
-    131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u,
-    131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u,
-    131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 131087u, 524327u, 524328u,
-    458793u, 458793u, 458795u, 458795u, 458796u, 458796u, 458797u, 458797u, 458802u, 458802u, 458803u, 458803u, 458805u, 458805u, 262186u, 262186u,
-    262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262186u, 262193u, 262193u,
-    262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 458806u, 458806u,
-    458807u, 458807u, 458808u, 458808u, 458810u, 458810u, 458816u, 458816u, 458817u, 458817u, 458818u, 458818u, 458819u, 458819u, 65555u, 65557u,
-    131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u,
-    131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u, 131119u,
-    196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u,
-    262207u, 262207u, 262207u, 262207u, 262207u, 262207u, 262207u, 262207u, 458820u, 458821u, 458822u, 458823u, 458824u, 458826u, 458827u, 458828u,
-    65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u,
-    65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u,
-    65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u,
-    65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u, 65584u,
-    65593u, 65609u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u,
-    262146u, 262146u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u,
-    327684u, 327684u, 393221u, 393221u, 393221u, 393221u, 393222u, 393222u, 393222u, 393222u, 458759u, 458759u, 458760u, 458760u, 524297u, 524298u,
-    2147483904u, 2164261122u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 458770u, 458770u, 458771u, 458771u, 458773u, 458773u,
-    458776u, 458776u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u,
-    262164u, 262164u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 393239u, 393239u, 393239u, 393239u, 458777u, 458777u,
-    458778u, 458778u, 524315u, 524316u, 524317u, 524318u, 524319u, 524320u, 2147483910u, 524322u, 524323u, 524324u, 2248147208u, 2248147336u, 458800u, 458800u,
-    458805u, 458805u, 327732u, 327732u, 327732u, 327732u, 327732u, 327732u, 327732u, 327732u, 524342u, 2197815816u, 458809u, 458809u, 524347u, 524348u,
-    458825u, 458825u, 65547u, 65548u, 65549u, 65549u, 131086u, 131087u, 65569u, 65573u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u,
-    196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196648u, 196648u, 196648u, 196648u, 196648u, 196648u,
-    196648u, 196648u, 196648u, 196648u, 196648u, 196648u, 196648u, 196648u, 196648u, 196648u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u,
-    131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u,
-    131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 131111u, 458793u, 458795u, 458796u, 458797u, 458802u, 458803u,
-    458816u, 458818u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 196655u, 196655u, 196655u, 196655u, 196655u, 196655u,
-    196655u, 196655u, 196655u, 196655u, 196655u, 196655u, 196655u, 196655u, 196655u, 196655u, 131114u, 131114u, 131114u, 131114u, 131114u, 131114u,
-    131114u, 131114u, 131114u, 131114u, 131114u, 131114u, 131114u, 131114u, 131114u, 131114u, 131114u, 131114u, 131114u, 131114u, 131114u, 131114u,
-    131114u, 131114u, 131114u, 131114u, 131114u, 131114u, 131114u, 131114u, 131114u, 131114u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u,
-    65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u,
-    65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u,
-    65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u,
-    65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 65582u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u,
-    131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u,
-    131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 131127u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u,
-    196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 196664u, 262207u, 262207u, 262207u, 262207u, 262207u, 262207u,
-    262207u, 262207u, 458819u, 458820u, 458821u, 458822u, 458823u, 458824u, 393290u, 393290u, 131130u, 131130u, 131130u, 131130u, 131133u, 131133u,
-    131133u, 131133u, 131134u, 131134u, 131134u, 131134u, 196673u, 196673u, 262219u, 262220u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u,
-    262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u,
-    327683u, 327683u, 393220u, 393220u, 393220u, 393220u, 393221u, 393221u, 393221u, 393221u, 393222u, 393222u, 393222u, 393222u, 458759u, 458759u,
-    458761u, 458761u, 393224u, 393224u, 393224u, 393224u, 524298u, 524299u, 524300u, 2147483904u, 524303u, 524325u, 458783u, 458783u, 393234u, 393234u,
-    393234u, 393234u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u,
-    262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 393235u, 393235u, 393235u, 393235u, 393237u, 393237u,
-    393237u, 393237u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u,
-    262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 327703u, 327703u, 327703u, 327703u, 327703u, 327703u,
-    327703u, 327703u, 393240u, 393240u, 393240u, 393240u, 393241u, 393241u, 393241u, 393241u, 393242u, 393242u, 393242u, 393242u, 393243u, 393243u,
-    393243u, 393243u, 393244u, 393244u, 393244u, 393244u, 393245u, 393245u, 393245u, 393245u, 393246u, 393246u, 393246u, 393246u, 458784u, 458784u,
-    458785u, 458785u, 458786u, 458786u, 458787u, 458787u, 458788u, 458788u, 2248147202u, 524329u, 458791u, 458791u, 458792u, 458792u, 2147484034u, 2164261252u,
-    524337u, 2164261256u, 393264u, 393264u, 393264u, 393264u, 458805u, 458805u, 458811u, 458811u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u,
-    262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 393273u, 393273u, 393273u, 393273u, 524348u, 524349u,
-    2147484044u, 2164261262u, 327753u, 327753u, 327753u, 327753u, 327753u, 327753u, 327753u, 327753u, 65549u, 65550u, 196646u, 196646u, 196646u, 196646u,
-    196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 458802u, 458803u, 458807u, 458808u,
-    458816u, 458821u, 393286u, 393286u, 393287u, 393287u, 393288u, 393288u, 393291u, 393291u, 393292u, 393292u, 131117u, 131117u, 131117u, 131117u,
-    131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u,
-    131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 131117u, 65578u, 65578u, 65578u, 65578u,
-    65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u,
-    65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u,
-    65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u,
-    65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65578u, 65579u, 65580u, 65582u, 65582u,
-    131119u, 131130u, 65590u, 65590u, 131134u, 131138u, 65599u, 65601u, 131139u, 131140u, 65610u, 65610u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 327682u, 327682u, 327682u, 327682u,
-    327682u, 327682u, 327682u, 327682u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 393220u, 393220u, 393220u, 393220u,
-    393221u, 393221u, 393221u, 393221u, 458758u, 458758u, 524295u, 524296u, 524297u, 2181038336u, 524300u, 2248147208u, 327697u, 327697u, 327697u, 327697u,
-    327697u, 327697u, 327697u, 327697u, 393234u, 393234u, 393234u, 393234u, 458771u, 458771u, 458776u, 458776u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 262164u, 262164u, 262164u, 262164u,
-    262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 393237u, 393237u, 393237u, 393237u,
-    393239u, 393239u, 393239u, 393239u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 524313u, 524315u, 458778u, 458778u,
-    458780u, 458780u, 524317u, 524319u, 458782u, 458782u, 524320u, 2147484040u, 2147484042u, 2181038476u, 2181038484u, 524337u, 393264u, 393264u, 393264u, 393264u,
-    458806u, 458806u, 458807u, 458807u, 327733u, 327733u, 327733u, 327733u, 327733u, 327733u, 327733u, 327733u, 262196u, 262196u, 262196u, 262196u,
-    262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 393273u, 393273u, 393273u, 393273u,
-    524346u, 524347u, 2181038492u, 2164261284u, 327753u, 327753u, 327753u, 327753u, 327753u, 327753u, 327753u, 327753u, 65546u, 65546u, 65546u, 65546u,
-    196619u, 196622u, 131085u, 131085u, 458767u, 458794u, 458802u, 458803u, 458814u, 458816u, 458819u, 458820u, 393285u, 393285u, 393286u, 393286u,
-    393287u, 393287u, 393288u, 393288u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u, 196646u,
-    196646u, 196646u, 196646u, 196646u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u,
-    131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u,
-    131112u, 131112u, 131112u, 131112u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u,
-    65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u,
-    65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u,
-    65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u, 65569u,
-    65569u, 65569u, 65569u, 65569u, 65570u, 65571u, 65572u, 65573u, 65575u, 65575u, 65575u, 65575u, 196649u, 196652u, 131115u, 131115u,
-    196653u, 196655u, 131118u, 131118u, 65592u, 65592u, 65592u, 65592u, 131132u, 131132u, 196669u, 196683u, 131135u, 131135u, 131137u, 131137u,
-    131138u, 131146u, 65612u, 65612u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 393219u, 393219u, 393219u, 393219u,
-    393220u, 393220u, 393220u, 393220u, 524293u, 2164261120u, 2248147204u, 2164261252u, 524306u, 524307u, 524310u, 524320u, 327697u, 327697u, 327697u, 327697u,
-    327697u, 327697u, 327697u, 327697u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u,
-    262160u, 262160u, 262160u, 262160u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 327706u, 327706u, 327706u, 327706u,
-    327706u, 327706u, 327706u, 327706u, 262169u, 262169u, 262169u, 262169u, 262169u, 262169u, 262169u, 262169u, 262169u, 262169u, 262169u, 262169u,
-    262169u, 262169u, 262169u, 262169u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u,
-    196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u,
-    196631u, 196631u, 196631u, 196631u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u,
-    196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u, 196632u,
-    196632u, 196632u, 196632u, 196632u, 393243u, 393243u, 393243u, 393243u, 393244u, 393244u, 393244u, 393244u, 458781u, 458781u, 458782u, 458782u,
-    458783u, 458783u, 524321u, 2147484040u, 524323u, 2164261258u, 524331u, 524332u, 393255u, 393255u, 393255u, 393255u, 393256u, 393256u, 393256u, 393256u,
-    2147484046u, 524340u, 2164261264u, 524361u, 65542u, 65542u, 131079u, 131080u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u,
-    65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u,
-    65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u,
-    65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u,
-    65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 458762u, 458763u, 458765u, 458767u, 458789u, 458798u, 458799u, 458801u,
-    458802u, 458803u, 458805u, 458806u, 458807u, 458808u, 458810u, 458812u, 458813u, 458814u, 458815u, 458816u, 458819u, 458820u, 458821u, 458822u
-);
-// Copies chunk 4 of the tables into the state, which a reset clears
-@compute @workgroup_size(64)
-fn loadTables4(@builtin(global_invocation_id) invocation: vec3u) {
-    if (packet.reset == 0u || invocation.x >= 8192u) {
-        return;
-    }
-    state[S_TABLES + 32768u + invocation.x] = TABLE_DATA_4[invocation.x];
-}
-const TABLE_DATA_5 = array<u32, 6804>(
-    458823u, 458824u, 393290u, 393290u, 393291u, 393291u, 393292u, 393292u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u,
-    131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u,
-    131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131086u, 131108u, 65557u, 65557u, 65570u, 65574u, 65577u, 65577u,
-    131114u, 131117u, 65584u, 65593u, 65595u, 65595u, 131137u, 131138u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u,
-    262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 262144u, 2181038336u, 2181038344u, 2164261136u, 2164261140u, 2164261144u, 2164261148u, 2164261152u, 2164261156u,
-    2164261160u, 2164261164u, 2164261168u, 2164261172u, 2164261176u, 2164261180u, 2164261184u, 2164261188u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u,
-    262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262170u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u,
-    262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 262171u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u,
-    131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u,
-    131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u,
-    131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u,
-    131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 131096u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u,
-    65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 65559u, 196609u, 196610u, 196611u, 196612u, 196613u, 196614u, 196615u, 196616u,
-    196617u, 196618u, 196619u, 196620u, 196621u, 196622u, 196623u, 196624u, 131089u, 131090u, 131091u, 131092u, 131093u, 131094u, 131097u, 131100u,
-    131101u, 131102u, 131103u, 131104u, 131105u, 131106u, 131107u, 131108u, 131109u, 131110u, 131111u, 131112u, 131113u, 131114u, 131115u, 131116u,
-    131117u, 131118u, 131119u, 131120u, 131121u, 131122u, 131123u, 131124u, 131125u, 131126u, 131127u, 131128u, 131129u, 131130u, 131131u, 131132u,
-    131133u, 131134u, 131135u, 131136u, 131137u, 131138u, 131139u, 131140u, 131141u, 131142u, 131143u, 131144u, 131145u, 131146u, 131147u, 131148u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u,
-    327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 393220u, 393220u, 393220u, 393220u, 458757u, 458757u, 524295u, 524296u,
-    393222u, 393222u, 393222u, 393222u, 2248147200u, 2147484032u, 2147484034u, 524320u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u,
-    262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u,
-    393234u, 393234u, 393234u, 393234u, 458771u, 458771u, 458773u, 458773u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u,
-    327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327705u, 327705u, 327705u, 327705u, 327705u, 327705u, 327705u, 327705u,
-    262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u, 262168u,
-    196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u,
-    196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u, 196631u,
-    327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327706u, 327707u, 327707u, 327707u, 327707u, 327707u, 327707u, 327707u, 327707u,
-    327708u, 327708u, 327708u, 327708u, 327708u, 327708u, 327708u, 327708u, 393245u, 393245u, 393245u, 393245u, 393246u, 393246u, 393246u, 393246u,
-    458783u, 458783u, 524321u, 524322u, 524323u, 524324u, 2181038468u, 524329u, 393255u, 393255u, 393255u, 393255u, 458792u, 458792u, 524330u, 524331u,
-    458800u, 458800u, 458809u, 458809u, 393268u, 393268u, 393268u, 393268u, 524347u, 2181038476u, 2231370132u, 524353u, 393289u, 393289u, 393289u, 393289u,
-    65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u,
-    65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u,
-    65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u,
-    65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u, 65545u,
-    131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u,
-    131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u, 131082u,
-    458766u, 458799u, 393265u, 393265u, 393266u, 393266u, 393267u, 393267u, 393270u, 393270u, 393271u, 393271u, 393272u, 393272u, 393274u, 393274u,
-    196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u, 196623u,
-    65547u, 65548u, 65549u, 65573u, 131110u, 131110u, 196652u, 196654u, 131117u, 131117u, 131125u, 131125u, 65596u, 65596u, 65596u, 65596u,
-    196669u, 196671u, 131134u, 131134u, 393280u, 393283u, 393284u, 393285u, 393286u, 393287u, 393288u, 393292u, 196683u, 196683u, 196683u, 196683u,
-    196683u, 196683u, 196683u, 196683u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u, 131138u,
-    131138u, 131138u, 131138u, 131138u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u,
-    65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u, 65610u,
-    65610u, 65610u, 65610u, 65610u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u,
-    262146u, 262146u, 262146u, 262146u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 393220u, 393220u, 393220u, 393220u,
-    393221u, 393221u, 393221u, 393221u, 458758u, 458758u, 524295u, 524296u, 524297u, 2147483904u, 2181038338u, 524311u, 327697u, 327697u, 327697u, 327697u,
-    327697u, 327697u, 327697u, 327697u, 393234u, 393234u, 393234u, 393234u, 458771u, 458771u, 2164261130u, 2197815566u, 393237u, 393237u, 393237u, 393237u,
-    2248147230u, 2197815710u, 524336u, 524343u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u,
-    262164u, 262164u, 262164u, 262164u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u,
-    262166u, 262166u, 262166u, 262166u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u,
-    262196u, 262196u, 262196u, 262196u, 393269u, 393269u, 393269u, 393269u, 458806u, 458806u, 524346u, 2231370158u, 393273u, 393273u, 393273u, 393273u,
-    393289u, 393289u, 393289u, 393289u, 65546u, 65547u, 196620u, 196621u, 196622u, 196623u, 65560u, 65560u, 65560u, 65560u, 131097u, 131099u,
-    65562u, 65562u, 131100u, 131100u, 131100u, 131100u, 262173u, 262179u, 196642u, 196642u, 131102u, 131102u, 131102u, 131102u, 131103u, 131103u,
-    131103u, 131103u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u,
-    131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u, 131104u,
-    131104u, 131104u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u,
-    131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u, 131105u,
-    131105u, 131105u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u,
-    131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u, 131108u,
-    131108u, 131108u, 262181u, 262181u, 262181u, 262181u, 262181u, 262181u, 262181u, 262181u, 262182u, 262182u, 262182u, 262182u, 262182u, 262182u,
-    262182u, 262182u, 458791u, 458792u, 458793u, 458794u, 393259u, 393259u, 393260u, 393260u, 393261u, 393261u, 393267u, 393267u, 393277u, 393277u,
-    393280u, 393280u, 196654u, 196654u, 196655u, 196655u, 131121u, 131121u, 131121u, 131121u, 262194u, 262207u, 196667u, 196667u, 131128u, 131128u,
-    131128u, 131128u, 131132u, 131132u, 131132u, 131132u, 131132u, 131132u, 131132u, 131132u, 131132u, 131132u, 131132u, 131132u, 131132u, 131132u,
-    131132u, 131132u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 196670u, 393281u, 393282u, 393283u, 393284u, 393285u, 393286u,
-    393287u, 393288u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196682u, 196683u, 196683u, 196683u, 196683u, 196683u, 196683u,
-    196683u, 196683u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u,
-    131148u, 131148u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 393219u, 393219u, 393219u, 393219u, 458756u, 458756u,
-    524293u, 524294u, 524295u, 2164261120u, 2264924420u, 524307u, 393234u, 393234u, 393234u, 393234u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u,
-    327697u, 327697u, 327701u, 327701u, 327701u, 327701u, 327701u, 327701u, 327701u, 327701u, 458775u, 458775u, 2147484164u, 2147484166u, 2164261384u, 2164261388u,
-    2164261392u, 2181038612u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u,
-    196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u, 196628u,
-    196628u, 196628u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u,
-    262166u, 262166u, 458800u, 458800u, 2181038620u, 524344u, 393270u, 393270u, 393270u, 393270u, 393271u, 393271u, 393271u, 393271u, 458810u, 458810u,
-    524363u, 524364u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u,
-    196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u,
-    196660u, 196660u, 262197u, 262197u, 262197u, 262197u, 262197u, 262197u, 262197u, 262197u, 262197u, 262197u, 262197u, 262197u, 262197u, 262197u,
-    262197u, 262197u, 327737u, 327737u, 327737u, 327737u, 327737u, 327737u, 327737u, 327737u, 327753u, 327753u, 327753u, 327753u, 327753u, 327753u,
-    327753u, 327753u, 131080u, 131082u, 65545u, 65545u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u,
-    131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u,
-    131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u,
-    131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u,
-    131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 524300u, 524303u, 524326u, 524332u, 458798u, 458798u, 458799u, 458799u, 458802u, 458802u,
-    458803u, 458803u, 458811u, 458811u, 458812u, 458812u, 458813u, 458813u, 458814u, 458814u, 458816u, 458816u, 458820u, 458820u, 458821u, 458821u,
-    458822u, 458822u, 458823u, 458823u, 458824u, 458824u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u,
-    196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 196645u,
-    196645u, 196645u, 196645u, 196645u, 196645u, 196645u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u,
-    131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u,
-    131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u,
-    131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u,
-    131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u,
-    131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u,
-    131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u,
-    131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 131086u,
-    131086u, 131086u, 131086u, 131086u, 131086u, 131086u, 65560u, 65561u, 65562u, 65563u, 65564u, 65564u, 131101u, 131102u, 131103u, 131104u,
-    131105u, 131106u, 65571u, 65571u, 131108u, 131111u, 196648u, 196650u, 131113u, 131113u, 131115u, 131115u, 196653u, 196671u, 65585u, 65585u,
-    65585u, 65585u, 196673u, 196674u, 196675u, 196682u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u,
-    262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 262147u,
-    262147u, 262147u, 262147u, 262147u, 262147u, 262147u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327685u, 327685u,
-    327685u, 327685u, 327685u, 327685u, 327685u, 327685u, 393222u, 393222u, 393222u, 393222u, 393223u, 393223u, 393223u, 393223u, 393224u, 393224u,
-    393224u, 393224u, 393225u, 393225u, 393225u, 393225u, 458762u, 458762u, 458763u, 458763u, 524300u, 524301u, 524302u, 2147483904u, 393233u, 393233u,
-    393233u, 393233u, 458770u, 458770u, 524309u, 524324u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 262160u,
-    262160u, 262160u, 262160u, 262160u, 262160u, 262160u, 393236u, 393236u, 393236u, 393236u, 458774u, 458774u, 458780u, 458780u, 393239u, 393239u,
-    393239u, 393239u, 393240u, 393240u, 393240u, 393240u, 393241u, 393241u, 393241u, 393241u, 393242u, 393242u, 393242u, 393242u, 393243u, 393243u,
-    393243u, 393243u, 458781u, 458781u, 458782u, 458782u, 458783u, 458783u, 458784u, 458784u, 458785u, 458785u, 458786u, 458786u, 458787u, 458787u,
-    524325u, 2248147202u, 458798u, 458798u, 524335u, 524336u, 2147484034u, 2248147332u, 458804u, 458804u, 524345u, 524349u, 458812u, 458812u, 393275u, 393275u,
-    393275u, 393275u, 524350u, 524361u, 458815u, 458815u, 65551u, 65555u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u,
-    65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u,
-    65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u,
-    65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u,
-    65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 196647u, 196647u, 196647u, 196647u, 196647u, 196647u, 196647u, 196647u,
-    196647u, 196647u, 196647u, 196647u, 196647u, 196647u, 196647u, 196647u, 458793u, 458794u, 458795u, 458796u, 458797u, 458803u, 458806u, 458807u,
-    262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 262193u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u,
-    131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u,
-    131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 131112u, 65586u, 65589u, 458808u, 458819u, 458820u, 458821u, 393286u, 393286u,
-    393287u, 393287u, 393288u, 393288u, 393290u, 393290u, 393291u, 393291u, 393292u, 393292u, 196666u, 196666u, 196666u, 196666u, 196666u, 196666u,
-    196666u, 196666u, 196666u, 196666u, 196666u, 196666u, 196666u, 196666u, 196666u, 196666u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u,
-    196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196673u, 196674u, 196674u, 196674u, 196674u, 196674u, 196674u,
-    196674u, 196674u, 196674u, 196674u, 196674u, 196674u, 196674u, 196674u, 196674u, 196674u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u,
-    65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u,
-    65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u,
-    65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u,
-    65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 65600u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u,
-    327682u, 327682u, 393219u, 393219u, 393219u, 393219u, 393220u, 393220u, 393220u, 393220u, 458757u, 458757u, 458758u, 458758u, 524295u, 524296u,
-    524297u, 2147483904u, 2231369986u, 524317u, 458771u, 458771u, 393234u, 393234u, 393234u, 393234u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u,
-    327697u, 327697u, 393237u, 393237u, 393237u, 393237u, 393240u, 393240u, 393240u, 393240u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u,
-    262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u,
-    327702u, 327702u, 327703u, 327703u, 327703u, 327703u, 327703u, 327703u, 327703u, 327703u, 393241u, 393241u, 393241u, 393241u, 393242u, 393242u,
-    393242u, 393242u, 458779u, 458779u, 458780u, 458780u, 458782u, 458782u, 524319u, 524320u, 524321u, 524322u, 524323u, 2164261186u, 458791u, 458791u,
-    524328u, 2147483974u, 2147483976u, 2197815626u, 458800u, 458800u, 524337u, 524342u, 524343u, 524346u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u,
-    262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 262196u, 393269u, 393269u, 393269u, 393269u, 393273u, 393273u,
-    393273u, 393273u, 2164261210u, 2181038430u, 2181038438u, 2147484014u, 393289u, 393289u, 393289u, 393289u, 65546u, 65547u, 131084u, 131084u, 131084u, 131084u,
-    131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131084u, 131085u, 131085u, 131085u, 131085u,
-    131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 131085u, 393230u, 393285u, 393286u, 393288u,
-    262159u, 262159u, 262159u, 262159u, 196652u, 196652u, 196652u, 196652u, 196652u, 196652u, 196652u, 196652u, 131109u, 131109u, 131109u, 131109u,
-    131109u, 131109u, 131109u, 131109u, 131109u, 131109u, 131109u, 131109u, 131109u, 131109u, 131109u, 131109u, 65572u, 65572u, 131110u, 131115u,
-    65577u, 65578u, 65581u, 65582u, 131119u, 131119u, 131119u, 131119u, 262194u, 262195u, 196670u, 196670u, 65592u, 65592u, 65592u, 65592u,
-    65592u, 65592u, 65592u, 65592u, 65595u, 65595u, 131132u, 131133u, 131135u, 131135u, 196672u, 196675u, 65601u, 65601u, 65601u, 65601u,
-    65602u, 65602u, 65602u, 65602u, 196676u, 196679u, 131148u, 131148u, 65610u, 65611u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u,
-    196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 196609u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u,
-    262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u,
-    327683u, 327683u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 393221u, 393221u, 393221u, 393221u, 393222u, 393222u,
-    393222u, 393222u, 458759u, 458759u, 458760u, 458760u, 458761u, 458761u, 524298u, 524299u, 524300u, 2197815552u, 2147483920u, 524307u, 458770u, 458770u,
-    458773u, 458773u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 327700u, 327700u, 327700u, 327700u, 327700u, 327700u,
-    327700u, 327700u, 393238u, 393238u, 393238u, 393238u, 393240u, 393240u, 393240u, 393240u, 327703u, 327703u, 327703u, 327703u, 327703u, 327703u,
-    327703u, 327703u, 458777u, 458777u, 458778u, 458778u, 458779u, 458779u, 524316u, 524317u, 458782u, 458782u, 524319u, 524320u, 524321u, 524322u,
-    524323u, 524324u, 2248147218u, 524334u, 2147484050u, 524336u, 458805u, 458805u, 2147484052u, 524347u, 327732u, 327732u, 327732u, 327732u, 327732u, 327732u,
-    327732u, 327732u, 458809u, 458809u, 524348u, 524349u, 2248147350u, 524351u, 458825u, 458825u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u,
-    65549u, 65549u, 131086u, 131086u, 131086u, 131086u, 196647u, 196647u, 262184u, 262185u, 65551u, 65573u, 65574u, 65574u, 65574u, 65574u,
-    65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u,
-    65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u,
-    65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u,
-    65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 65574u, 458794u, 458796u, 458797u, 458808u,
-    327723u, 327723u, 327723u, 327723u, 327731u, 327731u, 327731u, 327731u, 327746u, 327746u, 327746u, 327746u, 196666u, 196666u, 196666u, 196666u,
-    196666u, 196666u, 196666u, 196666u, 196666u, 196666u, 196666u, 196666u, 196666u, 196666u, 196666u, 196666u, 131121u, 131121u, 131121u, 131121u,
-    131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u,
-    131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 131121u, 65583u, 65586u, 65590u, 65591u,
-    65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u,
-    65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u,
-    65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u,
-    65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u, 65598u,
-    196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u, 196672u,
-    262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 262209u, 458819u, 458820u, 458821u, 458822u, 458823u, 458824u, 393290u, 393290u,
-    196683u, 196683u, 196683u, 196683u, 196683u, 196683u, 196683u, 196683u, 196683u, 196683u, 196683u, 196683u, 196683u, 196683u, 196683u, 196683u,
-    196684u, 196684u, 196684u, 196684u, 196684u, 196684u, 196684u, 196684u, 196684u, 196684u, 196684u, 196684u, 196684u, 196684u, 196684u, 196684u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u, 196608u,
-    262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u, 262146u,
-    327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327683u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u, 327684u,
-    393221u, 393221u, 393221u, 393221u, 393222u, 393222u, 393222u, 393222u, 458759u, 458759u, 524296u, 524297u, 524298u, 2147483904u, 2197815554u, 524321u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 327697u, 393234u, 393234u, 393234u, 393234u, 458771u, 458771u, 458779u, 458779u,
-    262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u,
-    393237u, 393237u, 393237u, 393237u, 393241u, 393241u, 393241u, 393241u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u, 327702u,
-    262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u, 262167u,
-    327704u, 327704u, 327704u, 327704u, 327704u, 327704u, 327704u, 327704u, 393242u, 393242u, 393242u, 393242u, 458780u, 458780u, 458781u, 458781u,
-    458782u, 458782u, 458783u, 458783u, 458784u, 458784u, 524322u, 524323u, 2147483922u, 524325u, 458791u, 458791u, 524328u, 2248147220u, 2147484052u, 2181038486u,
-    393264u, 393264u, 393264u, 393264u, 458801u, 458801u, 458805u, 458805u, 327732u, 327732u, 327732u, 327732u, 327732u, 327732u, 327732u, 327732u,
-    393273u, 393273u, 393273u, 393273u, 524347u, 2164261278u, 524353u, 2147484066u, 327753u, 327753u, 327753u, 327753u, 327753u, 327753u, 327753u, 327753u,
-    65547u, 65548u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 65549u, 196622u, 196622u, 262159u, 262189u, 131110u, 131110u,
-    131110u, 131110u, 65572u, 65577u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u, 196650u,
-    196650u, 196650u, 196650u, 196650u, 458799u, 458802u, 458803u, 458808u, 458816u, 458819u, 458820u, 458821u, 393286u, 393286u, 393287u, 393287u,
-    393288u, 393288u, 393292u, 393292u, 131116u, 131116u, 131116u, 131116u, 131116u, 131116u, 131116u, 131116u, 131116u, 131116u, 131116u, 131116u,
-    131116u, 131116u, 131116u, 131116u, 131116u, 131116u, 131116u, 131116u, 131116u, 131116u, 131116u, 131116u, 131116u, 131116u, 131116u, 131116u,
-    131116u, 131116u, 131116u, 131116u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u,
-    65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u,
-    65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u,
-    65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u, 65579u,
-    65579u, 65579u, 65579u, 65579u, 65582u, 65590u, 196663u, 196671u, 131133u, 131133u, 65594u, 65594u, 65594u, 65594u, 65596u, 65596u,
-    131134u, 131146u, 65602u, 65611u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u, 131072u,
-    131072u, 131072u, 131072u, 131072u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u, 262145u,
-    262145u, 262145u, 262145u, 262145u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 327682u, 393219u, 393219u, 393219u, 393219u,
-    458756u, 458756u, 458757u, 458757u, 524294u, 524295u, 2147483904u, 2248147202u, 393234u, 393234u, 393234u, 393234u, 327697u, 327697u, 327697u, 327697u,
-    327697u, 327697u, 327697u, 327697u, 458771u, 458771u, 524311u, 524312u, 393237u, 393237u, 393237u, 393237u, 2164261250u, 2147484038u, 2181038472u, 2181038480u,
-    2181038488u, 2231370144u, 458800u, 458800u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u, 196624u,
-    196624u, 196624u, 196624u, 196624u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u, 262164u,
-    262164u, 262164u, 262164u, 262164u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u, 262166u,
-    262166u, 262166u, 262166u, 262166u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u,
-    196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u, 196660u,
-    196660u, 196660u, 196660u, 196660u, 327733u, 327733u, 327733u, 327733u, 327733u, 327733u, 327733u, 327733u, 458806u, 458806u, 458807u, 458807u,
-    458810u, 458810u, 2147484128u, 524363u, 327737u, 327737u, 327737u, 327737u, 327737u, 327737u, 327737u, 327737u, 327753u, 327753u, 327753u, 327753u,
-    327753u, 327753u, 327753u, 327753u, 65544u, 65545u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u,
-    65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u,
-    65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u,
-    65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 65546u,
-    65546u, 65546u, 65546u, 65546u, 65546u, 65546u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u,
-    131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 131083u,
-    131083u, 131083u, 131083u, 131083u, 131083u, 131083u, 458764u, 458765u, 458766u, 458767u, 458784u, 458788u, 458790u, 458793u, 458794u, 458797u,
-    458799u, 458802u, 458803u, 458813u, 393278u, 393278u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 196642u,
-    196642u, 196642u, 196642u, 196642u, 196642u, 196642u, 65561u, 65561u, 131098u, 131100u, 65563u, 65565u, 131102u, 131102u, 131103u, 131103u,
-    131105u, 131105u, 196643u, 196648u, 131109u, 131109u, 196651u, 196652u, 65575u, 65575u, 65575u, 65575u, 196654u, 196668u, 131121u, 131121u,
-    65592u, 65592u, 65592u, 65592u, 65595u, 65595u, 65595u, 65595u, 65595u, 65595u, 65595u, 65595u, 65595u, 65595u, 65595u, 65595u,
-    65595u, 65595u, 65595u, 65595u, 65595u, 65595u, 65595u, 65595u, 65595u, 65595u, 65595u, 65595u, 65595u, 65595u, 65595u, 65595u,
-    65595u, 65595u, 65595u, 65595u, 393279u, 393280u, 393283u, 393284u, 393285u, 393286u, 393287u, 393288u, 196682u, 196682u, 196682u, 196682u,
-    196682u, 196682u, 196682u, 196682u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u, 131148u,
-    131148u, 131148u, 131148u, 131148u, 65601u, 65602u, 19u, 15u, 12u, 11u, 6u, 5u, 4u, 4u, 4u, 4u,
-    3u, 3u, 3u, 3u, 3u, 3u, 2u, 2u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u,
-    1u, 1u, 1u, 1u, 1u, 23u, 11u, 8u, 7u, 5u, 5u, 4u, 4u, 3u, 3u, 3u,
-    3u, 2u, 2u, 2u, 2u, 2u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u,
-    0u, 0u, 0u, 0u, 16u, 11u, 8u, 7u, 5u, 4u, 4u, 3u, 3u, 3u, 3u, 3u,
-    3u, 3u, 2u, 2u, 1u, 1u, 1u, 1u, 1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 14u, 9u, 5u, 4u, 4u, 4u, 3u, 3u, 3u, 3u, 3u, 3u, 3u,
-    2u, 2u, 2u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u,
-    1u, 0u, 27u, 10u, 5u, 4u, 3u, 3u, 3u, 3u, 2u, 2u, 1u, 1u, 1u, 1u,
-    1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 12u, 6u, 4u, 3u, 3u, 3u, 3u, 2u, 2u, 2u, 2u, 1u, 1u, 1u, 1u,
-    1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 0u, 0u, 0u, 0u,
-    56u, 20u, 10u, 7u, 6u, 5u, 4u, 3u, 3u, 3u, 2u, 2u, 2u, 2u, 1u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 32u,
-    13u, 8u, 6u, 5u, 4u, 4u, 3u, 3u, 3u, 2u, 2u, 2u, 2u, 2u, 2u, 2u,
-    2u, 2u, 2u, 2u, 2u, 2u, 1u, 1u, 0u, 0u, 0u, 0u, 0u, 0u, 6u, 5u,
-    4u, 4u, 3u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 1u, 1u,
-    1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u,
-    1u, 1u, 1u, 1u, 0u, 0u, 0u, 0u, 0u, 0u, 9u, 5u, 4u, 4u, 3u, 3u,
-    3u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 1u, 1u, 1u, 1u, 1u, 1u, 1u,
-    1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 4u, 4u, 3u, 3u, 2u, 2u, 2u, 2u, 2u, 2u,
-    2u, 2u, 2u, 2u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u,
-    1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 5u, 4u, 3u, 3u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u,
-    2u, 2u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u,
-    1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 8u, 3u,
-    2u, 2u, 2u, 2u, 2u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u,
-    1u, 1u, 1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 3u, 2u, 1u, 1u, 1u, 1u,
-    1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u,
-    1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u,
-    1u, 1u, 1u, 0u, 0u, 0u, 4u, 3u, 3u, 2u, 2u, 2u, 2u, 2u, 2u, 2u,
-    2u, 2u, 2u, 2u, 2u, 1u, 1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 4u, 3u, 3u, 3u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u,
-    2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 1u,
-    1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 255u, 30u,
-    17u, 15u, 9u, 5u, 4u, 3u, 3u, 3u, 3u, 3u, 2u, 1u, 1u, 1u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 255u, 26u, 16u, 11u, 7u, 5u, 3u, 3u, 2u,
-    1u, 1u, 1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    255u, 20u, 15u, 13u, 6u, 4u, 3u, 3u, 2u, 1u, 1u, 1u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 255u, 29u, 15u, 12u, 5u, 2u, 1u,
-    1u, 1u, 1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 255u, 14u, 9u, 7u, 3u, 2u, 1u, 1u, 1u, 1u, 1u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 255u, 26u, 10u, 6u, 2u,
-    1u, 1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 255u, 14u, 13u, 9u, 6u, 5u, 4u, 3u, 2u, 2u, 2u, 1u,
-    1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 255u, 24u, 22u,
-    9u, 6u, 4u, 3u, 2u, 2u, 1u, 1u, 1u, 1u, 1u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 255u, 37u, 15u, 4u, 3u, 1u, 0u, 0u, 0u, 0u,
-    255u, 36u, 14u, 6u, 3u, 1u, 0u, 0u, 0u, 0u, 255u, 26u, 13u, 3u, 1u, 0u,
-    0u, 0u, 0u, 0u, 255u, 43u, 15u, 3u, 1u, 0u, 0u, 0u, 0u, 0u, 255u, 20u,
-    6u, 1u, 0u, 0u, 0u, 0u, 0u, 0u, 255u, 40u, 1u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 255u, 16u, 14u, 2u, 0u, 0u, 0u, 0u, 0u, 0u, 255u, 30u, 28u, 3u,
-    0u, 0u, 0u, 0u, 0u, 0u, 1113859u, 1638147u, 17104642u, 17366787u, 2162437u, 17891076u, 67108866u, 134217730u, 201326594u, 268435459u,
-    402653187u, 50397186u, 117506051u, 1113858u, 1376002u, 1638146u, 1900290u, 2162436u, 3211012u, 17104642u, 17366787u, 17891076u, 67108866u, 134217731u, 268435460u, 50397186u,
-    117506051u, 34u, 50u, 51u, 83u, 35u, 66u, 67u, 99u, 36u, 82u, 52u, 115u, 37u, 98u, 68u,
-    131u, 38u, 114u, 53u, 84u, 39u, 130u, 69u, 100u, 40u, 146u, 54u, 116u, 41u, 162u, 70u,
-    132u, 0u, 1u, 2u, 3u, 4u, 5u, 7u, 9u, 13u, 17u, 25u, 33u, 49u, 65u, 97u,
-    129u, 193u, 256u, 256u, 256u, 256u, 256u, 256u, 259u, 262u, 265u, 269u, 272u, 275u, 278u, 282u,
-    285u, 288u, 292u, 295u, 299u, 303u, 306u, 310u, 314u, 317u, 321u, 325u, 329u, 333u, 337u, 341u,
-    345u, 349u, 353u, 358u, 362u, 366u, 371u, 375u, 379u, 384u, 389u, 393u, 398u, 403u, 408u, 413u,
-    417u, 422u, 428u, 433u, 438u, 443u, 448u, 454u, 459u, 465u, 470u, 476u, 482u, 488u, 493u, 499u,
-    505u, 511u, 0u, 8u, 4u, 10u, 11u, 2u, 6u, 9u, 1u, 3u, 5u, 7u, 4u, 0u,
-    8u, 11u, 10u, 3u, 5u, 2u, 6u, 9u, 1u, 7u, 8u, 0u, 4u, 10u, 11u, 1u,
-    7u, 2u, 6u, 9u, 3u, 5u, 640u, 640u, 669u, 480u, 708u, 354u, 748u, 257u, 792u, 198u,
-    760u, 143u, 808u, 101u, 772u, 72u, 480u, 669u, 537u, 537u, 598u, 416u, 661u, 316u, 719u, 250u,
-    707u, 185u, 768u, 134u, 745u, 97u, 354u, 708u, 416u, 598u, 488u, 488u, 564u, 388u, 634u, 317u,
-    642u, 241u, 716u, 179u, 706u, 132u, 257u, 748u, 316u, 661u, 388u, 564u, 469u, 469u, 543u, 395u,
-    571u, 311u, 655u, 238u, 660u, 180u, 198u, 792u, 250u, 719u, 317u, 634u, 395u, 543u, 469u, 469u,
-    507u, 380u, 597u, 299u, 616u, 231u, 161u, 855u, 206u, 788u, 266u, 710u, 340u, 623u, 411u, 548u,
-    455u, 455u, 548u, 366u, 576u, 288u, 122u, 972u, 159u, 914u, 211u, 842u, 276u, 758u, 341u, 682u,
-    389u, 584u, 483u, 483u, 520u, 390u, 110u, 1172u, 144u, 1107u, 193u, 1028u, 254u, 932u, 317u, 846u,
-    366u, 731u, 458u, 611u, 499u, 499u, 0u, 8u, 1u, 2u, 9u, 16u, 24u, 17u, 10u, 3u,
-    4u, 11u, 18u, 25u, 32u, 40u, 48u, 56u, 41u, 33u, 26u, 19u, 12u, 5u, 6u, 13u,
-    20u, 27u, 34u, 49u, 57u, 58u, 50u, 42u, 35u, 28u, 21u, 14u, 7u, 15u, 22u, 29u,
-    36u, 43u, 51u, 59u, 60u, 52u, 44u, 37u, 30u, 23u, 31u, 38u, 45u, 53u, 61u, 62u,
-    54u, 46u, 39u, 47u, 55u, 63u, 0u, 1u, 8u, 2u, 3u, 9u, 16u, 24u, 17u, 10u,
-    4u, 5u, 11u, 18u, 25u, 32u, 40u, 48u, 33u, 26u, 19u, 12u, 6u, 7u, 13u, 20u,
-    27u, 34u, 41u, 56u, 49u, 57u, 42u, 35u, 28u, 21u, 14u, 15u, 22u, 29u, 36u, 43u,
-    50u, 58u, 51u, 44u, 37u, 30u, 23u, 31u, 38u, 45u, 52u, 59u, 60u, 53u, 46u, 39u,
-    47u, 54u, 61u, 62u, 55u, 63u, 0u, 8u, 16u, 1u, 24u, 32u, 40u, 9u, 2u, 3u,
-    10u, 17u, 25u, 48u, 56u, 41u, 33u, 26u, 18u, 11u, 4u, 5u, 12u, 19u, 27u, 34u,
-    49u, 57u, 50u, 42u, 35u, 28u, 20u, 13u, 6u, 7u, 14u, 21u, 29u, 36u, 43u, 51u,
-    58u, 59u, 52u, 44u, 37u, 30u, 22u, 15u, 23u, 31u, 38u, 45u, 60u, 53u, 46u, 39u,
-    47u, 54u, 61u, 62u, 55u, 63u, 128u, 85u, 170u, 64u, 192u, 51u, 102u, 153u, 204u, 43u,
-    215u, 37u, 74u, 111u, 148u, 185u, 222u, 32u, 96u, 160u, 224u, 4294967295u, 0u, 0u, 1u, 2u,
-    3u, 4u, 5u, 6u, 7u, 8u, 6u, 7u, 8u, 9u, 10u, 11u, 12u, 13u, 14u, 15u,
-    16u, 17u, 18u, 19u, 20u, 21u, 22u, 23u, 24u, 25u, 27u, 29u, 31u, 0u, 1u, 2u,
-    4u, 3u, 1u, 3u, 2u, 4u, 0u, 0u, 1u, 2u, 3u, 1u, 3u, 2u, 0u, 3u,
-    6u, 0u, 7u, 2u, 1u, 4u, 5u, 0u, 4u, 5u, 7u, 3u, 6u, 1u, 2u, 0u,
-    6u, 7u, 1u, 4u, 5u, 3u, 2u, 0u, 3u, 6u, 7u, 96u, 112u, 32u, 64u, 80u,
-    65u, 81u, 17u, 5u, 0u, 0u, 0u, 0u, 0u, 0u, 96u, 112u, 32u, 64u, 80u, 65u,
-    81u, 17u, 68u, 84u, 4u, 67u, 83u, 19u, 5u, 0u, 2u, 4u, 8u, 8u, 8u, 9u,
-    9u, 10u, 10u, 11u, 11u, 12u, 12u, 13u, 13u, 14u, 14u, 15u, 15u, 16u, 16u, 17u,
-    17u, 18u, 18u, 19u, 19u, 20u, 20u, 21u, 21u, 262144u, 131072u, 87381u, 65536u, 52429u, 43691u, 37449u,
-    32768u, 29127u, 26214u, 23831u, 21845u, 20165u, 18725u, 17476u, 16384u, 15420u, 14564u, 13797u, 13107u, 12483u, 11916u, 11398u,
-    10923u, 10486u, 10082u, 9709u, 9362u, 9039u, 8738u, 8456u, 8192u, 7944u, 7710u, 7490u, 7282u, 7085u, 6899u, 6722u,
-    6554u, 6394u, 6242u, 6096u, 5958u, 5825u, 5699u, 5578u, 5461u, 5350u, 5243u, 5140u, 5041u, 4946u, 4855u, 4766u,
-    4681u, 4599u, 4520u, 4443u, 4369u, 4297u, 4228u, 4161u, 65535u, 1024u, 512u, 341u, 256u, 205u, 171u, 146u,
-    128u, 114u, 102u, 93u, 85u, 79u, 73u, 68u, 64u, 60u, 57u, 54u, 51u, 49u, 47u, 45u,
-    43u, 41u, 39u, 38u, 37u, 35u, 34u, 33u, 128u, 192u, 213u, 224u, 512u, 341u, 307u, 293u,
-    219u, 236u, 242u, 245u, 32u, 48u, 53u, 56u, 8u, 12u, 13u, 14u, 37u, 20u, 14u, 11u,
-    10u, 5u, 4u, 3u, 128u, 64u, 43u, 32u, 512u, 1024u, 1536u, 2048u, 219u, 204u, 200u, 198u,
-    32u, 16u, 11u, 8u, 8u, 4u, 3u, 2u, 37u, 52u, 56u, 58u, 10u, 13u, 14u, 15u,
-    171u, 205u, 219u, 228u, 384u, 320u, 299u, 288u, 230u, 239u, 244u, 246u, 43u, 51u, 55u, 57u,
-    11u, 13u, 14u, 14u, 26u, 17u, 12u, 10u, 7u, 4u, 3u, 3u, 0u, 0u, 1u, 2u,
-    4u, 4u, 5u, 6u, 2u, 2u, 3u, 8u, 6u, 6u, 7u, 12u, 0u, 1u, 2u, 4u,
-    8u, 16u, 32u, 64u, 128u, 0u, 1u, 3u, 7u, 15u, 31u, 63u, 127u, 255u, 0u, 2u,
-    3u, 4u, 5u, 8u, 0u, 0u, 0u, 35u, 0u, 19u, 3u, 0u, 0u, 18u, 2u, 0u,
-    1u, 0u, 0u, 0u, 0u, 0u, 0u, 1u, 0u, 2u, 18u, 0u, 0u, 3u, 19u, 0u,
-    35u, 0u, 0u, 0u, 0u, 8u, 1u, 2u, 9u, 16u, 24u, 17u, 10u, 3u, 4u, 11u,
-    18u, 25u, 32u, 40u, 48u, 56u, 41u, 33u, 26u, 19u, 12u, 5u, 6u, 13u, 20u, 27u,
-    34u, 49u, 57u, 58u, 50u, 42u, 35u, 28u, 21u, 14u, 7u, 15u, 22u, 29u, 36u, 43u,
-    51u, 59u, 60u, 52u, 44u, 37u, 30u, 23u, 31u, 38u, 45u, 53u, 61u, 62u, 54u, 46u,
-    39u, 47u, 55u, 63u, 0u, 8u, 1u, 2u, 9u, 16u, 24u, 17u, 10u, 3u, 4u, 11u,
-    18u, 25u, 32u, 40u, 33u, 48u, 26u, 19u, 12u, 5u, 6u, 13u, 20u, 27u, 34u, 41u,
-    56u, 49u, 57u, 42u, 35u, 28u, 21u, 14u, 7u, 15u, 22u, 29u, 36u, 43u, 50u, 58u,
-    51u, 59u, 44u, 37u, 30u, 23u, 31u, 38u, 45u, 52u, 60u, 53u, 61u, 46u, 39u, 47u,
-    54u, 62u, 55u, 63u, 0u, 1u, 8u, 2u, 3u, 9u, 16u, 24u, 17u, 10u, 4u, 5u,
-    11u, 18u, 25u, 32u, 40u, 48u, 33u, 26u, 19u, 12u, 6u, 7u, 13u, 20u, 27u, 34u,
-    41u, 56u, 49u, 57u, 42u, 35u, 28u, 21u, 14u, 15u, 22u, 29u, 36u, 43u, 50u, 58u,
-    51u, 44u, 37u, 30u, 23u, 31u, 38u, 45u, 52u, 59u, 60u, 53u, 46u, 39u, 47u, 54u,
-    61u, 62u, 55u, 63u, 0u, 8u, 16u, 1u, 24u, 32u, 40u, 9u, 2u, 3u, 10u, 17u,
-    25u, 48u, 56u, 41u, 33u, 26u, 18u, 11u, 4u, 5u, 12u, 19u, 27u, 34u, 49u, 57u,
-    50u, 42u, 35u, 28u, 20u, 13u, 6u, 7u, 14u, 21u, 29u, 36u, 43u, 51u, 58u, 59u,
-    52u, 44u, 37u, 30u, 22u, 15u, 23u, 31u, 38u, 45u, 60u, 53u, 46u, 39u, 47u, 54u,
-    61u, 62u, 55u, 63u, 0u, 8u, 1u, 16u, 24u, 9u, 2u, 32u, 40u, 48u, 56u, 17u,
-    10u, 3u, 25u, 18u, 11u, 4u, 33u, 41u, 49u, 57u, 26u, 34u, 42u, 50u, 58u, 19u,
-    12u, 5u, 27u, 20u, 13u, 6u, 35u, 28u, 21u, 14u, 7u, 15u, 22u, 29u, 36u, 43u,
-    51u, 59u, 60u, 52u, 44u, 37u, 30u, 23u, 31u, 38u, 45u, 53u, 61u, 62u, 54u, 46u,
-    39u, 47u, 55u, 63u, 0u, 1u, 2u, 8u, 3u, 9u, 10u, 16u, 4u, 11u, 17u, 24u,
-    18u, 12u, 5u, 19u, 25u, 13u, 20u, 26u, 27u, 6u, 21u, 28u, 14u, 22u, 29u, 7u,
-    30u, 15u, 23u, 31u, 0u, 8u, 1u, 16u, 9u, 24u, 17u, 2u, 32u, 10u, 25u, 40u,
-    18u, 48u, 33u, 26u, 56u, 41u, 34u, 3u, 49u, 57u, 11u, 42u, 19u, 50u, 27u, 58u,
-    35u, 43u, 51u, 59u, 0u, 8u, 1u, 16u, 2u, 9u, 10u, 3u, 24u, 17u, 4u, 11u,
-    18u, 12u, 5u, 19u, 25u, 13u, 20u, 26u, 27u, 6u, 21u, 28u, 14u, 22u, 29u, 7u,
-    30u, 15u, 23u, 31u, 0u, 1u, 8u, 2u, 9u, 16u, 17u, 24u, 10u, 32u, 25u, 18u,
-    40u, 3u, 33u, 26u, 48u, 11u, 56u, 41u, 34u, 49u, 57u, 42u, 19u, 50u, 27u, 58u,
-    35u, 43u, 51u, 59u, 0u, 8u, 16u, 1u, 9u, 24u, 17u, 2u, 10u, 18u, 25u, 3u,
-    11u, 26u, 19u, 27u, 0u, 8u, 16u, 24u, 1u, 9u, 2u, 17u, 25u, 10u, 3u, 18u,
-    26u, 4u, 11u, 19u, 12u, 5u, 13u, 20u, 27u, 6u, 21u, 28u, 14u, 22u, 29u, 7u,
-    30u, 15u, 23u, 31u, 0u, 1u, 2u, 8u, 16u, 9u, 24u, 17u, 10u, 3u, 32u, 40u,
-    48u, 56u, 25u, 18u, 33u, 26u, 41u, 34u, 49u, 57u, 11u, 42u, 19u, 50u, 27u, 58u,
-    35u, 43u, 51u, 59u, 0u, 8u, 16u, 24u, 1u, 9u, 17u, 2u, 25u, 10u, 18u, 3u,
-    26u, 11u, 19u, 27u
-);
-// Copies chunk 5 of the tables into the state, which a reset clears
-@compute @workgroup_size(64)
-fn loadTables5(@builtin(global_invocation_id) invocation: vec3u) {
-    if (packet.reset == 0u || invocation.x >= 6804u) {
-        return;
-    }
-    state[S_TABLES + 40960u + invocation.x] = TABLE_DATA_5[invocation.x];
-}
 
-// WGSL shared by every pass of the VC-1 decoder: picture constants, failure reports, parameter blocks, and macroblock records.
-// The layout constants, the tables, and the lookup locations are declared above.
-
-// Profiles
-const PROFILE_SIMPLE: u32 = 0u;
-const PROFILE_MAIN: u32 = 1u;
-const PROFILE_COMPLEX: u32 = 2u;
-const PROFILE_ADVANCED: u32 = 3u;
-
-// Picture types; BI pictures decode as intra B pictures
-const TYPE_I: u32 = 0u;
-const TYPE_P: u32 = 1u;
-const TYPE_B: u32 = 2u;
-const TYPE_BI: u32 = 3u;
-
-// Frame coding modes
-const FCM_PROGRESSIVE: u32 = 0u;
-const FCM_FRAME: u32 = 1u;
-const FCM_FIELD: u32 = 2u;
-
-// Motion vector modes of P pictures, FFmpeg's MV_PMODE_*
-const MV_MODE_1MV_HPEL_BILINEAR: u32 = 0u;
-const MV_MODE_1MV: u32 = 1u;
-const MV_MODE_1MV_HPEL: u32 = 2u;
-const MV_MODE_MIXED_MV: u32 = 3u;
-const MV_MODE_INTENSITY_COMPENSATION: u32 = 4u;
-
-// Interlaced frame macroblock types, FFmpeg's MV_PMODE_INTFR_*
-const FRAME_MB_1MV: u32 = 0u;
-const FRAME_MB_2MV_FIELD: u32 = 1u;
-const FRAME_MB_2MV: u32 = 2u;
-const FRAME_MB_4MV_FIELD: u32 = 3u;
-const FRAME_MB_4MV: u32 = 4u;
-const FRAME_MB_INTRA: u32 = 5u;
-
-// B macroblock prediction types, FFmpeg's BMV_TYPE_*
-const BMV_BACKWARD: u32 = 0u;
-const BMV_FORWARD: u32 = 1u;
-const BMV_INTERPOLATED: u32 = 2u;
-const BMV_DIRECT: u32 = 3u;
-
-// Transform types, FFmpeg's TT_*
-const TT_8X8: u32 = 0u;
-const TT_8X4_BOTTOM: u32 = 1u;
-const TT_8X4_TOP: u32 = 2u;
-const TT_8X4: u32 = 3u;
-const TT_4X8_RIGHT: u32 = 4u;
-const TT_4X8_LEFT: u32 = 5u;
-const TT_4X8: u32 = 6u;
-const TT_4X4: u32 = 7u;
-
-// Quantizer modes, FFmpeg's QUANT_*
-const QUANT_FRAME_IMPLICIT: u32 = 0u;
-const QUANT_FRAME_EXPLICIT: u32 = 1u;
-const QUANT_NON_UNIFORM: u32 = 2u;
-const QUANT_UNIFORM: u32 = 3u;
-
-// Edges where the macroblock quantizer may change, FFmpeg's DQPROFILE_*
-const DQPROFILE_FOUR_EDGES: u32 = 0u;
-const DQPROFILE_DOUBLE_EDGES: u32 = 1u;
-const DQPROFILE_SINGLE_EDGE: u32 = 2u;
-const DQPROFILE_ALL_MBS: u32 = 3u;
-
-// Conditional overlap of Advanced profile I pictures
-const CONDOVER_NONE: u32 = 0u;
-const CONDOVER_ALL: u32 = 1u;
-const CONDOVER_SELECT: u32 = 2u;
-
-// AC coding sets, FFmpeg's CS_* order
-const CS_HIGH_MOT_INTRA: u32 = 0u;
-const CS_HIGH_MOT_INTER: u32 = 1u;
-const CS_LOW_MOT_INTRA: u32 = 2u;
-const CS_LOW_MOT_INTER: u32 = 3u;
-const CS_MID_RATE_INTRA: u32 = 4u;
-const CS_MID_RATE_INTER: u32 = 5u;
-const CS_HIGH_RATE_INTRA: u32 = 6u;
-const CS_HIGH_RATE_INTER: u32 = 7u;
-
-// Bitplane bits of a macroblock's plane word
-const PLANE_MVTYPE: u32 = 1u;
-const PLANE_SKIP: u32 = 2u;
-const PLANE_DIRECT: u32 = 4u;
-const PLANE_FORWARD: u32 = 8u;
-const PLANE_ACPRED: u32 = 16u;
-const PLANE_OVERFLAGS: u32 = 32u;
-const PLANE_FIELDTX: u32 = 64u;
-
-// Fields of a macroblock record's FLAGS word
-const MB_INTRA_SHIFT: u32 = 0u;
-const MB_SKIPPED_BIT: u32 = 1u << 6u;
-const MB_FIELDTX_BIT: u32 = 1u << 7u;
-const MB_OVERFLAG_BIT: u32 = 1u << 8u;
-const MB_ACPRED_BIT: u32 = 1u << 9u;
-// Bits 10 to 15: whether each intra block codes AC levels, FFmpeg's coded argument of its intra block decoders
-const MB_INTRA_CODED_SHIFT: u32 = 10u;
-const MB_CODED_BLOCK_SHIFT: u32 = 16u;
-const MB_BLOCK_MV_TYPE_SHIFT: u32 = 20u;
-const MB_DECODED_BIT: u32 = 1u << 24u;
-// The macroblock sits in the first or the last row of its slice, which overlap smoothing and the loop filter do not cross
-const MB_SLICE_TOP_BIT: u32 = 1u << 25u;
-const MB_SLICE_BOTTOM_BIT: u32 = 1u << 26u;
-
-// Fields of a block's transform half-word: the transform type, the coded subblocks, the DC-only subblocks, and whether the block is coded
-const TRANSFORM_TYPE_MASK: u32 = 3u;
-const TRANSFORM_8X8: u32 = 0u;
-const TRANSFORM_8X4: u32 = 1u;
-const TRANSFORM_4X8: u32 = 2u;
-const TRANSFORM_4X4: u32 = 3u;
-const TRANSFORM_CODED_SHIFT: u32 = 2u;
-const TRANSFORM_DC_ONLY_SHIFT: u32 = 6u;
-const TRANSFORM_PRESENT_BIT: u32 = 1u << 10u;
-
-// Fields of a motion compensation operation's flags word
-const OP_PRESENT: u32 = 1u;
-const OP_KIND_SHIFT: u32 = 1u;
-const OP_AVERAGE: u32 = 1u << 3u;
-const OP_SOURCE_SHIFT: u32 = 4u;
-const OP_BOTTOM_FIELD: u32 = 1u << 6u;
-const OP_FIELD_MV: u32 = 1u << 7u;
-
-// Luma operation kinds: mc_1mv's 16x16 block, mc_4mv_luma's 8x8 block, and interp_mc's averaging 16x16 block
-const LUMA_KIND_1MV: u32 = 0u;
-const LUMA_KIND_4MV: u32 = 1u;
-const LUMA_KIND_INTERPOLATED: u32 = 2u;
-
-// Chroma operation kinds: the 8x8 blocks of mc_1mv, mc_4mv_chroma, and interp_mc, and mc_4mv_chroma4's 4x4 quarters
-const CHROMA_KIND_1MV: u32 = 0u;
-const CHROMA_KIND_4MV: u32 = 1u;
-const CHROMA_KIND_INTERPOLATED: u32 = 2u;
-const CHROMA_KIND_QUARTER: u32 = 3u;
-
-// Reference sources of an operation: the previous anchor, the next anchor, and the first field of the current frame
-const SOURCE_LAST: u32 = 0u;
-const SOURCE_NEXT: u32 = 1u;
-const SOURCE_CURRENT: u32 = 2u;
+// WGSL shared by every pass of the VC-1 decoder: failure reports, parameter blocks, macroblock records, and samples.
 
 // Reports a failure: the code in the high byte and the failing value below it; the highest report wins
 fn reportFailure(code: u32, value: u32) {
     reportDecodeError((code << ERROR_CODE_SHIFT) | min(value, (1u << ERROR_CODE_SHIFT) - 1u));
-}
-
-// One word of a table the decoder keeps in its state, where the loadTables entry points copy it at each reset
-fn tableWord(table: u32, index: u32) -> u32 {
-    return state[table + index];
 }
 
 fn stateValue(field: u32) -> u32 {
@@ -3643,11 +327,7 @@ fn setStateValue(field: u32, value: u32) {
 }
 
 fn passBase(passIndex: u32) -> u32 {
-    return F_PASSES + passIndex * PASS_WORDS;
-}
-
-fn unitBase(unit: u32) -> u32 {
-    return F_UNITS + unit * UNIT_WORDS;
+    return F_PASSES + passIndex * PICTURE_PASS_WORDS;
 }
 
 // The parameter block the invocation reads
@@ -3655,10 +335,6 @@ var<private> parameterBase: u32;
 
 fn parameter(field: u32) -> u32 {
     return pictureState[parameterBase + field];
-}
-
-fn signedParameter(field: u32) -> i32 {
-    return bitcast<i32>(pictureState[parameterBase + field]);
 }
 
 // Frame geometry in macroblocks; a field picture's frame has an even macroblock height, each field half of it
@@ -3675,10 +351,6 @@ fn macroblockRecord(column: u32, frameRow: u32) -> u32 {
     return (frameRow * mbWidth + column) * MACROBLOCK_WORDS;
 }
 
-fn packMotionVector(vector: vec2i) -> u32 {
-    return (u32(vector.x) & 0xFFFFu) | (u32(vector.y) << 16u);
-}
-
 fn unpackMotionVector(word: u32) -> vec2i {
     return vec2i(i32(word << 16u) >> 16u, i32(word) >> 16);
 }
@@ -3690,25 +362,6 @@ fn wrapInt16(value: i32) -> i32 {
 
 fn clipToByte(value: i32) -> u32 {
     return u32(clamp(value, 0, 255));
-}
-
-// FFmpeg's mid_pred: the median of three
-fn medianOfThree(a: i32, b: i32, c: i32) -> i32 {
-    return max(min(a, b), min(max(a, b), c));
-}
-
-// FFmpeg's median4: the mean of the middle two of four, truncated toward zero as C division is
-fn medianOfFour(a: i32, b: i32, c: i32, d: i32) -> i32 {
-    if (a < b) {
-        if (c < d) {
-            return (min(b, d) + max(a, c)) / 2;
-        }
-        return (min(b, c) + max(a, d)) / 2;
-    }
-    if (c < d) {
-        return (min(a, d) + max(b, c)) / 2;
-    }
-    return (min(a, c) + max(b, d)) / 2;
 }
 
 // Samples of the output slot
@@ -3737,6773 +390,262 @@ fn intraSampleIndex(plane: u32, x: u32, y: u32) -> u32 {
     }
 }
 
-// WGSL of the VC-1 decoder's bitstream access: the parallel start code and escape scan, the parallel unescape of each packet into
-// a big-endian word stream, and the bit reader over that stream.
-// Advanced profile segments drop emulation prevention bytes as FFmpeg's vc1_unescape_buffer does before anything parses them,
-// so a read is a few instructions without a loop; backends inline every read, which keeps the parsing pipelines small.
-// How a packet splits into segments, from its first bytes
-// Every start code begins a segment
-const SCAN_MODE_MARKERS: u32 = 0u;
-// The packet is one segment, as frame data without start codes is
-const SCAN_MODE_WHOLE: u32 = 1u;
-// Frame data without a start code, then a field start code before the second field
-const SCAN_MODE_FIELD_DIVIDER: u32 = 2u;
+// WGSL of the picture setup from the GPU record the CPU parser wrote: the record check, the sequence facts, the anchors and the passes'
+// parameter blocks, and the expansion of the record's macroblocks and lookup sets into the buffers the passes read.
 
-// The symbol a read returns for a bit pattern no code starts
-
-// A byte value no packet byte takes, for positions outside the packet
-const NO_BYTE: u32 = 0x100u;
-
-fn packetByteOrNone(position: u32, length: u32) -> u32 {
-    return select(NO_BYTE, readPacketByte(position), position < length);
+// The record header starts the packet
+fn headerValue(field: u32) -> u32 {
+    return readPacketWord(field);
 }
 
-// The scan: each invocation covers SCAN_BYTES_PER_INVOCATION bytes and records the start codes and the emulation prevention bytes
-// beginning in them as masks; each workgroup summarizes which invocations found start codes, and counts its escapes for the unescape
-var<workgroup> scanSummaryLow: atomic<u32>;
-var<workgroup> scanSummaryHigh: atomic<u32>;
-var<workgroup> scanEscapeCount: atomic<u32>;
-
-@compute @workgroup_size(SCAN_WORKGROUP_SIZE)
-fn findStartCodes(@builtin(global_invocation_id) globalId: vec3u, @builtin(local_invocation_index) localIndex: u32, @builtin(workgroup_id) workgroupId: vec3u) {
-    let length = pictureState[F_SCAN_LENGTH];
-    let mode = pictureState[F_SCAN_MODE];
-    let escapes = stateValue(S_PROFILE) == PROFILE_ADVANCED;
-    let first = globalId.x * SCAN_BYTES_PER_INVOCATION;
-    var markers = 0u;
-    var escapeMask = 0u;
-    if (first < length) {
-        let last = min(first + SCAN_BYTES_PER_INVOCATION, length);
-        // A window of the bytes two before the position to three after it
-        var before2 = select(NO_BYTE, readPacketByte(first - 2u), first >= 2u);
-        var before1 = select(NO_BYTE, readPacketByte(first - 1u), first >= 1u);
-        var current = readPacketByte(first);
-        var after1 = packetByteOrNone(first + 1u, length);
-        var after2 = packetByteOrNone(first + 2u, length);
-        var after3 = packetByteOrNone(first + 3u, length);
-        for (var position = first; position < last; position += 1u) {
-            let bit = 1u << (position - first);
-            // A start code is 00 00 01 and a type byte, all inside the packet, as find_next_marker finds one
-            if (current == 0u && after1 == 0u && after2 == 1u && after3 != NO_BYTE) {
-                markers |= bit;
-            }
-            // vc1_unescape_buffer drops 03 after 00 00 and before a byte under 4, unless it is its segment's last byte:
-            // a start code ends a segment, except in a packet without them, which FFmpeg unescapes whole
-            if (escapes && current == 3u && before1 == 0u && before2 == 0u && after1 < 4u) {
-                let startCodeFollows = after1 == 0u && after2 == 0u && after3 == 1u && position + 4u < length;
-                if (mode == SCAN_MODE_WHOLE || !startCodeFollows) {
-                    escapeMask |= bit;
-                }
-            }
-            before2 = before1;
-            before1 = current;
-            current = after1;
-            after1 = after2;
-            after2 = after3;
-            after3 = packetByteOrNone(position + 4u, length);
-        }
-        pictureState[F_MARKER_MASKS + globalId.x] = markers;
-        pictureState[F_ESCAPE_MASKS + globalId.x] = escapeMask;
-    }
-    if (markers != 0u) {
-        if (localIndex < 32u) {
-            atomicOr(&scanSummaryLow, 1u << localIndex);
-        } else {
-            atomicOr(&scanSummaryHigh, 1u << (localIndex - 32u));
-        }
-    }
-    if (escapeMask != 0u) {
-        atomicAdd(&scanEscapeCount, countOneBits(escapeMask));
-    }
-    workgroupBarrier();
-    if (localIndex == 0u) {
-        pictureState[F_SCAN_SUMMARIES + workgroupId.x * 2u] = atomicLoad(&scanSummaryLow);
-        pictureState[F_SCAN_SUMMARIES + workgroupId.x * 2u + 1u] = atomicLoad(&scanSummaryHigh);
-        pictureState[F_ESCAPE_TOTALS + workgroupId.x] = atomicLoad(&scanEscapeCount);
-    }
+// Whether a region of words at a record word offset lies after the header and within the record
+fn recordHolds(offset: u32, words: u32, recordWords: u32) -> bool {
+    return offset >= RECORD_HEADER_WORDS && offset <= recordWords && recordWords - offset >= words;
 }
 
-fn scanWorkgroupCount(length: u32) -> u32 {
-    let invocations = (length + SCAN_BYTES_PER_INVOCATION - 1u) / SCAN_BYTES_PER_INVOCATION;
-    return (invocations + SCAN_WORKGROUP_SIZE - 1u) / SCAN_WORKGROUP_SIZE;
-}
-
-// The escapes before each scan workgroup, an exclusive prefix sum of their counts in one workgroup, and the stream's length
-var<workgroup> prefixSums: array<u32, PREFIX_WORKGROUP_SIZE>;
-
-@compute @workgroup_size(PREFIX_WORKGROUP_SIZE)
-fn prefixEscapes(@builtin(local_invocation_index) localIndex: u32) {
-    let length = pictureState[F_SCAN_LENGTH];
-    let workgroups = scanWorkgroupCount(length);
-    let first = min(localIndex * PREFIX_GROUPS_PER_INVOCATION, workgroups);
-    let last = min(first + PREFIX_GROUPS_PER_INVOCATION, workgroups);
-    var sum = 0u;
-    for (var group = first; group < last; group += 1u) {
-        sum += pictureState[F_ESCAPE_TOTALS + group];
-    }
-    prefixSums[localIndex] = sum;
-    workgroupBarrier();
-    var before = 0u;
-    for (var other = 0u; other < localIndex; other += 1u) {
-        before += prefixSums[other];
-    }
-    for (var group = first; group < last; group += 1u) {
-        pictureState[F_ESCAPE_PREFIX + group] = before;
-        before += pictureState[F_ESCAPE_TOTALS + group];
-    }
-    if (localIndex == PREFIX_WORKGROUP_SIZE - 1u) {
-        pictureState[F_STREAM_LENGTH] = length - before;
-    }
-}
-
-// The unescape: each invocation writes the stream words whose first byte comes from its scan bytes, reading on into the next
-// invocation's bytes for the rest of a word; positions past the packet read as zero
-var<workgroup> unescapeCounts: array<u32, SCAN_WORKGROUP_SIZE>;
-
-@compute @workgroup_size(SCAN_WORKGROUP_SIZE)
-fn unescapePacket(@builtin(global_invocation_id) globalId: vec3u, @builtin(local_invocation_index) localIndex: u32, @builtin(workgroup_id) workgroupId: vec3u) {
-    let length = pictureState[F_SCAN_LENGTH];
-    let block = globalId.x;
-    let first = block * SCAN_BYTES_PER_INVOCATION;
-    var mask = 0u;
-    if (first < length) {
-        mask = pictureState[F_ESCAPE_MASKS + block];
-    }
-    unescapeCounts[localIndex] = countOneBits(mask);
-    workgroupBarrier();
-    if (first >= length) {
-        return;
-    }
-    var escapesBefore = pictureState[F_ESCAPE_PREFIX + workgroupId.x];
-    for (var other = 0u; other < localIndex; other += 1u) {
-        escapesBefore += unescapeCounts[other];
-    }
-    let blockEnd = min(first + SCAN_BYTES_PER_INVOCATION, length);
-    let nextMask = select(0u, pictureState[F_ESCAPE_MASKS + block + 1u], blockEnd < length);
-    let outputStart = first - escapesBefore;
-    let outputEnd = outputStart + (blockEnd - first) - countOneBits(mask);
-    var word = (outputStart + 3u) / 4u;
-    // The raw position of the word's first byte: skip the block's bytes that come before it
-    var position = first;
-    var skip = word * 4u - outputStart;
-    loop {
-        if (position >= blockEnd || ((mask >> (position - first)) & 1u) == 0u) {
-            if (skip == 0u) {
-                break;
-            }
-            skip -= 1u;
-        }
-        position += 1u;
-    }
-    loop {
-        if (word * 4u >= outputEnd) {
-            break;
-        }
-        var packed = 0u;
-        for (var lane = 0u; lane < 4u; lane += 1u) {
-            // Escapes are dropped; the next block's mask covers the bytes a word reads past this block
-            loop {
-                var escaped = false;
-                if (position < first + SCAN_BYTES_PER_INVOCATION) {
-                    escaped = ((mask >> (position - first)) & 1u) != 0u;
-                } else if (position < first + 2u * SCAN_BYTES_PER_INVOCATION) {
-                    escaped = ((nextMask >> (position - first - SCAN_BYTES_PER_INVOCATION)) & 1u) != 0u;
-                }
-                if (!escaped) {
-                    break;
-                }
-                position += 1u;
-            }
-            var value = 0u;
-            if (position < length) {
-                value = readPacketByte(position);
-            }
-            packed = (packed << 8u) | value;
-            position += 1u;
-        }
-        pictureState[F_STREAM + word] = packed;
-        word += 1u;
-    }
-}
-
-// The stream byte of a raw packet position: the position less the escapes before it
-fn streamByteOf(rawPosition: u32) -> u32 {
-    let length = pictureState[F_SCAN_LENGTH];
-    if (rawPosition >= length) {
-        return pictureState[F_STREAM_LENGTH];
-    }
-    let block = rawPosition / SCAN_BYTES_PER_INVOCATION;
-    let group = block / SCAN_WORKGROUP_SIZE;
-    var escapes = pictureState[F_ESCAPE_PREFIX + group];
-    for (var other = group * SCAN_WORKGROUP_SIZE; other < block; other += 1u) {
-        escapes += countOneBits(pictureState[F_ESCAPE_MASKS + other]);
-    }
-    let offset = rawPosition % SCAN_BYTES_PER_INVOCATION;
-    if (offset > 0u) {
-        escapes += countOneBits(pictureState[F_ESCAPE_MASKS + block] & ((1u << offset) - 1u));
-    }
-    return rawPosition - escapes;
-}
-
-// Copies the codec private bytes [start, end) to the start of the stream, without emulation prevention bytes when escapes is set,
-// exactly as vc1_unescape_buffer copies one segment; returns the bytes written
-fn copyConfigToStream(start: u32, end: u32, escapes: bool) -> u32 {
-    let size = end - start;
-    var written = 0u;
-    var packed = 0u;
-    var index = 0u;
-    while (index < size) {
-        var value = readConfigByte(start + index);
-        if (escapes && size >= 4u && value == 3u && index >= 2u && index + 1u < size
-            && readConfigByte(start + index - 1u) == 0u && readConfigByte(start + index - 2u) == 0u
-            && readConfigByte(start + index + 1u) < 4u) {
-            // The byte after an escape is copied without being examined
-            index += 1u;
-            value = readConfigByte(start + index);
-        }
-        packed = (packed << 8u) | value;
-        written += 1u;
-        if ((written & 3u) == 0u) {
-            pictureState[F_STREAM + written / 4u - 1u] = packed;
-            packed = 0u;
-        }
-        index += 1u;
-    }
-    if ((written & 3u) != 0u) {
-        pictureState[F_STREAM + written / 4u] = packed << ((4u - (written & 3u)) * 8u);
-    }
-    return written;
-}
-
-// Bit reader over the stream: the next bit and the segment's end, in stream bits
-var<private> readerBit: u32;
-var<private> readerEndBit: u32;
-var<private> readerInvalidCode: bool;
-// The stream words around the reader in registers: the word holding the next bit, the one after it, and one more loaded a word
-// ahead, so a read never waits on storage and a crossing's load has a word of decoding to arrive.
-// Each reads zero from the segment's end on, as FFmpeg's zero-padded buffers read past a segment
-var<private> readerWord: u32;
-var<private> readerHigh: u32;
-var<private> readerLow: u32;
-var<private> readerAhead: u32;
-
-// A stream word with its bits from the segment's end on zeroed
-fn readerStreamWord(word: u32) -> u32 {
-    let firstBit = word << 5u;
-    if (firstBit >= readerEndBit) {
-        return 0u;
-    }
-    let value = pictureState[F_STREAM + word];
-    let remaining = readerEndBit - firstBit;
-    return select(value & ~(0xFFFFFFFFu >> remaining), value, remaining >= 32u);
-}
-
-fn loadReaderWindow() {
-    readerWord = readerBit >> 5u;
-    readerHigh = readerStreamWord(readerWord);
-    readerLow = readerStreamWord(readerWord + 1u);
-    readerAhead = readerStreamWord(readerWord + 2u);
-}
-
-fn startReader(startBit: u32, endBit: u32) {
-    readerBit = startBit;
-    readerEndBit = endBit;
-    readerInvalidCode = false;
-    loadReaderWindow();
-}
-
-// Starts a reader on raw packet bytes [start, end)
-fn startPacketReader(start: u32, end: u32) {
-    startReader(streamByteOf(start) * 8u, streamByteOf(end) * 8u);
-}
-
-// The 32 bits from the reader's position; branch free, since backends inline it at every read.
-// The low word shifts in two steps, so a shift of 0 keeps its bits out
-fn peekReaderWindow() -> u32 {
-    let shift = readerBit & 31u;
-    return (readerHigh << shift) | ((readerLow >> 1u) >> (31u - shift));
-}
-
-// Returns the next count bits, 1 to 32, without consuming them
-fn peekReaderBits(count: u32) -> u32 {
-    return peekReaderWindow() >> (32u - count);
-}
-
-// Consumes count bits, 0 to 32, which crosses at most into the next word
-fn consumeReaderBits(count: u32) {
-    readerBit += count;
-    if ((readerBit >> 5u) != readerWord) {
-        readerWord += 1u;
-        readerHigh = readerLow;
-        readerLow = readerAhead;
-        readerAhead = readerStreamWord(readerWord + 2u);
-    }
-}
-
-// Reads count bits, 0 to 32, most significant first
-fn readBits(count: u32) -> u32 {
-    if (count == 0u) {
-        return 0u;
-    }
-    let value = peekReaderBits(count);
-    consumeReaderBits(count);
-    return value;
-}
-
-fn readBit() -> u32 {
-    let value = peekReaderWindow() >> 31u;
-    consumeReaderBits(1u);
-    return value;
-}
-
-fn readFlag() -> bool {
-    return readBits(1u) != 0u;
-}
-
-// Skips any number of bits, reloading the window
-fn skipReaderBits(count: u32) {
-    readerBit += count;
-    loadReaderWindow();
-}
-
-// The bits left in the segment, negative once the reader consumed past its end; FFmpeg's get_bits_left
-fn readerBitsLeft() -> i32 {
-    return i32(readerEndBit) - i32(readerBit);
-}
-
-// Whether a read consumed bits past the segment's end; the reader only moves forward, so it stays true once it holds
-fn readerOverran() -> bool {
-    return readerBit > readerEndBit;
-}
-
-// FFmpeg's get_unary: counts bits until one equals stop or maximumLength bits were read
-fn readUnary(stop: u32, maximumLength: u32) -> u32 {
-    var count = 0u;
-    while (count < maximumLength && readBit() != stop) {
-        count += 1u;
-    }
-    return count;
-}
-
-// FFmpeg's decode012: 0, 10, 11 read as 0, 1, 2
-fn readDecode012() -> u32 {
-    if (readBit() == 0u) {
-        return 0u;
-    }
-    return readBit() + 1u;
-}
-
-// FFmpeg's decode210: 1, 01, 00 read as 0, 1, 2
-fn readDecode210() -> u32 {
-    if (readBit() != 0u) {
-        return 0u;
-    }
-    return 2u - readBit();
-}
-
-// The lookup entry of a table level at the index the next indexBits bits of window from consumed form
-fn lookupEntry(levelBase: u32, window: u32, consumed: u32, indexBits: u32) -> u32 {
-    return tableWord(T_VLC_LOOKUP, levelBase + ((window << consumed) >> (32u - indexBits)));
-}
-
-// Reads one variable-length code of the table at location; an invalid code marks the reader and returns INVALID_CODE.
-// Codes have at most 32 bits, so one window holds every level of a code's lookup
-fn readCode(location: u32) -> u32 {
-    let window = peekReaderWindow();
-    let base = location & VLC_BASE_MASK;
-    var indexBits = location >> VLC_ROOT_BITS_SHIFT;
-    var entry = lookupEntry(base, window, 0u, indexBits);
-    var consumed = 0u;
-    // The loop sits behind its first test, so the common root-level code skips the loop's entry
-    if ((entry & VLC_SUBTABLE_FLAG) != 0u) {
-        loop {
-            consumed += indexBits;
-            indexBits = ((entry >> VLC_SUBTABLE_BITS_SHIFT) & VLC_SUBTABLE_BITS_MASK) + 1u;
-            entry = lookupEntry(base + (entry & VLC_OFFSET_MASK), window, consumed, indexBits);
-            if ((entry & VLC_SUBTABLE_FLAG) == 0u) {
-                break;
-            }
-        }
-    }
-    let length = (entry >> VLC_LENGTH_SHIFT) & VLC_LENGTH_MASK;
-    if (length == 0u) {
-        readerInvalidCode = true;
-        return INVALID_CODE;
-    }
-    consumeReaderBits(consumed + length);
-    return entry & VLC_SYMBOL_MASK;
-}
-
-// WGSL of the VC-1 decoder's header stage: configuration, sequence headers, entry points, picture and field headers, bitplanes,
-// intensity compensation lookups, anchor bookkeeping, and the parse units the slice pass decodes in parallel.
-// Each step mirrors FFmpeg's vc1.c and vc1dec.c, so pictures decode exactly as FFmpeg decodes them.
-// Start code types
-const MARKER_END_OF_SEQUENCE: u32 = 0x0Au;
-const MARKER_SLICE: u32 = 0x0Bu;
-const MARKER_FIELD: u32 = 0x0Cu;
-const MARKER_FRAME: u32 = 0x0Du;
-const MARKER_ENTRY_POINT: u32 = 0x0Eu;
-const MARKER_SEQUENCE_HEADER: u32 = 0x0Fu;
-
-// Video for Windows headers in a Matroska CodecPrivate
-const BITMAP_INFO_HEADER_SIZE: u32 = 40u;
-const FOURCC_WMV3: u32 = 0x33564D57u;
-const FOURCC_WMVA: u32 = 0x41564D57u;
-const FOURCC_WVC1: u32 = 0x31435657u;
-const FOURCC_WMVP: u32 = 0x50564D57u;
-const FOURCC_WVP2: u32 = 0x32505657u;
-// The Simple and Main profile sequence header, STRUCT_C, is 4 bytes of WMV3 extradata
-const STRUCT_C_SIZE: u32 = 4u;
-// The configuration failure's value for a Simple or Main profile sequence header without the Video for Windows header that sizes its frames,
-// above any codec private length the other configuration failures report
-const CONFIGURATION_FRAME_SIZE_MISSING: u32 = 0xFFFFFFu;
-
-// How a bitplane reached the decoder: not coded and all zero, raw bits in the macroblock layer, or decoded into the plane words
-const PLANE_ABSENT: u32 = 0u;
-const PLANE_RAW: u32 = 1u;
-const PLANE_DECODED: u32 = 2u;
-
-// Bitplane coding modes, FFmpeg's IMODE_*
-const IMODE_RAW: u32 = 0u;
-const IMODE_NORM2: u32 = 1u;
-const IMODE_DIFF2: u32 = 2u;
-const IMODE_NORM6: u32 = 3u;
-const IMODE_DIFF6: u32 = 4u;
-const IMODE_ROWSKIP: u32 = 5u;
-const IMODE_COLSKIP: u32 = 6u;
-
-// The slices and the second field of a packet in packet order
-const MAXIMUM_SLICES: u32 = 512u;
-var<private> sliceStarts: array<u32, MAXIMUM_SLICES>;
-var<private> sliceEnds: array<u32, MAXIMUM_SLICES>;
-var<private> sliceRows: array<u32, MAXIMUM_SLICES>;
-var<private> sliceIsField: array<bool, MAXIMUM_SLICES>;
-
-// The picture header fields of FFmpeg's VC1Context that the header stage parses, written to parameter blocks
-var<private> pictureType: u32;
-var<private> fcm: u32;
-var<private> fieldMode: u32;
-var<private> secondField: u32;
-var<private> currentFieldType: u32;
-var<private> fieldPictureType: u32;
-var<private> pictureSkipped: u32;
-var<private> pq: u32;
-var<private> pqindex: u32;
-var<private> halfpq: u32;
-var<private> pquantizer: u32;
-var<private> altpq: u32;
-var<private> dquantfrm: u32;
-var<private> mvMode: u32;
-var<private> mvMode2: u32;
-var<private> quarterSample: u32;
-var<private> mspel: u32;
-var<private> mvTableIndex: u32;
-var<private> cbptab: u32;
-var<private> ttmbf: u32;
-var<private> ttfrm: u32;
-var<private> ttIndex: u32;
-var<private> cAcTableIndex: u32;
-var<private> yAcTableIndex: u32;
-var<private> dcTableIndex: u32;
-var<private> pictureRnd: u32;
-var<private> condover: u32;
-var<private> fourmvswitch: u32;
-var<private> intcomp: u32;
-var<private> mbmodetab: u32;
-var<private> imvtab: u32;
-var<private> icbptab: u32;
-var<private> twomvbptab: u32;
-var<private> fourmvbptab: u32;
-var<private> numref: u32;
-var<private> reffield: u32;
-var<private> refFieldTypeForward: u32;
-var<private> frfd: u32;
-var<private> brfd: u32;
-var<private> bfraction: i32;
-var<private> rangeredfrm: u32;
-var<private> respic: u32;
-var<private> x8Type: u32;
-var<private> rangeX: u32;
-var<private> rangeY: u32;
-var<private> kX: u32;
-var<private> kY: u32;
-var<private> planeMvtype: u32;
-var<private> planeSkip: u32;
-var<private> planeDirect: u32;
-var<private> planeForward: u32;
-var<private> planeAcpred: u32;
-var<private> planeOverflags: u32;
-var<private> planeFieldtx: u32;
-var<private> firstPictureHeader: bool;
-var<private> pictureHeaderFlag: bool;
-// The logical intensity compensation set the current picture's own lookups live in: the next set for anchors, the auxiliary set for B pictures
-var<private> currentLutSet: u32;
-var<private> currentUseIcField: u32;
-
-// The planes' rows: a field picture decodes each field's planes into its own rows
-var<private> planeRowOffset: u32;
-
-fn lutIndex(lutSet: u32, table: u32, entry: u32) -> u32 {
-    return S_LUTS + lutSet * LUT_SET_WORDS + table * LUT_TABLE_WORDS + entry;
-}
-
-// FFmpeg's INIT_LUT: fills the luma and chroma lookups of one field of a set, composed with their current values when chained
-fn initializeLut(lutSet: u32, field: u32, lumscale: u32, lumshift: u32, chain: bool) {
-    var scale: i32;
-    var shift: i32;
-    if (lumscale == 0u) {
-        scale = -64;
-        shift = (255 - i32(lumshift) * 2) * 64;
-        if (lumshift > 31u) {
-            shift += 128 << 6u;
-        }
-    } else {
-        scale = i32(lumscale) + 32;
-        if (lumshift > 31u) {
-            shift = (i32(lumshift) - 64) * 64;
-        } else {
-            shift = i32(lumshift) << 6u;
-        }
-    }
-    for (var entry = 0u; entry < 256u; entry += 1u) {
-        let lumaIndex = lutIndex(lutSet, field, entry);
-        let chromaIndex = lutIndex(lutSet, 2u + field, entry);
-        let luma = select(i32(entry), i32(state[lumaIndex]), chain);
-        let chroma = select(i32(entry), i32(state[chromaIndex]), chain);
-        state[lumaIndex] = clipToByte((scale * luma + shift + 32) >> 6u);
-        state[chromaIndex] = clipToByte((scale * (chroma - 128) + 128 * 64 + 32) >> 6u);
-    }
-}
-
-// The lookup fills a header queues, which apply once it parsed, so the fill loop is inlined once: at most rotate_luts' two and two
-// of intensity compensation. Each packs the set, the field, whether it chains, LUMSCALE, and LUMSHIFT
-const LUT_QUEUE_SIZE: u32 = 4u;
-var<private> lutQueue: array<u32, LUT_QUEUE_SIZE>;
-var<private> lutQueueLength: u32;
-
-fn queueLut(lutSet: u32, field: u32, lumscale: u32, lumshift: u32, chain: bool) {
-    if (lutQueueLength >= LUT_QUEUE_SIZE) {
-        return;
-    }
-    lutQueue[lutQueueLength] = lutSet | (field << 2u) | (select(0u, 1u, chain) << 3u) | (lumscale << 8u) | (lumshift << 16u);
-    lutQueueLength += 1u;
-}
-
-fn applyQueuedLuts() {
-    for (var index = 0u; index < lutQueueLength; index += 1u) {
-        let entry = lutQueue[index];
-        initializeLut(entry & 3u, (entry >> 2u) & 1u, (entry >> 8u) & 0xFFu, (entry >> 16u) & 0xFFu, ((entry >> 3u) & 1u) != 0u);
-    }
-    lutQueueLength = 0u;
-}
-
-// FFmpeg's rotate_luts: B pictures work in the auxiliary set; an anchor swaps the last and next sets and works in the next set
-fn rotateLuts() {
-    if (pictureType == TYPE_B || pictureType == TYPE_BI) {
-        currentLutSet = LUT_AUX;
-        currentUseIcField = S_AUX_USE_IC;
-    } else {
-        let lastSet = stateValue(S_LUT_LAST);
-        setStateValue(S_LUT_LAST, stateValue(S_LUT_NEXT));
-        setStateValue(S_LUT_NEXT, lastSet);
-        let lastUse = stateValue(S_LAST_USE_IC);
-        setStateValue(S_LAST_USE_IC, stateValue(S_NEXT_USE_IC));
-        setStateValue(S_NEXT_USE_IC, lastUse);
-        currentLutSet = lastSet;
-        currentUseIcField = S_NEXT_USE_IC;
-    }
-    queueLut(currentLutSet, 0u, 32u, 0u, false);
-    queueLut(currentLutSet, 1u, 32u, 0u, false);
-    setStateValue(currentUseIcField, 0u);
-}
-
-// The last set's lookups, which P pictures' intensity compensation rewrites
-fn lastLutSet() -> u32 {
-    return stateValue(S_LUT_LAST);
-}
-
-// Bitplane access: one word per macroblock, one bit per plane
-fn planeWordIndex(x: u32, y: u32) -> u32 {
-    return F_BITPLANES + (planeRowOffset + y) * mbWidth + x;
-}
-
-fn readPlaneBit(planeBit: u32, x: u32, y: u32) -> u32 {
-    return select(0u, 1u, (pictureState[planeWordIndex(x, y)] & planeBit) != 0u);
-}
-
-fn writePlaneBit(planeBit: u32, x: u32, y: u32, value: u32) {
-    let index = planeWordIndex(x, y);
-    let word = pictureState[index];
-    pictureState[index] = select(word & ~planeBit, word | planeBit, value != 0u);
-}
-
-// FFmpeg's decode_rowskip over columns [x0, x0 + width) of rows [y0, y0 + height); a row's bits follow only its coded flag
-fn decodeRowskip(planeBit: u32, x0: u32, y0: u32, width: u32, height: u32) {
-    for (var y = y0; y < y0 + height; y += 1u) {
-        let coded = readBit() != 0u;
-        for (var x = x0; x < x0 + width; x += 1u) {
-            var value = 0u;
-            if (coded) {
-                value = readBit();
-            }
-            writePlaneBit(planeBit, x, y, value);
-        }
-    }
-}
-
-// FFmpeg's decode_colskip over columns [x0, x0 + width) of rows [0, height); a column's bits follow only its coded flag
-fn decodeColskip(planeBit: u32, x0: u32, width: u32, height: u32) {
-    for (var x = x0; x < x0 + width; x += 1u) {
-        let coded = readBit() != 0u;
-        for (var y = 0u; y < height; y += 1u) {
-            var value = 0u;
-            if (coded) {
-                value = readBit();
-            }
-            writePlaneBit(planeBit, x, y, value);
-        }
-    }
-}
-
-// FFmpeg's bitplane_decoding; returns how the plane reached the decoder, or PLANE_ABSENT after reporting a malformed plane
-fn decodeBitplane(planeBit: u32) -> u32 {
-    let width = mbWidth;
-    let height = mbHeight >> fieldMode;
-    let invert = readBit();
-    let imode = readCode(VLC_BITPLANE_MODE);
-    switch (imode) {
-        case IMODE_RAW: {
-            return PLANE_RAW;
-        }
-        case IMODE_NORM2, IMODE_DIFF2: {
-            let count = width * height;
-            var position = 0u;
-            if ((count & 1u) != 0u) {
-                writePlaneBit(planeBit, 0u, 0u, readBit());
-                position = 1u;
-            }
-            while (position < count) {
-                let code = readCode(VLC_NORM2);
-                writePlaneBit(planeBit, position % width, position / width, code & 1u);
-                writePlaneBit(planeBit, (position + 1u) % width, (position + 1u) / width, code >> 1u);
-                position += 2u;
-            }
-        }
-        case IMODE_NORM6, IMODE_DIFF6: {
-            if (height % 3u == 0u && width % 3u != 0u) {
-                // 2x3 tiles, an odd first column left to colskip
-                for (var y = 0u; y < height; y += 3u) {
-                    for (var x = width & 1u; x < width; x += 2u) {
-                        let code = readCode(VLC_NORM6);
-                        if (code == INVALID_CODE) {
-                            reportFailure(ERROR_BITPLANE, planeBit);
-                            return PLANE_ABSENT;
-                        }
-                        writePlaneBit(planeBit, x, y, code & 1u);
-                        writePlaneBit(planeBit, x + 1u, y, (code >> 1u) & 1u);
-                        writePlaneBit(planeBit, x, y + 1u, (code >> 2u) & 1u);
-                        writePlaneBit(planeBit, x + 1u, y + 1u, (code >> 3u) & 1u);
-                        writePlaneBit(planeBit, x, y + 2u, (code >> 4u) & 1u);
-                        writePlaneBit(planeBit, x + 1u, y + 2u, (code >> 5u) & 1u);
-                    }
-                }
-                if ((width & 1u) != 0u) {
-                    decodeColskip(planeBit, 0u, 1u, height);
-                }
-            } else {
-                // 3x2 tiles, the first width % 3 columns left to colskip and an odd first row to rowskip
-                for (var y = height & 1u; y < height; y += 2u) {
-                    for (var x = width % 3u; x < width; x += 3u) {
-                        let code = readCode(VLC_NORM6);
-                        if (code == INVALID_CODE) {
-                            reportFailure(ERROR_BITPLANE, planeBit);
-                            return PLANE_ABSENT;
-                        }
-                        writePlaneBit(planeBit, x, y, code & 1u);
-                        writePlaneBit(planeBit, x + 1u, y, (code >> 1u) & 1u);
-                        writePlaneBit(planeBit, x + 2u, y, (code >> 2u) & 1u);
-                        writePlaneBit(planeBit, x, y + 1u, (code >> 3u) & 1u);
-                        writePlaneBit(planeBit, x + 1u, y + 1u, (code >> 4u) & 1u);
-                        writePlaneBit(planeBit, x + 2u, y + 1u, (code >> 5u) & 1u);
-                    }
-                }
-                let leftColumns = width % 3u;
-                if (leftColumns != 0u) {
-                    decodeColskip(planeBit, 0u, leftColumns, height);
-                }
-                if ((height & 1u) != 0u) {
-                    decodeRowskip(planeBit, leftColumns, 0u, width - leftColumns, 1u);
-                }
-            }
-        }
-        case IMODE_ROWSKIP: {
-            decodeRowskip(planeBit, 0u, 0u, width, height);
-        }
-        case IMODE_COLSKIP: {
-            decodeColskip(planeBit, 0u, width, height);
-        }
-        default: {
-            reportFailure(ERROR_BITPLANE, imode);
-            return PLANE_ABSENT;
-        }
-    }
-    if (imode == IMODE_DIFF2 || imode == IMODE_DIFF6) {
-        writePlaneBit(planeBit, 0u, 0u, readPlaneBit(planeBit, 0u, 0u) ^ invert);
-        for (var x = 1u; x < width; x += 1u) {
-            writePlaneBit(planeBit, x, 0u, readPlaneBit(planeBit, x, 0u) ^ readPlaneBit(planeBit, x - 1u, 0u));
-        }
-        for (var y = 1u; y < height; y += 1u) {
-            writePlaneBit(planeBit, 0u, y, readPlaneBit(planeBit, 0u, y) ^ readPlaneBit(planeBit, 0u, y - 1u));
-            for (var x = 1u; x < width; x += 1u) {
-                let left = readPlaneBit(planeBit, x - 1u, y);
-                let top = readPlaneBit(planeBit, x, y - 1u);
-                writePlaneBit(planeBit, x, y, readPlaneBit(planeBit, x, y) ^ select(left, invert, left != top));
-            }
-        }
-    } else if (invert != 0u) {
-        for (var y = 0u; y < height; y += 1u) {
-            for (var x = 0u; x < width; x += 1u) {
-                writePlaneBit(planeBit, x, y, readPlaneBit(planeBit, x, y) ^ 1u);
-            }
-        }
-    }
-    return PLANE_DECODED;
-}
-
-// FFmpeg's vop_dquant_decoding
-fn decodeVopDquant() {
-    if (stateValue(S_DQUANT) != 2u) {
-        dquantfrm = readBit();
-        if (dquantfrm == 0u) {
-            return;
-        }
-        setStateValue(S_DQPROFILE, readBits(2u));
-        switch (stateValue(S_DQPROFILE)) {
-            case DQPROFILE_SINGLE_EDGE, DQPROFILE_DOUBLE_EDGES: {
-                setStateValue(S_DQSBEDGE, readBits(2u));
-            }
-            case DQPROFILE_ALL_MBS: {
-                setStateValue(S_DQBILEVEL, readBit());
-                if (stateValue(S_DQBILEVEL) == 0u) {
-                    halfpq = 0u;
-                    return;
-                }
-            }
-            default: {
-            }
-        }
-    }
-    let pqdiff = readBits(3u);
-    if (pqdiff == 7u) {
-        altpq = readBits(5u);
-    } else {
-        altpq = pq + pqdiff + 1u;
-    }
-}
-
-// FFmpeg's read_bfraction; false for the invalid index 21
-fn readBfraction() -> bool {
-    var index = readBits(3u);
-    if (index == 7u) {
-        index = 7u + readBits(4u);
-    }
-    if (index == 21u) {
-        return false;
-    }
-    bfraction = bitcast<i32>(tableWord(T_BFRACTION_LUT, index));
-    return true;
-}
-
-// The quantizer fields shared by every header: PQINDEX, HALFQP, and PQUANTIZER
-fn readPictureQuantizer() -> bool {
-    pqindex = readBits(5u);
-    if (pqindex == 0u) {
-        return false;
-    }
-    if (stateValue(S_QUANTIZER_MODE) == QUANT_FRAME_IMPLICIT) {
-        pq = tableWord(T_PQUANT_IMPLICIT, pqindex);
-    } else {
-        pq = pqindex;
-    }
-    // HALFQP is coded only below PQINDEX 9; select would read it regardless, since it evaluates both operands
-    halfpq = 0u;
-    if (pqindex < 9u) {
-        halfpq = readBit();
-    }
-    switch (stateValue(S_QUANTIZER_MODE)) {
-        case QUANT_FRAME_IMPLICIT: {
-            pquantizer = select(0u, 1u, pqindex < 9u);
-        }
-        case QUANT_NON_UNIFORM: {
-            pquantizer = 0u;
-        }
-        case QUANT_FRAME_EXPLICIT: {
-            pquantizer = readBit();
-        }
-        default: {
-            pquantizer = 1u;
-        }
-    }
-    dquantfrm = 0u;
-    return true;
-}
-
-fn updateMotionVectorRange(mvrange: u32) {
-    setStateValue(S_MVRANGE, mvrange);
-    kX = mvrange + 9u + (mvrange >> 1u);
-    kY = mvrange + 8u;
-    rangeX = 1u << (kX - 1u);
-    rangeY = 1u << (kY - 1u);
-}
-
-fn setQuarterSample(mode: u32) {
-    quarterSample = select(0u, 1u, mode != MV_MODE_1MV_HPEL && mode != MV_MODE_1MV_HPEL_BILINEAR);
-    mspel = select(0u, 1u, mode != MV_MODE_1MV_HPEL_BILINEAR);
-}
-
-fn readTransformTypeFrame() {
-    if (stateValue(S_VSTRANSFORM) != 0u) {
-        ttmbf = readBit();
-        if (ttmbf != 0u) {
-            ttfrm = tableWord(T_TTFRM_TO_TT, readBits(2u));
-        } else {
-            ttfrm = 0u;
-        }
-    } else {
-        ttmbf = 1u;
-        ttfrm = TT_8X8;
-    }
-}
-
-// The picture header parsers run as steps between bitplane groups, so one call site decodes every bitplane: each inlined copy of the
-// bitplane decoder costs the backends dearly. A step returns HEADER_DONE, HEADER_FAILED, or HEADER_PLANES with the planes to decode
-const HEADER_DONE: u32 = 0u;
-const HEADER_FAILED: u32 = 1u;
-const HEADER_PLANES: u32 = 2u;
-
-// Where the parse resumes after a bitplane group
-const STEP_START: u32 = 0u;
-const STEP_SIMPLE_AFTER_PLANES: u32 = 1u;
-const STEP_ADVANCED_AFTER_FIRST_PLANES: u32 = 2u;
-const STEP_ADVANCED_AFTER_SECOND_PLANES: u32 = 3u;
-
-var<private> headerStep: u32;
-// The bitplanes of the pending group in stream order, PLANE_* bits; zero for none
-var<private> pendingFirstPlane: u32;
-var<private> pendingSecondPlane: u32;
-
-fn requestPlanes(first: u32, second: u32, nextStep: u32) -> u32 {
-    pendingFirstPlane = first;
-    pendingSecondPlane = second;
-    headerStep = nextStep;
-    return HEADER_PLANES;
-}
-
-fn storePlane(planeBit: u32, result: u32) {
-    switch (planeBit) {
-        case PLANE_MVTYPE: {
-            planeMvtype = result;
-        }
-        case PLANE_SKIP: {
-            planeSkip = result;
-        }
-        case PLANE_DIRECT: {
-            planeDirect = result;
-        }
-        case PLANE_FORWARD: {
-            planeForward = result;
-        }
-        case PLANE_ACPRED: {
-            planeAcpred = result;
-        }
-        case PLANE_OVERFLAGS: {
-            planeOverflags = result;
-        }
-        default: {
-            planeFieldtx = result;
-        }
-    }
-}
-
-// Parses the picture header at the reader, Simple and Main or Advanced by the profile; FFmpeg's ff_vc1_parse_frame_header and
-// ff_vc1_parse_frame_header_adv. Queued lookup fills apply once the header parsed
-fn parsePictureHeader() -> bool {
-    headerStep = STEP_START;
-    lutQueueLength = 0u;
-    loop {
-        var status = HEADER_FAILED;
-        switch (headerStep) {
-            case STEP_START: {
-                if (stateValue(S_PROFILE) == PROFILE_ADVANCED) {
-                    status = parseAdvancedHeaderStart();
-                } else {
-                    status = parseSimpleHeaderStart();
-                }
-            }
-            case STEP_SIMPLE_AFTER_PLANES: {
-                status = parseSimpleHeaderAfterPlanes();
-            }
-            case STEP_ADVANCED_AFTER_FIRST_PLANES: {
-                status = parseAdvancedHeaderAfterFirstPlanes();
-            }
-            default: {
-                status = parseAdvancedHeaderTail();
-            }
-        }
-        if (status == HEADER_FAILED) {
+// Checks a macroblock picture's passes and tables against the record, then copies each pass's parameter block with its references
+fn beginMacroblockPasses(passCount: u32, recordWords: u32, references: vec4u) -> bool {
+    let height = stateValue(S_MB_HEIGHT);
+    var lookupWords = 0u;
+    for (var passIndex = 0u; passIndex < passCount; passIndex += 1u) {
+        let source = RECORD_HEADER_PASSES + passIndex * RECORD_PASS_WORDS;
+        let rowOffset = headerValue(source + RECORD_PASS_ROW_OFFSET);
+        let rows = headerValue(source + RECORD_PASS_MB_ROWS);
+        let usedSets = headerValue(source + RECORD_PASS_LOOKUP_SETS);
+        if (rows > height || rowOffset > height - rows || usedSets >= (1u << RECORD_LOOKUP_SET_COUNT)) {
+            reportFailure(ERROR_RECORD_INVALID, INVALID_RECORD_PASS);
             return false;
         }
-        if (status == HEADER_DONE) {
-            break;
-        }
-        for (var index = 0u; index < 2u; index += 1u) {
-            let planeBit = select(pendingSecondPlane, pendingFirstPlane, index == 0u);
-            if (planeBit != 0u) {
-                storePlane(planeBit, decodeBitplane(planeBit));
-            }
-        }
+        lookupWords += countOneBits(usedSets) * RECORD_LOOKUP_SET_WORDS;
     }
-    applyQueuedLuts();
-    return true;
-}
-
-// ff_vc1_parse_frame_header up to its bitplanes
-fn parseSimpleHeaderStart() -> u32 {
-    fieldMode = 0u;
-    fcm = FCM_PROGRESSIVE;
-    if (stateValue(S_FINTERPFLAG) != 0u) {
-        skipReaderBits(1u);
-    }
-    skipReaderBits(2u);
-    rangeredfrm = 0u;
-    if (stateValue(S_RANGERED) != 0u) {
-        rangeredfrm = readBit();
-    }
-    if (readBit() != 0u) {
-        pictureType = TYPE_P;
-    } else if (stateValue(S_MAX_B_FRAMES) != 0u && readBit() == 0u) {
-        pictureType = TYPE_B;
-    } else {
-        pictureType = TYPE_I;
-    }
-    if (pictureType == TYPE_B) {
-        if (!readBfraction()) {
-            return HEADER_FAILED;
-        }
-        if (bfraction == 0) {
-            pictureType = TYPE_BI;
-        }
-    }
-    if (pictureType == TYPE_I || pictureType == TYPE_BI) {
-        skipReaderBits(7u);
-    }
-    if (pictureType == TYPE_I || pictureType == TYPE_BI) {
-        setStateValue(S_RND, 1u);
-    }
-    if (pictureType == TYPE_P) {
-        setStateValue(S_RND, stateValue(S_RND) ^ 1u);
-    }
-    pictureRnd = stateValue(S_RND);
-    if (readerBitsLeft() < 5) {
-        return HEADER_FAILED;
-    }
-    if (!readPictureQuantizer()) {
-        return HEADER_FAILED;
-    }
-    var mvrange = stateValue(S_MVRANGE);
-    if (stateValue(S_EXTENDED_MV) == 1u) {
-        mvrange = readUnary(0u, 3u);
-    }
-    updateMotionVectorRange(mvrange);
-    if (stateValue(S_MULTIRES) != 0u && pictureType != TYPE_B) {
-        respic = readBits(2u);
-    }
-    x8Type = 0u;
-    if (stateValue(S_RES_X8) != 0u && (pictureType == TYPE_I || pictureType == TYPE_BI)) {
-        x8Type = readBit();
-    }
-    if (firstPictureHeader) {
-        rotateLuts();
-    }
-    switch (pictureType) {
-        case TYPE_P: {
-            ttIndex = select(0u, 1u, pq > 4u) + select(0u, 1u, pq > 12u);
-            let lowquant = select(1u, 0u, pq > 12u);
-            mvMode = tableWord(T_MV_PMODE_TABLE, lowquant * 5u + readUnary(1u, 4u));
-            if (mvMode == MV_MODE_INTENSITY_COMPENSATION) {
-                mvMode2 = tableWord(T_MV_PMODE_TABLE2, lowquant * 4u + readUnary(1u, 3u));
-                let lumscale = readBits(6u);
-                let lumshift = readBits(6u);
-                setStateValue(S_LAST_USE_IC, 1u);
-                queueLut(lastLutSet(), 0u, lumscale, lumshift, true);
-                queueLut(lastLutSet(), 1u, lumscale, lumshift, true);
-                setQuarterSample(mvMode2);
-            } else {
-                setQuarterSample(mvMode);
-            }
-            planeMvtype = PLANE_ABSENT;
-            return requestPlanes(select(0u, PLANE_MVTYPE, isMixedMotionVectorMode()), PLANE_SKIP, STEP_SIMPLE_AFTER_PLANES);
-        }
-        case TYPE_B: {
-            ttIndex = select(0u, 1u, pq > 4u) + select(0u, 1u, pq > 12u);
-            mvMode = select(MV_MODE_1MV_HPEL_BILINEAR, MV_MODE_1MV, readBit() != 0u);
-            quarterSample = select(0u, 1u, mvMode == MV_MODE_1MV);
-            mspel = quarterSample;
-            return requestPlanes(PLANE_DIRECT, PLANE_SKIP, STEP_SIMPLE_AFTER_PLANES);
-        }
-        default: {
-            return parseSimpleHeaderTail();
-        }
-    }
-}
-
-// ff_vc1_parse_frame_header after the bitplanes of a P or B picture
-fn parseSimpleHeaderAfterPlanes() -> u32 {
-    if (pictureType == TYPE_P && readerBitsLeft() < 4) {
-        return HEADER_FAILED;
-    }
-    mvTableIndex = readBits(2u);
-    cbptab = readBits(2u);
-    if (stateValue(S_DQUANT) != 0u) {
-        decodeVopDquant();
-    }
-    readTransformTypeFrame();
-    return parseSimpleHeaderTail();
-}
-
-fn parseSimpleHeaderTail() -> u32 {
-    if (x8Type == 0u) {
-        cAcTableIndex = readDecode012();
-        if (pictureType == TYPE_I || pictureType == TYPE_BI) {
-            yAcTableIndex = readDecode012();
-        }
-        dcTableIndex = readBit();
-    }
-    return HEADER_DONE;
-}
-
-fn isMixedMotionVectorMode() -> bool {
-    return mvMode == MV_MODE_MIXED_MV || (mvMode == MV_MODE_INTENSITY_COMPENSATION && mvMode2 == MV_MODE_MIXED_MV);
-}
-
-// The pan-scan windows of an Advanced profile picture header, which FFmpeg does not parse; they are skipped as SMPTE 421M lays them out
-fn skipPanScanWindows(rptfrm: u32, rff: u32) {
-    if (readBit() == 0u) {
-        return;
-    }
-    var windows = 1u;
-    let pulldown = stateValue(S_BROADCAST) != 0u;
-    if (stateValue(S_INTERLACE) == 0u || stateValue(S_PSF) != 0u) {
-        windows = select(1u, rptfrm + 1u, pulldown);
-    } else {
-        windows = select(2u, 2u + rff, pulldown);
-    }
-    skipReaderBits(windows * (18u + 18u + 14u + 14u));
-}
-
-// ff_vc1_parse_frame_header_adv up to its first bitplanes: the frame or field header, or a second field's header
-fn parseAdvancedHeaderStart() -> u32 {
-    numref = 0u;
-    pictureSkipped = 0u;
-    if (secondField != 0u) {
-        if (fcm != FCM_FIELD || fieldMode != 1u) {
-            return HEADER_FAILED;
-        }
-        if ((fieldPictureType & 4u) != 0u) {
-            pictureType = select(TYPE_B, TYPE_BI, (fieldPictureType & 1u) != 0u);
-        } else {
-            pictureType = select(TYPE_I, TYPE_P, (fieldPictureType & 1u) != 0u);
-        }
-        if (!pictureHeaderFlag) {
-            return parseAdvancedCommonStart();
-        }
-    }
-    var newFieldMode = 0u;
-    if (stateValue(S_INTERLACE) != 0u) {
-        fcm = readDecode012();
-        if (fcm == FCM_FIELD) {
-            newFieldMode = 1u;
-        }
-    } else {
-        fcm = FCM_PROGRESSIVE;
-    }
-    if (!firstPictureHeader && fieldMode != newFieldMode) {
-        return HEADER_FAILED;
-    }
-    fieldMode = newFieldMode;
-    let codedRows = (stateValue(S_CODED_HEIGHT) + 15u) >> 4u;
-    if (fieldMode != 0u) {
-        setStateValue(S_MB_HEIGHT, (codedRows + 1u) & ~1u);
-        fieldPictureType = readBits(3u);
-        if ((fieldPictureType & 4u) != 0u) {
-            pictureType = select(TYPE_B, TYPE_BI, (fieldPictureType & 2u) != 0u);
-        } else {
-            pictureType = select(TYPE_I, TYPE_P, (fieldPictureType & 2u) != 0u);
-        }
-    } else {
-        setStateValue(S_MB_HEIGHT, codedRows);
-        switch (readUnary(0u, 4u)) {
-            case 0u: {
-                pictureType = TYPE_P;
-            }
-            case 1u: {
-                pictureType = TYPE_B;
-            }
-            case 2u: {
-                pictureType = TYPE_I;
-            }
-            case 3u: {
-                pictureType = TYPE_BI;
-            }
-            default: {
-                pictureType = TYPE_P;
-                pictureSkipped = 1u;
-            }
-        }
-    }
-    mbHeight = stateValue(S_MB_HEIGHT);
-    if (stateValue(S_TFCNTRFLAG) != 0u) {
-        skipReaderBits(8u);
-    }
-    var rptfrm = 0u;
-    var rff = 0u;
-    if (stateValue(S_BROADCAST) != 0u) {
-        if (stateValue(S_INTERLACE) == 0u || stateValue(S_PSF) != 0u) {
-            rptfrm = readBits(2u);
-        } else {
-            setStateValue(S_TFF, readBit());
-            rff = readBit();
-        }
-    } else {
-        setStateValue(S_TFF, 1u);
-    }
-    if (stateValue(S_PANSCANFLAG) != 0u) {
-        skipPanScanWindows(rptfrm, rff);
-    }
-    if (pictureSkipped != 0u) {
-        return HEADER_DONE;
-    }
-    pictureRnd = readBit();
-    if (stateValue(S_INTERLACE) != 0u) {
-        skipReaderBits(1u);
-    }
-    if (fieldMode != 0u) {
-        if (stateValue(S_REFDIST_FLAG) == 0u) {
-            setStateValue(S_REFDIST, 0u);
-        } else if (pictureType != TYPE_B && pictureType != TYPE_BI) {
-            var refdist = readBits(2u);
-            if (refdist == 3u) {
-                refdist += readUnary(0u, 14u);
-            }
-            if (refdist > 16u) {
-                return HEADER_FAILED;
-            }
-            setStateValue(S_REFDIST, refdist);
-        }
-        if (pictureType == TYPE_B || pictureType == TYPE_BI) {
-            if (!readBfraction()) {
-                return HEADER_FAILED;
-            }
-            let refdist = i32(stateValue(S_REFDIST));
-            let forwardDistance = (bfraction * refdist) >> 8u;
-            frfd = u32(forwardDistance);
-            brfd = u32(max(refdist - forwardDistance - 1, 0));
-        }
-        return parseAdvancedCommonStart();
-    }
-    if (fcm == FCM_PROGRESSIVE) {
-        if (stateValue(S_FINTERPFLAG) != 0u) {
-            skipReaderBits(1u);
-        }
-        if (pictureType == TYPE_B) {
-            if (!readBfraction()) {
-                return HEADER_FAILED;
-            }
-            if (bfraction == 0) {
-                pictureType = TYPE_BI;
-            }
-        }
-    }
-    return parseAdvancedCommonStart();
-}
-
-// The part of ff_vc1_parse_frame_header_adv from parse_common_info up to the first bitplanes
-fn parseAdvancedCommonStart() -> u32 {
-    if (fieldMode != 0u) {
-        currentFieldType = select(0u, 1u, (stateValue(S_TFF) ^ secondField) == 0u);
-    }
-    if (!readPictureQuantizer()) {
-        return HEADER_FAILED;
-    }
-    if (stateValue(S_POSTPROCFLAG) != 0u) {
-        skipReaderBits(2u);
-    }
-    if (firstPictureHeader) {
-        rotateLuts();
-    }
-    switch (pictureType) {
-        case TYPE_I, TYPE_BI: {
-            planeFieldtx = PLANE_ABSENT;
-            return requestPlanes(select(0u, PLANE_FIELDTX, fcm == FCM_FRAME), PLANE_ACPRED, STEP_ADVANCED_AFTER_FIRST_PLANES);
-        }
-        case TYPE_P: {
-            return parseAdvancedPStart();
-        }
-        default: {
-            return parseAdvancedBStart();
-        }
-    }
-}
-
-// The P picture fields up to its bitplanes; a field picture codes none
-fn parseAdvancedPStart() -> u32 {
-    if (fieldMode != 0u) {
-        numref = readBit();
-        if (numref == 0u) {
-            reffield = readBit();
-            refFieldTypeForward = reffield ^ select(1u, 0u, currentFieldType != 0u);
-        }
-    }
-    var mvrange = 0u;
-    if (stateValue(S_EXTENDED_MV) != 0u) {
-        mvrange = readUnary(0u, 3u);
-    }
-    if (stateValue(S_INTERLACE) != 0u) {
-        var dmvrange = 0u;
-        if (stateValue(S_EXTENDED_DMV) != 0u) {
-            dmvrange = readUnary(0u, 3u);
-        }
-        setStateValue(S_DMVRANGE, dmvrange);
-        if (fcm == FCM_FRAME) {
-            fourmvswitch = readBit();
-            intcomp = readBit();
-            if (intcomp != 0u) {
-                let lumscale = readBits(6u);
-                let lumshift = readBits(6u);
-                queueLut(lastLutSet(), 0u, lumscale, lumshift, true);
-                queueLut(lastLutSet(), 1u, lumscale, lumshift, true);
-                setStateValue(S_LAST_USE_IC, 1u);
-            }
-            // The motion vector range applies once the bitplane is read
-            pendingMotionVectorRange = mvrange;
-            return requestPlanes(0u, PLANE_SKIP, STEP_ADVANCED_AFTER_FIRST_PLANES);
-        }
-    }
-    updateMotionVectorRange(mvrange);
-    ttIndex = select(0u, 1u, pq > 4u) + select(0u, 1u, pq > 12u);
-    let mvmode = readUnary(1u, 4u);
-    let lowquant = select(1u, 0u, pq > 12u);
-    mvMode = tableWord(T_MV_PMODE_TABLE, lowquant * 5u + mvmode);
-    if (mvMode == MV_MODE_INTENSITY_COMPENSATION) {
-        mvMode2 = tableWord(T_MV_PMODE_TABLE2, lowquant * 4u + readUnary(1u, 3u));
-        var intcompfield = 3u;
-        if (fieldMode != 0u) {
-            intcompfield = readDecode210() ^ 3u;
-        }
-        var lumscale = 32u;
-        var lumshift = 0u;
-        var lumscale2 = 32u;
-        var lumshift2 = 0u;
-        if ((intcompfield & 1u) != 0u) {
-            lumscale = readBits(6u);
-            lumshift = readBits(6u);
-        }
-        if ((intcompfield & 2u) != 0u && fieldMode != 0u) {
-            lumscale2 = readBits(6u);
-            lumshift2 = readBits(6u);
-        } else if (fieldMode == 0u) {
-            lumscale2 = lumscale;
-            lumshift2 = lumshift;
-        }
-        if (fieldMode != 0u && secondField != 0u) {
-            let opposite = currentFieldType ^ 1u;
-            if (currentFieldType != 0u) {
-                queueLut(currentLutSet, opposite, lumscale, lumshift, false);
-                queueLut(lastLutSet(), currentFieldType, lumscale2, lumshift2, true);
-            } else {
-                queueLut(currentLutSet, opposite, lumscale2, lumshift2, false);
-                queueLut(lastLutSet(), currentFieldType, lumscale, lumshift, true);
-            }
-            setStateValue(S_NEXT_USE_IC, 1u);
-            setStateValue(currentUseIcField, 1u);
-        } else {
-            queueLut(lastLutSet(), 0u, lumscale, lumshift, true);
-            queueLut(lastLutSet(), 1u, lumscale2, lumshift2, true);
-        }
-        setStateValue(S_LAST_USE_IC, 1u);
-        setQuarterSample(mvMode2);
-    } else {
-        setQuarterSample(mvMode);
-    }
-    if (fcm == FCM_PROGRESSIVE) {
-        planeMvtype = PLANE_ABSENT;
-        return requestPlanes(select(0u, PLANE_MVTYPE, isMixedMotionVectorMode()), PLANE_SKIP, STEP_ADVANCED_AFTER_FIRST_PLANES);
-    }
-    mbmodetab = readBits(3u);
-    imvtab = readBits(2u + numref);
-    icbptab = readBits(3u);
-    if (isMixedMotionVectorMode()) {
-        fourmvbptab = readBits(2u);
-    }
-    return parseAdvancedPredictedTail();
-}
-
-// The motion vector range an interlaced frame P picture reads before its bitplane and applies after it
-var<private> pendingMotionVectorRange: u32;
-
-// The B picture fields up to its bitplanes
-fn parseAdvancedBStart() -> u32 {
-    if (fcm == FCM_FRAME) {
-        if (!readBfraction()) {
-            return HEADER_FAILED;
-        }
-        if (bfraction == 0) {
-            return HEADER_FAILED;
-        }
-    }
-    var mvrange = 0u;
-    if (stateValue(S_EXTENDED_MV) != 0u) {
-        mvrange = readUnary(0u, 3u);
-    }
-    updateMotionVectorRange(mvrange);
-    ttIndex = select(0u, 1u, pq > 4u) + select(0u, 1u, pq > 12u);
-    if (fieldMode != 0u) {
-        // FFmpeg leaves DMVRANGE as it was when the picture does not code it
-        if (stateValue(S_EXTENDED_DMV) != 0u) {
-            setStateValue(S_DMVRANGE, readUnary(0u, 3u));
-        }
-        let mvmode = readUnary(1u, 3u);
-        let lowquant = select(1u, 0u, pq > 12u);
-        mvMode = tableWord(T_MV_PMODE_TABLE2, lowquant * 4u + mvmode);
-        quarterSample = select(0u, 1u, mvMode == MV_MODE_1MV || mvMode == MV_MODE_MIXED_MV);
-        mspel = select(0u, 1u, mvMode != MV_MODE_1MV_HPEL_BILINEAR);
-        return requestPlanes(0u, PLANE_FORWARD, STEP_ADVANCED_AFTER_FIRST_PLANES);
-    }
-    if (fcm == FCM_FRAME) {
-        if (stateValue(S_EXTENDED_DMV) != 0u) {
-            setStateValue(S_DMVRANGE, readUnary(0u, 3u));
-        }
-        skipReaderBits(1u);
-        intcomp = 0u;
-        mvMode = MV_MODE_1MV;
-        fourmvswitch = 0u;
-        quarterSample = 1u;
-        mspel = 1u;
-        return requestPlanes(PLANE_DIRECT, PLANE_SKIP, STEP_ADVANCED_AFTER_FIRST_PLANES);
-    }
-    mvMode = select(MV_MODE_1MV_HPEL_BILINEAR, MV_MODE_1MV, readBit() != 0u);
-    quarterSample = select(0u, 1u, mvMode == MV_MODE_1MV);
-    mspel = quarterSample;
-    return requestPlanes(PLANE_DIRECT, PLANE_SKIP, STEP_ADVANCED_AFTER_FIRST_PLANES);
-}
-
-// The Advanced profile header after its first bitplanes, up to an I picture's OVERFLAGS bitplane
-fn parseAdvancedHeaderAfterFirstPlanes() -> u32 {
-    switch (pictureType) {
-        case TYPE_I, TYPE_BI: {
-            condover = CONDOVER_NONE;
-            planeOverflags = PLANE_ABSENT;
-            if (stateValue(S_OVERLAP) != 0u && pq <= 8u) {
-                condover = readDecode012();
-                if (condover == CONDOVER_SELECT) {
-                    return requestPlanes(0u, PLANE_OVERFLAGS, STEP_ADVANCED_AFTER_SECOND_PLANES);
-                }
-            }
-            return parseAdvancedHeaderTail();
-        }
-        case TYPE_P: {
-            if (fcm == FCM_FRAME) {
-                mbmodetab = readBits(2u);
-                imvtab = readBits(2u);
-                icbptab = readBits(3u);
-                twomvbptab = readBits(2u);
-                if (fourmvswitch != 0u) {
-                    fourmvbptab = readBits(2u);
-                }
-                updateMotionVectorRange(pendingMotionVectorRange);
-                ttIndex = select(0u, 1u, pq > 4u) + select(0u, 1u, pq > 12u);
-                quarterSample = 1u;
-                mspel = 1u;
-            } else {
-                mvTableIndex = readBits(2u);
-                cbptab = readBits(2u);
-            }
-            return parseAdvancedPredictedTail();
-        }
-        default: {
-            if (fieldMode != 0u) {
-                mbmodetab = readBits(3u);
-                imvtab = readBits(3u);
-                icbptab = readBits(3u);
-                if (mvMode == MV_MODE_MIXED_MV) {
-                    fourmvbptab = readBits(2u);
-                }
-                numref = 1u;
-            } else if (fcm == FCM_FRAME) {
-                mbmodetab = readBits(2u);
-                imvtab = readBits(2u);
-                icbptab = readBits(3u);
-                twomvbptab = readBits(2u);
-                fourmvbptab = readBits(2u);
-            } else {
-                mvTableIndex = readBits(2u);
-                cbptab = readBits(2u);
-            }
-            return parseAdvancedPredictedTail();
-        }
-    }
-}
-
-// The end of a P or B picture's own fields: VOPDQUANT and the frame transform type, then the common tail
-fn parseAdvancedPredictedTail() -> u32 {
-    if (stateValue(S_DQUANT) != 0u) {
-        decodeVopDquant();
-    }
-    readTransformTypeFrame();
-    return parseAdvancedHeaderTail();
-}
-
-// The end of ff_vc1_parse_frame_header_adv: the AC and DC table indices, and an I picture's VOPDQUANT
-fn parseAdvancedHeaderTail() -> u32 {
-    cAcTableIndex = readDecode012();
-    if (pictureType == TYPE_I || pictureType == TYPE_BI) {
-        yAcTableIndex = readDecode012();
-    } else if (fcm != FCM_PROGRESSIVE && quarterSample == 0u) {
-        rangeX <<= 1u;
-        rangeY <<= 1u;
-    }
-    dcTableIndex = readBit();
-    if ((pictureType == TYPE_I || pictureType == TYPE_BI) && stateValue(S_DQUANT) != 0u) {
-        decodeVopDquant();
-    }
-    return HEADER_DONE;
-}
-
-// The coding sets of vc1_decode_i_blocks, vc1_decode_p_blocks, and vc1_decode_b_blocks
-fn selectCodingSets() -> vec2u {
-    var intraIndex = cAcTableIndex;
-    if (pictureType == TYPE_I || pictureType == TYPE_BI) {
-        intraIndex = yAcTableIndex;
-    }
-    var codingset = CS_MID_RATE_INTRA;
-    switch (intraIndex) {
-        case 0u: {
-            codingset = select(CS_LOW_MOT_INTRA, CS_HIGH_RATE_INTRA, pqindex <= 8u);
-        }
-        case 1u: {
-            codingset = CS_HIGH_MOT_INTRA;
-        }
-        default: {
-        }
-    }
-    var codingset2 = CS_MID_RATE_INTER;
-    switch (cAcTableIndex) {
-        case 0u: {
-            codingset2 = select(CS_LOW_MOT_INTER, CS_HIGH_RATE_INTER, pqindex <= 8u);
-        }
-        case 1u: {
-            codingset2 = CS_HIGH_MOT_INTER;
-        }
-        default: {
-        }
-    }
-    return vec2u(codingset, codingset2);
-}
-
-// The parsed picture's fields, written to a parameter block
-fn writeParameters(base: u32) {
-    let codingSets = selectCodingSets();
-    pictureState[base + P_VALID] = 1u;
-    pictureState[base + P_TYPE] = pictureType;
-    pictureState[base + P_FCM] = fcm;
-    pictureState[base + P_FIELD_MODE] = fieldMode;
-    pictureState[base + P_SECOND_FIELD] = secondField;
-    pictureState[base + P_CURRENT_FIELD_TYPE] = currentFieldType;
-    pictureState[base + P_SKIPPED] = pictureSkipped;
-    pictureState[base + P_PQ] = pq;
-    pictureState[base + P_PQINDEX] = pqindex;
-    pictureState[base + P_HALFPQ] = halfpq;
-    pictureState[base + P_PQUANTIZER] = pquantizer;
-    pictureState[base + P_ALTPQ] = altpq;
-    pictureState[base + P_DQUANTFRM] = dquantfrm;
-    pictureState[base + P_DQPROFILE] = stateValue(S_DQPROFILE);
-    pictureState[base + P_DQSBEDGE] = stateValue(S_DQSBEDGE);
-    pictureState[base + P_DQBILEVEL] = stateValue(S_DQBILEVEL);
-    pictureState[base + P_MVRANGE] = stateValue(S_MVRANGE);
-    pictureState[base + P_DMVRANGE] = stateValue(S_DMVRANGE);
-    pictureState[base + P_RANGE_X] = rangeX;
-    pictureState[base + P_RANGE_Y] = rangeY;
-    pictureState[base + P_K_X] = kX;
-    pictureState[base + P_K_Y] = kY;
-    pictureState[base + P_MV_MODE] = mvMode;
-    pictureState[base + P_MV_MODE2] = mvMode2;
-    pictureState[base + P_QUARTER_SAMPLE] = quarterSample;
-    pictureState[base + P_MSPEL] = mspel;
-    pictureState[base + P_MV_TABLE_INDEX] = mvTableIndex;
-    pictureState[base + P_CBPTAB] = cbptab;
-    pictureState[base + P_TTMBF] = ttmbf;
-    pictureState[base + P_TTFRM] = ttfrm;
-    pictureState[base + P_TT_INDEX] = ttIndex;
-    pictureState[base + P_DC_TABLE_INDEX] = dcTableIndex;
-    pictureState[base + P_CODINGSET] = codingSets.x;
-    pictureState[base + P_CODINGSET2] = codingSets.y;
-    pictureState[base + P_RND] = pictureRnd;
-    pictureState[base + P_CONDOVER] = condover;
-    pictureState[base + P_FOURMVSWITCH] = fourmvswitch;
-    pictureState[base + P_MBMODETAB] = mbmodetab;
-    pictureState[base + P_IMVTAB] = imvtab;
-    pictureState[base + P_ICBPTAB] = icbptab;
-    pictureState[base + P_TWOMVBPTAB] = twomvbptab;
-    pictureState[base + P_FOURMVBPTAB] = fourmvbptab;
-    pictureState[base + P_NUMREF] = numref;
-    pictureState[base + P_REFFIELD] = reffield;
-    pictureState[base + P_REF_FIELD_TYPE_FORWARD] = refFieldTypeForward;
-    pictureState[base + P_REFDIST] = stateValue(S_REFDIST);
-    pictureState[base + P_FRFD] = frfd;
-    pictureState[base + P_BRFD] = brfd;
-    pictureState[base + P_BFRACTION] = bitcast<u32>(bfraction);
-    pictureState[base + P_RANGEREDFRM] = rangeredfrm;
-    pictureState[base + P_X8_TYPE] = x8Type;
-    pictureState[base + P_MVTYPE_PLANE] = planeMvtype;
-    pictureState[base + P_SKIP_PLANE] = planeSkip;
-    pictureState[base + P_DIRECT_PLANE] = planeDirect;
-    pictureState[base + P_FORWARD_PLANE] = planeForward;
-    pictureState[base + P_ACPRED_PLANE] = planeAcpred;
-    pictureState[base + P_OVERFLAGS_PLANE] = planeOverflags;
-    pictureState[base + P_FIELDTX_PLANE] = planeFieldtx;
-    pictureState[base + P_MB_ROWS] = mbHeight >> fieldMode;
-    pictureState[base + P_ROW_OFFSET] = select(0u, mbHeight >> 1u, secondField != 0u);
-    pictureState[base + P_LUT_CURRENT] = currentLutSet;
-    pictureState[base + P_CURRENT_USE_IC] = stateValue(currentUseIcField);
-    pictureState[base + P_LUT_LAST] = stateValue(S_LUT_LAST);
-    pictureState[base + P_LUT_NEXT] = stateValue(S_LUT_NEXT);
-    pictureState[base + P_LAST_USE_IC] = stateValue(S_LAST_USE_IC);
-    pictureState[base + P_NEXT_USE_IC] = stateValue(S_NEXT_USE_IC);
-}
-
-// The references of the picture being decoded, decided once per frame and copied into every parameter block
-var<private> forwardSlot: u32;
-var<private> backwardSlot: u32;
-var<private> forwardInterlaced: u32;
-var<private> backwardInterlaced: u32;
-var<private> backwardFieldPicture: u32;
-
-fn writeReferences(base: u32) {
-    pictureState[base + P_FORWARD_SLOT] = forwardSlot;
-    pictureState[base + P_BACKWARD_SLOT] = backwardSlot;
-    pictureState[base + P_FORWARD_INTERLACED] = forwardInterlaced;
-    pictureState[base + P_BACKWARD_INTERLACED] = backwardInterlaced;
-    pictureState[base + P_BACKWARD_FIELD_PICTURE] = backwardFieldPicture;
-    let unsignedIntra = stateValue(S_PROFILE) != PROFILE_ADVANCED
-        && (pictureType == TYPE_I || pictureType == TYPE_BI)
-        && !(stateValue(S_OVERLAP) != 0u && pq >= 9u);
-    pictureState[base + P_UNSIGNED_INTRA] = select(0u, 1u, unsignedIntra);
-    pictureState[base + P_LOOP_FILTER] = stateValue(S_LOOP_FILTER);
-}
-
-// Writes a pass's parameter block and snapshots the lookup sets its intensity compensation reads
-fn writePassParameters(passIndex: u32) {
-    let base = passBase(passIndex);
-    writeParameters(base);
-    writeReferences(base);
-    let snapshot = F_PASS_LUTS + passIndex * PASS_LUT_WORDS;
-    var usedSets = 0u;
-    if (pictureState[base + P_LAST_USE_IC] != 0u) {
-        usedSets |= 1u << pictureState[base + P_LUT_LAST];
-    }
-    if (pictureState[base + P_NEXT_USE_IC] != 0u) {
-        usedSets |= 1u << pictureState[base + P_LUT_NEXT];
-    }
-    if (pictureState[base + P_CURRENT_USE_IC] != 0u) {
-        usedSets |= 1u << pictureState[base + P_LUT_CURRENT];
-    }
-    for (var lutSet = 0u; lutSet < 3u; lutSet += 1u) {
-        if (((usedSets >> lutSet) & 1u) == 0u) {
-            continue;
-        }
-        for (var word = 0u; word < LUT_SET_WORDS; word += 1u) {
-            pictureState[snapshot + lutSet * LUT_SET_WORDS + word] = state[S_LUTS + lutSet * LUT_SET_WORDS + word];
-        }
-    }
-}
-
-// FFmpeg's ff_vc1_decode_sequence_header and decode_sequence_header_adv; false for a header FFmpeg refuses
-fn parseSequenceHeader() -> bool {
-    let profile = readBits(2u);
-    setStateValue(S_PROFILE, profile);
-    if (profile == PROFILE_ADVANCED) {
-        return parseAdvancedSequenceHeader();
-    }
-    let resY411 = readBit();
-    setStateValue(S_RES_SPRITE, readBit());
-    if (resY411 != 0u) {
-        reportFailure(ERROR_UNSUPPORTED_FEATURE, 1u);
+    let lookupsHeld = lookupWords == 0u || recordHolds(headerValue(RECORD_HEADER_LOOKUPS), lookupWords, recordWords);
+    if (!lookupsHeld || !recordHolds(headerValue(RECORD_HEADER_MACROBLOCKS), stateValue(S_MB_WIDTH) * height, recordWords)) {
+        reportFailure(ERROR_RECORD_INVALID, INVALID_RECORD_TABLES);
         return false;
     }
-    skipReaderBits(3u + 5u);
-    setStateValue(S_LOOP_FILTER, readBit());
-    setStateValue(S_RES_X8, readBit());
-    setStateValue(S_MULTIRES, readBit());
-    setStateValue(S_RES_FASTTX, readBit());
-    setStateValue(S_FASTUVMC, readBit());
-    if (profile == PROFILE_SIMPLE && stateValue(S_FASTUVMC) == 0u) {
-        return false;
-    }
-    setStateValue(S_EXTENDED_MV, readBit());
-    if (profile == PROFILE_SIMPLE && stateValue(S_EXTENDED_MV) != 0u) {
-        return false;
-    }
-    setStateValue(S_DQUANT, readBits(2u));
-    setStateValue(S_VSTRANSFORM, readBit());
-    if (readBit() != 0u) {
-        return false;
-    }
-    setStateValue(S_OVERLAP, readBit());
-    setStateValue(S_RESYNC_MARKER, readBit());
-    setStateValue(S_RANGERED, readBit());
-    setStateValue(S_MAX_B_FRAMES, readBits(3u));
-    setStateValue(S_QUANTIZER_MODE, readBits(2u));
-    setStateValue(S_FINTERPFLAG, readBit());
-    if (stateValue(S_RES_SPRITE) != 0u) {
-        reportFailure(ERROR_UNSUPPORTED_FEATURE, 2u);
-        return false;
-    }
-    setStateValue(S_RES_RTM_FLAG, readBit());
-    setStateValue(S_SEQUENCE_VALID, 1u);
-    return true;
-}
-
-fn parseAdvancedSequenceHeader() -> bool {
-    setStateValue(S_RES_RTM_FLAG, 1u);
-    setStateValue(S_LEVEL, readBits(3u));
-    let chromaFormat = readBits(2u);
-    if (chromaFormat != 1u) {
-        reportFailure(ERROR_UNSUPPORTED_FEATURE, 3u);
-        return false;
-    }
-    skipReaderBits(3u + 5u);
-    setStateValue(S_POSTPROCFLAG, readBit());
-    setStateValue(S_MAX_CODED_WIDTH, (readBits(12u) + 1u) << 1u);
-    setStateValue(S_MAX_CODED_HEIGHT, (readBits(12u) + 1u) << 1u);
-    setStateValue(S_BROADCAST, readBit());
-    setStateValue(S_INTERLACE, readBit());
-    setStateValue(S_TFCNTRFLAG, readBit());
-    setStateValue(S_FINTERPFLAG, readBit());
-    skipReaderBits(1u);
-    setStateValue(S_PSF, readBit());
-    setStateValue(S_MAX_B_FRAMES, 7u);
-    if (readBit() != 0u) {
-        skipReaderBits(14u + 14u);
-        var aspectRatio = 0u;
-        if (readBit() != 0u) {
-            aspectRatio = readBits(4u);
+    for (var passIndex = 0u; passIndex < passCount; passIndex += 1u) {
+        let source = RECORD_HEADER_PASSES + passIndex * RECORD_PASS_WORDS;
+        let base = passBase(passIndex);
+        for (var word = 0u; word < RECORD_PASS_WORDS; word += 1u) {
+            pictureState[base + word] = headerValue(source + word);
         }
-        if (aspectRatio == 15u) {
-            skipReaderBits(8u + 8u);
-        }
-        if (readBit() != 0u) {
-            if (readBit() != 0u) {
-                skipReaderBits(16u);
-            } else {
-                skipReaderBits(8u + 4u);
-            }
-        }
-        if (readBit() != 0u) {
-            skipReaderBits(8u + 8u + 8u);
-        }
-    }
-    setStateValue(S_HRD_PARAM_FLAG, readBit());
-    if (stateValue(S_HRD_PARAM_FLAG) != 0u) {
-        let buckets = readBits(5u);
-        setStateValue(S_HRD_LEAKY_BUCKETS, buckets);
-        skipReaderBits(4u + 4u);
-        for (var bucket = 0u; bucket < buckets; bucket += 1u) {
-            skipReaderBits(16u + 16u);
-        }
-    }
-    setStateValue(S_SEQUENCE_VALID, 1u);
-    return true;
-}
-
-// FFmpeg's ff_vc1_decode_entry_point
-fn parseEntryPoint() -> bool {
-    setStateValue(S_BROKEN_LINK, readBit());
-    setStateValue(S_CLOSED_ENTRY, readBit());
-    setStateValue(S_PANSCANFLAG, readBit());
-    setStateValue(S_REFDIST_FLAG, readBit());
-    setStateValue(S_LOOP_FILTER, readBit());
-    setStateValue(S_FASTUVMC, readBit());
-    setStateValue(S_EXTENDED_MV, readBit());
-    setStateValue(S_DQUANT, readBits(2u));
-    setStateValue(S_VSTRANSFORM, readBit());
-    setStateValue(S_OVERLAP, readBit());
-    setStateValue(S_QUANTIZER_MODE, readBits(2u));
-    if (stateValue(S_HRD_PARAM_FLAG) != 0u) {
-        skipReaderBits(8u * stateValue(S_HRD_LEAKY_BUCKETS));
-    }
-    if (readBit() != 0u) {
-        setStateValue(S_CODED_WIDTH, (readBits(12u) + 1u) << 1u);
-        setStateValue(S_CODED_HEIGHT, (readBits(12u) + 1u) << 1u);
-    } else {
-        setStateValue(S_CODED_WIDTH, stateValue(S_MAX_CODED_WIDTH));
-        setStateValue(S_CODED_HEIGHT, stateValue(S_MAX_CODED_HEIGHT));
-    }
-    if (stateValue(S_EXTENDED_MV) != 0u) {
-        setStateValue(S_EXTENDED_DMV, readBit());
-    }
-    setStateValue(S_RANGE_MAPY_FLAG, readBit());
-    if (stateValue(S_RANGE_MAPY_FLAG) != 0u) {
-        setStateValue(S_RANGE_MAPY, readBits(3u));
-    }
-    setStateValue(S_RANGE_MAPUV_FLAG, readBit());
-    if (stateValue(S_RANGE_MAPUV_FLAG) != 0u) {
-        setStateValue(S_RANGE_MAPUV, readBits(3u));
-    }
-    setStateValue(S_ENTRY_POINT_VALID, 1u);
-    return true;
-}
-
-// Reads a 4-byte big-endian value of the packet at a byte position
-fn readPacketBigEndianWord(position: u32) -> u32 {
-    return (readPacketByte(position) << 24u) | (readPacketByte(position + 1u) << 16u)
-        | (readPacketByte(position + 2u) << 8u) | readPacketByte(position + 3u);
-}
-
-// Reads a 4-byte little-endian value of the codec private data at a byte position
-fn readConfigLittleEndianWord(position: u32) -> u32 {
-    return readConfigByte(position) | (readConfigByte(position + 1u) << 8u)
-        | (readConfigByte(position + 2u) << 16u) | (readConfigByte(position + 3u) << 24u);
-}
-
-// Starts a reader on codec private bytes [start, end), copied into the stream without emulation prevention bytes when escapes is set
-fn startConfigReader(start: u32, end: u32, escapes: bool) {
-    startReader(0u, copyConfigToStream(start, end, escapes) * 8u);
-}
-
-// The position of the first start code at or after position in config bytes [position, end), or end; FFmpeg's find_next_marker
-fn findConfigMarker(position: u32, end: u32) -> u32 {
-    if (end < position + 4u) {
-        return end;
-    }
-    for (var start = position; start + 3u < end; start += 1u) {
-        if (readConfigByte(start) == 0u && readConfigByte(start + 1u) == 0u && readConfigByte(start + 2u) == 1u) {
-            return start;
-        }
-    }
-    return end;
-}
-
-// Parses the codec private data: a Video for Windows header and its extradata, or bare VC-1 extradata.
-// WMV3 extradata is the Simple and Main profile sequence header, which sizes no frame, so it comes behind the header that carries the
-// container's frame size, as FFmpeg takes it from the container; VC-1 extradata carries a sequence header and an entry point after start codes
-fn configureDecoder() -> bool {
-    let length = stream.configByteLength;
-    var extradataStart = 0u;
-    var fourcc = 0u;
-    var codedWidth = 0u;
-    var codedHeight = 0u;
-    if (length >= BITMAP_INFO_HEADER_SIZE) {
-        let headerSize = readConfigLittleEndianWord(0u);
-        let candidate = readConfigLittleEndianWord(16u);
-        if (headerSize >= BITMAP_INFO_HEADER_SIZE
-            && (candidate == FOURCC_WMV3 || candidate == FOURCC_WMVA || candidate == FOURCC_WVC1)) {
-            // The extradata follows the 40-byte header whatever biSize says, as Matroska's V_MS/VFW/FOURCC and FFmpeg read it
-            fourcc = candidate;
-            extradataStart = BITMAP_INFO_HEADER_SIZE;
-            codedWidth = readConfigLittleEndianWord(4u);
-            let height = bitcast<i32>(readConfigLittleEndianWord(8u));
-            codedHeight = u32(abs(height));
-        } else if (headerSize >= BITMAP_INFO_HEADER_SIZE && (candidate == FOURCC_WMVP || candidate == FOURCC_WVP2)) {
-            reportFailure(ERROR_UNSUPPORTED_FEATURE, 2u);
-            return false;
-        }
-    }
-    let firstMarker = findConfigMarker(extradataStart, length);
-    if (fourcc == 0u && firstMarker == length) {
-        // Extradata without start codes is a Simple or Main profile sequence header, or too short to be one
-        // NOTE: Without the header only the pool's padded size is known, and a decode at it reads macroblock rows the frame does not have
-        reportFailure(ERROR_CONFIGURATION, select(length, CONFIGURATION_FRAME_SIZE_MISSING, length >= STRUCT_C_SIZE));
-        return false;
-    }
-    if (fourcc == FOURCC_WMV3) {
-        // The Simple and Main profile sequence header is the extradata itself
-        if (length < extradataStart + STRUCT_C_SIZE) {
-            reportFailure(ERROR_CONFIGURATION, length);
-            return false;
-        }
-        startConfigReader(extradataStart, length, false);
-        if (!parseSequenceHeader()) {
-            reportFailure(ERROR_SEQUENCE_HEADER, 0u);
-            return false;
-        }
-        if (stateValue(S_PROFILE) == PROFILE_ADVANCED) {
-            reportFailure(ERROR_SEQUENCE_HEADER, 1u);
-            return false;
-        }
-        setStateValue(S_CODED_WIDTH, codedWidth);
-        setStateValue(S_CODED_HEIGHT, codedHeight);
-        setStateValue(S_ENTRY_POINT_VALID, 1u);
-    } else {
-        // VC-1 extradata: every sequence header and entry point between start codes; the first byte may be a size byte
-        if (length - extradataStart < 16u) {
-            reportFailure(ERROR_CONFIGURATION, length);
-            return false;
-        }
-        var start = firstMarker;
-        while (start < length) {
-            let next = findConfigMarker(start + 4u, length);
-            if (next > start + 4u) {
-                let markerType = readConfigByte(start + 3u);
-                startConfigReader(start + 4u, next, true);
-                if (markerType == MARKER_SEQUENCE_HEADER) {
-                    if (!parseSequenceHeader()) {
-                        reportFailure(ERROR_SEQUENCE_HEADER, 2u);
-                        return false;
-                    }
-                } else if (markerType == MARKER_ENTRY_POINT) {
-                    if (!parseEntryPoint()) {
-                        reportFailure(ERROR_ENTRY_POINT, 0u);
-                        return false;
-                    }
-                }
-            }
-            start = next;
-        }
-        if (stateValue(S_SEQUENCE_VALID) == 0u || stateValue(S_ENTRY_POINT_VALID) == 0u) {
-            reportFailure(ERROR_CONFIGURATION, select(1u, 2u, stateValue(S_SEQUENCE_VALID) != 0u));
-            return false;
-        }
-    }
-    return updateGeometry();
-}
-
-// The frame's macroblock geometry from the coded size, and whether the pool and the decoder's buffers hold it
-fn updateGeometry() -> bool {
-    let codedWidth = stateValue(S_CODED_WIDTH);
-    let codedHeight = stateValue(S_CODED_HEIGHT);
-    if (codedWidth == 0u || codedHeight == 0u) {
-        reportFailure(ERROR_PICTURE_SIZE, 0u);
-        return false;
-    }
-    let width = (codedWidth + 15u) >> 4u;
-    let height = (codedHeight + 15u) >> 4u;
-    // Field pictures round the height up to whole macroblock rows per field
-    let alignedHeight = (height + 1u) & ~1u;
-    if (width * 16u > stream.width || alignedHeight * 16u > stream.height || width * alignedHeight > MAXIMUM_MACROBLOCKS) {
-        reportFailure(ERROR_PICTURE_SIZE, (width << 12u) | alignedHeight);
-        return false;
-    }
-    setStateValue(S_MB_WIDTH, width);
-    if (stateValue(S_MB_HEIGHT) != alignedHeight) {
-        setStateValue(S_MB_HEIGHT, height);
-    }
-    mbWidth = width;
-    mbHeight = stateValue(S_MB_HEIGHT);
-    return true;
-}
-
-// Resets the decoder for a stream start or a seek, as a new codec context would be
-fn initializeDecoder() -> bool {
-    setStateValue(S_LAST_SLOT, NO_SLOT);
-    setStateValue(S_NEXT_SLOT, NO_SLOT);
-    setStateValue(S_LUT_LAST, 0u);
-    setStateValue(S_LUT_NEXT, 1u);
-    if (!configureDecoder()) {
-        return false;
-    }
-    setStateValue(S_CONFIGURED, 1u);
-    return true;
-}
-
-// Prepares a packet: configures the decoder at a stream start, and sizes the start code scan of an Advanced profile packet
-@compute @workgroup_size(1)
-fn preparePicture() {
-    pictureState[F_ARGUMENTS_X] = 0u;
-    pictureState[F_ARGUMENTS_Y] = 1u;
-    pictureState[F_ARGUMENTS_Z] = 1u;
-    pictureState[F_SCAN_LENGTH] = 0u;
-    pictureState[F_UNIT_COUNT] = 0u;
-    pictureState[F_PASS_COUNT] = 0u;
-    pictureState[F_CURRENT_PASS] = 0u;
-    pictureState[F_SKIP_COPY] = 0u;
-    pictureState[F_RELEASED_ANCHOR] = 0u;
-    pictureState[passBase(0u) + P_VALID] = 0u;
-    pictureState[passBase(1u) + P_VALID] = 0u;
-    if (packet.reset != 0u) {
-        if (!initializeDecoder()) {
-            return;
-        }
-    }
-    if (stateValue(S_CONFIGURED) == 0u) {
-        return;
-    }
-    let length = packet.byteLength;
-    pictureState[F_SCAN_LENGTH] = length;
-    var mode = SCAN_MODE_WHOLE;
-    if (stateValue(S_PROFILE) == PROFILE_ADVANCED && length >= 4u) {
-        if ((readPacketBigEndianWord(0u) & 0xFFFFFF00u) == 0x00000100u) {
-            mode = SCAN_MODE_MARKERS;
-        } else if (stateValue(S_INTERLACE) != 0u && (readPacketByte(0u) & 0xC0u) == 0xC0u) {
-            mode = SCAN_MODE_FIELD_DIVIDER;
-        }
-    }
-    pictureState[F_SCAN_MODE] = mode;
-    // Every packet is scanned, since the scan also finds the escapes the unescape into the stream drops
-    pictureState[F_ARGUMENTS_X] = scanWorkgroupCount(length);
-}
-
-// The packet's start code positions in order, from the scan's summaries and masks
-var<private> markerCount: u32;
-
-fn collectMarkers(length: u32) -> bool {
-    markerCount = 0u;
-    let invocations = (length + SCAN_BYTES_PER_INVOCATION - 1u) / SCAN_BYTES_PER_INVOCATION;
-    let workgroups = (invocations + SCAN_WORKGROUP_SIZE - 1u) / SCAN_WORKGROUP_SIZE;
-    for (var workgroup = 0u; workgroup < workgroups; workgroup += 1u) {
-        for (var half = 0u; half < 2u; half += 1u) {
-            var summary = pictureState[F_SCAN_SUMMARIES + workgroup * 2u + half];
-            while (summary != 0u) {
-                let bit = firstTrailingBit(summary);
-                summary &= summary - 1u;
-                let invocation = workgroup * SCAN_WORKGROUP_SIZE + half * 32u + bit;
-                var mask = pictureState[F_MARKER_MASKS + invocation];
-                while (mask != 0u) {
-                    let offset = firstTrailingBit(mask);
-                    mask &= mask - 1u;
-                    if (markerCount >= MAXIMUM_MARKERS) {
-                        reportFailure(ERROR_START_CODES, markerCount);
-                        return false;
-                    }
-                    pictureState[F_MARKERS + markerCount] = invocation * SCAN_BYTES_PER_INVOCATION + offset;
-                    markerCount += 1u;
-                }
-            }
-        }
+        pictureState[base + P_FORWARD_SLOT] = references.x;
+        pictureState[base + P_BACKWARD_SLOT] = references.y;
+        pictureState[base + P_FORWARD_INTERLACED] = references.z;
+        pictureState[base + P_BACKWARD_INTERLACED] = references.w;
     }
     return true;
 }
 
-// The parse units decided so far
-var<private> unitCount: u32;
-
-// Records a parse unit at the reader's position: its parameters, its segment, and its macroblock rows
-fn addUnit(startRow: u32, endRow: u32) -> bool {
-    if (unitCount >= MAXIMUM_PARSE_UNITS) {
-        reportFailure(ERROR_PARSE_UNITS, unitCount);
-        return false;
+// Hands an anchor's slot back to the engine and empties the anchor
+fn releaseAnchor(field: u32) {
+    let slot = stateValue(field);
+    if (slot != NO_SLOT) {
+        releaseReferenceSlot(slot);
     }
-    let base = unitBase(unitCount);
-    writeParameters(base);
-    writeReferences(base);
-    pictureState[base + U_START_BIT] = readerBit;
-    pictureState[base + U_SEGMENT_END_BIT] = readerEndBit;
-    pictureState[base + U_START_ROW] = startRow;
-    pictureState[base + U_END_ROW] = endRow;
-    pictureState[base + U_PASS] = secondField;
-    unitCount += 1u;
-    return true;
+    setStateValue(field, NO_SLOT);
 }
 
-// The header stage: the packet's segments, the frame header, the anchors, and the parse units; FFmpeg's vc1_decode_frame up to ff_vc1_decode_blocks.
-// The frame header, a second field's header, and slices' repeated headers all parse at one call site
+// Sets up a picture from its record: the record check, the sequence facts, the anchors, and how the picture fills its slot.
+// An anchor's forward reference is the previous next anchor, and it becomes the next anchor itself
 @compute @workgroup_size(1)
 fn beginPicture() {
-    // The scan's arguments were copied before this dispatch; the slice pass's start at none
-    pictureState[F_ARGUMENTS_X] = 0u;
-    if (stateValue(S_CONFIGURED) == 0u) {
+    pictureState[F_PASS_COUNT] = 0u;
+    pictureState[F_CURRENT_PASS] = 0u;
+    pictureState[F_FRAME_TYPE] = NO_FRAME_TYPE;
+    pictureState[F_RELEASED_ANCHOR] = NO_SLOT;
+    pictureState[F_COPY_MODE] = COPY_MODE_NONE;
+    // A reset cleared the state, whose zero slots would read as held: the anchors start empty
+    if (packet.reset != 0u) {
+        setStateValue(S_LAST_SLOT, NO_SLOT);
+        setStateValue(S_NEXT_SLOT, NO_SLOT);
+    }
+    let recordWords = packet.byteLength / 4u;
+    if (recordWords < RECORD_HEADER_WORDS || headerValue(RECORD_HEADER_MAGIC) != RECORD_MAGIC || headerValue(RECORD_HEADER_VERSION) != RECORD_VERSION) {
+        reportFailure(ERROR_RECORD_INVALID, INVALID_RECORD_HEADER);
         return;
     }
-    loadGeometry();
-    let length = pictureState[F_SCAN_LENGTH];
-    if (length == 0u) {
-        pictureState[F_SKIP_COPY] = 1u;
+    let kind = headerValue(RECORD_HEADER_KIND);
+    let frameType = headerValue(RECORD_HEADER_FRAME_TYPE);
+    let passCount = headerValue(RECORD_HEADER_PASS_COUNT);
+    if (kind > RECORD_KIND_SKIPPED || frameType > RECORD_TYPE_BI || passCount == 0u || passCount > RECORD_MAXIMUM_PASSES) {
+        reportFailure(ERROR_RECORD_INVALID, INVALID_RECORD_KIND);
         return;
     }
-    if (!collectSegments(length)) {
+    let width = headerValue(RECORD_HEADER_MB_WIDTH);
+    let height = headerValue(RECORD_HEADER_MB_HEIGHT);
+    if (width == 0u || width > stream.planes[0].width / MACROBLOCK_SIZE) {
+        reportFailure(ERROR_PICTURE_SIZE, width);
         return;
     }
-    unitCount = 0u;
-    var fieldRows = 0u;
-    var headerFailed = false;
-    for (var unit = 0u; unit <= sliceCount; unit += 1u) {
-        var parseHeader = false;
-        var fieldHeader = false;
-        if (unit == 0u) {
-            startPacketReader(frameStart, frameEnd);
-            firstPictureHeader = true;
-            pictureHeaderFlag = false;
-            secondField = 0u;
-            currentFieldType = 0u;
-            planeRowOffset = 0u;
-            clearPlanes();
-            fieldMode = 0u;
-            parseHeader = true;
-        } else {
-            if (sliceRows[unit - 1u] >= fieldRows) {
-                if (fieldMode == 0u) {
-                    continue;
-                }
-                secondField = 1u;
-            } else {
-                secondField = 0u;
-            }
-            planeRowOffset = select(0u, mbHeight >> 1u, secondField != 0u);
-            startPacketReader(sliceStarts[unit - 1u], sliceEnds[unit - 1u]);
-            if (!sliceIsField[unit - 1u]) {
-                skipReaderBits(9u);
-            }
-            pictureHeaderFlag = false;
-            if (fieldMode != 0u && i32(unit) == firstFieldSlices + 2) {
-                clearPlanes();
-                parseHeader = true;
-                fieldHeader = true;
-            } else if (readBit() != 0u) {
-                pictureHeaderFlag = true;
-                parseHeader = true;
-            }
-        }
-        if (parseHeader) {
-            headerFailed = !parsePictureHeader();
-            if (unit == 0u) {
-                firstPictureHeader = false;
-                if (headerFailed) {
-                    reportFailure(ERROR_PICTURE_HEADER, pictureType);
-                    return;
-                }
-                if (!beginFrame()) {
-                    return;
-                }
-                fieldRows = mbHeight >> fieldMode;
-            }
-            if (!headerFailed && (unit == 0u || fieldHeader)) {
-                writePassParameters(secondField);
-                pictureState[F_PASS_COUNT] = secondField + 1u;
-                if (pictureSkipped != 0u) {
-                    return;
-                }
-            }
-        }
-        if (headerFailed) {
-            continue;
-        }
-        var startRow = 0u;
-        if (unit > 0u) {
-            startRow = sliceRows[unit - 1u] % fieldRows;
-        }
-        var endRow = fieldRows;
-        if (fieldMode == 0u || secondField != 0u) {
-            if (unit < sliceCount) {
-                endRow = min(fieldRows, sliceRows[unit] % fieldRows);
-            }
-        } else {
-            if (unit >= sliceCount) {
-                continue;
-            }
-            if (i32(unit) != firstFieldSlices + 1) {
-                endRow = min(fieldRows, sliceRows[unit] % fieldRows);
-            }
-        }
-        if (endRow <= startRow) {
-            continue;
-        }
-        if (!addUnit(startRow, endRow)) {
-            return;
-        }
+    if (height == 0u || height > stream.planes[0].height / MACROBLOCK_SIZE || width * height > RECORD_MAXIMUM_MACROBLOCKS) {
+        reportFailure(ERROR_PICTURE_SIZE, height);
+        return;
     }
-    pictureState[F_UNIT_COUNT] = unitCount;
-    pictureState[F_ARGUMENTS_X] = unitCount;
-}
-
-fn clearPlanes() {
-    planeMvtype = PLANE_ABSENT;
-    planeSkip = PLANE_ABSENT;
-    planeDirect = PLANE_ABSENT;
-    planeForward = PLANE_ABSENT;
-    planeAcpred = PLANE_ABSENT;
-    planeOverflags = PLANE_ABSENT;
-    planeFieldtx = PLANE_ABSENT;
-}
-
-// The frame data segment, and the slices and the second field in packet order
-var<private> frameStart: u32;
-var<private> frameEnd: u32;
-var<private> sliceCount: u32;
-// FFmpeg's n_slices1: the slice index of the first field's last slice, -1 before a field start code
-var<private> firstFieldSlices: i32;
-
-// Splits the packet into its segments as vc1_decode_frame walks its start codes; false after reporting a failure
-fn collectSegments(length: u32) -> bool {
-    let mode = pictureState[F_SCAN_MODE];
-    frameStart = 0u;
-    frameEnd = length;
-    sliceCount = 0u;
-    firstFieldSlices = -1;
-    var frameFound = mode != SCAN_MODE_MARKERS;
-    if (mode != SCAN_MODE_WHOLE) {
-        if (!collectMarkers(length)) {
-            return false;
-        }
+    let codedWidth = headerValue(RECORD_HEADER_CODED_WIDTH);
+    let codedHeight = headerValue(RECORD_HEADER_CODED_HEIGHT);
+    setStateValue(S_MB_WIDTH, width);
+    setStateValue(S_MB_HEIGHT, height);
+    setStateValue(S_CODED_WIDTH, codedWidth);
+    setStateValue(S_CODED_HEIGHT, codedHeight);
+    setStateValue(S_PROFILE, headerValue(RECORD_HEADER_PROFILE));
+    setStateValue(S_RES_FASTTX, headerValue(RECORD_HEADER_RES_FASTTX));
+    setStateValue(S_OVERLAP, headerValue(RECORD_HEADER_OVERLAP));
+    reportHeaderFacts(width * MACROBLOCK_SIZE, height * MACROBLOCK_SIZE, OUTPUT_BIT_DEPTH, vec4u(0u, 0u, codedWidth, codedHeight));
+    // The parser dropped its references at a coded size change, as FFmpeg's reinitialized decoder does
+    if ((headerValue(RECORD_HEADER_FLAGS) & RECORD_FLAG_RESET_ANCHORS) != 0u) {
+        releaseAnchor(S_LAST_SLOT);
+        releaseAnchor(S_NEXT_SLOT);
     }
-    if (mode == SCAN_MODE_MARKERS) {
-        var markerIndex = 0u;
-        var start = 0u;
-        while (start < length) {
-            // The next start code at least four bytes on, as find_next_marker searches from start + 4
-            while (markerIndex < markerCount && pictureState[F_MARKERS + markerIndex] < start + 4u) {
-                markerIndex += 1u;
-            }
-            let next = select(length, pictureState[F_MARKERS + markerIndex], markerIndex < markerCount);
-            if (next > start + 4u) {
-                let markerType = readPacketByte(start + 3u);
-                switch (markerType) {
-                    case MARKER_FRAME: {
-                        frameStart = start + 4u;
-                        frameEnd = next;
-                        frameFound = true;
-                    }
-                    case MARKER_FIELD, MARKER_SLICE: {
-                        if (sliceCount >= MAXIMUM_SLICES) {
-                            reportFailure(ERROR_PARSE_UNITS, sliceCount);
-                            return false;
-                        }
-                        sliceStarts[sliceCount] = start + 4u;
-                        sliceEnds[sliceCount] = next;
-                        if (markerType == MARKER_FIELD) {
-                            sliceRows[sliceCount] = (stateValue(S_CODED_HEIGHT) + 31u) >> 5u;
-                            sliceIsField[sliceCount] = true;
-                            firstFieldSlices = i32(sliceCount) - 1;
-                        } else {
-                            startPacketReader(start + 4u, next);
-                            sliceRows[sliceCount] = readBits(9u);
-                            sliceIsField[sliceCount] = false;
-                        }
-                        sliceCount += 1u;
-                    }
-                    case MARKER_ENTRY_POINT: {
-                        startPacketReader(start + 4u, next);
-                        parseEntryPoint();
-                        if (!updateGeometry()) {
-                            return false;
-                        }
-                    }
-                    default: {
-                        // FFmpeg reads sequence headers from the extradata alone
-                    }
-                }
-            }
-            start = next;
-        }
-    } else if (mode == SCAN_MODE_FIELD_DIVIDER) {
-        if (markerCount == 0u || readPacketByte(pictureState[F_MARKERS] + 3u) != MARKER_FIELD) {
-            reportFailure(ERROR_START_CODES, 1u);
-            return false;
-        }
-        let divider = pictureState[F_MARKERS];
-        frameEnd = divider;
-        sliceStarts[0] = divider + 4u;
-        sliceEnds[0] = length;
-        sliceRows[0] = (stateValue(S_MB_HEIGHT) + 1u) >> 1u;
-        sliceIsField[0] = true;
-        sliceCount = 1u;
-    }
-    if (!frameFound) {
-        // A packet without frame data, such as a lone sequence header, repeats the previous picture
-        pictureState[F_SKIP_COPY] = 1u;
-        return false;
-    }
-    return true;
-}
-
-// After the frame header: the picture's size checks, its facts, and its anchors; false when the picture decodes no units.
-// An anchor's forward reference is the previous next anchor, and it becomes the next anchor itself
-fn beginFrame() -> bool {
-    mbHeight = stateValue(S_MB_HEIGHT);
-    if ((mbHeight >> fieldMode) == 0u) {
-        reportFailure(ERROR_PICTURE_SIZE, mbHeight);
-        return false;
-    }
-    reportPictureFacts();
-    let isAnchor = pictureType == TYPE_I || pictureType == TYPE_P;
+    let isAnchor = frameType == RECORD_TYPE_I || frameType == RECORD_TYPE_P;
+    var references = vec4u(stateValue(S_LAST_SLOT), stateValue(S_NEXT_SLOT), stateValue(S_LAST_INTERLACED), stateValue(S_NEXT_INTERLACED));
     if (isAnchor) {
-        forwardSlot = stateValue(S_NEXT_SLOT);
-        forwardInterlaced = stateValue(S_NEXT_INTERLACED);
-        backwardSlot = NO_SLOT;
-        backwardInterlaced = 0u;
-        backwardFieldPicture = 0u;
-    } else {
-        forwardSlot = stateValue(S_LAST_SLOT);
-        forwardInterlaced = stateValue(S_LAST_INTERLACED);
-        backwardSlot = stateValue(S_NEXT_SLOT);
-        backwardInterlaced = stateValue(S_NEXT_INTERLACED);
-        backwardFieldPicture = stateValue(S_NEXT_FIELD_PICTURE);
+        references = vec4u(stateValue(S_NEXT_SLOT), NO_SLOT, stateValue(S_NEXT_INTERLACED), 0u);
     }
-    pictureState[F_FRAME_TYPE] = pictureType;
-    if (pictureType == TYPE_B && forwardSlot == NO_SLOT) {
-        // FFmpeg skips a B picture without a previous anchor; it repeats the next anchor instead
-        pictureState[F_SKIP_COPY] = 2u;
-        return false;
+    pictureState[F_FRAME_TYPE] = frameType;
+    if (frameType == RECORD_TYPE_B && references.x == NO_SLOT) {
+        // The parser drops a B picture without a previous anchor, as FFmpeg skips it; one after a stream change's reset repeats the next anchor
+        pictureState[F_COPY_MODE] = COPY_MODE_SLOT;
+        pictureState[F_COPY_SOURCE] = references.y;
+        return;
     }
     if (isAnchor) {
         // The anchor that drops out is released once the picture finishes
-        pictureState[F_RELEASED_ANCHOR] = stateValue(S_LAST_SLOT) + 1u;
+        pictureState[F_RELEASED_ANCHOR] = stateValue(S_LAST_SLOT);
         setStateValue(S_LAST_SLOT, stateValue(S_NEXT_SLOT));
         setStateValue(S_LAST_INTERLACED, stateValue(S_NEXT_INTERLACED));
         setStateValue(S_NEXT_SLOT, packet.outputSlot);
-        setStateValue(S_NEXT_INTERLACED, select(0u, 1u, fcm != FCM_PROGRESSIVE));
-        setStateValue(S_NEXT_FIELD_PICTURE, fieldMode);
+        setStateValue(S_NEXT_INTERLACED, select(0u, 1u, headerValue(RECORD_HEADER_FCM) != RECORD_FCM_PROGRESSIVE));
     }
-    if (pictureSkipped != 0u) {
-        // A skipped P picture copies its forward reference
-        pictureState[F_SKIP_COPY] = 3u;
+    switch (kind) {
+        case RECORD_KIND_SKIPPED: {
+            // A skipped P picture copies its forward reference, as vc1_decode_skip_blocks does
+            pictureState[F_COPY_MODE] = COPY_MODE_SLOT;
+            pictureState[F_COPY_SOURCE] = references.x;
+        }
+        case RECORD_KIND_INTRAX8: {
+            let samples = headerValue(RECORD_HEADER_SAMPLES);
+            if (!recordHolds(samples, width * height * INTRAX8_WORDS_PER_MACROBLOCK, recordWords)) {
+                reportFailure(ERROR_RECORD_INVALID, INVALID_RECORD_SAMPLES);
+                return;
+            }
+            pictureState[F_COPY_MODE] = COPY_MODE_SAMPLES;
+            pictureState[F_COPY_SOURCE] = samples;
+        }
+        default: {
+            if (!beginMacroblockPasses(passCount, recordWords, references)) {
+                return;
+            }
+            pictureState[F_PASS_COUNT] = passCount;
+        }
     }
-    return true;
 }
 
-// Reports the stream's coded size and visible rectangle once, from the first picture
-fn reportPictureFacts() {
-    if (stateValue(S_HEADER_FACTS_REPORTED) != 0u) {
+// Unpacks the lookup sets each pass's intensity compensation reads, four entries to a record word, into the pass's snapshot
+fn expandLookupSets(passCount: u32, localIndex: u32) {
+    var setWord = headerValue(RECORD_HEADER_LOOKUPS);
+    for (var passIndex = 0u; passIndex < passCount; passIndex += 1u) {
+        let usedSets = pictureState[passBase(passIndex) + RECORD_PASS_LOOKUP_SETS];
+        for (var lutSet = 0u; lutSet < RECORD_LOOKUP_SET_COUNT; lutSet += 1u) {
+            if (((usedSets >> lutSet) & 1u) == 0u) {
+                continue;
+            }
+            let snapshot = F_PASS_LUTS + passIndex * PASS_LUT_WORDS + lutSet * LUT_SET_WORDS;
+            for (var word = localIndex; word < RECORD_LOOKUP_SET_WORDS; word += EXPAND_WORKGROUP_SIZE) {
+                let entries = readPacketWord(setWord + word);
+                for (var lane = 0u; lane < LOOKUP_ENTRIES_PER_WORD; lane += 1u) {
+                    pictureState[snapshot + word * LOOKUP_ENTRIES_PER_WORD + lane] = (entries >> (lane * 8u)) & 0xFFu;
+                }
+            }
+            setWord += RECORD_LOOKUP_SET_WORDS;
+        }
+    }
+}
+
+// The coefficient count of a block from a macroblock record's count words
+fn recordBlockCount(source: u32, block: u32) -> u32 {
+    return (readPacketWord(source + RECORD_MACROBLOCK_COUNTS + block / 4u) >> ((block & 3u) * 8u)) & 0xFFu;
+}
+
+// Expands a macroblock picture's record, one workgroup per frame macroblock: the macroblock's fixed words and present operations into its
+// record, its coefficient entries into its blocks; the first workgroup also unpacks the passes' lookup sets.
+// A macroblock no unit decoded reconstructs from an empty record
+@compute @workgroup_size(EXPAND_WORKGROUP_SIZE)
+fn expandRecord(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) localIndex: u32) {
+    let passCount = pictureState[F_PASS_COUNT];
+    if (passCount == 0u) {
         return;
     }
-    setStateValue(S_HEADER_FACTS_REPORTED, 1u);
-    reportHeaderFacts(mbWidth * 16u, mbHeight * 16u, 8u, vec4u(0u, 0u, stateValue(S_CODED_WIDTH), stateValue(S_CODED_HEIGHT)));
+    if (workgroupId.x == 0u && workgroupId.y == 0u) {
+        expandLookupSets(passCount, localIndex);
+    }
+    loadGeometry();
+    let column = workgroupId.x;
+    let frameRow = workgroupId.y;
+    if (column >= mbWidth || frameRow >= mbHeight) {
+        return;
+    }
+    let record = macroblockRecord(column, frameRow);
+    let macroblockIndex = frameRow * mbWidth + column;
+    let source = readPacketWord(headerValue(RECORD_HEADER_MACROBLOCKS) + macroblockIndex);
+    if (source == 0u) {
+        if (localIndex < RECORD_MACROBLOCK_FIXED_WORDS) {
+            macroblocks[record + localIndex] = 0u;
+        }
+        return;
+    }
+    let recordWords = packet.byteLength / 4u;
+    if (!recordHolds(source, RECORD_MACROBLOCK_FIXED_WORDS, recordWords)) {
+        if (localIndex == 0u) {
+            reportFailure(ERROR_RECORD_INVALID, INVALID_RECORD_MACROBLOCK);
+        }
+        return;
+    }
+    let operations = readPacketWord(source + RECORD_MACROBLOCK_OPERATIONS) & ((1u << OPERATION_SLOTS) - 1u);
+    let coefficients = source + RECORD_MACROBLOCK_FIXED_WORDS + countOneBits(operations) * RECORD_OPERATION_WORDS;
+    var coefficientCount = 0u;
+    for (var block = 0u; block < BLOCKS_PER_MACROBLOCK; block += 1u) {
+        coefficientCount += recordBlockCount(source, block);
+    }
+    if (!recordHolds(coefficients, coefficientCount, recordWords)) {
+        if (localIndex == 0u) {
+            reportFailure(ERROR_RECORD_INVALID, INVALID_RECORD_MACROBLOCK);
+        }
+        return;
+    }
+    if (localIndex < RECORD_MACROBLOCK_FIXED_WORDS) {
+        macroblocks[record + localIndex] = readPacketWord(source + localIndex);
+    }
+    // The record keeps only the present operations, in slot order
+    if (localIndex < OPERATION_SLOTS && ((operations >> localIndex) & 1u) != 0u) {
+        let operation = source + RECORD_MACROBLOCK_FIXED_WORDS + countOneBits(operations & ((1u << localIndex) - 1u)) * RECORD_OPERATION_WORDS;
+        let slot = record + M_LUMA_OPS + localIndex * RECORD_OPERATION_WORDS;
+        macroblocks[slot] = readPacketWord(operation);
+        macroblocks[slot + 1u] = readPacketWord(operation + 1u);
+    }
+    var entry = coefficients;
+    for (var block = 0u; block < BLOCKS_PER_MACROBLOCK; block += 1u) {
+        let count = recordBlockCount(source, block);
+        let base = (macroblockIndex * BLOCKS_PER_MACROBLOCK + block) * RECORD_COEFFICIENTS_PER_BLOCK;
+        for (var index = localIndex; index < count; index += EXPAND_WORKGROUP_SIZE) {
+            blockData[base + index] = readPacketWord(entry + index);
+        }
+        entry += count;
+    }
 }
 
-// Ends a picture: releases the anchor that dropped out and the picture's own slot unless it became an anchor
+// Ends a picture: releases the anchor that dropped out, and the picture's own slot unless it became an anchor
 @compute @workgroup_size(1)
 fn finishPicture() {
-    if (stateValue(S_CONFIGURED) == 0u) {
-        return;
-    }
     let releasedAnchor = pictureState[F_RELEASED_ANCHOR];
-    if (releasedAnchor != 0u && releasedAnchor - 1u != NO_SLOT) {
-        releaseReferenceSlot(releasedAnchor - 1u);
+    if (releasedAnchor != NO_SLOT) {
+        releaseReferenceSlot(releasedAnchor);
     }
     let frameType = pictureState[F_FRAME_TYPE];
-    let skipCopy = pictureState[F_SKIP_COPY];
-    // A picture that is no anchor, or a repeat of one, holds no reference
-    if ((frameType != TYPE_I && frameType != TYPE_P) || skipCopy == 1u || skipCopy == 2u) {
+    // A picture that is no anchor holds no reference
+    if (frameType != RECORD_TYPE_I && frameType != RECORD_TYPE_P) {
         releaseReferenceSlot(packet.outputSlot);
     }
-}
-
-// WGSL of the VC-1 decoder's macroblock layer: one invocation decodes one parse unit, a slice or a field, in raster order.
-// It mirrors FFmpeg's vc1_block.c and vc1_pred.c: entropy decoding, DC, AC, and motion vector prediction, and dequantization.
-// Instead of reconstructing, it records each macroblock's coefficients and motion compensation calls for the reconstruction pass.
-// The parse unit's rows and the frame row of its field's first row
-var<private> unitStartRow: u32;
-var<private> unitEndRow: u32;
-var<private> rowOffset: u32;
-
-// Picture parameters the header module does not declare
-var<private> codingset: u32;
-var<private> codingset2: u32;
-var<private> dqprofile: u32;
-var<private> dqsbedge: u32;
-var<private> dqbilevel: u32;
-var<private> dmvrange: u32;
-var<private> refdist: u32;
-var<private> profile: u32;
-var<private> resRtmFlag: u32;
-var<private> overlapFlag: u32;
-var<private> fastuvmcFlag: u32;
-var<private> cbpcyLocation: u32;
-var<private> mbmodeLocation: u32;
-var<private> imvLocation: u32;
-var<private> twomvbpLocation: u32;
-var<private> fourmvbpLocation: u32;
-
-// Macroblock state, FFmpeg's MpegEncContext and VC1Context fields of the macroblock being decoded
-var<private> mbX: u32;
-var<private> mbY: u32;
-var<private> frameRow: u32;
-var<private> firstSliceLine: bool;
-var<private> mbIntra: bool;
-var<private> acPred: bool;
-var<private> esc3LevelLength: u32;
-var<private> esc3RunLength: u32;
-// The lookup of codingset2, which every inter block reads
-var<private> interACLocation: u32;
-var<private> refFieldType: array<u32, 2>;
-// FFmpeg's s->mv[dir][n] at index dir * 4 + n
-var<private> motionVectors: array<vec2i, 8>;
-var<private> currentRecord: u32;
-var<private> macroblockFailed: bool;
-// The bmvtype of field B macroblocks, which ff_vc1_pred_b_mv_intfi reads
-var<private> bMotionType: u32;
-
-// The macroblock being decoded, staged in workgroup memory and stored to its records once decoded: a lone invocation stalls for
-// hundreds of cycles on storage read-modify-writes and on dynamically indexed private arrays, which spill to local memory
-var<workgroup> stagedRecord: array<u32, MACROBLOCK_WORDS>;
-// The first prediction word of each block: an intra block's DC differential, which predictIntra replaces with its predictors, and zero
-// for the rest, as FFmpeg zeroes the DC predictor of inter blocks
-var<workgroup> stagedDCWords: array<u32, 6>;
-
-// The first coefficient entry of the inter block being decoded and the entries it wrote so far
-var<private> entryBase: u32;
-var<private> entryCount: u32;
-
-fn loadUnitParameters(unit: u32) {
-    parameterBase = unitBase(unit);
-    pictureType = parameter(P_TYPE);
-    fcm = parameter(P_FCM);
-    fieldMode = parameter(P_FIELD_MODE);
-    secondField = parameter(P_SECOND_FIELD);
-    currentFieldType = parameter(P_CURRENT_FIELD_TYPE);
-    pq = parameter(P_PQ);
-    pqindex = parameter(P_PQINDEX);
-    halfpq = parameter(P_HALFPQ);
-    pquantizer = parameter(P_PQUANTIZER);
-    altpq = parameter(P_ALTPQ);
-    dquantfrm = parameter(P_DQUANTFRM);
-    dqprofile = parameter(P_DQPROFILE);
-    dqsbedge = parameter(P_DQSBEDGE);
-    dqbilevel = parameter(P_DQBILEVEL);
-    dmvrange = parameter(P_DMVRANGE);
-    rangeX = parameter(P_RANGE_X);
-    rangeY = parameter(P_RANGE_Y);
-    kX = parameter(P_K_X);
-    kY = parameter(P_K_Y);
-    mvMode = parameter(P_MV_MODE);
-    mvMode2 = parameter(P_MV_MODE2);
-    quarterSample = parameter(P_QUARTER_SAMPLE);
-    mspel = parameter(P_MSPEL);
-    mvTableIndex = parameter(P_MV_TABLE_INDEX);
-    cbptab = parameter(P_CBPTAB);
-    ttmbf = parameter(P_TTMBF);
-    ttfrm = parameter(P_TTFRM);
-    ttIndex = parameter(P_TT_INDEX);
-    dcTableIndex = parameter(P_DC_TABLE_INDEX);
-    codingset = parameter(P_CODINGSET);
-    codingset2 = parameter(P_CODINGSET2);
-    interACLocation = VLC_AC_COEFFICIENTS[codingset2];
-    condover = parameter(P_CONDOVER);
-    fourmvswitch = parameter(P_FOURMVSWITCH);
-    mbmodetab = parameter(P_MBMODETAB);
-    imvtab = parameter(P_IMVTAB);
-    icbptab = parameter(P_ICBPTAB);
-    twomvbptab = parameter(P_TWOMVBPTAB);
-    fourmvbptab = parameter(P_FOURMVBPTAB);
-    numref = parameter(P_NUMREF);
-    reffield = parameter(P_REFFIELD);
-    refFieldTypeForward = parameter(P_REF_FIELD_TYPE_FORWARD);
-    refdist = parameter(P_REFDIST);
-    frfd = parameter(P_FRFD);
-    brfd = parameter(P_BRFD);
-    bfraction = signedParameter(P_BFRACTION);
-    rangeredfrm = parameter(P_RANGEREDFRM);
-    x8Type = parameter(P_X8_TYPE);
-    planeMvtype = parameter(P_MVTYPE_PLANE);
-    planeSkip = parameter(P_SKIP_PLANE);
-    planeDirect = parameter(P_DIRECT_PLANE);
-    planeForward = parameter(P_FORWARD_PLANE);
-    planeAcpred = parameter(P_ACPRED_PLANE);
-    planeOverflags = parameter(P_OVERFLAGS_PLANE);
-    planeFieldtx = parameter(P_FIELDTX_PLANE);
-    rowOffset = parameter(P_ROW_OFFSET);
-    unitStartRow = parameter(U_START_ROW);
-    unitEndRow = parameter(U_END_ROW);
-    profile = stateValue(S_PROFILE);
-    resRtmFlag = stateValue(S_RES_RTM_FLAG);
-    overlapFlag = stateValue(S_OVERLAP);
-    fastuvmcFlag = stateValue(S_FASTUVMC);
-    refFieldType[0] = refFieldTypeForward;
-    refFieldType[1] = 0u;
-    if (fcm == FCM_FRAME) {
-        cbpcyLocation = VLC_INTERLACED_CBPCY[icbptab];
-        if (fourmvswitch != 0u) {
-            mbmodeLocation = VLC_INTERLACED_FRAME_4MV_MBMODE[mbmodetab];
-        } else {
-            mbmodeLocation = VLC_INTERLACED_FRAME_NON4MV_MBMODE[mbmodetab];
-        }
-        imvLocation = VLC_ONE_REFERENCE_MVDATA[imvtab];
-        twomvbpLocation = VLC_2MV_BLOCK_PATTERN[twomvbptab];
-        fourmvbpLocation = VLC_4MV_BLOCK_PATTERN[fourmvbptab];
-    } else if (fcm == FCM_FIELD) {
-        cbpcyLocation = VLC_INTERLACED_CBPCY[icbptab];
-        let mixed = mvMode == MV_MODE_MIXED_MV || (mvMode == MV_MODE_INTENSITY_COMPENSATION && mvMode2 == MV_MODE_MIXED_MV);
-        if (mixed) {
-            mbmodeLocation = VLC_INTERLACED_FIELD_MIXED_MBMODE[mbmodetab];
-        } else {
-            mbmodeLocation = VLC_INTERLACED_FIELD_1MV_MBMODE[mbmodetab];
-        }
-        if (numref != 0u) {
-            imvLocation = VLC_TWO_REFERENCE_MVDATA[imvtab];
-        } else {
-            imvLocation = VLC_ONE_REFERENCE_MVDATA[imvtab];
-        }
-        fourmvbpLocation = VLC_4MV_BLOCK_PATTERN[fourmvbptab];
-    } else {
-        cbpcyLocation = VLC_CBPCY_P[cbptab];
-    }
-}
-
-// Macroblock records of the current picture by field row
-fn recordAt(column: u32, row: u32) -> u32 {
-    return macroblockRecord(column, rowOffset + row);
-}
-
-// Record fields: the current macroblock's in its staged copy, any other's in storage
-fn recordValue(record: u32, field: u32) -> u32 {
-    if (record == currentRecord) {
-        return stagedRecord[field];
-    }
-    return macroblocks[record + field];
-}
-
-fn setRecordValue(record: u32, field: u32, value: u32) {
-    if (record == currentRecord) {
-        stagedRecord[field] = value;
-    } else {
-        macroblocks[record + field] = value;
-    }
-}
-
-fn orRecordValue(record: u32, field: u32, value: u32) {
-    setRecordValue(record, field, recordValue(record, field) | value);
-}
-
-// The 8x8 luma block grid of the current field: FFmpeg's block_index addresses with a power-of-two stride, so addressing shifts instead
-// of dividing. Columns from 2 * mb_width on are padding, of which FFmpeg's b8_stride of 2 * mb_width + 1 holds one, and FFmpeg reads
-// none past it
-fn blockGridStride() -> i32 {
-    return 1 << GRID_STRIDE_SHIFT;
-}
-
-fn blockGridIndex(n: u32) -> i32 {
-    let x = i32(mbX) * 2 + i32(n & 1u);
-    let y = i32(mbY) * 2 + i32(n >> 1u);
-    return y * blockGridStride() + x;
-}
-
-// The column and row of a grid index outside the padding
-fn gridColumn(index: i32) -> u32 {
-    return u32(index) & ((1u << GRID_STRIDE_SHIFT) - 1u);
-}
-
-fn gridRow(index: i32) -> u32 {
-    return u32(index) >> GRID_STRIDE_SHIFT;
-}
-
-// The record and block of a grid index; the padding has none
-fn gridRecord(index: i32) -> u32 {
-    return recordAt(gridColumn(index) >> 1u, gridRow(index) >> 1u);
-}
-
-fn gridBlock(index: i32) -> u32 {
-    return (gridColumn(index) & 1u) | ((gridRow(index) & 1u) << 1u);
-}
-
-fn gridIsPadding(index: i32) -> bool {
-    return index < 0 || gridColumn(index) >= mbWidth * 2u;
-}
-
-// motion_val[dir] of a grid block
-fn gridMotionVector(direction: u32, index: i32) -> vec2i {
-    if (gridIsPadding(index)) {
-        return vec2i(0, 0);
-    }
-    return unpackMotionVector(recordValue(gridRecord(index), select(M_MV0_0, M_MV1_0, direction != 0u) + gridBlock(index)));
-}
-
-fn setGridMotionVector(direction: u32, index: i32, vector: vec2i) {
-    setRecordValue(gridRecord(index), select(M_MV0_0, M_MV1_0, direction != 0u) + gridBlock(index), packMotionVector(vector));
-}
-
-// mv_f[dir] of a grid block
-fn gridFieldFlag(direction: u32, index: i32) -> u32 {
-    if (gridIsPadding(index)) {
-        return 0u;
-    }
-    return (recordValue(gridRecord(index), M_FIELD_FLAGS) >> (direction * 8u + gridBlock(index))) & 1u;
-}
-
-fn setGridFieldFlag(direction: u32, index: i32, value: u32) {
-    let record = gridRecord(index);
-    let bit = 1u << (direction * 8u + gridBlock(index));
-    let flags = recordValue(record, M_FIELD_FLAGS);
-    setRecordValue(record, M_FIELD_FLAGS, select(flags & ~bit, flags | bit, value != 0u));
-}
-
-// Chroma mv_f, which mc functions set in field pictures
-fn setChromaFieldFlags(direction: u32, value: u32) {
-    let bits = (3u << 4u) << (direction * 8u);
-    let flags = recordValue(currentRecord, M_FIELD_FLAGS);
-    setRecordValue(currentRecord, M_FIELD_FLAGS, select(flags & ~bits, flags | bits, value != 0u));
-}
-
-// v->mb_type of a grid block: whether it is intra
-fn gridIsIntra(index: i32) -> bool {
-    if (gridIsPadding(index)) {
-        return false;
-    }
-    return ((recordValue(gridRecord(index), M_FLAGS) >> gridBlock(index)) & 1u) != 0u;
-}
-
-fn setBlockIntra(n: u32, intra: bool) {
-    let bit = 1u << n;
-    let flags = recordValue(currentRecord, M_FLAGS);
-    setRecordValue(currentRecord, M_FLAGS, select(flags & ~bit, flags | bit, intra));
-}
-
-fn setAllBlocksIntra(intra: bool) {
-    let flags = recordValue(currentRecord, M_FLAGS) & ~0x3Fu;
-    setRecordValue(currentRecord, M_FLAGS, flags | select(0u, 0x3Fu, intra));
-}
-
-// v->blk_mv_type of a grid block: whether its motion vector is a field motion vector
-fn gridBlockMotionType(index: i32) -> u32 {
-    if (gridIsPadding(index)) {
-        return 0u;
-    }
-    return (recordValue(gridRecord(index), M_FLAGS) >> (MB_BLOCK_MV_TYPE_SHIFT + gridBlock(index))) & 1u;
-}
-
-fn setBlockMotionTypes(fieldMotion: u32) {
-    let flags = recordValue(currentRecord, M_FLAGS) & ~(15u << MB_BLOCK_MV_TYPE_SHIFT);
-    setRecordValue(currentRecord, M_FLAGS, flags | select(0u, 15u << MB_BLOCK_MV_TYPE_SHIFT, fieldMotion != 0u));
-}
-
-// v->is_intra of a macroblock of the current field, by macroblock offset from the current one
-fn macroblockIsIntraAt(column: i32, row: i32) -> u32 {
-    if (column < 0 || row < 0 || column >= i32(mbWidth)) {
-        return 0u;
-    }
-    return recordValue(recordAt(u32(column), u32(row)), M_IS_INTRA);
-}
-
-// The signed quantizer of a macroblock, FFmpeg's qscale_table
-fn macroblockQuantizerAt(column: u32, row: u32) -> i32 {
-    return i32(recordValue(recordAt(column, row), M_QSCALE) & 0x3Fu) - 32;
-}
-
-fn setMacroblockQuantizer(quantizer: i32) {
-    setRecordValue(currentRecord, M_QSCALE, u32(quantizer + 32));
-}
-
-// The bitplane bit of the current macroblock, or the raw bit the macroblock layer reads
-fn planeBit(state: u32, bit: u32) -> u32 {
-    switch (state) {
-        case PLANE_RAW: {
-            return readBit();
-        }
-        case PLANE_DECODED: {
-            return select(0u, 1u, (pictureState[F_BITPLANES + frameRow * mbWidth + mbX] & bit) != 0u);
-        }
-        default: {
-            return 0u;
-        }
-    }
-}
-
-// FFmpeg's GET_MQUANT
-fn readMacroblockQuantizer(initial: i32) -> i32 {
-    var mquant = initial;
-    if (dquantfrm == 0u) {
-        return mquant;
-    }
-    var edges = 0u;
-    if (dqprofile == DQPROFILE_ALL_MBS) {
-        if (dqbilevel != 0u) {
-            mquant = select(i32(pq), -i32(altpq), readBit() != 0u);
-        } else {
-            let mqdiff = readBits(3u);
-            if (mqdiff != 7u) {
-                mquant = -i32(pq) - i32(mqdiff);
-            } else {
-                mquant = -i32(readBits(5u));
-            }
-        }
-    }
-    if (dqprofile == DQPROFILE_SINGLE_EDGE) {
-        edges = 1u << dqsbedge;
-    } else if (dqprofile == DQPROFILE_DOUBLE_EDGES) {
-        edges = (3u << dqsbedge) % 15u;
-    } else if (dqprofile == DQPROFILE_FOUR_EDGES) {
-        edges = 15u;
-    }
-    if ((edges & 1u) != 0u && mbX == 0u) {
-        mquant = -i32(altpq);
-    }
-    if ((edges & 2u) != 0u && mbY == 0u) {
-        mquant = -i32(altpq);
-    }
-    if ((edges & 4u) != 0u && mbX == mbWidth - 1u) {
-        mquant = -i32(altpq);
-    }
-    if ((edges & 8u) != 0u && mbY == (mbHeight >> fieldMode) - 1u) {
-        mquant = -i32(altpq);
-    }
-    if (mquant == 0 || mquant > 31 || mquant < -31) {
-        mquant = 1;
-    }
-    return mquant;
-}
-
-// FFmpeg's GET_MVDATA for progressive pictures: the differential, whether coefficients follow, and the intra escape
-struct MotionVectorData {
-    differential: vec2i,
-    hasCoefficients: bool,
-    intra: bool,
-}
-
-fn readMotionVectorComponent(index: u32) -> i32 {
-    var value = i32(tableWord(T_MV_OFFSET_TABLE, 9u + index));
-    var size = i32(tableWord(T_MV_SIZE_TABLE, index));
-    if (quarterSample == 0u && index == 5u) {
-        size -= 1;
-    }
-    if (size > 0) {
-        let bits = readBits(u32(size));
-        let sign = -i32(bits & 1u);
-        value = (sign ^ (i32(bits >> 1u) + value)) - sign;
-    }
-    return value;
-}
-
-fn readMotionVectorData() -> MotionVectorData {
-    var result = MotionVectorData(vec2i(0, 0), false, false);
-    var index = 1u + readCode(VLC_MV_DIFFERENTIAL[mvTableIndex]);
-    if (index > 36u) {
-        result.hasCoefficients = true;
-        index -= 37u;
-    }
-    if (index == 0u) {
-        return result;
-    }
-    if (index == 35u) {
-        result.differential = vec2i(i32(readBits(kX - 1u + quarterSample)), i32(readBits(kY - 1u + quarterSample)));
-        return result;
-    }
-    if (index == 36u) {
-        result.intra = true;
-        return result;
-    }
-    if (index > 36u) {
-        macroblockFailed = true;
-        return result;
-    }
-    let x = readMotionVectorComponent(index % 6u);
-    let y = readMotionVectorComponent(index / 6u);
-    result.differential = vec2i(x, y);
-    return result;
-}
-
-// FFmpeg's get_mvdata_interlaced: the differential and, with two references, the predictor flag in z
-fn readInterlacedMotionVectorData() -> vec3i {
-    let extendX = dmvrange & 1u;
-    let extendY = (dmvrange >> 1u) & 1u;
-    let escape = select(71u, 125u, numref != 0u);
-    let index = readCode(imvLocation);
-    var x = 0;
-    var y = 0;
-    var predictorFlag = 0;
-    if (index == escape) {
-        x = i32(readBits(kX));
-        y = i32(readBits(kY));
-        if (numref != 0u) {
-            predictorFlag = y & 1;
-            y = (y + (y & 1)) >> 1u;
-        }
-        return vec3i(x, y, predictorFlag);
-    }
-    if (index > escape) {
-        macroblockFailed = true;
-        return vec3i(0, 0, 0);
-    }
-    var index1 = (index + 1u) % 9u;
-    if (index1 != 0u) {
-        let value = readBits(index1 + extendX);
-        let sign = -i32(value & 1u);
-        x = (sign ^ (i32(value >> 1u) + i32(tableWord(T_MV_OFFSET_TABLE, extendX * 9u + index1)))) - sign;
-    }
-    index1 = (index + 1u) / 9u;
-    if (index1 > numref) {
-        let value = readBits((index1 >> numref) + extendY);
-        let sign = -i32(value & 1u);
-        y = (sign ^ (i32(value >> 1u) + i32(tableWord(T_MV_OFFSET_TABLE, extendY * 9u + (index1 >> numref))))) - sign;
-    }
-    if (numref != 0u) {
-        predictorFlag = i32(index1 & 1u);
-    }
-    return vec3i(x, y, predictorFlag);
-}
-
-// FFmpeg's vc1_decode_ac_coeff: run in x, value in y, last in z; a failure marks the macroblock.
-// location is the coding set's lookup, whose symbols carry each code's run, level, and last flag
-fn readACCoefficient(codingSet: u32, location: u32) -> vec3i {
-    // A code of the root level, the frequent case, reads with its sign bit from one window
-    let window = peekReaderWindow();
-    let entry = lookupEntry(location & VLC_BASE_MASK, window, 0u, location >> VLC_ROOT_BITS_SHIFT);
-    let length = (entry >> VLC_LENGTH_SHIFT) & VLC_LENGTH_MASK;
-    if ((entry & (VLC_SUBTABLE_FLAG | AC_ESCAPE_BIT)) != 0u || length == 0u) {
-        return readLongACCoefficient(codingSet, location);
-    }
-    // FFmpeg's last also holds once the code ran past the segment's end
-    let last = ((entry & AC_LAST_BIT) != 0u) | (readerBit + length > readerEndBit);
-    let signMask = -i32((window << length) >> 31u);
-    consumeReaderBits(length + 1u);
-    let level = i32((entry >> AC_LEVEL_SHIFT) & AC_LEVEL_MASK);
-    return vec3i(i32(entry & AC_RUN_MASK), (level ^ signMask) - signMask, select(0, 1, last));
-}
-
-// readACCoefficient for codes past the root level, escapes, and invalid codes
-fn readLongACCoefficient(codingSet: u32, location: u32) -> vec3i {
-    var symbol = readCode(location);
-    if (symbol == INVALID_CODE) {
-        macroblockFailed = true;
-        return vec3i(0, 0, 1);
-    }
-    var run = 0u;
-    var level = 0u;
-    var last = false;
-    var sign = 0u;
-    if ((symbol & AC_ESCAPE_BIT) == 0u) {
-        run = symbol & AC_RUN_MASK;
-        level = (symbol >> AC_LEVEL_SHIFT) & AC_LEVEL_MASK;
-        last = ((symbol & AC_LAST_BIT) != 0u) | (readerBitsLeft() < 0);
-        sign = readBit();
-    } else {
-        let escape = readDecode210();
-        if (escape != 2u) {
-            symbol = readCode(location);
-            if (symbol == INVALID_CODE || (symbol & AC_ESCAPE_BIT) != 0u) {
-                macroblockFailed = true;
-                return vec3i(0, 0, 1);
-            }
-            run = symbol & AC_RUN_MASK;
-            level = (symbol >> AC_LEVEL_SHIFT) & AC_LEVEL_MASK;
-            last = (symbol & AC_LAST_BIT) != 0u;
-            if (escape == 0u) {
-                if (last) {
-                    level += tableWord(T_AC_LAST_DELTA_LEVEL, codingSet * AC_LAST_DELTA_LEVEL_LENGTH + run);
-                } else {
-                    level += tableWord(T_AC_DELTA_LEVEL, codingSet * AC_DELTA_LEVEL_LENGTH + run);
-                }
-            } else {
-                if (last) {
-                    run += tableWord(T_AC_LAST_DELTA_RUN, codingSet * AC_LAST_DELTA_RUN_LENGTH + level) + 1u;
-                } else {
-                    run += tableWord(T_AC_DELTA_RUN, codingSet * AC_DELTA_RUN_LENGTH + level) + 1u;
-                }
-            }
-            sign = readBit();
-        } else {
-            last = readBit() != 0u;
-            if (esc3LevelLength == 0u) {
-                if (pq < 8u || dquantfrm != 0u) {
-                    esc3LevelLength = readBits(3u);
-                    if (esc3LevelLength == 0u) {
-                        esc3LevelLength = readBits(2u) + 8u;
-                    }
-                } else {
-                    esc3LevelLength = readUnary(1u, 6u) + 2u;
-                }
-                esc3RunLength = 3u + readBits(2u);
-            }
-            run = readBits(esc3RunLength);
-            sign = readBit();
-            level = readBits(esc3LevelLength);
-        }
-    }
-    let signMask = -i32(sign);
-    return vec3i(i32(run), (i32(level) ^ signMask) - signMask, select(0, 1, last));
-}
-
-// The first coefficient entry of block n of the current macroblock
-fn blockEntryBase(n: u32) -> u32 {
-    return ((currentRecord / MACROBLOCK_WORDS) * 6u + n) * COEFFICIENTS_PER_BLOCK;
-}
-
-// The entry count of block n, a byte of its macroblock's count fields
-fn setBlockCount(n: u32, count: u32) {
-    let countField = select(M_COUNTS_45, M_COUNTS_0123, n < 4u);
-    let shift = (n & 3u) * 8u;
-    stagedRecord[countField] = (stagedRecord[countField] & ~(0xFFu << shift)) | (count << shift);
-}
-
-// The transform half-word of a block
-fn setBlockTransform(n: u32, transform: u32) {
-    let field = M_TRANSFORM_01 + n / 2u;
-    let shift = (n & 1u) * 16u;
-    let value = recordValue(currentRecord, field) & ~(0xFFFFu << shift);
-    setRecordValue(currentRecord, field, value | (transform << shift));
-}
-
-// Reads the DC differential of a block with quantizer quant
-fn readDCDifferential(n: u32, quant: u32) -> i32 {
-    let component = select(0u, 1u, n >= 4u);
-    var dcdiff = i32(readCode(VLC_DC_DIFFERENTIAL[dcTableIndex * 2u + component]));
-    if (dcdiff == i32(INVALID_CODE)) {
-        macroblockFailed = true;
-        return 0;
-    }
-    if (dcdiff != 0) {
-        var m = 0u;
-        if (quant == 1u || quant == 2u) {
-            m = 3u - quant;
-        }
-        if (dcdiff == 119) {
-            dcdiff = i32(readBits(8u + m));
-        } else if (m != 0u) {
-            dcdiff = (dcdiff << m) + i32(readBits(m)) - ((1 << m) - 1);
-        }
-        if (readBit() != 0u) {
-            dcdiff = -dcdiff;
-        }
-    }
-    return dcdiff;
-}
-
-// An intra block's parse: its DC differential into its DC predictor and its AC levels by scan index into its entries, since no bit
-// depends on prediction; predictIntra predicts, scans, and dequantizes them once the slice passes are done
-fn decodeIntraBlockLevels(n: u32, coded: bool, codingSet: u32, quant: u32) {
-    stagedDCWords[n] = u32(readDCDifferential(n, quant)) & 0xFFFFu;
-    var count = 0u;
-    if (coded) {
-        let location = VLC_AC_COEFFICIENTS[codingSet];
-        let base = blockEntryBase(n);
-        var position = 1u;
-        loop {
-            let coefficient = readACCoefficient(codingSet, location);
-            position += u32(coefficient.x);
-            if (position > 63u || macroblockFailed) {
-                break;
-            }
-            blockData[base + count] = (position << 16u) | (u32(coefficient.y) & 0xFFFFu);
-            count += 1u;
-            if (coefficient.z != 0) {
-                break;
-            }
-            position += 1u;
-        }
-        stagedRecord[M_FLAGS] |= 1u << (MB_INTRA_CODED_SHIFT + n);
-    }
-    setBlockCount(n, count);
-    setBlockTransform(n, TRANSFORM_PRESENT_BIT | TRANSFORM_8X8 | (15u << TRANSFORM_CODED_SHIFT));
-}
-
-// The scan table of a subblock transform, chosen once per subblock: FFmpeg's zz tables by transform, coding mode, and profile
-fn subblockScanTable(transform: u32) -> u32 {
-    let progressive = fcm == FCM_PROGRESSIVE;
-    let advanced = profile == PROFILE_ADVANCED;
-    switch (transform) {
-        case TRANSFORM_8X8: {
-            return select(T_SCAN_8X8 + 4u * 64u, T_SCAN_8X8, progressive);
-        }
-        case TRANSFORM_4X4: {
-            return select(T_SCAN_4X4_INTERLACED, T_SCAN_4X4_PROGRESSIVE, progressive);
-        }
-        case TRANSFORM_8X4: {
-            return select(T_SCAN_8X4_INTERLACED, select(T_SCAN_8X4_SIMPLE, T_SCAN_8X4_ADVANCED, advanced), progressive);
-        }
-        default: {
-            return select(T_SCAN_4X8_INTERLACED, select(T_SCAN_4X8_SIMPLE, T_SCAN_4X8_ADVANCED, advanced), progressive);
-        }
-    }
-}
-
-// FFmpeg's vc1_decode_p_block: an inter block's transform type, subblock pattern, and coefficients.
-// ttmb is the macroblock's transform type, -1 when each block codes its own; returns the coded subblock pattern and the block's transform type
-fn decodeInterBlock(n: u32, mquant: i32, ttmb: i32, firstBlock: bool) -> vec2u {
-    let quant = abs(mquant);
-    entryBase = blockEntryBase(n);
-    entryCount = 0u;
-    var ttblk = u32(ttmb & 7);
-    var subblkpat = 0u;
-    if (ttmb == -1) {
-        let symbol = readCode(VLC_TTBLK[ttIndex]);
-        if (symbol == INVALID_CODE) {
-            macroblockFailed = true;
-            return vec2u(0u, 0u);
-        }
-        ttblk = tableWord(T_TTBLK_TO_TT, ttIndex * 8u + symbol);
-    }
-    if (ttblk == TT_4X4) {
-        let symbol = readCode(VLC_SUBBLOCK_PATTERN[ttIndex]);
-        if (symbol == INVALID_CODE) {
-            macroblockFailed = true;
-            return vec2u(0u, 0u);
-        }
-        subblkpat = ~(symbol + 1u);
-    }
-    if (ttblk != TT_8X8 && ttblk != TT_4X4
-        && ((ttmbf != 0u || (ttmb != -1 && (ttmb & 8) != 0 && !firstBlock)) || (resRtmFlag == 0u && !firstBlock))) {
-        subblkpat = readDecode012();
-        if (subblkpat != 0u) {
-            subblkpat ^= 3u;
-        }
-        if (ttblk == TT_8X4_TOP || ttblk == TT_8X4_BOTTOM) {
-            ttblk = TT_8X4;
-        }
-        if (ttblk == TT_4X8_RIGHT || ttblk == TT_4X8_LEFT) {
-            ttblk = TT_4X8;
-        }
-    }
-    let scale = quant * 2 + select(i32(halfpq), 0, mquant < 0);
-    if (ttblk == TT_8X4_TOP || ttblk == TT_8X4_BOTTOM) {
-        subblkpat = 2u - select(0u, 1u, ttblk == TT_8X4_TOP);
-        ttblk = TT_8X4;
-    }
-    if (ttblk == TT_4X8_RIGHT || ttblk == TT_4X8_LEFT) {
-        subblkpat = 2u - select(0u, 1u, ttblk == TT_4X8_LEFT);
-        ttblk = TT_4X8;
-    }
-    // The transform's subblocks: their count, the pattern bits that skip them, and their raster offsets. One decodeSubblock call site
-    // serves every transform type, since backends inline each call
-    var pattern = 0xFu;
-    var transform = TRANSFORM_8X8;
-    var subblocks = 1u;
-    switch (ttblk) {
-        case TT_8X8: {
-            subblkpat = 0u;
-        }
-        case TT_4X4: {
-            transform = TRANSFORM_4X4;
-            pattern = ~subblkpat & 0xFu;
-            subblocks = 4u;
-        }
-        case TT_8X4: {
-            transform = TRANSFORM_8X4;
-            pattern = ~((subblkpat & 2u) * 6u + (subblkpat & 1u) * 3u) & 0xFu;
-            subblocks = 2u;
-        }
-        default: {
-            transform = TRANSFORM_4X8;
-            pattern = ~(subblkpat * 5u) & 0xFu;
-            subblocks = 2u;
-        }
-    }
-    var coded = 0u;
-    var dcOnly = 0u;
-    for (var j = 0u; j < subblocks; j += 1u) {
-        if (((subblkpat >> (subblocks - 1u - j)) & 1u) != 0u) {
-            continue;
-        }
-        var offset = 0u;
-        switch (transform) {
-            case TRANSFORM_4X4: {
-                offset = (j & 1u) * 4u + (j & 2u) * 16u;
-            }
-            case TRANSFORM_8X4: {
-                offset = j * 32u;
-            }
-            case TRANSFORM_4X8: {
-                offset = j * 4u;
-            }
-            default: {
-            }
-        }
-        coded |= 1u << j;
-        let last = decodeSubblock(transform, offset, scale, quant);
-        dcOnly |= select(0u, 1u << j, last == 1u);
-    }
-    setBlockCount(n, entryCount);
-    setBlockTransform(n, TRANSFORM_PRESENT_BIT | transform | (coded << TRANSFORM_CODED_SHIFT) | (dcOnly << TRANSFORM_DC_ONLY_SHIFT));
-    return vec2u(pattern, ttblk);
-}
-
-// Decodes one subblock's coefficients at a raster offset; returns the position after the last coefficient, FFmpeg's i
-fn decodeSubblock(transform: u32, offset: u32, scale: i32, quant: i32) -> u32 {
-    let limit = select(select(32u, 16u, transform == TRANSFORM_4X4), 64u, transform == TRANSFORM_8X8);
-    let scanTable = subblockScanTable(transform);
-    var position = 0u;
-    loop {
-        let coefficient = readACCoefficient(codingset2, interACLocation);
-        position += u32(coefficient.x);
-        if (position >= limit || macroblockFailed) {
-            break;
-        }
-        let natural = tableWord(scanTable, position) + offset;
-        position += 1u;
-        // Positions never repeat within a block, so each nonzero value is its own entry; the reconstruction reads them in any order
-        var value = wrapInt16(coefficient.y * scale);
-        if (pquantizer == 0u) {
-            value = wrapInt16(value + select(quant, -quant, value < 0));
-        }
-        if (value != 0) {
-            blockData[entryBase + entryCount] = (natural << 16u) | (u32(value) & 0xFFFFu);
-            entryCount += 1u;
-        }
-        if (coefficient.z != 0) {
-            break;
-        }
-    }
-    return position;
-}
-
-// Motion compensation operation records: luma slot n * 2 + averaging, chroma slot quarter * 2 + averaging
-fn writeLumaOperation(slot: u32, flags: u32, vector: vec2i) {
-    let base = M_LUMA_OPS + slot * OPERATION_WORDS;
-    stagedRecord[base] = flags | OP_PRESENT;
-    stagedRecord[base + 1u] = packMotionVector(vector);
-    stagedRecord[M_OPERATIONS] |= 1u << slot;
-}
-
-fn writeChromaOperation(slot: u32, flags: u32, vector: vec2i) {
-    let base = M_CHROMA_OPS + slot * OPERATION_WORDS;
-    stagedRecord[base] = flags | OP_PRESENT;
-    stagedRecord[base + 1u] = packMotionVector(vector);
-    stagedRecord[M_OPERATIONS] |= 1u << (LUMA_OPERATION_SLOTS + slot);
-}
-
-// The source of a forward or backward operation: the first field of the current frame when a second field references the opposite field
-fn operationSource(direction: u32, referenceField: u32) -> u32 {
-    if (direction != 0u) {
-        return SOURCE_NEXT;
-    }
-    if (fieldMode != 0u && currentFieldType != referenceField && secondField != 0u) {
-        return SOURCE_CURRENT;
-    }
-    return SOURCE_LAST;
-}
-
-fn operationFlags(kind: u32, direction: u32, average: bool, referenceField: u32) -> u32 {
-    var flags = (kind << OP_KIND_SHIFT) | (operationSource(direction, referenceField) << OP_SOURCE_SHIFT);
-    if (average) {
-        flags |= OP_AVERAGE;
-    }
-    if (referenceField != 0u) {
-        flags |= OP_BOTTOM_FIELD;
-    }
-    return flags;
-}
-
-fn currentMotionVector(direction: u32, n: u32) -> vec2i {
-    return motionVectors[direction * 4u + n];
-}
-
-fn setCurrentMotionVector(direction: u32, n: u32, vector: vec2i) {
-    motionVectors[direction * 4u + n] = vector;
-}
-
-// The chroma motion vector of a luma vector, FFmpeg's (mv + ((mv & 3) == 3)) >> 1
-fn chromaVector(vector: vec2i) -> vec2i {
-    return vec2i((vector.x + select(0, 1, (vector.x & 3) == 3)) >> 1u, (vector.y + select(0, 1, (vector.y & 3) == 3)) >> 1u);
-}
-
-// FASTUVMC rounding of mc_1mv and mc_4mv_chroma: odd components move toward zero
-fn roundTowardZeroEven(value: i32) -> i32 {
-    return value + select(-(value & 1), value & 1, value < 0);
-}
-
-// FASTUVMC rounding of interp_mc: odd components move away from zero
-fn roundAwayFromZeroEven(value: i32) -> i32 {
-    return value + select(value & 1, -(value & 1), value < 0);
-}
-
-// Records ff_vc1_mc_1mv(v, dir) and its side effects on motion_val[1], luma_mv, and chroma mv_f
-fn recordMotion1MV(direction: u32) {
-    var vector = currentMotionVector(direction, 0u);
-    if (pictureType == TYPE_P) {
-        for (var n = 0u; n < 4u; n += 1u) {
-            setRecordValue(currentRecord, M_MV1_0 + n, packMotionVector(vector));
-        }
-    }
-    var chroma = chromaVector(vector);
-    setRecordValue(currentRecord, M_LOOP_FILTER_CHROMA_MV, packMotionVector(chroma));
-    let referenceField = refFieldType[direction];
-    if (fieldMode != 0u && currentFieldType != referenceField) {
-        vector.y = vector.y - 2 + 4 * i32(currentFieldType);
-        chroma.y = chroma.y - 2 + 4 * i32(currentFieldType);
-    }
-    if (fastuvmcFlag != 0u && fcm != FCM_FRAME) {
-        chroma = vec2i(roundTowardZeroEven(chroma.x), roundTowardZeroEven(chroma.y));
-    }
-    writeLumaOperation(0u, operationFlags(LUMA_KIND_1MV, direction, false, referenceField), vector);
-    writeChromaOperation(0u, operationFlags(CHROMA_KIND_1MV, direction, false, referenceField), chroma);
-    if (fieldMode != 0u) {
-        setChromaFieldFlags(direction, select(0u, 1u, currentFieldType != referenceField));
-    }
-}
-
-// Records ff_vc1_interp_mc: averaging the backward prediction into the forward one
-fn recordInterpolatedMotion() {
-    var vector = currentMotionVector(1u, 0u);
-    var chroma = chromaVector(vector);
-    let referenceField = refFieldType[1];
-    if (fieldMode != 0u && currentFieldType != referenceField) {
-        vector.y = vector.y - 2 + 4 * i32(currentFieldType);
-        chroma.y = chroma.y - 2 + 4 * i32(currentFieldType);
-    }
-    if (fastuvmcFlag != 0u) {
-        chroma = vec2i(roundAwayFromZeroEven(chroma.x), roundAwayFromZeroEven(chroma.y));
-    }
-    writeLumaOperation(1u, operationFlags(LUMA_KIND_INTERPOLATED, 1u, true, referenceField), vector);
-    writeChromaOperation(1u, operationFlags(CHROMA_KIND_INTERPOLATED, 1u, true, referenceField), chroma);
-}
-
-// get_luma_mv: the luma vector of a field 4MV macroblock's chroma, from the field flags; returns the vector and the opposite count in z
-fn medianLumaVector(direction: u32) -> vec3i {
-    var index = 0u;
-    for (var n = 0u; n < 4u; n += 1u) {
-        index |= gridFieldFlagOfCurrent(direction, n) << n;
-    }
-    let oppositeCount = countOneBits(index);
-    let v0 = currentMotionVector(direction, 0u);
-    let v1 = currentMotionVector(direction, 1u);
-    let v2 = currentMotionVector(direction, 2u);
-    let v3 = currentMotionVector(direction, 3u);
-    var result = vec2i(0, 0);
-    switch (oppositeCount) {
-        case 0u, 4u: {
-            result = vec2i(medianOfFour(v0.x, v1.x, v2.x, v3.x), medianOfFour(v0.y, v1.y, v2.y, v3.y));
-        }
-        case 1u: {
-            let a = currentMotionVector(direction, select(0u, 1u, index < 2u));
-            let b = currentMotionVector(direction, 1u + select(0u, 1u, index < 4u));
-            let c = currentMotionVector(direction, 2u + select(0u, 1u, index < 8u));
-            result = vec2i(medianOfThree(a.x, b.x, c.x), medianOfThree(a.y, b.y, c.y));
-        }
-        case 3u: {
-            let a = currentMotionVector(direction, select(0u, 1u, index > 0xDu));
-            let b = currentMotionVector(direction, 1u + select(0u, 1u, index > 0xBu));
-            let c = currentMotionVector(direction, 2u + select(0u, 1u, index > 0x7u));
-            result = vec2i(medianOfThree(a.x, b.x, c.x), medianOfThree(a.y, b.y, c.y));
-        }
-        default: {
-            let pair = tableWord(T_LUMA_MV_PAIRS, index);
-            let a = currentMotionVector(direction, pair >> 4u);
-            let b = currentMotionVector(direction, pair & 15u);
-            result = vec2i((a.x + b.x) / 2, (a.y + b.y) / 2);
-        }
-    }
-    return vec3i(result, i32(oppositeCount));
-}
-
-fn gridFieldFlagOfCurrent(direction: u32, n: u32) -> u32 {
-    return (recordValue(currentRecord, M_FIELD_FLAGS) >> (direction * 8u + n)) & 1u;
-}
-
-// get_chroma_mv: the luma vector of a 4MV macroblock's chroma from its inter blocks; the valid count in z, 0 when no chroma prediction is made
-fn medianChromaVector(direction: u32) -> vec3i {
-    var index = 0u;
-    for (var n = 0u; n < 4u; n += 1u) {
-        if (((recordValue(currentRecord, M_FLAGS) >> n) & 1u) == 0u) {
-            index |= 1u << n;
-        }
-    }
-    let validCount = countOneBits(index);
-    let v0 = currentMotionVector(direction, 0u);
-    let v1 = currentMotionVector(direction, 1u);
-    let v2 = currentMotionVector(direction, 2u);
-    let v3 = currentMotionVector(direction, 3u);
-    switch (validCount) {
-        case 4u: {
-            return vec3i(medianOfFour(v0.x, v1.x, v2.x, v3.x), medianOfFour(v0.y, v1.y, v2.y, v3.y), 4);
-        }
-        case 3u: {
-            let a = currentMotionVector(direction, select(0u, 1u, index > 0xDu));
-            let b = currentMotionVector(direction, 1u + select(0u, 1u, index > 0xBu));
-            let c = currentMotionVector(direction, 2u + select(0u, 1u, index > 0x7u));
-            return vec3i(medianOfThree(a.x, b.x, c.x), medianOfThree(a.y, b.y, c.y), 3);
-        }
-        case 2u: {
-            let pair = tableWord(T_CHROMA_MV_PAIRS, index);
-            let a = currentMotionVector(direction, pair >> 4u);
-            let b = currentMotionVector(direction, pair & 15u);
-            return vec3i((a.x + b.x) / 2, (a.y + b.y) / 2, 2);
-        }
-        default: {
-            return vec3i(0, 0, 0);
-        }
-    }
-}
-
-// Records ff_vc1_mc_4mv_luma(v, n, dir, avg) and its side effects
-fn recordMotion4MVLuma(n: u32, direction: u32, average: bool) {
-    var vector = currentMotionVector(direction, n);
-    let fieldMotion = select(0u, (recordValue(currentRecord, M_FLAGS) >> (MB_BLOCK_MV_TYPE_SHIFT + n)) & 1u, fcm == FCM_FRAME);
-    let referenceField = refFieldType[direction];
-    if (fieldMode != 0u && currentFieldType != referenceField) {
-        vector.y = vector.y - 2 + 4 * i32(currentFieldType);
-    }
-    if (pictureType == TYPE_P && n == 3u && fieldMode != 0u) {
-        let median = medianLumaVector(0u);
-        setRecordValue(currentRecord, M_MV1_0, packMotionVector(median.xy));
-        let opposite = select(0u, 1u, median.z > 2);
-        for (var k = 0u; k < 4u; k += 1u) {
-            setGridFieldFlag(1u, blockGridIndex(k), opposite);
-        }
-    }
-    if (fcm == FCM_FRAME) {
-        if (pictureType == TYPE_P) {
-            setRecordValue(currentRecord, M_MV1_0 + n, packMotionVector(vector));
-        }
-        // Pull back vectors that point too far outside the frame
-        let width = i32(stateValue(S_CODED_WIDTH));
-        let height = i32(stateValue(S_CODED_HEIGHT) >> 1u);
-        let qx = i32(mbX) * 16 + (vector.x >> 2u);
-        let qy = i32(mbY) * 8 + (vector.y >> 3u);
-        if (qx < -17) {
-            vector.x -= 4 * (qx + 17);
-        } else if (qx > width) {
-            vector.x -= 4 * (qx - width);
-        }
-        if (qy < -18) {
-            vector.y -= 8 * (qy + 18);
-        } else if (qy > height + 1) {
-            vector.y -= 8 * (qy - height - 1);
-        }
-    }
-    var flags = operationFlags(LUMA_KIND_4MV, direction, average, referenceField);
-    if (fieldMotion != 0u) {
-        flags |= OP_FIELD_MV;
-    }
-    writeLumaOperation(n * 2u + select(0u, 1u, average), flags, vector);
-}
-
-// Records ff_vc1_mc_4mv_chroma(v, dir)
-fn recordMotion4MVChroma(direction: u32) {
-    var luma = vec2i(0, 0);
-    var chromaReference = 0u;
-    if (fieldMode == 0u || numref == 0u) {
-        let median = medianChromaVector(direction);
-        if (median.z == 0) {
-            setRecordValue(currentRecord, M_MV1_0, 0u);
-            setRecordValue(currentRecord, M_LOOP_FILTER_CHROMA_MV, 0u);
-            return;
-        }
-        luma = median.xy;
-        chromaReference = refFieldType[direction];
-    } else {
-        let median = medianLumaVector(direction);
-        luma = median.xy;
-        chromaReference = currentFieldType ^ select(0u, 1u, median.z > 2);
-    }
-    setRecordValue(currentRecord, M_MV1_0, packMotionVector(luma));
-    var chroma = chromaVector(luma);
-    setRecordValue(currentRecord, M_LOOP_FILTER_CHROMA_MV, packMotionVector(chroma));
-    if (fastuvmcFlag != 0u) {
-        chroma = vec2i(roundTowardZeroEven(chroma.x), roundTowardZeroEven(chroma.y));
-    }
-    if (currentFieldType != chromaReference) {
-        chroma.y += 2 - 4 * i32(chromaReference);
-    }
-    writeChromaOperation(0u, operationFlags(CHROMA_KIND_4MV, direction, false, chromaReference), chroma);
-    if (fieldMode != 0u) {
-        setChromaFieldFlags(direction, select(0u, 1u, currentFieldType != chromaReference));
-    }
-}
-
-// Records ff_vc1_mc_4mv_chroma4(v, dir, dir2, avg): the four 4x4 chroma quarters of an interlaced frame macroblock
-fn recordMotion4MVChroma4(direction: u32, direction2: u32, average: bool) {
-    let fieldMotion = (recordValue(currentRecord, M_FLAGS) >> MB_BLOCK_MV_TYPE_SHIFT) & 1u;
-    for (var quarter = 0u; quarter < 4u; quarter += 1u) {
-        let source = select(direction2, direction, quarter < 2u);
-        let vector = currentMotionVector(source, quarter);
-        var chroma = vec2i((vector.x + select(0, 1, (vector.x & 3) == 3)) >> 1u, 0);
-        if (fieldMotion != 0u) {
-            chroma.y = (vector.y >> 4u) * 8 + i32(tableWord(T_FIELD_CHROMA_ROUNDING, u32(vector.y & 15)));
-        } else {
-            chroma.y = (vector.y + select(0, 1, (vector.y & 3) == 3)) >> 1u;
-        }
-        var flags = (CHROMA_KIND_QUARTER << OP_KIND_SHIFT) | (select(SOURCE_LAST, SOURCE_NEXT, source != 0u) << OP_SOURCE_SHIFT);
-        if (average) {
-            flags |= OP_AVERAGE;
-        }
-        if (fieldMotion != 0u) {
-            flags |= OP_FIELD_MV;
-        }
-        writeChromaOperation(quarter * 2u + select(0u, 1u, average), flags, chroma);
-    }
-}
-
-// The scaling of FFmpeg's scaleforsame and scaleforopp for field motion vector predictors
-fn fieldScaleValue(table: u32, row: u32, distance: u32) -> i32 {
-    return i32(tableWord(T_FIELD_MVPRED_SCALES, (table * 7u + row) * 4u + min(distance, 3u)));
-}
-
-fn backwardFieldScaleValue(row: u32, distance: u32) -> i32 {
-    return i32(tableWord(T_B_FIELD_MVPRED_SCALES, row * 4u + min(distance, 3u)));
-}
-
-fn referenceDistance(direction: u32) -> u32 {
-    if (pictureType != TYPE_B) {
-        return refdist;
-    }
-    return select(frfd, brfd, direction != 0u);
-}
-
-fn scaleZoned(value: i32, limit: i32, zone: i32, scale1: i32, scale2: i32, offset: i32) -> i32 {
-    if (abs(value) > limit) {
-        return value;
-    }
-    if (abs(value) < zone) {
-        return (value * scale1) >> 8u;
-    }
-    if (value < 0) {
-        return ((value * scale2) >> 8u) - offset;
-    }
-    return ((value * scale2) >> 8u) + offset;
-}
-
-fn clampFieldY(value: i32, direction: u32) -> i32 {
-    let halfRange = i32(rangeY) / 2;
-    if (currentFieldType != 0u && refFieldType[direction] == 0u) {
-        return clamp(value, -halfRange + 1, halfRange);
-    }
-    return clamp(value, -halfRange, halfRange - 1);
-}
-
-fn scaleForSameComponent(value: i32, dimension: u32, direction: u32) -> i32 {
-    let table = direction ^ secondField;
-    let distance = referenceDistance(direction);
-    if (dimension == 0u) {
-        let scaled = scaleZoned(value, 255, fieldScaleValue(table, 3u, distance), fieldScaleValue(table, 1u, distance),
-            fieldScaleValue(table, 2u, distance), fieldScaleValue(table, 5u, distance));
-        return clamp(scaled, -i32(rangeX), i32(rangeX) - 1);
-    }
-    let scaled = scaleZoned(value, 63, fieldScaleValue(table, 4u, distance), fieldScaleValue(table, 1u, distance),
-        fieldScaleValue(table, 2u, distance), fieldScaleValue(table, 6u, distance));
-    return clampFieldY(scaled, direction);
-}
-
-fn scaleForOppositeComponent(value: i32, dimension: u32, direction: u32) -> i32 {
-    let distance = min(brfd, 3u);
-    if (dimension == 0u) {
-        let scaled = scaleZoned(value, 255, backwardFieldScaleValue(3u, distance), backwardFieldScaleValue(1u, distance),
-            backwardFieldScaleValue(2u, distance), backwardFieldScaleValue(5u, distance));
-        return clamp(scaled, -i32(rangeX), i32(rangeX) - 1);
-    }
-    let scaled = scaleZoned(value, 63, backwardFieldScaleValue(4u, distance), backwardFieldScaleValue(1u, distance),
-        backwardFieldScaleValue(2u, distance), backwardFieldScaleValue(6u, distance));
-    return clampFieldY(scaled, direction);
-}
-
-// FFmpeg's scaleforsame
-fn scaleForSame(value: i32, dimension: u32, direction: u32) -> i32 {
-    let halfPel = 1u - quarterSample;
-    let n = value >> halfPel;
-    if (pictureType != TYPE_B || secondField != 0u || direction == 0u) {
-        return scaleForSameComponent(n, dimension, direction) * (1 << halfPel);
-    }
-    let scaleSame = backwardFieldScaleValue(0u, min(brfd, 3u));
-    return ((n * scaleSame) >> 8u) * (1 << halfPel);
-}
-
-// FFmpeg's scaleforopp
-fn scaleForOpposite(value: i32, dimension: u32, direction: u32) -> i32 {
-    let halfPel = 1u - quarterSample;
-    let n = value >> halfPel;
-    if (pictureType == TYPE_B && secondField == 0u && direction == 1u) {
-        return scaleForOppositeComponent(n, dimension, direction) * (1 << halfPel);
-    }
-    let scaleOpposite = fieldScaleValue(direction ^ secondField, 0u, referenceDistance(direction));
-    return ((n * scaleOpposite) >> 8u) * (1 << halfPel);
-}
-
-fn duplicate1MV(direction: u32, xy: i32, vector: vec2i) {
-    let wrap = blockGridStride();
-    setGridMotionVector(direction, xy + 1, vector);
-    setGridMotionVector(direction, xy + wrap, vector);
-    setGridMotionVector(direction, xy + wrap + 1, vector);
-}
-
-// The record word of grid block (column, row) of the current field, or null outside its columns and rows
-fn progressiveGridWord(column: i32, row: i32, field: u32) -> u32 {
-    let record = recordAt(u32(column) >> 1u, u32(row) >> 1u);
-    return recordValue(record, field);
-}
-
-// Whether grid block (column, row) lies in the picture: FFmpeg's padding column and the rows above read as zero
-fn gridBlockInside(column: i32, row: i32) -> bool {
-    return column >= 0 && row >= 0 && column < i32(mbWidth) * 2;
-}
-
-// FFmpeg's motion_val[0] of grid block (column, row) of a progressive picture
-fn progressiveGridVector(column: i32, row: i32) -> vec2i {
-    if (!gridBlockInside(column, row)) {
-        return vec2i(0, 0);
-    }
-    return unpackMotionVector(progressiveGridWord(column, row, M_MV0_0 + (u32(column) & 1u) + ((u32(row) & 1u) << 1u)));
-}
-
-// FFmpeg's is_intra check of grid block (column, row) of a progressive picture
-fn progressiveGridIsIntra(column: i32, row: i32) -> bool {
-    if (!gridBlockInside(column, row)) {
-        return false;
-    }
-    return ((progressiveGridWord(column, row, M_FLAGS) >> ((u32(column) & 1u) + ((u32(row) & 1u) << 1u))) & 1u) != 0u;
-}
-
-// FFmpeg's ff_vc1_pred_mv for progressive P pictures: direction 0, and no field predictors, flags, or scaling.
-// Its neighbors address by grid column and row, which spares predictMotionVector's general field logic on every macroblock
-fn predictProgressiveMotionVector(n: u32, differentialInput: vec2i, mv1: bool) {
-    if (mbIntra) {
-        setCurrentMotionVector(0u, n, vec2i(0, 0));
-        stagedRecord[M_MV0_0 + n] = 0u;
-        stagedRecord[M_MV1_0 + n] = 0u;
-        if (mv1) {
-            for (var k = 1u; k < 4u; k += 1u) {
-                stagedRecord[M_MV0_0 + k] = 0u;
-                stagedRecord[M_MV1_0 + k] = 0u;
-            }
-            stagedRecord[M_LOOP_FILTER_CHROMA_MV] = 0u;
-        }
-        return;
-    }
-    var differential = differentialInput;
-    if (quarterSample == 0u) {
-        differential *= 2;
-    }
-    let column = i32(mbX) * 2 + i32(n & 1u);
-    let row = i32(mbY) * 2 + i32(n >> 1u);
-    let aValid = !firstSliceLine || n >= 2u;
-    let cValid = mbX != 0u || (n & 1u) != 0u;
-    var bValid = aValid;
-    var bColumn = column - 1;
-    var bRow = row - 1;
-    if (mv1) {
-        bColumn = column + select(2, -1, mbX == mbWidth - 1u);
-        bValid = bValid && mbWidth > 1u;
-    } else {
-        switch (n) {
-            case 0u: {
-                if (mbX == 0u) {
-                    if (resRtmFlag != 0u) {
-                        bColumn = column + 1;
-                    } else {
-                        // FFmpeg's offset of 2 * mb_width - wrap - 1 reaches the last block of the row above the previous row
-                        bColumn = i32(mbWidth) * 2 - 1;
-                        bRow = row - 2;
-                    }
-                }
-            }
-            case 1u: {
-                bColumn = column + select(1, -1, mbX == mbWidth - 1u);
-            }
-            case 2u: {
-                bColumn = column + 1;
-            }
-            default: {
-            }
-        }
-    }
-    var predictorA = vec2i(0, 0);
-    var predictorB = vec2i(0, 0);
-    var predictorC = vec2i(0, 0);
-    if (aValid) {
-        predictorA = progressiveGridVector(column, row - 1);
-    }
-    if (bValid) {
-        predictorB = progressiveGridVector(bColumn, bRow);
-    }
-    if (cValid) {
-        predictorC = progressiveGridVector(column - 1, row);
-    }
-    var prediction = select(select(select(vec2i(0, 0), predictorB, bValid), predictorC, cValid), predictorA, aValid);
-    if (select(0, 1, aValid) + select(0, 1, bValid) + select(0, 1, cValid) > 1) {
-        prediction = vec2i(medianOfThree(predictorA.x, predictorB.x, predictorC.x), medianOfThree(predictorA.y, predictorB.y, predictorC.y));
-    }
-    // Pullback toward the picture
-    let limit = select(-28, -60, mv1);
-    let qx = (i32(mbX) << 6u) + select(0, 32, (n & 1u) != 0u);
-    let qy = (i32(mbY) << 6u) + select(0, 32, n >= 2u);
-    prediction = vec2i(clamp(qx + prediction.x, limit, (i32(mbWidth) << 6u) - 4) - qx, clamp(qy + prediction.y, limit, (i32(mbHeight) << 6u) - 4) - qy);
-    // Hybrid prediction: a far predictor lets one bit pick A or C
-    if (aValid && cValid) {
-        var sum = 0;
-        if (progressiveGridIsIntra(column, row - 1)) {
-            sum = abs(prediction.x) + abs(prediction.y);
-        } else {
-            sum = abs(prediction.x - predictorA.x) + abs(prediction.y - predictorA.y);
-        }
-        if (sum > 32) {
-            prediction = select(predictorC, predictorA, readBit() != 0u);
-        } else {
-            if (progressiveGridIsIntra(column - 1, row)) {
-                sum = abs(prediction.x) + abs(prediction.y);
-            } else {
-                sum = abs(prediction.x - predictorC.x) + abs(prediction.y - predictorC.y);
-            }
-            if (sum > 32) {
-                prediction = select(predictorC, predictorA, readBit() != 0u);
-            }
-        }
-    }
-    let rangeXValue = i32(rangeX);
-    let rangeYValue = i32(rangeY);
-    let vector = vec2i(
-        ((prediction.x + differential.x + rangeXValue) & ((rangeXValue << 1u) - 1)) - rangeXValue,
-        ((prediction.y + differential.y + rangeYValue) & ((rangeYValue << 1u) - 1)) - rangeYValue
-    );
-    let stored = vec2i(wrapInt16(vector.x), wrapInt16(vector.y));
-    setCurrentMotionVector(0u, n, stored);
-    refFieldType[0] = currentFieldType;
-    let packed = packMotionVector(stored);
-    stagedRecord[M_MV0_0 + n] = packed;
-    if (mv1) {
-        stagedRecord[M_MV0_1] = packed;
-        stagedRecord[M_MV0_2] = packed;
-        stagedRecord[M_MV0_3] = packed;
-    }
-}
-
-// A grid block's predictor in a field picture: its motion vector and opposite-field flag in one direction, and whether it is intra
-struct FieldPredictor {
-    vector: vec2i,
-    field: u32,
-    intra: bool,
-}
-
-// The predictor of grid block (column, row) of the current field; the padding and the rows above read as zero
-fn fieldPredictor(column: i32, row: i32, direction: u32) -> FieldPredictor {
-    if (!gridBlockInside(column, row)) {
-        return FieldPredictor(vec2i(0, 0), 0u, false);
-    }
-    let block = (u32(column) & 1u) | ((u32(row) & 1u) << 1u);
-    let record = recordAt(u32(column) >> 1u, u32(row) >> 1u);
-    let vectorWord = recordValue(record, select(M_MV0_0, M_MV1_0, direction != 0u) + block);
-    let fieldFlags = recordValue(record, M_FIELD_FLAGS);
-    let flags = recordValue(record, M_FLAGS);
-    return FieldPredictor(unpackMotionVector(vectorWord), (fieldFlags >> (direction * 8u + block)) & 1u, ((flags >> block) & 1u) != 0u);
-}
-
-// Sets mv_f of a block of the current macroblock in one direction
-fn setStagedFieldFlag(direction: u32, block: u32, value: u32) {
-    let bit = 1u << (direction * 8u + block);
-    stagedRecord[M_FIELD_FLAGS] = select(stagedRecord[M_FIELD_FLAGS] & ~bit, stagedRecord[M_FIELD_FLAGS] | bit, value != 0u);
-}
-
-// FFmpeg's ff_vc1_pred_mv for field pictures, the only ones left to it: progressive P pictures take predictProgressiveMotionVector.
-// Its grid offsets resolve to blocks of this macroblock and of its neighbors, each read once with its vector, field flag, and intra flag
-fn predictMotionVector(n: u32, differentialInput: vec2i, mv1: bool, rangeXValue: i32, rangeYInput: i32, predictorFlag: i32, direction: u32) {
-    let mvField = select(M_MV0_0, M_MV1_0, direction != 0u);
-    if (mbIntra) {
-        setCurrentMotionVector(0u, n, vec2i(0, 0));
-        stagedRecord[M_MV0_0 + n] = 0u;
-        stagedRecord[M_MV1_0 + n] = 0u;
-        if (mv1) {
-            for (var k = 1u; k < 4u; k += 1u) {
-                stagedRecord[M_MV0_0 + k] = 0u;
-                stagedRecord[M_MV1_0 + k] = 0u;
-            }
-            stagedRecord[M_LOOP_FILTER_CHROMA_MV] = 0u;
-        }
-        return;
-    }
-    var differential = differentialInput;
-    if (quarterSample == 0u) {
-        differential *= 2;
-    }
-    let column = i32(mbX) * 2 + i32(n & 1u);
-    let row = i32(mbY) * 2 + i32(n >> 1u);
-    var aValid = !firstSliceLine || n >= 2u;
-    var bValid = aValid;
-    var cValid = mbX != 0u || (n & 1u) != 0u;
-    var bColumn = column - 1;
-    var bRow = row - 1;
-    if (mv1) {
-        if (isMixedMotionVectorMode()) {
-            bColumn = column + select(2, -2, mbX == mbWidth - 1u);
-        } else {
-            bColumn = column + select(2, -1, mbX == mbWidth - 1u);
-        }
-        bValid = bValid && mbWidth > 1u;
-    } else {
-        switch (n) {
-            case 0u: {
-                if (mbX == 0u) {
-                    if (resRtmFlag != 0u) {
-                        bColumn = column + 1;
-                    } else {
-                        // FFmpeg's offset of 2 * mb_width - wrap - 1 reaches the last block of the row above the previous row
-                        bColumn = i32(mbWidth) * 2 - 1;
-                        bRow = row - 2;
-                    }
-                }
-            }
-            case 1u: {
-                bColumn = column + select(1, -1, mbX == mbWidth - 1u);
-            }
-            case 2u: {
-                bColumn = column + 1;
-            }
-            default: {
-            }
-        }
-        if (mbWidth == 1u) {
-            bValid = bValid && cValid;
-        }
-    }
-    let readA = fieldPredictor(column, row - 1, direction);
-    let readB = fieldPredictor(bColumn, bRow, direction);
-    let readC = fieldPredictor(column - 1, row, direction);
-    aValid = aValid && !readA.intra;
-    bValid = bValid && !readB.intra;
-    cValid = cValid && !readC.intra;
-    var predictorA = select(vec2i(0, 0), readA.vector, aValid);
-    var predictorB = select(vec2i(0, 0), readB.vector, bValid);
-    var predictorC = select(vec2i(0, 0), readC.vector, cValid);
-    let aField = select(0u, readA.field, aValid);
-    let bField = select(0u, readB.field, bValid);
-    let cField = select(0u, readC.field, cValid);
-    let validCount = select(0, 1, aValid) + select(0, 1, bValid) + select(0, 1, cValid);
-    let oppositeCount = i32(aField + bField + cField);
-    let sameCount = validCount - oppositeCount;
-    var opposite = 0u;
-    if (numref == 0u) {
-        opposite = 1u - reffield;
-    } else if (sameCount <= oppositeCount) {
-        opposite = 1u - u32(predictorFlag);
-    } else {
-        opposite = u32(predictorFlag);
-    }
-    setStagedFieldFlag(direction, n, opposite);
-    refFieldType[direction] = currentFieldType ^ opposite;
-    // Predictors from the other polarity than the chosen reference rescale to it
-    if (opposite != 0u) {
-        if (aValid && aField == 0u) {
-            predictorA = vec2i(scaleForOpposite(predictorA.x, 0u, direction), scaleForOpposite(predictorA.y, 1u, direction));
-        }
-        if (bValid && bField == 0u) {
-            predictorB = vec2i(scaleForOpposite(predictorB.x, 0u, direction), scaleForOpposite(predictorB.y, 1u, direction));
-        }
-        if (cValid && cField == 0u) {
-            predictorC = vec2i(scaleForOpposite(predictorC.x, 0u, direction), scaleForOpposite(predictorC.y, 1u, direction));
-        }
-    } else {
-        if (aValid && aField != 0u) {
-            predictorA = vec2i(scaleForSame(predictorA.x, 0u, direction), scaleForSame(predictorA.y, 1u, direction));
-        }
-        if (bValid && bField != 0u) {
-            predictorB = vec2i(scaleForSame(predictorB.x, 0u, direction), scaleForSame(predictorB.y, 1u, direction));
-        }
-        if (cValid && cField != 0u) {
-            predictorC = vec2i(scaleForSame(predictorC.x, 0u, direction), scaleForSame(predictorC.y, 1u, direction));
-        }
-    }
-    // FFmpeg keeps the field predictors in int16_t
-    predictorA = vec2i(wrapInt16(predictorA.x), wrapInt16(predictorA.y));
-    predictorB = vec2i(wrapInt16(predictorB.x), wrapInt16(predictorB.y));
-    predictorC = vec2i(wrapInt16(predictorC.x), wrapInt16(predictorC.y));
-    var prediction = select(select(select(vec2i(0, 0), predictorB, bValid), predictorC, cValid), predictorA, aValid);
-    if (validCount > 1) {
-        prediction = vec2i(medianOfThree(predictorA.x, predictorB.x, predictorC.x), medianOfThree(predictorA.y, predictorB.y, predictorC.y));
-    }
-    // Hybrid prediction of field P pictures; their valid A and C are never intra, so FFmpeg's intra tests of them always fail
-    if (pictureType != TYPE_B && aValid && cValid) {
-        if (abs(prediction.x - predictorA.x) + abs(prediction.y - predictorA.y) > 32) {
-            prediction = select(predictorC, predictorA, readBit() != 0u);
-        } else if (abs(prediction.x - predictorC.x) + abs(prediction.y - predictorC.y) > 32) {
-            prediction = select(predictorC, predictorA, readBit() != 0u);
-        }
-    }
-    var rangeYValue = rangeYInput;
-    if (numref != 0u) {
-        rangeYValue >>= 1u;
-    }
-    let bias = select(0, 1, currentFieldType != 0u && refFieldType[direction] == 0u);
-    let vector = vec2i(
-        ((prediction.x + differential.x + rangeXValue) & ((rangeXValue << 1u) - 1)) - rangeXValue,
-        ((prediction.y + differential.y + rangeYValue - bias) & ((rangeYValue << 1u) - 1)) - rangeYValue + bias
-    );
-    let stored = vec2i(wrapInt16(vector.x), wrapInt16(vector.y));
-    setCurrentMotionVector(direction, n, stored);
-    let packed = packMotionVector(stored);
-    stagedRecord[mvField + n] = packed;
-    if (mv1) {
-        stagedRecord[mvField + 1u] = packed;
-        stagedRecord[mvField + 2u] = packed;
-        stagedRecord[mvField + 3u] = packed;
-        setStagedFieldFlag(direction, 1u, opposite);
-        setStagedFieldFlag(direction, 2u, opposite);
-        setStagedFieldFlag(direction, 3u, opposite);
-    }
-}
-
-// A motion vector of a block of a neighbor macroblock, FFmpeg's motion_val[direction]
-fn neighborVector(record: u32, block: u32, direction: u32) -> vec2i {
-    return unpackMotionVector(macroblocks[record + select(M_MV0_0, M_MV1_0, direction != 0u) + block]);
-}
-
-// A motion vector of a block of the current macroblock
-fn stagedVector(block: u32, direction: u32) -> vec2i {
-    return unpackMotionVector(stagedRecord[select(M_MV0_0, M_MV1_0, direction != 0u) + block]);
-}
-
-// Whether a block of a neighbor macroblock carries a field motion vector, FFmpeg's blk_mv_type
-fn neighborFieldMotion(record: u32, block: u32) -> bool {
-    return ((macroblocks[record + M_FLAGS] >> (MB_BLOCK_MV_TYPE_SHIFT + block)) & 1u) != 0u;
-}
-
-fn stagedFieldMotion(block: u32) -> bool {
-    return ((stagedRecord[M_FLAGS] >> (MB_BLOCK_MV_TYPE_SHIFT + block)) & 1u) != 0u;
-}
-
-// The rounded mean of two predictors, as FFmpeg averages a field-motion neighbor's two field vectors
-fn averageVectors(first: vec2i, second: vec2i) -> vec2i {
-    return vec2i((first.x + second.x + 1) >> 1u, (first.y + second.y + 1) >> 1u);
-}
-
-// FFmpeg's ff_vc1_pred_mv_intfr for interlaced frame pictures; mvn is 1 for 1MV and 2 for 2MV field macroblocks.
-// Its grid offsets resolve to blocks of this macroblock and of its left, top, top-right, and top-left neighbors, read directly
-fn predictInterlacedFrameMotionVector(n: u32, differential: vec2i, mvn: u32, rangeXValue: i32, rangeYValue: i32, direction: u32) {
-    if (mbIntra) {
-        setCurrentMotionVector(0u, n, vec2i(0, 0));
-        stagedRecord[M_MV0_0 + n] = 0u;
-        stagedRecord[M_MV1_0 + n] = 0u;
-        if (mvn == 1u) {
-            for (var k = 1u; k < 4u; k += 1u) {
-                stagedRecord[M_MV0_0 + k] = 0u;
-                stagedRecord[M_MV1_0 + k] = 0u;
-            }
-            stagedRecord[M_LOOP_FILTER_CHROMA_MV] = 0u;
-        }
-        return;
-    }
-    let currentFieldMotion = stagedFieldMotion(n);
-    var a = vec2i(0, 0);
-    var b = vec2i(0, 0);
-    var c = vec2i(0, 0);
-    var aValid = false;
-    var bValid = false;
-    var cValid = false;
-    // A: the left block and, for a field-motion left neighbor under a frame-motion block, the block in its other row
-    if (mbX != 0u || (n & 1u) != 0u) {
-        var first = vec2i(0, 0);
-        var second = vec2i(0, 0);
-        var leftFieldMotion = false;
-        var leftIntra = false;
-        if ((n & 1u) != 0u) {
-            first = stagedVector(n - 1u, direction);
-            second = stagedVector(select(0u, 2u, n == 1u), direction);
-            leftFieldMotion = stagedFieldMotion(n - 1u);
-        } else {
-            let left = recordAt(mbX - 1u, mbY);
-            first = neighborVector(left, n + 1u, direction);
-            second = neighborVector(left, select(1u, 3u, n == 0u), direction);
-            leftFieldMotion = neighborFieldMotion(left, n + 1u);
-            leftIntra = macroblocks[left + M_IS_INTRA] != 0u;
-        }
-        a = select(averageVectors(first, second), first, currentFieldMotion || !leftFieldMotion);
-        aValid = !leftIntra;
-        if (leftIntra) {
-            a = vec2i(0, 0);
-        }
-    }
-    if (n < 2u || currentFieldMotion) {
-        if (!firstSliceLine) {
-            // B: the macroblock above, its other row averaged in when only it has field motion
-            let top = recordAt(mbX, mbY - 1u);
-            if (macroblocks[top + M_IS_INTRA] == 0u) {
-                bValid = true;
-                let topFieldMotion = neighborFieldMotion(top, n | 2u);
-                let adjacent = select(n | 2u, n, topFieldMotion && currentFieldMotion);
-                b = neighborVector(top, adjacent, direction);
-                if (topFieldMotion && !currentFieldMotion) {
-                    b = averageVectors(b, neighborVector(top, adjacent ^ 2u, direction));
-                }
-            }
-            // C: the macroblock above right, or above left in the last column, where above right is FFmpeg's zero padding
-            if (mbWidth > 1u) {
-                let rightExists = mbX + 1u < mbWidth;
-                let topRight = recordAt(min(mbX + 1u, mbWidth - 1u), mbY - 1u);
-                if (!rightExists || macroblocks[topRight + M_IS_INTRA] == 0u) {
-                    cValid = true;
-                    if (rightExists) {
-                        let rightFieldMotion = neighborFieldMotion(topRight, 2u);
-                        let adjacent = select(2u, n & 2u, rightFieldMotion && currentFieldMotion);
-                        c = neighborVector(topRight, adjacent, direction);
-                        if (rightFieldMotion && !currentFieldMotion) {
-                            c = averageVectors(c, neighborVector(topRight, adjacent ^ 2u, direction));
-                        }
-                    }
-                    if (mbX == mbWidth - 1u) {
-                        let topLeft = recordAt(mbX - 1u, mbY - 1u);
-                        cValid = macroblocks[topLeft + M_IS_INTRA] == 0u;
-                        if (cValid) {
-                            let leftFieldMotion = neighborFieldMotion(topLeft, 3u);
-                            c = neighborVector(topLeft, select(3u, n | 1u, leftFieldMotion && currentFieldMotion), direction);
-                            if (leftFieldMotion && !currentFieldMotion) {
-                                c = averageVectors(c, neighborVector(topLeft, 1u, direction));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    } else {
-        bValid = true;
-        b = stagedVector(1u, direction);
-        cValid = true;
-        c = stagedVector(0u, direction);
-    }
-    let totalValid = select(0, 1, aValid) + select(0, 1, bValid) + select(0, 1, cValid);
-    if (mbX == 0u && !(n == 1u || n == 3u)) {
-        a = vec2i(0, 0);
-    }
-    if ((firstSliceLine && currentFieldMotion) || (firstSliceLine && (n & 2u) == 0u)) {
-        b = vec2i(0, 0);
-        c = vec2i(0, 0);
-    }
-    var prediction = vec2i(0, 0);
-    if (!currentFieldMotion) {
-        if (mbWidth == 1u) {
-            prediction = b;
-        } else if (totalValid >= 2) {
-            prediction = vec2i(medianOfThree(a.x, b.x, c.x), medianOfThree(a.y, b.y, c.y));
-        } else if (totalValid != 0) {
-            if (aValid) {
-                prediction = a;
-            } else if (bValid) {
-                prediction = b;
-            } else {
-                prediction = c;
-            }
-        }
-    } else {
-        let fieldA = select(0, select(0, 1, (a.y & 4) != 0), aValid);
-        let fieldB = select(0, select(0, 1, (b.y & 4) != 0), bValid);
-        let fieldC = select(0, select(0, 1, (c.y & 4) != 0), cValid);
-        let oppositeCount = fieldA + fieldB + fieldC;
-        let sameCount = totalValid - oppositeCount;
-        if (totalValid == 3) {
-            if (sameCount == 3 || oppositeCount == 3) {
-                prediction = vec2i(medianOfThree(a.x, b.x, c.x), medianOfThree(a.y, b.y, c.y));
-            } else if (sameCount >= oppositeCount) {
-                prediction = select(b, a, fieldA == 0);
-            } else {
-                prediction = select(b, a, fieldA != 0);
-            }
-        } else if (totalValid == 2) {
-            if (sameCount >= oppositeCount) {
-                if (fieldA == 0 && aValid) {
-                    prediction = a;
-                } else if (fieldB == 0 && bValid) {
-                    prediction = b;
-                } else {
-                    prediction = c;
-                }
-            } else {
-                if (fieldA != 0 && aValid) {
-                    prediction = a;
-                } else {
-                    prediction = b;
-                }
-            }
-        } else if (totalValid == 1) {
-            if (aValid) {
-                prediction = a;
-            } else if (bValid) {
-                prediction = b;
-            } else {
-                prediction = c;
-            }
-        }
-    }
-    let vector = vec2i(
-        ((prediction.x + differential.x + rangeXValue) & ((rangeXValue << 1u) - 1)) - rangeXValue,
-        ((prediction.y + differential.y + rangeYValue) & ((rangeYValue << 1u) - 1)) - rangeYValue
-    );
-    let stored = vec2i(wrapInt16(vector.x), wrapInt16(vector.y));
-    let packed = packMotionVector(stored);
-    let mvField = select(M_MV0_0, M_MV1_0, direction != 0u);
-    setCurrentMotionVector(direction, n, stored);
-    stagedRecord[mvField + n] = packed;
-    if (mvn == 1u) {
-        stagedRecord[mvField + 1u] = packed;
-        stagedRecord[mvField + 2u] = packed;
-        stagedRecord[mvField + 3u] = packed;
-    } else if (mvn == 2u) {
-        stagedRecord[mvField + n + 1u] = packed;
-        setCurrentMotionVector(direction, n + 1u, stored);
-    }
-}
-
-// FFmpeg's scale_mv for B picture direct prediction
-fn scaleDirectVector(value: i32, inverse: bool) -> i32 {
-    var n = bfraction;
-    if (inverse) {
-        n -= 256;
-    }
-    if (quarterSample == 0u) {
-        return 2 * ((value * n + 255) >> 9u);
-    }
-    return (value * n + 128) >> 8u;
-}
-
-// The next anchor's motion vector stored for B pictures at a grid block of the current field, and its flags
-fn anchorRecordIndex(gridIndex: i32) -> u32 {
-    let row = gridRow(gridIndex) + rowOffset * 2u;
-    return S_ANCHOR_MOTION + (row * mbWidth * 2u + gridColumn(gridIndex)) * ANCHOR_WORDS_PER_BLOCK;
-}
-
-fn anchorMotionVector(gridIndex: i32) -> vec2i {
-    return unpackMotionVector(state[anchorRecordIndex(gridIndex)]);
-}
-
-fn anchorFlags(gridIndex: i32) -> u32 {
-    return state[anchorRecordIndex(gridIndex) + 1u];
-}
-
-// Anchor flags: bit 0 the block's dir-0 field flag, bit 1 the macroblock is intra
-const ANCHOR_FIELD_FLAG: u32 = 1u;
-const ANCHOR_INTRA: u32 = 2u;
-
-// FFmpeg's ff_vc1_pred_b_mv for progressive B pictures
-fn predictBMotionVector(differentialX: vec2i, differentialY: vec2i, direct: bool, motionType: u32) {
-    var dx = differentialX;
-    var dy = differentialY;
-    let rangeXValue = i32(rangeX);
-    let rangeYValue = i32(rangeY);
-    if (quarterSample == 0u) {
-        dx *= 2;
-        dy *= 2;
-    }
-    let wrap = blockGridStride();
-    let xy = blockGridIndex(0u);
-    if (mbIntra) {
-        setGridMotionVector(0u, xy, vec2i(0, 0));
-        setGridMotionVector(1u, xy, vec2i(0, 0));
-        return;
-    }
-    let colocated = anchorMotionVector(xy);
-    var forward = vec2i(scaleDirectVector(colocated.x, false), scaleDirectVector(colocated.y, false));
-    var backward = vec2i(scaleDirectVector(colocated.x, true), scaleDirectVector(colocated.y, true));
-    let lowX = -60 - (i32(mbX) << 6u);
-    let highX = (i32(mbWidth) << 6u) - 4 - (i32(mbX) << 6u);
-    let lowY = -60 - (i32(mbY) << 6u);
-    let highY = (i32(mbHeight) << 6u) - 4 - (i32(mbY) << 6u);
-    forward = vec2i(clamp(forward.x, lowX, highX), clamp(forward.y, lowY, highY));
-    backward = vec2i(clamp(backward.x, lowX, highX), clamp(backward.y, lowY, highY));
-    setCurrentMotionVector(0u, 0u, vec2i(wrapInt16(forward.x), wrapInt16(forward.y)));
-    setCurrentMotionVector(1u, 0u, vec2i(wrapInt16(backward.x), wrapInt16(backward.y)));
-    if (direct) {
-        setGridMotionVector(0u, xy, currentMotionVector(0u, 0u));
-        setGridMotionVector(1u, xy, currentMotionVector(1u, 0u));
-        return;
-    }
-    for (var direction = 0u; direction < 2u; direction += 1u) {
-        let wanted = select(motionType == BMV_FORWARD || motionType == BMV_INTERPOLATED, motionType == BMV_BACKWARD || motionType == BMV_INTERPOLATED, direction != 0u);
-        if (!wanted) {
-            continue;
-        }
-        var c = gridMotionVector(direction, xy - 2);
-        let a = gridMotionVector(direction, xy - wrap * 2);
-        let offset = select(2, -2, mbX == mbWidth - 1u);
-        let b = gridMotionVector(direction, xy - wrap * 2 + offset);
-        if (mbX == 0u) {
-            c = vec2i(0, 0);
-        }
-        var prediction = vec2i(0, 0);
-        if (!firstSliceLine) {
-            if (mbWidth == 1u) {
-                prediction = a;
-            } else {
-                prediction = vec2i(medianOfThree(a.x, b.x, c.x), medianOfThree(a.y, b.y, c.y));
-            }
-        } else if (mbX != 0u) {
-            prediction = c;
-        }
-        let shift = select(6u, 5u, profile < PROFILE_ADVANCED);
-        let limit = 4 - (1 << shift);
-        let qx = i32(mbX) << shift;
-        let qy = i32(mbY) << shift;
-        let maximumX = (i32(mbWidth) << shift) - 4;
-        let maximumY = (i32(mbHeight) << shift) - 4;
-        if (qx + prediction.x < limit) {
-            prediction.x = limit - qx;
-        }
-        if (qy + prediction.y < limit) {
-            prediction.y = limit - qy;
-        }
-        if (qx + prediction.x > maximumX) {
-            prediction.x = maximumX - qx;
-        }
-        if (qy + prediction.y > maximumY) {
-            prediction.y = maximumY - qy;
-        }
-        let differential = vec2i(select(dx.x, dx.y, direction != 0u), select(dy.x, dy.y, direction != 0u));
-        let vector = vec2i(
-            ((prediction.x + differential.x + rangeXValue) & ((rangeXValue << 1u) - 1)) - rangeXValue,
-            ((prediction.y + differential.y + rangeYValue) & ((rangeYValue << 1u) - 1)) - rangeYValue
-        );
-        setCurrentMotionVector(direction, 0u, vec2i(wrapInt16(vector.x), wrapInt16(vector.y)));
-    }
-    setGridMotionVector(0u, xy, currentMotionVector(0u, 0u));
-    setGridMotionVector(1u, xy, currentMotionVector(1u, 0u));
-}
-
-// FFmpeg's ff_vc1_pred_b_mv_intfi for field B pictures
-fn predictFieldBMotionVector(n: u32, differentialX: vec2i, differentialY: vec2i, mv1: bool, predictorFlags: vec2i) {
-    let direction = select(0u, 1u, bMotionType == BMV_BACKWARD);
-    if (bMotionType == BMV_DIRECT) {
-        var forward = vec2i(0, 0);
-        var backward = vec2i(0, 0);
-        var opposite = 0u;
-        let xy = blockGridIndex(0u);
-        if ((anchorFlags(xy) & ANCHOR_INTRA) == 0u) {
-            let colocated = anchorMotionVector(xy);
-            forward = vec2i(scaleDirectVector(colocated.x, false), scaleDirectVector(colocated.y, false));
-            backward = vec2i(scaleDirectVector(colocated.x, true), scaleDirectVector(colocated.y, true));
-            var oppositeTotal = 0u;
-            for (var k = 0u; k < 4u; k += 1u) {
-                oppositeTotal += anchorFlags(blockGridIndex(k)) & ANCHOR_FIELD_FLAG;
-            }
-            opposite = select(0u, 1u, oppositeTotal > 2u);
-        }
-        forward = vec2i(wrapInt16(forward.x), wrapInt16(forward.y));
-        backward = vec2i(wrapInt16(backward.x), wrapInt16(backward.y));
-        setCurrentMotionVector(0u, 0u, forward);
-        setCurrentMotionVector(1u, 0u, backward);
-        refFieldType[0] = currentFieldType ^ opposite;
-        refFieldType[1] = currentFieldType ^ opposite;
-        for (var k = 0u; k < 4u; k += 1u) {
-            setGridMotionVector(0u, blockGridIndex(k), forward);
-            setGridMotionVector(1u, blockGridIndex(k), backward);
-            setGridFieldFlag(0u, blockGridIndex(k), opposite);
-            setGridFieldFlag(1u, blockGridIndex(k), opposite);
-        }
-        return;
-    }
-    // The predictions in FFmpeg's order: both directions of an interpolated macroblock, else the coded direction, then the other
-    // direction's 1MV prediction once the macroblock's last vector is in. One call site keeps one inlined copy of the predictor
-    let interpolated = bMotionType == BMV_INTERPOLATED;
-    let firstDirection = select(direction, 0u, interpolated);
-    var count = 1u;
-    if (interpolated || n == 3u || mv1) {
-        count = 2u;
-    }
-    for (var k = 0u; k < count; k += 1u) {
-        let predictionDirection = select(1u - firstDirection, firstDirection, k == 0u);
-        let block = select(0u, n, k == 0u && !interpolated);
-        let blockIsMv1 = interpolated || k != 0u || mv1;
-        var flag = select(predictorFlags.x, predictorFlags.y, predictionDirection != 0u);
-        if (k != 0u && !interpolated) {
-            flag = 0;
-        }
-        let differential = select(vec2i(differentialX.x, differentialY.x), vec2i(differentialX.y, differentialY.y), predictionDirection != 0u);
-        predictMotionVector(block, differential, blockIsMv1, i32(rangeX), i32(rangeY), flag, predictionDirection);
-    }
-}
-
-// FFmpeg's vc1_coded_block_pred for Simple, Main, and Advanced I pictures
-fn codedBlockAt(index: i32) -> u32 {
-    if (gridIsPadding(index)) {
-        return 0u;
-    }
-    // The row above a unit's first row reads as zero, as FFmpeg clears it when a slice starts
-    if ((gridRow(index) >> 1u) < unitStartRow) {
-        return 0u;
-    }
-    return (recordValue(gridRecord(index), M_FLAGS) >> (MB_CODED_BLOCK_SHIFT + gridBlock(index))) & 1u;
-}
-
-fn predictCodedBlock(n: u32, difference: u32) -> u32 {
-    let xy = blockGridIndex(n);
-    let wrap = blockGridStride();
-    let a = codedBlockAt(xy - 1);
-    let b = codedBlockAt(xy - 1 - wrap);
-    let c = codedBlockAt(xy - wrap);
-    let prediction = select(c, a, b == c);
-    let coded = prediction ^ difference;
-    orRecordValue(currentRecord, M_FLAGS, coded << (MB_CODED_BLOCK_SHIFT + n));
-    return coded;
-}
-
-// Clears the staged macroblock for decoding
-fn beginMacroblock() {
-    currentRecord = recordAt(mbX, mbY);
-    // The fixed fields; operation slots count once the operation mask marks them
-    for (var field = 0u; field < M_LUMA_OPS; field += 1u) {
-        stagedRecord[field] = 0u;
-    }
-    // An inter block's AC predictors are never read, since AC prediction reads intra neighbors alone
-    for (var n = 0u; n < 6u; n += 1u) {
-        stagedDCWords[n] = 0u;
-    }
-    setMacroblockQuantizer(0);
-    mbIntra = false;
-    acPred = false;
-}
-
-// The availability of the top (x) and left (y) intra neighbors of a block, as FFmpeg's a_avail and c_avail
-fn intraNeighborAvailability(n: u32) -> vec2<bool> {
-    var top = false;
-    var left = false;
-    let xy = blockGridIndex(n);
-    if (n == 2u || n == 3u || !firstSliceLine) {
-        if (n >= 4u) {
-            top = mbY > 0u && ((recordValue(recordAt(mbX, mbY - 1u), M_FLAGS) >> n) & 1u) != 0u;
-        } else {
-            top = gridIsIntra(xy - blockGridStride());
-        }
-    }
-    if (n == 1u || n == 3u || mbX != 0u) {
-        if (n >= 4u) {
-            left = mbX > 0u && ((recordValue(recordAt(mbX - 1u, mbY), M_FLAGS) >> n) & 1u) != 0u;
-        } else {
-            left = gridIsIntra(xy - 1);
-        }
-    }
-    return vec2<bool>(top, left);
-}
-
-// One I picture macroblock of the Simple and Main profiles, vc1_decode_i_blocks
-fn decodeSimpleIntraMacroblock() {
-    setAllBlocksIntra(true);
-    setMacroblockQuantizer(i32(pq));
-    setRecordValue(currentRecord, M_IS_INTRA, 0x3Fu);
-    var cbp = readCode(VLC_INTRA_CBPCY);
-    if (cbp == INVALID_CODE) {
-        macroblockFailed = true;
-        return;
-    }
-    acPred = readBit() != 0u;
-    for (var k = 0u; k < 6u; k += 1u) {
-        var value = (cbp >> (5u - k)) & 1u;
-        if (k < 4u) {
-            value = predictCodedBlock(k, value);
-        }
-        cbp |= value << (5u - k);
-        decodeIntraBlockLevels(k, value != 0u, select(codingset2, codingset, k < 4u), pq);
-    }
-    setRecordValue(currentRecord, M_CBP, 0xFFFFFFu);
-}
-
-// One I picture macroblock of the Advanced profile, vc1_decode_i_blocks_adv
-fn decodeAdvancedIntraMacroblock() {
-    setAllBlocksIntra(true);
-    setRecordValue(currentRecord, M_IS_INTRA, 0x3Fu);
-    var fieldtx = 0u;
-    if (planeFieldtx == PLANE_RAW) {
-        fieldtx = readBit();
-    } else if (planeFieldtx == PLANE_DECODED) {
-        fieldtx = planeBit(PLANE_DECODED, PLANE_FIELDTX);
-    }
-    if (readerBitsLeft() <= 1) {
-        macroblockFailed = true;
-        return;
-    }
-    var cbp = readCode(VLC_INTRA_CBPCY);
-    if (cbp == INVALID_CODE) {
-        macroblockFailed = true;
-        return;
-    }
-    if (planeAcpred == PLANE_RAW) {
-        acPred = readBit() != 0u;
-    } else {
-        acPred = planeBit(planeAcpred, PLANE_ACPRED) != 0u;
-    }
-    var overflag = 0u;
-    if (condover == CONDOVER_SELECT) {
-        if (planeOverflags == PLANE_RAW) {
-            overflag = readBit();
-        } else {
-            overflag = planeBit(planeOverflags, PLANE_OVERFLAGS);
-        }
-    }
-    let mquant = readMacroblockQuantizer(i32(pq));
-    setMacroblockQuantizer(mquant);
-    var flags = recordValue(currentRecord, M_FLAGS);
-    if (fieldtx != 0u) {
-        flags |= MB_FIELDTX_BIT;
-    }
-    if (overflag != 0u) {
-        flags |= MB_OVERFLAG_BIT;
-    }
-    setRecordValue(currentRecord, M_FLAGS, flags);
-    for (var k = 0u; k < 6u; k += 1u) {
-        var value = (cbp >> (5u - k)) & 1u;
-        if (k < 4u) {
-            value = predictCodedBlock(k, value);
-        }
-        cbp |= value << (5u - k);
-        decodeIntraBlockLevels(k, value != 0u, select(codingset2, codingset, k < 4u), u32(abs(mquant)));
-    }
-    setRecordValue(currentRecord, M_CBP, 0xFFFFFFu);
-}
-
-// Decodes the coded blocks of an inter macroblock, intra blocks among them; returns FFmpeg's block_cbp and block_tt in x and y and block_intra in z
-fn decodeMacroblockBlocks(cbp: u32, mquant: i32, ttmbInput: i32, intraMask: u32, codedMask: u32) -> vec3u {
-    var ttmb = ttmbInput;
-    var firstBlock = true;
-    var blockCbp = 0u;
-    var blockTt = 0u;
-    var blockIntra = 0u;
-    for (var i = 0u; i < 6u; i += 1u) {
-        let value = ((codedMask >> i) & 1u) != 0u;
-        let intra = ((intraMask >> i) & 1u) != 0u;
-        if (intra) {
-            decodeIntraBlockLevels(i, value, select(codingset2, codingset, i < 4u), min(u32(abs(mquant)), 31u));
-            blockCbp |= 0xFu << (i << 2u);
-            blockIntra |= 1u << i;
-        } else if (value) {
-            let result = decodeInterBlock(i, mquant, ttmb, firstBlock);
-            blockCbp |= result.x << (i << 2u);
-            blockTt |= result.y << (i * 4u);
-            if (ttmbf == 0u && ttmb < 8) {
-                ttmb = -1;
-            }
-            firstBlock = false;
-        }
-        if (macroblockFailed) {
-            break;
-        }
-    }
-    return vec3u(blockCbp, blockTt, blockIntra);
-}
-
-// FFmpeg's vc1_decode_p_mb: progressive P macroblocks
-fn decodePMacroblock() {
-    var mquant = i32(pq);
-    let fourMotionVectors = planeBit(planeMvtype, PLANE_MVTYPE) != 0u;
-    let skipped = planeBit(planeSkip, PLANE_SKIP) != 0u;
-    var ttmb = i32(ttfrm);
-    var blockCbp = 0u;
-    var blockTt = 0u;
-    var blockIntra = 0u;
-    // The block layer of the 1MV and 4MV paths, decoded by one call after them
-    var decodeBlocks = false;
-    var blocksCbp = 0u;
-    var blocksIntraMask = 0u;
-    var blocksCodedMask = 0u;
-    if (!fourMotionVectors) {
-        if (!skipped) {
-            let data = readMotionVectorData();
-            mbIntra = data.intra;
-            let hasCoefficients = data.hasCoefficients;
-            predictProgressiveMotionVector(0u, data.differential, true);
-            var cbp = 0u;
-            if (mbIntra && !hasCoefficients) {
-                mquant = readMacroblockQuantizer(mquant);
-                acPred = readBit() != 0u;
-                cbp = 0u;
-            } else if (hasCoefficients) {
-                if (mbIntra) {
-                    acPred = readBit() != 0u;
-                }
-                cbp = readCode(cbpcyLocation);
-                mquant = readMacroblockQuantizer(mquant);
-            } else {
-                mquant = i32(pq);
-                cbp = 0u;
-            }
-            setMacroblockQuantizer(mquant);
-            if (ttmbf == 0u && !mbIntra && hasCoefficients) {
-                ttmb = i32(readCode(VLC_TTMB[ttIndex]));
-            }
-            if (!mbIntra) {
-                recordMotion1MV(0u);
-            }
-            var codedMask = 0u;
-            for (var i = 0u; i < 6u; i += 1u) {
-                codedMask |= ((cbp >> (5u - i)) & 1u) << i;
-            }
-            if (mbIntra) {
-                setAllBlocksIntra(true);
-            }
-            decodeBlocks = true;
-            blocksCbp = cbp;
-            blocksIntraMask = select(0u, 0x3Fu, mbIntra);
-            blocksCodedMask = codedMask;
-        } else {
-            mbIntra = false;
-            orRecordValue(currentRecord, M_FLAGS, MB_SKIPPED_BIT);
-            setMacroblockQuantizer(0);
-            predictProgressiveMotionVector(0u, vec2i(0, 0), true);
-            recordMotion1MV(0u);
-        }
-    } else {
-        if (!skipped) {
-            var intraCount = 0u;
-            var codedInter = false;
-            var intraMask = 0u;
-            var codedMask = 0u;
-            let cbp = readCode(cbpcyLocation);
-            for (var i = 0u; i < 6u; i += 1u) {
-                let value = (cbp >> (5u - i)) & 1u;
-                mbIntra = false;
-                var blockIsIntra = false;
-                var blockIsCoded = false;
-                if (i < 4u) {
-                    var differential = vec2i(0, 0);
-                    var hasCoefficients = false;
-                    if (value != 0u) {
-                        let data = readMotionVectorData();
-                        differential = data.differential;
-                        mbIntra = data.intra;
-                        hasCoefficients = data.hasCoefficients;
-                    }
-                    predictProgressiveMotionVector(i, differential, false);
-                    blockIsIntra = mbIntra;
-                    blockIsCoded = hasCoefficients;
-                    intraCount += select(0u, 1u, mbIntra);
-                    setBlockIntra(i, blockIsIntra);
-                    if (!mbIntra) {
-                        recordMotion4MVLuma(i, 0u, false);
-                    }
-                } else {
-                    blockIsIntra = intraCount >= 3u;
-                    blockIsCoded = value != 0u;
-                    setBlockIntra(i, blockIsIntra);
-                }
-                if (i == 4u) {
-                    recordMotion4MVChroma(0u);
-                }
-                intraMask |= select(0u, 1u, blockIsIntra) << i;
-                codedMask |= select(0u, 1u, blockIsCoded) << i;
-                if (!codedInter) {
-                    codedInter = !blockIsIntra && blockIsCoded;
-                }
-            }
-            if (intraCount != 0u || codedInter) {
-                mquant = readMacroblockQuantizer(mquant);
-                setMacroblockQuantizer(mquant);
-                var intraPrediction = false;
-                for (var i = 0u; i < 6u; i += 1u) {
-                    if (((intraMask >> i) & 1u) != 0u) {
-                        let availability = intraNeighborAvailability(i);
-                        if (availability.x || availability.y) {
-                            intraPrediction = true;
-                            break;
-                        }
-                    }
-                }
-                acPred = intraPrediction && readBit() != 0u;
-                if (ttmbf == 0u && codedInter) {
-                    ttmb = i32(readCode(VLC_TTMB[ttIndex]));
-                }
-                decodeBlocks = true;
-                blocksCbp = cbp;
-                blocksIntraMask = intraMask;
-                blocksCodedMask = codedMask;
-            }
-        } else {
-            mbIntra = false;
-            orRecordValue(currentRecord, M_FLAGS, MB_SKIPPED_BIT);
-            setMacroblockQuantizer(0);
-            for (var i = 0u; i < 4u; i += 1u) {
-                predictProgressiveMotionVector(i, vec2i(0, 0), false);
-                recordMotion4MVLuma(i, 0u, false);
-            }
-            recordMotion4MVChroma(0u);
-        }
-    }
-    if (decodeBlocks) {
-        let result = decodeMacroblockBlocks(blocksCbp, mquant, ttmb, blocksIntraMask, blocksCodedMask);
-        blockCbp = result.x;
-        blockTt = result.y;
-        blockIntra = result.z;
-    }
-    setRecordValue(currentRecord, M_CBP, blockCbp);
-    setRecordValue(currentRecord, M_TT, blockTt);
-    setRecordValue(currentRecord, M_IS_INTRA, blockIntra);
-}
-
-// FFmpeg's vc1_decode_p_mb_intfr: interlaced frame P macroblocks
-fn decodeInterlacedFramePMacroblock() {
-    var mquant = i32(pq);
-    var ttmb = i32(ttfrm);
-    var cbp = 0u;
-    var blockCbp = 0u;
-    var blockTt = 0u;
-    let skipped = planeBit(planeSkip, PLANE_SKIP) != 0u;
-    if (!skipped) {
-        let mode = readCode(mbmodeLocation);
-        if (mode == INVALID_CODE) {
-            macroblockFailed = true;
-            return;
-        }
-        let entry = tableWord(T_MBMODE_INTFRP, fourmvswitch * 15u + mode);
-        let macroblockType = entry & 15u;
-        var fourMotionVectors = false;
-        var twoMotionVectors = false;
-        switch (macroblockType) {
-            case FRAME_MB_4MV: {
-                fourMotionVectors = true;
-                setBlockMotionTypes(0u);
-            }
-            case FRAME_MB_4MV_FIELD: {
-                fourMotionVectors = true;
-                setBlockMotionTypes(1u);
-            }
-            case FRAME_MB_2MV_FIELD: {
-                twoMotionVectors = true;
-                setBlockMotionTypes(1u);
-            }
-            case FRAME_MB_1MV: {
-                setBlockMotionTypes(0u);
-            }
-            default: {
-            }
-        }
-        if (macroblockType == FRAME_MB_INTRA) {
-            for (var i = 0u; i < 4u; i += 1u) {
-                setGridMotionVector(1u, blockGridIndex(i), vec2i(0, 0));
-            }
-            setRecordValue(currentRecord, M_IS_INTRA, 0x3Fu);
-            mbIntra = true;
-            setAllBlocksIntra(true);
-            let fieldtx = readBit();
-            if (fieldtx != 0u) {
-                orRecordValue(currentRecord, M_FLAGS, MB_FIELDTX_BIT);
-            }
-            let hasCoefficients = readBit() != 0u;
-            if (hasCoefficients) {
-                cbp = 1u + readCode(cbpcyLocation);
-            }
-            acPred = readBit() != 0u;
-            mquant = readMacroblockQuantizer(mquant);
-            setMacroblockQuantizer(mquant);
-            for (var i = 0u; i < 6u; i += 1u) {
-                let value = ((cbp >> (5u - i)) & 1u) != 0u;
-                decodeIntraBlockLevels(i, value, select(codingset2, codingset, i < 4u), min(u32(abs(mquant)), 31u));
-                blockCbp |= 0xFu << (i << 2u);
-                if (macroblockFailed) {
-                    return;
-                }
-            }
-        } else {
-            let hasCoefficients = ((entry >> 6u) & 1u) != 0u;
-            if (hasCoefficients) {
-                cbp = 1u + readCode(cbpcyLocation);
-            }
-            var twoPattern = 0u;
-            var fourPattern = 0u;
-            if (macroblockType == FRAME_MB_2MV_FIELD) {
-                twoPattern = readCode(twomvbpLocation);
-            } else if (macroblockType == FRAME_MB_4MV || macroblockType == FRAME_MB_4MV_FIELD) {
-                fourPattern = readCode(fourmvbpLocation);
-            }
-            mbIntra = false;
-            setRecordValue(currentRecord, M_IS_INTRA, 0u);
-            setAllBlocksIntra(false);
-            let fieldtx = (entry >> 4u) & 1u;
-            if (fieldtx != 0u) {
-                orRecordValue(currentRecord, M_FLAGS, MB_FIELDTX_BIT);
-            }
-            if (fourMotionVectors) {
-                for (var i = 0u; i < 4u; i += 1u) {
-                    var differential = vec2i(0, 0);
-                    if ((fourPattern & (8u >> i)) != 0u) {
-                        differential = readInterlacedMotionVectorData().xy;
-                    }
-                    predictInterlacedFrameMotionVector(i, differential, 0u, i32(rangeX), i32(rangeY), 0u);
-                    recordMotion4MVLuma(i, 0u, false);
-                }
-                recordMotion4MVChroma4(0u, 0u, false);
-            } else if (twoMotionVectors) {
-                var differential = vec2i(0, 0);
-                if ((twoPattern & 2u) != 0u) {
-                    differential = readInterlacedMotionVectorData().xy;
-                }
-                predictInterlacedFrameMotionVector(0u, differential, 2u, i32(rangeX), i32(rangeY), 0u);
-                recordMotion4MVLuma(0u, 0u, false);
-                recordMotion4MVLuma(1u, 0u, false);
-                differential = vec2i(0, 0);
-                if ((twoPattern & 1u) != 0u) {
-                    differential = readInterlacedMotionVectorData().xy;
-                }
-                predictInterlacedFrameMotionVector(2u, differential, 2u, i32(rangeX), i32(rangeY), 0u);
-                recordMotion4MVLuma(2u, 0u, false);
-                recordMotion4MVLuma(3u, 0u, false);
-                recordMotion4MVChroma4(0u, 0u, false);
-            } else {
-                let motionPresent = ((entry >> 5u) & 1u) != 0u;
-                var differential = vec2i(0, 0);
-                if (motionPresent) {
-                    differential = readInterlacedMotionVectorData().xy;
-                }
-                predictInterlacedFrameMotionVector(0u, differential, 1u, i32(rangeX), i32(rangeY), 0u);
-                recordMotion1MV(0u);
-            }
-            if (cbp != 0u) {
-                mquant = readMacroblockQuantizer(mquant);
-            }
-            setMacroblockQuantizer(mquant);
-            if (ttmbf == 0u && cbp != 0u) {
-                ttmb = i32(readCode(VLC_TTMB[ttIndex]));
-            }
-            var codedMask = 0u;
-            for (var i = 0u; i < 6u; i += 1u) {
-                codedMask |= ((cbp >> (5u - i)) & 1u) << i;
-            }
-            let result = decodeMacroblockBlocks(cbp, mquant, ttmb, 0u, codedMask);
-            blockCbp = result.x;
-            blockTt = result.y;
-        }
-    } else {
-        mbIntra = false;
-        setRecordValue(currentRecord, M_IS_INTRA, 0u);
-        setAllBlocksIntra(false);
-        orRecordValue(currentRecord, M_FLAGS, MB_SKIPPED_BIT);
-        setMacroblockQuantizer(0);
-        setBlockMotionTypes(0u);
-        predictInterlacedFrameMotionVector(0u, vec2i(0, 0), 1u, i32(rangeX), i32(rangeY), 0u);
-        recordMotion1MV(0u);
-    }
-    setRecordValue(currentRecord, M_CBP, blockCbp);
-    setRecordValue(currentRecord, M_TT, blockTt);
-}
-
-// FFmpeg's vc1_decode_p_mb_intfi: field P macroblocks
-fn decodeFieldPMacroblock() {
-    var mquant = i32(pq);
-    var ttmb = i32(ttfrm);
-    var cbp = 0u;
-    var blockCbp = 0u;
-    var blockTt = 0u;
-    let mode = readCode(mbmodeLocation);
-    if (mode == INVALID_CODE) {
-        macroblockFailed = true;
-        return;
-    }
-    if (mode <= 1u) {
-        setRecordValue(currentRecord, M_IS_INTRA, 0x3Fu);
-        mbIntra = true;
-        setGridMotionVector(1u, blockGridIndex(0u), vec2i(0, 0));
-        setAllBlocksIntra(true);
-        mquant = readMacroblockQuantizer(mquant);
-        setMacroblockQuantizer(mquant);
-        acPred = readBit() != 0u;
-        if ((mode & 1u) != 0u) {
-            cbp = 1u + readCode(cbpcyLocation);
-        }
-        for (var i = 0u; i < 6u; i += 1u) {
-            let value = ((cbp >> (5u - i)) & 1u) != 0u;
-            decodeIntraBlockLevels(i, value, select(codingset2, codingset, i < 4u), min(u32(abs(mquant)), 31u));
-            blockCbp |= 0xFu << (i << 2u);
-            if (macroblockFailed) {
-                return;
-            }
-        }
-    } else {
-        mbIntra = false;
-        setRecordValue(currentRecord, M_IS_INTRA, 0u);
-        setAllBlocksIntra(false);
-        var hasCoefficients = false;
-        // A 1MV macroblock predicts once with its MVDATA flag, a 4MV macroblock once per block with its pattern's bits
-        let oneVector = mode <= 5u;
-        var pattern = 8u;
-        if (!oneVector) {
-            pattern = readCode(fourmvbpLocation);
-        }
-        let blocks = select(4u, 1u, oneVector);
-        for (var i = 0u; i < blocks; i += 1u) {
-            var data = vec3i(0, 0, 0);
-            if (select((pattern & (8u >> i)) != 0u, (mode & 1u) != 0u, oneVector)) {
-                data = readInterlacedMotionVectorData();
-            }
-            predictMotionVector(i, data.xy, oneVector, i32(rangeX), i32(rangeY), data.z, 0u);
-            if (!oneVector) {
-                recordMotion4MVLuma(i, 0u, false);
-            }
-        }
-        if (oneVector) {
-            recordMotion1MV(0u);
-            hasCoefficients = (mode & 2u) == 0u;
-        } else {
-            recordMotion4MVChroma(0u);
-            hasCoefficients = (mode & 1u) != 0u;
-        }
-        if (hasCoefficients) {
-            cbp = 1u + readCode(cbpcyLocation);
-        }
-        if (cbp != 0u) {
-            mquant = readMacroblockQuantizer(mquant);
-        }
-        setMacroblockQuantizer(mquant);
-        if (ttmbf == 0u && cbp != 0u) {
-            ttmb = i32(readCode(VLC_TTMB[ttIndex]));
-        }
-        var codedMask = 0u;
-        for (var i = 0u; i < 6u; i += 1u) {
-            codedMask |= ((cbp >> (5u - i)) & 1u) << i;
-        }
-        let result = decodeMacroblockBlocks(cbp, mquant, ttmb, 0u, codedMask);
-        blockCbp = result.x;
-        blockTt = result.y;
-    }
-    setRecordValue(currentRecord, M_CBP, blockCbp);
-    setRecordValue(currentRecord, M_TT, blockTt);
-}
-
-// vc1_b_mc: the motion compensation of a progressive or field B macroblock with one vector per direction
-fn recordBMotion(direct: bool, motionType: u32) {
-    if (direct || motionType == BMV_INTERPOLATED) {
-        recordMotion1MV(0u);
-        recordInterpolatedMotion();
-        return;
-    }
-    recordMotion1MV(select(0u, 1u, motionType == BMV_BACKWARD));
-}
-
-// FFmpeg's vc1_decode_b_mb: progressive B macroblocks
-fn decodeBMacroblock() {
-    var mquant = i32(pq);
-    var ttmb = i32(ttfrm);
-    var hasCoefficients = false;
-    mbIntra = false;
-    let direct = planeBit(planeDirect, PLANE_DIRECT) != 0u;
-    let skipped = planeBit(planeSkip, PLANE_SKIP) != 0u;
-    var differentialX = vec2i(0, 0);
-    var differentialY = vec2i(0, 0);
-    var motionType = BMV_BACKWARD;
-    setAllBlocksIntra(false);
-    setMacroblockQuantizer(0);
-    if (!direct) {
-        if (!skipped) {
-            let data = readMotionVectorData();
-            mbIntra = data.intra;
-            hasCoefficients = data.hasCoefficients;
-            differentialX = vec2i(data.differential.x, data.differential.x);
-            differentialY = vec2i(data.differential.y, data.differential.y);
-        }
-        if (skipped || !mbIntra) {
-            let code = readDecode012();
-            switch (code) {
-                case 0u: {
-                    motionType = select(BMV_FORWARD, BMV_BACKWARD, bfraction >= 128);
-                }
-                case 1u: {
-                    motionType = select(BMV_BACKWARD, BMV_FORWARD, bfraction >= 128);
-                }
-                default: {
-                    motionType = BMV_INTERPOLATED;
-                    differentialX.x = 0;
-                    differentialY.x = 0;
-                }
-            }
-        }
-    }
-    setAllBlocksIntra(mbIntra);
-    if (skipped) {
-        if (direct) {
-            motionType = BMV_INTERPOLATED;
-        }
-        predictBMotionVector(differentialX, differentialY, direct, motionType);
-        recordBMotion(direct, motionType);
-        orRecordValue(currentRecord, M_FLAGS, MB_SKIPPED_BIT);
-        return;
-    }
-    var cbp = 0u;
-    if (direct) {
-        cbp = readCode(cbpcyLocation);
-        mquant = readMacroblockQuantizer(mquant);
-        mbIntra = false;
-        setMacroblockQuantizer(mquant);
-        if (ttmbf == 0u) {
-            ttmb = i32(readCode(VLC_TTMB[ttIndex]));
-        }
-        predictBMotionVector(vec2i(0, 0), vec2i(0, 0), direct, motionType);
-        recordBMotion(direct, motionType);
-    } else {
-        if (!hasCoefficients && !mbIntra) {
-            predictBMotionVector(differentialX, differentialY, direct, motionType);
-            recordBMotion(direct, motionType);
-            return;
-        }
-        if (mbIntra && !hasCoefficients) {
-            mquant = readMacroblockQuantizer(mquant);
-            setMacroblockQuantizer(mquant);
-            acPred = readBit() != 0u;
-            cbp = 0u;
-            predictBMotionVector(differentialX, differentialY, direct, motionType);
-        } else {
-            if (motionType == BMV_INTERPOLATED) {
-                let data = readMotionVectorData();
-                mbIntra = data.intra;
-                hasCoefficients = data.hasCoefficients;
-                differentialX.x = data.differential.x;
-                differentialY.x = data.differential.y;
-                if (!hasCoefficients) {
-                    predictBMotionVector(differentialX, differentialY, direct, motionType);
-                    recordBMotion(direct, motionType);
-                    return;
-                }
-            }
-            predictBMotionVector(differentialX, differentialY, direct, motionType);
-            if (!mbIntra) {
-                recordBMotion(direct, motionType);
-            }
-            if (mbIntra) {
-                acPred = readBit() != 0u;
-            }
-            cbp = readCode(cbpcyLocation);
-            mquant = readMacroblockQuantizer(mquant);
-            setMacroblockQuantizer(mquant);
-            if (ttmbf == 0u && !mbIntra && hasCoefficients) {
-                ttmb = i32(readCode(VLC_TTMB[ttIndex]));
-            }
-        }
-    }
-    setAllBlocksIntra(mbIntra);
-    var codedMask = 0u;
-    for (var i = 0u; i < 6u; i += 1u) {
-        codedMask |= ((cbp >> (5u - i)) & 1u) << i;
-    }
-    decodeMacroblockBlocks(cbp, mquant, ttmb, select(0u, 0x3Fu, mbIntra), codedMask);
-}
-
-// FFmpeg's vc1_decode_b_mb_intfi: field B macroblocks
-fn decodeFieldBMacroblock() {
-    bMotionType = BMV_BACKWARD;
-    var mquant = i32(pq);
-    var ttmb = i32(ttfrm);
-    var cbp = 0u;
-    var blockCbp = 0u;
-    var blockTt = 0u;
-    mbIntra = false;
-    let mode = readCode(mbmodeLocation);
-    if (mode == INVALID_CODE) {
-        macroblockFailed = true;
-        return;
-    }
-    if (mode <= 1u) {
-        setRecordValue(currentRecord, M_IS_INTRA, 0x3Fu);
-        mbIntra = true;
-        setGridMotionVector(1u, blockGridIndex(0u), vec2i(0, 0));
-        setAllBlocksIntra(true);
-        mquant = readMacroblockQuantizer(mquant);
-        setMacroblockQuantizer(mquant);
-        acPred = readBit() != 0u;
-        if ((mode & 1u) != 0u) {
-            cbp = 1u + readCode(cbpcyLocation);
-        }
-        for (var i = 0u; i < 6u; i += 1u) {
-            let value = ((cbp >> (5u - i)) & 1u) != 0u;
-            decodeIntraBlockLevels(i, value, select(codingset2, codingset, i < 4u), min(u32(abs(mquant)), 31u));
-            if (macroblockFailed) {
-                return;
-            }
-        }
-    } else {
-        mbIntra = false;
-        setRecordValue(currentRecord, M_IS_INTRA, 0u);
-        setAllBlocksIntra(false);
-        let forward = planeBit(planeForward, PLANE_FORWARD) != 0u;
-        var hasCoefficients = false;
-        if (mode <= 5u) {
-            var differentialX = vec2i(0, 0);
-            var differentialY = vec2i(0, 0);
-            var predictorFlags = vec2i(0, 0);
-            var interpolatedPredictor = false;
-            if (forward) {
-                bMotionType = BMV_FORWARD;
-            } else {
-                switch (readDecode012()) {
-                    case 0u: {
-                        bMotionType = BMV_BACKWARD;
-                    }
-                    case 1u: {
-                        bMotionType = BMV_DIRECT;
-                    }
-                    default: {
-                        bMotionType = BMV_INTERPOLATED;
-                        interpolatedPredictor = readBit() != 0u;
-                    }
-                }
-            }
-            if (bMotionType != BMV_DIRECT && (mode & 1u) != 0u) {
-                let data = readInterlacedMotionVectorData();
-                if (bMotionType == BMV_BACKWARD) {
-                    differentialX.y = data.x;
-                    differentialY.y = data.y;
-                    predictorFlags.y = data.z;
-                } else {
-                    differentialX.x = data.x;
-                    differentialY.x = data.y;
-                    predictorFlags.x = data.z;
-                }
-            }
-            if (interpolatedPredictor) {
-                let data = readInterlacedMotionVectorData();
-                differentialX.y = data.x;
-                differentialY.y = data.y;
-                predictorFlags.y = data.z;
-            }
-            if (bMotionType == BMV_DIRECT) {
-                differentialX = vec2i(0, 0);
-                differentialY = vec2i(0, 0);
-                predictorFlags.x = 0;
-                if (parameter(P_BACKWARD_FIELD_PICTURE) == 0u) {
-                    macroblockFailed = true;
-                    return;
-                }
-            }
-            predictFieldBMotionVector(0u, differentialX, differentialY, true, predictorFlags);
-            recordBMotion(bMotionType == BMV_DIRECT, bMotionType);
-            hasCoefficients = (mode & 2u) == 0u;
-        } else {
-            if (forward) {
-                bMotionType = BMV_FORWARD;
-            }
-            let direction = select(0u, 1u, bMotionType == BMV_BACKWARD);
-            let pattern = readCode(fourmvbpLocation);
-            for (var i = 0u; i < 4u; i += 1u) {
-                var differentialX = vec2i(0, 0);
-                var differentialY = vec2i(0, 0);
-                var predictorFlags = vec2i(0, 0);
-                if ((pattern & (8u >> i)) != 0u) {
-                    let data = readInterlacedMotionVectorData();
-                    if (direction != 0u) {
-                        differentialX.y = data.x;
-                        differentialY.y = data.y;
-                        predictorFlags.y = data.z;
-                    } else {
-                        differentialX.x = data.x;
-                        differentialY.x = data.y;
-                        predictorFlags.x = data.z;
-                    }
-                }
-                predictFieldBMotionVector(i, differentialX, differentialY, false, predictorFlags);
-                recordMotion4MVLuma(i, direction, false);
-            }
-            recordMotion4MVChroma(direction);
-            hasCoefficients = (mode & 1u) != 0u;
-        }
-        if (hasCoefficients) {
-            cbp = 1u + readCode(cbpcyLocation);
-        }
-        if (cbp != 0u) {
-            mquant = readMacroblockQuantizer(mquant);
-        }
-        setMacroblockQuantizer(mquant);
-        if (ttmbf == 0u && cbp != 0u) {
-            ttmb = i32(readCode(VLC_TTMB[ttIndex]));
-        }
-        var codedMask = 0u;
-        for (var i = 0u; i < 6u; i += 1u) {
-            codedMask |= ((cbp >> (5u - i)) & 1u) << i;
-        }
-        let result = decodeMacroblockBlocks(cbp, mquant, ttmb, 0u, codedMask);
-        blockCbp = result.x;
-        blockTt = result.y;
-    }
-    setRecordValue(currentRecord, M_CBP, blockCbp);
-    setRecordValue(currentRecord, M_TT, blockTt);
-}
-
-// Copies a direction's 2MV field vectors between the top and bottom halves, as FFmpeg's mvsw loops do
-fn copyFieldVectors(direction: u32, fromBottom: bool) {
-    for (var i = 0u; i < 2u; i += 1u) {
-        let sourceBlock = select(i, i + 2u, fromBottom);
-        let vector = gridMotionVector(direction, blockGridIndex(sourceBlock));
-        setCurrentMotionVector(direction, i, vector);
-        setCurrentMotionVector(direction, i + 2u, vector);
-        setGridMotionVector(direction, blockGridIndex(i), vector);
-        setGridMotionVector(direction, blockGridIndex(i + 2u), vector);
-    }
-}
-
-// The plan of an interlaced frame B macroblock's motion: its vector predictions, then its 4MV-style motion compensation records.
-// Each runs through one call site, since backends inline every call and the macroblock's cases would inline the predictor a dozen times
-var<private> planPredictionCount: u32;
-// Prediction k: its block at bits 2k, FFmpeg's mvn at bits 2k, and its direction at bit k
-var<private> planPredictionBlocks: u32;
-var<private> planPredictionKinds: u32;
-var<private> planPredictionDirections: u32;
-var<private> planDifferentialsX: vec4i;
-var<private> planDifferentialsY: vec4i;
-// The prediction before which every block takes field motion, past the last when none does
-var<private> planFieldMotionFrom: u32;
-// Luma record k at bits 4k: its block, its direction at bit 2, and averaging at bit 3; chroma record k at bits 4k: its directions at
-// bits 0 and 1, and averaging at bit 2
-var<private> planLumaCount: u32;
-var<private> planLumaRecords: u32;
-var<private> planChromaCount: u32;
-var<private> planChromaRecords: u32;
-
-fn beginFramePlan() {
-    planPredictionCount = 0u;
-    planPredictionBlocks = 0u;
-    planPredictionKinds = 0u;
-    planPredictionDirections = 0u;
-    planDifferentialsX = vec4i(0, 0, 0, 0);
-    planDifferentialsY = vec4i(0, 0, 0, 0);
-    planFieldMotionFrom = 4u;
-    planLumaCount = 0u;
-    planLumaRecords = 0u;
-    planChromaCount = 0u;
-    planChromaRecords = 0u;
-}
-
-fn planFramePrediction(block: u32, differential: vec2i, mvn: u32, direction: u32) {
-    let k = planPredictionCount;
-    planPredictionBlocks |= block << (2u * k);
-    planPredictionKinds |= mvn << (2u * k);
-    planPredictionDirections |= direction << k;
-    planDifferentialsX[k] = differential.x;
-    planDifferentialsY[k] = differential.y;
-    planPredictionCount = k + 1u;
-}
-
-fn planLumaRecord(block: u32, direction: u32, average: bool) {
-    planLumaRecords |= (block | (direction << 2u) | (select(0u, 8u, average))) << (4u * planLumaCount);
-    planLumaCount += 1u;
-}
-
-fn planChromaRecord(direction: u32, direction2: u32, average: bool) {
-    planChromaRecords |= (direction | (direction2 << 1u) | select(0u, 4u, average)) << (4u * planChromaCount);
-    planChromaCount += 1u;
-}
-
-fn runFramePlan() {
-    for (var k = 0u; k < planPredictionCount; k += 1u) {
-        if (k == planFieldMotionFrom) {
-            setBlockMotionTypes(1u);
-        }
-        predictInterlacedFrameMotionVector((planPredictionBlocks >> (2u * k)) & 3u, vec2i(planDifferentialsX[k], planDifferentialsY[k]),
-            (planPredictionKinds >> (2u * k)) & 3u, i32(rangeX), i32(rangeY), (planPredictionDirections >> k) & 1u);
-    }
-}
-
-fn runRecordPlan() {
-    for (var k = 0u; k < planLumaCount; k += 1u) {
-        let record = (planLumaRecords >> (4u * k)) & 15u;
-        recordMotion4MVLuma(record & 3u, (record >> 2u) & 1u, (record & 8u) != 0u);
-    }
-    for (var k = 0u; k < planChromaCount; k += 1u) {
-        let record = (planChromaRecords >> (4u * k)) & 15u;
-        recordMotion4MVChroma4(record & 1u, (record >> 1u) & 1u, (record & 4u) != 0u);
-    }
-}
-
-// FFmpeg's vc1_decode_b_mb_intfr: interlaced frame B macroblocks
-fn decodeInterlacedFrameBMacroblock() {
-    var mquant = i32(pq);
-    var ttmb = i32(ttfrm);
-    var cbp = 0u;
-    var blockCbp = 0u;
-    var blockTt = 0u;
-    var switchVectors = false;
-    var twoMotionVectors = false;
-    var mode = 0u;
-    var direct = false;
-    var motionType = BMV_BACKWARD;
-    mbIntra = false;
-    let skipped = planeBit(planeSkip, PLANE_SKIP) != 0u;
-    if (!skipped) {
-        mode = readCode(mbmodeLocation);
-        if (mode == INVALID_CODE) {
-            macroblockFailed = true;
-            return;
-        }
-        if ((tableWord(T_MBMODE_INTFRP, mode) & 15u) == FRAME_MB_2MV_FIELD) {
-            twoMotionVectors = true;
-            setBlockMotionTypes(1u);
-        } else {
-            setBlockMotionTypes(0u);
-        }
-    }
-    let entry = tableWord(T_MBMODE_INTFRP, mode);
-    if ((entry & 15u) == FRAME_MB_INTRA) {
-        for (var i = 0u; i < 4u; i += 1u) {
-            setCurrentMotionVector(0u, i, vec2i(0, 0));
-            setCurrentMotionVector(1u, i, vec2i(0, 0));
-            setGridMotionVector(0u, blockGridIndex(i), vec2i(0, 0));
-            setGridMotionVector(1u, blockGridIndex(i), vec2i(0, 0));
-        }
-        setRecordValue(currentRecord, M_IS_INTRA, 0x3Fu);
-        mbIntra = true;
-        setAllBlocksIntra(true);
-        let fieldtx = readBit();
-        if (fieldtx != 0u) {
-            orRecordValue(currentRecord, M_FLAGS, MB_FIELDTX_BIT);
-        }
-        let hasCoefficients = readBit() != 0u;
-        if (hasCoefficients) {
-            cbp = 1u + readCode(cbpcyLocation);
-        }
-        acPred = readBit() != 0u;
-        mquant = readMacroblockQuantizer(mquant);
-        setMacroblockQuantizer(mquant);
-        for (var i = 0u; i < 6u; i += 1u) {
-            let value = ((cbp >> (5u - i)) & 1u) != 0u;
-            decodeIntraBlockLevels(i, value, select(codingset2, codingset, i < 4u), min(u32(abs(mquant)), 31u));
-            if (macroblockFailed) {
-                return;
-            }
-        }
-        setRecordValue(currentRecord, M_CBP, 0u);
-        setRecordValue(currentRecord, M_TT, 0u);
-        return;
-    }
-    setRecordValue(currentRecord, M_IS_INTRA, 0u);
-    direct = planeBit(planeDirect, PLANE_DIRECT) != 0u;
-    if (direct) {
-        if (parameter(P_BACKWARD_FIELD_PICTURE) != 0u) {
-            // FFmpeg warns about mixed frame and field direct prediction and continues
-        }
-        let first = anchorMotionVector(blockGridIndex(0u));
-        setCurrentMotionVector(0u, 0u, vec2i(wrapInt16(scaleDirectVector(first.x, false)), wrapInt16(scaleDirectVector(first.y, false))));
-        setCurrentMotionVector(1u, 0u, vec2i(wrapInt16(scaleDirectVector(first.x, true)), wrapInt16(scaleDirectVector(first.y, true))));
-        setGridMotionVector(0u, blockGridIndex(0u), currentMotionVector(0u, 0u));
-        setGridMotionVector(1u, blockGridIndex(0u), currentMotionVector(1u, 0u));
-        if (twoMotionVectors) {
-            let second = anchorMotionVector(blockGridIndex(2u));
-            setCurrentMotionVector(0u, 2u, vec2i(wrapInt16(scaleDirectVector(second.x, false)), wrapInt16(scaleDirectVector(second.y, false))));
-            setCurrentMotionVector(1u, 2u, vec2i(wrapInt16(scaleDirectVector(second.x, true)), wrapInt16(scaleDirectVector(second.y, true))));
-            setGridMotionVector(0u, blockGridIndex(2u), currentMotionVector(0u, 2u));
-            setGridMotionVector(1u, blockGridIndex(2u), currentMotionVector(1u, 2u));
-            for (var i = 1u; i < 4u; i += 2u) {
-                for (var direction = 0u; direction < 2u; direction += 1u) {
-                    let vector = currentMotionVector(direction, i - 1u);
-                    setCurrentMotionVector(direction, i, vector);
-                    setGridMotionVector(direction, blockGridIndex(i), vector);
-                }
-            }
-        } else {
-            for (var i = 1u; i < 4u; i += 1u) {
-                for (var direction = 0u; direction < 2u; direction += 1u) {
-                    let vector = currentMotionVector(direction, 0u);
-                    setCurrentMotionVector(direction, i, vector);
-                    setGridMotionVector(direction, blockGridIndex(i), vector);
-                }
-            }
-        }
-    }
-    if (!direct) {
-        if (skipped || !mbIntra) {
-            switch (readDecode012()) {
-                case 0u: {
-                    motionType = select(BMV_FORWARD, BMV_BACKWARD, bfraction >= 128);
-                }
-                case 1u: {
-                    motionType = select(BMV_BACKWARD, BMV_FORWARD, bfraction >= 128);
-                }
-                default: {
-                    motionType = BMV_INTERPOLATED;
-                }
-            }
-        }
-        if (twoMotionVectors && motionType != BMV_INTERPOLATED) {
-            switchVectors = readBit() != 0u;
-        }
-    }
-    var direction = select(0u, 1u, motionType == BMV_BACKWARD);
-    var direction2 = direction;
-    var copySwitched = false;
-    var copyOther = false;
-    var oneVector = false;
-    var interpolatedRecord = false;
-    beginFramePlan();
-    if (!skipped) {
-        let hasCoefficients = ((entry >> 6u) & 1u) != 0u;
-        if (hasCoefficients) {
-            cbp = 1u + readCode(cbpcyLocation);
-        }
-        var twoPattern = 0u;
-        var fourPattern = 0u;
-        if (!direct) {
-            if (motionType == BMV_INTERPOLATED && twoMotionVectors) {
-                fourPattern = readCode(fourmvbpLocation);
-            } else if (motionType == BMV_INTERPOLATED || twoMotionVectors) {
-                twoPattern = readCode(twomvbpLocation);
-            }
-        }
-        setAllBlocksIntra(false);
-        let fieldtx = (entry >> 4u) & 1u;
-        if (fieldtx != 0u) {
-            orRecordValue(currentRecord, M_FLAGS, MB_FIELDTX_BIT);
-        }
-        // The differentials read in bitstream order as the plan fills; prediction reads no bits, so it may follow them
-        if (direct) {
-            if (twoMotionVectors) {
-                for (var i = 0u; i < 4u; i += 1u) {
-                    planLumaRecord(i, 0u, false);
-                    planLumaRecord(i, 1u, true);
-                }
-                planChromaRecord(0u, 0u, false);
-                planChromaRecord(1u, 1u, true);
-            } else {
-                oneVector = true;
-                direction = 0u;
-                interpolatedRecord = true;
-            }
-        } else if (twoMotionVectors && motionType == BMV_INTERPOLATED) {
-            for (var i = 0u; i < 4u; i += 1u) {
-                let predictionDirection = i & 1u;
-                var differential = vec2i(0, 0);
-                if (((fourPattern >> (3u - i)) & 1u) != 0u) {
-                    differential = readInterlacedMotionVectorData().xy;
-                }
-                let block = select(0u, 2u, i > 1u);
-                planFramePrediction(block, differential, 2u, predictionDirection);
-                planLumaRecord(block, predictionDirection, predictionDirection != 0u);
-                planLumaRecord(block + 1u, predictionDirection, predictionDirection != 0u);
-            }
-            planChromaRecord(0u, 0u, false);
-            planChromaRecord(1u, 1u, true);
-        } else if (motionType == BMV_INTERPOLATED) {
-            var differential = vec2i(0, 0);
-            if ((twoPattern & 2u) != 0u) {
-                differential = readInterlacedMotionVectorData().xy;
-            }
-            planFramePrediction(0u, differential, 1u, 0u);
-            differential = vec2i(0, 0);
-            if ((twoPattern & 1u) != 0u) {
-                differential = readInterlacedMotionVectorData().xy;
-            }
-            planFramePrediction(0u, differential, 1u, 1u);
-            oneVector = true;
-            direction = 0u;
-            interpolatedRecord = true;
-        } else if (twoMotionVectors) {
-            if (switchVectors) {
-                direction2 = 1u - direction;
-            }
-            var differential = vec2i(0, 0);
-            if ((twoPattern & 2u) != 0u) {
-                differential = readInterlacedMotionVectorData().xy;
-            }
-            planFramePrediction(0u, differential, 2u, direction);
-            differential = vec2i(0, 0);
-            if ((twoPattern & 1u) != 0u) {
-                differential = readInterlacedMotionVectorData().xy;
-            }
-            planFramePrediction(2u, differential, 2u, direction2);
-            if (switchVectors) {
-                copySwitched = true;
-            } else {
-                planFramePrediction(0u, vec2i(0, 0), 2u, 1u - direction);
-                planFramePrediction(2u, vec2i(0, 0), 2u, 1u - direction);
-            }
-            planLumaRecord(0u, direction, false);
-            planLumaRecord(1u, direction, false);
-            planLumaRecord(2u, direction2, false);
-            planLumaRecord(3u, direction2, false);
-            planChromaRecord(direction, direction2, false);
-        } else {
-            var differential = vec2i(0, 0);
-            if (((entry >> 5u) & 1u) != 0u) {
-                differential = readInterlacedMotionVectorData().xy;
-            }
-            planFramePrediction(0u, differential, 1u, direction);
-            // The other direction predicts as a field macroblock
-            planFieldMotionFrom = 1u;
-            planFramePrediction(0u, vec2i(0, 0), 2u, 1u - direction);
-            copyOther = true;
-            oneVector = true;
-        }
-    } else {
-        setAllBlocksIntra(false);
-        orRecordValue(currentRecord, M_FLAGS, MB_SKIPPED_BIT);
-        setMacroblockQuantizer(0);
-        setBlockMotionTypes(0u);
-        direction = 0u;
-        if (!direct) {
-            if (motionType == BMV_INTERPOLATED) {
-                planFramePrediction(0u, vec2i(0, 0), 1u, 0u);
-                planFramePrediction(0u, vec2i(0, 0), 1u, 1u);
-            } else {
-                direction = select(0u, 1u, motionType == BMV_BACKWARD);
-                planFramePrediction(0u, vec2i(0, 0), 1u, direction);
-                if (switchVectors) {
-                    direction2 = 1u - direction;
-                    copySwitched = true;
-                } else {
-                    planFieldMotionFrom = 1u;
-                    planFramePrediction(0u, vec2i(0, 0), 2u, 1u - direction);
-                    copyOther = true;
-                }
-            }
-        }
-        oneVector = true;
-        interpolatedRecord = direct || motionType == BMV_INTERPOLATED;
-    }
-    runFramePlan();
-    if (copySwitched) {
-        copyFieldVectors(direction, false);
-        copyFieldVectors(direction2, true);
-    }
-    if (copyOther) {
-        copyFieldVectors(1u - direction, false);
-    }
-    runRecordPlan();
-    if (oneVector) {
-        recordMotion1MV(direction);
-        if (interpolatedRecord) {
-            recordInterpolatedMotion();
-        }
-    }
-    if (!skipped) {
-        if (cbp != 0u) {
-            mquant = readMacroblockQuantizer(mquant);
-        }
-        setMacroblockQuantizer(mquant);
-        if (ttmbf == 0u && cbp != 0u) {
-            ttmb = i32(readCode(VLC_TTMB[ttIndex]));
-        }
-        var codedMask = 0u;
-        for (var i = 0u; i < 6u; i += 1u) {
-            codedMask |= ((cbp >> (5u - i)) & 1u) << i;
-        }
-        let result = decodeMacroblockBlocks(cbp, mquant, ttmb, 0u, codedMask);
-        blockCbp = result.x;
-        blockTt = result.y;
-    }
-    setRecordValue(currentRecord, M_CBP, blockCbp);
-    setRecordValue(currentRecord, M_TT, blockTt);
-}
-
-// Stores the anchor motion of an I or P picture's macroblock for later B pictures: motion_val[1], the dir-0 field flags, and intra
-fn storeAnchorMotion() {
-    let intra = stagedRecord[M_IS_INTRA] == 0x3Fu || (stagedRecord[M_FLAGS] & 0x3Fu) == 0x3Fu;
-    let intraFlag = select(0u, ANCHOR_INTRA, intra);
-    let fieldFlags = stagedRecord[M_FIELD_FLAGS];
-    // The anchor grid is 2 * mb_width blocks wide, with the field's rows at their frame rows
-    let first = S_ANCHOR_MOTION + ((mbY + rowOffset) * mbWidth * 4u + mbX * 2u) * ANCHOR_WORDS_PER_BLOCK;
-    let rowWords = mbWidth * 2u * ANCHOR_WORDS_PER_BLOCK;
-    state[first] = stagedRecord[M_MV1_0];
-    state[first + 1u] = (fieldFlags & 1u) | intraFlag;
-    state[first + ANCHOR_WORDS_PER_BLOCK] = stagedRecord[M_MV1_1];
-    state[first + ANCHOR_WORDS_PER_BLOCK + 1u] = ((fieldFlags >> 1u) & 1u) | intraFlag;
-    state[first + rowWords] = stagedRecord[M_MV1_2];
-    state[first + rowWords + 1u] = ((fieldFlags >> 2u) & 1u) | intraFlag;
-    state[first + rowWords + ANCHOR_WORDS_PER_BLOCK] = stagedRecord[M_MV1_3];
-    state[first + rowWords + ANCHOR_WORDS_PER_BLOCK + 1u] = ((fieldFlags >> 3u) & 1u) | intraFlag;
-}
-
-// The picture kinds of the slice passes. Each entry point decodes the units of one kind and leaves the rest, so each pipeline holds
-// one kind's macroblock decoder: backends inline every call without folding constant arguments, and one pipeline for every kind compiles
-// for minutes
-const SLICE_KIND_SIMPLE_INTRA: u32 = 0u;
-const SLICE_KIND_ADVANCED_INTRA: u32 = 1u;
-const SLICE_KIND_P: u32 = 2u;
-const SLICE_KIND_FIELD_P: u32 = 3u;
-const SLICE_KIND_FRAME_P: u32 = 4u;
-const SLICE_KIND_B: u32 = 5u;
-const SLICE_KIND_FIELD_B: u32 = 6u;
-const SLICE_KIND_FRAME_B: u32 = 7u;
-const SLICE_KIND_X8: u32 = 8u;
-
-// The kind of the loaded unit's picture
-fn unitSliceKind() -> u32 {
-    switch (pictureType) {
-        case TYPE_I, TYPE_BI: {
-            if (x8Type != 0u) {
-                return SLICE_KIND_X8;
-            }
-            return select(SLICE_KIND_SIMPLE_INTRA, SLICE_KIND_ADVANCED_INTRA, profile == PROFILE_ADVANCED);
-        }
-        case TYPE_P: {
-            switch (fcm) {
-                case FCM_FIELD: {
-                    return SLICE_KIND_FIELD_P;
-                }
-                case FCM_FRAME: {
-                    return SLICE_KIND_FRAME_P;
-                }
-                default: {
-                    return SLICE_KIND_P;
-                }
-            }
-        }
-        default: {
-            switch (fcm) {
-                case FCM_FIELD: {
-                    return SLICE_KIND_FIELD_B;
-                }
-                case FCM_FRAME: {
-                    return SLICE_KIND_FRAME_B;
-                }
-                default: {
-                    return SLICE_KIND_B;
-                }
-            }
-        }
-    }
-}
-
-// Loads a parse unit and starts its reader at its first macroblock; false when the unit does not exist, is of another kind, or is empty
-fn beginUnit(unit: u32, kind: u32) -> bool {
-    if (unit >= pictureState[F_UNIT_COUNT]) {
-        return false;
-    }
-    loadGeometry();
-    loadUnitParameters(unit);
-    if (unitSliceKind() != kind || unitStartRow >= unitEndRow || mbWidth == 0u) {
-        return false;
-    }
-    startReader(parameter(U_START_BIT), parameter(U_SEGMENT_END_BIT));
-    esc3LevelLength = 0u;
-    esc3RunLength = 0u;
-    macroblockFailed = false;
-    firstSliceLine = true;
-    mbY = unitStartRow;
-    mbX = 0u;
-    return true;
-}
-
-// Prepares the macroblock at mbX, mbY; false after reporting a failure
-fn beginUnitMacroblock() -> bool {
-    frameRow = rowOffset + mbY;
-    beginMacroblock();
-    refFieldType[0] = refFieldTypeForward;
-    for (var k = 0u; k < 8u; k += 1u) {
-        motionVectors[k] = vec2i(0, 0);
-    }
-    // vc1_decode_p_blocks and vc1_decode_b_blocks stop a slice whose raw bitplanes leave no bits
-    if (fcm == FCM_FIELD || planeSkip == PLANE_RAW || planeDirect == PLANE_RAW
-        || (fcm == FCM_PROGRESSIVE && planeMvtype == PLANE_RAW && pictureType == TYPE_P)) {
-        if (pictureType != TYPE_I && pictureType != TYPE_BI && readerBitsLeft() < 1) {
-            storeStagedMacroblock();
-            reportFailure(ERROR_BITS_EXHAUSTED, frameRow * mbWidth + mbX);
-            return false;
-        }
-    }
-    return true;
-}
-
-// Stores the staged macroblock to its record and intra prediction record
-fn storeStagedMacroblock() {
-    for (var field = 0u; field < M_LUMA_OPS; field += 1u) {
-        macroblocks[currentRecord + field] = stagedRecord[field];
-    }
-    // Chroma slots follow the luma slots, so a mask bit indexes both
-    var operations = stagedRecord[M_OPERATIONS];
-    while (operations != 0u) {
-        let word = M_LUMA_OPS + firstTrailingBit(operations) * OPERATION_WORDS;
-        operations &= operations - 1u;
-        macroblocks[currentRecord + word] = stagedRecord[word];
-        macroblocks[currentRecord + word + 1u] = stagedRecord[word + 1u];
-    }
-    let prediction = B_PREDICTION + (currentRecord / MACROBLOCK_WORDS) * PREDICTION_WORDS;
-    for (var n = 0u; n < 6u; n += 1u) {
-        macroblocks[prediction + n * PREDICTION_WORDS_PER_BLOCK] = stagedDCWords[n];
-    }
-}
-
-// Records the decoded macroblock and moves to the next, as ff_vc1_decode_blocks walks a slice; false once the unit ended or failed
-fn finishUnitMacroblock() -> bool {
-    var flags = MB_DECODED_BIT | select(0u, MB_ACPRED_BIT, acPred);
-    if (mbY == unitStartRow) {
-        flags |= MB_SLICE_TOP_BIT;
-    }
-    if (mbY + 1u == unitEndRow) {
-        flags |= MB_SLICE_BOTTOM_BIT;
-    }
-    stagedRecord[M_FLAGS] |= flags;
-    if (pictureType == TYPE_I || pictureType == TYPE_P) {
-        storeAnchorMotion();
-    }
-    storeStagedMacroblock();
-    if (macroblockFailed || readerInvalidCode) {
-        reportFailure(ERROR_MACROBLOCK_LAYER, frameRow * mbWidth + mbX);
-        return false;
-    }
-    if (readerOverran()) {
-        reportFailure(ERROR_BITS_EXHAUSTED, frameRow * mbWidth + mbX);
-        return false;
-    }
-    mbX += 1u;
-    if (mbX == mbWidth) {
-        mbX = 0u;
-        mbY += 1u;
-        firstSliceLine = false;
-    }
-    return mbY < unitEndRow;
-}
-
-// The slice passes: each decodes the parse units of its kind with that kind's macroblock decoder alone
-@compute @workgroup_size(1)
-fn decodeSimpleIntraSlices(@builtin(workgroup_id) workgroupId: vec3u) {
-    if (!beginUnit(workgroupId.x, SLICE_KIND_SIMPLE_INTRA)) {
-        return;
-    }
-    loop {
-        if (!beginUnitMacroblock()) {
-            return;
-        }
-        decodeSimpleIntraMacroblock();
-        if (!finishUnitMacroblock()) {
-            return;
-        }
-    }
-}
-
-@compute @workgroup_size(1)
-fn decodeAdvancedIntraSlices(@builtin(workgroup_id) workgroupId: vec3u) {
-    if (!beginUnit(workgroupId.x, SLICE_KIND_ADVANCED_INTRA)) {
-        return;
-    }
-    loop {
-        if (!beginUnitMacroblock()) {
-            return;
-        }
-        decodeAdvancedIntraMacroblock();
-        if (!finishUnitMacroblock()) {
-            return;
-        }
-    }
-}
-
-@compute @workgroup_size(1)
-fn decodePSlices(@builtin(workgroup_id) workgroupId: vec3u) {
-    if (!beginUnit(workgroupId.x, SLICE_KIND_P)) {
-        return;
-    }
-    loop {
-        if (!beginUnitMacroblock()) {
-            return;
-        }
-        decodePMacroblock();
-        if (!finishUnitMacroblock()) {
-            return;
-        }
-    }
-}
-
-@compute @workgroup_size(1)
-fn decodeFieldPSlices(@builtin(workgroup_id) workgroupId: vec3u) {
-    if (!beginUnit(workgroupId.x, SLICE_KIND_FIELD_P)) {
-        return;
-    }
-    loop {
-        if (!beginUnitMacroblock()) {
-            return;
-        }
-        decodeFieldPMacroblock();
-        if (!finishUnitMacroblock()) {
-            return;
-        }
-    }
-}
-
-@compute @workgroup_size(1)
-fn decodeFramePSlices(@builtin(workgroup_id) workgroupId: vec3u) {
-    if (!beginUnit(workgroupId.x, SLICE_KIND_FRAME_P)) {
-        return;
-    }
-    loop {
-        if (!beginUnitMacroblock()) {
-            return;
-        }
-        decodeInterlacedFramePMacroblock();
-        if (!finishUnitMacroblock()) {
-            return;
-        }
-    }
-}
-
-@compute @workgroup_size(1)
-fn decodeBSlices(@builtin(workgroup_id) workgroupId: vec3u) {
-    if (!beginUnit(workgroupId.x, SLICE_KIND_B)) {
-        return;
-    }
-    loop {
-        if (!beginUnitMacroblock()) {
-            return;
-        }
-        decodeBMacroblock();
-        if (!finishUnitMacroblock()) {
-            return;
-        }
-    }
-}
-
-@compute @workgroup_size(1)
-fn decodeFieldBSlices(@builtin(workgroup_id) workgroupId: vec3u) {
-    if (!beginUnit(workgroupId.x, SLICE_KIND_FIELD_B)) {
-        return;
-    }
-    loop {
-        if (!beginUnitMacroblock()) {
-            return;
-        }
-        decodeFieldBMacroblock();
-        if (!finishUnitMacroblock()) {
-            return;
-        }
-    }
-}
-
-@compute @workgroup_size(1)
-fn decodeFrameBSlices(@builtin(workgroup_id) workgroupId: vec3u) {
-    if (!beginUnit(workgroupId.x, SLICE_KIND_FRAME_B)) {
-        return;
-    }
-    loop {
-        if (!beginUnitMacroblock()) {
-            return;
-        }
-        decodeInterlacedFrameBMacroblock();
-        if (!finishUnitMacroblock()) {
-            return;
-        }
-    }
-}
-
-// WGSL of the VC-1 decoder's IntraX8 pictures, the J-frame intra coding of WMV3 I pictures, as FFmpeg's intrax8.c and intrax8dsp.c
-// decode them. Its bitstream depends on reconstructed samples: a block's orientation code is read only when the edge samples its
-// neighbors left, after their in-loop filtering, span a wide enough range. So one workgroup decodes the picture block by block in
-// raster order: its first invocation parses, and all of them share each block's prediction, inverse transform, and filtering
-const X8_WORKGROUP_SIZE: u32 = 64u;
-
-// The spatial predictor's edge samples, setup_spatial_compensation's areas: 1 and 2 the two columns left of the block bottom up, 3 the
-// top-left corner, 4 and 5 the row above this block and the next, 6 the row above that
-const X8_AREA1: u32 = 0u;
-const X8_AREA2: u32 = 8u;
-const X8_AREA3: u32 = 16u;
-const X8_AREA4: u32 = 17u;
-const X8_AREA5: u32 = 25u;
-const X8_AREA6: u32 = 33u;
-const X8_EDGE_SAMPLES: u32 = 41u;
-
-// The block's samples and the five rows and columns before it the loop filter reaches: 13 x 13 from (-5, -5)
-const X8_WINDOW_SIZE: u32 = 13u;
-const X8_WINDOW_ORIGIN: u32 = 5u;
-
-// What the parsing invocation hands the others for one block
-const X8_PLACE_SOLID: u32 = 0u;
-const X8_PLACE_PREDICTED: u32 = 1u;
-struct X8Block {
-    // X8_PLACE_SOLID fills the block with solid; X8_PLACE_PREDICTED predicts it by orientation, or with solid when flat
-    placement: u32,
-    solid: u32,
-    orientation: u32,
-    flat: u32,
-    // Whether the coefficients hold anything to transform and add
-    transform: u32,
-    // The loop filter edges to filter: bit 0 the top edge, bit 1 the left edge
-    filterEdges: u32,
-    failed: u32,
-}
-
-var<workgroup> x8Block: X8Block;
-var<workgroup> x8Coefficients: array<i32, 64>;
-var<workgroup> x8EdgeSamples: array<u32, 48>;
-var<workgroup> x8Window: array<i32, 169>;
-// FFmpeg's prediction_table: per block column, the estimated run and orientation class of the two last block rows
-var<workgroup> x8Predictions: array<u32, 1024>;
-var<workgroup> x8Geometry: vec4u;
-
-// The picture's quantizers and the code tables it chose; the parsing invocation alone keeps them
-var<private> x8Quant: i32;
-var<private> x8Dquant: i32;
-var<private> x8Qsum: i32;
-var<private> x8QuantDcChroma: i32;
-var<private> x8DivideQuantDcLuma: i32;
-var<private> x8DivideQuantDcChroma: i32;
-var<private> x8UseQuantMatrix: bool;
-var<private> x8LoopFilter: bool;
-var<private> x8AcTables: vec4u;
-var<private> x8DcTables: vec4u;
-var<private> x8OrientTable: u32;
-// The block being parsed: FFmpeg's mb_x and mb_y count 8x8 blocks
-var<private> x8Column: u32;
-var<private> x8Row: u32;
-var<private> x8Edges: u32;
-var<private> x8Orient: u32;
-var<private> x8RawOrient: u32;
-var<private> x8EstRun: u32;
-var<private> x8ChromaOrient: u32;
-var<private> x8FlatDc: bool;
-var<private> x8PredictedDc: i32;
-
-// The sample position of a block of a plane: luma blocks by 8x8 block, chroma blocks by macroblock
-fn x8BlockOrigin(plane: u32) -> vec2u {
-    if (plane == 0u) {
-        return vec2u(x8Column * 8u, x8Row * 8u);
-    }
-    return vec2u((x8Column >> 1u) * 8u, (x8Row >> 1u) * 8u);
-}
-
-fn x8Sample(plane: u32, x: i32, y: i32) -> u32 {
-    return readOutputSample(plane, u32(x), u32(y));
-}
-
-// x8_get_prediction: the estimated run and orientation class of a luma block from its neighbors' prediction entries
-fn x8GetPrediction() {
-    x8Edges = select(0u, 1u, x8Column == 0u) | select(0u, 2u, x8Row == 0u) | select(0u, 4u, x8Column >= 2u * mbWidth - 1u);
-    let odd = x8Row & 1u;
-    switch (x8Edges & 3u) {
-        case 1u: {
-            x8EstRun = x8Predictions[1u - odd] >> 2u;
-            x8Orient = 1u;
-            return;
-        }
-        case 2u: {
-            x8EstRun = x8Predictions[2u * x8Column - 2u] >> 2u;
-            x8Orient = 2u;
-            return;
-        }
-        case 3u: {
-            x8EstRun = 16u;
-            x8Orient = 0u;
-            return;
-        }
-        default: {
-        }
-    }
-    var b = x8Predictions[2u * x8Column + 1u - odd];
-    var a = x8Predictions[2u * x8Column - 2u + odd];
-    var c = x8Predictions[2u * x8Column - 2u + 1u - odd];
-    x8EstRun = min(b, a);
-    // FFmpeg's condition, which tests the block position rather than the edges
-    if ((x8Column & x8Row) != 0u) {
-        x8EstRun = min(c, x8EstRun);
-    }
-    x8EstRun >>= 2u;
-    a &= 3u;
-    b &= 3u;
-    c &= 3u;
-    let index = (0xFFEAF4C4u >> (2u * b + 8u * a)) & 3u;
-    if (index != 3u) {
-        x8Orient = index;
-    } else {
-        x8Orient = (0xFFEAD8u >> (2u * c + select(0u, 8u, x8Quant > 12))) & 3u;
-    }
-}
-
-// x8_get_prediction_chroma: the chroma orientation of the macroblock from its left neighbor's entry
-fn x8GetPredictionChroma() {
-    x8Edges = select(0u, 1u, (x8Column >> 1u) == 0u) | select(0u, 2u, (x8Row >> 1u) == 0u) | select(0u, 4u, x8Column >= 2u * mbWidth - 1u);
-    x8RawOrient = 0u;
-    if ((x8Edges & 3u) != 0u) {
-        x8ChromaOrient = 4u << ((0xCCu >> x8Edges) & 1u);
-        return;
-    }
-    x8ChromaOrient = (x8Predictions[2u * x8Column - 2u] & 3u) << 2u;
-}
-
-// x8_setup_spatial_compensation: gathers the edge samples of a block and returns their range in x and the sum FFmpeg predicts a flat
-// DC from in y
-fn x8SetupSpatialCompensation(plane: u32) -> vec2i {
-    if ((x8Edges & 3u) == 3u) {
-        for (var index = 0u; index < X8_EDGE_SAMPLES; index += 1u) {
-            x8EdgeSamples[index] = 0x80u;
-        }
-        return vec2i(0, 0x80 * (8 + 1 + 8 + 2));
-    }
-    let origin = vec2i(x8BlockOrigin(plane));
-    var minimum = 256;
-    var maximum = -1;
-    var sum = 0;
-    if ((x8Edges & 1u) == 0u) {
-        for (var index = 0u; index < 8u; index += 1u) {
-            let y = origin.y + 7 - i32(index);
-            x8EdgeSamples[X8_AREA1 + index] = x8Sample(plane, origin.x - 2, y);
-            let sample = i32(x8Sample(plane, origin.x - 1, y));
-            sum += sample;
-            minimum = min(minimum, sample);
-            maximum = max(maximum, sample);
-            x8EdgeSamples[X8_AREA2 + index] = u32(sample);
-        }
-    }
-    if ((x8Edges & 2u) == 0u) {
-        var last = 0u;
-        for (var index = 0u; index < 8u; index += 1u) {
-            let sample = x8Sample(plane, origin.x + i32(index), origin.y - 1);
-            sum += i32(sample);
-            minimum = min(minimum, i32(sample));
-            maximum = max(maximum, i32(sample));
-            x8EdgeSamples[X8_AREA4 + index] = sample;
-            last = sample;
-        }
-        for (var index = 0u; index < 8u; index += 1u) {
-            if ((x8Edges & 4u) != 0u) {
-                x8EdgeSamples[X8_AREA5 + index] = last;
-            } else {
-                x8EdgeSamples[X8_AREA5 + index] = x8Sample(plane, origin.x + 8 + i32(index), origin.y - 1);
-            }
-            x8EdgeSamples[X8_AREA6 + index] = x8Sample(plane, origin.x + i32(index), origin.y - 2);
-        }
-    }
-    if ((x8Edges & 3u) != 0u) {
-        let average = u32((sum + 4) >> 3u);
-        if ((x8Edges & 1u) != 0u) {
-            for (var index = X8_AREA1; index <= X8_AREA3; index += 1u) {
-                x8EdgeSamples[index] = average;
-            }
-        } else {
-            for (var index = X8_AREA3; index < X8_EDGE_SAMPLES; index += 1u) {
-                x8EdgeSamples[index] = average;
-            }
-        }
-        sum += i32(average) * 9;
-    } else {
-        let corner = x8Sample(plane, origin.x - 1, origin.y - 1);
-        x8EdgeSamples[X8_AREA3] = corner;
-        sum += i32(corner);
-    }
-    sum += i32(x8EdgeSamples[X8_AREA5] + x8EdgeSamples[X8_AREA5 + 1u]);
-    return vec2i(maximum - minimum, sum);
-}
-
-// x8_get_orient_vlc, choosing the picture's orientation table at its first use
-fn x8ReadOrientation() -> u32 {
-    if (x8OrientTable == 0u) {
-        if (x8Quant < 13) {
-            x8OrientTable = VLC_X8_ORIENT[X8_LOW_QUANTIZER_ORIENT_TABLES + readBits(2u)];
-        } else {
-            x8OrientTable = VLC_X8_ORIENT[readBits(1u)];
-        }
-    }
-    return readCode(x8OrientTable);
-}
-
-// x8_setup_spatial_predictor: the block's orientation, flatness, and predicted flat DC; false after an invalid orientation code
-fn x8SetupSpatialPredictor(plane: u32) -> bool {
-    let compensation = x8SetupSpatialCompensation(plane);
-    let range = compensation.x;
-    var quant = x8Quant;
-    if (plane != 0u) {
-        x8Orient = x8ChromaOrient;
-        quant = x8QuantDcChroma;
-    }
-    x8FlatDc = false;
-    if (range < quant || range < 3) {
-        x8Orient = 0u;
-        // A transform error of one changes this, so the decoding is exact or not at all
-        if (range < 3) {
-            x8FlatDc = true;
-            x8PredictedDc = ((compensation.y + 9) * 6899) >> 17u;
-        }
-    }
-    if (plane != 0u) {
-        return true;
-    }
-    if (range < 2 * x8Quant) {
-        if ((x8Edges & 3u) == 0u) {
-            if (x8Orient == 1u) {
-                x8Orient = 11u;
-            }
-            if (x8Orient == 2u) {
-                x8Orient = 10u;
-            }
-        } else {
-            x8Orient = 0u;
-        }
-        x8RawOrient = 0u;
-        return true;
-    }
-    x8RawOrient = x8ReadOrientation();
-    if (x8RawOrient >= 12u) {
-        return false;
-    }
-    x8Orient = tableWord(T_X8_PREDICTION_ORIENTATIONS, x8Orient * 12u + x8RawOrient);
-    return true;
-}
-
-// x8_select_ac_table: chooses the AC table of a mode at its first use in the picture
-fn x8SelectACTable(mode: u32) {
-    if (x8AcTables[mode] != 0u) {
-        return;
-    }
-    let lowQuantizer = select(0u, 1u, x8Quant < 13);
-    x8AcTables[mode] = VLC_X8_AC[(lowQuantizer * 2u + (mode >> 1u)) * 8u + readBits(3u)];
-}
-
-// x8_get_ac_rlf: run in x, level in y, final in z; an invalid code returns a run past the block
-fn x8ReadAC(mode: u32) -> vec3i {
-    var index = readCode(x8AcTables[mode]);
-    if (index == INVALID_CODE) {
-        return vec3i(64, 64, 64);
-    }
-    if (index < 46u) {
-        let finalCode = select(0u, 1u, index > 22u);
-        index -= 23u * finalCode;
-        let level = (0xE50000u >> (index & 0x1Eu)) & 3u;
-        let runMask = 0x01030Fu >> (level << 3u);
-        return vec3i(i32(index & runMask), i32(level), i32(finalCode));
-    }
-    if (index < 73u) {
-        index -= 46u;
-        var packed = tableWord(T_X8_AC_DECODE, index);
-        let extra = readBits(packed & 0xFu);
-        packed >>= 8u;
-        let mask = packed & 0xFFu;
-        packed >>= 8u;
-        return vec3i(i32((packed & 0xFFu) + (extra & mask)), i32((packed >> 8u) + (extra & ~mask)), select(0, 1, index > 12u));
-    }
-    if (index < 75u) {
-        let packed = tableWord(T_X8_MIXED_RUN_LEVEL, readBits(5u));
-        return vec3i(i32(packed >> 4u), i32(packed & 0x0Fu), select(1, 0, (index & 1u) != 0u));
-    }
-    let level = readBits(7u - 3u * (index & 1u));
-    let run = readBits(6u);
-    return vec3i(i32(run), i32(level), i32(readBit()));
-}
-
-// x8_get_dc_rlf: level in x, final in y, and z set after an invalid code
-fn x8ReadDC(mode: u32) -> vec3i {
-    if (x8DcTables[mode] == 0u) {
-        x8DcTables[mode] = VLC_X8_DC[select(0u, 8u, x8Quant < 13) + readBits(3u)];
-    }
-    let code = readCode(x8DcTables[mode]);
-    var index = select(i32(code), -1, code == INVALID_CODE);
-    let finalCode = select(0, 1, index > 16);
-    index -= 17 * finalCode;
-    if (index <= 0) {
-        return vec3i(0, finalCode, select(0, 1, index < 0));
-    }
-    var extraBits = (index + 1) >> 1u;
-    extraBits -= select(0, 1, extraBits > 1);
-    var extra = i32(readBits(u32(extraBits)));
-    let magnitude = i32(tableWord(T_X8_DC_INDEX_OFFSET, u32(index))) + (extra >> 1u);
-    extra = -(extra & 1);
-    return vec3i((magnitude ^ extra) - extra, finalCode, 0);
-}
-
-// x8_ac_compensation: rounds the DC level into the first row, column, or both, by direction
-fn x8ACCompensation(direction: u32, dcLevel: i32) {
-    switch (direction) {
-        case 0u: {
-            var t = (3811 * dcLevel + 0x8000) >> 16u;
-            x8Coefficients[1] -= t;
-            x8Coefficients[8] -= t;
-            t = (487 * dcLevel + 0x8000) >> 16u;
-            x8Coefficients[2] -= t;
-            x8Coefficients[16] -= t;
-            t = (506 * dcLevel + 0x8000) >> 16u;
-            x8Coefficients[3] -= t;
-            x8Coefficients[24] -= t;
-            t = (135 * dcLevel + 0x8000) >> 16u;
-            x8Coefficients[4] -= t;
-            x8Coefficients[32] -= t;
-            x8Coefficients[10] += t;
-            x8Coefficients[17] += t;
-            x8Coefficients[11] += t;
-            x8Coefficients[25] += t;
-            t = (173 * dcLevel + 0x8000) >> 16u;
-            x8Coefficients[5] -= t;
-            x8Coefficients[40] -= t;
-            t = (61 * dcLevel + 0x8000) >> 16u;
-            x8Coefficients[6] -= t;
-            x8Coefficients[48] -= t;
-            x8Coefficients[13] += t;
-            x8Coefficients[41] += t;
-            t = (42 * dcLevel + 0x8000) >> 16u;
-            x8Coefficients[7] -= t;
-            x8Coefficients[56] -= t;
-            x8Coefficients[12] += t;
-            x8Coefficients[33] += t;
-            x8Coefficients[36] += t;
-            t = (1084 * dcLevel + 0x8000) >> 16u;
-            x8Coefficients[9] += t;
-        }
-        case 1u: {
-            x8Coefficients[8] -= (6269 * dcLevel + 0x8000) >> 16u;
-            x8Coefficients[24] -= (708 * dcLevel + 0x8000) >> 16u;
-            x8Coefficients[40] -= (172 * dcLevel + 0x8000) >> 16u;
-            x8Coefficients[56] -= (73 * dcLevel + 0x8000) >> 16u;
-        }
-        case 2u: {
-            x8Coefficients[1] -= (6269 * dcLevel + 0x8000) >> 16u;
-            x8Coefficients[3] -= (708 * dcLevel + 0x8000) >> 16u;
-            x8Coefficients[5] -= (172 * dcLevel + 0x8000) >> 16u;
-            x8Coefficients[7] -= (73 * dcLevel + 0x8000) >> 16u;
-        }
-        default: {
-        }
-    }
-    // The block is int16_t
-    for (var index = 0u; index < 64u; index += 1u) {
-        x8Coefficients[index] = wrapInt16(x8Coefficients[index]);
-    }
-}
-
-// x8_update_predictions: a luma block's entry for its neighbors
-fn x8UpdatePredictions(orient: u32, estimatedRun: u32) {
-    x8Predictions[x8Column * 2u + (x8Row & 1u)] = (estimatedRun << 2u) + select(0u, 1u, orient == 4u) + select(0u, 2u, orient == 8u);
-}
-
-// x8_decode_intra_mb's parse: the block's coefficients, how to place it, and which edges to filter; run by the parsing invocation
-fn x8ParseBlock(plane: u32) -> X8Block {
-    var block = X8Block(X8_PLACE_PREDICTED, 0u, x8Orient, select(0u, 1u, x8FlatDc), 0u, 0u, 0u);
-    for (var index = 0u; index < 64u; index += 1u) {
-        x8Coefficients[index] = 0;
-    }
-    let chroma = plane != 0u;
-    let dcMode = select(select(0u, 1u, x8EstRun != 0u), 2u, chroma);
-    let dc = x8ReadDC(dcMode);
-    if (dc.z != 0) {
-        block.failed = 1u;
-        return block;
-    }
-    var dcLevel = dc.x;
-    var count = 0u;
-    var zerosOnly = false;
-    var placed = false;
-    if (dc.y == 0) {
-        var useQuantMatrix = x8UseQuantMatrix;
-        var acMode = 1u;
-        var estimatedRun = 64u;
-        if (!chroma) {
-            if (x8RawOrient < 3u) {
-                useQuantMatrix = false;
-            }
-            if (x8RawOrient > 4u) {
-                acMode = 0u;
-            } else if (x8EstRun > 1u) {
-                acMode = 2u;
-                estimatedRun = x8EstRun;
-            } else {
-                acMode = 3u;
-            }
-        }
-        x8SelectACTable(acMode);
-        let scan = T_X8_SCANS + ((0x928548u >> (2u * x8Orient)) & 3u) * 64u;
-        var position = 0u;
-        loop {
-            count += 1u;
-            if (count >= estimatedRun) {
-                acMode = 3u;
-                x8SelectACTable(3u);
-            }
-            let coefficient = x8ReadAC(acMode);
-            position += u32(coefficient.x) + 1u;
-            if (position > 63u) {
-                block.failed = 1u;
-                return block;
-            }
-            var level = (coefficient.y + 1) * x8Dquant + x8Qsum;
-            let sign = -i32(readBit());
-            level = (level ^ sign) - sign;
-            if (useQuantMatrix) {
-                level = (level * i32(tableWord(T_X8_QUANT_MATRIX, position))) >> 8u;
-            }
-            x8Coefficients[tableWord(scan, position)] = wrapInt16(level);
-            if (coefficient.z != 0) {
-                break;
-            }
-        }
-    } else {
-        if (x8FlatDc && u32(dcLevel + 1) < 3u) {
-            let divideQuant = select(x8DivideQuantDcLuma, x8DivideQuantDcChroma, chroma);
-            let dcQuant = select(x8Quant, x8QuantDcChroma, chroma);
-            // FFmpeg's rounding of dc_level += predicted_dc / quant
-            dcLevel += (x8PredictedDc * divideQuant + (1 << 12u)) >> 13u;
-            block.placement = X8_PLACE_SOLID;
-            block.solid = u32(clamp((dcLevel * dcQuant + 4) >> 3u, 0, 255));
-            placed = true;
-        } else {
-            zerosOnly = dcLevel == 0;
-        }
-    }
-    if (!placed) {
-        x8Coefficients[0] = wrapInt16(dcLevel * select(x8Quant, x8QuantDcChroma, chroma));
-        if (u32(dcLevel + 1) >= 3u && (x8Edges & 3u) != 3u) {
-            let direction = (0x6A017Cu >> (x8Orient * 2u)) & 3u;
-            if (direction != 3u) {
-                x8ACCompensation(direction, x8Coefficients[0]);
-            }
-        }
-        if (x8FlatDc) {
-            block.solid = u32(x8PredictedDc) & 0xFFu;
-        }
-        block.transform = select(1u, 0u, zerosOnly);
-    }
-    if (!chroma) {
-        x8UpdatePredictions(x8Orient, count);
-    }
-    if (x8LoopFilter) {
-        if (!((x8Edges & 2u) != 0u || (zerosOnly && (x8Orient | 4u) == 4u))) {
-            block.filterEdges |= 1u;
-        }
-        if (!((x8Edges & 1u) != 0u || (zerosOnly && (x8Orient | 8u) == 8u))) {
-            block.filterEdges |= 2u;
-        }
-    }
-    return block;
-}
-
-// spatial_compensation_0's smoothed edge at one position: the edge samples weighted down by their distance, the odd distances by
-// sqrt(2)/2; FFmpeg keeps the sums in uint16_t
-fn x8SmoothedEdge(first: u32, count: u32, position: i32, reversed: bool) -> u32 {
-    var even = 0u;
-    var odd = 0u;
-    for (var index = 0u; index < count; index += 1u) {
-        let distance = u32(abs(i32(index) - position));
-        let source = select(first + index, first + 7u - index, reversed);
-        let value = (x8EdgeSamples[source] << 4u) >> (distance >> 1u);
-        if ((distance & 1u) == 0u) {
-            even += value;
-        } else {
-            odd += value;
-        }
-    }
-    return (even + ((odd * 181u + 128u) >> 8u)) & 0xFFFFu;
-}
-
-// The predicted sample (x, y) of the block's orientation, FFmpeg's spatial_compensation functions
-fn x8PredictSample(orientation: u32, x: u32, y: u32) -> u32 {
-    let ix = i32(x);
-    let iy = i32(y);
-    switch (orientation) {
-        case 0u: {
-            // The top row reaches columns 8 and 9 for columns 5 to 7, and columns 10 and 11 for column 7
-            var topCount = 8u;
-            if (x >= 5u) {
-                topCount = 10u;
-            }
-            if (x == 7u) {
-                topCount = 12u;
-            }
-            let top = x8SmoothedEdge(X8_AREA4, topCount, ix, false);
-            let left = x8SmoothedEdge(X8_AREA2, 8u, iy, true);
-            let weights = T_X8_ZERO_PREDICTION_WEIGHTS + y * 16u + x * 2u;
-            // A uint8_t keeps the low byte
-            return ((top * tableWord(weights, 0u) + left * tableWord(weights, 1u) + 0x8000u) >> 16u) & 0xFFu;
-        }
-        case 1u: {
-            return x8EdgeSamples[X8_AREA4 + min(2u * y + x + 2u, 15u)];
-        }
-        case 2u: {
-            return x8EdgeSamples[X8_AREA4 + 1u + y + x];
-        }
-        case 3u: {
-            return x8EdgeSamples[X8_AREA4 + ((y + 1u) >> 1u) + x];
-        }
-        case 4u: {
-            return (x8EdgeSamples[X8_AREA4 + x] + x8EdgeSamples[X8_AREA6 + x] + 1u) >> 1u;
-        }
-        case 5u: {
-            if (2 * ix - iy < 0) {
-                return x8EdgeSamples[u32(i32(X8_AREA2) + 9 + 2 * ix - iy)];
-            }
-            return x8EdgeSamples[u32(i32(X8_AREA4) + ix - ((iy + 1) >> 1u))];
-        }
-        case 6u: {
-            return x8EdgeSamples[X8_AREA3 - y + x];
-        }
-        case 7u: {
-            if (ix - 2 * iy > 0) {
-                let index = u32(i32(X8_AREA3) + ix - 2 * iy);
-                return (x8EdgeSamples[index - 1u] + x8EdgeSamples[index] + 1u) >> 1u;
-            }
-            return x8EdgeSamples[X8_AREA2 + 8u - y + (x >> 1u)];
-        }
-        case 8u: {
-            return (x8EdgeSamples[X8_AREA1 + 7u - y] + x8EdgeSamples[X8_AREA2 + 7u - y] + 1u) >> 1u;
-        }
-        case 9u: {
-            return x8EdgeSamples[X8_AREA2 + 6u - min(x + y, 6u)];
-        }
-        case 10u: {
-            return (x8EdgeSamples[X8_AREA2 + 7u - y] * (8u - x) + x8EdgeSamples[X8_AREA4 + x] * x + 4u) >> 3u;
-        }
-        default: {
-            return (x8EdgeSamples[X8_AREA2 + 7u - y] * y + x8EdgeSamples[X8_AREA4 + x] * (8u - y) + 4u) >> 3u;
-        }
-    }
-}
-
-fn x8WindowIndex(x: i32, y: i32) -> u32 {
-    return u32(y + i32(X8_WINDOW_ORIGIN)) * X8_WINDOW_SIZE + u32(x + i32(X8_WINDOW_ORIGIN));
-}
-
-// wmv2_idct_row of row r, int16_t in and out
-fn x8TransformRow(row: u32) {
-    let base = row * 8u;
-    let b0 = x8Coefficients[base];
-    let b1 = x8Coefficients[base + 1u];
-    let b2 = x8Coefficients[base + 2u];
-    let b3 = x8Coefficients[base + 3u];
-    let b4 = x8Coefficients[base + 4u];
-    let b5 = x8Coefficients[base + 5u];
-    let b6 = x8Coefficients[base + 6u];
-    let b7 = x8Coefficients[base + 7u];
-    let a1 = 2841 * b1 + 565 * b7;
-    let a7 = 565 * b1 - 2841 * b7;
-    let a5 = 1609 * b5 + 2408 * b3;
-    let a3 = 2408 * b5 - 1609 * b3;
-    let a2 = 2676 * b2 + 1108 * b6;
-    let a6 = 1108 * b2 - 2676 * b6;
-    let a0 = 2048 * b0 + 2048 * b4;
-    let a4 = 2048 * b0 - 2048 * b4;
-    let s1 = bitcast<i32>(181u * bitcast<u32>(a1 - a5 + a7 - a3) + 128u) >> 8u;
-    let s2 = bitcast<i32>(181u * bitcast<u32>(a1 - a5 - a7 + a3) + 128u) >> 8u;
-    x8Coefficients[base] = wrapInt16((a0 + a2 + a1 + a5 + 128) >> 8u);
-    x8Coefficients[base + 1u] = wrapInt16((a4 + a6 + s1 + 128) >> 8u);
-    x8Coefficients[base + 2u] = wrapInt16((a4 - a6 + s2 + 128) >> 8u);
-    x8Coefficients[base + 3u] = wrapInt16((a0 - a2 + a7 + a3 + 128) >> 8u);
-    x8Coefficients[base + 4u] = wrapInt16((a0 - a2 - a7 - a3 + 128) >> 8u);
-    x8Coefficients[base + 5u] = wrapInt16((a4 - a6 - s2 + 128) >> 8u);
-    x8Coefficients[base + 6u] = wrapInt16((a4 + a6 - s1 + 128) >> 8u);
-    x8Coefficients[base + 7u] = wrapInt16((a0 + a2 - a1 - a5 + 128) >> 8u);
-}
-
-// wmv2_idct_col of column c, int16_t in and out
-fn x8TransformColumn(column: u32) {
-    let b0 = x8Coefficients[column];
-    let b1 = x8Coefficients[column + 8u];
-    let b2 = x8Coefficients[column + 16u];
-    let b3 = x8Coefficients[column + 24u];
-    let b4 = x8Coefficients[column + 32u];
-    let b5 = x8Coefficients[column + 40u];
-    let b6 = x8Coefficients[column + 48u];
-    let b7 = x8Coefficients[column + 56u];
-    let a1 = (2841 * b1 + 565 * b7 + 4) >> 3u;
-    let a7 = (565 * b1 - 2841 * b7 + 4) >> 3u;
-    let a5 = (1609 * b5 + 2408 * b3 + 4) >> 3u;
-    let a3 = (2408 * b5 - 1609 * b3 + 4) >> 3u;
-    let a2 = (2676 * b2 + 1108 * b6 + 4) >> 3u;
-    let a6 = (1108 * b2 - 2676 * b6 + 4) >> 3u;
-    let a0 = (2048 * b0 + 2048 * b4) >> 3u;
-    let a4 = (2048 * b0 - 2048 * b4) >> 3u;
-    let s1 = bitcast<i32>(181u * bitcast<u32>(a1 - a5 + a7 - a3) + 128u) >> 8u;
-    let s2 = bitcast<i32>(181u * bitcast<u32>(a1 - a5 - a7 + a3) + 128u) >> 8u;
-    x8Coefficients[column] = wrapInt16((a0 + a2 + a1 + a5 + 8192) >> 14u);
-    x8Coefficients[column + 8u] = wrapInt16((a4 + a6 + s1 + 8192) >> 14u);
-    x8Coefficients[column + 16u] = wrapInt16((a4 - a6 + s2 + 8192) >> 14u);
-    x8Coefficients[column + 24u] = wrapInt16((a0 - a2 + a7 + a3 + 8192) >> 14u);
-    x8Coefficients[column + 32u] = wrapInt16((a0 - a2 - a7 - a3 + 8192) >> 14u);
-    x8Coefficients[column + 40u] = wrapInt16((a4 - a6 - s2 + 8192) >> 14u);
-    x8Coefficients[column + 48u] = wrapInt16((a4 + a6 - s1 + 8192) >> 14u);
-    x8Coefficients[column + 56u] = wrapInt16((a0 + a2 - a1 - a5 + 8192) >> 14u);
-}
-
-// x8_loop_filter across one line of an edge: the window samples at first + k * step for k from -5 to 4, the edge between -1 and 0
-fn x8FilterLine(first: i32, step: i32, quant: i32) {
-    var p: array<i32, 10>;
-    for (var k = 0; k < 10; k += 1) {
-        p[k] = x8Window[u32(first + (k - 5) * step)];
-    }
-    let ql = (quant + 10) >> 3u;
-    var t = select(0, 1, abs(p[1] - p[2]) <= ql) + select(0, 1, abs(p[2] - p[3]) <= ql) + select(0, 1, abs(p[3] - p[4]) <= ql)
-        + select(0, 1, abs(p[4] - p[5]) <= ql);
-    if (t > 0) {
-        t += select(0, 1, abs(p[5] - p[6]) <= ql) + select(0, 1, abs(p[6] - p[7]) <= ql) + select(0, 1, abs(p[7] - p[8]) <= ql)
-            + select(0, 1, abs(p[8] - p[9]) <= ql) + select(0, 1, abs(p[0] - p[1]) <= ql);
-        if (t >= 6) {
-            var minimum = min(min(p[1], p[3]), min(p[5], p[8]));
-            var maximum = max(max(p[1], p[3]), max(p[5], p[8]));
-            if (maximum - minimum < 2 * quant) {
-                minimum = min(minimum, min(min(p[2], p[4]), min(p[6], p[7])));
-                maximum = max(maximum, max(max(p[2], p[4]), max(p[6], p[7])));
-                if (maximum - minimum < 2 * quant) {
-                    x8Window[u32(first - 2 * step)] = (4 * p[2] + 3 * p[3] + 1 * p[7] + 4) >> 3u;
-                    x8Window[u32(first - step)] = (3 * p[2] + 3 * p[4] + 2 * p[7] + 4) >> 3u;
-                    x8Window[u32(first)] = (2 * p[2] + 3 * p[5] + 3 * p[7] + 4) >> 3u;
-                    x8Window[u32(first + step)] = (1 * p[2] + 3 * p[6] + 4 * p[7] + 4) >> 3u;
-                    return;
-                }
-            }
-        }
-    }
-    let x0 = (2 * p[3] - 5 * p[4] + 5 * p[5] - 2 * p[6] + 4) >> 3u;
-    if (abs(x0) < quant) {
-        let x1 = (2 * p[1] - 5 * p[2] + 5 * p[3] - 2 * p[4] + 4) >> 3u;
-        let x2 = (2 * p[5] - 5 * p[6] + 5 * p[7] - 2 * p[8] + 4) >> 3u;
-        var x = abs(x0) - min(abs(x1), abs(x2));
-        var m = p[4] - p[5];
-        if (x > 0 && (m ^ x0) < 0) {
-            let sign = m >> 31u;
-            m = ((m ^ sign) - sign) >> 1u;
-            x = min((5 * x) >> 3u, m);
-            x = (x ^ sign) - sign;
-            x8Window[u32(first - step)] = p[4] - x;
-            x8Window[u32(first)] = p[5] + x;
-        }
-    }
-}
-
-// Writes four window samples of a row back to the output slot as one word; the window holds every sample the block's steps changed
-fn x8WriteWindowWord(plane: u32, origin: vec2i, windowX: i32, windowY: i32) {
-    let index = x8WindowIndex(windowX, windowY);
-    let samples = vec4u(u32(x8Window[index]), u32(x8Window[index + 1u]), u32(x8Window[index + 2u]), u32(x8Window[index + 3u]));
-    writeOutputSamples8(plane, u32(origin.x + windowX), u32(origin.y + windowY), samples);
-}
-
-// Decodes one block of a plane with the whole workgroup; false once the picture's parse failed
-fn x8DecodeBlock(plane: u32, localIndex: u32) -> bool {
-    if (localIndex == 0u) {
-        var block = X8Block(X8_PLACE_PREDICTED, 0u, 0u, 0u, 0u, 0u, 1u);
-        var valid = true;
-        if (plane == 0u) {
-            x8GetPrediction();
-            valid = x8SetupSpatialPredictor(0u);
-        } else {
-            if (plane == 1u) {
-                x8GetPredictionChroma();
-            }
-            valid = x8SetupSpatialPredictor(plane);
-        }
-        if (valid) {
-            block = x8ParseBlock(plane);
-        }
-        x8Block = block;
-    }
-    let block = workgroupUniformLoad(&x8Block);
-    if (block.failed != 0u) {
-        return false;
-    }
-    // The block's samples land in the window's center, the prediction first
-    let origin = vec2i(x8BlockOrigin(plane));
-    let x = localIndex & 7u;
-    let y = localIndex >> 3u;
-    var predicted = block.solid;
-    if (block.placement == X8_PLACE_PREDICTED && block.flat == 0u) {
-        predicted = x8PredictSample(block.orientation, x, y);
-    }
-    if (block.transform != 0u && y == 0u) {
-        x8TransformRow(x);
-    }
-    workgroupBarrier();
-    if (block.transform != 0u && y == 0u) {
-        x8TransformColumn(x);
-    }
-    workgroupBarrier();
-    var sample = i32(predicted);
-    if (block.transform != 0u) {
-        sample = clamp(sample + x8Coefficients[y * 8u + x], 0, 255);
-    }
-    x8Window[x8WindowIndex(i32(x), i32(y))] = sample;
-    // The loop filter reads up to five rows above and columns left of the block, which earlier blocks finished
-    if (block.filterEdges != 0u) {
-        for (var index = localIndex; index < X8_WINDOW_SIZE * X8_WINDOW_SIZE; index += X8_WORKGROUP_SIZE) {
-            let windowX = i32(index % X8_WINDOW_SIZE) - i32(X8_WINDOW_ORIGIN);
-            let windowY = i32(index / X8_WINDOW_SIZE) - i32(X8_WINDOW_ORIGIN);
-            let inside = origin.x + windowX >= 0 && origin.y + windowY >= 0;
-            if ((windowX < 0 || windowY < 0) && inside && (windowX >= 0 || windowY >= 0)) {
-                x8Window[index] = i32(x8Sample(plane, origin.x + windowX, origin.y + windowY));
-            }
-        }
-    }
-    workgroupBarrier();
-    let quant = i32(workgroupUniformLoad(&x8Geometry).w);
-    if ((block.filterEdges & 1u) != 0u && localIndex < 8u) {
-        x8FilterLine(i32(x8WindowIndex(i32(localIndex), 0)), i32(X8_WINDOW_SIZE), quant);
-    }
-    workgroupBarrier();
-    if ((block.filterEdges & 2u) != 0u && localIndex < 8u) {
-        x8FilterLine(i32(x8WindowIndex(0, i32(localIndex))), 1, quant);
-    }
-    workgroupBarrier();
-    // Words back to the slot: the block's 16, the two rows above it the top filter changed, and the word left of each row the left
-    // filter changed
-    if (localIndex < 16u) {
-        x8WriteWindowWord(plane, origin, i32(localIndex & 1u) * 4, i32(localIndex >> 1u));
-    } else if (localIndex < 20u) {
-        if ((block.filterEdges & 1u) != 0u) {
-            let index = localIndex - 16u;
-            x8WriteWindowWord(plane, origin, i32(index & 1u) * 4, -2 + i32(index >> 1u));
-        }
-    } else if (localIndex < 28u) {
-        if ((block.filterEdges & 2u) != 0u) {
-            x8WriteWindowWord(plane, origin, -4, i32(localIndex - 20u));
-        }
-    }
-    storageBarrier();
-    return true;
-}
-
-// Records the picture's anchor motion as an I picture's: zero vectors, every block intra
-fn x8StoreAnchorMotion(localIndex: u32) {
-    let blocks = mbWidth * 2u * mbHeight * 2u;
-    for (var block = localIndex; block < blocks; block += X8_WORKGROUP_SIZE) {
-        state[S_ANCHOR_MOTION + block * ANCHOR_WORDS_PER_BLOCK] = 0u;
-        state[S_ANCHOR_MOTION + block * ANCHOR_WORDS_PER_BLOCK + 1u] = ANCHOR_INTRA;
-    }
-}
-
-// ff_intrax8_decode_picture: the IntraX8 picture of a parse unit, decoded by one workgroup
-@compute @workgroup_size(X8_WORKGROUP_SIZE)
-fn decodeX8Slices(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) localIndex: u32) {
-    // The workgroup's geometry and the loop filter's quantizer, w->quant, for every invocation
-    if (localIndex == 0u) {
-        var geometry = vec4u(0u, 0u, 0u, 0u);
-        if (beginUnit(workgroupId.x, SLICE_KIND_X8)) {
-            geometry = vec4u(1u, mbWidth, mbHeight, (pq * 2u + halfpq) >> 1u);
-        }
-        x8Geometry = geometry;
-    }
-    let geometry = workgroupUniformLoad(&x8Geometry);
-    if (geometry.x == 0u) {
-        return;
-    }
-    loadGeometry();
-    for (var index = localIndex; index < 4u * geometry.y; index += X8_WORKGROUP_SIZE) {
-        x8Predictions[index] = 0u;
-    }
-    if (localIndex == 0u) {
-        x8Dquant = i32(pq) * 2 + i32(halfpq);
-        x8Quant = x8Dquant >> 1u;
-        x8Qsum = select(0, i32(pq), pquantizer == 0u);
-        x8LoopFilter = stateValue(S_LOOP_FILTER) != 0u;
-        x8UseQuantMatrix = readBit() != 0u;
-        x8DivideQuantDcLuma = ((1 << 16u) + (x8Quant >> 1u)) / x8Quant;
-        if (x8Quant < 5) {
-            x8QuantDcChroma = x8Quant;
-            x8DivideQuantDcChroma = x8DivideQuantDcLuma;
-        } else {
-            x8QuantDcChroma = x8Quant + ((x8Quant + 3) >> 3u);
-            x8DivideQuantDcChroma = ((1 << 16u) + (x8QuantDcChroma >> 1u)) / x8QuantDcChroma;
-        }
-        x8AcTables = vec4u(0u, 0u, 0u, 0u);
-        x8DcTables = vec4u(0u, 0u, 0u, 0u);
-        x8OrientTable = 0u;
-    }
-    x8StoreAnchorMotion(localIndex);
-    workgroupBarrier();
-    let blockRows = geometry.z * 2u;
-    let blockColumns = geometry.y * 2u;
-    for (var row = 0u; row < blockRows; row += 1u) {
-        // FFmpeg stops the picture at a row without bits left
-        if (localIndex == 0u) {
-            x8Block.failed = select(0u, 1u, readerBitsLeft() < 1);
-        }
-        if (workgroupUniformLoad(&x8Block).failed != 0u) {
-            return;
-        }
-        for (var column = 0u; column < blockColumns; column += 1u) {
-            x8Column = column;
-            x8Row = row;
-            if (!x8DecodeBlock(0u, localIndex)) {
-                return;
-            }
-            if ((column & row & 1u) != 0u) {
-                if (!x8DecodeBlock(1u, localIndex)) {
-                    return;
-                }
-                if (!x8DecodeBlock(2u, localIndex)) {
-                    return;
-                }
-            }
-        }
-    }
-}
-
-// WGSL of the VC-1 decoder's intra prediction pass. The slice passes record each intra block's DC differential and its AC levels by
-// scan index, since no bit they read depends on prediction; this pass then predicts, scans, and dequantizes them, as FFmpeg's
-// vc1_decode_i_block, vc1_decode_i_block_adv, and vc1_decode_intra_block do inline.
-// One workgroup walks the anti-diagonals of the pass's macroblocks, one macroblock per invocation, so every macroblock follows its
-// left, top, and top-left neighbors as in FFmpeg's raster order, while the serial parse stays free of the prediction work
-// Whether the pass runs and its macroblock columns and rows, broadcast so the wavefront loop stays in uniform control flow
-var<workgroup> intraPassGeometry: vec4u;
-
-// The intra prediction variants: FFmpeg's vc1_decode_i_block, vc1_decode_i_block_adv, and vc1_decode_intra_block
-const INTRA_SIMPLE: u32 = 0u;
-const INTRA_ADVANCED: u32 = 1u;
-const INTRA_INTER_PICTURE: u32 = 2u;
-
-// Intra prediction records: per block the DC level and the 7 + 7 AC levels of its first column and first row
-fn predictionWord(record: u32, n: u32, half: u32) -> u32 {
-    return B_PREDICTION + (record / MACROBLOCK_WORDS) * PREDICTION_WORDS + n * PREDICTION_WORDS_PER_BLOCK + half / 2u;
-}
-
-// The DC predictor half is 0, the left column halves 1 to 7, the top row halves 9 to 15, as FFmpeg's ac_val[1..7] and ac_val[9..15]
-const PREDICTION_DC: u32 = 0u;
-
-fn predictionValue(record: u32, n: u32, half: u32) -> i32 {
-    let word = macroblocks[predictionWord(record, n, half)];
-    return i32(word << (16u - (half & 1u) * 16u)) >> 16u;
-}
-
-// The neighbor block of block n to the left (direction 1) or above (direction 0), as dc_val[-1] and dc_val[-wrap] address it
-struct NeighborBlock {
-    record: u32,
-    block: u32,
-    inside: bool,
-}
-
-fn neighborBlock(n: u32, direction: u32) -> NeighborBlock {
-    if (n >= 4u) {
-        // Chroma blocks sit on the macroblock grid
-        if (direction == 1u) {
-            if (mbX == 0u) {
-                return NeighborBlock(0u, n, false);
-            }
-            return NeighborBlock(recordAt(mbX - 1u, mbY), n, true);
-        }
-        if (mbY == 0u) {
-            return NeighborBlock(0u, n, false);
-        }
-        return NeighborBlock(recordAt(mbX, mbY - 1u), n, true);
-    }
-    if (direction == 1u) {
-        if ((n & 1u) != 0u) {
-            return NeighborBlock(currentRecord, n - 1u, true);
-        }
-        if (mbX == 0u) {
-            return NeighborBlock(0u, n, false);
-        }
-        return NeighborBlock(recordAt(mbX - 1u, mbY), n + 1u, true);
-    }
-    if ((n & 2u) != 0u) {
-        return NeighborBlock(currentRecord, n - 2u, true);
-    }
-    if (mbY == 0u) {
-        return NeighborBlock(0u, n, false);
-    }
-    return NeighborBlock(recordAt(mbX, mbY - 1u), n + 2u, true);
-}
-
-// The top-left neighbor, dc_val[-1 - wrap]
-fn topLeftBlock(n: u32) -> NeighborBlock {
-    if (n >= 4u) {
-        if (mbX == 0u || mbY == 0u) {
-            return NeighborBlock(0u, n, false);
-        }
-        return NeighborBlock(recordAt(mbX - 1u, mbY - 1u), n, true);
-    }
-    switch (n) {
-        case 0u: {
-            if (mbX == 0u || mbY == 0u) {
-                return NeighborBlock(0u, n, false);
-            }
-            return NeighborBlock(recordAt(mbX - 1u, mbY - 1u), 3u, true);
-        }
-        case 1u: {
-            if (mbY == 0u) {
-                return NeighborBlock(0u, n, false);
-            }
-            return NeighborBlock(recordAt(mbX, mbY - 1u), 2u, true);
-        }
-        case 2u: {
-            if (mbX == 0u) {
-                return NeighborBlock(0u, n, false);
-            }
-            return NeighborBlock(recordAt(mbX - 1u, mbY), 1u, true);
-        }
-        default: {
-            return NeighborBlock(currentRecord, 0u, true);
-        }
-    }
-}
-
-fn neighborDC(neighbor: NeighborBlock) -> i32 {
-    if (!neighbor.inside) {
-        return 0;
-    }
-    return predictionValue(neighbor.record, neighbor.block, PREDICTION_DC);
-}
-
-// Whether a neighbor block exists and is intra, FFmpeg's mb_type check of a_avail and c_avail
-fn neighborIsIntra(neighbor: NeighborBlock) -> bool {
-    return neighbor.inside && ((macroblocks[neighbor.record + M_FLAGS] >> neighbor.block) & 1u) != 0u;
-}
-
-// The signed quantizer of a macroblock record, FFmpeg's qscale_table
-fn recordQuantizer(record: u32) -> i32 {
-    return i32(macroblocks[record + M_QSCALE] & 0x3Fu) - 32;
-}
-
-// FFmpeg's vc1_i_pred_dc for Simple and Main profile I pictures; x is the prediction, y is 1 for left and 0 for top
-fn predictSimpleDC(n: u32, firstLine: bool, dcScale: u32) -> vec2i {
-    var c = neighborDC(neighborBlock(n, 1u));
-    var b = neighborDC(topLeftBlock(n));
-    var a = neighborDC(neighborBlock(n, 0u));
-    let outer = select(0, i32(tableWord(T_DC_PREDICTION, dcScale)), pq < 9u || overlapFlag == 0u);
-    if (firstLine && n != 2u && n != 3u) {
-        b = outer;
-        a = outer;
-    }
-    if (mbX == 0u && n != 1u && n != 3u) {
-        b = outer;
-        c = outer;
-    }
-    if (abs(a - b) <= abs(b - c)) {
-        return vec2i(c, 1);
-    }
-    return vec2i(a, 0);
-}
-
-// A neighbor's DC predictor rescaled from its macroblock's quantizer to quantizer
-fn scaleDCPredictor(value: i32, neighborQuantizer: i32, quantizer: u32) -> i32 {
-    let q2 = u32(abs(neighborQuantizer));
-    if (q2 == 0u || q2 == quantizer) {
-        return value;
-    }
-    let scaleIndex = tableWord(T_WMV3_DC_SCALE, quantizer) - 1u;
-    let product = u32(value) * tableWord(T_WMV3_DC_SCALE, q2) * tableWord(T_DQSCALE, scaleIndex) + 0x20000u;
-    return bitcast<i32>(product) >> 18u;
-}
-
-// FFmpeg's ff_vc1_pred_dc; top and left are a_avail and c_avail
-fn predictDC(n: u32, top: bool, left: bool) -> vec2i {
-    let q1 = u32(abs(recordQuantizer(currentRecord)));
-    if (tableWord(T_WMV3_DC_SCALE, q1) == 0u) {
-        return vec2i(0, 1);
-    }
-    var c = neighborDC(neighborBlock(n, 1u));
-    var b = neighborDC(topLeftBlock(n));
-    var a = neighborDC(neighborBlock(n, 0u));
-    if (left && n != 1u && n != 3u) {
-        c = scaleDCPredictor(c, recordQuantizer(recordAt(mbX - 1u, mbY)), q1);
-    }
-    if (top && n != 2u && n != 3u) {
-        a = scaleDCPredictor(a, recordQuantizer(recordAt(mbX, mbY - 1u)), q1);
-    }
-    if (top && left && n != 3u) {
-        var column = mbX;
-        var row = mbY;
-        if (n != 1u) {
-            column -= 1u;
-        }
-        if (n != 2u) {
-            row -= 1u;
-        }
-        b = scaleDCPredictor(b, recordQuantizer(recordAt(column, row)), q1);
-    }
-    if (left && (!top || abs(a - b) <= abs(b - c))) {
-        return vec2i(c, 1);
-    }
-    if (top) {
-        return vec2i(a, 0);
-    }
-    return vec2i(0, 1);
-}
-
-// The rescaled AC predictor of FFmpeg's "scale predictors if needed" loops
-fn scaleACPredictor(value: i32, q1: i32, q2: i32) -> i32 {
-    if (q2 != 0 && q1 != q2) {
-        let product = u32(value) * u32(q2) * tableWord(T_DQSCALE, u32(q1 - 1)) + 0x20000u;
-        return bitcast<i32>(product) >> 18u;
-    }
-    return value;
-}
-
-// The quantizer step of a signed macroblock quantizer, as AC prediction scales by it: |q| * 2 plus HALFQP for picture quantizers, less one
-fn predictorScale(quantizer: i32) -> i32 {
-    return abs(quantizer) * 2 + select(i32(halfpq), 0, quantizer < 0) - 1;
-}
-
-// The quantizer of the neighbor a block's AC prediction reads, FFmpeg's q2; 0 when that neighbor is missing
-fn predictorNeighborQuantizer(n: u32, direction: u32, top: bool, left: bool, quantizer: i32) -> i32 {
-    if (n == 3u) {
-        return quantizer;
-    }
-    if (direction == 1u) {
-        if (n == 1u) {
-            return quantizer;
-        }
-        if (left && (mbX != 0u || mbY != 0u)) {
-            return recordQuantizer(recordAt(mbX - 1u, mbY));
-        }
-        return 0;
-    }
-    if (n == 2u) {
-        return quantizer;
-    }
-    if (top && mbY != 0u) {
-        return recordQuantizer(recordAt(mbX, mbY - 1u));
-    }
-    return 0;
-}
-
-// The AC levels of the first row and first column, the only ones prediction changes, by lane: row lane k holds position k, column lane
-// k holds position 8 * k, lane 0 unused
-var<private> firstRow: array<i32, 8>;
-var<private> firstColumn: array<i32, 8>;
-
-// A dequantized AC level as FFmpeg's "scale AC coeffs" loops leave it; zeroCheckFirst tests the level before scaling, as coded blocks do
-fn dequantizeLevel(level: i32, scale: i32, quant: i32, zeroCheckFirst: bool) -> i32 {
-    if (zeroCheckFirst && level == 0) {
-        return 0;
-    }
-    var value = wrapInt16(level * scale);
-    if (pquantizer == 0u && value != 0) {
-        value = wrapInt16(value + select(quant, -quant, value < 0));
-    }
-    return value;
-}
-
-// Predicts, scans, and dequantizes intra block n of the invocation's macroblock in place: its entries hold AC levels by scan index and
-// its DC predictor half the DC differential, and they leave as the reconstruction reads them, with the predictors its neighbors read
-fn predictIntraBlock(n: u32, variant: u32, flags: u32, firstLine: bool) {
-    let quantizer = recordQuantizer(currentRecord);
-    let quant = abs(quantizer);
-    let dcScale = tableWord(T_WMV3_DC_SCALE, u32(quant));
-    let acPrediction = (flags & MB_ACPRED_BIT) != 0u;
-    let coded = ((flags >> (MB_INTRA_CODED_SHIFT + n)) & 1u) != 0u;
-    var top = true;
-    var left = true;
-    var prediction = vec2i(0, 1);
-    switch (variant) {
-        case INTRA_SIMPLE: {
-            prediction = predictSimpleDC(n, firstLine, dcScale);
-        }
-        case INTRA_ADVANCED: {
-            top = !firstLine || n == 2u || n == 3u;
-            left = mbX != 0u || n == 1u || n == 3u;
-            prediction = predictDC(n, top, left);
-        }
-        default: {
-            top = (n == 2u || n == 3u || !firstLine) && neighborIsIntra(neighborBlock(n, 0u));
-            left = (n == 1u || n == 3u || mbX != 0u) && neighborIsIntra(neighborBlock(n, 1u));
-            prediction = predictDC(n, top, left);
-        }
-    }
-    let dc = predictionValue(currentRecord, n, PREDICTION_DC) + prediction.x;
-    var direction = u32(prediction.y);
-    var usePrediction = acPrediction;
-    var scan = 1u;
-    switch (variant) {
-        case INTRA_SIMPLE: {
-            if (acPrediction) {
-                scan = select(2u, 3u, direction == 1u);
-            }
-        }
-        case INTRA_ADVANCED: {
-            usePrediction = acPrediction && (top || left);
-            if (acPrediction) {
-                scan = select(select(2u, 3u, direction == 1u), 4u, !usePrediction && fcm == FCM_FRAME);
-            } else if (fcm == FCM_FRAME) {
-                scan = 4u;
-            }
-        }
-        default: {
-            usePrediction = acPrediction && (top || left);
-            if (!top) {
-                direction = 1u;
-            }
-            if (!left) {
-                direction = 0u;
-            }
-            if (fcm == FCM_PROGRESSIVE) {
-                scan = 0u;
-            } else if (usePrediction && fcm == FCM_FRAME) {
-                scan = select(2u, 3u, direction == 1u);
-            } else {
-                scan = 4u;
-            }
-        }
-    }
-    let scale = quant * 2 + select(i32(halfpq), 0, quantizer < 0);
-    for (var lane = 0u; lane < 8u; lane += 1u) {
-        firstRow[lane] = 0;
-        firstColumn[lane] = 0;
-    }
-
-    // Levels off the first row and column take no prediction, so they scan and dequantize in place; the entries compact as they go,
-    // writing no further than they read
-    let macroblockIndex = currentRecord / MACROBLOCK_WORDS;
-    let base = (macroblockIndex * 6u + n) * COEFFICIENTS_PER_BLOCK;
-    let countField = select(M_COUNTS_45, M_COUNTS_0123, n < 4u);
-    let countShift = (n & 3u) * 8u;
-    let levelCount = (macroblocks[currentRecord + countField] >> countShift) & 0xFFu;
-    var count = 0u;
-    for (var entry = 0u; entry < levelCount; entry += 1u) {
-        let word = blockData[base + entry];
-        let position = tableWord(T_SCAN_8X8, scan * 64u + ((word >> 16u) & 63u));
-        let level = i32(word << 16u) >> 16u;
-        if (position < 8u) {
-            firstRow[position] = level;
-        } else if ((position & 7u) == 0u) {
-            firstColumn[position >> 3u] = level;
-        } else {
-            let value = dequantizeLevel(level, scale, quant, true);
-            if (value != 0) {
-                blockData[base + count] = (position << 16u) | (u32(value) & 0xFFFFu);
-                count += 1u;
-            }
-        }
-    }
-
-    // AC prediction adds the neighbor's first column to a left-predicted block's, or its first row to a top-predicted block's
-    if (usePrediction) {
-        let neighbor = neighborBlock(n, direction);
-        var q1 = 0;
-        var q2 = 0;
-        if (variant != INTRA_SIMPLE) {
-            q1 = predictorScale(quantizer);
-            let neighborQuantizer = predictorNeighborQuantizer(n, direction, top, left, quantizer);
-            if (neighborQuantizer != 0) {
-                q2 = predictorScale(neighborQuantizer);
-            }
-        }
-        for (var k = 1u; k < 8u; k += 1u) {
-            var predictor = 0;
-            if (neighbor.inside) {
-                predictor = predictionValue(neighbor.record, neighbor.block, select(k + 8u, k, direction == 1u));
-            }
-            if (variant != INTRA_SIMPLE) {
-                predictor = scaleACPredictor(predictor, q1, q2);
-            }
-            if (direction == 1u) {
-                firstColumn[k] = wrapInt16(firstColumn[k] + predictor);
-            } else {
-                firstRow[k] = wrapInt16(firstRow[k] + predictor);
-            }
-        }
-    }
-
-    // The predictors this block leaves for its neighbors: the DC level, then the first column and row before dequantization
-    let prediction0 = predictionWord(currentRecord, n, PREDICTION_DC);
-    macroblocks[prediction0] = (u32(dc) & 0xFFFFu) | (u32(firstColumn[1]) << 16u);
-    macroblocks[prediction0 + 1u] = (u32(firstColumn[2]) & 0xFFFFu) | (u32(firstColumn[3]) << 16u);
-    macroblocks[prediction0 + 2u] = (u32(firstColumn[4]) & 0xFFFFu) | (u32(firstColumn[5]) << 16u);
-    macroblocks[prediction0 + 3u] = (u32(firstColumn[6]) & 0xFFFFu) | (u32(firstColumn[7]) << 16u);
-    macroblocks[prediction0 + 4u] = u32(firstRow[1]) << 16u;
-    macroblocks[prediction0 + 5u] = (u32(firstRow[2]) & 0xFFFFu) | (u32(firstRow[3]) << 16u);
-    macroblocks[prediction0 + 6u] = (u32(firstRow[4]) & 0xFFFFu) | (u32(firstRow[5]) << 16u);
-    macroblocks[prediction0 + 7u] = (u32(firstRow[6]) & 0xFFFFu) | (u32(firstRow[7]) << 16u);
-
-    // Coded blocks dequantize the levels they hold; uncoded blocks dequantize their predicted levels, testing them after scaling
-    for (var k = 1u; k < 8u; k += 1u) {
-        let rowValue = dequantizeLevel(firstRow[k], scale, quant, coded);
-        if (rowValue != 0) {
-            blockData[base + count] = (k << 16u) | (u32(rowValue) & 0xFFFFu);
-            count += 1u;
-        }
-        let columnValue = dequantizeLevel(firstColumn[k], scale, quant, coded);
-        if (columnValue != 0) {
-            blockData[base + count] = ((k * 8u) << 16u) | (u32(columnValue) & 0xFFFFu);
-            count += 1u;
-        }
-    }
-    let dcValue = wrapInt16(dc * i32(dcScale));
-    if (dcValue != 0) {
-        blockData[base + count] = u32(dcValue) & 0xFFFFu;
-        count += 1u;
-    }
-    let counts = macroblocks[currentRecord + countField] & ~(0xFFu << countShift);
-    macroblocks[currentRecord + countField] = counts | (count << countShift);
-}
-
-// Predicts the intra blocks of one macroblock of the pass
-fn predictIntraMacroblock(column: u32, row: u32, variant: u32) {
-    mbX = column;
-    mbY = row;
-    currentRecord = recordAt(column, row);
-    let flags = macroblocks[currentRecord + M_FLAGS];
-    if ((flags & MB_DECODED_BIT) == 0u) {
-        return;
-    }
-    let firstLine = (flags & MB_SLICE_TOP_BIT) != 0u;
-    for (var n = 0u; n < 6u; n += 1u) {
-        if (((flags >> n) & 1u) != 0u) {
-            predictIntraBlock(n, variant, flags, firstLine);
-        }
-    }
-}
-
-fn predictIntra(passIndex: u32, localIndex: u32) {
-    if (localIndex == 0u) {
-        loadGeometry();
-        parameterBase = passBase(passIndex);
-        var geometry = vec4u(0u, 0u, 0u, 0u);
-        if (pictureState[F_PASS_COUNT] > passIndex && parameter(P_VALID) != 0u && pictureState[F_SKIP_COPY] == 0u && parameter(P_X8_TYPE) == 0u) {
-            geometry = vec4u(1u, mbWidth, parameter(P_MB_ROWS), 0u);
-        }
-        intraPassGeometry = geometry;
-    }
-    let geometry = workgroupUniformLoad(&intraPassGeometry);
-    if (geometry.x == 0u) {
-        return;
-    }
-    loadGeometry();
-    parameterBase = passBase(passIndex);
-    pictureType = parameter(P_TYPE);
-    fcm = parameter(P_FCM);
-    pq = parameter(P_PQ);
-    halfpq = parameter(P_HALFPQ);
-    pquantizer = parameter(P_PQUANTIZER);
-    rowOffset = parameter(P_ROW_OFFSET);
-    overlapFlag = stateValue(S_OVERLAP);
-    var variant = INTRA_INTER_PICTURE;
-    if (pictureType == TYPE_I || pictureType == TYPE_BI) {
-        variant = select(INTRA_SIMPLE, INTRA_ADVANCED, stateValue(S_PROFILE) == PROFILE_ADVANCED);
-    }
-    // Anti-diagonal d holds the macroblocks with column + row == d, whose neighbors all lie on earlier diagonals
-    let diagonals = geometry.y + geometry.z - 1u;
-    for (var diagonal = 0u; diagonal < diagonals; diagonal += 1u) {
-        if (localIndex < geometry.z && diagonal >= localIndex && diagonal - localIndex < geometry.y) {
-            predictIntraMacroblock(diagonal - localIndex, localIndex, variant);
-        }
-        storageBarrier();
-    }
-}
-
-@compute @workgroup_size(INTRA_WORKGROUP_SIZE)
-fn predictIntraBlocks(@builtin(local_invocation_index) localIndex: u32) {
-    predictIntra(pictureState[F_CURRENT_PASS], localIndex);
 }
 
 // WGSL of the VC-1 decoder's reconstruction: one workgroup per macroblock runs the inverse transforms and motion compensation,
@@ -10535,24 +677,24 @@ var<private> simpleIdct: bool;
 
 fn loadPassParameters(passIndex: u32) -> bool {
     parameterBase = passBase(passIndex);
-    // IntraX8 pictures decode and filter their samples in decodeX8Slices
-    if (pictureState[F_PASS_COUNT] <= passIndex || parameter(P_VALID) == 0u || pictureState[F_SKIP_COPY] != 0u || parameter(P_X8_TYPE) != 0u) {
+    // Only macroblock pictures reconstruct; a picture copyPicture fills runs no pass
+    if (pictureState[F_PASS_COUNT] <= passIndex) {
         return false;
     }
-    passPictureType = parameter(P_TYPE);
-    passFieldMode = parameter(P_FIELD_MODE);
-    passCurrentFieldType = parameter(P_CURRENT_FIELD_TYPE);
-    passFcm = parameter(P_FCM);
-    passRowOffset = parameter(P_ROW_OFFSET);
-    passRows = parameter(P_MB_ROWS);
-    passMspel = parameter(P_MSPEL);
-    passRnd = parameter(P_RND);
-    passRangered = parameter(P_RANGEREDFRM);
+    passPictureType = parameter(RECORD_PASS_TYPE);
+    passFieldMode = parameter(RECORD_PASS_FIELD_MODE);
+    passCurrentFieldType = parameter(RECORD_PASS_CURRENT_FIELD_TYPE);
+    passFcm = parameter(RECORD_PASS_FCM);
+    passRowOffset = parameter(RECORD_PASS_ROW_OFFSET);
+    passRows = parameter(RECORD_PASS_MB_ROWS);
+    passMspel = parameter(RECORD_PASS_MSPEL);
+    passRnd = parameter(RECORD_PASS_RND);
+    passRangered = parameter(RECORD_PASS_RANGEREDFRM);
     passProfile = stateValue(S_PROFILE);
-    simpleIdct = passProfile != PROFILE_ADVANCED && stateValue(S_RES_FASTTX) == 0u;
+    simpleIdct = passProfile != RECORD_PROFILE_ADVANCED && stateValue(S_RES_FASTTX) == 0u;
     codedWidth = i32(stateValue(S_CODED_WIDTH));
     codedHeight = i32(stateValue(S_CODED_HEIGHT));
-    if (passProfile == PROFILE_ADVANCED) {
+    if (passProfile == RECORD_PROFILE_ADVANCED) {
         horizontalEdge = codedWidth;
         verticalEdge = codedHeight;
     } else {
@@ -10575,12 +717,12 @@ fn overlapActive() -> bool {
     if (stateValue(S_OVERLAP) == 0u) {
         return false;
     }
-    let pq = parameter(P_PQ);
+    let pq = parameter(RECORD_PASS_PQ);
     switch (passPictureType) {
-        case TYPE_I, TYPE_BI: {
-            return pq >= 9u || (passProfile == PROFILE_ADVANCED && parameter(P_CONDOVER) != CONDOVER_NONE);
+        case RECORD_TYPE_I, RECORD_TYPE_BI: {
+            return pq >= 9u || (passProfile == RECORD_PROFILE_ADVANCED && parameter(RECORD_PASS_CONDOVER) != RECORD_CONDOVER_NONE);
         }
-        case TYPE_P: {
+        case RECORD_TYPE_P: {
             return pq >= 9u;
         }
         default: {
@@ -10599,14 +741,14 @@ struct ReferencePicture {
 
 fn referencePicture(source: u32) -> ReferencePicture {
     switch (source) {
-        case SOURCE_NEXT: {
-            return ReferencePicture(parameter(P_BACKWARD_SLOT), parameter(P_BACKWARD_INTERLACED) != 0u, parameter(P_NEXT_USE_IC) != 0u, parameter(P_LUT_NEXT));
+        case RECORD_SOURCE_NEXT: {
+            return ReferencePicture(parameter(P_BACKWARD_SLOT), parameter(P_BACKWARD_INTERLACED) != 0u, parameter(RECORD_PASS_NEXT_USE_IC) != 0u, parameter(RECORD_PASS_LUT_NEXT));
         }
-        case SOURCE_CURRENT: {
-            return ReferencePicture(packet.outputSlot, true, parameter(P_CURRENT_USE_IC) != 0u, parameter(P_LUT_CURRENT));
+        case RECORD_SOURCE_CURRENT: {
+            return ReferencePicture(packet.outputSlot, true, parameter(RECORD_PASS_CURRENT_USE_IC) != 0u, parameter(RECORD_PASS_LUT_CURRENT));
         }
         default: {
-            return ReferencePicture(parameter(P_FORWARD_SLOT), parameter(P_FORWARD_INTERLACED) != 0u, parameter(P_LAST_USE_IC) != 0u, parameter(P_LUT_LAST));
+            return ReferencePicture(parameter(P_FORWARD_SLOT), parameter(P_FORWARD_INTERLACED) != 0u, parameter(RECORD_PASS_LAST_USE_IC) != 0u, parameter(RECORD_PASS_LUT_LAST));
         }
     }
 }
@@ -10691,11 +833,11 @@ struct LumaSource {
 }
 
 fn clipLumaSource(sourceX: i32, sourceY: i32) -> vec2i {
-    if (passProfile != PROFILE_ADVANCED) {
+    if (passProfile != RECORD_PROFILE_ADVANCED) {
         return vec2i(clamp(sourceX, -16, i32(mbWidth) * 16), clamp(sourceY, -16, i32(mbHeight) * 16));
     }
     var y = sourceY;
-    if (passFcm == FCM_FRAME) {
+    if (passFcm == RECORD_FCM_FRAME) {
         y = clamp(sourceY, -18 + (sourceY & 1), codedHeight + (sourceY & 1));
     } else {
         y = clamp(sourceY, -18, codedHeight + 1);
@@ -10705,14 +847,14 @@ fn clipLumaSource(sourceX: i32, sourceY: i32) -> vec2i {
 
 // The predicted luma sample of one operation at macroblock pixel (x, y): FFmpeg's ff_vc1_mc_1mv, ff_vc1_mc_4mv_luma, or ff_vc1_interp_mc
 fn lumaPrediction(flags: u32, vector: vec2i, macroblockColumn: u32, macroblockRow: u32, x: u32, y: u32) -> i32 {
-    let kind = (flags >> OP_KIND_SHIFT) & 3u;
-    let reference = referencePicture((flags >> OP_SOURCE_SHIFT) & 3u);
-    let bottomField = select(0u, 1u, (flags & OP_BOTTOM_FIELD) != 0u);
-    let fieldMotion = (flags & OP_FIELD_MV) != 0u;
+    let kind = (flags >> RECORD_OPERATION_KIND_SHIFT) & 3u;
+    let reference = referencePicture((flags >> RECORD_OPERATION_SOURCE_SHIFT) & 3u);
+    let bottomField = select(0u, 1u, (flags & RECORD_OPERATION_BOTTOM_FIELD) != 0u);
+    let fieldMotion = (flags & RECORD_OPERATION_FIELD_MV) != 0u;
     var origin = vec2i(0, 0);
     var pixel = vec2i(i32(x), i32(y));
     var rowStep = 1;
-    if (kind == LUMA_KIND_4MV) {
+    if (kind == RECORD_LUMA_KIND_4MV) {
         var block = (x >> 3u) + 2u * (y >> 3u);
         pixel = vec2i(i32(x & 7u), i32(y & 7u));
         if (fieldMotion) {
@@ -10789,11 +931,11 @@ fn lumaPrediction(flags: u32, vector: vec2i, macroblockColumn: u32, macroblockRo
 }
 
 fn clipChromaSource(kind: u32, sourceX: i32, sourceY: i32) -> vec2i {
-    if (passProfile != PROFILE_ADVANCED) {
+    if (passProfile != RECORD_PROFILE_ADVANCED) {
         return vec2i(clamp(sourceX, -8, i32(mbWidth) * 8), clamp(sourceY, -8, i32(mbHeight) * 8));
     }
     let x = clamp(sourceX, -8, codedWidth >> 1u);
-    if (passFcm == FCM_FRAME && kind != CHROMA_KIND_4MV) {
+    if (passFcm == RECORD_FCM_FRAME && kind != RECORD_CHROMA_KIND_4MV) {
         return vec2i(x, clamp(sourceY, -8 + (sourceY & 1), (codedHeight >> 1u) + (sourceY & 1)));
     }
     return vec2i(x, clamp(sourceY, -8, codedHeight >> 1u));
@@ -10801,14 +943,14 @@ fn clipChromaSource(kind: u32, sourceX: i32, sourceY: i32) -> vec2i {
 
 // The predicted chroma sample of one operation at macroblock chroma pixel (x, y): bilinear in eighth samples
 fn chromaPrediction(flags: u32, vector: vec2i, plane: u32, macroblockColumn: u32, macroblockRow: u32, x: u32, y: u32) -> i32 {
-    let kind = (flags >> OP_KIND_SHIFT) & 3u;
-    var reference = referencePicture((flags >> OP_SOURCE_SHIFT) & 3u);
-    let bottomField = select(0u, 1u, (flags & OP_BOTTOM_FIELD) != 0u);
-    let fieldMotion = (flags & OP_FIELD_MV) != 0u;
+    let kind = (flags >> RECORD_OPERATION_KIND_SHIFT) & 3u;
+    var reference = referencePicture((flags >> RECORD_OPERATION_SOURCE_SHIFT) & 3u);
+    let bottomField = select(0u, 1u, (flags & RECORD_OPERATION_BOTTOM_FIELD) != 0u);
+    let fieldMotion = (flags & RECORD_OPERATION_FIELD_MV) != 0u;
     var pixel = vec2i(i32(x), i32(y));
     var rowStep = 1;
     var origin = vec2i(0, 0);
-    if (kind == CHROMA_KIND_QUARTER) {
+    if (kind == RECORD_CHROMA_KIND_QUARTER) {
         let verticalDistance = select(4, 1, fieldMotion);
         var quarter = (x >> 2u) + 2u * (y >> 2u);
         pixel = vec2i(i32(x & 3u), i32(y & 3u));
@@ -10827,7 +969,7 @@ fn chromaPrediction(flags: u32, vector: vec2i, plane: u32, macroblockColumn: u32
     let fractionY = (vector.y & 3) << 1u;
     let baseX = origin.x + pixel.x;
     let baseRow = origin.y + pixel.y * rowStep;
-    if (kind == CHROMA_KIND_QUARTER) {
+    if (kind == RECORD_CHROMA_KIND_QUARTER) {
         // mc_4mv_chroma4 applies intensity compensation but not range reduction, which interlaced frames never use
         reference.useIntensityCompensation = reference.useIntensityCompensation;
     }
@@ -10841,32 +983,32 @@ fn chromaPrediction(flags: u32, vector: vec2i, plane: u32, macroblockColumn: u32
 
 // An operation word, zero for a slot the parse did not write, since the parse stores only the operations it wrote
 fn operationWord(record: u32, base: u32, slot: u32, word: u32) -> u32 {
-    let presence = slot + select(0u, LUMA_OPERATION_SLOTS, base == M_CHROMA_OPS);
-    if (((macroblocks[record + M_OPERATIONS] >> presence) & 1u) == 0u) {
+    let presence = slot + select(0u, RECORD_LUMA_OPERATION_SLOTS, base == M_CHROMA_OPS);
+    if (((macroblocks[record + RECORD_MACROBLOCK_OPERATIONS] >> presence) & 1u) == 0u) {
         return 0u;
     }
-    return macroblocks[record + base + slot * OPERATION_WORDS + word];
+    return macroblocks[record + base + slot * RECORD_OPERATION_WORDS + word];
 }
 
 // The predicted luma sample of an inter macroblock: the put operation, then the averaging one if present
 fn predictLuma(record: u32, macroblockColumn: u32, macroblockRow: u32, x: u32, y: u32) -> i32 {
     var slot = 0u;
     let firstFlags = operationWord(record, M_LUMA_OPS, 0u, 0u);
-    if ((firstFlags & OP_PRESENT) == 0u || ((firstFlags >> OP_KIND_SHIFT) & 3u) == LUMA_KIND_4MV) {
+    if ((firstFlags & RECORD_OPERATION_PRESENT) == 0u || ((firstFlags >> RECORD_OPERATION_KIND_SHIFT) & 3u) == RECORD_LUMA_KIND_4MV) {
         var block = (x >> 3u) + 2u * (y >> 3u);
         let blockFlags = operationWord(record, M_LUMA_OPS, block * 2u, 0u);
-        if ((blockFlags & OP_FIELD_MV) != 0u || (firstFlags & OP_FIELD_MV) != 0u) {
+        if ((blockFlags & RECORD_OPERATION_FIELD_MV) != 0u || (firstFlags & RECORD_OPERATION_FIELD_MV) != 0u) {
             block = (x >> 3u) + 2u * (y & 1u);
         }
         slot = block * 2u;
     }
     let putFlags = operationWord(record, M_LUMA_OPS, slot, 0u);
-    if ((putFlags & OP_PRESENT) == 0u) {
+    if ((putFlags & RECORD_OPERATION_PRESENT) == 0u) {
         return 128;
     }
     var value = lumaPrediction(putFlags, unpackMotionVector(operationWord(record, M_LUMA_OPS, slot, 1u)), macroblockColumn, macroblockRow, x, y);
     let averageFlags = operationWord(record, M_LUMA_OPS, slot + 1u, 0u);
-    if ((averageFlags & OP_PRESENT) != 0u) {
+    if ((averageFlags & RECORD_OPERATION_PRESENT) != 0u) {
         let other = lumaPrediction(averageFlags, unpackMotionVector(operationWord(record, M_LUMA_OPS, slot + 1u, 1u)), macroblockColumn, macroblockRow, x, y);
         value = (value + other + 1) >> 1u;
     }
@@ -10876,20 +1018,20 @@ fn predictLuma(record: u32, macroblockColumn: u32, macroblockRow: u32, x: u32, y
 fn predictChroma(record: u32, plane: u32, macroblockColumn: u32, macroblockRow: u32, x: u32, y: u32) -> i32 {
     var slot = 0u;
     let firstFlags = operationWord(record, M_CHROMA_OPS, 0u, 0u);
-    if ((firstFlags & OP_PRESENT) != 0u && ((firstFlags >> OP_KIND_SHIFT) & 3u) == CHROMA_KIND_QUARTER) {
+    if ((firstFlags & RECORD_OPERATION_PRESENT) != 0u && ((firstFlags >> RECORD_OPERATION_KIND_SHIFT) & 3u) == RECORD_CHROMA_KIND_QUARTER) {
         var quarter = (x >> 2u) + 2u * (y >> 2u);
-        if ((firstFlags & OP_FIELD_MV) != 0u) {
+        if ((firstFlags & RECORD_OPERATION_FIELD_MV) != 0u) {
             quarter = (x >> 2u) + 2u * (y & 1u);
         }
         slot = quarter * 2u;
     }
     let putFlags = operationWord(record, M_CHROMA_OPS, slot, 0u);
-    if ((putFlags & OP_PRESENT) == 0u) {
+    if ((putFlags & RECORD_OPERATION_PRESENT) == 0u) {
         return 128;
     }
     var value = chromaPrediction(putFlags, unpackMotionVector(operationWord(record, M_CHROMA_OPS, slot, 1u)), plane, macroblockColumn, macroblockRow, x, y);
     let averageFlags = operationWord(record, M_CHROMA_OPS, slot + 1u, 0u);
-    if ((averageFlags & OP_PRESENT) != 0u) {
+    if ((averageFlags & RECORD_OPERATION_PRESENT) != 0u) {
         let other = chromaPrediction(averageFlags, unpackMotionVector(operationWord(record, M_CHROMA_OPS, slot + 1u, 1u)), plane, macroblockColumn, macroblockRow, x, y);
         value = (value + other + 1) >> 1u;
     }
@@ -10898,7 +1040,7 @@ fn predictChroma(record: u32, plane: u32, macroblockColumn: u32, macroblockRow: 
 
 // The transform half-word of a block
 fn blockTransform(record: u32, block: u32) -> u32 {
-    return (macroblocks[record + M_TRANSFORM_01 + block / 2u] >> ((block & 1u) * 16u)) & 0xFFFFu;
+    return (macroblocks[record + RECORD_MACROBLOCK_TRANSFORMS + block / 2u] >> ((block & 1u) * 16u)) & 0xFFFFu;
 }
 
 // The 8-point inverse transform of one row or column: FFmpeg's vc1_inv_trans_8x8 butterflies, without the final shift
@@ -10938,13 +1080,13 @@ fn setBlockValue(block: u32, row: u32, column: u32, value: i32) {
 // The subblocks a transform type splits a block into, and the first row and column of each
 fn subblockOrigin(transformType: u32, subblock: u32) -> vec2u {
     switch (transformType) {
-        case TRANSFORM_8X4: {
+        case RECORD_TRANSFORM_8X4: {
             return vec2u(0u, subblock * 4u);
         }
-        case TRANSFORM_4X8: {
+        case RECORD_TRANSFORM_4X8: {
             return vec2u(subblock * 4u, 0u);
         }
-        case TRANSFORM_4X4: {
+        case RECORD_TRANSFORM_4X4: {
             return vec2u((subblock & 1u) * 4u, (subblock >> 1u) * 4u);
         }
         default: {
@@ -11042,12 +1184,12 @@ fn simpleColumn4(s0: i32, s1: i32, s2: i32, s3: i32) -> vec4i {
 // The simple IDCT's row pass over one row of a block, in place: ff_simple_idct, ff_simple_idct84_add, 48_add, and 44_add
 fn simpleTransformRow(record: u32, block: u32, row: u32) {
     let transform = blockTransform(record, block);
-    if ((transform & TRANSFORM_PRESENT_BIT) == 0u) {
+    if ((transform & RECORD_TRANSFORM_PRESENT_BIT) == 0u) {
         return;
     }
-    let transformType = transform & TRANSFORM_TYPE_MASK;
-    let coded = (transform >> TRANSFORM_CODED_SHIFT) & 15u;
-    if (transformType == TRANSFORM_8X8 || (transformType == TRANSFORM_8X4 && ((coded >> (row >> 2u)) & 1u) != 0u)) {
+    let transformType = transform & RECORD_TRANSFORM_TYPE_MASK;
+    let coded = (transform >> RECORD_TRANSFORM_CODED_SHIFT) & 15u;
+    if (transformType == RECORD_TRANSFORM_8X8 || (transformType == RECORD_TRANSFORM_8X4 && ((coded >> (row >> 2u)) & 1u) != 0u)) {
         var samples: array<i32, 8>;
         for (var column = 0u; column < 8u; column += 1u) {
             samples[column] = blockValue(block, row, column);
@@ -11058,12 +1200,12 @@ fn simpleTransformRow(record: u32, block: u32, row: u32) {
         }
         return;
     }
-    if (transformType == TRANSFORM_8X4) {
+    if (transformType == RECORD_TRANSFORM_8X4) {
         return;
     }
     for (var half = 0u; half < 2u; half += 1u) {
         var subblock = half;
-        if (transformType == TRANSFORM_4X4) {
+        if (transformType == RECORD_TRANSFORM_4X4) {
             subblock = (row >> 2u) * 2u + half;
         }
         if (((coded >> subblock) & 1u) == 0u) {
@@ -11082,15 +1224,15 @@ fn simpleTransformRow(record: u32, block: u32, row: u32) {
 // An 8x8 block keeps its result in int16 unless only its DC is coded, which ff_simple_idct_add adds directly
 fn simpleTransformColumn(record: u32, block: u32, column: u32, intra: bool) {
     let transform = blockTransform(record, block);
-    if ((transform & TRANSFORM_PRESENT_BIT) == 0u) {
+    if ((transform & RECORD_TRANSFORM_PRESENT_BIT) == 0u) {
         fillColumn(block, column, 0, 0u, 8u);
         return;
     }
-    let transformType = transform & TRANSFORM_TYPE_MASK;
-    let coded = (transform >> TRANSFORM_CODED_SHIFT) & 15u;
-    let dcOnly = !intra && ((transform >> TRANSFORM_DC_ONLY_SHIFT) & 1u) != 0u;
-    if (transformType == TRANSFORM_8X8 || transformType == TRANSFORM_4X8) {
-        if (transformType == TRANSFORM_4X8 && ((coded >> (column >> 2u)) & 1u) == 0u) {
+    let transformType = transform & RECORD_TRANSFORM_TYPE_MASK;
+    let coded = (transform >> RECORD_TRANSFORM_CODED_SHIFT) & 15u;
+    let dcOnly = !intra && ((transform >> RECORD_TRANSFORM_DC_ONLY_SHIFT) & 1u) != 0u;
+    if (transformType == RECORD_TRANSFORM_8X8 || transformType == RECORD_TRANSFORM_4X8) {
+        if (transformType == RECORD_TRANSFORM_4X8 && ((coded >> (column >> 2u)) & 1u) == 0u) {
             fillColumn(block, column, 0, 0u, 8u);
             return;
         }
@@ -11099,7 +1241,7 @@ fn simpleTransformColumn(record: u32, block: u32, column: u32, intra: bool) {
             samples[row] = blockValue(block, row, column);
         }
         let result = simpleColumn8(samples);
-        let keepsInt16 = transformType == TRANSFORM_8X8 && !dcOnly;
+        let keepsInt16 = transformType == RECORD_TRANSFORM_8X8 && !dcOnly;
         for (var row = 0u; row < 8u; row += 1u) {
             setBlockValue(block, row, column, select(result[row], wrapInt16(result[row]), keepsInt16));
         }
@@ -11107,7 +1249,7 @@ fn simpleTransformColumn(record: u32, block: u32, column: u32, intra: bool) {
     }
     for (var vertical = 0u; vertical < 2u; vertical += 1u) {
         var subblock = vertical;
-        if (transformType == TRANSFORM_4X4) {
+        if (transformType == RECORD_TRANSFORM_4X4) {
             subblock = vertical * 2u + (column >> 2u);
         }
         let first = vertical * 4u;
@@ -11130,12 +1272,12 @@ fn transformRow(record: u32, block: u32, row: u32, intra: bool) {
         return;
     }
     let transform = blockTransform(record, block);
-    if ((transform & TRANSFORM_PRESENT_BIT) == 0u) {
+    if ((transform & RECORD_TRANSFORM_PRESENT_BIT) == 0u) {
         return;
     }
-    let transformType = transform & TRANSFORM_TYPE_MASK;
-    let coded = (transform >> TRANSFORM_CODED_SHIFT) & 15u;
-    let dcOnly = select((transform >> TRANSFORM_DC_ONLY_SHIFT) & 15u, 0u, intra);
+    let transformType = transform & RECORD_TRANSFORM_TYPE_MASK;
+    let coded = (transform >> RECORD_TRANSFORM_CODED_SHIFT) & 15u;
+    let dcOnly = select((transform >> RECORD_TRANSFORM_DC_ONLY_SHIFT) & 15u, 0u, intra);
     for (var subblock = 0u; subblock < 4u; subblock += 1u) {
         let origin = subblockOrigin(transformType, subblock);
         if (((dcOnly >> subblock) & 1u) != 0u && origin.y == row) {
@@ -11143,7 +1285,7 @@ fn transformRow(record: u32, block: u32, row: u32, intra: bool) {
         }
     }
     switch (transformType) {
-        case TRANSFORM_8X8: {
+        case RECORD_TRANSFORM_8X8: {
             if ((dcOnly & 1u) != 0u) {
                 return;
             }
@@ -11156,7 +1298,7 @@ fn transformRow(record: u32, block: u32, row: u32, intra: bool) {
                 setBlockValue(block, row, column, wrapInt16(result[column] >> 3u));
             }
         }
-        case TRANSFORM_8X4: {
+        case RECORD_TRANSFORM_8X4: {
             let subblock = row >> 2u;
             if (((coded >> subblock) & 1u) == 0u || ((dcOnly >> subblock) & 1u) != 0u) {
                 return;
@@ -11173,7 +1315,7 @@ fn transformRow(record: u32, block: u32, row: u32, intra: bool) {
         default: {
             for (var half = 0u; half < 2u; half += 1u) {
                 var subblock = half;
-                if (transformType == TRANSFORM_4X4) {
+                if (transformType == RECORD_TRANSFORM_4X4) {
                     subblock = (row >> 2u) * 2u + half;
                 }
                 if (((coded >> subblock) & 1u) == 0u || ((dcOnly >> subblock) & 1u) != 0u) {
@@ -11193,13 +1335,13 @@ fn transformRow(record: u32, block: u32, row: u32, intra: bool) {
 // The DC-only value of a subblock: FFmpeg's vc1_inv_trans_*_dc
 fn dcOnlyValue(transformType: u32, dc: i32) -> i32 {
     switch (transformType) {
-        case TRANSFORM_8X8: {
+        case RECORD_TRANSFORM_8X8: {
             return (3 * ((3 * dc + 1) >> 1u) + 16) >> 5u;
         }
-        case TRANSFORM_8X4: {
+        case RECORD_TRANSFORM_8X4: {
             return (17 * ((3 * dc + 1) >> 1u) + 64) >> 7u;
         }
-        case TRANSFORM_4X8: {
+        case RECORD_TRANSFORM_4X8: {
             return (12 * ((17 * dc + 4) >> 3u) + 64) >> 7u;
         }
         default: {
@@ -11223,15 +1365,15 @@ fn transformColumn(record: u32, block: u32, column: u32, intra: bool) {
         return;
     }
     let transform = blockTransform(record, block);
-    if ((transform & TRANSFORM_PRESENT_BIT) == 0u) {
+    if ((transform & RECORD_TRANSFORM_PRESENT_BIT) == 0u) {
         fillColumn(block, column, 0, 0u, 8u);
         return;
     }
-    let transformType = transform & TRANSFORM_TYPE_MASK;
-    let coded = (transform >> TRANSFORM_CODED_SHIFT) & 15u;
-    let dcOnly = select((transform >> TRANSFORM_DC_ONLY_SHIFT) & 15u, 0u, intra);
+    let transformType = transform & RECORD_TRANSFORM_TYPE_MASK;
+    let coded = (transform >> RECORD_TRANSFORM_CODED_SHIFT) & 15u;
+    let dcOnly = select((transform >> RECORD_TRANSFORM_DC_ONLY_SHIFT) & 15u, 0u, intra);
     switch (transformType) {
-        case TRANSFORM_8X8: {
+        case RECORD_TRANSFORM_8X8: {
             if ((dcOnly & 1u) != 0u) {
                 fillColumn(block, column, dcOnlyValues[block * 4u], 0u, 8u);
                 return;
@@ -11246,7 +1388,7 @@ fn transformColumn(record: u32, block: u32, column: u32, intra: bool) {
                 setBlockValue(block, row, column, wrapInt16((result[row] + rounding) >> 7u));
             }
         }
-        case TRANSFORM_8X4: {
+        case RECORD_TRANSFORM_8X4: {
             for (var subblock = 0u; subblock < 2u; subblock += 1u) {
                 let first = subblock * 4u;
                 if (((coded >> subblock) & 1u) == 0u) {
@@ -11264,7 +1406,7 @@ fn transformColumn(record: u32, block: u32, column: u32, intra: bool) {
                 }
             }
         }
-        case TRANSFORM_4X8: {
+        case RECORD_TRANSFORM_4X8: {
             let subblock = column >> 2u;
             if (((coded >> subblock) & 1u) == 0u) {
                 fillColumn(block, column, 0, 0u, 8u);
@@ -11320,8 +1462,8 @@ fn intraSampleBeforeOverlap(value: i32) -> i32 {
     if (passRangered == 0u) {
         return value;
     }
-    if (passPictureType == TYPE_I || passPictureType == TYPE_BI) {
-        if (parameter(P_UNSIGNED_INTRA) != 0u) {
+    if (passPictureType == RECORD_TYPE_I || passPictureType == RECORD_TYPE_BI) {
+        if (parameter(RECORD_PASS_UNSIGNED_INTRA) != 0u) {
             return wrapInt16((value - 64) * 2);
         }
         return value;
@@ -11330,7 +1472,7 @@ fn intraSampleBeforeOverlap(value: i32) -> i32 {
 }
 
 fn putIntraSample(value: i32) -> u32 {
-    if (parameter(P_UNSIGNED_INTRA) != 0u) {
+    if (parameter(RECORD_PASS_UNSIGNED_INTRA) != 0u) {
         return clipToByte(value);
     }
     return clipToByte(value + 128);
@@ -11358,18 +1500,18 @@ fn reconstructMacroblock(passIndex: u32, workgroupId: vec3u, localIndex: u32) {
         return;
     }
     let record = macroblockRecord(column, passRowOffset + row);
-    let flags = macroblocks[record + M_FLAGS];
+    let flags = macroblocks[record + RECORD_MACROBLOCK_FLAGS];
     let intraMask = flags & 0x3Fu;
-    let fieldTransform = (flags & MB_FIELDTX_BIT) != 0u;
+    let fieldTransform = (flags & RECORD_MACROBLOCK_FIELDTX_BIT) != 0u;
     for (var index = localIndex; index < 384u; index += 64u) {
         transformBlocks[index] = 0;
     }
     workgroupBarrier();
     let macroblockIndex = record / MACROBLOCK_WORDS;
     for (var block = 0u; block < 6u; block += 1u) {
-        let counts = macroblocks[record + select(M_COUNTS_45, M_COUNTS_0123, block < 4u)];
+        let counts = macroblocks[record + select(RECORD_MACROBLOCK_COUNTS + 1u, RECORD_MACROBLOCK_COUNTS, block < 4u)];
         let count = (counts >> ((block & 3u) * 8u)) & 0xFFu;
-        let base = (macroblockIndex * 6u + block) * COEFFICIENTS_PER_BLOCK;
+        let base = (macroblockIndex * 6u + block) * RECORD_COEFFICIENTS_PER_BLOCK;
         for (var entry = localIndex; entry < count; entry += 64u) {
             let word = blockData[base + entry];
             transformBlocks[block * 64u + ((word >> 16u) & 63u)] = i32(word << 16u) >> 16u;
@@ -11409,7 +1551,7 @@ fn reconstructMacroblock(passIndex: u32, workgroupId: vec3u, localIndex: u32) {
             writePictureWord(0u, pictureX, pictureY, outputSamples);
         }
     } else {
-        let coded = (blockTransform(record, lumaBlock) & TRANSFORM_PRESENT_BIT) != 0u;
+        let coded = (blockTransform(record, lumaBlock) & RECORD_TRANSFORM_PRESENT_BIT) != 0u;
         var outputSamples = vec4u(0u, 0u, 0u, 0u);
         for (var lane = 0u; lane < 4u; lane += 1u) {
             var value = predictLuma(record, column, row, lumaX + lane, lumaRow);
@@ -11443,7 +1585,7 @@ fn reconstructMacroblock(passIndex: u32, workgroupId: vec3u, localIndex: u32) {
                 writePictureWord(plane, chromaPictureX, chromaY, outputSamples);
             }
         } else {
-            let coded = (blockTransform(record, block) & TRANSFORM_PRESENT_BIT) != 0u;
+            let coded = (blockTransform(record, block) & RECORD_TRANSFORM_PRESENT_BIT) != 0u;
             var outputSamples = vec4u(0u, 0u, 0u, 0u);
             for (var lane = 0u; lane < 4u; lane += 1u) {
                 var value = predictChroma(record, plane, column, row, chromaX + lane, chromaRow);
@@ -11477,43 +1619,54 @@ fn nextPass() {
     pictureState[F_CURRENT_PASS] = 1u;
 }
 
-// Copies a repeated picture's macroblock: an anchor for a skipped P picture, or the next anchor for a picture FFmpeg does not decode
+// The four samples a copy puts at x, a multiple of 4: a pool slot's, mid-gray for a missing slot, or the record's, whose planes hold
+// rows of whole macroblocks tightly packed, luma then Cb and Cr
+fn copiedSamples(mode: u32, source: u32, plane: u32, x: u32, y: u32) -> vec4u {
+    if (mode == COPY_MODE_SAMPLES) {
+        let lumaWidth = mbWidth * MACROBLOCK_SIZE;
+        let lumaHeight = mbHeight * MACROBLOCK_SIZE;
+        var planeStart = 0u;
+        var width = lumaWidth;
+        if (plane != 0u) {
+            width = lumaWidth / 2u;
+            planeStart = lumaWidth * lumaHeight + (plane - 1u) * width * (lumaHeight / 2u);
+        }
+        let word = readPacketWord(source + (planeStart + y * width + x) / 4u);
+        return vec4u(word & 0xFFu, (word >> 8u) & 0xFFu, (word >> 16u) & 0xFFu, word >> 24u);
+    }
+    if (source == NO_SLOT) {
+        return vec4u(128u, 128u, 128u, 128u);
+    }
+    var samples = vec4u(0u, 0u, 0u, 0u);
+    for (var lane = 0u; lane < 4u; lane += 1u) {
+        samples[lane] = readSlotSample(source, plane, x + lane, y);
+    }
+    return samples;
+}
+
+// Fills a picture that reconstructs nothing, one macroblock per workgroup: a copy of a pool slot, as a skipped P picture copies its
+// forward reference, or the samples of an IntraX8 picture's record, which the parser decoded and filtered
 @compute @workgroup_size(64)
 fn copyPicture(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) localIndex: u32) {
     loadGeometry();
-    let mode = pictureState[F_SKIP_COPY];
+    let mode = pictureState[F_COPY_MODE];
     let column = workgroupId.x;
     let row = workgroupId.y;
-    if (mode == 0u || column >= mbWidth || row >= mbHeight) {
+    if (mode == COPY_MODE_NONE || column >= mbWidth || row >= mbHeight) {
         return;
     }
-    var source = stateValue(S_NEXT_SLOT);
-    if (mode == 3u) {
-        source = pictureState[passBase(0u) + P_FORWARD_SLOT];
-    }
-    if (source == packet.outputSlot) {
+    let source = pictureState[F_COPY_SOURCE];
+    if (mode == COPY_MODE_SLOT && source == packet.outputSlot) {
         return;
     }
     let lumaRow = row * 16u + (localIndex >> 2u);
     let lumaX = column * 16u + (localIndex & 3u) * 4u;
-    var outputSamples = vec4u(128u, 128u, 128u, 128u);
-    if (source != NO_SLOT) {
-        for (var lane = 0u; lane < 4u; lane += 1u) {
-            outputSamples[lane] = readSlotSample(source, 0u, lumaX + lane, lumaRow);
-        }
-    }
-    writePictureWord(0u, lumaX, lumaRow, outputSamples);
+    writePictureWord(0u, lumaX, lumaRow, copiedSamples(mode, source, 0u, lumaX, lumaRow));
     if (localIndex < 32u) {
         let plane = 1u + (localIndex >> 4u);
         let chromaRow = row * 8u + ((localIndex >> 1u) & 7u);
         let chromaX = column * 8u + (localIndex & 1u) * 4u;
-        var chroma = vec4u(128u, 128u, 128u, 128u);
-        if (source != NO_SLOT) {
-            for (var lane = 0u; lane < 4u; lane += 1u) {
-                chroma[lane] = readSlotSample(source, plane, chromaX + lane, chromaRow);
-            }
-        }
-        writePictureWord(plane, chromaX, chromaRow, chroma);
+        writePictureWord(plane, chromaX, chromaRow, copiedSamples(mode, source, plane, chromaX, chromaRow));
     }
 }
 
@@ -11542,7 +1695,7 @@ fn overlapEdge(plane: u32, x0: u32, y0: u32, vertical: bool, alongIndex: u32) {
 }
 
 fn recordFlags(column: u32, row: u32) -> u32 {
-    return macroblocks[macroblockRecord(column, passRowOffset + row) + M_FLAGS];
+    return macroblocks[macroblockRecord(column, passRowOffset + row) + RECORD_MACROBLOCK_FLAGS];
 }
 
 fn blockIsIntra(column: u32, row: u32, block: u32) -> bool {
@@ -11551,20 +1704,20 @@ fn blockIsIntra(column: u32, row: u32, block: u32) -> bool {
 
 // The overlap condition of an I picture edge: every edge above PQUANT 8, or per CONDOVER; internal edges need only this macroblock's flag
 fn intraPictureOverlaps(column: u32, row: u32, internal: bool, neighborColumn: u32, neighborRow: u32) -> bool {
-    if (parameter(P_PQ) >= 9u) {
+    if (parameter(RECORD_PASS_PQ) >= 9u) {
         return true;
     }
-    if (passProfile != PROFILE_ADVANCED) {
+    if (passProfile != RECORD_PROFILE_ADVANCED) {
         return false;
     }
-    let condition = parameter(P_CONDOVER);
-    if (condition == CONDOVER_ALL) {
+    let condition = parameter(RECORD_PASS_CONDOVER);
+    if (condition == RECORD_CONDOVER_ALL) {
         return true;
     }
-    if (condition != CONDOVER_SELECT || (recordFlags(column, row) & MB_OVERFLAG_BIT) == 0u) {
+    if (condition != RECORD_CONDOVER_SELECT || (recordFlags(column, row) & RECORD_MACROBLOCK_OVERFLAG_BIT) == 0u) {
         return false;
     }
-    return internal || (recordFlags(neighborColumn, neighborRow) & MB_OVERFLAG_BIT) != 0u;
+    return internal || (recordFlags(neighborColumn, neighborRow) & RECORD_MACROBLOCK_OVERFLAG_BIT) != 0u;
 }
 
 // Overlap smoothing across vertical edges, before the horizontal edges: the macroblock's left edge and its internal luma edge
@@ -11578,7 +1731,7 @@ fn overlapVerticalEdgesInPass(passIndex: u32, workgroupId: vec3u, localIndex: u3
     if (column >= mbWidth || row >= passRows || localIndex >= 48u) {
         return;
     }
-    let isIntraPicture = passPictureType == TYPE_I || passPictureType == TYPE_BI;
+    let isIntraPicture = passPictureType == RECORD_TYPE_I || passPictureType == RECORD_TYPE_BI;
     var plane = 0u;
     var edgeX = 0u;
     var along = 0u;
@@ -11628,7 +1781,7 @@ fn overlapVerticalEdgesInPass(passIndex: u32, workgroupId: vec3u, localIndex: u3
 // Overlap smoothing across horizontal edges: the macroblock's top edge, unless a slice starts at it, and its internal luma edge
 fn overlapHorizontalEdgesInPass(passIndex: u32, workgroupId: vec3u, localIndex: u32) {
     loadGeometry();
-    if (!loadPassParameters(passIndex) || !overlapActive() || passFcm == FCM_FRAME) {
+    if (!loadPassParameters(passIndex) || !overlapActive() || passFcm == RECORD_FCM_FRAME) {
         return;
     }
     let column = workgroupId.x;
@@ -11636,8 +1789,8 @@ fn overlapHorizontalEdgesInPass(passIndex: u32, workgroupId: vec3u, localIndex: 
     if (column >= mbWidth || row >= passRows || localIndex >= 48u) {
         return;
     }
-    let isIntraPicture = passPictureType == TYPE_I || passPictureType == TYPE_BI;
-    let sliceTop = (recordFlags(column, row) & MB_SLICE_TOP_BIT) != 0u;
+    let isIntraPicture = passPictureType == RECORD_TYPE_I || passPictureType == RECORD_TYPE_BI;
+    let sliceTop = (recordFlags(column, row) & RECORD_MACROBLOCK_SLICE_TOP_BIT) != 0u;
     var plane = 0u;
     var edgeRow = 0u;
     var along = 0u;
@@ -11710,8 +1863,8 @@ fn putIntraSamples(passIndex: u32, workgroupId: vec3u, localIndex: u32) {
     }
     let flags = recordFlags(column, row);
     let intraMask = flags & 0x3Fu;
-    let fieldTransform = (flags & MB_FIELDTX_BIT) != 0u;
-    let scaleAfterOverlap = passRangered != 0u && (passPictureType == TYPE_I || passPictureType == TYPE_BI);
+    let fieldTransform = (flags & RECORD_MACROBLOCK_FIELDTX_BIT) != 0u;
+    let scaleAfterOverlap = passRangered != 0u && (passPictureType == RECORD_TYPE_I || passPictureType == RECORD_TYPE_BI);
     let lumaRow = localIndex >> 2u;
     let lumaX = (localIndex & 3u) * 4u;
     let lumaBlock = lumaResidualPosition(fieldTransform, lumaX, lumaRow).x;
@@ -11751,7 +1904,6 @@ fn putIntraSamples(passIndex: u32, workgroupId: vec3u, localIndex: u32) {
 fn putIntra(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) localIndex: u32) {
     putIntraSamples(pictureState[F_CURRENT_PASS], workgroupId, localIndex);
 }
-
 
 // WGSL of the VC-1 decoder's in-loop deblocking filter, FFmpeg's vc1_loopfilter.c and vc1_loop_filter.
 // FFmpeg filters every horizontal edge before any vertical edge; along each, the 8-aligned edges come before the 4-aligned subblock edges,
@@ -11838,44 +1990,44 @@ struct EdgeBlock {
 }
 
 fn edgeBlock(column: u32, row: u32, block: u32) -> EdgeBlock {
-    let intra = ((macroblockField(column, row, M_IS_INTRA) >> block) & 1u) != 0u;
-    let pattern = (macroblockField(column, row, M_CBP) >> (block * 4u)) & 15u;
+    let intra = ((macroblockField(column, row, RECORD_MACROBLOCK_IS_INTRA) >> block) & 1u) != 0u;
+    let pattern = (macroblockField(column, row, RECORD_MACROBLOCK_CBP) >> (block * 4u)) & 15u;
     var vector = 0u;
     if (block < 4u) {
-        vector = macroblockField(column, row, M_MV0_0 + block);
+        vector = macroblockField(column, row, RECORD_MACROBLOCK_MV0 + block);
     } else {
-        vector = macroblockField(column, row, M_LOOP_FILTER_CHROMA_MV);
+        vector = macroblockField(column, row, RECORD_MACROBLOCK_LOOP_FILTER_CHROMA_MV);
     }
-    let field = (macroblockField(column, row, M_FIELD_FLAGS) >> block) & 1u;
+    let field = (macroblockField(column, row, RECORD_MACROBLOCK_FIELD_FLAGS) >> block) & 1u;
     return EdgeBlock(intra, pattern, vector, field);
 }
 
 // FFmpeg's whole-edge condition of vc1_p_v_loop_filter and vc1_p_h_loop_filter
 fn filtersWholeEdge(first: EdgeBlock, second: EdgeBlock) -> bool {
-    return first.intra || second.intra || first.vector != second.vector || (passFcm == FCM_FIELD && first.field != second.field);
+    return first.intra || second.intra || first.vector != second.vector || (passFcm == RECORD_FCM_FIELD && first.field != second.field);
 }
 
 // Whether the pass decides edges from coded patterns and vectors, as P pictures do, rather than filtering every block edge
 fn usesPEdgeDecisions() -> bool {
-    return passPictureType == TYPE_P;
+    return passPictureType == RECORD_TYPE_P;
 }
 
 // Whether the pass filters 4x4, 8x4, and 4x8 subblock edges: P pictures and field B pictures
 fn filtersSubblockEdges() -> bool {
-    return passPictureType == TYPE_P || (passPictureType == TYPE_B && passFcm == FCM_FIELD);
+    return passPictureType == RECORD_TYPE_P || (passPictureType == RECORD_TYPE_B && passFcm == RECORD_FCM_FIELD);
 }
 
 fn blockTransformType(column: u32, row: u32, block: u32) -> u32 {
-    return (macroblockField(column, row, M_TT) >> (block * 4u)) & 15u;
+    return (macroblockField(column, row, RECORD_MACROBLOCK_TT) >> (block * 4u)) & 15u;
 }
 
 fn loopFilterActive(passIndex: u32) -> bool {
-    return loadPassParameters(passIndex) && parameter(P_LOOP_FILTER) != 0u && passFcm != FCM_FRAME;
+    return loadPassParameters(passIndex) && parameter(RECORD_PASS_LOOP_FILTER) != 0u && passFcm != RECORD_FCM_FRAME;
 }
 
 // Whether the frame's single pass is an interlaced frame picture with the loop filter on
 fn frameLoopFilterActive() -> bool {
-    return loadPassParameters(0u) && parameter(P_LOOP_FILTER) != 0u && passFcm == FCM_FRAME;
+    return loadPassParameters(0u) && parameter(RECORD_PASS_LOOP_FILTER) != 0u && passFcm == RECORD_FCM_FRAME;
 }
 
 // Horizontal block edges: each macroblock filters its internal luma edge and its bottom edge, unless its slice ends there.
@@ -11890,8 +2042,8 @@ fn filterHorizontalBlockEdgesInPass(passIndex: u32, workgroupId: vec3u, localInd
     if (column >= mbWidth || row >= passRows || localIndex >= 12u) {
         return;
     }
-    let pq = i32(parameter(P_PQ));
-    let lastRow = row + 1u >= passRows || (macroblockField(column, row, M_FLAGS) & MB_SLICE_BOTTOM_BIT) != 0u;
+    let pq = i32(parameter(RECORD_PASS_PQ));
+    let lastRow = row + 1u >= passRows || (macroblockField(column, row, RECORD_MACROBLOCK_FLAGS) & RECORD_MACROBLOCK_SLICE_BOTTOM_BIT) != 0u;
     var plane = 0u;
     var segment = localIndex & 3u;
     var edge = 0u;
@@ -11948,7 +2100,7 @@ fn filterHorizontalSubblockEdgesInPass(passIndex: u32, workgroupId: vec3u, local
     if (column >= mbWidth || row >= passRows || localIndex >= 12u) {
         return;
     }
-    let pq = i32(parameter(P_PQ));
+    let pq = i32(parameter(RECORD_PASS_PQ));
     var plane = 0u;
     var block = 0u;
     var segment = 0u;
@@ -11965,10 +2117,10 @@ fn filterHorizontalSubblockEdgesInPass(passIndex: u32, workgroupId: vec3u, local
         edge = row * 8u + 4u;
     }
     let transformType = blockTransformType(column, row, block);
-    if (transformType != TT_4X4 && transformType != TT_8X4) {
+    if (transformType != RECORD_TT_4X4 && transformType != RECORD_TT_8X4) {
         return;
     }
-    let pattern = (macroblockField(column, row, M_CBP) >> (block * 4u)) & 15u;
+    let pattern = (macroblockField(column, row, RECORD_MACROBLOCK_CBP) >> (block * 4u)) & 15u;
     // The right half filters when a right subblock is coded, the left half when a left one is
     let mask = select(5u, 10u, segment == 0u);
     if ((pattern & mask) == 0u) {
@@ -11993,7 +2145,7 @@ fn filterVerticalBlockEdgesInPass(passIndex: u32, workgroupId: vec3u, localIndex
     if (column >= mbWidth || row >= passRows || localIndex >= 12u) {
         return;
     }
-    let pq = i32(parameter(P_PQ));
+    let pq = i32(parameter(RECORD_PASS_PQ));
     let lastColumn = column + 1u >= mbWidth;
     var plane = 0u;
     var segment = localIndex & 3u;
@@ -12051,7 +2203,7 @@ fn filterVerticalSubblockEdgesInPass(passIndex: u32, workgroupId: vec3u, localIn
     if (column >= mbWidth || row >= passRows || localIndex >= 12u) {
         return;
     }
-    let pq = i32(parameter(P_PQ));
+    let pq = i32(parameter(RECORD_PASS_PQ));
     var plane = 0u;
     var block = 0u;
     var segment = 0u;
@@ -12070,10 +2222,10 @@ fn filterVerticalSubblockEdgesInPass(passIndex: u32, workgroupId: vec3u, localIn
         firstRow = row * 8u + segment * 4u;
     }
     let transformType = blockTransformType(column, row, block);
-    if (transformType != TT_4X4 && transformType != TT_4X8) {
+    if (transformType != RECORD_TT_4X4 && transformType != RECORD_TT_4X8) {
         return;
     }
-    let pattern = (macroblockField(column, row, M_CBP) >> (block * 4u)) & 15u;
+    let pattern = (macroblockField(column, row, RECORD_MACROBLOCK_CBP) >> (block * 4u)) & 15u;
     // The bottom half filters when a bottom subblock is coded, the top half when a top one is
     let mask = select(3u, 12u, segment == 0u);
     if ((pattern & mask) == 0u) {
@@ -12086,7 +2238,7 @@ fn filterVerticalSubblockEdgesInPass(passIndex: u32, workgroupId: vec3u, localIn
 // and the interlaced branch of ff_vc1_i_loop_filter do; their edges sit four rows apart, so each line segment walks its edges in order
 
 fn isSplitTransform(transformType: u32, split: u32) -> bool {
-    return transformType == TT_4X4 || transformType == split;
+    return transformType == RECORD_TT_4X4 || transformType == split;
 }
 
 // The edges across the rows of one 4-column segment and one parity, top to bottom.
@@ -12109,18 +2261,18 @@ fn filterFrameHorizontalEdges(index: u32) {
         plane = 1u + segment / chromaSegments;
         segment = segment % chromaSegments;
     }
-    let pq = i32(parameter(P_PQ));
-    let intraPicture = passPictureType == TYPE_I || passPictureType == TYPE_BI;
+    let pq = i32(parameter(RECORD_PASS_PQ));
+    let intraPicture = passPictureType == RECORD_TYPE_I || passPictureType == RECORD_TYPE_BI;
     let segmentsPerMacroblock = select(4u, 2u, plane != 0u);
     let column = segment / segmentsPerMacroblock;
     let x = segment * 4u;
     // The left half of the luma macroblock holds blocks 0 and 2, the right half blocks 1 and 3
     let half = (segment % 4u) >> 1u;
     for (var row = 0u; row < mbHeight; row += 1u) {
-        let flags = macroblockField(column, row, M_FLAGS);
-        let topEdge = (flags & MB_SLICE_TOP_BIT) != 0u;
-        let bottomEdge = (flags & MB_SLICE_BOTTOM_BIT) != 0u;
-        let fieldTransform = (flags & MB_FIELDTX_BIT) != 0u;
+        let flags = macroblockField(column, row, RECORD_MACROBLOCK_FLAGS);
+        let topEdge = (flags & RECORD_MACROBLOCK_SLICE_TOP_BIT) != 0u;
+        let bottomEdge = (flags & RECORD_MACROBLOCK_SLICE_BOTTOM_BIT) != 0u;
+        let fieldTransform = (flags & RECORD_MACROBLOCK_FIELDTX_BIT) != 0u;
         if (plane != 0u) {
             let base = row * 8u + parity;
             if (intraPicture) {
@@ -12132,7 +2284,7 @@ fn filterFrameHorizontalEdges(index: u32) {
             if (bottomEdge) {
                 continue;
             }
-            if (!topEdge && isSplitTransform(blockTransformType(column, row, 3u + plane), TT_8X4)) {
+            if (!topEdge && isSplitTransform(blockTransformType(column, row, 3u + plane), RECORD_TT_8X4)) {
                 filterSegment(plane, true, x, base + 4u, 2u, pq);
             }
             filterSegment(plane, true, x, base + 8u, 2u, pq);
@@ -12151,7 +2303,7 @@ fn filterFrameHorizontalEdges(index: u32) {
         if (fieldTransform) {
             // Block half holds the top field's lines, block half + 2 the bottom field's
             let block = half + 2u * parity;
-            if (isSplitTransform(blockTransformType(column, row, block), TT_8X4)) {
+            if (isSplitTransform(blockTransformType(column, row, block), RECORD_TT_8X4)) {
                 filterSegment(0u, true, x, base + 8u, 2u, pq);
             }
             if (!bottomEdge) {
@@ -12159,14 +2311,14 @@ fn filterFrameHorizontalEdges(index: u32) {
             }
             continue;
         }
-        if (!topEdge && isSplitTransform(blockTransformType(column, row, half), TT_8X4)) {
+        if (!topEdge && isSplitTransform(blockTransformType(column, row, half), RECORD_TT_8X4)) {
             filterSegment(0u, true, x, base + 4u, 2u, pq);
         }
         filterSegment(0u, true, x, base + 8u, 2u, pq);
         if (bottomEdge) {
             continue;
         }
-        if (isSplitTransform(blockTransformType(column, row, half + 2u), TT_8X4)) {
+        if (isSplitTransform(blockTransformType(column, row, half + 2u), RECORD_TT_8X4)) {
             filterSegment(0u, true, x, base + 12u, 2u, pq);
         }
         filterSegment(0u, true, x, base + 16u, 2u, pq);
@@ -12192,8 +2344,8 @@ fn filterFrameVerticalEdges(index: u32) {
         plane = 1u + segment / chromaSegments;
         segment = segment % chromaSegments;
     }
-    let pq = i32(parameter(P_PQ));
-    let intraPicture = passPictureType == TYPE_I || passPictureType == TYPE_BI;
+    let pq = i32(parameter(RECORD_PASS_PQ));
+    let intraPicture = passPictureType == RECORD_TYPE_I || passPictureType == RECORD_TYPE_BI;
     let segmentsPerMacroblock = select(4u, 2u, plane != 0u);
     let row = segment / segmentsPerMacroblock;
     let part = segment % segmentsPerMacroblock;
@@ -12215,7 +2367,7 @@ fn filterFrameVerticalEdges(index: u32) {
             continue;
         }
         if (plane != 0u) {
-            if (isSplitTransform(blockTransformType(column, row, 3u + plane), TT_4X8)) {
+            if (isSplitTransform(blockTransformType(column, row, 3u + plane), RECORD_TT_4X8)) {
                 filterSegment(plane, false, firstRow, left + 4u, 2u, pq);
             }
             if (!lastColumn) {
@@ -12224,14 +2376,14 @@ fn filterFrameVerticalEdges(index: u32) {
             continue;
         }
         // Field transform macroblocks hold each field's lines in one block row, frame macroblocks each half's rows
-        let fieldTransform = (macroblockField(column, row, M_FLAGS) & MB_FIELDTX_BIT) != 0u;
+        let fieldTransform = (macroblockField(column, row, RECORD_MACROBLOCK_FLAGS) & RECORD_MACROBLOCK_FIELDTX_BIT) != 0u;
         let blockRow = select(lower, parity, fieldTransform);
         let leftBlock = blockRow * 2u;
-        if (isSplitTransform(blockTransformType(column, row, leftBlock), TT_4X8)) {
+        if (isSplitTransform(blockTransformType(column, row, leftBlock), RECORD_TT_4X8)) {
             filterSegment(0u, false, firstRow, left + 4u, 2u, pq);
         }
         filterSegment(0u, false, firstRow, left + 8u, 2u, pq);
-        if (isSplitTransform(blockTransformType(column, row, leftBlock + 1u), TT_4X8)) {
+        if (isSplitTransform(blockTransformType(column, row, leftBlock + 1u), RECORD_TT_4X8)) {
             filterSegment(0u, false, firstRow, left + 12u, 2u, pq);
         }
         if (!lastColumn) {
@@ -12269,4 +2421,3 @@ fn filterVerticalBlockEdges(@builtin(workgroup_id) workgroupId: vec3u, @builtin(
 fn filterVerticalSubblockEdges(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) localIndex: u32) {
     filterVerticalSubblockEdgesInPass(pictureState[F_CURRENT_PASS], workgroupId, localIndex);
 }
-

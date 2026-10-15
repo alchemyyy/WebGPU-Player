@@ -1,4 +1,5 @@
 import { isHDRToneMappingEnabled } from '../EngineConfiguration';
+import { requireMicroseconds } from '../TimeMath';
 import { recordTimingWait, startTimingWait } from '../TimingTrace';
 
 import {
@@ -48,11 +49,26 @@ import {
 import { createFramePoolSignal } from './passes/builtin/FramePoolSignal';
 import type { GPUDecoderOutputFormat } from '../decode/video/gpu/GPUDecodeFormats';
 import { getGPUFramePoolByteLimit } from '../decode/video/gpu/GPUFramePool';
+import {
+    getScanFrameFields,
+    UNKNOWN_VIDEO_STREAM_FIELDS,
+    type VideoFrameFields,
+    type VideoScan,
+    type VideoStreamFields
+} from '../decode/video/VideoFields';
 import { createBuiltinChain } from './passes/builtin/BuiltinChains';
+import DeinterlaceTimeline, {
+    DEFAULT_DEINTERLACE_MODE,
+    DEINTERLACE_MODES,
+    type DeinterlaceDraw,
+    type DeinterlaceMode
+} from './DeinterlaceTimeline';
 import { getPresetPassPosition } from './passes/PassLanguage';
 import { parsePassFile, type PassFileEntry } from './passes/PassManifest';
+import { PRESENTATION_FIELD_STATE } from './passes/PassResources';
 import type {
     BuiltinChainConfiguration,
+    DeinterlaceRequest,
     FramePoolFrame,
     PassManifest,
     PassParameter,
@@ -63,6 +79,7 @@ import type {
     PlanReport,
     PlanRequest,
     PresentationCompileMessage,
+    PresentationFrameInput,
     PresentationFrameSource,
     PresentationPlan,
     SignalDefinition
@@ -125,6 +142,8 @@ const WEBGPU_RESOURCE_OPERATION_TIMEOUT = Symbol('webgpu-resource-operation-time
 const PREWARMED_RAW_DOLBY_VISION_FRAME_FORMAT: RawDolbyVisionVideoFrameFormat = 'I420P10';
 // The external Profile 5 route recovers 10-bit codes, so its RPU must declare a 10-bit base layer
 const EXTERNAL_DOLBY_VISION_BASE_LAYER_BIT_DEPTH = 10;
+// External textures of the identity route are 8 bits per channel
+const EXTERNAL_IDENTITY_BIT_DEPTH = 8;
 // A new frame more than this many frame durations after the previous one is a discontinuity, which starts history over
 const HISTORY_DISCONTINUITY_FRAME_DURATIONS = 2.5;
 // The size facts take before a frame or a canvas measures them; default plans never depend on sizes
@@ -229,6 +248,8 @@ export type PresentationTelemetry = {
 export type DecodedVideoPresentationFrame = {
     durationMicroseconds: Microseconds
     encodedDolbyVisionMetadata?: TransferableDolbyVisionEncodedFrameMetadata
+    /** The frame's own fields, which its container reported; absent ones take the stream's scan */
+    fields?: VideoFrameFields
     HDR10PlusMetadata?: HDR10PlusFrameMetadata
     frame: VideoFrame
     mediaTimeMicroseconds: Microseconds
@@ -240,6 +261,8 @@ export type DecodedVideoPresentationFrame = {
 export type DecodedRawPresentationFrame = {
     durationMicroseconds: Microseconds
     encodedDolbyVisionMetadata?: TransferableDolbyVisionEncodedFrameMetadata
+    /** The frame's own fields, which its container reported; absent ones take the stream's scan */
+    fields?: VideoFrameFields
     HDR10PlusMetadata?: HDR10PlusFrameMetadata
     enhancementFrame?: TransferableRawVideoFrame | null
     frame: TransferableRawVideoFrame
@@ -255,6 +278,8 @@ export type DecodedFramePoolPresentationFrame = {
     displayHeight: number
     displayWidth: number
     durationMicroseconds: Microseconds
+    /** The picture's own fields, which its decoder, its parser, or its container reported; absent ones take the stream's scan */
+    fields?: VideoFrameFields
     frame: FramePoolFrame
     HDR10PlusMetadata?: HDR10PlusFrameMetadata
     mediaTimeMicroseconds: Microseconds
@@ -326,6 +351,11 @@ export type PresentationColorPipelineConfiguration = (
 ) & {
     /** Defaults to true for callers without a persisted manual peak policy. */
     automaticInputPeakNits?: boolean
+    /**
+     * What the stream declares of its fields, which decides whether the route's plan deinterlaces from its first frame; unknown when absent.
+     * Frames that report their own fields override its scan, and a session that shows an interlaced frame deinterlaces from then on.
+     */
+    videoFields?: VideoStreamFields
 };
 
 type PresentationInputMode =
@@ -355,6 +385,8 @@ type DolbyVisionDualLayerPresentation =
 type FrameSubmission = {
     device: GPUDevice
     dolbyVisionDualLayerMode?: DolbyVisionDualLayerPresentation
+    /** The media time the submission shows: its frame's, or a deinterlaced frame's field's */
+    presentedTimeMicroseconds: Microseconds
     validationResult: Promise<GPUError | null> | null
 };
 
@@ -425,7 +457,11 @@ type TexturePresentation = TexturePresentationGeometry;
 type FrameTiming = {
     /** The frame's own duration, or null when only the interval since the previous frame is known. */
     durationMicroseconds: number | null
+    /** The frame's own fields, or null when they take the stream's scan */
+    fields: VideoFrameFields | null
     newFrame: boolean
+    /** The clock time the frame presents at, which picks the field a deinterlaced frame shows; a frame without one shows at its own time */
+    targetTimeMicroseconds: number | null
     timestampMicroseconds: number
     videoEpoch: number | null
 };
@@ -544,6 +580,92 @@ function withHDROutput(configuration: BuiltinChainConfiguration, hdrOutput: bool
         return configuration;
     }
     return { ...configuration, hdrOutput };
+}
+
+/**
+ * Returns a route's chain configuration with field-aware chroma while plans deinterlace: the planar routes' signals then read an interlaced frame's 4:2:0 chroma
+ * within each field. External sources arrive with the browser's chroma upsampling, and the Dolby Vision routes never deinterlace.
+ */
+function withInterlacedChroma(configuration: BuiltinChainConfiguration, interlacedChroma: boolean): BuiltinChainConfiguration {
+    if (!interlacedChroma) {
+        return configuration;
+    }
+    switch (configuration.route) {
+        case 'frame-pool':
+        case 'raw-yuv':
+            return { ...configuration, interlacedChroma };
+        case 'external-dolby-vision':
+        case 'external-hdr':
+        case 'external-identity':
+        case 'raw-dolby-vision':
+            return configuration;
+    }
+}
+
+/**
+ * Returns the bit depth of a route's signal, whose code value sizes the deinterlacing pass's score bias; null for the Dolby Vision routes,
+ * whose profiles are progressive, so they never deinterlace.
+ */
+function getChainBitDepth(configuration: BuiltinChainConfiguration): number | null {
+    switch (configuration.route) {
+        case 'external-identity':
+            return EXTERNAL_IDENTITY_BIT_DEPTH;
+        case 'external-hdr':
+        case 'frame-pool':
+        case 'raw-yuv':
+            return configuration.metadata.bitDepth;
+        case 'external-dolby-vision':
+        case 'raw-dolby-vision':
+            return null;
+    }
+}
+
+function isInterlacedScan(scan: VideoScan): boolean {
+    return scan === 'bottom-first' || scan === 'interlaced' || scan === 'top-first';
+}
+
+function areDeinterlaceRequestsEqual(first: DeinterlaceRequest | null, second: DeinterlaceRequest | null): boolean {
+    if (first === null || second === null) {
+        return first === second;
+    }
+    return first.bitDepth === second.bitDepth && first.frameHeight === second.frameHeight && first.frameWidth === second.frameWidth;
+}
+
+function areDrawsEqual(first: DeinterlaceDraw, second: DeinterlaceDraw | null): boolean {
+    return second !== null && first.fieldState === second.fieldState && first.timestampMicroseconds === second.timestampMicroseconds;
+}
+
+type VisibleSize = Readonly<{ height: number; width: number }>;
+
+/** Returns the size of a frame source's visible rectangle in samples, as the executor sizes the source: a VideoFrame's visible rectangle, or its display size. */
+function getSourceVisibleSize(source: PresentationFrameSource): VisibleSize {
+    switch (source.kind) {
+        case 'external': {
+            const externalSource = source.source;
+            if ('videoWidth' in externalSource) {
+                return { height: externalSource.videoHeight, width: externalSource.videoWidth };
+            }
+            const rectangle = externalSource.visibleRect;
+            return rectangle ?
+                { height: rectangle.height, width: rectangle.width } :
+                { height: externalSource.displayHeight, width: externalSource.displayWidth };
+        }
+        case 'frame-pool':
+        case 'planes':
+            return { height: source.frame.visibleRectangle.height, width: source.frame.visibleRectangle.width };
+    }
+}
+
+/** Returns the size of a decoded frame's visible rectangle in samples, which a deinterlacing plan runs at. */
+function getDecodedFrameVisibleSize(decodedFrame: DecodedPresentationFrame): VisibleSize {
+    switch (decodedFrame.outputMode) {
+        case 'frame-pool':
+            return getSourceVisibleSize({ frame: decodedFrame.frame, kind: 'frame-pool' });
+        case 'raw-planes':
+            return getSourceVisibleSize({ enhancementFrame: null, frame: decodedFrame.frame, kind: 'planes' });
+        case 'video-frame':
+            return getSourceVisibleSize({ kind: 'external', source: decodedFrame.frame });
+    }
 }
 
 function createExcludedPresetPass(manifest: PassManifest | null, exclusion: PassRejection): PresetPass {
@@ -1082,6 +1204,16 @@ export default class WebGPUPresenter {
     private deviceRecoveryAttempts = 0;
     private deviceResourceEpoch = 0;
     private decodedFramePushActive = false;
+    // The host's deinterlacing choice, which outlives sessions
+    private deinterlaceMode: DeinterlaceMode = DEFAULT_DEINTERLACE_MODE;
+    // Mirrors the deinterlacing pass's history, so each draw knows which held frame shows which field
+    private readonly deinterlaceTimeline = new DeinterlaceTimeline();
+    // The session saw an interlaced frame, so its plans deinterlace whatever its stream's scan said
+    private interlacedFrameSeen = false;
+    // The draw a redraw from history last presented, so another redraws only when another field or frame shows
+    private lastHistoryDraw: DeinterlaceDraw | null = null;
+    // The session's stream fields, which deinterlacing plans follow
+    private videoFieldFacts: VideoStreamFields = UNKNOWN_VIDEO_STREAM_FIELDS;
     private dynamicHDR10PlusSettingsActive = false;
     private executor: PresentationExecutor | null = null;
     private executorBuild: ExecutorBuild | null = null;
@@ -1162,6 +1294,7 @@ export default class WebGPUPresenter {
         this.pendingSubmissionValidation = null;
         this.renderSettingsData = null;
         this.resetPresentationHistory();
+        this.resetVideoFieldFacts();
         this.sessionActive = true;
         this.settings = createDefaultRenderSettings();
         this.submissionValidated = false;
@@ -1484,11 +1617,14 @@ export default class WebGPUPresenter {
     /**
      * Takes ownership of one clock-selected decoded frame and closes it on every path.
      * This path does not require a native video-frame callback.
+     * targetTimeMicroseconds is the clock time the frame loop presents at, which picks the field a deinterlaced stream shows; without it a frame shows at its own time.
+     * A plan that deinterlaces takes frames one frame ahead of the clock (getFrameLookaheadMicroseconds) and shows the frame before the newest.
      */
     presentDecodedFrame(
         decodedFrame: DecodedPresentationFrame,
         generation: number,
-        videoFrameSubmissionCompleted?: (gpuWorkCompleted: boolean) => void
+        videoFrameSubmissionCompleted?: (gpuWorkCompleted: boolean) => void,
+        targetTimeMicroseconds?: Microseconds
     ): boolean {
         try {
             if (!this.isCurrent(generation) || this.fallbackLatched) {
@@ -1516,7 +1652,9 @@ export default class WebGPUPresenter {
             if (!this.applyHDR10PlusFrameMetadata(decodedFrame, generation)) {
                 return false;
             }
+            this.followFrameFields(decodedFrame);
 
+            const targetTime = targetTimeMicroseconds ?? null;
             let frameWidth: number;
             let frameHeight: number;
             let submission: FrameSubmission | null;
@@ -1524,12 +1662,12 @@ export default class WebGPUPresenter {
                 case 'frame-pool':
                     frameWidth = decodedFrame.displayWidth;
                     frameHeight = decodedFrame.displayHeight;
-                    submission = this.renderDecodedFramePoolFrame(decodedFrame, generation);
+                    submission = this.renderDecodedFramePoolFrame(decodedFrame, generation, targetTime);
                     break;
                 case 'raw-planes': {
                     frameWidth = decodedFrame.frame.displayWidth;
                     frameHeight = decodedFrame.frame.displayHeight;
-                    submission = this.renderDecodedRawFrame(decodedFrame, generation);
+                    submission = this.renderDecodedRawFrame(decodedFrame, generation, targetTime);
                     break;
                 }
                 case 'video-frame':
@@ -1537,7 +1675,7 @@ export default class WebGPUPresenter {
                         || decodedFrame.frame.codedWidth;
                     frameHeight = decodedFrame.frame.displayHeight
                         || decodedFrame.frame.codedHeight;
-                    submission = this.renderDecodedVideoFrame(decodedFrame, generation);
+                    submission = this.renderDecodedVideoFrame(decodedFrame, generation, targetTime);
                     break;
             }
             if (frameWidth <= 0 || frameHeight <= 0) {
@@ -1556,8 +1694,9 @@ export default class WebGPUPresenter {
                 if (!this.isCurrent(generation) || this.fallbackLatched) {
                     return;
                 }
+                // A deinterlaced stream shows a held frame's field, at the time the timeline drew it
                 this.recordPresentedFrame(
-                    decodedFrame.mediaTimeMicroseconds,
+                    submission.presentedTimeMicroseconds,
                     callbackTimeMicroseconds,
                     callbackTimeMicroseconds,
                     'decoded'
@@ -1598,6 +1737,10 @@ export default class WebGPUPresenter {
             return false;
         }
 
+        // The route's executor is built for the stream's fields, so an interlaced stream deinterlaces from its first frame
+        this.changeDeinterlaceInputs((): void => {
+            this.videoFieldFacts = configuration.videoFields ?? UNKNOWN_VIDEO_STREAM_FIELDS;
+        });
         const installFailure = await this.installPreparedExecutor(preparedPipeline, pendingConfiguration);
         if (!this.isColorConfigurationCurrent(pendingConfiguration)) {
             return false;
@@ -1821,6 +1964,140 @@ export default class WebGPUPresenter {
         this.hdrOutputEnabled = enabled;
         this.planRevision += 1;
         await this.applyPlanInputs();
+    }
+
+    /**
+     * Selects how interlaced frames present: 'double-rate', the default, shows each field as a frame of its own; 'single-rate' shows each frame's first field;
+     * 'off' presents frames woven, as decoded. The choice outlives sessions and resolves once an executor for it is installed.
+     * Throws 'deinterlace-mode' for a mode outside DEINTERLACE_MODES.
+     */
+    async setDeinterlaceMode(mode: DeinterlaceMode): Promise<void> {
+        if (!DEINTERLACE_MODES.includes(mode)) {
+            throw new RangeError(`deinterlace-mode: '${String(mode)}'`);
+        }
+        if (mode === this.deinterlaceMode) {
+            return;
+        }
+        // Single and double rate plan alike, so only a change to or from 'off' builds an executor; the next draw shows the new rate
+        if (this.changeDeinterlaceInputs((): void => {
+            this.deinterlaceMode = mode;
+        })) {
+            await this.applyPlanInputs();
+        }
+    }
+
+    getDeinterlaceMode(): DeinterlaceMode {
+        return this.deinterlaceMode;
+    }
+
+    /**
+     * Returns how far ahead of the clock the frame loop takes frames: while a plan deinterlaces, the newest held frame's duration, so the frame after it,
+     * which deinterlacing reads as the next frame, arrives when the clock reaches the newest; 0 otherwise.
+     * Presentation keeps the clock's time, so audio and video stay in step; decoding runs one frame further ahead.
+     */
+    getFrameLookaheadMicroseconds(): number {
+        if (!this.executorPlan?.deinterlace || this.deinterlaceMode === 'off') {
+            return 0;
+        }
+        return this.deinterlaceTimeline.getLookaheadMicroseconds();
+    }
+
+    /** Returns whether the frame shown waits for the frame after it, which deinterlacing reads, as a paused seek's first frame does. */
+    awaitsLookaheadFrame(): boolean {
+        return Boolean(this.executorPlan?.deinterlace) && this.deinterlaceMode !== 'off' && this.deinterlaceTimeline.awaitsNextFrame();
+    }
+
+    /**
+     * Redraws from history alone when the clock reached another field or frame than the one shown: a deinterlaced frame's second field,
+     * or the newest frame once the clock reaches it without a frame after it; returns whether it drew.
+     * The frame loop calls it on every tick that takes no frame; without a deinterlacing plan it draws nothing.
+     */
+    presentHeldFields(generation: number, targetTimeMicroseconds: Microseconds): boolean {
+        if (
+            !this.isCurrent(generation)
+            || this.fallbackLatched
+            || this.pendingColorConfiguration?.generation === generation
+            || this.pendingSubmissionValidation
+            || !this.hasReadyPresentationResources()
+            || !this.executorPlan?.deinterlace
+            || this.deinterlaceMode === 'off'
+        ) {
+            return false;
+        }
+        const draw = this.deinterlaceTimeline.getDraw(targetTimeMicroseconds, this.deinterlaceMode);
+        if (draw === null || areDrawsEqual(draw, this.lastHistoryDraw)) {
+            return false;
+        }
+        try {
+            const submission = this.submitHistoryDraw(draw);
+            if (!submission) {
+                return false;
+            }
+            this.lastHistoryDraw = draw;
+            const callbackTimeMicroseconds = getMonotonicMicroseconds();
+            this.completeSubmission(submission, generation, (): void => {
+                if (this.isCurrent(generation) && !this.fallbackLatched) {
+                    this.recordPresentedFrame(submission.presentedTimeMicroseconds, callbackTimeMicroseconds, callbackTimeMicroseconds, 'decoded');
+                }
+            });
+            return true;
+        } catch (error) {
+            this.fallback(generation, 'frame-render-failed', `history-draw: ${getErrorMessage(error)}`);
+            return false;
+        }
+    }
+
+    /**
+     * Follows what deinterlacing plans depend on in a frame: its visible size, which they run at, and whether it is interlaced, which makes the session's plans
+     * deinterlace; a change starts building a plan for it, which later frames present with.
+     */
+    private followFrameFields(decodedFrame: DecodedPresentationFrame): void {
+        const fields = this.getEffectiveFrameFields(decodedFrame.fields ?? null);
+        const visibleSize = getDecodedFrameVisibleSize(decodedFrame);
+        const changed = this.changeDeinterlaceInputs((): void => {
+            if (fields !== null && fields.scan !== 'progressive') {
+                this.interlacedFrameSeen = true;
+            }
+            this.videoFieldFacts = { ...this.videoFieldFacts, frameHeight: visibleSize.height, frameWidth: visibleSize.width };
+        });
+        if (changed) {
+            void this.applyPlanInputs();
+        }
+    }
+
+    /** Applies a change to what deinterlacing plans depend on; a change to the deinterlacing plans take advances the plan revision, and returns true. */
+    private changeDeinterlaceInputs(change: () => void): boolean {
+        const previousRequest = this.getDeinterlaceRequest();
+        change();
+        if (areDeinterlaceRequestsEqual(previousRequest, this.getDeinterlaceRequest())) {
+            return false;
+        }
+        this.planRevision += 1;
+        return true;
+    }
+
+    /** Starts a session's field facts over: an unknown scan and size, and no interlaced frame seen. */
+    private resetVideoFieldFacts(): void {
+        this.changeDeinterlaceInputs((): void => {
+            this.interlacedFrameSeen = false;
+            this.videoFieldFacts = UNKNOWN_VIDEO_STREAM_FIELDS;
+        });
+    }
+
+    /**
+     * Returns the deinterlacing pass plans take now, or null: none while the mode is off, before the frame size is known, on a Dolby Vision route,
+     * which is progressive by its profiles, or while neither the stream's scan nor any frame was interlaced.
+     */
+    private getDeinterlaceRequest(): DeinterlaceRequest | null {
+        const facts = this.videoFieldFacts;
+        const bitDepth = getChainBitDepth(this.desiredChainConfiguration);
+        if (this.deinterlaceMode === 'off' || bitDepth === null || facts.frameWidth === null || facts.frameHeight === null) {
+            return null;
+        }
+        if (!this.interlacedFrameSeen && !isInterlacedScan(facts.scan)) {
+            return null;
+        }
+        return { bitDepth, frameHeight: facts.frameHeight, frameWidth: facts.frameWidth };
     }
 
     /**
@@ -2070,14 +2347,17 @@ export default class WebGPUPresenter {
         }
 
         let signal: SignalDefinition;
+        let interlacedSignal: SignalDefinition;
         try {
             signal = createFramePoolSignal(configuration.format, configuration.metadata);
+            interlacedSignal = createFramePoolSignal(configuration.format, configuration.metadata, true);
         } catch (error) {
             this.failColorConfiguration(pendingConfiguration, 'hdr-color-configuration-invalid', `signal: ${getErrorMessage(error)}`);
             return null;
         }
         const chainConfiguration: BuiltinChainConfiguration = {
             hdrOutput: false,
+            interlacedSignal,
             metadata: { ...configuration.metadata },
             route: 'frame-pool',
             settings: configuration.settings,
@@ -2599,8 +2879,10 @@ export default class WebGPUPresenter {
     /** Returns the plan request of the route's chain and the planned preset passes: the canvas output, HDR while HDR output is active, and the best-known facts. */
     private createPlanRequest(device: GPUDevice, canvasFormat: GPUTextureFormat, presetPasses: readonly PresetPass[]): PlanRequest {
         const hdrOutput = this.isHDROutputActive();
+        const deinterlace = this.getDeinterlaceRequest();
         return {
-            chain: createBuiltinChain(withHDROutput(this.desiredChainConfiguration, hdrOutput)),
+            chain: createBuiltinChain(withInterlacedChroma(withHDROutput(this.desiredChainConfiguration, hdrOutput), deinterlace !== null)),
+            deinterlace,
             device: {
                 features: device.features,
                 maximumTextureDimension: device.limits.maxTextureDimension2D
@@ -2648,6 +2930,8 @@ export default class WebGPUPresenter {
         }
         applyParameterValues(executor, build.plan, build.presetPasses);
         previousExecutor?.destroy();
+        // A new executor's history starts empty
+        this.resetDeinterlaceTimeline();
         if (this.canvasContext && !this.createAndConfigureCanvas()) {
             this.fallback(this.activeGeneration, this.initializationFailureReason, this.initializationFailureDetail);
         }
@@ -2675,6 +2959,7 @@ export default class WebGPUPresenter {
         this.executorPresetPasses = null;
         this.executorRevision = -1;
         executor?.destroy();
+        this.resetDeinterlaceTimeline();
     }
 
     /** Releases the route's GPU resources, its executor's textures and buffers among them, while the device stays for a later session. */
@@ -2894,7 +3179,9 @@ export default class WebGPUPresenter {
         try {
             const submission = this.renderFrameCallbackSource(video, generation, {
                 durationMicroseconds: null,
+                fields: null,
                 newFrame: true,
+                targetTimeMicroseconds: null,
                 timestampMicroseconds: mediaTimeMicroseconds,
                 videoEpoch: null
             });
@@ -2926,7 +3213,8 @@ export default class WebGPUPresenter {
 
     private renderDecodedVideoFrame(
         decodedFrame: DecodedVideoPresentationFrame,
-        generation: number
+        generation: number,
+        targetTimeMicroseconds: number | null
     ): FrameSubmission | null {
         const frame = decodedFrame.frame;
         switch (this.activeInputMode) {
@@ -2983,12 +3271,18 @@ export default class WebGPUPresenter {
 
         const frameWidth = frame.displayWidth || frame.codedWidth;
         const frameHeight = frame.displayHeight || frame.codedHeight;
-        return this.submitFrame({ kind: 'external', source: frame }, frameWidth, frameHeight, this.getDecodedFrameTiming(decodedFrame));
+        return this.submitFrame(
+            { kind: 'external', source: frame },
+            frameWidth,
+            frameHeight,
+            this.getDecodedFrameTiming(decodedFrame, targetTimeMicroseconds)
+        );
     }
 
     private renderDecodedRawFrame(
         decodedFrame: DecodedRawPresentationFrame,
-        generation: number
+        generation: number,
+        targetTimeMicroseconds: number | null
     ): FrameSubmission | null {
         const format = this.activeRawFrameFormat;
         if (!format) {
@@ -2997,9 +3291,9 @@ export default class WebGPUPresenter {
         }
         switch (this.activeInputMode) {
             case 'raw-yuv':
-                return this.renderDecodedRawYUVFrame(decodedFrame, generation, format);
+                return this.renderDecodedRawYUVFrame(decodedFrame, generation, format, targetTimeMicroseconds);
             case 'raw-dolby-vision':
-                return this.renderDecodedRawDolbyVisionFrame(decodedFrame, generation, format);
+                return this.renderDecodedRawDolbyVisionFrame(decodedFrame, generation, format, targetTimeMicroseconds);
             case 'external-dolby-vision':
             case 'external-hdr':
             case 'external-texture':
@@ -3014,7 +3308,8 @@ export default class WebGPUPresenter {
     /** Presents a GPU decoder's pool slot in place; its slot stays the decoder's to reuse once this submit is queued, since later decode work runs after it. */
     private renderDecodedFramePoolFrame(
         decodedFrame: DecodedFramePoolPresentationFrame,
-        generation: number
+        generation: number,
+        targetTimeMicroseconds: number | null
     ): FrameSubmission | null {
         const frame = decodedFrame.frame;
         const rectangle = frame.visibleRectangle;
@@ -3039,14 +3334,15 @@ export default class WebGPUPresenter {
             { frame, kind: 'frame-pool' },
             decodedFrame.displayWidth,
             decodedFrame.displayHeight,
-            this.getDecodedFrameTiming(decodedFrame)
+            this.getDecodedFrameTiming(decodedFrame, targetTimeMicroseconds)
         );
     }
 
     private renderDecodedRawYUVFrame(
         decodedFrame: DecodedRawPresentationFrame,
         generation: number,
-        format: SupportedRawVideoFrameFormat
+        format: SupportedRawVideoFrameFormat,
+        targetTimeMicroseconds: number | null
     ): FrameSubmission | null {
         const inputColorMetadata = this.activeInputColorMetadata;
         const frameFailure = inputColorMetadata ?
@@ -3062,14 +3358,15 @@ export default class WebGPUPresenter {
             { enhancementFrame: null, frame, kind: 'planes' },
             frame.displayWidth,
             frame.displayHeight,
-            this.getDecodedFrameTiming(decodedFrame)
+            this.getDecodedFrameTiming(decodedFrame, targetTimeMicroseconds)
         );
     }
 
     private renderDecodedRawDolbyVisionFrame(
         decodedFrame: DecodedRawPresentationFrame,
         generation: number,
-        format: SupportedRawVideoFrameFormat
+        format: SupportedRawVideoFrameFormat,
+        targetTimeMicroseconds: number | null
     ): FrameSubmission | null {
         const executor = this.executor;
         const profile = this.activeDolbyVisionProfile;
@@ -3132,7 +3429,7 @@ export default class WebGPUPresenter {
             { enhancementFrame, frame, kind: 'planes' },
             frame.displayWidth,
             frame.displayHeight,
-            this.getDecodedFrameTiming(decodedFrame)
+            this.getDecodedFrameTiming(decodedFrame, targetTimeMicroseconds)
         );
         if (!submission || !dualLayerRPUData) {
             return submission;
@@ -3154,6 +3451,7 @@ export default class WebGPUPresenter {
     /**
      * Records one frame through the executor into the canvas and submits it once.
      * A new frame that does not follow the previous one in time first starts history over.
+     * A plan that deinterlaces takes the frame into its history, and shows the field of the held frame the frame's target time reaches.
      */
     private submitFrame(
         source: PresentationFrameSource,
@@ -3181,6 +3479,60 @@ export default class WebGPUPresenter {
         if (timing.newFrame) {
             this.resetHistoryOnDiscontinuity(executor, timing);
         }
+        const draw = this.prepareFrameDraw(source, timing);
+        return this.encodeSubmission(device, canvasContext, executor, layout, {
+            fieldState: draw.fieldState,
+            newFrame: timing.newFrame,
+            source,
+            timestampMicroseconds: draw.timestampMicroseconds
+        });
+    }
+
+    /**
+     * Returns what a frame's submission shows: in a plan that deinterlaces, the frame enters the timeline as a new frame, and the draw is the field the
+     * frame's target time reaches; otherwise the frame itself.
+     * A frame of another size than the plan's presents as it is, since its rows no longer match the plan's fields; a plan for its size follows.
+     */
+    private prepareFrameDraw(source: PresentationFrameSource, timing: FrameTiming): DeinterlaceDraw {
+        const deinterlace = this.executorPlan?.deinterlace ?? null;
+        if (deinterlace === null) {
+            return { fieldState: PRESENTATION_FIELD_STATE.none, timestampMicroseconds: timing.timestampMicroseconds };
+        }
+        const visibleSize = getSourceVisibleSize(source);
+        const fitsPlan = visibleSize.width === deinterlace.frameWidth && visibleSize.height === deinterlace.frameHeight;
+        const fields = fitsPlan ? this.getEffectiveFrameFields(timing.fields) : null;
+        // The plan's signal reads an interlaced frame's 4:2:0 chroma within each field, whichever field shows
+        const signalState = fields !== null && fields.scan !== 'progressive' ? PRESENTATION_FIELD_STATE.interlacedSignal : PRESENTATION_FIELD_STATE.none;
+        if (timing.newFrame) {
+            this.deinterlaceTimeline.push({
+                durationMicroseconds: timing.durationMicroseconds ?? 0,
+                fields,
+                timestampMicroseconds: timing.timestampMicroseconds
+            });
+        }
+        const draw = this.deinterlaceMode === 'off' ?
+            null :
+            this.deinterlaceTimeline.getDraw(timing.targetTimeMicroseconds ?? timing.timestampMicroseconds, this.deinterlaceMode);
+        if (draw === null) {
+            return { fieldState: signalState, timestampMicroseconds: timing.timestampMicroseconds };
+        }
+        this.lastHistoryDraw = draw;
+        return { fieldState: draw.fieldState | signalState, timestampMicroseconds: draw.timestampMicroseconds };
+    }
+
+    /** Returns a frame's fields: its own, or its stream's scan; null when both are unknown, so it presents as it is. */
+    private getEffectiveFrameFields(fields: VideoFrameFields | null): VideoFrameFields | null {
+        return fields ?? getScanFrameFields(this.videoFieldFacts.scan);
+    }
+
+    /** Records one frame input through the executor into the canvas and submits it, inside a validation scope until a submission validated. */
+    private encodeSubmission(
+        device: GPUDevice,
+        canvasContext: GPUCanvasContext,
+        executor: PresentationExecutor,
+        layout: CachedPresentationLayout,
+        frame: Pick<PresentationFrameInput, 'fieldState' | 'newFrame' | 'source' | 'timestampMicroseconds'>
+    ): FrameSubmission {
         const validateSubmission = !this.submissionValidated;
         if (validateSubmission) {
             device.pushErrorScope(VALIDATION_ERROR_FILTER);
@@ -3189,12 +3541,13 @@ export default class WebGPUPresenter {
         try {
             const commandEncoder = device.createCommandEncoder();
             executor.encode(commandEncoder, {
+                fieldState: frame.fieldState,
                 geometry: layout.presentation,
-                newFrame: timing.newFrame,
+                newFrame: frame.newFrame,
                 skippedFrameCount: 0,
-                source,
+                source: frame.source,
                 target: canvasContext.getCurrentTexture().createView(),
-                timestampMicroseconds: timing.timestampMicroseconds
+                timestampMicroseconds: frame.timestampMicroseconds
             });
             device.queue.submit([ commandEncoder.finish() ]);
         } catch (error) {
@@ -3206,8 +3559,32 @@ export default class WebGPUPresenter {
 
         return {
             device,
+            presentedTimeMicroseconds: requireMicroseconds(frame.timestampMicroseconds, 'Presented frame time'),
             validationResult: validateSubmission ? device.popErrorScope() : null
         };
+    }
+
+    /** Records a draw from history alone, at the last frame's layout; returns null while the surface has no layout box. */
+    private submitHistoryDraw(draw: DeinterlaceDraw): FrameSubmission | null {
+        const surface = this.surface;
+        const canvas = this.canvas;
+        const canvasContext = this.canvasContext;
+        const device = this.device;
+        const executor = this.executor;
+        const cachedLayout = this.cachedPresentationLayout;
+        if (!surface || !canvas || !canvasContext || !device || !executor || !cachedLayout) {
+            throw new Error('presentation-resources: incomplete');
+        }
+        const layout = this.getPresentationLayout(surface, canvas, device, cachedLayout.videoWidth, cachedLayout.videoHeight);
+        if (!layout) {
+            return null;
+        }
+        return this.encodeSubmission(device, canvasContext, executor, layout, {
+            fieldState: draw.fieldState,
+            newFrame: false,
+            source: null,
+            timestampMicroseconds: draw.timestampMicroseconds
+        });
     }
 
     /** Starts history over before a new frame whose epoch changed, whose timestamp went back, or that jumped past 2.5 frame durations. */
@@ -3234,6 +3611,7 @@ export default class WebGPUPresenter {
             && elapsedMicroseconds > HISTORY_DISCONTINUITY_FRAME_DURATIONS * previousDuration;
         if (epochChanged || elapsedMicroseconds < 0 || jumped) {
             executor.resetHistory();
+            this.resetDeinterlaceTimeline();
         }
     }
 
@@ -3241,7 +3619,7 @@ export default class WebGPUPresenter {
      * Returns a pushed frame's timing.
      * The host re-pushes the frame it last presented for a layout refresh; that frame is a redraw, which never advances history.
      */
-    private getDecodedFrameTiming(decodedFrame: DecodedPresentationFrame): FrameTiming {
+    private getDecodedFrameTiming(decodedFrame: DecodedPresentationFrame, targetTimeMicroseconds: number | null): FrameTiming {
         const videoEpoch = decodedFrame.videoEpoch ?? null;
         const lastNewFrame = this.lastNewFrame;
         const repeatsLastNewFrame = lastNewFrame !== null
@@ -3249,7 +3627,9 @@ export default class WebGPUPresenter {
             && lastNewFrame.videoEpoch === videoEpoch;
         return {
             durationMicroseconds: decodedFrame.durationMicroseconds,
+            fields: decodedFrame.fields ?? null,
             newFrame: !repeatsLastNewFrame,
+            targetTimeMicroseconds,
             timestampMicroseconds: decodedFrame.mediaTimeMicroseconds,
             videoEpoch
         };
@@ -3259,6 +3639,13 @@ export default class WebGPUPresenter {
     private resetPresentationHistory(): void {
         this.lastNewFrame = null;
         this.executor?.resetHistory();
+        this.resetDeinterlaceTimeline();
+    }
+
+    /** Starts the deinterlacing timeline over with the executor's history, which a new executor or a history reset empties. */
+    private resetDeinterlaceTimeline(): void {
+        this.deinterlaceTimeline.reset();
+        this.lastHistoryDraw = null;
     }
 
     private completeFrameSubmission(
@@ -3675,7 +4062,9 @@ export default class WebGPUPresenter {
         try {
             const submission = this.submitFrame({ kind: 'external', source: video }, video.videoWidth, video.videoHeight, {
                 durationMicroseconds: null,
+                fields: null,
                 newFrame: false,
+                targetTimeMicroseconds: null,
                 timestampMicroseconds: this.lastNewFrame?.timestampMicroseconds ?? 0,
                 videoEpoch: null
             });

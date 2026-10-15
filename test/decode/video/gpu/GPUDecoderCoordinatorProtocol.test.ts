@@ -10,7 +10,15 @@ import {
 import { encodeWebAssemblyModule } from '../../../helpers/webAssemblyModuleEncoder';
 
 const PARSER_WASM_MODULE = new WebAssembly.Module(encodeWebAssemblyModule({}));
-const PARSER_MODULE = { errorNames: new Map([ [ 1, 'configuration' ] ]), memory: null, module: PARSER_WASM_MODULE, repeatDirectiveCount: 0 };
+const CONFIGURATION_ERROR_CODE = 1;
+const CONFIGURATION_ERROR_VALUE = 4;
+const PARSER_MODULE = {
+    errorNames: new Map([ [ CONFIGURATION_ERROR_CODE, 'configuration' ] ]),
+    errorRecoveries: new Map(),
+    memory: null,
+    module: PARSER_WASM_MODULE,
+    repeatDirectiveCount: 0
+};
 // The parser's package, by its id and the SHA-256 of its file
 const PACKAGE_VERSION = { contentHash: 'ab'.repeat(32), id: 'jpeg2000' };
 const PIPELINE_ID = 2;
@@ -32,6 +40,8 @@ const OVERSIZED_REPEAT_COUNT = 0x1_0000_0000;
 // A picture's output format, and a format no frame pool holds
 const PICTURE_FORMAT = 'I422P10';
 const UNHELD_FORMAT = 'NV12';
+// The fields a picture's parser reported
+const PICTURE_FIELDS = { repeatFirstField: false, scan: 'top-first' } as const;
 
 const OPEN_REQUEST = {
     codecPrivate: new ArrayBuffer(CODEC_PRIVATE_BYTE_LENGTH),
@@ -44,6 +54,7 @@ const SUBMIT_REQUEST = { packet: new ArrayBuffer(PACKET_BYTE_LENGTH), pipelineId
 const CLOSE_REQUEST = { pipelineId: PIPELINE_ID, type: 'close' } as const;
 const PICTURE = {
     events: OUTPUT_EVENTS,
+    fields: PICTURE_FIELDS,
     format: PICTURE_FORMAT,
     maximumPictureSize: MAXIMUM_PICTURE_SIZE,
     record: new ArrayBuffer(RECORD_BYTE_LENGTH),
@@ -51,7 +62,14 @@ const PICTURE = {
     visibleSize: PICTURE_SIZE
 } as const;
 const RESULT_RESPONSE = { pictures: [ PICTURE ], pipelineId: PIPELINE_ID, sequence: SEQUENCE, trailingEvents: new Uint32Array(0), type: 'result' } as const;
-const FAILED_RESPONSE = { message: FAILURE_MESSAGE, pipelineId: PIPELINE_ID, sequence: SEQUENCE, type: 'failed' } as const;
+const FAILED_RESPONSE = {
+    code: CONFIGURATION_ERROR_CODE,
+    message: FAILURE_MESSAGE,
+    pipelineId: PIPELINE_ID,
+    sequence: SEQUENCE,
+    type: 'failed',
+    value: CONFIGURATION_ERROR_VALUE
+} as const;
 const OPENED_RESPONSE = { maximumPictureSize: MAXIMUM_PICTURE_SIZE, pipelineId: PIPELINE_ID, type: 'opened' } as const;
 
 describe('isGPUDecoderCoordinatorRequest', () => {
@@ -86,11 +104,12 @@ describe('isGPUDecoderCoordinatorResponse', () => {
         expect(isGPUDecoderCoordinatorResponse(RESULT_RESPONSE)).toBe(true);
         expect(isGPUDecoderCoordinatorResponse({
             ...RESULT_RESPONSE,
-            pictures: [ PICTURE, { ...PICTURE, format: null, maximumPictureSize: null, repeatCounts: [], visibleSize: null } ]
+            pictures: [ PICTURE, { ...PICTURE, fields: null, format: null, maximumPictureSize: null, repeatCounts: [], visibleSize: null } ]
         })).toBe(true);
         expect(isGPUDecoderCoordinatorResponse({ ...RESULT_RESPONSE, pictures: [], trailingEvents: OUTPUT_EVENTS })).toBe(true);
         expect(isGPUDecoderCoordinatorResponse(FAILED_RESPONSE)).toBe(true);
         expect(isGPUDecoderCoordinatorResponse({ ...FAILED_RESPONSE, sequence: null })).toBe(true);
+        expect(isGPUDecoderCoordinatorResponse({ ...FAILED_RESPONSE, code: 0, value: 0 })).toBe(true);
     });
 
     it.each([
@@ -105,11 +124,15 @@ describe('isGPUDecoderCoordinatorResponse', () => {
         { subject: 'a picture without repeat counts', value: { ...RESULT_RESPONSE, pictures: [ { ...PICTURE, repeatCounts: undefined } ] } },
         { subject: 'a format no frame pool holds', value: { ...RESULT_RESPONSE, pictures: [ { ...PICTURE, format: UNHELD_FORMAT } ] } },
         { subject: 'a picture without its format', value: { ...RESULT_RESPONSE, pictures: [ { ...PICTURE, format: undefined } ] } },
+        { subject: 'a picture without its fields', value: { ...RESULT_RESPONSE, pictures: [ { ...PICTURE, fields: undefined } ] } },
+        { subject: 'fields of an unknown scan', value: { ...RESULT_RESPONSE, pictures: [ { ...PICTURE, fields: { ...PICTURE_FIELDS, scan: 'unknown' } } ] } },
         { subject: 'a sequence maximum without a width', value: { ...RESULT_RESPONSE, pictures: [ { ...PICTURE, maximumPictureSize: { height: MAXIMUM_PICTURE_SIZE.height, width: 0 } } ] } },
         { subject: 'pictures as one picture', value: { ...RESULT_RESPONSE, pictures: PICTURE } },
         { subject: 'trailing events as an array', value: { ...RESULT_RESPONSE, trailingEvents: [ ...OUTPUT_EVENTS ] } },
         { subject: 'a result without its sequence', value: { ...RESULT_RESPONSE, sequence: null } },
         { subject: 'a failure without its message', value: { ...FAILED_RESPONSE, message: null } },
+        { subject: 'a failure without its code', value: { ...FAILED_RESPONSE, code: undefined } },
+        { subject: 'a failure with a fractional value', value: { ...FAILED_RESPONSE, value: FRACTIONAL_COUNT } },
         { subject: 'a failure of a negative sequence', value: { ...FAILED_RESPONSE, sequence: NEGATIVE_COUNT } },
         { subject: 'a response without its pipeline', value: { ...FAILED_RESPONSE, pipelineId: undefined } },
         { subject: 'an unknown response', value: { ...FAILED_RESPONSE, type: UNKNOWN_TYPE } }

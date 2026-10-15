@@ -526,15 +526,22 @@ describe('CustomPlaybackEligibility', () => {
     });
 
     it.each([
-        [ 'interlaced MPEG-2', {
-            AverageFrameRate: 29.97003,
-            BitDepth: 8,
-            Codec: 'MPEG2VIDEO',
-            Height: 480,
-            IsInterlaced: true,
-            Profile: 'Main',
-            Width: 720
-        } ],
+        [ 'MPEG-2', { AverageFrameRate: 29.97003, BitDepth: 8, Codec: 'MPEG2VIDEO', Height: 480, Profile: 'Main', Width: 720 }, 'mkv' ],
+        [ 'H264', { BitDepth: 8, Codec: 'H264', Profile: 'High' }, 'mkv' ],
+        [ 'Advanced VC-1', { AverageFrameRate: 29.97003, BitDepth: 8, Codec: 'VC1', Profile: 'Advanced' }, 'mkv' ]
+    ])('keeps interlaced %s potential, as its frames weave both fields for the deinterlacing pass', (_label, videoStream, container) => {
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ ...videoStream, IsInterlaced: true }, container))).toBe(true);
+    });
+
+    it.each([
+        [ 'HEVC', { BitDepth: 10, Codec: 'HEVC', Profile: 'Main 10' }, 'mkv' ],
+        [ 'JPEG 2000', { BitDepth: 12, Codec: 'JPEG2000', PixelFormat: 'yuv444p12le' }, 'mj2' ]
+    ])('routes interlaced %s, which codes its fields apart, to the HTML player', (_label, videoStream, container) => {
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ ...videoStream, IsInterlaced: true }, container))).toBe(false);
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem(videoStream, container))).toBe(true);
+    });
+
+    it.each([
         // The raw SDR keys are BT.709 only, and 10-bit AV1 and VP9 have no other route
         [ '10-bit BT.601 SDR AV1', {
             AverageFrameRate: 24,
@@ -950,6 +957,32 @@ describe('CustomPlaybackEligibility', () => {
         expect(eligibility).not.toHaveProperty('audioDecoder');
     });
 
+    it('presents interlaced VC-1 on its decoder package, whose frames weave both fields, and refuses interlaced JPEG 2000, a codestream per field', () => {
+        const createInterlacedOptions = (container: string, videoStream: Record<string, unknown>): Record<string, unknown> => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = container;
+            mediaSource.MediaStreams[0] = { Height: 1_080, Index: 0, IsInterlaced: true, Type: 'Video', VideoRangeType: 'SDR', Width: 1_920, ...videoStream };
+            return options;
+        };
+        const vc1Options = createInterlacedOptions('mkv', { AverageFrameRate: 29.97, BitDepth: 8, Codec: 'VC1', Profile: 'Advanced' });
+        const jpeg2000Options = createInterlacedOptions('mj2', { AverageFrameRate: 29.97, BitDepth: 8, Codec: 'JPEG2000' });
+
+        expect(getCustomPlaybackEligibility(vc1Options, createCapabilities(), {
+            allowRawHDR: false,
+            gpuVideoDecoders: createVideoDecoderOffers(VC1_VIDEO_PACKAGE),
+            runtimeAvailability: AVAILABLE_RUNTIME
+        })).toMatchObject(createPackageVideoRoute(VC1_VIDEO_PACKAGE, 'vc1'));
+        expect(getCustomPlaybackEligibility(jpeg2000Options, createCapabilities(), {
+            allowRawHDR: false,
+            gpuVideoDecoders: createVideoDecoderOffers(JPEG2000_VIDEO_PACKAGE),
+            runtimeAvailability: AVAILABLE_RUNTIME
+        })).toEqual({ eligible: false, reason: 'interlaced-video-unsupported' });
+    });
+
     // A decoder package's own stream constraint, not the stream's profile, bounds what it takes
     it.each([
         [ 'no offered package', { AverageFrameRate: 24 }, 'mkv', false, false ],
@@ -959,7 +992,8 @@ describe('CustomPlaybackEligibility', () => {
         [ 'a bit depth the package does not write', { AverageFrameRate: 24, BitDepth: 10 }, 'mkv', true, false ],
         [ 'non-Main profile', { AverageFrameRate: 24, Profile: 'Simple' }, 'mkv', true, true ],
         [ 'missing profile', { AverageFrameRate: 24, Profile: null }, 'mkv', true, true ],
-        [ 'interlaced frames', { AverageFrameRate: 24, IsInterlaced: true }, 'mkv', true, false ],
+        // Its decoder weaves field pictures into frames, which the deinterlacing pass presents
+        [ 'interlaced frames', { AverageFrameRate: 24, IsInterlaced: true }, 'mkv', true, true ],
         [ 'MPEG-TS container', { AverageFrameRate: 24 }, 'ts', true, false ],
         [ 'MPEG-TS alias container', { AverageFrameRate: 24 }, 'mpegts', true, false ],
         [ 'MTS container', { AverageFrameRate: 24 }, 'mts', true, false ],
@@ -2947,21 +2981,34 @@ describe('CustomPlaybackEligibility', () => {
         });
     });
 
-    it.each([
-        { codec: 'h264', label: 'H264' },
-        { codec: 'hevc', label: 'HEVC' }
-    ])('rejects interlaced $label video before starting a decoder', ({ codec }) => {
+    it('presents interlaced H264 on the native route, whose frames the deinterlacing pass takes', () => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             MediaStreams: Array<Record<string, unknown>>
         };
-        mediaSource.MediaStreams[0].Codec = codec;
+        mediaSource.MediaStreams[0].IsInterlaced = true;
+
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), PQ_AUTHORIZATION)).toMatchObject({
+            eligible: true,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        });
+        expect(hasEligibleCustomVideoRoute(options.mediaSource, createCapabilities(), PQ_AUTHORIZATION)).toBe(true);
+    });
+
+    it('rejects interlaced HEVC, which codes its fields as pictures, before starting a decoder', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.MediaStreams[0].Codec = 'hevc';
         mediaSource.MediaStreams[0].IsInterlaced = true;
 
         expect(getCustomPlaybackEligibility(options, createCapabilities(), PQ_AUTHORIZATION)).toEqual({
             eligible: false,
             reason: 'interlaced-video-unsupported'
         });
+        expect(hasEligibleCustomVideoRoute(options.mediaSource, createCapabilities(), PQ_AUTHORIZATION)).toBe(false);
     });
 
     it.each([
@@ -2969,7 +3016,7 @@ describe('CustomPlaybackEligibility', () => {
         { label: 'null', value: null },
         { label: 'string false', value: 'false' },
         { label: 'numeric zero', value: 0 }
-    ])('rejects $label interlace metadata before starting a decoder', ({ value }) => {
+    ])('takes $label interlace metadata as an unknown scan, which each frame\'s own fields settle', ({ value }) => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             MediaStreams: Array<Record<string, unknown>>
@@ -2980,9 +3027,37 @@ describe('CustomPlaybackEligibility', () => {
             mediaSource.MediaStreams[0].IsInterlaced = value;
         }
 
-        expect(getCustomPlaybackEligibility(options, createCapabilities(), PQ_AUTHORIZATION)).toEqual({
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), PQ_AUTHORIZATION)).toMatchObject({ eligible: true, videoOutputMode: 'video-frame' });
+    });
+
+    it('keeps a Dolby Vision route, which never deinterlaces, to streams called progressive, and presents others on the base layer\'s route', () => {
+        const createUnknownScanOptions = (): Record<string, unknown> => {
+            const options = createProfile8HLGBaseOptions();
+            delete (options.mediaSource as { MediaStreams: Array<Record<string, unknown>> }).MediaStreams[0].IsInterlaced;
+            return options;
+        };
+        const eligibilityOptions: CustomPlaybackEligibilityOptions = {
+            allowDolbyVision: true,
+            allowNativeDolbyVisionProfile8HLGBase: true,
+            allowNativeHDR: true,
+            allowRawHDR: false,
+            authorizedExternalHDRRouteKeys: [ 'external-hevc-main10-bt709-limited:hlg-v1' ],
+            runtimeAvailability: AVAILABLE_RUNTIME
+        };
+        const reconstructionCapabilities = createCapabilities();
+        reconstructionCapabilities.nativeHDRHEVC = undefined;
+
+        // Without the native base, the route is RPU reconstruction
+        expect(getCustomPlaybackEligibility(createUnknownScanOptions(), reconstructionCapabilities, eligibilityOptions)).toEqual({
             eligible: false,
             reason: 'interlaced-video-unsupported'
+        });
+        expect(getCustomPlaybackEligibility(createProfile8HLGBaseOptions(), reconstructionCapabilities, eligibilityOptions))
+            .toMatchObject({ dolbyVisionProfile: 8, eligible: true });
+        expect(getCustomPlaybackEligibility(createUnknownScanOptions(), createCapabilities(), eligibilityOptions)).toMatchObject({
+            dolbyVisionProfile: null,
+            eligible: true,
+            videoOutputMode: 'video-frame'
         });
     });
 
