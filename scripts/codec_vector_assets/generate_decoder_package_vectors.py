@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the self-test vectors of every decoder project in decoders/.
+"""Generate the self-test vectors of every decoder project in wgpud/.
 
 A project's decoder.json lists its vectors under "vectors": each one's output format, its source media as a folder key of
 tools/constants.json and a path in that folder, and optionally the FFmpeg decoder options of the reference decode ("decoderOptions").

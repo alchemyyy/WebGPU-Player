@@ -182,7 +182,7 @@ function findUndeclaredNames(module: string, wholeModuleNames: ReadonlySet<strin
     return [ ...usedWords ].filter((word: string): boolean => wholeModuleNames.has(word) && !declaredNames.has(word));
 }
 
-/** Every video decoder project in decoders/, by name. */
+/** Every video decoder project in wgpud/, by name. */
 function listVideoDecoderProjects(): string[] {
     return readdirSync(DECODERS_DIRECTORY, { withFileTypes: true })
         .filter(entry => entry.isDirectory() && existsSync(join(DECODERS_DIRECTORY, entry.name, PROJECT_FILE_NAME)))

@@ -101,7 +101,7 @@ CARGO_HOME_DIRECTORY := $(or $(CARGO_HOME),$(HOME)/.cargo)
 
 .PHONY: module clean toolchain
 
-# decoders/Makefile includes these rules for its shared jobs and cleans every project itself
+# wgpud/Makefile includes these rules for its shared jobs and cleans every project itself
 ifndef DECODERS_ROOT_MAKEFILE
 clean:
 	rm -rf $(BUILD)
@@ -116,7 +116,7 @@ toolchain:
 
 # $(1): submodule directory, $(2): pinned commit
 define require_commit
-	@test "$$(git -C $(1) rev-parse HEAD)" = "$(2)" || { echo "$(1) is not at $(2); run make -C decoders sources" >&2; exit 1; }
+	@test "$$(git -C $(1) rev-parse HEAD)" = "$(2)" || { echo "$(1) is not at $(2); run make -C wgpud sources" >&2; exit 1; }
 endef
 
 # $(1): the FFmpeg tree being built

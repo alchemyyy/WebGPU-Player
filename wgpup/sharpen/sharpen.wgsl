@@ -1,5 +1,4 @@
-/** An OUTPUT kernel that sharpens with a 3x3 neighborhood into an intermediate texture; an example, which the presenter tests also run. */
-export const SHARPEN_KERNEL_PASS = /* wgsl */ `//! name: Sharpen
+//! name: Sharpen
 //! shape: kernel
 //! hook: OUTPUT
 //! input: HOOKED
@@ -19,4 +18,3 @@ fn kernel(coordinate: vec2f) -> vec4f {
     let neighborMean = (neighborhoodSum - center) / 8.0;
     return center + (center - neighborMean) * parameters.strength;
 }
-`;

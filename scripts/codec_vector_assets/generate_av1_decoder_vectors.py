@@ -417,7 +417,7 @@ def generate_vectors(ffmpeg_path: Path, *, check: bool) -> list[str]:
 
 
 def get_decoder_declarations() -> list[dict[str, object]]:
-    """Returns the vector declarations of decoders/av1/decoder.json that match these media, for --print-declarations."""
+    """Returns the vector declarations of wgpud/av1/decoder.json that match these media, for --print-declarations."""
 
     return [
         {"format": vector.output_format, "root": "decodersDirectory", "path": f"{PROJECT_NAME}/vectors/{vector.file_name}",

@@ -7,7 +7,7 @@ so every machine writes the same bytes. Its pictures are open-loop: residuals ar
 never see, so pictures drift, but every choice keeps the stream valid: motion stays inside the reference pictures, and dequantized
 coefficients stay within 12 bits. FFmpeg's decode of the result is the reference the vectors section hashes.
 
-Each vector is a Matroska file in decoders/mpeg2/vectors/, one block per coded frame in decode order with presentation timestamps,
+Each vector is a Matroska file in wgpud/mpeg2/vectors/, one block per coded frame in decode order with presentation timestamps,
 and the first sequence header and its extension as the track's CodecPrivate. --check regenerates every file and compares the bytes.
 """
 

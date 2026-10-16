@@ -1,6 +1,4 @@
-// A 4x4 Catmull-Rom scaler in the user pass format, which replaces the built-in bilinear scaler.
-// Its taps read texel centers, so the result does not depend on the filtering of the hooked input
-const catmullRomScalerShader = /* wgsl */ `//! name: Catmull-Rom
+//! name: Catmull-Rom
 //! shape: scaler
 //! hook: SCALE
 //! input: HOOKED
@@ -35,6 +33,3 @@ fn scale(coordinate: vec2f) -> vec4f {
     }
     return color;
 }
-`;
-
-export default catmullRomScalerShader;

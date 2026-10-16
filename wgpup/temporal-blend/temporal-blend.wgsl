@@ -1,5 +1,4 @@
-/** A temporal kernel that blends the RGB stage toward its previous frame while history is valid; an example, which the presenter tests also run. */
-export const TEMPORAL_BLEND_KERNEL_PASS = /* wgsl */ `//! name: Temporal blend
+//! name: Temporal blend
 //! shape: kernel
 //! hook: RGB
 //! input: HOOKED
@@ -14,4 +13,3 @@ fn kernel(coordinate: vec2f) -> vec4f {
     let previousWeight = select(0.0, parameters.blend, presentation.historyValid >= 1u);
     return mix(current, RGB_history1_tex(coordinate), previousWeight);
 }
-`;

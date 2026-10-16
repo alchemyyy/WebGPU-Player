@@ -311,7 +311,7 @@ export function readDecoderProjectSourceFiles(project: string): DecoderSourceFil
 export function readDecoderProjectSource(project: string): string {
     const sourceFiles: DecoderSourceFile[] = readDecoderProjectSourceFiles(project);
     if (sourceFiles.length !== 1) {
-        throw new Error(`decoders/${project} has ${sourceFiles.length} source files; join readDecoderProjectSourceFiles with the package tool`);
+        throw new Error(`${join(DECODERS_DIRECTORY, project)} has ${sourceFiles.length} source files; join readDecoderProjectSourceFiles with the package tool`);
     }
     return sourceFiles[0].text;
 }
@@ -321,12 +321,12 @@ export function createDecoderProjectVideoPackageForTest(project: string): VideoD
     return createVideoDecoderPackageForTest(readDecoderProjectSource(project));
 }
 
-/** Reads a decoder project's vectors section, decoders/<project>/<project>.vectors, which the package build packs as it is. */
+/** Reads a decoder project's vectors section, wgpud/<project>/<project>.vectors, which the package build packs as it is. */
 export function readDecoderProjectVectors(project: string): ArrayBuffer {
     return toArrayBuffer(new Uint8Array(readFileSync(join(DECODERS_DIRECTORY, project, `${project}${VECTORS_SECTION_EXTENSION}`))));
 }
 
-/** Reads a decoder project's package from bin/decoders, which `npm run decoders` builds; a missing one fails with that instruction. */
+/** Reads a decoder project's package from bin/wgpud, which `npm run decoders` builds; a missing one fails with that instruction. */
 export function readDecoderProjectPackageFile(project: string): ArrayBuffer {
     const packagePath = join(DECODER_OUTPUT_DIRECTORY, `${project}${PACKAGE_FILE_EXTENSION}`);
     if (!existsSync(packagePath)) {

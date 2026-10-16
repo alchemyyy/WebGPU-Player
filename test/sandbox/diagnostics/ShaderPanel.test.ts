@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { PlanReport } from 'webgpu-player/presentation/passes/PassTypes';
 
-import type { ExampleShaderPass, SandboxShaderFile } from '../../../sandbox/src/contracts/SandboxContracts';
+import type { BuiltShaderPass, SandboxShaderFile } from '../../../sandbox/src/contracts/SandboxContracts';
 import type { Panel, PanelContext } from '../../../sandbox/src/ui/Panel';
 import { createShaderPanel } from '../../../sandbox/src/ui/panels/ShaderPanel';
 import { createFakePanelContext } from '../shell/sandboxFakes';
@@ -17,20 +17,21 @@ const TYPED_GAIN = 1.75;
 const COMMITTED_GAIN = 0.5;
 const GAIN_FILE_ID = 'gain-file';
 const TINT_FILE_ID = 'tint-file';
-const EXAMPLES: readonly ExampleShaderPass[] = [
-    { id: 'sharpen', name: 'Sharpen kernel', source: '' },
-    { id: 'temporal', name: 'Temporal blend', source: '' }
+const BUILT_PASSES: readonly BuiltShaderPass[] = [
+    { fileName: 'sharpen.wgsl', url: '/wgpup/sharpen.wgsl' },
+    { fileName: 'temporal-blend.wgsl', url: '/wgpup/temporal-blend.wgsl' }
 ];
-const EXAMPLE_PLACEHOLDER_INDEX = 0;
-// The placeholder takes the first option, so each example's option follows its index
-const SECOND_EXAMPLE_OPTION_INDEX = 2;
+const BUILT_PASS_PLACEHOLDER_INDEX = 0;
+// The placeholder takes the first option, so each built pass's option follows its index
+const SECOND_BUILT_PASS_OPTION_INDEX = 2;
+const LISTING_REJECTION_MESSAGE = 'built-passes-unavailable: /__sandbox/built-passes HTTP 404';
 const DROPPED_WGSL_FILE = new File([ '' ], 'grain.wgsl');
 const DROPPED_TEXT_FILE = new File([ '' ], 'notes.txt');
 const FILES_DRAG_TYPE = 'Files';
 const TEXT_DRAG_TYPE = 'text/plain';
 const MOVE_UP_OFFSET = -1;
 const MOVE_DOWN_OFFSET = 1;
-const REJECTION_MESSAGE = 'example-unknown: sharpen';
+const REJECTION_MESSAGE = 'built-pass-unavailable: sharpen.wgsl HTTP 404';
 const COMPILE_ERROR_DETAIL = 'line 9: unresolved value \'gian\'';
 
 const ROW_SELECTOR = '.shader-pass';
@@ -38,7 +39,7 @@ const NAME_SELECTOR = '.shader-pass-name';
 const STATE_SELECTOR = '.shader-pass-state';
 const PARAMETER_INPUT_SELECTOR = '.shader-pass-parameter-input';
 const DEFAULT_BUTTON_SELECTOR = '.default-button';
-const EXAMPLE_SELECTOR = '.shader-panel-examples';
+const BUILT_PASS_SELECTOR = '.shader-panel-built-passes';
 const FILE_INPUT_SELECTOR = '.shader-panel-file-input';
 const DRAG_ACTIVE_CLASS = 'shader-panel-drag-active';
 const MOVE_UP_BUTTON_INDEX = 0;
@@ -71,18 +72,27 @@ function publishFiles(context: PanelContext, files: readonly SandboxShaderFile[]
     context.store.setState(state => ({ presentation: { ...state.presentation, files, report: planReport ?? state.presentation.report } }));
 }
 
-/** A fake context whose session offers the examples. */
-function createContextWithExamples(): PanelContext {
+/** A fake context whose session lists the built passes. */
+function createContextWithBuiltPasses(): PanelContext {
     const context = createFakePanelContext();
-    vi.mocked(context.session.getExampleShaderPasses).mockReturnValue(EXAMPLES);
+    vi.mocked(context.session.listBuiltShaderPasses).mockResolvedValue(BUILT_PASSES);
     return context;
 }
 
-function requireExampleSelect(panel: Panel): HTMLSelectElement {
-    const select = panel.element.querySelector<HTMLSelectElement>(EXAMPLE_SELECTOR);
+function requireBuiltPassSelect(panel: Panel): HTMLSelectElement {
+    const select = panel.element.querySelector<HTMLSelectElement>(BUILT_PASS_SELECTOR);
     if (!select) {
-        throw new Error('missing example selector');
+        throw new Error('missing built pass selector');
     }
+    return select;
+}
+
+/** Returns the built pass selector once the session's list has filled it. */
+async function requireLoadedBuiltPassSelect(panel: Panel): Promise<HTMLSelectElement> {
+    const select = requireBuiltPassSelect(panel);
+    await vi.waitFor((): void => {
+        expect(select.disabled).toBe(false);
+    });
     return select;
 }
 
@@ -110,37 +120,57 @@ function createDragEvent(type: string, files: readonly File[], types: readonly s
 }
 
 describe('createShaderPanel', () => {
-    it('offers the session\'s examples and adds the chosen one, returning to the placeholder', () => {
-        const context = createContextWithExamples();
+    it('offers the session\'s built passes and adds the chosen one, returning to the placeholder', async () => {
+        const context = createContextWithBuiltPasses();
         const panel = createShaderPanel(context);
-        const select = requireExampleSelect(panel);
+        const select = await requireLoadedBuiltPassSelect(panel);
 
-        expect([ ...select.options ].slice(EXAMPLE_PLACEHOLDER_INDEX + 1).map((option: HTMLOptionElement): string | null => option.textContent))
-            .toEqual(EXAMPLES.map((example: ExampleShaderPass): string => example.name));
-        expect(select.selectedIndex).toBe(EXAMPLE_PLACEHOLDER_INDEX);
-        select.selectedIndex = SECOND_EXAMPLE_OPTION_INDEX;
+        expect([ ...select.options ].slice(BUILT_PASS_PLACEHOLDER_INDEX + 1).map((option: HTMLOptionElement): string | null => option.textContent))
+            .toEqual(BUILT_PASSES.map((builtPass: BuiltShaderPass): string => builtPass.fileName));
+        expect(select.selectedIndex).toBe(BUILT_PASS_PLACEHOLDER_INDEX);
+        select.selectedIndex = SECOND_BUILT_PASS_OPTION_INDEX;
         select.dispatchEvent(new Event('change'));
 
-        expect(context.session.addExampleShaderPass).toHaveBeenCalledWith(EXAMPLES[1].id);
-        expect(select.selectedIndex).toBe(EXAMPLE_PLACEHOLDER_INDEX);
+        expect(context.session.addBuiltShaderPass).toHaveBeenCalledWith(BUILT_PASSES[1]);
+        expect(select.selectedIndex).toBe(BUILT_PASS_PLACEHOLDER_INDEX);
         panel.destroy();
     });
 
-    it('adds nothing when the placeholder is chosen', () => {
-        const context = createContextWithExamples();
+    it('adds nothing when the placeholder is chosen', async () => {
+        const context = createContextWithBuiltPasses();
         const panel = createShaderPanel(context);
-        const select = requireExampleSelect(panel);
+        const select = await requireLoadedBuiltPassSelect(panel);
 
         select.dispatchEvent(new Event('change'));
 
-        expect(context.session.addExampleShaderPass).not.toHaveBeenCalled();
+        expect(context.session.addBuiltShaderPass).not.toHaveBeenCalled();
         panel.destroy();
     });
 
-    it('disables the example selector when the session offers none', () => {
-        const panel = createShaderPanel(createFakePanelContext());
+    it('keeps the built pass selector disabled when the session lists none', async () => {
+        const context = createFakePanelContext();
+        const panel = createShaderPanel(context);
 
-        expect(panel.element.querySelector<HTMLSelectElement>(EXAMPLE_SELECTOR)?.disabled).toBe(true);
+        await vi.waitFor((): void => {
+            expect(context.session.listBuiltShaderPasses).toHaveBeenCalledOnce();
+        });
+        await Promise.resolve();
+        expect(requireBuiltPassSelect(panel).disabled).toBe(true);
+        panel.destroy();
+    });
+
+    it('keeps the built pass selector disabled and logs the rejection when the dev server lists nothing', async () => {
+        const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+        const context = createFakePanelContext();
+        const rejection = new Error(LISTING_REJECTION_MESSAGE);
+        vi.mocked(context.session.listBuiltShaderPasses).mockRejectedValue(rejection);
+        const panel = createShaderPanel(context);
+
+        await vi.waitFor((): void => {
+            expect(consoleError).toHaveBeenCalledWith(expect.anything(), rejection);
+        });
+        expect(requireBuiltPassSelect(panel).disabled).toBe(true);
+        consoleError.mockRestore();
         panel.destroy();
     });
 
@@ -295,13 +325,13 @@ describe('createShaderPanel', () => {
 
     it('logs a rejected command to the console', async () => {
         const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
-        const context = createContextWithExamples();
+        const context = createContextWithBuiltPasses();
         const rejection = new Error(REJECTION_MESSAGE);
-        vi.mocked(context.session.addExampleShaderPass).mockRejectedValue(rejection);
+        vi.mocked(context.session.addBuiltShaderPass).mockRejectedValue(rejection);
         const panel = createShaderPanel(context);
-        const select = requireExampleSelect(panel);
+        const select = await requireLoadedBuiltPassSelect(panel);
 
-        select.selectedIndex = SECOND_EXAMPLE_OPTION_INDEX;
+        select.selectedIndex = SECOND_BUILT_PASS_OPTION_INDEX;
         select.dispatchEvent(new Event('change'));
 
         await vi.waitFor((): void => {

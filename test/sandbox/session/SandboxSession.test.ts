@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
-import { EXAMPLE_PASSES } from 'webgpu-player/presentation/passes/examples/ExamplePasses';
-
+import { readPostprocessingPass } from '../../helpers/postprocessingPasses';
 import { createInitialSandboxState, type RouteOverride, type SandboxFailure, type SandboxState } from '../../../sandbox/src/contracts/SandboxContracts';
+import { BUILT_PASSES_ROUTE } from '../../../sandbox/src/session/BuiltOutputRoutes';
 import { createSandboxSession } from '../../../sandbox/src/session/SandboxSession';
 import { createStore } from '../../../sandbox/src/ui/Store';
 import {
@@ -188,6 +188,13 @@ const SATURATION_PARAMETER = 'saturation';
 const CHANGED_SATURATION = 1.5;
 const TEXT_FILE_NAME = 'notes.txt';
 const PASS_FILE_NAME = 'saturation.wgsl';
+// The saturation pass project in wgpup/, as a host offers it
+const SATURATION_PASS_SOURCE = readPostprocessingPass('saturation', PASS_FILE_NAME);
+const SATURATION_PASS_NAME = 'Saturation';
+const BUILT_SATURATION_PASS = { fileName: PASS_FILE_NAME, url: `/wgpup/${PASS_FILE_NAME}` } as const;
+// The dev server lists every file of the pass output folder; only the WGSL files are passes
+const LISTED_OUTPUT_FILES = [ BUILT_SATURATION_PASS, { fileName: 'README.txt', url: '/wgpup/README.txt' } ];
+const MISSING_FILE_STATUS = 404;
 const GPU_RAW_OVERRIDE: RouteOverride = { decoder: 'gpu', transport: 'raw-planes' };
 const GPU_OVERRIDE: RouteOverride = { decoder: 'gpu', transport: 'auto' };
 // A device whose frame pool may take 2 GiB, as a desktop adapter allows
@@ -484,7 +491,7 @@ describe('SandboxSession', () => {
         const harness = createHarness();
 
         await harness.session.addShaderFiles([
-            new File([ EXAMPLE_PASSES[0].source ], PASS_FILE_NAME),
+            new File([ SATURATION_PASS_SOURCE ], PASS_FILE_NAME),
             new File([ 'not a pass' ], TEXT_FILE_NAME)
         ]);
 
@@ -492,14 +499,48 @@ describe('SandboxSession', () => {
         const presentation = harness.store.getState().presentation;
         expect(presentation.files).toHaveLength(1);
         expect(presentation.files[0]).toMatchObject({ origin: PASS_FILE_NAME });
-        expect(presentation.files[0].passes).toEqual([ { headerFailure: null, manifest: expect.objectContaining({ name: 'Saturation' }) } ]);
-        expect(presentation.report.activePasses).toEqual([ 'Saturation' ]);
-        expect(engineMocks.presenters[0].setPresentationPreset).toHaveBeenCalledWith([ { parameters: {}, source: EXAMPLE_PASSES[0].source } ]);
+        expect(presentation.files[0].passes).toEqual([ { headerFailure: null, manifest: expect.objectContaining({ name: SATURATION_PASS_NAME }) } ]);
+        expect(presentation.report.activePasses).toEqual([ SATURATION_PASS_NAME ]);
+        expect(engineMocks.presenters[0].setPresentationPreset).toHaveBeenCalledWith([ { parameters: {}, source: SATURATION_PASS_SOURCE } ]);
+    });
+
+    it('lists the built pass files and adds one by fetching it', async () => {
+        const harness = createHarness();
+        const fetchMock = vi.fn(async (url: string): Promise<Response> => (
+            url === BUILT_PASSES_ROUTE ? Response.json(LISTED_OUTPUT_FILES) : new Response(SATURATION_PASS_SOURCE)
+        ));
+        vi.stubGlobal('fetch', fetchMock);
+        try {
+            const builtPasses = await harness.session.listBuiltShaderPasses();
+            await harness.session.addBuiltShaderPass(builtPasses[0]);
+
+            expect(builtPasses).toEqual([ BUILT_SATURATION_PASS ]);
+            expect(fetchMock).toHaveBeenLastCalledWith(BUILT_SATURATION_PASS.url);
+            expect(harness.store.getState().presentation.files[0]).toMatchObject({ origin: PASS_FILE_NAME });
+            expect(engineMocks.presenters[0].setPresentationPreset).toHaveBeenCalledWith([ { parameters: {}, source: SATURATION_PASS_SOURCE } ]);
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it('reports a built pass file it cannot fetch and adds nothing', async () => {
+        const harness = createHarness();
+        vi.stubGlobal('fetch', vi.fn(async (): Promise<Response> => new Response(null, { status: MISSING_FILE_STATUS })));
+        try {
+            await expect(harness.session.addBuiltShaderPass(BUILT_SATURATION_PASS)).rejects.toThrow('built-pass-unavailable');
+
+            expect(getFailures(harness)).toEqual([
+                { code: 'built-pass-unavailable', detail: `${PASS_FILE_NAME} HTTP ${MISSING_FILE_STATUS}`, layer: 'shader' }
+            ]);
+            expect(harness.store.getState().presentation.files).toEqual([]);
+        } finally {
+            vi.unstubAllGlobals();
+        }
     });
 
     it('applies a parameter live, and keeps it for a pass that is not running', async () => {
         const harness = createHarness();
-        await harness.session.addExampleShaderPass(EXAMPLE_PASSES[0].id);
+        await harness.session.addShaderFiles([ new File([ SATURATION_PASS_SOURCE ], PASS_FILE_NAME) ]);
         const fileId = harness.store.getState().presentation.files[0].id;
         const presenter = engineMocks.presenters[0];
 
@@ -509,7 +550,7 @@ describe('SandboxSession', () => {
         });
         harness.session.setShaderParameter(fileId, SATURATION_PARAMETER, CHANGED_SATURATION);
 
-        expect(presenter.setPresentationParameter).toHaveBeenCalledWith(EXAMPLE_PASSES[0].name, SATURATION_PARAMETER, CHANGED_SATURATION);
+        expect(presenter.setPresentationParameter).toHaveBeenCalledWith(SATURATION_PASS_NAME, SATURATION_PARAMETER, CHANGED_SATURATION);
         expect(harness.store.getState().presentation.files[0].parameters).toEqual({ [SATURATION_PARAMETER]: CHANGED_SATURATION });
         expect(getFailures(harness)).toEqual([ { code: 'shader-parameter-pending', detail: PENDING_PARAMETER_ERROR, layer: 'shader' } ]);
     });

@@ -1,9 +1,9 @@
 # The jobs the decoder projects share. Each project builds its own module with its own Makefile, which includes rules.mk;
-# scripts/decoder-packages.mjs runs those and packs every project into bin/decoders/.
+# scripts/decoder-packages.mjs runs those and packs every project into bin/wgpud/.
 #
-#   make -C decoders sources            Fetch the pinned FFmpeg, dcadec, and libaom submodules
-#   make -C decoders source-archives    Write the corresponding-source tarballs of the LGPL modules for a release
-#   make -C decoders clean              Remove every project's build tree
+#   make -C wgpud sources            Fetch the pinned FFmpeg, dcadec, and libaom submodules
+#   make -C wgpud source-archives    Write the corresponding-source tarballs of the LGPL modules for a release
+#   make -C wgpud clean              Remove every project's build tree
 
 DECODERS_ROOT_MAKEFILE := 1
 include rules.mk
@@ -35,8 +35,8 @@ source-archives: sources
 		--prefix=dcadec-$(DCADEC_COMMIT)/ -o $(ARCHIVES)/dcadec-$(DCADEC_COMMIT).tar.gz $(DCADEC_COMMIT)
 	revision=$$(git -C $(ENGINE) rev-parse --short=12 HEAD) && \
 		git -C $(ENGINE) -c core.autocrlf=false archive --format=tar.gz \
-			--prefix=webgpu-player-decoders-$$revision/ \
-			-o $(ARCHIVES)/webgpu-player-decoders-$$revision.tar.gz HEAD $(call engine_layout,decodersDirectory)
+			--prefix=webgpu-player-wgpud-$$revision/ \
+			-o $(ARCHIVES)/webgpu-player-wgpud-$$revision.tar.gz HEAD $(call engine_layout,decodersDirectory)
 	ls -l $(ARCHIVES)
 
 # Checks out a source submodule at the commit the engine records, fetching only that commit when it is missing.

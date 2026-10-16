@@ -1,7 +1,7 @@
 // AV1 intra family: every intra predictor (directional with edge filter and upsampling, smooth, Paeth, DC, chroma from luma,
 // palette, and filter intra) and the intra wavefront's per-superblock job loop. Owner: av1-gpu-intra; scratch/av1/DESIGN.md specifies its
 // functions, prefixes, and record fields.
-// The reference is libaom v3.15.2 (BSD-2-Clause, decoders/licenses/libaom-LICENSE): av1_predict_intra_block() after its edge
+// The reference is libaom v3.15.2 (BSD-2-Clause, wgpud/licenses/libaom-LICENSE): av1_predict_intra_block() after its edge
 // derivation (av1/common/reconintra.c), the predictors of aom_dsp/intrapred.c, and av1/common/cfl.c; the tables below name their sources.
 // The lanes first decode a chunk of the superblock's jobs in parallel, one job each, into descriptors; then the jobs run one after
 // another with all 64 lanes: a job's edges go to workgroup memory, a directional job filters and upsamples them there, and each lane

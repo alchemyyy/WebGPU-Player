@@ -267,10 +267,13 @@ import {
     type RecordedBufferWrite,
     type WebGPUDeviceHarness
 } from '../helpers/webGPUDeviceHarness';
-import { SATURATION_COLOR_PASS } from 'webgpu-player/presentation/passes/examples/SaturationColorPass';
-import { SHARPEN_KERNEL_PASS } from 'webgpu-player/presentation/passes/examples/SharpenKernelPass';
+import { readPostprocessingPass } from '../helpers/postprocessingPasses';
 
 type MockFunction = ReturnType<typeof vi.fn>;
+
+// Pass projects in wgpup/ that the user pass tests run
+const SATURATION_COLOR_PASS = readPostprocessingPass('saturation', 'saturation.wgsl');
+const SHARPEN_KERNEL_PASS = readPostprocessingPass('sharpen', 'sharpen.wgsl');
 
 // Above the 8192 texels a default WebGPU device allows
 const ADAPTER_MAXIMUM_TEXTURE_DIMENSION = 16_384;

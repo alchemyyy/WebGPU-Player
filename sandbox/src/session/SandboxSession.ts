@@ -26,7 +26,6 @@ import type {
 } from 'webgpu-player/pipeline/CustomPlaybackControllerTypes';
 import CustomPlaybackFrameLoop from 'webgpu-player/pipeline/CustomPlaybackFrameLoop';
 import type { DeinterlaceMode } from 'webgpu-player/presentation/DeinterlaceTimeline';
-import { EXAMPLE_PASSES } from 'webgpu-player/presentation/passes/examples/ExamplePasses';
 import { PASS_FILE_EXTENSION } from 'webgpu-player/presentation/passes/PassLanguage';
 import { parsePassFile, type PassFileEntry } from 'webgpu-player/presentation/passes/PassManifest';
 import type { PassParameter } from 'webgpu-player/presentation/passes/PassTypes';
@@ -65,7 +64,7 @@ import {
     getDefaultAudioTrackIndex,
     type ActiveRoute,
     type AuthorizationTelemetry,
-    type ExampleShaderPass,
+    type BuiltShaderPass,
     type PlaybackState,
     type PlaybackStatus,
     type RouteOverride,
@@ -78,6 +77,7 @@ import {
     type SubtitleSelection
 } from '../contracts/SandboxContracts';
 import type { SandboxStore } from '../ui/Panel';
+import { fetchBuiltPassSource, listBuiltPasses } from './BuiltPasses';
 import { createSandboxDecoderPackages } from './DecoderPackages';
 import { createFFmpegTool, type FFmpegTool } from './FFmpegTool';
 import { isContainerVideoStream, type FFprobeStream } from './FFprobeOutput';
@@ -695,15 +695,17 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
     };
 
     return {
-        addDecoderPackages: (chosenFiles: readonly File[]): Promise<void> => decoderPackages.add(chosenFiles),
-        addExampleShaderPass: (exampleId: string): Promise<void> => {
-            const example = EXAMPLE_PASSES.find((candidate: ExampleShaderPass): boolean => candidate.id === exampleId);
-            if (!example) {
-                return Promise.reject(failCommand('shader', 'example-unknown', exampleId));
+        addBuiltShaderPass: async (pass: BuiltShaderPass): Promise<void> => {
+            let source: string;
+            try {
+                source = await fetchBuiltPassSource(pass);
+            } catch (error) {
+                throw failCommand('shader', 'built-pass-unavailable', describeError(error));
             }
-            addFile(example.name, example.source);
-            return applyPreset();
+            addFile(pass.fileName, source);
+            await applyPreset();
         },
+        addDecoderPackages: (chosenFiles: readonly File[]): Promise<void> => decoderPackages.add(chosenFiles),
         addShaderFiles: async (chosenFiles: readonly File[]): Promise<void> => {
             for (const chosenFile of chosenFiles) {
                 if (!chosenFile.name.toLowerCase().endsWith(PASS_FILE_EXTENSION)) {
@@ -715,7 +717,7 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
             await applyPreset();
         },
         getCurrentTimeMicroseconds: (): Microseconds => playback?.controller?.currentTimeMicroseconds ?? playback?.lastTimeMicroseconds ?? START_TIME,
-        getExampleShaderPasses: (): readonly ExampleShaderPass[] => EXAMPLE_PASSES,
+        listBuiltShaderPasses: (): Promise<readonly BuiltShaderPass[]> => listBuiltPasses(),
         moveShaderFile: (fileId: string, offset: -1 | 1): Promise<void> => {
             const index = requireFileIndex(fileId, 'shader-move-failed');
             const targetIndex = index + offset;

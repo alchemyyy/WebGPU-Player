@@ -376,23 +376,24 @@ export type SandboxLibraryCommands = {
     restore: (requestPermission: boolean) => Promise<void>
 };
 
-/** An example pass the shader panel offers. */
-export type ExampleShaderPass = Readonly<{
-    id: string
-    name: string
-    source: string
+/** A pass file of the engine's pass projects, which the asset build copies into its output folder and the shader panel offers. */
+export type BuiltShaderPass = Readonly<{
+    fileName: string
+    /** Where the dev server serves the file */
+    url: string
 }>;
 
 /** What the panels ask of the session; it publishes every state but library. */
 export type SandboxSessionCommands = {
+    /** Fetches a built pass file and adds it after the preset's files */
+    addBuiltShaderPass: (pass: BuiltShaderPass) => Promise<void>
     /** Checks and stores decoder package files, which the next start of the media may decode with; a file the engine refuses is reported */
     addDecoderPackages: (files: readonly File[]) => Promise<void>
-    addExampleShaderPass: (exampleId: string) => Promise<void>
     addShaderFiles: (files: readonly File[]) => Promise<void>
-    /** The examples addExampleShaderPass takes */
-    getExampleShaderPasses: () => readonly ExampleShaderPass[]
     /** The playback clock, cheap enough for every animation frame, which subtitles and the timeline read */
     getCurrentTimeMicroseconds: () => Microseconds
+    /** The built pass files addBuiltShaderPass takes, as the dev server lists them; a static build lists none and rejects */
+    listBuiltShaderPasses: () => Promise<readonly BuiltShaderPass[]>
     moveShaderFile: (fileId: string, offset: -1 | 1) => Promise<void>
     /** Probes and plays a file from the start, replacing any open media */
     openMedia: (media: SandboxMediaFile) => Promise<void>

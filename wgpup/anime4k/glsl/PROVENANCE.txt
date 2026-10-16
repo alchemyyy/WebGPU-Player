@@ -1,0 +1,13 @@
+Anime4K source provenance
+
+Anime4K_Upscale_Denoise_CNN_x2_L.glsl and Anime4K_Upscale_Denoise_CNN_x2_UL.glsl are copied unmodified from glsl/Upscale+Denoise/ of https://github.com/bloc97/Anime4K at commit 7684e9586f8dcc738af08a1cdceb024cc184f426.
+wgpup/licenses/Anime4K-LICENSE is the license file of that commit: the MIT License, Copyright (c) 2019 bloc97.
+
+SHA-256, which test/presentation/passes/PostprocessingPasses.test.ts checks:
+
+  6cc4604c9544fd4fd9e3a75fd797511bf5fe1e626e9e1dbcee03302823a63207  Anime4K_Upscale_Denoise_CNN_x2_L.glsl
+  38bd11e7e92ff1a615a274be912d6f2cfe67f5b43771f0383a91c6ab3d0f8cb6  Anime4K_Upscale_Denoise_CNN_x2_UL.glsl
+  5bad448b737378e3d0c977ad0d0521fa37ad279a7e76ea9a31d9257eeb6953f5  Anime4K-LICENSE
+
+generate_anime4k_wgsl.py fuses the L network into one compute pass, and generate_anime4k_wgsl_chain.py writes the UL network as one pass per layer, in one file.
+Their outputs beside this folder are committed, so a build needs no Python.

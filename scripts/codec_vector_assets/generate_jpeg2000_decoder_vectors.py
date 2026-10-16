@@ -369,7 +369,7 @@ def generate_vector(vector: DecoderVector, ffmpeg_path: Path, ffprobe_path: Path
 
 
 def get_decoder_declarations() -> list[dict[str, object]]:
-    """Returns the vector declarations of decoders/jpeg2000/decoder.json that match these media, for --print-declarations."""
+    """Returns the vector declarations of wgpud/jpeg2000/decoder.json that match these media, for --print-declarations."""
 
     declarations: list[dict[str, object]] = []
     for vector in VECTORS:

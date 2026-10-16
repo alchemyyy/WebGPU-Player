@@ -10,8 +10,8 @@ __pycache__/
 # Build trees and the Rust target directories of the engine's WebAssembly and of the decoder projects
 wasm/build/
 wasm/libdovi/target/
-/decoders/build/
-/decoders/*/*/target/
+/wgpud/build/
+/wgpud/*/*/target/
 
 # The built book; .github/workflows/docs.yml builds and publishes it
 /docs/book/
