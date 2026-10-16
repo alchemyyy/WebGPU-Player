@@ -36,7 +36,7 @@ describe('CustomContainerCodecSupport', () => {
     });
 
     it('lists every profile container that can carry an audio codec', () => {
-        expect(getCustomAudioCodecProfileContainers('dts')).toEqual([ 'mp4', 'm4v', 'mov', 'mkv' ]);
+        expect(getCustomAudioCodecProfileContainers('dts')).toEqual([ 'mp4', 'm4v', 'mov', 'mkv', 'ts', 'm2ts', 'mts' ]);
         expect(getCustomAudioCodecProfileContainers('truehd')).toEqual([ 'mp4', 'm4v', 'mov', 'mkv' ]);
         expect(getCustomAudioCodecProfileContainers('mlp')).toEqual([ 'mkv' ]);
     });
@@ -56,7 +56,9 @@ describe('CustomContainerCodecSupport', () => {
         [ 'ts', 'mpeg2video', 'ac3' ],
         [ 'm2ts', 'mpeg2video', 'aac' ],
         [ 'mts', 'vc1', 'eac3' ],
-        [ 'm2ts', 'vc1', 'ac3' ]
+        [ 'm2ts', 'vc1', 'ac3' ],
+        [ 'm2ts', 'hevc', 'dts' ],
+        [ 'ts', 'h264', 'dts' ]
     ] as const)('carries %s %s with %s, which the fork demuxes', (container, videoCodec, audioCodec) => {
         expect(supportsCustomContainerCodecCombination([ container ], videoCodec, audioCodec)).toBe(true);
     });
@@ -72,7 +74,7 @@ describe('CustomContainerCodecSupport', () => {
         [ 'webm', 'vp9', 'ac3' ],
         [ 'ts', 'wmv3', 'ac3' ],
         [ 'mp4', 'h264', 'mlp' ],
-        [ 'ts', 'hevc', 'dts' ]
+        [ 'm2ts', 'hevc', 'truehd' ]
     ] as const)(
         'rejects the undeclared %s/%s/%s container combination',
         (container, videoCodec, audioCodec) => {

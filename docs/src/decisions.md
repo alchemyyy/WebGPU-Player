@@ -457,6 +457,10 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Fourteen MPEG-2 and VC-1 streams, remuxed by FFmpeg into MPEG-TS and M2TS, and the engine's own TS vectors, decode on Dawn bit-exact against the same streams in Matroska.
   The one difference found is a stream whose elementary source put six bytes ahead of its first start code: Mediabunny drops bytes before a packet's first start code, as it does for H.264 and HEVC, and FFmpeg's decoder decodes that first packet differently without them.
   BDAV M2TS carries neither MPEG-1 video nor MP3; FFmpeg's M2TS mode writes them as private data, which Mediabunny rightly skips.
+- DTS plays from MPEG-TS and M2TS (10-16).
+  Mediabunny 1.61.5 reads DTS by its stream types and descriptors, a Blu-ray program's DTS-HD types among them, and splits the same frames Matroska carries, so the TS rule takes DTS and the `dts` package decodes it as from any container.
+  `dts-core.m2ts`, the DTS test vector remuxed by FFmpeg, demuxes to the Matroska vector's packets byte for byte.
+  FFmpeg writes DTS in plain MPEG-TS as stream type 0x82 without the registration that names it, which Mediabunny reads as DTS but FFprobe, and so Jellyfin, as MP3, so only M2TS has a vector.
 - A package's output format follows the stream's pixel format (10-13).
   It was 4:2:0 at the stream's bit depth, so a 4:2:2 or 4:4:4 MPEG-2 stream reached the decoder as I420 and failed as `chromaFormat`.
   The pixel format now names the chroma subsampling, an explicit BitDepth must agree with its samples, and one no frame pool holds, such as RGB, leaves the stream to its native routes.

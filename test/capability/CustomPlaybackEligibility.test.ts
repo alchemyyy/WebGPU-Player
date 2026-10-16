@@ -4035,7 +4035,7 @@ describe('CustomPlaybackEligibility', () => {
     });
 
     it.each([ 'm2ts', 'mts', 'ts' ] as const)(
-        'does not advertise DTS in the unsupported Mediabunny %s demux route',
+        'plays DTS from %s, which the fork demuxes as a Blu-ray program carries it',
         container => {
             const options = createOptions();
             const mediaSource = options.mediaSource as {
@@ -4051,7 +4051,11 @@ describe('CustomPlaybackEligibility', () => {
                 options,
                 createCapabilities(),
                 { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
-            )).toEqual({ eligible: false, reason: 'container-unsupported' });
+            )).toMatchObject({
+                audioDecoder: { codec: 'dts' },
+                audioOutputMode: 'decoded-pcm',
+                eligible: true
+            });
         }
     );
 
