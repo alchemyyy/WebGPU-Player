@@ -13,6 +13,38 @@ import {
 import { createNALUnit, encodeAnnexBNALUnits } from '../../helpers/hevcNALUnits';
 
 const EMPTY_ACCESS_UNIT_ERROR = 'access unit is empty';
+const FOUR_BYTE_START_CODE = new Uint8Array([ 0, 0, 0, 1 ]);
+const THREE_BYTE_START_CODE = new Uint8Array([ 0, 0, 1 ]);
+// Bytes ahead of an access unit in its buffer, as when a demuxer's packet views a larger read
+const PRECEDING_BUFFER_BYTES = [ 0xAA, 0xBB, 0xCC ];
+const SECOND_VIEW_LAYER_ID = 1;
+
+/** Joins NAL units into one Annex B stream, each after its own start code. */
+function joinAnnexBNALUnits(entries: ReadonlyArray<readonly [Uint8Array, Uint8Array]>): Uint8Array {
+    const byteLength = entries.reduce(
+        (totalByteLength: number, [ startCode, nalUnit ]: readonly [Uint8Array, Uint8Array]): number => (
+            totalByteLength + startCode.byteLength + nalUnit.byteLength
+        ),
+        0
+    );
+    const output = new Uint8Array(byteLength);
+    let offset = 0;
+    for (const [ startCode, nalUnit ] of entries) {
+        output.set(startCode, offset);
+        offset += startCode.byteLength;
+        output.set(nalUnit, offset);
+        offset += nalUnit.byteLength;
+    }
+    return output;
+}
+
+/** Places an access unit after other bytes in one buffer, so its view starts past the buffer's start. */
+function createOffsetView(accessUnit: Uint8Array): Uint8Array {
+    const buffer = new Uint8Array(PRECEDING_BUFFER_BYTES.length + accessUnit.byteLength);
+    buffer.set(PRECEDING_BUFFER_BYTES);
+    buffer.set(accessUnit, PRECEDING_BUFFER_BYTES.length);
+    return buffer.subarray(PRECEDING_BUFFER_BYTES.length);
+}
 
 function createLayerNALUnit(
     type: number,
@@ -118,29 +150,17 @@ describe.each<1 | 2 | 3 | 4>([ 1, 2, 3, 4 ])(
 );
 
 describe('DolbyVisionHEVCSplitter Annex B', () => {
-    it('normalizes mixed start codes and can change the EL output format', () => {
+    it('normalizes mixed start codes in a rebuilt BL and can change the EL output format', () => {
         const basePicture = createNALUnit(1, [ 1 ]);
         const rpu = createNALUnit(62, [ 25, 8, 9 ]);
         const enhancementPicture = createNALUnit(20, [ 2 ]);
         const enhancementWrapper = createNALUnit(63, Array.from(enhancementPicture));
-        const fourByteStartCode = new Uint8Array([ 0, 0, 0, 1 ]);
-        const threeByteStartCode = new Uint8Array([ 0, 0, 1 ]);
-        const packet = new Uint8Array(
-            fourByteStartCode.byteLength + basePicture.byteLength
-            + threeByteStartCode.byteLength + rpu.byteLength
-            + fourByteStartCode.byteLength + enhancementWrapper.byteLength
-        );
-        let offset = 0;
-        for (const [ startCode, nalUnit ] of [
-            [ fourByteStartCode, basePicture ],
-            [ threeByteStartCode, rpu ],
-            [ fourByteStartCode, enhancementWrapper ]
-        ] as const) {
-            packet.set(startCode, offset);
-            offset += startCode.byteLength;
-            packet.set(nalUnit, offset);
-            offset += nalUnit.byteLength;
-        }
+        // The RPU ahead of the BL picture makes the BL a new access unit
+        const packet = joinAnnexBNALUnits([
+            [ FOUR_BYTE_START_CODE, rpu ],
+            [ THREE_BYTE_START_CODE, basePicture ],
+            [ FOUR_BYTE_START_CODE, enhancementWrapper ]
+        ]);
 
         const result = splitDolbyVisionHEVCAccessUnit(
             packet,
@@ -251,6 +271,91 @@ describe('DolbyVisionHEVCSplitter multi-layer streams', () => {
         expect(result.hasBaseLayerVCL).toBe(false);
         expect(result.hasEnhancementLayerVCL).toBe(false);
         expect(result.rpuNALUnits).toEqual([]);
+    });
+});
+
+describe('DolbyVisionHEVCSplitter BL reuse', () => {
+    it('returns the input itself when it removes nothing', () => {
+        const lengthPrefixedFormat = { kind: 'length-prefixed', lengthSize: 4 } as const;
+        const annexBPacket = encodeAnnexBNALUnits([
+            createNALUnit(32, [ 1 ]),
+            createNALUnit(39, [ 2 ]),
+            createNALUnit(19, [ 3 ])
+        ]);
+        const lengthPrefixedPacket = encodeLengthPrefixedNALUnits(
+            [ createNALUnit(19, [ 4 ]) ],
+            lengthPrefixedFormat.lengthSize
+        );
+
+        expect(splitDolbyVisionHEVCAccessUnit(annexBPacket, { kind: 'annex-b' }).baseLayerData)
+            .toBe(annexBPacket);
+        expect(splitDolbyVisionHEVCAccessUnit(lengthPrefixedPacket, lengthPrefixedFormat).baseLayerData)
+            .toBe(lengthPrefixedPacket);
+    });
+
+    it('returns a view of the leading Annex B bytes when only trailing EL and RPU NAL units are removed', () => {
+        const basePicture = createNALUnit(19, [ 1, 2 ]);
+        const enhancementWrapper = createNALUnit(63, Array.from(createNALUnit(1, [ 3 ])));
+        const rpu = createNALUnit(62, [ 25, 8, 9 ]);
+        const packet = createOffsetView(joinAnnexBNALUnits([
+            [ FOUR_BYTE_START_CODE, basePicture ],
+            [ FOUR_BYTE_START_CODE, enhancementWrapper ],
+            [ THREE_BYTE_START_CODE, rpu ]
+        ]));
+
+        const result = splitDolbyVisionHEVCAccessUnit(packet, { kind: 'annex-b' });
+
+        expect(result.baseLayerData?.buffer).toBe(packet.buffer);
+        expect(result.baseLayerData?.byteOffset).toBe(packet.byteOffset);
+        expect(result.baseLayerData).toEqual(encodeAnnexBNALUnits([ basePicture ]));
+        expect(result.hasEnhancementLayerVCL).toBe(true);
+        expect(result.rpuNALUnits).toEqual([ rpu ]);
+    });
+
+    it('returns a view of the leading length-prefixed bytes when only trailing NAL units of other layers are removed', () => {
+        const format = { kind: 'length-prefixed', lengthSize: 4 } as const;
+        const parameterSet = createNALUnit(33, [ 1 ]);
+        const basePicture = createNALUnit(19, [ 2 ]);
+        const rpu = createNALUnit(62, [ 25, 8, 9 ]);
+        const packet = createOffsetView(encodeLengthPrefixedNALUnits([
+            parameterSet,
+            basePicture,
+            createLayerNALUnit(19, SECOND_VIEW_LAYER_ID, [ 3 ]),
+            rpu
+        ], format.lengthSize));
+
+        const result = splitDolbyVisionHEVCAccessUnit(packet, format);
+
+        expect(result.baseLayerData?.buffer).toBe(packet.buffer);
+        expect(result.baseLayerData?.byteOffset).toBe(packet.byteOffset);
+        expect(result.baseLayerData).toEqual(encodeLengthPrefixedNALUnits([ parameterSet, basePicture ], format.lengthSize));
+        expect(result.rpuNALUnits).toEqual([ rpu ]);
+    });
+
+    it('rebuilds the BL when a removed NAL unit precedes a BL one', () => {
+        const basePicture = createNALUnit(19, [ 1 ]);
+        const rpu = createNALUnit(62, [ 2 ]);
+        const suffixSEI = createNALUnit(40, [ 3 ]);
+        const packet = encodeAnnexBNALUnits([ basePicture, rpu, suffixSEI ]);
+
+        const result = splitDolbyVisionHEVCAccessUnit(packet, { kind: 'annex-b' });
+
+        expect(result.baseLayerData?.buffer).not.toBe(packet.buffer);
+        expect(result.baseLayerData).toEqual(encodeAnnexBNALUnits([ basePicture, suffixSEI ]));
+    });
+
+    it('splits the NAL units its caller walked instead of walking the unit again', () => {
+        const format = { kind: 'annex-b' } as const;
+        const basePicture = createNALUnit(19, [ 1 ]);
+        const packet = encodeAnnexBNALUnits([ basePicture, createNALUnit(62, [ 2 ]) ]);
+        const walkedNALUnits = parseHEVCNALUnits(packet, format);
+
+        expect(splitDolbyVisionHEVCAccessUnit(packet, format, format, walkedNALUnits))
+            .toEqual(splitDolbyVisionHEVCAccessUnit(packet, format));
+        // A walk that saw only the picture removes nothing, so the input itself comes back
+        const pictureOnlySplit = splitDolbyVisionHEVCAccessUnit(packet, format, format, walkedNALUnits.slice(0, 1));
+        expect(pictureOnlySplit.baseLayerData).toBe(packet);
+        expect(pictureOnlySplit.rpuNALUnits).toEqual([]);
     });
 });
 

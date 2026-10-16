@@ -1,4 +1,4 @@
-import type { HEVCNALFormat } from '../dolby-vision/DolbyVisionHEVCSplitter';
+import type { HEVCNALFormat, HEVCNALUnit } from '../dolby-vision/DolbyVisionHEVCSplitter';
 import { parseHEVCSEIMessages } from '../hevc/HEVCSEI';
 
 export const HDR10_PLUS_METADATA_SCHEMA_VERSION = 1;
@@ -372,11 +372,19 @@ export function parseHDR10PlusITUTT35Messages(messages: readonly Uint8Array[]): 
     return { metadata: firstPayload.metadata, status: 'valid' };
 }
 
-/** Parses one HEVC access unit's ST 2094-40 metadata without retaining access-unit views. */
-export function parseHEVCHDR10PlusMetadata(accessUnit: Uint8Array, format: HEVCNALFormat): HDR10PlusFrameMetadata {
+/**
+ * Parses one HEVC access unit's ST 2094-40 metadata without retaining access-unit views.
+ * A caller that already walked the access unit's NAL units passes them, so the unit is walked once; without them, a malformed walk makes the frame malformed.
+ */
+export function parseHEVCHDR10PlusMetadata(
+    accessUnit: Uint8Array,
+    format: HEVCNALFormat,
+    walkedNALUnits?: readonly HEVCNALUnit[]
+): HDR10PlusFrameMetadata {
     const messages: Uint8Array[] = [];
     try {
-        for (const message of parseHEVCSEIMessages(accessUnit, format)) {
+        // Without walked NAL units, the SEI parse walks them here, inside the syntax error handling
+        for (const message of parseHEVCSEIMessages(accessUnit, format, walkedNALUnits)) {
             if (message.payloadType === USER_DATA_REGISTERED_ITU_T_T35_PAYLOAD_TYPE) {
                 messages.push(message.payload);
             }

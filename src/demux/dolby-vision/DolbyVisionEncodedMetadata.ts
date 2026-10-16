@@ -16,7 +16,8 @@ import { DOLBY_VISION_LAYER_PAIR_TOLERANCE_MICROSECONDS } from './DolbyVisionPro
 import {
     splitDolbyVisionHEVCAccessUnit,
     type DolbyVisionHEVCSplitResult,
-    type HEVCNALFormat
+    type HEVCNALFormat,
+    type HEVCNALUnit
 } from './DolbyVisionHEVCSplitter';
 import { splitDolbyVisionAV1TemporalUnit } from './DolbyVisionAV1Splitter';
 import { parseHEVCDecoderConfiguration } from '../hevc/HEVCDecoderConfiguration';
@@ -28,6 +29,7 @@ export const MAXIMUM_DOLBY_VISION_PENDING_METADATA_BYTE_LENGTH = 64 * 1_024 * 1_
 const MAXIMUM_DOLBY_VISION_AV1_TEMPORAL_UNIT_RPU_COUNT = 1;
 
 export type ProcessedDolbyVisionHEVCPacket = {
+    /** The BL the decoder takes: the input packet when nothing was removed, its data's leading bytes, or a new access unit */
     baseLayerPacket: EncodedPacket | null
     enhancementLayerPacket: EncodedPacket | null
     hasBaseLayerVCL: boolean
@@ -101,6 +103,14 @@ function getMetadataByteLength(encodedRPUs: readonly Uint8Array[], parsedRPUData
  */
 function hasOnlySingleLayerRPU(parsedRPUData: readonly ArrayBuffer[]): boolean {
     return parsedRPUData.length === 1 && readDolbyVisionRPUSnapshotHeader(parsedRPUData[0]).layerMode === 'single-layer';
+}
+
+/** Returns the packet that carries split data: the packet itself when the data is its own, else a clone with the data. */
+function createSplitPacket(packet: EncodedPacket, data: Uint8Array | null): EncodedPacket | null {
+    if (!data) {
+        return null;
+    }
+    return data === packet.data ? packet : packet.clone({ data });
 }
 
 function discardEnhancementLayer(splitResult: DolbyVisionHEVCSplitResult): DolbyVisionHEVCSplitResult {
@@ -212,8 +222,12 @@ export default class DolbyVisionEncodedMetadataQueue {
     /**
      * Removes DV NAL units from one packet and records bounded frame metadata.
      * The EL data of a frame whose only RPU is single-layer is discarded, so its metadata and result report no EL.
+     * A caller that already walked the packet's NAL units passes them, so the packet is walked once.
      */
-    public async processPacket(packet: EncodedPacket): Promise<ProcessedDolbyVisionHEVCPacket> {
+    public async processPacket(
+        packet: EncodedPacket,
+        nalUnits?: readonly HEVCNALUnit[]
+    ): Promise<ProcessedDolbyVisionHEVCPacket> {
         const timestampMicroseconds = requireMicroseconds(
             packet.microsecondTimestamp,
             'Encoded HEVC packet timestamp'
@@ -221,7 +235,8 @@ export default class DolbyVisionEncodedMetadataQueue {
         const splitResult = splitDolbyVisionHEVCAccessUnit(
             packet.data,
             this.inputFormat,
-            this.enhancementOutputFormat
+            this.enhancementOutputFormat,
+            nalUnits
         );
         const hasDolbyVisionFrameData = splitResult.rpuNALUnits.length > 0 || splitResult.hasEnhancementLayerVCL;
         if (hasDolbyVisionFrameData && !splitResult.hasBaseLayerVCL) {
@@ -247,12 +262,8 @@ export default class DolbyVisionEncodedMetadataQueue {
         }
 
         return {
-            baseLayerPacket: presentedSplit.baseLayerData ?
-                packet.clone({ data: presentedSplit.baseLayerData }) :
-                null,
-            enhancementLayerPacket: presentedSplit.enhancementLayerData ?
-                packet.clone({ data: presentedSplit.enhancementLayerData }) :
-                null,
+            baseLayerPacket: createSplitPacket(packet, presentedSplit.baseLayerData),
+            enhancementLayerPacket: createSplitPacket(packet, presentedSplit.enhancementLayerData),
             hasBaseLayerVCL: presentedSplit.hasBaseLayerVCL,
             hasEnhancementLayerVCL: presentedSplit.hasEnhancementLayerVCL
         };
@@ -261,11 +272,13 @@ export default class DolbyVisionEncodedMetadataQueue {
     /**
      * Associates an ordinary HEVC BL packet with one separate-track EL packet.
      * The EL picture is discarded when the frame's only RPU is single-layer.
+     * A caller that already walked the BL packet's NAL units passes them, so the packet is walked once.
      */
     public async processSeparatePackets(
         baseLayerPacket: EncodedPacket,
         enhancementLayerPacket: EncodedPacket,
-        enhancementInputFormat: HEVCNALFormat
+        enhancementInputFormat: HEVCNALFormat,
+        baseLayerNALUnits?: readonly HEVCNALUnit[]
     ): Promise<ProcessedDolbyVisionHEVCPacket> {
         const baseTimestampMicroseconds = requireMicroseconds(
             baseLayerPacket.microsecondTimestamp,
@@ -283,7 +296,8 @@ export default class DolbyVisionEncodedMetadataQueue {
         const baseSplit = splitDolbyVisionHEVCAccessUnit(
             baseLayerPacket.data,
             this.inputFormat,
-            this.inputFormat
+            this.inputFormat,
+            baseLayerNALUnits
         );
         const enhancementSplit = splitDolbyVisionHEVCAccessUnit(
             enhancementLayerPacket.data,
@@ -315,12 +329,8 @@ export default class DolbyVisionEncodedMetadataQueue {
             getEnhancementLayerDisposition(enhancementLayerData, parsedRPUData) :
             'absent';
         const processedPacket: ProcessedDolbyVisionHEVCPacket = {
-            baseLayerPacket: baseSplit.baseLayerData ?
-                baseLayerPacket.clone({ data: baseSplit.baseLayerData }) :
-                null,
-            enhancementLayerPacket: enhancementLayerData ?
-                enhancementLayerPacket.clone({ data: enhancementLayerData }) :
-                null,
+            baseLayerPacket: createSplitPacket(baseLayerPacket, baseSplit.baseLayerData),
+            enhancementLayerPacket: createSplitPacket(enhancementLayerPacket, enhancementLayerData),
             hasBaseLayerVCL: true,
             hasEnhancementLayerVCL
         };

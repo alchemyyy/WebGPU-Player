@@ -107,8 +107,10 @@ import DolbyVisionEncodedMetadataQueue, {
 } from '../demux/dolby-vision/DolbyVisionEncodedMetadata';
 import DolbyVisionEncodedPacketPairer from '../demux/dolby-vision/DolbyVisionEncodedPacketPairer';
 import {
+    parseHEVCNALUnits,
     splitDolbyVisionHEVCAccessUnit,
-    type HEVCNALFormat
+    type HEVCNALFormat,
+    type HEVCNALUnit
 } from '../demux/dolby-vision/DolbyVisionHEVCSplitter';
 import {
     getDolbyVisionEncodedMetadataTransferList,
@@ -2128,6 +2130,7 @@ function createOwnedVideoStreamRun(
 type OwnedHEVCStream = {
     decoder: OwnedVideoDecoderPort
     dynamicHDRMetadataQueue: HEVCDynamicHDRMetadataQueue
+    inputFormat: HEVCNALFormat
     metadataQueue: DolbyVisionEncodedMetadataQueue
     separateEnhancementStream: SeparateDolbyVisionEnhancementPacketStream | null
     state: OwnedVideoStreamState
@@ -2170,6 +2173,7 @@ async function createSeparateDolbyVisionEnhancementPacketStream(
 async function processOwnedHEVCPacket(
     hevcStream: OwnedHEVCStream,
     packet: EncodedPacket,
+    nalUnits: readonly HEVCNALUnit[],
     separateEnhancementPacket: EncodedPacket | null
 ): Promise<ProcessedDolbyVisionHEVCPacket> {
     const separateEnhancementStream = hevcStream.separateEnhancementStream;
@@ -2178,13 +2182,14 @@ async function processOwnedHEVCPacket(
             return await hevcStream.metadataQueue.processSeparatePackets(
                 packet,
                 separateEnhancementPacket,
-                separateEnhancementStream.inputFormat
+                separateEnhancementStream.inputFormat,
+                nalUnits
             );
         } catch {
             await separateEnhancementStream.pairer.retire();
         }
     }
-    return hevcStream.metadataQueue.processPacket(packet);
+    return hevcStream.metadataQueue.processPacket(packet, nalUnits);
 }
 
 /** Takes the separate-track EL packet that pairs with a BL packet; a missing or unreadable one retires the EL track. */
@@ -2223,8 +2228,10 @@ async function decodeOwnedHEVCPacket(
     if (isVideoAttemptStopped(run)) {
         return false;
     }
-    hevcStream.dynamicHDRMetadataQueue.processPacket(packet);
-    const processedPacket = await processOwnedHEVCPacket(hevcStream, packet, separateEnhancementPacket);
+    // One walk of the packet's NAL units serves its HDR10+ parse and its Dolby Vision split
+    const nalUnits = parseHEVCNALUnits(packet.data, hevcStream.inputFormat);
+    hevcStream.dynamicHDRMetadataQueue.processPacket(packet, nalUnits);
+    const processedPacket = await processOwnedHEVCPacket(hevcStream, packet, nalUnits, separateEnhancementPacket);
     hevcStream.state.decodeBasePacket(
         packet,
         processedPacket.baseLayerPacket,
@@ -2453,6 +2460,7 @@ async function streamOwnedHEVCFrames(
         const hevcStream: OwnedHEVCStream = {
             decoder,
             dynamicHDRMetadataQueue,
+            inputFormat,
             metadataQueue,
             separateEnhancementStream,
             state

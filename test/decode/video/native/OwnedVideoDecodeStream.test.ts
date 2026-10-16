@@ -128,6 +128,10 @@ function createPacket(timestampMicroseconds: number): EncodedPacket {
     return new EncodedPacket(new Uint8Array([ 1 ]), 'key', timestampMicroseconds / 1_000_000, 0);
 }
 
+// A demuxed packet's bytes, of which a processed packet may keep the leading one
+const SOURCE_PACKET_BYTES = [ 1, 2 ];
+const LEADING_BYTE_LENGTH = 1;
+
 describe('OwnedVideoStreamState', () => {
     it('gives back the metadata of a frame its decoder drops', () => {
         const harness = createHarness(false);
@@ -144,6 +148,28 @@ describe('OwnedVideoStreamState', () => {
         const decoder = createDecoder(true);
         harness.state.decodeBasePacket(packet, null, true, decoder);
         expect(decoder.decode).not.toHaveBeenCalled();
+    });
+
+    it('lets the decoder transfer only a buffer the packet processing allocated', () => {
+        const harness = createHarness(false);
+        const sourcePacket = new EncodedPacket(new Uint8Array(SOURCE_PACKET_BYTES), 'key', 0, 0);
+        const decoder = createDecoder(true);
+
+        harness.state.decodeBasePacket(sourcePacket, sourcePacket, true, decoder);
+        harness.state.decodeBasePacket(
+            sourcePacket,
+            sourcePacket.clone({ data: sourcePacket.data.subarray(0, LEADING_BYTE_LENGTH) }),
+            true,
+            decoder
+        );
+        harness.state.decodeBasePacket(
+            sourcePacket,
+            sourcePacket.clone({ data: sourcePacket.data.slice(0, LEADING_BYTE_LENGTH) }),
+            true,
+            decoder
+        );
+
+        expect(decoder.decode.mock.calls.map((call: unknown[]): unknown => call[1])).toEqual([ false, false, true ]);
     });
 
     it('posts each BL frame with the EL frame of its timestamp', async () => {

@@ -15,16 +15,22 @@ export default class HEVCDynamicHDRMetadataQueue extends HDR10PlusFrameMetadataQ
         super('HEVC');
     }
 
-    /** Parses and queues metadata when an encoded packet contains a base-layer picture. */
-    public processPacket(packet: EncodedPacket): boolean {
+    /**
+     * Parses and queues metadata when an encoded packet contains a base-layer picture.
+     * A caller that already walked the packet's NAL units passes them, so the packet is walked once.
+     */
+    public processPacket(
+        packet: EncodedPacket,
+        nalUnits: readonly HEVCNALUnit[] = parseHEVCNALUnits(packet.data, this.inputFormat)
+    ): boolean {
         // Only base-layer pictures are decoded, as the Dolby Vision splitter drops other layers
-        const hasBaseLayerVCL = parseHEVCNALUnits(packet.data, this.inputFormat).some(
+        const hasBaseLayerVCL = nalUnits.some(
             (nalUnit: HEVCNALUnit): boolean => nalUnit.layerID === HEVC_BASE_LAYER_ID && nalUnit.type <= 31
         );
         if (!hasBaseLayerVCL) {
             return false;
         }
-        this.enqueue(packet.microsecondTimestamp, parseHEVCHDR10PlusMetadata(packet.data, this.inputFormat));
+        this.enqueue(packet.microsecondTimestamp, parseHEVCHDR10PlusMetadata(packet.data, this.inputFormat, nalUnits));
         return true;
     }
 }

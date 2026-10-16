@@ -141,6 +141,14 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
 - Per frame, a snapshot's header is read, not the whole snapshot (10-15).
   The worker's parser validates each whole snapshot once, curves and MMR data included, when it parses the RPU.
   The worker boundary, the EL classification, and the presenter's single- and dual-layer checks used to decode the whole 3,232 bytes again for every frame to read five header fields; `readDolbyVisionRPUSnapshotHeader` reads only those, still checking the length, the schema, the revision, and that the flags agree with the profile.
+- Each HEVC packet's NAL units are walked once (10-15).
+  The owned HEVC path walked every packet three times: twice in the HDR10+ queue, for its base-layer picture check and its SEI parse, and once in the Dolby Vision split, which then rebuilt the BL into a new buffer even when it removed nothing.
+  The worker now walks each packet once and passes the NAL units to both, as the AV1 path passes its OBUs, and the frame-pool route's HDR10+ queue walks its packet once.
+  The split returns the input itself when it removes nothing, and a view of the input's leading bytes when it removes only trailing NAL units, as Dolby Vision streams carry their RPU and an interleaved EL after the BL.
+  Only a removal ahead of a BL NAL unit rebuilds the BL, with four-byte start codes.
+  A buffer the engine allocated for one decode, a rebuilt BL, an AV1 temporal unit without its RPU, or a sanitized or color-neutralized access unit, moves into its `EncodedVideoChunk` through `transfer` instead of being copied.
+  A packet's own bytes may share Mediabunny's read buffer, so they and any view of them are copied.
+  The native decoder's own walks stay: its RASL check reads only the leading pictures after a key packet, its Chromium sanitizing only the first packet, and its color rewrite only key packets.
 - Mediabunny's Dolby Vision sample entries are mapped in the engine (10-06).
   Mediabunny 1.52.2 parses `dvh1`, `dvhe`, `dva1`, `dvav`, and `dav1` but gives them no codec.
   `ISOBaseMediaDolbyVisionSampleEntry.ts` writes the wrapped codec into the track's internal info, contained the way `MatroskaVFWVideoConfiguration.ts` is, so Mediabunny itself stays unmodified.

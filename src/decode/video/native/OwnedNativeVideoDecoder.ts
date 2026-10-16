@@ -18,8 +18,12 @@ export type NativeVideoDecoderPort = {
 
 export type OwnedNativeVideoDecoderDependencies = {
     createDecoder: (init: VideoDecoderInit) => NativeVideoDecoderPort
-    createEncodedVideoChunk: (packet: EncodedPacket) => EncodedVideoChunk
+    /** Transferable data's buffer moves into the chunk and is detached; other data is copied. */
+    createEncodedVideoChunk: (packet: EncodedPacket, transferableData: boolean) => EncodedVideoChunk
 };
+
+// EncodedVideoChunkInit's transfer member, which the TypeScript DOM library does not declare
+type TransferringEncodedVideoChunkInit = EncodedVideoChunkInit & { transfer: ArrayBuffer[] };
 
 /** The one decoded source kind a native decoder outputs */
 export type OwnedNativeFrameSource = Extract<OwnedDecodedVideoSource, { kind: 'native-frame' }>;
@@ -32,12 +36,31 @@ export type OwnedNativeVideoDecoderCallbacks = {
     onProgress: () => void
 };
 
+/**
+ * Creates a packet's chunk, moving transferable data's buffer into it instead of copying it.
+ * A browser that ignores `transfer` copies the data and leaves the buffer attached.
+ */
+function createEncodedVideoChunk(packet: EncodedPacket, transferableData: boolean): EncodedVideoChunk {
+    const buffer = packet.data.buffer;
+    // A shared buffer cannot be transferred
+    if (!transferableData || !(buffer instanceof ArrayBuffer)) {
+        return packet.toEncodedVideoChunk();
+    }
+    const init: TransferringEncodedVideoChunkInit = {
+        data: packet.data,
+        duration: packet.microsecondDuration,
+        timestamp: packet.microsecondTimestamp,
+        transfer: [ buffer ],
+        type: packet.type
+    };
+    // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
+    return new EncodedVideoChunk(init);
+}
+
 export const DEFAULT_NATIVE_VIDEO_DECODER_DEPENDENCIES: OwnedNativeVideoDecoderDependencies = {
     // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
     createDecoder: (init: VideoDecoderInit): NativeVideoDecoderPort => new VideoDecoder(init),
-    createEncodedVideoChunk: (packet: EncodedPacket): EncodedVideoChunk => (
-        packet.toEncodedVideoChunk()
-    )
+    createEncodedVideoChunk
 };
 
 /** Closes a codec unless WebCodecs already closed it after an error or reclamation. */
@@ -98,8 +121,8 @@ export default class OwnedNativeVideoDecoder implements OwnedVideoDecoderPort {
     }
 
     /** Queues one packet; a native decoder never drops a picture on its own. */
-    public decode(packet: EncodedPacket): boolean {
-        this.requireDecoder().decode(this.dependencies.createEncodedVideoChunk(packet));
+    public decode(packet: EncodedPacket, transferableData = false): boolean {
+        this.requireDecoder().decode(this.dependencies.createEncodedVideoChunk(packet, transferableData));
         return true;
     }
 

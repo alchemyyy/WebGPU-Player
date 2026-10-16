@@ -83,8 +83,11 @@ export default class OwnedNativeHEVCVideoDecoder extends OwnedNativeVideoDecoder
         super(config, createNativeFrameCallbacks(callbacks), dependencies);
     }
 
-    /** Queues one cleaned base-layer packet, or drops a leading RASL picture and returns false. */
-    public override decode(packet: EncodedPacket): boolean {
+    /**
+     * Queues one cleaned base-layer packet, or drops a leading RASL picture and returns false.
+     * Data this decoder rewrites is its own and always transfers; unchanged data transfers only when the caller allows.
+     */
+    public override decode(packet: EncodedPacket, transferableData = false): boolean {
         // A closed or failed decoder throws before the packet state below changes
         this.requireDecoder();
         if (this.currentPacketIndex > 0 && !this.raslSkipped) {
@@ -107,9 +110,11 @@ export default class OwnedNativeHEVCVideoDecoder extends OwnedNativeVideoDecoder
 
         decodedPacketData = this.neutralizeHDRPacketData(packet, decodedPacketData);
 
-        const decodedPacket = decodedPacketData === packet.data ? packet : packet.clone({ data: decodedPacketData });
-
-        super.decode(decodedPacket);
+        if (decodedPacketData === packet.data) {
+            super.decode(packet, transferableData);
+        } else {
+            super.decode(packet.clone({ data: decodedPacketData }), true);
+        }
         this.currentPacketIndex += 1;
         return true;
     }

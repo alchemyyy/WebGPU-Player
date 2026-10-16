@@ -21,6 +21,10 @@ export type HEVCNALFormat =
     | { kind: 'length-prefixed', lengthSize: HEVCLengthSize };
 
 export type DolbyVisionHEVCSplitResult = {
+    /**
+     * The BL the decoder takes: the input itself when nothing was removed, a view of its leading bytes when only trailing NAL units were, and a new access unit otherwise.
+     * Null when the input has no BL NAL unit.
+     */
     baseLayerData: Uint8Array | null
     enhancementLayerData: Uint8Array | null
     hasBaseLayerVCL: boolean
@@ -214,33 +218,64 @@ function encodeNALUnits(nalUnits: readonly Uint8Array[], format: HEVCNALFormat):
 }
 
 /**
- * Separates BL, RPU, and wrapped EL NAL units without retaining packet views.
+ * Returns the BL of a split access unit without copying it when the removed NAL units allow.
+ * Dolby Vision muxers put the RPU, and an interleaved EL, after the BL's NAL units, so the BL is usually the input's leading bytes.
+ */
+function getBaseLayerData(
+    data: Uint8Array,
+    inputFormat: HEVCNALFormat,
+    baseLayerNALUnits: readonly Uint8Array[],
+    removedNALUnitCount: number,
+    leadingBaseLayerByteLength: number | null
+): Uint8Array | null {
+    if (baseLayerNALUnits.length === 0) {
+        return null;
+    }
+    if (removedNALUnitCount === 0) {
+        return data;
+    }
+    return leadingBaseLayerByteLength === null ?
+        encodeNALUnits(baseLayerNALUnits, inputFormat) :
+        data.subarray(0, leadingBaseLayerByteLength);
+}
+
+/**
+ * Separates BL, RPU, and wrapped EL NAL units.
+ * A BL that is the input itself or a view of it shares the input's bytes; RPUs are owned copies, and the EL is a new access unit.
  * NAL units with nuh_layer_id above zero, such as an MV-HEVC second view or an SHVC layer, are dropped: single-layer decoders ignore them and the base layer decodes without them.
+ * A caller that already walked the access unit's NAL units passes them, so the unit is walked once.
  */
 export function splitDolbyVisionHEVCAccessUnit(
     data: Uint8Array,
     inputFormat: HEVCNALFormat,
-    enhancementOutputFormat: HEVCNALFormat = inputFormat
+    enhancementOutputFormat: HEVCNALFormat = inputFormat,
+    walkedNALUnits?: readonly HEVCNALUnit[]
 ): DolbyVisionHEVCSplitResult {
     requireAccessUnit(data);
-    const nalUnits = parseHEVCNALUnits(data, inputFormat);
+    const nalUnits = walkedNALUnits ?? parseHEVCNALUnits(data, inputFormat);
     const baseLayerNALUnits: Uint8Array[] = [];
     const enhancementLayerNALUnits: Uint8Array[] = [];
     const enhancementLayerParameterSetTypes = new Set<number>();
     const rpuNALUnits: Uint8Array[] = [];
     let hasBaseLayerVCL = false;
     let hasEnhancementLayerVCL = false;
+    let removedNALUnitCount = 0;
+    // The input's bytes through its last BL NAL unit, or null once a removed NAL unit precedes a BL one
+    let leadingBaseLayerByteLength: number | null = null;
 
     for (const nalUnit of nalUnits) {
         // RPU (62) and EL wrapper (63) NAL units always carry layer 0, and the wrapped EL is its own bitstream
         if (nalUnit.layerID !== HEVC_BASE_LAYER_ID) {
+            removedNALUnitCount += 1;
             continue;
         }
         switch (nalUnit.type) {
             case DOLBY_VISION_RPU_NAL_UNIT_TYPE:
+                removedNALUnitCount += 1;
                 rpuNALUnits.push(nalUnit.data.slice());
                 break;
             case DOLBY_VISION_ENHANCEMENT_WRAPPER_NAL_UNIT_TYPE: {
+                removedNALUnitCount += 1;
                 const enhancementLayerNALUnit = nalUnit.data.subarray(2);
                 const enhancementLayerType = getNALUnitType(enhancementLayerNALUnit);
                 hasEnhancementLayerVCL ||= enhancementLayerType <= 31;
@@ -257,12 +292,21 @@ export function splitDolbyVisionHEVCAccessUnit(
             default:
                 hasBaseLayerVCL ||= nalUnit.type <= 31;
                 baseLayerNALUnits.push(nalUnit.data);
+                leadingBaseLayerByteLength = removedNALUnitCount === 0 ?
+                    nalUnit.data.byteOffset + nalUnit.data.byteLength - data.byteOffset :
+                    null;
                 break;
         }
     }
 
     return {
-        baseLayerData: encodeNALUnits(baseLayerNALUnits, inputFormat),
+        baseLayerData: getBaseLayerData(
+            data,
+            inputFormat,
+            baseLayerNALUnits,
+            removedNALUnitCount,
+            leadingBaseLayerByteLength
+        ),
         enhancementLayerData: encodeNALUnits(enhancementLayerNALUnits, enhancementOutputFormat),
         hasBaseLayerVCL,
         hasEnhancementLayerVCL,
