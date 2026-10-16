@@ -539,18 +539,15 @@ function hasUnsupportedRotation(stream: MediaStream): boolean {
 }
 
 /**
- * Returns whether an interlaced stream's codec codes its fields apart, as no route presents them: HEVC as field pictures and JPEG 2000 as a codestream per field,
- * which no decoder weaves into frames.
- * The deinterlacing presentation pass takes frames whose rows alternate between the fields, as the other codecs' decoders output them.
+ * Returns whether a route presents the codec's interlaced streams, outside the Dolby Vision routes, which never deinterlace.
+ * The deinterlacing presentation pass takes frames whose rows alternate between the fields, as these codecs' decoders output them.
+ * HEVC codes its fields apart as field pictures and JPEG 2000 as a codestream per field, which no decoder weaves into frames.
  */
-function codesInterlacedFieldsApart(codec: CustomVideoCodec, stream: MediaStream): boolean {
-    if (stream.IsInterlaced !== true) {
-        return false;
-    }
+export function presentsInterlacedVideo(codec: CustomVideoCodec): boolean {
     switch (codec) {
         case 'hevc':
         case 'jpeg2000':
-            return true;
+            return false;
         case 'av1':
         case 'h264':
         case 'mpeg1video':
@@ -559,8 +556,13 @@ function codesInterlacedFieldsApart(codec: CustomVideoCodec, stream: MediaStream
         case 'vp8':
         case 'vp9':
         case 'wmv3':
-            return false;
+            return true;
     }
+}
+
+/** Returns whether an interlaced stream's codec codes its fields apart, so no route presents it. */
+function codesInterlacedFieldsApart(codec: CustomVideoCodec, stream: MediaStream): boolean {
+    return stream.IsInterlaced === true && !presentsInterlacedVideo(codec);
 }
 
 /**
