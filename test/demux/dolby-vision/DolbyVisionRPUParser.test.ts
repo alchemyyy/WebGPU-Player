@@ -23,6 +23,7 @@ import DolbyVisionRPUParser, {
     MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH,
     MAXIMUM_DOLBY_VISION_RPU_PARSER_MEMORY_BYTE_LENGTH,
     resolveDolbyVisionRPUParserWASMURL,
+    type DolbyVisionRPUContainerProfile,
     type DolbyVisionRPUParserDependencies,
     type DolbyVisionRPULayerMode
 } from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParser';
@@ -49,6 +50,11 @@ const SEGMENT_MMR_ORDER_BYTE_OFFSET = DOLBY_VISION_RPU_SEGMENT_MMR_ORDER_INDEX *
 // Each shared-instance test loads its parser from its own URL, so it starts without a cached instance
 const SHARED_PARSER_WASM_URL = 'https://example.test/web/libraries/libdovi/shared/dovi-rpu-parser.wasm';
 const TRAPPING_PARSER_WASM_URL = 'https://example.test/web/libraries/libdovi/trapping/dovi-rpu-parser.wasm';
+// Container profiles: an RPU profile the vector's header would contradict, and AV1's Profile 10, which is no RPU profile
+const CONTRADICTED_CONTAINER_PROFILE: DolbyVisionRPUContainerProfile = 4;
+const NOT_AN_RPU_PROFILE = 10;
+// libdovi's STATUS_INVALID_ARGUMENT
+const INVALID_ARGUMENT_STATUS = 1;
 const WASM_TRAP_MESSAGE = 'unreachable';
 const MOCK_PARSER_CONTEXT_POINTER = 512;
 const MOCK_PARSER_FIRST_ALLOCATION_POINTER = 1_024;
@@ -188,6 +194,43 @@ const ACTUAL_PARSER_DEPENDENCIES: DolbyVisionRPUParserDependencies = {
 async function createActualParser(): Promise<DolbyVisionRPUParser> {
     return DolbyVisionRPUParser.create('local-parser.wasm', ACTUAL_PARSER_DEPENDENCIES);
 }
+
+describe('DolbyVisionRPUParser container profile', () => {
+    it('keeps the profile a header reveals over the container\'s', async () => {
+        const parser = await createActualParser();
+        try {
+            parser.setContainerProfile(CONTRADICTED_CONTAINER_PROFILE);
+
+            expect(parser.parse(readVector('profile8.bin')).profile).toBe(8);
+            // A reset keeps the container's profile, and null clears it
+            parser.reset();
+            parser.setContainerProfile(null);
+            expect(parser.parse(readVector('profile8.bin')).profile).toBe(8);
+        } finally {
+            parser.close();
+        }
+    });
+
+    it('refuses a container profile that is no RPU profile with the parser\'s status', async () => {
+        const parser = await createActualParser();
+        try {
+            const refusal = ((): unknown => {
+                try {
+                    parser.setContainerProfile(NOT_AN_RPU_PROFILE as DolbyVisionRPUContainerProfile);
+                } catch (error) {
+                    return error;
+                }
+                return null;
+            })();
+
+            expect(refusal).toBeInstanceOf(DolbyVisionRPUParseError);
+            expect((refusal as DolbyVisionRPUParseError).statusCode).toBe(INVALID_ARGUMENT_STATUS);
+            expect((refusal as DolbyVisionRPUParseError).message).toContain(`profile ${NOT_AN_RPU_PROFILE} is not an RPU profile`);
+        } finally {
+            parser.close();
+        }
+    });
+});
 
 describe('DolbyVisionRPUParser pinned WASM integration', () => {
     it.each(PARSER_VECTORS)(
@@ -619,6 +662,7 @@ describe('decodeDolbyVisionRPUSnapshot validation', () => {
                 dovi_parser_schema_version: (): number => (
                     DOLBY_VISION_RPU_SCHEMA_VERSION
                 ),
+                dovi_parser_set_container_profile: (): number => 0,
                 memory
             }
         } as unknown as WebAssembly.Instance;
@@ -662,6 +706,7 @@ function createTrappingParserInstance(): WebAssembly.Instance {
             dovi_parser_reset: (): number => 0,
             dovi_parser_revision_prefix: (): number => DOLBY_VISION_RPU_PARSER_REVISION_PREFIX,
             dovi_parser_schema_version: (): number => DOLBY_VISION_RPU_SCHEMA_VERSION,
+            dovi_parser_set_container_profile: (): number => 0,
             memory: new WebAssembly.Memory({ initial: MOCK_PARSER_MEMORY_PAGE_COUNT })
         }
     } as unknown as WebAssembly.Instance;

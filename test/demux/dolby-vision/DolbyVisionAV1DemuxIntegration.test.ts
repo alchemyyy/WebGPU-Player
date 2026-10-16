@@ -89,6 +89,8 @@ const OBU_TRAILING_BITS_BYTE = 0x80;
 const METADATA_TYPE_ITUT_T35 = 4;
 // The ITU-T T.35 metadata_type, then the Dolby Vision T.35 header
 const DOLBY_VISION_METADATA_PREFIX: readonly number[] = [ METADATA_TYPE_ITUT_T35, ...DOLBY_VISION_ITUT_T35_HEADER ];
+// Every source RPU reveals its profile, so none needs the container's
+const NO_CONTAINER_PROFILE = null;
 
 async function createParser(): Promise<DolbyVisionRPUParser> {
     return DolbyVisionRPUParser.create('local-parser.wasm', {
@@ -100,7 +102,7 @@ async function createParser(): Promise<DolbyVisionRPUParser> {
 }
 
 function createParserSession(): DolbyVisionRPUParserSession {
-    return DolbyVisionRPUParserSession.create('local-parser.wasm', {
+    return DolbyVisionRPUParserSession.create('local-parser.wasm', NO_CONTAINER_PROFILE, {
         createParser
     });
 }

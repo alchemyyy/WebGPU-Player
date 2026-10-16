@@ -1,4 +1,5 @@
 import DolbyVisionRPUParser, {
+    type DolbyVisionRPUContainerProfile,
     type DolbyVisionRPUSnapshot
 } from './DolbyVisionRPUParser';
 
@@ -10,7 +11,7 @@ export type DolbyVisionRPUParserPort = {
 };
 
 export type DolbyVisionRPUParserSessionDependencies = {
-    createParser: (wasmURL: string) => Promise<DolbyVisionRPUParserPort>
+    createParser: (wasmURL: string, containerProfile: DolbyVisionRPUContainerProfile) => Promise<DolbyVisionRPUParserPort>
 };
 
 type ParserInitializationResult = {
@@ -18,10 +19,23 @@ type ParserInitializationResult = {
     parser: DolbyVisionRPUParserPort | null
 };
 
+/** Creates a parser that gives an RPU whose header reveals no profile the container's. */
+async function createContainerProfileParser(
+    wasmURL: string,
+    containerProfile: DolbyVisionRPUContainerProfile
+): Promise<DolbyVisionRPUParserPort> {
+    const parser = await DolbyVisionRPUParser.create(wasmURL);
+    try {
+        parser.setContainerProfile(containerProfile);
+    } catch (error) {
+        parser.close();
+        throw error;
+    }
+    return parser;
+}
+
 const DEFAULT_DEPENDENCIES: DolbyVisionRPUParserSessionDependencies = {
-    createParser: (wasmURL: string): Promise<DolbyVisionRPUParserPort> => (
-        DolbyVisionRPUParser.create(wasmURL)
-    )
+    createParser: createContainerProfileParser
 };
 
 function releaseParser(parser: DolbyVisionRPUParserPort): void {
@@ -47,21 +61,26 @@ export default class DolbyVisionRPUParserSession {
         // Use create() so asynchronous initialization starts outside construction
     }
 
-    /** Starts non-blocking parser initialization for one decode generation. */
+    /**
+     * Starts non-blocking parser initialization for one decode generation.
+     * The container's profile is what an RPU whose header reveals none takes, as FFmpeg's takes the configuration record's.
+     */
     public static create(
         wasmURL: string,
+        containerProfile: DolbyVisionRPUContainerProfile,
         dependencies: DolbyVisionRPUParserSessionDependencies = DEFAULT_DEPENDENCIES
     ): DolbyVisionRPUParserSession {
         const session = new DolbyVisionRPUParserSession();
-        session.initialization = session.initializeParser(wasmURL, dependencies);
+        session.initialization = session.initializeParser(wasmURL, containerProfile, dependencies);
         return session;
     }
 
     private initializeParser(
         wasmURL: string,
+        containerProfile: DolbyVisionRPUContainerProfile,
         dependencies: DolbyVisionRPUParserSessionDependencies
     ): Promise<ParserInitializationResult> {
-        return dependencies.createParser(wasmURL).then(
+        return dependencies.createParser(wasmURL, containerProfile).then(
             (parser: DolbyVisionRPUParserPort): ParserInitializationResult => {
                 if (this.closed) {
                     releaseParser(parser);
