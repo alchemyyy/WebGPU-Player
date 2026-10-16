@@ -1,4 +1,4 @@
-// The names of the pass language that headers, the prelude, and the planner share; overhual/passes.md documents them.
+// The names of the pass language that headers, the prelude, and the planner share; docs/src/new-pass.md documents them.
 import type { PassInput, PassShape, PresentationStage } from './PassTypes';
 
 /** The spatial spine after the fixed signal step, in pipeline order. */

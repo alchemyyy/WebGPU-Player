@@ -1,5 +1,5 @@
 // The contracts shared by the pass manifest, the built-in passes, the planner, the executor, and the GPU decode route.
-// overhual/ in the engine root describes the design they implement.
+// The Presentation section of docs/src/architecture.md and docs/src/new-pass.md describe them.
 import type { InputColorMetadata } from '../../color/ColorMetadata';
 import type {
     RawDolbyVisionVideoFrameFormat,

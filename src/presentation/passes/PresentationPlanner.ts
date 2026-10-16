@@ -1,5 +1,5 @@
 // Builds presentation plans: it arranges a route's built-in chain and the user passes on the spatial spine and the color track, then generates each pass's WGSL.
-// overhual/planning.md, overhual/color.md, and overhual/temporal.md in the engine root describe the rules it implements.
+// The Presentation section of docs/src/architecture.md and docs/src/new-pass.md describe the rules it implements.
 import {
     FLOAT32_FILTERABLE_FEATURE,
     FLOAT32_TEXTURE_FORMATS,

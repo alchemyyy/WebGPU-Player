@@ -1,5 +1,5 @@
 // Generates the WGSL around pass code: input accessors, entry points, and the renaming that keeps each user body's identifiers apart.
-// overhual/passes.md in the engine root describes the prelude a user pass sees.
+// docs/src/new-pass.md describes the generated code a user pass sees.
 import { TARGET_ACCESSOR_PREFIX } from './PassLanguage';
 import type { PassLineMapping, PassParameter } from './PassTypes';
 
