@@ -1,6 +1,6 @@
 import {
-    decodeDolbyVisionRPUSnapshot,
-    MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH
+    MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH,
+    readDolbyVisionRPUSnapshotHeader
 } from './DolbyVisionRPUParser';
 
 export const DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION = 4;
@@ -123,7 +123,8 @@ export function getDolbyVisionEncodedFrameMetadataFailure(value: unknown): strin
     const layerModes: string[] = [];
     for (const packedRPUData of metadata.parsedRPUData) {
         try {
-            layerModes.push(decodeDolbyVisionRPUSnapshot(packedRPUData).layerMode);
+            // The producing worker's parser validated each whole snapshot, so the boundary checks its header
+            layerModes.push(readDolbyVisionRPUSnapshotHeader(packedRPUData).layerMode);
         } catch (error) {
             return `rpu: ${error instanceof Error ? error.message : String(error)}`;
         }

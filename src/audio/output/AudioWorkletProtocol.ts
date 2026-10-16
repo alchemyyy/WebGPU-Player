@@ -57,6 +57,12 @@ export type AudioWorkletDestroyMessage = {
     type: 'destroy'
 };
 
+/** Turns the processor's per-sample signal statistics on or off; telemetry carries `signal` only while they are on */
+export type AudioWorkletSignalAnalysisMessage = {
+    enabled: boolean
+    type: 'signal-analysis'
+};
+
 export type AudioWorkletDeactivateMessage = {
     generation: number
     leaseId: number
@@ -79,7 +85,8 @@ export type CustomAudioWorkletMessage =
     | AudioWorkletEnqueueMessage
     | AudioWorkletFlushMessage
     | AudioWorkletGainMessage
-    | AudioWorkletPlaybackMessage;
+    | AudioWorkletPlaybackMessage
+    | AudioWorkletSignalAnalysisMessage;
 
 export type AudioWorkletTelemetryReason =
     | 'enqueue'

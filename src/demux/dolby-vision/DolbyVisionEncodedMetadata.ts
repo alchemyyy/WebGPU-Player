@@ -9,8 +9,8 @@ import {
     type DolbyVisionEncodedFrameMetadata
 } from './DolbyVisionEncodedMetadataProtocol';
 import {
-    decodeDolbyVisionRPUSnapshot,
-    DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH
+    DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
+    readDolbyVisionRPUSnapshotHeader
 } from './DolbyVisionRPUParser';
 import { DOLBY_VISION_LAYER_PAIR_TOLERANCE_MICROSECONDS } from './DolbyVisionProfiles';
 import {
@@ -100,7 +100,7 @@ function getMetadataByteLength(encodedRPUs: readonly Uint8Array[], parsedRPUData
  * Such an RPU presents no EL, so EL data in its frame, as from a malformed Profile 5 or 8 stream that sets the EL flag or carries NAL 63, is discarded.
  */
 function hasOnlySingleLayerRPU(parsedRPUData: readonly ArrayBuffer[]): boolean {
-    return parsedRPUData.length === 1 && decodeDolbyVisionRPUSnapshot(parsedRPUData[0]).layerMode === 'single-layer';
+    return parsedRPUData.length === 1 && readDolbyVisionRPUSnapshotHeader(parsedRPUData[0]).layerMode === 'single-layer';
 }
 
 function discardEnhancementLayer(splitResult: DolbyVisionHEVCSplitResult): DolbyVisionHEVCSplitResult {
@@ -123,8 +123,7 @@ function getEnhancementLayerDisposition(
         throw new TypeError('A Dolby Vision enhancement access unit requires exactly one RPU');
     }
 
-    const snapshot = decodeDolbyVisionRPUSnapshot(parsedRPUData[0]);
-    switch (snapshot.layerMode) {
+    switch (readDolbyVisionRPUSnapshotHeader(parsedRPUData[0]).layerMode) {
         case 'fel':
             return 'discarded-fel';
         case 'mel':

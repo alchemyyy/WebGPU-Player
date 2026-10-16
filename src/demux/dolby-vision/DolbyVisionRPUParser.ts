@@ -33,6 +33,12 @@ const PACKED_COMPONENT_OFFSET = DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH
     + DOLBY_VISION_RPU_PACKED_NLQ_BYTE_LENGTH;
 const KNOWN_SCHEMA_FLAGS = 0x1FF;
 const MISSING_UNSIGNED_INTEGER = 0xFFFF_FFFF;
+// Byte offsets of the header words presentation checks
+const FLAGS_BYTE_OFFSET = 12;
+const PROFILE_BYTE_OFFSET = 20;
+const BASE_LAYER_BIT_DEPTH_BYTE_OFFSET = 48;
+const ENHANCEMENT_LAYER_BIT_DEPTH_BYTE_OFFSET = 52;
+const DISABLE_RESIDUAL_BYTE_OFFSET = 80;
 
 const FLAG_USED_PREVIOUS_MAPPING = 1 << 0;
 const FLAG_EXPLICIT_COLOR_METADATA = 1 << 1;
@@ -457,6 +463,40 @@ export function hasCompatibleDolbyVisionRPUSnapshotHeader(packedData: unknown): 
         && (flags & ~KNOWN_SCHEMA_FLAGS) === 0;
 }
 
+/** The header fields of a parser snapshot that presentation and the worker boundary check. */
+export type DolbyVisionRPUSnapshotHeader = Readonly<{
+    baseLayerBitDepth: number
+    disableResidual: boolean
+    enhancementLayerBitDepth: number
+    layerMode: DolbyVisionRPULayerMode
+    nlqActive: boolean
+    profile: number
+}>;
+
+/**
+ * Reads the header of a snapshot whose curves the worker's parser already validated, without decoding them again per frame.
+ * It still checks the byte length, schema, and parser revision, and that the flags agree with the profile.
+ */
+export function readDolbyVisionRPUSnapshotHeader(packedData: ArrayBuffer): DolbyVisionRPUSnapshotHeader {
+    if (!(packedData instanceof ArrayBuffer) || packedData.byteLength !== DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH) {
+        throw new TypeError('Dolby Vision RPU snapshot has an invalid byte length');
+    }
+    if (!hasCompatibleDolbyVisionRPUSnapshotHeader(packedData)) {
+        throw new TypeError('Dolby Vision RPU snapshot header is incompatible');
+    }
+    const view = new DataView(packedData);
+    const flags = view.getUint32(FLAGS_BYTE_OFFSET, true);
+    const profile = view.getUint32(PROFILE_BYTE_OFFSET, true);
+    return {
+        baseLayerBitDepth: view.getUint32(BASE_LAYER_BIT_DEPTH_BYTE_OFFSET, true),
+        disableResidual: view.getUint32(DISABLE_RESIDUAL_BYTE_OFFSET, true) !== 0,
+        enhancementLayerBitDepth: view.getUint32(ENHANCEMENT_LAYER_BIT_DEPTH_BYTE_OFFSET, true),
+        layerMode: validateSnapshotFlags(profile, flags).layerMode,
+        nlqActive: (flags & FLAG_NLQ_ACTIVE) !== 0,
+        profile
+    };
+}
+
 /** Validates and decodes one owned schema-versioned parser snapshot. */
 export function decodeDolbyVisionRPUSnapshot(packedData: ArrayBuffer): DolbyVisionRPUSnapshot {
     if (!(packedData instanceof ArrayBuffer) || packedData.byteLength !== DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH) {
@@ -467,10 +507,10 @@ export function decodeDolbyVisionRPUSnapshot(packedData: ArrayBuffer): DolbyVisi
     }
     const view = new DataView(packedData);
     const schemaVersion = view.getUint32(4, true);
-    const flags = view.getUint32(12, true);
+    const flags = view.getUint32(FLAGS_BYTE_OFFSET, true);
     const parserRevisionPrefix = view.getUint32(16, true);
 
-    const profile = view.getUint32(20, true);
+    const profile = view.getUint32(PROFILE_BYTE_OFFSET, true);
     const validatedFlags = validateSnapshotFlags(profile, flags);
 
     const components: DolbyVisionRPUComponentSummary[] = [];
@@ -501,11 +541,11 @@ export function decodeDolbyVisionRPUSnapshot(packedData: ArrayBuffer): DolbyVisi
     );
 
     return {
-        baseLayerBitDepth: view.getUint32(48, true),
+        baseLayerBitDepth: view.getUint32(BASE_LAYER_BIT_DEPTH_BYTE_OFFSET, true),
         coefficientLog2Denominator: view.getUint32(44, true),
         components,
-        disableResidual: view.getUint32(80, true) !== 0,
-        enhancementLayerBitDepth: view.getUint32(52, true),
+        disableResidual: view.getUint32(DISABLE_RESIDUAL_BYTE_OFFSET, true) !== 0,
+        enhancementLayerBitDepth: view.getUint32(ENHANCEMENT_LAYER_BIT_DEPTH_BYTE_OFFSET, true),
         explicitColorMetadata: validatedFlags.explicitColorMetadata,
         flags,
         layerMode: validatedFlags.layerMode,

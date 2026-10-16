@@ -26,7 +26,7 @@ import {
     isDolbyVisionDualLayerProfile,
     type DolbyVisionReconstructionProfile
 } from './PresentationInput';
-import { decodeDolbyVisionRPUSnapshot } from '../demux/dolby-vision/DolbyVisionRPUParser';
+import { readDolbyVisionRPUSnapshotHeader, type DolbyVisionRPUSnapshotHeader } from '../demux/dolby-vision/DolbyVisionRPUParser';
 import {
     getRawFormatBitDepth,
     isRawDolbyVisionVideoFrameFormat,
@@ -1043,9 +1043,10 @@ function getSingleLayerDolbyVisionRPUData(
         return createRPUFailure(`rpu-count: ${metadata.parsedRPUData.length}, expected 1`);
     }
     const packedRPUData = metadata.parsedRPUData[0];
-    let snapshot: ReturnType<typeof decodeDolbyVisionRPUSnapshot>;
+    // The worker's parser validated the whole snapshot, so each frame reads only its header
+    let snapshot: DolbyVisionRPUSnapshotHeader;
     try {
-        snapshot = decodeDolbyVisionRPUSnapshot(packedRPUData);
+        snapshot = readDolbyVisionRPUSnapshotHeader(packedRPUData);
     } catch (error) {
         return createRPUFailure(`rpu: ${getErrorMessage(error)}`);
     }
@@ -1102,9 +1103,10 @@ function getDualLayerDolbyVisionRPUData(
         return createRPUFailure('enhancement-layer: decoded EL without EL VCL');
     }
     const packedRPUData = metadata.parsedRPUData[0];
-    let snapshot: ReturnType<typeof decodeDolbyVisionRPUSnapshot>;
+    // The worker's parser validated the whole snapshot, so each frame reads only its header
+    let snapshot: DolbyVisionRPUSnapshotHeader;
     try {
-        snapshot = decodeDolbyVisionRPUSnapshot(packedRPUData);
+        snapshot = readDolbyVisionRPUSnapshotHeader(packedRPUData);
     } catch (error) {
         return createRPUFailure(`rpu: ${getErrorMessage(error)}`);
     }

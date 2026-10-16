@@ -3,7 +3,11 @@ import { CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE } from 'webgpu-player/audio/CustomAudio
 import CustomDecodeNativeAudioBridge from 'webgpu-player/audio/native/CustomDecodeNativeAudioBridge';
 import { selectCustomAudioOutputChannelCountForMaximum } from 'webgpu-player/audio/NativeMultichannelAudioOutput';
 import { prewarmBrowserAudioContext, type BrowserAudioContextPrewarmLease } from 'webgpu-player/audio/output/BrowserAudioContextPrewarm';
-import { createBrowserCustomAudioOutputFactory } from 'webgpu-player/audio/output/BrowserCustomAudioOutput';
+import {
+    createBrowserCustomAudioOutputFactory,
+    type BrowserCustomAudioOutputOptions
+} from 'webgpu-player/audio/output/BrowserCustomAudioOutput';
+import { getWebGPUAudioOutputManager } from 'webgpu-player/audio/output/WebGPUAudioOutputManager';
 import { createDefaultAudioDownmixSettings } from 'webgpu-player/audio/processing/CustomAudioDownmix';
 import { DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM } from 'webgpu-player/audio/processing/CustomAudioDownmixAlgorithm';
 import { probeCustomDecodeCapabilities } from 'webgpu-player/capability/CustomDecodeCapabilities';
@@ -115,6 +119,8 @@ type FailureLayer = SandboxFailure['layer'];
 // The play method the eligibility accepts; the sandbox reads the file directly
 const DIRECT_PLAY_METHOD = 'DirectPlay';
 const TELEMETRY_INTERVAL_MILLISECONDS = 250;
+// The diagnostics panel shows the output's peak, RMS, and clipping, which the audio thread computes only on request
+const SANDBOX_AUDIO_OUTPUT_OPTIONS: BrowserCustomAudioOutputOptions = Object.freeze({ analyzeSignal: true });
 const START_TIME = requireMicroseconds(0);
 const NO_MEDIA_PLAYING_DETAIL = 'no media playing';
 const NO_MEDIA_OPEN_DETAIL = 'no media open';
@@ -493,7 +499,9 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
         const reference: { controller: CustomPlaybackController | null } = { controller: null };
         const hasAudio = eligibility.audioTrackIndex !== null;
         const controller = new CustomPlaybackController({
-            audioOutputFactory: hasAudio ? createBrowserCustomAudioOutputFactory(audioPrewarm) : undefined,
+            audioOutputFactory: hasAudio ?
+                createBrowserCustomAudioOutputFactory(audioPrewarm, getWebGPUAudioOutputManager(), SANDBOX_AUDIO_OUTPUT_OPTIONS) :
+                undefined,
             eventHandler: (event: CustomPlaybackControllerEvent): void => {
                 if (reference.controller) {
                     handleControllerEvent(current, reference.controller, event);

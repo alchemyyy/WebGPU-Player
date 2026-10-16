@@ -138,6 +138,9 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Each linear piece is packed as the order-1 polynomial between its pivots' values.
   A linear piece next to an MMR piece is rejected: an MMR piece maps all three components together, so it has no scalar value to rise from or end on.
   The revision prefix names the vendored dovi_tool commit; the schema version is what a snapshot's readers check.
+- Per frame, a snapshot's header is read, not the whole snapshot (10-15).
+  The worker's parser validates each whole snapshot once, curves and MMR data included, when it parses the RPU.
+  The worker boundary, the EL classification, and the presenter's single- and dual-layer checks used to decode the whole 3,232 bytes again for every frame to read five header fields; `readDolbyVisionRPUSnapshotHeader` reads only those, still checking the length, the schema, the revision, and that the flags agree with the profile.
 - Mediabunny's Dolby Vision sample entries are mapped in the engine (10-06).
   Mediabunny 1.52.2 parses `dvh1`, `dvhe`, `dva1`, `dvav`, and `dav1` but gives them no codec.
   `ISOBaseMediaDolbyVisionSampleEntry.ts` writes the wrapped codec into the track's internal info, contained the way `MatroskaVFWVideoConfiguration.ts` is, so Mediabunny itself stays unmodified.
@@ -761,6 +764,9 @@ These were settled on Firefox 157 on Windows.
   The page now creates the channel, hands the producer's end over with `attach-audio-output` or `resync-audio`, and learns each chunk's place and length from `audio-progress`, which readiness, telemetry, and the end-of-stream drain read.
   `WorkletPCMProducer` owns the credit window and checks each chunk as the page's bridge did, so a gap, an overlap, or an overflow still fails as `audio-output-failed`.
   The worklet returns each played chunk's buffers, and `PCMChannelPool` lends them to the output stage for later chunks.
+- The worklet computes signal statistics only when a host shows them (10-15).
+  Its peak, RMS, clipping, and non-finite counts took a finite check, an absolute value, a maximum, and a square for every output sample on the audio rendering thread, and only the sandbox's diagnostics read them.
+  `createBrowserCustomAudioOutputFactory` takes `{ analyzeSignal: true }` to turn them on; every output sets its choice on each worklet it leases, since the pool hands one node to the next session, and telemetry carries `signal` only while they are on.
 - An audio decode worker decodes and renders decoded PCM (10-09).
   The worker spawns `CustomAudioDecode.worker.js` at its first decoded PCM start and keeps it for its life; terminating the worker terminates it too.
   It runs audio decoder packages (the bundled E-AC-3, DTS, and TrueHD decoders until 10-13), the downmix, the output stage, and the producer, so video work in the worker never delays audio, and audio decoding never delays video.

@@ -56,6 +56,8 @@ export interface AudioWorkletOutputController {
     seek: (mediaTimeMicroseconds: Microseconds) => number
     setMuted: (muted: boolean) => void
     setPlaying: (playing: boolean) => void
+    /** Turns the per-sample signal statistics in telemetry on or off; they are off on a new output */
+    setSignalAnalysis: (enabled: boolean) => void
     setVolume: (volume: number) => void
 }
 
@@ -288,6 +290,12 @@ export default class AudioWorkletController implements AudioWorkletOutputControl
         this.requireActive();
         this.muted = muted;
         this.postGain();
+    }
+
+    public setSignalAnalysis(enabled: boolean): void {
+        this.requireActive();
+        const message: CustomAudioWorkletMessage = { enabled, type: 'signal-analysis' };
+        this.node.port.postMessage(message);
     }
 
     /** Subscribes to processor acknowledgements and bounded-queue telemetry. */
