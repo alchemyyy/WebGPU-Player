@@ -5,7 +5,9 @@ Each vector is muxed by FFmpeg's MPEG-TS muxer, and its M2TS twin by the same mu
 Together they cover the stream types Mediabunny's demuxer reads beyond H.264 and HEVC:
 - MPEG-1 video (stream type 0x01) beside MP3, an FFmpeg encode, in MPEG-TS alone;
 - MPEG-2 video (stream type 0x02) with B-frames beside AC-3, an FFmpeg encode;
-- VC-1 Advanced profile (stream type 0xEA with its VC-1 registration descriptor), remuxed from the committed qualification vector, since FFmpeg has no VC-1 encoder.
+- VC-1 Advanced profile (stream type 0xEA with its VC-1 registration descriptor), remuxed from the committed qualification vector, since FFmpeg has no VC-1 encoder;
+- DTS core (stream type 0x82) in M2TS alone, as a Blu-ray program carries it, remuxed from the committed DTS test vector, since FFmpeg's DTS encoder is experimental.
+  In plain MPEG-TS FFmpeg writes 0x82 without the registration that names it DTS, so FFprobe, and so Jellyfin, read that stream as MP3.
 
 The encoders' bytes depend on the FFmpeg build, so the generator refuses any but the pinned one, and an existing vector is only compared, never replaced.
 Before writing, it checks each file's streams with FFprobe: the codec and the packet count.
@@ -21,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Sequence
 
-from engine_layout import CODEC_VECTOR_ASSETS_DIRECTORY, QUALIFICATION_VECTORS_DIRECTORY
+from engine_layout import CODEC_VECTOR_ASSETS_DIRECTORY, QUALIFICATION_VECTORS_DIRECTORY, TEST_VECTORS_DIRECTORY
 from generated_output import GeneratedOutputError, install_or_check_output
 from media_tools import (
     MediaTools,
@@ -40,6 +42,10 @@ VC1_SOURCE_FRAME_RATE: Final = "24"
 VC1_FRAME_COUNT: Final = 12
 START_CODE_PREFIX: Final = b"\x00\x00\x01"
 VC1_FRAME_START_CODE: Final = b"\x00\x00\x01\x0d"
+DTS_SOURCE_PATH: Final = TEST_VECTORS_DIRECTORY / "dts" / "core_51_24_48_768_0.mka"
+DTS_BASE_NAME: Final = "dts-core"
+DTS_CODEC_NAME: Final = "dts"
+DTS_PACKET_COUNT: Final = 6
 
 # 192x192, like the other vectors, so hardware decoders with a minimum coded size accept it
 VIDEO_SOURCE: Final = "testsrc2=size=192x192:rate=24:duration=0.5"
@@ -177,20 +183,46 @@ def remux_VC1_vector(tools: MediaTools, elementary_stream_path: Path, extension:
     ])
 
 
-def verify_vector(tools: MediaTools, file_name: str, path: Path, codec_names: Sequence[str], video_frame_count: int) -> None:
-    """Requires FFprobe to read the vector's streams and every video frame."""
+def remux_DTS_vector(tools: MediaTools, output_path: Path) -> None:
+    """Remuxes the DTS test vector's frames into M2TS."""
 
+    execute_tool(tools.FFmpeg_path, [
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(DTS_SOURCE_PATH),
+        "-map", "0:a:0", "-c", "copy",
+        "-fflags", "+bitexact",
+        *M2TS_MODE_ARGUMENTS,
+        "-f", "mpegts", str(output_path),
+    ])
+
+
+def probe_streams(tools: MediaTools, path: Path) -> list[dict[str, object]]:
     probe = json.loads(execute_tool(tools.FFprobe_path, [
         "-hide_banner", "-loglevel", "error", "-count_packets",
         "-show_entries", "stream=codec_type,codec_name,nb_read_packets",
         "-of", "json", str(path),
     ]))
-    streams = probe["streams"]
+    return probe["streams"]
+
+
+def verify_vector(tools: MediaTools, file_name: str, path: Path, codec_names: Sequence[str], video_frame_count: int) -> None:
+    """Requires FFprobe to read the vector's streams and every video frame."""
+
+    streams = probe_streams(tools, path)
     require_equal([stream["codec_name"] for stream in streams], list(codec_names), f"{file_name} codecs")
     video_stream = streams[0]
     require_equal(video_stream["codec_type"], "video", f"{file_name} first stream type")
     if int(video_stream["nb_read_packets"]) != video_frame_count:
         raise VectorGenerationError(f"{file_name} holds {video_stream['nb_read_packets']} video packets")
+
+
+def verify_audio_vector(tools: MediaTools, file_name: str, path: Path, codec_name: str, packet_count: int) -> None:
+    """Requires FFprobe to read the vector's one audio stream and every packet of it."""
+
+    streams = probe_streams(tools, path)
+    require_equal([stream["codec_name"] for stream in streams], [codec_name], f"{file_name} codecs")
+    if int(streams[0]["nb_read_packets"]) != packet_count:
+        raise VectorGenerationError(f"{file_name} holds {streams[0]['nb_read_packets']} audio packets")
 
 
 def install_vector(path: Path, file_name: str, *, check: bool) -> None:
@@ -218,6 +250,11 @@ def main(command_arguments: Sequence[str] | None = None) -> int:
                 remux_VC1_vector(tools, Path(temporary_directory) / f"{VC1_BASE_NAME}.vc1", extension, remuxed_path)
                 verify_vector(tools, file_name, remuxed_path, ("vc1",), VC1_FRAME_COUNT)
                 install_vector(remuxed_path, file_name, check=arguments.check)
+            file_name = DTS_BASE_NAME + M2TS_EXTENSION
+            remuxed_path = Path(temporary_directory) / file_name
+            remux_DTS_vector(tools, remuxed_path)
+            verify_audio_vector(tools, file_name, remuxed_path, DTS_CODEC_NAME, DTS_PACKET_COUNT)
+            install_vector(remuxed_path, file_name, check=arguments.check)
     except (GeneratedOutputError, ToolError, VectorGenerationError) as error:
         print(f"generate_transport_stream_demux_vectors: {error}", file=sys.stderr)
         return 1

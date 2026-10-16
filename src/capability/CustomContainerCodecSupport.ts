@@ -137,7 +137,8 @@ export const CUSTOM_CONTAINER_CODEC_RULES: readonly CustomContainerCodecRule[] =
         videoCodecs: Object.freeze([ 'vp8', 'vp9', 'av1' ] as const)
     }),
     Object.freeze({
-        audioCodecs: Object.freeze([ 'aac', 'mp3', 'ac3', 'eac3' ] as const),
+        // The fork's demuxer reads DTS by its stream types and descriptors, a Blu-ray program's DTS-HD among them
+        audioCodecs: Object.freeze([ 'aac', 'mp3', 'ac3', 'eac3', 'dts' ] as const),
         containerAliases: Object.freeze([]),
         profileContainers: Object.freeze([ 'ts', 'm2ts', 'mts' ]),
         // The fork's demuxer reads MPEG-1, MPEG-2, and VC-1 streams, which the worker gives their first sequence header's extradata
