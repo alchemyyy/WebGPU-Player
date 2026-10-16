@@ -32,7 +32,6 @@ import {
     startWorkerTimingTrace,
     stopWorkerTimingTrace
 } from '../TimingTrace';
-import { markHandledDecodeFailure, suppressHandledDecodeFailureRejections } from './HandledDecodeFailures';
 import {
     DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
     type CustomAudioDownmixAlgorithm
@@ -407,8 +406,6 @@ const workerScope = self as unknown as WorkerScope;
 let currentRun: DecodeRun | null = null;
 // Settles once the latest run has posted `stopped`, so runs never overlap in this worker
 let previousRunCompletion: Promise<void> = Promise.resolve();
-// Mediabunny never closes a custom decoder whose call failed, so a worker that suppressed such a failure asks to be replaced
-let unclosedDecoderSuspected = false;
 // The audio decode worker this worker spawns for its first decoded PCM run and keeps for every later one; a lost one asks for this worker's replacement
 let audioDecodeWorkerClient: AudioDecodeWorkerClient | null = null;
 
@@ -3195,7 +3192,6 @@ async function runVideoAttempt(
             }, outputEvents ? [ outputEvents.buffer ] : []);
         }
     } catch (error) {
-        markHandledDecodeFailure(error);
         // Failures while a replaced attempt unwinds are expected and discarded
         if (run.cancelled || (!run.videoAttemptCancelled && !isCodecReclamationError(error))) {
             throw error;
@@ -3594,7 +3590,6 @@ async function streamAudioAttempts(
         try {
             await streamPreparedAudio(run, attemptRequest, attemptTrack);
         } catch (error) {
-            markHandledDecodeFailure(error);
             // Failures while a replaced attempt unwinds are expected and discarded
             if (run.cancelled || !run.audioAttemptCancelled) {
                 throw error;
@@ -3722,7 +3717,6 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
             postResponse({ generation: run.generation, type: 'ended' });
         }
     } catch (error) {
-        markHandledDecodeFailure(error);
         if (!run.cancelled || reportDecodeStreamFailure) {
             postResponse({
                 failureKind: classifyFailure(error),
@@ -3753,9 +3747,9 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
     }
 }
 
-/** Whether a decoder whose call failed may still be open, or the audio decode worker was lost; either way a fresh worker serves the next run. */
+/** Whether the audio decode worker was lost, so a fresh worker serves the next run. */
 function isWorkerReplacementRequired(): boolean {
-    return unclosedDecoderSuspected || (audioDecodeWorkerClient !== null && audioDecodeWorkerClient.failure !== null);
+    return audioDecodeWorkerClient !== null && audioDecodeWorkerClient.failure !== null;
 }
 
 function createDecodeRun(request: Extract<DecodeWorkerRequest, { type: 'start' }>): DecodeRun {
@@ -3960,9 +3954,6 @@ function handleRequest(requestValue: unknown): void {
 
 workerScope.addEventListener('message', event => {
     handleRequest(event.data);
-});
-suppressHandledDecodeFailureRejections(self, (): void => {
-    unclosedDecoderSuspected = true;
 });
 
 /* eslint-enable no-restricted-globals */

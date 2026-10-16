@@ -481,7 +481,7 @@ export type DecodeWorkerErrorResponse = {
  */
 export type DecodeWorkerStoppedResponse = {
     generation: number
-    /** Asks the session not to reuse the worker, because a decoder whose call failed was left unclosed */
+    /** Asks the session not to reuse the worker, because its audio decode worker was lost */
     replaceWorker?: boolean
     type: 'stopped'
 };

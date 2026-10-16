@@ -97,7 +97,6 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 - `AudioDecodeWorkerClient.ts` [worker]: the decode worker's side: the audio decode worker's spawn, each attempt's open, input credits, outcome, and close, and the packet and sample batch builders.
   A worker that fails to start, throws, or answers out of contract fails every attempt as `audio-output-failed`.
 - `AudioDecodeWorkerProtocol.ts`: the messages between the two workers, their validators, the batch shapes and their transfers, and the batch and credit constants (4 batches, 40 ms or 64 inputs).
-- `HandledDecodeFailures.ts` [worker]: marks the failures the worker catches, so the duplicate rejection Mediabunny leaves behind is not reported as unhandled, and tells the worker when it suppressed one, because the failed decoder stays open.
 - `DecodeWorkerProtocol.ts`: messages, validators, credit constants (4 frames, 2 raw buffers, 8 GPU decode packets, 8 audio samples), and the backend and output literals.
 - `ConcurrentDecodeStreams.ts`: concurrent decode streams that cancel each other on the first failure and all drain before the worker reports that the generation stopped.
 - `MediaClock.ts` [main]: the generation-tagged clock; `synchronize` re-anchors it.
@@ -110,7 +109,7 @@ All worker code unless marked.
 - `CustomDecodeMediaSource.ts` [main and worker]: the media a playback reads, a URL that the worker fetches in byte ranges, with the host's pattern for the paths whose cross-origin 206 hides `Content-Range`, or a `File` that crosses to it by structured clone, and its validator.
 - `MediaFetchPolicy.ts`: retries only transport errors and 408, 429, and 5xx.
 - `HTTPRangeResponse.ts`: validates Range responses, a cross-origin 206 that hides `Content-Range` included, from the paths the source's pattern names.
-- `CustomDecodeInputFormats.ts`: Mediabunny's input formats with Matroska content decoding scoped to frames, so header-stripped laced audio demuxes intact, and Motion JPEG 2000 added, whose JP2 signature box precedes its ftyp.
+- `CustomDecodeInputFormats.ts`: Mediabunny's input formats with Motion JPEG 2000 added, whose JP2 signature box precedes its ftyp.
 - `MatroskaBlockAdditions.ts`: wraps Mediabunny's Matroska and WebM formats so their demuxers keep every BlockAdditional but alpha, and reads a packet's additions, such as VP9 HDR10+.
 - `ContainerVideoScan.ts`: a video track's scan as its container declares it: Matroska's FlagInterlaced and FieldOrder, recorded while Mediabunny's demuxer parses the track entry, or an ISO base media sample entry's `fiel` box.
 - `CustomDecodeTrackSelection.ts`: track lookup by ordinal within one media type.

@@ -22,8 +22,6 @@ const MEDIA_FILES = new Map<string, Uint8Array>([
 ]);
 const FIRST_RUN_GENERATION = 11;
 const SECOND_RUN_GENERATION = 12;
-const UNHANDLED_REJECTION_EVENT = 'unhandledrejection';
-const LEFT_OPEN_DECODER_FAILURE_MESSAGE = 'A custom decoder call failed';
 
 beforeEach(() => {
     vi.resetModules();
@@ -41,14 +39,6 @@ function getResponseTypes(responses: readonly DecodeWorkerResponse[], generation
         }
     }
     return responseTypes;
-}
-
-/** Dispatches the rejection Mediabunny leaves when it skips a failed decoder's close() */
-function dispatchUnhandledRejection(scope: EventTarget, reason: unknown): Event {
-    const event = new Event(UNHANDLED_REJECTION_EVENT, { cancelable: true });
-    Object.defineProperty(event, 'reason', { value: reason });
-    scope.dispatchEvent(event);
-    return event;
 }
 
 describe('the playback worker across generations', () => {
@@ -111,25 +101,6 @@ describe('the playback worker across generations', () => {
         // The replaced run never opened its input, so only the second run created a decoder
         expect(getResponseTypes(workerScope.responses, FIRST_RUN_GENERATION)).toEqual([ 'stopped' ]);
         expect(FakeVideoDecoder.instances).toHaveLength(1);
-    });
-
-    it('asks to be replaced once a failed decoder was left open', async () => {
-        const workerScope = await startDecodeWorker(MEDIA_FILES);
-        // The registry the worker module consults, since both import the same module instance
-        const { markHandledDecodeFailure } = await import('webgpu-player/pipeline/HandledDecodeFailures');
-        const firstResponses = await decodeToEnd(workerScope, createWorkerStartRequest(LIFECYCLE_VECTOR.fileName, {
-            generation: FIRST_RUN_GENERATION
-        }));
-        expect(firstResponses.at(-1)).toEqual({ generation: FIRST_RUN_GENERATION, type: 'stopped' });
-
-        const leftOpenDecoderFailure = new Error(LEFT_OPEN_DECODER_FAILURE_MESSAGE);
-        markHandledDecodeFailure(leftOpenDecoderFailure);
-        expect(dispatchUnhandledRejection(workerScope, leftOpenDecoderFailure).defaultPrevented).toBe(true);
-
-        const secondResponses = await decodeToEnd(workerScope, createWorkerStartRequest(LIFECYCLE_VECTOR.fileName, {
-            generation: SECOND_RUN_GENERATION
-        }));
-        expect(secondResponses.at(-1)).toEqual({ generation: SECOND_RUN_GENERATION, replaceWorker: true, type: 'stopped' });
     });
 });
 

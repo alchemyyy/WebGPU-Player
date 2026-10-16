@@ -186,11 +186,13 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   `CustomDecodeInputFormats.ts` gives the worker a Matroska format whose demuxer splits such a block as stored and then restores each frame's bytes, contained as `MatroskaBlockAdditions.ts` is, which wraps it in turn.
   When the internals differ, demuxing proceeds untouched with one console warning, and `test/demux/CustomDecodeInputFormats.test.ts` fails.
   Its last case fails once Mediabunny itself reads such blocks correctly, and the replacement can then go.
+  The fork splits a laced block as stored and restores each frame's bytes itself (branch `fix-matroska-laced-header-stripping`), so the replacement format and its last case left; `test/demux/CustomDecodeInputFormats.test.ts` still reads every lacing through the worker's formats (10-16).
 - A custom decoder's failure is reported once (10-09).
   After a Mediabunny custom decoder rejects, Mediabunny 1.52.2 queues the decoder's `close()` behind the failed call without a handler, so the same error resurfaces as an unhandled rejection and the decoder is never closed.
   The worker marks every failure it catches (`HandledDecodeFailures.ts`) and prevents the unhandled-rejection report of a marked error only, so any other unhandled rejection is still reported.
   The unclosed decoder ends with its worker: the session replaces a worker whose run failed, and a worker that suppressed such a rejection asks for its replacement in its next `stopped`.
   Mediabunny 1.61.5 still chains `close()` with `void` behind the rejected call (10-15).
+  The fork closes a custom decoder even after one of its calls failed, and reports a failing `close()` as a decoder error (branch `fix-custom-decoder-close-after-failure`), so `HandledDecodeFailures.ts` and the worker's replacement for an unclosed decoder left; a run's failure still retires its worker (10-16).
 - The bundled HEVC decoder was FFmpeg's (10-10), until the CPU decoders left (10-13).
   hevc.js (`@hevcjs/core`), the decoder before it, rejects the first slice of every stream that enables tiles (`tiles_enabled_flag`), and Ultra HD Blu-ray encodes commonly use tiles, as ATEME Titan's do.
   Such sources failed on Firefox on Windows, which always took the bundled route, and fell back to a server transcode.
@@ -642,6 +644,7 @@ These were settled on Firefox 157 on Windows.
   An overlap stalled the handoff while the bundled HEVC decoders lived, because a stopping run waited for every one in its worker, the next run's included, before it acknowledged; runs still never overlap, because a stopping run releases its decoders and audio attempts first (10-13).
   A worker is replaced rather than reused after a generation fails, a message fails validation, the worker crashes, or a retired run does not acknowledge within the 1 s stop bound.
   It is also replaced when a run's `stopped` carries `replaceWorker`, which the worker sets once it suppressed the rejection of a custom decoder that Mediabunny left open.
+  Since the fork closes such a decoder (10-16), the worker sets `replaceWorker` only once its audio decode worker was lost.
   A start on another video decoder backend gets a new worker too, because Mediabunny kept a decoder registration, such as the bundled HEVC adapter that `canDecode()` consulted, for the worker's life; since the CPU decoders left (10-13), the new worker keeps what one backend set up, such as a package parser's workers, from outliving it.
   Each run still opens its own input, so the read cache does not outlive a seek.
   After a run ends on its own, its generation stays current while the worker idles, so a native-media element that plays out after decode still ends the session.
@@ -826,6 +829,7 @@ These were settled on Firefox 157 on Windows.
 - Mediabunny comes from the user's fork, vendored as a submodule and aliased, not installed (10-15).
   The fork, [alchemyyy/mediabunny](https://github.com/alchemyyy/mediabunny), is Mediabunny 1.61.5 with six upstream pull requests merged, each in a merge commit named after it with its authors' commits kept: #155 (AVI), #156 (MPEG-4 Part 2), #298 (MP4 chapters), #409 (AIFF), #443 (ASS subtitle muxing), and #495 (`getUnsupportedFeatures`).
   On top of them the fork times AVI audio chunks as FFmpeg's `get_duration` does, and demuxes MPEG-1, MPEG-2, and VC-1 from MPEG-TS and M2TS.
+  Fixes meant for upstream are cut from upstream's `main`, one branch per bug, and merged into the fork's `main` in a merge commit named after the branch: `fix-matroska-laced-header-stripping` and `fix-custom-decoder-close-after-failure` (10-16).
   `vendor/mediabunny` pins the fork's commit as a shallow submodule, the way the add-on pins its hls.js fork.
   A `file:` dependency would have installed the fork's development dependencies into the host's lockfile, so nothing installs it: the tsconfig `paths` entry maps `mediabunny` to the folder for tsc, esbuild, and Vitest, the sandbox's Vite config and the host's webpack and Vitest configs alias it, and both ESLint configs ignore the import.
   `scripts/mediabunny.mjs` builds the fork's `dist/` with its own pinned toolchain (`npm ci --ignore-scripts` in the folder, then its `tsc` and import-extension pass), stamps the commit in `dist/webgpu-player-build.json`, and skips the build while the stamp matches; the engine's typecheck, test, lint, and build scripts run it first.
