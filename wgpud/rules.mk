@@ -90,10 +90,10 @@ AUDIO_MODULE_EXPORTS := _audio_decoder_abi_version _audio_decoder_create _audio_
 	_audio_decoder_channel_mask _audio_decoder_channel_pointer _audio_decoder_timestamp _audio_decoder_attribute \
 	_audio_decoder_clear _audio_decoder_error_code _audio_decoder_error_value
 AUDIO_MODULE_INCLUDES := -I$(DECODERS)/include
-# FFmpeg audio modules optimize for size with SIMD
-FFMPEG_AUDIO_CFLAGS := -DNDEBUG -Oz -flto -msimd128
-FFMPEG_AUDIO_LDFLAGS := -Oz -flto
-FFMPEG_AUDIO_LINK_TAIL := -msimd128 -flto -Oz -Wl,--no-entry
+# FFmpeg audio modules optimize for speed with SIMD, as the DTS module does
+FFMPEG_AUDIO_CFLAGS := -DNDEBUG -O3 -flto -msimd128
+FFMPEG_AUDIO_LDFLAGS := -O3 -flto
+FFMPEG_AUDIO_LINK_TAIL := -msimd128 -flto -O3 -Wl,--no-entry
 
 # Machine paths map to fixed names, so a build embeds no checkout path
 native_path = $(shell cygpath -m '$(1)' 2>/dev/null || printf '%s' '$(1)')
