@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     ALL_FORMATS,
     AudioSample,
-    AudioSampleSink,
+    AudioSampleCursor,
     AudioSampleSource,
     BufferSource,
     BufferTarget,
@@ -67,7 +67,7 @@ async function createPCMVector(codec: AudioCodec): Promise<ArrayBuffer> {
 
 describe('Mediabunny PCM audio decode integration', () => {
     it.each(MEDIABUNNY_PCM_DECODER_CODECS)(
-        'round-trips %s through the public MOV demux and AudioSampleSink path',
+        'round-trips %s through the public MOV demux and AudioSampleCursor path',
         async codec => {
             // Mediabunny 1.61 counts its own mu-law and A-law decoders in canDecode(), so nothing is registered first
             const vector = await createPCMVector(codec);
@@ -86,19 +86,15 @@ describe('Mediabunny PCM audio decode integration', () => {
                 expect(await track.getSampleRate()).toBe(SAMPLE_RATE);
                 expect(await track.canDecode()).toBe(true);
 
-                const sink = new AudioSampleSink(track);
+                await using cursor = new AudioSampleCursor(track);
                 const outputSamples: number[] = [];
-                for await (const decodedSample of sink.samples()) {
-                    try {
-                        const channel = new Float32Array(decodedSample.numberOfFrames);
-                        decodedSample.copyTo(channel, {
-                            format: 'f32-planar',
-                            planeIndex: 0
-                        });
-                        outputSamples.push(...channel);
-                    } finally {
-                        decodedSample.close();
-                    }
+                for await (const decodedSample of cursor) {
+                    const channel = new Float32Array(decodedSample.numberOfFrames);
+                    decodedSample.copyTo(channel, {
+                        format: 'f32-planar',
+                        planeIndex: 0
+                    });
+                    outputSamples.push(...channel);
                 }
 
                 expect(outputSamples).toHaveLength(EXPECTED_SAMPLES.length);

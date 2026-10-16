@@ -1,4 +1,4 @@
-import type { EncodedPacket, EncodedPacketSink } from 'mediabunny';
+import type { EncodedPacket, PacketReader } from 'mediabunny';
 
 import { microsecondsToSeconds, type Microseconds } from '../MediaTime';
 
@@ -6,7 +6,7 @@ import { microsecondsToSeconds, type Microseconds } from '../MediaTime';
 export const DTS_SEEK_PREROLL_MICROSECONDS = 1_000_000;
 export const TRUEHD_MAJOR_SYNC_PREROLL_MICROSECONDS = 1_000_000;
 
-export type AudioStartPacketSink = Pick<EncodedPacketSink, 'getFirstPacket' | 'getPacket'>;
+export type AudioStartPacketReader = Pick<PacketReader, 'getFirst' | 'getAt'>;
 
 /** Returns the time an attempt demuxes from: its start less a decoder's lead, and never before zero. */
 export function getAudioPrerollTimeMicroseconds(
@@ -22,12 +22,12 @@ export function getAudioPrerollTimeMicroseconds(
  * A lookup at or before zero therefore goes straight to the first packet, and a later lookup falls back to it only when nothing precedes the lookup time.
  */
 export async function getAudioStartPacket(
-    packetSink: AudioStartPacketSink,
+    packetReader: AudioStartPacketReader,
     lookupTimeMicroseconds: Microseconds
 ): Promise<EncodedPacket | null> {
     if (lookupTimeMicroseconds <= 0) {
-        return packetSink.getFirstPacket();
+        return packetReader.getFirst();
     }
-    const lookupPacket = await packetSink.getPacket(microsecondsToSeconds(lookupTimeMicroseconds));
-    return lookupPacket ?? packetSink.getFirstPacket();
+    const lookupPacket = await packetReader.getAt(microsecondsToSeconds(lookupTimeMicroseconds));
+    return lookupPacket ?? packetReader.getFirst();
 }

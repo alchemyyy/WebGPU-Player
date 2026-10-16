@@ -1,12 +1,10 @@
 /* eslint-disable no-restricted-globals */
 import {
-    AudioSampleSink,
     AviInputFormat,
     BlobSource,
-    EncodedPacketSink,
     Input,
+    PacketReader,
     UrlSource,
-    VideoSampleSink,
     type AudioSample,
     type AudioCodec,
     type EncodedPacket,
@@ -19,6 +17,7 @@ import {
 
 import { microsecondsToSeconds, secondsToMicroseconds, type Microseconds } from '../MediaTime';
 import { hasIncompleteAVIIndex } from '../demux/AVIIndexCoverage';
+import { iterateAudioSamples, iterateTrackPackets, iterateVideoSamples } from '../demux/TrackIteration';
 import { findUnsupportedTrackFeature } from '../demux/UnsupportedTrackFeatures';
 import { getTransportStreamVideoCodec, readTransportStreamVideoDecoderDescription } from '../demux/mpeg/MPEGTransportStreamVideoConfiguration';
 import { isDolbyVisionDualLayerProfile } from '../demux/dolby-vision/DolbyVisionProfiles';
@@ -198,11 +197,7 @@ import {
     MATROSKA_MPEG2_CODEC_ID,
     readMatroskaMPEGVideoDecoderDescription
 } from '../demux/mpeg/MatroskaMPEGVideoConfiguration';
-import {
-    createMatroskaBlockAdditionReader,
-    withMatroskaBlockAdditions,
-    type MatroskaBlockAddition
-} from '../demux/MatroskaBlockAdditions';
+import { readMatroskaBlockAdditions, type MatroskaBlockAddition } from '../demux/MatroskaBlockAdditions';
 import { readContainerVideoScan, withMatroskaVideoFieldOrder } from '../demux/ContainerVideoScan';
 import { getScanFrameFields, type VideoFrameFields } from '../decode/video/VideoFields';
 import {
@@ -982,7 +977,7 @@ async function prepareFocusedVideoTrack(input: FocusedVideoTrackInput): Promise<
 
 /** Reads the packets of a static HDR scan from the first one, within the scan's unit and byte bounds. */
 async function readStaticHDRMetadataScanUnits(
-    packetSink: EncodedPacketSink,
+    packetReader: PacketReader,
     firstPacket: EncodedPacket | null,
     run: DecodeRun
 ): Promise<Uint8Array[]> {
@@ -999,7 +994,7 @@ async function readStaticHDRMetadataScanUnits(
         if (scannedByteLength >= STATIC_HDR_METADATA_SCAN_MAXIMUM_BYTE_LENGTH) {
             break;
         }
-        packet = await packetSink.getNextPacket(packet, STATIC_HDR_METADATA_PACKET_OPTIONS);
+        packet = await packetReader.getNext(packet, STATIC_HDR_METADATA_PACKET_OPTIONS);
     }
     return units;
 }
@@ -1014,10 +1009,10 @@ async function readHEVCStaticHDRMetadata(
         return null;
     }
 
-    const packetSink = new EncodedPacketSink(videoTrack);
+    const packetReader = new PacketReader(videoTrack);
     const accessUnits = await readStaticHDRMetadataScanUnits(
-        packetSink,
-        await packetSink.getFirstPacket(STATIC_HDR_METADATA_PACKET_OPTIONS),
+        packetReader,
+        await packetReader.getFirst(STATIC_HDR_METADATA_PACKET_OPTIONS),
         run
     );
     return scanHEVCStaticHDRMetadata(accessUnits, getHEVCNALFormat(decoderConfig));
@@ -1036,12 +1031,12 @@ async function readAV1StaticHDRMetadata(
         return null;
     }
 
-    const packetSink = new EncodedPacketSink(videoTrack);
-    const firstPacket = await packetSink.getFirstPacket(STATIC_HDR_METADATA_PACKET_OPTIONS);
+    const packetReader = new PacketReader(videoTrack);
+    const firstPacket = await packetReader.getFirst(STATIC_HDR_METADATA_PACKET_OPTIONS);
     if (!firstPacket || !hasAV1PQSequenceHeader(firstPacket.data)) {
         return null;
     }
-    return scanAV1StaticHDRMetadata(await readStaticHDRMetadataScanUnits(packetSink, firstPacket, run));
+    return scanAV1StaticHDRMetadata(await readStaticHDRMetadataScanUnits(packetReader, firstPacket, run));
 }
 
 /** Scans the static HDR metadata a codec carries in band, on the routes whose presentation applies it. */
@@ -2185,16 +2180,16 @@ async function createSeparateDolbyVisionEnhancementPacketStream(
         return null;
     }
     try {
-        const packetSink = new EncodedPacketSink(enhancementTrack.videoTrack);
+        const packetReader = new PacketReader(enhancementTrack.videoTrack);
         const startTimeSeconds = microsecondsToSeconds(startTimeMicroseconds);
-        const keyPacket = await packetSink.getKeyPacket(
+        const keyPacket = await packetReader.getKeyAt(
             startTimeSeconds,
             OWNED_HEVC_PACKET_OPTIONS
-        ) ?? await packetSink.getFirstKeyPacket(OWNED_HEVC_PACKET_OPTIONS);
+        ) ?? await packetReader.getFirstKey(OWNED_HEVC_PACKET_OPTIONS);
         if (!keyPacket || isVideoAttemptStopped(run)) {
             return null;
         }
-        const iterator = packetSink.packets(keyPacket, undefined, OWNED_HEVC_PACKET_OPTIONS);
+        const iterator = iterateTrackPackets(packetReader, keyPacket, null, OWNED_HEVC_PACKET_OPTIONS);
         const pairer = new DolbyVisionEncodedPacketPairer(iterator);
         run.enhancementPacketPairer = pairer;
         return {
@@ -2427,12 +2422,12 @@ async function streamOwnedHEVCFrames(
         throw new UnsupportedCustomDecodeSourceError('The owned HEVC decoder requires an HEVC track');
     }
 
-    const packetSink = new EncodedPacketSink(preparedVideoTrack.videoTrack);
+    const packetReader = new PacketReader(preparedVideoTrack.videoTrack);
     const startTimeSeconds = microsecondsToSeconds(request.startTimeMicroseconds);
-    const keyPacket = await packetSink.getKeyPacket(
+    const keyPacket = await packetReader.getKeyAt(
         startTimeSeconds,
         OWNED_HEVC_PACKET_OPTIONS
-    ) ?? await packetSink.getFirstKeyPacket(OWNED_HEVC_PACKET_OPTIONS);
+    ) ?? await packetReader.getFirstKey(OWNED_HEVC_PACKET_OPTIONS);
     if (!keyPacket || isVideoAttemptStopped(run)) {
         return;
     }
@@ -2442,7 +2437,7 @@ async function streamOwnedHEVCFrames(
     );
     postVideoStartupProgress(run, 'video-key-packet-ready', 0, keyPacketMediaTimeMicroseconds);
 
-    const packetIterator = packetSink.packets(keyPacket, undefined, OWNED_HEVC_PACKET_OPTIONS);
+    const packetIterator = iterateTrackPackets(packetReader, keyPacket, null, OWNED_HEVC_PACKET_OPTIONS);
     run.videoIterator = packetIterator;
     const inputFormat = getHEVCNALFormat(preparedVideoTrack.decoderConfig);
     const keyPacketSplit = splitDolbyVisionHEVCAccessUnit(keyPacket.data, inputFormat, inputFormat);
@@ -2548,12 +2543,12 @@ async function streamOwnedNativeFrames(
     codecName: 'AV1' | 'VP9',
     runAttempt: OwnedNativeVideoAttempt
 ): Promise<void> {
-    const packetSink = new EncodedPacketSink(preparedVideoTrack.videoTrack);
+    const packetReader = new PacketReader(preparedVideoTrack.videoTrack);
     const startTimeSeconds = microsecondsToSeconds(request.startTimeMicroseconds);
-    const keyPacket = await packetSink.getKeyPacket(
+    const keyPacket = await packetReader.getKeyAt(
         startTimeSeconds,
         OWNED_NATIVE_PACKET_OPTIONS
-    ) ?? await packetSink.getFirstKeyPacket(OWNED_NATIVE_PACKET_OPTIONS);
+    ) ?? await packetReader.getFirstKey(OWNED_NATIVE_PACKET_OPTIONS);
     if (!keyPacket || isVideoAttemptStopped(run)) {
         return;
     }
@@ -2563,7 +2558,7 @@ async function streamOwnedNativeFrames(
     );
     postVideoStartupProgress(run, 'video-key-packet-ready', 0, keyPacketMediaTimeMicroseconds);
 
-    const packetIterator = packetSink.packets(keyPacket, undefined, OWNED_NATIVE_PACKET_OPTIONS);
+    const packetIterator = iterateTrackPackets(packetReader, keyPacket, null, OWNED_NATIVE_PACKET_OPTIONS);
     run.videoIterator = packetIterator;
     const decoderConfig: VideoDecoderConfig = {
         ...preparedVideoTrack.decoderConfig,
@@ -2647,11 +2642,10 @@ async function streamOwnedVP9Frames(
         createDecoder: (callbacks: OwnedVideoDecoderCallbacks) => OwnedVideoDecoderPort,
         keyPacketMediaTimeMicroseconds: Microseconds
     ): Promise<void> => {
-        const readBlockAdditions = createMatroskaBlockAdditionReader(preparedVideoTrack.videoTrack);
         return runOwnedVP9VideoStream(
             stream,
             packetIterator,
-            (packet: EncodedPacket): Uint8Array[] => readBlockAdditions(packet).map(
+            (packet: EncodedPacket): Uint8Array[] => readMatroskaBlockAdditions(packet).map(
                 (addition: MatroskaBlockAddition): Uint8Array => addition.data
             ),
             createDecoder,
@@ -2699,7 +2693,7 @@ type GPUDecodePacketQueue = {
     iterator: OwnedVideoPacketIterator
     outgoing: GPUDecodeOutgoingPacket[]
     /** The track's packets, which a parser's restart reads again from the next key packet */
-    packetSink: EncodedPacketSink
+    packetReader: PacketReader
     // The decoder package's parser, which turns each packet into what the decoder reads
     pipeline: GPUDecoderParserRemotePipeline | null
     readAheadDepth: number
@@ -2782,17 +2776,17 @@ async function openGPUDecodePacketQueue(
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
     preparedVideoTrack: PreparedVideoTrack
 ): Promise<GPUDecodePacketQueue | null> {
-    const packetSink = new EncodedPacketSink(preparedVideoTrack.videoTrack);
+    const packetReader = new PacketReader(preparedVideoTrack.videoTrack);
     const startTimeSeconds = microsecondsToSeconds(request.startTimeMicroseconds);
-    const keyPacket = await packetSink.getKeyPacket(startTimeSeconds, GPU_DECODE_PACKET_OPTIONS)
-        ?? await packetSink.getFirstKeyPacket(GPU_DECODE_PACKET_OPTIONS);
+    const keyPacket = await packetReader.getKeyAt(startTimeSeconds, GPU_DECODE_PACKET_OPTIONS)
+        ?? await packetReader.getFirstKey(GPU_DECODE_PACKET_OPTIONS);
     if (!keyPacket || isVideoAttemptStopped(run)) {
         return null;
     }
     const keyPacketMediaTimeMicroseconds = requireMicroseconds(keyPacket.microsecondTimestamp, 'GPU decode key packet timestamp');
     postVideoStartupProgress(run, 'video-key-packet-ready', 0, keyPacketMediaTimeMicroseconds);
 
-    const iterator = packetSink.packets(keyPacket, undefined, GPU_DECODE_PACKET_OPTIONS);
+    const iterator = iterateTrackPackets(packetReader, keyPacket, null, GPU_DECODE_PACKET_OPTIONS);
     run.videoIterator = iterator;
     const parser = request.gpuVideoParser;
     const pipeline = parser ?
@@ -2807,7 +2801,7 @@ async function openGPUDecodePacketQueue(
         ended: false,
         iterator,
         outgoing: [],
-        packetSink,
+        packetReader,
         pipeline,
         // A parser parses ahead of the credits, so its workers stay busy while the page decodes
         readAheadDepth: pipeline ? GPU_DECODE_PARSER_READ_AHEAD : 1,
@@ -2894,9 +2888,9 @@ async function restartGPUDecodeParser(
     const previousIterator = run.videoIterator;
     run.videoIterator = null;
     await retireIterator(previousIterator);
-    const keyPacket = await queue.packetSink.getNextKeyPacket(failedPacket, GPU_DECODE_PACKET_OPTIONS);
+    const keyPacket = await queue.packetReader.getNextKey(failedPacket, GPU_DECODE_PACKET_OPTIONS);
     let carriedRecovery: GPUVideoDecodeRecovery | null = recovery;
-    for await (const heldPacket of queue.packetSink.packets(failedPacket, keyPacket ?? undefined, GPU_DECODE_HOLD_PACKET_OPTIONS)) {
+    for await (const heldPacket of iterateTrackPackets(queue.packetReader, failedPacket, keyPacket, GPU_DECODE_HOLD_PACKET_OPTIONS)) {
         if (!(await waitForFrameCredit(run))) {
             return false;
         }
@@ -2911,7 +2905,7 @@ async function restartGPUDecodeParser(
         queue.ended = true;
         return true;
     }
-    const iterator = queue.packetSink.packets(keyPacket, undefined, GPU_DECODE_PACKET_OPTIONS);
+    const iterator = iterateTrackPackets(queue.packetReader, keyPacket, null, GPU_DECODE_PACKET_OPTIONS);
     queue.iterator = iterator;
     // The read ahead may have reached the track's end before the failure surfaced; the new parser reads it again
     queue.ended = false;
@@ -3117,13 +3111,10 @@ async function streamVideoFrames(
         return streamOwnedVP9Frames(run, request, preparedVideoTrack);
     }
 
-    const sampleSink = new VideoSampleSink(preparedVideoTrack.videoTrack, {
+    const iterator = iterateVideoSamples(preparedVideoTrack.videoTrack, microsecondsToSeconds(request.startTimeMicroseconds), {
         hardwareAcceleration: preparedVideoTrack.videoHardwareAcceleration,
         optimizeForLatency: true
     });
-    const iterator = sampleSink.samples(
-        microsecondsToSeconds(request.startTimeMicroseconds)
-    ) as unknown as MediaSampleIterator<VideoSample>;
     run.videoIterator = iterator;
 
     while (await waitForFrameCredit(run)) {
@@ -3313,10 +3304,9 @@ async function forwardAudioPackets(
     preparedAudioTrack: PreparedAudioTrack,
     lookupTimeMicroseconds: Microseconds
 ): Promise<boolean> {
-    const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
-    const startPacket = await getAudioStartPacket(packetSink, lookupTimeMicroseconds);
-    const iterator = packetSink.packets(startPacket ?? undefined) as unknown as
-        MediaSampleIterator<EncodedPacket>;
+    const packetReader = new PacketReader(preparedAudioTrack.audioTrack);
+    const startPacket = await getAudioStartPacket(packetReader, lookupTimeMicroseconds);
+    const iterator = iterateTrackPackets(packetReader, startPacket, null, {});
     run.audioIterator = iterator;
     const batchBuilder = new AudioDecodeWorkerPacketBatchBuilder();
     while (await waitForAudioDecodeInputCredit(run, attempt)) {
@@ -3353,10 +3343,7 @@ async function forwardAudioSamples(
     preparedAudioTrack: PreparedAudioTrack,
     startTimeMicroseconds: Microseconds
 ): Promise<boolean> {
-    const sampleSink = new AudioSampleSink(preparedAudioTrack.audioTrack);
-    const iterator = sampleSink.samples(
-        microsecondsToSeconds(startTimeMicroseconds)
-    ) as unknown as MediaSampleIterator<AudioSample>;
+    const iterator = iterateAudioSamples(preparedAudioTrack.audioTrack, microsecondsToSeconds(startTimeMicroseconds));
     run.audioIterator = iterator;
     const batchBuilder = new AudioDecodeWorkerPCMBatchBuilder();
     while (await waitForAudioDecodeInputCredit(run, attempt)) {
@@ -3467,10 +3454,9 @@ async function streamNativeAudioPackets(
     if (!decoderConfig) {
         throw new UnsupportedCustomDecodeSourceError('Native audio decoder configuration is unavailable');
     }
-    const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
-    const startPacket = await getAudioStartPacket(packetSink, request.startTimeMicroseconds);
-    const iterator = packetSink.packets(startPacket ?? undefined) as unknown as
-        MediaSampleIterator<EncodedPacket>;
+    const packetReader = new PacketReader(preparedAudioTrack.audioTrack);
+    const startPacket = await getAudioStartPacket(packetReader, request.startTimeMicroseconds);
+    const iterator = iterateTrackPackets(packetReader, startPacket, null, {});
     run.audioIterator = iterator;
     const remuxer = new NativeMediaAudioFMP4Remuxer({
         channelCount: audioConfiguration.channelCount as 2 | 6,
@@ -3688,7 +3674,7 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
             return;
         }
         const input = new Input({
-            formats: withMatroskaVideoFieldOrder(withMatroskaBlockAdditions(CUSTOM_DECODE_INPUT_FORMATS)),
+            formats: withMatroskaVideoFieldOrder(CUSTOM_DECODE_INPUT_FORMATS),
             source: createMediaSource(request.source)
         });
         run.input = input;

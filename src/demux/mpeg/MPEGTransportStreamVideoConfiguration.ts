@@ -1,4 +1,4 @@
-import { EncodedPacketSink, type InputVideoTrack, type VideoCodec } from 'mediabunny';
+import { PacketReader, type InputVideoTrack, type VideoCodec } from 'mediabunny';
 
 /** The engine's codecs, FFmpeg's names, of the transport stream video tracks a GPU decoder reads. */
 export type TransportStreamVideoCodec = 'mpeg1video' | 'mpeg2video' | 'vc1';
@@ -66,14 +66,14 @@ export async function readTransportStreamVideoDecoderDescription(
     codec: TransportStreamVideoCodec,
     track: InputVideoTrack
 ): Promise<TransportStreamVideoDescriptionResult> {
-    const packetSink = new EncodedPacketSink(track);
-    let packet = await packetSink.getFirstPacket();
+    const packetReader = new PacketReader(track);
+    let packet = await packetReader.getFirst();
     for (let packetIndex = 0; packet && packetIndex < MAXIMUM_SEARCHED_PACKET_COUNT; packetIndex += 1) {
         const extradataByteLength = findTransportStreamExtradataByteLength(codec, packet.data);
         if (extradataByteLength > 0) {
             return { description: packet.data.slice(0, extradataByteLength), status: 'read' };
         }
-        packet = await packetSink.getNextPacket(packet);
+        packet = await packetReader.getNext(packet);
     }
     return { failure: `sequence-header-missing: ${codec}`, status: 'failed' };
 }

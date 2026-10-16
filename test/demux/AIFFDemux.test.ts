@@ -4,7 +4,7 @@ import {
     AiffInputFormat,
     AiffOutputFormat,
     AudioSample,
-    AudioSampleSink,
+    AudioSampleCursor,
     AudioSampleSource,
     BufferSource,
     BufferTarget,
@@ -64,11 +64,11 @@ describe('AIFF through the fork', () => {
             expect(await track.canDecode()).toBe(true);
 
             const decodedSamples: number[] = [];
-            for await (const decodedSample of new AudioSampleSink(track).samples()) {
+            await using cursor = new AudioSampleCursor(track);
+            for await (const decodedSample of cursor) {
                 const channel = new Float32Array(decodedSample.numberOfFrames);
                 decodedSample.copyTo(channel, { format: 'f32-planar', planeIndex: 0 });
                 decodedSamples.push(...channel);
-                decodedSample.close();
             }
             expect(decodedSamples).toHaveLength(SAMPLES.length);
             decodedSamples.forEach((decodedSample: number, sampleIndex: number): void => {

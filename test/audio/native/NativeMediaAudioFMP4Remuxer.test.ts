@@ -1,8 +1,8 @@
 import {
     ALL_FORMATS,
     BufferSource,
-    EncodedPacketSink,
     Input,
+    PacketCursor,
     type InputAudioTrack
 } from 'mediabunny';
 import { describe, expect, it } from 'vitest';
@@ -65,9 +65,8 @@ async function remuxVector(codec: NativeMediaAudioFMP4Codec): Promise<{
             sampleRate: 48_000
         });
         const outputs: NativeMediaAudioFMP4RemuxOutput[] = [];
-        const packetSink = new EncodedPacketSink(audioTrack);
         await remuxer.start();
-        for await (const packet of packetSink.packets()) {
+        for await (const packet of new PacketCursor(audioTrack)) {
             await remuxer.addPacket({
                 data: packet.data,
                 durationMicroseconds: requireMicroseconds(packet.microsecondDuration),

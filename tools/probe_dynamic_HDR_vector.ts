@@ -2,9 +2,9 @@ import { resolve } from 'node:path';
 
 import {
     ALL_FORMATS,
-    EncodedPacketSink,
     FilePathSource,
-    Input
+    Input,
+    PacketReader
 } from 'mediabunny';
 
 import { secondsToMicroseconds } from '../src/MediaTime';
@@ -71,7 +71,7 @@ try {
         throw new TypeError('The dynamic HDR vector has no decoder configuration');
     }
     const inputFormat = getHEVCNALFormat(decoderConfig);
-    const packetSink = new EncodedPacketSink(videoTracks[0]);
+    const packetReader = new PacketReader(videoTracks[0]);
     const statusCounts = createStatusCounts();
     const statusTransitions: StatusTransition[] = [];
     let firstValidMetadata: HDR10PlusMetadata | null = null;
@@ -80,7 +80,7 @@ try {
     let scannedByteLength = 0;
     let minimumValidPeakNits: number | null = null;
     let maximumValidPeakNits: number | null = null;
-    let packet = await packetSink.getFirstPacket({ metadataOnly: false });
+    let packet = await packetReader.getFirst({ metadataOnly: false });
     while (packet && scannedAccessUnitCount < maximumAccessUnitCount) {
         const frameMetadata = parseHEVCHDR10PlusMetadata(packet.data, inputFormat);
         statusCounts[frameMetadata.status] += 1;
@@ -105,7 +105,7 @@ try {
         }
         scannedAccessUnitCount += 1;
         scannedByteLength += packet.data.byteLength;
-        packet = await packetSink.getNextPacket(packet, { metadataOnly: false });
+        packet = await packetReader.getNext(packet, { metadataOnly: false });
     }
 
     process.stdout.write(`${JSON.stringify({

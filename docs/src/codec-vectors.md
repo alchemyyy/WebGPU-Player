@@ -224,7 +224,7 @@ Before writing, the generator checks:
 - the codec, color, packet sizes, and key flags FFprobe reads from the stream and from both containers, and that neither container carries static HDR metadata of its own;
 - the side data FFmpeg decodes for every frame of both containers, the independent oracle: libdav1d reports the MDCV and CLL on every frame from the first key frame on, and HDR10+ only on the frame whose unit carries it.
 
-`test/demux/hdr/AV1HDR10PlusDemuxIntegration.test.ts` reads both vectors with Mediabunny's `EncodedPacketSink` and requires the engine's extraction and static scan to read every frame as recorded.
+`test/demux/hdr/AV1HDR10PlusDemuxIntegration.test.ts` reads both vectors' packets with Mediabunny and requires the engine's extraction and static scan to read every frame as recorded.
 `test/pipeline/CustomDecodeWorkerAV1Route.test.ts` plays them through the worker with a stand-in WebCodecs decoder, and requires every posted frame to carry its recorded HDR10+ result.
 The vectors prove the demux, the extraction, and the routing; they prove nothing about decode or presentation.
 
@@ -254,10 +254,10 @@ Before writing, the generator checks:
 - every block's BlockAdditionals, read back with its own EBML walk, against the frame's ST 2094-40 serialization in `HDR10_plus_metadata.py`, and the DocType, Colour, BlockAdditionMapping, key frames, and clusters of each container;
 - the codec, profile, color, key flags, and HDR10+ side data FFprobe reads from every packet of both containers, the independent oracle.
 
-`test/demux/MatroskaBlockAdditions.test.ts` reads both vectors through the engine's Mediabunny hook, and fails when Mediabunny's internals no longer let it read every block's additions as recorded.
+`test/demux/MatroskaBlockAdditions.test.ts` reads both vectors' block additions from the fork's packet side data, through Mediabunny's formats and the worker's, and fails when any block's additions no longer arrive as recorded.
 `test/demux/hdr/HDR10PlusVP9DemuxIntegration.test.ts` plays both through the owned VP9 path with a stand-in decoder, from the start and from the second key frame, and requires every frame's HDR10+ result to be the recorded one.
 `test/pipeline/CustomDecodeWorkerOwnedVP9.test.ts` plays them through the worker with a stand-in WebCodecs decoder, and requires every posted frame to carry its recorded HDR10+ result.
-The vectors prove the demux, the hook, the extraction, and the routing; they prove nothing about decode or presentation.
+The vectors prove the demux, the extraction, and the routing; they prove nothing about decode or presentation.
 
 ## Local playback media
 

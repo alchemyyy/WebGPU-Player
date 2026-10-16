@@ -6,8 +6,8 @@ import { join } from 'node:path';
 import {
     AviInputFormat,
     BufferSource,
-    EncodedPacketSink,
     Input,
+    PacketCursor,
     type EncodedPacket,
     type InputTrack
 } from 'mediabunny';
@@ -71,7 +71,7 @@ function openAVI(bytes: Uint8Array): Input {
 
 async function readPackets(track: InputTrack): Promise<EncodedPacket[]> {
     const packets: EncodedPacket[] = [];
-    for await (const packet of new EncodedPacketSink(track).packets()) {
+    for await (const packet of new PacketCursor(track)) {
         packets.push(packet);
     }
     return packets;

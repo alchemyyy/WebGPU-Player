@@ -9,11 +9,11 @@ import {
     BufferSource,
     BufferTarget,
     EncodedPacket,
-    EncodedPacketSink,
     EncodedVideoPacketSource,
     Input,
     MkvOutputFormat,
     Output,
+    PacketReader,
     type InputVideoTrack
 } from 'mediabunny';
 import { describe, expect, it, vi } from 'vitest';
@@ -107,7 +107,7 @@ function readVector(fileName: string): Uint8Array {
 async function readFirstPacketSequenceHeader(fileName: string): Promise<AV1SequenceHeader | null> {
     let sequenceHeader: AV1SequenceHeader | null = null;
     await withVideoTrack(readVector(fileName), async (track: InputVideoTrack): Promise<void> => {
-        const firstPacket = await new EncodedPacketSink(track).getFirstPacket();
+        const firstPacket = await new PacketReader(track).getFirst();
         sequenceHeader = firstPacket && findAV1SequenceHeader(firstPacket.data);
     });
     return sequenceHeader;
@@ -227,7 +227,7 @@ describe('AV1DecoderConfiguration', () => {
     it('leaves a track untouched without a sequence header, an AV1 codec, or the expected backing', async () => {
         const matroskaWithoutSequenceHeader = await createMatroskaWithoutSequenceHeader();
         await withVideoTrack(matroskaWithoutSequenceHeader, async (track: InputVideoTrack): Promise<void> => {
-            const firstPacket = await new EncodedPacketSink(track).getFirstPacket();
+            const firstPacket = await new PacketReader(track).getFirst();
             expect(await track.getCodec()).toBe('av1');
             expect(firstPacket && findAV1SequenceHeader(firstPacket.data)).toBeNull();
             const decoderConfig = await track.getDecoderConfig();

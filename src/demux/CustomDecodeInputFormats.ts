@@ -90,6 +90,6 @@ class MotionJPEG2000InputFormat extends Mp4InputFormat {
 
 /**
  * Mediabunny's input formats for custom decode, with Motion JPEG 2000 added ahead of them.
- * The addition is contained here, as MatroskaBlockAdditions.ts contains its own, so Mediabunny stays unmodified.
+ * The addition is contained here, so Mediabunny stays unmodified.
  */
 export const CUSTOM_DECODE_INPUT_FORMATS: InputFormat[] = [ new MotionJPEG2000InputFormat(), ...ALL_FORMATS ];

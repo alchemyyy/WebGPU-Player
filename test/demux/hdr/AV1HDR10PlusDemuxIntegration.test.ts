@@ -3,8 +3,8 @@
 import {
     ALL_FORMATS,
     BufferSource,
-    EncodedPacketSink,
     Input,
+    PacketCursor,
     type EncodedPacket
 } from 'mediabunny';
 import { describe, expect, it } from 'vitest';
@@ -57,7 +57,7 @@ async function readVectorPackets(vector: AV1HDR10PlusVector): Promise<EncodedPac
         ]);
 
         const packets: EncodedPacket[] = [];
-        for await (const packet of new EncodedPacketSink(videoTrack).packets(undefined, undefined, OWNED_AV1_PACKET_OPTIONS)) {
+        for await (const packet of new PacketCursor(videoTrack, { options: OWNED_AV1_PACKET_OPTIONS })) {
             packets.push(packet);
         }
         return packets;

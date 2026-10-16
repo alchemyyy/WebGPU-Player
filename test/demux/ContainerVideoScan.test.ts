@@ -6,7 +6,6 @@ import { describe, expect, it } from 'vitest';
 import type { VideoScan } from 'webgpu-player/decode/video/VideoFields';
 import { MATROSKA_AV1_CODEC_ID } from 'webgpu-player/demux/av1/AV1CodecConfigurationRecord';
 import { hasSwappedMatroskaFieldOrders, readContainerVideoScan, withMatroskaVideoFieldOrder } from 'webgpu-player/demux/ContainerVideoScan';
-import { withMatroskaBlockAdditions } from 'webgpu-player/demux/MatroskaBlockAdditions';
 
 import { createBox, createVideoTrackISOBaseMedia, createVisualSampleEntry } from '../helpers/isoBaseMediaBoxes';
 import { createASCIIElement, createElement, createUnsignedIntegerElement, createVideoTrackMatroska } from '../helpers/matroskaElements';
@@ -142,13 +141,6 @@ describe('readContainerVideoScan', () => {
         const elements = [ createUnsignedIntegerElement(FLAG_INTERLACED_ID, FLAG_INTERLACED_INTERLACED), createElement(FIELD_ORDER_ID, PADDED_BOTTOM_FIRST_PAYLOAD) ];
 
         expect(await readScan(createMatroska(elements), withMatroskaVideoFieldOrder(ALL_FORMATS))).toBe('bottom-first');
-    });
-
-    it('records the elements beside block additions, whose formats it wraps', async () => {
-        const formats = withMatroskaVideoFieldOrder(withMatroskaBlockAdditions(ALL_FORMATS));
-        const file = createMatroska(createFieldElements([ FLAG_INTERLACED_INTERLACED, FIELD_ORDER_BOTTOM_FIRST ]));
-
-        expect(await readScan(file, formats)).toBe('bottom-first');
     });
 
     it.each([

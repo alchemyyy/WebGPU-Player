@@ -81,21 +81,21 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   P20 reconstructs its MV-HEVC base view, and P10 its AV1 picture, as P5 (CCID 0 or none) or as P8.
   P9 (AVC) has no RPU route, because the engine owns no AVC decode path, and plays its declared base.
 - Profile 10 decodes through the engine's own AV1 path (10-08).
-  Mediabunny's `VideoSampleSink` hides the packet bytes that carry the RPU, so a P10 route reads packets with `EncodedPacketSink` and feeds its own WebCodecs decoder.
+  Mediabunny's decoded video samples hide the packet bytes that carry the RPU, so a P10 route reads packets and feeds its own WebCodecs decoder.
   Each temporal unit's Dolby Vision ITU-T T.35 metadata OBUs are removed before decode, so no browser decoder sees them.
   The libdovi T.35 entry point parses them in decode order.
   A temporal unit has exactly one shown frame, so its timestamp keys its RPU, as a PTS keys an HEVC RPU.
   The route profile comes from the container descriptor; the profile the crate infers from the RPU header (5 for 10.0, 8 otherwise) only validates the snapshot.
   AV1 has no native external Dolby Vision or HDR route, because nothing neutralizes an AV1 sequence header's color, so P10 reconstructs from raw I420P10 only.
 - Every AV1 track decodes through the engine's own AV1 path (10-09).
-  HDR10+ and the MDCV and CLL travel in metadata OBUs, which `VideoSampleSink` hides as it hides the RPU, and Jellyfin's HDR10Plus label is not a reliable sign of them, so the route does not depend on any label.
+  HDR10+ and the MDCV and CLL travel in metadata OBUs, which Mediabunny's decoded samples hide as they hide the RPU, and Jellyfin's HDR10Plus label is not a reliable sign of them, so the route does not depend on any label.
   Each temporal unit's OBUs are walked once: its Dolby Vision RPU OBUs are removed before decode on every route, and parsed only on a Dolby Vision route, the one route that loads the RPU parser.
   Its HDR10+ T.35 messages lose their OBU trailing bits as dav1d removes them, then parse as HEVC SEI payloads do, and their OBUs stay in the unit.
   Mediabunny's decoder wrapper has no AV1 workaround, and a unit's one shown frame keeps the unit's timestamp, so frames need no timestamp reassignment.
-  The one sample sink feature the owned path drops is the merge of a Matroska alpha channel (BlockAddID 1) into each frame.
+  The one feature of Mediabunny's sample decoding the owned path drops is the merge of a Matroska alpha channel (BlockAddID 1) into each frame.
   AV1 has no native PQ route, so no request names a PQ transfer for it; an AV1 track without an RPU route scans its MDCV and CLL OBUs at startup when its first sequence header signals PQ.
 - Every VP9 track on the native backend decodes through the engine's own VP9 path (10-09).
-  VP9 has no metadata of its own, so its HDR10+ travels beside each frame in a Matroska or WebM BlockAdditional, which `VideoSampleSink` never reads, and Jellyfin's HDR10Plus label is not a reliable sign of it, so the route does not depend on any label.
+  VP9 has no metadata of its own, so its HDR10+ travels beside each frame in a Matroska or WebM BlockAdditional, which Mediabunny's sample decoding never reads, and Jellyfin's HDR10Plus label is not a reliable sign of it, so the route does not depend on any label.
   Packets decode unchanged, and each packet's BlockAdditionals parse as the ITU-T T.35 messages of HEVC SEI do.
   WebM and MP4 put one shown frame in each packet, a superframe holding any hidden frames before it, and a `show_existing_frame` header shows a frame too, so a packet's timestamp keys its frame's metadata.
   A packet of hidden frames alone, which those containers forbid, records nothing, because the decoder outputs no frame for it.
@@ -181,6 +181,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   HDR10+ is recognized by its ITU-T T.35 header, not by BlockAddID, so no BlockAdditionMapping is needed: FFmpeg writes BlockAddID 4 with a mapping in Matroska and without one in WebM, and reads it either way.
   A laced block keeps no additions, because Mediabunny replaces it with one new block per frame; Matroska muxers lace audio, not video.
   Mediabunny 1.61.5 still keeps only BlockAddID 1 (10-15).
+  The fork's Matroska demuxer keeps every BlockAdditional but alpha as packet side data, `matroskaBlockAdditions`, each frame of a laced block taking its block's (branch `v2-matroska-block-additions`), so the format wrapper, its shape checks, and its warning left, and `MatroskaBlockAdditions.ts` only reads the side data (10-16).
 - Header-stripped laced Matroska blocks are split before their content is decoded (10-09).
   Older mkvmerge releases moved the leading bytes of every AC-3, DTS, and MP3 frame into the track's ContentCompression (header stripping), and laced audio by default.
   The Matroska specification scopes a block's content encoding to its frames, excluding the lacing data, and FFmpeg reads it that way.
@@ -852,6 +853,10 @@ These were settled on Firefox 157 on Windows.
   A `file:` dependency would have installed the fork's development dependencies into the host's lockfile, so nothing installs it: the tsconfig `paths` entry maps `mediabunny` to the folder for tsc, esbuild, and Vitest, the sandbox's Vite config and the host's webpack and Vitest configs alias it, and both ESLint configs ignore the import.
   `scripts/mediabunny.mjs` builds the fork's `dist/` with its own pinned toolchain (`npm ci --ignore-scripts` in the folder, then its `tsc` and import-extension pass), stamps the commit in `dist/webgpu-player-build.json`, and skips the build while the stamp matches; the engine's typecheck, test, lint, and build scripts run it first.
   The version move from 1.52.2 removed the engine's G.711 decoder registration, which Mediabunny 1.61.5 decodes itself, and the ISO BMFF DTS sample entry mappings, which it maps itself.
+  The fork follows Mediabunny v2, upstream's `v2` branch, since 10-16: its `v2` branch merges upstream's `main` (1.61.6) in one commit, then carries the six pull requests, the AVI timing, and the MPEG-TS video, ported where v2 changed their code (AVI, AIFF).
+  Branches meant for upstream's `v2` are cut from it with a `v2-` prefix: `v2-fix-matroska-laced-header-stripping`, `v2-fix-custom-decoder-close-after-failure`, `v2-url-source-read-ahead`, and `v2-matroska-block-additions`.
+  v2 replaces the media sinks with packet readers and cursors, so `TrackIteration.ts` gives the worker what the sinks' `packets()` and `samples()` gave: packets read about a second ahead, and decoded samples from a start time, each ending at once on `return()`.
+  `VC1PresentationOrder.ts` follows v2's track backing, which writes each packet into a result value, and presents a restamped packet through Mediabunny's internal clone, which keeps where the demuxer finds the packet again.
 - The engine is an npm workspace of its host (10-02).
   npm installs the engine's dependencies, so the host lists only what it uses directly.
   Inside the host the engine has no `node_modules` of its own, and its tooling finds packages by walking up from the engine root.

@@ -2,8 +2,8 @@
 
 import {
     BufferSource,
-    EncodedPacketSink,
     Input,
+    PacketReader,
     type EncodedPacket
 } from 'mediabunny';
 import { describe, expect, it } from 'vitest';
@@ -15,11 +15,8 @@ import type {
     OwnedVideoDecoderCallbacks,
     OwnedVideoDecoderPort
 } from 'webgpu-player/decode/video/native/OwnedVideoDecodeStream';
-import {
-    createMatroskaBlockAdditionReader,
-    withMatroskaBlockAdditions,
-    type MatroskaBlockAddition
-} from 'webgpu-player/demux/MatroskaBlockAdditions';
+import { readMatroskaBlockAdditions, type MatroskaBlockAddition } from 'webgpu-player/demux/MatroskaBlockAdditions';
+import { iterateTrackPackets } from 'webgpu-player/demux/TrackIteration';
 import { hasVP9ShownFrame } from 'webgpu-player/demux/vp9/VP9FrameParser';
 
 import { requirePostedHDR10PlusResult, type HDR10PlusVectorFrame } from '../../helpers/hdr10PlusVectors';
@@ -61,28 +58,27 @@ const BT2020_PQ_COLOR_SPACE = {
 /** Plays a vector as the worker's owned VP9 path does, from the key packet at or before the start time, through a decoder that outputs every packet's frame. */
 async function playVector(vector: VP9HDR10PlusVector, startTimeMicroseconds: Microseconds): Promise<PlayedVector> {
     const input = new Input({
-        formats: withMatroskaBlockAdditions(CUSTOM_DECODE_INPUT_FORMATS),
+        formats: CUSTOM_DECODE_INPUT_FORMATS,
         source: new BufferSource(readVP9HDR10PlusVector(vector.fileName))
     });
     try {
         const [ track ] = await input.getVideoTracks();
-        const packetSink = new EncodedPacketSink(track);
-        const keyPacket = await packetSink.getKeyPacket(microsecondsToSeconds(startTimeMicroseconds), OWNED_VP9_PACKET_OPTIONS)
-            ?? await packetSink.getFirstKeyPacket(OWNED_VP9_PACKET_OPTIONS);
+        const packetReader = new PacketReader(track);
+        const keyPacket = await packetReader.getKeyAt(microsecondsToSeconds(startTimeMicroseconds), OWNED_VP9_PACKET_OPTIONS)
+            ?? await packetReader.getFirstKey(OWNED_VP9_PACKET_OPTIONS);
         if (!keyPacket) {
             throw new Error(`${vector.fileName} has no key packet`);
         }
         const packets: EncodedPacket[] = [];
-        for await (const packet of packetSink.packets(keyPacket, undefined, OWNED_VP9_PACKET_OPTIONS)) {
+        for await (const packet of iterateTrackPackets(packetReader, keyPacket, null, OWNED_VP9_PACKET_OPTIONS)) {
             packets.push(packet);
         }
 
-        const readBlockAdditions = createMatroskaBlockAdditionReader(track);
         const run = new FakeStreamRun(AMPLE_FRAME_CREDITS);
         await runOwnedVP9VideoStream(
             run,
             new FakePacketIterator(packets),
-            (packet: EncodedPacket): Uint8Array[] => readBlockAdditions(packet).map(
+            (packet: EncodedPacket): Uint8Array[] => readMatroskaBlockAdditions(packet).map(
                 (addition: MatroskaBlockAddition): Uint8Array => addition.data
             ),
             (callbacks: OwnedVideoDecoderCallbacks): OwnedVideoDecoderPort => new FakeOwnedVideoDecoder(callbacks),
@@ -110,7 +106,7 @@ describe('HDR10+ VP9 demux integration', () => {
         (_fileName: string, vector: VP9HDR10PlusVector) => {
             it('reads a VP9 Profile 2 BT.2020 PQ track', async () => {
                 const input = new Input({
-                    formats: withMatroskaBlockAdditions(CUSTOM_DECODE_INPUT_FORMATS),
+                    formats: CUSTOM_DECODE_INPUT_FORMATS,
                     source: new BufferSource(readVP9HDR10PlusVector(vector.fileName))
                 });
                 try {

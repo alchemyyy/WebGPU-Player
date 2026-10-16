@@ -111,13 +111,14 @@ All worker code unless marked.
 - `MediaFetchPolicy.ts`: retries only transport errors and 408, 429, and 5xx.
 - `HTTPRangeResponse.ts`: validates Range responses, a cross-origin 206 that hides `Content-Range` included, from the paths the source's pattern names.
 - `CustomDecodeInputFormats.ts`: Mediabunny's input formats with Motion JPEG 2000 added, whose JP2 signature box precedes its ftyp.
-- `MatroskaBlockAdditions.ts`: wraps Mediabunny's Matroska and WebM formats so their demuxers keep every BlockAdditional but alpha, and reads a packet's additions, such as VP9 HDR10+.
+- `MatroskaBlockAdditions.ts`: reads a packet's Matroska or WebM BlockAdditionals but alpha, such as VP9 HDR10+, from the fork's packet side data.
 - `ContainerVideoScan.ts`: a video track's scan as its container declares it: Matroska's FlagInterlaced and FieldOrder, recorded while Mediabunny's demuxer parses the track entry, or an ISO base media sample entry's `fiel` box.
 - `CustomDecodeTrackSelection.ts`: track lookup by ordinal within one media type.
 - `CustomAudioTrackMetadata.ts`: the Matroska and ISO BMFF DTS and TrueHD tracks whose codec Mediabunny does not map (`DTS `, `mlpa`), DTS Express detection, declared-rate recovery for their sample entries, and the decoded audio timestamp tolerance.
 - `AVIIndexCoverage.ts`: whether an AVI track's indexed packets end well before its stream header's declared length, as an OpenDML file's do past its first RIFF list.
 - `UnsupportedTrackFeatures.ts`: the first feature, such as an edit list, that Mediabunny reports it cannot honor for a track.
 - `AudioStartPacket.ts`: the packet an audio attempt starts from, without Mediabunny's proof scans when the track starts late.
+- `TrackIteration.ts`: a track's packets in decode order, read about a second ahead, and its decoded video or audio samples from a start time, as iterators that end at once on `return()`.
 - `ISOBaseMediaSampleEntryChildBox.ts`: reads a child box of an ISO base media track's first sample entry, such as `dvc1` or `av1C`, from the `moov` bytes Mediabunny keeps.
 
 ### demux/av1/

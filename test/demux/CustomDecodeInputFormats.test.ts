@@ -3,8 +3,8 @@
 import {
     ALL_FORMATS,
     BufferSource,
-    EncodedPacketSink,
     Input,
+    PacketCursor,
     type InputFormat
 } from 'mediabunny';
 import { describe, expect, it } from 'vitest';
@@ -241,7 +241,7 @@ async function readPacketData(formats: InputFormat[], matroska: Uint8Array): Pro
         const tracks = await input.getAudioTracks();
         expect(tracks).toHaveLength(1);
         const packetData: Uint8Array[] = [];
-        for await (const packet of new EncodedPacketSink(tracks[0]).packets()) {
+        for await (const packet of new PacketCursor(tracks[0])) {
             packetData.push(packet.data);
         }
         return packetData;
@@ -315,7 +315,7 @@ describe('CUSTOM_DECODE_INPUT_FORMATS', () => {
             const track = await input.getPrimaryVideoTrack();
             expect(await track?.getInternalCodecId()).toBe(MOTION_JPEG_2000_SAMPLE_ENTRY_TYPE);
             const packetData: Uint8Array[] = [];
-            for await (const packet of new EncodedPacketSink(track!).packets()) {
+            for await (const packet of new PacketCursor(track!)) {
                 packetData.push(packet.data);
             }
             expect(packetData).toEqual(MOTION_JPEG_2000_SAMPLES.map(sample => sample.data));
