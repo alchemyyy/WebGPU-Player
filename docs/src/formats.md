@@ -27,7 +27,7 @@ PCM in AVI is 8-bit unsigned, little-endian 16, 24, or 32-bit integer or 32 or 6
 The rows come from `capability/CustomContainerCodecSupport.ts`.
 
 AVI plays only what its `idx1` index covers: a file whose video stream outruns the index, as an OpenDML file past about 1 GiB does, is refused, since Mediabunny reads no OpenDML index.
-AVI keeps no presentation times, so HEVC, whose owned path presents packets as stamped, is refused in AVI; H.264 with B-frames relies on Mediabunny's sample sink to reorder.
+AVI keeps no presentation times, so HEVC, whose owned path presents packets as stamped, is refused in AVI; H.264 with B-frames relies on Mediabunny's sample sink to reorder, which WebKit's does not, so on WebKit only Baseline H.264 plays from AVI.
 An AIFF file opens, but the pipeline plays only sources with video, so AIFF, like every audio-only file, falls back to the host.
 A track whose edit list Mediabunny cannot honor, as `getUnsupportedFeatures()` reports, is refused rather than played out of sync.
 

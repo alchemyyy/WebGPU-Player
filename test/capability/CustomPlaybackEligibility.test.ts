@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
     CUSTOM_AUDIO_CODECS,
@@ -6257,6 +6257,13 @@ describe('AV1 on a decoder package', () => {
 
 describe('AVI and codecs without a route', () => {
     const AVI_CONTAINER = 'avi';
+    // jsdom's own user agent names AppleWebKit without Chrome, which Mediabunny takes for WebKit
+    const CHROMIUM_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
+    const SAFARI_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15';
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
 
     function createAVIOptions(videoCodec: string, audioCodec: string): Record<string, unknown> {
         const options = createOptions();
@@ -6268,6 +6275,8 @@ describe('AVI and codecs without a route', () => {
     }
 
     it('plays H.264 with MP3 from AVI, which the fork demuxes', () => {
+        vi.stubGlobal('navigator', { userAgent: CHROMIUM_USER_AGENT });
+
         expect(getCustomPlaybackEligibility(
             createAVIOptions('h264', 'mp3'),
             createCapabilities(),
@@ -6275,6 +6284,21 @@ describe('AVI and codecs without a route', () => {
         )).toMatchObject({ eligible: true });
         expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ BitDepth: 8, Codec: 'h264', Profile: 'High' }, AVI_CONTAINER)))
             .toBe(true);
+    });
+
+    it('keeps H.264 that can code B-frames out of AVI on WebKit, whose sample sink orders frames by AVI\'s decode-order timestamps', () => {
+        vi.stubGlobal('navigator', { userAgent: SAFARI_USER_AGENT });
+
+        expect(getCustomPlaybackEligibility(
+            createAVIOptions('h264', 'mp3'),
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'presentation-order-unsupported' });
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ BitDepth: 8, Codec: 'h264', Profile: 'High' }, AVI_CONTAINER)))
+            .toBe(false);
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ BitDepth: 8, Codec: 'h264', Profile: 'Constrained Baseline' }, AVI_CONTAINER)))
+            .toBe(true);
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ BitDepth: 8, Codec: 'h264', Profile: 'High' }))).toBe(true);
     });
 
     it('keeps HEVC out of AVI, whose decode-order timestamps the owned HEVC path cannot order', () => {

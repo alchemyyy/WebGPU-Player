@@ -134,6 +134,10 @@ const VC1_METADATA_PROFILES: Readonly<Record<'vc1' | 'wmv3', readonly string[]>>
 });
 // The frame pool formats of the AV1 streams native routes decode: Main at 4:2:0, 8 or 10 bits
 const NATIVE_AV1_OUTPUT_FORMATS: ReadonlySet<GPUDecoderOutputFormat> = new Set<GPUDecoderOutputFormat>([ 'I420', 'I420P10' ]);
+// The container token of AVI, which stamps packets in decode order
+const AVI_CONTAINER_TOKEN = 'AVI';
+// The H.264 profiles that code no B-frames, as ffprobe names them, normalized
+const H264_PROFILES_WITHOUT_B_FRAMES: ReadonlySet<string> = new Set<string>([ 'BASELINE', 'CONSTRAINEDBASELINE' ]);
 
 const AUDIO_CODEC_ALIASES = new Map<string, CustomAudioCodec>([
     [ 'AAC', 'aac' ],
@@ -313,6 +317,7 @@ export type CustomPlaybackIneligibilityReason =
     | 'live-stream-unsupported'
     | 'metadata-unsupported'
     | 'play-method-unsupported'
+    | 'presentation-order-unsupported'
     | 'rotation-unsupported'
     | 'runtime-unavailable'
     | 'url-unsupported'
@@ -563,6 +568,30 @@ export function presentsInterlacedVideo(codec: CustomVideoCodec): boolean {
 /** Returns whether an interlaced stream's codec codes its fields apart, so no route presents it. */
 function codesInterlacedFieldsApart(codec: CustomVideoCodec, stream: MediaStream): boolean {
     return stream.IsInterlaced === true && !presentsInterlacedVideo(codec);
+}
+
+/**
+ * Returns whether the page runs on WebKit, as Mediabunny's `isWebKit` decides it in the decode worker, where `navigator.vendor` is absent.
+ * There its sample sink orders decoded frames by their packets' timestamps instead of taking the decoder's output order.
+ */
+function isWebKitRuntime(): boolean {
+    if (typeof navigator === 'undefined') {
+        return false;
+    }
+    const userAgent = navigator.userAgent;
+    return (/AppleWebKit/.test(userAgent) && !/Chrome/.test(userAgent)) || /\b(iPad|iPhone|iPod)\b/.test(userAgent);
+}
+
+/**
+ * Returns whether the stream's frames would present out of order: AVI stamps packets in decode order, and on WebKit the sample sink orders decoded H.264 frames
+ * by those stamps, so each B-frame would show at its decode position.
+ * Baseline H.264 codes no B-frames.
+ */
+function presentsInDecodeOrder(containerTokens: readonly string[], codec: CustomVideoCodec, stream: MediaStream): boolean {
+    return codec === 'h264'
+        && containerTokens.includes(AVI_CONTAINER_TOKEN)
+        && !H264_PROFILES_WITHOUT_B_FRAMES.has(normalizeMetadataToken(stream.Profile) ?? '')
+        && isWebKitRuntime();
 }
 
 /**
@@ -1831,6 +1860,7 @@ function hasPotentialCustomVideoRoute(mediaSource: MediaSource): boolean {
     }
     const codec: CustomVideoCodec = codecSelection.codec;
     if (codesInterlacedFieldsApart(codec, selectedVideo.stream)
+        || presentsInDecodeOrder(containerTokens, codec, selectedVideo.stream)
         || hasUnsupportedRotation(selectedVideo.stream)) {
         return false;
     }
@@ -2088,6 +2118,9 @@ export function getCustomPlaybackEligibility(
     }
     if (codesInterlacedFieldsApart(videoCodec, selectedVideo.stream)) {
         return { eligible: false, reason: 'interlaced-video-unsupported' };
+    }
+    if (presentsInDecodeOrder(parsedSource.containerTokens, videoCodec, selectedVideo.stream)) {
+        return { eligible: false, reason: 'presentation-order-unsupported' };
     }
 
     const videoOutput = selectVideoOutput(

@@ -29,6 +29,7 @@ A host calls these, in this order, for each playback:
 2. `selectVideoStream`, and a codec the engine names.
    A codec it knows but nothing decodes, MPEG-4 Part 2, MS-MPEG4, H.263, or Theora, reads `video-codec-without-route`; any other unnamed codec reads `codec-unsupported`.
 3. Rotation 0, and a codec that keeps an interlaced stream's fields together in frames (`codesInterlacedFieldsApart`, from `presentsInterlacedVideo`).
+   On WebKit, H.264 in AVI only when its profile codes no B-frames (`presentsInDecodeOrder`), as `presentation-order-unsupported`.
 4. `selectVideoOutput` (below), and a route that presents the stream's scan (`refusesVideoScan`).
 5. `selectPlaybackAudio`.
 6. `supportsCustomContainerCodecCombination`.

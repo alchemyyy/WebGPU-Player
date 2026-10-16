@@ -40,6 +40,8 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
 - AVI carries only what the fork's AVI demuxer and the engine's routes play (10-15).
   The rule takes H.264, VP8, VP9, and AV1 with AAC, MP3, AC-3, and the PCM formats WAVEFORMATEX maps, all checked against FFmpeg-made AVI vectors.
   HEVC stays out: AVI keeps no presentation times, and the owned HEVC path presents packets as stamped, while H.264's sample sink reorders by timestamp, except on WebKit.
+  On WebKit the sink orders decoded frames by their packets' timestamps, which AVI gives in decode order, so eligibility and the prefilter refuse H.264 in AVI there as `presentation-order-unsupported` unless its profile, Baseline or Constrained Baseline, codes no B-frames (10-16).
+  Recovering the order would need each picture's order count parsed from the slices, which no part of that route reads.
   FLAC and Vorbis in AVI carry no decoder description Mediabunny reads, and WAVE_FORMAT_EXTENSIBLE is not mapped.
   The demuxer reads no OpenDML index, so `AVIIndexCoverage.ts` refuses a video track whose stream header's declared length outruns its `idx1` packets by more than a second, as `opendml-index-unread`, rather than stopping near 1 GiB.
 - A known codec without a route is refused as such (10-15).
