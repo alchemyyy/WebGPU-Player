@@ -102,8 +102,9 @@ const CHANGE_PICTURE_EVENTS = Uint32Array.of(EARLIER_PICTURE_EVENT, OWN_PICTURE_
 const FORMAT_FAILURE: GPUVideoDecodeFailure = { code: 'format-unsupported', detail: 'I444P12 not in I420' };
 // Submission completions that settle every packet of the stream-change tests
 const SETTLE_ROUND_COUNT = 8;
-// The packets whose decode work the feed keeps in flight at once
-const IN_FLIGHT_PACKET_LIMIT = 2;
+// The slices of decode work the feed keeps in flight at once; a fake session's packet takes one slice unless a test sets more
+const IN_FLIGHT_SLICE_LIMIT = 2;
+const SLICES_PER_LARGE_PACKET = 3;
 // Recoveries a session reports: a concealed slice twice, the later with another value, and a parser's failure that resynced
 const CONCEALED_RECOVERY: GPUVideoDecodeRecovery = { code: 'concealed', errorName: 'sliceHeader', value: 12 };
 const LATER_CONCEALED_VALUE = 30;
@@ -214,7 +215,7 @@ describe('GPUVideoDecodeFeed', () => {
     it('creates the session once the track is described, then decodes the packets that waited, two submissions in flight at a time', async () => {
         const harness = createHarness();
         harness.feed.start(harness.callbacks, INITIAL_VIDEO_EPOCH);
-        for (let index = 0; index <= IN_FLIGHT_PACKET_LIMIT; index += 1) {
+        for (let index = 0; index <= IN_FLIGHT_SLICE_LIMIT; index += 1) {
             harness.feed.queuePacket(createPacket(index));
         }
 
@@ -225,9 +226,9 @@ describe('GPUVideoDecodeFeed', () => {
         const session = harness.sessions[0];
         expect(session.queuedPackets.map(packet => packet.reset)).toEqual([ true, false, false ]);
         // The third packet waits until a packet in flight completes
-        expect(session.submittedPackets).toHaveLength(IN_FLIGHT_PACKET_LIMIT);
-        expect(harness.callbacks.creditsReleased).toBe(IN_FLIGHT_PACKET_LIMIT);
-        expect(harness.callbacks.frames).toHaveLength(IN_FLIGHT_PACKET_LIMIT);
+        expect(session.submittedPackets).toHaveLength(IN_FLIGHT_SLICE_LIMIT);
+        expect(harness.callbacks.creditsReleased).toBe(IN_FLIGHT_SLICE_LIMIT);
+        expect(harness.callbacks.frames).toHaveLength(IN_FLIGHT_SLICE_LIMIT);
         expect(harness.callbacks.frames[0]).toMatchObject({
             displayHeight: VISIBLE_HEIGHT,
             displayWidth: DISPLAY_WIDTH,
@@ -240,14 +241,43 @@ describe('GPUVideoDecodeFeed', () => {
         harness.queue.completeAll();
         await settle();
 
-        expect(session.submittedPackets).toHaveLength(IN_FLIGHT_PACKET_LIMIT + 1);
-        expect(harness.callbacks.creditsReleased).toBe(IN_FLIGHT_PACKET_LIMIT + 1);
+        expect(session.submittedPackets).toHaveLength(IN_FLIGHT_SLICE_LIMIT + 1);
+        expect(harness.callbacks.creditsReleased).toBe(IN_FLIGHT_SLICE_LIMIT + 1);
         expect(harness.feed.getTelemetry()).toMatchObject({
             decoderName: FAKE_GPU_DECODER_NAME,
             slotCount: FAKE_GPU_SLOT_COUNT,
             state: 'ready',
-            submittedPacketCount: IN_FLIGHT_PACKET_LIMIT + 1
+            submittedPacketCount: IN_FLIGHT_SLICE_LIMIT + 1
         });
+    });
+
+    it('returns a packet\'s credit once its work begins, and keeps two slices in flight across the slices of large packets', async () => {
+        const harness = createHarness();
+        startConfigured(harness);
+        await settle();
+        const session = harness.sessions[0];
+        session.sliceCount = SLICES_PER_LARGE_PACKET;
+
+        harness.feed.queuePacket(createPacket(0));
+        harness.feed.queuePacket(createPacket(1));
+        await settle();
+        // Two of the first packet's slices are in flight, and its frame waits for its last
+        const firstRound = [ session.submittedSliceCount, harness.callbacks.creditsReleased, harness.callbacks.frames.length ];
+        harness.queue.completeAll();
+        await settle();
+        // The first packet's last slice and the second packet's first
+        const secondRound = [ session.submittedSliceCount, harness.callbacks.creditsReleased, harness.callbacks.frames.length ];
+        harness.queue.completeAll();
+        await settle();
+        harness.queue.completeAll();
+        await settle();
+
+        expect(firstRound).toEqual([ IN_FLIGHT_SLICE_LIMIT, 1, 0 ]);
+        expect(secondRound).toEqual([ 2 * IN_FLIGHT_SLICE_LIMIT, 2, 1 ]);
+        expect(session.submittedSliceCount).toBe(2 * SLICES_PER_LARGE_PACKET);
+        expect(harness.callbacks.creditsReleased).toBe(2);
+        expect(harness.callbacks.frames.map(frame => frame.mediaTimeMicroseconds)).toEqual([ getTimestamp(0), getTimestamp(1) ]);
+        expect(harness.feed.getTelemetry().submittedPacketCount).toBe(2);
     });
 
     it('hands each picture its own visible size and repeat counts, and presents a picture of its own size in the stream\'s display area', async () => {
@@ -565,7 +595,7 @@ describe('GPUVideoDecodeFeed stream changes', () => {
         await settle();
 
         const [ previousSession, changedSession ] = harness.sessions;
-        expect(previousSession.getInFlightPacketCount()).toBe(IN_FLIGHT_PACKET_LIMIT);
+        expect(previousSession.getInFlightPacketCount()).toBe(IN_FLIGHT_SLICE_LIMIT);
         expect(changedSession.submittedPackets).toHaveLength(0);
         expect(harness.feed.getTelemetry().streamChangeCount).toBe(0);
 
@@ -573,7 +603,7 @@ describe('GPUVideoDecodeFeed stream changes', () => {
         await settle();
 
         expect(harness.feed.getTelemetry().streamChangeCount).toBe(1);
-        expect(changedSession.submittedPackets).toHaveLength(IN_FLIGHT_PACKET_LIMIT);
+        expect(changedSession.submittedPackets).toHaveLength(IN_FLIGHT_SLICE_LIMIT);
     });
 
     it('keeps the session before a change until presentation releases its last frame', async () => {

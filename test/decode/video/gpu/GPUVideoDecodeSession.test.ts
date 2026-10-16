@@ -18,6 +18,7 @@ import type { GPUDecoderOutputFormat } from 'webgpu-player/decode/video/gpu/GPUD
 import {
     GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH,
     GPU_DECODE_PACKET_RING_PACKET_COUNT,
+    GPU_DECODE_SLICE_DISPATCH_COUNT,
     GPU_DECODER_PARSER_ABI_VERSION
 } from 'webgpu-player/decode/video/gpu/GPUDecodeLimits';
 import { splitGPUDecoderModule } from 'webgpu-player/decode/video/gpu/GPUDecoderEntryPointModules';
@@ -230,6 +231,19 @@ const WAVE_DISPATCHES = [
     `${WAVE_ENTRY_POINT}, 1`,
     `${FILL_ENTRY_POINT}, 1`
 ];
+// A wavefront long enough that a packet's work takes several slices: a parse, the waves, and a fill, in slices of about equal length
+const SLICED_WAVE_COUNT = 100;
+const SLICED_DISPATCHES = [
+    `${PARSE_ENTRY_POINT}, 1`,
+    `${REPEAT_DIRECTIVE_PREFIX} ${SLICED_WAVE_COUNT}, 1`,
+    `${WAVE_ENTRY_POINT}, 1`,
+    `${FILL_ENTRY_POINT}, 1`
+];
+const SLICED_PACKET_DISPATCH_COUNT = SLICED_WAVE_COUNT + 2;
+const SLICED_PACKET_SLICE_COUNT = Math.ceil(SLICED_PACKET_DISPATCH_COUNT / GPU_DECODE_SLICE_DISPATCH_COUNT);
+const SLICED_PACKET_SLICE_LENGTH = Math.ceil(SLICED_PACKET_DISPATCH_COUNT / SLICED_PACKET_SLICE_COUNT);
+// The status readbacks a session keeps: as many packets decode whole before any status applies
+const STATUS_READBACK_COUNT = 3;
 // A picture larger than the pool, and one smaller, at an odd size, as an AV1 frame after a size change
 const OVERSIZED_PICTURE_SIZE = { height: CODED_HEIGHT, width: CODED_WIDTH + 2 };
 const SMALLER_PICTURE_SIZE = { height: 19, width: 33 };
@@ -1222,43 +1236,140 @@ describe('GPUVideoDecodeSession', () => {
             expect(device.dispatches).toHaveLength(packetCount);
         });
 
-        it('counts its packets in flight until their readbacks apply, polls the device meanwhile, and wakes on the next readback', async () => {
+        it('counts its slices in flight until their work completes and its packets until their readbacks apply, polls the device meanwhile, and wakes on either', async () => {
             vi.useFakeTimers({ toFake: [ 'setInterval', 'clearInterval' ] });
             try {
                 const device = new MockGPUDevice();
                 device.manualMaps = true;
+                device.manualWorkDone = true;
                 const session = await createSession(device, createManifest({ reorder: REORDER }));
-                // Two packets in flight, as the feed keeps them
+                // Two packets of one slice each in flight, as the feed keeps them
                 const packetCount = 2;
                 for (let packetIndex = 0; packetIndex < packetCount; packetIndex += 1) {
                     session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, packetIndex * FRAME_DURATION_MICROSECONDS, packetIndex === 0));
                     session.submitPendingDecodeWork();
                 }
-                let nextReadbackApplied = false;
-                const nextReadback = session.waitForNextStatusReadback().then((): void => {
-                    nextReadbackApplied = true;
+                let progressed = false;
+                const workProgress = session.waitForDecodeProgress().then((): void => {
+                    progressed = true;
                 });
 
-                const inFlightWhileMapping = session.getInFlightPacketCount();
+                const slicesWhileRunning = session.getInFlightSliceCount();
                 vi.advanceTimersByTime(POLL_INTERVAL_MILLISECONDS);
                 await Promise.resolve();
-                const appliedWhileMapping = nextReadbackApplied;
-                const pollsWhileMapping = device.pollCount;
+                const progressedWhileRunning = progressed;
+                const pollsWhileRunning = device.pollCount;
+                device.completeSubmittedWork();
+                await workProgress;
+                while (session.getInFlightSliceCount() > 0) {
+                    await session.waitForDecodeProgress();
+                }
+                const packetsWhileMapping = session.getInFlightPacketCount();
+                const readbackProgress = session.waitForDecodeProgress();
                 device.settlePendingMaps();
-                await nextReadback;
+                await readbackProgress;
                 await session.waitForStatusReadbacks();
                 vi.advanceTimersByTime(POLL_INTERVAL_MILLISECONDS);
 
-                expect(inFlightWhileMapping).toBe(packetCount);
-                expect(appliedWhileMapping).toBe(false);
-                expect(pollsWhileMapping).toBe(1);
+                expect(slicesWhileRunning).toBe(packetCount);
+                expect(progressedWhileRunning).toBe(false);
+                expect(pollsWhileRunning).toBe(1);
+                expect(packetsWhileMapping).toBe(packetCount);
                 expect(session.getInFlightPacketCount()).toBe(0);
-                expect(device.pollCount).toBe(pollsWhileMapping);
+                expect(device.pollCount).toBe(pollsWhileRunning);
                 expect(device.submitCount).toBe(packetCount);
-                await expect(session.waitForNextStatusReadback()).resolves.toBeUndefined();
+                await expect(session.waitForDecodeProgress()).resolves.toBeUndefined();
             } finally {
                 vi.useRealTimers();
             }
+        });
+
+        it('submits a packet of more dispatches than a slice carries in slices of about equal length, on its one uniform, copying its status with the last', async () => {
+            const device = new MockGPUDevice();
+            device.manualMaps = true;
+            const session = await createSession(device, createManifest({ dispatches: SLICED_DISPATCHES }));
+            session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, 0, true));
+
+            const rounds: Array<readonly [boolean, number, number, number]> = [];
+            for (let call = 0; call <= SLICED_PACKET_SLICE_COUNT; call += 1) {
+                const submitted = session.submitPendingDecodeWork();
+                rounds.push([ submitted, device.dispatches.length, session.getInFlightPacketCount(), device.getPendingMapCount() ]);
+            }
+
+            const expectedRounds = Array.from({ length: SLICED_PACKET_SLICE_COUNT }, (_: unknown, sliceIndex: number) => [
+                true,
+                Math.min((sliceIndex + 1) * SLICED_PACKET_SLICE_LENGTH, SLICED_PACKET_DISPATCH_COUNT),
+                1,
+                sliceIndex === SLICED_PACKET_SLICE_COUNT - 1 ? 1 : 0
+            ]);
+            expect(rounds).toEqual([ ...expectedRounds, [ false, SLICED_PACKET_DISPATCH_COUNT, 1, 1 ] ]);
+            expect(device.submitCount).toBe(SLICED_PACKET_SLICE_COUNT);
+            expect(new Set(device.dispatches.map(dispatch => dispatch.dynamicOffsets[0]))).toEqual(new Set([ 0 ]));
+            expect(session.getPendingPacketCount()).toBe(0);
+        });
+
+        it('submits no more of the packet in progress after a reset, and frees its readback and slot', async () => {
+            const device = new MockGPUDevice();
+            device.manualMaps = true;
+            const session = await createSession(device, createManifest({ dispatches: SLICED_DISPATCHES, reorder: REORDER }));
+            session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, 0, true));
+            session.submitPendingDecodeWork();
+
+            session.reset();
+            const afterReset = [ session.getInFlightPacketCount(), session.getQueuedFrameCount(), session.getFreeSlotCount(), session.submitPendingDecodeWork() ];
+            // Every readback is free again, so as many packets as there are readbacks decode whole
+            for (let packetIndex = 0; packetIndex < STATUS_READBACK_COUNT; packetIndex += 1) {
+                session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, (packetIndex + 1) * FRAME_DURATION_MICROSECONDS, packetIndex === 0));
+            }
+            while (session.submitPendingDecodeWork()) {
+                // Each call submits one slice
+            }
+
+            expect(afterReset).toEqual([ 0, 0, session.pool.layout.slotCount, false ]);
+            expect(device.getPendingMapCount()).toBe(STATUS_READBACK_COUNT);
+            expect(device.dispatches).toHaveLength(SLICED_PACKET_SLICE_LENGTH + STATUS_READBACK_COUNT * SLICED_PACKET_DISPATCH_COUNT);
+            // The abandoned packet decoded from a reset, and the first packet after the reset decodes from another
+            expect(device.dispatches.filter(dispatch => readPacketUniform(dispatch).reset === 1)).toHaveLength(SLICED_PACKET_SLICE_LENGTH + SLICED_PACKET_DISPATCH_COUNT);
+        });
+
+        it('submits no more of the packet in progress once an earlier packet\'s error begins a resync, its frame repeating the last good frame', async () => {
+            const device = new MockGPUDevice();
+            device.manualMaps = true;
+            const session = await createSession(device, createManifest({
+                dispatches: SLICED_DISPATCHES,
+                errors: RECOVERY_ERROR_LINES,
+                references: REFERENCES,
+                reorder: REORDER,
+                state: STATE_BYTE_LENGTH
+            }));
+            reportErrorAtPackets(device, new Map([ [ 1, createErrorWord(RESYNCED_ERROR_CODE) ] ]));
+            for (const frameIndex of [ 0, 1, 2 ]) {
+                session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, frameIndex * FRAME_DURATION_MICROSECONDS, frameIndex === 0));
+            }
+            // Packets 0 and 1 whole, then the first slice of packet 2, before any status applies
+            for (let call = 0; call <= 2 * SLICED_PACKET_SLICE_COUNT; call += 1) {
+                session.submitPendingDecodeWork();
+            }
+            const dispatchesBeforeResync = device.dispatches.length;
+
+            device.settlePendingMaps();
+            await session.waitForStatusReadbacks();
+            const submittedAfterResync = session.submitPendingDecodeWork();
+            session.endOfStream();
+            const takenFrames: GPUDecodedFrame[] = [];
+            takeFrames(session, takenFrames);
+            const takenSlots = takenFrames.map(frame => frame.slot);
+            releaseFrames(session, takenFrames);
+
+            expect(dispatchesBeforeResync).toBe(2 * SLICED_PACKET_DISPATCH_COUNT + SLICED_PACKET_SLICE_LENGTH);
+            expect(submittedAfterResync).toBe(false);
+            expect(device.dispatches).toHaveLength(dispatchesBeforeResync);
+            expect(session.getInFlightPacketCount()).toBe(0);
+            // The damaged picture 1 and the abandoned picture 2 repeat picture 0
+            expect(takenFrames.map(frame => frame.timestampMicroseconds)).toEqual(toTimestamps([ 0, 1, 2 ]));
+            expect(takenSlots).toEqual([ takenSlots[0], takenSlots[0], takenSlots[0] ]);
+            expect(session.takeRecoveries()).toEqual([ { code: 'resynced', errorName: RESYNCED_ERROR_NAME, value: FAILING_VALUE } ]);
+            expect(session.getFreeSlotCount()).toBe(session.pool.layout.slotCount);
         });
 
         it('presents a frame only once its packet\'s status readback applied', async () => {

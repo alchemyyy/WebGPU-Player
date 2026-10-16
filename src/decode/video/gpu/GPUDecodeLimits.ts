@@ -20,6 +20,12 @@ export const GPU_DECODER_MAXIMUM_REORDER = 8;
 /** The most dispatches one packet may encode, repeats expanded; a wavefront at the largest picture a decoder takes stays far within it. */
 export const GPU_DECODER_MAXIMUM_DISPATCHES = 4096;
 
+/**
+ * The most dispatches one submit of a packet's decode work carries: a packet with more, such as a large picture's wavefront, submits in slices of about equal length,
+ * between which other work on the device's one queue, presentation's included, runs; a reset submits no more of them.
+ */
+export const GPU_DECODE_SLICE_DISPATCH_COUNT = 96;
+
 /** The largest scratch buffer a decoder may declare: u32 byte addresses reach 4 GiB; the session checks the device's own limits. */
 export const GPU_DECODE_MAXIMUM_SCRATCH_BUFFER_BYTE_LENGTH = U32_VALUE_COUNT - 4;
 

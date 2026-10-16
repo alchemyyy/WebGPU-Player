@@ -278,15 +278,15 @@ async function decodeVectorFrames(
     let presentedFrameCount = 0;
     let idleRoundCount = 0;
     while (presentedFrameCount <= vector.lastFrame && (session.getPendingPacketCount() > 0 || session.getQueuedFrameCount() > 0)) {
-        const pendingPacketCount = session.getPendingPacketCount();
         const frameCountBefore = presentedFrameCount;
-        session.submitPendingDecodeWork();
+        // A packet's work submits a slice per call
+        const submitted = session.submitPendingDecodeWork();
         presentedFrameCount = presentVectorFrames(device, session, vector, presentedFrameCount, readbacks);
         const failure = session.getFailure();
         if (failure) {
             return { ...failure };
         }
-        if (session.getPendingPacketCount() < pendingPacketCount || presentedFrameCount > frameCountBefore) {
+        if (submitted || presentedFrameCount > frameCountBefore) {
             idleRoundCount = 0;
             continue;
         }

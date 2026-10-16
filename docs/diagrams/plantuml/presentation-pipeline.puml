@@ -50,7 +50,7 @@ partition "Frame time: each presented frame" {
     split again
         :GPU decode route
         packet, or a package parser's record (coordinator worker + parse workers)
-        -> GPUVideoDecodeFeed, two packets in flight
+        -> GPUVideoDecodeFeed, two slices in flight
         -> GPUVideoDecodeSession compute -> frame pool slot; <<$HL_BLUE>>
     end split
     :PresentationExecutor.encode(encoder, frame)
