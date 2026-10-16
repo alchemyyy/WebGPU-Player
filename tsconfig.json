@@ -13,6 +13,7 @@
     "types": ["@webgpu/types", "node"],
     "baseUrl": ".",
     "paths": {
+      "mediabunny": ["vendor/mediabunny"],
       "webgpu-player/*": ["src/*"]
     }
   },

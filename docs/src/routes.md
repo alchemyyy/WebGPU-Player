@@ -26,7 +26,8 @@ A host calls these, in this order, for each playback:
    A URL source keeps the host's `hiddenContentRangePathPattern`, the paths whose cross-origin 206 hides `Content-Range` (see [Architecture](architecture.md)).
    A missing or zero `RunTimeTicks` is an unknown duration, not a rejection.
    Playback then ends with the streams, audio takes the decoded-PCM route because the native media backend needs a duration, and the worker reports the container's duration on `ready`.
-2. `selectVideoStream`.
+2. `selectVideoStream`, and a codec the engine names.
+   A codec it knows but nothing decodes, MPEG-4 Part 2, MS-MPEG4, H.263, or Theora, reads `video-codec-without-route`; any other unnamed codec reads `codec-unsupported`.
 3. Rotation 0, and a codec that keeps an interlaced stream's fields together in frames (`codesInterlacedFieldsApart`).
 4. `selectVideoOutput` (below), and a route that presents the stream's scan (`refusesVideoScan`).
 5. `selectPlaybackAudio`.
@@ -34,6 +35,9 @@ A host calls these, in this order, for each playback:
 7. The runtime budget.
 
 An ineligible result carries its reason, and the host falls back.
+
+The worker refuses what only the file shows, with a message that names the check: an MPEG-4 Part 2 track (`no decode route: mpeg4`), a track whose edit list Mediabunny cannot honor (`getUnsupportedFeatures()`), an AVI video track that outruns its `idx1` index (`opendml-index-unread`), HEVC in AVI (`no presentation order: hevc`), and a DTS Express audio track (`no decode route: dtse`).
+On the frame-pool route an MPEG-TS or M2TS track of MPEG-1, MPEG-2, or VC-1 must carry the negotiated codec (`container-codec`), and takes its first sequence header's extradata as codec private data (`sequence-header-missing` when none of its first 64 packets has one).
 
 ## Probes and caching
 

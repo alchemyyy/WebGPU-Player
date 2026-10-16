@@ -1,6 +1,7 @@
 /* eslint-disable no-restricted-globals */
 import {
     AudioSampleSink,
+    AviInputFormat,
     BlobSource,
     EncodedPacketSink,
     Input,
@@ -17,6 +18,9 @@ import {
 } from 'mediabunny';
 
 import { microsecondsToSeconds, secondsToMicroseconds, type Microseconds } from '../MediaTime';
+import { hasIncompleteAVIIndex } from '../demux/AVIIndexCoverage';
+import { findUnsupportedTrackFeature } from '../demux/UnsupportedTrackFeatures';
+import { getTransportStreamVideoCodec, readTransportStreamVideoDecoderDescription } from '../demux/mpeg/MPEGTransportStreamVideoConfiguration';
 import { isDolbyVisionDualLayerProfile } from '../demux/dolby-vision/DolbyVisionProfiles';
 import { getAudioSampleWindow } from '../audio/AudioSampleWindow';
 import { settleConcurrentDecodeStreams } from './ConcurrentDecodeStreams';
@@ -29,7 +33,6 @@ import {
     stopWorkerTimingTrace
 } from '../TimingTrace';
 import { markHandledDecodeFailure, suppressHandledDecodeFailureRejections } from './HandledDecodeFailures';
-import { registerRequiredCustomAudioDecoder } from '../decode/audio/CustomAudioDecoderRegistration';
 import {
     DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
     type CustomAudioDownmixAlgorithm
@@ -57,7 +60,8 @@ import {
 } from '../demux/AudioStartPacket';
 import {
     getContainerAudioCodec,
-    getDeclaredAudioSampleRate
+    getDeclaredAudioSampleRate,
+    isDTSExpressTrack
 } from '../demux/CustomAudioTrackMetadata';
 import { createEngineWorker, type EngineWorkerPath } from '../EngineAssets';
 import AudioDecodeWorkerClient, {
@@ -880,12 +884,23 @@ function getFocusedVideoRoute(request: Extract<DecodeWorkerRequest, { type: 'sta
 /**
  * Returns the codec private data a focused route's decoder receives, null for a route without any, and the track its packets come from.
  * MPEG-1 and MPEG-2 take their track's CodecPrivate when it has one; VC-1 and WMV3 always take codec private data, and a VfW track of either restamps its packets in presentation order.
+ * An MPEG-TS or M2TS track has no codec private data, so it takes its first sequence header's extradata, and stamps its packets in presentation order already.
  */
-function readFocusedVideoTrackConfiguration(
+async function readFocusedVideoTrackConfiguration(
     route: FocusedVideoRoute,
     internalCodecID: string,
     input: FocusedVideoTrackInput
-): Readonly<{ description: Uint8Array | null, videoTrack: InputVideoTrack }> {
+): Promise<Readonly<{ description: Uint8Array | null, videoTrack: InputVideoTrack }>> {
+    const transportStreamCodec = getTransportStreamVideoCodec(input.containerCodec);
+    if (transportStreamCodec !== null) {
+        const configuration = await readTransportStreamVideoDecoderDescription(transportStreamCodec, input.videoTrack);
+        if (configuration.status === 'failed') {
+            throw new UnsupportedCustomDecodeSourceError(
+                `The selected ${route.errorName} track has no decoder configuration: ${configuration.failure}`
+            );
+        }
+        return { description: configuration.description, videoTrack: input.videoTrack };
+    }
     switch (route.codec) {
         case 'jpeg2000':
             return { description: null, videoTrack: input.videoTrack };
@@ -907,10 +922,12 @@ function readFocusedVideoTrackConfiguration(
 
 /** Returns the check a track or its request fails for a focused route, as `code: detail`, or null when both match it. */
 function findFocusedVideoRouteMismatch(route: FocusedVideoRoute, input: FocusedVideoTrackInput): string | null {
+    // Mediabunny names the codecs of MPEG-TS and M2TS tracks, and leaves the other containers' tracks codec-less
     if (input.containerCodec !== null) {
-        return `container-codec: ${input.containerCodec}`;
-    }
-    if (typeof input.internalCodecID !== 'string' || !route.internalCodecIDs.includes(input.internalCodecID)) {
+        if (getTransportStreamVideoCodec(input.containerCodec) !== route.codec) {
+            return `container-codec: ${input.containerCodec}`;
+        }
+    } else if (typeof input.internalCodecID !== 'string' || !route.internalCodecIDs.includes(input.internalCodecID)) {
         return `codec-id: ${String(input.internalCodecID)}`;
     }
     if (input.request.videoOutputMode !== 'frame-pool') {
@@ -934,11 +951,11 @@ async function prepareFocusedVideoTrack(input: FocusedVideoTrackInput): Promise<
     if (mismatch !== null) {
         throw new UnsupportedCustomDecodeSourceError(`The selected video track does not match the negotiated ${route.errorName} route: ${mismatch}`);
     }
-    // A matching track's codec ID is one of the route's
+    // A matching track's codec ID is one of the route's, or its transport stream's stream type
     const internalCodecID = String(input.internalCodecID);
 
     const colorSpace = route.includeColorSpace ? await input.videoTrack.getColorSpace() : null;
-    const { description, videoTrack } = readFocusedVideoTrackConfiguration(route, internalCodecID, input);
+    const { description, videoTrack } = await readFocusedVideoTrackConfiguration(route, internalCodecID, input);
     const videoHardwareAcceleration = getCustomDecodeRequestHardwareAcceleration(input.request, null);
     return {
         availableVideoTracks: input.availableVideoTracks,
@@ -1099,6 +1116,25 @@ function requireRouteVideoCodec(codec: VideoCodec, request: Extract<DecodeWorker
     }
 }
 
+/** Refuses a video track Mediabunny identifies but no route can play as it demuxes it. */
+async function requireDemuxableVideoTrack(input: Input, videoTrack: InputVideoTrack, codec: VideoCodec | null): Promise<void> {
+    // Mediabunny identifies MPEG-4 Part 2, which neither WebCodecs nor a decoder package decodes, and the engine keeps no CPU video decoder
+    if (codec === 'mpeg4') {
+        throw new UnsupportedCustomDecodeSourceError('The selected video codec has no decode route: mpeg4');
+    }
+    const unsupportedVideoFeature = await findUnsupportedTrackFeature(videoTrack);
+    if (unsupportedVideoFeature !== null) {
+        throw new UnsupportedCustomDecodeSourceError(`The selected video track has an edit list Mediabunny cannot honor: ${unsupportedVideoFeature}`);
+    }
+    if (await hasIncompleteAVIIndex(input, videoTrack)) {
+        throw new UnsupportedCustomDecodeSourceError('The selected AVI video track outruns its idx1 index: opendml-index-unread');
+    }
+    // AVI stamps packets in decode order, which the owned HEVC path would present as they are
+    if (codec === 'hevc' && await input.getFormat() instanceof AviInputFormat) {
+        throw new UnsupportedCustomDecodeSourceError('The selected AVI video track has no presentation order: hevc');
+    }
+}
+
 async function prepareVideoTrack(
     input: Input,
     run: DecodeRun,
@@ -1132,6 +1168,7 @@ async function prepareVideoTrack(
         videoTrack.getDisplayHeight(),
         videoTrack.getDisplayWidth()
     ]);
+    await requireDemuxableVideoTrack(input, videoTrack, codec);
     const dimensions = [ codedHeight, codedWidth, displayHeight, displayWidth ];
     if (dimensions.some(dimension => !Number.isSafeInteger(dimension) || dimension <= 0)) {
         throw new UnsupportedCustomDecodeSourceError('The selected video dimensions are invalid');
@@ -1270,10 +1307,17 @@ async function getSelectedAudioTrackMetadata(
         audioTrack.getSampleRate(),
         audioTrack.getTimeResolution()
     ]);
-    // Matroska and ISO BMFF DTS and TrueHD tracks have no Mediabunny codec, which only a package decodes
+    // Matroska and ISO BMFF TrueHD tracks, and QuickTime DTS core tracks, have no Mediabunny codec, which only a package decodes
     const sampleRate = getDeclaredAudioSampleRate(internalCodecID, declaredSampleRate);
     if ((!codec || !decoderConfig) && getContainerAudioCodec(codec, internalCodecID) === null) {
         throw new UnsupportedCustomDecodeSourceError('The selected audio codec configuration is unavailable');
+    }
+    if (isDTSExpressTrack(codec, decoderConfig)) {
+        throw new UnsupportedCustomDecodeSourceError('The selected audio codec has no decode route: dtse');
+    }
+    const unsupportedAudioFeature = await findUnsupportedTrackFeature(audioTrack);
+    if (unsupportedAudioFeature !== null) {
+        throw new UnsupportedCustomDecodeSourceError(`The selected audio track has an edit list Mediabunny cannot honor: ${unsupportedAudioFeature}`);
     }
     if (!Number.isSafeInteger(channelCount) || channelCount <= 0 || channelCount > MAX_DECODED_AUDIO_CHANNELS) {
         throw new UnsupportedCustomDecodeSourceError('The selected audio channel count is unsupported');
@@ -1418,7 +1462,6 @@ async function prepareMediabunnyDecodedAudioTrack(
             'The selected audio track does not match a qualified decoded PCM route'
         );
     }
-    registerRequiredCustomAudioDecoder(codec);
     const canDecode = await audioTrack.canDecode();
     if (!canDecode) {
         throw new UnsupportedCustomDecodeSourceError(

@@ -17,7 +17,17 @@
 1. Install the dependencies.
    In a standalone checkout, run `npm ci` in the engine root.
    When a host lists the engine as an npm workspace, run `npm ci` in the host root instead; the engine then has no `node_modules` of its own.
-2. Build the engine's WebAssembly modules, and the decoder projects' packages, once per checkout and again after their sources change:
+   Inside a host, an `npm install` or `npm ci` run in the engine root resolves to the host's workspace and rewrites its lockfile; pass `--workspaces=false` to install the engine standalone there.
+2. Fetch the Mediabunny fork, which the engine demuxes with:
+
+   ```sh
+   git submodule update --init --depth 1 vendor/mediabunny
+   ```
+
+   Nothing installs it from npm: `tsconfig.json` maps `mediabunny` to the folder, and `node scripts/mediabunny.mjs` builds its `dist/` with the fork's own pinned toolchain.
+   The typecheck, test, lint, and build scripts run that step first and skip it while `dist/webgpu-player-build.json` names the checked-out commit; `--force` rebuilds.
+   See [Decisions](decisions.md#repository) for why it is a fork, and which pull requests it merges.
+3. Build the engine's WebAssembly modules, and the decoder projects' packages, once per checkout and again after their sources change:
 
    ```sh
    make -C wasm all
@@ -28,7 +38,7 @@
    Activate Emscripten with `emsdk_env` first, or append `EMSDK=/path/to/emsdk`.
    The builds write `bin/wasm/` and `bin/wgpud/`, which are ignored; `make -C wgpud sources` fetches the pinned FFmpeg and dcadec only once.
    See [WebAssembly build](decoders.md).
-3. Run the checks from the engine root:
+4. Run the checks from the engine root:
 
    ```sh
    npm run typecheck

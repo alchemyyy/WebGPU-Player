@@ -13,9 +13,6 @@ import {
 } from 'mediabunny';
 
 import { MEDIABUNNY_PCM_DECODER_CODECS } from 'webgpu-player/audio/CustomAudioOutputPolicy';
-import {
-    registerMediabunnyPCMBuiltinDecoderAvailability
-} from 'webgpu-player/decode/audio/MediabunnyPCMBuiltinDecoderAvailability';
 
 const EXPECTED_SAMPLES = new Float32Array([ 0, 0.01, -0.02, 0.05, 0.1 ]);
 const SAMPLE_RATE = 44_100;
@@ -72,7 +69,7 @@ describe('Mediabunny PCM audio decode integration', () => {
     it.each(MEDIABUNNY_PCM_DECODER_CODECS)(
         'round-trips %s through the public MOV demux and AudioSampleSink path',
         async codec => {
-            registerMediabunnyPCMBuiltinDecoderAvailability();
+            // Mediabunny 1.61 counts its own mu-law and A-law decoders in canDecode(), so nothing is registered first
             const vector = await createPCMVector(codec);
             const input = new Input({
                 formats: ALL_FORMATS,

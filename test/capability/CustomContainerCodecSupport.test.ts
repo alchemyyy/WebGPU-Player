@@ -42,10 +42,35 @@ describe('CustomContainerCodecSupport', () => {
     });
 
     it.each([
+        [ 'h264', 'mp3' ],
+        [ 'vp8', 'pcm_s16le' ],
+        [ 'vp9', 'aac' ],
+        [ 'av1', 'ac3' ],
+        [ 'h264', 'pcm_alaw' ]
+    ] as const)('carries %s with %s in AVI, which the fork demuxes', (videoCodec, audioCodec) => {
+        expect(supportsCustomContainerCodecCombination([ 'avi' ], videoCodec, audioCodec)).toBe(true);
+    });
+
+    it.each([
+        [ 'ts', 'mpeg1video', 'mp3' ],
+        [ 'ts', 'mpeg2video', 'ac3' ],
+        [ 'm2ts', 'mpeg2video', 'aac' ],
+        [ 'mts', 'vc1', 'eac3' ],
+        [ 'm2ts', 'vc1', 'ac3' ]
+    ] as const)('carries %s %s with %s, which the fork demuxes', (container, videoCodec, audioCodec) => {
+        expect(supportsCustomContainerCodecCombination([ container ], videoCodec, audioCodec)).toBe(true);
+    });
+
+    it.each([
+        [ 'avi', 'hevc', 'ac3' ],
+        [ 'avi', 'h264', 'flac' ],
+        [ 'avi', 'h264', 'vorbis' ],
+        [ 'avi', 'h264', 'eac3' ],
+        [ 'avi', 'mpeg2video', 'mp3' ],
         [ 'mkv', 'jpeg2000', 'flac' ],
         [ 'webm', 'h264', 'opus' ],
         [ 'webm', 'vp9', 'ac3' ],
-        [ 'ts', 'vc1', 'ac3' ],
+        [ 'ts', 'wmv3', 'ac3' ],
         [ 'mp4', 'h264', 'mlp' ],
         [ 'ts', 'hevc', 'dts' ]
     ] as const)(

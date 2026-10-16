@@ -44,6 +44,8 @@ The HEVC range-extension, AV1 Dolby Vision, HDR10+ AV1, and HDR10+ VP9 generator
 | `generate_dolby_vision_AV1_vectors.py` | `dolby-vision-av1/profile10.{0,1,2,4}.{mp4,mkv}` and `expectations.json`, from the RPU payloads in `src/capability/vectors/test/dolby-vision-rpu/` |
 | `generate_HDR10_plus_AV1_vectors.py` | `hdr10plus-av1/hdr10plus.{mp4,mkv}` and `expectations.json` |
 | `generate_HDR10_plus_VP9_vectors.py` | `hdr10plus-vp9/hdr10plus.{webm,mkv}` and `expectations.json` |
+| `generate_AVI_demux_vectors.py` | `avi/*.avi`, FFmpeg encodes in FFmpeg's AVI muxer: H.264 with B-frames and VBR MP3, H.264 with CBR MP3, VP8 with PCM, VP9 with AAC, AV1 with AC-3, HEVC (refused in AVI), and MPEG-4 Part 2 under `XVID` (no route) |
+| `generate_transport_stream_demux_vectors.py` | `mpeg-ts/*.{ts,m2ts}`: MPEG-1 with MP3 in MPEG-TS alone, since BDAV M2TS carries neither; MPEG-2 with B-frames and AC-3; and the VC-1 qualification vector, which FFmpeg cannot encode, rebuilt as an elementary stream with its headers and frame start codes in band and remuxed |
 
 Two helpers serve them: `generated_output.py` (shared write, check, and install helpers) and `engine_layout.py` (the engine's folders, read from `tools/constants.json` through `tools/constants.py`).
 The TrueHD generator computes the TypeScript import paths it embeds from the same constants, so moving a folder only needs a rerun.

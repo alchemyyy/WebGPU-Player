@@ -3,20 +3,20 @@ import { describe, expect, it } from 'vitest';
 import {
     getAudioTimestampToleranceMicroseconds,
     getContainerAudioCodec,
-    getDeclaredAudioSampleRate
+    getDeclaredAudioSampleRate,
+    isDTSExpressTrack
 } from 'webgpu-player/demux/CustomAudioTrackMetadata';
 
 // ISO BMFF reads a 32-bit integer rate as 16.16 fixed point
 const ISO_BASE_MEDIA_SAMPLE_RATE_SCALE = 0x1_0000;
+// Mediabunny's decoder configuration codecs for DTS Express and the DTS core
+const DTS_EXPRESS_CODEC_STRING = 'dtse';
+const DTS_CORE_CODEC_STRING = 'dtsc';
 
 describe('CustomAudioTrackMetadata', () => {
     it.each([
-        [ 'A_DTS', 'dts' ],
-        // The QuickTime DTS core entry, whose fourcc ends in a space
+        // The QuickTime DTS core entry, whose fourcc ends in a space, which Mediabunny does not map
         [ 'DTS ', 'dts' ],
-        [ 'dtsc', 'dts' ],
-        [ 'dtsh', 'dts' ],
-        [ 'dtsl', 'dts' ],
         [ 'A_MLP', 'mlp' ],
         [ 'A_TRUEHD', 'truehd' ],
         [ 'mlpa', 'truehd' ]
@@ -28,6 +28,11 @@ describe('CustomAudioTrackMetadata', () => {
         // DTS LBR and DTS-UHD, which the engine does not identify
         [ null, 'dtse' ],
         [ null, 'dtsx' ],
+        // Mediabunny maps these DTS tracks itself
+        [ null, 'A_DTS' ],
+        [ null, 'dtsc' ],
+        [ null, 'dtsh' ],
+        [ null, 'dtsl' ],
         // Only the exact fourcc maps
         [ null, 'DTS' ],
         [ null, 'A_AAC' ],
@@ -36,6 +41,13 @@ describe('CustomAudioTrackMetadata', () => {
         [ 'eac3', 'A_DTS' ]
     ] as const)('leaves the %s track with internal ID %s to Mediabunny', (codec, internalCodecID) => {
         expect(getContainerAudioCodec(codec, internalCodecID)).toBeNull();
+    });
+
+    it('marks only Mediabunny\'s DTS Express configuration as DTS Express', () => {
+        expect(isDTSExpressTrack('dts', { codec: DTS_EXPRESS_CODEC_STRING, numberOfChannels: 2, sampleRate: 48_000 })).toBe(true);
+        expect(isDTSExpressTrack('dts', { codec: DTS_CORE_CODEC_STRING, numberOfChannels: 6, sampleRate: 48_000 })).toBe(false);
+        expect(isDTSExpressTrack('dts', null)).toBe(false);
+        expect(isDTSExpressTrack('eac3', { codec: DTS_EXPRESS_CODEC_STRING, numberOfChannels: 2, sampleRate: 48_000 })).toBe(false);
     });
 
     it('recovers the integer rate of a Dolby TrueHD ISO BMFF sample entry', () => {

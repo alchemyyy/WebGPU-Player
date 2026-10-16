@@ -13,3 +13,7 @@
 	url = https://aomedia.googlesource.com/aom
 	shallow = true
 	update = none
+[submodule "vendor/mediabunny"]
+	path = vendor/mediabunny
+	url = https://github.com/alchemyyy/mediabunny.git
+	shallow = true

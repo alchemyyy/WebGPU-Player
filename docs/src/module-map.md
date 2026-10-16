@@ -114,7 +114,9 @@ All worker code unless marked.
 - `MatroskaBlockAdditions.ts`: wraps Mediabunny's Matroska and WebM formats so their demuxers keep every BlockAdditional but alpha, and reads a packet's additions, such as VP9 HDR10+.
 - `ContainerVideoScan.ts`: a video track's scan as its container declares it: Matroska's FlagInterlaced and FieldOrder, recorded while Mediabunny's demuxer parses the track entry, or an ISO base media sample entry's `fiel` box.
 - `CustomDecodeTrackSelection.ts`: track lookup by ordinal within one media type.
-- `CustomAudioTrackMetadata.ts`: the Matroska and ISO BMFF DTS and TrueHD tracks, whose codec Mediabunny does not map, declared-rate recovery for their sample entries, and the decoded audio timestamp tolerance.
+- `CustomAudioTrackMetadata.ts`: the Matroska and ISO BMFF DTS and TrueHD tracks whose codec Mediabunny does not map (`DTS `, `mlpa`), DTS Express detection, declared-rate recovery for their sample entries, and the decoded audio timestamp tolerance.
+- `AVIIndexCoverage.ts`: whether an AVI track's indexed packets end well before its stream header's declared length, as an OpenDML file's do past its first RIFF list.
+- `UnsupportedTrackFeatures.ts`: the first feature, such as an edit list, that Mediabunny reports it cannot honor for a track.
 - `AudioStartPacket.ts`: the packet an audio attempt starts from, without Mediabunny's proof scans when the track starts late.
 - `ISOBaseMediaSampleEntryChildBox.ts`: reads a child box of an ISO base media track's first sample entry, such as `dvc1` or `av1C`, from the `moov` bytes Mediabunny keeps.
 
@@ -152,6 +154,7 @@ All worker code unless marked.
 ### demux/mpeg/
 
 - `MatroskaMPEGVideoConfiguration.ts`: a Matroska `V_MPEG1` or `V_MPEG2` track's CodecPrivate, the sequence header FFmpeg hands its decoder, or none.
+- `MPEGTransportStreamVideoConfiguration.ts`: the engine codec of an MPEG-TS or M2TS MPEG-1, MPEG-2, or VC-1 track, and its codec private data, the extradata of its first packet with a sequence header, as FFmpeg's `extract_extradata` takes it.
 
 ### demux/vc1/
 
@@ -226,7 +229,6 @@ The audio half of [decoder packages](decoder-packages.md).
 - `AudioDecoderManifest.ts`: parses an audio package's `//!` header.
 - `AudioDecoderPackageInstance.ts` [worker]: one decoder on its own instance of a package's module, which drives version 1 of the audio decoder interface and copies each block out; the selection of a package and codec, and its validators across worker boundaries.
 - `PackageSoftwareAudioDecoder.ts` [worker]: owns one package decoder in the audio decode worker, checks each block's layout and rate, and stamps blocks without a timestamp after their packet's earlier ones.
-- `CustomAudioDecoderRegistration.ts`, `MediabunnyPCMBuiltinDecoderAvailability.ts`: what Mediabunny needs before it decodes a track, which is only G.711 availability.
 
 ### decode/packages/
 
@@ -295,9 +297,9 @@ The authorization vectors are in `capability/vectors/`.
 - `test/helpers/dolbyVisionAV1ITUTT35Payload.ts`, `test/helpers/dolbyVisionMixedRPUVector.ts`: wrap an HEVC RPU in the AV1 EMDF T.35 container, and build RPUs with mixed and linear pieces.
 - `test/helpers/libraryAssets.ts`: the asset build's tables from `scripts/library-assets.mjs`, and a served binary read as bytes from the file the build copies, since tests have no server for its URL.
 - `test/helpers/decoderPackages.ts`: video decoder packages for tests, assembled with the engine's package tool or built in memory, and the decoder projects' sources, vectors, and built packages.
+- `test/helpers/postprocessingPasses.ts`: the pass files of the pass projects, one by project and name, or all of them as the asset build copies them.
 - `test/helpers/audioDecoderPackageStubs.ts`, `test/helpers/scriptedAudioDecoderModule.ts`, `test/helpers/audioDecoderPackageResults.ts`: the smallest audio package the loader accepts; a module of the audio decoder interface scripted in JavaScript, found again after a structured clone by a custom section; and the packets and results the decoder projects' tests use.
 - `test/helpers/webAssemblyModuleEncoder.ts`: encodes small WebAssembly modules without a toolchain, for the package loader's and the interfaces' tests.
-- `test/helpers/postprocessingPasses.ts`: the pass files of the pass projects, one by project and name, or all of them as the asset build copies them.
 - `test/helpers/fakeIndexedDB.ts`: an in-memory IndexedDB of the parts the package stores use: versioned opens with upgrades, keyed object stores, and transactions that apply their writes only when every request succeeds.
 - `test/helpers/vc1Media.ts`: synthetic VC-1 and WMV3 sequence and picture headers, Matroska Video for Windows files, and MP4 `vc-1` files.
 - `test/helpers/matroskaElements.ts`, `test/helpers/isoBaseMediaBoxes.ts`: EBML elements and ISO base media boxes, and a file of one video track in each, with any codec ID or sample entry, CodecPrivate or none, and boxes ahead of `ftyp`.

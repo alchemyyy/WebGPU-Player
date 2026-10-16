@@ -17,11 +17,12 @@ import { getContainerAudioCodec } from 'webgpu-player/demux/CustomAudioTrackMeta
 const MATROSKA_VECTOR_PATH = resolve(TEST_VECTORS_DIRECTORY, 'dts', 'core_51_24_48_768_0.mka');
 const MATROSKA_DTS_CODEC_ID = 'A_DTS';
 const DTS_CODEC = 'dts';
+const DTS_CORE_CODEC_STRING = 'dtsc';
 const DTS_CHANNEL_COUNT = 6;
 const DTS_SAMPLE_RATE = 48_000;
 
 describe('Mediabunny DTS demux integration', () => {
-    it('surfaces Matroska A_DTS packets, which the engine identifies by their codec ID', async () => {
+    it('maps Matroska A_DTS tracks to dts itself, so the engine needs no codec ID of its own', async () => {
         const input = new Input({
             formats: ALL_FORMATS,
             source: new BufferSource(new Uint8Array(readFileSync(MATROSKA_VECTOR_PATH)))
@@ -33,10 +34,10 @@ describe('Mediabunny DTS demux integration', () => {
             const track = tracks[0];
             const codec = await track.getCodec();
             const internalCodecID = await track.getInternalCodecId();
-            expect(codec).toBeNull();
-            expect(await track.getDecoderConfig()).toBeNull();
+            expect(codec).toBe(DTS_CODEC);
+            expect((await track.getDecoderConfig())?.codec).toBe(DTS_CORE_CODEC_STRING);
             expect(internalCodecID).toBe(MATROSKA_DTS_CODEC_ID);
-            expect(getContainerAudioCodec(codec, internalCodecID)).toBe(DTS_CODEC);
+            expect(getContainerAudioCodec(codec, internalCodecID)).toBeNull();
             expect(await track.getNumberOfChannels()).toBe(DTS_CHANNEL_COUNT);
             expect(await track.getSampleRate()).toBe(DTS_SAMPLE_RATE);
 

@@ -37,6 +37,16 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
   A run now starts every selected probe's downloads at once and each probe decodes only once its own are done; decoding stays one probe at a time.
   Worker scripts and glue were warmed in the HTTP cache rather than spawned early, so no worker or compile competed with a running probe's real-time-factor measurement.
   The exact probes and their measurements left with the CPU decoders (10-13), so only the range-extension probes download vectors, and nothing is warmed.
+- AVI carries only what the fork's AVI demuxer and the engine's routes play (10-15).
+  The rule takes H.264, VP8, VP9, and AV1 with AAC, MP3, AC-3, and the PCM formats WAVEFORMATEX maps, all checked against FFmpeg-made AVI vectors.
+  HEVC stays out: AVI keeps no presentation times, and the owned HEVC path presents packets as stamped, while H.264's sample sink reorders by timestamp, except on WebKit.
+  FLAC and Vorbis in AVI carry no decoder description Mediabunny reads, and WAVE_FORMAT_EXTENSIBLE is not mapped.
+  The demuxer reads no OpenDML index, so `AVIIndexCoverage.ts` refuses a video track whose stream header's declared length outruns its `idx1` packets by more than a second, as `opendml-index-unread`, rather than stopping near 1 GiB.
+- A known codec without a route is refused as such (10-15).
+  Mediabunny identifies MPEG-4 Part 2, and no WebCodecs decoder or package decodes it, so eligibility answers `video-codec-without-route` for it, H.263, MS-MPEG4, and Theora, and the worker refuses an MPEG-4 Part 2 track with `The selected video codec has no decode route: mpeg4`.
+- A track whose edit list Mediabunny cannot honor is refused (10-15).
+  `getUnsupportedFeatures()` reports an MP4 or MOV edit list Mediabunny applies only in part, `multiple_edits` or `non_unit_playback_rate`, whose packets it then times as if the rest were absent.
+  `UnsupportedTrackFeatures.ts` turns the first reported feature into a refusal of the video or audio track, since playing it would put the track at the wrong times.
 
 ## Video decode and Dolby Vision
 
@@ -152,12 +162,14 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
 - Mediabunny's Dolby Vision sample entries are mapped in the engine (10-06).
   Mediabunny 1.52.2 parses `dvh1`, `dvhe`, `dva1`, `dvav`, and `dav1` but gives them no codec.
   `ISOBaseMediaDolbyVisionSampleEntry.ts` writes the wrapped codec into the track's internal info, contained the way `MatroskaVFWVideoConfiguration.ts` is, so Mediabunny itself stays unmodified.
+  Mediabunny 1.61.5 still gives them no codec (10-15).
 - AV1 codec strings come from the bitstream (10-08).
   Without an `av1C` record, as in every Matroska track, Mediabunny 1.52.2 reads the first packet's sequence header, but it reads `decoder_model_info_present_flag` without timing info and the initial display delay flag once per operating point.
   Its `color_config` also skips the color description and range, and takes the Professional profile below 12 bits as 4:2:0.
   Every field after the operating points comes out wrong: a 10-bit Profile 10 Matroska vector reads as 8-bit and monochrome.
   `AV1DecoderConfiguration.ts` parses the first packet's sequence header as the specification defines it and replaces the cached decoder configuration's codec string before the first `getDecoderConfig()` or `canDecode()`, so `canDecode()` and the owned AV1 path use the stream's own string.
   It is contained the same way, and leaves a track whose first packet has no sequence header untouched.
+  Mediabunny 1.61.5 reads bit depth, monochrome, and chroma format correctly (10-15), but a header without a color description still gets the optional fields with BT.709 code points it never declared, so the replacement stays and leaves them out.
 - Mediabunny's dropped BlockAdditionals are recovered in the engine (10-09).
   Mediabunny 1.52.2 parses every BlockMore but keeps only BlockAddID 1, the alpha channel, so VP9 HDR10+ never reaches a packet's side data.
   An upstream change would wait for a release, and a patch to the installed package is lost on every install, so `MatroskaBlockAdditions.ts` contains the fix, as `ISOBaseMediaDolbyVisionSampleEntry.ts` and `AV1DecoderConfiguration.ts` contain theirs.
@@ -166,10 +178,11 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Each internal is shape-checked: when one differs, demuxing proceeds untouched and reads no additions, with one console warning, and `test/demux/MatroskaBlockAdditions.test.ts` fails on the committed vectors.
   HDR10+ is recognized by its ITU-T T.35 header, not by BlockAddID, so no BlockAdditionMapping is needed: FFmpeg writes BlockAddID 4 with a mapping in Matroska and without one in WebM, and reads it either way.
   A laced block keeps no additions, because Mediabunny replaces it with one new block per frame; Matroska muxers lace audio, not video.
+  Mediabunny 1.61.5 still keeps only BlockAddID 1 (10-15).
 - Header-stripped laced Matroska blocks are split before their content is decoded (10-09).
   Older mkvmerge releases moved the leading bytes of every AC-3, DTS, and MP3 frame into the track's ContentCompression (header stripping), and laced audio by default.
   The Matroska specification scopes a block's content encoding to its frames, excluding the lacing data, and FFmpeg reads it that way.
-  Mediabunny 1.52.2, and 1.61.3 too, restores the stripped bytes ahead of a laced block's lace header, so it misreads the frame count and no frame decodes.
+  Mediabunny 1.52.2, and 1.61.3 and the fork's 1.61.5 too, restores the stripped bytes ahead of a laced block's lace header, so it misreads the frame count and no frame decodes.
   `CustomDecodeInputFormats.ts` gives the worker a Matroska format whose demuxer splits such a block as stored and then restores each frame's bytes, contained as `MatroskaBlockAdditions.ts` is, which wraps it in turn.
   When the internals differ, demuxing proceeds untouched with one console warning, and `test/demux/CustomDecodeInputFormats.test.ts` fails.
   Its last case fails once Mediabunny itself reads such blocks correctly, and the replacement can then go.
@@ -177,6 +190,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   After a Mediabunny custom decoder rejects, Mediabunny 1.52.2 queues the decoder's `close()` behind the failed call without a handler, so the same error resurfaces as an unhandled rejection and the decoder is never closed.
   The worker marks every failure it catches (`HandledDecodeFailures.ts`) and prevents the unhandled-rejection report of a marked error only, so any other unhandled rejection is still reported.
   The unclosed decoder ends with its worker: the session replaces a worker whose run failed, and a worker that suppressed such a rejection asks for its replacement in its next `stopped`.
+  Mediabunny 1.61.5 still chains `close()` with `void` behind the rejected call (10-15).
 - The bundled HEVC decoder was FFmpeg's (10-10), until the CPU decoders left (10-13).
   hevc.js (`@hevcjs/core`), the decoder before it, rejects the first slice of every stream that enables tiles (`tiles_enabled_flag`), and Ultra HD Blu-ray encodes commonly use tiles, as ATEME Titan's do.
   Such sources failed on Firefox on Windows, which always took the bundled route, and fell back to a server transcode.
@@ -420,14 +434,24 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
 - VC-1 in MP4 and MOV reads its `dvc1` box through Mediabunny's internals (10-13).
   Mediabunny 1.52.2 lists a `vc-1` track and its samples but skips the `dvc1` box, so `ISOBaseMediaVC1Configuration.ts` reads it from the `moov` bytes Mediabunny keeps (`moovSlice`, `sampleTableByteOffset`), and the worker builds its packet track with the `InputVideoTrack` constructor.
   Each internal is checked, and a change fails the track with a named check; only the Advanced profile's `dvc1` is read, as FFmpeg reads it.
+  Mediabunny 1.61.5 still skips `dvc1` (10-15).
 - AV1's codec private data reads through Mediabunny's internals too (10-14).
   Mediabunny 1.52.2 reads an `av1C` box only for its codec string and keeps a Matroska `V_AV1` CodecPrivate without handing it on, so an AV1 package's parser saw no sequence header before the first temporal unit and could declare no maximum frame size.
   On the frame-pool route `AV1CodecConfigurationRecord.ts` reads the CodecPrivate from the internal track, or the `av1C` box of an `av01` or `dav1` sample entry through the `moov` reader the `dvc1` path now shares (`ISOBaseMediaSampleEntryChildBox.ts`), and copies the record unchecked, as FFmpeg's demuxers do.
   A container without one hands nothing, since temporal units carry their sequence headers, and a change in the internals fails the track with a named check.
+  Mediabunny 1.61.5 still keeps the CodecPrivate to itself (10-15).
 - VC-1 in MPEG-TS and M2TS is unreachable (10-13).
   Mediabunny 1.52.2 drops stream type 0xEA, and its video setup and packet splitter handle only AVC and HEVC, in private methods the engine cannot wrap.
   Once Mediabunny surfaces the stream, the engine needs only the codec ID, extradata from the first key packet, and `vc1` in the transport stream rule.
   MPEG-2 in a transport stream is unreachable for the same reason.
+  The fork surfaces all three since 10-15, so they play; see the entry on MPEG-1, MPEG-2, and VC-1 in transport streams.
+- MPEG-1, MPEG-2, and VC-1 play from MPEG-TS and M2TS through the fork (10-15).
+  The fork reads stream types 0x01 and 0x02, and 0xEA only under the `VC-1` registration descriptor, and splits packets as FFmpeg's `mpeg1_find_frame_end` and `vc1_parse` do, so each packet is FFmpeg's, byte for byte.
+  A transport stream track has no codec private data, so `MPEGTransportStreamVideoConfiguration.ts` takes the extradata of its first packet that holds a sequence header, by FFmpeg's `extract_extradata` rule: MPEG takes the sequence header and its extensions, VC-1 the sequence header and entry points.
+  The fork sizes a VC-1 track by the last entry point before its first frame, as FFmpeg's decoder does, since a stream may declare a larger maximum in its sequence header.
+  Fourteen MPEG-2 and VC-1 streams, remuxed by FFmpeg into MPEG-TS and M2TS, and the engine's own TS vectors, decode on Dawn bit-exact against the same streams in Matroska.
+  The one difference found is a stream whose elementary source put six bytes ahead of its first start code: Mediabunny drops bytes before a packet's first start code, as it does for H.264 and HEVC, and FFmpeg's decoder decodes that first packet differently without them.
+  BDAV M2TS carries neither MPEG-1 video nor MP3; FFmpeg's M2TS mode writes them as private data, which Mediabunny rightly skips.
 - A package's output format follows the stream's pixel format (10-13).
   It was 4:2:0 at the stream's bit depth, so a 4:2:2 or 4:4:4 MPEG-2 stream reached the decoder as I420 and failed as `chromaFormat`.
   The pixel format now names the chroma subsampling, an explicit BitDepth must agree with its samples, and one no frame pool holds, such as RGB, leaves the stream to its native routes.
@@ -447,6 +471,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   ISO/IEC 15444-3 puts the JP2 signature box ahead of `ftyp`, and Mediabunny 1.52.2 recognizes an ISO base media file only by an `ftyp` first, so no `.mj2` file opened.
   `CustomDecodeInputFormats.ts` adds a format ahead of Mediabunny's own that takes the signature box and an `ftyp` of brand `mjp2`, and hands the file to Mediabunny's MP4 demuxer, which skips the signature box.
   It reads the file's first bytes through Mediabunny's internal reader, contained the way the Matroska fix is: when the reader differs, it warns once and opens nothing.
+  Mediabunny 1.61.5 still requires an `ftyp` first (10-15).
 - The WGSL JPEG 2000 decoder follows FFmpeg's bitexact 9/7 path (10-13).
   FFmpeg's default irreversible 9/7 transform runs in floating point, whose rounding follows the CPU's SIMD, which WGSL's `f32` cannot reproduce.
   Its integer path, the one `-flags bitexact` selects, lifts in fixed point with defined rounding, so the decoder implements that, and the 9/7 vectors pin `-flags bitexact`.
@@ -746,6 +771,7 @@ These were settled on Firefox 157 on Windows.
   Two sample-rate fields need recovery.
   TrueHD writes the rate as a 32-bit integer, which reads back as 16.16.
   A DTS rate above 65535 Hz does not fit the 16-bit integer part, so muxers write zero, and the worker declares the 48 kHz core until the decoder reports the real rate.
+  Mediabunny 1.61.5 maps `dtsc`, `dtsh`, `dtsl`, and `dtse` itself (10-15), so the worker maps only `DTS ` and `mlpa`, and refuses a `dtse` track as `The selected audio codec has no decode route: dtse`, which `isDTSExpressTrack` tells from the core entries.
 - The `dts` package builds libdcadec with SIMD and link-time optimization (10-15).
   It built at `-O3` without either, while the FFmpeg audio packages used both, so nothing of libdcadec was vectorized.
   `-msimd128` and `-flto` grow the module from 268,676 to 332,684 bytes, each about half of that, and it decodes both DTS test vectors, Master Audio 7.1 and core 5.1, to the same samples as before.
@@ -797,6 +823,13 @@ These were settled on Firefox 157 on Windows.
 - The engine is its own repository (10-02): [WebGPU Player](https://github.com/alchemyyy/WebGPU-Player), MIT, with each vendored library under its own license.
   Hosts check it out as a git submodule and import it as `webgpu-player/*`.
   Its only host is the Jellyfin plugin's add-on.
+- Mediabunny comes from the user's fork, vendored as a submodule and aliased, not installed (10-15).
+  The fork, [alchemyyy/mediabunny](https://github.com/alchemyyy/mediabunny), is Mediabunny 1.61.5 with six upstream pull requests merged, each in a merge commit named after it with its authors' commits kept: #155 (AVI), #156 (MPEG-4 Part 2), #298 (MP4 chapters), #409 (AIFF), #443 (ASS subtitle muxing), and #495 (`getUnsupportedFeatures`).
+  On top of them the fork times AVI audio chunks as FFmpeg's `get_duration` does, and demuxes MPEG-1, MPEG-2, and VC-1 from MPEG-TS and M2TS.
+  `vendor/mediabunny` pins the fork's commit as a shallow submodule, the way the add-on pins its hls.js fork.
+  A `file:` dependency would have installed the fork's development dependencies into the host's lockfile, so nothing installs it: the tsconfig `paths` entry maps `mediabunny` to the folder for tsc, esbuild, and Vitest, the sandbox's Vite config and the host's webpack and Vitest configs alias it, and both ESLint configs ignore the import.
+  `scripts/mediabunny.mjs` builds the fork's `dist/` with its own pinned toolchain (`npm ci --ignore-scripts` in the folder, then its `tsc` and import-extension pass), stamps the commit in `dist/webgpu-player-build.json`, and skips the build while the stamp matches; the engine's typecheck, test, lint, and build scripts run it first.
+  The version move from 1.52.2 removed the engine's G.711 decoder registration, which Mediabunny 1.61.5 decodes itself, and the ISO BMFF DTS sample entry mappings, which it maps itself.
 - The engine is an npm workspace of its host (10-02).
   npm installs the engine's dependencies, so the host lists only what it uses directly.
   Inside the host the engine has no `node_modules` of its own, and its tooling finds packages by walking up from the engine root.

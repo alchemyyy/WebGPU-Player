@@ -90,7 +90,8 @@ Check: the engine checks from [Set up a checkout](setup.md), and the host's chec
 1. Change the folder in `tools/constants.json`.
    Every reader in [Repository layout](layout.md#folder-names-live-in-one-file) follows.
 2. Edit by hand the files that cannot read it:
-   - `.gitignore`, `.gitattributes`, `.gitmodules`, and `tsconfig.json`;
+   - `.gitignore`, `.gitattributes`, `.gitmodules`, and `tsconfig.json`, whose `paths` entry names the Mediabunny fork's folder;
+   - `sandbox/vite.config.ts`, whose alias names that folder too, and the host's webpack, Vitest, and tsconfig aliases of it;
    - `package.json`: its scripts, and its `imports` map, which sends `#codec_vector_assets/*` to the generated modules;
    - each decoder project's `decoder.json`, whose vectors name a layout key and a path under it;
    - this book.
