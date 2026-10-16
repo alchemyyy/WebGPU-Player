@@ -11,6 +11,7 @@ import {
 } from '../color/ColorPipeline';
 import { reconstructDolbyVisionBT2020PQ } from '../color/DolbyVisionColorTransform';
 import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../demux/dolby-vision/DolbyVisionRPUParser';
+import { waitForGPUCompletion } from '../GPUCompletion';
 import type {
     RawVideoPlaneDescriptor,
     TransferableRawVideoFrame
@@ -514,7 +515,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
             );
             step = 'render';
             device.queue.submit([ inputProbeCommandBuffer, commandBuffer ]);
-            await deadline.wait(device.queue.onSubmittedWorkDone());
+            await deadline.wait(waitForGPUCompletion(device, device.queue.onSubmittedWorkDone()));
             const validationPromise = device.popErrorScope();
             errorScopePushed = false;
             const validationError = await deadline.wait(validationPromise);

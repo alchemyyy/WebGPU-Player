@@ -15,6 +15,7 @@ import {
     processEncodedYUV,
     type ColorTriplet
 } from '../color/ColorPipeline';
+import { waitForGPUCompletion } from '../GPUCompletion';
 import { millisecondsToMicroseconds } from '../MediaTime';
 import { createBuiltinChain } from '../presentation/passes/builtin/BuiltinChains';
 import { PRESENTATION_FIELD_STATE } from '../presentation/passes/PassResources';
@@ -963,7 +964,7 @@ export class RawHDRPresentationAuthorizationRunner {
                 targetTexture,
                 'WebGPU raw HDR authorization commands'
             ) ]);
-            await deadline.wait(device.queue.onSubmittedWorkDone());
+            await deadline.wait(waitForGPUCompletion(device, device.queue.onSubmittedWorkDone()));
             const validationPromise = device.popErrorScope();
             errorScopePushed = false;
             const validationError = await deadline.wait(validationPromise);

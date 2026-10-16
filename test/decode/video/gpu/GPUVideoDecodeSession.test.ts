@@ -1,6 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { DecoderPackageVersion } from 'webgpu-player/decode/packages/DecoderPackageIdentity';
+import { GPU_COMPLETION_POLL_INTERVAL_MICROSECONDS } from 'webgpu-player/GPUCompletion';
+import { microsecondsToMilliseconds } from 'webgpu-player/MediaTime';
 import {
     BYTES_PER_WORD,
     INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH,
@@ -47,6 +49,8 @@ import { installWebGPUGlobals } from './webGPUGlobals';
 
 const DECODER_NAME = 'Session test';
 const BUFFER_LABEL_PREFIX = `GPU decoder ${DECODER_NAME}`;
+// How often a pending status readback polls the device with an empty submit
+const POLL_INTERVAL_MILLISECONDS = microsecondsToMilliseconds(GPU_COMPLETION_POLL_INTERVAL_MICROSECONDS);
 // The package a session's compiled decoder is kept under, by its id and content hash, and a rebuilt version of it; each test's device is new, so nothing carries over between tests
 const PACKAGE_VERSION: DecoderPackageVersion = { contentHash: 'c3'.repeat(32), id: 'session-test' };
 const REBUILT_PACKAGE_VERSION: DecoderPackageVersion = { contentHash: 'c4'.repeat(32), id: 'session-test' };
@@ -1216,6 +1220,45 @@ describe('GPUVideoDecodeSession', () => {
             expect(mapsWhileMapping).toBe(3);
             expect(submittedOnceFree).toBe(true);
             expect(device.dispatches).toHaveLength(packetCount);
+        });
+
+        it('counts its packets in flight until their readbacks apply, polls the device meanwhile, and wakes on the next readback', async () => {
+            vi.useFakeTimers({ toFake: [ 'setInterval', 'clearInterval' ] });
+            try {
+                const device = new MockGPUDevice();
+                device.manualMaps = true;
+                const session = await createSession(device, createManifest({ reorder: REORDER }));
+                // Two packets in flight, as the feed keeps them
+                const packetCount = 2;
+                for (let packetIndex = 0; packetIndex < packetCount; packetIndex += 1) {
+                    session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, packetIndex * FRAME_DURATION_MICROSECONDS, packetIndex === 0));
+                    session.submitPendingDecodeWork();
+                }
+                let nextReadbackApplied = false;
+                const nextReadback = session.waitForNextStatusReadback().then((): void => {
+                    nextReadbackApplied = true;
+                });
+
+                const inFlightWhileMapping = session.getInFlightPacketCount();
+                vi.advanceTimersByTime(POLL_INTERVAL_MILLISECONDS);
+                await Promise.resolve();
+                const appliedWhileMapping = nextReadbackApplied;
+                const pollsWhileMapping = device.pollCount;
+                device.settlePendingMaps();
+                await nextReadback;
+                await session.waitForStatusReadbacks();
+                vi.advanceTimersByTime(POLL_INTERVAL_MILLISECONDS);
+
+                expect(inFlightWhileMapping).toBe(packetCount);
+                expect(appliedWhileMapping).toBe(false);
+                expect(pollsWhileMapping).toBe(1);
+                expect(session.getInFlightPacketCount()).toBe(0);
+                expect(device.pollCount).toBe(pollsWhileMapping);
+                expect(device.submitCount).toBe(packetCount);
+                await expect(session.waitForNextStatusReadback()).resolves.toBeUndefined();
+            } finally {
+                vi.useRealTimers();
+            }
         });
 
         it('presents a frame only once its packet\'s status readback applied', async () => {

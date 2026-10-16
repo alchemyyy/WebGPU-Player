@@ -27,6 +27,9 @@ import type { HDR10PlusFrameMetadata } from '../../../demux/hdr/HDR10PlusMetadat
 
 // A picture index at most half the index range behind a picture is an earlier one
 const PICTURE_INDEX_HALF_RANGE = GPU_DECODER_OUTPUT_EVENT.pictureIndexModulus / 2;
+// Packets whose decode work may be in flight at once: the second keeps the GPU busy while the page learns that the first completed,
+// and a presentation submit queues behind no more than these
+const MAXIMUM_IN_FLIGHT_PACKETS = 2;
 
 /**
  * What a frame-pool generation's GPU decode session decodes: the decoder, its output format, the track's codec private data, and the pool's stream facts,
@@ -344,8 +347,8 @@ function countStreamChangePackets(changes: readonly StreamChange[]): number {
 
 /**
  * Drives the frame-pool route's GPU decode session for one generation at a time.
- * At most one packet's decode work is in flight on the presenter's queue, so a presented frame never waits behind more than one frame of decode;
- * the next packet goes once that work and its status readback complete.
+ * At most MAXIMUM_IN_FLIGHT_PACKETS packets' decode work is in flight on the presenter's queue, so a presented frame waits behind no more decode than that;
+ * each status readback that applies lets the next packet go.
  */
 export default class GPUVideoDecodeFeed {
     private creationRequest: GPUVideoDecodeSessionRequest | null = null;
@@ -360,10 +363,10 @@ export default class GPUVideoDecodeFeed {
     // Sessions a stream change replaced, kept until presentation releases their last frame
     private readonly retiredHandles = new Set<GPUVideoDecodeHandle>();
     private reuseCount = 0;
+    // The session whose next status readback the feed waits for, so a replaced session's readback never pumps its successor
+    private readbackWaitHandle: GPUVideoDecodeHandle | null = null;
     private sessionRequest: GPUVideoDecodeSessionRequest | null = null;
     private streamChangeCount = 0;
-    // The session whose decode work is in flight, so a replaced session's completion never releases its successor's
-    private submissionHandle: GPUVideoDecodeHandle | null = null;
     private submittedPacketCount = 0;
 
     constructor(factory: GPUVideoDecodeSessionFactory) {
@@ -674,8 +677,8 @@ export default class GPUVideoDecodeFeed {
     }
 
     /**
-     * Advances the stream changes: the session before the first change hears that its packets are complete, and once it decoded them and its
-     * submission completed, its last frames go to the frame queue and the change's session takes over, numbering its pictures on from the change.
+     * Advances the stream changes: the session before the first change hears that its packets are complete, and once it decoded them and their
+     * status readbacks applied, its last frames go to the frame queue and the change's session takes over, numbering its pictures on from the change.
      */
     private advanceStreamChanges(generation: FeedGeneration): void {
         for (let change = generation.streamChanges.at(0); change !== undefined; change = generation.streamChanges.at(0)) {
@@ -687,7 +690,12 @@ export default class GPUVideoDecodeFeed {
                 change.previousSessionEnded = true;
                 handle.session.endOfStream(change.previousSessionEvents);
             }
-            if (handle.session.getPendingPacketCount() > 0 || change.handle === null || this.reportSessionFailure(handle, generation)) {
+            if (
+                handle.session.getPendingPacketCount() > 0
+                || handle.session.getInFlightPacketCount() > 0
+                || change.handle === null
+                || this.reportSessionFailure(handle, generation)
+            ) {
                 return;
             }
             this.deliverFrames(handle, generation);
@@ -759,12 +767,12 @@ export default class GPUVideoDecodeFeed {
     }
 
     /**
-     * Submits the next packet's decode work unless a submission is in flight, then delivers the frames it made presentable.
-     * The next packet goes once the queue finished the work and the status readback applied, since the slots that readback frees can be what it waits for.
+     * Submits queued packets' decode work while fewer than MAXIMUM_IN_FLIGHT_PACKETS are in flight, then delivers the frames the session made presentable.
+     * While any is in flight, its status readback pumps again, since the readback and the slots it frees can be what the next packet waits for.
      */
     private pump(): void {
         const generation = this.generation;
-        if (!generation || generation.failed || this.submissionHandle !== null || this.creationRequest !== null) {
+        if (!generation || generation.failed || this.creationRequest !== null) {
             return;
         }
         this.advanceStreamChanges(generation);
@@ -773,42 +781,58 @@ export default class GPUVideoDecodeFeed {
             return;
         }
         const session = handle.session;
-        const submitted = session.submitPendingDecodeWork();
+        let consumedPacketCount = 0;
+        while (session.getInFlightPacketCount() < MAXIMUM_IN_FLIGHT_PACKETS && session.submitPendingDecodeWork()) {
+            consumedPacketCount += 1;
+        }
         this.collectRecoveries(handle);
         if (this.reportSessionFailure(handle, generation)) {
             return;
         }
+        if (consumedPacketCount > 0) {
+            this.submittedPacketCount += consumedPacketCount;
+            generation.callbacks.onCreditsReleased(consumedPacketCount);
+        }
         this.deliverFrames(handle, generation);
-        if (!submitted) {
-            // The session before a stream change may have just decoded its last packet
-            if (generation.streamChanges.length > 0 && session.getPendingPacketCount() === 0) {
-                this.advanceStreamChanges(generation);
-                if (this.handle !== handle) {
-                    this.pump();
-                }
-                return;
-            }
-            this.completeDrainIfEnded(handle, generation);
+        // A delivered frame's release may pump meanwhile, and hand over to a stream change's session, which that pump then runs
+        if (this.handle !== handle || generation.failed) {
             return;
         }
-        this.submittedPacketCount += 1;
-        generation.callbacks.onCreditsReleased(1);
-        this.submissionHandle = handle;
-        const completeSubmission = (): void => {
-            if (this.submissionHandle !== handle) {
+        if (session.getInFlightPacketCount() > 0) {
+            this.waitForStatusReadback(handle);
+            return;
+        }
+        // The session before a stream change may have just decoded its last packet
+        if (generation.streamChanges.length > 0 && session.getPendingPacketCount() === 0) {
+            this.advanceStreamChanges(generation);
+            if (this.handle !== handle) {
+                this.pump();
+            }
+            return;
+        }
+        this.completeDrainIfEnded(handle, generation);
+    }
+
+    /** Pumps once the session's next status readback applies; one wait at a time, and none that pumps a session the feed no longer runs. */
+    private waitForStatusReadback(handle: GPUVideoDecodeHandle): void {
+        if (this.readbackWaitHandle === handle) {
+            return;
+        }
+        this.readbackWaitHandle = handle;
+        const readbackApplied = (): void => {
+            if (this.readbackWaitHandle !== handle) {
                 return;
             }
-            this.submissionHandle = null;
-            if (this.handle !== handle || !this.generation) {
+            this.readbackWaitHandle = null;
+            const generation = this.generation;
+            if (this.handle !== handle || !generation) {
                 return;
             }
-            if (!this.reportSessionFailure(handle, this.generation)) {
+            if (!this.reportSessionFailure(handle, generation)) {
                 this.pump();
             }
         };
-        handle.device.queue.onSubmittedWorkDone()
-            .then((): Promise<void> => session.waitForStatusReadbacks())
-            .then(completeSubmission, completeSubmission);
+        handle.session.waitForNextStatusReadback().then(readbackApplied, readbackApplied);
     }
 
     /** Hands every frame the session made presentable to the frame queue, with its packet's HDR10+ state. */
@@ -879,6 +903,6 @@ export default class GPUVideoDecodeFeed {
         this.handle = null;
         this.sessionRequest = null;
         this.creationRequest = null;
-        this.submissionHandle = null;
+        this.readbackWaitHandle = null;
     }
 }

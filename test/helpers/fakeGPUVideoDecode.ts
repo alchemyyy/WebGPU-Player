@@ -21,7 +21,10 @@ export const FAKE_GPU_SLOT_COUNT = 4;
 // A device buffer limit that holds every test stream's pool and buffers
 const FAKE_BUFFER_BYTE_LIMIT = 2 ** 31;
 
-/** A decode session that decodes each submitted packet into one presentable frame at once, with no reorder, at its picture's own visible size when it has one. */
+/**
+ * A decode session that decodes each submitted packet into one presentable frame at once, with no reorder, at its picture's own visible size when it has one.
+ * Each submitted packet stays in flight, as its status readback would, until its queue completes the work submitted so far.
+ */
 export class FakeGPUVideoDecodeSession {
     /** The picture index a stream change continued the session's numbering from, or null when it numbers from 0 */
     continuedPictureIndex: number | null = null;
@@ -42,8 +45,10 @@ export class FakeGPUVideoDecodeSession {
     readonly releasedFrames: GPUDecodedFrame[] = [];
     resetCount = 0;
     readonly submittedPackets: GPUDecodePacket[] = [];
+    // The completion of each submitted packet whose work the queue has not completed yet
+    private readonly inFlightCompletions = new Set<Promise<void>>();
 
-    constructor(private readonly stream: GPUDecodeStreamFacts) {
+    constructor(private readonly stream: GPUDecodeStreamFacts, private readonly queue: ControlledQueue) {
         this.pool = { layout: { codedHeight: stream.codedHeight, codedWidth: stream.codedWidth, slotCount: FAKE_GPU_SLOT_COUNT } };
     }
 
@@ -66,6 +71,10 @@ export class FakeGPUVideoDecodeSession {
 
     getFreeSlotCount(): number {
         return this.freeSlotCount;
+    }
+
+    getInFlightPacketCount(): number {
+        return this.inFlightCompletions.size;
     }
 
     getPendingPacketCount(): number {
@@ -117,6 +126,10 @@ export class FakeGPUVideoDecodeSession {
             timestampMicroseconds: packet.timestampMicroseconds,
             visibleSize
         });
+        const completion = this.queue.onSubmittedWorkDone().then((): void => {
+            this.inFlightCompletions.delete(completion);
+        });
+        this.inFlightCompletions.add(completion);
         return true;
     }
 
@@ -128,8 +141,11 @@ export class FakeGPUVideoDecodeSession {
         return this.recoveries.splice(0);
     }
 
-    waitForStatusReadbacks(): Promise<void> {
-        return Promise.resolve();
+    /** Resolves once the next in-flight packet's work completed, at once when none is in flight. */
+    async waitForNextStatusReadback(): Promise<void> {
+        if (this.inFlightCompletions.size > 0) {
+            await Promise.race(this.inFlightCompletions);
+        }
     }
 }
 
@@ -178,7 +194,7 @@ export function createFakeGPUVideoDecodeSessionFactory(
             maximumBufferByteLength,
             sessionRequest.fallbackPictureSize ?? null
         );
-        const session = new FakeGPUVideoDecodeSession(stream);
+        const session = new FakeGPUVideoDecodeSession(stream, queue);
         requests.push(sessionRequest);
         sessions.push(session);
         return Promise.resolve({

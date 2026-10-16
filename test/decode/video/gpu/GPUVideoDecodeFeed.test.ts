@@ -102,6 +102,8 @@ const CHANGE_PICTURE_EVENTS = Uint32Array.of(EARLIER_PICTURE_EVENT, OWN_PICTURE_
 const FORMAT_FAILURE: GPUVideoDecodeFailure = { code: 'format-unsupported', detail: 'I444P12 not in I420' };
 // Submission completions that settle every packet of the stream-change tests
 const SETTLE_ROUND_COUNT = 8;
+// The packets whose decode work the feed keeps in flight at once
+const IN_FLIGHT_PACKET_LIMIT = 2;
 // Recoveries a session reports: a concealed slice twice, the later with another value, and a parser's failure that resynced
 const CONCEALED_RECOVERY: GPUVideoDecodeRecovery = { code: 'concealed', errorName: 'sliceHeader', value: 12 };
 const LATER_CONCEALED_VALUE = 30;
@@ -209,22 +211,23 @@ async function settle(): Promise<void> {
 }
 
 describe('GPUVideoDecodeFeed', () => {
-    it('creates the session once the track is described, then decodes the packets that waited, one submission at a time', async () => {
+    it('creates the session once the track is described, then decodes the packets that waited, two submissions in flight at a time', async () => {
         const harness = createHarness();
         harness.feed.start(harness.callbacks, INITIAL_VIDEO_EPOCH);
-        harness.feed.queuePacket(createPacket(0));
-        harness.feed.queuePacket(createPacket(1));
+        for (let index = 0; index <= IN_FLIGHT_PACKET_LIMIT; index += 1) {
+            harness.feed.queuePacket(createPacket(index));
+        }
 
         harness.feed.configure(createRequest(), { displayHeight: VISIBLE_HEIGHT, displayWidth: DISPLAY_WIDTH });
         await settle();
 
         expect(harness.factory).toHaveBeenCalledOnce();
         const session = harness.sessions[0];
-        expect(session.queuedPackets.map(packet => packet.reset)).toEqual([ true, false ]);
-        // The second packet waits for the first one's decode work
-        expect(session.submittedPackets).toHaveLength(1);
-        expect(harness.callbacks.creditsReleased).toBe(1);
-        expect(harness.callbacks.frames).toHaveLength(1);
+        expect(session.queuedPackets.map(packet => packet.reset)).toEqual([ true, false, false ]);
+        // The third packet waits until a packet in flight completes
+        expect(session.submittedPackets).toHaveLength(IN_FLIGHT_PACKET_LIMIT);
+        expect(harness.callbacks.creditsReleased).toBe(IN_FLIGHT_PACKET_LIMIT);
+        expect(harness.callbacks.frames).toHaveLength(IN_FLIGHT_PACKET_LIMIT);
         expect(harness.callbacks.frames[0]).toMatchObject({
             displayHeight: VISIBLE_HEIGHT,
             displayWidth: DISPLAY_WIDTH,
@@ -237,13 +240,13 @@ describe('GPUVideoDecodeFeed', () => {
         harness.queue.completeAll();
         await settle();
 
-        expect(session.submittedPackets).toHaveLength(2);
-        expect(harness.callbacks.creditsReleased).toBe(2);
+        expect(session.submittedPackets).toHaveLength(IN_FLIGHT_PACKET_LIMIT + 1);
+        expect(harness.callbacks.creditsReleased).toBe(IN_FLIGHT_PACKET_LIMIT + 1);
         expect(harness.feed.getTelemetry()).toMatchObject({
             decoderName: FAKE_GPU_DECODER_NAME,
             slotCount: FAKE_GPU_SLOT_COUNT,
             state: 'ready',
-            submittedPacketCount: 2
+            submittedPacketCount: IN_FLIGHT_PACKET_LIMIT + 1
         });
     });
 
@@ -551,6 +554,26 @@ describe('GPUVideoDecodeFeed stream changes', () => {
         expect(harness.callbacks.frames.map(frame => frame.mediaTimeMicroseconds)).toEqual([ 0, 1, CHANGE_PICTURE_INDEX, CHANGE_PICTURE_INDEX + 1 ].map(getTimestamp));
         expect(harness.callbacks.creditsReleased).toBe(4);
         expect(harness.feed.getTelemetry()).toMatchObject({ streamChangeCount: 1, submittedPacketCount: 4 });
+    });
+
+    it('hands over to a change\'s session only once the packets in flight on the session before it completed', async () => {
+        const harness = createHarness();
+        startConfigured(harness);
+        await settle();
+
+        queueChangingStream(harness, { format: CHANGED_FORMAT });
+        await settle();
+
+        const [ previousSession, changedSession ] = harness.sessions;
+        expect(previousSession.getInFlightPacketCount()).toBe(IN_FLIGHT_PACKET_LIMIT);
+        expect(changedSession.submittedPackets).toHaveLength(0);
+        expect(harness.feed.getTelemetry().streamChangeCount).toBe(0);
+
+        harness.queue.completeAll();
+        await settle();
+
+        expect(harness.feed.getTelemetry().streamChangeCount).toBe(1);
+        expect(changedSession.submittedPackets).toHaveLength(IN_FLIGHT_PACKET_LIMIT);
     });
 
     it('keeps the session before a change until presentation releases its last frame', async () => {

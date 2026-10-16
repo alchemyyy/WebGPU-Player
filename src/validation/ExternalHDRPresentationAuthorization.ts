@@ -14,6 +14,7 @@ import {
     type ColorTriplet
 } from '../color/ColorPipeline';
 import { rewriteHEVCAccessUnitColorDescriptionToBT709 } from '../demux/dolby-vision/DolbyVisionHEVCSplitter';
+import { waitForGPUCompletion } from '../GPUCompletion';
 import { createBuiltinChain } from '../presentation/passes/builtin/BuiltinChains';
 import type { BuiltinChain, BuiltinChainConfiguration } from '../presentation/passes/PassTypes';
 import type { PresentationExecutor } from '../presentation/passes/PresentationExecutor';
@@ -547,7 +548,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
             );
             step = 'render';
             device.queue.submit([ commandBuffer ]);
-            await deadline.wait(device.queue.onSubmittedWorkDone());
+            await deadline.wait(waitForGPUCompletion(device, device.queue.onSubmittedWorkDone()));
             const validationError = await deadline.wait(device.popErrorScope());
             errorScopePushed = false;
             if (validationError) {

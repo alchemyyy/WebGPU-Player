@@ -254,6 +254,11 @@ export class MockGPUDevice {
     readonly queue = {
         onSubmittedWorkDone: (): Promise<void> => Promise.resolve(),
         submit: (commandBuffers: readonly MockCommandBuffer[]): void => {
+            // An empty submit is a poll for completions, which submits no work
+            if (commandBuffers.length === 0) {
+                this.pollCount += 1;
+                return;
+            }
             this.submitCount += 1;
             for (const commandBuffer of commandBuffers) {
                 for (const command of commandBuffer.commands) {
@@ -272,6 +277,8 @@ export class MockGPUDevice {
             buffer.data.set(bytes, bufferOffset);
         }
     };
+    /** Empty submits, which poll the device for completions */
+    pollCount = 0;
     readonly shaderModuleCodes: string[] = [];
     submitCount = 0;
     writeBufferCount = 0;
