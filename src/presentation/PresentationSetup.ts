@@ -656,12 +656,18 @@ export async function getGPUVideoDecoderOffers(
     return candidates.map((decoderPackage: VideoDecoderPackage): GPUVideoDecoderOffer => createGPUVideoDecoderOffer(decoderPackage, target.format, maximumBufferByteLength));
 }
 
+/** How the GPU decode sessions of a factory submit their decode work. */
+export type GPUVideoDecodeSessionFactoryOptions = Readonly<{
+    /** Whether a large picture's decode work submits in slices, between which presentation's submits run, rather than whole */
+    slicing: boolean
+}>;
+
 /**
  * Returns the factory a controller's frame-pool route creates its GPU decode sessions with: the selected package's decoder for the stream's format, compiled on the presenter's device.
  * The device keeps the compiled decoder under the package's id and output format, so a later session of the same package version and format compiles nothing.
  * A session takes the largest picture the decoder's parser declared, rounded up to whole coding blocks, when the decoder fits it on the device, and the container's size otherwise.
  */
-export function createGPUVideoDecodeSessionFactory(presenter: WebGPUPresenter): GPUVideoDecodeSessionFactory {
+export function createGPUVideoDecodeSessionFactory(presenter: WebGPUPresenter, options: GPUVideoDecodeSessionFactoryOptions): GPUVideoDecodeSessionFactory {
     return async (request: GPUVideoDecodeSessionRequest): Promise<GPUVideoDecodeHandle> => {
         const manifest = request.decoder.package.manifest;
         const device = await presenter.getGPUVideoDecodeDevice();
@@ -682,6 +688,7 @@ export function createGPUVideoDecodeSessionFactory(presenter: WebGPUPresenter): 
             device,
             format: request.format,
             manifest,
+            slicing: options.slicing,
             stream
         });
         return {

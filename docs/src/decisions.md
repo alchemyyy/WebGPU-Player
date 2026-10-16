@@ -357,12 +357,14 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   The GPU then idled while the page learned of each completion, a few milliseconds a packet in Chrome and up to 100 ms in Firefox (see [Firefox](#firefox)), so the feed keeps two packets in flight and submits the next as a status readback applies.
   The second packet keeps the GPU decoding across that wait, and a presentation submit queues behind at most two packets' work; the session's three readbacks would allow three.
   A presented slot returns to the decoder right after its presentation submit, because the queue orders later decode work behind it.
-- A packet's decode work submits in slices, two in flight (10-16).
+- A packet's decode work can submit in slices, two in flight, a switch the host sets and leaves off by default (10-16).
   The device has one queue without priorities, so a presentation submit waited behind up to two whole packets, a large picture's wavefront of hundreds of dispatches among them.
   `GPUVideoDecodeSession` lays a packet's dispatches out at its start and submits them in slices of at most 96, of about equal length, each tracked to its completion; the last copies the packet's status, whose epoch is the packet's start, so a resync while it submits makes its status stale.
   The feed keeps two slices in flight, which bounds the decode work a presentation submit waits behind to two slices, and returns a packet's credit once its work begins.
   A reset or a resync submits no more of the packet in progress: its readback is free again, and its frame drops, or repeats the last good frame in a resync; slices already submitted still run, since WebGPU cannot recall queued work.
   Slices stay large because each completion costs the page a few milliseconds to learn of, more in Firefox, and the GPU would idle between slices that run shorter.
+  Slicing trades decode throughput for presentation latency: the GPU idles between slices that run shorter than the page takes to learn of a completion, as on a fast GPU in Firefox, and two slices of queued work ride out a shorter main-thread stall than two packets did.
+  Unmeasured in the field, it is off unless the host turns it on through `createGPUVideoDecodeSessionFactory`'s `slicing`; off, every packet submits whole with two in flight, as before slicing, apart from pacing on the GPU's completion rather than on the status readback.
 - Every packet's status reads back, and its frame presents only once it has (10-15).
   Until 10-15 a session copied the status out only when a readback buffer was free, so one readback could cover several packets, and frames presented without waiting for theirs.
   A recoverable error belongs to one packet's frame, though, as do the field flags a decoder reports for the deinterlacer, so concealment and the deinterlacer designed the status together.

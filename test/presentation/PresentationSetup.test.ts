@@ -1,9 +1,12 @@
 import { describe, expect, it, vi, type Mock } from 'vitest';
 
 import type { CustomPlaybackEligibility, EligibleCustomPlayback } from 'webgpu-player/capability/CustomPlaybackEligibility';
+import { GPU_DECODE_SLICE_DISPATCH_COUNT } from 'webgpu-player/decode/video/gpu/GPUDecodeLimits';
+import type { GPUDecodePacket } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
 import {
     alignPresentationInputBitDepth,
     configurePresentationColorPipeline,
+    createGPUVideoDecodeSessionFactory,
     EMPTY_PRESENTATION_INPUT,
     getCustomPresentationEligibilityOptions,
     getStaticHDRRenderSettings,
@@ -16,6 +19,16 @@ import {
 import { createDefaultRenderSettings, createHDRToSDRRenderSettings } from 'webgpu-player/presentation/RenderSettings';
 import type WebGPUPresenter from 'webgpu-player/presentation/WebGPUPresenter';
 import type { StaticHDRMetadata } from 'webgpu-player/demux/hdr/StaticHDRMetadata';
+
+import { MockGPUDevice } from '../decode/video/gpu/mockGPUDevice';
+import { installWebGPUGlobals } from '../decode/video/gpu/webGPUGlobals';
+import {
+    createVideoDecoderPackageForTest,
+    createVideoDecoderSource,
+    TEST_DECODER_CODEC,
+    TEST_DECODER_ENTRY_POINT,
+    TEST_DECODER_OUTPUT_FORMAT
+} from '../helpers/decoderPackages';
 
 const GENERATION = 7;
 const DOLBY_VISION_INPUT_PEAK_NITS = 4_000;
@@ -84,6 +97,16 @@ const STATIC_HDR_METADATA: StaticHDRMetadata = {
     maximumContentLightLevelNits: null,
     maximumFrameAverageLightLevelNits: null
 };
+// A decoder whose picture runs its entry point once, then as many times more as a slice carries, so sliced it submits in two slices
+const SLICING_DECODER_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({
+    extraDirectives: [ `//! repeat: ${GPU_DECODE_SLICE_DISPATCH_COUNT}, 1`, `//! dispatch: ${TEST_DECODER_ENTRY_POINT}, 1` ]
+}));
+const SLICED_SUBMIT_COUNT = 2;
+const WHOLE_SUBMIT_COUNT = 1;
+const SLICING_STREAM_SIZE = 64;
+const SLICING_STREAM_BIT_DEPTH = 8;
+const SLICING_PACKET_BYTE_LENGTH = 16;
+const SLICING_FRAME_DURATION_MICROSECONDS = 40_000;
 
 type FakePresenter = {
     configureColorPipeline: Mock
@@ -417,6 +440,56 @@ describe('PresentationSetup', () => {
                 ...request,
                 currentSettings: createHDRToSDRRenderSettings({ toneMapping: { inputPeakNits: STATIC_PEAK_NITS } })
             })).toBeNull();
+        });
+    });
+
+    describe('createGPUVideoDecodeSessionFactory', () => {
+        it.each([
+            [ false, WHOLE_SUBMIT_COUNT ],
+            [ true, SLICED_SUBMIT_COUNT ]
+        ])('creates sessions on the presenter\'s device that slice a large picture\'s decode work only when the host asks, slicing %s', async (slicing: boolean, submitCount: number) => {
+            const restoreWebGPUGlobals = installWebGPUGlobals();
+            const device = new MockGPUDevice();
+            device.manualMaps = true;
+            const presenter = { getGPUVideoDecodeDevice: vi.fn(() => Promise.resolve(device.asDevice())) } as unknown as WebGPUPresenter;
+            const packet: GPUDecodePacket = {
+                data: new ArrayBuffer(SLICING_PACKET_BYTE_LENGTH),
+                durationMicroseconds: SLICING_FRAME_DURATION_MICROSECONDS,
+                fields: null,
+                hold: false,
+                keyframe: true,
+                outputEvents: null,
+                recovery: null,
+                repeatCounts: null,
+                reset: true,
+                timestampMicroseconds: 0,
+                visibleSize: null
+            };
+            try {
+                const handle = await createGPUVideoDecodeSessionFactory(presenter, { slicing })({
+                    codecPrivate: null,
+                    decoder: { codec: TEST_DECODER_CODEC, decoderId: SLICING_DECODER_PACKAGE.id, package: SLICING_DECODER_PACKAGE },
+                    format: TEST_DECODER_OUTPUT_FORMAT,
+                    maximumPictureSize: null,
+                    stream: {
+                        bitDepth: SLICING_STREAM_BIT_DEPTH,
+                        codedHeight: SLICING_STREAM_SIZE,
+                        codedWidth: SLICING_STREAM_SIZE,
+                        visibleRectangle: { height: SLICING_STREAM_SIZE, width: SLICING_STREAM_SIZE, x: 0, y: 0 }
+                    }
+                });
+                handle.session.queuePacket(packet);
+                while (handle.session.submitPendingDecodeWork()) {
+                    // Each call submits one slice
+                }
+
+                expect(handle.device).toBe(device.asDevice());
+                expect(device.submitCount).toBe(submitCount);
+                expect(device.dispatches).toHaveLength(GPU_DECODE_SLICE_DISPATCH_COUNT + 1);
+                handle.session.destroy();
+            } finally {
+                restoreWebGPUGlobals();
+            }
         });
     });
 });
