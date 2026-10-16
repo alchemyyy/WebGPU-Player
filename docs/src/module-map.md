@@ -326,7 +326,7 @@ The authorization vectors are in `capability/vectors/`.
 - `scripts/decoder-packages.mjs`: builds the decoder projects into `bin/wgpud/`, or checks them against it.
 - `scripts/codec_vector_assets/`: the Python codec vector generators, their tests in `test/`, and the local playback media generators.
   See [Codec vectors](codec-vectors.md).
-- `tools/`: browser probes, the decoder package tools, and `constants.json`.
+- `tools/`: browser probes, the decoder package tools, the mpv shader converter with its tests in `test/`, and `constants.json`.
   See [Tools](tools.md).
 - `bin/wasm/`: the engine modules' builds from `make -C wasm`, `libdovi/` and `audio-output-stage/`, served from `libraries/`; ignored.
 - `bin/wgpud/`: the decoder packages `npm run decoders` builds; ignored.

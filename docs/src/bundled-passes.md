@@ -7,7 +7,7 @@ The engine never loads a pass on its own: a host adds one to its users' presenta
 ## Projects
 
 A pass project is a folder of `wgpup/` whose top-level WGSL files are its pass files.
-Each file holds one or more passes in the pass header format, which run in file order, and no two projects use the same file name.
+Each file holds one or more passes in the [pass file format](new-pass.md), which run in file order, and no two projects use the same file name.
 
 | Project | Pass files | What it does |
 | --- | --- | --- |
@@ -37,6 +37,7 @@ The generators beside them turn a shader's convolution and depth-to-space passes
   UL's eight layers become the eight passes of its file.
 
 The generated pass files are committed, so a build needs no Python.
+`tools/convert_mpv_shader.py` converts these shaders too, pass for pass (see [Migrate an mpv shader to a wgpup](mpv-shaders.md)); the generators fuse each network into fewer passes instead.
 To regenerate them, run from the engine root:
 
 ```sh

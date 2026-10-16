@@ -1,4 +1,4 @@
-// Parses a pass file, whose passes each start with a `//!` header, into PassManifests; overhual/passes.md documents the grammar.
+// Parses a pass file, whose passes each start with a `//!` header, into PassManifests; docs/src/new-pass.md documents the grammar.
 import {
     INTERMEDIATE_TEXTURE_FORMAT,
     MAXIMUM_WORKGROUP_INVOCATIONS,

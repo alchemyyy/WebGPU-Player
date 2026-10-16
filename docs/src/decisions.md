@@ -858,6 +858,23 @@ These were settled on Firefox 157 on Windows.
   The profile, rate, and layout rules that gated the bundled decoders on their qualification vectors therefore no longer apply: a stream the package cannot decode, such as DTS-UHD, fails its attempt as `decode-failed` and renegotiates.
   Every start and seek runs on a new instance of the package's module, so a decoder never sees a jump in its packets.
 
+## Passes
+
+- mpv user shaders convert through naga (10-16).
+  `tools/convert_mpv_shader.py` parses the `//!` headers itself and hands each pass's GLSL to naga-cli 30.0.1 inside a wrapper of stubs for the mpv shader API, then binds the stubs to the pass API, rather than translating GLSL with a parser of its own.
+  The version is pinned, since the converter repairs that version's GLSL frontend: it reverses adjacent array dimensions, reads a for-loop condition that opens with a constructor as a declaration, lowers `barrier()` with a `subgroupBarrier()` WebGPU lacks by default, rejects a function that can end without a return and `dot()` of scalars, and cannot fold a ternary in a global `const`.
+  Every converted pass is validated with naga before the file is written.
+  71 user shaders were checked in development: Anime4K's, bjin's ravu and nnedi3 variants, FSRCNNX, KrigBilateral, SSimSuperRes, SSimDownscaler, adaptive-sharpen, FSR, CAS, NIS, and SGSR.
+  68 converted, and all of their passes planned and compiled under naga in the planner's modules; ravu-zoom's lookup tables and NVScaler's shared memory exceed the limits below.
+- Plane hooks read the RGB image (10-16).
+  Passes see RGB, so a `LUMA`, `CHROMA`, or `NATIVE` pass reads planes derived from the image with BT.709 weights, and a pass that overwrites its plane writes the image: new luma moves every channel by its difference, which keeps the chroma exactly.
+  Each such pass writes the image itself, rather than saving planes for a later merge, so a pass whose `WHEN` leaves it out leaves nothing behind.
+  The engine upsamples chroma before any pass, so `CHROMA` has the image's size, and chroma upscalers that ask for subsampled chroma do not run.
+- mpv's linear light is 1.0 at SDR white (10-16).
+  The engine's is in nits, so a `LINEAR` or `SIGMOID` pass becomes an SDR pass over 100 nits, the engine's default SDR white, and an HDR pass over BT.2408's 203 nits, which `hdr.source` selects.
+- A `TEXTURE` block becomes a constant array of at most 4096 texels (10-16), which a D3D11 immediate constant buffer holds; passes cannot declare textures or buffers.
+- Converted compute passes keep WebGPU's default limits (10-16), as the pass header does: 256 invocations per workgroup and 16 KiB of workgroup storage.
+
 ## Repository
 
 - The engine is its own repository (10-02): [WebGPU Player](https://github.com/alchemyyy/WebGPU-Player), MIT, with each vendored library under its own license.

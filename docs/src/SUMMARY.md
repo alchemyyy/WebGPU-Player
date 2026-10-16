@@ -20,6 +20,8 @@
 - [Embedding the engine](embedding.md)
 - [Decoder packages](decoder-packages.md)
 - [Bundled passes](bundled-passes.md)
+- [Create a new WebGPU pass](new-pass.md)
+- [Migrate an mpv shader to a wgpup](mpv-shaders.md)
 
 # Build and test
 

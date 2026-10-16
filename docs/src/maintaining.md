@@ -57,6 +57,7 @@ Update the chapter in the same change that alters what it describes:
 - a route, a probe, a route key, or an eligibility rule: [Eligibility and routes](routes.md) and [HEVC and Dolby Vision support](codec-support.md);
 - a file added, moved, or removed: [Module map](module-map.md), and [Repository layout](layout.md) for a folder;
 - the decoder package format or an interface a package implements: [Decoder packages](decoder-packages.md);
+- the pass file format, the code generated around a pass, or a reason a pass is left out: [Create a new WebGPU pass](new-pass.md), and [Migrate an mpv shader to a wgpup](mpv-shaders.md), whose converter writes that format;
 - a decoder project, an engine module, or a build step: [WebAssembly build](decoders.md);
 - a vector or a generator: [Codec vectors](codec-vectors.md);
 - a settled investigation: [Decisions](decisions.md).

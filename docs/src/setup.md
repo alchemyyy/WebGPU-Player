@@ -5,6 +5,7 @@
 - Node.js 24 and npm 11.
 - For the WebAssembly: GNU Make, Git, a POSIX shell (Git Bash on Windows), Emscripten 4.0.13, and rustup.
 - For the codec vectors: Python 3.10 or later, and the FFmpeg build named in [Codec vectors](codec-vectors.md).
+- To convert mpv shaders: Python 3.10 or later, and naga-cli 30.0.1; see [Migrate an mpv shader to a wgpup](mpv-shaders.md).
 - For this book: mdBook 0.5.
 - To run the engine: Chrome, Edge, or Firefox with WebGPU and WebCodecs, on a secure context (HTTPS or `localhost`).
   Firefox on Windows has no WebCodecs HEVC, so HEVC plays there only through a GPU decoder package; see [Decisions](decisions.md#firefox).

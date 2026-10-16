@@ -52,9 +52,11 @@ Check: the engine checks from [Set up a checkout](setup.md), and the host's chec
 
 ## Change or add a pass project
 
-1. Edit, or create, `wgpup/<project>/` with its pass files: WGSL files at the project's top level, each of one or more passes in the pass header format, under a file name no other project uses.
+1. Edit, or create, `wgpup/<project>/` with its pass files: WGSL files at the project's top level, each of one or more passes in the [pass file format](new-pass.md), under a file name no other project uses.
    A generated pass keeps its generator and inputs in the project and is committed, so a build needs no generator.
-2. Run `npx vitest --watch=false test/presentation/passes`, whose pass rules every pass file must keep.
+   An mpv user shader converts with `tools/convert_mpv_shader.py` (see [Migrate an mpv shader to a wgpup](mpv-shaders.md)).
+2. For a new project, add it to `EXPECTED_PROJECTS` in `test/presentation/passes/PostprocessingPasses.test.ts`.
+   Run `npx vitest --watch=false test/presentation/passes`, whose pass rules every pass file must keep.
 3. Run `npm run build`, which copies the pass files into `bin/wgpup/`, and pick the pass in the sandbox's shader panel to see it.
 4. Update the project table in [Bundled passes](bundled-passes.md).
 

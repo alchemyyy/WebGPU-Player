@@ -27,6 +27,16 @@ node tools/pack-decoder-package.mjs --decoder <source> [--module <module.wasm>] 
 It checks the result with the engine's own loader, so a package it writes loads wherever the engine runs.
 `decoder-package-format.mjs` holds the writer it shares with `scripts/decoder-packages.mjs`, which builds the decoder projects (see [WebAssembly build](decoders.md#decoder-projects)).
 
+## mpv shader converter
+
+```sh
+python tools/convert_mpv_shader.py <input.glsl> <output.wgsl> [--name <name>] [--naga <executable>]
+```
+
+`convert_mpv_shader.py` converts an mpv or libplacebo user shader into a pass file, through naga-cli 30.0.1, and reports where the result differs from mpv.
+Its tests are in `tools/test/`.
+See [Migrate an mpv shader to a wgpup](mpv-shaders.md).
+
 ## Browser probes
 
 | File | Does |
