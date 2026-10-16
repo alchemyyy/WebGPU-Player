@@ -89,6 +89,8 @@ export const CUSTOM_PLAYBACK_AUDIO_OUTPUT_SWITCH_TIMEOUT_MICROSECONDS = millisec
 
 const MINIMUM_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS = millisecondsToMicroseconds(100);
 const CUSTOM_PLAYBACK_AUDIO_DRAIN_LATENCY_SAFETY_MICROSECONDS = millisecondsToMicroseconds(100);
+// The longest the clock holds its start for a starting audio output; a larger browser estimate is clamped, and the first correlated report re-anchors the clock anyway
+const MAXIMUM_CUSTOM_PLAYBACK_AUDIO_START_HOLD_MICROSECONDS = millisecondsToMicroseconds(500);
 
 type PendingStartup = {
     completing: boolean
@@ -660,7 +662,7 @@ export default class CustomPlaybackController {
             this.videoStarvationAnchorMediaTimeMicroseconds = this.currentTimeMicroseconds;
             this.videoStarvationAnchorMonotonicTimeMicroseconds = this.readMonotonicTime();
         } else if (this.clockStarvation === null) {
-            this.clock.resume();
+            this.clock.resume(this.getAudioStartHoldMicroseconds());
         }
         if (this.hasActivePlaybackWait()) {
             this.playbackStarvationStartedAtMicroseconds = this.readMonotonicTime();
@@ -1657,7 +1659,7 @@ export default class CustomPlaybackController {
             }
 
             if (appliedPlaying) {
-                this.clock.resume();
+                this.clock.resume(this.getAudioStartHoldMicroseconds());
                 this.setState('playing', generation);
             } else {
                 this.setState('paused', generation);
@@ -1925,21 +1927,46 @@ export default class CustomPlaybackController {
         }
     }
 
-    private getUncorrelatedAudioDrainGraceMicroseconds(): Microseconds {
+    /** Returns the audio output's estimate of how long its samples take to reach the speakers, or null without a usable one. */
+    private readEstimatedAudioOutputLatencyMicroseconds(): Microseconds | null {
         const getEstimatedOutputLatencyMicroseconds = this.audioOutput?.getEstimatedOutputLatencyMicroseconds;
         if (!getEstimatedOutputLatencyMicroseconds) {
-            return DEFAULT_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS;
+            return null;
         }
 
         let estimatedOutputLatencyMicroseconds: Microseconds | null;
         try {
             estimatedOutputLatencyMicroseconds = getEstimatedOutputLatencyMicroseconds.call(this.audioOutput);
         } catch {
-            return DEFAULT_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS;
+            return null;
         }
         if (estimatedOutputLatencyMicroseconds === null
             || !Number.isSafeInteger(estimatedOutputLatencyMicroseconds)
             || estimatedOutputLatencyMicroseconds < 0) {
+            return null;
+        }
+        return estimatedOutputLatencyMicroseconds;
+    }
+
+    /**
+     * Returns how long the clock holds its start when audio output starts: the output's estimated latency, so video moves when the first sample is heard
+     * and the first correlated report finds the clock where the speakers are.
+     * Without an estimate the clock holds nothing, and that report re-anchors it.
+     */
+    private getAudioStartHoldMicroseconds(): Microseconds {
+        const estimatedOutputLatencyMicroseconds = this.readEstimatedAudioOutputLatencyMicroseconds();
+        if (estimatedOutputLatencyMicroseconds === null) {
+            return ZERO_MICROSECONDS;
+        }
+        return requireMicroseconds(
+            Math.min(estimatedOutputLatencyMicroseconds, MAXIMUM_CUSTOM_PLAYBACK_AUDIO_START_HOLD_MICROSECONDS),
+            'Audio start hold'
+        );
+    }
+
+    private getUncorrelatedAudioDrainGraceMicroseconds(): Microseconds {
+        const estimatedOutputLatencyMicroseconds = this.readEstimatedAudioOutputLatencyMicroseconds();
+        if (estimatedOutputLatencyMicroseconds === null) {
             return DEFAULT_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS;
         }
 
@@ -2273,7 +2300,7 @@ export default class CustomPlaybackController {
         }
         this.clockStarvation = null;
         if (this.state === 'playing') {
-            this.clock.resume();
+            this.clock.resume(this.getAudioStartHoldMicroseconds());
             if (!this.waitingForVideoFrame) {
                 this.emitEvent({ generation, type: 'playing' });
             }
@@ -2470,10 +2497,13 @@ export default class CustomPlaybackController {
         if (this.clockStarvation === 'audio') {
             this.clockStarvation = null;
             if (this.state === 'playing') {
+                // A correlated report already says what the speakers play; without one, the recovered output is heard after its latency
                 if (telemetry.hasPhysicalOutputTimeCorrelation) {
                     this.synchronizeClock(telemetry.mediaTimeMicroseconds, 'audio-underflow-recovered');
+                    this.clock.resume();
+                } else {
+                    this.clock.resume(this.getAudioStartHoldMicroseconds());
                 }
-                this.clock.resume();
                 if (!this.waitingForVideoFrame) {
                     this.emitEvent({ generation, type: 'playing' });
                 }
