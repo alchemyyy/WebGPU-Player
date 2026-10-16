@@ -13,6 +13,7 @@ const DATABASE_NAME = 'decoder-package-store-test';
 const OBJECT_STORE_NAME = 'packages';
 const KEY_PATH = 'id';
 const EARLIER_SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const HEVC_ID = 'hevc';
 const MPEG2_ID = 'mpeg2';
 const HEVC_NAME = 'HEVC';
@@ -116,6 +117,30 @@ describe('DecoderPackageStore', () => {
 
         expect(await store.loadAll()).toEqual({ failures: [], packages: [] });
         expect(fakeIndexedDB.readKeys(DATABASE_NAME, OBJECT_STORE_NAME)).toEqual([]);
+    });
+
+    it('loads one stored package by its id, and nothing for an id it does not hold', async () => {
+        const store = new DecoderPackageStore(DATABASE_NAME);
+        useClock(FIRST_ADD_MILLISECONDS, SECOND_ADD_MILLISECONDS);
+        await store.add(HEVC_FILE_NAME, await createPackageFile(HEVC_ID, HEVC_NAME));
+        const mpeg2 = await store.add(MPEG2_FILE_NAME, await createPackageFile(MPEG2_ID, MPEG2_NAME));
+
+        const loaded = await store.load(MPEG2_ID);
+
+        expect(loaded).toMatchObject({ addedAtMilliseconds: SECOND_ADD_MILLISECONDS, fileName: MPEG2_FILE_NAME });
+        expect(loaded?.decoderPackage).toMatchObject({ contentHash: mpeg2.decoderPackage.contentHash, id: MPEG2_ID, name: MPEG2_NAME });
+        expect(await store.load(UNKNOWN_ID)).toBeNull();
+    });
+
+    it('rejects loading a stored file that no longer loads, and keeps it stored', async () => {
+        fakeIndexedDB.seed(DATABASE_NAME, SCHEMA_VERSION, OBJECT_STORE_NAME, KEY_PATH, [
+            { addedAtMilliseconds: FIRST_ADD_MILLISECONDS, bytes: NOT_A_MODULE.buffer, fileName: STALE_FILE_NAME, id: STALE_ID }
+        ]);
+        const store = new DecoderPackageStore(DATABASE_NAME);
+
+        await expect(store.load(STALE_ID)).rejects.toMatchObject({ code: 'package-invalid' });
+
+        expect(fakeIndexedDB.readKeys(DATABASE_NAME, OBJECT_STORE_NAME)).toEqual([ STALE_ID ]);
     });
 
     it('reports a stored file that no longer loads with its id, and keeps it until removed', async () => {
