@@ -6,6 +6,7 @@ import {
     CUSTOM_NATIVE_SURROUND_AUDIO_CODECS,
     CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS,
     CUSTOM_PACKAGE_AUDIO_CODECS,
+    CUSTOM_VIDEO_CODECS,
     type CustomNativeSurroundAudioCodec,
     type CustomNativeSurroundAudioCodecCapability,
     type CustomNativeUltraHDVideoCodec,
@@ -24,6 +25,7 @@ import {
     getPlaybackAudioCodec,
     hasEligibleCustomVideoRoute,
     hasPotentialCustomPlaybackVideoRoute,
+    presentsInterlacedVideo,
     type CustomPlaybackEligibilityOptions
 } from 'webgpu-player/capability/CustomPlaybackEligibility';
 import {
@@ -71,6 +73,9 @@ const AVAILABLE_RUNTIME: CustomPlaybackRuntimeAvailability = {
     },
     reason: null
 };
+
+// HEVC codes interlaced video as field pictures and JPEG 2000 as a codestream per field
+const FIELDS_APART_VIDEO_CODECS: ReadonlySet<CustomVideoCodec> = new Set<CustomVideoCodec>([ 'hevc', 'jpeg2000' ]);
 
 const PQ_AUTHORIZATION = {
     allowRawHDR: true,
@@ -540,6 +545,12 @@ describe('CustomPlaybackEligibility', () => {
     ])('routes interlaced %s, which codes its fields apart, to the HTML player', (_label, videoStream, container) => {
         expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ ...videoStream, IsInterlaced: true }, container))).toBe(false);
         expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem(videoStream, container))).toBe(true);
+    });
+
+    it('presents interlaced video of every codec but those that code their fields apart', () => {
+        for (const codec of CUSTOM_VIDEO_CODECS) {
+            expect(presentsInterlacedVideo(codec)).toBe(!FIELDS_APART_VIDEO_CODECS.has(codec));
+        }
     });
 
     it.each([

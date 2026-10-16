@@ -28,7 +28,7 @@ A host calls these, in this order, for each playback:
    Playback then ends with the streams, audio takes the decoded-PCM route because the native media backend needs a duration, and the worker reports the container's duration on `ready`.
 2. `selectVideoStream`, and a codec the engine names.
    A codec it knows but nothing decodes, MPEG-4 Part 2, MS-MPEG4, H.263, or Theora, reads `video-codec-without-route`; any other unnamed codec reads `codec-unsupported`.
-3. Rotation 0, and a codec that keeps an interlaced stream's fields together in frames (`codesInterlacedFieldsApart`).
+3. Rotation 0, and a codec that keeps an interlaced stream's fields together in frames (`codesInterlacedFieldsApart`, from `presentsInterlacedVideo`).
 4. `selectVideoOutput` (below), and a route that presents the stream's scan (`refusesVideoScan`).
 5. `selectPlaybackAudio`.
 6. `supportsCustomContainerCodecCombination`.
@@ -148,6 +148,7 @@ Every route but Dolby Vision's presents interlaced video through the deinterlaci
 
 H.264, MPEG-2, VC-1, and WMV3 decode interlaced video into woven frames, so they are eligible whatever `IsInterlaced` says, and a missing or malformed `IsInterlaced` is an unknown scan, which each frame's own fields settle.
 MPEG-1, VP8, VP9, and AV1 have no interlaced coding.
+`presentsInterlacedVideo(codec)` exports the per-codec answer, so a host's negotiation offers interlaced streams of exactly those codecs, outside its Dolby Vision labels.
 
 | Route | Interlaced video | Field order from |
 | --- | --- | --- |

@@ -55,7 +55,7 @@ The optional user passes a host may offer are pass projects in `wgpup/`, outside
 ## capability/
 
 - `CustomContainerCodecSupport.ts`: the single container and codec matrix.
-- `CustomPlaybackEligibility.ts`: per-session route choice, the player-selection prefilter, `hasEligibleCustomVideoRoute` for item-scoped negotiation, and the video and audio codecs a playback decodes (`getGPUVideoDecodeTarget`, `getPlaybackAudioCodec`), which a host fetches packages for.
+- `CustomPlaybackEligibility.ts`: per-session route choice, the player-selection prefilter, `hasEligibleCustomVideoRoute` for item-scoped negotiation, the codecs whose interlaced streams a route presents (`presentsInterlacedVideo`), and the video and audio codecs a playback decodes (`getGPUVideoDecodeTarget`, `getPlaybackAudioCodec`), which a host fetches packages for.
 - `CustomDecodeCapabilities.ts`: the cached orchestrator of every capability probe, the per-item probe selection, and the codec lists, with the video codecs only a decoder package decodes (`CUSTOM_PACKAGE_VIDEO_CODECS`).
 - `CapabilityAssetLoading.ts`: the bounded, retried download of a probe's served vectors.
 - `CustomPlaybackRuntime.ts`: runtime feature detection with failure reasons.
