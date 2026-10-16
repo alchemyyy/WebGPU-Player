@@ -277,6 +277,7 @@ const EBML_FRAMES = EBML_FRAME_BYTE_LENGTHS.map((byteLength: number, frameIndex:
 const UNLACED_FRAME = createFrame(UNLACED_FRAME_BYTE_LENGTH, 48);
 
 describe('CUSTOM_DECODE_INPUT_FORMATS', () => {
+    // The Mediabunny fork restores it per frame; Mediabunny 1.61.5 restored it ahead of the lace header
     it('restores the stripped header of every frame in a laced Matroska block', async () => {
         const matroska = createMatroska([ createAudioTrack(STRIPPED_TRACK_NUMBER, AC3_SYNC_WORD) ], [
             { frames: XIPH_FRAMES, lacing: XIPH_LACING, timestamp: XIPH_BLOCK_TIMESTAMP, trackNumber: STRIPPED_TRACK_NUMBER },
@@ -301,10 +302,10 @@ describe('CUSTOM_DECODE_INPUT_FORMATS', () => {
         expect(packetData).toEqual([ ...FIXED_FRAMES, ...EBML_FRAMES ]);
     });
 
-    it('adds Motion JPEG 2000 first and replaces only the Matroska format', () => {
+    it('adds Motion JPEG 2000 ahead of Mediabunny\'s own formats', () => {
         expect(CUSTOM_DECODE_INPUT_FORMATS).toHaveLength(ALL_FORMATS.length + 1);
-        const ownFormats = CUSTOM_DECODE_INPUT_FORMATS.filter((format: InputFormat): boolean => !ALL_FORMATS.includes(format));
-        expect(ownFormats.map((format: InputFormat): string => format.name)).toEqual([ MOTION_JPEG_2000_FORMAT_NAME, 'Matroska' ]);
+        expect(CUSTOM_DECODE_INPUT_FORMATS[0].name).toBe(MOTION_JPEG_2000_FORMAT_NAME);
+        expect(CUSTOM_DECODE_INPUT_FORMATS.slice(1)).toEqual(ALL_FORMATS);
     });
 
     it('opens a Motion JPEG 2000 file, whose signature box precedes its ftyp', async () => {
@@ -340,16 +341,5 @@ describe('CUSTOM_DECODE_INPUT_FORMATS', () => {
         } finally {
             await input.dispose();
         }
-    });
-
-    // When this fails, Mediabunny decodes laced frames correctly and the replacement format can be removed
-    it('corrects a Mediabunny 1.52.2 defect that the stock formats still have', async () => {
-        const matroska = createMatroska([ createAudioTrack(STRIPPED_TRACK_NUMBER, AC3_SYNC_WORD) ], [
-            { frames: FIXED_FRAMES, lacing: FIXED_SIZE_LACING, timestamp: FIXED_SIZE_BLOCK_TIMESTAMP, trackNumber: STRIPPED_TRACK_NUMBER }
-        ]);
-
-        const packetData = await readPacketData(ALL_FORMATS, matroska);
-
-        expect(packetData).not.toEqual(FIXED_FRAMES.map(prependStrippedHeader));
     });
 });
