@@ -16,6 +16,7 @@ export const WASM_OUTPUT_DIRECTORY = join(ENGINE_ROOT, LAYOUT.wasmOutputDirector
 export const LIBRARY_OUTPUT_DIRECTORY = join(ENGINE_ROOT, LAYOUT.libraryOutputDirectory);
 export const DECODERS_DIRECTORY = join(ENGINE_ROOT, LAYOUT.decodersDirectory);
 export const DECODER_OUTPUT_DIRECTORY = join(ENGINE_ROOT, LAYOUT.decoderOutputDirectory);
+export const PASSES_DIRECTORY = join(ENGINE_ROOT, LAYOUT.passesDirectory);
 
 // A dependency every engine install has; tool caches can create node_modules without it
 const INSTALLED_DEPENDENCY_MARKER = join('mediabunny', 'package.json');

@@ -420,7 +420,7 @@ An audio package's decoder section is its manifest, a `//!` header like a video 
 
 ### The audio decoder interface
 
-The module implements version 1 of this interface, which `decoders/include/audio_decoder_interface.h` declares for C.
+The module implements version 1 of this interface, which `wgpud/include/audio_decoder_interface.h` declares for C.
 `src/decode/audio/AudioDecoderPackageInstance.ts` drives it, on the playback worker's audio decode worker.
 
 <div class="diagram">
@@ -471,7 +471,7 @@ Every start and seek is a new attempt on a new instance, which `audio_decoder_de
   A file of an id the store holds is a new version of that package: it replaces the stored file and keeps its place in the order.
   The store's schema is version 2, which keys files by id; a database of an earlier version opens empty, without its files.
 - Where a host gets package files is its own choice: the engine fetches none.
-  The decoder projects in the engine's `decoders/` build packages a host may offer (see [WebAssembly build](decoders.md#decoder-projects)).
+  The decoder projects in the engine's `wgpud/` build packages a host may offer (see [WebAssembly build](decoders.md#decoder-projects)).
 
 ### Offering packages to a playback
 

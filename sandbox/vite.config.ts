@@ -5,44 +5,49 @@ import { fileURLToPath } from 'node:url';
 
 import { defineConfig, searchForWorkspaceRoot, type Plugin } from 'vite';
 
-import { BUILT_DECODER_PACKAGES_ROUTE, type BuiltDecoderPackageEntry } from './src/session/BuiltDecoderPackageRoute';
+import { BUILT_DECODER_PACKAGES_ROUTE, BUILT_PASSES_ROUTE, type BuiltOutputEntry } from './src/session/BuiltOutputRoutes';
 import LAYOUT from '../tools/constants.json';
 
 const ENGINE_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SANDBOX_ROOT = fileURLToPath(new URL('.', import.meta.url));
 const SANDBOX_PORT = 5180;
 const JSON_CONTENT_TYPE = 'application/json';
-// The decoder package output folder's URL path, below the output folder the dev server serves as its public folder
-const DECODER_OUTPUT_URL_PATH = LAYOUT.decoderOutputDirectory.slice(`${LAYOUT.outputDirectory}/`.length);
 
-/** Lists the decoder package output folder's files at BUILT_DECODER_PACKAGES_ROUTE, freshly on each request, so the panel can add the latest builds. */
-function builtDecoderPackagesPlugin(): Plugin {
+/**
+ * Lists an output folder's files at a route, freshly on each request, so a panel can add the latest builds.
+ * The folder lies below the output folder the dev server serves as its public folder, which gives each file's URL.
+ */
+function listOutputFolderPlugin(route: string, outputDirectory: string, name: string): Plugin {
+    const urlPath = outputDirectory.slice(`${LAYOUT.outputDirectory}/`.length);
     return {
         configureServer(server): void {
-            server.middlewares.use(BUILT_DECODER_PACKAGES_ROUTE, (_request, response): void => {
+            server.middlewares.use(route, (_request, response): void => {
                 let fileNames: string[] = [];
                 try {
-                    fileNames = readdirSync(`${ENGINE_ROOT}${LAYOUT.decoderOutputDirectory}`).sort();
+                    fileNames = readdirSync(`${ENGINE_ROOT}${outputDirectory}`).sort();
                 } catch {
-                    // No package is built yet
+                    // Nothing is built yet
                     fileNames = [];
                 }
-                const entries: BuiltDecoderPackageEntry[] = fileNames.map((fileName: string): BuiltDecoderPackageEntry => ({
+                const entries: BuiltOutputEntry[] = fileNames.map((fileName: string): BuiltOutputEntry => ({
                     fileName,
-                    url: `/${DECODER_OUTPUT_URL_PATH}/${fileName}`
+                    url: `/${urlPath}/${fileName}`
                 }));
                 response.setHeader('Content-Type', JSON_CONTENT_TYPE);
                 response.end(JSON.stringify(entries));
             });
         },
-        name: 'sandbox-built-decoder-packages'
+        name
     };
 }
 
 export default defineConfig({
     // ffmpeg.wasm starts its worker from a URL relative to its own module, which pre-bundling would move
     optimizeDeps: { exclude: [ '@ffmpeg/ffmpeg' ] },
-    plugins: [ builtDecoderPackagesPlugin() ],
+    plugins: [
+        listOutputFolderPlugin(BUILT_DECODER_PACKAGES_ROUTE, LAYOUT.decoderOutputDirectory, 'sandbox-built-decoder-packages'),
+        listOutputFolderPlugin(BUILT_PASSES_ROUTE, LAYOUT.passOutputDirectory, 'sandbox-built-passes')
+    ],
     // The engine's default asset base is libraries/ beside the page, which this maps to the asset build in bin/libraries/
     publicDir: `${ENGINE_ROOT}${LAYOUT.outputDirectory}`,
     resolve: {

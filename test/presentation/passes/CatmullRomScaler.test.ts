@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import catmullRomScalerShader from 'webgpu-player/presentation/passes/builtin/CatmullRomScaler.wgsl';
 import { evaluatePassExpression, parsePassExpression } from 'webgpu-player/presentation/passes/PassExpression';
 
+import { readPostprocessingPass } from '../../helpers/postprocessingPasses';
+
+const CATMULL_ROM_PROJECT = 'catmull-rom';
+const CATMULL_ROM_PASS_FILE = 'catmull-rom.wgsl';
+const catmullRomScalerShader = readPostprocessingPass(CATMULL_ROM_PROJECT, CATMULL_ROM_PASS_FILE);
 const EXPECTED_HEADER: readonly string[] = [
     '//! name: Catmull-Rom',
     '//! shape: scaler',

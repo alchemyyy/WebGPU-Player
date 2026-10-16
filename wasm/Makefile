@@ -1,5 +1,5 @@
 # Builds the engine's own WebAssembly modules: the Dolby Vision RPU parser and the decoded audio output stage.
-# Decoders are not the engine's; each is a project under decoders/, built into a package by scripts/decoder-packages.mjs.
+# Decoders are not the engine's; each is a project under wgpud/, built into a package by scripts/decoder-packages.mjs.
 #
 # Needs GNU Make, a POSIX shell (Git Bash on Windows), Node.js, Emscripten 4.0.13, and cargo.
 # Activate the pinned emsdk first, or pass EMSDK=/path/to/emsdk.

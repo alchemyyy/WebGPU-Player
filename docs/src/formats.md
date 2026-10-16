@@ -41,7 +41,7 @@ The rows come from `capability/CustomContainerCodecSupport.ts`.
 
 Every other video codec is not supported, among them MPEG-4 Part 2 (DivX, Xvid), H.263, MS-MPEG4, WMV1, WMV2, Theora, VVC, ProRes, DNxHD, and Motion JPEG.
 WebCodecs is the browser's own decoder.
-A GPU decoder package is WGSL a host loads, which decodes on the presenter's device; it plays only what no native route plays, and the decoder projects in `decoders/` build one for HEVC, MPEG-1 with MPEG-2, VC-1 with WMV3, and JPEG 2000.
+A GPU decoder package is WGSL a host loads, which decodes on the presenter's device; it plays only what no native route plays, and the decoder projects in `wgpud/` build one for HEVC, MPEG-1 with MPEG-2, VC-1 with WMV3, and JPEG 2000.
 A package's frames take the format that holds the stream's pixel format, so 4:2:2 and 4:4:4 streams keep their chroma.
 
 | Property | Plays | Does not play |

@@ -2,7 +2,7 @@
 
 The repository holds two kinds of WebAssembly.
 `wasm/` holds the engine's own modules: the Dolby Vision RPU parser and the decoded audio output stage.
-`decoders/` holds the decoder projects, each of which builds one [decoder package](decoder-packages.md).
+`wgpud/` holds the decoder projects, each of which builds one [decoder package](decoder-packages.md); its name marks them as this player's own module type, as `wgpup/` marks the [bundled passes](bundled-passes.md).
 The engine never loads a decoder project's output by itself: a host supplies packages at runtime, and the engine names no project.
 Both builds write into `bin/`, which is ignored like everything in `bin/` but `bin/codec_vector_assets/`.
 
@@ -87,7 +87,7 @@ npx vitest --watch=false test/audio/processing/AudioOutputStageModule.integratio
 
 ## Decoder projects
 
-A decoder project is a folder of `decoders/` with a `decoder.json`.
+A decoder project is a folder of `wgpud/` with a `decoder.json`.
 It is a minimal project that builds one package and runs nowhere on its own.
 
 | Project | Decodes | Module | Self-test vectors | Library and license |
@@ -106,19 +106,19 @@ It is a minimal project that builds one package and runs nowhere on its own.
 Each project's header declares the project's name as its package id, such as `//! id: hevc`, so a rebuilt package replaces the one a host stored before.
 A WGSL decoder may name a list of files instead, which the build joins in order into the one source the package carries: each later file follows a `// Decoder source: <file>` line, so a compile message leads back to its file, and only the first file may hold header lines.
 A video project lists its self-test vectors under `vectors`, each with its output `format`, the layout key of its `root` folder in `tools/constants.json`, its `path` there, and optionally the FFmpeg `decoderOptions` of the reference decode.
-A project with a `Makefile` builds its module with `make module`, which writes `decoders/build/<project>/module.wasm`; a project without one packs an empty module, as a decoder without a parser does.
-Each `Makefile` includes `decoders/rules.mk`, which pins the toolchain, FFmpeg, dcadec, and libaom, and holds the rules to build an FFmpeg audio module, a libdcadec module, libaom, and a Rust module.
-`decoders/include/audio_decoder_interface.h` declares the [audio decoder interface](decoder-packages.md#the-audio-decoder-interface) for C modules.
+A project with a `Makefile` builds its module with `make module`, which writes `wgpud/build/<project>/module.wasm`; a project without one packs an empty module, as a decoder without a parser does.
+Each `Makefile` includes `wgpud/rules.mk`, which pins the toolchain, FFmpeg, dcadec, and libaom, and holds the rules to build an FFmpeg audio module, a libdcadec module, libaom, and a Rust module.
+`wgpud/include/audio_decoder_interface.h` declares the [audio decoder interface](decoder-packages.md#the-audio-decoder-interface) for C modules.
 
 Run from the engine root:
 
 ```sh
-make -C decoders sources                  # Fetch the pinned FFmpeg, dcadec, and libaom, once, for the audio and AV1 projects
-npm run decoders                          # Build every project into bin/decoders/<project>.wasm
+make -C wgpud sources                     # Fetch the pinned FFmpeg, dcadec, and libaom, once, for the audio and AV1 projects
+npm run decoders                          # Build every project into bin/wgpud/<project>.wasm
 npm run decoders -- hevc vc1              # Build some projects
-npm run decoders -- --check               # Rebuild every project into a scratch folder and compare it with bin/decoders
-make -C decoders source-archives          # Write the corresponding source of the LGPL projects
-make -C decoders clean
+npm run decoders -- --check               # Rebuild every project into a scratch folder and compare it with bin/wgpud
+make -C wgpud source-archives             # Write the corresponding source of the LGPL projects
+make -C wgpud clean
 ```
 
 `scripts/decoder-packages.mjs` iterates over the projects without naming any.
@@ -129,10 +129,10 @@ It builds a project's module, packs the module, the decoder source, and the proj
 
 - Pinned sources.
   FFmpeg, dcadec, and libaom are git submodules in the engine's `vendor/`, pinned to exact commits.
-  They are shallow and marked `update = none`, so a recursive clone of the engine, or of a host that embeds it, skips them until `make -C decoders sources` fetches them.
+  They are shallow and marked `update = none`, so a recursive clone of the engine, or of a host that embeds it, skips them until `make -C wgpud sources` fetches them.
   It fetches only each recorded commit, at depth 1, because `git submodule update --depth 1` would first clone the tip of the default branch.
 - Fresh source trees.
-  An FFmpeg project extracts a fresh copy of the pinned tree into `decoders/build/<project>/source/` with `git archive`, then configures and builds it there with only that project's decoders and FFmpeg's portable C.
+  An FFmpeg project extracts a fresh copy of the pinned tree into `wgpud/build/<project>/source/` with `git archive`, then configures and builds it there with only that project's decoders and FFmpeg's portable C.
   Building outside a git checkout keeps FFmpeg's embedded version string and source paths stable.
   The AV1 project extracts and builds libaom the same way, after applying its patches (see [The AV1 parser](#the-av1-parser)).
 - Configuration checks.
@@ -142,14 +142,14 @@ It builds a project's module, packs the module, the decoder source, and the proj
 
 ### Self-test vectors
 
-`scripts/codec_vector_assets/generate_decoder_package_vectors.py` reads the vectors each `decoder.json` lists and writes `decoders/<project>/<project>.vectors`, the set the package carries in its vectors section (see [Self-test vectors](decoder-packages.md#self-test-vectors)).
+`scripts/codec_vector_assets/generate_decoder_package_vectors.py` reads the vectors each `decoder.json` lists and writes `wgpud/<project>/<project>.vectors`, the set the package carries in its vectors section (see [Self-test vectors](decoder-packages.md#self-test-vectors)).
 A project whose streams no script elsewhere writes keeps them in its own `vectors/`, from a generator of its own: `generate_mpeg2_decoder_vectors.py`, `generate_jpeg2000_decoder_vectors.py`, and `generate_av1_decoder_vectors.py`.
 The files are committed, byte for byte (`.gitattributes` marks them `-text`), and `--check` fails unless they match what the generators write.
 `scripts/generate_all_codec_vector_assets.py` runs them with the other generators, a project's own media first.
 
 ### The HEVC parser
 
-`decoders/hevc/parser/` is our crate: the CPU half of the HEVC package, whose WGSL back end is `decoders/hevc/hevc.wgsl`.
+`wgpud/hevc/parser/` is our crate: the CPU half of the HEVC package, whose WGSL back end is `wgpud/hevc/hevc.wgsl`.
 It parses each packet into one GPU record: the picture's parameters and slices, and per CTB its SAO, its prediction units with their motion, its transform jobs and coefficients, its deblocking edges, and its PCM samples.
 The WGSL expands the record and reconstructs and filters the picture on the GPU (see [Decisions](decisions.md#gpu-decode)).
 It implements version 2 of the engine's [parser interface](decoder-packages.md#the-parser-interface): `plan`, `parse`, and `finish`, with `decode` running all three on one instance.
@@ -164,13 +164,13 @@ After a change, from the engine root:
 
 ```sh
 npm run decoders -- hevc
-cd decoders/hevc/parser && cargo test --locked
-npx vitest --watch=false decoders/hevc
+cd wgpud/hevc/parser && cargo test --locked
+npx vitest --watch=false wgpud/hevc
 ```
 
 ### The JPEG 2000 parser
 
-`decoders/jpeg2000/parser/` is our crate: the CPU half of the JPEG 2000 package, whose WGSL back end is `decoders/jpeg2000/jpeg2000.wgsl`.
+`wgpud/jpeg2000/parser/` is our crate: the CPU half of the JPEG 2000 package, whose WGSL back end is `wgpud/jpeg2000/jpeg2000.wgsl`.
 It reads a JP2 file, a `jp2c` box, or a bare codestream, picks the pixel format as FFmpeg does, runs tier-2, and writes one GPU record per picture: the code blocks with their bytes, terminations, and dequantization, the wavelet tables, and the output planes.
 One parse unit is one tile, so the parse workers split a picture by its tiles.
 The WGSL decodes each code block in one 32-lane workgroup, runs the inverse wavelet, and writes the output planes.
@@ -182,13 +182,13 @@ After a change, from the engine root:
 
 ```sh
 npm run decoders -- jpeg2000
-cd decoders/jpeg2000/parser && cargo test --locked
-npx vitest --watch=false decoders/jpeg2000
+cd wgpud/jpeg2000/parser && cargo test --locked
+npx vitest --watch=false wgpud/jpeg2000
 ```
 
 ### The VC-1 parser
 
-`decoders/vc1/parser/` is our crate: the CPU half of the VC-1 package, whose WGSL back end is `decoders/vc1/vc1.wgsl`.
+`wgpud/vc1/parser/` is our crate: the CPU half of the VC-1 package, whose WGSL back end is `wgpud/vc1/vc1.wgsl`.
 It parses each packet's picture as FFmpeg's `vc1` decoder does: the segments and their escapes, entry points, the frame, field, and slice headers, bitplanes, the intensity compensation lookups, and the macroblock layer, with motion vector prediction, coefficients, and intra DC and AC prediction, scan, and dequantization.
 `configure` takes the codec private data the engine passes for `vc1` and `wmv3` (see [Codec private data](decoder-packages.md#codec-private-data)) and reports the Advanced profile's `MAX_CODED_WIDTH` and `MAX_CODED_HEIGHT`, or the Simple and Main profiles' coded size, as the largest picture.
 One parse unit is one slice or one field, so the parse workers split a picture by its slices and fields; a picture without slices parses on one worker.
@@ -207,15 +207,15 @@ After a change, from the engine root:
 
 ```sh
 npm run decoders -- vc1
-cd decoders/vc1/parser && cargo test --locked
-npx vitest --watch=false decoders/vc1
+cd wgpud/vc1/parser && cargo test --locked
+npx vitest --watch=false wgpud/vc1
 ```
 
 ### The AV1 parser
 
-`decoders/av1/` decodes AV1 with libaom's decoder as its parser and WGSL for everything after the syntax.
-libaom v3.15.2 is the git submodule `vendor/aom`, pinned in `decoders/rules.mk` (`AOM_COMMIT`), shallow and marked `update = none`, as FFmpeg and dcadec are.
-The build extracts the pinned tree with `git archive`, applies the patches in `decoders/av1/parser/patches/` in order with `patch --fuzz=0`, and builds the decoder alone with libaom's CMake and Emscripten's toolchain file: generic C, one thread, and WebAssembly exception handling for libaom's `longjmp` error path (`-sSUPPORT_LONGJMP=wasm`), so the module needs no JavaScript glue.
+`wgpud/av1/` decodes AV1 with libaom's decoder as its parser and WGSL for everything after the syntax.
+libaom v3.15.2 is the git submodule `vendor/aom`, pinned in `wgpud/rules.mk` (`AOM_COMMIT`), shallow and marked `update = none`, as FFmpeg and dcadec are.
+The build extracts the pinned tree with `git archive`, applies the patches in `wgpud/av1/parser/patches/` in order with `patch --fuzz=0`, and builds the decoder alone with libaom's CMake and Emscripten's toolchain file: generic C, one thread, and WebAssembly exception handling for libaom's `longjmp` error path (`-sSUPPORT_LONGJMP=wasm`), so the module needs no JavaScript glue.
 The patches turn the decoder into a parser:
 
 - `0001-parse-only-decoding.patch` parses every tile with libaom's parse-only flag, so the decoder reads modes, motion, palettes, transform sizes, coefficients, CDEF indices, and restoration units, and runs no prediction, reconstruction, or filter; hooks hand each transform block, block, frame, and missing reference to the bridge.
@@ -243,7 +243,7 @@ After a change, from the engine root:
 
 ```sh
 npm run decoders -- av1      # About 3 minutes
-npx vitest --watch=false decoders/av1
+npx vitest --watch=false wgpud/av1
 ```
 
 ### Licenses
@@ -251,11 +251,11 @@ npx vitest --watch=false decoders/av1
 - The engine's modules, the bridges, the HEVC, JPEG 2000, and VC-1 parsers, the decoder sources, and the `libdovi` crate are MIT, like the rest of the engine.
   The vendored `dolby_vision` crate is MIT too and keeps its own `LICENSE`.
 - FFmpeg and libdcadec are LGPL-2.1-or-later, and only the `eac3`, `truehd`, and `dts` packages contain them.
-  `decoders/licenses/` holds their license texts.
+  `wgpud/licenses/` holds their license texts.
 - libaom is BSD-2-Clause with the Alliance for Open Media Patent License 1.0, and only the `av1` package contains it.
-  `decoders/licenses/` holds its `LICENSE` and `PATENTS` as `libaom-LICENSE` and `libaom-PATENTS`.
+  `wgpud/licenses/` holds its `LICENSE` and `PATENTS` as `libaom-LICENSE` and `libaom-PATENTS`.
 - The engine ships no decoder package.
-  Whoever distributes the LGPL packages must offer their corresponding source: `make -C decoders source-archives` writes the exact FFmpeg and dcadec trees, and the engine's `decoders/` sources, to `decoders/build/source-archives/`.
+  Whoever distributes the LGPL packages must offer their corresponding source: `make -C wgpud source-archives` writes the exact FFmpeg and dcadec trees, and the engine's `wgpud/` sources, to `wgpud/build/source-archives/`.
 
 ## Layout
 
@@ -265,9 +265,9 @@ npx vitest --watch=false decoders/av1
 | `wasm/libdovi/` | The Rust crate that wraps the `dolby_vision` RPU parser, and its vendored, patched copy of that crate |
 | `wasm/audio-output-stage/` | The audio output stage's kernels |
 | `wasm/build/` | The engine modules' build trees, ignored |
-| `decoders/Makefile` | The decoder projects' shared jobs: the pinned sources, the source archives, and clean |
-| `decoders/rules.mk` | The rules every decoder project's `Makefile` includes |
-| `decoders/<project>/` | One decoder project: its `decoder.json`, decoder source, vectors file, module sources, and tests in `test/` |
-| `decoders/include/` | The audio decoder interface for C modules |
-| `decoders/licenses/` | Upstream license texts |
-| `decoders/build/` | The decoder projects' build trees and source archives, ignored |
+| `wgpud/Makefile` | The decoder projects' shared jobs: the pinned sources, the source archives, and clean |
+| `wgpud/rules.mk` | The rules every decoder project's `Makefile` includes |
+| `wgpud/<project>/` | One decoder project: its `decoder.json`, decoder source, vectors file, module sources, and tests in `test/` |
+| `wgpud/include/` | The audio decoder interface for C modules |
+| `wgpud/licenses/` | Upstream license texts |
+| `wgpud/build/` | The decoder projects' build trees and source archives, ignored |

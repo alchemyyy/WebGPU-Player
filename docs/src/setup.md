@@ -21,12 +21,12 @@
 
    ```sh
    make -C wasm all
-   make -C decoders sources
+   make -C wgpud sources
    npm run decoders
    ```
 
    Activate Emscripten with `emsdk_env` first, or append `EMSDK=/path/to/emsdk`.
-   The builds write `bin/wasm/` and `bin/decoders/`, which are ignored; `make -C decoders sources` fetches the pinned FFmpeg and dcadec only once.
+   The builds write `bin/wasm/` and `bin/wgpud/`, which are ignored; `make -C wgpud sources` fetches the pinned FFmpeg and dcadec only once.
    See [WebAssembly build](decoders.md).
 3. Run the checks from the engine root:
 
@@ -47,9 +47,9 @@
 | --- | --- | --- |
 | `npm run typecheck` | `tsc --noEmit` over `src/`, `test/`, the decoder projects' tests, and `sandbox/src/` | Nothing built |
 | `npm run lint` | The engine's ESLint config, adapted from Jellyfin Web's | Nothing built |
-| `npm test` | The Vitest suites (jsdom), the decoder projects' tests in `decoders/*/test/` included, which load the packages in `bin/decoders/`; the audio output stage's tests run its build in `bin/wasm/` | `bin/wasm/` and `bin/decoders/` |
-| `npm run build` | The served assets in `bin/libraries/` and `bin/build-info.json`. `npm run build -- --production` minifies the workers | `bin/wasm/` |
-| `npm run decoders -- --check` | Every decoder project rebuilds into the package in `bin/decoders/`, byte for byte | The decoder toolchain |
+| `npm test` | The Vitest suites (jsdom), the decoder projects' tests in `wgpud/*/test/` included, which load the packages in `bin/wgpud/`, and the pass rules every pass file in `wgpup/` keeps; the audio output stage's tests run its build in `bin/wasm/` | `bin/wasm/` and `bin/wgpud/` |
+| `npm run build` | The served assets in `bin/libraries/` and `bin/build-info.json`, and the pass files in `bin/wgpup/`. `npm run build -- --production` minifies the workers | `bin/wasm/` |
+| `npm run decoders -- --check` | Every decoder project rebuilds into the package in `bin/wgpud/`, byte for byte | The decoder toolchain |
 | `generate_all_codec_vector_assets.py --check` | Every committed vector in `bin/codec_vector_assets/` and every decoder project's vectors file matches a fresh run of its generator | Nothing built |
 
 A host may lint the engine with its own ESLint config as well; the Jellyfin add-on does.

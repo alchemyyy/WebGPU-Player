@@ -2,30 +2,15 @@
 // The dev server serves the engine's output folder as its public folder, so each package is fetched from there
 import { DECODER_PACKAGE_FILE_EXTENSION } from 'webgpu-player/decode/packages/DecoderPackage';
 
-import { BUILT_DECODER_PACKAGES_ROUTE, type BuiltDecoderPackageEntry } from './BuiltDecoderPackageRoute';
-
-function isBuiltDecoderPackageEntry(value: unknown): value is BuiltDecoderPackageEntry {
-    if (typeof value !== 'object' || value === null) {
-        return false;
-    }
-    const entry = value as Record<string, unknown>;
-    return typeof entry.fileName === 'string' && typeof entry.url === 'string';
-}
+import { BUILT_DECODER_PACKAGES_ROUTE, fetchBuiltOutputEntries, type BuiltOutputEntry } from './BuiltOutputRoutes';
 
 /**
  * Fetches every built package the dev server lists, as files to add.
  * Rejects with a code and a detail when the dev server lists nothing, as a static build of the sandbox does, or a package fails to fetch.
  */
 export async function fetchBuiltDecoderPackages(): Promise<File[]> {
-    const listResponse = await fetch(BUILT_DECODER_PACKAGES_ROUTE);
-    if (!listResponse.ok) {
-        throw new Error(`built-packages-unavailable: ${BUILT_DECODER_PACKAGES_ROUTE} HTTP ${listResponse.status}`);
-    }
-    const listed: unknown = await listResponse.json();
-    if (!Array.isArray(listed) || !listed.every(isBuiltDecoderPackageEntry)) {
-        throw new Error(`built-packages-unavailable: ${BUILT_DECODER_PACKAGES_ROUTE} lists no package entries`);
-    }
-    const entries = listed.filter((entry: BuiltDecoderPackageEntry): boolean => entry.fileName.toLowerCase().endsWith(DECODER_PACKAGE_FILE_EXTENSION));
+    const listed = await fetchBuiltOutputEntries(BUILT_DECODER_PACKAGES_ROUTE, 'built-packages-unavailable');
+    const entries = listed.filter((entry: BuiltOutputEntry): boolean => entry.fileName.toLowerCase().endsWith(DECODER_PACKAGE_FILE_EXTENSION));
     if (entries.length === 0) {
         throw new Error('built-packages-missing: the decoder package output folder is empty; build the packages with npm run decoders');
     }

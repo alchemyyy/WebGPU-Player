@@ -37,18 +37,26 @@ Check: the engine checks from [Set up a checkout](setup.md), and the host's chec
 2. Pair it with its containers in `src/capability/CustomContainerCodecSupport.ts`.
 3. For video, give the worker its frame-pool route in `src/pipeline/CustomDecode.worker.ts`: the container codec IDs it reads, and the codec private data and packets a package receives, with any container reader under `src/demux/`.
    Describe that codec private data in [Decoder packages](decoder-packages.md), since every package of the codec depends on it.
-4. Build a decoder project for it in `decoders/<project>/`, as the next recipe says, whose header accepts the codec's name.
+4. Build a decoder project for it in `wgpud/<project>/`, as the next recipe says, whose header accepts the codec's name.
 5. Cover the eligibility, the container reach, and the worker's route in `test/`, and the project in its own `test/`.
 
 ## Change or add a decoder project
 
-1. Edit, or create, `decoders/<project>/`: its `decoder.json`, its decoder source, whose header declares the project's name as its `id:`, and, for a module, a `Makefile` that includes `../rules.mk` and builds `module`.
+1. Edit, or create, `wgpud/<project>/`: its `decoder.json`, its decoder source, whose header declares the project's name as its `id:`, and, for a module, a `Makefile` that includes `../rules.mk` and builds `module`.
    List its self-test vectors in `decoder.json`, one per output format at most, and run `python scripts/codec_vector_assets/generate_decoder_package_vectors.py` to write its vectors file.
 2. Run `npm run decoders -- <project>`, with Emscripten active or `EMSDK=` set for a C module.
-3. Run its tests, `npx vitest --watch=false decoders/<project>`, which load the package from `bin/decoders/`.
+3. Run its tests, `npx vitest --watch=false wgpud/<project>`, which load the package from `bin/wgpud/`.
 4. Run `npm run decoders -- --check`, which must report every package identical.
    A change that is not reproducible shows up here.
 5. Update the project table in [WebAssembly build](decoders.md#decoder-projects).
+
+## Change or add a pass project
+
+1. Edit, or create, `wgpup/<project>/` with its pass files: WGSL files at the project's top level, each of one or more passes in the pass header format, under a file name no other project uses.
+   A generated pass keeps its generator and inputs in the project and is committed, so a build needs no generator.
+2. Run `npx vitest --watch=false test/presentation/passes`, whose pass rules every pass file must keep.
+3. Run `npm run build`, which copies the pass files into `bin/wgpup/`, and pick the pass in the sandbox's shader panel to see it.
+4. Update the project table in [Bundled passes](bundled-passes.md).
 
 ## Rebuild one engine module
 
@@ -75,7 +83,7 @@ Check: the engine checks from [Set up a checkout](setup.md), and the host's chec
 2. Run its generator with the pinned FFmpeg on PATH, for example `python scripts/codec_vector_assets/generate_truehd_capability_vectors.py --regenerate-sources`.
    A stream a decoder project's `decoder.json` lists also needs `python scripts/codec_vector_assets/generate_decoder_package_vectors.py <project>`, which rewrites that project's self-test vectors.
 3. Run `python scripts/generate_all_codec_vector_assets.py --check` and the generator tests.
-4. Review the diff of `bin/codec_vector_assets/` and `decoders/`, and update any pinned fingerprint or length only after inspecting the decoded output.
+4. Review the diff of `bin/codec_vector_assets/` and `wgpud/`, and update any pinned fingerprint or length only after inspecting the decoded output.
 
 ## Move an engine folder
 

@@ -41,9 +41,10 @@ The presentation pipeline: each route's fixed signal and default color track, us
   Without user passes every route plans one pass, which reads the source and writes the canvas.
 - `PresentationExecutor.ts`: compiles a plan, owns its textures, history rings, buffers, and bind groups, and records each frame without submitting.
 - `PlaneTextureSource.ts`: the plane route's ingress: layout validation that names the failed check, one integer texture per plane, and the uploads.
-- `builtin/`: the built-in signals (`BuiltinSignals.ts`, and `FramePoolSignal.ts`, which reads a pool slot of any output format, as its layout says, for the frame-pool route's chain), color functions (`BuiltinColorFunctions.ts`), and route chains (`BuiltinChains.ts`), the deinterlacing pass (`DeinterlacePass.ts`, yadif over the signal's ring), and a Catmull-Rom scaler in the user pass format.
+- `builtin/`: the built-in signals (`BuiltinSignals.ts`, and `FramePoolSignal.ts`, which reads a pool slot of any output format, as its layout says, for the frame-pool route's chain), color functions (`BuiltinColorFunctions.ts`), and route chains (`BuiltinChains.ts`), and the deinterlacing pass (`DeinterlacePass.ts`, yadif over the signal's ring).
   A deinterlacing plan's raw and frame pool signals read an interlaced frame's 4:2:0 chroma within each field.
-- `examples/`: example user passes (a saturation color pass, a sharpen kernel, and a temporal blend kernel), which the presenter tests also run, and `ExamplePasses.ts`, the catalog a host offers: each example and the Catmull-Rom scaler, with a stable id and the name its header declares.
+
+The optional user passes a host may offer are pass projects in `wgpup/`, outside `src/` (see [Bundled passes](bundled-passes.md)); the presenter tests run some of them.
 
 ## color/
 
@@ -198,7 +199,7 @@ The owned WebCodecs paths.
 
 The video half of [decoder packages](decoder-packages.md): WGSL compute decoders, which write decoded frames into a pool on the presenter's device, and their optional CPU parsers.
 The frame-pool route plays them: `GPUVideoDecodeFeed.ts` feeds a session the worker's packets, and `presentation/PresentationSetup.ts` offers the host's packages and creates sessions on the presenter's device.
-The engine holds no decoder; the decoder projects in `decoders/` build packages.
+The engine holds no decoder; the decoder projects in `wgpud/` build packages.
 
 - `GPUDecodeTypes.ts` [main]: the decoder manifest, stream facts, packets, output events, and coded failures.
 - `GPUVideoDecoderCatalog.ts` [main]: the offer of one video decoder package for one output format, with the device's buffer limit, which the eligibility selects from.
@@ -296,6 +297,7 @@ The authorization vectors are in `capability/vectors/`.
 - `test/helpers/decoderPackages.ts`: video decoder packages for tests, assembled with the engine's package tool or built in memory, and the decoder projects' sources, vectors, and built packages.
 - `test/helpers/audioDecoderPackageStubs.ts`, `test/helpers/scriptedAudioDecoderModule.ts`, `test/helpers/audioDecoderPackageResults.ts`: the smallest audio package the loader accepts; a module of the audio decoder interface scripted in JavaScript, found again after a structured clone by a custom section; and the packets and results the decoder projects' tests use.
 - `test/helpers/webAssemblyModuleEncoder.ts`: encodes small WebAssembly modules without a toolchain, for the package loader's and the interfaces' tests.
+- `test/helpers/postprocessingPasses.ts`: the pass files of the pass projects, one by project and name, or all of them as the asset build copies them.
 - `test/helpers/fakeIndexedDB.ts`: an in-memory IndexedDB of the parts the package stores use: versioned opens with upgrades, keyed object stores, and transactions that apply their writes only when every request succeeds.
 - `test/helpers/vc1Media.ts`: synthetic VC-1 and WMV3 sequence and picture headers, Matroska Video for Windows files, and MP4 `vc-1` files.
 - `test/helpers/matroskaElements.ts`, `test/helpers/isoBaseMediaBoxes.ts`: EBML elements and ISO base media boxes, and a file of one video track in each, with any codec ID or sample entry, CodecPrivate or none, and boxes ahead of `ftyp`.
@@ -310,18 +312,21 @@ The authorization vectors are in `capability/vectors/`.
 - `test/helpers/fakeWorkletProcessor.ts`, `test/helpers/decodedAudioMedia.ts`: the worklet processor's end of a producer channel, which records each chunk and returns it played, held, or dropped; and a Matroska file of the VP9 vector's video and a stereo PCM tone, which Mediabunny decodes in Node.
 - `wasm/`: the engine's own WebAssembly modules and their build.
   See [WebAssembly build](decoders.md).
-- `decoders/`: the decoder projects, each of which builds one decoder package, with its tests in `test/`, and their shared build rules.
+- `wgpud/`: the decoder projects, each of which builds one decoder package, with its tests in `test/`, and their shared build rules.
   See [WebAssembly build](decoders.md#decoder-projects).
-- `vendor/`: the FFmpeg and dcadec submodules (`update = none`), which `make -C decoders sources` fetches.
-- `scripts/build.mjs`: assembles `bin/libraries/`, including the esbuild worker bundles.
+- `wgpup/`: the pass projects, whose pass files a host offers as optional passes, and their upstream license texts in `licenses/`.
+  See [Bundled passes](bundled-passes.md).
+- `vendor/`: the FFmpeg and dcadec submodules (`update = none`), which `make -C wgpud sources` fetches.
+- `scripts/build.mjs`: assembles `bin/libraries/`, including the esbuild worker bundles, and copies the pass projects' pass files into `bin/wgpup/`.
   `scripts/library-assets.mjs` maps each served file to its source.
-- `scripts/decoder-packages.mjs`: builds the decoder projects into `bin/decoders/`, or checks them against it.
+- `scripts/decoder-packages.mjs`: builds the decoder projects into `bin/wgpud/`, or checks them against it.
 - `scripts/codec_vector_assets/`: the Python codec vector generators, their tests in `test/`, and the local playback media generators.
   See [Codec vectors](codec-vectors.md).
 - `tools/`: browser probes, the decoder package tools, and `constants.json`.
   See [Tools](tools.md).
 - `bin/wasm/`: the engine modules' builds from `make -C wasm`, `libdovi/` and `audio-output-stage/`, served from `libraries/`; ignored.
-- `bin/decoders/`: the decoder packages `npm run decoders` builds; ignored.
+- `bin/wgpud/`: the decoder packages `npm run decoders` builds; ignored.
+- `bin/wgpup/`: the pass files `npm run build` copies from the pass projects; ignored.
 - `bin/codec_vector_assets/`: the generated codec vectors, the one committed folder in `bin/`:
   - `truehd/TrueHDExactCapabilityVectors.ts`: TrueHD and MLP access units and their expected outputs, which the `truehd` project's tests import as `#codec_vector_assets/*`, and the synthetic streams the module embeds.
   - `hevc-range-extension/`: the nine range extension streams, which the native probes fetch from `bin/libraries/` and the `hevc` project's vectors hold.

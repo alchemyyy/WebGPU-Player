@@ -279,7 +279,7 @@ CDFs, global motion, and the reference map.
 + * parser: its parse-only pass reads every frame, and the package's compute
 + * shaders reconstruct and filter. The patched decoder calls these hooks where
 + * its reconstruction, filtering, and frame buffer writes used to run; the
-+ * parser bridge in the engine's decoders/av1/parser/ implements them.
++ * parser bridge in the engine's wgpud/av1/parser/ implements them.
 + */
 +
 +#ifndef AOM_AV1_DECODER_PARSER_HOOKS_H_

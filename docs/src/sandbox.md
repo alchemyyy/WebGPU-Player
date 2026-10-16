@@ -9,7 +9,7 @@ It lives in `sandbox/` and never ships.
 You need:
 
 - A checkout set up as in [Set up a checkout](setup.md), with the engine's modules built, since the sandbox serves the engine's assets.
-- To play codecs no browser decodes, decoder packages, such as the ones `npm run decoders` builds into `bin/decoders/`.
+- To play codecs no browser decodes, decoder packages, such as the ones `npm run decoders` builds into `bin/wgpud/`.
 - A browser with WebGPU and WebCodecs.
 
 Steps:
@@ -125,7 +125,7 @@ The sandbox has no decoders of its own; the decoder package panel holds the ones
 It is in `sandbox/src/ui/panels/DecoderPackagePanel.ts`, over `sandbox/src/session/DecoderPackages.ts`.
 
 - Open packages, or drop `.wasm` files on the panel, to add them.
-  Load built packages adds every package in `bin/decoders/` at once: the dev server lists that folder's files at `/__sandbox/built-decoder-packages` (`sandbox/src/session/BuiltDecoderPackageRoute.ts`), and a static build of the sandbox, which has no such route, reports `built-packages-unavailable`.
+  Load built packages adds every package in `bin/wgpud/` at once: the dev server lists that folder's files at `/__sandbox/built-decoder-packages` (`sandbox/src/session/BuiltOutputRoutes.ts`), and a static build of the sandbox, which has no such route, reports `built-packages-unavailable`.
   Each file loads with the engine's checks before it is stored, and a file the engine refuses is recorded with the check's code, such as `package-import`, and skipped.
 - The packages stay in the sandbox's own IndexedDB database across reloads, through `DecoderPackageStore`, by the id each header declares.
   A stored package that no longer loads, as after an engine change tightened a check, is recorded as `package-stale`.
@@ -145,7 +145,9 @@ It is in `sandbox/src/ui/panels/DecoderPackagePanel.ts`, over `sandbox/src/sessi
 - Playback info groups the media and its tracks, the route and the override, the clock, video decode, audio, presentation, authorization, and the failure log, newest first.
   Its sections collapse, and stay collapsed across refreshes.
   On the frame-pool route, video decode adds a GPU decoder row: its name, state, and failure, its pool's free slots, and its decoded, held-back, reused, and stream change counts.
-- The shader panel adds passes from the examples, from files, or by dropping files on it.
+- The shader panel adds the [bundled passes](bundled-passes.md), passes from files, or files dropped on it.
+  Its bundled pass selector lists the pass files in `bin/wgpup/`, which `npm run sandbox` copies there with the asset build: the dev server lists them at `/__sandbox/built-passes`, and a pick fetches that file and records `built-pass-unavailable` when it cannot.
+  A static build of the sandbox has no such route, so its selector stays disabled.
   It lists each file with its order controls, a plan state per pass, which names the pass when the file holds several, and an input per parameter, which applies when committed to every pass of the file that declares it.
 - Files dropped anywhere but the shader panel and the decoder package panel are ignored, so a stray drop never navigates away from the sandbox.
 

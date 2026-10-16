@@ -181,10 +181,10 @@ class VectorTableTests(unittest.TestCase):
 
     def test_declares_what_decoder_json_lists(self) -> None:
         if not PROJECT_DECLARATION_PATH.is_file():
-            self.skipTest("decoders/av1/decoder.json does not exist yet")
+            self.skipTest("wgpud/av1/decoder.json does not exist yet")
         project = json.loads(PROJECT_DECLARATION_PATH.read_text(encoding="utf-8"))
         if "vectors" not in project:
-            self.skipTest("decoders/av1/decoder.json lists no vectors yet")
+            self.skipTest("wgpud/av1/decoder.json lists no vectors yet")
 
         self.assertEqual(generator.get_decoder_declarations(), project["vectors"])
 

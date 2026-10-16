@@ -42,7 +42,7 @@ Only for specific tasks:
 ```sh
 npm ci
 make -C wasm all           # The engine's WebAssembly modules, once per checkout
-make -C decoders sources   # The pinned FFmpeg and dcadec, once per checkout
+make -C wgpud sources      # The pinned FFmpeg and dcadec, once per checkout
 npm run decoders           # The decoder packages, which their projects' tests load
 npm run typecheck
 npm run lint

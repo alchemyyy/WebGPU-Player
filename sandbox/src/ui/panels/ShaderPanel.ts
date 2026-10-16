@@ -1,8 +1,9 @@
-// The panel that shows the WGSL preset's pass files: examples, dropped files, order, parameters, and the plan report.
+// The panel that shows the WGSL preset's pass files: the engine's built passes, dropped files, order, parameters, and the plan report.
 import { PASS_FILE_EXTENSION } from 'webgpu-player/presentation/passes/PassLanguage';
 import type { PlanReport } from 'webgpu-player/presentation/passes/PassTypes';
 
 import type {
+    BuiltShaderPass,
     SandboxSessionCommands,
     SandboxShaderFile,
     SandboxState
@@ -24,13 +25,13 @@ import { createDefaultButton } from './DefaultButton';
 import './ShaderPanel.css';
 
 const DRAG_ACTIVE_CLASS = 'shader-panel-drag-active';
-// The example selector's placeholder choice
-const NO_EXAMPLE = null;
+// The built pass selector's placeholder choice
+const NO_BUILT_PASS = null;
 const ANY_STEP = 'any';
 const MOVE_UP_OFFSET = -1;
 const MOVE_DOWN_OFFSET = 1;
 const TITLE_TEXT = 'WGSL passes';
-const EXAMPLE_PLACEHOLDER_TEXT = 'Add an example...';
+const BUILT_PASS_PLACEHOLDER_TEXT = 'Add a bundled pass...';
 const OPEN_FILES_TEXT = 'Open files...';
 const MOVE_UP_TEXT = 'Up';
 const MOVE_DOWN_TEXT = 'Down';
@@ -104,31 +105,40 @@ function createHeader(session: SandboxSessionCommands): HTMLElement {
     });
     return createElement('div', { className: 'shader-panel-header' }, [
         createElement('h3', { className: 'shader-panel-title', text: TITLE_TEXT }),
-        createExampleSelect(session),
+        createBuiltPassSelect(session),
         openButton,
         fileInput
     ]);
 }
 
-/** Lists the session's examples under a placeholder, which comes back after each pick, so picking one example again adds another copy. */
-function createExampleSelect(session: SandboxSessionCommands): HTMLSelectElement {
-    const examples = session.getExampleShaderPasses();
-    const exampleSelect = createChoiceSelect<string | null>((exampleId: string | null): void => {
-        exampleSelect.setValue(NO_EXAMPLE);
-        if (exampleId !== NO_EXAMPLE) {
-            session.addExampleShaderPass(exampleId).catch(reportCommandRejection);
+/**
+ * Lists the engine's built pass files under a placeholder, which comes back after each pick, so picking one again adds another copy.
+ * The list loads from the dev server; until it has, and when it lists none, as a static build does, the selector stays disabled.
+ */
+function createBuiltPassSelect(session: SandboxSessionCommands): HTMLSelectElement {
+    let builtPasses: readonly BuiltShaderPass[] = [];
+    const passSelect = createChoiceSelect<string | null>((fileName: string | null): void => {
+        passSelect.setValue(NO_BUILT_PASS);
+        const builtPass = builtPasses.find((candidate: BuiltShaderPass): boolean => candidate.fileName === fileName);
+        if (builtPass) {
+            session.addBuiltShaderPass(builtPass).catch(reportCommandRejection);
         }
     });
-    const choices: Choice<string | null>[] = [];
-    choices.push({ label: EXAMPLE_PLACEHOLDER_TEXT, value: NO_EXAMPLE });
-    for (const example of examples) {
-        choices.push({ label: example.name, value: example.id });
-    }
-    exampleSelect.setChoices(choices);
-    exampleSelect.setValue(NO_EXAMPLE);
-    exampleSelect.element.className = 'shader-panel-examples';
-    exampleSelect.element.disabled = examples.length === 0;
-    return exampleSelect.element;
+    const placeholder: Choice<string | null> = { label: BUILT_PASS_PLACEHOLDER_TEXT, value: NO_BUILT_PASS };
+    passSelect.setChoices([ placeholder ]);
+    passSelect.setValue(NO_BUILT_PASS);
+    passSelect.element.className = 'shader-panel-built-passes';
+    passSelect.element.disabled = true;
+    session.listBuiltShaderPasses().then((listedPasses: readonly BuiltShaderPass[]): void => {
+        builtPasses = listedPasses;
+        passSelect.setChoices([
+            placeholder,
+            ...listedPasses.map((builtPass: BuiltShaderPass): Choice<string | null> => ({ label: builtPass.fileName, value: builtPass.fileName }))
+        ]);
+        passSelect.setValue(NO_BUILT_PASS);
+        passSelect.element.disabled = listedPasses.length === 0;
+    }).catch(reportCommandRejection);
+    return passSelect.element;
 }
 
 function createRowView(row: ShaderFileRow, session: SandboxSessionCommands): FileRowView {

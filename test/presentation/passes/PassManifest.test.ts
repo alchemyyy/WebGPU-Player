@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import { BUILTIN_COLOR_FUNCTION_NAMES } from 'webgpu-player/presentation/passes/builtin/BuiltinColorFunctions';
-import catmullRomScalerShader from 'webgpu-player/presentation/passes/builtin/CatmullRomScaler.wgsl';
 import { parsePassExpression } from 'webgpu-player/presentation/passes/PassExpression';
 import {
     parsePassFile,
@@ -17,9 +16,13 @@ import type {
     PassWorkgroup
 } from 'webgpu-player/presentation/passes/PassTypes';
 
-import { SATURATION_COLOR_PASS } from 'webgpu-player/presentation/passes/examples/SaturationColorPass';
-import { SHARPEN_KERNEL_PASS } from 'webgpu-player/presentation/passes/examples/SharpenKernelPass';
-import { TEMPORAL_BLEND_KERNEL_PASS } from 'webgpu-player/presentation/passes/examples/TemporalBlendKernelPass';
+import { readPostprocessingPass } from '../../helpers/postprocessingPasses';
+
+// The pass projects in wgpup/ whose manifests these tests pin
+const SATURATION_COLOR_PASS = readPostprocessingPass('saturation', 'saturation.wgsl');
+const SHARPEN_KERNEL_PASS = readPostprocessingPass('sharpen', 'sharpen.wgsl');
+const TEMPORAL_BLEND_KERNEL_PASS = readPostprocessingPass('temporal-blend', 'temporal-blend.wgsl');
+const catmullRomScalerShader = readPostprocessingPass('catmull-rom', 'catmull-rom.wgsl');
 
 const LF = '\n';
 const CRLF = '\r\n';

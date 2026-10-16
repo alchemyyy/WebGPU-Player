@@ -270,7 +270,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
 - Decoders are packages (10-13).
   A decoder is one `.wasm` file a host hands the engine at runtime: its module, and custom sections that carry its manifest and, for video, its WGSL and its self-test vectors.
   The engine has no decoder of its own and names none, so anyone can add a codec without changing it, and a package carries no JavaScript, so a host may load packages from anyone: the module imports only its bounded memory (1 GiB at most) and inert WASI calls.
-  The decoder projects in `decoders/` build packages without running on their own, and the engine's tests load them through the engine's loader, as a host does.
+  The decoder projects in `wgpud/` build packages without running on their own, and the engine's tests load them through the engine's loader, as a host does.
   Demuxing, the container rules, and the native routes' vectors stay in the engine, because a package decodes what the engine's demuxer hands it.
 - A package's identity is the id its header declares (10-15).
   Until 10-15 a package's id was its file's SHA-256, so a rebuilt package was another package: a host's store kept both, and every engine cache keyed by it needed a count limit to bound what old versions left behind.
@@ -360,7 +360,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
 - The WGSL HEVC decoder parses on the CPU (10-13).
   CABAC decodes each bin from the state the previous bin left, so a GPU parses a substream on one invocation, at about 200 ns a bin.
   On a 66 Mbit/s 2160p stream with 16 tiles, parsing on the GPU took about 100 ms a picture even with each tile on its own invocation, while everything after the syntax took 3 to 4 ms.
-  The HEVC decoder project's parser (`decoders/hevc/parser/`) parses such a picture in about 40 ms on one core, and the engine's parse workers parse a picture's slices and tiles, and several pictures, at once.
+  The HEVC decoder project's parser (`wgpud/hevc/parser/`) parses such a picture in about 40 ms on one core, and the engine's parse workers parse a picture's slices and tiles, and several pictures, at once.
   It also derives the motion vectors, which read earlier pictures' motion in decode order, so the GPU record carries final motion, coefficients, and edges, and the GPU only reconstructs and filters.
   A record holds one word per coefficient, 2 to 5 MB for such a picture; a lossless 2160p 4:4:4 picture can pass the 64 MiB packet bound, which compact coefficient blocks would lift.
 - Known differences between the WGSL HEVC decoder and FFmpeg (10-12).
@@ -401,7 +401,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   On 10-15 the slice pipelines, `predictIntraBlocks`, the header stage, and the `loadTables` entry points left with the parse, and 15 entry points remain, the field passes still sharing theirs.
 - The VC-1 decoder parses on the CPU (10-15).
   Real VC-1 and WMV3 streams carry no slices, so the GPU parse ran each picture's whole macroblock layer on one invocation, and `predictIntraBlocks` ran each picture's intra prediction in one workgroup.
-  The package's parser (`decoders/vc1/parser/`) does the serial work instead: the headers, bitplanes, and lookups, the macroblock layer with motion vector prediction, and intra DC and AC prediction, scan, and dequantization, which read each macroblock's left, top, and top-left neighbors.
+  The package's parser (`wgpud/vc1/parser/`) does the serial work instead: the headers, bitplanes, and lookups, the macroblock layer with motion vector prediction, and intra DC and AC prediction, scan, and dequantization, which read each macroblock's left, top, and top-left neighbors.
   The WGSL keeps reconstruction, overlap smoothing, and the loop filter as they were, and `expandRecord` writes each record's macroblocks into the buffers they read; the module fell from 789,633 bytes and 34 entry points to 107,099 bytes and 15.
   IntraX8 pictures decode entirely in the parser, and their record carries the samples: X8's orientation code is read only when the reconstructed edge samples span a wide range, so its parse needs its own reconstruction, and a GPU kernel would have kept the bit reader, X8's code lookups, and a serial workgroup in the WGSL.
   A B picture's direct prediction reads the next anchor's motion, which that anchor's parse derives, so a B picture's plan waits until every earlier anchor finished, and the plan carries the motion to the parse workers.
@@ -786,7 +786,7 @@ These were settled on Firefox 157 on Windows.
   Failures keep their kinds, and a lost audio decode worker fails the run as `audio-output-failed`, which falls back to HTML in the same session, and asks for a fresh worker.
   Mediabunny's own decoding stays in the worker: WebCodecs decodes off the worker's thread anyway, and `@mediabunny/ac3` exposed only its Mediabunny registration until AC-3 became a package codec (10-13).
 - Audio decoders are packages (10-13).
-  The E-AC-3 and AC-3, TrueHD and MLP, and DTS decoders left the engine and became decoder projects (`eac3`, `truehd`, and `dts` in `decoders/`), which build packages a host supplies; `@mediabunny/ac3` left too.
+  The E-AC-3 and AC-3, TrueHD and MLP, and DTS decoders left the engine and became decoder projects (`eac3`, `truehd`, and `dts` in `wgpud/`), which build packages a host supplies; `@mediabunny/ac3` left too.
   The order is the MSE bridge, then the engine's own decoders (WebCodecs and Mediabunny's PCM), then the first package whose manifest accepts the codec, so AC-3 without MSE needs a package.
   Eligibility checks only the codec's input channel counts and rate, because a package reports every block's speaker mask, which the engine checks before it mixes, and the decoded format is authoritative anyway.
   The profile, rate, and layout rules that gated the bundled decoders on their qualification vectors therefore no longer apply: a stream the package cannot decode, such as DTS-UHD, fails its attempt as `decode-failed` and renegotiates.
@@ -809,12 +809,12 @@ These were settled on Firefox 157 on Windows.
   `src/EngineAssets.ts` is the typed manifest of runtime assets.
   The SHA-256 pins, verify scripts, vector registry, and per-file byte pins were removed; committed bytes and output oracle tests remain.
 - Decoders build with make (10-02).
-  `wasm/Makefile` (GNU Make) replaced the Python builders, and since 10-13 each decoder project's `Makefile` builds its module with the rules in `decoders/rules.mk`.
-  FFmpeg and dcadec are pinned, shallow, `update = none` submodules, which `make -C decoders sources` fetches.
+  `wasm/Makefile` (GNU Make) replaced the Python builders, and since 10-13 each decoder project's `Makefile` builds its module with the rules in `wgpud/rules.mk`.
+  FFmpeg and dcadec are pinned, shallow, `update = none` submodules, which `make -C wgpud sources` fetches.
   There is no Docker and no Python of our own in the build.
-  `make -C wasm check` and `npm run decoders -- --check` verify byte-reproducible outputs, and whoever distributes the LGPL packages offers their corresponding source from `make -C decoders source-archives`.
+  `make -C wasm check` and `npm run decoders -- --check` verify byte-reproducible outputs, and whoever distributes the LGPL packages offers their corresponding source from `make -C wgpud source-archives`.
 - Decoder builds are not committed (10-05).
-  `bin/` holds generated output, and only `bin/codec_vector_assets/` is committed, so `bin/wasm/` and `bin/decoders/` are ignored.
+  `bin/` holds generated output, and only `bin/codec_vector_assets/` is committed, so `bin/wasm/`, `bin/wgpud/`, and `bin/wgpup/` are ignored.
   Each checkout builds the engine's modules with `make -C wasm all` before the asset build, and the decoder projects with `npm run decoders` before their tests.
   The decoder glue's hand-written declarations lived in `wasm/<kit>/`, where the `types` condition of the `#wasm/*` import resolved TypeScript to them, until the CPU decoders left (10-13) and took the import with them.
 - Audio decoder binaries were served files (10-08), until the audio decoders became packages (10-13), which the engine does not serve.
@@ -842,7 +842,13 @@ These were settled on Firefox 157 on Windows.
 - Decoder kits were named for their library and codecs (10-06): `ffmpeg-eac3`, `ffmpeg-truehd`, `ffmpeg-mpeg2-vc1`, `ffmpeg-hevc`, `libdcadec-dts`, and `libdovi`.
   Their classes followed the codecs too, as in `MPEG2VC1SoftwareVideoDecoder`, and a name that covered one codec only said so, as in `bundledMPEG2` beside `bundledVC1`.
   Since 10-13 a decoder project is named for its codec, whatever library it builds (`eac3`, `truehd`, `dts`, `hevc`, `vc1`), and `libdovi` is the one kit left.
-- Our sources in `wasm/` and `decoders/` carry no license headers (10-06).
+- The decoder projects live in `wgpud/` and the pass projects in `wgpup/` (10-15).
+  The names mark both as module types of this player: a decoder package or a pass file is something a host loads into the engine, not engine code.
+  `decoders/` became `wgpud/`, and its packages build into `bin/wgpud/`.
+  `wgpup/` holds the optional passes a host may offer: the sharpen, saturation, and temporal blend examples and the Catmull-Rom scaler, which were modules of `src/presentation/passes/` that no route used, and the Anime4K upscalers.
+  The engine never loads a pass itself; `npm run build` copies the pass files into `bin/wgpup/`, where a host serves them, and the sandbox lists them.
+  The Anime4K passes are generated from the upstream mpv GLSL by the project's own generators and committed, so a build needs no Python.
+- Our sources in `wasm/`, `wgpud/`, and `wgpup/` carry no license headers (10-06).
   The repository's `LICENSE` covers them.
 - Both repositories lint the engine (10-02).
   The engine has its own ESLint config adapted from Jellyfin Web's, and the host's lint also covers the engine's `src/` and `test/`, so the engine stays clean under both.

@@ -5,9 +5,9 @@ import { createBuiltinChain } from 'webgpu-player/presentation/passes/builtin/Bu
 import { parsePassManifest } from 'webgpu-player/presentation/passes/PassManifest';
 import type { PlannedPass, PresentationPlan } from 'webgpu-player/presentation/passes/PassTypes';
 import { planPresentation } from 'webgpu-player/presentation/passes/PresentationPlanner';
-import { TEMPORAL_BLEND_KERNEL_PASS } from 'webgpu-player/presentation/passes/examples/TemporalBlendKernelPass';
 import { createDefaultRenderSettings } from 'webgpu-player/presentation/RenderSettings';
 
+import { readPostprocessingPass } from '../../helpers/postprocessingPasses';
 import {
     formatPipelineGraphEdgePath,
     layoutPipelineGraph,
@@ -25,6 +25,8 @@ import {
     TEST_CANVAS_OUTPUT
 } from './diagnosticsTestState';
 
+// The pass project in wgpup/ whose history input the graph lays out
+const TEMPORAL_BLEND_KERNEL_PASS = readPostprocessingPass('temporal-blend', 'temporal-blend.wgsl');
 const SOURCE_WIDTH = 1920;
 const SOURCE_HEIGHT = 1080;
 const OUTPUT_WIDTH = 2560;

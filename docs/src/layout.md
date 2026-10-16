@@ -9,8 +9,9 @@
 | `test/` | The Vitest suites, mirroring `src/`, and shared helpers in `test/helpers/` |
 | `sandbox/` | The testing sandbox, a local web app that plays media from a picked folder through the engine: its Vite config, page, and sources in `src/`. See [Sandbox](sandbox.md) |
 | `wasm/` | The engine's own WebAssembly modules and their build: the `libdovi` crate, the audio output stage, license texts, and the Makefile. See [WebAssembly build](decoders.md) |
-| `decoders/` | The decoder projects, each of which builds one [decoder package](decoder-packages.md), with its tests in `test/`, and their shared build rules. See [WebAssembly build](decoders.md#decoder-projects) |
-| `vendor/` | The FFmpeg and dcadec submodules, fetched only by `make -C decoders sources` |
+| `wgpud/` | The decoder projects, each of which builds one [decoder package](decoder-packages.md), with its tests in `test/`, and their shared build rules. See [WebAssembly build](decoders.md#decoder-projects) |
+| `wgpup/` | The pass projects, whose WGSL pass files a host offers as optional passes, and the license texts of their upstream sources. See [Bundled passes](bundled-passes.md) |
+| `vendor/` | The FFmpeg and dcadec submodules, fetched only by `make -C wgpud sources` |
 | `scripts/` | `build.mjs` (the served assets), `library-assets.mjs` (which file is served from where), `decoder-packages.mjs` (the decoder projects' build), and the codec vector generators. See [Codec vectors](codec-vectors.md) |
 | `tools/` | Development tooling that never ships, and `constants.json`. See [Tools](tools.md) |
 | `docs/` | This book: chapters in `src/`, PlantUML sources in `diagrams/` and their SVGs in `src/diagrams/`, stylesheets, scripts, and the favicon in `theme/`, and the built book in `book/` |
@@ -20,8 +21,9 @@
 `bin/` holds:
 
 - `bin/wasm/`: the engine modules' builds from `make -C wasm`.
-- `bin/decoders/`: the decoder packages from `npm run decoders`.
+- `bin/wgpud/`: the decoder packages from `npm run decoders`.
 - `bin/libraries/` and `bin/build-info.json`: the served assets from `npm run build`.
+- `bin/wgpup/`: the pass files of every pass project, which `npm run build` copies there.
 - `bin/playback_smoke_media/`: local playback media from the smoke media generators.
 - `bin/plantuml/`: the pinned PlantUML jar that `tools/render-diagrams.mjs` downloads.
 - `bin/codec_vector_assets/`: the generated codec vectors.
@@ -40,7 +42,7 @@ Read a path from it instead of spelling it out, so moving a folder is a one-line
 | Tests | `test/helpers/enginePaths.ts` |
 | `vitest.config.ts` | A JSON import |
 | `sandbox/vite.config.ts` and `sandbox/src/main.ts` | A JSON import |
-| `wasm/Makefile`, `decoders/Makefile`, and `decoders/rules.mk` | `node -p`, which is why WebAssembly builds need Node.js |
+| `wasm/Makefile`, `wgpud/Makefile`, and `wgpud/rules.mk` | `node -p`, which is why WebAssembly builds need Node.js |
 | Hosts | The file itself, at `<engine>/tools/constants.json` |
 
 Some files cannot read it.

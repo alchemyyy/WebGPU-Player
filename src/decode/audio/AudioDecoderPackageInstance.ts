@@ -1,5 +1,5 @@
 // One decoder of an audio decoder package: the package's WebAssembly module decodes packets into planar 32-bit float PCM blocks.
-// decoders/include/audio_decoder_interface.h declares the interface for C modules, and the engine's book describes it.
+// wgpud/include/audio_decoder_interface.h declares the interface for C modules, and the engine's book describes it.
 import { getDecoderErrorName } from '../packages/DecoderHeader';
 import { instantiateDecoderPackage, isDecoderPackageMemoryLimits, type DecoderPackageMemoryLimits } from '../packages/DecoderPackageImports';
 import { AUDIO_DECODER_MAXIMUM_PACKET_BYTE_LENGTH, type AudioDecoderManifest } from './AudioDecoderManifest';

@@ -37,10 +37,10 @@ The HEVC range-extension, AV1 Dolby Vision, HDR10+ AV1, and HDR10+ VP9 generator
 | `generate_truehd_capability_vectors.py` | `truehd/TrueHDExactCapabilityVectors.ts`, from the synthetic streams in `truehd/`. `--regenerate-sources` re-encodes those streams first |
 | `generate_seven_point_one_downmix_reference.py` | `downmix-reference/seven-point-one.json`. `--verify-external` also runs the referenced mpv and FFmpeg builds against it |
 | `generate_HEVC_range_extension_vectors.py` | `hevc-range-extension/*.hevc`. `--inspect` prints the evidence that `capability/HEVCRangeExtensionCapabilities.ts` records |
-| `generate_mpeg2_decoder_vectors.py` | Outside `bin/`: `decoders/mpeg2/vectors/`, one Matroska MPEG-2 stream per chroma format from a deterministic syntax exerciser, since no available encoder writes field pictures, dual prime, 16x8 motion, concealment vectors, and 4:4:4 together; FFmpeg checks each stream |
-| `generate_jpeg2000_decoder_vectors.py` | Outside `bin/`: `decoders/jpeg2000/vectors/`, one stream per output format from FFmpeg's native and OpenJPEG encoders, across both wavelets, tiles, quality layers, every progression order, and SOP and EPH markers, in QuickTime files and in Motion JPEG 2000 files it muxes itself |
-| `generate_av1_decoder_vectors.py` | Outside `bin/`: `decoders/av1/vectors/`, one Matroska stream per output format from FFmpeg's libaom-av1 encoder, as [AV1 decoder vectors](#av1-decoder-vectors) describes |
-| `generate_decoder_package_vectors.py` | Outside `bin/`: each decoder project's `decoders/<project>/<project>.vectors`, from the streams its `decoder.json` lists, demuxed with FFprobe and hashed from FFmpeg's decode, so a project's vectors are FFmpeg's known answers |
+| `generate_mpeg2_decoder_vectors.py` | Outside `bin/`: `wgpud/mpeg2/vectors/`, one Matroska MPEG-2 stream per chroma format from a deterministic syntax exerciser, since no available encoder writes field pictures, dual prime, 16x8 motion, concealment vectors, and 4:4:4 together; FFmpeg checks each stream |
+| `generate_jpeg2000_decoder_vectors.py` | Outside `bin/`: `wgpud/jpeg2000/vectors/`, one stream per output format from FFmpeg's native and OpenJPEG encoders, across both wavelets, tiles, quality layers, every progression order, and SOP and EPH markers, in QuickTime files and in Motion JPEG 2000 files it muxes itself |
+| `generate_av1_decoder_vectors.py` | Outside `bin/`: `wgpud/av1/vectors/`, one Matroska stream per output format from FFmpeg's libaom-av1 encoder, as [AV1 decoder vectors](#av1-decoder-vectors) describes |
+| `generate_decoder_package_vectors.py` | Outside `bin/`: each decoder project's `wgpud/<project>/<project>.vectors`, from the streams its `decoder.json` lists, demuxed with FFprobe and hashed from FFmpeg's decode, so a project's vectors are FFmpeg's known answers |
 | `generate_dolby_vision_AV1_vectors.py` | `dolby-vision-av1/profile10.{0,1,2,4}.{mp4,mkv}` and `expectations.json`, from the RPU payloads in `src/capability/vectors/test/dolby-vision-rpu/` |
 | `generate_HDR10_plus_AV1_vectors.py` | `hdr10plus-av1/hdr10plus.{mp4,mkv}` and `expectations.json` |
 | `generate_HDR10_plus_VP9_vectors.py` | `hdr10plus-vp9/hdr10plus.{webm,mkv}` and `expectations.json` |
@@ -125,7 +125,7 @@ Do not update an access-unit length, a constraint string, or a fingerprint until
 ## AV1 decoder vectors
 
 These are the `av1` decoder project's self-test media, one Matroska stream per output format.
-`decoders/av1/decoder.json` lists them with the decoder options `-c:v libdav1d`, so the package's known answers are libdav1d's decode, film grain included.
+`wgpud/av1/decoder.json` lists them with the decoder options `-c:v libdav1d`, so the package's known answers are libdav1d's decode, film grain included.
 libaom's decoder decodes every frame of every stream to the same bytes as libdav1d.
 `generate_av1_decoder_vectors.py --print-declarations` prints that list.
 

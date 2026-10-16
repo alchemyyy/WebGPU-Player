@@ -19,6 +19,7 @@
 
 - [Embedding the engine](embedding.md)
 - [Decoder packages](decoder-packages.md)
+- [Bundled passes](bundled-passes.md)
 
 # Build and test
 
