@@ -110,6 +110,7 @@ All worker code unless marked.
 - `CustomDecodeMediaSource.ts` [main and worker]: the media a playback reads, a URL that the worker fetches in byte ranges, with the host's pattern for the paths whose cross-origin 206 hides `Content-Range`, or a `File` that crosses to it by structured clone, and its validator.
 - `MediaFetchPolicy.ts`: retries only transport errors and 408, 429, and 5xx.
 - `HTTPRangeResponse.ts`: validates Range responses, a cross-origin 206 that hides `Content-Range` included, from the paths the source's pattern names.
+- `URLSourceRetention.ts`: keeps the last run's URL source for the next run over the same media, and sizes its read-ahead and cache by the media's bitrate.
 - `CustomDecodeInputFormats.ts`: Mediabunny's input formats with Motion JPEG 2000 added, whose JP2 signature box precedes its ftyp.
 - `MatroskaBlockAdditions.ts`: reads a packet's Matroska or WebM BlockAdditionals but alpha, such as VP9 HDR10+, from the fork's packet side data.
 - `ContainerVideoScan.ts`: a video track's scan as its container declares it: Matroska's FlagInterlaced and FieldOrder, recorded while Mediabunny's demuxer parses the track entry, or an ISO base media sample entry's `fiel` box.

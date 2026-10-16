@@ -279,8 +279,10 @@ Every stale callback is dropped by a generation or revision check:
 - WebGPU presentation on the HTML path is SDR only: a `<video>` external texture is browser-converted sRGB.
 - A deinterlaced native frame's chroma is the browser's progressive upsampling, which blends the two fields' chroma rows; only the raw and frame-pool routes read chroma within each field.
 - Worker track indices are container ordinals, not Jellyfin `MediaStream.Index`.
-- Every seek, audio switch, and paused repaint starts a new run in the session's worker, and each run opens the input again.
-  The 32 MiB read cache belongs to one run, so a seek reads its range anew.
+- Every seek, audio switch, and paused repaint starts a new run in the session's worker, and each run opens its input again, over the last run's URL source when it reads the same URL (`demux/URLSourceRetention.ts`).
+  The source keeps its cache, the container's header and index pinned in it, and its open responses, so a seek reads the header and index from memory and reads on near where the last run stopped.
+  A run's stop cancels the reads its input still waits for; a failed run's source, or one no run takes within 5 s, is released.
+  After the first preparation over a source, its read-ahead holds 5 s of media and its cache 15 s, at the media's size over its duration, within 8 to 64 MiB and 32 to 192 MiB; a file's cache stays 32 MiB.
 - Decoded PCM gain (volume cubed times normalization) is applied after the limiter and is not capped, so a boost can clip; clipping is counted.
   The native-media route caps gain at 1.
 - `DecodedVideoGeometry` locks the first decoded size of a run, with a 64 px tolerance.

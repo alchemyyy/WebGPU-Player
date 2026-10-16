@@ -1104,7 +1104,7 @@ export default class CustomDecodeSession {
             nativeHDRTransfer: options.nativeHDRTransfer,
             neutralizeHDRColorMetadata: options.neutralizeHDRColorMetadata,
             rawVideoFrameFormat: options.rawVideoFrameFormat,
-            ...(options.durationMicroseconds == null ? { reportContainerDuration: true } : {}),
+            ...(options.durationMicroseconds == null ? {} : { durationMicroseconds: options.durationMicroseconds }),
             source: options.source,
             startTimeMicroseconds: options.startTimeMicroseconds,
             ...(isTimingTraceActive() ? { timingTrace: true } : {}),

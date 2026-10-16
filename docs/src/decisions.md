@@ -661,7 +661,7 @@ These were settled on Firefox 157 on Windows.
   It is also replaced when a run's `stopped` carries `replaceWorker`, which the worker sets once it suppressed the rejection of a custom decoder that Mediabunny left open.
   Since the fork closes such a decoder (10-16), the worker sets `replaceWorker` only once its audio decode worker was lost.
   A start on another video decoder backend gets a new worker too, because Mediabunny kept a decoder registration, such as the bundled HEVC adapter that `canDecode()` consulted, for the worker's life; since the CPU decoders left (10-13), the new worker keeps what one backend set up, such as a package parser's workers, from outliving it.
-  Each run still opens its own input, so the read cache does not outlive a seek.
+  Each run still opens its own input, so the read cache does not outlive a seek; since 10-16 a URL source does (below).
   After a run ends on its own, its generation stays current while the worker idles, so a native-media element that plays out after decode still ends the session.
   Before, the run's `stopped` retired the worker and with it the generation, and such a session did not end.
 - Presentation stays on the page; presentation in the worker was removed (10-09).
@@ -675,6 +675,14 @@ These were settled on Firefox 157 on Windows.
   `Content-Range` is not CORS-safelisted, and Jellyfin's stream endpoint does not expose it, so the range check accepted a 206 with a bounded `Content-Length` from a hard-coded Jellyfin path, which bound the engine to one host.
   A URL source now carries `hiddenContentRangePathPattern`, a RegExp without the global or sticky flag that crosses to the decode worker by structured clone, and without it every 206 must show its `Content-Range`.
   The Jellyfin plugin sets the same `/Videos/{id}/stream` pattern on the stream URL it plays, so its playback is unchanged; the sandbox sets none.
+- A URL source outlives its run and reads ahead by seconds of media (10-16).
+  Every seek started a run whose new source read the container's header and index again over new connections.
+  Mediabunny's prefetch reached at most 8 MiB past a read, under a second of a 70 Mbit/s remux, and it aborted each response at its target, so the next read paid a new request and a TCP slow start.
+  The fork's `UrlSource` keeps a response open for 4 s at its target, where a sequential reader extends it, keeps a set read-ahead past the latest read, pins what it cached outside its cache budget, and cancels waiting reads (branch `v2-url-source-read-ahead`).
+  The worker keeps the last run's source for the next run over the same URL and pattern, cancels its waiting reads when a run stops, and releases it when a run fails, when a run opens other media, or when no run takes it within 5 s.
+  After the first preparation over a source, the worker pins its cache, the container's header and index among it, and sizes its read-ahead to 5 s of media and its cache to 15 s, at the media's size over the server's duration, else the container's, within 8 to 64 MiB and 32 to 192 MiB.
+  The server's duration reaches the worker in the start request, whose absence asks for the container's in the ready response.
+  Each run still opens its own input, because a canceled read rejects promises a kept demuxer could have memoized.
 
 ## Audio
 
