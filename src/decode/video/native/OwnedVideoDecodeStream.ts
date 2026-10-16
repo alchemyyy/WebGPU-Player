@@ -51,8 +51,11 @@ export type OwnedVideoDecoderCallbacks = {
 
 export type OwnedVideoDecoderPort = {
     close: () => void
-    /** Returns false when the decoder drops the packet's picture. */
-    decode: (packet: EncodedPacket) => boolean
+    /**
+     * Returns false when the decoder drops the packet's picture.
+     * Transferable data was allocated for this decode alone, so the decoder may detach its buffer instead of copying it.
+     */
+    decode: (packet: EncodedPacket, transferableData?: boolean) => boolean
     flush: () => Promise<void>
     getDecodeQueueSize: () => number
     init: () => Promise<void>
@@ -106,7 +109,10 @@ export type OwnedVideoPacketDecoder = (packet: EncodedPacket, packetMediaTimeMic
 
 /** One packet after its metadata was recorded in decode order. */
 export type ProcessedOwnedVideoPacket = {
-    /** The packet without the metadata the decoder must not see; the input packet when it carried none */
+    /**
+     * The packet without the metadata the decoder must not see; the input packet when it carried none.
+     * Its data is the input's, a view of it, or a buffer allocated for this decode alone.
+     */
     decoderPacket: EncodedPacket
     /** Whether the decoder outputs a frame, which takes the packet's metadata entry */
     hasFrame: boolean
@@ -372,7 +378,8 @@ export class OwnedVideoStreamState {
         if (!decoderPacket) {
             return;
         }
-        const packetAccepted = decoder.decode(decoderPacket);
+        // The demuxer may keep reading its own buffer, so only a buffer the packet's processing allocated transfers
+        const packetAccepted = decoder.decode(decoderPacket, decoderPacket.data.buffer !== sourcePacket.data.buffer);
         if (!packetAccepted && hasFrame) {
             this.frameMetadata.takeFrameMetadata(sourcePacket.microsecondTimestamp);
         }

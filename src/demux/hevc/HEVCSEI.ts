@@ -105,10 +105,14 @@ function parseSEINALUnit(nalUnit: HEVCNALUnit): HEVCSEIMessage[] {
 /**
  * Extracts bounded prefix and suffix SEI messages from one HEVC access unit.
  * Only base-layer SEI NAL units are read: SEI with nuh_layer_id above zero describes another layer, such as an MV-HEVC second view.
+ * A caller that already walked the access unit's NAL units passes them, so the unit is walked once.
  */
-export function parseHEVCSEIMessages(accessUnit: Uint8Array, format: HEVCNALFormat): HEVCSEIMessage[] {
+export function parseHEVCSEIMessages(
+    accessUnit: Uint8Array,
+    format: HEVCNALFormat,
+    nalUnits: readonly HEVCNALUnit[] = parseHEVCNALUnits(accessUnit, format)
+): HEVCSEIMessage[] {
     const messages: HEVCSEIMessage[] = [];
-    const nalUnits = parseHEVCNALUnits(accessUnit, format);
     for (const nalUnit of nalUnits) {
         if (nalUnit.layerID !== HEVC_BASE_LAYER_ID) {
             continue;

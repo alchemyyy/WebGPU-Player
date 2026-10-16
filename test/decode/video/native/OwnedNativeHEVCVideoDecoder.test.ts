@@ -140,6 +140,7 @@ type DecoderHarness = {
     dependencies: OwnedNativeHEVCVideoDecoderDependencies
     init: VideoDecoderInit | null
     packets: EncodedPacket[]
+    transferableData: boolean[]
 };
 
 function createHarness(): DecoderHarness {
@@ -147,15 +148,17 @@ function createHarness(): DecoderHarness {
         decoder: new FakeNativeVideoDecoder(),
         dependencies: null as unknown as OwnedNativeHEVCVideoDecoderDependencies,
         init: null,
-        packets: []
+        packets: [],
+        transferableData: []
     };
     harness.dependencies = {
         createDecoder: (init: VideoDecoderInit): NativeVideoDecoderPort => {
             harness.init = init;
             return harness.decoder;
         },
-        createEncodedVideoChunk: (packet: EncodedPacket): EncodedVideoChunk => {
+        createEncodedVideoChunk: (packet: EncodedPacket, transferableData: boolean): EncodedVideoChunk => {
             harness.packets.push(packet);
+            harness.transferableData.push(transferableData);
             return { packet } as unknown as EncodedVideoChunk;
         }
     };
@@ -266,6 +269,29 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
         expect(harness.packets).toHaveLength(2);
         expect(harness.packets[0].data).toEqual(encodeAnnexBNALUnits([ picture ]));
         expect(harness.packets[1].sequenceNumber).toBe(2);
+        decoder.close();
+    });
+
+    it('transfers the data it rewrites, and unchanged data only as its caller allows', async () => {
+        const harness = createHarness();
+        const decoder = new OwnedNativeHEVCVideoDecoder(
+            { codec: 'hvc1.2.4.L153.B0' },
+            { kind: 'annex-b' },
+            { onError: vi.fn(), onFrame: vi.fn(), onProgress: vi.fn() },
+            harness.dependencies
+        );
+        await decoder.init();
+        const picture = createNALUnit(19, [ 1 ]);
+        const lateParameterSet = createNALUnit(32, [ 2 ]);
+        const unchangedPacket = createPacket(encodeAnnexBNALUnits([ createNALUnit(1, [ 3 ]) ]), 1);
+
+        // The first access unit is sanitized into a new buffer
+        decoder.decode(createPacket(encodeAnnexBNALUnits([ picture, lateParameterSet ]), 0), false);
+        decoder.decode(unchangedPacket, false);
+        decoder.decode(unchangedPacket, true);
+
+        expect(harness.transferableData).toEqual([ true, false, true ]);
+        expect(harness.packets[1]).toBe(unchangedPacket);
         decoder.close();
     });
 

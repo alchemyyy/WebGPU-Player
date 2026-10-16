@@ -89,6 +89,17 @@ describe('HEVCDynamicHDRMetadataQueue', () => {
         expect(() => queue.requireDrained()).not.toThrow();
     });
 
+    it('reads the NAL units its caller walked instead of walking the packet again', () => {
+        const queue = new HEVCDynamicHDRMetadataQueue({ kind: 'annex-b' });
+        const absentPacket = createPacket('absent', 0);
+        // Units walked from another access unit stand in for the packet's own, which proves no second walk reads it
+        const validNALUnits = parseHEVCNALUnits(createHDR10PlusHEVCVector('valid'), { kind: 'annex-b' });
+
+        expect(queue.processPacket(absentPacket, validNALUnits)).toBe(true);
+        expect(queue.takeFrameMetadata(absentPacket.microsecondTimestamp).status).toBe('valid');
+        expect(() => queue.requireDrained()).not.toThrow();
+    });
+
     it('queues no frame for an access unit without a base-layer picture', () => {
         const queue = new HEVCDynamicHDRMetadataQueue({ kind: 'annex-b' });
 

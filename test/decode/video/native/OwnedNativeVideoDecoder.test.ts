@@ -2,6 +2,7 @@ import { EncodedPacket } from 'mediabunny';
 import { describe, expect, it, vi } from 'vitest';
 
 import OwnedNativeVideoDecoder, {
+    DEFAULT_NATIVE_VIDEO_DECODER_DEPENDENCIES,
     type NativeVideoDecoderPort,
     type OwnedNativeVideoDecoderDependencies
 } from 'webgpu-player/decode/video/native/OwnedNativeVideoDecoder';
@@ -17,6 +18,8 @@ const AV1_CONFIG: VideoDecoderConfig = {
     hardwareAcceleration: 'prefer-software',
     optimizeForLatency: true
 };
+// A packet past the first, so its chunk has a nonzero timestamp
+const TRANSFER_PACKET_SEQUENCE_NUMBER = 3;
 
 class FakeVideoFrame {
     public readonly close = vi.fn();
@@ -24,6 +27,11 @@ class FakeVideoFrame {
     public readonly codedWidth = 3_840;
     public readonly displayHeight = 2_160;
     public readonly displayWidth = 3_840;
+}
+
+/** Keeps the init each chunk was made from, as WebCodecs' constructor reads it. */
+class FakeEncodedVideoChunk {
+    public constructor(public readonly init: EncodedVideoChunkInit & { transfer?: ArrayBuffer[] }) {}
 }
 
 type DecoderHarness = {
@@ -37,6 +45,7 @@ type DecoderHarness = {
     init: VideoDecoderInit | null
     nativeDecoder: FakeNativeVideoDecoder
     packets: EncodedPacket[]
+    transferableData: boolean[]
 };
 
 function createHarness(): DecoderHarness {
@@ -48,15 +57,17 @@ function createHarness(): DecoderHarness {
         },
         init: null,
         nativeDecoder: new FakeNativeVideoDecoder(),
-        packets: []
+        packets: [],
+        transferableData: []
     } as unknown as DecoderHarness;
     harness.dependencies = {
         createDecoder: (init: VideoDecoderInit): NativeVideoDecoderPort => {
             harness.init = init;
             return harness.nativeDecoder;
         },
-        createEncodedVideoChunk: (packet: EncodedPacket): EncodedVideoChunk => {
+        createEncodedVideoChunk: (packet: EncodedPacket, transferableData: boolean): EncodedVideoChunk => {
             harness.packets.push(packet);
+            harness.transferableData.push(transferableData);
             return { packet } as unknown as EncodedVideoChunk;
         }
     };
@@ -82,6 +93,7 @@ describe('OwnedNativeVideoDecoder', () => {
         expect(harness.nativeDecoder.configure).toHaveBeenCalledExactlyOnceWith(AV1_CONFIG);
         expect(harness.packets).toEqual([ packet ]);
         expect(harness.packets[0]).toBe(packet);
+        expect(harness.transferableData).toEqual([ false ]);
         expect(harness.decoder.getDecodeQueueSize()).toBe(3);
         expect(harness.callbacks.onProgress).toHaveBeenCalledOnce();
         expect(harness.nativeDecoder.flush).toHaveBeenCalledOnce();
@@ -90,6 +102,45 @@ describe('OwnedNativeVideoDecoder', () => {
         harness.decoder.close();
         expect(harness.nativeDecoder.close).toHaveBeenCalledOnce();
         await expect(harness.decoder.init()).rejects.toThrow('is closed');
+    });
+
+    it('passes whether its caller allows the packet data to transfer', async () => {
+        const harness = createHarness();
+        await harness.decoder.init();
+
+        harness.decoder.decode(createPacket(0), true);
+        harness.decoder.decode(createPacket(1), false);
+
+        expect(harness.transferableData).toEqual([ true, false ]);
+        harness.decoder.close();
+    });
+
+    it('moves only transferable, unshared data into a chunk and copies the rest', () => {
+        vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+        try {
+            const packet = createPacket(TRANSFER_PACKET_SEQUENCE_NUMBER);
+            const sharedData = new Uint8Array(new SharedArrayBuffer(packet.data.byteLength));
+            sharedData.set(packet.data);
+            const sharedPacket = packet.clone({ data: sharedData });
+            const createChunk = DEFAULT_NATIVE_VIDEO_DECODER_DEPENDENCIES.createEncodedVideoChunk;
+
+            const transferredChunk = createChunk(packet, true) as unknown as FakeEncodedVideoChunk;
+            const copiedChunk = createChunk(packet, false) as unknown as FakeEncodedVideoChunk;
+            const sharedChunk = createChunk(sharedPacket, true) as unknown as FakeEncodedVideoChunk;
+
+            expect(transferredChunk.init).toEqual({
+                data: packet.data,
+                duration: packet.microsecondDuration,
+                timestamp: packet.microsecondTimestamp,
+                transfer: [ packet.data.buffer ],
+                type: packet.type
+            });
+            expect(copiedChunk.init.transfer).toBeUndefined();
+            expect(copiedChunk.init.data).toBe(packet.data);
+            expect(sharedChunk.init.transfer).toBeUndefined();
+        } finally {
+            vi.unstubAllGlobals();
+        }
     });
 
     it('hands each frame to its stream with its geometry and closes later outputs', async () => {
