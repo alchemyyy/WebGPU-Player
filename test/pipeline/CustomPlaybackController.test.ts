@@ -5062,6 +5062,15 @@ const CLOCK_SMALL_JUMP = millisecondsToMicroseconds(10);
 const CLOCK_RESET_MEDIA_TIME = millisecondsToMicroseconds(5_200);
 const CLOCK_RESET_JUMP = millisecondsToMicroseconds(60);
 const PRESENTATION_TIMING_SEEK_TIME = secondsToMicroseconds(40);
+// Playback starts at 5 s at monotonic 10 s, and the output's first sample is heard 70 ms later
+const AUDIO_START_LATENCY = millisecondsToMicroseconds(70);
+const AUDIO_START_HELD_MONOTONIC_TIME = millisecondsToMicroseconds(10_050);
+const AUDIO_START_HEARD_MONOTONIC_TIME = millisecondsToMicroseconds(10_100);
+const AUDIO_START_HEARD_MEDIA_TIME = millisecondsToMicroseconds(5_030);
+const AUDIO_START_IMPLAUSIBLE_LATENCY = secondsToMicroseconds(3);
+const AUDIO_START_MAXIMUM_HOLD_END_MONOTONIC_TIME = millisecondsToMicroseconds(10_500);
+const AUDIO_START_AFTER_MAXIMUM_HOLD_MONOTONIC_TIME = millisecondsToMicroseconds(10_600);
+const AUDIO_START_AFTER_MAXIMUM_HOLD_MEDIA_TIME = millisecondsToMicroseconds(5_100);
 
 describe('CustomPlaybackController presentation timing', () => {
     afterEach(() => {
@@ -5122,6 +5131,33 @@ describe('CustomPlaybackController presentation timing', () => {
         });
         await harness.controller.destroy();
         await expect(seekPromise).resolves.toMatchObject({ status: 'stopped' });
+    });
+
+    it('holds the clock at startup for the audio output latency, so the first correlated report finds no jump', async () => {
+        const harness = createControllerHarness(true);
+        requireAudioOutput(harness).setEstimatedOutputLatencyMicroseconds(AUDIO_START_LATENCY);
+        await startReadyPlayback(harness, true);
+
+        harness.setMonotonicTime(AUDIO_START_HELD_MONOTONIC_TIME);
+        expect(harness.controller.getPresentationTargetTime()).toBe(createPlayOptions().startTimeMicroseconds);
+        harness.setMonotonicTime(AUDIO_START_HEARD_MONOTONIC_TIME);
+        expect(harness.controller.getPresentationTargetTime()).toBe(AUDIO_START_HEARD_MEDIA_TIME);
+
+        requireAudioOutput(harness).emitTelemetry(AUDIO_START_HEARD_MEDIA_TIME);
+        expect(harness.controller.getTelemetry().presentationTiming.largestClockJumpMicroseconds).toBe(0);
+        await harness.controller.destroy();
+    });
+
+    it('clamps an implausible output latency to the longest start hold', async () => {
+        const harness = createControllerHarness(true);
+        requireAudioOutput(harness).setEstimatedOutputLatencyMicroseconds(AUDIO_START_IMPLAUSIBLE_LATENCY);
+        await startReadyPlayback(harness, true);
+
+        harness.setMonotonicTime(AUDIO_START_MAXIMUM_HOLD_END_MONOTONIC_TIME);
+        expect(harness.controller.getPresentationTargetTime()).toBe(createPlayOptions().startTimeMicroseconds);
+        harness.setMonotonicTime(AUDIO_START_AFTER_MAXIMUM_HOLD_MONOTONIC_TIME);
+        expect(harness.controller.getPresentationTargetTime()).toBe(AUDIO_START_AFTER_MAXIMUM_HOLD_MEDIA_TIME);
+        await harness.controller.destroy();
     });
 
     it('records render ticks and clock re-anchors only while a timing trace runs', async () => {

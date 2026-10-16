@@ -713,6 +713,11 @@ These were settled on Firefox 157 on Windows.
   Hidden tabs fire that timer late, so a timer more than 20 ms late first moves the parked element and its clock baseline forward by the overshoot, within the buffered range, and audio does not trail the clock.
   Only an `AbortError` caused by the backend's own pause, seek, or teardown stays silent; any other `play()` rejection is reported.
   Mediabunny proves that a track starts after a lookup time only after two scans, so an audio start at or before zero, or after no earlier packet, takes the first packet directly.
+- A starting audio output holds the clock for its latency (10-15).
+  The clock started running as soon as the `AudioContext` did, but the first sample reached the speakers `baseLatency` plus `outputLatency` later, so the first correlated report pulled the clock back 72 to 81 ms against a reported 64 to 72 ms on an Intel Arc laptop, and the first frames held for about two frame durations.
+  Uncorrelated reports never move the clock, so the jump came from the clock's own start, not from them.
+  Wherever an audio output starts, at playback start, resume, an output switch, and an underflow recovery without a correlated report, `MediaClock.resume` holds the media time for the output's estimated latency, at most 500 ms, so video moves when its first sample is heard and the first correlated report corrects only the estimate's error.
+  Without an estimate the clock holds nothing and that report re-anchors it, as before.
 - Audio that ends before video is not starvation (10-07).
   Treating the final underflow as starvation started an audio wait that fell back with `playback-stalled` after 10 s.
   The worker posts `audio-ended` for the epoch.

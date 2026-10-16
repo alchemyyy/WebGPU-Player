@@ -168,7 +168,8 @@ export type CustomPlaybackClock = {
     readonly rate: number
     pause: () => number
     reset: (mediaTimeMicroseconds?: Microseconds) => number
-    resume: () => number
+    /** Resumes, first holding the media time for the start hold, as a starting audio output is heard that much later */
+    resume: (startHoldMicroseconds?: Microseconds) => number
     seek: (mediaTimeMicroseconds: Microseconds) => number
     setPlaybackRate: (playbackRate: number) => number
     snapshot: () => MediaClockSnapshot

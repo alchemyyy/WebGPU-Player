@@ -1,9 +1,82 @@
 import { describe, expect, it } from 'vitest';
 
-import { secondsToMicroseconds, type Microseconds } from 'webgpu-player/MediaTime';
+import { millisecondsToMicroseconds, secondsToMicroseconds, type Microseconds } from 'webgpu-player/MediaTime';
 import MediaClock from 'webgpu-player/pipeline/MediaClock';
 
+// A clock resumed at 10 s with a 70 ms start hold stays at 5 s until 10.07 s
+const START_HOLD = millisecondsToMicroseconds(70);
+const START_HOLD_MEDIA_TIME = secondsToMicroseconds(5);
+const START_HOLD_RESUME_TIME = millisecondsToMicroseconds(10_000);
+const START_HOLD_INSIDE_TIME = millisecondsToMicroseconds(10_050);
+const START_HOLD_END_TIME = millisecondsToMicroseconds(10_070);
+const START_HOLD_AFTER_TIME = millisecondsToMicroseconds(10_100);
+const START_HOLD_AFTER_MEDIA_TIME = millisecondsToMicroseconds(5_030);
+const START_HOLD_DOUBLE_RATE_AFTER_MEDIA_TIME = millisecondsToMicroseconds(5_060);
+const START_HOLD_SYNCHRONIZED_MEDIA_TIME = millisecondsToMicroseconds(4_990);
+const START_HOLD_SYNCHRONIZED_AFTER_MEDIA_TIME = millisecondsToMicroseconds(5_040);
+const START_HOLD_BACKWARDS_TIME = millisecondsToMicroseconds(9_990);
+const NEGATIVE_START_HOLD = -1 as Microseconds;
+
+function createHeldClock(readMonotonicTime: () => Microseconds): MediaClock {
+    const clock = new MediaClock(readMonotonicTime);
+    clock.seek(START_HOLD_MEDIA_TIME);
+    clock.resume(START_HOLD);
+    return clock;
+}
+
 describe('MediaClock', () => {
+    it('keeps its media time through a start hold, then advances from it', () => {
+        let monotonicTime = START_HOLD_RESUME_TIME;
+        const clock = createHeldClock(() => monotonicTime);
+
+        monotonicTime = START_HOLD_INSIDE_TIME;
+        expect(clock.mediaTimeMicroseconds).toBe(START_HOLD_MEDIA_TIME);
+        monotonicTime = START_HOLD_END_TIME;
+        expect(clock.mediaTimeMicroseconds).toBe(START_HOLD_MEDIA_TIME);
+        monotonicTime = START_HOLD_AFTER_TIME;
+        expect(clock.mediaTimeMicroseconds).toBe(START_HOLD_AFTER_MEDIA_TIME);
+    });
+
+    it('keeps a start hold through invalidation and rate changes, and pauses at its start', () => {
+        let monotonicTime = START_HOLD_RESUME_TIME;
+        const clock = createHeldClock(() => monotonicTime);
+
+        monotonicTime = START_HOLD_INSIDE_TIME;
+        clock.invalidate();
+        clock.setPlaybackRate(2);
+        expect(clock.mediaTimeMicroseconds).toBe(START_HOLD_MEDIA_TIME);
+        monotonicTime = START_HOLD_AFTER_TIME;
+        expect(clock.mediaTimeMicroseconds).toBe(START_HOLD_DOUBLE_RATE_AFTER_MEDIA_TIME);
+
+        monotonicTime = START_HOLD_RESUME_TIME;
+        const pausedClock = createHeldClock(() => monotonicTime);
+        monotonicTime = START_HOLD_INSIDE_TIME;
+        pausedClock.pause();
+        monotonicTime = START_HOLD_AFTER_TIME;
+        expect(pausedClock.mediaTimeMicroseconds).toBe(START_HOLD_MEDIA_TIME);
+    });
+
+    it('ends a start hold when it synchronizes to an audio master', () => {
+        let monotonicTime = START_HOLD_RESUME_TIME;
+        const clock = createHeldClock(() => monotonicTime);
+
+        monotonicTime = START_HOLD_INSIDE_TIME;
+        clock.synchronize(START_HOLD_SYNCHRONIZED_MEDIA_TIME);
+        expect(clock.mediaTimeMicroseconds).toBe(START_HOLD_SYNCHRONIZED_MEDIA_TIME);
+        monotonicTime = START_HOLD_AFTER_TIME;
+        expect(clock.mediaTimeMicroseconds).toBe(START_HOLD_SYNCHRONIZED_AFTER_MEDIA_TIME);
+    });
+
+    it('rejects a negative start hold and notices time moving backwards inside one', () => {
+        let monotonicTime = START_HOLD_RESUME_TIME;
+        const clock = new MediaClock(() => monotonicTime);
+        expect(() => clock.resume(NEGATIVE_START_HOLD)).toThrow(RangeError);
+
+        const heldClock = createHeldClock(() => monotonicTime);
+        monotonicTime = START_HOLD_BACKWARDS_TIME;
+        expect(() => heldClock.mediaTimeMicroseconds).toThrow('Monotonic time moved backwards');
+    });
+
     it('advances signed integer media time only while running', () => {
         let monotonicTime = secondsToMicroseconds(10);
         const clock = new MediaClock(() => monotonicTime);
