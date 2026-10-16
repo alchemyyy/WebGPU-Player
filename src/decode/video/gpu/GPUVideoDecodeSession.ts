@@ -20,6 +20,7 @@ import { decodePictureFieldsWord, type VideoFrameFields } from '../VideoFields';
 import { getGPUDecoderFormatFacts, type GPUDecoderOutputFormat } from './GPUDecodeFormats';
 import {
     GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH,
+    GPU_DECODE_SLICE_DISPATCH_COUNT,
     GPU_DECODER_ERROR_CODE_SHIFT,
     GPU_DECODER_MAXIMUM_DISPATCHES
 } from './GPUDecodeLimits';
@@ -159,10 +160,23 @@ type DispatchRun<Dispatch> = {
 
 type StatusReadback = {
     buffer: GPUBuffer
-    /** The frame of the packet whose status the readback captured, until the readback applies */
+    /** The frame of the packet whose status the readback captures, until the readback applies */
     entry: DecodedFrameEntry | null
-    /** The reset epoch the readback was taken in; a readback of an earlier epoch is stale. */
+    /** The reset epoch the packet began in; a readback of an earlier epoch is stale. */
     epoch: number
+};
+
+/** A packet whose decode work submits a slice at a time: its first slice clears the decoder at a reset, and its last copies its status into its readback. */
+type SlicedPacket = {
+    /** The packet's dispatches in order, repeats expanded */
+    readonly dispatches: readonly PreparedDispatch[]
+    readonly label: string
+    /** The first dispatch of the next slice */
+    nextDispatchIndex: number
+    readonly readback: StatusReadback
+    readonly reset: boolean
+    readonly sliceDispatchCount: number
+    readonly uniformOffset: number
 };
 
 type SessionResources = {
@@ -487,6 +501,8 @@ export default class GPUVideoDecodeSession {
     private readonly parserOutput: boolean;
     private headerFacts: GPUDecodeStreamFacts | null = null;
     private readonly inFlightReadbacks = new Set<Promise<void>>();
+    // The completion of each submitted slice whose work may still run
+    private readonly inFlightSlices = new Set<Promise<void>>();
     private lastReleasedTimestampMicroseconds = Number.NEGATIVE_INFINITY;
     // The serial the next consumed packet takes, counted in submission order since the session started
     private nextPacketSerial = 0;
@@ -508,6 +524,8 @@ export default class GPUVideoDecodeSession {
     private resetPending = true;
     private resync: ResyncState | null = null;
     private ringByteOffset = 0;
+    // The packet whose decode work is submitting, a slice at a time
+    private slicedPacket: SlicedPacket | null = null;
     private readonly stateBuffer: GPUBuffer;
     private readonly statusBuffer: GPUBuffer;
     private readonly takenFrames = new Set<GPUDecodedFrame>();
@@ -673,15 +691,15 @@ export default class GPUVideoDecodeSession {
     }
 
     /**
-     * Consumes at most one packet: it encodes and submits a packet's decode work when a slot and a readback are free, or consumes a held packet,
-     * which decodes nothing; returns whether it consumed one.
-     * The caller paces the calls by getInFlightPacketCount(), which bounds the decode work a presentation submit queues behind.
+     * Submits one slice of decode work: the next of the packet in progress, else the first of the next queued packet once a slot and a readback are free;
+     * or consumes a held packet, which decodes nothing. Returns whether it submitted or consumed anything.
+     * The caller paces the calls by getInFlightSliceCount(), which bounds the decode work a presentation submit queues behind.
      */
     submitPendingDecodeWork(): boolean {
         if (this.destroyed || this.failure) {
             return false;
         }
-        const submitted = this.submitNextPacket();
+        const submitted = this.slicedPacket ? this.submitNextSlice(this.slicedPacket) : this.startNextPacket();
         this.flushEndOfStreamIfDecoded();
         return submitted;
     }
@@ -740,7 +758,7 @@ export default class GPUVideoDecodeSession {
     }
 
     /**
-     * Drops queued packets and decoded frames that were not taken, and every decoder reference, for a seek or a new video epoch.
+     * Drops queued packets, the rest of the packet in progress, and decoded frames that were not taken, and every decoder reference, for a seek or a new video epoch.
      * The next packet decodes as a reset, which clears the state and status buffers, whether or not it carries the flag.
      */
     reset(): void {
@@ -755,6 +773,7 @@ export default class GPUVideoDecodeSession {
         this.parserFrames.length = 0;
         this.reorderFrames.length = 0;
         this.presentableFrames.length = 0;
+        this.abandonSlicedPacket();
         this.releaseHeldFrame();
         this.endOfStreamPending = false;
         this.endOfStreamEvents = null;
@@ -790,25 +809,34 @@ export default class GPUVideoDecodeSession {
     }
 
     /**
-     * Resolves once the next status readback in flight has been applied, which frees its readback, may free slots, and confirms its frame;
-     * at once when none is in flight. A packet's readback applies only after its decode work completed.
+     * Resolves once the next submitted slice's work completed, which lets the next slice go, or the next status readback applied,
+     * which frees its readback, may free slots, and confirms its frame; at once when neither is in flight.
      */
-    async waitForNextStatusReadback(): Promise<void> {
-        if (this.inFlightReadbacks.size > 0) {
-            await Promise.race(this.inFlightReadbacks);
+    async waitForDecodeProgress(): Promise<void> {
+        if (this.inFlightSlices.size > 0 || this.inFlightReadbacks.size > 0) {
+            await Promise.race([ ...this.inFlightSlices, ...this.inFlightReadbacks ]);
         }
     }
 
-    /** Returns how many submitted packets' status readbacks have not been applied yet, each a packet whose decode work may still run. */
+    /** Returns how many packets' decode has not finished: the packet in progress, and each submitted packet whose status readback has not applied yet. */
     getInFlightPacketCount(): number {
-        return this.inFlightReadbacks.size;
+        return this.inFlightReadbacks.size + (this.slicedPacket ? 1 : 0);
+    }
+
+    /** Returns how many submitted slices' work may still run. */
+    getInFlightSliceCount(): number {
+        return this.inFlightSlices.size;
     }
 
     /**
-     * Resolves once the status of every submitted packet has been read back and applied; each packet's status is captured with its decode work.
+     * Submits the rest of the packet in progress, then resolves once the status of every submitted packet has been read back and applied;
+     * each packet's status is captured with its last slice.
      * A conformance check calls it after the last packet, so a decoder error that packet reports is never missed.
      */
     async flushStatusReadbacks(): Promise<void> {
+        for (let sliced = this.slicedPacket; sliced !== null && !this.destroyed && !this.failure; sliced = this.slicedPacket) {
+            this.submitNextSlice(sliced);
+        }
         await this.waitForStatusReadbacks();
     }
 
@@ -849,6 +877,7 @@ export default class GPUVideoDecodeSession {
         }
         this.destroyed = true;
         liveSessionsByDevice.get(this.device)?.delete(this);
+        this.slicedPacket = null;
         this.pendingPackets.length = 0;
         this.parserFrames.length = 0;
         this.reorderFrames.length = 0;
@@ -972,10 +1001,10 @@ export default class GPUVideoDecodeSession {
     }
 
     /**
-     * Consumes the first queued packet: it submits its decode work into a free slot, with a free readback for its status, and queues its frame,
-     * or holds the last good frame for a packet that decodes nothing; returns false when no packet waits, or no slot or readback is free.
+     * Consumes the first queued packet: it begins its decode work in a free slot, with a free readback for its status, submits the work's first slice,
+     * and queues its frame, or holds the last good frame for a packet that decodes nothing; returns false when no packet waits, or no slot or readback is free.
      */
-    private submitNextPacket(): boolean {
+    private startNextPacket(): boolean {
         const packet = this.pendingPackets.at(0);
         if (!packet) {
             return false;
@@ -1017,7 +1046,9 @@ export default class GPUVideoDecodeSession {
             timestampMicroseconds: packet.timestampMicroseconds,
             visibleSize: packet.visibleSize
         };
-        this.submitPacket(packet, slot, readback, entry);
+        const sliced = this.beginPacket(packet, slot, readback, entry);
+        this.slicedPacket = sliced;
+        this.submitNextSlice(sliced);
         if (this.parserOutput) {
             this.receiveParserFrame(entry, packet.outputEvents);
         } else {
@@ -1099,6 +1130,8 @@ export default class GPUVideoDecodeSession {
                 this.replaceBrokenFrames(frames, firstDroppedSerial, heldFrame);
             }
         }
+        // The packet in progress decodes from the broken references, so the rest of its work is wasted
+        this.abandonSlicedPacket();
         // The decoder's references are broken, and the next packet it decodes, the key packet, decodes from a reset
         this.beginDecoderEpoch();
         this.resetPending = true;
@@ -1232,8 +1265,11 @@ export default class GPUVideoDecodeSession {
         return true;
     }
 
-    /** Writes a packet into the ring and submits its decode work into a slot, ending with the copy of its status into its readback. */
-    private submitPacket(packet: GPUDecodePacket, slot: number, readback: StatusReadback, entry: DecodedFrameEntry): void {
+    /**
+     * Writes a packet into the ring and its uniform into the next uniform slot, and lays its decode work out in slices of about equal length,
+     * its readback taking its status in the epoch the packet begins in, so a reset or a resync while it submits makes that status stale.
+     */
+    private beginPacket(packet: GPUDecodePacket, slot: number, readback: StatusReadback, entry: DecodedFrameEntry): SlicedPacket {
         const alignedByteLength = alignTo(packet.data.byteLength, BYTES_PER_WORD);
         const byteOffset = this.ringByteOffset + alignedByteLength > this.packetRingByteLength ? 0 : this.ringByteOffset;
         this.ringByteOffset = byteOffset + alignedByteLength;
@@ -1252,17 +1288,90 @@ export default class GPUVideoDecodeSession {
         const uniformOffset = this.packetUniformSlot * PACKET_UNIFORM_STRIDE;
         this.packetUniformSlot = (this.packetUniformSlot + 1) % PACKET_UNIFORM_SLOT_COUNT;
         this.device.queue.writeBuffer(this.packetUniforms, uniformOffset, this.packetUniformValues);
+        const label = `GPU decoder ${this.manifest.name} packet ${this.packetIndex}`;
+        this.packetIndex = (this.packetIndex + 1) % U32_VALUE_COUNT;
 
-        const encoder = this.device.createCommandEncoder({ label: `GPU decoder ${this.manifest.name} packet ${this.packetIndex}` });
-        if (reset) {
+        readback.epoch = this.epoch;
+        readback.entry = entry;
+        const dispatches = this.listDispatches(packet.repeatCounts);
+        const sliceCount = Math.max(1, Math.ceil(dispatches.length / GPU_DECODE_SLICE_DISPATCH_COUNT));
+        return {
+            dispatches,
+            label,
+            nextDispatchIndex: 0,
+            readback,
+            reset,
+            sliceDispatchCount: Math.ceil(dispatches.length / sliceCount),
+            uniformOffset
+        };
+    }
+
+    /** Lists a packet's dispatches in order, each run's its iteration count of times: a repeat's count, or the picture's own smaller count. */
+    private listDispatches(repeatCounts: readonly number[] | null): PreparedDispatch[] {
+        const dispatches: PreparedDispatch[] = [];
+        for (const run of this.dispatchRuns) {
+            const iterationCount = getRunIterationCount(run, repeatCounts);
+            for (let iteration = 0; iteration < iterationCount; iteration += 1) {
+                dispatches.push(...run.dispatches);
+            }
+        }
+        return dispatches;
+    }
+
+    /**
+     * Submits a packet's next slice: its first clears the state and status buffers at a reset, and its last ends with the copy of the packet's status
+     * into its readback, which ends the packet's turn in progress; returns true.
+     */
+    private submitNextSlice(sliced: SlicedPacket): boolean {
+        const firstDispatchIndex = sliced.nextDispatchIndex;
+        const endDispatchIndex = Math.min(firstDispatchIndex + sliced.sliceDispatchCount, sliced.dispatches.length);
+        const lastSlice = endDispatchIndex === sliced.dispatches.length;
+        const encoder = this.device.createCommandEncoder({ label: sliced.label });
+        if (firstDispatchIndex === 0 && sliced.reset) {
             encoder.clearBuffer(this.stateBuffer);
             encoder.clearBuffer(this.statusBuffer);
         }
-        this.encodeDispatches(encoder, uniformOffset, packet.repeatCounts);
-        this.encodeStatusCopy(encoder, readback, entry);
+        this.encodeDispatches(encoder, sliced.uniformOffset, sliced.dispatches.slice(firstDispatchIndex, endDispatchIndex));
+        if (lastSlice) {
+            this.encodeStatusCopy(encoder, sliced.readback);
+        }
         this.device.queue.submit([ encoder.finish() ]);
-        this.packetIndex = (this.packetIndex + 1) % U32_VALUE_COUNT;
-        this.mapStatusReadback(readback);
+        sliced.nextDispatchIndex = endDispatchIndex;
+        this.trackSliceCompletion();
+        if (lastSlice) {
+            this.slicedPacket = null;
+            this.mapStatusReadback(sliced.readback);
+        }
+        return true;
+    }
+
+    /** Keeps the just submitted slice in flight until its work completed; a lost device fails the session through its own promise instead. */
+    private trackSliceCompletion(): void {
+        const completion = waitForGPUCompletion(this.device, this.device.queue.onSubmittedWorkDone()).then(
+            (): void => undefined,
+            (): void => undefined
+        ).finally((): void => {
+            this.inFlightSlices.delete(completion);
+        });
+        this.inFlightSlices.add(completion);
+    }
+
+    /**
+     * Submits no more of the packet in progress, whose remaining work a reset or a resync made useless; slices already submitted still run.
+     * Its readback is free again, never having been copied into, and its frame, unless a resync already replaced it, drops, since no status will confirm it.
+     */
+    private abandonSlicedPacket(): void {
+        const sliced = this.slicedPacket;
+        if (sliced === null) {
+            return;
+        }
+        this.slicedPacket = null;
+        const entry = sliced.readback.entry;
+        sliced.readback.entry = null;
+        this.freeReadbacks.push(sliced.readback);
+        if (entry !== null && !entry.confirmed) {
+            this.dropFrame(entry);
+        }
     }
 
     private beginComputePass(encoder: GPUCommandEncoder, uniformOffset: number): GPUComputePassEncoder {
@@ -1271,30 +1380,22 @@ export default class GPUVideoDecodeSession {
         return pass;
     }
 
-    /**
-     * Encodes the dispatch sequence, each repeat its count, or the picture's own smaller count; an indirect dispatch ends the pass to copy its counts,
-     * since copies run between passes.
-     */
-    private encodeDispatches(encoder: GPUCommandEncoder, uniformOffset: number, repeatCounts: readonly number[] | null): void {
+    /** Encodes dispatches in order; an indirect dispatch ends the pass to copy its counts, since copies run between passes. */
+    private encodeDispatches(encoder: GPUCommandEncoder, uniformOffset: number, dispatches: readonly PreparedDispatch[]): void {
         let pass = this.beginComputePass(encoder, uniformOffset);
-        for (const run of this.dispatchRuns) {
-            const iterationCount = getRunIterationCount(run, repeatCounts);
-            for (let iteration = 0; iteration < iterationCount; iteration += 1) {
-                for (const dispatch of run.dispatches) {
-                    switch (dispatch.kind) {
-                        case 'direct':
-                            pass.setPipeline(dispatch.pipeline);
-                            pass.dispatchWorkgroups(dispatch.workgroupCounts[0], dispatch.workgroupCounts[1], dispatch.workgroupCounts[2]);
-                            break;
-                        case 'indirect':
-                            pass.end();
-                            encoder.copyBufferToBuffer(dispatch.indirectSource, 0, dispatch.indirectMirror, 0, INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH);
-                            pass = this.beginComputePass(encoder, uniformOffset);
-                            pass.setPipeline(dispatch.pipeline);
-                            pass.dispatchWorkgroupsIndirect(dispatch.indirectMirror, 0);
-                            break;
-                    }
-                }
+        for (const dispatch of dispatches) {
+            switch (dispatch.kind) {
+                case 'direct':
+                    pass.setPipeline(dispatch.pipeline);
+                    pass.dispatchWorkgroups(dispatch.workgroupCounts[0], dispatch.workgroupCounts[1], dispatch.workgroupCounts[2]);
+                    break;
+                case 'indirect':
+                    pass.end();
+                    encoder.copyBufferToBuffer(dispatch.indirectSource, 0, dispatch.indirectMirror, 0, INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH);
+                    pass = this.beginComputePass(encoder, uniformOffset);
+                    pass.setPipeline(dispatch.pipeline);
+                    pass.dispatchWorkgroupsIndirect(dispatch.indirectMirror, 0);
+                    break;
             }
         }
         pass.end();
@@ -1304,9 +1405,7 @@ export default class GPUVideoDecodeSession {
      * Copies the status into the packet's readback and clears the packet's block, so each freed slot is reported once
      * and the next packet's picture reports start from none.
      */
-    private encodeStatusCopy(encoder: GPUCommandEncoder, readback: StatusReadback, entry: DecodedFrameEntry): void {
-        readback.epoch = this.epoch;
-        readback.entry = entry;
+    private encodeStatusCopy(encoder: GPUCommandEncoder, readback: StatusReadback): void {
         encoder.copyBufferToBuffer(this.statusBuffer, 0, readback.buffer, 0, GPU_DECODER_STATUS_BYTE_LENGTH);
         encoder.clearBuffer(this.statusBuffer, GPU_DECODER_STATUS_PACKET_BLOCK_BYTE_OFFSET, GPU_DECODER_STATUS_PACKET_BLOCK_BYTE_LENGTH);
     }
@@ -1493,5 +1592,6 @@ export default class GPUVideoDecodeSession {
         }
         this.failure = failure;
         this.pendingPackets.length = 0;
+        this.abandonSlicedPacket();
     }
 }

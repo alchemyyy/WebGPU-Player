@@ -246,13 +246,22 @@ export class MockGPUDevice {
     readonly lost: Promise<GPUDeviceLostInfo>;
     /** When true, mapAsync settles only through settlePendingMaps(). */
     manualMaps = false;
+    /** When true, onSubmittedWorkDone settles only through completeSubmittedWork(). */
+    manualWorkDone = false;
     /** When set, every mapAsync rejects with this error. */
     mapFailure: Error | null = null;
     /** When set, createComputePipelineAsync rejects with this error. */
     pipelineFailure: Error | null = null;
     readonly pipelines: MockComputePipeline[] = [];
     readonly queue = {
-        onSubmittedWorkDone: (): Promise<void> => Promise.resolve(),
+        onSubmittedWorkDone: (): Promise<void> => {
+            if (!this.manualWorkDone) {
+                return Promise.resolve();
+            }
+            return new Promise<void>(resolve => {
+                this.pendingWorkDone.push(resolve);
+            });
+        },
         submit: (commandBuffers: readonly MockCommandBuffer[]): void => {
             // An empty submit is a poll for completions, which submits no work
             if (commandBuffers.length === 0) {
@@ -284,6 +293,7 @@ export class MockGPUDevice {
     writeBufferCount = 0;
     private readonly errorScopes: GPUErrorFilter[] = [];
     private readonly pendingMaps: PendingMap[] = [];
+    private readonly pendingWorkDone: Array<() => void> = [];
     private resolveLost: (info: GPUDeviceLostInfo) => void = (): void => undefined;
 
     constructor(features: readonly string[] = [], limits: Partial<MockGPULimits> = {}) {
@@ -397,6 +407,13 @@ export class MockGPUDevice {
                 this.settleMap(pending);
             });
         });
+    }
+
+    /** Settles every onSubmittedWorkDone waiting under manualWorkDone, as the queue completing the work submitted so far. */
+    completeSubmittedWork(): void {
+        for (const resolve of this.pendingWorkDone.splice(0)) {
+            resolve();
+        }
     }
 
     /** Settles every map waiting under manualMaps. */

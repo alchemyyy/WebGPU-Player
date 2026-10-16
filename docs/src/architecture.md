@@ -97,7 +97,9 @@ Video credits:
   Firefox completes `onSubmittedWorkDone()` and `mapAsync()` only when its GPU process polls the device, at a later `submit` or every 100 ms, so without the polls a credit or a readback waited up to 100 ms there (see [Decisions](decisions.md#firefox)).
 - In raw mode the posted buffer is the credit, and it returns through `recycle-frame`.
 - On the frame-pool route a credit is a packet queued on the page, and it returns once the packet's decode work is submitted.
-  `GPUVideoDecodeFeed` keeps up to two packets' decode work in flight and submits the next once a status readback applies, so the GPU decodes on while the page learns of a completion, and presentation queues behind at most two packets of decode work.
+  A packet's decode work submits in slices of at most 96 dispatches, of about equal length, so a large picture's wavefront splits into several submits.
+  `GPUVideoDecodeFeed` keeps up to two slices in flight and submits the next once one completes or a status readback applies, so the GPU decodes on while the page learns of a completion, and presentation queues behind at most two slices of decode work.
+  A reset, as a seek or a new video epoch makes, or a resync submits no more of the packet in progress.
   With a parser, a credit is one picture: the worker reads packets until their pictures run 8 ahead of the credits, a packet still parsing counting as one, so its parse workers stay busy, and a packet without a picture, such as a skipped leading picture, spends none.
   A presented frame returns its pool slot right after its submit, because the queue orders later decode work behind it.
 - The owned HEVC, AV1, and VP9 paths read a packet only while they hold a credit, then wait up to 10 ms for the decoder to return a frame before reading the next.
