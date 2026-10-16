@@ -785,6 +785,10 @@ These were settled on Firefox 157 on Windows.
 - The `dts` package builds libdcadec with SIMD and link-time optimization (10-15).
   It built at `-O3` without either, while the FFmpeg audio packages used both, so nothing of libdcadec was vectorized.
   `-msimd128` and `-flto` grow the module from 268,676 to 332,684 bytes, each about half of that, and it decodes both DTS test vectors, Master Audio 7.1 and core 5.1, to the same samples as before.
+- The FFmpeg audio packages build for speed, as the `dts` package does (10-16).
+  `eac3` and `truehd` built at `-Oz`, which keeps FFmpeg from inlining and unrolling its transforms and bit readers; at `-O3` they grow from 520,412 to 539,361 and from 315,165 to 326,453 bytes, 3.6% each.
+  A client downloads a package once and keeps it until the server offers another, so the size costs one download, while decoding runs for every second of audio.
+  Both decode Mediabunny's E-AC-3 and AC-3 test files and the TrueHD test vector to the same samples as before.
 - Normalization follows the metadata.
   Jellyfin fills track and album gain for audio libraries, not movies, so video sessions normally use unity gain.
 - The resampler and the limiter render in WebAssembly, byte for byte as their JavaScript reference (10-09).
