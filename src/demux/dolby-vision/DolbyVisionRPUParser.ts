@@ -46,6 +46,11 @@ const FLAG_DEFAULT_COLOR_METADATA = 1 << 8;
 
 // RPU profiles the parser packs besides the dual-layer ones, which carry an enhancement layer residual
 const SINGLE_LAYER_PROFILES: readonly number[] = [ 5, 8 ];
+// The container profile the parser takes for none, so every RPU keeps the profile its header reveals
+const NO_CONTAINER_PROFILE = 0;
+
+/** The RPU profile a stream's container declares, which an RPU whose header reveals none takes, as FFmpeg's does; null for none. */
+export type DolbyVisionRPUContainerProfile = 4 | 5 | 7 | 8 | null;
 
 type WASMFunction = (...argumentsList: number[]) => number;
 
@@ -65,6 +70,7 @@ type DolbyVisionRPUParserWASMExports = {
     parse: WASMFunction
     parseAV1ITUTT35: WASMFunction
     reset: WASMFunction
+    setContainerProfile: WASMFunction
 };
 
 export type DolbyVisionRPULayerMode = 'fel' | 'mel' | 'single-layer';
@@ -183,7 +189,8 @@ function requireParserExports(instance: WebAssembly.Instance): DolbyVisionRPUPar
         memory: exportsValue.memory,
         parse: getWASMFunction(exportsValue, 'dovi_parser_parse'),
         parseAV1ITUTT35: getWASMFunction(exportsValue, 'dovi_parser_parse_av1_t35'),
-        reset: getWASMFunction(exportsValue, 'dovi_parser_reset')
+        reset: getWASMFunction(exportsValue, 'dovi_parser_reset'),
+        setContainerProfile: getWASMFunction(exportsValue, 'dovi_parser_set_container_profile')
     };
 }
 
@@ -611,6 +618,18 @@ export default class DolbyVisionRPUParser {
      */
     public parseAV1ITUTT35(payload: Uint8Array): DolbyVisionRPUSnapshot {
         return this.parseInput(this.parserExports.parseAV1ITUTT35, payload);
+    }
+
+    /** Sets the profile the stream's container declares, which an RPU whose header reveals none takes; a reset keeps it. */
+    public setContainerProfile(profile: DolbyVisionRPUContainerProfile): void {
+        this.requireOpen();
+        const statusCode = this.parserExports.setContainerProfile(this.contextPointer, profile ?? NO_CONTAINER_PROFILE);
+        if (statusCode !== 0) {
+            throw new DolbyVisionRPUParseError(
+                statusCode,
+                this.readLastError() || `Dolby Vision parser refused container profile ${profile}`
+            );
+        }
     }
 
     /** Clears all prior-mapping state at seek and generation boundaries. */

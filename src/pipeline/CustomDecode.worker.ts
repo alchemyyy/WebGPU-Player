@@ -2420,7 +2420,7 @@ async function streamOwnedHEVCFrames(
     // Only a Dolby Vision route parses RPUs, so any other route never loads the parser
     const rpuParser = request.dolbyVisionProfile === null ?
         null :
-        DolbyVisionRPUParserSession.create(request.dolbyVisionRPUParserWASMURL);
+        DolbyVisionRPUParserSession.create(request.dolbyVisionRPUParserWASMURL, request.dolbyVisionProfile);
     const metadataQueue = new DolbyVisionEncodedMetadataQueue(inputFormat, rpuParser);
     const dynamicHDRMetadataQueue = new HEVCDynamicHDRMetadataQueue(inputFormat);
     // No decoder decodes a Dolby Vision EL, so the stream posts BL frames alone
@@ -2563,7 +2563,7 @@ async function streamOwnedAV1Frames(
     ): Promise<void> => {
         const rpuParser = request.dolbyVisionProfile === null ?
             null :
-            DolbyVisionRPUParserSession.create(request.dolbyVisionRPUParserWASMURL);
+            DolbyVisionRPUParserSession.create(request.dolbyVisionRPUParserWASMURL, request.dolbyVisionProfile);
         try {
             await runOwnedAV1VideoStream(
                 stream,

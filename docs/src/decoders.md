@@ -46,6 +46,7 @@ With the `rust-src` component installed, rustc rewrites the standard library's `
 `wasm/libdovi/` is our crate.
 `src/lib.rs` wraps the `dolby_vision` crate and packs each RPU into the fixed snapshot layout the engine reads (`demux/dolby-vision/DolbyVisionRPUDataLayout.ts`, schema 2).
 It has two entry points over one parser state: `dovi_parser_parse` reads an HEVC RPU NAL unit (type 62), and `dovi_parser_parse_av1_t35` reads an AV1 ITU-T T.35 metadata message, from the country code to the end of its OBU payload.
+`dovi_parser_set_container_profile` gives the state the RPU profile the container declares, which an RPU whose header reveals none takes.
 The playback worker loads `dovi-rpu-parser.wasm` only for an owned HEVC or AV1 attempt on a Dolby Vision route; any other route removes the RPUs without parsing them.
 
 The `dolby_vision` crate is not fetched from GitHub.

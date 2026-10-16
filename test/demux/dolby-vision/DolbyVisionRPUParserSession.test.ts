@@ -7,6 +7,11 @@ import DolbyVisionRPUParserSession, {
 
 import { DOLBY_VISION_ITUT_T35_HEADER } from '../../helpers/dolbyVisionAV1ITUTT35Payload';
 
+// Every RPU in these tests reveals its profile, so none needs the container's
+const NO_CONTAINER_PROFILE = null;
+const PROFILE_EIGHT_CONTAINER = 8;
+const SAMPLE_RPU_NAL_UNIT = Uint8Array.of(124, 1, 25, 8, 9);
+
 function createDeferred<Value>(): {
     promise: Promise<Value>
     resolve: (value: Value) => void
@@ -53,18 +58,29 @@ describe('DolbyVisionRPUParserSession', () => {
         const packedData = new ArrayBuffer(32);
         const parser = createParserPort(packedData);
         const createParser = vi.fn(() => deferredParser.promise);
-        const session = DolbyVisionRPUParserSession.create('parser.wasm', { createParser });
+        const session = DolbyVisionRPUParserSession.create('parser.wasm', NO_CONTAINER_PROFILE, { createParser });
         const rpuNALUnit = new Uint8Array([ 124, 1, 25, 8, 9 ]);
         const parsePromise = session.parse(rpuNALUnit);
 
         deferredParser.resolve(parser);
 
         await expect(parsePromise).resolves.toBe(packedData);
-        expect(createParser).toHaveBeenCalledWith('parser.wasm');
+        expect(createParser).toHaveBeenCalledWith('parser.wasm', NO_CONTAINER_PROFILE);
         expect(parser.parse).toHaveBeenCalledWith(rpuNALUnit);
         session.close();
         expect(parser.reset).toHaveBeenCalledTimes(1);
         expect(parser.close).toHaveBeenCalledTimes(1);
+    });
+
+    it('hands the container\'s profile to the parser it creates', async () => {
+        const parser = createParserPort(new ArrayBuffer(32));
+        const createParser = vi.fn(async (): Promise<DolbyVisionRPUParserPort> => parser);
+        const session = DolbyVisionRPUParserSession.create('parser.wasm', PROFILE_EIGHT_CONTAINER, { createParser });
+
+        await session.parse(SAMPLE_RPU_NAL_UNIT);
+
+        expect(createParser).toHaveBeenCalledWith('parser.wasm', PROFILE_EIGHT_CONTAINER);
+        session.close();
     });
 
     it('routes AV1 T.35 payloads to the same lazily created parser', async () => {
@@ -73,7 +89,7 @@ describe('DolbyVisionRPUParserSession', () => {
         const av1PackedData = new ArrayBuffer(32);
         const parser = createParserPort(packedData, av1PackedData);
         const createParser = vi.fn(() => deferredParser.promise);
-        const session = DolbyVisionRPUParserSession.create('parser.wasm', { createParser });
+        const session = DolbyVisionRPUParserSession.create('parser.wasm', NO_CONTAINER_PROFILE, { createParser });
         const payload = new Uint8Array(DOLBY_VISION_ITUT_T35_HEADER);
         const rpuNALUnit = new Uint8Array([ 124, 1, 25, 8, 9 ]);
         const av1ParsePromise = session.parseAV1ITUTT35(payload);
@@ -96,7 +112,7 @@ describe('DolbyVisionRPUParserSession', () => {
     it('retires a parser that resolves after its generation closes', async () => {
         const deferredParser = createDeferred<DolbyVisionRPUParserPort>();
         const parser = createParserPort();
-        const session = DolbyVisionRPUParserSession.create('parser.wasm', {
+        const session = DolbyVisionRPUParserSession.create('parser.wasm', NO_CONTAINER_PROFILE, {
             createParser: (): Promise<DolbyVisionRPUParserPort> => deferredParser.promise
         });
 
@@ -116,7 +132,7 @@ describe('DolbyVisionRPUParserSession', () => {
 
     it('propagates initialization and parse failures without an unhandled rejection', async () => {
         const initializationFailure = new Error('parser initialization failed');
-        const failedInitialization = DolbyVisionRPUParserSession.create('parser.wasm', {
+        const failedInitialization = DolbyVisionRPUParserSession.create('parser.wasm', NO_CONTAINER_PROFILE, {
             createParser: (): Promise<DolbyVisionRPUParserPort> => (
                 Promise.reject(initializationFailure)
             )
@@ -131,7 +147,7 @@ describe('DolbyVisionRPUParserSession', () => {
         parser.parse.mockImplementation((): never => {
             throw parseFailure;
         });
-        const failedParse = DolbyVisionRPUParserSession.create('parser.wasm', {
+        const failedParse = DolbyVisionRPUParserSession.create('parser.wasm', NO_CONTAINER_PROFILE, {
             createParser: async (): Promise<DolbyVisionRPUParserPort> => parser
         });
         await expect(failedParse.parse(new Uint8Array([ 2 ]))).rejects.toBe(parseFailure);

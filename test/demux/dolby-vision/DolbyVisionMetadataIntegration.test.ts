@@ -21,6 +21,8 @@ import DolbyVisionRPUParser, {
 import DolbyVisionRPUParserSession from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParserSession';
 
 const PARSER_WASM_PATH = resolve(WASM_OUTPUT_DIRECTORY, 'libdovi', 'dovi-rpu-parser.wasm');
+// Every vector RPU reveals its profile, so none needs the container's
+const NO_CONTAINER_PROFILE = null;
 const RPU_VECTOR_DIRECTORY = resolve(TEST_VECTORS_DIRECTORY, 'dolby-vision-rpu');
 const PARSER_WASM_BYTES = new Uint8Array(readFileSync(PARSER_WASM_PATH));
 
@@ -43,7 +45,7 @@ describe('Dolby Vision metadata integration', () => {
         rpuNALUnit.set([ 0x7C, 0x01 ]);
         rpuNALUnit.set(vector.subarray(4), 2);
         const baseLayerNALUnit = new Uint8Array([ 19 << 1, 1, 7, 8, 9 ]);
-        const parserSession = DolbyVisionRPUParserSession.create('local-parser.wasm', {
+        const parserSession = DolbyVisionRPUParserSession.create('local-parser.wasm', NO_CONTAINER_PROFILE, {
             createParser: createActualParser
         });
         const queue = new DolbyVisionEncodedMetadataQueue(
@@ -86,7 +88,7 @@ describe('Dolby Vision metadata integration', () => {
             RPU_VECTOR_DIRECTORY,
             'profile5.bin'
         )));
-        const parserSession = DolbyVisionRPUParserSession.create('local-parser.wasm', {
+        const parserSession = DolbyVisionRPUParserSession.create('local-parser.wasm', NO_CONTAINER_PROFILE, {
             createParser: createActualParser
         });
 

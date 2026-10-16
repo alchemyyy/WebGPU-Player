@@ -119,6 +119,8 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
 - The `dolby_vision` crate is vendored and patched (10-06, 10-08).
   It is copied from dovi_tool rev `38adec0` into `wasm/libdovi/vendor/dolby_vision/`, and its `PATCHES.md` lists every deviation.
   The bridge in `wasm/libdovi/src/lib.rs` adds what the crate lacks: a reuse cache for compressed display metadata, Profile 4's 2^30 YCC offset scale, and every mapping color space and chroma format.
+  Since 10-15 it also takes the container's profile for an RPU whose header reveals none, as FFmpeg takes the configuration record's (`dovi_parser_set_container_profile`, from the worker's RPU profile); a header that reveals its profile keeps it.
+  And an RPU's own header decides its layer, as FFmpeg's `use_nlq` does: a single-layer RPU that reuses a dual-layer mapping stays single-layer, and a dual-layer one that reuses a mapping stored without NLQ is a MEL whose residual adds nothing, where both were rejected before, one by the host's layer check and one by the bridge.
   Every color space and chroma format works because the composer maps the decoded components as they are and the RPU's own matrices convert them, as for Profile 5's IPT.
   The AV1 EMDF container is bounded before it sizes a buffer.
   Upstream rejected syntax that FFmpeg's `dovi_rpudec.c` accepts, so the patches follow FFmpeg:

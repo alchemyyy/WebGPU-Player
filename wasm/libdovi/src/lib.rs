@@ -73,6 +73,17 @@ const RPU_FORMAT_EXTENSION_MASK: u16 = 0x700;
 // FFmpeg's dm_compression values, which the crate stores as reserved_zero_3bits
 const UNCOMPRESSED_DISPLAY_METADATA: u8 = 0;
 const COMPRESSED_DISPLAY_METADATA: u8 = 1;
+// The profile the crate infers from a header that reveals none, as FFmpeg's ff_dovi_guess_profile_hevc returns
+const UNKNOWN_PROFILE: u8 = 0;
+// The RPU profiles a container may declare to stand in for that unknown one
+const CONTAINER_PROFILES: [u8; 4] = [4, 5, 7, 8];
+// An NLQ that adds nothing to the base layer: no offset, the full VDR range, no dead zone
+const ZERO_RESIDUAL_NLQ: PackedNLQData = PackedNLQData {
+    deadzone_slope: 0.0,
+    deadzone_threshold: 0.0,
+    offset: 0.0,
+    vdr_in_max: 1.0,
+};
 
 /// How the input buffer carries one RPU
 #[derive(Clone, Copy)]
@@ -106,6 +117,8 @@ struct ParserContext {
     mappings: [Option<RpuDataMapping>; MAXIMUM_MAPPING_ID + 1],
     // The last uncompressed display metadata, which compressed RPUs reuse
     color_metadata: Option<ScaledColorMetadata>,
+    // The profile the stream's container declares, which an RPU whose header reveals none takes, as FFmpeg's does
+    container_profile: Option<u8>,
 }
 
 impl Default for ParserContext {
@@ -115,6 +128,7 @@ impl Default for ParserContext {
             last_error_length: 0,
             mappings: array::from_fn(|_| None),
             color_metadata: None,
+            container_profile: None,
         }
     }
 }
@@ -132,10 +146,29 @@ impl ParserContext {
         self.last_error[..self.last_error_length].copy_from_slice(&bytes[..self.last_error_length]);
     }
 
+    /// Clears the prior mapping and display metadata state; the container's profile belongs to the stream and stays.
     fn reset(&mut self) {
         self.clear_error();
         self.mappings.fill(None);
         self.color_metadata = None;
+    }
+
+    fn set_container_profile(&mut self, profile: u32) -> ParserResult<()> {
+        if profile == u32::from(UNKNOWN_PROFILE) {
+            self.container_profile = None;
+            return Ok(());
+        }
+        let profile = u8::try_from(profile)
+            .ok()
+            .filter(|profile| CONTAINER_PROFILES.contains(profile))
+            .ok_or_else(|| {
+                ParserFailure::new(
+                    STATUS_INVALID_ARGUMENT,
+                    format!("Container Dolby Vision profile {profile} is not an RPU profile"),
+                )
+            })?;
+        self.container_profile = Some(profile);
+        Ok(())
     }
 
     fn parse(&mut self, input: &[u8], framing: RpuFraming, output: &mut [u8]) -> ParserResult<()> {
@@ -143,7 +176,7 @@ impl ParserContext {
             RpuFraming::HEVCUnspec62NALUnit => DoviRpu::parse_unspec62_nalu(input),
             RpuFraming::AV1ITUTT35Payload => DoviRpu::parse_itu_t35_dovi_metadata_obu(input),
         };
-        let rpu = parsed_rpu.map_err(|error| {
+        let mut rpu = parsed_rpu.map_err(|error| {
             if let Some(syntax) = error.downcast_ref::<UnsupportedRpuSyntax>() {
                 return unsupported_syntax_failure(*syntax);
             }
@@ -153,6 +186,11 @@ impl ParserContext {
                 format!("libdovi parse failed: {error:#}"),
             )
         })?;
+        if rpu.dovi_profile == UNKNOWN_PROFILE
+            && let Some(container_profile) = self.container_profile
+        {
+            rpu.dovi_profile = container_profile;
+        }
         validate_rpu_policy(&rpu)?;
         let mapping_resolution = self.resolve_mapping(&rpu)?;
         let color_resolution = self.resolve_color_metadata(&rpu)?;
@@ -354,7 +392,7 @@ impl PackedSnapshot {
             pack_component(&mapping.curves[1], &rpu.header)?,
             pack_component(&mapping.curves[2], &rpu.header)?,
         ];
-        let (nlq, nlq_flags) = pack_nlq(mapping, &rpu.header)?;
+        let (nlq, nlq_flags) = pack_nlq(mapping, &rpu.header, used_previous_mapping)?;
         if rpu.dovi_profile == 5 && !rpu.header.disable_residual_flag {
             return Err(ParserFailure::new(
                 STATUS_UNSUPPORTED_METADATA,
@@ -1085,18 +1123,26 @@ fn pack_mmr_segment(
     Ok(mmr_vector_index)
 }
 
+/// Packs the NLQ of the RPU's mapping and the layer flags that go with it.
+/// The RPU's own header decides the layer, as FFmpeg's use_nlq does, so a reused mapping's NLQ never makes a single-layer RPU dual-layer,
+/// and a dual-layer RPU that reuses a mapping stored without NLQ adds no residual.
 fn pack_nlq(
     mapping: &RpuDataMapping,
     header: &dolby_vision::rpu::rpu_data_header::RpuDataHeader,
+    used_previous_mapping: bool,
 ) -> ParserResult<([PackedNLQData; 3], u32)> {
-    let Some(nlq) = &mapping.nlq else {
-        if !header.disable_residual_flag {
-            return Err(ParserFailure::new(
-                STATUS_UNSUPPORTED_METADATA,
-                "Enabled enhancement residual has no LINEAR_DZ metadata",
-            ));
-        }
+    if header.disable_residual_flag {
         return Ok(([PackedNLQData::default(); 3], 0));
+    }
+    let Some(nlq) = &mapping.nlq else {
+        // FFmpeg keeps the reused mapping's absent NLQ method, which applies no residual
+        if used_previous_mapping {
+            return Ok(([ZERO_RESIDUAL_NLQ; 3], FLAG_NLQ_PRESENT | FLAG_MEL));
+        }
+        return Err(ParserFailure::new(
+            STATUS_UNSUPPORTED_METADATA,
+            "Enabled enhancement residual has no LINEAR_DZ metadata",
+        ));
     };
     if mapping.nlq_method_idc.is_none() {
         return Err(ParserFailure::new(
@@ -1320,6 +1366,28 @@ pub unsafe extern "C" fn dovi_parser_reset(context: *mut c_void) -> i32 {
     };
     context.reset();
     0
+}
+
+#[unsafe(no_mangle)]
+/// Sets the Dolby Vision profile the stream's container declares, 4, 5, 7, or 8, or clears it with 0.
+/// An RPU whose header reveals no profile takes it, as FFmpeg's takes the configuration record's; a reset keeps it.
+///
+/// # Safety
+/// The pointer must identify a live context returned by `dovi_parser_create`.
+pub unsafe extern "C" fn dovi_parser_set_container_profile(
+    context: *mut c_void,
+    profile: u32,
+) -> i32 {
+    let Some(context) = parse_context(context) else {
+        return STATUS_INVALID_ARGUMENT;
+    };
+    match context.set_container_profile(profile) {
+        Ok(()) => 0,
+        Err(failure) => {
+            context.record_error(&failure);
+            failure.code
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -2920,6 +2988,134 @@ mod tests {
         assert_ne!(flags & FLAG_USED_PREVIOUS_MAPPING, 0);
         assert_ne!(flags & FLAG_DEFAULT_COLOR_METADATA, 0);
         assert_eq!(av1_output, hevc_output);
+    }
+
+    // The mapping ID a stored RPU takes and a later RPU reuses
+    const REUSED_MAPPING_ID: u64 = 2;
+    // Each component's packed NLQ, in written order: offset, dead zone slope, dead zone threshold, VDR maximum
+    const ZERO_RESIDUAL_NLQ_VALUES: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+    // A header that FFmpeg's profile guess and the crate's place nowhere: VDR RPU profile 0 at limited range
+    const UNPLACED_VDR_RPU_PROFILE: u8 = 0;
+
+    /// Parses an RPU that stores its mapping, then an RPU that reuses it, and returns the second one's output
+    fn parse_reusing(stored: DoviRpu, reusing: DoviRpu) -> Vec<u8> {
+        let mut context = ParserContext::default();
+        let mut stored = stored;
+        stored.rpu_data_mapping.as_mut().unwrap().vdr_rpu_id = REUSED_MAPPING_ID;
+        parse_into(&mut context, &encode(&stored)).unwrap();
+        let mut reusing = reusing;
+        reusing.header.use_prev_vdr_rpu_flag = true;
+        reusing.header.prev_vdr_rpu_id = REUSED_MAPPING_ID;
+        reusing.rpu_data_mapping = None;
+        parse_into(&mut context, &encode(&reusing)).unwrap()
+    }
+
+    fn packed_nlq(output: &[u8]) -> [[f32; 4]; 3] {
+        let nlq_byte_offset = HEADER_BYTE_LENGTH + (COLOR_FLOAT_COUNT * size_of::<f32>());
+        array::from_fn(|component_index| {
+            array::from_fn(|value_index| {
+                float_at(
+                    output,
+                    nlq_byte_offset + (((component_index * 4) + value_index) * size_of::<f32>()),
+                )
+            })
+        })
+    }
+
+    fn unplaced_profile_rpu() -> DoviRpu {
+        let mut rpu = profile8_rpu();
+        rpu.header.vdr_rpu_profile = UNPLACED_VDR_RPU_PROFILE;
+        rpu.header.bl_video_full_range_flag = false;
+        // The crate's writer checks the header against the profile it stores
+        rpu.dovi_profile = rpu.header.get_dovi_profile();
+        assert_eq!(rpu.dovi_profile, UNKNOWN_PROFILE);
+        rpu
+    }
+
+    #[test]
+    fn a_single_layer_rpu_that_reuses_a_dual_layer_mapping_stays_single_layer() {
+        // Its header disables the residual, which FFmpeg's use_nlq follows, so the reused mapping's NLQ is not its layer
+        let output = parse_reusing(profile4_rpu(), profile8_rpu());
+
+        let flags = header_word(&output, FLAGS_WORD);
+        assert_eq!(header_word(&output, PROFILE_WORD), 8);
+        assert_ne!(flags & FLAG_USED_PREVIOUS_MAPPING, 0);
+        assert_eq!(
+            flags & (FLAG_NLQ_PRESENT | FLAG_NLQ_ACTIVE | FLAG_MEL | FLAG_FEL),
+            0
+        );
+    }
+
+    #[test]
+    fn a_dual_layer_rpu_that_reuses_a_mapping_without_nlq_adds_no_residual() {
+        // FFmpeg keeps the reused mapping's absent NLQ method, so the enhancement layer contributes nothing
+        let output = parse_reusing(profile8_rpu(), profile4_rpu());
+
+        let flags = header_word(&output, FLAGS_WORD);
+        assert_eq!(header_word(&output, PROFILE_WORD), 4);
+        assert_eq!(
+            flags & (FLAG_NLQ_PRESENT | FLAG_MEL),
+            FLAG_NLQ_PRESENT | FLAG_MEL
+        );
+        assert_eq!(flags & (FLAG_NLQ_ACTIVE | FLAG_FEL), 0);
+        assert_eq!(packed_nlq(&output), [ZERO_RESIDUAL_NLQ_VALUES; 3]);
+    }
+
+    #[test]
+    fn a_fresh_dual_layer_mapping_without_nlq_is_still_rejected() {
+        let mut rpu = profile4_rpu();
+        rpu.rpu_data_mapping.as_mut().unwrap().nlq = None;
+        rpu.rpu_data_mapping.as_mut().unwrap().nlq_method_idc = None;
+
+        let failure = parse_into(&mut ParserContext::default(), &encode(&rpu)).unwrap_err();
+
+        // The crate reads NLQ for every header that enables the residual, so the coded RPU runs short
+        assert_eq!(failure.code, STATUS_PARSE_FAILED);
+    }
+
+    #[test]
+    fn an_rpu_whose_header_reveals_no_profile_takes_the_container_profile_as_in_ffmpeg() {
+        let input = encode(&unplaced_profile_rpu());
+        let failure = parse_into(&mut ParserContext::default(), &input).unwrap_err();
+        assert_eq!(failure.code, STATUS_UNSUPPORTED_METADATA);
+
+        let mut context = ParserContext::default();
+        context.set_container_profile(8).unwrap();
+        let output = parse_into(&mut context, &input).unwrap();
+        assert_eq!(header_word(&output, PROFILE_WORD), 8);
+
+        // A reset keeps the stream's profile, and 0 clears it
+        context.reset();
+        assert!(parse_into(&mut context, &input).is_ok());
+        context
+            .set_container_profile(u32::from(UNKNOWN_PROFILE))
+            .unwrap();
+        assert_eq!(
+            parse_into(&mut context, &input).unwrap_err().code,
+            STATUS_UNSUPPORTED_METADATA
+        );
+    }
+
+    #[test]
+    fn a_header_that_reveals_its_profile_keeps_it_over_the_container_profile() {
+        let mut context = ParserContext::default();
+        context.set_container_profile(4).unwrap();
+
+        let output = parse_into(&mut context, &encode(&profile8_rpu())).unwrap();
+
+        assert_eq!(header_word(&output, PROFILE_WORD), 8);
+    }
+
+    #[test]
+    fn container_profiles_that_are_no_rpu_profile_are_invalid_arguments() {
+        let mut context = ParserContext::default();
+        for profile in [1, 9, 10, 256] {
+            assert_eq!(
+                context.set_container_profile(profile).unwrap_err().code,
+                STATUS_INVALID_ARGUMENT
+            );
+        }
+        assert_eq!(context.container_profile, None);
     }
 
     #[test]

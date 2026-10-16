@@ -234,7 +234,7 @@ Other conditions:
 - Dolby Vision:
   - the configurations in [Rejected](#rejected);
   - RPU reconstruction for AVC Profile 9, and for AV1 Profile 10 at 8 bits or outside the Main profile;
-  - RPUs the parser rejects: a linear interpolation piece next to an MMR piece, an RPU format extension, missing sequence information, display metadata compression above method 1, and a header from which no profile is inferred.
+  - RPUs the parser rejects: a linear interpolation piece next to an MMR piece, an RPU format extension, missing sequence information, display metadata compression above method 1, and a header from which no profile is inferred while the container declares none.
 
 ## Known issues
 
