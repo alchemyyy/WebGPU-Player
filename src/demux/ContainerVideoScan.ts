@@ -214,7 +214,7 @@ function createFieldRecordingInputFormat(format: InputFormat): InputFormat {
 
 /**
  * Returns the input formats with Matroska and WebM, in their places, replaced by formats whose demuxers record each video track's FlagInterlaced and FieldOrder.
- * It composes with withMatroskaBlockAdditions, whose formats it wraps in turn; every other format is unchanged.
+ * Every other format is unchanged.
  */
 export function withMatroskaVideoFieldOrder(formats: readonly InputFormat[]): InputFormat[] {
     return formats.map((format: InputFormat): InputFormat => (format instanceof MatroskaInputFormat ? createFieldRecordingInputFormat(format) : format));

@@ -1,4 +1,4 @@
-import { InputVideoTrack, type EncodedPacket, type Input } from 'mediabunny';
+import { EncodedPacket, InputVideoTrack, type Input } from 'mediabunny';
 
 // A Video for Windows track, as Matroska's V_MS/VFW/FOURCC carries one, stamps each packet in decode order with the time of the picture a
 // one-picture-delay decoder outputs at it, as FFmpeg reads such a track: an anchor (I or P picture) outputs when the next anchor arrives, and a
@@ -47,17 +47,39 @@ export type VC1PictureOrder = 'anchor' | 'bidirectional' | 'none';
 
 type PacketRetrievalOptions = Readonly<Record<string, unknown>>;
 
+/** A packet retrieval's result as Mediabunny's internal PacketRetrievalResult carries it: the packet, and whether a live source may still change it. */
+type PacketRetrievalResult = Readonly<{ packet: EncodedPacket | null, provisional: boolean }>;
+
+/** What a Mediabunny track backing writes a retrieval's result into, as its internal ResultValue, before the promise it returns settles. */
+type PacketRetrievalResultValue = {
+    set: (result: PacketRetrievalResult) => void
+};
+
 /** The packet retrieval of a Mediabunny track backing, which the presentation order replaces, and the timestamp resolution it steps back by. */
 type PacketRetrievalBacking = {
-    getFirstPacket: (options: PacketRetrievalOptions) => Promise<EncodedPacket | null>
-    getKeyPacket: (timestamp: number, options: PacketRetrievalOptions) => Promise<EncodedPacket | null>
-    getNextKeyPacket: (packet: EncodedPacket, options: PacketRetrievalOptions) => Promise<EncodedPacket | null>
-    getNextPacket: (packet: EncodedPacket, options: PacketRetrievalOptions) => Promise<EncodedPacket | null>
-    getPacket: (timestamp: number, options: PacketRetrievalOptions) => Promise<EncodedPacket | null>
+    getFirstPacket: (result: PacketRetrievalResultValue, options: PacketRetrievalOptions) => Promise<unknown>
+    getKeyPacket: (result: PacketRetrievalResultValue, timestamp: number, options: PacketRetrievalOptions) => Promise<unknown>
+    getNextKeyPacket: (result: PacketRetrievalResultValue, packet: EncodedPacket, options: PacketRetrievalOptions) => Promise<unknown>
+    getNextPacket: (result: PacketRetrievalResultValue, packet: EncodedPacket, options: PacketRetrievalOptions) => Promise<unknown>
+    getPacket: (result: PacketRetrievalResultValue, timestamp: number, options: PacketRetrievalOptions) => Promise<unknown>
     getTimeResolution: () => number | Promise<number>
 };
 
+/** Mediabunny's internal packet clone, which keeps where the demuxer finds the packet again, so a presented packet's next-packet lookups need no mapping. */
+type InternalPacketClone = (options: Readonly<{ timestamp: number }>) => EncodedPacket;
+
 type InputVideoTrackConstructor = new (input: Input, backing: object) => InputVideoTrack;
+
+const NO_PACKET: PacketRetrievalResult = Object.freeze({ packet: null, provisional: false });
+
+/** Receives one backing retrieval's result. */
+class BackingResult implements PacketRetrievalResultValue {
+    public value: PacketRetrievalResult = NO_PACKET;
+
+    public set(result: PacketRetrievalResult): void {
+        this.value = result;
+    }
+}
 
 /** Reads bits most significant first; past the end it reads zeros, as FFmpeg's padded reader does. */
 class BitReader {
@@ -232,81 +254,97 @@ export function hasVC1OutputDelay(syntax: VC1PictureTypeSyntax): boolean {
  * packet at which FFmpeg outputs it, the next anchor or packet without a picture, or the end of its last packet.
  */
 class VC1PresentationOrder {
-    // The packets handed out, by the packet the track backing returned, which its next-packet lookups need
-    private readonly backingPackets = new WeakMap<EncodedPacket, EncodedPacket>();
-
     public constructor(
         private readonly backing: PacketRetrievalBacking,
         private readonly syntax: VC1PictureTypeSyntax
     ) {}
 
-    public readonly getFirstPacket = async (options: PacketRetrievalOptions): Promise<EncodedPacket | null> => (
-        this.present(await this.backing.getFirstPacket(options), options)
-    );
-
-    public readonly getPacket = async (timestamp: number, options: PacketRetrievalOptions): Promise<EncodedPacket | null> => (
-        this.present(await this.backing.getPacket(timestamp, options), options)
-    );
-
-    public readonly getNextPacket = async (packet: EncodedPacket, options: PacketRetrievalOptions): Promise<EncodedPacket | null> => (
-        this.present(await this.backing.getNextPacket(this.getBackingPacket(packet), options), options)
-    );
-
-    /**
-     * Returns the key packet to present a time from: the latest whose picture presents by then.
-     * The backing finds the latest by decode-order timestamps, under which an anchor presents later, and a VfW track's first two anchors may share one.
-     */
-    public readonly getKeyPacket = async (timestamp: number, options: PacketRetrievalOptions): Promise<EncodedPacket | null> => {
-        let keyPacket = await this.backing.getKeyPacket(timestamp, options);
-        let presentedKeyPacket = await this.present(keyPacket, options);
-        while (keyPacket && presentedKeyPacket && presentedKeyPacket.timestamp > timestamp) {
-            keyPacket = await this.findEarlierKeyPacket(keyPacket, options);
-            if (!keyPacket) {
-                break;
-            }
-            presentedKeyPacket = await this.present(keyPacket, options);
-        }
-        return presentedKeyPacket;
+    public readonly getFirstPacket = async (result: PacketRetrievalResultValue, options: PacketRetrievalOptions): Promise<void> => {
+        result.set(await this.present(await this.retrieveFirstPacket(options), options));
     };
 
-    public readonly getNextKeyPacket = async (packet: EncodedPacket, options: PacketRetrievalOptions): Promise<EncodedPacket | null> => (
-        this.present(await this.backing.getNextKeyPacket(this.getBackingPacket(packet), options), options)
-    );
+    public readonly getPacket = async (result: PacketRetrievalResultValue, timestamp: number, options: PacketRetrievalOptions): Promise<void> => {
+        const backingResult = new BackingResult();
+        await this.backing.getPacket(backingResult, timestamp, options);
+        result.set(await this.present(backingResult.value, options));
+    };
 
-    private getBackingPacket(packet: EncodedPacket): EncodedPacket {
-        return this.backingPackets.get(packet) ?? packet;
+    public readonly getNextPacket = async (result: PacketRetrievalResultValue, packet: EncodedPacket, options: PacketRetrievalOptions): Promise<void> => {
+        result.set(await this.present(await this.retrieveNextPacket(packet, options), options));
+    };
+
+    /**
+     * Sets the key packet to present a time from: the latest whose picture presents by then.
+     * The backing finds the latest by decode-order timestamps, under which an anchor presents later, and a VfW track's first two anchors may share one.
+     */
+    public readonly getKeyPacket = async (result: PacketRetrievalResultValue, timestamp: number, options: PacketRetrievalOptions): Promise<void> => {
+        let keyPacket = await this.retrieveKeyPacket(timestamp, options);
+        let presentedKeyPacket = await this.present(keyPacket, options);
+        while (keyPacket.packet && presentedKeyPacket.packet && presentedKeyPacket.packet.timestamp > timestamp) {
+            const earlierKeyPacket = await this.findEarlierKeyPacket(keyPacket.packet, options);
+            if (!earlierKeyPacket.packet) {
+                break;
+            }
+            keyPacket = earlierKeyPacket;
+            presentedKeyPacket = await this.present(keyPacket, options);
+        }
+        result.set(presentedKeyPacket);
+    };
+
+    public readonly getNextKeyPacket = async (result: PacketRetrievalResultValue, packet: EncodedPacket, options: PacketRetrievalOptions): Promise<void> => {
+        const backingResult = new BackingResult();
+        await this.backing.getNextKeyPacket(backingResult, packet, options);
+        result.set(await this.present(backingResult.value, options));
+    };
+
+    private async retrieveFirstPacket(options: PacketRetrievalOptions): Promise<PacketRetrievalResult> {
+        const backingResult = new BackingResult();
+        await this.backing.getFirstPacket(backingResult, options);
+        return backingResult.value;
+    }
+
+    private async retrieveNextPacket(packet: EncodedPacket, options: PacketRetrievalOptions): Promise<PacketRetrievalResult> {
+        const backingResult = new BackingResult();
+        await this.backing.getNextPacket(backingResult, packet, options);
+        return backingResult.value;
+    }
+
+    private async retrieveKeyPacket(timestamp: number, options: PacketRetrievalOptions): Promise<PacketRetrievalResult> {
+        const backingResult = new BackingResult();
+        await this.backing.getKeyPacket(backingResult, timestamp, options);
+        return backingResult.value;
     }
 
     /** Returns the key packet before one in decode order: the latest before its timestamp, else the track's first packet when that is a key packet before it. */
-    private async findEarlierKeyPacket(keyPacket: EncodedPacket, options: PacketRetrievalOptions): Promise<EncodedPacket | null> {
+    private async findEarlierKeyPacket(keyPacket: EncodedPacket, options: PacketRetrievalOptions): Promise<PacketRetrievalResult> {
         const timeResolution = await this.backing.getTimeResolution();
-        const earlier = await this.backing.getKeyPacket(keyPacket.timestamp - 1 / timeResolution, options);
-        if (earlier && earlier.sequenceNumber < keyPacket.sequenceNumber) {
+        const earlier = await this.retrieveKeyPacket(keyPacket.timestamp - 1 / timeResolution, options);
+        if (earlier.packet && earlier.packet.sequenceNumber < keyPacket.sequenceNumber) {
             return earlier;
         }
-        const first = await this.backing.getFirstPacket(options);
-        return first?.type === 'key' && first.sequenceNumber < keyPacket.sequenceNumber ? first : null;
+        const first = await this.retrieveFirstPacket(options);
+        return first.packet?.type === 'key' && first.packet.sequenceNumber < keyPacket.sequenceNumber ? first : NO_PACKET;
     }
 
-    /** Returns a packet with its picture's presentation timestamp; a metadata-only packet has no picture to read, so it keeps its own. */
-    private async present(packet: EncodedPacket | null, options: PacketRetrievalOptions): Promise<EncodedPacket | null> {
+    /** Returns a result with its packet's picture presentation timestamp; a metadata-only packet has no picture to read, so it keeps its own. */
+    private async present(retrieved: PacketRetrievalResult, options: PacketRetrievalOptions): Promise<PacketRetrievalResult> {
+        const packet = retrieved.packet;
         if (!packet || packet.isMetadataOnly || getVC1PictureOrder(packet.data, this.syntax) !== 'anchor') {
-            return packet;
+            return retrieved;
         }
         const timestamp = await this.findAnchorOutputTimestamp(packet, options);
         if (timestamp === packet.timestamp) {
-            return packet;
+            return retrieved;
         }
-        const presentedPacket = packet.clone({ timestamp });
-        this.backingPackets.set(presentedPacket, packet);
-        return presentedPacket;
+        const cloneInternal = (packet as unknown as { _cloneInternal: InternalPacketClone })._cloneInternal;
+        return { packet: cloneInternal.call(packet, { timestamp }), provisional: retrieved.provisional };
     }
 
     /** Returns the time of the packet that outputs an anchor: the first later packet that is no B or BI picture, or the end of the last packet. */
     private async findAnchorOutputTimestamp(anchor: EncodedPacket, options: PacketRetrievalOptions): Promise<number> {
         let previous = anchor;
         for (let lookaheadIndex = 0; lookaheadIndex < MAXIMUM_LOOKAHEAD_PACKET_COUNT; lookaheadIndex += 1) {
-            const next = await this.backing.getNextPacket(previous, options);
+            const next = (await this.retrieveNextPacket(previous, options)).packet;
             if (!next) {
                 break;
             }
@@ -317,6 +355,10 @@ class VC1PresentationOrder {
         }
         return previous.timestamp + previous.duration;
     }
+}
+
+function hasInternalPacketClone(): boolean {
+    return typeof (EncodedPacket.prototype as unknown as { _cloneInternal?: unknown })._cloneInternal === 'function';
 }
 
 function isPacketRetrievalBacking(value: unknown): value is PacketRetrievalBacking {
@@ -335,14 +377,14 @@ function isPacketRetrievalBacking(value: unknown): value is PacketRetrievalBacki
 /**
  * Returns a track whose packets carry presentation timestamps for a Matroska VfW track of VC-1 or WMV3, which stamps them in decode order.
  * A sequence without output delay presents in decode order, so its track is returned as it is.
- * Mediabunny 1.52.2's InputVideoTrack reads packets through its internal backing, so the replacement is contained here; null when that backing differs.
+ * Mediabunny's InputVideoTrack reads packets through its internal backing, so the replacement is contained here; null when that backing or its packet clone differs.
  */
 export function createVC1PresentationOrderTrack(track: InputVideoTrack, syntax: VC1PictureTypeSyntax): InputVideoTrack | null {
     if (!hasVC1OutputDelay(syntax)) {
         return track;
     }
     const backing = (track as unknown as { _backing?: unknown })._backing;
-    if (!isPacketRetrievalBacking(backing)) {
+    if (!isPacketRetrievalBacking(backing) || !hasInternalPacketClone()) {
         return null;
     }
     const order = new VC1PresentationOrder(backing, syntax);

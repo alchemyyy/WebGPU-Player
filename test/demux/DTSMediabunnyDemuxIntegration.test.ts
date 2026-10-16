@@ -7,8 +7,8 @@ import { resolve } from 'node:path';
 import {
     ALL_FORMATS,
     BufferSource,
-    EncodedPacketSink,
     Input,
+    PacketCursor,
     type AudioCodec
 } from 'mediabunny';
 import { describe, expect, it } from 'vitest';
@@ -46,7 +46,7 @@ async function demuxAudioTrack(path: string): Promise<DemuxedDTSTrack> {
         expect(tracks).toHaveLength(1);
         const track = tracks[0];
         const packets: Uint8Array[] = [];
-        for await (const packet of new EncodedPacketSink(track).packets()) {
+        for await (const packet of new PacketCursor(track)) {
             packets.push(packet.data.slice());
         }
         return {
@@ -82,10 +82,9 @@ describe('Mediabunny DTS demux integration', () => {
             expect(await track.getNumberOfChannels()).toBe(DTS_CHANNEL_COUNT);
             expect(await track.getSampleRate()).toBe(DTS_SAMPLE_RATE);
 
-            const packetSink = new EncodedPacketSink(track);
             let packetCount = 0;
             let positiveDurationPacketCount = 0;
-            for await (const packet of packetSink.packets()) {
+            for await (const packet of new PacketCursor(track)) {
                 expect(packet.data.byteLength).toBeGreaterThan(0);
                 expect(packet.microsecondDuration).toBeGreaterThanOrEqual(0);
                 if (packet.microsecondDuration > 0) {

@@ -7,8 +7,8 @@ import { resolve } from 'node:path';
 import {
     ALL_FORMATS,
     BufferSource,
-    EncodedPacketSink,
-    Input
+    Input,
+    PacketCursor
 } from 'mediabunny';
 import { describe, expect, it } from 'vitest';
 
@@ -43,10 +43,9 @@ describe('Mediabunny TrueHD demux integration', () => {
             expect(await track.getNumberOfChannels()).toBe(TRUEHD_CHANNEL_COUNT);
             expect(await track.getSampleRate()).toBe(TRUEHD_SAMPLE_RATE);
 
-            const packetSink = new EncodedPacketSink(track);
             let packetCount = 0;
             let positiveDurationPacketCount = 0;
-            for await (const packet of packetSink.packets()) {
+            for await (const packet of new PacketCursor(track)) {
                 expect(packet.data.byteLength).toBeGreaterThan(0);
                 expect(packet.microsecondDuration).toBeGreaterThanOrEqual(0);
                 if (packet.microsecondDuration > 0) {

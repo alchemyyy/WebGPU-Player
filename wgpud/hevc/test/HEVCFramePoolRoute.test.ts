@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     ALL_FORMATS,
     BufferSource,
-    EncodedPacketSink,
-    Input
+    Input,
+    PacketReader
 } from 'mediabunny';
 import type { VideoDecoderPackage } from 'webgpu-player/decode/packages/DecoderPackage';
 import {
@@ -69,7 +69,7 @@ function getParserField(decoderPackage: VideoDecoderPackage): DecodeWorkerGPUVid
 async function decodeOnlyPacket(matroska: Uint8Array, codecPrivate: ArrayBuffer | undefined, parser: GPUDecoderParserModule): Promise<GPUDecoderParserOutput> {
     const input = new Input({ formats: ALL_FORMATS, source: new BufferSource(matroska) });
     const track = await input.getPrimaryVideoTrack();
-    const packet = track ? await new EncodedPacketSink(track).getFirstPacket() : null;
+    const packet = track ? await new PacketReader(track).getFirst() : null;
     input.dispose();
     if (!packet) {
         throw new Error('The vector has no video packet');

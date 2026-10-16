@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { ALL_FORMATS, BufferSource, EncodedPacketSink, Input, type InputVideoTrack } from 'mediabunny';
+import { ALL_FORMATS, BufferSource, Input, PacketCursor, type InputVideoTrack } from 'mediabunny';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -64,7 +64,7 @@ describe('readISOBaseMediaVC1DecoderDescription', () => {
         await withISOBaseMediaTrack(file, async (track: InputVideoTrack): Promise<void> => {
             readISOBaseMediaVC1DecoderDescription(track);
             const samples: Array<{ data: Uint8Array, timestampMilliseconds: number }> = [];
-            for await (const packet of new EncodedPacketSink(track).packets()) {
+            for await (const packet of new PacketCursor(track)) {
                 samples.push({ data: packet.data, timestampMilliseconds: Math.round(packet.timestamp * MILLISECONDS_PER_SECOND) });
             }
 

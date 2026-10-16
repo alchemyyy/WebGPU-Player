@@ -1,4 +1,4 @@
-import { EncodedPacketSink, type InputVideoTrack } from 'mediabunny';
+import { PacketReader, type InputVideoTrack } from 'mediabunny';
 
 import { createAV1CodecParameterString } from './AV1CodecParameterString';
 import { AV1OBUParseError } from './AV1OBUParser';
@@ -32,7 +32,7 @@ function getCachedDecoderConfigurationBacking(track: InputVideoTrack): CachedDec
 
 /** Reads the sequence header of the track's first packet, or null when it has none or cannot be walked. */
 async function readFirstPacketSequenceHeader(track: InputVideoTrack): Promise<AV1SequenceHeader | null> {
-    const firstPacket = await new EncodedPacketSink(track).getFirstPacket();
+    const firstPacket = await new PacketReader(track).getFirst();
     if (!firstPacket) {
         return null;
     }

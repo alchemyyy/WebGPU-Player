@@ -9,8 +9,9 @@ import { resolve } from 'node:path';
 import {
     ALL_FORMATS,
     BufferSource,
-    EncodedPacketSink,
     Input,
+    PacketCursor,
+    PacketReader,
     type EncodedPacket
 } from 'mediabunny';
 import { describe, expect, it, vi } from 'vitest';
@@ -163,15 +164,14 @@ async function readVectorPackets(vector: DolbyVisionAV1Vector): Promise<EncodedP
             vector.height
         ]);
 
-        const packetSink = new EncodedPacketSink(videoTrack);
         const packets: EncodedPacket[] = [];
-        for await (const packet of packetSink.packets(undefined, undefined, OWNED_AV1_PACKET_OPTIONS)) {
+        for await (const packet of new PacketCursor(videoTrack, { options: OWNED_AV1_PACKET_OPTIONS })) {
             packets.push(packet);
         }
         // The owned path seeks to the key packet preceding its start time
         const lastPacket = packets.at(-1);
         if (lastPacket) {
-            const keyPacket = await packetSink.getKeyPacket(lastPacket.timestamp, OWNED_AV1_PACKET_OPTIONS);
+            const keyPacket = await new PacketReader(videoTrack).getKeyAt(lastPacket.timestamp, OWNED_AV1_PACKET_OPTIONS);
             expect(keyPacket?.type).toBe('key');
         }
         return packets;

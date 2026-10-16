@@ -8,23 +8,19 @@ import {
     ALL_FORMATS,
     BufferSource,
     EncodedPacket,
-    EncodedPacketSink,
     Input,
     MATROSKA,
-    MatroskaInputFormat,
+    PacketCursor,
+    PacketReader,
     WEBM,
-    WebMInputFormat,
     type InputFormat,
     type InputVideoTrack
 } from 'mediabunny';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
+import { withMatroskaVideoFieldOrder } from 'webgpu-player/demux/ContainerVideoScan';
 import { CUSTOM_DECODE_INPUT_FORMATS } from 'webgpu-player/demux/CustomDecodeInputFormats';
-import {
-    createMatroskaBlockAdditionReader,
-    withMatroskaBlockAdditions,
-    type MatroskaBlockAddition
-} from 'webgpu-player/demux/MatroskaBlockAdditions';
+import { readMatroskaBlockAdditions, type MatroskaBlockAddition } from 'webgpu-player/demux/MatroskaBlockAdditions';
 
 import { concatenate, createBytesFromHex } from '../helpers/byteArrays';
 import {
@@ -39,14 +35,6 @@ import {
     type VP9HDR10PlusVector
 } from '../helpers/vp9HDR10PlusVectors';
 
-type HookModule = typeof import('webgpu-player/demux/MatroskaBlockAdditions');
-type MediabunnyModule = typeof import('mediabunny');
-type FreshModules = {
-    hook: HookModule
-    mediabunny: MediabunnyModule
-};
-type DemuxerFactory = (input: unknown) => Record<string, unknown>;
-
 // The worker's owned VP9 path reads packets with the same options
 const OWNED_VP9_PACKET_OPTIONS = {
     metadataOnly: false,
@@ -54,7 +42,6 @@ const OWNED_VP9_PACKET_OPTIONS = {
 } as const;
 const PLAIN_PACKET_OPTIONS = { metadataOnly: false } as const;
 const VECTORS = VP9_HDR10_PLUS_EXPECTATIONS.vectors;
-const WEBM_VECTOR_FILE_NAME = 'hdr10plus.webm';
 const SECOND_KEY_FRAME_INDEX = VP9_HDR10_PLUS_EXPECTATIONS.frames.findIndex(
     (frame: HDR10PlusVectorFrame, frameIndex: number): boolean => frameIndex > 0 && frame.keyFrame
 );
@@ -64,7 +51,6 @@ const DOLBY_VISION_AV1_VECTOR_DIRECTORY = resolve(CODEC_VECTOR_ASSETS_DIRECTORY,
 // Matroska with a BlockAdditionMapping but no block additions, and an MP4 of the same stream
 const MATROSKA_WITHOUT_ADDITIONS_FILE_NAME = 'profile10.1.mkv';
 const MP4_FILE_NAME = 'profile10.1.mp4';
-const UNAVAILABLE_WARNING_PATTERN = /BlockAdditional side data, HDR10\+ included, is unavailable/;
 
 // Matroska element IDs, with their length markers, from RFC 9559 and the WebM alpha extension
 const EBML_ID = 0x1A45_DFA3;
@@ -131,14 +117,18 @@ async function withVideoTrack(
 
 async function readPackets(track: InputVideoTrack): Promise<EncodedPacket[]> {
     const packets: EncodedPacket[] = [];
-    for await (const packet of new EncodedPacketSink(track).packets(undefined, undefined, OWNED_VP9_PACKET_OPTIONS)) {
+    for await (const packet of new PacketCursor(track, { options: OWNED_VP9_PACKET_OPTIONS })) {
         packets.push(packet);
     }
     return packets;
 }
 
 function describeAdditions(additions: readonly MatroskaBlockAddition[]): Array<[ number, number[] ]> {
-    return additions.map((addition: MatroskaBlockAddition): [ number, number[] ] => [ addition.addID, Array.from(addition.data) ]);
+    return additions.map((addition: MatroskaBlockAddition): [ number, number[] ] => [ addition.addId, Array.from(addition.data) ]);
+}
+
+function describePacketAdditions(packet: EncodedPacket | null): Array<[ number, number[] ]> | null {
+    return packet && describeAdditions(readMatroskaBlockAdditions(packet));
 }
 
 /** The one ITU-T T.35 BlockAdditional the generator wrote for a frame, or none. */
@@ -207,109 +197,66 @@ function createAlphaWebM(): Uint8Array {
     ]);
 }
 
-/** Imports the hook module afresh, so its one warning is still unspent, with the Mediabunny it binds to. */
-async function importFreshModules(): Promise<FreshModules> {
-    vi.resetModules();
-    const mediabunny = await import('mediabunny');
-    const hook = await import('webgpu-player/demux/MatroskaBlockAdditions');
-    return { hook, mediabunny };
-}
-
-function getDemuxerFactory(format: InputFormat): DemuxerFactory {
-    return (format as unknown as { _createDemuxer: DemuxerFactory })._createDemuxer;
-}
-
-describe('withMatroskaBlockAdditions', () => {
-    it('replaces Matroska and WebM in their places with formats that detect and name as Mediabunny\'s', () => {
-        const formats = withMatroskaBlockAdditions(ALL_FORMATS);
-
-        expect(formats).toHaveLength(ALL_FORMATS.length);
-        for (const [ formatIndex, format ] of formats.entries()) {
-            const mediabunnyFormat = ALL_FORMATS[formatIndex];
-            if (mediabunnyFormat !== MATROSKA && mediabunnyFormat !== WEBM) {
-                expect(format).toBe(mediabunnyFormat);
-                continue;
-            }
-            expect(format).not.toBe(mediabunnyFormat);
-            expect(Object.getPrototypeOf(format)).toBe(mediabunnyFormat);
-            expect([ format.name, format.mimeType ]).toEqual([ mediabunnyFormat.name, mediabunnyFormat.mimeType ]);
-        }
-        expect(formats[ALL_FORMATS.indexOf(MATROSKA)]).toBeInstanceOf(MatroskaInputFormat);
-        expect(formats[ALL_FORMATS.indexOf(WEBM)]).toBeInstanceOf(WebMInputFormat);
-    });
-
+describe('readMatroskaBlockAdditions', () => {
     describe.each(VECTORS.map((vector: VP9HDR10PlusVector) => [ vector.fileName, vector ] as const))(
         'over %s',
         (_fileName: string, vector: VP9HDR10PlusVector) => {
             it('reads each packet\'s ITU-T T.35 BlockAdditional, as the generator wrote it', async () => {
-                const warning = vi.spyOn(console, 'warn');
                 await withVideoTrack(
                     readVP9HDR10PlusVector(vector.fileName),
-                    withMatroskaBlockAdditions(ALL_FORMATS),
+                    ALL_FORMATS,
                     async (track: InputVideoTrack, input: Input): Promise<void> => {
                         expect((await input.getFormat()).name).toBe(vector.container === 'webm' ? WEBM.name : MATROSKA.name);
-                        const readBlockAdditions = createMatroskaBlockAdditionReader(track);
                         const packets = await readPackets(track);
 
                         expect(packets.map(packet => packet.type === 'key')).toEqual(
                             VP9_HDR10_PLUS_EXPECTATIONS.frames.map(frame => frame.keyFrame)
                         );
-                        expect(packets.map(packet => describeAdditions(readBlockAdditions(packet)))).toEqual(
-                            VP9_HDR10_PLUS_EXPECTATIONS.frames.map(getExpectedAdditions)
-                        );
+                        expect(packets.map(describePacketAdditions)).toEqual(VP9_HDR10_PLUS_EXPECTATIONS.frames.map(getExpectedAdditions));
                     }
                 );
-                expect(warning).not.toHaveBeenCalled();
             });
 
             it('reads the packets a seek reaches, and a cluster parsed again', async () => {
                 const frames = VP9_HDR10_PLUS_EXPECTATIONS.frames;
                 await withVideoTrack(
                     readVP9HDR10PlusVector(vector.fileName),
-                    withMatroskaBlockAdditions(ALL_FORMATS),
+                    ALL_FORMATS,
                     async (track: InputVideoTrack): Promise<void> => {
-                        const readBlockAdditions = createMatroskaBlockAdditionReader(track);
-                        const packetSink = new EncodedPacketSink(track);
-                        const keyPacket = await packetSink.getKeyPacket(SECOND_GROUP_SEEK_SECONDS, OWNED_VP9_PACKET_OPTIONS);
+                        const packetReader = new PacketReader(track);
+                        const keyPacket = await packetReader.getKeyAt(SECOND_GROUP_SEEK_SECONDS, OWNED_VP9_PACKET_OPTIONS);
                         if (!keyPacket) {
                             throw new Error('The vector has no key packet in its second group');
                         }
-                        const nextPacket = await packetSink.getNextPacket(keyPacket, OWNED_VP9_PACKET_OPTIONS);
+                        const nextPacket = await packetReader.getNext(keyPacket, OWNED_VP9_PACKET_OPTIONS);
                         // Mediabunny keeps one parsed cluster, so the first packet parses the first cluster again
-                        const firstPacket = await packetSink.getFirstPacket(OWNED_VP9_PACKET_OPTIONS);
+                        const firstPacket = await packetReader.getFirst(OWNED_VP9_PACKET_OPTIONS);
 
-                        expect(describeAdditions(readBlockAdditions(keyPacket))).toEqual(getExpectedAdditions(frames[SECOND_KEY_FRAME_INDEX]));
-                        expect(nextPacket && describeAdditions(readBlockAdditions(nextPacket))).toEqual(
-                            getExpectedAdditions(frames[SECOND_KEY_FRAME_INDEX + 1])
-                        );
-                        expect(firstPacket && describeAdditions(readBlockAdditions(firstPacket))).toEqual(getExpectedAdditions(frames[0]));
+                        expect(describePacketAdditions(keyPacket)).toEqual(getExpectedAdditions(frames[SECOND_KEY_FRAME_INDEX]));
+                        expect(describePacketAdditions(nextPacket)).toEqual(getExpectedAdditions(frames[SECOND_KEY_FRAME_INDEX + 1]));
+                        expect(describePacketAdditions(firstPacket)).toEqual(getExpectedAdditions(frames[0]));
                     }
                 );
             });
 
-            it('composes with the worker\'s laced-block content decoding', async () => {
+            it('reads them through the worker\'s input formats', async () => {
                 await withVideoTrack(
                     readVP9HDR10PlusVector(vector.fileName),
-                    withMatroskaBlockAdditions(CUSTOM_DECODE_INPUT_FORMATS),
+                    withMatroskaVideoFieldOrder(CUSTOM_DECODE_INPUT_FORMATS),
                     async (track: InputVideoTrack): Promise<void> => {
-                        const readBlockAdditions = createMatroskaBlockAdditionReader(track);
                         const packets = await readPackets(track);
 
-                        expect(packets.map(packet => describeAdditions(readBlockAdditions(packet)))).toEqual(
-                            VP9_HDR10_PLUS_EXPECTATIONS.frames.map(getExpectedAdditions)
-                        );
+                        expect(packets.map(describePacketAdditions)).toEqual(VP9_HDR10_PLUS_EXPECTATIONS.frames.map(getExpectedAdditions));
                     }
                 );
             });
         }
     );
 
-    it('leaves alpha to Mediabunny and reads the other additions of the same block in order', async () => {
-        const warning = vi.spyOn(console, 'warn');
-        await withVideoTrack(createAlphaWebM(), withMatroskaBlockAdditions(ALL_FORMATS), async (track: InputVideoTrack): Promise<void> => {
-            const readBlockAdditions = createMatroskaBlockAdditionReader(track);
+    it('leaves alpha to its own side data and reads the other additions of a block in order, for each frame of a laced block', async () => {
+        await withVideoTrack(createAlphaWebM(), ALL_FORMATS, async (track: InputVideoTrack): Promise<void> => {
             const packets: EncodedPacket[] = [];
-            for await (const packet of new EncodedPacketSink(track).packets(undefined, undefined, PLAIN_PACKET_OPTIONS)) {
+            for await (const packet of new PacketCursor(track, { options: PLAIN_PACKET_OPTIONS })) {
                 packets.push(packet);
             }
 
@@ -320,133 +267,32 @@ describe('withMatroskaBlockAdditions', () => {
                 Array.from(SECOND_LACED_FRAME_DATA)
             ]);
             expect(packets[0].sideData.alpha).toEqual(ALPHA_DATA);
-            expect(describeAdditions(readBlockAdditions(packets[0]))).toEqual([
+            expect(describePacketAdditions(packets[0])).toEqual([
                 [ ITU_T_T35_BLOCK_ADDITION_ID, Array.from(HDR10_PLUS_MESSAGE) ],
                 [ OTHER_BLOCK_ADDITION_ID, Array.from(OTHER_PROVIDER_MESSAGE) ]
             ]);
             expect(packets[1].sideData.alpha).toBeUndefined();
-            expect(readBlockAdditions(packets[1])).toEqual([]);
-            // Mediabunny replaces a laced block with new blocks, one per frame, so its additions are not read
-            expect(readBlockAdditions(packets[2])).toEqual([]);
-            expect(readBlockAdditions(packets[3])).toEqual([]);
+            expect(readMatroskaBlockAdditions(packets[1])).toEqual([]);
+            for (const lacedPacket of packets.slice(2)) {
+                expect(describePacketAdditions(lacedPacket)).toEqual([ [ ITU_T_T35_BLOCK_ADDITION_ID, Array.from(HDR10_PLUS_MESSAGE) ] ]);
+            }
         });
-        expect(warning).not.toHaveBeenCalled();
     });
 
-    it('reads none, without a warning, from Matroska without additions and from another demuxer', async () => {
-        const warning = vi.spyOn(console, 'warn');
+    it('reads none from Matroska without additions and from another demuxer', async () => {
         for (const fileName of [ MATROSKA_WITHOUT_ADDITIONS_FILE_NAME, MP4_FILE_NAME ]) {
             await withVideoTrack(
                 readDolbyVisionAV1Vector(fileName),
-                withMatroskaBlockAdditions(ALL_FORMATS),
+                ALL_FORMATS,
                 async (track: InputVideoTrack): Promise<void> => {
-                    const readBlockAdditions = createMatroskaBlockAdditionReader(track);
                     const packets = await readPackets(track);
 
                     expect(packets.length).toBeGreaterThan(0);
                     for (const packet of packets) {
-                        expect(readBlockAdditions(packet)).toEqual([]);
+                        expect(readMatroskaBlockAdditions(packet)).toEqual([]);
                     }
                 }
             );
-        }
-        expect(warning).not.toHaveBeenCalled();
-    });
-});
-
-describe('MatroskaBlockAdditions when Mediabunny\'s internals differ', () => {
-    it('keeps a format without a demuxer factory, with one warning', async () => {
-        const { hook, mediabunny } = await importFreshModules();
-        const warning = vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
-        const formatWithoutFactory = Object.create(mediabunny.MATROSKA, {
-            _createDemuxer: { value: undefined }
-        }) as InputFormat;
-
-        expect(hook.withMatroskaBlockAdditions([ formatWithoutFactory ])).toEqual([ formatWithoutFactory ]);
-        expect(hook.withMatroskaBlockAdditions([ formatWithoutFactory ])[0]).toBe(formatWithoutFactory);
-        expect(warning).toHaveBeenCalledOnce();
-        expect(warning).toHaveBeenCalledWith(expect.stringMatching(UNAVAILABLE_WARNING_PATTERN));
-    });
-
-    it('leaves a demuxer whose fields differ untouched and its packets unchanged, with one warning', async () => {
-        const { hook, mediabunny } = await importFreshModules();
-        const warning = vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
-        const createWebMDemuxer = getDemuxerFactory(mediabunny.WEBM);
-        // As if Mediabunny renamed the field
-        const renamedFieldFormat = Object.create(mediabunny.WEBM, {
-            _createDemuxer: {
-                value: (input: unknown): unknown => {
-                    const demuxer = createWebMDemuxer.call(mediabunny.WEBM, input);
-                    delete demuxer.currentBlockAdditional;
-                    return demuxer;
-                }
-            }
-        }) as InputFormat;
-        const input = new mediabunny.Input({
-            formats: hook.withMatroskaBlockAdditions([ renamedFieldFormat ]),
-            source: new mediabunny.BufferSource(readVP9HDR10PlusVector(WEBM_VECTOR_FILE_NAME))
-        });
-        try {
-            const [ track ] = await input.getVideoTracks();
-            const readBlockAdditions = hook.createMatroskaBlockAdditionReader(track);
-            const packetData: number[][] = [];
-            for await (const packet of new mediabunny.EncodedPacketSink(track).packets(undefined, undefined, PLAIN_PACKET_OPTIONS)) {
-                expect(readBlockAdditions(packet)).toEqual([]);
-                packetData.push(Array.from(packet.data));
-            }
-
-            expect(packetData).toHaveLength(VP9_HDR10_PLUS_EXPECTATIONS.frameCount);
-        } finally {
-            input.dispose();
-        }
-        expect(warning).toHaveBeenCalledOnce();
-    });
-
-    it('reads none for a packet the track did not return or a track backing that differs, with one warning in all', async () => {
-        const { hook, mediabunny } = await importFreshModules();
-        const warning = vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
-        const input = new mediabunny.Input({
-            formats: hook.withMatroskaBlockAdditions(mediabunny.ALL_FORMATS),
-            source: new mediabunny.BufferSource(readVP9HDR10PlusVector(WEBM_VECTOR_FILE_NAME))
-        });
-        try {
-            const [ track ] = await input.getVideoTracks();
-            const readBlockAdditions = hook.createMatroskaBlockAdditionReader(track);
-            const foreignPacket = new mediabunny.EncodedPacket(KEY_FRAME_DATA, 'key', 0, 1);
-            const backing = (track as unknown as { _backing: { internalTrack: unknown } })._backing;
-            const trackWithChangedBacking = {
-                _backing: { internalTrack: backing.internalTrack, packetToClusterLocation: new Map() }
-            } as unknown as InputVideoTrack;
-
-            expect(readBlockAdditions(foreignPacket)).toEqual([]);
-            expect(warning).toHaveBeenCalledOnce();
-            expect(hook.createMatroskaBlockAdditionReader(trackWithChangedBacking)(foreignPacket)).toEqual([]);
-        } finally {
-            input.dispose();
-        }
-        expect(warning).toHaveBeenCalledOnce();
-    });
-
-    it('warns about a track backing that differs', async () => {
-        const { hook, mediabunny } = await importFreshModules();
-        const warning = vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
-        const input = new mediabunny.Input({
-            formats: hook.withMatroskaBlockAdditions(mediabunny.ALL_FORMATS),
-            source: new mediabunny.BufferSource(readVP9HDR10PlusVector(WEBM_VECTOR_FILE_NAME))
-        });
-        try {
-            const [ track ] = await input.getVideoTracks();
-            const backing = (track as unknown as { _backing: { internalTrack: unknown } })._backing;
-            const trackWithChangedBacking = {
-                _backing: { internalTrack: backing.internalTrack, packetToClusterLocation: new Map() }
-            } as unknown as InputVideoTrack;
-
-            const readBlockAdditions = hook.createMatroskaBlockAdditionReader(trackWithChangedBacking);
-
-            expect(warning).toHaveBeenCalledOnce();
-            expect(readBlockAdditions(new mediabunny.EncodedPacket(KEY_FRAME_DATA, 'key', 0, 1))).toEqual([]);
-        } finally {
-            input.dispose();
         }
     });
 });

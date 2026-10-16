@@ -7,11 +7,11 @@ import {
     BufferSource,
     BufferTarget,
     EncodedPacket,
-    EncodedPacketSink,
     EncodedVideoPacketSource,
     Input,
     Mp4OutputFormat,
-    Output
+    Output,
+    PacketReader
 } from 'mediabunny';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -86,7 +86,7 @@ async function createEditedMP4(edits: readonly Edit[]): Promise<Uint8Array> {
     const sourceInput = new Input({ formats: CUSTOM_DECODE_INPUT_FORMATS, source: new BufferSource(readFileSync(SOURCE_VECTOR_PATH)) });
     try {
         const [ sourceTrack ] = await sourceInput.getVideoTracks();
-        const firstPacket = await new EncodedPacketSink(sourceTrack).getFirstPacket();
+        const firstPacket = await new PacketReader(sourceTrack).getFirst();
         const decoderConfig = await sourceTrack.getDecoderConfig();
         if (!firstPacket || !decoderConfig) {
             throw new Error('The HDR10+ VP9 vector has no first packet');

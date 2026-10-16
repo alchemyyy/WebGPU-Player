@@ -1,5 +1,5 @@
 // What audio decoder packages return, and the packets the decoder projects' tests feed them.
-import { ALL_FORMATS, BufferSource, EncodedPacketSink, Input } from 'mediabunny';
+import { ALL_FORMATS, BufferSource, Input, PacketCursor } from 'mediabunny';
 
 import type { AudioDecoderManifest } from 'webgpu-player/decode/audio/AudioDecoderManifest';
 import type { AudioDecoderPackageBlock, AudioDecoderPackageResult } from 'webgpu-player/decode/audio/AudioDecoderPackageInstance';
@@ -15,7 +15,7 @@ export async function readContainerAudioPackets(vector: Uint8Array): Promise<Enc
     const packets: EncodedAudioPacket[] = [];
     try {
         const [ track ] = await input.getAudioTracks();
-        for await (const packet of new EncodedPacketSink(track).packets()) {
+        for await (const packet of new PacketCursor(track)) {
             packets.push({ data: packet.data.slice(), timestampMicroseconds: requireMicroseconds(packet.microsecondTimestamp) });
         }
     } finally {

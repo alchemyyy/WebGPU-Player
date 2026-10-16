@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { ALL_FORMATS, BufferSource, EncodedPacketSink, Input, type EncodedPacket, type InputVideoTrack } from 'mediabunny';
+import { ALL_FORMATS, BufferSource, Input, PacketCursor, PacketReader, type EncodedPacket, type InputVideoTrack } from 'mediabunny';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -94,7 +94,7 @@ function toMilliseconds(packet: EncodedPacket): number {
 
 async function readTimestamps(track: InputVideoTrack): Promise<number[]> {
     const timestamps: number[] = [];
-    for await (const packet of new EncodedPacketSink(track).packets()) {
+    for await (const packet of new PacketCursor(track)) {
         timestamps.push(toMilliseconds(packet));
     }
     return timestamps;
@@ -237,17 +237,17 @@ describe('createVC1PresentationOrderTrack', () => {
         const { input, track } = await openWMV3Track(pictures, B_PICTURE_FIELDS);
         try {
             const presentationTrack = requireTrack(createVC1PresentationOrderTrack(track, toSyntax(B_PICTURE_FIELDS)));
-            const sink = new EncodedPacketSink(presentationTrack);
+            const packetReader = new PacketReader(presentationTrack);
 
             expect(await readTimestamps(presentationTrack)).toEqual([ 0, 3, 1, 2, 6, 4, 5 ].map(frame => frame * FRAME_MILLISECONDS));
             // The first anchor starts presentation, though the backing finds the second at the same decode time
-            const startPacket = await sink.getKeyPacket(0);
+            const startPacket = await packetReader.getKeyAt(0);
             expect(startPacket && toMilliseconds(startPacket)).toBe(0);
-            expect(startPacket && await sink.getNextPacket(startPacket)).toMatchObject({ type: 'key' });
+            expect(startPacket && await packetReader.getNext(startPacket)).toMatchObject({ type: 'key' });
             // A time between an anchor's decode time and its presentation starts from the anchor before it
-            const midPacket = await sink.getKeyPacket(FRAME_MILLISECONDS / MILLISECONDS_PER_SECOND);
+            const midPacket = await packetReader.getKeyAt(FRAME_MILLISECONDS / MILLISECONDS_PER_SECOND);
             expect(midPacket && toMilliseconds(midPacket)).toBe(0);
-            const laterPacket = await sink.getKeyPacket((3 * FRAME_MILLISECONDS) / MILLISECONDS_PER_SECOND);
+            const laterPacket = await packetReader.getKeyAt((3 * FRAME_MILLISECONDS) / MILLISECONDS_PER_SECOND);
             expect(laterPacket && toMilliseconds(laterPacket)).toBe(3 * FRAME_MILLISECONDS);
         } finally {
             input.dispose();
@@ -261,10 +261,10 @@ describe('createVC1PresentationOrderTrack', () => {
         ];
         const { input, track } = await openWMV3Track(pictures, B_PICTURE_FIELDS);
         try {
-            const sink = new EncodedPacketSink(requireTrack(createVC1PresentationOrderTrack(track, toSyntax(B_PICTURE_FIELDS))));
+            const packetReader = new PacketReader(requireTrack(createVC1PresentationOrderTrack(track, toSyntax(B_PICTURE_FIELDS))));
 
-            const metadataPacket = await sink.getFirstPacket({ metadataOnly: true });
-            const packet = await sink.getFirstPacket();
+            const metadataPacket = await packetReader.getFirst({ metadataOnly: true });
+            const packet = await packetReader.getFirst();
 
             expect(metadataPacket && toMilliseconds(metadataPacket)).toBe(0);
             expect(packet && toMilliseconds(packet)).toBe(FRAME_MILLISECONDS);

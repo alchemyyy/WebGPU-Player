@@ -6,11 +6,11 @@ import {
     BufferTarget,
     EncodedAudioPacketSource,
     EncodedPacket,
-    EncodedPacketSink,
     EncodedVideoPacketSource,
     Input,
     MkvOutputFormat,
-    Output
+    Output,
+    PacketCursor
 } from 'mediabunny';
 
 import { readVP9HDR10PlusVector, VP9_HDR10_PLUS_EXPECTATIONS } from './vp9HDR10PlusVectors';
@@ -81,7 +81,7 @@ export async function createDecodedAudioMedia(): Promise<Uint8Array> {
     await output.start();
 
     let firstVideoPacket = true;
-    for await (const packet of new EncodedPacketSink(videoTrack).packets()) {
+    for await (const packet of new PacketCursor(videoTrack)) {
         await videoSource.add(packet, firstVideoPacket ? { decoderConfig: videoDecoderConfig } : undefined);
         firstVideoPacket = false;
     }

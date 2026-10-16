@@ -1,4 +1,4 @@
-import { AviInputFormat, EncodedPacketSink, type Input, type InputTrack } from 'mediabunny';
+import { AviInputFormat, PacketReader, type Input, type InputTrack } from 'mediabunny';
 
 import { secondsToMicroseconds, type Microseconds } from '../MediaTime';
 
@@ -20,7 +20,7 @@ export async function hasIncompleteAVIIndex(input: Input, track: InputTrack): Pr
     if (declaredDurationSeconds === null) {
         return false;
     }
-    const lastPacket = await new EncodedPacketSink(track).getPacket(Number.POSITIVE_INFINITY, LAST_PACKET_OPTIONS);
+    const lastPacket = await new PacketReader(track).getAt(Number.POSITIVE_INFINITY, LAST_PACKET_OPTIONS);
     const indexedEndMicroseconds = lastPacket ? secondsToMicroseconds(lastPacket.timestamp + lastPacket.duration) : 0;
     return secondsToMicroseconds(declaredDurationSeconds) - indexedEndMicroseconds > MAXIMUM_INDEX_SHORTFALL_MICROSECONDS;
 }
