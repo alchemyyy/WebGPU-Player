@@ -196,6 +196,11 @@ export type DecodeWorkerStartRequest = {
     decodedAudioOutputChannelCount?: CustomAudioOutputChannelCount
     dolbyVisionProfile: CustomDecodeDolbyVisionProfile
     dolbyVisionRPUParserWASMURL: string
+    /**
+     * The media's duration the server reported, by which the worker sizes a URL source's read-ahead and cache.
+     * Without it the worker reads the container's duration and reports it in the ready response.
+     */
+    durationMicroseconds?: Microseconds
     /** The route's video credits: frames on the decoding routes, packets on the frame-pool route */
     frameCredits: number
     generation: number
@@ -208,8 +213,6 @@ export type DecodeWorkerStartRequest = {
     nativeHDRTransfer: CustomDecodeNativeHDRTransfer
     neutralizeHDRColorMetadata: boolean
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
-    /** Asks for the container's duration in the ready response, because the server reported none */
-    reportContainerDuration?: boolean
     source: CustomDecodeMediaSource
     startTimeMicroseconds: Microseconds
     /** Asks the worker to send its timing events, because the page records a timing trace */
@@ -1174,7 +1177,7 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
             const hasValidAudioDownmixAlgorithm = isValidAudioDownmixAlgorithmSelection(value, audioOutputMode, hasAudioTrack);
             const hasValidVideoOutput = hasValidVideoOutputFormat(value);
             return isCustomDecodeMediaSource(value.source)
-                && isOptionalBoolean(value.reportContainerDuration)
+                && (value.durationMicroseconds === undefined || (isMicroseconds(value.durationMicroseconds) && value.durationMicroseconds > 0))
                 && isOptionalBoolean(value.timingTrace)
                 && isDolbyVisionProfile(value.dolbyVisionProfile)
                 && isCodecAssetURL(value.dolbyVisionRPUParserWASMURL)

@@ -54,6 +54,9 @@ const MEDIA_URL = 'http://localhost/video.mkv';
 const UNKNOWN_MEDIA_SOURCE_KIND = 'stream';
 // Any positive epoch time; worker events carry the shared epoch clock
 const TIMING_TRACE_EVENT_EPOCH_MILLISECONDS = 1_791_000_000_000;
+// A 90-minute feature, and durations a server could not have reported: none, negative, fractional, and not a number
+const SERVER_DURATION_MICROSECONDS = secondsToMicroseconds(5_400);
+const INVALID_SERVER_DURATIONS = [ 0, -1, 1.5, '5400000000' ] as const;
 
 const RAW_TEST_FRAME_CODED_WIDTH = 4;
 const RAW_TEST_FRAME_CODED_HEIGHT = 2;
@@ -365,7 +368,7 @@ describe('DecodeWorkerProtocol', () => {
         expect(getCustomDecodeRequestHardwareAcceleration(request, videoCodec)).toBe(expected);
     });
 
-    it('validates the container duration request and its positive report', () => {
+    it('validates the server duration of a start request and the positive container duration report', () => {
         const request = {
             audioSampleCredits: 0,
             audioTrackIndex: null,
@@ -378,7 +381,6 @@ describe('DecodeWorkerProtocol', () => {
             nativeHDRTransfer: null,
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
-            reportContainerDuration: true,
             startTimeMicroseconds: 0,
             type: 'start',
             source: { kind: 'url', url: 'http://localhost/video.mkv' },
@@ -399,7 +401,10 @@ describe('DecodeWorkerProtocol', () => {
         } as const;
 
         expect(isDecodeWorkerRequest(request)).toBe(true);
-        expect(isDecodeWorkerRequest({ ...request, reportContainerDuration: 'yes' })).toBe(false);
+        expect(isDecodeWorkerRequest({ ...request, durationMicroseconds: SERVER_DURATION_MICROSECONDS })).toBe(true);
+        for (const durationMicroseconds of INVALID_SERVER_DURATIONS) {
+            expect(isDecodeWorkerRequest({ ...request, durationMicroseconds })).toBe(false);
+        }
         expect(isDecodeWorkerResponse(readyResponse)).toBe(true);
         expect(isDecodeWorkerResponse({ ...readyResponse, containerDurationMicroseconds: 0 })).toBe(false);
         expect(isDecodeWorkerResponse({ ...readyResponse, containerDurationMicroseconds: -1 })).toBe(false);

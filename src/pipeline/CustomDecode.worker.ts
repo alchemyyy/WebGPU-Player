@@ -98,6 +98,7 @@ import {
 } from './DecodeWorkerProtocol';
 import { getTrackByOrdinal } from '../demux/CustomDecodeTrackSelection';
 import type { CustomDecodeMediaSource } from '../demux/CustomDecodeMediaSource';
+import { URLSourceRetention } from '../demux/URLSourceRetention';
 import {
     DecodedVideoGeometryError,
     exceedsNegotiatedCodedSize,
@@ -205,7 +206,7 @@ import {
     type StaticHDRMetadataScanResult
 } from '../demux/hdr/StaticHDRMetadata';
 
-// A run's read cache, whether it reads a URL or a file
+// A run's read cache, a file's, or a URL's until the first preparation over it sizes it by the media's bitrate
 const MEDIA_SOURCE_CACHE_BYTES = 32 * 1024 * 1024;
 const URL_SOURCE_PARALLELISM = 2;
 const MAX_NETWORK_RETRY_ATTEMPTS = 2;
@@ -317,6 +318,8 @@ type DecodeRun = {
     videoStreamFinished: boolean
     /** The latest video attempt reached the end of its track; a suspended or interrupted one did not */
     videoTrackEnded: boolean
+    /** The retained URL source the run's input reads, whose waiting reads the run's stop cancels; null for a file */
+    urlSource: UrlSource | null
     /** The output events a frame-pool attempt's last packets decided without a picture to carry them, which its end carries */
     videoTrailingOutputEvents: Uint32Array | null
     wakeAudioControlWaiters: Array<() => void>
@@ -403,6 +406,8 @@ let currentRun: DecodeRun | null = null;
 let previousRunCompletion: Promise<void> = Promise.resolve();
 // The audio decode worker this worker spawns for its first decoded PCM run and keeps for every later one; a lost one asks for this worker's replacement
 let audioDecodeWorkerClient: AudioDecodeWorkerClient | null = null;
+// The last run's URL source, which the next run over the same media reads on
+const urlSourceRetention = new URLSourceRetention();
 
 function postResponse(response: DecodeWorkerResponse, transfer?: Transferable[]): void {
     workerScope.postMessage(response, transfer);
@@ -488,18 +493,27 @@ function createValidatedRangeFetch(hiddenContentRangePathPattern: RegExp | null)
     };
 }
 
-/** Opens a run's media: a URL through ranged requests under the fetch policy, or a file through reads of its own bytes. */
-function createMediaSource(source: CustomDecodeMediaSource): Source {
+/**
+ * Opens a run's media: a URL through ranged requests under the fetch policy, on the last run's source when it reads the same URL,
+ * or a file through reads of its own bytes.
+ */
+function openMediaSource(run: DecodeRun, source: CustomDecodeMediaSource): Source {
     switch (source.kind) {
         case 'file':
+            urlSourceRetention.release();
             return new BlobSource(source.file, { maxCacheSize: MEDIA_SOURCE_CACHE_BYTES });
-        case 'url':
-            return new UrlSource(source.url, {
-                fetchFn: createValidatedRangeFetch(source.hiddenContentRangePathPattern ?? null),
+        case 'url': {
+            const hiddenContentRangePathPattern = source.hiddenContentRangePathPattern ?? null;
+            // The pattern is part of what the source's validated fetch reads
+            const key = JSON.stringify([ source.url, hiddenContentRangePathPattern?.source ?? null, hiddenContentRangePathPattern?.flags ?? null ]);
+            run.urlSource = urlSourceRetention.acquire(key, (): UrlSource => new UrlSource(source.url, {
+                fetchFn: createValidatedRangeFetch(hiddenContentRangePathPattern),
                 getRetryDelay,
                 maxCacheSize: MEDIA_SOURCE_CACHE_BYTES,
                 parallelism: URL_SOURCE_PARALLELISM
-            });
+            }));
+            return run.urlSource;
+        }
     }
 }
 
@@ -754,6 +768,8 @@ function stopRun(run: DecodeRun): void {
     wakeWaiters(run.wakeFrameCreditWaiters);
     wakeWaiters(run.wakeVideoControlWaiters);
     wakeWaiters(run.wakeVideoDecodeWaiters);
+    // The retained source outlives the input, so the reads the input still waits for are canceled, and the next run's reads take the network at once
+    run.urlSource?.cancelReads();
     run.input?.dispose();
     const iteratorRetirementPromises: Array<Promise<void>> = [];
     iteratorRetirementPromises.push(retireIterator(run.audioIterator));
@@ -3605,14 +3621,15 @@ async function streamAudioAttempts(
     }
 }
 
-/** A run's prepared tracks, which its streams decode. */
+/** A run's prepared tracks, which its streams decode, and the media's duration: the server's, else the container's, when it has one. */
 type PreparedRunTracks = Readonly<{
     audioTrack: PreparedAudioTrack | null
+    durationMicroseconds: Microseconds | null
     videoTrack: PreparedVideoTrack
 }>;
 
 /**
- * Prepares a run's tracks, its container duration when the request asks for it, and its first attempt's parser, then posts the run's readiness.
+ * Prepares a run's tracks, its container duration when the server reported none, and its first attempt's parser, then posts the run's readiness.
  * Returns null, having posted nothing, once the run stopped meanwhile.
  */
 async function prepareRunTracks(
@@ -3643,7 +3660,7 @@ async function prepareRunTracks(
     }
     // The container's field order, which Mediabunny's parse of the track already read, goes with every frame that reports none of its own
     run.videoFrameFields = getScanFrameFields(await readContainerVideoScan(preparedVideoTrack.videoTrack));
-    const containerDurationMicroseconds = request.reportContainerDuration === true ?
+    const containerDurationMicroseconds = request.durationMicroseconds === undefined ?
         await readContainerDurationMicroseconds(input, preparedVideoTrack.videoTrack) :
         null;
     if (run.cancelled) {
@@ -3654,7 +3671,11 @@ async function prepareRunTracks(
         return null;
     }
     postReadyResponse(run, preparedVideoTrack, preparedAudioTrack, containerDurationMicroseconds, maximumPictureSize);
-    return { audioTrack: preparedAudioTrack, videoTrack: preparedVideoTrack };
+    return {
+        audioTrack: preparedAudioTrack,
+        durationMicroseconds: request.durationMicroseconds ?? containerDurationMicroseconds,
+        videoTrack: preparedVideoTrack
+    };
 }
 
 /**
@@ -3663,6 +3684,7 @@ async function prepareRunTracks(
  */
 async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest, { type: 'start' }>): Promise<void> {
     let reportDecodeStreamFailure = false;
+    let failed = false;
     if (request.timingTrace === true && !run.cancelled) {
         startWorkerTimingTrace((events): void => {
             postResponse({ events, generation: run.generation, type: 'timing-trace' });
@@ -3675,12 +3697,15 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
         }
         const input = new Input({
             formats: withMatroskaVideoFieldOrder(CUSTOM_DECODE_INPUT_FORMATS),
-            source: createMediaSource(request.source)
+            source: openMediaSource(run, request.source)
         });
         run.input = input;
         const prepared = await prepareRunTracks(input, run, request);
         if (!prepared) {
             return;
+        }
+        if (run.urlSource) {
+            await urlSourceRetention.settle(run.urlSource, prepared.durationMicroseconds);
         }
         run.audioStreamFinished = prepared.audioTrack === null;
         const streamPromises: Array<Promise<void>> = [];
@@ -3704,6 +3729,7 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
         }
     } catch (error) {
         if (!run.cancelled || reportDecodeStreamFailure) {
+            failed = true;
             postResponse({
                 failureKind: classifyFailure(error),
                 generation: run.generation,
@@ -3713,6 +3739,12 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
         }
     } finally {
         stopRun(run);
+        // A failed run's source may hold the failure, so no later run reads on it
+        if (failed) {
+            urlSourceRetention.release();
+        } else {
+            urlSourceRetention.releaseLater();
+        }
         // A parser pipeline no attempt took ends with the run
         takePreparedGPUDecodeParser(run)?.close();
         if (run.iteratorRetirementPromise) {
@@ -3779,6 +3811,7 @@ function createDecodeRun(request: Extract<DecodeWorkerRequest, { type: 'start' }
         videoStreamFinished: false,
         videoTrackEnded: false,
         videoTrailingOutputEvents: null,
+        urlSource: null,
         wakeAudioControlWaiters: [],
         wakeAudioCreditWaiters: [],
         wakeFrameCreditWaiters: [],

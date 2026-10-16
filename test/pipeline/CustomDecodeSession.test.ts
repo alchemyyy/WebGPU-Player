@@ -923,7 +923,7 @@ describe('CustomDecodeSession', () => {
         }
     });
 
-    it('asks for the container duration only without a server duration and forwards it on ready', () => {
+    it('passes the server duration, asks for the container duration without one, and forwards it on ready', () => {
         const knownDurationWorker = new MockWorker();
         const knownDurationSession = new CustomDecodeSession(
             () => undefined,
@@ -944,7 +944,7 @@ describe('CustomDecodeSession', () => {
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
         });
-        expect(knownDurationWorker.postedMessages[0]).not.toHaveProperty('reportContainerDuration');
+        expect(knownDurationWorker.postedMessages[0]).toMatchObject({ durationMicroseconds: secondsToMicroseconds(60) });
 
         const worker = new MockWorker();
         const events: CustomDecodeSessionEvent[] = [];
@@ -953,7 +953,7 @@ describe('CustomDecodeSession', () => {
             () => worker as unknown as Worker
         );
         startSession(session, 4);
-        expect(worker.postedMessages[0]).toMatchObject({ reportContainerDuration: true });
+        expect(worker.postedMessages[0]).not.toHaveProperty('durationMicroseconds');
         worker.emitMessage({
             audio: null,
             codec: 'avc1.640028',
@@ -994,8 +994,6 @@ describe('CustomDecodeSession', () => {
             nativeHDRTransfer: null,
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
-            // This session starts without a server duration
-            reportContainerDuration: true,
             startTimeMicroseconds: 1_000_000,
             type: 'start',
             source: { kind: 'url', url: 'http://localhost/video.mp4?ApiKey=secret' },
