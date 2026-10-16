@@ -480,13 +480,14 @@ Every start and seek is a new attempt on a new instance, which `audio_decoder_de
   The host passes them as the eligibility's `gpuVideoDecoders`.
 - The host passes its audio packages, in its order, as the eligibility's `audioDecoders`.
 - A host that fetches packages only when a playback needs them asks first what the playback decodes: `getGPUVideoDecodeTarget(options)` in `src/capability/CustomPlaybackEligibility.ts` names the video's codec and frame pool format, and `getPlaybackAudioCodec(options)` the codec of the audio track the eligibility selects.
+- Before a playback, a host passes what its video packages decode, their codecs and output formats, as `hasEligibleCustomVideoRoute`'s `gpuVideoDecoderSummaries`; see [GPU decoders](routes.md#gpu-decoders).
 - The eligibility prefers a native WebCodecs video route; otherwise it takes the first offer whose `accepts` conditions take the stream and whose pool, `state`, `buffer:`s, and packet ring each fit the buffer limit, on the `frame-pool` route with the `gpu` decoder backend.
   `findGPUDecoderStreamFitFailure` in `src/decode/video/gpu/GPUDecoderStreamFit.ts` checks them at the container's size.
   An HDR stream takes a package only when the host tone-maps frame-pool HDR, the `allowFramePoolHDR` presentation option.
 - For audio it prefers passing the track through to the browser, then the browser's own decoder, then the first package whose `accepts` names the track's codec, on the decoded PCM route.
 - The output format of a stream is its HEVC range extension format when it has one, otherwise the format that holds its pixel format, such as I422 for `yuv422p`, or 4:2:0 at its bit depth when the stream names no pixel format.
   A 4:0:0 pixel format, `gray`, `gray9`, `gray10`, or `gray12` in either byte order, takes the 4:2:0 format of its depth, and only a decoder whose header declares `monochrome` is offered it.
-- The controller takes `gpuVideoDecodeSessionFactory: createGPUVideoDecodeSessionFactory(presenter)`, and `play()` takes the eligibility's `gpuVideoDecoder` and `audioDecoder`.
+- The controller takes `gpuVideoDecodeSessionFactory: createGPUVideoDecodeSessionFactory(presenter, { slicing })`, where `slicing` is the host's choice of sliced decode submits, and `play()` takes the eligibility's `gpuVideoDecoder` and `audioDecoder`.
 - An audio track switch passes the new track's `audioDecoder` from its own eligibility to `setAudioStreamIndex`; the previous track's package never carries over.
 
 ### Verifying a package

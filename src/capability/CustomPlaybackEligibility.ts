@@ -353,6 +353,18 @@ export type CustomPlaybackEligibilityOptions = {
     runtimeAvailability: CustomPlaybackRuntimeAvailability
 };
 
+/** What a GPU decoder package decodes, as a host knows it without the package or the device: the codec families and the output formats. */
+export type GPUVideoDecoderSummary = Readonly<{
+    codecs: readonly string[]
+    outputFormats: readonly string[]
+}>;
+
+/** The options of `hasEligibleCustomVideoRoute`: the eligibility's, without runtime availability, and with summaries of the GPU decoders in place of offers. */
+export type CustomVideoRouteOptions = Omit<CustomPlaybackEligibilityOptions, 'gpuVideoDecoders' | 'runtimeAvailability'> & {
+    /** The GPU decoder packages a playback could use, which the frame-pool route takes by codec and output format alone, without their headers' conditions or the device's buffer limit */
+    gpuVideoDecoderSummaries?: readonly GPUVideoDecoderSummary[]
+};
+
 export type EligibleCustomPlayback = {
     /** The host's audio decoder package that decodes the decoded PCM route's track, which no engine decoder decodes */
     audioDecoder?: AudioDecoderPackageSelection
@@ -1455,60 +1467,67 @@ function getGPUDecodeOutputFormat(
  * and the device's limit on its frame pool, its state and scratch buffers, and its packet ring, so an offer the session would refuse is skipped.
  * A 4:0:0 stream, by its pixel format, goes only to a decoder whose header declares `monochrome`.
  * Its HDR needs the host's tone mapping; no presentation authorization gates it, and whether a package was verified is the host's choice.
+ * Without a fitting offer, a summary that decodes the codec into the format selects the route without a decoder, which only negotiation passes.
  */
 function selectGPUVideoOutput(
     eligibilityOptions: CustomPlaybackEligibilityOptions,
     videoCodec: CustomVideoCodec,
     videoStream: MediaStream,
-    colorMetadata: InputColorMetadata
+    colorMetadata: InputColorMetadata,
+    gpuVideoDecoderSummaries: readonly GPUVideoDecoderSummary[]
 ): VideoOutputSelection | null {
-    const monochrome = typeof videoStream.PixelFormat === 'string' && isGPUDecoderMonochromePixelFormat(videoStream.PixelFormat);
-    const offers = (eligibilityOptions.gpuVideoDecoders ?? []).filter((offer: GPUVideoDecoderOffer): boolean => (
-        offer.codecs.includes(videoCodec) && (!monochrome || offer.package.manifest.monochrome)
-    ));
     const format = getGPUDecodeOutputFormat(videoCodec, videoStream, colorMetadata);
     const hdr = colorMetadata.transfer !== 'sdr';
     if (
-        offers.length === 0
-        || format === null
+        format === null
         || (hdr && eligibilityOptions.allowFramePoolHDR !== true)
         || !isPositiveSafeInteger(videoStream.Width)
         || !isPositiveSafeInteger(videoStream.Height)
     ) {
         return null;
     }
+    const route: Extract<VideoOutputSelection, { status: 'selected' }> = {
+        hdr,
+        maximumCodedHeight: videoStream.Height,
+        maximumCodedWidth: videoStream.Width,
+        nativeVideoDecoderRequired: false,
+        neutralizeHDRColorMetadata: false,
+        rawVideoFrameFormat: format,
+        status: 'selected',
+        videoDecoderBackend: 'gpu',
+        videoOutputMode: 'frame-pool'
+    };
+    const monochrome = typeof videoStream.PixelFormat === 'string' && isGPUDecoderMonochromePixelFormat(videoStream.PixelFormat);
     // The pool takes the picture padded to whole coding blocks, which the container's cropped size omits
     const stream = createGPUDecodeStreamFacts(videoStream.Width, videoStream.Height, format);
-    for (const offer of offers) {
-        if (offer.format !== format || findGPUDecoderStreamFitFailure(offer.package.manifest, stream, format, offer.maximumBufferByteLength) !== null) {
+    for (const offer of eligibilityOptions.gpuVideoDecoders ?? []) {
+        if (
+            !offer.codecs.includes(videoCodec)
+            || (monochrome && !offer.package.manifest.monochrome)
+            || offer.format !== format
+            || findGPUDecoderStreamFitFailure(offer.package.manifest, stream, format, offer.maximumBufferByteLength) !== null
+        ) {
             continue;
         }
-        return {
-            gpuVideoDecoder: { codec: videoCodec, decoderId: offer.decoderId, package: offer.package },
-            hdr,
-            maximumCodedHeight: videoStream.Height,
-            maximumCodedWidth: videoStream.Width,
-            nativeVideoDecoderRequired: false,
-            neutralizeHDRColorMetadata: false,
-            rawVideoFrameFormat: format,
-            status: 'selected',
-            videoDecoderBackend: 'gpu',
-            videoOutputMode: 'frame-pool'
-        };
+        return { ...route, gpuVideoDecoder: { codec: videoCodec, decoderId: offer.decoderId, package: offer.package } };
     }
-    return null;
+    const summarized = gpuVideoDecoderSummaries.some((summary: GPUVideoDecoderSummary): boolean => (
+        summary.codecs.includes(videoCodec) && summary.outputFormats.includes(format)
+    ));
+    return summarized ? route : null;
 }
 
 /**
  * Selects the video route of a stream with color metadata.
- * A native WebCodecs route comes first, then a GPU decoder the host offers.
+ * A native WebCodecs route comes first, then a GPU decoder the host offers, then one it summarizes.
  */
 function selectVideoOutput(
     options: unknown,
     capabilities: CustomDecodeCapabilities,
     eligibilityOptions: CustomPlaybackEligibilityOptions,
     videoCodec: CustomVideoCodec,
-    videoStream: MediaStream
+    videoStream: MediaStream,
+    gpuVideoDecoderSummaries: readonly GPUVideoDecoderSummary[]
 ): VideoOutputSelection {
     const dolbyVisionSelection = selectDolbyVisionVideoOutput(
         options,
@@ -1529,7 +1548,7 @@ function selectVideoOutput(
     if (nativeSelection.status === 'selected') {
         return nativeSelection;
     }
-    return selectGPUVideoOutput(eligibilityOptions, videoCodec, videoStream, colorMetadata) ?? nativeSelection;
+    return selectGPUVideoOutput(eligibilityOptions, videoCodec, videoStream, colorMetadata, gpuVideoDecoderSummaries) ?? nativeSelection;
 }
 
 /** Selects the engine's own route for a stream's color: a range extension's exact variant, then the SDR routes, then the HDR routes. */
@@ -2056,12 +2075,13 @@ export function getPlaybackAudioCodec(options: unknown): CustomAudioCodec | null
 /**
  * Returns whether a media source's presented video stream has an eligible route, judged by the same video selection playback runs.
  * Audio, transport, and runtime availability are ignored.
+ * GPU decoders are judged by summaries of the packages a playback could use, since offers exist only once a playback has its packages and its device.
  * Negotiation uses it to advertise one exact item whose range label no generic route covers.
  */
 export function hasEligibleCustomVideoRoute(
     mediaSource: unknown,
     capabilities: CustomDecodeCapabilities,
-    eligibilityOptions: Omit<CustomPlaybackEligibilityOptions, 'runtimeAvailability'>
+    routeOptions: CustomVideoRouteOptions
 ): boolean {
     if (!mediaSource || typeof mediaSource !== 'object') {
         return false;
@@ -2082,9 +2102,10 @@ export function hasEligibleCustomVideoRoute(
     const videoOutput = selectVideoOutput(
         options,
         capabilities,
-        eligibilityOptions as CustomPlaybackEligibilityOptions,
+        routeOptions as CustomPlaybackEligibilityOptions,
         videoCodec,
-        selectedVideo.stream
+        selectedVideo.stream,
+        routeOptions.gpuVideoDecoderSummaries ?? []
     );
     return videoOutput.status === 'selected' && !refusesVideoScan(videoOutput, selectedVideo.stream);
 }
@@ -2123,12 +2144,14 @@ export function getCustomPlaybackEligibility(
         return { eligible: false, reason: 'presentation-order-unsupported' };
     }
 
+    // A playback takes a GPU decoder only from an offer, which carries the package its session runs
     const videoOutput = selectVideoOutput(
         options,
         capabilities,
         eligibilityOptions,
         videoCodec,
-        selectedVideo.stream
+        selectedVideo.stream,
+        []
     );
     if (videoOutput.status === 'invalid') {
         return { eligible: false, reason: videoOutput.reason };

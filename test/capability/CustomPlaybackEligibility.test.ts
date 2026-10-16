@@ -26,7 +26,9 @@ import {
     hasEligibleCustomVideoRoute,
     hasPotentialCustomPlaybackVideoRoute,
     presentsInterlacedVideo,
-    type CustomPlaybackEligibilityOptions
+    type CustomPlaybackEligibilityOptions,
+    type CustomVideoRouteOptions,
+    type GPUVideoDecoderSummary
 } from 'webgpu-player/capability/CustomPlaybackEligibility';
 import {
     HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS,
@@ -6066,6 +6068,89 @@ describe('GPU video decode route', () => {
             ...GPU_ROUTE,
             gpuVideoDecoder: { codec: 'hevc', decoderId: FIRST_TEN_BIT_HEVC_PACKAGE.id, package: FIRST_TEN_BIT_HEVC_PACKAGE },
             rawVideoFrameFormat: 'I420P10'
+        });
+    });
+
+    describe('hasEligibleCustomVideoRoute', () => {
+        // What a host knows of the HEVC decoder before a playback has the package and the device
+        const HEVC_SUMMARY: GPUVideoDecoderSummary = {
+            codecs: HEVC_PACKAGE.manifest.accepts.codecs,
+            outputFormats: HEVC_PACKAGE.manifest.outputFormats
+        };
+        const SUMMARY_ROUTE_OPTIONS: CustomVideoRouteOptions = { allowRawHDR: false, gpuVideoDecoderSummaries: [ HEVC_SUMMARY ] };
+        // Profile 8.1, whose compatibility ID 1 declares an HDR10 base
+        const DOLBY_VISION_HDR10_BASE_STREAM = {
+            ...HDR10_STREAM,
+            BlPresentFlag: true,
+            DvBlSignalCompatibilityId: 1,
+            DvProfile: 8,
+            RpuPresentFlag: true,
+            VideoRangeType: 'DOVIWithHDR10'
+        } as const;
+
+        function createGPUMediaSource(videoStream: Record<string, unknown>): unknown {
+            return (createGPUOptions(videoStream) as { mediaSource: unknown }).mediaSource;
+        }
+
+        it('takes a GPU decoder by its summary, since no offer exists before a playback', () => {
+            const mediaSource = createGPUMediaSource({});
+
+            expect(hasEligibleCustomVideoRoute(mediaSource, createCapabilitiesWithoutNativeHEVC(), { allowRawHDR: false })).toBe(false);
+            expect(hasEligibleCustomVideoRoute(mediaSource, createCapabilitiesWithoutNativeHEVC(), SUMMARY_ROUTE_OPTIONS)).toBe(true);
+        });
+
+        it.each([
+            { codecs: [ 'vp9' ], outputFormats: [ 'I420P10' ], subject: 'another codec' },
+            { codecs: [ 'hevc' ], outputFormats: [ 'I420' ], subject: 'another output format' }
+        ])('passes over a summary of $subject', ({ codecs, outputFormats }) => {
+            expect(hasEligibleCustomVideoRoute(
+                createGPUMediaSource({}),
+                createCapabilitiesWithoutNativeHEVC(),
+                { ...SUMMARY_ROUTE_OPTIONS, gpuVideoDecoderSummaries: [ { codecs, outputFormats } ] }
+            )).toBe(false);
+        });
+
+        it('leaves the decoder\'s stream conditions and the device\'s buffer limit to the playback\'s offers', () => {
+            const videoStream = { Height: ULTRA_HD_8K_CODED_HEIGHT, Width: ULTRA_HD_8K_CODED_WIDTH };
+
+            expect(hasEligibleCustomVideoRoute(createGPUMediaSource(videoStream), createCapabilitiesWithoutNativeHEVC(), SUMMARY_ROUTE_OPTIONS)).toBe(true);
+            expect(getCustomPlaybackEligibility(
+                createGPUOptions(videoStream),
+                createCapabilitiesWithoutNativeHEVC(),
+                createGPUEligibilityOptions()
+            )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+        });
+
+        it('presents summarized HDR only when the host tone-maps it', () => {
+            const mediaSource = createGPUMediaSource(HDR10_STREAM);
+
+            expect(hasEligibleCustomVideoRoute(mediaSource, createCapabilitiesWithoutNativeHEVC(), SUMMARY_ROUTE_OPTIONS)).toBe(false);
+            expect(hasEligibleCustomVideoRoute(
+                mediaSource,
+                createCapabilitiesWithoutNativeHEVC(),
+                { ...SUMMARY_ROUTE_OPTIONS, allowFramePoolHDR: true }
+            )).toBe(true);
+        });
+
+        it('presents a declared Dolby Vision base on a summarized decoder, as a playback presents it on the offer', () => {
+            const routeOptions: CustomVideoRouteOptions = { ...SUMMARY_ROUTE_OPTIONS, allowFramePoolHDR: true };
+
+            expect(hasEligibleCustomVideoRoute(
+                createGPUMediaSource(DOLBY_VISION_HDR10_BASE_STREAM),
+                createCapabilitiesWithoutNativeHEVC(),
+                routeOptions
+            )).toBe(true);
+            expect(getCustomPlaybackEligibility(
+                createGPUOptions(DOLBY_VISION_HDR10_BASE_STREAM),
+                createCapabilitiesWithoutNativeHEVC(),
+                { ...createGPUEligibilityOptions(), allowFramePoolHDR: true }
+            )).toMatchObject({ ...GPU_ROUTE, dolbyVisionProfile: null, hdr: true, rawVideoFrameFormat: 'I420P10' });
+            // Compatibility ID 0 declares no base, and the frame-pool route reconstructs no RPU
+            expect(hasEligibleCustomVideoRoute(
+                createGPUMediaSource({ ...DOLBY_VISION_HDR10_BASE_STREAM, DvBlSignalCompatibilityId: 0, VideoRangeType: 'DOVIInvalid' }),
+                createCapabilitiesWithoutNativeHEVC(),
+                routeOptions
+            )).toBe(false);
         });
     });
 
