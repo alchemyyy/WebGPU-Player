@@ -44,6 +44,13 @@ const MAX_BUFFERED_AUDIO_SECONDS = CUSTOM_AUDIO_OUTPUT_BUFFERED_SECONDS;
 const MAX_OUTPUT_TIMESTAMP_CORRECTION_MICROSECONDS = secondsToMicroseconds(MAX_BUFFERED_AUDIO_SECONDS);
 const MILLISECONDS_PER_SECOND = 1_000;
 
+/** How a factory's outputs report: `analyzeSignal` adds per-sample peak, RMS, and clipping statistics to telemetry, at a cost on the audio thread. */
+export type BrowserCustomAudioOutputOptions = Readonly<{
+    analyzeSignal?: boolean
+}>;
+
+const DEFAULT_BROWSER_CUSTOM_AUDIO_OUTPUT_OPTIONS: BrowserCustomAudioOutputOptions = Object.freeze({});
+
 type AudioContextWithSinkInfo = AudioContext & {
     readonly sinkId?: string | Readonly<{ type: string }>
 };
@@ -114,10 +121,13 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
     public constructor(
         private readonly audioContextReference: SharedBrowserAudioContextReference,
         private workletLease: SharedBrowserAudioWorkletLease,
-        private readonly audioOutputTargetLease: WebGPUAudioOutputTargetLease
+        private readonly audioOutputTargetLease: WebGPUAudioOutputTargetLease,
+        private readonly signalAnalysis: boolean
     ) {
         this.audioContext = audioContextReference.audioContext;
         this.output = workletLease.output;
+        // A pooled node keeps what its last lease set, so every lease sets its own
+        this.output.setSignalAnalysis(signalAnalysis);
         this.outputTelemetryUnsubscribe = this.output.onTelemetry(this.handleOutputTelemetry);
         this.audioContext.addEventListener('sinkchange', this.handleSinkChange);
     }
@@ -208,6 +218,7 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
         this.output.setVolume(this.volume);
         this.output.setMuted(this.muted);
         this.output.setPlaying(this.playing);
+        this.output.setSignalAnalysis(this.signalAnalysis);
         this.outputTelemetryUnsubscribe = this.output.onTelemetry(this.handleOutputTelemetry);
         return new CustomDecodeAudioBridge(this.output);
     }
@@ -536,7 +547,8 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
 async function createOutput(
     configuration: DecodeWorkerAudioConfiguration,
     prewarmedAudioContext: BrowserAudioContextPrewarmLease | null,
-    audioOutputManager: WebGPUAudioOutputManager
+    audioOutputManager: WebGPUAudioOutputManager,
+    signalAnalysis: boolean
 ): Promise<CustomAudioOutputBinding> {
     try {
         assertSupportedCustomAudioOutputLayout(
@@ -587,7 +599,8 @@ async function createOutput(
         const managedOutput = new BrowserCustomAudioOutput(
             audioContextReference,
             workletLease,
-            audioOutputTargetLease
+            audioOutputTargetLease,
+            signalAnalysis
         );
         return {
             bridge: new CustomDecodeAudioBridge(workletLease.output),
@@ -610,12 +623,14 @@ async function createOutput(
 /** Creates exact-rate browser PCM outputs for a combined custom A/V session. */
 export function createBrowserCustomAudioOutputFactory(
     prewarmedAudioContext: BrowserAudioContextPrewarmLease | null = null,
-    audioOutputManager: WebGPUAudioOutputManager = getWebGPUAudioOutputManager()
+    audioOutputManager: WebGPUAudioOutputManager = getWebGPUAudioOutputManager(),
+    options: BrowserCustomAudioOutputOptions = DEFAULT_BROWSER_CUSTOM_AUDIO_OUTPUT_OPTIONS
 ): CustomAudioOutputFactory {
     let availablePrewarm = prewarmedAudioContext;
+    const signalAnalysis = options.analyzeSignal === true;
     return (configuration: DecodeWorkerAudioConfiguration): Promise<CustomAudioOutputBinding> => {
         const selectedPrewarm = availablePrewarm;
         availablePrewarm = null;
-        return createOutput(configuration, selectedPrewarm, audioOutputManager);
+        return createOutput(configuration, selectedPrewarm, audioOutputManager, signalAnalysis);
     };
 }

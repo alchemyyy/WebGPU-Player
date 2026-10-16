@@ -354,7 +354,8 @@ describe('SandboxSession', () => {
         await openMedia(harness);
 
         expect(engineMocks.prewarmLeases[0].close).toHaveBeenCalledOnce();
-        expect(createBrowserCustomAudioOutputFactory).toHaveBeenLastCalledWith(null);
+        // The sandbox shows the output's signal statistics, so its outputs compute them
+        expect(createBrowserCustomAudioOutputFactory).toHaveBeenLastCalledWith(null, expect.anything(), { analyzeSignal: true });
         expect(getLastController().play).toHaveBeenCalledWith(expect.objectContaining({ audioDownmixSettings: undefined, audioOutputMode: 'native-media' }));
     });
 

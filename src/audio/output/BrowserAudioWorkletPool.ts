@@ -247,6 +247,11 @@ class GuardedAudioWorkletOutput implements AudioWorkletOutputController {
         this.controller.setPlaying(playing);
     }
 
+    public setSignalAnalysis(enabled: boolean): void {
+        this.requireActive();
+        this.controller.setSignalAnalysis(enabled);
+    }
+
     public setVolume(volume: number): void {
         this.requireActive();
         this.controller.setVolume(volume);

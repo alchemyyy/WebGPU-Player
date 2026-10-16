@@ -22,6 +22,7 @@ import DolbyVisionRPUParser, {
     DolbyVisionRPUParseError,
     MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH,
     MAXIMUM_DOLBY_VISION_RPU_PARSER_MEMORY_BYTE_LENGTH,
+    readDolbyVisionRPUSnapshotHeader,
     resolveDolbyVisionRPUParserWASMURL,
     type DolbyVisionRPUContainerProfile,
     type DolbyVisionRPUParserDependencies,
@@ -52,6 +53,8 @@ const SHARED_PARSER_WASM_URL = 'https://example.test/web/libraries/libdovi/share
 const TRAPPING_PARSER_WASM_URL = 'https://example.test/web/libraries/libdovi/trapping/dovi-rpu-parser.wasm';
 // Container profiles: an RPU profile the vector's header would contradict, and AV1's Profile 10, which is no RPU profile
 const CONTRADICTED_CONTAINER_PROFILE: DolbyVisionRPUContainerProfile = 4;
+// A dual-layer profile a single-layer snapshot's flags contradict
+const DUAL_LAYER_PROFILE = 4;
 const NOT_AN_RPU_PROFILE = 10;
 // libdovi's STATUS_INVALID_ARGUMENT
 const INVALID_ARGUMENT_STATUS = 1;
@@ -194,6 +197,41 @@ const ACTUAL_PARSER_DEPENDENCIES: DolbyVisionRPUParserDependencies = {
 async function createActualParser(): Promise<DolbyVisionRPUParser> {
     return DolbyVisionRPUParser.create('local-parser.wasm', ACTUAL_PARSER_DEPENDENCIES);
 }
+
+describe('readDolbyVisionRPUSnapshotHeader', () => {
+    it.each(PARSER_VECTORS)('reads the header fields the full decode of $fileName gives', async vector => {
+        const parser = await createActualParser();
+        try {
+            const snapshot = parser.parse(readVector(vector.fileName));
+
+            expect(readDolbyVisionRPUSnapshotHeader(snapshot.packedData)).toEqual({
+                baseLayerBitDepth: snapshot.baseLayerBitDepth,
+                disableResidual: snapshot.disableResidual,
+                enhancementLayerBitDepth: snapshot.enhancementLayerBitDepth,
+                layerMode: snapshot.layerMode,
+                nlqActive: snapshot.nlqActive,
+                profile: snapshot.profile
+            });
+        } finally {
+            parser.close();
+        }
+    });
+
+    it('refuses an incompatible header and flags that contradict the profile', async () => {
+        const parser = await createActualParser();
+        const singleLayerPackedData = parser.parse(readVector('profile8.bin')).packedData;
+        parser.close();
+
+        const corruptMagic = singleLayerPackedData.slice(0);
+        new DataView(corruptMagic).setUint32(0, 0, true);
+        expect(() => readDolbyVisionRPUSnapshotHeader(corruptMagic)).toThrow('snapshot header is incompatible');
+
+        // A single-layer snapshot relabeled as a dual-layer profile
+        const relabeledPackedData = singleLayerPackedData.slice(0);
+        new DataView(relabeledPackedData).setUint32(SNAPSHOT_PROFILE_BYTE_OFFSET, DUAL_LAYER_PROFILE, true);
+        expect(() => readDolbyVisionRPUSnapshotHeader(relabeledPackedData)).toThrow('flags contradict its profile');
+    });
+});
 
 describe('DolbyVisionRPUParser container profile', () => {
     it('keeps the profile a header reveals over the container\'s', async () => {

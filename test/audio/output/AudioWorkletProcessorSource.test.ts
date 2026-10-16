@@ -120,6 +120,11 @@ const LEADING_GAP_PROCESSOR_OPTIONS: ProcessorOptions = {
     // One periodic telemetry message closes every render quantum
     telemetryIntervalFrames: LEADING_GAP_RENDER_FRAME_COUNT
 };
+// One render quantum of one channel, peaking at 0.75, and the times of the chunks that follow it
+const SIGNAL_ANALYSIS_SAMPLES = [ 0.5, -0.75, 0.25, 0 ];
+const SIGNAL_ANALYSIS_PEAK = 0.75;
+const SIGNAL_ANALYSIS_SECOND_CHUNK_TIME = 4_000;
+const SIGNAL_ANALYSIS_THIRD_CHUNK_TIME = 8_000;
 
 function createLeadingGapProcessor(
     processorOptions: ProcessorOptions = LEADING_GAP_PROCESSOR_OPTIONS
@@ -157,6 +162,11 @@ function deliverChunk(
 
 function setPlaying(processor: ProcessorHarness, playing: boolean): void {
     processor.port.deliver({ playing, type: 'playback' });
+}
+
+/** Turns on the per-sample signal statistics, which a processor computes only on request. */
+function setSignalAnalysis(processor: ProcessorHarness, enabled: boolean): void {
+    processor.port.deliver({ enabled, type: 'signal-analysis' });
 }
 
 // A producer's chunks carry their own sequences, which the releases echo
@@ -221,6 +231,7 @@ describe('AudioWorkletProcessorSource', () => {
                 telemetryIntervalFrames: 4
             }
         } ]) as ProcessorHarness;
+        setSignalAnalysis(processor, true);
         const acceptedChannelData = [
             new Float32Array([ 1, 2, 3, 4 ]),
             new Float32Array([ 5, 6, 7, 8 ])
@@ -336,6 +347,7 @@ describe('AudioWorkletProcessorSource', () => {
                 telemetryIntervalFrames: 2
             }
         } ]) as ProcessorHarness;
+        setSignalAnalysis(processor, true);
         processor.port.deliver({ muted: false, type: 'gain', volume: 2 });
         processor.port.deliver({
             channelData: [ new Float32Array([ 0.25, -0.25 ]) ],
@@ -362,6 +374,29 @@ describe('AudioWorkletProcessorSource', () => {
             },
             underflowFrames: 2
         }));
+    });
+
+    it('computes signal statistics only while a host asks for them, starting over at each change', () => {
+        const processor = createLeadingGapProcessor();
+        deliverFlush(processor, 2, 0);
+        deliverChunk(processor, 2, 0, SIGNAL_ANALYSIS_SAMPLES);
+        setPlaying(processor, true);
+
+        renderQuantum(processor);
+        expect(processor.port.postedMessages.at(-1)).toMatchObject({ reason: 'periodic', signal: undefined });
+
+        setSignalAnalysis(processor, true);
+        deliverChunk(processor, 2, SIGNAL_ANALYSIS_SECOND_CHUNK_TIME, SIGNAL_ANALYSIS_SAMPLES);
+        renderQuantum(processor);
+        expect(processor.port.postedMessages.at(-1)).toMatchObject({
+            reason: 'periodic',
+            signal: expect.objectContaining({ analyzedFrameCount: SIGNAL_ANALYSIS_SAMPLES.length, samplePeak: SIGNAL_ANALYSIS_PEAK })
+        });
+
+        setSignalAnalysis(processor, false);
+        deliverChunk(processor, 2, SIGNAL_ANALYSIS_THIRD_CHUNK_TIME, SIGNAL_ANALYSIS_SAMPLES);
+        renderQuantum(processor);
+        expect(processor.port.postedMessages.at(-1)).toMatchObject({ reason: 'periodic', signal: undefined });
     });
 
     it('correlates media time to the exact sample before a partial underflow', () => {
@@ -685,6 +720,7 @@ describe('AudioWorkletProcessorSource', () => {
                 ...LEADING_GAP_PROCESSOR_OPTIONS,
                 channelCount: 2
             });
+            setSignalAnalysis(processor, true);
             deliverFlush(processor, 2, 0);
             deliverChunk(processor, 2, 6_000, [ 0.5, -0.25 ], [ 0.75, 0.125 ]);
             setPlaying(processor, true);

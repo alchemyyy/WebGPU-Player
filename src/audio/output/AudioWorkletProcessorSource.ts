@@ -40,6 +40,8 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         this.nonFiniteSampleCount = 0;
         this.samplePeak = 0;
         this.sampleSquareSum = 0;
+        // Off unless a host shows signal statistics, so playback spends nothing per sample on them
+        this.signalAnalysis = false;
         this.mediaTimeContextTimeMicroseconds = null;
         this.mediaTimeMicroseconds = 0;
         this.underflowActive = false;
@@ -76,6 +78,9 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
                 break;
             case 'playback':
                 this.playing = message.playing === true;
+                break;
+            case 'signal-analysis':
+                this.setSignalAnalysis(message.enabled === true);
                 break;
             case 'destroy':
                 this.detachProducer();
@@ -322,7 +327,9 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         }
 
         const underflowFrameCount = renderFrameCount - outputOffset;
-        this.analyzeOutput(outputChannels, silentPrefixFrameCount, outputOffset);
+        if (this.signalAnalysis) {
+            this.analyzeOutput(outputChannels, silentPrefixFrameCount, outputOffset);
+        }
         if (underflowFrameCount > 0) {
             this.underflowFrames += underflowFrameCount;
             if (!this.underflowActive) {
@@ -382,6 +389,14 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         }
     }
 
+    // A change starts the statistics over, so they never mix analyzed and skipped output
+    setSignalAnalysis(enabled) {
+        if (enabled !== this.signalAnalysis) {
+            this.signalAnalysis = enabled;
+            this.resetSignalTelemetry();
+        }
+    }
+
     resetSignalTelemetry() {
         this.analyzedFrameCount = 0;
         this.analyzedSampleCount = 0;
@@ -434,6 +449,14 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
     }
 
     postTelemetry(reason, sequence) {
+        const signal = this.signalAnalysis ? {
+            analyzedFrameCount: this.analyzedFrameCount,
+            analyzedSampleCount: this.analyzedSampleCount,
+            clippedSampleCount: this.clippedSampleCount,
+            nonFiniteSampleCount: this.nonFiniteSampleCount,
+            samplePeak: this.samplePeak,
+            sampleSquareSum: this.sampleSquareSum
+        } : undefined;
         this.port.postMessage({
             consumedFrames: this.consumedFrames,
             droppedFrames: this.droppedFrames,
@@ -449,14 +472,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             queuedFrames: this.queuedFrames,
             reason,
             sequence,
-            signal: {
-                analyzedFrameCount: this.analyzedFrameCount,
-                analyzedSampleCount: this.analyzedSampleCount,
-                clippedSampleCount: this.clippedSampleCount,
-                nonFiniteSampleCount: this.nonFiniteSampleCount,
-                samplePeak: this.samplePeak,
-                sampleSquareSum: this.sampleSquareSum
-            },
+            signal,
             staleChunks: this.staleChunks,
             type: 'telemetry',
             underflowEvents: this.underflowEvents,

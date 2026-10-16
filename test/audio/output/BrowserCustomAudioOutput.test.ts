@@ -48,6 +48,10 @@ import { isSameAudioSink } from '../../helpers/audioSink';
 
 // Keeps the output manager's recovery poll from firing during a test
 const OUTPUT_RECOVERY_POLL_INTERVAL_MILLISECONDS = 3_600_000;
+const SIGNAL_ANALYSIS_CONFIGURATION: DecodeWorkerAudioConfiguration = { channelCount: 2, codec: 'flac', sampleRate: 48_000 };
+const SIGNAL_ANALYSIS_OPTIONS = Object.freeze({ analyzeSignal: true });
+// A decoded 5.1 layout the destination accepts, so the reconfiguration replaces the worklet
+const SIGNAL_ANALYSIS_RECONFIGURED_CHANNEL_COUNT = 6;
 
 let fakeMaximumChannelCount = 2;
 
@@ -119,6 +123,7 @@ type WorkletControllerHarness = {
     seek: ReturnType<typeof vi.fn>
     setMuted: ReturnType<typeof vi.fn>
     setPlaying: ReturnType<typeof vi.fn>
+    setSignalAnalysis: ReturnType<typeof vi.fn>
     setVolume: ReturnType<typeof vi.fn>
 };
 
@@ -194,6 +199,7 @@ function createWorkletController(channelCount = 2): WorkletControllerHarness {
         seek: vi.fn((): number => 2),
         setMuted: vi.fn(),
         setPlaying: vi.fn(),
+        setSignalAnalysis: vi.fn(),
         setVolume: vi.fn()
     };
 }
@@ -298,6 +304,34 @@ describe('BrowserCustomAudioOutput', () => {
     afterEach(async () => {
         await closeIdleSharedBrowserAudioContexts().catch((): void => undefined);
         vi.unstubAllGlobals();
+    });
+
+    it('leaves signal statistics off unless a host asks for them, on every worklet it leases', async () => {
+        fakeMaximumChannelCount = SIGNAL_ANALYSIS_RECONFIGURED_CHANNEL_COUNT;
+        const pooledController = createWorkletController();
+        audioWorkletMockState.create.mockResolvedValue(pooledController);
+        const plainBinding = await createBrowserCustomAudioOutputFactory()(SIGNAL_ANALYSIS_CONFIGURATION);
+        expect(pooledController.setSignalAnalysis).toHaveBeenLastCalledWith(false);
+        await plainBinding.output.destroy();
+
+        // The pool hands the same node to the next output, which sets its own choice on it
+        const analyzedBinding = await createBrowserCustomAudioOutputFactory(
+            null,
+            undefined,
+            SIGNAL_ANALYSIS_OPTIONS
+        )(SIGNAL_ANALYSIS_CONFIGURATION);
+        expect(audioWorkletMockState.create).toHaveBeenCalledOnce();
+        expect(pooledController.setSignalAnalysis).toHaveBeenLastCalledWith(true);
+
+        // A reconfiguration's new worklet takes the same setting
+        const reconfiguredController = createWorkletController(SIGNAL_ANALYSIS_RECONFIGURED_CHANNEL_COUNT);
+        audioWorkletMockState.create.mockResolvedValue(reconfiguredController);
+        await analyzedBinding.output.reconfigure?.({
+            ...SIGNAL_ANALYSIS_CONFIGURATION,
+            channelCount: SIGNAL_ANALYSIS_RECONFIGURED_CHANNEL_COUNT
+        });
+        expect(reconfiguredController.setSignalAnalysis).toHaveBeenLastCalledWith(true);
+        await analyzedBinding.output.destroy();
     });
 
     it('creates an exact-rate bounded worklet output on the shared context', async () => {
