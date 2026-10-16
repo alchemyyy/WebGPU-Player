@@ -733,6 +733,9 @@ These were settled on Firefox 157 on Windows.
   Two sample-rate fields need recovery.
   TrueHD writes the rate as a 32-bit integer, which reads back as 16.16.
   A DTS rate above 65535 Hz does not fit the 16-bit integer part, so muxers write zero, and the worker declares the 48 kHz core until the decoder reports the real rate.
+- The `dts` package builds libdcadec with SIMD and link-time optimization (10-15).
+  It built at `-O3` without either, while the FFmpeg audio packages used both, so nothing of libdcadec was vectorized.
+  `-msimd128` and `-flto` grow the module from 268,676 to 332,684 bytes, each about half of that, and it decodes both DTS test vectors, Master Audio 7.1 and core 5.1, to the same samples as before.
 - Normalization follows the metadata.
   Jellyfin fills track and album gain for audio libraries, not movies, so video sessions normally use unity gain.
 - The resampler and the limiter render in WebAssembly, byte for byte as their JavaScript reference (10-09).

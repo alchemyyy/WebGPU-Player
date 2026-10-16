@@ -7,7 +7,8 @@ DCADEC_SOURCES := bitstream.c core_decoder.c dca_context.c dca_frame.c dmix_tabl
 	exss_parser.c idct_fixed.c idct_float.c interpolator.c interpolator_fixed.c \
 	interpolator_float.c lbr_decoder.c ta.c xll_decoder.c
 DCADEC_ROOT := $(BUILD)/source/dcadec-$(DCADEC_COMMIT)
-LIBDCADEC_CFLAGS := -std=gnu99 -O3 -DNDEBUG -fno-exceptions
+# One emcc call compiles and links, so SIMD and link-time optimization cover both, as in the FFmpeg audio modules
+LIBDCADEC_CFLAGS := -std=gnu99 -O3 -DNDEBUG -fno-exceptions -msimd128 -flto
 
 module: toolchain
 	$(call require_commit,$(DCADEC_SUBMODULE),$(DCADEC_COMMIT))
