@@ -193,6 +193,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   The unclosed decoder ends with its worker: the session replaces a worker whose run failed, and a worker that suppressed such a rejection asks for its replacement in its next `stopped`.
   Mediabunny 1.61.5 still chains `close()` with `void` behind the rejected call (10-15).
   The fork closes a custom decoder even after one of its calls failed, and reports a failing `close()` as a decoder error (branch `fix-custom-decoder-close-after-failure`), so `HandledDecodeFailures.ts` and the worker's replacement for an unclosed decoder left; a run's failure still retires its worker (10-16).
+  The same branch closes a custom encoder after a failed `encode()` or `flush()`, which the engine never runs (10-16).
 - The bundled HEVC decoder was FFmpeg's (10-10), until the CPU decoders left (10-13).
   hevc.js (`@hevcjs/core`), the decoder before it, rejects the first slice of every stream that enables tiles (`tiles_enabled_flag`), and Ultra HD Blu-ray encodes commonly use tiles, as ATEME Titan's do.
   Such sources failed on Firefox on Windows, which always took the bundled route, and fell back to a server transcode.
