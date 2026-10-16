@@ -1,6 +1,7 @@
 // The self-test of a decoder package: decode one of its vectors on a device, read back the checked frames' planes, and compare their SHA-256 with the vector's.
 // The vector's packets come from the package's vectors section; a package with a parser hands over its parser's outputs instead.
 // The engine book's decoder packages chapter describes verification.
+import { waitForGPUCompletion } from '../../../GPUCompletion';
 import type { GPUDecoderParserOutput } from './GPUDecoderParser';
 import type { GPUDecoderVector } from './GPUDecoderVectorSet';
 import { getGPUDecoderFormatFacts } from './GPUDecodeFormats';
@@ -183,7 +184,7 @@ function readSlot(device: GPUDevice, session: GPUVideoDecodeSession, slot: numbe
     const encoder = device.createCommandEncoder({ label: VECTOR_READBACK_LABEL });
     encoder.copyBufferToBuffer(session.pool.buffer, session.pool.getSlotByteOffset(slot), buffer, 0, slotByteLength);
     device.queue.submit([ encoder.finish() ]);
-    return buffer.mapAsync(GPUMapMode.READ).then(
+    return waitForGPUCompletion(device, buffer.mapAsync(GPUMapMode.READ)).then(
         (): Uint8Array => {
             const bytes = new Uint8Array(buffer.getMappedRange().slice(0));
             buffer.unmap();
@@ -239,7 +240,7 @@ async function getFinishedDecodeFailure(
     presentedFrameCount: number
 ): Promise<GPUDecoderVectorCheckResult | null> {
     // A decoder error the last packets report fails the check even when their frames came out
-    await device.queue.onSubmittedWorkDone();
+    await waitForGPUCompletion(device, device.queue.onSubmittedWorkDone());
     await session.flushStatusReadbacks();
     const failure = session.getFailure();
     if (failure) {
@@ -294,7 +295,7 @@ async function decodeVectorFrames(
             return { code: 'slots-exhausted', detail: `${session.getPendingPacketCount()} packets, ${session.getFreeSlotCount()} free slots` };
         }
         // Reference slots free only through status readbacks, which arrive as the GPU progresses
-        await device.queue.onSubmittedWorkDone();
+        await waitForGPUCompletion(device, device.queue.onSubmittedWorkDone());
         await session.waitForStatusReadbacks();
     }
     return getFinishedDecodeFailure(device, session, vector, presentedFrameCount);

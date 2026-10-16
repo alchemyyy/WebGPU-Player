@@ -4,6 +4,7 @@
 // The engine book's decoder packages chapter describes the route.
 import { getDecoderErrorName } from '../../packages/DecoderHeader';
 import type { DecoderPackageVersion } from '../../packages/DecoderPackageIdentity';
+import { waitForGPUCompletion } from '../../../GPUCompletion';
 import { evaluatePassExpression, PassExpressionError } from '../../../presentation/passes/PassExpression';
 import type { FramePoolFrame, PassExpression } from '../../../presentation/passes/PassTypes';
 import {
@@ -674,7 +675,7 @@ export default class GPUVideoDecodeSession {
     /**
      * Consumes at most one packet: it encodes and submits a packet's decode work when a slot and a readback are free, or consumes a held packet,
      * which decodes nothing; returns whether it consumed one.
-     * The caller paces the calls, so presentation never queues behind more than one frame of decode work.
+     * The caller paces the calls by getInFlightPacketCount(), which bounds the decode work a presentation submit queues behind.
      */
     submitPendingDecodeWork(): boolean {
         if (this.destroyed || this.failure) {
@@ -786,6 +787,21 @@ export default class GPUVideoDecodeSession {
         while (this.inFlightReadbacks.size > 0) {
             await Promise.all([ ...this.inFlightReadbacks ]);
         }
+    }
+
+    /**
+     * Resolves once the next status readback in flight has been applied, which frees its readback, may free slots, and confirms its frame;
+     * at once when none is in flight. A packet's readback applies only after its decode work completed.
+     */
+    async waitForNextStatusReadback(): Promise<void> {
+        if (this.inFlightReadbacks.size > 0) {
+            await Promise.race(this.inFlightReadbacks);
+        }
+    }
+
+    /** Returns how many submitted packets' status readbacks have not been applied yet, each a packet whose decode work may still run. */
+    getInFlightPacketCount(): number {
+        return this.inFlightReadbacks.size;
     }
 
     /**
@@ -1296,7 +1312,7 @@ export default class GPUVideoDecodeSession {
     }
 
     private mapStatusReadback(readback: StatusReadback): void {
-        const readbackPromise = readback.buffer.mapAsync(GPUMapMode.READ).then(
+        const readbackPromise = waitForGPUCompletion(this.device, readback.buffer.mapAsync(GPUMapMode.READ)).then(
             (): void => {
                 this.applyStatusReadback(readback);
             },

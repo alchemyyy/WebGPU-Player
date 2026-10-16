@@ -351,8 +351,10 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   A package carries at most one vector per output format, in a format it writes, and `verifyGPUDecoderPackage` runs one only when a host calls it.
   Nothing caches or persists a result, because a verdict belongs to a package and a device, which the host keys itself.
   Offers verify nothing, so playback never waits on a vector; the policy of 10-12, which offered a decoder only once its vector passed, left with the built-in decoders.
-- The frame-pool route keeps one packet of decode work in flight (10-12).
-  Decode shares the presenter's queue, so `GPUVideoDecodeFeed` submits a packet only after the previous submission completed and its status readbacks applied, and a presented frame waits behind at most one packet's decode work.
+- The frame-pool route kept one packet of decode work in flight (10-12), until two (10-16).
+  Decode shares the presenter's queue, so `GPUVideoDecodeFeed` submitted a packet only after the previous submission completed and its status readbacks applied, and a presented frame waited behind at most one packet's decode work.
+  The GPU then idled while the page learned of each completion, a few milliseconds a packet in Chrome and up to 100 ms in Firefox (see [Firefox](#firefox)), so the feed keeps two packets in flight and submits the next as a status readback applies.
+  The second packet keeps the GPU decoding across that wait, and a presentation submit queues behind at most two packets' work; the session's three readbacks would allow three.
   A presented slot returns to the decoder right after its presentation submit, because the queue orders later decode work behind it.
 - Every packet's status reads back, and its frame presents only once it has (10-15).
   Until 10-15 a session copied the status out only when a readback buffer was free, so one readback could cover several packets, and frames presented without waiting for theirs.
@@ -615,6 +617,11 @@ These were settled on Firefox 157 on Windows.
   The spec accepts only RGB formats there, and Firefox enforces it, rejecting even a frame's own `I420P10` in `allocationSize` and `copyTo`.
   The raw copy and its capability probe therefore leave `format` out when the frame already has the requested format.
 - 10-bit AV1 decodes to 8-bit `BGRX`, and the 4K VP9 Profile 2 vector fails to decode (10-07), so raw HDR AV1 and VP9 do not qualify.
+- WebGPU completes queue work only when the GPU process polls the device (10-16).
+  Firefox resolves `onSubmittedWorkDone()` and `mapAsync()` inside wgpu-core's `Device::maintain`, which runs at the end of each `queue.submit` and on the GPU process's 100 ms timer (`POLL_TIME_MS` in `dom/webgpu/ipc/WebGPUParent.cpp`; [bug 1870699](https://bugzilla.mozilla.org/show_bug.cgi?id=1870699)).
+  The frame-pool route waited on each packet's completion before submitting the next, and native frame credits wait on `onSubmittedWorkDone()`, so decoding advanced only as presentation submitted, and every 100 ms once the frames ran out.
+  An empty submit runs the same maintenance without work, so `waitForGPUCompletion` polls the device with one every 2 ms while a completion is pending; Mozilla measured completion at 100 ms idle against 3.85 ms in Chrome, and at 21 ms with an empty submit every 20 ms.
+  Chrome completes queue work within milliseconds of the GPU finishing, so the polls add only a few empty submits there.
 - The Vorbis decoder emits an empty `AudioData` for the priming packet before the decoded one (10-07).
   Mediabunny skips it at runtime, and the audio probe skips empty outputs too.
 

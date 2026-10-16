@@ -1,4 +1,5 @@
 import { type ColorTriplet } from '../color/ColorPipeline';
+import { waitForGPUCompletion } from '../GPUCompletion';
 import {
     microsecondsToMilliseconds,
     millisecondsToMicroseconds
@@ -428,7 +429,9 @@ export class GPUCanvasPixelReader {
             });
             encodePixelCopies(commandEncoder, texture, buffer, samples, bytesPerRow);
             this.device.queue.submit([ commandEncoder.finish() ]);
-            const mappingResult = await this.waitForOperation(buffer.mapAsync(usageConstants.mapRead, 0, bufferByteLength));
+            const mappingResult = await this.waitForOperation(
+                waitForGPUCompletion(this.device, buffer.mapAsync(usageConstants.mapRead, 0, bufferByteLength))
+            );
             if (mappingResult === GPU_CANVAS_READBACK_OPERATION_DESTROYED) {
                 return createFailure('destroyed', 'The reader was destroyed during canvas readback');
             }

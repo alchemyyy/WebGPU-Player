@@ -1,4 +1,5 @@
 import { isHDRToneMappingEnabled } from '../EngineConfiguration';
+import { waitForGPUCompletion } from '../GPUCompletion';
 import { requireMicroseconds } from '../TimeMath';
 import { recordTimingWait, startTimingWait } from '../TimingTrace';
 
@@ -3725,7 +3726,7 @@ export default class WebGPUPresenter {
                 console.warn(`frame-completion-handler: ${getErrorMessage(error)}`);
             }
         };
-        void device.queue.onSubmittedWorkDone().then((): void => notify(true), (): void => notify(false));
+        void waitForGPUCompletion(device, device.queue.onSubmittedWorkDone()).then((): void => notify(true), (): void => notify(false));
     }
 
     /** Waits the bounded raw SDR prewarm used for Rext negotiation. */

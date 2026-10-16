@@ -16,6 +16,7 @@ import {
     reconstructDolbyVisionBT2020PQWithEnhancement
 } from '../color/DolbyVisionColorTransform';
 import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../demux/dolby-vision/DolbyVisionRPUParser';
+import { waitForGPUCompletion } from '../GPUCompletion';
 import {
     RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT,
     RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
@@ -740,7 +741,7 @@ export class DolbyVisionPresentationAuthorizationRunner {
                     targetTexture,
                     'WebGPU Dolby Vision authorization commands'
                 ) ]);
-                await deadline.wait(device.queue.onSubmittedWorkDone());
+                await deadline.wait(waitForGPUCompletion(device, device.queue.onSubmittedWorkDone()));
                 const validationPromise = device.popErrorScope();
                 errorScopePushed = false;
                 const validationError = await deadline.wait(validationPromise);
