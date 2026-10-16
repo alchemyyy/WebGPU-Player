@@ -318,6 +318,11 @@ function createSession(
     return GPUVideoDecodeSession.create({ codecPrivate, device: device.asDevice(), format, manifest, stream });
 }
 
+/** Creates a session of the default stream whose packets of many dispatches submit in slices. */
+function createSlicingSession(device: MockGPUDevice, manifest: GPUDecoderManifest): Promise<GPUVideoDecodeSession> {
+    return GPUVideoDecodeSession.create({ codecPrivate: null, device: device.asDevice(), format: OUTPUT_FORMAT, manifest, slicing: true, stream: STREAM });
+}
+
 /** Returns each entry point's module, as the session compiles them, in dispatch order. */
 function getEntryPointModuleCodes(manifest: GPUDecoderManifest, format: GPUDecoderOutputFormat): ReadonlyMap<string, string> {
     const entryPoints = [ ...new Set(manifest.dispatches.map(dispatch => dispatch.entryPoint)) ];
@@ -1284,10 +1289,25 @@ describe('GPUVideoDecodeSession', () => {
             }
         });
 
-        it('submits a packet of more dispatches than a slice carries in slices of about equal length, on its one uniform, copying its status with the last', async () => {
+        it('submits a packet of more dispatches than a slice carries whole while slicing is off', async () => {
             const device = new MockGPUDevice();
             device.manualMaps = true;
             const session = await createSession(device, createManifest({ dispatches: SLICED_DISPATCHES }));
+            session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, 0, true));
+
+            const submitted = [ session.submitPendingDecodeWork(), session.submitPendingDecodeWork() ];
+
+            expect(submitted).toEqual([ true, false ]);
+            expect(device.submitCount).toBe(1);
+            expect(device.dispatches).toHaveLength(SLICED_PACKET_DISPATCH_COUNT);
+            expect(device.getPendingMapCount()).toBe(1);
+            expect(session.getInFlightPacketCount()).toBe(1);
+        });
+
+        it('submits a packet of more dispatches than a slice carries in slices of about equal length, on its one uniform, copying its status with the last', async () => {
+            const device = new MockGPUDevice();
+            device.manualMaps = true;
+            const session = await createSlicingSession(device, createManifest({ dispatches: SLICED_DISPATCHES }));
             session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, 0, true));
 
             const rounds: Array<readonly [boolean, number, number, number]> = [];
@@ -1311,7 +1331,7 @@ describe('GPUVideoDecodeSession', () => {
         it('submits no more of the packet in progress after a reset, and frees its readback and slot', async () => {
             const device = new MockGPUDevice();
             device.manualMaps = true;
-            const session = await createSession(device, createManifest({ dispatches: SLICED_DISPATCHES, reorder: REORDER }));
+            const session = await createSlicingSession(device, createManifest({ dispatches: SLICED_DISPATCHES, reorder: REORDER }));
             session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, 0, true));
             session.submitPendingDecodeWork();
 
@@ -1335,7 +1355,7 @@ describe('GPUVideoDecodeSession', () => {
         it('submits no more of the packet in progress once an earlier packet\'s error begins a resync, its frame repeating the last good frame', async () => {
             const device = new MockGPUDevice();
             device.manualMaps = true;
-            const session = await createSession(device, createManifest({
+            const session = await createSlicingSession(device, createManifest({
                 dispatches: SLICED_DISPATCHES,
                 errors: RECOVERY_ERROR_LINES,
                 references: REFERENCES,

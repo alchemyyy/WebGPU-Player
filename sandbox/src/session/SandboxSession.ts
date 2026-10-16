@@ -40,6 +40,7 @@ import {
     getStaticHDRRenderSettings,
     isWebGPUPresentationInput,
     readPresentationInput,
+    type GPUVideoDecodeSessionFactoryOptions,
     type HDRRenderConfiguration,
     type PresentationInput
 } from 'webgpu-player/presentation/PresentationSetup';
@@ -121,6 +122,8 @@ const DIRECT_PLAY_METHOD = 'DirectPlay';
 const TELEMETRY_INTERVAL_MILLISECONDS = 250;
 // The diagnostics panel shows the output's peak, RMS, and clipping, which the audio thread computes only on request
 const SANDBOX_AUDIO_OUTPUT_OPTIONS: BrowserCustomAudioOutputOptions = Object.freeze({ analyzeSignal: true });
+// Every packet's GPU decode work submits whole, slicing's default
+const SANDBOX_GPU_VIDEO_DECODE_SESSION_OPTIONS: GPUVideoDecodeSessionFactoryOptions = Object.freeze({ slicing: false });
 const START_TIME = requireMicroseconds(0);
 const NO_MEDIA_PLAYING_DETAIL = 'no media playing';
 const NO_MEDIA_OPEN_DETAIL = 'no media open';
@@ -477,7 +480,7 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
 
     const presenter = new WebGPUPresenter(handlePresentationFallback, handleDecodedPresentationRefresh);
     // The frame-pool route decodes on the presenter's device, so its sessions come from the presenter
-    const gpuVideoDecodeSessionFactory = createGPUVideoDecodeSessionFactory(presenter);
+    const gpuVideoDecodeSessionFactory = createGPUVideoDecodeSessionFactory(presenter, SANDBOX_GPU_VIDEO_DECODE_SESSION_OPTIONS);
     // The user's decoder packages, which playbacks prefer to the engine's, kept across reloads
     const decoderPackages = createSandboxDecoderPackages({
         publish: (packages): void => {

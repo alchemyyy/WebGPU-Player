@@ -93,6 +93,11 @@ export type GPUVideoDecodeSessionOptions = {
     /** The output format, one of those the decoder lists. */
     format: GPUDecoderOutputFormat
     manifest: GPUDecoderManifest
+    /**
+     * Whether a packet of more than GPU_DECODE_SLICE_DISPATCH_COUNT dispatches submits its decode work in slices, between which presentation's submits run;
+     * off, every packet submits whole. Off unless set.
+     */
+    slicing?: boolean
     stream: GPUDecodeStreamFacts
 };
 
@@ -526,6 +531,7 @@ export default class GPUVideoDecodeSession {
     private ringByteOffset = 0;
     // The packet whose decode work is submitting, a slice at a time
     private slicedPacket: SlicedPacket | null = null;
+    private readonly slicing: boolean;
     private readonly stateBuffer: GPUBuffer;
     private readonly statusBuffer: GPUBuffer;
     private readonly takenFrames = new Set<GPUDecodedFrame>();
@@ -536,6 +542,7 @@ export default class GPUVideoDecodeSession {
         this.format = format;
         this.manifest = manifest;
         this.parserOutput = manifest.parser !== null;
+        this.slicing = options.slicing ?? false;
         // The pool goes first: it is the one allocation a device's limits can refuse
         this.pool = new GPUFramePool(
             device,
@@ -1266,7 +1273,7 @@ export default class GPUVideoDecodeSession {
     }
 
     /**
-     * Writes a packet into the ring and its uniform into the next uniform slot, and lays its decode work out in slices of about equal length,
+     * Writes a packet into the ring and its uniform into the next uniform slot, and lays its decode work out in slices of about equal length, one when slicing is off,
      * its readback taking its status in the epoch the packet begins in, so a reset or a resync while it submits makes that status stale.
      */
     private beginPacket(packet: GPUDecodePacket, slot: number, readback: StatusReadback, entry: DecodedFrameEntry): SlicedPacket {
@@ -1294,7 +1301,7 @@ export default class GPUVideoDecodeSession {
         readback.epoch = this.epoch;
         readback.entry = entry;
         const dispatches = this.listDispatches(packet.repeatCounts);
-        const sliceCount = Math.max(1, Math.ceil(dispatches.length / GPU_DECODE_SLICE_DISPATCH_COUNT));
+        const sliceCount = this.slicing ? Math.max(1, Math.ceil(dispatches.length / GPU_DECODE_SLICE_DISPATCH_COUNT)) : 1;
         return {
             dispatches,
             label,
