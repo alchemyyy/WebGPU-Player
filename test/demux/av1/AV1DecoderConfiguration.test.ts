@@ -40,17 +40,17 @@ const VECTOR_CODEC_STRINGS: readonly VectorCodecStrings[] = [
     {
         bitstreamCodecString: 'av01.0.00M.10',
         fileName: 'profile10.0.mkv',
-        mediabunnyCodecString: 'av01.0.00M.08.0.110.01.01.01.1'
+        mediabunnyCodecString: 'av01.0.00M.10.0.110.01.01.01.1'
     },
     {
         bitstreamCodecString: 'av01.0.00M.10',
         fileName: 'profile10.0.mp4',
-        mediabunnyCodecString: 'av01.0.00M.10'
+        mediabunnyCodecString: 'av01.0.00M.10.0.110.01.01.01.1'
     },
     {
         bitstreamCodecString: 'av01.0.00M.10.0.110.09.16.09.0',
         fileName: 'profile10.1.mkv',
-        mediabunnyCodecString: 'av01.0.00M.08.1.110.09.16.09.0'
+        mediabunnyCodecString: 'av01.0.00M.10.0.110.09.16.09.0'
     },
     {
         bitstreamCodecString: 'av01.0.00M.10.0.110.09.16.09.0',
@@ -60,7 +60,7 @@ const VECTOR_CODEC_STRINGS: readonly VectorCodecStrings[] = [
     {
         bitstreamCodecString: 'av01.0.00M.10',
         fileName: 'profile10.2.mkv',
-        mediabunnyCodecString: 'av01.0.00M.08'
+        mediabunnyCodecString: 'av01.0.00M.10'
     },
     {
         bitstreamCodecString: 'av01.0.00M.10',
@@ -70,7 +70,7 @@ const VECTOR_CODEC_STRINGS: readonly VectorCodecStrings[] = [
     {
         bitstreamCodecString: 'av01.0.00M.10.0.110.09.18.09.0',
         fileName: 'profile10.4.mkv',
-        mediabunnyCodecString: 'av01.0.00M.08.1.110.09.18.09.0'
+        mediabunnyCodecString: 'av01.0.00M.10.0.110.09.18.09.0'
     },
     {
         bitstreamCodecString: 'av01.0.00M.10.0.110.09.18.09.0',
@@ -216,11 +216,11 @@ describe('AV1DecoderConfiguration', () => {
     );
 
     it('serves the corrected codec string to every later reader of the track', async () => {
-        await withVideoTrack(readVector('profile10.4.mkv'), async (track: InputVideoTrack): Promise<void> => {
+        await withVideoTrack(readVector('profile10.0.mkv'), async (track: InputVideoTrack): Promise<void> => {
             expect(await assignAV1SequenceHeaderCodecString(track)).toBe(true);
 
-            expect(await track.getCodecParameterString()).toBe('av01.0.00M.10.0.110.09.18.09.0');
-            expect((await track.getDecoderConfig())?.codec).toBe('av01.0.00M.10.0.110.09.18.09.0');
+            expect(await track.getCodecParameterString()).toBe('av01.0.00M.10');
+            expect((await track.getDecoderConfig())?.codec).toBe('av01.0.00M.10');
         });
     });
 
@@ -251,7 +251,7 @@ describe('AV1DecoderConfiguration', () => {
             delete backing.decoderConfigPromise;
 
             expect(await assignAV1SequenceHeaderCodecString(track)).toBe(false);
-            expect((await track.getDecoderConfig())?.codec).toBe('av01.0.00M.08.0.110.01.01.01.1');
+            expect((await track.getDecoderConfig())?.codec).toBe('av01.0.00M.10.0.110.01.01.01.1');
         });
     });
 });

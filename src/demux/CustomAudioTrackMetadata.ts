@@ -12,33 +12,43 @@ const ISO_BASE_MEDIA_TRUEHD_SAMPLE_ENTRY = 'mlpa';
 /** The codecs of a Meridian Lossless Packing track: MLP, or Dolby TrueHD. */
 export type TrueHDAudioCodec = 'mlp' | 'truehd';
 
-/** The audio codecs the engine reads from a track's container codec ID, because Mediabunny maps none of them. */
+/** The audio codecs the engine reads from a track's container codec ID, because Mediabunny does not map them. */
 export type ContainerAudioCodec = 'dts' | TrueHDAudioCodec;
 
+// QuickTime muxers write the DTS core entry with a trailing space, which Mediabunny does not map
+const QUICKTIME_DTS_SAMPLE_ENTRY = 'DTS ';
 // DTS core, DTS-HD with a core, and DTS-HD lossless; not dtse (LBR) or dtsx (DTS-UHD)
 const ISO_BASE_MEDIA_DTS_SAMPLE_ENTRIES: ReadonlySet<unknown> = new Set<unknown>([
-    // QuickTime muxers write the DTS core entry with a trailing space
-    'DTS ',
+    QUICKTIME_DTS_SAMPLE_ENTRY,
     'dtsc',
     'dtsh',
     'dtsl'
 ]);
+// The decoder configuration codec Mediabunny gives DTS Express (LBR), a DTS variant no decoder package decodes
+const DTS_EXPRESS_CODEC_STRING = 'dtse';
 
 /** Matroska codec IDs and ISO BMFF sample entries that Mediabunny leaves without a codec */
 const CONTAINER_AUDIO_CODECS: ReadonlyMap<unknown, ContainerAudioCodec> = new Map<unknown, ContainerAudioCodec>([
-    [ 'A_DTS', 'dts' ],
-    ...[ ...ISO_BASE_MEDIA_DTS_SAMPLE_ENTRIES ].map((sampleEntry): [ unknown, ContainerAudioCodec ] => [ sampleEntry, 'dts' ]),
+    [ QUICKTIME_DTS_SAMPLE_ENTRY, 'dts' ],
     [ 'A_MLP', 'mlp' ],
     [ 'A_TRUEHD', 'truehd' ],
     [ ISO_BASE_MEDIA_TRUEHD_SAMPLE_ENTRY, 'truehd' ]
 ]);
 
-/** Identifies a DTS or TrueHD track by its container codec ID, since Mediabunny maps neither codec; null for any other track. */
+/**
+ * Identifies a codec-less track by its container codec ID: TrueHD and MLP, which Mediabunny does not map, and the QuickTime DTS core entry; null for any other track.
+ * Mediabunny maps every other DTS track itself.
+ */
 export function getContainerAudioCodec(codec: AudioCodec | null, internalCodecID: unknown): ContainerAudioCodec | null {
     if (codec !== null) {
         return null;
     }
     return CONTAINER_AUDIO_CODECS.get(internalCodecID) ?? null;
+}
+
+/** Returns whether a track is DTS Express, which Mediabunny maps to `dts` though no decoder package decodes it. */
+export function isDTSExpressTrack(codec: AudioCodec | null, decoderConfig: AudioDecoderConfig | null): boolean {
+    return codec === 'dts' && decoderConfig?.codec === DTS_EXPRESS_CODEC_STRING;
 }
 
 /**

@@ -13,13 +13,11 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "decoders": "node scripts/decoder-packages.mjs",
-    "lint": "eslint --concurrency=auto",
+    "lint": "node scripts/mediabunny.mjs && eslint --concurrency=auto",
+    "mediabunny": "node scripts/mediabunny.mjs",
     "sandbox": "node scripts/build.mjs && vite --config sandbox/vite.config.ts",
-    "test": "vitest --watch=false",
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "mediabunny": "1.52.2"
+    "test": "node scripts/mediabunny.mjs && vitest --watch=false",
+    "typecheck": "node scripts/mediabunny.mjs && tsc --noEmit"
   },
   "devDependencies": {
     "@eslint-community/eslint-plugin-eslint-comments": "4.7.2",

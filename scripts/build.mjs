@@ -18,13 +18,14 @@ import {
     WASM_OUTPUT_DIRECTORY
 } from '../tools/constants.mjs';
 import { getLibraryAssets, getWorkerEntryPoints } from './library-assets.mjs';
+import { ensureMediabunnyBuild } from './mediabunny.mjs';
 
 const ASSET_KEY_LENGTH = 16;
 const PRODUCTION = process.argv.includes('--production');
 // Workers only run in WebGPU-capable browsers, so they keep modern syntax
 const WORKER_TARGET = 'es2022';
-
 const PASS_FILE_EXTENSION = '.wgsl';
+
 function copyAsset(destination, source) {
     if (!existsSync(source)) {
         // A WebAssembly build from before a kit gained an output lacks that output
@@ -54,7 +55,6 @@ function computeAssetKey() {
     return hash.digest('hex').slice(0, ASSET_KEY_LENGTH);
 }
 
-// The engine's WebAssembly is a build output too, from a separate toolchain, so a fresh checkout builds it once
 /**
  * Copies the pass files of every pass project into the pass output folder, flat, so a host serves them from one place, and returns how many it copied.
  * A pass file is a WGSL file at a project's top level; two of the same name fail the build.
@@ -83,6 +83,10 @@ function assemblePasses() {
     return projectByFileName.size;
 }
 
+// The workers bundle Mediabunny from the vendored fork's build
+ensureMediabunnyBuild();
+
+// The engine's WebAssembly is a build output too, from a separate toolchain, so a fresh checkout builds it once
 if (!existsSync(WASM_OUTPUT_DIRECTORY)) {
     throw new Error(`The engine's WebAssembly is not built in ${WASM_OUTPUT_DIRECTORY}. `
         + 'Run make -C wasm all from the engine root; docs/src/decoders.md lists the toolchain.');

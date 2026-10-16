@@ -31,5 +31,6 @@
   "vendorDirectory": "vendor",
   "ffmpegSourceDirectory": "vendor/ffmpeg",
   "dcadecSourceDirectory": "vendor/dcadec",
-  "aomSourceDirectory": "vendor/aom"
+  "aomSourceDirectory": "vendor/aom",
+  "mediabunnySourceDirectory": "vendor/mediabunny"
 }

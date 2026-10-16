@@ -41,3 +41,4 @@ export const VENDOR_DIRECTORY = join(ENGINE_ROOT, LAYOUT.vendorDirectory);
 export const FFMPEG_SOURCE_DIRECTORY = join(ENGINE_ROOT, LAYOUT.ffmpegSourceDirectory);
 export const DCADEC_SOURCE_DIRECTORY = join(ENGINE_ROOT, LAYOUT.dcadecSourceDirectory);
 export const AOM_SOURCE_DIRECTORY = join(ENGINE_ROOT, LAYOUT.aomSourceDirectory);
+export const MEDIABUNNY_SOURCE_DIRECTORY = join(ENGINE_ROOT, LAYOUT.mediabunnySourceDirectory);

@@ -152,7 +152,9 @@ describe('VC-1 and WMV3 reach', () => {
         [ 'mp4', 'vc1', 'aac', true ],
         [ 'mov', 'vc1', 'pcm_s16le', true ],
         [ 'm4v', 'vc1', 'ac3', true ],
-        [ TRANSPORT_STREAM_CONTAINER, 'vc1', 'ac3', false ],
+        // The fork's demuxer reads VC-1 under its registration descriptor, in MPEG-TS and M2TS
+        [ TRANSPORT_STREAM_CONTAINER, 'vc1', 'ac3', true ],
+        [ 'm2ts', 'vc1', 'ac3', true ],
         [ ASF_CONTAINER, 'wmv3', null, false ]
     ] as const)('places %s %s with %s audio: %s', (container, videoCodec, audioCodec, supported) => {
         expect(supportsCustomContainerCodecCombination([ container ], videoCodec, audioCodec)).toBe(supported);
@@ -166,16 +168,18 @@ describe('VC-1 and WMV3 reach', () => {
         [ 'an Advanced profile WMV3 stream', { Codec: 'wmv3', Profile: 'Advanced' }, MATROSKA_CONTAINER ],
         [ 'a WMV3 stream in an ISO base media file', { Codec: 'wmv3', Profile: 'Main' }, ISO_BASE_MEDIA_CONTAINER ],
         [ 'a WMV3 stream in ASF', { Codec: 'wmv3', Profile: 'Main' }, ASF_CONTAINER ],
-        [ 'a Main profile VC-1 stream', { Codec: 'vc1', Profile: 'Main' }, MATROSKA_CONTAINER ],
-        [ 'a VC-1 stream in a transport stream', { Codec: 'vc1', Height: VC1_HEIGHT, Profile: 'Advanced', Width: VC1_WIDTH }, TRANSPORT_STREAM_CONTAINER ]
+        [ 'a Main profile VC-1 stream', { Codec: 'vc1', Profile: 'Main' }, MATROSKA_CONTAINER ]
     ])('rejects %s from selection', (_label: string, fields: StreamFields, container: string) => {
         expect(hasPotentialCustomPlaybackVideoRoute(createItem(fields, container))).toBe(false);
     });
 
-    it('keeps an Advanced profile VC-1 stream in an ISO base media file eligible for selection', () => {
+    it.each([
+        [ 'an ISO base media file', ISO_BASE_MEDIA_CONTAINER ],
+        [ 'a transport stream', TRANSPORT_STREAM_CONTAINER ]
+    ])('keeps an Advanced profile VC-1 stream in %s eligible for selection', (_label: string, container: string) => {
         const fields = { Codec: 'vc1', Height: VC1_HEIGHT, Profile: 'Advanced', Width: VC1_WIDTH };
 
-        expect(hasPotentialCustomPlaybackVideoRoute(createItem(fields, ISO_BASE_MEDIA_CONTAINER))).toBe(true);
+        expect(hasPotentialCustomPlaybackVideoRoute(createItem(fields, container))).toBe(true);
     });
 
     it('plays Matroska WMV3 on the frame-pool route of the VC-1 decoder project, whose header accepts wmv3', async () => {

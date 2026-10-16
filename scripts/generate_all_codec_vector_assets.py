@@ -39,6 +39,8 @@ GENERATOR_STEPS: Final = (
     GeneratorStep("generate_dolby_vision_AV1_vectors.py"),
     GeneratorStep("generate_HDR10_plus_AV1_vectors.py"),
     GeneratorStep("generate_HDR10_plus_VP9_vectors.py"),
+    GeneratorStep("generate_AVI_demux_vectors.py"),
+    GeneratorStep("generate_transport_stream_demux_vectors.py"),
 )
 
 

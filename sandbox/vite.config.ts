@@ -51,7 +51,11 @@ export default defineConfig({
     // The engine's default asset base is libraries/ beside the page, which this maps to the asset build in bin/libraries/
     publicDir: `${ENGINE_ROOT}${LAYOUT.outputDirectory}`,
     resolve: {
-        alias: { 'webgpu-player': `${ENGINE_ROOT}${LAYOUT.sourceDirectory}` }
+        alias: {
+            // The vendored Mediabunny fork, which tsconfig maps for tsc and esbuild
+            'mediabunny': `${ENGINE_ROOT}${LAYOUT.mediabunnySourceDirectory}`,
+            'webgpu-player': `${ENGINE_ROOT}${LAYOUT.sourceDirectory}`
+        }
     },
     root: SANDBOX_ROOT,
     server: {

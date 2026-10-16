@@ -116,6 +116,17 @@ const VIDEO_CODEC_ALIASES: Readonly<Record<string, CustomVideoCodec>> = {
     // FFmpeg's name of the VC-1 Simple and Main profiles, which ffprobe reports for WMV3 streams
     WMV3: 'wmv3'
 };
+// Video codecs the engine knows, as ffprobe names them, that neither WebCodecs nor a decoder package decodes: MPEG-4 Part 2 (DivX, Xvid) and its
+// Microsoft variants, H.263, and Theora. Mediabunny identifies MPEG-4 Part 2 tracks, but the engine keeps no CPU video decoder
+const VIDEO_CODECS_WITHOUT_ROUTE: ReadonlySet<string> = new Set<string>([
+    'H263',
+    'MPEG4',
+    'MSMPEG4',
+    'MSMPEG4V1',
+    'MSMPEG4V2',
+    'MSMPEG4V3',
+    'THEORA'
+]);
 // The VC-1 profiles of each codec, as ffprobe names them: vc1 is the Advanced profile, and wmv3 the Simple and Main profiles and the Complex profile, which FFmpeg decodes as Main
 const VC1_METADATA_PROFILES: Readonly<Record<'vc1' | 'wmv3', readonly string[]>> = Object.freeze({
     vc1: Object.freeze([ 'ADVANCED' ]),
@@ -305,6 +316,7 @@ export type CustomPlaybackIneligibilityReason =
     | 'rotation-unsupported'
     | 'runtime-unavailable'
     | 'url-unsupported'
+    | 'video-codec-without-route'
     | 'video-track-unavailable';
 
 export type CustomPlaybackEligibilityOptions = {
@@ -2045,9 +2057,13 @@ export function getCustomPlaybackEligibility(
         return { eligible: false, reason: 'video-track-unavailable' };
     }
 
-    const videoCodec = VIDEO_CODEC_ALIASES[normalizeMetadataValue(selectedVideo.stream.Codec) ?? ''];
+    const normalizedVideoCodec = normalizeMetadataValue(selectedVideo.stream.Codec) ?? '';
+    const videoCodec = VIDEO_CODEC_ALIASES[normalizedVideoCodec];
     if (!videoCodec) {
-        return { eligible: false, reason: 'codec-unsupported' };
+        return {
+            eligible: false,
+            reason: VIDEO_CODECS_WITHOUT_ROUTE.has(normalizedVideoCodec) ? 'video-codec-without-route' : 'codec-unsupported'
+        };
     }
     if (hasUnsupportedRotation(selectedVideo.stream)) {
         return { eligible: false, reason: 'rotation-unsupported' };

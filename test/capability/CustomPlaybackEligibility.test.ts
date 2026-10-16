@@ -994,10 +994,11 @@ describe('CustomPlaybackEligibility', () => {
         [ 'missing profile', { AverageFrameRate: 24, Profile: null }, 'mkv', true, true ],
         // Its decoder weaves field pictures into frames, which the deinterlacing pass presents
         [ 'interlaced frames', { AverageFrameRate: 24, IsInterlaced: true }, 'mkv', true, true ],
-        [ 'MPEG-TS container', { AverageFrameRate: 24 }, 'ts', true, false ],
+        // The fork's demuxer reads MPEG-2 in MPEG-TS and M2TS; the mpegts alias names no rule
+        [ 'MPEG-TS container', { AverageFrameRate: 24 }, 'ts', true, true ],
         [ 'MPEG-TS alias container', { AverageFrameRate: 24 }, 'mpegts', true, false ],
-        [ 'MTS container', { AverageFrameRate: 24 }, 'mts', true, false ],
-        [ 'M2TS container', { AverageFrameRate: 24 }, 'm2ts', true, false ],
+        [ 'MTS container', { AverageFrameRate: 24 }, 'mts', true, true ],
+        [ 'M2TS container', { AverageFrameRate: 24 }, 'm2ts', true, true ],
         [ 'MPEG-PS container', { AverageFrameRate: 24 }, 'mpegps', true, false ],
         [ 'MPEG container', { AverageFrameRate: 24 }, 'mpeg', true, false ],
         [ 'MPG container', { AverageFrameRate: 24 }, 'mpg', true, false ],
@@ -4442,7 +4443,7 @@ describe('CustomPlaybackEligibility', () => {
 
     it.each([
         [ { playMethod: 'Transcode' }, 'play-method-unsupported' ],
-        [ { mediaSource: { Container: 'avi', MediaStreams: [], RunTimeTicks: 1 } }, 'container-unsupported' ],
+        [ { mediaSource: { Container: 'flv', MediaStreams: [], RunTimeTicks: 1 } }, 'container-unsupported' ],
         [ { source: { kind: 'url', url: FILE_URL } }, 'url-unsupported' ],
         [ { source: { kind: 'url', url: CREDENTIAL_URL } }, 'url-unsupported' ],
         [ { source: { kind: 'url', url: EMPTY_URL } }, 'invalid-options' ],
@@ -6200,5 +6201,50 @@ describe('AV1 on a decoder package', () => {
 
     it('rules out AV1 whose pixel format no frame pool holds, such as RGB', () => {
         expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ BitDepth: 8, Codec: 'AV1', PixelFormat: 'gbrp', Profile: 'High' }))).toBe(false);
+    });
+});
+
+describe('AVI and codecs without a route', () => {
+    const AVI_CONTAINER = 'avi';
+
+    function createAVIOptions(videoCodec: string, audioCodec: string): Record<string, unknown> {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as { Container: string, MediaStreams: Array<Record<string, unknown>> };
+        mediaSource.Container = AVI_CONTAINER;
+        mediaSource.MediaStreams[0].Codec = videoCodec;
+        mediaSource.MediaStreams[1].Codec = audioCodec;
+        return options;
+    }
+
+    it('plays H.264 with MP3 from AVI, which the fork demuxes', () => {
+        expect(getCustomPlaybackEligibility(
+            createAVIOptions('h264', 'mp3'),
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toMatchObject({ eligible: true });
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ BitDepth: 8, Codec: 'h264', Profile: 'High' }, AVI_CONTAINER)))
+            .toBe(true);
+    });
+
+    it('keeps HEVC out of AVI, whose decode-order timestamps the owned HEVC path cannot order', () => {
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ BitDepth: 8, Codec: 'hevc', Profile: 'Main' }, AVI_CONTAINER)))
+            .toBe(false);
+    });
+
+    it.each([ 'mpeg4', 'MSMPEG4V3', 'h263', 'theora' ])('declines %s as a known codec without a route', (videoCodec) => {
+        expect(getCustomPlaybackEligibility(
+            createAVIOptions(videoCodec, 'mp3'),
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'video-codec-without-route' });
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ Codec: videoCodec }, AVI_CONTAINER))).toBe(false);
+    });
+
+    it('still names an unknown codec unsupported', () => {
+        expect(getCustomPlaybackEligibility(
+            createAVIOptions('cinepak', 'mp3'),
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'codec-unsupported' });
     });
 });

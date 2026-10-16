@@ -44,6 +44,7 @@ VENDOR_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["vendorDirectory"]
 FFMPEG_SOURCE_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["ffmpegSourceDirectory"]
 DCADEC_SOURCE_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["dcadecSourceDirectory"]
 AOM_SOURCE_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["aomSourceDirectory"]
+MEDIABUNNY_SOURCE_DIRECTORY: Final = ENGINE_ROOT / LAYOUT["mediabunnySourceDirectory"]
 
 
 def typescript_import_path(module_from_source: str, importing_directory: Path) -> str:

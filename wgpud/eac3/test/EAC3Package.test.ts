@@ -96,7 +96,8 @@ describe('the E-AC-3 package on AudioDecoderPackageInstance', () => {
                 channelMask: CUSTOM_WAVE_CHANNEL_MASK_STEREO,
                 frameCount: SYNCFRAME_FRAME_COUNT,
                 sampleRate: SAMPLE_RATE,
-                timestampMicroseconds: packet.timestampMicroseconds
+                // The vector's edit list starts its first packet before zero, and a block reports no negative time, so it continues from its packet's
+                timestampMicroseconds: packet.timestampMicroseconds < 0 ? null : packet.timestampMicroseconds
             });
             expect(blocks[0].channelData.map(plane => plane.length)).toEqual([ SYNCFRAME_FRAME_COUNT, SYNCFRAME_FRAME_COUNT ]);
             expect(blocks[0].attributes.get(LIBRARY_VERSION_ATTRIBUTE)).toBe(instance.readAttribute(LIBRARY_VERSION_ATTRIBUTE));

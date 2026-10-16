@@ -69,6 +69,22 @@ const CUSTOM_MATROSKA_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.freeze(
     'wmv3'
 ]);
 export const CUSTOM_MATROSKA_PROFILE_CONTAINER = 'mkv';
+// Mediabunny's AVI demuxer stamps packets in decode order, which the sample sink reorders but the owned HEVC path does not, so HEVC stays out
+const CUSTOM_AVI_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.freeze([ 'h264', 'vp8', 'vp9', 'av1' ]);
+// The WAVEFORMATEX tags Mediabunny maps; FLAC and Vorbis in AVI carry no decoder description Mediabunny reads
+const CUSTOM_AVI_AUDIO_CODECS: readonly CustomAudioCodec[] = Object.freeze([
+    'aac',
+    'mp3',
+    'ac3',
+    'pcm_u8',
+    'pcm_s16le',
+    'pcm_s24le',
+    'pcm_s32le',
+    'pcm_f32le',
+    'pcm_f64le',
+    'pcm_mulaw',
+    'pcm_alaw'
+]);
 
 /**
  * Defines container compatibility independently of the selected decoder backends.
@@ -109,6 +125,12 @@ export const CUSTOM_CONTAINER_CODEC_RULES: readonly CustomContainerCodecRule[] =
         videoCodecs: CUSTOM_MATROSKA_VIDEO_CODECS
     }),
     Object.freeze({
+        audioCodecs: CUSTOM_AVI_AUDIO_CODECS,
+        containerAliases: Object.freeze([]),
+        profileContainers: Object.freeze([ 'avi' ]),
+        videoCodecs: CUSTOM_AVI_VIDEO_CODECS
+    }),
+    Object.freeze({
         audioCodecs: Object.freeze([ 'opus', 'vorbis' ] as const),
         containerAliases: Object.freeze([]),
         profileContainers: Object.freeze([ 'webm' ]),
@@ -118,7 +140,8 @@ export const CUSTOM_CONTAINER_CODEC_RULES: readonly CustomContainerCodecRule[] =
         audioCodecs: Object.freeze([ 'aac', 'mp3', 'ac3', 'eac3' ] as const),
         containerAliases: Object.freeze([]),
         profileContainers: Object.freeze([ 'ts', 'm2ts', 'mts' ]),
-        videoCodecs: Object.freeze([ 'h264', 'hevc' ] as const)
+        // The fork's demuxer reads MPEG-1, MPEG-2, and VC-1 streams, which the worker gives their first sequence header's extradata
+        videoCodecs: Object.freeze([ 'h264', 'hevc', 'mpeg1video', 'mpeg2video', 'vc1' ] as const)
     })
 ]);
 

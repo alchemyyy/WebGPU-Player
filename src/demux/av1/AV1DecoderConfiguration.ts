@@ -16,7 +16,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Returns the track backing that caches the decoder configuration behind getDecoderConfig(), canDecode(), and the sample sinks, or null when its internal shape is not Mediabunny 1.52.2's.
+ * Returns the track backing that caches the decoder configuration behind getDecoderConfig(), canDecode(), and the sample sinks, or null when its internal shape is not the vendored Mediabunny's.
  */
 function getCachedDecoderConfigurationBacking(track: InputVideoTrack): CachedDecoderConfigurationBacking | null {
     const backing = (track as unknown as { _backing?: unknown })._backing;
@@ -48,8 +48,9 @@ async function readFirstPacketSequenceHeader(track: InputVideoTrack): Promise<AV
 
 /**
  * Replaces the codec string Mediabunny derives for an AV1 track with the one its bitstream declares, keeping every other decoder configuration field.
- * Without an av1C record, as in every Matroska track, Mediabunny 1.52.2 reads the first packet's sequence header, but it misreads the operating points and color_config, so bit depth, monochrome, chroma format, and color come out wrong.
- * The fix is contained here, as ISOBaseMediaDolbyVisionSampleEntry.ts contains its own, so Mediabunny stays unmodified.
+ * Mediabunny 1.61 reads bit depth, monochrome, and chroma format from the sequence header correctly, but when the header declares no color description it still writes the optional fields, with BT.709 code points that the stream never declared.
+ * This string leaves them out instead, as the AV1 ISOBMFF binding's short form does (1.52.2 also misread the operating points and color_config).
+ * The fix is contained here, as ISOBaseMediaDolbyVisionSampleEntry.ts contains its own.
  * Call it before the track's first getDecoderConfig() or canDecode().
  * A track whose first packet has no sequence header, or whose internal shape differs, is left untouched.
  * Returns whether the codec string was replaced.

@@ -58,8 +58,8 @@ export default tseslint.config(
             'array-callback-return': ['error', { 'checkForEach': true }],
             'curly': ['error', 'multi-line', 'consistent'],
             'default-case-last': 'error',
-            // Specifiers the node resolver cannot read, which tsc checks: the tsconfig path alias that tests import engine modules through, package.json imports such as #codec_vector_assets/, and the sandbox's Vite asset URLs such as @ffmpeg/core?url
-            'import/no-unresolved': ['error', { 'ignore': ['^webgpu-player/', '^#', String.raw`\?url$`] }],
+            // Specifiers the node resolver cannot read, which tsc checks: the tsconfig path aliases for engine modules and the vendored Mediabunny fork, package.json imports such as #codec_vector_assets/, and the sandbox's Vite asset URLs such as @ffmpeg/core?url
+            'import/no-unresolved': ['error', { 'ignore': ['^webgpu-player/', '^mediabunny$', '^#', String.raw`\?url$`] }],
             'max-params': ['error', 7],
             'new-cap': [
                 'error',
