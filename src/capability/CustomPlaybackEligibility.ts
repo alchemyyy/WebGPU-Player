@@ -2006,6 +2006,22 @@ export function getGPUVideoDecodeTarget(options: unknown): GPUVideoDecodeTarget 
 }
 
 /**
+ * Returns the codec of the audio track a playback of the options decodes, as the eligibility selects the track, or null when it selects none or the engine has no name for its codec.
+ * A host fetches only the audio decoder packages that decode it before eligibility runs.
+ */
+export function getPlaybackAudioCodec(options: unknown): CustomAudioCodec | null {
+    const mediaSource = options && typeof options === 'object' ? (options as { mediaSource?: unknown }).mediaSource : undefined;
+    if (!mediaSource || typeof mediaSource !== 'object') {
+        return null;
+    }
+    const selectedAudio = getSelectedAudioStream(mediaSource as MediaSource, getStreams(mediaSource as MediaSource));
+    if (selectedAudio.status !== 'selected') {
+        return null;
+    }
+    return AUDIO_CODEC_ALIASES.get(normalizeMetadataValue(selectedAudio.stream.Codec) ?? '') ?? null;
+}
+
+/**
  * Returns whether a media source's presented video stream has an eligible route, judged by the same video selection playback runs.
  * Audio, transport, and runtime availability are ignored.
  * Negotiation uses it to advertise one exact item whose range label no generic route covers.

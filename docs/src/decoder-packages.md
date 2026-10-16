@@ -468,6 +468,7 @@ Every start and seek is a new attempt on a new instance, which `audio_decoder_de
   The compiled module crosses to the engine's workers, which instantiate it with memory of their own.
 - `DecoderPackageStore` in `src/decode/packages/DecoderPackageStore.ts` keeps package files in IndexedDB by package id, under a database name the host chooses.
   `add(fileName, bytes)` loads a file with the engine's checks before it stores it, `remove(id)` deletes one, and `loadAll()` loads every stored file, oldest first, with a failure for each one that no longer loads.
+  `load(id)` loads the one stored file of an id, or null when the store holds none, so a host that caches packages it fetches compiles only the ones a playback needs.
   A file of an id the store holds is a new version of that package: it replaces the stored file and keeps its place in the order.
   The store's schema is version 2, which keys files by id; a database of an earlier version opens empty, without its files.
 - Where a host gets package files is its own choice: the engine fetches none.
@@ -478,6 +479,7 @@ Every start and seek is a new attempt on a new instance, which `audio_decoder_de
 - `getGPUVideoDecoderOffers(presenter, videoPackages, options)` in `src/presentation/PresentationSetup.ts` returns the packages whose `accepts` names the stream's codec and whose `output` lists its format, in the host's order, with the device's buffer limit, the smaller of its largest buffer and its largest storage binding.
   The host passes them as the eligibility's `gpuVideoDecoders`.
 - The host passes its audio packages, in its order, as the eligibility's `audioDecoders`.
+- A host that fetches packages only when a playback needs them asks first what the playback decodes: `getGPUVideoDecodeTarget(options)` in `src/capability/CustomPlaybackEligibility.ts` names the video's codec and frame pool format, and `getPlaybackAudioCodec(options)` the codec of the audio track the eligibility selects.
 - The eligibility prefers a native WebCodecs video route; otherwise it takes the first offer whose `accepts` conditions take the stream and whose pool, `state`, `buffer:`s, and packet ring each fit the buffer limit, on the `frame-pool` route with the `gpu` decoder backend.
   `findGPUDecoderStreamFitFailure` in `src/decode/video/gpu/GPUDecoderStreamFit.ts` checks them at the container's size.
   An HDR stream takes a package only when the host tone-maps frame-pool HDR, the `allowFramePoolHDR` presentation option.

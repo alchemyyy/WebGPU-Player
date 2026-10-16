@@ -21,6 +21,7 @@ import {
     getCustomPlaybackEligibility,
     getDolbyVisionReconstructionRawFrameFormat,
     getGPUVideoDecodeTarget,
+    getPlaybackAudioCodec,
     hasEligibleCustomVideoRoute,
     hasPotentialCustomPlaybackVideoRoute,
     type CustomPlaybackEligibilityOptions
@@ -6068,6 +6069,45 @@ describe('GPU video decode route', () => {
             expect(getGPUVideoDecodeTarget(createGPUOptions({ Codec: UNSUPPORTED_VIDEO_CODEC }))).toBeNull();
             expect(getGPUVideoDecodeTarget({ ...createGPUOptions({}), mediaSource: undefined })).toBeNull();
             expect(getGPUVideoDecodeTarget(null)).toBeNull();
+        });
+    });
+
+    describe('getPlaybackAudioCodec', () => {
+        const DTS_STREAM_INDEX = 2;
+        const DTS_CHANNEL_COUNT = 6;
+        const DTS_SAMPLE_RATE = 48_000;
+        // A Jellyfin stream index no track of the source has
+        const UNSELECTED_STREAM_INDEX = 7;
+        const UNNAMED_AUDIO_CODEC = 'atrac3';
+
+        /** The GPU playback's options with a DTS track after its AAC track, and the default audio index given. */
+        function createTwoTrackOptions(defaultAudioStreamIndex: number | null, secondCodec = 'DTS'): Record<string, unknown> {
+            const options = createGPUOptions({});
+            const mediaSource = options.mediaSource as { MediaStreams: unknown[] };
+            return {
+                ...options,
+                mediaSource: {
+                    ...mediaSource,
+                    DefaultAudioStreamIndex: defaultAudioStreamIndex,
+                    MediaStreams: [
+                        ...mediaSource.MediaStreams,
+                        { Channels: DTS_CHANNEL_COUNT, Codec: secondCodec, Index: DTS_STREAM_INDEX, SampleRate: DTS_SAMPLE_RATE, Type: 'Audio' }
+                    ]
+                }
+            };
+        }
+
+        it('names the codec of the track the default audio index selects, by the engine\'s name for it', () => {
+            expect(getPlaybackAudioCodec(createGPUOptions({}))).toBe('aac');
+            expect(getPlaybackAudioCodec(createTwoTrackOptions(DTS_STREAM_INDEX))).toBe('dts');
+            expect(getPlaybackAudioCodec(createTwoTrackOptions(null))).toBe('aac');
+        });
+
+        it('names no codec for an index no track has, a codec the engine has no name for, or no media source', () => {
+            expect(getPlaybackAudioCodec(createTwoTrackOptions(UNSELECTED_STREAM_INDEX))).toBeNull();
+            expect(getPlaybackAudioCodec(createTwoTrackOptions(DTS_STREAM_INDEX, UNNAMED_AUDIO_CODEC))).toBeNull();
+            expect(getPlaybackAudioCodec({ ...createGPUOptions({}), mediaSource: undefined })).toBeNull();
+            expect(getPlaybackAudioCodec(null)).toBeNull();
         });
     });
 });

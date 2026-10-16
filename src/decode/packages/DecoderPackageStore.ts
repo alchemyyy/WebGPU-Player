@@ -124,6 +124,26 @@ export default class DecoderPackageStore {
         await this.runTransaction('readwrite', 'package-delete-failed', (store: IDBObjectStore): readonly IDBRequest[] => [ store.delete(id) ], (): void => undefined);
     }
 
+    /**
+     * Loads the stored package of one id with the engine's checks, or resolves null when the store holds none.
+     * Rejects with the DecoderPackageError of a stored file that no longer loads, which stays stored until removed or replaced.
+     */
+    async load(id: string): Promise<StoredDecoderPackage | null> {
+        const file = await this.runTransaction(
+            'readonly',
+            'package-read-failed',
+            (store: IDBObjectStore): readonly IDBRequest[] => [ store.get(id) ],
+            (requests: readonly IDBRequest[]): StoredDecoderPackageFile | null => {
+                const value: unknown = requests[0].result;
+                return isStoredFile(value) ? value : null;
+            }
+        );
+        if (!file) {
+            return null;
+        }
+        return { addedAtMilliseconds: file.addedAtMilliseconds, decoderPackage: await loadDecoderPackage(file.bytes), fileName: file.fileName };
+    }
+
     /** Loads every stored package with the engine's checks, oldest first; a file that no longer loads is reported, and stays stored until removed. */
     async loadAll(): Promise<StoredDecoderPackages> {
         const files = await this.readFiles();
