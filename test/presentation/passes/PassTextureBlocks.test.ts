@@ -1,7 +1,6 @@
-import { createHash } from 'node:crypto';
-
 import { describe, expect, it } from 'vitest';
 
+import { getContentIdentity } from 'webgpu-player/presentation/passes/ContentIdentity';
 import { type PassFileEntry, parsePassFile, parsePassManifest } from 'webgpu-player/presentation/passes/PassManifest';
 import type { PassTexture } from 'webgpu-player/presentation/passes/PassTypes';
 
@@ -53,8 +52,13 @@ const LUT_BLOCK = createTextureBlock([
 // The LUT block's header lines; its body, which a data error names, starts after them
 const LUT_BLOCK_HEADER_LENGTH = 5;
 
+// The identity covers the block's size and format before its data, so a block's bytes under another shape name another texture
 function getExpectedIdentity(size: readonly number[], format: string, bytes: Uint8Array): string {
-    return createHash('sha256').update(`${[ ...size, format ].join(LF)}${LF}`).update(bytes).digest('hex');
+    const prefix = new TextEncoder().encode(`${[ ...size, format ].join(LF)}${LF}`);
+    const content = new Uint8Array(prefix.byteLength + bytes.byteLength);
+    content.set(prefix);
+    content.set(bytes, prefix.byteLength);
+    return getContentIdentity(content);
 }
 
 function requireError(entries: readonly PassFileEntry[], index: number): string {

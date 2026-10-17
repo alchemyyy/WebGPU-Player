@@ -207,7 +207,7 @@ AAA8AAA8AAA8ADw...
   It fills the size in the format exactly.
 - A block is not a pass; a pass reads it after `bind: <NAME>`, under a name no input of the pass takes, and a file of blocks alone has no pass.
 - A block that does not parse fails the passes that bind it, with its own line and message.
-- The engine uploads a block once, when a plan first binds it, keyed by the SHA-256 of its size, format, and data, so a new version of the file replaces the old upload once no preset holds it; there is no count or LRU limit.
+- The engine uploads a block once, when a plan first binds it, keyed by a content identity of its size, format, and data, so a new version of the file replaces the old upload once no preset holds it; there is no count or LRU limit.
 - A block beyond the device's largest texture of its dimensions, 2D for one and two, is left out as `texture-size`, and a linear filter on a 32-bit float format a device cannot filter as `texture-format`.
 - `tools/convert_cube_lut.py` turns a `.cube` 3D LUT into a file of one color pass that grades through it (see [Tools](tools.md#cube-lut-converter)).
 

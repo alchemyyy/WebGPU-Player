@@ -35,7 +35,7 @@ The presentation pipeline: each route's fixed signal and default color track, us
 - `PassLanguage.ts`: the names that headers, the prelude, and the planner share: the plane and image stages, `HOOKED`, history accessors, texture block accessors, entry points, `offset: align`, the prelude's functions, and plan-time facts.
 - `PassExpression.ts`: the size and condition expressions of pass and decoder headers.
 - `PassManifest.ts`: parses a pass file, whose passes each start with a `//!` header as in mpv's user shaders, into manifests in file order, each with the texture blocks it binds; a failure names its line in the file.
-- `ContentIdentity.ts`: a synchronous SHA-256, the content identity of a texture block, which keys its upload.
+- `ContentIdentity.ts`: the content identity of a texture block, a 53-bit cyrb53 hash computed synchronously, which keys its upload.
 - `PassResources.ts`: the engine-owned bindings, their WGSL declarations and layout entries, the byte layouts of the uniforms the engine writes, and a parameter value's normalization to its type and range.
 - `PassPrelude.ts`: the WGSL around pass code: input accessors, each with its input's plan-time offset, texture block accessors, constants, the prelude's linear light and planes transform, entry stages, and the renaming that keeps each user body's names apart.
 - `PresentationPlanner.ts`: arranges a route's built-in chain and the user passes on the stage spine and the color track, then generates each pass's module.

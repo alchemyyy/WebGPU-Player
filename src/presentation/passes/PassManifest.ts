@@ -954,7 +954,7 @@ function decodeTextureData(body: string, line: number): Uint8Array<ArrayBuffer> 
     }
 }
 
-/** Returns a texture's content identity: the SHA-256 of its size, its format, and its data. */
+/** Returns a texture's content identity over its size, its format, and its data. */
 function createTextureIdentity(size: PassTexture['size'], format: GPUTextureFormat, data: Uint8Array): string {
     const prefix = new TextEncoder().encode([ ...size, format ].join(IDENTITY_FIELD_SEPARATOR) + IDENTITY_FIELD_SEPARATOR);
     const content = new Uint8Array(prefix.byteLength + data.byteLength);

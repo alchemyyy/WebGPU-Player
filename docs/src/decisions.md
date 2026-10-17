@@ -902,7 +902,8 @@ These were settled on Firefox 157 on Windows.
   They and the plane transform are defined only in modules whose bodies call them, so no other module grows.
 - Pass files carry texture blocks (10-16), replacing the converter's constant arrays of at most 4096 texels.
   A host stores one file per pass, so the texture travels inside it, in base64, and the passes that bind it read it through accessors with its filter and edge mode.
-  The engine uploads a block when a plan first binds it, keyed by the SHA-256 of its size, format, and data, which the parse computes synchronously since a plan needs the identity; uploads live until neither the installed plan nor the preset holds them, with no count or LRU limit.
+  The engine uploads a block when a plan first binds it, keyed by a content identity of its size, format, and data, which the parse computes synchronously since a plan needs the identity; uploads live until neither the installed plan nor the preset holds them, with no count or LRU limit.
+  The identity is cyrb53, a 53-bit non-cryptographic hash, rather than a SHA-256: `crypto.subtle` digests asynchronously, a hand-written SHA-256 was code to keep for a cache key, and two of a preset's few blocks collide with a chance of about one in 2^53.
   A one-dimensional block is a texture one texel high, since WGSL samples a 1D texture only in fragment code, and a block beyond the device's texture size, or a linear filter on a format it cannot filter, leaves its passes out with a code of its own.
 - A pass's `when` reads its own parameters (10-16).
   The plan request carries the current values, and the presenter plans again when a parameter some `when` reads changes; the executor of a plan that comes out the same keeps running, and every other parameter stays a uniform write.
