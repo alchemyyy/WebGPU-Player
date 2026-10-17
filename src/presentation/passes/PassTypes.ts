@@ -117,7 +117,7 @@ export type PassTexture = {
     edge: PassTextureEdge
     filter: PassTextureFilter
     format: GPUTextureFormat
-    /** The lowercase hexadecimal SHA-256 of the block's size, format, and data, which keys its upload */
+    /** The content identity of the block's size, format, and data (`ContentIdentity.ts`), which keys its upload */
     identity: string
     name: string
     /** Width, height, and depth, 1 on the axes past its dimensions */
