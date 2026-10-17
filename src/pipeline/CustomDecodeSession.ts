@@ -90,6 +90,8 @@ import type {
 const RETIRED_RUN_STOP_TIMEOUT_MILLISECONDS = 10_000;
 // The retired runs one worker may unwind beside its running one; a start that would leave more takes a fresh worker instead
 const MAXIMUM_RETIRING_RUNS = 4;
+// How long a destroyed session's worker waits for the page's next session, which the next item of a queue starts within seconds
+const IDLE_DECODE_WORKER_RELEASE_DELAY_MILLISECONDS = 30_000;
 const MINIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS = 100_000;
 const FRAME_QUEUE_BOUND_FAILURE = 'The custom decode frame queue exceeded its bound';
 const UNEXPECTED_FRAME_OUTPUT_MODE_FAILURE = 'The custom decode worker returned an unexpected video output mode';
@@ -258,9 +260,10 @@ type WorkerRecord = {
     replacementRequired: boolean
     /** The generations the session asked to stop whose runs still unwind beside the running one, each until its `stopped` or its bound */
     retiringGenerations: Set<GenerationRecord>
+    /** The session let the worker go, terminated or left to the page's next session, and takes no message from it any more */
+    released: boolean
     /** The generation whose run the worker holds until the session stops it or it posts `stopped`; null while no run is current */
     runningGeneration: GenerationRecord | null
-    terminated: boolean
     /** Another backend gets a new worker, so nothing one backend set up in a worker, such as a package parser's workers, outlives it */
     videoDecoderBackend: CustomDecodeVideoDecoderBackend
     worker: Worker
@@ -378,6 +381,64 @@ function createTelemetry(): CustomDecodeSessionTelemetry {
 
 function createDefaultWorker(): Worker {
     return createEngineWorker('webgpu-player/CustomDecode.worker.js');
+}
+
+/** A decode worker that a destroyed session left with no run, for the page's next session that the same factory serves. */
+type IdleDecodeWorker = {
+    errorHandler: (event: ErrorEvent) => void
+    factory: CustomDecodeWorkerFactory
+    releaseTimer: ReturnType<typeof globalThis.setTimeout>
+    videoDecoderBackend: CustomDecodeVideoDecoderBackend
+    worker: Worker
+};
+
+// The page's idle decode worker, whose parser coordinator and parse workers, audio decode worker, and retained URL source a next item's session reuses
+let idleDecodeWorker: IdleDecodeWorker | null = null;
+
+/** Keeps a worker that holds no run for the page's next session from the same factory, in place of any worker that waited before it. */
+function parkIdleDecodeWorker(factory: CustomDecodeWorkerFactory, videoDecoderBackend: CustomDecodeVideoDecoderBackend, worker: Worker): void {
+    releaseIdleCustomDecodeWorker();
+    const releaseIfIdle = (): void => {
+        if (idleDecodeWorker?.worker === worker) {
+            releaseIdleCustomDecodeWorker();
+        }
+    };
+    const errorHandler = (event: ErrorEvent): void => {
+        event.preventDefault();
+        releaseIfIdle();
+    };
+    worker.addEventListener('error', errorHandler);
+    idleDecodeWorker = {
+        errorHandler,
+        factory,
+        releaseTimer: globalThis.setTimeout(releaseIfIdle, IDLE_DECODE_WORKER_RELEASE_DELAY_MILLISECONDS),
+        videoDecoderBackend,
+        worker
+    };
+}
+
+/** Takes the page's idle worker for a session's first start when the same factory created it for the same video decoder backend. */
+function takeIdleDecodeWorker(factory: CustomDecodeWorkerFactory, videoDecoderBackend: CustomDecodeVideoDecoderBackend): Worker | null {
+    const idleWorker = idleDecodeWorker;
+    if (idleWorker?.factory !== factory || idleWorker.videoDecoderBackend !== videoDecoderBackend) {
+        return null;
+    }
+    idleDecodeWorker = null;
+    globalThis.clearTimeout(idleWorker.releaseTimer);
+    idleWorker.worker.removeEventListener('error', idleWorker.errorHandler);
+    return idleWorker.worker;
+}
+
+/** Terminates the decode worker a destroyed session left for the page's next session, if one waits, rather than at the end of its idle delay. */
+export function releaseIdleCustomDecodeWorker(): void {
+    const idleWorker = idleDecodeWorker;
+    if (!idleWorker) {
+        return;
+    }
+    idleDecodeWorker = null;
+    globalThis.clearTimeout(idleWorker.releaseTimer);
+    idleWorker.worker.removeEventListener('error', idleWorker.errorHandler);
+    idleWorker.worker.terminate();
 }
 
 function isValidGeneration(generation: number): boolean {
@@ -639,6 +700,7 @@ function createDecodedPresentationFrame(
 /**
  * Owns one bounded, generation-safe custom decode session and its decode worker.
  * The worker outlives generations: it runs one at a time, and the runs stopped before it unwind beside it.
+ * It outlives the session too: once a destroyed session's runs are over, the page's next session takes it.
  */
 export default class CustomDecodeSession {
     private activeAudioBridge: CustomDecodeAudioBridge | null = null;
@@ -660,7 +722,10 @@ export default class CustomDecodeSession {
     private telemetry = createTelemetry();
     /** The generation the telemetry describes runs the frame-pool route */
     private telemetryFramePool = false;
-    /** Created by the first start, and replaced only for a start it cannot take: after a failure or an unacknowledged stop, for another backend, or with too many runs unwinding */
+    /**
+     * Taken by the first start from the page's idle worker, else created, and replaced only for a start it cannot take: after a failure or an unacknowledged stop,
+     * for another backend, or with too many runs unwinding
+     */
     private workerRecord: WorkerRecord | null = null;
 
     /** Creates an idle session; its first start creates the decode worker. */
@@ -744,7 +809,11 @@ export default class CustomDecodeSession {
         return this.nativeAudioStopScheduled ? this.nativeAudioStopTail : Promise.resolve();
     }
 
-    /** Stops decoding and terminates the worker at once, ending the runs still unwinding in it; a later start throws. */
+    /**
+     * Stops decoding; a later start throws.
+     * Once its runs are over, the worker waits idle for the page's next session from the same factory, as the next item of a queue starts one, and terminates
+     * when none takes it within the idle delay; a worker unfit for another generation terminates instead.
+     */
     public destroy(): void {
         if (this.destroyed) {
             return;
@@ -754,7 +823,7 @@ export default class CustomDecodeSession {
         this.gpuVideoDecodeFeed?.destroy();
         const workerRecord = this.workerRecord;
         if (workerRecord) {
-            this.terminateWorker(workerRecord);
+            this.parkWorkerWhenIdle(workerRecord);
         }
     }
 
@@ -1203,15 +1272,16 @@ export default class CustomDecodeSession {
         };
     }
 
-    private createWorkerRecord(worker: Worker, videoDecoderBackend: CustomDecodeVideoDecoderBackend): WorkerRecord {
+    /** Takes a worker into the session: a new one, or one an earlier session already ran generations in. */
+    private createWorkerRecord(worker: Worker, videoDecoderBackend: CustomDecodeVideoDecoderBackend, hasRunGeneration: boolean): WorkerRecord {
         const workerRecord: WorkerRecord = {
             errorHandler: (): void => undefined,
-            hasRunGeneration: false,
+            hasRunGeneration,
             messageHandler: (): void => undefined,
+            released: false,
             replacementRequired: false,
             retiringGenerations: new Set<GenerationRecord>(),
             runningGeneration: null,
-            terminated: false,
             videoDecoderBackend,
             worker
         };
@@ -1229,7 +1299,7 @@ export default class CustomDecodeSession {
     }
 
     /**
-     * Posts the active generation's start at once, creating the worker at the first start.
+     * Posts the active generation's start at once; the first start takes the worker an earlier session left idle, or creates one.
      * A stopped run closed its decoders and audio attempt and canceled its reads when it stopped, so it unwinds beside the new run instead of holding it back.
      */
     private startPendingGeneration(): void {
@@ -1252,7 +1322,8 @@ export default class CustomDecodeSession {
 
         if (!workerRecord) {
             try {
-                workerRecord = this.createWorkerRecord(this.workerFactory(), generationRecord.videoDecoderBackend);
+                const idleWorker = takeIdleDecodeWorker(this.workerFactory, generationRecord.videoDecoderBackend);
+                workerRecord = this.createWorkerRecord(idleWorker ?? this.workerFactory(), generationRecord.videoDecoderBackend, idleWorker !== null);
             } catch {
                 this.activeGeneration = null;
                 this.failSession(generationRecord.generation, 'decode-failed', 'Unable to create the custom decode worker');
@@ -1332,7 +1403,25 @@ export default class CustomDecodeSession {
         this.completeRun(generationRecord);
         if (workerRecord.replacementRequired) {
             this.requireWorkerReplacement(workerRecord);
+        } else if (this.destroyed) {
+            this.parkWorkerWhenIdle(workerRecord);
         }
+    }
+
+    /**
+     * Leaves a destroyed session's worker to the page's next session once it holds no run, so a later run's messages are never taken for this session's.
+     * A worker unfit for another generation terminates instead.
+     */
+    private parkWorkerWhenIdle(workerRecord: WorkerRecord): void {
+        if (workerRecord.released || workerRecord.runningGeneration || workerRecord.retiringGenerations.size > 0) {
+            return;
+        }
+        if (workerRecord.replacementRequired) {
+            this.terminateWorker(workerRecord);
+            return;
+        }
+        this.releaseWorkerRecord(workerRecord);
+        parkIdleDecodeWorker(this.workerFactory, workerRecord.videoDecoderBackend, workerRecord.worker);
     }
 
     /** Returns the generation whose run the worker holds, running or retiring, by its number. */
@@ -1350,17 +1439,12 @@ export default class CustomDecodeSession {
 
     /** Terminates a worker and ends every run it held; the next start creates a new worker. */
     private terminateWorker(workerRecord: WorkerRecord): void {
-        if (workerRecord.terminated) {
+        if (workerRecord.released) {
             return;
         }
 
-        workerRecord.terminated = true;
-        workerRecord.worker.removeEventListener('message', workerRecord.messageHandler);
-        workerRecord.worker.removeEventListener('error', workerRecord.errorHandler);
+        this.releaseWorkerRecord(workerRecord);
         workerRecord.worker.terminate();
-        if (this.workerRecord === workerRecord) {
-            this.workerRecord = null;
-        }
         const runningGeneration = workerRecord.runningGeneration;
         workerRecord.runningGeneration = null;
         if (runningGeneration) {
@@ -1370,6 +1454,16 @@ export default class CustomDecodeSession {
             this.completeRun(retiringGeneration);
         }
         workerRecord.retiringGenerations.clear();
+    }
+
+    /** Stops taking a worker's messages and errors; the session's next start takes another worker. */
+    private releaseWorkerRecord(workerRecord: WorkerRecord): void {
+        workerRecord.released = true;
+        workerRecord.worker.removeEventListener('message', workerRecord.messageHandler);
+        workerRecord.worker.removeEventListener('error', workerRecord.errorHandler);
+        if (this.workerRecord === workerRecord) {
+            this.workerRecord = null;
+        }
     }
 
     /** Keeps a worker from taking another generation: one that holds no run terminates at once, a busy one once its last run is over. */
