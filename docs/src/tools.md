@@ -35,6 +35,7 @@ python tools/convert_mpv_shader.py <input.glsl> <output.wgsl> [--name <name>] [-
 
 `convert_mpv_shader.py` converts an mpv or libplacebo user shader into a pass file, through naga-cli 30.0.1, and reports where the result differs from mpv.
 Its tests are in `tools/test/`.
+`.github/workflows/tools.yml` runs the tests in `tools/test/` on every push or pull request that changes `tools/` or `wgpup/`, with the naga-cli version the converter pins, which it builds once and caches.
 See [Migrate an mpv shader to a wgpup](mpv-shaders.md).
 
 ## Cube LUT converter

@@ -1,0 +1,55 @@
+# Runs the Python tool tests in tools/test/ when a push or pull request changes the tools or the pass projects they convert, or when run by hand (Actions > Tools > Run workflow).
+# The mpv shader converter translates GLSL with a pinned naga-cli, which the job builds once and caches.
+name: Tools
+
+on:
+  push:
+    # The tools, the pass projects whose upstream shaders the converter tests convert, and this workflow
+    paths:
+      - tools/**
+      - wgpup/**
+      - .github/workflows/tools.yml
+  pull_request:
+    paths:
+      - tools/**
+      - wgpup/**
+      - .github/workflows/tools.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # The tests need none of the codec submodules, which checkout leaves out by default
+      - name: Check out the engine
+        uses: actions/checkout@v7
+
+      # The converter declares the naga version it accepts, so this workflow never restates it
+      - name: Read the pinned naga version
+        run: echo "NAGA_VERSION=$(python3 -c 'import sys; sys.path.insert(0, "tools"); import convert_mpv_shader; print(convert_mpv_shader.NAGA_VERSION)')" >> "$GITHUB_ENV"
+
+      - name: Restore naga-cli
+        id: naga-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/naga
+          key: naga-cli-${{ env.NAGA_VERSION }}-${{ runner.os }}
+
+      - name: Build naga-cli
+        if: steps.naga-cache.outputs.cache-hit != 'true'
+        run: cargo install naga-cli --version "$NAGA_VERSION" --locked
+
+      # The conversion tests skip without the pinned naga, so a missing or wrong naga fails here instead
+      - name: Check naga-cli
+        run: test "$(naga --version)" = "$NAGA_VERSION"
+
+      - name: Test the tools
+        run: python3 -m unittest discover -s tools/test -p "*_test.py"
