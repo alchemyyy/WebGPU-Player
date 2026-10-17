@@ -201,7 +201,7 @@ import {
 import { readMatroskaBlockAdditions, type MatroskaBlockAddition } from '../demux/MatroskaBlockAdditions';
 import { readContainerVideoScan, withMatroskaVideoFieldOrder } from '../demux/ContainerVideoScan';
 import { getScanFrameFields, type VideoFrameFields } from '../decode/video/VideoFields';
-import { type ChromaSubsampling, readVideoChromaSubsampling } from '../demux/VideoChromaSubsampling';
+import { readVideoChromaFormat } from '../demux/VideoChromaFormat';
 import {
     MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT,
     type StaticHDRMetadataScanResult
@@ -311,8 +311,6 @@ type DecodeRun = {
     videoDecoderBackend: CustomDecodeVideoDecoderBackend
     /** Tags posted frames so the session can drop frames from replaced attempts */
     videoEpoch: number
-    /** The chroma subsampling the video track's decoder configuration declares, which every posted VideoFrame carries; null while it declares none */
-    videoChromaSubsampling: ChromaSubsampling | null
     /** The fields of the video track's container scan, which every posted frame and picture without its own carries; null while the container names none */
     videoFrameFields: VideoFrameFields | null
     videoOutputMode: CustomDecodeVideoOutputMode
@@ -1566,8 +1564,10 @@ function postReadyResponse(
 ): void {
     const geometry = preparedVideoTrack.geometry;
     const codecPrivate = getGPUDecodeCodecPrivate(run, preparedVideoTrack);
+    const chromaFormat = readVideoChromaFormat(preparedVideoTrack.decoderConfig);
     postResponse({
         audio: preparedAudioTrack?.audioConfiguration ?? null,
+        ...(chromaFormat.location !== null || chromaFormat.subsampling !== null ? { chromaFormat } : {}),
         codec: preparedVideoTrack.decoderConfig.codec,
         ...(codecPrivate ? { codecPrivate } : {}),
         codedHeight: geometry.codedHeight,
@@ -1837,7 +1837,6 @@ function postTransferredVideoFrame(
     HDR10PlusMetadata: HDR10PlusFrameMetadata | null | undefined
 ): void {
     const response: MutableDecodeWorkerFrameResponse = {
-        ...(run.videoChromaSubsampling === null ? {} : { chromaSubsampling: run.videoChromaSubsampling }),
         durationMicroseconds,
         frame,
         generation: run.generation,
@@ -3664,7 +3663,6 @@ async function prepareRunTracks(
     }
     // The container's field order, which Mediabunny's parse of the track already read, goes with every frame that reports none of its own
     run.videoFrameFields = getScanFrameFields(await readContainerVideoScan(preparedVideoTrack.videoTrack));
-    run.videoChromaSubsampling = readVideoChromaSubsampling(preparedVideoTrack.decoderConfig);
     const containerDurationMicroseconds = request.durationMicroseconds === undefined ?
         await readContainerDurationMicroseconds(input, preparedVideoTrack.videoTrack) :
         null;
@@ -3809,7 +3807,6 @@ function createDecodeRun(request: Extract<DecodeWorkerRequest, { type: 'start' }
         videoAttemptConsumedCreditCount: 0,
         videoAttemptPostedFrameCount: 0,
         videoDecoderBackend: request.videoDecoderBackend,
-        videoChromaSubsampling: null,
         videoEpoch: 0,
         videoFrameFields: null,
         videoOutputMode: request.videoOutputMode,

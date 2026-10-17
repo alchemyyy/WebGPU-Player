@@ -1,5 +1,6 @@
 // The built-in signals: each route's fixed, decode-equivalent read of its source into 'source' RGB.
-// Apart from the entry points, the WGSL is the legacy fused shader's text, so every route samples and reconstructs exactly as that shader did.
+// Apart from the entry points and chroma siting, the WGSL is the legacy fused shader's text, so every route samples and reconstructs as that shader did.
+// Chroma is read where the stream declares it lies, which the legacy shader fixed at left for planar formats and at the texel center for NV12.
 import {
     assertValidInputColorMetadata,
     createPQColorMetadata,
@@ -9,7 +10,7 @@ import {
 } from '../../../color/ColorMetadata';
 import { createDolbyVisionColorFunctionsWGSL } from '../../../color/DolbyVisionColorTransform';
 import { getRawFormatBitDepth, type SupportedRawVideoFrameFormat } from '../../../decode/video/RawVideoFrameCopy';
-import type { ChromaSubsampling } from '../../../demux/VideoChromaSubsampling';
+import type { ChromaLocation, ChromaSubsampling } from '../../../demux/VideoChromaFormat';
 import type { DolbyVisionReconstructionProfile } from '../../PresentationInput';
 import {
     HALF_FLOAT_PLANE_MAXIMUM_BIT_DEPTH,
@@ -64,8 +65,21 @@ const CASE_BODY_INDENTATION = '            ';
 const FEL_WITHOUT_ENHANCEMENT_CONDITION = 'isDolbyVisionFEL() && enhancement.enhancementPresent == 0u';
 const FEL_CONDITION = 'isDolbyVisionFEL()';
 
-// Left-sited chroma lies on its left luma sample, half a luma sample left of its texel's center
-const LEFT_SITED_CHROMA_LUMA_SHIFT = 0.5;
+/** Where 4:2:0 chroma lies when the stream declares no location: on the left luma column between two rows, the default of H.264 and HEVC. */
+export const DEFAULT_CHROMA_LOCATION: ChromaLocation = 'left';
+/** Where 4:2:2 chroma lies whatever the stream declares: on its left luma column, which H.264 and HEVC fix for it. */
+export const HORIZONTALLY_SUBSAMPLED_CHROMA_LOCATION: ChromaLocation = 'left';
+// Each location's chroma site from its chroma texel's center, in luma samples, positive left and up: a site on the left column lies half a luma sample
+// left of the center, a site on the top row half a sample above it, and a site on the bottom row half a sample below it
+const HALF_LUMA_SAMPLE = 0.5;
+const CHROMA_LOCATION_LUMA_SHIFTS: Readonly<Record<ChromaLocation, readonly [number, number]>> = Object.freeze({
+    bottom: Object.freeze([ 0, -HALF_LUMA_SAMPLE ] as const),
+    'bottom-left': Object.freeze([ HALF_LUMA_SAMPLE, -HALF_LUMA_SAMPLE ] as const),
+    center: Object.freeze([ 0, 0 ] as const),
+    left: Object.freeze([ HALF_LUMA_SAMPLE, 0 ] as const),
+    top: Object.freeze([ 0, HALF_LUMA_SAMPLE ] as const),
+    'top-left': Object.freeze([ HALF_LUMA_SAMPLE, HALF_LUMA_SAMPLE ] as const)
+});
 // The subsampling divisor of a plane that is not subsampled, and of a subsampled one
 const FULL_RESOLUTION_DIVISOR = 1;
 const SUBSAMPLED_DIVISOR = 2;
@@ -93,12 +107,16 @@ const MATRIX_LUMA_WEIGHTS: Readonly<Record<YUVMatrix, readonly [number, number]>
 // Planes derived from RGB hold normalized plane values, which a code scale of 1 leaves as they are
 const DERIVED_PLANE_CODE_SCALE = 1;
 const NO_CHROMA_OFFSET: readonly [number, number] = Object.freeze([ 0, 0 ]);
+
+/** A chroma plane's subsampling, as each axis's divisor of the luma plane's size. */
+export type ChromaDivisors = Pick<SignalPlanes, 'chromaHeightDivisor' | 'chromaWidthDivisor'>;
+
 // The subsampling divisors of each chroma subsampling a stream declares
-const FULL_RESOLUTION_DIVISORS: Pick<SignalPlanes, 'chromaHeightDivisor' | 'chromaWidthDivisor'> = Object.freeze({
+const FULL_RESOLUTION_DIVISORS: ChromaDivisors = Object.freeze({
     chromaHeightDivisor: FULL_RESOLUTION_DIVISOR,
     chromaWidthDivisor: FULL_RESOLUTION_DIVISOR
 });
-const CHROMA_SUBSAMPLING_DIVISORS: ReadonlyMap<ChromaSubsampling, Pick<SignalPlanes, 'chromaHeightDivisor' | 'chromaWidthDivisor'>> = new Map([
+const CHROMA_SUBSAMPLING_DIVISORS: ReadonlyMap<ChromaSubsampling, ChromaDivisors> = new Map([
     [ '4:2:0', { chromaHeightDivisor: SUBSAMPLED_DIVISOR, chromaWidthDivisor: SUBSAMPLED_DIVISOR } ],
     [ '4:2:2', { chromaHeightDivisor: FULL_RESOLUTION_DIVISOR, chromaWidthDivisor: SUBSAMPLED_DIVISOR } ],
     [ '4:4:4', FULL_RESOLUTION_DIVISORS ]
@@ -298,12 +316,20 @@ fn sampleChromaV(textureCoordinate: vec2f) -> f32 {
     return mix(mix(topLeft, topRight, fraction.x), mix(bottomLeft, bottomRight, fraction.x), fraction.y);
 }`;
 
+/** Returns where chroma at a location lies from its chroma texel's center, in luma samples, positive left and up; null is the default location. */
+export function getChromaLocationLumaShift(chromaLocation: ChromaLocation | null): readonly [number, number] {
+    return CHROMA_LOCATION_LUMA_SHIFTS[chromaLocation ?? DEFAULT_CHROMA_LOCATION];
+}
+
 /**
- * Returns whether the raw signals treat a format's chroma as left-sited: each chroma sample lies on its left luma sample, half a luma sample left of its texel center.
- * HEVC defaults horizontally subsampled planar chroma to left siting when no location is signaled.
+ * Returns where a plane's chroma samples lie from its texel centers, in luma samples, positive left and up: 4:2:0 chroma, the only kind subsampled down,
+ * at the stream's location, 4:2:2 chroma on its left luma column, and chroma at the luma's size on its luma samples.
  */
-export function hasLeftSitedChroma(format: SupportedRawVideoFrameFormat): boolean {
-    return format.startsWith('I420') || format.startsWith('I422');
+export function getChromaLumaShift(chromaLocation: ChromaLocation | null, divisors: ChromaDivisors): readonly [number, number] {
+    if (divisors.chromaHeightDivisor > FULL_RESOLUTION_DIVISOR) {
+        return getChromaLocationLumaShift(chromaLocation);
+    }
+    return divisors.chromaWidthDivisor > FULL_RESOLUTION_DIVISOR ? getChromaLocationLumaShift(HORIZONTALLY_SUBSAMPLED_CHROMA_LOCATION) : NO_CHROMA_OFFSET;
 }
 
 /** Returns the formats a signal's planes are read apart into for codes of a bit depth. */
@@ -313,9 +339,13 @@ export function getPlaneFormats(bitDepth: number): Pick<SignalPlanes, 'chromaFor
         { chromaFormat: PLANE_CHROMA_HALF_FLOAT_FORMAT, lumaFormat: PLANE_LUMA_HALF_FLOAT_FORMAT, nativeFormat: PLANE_NATIVE_HALF_FLOAT_FORMAT };
 }
 
-/** Returns the chroma plane's offset in its own pixels: left-sited chroma lies half a luma sample left of where its texel would sit. */
-export function getChromaPlaneOffset(leftSited: boolean, widthDivisor: number): readonly [number, number] {
-    return leftSited ? Object.freeze([ LEFT_SITED_CHROMA_LUMA_SHIFT / widthDivisor, 0 ]) : NO_CHROMA_OFFSET;
+/** Returns the chroma plane's offset in its own pixels: where getChromaLumaShift places its samples from its texel centers, over its subsampling. */
+export function getChromaPlaneOffset(chromaLocation: ChromaLocation | null, divisors: ChromaDivisors): readonly [number, number] {
+    const [ horizontalShift, verticalShift ] = getChromaLumaShift(chromaLocation, divisors);
+    if (horizontalShift === 0 && verticalShift === 0) {
+        return NO_CHROMA_OFFSET;
+    }
+    return Object.freeze([ horizontalShift / divisors.chromaWidthDivisor, verticalShift / divisors.chromaHeightDivisor ]);
 }
 
 /**
@@ -362,7 +392,7 @@ function createPlaneFunctionsWGSL(
     readCodes: (coordinate: string) => string,
     codeScale: number,
     chromaOffset: readonly [number, number],
-    divisors: Pick<SignalPlanes, 'chromaHeightDivisor' | 'chromaWidthDivisor'>,
+    divisors: ChromaDivisors,
     conversionWGSL: string
 ): string {
     const lumaPixelShiftX = chromaOffset[0] * divisors.chromaWidthDivisor;
@@ -391,7 +421,7 @@ fn ${SIGNAL_PLANE_ENTRY_POINTS.codeScale}() -> f32 {
 /** Returns the plane functions derived from an RGB image through the transform, which the plan or the signal defines the image's reads of. */
 export function createImagePlaneFunctionsWGSL(
     chromaOffset: readonly [number, number],
-    divisors: Pick<SignalPlanes, 'chromaHeightDivisor' | 'chromaWidthDivisor'>
+    divisors: ChromaDivisors
 ): string {
     return createPlaneFunctionsWGSL(
         (coordinate: string): string => `${SIGNAL_PLANE_ENTRY_POINTS.rgbToPlanes}(${SIGNAL_PLANE_ENTRY_POINTS.imageRead}(${coordinate}))`,
@@ -403,11 +433,11 @@ export function createImagePlaneFunctionsWGSL(
 }
 
 /** Returns the divisors of a declared chroma subsampling, or chroma at the image's size when the stream declares none. */
-function getChromaSubsamplingDivisors(chromaSubsampling: ChromaSubsampling | null): Pick<SignalPlanes, 'chromaHeightDivisor' | 'chromaWidthDivisor'> {
+function getChromaSubsamplingDivisors(chromaSubsampling: ChromaSubsampling | null): ChromaDivisors {
     return (chromaSubsampling === null ? null : CHROMA_SUBSAMPLING_DIVISORS.get(chromaSubsampling)) ?? FULL_RESOLUTION_DIVISORS;
 }
 
-function getRawChromaDivisors(format: SupportedRawVideoFrameFormat): Pick<SignalPlanes, 'chromaHeightDivisor' | 'chromaWidthDivisor'> {
+function getRawChromaDivisors(format: SupportedRawVideoFrameFormat): ChromaDivisors {
     if (format === 'NV12' || format.startsWith('I420')) {
         return { chromaHeightDivisor: SUBSAMPLED_DIVISOR, chromaWidthDivisor: SUBSAMPLED_DIVISOR };
     }
@@ -417,13 +447,13 @@ function getRawChromaDivisors(format: SupportedRawVideoFrameFormat): Pick<Signal
     return { chromaHeightDivisor: FULL_RESOLUTION_DIVISOR, chromaWidthDivisor: FULL_RESOLUTION_DIVISOR };
 }
 
-/** Returns the planes of the raw YUV signal: its own plane reads, chroma siting, range, and matrix. */
-function createRawYUVPlanes(format: SupportedRawVideoFrameFormat, metadata: InputColorMetadata): SignalPlanes {
+/** Returns the planes of the raw YUV signal: its own plane reads, chroma siting at the stream's location, range, and matrix. */
+function createRawYUVPlanes(format: SupportedRawVideoFrameFormat, metadata: InputColorMetadata, chromaLocation: ChromaLocation | null): SignalPlanes {
     const chromaRead = format === 'NV12' ?
         'sampleChroma(coordinate)' :
         'vec2f(sampleChromaU(coordinate), sampleChromaV(coordinate))';
     const divisors = getRawChromaDivisors(format);
-    const chromaOffset = getChromaPlaneOffset(hasLeftSitedChroma(format), divisors.chromaWidthDivisor);
+    const chromaOffset = getChromaPlaneOffset(chromaLocation, divisors);
     return {
         ...divisors,
         ...getPlaneFormats(metadata.bitDepth),
@@ -441,7 +471,7 @@ fn ${SIGNAL_PLANE_ENTRY_POINTS.chroma}(coordinate: vec2f) -> vec2f {
 }
 
 fn ${SIGNAL_PLANE_ENTRY_POINTS.sitedChroma}(textureCoordinate: vec2f) -> vec2f {
-    return ${SIGNAL_PLANE_ENTRY_POINTS.chroma}(${getChromaTextureCoordinateWGSL(format)});
+    return ${SIGNAL_PLANE_ENTRY_POINTS.chroma}(${getChromaTextureCoordinateWGSL(getChromaLumaShift(chromaLocation, divisors))});
 }
 
 fn ${SIGNAL_PLANE_ENTRY_POINTS.codeScale}() -> f32 {
@@ -454,11 +484,15 @@ fn ${SIGNAL_PLANE_ENTRY_POINTS.codeScale}() -> f32 {
 
 /**
  * Returns the planes of a signal the browser already converted to RGB: they derive from the signal's RGB through the stream's own matrix and range,
- * with chroma at the stream's subsampling and siting, read at each chroma sample's site; without a declared subsampling, chroma has the image's size.
+ * with chroma at the stream's subsampling and location, read at each chroma sample's site; without a declared subsampling, chroma has the image's size.
  */
-function createExternalPlanes(metadata: InputColorMetadata, chromaSubsampling: ChromaSubsampling | null): SignalPlanes {
+function createExternalPlanes(
+    metadata: InputColorMetadata,
+    chromaSubsampling: ChromaSubsampling | null,
+    chromaLocation: ChromaLocation | null
+): SignalPlanes {
     const divisors = getChromaSubsamplingDivisors(chromaSubsampling);
-    const chromaOffset = getChromaPlaneOffset(divisors.chromaWidthDivisor > FULL_RESOLUTION_DIVISOR, divisors.chromaWidthDivisor);
+    const chromaOffset = getChromaPlaneOffset(chromaLocation, divisors);
     const imageCode = createImagePlaneFunctionsWGSL(chromaOffset, divisors);
     return {
         ...divisors,
@@ -474,11 +508,15 @@ function createExternalPlanes(metadata: InputColorMetadata, chromaSubsampling: C
 
 /**
  * Returns the planes of the external HDR signal: the 10-bit codes the signal recovers from the browser's BT.709 texture, exactly as it recovers them,
- * with chroma at the stream's subsampling and siting; the signal's own range and matrix convert them.
+ * with chroma at the stream's subsampling and location; the signal's own range and matrix convert them.
  */
-function createExternalHDRPlanes(metadata: InputColorMetadata, chromaSubsampling: ChromaSubsampling | null): SignalPlanes {
+function createExternalHDRPlanes(
+    metadata: InputColorMetadata,
+    chromaSubsampling: ChromaSubsampling | null,
+    chromaLocation: ChromaLocation | null
+): SignalPlanes {
     const divisors = getChromaSubsamplingDivisors(chromaSubsampling);
-    const chromaOffset = getChromaPlaneOffset(divisors.chromaWidthDivisor > FULL_RESOLUTION_DIVISOR, divisors.chromaWidthDivisor);
+    const chromaOffset = getChromaPlaneOffset(chromaLocation, divisors);
     const readCodes = (coordinate: string): string => (
         `recoverLimitedRangeBT709YUV(textureSampleBaseClampToEdge(videoTexture, videoSampler, ${coordinate}).rgb)`
     );
@@ -512,7 +550,8 @@ export const INTERLACED_SIGNAL_CONDITION = `(presentation.fieldState & ${PRESENT
  * Returns the WGSL of a field-aware bilinear chroma read: the luma row a coordinate falls on names its field, and the read takes that field's chroma rows,
  * every other row of the plane, at the field's own siting, MPEG-2's for interlaced 4:2:0: the top field's chroma lies a quarter of a field row below its
  * luma rows, the bottom field's three quarters, so a still frame's chroma sits where a progressive frame's does.
- * The horizontal read is the progressive one; dimensions, lumaHeight, and the load are WGSL expressions of the plane it reads.
+ * The horizontal read is the progressive one, so its coordinate carries the location's horizontal shift alone, and the vertical siting stays MPEG-2's
+ * whatever the stream declares; dimensions, lumaHeight, and the load are WGSL expressions of the plane it reads.
  */
 export function createInterlacedChromaReadWGSL(
     signature: string,
@@ -556,19 +595,33 @@ function createTextureInterlacedChromaReadWGSL(functionName: string, textureName
     );
 }
 
-/** Returns the WGSL coordinate at which the raw signals read chroma for `textureCoordinate`, a coordinate of the luma grid: half a luma sample right for left-sited chroma. */
-function getChromaTextureCoordinateWGSL(format: SupportedRawVideoFrameFormat): string {
-    return hasLeftSitedChroma(format) ?
-        `textureCoordinate + vec2f(${LEFT_SITED_CHROMA_LUMA_SHIFT} / f32(textureDimensions(lumaTexture).x), 0.0)` :
-        'textureCoordinate';
+/**
+ * Returns the WGSL coordinate at which the raw signals read chroma for `textureCoordinate`, a coordinate of the luma grid: the chroma sites' shift in luma samples
+ * past it, so a chroma sample that lies left of or above its texel's center is read where it lies.
+ */
+function getChromaTextureCoordinateWGSL(chromaLumaShift: readonly [number, number]): string {
+    const [ horizontalShift, verticalShift ] = chromaLumaShift;
+    if (horizontalShift === 0 && verticalShift === 0) {
+        return 'textureCoordinate';
+    }
+    const horizontal = horizontalShift === 0 ? '0.0' : `${toWGSLFloat(horizontalShift)} / f32(textureDimensions(lumaTexture).x)`;
+    const vertical = verticalShift === 0 ? '0.0' : `${toWGSLFloat(verticalShift)} / f32(textureDimensions(lumaTexture).y)`;
+    return `textureCoordinate + vec2f(${horizontal}, ${vertical})`;
 }
 
 /**
- * Generates the manual bilinear reads of the plane textures, which PassResources declares, as one YUV code triplet.
+ * Generates the manual bilinear reads of the plane textures, which PassResources declares, as one YUV code triplet, with chroma at the stream's location.
  * With interlacedChroma, a 4:2:0 format's reads take chroma within each field of a frame the presentation uniform marks interlaced.
  */
-function createRawYUVSamplingWGSL(format: SupportedRawVideoFrameFormat, interlacedChroma: boolean = false): string {
-    const chromaTextureCoordinate = getChromaTextureCoordinateWGSL(format);
+function createRawYUVSamplingWGSL(
+    format: SupportedRawVideoFrameFormat,
+    interlacedChroma: boolean = false,
+    chromaLocation: ChromaLocation | null = null
+): string {
+    const chromaLumaShift = getChromaLumaShift(chromaLocation, getRawChromaDivisors(format));
+    const chromaTextureCoordinate = getChromaTextureCoordinateWGSL(chromaLumaShift);
+    // A field read places chroma rows by the field's own siting, so its coordinate takes the horizontal shift alone
+    const fieldChromaTextureCoordinate = getChromaTextureCoordinateWGSL([ chromaLumaShift[0], 0 ]);
     const fieldAware = interlacedChroma && hasVerticallySubsampledChroma(format);
     if (format === 'NV12') {
         if (fieldAware) {
@@ -576,7 +629,7 @@ function createRawYUVSamplingWGSL(format: SupportedRawVideoFrameFormat, interlac
 fn sampleRawYUV(textureCoordinate: vec2f) -> vec3f {
     var chroma = sampleChroma(${chromaTextureCoordinate});
     if (${INTERLACED_SIGNAL_CONDITION}) {
-        chroma = sampleInterlacedChroma(${chromaTextureCoordinate});
+        chroma = sampleInterlacedChroma(${fieldChromaTextureCoordinate});
     }
     return vec3f(sampleLuma(textureCoordinate), chroma.x, chroma.y);
 }` ]);
@@ -599,8 +652,8 @@ fn sampleRawYUV(textureCoordinate: vec2f) -> vec3f {
     if (${INTERLACED_SIGNAL_CONDITION}) {
         return vec3f(
             sampleLuma(textureCoordinate),
-            sampleInterlacedChromaU(${chromaTextureCoordinate}),
-            sampleInterlacedChromaV(${chromaTextureCoordinate})
+            sampleInterlacedChromaU(${fieldChromaTextureCoordinate}),
+            sampleInterlacedChromaV(${fieldChromaTextureCoordinate})
         );
     }
     return vec3f(
@@ -714,7 +767,11 @@ function getDolbyVisionDualLayerBypassCondition(
  * Returns the bilinear read of the external texture, which the identity route presents unchanged.
  * Its planes derive from the RGB through the stream's metadata, the conversion the browser made, so it has none while the metadata is unknown.
  */
-export function createExternalIdentitySignal(metadata: InputColorMetadata | null, chromaSubsampling: ChromaSubsampling | null = null): SignalDefinition {
+export function createExternalIdentitySignal(
+    metadata: InputColorMetadata | null,
+    chromaSubsampling: ChromaSubsampling | null = null,
+    chromaLocation: ChromaLocation | null = null
+): SignalDefinition {
     if (metadata !== null) {
         assertValidInputColorMetadata(metadata);
     }
@@ -726,7 +783,7 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
 }` ]),
         entryPoint: SIGNAL_ENTRY_POINT,
         name: `${SIGNAL_NAME_PREFIX}.external-identity`,
-        planes: metadata === null ? null : createExternalPlanes(metadata, chromaSubsampling),
+        planes: metadata === null ? null : createExternalPlanes(metadata, chromaSubsampling, chromaLocation),
         resources: EXTERNAL_RESOURCES,
         sourceKind: 'external'
     };
@@ -749,7 +806,11 @@ function assertExternalHDRMetadata(metadata: InputColorMetadata): void {
 }
 
 /** Returns the recovery of neutralized 10-bit HDR YUV from Chromium's opaque BT.709 texture, converted to encoded RGB. */
-export function createExternalHDRSignal(metadata: InputColorMetadata, chromaSubsampling: ChromaSubsampling | null = null): SignalDefinition {
+export function createExternalHDRSignal(
+    metadata: InputColorMetadata,
+    chromaSubsampling: ChromaSubsampling | null = null,
+    chromaLocation: ChromaLocation | null = null
+): SignalDefinition {
     assertValidInputColorMetadata(metadata);
     assertExternalHDRMetadata(metadata);
 
@@ -775,7 +836,7 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
         ]),
         entryPoint: SIGNAL_ENTRY_POINT,
         name: `${SIGNAL_NAME_PREFIX}.external-hdr`,
-        planes: createExternalHDRPlanes(metadata, chromaSubsampling),
+        planes: createExternalHDRPlanes(metadata, chromaSubsampling, chromaLocation),
         resources: EXTERNAL_RESOURCES,
         sourceKind: 'external'
     };
@@ -812,10 +873,16 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
 }
 
 /**
- * Returns the manual bilinear YUV read of raw planes in format, normalized by the metadata's range and converted by its matrix.
+ * Returns the manual bilinear YUV read of raw planes in format, with 4:2:0 chroma at the stream's location, normalized by the metadata's range and
+ * converted by its matrix.
  * With interlacedChroma, as a deinterlacing plan's signal, 4:2:0 chroma is read within each field of a frame the presentation uniform marks interlaced.
  */
-export function createRawYUVSignal(format: SupportedRawVideoFrameFormat, metadata: InputColorMetadata, interlacedChroma: boolean = false): SignalDefinition {
+export function createRawYUVSignal(
+    format: SupportedRawVideoFrameFormat,
+    metadata: InputColorMetadata,
+    interlacedChroma: boolean = false,
+    chromaLocation: ChromaLocation | null = null
+): SignalDefinition {
     assertValidInputColorMetadata(metadata);
     const formatBitDepth = getRawFormatBitDepth(format);
     if (metadata.bitDepth !== formatBitDepth) {
@@ -833,21 +900,21 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
     return {
         bypassCondition: null,
         code: joinWGSL([
-            createRawYUVSamplingWGSL(format, fieldAwareChroma),
+            createRawYUVSamplingWGSL(format, fieldAwareChroma, chromaLocation),
             createRawYUVRangeWGSL(metadata),
             createRawYUVMatrixWGSL(metadata),
             entryWGSL
         ]),
         entryPoint: SIGNAL_ENTRY_POINT,
         name: `${SIGNAL_NAME_PREFIX}.raw-yuv.${format}${fieldAwareChroma ? INTERLACED_CHROMA_NAME_SUFFIX : ''}`,
-        planes: createRawYUVPlanes(format, metadata),
+        planes: createRawYUVPlanes(format, metadata, chromaLocation),
         resources: format === 'NV12' ? NV12_RESOURCES : PLANAR_RESOURCES,
         sourceKind: 'planes'
     };
 }
 
 /** Returns single-layer RPU reconstruction of raw BL codes into encoded BT.2020 PQ. */
-function createRawDolbyVisionSingleLayerSignal(format: RawDolbyVisionFrameFormat, profile: 5 | 8): SignalDefinition {
+function createRawDolbyVisionSingleLayerSignal(format: RawDolbyVisionFrameFormat, profile: 5 | 8, chromaLocation: ChromaLocation | null): SignalDefinition {
     const entryWGSL = `
 fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
     let encodedBT2020PQ = reconstructDolbyVisionBT2020PQ(
@@ -857,7 +924,7 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
 }`;
     return {
         bypassCondition: null,
-        code: joinWGSL([ createRawYUVSamplingWGSL(format), createDolbyVisionColorFunctionsWGSL(), entryWGSL ]),
+        code: joinWGSL([ createRawYUVSamplingWGSL(format, false, chromaLocation), createDolbyVisionColorFunctionsWGSL(), entryWGSL ]),
         entryPoint: SIGNAL_ENTRY_POINT,
         name: `${SIGNAL_NAME_PREFIX}.raw-dolby-vision.profile-${profile}.${format}`,
         planes: null,
@@ -869,12 +936,13 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
 /**
  * Returns dual-layer MEL reconstruction, optional FEL residual reconstruction, and the compatible base an FEL frame falls back to without its EL.
  * Profile 7 falls back to its HDR10 base, a normal PQ source; Profile 4 to its SDR base, which bypassCondition presents unmodified.
- * The BL is sampled in its own planar format and the EL always as I420P10.
+ * The BL is sampled in its own planar format, with 4:2:0 chroma at the stream's location, and the EL always as I420P10 at its own siting.
  */
 function createRawDolbyVisionDualLayerSignal(
     format: RawDolbyVisionFrameFormat,
     profile: 4 | 7,
-    felReconstruction: boolean
+    felReconstruction: boolean,
+    chromaLocation: ChromaLocation | null
 ): SignalDefinition {
     const baseLayerFallback: DolbyVisionDualLayerBaseFallback = profile === 4 ? 'sdr' : 'hdr10';
     const baseLayerMetadata = getDolbyVisionDualLayerBaseMetadata(baseLayerFallback, format);
@@ -905,7 +973,7 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
 }`;
 
     const declarations: string[] = [];
-    declarations.push(createRawYUVSamplingWGSL(format));
+    declarations.push(createRawYUVSamplingWGSL(format, false, chromaLocation));
     if (felReconstruction) {
         declarations.push(ENHANCEMENT_SAMPLING_WGSL);
     }
@@ -930,20 +998,21 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
 }
 
 /**
- * Returns RPU reconstruction of raw BL planes in format into encoded BT.2020 PQ.
+ * Returns RPU reconstruction of raw BL planes in format, with 4:2:0 chroma at the stream's location, into encoded BT.2020 PQ.
  * Profiles 5 and 8 are single-layer, so felReconstruction applies only to the dual-layer Profiles 4 and 7.
  */
 export function createRawDolbyVisionSignal(
     format: RawDolbyVisionFrameFormat,
     profile: DolbyVisionReconstructionProfile,
-    felReconstruction: boolean
+    felReconstruction: boolean,
+    chromaLocation: ChromaLocation | null = null
 ): SignalDefinition {
     switch (profile) {
         case 4:
         case 7:
-            return createRawDolbyVisionDualLayerSignal(format, profile, felReconstruction);
+            return createRawDolbyVisionDualLayerSignal(format, profile, felReconstruction, chromaLocation);
         case 5:
         case 8:
-            return createRawDolbyVisionSingleLayerSignal(format, profile);
+            return createRawDolbyVisionSingleLayerSignal(format, profile, chromaLocation);
     }
 }

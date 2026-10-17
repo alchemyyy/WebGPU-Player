@@ -13,6 +13,7 @@ import {
     createRawDolbyVisionSignal,
     createRawYUVSignal
 } from './BuiltinSignals';
+import { createFramePoolSignal } from './FramePoolSignal';
 
 // Dolby Vision reconstruction produces full-range BT.2020 PQ, which the color track decodes
 const DOLBY_VISION_OUTPUT_METADATA = createPQColorMetadata({ range: 'full' });
@@ -41,12 +42,12 @@ export function createBuiltinChain(configuration: BuiltinChainConfiguration): Bu
             return {
                 colorFunctions: [],
                 linearLight: configuration.metadata === null ? null : createSignalLinearLight(configuration.metadata),
-                signal: createExternalIdentitySignal(configuration.metadata, configuration.chromaSubsampling ?? null),
+                signal: createExternalIdentitySignal(configuration.metadata, configuration.chromaSubsampling ?? null, configuration.chromaLocation ?? null),
                 sourceIsDisplay: true
             };
         case 'external-hdr':
             return createColorTrackChain(
-                createExternalHDRSignal(configuration.metadata, configuration.chromaSubsampling ?? null),
+                createExternalHDRSignal(configuration.metadata, configuration.chromaSubsampling ?? null, configuration.chromaLocation ?? null),
                 configuration.metadata,
                 configuration.settings,
                 configuration.hdrOutput
@@ -60,22 +61,22 @@ export function createBuiltinChain(configuration: BuiltinChainConfiguration): Bu
             );
         case 'raw-yuv':
             return createColorTrackChain(
-                createRawYUVSignal(configuration.format, configuration.metadata, configuration.interlacedChroma === true),
+                createRawYUVSignal(configuration.format, configuration.metadata, configuration.interlacedChroma === true, configuration.chromaLocation ?? null),
                 configuration.metadata,
                 configuration.settings,
                 configuration.hdrOutput
             );
         case 'raw-dolby-vision':
             return createColorTrackChain(
-                createRawDolbyVisionSignal(configuration.format, configuration.profile, configuration.felReconstruction),
+                createRawDolbyVisionSignal(configuration.format, configuration.profile, configuration.felReconstruction, configuration.chromaLocation ?? null),
                 DOLBY_VISION_OUTPUT_METADATA,
                 configuration.settings,
                 configuration.hdrOutput
             );
         case 'frame-pool':
-            // The GPU decode route supplies the signal, and the color track is the raw YUV route's
+            // The signal reads the GPU decoder's slots, and the color track is the raw YUV route's
             return createColorTrackChain(
-                configuration.interlacedChroma === true && configuration.interlacedSignal ? configuration.interlacedSignal : configuration.signal,
+                createFramePoolSignal(configuration.format, configuration.metadata, configuration.interlacedChroma === true, configuration.chromaLocation ?? null),
                 configuration.metadata,
                 configuration.settings,
                 configuration.hdrOutput

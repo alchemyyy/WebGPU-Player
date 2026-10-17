@@ -1,12 +1,13 @@
 // The contracts shared by the pass manifest, the built-in passes, the planner, the executor, and the GPU decode route.
 // The Presentation section of docs/src/architecture.md and docs/src/new-pass.md describe them.
 import type { InputColorMetadata } from '../../color/ColorMetadata';
-import type { ChromaSubsampling } from '../../demux/VideoChromaSubsampling';
+import type { ChromaLocation, ChromaSubsampling } from '../../demux/VideoChromaFormat';
 import type {
     RawDolbyVisionVideoFrameFormat,
     SupportedRawVideoFrameFormat,
     TransferableRawVideoFrame
 } from '../../decode/video/RawVideoFrameCopy';
+import type { GPUDecoderOutputFormat } from '../../decode/video/gpu/GPUDecodeFormats';
 import type { DolbyVisionReconstructionProfile } from '../PresentationInput';
 import type { TexturePresentationGeometry } from '../PresentationGeometry';
 import type { HDRToSDRRenderSettings, RenderSettings } from '../RenderSettings';
@@ -287,11 +288,22 @@ export type RawDolbyVisionFrameFormat = RawDolbyVisionVideoFrameFormat;
 /**
  * A route the built-in library builds a chain for.
  * `hdrOutput` selects the extended-range output encode in place of the SDR encode, display controls, and dither.
- * The frame pool route takes its signal from the GPU decode route and the color functions from the library.
+ * `chromaLocation` is where the stream's 4:2:0 chroma lies, which the planar signals read chroma at and the external routes derive their planes' chroma at;
+ * null or absent is the left siting H.264 and HEVC default to.
+ * The frame pool route's signal reads the GPU decoder's slots of its output format, and its color functions are the library's.
  */
 export type BuiltinChainConfiguration =
-    | { felReconstruction: boolean; format: RawDolbyVisionFrameFormat; hdrOutput: boolean; profile: DolbyVisionReconstructionProfile; route: 'raw-dolby-vision'; settings: HDRToSDRRenderSettings }
     | {
+        chromaLocation?: ChromaLocation | null
+        felReconstruction: boolean
+        format: RawDolbyVisionFrameFormat
+        hdrOutput: boolean
+        profile: DolbyVisionReconstructionProfile
+        route: 'raw-dolby-vision'
+        settings: HDRToSDRRenderSettings
+    }
+    | {
+        chromaLocation?: ChromaLocation | null
         format: SupportedRawVideoFrameFormat
         hdrOutput: boolean
         /** The signal reads 4:2:0 chroma within each field of a frame the presentation uniform marks interlaced, as a deinterlacing plan's does */
@@ -301,6 +313,7 @@ export type BuiltinChainConfiguration =
         settings: RenderSettings
     }
     | {
+        chromaLocation?: ChromaLocation | null
         /** The stream's chroma subsampling, at which the planes derived from the browser's RGB hold chroma; null for chroma at the image's size */
         chromaSubsampling?: ChromaSubsampling | null
         hdrOutput: boolean
@@ -309,18 +322,19 @@ export type BuiltinChainConfiguration =
         settings: HDRToSDRRenderSettings
     }
     | {
+        chromaLocation?: ChromaLocation | null
+        /** The format of the stream's first frames, whose bit depth the metadata holds; each slot's own layout decides how its samples read */
+        format: GPUDecoderOutputFormat
         hdrOutput: boolean
-        /** The chain takes interlacedSignal, as a deinterlacing plan does */
+        /** The signal reads a slot's 4:2:0 chroma within each field of a frame the presentation uniform marks interlaced, as a deinterlacing plan's does */
         interlacedChroma?: boolean
-        /** The route's signal that reads 4:2:0 chroma within each field of a frame the presentation uniform marks interlaced */
-        interlacedSignal?: SignalDefinition
         metadata: InputColorMetadata
         route: 'frame-pool'
         settings: RenderSettings
-        signal: SignalDefinition
     }
     | { hdrOutput: boolean; route: 'external-dolby-vision'; settings: HDRToSDRRenderSettings }
     | {
+        chromaLocation?: ChromaLocation | null
         /** The stream's chroma subsampling, at which the planes derived from the browser's RGB hold chroma; null for chroma at the image's size */
         chromaSubsampling?: ChromaSubsampling | null
         /** The stream's color, whose matrix and range the browser converted with; null when unknown, which leaves the route without planes */

@@ -24,6 +24,7 @@ import type { GPUVideoDecoderSelection } from './GPUVideoDecoderCatalog';
 import type GPUVideoDecodeSession from './GPUVideoDecodeSession';
 import type { GPUDecodedFrame } from './GPUVideoDecodeSession';
 import type { HDR10PlusFrameMetadata } from '../../../demux/hdr/HDR10PlusMetadata';
+import type { VideoChromaFormat } from '../../../demux/VideoChromaFormat';
 
 // A picture index at most half the index range behind a picture is an earlier one
 const PICTURE_INDEX_HALF_RANGE = GPU_DECODER_OUTPUT_EVENT.pictureIndexModulus / 2;
@@ -158,6 +159,8 @@ type StreamChange = {
 /** One generation's use of the feed. */
 type FeedGeneration = {
     callbacks: GPUVideoDecodeFeedCallbacks
+    /** The chroma the track declares, which every frame carries to presentation */
+    chromaFormat: VideoChromaFormat | null
     displaySize: GPUVideoDecodeDisplaySize | null
     /** The epoch's last frame left the decoder after its end */
     drained: boolean
@@ -378,6 +381,7 @@ export default class GPUVideoDecodeFeed {
         this.cancelStreamChanges();
         this.generation = {
             callbacks,
+            chromaFormat: null,
             displaySize: null,
             drained: false,
             failed: false,
@@ -397,12 +401,14 @@ export default class GPUVideoDecodeFeed {
     /**
      * Prepares the generation's session once the worker described the track, reusing the current session when it decodes the same stream.
      * Packets that arrive before the session exists wait for it.
+     * Every frame of the generation carries the display size and the chroma the track declares.
      */
-    configure(request: GPUVideoDecodeSessionRequest, displaySize: GPUVideoDecodeDisplaySize): void {
+    configure(request: GPUVideoDecodeSessionRequest, displaySize: GPUVideoDecodeDisplaySize, chromaFormat: VideoChromaFormat | null = null): void {
         const generation = this.generation;
         if (!generation || this.destroyed) {
             return;
         }
+        generation.chromaFormat = chromaFormat;
         generation.displaySize = displaySize;
         const handle = this.handle;
         const sessionRequest = this.sessionRequest;
@@ -842,12 +848,14 @@ export default class GPUVideoDecodeFeed {
 
     /** Hands every frame the session made presentable to the frame queue, with its packet's HDR10+ state. */
     private deliverFrames(handle: GPUVideoDecodeHandle, generation: FeedGeneration): void {
+        const chromaFormat = generation.chromaFormat;
         const displaySize = generation.displaySize;
         for (let decodedFrame = handle.session.takeNextFrame(); decodedFrame !== null; decodedFrame = handle.session.takeNextFrame()) {
             const metadata = generation.frameMetadata.get(decodedFrame.timestampMicroseconds);
             generation.frameMetadata.delete(decodedFrame.timestampMicroseconds);
             const visibleRectangle = decodedFrame.frame.visibleRectangle;
             const presentationFrame: DecodedFramePoolPresentationFrame = {
+                ...(chromaFormat ? { chromaFormat } : {}),
                 displayHeight: displaySize?.displayHeight ?? visibleRectangle.height,
                 displayWidth: displaySize?.displayWidth ?? visibleRectangle.width,
                 durationMicroseconds: requireMicroseconds(decodedFrame.durationMicroseconds, 'GPU decoded frame duration'),

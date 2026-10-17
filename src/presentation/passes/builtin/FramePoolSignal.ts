@@ -1,21 +1,25 @@
 // The fixed signal step of the GPU decode route: it samples a decoded pool slot in place and returns 'source' RGB.
 // It is the raw YUV signal read from the pool buffer instead of integer textures: the same bilinear sample, chroma siting, range, and matrix.
 // It reads each frame's sample size, bit depth, and chroma subsampling from the slot's layout uniform, so frames of every output format share one signal,
-// as a stream that changes its format mid-stream needs. Its sampling functions carry a framePool prefix; the matrix function is the raw YUV signal's.
+// as a stream that changes its format mid-stream needs; the stream's chroma location, which places 4:2:0 chroma, is compiled in.
+// Its sampling functions carry a framePool prefix; the matrix function is the raw YUV signal's.
 import { assertValidInputColorMetadata, type InputColorMetadata } from '../../../color/ColorMetadata';
+import type { ChromaLocation } from '../../../demux/VideoChromaFormat';
 import {
     createImagePlaneFunctionsWGSL,
     createInterlacedChromaReadWGSL,
     createPlaneTransformWGSL,
     createRawYUVMatrixWGSL,
     createSelectedBitDepthRawYUVRangeWGSL,
+    getChromaLocationLumaShift,
     getChromaPlaneOffset,
     getPlaneFormats,
+    HORIZONTALLY_SUBSAMPLED_CHROMA_LOCATION,
     INTERLACED_SIGNAL_CONDITION,
     PLANE_ENTRY_POINT_FIELDS,
     SIGNAL_PLANE_ENTRY_POINTS
 } from './BuiltinSignals';
-import { joinWGSL } from './BuiltinWGSL';
+import { joinWGSL, toWGSLFloat } from './BuiltinWGSL';
 import type { EngineResource, SignalDefinition, SignalPlanes } from '../PassTypes';
 import type { SupportedRawVideoFrameFormat } from '../../../decode/video/RawVideoFrameCopy';
 import {
@@ -62,12 +66,29 @@ fn framePoolSamplePlane(planeIndex: u32, textureCoordinate: vec2f) -> f32 {
     return mix(mix(topLeft, topRight, fraction.x), mix(bottomLeft, bottomRight, fraction.x), fraction.y);
 }`;
 
-// Chroma subsampled across, as at 4:2:0 and 4:2:2, is sited left, so its coordinate moves half a luma sample; 4:4:4 chroma is co-sited
+/**
+ * Returns `fn framePoolChromaShift() -> vec2f`: where the slot's chroma samples lie from their texel centers, normalized over its luma plane,
+ * positive left and up, as getChromaLumaShift places them by the slot's own subsampling: 4:2:0 chroma at the stream's location, 4:2:2 chroma on its
+ * left luma column, and 4:4:4 chroma on its luma samples.
+ */
+function createChromaShiftWGSL(chromaLocation: ChromaLocation | null): string {
+    const [ horizontalShift, verticalShift ] = getChromaLocationLumaShift(chromaLocation);
+    const [ horizontallySubsampledShift ] = getChromaLocationLumaShift(HORIZONTALLY_SUBSAMPLED_CHROMA_LOCATION);
+    return `
+fn framePoolChromaShift() -> vec2f {
+    let lumaSize = vec2u(framePoolLayout.planes[0].width, framePoolLayout.planes[0].height);
+    let subsampled = vec2u(framePoolLayout.planes[1].width, framePoolLayout.planes[1].height) < lumaSize;
+    var shift = vec2f(select(0.0, ${toWGSLFloat(horizontallySubsampledShift)}, subsampled.x), 0.0);
+    if (subsampled.y) {
+        shift = vec2f(${toWGSLFloat(horizontalShift)}, ${toWGSLFloat(verticalShift)});
+    }
+    return shift / vec2f(lumaSize);
+}`;
+}
+
 const SAMPLE_YUV_WGSL = `
 fn framePoolSampleYUV(textureCoordinate: vec2f) -> vec3f {
-    let lumaWidth = framePoolLayout.planes[0].width;
-    let chromaOffset = select(0.0, 0.5 / f32(lumaWidth), framePoolLayout.planes[1].width < lumaWidth);
-    let chromaTextureCoordinate = textureCoordinate + vec2f(chromaOffset, 0.0);
+    let chromaTextureCoordinate = textureCoordinate + framePoolChromaShift();
     return vec3f(
         framePoolSamplePlane(0u, textureCoordinate),
         framePoolSamplePlane(1u, chromaTextureCoordinate),
@@ -75,19 +96,20 @@ fn framePoolSampleYUV(textureCoordinate: vec2f) -> vec3f {
     );
 }`;
 
-// A deinterlacing plan's read: 4:2:0 chroma of a frame the presentation uniform marks interlaced is read within each field
+// A deinterlacing plan's read: 4:2:0 chroma of a frame the presentation uniform marks interlaced is read within each field, whose own siting places its rows,
+// so its coordinate takes the horizontal shift alone
 const INTERLACED_SAMPLE_YUV_WGSL = `
 fn framePoolSampleYUV(textureCoordinate: vec2f) -> vec3f {
-    let lumaWidth = framePoolLayout.planes[0].width;
-    let chromaOffset = select(0.0, 0.5 / f32(lumaWidth), framePoolLayout.planes[1].width < lumaWidth);
-    let chromaTextureCoordinate = textureCoordinate + vec2f(chromaOffset, 0.0);
+    let chromaShift = framePoolChromaShift();
     if (${INTERLACED_SIGNAL_CONDITION} && framePoolLayout.planes[1].height < framePoolLayout.planes[0].height) {
+        let fieldChromaTextureCoordinate = textureCoordinate + vec2f(chromaShift.x, 0.0);
         return vec3f(
             framePoolSamplePlane(0u, textureCoordinate),
-            framePoolSampleInterlacedChroma(1u, chromaTextureCoordinate),
-            framePoolSampleInterlacedChroma(2u, chromaTextureCoordinate)
+            framePoolSampleInterlacedChroma(1u, fieldChromaTextureCoordinate),
+            framePoolSampleInterlacedChroma(2u, fieldChromaTextureCoordinate)
         );
     }
+    let chromaTextureCoordinate = textureCoordinate + chromaShift;
     return vec3f(
         framePoolSamplePlane(0u, textureCoordinate),
         framePoolSamplePlane(1u, chromaTextureCoordinate),
@@ -106,9 +128,7 @@ fn ${SIGNAL_PLANE_ENTRY_POINTS.chroma}(coordinate: vec2f) -> vec2f {
 }
 
 fn ${SIGNAL_PLANE_ENTRY_POINTS.sitedChroma}(textureCoordinate: vec2f) -> vec2f {
-    let lumaWidth = framePoolLayout.planes[0].width;
-    let chromaOffset = select(0.0, 0.5 / f32(lumaWidth), framePoolLayout.planes[1].width < lumaWidth);
-    return ${SIGNAL_PLANE_ENTRY_POINTS.chroma}(textureCoordinate + vec2f(chromaOffset, 0.0));
+    return ${SIGNAL_PLANE_ENTRY_POINTS.chroma}(textureCoordinate + framePoolChromaShift());
 }
 
 fn ${SIGNAL_PLANE_ENTRY_POINTS.codeScale}() -> f32 {
@@ -120,14 +140,13 @@ fn ${SIGNAL_PLANE_ENTRY_POINTS.conversion}(codes: vec3f) -> vec4f {
 }`;
 
 /**
- * Returns the planes of the frame pool signal for a stream of the format: its subsampling and siting, read per slot as the signal reads them.
+ * Returns the planes of the frame pool signal for a stream of the format: its subsampling and siting at the stream's location, read per slot as the signal reads them.
  * The transform, which planes derived from the signal's RGB take, holds the stream's metadata at the format's bit depth.
  */
-function createFramePoolPlanes(format: GPUDecoderOutputFormat, metadata: InputColorMetadata): SignalPlanes {
+function createFramePoolPlanes(format: GPUDecoderOutputFormat, metadata: InputColorMetadata, chromaLocation: ChromaLocation | null): SignalPlanes {
     const facts = getGPUDecoderFormatFacts(format);
     const divisors = { chromaHeightDivisor: facts.chromaHeightDivisor, chromaWidthDivisor: facts.chromaWidthDivisor };
-    // Chroma subsampled across is sited left, as the signal reads it
-    const chromaOffset = getChromaPlaneOffset(facts.chromaWidthDivisor > 1, facts.chromaWidthDivisor);
+    const chromaOffset = getChromaPlaneOffset(chromaLocation, divisors);
     return {
         ...getPlaneFormats(facts.bitDepth),
         ...divisors,
@@ -150,10 +169,16 @@ const SAMPLE_INTERLACED_CHROMA_WGSL = createInterlacedChromaReadWGSL(
 /**
  * Returns the signal step that reads a frame pool slot: a bilinear sample of the slot's planes at a coordinate normalized over the coded frame, converted to 'source' RGB.
  * It binds the 'frame-pool' resource, whose framePool and framePoolLayout PassResources declares, so the built-in color functions apply unchanged.
- * The format and the metadata's bit depth describe the stream's first frames; each frame's own layout decides how its samples read.
+ * The format and the metadata's bit depth describe the stream's first frames; each frame's own layout decides how its samples read, and a slot's 4:2:0
+ * chroma is read at the stream's location.
  * With interlacedChroma, as a deinterlacing plan's signal, a slot's 4:2:0 chroma is read within each field of a frame the presentation uniform marks interlaced.
  */
-export function createFramePoolSignal(format: SupportedRawVideoFrameFormat, metadata: InputColorMetadata, interlacedChroma: boolean = false): SignalDefinition {
+export function createFramePoolSignal(
+    format: SupportedRawVideoFrameFormat,
+    metadata: InputColorMetadata,
+    interlacedChroma: boolean = false,
+    chromaLocation: ChromaLocation | null = null
+): SignalDefinition {
     if (!isGPUDecoderOutputFormat(format)) {
         throw new RangeError(`format: unsupported '${format}'`);
     }
@@ -173,6 +198,7 @@ fn ${FRAME_POOL_SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
         code: joinWGSL([
             LOAD_SAMPLE_WGSL,
             SAMPLE_PLANE_WGSL,
+            createChromaShiftWGSL(chromaLocation),
             ...(interlacedChroma ? [ SAMPLE_INTERLACED_CHROMA_WGSL, INTERLACED_SAMPLE_YUV_WGSL ] : [ SAMPLE_YUV_WGSL ]),
             createSelectedBitDepthRawYUVRangeWGSL(metadata, GPU_DECODER_OUTPUT_BIT_DEPTHS, FRAME_POOL_BIT_DEPTH_EXPRESSION),
             createRawYUVMatrixWGSL(metadata),
@@ -180,7 +206,7 @@ fn ${FRAME_POOL_SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
         ]),
         entryPoint: FRAME_POOL_SIGNAL_ENTRY_POINT,
         name: `${FRAME_POOL_SIGNAL_NAME_PREFIX}.${format}${interlacedChroma ? INTERLACED_CHROMA_NAME_SUFFIX : ''}`,
-        planes: createFramePoolPlanes(format, metadata),
+        planes: createFramePoolPlanes(format, metadata, chromaLocation),
         resources: FRAME_POOL_RESOURCES,
         sourceKind: 'frame-pool'
     };

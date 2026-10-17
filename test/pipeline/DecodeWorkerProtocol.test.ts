@@ -49,6 +49,10 @@ import { createParserStubModuleBinary, STUB_MODULE_MEMORY_PAGES } from '../helpe
 const DOLBY_VISION_RPU_PARSER_WASM_URL = 'https://example.test/libraries/libdovi/dovi-rpu-parser.wasm';
 // The CPU decoder backends decoder packages replaced, and a name no backend ever had
 const REMOVED_VIDEO_DECODER_BACKENDS = [ 'bundled-hevc', 'ffmpeg-mpeg2-vc1', 'openjpeg', 'software' ] as const;
+// A ready response's chroma format, and members no reader declares
+const DECLARED_CHROMA_FORMAT = { location: 'top-left', subsampling: '4:2:0' } as const;
+const UNKNOWN_CHROMA_LOCATION = 'middle';
+const UNKNOWN_CHROMA_SUBSAMPLING = '4:1:1';
 const MEDIA_FILE_NAME = 'video.mkv';
 const MEDIA_URL = 'http://localhost/video.mkv';
 const UNKNOWN_MEDIA_SOURCE_KIND = 'stream';
@@ -1156,6 +1160,27 @@ describe('DecodeWorkerProtocol', () => {
             videoOutputMode: 'raw-planes',
             videoTrackIndex: 0
         })).toBe(true);
+    });
+
+    it('accepts a ready response\'s chroma format only with a known location and subsampling, each or both undeclared', () => {
+        const readyResponse = {
+            audio: null,
+            codec: 'hvc1.2.4.L153.B0',
+            codedHeight: 2_160,
+            codedWidth: 3_840,
+            displayHeight: 2_160,
+            displayWidth: 3_840,
+            generation: 1,
+            type: 'ready'
+        } as const;
+
+        expect(isDecodeWorkerResponse({ ...readyResponse, chromaFormat: DECLARED_CHROMA_FORMAT })).toBe(true);
+        expect(isDecodeWorkerResponse({ ...readyResponse, chromaFormat: { ...DECLARED_CHROMA_FORMAT, location: null } })).toBe(true);
+        expect(isDecodeWorkerResponse({ ...readyResponse, chromaFormat: { location: null, subsampling: null } })).toBe(true);
+        expect(isDecodeWorkerResponse({ ...readyResponse, chromaFormat: { ...DECLARED_CHROMA_FORMAT, location: UNKNOWN_CHROMA_LOCATION } })).toBe(false);
+        expect(isDecodeWorkerResponse({ ...readyResponse, chromaFormat: { ...DECLARED_CHROMA_FORMAT, subsampling: UNKNOWN_CHROMA_SUBSAMPLING } })).toBe(false);
+        expect(isDecodeWorkerResponse({ ...readyResponse, chromaFormat: { subsampling: DECLARED_CHROMA_FORMAT.subsampling } })).toBe(false);
+        expect(isDecodeWorkerResponse({ ...readyResponse, chromaFormat: null })).toBe(false);
     });
 
     it('rejects malformed generations, dimensions, and failures', () => {

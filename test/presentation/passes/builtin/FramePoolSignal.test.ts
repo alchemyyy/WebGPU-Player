@@ -6,12 +6,16 @@ import {
     createSDRColorMetadata,
     type InputColorMetadata
 } from 'webgpu-player/color/ColorMetadata';
+import { CHROMA_LOCATIONS, type ChromaLocation } from 'webgpu-player/demux/VideoChromaFormat';
 import {
     createRawYUVRangeWGSL,
     createRawYUVSignal,
     createSelectedBitDepthRawYUVRangeWGSL,
+    getChromaLumaShift,
+    getChromaPlaneOffset,
     INTERLACED_SIGNAL_CONDITION
 } from 'webgpu-player/presentation/passes/builtin/BuiltinSignals';
+import { toWGSLFloat } from 'webgpu-player/presentation/passes/builtin/BuiltinWGSL';
 import { createEngineStructsWGSL } from 'webgpu-player/presentation/passes/PassResources';
 import { createFramePoolSignal, FRAME_POOL_SIGNAL_ENTRY_POINT } from 'webgpu-player/presentation/passes/builtin/FramePoolSignal';
 import { GPU_DECODER_OUTPUT_BIT_DEPTHS, type GPUDecoderOutputFormat } from 'webgpu-player/decode/video/gpu/GPUDecodeFormats';
@@ -31,6 +35,12 @@ const VERTICALLY_SUBSAMPLED_CHROMA_CONDITION = 'framePoolLayout.planes[1].height
 const FINAL_READ_START = 'return vec3f(';
 // The slot's bit depth, which the signal normalizes each frame's codes by
 const SLOT_BIT_DEPTH_EXPRESSION = 'framePoolLayout.bitDepth';
+// The slot's subsampling on each axis, which places its chroma
+const SLOT_SUBSAMPLING_EXPRESSION = 'vec2u(framePoolLayout.planes[1].width, framePoolLayout.planes[1].height) < lumaSize';
+const DIVISORS_420 = { chromaHeightDivisor: 2, chromaWidthDivisor: 2 } as const;
+// 4:2:2 chroma lies half a luma sample, a quarter of a chroma sample, left of its texel's center
+const HALF_LUMA_SAMPLE = 0.5;
+const QUARTER_CHROMA_SAMPLE = 0.25;
 const SIGNAL_RANGES = [ 'limited', 'full' ] as const;
 
 type SignalCase = {
@@ -128,8 +138,21 @@ describe('createFramePoolSignal', () => {
         expect(load).toContain('u32(position.x) * bytesPerSample');
         expect(load).toContain('select(0xFFFFu, 0xFFu, bytesPerSample == 1u)');
         expect(extractFunction(eightBit420.code, 'normalizeRawYUV')).toContain(SLOT_BIT_DEPTH_EXPRESSION);
-        // Chroma subsampled across sits left, as the raw YUV signal sites 4:2:0 and 4:2:2, and full chroma is co-sited
-        expect(extractFunction(eightBit420.code, 'framePoolSampleYUV')).toContain('framePoolLayout.planes[1].width < lumaWidth');
+        // The slot's own subsampling places its chroma, as the raw YUV signal places each format's
+        expect(extractFunction(eightBit420.code, 'framePoolChromaShift')).toContain(SLOT_SUBSAMPLING_EXPRESSION);
+        expect(extractFunction(eightBit420.code, 'framePoolSampleYUV')).toContain('let chromaTextureCoordinate = textureCoordinate + framePoolChromaShift();');
+    });
+
+    it.each(CHROMA_LOCATIONS)('places a 4:2:0 slot\'s chroma at the %s location, and a 4:2:2 slot\'s on its left luma column', (location: ChromaLocation) => {
+        const signal = createFramePoolSignal('I420', createSDRColorMetadata(), false, location);
+        const [ horizontalShift, verticalShift ] = getChromaLumaShift(location, DIVISORS_420);
+        const chromaShift = extractFunction(signal.code, 'framePoolChromaShift');
+
+        expect(chromaShift).toContain(`if (subsampled.y) {\n        shift = vec2f(${toWGSLFloat(horizontalShift)}, ${toWGSLFloat(verticalShift)});`);
+        expect(chromaShift).toContain(`var shift = vec2f(select(0.0, ${toWGSLFloat(HALF_LUMA_SAMPLE)}, subsampled.x), 0.0);`);
+        expect(signal.planes?.chromaOffset).toEqual(getChromaPlaneOffset(location, DIVISORS_420));
+        expect(createFramePoolSignal('I422', createSDRColorMetadata(), false, location).planes?.chromaOffset).toEqual([ QUARTER_CHROMA_SAMPLE, 0 ]);
+        expect(createFramePoolSignal('I444', createSDRColorMetadata(), false, location).planes?.chromaOffset).toEqual([ 0, 0 ]);
     });
 
     it.each(GPU_DECODER_OUTPUT_BIT_DEPTHS)('normalizes %i-bit codes with the arithmetic of a raw YUV signal compiled for that depth', (bitDepth: number) => {
@@ -154,8 +177,10 @@ describe('createFramePoolSignal', () => {
         const sampleYUV = extractFunction(interlacedSignal.code, 'framePoolSampleYUV');
         const progressiveSampleYUV = extractFunction(signal.code, 'framePoolSampleYUV');
         expect(sampleYUV).toContain(`if (${INTERLACED_SIGNAL_CONDITION} && ${VERTICALLY_SUBSAMPLED_CHROMA_CONDITION}) {`);
-        expect(sampleYUV).toContain(`${INTERLACED_CHROMA_FUNCTION}(1u, chromaTextureCoordinate)`);
-        expect(sampleYUV).toContain(`${INTERLACED_CHROMA_FUNCTION}(2u, chromaTextureCoordinate)`);
+        // A field's rows carry its own siting, so its read takes the location's horizontal shift alone
+        expect(sampleYUV).toContain('let fieldChromaTextureCoordinate = textureCoordinate + vec2f(chromaShift.x, 0.0);');
+        expect(sampleYUV).toContain(`${INTERLACED_CHROMA_FUNCTION}(1u, fieldChromaTextureCoordinate)`);
+        expect(sampleYUV).toContain(`${INTERLACED_CHROMA_FUNCTION}(2u, fieldChromaTextureCoordinate)`);
         // Outside the interlaced branch, the read is the progressive signal's
         expect(sampleYUV.slice(sampleYUV.lastIndexOf(FINAL_READ_START))).toBe(progressiveSampleYUV.slice(progressiveSampleYUV.lastIndexOf(FINAL_READ_START)));
         expect(signal.code).not.toContain(INTERLACED_SIGNAL_CONDITION);
