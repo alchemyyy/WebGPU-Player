@@ -32,6 +32,8 @@ import { createParserStubModuleBinary, type ParserStubOptions } from '../helpers
 import { createHEVCMatroska, createHEVCMatroskaWithKeyframes } from '../helpers/hevcMatroskaVector';
 import {
     createInProcessGPUDecoderWorkerConstructor,
+    GPU_DECODER_COORDINATOR_WORKER_PATH,
+    InProcessGPUDecoderWorker,
     terminateInProcessGPUDecoderWorkers
 } from '../helpers/inProcessGPUDecoderWorkers';
 
@@ -93,11 +95,26 @@ const SLICE_DATA_ERROR_NAME = 'sliceData';
 const SLICE_DATA_ERROR_VALUE = 7;
 const SLICE_DATA_ERROR_NAMES = new Map([ [ SLICE_DATA_ERROR_CODE, SLICE_DATA_ERROR_NAME ] ]);
 const SLICE_DATA_RECOVERY = { code: 'resynced', errorName: `parser ${SLICE_DATA_ERROR_NAME}`, value: SLICE_DATA_ERROR_VALUE };
+// Two generations a seek separates
+const FIRST_RUN_GENERATION = 11;
+const SECOND_RUN_GENERATION = 12;
+// Long enough for a run to reach the parser output it waits for, were it not waiting already
+const SETTLE_MILLISECONDS = 50;
 
 type PacketResponse = Extract<DecodeWorkerResponse, { type: 'packet' }>;
 
 function getPacketResponses(responses: readonly DecodeWorkerResponse[]): PacketResponse[] {
     return responses.filter((response: DecodeWorkerResponse): response is PacketResponse => response.type === 'packet');
+}
+
+function getGenerationResponses(responses: readonly DecodeWorkerResponse[], generation: number): DecodeWorkerResponse[] {
+    return responses.filter(response => response.generation === generation);
+}
+
+function waitForSettled(): Promise<void> {
+    return new Promise(resolve => {
+        setTimeout(resolve, SETTLE_MILLISECONDS);
+    });
 }
 
 /** The error lines of a stub parser's header: each code's name, and the recovery of those that declare one. */
@@ -369,6 +386,50 @@ describe('CustomDecode.worker frame-pool route', () => {
             type: 'error'
         });
         expect(getPacketResponses(workerScope.responses).some(packet => packet.hold)).toBe(false);
+    });
+
+    it('runs a seek\'s generation beside the stopped one, whose parser pipeline the next run\'s replaces on the shared coordinator', async () => {
+        const workerScope = await startDecodeWorker(new Map([ [ RESYNC_FILE_NAME, await createHEVCMatroskaWithKeyframes(RESYNC_KEYFRAMES) ] ]));
+        serveGPUDecoderWorkers();
+        workerScope.dispatchRequest(createWorkerStartRequest(RESYNC_FILE_NAME, {
+            ...FRAME_POOL_ROUTE,
+            generation: FIRST_RUN_GENERATION,
+            gpuVideoParser: createRecordingParserField({})
+        }));
+        await workerScope.waitForResponse(response => response.type === 'ready' && response.generation === FIRST_RUN_GENERATION);
+        // The coordinator's answers wait, so the first run stops inside the packets its parser owes
+        const coordinator = InProcessGPUDecoderWorker.instances.find(worker => worker.runs(GPU_DECODER_COORDINATOR_WORKER_PATH));
+        if (!coordinator) {
+            throw new Error('The run started no parser coordinator worker');
+        }
+        const deliverResponse = coordinator.onmessage;
+        const heldResponses: Array<MessageEvent<unknown>> = [];
+        coordinator.onmessage = (event: MessageEvent<unknown>): void => {
+            heldResponses.push(event);
+        };
+        await waitForSettled();
+
+        workerScope.dispatchRequest({ generation: FIRST_RUN_GENERATION, type: 'stop' });
+        workerScope.dispatchRequest(createWorkerStartRequest(RESYNC_FILE_NAME, {
+            ...FRAME_POOL_ROUTE,
+            generation: SECOND_RUN_GENERATION,
+            gpuVideoParser: createRecordingParserField({})
+        }));
+        // Only the next run's pipeline, which replaces the first run's, ends the packets the first run waits for, so the next run began before the first one stopped
+        await workerScope.waitForStopped(FIRST_RUN_GENERATION);
+
+        coordinator.onmessage = deliverResponse;
+        for (const heldResponse of heldResponses.splice(0)) {
+            deliverResponse?.(heldResponse);
+        }
+        await workerScope.waitForStopped(SECOND_RUN_GENERATION);
+
+        const responses = workerScope.responses;
+        expect(responses.map(response => response.type)).not.toContain('error');
+        expect(getPacketResponses(getGenerationResponses(responses, FIRST_RUN_GENERATION))).toEqual([]);
+        const secondRunResponses = getGenerationResponses(responses, SECOND_RUN_GENERATION);
+        expect(getPacketResponses(secondRunResponses)).toHaveLength(RESYNC_KEYFRAMES.length);
+        expect(secondRunResponses.slice(-2).map(response => response.type)).toEqual([ 'ended', 'stopped' ]);
     });
 
     it('fails the run with the check its parser\'s configure failed', async () => {

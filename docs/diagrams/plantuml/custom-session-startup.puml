@@ -34,7 +34,7 @@ note right of controller
 end note
 controller -> session : start
 session -> worker : the first start creates CustomDecode.worker.js?v=<build key>
-session -> worker : 'start', once the previous run stopped;\ncredits: 4 frames, or 2 raw-plane buffers
+session -> worker : 'start', right behind the previous run's 'stop',\nwhich unwinds beside it; credits: 4 frames, or 2 raw-plane buffers
 worker -> audioWorker : the first decoded PCM start\ncreates CustomAudioDecode.worker.js
 worker -> worker : prepare tracks (canDecode);\nscan static HDR metadata\n(first 16 access units or 8 MiB)
 worker --> session : 'ready'

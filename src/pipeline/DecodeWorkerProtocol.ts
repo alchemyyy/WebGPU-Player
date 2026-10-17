@@ -482,13 +482,11 @@ export type DecodeWorkerErrorResponse = {
 };
 
 /**
- * Ends every run, stopped or finished; the worker then takes the next generation's start.
- * A worker runs one generation at a time, so the session sends a start only after the previous run's `stopped`.
+ * Ends every run, stopped or finished, once the run released everything it opened.
+ * The session sends the next generation's start without waiting for it, so a stopped run unwinds beside the next one.
  */
 export type DecodeWorkerStoppedResponse = {
     generation: number
-    /** Asks the session not to reuse the worker, because its audio decode worker was lost */
-    replaceWorker?: boolean
     type: 'stopped'
 };
 
@@ -1389,9 +1387,8 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
                 && isVideoStartupProgressPacketCount(value.packetCount)
                 && (value.mediaTimeMicroseconds === null || isMicroseconds(value.mediaTimeMicroseconds));
         case 'ended':
-            return true;
         case 'stopped':
-            return isOptionalBoolean(value.replaceWorker);
+            return true;
         case 'error':
             return isCustomDecodeFailureKind(value.failureKind) && typeof value.message === 'string';
         case 'audio-ended':

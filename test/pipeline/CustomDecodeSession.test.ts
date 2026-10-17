@@ -68,8 +68,10 @@ const ULTRA_HD_16K_CODED_HEIGHT = 8_640;
 const UNREPRESENTABLE_CODED_WIDTH = Number.MAX_SAFE_INTEGER;
 const UNREPRESENTABLE_CODED_HEIGHT = 2;
 const UNREPRESENTABLE_RAW_ROUTE_ERROR = 'Custom decode raw-frame route has no representable copy layout';
-// The bound a retired run has to acknowledge its stop before the session replaces its worker
-const WORKER_STOP_TIMEOUT_MILLISECONDS = 1_000;
+// The bound a retired run has to acknowledge its stop before the session gives up on its worker
+const RETIRED_RUN_STOP_TIMEOUT_MILLISECONDS = 10_000;
+// The retired runs one worker may unwind beside its running one before a start takes a fresh worker
+const MAXIMUM_RETIRING_RUNS = 4;
 const TIMER_RESOLUTION_MILLISECONDS = 1;
 const FIRST_LIFECYCLE_GENERATION = 201;
 const SECOND_LIFECYCLE_GENERATION = 202;
@@ -81,6 +83,7 @@ const DECODER_FAILURE_MESSAGE = 'Decoder failed';
 const INVALID_WORKER_MESSAGE_FAILURE = 'The custom decode worker sent an invalid message';
 const DESTROYED_SESSION_ERROR = 'The custom decode session is destroyed';
 const UNACKNOWLEDGED_STOP_WARNING = 'did not acknowledge shutdown';
+const WORKER_CRASH_FAILURE = 'The custom decode worker crashed';
 // A response type the protocol does not define
 const MALFORMED_RESPONSE_TYPE = 'malformed';
 
@@ -1908,7 +1911,7 @@ describe('CustomDecodeSession', () => {
         expect(worker.postedMessages.at(-1)).toEqual({ generation: 21, type: 'stop' });
     });
 
-    it('closes stale frames and hands the worker to the next generation once the previous run stops', async () => {
+    it('closes stale frames and starts the next generation in the same worker while the previous run unwinds', async () => {
         const worker = new MockWorker();
         const workerFactory = vi.fn((): Worker => worker as unknown as Worker);
         const session = new CustomDecodeSession(
@@ -1925,25 +1928,30 @@ describe('CustomDecodeSession', () => {
 
         expect(pendingOldFrame.close).toHaveBeenCalledOnce();
         expect(queuedOldFrame.close).toHaveBeenCalledOnce();
-        expect(worker.postedMessages.at(-1)).toEqual({ generation: 1, type: 'stop' });
+        // The start follows the stop at once, without the previous run's acknowledgement
+        expect(worker.postedMessages.slice(-2)).toEqual([
+            { generation: 1, type: 'stop' },
+            expect.objectContaining({ generation: 2, type: 'start' })
+        ]);
+        expect(session.getTelemetry().workerReused).toBe(true);
+        expect(workerFactory).toHaveBeenCalledOnce();
 
         const staleFrame = emitFrame(worker, 1, 1_100_000);
         expect(staleFrame.close).toHaveBeenCalledOnce();
         expect(session.getTelemetry().staleFrameCount).toBe(1);
 
+        const postedMessageCount = worker.postedMessages.length;
         worker.emitMessage({ generation: 1, type: 'stopped' });
-        expect(worker.postedMessages.at(-1)).toMatchObject({ generation: 2, type: 'start' });
-        expect(session.getTelemetry().workerReused).toBe(true);
-        expect(workerFactory).toHaveBeenCalledOnce();
+        expect(worker.postedMessages).toHaveLength(postedMessageCount);
         expect(worker.terminate).not.toHaveBeenCalled();
 
         const currentFrame = emitFrame(worker, 2, 1_000_000);
         expect(session.takeFrame(secondsToMicroseconds(1))?.frame).toBe(currentFrame);
-        const stopPromise = session.stop();
+        // The stop resolves without the run's acknowledgement too
+        await session.stop();
         expect(currentFrame.close).toHaveBeenCalledOnce();
         expect(worker.postedMessages.at(-1)).toEqual({ generation: 2, type: 'stop' });
         worker.emitMessage({ generation: 2, type: 'stopped' });
-        await stopPromise;
         // The idle worker waits for the next start
         expect(worker.terminate).not.toHaveBeenCalled();
     });
@@ -2087,8 +2095,9 @@ describe('CustomDecodeSession', () => {
         expect(crashingSession.getTelemetry().state).toBe('error');
     });
 
-    it('forcibly terminates a worker that does not acknowledge stop', async () => {
+    it('stops at once, and terminates the idle worker once its stopped run outlasts the bound', async () => {
         vi.useFakeTimers();
+        const consoleWarning = vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
         try {
             const worker = new MockWorker();
             const session = new CustomDecodeSession(
@@ -2097,18 +2106,20 @@ describe('CustomDecodeSession', () => {
             );
             startSession(session, 8);
 
-            const stopPromise = session.stop();
+            await session.stop();
+            await vi.advanceTimersByTimeAsync(RETIRED_RUN_STOP_TIMEOUT_MILLISECONDS - TIMER_RESOLUTION_MILLISECONDS);
             expect(worker.terminate).not.toHaveBeenCalled();
-            await vi.advanceTimersByTimeAsync(WORKER_STOP_TIMEOUT_MILLISECONDS);
-            await stopPromise;
+            await vi.advanceTimersByTimeAsync(TIMER_RESOLUTION_MILLISECONDS);
 
             expect(worker.terminate).toHaveBeenCalledOnce();
+            expect(consoleWarning).toHaveBeenCalledWith(expect.stringContaining(UNACKNOWLEDGED_STOP_WARNING));
         } finally {
+            consoleWarning.mockRestore();
             vi.useRealTimers();
         }
     });
 
-    it('keeps fallback and destroy stops pending until a failed worker retires', async () => {
+    it('resolves fallback and destroy stops at once, and terminates a failed worker once its run stopped', async () => {
         const worker = new MockWorker();
         const fallbackStopPromises: Promise<void>[] = [];
         const session = new CustomDecodeSession(
@@ -2131,30 +2142,14 @@ describe('CustomDecodeSession', () => {
         if (!fallbackStopPromise) {
             throw new Error('The fallback stop was not requested');
         }
-        const destroyStopPromise = session.stop();
-        let fallbackStopSettled = false;
-        let destroyStopSettled = false;
-        const observedFallbackStopPromise = fallbackStopPromise.then((): void => {
-            fallbackStopSettled = true;
-        });
-        const observedDestroyStopPromise = destroyStopPromise.then((): void => {
-            destroyStopSettled = true;
-        });
-        await Promise.resolve();
+        await fallbackStopPromise;
+        await session.stop();
 
         expect(fallbackStopPromises).toHaveLength(1);
-        expect(destroyStopPromise).toBe(fallbackStopPromise);
-        expect(fallbackStopSettled).toBe(false);
-        expect(destroyStopSettled).toBe(false);
         expect(countPostedMessages(worker, 'stop')).toBe(1);
+        // The failed run still releases its decoders before its worker goes
         expect(worker.terminate).not.toHaveBeenCalled();
-
         worker.emitMessage({ generation: 11, type: 'stopped' });
-        await fallbackStopPromise;
-        await destroyStopPromise;
-        await observedFallbackStopPromise;
-        await observedDestroyStopPromise;
-
         expect(worker.terminate).toHaveBeenCalledOnce();
     });
 
@@ -2886,9 +2881,6 @@ describe('CustomDecodeSession', () => {
         expect(session.suspendVideo()).toBe(true);
 
         startSession(session, 69);
-        // A start still waiting for the worker has no video attempt to resynchronize
-        expect(session.resyncVideo(secondsToMicroseconds(5))).toBe(false);
-        worker.emitMessage({ generation: 68, type: 'stopped' });
         emitRawReady(worker, 69);
         const initialFrame = emitFrame(worker, 69, 1_100_000);
 
@@ -3945,15 +3937,17 @@ describe('CustomDecodeSession worker lifecycle', () => {
         emitFrame(worker, FIRST_LIFECYCLE_GENERATION, 1_100_000);
 
         // The controller stops a generation before a seek starts the next one
-        const stopPromise = session.stop();
+        await session.stop();
         worker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
-        await stopPromise;
         startSession(session, SECOND_LIFECYCLE_GENERATION);
         expect(worker.postedMessages.at(-1)).toMatchObject({ generation: SECOND_LIFECYCLE_GENERATION, type: 'start' });
 
-        // A start without a stop waits for the previous run's acknowledgement
+        // A start without a stop retires the running generation and starts behind its stop
         startSession(session, THIRD_LIFECYCLE_GENERATION);
-        expect(worker.postedMessages.at(-1)).toEqual({ generation: SECOND_LIFECYCLE_GENERATION, type: 'stop' });
+        expect(worker.postedMessages.slice(-2)).toEqual([
+            { generation: SECOND_LIFECYCLE_GENERATION, type: 'stop' },
+            expect.objectContaining({ generation: THIRD_LIFECYCLE_GENERATION, type: 'start' })
+        ]);
         worker.emitMessage({ generation: SECOND_LIFECYCLE_GENERATION, type: 'stopped' });
 
         expect(getPostedStartGenerations(worker)).toEqual([
@@ -3970,7 +3964,7 @@ describe('CustomDecodeSession worker lifecycle', () => {
         });
     });
 
-    it('starts a generation only after the previous run stopped, and drops a start that never reached the worker', () => {
+    it('starts every generation at once while the runs it replaced unwind beside it', () => {
         const pool = createWorkerPool();
         const events: CustomDecodeSessionEvent[] = [];
         const session = new CustomDecodeSession(event => events.push(event), pool.createWorker);
@@ -3979,39 +3973,67 @@ describe('CustomDecodeSession worker lifecycle', () => {
 
         startSession(session, SECOND_LIFECYCLE_GENERATION);
         startSession(session, THIRD_LIFECYCLE_GENERATION);
-        // Only the running generation is asked to stop
-        expect(worker.postedMessages.slice(1)).toEqual([ { generation: FIRST_LIFECYCLE_GENERATION, type: 'stop' } ]);
+        // Each start stops the run before it
+        expect(worker.postedMessages.slice(1)).toEqual([
+            { generation: FIRST_LIFECYCLE_GENERATION, type: 'stop' },
+            expect.objectContaining({ generation: SECOND_LIFECYCLE_GENERATION, type: 'start' }),
+            { generation: SECOND_LIFECYCLE_GENERATION, type: 'stop' },
+            expect.objectContaining({ generation: THIRD_LIFECYCLE_GENERATION, type: 'start' })
+        ]);
         expect(session.getTelemetry()).toMatchObject({
             activeGeneration: THIRD_LIFECYCLE_GENERATION,
             state: 'starting',
-            workerReused: false
+            workerReused: true
         });
 
+        // The retired runs' acknowledgements change nothing for the running one
+        const postedMessageCount = worker.postedMessages.length;
         worker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
-        expect(getPostedStartGenerations(worker)).toEqual([ FIRST_LIFECYCLE_GENERATION, THIRD_LIFECYCLE_GENERATION ]);
-        expect(session.getTelemetry().workerReused).toBe(true);
+        worker.emitMessage({ generation: SECOND_LIFECYCLE_GENERATION, type: 'stopped' });
+        expect(worker.postedMessages).toHaveLength(postedMessageCount);
+        expect(worker.terminate).not.toHaveBeenCalled();
+        expect(pool.workers).toHaveLength(1);
         expect(events).toEqual([]);
     });
 
-    it('drops a waiting start when the session stops, and resolves once the running run stopped', async () => {
+    it('stops at once, and keeps the worker for the next start while its stopped runs unwind', async () => {
         const pool = createWorkerPool();
         const session = new CustomDecodeSession(() => undefined, pool.createWorker);
         startSession(session, FIRST_LIFECYCLE_GENERATION);
         const [ worker ] = pool.workers;
         startSession(session, SECOND_LIFECYCLE_GENERATION);
 
-        let stopSettled = false;
-        const stopPromise = session.stop().then((): void => {
-            stopSettled = true;
-        });
-        await Promise.resolve();
-        expect(stopSettled).toBe(false);
+        await session.stop();
+        expect(getPostedStartGenerations(worker)).toEqual([ FIRST_LIFECYCLE_GENERATION, SECOND_LIFECYCLE_GENERATION ]);
+        expect(countPostedMessages(worker, 'stop')).toBe(2);
 
+        startSession(session, THIRD_LIFECYCLE_GENERATION);
         worker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
-        await stopPromise;
-        expect(getPostedStartGenerations(worker)).toEqual([ FIRST_LIFECYCLE_GENERATION ]);
-        expect(countPostedMessages(worker, 'stop')).toBe(1);
+        worker.emitMessage({ generation: SECOND_LIFECYCLE_GENERATION, type: 'stopped' });
+        expect(getPostedStartGenerations(worker)).toEqual([
+            FIRST_LIFECYCLE_GENERATION,
+            SECOND_LIFECYCLE_GENERATION,
+            THIRD_LIFECYCLE_GENERATION
+        ]);
+        expect(pool.workers).toHaveLength(1);
         expect(worker.terminate).not.toHaveBeenCalled();
+    });
+
+    it('gives a start a fresh worker once the current one unwinds more retired runs than it may', () => {
+        const pool = createWorkerPool();
+        const session = new CustomDecodeSession(() => undefined, pool.createWorker);
+        const generations = Array.from({ length: MAXIMUM_RETIRING_RUNS + 2 }, (_value, index) => FIRST_LIFECYCLE_GENERATION + index);
+        // A burst of seeks whose stopped runs never acknowledge in time
+        for (const generation of generations) {
+            startSession(session, generation);
+        }
+
+        const [ crowdedWorker, freshWorker ] = pool.workers;
+        expect(pool.workers).toHaveLength(2);
+        expect(getPostedStartGenerations(crowdedWorker)).toEqual(generations.slice(0, MAXIMUM_RETIRING_RUNS + 1));
+        expect(crowdedWorker.terminate).toHaveBeenCalledOnce();
+        expect(getPostedStartGenerations(freshWorker)).toEqual(generations.slice(MAXIMUM_RETIRING_RUNS + 1));
+        expect(session.getTelemetry()).toMatchObject({ activeGeneration: generations.at(-1), state: 'starting', workerReused: false });
     });
 
     it('replaces the worker after it reports an error', async () => {
@@ -4046,7 +4068,7 @@ describe('CustomDecodeSession worker lifecycle', () => {
         expect(session.getTelemetry().workerReused).toBe(false);
     });
 
-    it('starts a waiting generation in a new worker at once when the previous run failed', () => {
+    it('keeps the running generation in a worker whose retired run failed, and gives the next start a new worker', () => {
         const pool = createWorkerPool();
         const events: CustomDecodeSessionEvent[] = [];
         const session = new CustomDecodeSession(event => events.push(event), pool.createWorker);
@@ -4062,11 +4084,16 @@ describe('CustomDecodeSession worker lifecycle', () => {
             type: 'error'
         });
 
+        expect(failedWorker.terminate).not.toHaveBeenCalled();
+        expect(events).toEqual([]);
+        expect(session.getTelemetry()).toMatchObject({ activeGeneration: SECOND_LIFECYCLE_GENERATION, failureKind: null, state: 'starting' });
+
+        startSession(session, THIRD_LIFECYCLE_GENERATION);
         expect(failedWorker.terminate).toHaveBeenCalledOnce();
         expect(pool.workers).toHaveLength(2);
-        expect(getPostedStartGenerations(pool.workers[1])).toEqual([ SECOND_LIFECYCLE_GENERATION ]);
-        expect(events).toEqual([]);
-        expect(session.getTelemetry()).toMatchObject({ failureKind: null, state: 'starting' });
+        expect(getPostedStartGenerations(failedWorker)).toEqual([ FIRST_LIFECYCLE_GENERATION, SECOND_LIFECYCLE_GENERATION ]);
+        expect(getPostedStartGenerations(pool.workers[1])).toEqual([ THIRD_LIFECYCLE_GENERATION ]);
+        expect(session.getTelemetry().workerReused).toBe(false);
     });
 
     it('replaces the worker after an invalid message, and an idle one without failing its ended generation', () => {
@@ -4106,7 +4133,7 @@ describe('CustomDecodeSession worker lifecycle', () => {
         expect(events.at(-1)).toEqual({ generation: SECOND_LIFECYCLE_GENERATION, type: 'ended' });
     });
 
-    it('replaces a worker whose retired run does not acknowledge its stop within the bound', async () => {
+    it('replaces a worker whose retired run does not acknowledge its stop within the bound at the next start', async () => {
         vi.useFakeTimers();
         const consoleWarning = vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
         try {
@@ -4116,40 +4143,27 @@ describe('CustomDecodeSession worker lifecycle', () => {
             const [ unresponsiveWorker ] = pool.workers;
             startSession(session, SECOND_LIFECYCLE_GENERATION);
 
-            await vi.advanceTimersByTimeAsync(WORKER_STOP_TIMEOUT_MILLISECONDS - TIMER_RESOLUTION_MILLISECONDS);
-            expect(unresponsiveWorker.terminate).not.toHaveBeenCalled();
-            expect(pool.workers).toHaveLength(1);
-
+            await vi.advanceTimersByTimeAsync(RETIRED_RUN_STOP_TIMEOUT_MILLISECONDS - TIMER_RESOLUTION_MILLISECONDS);
+            expect(consoleWarning).not.toHaveBeenCalled();
             await vi.advanceTimersByTimeAsync(TIMER_RESOLUTION_MILLISECONDS);
-            expect(unresponsiveWorker.terminate).toHaveBeenCalledOnce();
             expect(consoleWarning).toHaveBeenCalledWith(expect.stringContaining(UNACKNOWLEDGED_STOP_WARNING));
+            // The running generation keeps the worker it started in
+            expect(unresponsiveWorker.terminate).not.toHaveBeenCalled();
+            expect(session.getTelemetry()).toMatchObject({ activeGeneration: SECOND_LIFECYCLE_GENERATION, failureKind: null, state: 'starting' });
+
+            startSession(session, THIRD_LIFECYCLE_GENERATION);
+            expect(unresponsiveWorker.terminate).toHaveBeenCalledOnce();
             expect(pool.workers).toHaveLength(2);
-            expect(getPostedStartGenerations(pool.workers[1])).toEqual([ SECOND_LIFECYCLE_GENERATION ]);
+            expect(getPostedStartGenerations(pool.workers[1])).toEqual([ THIRD_LIFECYCLE_GENERATION ]);
 
             // A late acknowledgement from the replaced worker reaches nothing
             unresponsiveWorker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
-            expect(getPostedStartGenerations(pool.workers[1])).toEqual([ SECOND_LIFECYCLE_GENERATION ]);
+            expect(getPostedStartGenerations(pool.workers[1])).toEqual([ THIRD_LIFECYCLE_GENERATION ]);
             expect(session.getTelemetry()).toMatchObject({ failureKind: null, state: 'starting' });
         } finally {
             consoleWarning.mockRestore();
             vi.useRealTimers();
         }
-    });
-
-    it('replaces a worker that asks for it when its run stops', async () => {
-        const pool = createWorkerPool();
-        const session = new CustomDecodeSession(() => undefined, pool.createWorker);
-        startSession(session, FIRST_LIFECYCLE_GENERATION);
-        const [ leakingWorker ] = pool.workers;
-
-        const stopPromise = session.stop();
-        leakingWorker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, replaceWorker: true, type: 'stopped' });
-        await stopPromise;
-        expect(leakingWorker.terminate).toHaveBeenCalledOnce();
-
-        startSession(session, SECOND_LIFECYCLE_GENERATION);
-        expect(pool.workers).toHaveLength(2);
-        expect(getPostedStartGenerations(pool.workers[1])).toEqual([ SECOND_LIFECYCLE_GENERATION ]);
     });
 
     it('gives a start on another video decoder backend a new worker', async () => {
@@ -4195,7 +4209,7 @@ describe('CustomDecodeSession worker lifecycle', () => {
         });
     });
 
-    it('replaces a crashed worker and starts the generation that waited for it in a new one', () => {
+    it('replaces a crashed worker, failing only a generation that ran in it', async () => {
         const pool = createWorkerPool();
         const events: CustomDecodeSessionEvent[] = [];
         const session = new CustomDecodeSession(event => events.push(event), pool.createWorker);
@@ -4206,10 +4220,22 @@ describe('CustomDecodeSession worker lifecycle', () => {
         crashedWorker.emitError();
 
         expect(crashedWorker.terminate).toHaveBeenCalledOnce();
-        expect(pool.workers).toHaveLength(2);
-        expect(getPostedStartGenerations(pool.workers[1])).toEqual([ SECOND_LIFECYCLE_GENERATION ]);
-        // The crash took a retired run, so the waiting generation does not fail
-        expect(events).toEqual([]);
+        // The crash took the running generation with the retired run
+        expect(events).toEqual([ {
+            failureKind: 'decode-failed',
+            generation: SECOND_LIFECYCLE_GENERATION,
+            message: WORKER_CRASH_FAILURE,
+            type: 'error'
+        } ]);
+
+        startSession(session, THIRD_LIFECYCLE_GENERATION);
+        const [ , replacementWorker ] = pool.workers;
+        expect(getPostedStartGenerations(replacementWorker)).toEqual([ THIRD_LIFECYCLE_GENERATION ]);
+        await session.stop();
+        // A worker that holds only stopped runs fails nothing when it crashes
+        replacementWorker.emitError();
+        expect(replacementWorker.terminate).toHaveBeenCalledOnce();
+        expect(events).toHaveLength(1);
     });
 
     it('terminates the worker on destroy and refuses later starts', () => {
@@ -4273,6 +4299,8 @@ describe('CustomDecodeSession worker lifecycle', () => {
 
 describe('CustomDecodeSession frame-pool route', () => {
     const FRAME_POOL_GENERATION = 301;
+    // The generation a seek starts
+    const SEEK_FRAME_POOL_GENERATION = 302;
     // The HEVC decoder's package, whose parser turns the worker's packets into GPU records
     const HEVC_PACKAGE = createDecoderProjectVideoPackageForTest('hevc');
     const GPU_VIDEO_DECODER: GPUVideoDecoderSelection = { codec: 'hevc', decoderId: HEVC_PACKAGE.id, package: HEVC_PACKAGE };
@@ -4298,15 +4326,11 @@ describe('CustomDecodeSession frame-pool route', () => {
         worker: MockWorker
     };
 
-    /** Starts a frame-pool generation and answers its start with a ready that carries the track's codec private data. */
-    function startReadyFramePoolSession(gpuVideoDecoder: GPUVideoDecoderSelection = GPU_VIDEO_DECODER): FramePoolHarness {
-        const worker = new MockWorker();
-        const events: CustomDecodeSessionEvent[] = [];
-        const sessionFactory = createFakeGPUVideoDecodeSessionFactory();
-        const session = new CustomDecodeSession(event => events.push(event), () => worker as unknown as Worker, null, null, null, sessionFactory.factory);
+    /** Starts a frame-pool generation of the track on the session. */
+    function startFramePoolGeneration(session: CustomDecodeSession, generation: number, gpuVideoDecoder: GPUVideoDecoderSelection): void {
         session.start({
             dolbyVisionProfile: null,
-            generation: FRAME_POOL_GENERATION,
+            generation,
             gpuVideoDecoder,
             maximumCodedHeight: TRACK_CODED_HEIGHT,
             maximumCodedWidth: TRACK_CODED_WIDTH,
@@ -4319,6 +4343,10 @@ describe('CustomDecodeSession frame-pool route', () => {
             videoOutputMode: 'frame-pool',
             videoTrackIndex: 0
         });
+    }
+
+    /** Answers a generation's start with a ready that carries the track's codec private data. */
+    function emitFramePoolReady(worker: MockWorker, generation: number): void {
         worker.emitMessage({
             audio: null,
             codec: 'hvc1.2.4.L120.B0',
@@ -4327,9 +4355,19 @@ describe('CustomDecodeSession frame-pool route', () => {
             codedWidth: TRACK_CODED_WIDTH,
             displayHeight: TRACK_CODED_HEIGHT,
             displayWidth: TRACK_CODED_WIDTH,
-            generation: FRAME_POOL_GENERATION,
+            generation,
             type: 'ready'
         });
+    }
+
+    /** Starts a frame-pool generation and answers its start with a ready. */
+    function startReadyFramePoolSession(gpuVideoDecoder: GPUVideoDecoderSelection = GPU_VIDEO_DECODER): FramePoolHarness {
+        const worker = new MockWorker();
+        const events: CustomDecodeSessionEvent[] = [];
+        const sessionFactory = createFakeGPUVideoDecodeSessionFactory();
+        const session = new CustomDecodeSession(event => events.push(event), () => worker as unknown as Worker, null, null, null, sessionFactory.factory);
+        startFramePoolGeneration(session, FRAME_POOL_GENERATION, gpuVideoDecoder);
+        emitFramePoolReady(worker, FRAME_POOL_GENERATION);
         return { ...sessionFactory, events, session, worker };
     }
 
@@ -4421,6 +4459,35 @@ describe('CustomDecodeSession frame-pool route', () => {
         expect(harness.session.acknowledgeFrame(presentationFrame)).toBe(true);
         expect(harness.sessions[0].releasedFrames).toHaveLength(1);
         expect(harness.session.getTelemetry().gpuVideoDecode).toMatchObject({ state: 'ready', submittedPacketCount: 1 });
+    });
+
+    it('starts a seek\'s generation in the same worker at once, decodes none of the retired run\'s packets, and keeps the decoder', async () => {
+        const harness = startReadyFramePoolSession();
+        await vi.waitFor((): void => {
+            expect(harness.sessions).toHaveLength(1);
+        });
+        emitPacket(harness.worker, 0);
+        const queuedPacketCount = harness.sessions[0].queuedPackets.length;
+
+        startFramePoolGeneration(harness.session, SEEK_FRAME_POOL_GENERATION, GPU_VIDEO_DECODER);
+        expect(harness.worker.postedMessages.slice(-2)).toEqual([
+            { generation: FRAME_POOL_GENERATION, type: 'stop' },
+            expect.objectContaining({ generation: SEEK_FRAME_POOL_GENERATION, type: 'start', videoDecoderBackend: 'gpu' })
+        ]);
+        expect(harness.session.getTelemetry().workerReused).toBe(true);
+
+        // A packet the retired run posted before its stop arrives beside the next run's readiness
+        emitPacket(harness.worker, 1);
+        emitFramePoolReady(harness.worker, SEEK_FRAME_POOL_GENERATION);
+        harness.worker.emitMessage({ generation: FRAME_POOL_GENERATION, type: 'stopped' });
+
+        expect(harness.sessions[0].queuedPackets).toHaveLength(queuedPacketCount);
+        expect(harness.session.getTelemetry().staleFrameCount).toBe(1);
+        await vi.waitFor((): void => {
+            expect(harness.session.getTelemetry().gpuVideoDecode).toMatchObject({ reuseCount: 1, state: 'ready' });
+        });
+        expect(harness.sessions).toHaveLength(1);
+        expect(harness.worker.terminate).not.toHaveBeenCalled();
     });
 
     it('returns the credit of a replaced epoch\'s packet without decoding it', async () => {
