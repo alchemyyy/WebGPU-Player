@@ -37,6 +37,8 @@ const CODED_HEIGHT = 1_088;
 const CODED_POOL: GPUDecoderPictureSize = { height: CODED_HEIGHT, width: CODED_WIDTH };
 const VISIBLE_HEIGHT = 1_080;
 const DISPLAY_WIDTH = 2_560;
+// A track whose decoder configuration declares top-left 4:2:0 chroma
+const DECLARED_CHROMA_FORMAT = { location: 'top-left', subsampling: '4:2:0' } as const;
 const INITIAL_VIDEO_EPOCH = 0;
 const RESYNCED_VIDEO_EPOCH = 1;
 // The HEVC decoder's sliceData error, code 11, with the failing value 7
@@ -278,6 +280,21 @@ describe('GPUVideoDecodeFeed', () => {
         expect(harness.callbacks.creditsReleased).toBe(2);
         expect(harness.callbacks.frames.map(frame => frame.mediaTimeMicroseconds)).toEqual([ getTimestamp(0), getTimestamp(1) ]);
         expect(harness.feed.getTelemetry().submittedPacketCount).toBe(2);
+    });
+
+    it('hands every frame the chroma the track declares, and none without a declaration', async () => {
+        const declaring = createHarness();
+        declaring.feed.start(declaring.callbacks, INITIAL_VIDEO_EPOCH);
+        declaring.feed.configure(createRequest(), { displayHeight: VISIBLE_HEIGHT, displayWidth: DISPLAY_WIDTH }, DECLARED_CHROMA_FORMAT);
+        const undeclared = createHarness();
+        startConfigured(undeclared);
+        await settle();
+
+        declaring.feed.queuePacket(createPacket(0));
+        undeclared.feed.queuePacket(createPacket(0));
+
+        expect(declaring.callbacks.frames[0].chromaFormat).toEqual(DECLARED_CHROMA_FORMAT);
+        expect(undeclared.callbacks.frames[0]).not.toHaveProperty('chromaFormat');
     });
 
     it('hands each picture its own visible size and repeat counts, and presents a picture of its own size in the stream\'s display area', async () => {

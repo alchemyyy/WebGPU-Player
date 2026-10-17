@@ -9,7 +9,15 @@ import {
     createBuiltinChain,
     getBuiltinColorFunctionNames
 } from 'webgpu-player/presentation/passes/builtin/BuiltinChains';
-import { INTERLACED_SIGNAL_CONDITION } from 'webgpu-player/presentation/passes/builtin/BuiltinSignals';
+import {
+    createExternalHDRSignal,
+    createExternalIdentitySignal,
+    createRawDolbyVisionSignal,
+    createRawYUVSignal,
+    DEFAULT_CHROMA_LOCATION,
+    INTERLACED_SIGNAL_CONDITION
+} from 'webgpu-player/presentation/passes/builtin/BuiltinSignals';
+import { createFramePoolSignal } from 'webgpu-player/presentation/passes/builtin/FramePoolSignal';
 import type {
     BuiltinChain,
     BuiltinChainConfiguration,
@@ -54,20 +62,11 @@ const DUAL_LAYER_FORMAT: RawDolbyVisionFrameFormat = 'I420P10';
 const MISMATCHED_RAW_FORMAT = 'I420P12';
 const NON_NEUTRALIZED_BIT_DEPTH = 12;
 
-const FRAME_POOL_SIGNAL: SignalDefinition = {
-    bypassCondition: null,
-    code: `fn sampleFramePoolSignal(coordinate: vec2f) -> vec4f {
-    return vec4f(f32(framePool[0]), coordinate, 1.0);
-}`,
-    entryPoint: 'sampleFramePoolSignal',
-    name: 'test.frame-pool-signal',
-    planes: null,
-    resources: [ 'frame-pool' ],
-    sourceKind: 'frame-pool'
-};
-
-const INTERLACED_FRAME_POOL_SIGNAL: SignalDefinition = { ...FRAME_POOL_SIGNAL, name: 'test.frame-pool-signal.interlaced-chroma' };
 const INTERLACED_CHROMA_NAME_SUFFIX = '.interlaced-chroma';
+// A location other than the default left, which every route that reads or derives chroma takes
+const DECLARED_CHROMA_LOCATION = 'top-left';
+// The subsampling at which the external routes derive their planes' chroma
+const DECLARED_CHROMA_SUBSAMPLING = '4:2:0';
 const EIGHT_BIT_DEPTH = 8;
 const TEN_BIT_DEPTH = 10;
 // The raw formats whose chroma has half the luma's rows, which an interlaced frame's two fields share
@@ -93,7 +92,7 @@ function createToneMappedConfigurations(hdrOutput: boolean): ColorTrackConfigura
         { hdrOutput, route: 'external-dolby-vision', settings },
         { format: 'I420P10', hdrOutput, metadata: createHLGColorMetadata(), route: 'raw-yuv', settings },
         { felReconstruction: true, format: DUAL_LAYER_FORMAT, hdrOutput, profile: 7, route: 'raw-dolby-vision', settings },
-        { hdrOutput, metadata: createPQColorMetadata(), route: 'frame-pool', settings, signal: FRAME_POOL_SIGNAL }
+        { format: 'I420P10', hdrOutput, metadata: createPQColorMetadata(), route: 'frame-pool', settings }
     );
     return configurations;
 }
@@ -156,22 +155,22 @@ describe('createBuiltinChain', () => {
         expect(identityChain.signal).toEqual(toneMappedChain.signal);
     });
 
-    it('takes the frame pool signal from the GPU decode route and the raw YUV color track', () => {
+    it('reads the GPU decoder\'s slots of its output format with the frame pool signal and the raw YUV color track', () => {
         const metadata = createPQColorMetadata();
         const settings = createHDRToSDRRenderSettings();
-        const chain = createBuiltinChain({ hdrOutput: false, metadata, route: 'frame-pool', settings, signal: FRAME_POOL_SIGNAL });
+        const chain = createBuiltinChain({ format: 'I420P10', hdrOutput: false, metadata, route: 'frame-pool', settings });
         const rawChain = createBuiltinChain({ format: 'I420P10', hdrOutput: false, metadata, route: 'raw-yuv', settings });
         const identityChain = createBuiltinChain({
+            format: 'I420',
             hdrOutput: false,
             metadata: createSDRColorMetadata(),
             route: 'frame-pool',
-            settings: createDefaultRenderSettings(),
-            signal: FRAME_POOL_SIGNAL
+            settings: createDefaultRenderSettings()
         });
 
-        expect(chain.signal).toBe(FRAME_POOL_SIGNAL);
+        expect(chain.signal).toEqual(createFramePoolSignal('I420P10', metadata));
         expect(chain.colorFunctions).toEqual(rawChain.colorFunctions);
-        expect(identityChain.signal).toBe(FRAME_POOL_SIGNAL);
+        expect(identityChain.signal).toEqual(createFramePoolSignal('I420', createSDRColorMetadata()));
         expect(identityChain.colorFunctions).toEqual([]);
         expect(identityChain.sourceIsDisplay).toBe(true);
     });
@@ -236,29 +235,56 @@ describe('field-aware chroma for deinterlacing plans', () => {
             .toEqual(createBuiltinChain({ format, hdrOutput: false, metadata, route: 'raw-yuv', settings }));
     });
 
-    it('takes the frame pool route\'s interlaced signal only with interlaced chroma', () => {
+    it('reads the frame pool route\'s chroma within each field only with interlaced chroma', () => {
         const metadata = createSDRColorMetadata();
 
+        expect(createBuiltinChain({ format: 'I420', hdrOutput: false, metadata, route: 'frame-pool', settings }).signal)
+            .toEqual(createFramePoolSignal('I420', metadata));
+        expect(createBuiltinChain({ format: 'I420', hdrOutput: false, interlacedChroma: true, metadata, route: 'frame-pool', settings }).signal)
+            .toEqual(createFramePoolSignal('I420', metadata, true));
+    });
+});
+
+describe('the stream\'s chroma location', () => {
+    const settings = createHDRToSDRRenderSettings();
+
+    it('reaches every route that reads or derives chroma', () => {
+        const metadata = createPQColorMetadata();
+        const sdrMetadata = createSDRColorMetadata();
+
+        expect(createBuiltinChain({ chromaLocation: DECLARED_CHROMA_LOCATION, format: 'I420P10', hdrOutput: false, metadata, route: 'raw-yuv', settings }).signal)
+            .toEqual(createRawYUVSignal('I420P10', metadata, false, DECLARED_CHROMA_LOCATION));
+        expect(createBuiltinChain({ chromaLocation: DECLARED_CHROMA_LOCATION, format: 'I420P10', hdrOutput: false, metadata, route: 'frame-pool', settings }).signal)
+            .toEqual(createFramePoolSignal('I420P10', metadata, false, DECLARED_CHROMA_LOCATION));
         expect(createBuiltinChain({
+            chromaLocation: DECLARED_CHROMA_LOCATION,
+            felReconstruction: true,
+            format: DUAL_LAYER_FORMAT,
             hdrOutput: false,
-            interlacedSignal: INTERLACED_FRAME_POOL_SIGNAL,
-            metadata,
-            route: 'frame-pool',
-            settings,
-            signal: FRAME_POOL_SIGNAL
-        }).signal).toBe(FRAME_POOL_SIGNAL);
+            profile: 7,
+            route: 'raw-dolby-vision',
+            settings
+        }).signal).toEqual(createRawDolbyVisionSignal(DUAL_LAYER_FORMAT, 7, true, DECLARED_CHROMA_LOCATION));
         expect(createBuiltinChain({
+            chromaLocation: DECLARED_CHROMA_LOCATION,
+            chromaSubsampling: DECLARED_CHROMA_SUBSAMPLING,
             hdrOutput: false,
-            interlacedChroma: true,
-            interlacedSignal: INTERLACED_FRAME_POOL_SIGNAL,
             metadata,
-            route: 'frame-pool',
-            settings,
-            signal: FRAME_POOL_SIGNAL
-        }).signal).toBe(INTERLACED_FRAME_POOL_SIGNAL);
-        // A configuration without an interlaced signal keeps its own
-        expect(createBuiltinChain({ hdrOutput: false, interlacedChroma: true, metadata, route: 'frame-pool', settings, signal: FRAME_POOL_SIGNAL }).signal)
-            .toBe(FRAME_POOL_SIGNAL);
+            route: 'external-hdr',
+            settings
+        }).signal).toEqual(createExternalHDRSignal(metadata, DECLARED_CHROMA_SUBSAMPLING, DECLARED_CHROMA_LOCATION));
+        expect(createBuiltinChain({ chromaLocation: DECLARED_CHROMA_LOCATION, chromaSubsampling: DECLARED_CHROMA_SUBSAMPLING, metadata: sdrMetadata, route: 'external-identity' }).signal)
+            .toEqual(createExternalIdentitySignal(sdrMetadata, DECLARED_CHROMA_SUBSAMPLING, DECLARED_CHROMA_LOCATION));
+    });
+
+    it('reads chroma left where the stream declares no location, as H.264 and HEVC default', () => {
+        const metadata = createSDRColorMetadata();
+        const undeclaredSignal = createBuiltinChain({ format: 'I420', hdrOutput: false, metadata, route: 'raw-yuv', settings }).signal;
+
+        expect(createBuiltinChain({ chromaLocation: null, format: 'I420', hdrOutput: false, metadata, route: 'raw-yuv', settings }).signal).toEqual(undeclaredSignal);
+        expect(createBuiltinChain({ chromaLocation: DEFAULT_CHROMA_LOCATION, format: 'I420', hdrOutput: false, metadata, route: 'raw-yuv', settings }).signal).toEqual(undeclaredSignal);
+        expect(createBuiltinChain({ chromaLocation: DECLARED_CHROMA_LOCATION, format: 'I420', hdrOutput: false, metadata, route: 'raw-yuv', settings }).signal)
+            .not.toEqual(undeclaredSignal);
     });
 });
 

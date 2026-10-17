@@ -34,7 +34,7 @@ import {
     type StaticHDRMetadataScanResult
 } from '../demux/hdr/StaticHDRMetadata';
 import { isVideoFrameFields, type VideoFrameFields } from '../decode/video/VideoFields';
-import { type ChromaSubsampling, isChromaSubsampling } from '../demux/VideoChromaSubsampling';
+import { isChromaLocation, isChromaSubsampling, type VideoChromaFormat } from '../demux/VideoChromaFormat';
 import type { CustomAudioOutputChannelCount } from '../audio/processing/CustomAudioChannelLayout';
 import {
     assertValidAudioDownmixSettings,
@@ -346,6 +346,8 @@ export type DecodeWorkerReadyAudioConfiguration =
 
 export type DecodeWorkerReadyResponse = {
     audio: DecodeWorkerReadyAudioConfiguration | null
+    /** The chroma the track's decoder configuration declares, which every frame of the run carries to presentation; omitted when it declares none */
+    chromaFormat?: VideoChromaFormat
     codec: string
     /** The track's decoder configuration record, such as an hvcC, which the GPU decoder reads; sent on the frame-pool route when the track has one */
     codecPrivate?: ArrayBuffer
@@ -379,8 +381,6 @@ type DecodeWorkerFrameResponseBase = {
 };
 
 export type DecodeWorkerVideoFrameResponse = DecodeWorkerFrameResponseBase & {
-    /** The chroma subsampling the track's decoder configuration declares; omitted when it declares none */
-    chromaSubsampling?: ChromaSubsampling
     frame: VideoFrame
     outputMode: 'video-frame'
 };
@@ -1248,9 +1248,7 @@ function isDecodeWorkerFrameResponse(value: Record<string, unknown>): boolean {
     }
     switch (value.outputMode) {
         case 'video-frame':
-            return isRecord(value.frame)
-                && typeof value.frame.close === 'function'
-                && (value.chromaSubsampling === undefined || isChromaSubsampling(value.chromaSubsampling));
+            return isRecord(value.frame) && typeof value.frame.close === 'function';
         case 'raw-planes': {
             const hasValidFrame = (
                 Object.prototype.hasOwnProperty.call(value, 'enhancementFrame') ?
@@ -1342,7 +1340,14 @@ function isDecodeWorkerReadyResponse(value: Record<string, unknown>): boolean {
         && (!Object.prototype.hasOwnProperty.call(value, 'staticHDRMetadataScan')
             || isStaticHDRMetadataScanResult(value.staticHDRMetadataScan))
         && (value.codecPrivate === undefined || isCodecPrivate(value.codecPrivate))
+        && (value.chromaFormat === undefined || isVideoChromaFormat(value.chromaFormat))
         && (value.maximumPictureSize === undefined || isGPUDecoderPictureSize(value.maximumPictureSize));
+}
+
+function isVideoChromaFormat(value: unknown): value is VideoChromaFormat {
+    return isRecord(value)
+        && (value.location === null || isChromaLocation(value.location))
+        && (value.subsampling === null || isChromaSubsampling(value.subsampling));
 }
 
 function isNativeAudioMediaResponse(value: Record<string, unknown>): boolean {

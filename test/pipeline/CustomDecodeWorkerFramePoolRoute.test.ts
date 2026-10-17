@@ -51,6 +51,8 @@ const MISMATCHED_CODEC_FAILURE = 'The selected hevc video track does not match t
 const HVCC_CONFIGURATION_VERSION = 1;
 const HVCC_ARRAY_COUNT_BYTE_INDEX = 22;
 const HVCC_ARRAY_COUNT = 3;
+// The x265 HDR10+ sample's chroma: 4:2:0, whose SPS declares the top-left location HDR encodes take
+const X265_SAMPLE_CHROMA_FORMAT = { location: 'top-left', subsampling: '4:2:0' } as const;
 const ANNEX_B_START_CODE = [ 0, 0, 0, 1 ];
 // The parse workers each in-process coordinator worker starts
 const PARSE_WORKER_COUNT = 2;
@@ -182,6 +184,8 @@ describe('CustomDecode.worker frame-pool route', () => {
         const codecPrivate = new Uint8Array(getReadyResponse(responses).codecPrivate ?? new ArrayBuffer(0));
         expect(codecPrivate[0]).toBe(HVCC_CONFIGURATION_VERSION);
         expect(codecPrivate[HVCC_ARRAY_COUNT_BYTE_INDEX]).toBe(HVCC_ARRAY_COUNT);
+        // The chroma the hvcC and its SPS declare, which every frame of the run carries
+        expect(getReadyResponse(responses).chromaFormat).toEqual(X265_SAMPLE_CHROMA_FORMAT);
         expect(responses.some(response => response.type === 'frame')).toBe(false);
         expect(FakeVideoDecoder.instances).toEqual([]);
     });

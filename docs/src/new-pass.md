@@ -98,7 +98,8 @@ The plane stages hold the planes as mpv's do, as normalized code values: a code 
 
 Every image the plan holds has an offset: the pixel of the image, in its own pixels, that the reference grid's origin falls on, as libplacebo's texture rects place them.
 
-- The source's luma and the signal's RGB have the offset 0, and chroma has its siting: left-sited 4:2:0 and 4:2:2 chroma, such as H.264's and HEVC's default, has (0.25, 0), half a luma pixel.
+- The source's luma and the signal's RGB have the offset 0, and chroma has its siting: 4:2:0 chroma at the location the stream declares, and 4:2:2 chroma on its left luma column.
+  Left-sited chroma, H.264's and HEVC's default and the engine's where a stream declares no location, has (0.25, 0), half a luma pixel; top-left chroma, as BT.2020 sites it, has (0.25, 0.25).
 - A kernel or compute pass's output has the hooked image's offset scaled by the output's size over the hooked image's, plus its declared `offset`, or 0 with `offset: align`.
 - The engine never shifts a read: `<P>_tex` reads where the pass asks, and `<P>_offset()` gives the input's offset, so a pass that aligns itself reads `HOOKED_tex(coordinate + HOOKED_offset() * HOOKED_pt())`, as libplacebo's `OFFSET ALIGN` moves `HOOKED_pos`.
 - The scaler corrects its image's offset within its own resample, built-in or user, so an image that a pass doubled with `offset: -0.5, -0.5` lands where the source did.

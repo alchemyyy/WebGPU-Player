@@ -47,7 +47,6 @@ import {
     isHDR10PlusFrameMetadata,
     type HDR10PlusFrameMetadata
 } from '../demux/hdr/HDR10PlusMetadata';
-import { createFramePoolSignal } from './passes/builtin/FramePoolSignal';
 import type { GPUDecoderOutputFormat } from '../decode/video/gpu/GPUDecodeFormats';
 import { getGPUFramePoolByteLimit } from '../decode/video/gpu/GPUFramePool';
 import {
@@ -57,7 +56,7 @@ import {
     type VideoScan,
     type VideoStreamFields
 } from '../decode/video/VideoFields';
-import type { ChromaSubsampling } from '../demux/VideoChromaSubsampling';
+import type { ChromaLocation, ChromaSubsampling, VideoChromaFormat } from '../demux/VideoChromaFormat';
 import { createBuiltinChain } from './passes/builtin/BuiltinChains';
 import DeinterlaceTimeline, {
     DEFAULT_DEINTERLACE_MODE,
@@ -85,8 +84,7 @@ import type {
     PresentationCompileMessage,
     PresentationFrameInput,
     PresentationFrameSource,
-    PresentationPlan,
-    SignalDefinition
+    PresentationPlan
 } from './passes/PassTypes';
 import { getRawPlaneLayoutFailure } from './passes/PlaneTextureSource';
 import {
@@ -250,8 +248,8 @@ export type PresentationTelemetry = {
 };
 
 export type DecodedVideoPresentationFrame = {
-    /** The chroma subsampling the stream's decoder configuration declares, which the browser upsampled before the frame arrives as RGB */
-    chromaSubsampling?: ChromaSubsampling
+    /** The chroma the stream's decoder configuration declares, which the browser upsampled before the frame arrives as RGB */
+    chromaFormat?: VideoChromaFormat
     durationMicroseconds: Microseconds
     encodedDolbyVisionMetadata?: TransferableDolbyVisionEncodedFrameMetadata
     /** The frame's own fields, which its container reported; absent ones take the stream's scan */
@@ -265,6 +263,8 @@ export type DecodedVideoPresentationFrame = {
 };
 
 export type DecodedRawPresentationFrame = {
+    /** The chroma the stream's decoder configuration declares, whose location the signal reads the frame's chroma at */
+    chromaFormat?: VideoChromaFormat
     durationMicroseconds: Microseconds
     encodedDolbyVisionMetadata?: TransferableDolbyVisionEncodedFrameMetadata
     /** The frame's own fields, which its container reported; absent ones take the stream's scan */
@@ -280,6 +280,8 @@ export type DecodedRawPresentationFrame = {
 
 /** A frame a GPU decoder wrote into a frame pool slot on the presenter's device. */
 export type DecodedFramePoolPresentationFrame = {
+    /** The chroma the stream's decoder configuration declares, whose location the signal reads the frame's chroma at */
+    chromaFormat?: VideoChromaFormat
     /** The size presentation fits the frame by, which carries the pixel aspect ratio the visible rectangle lacks */
     displayHeight: number
     displayWidth: number
@@ -610,16 +612,24 @@ function withInterlacedChroma(configuration: BuiltinChainConfiguration, interlac
     }
 }
 
-/** Returns a route's chain configuration with the stream's chroma subsampling, which the external routes derive their planes' chroma at. */
-function withChromaSubsampling(configuration: BuiltinChainConfiguration, chromaSubsampling: ChromaSubsampling | null): BuiltinChainConfiguration {
+/**
+ * Returns a route's chain configuration with the stream's chroma: the planar routes' signals read 4:2:0 chroma at its location, and the external routes
+ * derive their planes' chroma at its subsampling and location. The browser converts an external Dolby Vision frame without planes.
+ */
+function withStreamChroma(
+    configuration: BuiltinChainConfiguration,
+    chromaSubsampling: ChromaSubsampling | null,
+    chromaLocation: ChromaLocation | null
+): BuiltinChainConfiguration {
     switch (configuration.route) {
         case 'external-hdr':
         case 'external-identity':
-            return { ...configuration, chromaSubsampling };
-        case 'external-dolby-vision':
+            return { ...configuration, chromaLocation, chromaSubsampling };
         case 'frame-pool':
         case 'raw-dolby-vision':
         case 'raw-yuv':
+            return { ...configuration, chromaLocation };
+        case 'external-dolby-vision':
             return configuration;
     }
 }
@@ -1258,7 +1268,8 @@ export default class WebGPUPresenter {
     private lastHistoryDraw: DeinterlaceDraw | null = null;
     // The session's stream fields, which deinterlacing plans follow
     private videoFieldFacts: VideoStreamFields = UNKNOWN_VIDEO_STREAM_FIELDS;
-    // The chroma subsampling the stream's decoder configuration declares, which the newest browser-decoded frame carried
+    // The chroma the stream's decoder configuration declares, which the newest frame carried
+    private streamChromaLocation: ChromaLocation | null = null;
     private streamChromaSubsampling: ChromaSubsampling | null = null;
     private dynamicHDR10PlusSettingsActive = false;
     private executor: PresentationExecutor | null = null;
@@ -2109,6 +2120,7 @@ export default class WebGPUPresenter {
         const fields = this.getEffectiveFrameFields(decodedFrame.fields ?? null);
         const visibleSize = getDecodedFrameVisibleSize(decodedFrame);
         const previousFacts = this.videoFieldFacts;
+        const previousChromaLocation = this.streamChromaLocation;
         const previousChromaSubsampling = this.streamChromaSubsampling;
         let changed = this.changeDeinterlaceInputs((): void => {
             if (fields !== null && fields.scan !== 'progressive') {
@@ -2116,14 +2128,13 @@ export default class WebGPUPresenter {
             }
             this.videoFieldFacts = { ...this.videoFieldFacts, frameHeight: visibleSize.height, frameWidth: visibleSize.width };
         });
-        if (decodedFrame.outputMode === 'video-frame') {
-            this.streamChromaSubsampling = decodedFrame.chromaSubsampling ?? null;
-        }
-        // Preset passes plan their planes at the frame's sample size, and an external route's chroma at the stream's subsampling
-        const planesChanged = previousFacts.frameWidth !== visibleSize.width
-            || previousFacts.frameHeight !== visibleSize.height
-            || previousChromaSubsampling !== this.streamChromaSubsampling;
-        if (!changed && planesChanged && this.presetPasses.some(isPlannedPresetPass)) {
+        this.streamChromaLocation = decodedFrame.chromaFormat?.location ?? null;
+        this.streamChromaSubsampling = decodedFrame.chromaFormat?.subsampling ?? null;
+        // Every route's signal or planes read chroma as the stream declares it, so a change replans whatever the preset; the planner returns the same plan,
+        // which keeps its executor, where nothing reads it. Preset passes plan their planes at the frame's sample size.
+        const chromaChanged = previousChromaLocation !== this.streamChromaLocation || previousChromaSubsampling !== this.streamChromaSubsampling;
+        const sizeChanged = previousFacts.frameWidth !== visibleSize.width || previousFacts.frameHeight !== visibleSize.height;
+        if (!changed && (chromaChanged || (sizeChanged && this.presetPasses.some(isPlannedPresetPass)))) {
             this.planRevision += 1;
             changed = true;
         }
@@ -2149,6 +2160,7 @@ export default class WebGPUPresenter {
             this.interlacedFrameSeen = false;
             this.videoFieldFacts = UNKNOWN_VIDEO_STREAM_FIELDS;
         });
+        this.streamChromaLocation = null;
         this.streamChromaSubsampling = null;
     }
 
@@ -2415,22 +2427,12 @@ export default class WebGPUPresenter {
             return null;
         }
 
-        let signal: SignalDefinition;
-        let interlacedSignal: SignalDefinition;
-        try {
-            signal = createFramePoolSignal(configuration.format, configuration.metadata);
-            interlacedSignal = createFramePoolSignal(configuration.format, configuration.metadata, true);
-        } catch (error) {
-            this.failColorConfiguration(pendingConfiguration, 'hdr-color-configuration-invalid', `signal: ${getErrorMessage(error)}`);
-            return null;
-        }
         const chainConfiguration: BuiltinChainConfiguration = {
+            format: configuration.format,
             hdrOutput: false,
-            interlacedSignal,
             metadata: { ...configuration.metadata },
             route: 'frame-pool',
-            settings: configuration.settings,
-            signal
+            settings: configuration.settings
         };
         const chainFailure = this.validateChainConfiguration(chainConfiguration);
         if (chainFailure !== null) {
@@ -2949,7 +2951,7 @@ export default class WebGPUPresenter {
     private createPlanRequest(device: GPUDevice, canvasFormat: GPUTextureFormat, presetPasses: readonly PresetPass[]): PlanRequest {
         const hdrOutput = this.isHDROutputActive();
         const deinterlace = this.getDeinterlaceRequest();
-        const configuration = withChromaSubsampling(this.desiredChainConfiguration, this.streamChromaSubsampling);
+        const configuration = withStreamChroma(this.desiredChainConfiguration, this.streamChromaSubsampling, this.streamChromaLocation);
         return {
             chain: createBuiltinChain(withInterlacedChroma(withHDROutput(configuration, hdrOutput), deinterlace !== null)),
             deinterlace,

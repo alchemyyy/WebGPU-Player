@@ -256,6 +256,7 @@ import type {
 import { PresentationExecutor } from 'webgpu-player/presentation/passes/PresentationExecutor';
 import { PRESENTATION_FIELD_STATE } from 'webgpu-player/presentation/passes/PassResources';
 import { planPresentation } from 'webgpu-player/presentation/passes/PresentationPlanner';
+import { createRawYUVSignal } from 'webgpu-player/presentation/passes/builtin/BuiltinSignals';
 import type { VideoStreamFields } from 'webgpu-player/decode/video/VideoFields';
 
 import { createHDR10PlusHEVCVector } from '../../src/capability/vectors/HDR10PlusVectors';
@@ -326,6 +327,8 @@ const NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS = addMicroseconds(RAW_FRAME_TIMESTAM
 const DISCONTINUOUS_FRAME_STEP_MICROSECONDS = requireMicroseconds(RAW_FRAME_DURATION_MICROSECONDS * 3);
 const FIRST_VIDEO_EPOCH = 0;
 const SECOND_VIDEO_EPOCH = 1;
+// A stream whose decoder configuration declares top-left 4:2:0 chroma, as BT.2020 sites it
+const DECLARED_CHROMA_FORMAT = { location: 'top-left', subsampling: '4:2:0' } as const;
 // An interlaced stream of raw test frames, top field first, its fields' signal, and its first frame's second field, halfway to the next frame
 const INTERLACED_FRAME_WIDTH = 8;
 const INTERLACED_FRAME_HEIGHT = 4;
@@ -4881,6 +4884,33 @@ describe('WebGPUPresenter', () => {
         expect(readParameterWrites(deviceHarness).at(-1)).toBe(Math.fround(NEXT_PRESET_SATURATION));
         // The paused frame redraws with the new value
         expect(encode.mock.calls.map((call: unknown[]): boolean => (call[1] as PresentationFrameInput).newFrame)).toEqual([ false ]);
+    });
+
+    it('reads a raw stream\'s chroma at the location it declares, replanning without preset passes, and once per change', async () => {
+        const metadata = createPQColorMetadata();
+        const { presenter } = await startRawRoutePresentation(metadata, 'I420P10', createHDRToSDRRenderSettings());
+        expect(getLastPlanRequest().chain.signal).toEqual(createRawYUVSignal('I420P10', metadata));
+        const pushFrame = async (timestampMicroseconds: Microseconds, expectedPresentedFrameCount: number): Promise<void> => {
+            expect(presenter.presentDecodedFrame({
+                chromaFormat: DECLARED_CHROMA_FORMAT,
+                durationMicroseconds: RAW_FRAME_DURATION_MICROSECONDS,
+                frame: { ...createRawFrame('I420P10', metadata), timestampMicroseconds },
+                mediaTimeMicroseconds: timestampMicroseconds,
+                outputMode: 'raw-planes',
+                videoEpoch: FIRST_VIDEO_EPOCH
+            }, 1)).toBe(true);
+            await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(expectedPresentedFrameCount));
+        };
+        const presentedFrameCount = presenter.getTelemetry().presentedFrameCount;
+
+        await pushFrame(RAW_FRAME_TIMESTAMP_MICROSECONDS, presentedFrameCount + 1);
+
+        await vi.waitFor(() => expect(getLastPlanRequest().chain.signal).toEqual(
+            createRawYUVSignal('I420P10', metadata, false, DECLARED_CHROMA_FORMAT.location)
+        ));
+        const planCount = vi.mocked(planPresentation).mock.calls.length;
+        await pushFrame(NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS, presentedFrameCount + 2);
+        expect(planPresentation).toHaveBeenCalledTimes(planCount);
     });
 
     it('replans for a new output size only while preset passes take part in plans, keeping live parameter values', async () => {

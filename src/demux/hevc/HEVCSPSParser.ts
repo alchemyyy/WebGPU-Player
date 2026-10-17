@@ -70,6 +70,8 @@ export type HEVCSPSColorSpace = {
 export type HEVCSPSConfiguration = {
     bitDepth: 8 | 10
     chromaFormat: 1
+    /** The VUI's chroma_sample_loc_type_top_field, H.273's location of 4:2:0 chroma, which a frame's chroma takes; null when the VUI declares none */
+    chromaSampleLocationType: number | null
     codedHeight: number
     codedWidth: number
     colorSpace: HEVCSPSColorSpace | null
@@ -150,6 +152,7 @@ type ProfileTierLevel = {
 };
 
 type ParsedVUI = {
+    chromaSampleLocationType: number | null
     colorDescriptionCodes: VUIColorDescriptionCodes | null
     colorDescriptionOffsets: VUIColorDescriptionOffsets | null
     colorSpace: HEVCSPSColorSpace | null
@@ -405,8 +408,9 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
         }
     }
 
+    let chromaSampleLocationType: number | null = null;
     if (reader.readFlag('chroma_loc_info_present_flag')) {
-        reader.readUnsignedExpGolomb('chroma_sample_loc_type_top_field', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
+        chromaSampleLocationType = reader.readUnsignedExpGolomb('chroma_sample_loc_type_top_field', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
         reader.readUnsignedExpGolomb('chroma_sample_loc_type_bottom_field', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
     }
     reader.skipBits(1, 'neutral_chroma_indication_flag');
@@ -415,6 +419,7 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
 
     const describedColorSpace = colorDescriptionCodes === null ? null : mapColorSpace(colorDescriptionCodes);
     return {
+        chromaSampleLocationType,
         colorDescriptionCodes,
         colorDescriptionOffsets,
         // Full range survives an absent or wholly unspecified colour description; limited is the default anyway
@@ -625,10 +630,11 @@ function parseHEVCSPSSyntax(nalUnit: Uint8Array): ParsedHEVCSPS {
     skipReferencePictureSyntax(reader, bitDepthConfiguration.log2MaximumPictureOrderCountLSBMinus4);
     reader.skipBits(1, 'sps_temporal_mvp_enabled_flag');
     reader.skipBits(1, 'strong_intra_smoothing_enabled_flag');
-    // An SPS without VUI leaves its color unspecified and field_seq_flag inferred as 0
+    // An SPS without VUI leaves its color and chroma location unspecified and field_seq_flag inferred as 0
     const vui: ParsedVUI = reader.readFlag('vui_parameters_present_flag') ?
         parseVUI(reader) :
         {
+            chromaSampleLocationType: null,
             colorDescriptionCodes: null,
             colorDescriptionOffsets: null,
             colorSpace: null,
@@ -642,6 +648,7 @@ function parseHEVCSPSSyntax(nalUnit: Uint8Array): ParsedHEVCSPS {
         configuration: {
             bitDepth: bitDepthConfiguration.bitDepth,
             chromaFormat: 1,
+            chromaSampleLocationType: vui.chromaSampleLocationType,
             codedHeight: dimensions.codedHeight,
             codedWidth: dimensions.codedWidth,
             colorSpace: vui.colorSpace,
@@ -686,7 +693,7 @@ function createNALUnitFromRBSP(nalUnit: Uint8Array, RBSP: Uint8Array): Uint8Arra
     return new Uint8Array(escapedBytes);
 }
 
-/** Parses the bounded SPS fields of a Main or Main 10 stream: geometry, bit depth, profile, level, DPB size, and color description. */
+/** Parses the bounded SPS fields of a Main or Main 10 stream: geometry, bit depth, profile, level, DPB size, color description, and chroma location. */
 export function parseHEVCSPS(nalUnit: Uint8Array): HEVCSPSConfiguration {
     return parseHEVCSPSSyntax(nalUnit).configuration;
 }

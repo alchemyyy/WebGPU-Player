@@ -8,6 +8,7 @@ import { getGPUDecoderParserModule } from '../decode/video/gpu/GPUDecoderParser'
 import { createGPUDecodeStreamFacts } from '../decode/video/gpu/GPUFramePool';
 import type { GPUVideoDecoderSelection } from '../decode/video/gpu/GPUVideoDecoderCatalog';
 import type { HDR10PlusFrameMetadata } from '../demux/hdr/HDR10PlusMetadata';
+import type { VideoChromaFormat } from '../demux/VideoChromaFormat';
 import GPUVideoDecodeFeed, {
     type GPUVideoDecodeFeedCallbacks,
     type GPUVideoDecodeFeedTelemetry,
@@ -300,6 +301,8 @@ type GenerationRecord = {
     stopRequested: boolean
     durationMicroseconds: Microseconds | null
     videoGeometry: RawVideoFrameGeometry | null
+    /** The chroma the track's decoder configuration declares, which the worker's readiness named and every frame carries; null while it declares none */
+    videoChromaFormat: VideoChromaFormat | null
     videoCodec: string | null
     videoDecoderBackend: CustomDecodeVideoDecoderBackend
     /** Latest requested video attempt; frames from earlier epochs are stale */
@@ -593,11 +596,19 @@ function validateHDRStartOptions(options: CustomDecodeSessionStartOptions): void
     }
 }
 
-/** Returns a worker's frame as presentation takes it, with its generation's video epoch, so presentation starts temporal history over when the epoch changes. */
-function createDecodedPresentationFrame(message: DecodeWorkerFrameResponse, videoEpoch: number): DecodedPresentationFrame {
+/**
+ * Returns a worker's frame as presentation takes it: with its generation's video epoch, so presentation starts temporal history over when the epoch changes,
+ * and the chroma its stream declares.
+ */
+function createDecodedPresentationFrame(
+    message: DecodeWorkerFrameResponse,
+    videoEpoch: number,
+    chromaFormat: VideoChromaFormat | null
+): DecodedPresentationFrame {
     switch (message.outputMode) {
         case 'raw-planes':
             return {
+                ...(chromaFormat ? { chromaFormat } : {}),
                 durationMicroseconds: message.durationMicroseconds,
                 encodedDolbyVisionMetadata: message.encodedDolbyVisionMetadata,
                 ...(message.fields ? { fields: message.fields } : {}),
@@ -610,7 +621,7 @@ function createDecodedPresentationFrame(message: DecodeWorkerFrameResponse, vide
             };
         case 'video-frame':
             return {
-                ...(message.chromaSubsampling ? { chromaSubsampling: message.chromaSubsampling } : {}),
+                ...(chromaFormat ? { chromaFormat } : {}),
                 durationMicroseconds: message.durationMicroseconds,
                 encodedDolbyVisionMetadata: message.encodedDolbyVisionMetadata,
                 ...(message.fields ? { fields: message.fields } : {}),
@@ -1202,6 +1213,7 @@ export default class CustomDecodeSession {
             startTimeMicroseconds: options.startTimeMicroseconds,
             stopRequested: false,
             durationMicroseconds: options.durationMicroseconds ?? null,
+            videoChromaFormat: null,
             videoCodec: null,
             videoDecoderBackend: options.videoDecoderBackend,
             videoEpoch: 0,
@@ -1540,6 +1552,7 @@ export default class CustomDecodeSession {
             return;
         }
 
+        generationRecord.videoChromaFormat = message.chromaFormat ?? null;
         generationRecord.videoCodec = videoCodec;
         if (generationRecord.videoOutputMode === 'frame-pool' && !this.configureGPUVideoDecode(generationRecord, message)) {
             return;
@@ -1618,7 +1631,7 @@ export default class CustomDecodeSession {
             format,
             maximumPictureSize: message.maximumPictureSize ?? null,
             stream: createGPUDecodeStreamFacts(message.codedWidth, message.codedHeight, format)
-        }, { displayHeight: message.displayHeight, displayWidth: message.displayWidth });
+        }, { displayHeight: message.displayHeight, displayWidth: message.displayWidth }, generationRecord.videoChromaFormat);
         return true;
     }
 
@@ -2084,7 +2097,7 @@ export default class CustomDecodeSession {
             return;
         }
 
-        this.queueDecodedFrame(generationRecord, createDecodedPresentationFrame(message, generationRecord.videoEpoch));
+        this.queueDecodedFrame(generationRecord, createDecodedPresentationFrame(message, generationRecord.videoEpoch, generationRecord.videoChromaFormat));
         this.recordDolbyVisionMetadata(message);
         this.recordHDR10PlusMetadata(message.HDR10PlusMetadata);
         this.emitReadyEventIfMediaReady(generationRecord);

@@ -64,6 +64,15 @@ const LEVEL_5_1_DPB_7_UHD_MAIN10_SPS = createBytesFromHex(
 const LEVEL_6_DPB_7_UHD_MAIN10_SPS = createBytesFromHex(
     '4201010200000000800000000000b4a001e020021c4d967ff089a848804800'
 );
+// SPSs of 64x64 streams from the pinned FFmpeg's libx265, whose trace_headers names their chroma_sample_loc_type: Main at 2 and Main 10 at 5
+const X265_MAIN_TOP_LEFT_SPS = createBytesFromHex(
+    '42010101600000030090000003000003001ea020810596566924caf01696c20000030002000003003210'
+);
+const X265_MAIN10_BOTTOM_SPS = createBytesFromHex(
+    '42010102200000030090000003000003001ea0208104d96566924caf016931820000030002000003003210'
+);
+const TOP_LEFT_CHROMA_SAMPLE_LOCATION_TYPE = 2;
+const BOTTOM_CHROMA_SAMPLE_LOCATION_TYPE = 5;
 const DOLBY_VISION_PROFILE_5_SPS_WITH_UNSPECIFIED_COLOR = createBytesFromHex(
     '420101222000000300b00000030000030096a001e02002087db6718b92448053888892cf24a69272c9124922dc91aa48fca223ff000100010100000303e900005dc06005ef7e000068e7700000d1cef080'
 );
@@ -73,6 +82,7 @@ describe('parseHEVCSPS', () => {
         expect(parseHEVCSPS(MAIN_SPS)).toEqual({
             bitDepth: 8,
             chromaFormat: 1,
+            chromaSampleLocationType: null,
             codedHeight: 64,
             codedWidth: 64,
             colorSpace: {
@@ -94,6 +104,7 @@ describe('parseHEVCSPS', () => {
         expect(parseHEVCSPS(MAIN10_PQ_SPS)).toEqual({
             bitDepth: 10,
             chromaFormat: 1,
+            chromaSampleLocationType: null,
             codedHeight: 360,
             codedWidth: 640,
             colorSpace: {
@@ -109,6 +120,13 @@ describe('parseHEVCSPS', () => {
             profileIDC: 2,
             progressive: true
         });
+    });
+
+    it('reads the VUI\'s top-field chroma sample location type, and null without chroma_loc_info or a VUI', () => {
+        expect(parseHEVCSPS(X265_MAIN_TOP_LEFT_SPS).chromaSampleLocationType).toBe(TOP_LEFT_CHROMA_SAMPLE_LOCATION_TYPE);
+        expect(parseHEVCSPS(X265_MAIN10_BOTTOM_SPS).chromaSampleLocationType).toBe(BOTTOM_CHROMA_SAMPLE_LOCATION_TYPE);
+        expect(parseHEVCSPS(MAIN10_HLG_SPS).chromaSampleLocationType).toBeNull();
+        expect(parseHEVCSPS(MAIN10_SPS_WITHOUT_VUI).chromaSampleLocationType).toBeNull();
     });
 
     it('maps a progressive Main10 BT.2020 HLG SPS without aliases', () => {

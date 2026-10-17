@@ -47,6 +47,7 @@ The presentation pipeline: each route's fixed signal and default color track, us
 - `PlaneTextureSource.ts`: the plane route's ingress: layout validation that names the failed check, one integer texture per plane, and the uploads.
 - `builtin/`: the built-in signals (`BuiltinSignals.ts`, and `FramePoolSignal.ts`, which reads a pool slot of any output format, as its layout says, for the frame-pool route's chain), color functions (`BuiltinColorFunctions.ts`), and route chains (`BuiltinChains.ts`), and the deinterlacing pass (`DeinterlacePass.ts`, yadif over the signal's ring).
   A deinterlacing plan's raw and frame pool signals read an interlaced frame's 4:2:0 chroma within each field.
+  Every signal reads 4:2:0 chroma at the stream's declared location, left where it declares none.
   Each signal offers its planes to plane passes: the raw and frame pool signals their decoded planes, with chroma's siting, range, and matrix, the external signals planes derived from RGB through the stream's own matrix and range at its chroma subsampling, and the Dolby Vision signals none.
   Every signal with planes also offers their transform from 'source' RGB and back, which deinterlacing plans and the prelude use.
   `BuiltinColorFunctions.ts` also gives each chain its transfer function for the prelude's linearize and delinearize, renamed from the transfer decode's code.
@@ -124,7 +125,7 @@ All worker code unless marked.
 - `CustomAudioTrackMetadata.ts`: the Matroska and ISO BMFF DTS and TrueHD tracks whose codec Mediabunny does not map (`DTS `, `mlpa`), DTS Express detection, declared-rate recovery for their sample entries, and the decoded audio timestamp tolerance.
 - `AVIIndexCoverage.ts`: whether an AVI track's indexed packets end well before its stream header's declared length, as an OpenDML file's do past its first RIFF list.
 - `UnsupportedTrackFeatures.ts`: the first feature, such as an edit list, that Mediabunny reports it cannot honor for a track.
-- `VideoChromaSubsampling.ts` [main and worker]: a video track's chroma subsampling from its decoder configuration, an avcC (its closing chroma format or its first SPS), an hvcC, an av1C, or an AV1, VP9, or VP8 codecs string, which VideoFrames carry to presentation.
+- `VideoChromaFormat.ts` [main and worker]: a video track's chroma from its decoder configuration, which the worker's ready response names and every frame carries to presentation: its subsampling from an avcC (its closing chroma format or its first SPS), an hvcC, an av1C, or an AV1, VP9, or VP8 codecs string, and its 4:2:0 location from the first SPS's VUI of an avcC or hvcC, or an av1C's or AV1 codecs string's chroma_sample_position.
 - `AudioStartPacket.ts`: the packet an audio attempt starts from, without Mediabunny's proof scans when the track starts late.
 - `TrackIteration.ts`: a track's packets in decode order, read about a second ahead, and its decoded video or audio samples from a start time, as iterators that end at once on `return()`.
 - `ISOBaseMediaSampleEntryChildBox.ts`: reads a child box of an ISO base media track's first sample entry, such as `dvc1` or `av1C`, from the `moov` bytes Mediabunny keeps.

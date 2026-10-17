@@ -73,6 +73,9 @@ const WORKER_STOP_TIMEOUT_MILLISECONDS = 1_000;
 const TIMER_RESOLUTION_MILLISECONDS = 1;
 const FIRST_LIFECYCLE_GENERATION = 201;
 const SECOND_LIFECYCLE_GENERATION = 202;
+const CHROMA_FORMAT_GENERATION = 41;
+// A track whose decoder configuration declares top-left 4:2:0 chroma, as BT.2020 sites it
+const DECLARED_CHROMA_FORMAT = { location: 'top-left', subsampling: '4:2:0' } as const;
 const THIRD_LIFECYCLE_GENERATION = 203;
 const DECODER_FAILURE_MESSAGE = 'Decoder failed';
 const INVALID_WORKER_MESSAGE_FAILURE = 'The custom decode worker sent an invalid message';
@@ -834,6 +837,54 @@ describe('CustomDecodeSession', () => {
             videoProgressPhase: 'video-packet-started'
         });
         expect(events).toEqual([]);
+    });
+
+    it.each([ 'video-frame', 'raw-planes' ] as const)('hands every %s frame the chroma the worker\'s readiness declared', videoOutputMode => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            (): void => undefined,
+            () => worker as unknown as Worker
+        );
+        startSession(session, CHROMA_FORMAT_GENERATION, undefined, videoOutputMode);
+        worker.emitMessage({
+            audio: null,
+            chromaFormat: DECLARED_CHROMA_FORMAT,
+            codec: 'hvc1.2.4.L153.B0',
+            codedHeight: 2,
+            codedWidth: 4,
+            displayHeight: 2,
+            displayWidth: 4,
+            generation: CHROMA_FORMAT_GENERATION,
+            type: 'ready'
+        });
+        if (videoOutputMode === 'video-frame') {
+            emitFrame(worker, CHROMA_FORMAT_GENERATION, 1_100_000);
+        } else {
+            emitRawFrame(worker, CHROMA_FORMAT_GENERATION, requireMicroseconds(1_100_000, 'raw frame time'));
+        }
+
+        const presentationFrame = session.takeFrame(secondsToMicroseconds(1.1));
+        expect(presentationFrame?.chromaFormat).toEqual(DECLARED_CHROMA_FORMAT);
+        if (presentationFrame?.outputMode === 'video-frame') {
+            presentationFrame.frame.close();
+        }
+    });
+
+    it('hands frames no chroma format when the worker\'s readiness declared none', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            (): void => undefined,
+            () => worker as unknown as Worker
+        );
+        startSession(session, CHROMA_FORMAT_GENERATION);
+        emitRawReady(worker, CHROMA_FORMAT_GENERATION);
+        emitFrame(worker, CHROMA_FORMAT_GENERATION, 1_100_000);
+
+        const presentationFrame = session.takeFrame(secondsToMicroseconds(1.1));
+        expect(presentationFrame).not.toHaveProperty('chromaFormat');
+        if (presentationFrame?.outputMode === 'video-frame') {
+            presentationFrame.frame.close();
+        }
     });
 
     it('forwards encoded Dolby Vision ownership and records extraction telemetry', () => {
