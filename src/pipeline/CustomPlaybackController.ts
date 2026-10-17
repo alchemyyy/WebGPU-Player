@@ -1286,7 +1286,7 @@ export default class CustomPlaybackController {
 
         this.destroyed = true;
         this.destroyPromise = this.stopController().finally((): void => {
-            // The decode worker outlives every generation, so only a destroyed controller releases it
+            // The decode worker outlives every generation, so only a destroyed controller lets it go, to the page's next controller
             this.videoDecodeSession.destroy();
         }).then(
             (): Promise<void> => this.destroyAudioResources(),

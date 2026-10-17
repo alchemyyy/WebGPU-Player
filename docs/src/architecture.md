@@ -264,7 +264,9 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
   A worker is replaced, never reused, after a generation fails, a message fails validation, or the worker crashes; a start on another video decoder backend also gets a new worker.
   A retired run that does not post `stopped` within 10 s, or a retired run's failure, replaces the worker at the next start, and such a worker terminates once it holds no run; a start that would leave more than 4 retired runs unwinding in the worker takes a new one.
   A lost audio decode worker fails its run's decoded PCM as `audio-output-failed`, and the decode worker spawns another for its next run.
-- Stop: `controller.destroy` stops the generation, terminates the decode worker and with it its audio decode worker and the runs still unwinding in it, releases the worklet and the sink lease (1.5 s cap), and ends the presenter session.
+- Stop: `controller.destroy` stops the generation, releases the worklet and the sink lease (1.5 s cap), and ends the presenter session.
+  Once the stopped run posted `stopped`, the decode worker, with its parser coordinator, parse workers, and audio decode worker, waits for the page's next session, as the next item of a queue starts one, and terminates if none takes it within 30 s (`releaseIdleCustomDecodeWorker` ends the wait at once).
+  A worker unfit for another generation terminates instead.
 
 ## Fallback and renegotiation
 

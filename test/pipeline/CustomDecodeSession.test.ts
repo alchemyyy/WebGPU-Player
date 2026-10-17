@@ -24,6 +24,7 @@ import CustomDecodeNativeAudioBridge, {
     type OwnedNativeMediaAudioBackendPort
 } from 'webgpu-player/audio/native/CustomDecodeNativeAudioBridge';
 import CustomDecodeSession, {
+    releaseIdleCustomDecodeWorker,
     type CustomDecodeAudioResyncOptions,
     type CustomDecodeSessionEvent
 } from 'webgpu-player/pipeline/CustomDecodeSession';
@@ -72,6 +73,8 @@ const UNREPRESENTABLE_RAW_ROUTE_ERROR = 'Custom decode raw-frame route has no re
 const RETIRED_RUN_STOP_TIMEOUT_MILLISECONDS = 10_000;
 // The retired runs one worker may unwind beside its running one before a start takes a fresh worker
 const MAXIMUM_RETIRING_RUNS = 4;
+// How long a destroyed session's worker waits for the page's next session before it terminates
+const IDLE_DECODE_WORKER_RELEASE_DELAY_MILLISECONDS = 30_000;
 const TIMER_RESOLUTION_MILLISECONDS = 1;
 const FIRST_LIFECYCLE_GENERATION = 201;
 const SECOND_LIFECYCLE_GENERATION = 202;
@@ -390,6 +393,8 @@ afterEach(() => {
     for (const port of openedAudioOutputPorts.splice(0)) {
         port.close();
     }
+    // A destroyed session's worker waits for the page's next session, which no later test is
+    releaseIdleCustomDecodeWorker();
 });
 
 type DecodedAudioSessionHarness = {
@@ -4238,7 +4243,7 @@ describe('CustomDecodeSession worker lifecycle', () => {
         expect(events).toHaveLength(1);
     });
 
-    it('terminates the worker on destroy and refuses later starts', () => {
+    it('leaves its worker idle on destroy once its run stopped, and refuses later starts', () => {
         const pool = createWorkerPool();
         const session = new CustomDecodeSession(() => undefined, pool.createWorker);
         startSession(session, FIRST_LIFECYCLE_GENERATION);
@@ -4249,13 +4254,148 @@ describe('CustomDecodeSession worker lifecycle', () => {
 
         expect(frame.close).toHaveBeenCalledOnce();
         expect(worker.postedMessages.at(-1)).toEqual({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stop' });
-        expect(worker.terminate).toHaveBeenCalledOnce();
         expect(session.getTelemetry()).toMatchObject({ activeGeneration: null, state: 'idle' });
+        session.destroy();
+        expect(() => startSession(session, SECOND_LIFECYCLE_GENERATION)).toThrow(DESTROYED_SESSION_ERROR);
+
+        // The stopped run unwinds first, then the worker waits for the page's next session
+        worker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+        expect(worker.terminate).not.toHaveBeenCalled();
+        releaseIdleCustomDecodeWorker();
+        expect(worker.terminate).toHaveBeenCalledOnce();
+        expect(pool.workers).toHaveLength(1);
+    });
+
+    it('gives the page\'s next session from the same factory the worker a destroyed session left idle', () => {
+        const pool = createWorkerPool();
+        const firstSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(firstSession, FIRST_LIFECYCLE_GENERATION);
+        const [ worker ] = pool.workers;
+        firstSession.destroy();
+        worker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+
+        // A session from another factory never takes it
+        const otherPool = createWorkerPool();
+        const otherSession = new CustomDecodeSession(() => undefined, otherPool.createWorker);
+        startSession(otherSession, FIRST_LIFECYCLE_GENERATION);
+        expect(otherPool.workers).toHaveLength(1);
+
+        // The next item's controller numbers its generations afresh
+        const nextSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(nextSession, FIRST_LIFECYCLE_GENERATION);
+
+        expect(pool.workers).toHaveLength(1);
+        expect(getPostedStartGenerations(worker)).toEqual([ FIRST_LIFECYCLE_GENERATION, FIRST_LIFECYCLE_GENERATION ]);
+        expect(nextSession.getTelemetry()).toMatchObject({ state: 'starting', workerReused: true });
+        const frame = emitFrame(worker, FIRST_LIFECYCLE_GENERATION, 1_000_000);
+        expect(nextSession.takeFrame(secondsToMicroseconds(1))?.frame).toBe(frame);
+        expect(worker.terminate).not.toHaveBeenCalled();
+    });
+
+    it('starts a session in a worker of its own while a destroyed session\'s run still unwinds, and keeps one idle worker', () => {
+        const pool = createWorkerPool();
+        const firstSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(firstSession, FIRST_LIFECYCLE_GENERATION);
+        const [ unwindingWorker ] = pool.workers;
+        firstSession.destroy();
+
+        const nextSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(nextSession, FIRST_LIFECYCLE_GENERATION);
+        const [ , nextWorker ] = pool.workers;
+        expect(getPostedStartGenerations(nextWorker)).toEqual([ FIRST_LIFECYCLE_GENERATION ]);
+
+        // The unwound worker waits for a later session, and the next one's worker replaces it there
+        unwindingWorker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+        expect(unwindingWorker.terminate).not.toHaveBeenCalled();
+        nextSession.destroy();
+        nextWorker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+        expect(unwindingWorker.terminate).toHaveBeenCalledOnce();
+        expect(nextWorker.terminate).not.toHaveBeenCalled();
+    });
+
+    it('terminates the idle worker once no session takes it within the idle delay', async () => {
+        vi.useFakeTimers();
+        try {
+            const pool = createWorkerPool();
+            const session = new CustomDecodeSession(() => undefined, pool.createWorker);
+            startSession(session, FIRST_LIFECYCLE_GENERATION);
+            const [ worker ] = pool.workers;
+            session.destroy();
+            worker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+
+            await vi.advanceTimersByTimeAsync(IDLE_DECODE_WORKER_RELEASE_DELAY_MILLISECONDS - TIMER_RESOLUTION_MILLISECONDS);
+            expect(worker.terminate).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(TIMER_RESOLUTION_MILLISECONDS);
+            expect(worker.terminate).toHaveBeenCalledOnce();
+
+            const nextSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+            startSession(nextSession, SECOND_LIFECYCLE_GENERATION);
+            expect(pool.workers).toHaveLength(2);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('terminates a destroyed session\'s worker unfit for another generation instead of leaving it idle', () => {
+        const pool = createWorkerPool();
+        const session = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(session, FIRST_LIFECYCLE_GENERATION);
+        const [ failedWorker ] = pool.workers;
+        failedWorker.emitMessage({
+            failureKind: 'decode-failed',
+            generation: FIRST_LIFECYCLE_GENERATION,
+            message: DECODER_FAILURE_MESSAGE,
+            type: 'error'
+        });
 
         session.destroy();
-        expect(worker.terminate).toHaveBeenCalledOnce();
-        expect(() => startSession(session, SECOND_LIFECYCLE_GENERATION)).toThrow(DESTROYED_SESSION_ERROR);
-        expect(pool.workers).toHaveLength(1);
+        failedWorker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+        expect(failedWorker.terminate).toHaveBeenCalledOnce();
+
+        const nextSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(nextSession, FIRST_LIFECYCLE_GENERATION);
+        expect(pool.workers).toHaveLength(2);
+        expect(nextSession.getTelemetry().workerReused).toBe(false);
+    });
+
+    it('leaves an idle worker to a session on its own video decoder backend', () => {
+        const pool = createWorkerPool();
+        const nativeSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(nativeSession, FIRST_LIFECYCLE_GENERATION);
+        const [ nativeWorker ] = pool.workers;
+        nativeSession.destroy();
+        nativeWorker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+
+        const gpuSession = new CustomDecodeSession(
+            () => undefined,
+            pool.createWorker,
+            null,
+            null,
+            null,
+            createFakeGPUVideoDecodeSessionFactory().factory
+        );
+        const decoderPackage = createVideoDecoderPackageForTest(createVideoDecoderSource({ outputFormats: [ 'I420P10' ] }));
+        gpuSession.start({
+            dolbyVisionProfile: null,
+            generation: FIRST_LIFECYCLE_GENERATION,
+            gpuVideoDecoder: { codec: 'hevc', decoderId: decoderPackage.id, package: decoderPackage },
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: 'I420P10',
+            startTimeMicroseconds: secondsToMicroseconds(1),
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
+            videoDecoderBackend: 'gpu',
+            videoOutputMode: 'frame-pool',
+            videoTrackIndex: 0
+        });
+        expect(pool.workers).toHaveLength(2);
+
+        const nextNativeSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(nextNativeSession, SECOND_LIFECYCLE_GENERATION);
+        expect(pool.workers).toHaveLength(2);
+        expect(getPostedStartGenerations(nativeWorker)).toEqual([ FIRST_LIFECYCLE_GENERATION, SECOND_LIFECYCLE_GENERATION ]);
     });
 
     it('keeps an ended generation current after its run stops, so the native element still ends the session', async () => {

@@ -665,6 +665,9 @@ These were settled on Firefox 157 on Windows.
 - One decode worker per session (10-09).
   Every generation, which every seek, audio track switch, and paused repaint starts, used to create its own worker and paid worker startup, script evaluation, and WASM decoder instantiation each time.
   The session now creates its worker at the first start, runs every generation in it, and terminates it only on `destroy`.
+  Since 10-17 `destroy` leaves a worker fit for another generation to the page's next session from the same factory, once its runs posted `stopped`, and terminates it if none takes it within 30 s.
+  Each item of a queue built its own controller and session, so every episode switch started the decode worker, its parser coordinator, its six parse workers, and its audio decode worker again and fetched their scripts and the output stage's WASM.
+  The handoff waits for the runs to end because a new controller numbers its generations from 1 again, so a run still unwinding could post under the next session's generation; a session that starts first takes a new worker.
   Runs overlap since 10-16: the session posts the next `start` right behind the previous run's `stop`, and the worker starts it at once while the stopped run unwinds beside it.
   Before, a start waited for the previous run's `stopped`, and a run that did not post it within 1 s had its worker replaced, so a seek paid the wait, then a cold worker and a lost URL source; contention in the field held an unwinding run past that bound now and then.
   The wait came from the bundled HEVC decoders, whose stopping run waited for every one in its worker, the next run's included (10-13).

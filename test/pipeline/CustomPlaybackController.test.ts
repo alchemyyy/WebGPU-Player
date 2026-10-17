@@ -22,7 +22,8 @@ import CustomDecodeSession, {
     CustomDecodeNativeAudioBridgeFactory,
     CustomDecodeSessionEvent,
     CustomDecodeSessionStartOptions,
-    CustomDecodeSessionTelemetry
+    CustomDecodeSessionTelemetry,
+    releaseIdleCustomDecodeWorker
 } from 'webgpu-player/pipeline/CustomDecodeSession';
 import type { DecodeWorkerAudioConfiguration } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 import { addMicroseconds, requireMicroseconds } from 'webgpu-player/TimeMath';
@@ -1655,7 +1656,9 @@ describe('CustomPlaybackController', () => {
         await destroyPromise;
         expect(staleVideoFrame.close).toHaveBeenCalledOnce();
         expect(currentVideoFrame.close).toHaveBeenCalledOnce();
-        // The acknowledged stop leaves the worker idle, and only the destroyed controller terminates it
+        // The destroyed controller leaves the worker idle for the page's next one
+        expect(worker.terminate).not.toHaveBeenCalled();
+        releaseIdleCustomDecodeWorker();
         expect(worker.terminate).toHaveBeenCalledOnce();
     });
 
