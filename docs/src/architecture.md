@@ -167,9 +167,16 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
 - The spine starts with the plane stages, `LUMA`, `CHROMA`, and `NATIVE`, which hold the signal's planes as normalized codes (see [Planes](new-pass.md#planes)).
   Each signal offers its planes (`SignalDefinition.planes`): its own reads of the luma and chroma codes, chroma's siting, and its conversion to 'source' RGB.
   A plan reads a plane apart into a texture only for a pass that reads it, and when a pass replaced a plane, a merge pass converts the planes into the spine's first image at luma's size, reading each plane no pass replaced from the source, so it converts exactly as the signal does.
-  The raw and frame-pool routes hold the decoded planes, the external routes derive them from RGB with BT.709 weights, and the Dolby Vision routes offer none.
+  The raw and frame-pool routes hold the decoded planes, and the Dolby Vision routes offer none.
+  The external routes derive them from the browser's RGB through the stream's own matrix and range (`SignalPlanes.transformCode`), the external HDR route from the codes its signal recovers, with chroma at the stream's subsampling, which the decode worker reads from the track's decoder configuration and each VideoFrame carries.
+  A deinterlacing plan derives them from its deinterlaced image through the same transform (`SignalPlanes.imageCode`), so plane passes run on interlaced sources without reading the source again.
+- The planes hold the frame's visible samples (`PlanFacts.sampleWidth` and `sampleHeight`, the `luma.width` and `luma.height` facts), and chroma's extent is luma's over the subsampling divisor, as libplacebo sizes plane rects; the presenter plans again when the frame's sample size or the stream's chroma subsampling changes while preset passes plan.
 - Every image the plan holds has a plan-time offset, as libplacebo's texture rects place mpv's textures: chroma starts at its siting, a pass's output takes the hooked image's offset scaled to its size plus its declared `offset`, and `offset: align` returns it to the reference grid.
   No read is shifted; the merge resamples chroma onto luma's grid through both offsets, and the scaler corrects its image's offset within its resample.
+- A pass file's texture blocks reach the planner inside the manifests of the passes that bind them, and the plan names each by its content identity (`PresentationPlan.passTextures`).
+  The presenter's `PassTextureCache` uploads a block when a plan first binds it, hands the uploads to `PresentationExecutor.create`, and after installing an executor releases the uploads neither its plan nor the preset holds.
+- A pass's `when` reads its parameters, and a `const` parameter compiles into the plan's modules, so a change to either builds a new plan (`PlanRequest.parameterValues`), which the executor of an unchanged plan adopts without rebuilding; any other parameter is a uniform write.
+- The prelude gives a body that calls them the source's transfer function in mpv's scale of linear light (`BuiltinChain.linearLight`, from the built-in transfer decode's code) and its planes transform.
 - Temporal history advances only on new frames.
   It resets on a seek, a new generation, a video epoch change, and a frame whose timestamp goes back or jumps past 2.5 frame durations.
 - Authorization renders the default chain through the same planner and executor, so a preset never changes the route.
@@ -182,6 +189,7 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
   A Dolby Vision route never asks, since its profiles are progressive.
 - The planner places it before every stage: the signal renders into `signal`, a ring of three frames at the frame's visible size in `rgba16float`, and the pass reads the frame it shows, the one before it, and the one after it, and writes `deinterlace` at the same size, which the rest of the spine takes.
 - It deinterlaces the signal's 'source' RGB per channel in f32, so one pass serves every route but Dolby Vision's, 8 to 12 bits and every chroma format.
+- Plane passes take their planes from `deinterlace`, through the signal's transform, as mpv's user shaders see the planes a deinterlacing filter wrote.
 - A progressive frame passes through untouched, as does a frame beside a progressive one that repeats a field, as yadif's `deint=interlaced` does.
 - The `presentation` uniform's `fieldState` word (`PRESENTATION_FIELD_STATE`) names what shows: whether the pass interpolates, the field shown, whether it is its frame's second, whether the shown frame is the one before the newest, and whether the frame the signal reads now is interlaced.
 - On the raw and frame-pool routes a deinterlacing plan's signal reads an interlaced frame's 4:2:0 chroma within each field, at MPEG-2's interlaced siting, so a field never takes the other field's colors.

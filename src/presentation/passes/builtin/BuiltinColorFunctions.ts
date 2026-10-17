@@ -1,6 +1,6 @@
 // The built-in color track: the legacy fused shader's processColor, split into one color function per transition.
 // Apart from the entry points, the WGSL is the legacy text, so the default chains render exactly as that shader did.
-import { assertValidInputColorMetadata, type InputColorMetadata } from '../../../color/ColorMetadata';
+import { assertValidInputColorMetadata, HDR_REFERENCE_WHITE_NITS, type InputColorMetadata } from '../../../color/ColorMetadata';
 import {
     getGamutToBT709Matrix,
     getLuminanceCoefficients,
@@ -8,7 +8,8 @@ import {
     type ColorMatrix,
     type ColorTriplet
 } from '../../../color/ColorPipeline';
-import type { BuiltinColorFunction, EngineResource } from '../PassTypes';
+import { collectTopLevelDeclarations, renameWGSLIdentifiers } from '../PassPrelude';
+import type { BuiltinColorFunction, EngineResource, SignalLinearLight } from '../PassTypes';
 import { joinWGSL, toWGSLFloat } from './BuiltinWGSL';
 
 const TRANSFER_DECODE_NAME = 'builtin.transfer-decode';
@@ -34,6 +35,11 @@ const DITHER_ENTRY_POINT = 'applyBuiltinDither';
 
 const NO_RESOURCES: readonly EngineResource[] = Object.freeze([]);
 const RENDER_SETTINGS_RESOURCES: readonly EngineResource[] = Object.freeze([ 'render-settings' ]);
+
+// The transfer functions linear light renames, and the prefix that keeps them apart from the built-in transfer decode's
+const TRANSFER_DECODE_FUNCTION = 'decodeInputTransfer';
+const TRANSFER_ENCODE_FUNCTION = 'encodeInputTransfer';
+const LINEAR_LIGHT_NAME_PREFIX = 'passLight';
 
 // BT.2100 HLG system gamma: 1.2 at a 1000-nit display, extended to other peaks
 const HLG_REFERENCE_SYSTEM_GAMMA = 1.2;
@@ -126,6 +132,96 @@ fn decodeInputTransfer(encodedRGB: vec3f) -> vec3f {
 }`;
         }
     }
+}
+
+/** Returns `fn encodeInputTransfer(linearNits: vec3f) -> vec3f`, the exact inverse of createTransferDecodeWGSL's decodeInputTransfer. */
+function createTransferEncodeWGSL(metadata: InputColorMetadata): string {
+    switch (metadata.transfer) {
+        case 'pq':
+            return `
+fn applyPQInverseEOTF(linearNits: f32) -> f32 {
+    let poweredValue = pow(clamp(linearNits / 10000.0, 0.0, 1.0), 2610.0 / 16384.0);
+    return pow(((3424.0 / 4096.0) + (2413.0 / 128.0) * poweredValue) / (1.0 + (2392.0 / 128.0) * poweredValue), 2523.0 / 32.0);
+}
+
+fn encodeInputTransfer(linearNits: vec3f) -> vec3f {
+    return vec3f(
+        applyPQInverseEOTF(linearNits.r),
+        applyPQInverseEOTF(linearNits.g),
+        applyPQInverseEOTF(linearNits.b)
+    );
+}`;
+        case 'sdr':
+            return `
+fn applySDRInverseEOTF(linearNits: f32) -> f32 {
+    let linearValue = linearNits / ${toWGSLFloat(metadata.sdrReferenceWhiteNits)};
+    if (linearValue < 0.081 / 4.5) {
+        return linearValue * 4.5;
+    }
+    return 1.099 * pow(linearValue, 0.45) - 0.099;
+}
+
+fn encodeInputTransfer(linearNits: vec3f) -> vec3f {
+    return vec3f(
+        applySDRInverseEOTF(linearNits.r),
+        applySDRInverseEOTF(linearNits.g),
+        applySDRInverseEOTF(linearNits.b)
+    );
+}`;
+        case 'hlg': {
+            const luminanceCoefficients = getLuminanceCoefficients(metadata.primaries);
+            const systemGamma = HLG_REFERENCE_SYSTEM_GAMMA
+                + (HLG_SYSTEM_GAMMA_SLOPE * Math.log10(metadata.nominalPeakNits / HLG_REFERENCE_PEAK_NITS));
+            return `
+fn applyHLGOETF(sceneValue: f32) -> f32 {
+    let clampedValue = clamp(sceneValue, 0.0, 1.0);
+    if (clampedValue <= 1.0 / 12.0) {
+        return sqrt(3.0 * clampedValue);
+    }
+    let hlgA = 0.178832770;
+    let hlgB = 1.0 - 4.0 * hlgA;
+    let hlgC = 0.5 - hlgA * log(4.0 * hlgA);
+    return hlgA * log(12.0 * clampedValue - hlgB) + hlgC;
+}
+
+fn encodeInputTransfer(linearNits: vec3f) -> vec3f {
+    // The display luminance is the peak times the scene luminance to the system gamma, which the inverse OOTF undoes
+    let displayLuminance = max(dot(
+        linearNits,
+        vec3f(
+            ${toWGSLFloat(luminanceCoefficients.red)},
+            ${toWGSLFloat(luminanceCoefficients.green)},
+            ${toWGSLFloat(luminanceCoefficients.blue)}
+        )
+    ), 0.0);
+    if (displayLuminance == 0.0) {
+        return vec3f(0.0);
+    }
+    let sceneLuminance = pow(displayLuminance / ${toWGSLFloat(metadata.nominalPeakNits)}, ${toWGSLFloat(1 / systemGamma)});
+    let sceneRGB = linearNits / (${toWGSLFloat(metadata.nominalPeakNits)} * pow(sceneLuminance, ${toWGSLFloat(systemGamma - 1)}));
+    return vec3f(applyHLGOETF(sceneRGB.r), applyHLGOETF(sceneRGB.g), applyHLGOETF(sceneRGB.b));
+}`;
+        }
+    }
+}
+
+/**
+ * Returns the source's transfer function for the prelude's linearize and delinearize: the built-in transfer decode's own code and its inverse, renamed apart
+ * from the built-in function a module may hold beside them, with the nits of mpv's linear 1.0.
+ */
+export function createSignalLinearLight(metadata: InputColorMetadata): SignalLinearLight {
+    assertValidInputColorMetadata(metadata);
+    const code = joinWGSL([ createTransferDecodeWGSL(metadata), createTransferEncodeWGSL(metadata) ]);
+    const renames = new Map<string, string>();
+    for (const name of collectTopLevelDeclarations(code)) {
+        renames.set(name, `${LINEAR_LIGHT_NAME_PREFIX}${name[0].toUpperCase()}${name.slice(1)}`);
+    }
+    return {
+        code: renameWGSLIdentifiers(code, renames),
+        decodeEntryPoint: renames.get(TRANSFER_DECODE_FUNCTION) ?? TRANSFER_DECODE_FUNCTION,
+        encodeEntryPoint: renames.get(TRANSFER_ENCODE_FUNCTION) ?? TRANSFER_ENCODE_FUNCTION,
+        referenceWhiteNits: metadata.transfer === 'sdr' ? metadata.sdrReferenceWhiteNits : HDR_REFERENCE_WHITE_NITS
+    };
 }
 
 function createGamutConversionWGSL(metadata: InputColorMetadata): string {

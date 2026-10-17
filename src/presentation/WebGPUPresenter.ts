@@ -57,6 +57,7 @@ import {
     type VideoScan,
     type VideoStreamFields
 } from '../decode/video/VideoFields';
+import type { ChromaSubsampling } from '../demux/VideoChromaSubsampling';
 import { createBuiltinChain } from './passes/builtin/BuiltinChains';
 import DeinterlaceTimeline, {
     DEFAULT_DEINTERLACE_MODE,
@@ -65,7 +66,9 @@ import DeinterlaceTimeline, {
     type DeinterlaceMode
 } from './DeinterlaceTimeline';
 import { getPresetPassPosition } from './passes/PassLanguage';
+import { collectPassExpressionIdentifiers } from './passes/PassExpression';
 import { parsePassFile, type PassFileEntry } from './passes/PassManifest';
+import { collectPassTextures, PassTextureCache } from './passes/PassTextureCache';
 import { PRESENTATION_FIELD_STATE } from './passes/PassResources';
 import type {
     BuiltinChainConfiguration,
@@ -149,8 +152,8 @@ const EXTERNAL_IDENTITY_BIT_DEPTH = 8;
 const HISTORY_DISCONTINUITY_FRAME_DURATIONS = 2.5;
 // The size facts take before a frame or a canvas measures them; default plans never depend on sizes
 const UNKNOWN_PLAN_DIMENSION = 1;
-// The native and identity SDR route: the browser's own conversion, presented as it is
-const EXTERNAL_IDENTITY_CHAIN_CONFIGURATION: BuiltinChainConfiguration = { route: 'external-identity' };
+// The native and identity SDR route: the browser's own conversion, presented as it is, of a stream whose color is unknown until one is configured
+const EXTERNAL_IDENTITY_CHAIN_CONFIGURATION: BuiltinChainConfiguration = { metadata: null, route: 'external-identity' };
 const NEUTRAL_BT709_COLOR_DESCRIPTION = 'bt709:bt709:bt709:limited';
 // Names a preset pass whose header failed before it declared a name, followed by its preset position
 const UNNAMED_PRESET_PASS_PREFIX = 'pass ';
@@ -247,6 +250,8 @@ export type PresentationTelemetry = {
 };
 
 export type DecodedVideoPresentationFrame = {
+    /** The chroma subsampling the stream's decoder configuration declares, which the browser upsampled before the frame arrives as RGB */
+    chromaSubsampling?: ChromaSubsampling
     durationMicroseconds: Microseconds
     encodedDolbyVisionMetadata?: TransferableDolbyVisionEncodedFrameMetadata
     /** The frame's own fields, which its container reported; absent ones take the stream's scan */
@@ -295,6 +300,8 @@ export type DecodedPresentationFrame =
     | DecodedVideoPresentationFrame;
 
 export type IdentityColorPipelineConfiguration = {
+    /** The stream's color, whose matrix and range the browser converts its frames with, and which the planes of plane passes derive through */
+    metadata: InputColorMetadata
     settings: IdentitySDRRenderSettings
 };
 
@@ -603,6 +610,20 @@ function withInterlacedChroma(configuration: BuiltinChainConfiguration, interlac
     }
 }
 
+/** Returns a route's chain configuration with the stream's chroma subsampling, which the external routes derive their planes' chroma at. */
+function withChromaSubsampling(configuration: BuiltinChainConfiguration, chromaSubsampling: ChromaSubsampling | null): BuiltinChainConfiguration {
+    switch (configuration.route) {
+        case 'external-hdr':
+        case 'external-identity':
+            return { ...configuration, chromaSubsampling };
+        case 'external-dolby-vision':
+        case 'frame-pool':
+        case 'raw-dolby-vision':
+        case 'raw-yuv':
+            return configuration;
+    }
+}
+
 /**
  * Returns the bit depth of a route's signal, whose code value sizes the deinterlacing pass's score bias; null for the Dolby Vision routes,
  * whose profiles are progressive, so they never deinterlace.
@@ -673,12 +694,21 @@ function createExcludedPresetPass(manifest: PassManifest | null, exclusion: Pass
     return { exclusion, manifest, name: exclusion.name, parameterValues: new Map<string, number>() };
 }
 
+/** Returns whether a pass declares a parameter, as a uniform parameter or a constant. */
+function declaresParameter(manifest: PassManifest, parameterName: string): boolean {
+    return [ ...manifest.parameters, ...manifest.constants ].some((parameter: PassParameter): boolean => parameter.name === parameterName);
+}
+
+/** Returns whether a parameter's value shapes a pass's plan: a constant, which the plan compiles in, or a parameter its condition reads. */
+function isPlanParameter(manifest: PassManifest, parameterName: string): boolean {
+    return manifest.constants.some((constant: PassParameter): boolean => constant.name === parameterName)
+        || (manifest.when !== null && collectPassExpressionIdentifiers(manifest.when).includes(parameterName));
+}
+
 /** Returns the check that a preset file's values fail for every pass of the file: a value no pass declares, or one that is not finite. */
 function checkPresetValues(presetFile: PresentationPresetFile, entries: readonly PassFileEntry[]): Omit<PassRejection, 'name'> | null {
     for (const [ parameterName, value ] of Object.entries(presetFile.parameters)) {
-        const declared = entries.some((entry: PassFileEntry): boolean => entry.manifest !== null && entry.manifest.parameters.some(
-            (parameter: PassParameter): boolean => parameter.name === parameterName
-        ));
+        const declared = entries.some((entry: PassFileEntry): boolean => entry.manifest !== null && declaresParameter(entry.manifest, parameterName));
         if (!declared) {
             return { detail: `'${parameterName}'`, reason: 'parameter-unknown' };
         }
@@ -721,7 +751,7 @@ function createPresetPasses(presetFile: PresentationPresetFile, fileIndex: numbe
         // Each pass takes the file's values of the parameters it declares
         const parameterValues = new Map<string, number>();
         for (const [ parameterName, value ] of Object.entries(presetFile.parameters)) {
-            if (manifest.parameters.some((parameter: PassParameter): boolean => parameter.name === parameterName)) {
+            if (declaresParameter(manifest, parameterName)) {
                 parameterValues.set(parameterName, value);
             }
         }
@@ -750,6 +780,17 @@ function applyParameterValues(executor: PresentationExecutor, plan: Presentation
             }
         }
     }
+}
+
+/** Returns the preset passes' current parameter values by pass name, which conditions read and constants compile in. */
+function getPlannedParameterValues(presetPasses: readonly PresetPass[]): Map<string, ReadonlyMap<string, number>> {
+    const values = new Map<string, ReadonlyMap<string, number>>();
+    for (const presetPass of presetPasses) {
+        if (isPlannedPresetPass(presetPass)) {
+            values.set(presetPass.name, new Map<string, number>(presetPass.parameterValues));
+        }
+    }
+    return values;
 }
 
 /** Returns the manifests of the preset passes plans include, in preset order. */
@@ -1217,6 +1258,8 @@ export default class WebGPUPresenter {
     private lastHistoryDraw: DeinterlaceDraw | null = null;
     // The session's stream fields, which deinterlacing plans follow
     private videoFieldFacts: VideoStreamFields = UNKNOWN_VIDEO_STREAM_FIELDS;
+    // The chroma subsampling the stream's decoder configuration declares, which the newest browser-decoded frame carried
+    private streamChromaSubsampling: ChromaSubsampling | null = null;
     private dynamicHDR10PlusSettingsActive = false;
     private executor: PresentationExecutor | null = null;
     private executorBuild: ExecutorBuild | null = null;
@@ -1224,6 +1267,9 @@ export default class WebGPUPresenter {
     private executorPlanKey: string | null = null;
     // The preset the active executor's plan was built from, so the report never reads one preset's plan against another
     private executorPresetPasses: readonly PresetPass[] | null = null;
+    // The uploads of the preset's texture blocks, on the device they were made on
+    private passTextureCache: PassTextureCache | null = null;
+    private passTextureCacheDevice: GPUDevice | null = null;
     // The plan revision the active executor answers
     private executorRevision = -1;
     private fallbackLatched = false;
@@ -1903,7 +1949,8 @@ export default class WebGPUPresenter {
     }
 
     /**
-     * Changes one parameter of a preset pass live, without replanning: the active executor takes it from the next frame, a paused frame redraws, and later executors keep it.
+     * Changes one parameter of a preset pass live: the active executor takes a uniform parameter from the next frame without replanning, a paused frame redraws,
+     * and later executors keep it. A constant, or a parameter the pass's condition reads, builds a plan for the new value instead.
      * Integer parameters round and values outside the declared range clamp.
      * A pass outside the preset ('pass-unknown'), an undeclared parameter ('parameter-unknown'), or a value that is not finite ('parameter-invalid') throws a RangeError.
      */
@@ -1912,13 +1959,17 @@ export default class WebGPUPresenter {
         if (!presetPass?.manifest) {
             throw new RangeError(`pass-unknown: '${passName}'`);
         }
-        if (!presetPass.manifest.parameters.some((parameter: PassParameter): boolean => parameter.name === parameterName)) {
+        if (!declaresParameter(presetPass.manifest, parameterName)) {
             throw new RangeError(`parameter-unknown: '${passName}' '${parameterName}'`);
         }
         if (!Number.isFinite(value)) {
             throw new RangeError(`parameter-invalid: '${passName}' '${parameterName}' ${value}`);
         }
         presetPass.parameterValues.set(parameterName, value);
+        if (isPlanParameter(presetPass.manifest, parameterName) && isPlannedPresetPass(presetPass)) {
+            this.planRevision += 1;
+            void this.applyPlanInputs();
+        }
         const executor = this.executor;
         // An executor still running an earlier preset may hold a pass of this name without the parameter
         const parameterSet = this.executorPlan?.parameterSets.find(
@@ -2057,12 +2108,25 @@ export default class WebGPUPresenter {
     private followFrameFields(decodedFrame: DecodedPresentationFrame): void {
         const fields = this.getEffectiveFrameFields(decodedFrame.fields ?? null);
         const visibleSize = getDecodedFrameVisibleSize(decodedFrame);
-        const changed = this.changeDeinterlaceInputs((): void => {
+        const previousFacts = this.videoFieldFacts;
+        const previousChromaSubsampling = this.streamChromaSubsampling;
+        let changed = this.changeDeinterlaceInputs((): void => {
             if (fields !== null && fields.scan !== 'progressive') {
                 this.interlacedFrameSeen = true;
             }
             this.videoFieldFacts = { ...this.videoFieldFacts, frameHeight: visibleSize.height, frameWidth: visibleSize.width };
         });
+        if (decodedFrame.outputMode === 'video-frame') {
+            this.streamChromaSubsampling = decodedFrame.chromaSubsampling ?? null;
+        }
+        // Preset passes plan their planes at the frame's sample size, and an external route's chroma at the stream's subsampling
+        const planesChanged = previousFacts.frameWidth !== visibleSize.width
+            || previousFacts.frameHeight !== visibleSize.height
+            || previousChromaSubsampling !== this.streamChromaSubsampling;
+        if (!changed && planesChanged && this.presetPasses.some(isPlannedPresetPass)) {
+            this.planRevision += 1;
+            changed = true;
+        }
         if (changed) {
             void this.applyPlanInputs();
         }
@@ -2085,6 +2149,7 @@ export default class WebGPUPresenter {
             this.interlacedFrameSeen = false;
             this.videoFieldFacts = UNKNOWN_VIDEO_STREAM_FIELDS;
         });
+        this.streamChromaSubsampling = null;
     }
 
     /**
@@ -2172,13 +2237,14 @@ export default class WebGPUPresenter {
         }
 
         try {
+            assertValidInputColorMetadata(configuration.metadata);
             assertValidRenderSettings(configuration.settings);
         } catch (error) {
             this.failColorConfiguration(pendingConfiguration, 'hdr-color-configuration-invalid', getErrorMessage(error));
             return null;
         }
         return {
-            chainConfiguration: EXTERNAL_IDENTITY_CHAIN_CONFIGURATION,
+            chainConfiguration: { metadata: { ...configuration.metadata }, route: 'external-identity' },
             dolbyVisionFELAuthorizationFailure: null,
             dolbyVisionFELReconstruction: false,
             dolbyVisionProfile: null,
@@ -2856,7 +2922,7 @@ export default class WebGPUPresenter {
             if (this.executor && this.device === device && this.executorPlanKey === planKey) {
                 return { executor: this.executor, kind: 'current', plan, presetPasses };
             }
-            const executorPromise = PresentationExecutor.create(device, plan);
+            const executorPromise = this.createExecutor(device, plan, presetPasses);
             let executorResult: PresentationExecutor | typeof WEBGPU_RESOURCE_OPERATION_TIMEOUT;
             try {
                 executorResult = await waitForWebGPUResourceOperation(executorPromise);
@@ -2883,8 +2949,9 @@ export default class WebGPUPresenter {
     private createPlanRequest(device: GPUDevice, canvasFormat: GPUTextureFormat, presetPasses: readonly PresetPass[]): PlanRequest {
         const hdrOutput = this.isHDROutputActive();
         const deinterlace = this.getDeinterlaceRequest();
+        const configuration = withChromaSubsampling(this.desiredChainConfiguration, this.streamChromaSubsampling);
         return {
-            chain: createBuiltinChain(withInterlacedChroma(withHDROutput(this.desiredChainConfiguration, hdrOutput), deinterlace !== null)),
+            chain: createBuiltinChain(withInterlacedChroma(withHDROutput(configuration, hdrOutput), deinterlace !== null)),
             deinterlace,
             device: {
                 features: device.features,
@@ -2892,6 +2959,7 @@ export default class WebGPUPresenter {
             },
             facts: this.getPlanFacts(hdrOutput),
             output: createPlannedOutput(hdrOutput, canvasFormat),
+            parameterValues: getPlannedParameterValues(presetPasses),
             passes: getPlannedManifests(presetPasses)
         };
     }
@@ -2904,14 +2972,19 @@ export default class WebGPUPresenter {
     /** Returns the plan facts the presenter knows: the last measured source and output sizes, 1x1 until a frame measures them. */
     private getPlanFacts(hdrOutput: boolean): PlanFacts {
         const layout = this.cachedPresentationLayout;
+        const sourceHeight = layout ? Math.max(layout.videoHeight, UNKNOWN_PLAN_DIMENSION) : UNKNOWN_PLAN_DIMENSION;
+        const sourceWidth = layout ? Math.max(layout.videoWidth, UNKNOWN_PLAN_DIMENSION) : UNKNOWN_PLAN_DIMENSION;
         return {
             frameRate: null,
             hdrOutput,
             hdrSource: isHDRSourceConfiguration(this.desiredChainConfiguration),
             outputHeight: layout ? Math.max(layout.presentation.viewportHeight, UNKNOWN_PLAN_DIMENSION) : UNKNOWN_PLAN_DIMENSION,
             outputWidth: layout ? Math.max(layout.presentation.viewportWidth, UNKNOWN_PLAN_DIMENSION) : UNKNOWN_PLAN_DIMENSION,
-            sourceHeight: layout ? Math.max(layout.videoHeight, UNKNOWN_PLAN_DIMENSION) : UNKNOWN_PLAN_DIMENSION,
-            sourceWidth: layout ? Math.max(layout.videoWidth, UNKNOWN_PLAN_DIMENSION) : UNKNOWN_PLAN_DIMENSION
+            // Until a frame measures its samples, the planes take the source's size
+            sampleHeight: Math.max(this.videoFieldFacts.frameHeight ?? sourceHeight, UNKNOWN_PLAN_DIMENSION),
+            sampleWidth: Math.max(this.videoFieldFacts.frameWidth ?? sourceWidth, UNKNOWN_PLAN_DIMENSION),
+            sourceHeight,
+            sourceWidth
         };
     }
 
@@ -2933,6 +3006,12 @@ export default class WebGPUPresenter {
         }
         applyParameterValues(executor, build.plan, build.presetPasses);
         previousExecutor?.destroy();
+        // The installed plan's texture blocks and the current preset's stay; a replaced preset's are released
+        const retainedTextures = new Set<string>(collectPassTextures(getPlannedManifests(this.presetPasses)).keys());
+        for (const texture of build.plan.passTextures) {
+            retainedTextures.add(texture.id);
+        }
+        this.passTextureCache?.retain(retainedTextures);
         // A new executor's history starts empty
         this.resetDeinterlaceTimeline();
         if (this.canvasContext && !this.createAndConfigureCanvas()) {
@@ -2962,7 +3041,26 @@ export default class WebGPUPresenter {
         this.executorPresetPasses = null;
         this.executorRevision = -1;
         executor?.destroy();
+        // The texture blocks upload again when a later plan binds them
+        this.passTextureCache?.destroy();
+        this.passTextureCache = null;
         this.resetDeinterlaceTimeline();
+    }
+
+    /** Creates a plan's executor over the uploads of its texture blocks, which the preset's passes hold and the device's cache keeps. */
+    private async createExecutor(device: GPUDevice, plan: PresentationPlan, presetPasses: readonly PresetPass[]): Promise<PresentationExecutor> {
+        const passTextureViews = this.getPassTextureCache(device).acquire(plan, collectPassTextures(getPlannedManifests(presetPasses)));
+        return PresentationExecutor.create(device, plan, passTextureViews);
+    }
+
+    /** Returns the upload cache of texture blocks on the device, a new one for a new device. */
+    private getPassTextureCache(device: GPUDevice): PassTextureCache {
+        if (this.passTextureCache === null || this.passTextureCacheDevice !== device) {
+            this.passTextureCache?.destroy();
+            this.passTextureCache = new PassTextureCache(device);
+            this.passTextureCacheDevice = device;
+        }
+        return this.passTextureCache;
     }
 
     /** Releases the route's GPU resources, its executor's textures and buffers among them, while the device stays for a later session. */

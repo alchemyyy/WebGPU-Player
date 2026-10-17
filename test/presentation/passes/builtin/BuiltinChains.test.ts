@@ -136,7 +136,7 @@ describe('createBuiltinChain', () => {
     });
 
     it('presents the external identity route without color functions', () => {
-        const chain = createBuiltinChain({ route: 'external-identity' });
+        const chain = createBuiltinChain({ metadata: createSDRColorMetadata(), route: 'external-identity' });
 
         expect(chain.colorFunctions).toEqual([]);
         expect(chain.sourceIsDisplay).toBe(true);

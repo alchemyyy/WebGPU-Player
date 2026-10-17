@@ -887,10 +887,12 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
                 fileIndex === index ? { ...candidate, parameters: { ...candidate.parameters, [parameterName]: value } } : candidate
             ));
             store.setState((state: SandboxState): Partial<SandboxState> => ({ presentation: { ...state.presentation, files } }));
-            // The file's passes share the value, so each pass that declares the parameter takes it
+            // The file's passes share the value, so each pass that declares the parameter, as a uniform or a constant, takes it
             for (const filePass of changedFile.passes) {
                 const manifest = filePass.manifest;
-                if (!manifest?.parameters.some((parameter: PassParameter): boolean => parameter.name === parameterName)) {
+                const declared = manifest !== null && [ ...manifest.parameters, ...manifest.constants ]
+                    .some((parameter: PassParameter): boolean => parameter.name === parameterName);
+                if (!declared) {
                     continue;
                 }
                 try {

@@ -32,20 +32,24 @@ Each source file's tests are at the same relative path under `test/`, and integr
 The presentation pipeline: each route's fixed signal and default color track, user WGSL passes, the planner that arranges them, and the executor that records frames.
 
 - `PassTypes.ts`: the contracts of the pipeline: pass manifests, built-in chains, plans, and frame input.
-- `PassLanguage.ts`: the names that headers, the prelude, and the planner share: the plane and image stages, `HOOKED`, history accessors, entry points, `offset: align`, and plan-time facts.
+- `PassLanguage.ts`: the names that headers, the prelude, and the planner share: the plane and image stages, `HOOKED`, history accessors, texture block accessors, entry points, `offset: align`, the prelude's functions, and plan-time facts.
 - `PassExpression.ts`: the size and condition expressions of pass and decoder headers.
-- `PassManifest.ts`: parses a pass file, whose passes each start with a `//!` header as in mpv's user shaders, into manifests in file order; a failure names its line in the file.
-- `PassResources.ts`: the engine-owned bindings, their WGSL declarations and layout entries, and the byte layouts of the uniforms the engine writes.
-- `PassPrelude.ts`: the WGSL around pass code: input accessors, each with its input's plan-time offset, entry stages, and the renaming that keeps each user body's names apart.
+- `PassManifest.ts`: parses a pass file, whose passes each start with a `//!` header as in mpv's user shaders, into manifests in file order, each with the texture blocks it binds; a failure names its line in the file.
+- `ContentIdentity.ts`: a synchronous SHA-256, the content identity of a texture block, which keys its upload.
+- `PassResources.ts`: the engine-owned bindings, their WGSL declarations and layout entries, the byte layouts of the uniforms the engine writes, and a parameter value's normalization to its type and range.
+- `PassPrelude.ts`: the WGSL around pass code: input accessors, each with its input's plan-time offset, texture block accessors, constants, the prelude's linear light and planes transform, entry stages, and the renaming that keeps each user body's names apart.
 - `PresentationPlanner.ts`: arranges a route's built-in chain and the user passes on the stage spine and the color track, then generates each pass's module.
   A pass that cannot run is left out with a reason code and a terse detail.
   Without user passes every route plans one pass, which reads the source and writes the canvas.
-  It reads the signal's planes apart for plane passes, merges and converts the planes they replace, and gives every image its offset, which the scaler corrects.
-- `PresentationExecutor.ts`: compiles a plan, owns its textures, history rings, buffers, and bind groups, and records each frame without submitting.
+  It reads the signal's planes apart for plane passes, from the source or a deinterlaced image, merges and converts the planes they replace, and gives every image its offset and extent, which the scaler corrects.
+- `PresentationExecutor.ts`: compiles a plan, owns its textures, history rings, buffers, and bind groups, binds the caller's uploads of its texture blocks, and records each frame without submitting.
+- `PassTextureCache.ts`: the uploads of texture blocks on one device by content identity, made when a plan first binds a block and released when no plan or preset holds it.
 - `PlaneTextureSource.ts`: the plane route's ingress: layout validation that names the failed check, one integer texture per plane, and the uploads.
 - `builtin/`: the built-in signals (`BuiltinSignals.ts`, and `FramePoolSignal.ts`, which reads a pool slot of any output format, as its layout says, for the frame-pool route's chain), color functions (`BuiltinColorFunctions.ts`), and route chains (`BuiltinChains.ts`), and the deinterlacing pass (`DeinterlacePass.ts`, yadif over the signal's ring).
   A deinterlacing plan's raw and frame pool signals read an interlaced frame's 4:2:0 chroma within each field.
-  Each signal offers its planes to plane passes: the raw and frame pool signals their decoded planes, with chroma's siting, range, and matrix, the external signals planes derived from RGB, and the Dolby Vision signals none.
+  Each signal offers its planes to plane passes: the raw and frame pool signals their decoded planes, with chroma's siting, range, and matrix, the external signals planes derived from RGB through the stream's own matrix and range at its chroma subsampling, and the Dolby Vision signals none.
+  Every signal with planes also offers their transform from 'source' RGB and back, which deinterlacing plans and the prelude use.
+  `BuiltinColorFunctions.ts` also gives each chain its transfer function for the prelude's linearize and delinearize, renamed from the transfer decode's code.
 
 The optional user passes a host may offer are pass projects in `wgpup/`, outside `src/` (see [Bundled passes](bundled-passes.md)); the presenter tests run some of them.
 
@@ -120,6 +124,7 @@ All worker code unless marked.
 - `CustomAudioTrackMetadata.ts`: the Matroska and ISO BMFF DTS and TrueHD tracks whose codec Mediabunny does not map (`DTS `, `mlpa`), DTS Express detection, declared-rate recovery for their sample entries, and the decoded audio timestamp tolerance.
 - `AVIIndexCoverage.ts`: whether an AVI track's indexed packets end well before its stream header's declared length, as an OpenDML file's do past its first RIFF list.
 - `UnsupportedTrackFeatures.ts`: the first feature, such as an edit list, that Mediabunny reports it cannot honor for a track.
+- `VideoChromaSubsampling.ts` [main and worker]: a video track's chroma subsampling from its decoder configuration, an avcC (its closing chroma format or its first SPS), an hvcC, an av1C, or an AV1, VP9, or VP8 codecs string, which VideoFrames carry to presentation.
 - `AudioStartPacket.ts`: the packet an audio attempt starts from, without Mediabunny's proof scans when the track starts late.
 - `TrackIteration.ts`: a track's packets in decode order, read about a second ahead, and its decoded video or audio samples from a start time, as iterators that end at once on `return()`.
 - `ISOBaseMediaSampleEntryChildBox.ts`: reads a child box of an ISO base media track's first sample entry, such as `dvc1` or `av1C`, from the `moov` bytes Mediabunny keeps.
@@ -328,7 +333,7 @@ The authorization vectors are in `capability/vectors/`.
 - `scripts/decoder-packages.mjs`: builds the decoder projects into `bin/wgpud/`, or checks them against it.
 - `scripts/codec_vector_assets/`: the Python codec vector generators, their tests in `test/`, and the local playback media generators.
   See [Codec vectors](codec-vectors.md).
-- `tools/`: browser probes, the decoder package tools, the mpv shader converter with its tests in `test/`, and `constants.json`.
+- `tools/`: browser probes, the decoder package tools, the mpv shader converter and the `.cube` LUT converter with their tests in `test/` and the texture block writer they share, and `constants.json`.
   See [Tools](tools.md).
 - `bin/wasm/`: the engine modules' builds from `make -C wasm`, `libdovi/` and `audio-output-stage/`, served from `libraries/`; ignored.
 - `bin/wgpud/`: the decoder packages `npm run decoders` builds; ignored.

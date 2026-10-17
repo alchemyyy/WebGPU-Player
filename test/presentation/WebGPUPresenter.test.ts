@@ -363,6 +363,25 @@ const NEXT_PRESET_SATURATION = 0.5;
 const SHARPEN_PASS_NAME = 'Sharpen';
 const SHARPEN_PARAMETER_NAME = 'strength';
 const LIVE_SHARPEN_STRENGTH = 0.25;
+// A color pass with a constant and a condition on a uniform parameter, both of which shape its plan
+const TUNED_PASS_NAME = 'Tuned';
+const TUNED_CONSTANT_NAME = 'scale';
+const LIVE_TUNED_CONSTANT = 0.5;
+const TUNED_CONDITION_PARAMETER_NAME = 'enabled';
+const OFF_TUNED_CONDITION = 0;
+const TUNED_COLOR_PASS_SOURCE = [
+    `//! name: ${TUNED_PASS_NAME}`,
+    '//! shape: color',
+    '//! hook: OUTPUT',
+    '//! domain: sdr',
+    `//! const ${TUNED_CONSTANT_NAME}: f32 = 1 in [0, 2]`,
+    `//! param ${TUNED_CONDITION_PARAMETER_NAME}: i32 = 1 in [0, 1]`,
+    `//! when: ${TUNED_CONDITION_PARAMETER_NAME} == 1`,
+    '',
+    'fn apply(color: vec4f, position: vec2f) -> vec4f {',
+    `    return vec4f(color.rgb * ${TUNED_CONSTANT_NAME}, color.a);`,
+    '}'
+].join('\n');
 const MISSING_PASS_NAME = 'Missing';
 const UNDECLARED_PARAMETER_NAME = 'radius';
 // A header without its required name, which fails on line 1 before any name is known, so the report names it by its preset index
@@ -4488,7 +4507,7 @@ describe('WebGPUPresenter', () => {
             toneMapping: { mode: 'standard' }
         });
 
-        await expect(presenter.configureColorPipeline({ settings: createDefaultRenderSettings() }, 1)).resolves.toBe(true);
+        await expect(presenter.configureColorPipeline({ metadata: createSDRColorMetadata(), settings: createDefaultRenderSettings() }, 1)).resolves.toBe(true);
 
         expect(gpuHarness.devices[0].createShaderModule).toHaveBeenCalledOnce();
         expect(gpuHarness.devices[0].createRenderPipelineAsync).toHaveBeenCalledOnce();
@@ -4815,6 +4834,26 @@ describe('WebGPUPresenter', () => {
             .toThrow(`parameter-unknown: '${SATURATION_PASS_NAME}' '${UNDECLARED_PARAMETER_NAME}'`);
         expect(() => presenter.setPresentationParameter(SATURATION_PASS_NAME, SATURATION_PARAMETER_NAME, Number.NaN))
             .toThrow(`parameter-invalid: '${SATURATION_PASS_NAME}' '${SATURATION_PARAMETER_NAME}' NaN`);
+    });
+
+    it('replans for a constant or a parameter a condition reads, with the new value in the plan request', async () => {
+        const { deviceHarness, presenter } = await startIdentityPresentation(true);
+        await presenter.setPresentationPreset([ { parameters: {}, source: TUNED_COLOR_PASS_SOURCE } ]);
+        const planCount = vi.mocked(planPresentation).mock.calls.length;
+        const shaderModuleCount = deviceHarness.createShaderModule.mock.calls.length;
+
+        presenter.setPresentationParameter(TUNED_PASS_NAME, TUNED_CONSTANT_NAME, LIVE_TUNED_CONSTANT);
+        await vi.waitFor(() => expect(deviceHarness.createShaderModule.mock.calls.length).toBeGreaterThan(shaderModuleCount));
+
+        expect(getLastPlanRequest().parameterValues?.get(TUNED_PASS_NAME)?.get(TUNED_CONSTANT_NAME)).toBe(LIVE_TUNED_CONSTANT);
+        expect(vi.mocked(planPresentation).mock.calls.length).toBeGreaterThan(planCount);
+        const constantPlanCount = vi.mocked(planPresentation).mock.calls.length;
+
+        presenter.setPresentationParameter(TUNED_PASS_NAME, TUNED_CONDITION_PARAMETER_NAME, OFF_TUNED_CONDITION);
+        await vi.waitFor(() => expect(presenter.getPresentationPlanReport().inactivePasses).toEqual([
+            { detail: '', name: TUNED_PASS_NAME, reason: 'condition-false' }
+        ]));
+        expect(vi.mocked(planPresentation).mock.calls.length).toBeGreaterThan(constantPlanCount);
     });
 
     it('keeps the executor for a preset that adds no pass to its plan, reporting the preset\'s passes and applying its values', async () => {

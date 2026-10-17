@@ -4,10 +4,12 @@ import {
     assertValidInputColorMetadata,
     createPQColorMetadata,
     createSDRColorMetadata,
-    type InputColorMetadata
+    type InputColorMetadata,
+    type YUVMatrix
 } from '../../../color/ColorMetadata';
 import { createDolbyVisionColorFunctionsWGSL } from '../../../color/DolbyVisionColorTransform';
 import { getRawFormatBitDepth, type SupportedRawVideoFrameFormat } from '../../../decode/video/RawVideoFrameCopy';
+import type { ChromaSubsampling } from '../../../demux/VideoChromaSubsampling';
 import type { DolbyVisionReconstructionProfile } from '../../PresentationInput';
 import {
     HALF_FLOAT_PLANE_MAXIMUM_BIT_DEPTH,
@@ -68,59 +70,70 @@ const LEFT_SITED_CHROMA_LUMA_SHIFT = 0.5;
 const FULL_RESOLUTION_DIVISOR = 1;
 const SUBSAMPLED_DIVISOR = 2;
 
-// The plane functions every signal with planes defines, which the planner's plane passes call
+// The plane functions every signal with planes defines, which the planner's plane passes call, and the functions of its transform and image reads
 export const SIGNAL_PLANE_ENTRY_POINTS = Object.freeze({
     chroma: 'readSignalChroma',
     codeScale: 'getSignalCodeScale',
     conversion: 'convertSignalCodes',
+    imageRead: 'readPlaneImage',
+    imageSize: 'getPlaneImageSize',
     luma: 'readSignalLuma',
+    planesToRGB: 'convertSignalPlaneValues',
+    rgbToPlanes: 'deriveSignalPlaneValues',
     sitedChroma: 'readSignalSitedChroma'
 });
 
-// BT.709 luma weights and chroma scales, by which planes are derived from a signal that has RGB alone, and joined back
-const DERIVED_PLANE_LUMA_WEIGHTS = [ 0.2126, 0.7152, 0.0722 ] as const;
-const DERIVED_PLANE_CHROMA_BLUE_SCALE = 1.8556;
-const DERIVED_PLANE_CHROMA_RED_SCALE = 1.5748;
-// The value of neutral chroma in a normalized plane
-const DERIVED_PLANE_CHROMA_CENTER = 0.5;
-// A derived plane's values are already normalized
+// Each matrix's luma weights of red and blue, by which planes derive from RGB and convert back exactly
+const MATRIX_LUMA_WEIGHTS: Readonly<Record<YUVMatrix, readonly [number, number]>> = Object.freeze({
+    'bt2020-ncl': [ 0.2627, 0.0593 ],
+    bt470bg: [ 0.299, 0.114 ],
+    bt709: [ 0.2126, 0.0722 ],
+    smpte170m: [ 0.299, 0.114 ]
+});
+// Planes derived from RGB hold normalized plane values, which a code scale of 1 leaves as they are
 const DERIVED_PLANE_CODE_SCALE = 1;
 const NO_CHROMA_OFFSET: readonly [number, number] = Object.freeze([ 0, 0 ]);
+// The subsampling divisors of each chroma subsampling a stream declares
+const FULL_RESOLUTION_DIVISORS: Pick<SignalPlanes, 'chromaHeightDivisor' | 'chromaWidthDivisor'> = Object.freeze({
+    chromaHeightDivisor: FULL_RESOLUTION_DIVISOR,
+    chromaWidthDivisor: FULL_RESOLUTION_DIVISOR
+});
+const CHROMA_SUBSAMPLING_DIVISORS: ReadonlyMap<ChromaSubsampling, Pick<SignalPlanes, 'chromaHeightDivisor' | 'chromaWidthDivisor'>> = new Map([
+    [ '4:2:0', { chromaHeightDivisor: SUBSAMPLED_DIVISOR, chromaWidthDivisor: SUBSAMPLED_DIVISOR } ],
+    [ '4:2:2', { chromaHeightDivisor: FULL_RESOLUTION_DIVISOR, chromaWidthDivisor: SUBSAMPLED_DIVISOR } ],
+    [ '4:4:4', FULL_RESOLUTION_DIVISORS ]
+]);
+// The entry points of every signal's planes, whatever their code
+export const PLANE_ENTRY_POINT_FIELDS = Object.freeze({
+    chromaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.chroma,
+    codeScaleEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.codeScale,
+    conversionEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.conversion,
+    imageReadEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.imageRead,
+    imageSizeEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.imageSize,
+    lumaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.luma,
+    planesToRGBEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.planesToRGB,
+    rgbToPlanesEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.rgbToPlanes,
+    sitedChromaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.sitedChroma
+});
 
 const SIGNAL_PLANE_CONVERSION_WGSL = /* wgsl */ `
 fn ${SIGNAL_PLANE_ENTRY_POINTS.conversion}(codes: vec3f) -> vec4f {
     return vec4f(convertRawYUVToEncodedRGB(normalizeRawYUV(codes)), 1.0);
 }`;
 
-const DERIVED_PLANES_WGSL = /* wgsl */ `
-const DERIVED_PLANE_LUMA_WEIGHTS = vec3f(${DERIVED_PLANE_LUMA_WEIGHTS.join(', ')});
-
-fn ${SIGNAL_PLANE_ENTRY_POINTS.luma}(coordinate: vec2f) -> f32 {
-    return dot(${SIGNAL_ENTRY_POINT}(coordinate).rgb, DERIVED_PLANE_LUMA_WEIGHTS);
-}
-
-fn ${SIGNAL_PLANE_ENTRY_POINTS.chroma}(coordinate: vec2f) -> vec2f {
-    let color = ${SIGNAL_ENTRY_POINT}(coordinate).rgb;
-    let luma = dot(color, DERIVED_PLANE_LUMA_WEIGHTS);
-    return vec2f(
-        (color.b - luma) / ${DERIVED_PLANE_CHROMA_BLUE_SCALE} + ${DERIVED_PLANE_CHROMA_CENTER},
-        (color.r - luma) / ${DERIVED_PLANE_CHROMA_RED_SCALE} + ${DERIVED_PLANE_CHROMA_CENTER}
-    );
-}
-
-fn ${SIGNAL_PLANE_ENTRY_POINTS.sitedChroma}(coordinate: vec2f) -> vec2f {
-    return ${SIGNAL_PLANE_ENTRY_POINTS.chroma}(coordinate);
-}
-
-fn ${SIGNAL_PLANE_ENTRY_POINTS.codeScale}() -> f32 {
-    return ${toWGSLFloat(DERIVED_PLANE_CODE_SCALE)};
-}
-
+const DERIVED_PLANE_CONVERSION_WGSL = /* wgsl */ `
 fn ${SIGNAL_PLANE_ENTRY_POINTS.conversion}(codes: vec3f) -> vec4f {
-    let red = codes.x + ${DERIVED_PLANE_CHROMA_RED_SCALE} * (codes.z - ${DERIVED_PLANE_CHROMA_CENTER});
-    let blue = codes.x + ${DERIVED_PLANE_CHROMA_BLUE_SCALE} * (codes.y - ${DERIVED_PLANE_CHROMA_CENTER});
-    let green = (codes.x - ${DERIVED_PLANE_LUMA_WEIGHTS[0]} * red - ${DERIVED_PLANE_LUMA_WEIGHTS[2]} * blue) / ${DERIVED_PLANE_LUMA_WEIGHTS[1]};
-    return vec4f(red, green, blue, 1.0);
+    return vec4f(${SIGNAL_PLANE_ENTRY_POINTS.planesToRGB}(codes), 1.0);
+}`;
+
+// The image an external signal's planes derive from: the signal's own RGB, at the browser's texture size
+const EXTERNAL_PLANE_IMAGE_WGSL = /* wgsl */ `
+fn ${SIGNAL_PLANE_ENTRY_POINTS.imageRead}(coordinate: vec2f) -> vec3f {
+    return ${SIGNAL_ENTRY_POINT}(coordinate).rgb;
+}
+
+fn ${SIGNAL_PLANE_ENTRY_POINTS.imageSize}() -> vec2f {
+    return vec2f(textureDimensions(videoTexture));
 }`;
 
 const BT709_LIMITED_YUV_RECOVERY_WGSL = /* wgsl */ `
@@ -305,6 +318,95 @@ export function getChromaPlaneOffset(leftSited: boolean, widthDivisor: number): 
     return leftSited ? Object.freeze([ LEFT_SITED_CHROMA_LUMA_SHIFT / widthDivisor, 0 ]) : NO_CHROMA_OFFSET;
 }
 
+/**
+ * Returns `fn deriveSignalPlaneValues(color: vec3f) -> vec3f` and `fn convertSignalPlaneValues(planes: vec3f) -> vec3f`: 'source' RGB to the normalized
+ * Y, Cb, and Cr plane values of the metadata's matrix, range, and bit depth, a code over the largest code, and back, each the other's exact inverse.
+ */
+export function createPlaneTransformWGSL(metadata: Pick<InputColorMetadata, 'bitDepth' | 'matrix' | 'range'>): string {
+    const [ redWeight, blueWeight ] = MATRIX_LUMA_WEIGHTS[metadata.matrix];
+    const greenWeight = 1 - redWeight - blueWeight;
+    // The scales of the color differences, which span [-0.5, 0.5]
+    const blueDifferenceScale = 2 * (1 - blueWeight);
+    const redDifferenceScale = 2 * (1 - redWeight);
+    const codeScale = 2 ** (metadata.bitDepth - REFERENCE_CODE_BIT_DEPTH);
+    const maximumCode = (2 ** metadata.bitDepth) - 1;
+    const limited = metadata.range === 'limited';
+    // Plane value = code / maximum code, with the codes of createRawYUVRangeWGSL's range
+    const lumaScale = limited ? (LIMITED_LUMA_EXCURSION * codeScale) / maximumCode : 1;
+    const lumaOffset = limited ? (LIMITED_LUMA_BLACK_CODE * codeScale) / maximumCode : 0;
+    const chromaScale = limited ? (LIMITED_CHROMA_EXCURSION * codeScale) / maximumCode : 1;
+    const chromaCenter = (CHROMA_CENTER_CODE * codeScale) / maximumCode;
+    const weights = [ redWeight, greenWeight, blueWeight ].map(toWGSLFloat).join(', ');
+    return `
+fn ${SIGNAL_PLANE_ENTRY_POINTS.rgbToPlanes}(color: vec3f) -> vec3f {
+    let luma = dot(color, vec3f(${weights}));
+    let chroma = vec2f((color.b - luma) / ${toWGSLFloat(blueDifferenceScale)}, (color.r - luma) / ${toWGSLFloat(redDifferenceScale)});
+    return vec3f(luma * ${toWGSLFloat(lumaScale)} + ${toWGSLFloat(lumaOffset)}, chroma * ${toWGSLFloat(chromaScale)} + vec2f(${toWGSLFloat(chromaCenter)}));
+}
+
+fn ${SIGNAL_PLANE_ENTRY_POINTS.planesToRGB}(planes: vec3f) -> vec3f {
+    let luma = (planes.x - ${toWGSLFloat(lumaOffset)}) / ${toWGSLFloat(lumaScale)};
+    let chroma = (planes.yz - vec2f(${toWGSLFloat(chromaCenter)})) / ${toWGSLFloat(chromaScale)};
+    let red = luma + ${toWGSLFloat(redDifferenceScale)} * chroma.y;
+    let blue = luma + ${toWGSLFloat(blueDifferenceScale)} * chroma.x;
+    return vec3f(red, (luma - ${toWGSLFloat(redWeight)} * red - ${toWGSLFloat(blueWeight)} * blue) / ${toWGSLFloat(greenWeight)}, blue);
+}`;
+}
+
+/**
+ * Returns the plane functions over a read of codes at a normalized coordinate of the luma grid, such as the transform of an RGB image:
+ * luma and sited chroma read where they are asked, and unsited chroma, which a chroma texel's center names, at its sample's site, the chroma offset
+ * in luma pixels before it, as the raw signals read their planes.
+ */
+function createPlaneFunctionsWGSL(
+    readCodes: (coordinate: string) => string,
+    codeScale: number,
+    chromaOffset: readonly [number, number],
+    divisors: Pick<SignalPlanes, 'chromaHeightDivisor' | 'chromaWidthDivisor'>,
+    conversionWGSL: string
+): string {
+    const lumaPixelShiftX = chromaOffset[0] * divisors.chromaWidthDivisor;
+    const lumaPixelShiftY = chromaOffset[1] * divisors.chromaHeightDivisor;
+    const chromaSiteCoordinate = lumaPixelShiftX === 0 && lumaPixelShiftY === 0 ?
+        'coordinate' :
+        `coordinate - vec2f(${toWGSLFloat(lumaPixelShiftX)}, ${toWGSLFloat(lumaPixelShiftY)}) / ${SIGNAL_PLANE_ENTRY_POINTS.imageSize}()`;
+    return joinWGSL([ `
+fn ${SIGNAL_PLANE_ENTRY_POINTS.luma}(coordinate: vec2f) -> f32 {
+    return ${readCodes('coordinate')}.x;
+}
+
+fn ${SIGNAL_PLANE_ENTRY_POINTS.chroma}(coordinate: vec2f) -> vec2f {
+    return ${readCodes(chromaSiteCoordinate)}.yz;
+}
+
+fn ${SIGNAL_PLANE_ENTRY_POINTS.sitedChroma}(coordinate: vec2f) -> vec2f {
+    return ${readCodes('coordinate')}.yz;
+}
+
+fn ${SIGNAL_PLANE_ENTRY_POINTS.codeScale}() -> f32 {
+    return ${toWGSLFloat(codeScale)};
+}`, conversionWGSL ]);
+}
+
+/** Returns the plane functions derived from an RGB image through the transform, which the plan or the signal defines the image's reads of. */
+export function createImagePlaneFunctionsWGSL(
+    chromaOffset: readonly [number, number],
+    divisors: Pick<SignalPlanes, 'chromaHeightDivisor' | 'chromaWidthDivisor'>
+): string {
+    return createPlaneFunctionsWGSL(
+        (coordinate: string): string => `${SIGNAL_PLANE_ENTRY_POINTS.rgbToPlanes}(${SIGNAL_PLANE_ENTRY_POINTS.imageRead}(${coordinate}))`,
+        DERIVED_PLANE_CODE_SCALE,
+        chromaOffset,
+        divisors,
+        DERIVED_PLANE_CONVERSION_WGSL
+    );
+}
+
+/** Returns the divisors of a declared chroma subsampling, or chroma at the image's size when the stream declares none. */
+function getChromaSubsamplingDivisors(chromaSubsampling: ChromaSubsampling | null): Pick<SignalPlanes, 'chromaHeightDivisor' | 'chromaWidthDivisor'> {
+    return (chromaSubsampling === null ? null : CHROMA_SUBSAMPLING_DIVISORS.get(chromaSubsampling)) ?? FULL_RESOLUTION_DIVISORS;
+}
+
 function getRawChromaDivisors(format: SupportedRawVideoFrameFormat): Pick<SignalPlanes, 'chromaHeightDivisor' | 'chromaWidthDivisor'> {
     if (format === 'NV12' || format.startsWith('I420')) {
         return { chromaHeightDivisor: SUBSAMPLED_DIVISOR, chromaWidthDivisor: SUBSAMPLED_DIVISOR };
@@ -321,11 +423,14 @@ function createRawYUVPlanes(format: SupportedRawVideoFrameFormat, metadata: Inpu
         'sampleChroma(coordinate)' :
         'vec2f(sampleChromaU(coordinate), sampleChromaV(coordinate))';
     const divisors = getRawChromaDivisors(format);
+    const chromaOffset = getChromaPlaneOffset(hasLeftSitedChroma(format), divisors.chromaWidthDivisor);
     return {
         ...divisors,
         ...getPlaneFormats(metadata.bitDepth),
-        chromaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.chroma,
-        chromaOffset: getChromaPlaneOffset(hasLeftSitedChroma(format), divisors.chromaWidthDivisor),
+        ...PLANE_ENTRY_POINT_FIELDS,
+        chromaOffset,
+        // No route presents RGB-coded video, so every signal's planes are Y, Cb, and Cr
+        rgb: false,
         code: joinWGSL([ `
 fn ${SIGNAL_PLANE_ENTRY_POINTS.luma}(coordinate: vec2f) -> f32 {
     return sampleLuma(coordinate);
@@ -342,29 +447,53 @@ fn ${SIGNAL_PLANE_ENTRY_POINTS.sitedChroma}(textureCoordinate: vec2f) -> vec2f {
 fn ${SIGNAL_PLANE_ENTRY_POINTS.codeScale}() -> f32 {
     return ${toWGSLFloat((2 ** metadata.bitDepth) - 1)};
 }`, SIGNAL_PLANE_CONVERSION_WGSL ]),
-        codeScaleEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.codeScale,
-        conversionEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.conversion,
-        lumaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.luma,
-        sitedChromaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.sitedChroma
+        imageCode: createImagePlaneFunctionsWGSL(chromaOffset, divisors),
+        transformCode: createPlaneTransformWGSL(metadata)
     };
 }
 
-/** Returns planes derived from a signal that has RGB alone: BT.709 luma and chroma at the image's size, which the conversion joins back exactly. */
-function createDerivedPlanes(): SignalPlanes {
+/**
+ * Returns the planes of a signal the browser already converted to RGB: they derive from the signal's RGB through the stream's own matrix and range,
+ * with chroma at the stream's subsampling and siting, read at each chroma sample's site; without a declared subsampling, chroma has the image's size.
+ */
+function createExternalPlanes(metadata: InputColorMetadata, chromaSubsampling: ChromaSubsampling | null): SignalPlanes {
+    const divisors = getChromaSubsamplingDivisors(chromaSubsampling);
+    const chromaOffset = getChromaPlaneOffset(divisors.chromaWidthDivisor > FULL_RESOLUTION_DIVISOR, divisors.chromaWidthDivisor);
+    const imageCode = createImagePlaneFunctionsWGSL(chromaOffset, divisors);
     return {
-        // A browser-converted frame holds at most 10-bit values
-        chromaFormat: PLANE_CHROMA_HALF_FLOAT_FORMAT,
-        lumaFormat: PLANE_LUMA_HALF_FLOAT_FORMAT,
-        nativeFormat: PLANE_NATIVE_HALF_FLOAT_FORMAT,
-        chromaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.chroma,
-        chromaHeightDivisor: FULL_RESOLUTION_DIVISOR,
-        chromaOffset: NO_CHROMA_OFFSET,
-        chromaWidthDivisor: FULL_RESOLUTION_DIVISOR,
-        code: joinWGSL([ DERIVED_PLANES_WGSL ]),
-        codeScaleEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.codeScale,
-        conversionEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.conversion,
-        lumaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.luma,
-        sitedChromaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.sitedChroma
+        ...divisors,
+        ...getPlaneFormats(metadata.bitDepth),
+        ...PLANE_ENTRY_POINT_FIELDS,
+        chromaOffset,
+        rgb: false,
+        code: joinWGSL([ EXTERNAL_PLANE_IMAGE_WGSL, imageCode ]),
+        imageCode,
+        transformCode: createPlaneTransformWGSL(metadata)
+    };
+}
+
+/**
+ * Returns the planes of the external HDR signal: the 10-bit codes the signal recovers from the browser's BT.709 texture, exactly as it recovers them,
+ * with chroma at the stream's subsampling and siting; the signal's own range and matrix convert them.
+ */
+function createExternalHDRPlanes(metadata: InputColorMetadata, chromaSubsampling: ChromaSubsampling | null): SignalPlanes {
+    const divisors = getChromaSubsamplingDivisors(chromaSubsampling);
+    const chromaOffset = getChromaPlaneOffset(divisors.chromaWidthDivisor > FULL_RESOLUTION_DIVISOR, divisors.chromaWidthDivisor);
+    const readCodes = (coordinate: string): string => (
+        `recoverLimitedRangeBT709YUV(textureSampleBaseClampToEdge(videoTexture, videoSampler, ${coordinate}).rgb)`
+    );
+    return {
+        ...divisors,
+        ...getPlaneFormats(metadata.bitDepth),
+        ...PLANE_ENTRY_POINT_FIELDS,
+        chromaOffset,
+        rgb: false,
+        code: joinWGSL([
+            EXTERNAL_PLANE_IMAGE_WGSL,
+            createPlaneFunctionsWGSL(readCodes, (2 ** EXTERNAL_HDR_BIT_DEPTH) - 1, chromaOffset, divisors, SIGNAL_PLANE_CONVERSION_WGSL)
+        ]),
+        imageCode: createImagePlaneFunctionsWGSL(chromaOffset, divisors),
+        transformCode: createPlaneTransformWGSL(metadata)
     };
 }
 
@@ -581,8 +710,14 @@ function getDolbyVisionDualLayerBypassCondition(
     return felReconstruction ? FEL_WITHOUT_ENHANCEMENT_CONDITION : FEL_CONDITION;
 }
 
-/** Returns the bilinear read of the external texture, which the identity route presents unchanged. */
-export function createExternalIdentitySignal(): SignalDefinition {
+/**
+ * Returns the bilinear read of the external texture, which the identity route presents unchanged.
+ * Its planes derive from the RGB through the stream's metadata, the conversion the browser made, so it has none while the metadata is unknown.
+ */
+export function createExternalIdentitySignal(metadata: InputColorMetadata | null, chromaSubsampling: ChromaSubsampling | null = null): SignalDefinition {
+    if (metadata !== null) {
+        assertValidInputColorMetadata(metadata);
+    }
     return {
         bypassCondition: null,
         code: joinWGSL([ `
@@ -591,7 +726,7 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
 }` ]),
         entryPoint: SIGNAL_ENTRY_POINT,
         name: `${SIGNAL_NAME_PREFIX}.external-identity`,
-        planes: createDerivedPlanes(),
+        planes: metadata === null ? null : createExternalPlanes(metadata, chromaSubsampling),
         resources: EXTERNAL_RESOURCES,
         sourceKind: 'external'
     };
@@ -614,7 +749,7 @@ function assertExternalHDRMetadata(metadata: InputColorMetadata): void {
 }
 
 /** Returns the recovery of neutralized 10-bit HDR YUV from Chromium's opaque BT.709 texture, converted to encoded RGB. */
-export function createExternalHDRSignal(metadata: InputColorMetadata): SignalDefinition {
+export function createExternalHDRSignal(metadata: InputColorMetadata, chromaSubsampling: ChromaSubsampling | null = null): SignalDefinition {
     assertValidInputColorMetadata(metadata);
     assertExternalHDRMetadata(metadata);
 
@@ -640,7 +775,7 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
         ]),
         entryPoint: SIGNAL_ENTRY_POINT,
         name: `${SIGNAL_NAME_PREFIX}.external-hdr`,
-        planes: createDerivedPlanes(),
+        planes: createExternalHDRPlanes(metadata, chromaSubsampling),
         resources: EXTERNAL_RESOURCES,
         sourceKind: 'external'
     };

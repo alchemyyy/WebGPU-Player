@@ -34,6 +34,7 @@ import {
     type StaticHDRMetadataScanResult
 } from '../demux/hdr/StaticHDRMetadata';
 import { isVideoFrameFields, type VideoFrameFields } from '../decode/video/VideoFields';
+import { type ChromaSubsampling, isChromaSubsampling } from '../demux/VideoChromaSubsampling';
 import type { CustomAudioOutputChannelCount } from '../audio/processing/CustomAudioChannelLayout';
 import {
     assertValidAudioDownmixSettings,
@@ -378,6 +379,8 @@ type DecodeWorkerFrameResponseBase = {
 };
 
 export type DecodeWorkerVideoFrameResponse = DecodeWorkerFrameResponseBase & {
+    /** The chroma subsampling the track's decoder configuration declares; omitted when it declares none */
+    chromaSubsampling?: ChromaSubsampling
     frame: VideoFrame
     outputMode: 'video-frame'
 };
@@ -1245,7 +1248,9 @@ function isDecodeWorkerFrameResponse(value: Record<string, unknown>): boolean {
     }
     switch (value.outputMode) {
         case 'video-frame':
-            return isRecord(value.frame) && typeof value.frame.close === 'function';
+            return isRecord(value.frame)
+                && typeof value.frame.close === 'function'
+                && (value.chromaSubsampling === undefined || isChromaSubsampling(value.chromaSubsampling));
         case 'raw-planes': {
             const hasValidFrame = (
                 Object.prototype.hasOwnProperty.call(value, 'enhancementFrame') ?

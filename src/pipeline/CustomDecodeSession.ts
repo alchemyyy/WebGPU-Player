@@ -593,6 +593,36 @@ function validateHDRStartOptions(options: CustomDecodeSessionStartOptions): void
     }
 }
 
+/** Returns a worker's frame as presentation takes it, with its generation's video epoch, so presentation starts temporal history over when the epoch changes. */
+function createDecodedPresentationFrame(message: DecodeWorkerFrameResponse, videoEpoch: number): DecodedPresentationFrame {
+    switch (message.outputMode) {
+        case 'raw-planes':
+            return {
+                durationMicroseconds: message.durationMicroseconds,
+                encodedDolbyVisionMetadata: message.encodedDolbyVisionMetadata,
+                ...(message.fields ? { fields: message.fields } : {}),
+                HDR10PlusMetadata: message.HDR10PlusMetadata,
+                enhancementFrame: message.enhancementFrame,
+                frame: message.frame,
+                mediaTimeMicroseconds: message.mediaTimeMicroseconds,
+                outputMode: message.outputMode,
+                videoEpoch
+            };
+        case 'video-frame':
+            return {
+                ...(message.chromaSubsampling ? { chromaSubsampling: message.chromaSubsampling } : {}),
+                durationMicroseconds: message.durationMicroseconds,
+                encodedDolbyVisionMetadata: message.encodedDolbyVisionMetadata,
+                ...(message.fields ? { fields: message.fields } : {}),
+                HDR10PlusMetadata: message.HDR10PlusMetadata,
+                frame: message.frame,
+                mediaTimeMicroseconds: message.mediaTimeMicroseconds,
+                outputMode: message.outputMode,
+                videoEpoch
+            };
+    }
+}
+
 /**
  * Owns one bounded, generation-safe custom decode session and its decode worker.
  * The worker outlives generations: it runs one at a time, and a start waits until the previous run has stopped.
@@ -2054,36 +2084,7 @@ export default class CustomDecodeSession {
             return;
         }
 
-        let presentationFrame: DecodedPresentationFrame;
-        switch (message.outputMode) {
-            // A frame carries its video epoch, so presentation starts temporal history over when the epoch changes
-            case 'raw-planes':
-                presentationFrame = {
-                    durationMicroseconds: message.durationMicroseconds,
-                    encodedDolbyVisionMetadata: message.encodedDolbyVisionMetadata,
-                    ...(message.fields ? { fields: message.fields } : {}),
-                    HDR10PlusMetadata: message.HDR10PlusMetadata,
-                    enhancementFrame: message.enhancementFrame,
-                    frame: message.frame,
-                    mediaTimeMicroseconds: message.mediaTimeMicroseconds,
-                    outputMode: message.outputMode,
-                    videoEpoch: generationRecord.videoEpoch
-                };
-                break;
-            case 'video-frame':
-                presentationFrame = {
-                    durationMicroseconds: message.durationMicroseconds,
-                    encodedDolbyVisionMetadata: message.encodedDolbyVisionMetadata,
-                    ...(message.fields ? { fields: message.fields } : {}),
-                    HDR10PlusMetadata: message.HDR10PlusMetadata,
-                    frame: message.frame,
-                    mediaTimeMicroseconds: message.mediaTimeMicroseconds,
-                    outputMode: message.outputMode,
-                    videoEpoch: generationRecord.videoEpoch
-                };
-                break;
-        }
-        this.queueDecodedFrame(generationRecord, presentationFrame);
+        this.queueDecodedFrame(generationRecord, createDecodedPresentationFrame(message, generationRecord.videoEpoch));
         this.recordDolbyVisionMetadata(message);
         this.recordHDR10PlusMetadata(message.HDR10PlusMetadata);
         this.emitReadyEventIfMediaReady(generationRecord);

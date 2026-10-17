@@ -218,7 +218,11 @@ describe('PresentationSetup', () => {
 
             await expect(configurePresentationColorPipeline(asPresenter(presenter), request)).resolves.toBe(true);
 
-            expect(presenter.configureColorPipeline).toHaveBeenCalledWith({ settings: createDefaultRenderSettings(), videoFields: PROGRESSIVE_FIELDS }, GENERATION);
+            expect(presenter.configureColorPipeline).toHaveBeenCalledWith({
+                metadata: request.input.colorMetadata,
+                settings: createDefaultRenderSettings(),
+                videoFields: PROGRESSIVE_FIELDS
+            }, GENERATION);
             expect(request.clearDetectedInputPeak).toHaveBeenCalledTimes(1);
         });
 

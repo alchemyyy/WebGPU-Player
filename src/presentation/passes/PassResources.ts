@@ -2,7 +2,7 @@
 // Built-in code reads these bindings by the variable names declared here, and the planner assigns their binding numbers.
 import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../../demux/dolby-vision/DolbyVisionRPUParser';
 import { BYTES_PER_WORD, UNIFORM_BUFFER_OFFSET_ALIGNMENT } from '../WebGPUConstants';
-import type { EngineBindingResource, EngineResource } from './PassTypes';
+import type { EngineBindingResource, EngineResource, PassParameter } from './PassTypes';
 
 /** The bytes of one pass's `presentation` uniform. */
 export const PRESENTATION_UNIFORM_BYTE_LENGTH = 64;
@@ -247,6 +247,15 @@ export type FramePoolLayoutValues = {
 };
 
 /** Returns a parameter's byte offset in its pass's `parameters` uniform: declared scalars in order, 4 bytes apart. */
+/** Returns a parameter value in its type and range: integers round, and values outside the range clamp to it; a value that is not finite throws a RangeError. */
+export function normalizePassParameterValue(parameter: PassParameter, value: number): number {
+    if (!Number.isFinite(value)) {
+        throw new RangeError(`Parameter '${parameter.name}' must be a finite number`);
+    }
+    const typedValue = parameter.type === 'f32' ? value : Math.round(value);
+    return Math.min(Math.max(typedValue, parameter.minimum), parameter.maximum);
+}
+
 export function getParameterByteOffset(parameterIndex: number): number {
     return parameterIndex * BYTES_PER_WORD;
 }

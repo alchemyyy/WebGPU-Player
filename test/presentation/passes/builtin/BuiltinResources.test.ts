@@ -154,7 +154,10 @@ function expectResourcesMatchCode(code: string, resources: readonly EngineResour
 
 function createChains(): { chain: BuiltinChain; label: string }[] {
     const settings = createHDRToSDRRenderSettings();
-    const configurations: BuiltinChainConfiguration[] = [ { route: 'external-identity' } ];
+    const configurations: BuiltinChainConfiguration[] = [
+        { metadata: null, route: 'external-identity' },
+        { chromaSubsampling: '4:2:0', metadata: createSDRColorMetadata(), route: 'external-identity' }
+    ];
     for (const hdrOutput of OUTPUT_KINDS) {
         configurations.push(
             { hdrOutput, metadata: createPQColorMetadata(), route: 'external-hdr', settings },
@@ -181,7 +184,7 @@ function createChains(): { chain: BuiltinChain; label: string }[] {
     }
     return configurations.map((configuration: BuiltinChainConfiguration) => {
         const chain = createBuiltinChain(configuration);
-        const metadataLabel = 'metadata' in configuration ?
+        const metadataLabel = 'metadata' in configuration && configuration.metadata !== null ?
             ` with ${configuration.metadata.range}-range ${configuration.metadata.transfer} metadata` :
             '';
         const outputLabel = 'hdrOutput' in configuration && configuration.hdrOutput ? 'HDR output' : 'SDR output';

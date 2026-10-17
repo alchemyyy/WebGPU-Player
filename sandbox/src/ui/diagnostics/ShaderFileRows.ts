@@ -155,8 +155,10 @@ function getShaderPassStateTone(state: ShaderPassState): DiagnosticTone {
 
 function describeParameters(file: SandboxShaderFile): ShaderParameterField[] {
     const fields: ShaderParameterField[] = [];
-    // The parser rejects a parameter that a file's passes declare differently, so each name's first declaration stands for all of them
-    const parameters = file.passes.flatMap((filePass: SandboxFilePass): readonly PassParameter[] => filePass.manifest?.parameters ?? []);
+    // The parser rejects a parameter that a file's passes declare differently, so each name's first declaration stands for all of them; constants tune alike
+    const parameters = file.passes.flatMap((filePass: SandboxFilePass): readonly PassParameter[] => (
+        filePass.manifest === null ? [] : [ ...filePass.manifest.parameters, ...filePass.manifest.constants ]
+    ));
     for (const parameter of parameters) {
         if (fields.some((field: ShaderParameterField): boolean => field.name === parameter.name)) {
             continue;

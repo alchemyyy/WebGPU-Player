@@ -1,5 +1,8 @@
 export const COLOR_METADATA_VERSION = 1;
 
+/** BT.2408's HDR reference white, the nits of graphics white in a PQ or HLG signal. */
+export const HDR_REFERENCE_WHITE_NITS = 203;
+
 const MAXIMUM_LUMINANCE_NITS = 10_000;
 const MINIMUM_LUMINANCE_NITS = 1;
 const MINIMUM_BIT_DEPTH = 8;

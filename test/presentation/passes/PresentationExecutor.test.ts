@@ -12,6 +12,7 @@ import type {
     PlannedBinding,
     PlannedOutput,
     PlannedPass,
+    PlannedPassTexture,
     PlannedTexture,
     PresentationFrameInput,
     PresentationFrameSource,
@@ -199,6 +200,9 @@ const UNKNOWN_NAME = 'missing';
 const WORKGROUP_COUNTS: readonly [number, number, number] = [ 4, 2, 1 ];
 const INDIRECT_ARGUMENTS_BYTE_LENGTH = 12;
 const STATE_BYTE_LENGTH = 64;
+// A linear 3D LUT and a nearest table of 32-bit floats, which repeats
+const LUT_PASS_TEXTURE: PlannedPassTexture = { dimension: '3d', edge: 'clamp', filter: 'linear', format: 'rgba16float', id: 'lut', size: [ 17, 17, 17 ] };
+const WEIGHTS_PASS_TEXTURE: PlannedPassTexture = { dimension: '2d', edge: 'repeat', filter: 'nearest', format: 'rgba32float', id: 'weights', size: [ 5, 648, 1 ] };
 const STEADY_STATE_FRAME_COUNT = 5;
 const HISTORY_DEPTH = 1;
 
@@ -389,6 +393,7 @@ function createPlan(plan: Partial<PresentationPlan>): PresentationPlan {
         deinterlace: null,
         output: OUTPUT,
         parameterSets: [],
+        passTextures: [],
         passes: [],
         report: { activePasses: [], inactivePasses: [] },
         sourceKind: 'external',
@@ -614,6 +619,53 @@ describe('PresentationExecutor', () => {
         for (const [ propertyName, descriptor ] of originalDescriptors) {
             restoreProperty(globalThis, propertyName, descriptor);
         }
+    });
+
+    it('binds texture blocks from the caller\'s uploads, with a sampler of each filter and edge mode, and refuses a plan without them', async () => {
+        const harness = createDeviceHarness();
+        const lutView = { label: 'lut view' } as unknown as GPUTextureView;
+        const weightsView = { label: 'weights view' } as unknown as GPUTextureView;
+        const plan = createPlan({
+            passTextures: [ LUT_PASS_TEXTURE, WEIGHTS_PASS_TEXTURE ],
+            passes: [
+                createRenderPass('Grade', {
+                    bindings: [
+                        { binding: 0, kind: 'presentation' },
+                        { binding: 1, kind: 'pass-texture', textureId: LUT_PASS_TEXTURE.id },
+                        { binding: 2, kind: 'pass-sampler', textureId: LUT_PASS_TEXTURE.id },
+                        { binding: 3, kind: 'pass-texture', textureId: WEIGHTS_PASS_TEXTURE.id },
+                        { binding: 4, kind: 'pass-sampler', textureId: WEIGHTS_PASS_TEXTURE.id }
+                    ]
+                })
+            ]
+        });
+
+        const executor = await PresentationExecutor.create(
+            harness.device,
+            plan,
+            new Map([ [ LUT_PASS_TEXTURE.id, lutView ], [ WEIGHTS_PASS_TEXTURE.id, weightsView ] ])
+        );
+        encodeFrame(executor, createExternalFrameInput());
+
+        expect(harness.bindGroupLayouts[0].descriptor.entries).toEqual([
+            { binding: 0, buffer: { type: 'uniform' }, visibility: GPU_SHADER_STAGE.FRAGMENT },
+            { binding: 1, texture: { sampleType: 'float', viewDimension: '3d' }, visibility: GPU_SHADER_STAGE.FRAGMENT },
+            { binding: 2, sampler: { type: 'filtering' }, visibility: GPU_SHADER_STAGE.FRAGMENT },
+            // A nearest read of 32-bit floats needs neither filtering nor the float32-filterable feature
+            { binding: 3, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' }, visibility: GPU_SHADER_STAGE.FRAGMENT },
+            { binding: 4, sampler: { type: 'non-filtering' }, visibility: GPU_SHADER_STAGE.FRAGMENT }
+        ]);
+        expect(harness.device.createSampler).toHaveBeenCalledWith(expect.objectContaining({
+            addressModeU: 'clamp-to-edge',
+            addressModeW: 'clamp-to-edge',
+            magFilter: 'linear',
+            minFilter: 'linear'
+        }));
+        expect(harness.device.createSampler).toHaveBeenCalledWith(expect.objectContaining({ addressModeV: 'repeat', magFilter: 'nearest' }));
+        const entries = harness.bindGroups.at(-1)?.descriptor.entries as GPUBindGroupEntry[];
+        expect(entries[1].resource).toBe(lutView);
+        expect(entries[3].resource).toBe(weightsView);
+        await expect(PresentationExecutor.create(harness.device, plan)).rejects.toThrow(`texture-upload: no upload of texture block ${LUT_PASS_TEXTURE.id}`);
     });
 
     it('creates explicit layouts, pipelines, and bind group entries from the planned bindings', async () => {

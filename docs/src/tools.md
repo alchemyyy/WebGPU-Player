@@ -37,6 +37,20 @@ python tools/convert_mpv_shader.py <input.glsl> <output.wgsl> [--name <name>] [-
 Its tests are in `tools/test/`.
 See [Migrate an mpv shader to a wgpup](mpv-shaders.md).
 
+## Cube LUT converter
+
+```sh
+python tools/convert_cube_lut.py <input.cube> <output.wgsl> [--name <name>] [--hook <stage>] [--domain <domain>]
+```
+
+`convert_cube_lut.py` turns a `.cube` 3D LUT into a pass file: one color pass that grades each pixel through the LUT, which the file holds as a three-dimensional texture block of half floats, read trilinearly at texel centers over the LUT's `DOMAIN_MIN` and `DOMAIN_MAX`.
+By default the pass grades the source's encoded RGB, at `RGB` in the `source` domain, which a LUT made for Rec. 709 video expects of an SDR source; `--hook OUTPUT --domain sdr` grades what the display shows instead.
+The pass name defaults to the LUT's `TITLE`, else the file's name.
+A 1D LUT, a size outside 2 to 256, or a table of the wrong length does not convert, with a code and a detail.
+`pass_texture_block.py` writes the texture block, as the mpv shader converter does for a `TEXTURE`.
+Its tests are in `tools/test/`.
+See [Texture blocks](new-pass.md#texture-blocks).
+
 ## Browser probes
 
 | File | Does |

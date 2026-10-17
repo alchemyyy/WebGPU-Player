@@ -4,12 +4,15 @@
 // as a stream that changes its format mid-stream needs. Its sampling functions carry a framePool prefix; the matrix function is the raw YUV signal's.
 import { assertValidInputColorMetadata, type InputColorMetadata } from '../../../color/ColorMetadata';
 import {
+    createImagePlaneFunctionsWGSL,
     createInterlacedChromaReadWGSL,
+    createPlaneTransformWGSL,
     createRawYUVMatrixWGSL,
     createSelectedBitDepthRawYUVRangeWGSL,
     getChromaPlaneOffset,
     getPlaneFormats,
     INTERLACED_SIGNAL_CONDITION,
+    PLANE_ENTRY_POINT_FIELDS,
     SIGNAL_PLANE_ENTRY_POINTS
 } from './BuiltinSignals';
 import { joinWGSL } from './BuiltinWGSL';
@@ -116,21 +119,24 @@ fn ${SIGNAL_PLANE_ENTRY_POINTS.conversion}(codes: vec3f) -> vec4f {
     return vec4f(convertRawYUVToEncodedRGB(normalizeRawYUV(codes)), 1.0);
 }`;
 
-/** Returns the planes of the frame pool signal for a stream of the format: its subsampling and siting, read per slot as the signal reads them. */
-function createFramePoolPlanes(format: GPUDecoderOutputFormat): SignalPlanes {
+/**
+ * Returns the planes of the frame pool signal for a stream of the format: its subsampling and siting, read per slot as the signal reads them.
+ * The transform, which planes derived from the signal's RGB take, holds the stream's metadata at the format's bit depth.
+ */
+function createFramePoolPlanes(format: GPUDecoderOutputFormat, metadata: InputColorMetadata): SignalPlanes {
     const facts = getGPUDecoderFormatFacts(format);
+    const divisors = { chromaHeightDivisor: facts.chromaHeightDivisor, chromaWidthDivisor: facts.chromaWidthDivisor };
+    // Chroma subsampled across is sited left, as the signal reads it
+    const chromaOffset = getChromaPlaneOffset(facts.chromaWidthDivisor > 1, facts.chromaWidthDivisor);
     return {
         ...getPlaneFormats(facts.bitDepth),
-        chromaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.chroma,
-        chromaHeightDivisor: facts.chromaHeightDivisor,
-        // Chroma subsampled across is sited left, as the signal reads it
-        chromaOffset: getChromaPlaneOffset(facts.chromaWidthDivisor > 1, facts.chromaWidthDivisor),
-        chromaWidthDivisor: facts.chromaWidthDivisor,
+        ...divisors,
+        ...PLANE_ENTRY_POINT_FIELDS,
+        chromaOffset,
+        rgb: false,
         code: joinWGSL([ PLANES_WGSL ]),
-        codeScaleEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.codeScale,
-        conversionEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.conversion,
-        lumaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.luma,
-        sitedChromaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.sitedChroma
+        imageCode: createImagePlaneFunctionsWGSL(chromaOffset, divisors),
+        transformCode: createPlaneTransformWGSL({ ...metadata, bitDepth: facts.bitDepth })
     };
 }
 
@@ -174,7 +180,7 @@ fn ${FRAME_POOL_SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
         ]),
         entryPoint: FRAME_POOL_SIGNAL_ENTRY_POINT,
         name: `${FRAME_POOL_SIGNAL_NAME_PREFIX}.${format}${interlacedChroma ? INTERLACED_CHROMA_NAME_SUFFIX : ''}`,
-        planes: createFramePoolPlanes(format),
+        planes: createFramePoolPlanes(format, metadata),
         resources: FRAME_POOL_RESOURCES,
         sourceKind: 'frame-pool'
     };

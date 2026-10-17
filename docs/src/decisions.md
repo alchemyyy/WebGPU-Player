@@ -865,11 +865,12 @@ These were settled on Firefox 157 on Windows.
   The version is pinned, since the converter repairs that version's GLSL frontend: it reverses adjacent array dimensions, reads a for-loop condition that opens with a constructor as a declaration, lowers `barrier()` with a `subgroupBarrier()` WebGPU lacks by default, rejects a function that can end without a return, `dot()` of scalars, and a swizzle of a scalar, and cannot fold a ternary in a global `const`.
   Every converted pass is validated with naga before the file is written.
   71 user shaders were checked in development: Anime4K's, bjin's ravu and nnedi3 variants, FSRCNNX, KrigBilateral, SSimSuperRes, SSimDownscaler, adaptive-sharpen, FSR, CAS, NIS, and SGSR, then the Chroma from Luma prediction shaders.
-  68 of the 71 converted, as did both Chroma from Luma shaders, and all of their passes planned and compiled under naga in the planner's modules on the raw, frame-pool, and external routes; ravu-zoom's lookup tables and NVScaler's shared memory exceed the limits below.
+  70 of the 71 converted, as did both Chroma from Luma shaders, and all of their passes planned and compiled under naga in the planner's modules on the raw, frame-pool, external, and deinterlacing routes; NVScaler's shared memory exceeds the limits below.
+  ravu-zoom converted once `TEXTURE` blocks became texture blocks of the pass file.
 - Plane passes run on the signal's planes (10-16).
   mpv's `LUMA`, `CHROMA`, and `NATIVE` hooks see the decoded planes before conversion, which only the signal step reads, so the spine starts with plane stages of those names, and the converter maps the hooks onto them.
   Deriving planes from the RGB image, as the converter first did, gave `CHROMA` the image's size, so a chroma upscaler, whose `WHEN` asks for subsampled chroma, never ran, and it could not read native chroma anyway.
-  `CHROMA_SCALED` still reads the RGB image, since the engine never holds chroma apart at the image's size.
+  `CHROMA_SCALED` still reads the RGB image, since the engine never holds chroma apart at the image's size, through the prelude's transform of the source's own matrix and range (10-16).
 - The signal converts what plane passes leave (10-16).
   The fixed signal step is decode-equivalent, so the merge that converts the planes is built from the signal's own functions: its plane reads, its chroma siting, and its range and matrix.
   It reads each plane no pass replaced straight from the source, so a chroma upscaler leaves luma exactly as decoded, and a plan without plane passes is the plan it always was.
@@ -878,15 +879,41 @@ These were settled on Firefox 157 on Windows.
   libplacebo binds every texture whole, so `NAME_pos` is the output's coordinate whatever the texture's rect, and only `OFFSET ALIGN` moves the hooked texture's position onto its rect; the rects decide where each result lands, which the plane merge and the final scaler apply.
   Folding each input's offset into its accessors would shift reads that a pass computes itself: KrigBilateral's upscaling pass reads `LOWRES_Y` at chroma texel centers it derives from the aligned `CHROMA_pos`, which a folded read would move between texels.
   So the engine gives each input its offset as `<P>_offset()`, as mpv's `NAME_off`, and places outputs as libplacebo does.
-- Routes without decoded planes derive them from RGB (10-16).
-  An external route imports a frame the browser already converted, so its planes are BT.709 luma and chroma at the image's size, which the merge inverts exactly; luma passes keep running there, and a chroma upscaler's `WHEN` is false, since `chroma.width` is `source.width`.
-  Preferring a plane route for a preset that needs planes would make a preset change the route, and re-subsampling the browser's chroma would need a subsampling the external route does not know.
-  The Dolby Vision routes offer no planes, since reconstruction maps each pixel's base-layer codes, and a deinterlacing plan deinterlaces the RGB the planes merge into, so both leave plane passes out as `planes-unavailable`.
-- The planes are on the source's display grid (10-16).
-  Plane facts derive from `source.width` and `source.height`, the display size every plan already reads, so an anamorphic stream's planes are resampled to square pixels rather than held at their sample size.
-- mpv's linear light is 1.0 at SDR white (10-16).
-  The engine's is in nits, so a `LINEAR` or `SIGMOID` pass becomes an SDR pass over 100 nits, the engine's default SDR white, and an HDR pass over BT.2408's 203 nits, which `hdr.source` selects.
-- A `TEXTURE` block becomes a constant array of at most 4096 texels (10-16), which a D3D11 immediate constant buffer holds; passes cannot declare textures or buffers.
+- Routes without decoded planes derive them from RGB through the conversion that made it (10-16).
+  An external route imports a frame the browser already converted, so its planes come back through the stream's own matrix and range, at its bit depth, from its color metadata, which the merge inverts exactly; the identity route therefore carries the stream's metadata, and has no planes while it does not know it.
+  On the external HDR route the engine itself labels the stream BT.709 for the browser, so its planes are the codes its signal recovers from that labeling, which match the signal's own codes exactly; a BT.709 assumption on every route gave a BT.601 or BT.2020 source the wrong luma and chroma.
+  Preferring a plane route for a preset that needs planes would make a preset change the route.
+  The Dolby Vision routes offer no planes, since reconstruction maps each pixel's base-layer codes, so they leave plane passes out as `planes-unavailable`.
+- An external route's chroma takes the stream's subsampling from its decoder configuration (10-16).
+  The decode worker reads it from the track's avcC (its closing chroma format, else its first SPS), hvcC, or av1C, or the AV1, VP9, or VP8 codecs string, and each VideoFrame carries it, so the presenter plans with it without a host fact.
+  Derived chroma is read at each chroma sample's site, the engine's siting for horizontally subsampled chroma, so a chroma upscaler runs on the external routes too.
+  Read back that way, the browser's chroma is exact across, since a bilinear upsampler passes through the samples it interpolates, and down it is the 4:2:0 rows' [1, 6, 1] / 8 blur under bilinear upsampling: exact for chroma that varies linearly, about 0.0014 RMS of the plane for smooth chroma, a third of an 8-bit code, and 0.09 RMS for chroma that changes every row; the browser's own upsampler and its rounding to 8-bit RGB are unknowns on top.
+- A deinterlacing plan derives its planes from the deinterlaced image (10-16).
+  Plane passes once left a deinterlacing plan out, since the deinterlacer works on the signal's RGB, after the planes, so luma shaders that ran on interlaced sources through RGB-derived planes stopped running there.
+  The planes now come from the deinterlaced image through the signal's transform, as mpv's shaders see the planes of a deinterlacing filter's output, and no pass after the deinterlacer reads the source, so a held field still draws from history alone.
+- The planes hold the frame's samples (10-16), revising their first placement on the source's display grid.
+  Plane sizes derive from the frame's visible sample size, a plan fact (`PlanFacts.sampleWidth` and `sampleHeight`, the `luma.width` and `luma.height` facts) that the presenter follows per frame and plans again on, so an anamorphic stream's planes keep its samples, as mpv's do, and the scaler takes the merged image to the display's shape.
+- Chroma's rect is luma's over the subsampling divisor (10-16).
+  libplacebo keeps a subsampled plane's rect at the source rect over the divisor, so an odd luma width leaves the chroma texture's last texel half outside the rect and chroma's scale exactly half luma's.
+  The engine took the texture's extent as the rect, which moved chroma by up to half a chroma texel across the frame, so each plane image now carries an extent: the chroma read covers whole texels, the merge reads chroma through extent over size, and a pass's output extent scales as libplacebo scales a rect.
+- mpv's linear light is 1.0 at reference white, which the engine gives passes (10-16).
+  The engine's linear light is in nits, so a `LINEAR` or `SIGMOID` pass divides by the prelude's `referenceWhiteNits()`, the configured SDR white for an SDR source and BT.2408's 203 nits for HDR, and multiplies its result back; it was an SDR pass over a fixed 100 nits and an HDR pass over 203, which `hdr.source` chose.
+  The prelude's `linearize()` and `delinearize()` compile from the built-in transfer decode's own code, renamed apart from it, and its exact inverse, so they are the source's transfer rather than the gamma 2.4 the converter once stood in.
+  They and the plane transform are defined only in modules whose bodies call them, so no other module grows.
+- Pass files carry texture blocks (10-16), replacing the converter's constant arrays of at most 4096 texels.
+  A host stores one file per pass, so the texture travels inside it, in base64, and the passes that bind it read it through accessors with its filter and edge mode.
+  The engine uploads a block when a plan first binds it, keyed by the SHA-256 of its size, format, and data, which the parse computes synchronously since a plan needs the identity; uploads live until neither the installed plan nor the preset holds them, with no count or LRU limit.
+  A one-dimensional block is a texture one texel high, since WGSL samples a 1D texture only in fragment code, and a block beyond the device's texture size, or a linear filter on a format it cannot filter, leaves its passes out with a code of its own.
+- A pass's `when` reads its own parameters (10-16).
+  The plan request carries the current values, and the presenter plans again when a parameter some `when` reads changes; the executor of a plan that comes out the same keeps running, and every other parameter stays a uniform write.
+  The converter once fixed parameter defaults into `when`, or ran a parameter `WHEN` every frame as a guard that presented the image unchanged; a `when` that reads the parameter replaces both.
+- `const` parameters compile into the plan (10-16).
+  A WGSL override constant was the alternative, but the executor builds every pipeline of a plan anyway, and a `const` may also size an array or fold into other constants, so a change builds a new plan whose modules hold the new value.
+  The converter declares an mpv `CONSTANT` as a GLSL global, which naga reads by name, unless the code needs a constant expression of it; such a constant naga may fold, which a second translation at another value detects, and a folded one keeps its default.
+- A `DEFINE` parameter splits its pass (10-16).
+  A `DEFINE` steers the preprocessor, so no single translation serves every value; the converter translates one pass per value of the `DEFINE` parameters a pass's code reads, each under `when: <name> == <value>`, up to 16 passes, past which the parameters keep their defaults.
+- `rgb.source` tells RGB sources apart (10-16).
+  mpv fires `RGB` on RGB sources and `LUMA` and `CHROMA` on YUV ones, so the converter keeps both copies of a pass that hooks both, each under the fact, rather than dropping `RGB`; every route presents YUV, so the fact is 0 on each.
 - Converted compute passes keep WebGPU's default limits (10-16), as the pass header does: 256 invocations per workgroup and 16 KiB of workgroup storage.
 
 ## Repository

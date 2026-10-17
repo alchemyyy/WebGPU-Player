@@ -436,6 +436,8 @@ export function createAuthorizationReferencePlan(
                 hdrSource: target.hdrSource,
                 outputHeight: target.height,
                 outputWidth: target.width,
+                sampleHeight: target.height,
+                sampleWidth: target.width,
                 sourceHeight: target.height,
                 sourceWidth: target.width
             },

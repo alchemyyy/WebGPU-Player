@@ -50,7 +50,7 @@ A host loads any pass file through `WebGPUPresenter.setPresentationPreset`, as a
 The hook names the stage a pass attaches to, in pipeline order:
 
 - `LUMA`, `CHROMA`, then `NATIVE`, the plane stages, run on the signal's planes before it converts them into RGB (see [Planes](#planes)).
-- `RGB`, then `PRESCALE`, run before scaling, where `HOOKED` starts at the source's size, or at luma's when a luma pass resized it.
+- `RGB`, then `PRESCALE`, run before scaling, where `HOOKED` starts at the source's size, or at luma's when plane passes replaced a plane.
   A pass there may change the size, as the Anime4K passes double it, and the scaler takes whatever size it is given.
 - `SCALE` holds the scaler: the first user scaler that can run replaces the built-in bilinear one, and every other scaler is left out as `extra-scaler`.
   Kernels and color functions on `SCALE` run after the scaler.
@@ -78,17 +78,21 @@ The plane stages hold the planes as mpv's do, as normalized code values: a code 
 
 | Stage | `HOOKED` | Size |
 | --- | --- | --- |
-| `LUMA` | Y in `.x` | The source's |
-| `CHROMA` | Cb in `.x` and Cr in `.y` | The chroma plane's: `chroma.width` by `chroma.height`, half the source's across and down at 4:2:0 |
+| `LUMA` | Y in `.x` | The frame's visible size in samples: `luma.width` by `luma.height` |
+| `CHROMA` | Cb in `.x` and Cr in `.y` | The chroma plane's: `chroma.width` by `chroma.height`, half luma's across and down at 4:2:0, rounded up |
 | `NATIVE` | Y, Cb, and Cr in `.xyz`, chroma resampled onto luma's grid | Luma's |
 
 - A pass that writes its plane stage's image replaces that plane; the plan then merges the planes and converts them with the signal's own range and matrix, reading a plane no pass replaced from the source, so it converts as the signal does.
 - Chroma resampled onto luma's grid, by `NATIVE` or the merge, is read bilinearly through both images' offsets; a chroma upscaler that writes chroma at luma's size with `offset: align` is read texel for texel.
 - A plane is read apart from the source only when a pass reads it; a plan without plane passes reads the source as it always does.
+- The planes hold the frame's samples, so an anamorphic stream's planes keep its non-square samples, and the image the planes merge into starts at luma's size; the scaler takes it to the display's shape.
+- Chroma's size is luma's over the subsampling divisor, rounded up, and its extent on the reference grid is luma's over the divisor exactly, as libplacebo sizes a plane's rect; an odd luma size leaves chroma's last pixel half outside, so chroma's scale stays exactly the subsampling's.
 - The raw and frame-pool routes hold the decoded planes.
-  The external routes, which import a frame the browser already converted to RGB, derive the planes from the RGB image with BT.709 weights at the image's size, chroma included, and the merge inverts them exactly; there `chroma.width` is `source.width`.
-- Dolby Vision routes have no planes to offer, and a deinterlacing plan deinterlaces the RGB the planes merge into, so on both a plane pass, and a pass that reads a plane stage, is left out as `planes-unavailable`.
-- The planes are the source's visible area on the source's display grid, so an anamorphic stream's planes are resampled to it.
+- The external routes import a frame the browser already converted to RGB, so they derive the planes from it through the conversion that made it: the stream's own matrix and range, at its bit depth, which the merge inverts exactly.
+  The external HDR route reads the codes its signal recovers from the browser's BT.709 texture, the engine's own labeling of the stream.
+  Chroma takes the stream's subsampling from its decoder configuration, read at each chroma sample's site, so a chroma upscaler runs there too; a stream that declares none has chroma at the image's size.
+- A deinterlacing plan derives the planes from its deinterlaced image through the same conversion, chroma at the stream's subsampling.
+- Dolby Vision routes have no planes to offer, so a plane pass, and a pass that reads a plane stage, is left out there as `planes-unavailable`.
 
 ### Offsets
 
@@ -102,7 +106,7 @@ Every image the plan holds has an offset: the pixel of the image, in its own pix
 ## Header
 
 A pass is a header, a run of lines that start with `//!`, and its body, which runs up to the next line that starts with `//!`.
-A file holds one or more passes, as mpv's user shaders do, so a network of several passes ships as one file.
+A file holds one or more passes, as mpv's user shaders do, so a network of several passes ships as one file, and any texture blocks its passes bind (see [Texture blocks](#texture-blocks)).
 
 ```wgsl
 //! name: Sharpen
@@ -130,13 +134,15 @@ fn kernel(coordinate: vec2f) -> vec4f {
 | `output` | Kernel, compute; required for compute | `<NAME>.size, <format>` or `<width>, <height>, <format>` |
 | `components` | Kernel, compute | 1, 2, 3, or 4, the channels it needs; the planner takes the format from `output` alone |
 | `offset` | Kernel, compute, on a hook before `SCALE` | `<x>, <y>` decimals, the output's offset in its own pixels beyond the hooked image's, or `align`; see [Offsets](#offsets) |
-| `when` | All | A condition on the global facts; when it is 0, the plan leaves the pass out as `condition-false` |
+| `when` | All | A condition on the global facts and the pass's own parameters; when it is 0, the plan leaves the pass out as `condition-false` |
 | `workgroup` | Compute, required | `<x>[, <y>[, <z>]]` positive integers, 1 where omitted; x and y at most 256, z at most 64, and at most 256 invocations in all |
 | `dispatch` | Compute | `<x>[, <y>[, <z>]]` expressions, 1 where omitted; defaults to `ceil(<output width> / x), ceil(<output height> / y), 1` |
-| `param` | All; repeats | `param <name>: <type> = <default> in [<minimum>, <maximum>]` |
+| `bind` | All; repeats | The name of a texture block of the file, which the pass reads; see [Texture blocks](#texture-blocks) |
+| `param` | All; repeats | `param <name>: <type> = <default> in [<minimum>, <maximum>]`, a uniform |
+| `const` | All; repeats | `const <name>: <type> = <default> in [<minimum>, <maximum>]`, a constant the plan compiles in |
 
 - A header line is `//! <directive>: <value>`, with any whitespace around the tokens, and `\r\n` line endings read as `\n`.
-- Only `input` and `param` repeat; an unknown, repeated, or empty directive is an error, as is a directive that the shape does not take.
+- Only `input`, `bind`, `param`, and `const` repeat; an unknown, repeated, or empty directive is an error, as is a directive that the shape does not take.
 - Only blank lines may come before a file's first header, and every line that starts with `//!` belongs to a header, so a body cannot hold one.
 - Each pass of a file parses on its own, so a malformed header leaves the file's other passes in place.
   An error carries the line of its directive, or the header's first line for a missing required directive, counted from the file's first line.
@@ -147,9 +153,9 @@ fn kernel(coordinate: vec2f) -> vec4f {
 - `NAME` is `HOOKED`, the image at the hook, a stage name, which reads that stage's final image and must not come after the hook, or a name an earlier pass saved.
 - A pass without inputs reads `HOOKED`, and a scaler reads nothing else.
 - No input pairs a name and a history depth twice.
-- A saved name is not `HOOKED` or a stage name, and no texture name is `source`, `output`, or `chroma`, whose sizes are global facts, or ends in `_history<digits>`, which history accessors use.
+- A saved name is not `HOOKED` or a stage name, and no texture name is `source`, `output`, `luma`, or `chroma`, whose sizes are global facts, or ends in `_history<digits>`, which history accessors use.
 - A compute pass's input is never `TARGET`, the prefix of its storage target.
-- In `output`, `<NAME>` is `HOOKED`, an input, `source`, `output`, or `chroma`, and a comma inside parentheses belongs to a function call.
+- In `output`, `<NAME>` is `HOOKED`, an input, `source`, `output`, `luma`, or `chroma`, and a comma inside parentheses belongs to a function call.
 - A kernel's output defaults to `HOOKED.size, rgba16float`, and its format is `rgba16float`, `rg16float`, `r16float`, `rgba32float`, `r32float`, `rgb10a2unorm`, or `rgba8unorm`.
 - A compute pass writes a core storage format: `rgba16float`, `rgba32float`, `r32float`, or `rgba8unorm`.
 - An output's width and height round to whole pixels within 1 and the device's largest texture dimension, and each dispatch count rounds up within 1 and 65535; otherwise the pass is left out as `output-size` or `workgroup-count`.
@@ -157,18 +163,53 @@ fn kernel(coordinate: vec2f) -> vec4f {
 ### Expressions
 
 - `when`, `output`, and `dispatch` take expressions of numbers, identifiers, parentheses, `abs`, `ceil`, `floor`, `max`, `min`, `round`, and the operators `! - * / % + < <= > >= == != && ||`; a comparison or logic operator yields 1 or 0.
-- Every expression reads the global facts, `source.width`, `source.height`, `output.width`, `output.height`, `chroma.width`, `chroma.height`, `frame.rate`, `hdr.source`, and `hdr.output`, all fixed at plan time.
-  The HDR facts are 1 or 0, an unknown frame rate is 0, and the chroma size is the chroma plane's (see [Planes](#planes)), so `chroma.width < source.width` holds for subsampled chroma.
+- Every expression reads the global facts, `source.width`, `source.height`, `output.width`, `output.height`, `luma.width`, `luma.height`, `chroma.width`, `chroma.height`, `frame.rate`, `hdr.source`, `hdr.output`, and `rgb.source`, all fixed at plan time.
+  The HDR facts are 1 or 0, an unknown frame rate is 0, and the luma and chroma sizes are the planes' (see [Planes](#planes)), so `chroma.width < luma.width` holds for subsampled chroma.
+  `rgb.source` is 1 where the source codes R, G, and B planes, where mpv fires its `RGB` hook rather than `LUMA` and `CHROMA`; no route presents such video, so it is 0 on every route.
+- `when` also reads the pass's own parameters and constants by name, at their current values, and the presenter plans again when one that a `when` reads changes.
 - `output` and `dispatch` also read `<NAME>.width` and `<NAME>.height` for `HOOKED` and each input, by its base name for a history input.
-- Anything that varies per frame belongs in the body, which branches on a uniform.
+- Anything else that varies per frame belongs in the body, which branches on a uniform.
 
 ### Parameters
 
 - A parameter's name is a unique identifier, its type is `f32`, `i32`, or `u32`, and its numbers are decimals with an optional sign, fraction, and exponent.
-- Its default lies within its range, every number fits its type, and a pass has at most 32 parameters.
-- The body reads it as `parameters.<name>`.
-  Parameters are uniforms, so `WebGPUPresenter.setPresentationParameter` changes one from the next frame without rebuilding a pipeline, rounding integers and clamping to the range.
-- The passes of a file share each parameter's value, so passes that declare one parameter declare it alike.
+- Its default lies within its range, every number fits its type, and a pass has at most 32 parameters and constants together.
+- The body reads a `param` as `parameters.<name>`.
+  It is a uniform, so `WebGPUPresenter.setPresentationParameter` changes one from the next frame without rebuilding a pipeline, rounding integers and clamping to the range.
+- The body reads a `const` as `<name>`, a WGSL constant at its current value, so it may size an array or fold into other constants.
+  A change builds a new plan, whose modules compile the new value, as does a change to a `param` that the pass's `when` reads.
+- The passes of a file share each parameter's value, so passes that declare one parameter declare it alike, of the same kind.
+
+### Texture blocks
+
+A file may hold texture blocks beside its passes, such as a 3D LUT or a table of weights, so a host keeps storing one file per pass.
+A block is a header that names a texture, then its data:
+
+```wgsl
+//! texture: LUT
+//! size: 33, 33, 33
+//! format: rgba16float
+//! filter: linear
+//! edge: clamp
+
+AAA8AAA8AAA8ADw...
+```
+
+| Directive | Value |
+| --- | --- |
+| `texture` | Required: the name passes bind it by, an identifier other than `HOOKED`, a stage name, or a global size's name |
+| `size` | Required: `<width>[, <height>[, <depth>]]` positive integers, which give it one, two, or three dimensions |
+| `format` | Required: `r8unorm`, `rg8unorm`, `rgba8unorm`, `r16float`, `rg16float`, `rgba16float`, `r32float`, `rg32float`, or `rgba32float` |
+| `filter` | `linear` or `nearest`, the default |
+| `edge` | `clamp`, the default, `repeat`, or `mirror`: how a read beyond the edge wraps |
+
+- The body is the texels' bytes in base64, whitespace ignored: little-endian, packed tightly in the format, x fastest, then y, then z.
+  It fills the size in the format exactly.
+- A block is not a pass; a pass reads it after `bind: <NAME>`, under a name no input of the pass takes, and a file of blocks alone has no pass.
+- A block that does not parse fails the passes that bind it, with its own line and message.
+- The engine uploads a block once, when a plan first binds it, keyed by the SHA-256 of its size, format, and data, so a new version of the file replaces the old upload once no preset holds it; there is no count or LRU limit.
+- A block beyond the device's largest texture of its dimensions, 2D for one and two, is left out as `texture-size`, and a linear filter on a 32-bit float format a device cannot filter as `texture-format`.
+- `tools/convert_cube_lut.py` turns a `.cube` 3D LUT into a file of one color pass that grades through it (see [Tools](tools.md#cube-lut-converter)).
 
 ## Generated code
 
@@ -178,7 +219,14 @@ The engine owns every binding, and generates around each body:
   `<P>` is the input's name, or `<NAME>_history<N>` for `<NAME>[-N]`, as in `RGB_history1_tex`.
   A format that cannot be filtered, such as `r32float`, reads with four loads and a manual blend, so the accessor behaves the same.
 - For a compute pass, `TARGET_size() -> vec2u` and `TARGET_store(position: vec2u, value: vec4f)`, which runs the color steps fused after the pass before it stores.
-- The `parameters` uniform, one 32-bit scalar per declared parameter in order.
+- For each texture block it binds, `<NAME>_tex(coordinate)`, a read through the block's filter and edge mode at a normalized coordinate, `<NAME>_size()`, and `<NAME>_load(texel)`, one texel clamped to the block.
+  A coordinate is `f32`, `vec2f`, or `vec3f`, and a texel `i32`, `vec2i`, or `vec3i`, by the block's dimensions.
+- The `parameters` uniform, one 32-bit scalar per declared `param` in order, and each `const` as a WGSL constant.
+- For a body that calls them without declaring them itself:
+  - `linearize(color: vec4f) -> vec4f` and `delinearize(color: vec4f) -> vec4f`, the source's own transfer function, compiled from the code of the built-in transfer decode and its inverse, in mpv's scale of linear light, where 1.0 is `referenceWhiteNits()` nits.
+  - `referenceWhiteNits() -> f32`, the nits of mpv's linear 1.0: the configured SDR white for an SDR source, BT.2408's HDR reference white, 203 nits, for HDR.
+    A pass of the `linear` domain reads nits, so it divides by it to work in mpv's scale.
+  - `rgbToPlanes(color: vec3f) -> vec3f` and `planesToRGB(planes: vec3f) -> vec3f`: 'source' RGB to the normalized Y, Cb, and Cr plane values of the source's own matrix and range, and back, each the other's exact inverse.
 - The `presentation` uniform, whose frame globals are `sourceSize`, `outputSize`, and `inputSize` as `vec2f`, `timestampSeconds`, `frameIndex`, `historyValid`, `skippedFrames`, and `fieldState`.
   `historyValid` counts the earlier frames history holds: 0 after a reset, rising by one per new frame to the plan's deepest history, so a pass that reads history weighs it by `historyValid`, as `temporal-blend.wgsl` does.
   `skippedFrames` counts the frames dropped since the previous new frame, which a temporal pass may treat as a soft reset.
@@ -203,7 +251,9 @@ A pass that cannot run is left out of the plan, playback continues without it, a
 | `extra-scaler` | Another scaler runs |
 | `replaced-function-missing`, `replaced-function-taken` | The route's chain has no such built-in function, or another pass replaced it |
 | `input-unknown`, `input-after-hook`, `input-reserved` | An input names nothing saved, a later stage, or `TARGET` |
-| `planes-unavailable` | The pass hooks or reads a plane stage on a route without planes, which the detail names by its signal, or in a plan that deinterlaces, `deinterlacing` |
+| `planes-unavailable` | The pass hooks or reads a plane stage, or calls the prelude's plane transform, on a route without planes, which the detail names by its signal |
+| `linear-light-unavailable` | The pass calls `linearize`, `delinearize`, or `referenceWhiteNits` on a route that does not know its stream's transfer function, which the detail names by its signal |
+| `texture-size`, `texture-format` | A texture block exceeds the device's texture size, or needs a filter the device lacks for its format; the detail names the block |
 | `output-size`, `output-missing`, `workgroup-count`, `workgroup-missing` | An output size or dispatch count is out of range, or missing |
 
 WGSL is bounds-checked and cannot reach the network or the page, so a pass can only read the frames it is given and produce pixels.

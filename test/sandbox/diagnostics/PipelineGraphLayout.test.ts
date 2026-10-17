@@ -403,6 +403,8 @@ describe('layoutPipelineGraph', () => {
                 hdrSource: false,
                 outputHeight: OUTPUT_HEIGHT,
                 outputWidth: OUTPUT_WIDTH,
+                sampleHeight: SOURCE_HEIGHT,
+                sampleWidth: SOURCE_WIDTH,
                 sourceHeight: SOURCE_HEIGHT,
                 sourceWidth: SOURCE_WIDTH
             },
@@ -437,6 +439,8 @@ describe('layoutPipelineGraph', () => {
                 hdrSource: false,
                 outputHeight: OUTPUT_HEIGHT,
                 outputWidth: OUTPUT_WIDTH,
+                sampleHeight: SOURCE_HEIGHT,
+                sampleWidth: SOURCE_WIDTH,
                 sourceHeight: SOURCE_HEIGHT,
                 sourceWidth: SOURCE_WIDTH
             },
