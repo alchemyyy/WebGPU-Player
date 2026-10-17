@@ -104,6 +104,7 @@ function createManifest(overrides: Partial<PassManifest> & Pick<PassManifest, 'b
         domain: 'any',
         hook: 'OUTPUT',
         inputs: [],
+        offset: null,
         output: null,
         parameters: [],
         replaces: null,
@@ -545,5 +546,239 @@ describe('planPresentation with deinterlacing', () => {
     it('fails on a frame size the device cannot hold', () => {
         expect(() => planDeinterlaced(createHDRChain(), [], { ...DEINTERLACE, frameWidth: MAXIMUM_TEXTURE_DIMENSION + 1 }))
             .toThrow(`deinterlace-size: frame width ${MAXIMUM_TEXTURE_DIMENSION + 1} outside [1, ${MAXIMUM_TEXTURE_DIMENSION}]`);
+    });
+});
+
+describe('planPresentation with plane passes', () => {
+    const CHROMA_WIDTH = SOURCE_WIDTH / 2;
+    const CHROMA_HEIGHT = SOURCE_HEIGHT / 2;
+    // Left-sited 4:2:0 chroma lies half a luma sample, a quarter of a chroma sample, left of its texel's center
+    const LEFT_SITED_CHROMA_OFFSET = 0.25;
+    const LUMA_LABEL = 'Presentation luma plane';
+    const CHROMA_LABEL = 'Presentation chroma plane';
+    const NATIVE_LABEL = 'Presentation native';
+    const MERGE_LABEL = 'Presentation merge';
+    const SCALE_LABEL = 'Presentation scale';
+    const SIGNAL_LABEL = 'Presentation signal';
+    const UPSCALER_LABEL = 'Presentation pass \'Chroma upscaler\'';
+    const MAIN_LABEL = 'Presentation pass \'Main\'';
+    const ZERO_VECTOR = 'vec2f(0.000000000, 0.000000000)';
+    const DOUBLER_OFFSET = -0.5;
+    const DOUBLING_FACTOR = 2;
+    const DEEP_BIT_DEPTH = 12;
+    const CHROMA_INPUT = { historyOffset: 0, name: 'CHROMA' } as const;
+    const LUMA_INPUT = { historyOffset: 0, name: 'LUMA' } as const;
+    const HOOKED_INPUT = { historyOffset: 0, name: 'HOOKED' } as const;
+    const LUMA_SIZE_OUTPUT = { format: 'rgba16float', height: parsePassExpression('LUMA.height'), width: parsePassExpression('LUMA.width') } as const;
+    const DOUBLED_OUTPUT = {
+        format: 'rgba16float',
+        height: parsePassExpression(`HOOKED.height * ${DOUBLING_FACTOR}`),
+        width: parsePassExpression(`HOOKED.width * ${DOUBLING_FACTOR}`)
+    } as const;
+    const SUBSAMPLED_CONDITION = parsePassExpression('chroma.width < source.width');
+
+    function createSDRChain(): BuiltinChain {
+        return createBuiltinChain({ format: 'I420', hdrOutput: false, metadata: createSDRColorMetadata({ bitDepth: 8 }), route: 'raw-yuv', settings: createHDRToSDRRenderSettings() });
+    }
+
+    function createExternalChain(): BuiltinChain {
+        return createBuiltinChain({ hdrOutput: false, metadata: createPQColorMetadata(), route: 'external-hdr', settings: createHDRToSDRRenderSettings() });
+    }
+
+    /** A chroma upscaler's last pass: chroma at luma's size, aligned with the reference grid, as KrigBilateral's is. */
+    function createChromaUpscaler(overrides: Partial<PassManifest> = {}): PassManifest {
+        return createKernelPass({
+            hook: 'CHROMA',
+            inputs: [ HOOKED_INPUT, LUMA_INPUT ],
+            name: 'Chroma upscaler',
+            offset: { kind: 'align' },
+            output: LUMA_SIZE_OUTPUT,
+            when: SUBSAMPLED_CONDITION,
+            ...overrides
+        });
+    }
+
+    function createLumaDoubler(): PassManifest {
+        return createKernelPass({
+            hook: 'LUMA',
+            name: 'Luma doubler',
+            offset: { kind: 'pixels', x: DOUBLER_OFFSET, y: DOUBLER_OFFSET },
+            output: DOUBLED_OUTPUT
+        });
+    }
+
+    function findPass(presentationPlan: PresentationPlan, label: string): PlannedPass {
+        const pass = presentationPlan.passes.find((candidate: PlannedPass): boolean => candidate.label === label);
+        if (pass === undefined) {
+            throw new Error(`No pass '${label}'`);
+        }
+        return pass;
+    }
+
+    function getLabels(presentationPlan: PresentationPlan): string[] {
+        return presentationPlan.passes.map((pass: PlannedPass): string => pass.label);
+    }
+
+    function toVector(x: number, y: number): string {
+        return `vec2f(${x.toFixed(9)}, ${y.toFixed(9)})`;
+    }
+
+    it('reads chroma apart at its own size, merges the upscaled chroma with the source\'s luma, and converts as the signal does', () => {
+        const presentationPlan = plan(createSDRChain(), [ createChromaUpscaler() ]);
+
+        expect(presentationPlan.report.activePasses).toEqual([ 'Chroma upscaler' ]);
+        expect(getLabels(presentationPlan)).toEqual([ CHROMA_LABEL, LUMA_LABEL, UPSCALER_LABEL, MERGE_LABEL, SCALE_LABEL ]);
+        expect(presentationPlan.textures.map(texture => [ texture.id, texture.format, texture.width, texture.height ])).toEqual([
+            [ 'plane:chroma', 'rg16float', CHROMA_WIDTH, CHROMA_HEIGHT ],
+            [ 'pass:Chroma upscaler', 'rgba16float', SOURCE_WIDTH, SOURCE_HEIGHT ],
+            [ 'plane:luma', 'r16float', SOURCE_WIDTH, SOURCE_HEIGHT ],
+            [ 'merge', 'rgba16float', SOURCE_WIDTH, SOURCE_HEIGHT ]
+        ]);
+        const chromaPass = findPass(presentationPlan, CHROMA_LABEL);
+        expect(chromaPass.inputTextureId).toBeNull();
+        expect(chromaPass.coordinateMapping).toBe('identity');
+        expect(chromaPass.code).toContain('let color = vec4f(readSignalChroma(textureCoordinate) / getSignalCodeScale(), 0.0, 1.0);');
+        const mergePass = findPass(presentationPlan, MERGE_LABEL);
+        expect(mergePass.inputTextureId).toBeNull();
+        expect(getTextureBindings(mergePass).map(binding => binding.textureId)).toEqual([ 'pass:Chroma upscaler' ]);
+        expect(mergePass.code).toContain('let luma = readSignalLuma(sourceCoordinate);');
+        expect(mergePass.code).toContain(`let chroma = planeChroma_tex(referenceCoordinate + ${ZERO_VECTOR}).xy * scale;`);
+        expect(mergePass.code).toContain('return convertSignalCodes(codes);');
+        expect(mergePass.code).toContain('let color = mergeSignalPlanes(textureCoordinate, input.textureCoordinate);');
+        expect(getStepCalls(findPass(presentationPlan, SCALE_LABEL))).toEqual(SDR_STEP_ENTRY_POINTS);
+    });
+
+    it('gives each input its texture\'s offset, the hooked chroma its siting, and an aligned output the reference grid\'s', () => {
+        const presentationPlan = plan(createSDRChain(), [ createChromaUpscaler() ]);
+        const upscalerCode = findPass(presentationPlan, UPSCALER_LABEL).code;
+
+        expect(upscalerCode).toContain(`fn HOOKED_offset() -> vec2f {\n    return ${toVector(LEFT_SITED_CHROMA_OFFSET, 0)};\n}`);
+        expect(upscalerCode).toContain(`fn LUMA_offset() -> vec2f {\n    return ${ZERO_VECTOR};\n}`);
+        expect(findPass(presentationPlan, MERGE_LABEL).code).toContain(`fn planeChroma_offset() -> vec2f {\n    return ${ZERO_VECTOR};\n}`);
+    });
+
+    it('resamples unaligned chroma onto luma\'s grid through its offset, scaled to its new pixels', () => {
+        const presentationPlan = plan(createSDRChain(), [ createChromaUpscaler({ offset: null }) ]);
+        const scaledOffset = LEFT_SITED_CHROMA_OFFSET * (SOURCE_WIDTH / CHROMA_WIDTH);
+
+        expect(findPass(presentationPlan, MERGE_LABEL).code).toContain(
+            `let chroma = planeChroma_tex(referenceCoordinate + ${toVector(scaledOffset / SOURCE_WIDTH, 0)}).xy * scale;`
+        );
+    });
+
+    it('sizes plan-time expressions from the chroma plane, which is the source\'s size where a route derives its planes from RGB', () => {
+        expect(plan(createSDRChain(), [ createChromaUpscaler() ]).report.activePasses).toEqual([ 'Chroma upscaler' ]);
+        expect(plan(createExternalChain(), [ createChromaUpscaler() ]).report.inactivePasses).toEqual([
+            { detail: '', name: 'Chroma upscaler', reason: 'condition-false' }
+        ]);
+    });
+
+    it('runs a luma pass on the derived luma of a route without decoded planes, and reads chroma from the signal', () => {
+        const presentationPlan = plan(createExternalChain(), [ createKernelPass({ hook: 'LUMA', name: 'Luma' }) ]);
+        const mergeCode = findPass(presentationPlan, MERGE_LABEL).code;
+
+        expect(presentationPlan.report.activePasses).toEqual([ 'Luma' ]);
+        expect(mergeCode).toContain('let chroma = readSignalSitedChroma(referenceSourceCoordinate);');
+        expect(mergeCode).toContain('let luma = planeLuma_tex(imageCoordinate).x * scale;');
+        expect(mergeCode).toContain(`dot(${SIGNAL_ENTRY_POINT}(coordinate).rgb, DERIVED_PLANE_LUMA_WEIGHTS)`);
+    });
+
+    it('merges onto a resized luma\'s grid, and the scaler corrects the image\'s offset', () => {
+        const presentationPlan = plan(createSDRChain(), [ createLumaDoubler() ]);
+        const doubledWidth = SOURCE_WIDTH * DOUBLING_FACTOR;
+        const doubledHeight = SOURCE_HEIGHT * DOUBLING_FACTOR;
+        const shift = toVector(DOUBLER_OFFSET / doubledWidth, DOUBLER_OFFSET / doubledHeight);
+        const mergeCode = findPass(presentationPlan, MERGE_LABEL).code;
+
+        expect(getLabels(presentationPlan)).toEqual([ LUMA_LABEL, 'Presentation pass \'Luma doubler\'', MERGE_LABEL, SCALE_LABEL ]);
+        expect(presentationPlan.textures.find(texture => texture.id === 'merge')).toMatchObject({ height: doubledHeight, width: doubledWidth });
+        expect(mergeCode).toContain(`let referenceSourceCoordinate = sourceCoordinate - ${shift} * presentation.textureScale;`);
+        expect(mergeCode).toContain('let chroma = readSignalSitedChroma(referenceSourceCoordinate);');
+        expect(findPass(presentationPlan, SCALE_LABEL).code).toContain(`var color = engineInput_tex((textureCoordinate + ${shift}));`);
+    });
+
+    it('carries the image\'s offset through an RGB pass to the scaler', () => {
+        const presentationPlan = plan(createSDRChain(), [ createLumaDoubler(), createKernelPass({ domain: 'source', hook: 'RGB', name: 'Main' }) ]);
+        const doubledWidth = SOURCE_WIDTH * DOUBLING_FACTOR;
+        const doubledHeight = SOURCE_HEIGHT * DOUBLING_FACTOR;
+
+        expect(findPass(presentationPlan, MAIN_LABEL).code).toContain(`fn HOOKED_offset() -> vec2f {\n    return ${toVector(DOUBLER_OFFSET, DOUBLER_OFFSET)};\n}`);
+        expect(findPass(presentationPlan, SCALE_LABEL).code).toContain(
+            `engineInput_tex((textureCoordinate + ${toVector(DOUBLER_OFFSET / doubledWidth, DOUBLER_OFFSET / doubledHeight)}))`
+        );
+    });
+
+    it('reads a plane apart for a later pass that binds it, and keeps the signal\'s own conversion', () => {
+        const presentationPlan = plan(createSDRChain(), [ createKernelPass({ hook: 'RGB', inputs: [ HOOKED_INPUT, LUMA_INPUT ], name: 'Main' }) ]);
+
+        expect(getLabels(presentationPlan)).toEqual([ SIGNAL_LABEL, LUMA_LABEL, MAIN_LABEL, SCALE_LABEL ]);
+        expect(getTextureBindings(findPass(presentationPlan, MAIN_LABEL)).map(binding => binding.textureId)).toEqual([ 'signal', 'plane:luma' ]);
+    });
+
+    it('merges into NATIVE for a NATIVE pass, and converts the image from what that pass leaves', () => {
+        const presentationPlan = plan(createSDRChain(), [ createKernelPass({ hook: 'NATIVE', name: 'Native' }) ]);
+
+        expect(getLabels(presentationPlan)).toEqual([ NATIVE_LABEL, 'Presentation pass \'Native\'', MERGE_LABEL, SCALE_LABEL ]);
+        expect(findPass(presentationPlan, NATIVE_LABEL).code).toContain('return vec4f(codes / scale, 1.0);');
+        expect(findPass(presentationPlan, MERGE_LABEL).code).toContain('let codes = planeNative_tex(imageCoordinate).xyz * scale;');
+    });
+
+    it('takes 32-bit float planes for codes deeper than 10 bits', () => {
+        const chain = createBuiltinChain({
+            format: 'I420P12',
+            hdrOutput: false,
+            metadata: createPQColorMetadata({ bitDepth: DEEP_BIT_DEPTH }),
+            route: 'raw-yuv',
+            settings: createHDRToSDRRenderSettings()
+        });
+        const presentationPlan = plan(chain, [ createChromaUpscaler() ]);
+
+        expect(presentationPlan.textures.find(texture => texture.id === 'plane:chroma')?.format).toBe('rg32float');
+        expect(presentationPlan.textures.find(texture => texture.id === 'plane:luma')?.format).toBe('r32float');
+    });
+
+    it('leaves plane passes out on a Dolby Vision route, with the passes that read a plane stage', () => {
+        const chain = createBuiltinChain({
+            felReconstruction: false,
+            format: HDR_FORMAT,
+            hdrOutput: false,
+            profile: 8,
+            route: 'raw-dolby-vision',
+            settings: createHDRToSDRRenderSettings()
+        });
+        const reader = createKernelPass({ hook: 'RGB', inputs: [ HOOKED_INPUT, CHROMA_INPUT ], name: 'Reader' });
+        const presentationPlan = plan(chain, [ createChromaUpscaler({ when: null }), reader ]);
+
+        expect(presentationPlan.report.inactivePasses).toEqual([
+            { detail: chain.signal.name, name: 'Chroma upscaler', reason: 'planes-unavailable' },
+            { detail: chain.signal.name, name: 'Reader', reason: 'planes-unavailable' }
+        ]);
+        expect(presentationPlan.passes).toHaveLength(1);
+    });
+
+    it('leaves plane passes out of a deinterlacing plan, whose deinterlacer reads the signal\'s RGB', () => {
+        const presentationPlan = planPresentation({
+            chain: createSDRChain(),
+            deinterlace: { bitDepth: 8, frameHeight: SOURCE_HEIGHT, frameWidth: SOURCE_WIDTH },
+            device: { features: new Set<string>(), maximumTextureDimension: MAXIMUM_TEXTURE_DIMENSION },
+            facts: createFacts(),
+            output: SDR_OUTPUT,
+            passes: [ createChromaUpscaler() ]
+        });
+
+        expect(presentationPlan.report.inactivePasses).toEqual([ { detail: 'deinterlacing', name: 'Chroma upscaler', reason: 'planes-unavailable' } ]);
+    });
+
+    it('rejects a plane pass whose domain is a color state, since planes come before the color track', () => {
+        const presentationPlan = plan(createSDRChain(), [ createChromaUpscaler({ domain: 'source' }) ]);
+
+        expect(presentationPlan.report.inactivePasses).toEqual([ { detail: 'source at CHROMA', name: 'Chroma upscaler', reason: 'domain-unreachable' } ]);
+        expect(presentationPlan.passes).toHaveLength(1);
+    });
+
+    it('rejects reading CHROMA from a LUMA pass, which runs before it', () => {
+        const presentationPlan = plan(createSDRChain(), [ createKernelPass({ hook: 'LUMA', inputs: [ HOOKED_INPUT, CHROMA_INPUT ], name: 'Luma' }) ]);
+
+        expect(presentationPlan.report.inactivePasses).toEqual([ { detail: 'CHROMA at LUMA', name: 'Luma', reason: 'input-after-hook' } ]);
     });
 });

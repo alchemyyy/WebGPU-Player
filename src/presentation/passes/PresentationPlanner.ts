@@ -7,6 +7,7 @@ import {
     MAXIMUM_WORKGROUP_COUNT,
     WORKGROUP_AXIS_NAMES
 } from '../WebGPUConstants';
+import { toWGSLFloat } from './builtin/BuiltinWGSL';
 import { evaluatePassExpression, PassExpressionError } from './PassExpression';
 import {
     collectTopLevelDeclarations,
@@ -17,17 +18,23 @@ import {
     createTextureAccessorsWGSL,
     FRAGMENT_COORDINATE,
     FRAGMENT_POSITION,
+    FRAGMENT_TARGET_COORDINATE,
     renameWGSLIdentifiers,
     ShaderModuleBuilder,
     VERTEX_STAGE_WGSL
 } from './PassPrelude';
 import {
+    CHROMA_STAGE,
     ENTRY_POINTS,
     getAccessorPrefix,
     GLOBAL_FACTS,
     HEIGHT_SUFFIX,
     HOOKED_INPUT_NAME,
+    IMAGE_STAGES,
+    LUMA_STAGE,
+    NATIVE_STAGE,
     PARAMETERS_VARIABLE,
+    PLANE_STAGES,
     STAGE_ORDER,
     TARGET_ACCESSOR_PREFIX,
     WIDTH_SUFFIX
@@ -68,12 +75,30 @@ import type {
     PlannedTexture,
     PlanRequest,
     PresentationPlan,
-    PresentationStage
+    PresentationStage,
+    SignalPlanes
 } from './PassTypes';
 
 const STAGE_NAMES: ReadonlySet<string> = new Set<string>(STAGE_ORDER);
+const PLANE_STAGE_NAMES: ReadonlySet<string> = new Set<string>(PLANE_STAGES);
 
 const SIGNAL_TEXTURE_ID = 'signal';
+// The plane images a signal's planes are read apart into, and the image its merge converts them into
+const LUMA_PLANE_TEXTURE_ID = 'plane:luma';
+const CHROMA_PLANE_TEXTURE_ID = 'plane:chroma';
+const NATIVE_PLANE_TEXTURE_ID = 'plane:native';
+const MERGE_TEXTURE_ID = 'merge';
+// The accessors of the plane images a merge reads
+const LUMA_INPUT_PREFIX = 'planeLuma';
+const CHROMA_INPUT_PREFIX = 'planeChroma';
+const NATIVE_INPUT_PREFIX = 'planeNative';
+// The merge function a plane merge pass generates around the signal's plane functions
+const MERGE_ENTRY_POINT = 'mergeSignalPlanes';
+// The detail of planes a deinterlacing plan leaves out, since the deinterlacer reads the signal's RGB
+const DEINTERLACED_PLANES_DETAIL = 'deinterlacing';
+const ZERO_OFFSET: Offset = Object.freeze([ 0, 0 ]);
+// The subsampling divisor of chroma at luma's size, as a signal without planes has
+const FULL_RESOLUTION_DIVISOR = 1;
 const DEINTERLACE_TEXTURE_ID = 'deinterlace';
 const SCALE_TEXTURE_ID = 'scale';
 const PASS_TEXTURE_ID_PREFIX = 'pass:';
@@ -86,6 +111,10 @@ const SAMPLER_VARIABLE = 'videoSampler';
 
 const LABEL_PREFIX = 'Presentation';
 const SIGNAL_LABEL = `${LABEL_PREFIX} signal`;
+const LUMA_PLANE_LABEL = `${LABEL_PREFIX} luma plane`;
+const CHROMA_PLANE_LABEL = `${LABEL_PREFIX} chroma plane`;
+const NATIVE_LABEL = `${LABEL_PREFIX} native`;
+const MERGE_LABEL = `${LABEL_PREFIX} merge`;
 const DEINTERLACE_LABEL = `${LABEL_PREFIX} deinterlace`;
 const SCALE_LABEL = `${LABEL_PREFIX} scale`;
 const COLOR_LABEL = `${LABEL_PREFIX} color`;
@@ -118,25 +147,67 @@ type InputSource =
 type DraftInput = {
     accessorPrefix: string
     historyOffset: number
+    /** The offset of the texture it reads, in that texture's pixels; known once the input resolves to a texture */
+    offset: Offset
     source: InputSource
+};
+
+/** An offset in an image's own pixels, or a shift in normalized coordinates, x then y. */
+type Offset = readonly [number, number];
+
+/** Where a plane merge reads each component: an input's accessor prefix, or null for the signal's own plane read from the source. */
+type PlaneMerge = {
+    chromaPrefix: string | null
+    /** The chroma image's offset over its size: the shift from the reference grid to its normalized coordinates */
+    chromaShift: Offset
+    /** The merged grid's offset over its size: the shift from the reference grid to its normalized coordinates */
+    gridShift: Offset
+    lumaPrefix: string | null
+    /** The NATIVE image's accessor prefix; when set, it holds every component */
+    nativePrefix: string | null
+    /** Whether the merge writes NATIVE's normalized Y, Cb, and Cr rather than converting them to 'source' RGB */
+    writesNative: boolean
 };
 
 /**
  * What a pass computes before its color steps.
  * - 'deinterlace': the built-in deinterlacing pass over the signal's history, at the stream's bit depth.
  * - 'signal': the route's signal, read from the source at the pass's coordinate.
+ * - 'plane-read': one of the signal's planes, read from the source on its own grid as normalized codes.
+ * - 'plane-merge': the signal's planes, from plane images or the source, merged on one grid and converted as the signal converts.
  * - 'sample': a bilinear read of the pass's one input texture.
  * - 'user': a user kernel, scaler, or compute body.
  */
 type DraftCore =
     | { bitDepth: number; kind: 'deinterlace' }
+    | { kind: 'plane-merge'; merge: PlaneMerge }
+    | { kind: 'plane-read'; plane: 'chroma' | 'luma' }
     | { kind: 'sample' }
     | { kind: 'signal' }
     | { kind: 'user'; pass: ActivePass };
 
+/**
+ * A plane stage's image: its size and offset on the reference grid, the texture that holds it once one does, and whether a pass replaced
+ * the signal's own plane, which the merge then reads from the texture rather than from the source.
+ */
+type PlaneImage = {
+    offset: Offset
+    replaced: boolean
+    size: Size
+    textureId: string | null
+};
+
+/** The size and offset of the image a pass hooks. */
+type HookedImage = {
+    offset: Offset
+    size: Size
+};
+
 type DraftPass = {
     core: DraftCore
     coordinateMapping: PassCoordinateMapping
+    /** A normalized shift of the coordinate the core reads at: a scaler's correction of its image's offset */
+    coordinateShift: Offset
     /** The texture that fills `presentation.inputSize`, or null when the pass reads the source. */
     hookedTextureId: string | null
     inputs: DraftInput[]
@@ -152,7 +223,7 @@ type DraftPass = {
 };
 
 type DraftPassOptions = Pick<DraftPass, 'core' | 'coordinateMapping' | 'hookedTextureId' | 'inputs' | 'label' | 'targetTextureId'>
-    & Partial<Pick<DraftPass, 'kind' | 'postSteps' | 'workgroupCounts'>>;
+    & Partial<Pick<DraftPass, 'coordinateShift' | 'kind' | 'postSteps' | 'workgroupCounts'>>;
 
 type Size = { height: number; width: number };
 
@@ -180,20 +251,66 @@ function isStage(name: string): name is PresentationStage {
     return STAGE_NAMES.has(name);
 }
 
+function isPlaneStage(name: string | null): name is PresentationStage {
+    return name !== null && PLANE_STAGE_NAMES.has(name);
+}
+
 function compareStages(first: PresentationStage, second: PresentationStage): number {
     return STAGE_ORDER.indexOf(first) - STAGE_ORDER.indexOf(second);
 }
 
-function createEngineInput(textureId: string): DraftInput {
-    return { accessorPrefix: ENGINE_INPUT_PREFIX, historyOffset: 0, source: { kind: 'texture', textureId } };
+function createEngineInput(textureId: string, accessorPrefix: string = ENGINE_INPUT_PREFIX): DraftInput {
+    return { accessorPrefix, historyOffset: 0, offset: ZERO_OFFSET, source: { kind: 'texture', textureId } };
 }
 
-function createGlobalFacts(facts: PlanFacts): Map<string, number> {
+/** Returns the chroma plane's visible size: the source's, divided by the signal's subsampling and rounded up, or the source's without planes. */
+function getChromaSize(facts: PlanFacts, planes: SignalPlanes | null): Size {
+    return {
+        height: Math.ceil(facts.sourceHeight / (planes?.chromaHeightDivisor ?? FULL_RESOLUTION_DIVISOR)),
+        width: Math.ceil(facts.sourceWidth / (planes?.chromaWidthDivisor ?? FULL_RESOLUTION_DIVISOR))
+    };
+}
+
+/** Returns an offset over a size: the normalized shift from the reference grid to an image's normalized coordinates. */
+function getNormalizedShift(offset: Offset, size: Size): Offset {
+    return [ offset[0] / size.width, offset[1] / size.height ];
+}
+
+function isZeroOffset(offset: Offset): boolean {
+    return offset[0] === 0 && offset[1] === 0;
+}
+
+/** Returns the WGSL vec2f of an offset or shift. */
+function toWGSLVector(offset: Offset): string {
+    return `vec2f(${toWGSLFloat(offset[0])}, ${toWGSLFloat(offset[1])})`;
+}
+
+/**
+ * Returns the offset of a pass's output, as libplacebo places an mpv pass's output rect:
+ * the hooked image's offset scaled by the output's size over the hooked image's, plus the declared offset, or the reference grid's origin under align.
+ */
+function getOutputOffset(manifest: PassManifest, hooked: HookedImage, size: Size): Offset {
+    const declared = manifest.offset;
+    if (declared?.kind === 'align') {
+        return ZERO_OFFSET;
+    }
+    const declaredX = declared?.kind === 'pixels' ? declared.x : 0;
+    const declaredY = declared?.kind === 'pixels' ? declared.y : 0;
+    return [
+        (size.width / hooked.size.width) * hooked.offset[0] + declaredX,
+        (size.height / hooked.size.height) * hooked.offset[1] + declaredY
+    ];
+}
+
+function createGlobalFacts(facts: PlanFacts, planes: SignalPlanes | null): Map<string, number> {
+    const chromaSize = getChromaSize(facts, planes);
     return new Map<string, number>([
         [ GLOBAL_FACTS.sourceWidth, facts.sourceWidth ],
         [ GLOBAL_FACTS.sourceHeight, facts.sourceHeight ],
         [ GLOBAL_FACTS.outputWidth, facts.outputWidth ],
         [ GLOBAL_FACTS.outputHeight, facts.outputHeight ],
+        [ GLOBAL_FACTS.chromaWidth, chromaSize.width ],
+        [ GLOBAL_FACTS.chromaHeight, chromaSize.height ],
         [ GLOBAL_FACTS.frameRate, facts.frameRate ?? 0 ],
         [ GLOBAL_FACTS.hdrSource, facts.hdrSource ? 1 : 0 ],
         [ GLOBAL_FACTS.hdrOutput, facts.hdrOutput ? 1 : 0 ]
@@ -251,6 +368,13 @@ function requireOutput(manifest: PassManifest): PassOutput {
     return manifest.output;
 }
 
+/** Rejects a compute pass that names its own storage target's prefix as an input. */
+function requireUnreservedInputs(manifest: PassManifest): void {
+    if (manifest.shape === 'compute' && manifest.inputs.some((input: PassInput): boolean => input.name === TARGET_ACCESSOR_PREFIX)) {
+        throw new PassPlacementError('input-reserved', TARGET_ACCESSOR_PREFIX);
+    }
+}
+
 function createBuiltinTrackEntry(colorFunction: BuiltinColorFunction): TrackEntry {
     return {
         name: colorFunction.name,
@@ -281,13 +405,22 @@ class PresentationPlanBuilder {
     private readonly inactivePasses: PassRejection[] = [];
     private readonly initialState: ColorState;
     private readonly request: PlanRequest;
+    // Each plane stage's image as it is when the stage ends, which later passes read by the stage's name
+    private readonly finalPlaneImages = new Map<PresentationStage, PlaneImage>();
+    private readonly planeImages = new Map<PresentationStage, PlaneImage>();
     private readonly savedTextures = new Map<string, string>();
     private readonly stageTextures = new Map<PresentationStage, string>();
+    // Every planned texture's offset in its own pixels
+    private readonly textureOffsets = new Map<string, Offset>();
     private readonly textures = new Map<string, DraftTexture>();
     private copyCount = 0;
     private deinterlace: DeinterlaceRequest | null = null;
     // The producer of the spine's current image; null while that image is the signal, which no pass has read yet
     private current: DraftPass | null = null;
+    // The offset of the spine's current image in its own pixels
+    private currentOffset: Offset = ZERO_OFFSET;
+    // Why plane stages cannot run, or null while they can
+    private planesUnavailable: string | null = null;
     // Track entries before the cursor have run
     private cursor = 0;
     private namedStages: ReadonlySet<PresentationStage> = new Set<PresentationStage>();
@@ -297,7 +430,7 @@ class PresentationPlanBuilder {
 
     constructor(request: PlanRequest) {
         this.request = request;
-        this.facts = createGlobalFacts(request.facts);
+        this.facts = createGlobalFacts(request.facts, request.chain.signal.planes);
         this.initialState = request.chain.sourceIsDisplay ? 'display' : 'source';
     }
 
@@ -311,7 +444,8 @@ class PresentationPlanBuilder {
             this.placeDeinterlace(deinterlace);
             this.deinterlace = deinterlace;
         }
-        for (const stage of STAGE_ORDER) {
+        this.placePlanes(walkedPasses);
+        for (const stage of IMAGE_STAGES) {
             this.placeStage(stage, walkedPasses);
         }
         this.placeOutput();
@@ -415,6 +549,7 @@ class PresentationPlanBuilder {
             inputs.push({
                 accessorPrefix: getAccessorPrefix({ historyOffset, name: DEINTERLACE_SIGNAL_INPUT_NAME }),
                 historyOffset,
+                offset: ZERO_OFFSET,
                 source: { kind: 'texture', textureId: SIGNAL_TEXTURE_ID }
             });
         }
@@ -426,6 +561,205 @@ class PresentationPlanBuilder {
             inputs,
             label: DEINTERLACE_LABEL,
             targetTextureId: DEINTERLACE_TEXTURE_ID
+        });
+    }
+
+    /**
+     * Places the plane stages before the image stages, when a pass hooks or reads one.
+     * A plane is read apart from the source only when a pass reads it, and when a pass replaced a plane, the merge converts the planes into the
+     * spine's first image, reading each plane a pass left untouched from the source, so it converts exactly as the signal does.
+     */
+    private placePlanes(passes: readonly ActivePass[]): void {
+        const planePasses = passes.filter((pass: ActivePass): boolean => isPlaneStage(pass.manifest.hook));
+        const readsPlanes = PLANE_STAGES.some((stage: PresentationStage): boolean => this.namedStages.has(stage));
+        if (planePasses.length === 0 && !readsPlanes) {
+            return;
+        }
+        const planes = this.request.chain.signal.planes;
+        this.planesUnavailable = this.getPlanesUnavailableDetail();
+        if (planes === null || this.planesUnavailable !== null) {
+            for (const pass of planePasses) {
+                this.reject(pass.manifest.name, 'planes-unavailable', this.planesUnavailable ?? '');
+            }
+            return;
+        }
+        this.planeImages.set(LUMA_STAGE, { offset: ZERO_OFFSET, replaced: false, size: this.getSourceSize(), textureId: null });
+        this.planeImages.set(CHROMA_STAGE, {
+            offset: planes.chromaOffset,
+            replaced: false,
+            size: getChromaSize(this.request.facts, planes),
+            textureId: null
+        });
+        for (const stage of PLANE_STAGES) {
+            const stagePasses = planePasses.filter((pass: ActivePass): boolean => pass.manifest.hook === stage);
+            if (stage === NATIVE_STAGE && (stagePasses.length > 0 || this.namedStages.has(stage))) {
+                this.placeNative(planes);
+            }
+            for (const pass of stagePasses) {
+                this.tryPlace(pass, (): void => this.placePlanePass(pass, stage));
+            }
+            // A later read makes the stage's final image a texture, so a reader the plan leaves out reads no plane apart
+            const finalImage = this.planeImages.get(stage);
+            if (finalImage !== undefined) {
+                this.finalPlaneImages.set(stage, finalImage);
+            }
+        }
+        this.placeMerge();
+    }
+
+    /**
+     * Returns why plane passes cannot run, or null when they can: a deinterlacing plan's deinterlacer reads the signal's RGB, after the planes,
+     * and a signal without planes, as Dolby Vision reconstruction is, names itself.
+     */
+    private getPlanesUnavailableDetail(): string | null {
+        if (this.deinterlace !== null) {
+            return DEINTERLACED_PLANES_DETAIL;
+        }
+        return this.request.chain.signal.planes === null ? this.request.chain.signal.name : null;
+    }
+
+    /** Returns a plane stage's image; the plane stages hold one each once placePlanes starts. */
+    private requirePlaneImage(stage: PresentationStage): PlaneImage {
+        const image = this.planeImages.get(stage);
+        if (image === undefined) {
+            throw new Error(`The ${stage} stage has no image`);
+        }
+        return image;
+    }
+
+    /** Places a kernel or compute pass on a plane stage: it reads and writes planes, so it runs before the color track and takes no domain. */
+    private placePlanePass(pass: ActivePass, stage: PresentationStage): void {
+        const manifest = pass.manifest;
+        requireUnreservedInputs(manifest);
+        if (manifest.domain !== 'any') {
+            throw new PassPlacementError('domain-unreachable', `${manifest.domain} at ${stage}`);
+        }
+        const hooked = this.requirePlaneImage(stage);
+        const { output, size, workgroupCounts } = this.evaluateOutput(pass, stage);
+        // Every check has passed, so the plan changes from here
+        const hookedTextureId = this.materializePlane(stage);
+        const textureId = `${PASS_TEXTURE_ID_PREFIX}${manifest.name}`;
+        const offset = getOutputOffset(manifest, hooked, size);
+        this.addTexture(textureId, size, output.format, manifest.shape === 'compute', offset);
+        this.pushDraft({
+            core: { kind: 'user', pass },
+            coordinateMapping: 'identity',
+            hookedTextureId,
+            inputs: this.createInputs(pass, stage, hookedTextureId),
+            kind: manifest.shape === 'compute' ? 'compute' : 'render',
+            label: `${LABEL_PREFIX} pass '${manifest.name}'`,
+            targetTextureId: textureId,
+            workgroupCounts
+        });
+        if (manifest.save !== null) {
+            this.savedTextures.set(manifest.save, textureId);
+            return;
+        }
+        this.planeImages.set(stage, { offset, replaced: true, size, textureId });
+    }
+
+    /** Makes a plane stage's current image a texture and returns it: a plane no pass replaced is read apart from the source at its own size. */
+    private materializePlane(stage: PresentationStage): string {
+        return this.materializePlaneImage(stage, this.requirePlaneImage(stage));
+    }
+
+    private materializePlaneImage(stage: PresentationStage, image: PlaneImage): string {
+        if (image.textureId !== null) {
+            return image.textureId;
+        }
+        const planes = this.requirePlanes();
+        const isLuma = stage === LUMA_STAGE;
+        const textureId = isLuma ? LUMA_PLANE_TEXTURE_ID : CHROMA_PLANE_TEXTURE_ID;
+        this.addTexture(textureId, image.size, isLuma ? planes.lumaFormat : planes.chromaFormat, false, image.offset);
+        this.pushDraft({
+            core: { kind: 'plane-read', plane: isLuma ? 'luma' : 'chroma' },
+            coordinateMapping: 'identity',
+            hookedTextureId: null,
+            inputs: [],
+            label: isLuma ? LUMA_PLANE_LABEL : CHROMA_PLANE_LABEL,
+            targetTextureId: textureId
+        });
+        image.textureId = textureId;
+        return textureId;
+    }
+
+    private requirePlanes(): SignalPlanes {
+        const planes = this.request.chain.signal.planes;
+        if (planes === null) {
+            throw new Error(`Signal '${this.request.chain.signal.name}' has no planes`);
+        }
+        return planes;
+    }
+
+    /** Merges the luma and chroma images into NATIVE's normalized Y, Cb, and Cr, on luma's grid. */
+    private placeNative(planes: SignalPlanes): void {
+        const grid = this.getMergeGrid();
+        this.createMergeDraft(NATIVE_PLANE_TEXTURE_ID, planes.nativeFormat, true, NATIVE_LABEL);
+        this.planeImages.set(NATIVE_STAGE, { offset: grid.offset, replaced: false, size: grid.size, textureId: NATIVE_PLANE_TEXTURE_ID });
+    }
+
+    /**
+     * Converts the planes into the spine's first image when a pass replaced one, as the signal converts them: from NATIVE when a pass replaced it,
+     * else from luma's grid, with chroma resampled onto it through both images' offsets.
+     * The image keeps the grid's offset, which the scaler corrects.
+     */
+    private placeMerge(): void {
+        const native = this.planeImages.get(NATIVE_STAGE);
+        const replaced = PLANE_STAGES.some((stage: PresentationStage): boolean => this.planeImages.get(stage)?.replaced === true);
+        if (!replaced) {
+            return;
+        }
+        this.current = this.createMergeDraft(MERGE_TEXTURE_ID, INTERMEDIATE_TEXTURE_FORMAT, false, MERGE_LABEL);
+        this.current.postSteps.push(...this.signalSteps);
+        this.signalSteps = [];
+        this.currentOffset = native?.replaced === true ? native.offset : this.getMergeGrid().offset;
+    }
+
+    /** Returns the grid the planes merge onto: luma's image once a pass replaced it, else the source's own luma. */
+    private getMergeGrid(): HookedImage {
+        const luma = this.requirePlaneImage(LUMA_STAGE);
+        return luma.replaced ? { offset: luma.offset, size: luma.size } : { offset: ZERO_OFFSET, size: this.getSourceSize() };
+    }
+
+    /** Pushes a pass that merges the plane images it needs, and the signal's planes for the rest, into a texture on the merge grid. */
+    private createMergeDraft(textureId: string, format: GPUTextureFormat, writesNative: boolean, label: string): DraftPass {
+        const native = this.planeImages.get(NATIVE_STAGE);
+        const inputs: DraftInput[] = [];
+        let grid: HookedImage;
+        let merge: PlaneMerge;
+        if (!writesNative && native?.replaced === true && native.textureId !== null) {
+            grid = { offset: native.offset, size: native.size };
+            inputs.push(createEngineInput(native.textureId, NATIVE_INPUT_PREFIX));
+            merge = { chromaPrefix: null, chromaShift: ZERO_OFFSET, gridShift: getNormalizedShift(grid.offset, grid.size), lumaPrefix: null, nativePrefix: NATIVE_INPUT_PREFIX, writesNative };
+        } else {
+            grid = this.getMergeGrid();
+            const luma = this.requirePlaneImage(LUMA_STAGE);
+            const chroma = this.requirePlaneImage(CHROMA_STAGE);
+            const lumaTextureId = luma.replaced ? luma.textureId : null;
+            const chromaTextureId = chroma.replaced ? chroma.textureId : null;
+            if (lumaTextureId !== null) {
+                inputs.push(createEngineInput(lumaTextureId, LUMA_INPUT_PREFIX));
+            }
+            if (chromaTextureId !== null) {
+                inputs.push(createEngineInput(chromaTextureId, CHROMA_INPUT_PREFIX));
+            }
+            merge = {
+                chromaPrefix: chromaTextureId === null ? null : CHROMA_INPUT_PREFIX,
+                chromaShift: getNormalizedShift(chroma.offset, chroma.size),
+                gridShift: getNormalizedShift(grid.offset, grid.size),
+                lumaPrefix: lumaTextureId === null ? null : LUMA_INPUT_PREFIX,
+                nativePrefix: null,
+                writesNative
+            };
+        }
+        this.addTexture(textureId, grid.size, format, false, grid.offset);
+        return this.pushDraft({
+            core: { kind: 'plane-merge', merge },
+            coordinateMapping: 'identity',
+            hookedTextureId: null,
+            inputs,
+            label,
+            targetTextureId: textureId
         });
     }
 
@@ -484,15 +818,23 @@ class PresentationPlanBuilder {
         const targetCursor = this.findPlacementCursor(scaler.manifest.domain, this.current === null);
         this.createInputFacts(scaler, 'SCALE');
         this.advanceTo(targetCursor);
+        const coordinateShift = this.getScalerShift();
         const hookedTextureId = this.materializeCurrent();
         this.current = this.pushDraft({
             core: { kind: 'user', pass: scaler },
             coordinateMapping: 'object-fit',
+            coordinateShift,
             hookedTextureId,
             inputs: this.createInputs(scaler, 'SCALE', hookedTextureId),
             label: `${LABEL_PREFIX} pass '${scaler.manifest.name}'`,
             targetTextureId: null
         });
+        this.currentOffset = ZERO_OFFSET;
+    }
+
+    /** Returns the shift by which a scaler corrects its image's offset, so the image lands on the reference grid that object-fit maps. */
+    private getScalerShift(): Offset {
+        return getNormalizedShift(this.currentOffset, this.getCurrentImageSize());
     }
 
     /** The built-in scaler is a bilinear read; over the signal, it fuses into the pass that reads the source. */
@@ -510,15 +852,18 @@ class PresentationPlanBuilder {
             this.signalSteps = [];
             return;
         }
+        const coordinateShift = this.getScalerShift();
         const hookedTextureId = this.materializeCurrent();
         this.current = this.pushDraft({
             core: { kind: 'sample' },
             coordinateMapping: 'object-fit',
+            coordinateShift,
             hookedTextureId,
             inputs: [ createEngineInput(hookedTextureId) ],
             label: SCALE_LABEL,
             targetTextureId: null
         });
+        this.currentOffset = ZERO_OFFSET;
     }
 
     private placeColorPass(pass: ActivePass): void {
@@ -529,26 +874,16 @@ class PresentationPlanBuilder {
     /** Places a kernel or compute pass: it reads textures, so its hooked image is materialized with the color steps its domain needs. */
     private placeSpatialPass(pass: ActivePass, stage: PresentationStage): void {
         const manifest = pass.manifest;
-        if (manifest.shape === 'compute' && manifest.inputs.some((input: PassInput): boolean => input.name === TARGET_ACCESSOR_PREFIX)) {
-            throw new PassPlacementError('input-reserved', TARGET_ACCESSOR_PREFIX);
-        }
+        requireUnreservedInputs(manifest);
         const targetCursor = this.findPlacementCursor(manifest.domain, this.current === null);
-        const output = requireOutput(manifest);
-        const inputFacts = this.createInputFacts(pass, stage);
-        const maximumDimension = this.request.device.maximumTextureDimension;
-        const size: Size = {
-            height: evaluateDimension(output.height, inputFacts, maximumDimension, 'height'),
-            width: evaluateDimension(output.width, inputFacts, maximumDimension, 'width')
-        };
-        const workgroupCounts = manifest.workgroup ? evaluateWorkgroupCounts(manifest.workgroup, inputFacts) : null;
-        if (manifest.shape === 'compute' && workgroupCounts === null) {
-            throw new PassPlacementError('workgroup-missing', manifest.shape);
-        }
+        const { output, size, workgroupCounts } = this.evaluateOutput(pass, stage);
         // Every check has passed, so the plan changes from here
         this.advanceTo(targetCursor);
+        const hooked = this.getHookedImage(stage);
         const hookedTextureId = this.materializeCurrent();
         const textureId = `${PASS_TEXTURE_ID_PREFIX}${manifest.name}`;
-        this.addTexture(textureId, size, output.format, manifest.shape === 'compute');
+        const offset = getOutputOffset(manifest, hooked, size);
+        this.addTexture(textureId, size, output.format, manifest.shape === 'compute', offset);
         const draft = this.pushDraft({
             core: { kind: 'user', pass },
             coordinateMapping: 'identity',
@@ -561,11 +896,32 @@ class PresentationPlanBuilder {
         });
         if (manifest.save === null) {
             this.current = draft;
+            this.currentOffset = offset;
             return;
         }
         // The hooked image was read as it is, so it takes no further color steps
         this.savedTextures.set(manifest.save, textureId);
         this.sealCurrent();
+    }
+
+    /** Checks a kernel or compute pass's inputs and evaluates its output size and workgroup counts, before the plan changes. */
+    private evaluateOutput(
+        pass: ActivePass,
+        stage: PresentationStage
+    ): { output: PassOutput; size: Size; workgroupCounts: readonly [number, number, number] | null } {
+        const manifest = pass.manifest;
+        const output = requireOutput(manifest);
+        const inputFacts = this.createInputFacts(pass, stage);
+        const maximumDimension = this.request.device.maximumTextureDimension;
+        const size: Size = {
+            height: evaluateDimension(output.height, inputFacts, maximumDimension, 'height'),
+            width: evaluateDimension(output.width, inputFacts, maximumDimension, 'width')
+        };
+        const workgroupCounts = manifest.workgroup ? evaluateWorkgroupCounts(manifest.workgroup, inputFacts) : null;
+        if (manifest.shape === 'compute' && workgroupCounts === null) {
+            throw new PassPlacementError('workgroup-missing', manifest.shape);
+        }
+        return { output, size, workgroupCounts };
     }
 
     /** At a stage that passes read by name, the stage's final image becomes a texture. */
@@ -624,13 +980,14 @@ class PresentationPlanBuilder {
         return [ ...this.stageTextures.values() ].includes(textureId) || [ ...this.savedTextures.values() ].includes(textureId);
     }
 
-    /** Points history reads of a stage at its final texture, and sizes every ring for its deepest read. */
+    /** Points history reads of a stage at its final texture, sizes every ring for its deepest read, and gives each input its texture's offset. */
     private resolveInputs(): void {
         for (const draft of this.drafts) {
             for (const input of draft.inputs) {
                 if (input.source.kind === 'stage-history') {
                     input.source = { kind: 'texture', textureId: this.requireStageTexture(input.source.stage) };
                 }
+                input.offset = this.textureOffsets.get(input.source.textureId) ?? ZERO_OFFSET;
                 if (input.historyOffset < 0) {
                     const texture = requireTexture(this.textures, input.source.textureId);
                     texture.historyDepth = Math.max(texture.historyDepth, -input.historyOffset);
@@ -734,7 +1091,7 @@ class PresentationPlanBuilder {
         const sourceTextureId = this.materializeCurrent();
         const textureId = `${COPY_TEXTURE_ID_PREFIX}${this.copyCount}`;
         this.copyCount += 1;
-        this.addTexture(textureId, this.getTextureSize(sourceTextureId), INTERMEDIATE_TEXTURE_FORMAT, false);
+        this.addTexture(textureId, this.getTextureSize(sourceTextureId), INTERMEDIATE_TEXTURE_FORMAT, false, this.currentOffset);
         return this.pushDraft({
             core: { kind: 'sample' },
             coordinateMapping: 'identity',
@@ -785,6 +1142,7 @@ class PresentationPlanBuilder {
         const draft: DraftPass = {
             core: options.core,
             coordinateMapping: options.coordinateMapping,
+            coordinateShift: options.coordinateShift ?? ZERO_OFFSET,
             hookedTextureId: options.hookedTextureId,
             inputs: options.inputs,
             kind: options.kind ?? 'render',
@@ -799,8 +1157,9 @@ class PresentationPlanBuilder {
         return draft;
     }
 
-    private addTexture(id: string, size: Size, format: GPUTextureFormat, storage: boolean): void {
+    private addTexture(id: string, size: Size, format: GPUTextureFormat, storage: boolean, offset: Offset = ZERO_OFFSET): void {
         this.textures.set(id, { format, height: size.height, historyDepth: 0, id, storage, width: size.width });
+        this.textureOffsets.set(id, offset);
     }
 
     private getTextureSize(textureId: string): Size {
@@ -816,7 +1175,12 @@ class PresentationPlanBuilder {
         return { height: this.request.facts.outputHeight, width: this.request.facts.outputWidth };
     }
 
+    /** Returns a stage's final texture; a plane stage's final image becomes one on its first read. */
     private requireStageTexture(stage: PresentationStage): string {
+        const finalPlaneImage = this.finalPlaneImages.get(stage);
+        if (finalPlaneImage !== undefined) {
+            return this.materializePlaneImage(stage, finalPlaneImage);
+        }
         const textureId = this.stageTextures.get(stage);
         if (textureId === undefined) {
             throw new Error(`The ${stage} stage has no texture`);
@@ -835,17 +1199,33 @@ class PresentationPlanBuilder {
         return this.getTextureSize(this.current.targetTextureId);
     }
 
+    /** Returns the size and offset of the image a pass on a stage hooks: a plane stage's image, or the spine's current image. */
+    private getHookedImage(stage: PresentationStage): HookedImage {
+        if (isPlaneStage(stage)) {
+            const image = this.requirePlaneImage(stage);
+            return { offset: image.offset, size: image.size };
+        }
+        return { offset: this.currentOffset, size: this.getCurrentImageSize() };
+    }
+
     /** Returns the size of what an input reads, or throws when the input names nothing an earlier pass or stage provides. */
     private getInputSize(input: PassInput, stage: PresentationStage): Size {
         if (input.name === HOOKED_INPUT_NAME) {
-            return this.getCurrentImageSize();
+            return this.getHookedImage(stage).size;
         }
         if (isStage(input.name)) {
             const order = compareStages(input.name, stage);
             if (order > 0) {
                 throw new PassPlacementError('input-after-hook', `${input.name} at ${stage}`);
             }
-            return order === 0 ? this.getCurrentImageSize() : this.getTextureSize(this.requireStageTexture(input.name));
+            if (isPlaneStage(input.name) && this.planesUnavailable !== null) {
+                throw new PassPlacementError('planes-unavailable', this.planesUnavailable);
+            }
+            if (order === 0) {
+                return this.getHookedImage(stage).size;
+            }
+            const finalPlaneImage = this.finalPlaneImages.get(input.name);
+            return finalPlaneImage === undefined ? this.getTextureSize(this.requireStageTexture(input.name)) : finalPlaneImage.size;
         }
         const savedTextureId = this.savedTextures.get(input.name);
         if (savedTextureId === undefined) {
@@ -857,7 +1237,7 @@ class PresentationPlanBuilder {
     /** Returns the global facts plus `<input>.width` and `<input>.height` for HOOKED and each input. */
     private createInputFacts(pass: ActivePass, stage: PresentationStage): Map<string, number> {
         const facts = new Map<string, number>(this.facts);
-        setSizeFacts(facts, HOOKED_INPUT_NAME, this.getCurrentImageSize());
+        setSizeFacts(facts, HOOKED_INPUT_NAME, this.getHookedImage(stage).size);
         for (const input of pass.manifest.inputs) {
             setSizeFacts(facts, input.name, this.getInputSize(input, stage));
         }
@@ -868,6 +1248,7 @@ class PresentationPlanBuilder {
         return pass.manifest.inputs.map((input: PassInput): DraftInput => ({
             accessorPrefix: getAccessorPrefix(input),
             historyOffset: input.historyOffset,
+            offset: ZERO_OFFSET,
             source: this.getInputSource(input, stage, hookedTextureId)
         }));
     }
@@ -925,8 +1306,14 @@ class PassCodeGenerator {
         if (draft.kind === 'compute') {
             builder.appendEngineCode(this.bindStorageTarget(draft, bindingList));
         }
-        if (draft.core.kind === 'signal') {
+        if (readsSignal(draft.core)) {
             builder.appendEngineCode(this.chain.signal.code);
+        }
+        if (draft.core.kind === 'plane-read' || draft.core.kind === 'plane-merge') {
+            builder.appendEngineCode(this.requirePlanes().code);
+        }
+        if (draft.core.kind === 'plane-merge') {
+            builder.appendEngineCode(createPlaneMergeWGSL(draft.core.merge, this.requirePlanes()));
         }
         if (draft.core.kind === 'deinterlace') {
             builder.appendEngineCode(createDeinterlaceWGSL(draft.core.bitDepth));
@@ -959,7 +1346,7 @@ class PassCodeGenerator {
     /** Binds the engine resources the signal, the built-in steps, and the input samplers read; returns the bound resources. */
     private bindEngineResources(draft: DraftPass, bindingList: BindingList): EngineBindingResource[] {
         const resources: EngineResource[] = [];
-        if (draft.core.kind === 'signal') {
+        if (readsSignal(draft.core)) {
             resources.push(...this.chain.signal.resources);
         }
         for (const colorFunction of getBuiltinFunctions(draft)) {
@@ -1001,7 +1388,7 @@ class PassCodeGenerator {
             kind: 'texture',
             textureId: requireTextureSource(input)
         });
-        return createTextureAccessorsWGSL(input.accessorPrefix, binding, this.isFilterable(input), SAMPLER_VARIABLE);
+        return createTextureAccessorsWGSL(input.accessorPrefix, binding, this.isFilterable(input), SAMPLER_VARIABLE, input.offset);
     }
 
     private bindStorageTarget(draft: DraftPass, bindingList: BindingList): string {
@@ -1020,21 +1407,38 @@ class PassCodeGenerator {
             return createComputeStageWGSL(core.pass.manifest.workgroup.size, `${core.pass.prefix}${ENTRY_POINTS.compute}`);
         }
         const bypassCondition = core.kind === 'signal' ? this.chain.signal.bypassCondition : null;
-        const fragmentStage = createFragmentStageWGSL(this.getCoreExpression(core), bypassCondition, this.getStepEntryPoints(draft));
+        const fragmentStage = createFragmentStageWGSL(this.getCoreExpression(draft), bypassCondition, this.getStepEntryPoints(draft));
         return `${VERTEX_STAGE_WGSL}\n\n${fragmentStage}`;
     }
 
-    private getCoreExpression(core: DraftCore): string {
+    private getCoreExpression(draft: DraftPass): string {
+        const core = draft.core;
+        // A scaler shifts its coordinate onto its image's offset; every other pass reads at its own coordinate
+        const coordinate = isZeroOffset(draft.coordinateShift) ?
+            FRAGMENT_COORDINATE :
+            `(${FRAGMENT_COORDINATE} + ${toWGSLVector(draft.coordinateShift)})`;
         switch (core.kind) {
             case 'deinterlace':
                 return `${DEINTERLACE_ENTRY_POINT}(${FRAGMENT_POSITION})`;
+            case 'plane-merge':
+                return `${MERGE_ENTRY_POINT}(${coordinate}, ${FRAGMENT_TARGET_COORDINATE})`;
+            case 'plane-read':
+                return createPlaneReadWGSL(core.plane, this.requirePlanes(), coordinate);
             case 'sample':
-                return `${ENGINE_INPUT_PREFIX}_tex(${FRAGMENT_COORDINATE})`;
+                return `${ENGINE_INPUT_PREFIX}_tex(${coordinate})`;
             case 'signal':
-                return `${this.chain.signal.entryPoint}(${FRAGMENT_COORDINATE})`;
+                return `${this.chain.signal.entryPoint}(${coordinate})`;
             case 'user':
-                return `${core.pass.prefix}${ENTRY_POINTS[core.pass.manifest.shape]}(${FRAGMENT_COORDINATE})`;
+                return `${core.pass.prefix}${ENTRY_POINTS[core.pass.manifest.shape]}(${coordinate})`;
         }
+    }
+
+    private requirePlanes(): SignalPlanes {
+        const planes = this.chain.signal.planes;
+        if (planes === null) {
+            throw new Error(`Signal '${this.chain.signal.name}' has no planes`);
+        }
+        return planes;
     }
 
     private getStepEntryPoints(draft: DraftPass): string[] {
@@ -1066,6 +1470,48 @@ class PassCodeGenerator {
         const format = requireTexture(this.textures, requireTextureSource(input)).format;
         return this.float32Filterable || !FLOAT32_TEXTURE_FORMATS.has(format);
     }
+}
+
+/** Returns whether a core runs the route's signal code, whose resources its pass binds. */
+function readsSignal(core: DraftCore): boolean {
+    return core.kind === 'signal' || core.kind === 'plane-read' || core.kind === 'plane-merge';
+}
+
+/** Returns the expression of a plane read: the plane's codes at the coordinate over the code scale, in the components mpv's plane has. */
+function createPlaneReadWGSL(plane: 'chroma' | 'luma', planes: SignalPlanes, coordinate: string): string {
+    const scale = `${planes.codeScaleEntryPoint}()`;
+    return plane === 'luma' ?
+        `vec4f(${planes.lumaEntryPoint}(${coordinate}) / ${scale}, 0.0, 0.0, 1.0)` :
+        `vec4f(${planes.chromaEntryPoint}(${coordinate}) / ${scale}, 0.0, 1.0)`;
+}
+
+/**
+ * Returns the merge function of a plane merge pass: `fn mergeSignalPlanes(sourceCoordinate: vec2f, imageCoordinate: vec2f) -> vec4f`.
+ * The image coordinate is normalized over the merged grid, and the source coordinate is the same point mapped onto the coded frame.
+ * Each plane comes from its image, scaled back to codes, or from the signal's own read; chroma lands on the grid through both images' offsets.
+ */
+function createPlaneMergeWGSL(merge: PlaneMerge, planes: SignalPlanes): string {
+    const statements: string[] = [ `    let scale = ${planes.codeScaleEntryPoint}();` ];
+    if (merge.nativePrefix !== null) {
+        statements.push(`    let codes = ${merge.nativePrefix}_tex(imageCoordinate).xyz * scale;`);
+    } else {
+        // The reference grid's coordinate, normalized over the merged image and mapped onto the coded frame
+        statements.push(
+            `    let referenceCoordinate = imageCoordinate - ${toWGSLVector(merge.gridShift)};`,
+            `    let referenceSourceCoordinate = sourceCoordinate - ${toWGSLVector(merge.gridShift)} * presentation.textureScale;`,
+            merge.lumaPrefix === null ?
+                `    let luma = ${planes.lumaEntryPoint}(sourceCoordinate);` :
+                `    let luma = ${merge.lumaPrefix}_tex(imageCoordinate).x * scale;`,
+            merge.chromaPrefix === null ?
+                `    let chroma = ${planes.sitedChromaEntryPoint}(referenceSourceCoordinate);` :
+                `    let chroma = ${merge.chromaPrefix}_tex(referenceCoordinate + ${toWGSLVector(merge.chromaShift)}).xy * scale;`,
+            '    let codes = vec3f(luma, chroma);'
+        );
+    }
+    statements.push(merge.writesNative ? '    return vec4f(codes / scale, 1.0);' : `    return ${planes.conversionEntryPoint}(codes);`);
+    return `fn ${MERGE_ENTRY_POINT}(sourceCoordinate: vec2f, imageCoordinate: vec2f) -> vec4f {
+${statements.join('\n')}
+}`;
 }
 
 function requireTextureSource(input: DraftInput): string {

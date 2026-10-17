@@ -156,6 +156,10 @@ FACT_SOURCE_WIDTH: Final = 'source.width'
 FACT_SOURCE_HEIGHT: Final = 'source.height'
 FACT_OUTPUT_WIDTH: Final = 'output.width'
 FACT_OUTPUT_HEIGHT: Final = 'output.height'
+FACT_CHROMA_WIDTH: Final = 'chroma.width'
+FACT_CHROMA_HEIGHT: Final = 'chroma.height'
+# The facts no WGSL expression reads, so a condition that reads them is evaluated at plan time
+PLAN_ONLY_FACTS: Final = (FACT_CHROMA_WIDTH, FACT_CHROMA_HEIGHT)
 FACT_HDR_SOURCE: Final = 'hdr.source'
 FACT_WGSL: Final = {
     FACT_SOURCE_WIDTH: 'presentation.sourceSize.x',
@@ -168,13 +172,21 @@ RPN_EQUALITY_TOLERANCE: Final = '0.000001'
 
 # Pass API
 
+ENGINE_STAGE_LUMA: Final = 'LUMA'
+ENGINE_STAGE_CHROMA: Final = 'CHROMA'
+ENGINE_STAGE_NATIVE: Final = 'NATIVE'
 ENGINE_STAGE_RGB: Final = 'RGB'
 ENGINE_STAGE_PRESCALE: Final = 'PRESCALE'
 ENGINE_STAGE_SCALE: Final = 'SCALE'
 ENGINE_STAGE_OUTPUT: Final = 'OUTPUT'
-ENGINE_STAGES: Final = (ENGINE_STAGE_RGB, ENGINE_STAGE_PRESCALE, ENGINE_STAGE_SCALE, ENGINE_STAGE_OUTPUT)
-# The stages before the scaler, whose images keep the size the RGB stage leaves
-PRESCALE_STAGES: Final = (ENGINE_STAGE_RGB, ENGINE_STAGE_PRESCALE)
+ENGINE_STAGES: Final = (ENGINE_STAGE_LUMA, ENGINE_STAGE_CHROMA, ENGINE_STAGE_NATIVE, ENGINE_STAGE_RGB, ENGINE_STAGE_PRESCALE,
+                        ENGINE_STAGE_SCALE, ENGINE_STAGE_OUTPUT)
+# The plane stages, whose passes read and write the signal's planes before it converts them
+PLANE_STAGES: Final = (ENGINE_STAGE_LUMA, ENGINE_STAGE_CHROMA, ENGINE_STAGE_NATIVE)
+# The stages whose images take luma's grid: NATIVE and the image stages before the scaler, until a pass there resizes the image
+IMAGE_STAGES: Final = (ENGINE_STAGE_NATIVE, ENGINE_STAGE_RGB, ENGINE_STAGE_PRESCALE)
+# The stages after the scaler, whose images sit on the output's grid, so a pass there takes no offset
+SCALED_STAGES: Final = (ENGINE_STAGE_SCALE, ENGINE_STAGE_OUTPUT)
 DOMAIN_ANY: Final = 'any'
 DOMAIN_SOURCE: Final = 'source'
 DOMAIN_LINEAR: Final = 'linear'
@@ -182,7 +194,8 @@ DOMAIN_DISPLAY: Final = 'display'
 SHAPE_KERNEL: Final = 'kernel'
 SHAPE_COMPUTE: Final = 'compute'
 TARGET_PREFIX: Final = 'TARGET'
-ENGINE_RESERVED_TEXTURE_NAMES: Final = (HOOKED_NAME, TARGET_PREFIX, 'source', 'output', *ENGINE_STAGES)
+ENGINE_RESERVED_TEXTURE_NAMES: Final = (HOOKED_NAME, TARGET_PREFIX, 'source', 'output', 'chroma', *ENGINE_STAGES)
+ENGINE_OFFSET_ALIGN: Final = 'align'
 HISTORY_SUFFIX_PATTERN: Final = re.compile(r'_history\d+$')
 IDENTIFIER_PATTERN: Final = re.compile(r'^[A-Za-z_]\w*$')
 INVALID_IDENTIFIER_CHARACTER_PATTERN: Final = re.compile(r'\W')
@@ -204,7 +217,7 @@ KERNEL_ENTRY: Final = 'fn kernel(coordinate: vec2f) -> vec4f {'
 COMPUTE_ENTRY: Final = 'fn compute(id: vec3u) {'
 # Names the generated code reads from the prelude, which a body declaration of the same name would shadow
 PRELUDE_NAMES: Final = (PARAMETERS_VARIABLE, PRESENTATION_VARIABLE, SHAPE_KERNEL, SHAPE_COMPUTE, 'TARGET_size', 'TARGET_store')
-ACCESSOR_SUFFIXES: Final = ('_tex', '_texOff', '_pt', '_size', '_texture')
+ACCESSOR_SUFFIXES: Final = ('_tex', '_texOff', '_pt', '_size', '_offset', '_texture')
 WGSL_RESERVED_WORDS: Final = frozenset((
     'alias', 'break', 'case', 'const', 'const_assert', 'continue', 'continuing', 'default', 'diagnostic', 'discard', 'else',
     'enable', 'false', 'fn', 'for', 'if', 'let', 'loop', 'override', 'requires', 'return', 'struct', 'switch', 'true', 'var',
@@ -228,14 +241,12 @@ SAVED_NAME_PREFIX: Final = 'mpv_'
 
 # Hook points
 
-PLANE_LUMA: Final = 'luma'
 PLANE_CHROMA: Final = 'chroma'
-PLANE_NATIVE: Final = 'native'
 PLANE_ALPHA: Final = 'alpha'
 LIGHT_LINEAR: Final = 'linear'
 LIGHT_SIGMOID: Final = 'sigmoid'
-# The planes plane hooks read and write through the RGB image
-EMULATED_PLANES: Final = (PLANE_LUMA, PLANE_CHROMA, PLANE_NATIVE)
+# The planes a hook reads and writes through the RGB image: CHROMA_SCALED's chroma, which the engine never holds apart at the image's size
+EMULATED_PLANES: Final = (PLANE_CHROMA,)
 RGB_PLANE_HOOK: Final = 'RGB'
 YUV_PLANE_HOOKS: Final = ('LUMA', 'CHROMA')
 XYZ_HOOK: Final = 'XYZ'
@@ -257,13 +268,13 @@ class HookMapping:
 # mpv's hook points in pipeline order; MAINPRESUB reads as MAIN, as libplacebo handles it
 HOOK_MAPPINGS: Final[dict[str, HookMapping]] = {
     RGB_PLANE_HOOK: HookMapping(0, ENGINE_STAGE_RGB, DOMAIN_SOURCE, resizable=True),
-    'LUMA': HookMapping(1, ENGINE_STAGE_RGB, DOMAIN_SOURCE, plane=PLANE_LUMA, resizable=True),
-    'CHROMA': HookMapping(2, ENGINE_STAGE_RGB, DOMAIN_SOURCE, plane=PLANE_CHROMA, resizable=True),
+    'LUMA': HookMapping(1, ENGINE_STAGE_LUMA, DOMAIN_ANY, resizable=True),
+    'CHROMA': HookMapping(2, ENGINE_STAGE_CHROMA, DOMAIN_ANY, resizable=True),
     'ALPHA': HookMapping(3, ENGINE_STAGE_RGB, DOMAIN_SOURCE, plane=PLANE_ALPHA, fires=False),
     XYZ_HOOK: HookMapping(4, ENGINE_STAGE_RGB, DOMAIN_SOURCE, fires=False),
     'CHROMA_SCALED': HookMapping(5, ENGINE_STAGE_RGB, DOMAIN_SOURCE, plane=PLANE_CHROMA),
     'ALPHA_SCALED': HookMapping(6, ENGINE_STAGE_RGB, DOMAIN_SOURCE, plane=PLANE_ALPHA, fires=False),
-    'NATIVE': HookMapping(7, ENGINE_STAGE_RGB, DOMAIN_SOURCE, plane=PLANE_NATIVE, resizable=True),
+    'NATIVE': HookMapping(7, ENGINE_STAGE_NATIVE, DOMAIN_ANY, resizable=True),
     MAIN_NAME: HookMapping(8, ENGINE_STAGE_RGB, DOMAIN_SOURCE, resizable=True),
     'LINEAR': HookMapping(9, ENGINE_STAGE_PRESCALE, DOMAIN_LINEAR, light=LIGHT_LINEAR),
     'SIGMOID': HookMapping(10, ENGINE_STAGE_PRESCALE, DOMAIN_LINEAR, light=LIGHT_SIGMOID),
@@ -321,6 +332,10 @@ RAW_SUFFIX: Final = '_raw'
 HOOK_FUNCTION_PATTERN: Final = re.compile(r'\bhook\s*\(')
 FRAGMENT_OUTPUT_NAME: Final = 'mpv_fragment_output'
 POSITION_NAME: Final = 'mpv_position'
+# The hooked texture's position under OFFSET ALIGN, which libplacebo moves onto the texture's own offset
+ALIGNED_POSITION_NAME: Final = 'mpv_aligned_position'
+# The normalized shift from the output's coordinate to the hooked texture's under OFFSET ALIGN: its offset, in its own pixels
+HOOKED_ALIGNMENT_WGSL: Final = f'{HOOKED_NAME}_offset() * {HOOKED_NAME}_pt()'
 FRAGMENT_COORDINATE_NAME: Final = 'mpv_fragment_coordinate'
 GLOBAL_INVOCATION_NAME: Final = 'mpv_global_invocation_id'
 LOCAL_INVOCATION_NAME: Final = 'mpv_local_invocation_id'
@@ -354,6 +369,11 @@ INVALID_FUNCTION_PATTERN: Final = re.compile(r"Function \[\d+\] '(\w+)' is inval
 MISSING_RETURN_MESSAGE: Final = 'The `return` expression None does not match'
 SCALAR_DOT_MESSAGE: Final = 'BuiltinArgumentsInvalid("Dot")'
 RUNTIME_CONSTANT_MESSAGE: Final = 'Unexpected runtime-expression'
+SCALAR_SWIZZLE_MESSAGE: Final = "Can't lookup field on this type"
+# GLSL 4.20 swizzles scalars, which naga does not: a scalar's swizzle becomes the scalar, or a vector of it
+SCALAR_DECLARATION_PATTERN: Final = re.compile(r'\b(float|int|uint|bool)\s+([A-Za-z_]\w*)\s*(?=[=;,)])')
+SCALAR_VECTOR_PREFIXES: Final = {'float': '', 'int': 'i', 'uint': 'u', 'bool': 'b'}
+SWIZZLE_COMPONENTS: Final = '[xyzwrgbastpq]{1,4}'
 GLOBAL_CONSTANT_PATTERN: Final = re.compile(r'^([ \t]*)const\s+[A-Za-z_]\w*\s+([A-Za-z_]\w*)\s*=')
 INLINED_CONSTANT_PATTERN: Final = re.compile(r'^[ \t]*#define\s+([A-Za-z_]\w*)\s')
 LINE_COMMENT_PATTERN: Final = re.compile(r'//.*$')
@@ -368,6 +388,7 @@ SCALAR_DOT_SHIM: Final = (
 )
 REPAIR_MISSING_RETURN: Final = 'missing-return'
 REPAIR_SCALAR_DOT: Final = 'scalar-dot'
+REPAIR_SCALAR_SWIZZLE: Final = 'scalar-swizzle'
 
 # WGSL post-processing
 
@@ -861,6 +882,7 @@ def binary_token(operator: str) -> RPNToken:
 NOT_TOKEN: Final = RPNToken(TOKEN_NOT, RPN_NOT_OPERATOR)
 SOURCE_SIZE: Final = ([fact_token(FACT_SOURCE_WIDTH)], [fact_token(FACT_SOURCE_HEIGHT)])
 OUTPUT_SIZE: Final = ([fact_token(FACT_OUTPUT_WIDTH)], [fact_token(FACT_OUTPUT_HEIGHT)])
+CHROMA_SIZE: Final = ([fact_token(FACT_CHROMA_WIDTH)], [fact_token(FACT_CHROMA_HEIGHT)])
 
 
 @dataclass(frozen=True)
@@ -938,13 +960,34 @@ class SavedTexture:
     height: list[RPNToken]
 
 
+SymbolicSize = tuple[list[RPNToken], list[RPNToken]]
+
+# The images whose sizes passes change: each plane's, and the image's, which NATIVE and the stages before the scaler share
+SIZE_GROUP_IMAGE: Final = 'image'
+
+
+def get_size_group(stage: str) -> str | None:
+    """Returns the image an engine stage's passes hook: a plane, the image, or None after the scaler, where it has the output's size."""
+    if stage in (ENGINE_STAGE_LUMA, ENGINE_STAGE_CHROMA):
+        return stage
+    return SIZE_GROUP_IMAGE if stage in IMAGE_STAGES else None
+
+
+def create_initial_sizes() -> dict[str, SymbolicSize]:
+    """Returns the sizes before any pass: luma and the image at the source's size, and chroma at the chroma plane's."""
+    return {
+        ENGINE_STAGE_LUMA: (list(SOURCE_SIZE[0]), list(SOURCE_SIZE[1])),
+        ENGINE_STAGE_CHROMA: (list(CHROMA_SIZE[0]), list(CHROMA_SIZE[1])),
+        SIZE_GROUP_IMAGE: (list(SOURCE_SIZE[0]), list(SOURCE_SIZE[1]))
+    }
+
+
 @dataclass
 class PipelineState:
-    """What earlier passes left behind, in pipeline order: saved textures and the RGB image's size, over plan-time facts."""
+    """What earlier passes left behind, in pipeline order: saved textures and the planes' and image's sizes, over plan-time facts."""
 
     saved_textures: dict[str, SavedTexture] = field(default_factory=dict)
-    image_width: list[RPNToken] = field(default_factory=lambda: list(SOURCE_SIZE[0]))
-    image_height: list[RPNToken] = field(default_factory=lambda: list(SOURCE_SIZE[1]))
+    sizes: dict[str, SymbolicSize] = field(default_factory=create_initial_sizes)
     engine_save_names: dict[str, str] = field(default_factory=dict)
 
 
@@ -1043,7 +1086,8 @@ def resolve_texture(name: str, instance: PassInstance, shader: ParsedShader, sta
         raise ConversionError(CODE_BIND_UNKNOWN, f'{instance.name}: {name}')
     if target.order > instance.mapping.order:
         raise ConversionError(CODE_BIND_BEFORE_STAGE, f'{instance.name}: {name} at {instance.hook}')
-    if target.engine_stage != instance.mapping.engine_stage:
+    # A plane stage's final image is exactly what mpv binds by the plane's name
+    if target.engine_stage != instance.mapping.engine_stage and target.engine_stage != name:
         report.add(SEVERITY_NOTE, CODE_STAGE_APPROXIMATED, f'{instance.name}: {name} reads the final {target.engine_stage} image')
     return TextureSource(get_stage_input(target.engine_stage, instance), target.plane)
 
@@ -1078,7 +1122,9 @@ class StateUpdate:
 
     save_name: str | None = None
     saved_texture: SavedTexture | None = None
-    image_size: tuple[list[RPNToken], list[RPNToken]] | None = None
+    # The hooked image's new size, under its size group
+    resized_group: str | None = None
+    resized_size: SymbolicSize | None = None
 
 
 @dataclass
@@ -1115,6 +1161,13 @@ class PassContext:
         texture_name = self.sources[source_index].texture_name
         return len(self.shader.textures[texture_name].size) if texture_name else 2
 
+    def is_aligned(self, source_index: int) -> bool:
+        """Returns whether OFFSET ALIGN moves a source's position: libplacebo aligns the texture bound under the hooked stage's name."""
+        return self.mpv_pass.offset_align and self.sources[source_index].engine_input == HOOKED_NAME
+
+    def position_name(self, source_index: int) -> str:
+        return ALIGNED_POSITION_NAME if self.is_aligned(source_index) else POSITION_NAME
+
 
 def WGSL_float(value: float) -> str:
     text = repr(float(value))
@@ -1139,7 +1192,7 @@ def shortest_float32(value: float) -> str:
 HELPER_FUNCTIONS: Final[dict[str, str]] = {
     'mpv_luma_of': (
         f'const MPV_LUMA_WEIGHTS = vec3f({LUMA_RED_WEIGHT}, {LUMA_GREEN_WEIGHT}, {LUMA_BLUE_WEIGHT});\n\n'
-        '// BT.709 luma, by which plane hooks read the RGB image as planes\n'
+        '// BT.709 luma, by which CHROMA_SCALED reads the RGB image as planes\n'
         'fn mpv_luma_of(color: vec3f) -> f32 {\n'
         '    return dot(color, MPV_LUMA_WEIGHTS);\n'
         '}'
@@ -1158,12 +1211,6 @@ HELPER_FUNCTIONS: Final[dict[str, str]] = {
         f'    let red = ycbcr.x + {WGSL_float(CHROMA_RED_SCALE)} * (ycbcr.z - {CHROMA_OFFSET});\n'
         f'    let blue = ycbcr.x + {WGSL_float(CHROMA_BLUE_SCALE)} * (ycbcr.y - {CHROMA_OFFSET});\n'
         f'    return vec3f(red, (ycbcr.x - {LUMA_RED_WEIGHT} * red - {LUMA_BLUE_WEIGHT} * blue) / {LUMA_GREEN_WEIGHT}, blue);\n'
-        '}'
-    ),
-    'mpv_replace_luma': (
-        '// Moves every channel by the new luma\'s difference, which keeps the image\'s chroma exactly\n'
-        'fn mpv_replace_luma(base: vec4f, luma: f32) -> vec4f {\n'
-        '    return vec4f(base.rgb + vec3f(luma - mpv_luma_of(base.rgb)), base.a);\n'
         '}'
     ),
     'mpv_replace_chroma': (
@@ -1188,7 +1235,6 @@ HELPER_FUNCTIONS: Final[dict[str, str]] = {
 }
 HELPER_DEPENDENCIES: Final[dict[str, tuple[str, ...]]] = {
     'mpv_ycbcr_of': ('mpv_luma_of',),
-    'mpv_replace_luma': ('mpv_luma_of',),
     'mpv_replace_chroma': ('mpv_luma_of', 'mpv_rgb_of')
 }
 
@@ -1196,12 +1242,8 @@ HELPER_DEPENDENCIES: Final[dict[str, tuple[str, ...]]] = {
 def get_transform_expression(transform: str | None, color: str) -> tuple[str, tuple[str, ...]]:
     """Returns WGSL that reads an RGB image sample as mpv's texture would hold it, with the helpers it needs."""
     match transform:
-        case 'luma':
-            return f'vec4f(mpv_luma_of({color}.rgb), 0.0, 0.0, 1.0)', ('mpv_luma_of',)
         case 'chroma':
             return f'vec4f(mpv_ycbcr_of({color}.rgb).yz, 0.0, 1.0)', ('mpv_ycbcr_of',)
-        case 'native':
-            return f'vec4f(mpv_ycbcr_of({color}.rgb), {color}.a)', ('mpv_ycbcr_of',)
         case 'alpha':
             return f'vec4f({color}.a, 0.0, 0.0, 1.0)', ()
         case 'linear':
@@ -1227,12 +1269,8 @@ def get_output_expression(context: PassContext, result: str, coordinate: str) ->
         return OutputExpression(result)
     base = f'HOOKED_tex({coordinate})'
     match mapping.plane or mapping.light:
-        case 'luma':
-            return OutputExpression(f'mpv_replace_luma({base}, {result}.x)', ('mpv_replace_luma',), (HOOKED_NAME,))
         case 'chroma':
             return OutputExpression(f'mpv_replace_chroma({base}, {result}.xy)', ('mpv_replace_chroma',), (HOOKED_NAME,))
-        case 'native':
-            return OutputExpression(f'vec4f(mpv_rgb_of({result}.xyz), {result}.w)', ('mpv_rgb_of',))
         case 'linear':
             return OutputExpression(f'vec4f({result}.rgb * {LINEAR_SCALE_CONSTANT}, {result}.a)')
         case 'sigmoid':
@@ -1257,6 +1295,8 @@ def build_engine_glue(context: PassContext, source_index: int) -> dict[str, Glue
             '}', engine_inputs=(engine_input,), helpers=helpers, finding=finding),
         f'{prefix}_size': GlueFunction(
             f'fn {prefix}_size() -> vec2f {{\n    return {engine_input}_size();\n}}', engine_inputs=(engine_input,)),
+        f'{prefix}_offset': GlueFunction(
+            f'fn {prefix}_offset() -> vec2f {{\n    return {engine_input}_offset();\n}}', engine_inputs=(engine_input,)),
         f'{prefix}_fetch': GlueFunction(
             f'fn {prefix}_fetch(texel: vec2i) -> vec4f {{\n'
             f'    let size = {prefix}_size();\n'
@@ -1586,6 +1626,8 @@ def build_GLSL_wrapper(context: PassContext, body: str, extra_prelude: list[str]
         context.stubs.extend(['mpv_image_store', 'mpv_image_size', 'mpv_map'])
     else:
         lines.append(f'vec4 {FRAGMENT_COORDINATE_NAME};')
+    if mpv_pass.offset_align:
+        lines.append(f'vec2 {ALIGNED_POSITION_NAME};')
     lines.extend([
         f'vec2 {POSITION_NAME};',
         'int mpv_frame() { return 0; }',
@@ -1616,22 +1658,28 @@ def build_GLSL_wrapper(context: PassContext, body: str, extra_prelude: list[str]
             f'vec4 {prefix}_gather({position_type} position, int component) {{ return vec4(0.0); }}'
         ])
         context.stubs.extend([f'{prefix}_sample', f'{prefix}_size', f'{prefix}_fetch', f'{prefix}_gather'])
+        if not context.sources[source_index].texture_name:
+            lines.append(f'vec2 {prefix}_offset() {{ return vec2(0.0); }}')
+            context.stubs.append(f'{prefix}_offset')
     for name, source_index in context.visible.items():
         prefix = context.source_prefix(source_index)
         if context.sources[source_index].texture_name:
             # libplacebo gives a TEXTURE block only its sampler and NAME_tex
             lines.append(f'#define {name}_tex(pos) {prefix}_sample(pos)')
             continue
+        position = context.position_name(source_index)
+        # An aligned texture's rect starts at its own offset, so its map lands there too
+        texel_map = f'(mpv_map(vec2(id)) + {prefix}_offset() / {prefix}_size())' if context.is_aligned(source_index) else 'mpv_map(vec2(id))'
         lines.extend([
-            f'#define {name}_pos {POSITION_NAME}',
+            f'#define {name}_pos {position}',
             f'#define {name}_size {prefix}_size()',
             f'#define {name}_pt (vec2(1.0) / {prefix}_size())',
             f'#define {name}_mul 1.0',
             f'#define {name}_rot mat2(1.0, 0.0, 0.0, 1.0)',
-            f'#define {name}_off vec2(0.0)',
-            f'#define {name}_map(id) mpv_map(vec2(id))',
+            f'#define {name}_off {prefix}_offset()',
+            f'#define {name}_map(id) {texel_map}',
             f'#define {name}_tex(pos) {prefix}_sample(pos)',
-            f'#define {name}_texOff(off) {prefix}_sample({POSITION_NAME} + (vec2(1.0) / {prefix}_size()) * vec2(off))',
+            f'#define {name}_texOff(off) {prefix}_sample({position} + (vec2(1.0) / {prefix}_size()) * vec2(off))',
             f'#define {name}_gather(pos, c) {prefix}_gather(pos, c)'
         ])
     for parameter in context.shader.parameters.values():
@@ -1682,8 +1730,6 @@ def prepare_GLSL_body(context: PassContext) -> str:
         assert mpv_pass.thread_size is not None
         replacements.update(COMPUTE_BUILTINS)
         replacements[WORKGROUP_SIZE_BUILTIN] = f'uvec3({mpv_pass.thread_size[0]}u, {mpv_pass.thread_size[1]}u, 1u)'
-    if mpv_pass.offset is not None and any(mpv_pass.offset):
-        context.report.add(SEVERITY_WARNING, CODE_OFFSET_IGNORED, f'{pass_name}: OFFSET {mpv_pass.offset[0]} {mpv_pass.offset[1]}')
     return wrap_for_conditions(reverse_array_dimensions(replace_identifiers(body, replacements)))
 
 
@@ -1819,6 +1865,29 @@ def inline_runtime_constants(body: str, body_line: int, inlined: set[str]) -> st
     return body
 
 
+def expand_scalar_swizzles(body: str, body_line: int) -> tuple[str | None, list[str]]:
+    """Rewrites the swizzles of scalars on one line, which GLSL 4.20 allows: `x.x` reads x, and `x.xy` a vector of x; returns the names it rewrote."""
+    lines = body.split('\n')
+    if not 0 <= body_line < len(lines):
+        return None, []
+    scalar_types = {match.group(2): match.group(1) for match in SCALAR_DECLARATION_PATTERN.finditer(body)}
+    rewritten: list[str] = []
+
+    def rewrite(match: re.Match[str]) -> str:
+        name, components = match.group(1), match.group(2)
+        if name not in scalar_types:
+            return match.group(0)
+        if name not in rewritten:
+            rewritten.append(name)
+        return name if len(components) == 1 else f'{SCALAR_VECTOR_PREFIXES[scalar_types[name]]}vec{len(components)}({name})'
+
+    line = re.sub(rf'(?<![\w.])([A-Za-z_]\w*)\.({SWIZZLE_COMPONENTS})\b', rewrite, lines[body_line])
+    if not rewritten:
+        return None, []
+    lines[body_line] = line
+    return '\n'.join(lines), rewritten
+
+
 @dataclass
 class GLSLRepairs:
     """The repairs applied so far to one pass's GLSL, so that none repeats."""
@@ -1841,6 +1910,11 @@ def repair_GLSL(body: str, error: NagaTranslationError, repairs: GLSLRepairs, co
         repairs.extra_prelude.extend(SCALAR_DOT_SHIM)
         repaired = DOT_FUNCTION_PATTERN.sub(f'{SCALAR_DOT_NAME}(', body)
         detail = 'dot() of scalars goes through overloads, since WGSL takes vectors only'
+    elif (SCALAR_SWIZZLE_MESSAGE in error.output and error.body_line is not None
+          and f'{REPAIR_SCALAR_SWIZZLE}:{error.body_line}' not in repairs.applied):
+        repairs.applied.add(f'{REPAIR_SCALAR_SWIZZLE}:{error.body_line}')
+        repaired, names = expand_scalar_swizzles(body, error.body_line)
+        detail = f'swizzles of the scalars {", ".join(names)} read the scalar, since naga swizzles vectors only'
     elif RUNTIME_CONSTANT_MESSAGE in error.output and error.body_line is not None:
         before = set(repairs.inlined_constants)
         repaired = inline_runtime_constants(body, error.body_line, repairs.inlined_constants)
@@ -2093,12 +2167,15 @@ def collect_helpers(helpers: set[str]) -> list[str]:
 def get_symbolic_size(name: str, axis: str, context: PassContext) -> list[RPNToken]:
     """Returns a texture's size as RPN over plan-time facts, as far as the passes before it determine it."""
     state = context.state
-    image_size = (state.image_width, state.image_height)
     axis_index = 0 if axis == AXIS_WIDTH else 1
     name = normalize_texture_name(name)
+
+    def stage_size(stage: str) -> list[RPNToken]:
+        group = get_size_group(stage)
+        return list((OUTPUT_SIZE if group is None else state.sizes[group])[axis_index])
+
     if name in (HOOKED_NAME, context.instance.hook):
-        stage = context.instance.mapping.engine_stage
-        return list((image_size if stage in PRESCALE_STAGES else OUTPUT_SIZE)[axis_index])
+        return stage_size(context.instance.mapping.engine_stage)
     if name == OUTPUT_NAME:
         return list(OUTPUT_SIZE[axis_index])
     if name == NATIVE_CROPPED_NAME:
@@ -2111,7 +2188,7 @@ def get_symbolic_size(name: str, axis: str, context: PassContext) -> list[RPNTok
         return [number_token(size[axis_index] if axis_index < len(size) else 1)]
     mapping = HOOK_MAPPINGS.get(name)
     if mapping is not None:
-        return list((image_size if mapping.engine_stage in PRESCALE_STAGES else OUTPUT_SIZE)[axis_index])
+        return stage_size(mapping.engine_stage)
     raise ConversionError(CODE_EXPRESSION_NAME_UNKNOWN, f'{context.instance.name}: {name}')
 
 
@@ -2219,6 +2296,16 @@ def is_same_size(tokens: list[RPNToken] | None, axis: str, context: PassContext)
             and tokens[0].texture in (HOOKED_NAME, context.instance.hook))
 
 
+def reads_plan_only_facts(tokens: list[RPNToken], context: PassContext) -> bool:
+    """Returns whether a condition reads a size that only a plan-time fact holds, such as the chroma plane's, which WGSL cannot read."""
+    for token in tokens:
+        if token.kind != TOKEN_SIZE or normalize_texture_name(token.texture) in (HOOKED_NAME, context.instance.hook):
+            continue
+        if any(size_token.text in PLAN_ONLY_FACTS for size_token in get_symbolic_size(token.texture, token.axis, context)):
+            return True
+    return False
+
+
 def reads_tunable_parameters(tokens: list[RPNToken] | None, shader: ParsedShader) -> bool:
     if tokens is None:
         return False
@@ -2283,30 +2370,41 @@ def plan_state_update(context: PassContext, plan_condition: list[RPNToken]) -> S
         assert mpv_pass.save is not None
         save_name = get_engine_save_name(mpv_pass.save, context.state, context.report)
         return StateUpdate(save_name, SavedTexture(save_name, width, height))
-    if not context.instance.mapping.resizable or (mpv_pass.width is None and mpv_pass.height is None):
+    group = get_size_group(context.instance.mapping.engine_stage)
+    if not context.instance.mapping.resizable or group is None or (mpv_pass.width is None and mpv_pass.height is None):
         return StateUpdate()
     if not plan_condition:
-        return StateUpdate(image_size=(width, height))
+        return StateUpdate(resized_group=group, resized_size=(width, height))
     # A pass that may not run leaves the image at either size, which only the condition decides
     condition = expand_symbolic(plan_condition, context, lambda name: False, 'WHEN')
-    state = context.state
-    return StateUpdate(image_size=(select_tokens(condition, width, state.image_width), select_tokens(condition, height, state.image_height)))
+    current_width, current_height = context.state.sizes[group]
+    return StateUpdate(resized_group=group, resized_size=(select_tokens(condition, width, current_width),
+                                                          select_tokens(condition, height, current_height)))
 
 
 def apply_state_update(state: PipelineState, mpv_pass: MPVPass, update: StateUpdate) -> None:
     if update.saved_texture is not None and mpv_pass.save is not None:
         state.saved_textures[mpv_pass.save] = update.saved_texture
-    if update.image_size is not None:
-        state.image_width, state.image_height = update.image_size
+    if update.resized_group is None or update.resized_size is None:
+        return
+    state.sizes[update.resized_group] = update.resized_size
+    # The image takes luma's grid, so a luma pass that resizes luma resizes it too
+    if update.resized_group == ENGINE_STAGE_LUMA:
+        state.sizes[SIZE_GROUP_IMAGE] = update.resized_size
 
 
 def build_entry(context: PassContext, private_names: set[str], guard: str | None) -> tuple[str, OutputExpression]:
     """Builds the pass's entry point, which sets the mpv globals the body reads, then runs hook()."""
     mpv_pass = context.mpv_pass
+    # OFFSET ALIGN moves the hooked texture's position onto its offset, which reads HOOKED
+    aligned = ALIGNED_POSITION_NAME in private_names
+    alignment_inputs: tuple[str, ...] = (HOOKED_NAME,) if aligned else ()
     if not context.is_compute:
         lines = [KERNEL_ENTRY]
         if POSITION_NAME in private_names:
             lines.append(f'    {POSITION_NAME} = coordinate;')
+        if aligned:
+            lines.append(f'    {ALIGNED_POSITION_NAME} = coordinate + {HOOKED_ALIGNMENT_WGSL};')
         if FRAGMENT_COORDINATE_NAME in private_names:
             target_size = f'round(vec2f({render_size_WGSL(mpv_pass.width, AXIS_WIDTH, context)}, {render_size_WGSL(mpv_pass.height, AXIS_HEIGHT, context)}))'
             lines.append(f'    {FRAGMENT_COORDINATE_NAME} = vec4f(coordinate * {target_size}, 0.0, 1.0);')
@@ -2316,7 +2414,7 @@ def build_entry(context: PassContext, private_names: set[str], guard: str | None
         output = get_output_expression(context, 'result', 'coordinate')
         lines.extend(['    let result = hook();', f'    return {output.text};', '}'])
         inputs = (*output.engine_inputs, HOOKED_NAME) if guard is not None else output.engine_inputs
-        return '\n'.join(lines), OutputExpression(output.text, output.helpers, inputs)
+        return '\n'.join(lines), OutputExpression(output.text, output.helpers, (*inputs, *alignment_inputs))
     assert mpv_pass.thread_size is not None and mpv_pass.block_size is not None
     thread_width, thread_height = mpv_pass.thread_size
     block_width, block_height = mpv_pass.block_size
@@ -2326,7 +2424,8 @@ def build_entry(context: PassContext, private_names: set[str], guard: str | None
         WORKGROUP_NAME: f'id / {WORKGROUP_SIZE_CONSTANT}',
         LOCAL_INDEX_NAME: f'(id.x % {thread_width}u) + (id.y % {thread_height}u) * {thread_width}u',
         WORKGROUP_COUNT_NAME: f'vec3u((TARGET_size() + vec2u({block_width - 1}u, {block_height - 1}u)) / vec2u({block_width}u, {block_height}u), 1u)',
-        POSITION_NAME: '(vec2f(id.xy) + vec2f(0.5)) / vec2f(TARGET_size())'
+        POSITION_NAME: '(vec2f(id.xy) + vec2f(0.5)) / vec2f(TARGET_size())',
+        ALIGNED_POSITION_NAME: f'(vec2f(id.xy) + vec2f(0.5)) / vec2f(TARGET_size()) + {HOOKED_ALIGNMENT_WGSL}'
     }
     lines = [f'const {WORKGROUP_SIZE_CONSTANT} = vec3u({thread_width}u, {thread_height}u, 1u);', '', COMPUTE_ENTRY]
     lines.extend(f'    {name} = {value};' for name, value in assignments.items() if name in private_names)
@@ -2353,7 +2452,7 @@ def build_entry(context: PassContext, private_names: set[str], guard: str | None
             '    }'
         ])
     lines.extend(['    hook();', '}'])
-    return '\n'.join(lines), OutputExpression('', helpers, inputs)
+    return '\n'.join(lines), OutputExpression('', helpers, (*inputs, *alignment_inputs))
 
 
 def build_validation_module(context: PassContext, body: str, inputs: list[str], parameters: list[MPVParameter], output_format: str) -> str:
@@ -2377,6 +2476,7 @@ def build_validation_module(context: PassContext, body: str, inputs: list[str], 
             f'@group(0) @binding({binding}) var {engine_input}_texture: texture_2d<f32>;',
             f'fn {engine_input}_size() -> vec2f {{ return vec2f(textureDimensions({engine_input}_texture)); }}',
             f'fn {engine_input}_pt() -> vec2f {{ return 1.0 / {engine_input}_size(); }}',
+            f'fn {engine_input}_offset() -> vec2f {{ return vec2f(0.0); }}',
             f'fn {engine_input}_tex(coordinate: vec2f) -> vec4f {{ return textureSampleLevel({engine_input}_texture, validationSampler, coordinate, 0.0); }}',
             f'fn {engine_input}_texOff(coordinate: vec2f, offsetInPixels: vec2f) -> vec4f {{ return {engine_input}_tex(coordinate + offsetInPixels * {engine_input}_pt()); }}'
         ])
@@ -2412,13 +2512,39 @@ def get_plan_condition(context: PassContext, in_place: bool) -> tuple[list[RPNTo
     instance = context.instance
     runtime: list[RPNToken] | None = None
     plan: list[RPNToken] = []
-    if mpv_pass.condition is not None and reads_tunable_parameters(mpv_pass.condition, context.shader) and in_place:
+    if (mpv_pass.condition is not None and reads_tunable_parameters(mpv_pass.condition, context.shader) and in_place
+            and not reads_plan_only_facts(mpv_pass.condition, context)):
         runtime = mpv_pass.condition
     elif mpv_pass.condition is not None:
         plan = list(mpv_pass.condition)
     if instance.variant_condition:
         plan = [*plan, *instance.variant_condition, binary_token('*')] if plan else list(instance.variant_condition)
     return plan, runtime
+
+
+def get_offset_value(context: PassContext) -> str | None:
+    """Returns the pass's `offset` value from OFFSET, or None without one.
+
+    A pass after the scaler, or on the chroma CHROMA_SCALED emulates through the RGB image, has no grid of its own to shift, so its OFFSET is reported.
+    """
+    mpv_pass = context.mpv_pass
+    mapping = context.instance.mapping
+    declared = mpv_pass.offset if mpv_pass.offset is not None and any(mpv_pass.offset) else None
+    if mpv_pass.offset_align:
+        detail = OFFSET_ALIGN
+    elif declared is not None:
+        detail = f'{declared[0]} {declared[1]}'
+    else:
+        return None
+    if mapping.engine_stage in SCALED_STAGES or mapping.plane in EMULATED_PLANES:
+        context.report.add(SEVERITY_WARNING, CODE_OFFSET_IGNORED, f'{context.instance.name}: OFFSET {detail} at {context.instance.hook}')
+        return None
+    if declared is None:
+        return ENGINE_OFFSET_ALIGN
+    if mpv_pass.offset_align:
+        context.report.add(SEVERITY_WARNING, CODE_OFFSET_IGNORED, f'{context.instance.name}: OFFSET {declared[0]} {declared[1]} beside OFFSET ALIGN')
+        return ENGINE_OFFSET_ALIGN
+    return ', '.join(format_decimal(Decimal(repr(coordinate))) for coordinate in declared)
 
 
 def translate_with_repairs(context: PassContext, naga: str, directory: Path) -> str:
@@ -2468,8 +2594,10 @@ def convert_instance(context: PassContext, naga: str, directory: Path) -> Conver
         context.report.add(SEVERITY_NOTE, CODE_HOOK_EMULATED, f'{instance.name}: {instance.hook} reads linear light over {instance.linear_scale} nits')
 
     ordered_inputs = [HOOKED_NAME] if HOOKED_NAME in engine_inputs else []
+    saved_names = {saved.engine_name for saved in context.state.saved_textures.values()}
     for source in context.sources:
-        if source.engine_input in engine_inputs and source.engine_input not in ordered_inputs:
+        # mpv skips a pass whose bound texture no pass saved, so a bound saved texture stays an input, read or not
+        if (source.engine_input in engine_inputs or source.engine_input in saved_names) and source.engine_input not in ordered_inputs:
             ordered_inputs.append(source.engine_input)
     declared_inputs = set(ordered_inputs)
     width = render_size_expression(mpv_pass.width, context, declared_inputs) if mpv_pass.width else f'{HOOKED_NAME}.{AXIS_WIDTH}'
@@ -2483,6 +2611,9 @@ def convert_instance(context: PassContext, naga: str, directory: Path) -> Conver
     if saves:
         header_lines.append(f'//! save: {context.state_update.save_name}')
     header_lines.append(f'//! output: {width}, {height}, {output_format}')
+    offset = get_offset_value(context)
+    if offset is not None:
+        header_lines.append(f'//! offset: {offset}')
     if saves and mpv_pass.components:
         header_lines.append(f'//! components: {min(max(mpv_pass.components, 1), MAXIMUM_COMPONENTS)}')
     if plan_condition:

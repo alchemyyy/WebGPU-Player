@@ -12,6 +12,7 @@ import type {
     PassExpression,
     PassInput,
     PassManifest,
+    PassOffset,
     PassOutput,
     PassWorkgroup
 } from 'webgpu-player/presentation/passes/PassTypes';
@@ -49,6 +50,8 @@ const SECOND_PASS_NAME = 'Second pass';
 const UNKNOWN_SHAPE_LINE = '//! shape: blur';
 // A line the header reader rejects before any directive is checked
 const UNKNOWN_DIRECTIVE_LINE = '//! sampler: linear';
+// A kernel header before the scaler, which may declare an offset
+const KERNEL_HEADER_BEFORE_SCALER: readonly string[] = [ NAME_LINE, '//! shape: kernel', '//! hook: RGB' ];
 // A kernel header after its name line
 const KERNEL_DIRECTIVES: readonly string[] = [ '//! shape: kernel', '//! hook: OUTPUT' ];
 const KERNEL_HEADER: readonly string[] = [ NAME_LINE, ...KERNEL_DIRECTIVES ];
@@ -97,7 +100,7 @@ const KERNEL_OUTPUT_FORMATS: readonly GPUTextureFormat[] = [
 const COMPUTE_OUTPUT_FORMATS: readonly GPUTextureFormat[] = [ 'rgba16float', 'rgba32float', 'r32float', 'rgba8unorm' ];
 const COMPONENT_COUNTS: readonly number[] = [ 1, 2, 3, 4 ];
 
-const GLOBAL_FACT_LIST = 'source.width, source.height, output.width, output.height, frame.rate, hdr.source, hdr.output';
+const GLOBAL_FACT_LIST = 'source.width, source.height, output.width, output.height, chroma.width, chroma.height, frame.rate, hdr.source, hdr.output';
 const HOOKED_SIZE_FACT_LIST = `${GLOBAL_FACT_LIST}, HOOKED.width, HOOKED.height`;
 
 const MISSING_HEADER_MESSAGE = 'The pass has no //! header';
@@ -152,6 +155,7 @@ const DEFAULT_KERNEL_MANIFEST: PassManifest = {
     hook: 'OUTPUT',
     inputs: [ HOOKED_INPUT ],
     name: PASS_NAME,
+    offset: null,
     output: HOOKED_SIZE_OUTPUT,
     parameters: [],
     replaces: null,
@@ -223,6 +227,7 @@ const FULL_KERNEL_MANIFEST: PassManifest = {
     hook: 'RGB',
     inputs: [ HOOKED_INPUT, { historyOffset: 0, name: 'LUMA' }, { historyOffset: -2, name: 'RGB' } ],
     name: FULL_KERNEL_NAME,
+    offset: null,
     output: { format: 'rg16float', height: parsePassExpression(FULL_KERNEL_HEIGHT), width: parsePassExpression(FULL_KERNEL_WIDTH) },
     parameters: [
         { defaultValue: -0.25, maximum: 0.25, minimum: -15, name: 'strength', type: 'f32' },
@@ -260,6 +265,7 @@ const FULL_COMPUTE_MANIFEST: PassManifest = {
     hook: 'PRESCALE',
     inputs: [ { historyOffset: -1, name: 'STATE' } ],
     name: 'Reduction',
+    offset: null,
     output: { format: 'r32float', height: parsePassExpression(FULL_COMPUTE_HEIGHT), width: parsePassExpression(FULL_COMPUTE_WIDTH) },
     parameters: [],
     replaces: null,
@@ -299,6 +305,20 @@ const SIZE_REFERENCE_CASES: readonly SizeReferenceCase[] = [
         output: { format: 'rgb10a2unorm', height: createIdentifier('output.height'), width: createIdentifier('output.width') }
     }
 ];
+
+type OffsetCase = {
+    offset: PassOffset
+    text: string
+};
+
+const OFFSET_CASES: readonly OffsetCase[] = [
+    { offset: { kind: 'align' }, text: 'align' },
+    { offset: { kind: 'pixels', x: -0.5, y: 0 }, text: '-0.5, 0' },
+    { offset: { kind: 'pixels', x: 0.25, y: -1.5e-1 }, text: ' +0.25 ,-1.5e-1 ' }
+];
+
+// A plane stage, which a kernel may hook and a color pass may not
+const PLANE_HOOK_LINE = '//! hook: CHROMA';
 
 type WorkgroupSizeCase = {
     size: PassWorkgroup['size']
@@ -512,7 +532,7 @@ const HOOK_AND_DOMAIN_ERROR_CASES: readonly ErrorCase[] = [
         headerLines: [ NAME_LINE, '//! shape: kernel', '//! hook: MAIN' ],
         label: 'an unknown hook',
         line: 3,
-        message: "Unknown hook 'MAIN'; expected RGB, PRESCALE, SCALE, OUTPUT"
+        message: "Unknown hook 'MAIN'; expected LUMA, CHROMA, NATIVE, RGB, PRESCALE, SCALE, OUTPUT"
     },
     {
         headerLines: [ NAME_LINE, '//! shape: scaler', '//! hook: OUTPUT' ],
@@ -524,6 +544,35 @@ const HOOK_AND_DOMAIN_ERROR_CASES: readonly ErrorCase[] = [
         label: 'an unknown domain',
         message: "Unknown domain 'hdr'; expected any, display, linear, sdr, source",
         ...appendLine(KERNEL_HEADER, '//! domain: hdr')
+    }
+];
+
+const OFFSET_ERROR_CASES: readonly ErrorCase[] = [
+    {
+        label: 'an offset of one coordinate',
+        message: "Expected 'offset: <x>, <y>' or 'offset: align'",
+        ...appendLine(KERNEL_HEADER_BEFORE_SCALER, '//! offset: 0.5')
+    },
+    {
+        label: 'an offset that is not a number',
+        message: "Expected 'offset: <x>, <y>' or 'offset: align'",
+        ...appendLine(KERNEL_HEADER_BEFORE_SCALER, '//! offset: half, 0')
+    },
+    {
+        label: 'an offset after the scaler',
+        message: 'An offset needs a hook before SCALE',
+        ...appendLine(KERNEL_HEADER, '//! offset: align')
+    },
+    {
+        label: 'an offset in a color pass',
+        message: "A color pass cannot declare 'offset'",
+        ...appendLine(COLOR_HEADER, '//! offset: align')
+    },
+    {
+        headerLines: [ NAME_LINE, '//! shape: color', PLANE_HOOK_LINE ],
+        label: 'a color pass on a plane stage',
+        line: 3,
+        message: 'A color pass cannot hook a plane stage: LUMA, CHROMA, NATIVE'
     }
 ];
 
@@ -576,7 +625,7 @@ const OUTPUT_ERROR_CASES: readonly ErrorCase[] = [
     },
     {
         label: 'a size reference to an undeclared input',
-        message: "Unknown size 'LUMA.size'; expected HOOKED.size, source.size, output.size",
+        message: "Unknown size 'LUMA.size'; expected HOOKED.size, source.size, output.size, chroma.size",
         ...appendLine(KERNEL_HEADER, '//! output: LUMA.size, rgba16float')
     },
     {
@@ -785,6 +834,7 @@ const SATURATION_MANIFEST: PassManifest = {
     hook: 'OUTPUT',
     inputs: [],
     name: 'Saturation',
+    offset: null,
     output: null,
     parameters: [ { defaultValue: 1.2, maximum: 2, minimum: 0, name: 'saturation', type: 'f32' } ],
     replaces: null,
@@ -802,6 +852,7 @@ const SHARPEN_MANIFEST: PassManifest = {
     hook: 'OUTPUT',
     inputs: [ HOOKED_INPUT ],
     name: 'Sharpen',
+    offset: null,
     output: HOOKED_SIZE_OUTPUT,
     parameters: [ { defaultValue: 0.5, maximum: 1, minimum: 0, name: 'strength', type: 'f32' } ],
     replaces: null,
@@ -819,6 +870,7 @@ const TEMPORAL_BLEND_MANIFEST: PassManifest = {
     hook: 'RGB',
     inputs: [ HOOKED_INPUT, { historyOffset: -1, name: 'RGB' } ],
     name: 'Temporal blend',
+    offset: null,
     output: HOOKED_SIZE_OUTPUT,
     parameters: [ { defaultValue: 0.5, maximum: 1, minimum: 0, name: 'blend', type: 'f32' } ],
     replaces: null,
@@ -836,6 +888,7 @@ const CATMULL_ROM_MANIFEST: PassManifest = {
     hook: 'SCALE',
     inputs: [ HOOKED_INPUT ],
     name: 'Catmull-Rom',
+    offset: null,
     output: null,
     parameters: [],
     replaces: null,
@@ -948,6 +1001,17 @@ describe('pass manifest directives', () => {
         const manifest = parsePassManifest(createSource([ ...COMPUTE_HEADER, `//! dispatch: ${text}` ]));
 
         expect(manifest.workgroup).toEqual({ dispatch, size: COMPUTE_MANIFEST.workgroup?.size });
+    });
+
+    it.each(OFFSET_CASES)('reads the offset $text', ({ offset, text }) => {
+        expect(parsePassManifest(createSource([ ...KERNEL_HEADER_BEFORE_SCALER, `//! offset: ${text}` ])).offset).toEqual(offset);
+    });
+
+    it('lets a kernel hook a plane stage and read the plane stages before it', () => {
+        const manifest = parsePassManifest(createSource([ NAME_LINE, '//! shape: kernel', PLANE_HOOK_LINE, '//! input: HOOKED', '//! input: LUMA' ]));
+
+        expect(manifest.hook).toBe('CHROMA');
+        expect(manifest.inputs).toEqual([ HOOKED_INPUT, { historyOffset: 0, name: 'LUMA' } ]);
     });
 
     it('lets a dispatch read the size of a declared input', () => {
@@ -1131,6 +1195,7 @@ describe('pass manifest errors', () => {
         { cases: HOOK_AND_DOMAIN_ERROR_CASES, group: 'replaces, hook, and domain' },
         { cases: INPUT_AND_SAVE_ERROR_CASES, group: 'input and save' },
         { cases: OUTPUT_ERROR_CASES, group: 'output, components, and when' },
+        { cases: OFFSET_ERROR_CASES, group: 'offset' },
         { cases: PARAMETER_ERROR_CASES, group: 'parameter' },
         { cases: WORKGROUP_ERROR_CASES, group: 'workgroup and dispatch' }
     ])('$group errors', ({ cases }) => {

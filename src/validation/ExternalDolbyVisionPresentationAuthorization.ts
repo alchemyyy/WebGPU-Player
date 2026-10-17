@@ -87,6 +87,7 @@ const EXTERNAL_INPUT_PROBE_CHAIN: BuiltinChain = {
         code: EXTERNAL_INPUT_PROBE_SIGNAL_CODE,
         entryPoint: 'recoverExternalDolbyVisionBaseSignal',
         name: 'external-dolby-vision-input-probe',
+        planes: null,
         resources: [ 'external-texture', 'sampler-linear' ],
         sourceKind: 'external'
     },

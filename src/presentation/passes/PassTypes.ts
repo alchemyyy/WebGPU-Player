@@ -10,8 +10,11 @@ import type { DolbyVisionReconstructionProfile } from '../PresentationInput';
 import type { TexturePresentationGeometry } from '../PresentationGeometry';
 import type { HDRToSDRRenderSettings, RenderSettings } from '../RenderSettings';
 
-/** A stage of the spatial spine that user passes hook, in pipeline order; the fixed signal step comes before all of them. */
-export type PresentationStage = 'OUTPUT' | 'PRESCALE' | 'RGB' | 'SCALE';
+/**
+ * A stage of the spatial spine that user passes hook.
+ * The plane stages, 'LUMA', 'CHROMA', and 'NATIVE', hold the signal's planes before it converts them; the fixed signal step converts them into 'RGB'.
+ */
+export type PresentationStage = 'CHROMA' | 'LUMA' | 'NATIVE' | 'OUTPUT' | 'PRESCALE' | 'RGB' | 'SCALE';
 
 /**
  * A state on the color track.
@@ -88,6 +91,13 @@ export type PassOutput = {
     width: PassExpression
 };
 
+/**
+ * Where a pass's output sits on the reference grid, as mpv's `OFFSET` says.
+ * - 'pixels': the output's offset is the hooked image's, scaled by the output's size over the hooked image's, plus x and y output pixels.
+ * - 'align': the output's offset is the reference grid's own, 0.
+ */
+export type PassOffset = { kind: 'align' } | { kind: 'pixels'; x: number; y: number };
+
 export type PassWorkgroup = {
     dispatch: readonly [PassExpression, PassExpression, PassExpression]
     size: readonly [number, number, number]
@@ -106,6 +116,8 @@ export type PassManifest = {
     hook: PresentationStage | null
     inputs: readonly PassInput[]
     name: string
+    /** Null for the default, the hooked image's offset scaled by the output's size */
+    offset: PassOffset | null
     output: PassOutput | null
     parameters: readonly PassParameter[]
     /** The built-in color function a color pass replaces, such as 'builtin.tone-map'; a scaler always replaces the built-in scaler. */
@@ -160,6 +172,32 @@ export type BuiltinColorFunction = {
     resources: readonly EngineResource[]
 };
 
+/**
+ * How a signal reads its planes apart and converts them, which plane passes run between; its code calls functions of the signal's code.
+ * A plane holds codes divided by the code scale, as mpv's planes hold normalized values, so a value of 1 is the largest code.
+ */
+export type SignalPlanes = {
+    /** `fn <entryPoint>(coordinate: vec2f) -> vec2f`: Cb and Cr codes at a normalized coordinate of the chroma plane, without siting. */
+    chromaEntryPoint: string
+    chromaFormat: GPUTextureFormat
+    chromaHeightDivisor: 1 | 2
+    /** The chroma plane's offset in its own pixels: where the signal reads it on the luma grid. */
+    chromaOffset: readonly [number, number]
+    chromaWidthDivisor: 1 | 2
+    /** `fn <entryPoint>() -> f32`: the code a plane value of 1 stands for. */
+    codeScaleEntryPoint: string
+    code: string
+    /** `fn <entryPoint>(codes: vec3f) -> vec4f`: Y, Cb, and Cr codes to 'source' RGB, as the signal converts them. */
+    conversionEntryPoint: string
+    /** `fn <entryPoint>(coordinate: vec2f) -> f32`: the luma code at a normalized coordinate. */
+    lumaEntryPoint: string
+    lumaFormat: GPUTextureFormat
+    /** The format of NATIVE, the planes merged into normalized Y, Cb, and Cr on luma's grid. */
+    nativeFormat: GPUTextureFormat
+    /** `fn <entryPoint>(coordinate: vec2f) -> vec2f`: Cb and Cr codes at a normalized coordinate of the luma grid, sited as the signal reads them. */
+    sitedChromaEntryPoint: string
+};
+
 /** The fixed, decode-equivalent step of a route: it reads the source and produces 'source' RGB. */
 export type SignalDefinition = {
     /**
@@ -172,6 +210,8 @@ export type SignalDefinition = {
     /** `fn <entryPoint>(coordinate: vec2f) -> vec4f`, bilinear at a normalized source coordinate, returning 'source' RGB. */
     entryPoint: string
     name: string
+    /** The planes plane passes read, or null when the signal has none to offer, as Dolby Vision reconstruction does. */
+    planes: SignalPlanes | null
     resources: readonly EngineResource[]
     sourceKind: PresentationSourceKind
 };
@@ -350,6 +390,7 @@ export type PassRejectionReason =
     | 'output-size'
     | 'parameter-invalid'
     | 'parameter-unknown'
+    | 'planes-unavailable'
     | 'replaced-function-missing'
     | 'replaced-function-taken'
     | 'sdr-on-hdr-output'

@@ -18,6 +18,9 @@ import {
     HOOKED_INPUT_NAME,
     MAXIMUM_HISTORY_DEPTH,
     MAXIMUM_PARAMETER_COUNT,
+    OFFSET_ALIGN,
+    PLANE_STAGES,
+    SCALED_STAGES,
     SCALER_STAGE,
     SIZE_SUFFIX,
     STAGE_ORDER,
@@ -28,6 +31,7 @@ import type {
     PassExpression,
     PassInput,
     PassManifest,
+    PassOffset,
     PassOutput,
     PassParameter,
     PassParameterType,
@@ -57,6 +61,7 @@ type Directive =
     | 'hook'
     | 'input'
     | 'name'
+    | 'offset'
     | 'output'
     | 'replaces'
     | 'save'
@@ -133,6 +138,7 @@ const DIRECTIVE_SHAPES: Readonly<Record<Directive, readonly PassShape[]>> = {
     hook: SHAPES,
     input: [ 'kernel', 'scaler', 'compute' ],
     name: SHAPES,
+    offset: TEXTURE_SHAPES,
     output: TEXTURE_SHAPES,
     replaces: [ 'color' ],
     save: TEXTURE_SHAPES,
@@ -168,6 +174,9 @@ const MALFORMED_PARAMETER_MESSAGE = "Expected 'param <name>: <type> = <default> 
 const MALFORMED_OUTPUT_MESSAGE = "Expected '<NAME>.size, <format>' or '<width>, <height>, <format>'";
 const MALFORMED_WORKGROUP_MESSAGE = "Expected 'workgroup: <x>[, <y>[, <z>]]'";
 const MALFORMED_DISPATCH_MESSAGE = "Expected 'dispatch: <x>[, <y>[, <z>]]'";
+const MALFORMED_OFFSET_MESSAGE = `Expected 'offset: <x>, <y>' or 'offset: ${OFFSET_ALIGN}'`;
+const SCALED_OFFSET_MESSAGE = `An offset needs a hook before ${SCALER_STAGE}`;
+const PLANE_HOOK_MESSAGE = `A color pass cannot hook a plane stage: ${PLANE_STAGES.join(', ')}`;
 // The expression parser's message for the same mistake
 const UNBALANCED_PARENTHESIS_MESSAGE = 'Unbalanced parenthesis';
 const REPLACING_HOOK_MESSAGE = 'A color pass with replaces cannot declare a hook';
@@ -415,7 +424,42 @@ function readHook(header: PassHeader, shape: PassShape, replaces: string | null)
     if (shape === 'scaler' && hook !== SCALER_STAGE) {
         throw new PassManifestError(SCALER_HOOK_MESSAGE, entry.line);
     }
+    // Plane stages run before the color track, which color passes ride on
+    if (shape === 'color' && PLANE_STAGES.includes(hook)) {
+        throw new PassManifestError(PLANE_HOOK_MESSAGE, entry.line);
+    }
     return hook;
+}
+
+/** Parses one coordinate of an offset, a finite decimal in output pixels. */
+function parseOffsetCoordinate(text: string, line: number): number {
+    if (!NUMBER_PATTERN.test(text)) {
+        throw new PassManifestError(MALFORMED_OFFSET_MESSAGE, line);
+    }
+    const value = Number(text);
+    if (!Number.isFinite(value)) {
+        throw new PassManifestError(`Offset ${text} is not finite`, line);
+    }
+    return value;
+}
+
+/** Reads `offset: <x>, <y>` or `offset: align`, which only a pass before the scaler declares, since the scaler takes the image's offset. */
+function readOffset(header: PassHeader, hook: PresentationStage | null): PassOffset | null {
+    const entry = getEntry(header, 'offset');
+    if (!entry) {
+        return null;
+    }
+    if (hook !== null && SCALED_STAGES.includes(hook)) {
+        throw new PassManifestError(SCALED_OFFSET_MESSAGE, entry.line);
+    }
+    if (entry.value === OFFSET_ALIGN) {
+        return { kind: 'align' };
+    }
+    const parts = splitTopLevel(entry.value, entry.line);
+    if (parts.length !== 2) {
+        throw new PassManifestError(MALFORMED_OFFSET_MESSAGE, entry.line);
+    }
+    return { kind: 'pixels', x: parseOffsetCoordinate(parts[0], entry.line), y: parseOffsetCoordinate(parts[1], entry.line) };
 }
 
 /** Reads the domain, which a color pass with replaces takes from the replaced function's color states. */
@@ -716,6 +760,7 @@ function readManifest(header: PassHeader, name: string): PassManifest {
     const inputs = readInputs(header, shape);
     const save = readSave(header);
     const output = readOutput(header, shape, inputs);
+    const offset = readOffset(header, hook);
     const components = readComponents(header);
     const when = readWhen(header);
     const workgroup = shape === 'compute' && output ? readWorkgroup(header, inputs, output) : null;
@@ -728,6 +773,7 @@ function readManifest(header: PassHeader, name: string): PassManifest {
         hook,
         inputs,
         name,
+        offset,
         output,
         parameters,
         replaces,

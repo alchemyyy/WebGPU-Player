@@ -90,6 +90,10 @@ MISSING_RETURN_REPAIRED = 'vec4 pick(float n) {\n    for (int i = 0; i < 4; i++)
 TERNARY_CONSTANTS = 'const float slider = 0.25;\nconst float scale = (slider >= 0.0) ? 1.25 : 1.75;\nconst float strength = 0.4 + slider * scale;\nconst float other = 1.0;\nvec4 hook() { return vec4(strength); }'
 TERNARY_CONSTANTS_INLINED = 'const float slider = 0.25;\n#define scale ((slider >= 0.0) ? 1.25 : 1.75)\n#define strength (0.4 + slider * scale)\nconst float other = 1.0;\nvec4 hook() { return vec4(strength); }'
 TERNARY_LINE = 1
+# GLSL 4.20 swizzles scalars, as the Chroma from Luma shaders do; only the failing line is rewritten
+SCALAR_SWIZZLES = 'float start = 1.0;\nint count = 2;\nvec2 pos = vec2(0.0);\nfor (float x = start.x; x <= pos.x + vec2(count.xx).y; x++) {}'
+SCALAR_SWIZZLES_EXPANDED = 'float start = 1.0;\nint count = 2;\nvec2 pos = vec2(0.0);\nfor (float x = start; x <= pos.x + vec2(ivec2(count)).y; x++) {}'
+SCALAR_SWIZZLE_LINE = 3
 
 FRAGMENT_SHADER = '''//!PARAM strength
 //!TYPE float
@@ -146,7 +150,70 @@ vec4 hook() { return HOOKED_tex(HOOKED_pos) + 0.1 * DETAIL_tex(DETAIL_pos); }
 LUMA_DOUBLER_OUTPUT = '//! output: (HOOKED.width * 2), (HOOKED.height * 2), rgba16float'
 LUMA_DOUBLER_CONDITION = '//! when: (output.width > (source.width * 1.3))'
 LUMA_DOUBLER_INPUTS = ['//! input: HOOKED', '//! input: DETAIL']
-LUMA_REPLACEMENT = 'return mpv_replace_luma(HOOKED_tex(coordinate), result.x);'
+# A luma pass writes the luma plane itself, which the engine merges with chroma as the signal converts
+LUMA_PASS_HEADER_LINES = ['//! hook: LUMA', '//! domain: any']
+LUMA_RESULT = 'return result;'
+
+# A chroma upscaler as KrigBilateral's passes are: luma read at chroma's size, then chroma at luma's size, aligned with the reference grid
+CHROMA_UPSCALER_SHADER = '''//!HOOK CHROMA
+//!BIND LUMA
+//!BIND HOOKED
+//!SAVE LOWRES_Y
+//!WIDTH LUMA.w
+//!WHEN CHROMA.w LUMA.w <
+//!DESC chroma downscale
+vec4 hook() { return LUMA_tex(LUMA_pos); }
+
+//!HOOK CHROMA
+//!BIND HOOKED
+//!BIND LUMA
+//!BIND LOWRES_Y
+//!WIDTH LUMA.w
+//!HEIGHT LUMA.h
+//!WHEN CHROMA.w LUMA.w <
+//!OFFSET ALIGN
+//!DESC chroma upscale
+vec4 hook() {
+    vec2 pos = CHROMA_pos * HOOKED_size - vec2(0.5) + HOOKED_off * 0.0;
+    return CHROMA_tex(CHROMA_pt * (round(pos) + vec2(0.5))) * LUMA_texOff(0).x + LOWRES_Y_tex(LOWRES_Y_pos);
+}
+'''
+CHROMA_DOWNSCALE_LINES = ['//! hook: CHROMA', '//! save: LOWRES_Y', '//! output: LUMA.width, HOOKED.height, rgba16float',
+                          '//! when: (chroma.width < source.width)']
+CHROMA_UPSCALE_LINES = ['//! output: LUMA.width, LUMA.height, rgba16float', '//! offset: align', '//! when: (chroma.width < source.width)']
+ALIGNED_POSITION_ASSIGNMENT = 'mpv_aligned_position = coordinate + HOOKED_offset() * HOOKED_pt();'
+HOOKED_OFFSET_GLUE = 'return HOOKED_offset();'
+
+OFFSET_SHADER = '''//!HOOK LUMA
+//!BIND HOOKED
+//!WIDTH HOOKED.w 2 *
+//!OFFSET -0.500000 0.000000
+//!DESC offset doubler
+vec4 hook() { return HOOKED_tex(HOOKED_pos); }
+
+//!HOOK POSTKERNEL
+//!BIND HOOKED
+//!OFFSET 0.5 0.5
+//!DESC scaled offset
+vec4 hook() { return HOOKED_tex(HOOKED_pos); }
+'''
+OFFSET_LINE = '//! offset: -0.5, 0'
+SCALED_OFFSET_DETAIL = 'scaled offset: OFFSET 0.5 0.5 at POSTKERNEL'
+
+# A condition that reads chroma's size and a parameter: WGSL cannot read the chroma plane's size, so it plans on the parameter's default
+CHROMA_FACT_CONDITION_SHADER = '''//!PARAM strength
+//!TYPE float
+//!MINIMUM 0.0
+//!MAXIMUM 1.0
+0.5
+
+//!HOOK LUMA
+//!BIND HOOKED
+//!WHEN CHROMA.w LUMA.w < strength *
+//!DESC chroma aware
+vec4 hook() { return HOOKED_tex(HOOKED_pos) * strength; }
+'''
+CHROMA_FACT_CONDITION = '//! when: ((chroma.width < source.width) * 0.5)'
 
 # libplacebo's own example: a 41x41 average over shared memory, at 32x32 threads, then at 16x16
 COMPUTE_TEMPLATE = '''//!HOOK LUMA
@@ -346,6 +413,7 @@ class PassExpansionTest(unittest.TestCase):
 
         self.assertEqual(converter.get_engine_save_name('RGB', state, report), 'mpv_RGB')
         self.assertEqual(converter.get_engine_save_name('output', state, report), 'mpv_output')
+        self.assertEqual(converter.get_engine_save_name('chroma', state, report), 'mpv_chroma')
         self.assertEqual(converter.get_engine_save_name('LOWRES', state, report), 'LOWRES')
         self.assertEqual(converter.get_engine_save_name('LOWRES', state, report), 'LOWRES')
 
@@ -374,6 +442,13 @@ class GLSLRewriteTest(unittest.TestCase):
         self.assertEqual(converter.inline_runtime_constants(TERNARY_CONSTANTS, TERNARY_LINE, inlined), TERNARY_CONSTANTS_INLINED)
         self.assertEqual(inlined, {'scale', 'strength'})
 
+    def test_expands_scalar_swizzles_on_the_failing_line(self) -> None:
+        repaired, names = converter.expand_scalar_swizzles(SCALAR_SWIZZLES, SCALAR_SWIZZLE_LINE)
+
+        self.assertEqual(repaired, SCALAR_SWIZZLES_EXPANDED)
+        self.assertEqual(names, ['start', 'count'])
+        self.assertEqual(converter.expand_scalar_swizzles(SCALAR_SWIZZLES, 0), (None, []))
+
     def test_measures_workgroup_types(self) -> None:
         self.assertEqual(converter.measure_WGSL_type(NESTED_ARRAY_TYPE), NESTED_ARRAY_BYTES)
         self.assertEqual(converter.measure_WGSL_type(VECTOR_ARRAY_TYPE), VECTOR_ARRAY_BYTES)
@@ -401,17 +476,50 @@ class ConversionTest(unittest.TestCase):
         assert result is not None
         self.assertIn(NESTED_ARRAY_WGSL, result)
 
-    def test_joins_a_resized_luma_plane_with_the_image(self) -> None:
+    def test_writes_a_resized_luma_plane_itself(self) -> None:
         result, report = convert(LUMA_DOUBLER_SHADER)
 
         self.assertIsNotNone(result, report.findings)
         assert result is not None
         doubler = result[result.index('//! name: luma doubler'):]
-        self.assertIn(LUMA_DOUBLER_OUTPUT, doubler)
-        self.assertIn(LUMA_DOUBLER_CONDITION, doubler)
-        for line in LUMA_DOUBLER_INPUTS:
+        for line in [LUMA_DOUBLER_OUTPUT, LUMA_DOUBLER_CONDITION, *LUMA_DOUBLER_INPUTS, *LUMA_PASS_HEADER_LINES]:
             self.assertIn(line, doubler)
-        self.assertIn(LUMA_REPLACEMENT, doubler)
+        self.assertIn(LUMA_RESULT, doubler)
+        self.assertNotIn(converter.CODE_HOOK_EMULATED, get_codes(report, converter.SEVERITY_NOTE))
+
+    def test_converts_a_chroma_upscaler_on_native_planes(self) -> None:
+        result, report = convert(CHROMA_UPSCALER_SHADER)
+
+        self.assertIsNotNone(result, report.findings)
+        assert result is not None
+        downscale = result[result.index('//! name: chroma downscale'):result.index('//! name: chroma upscale')]
+        upscale = result[result.index('//! name: chroma upscale'):]
+        for line in CHROMA_DOWNSCALE_LINES:
+            self.assertIn(line, downscale)
+        for line in CHROMA_UPSCALE_LINES:
+            self.assertIn(line, upscale)
+        self.assertIn(ALIGNED_POSITION_ASSIGNMENT, upscale)
+        self.assertIn(HOOKED_OFFSET_GLUE, upscale)
+        self.assertNotIn(ALIGNED_POSITION_ASSIGNMENT, downscale)
+        self.assertEqual(get_codes(report, converter.SEVERITY_WARNING), [])
+
+    def test_maps_offsets_before_the_scaler_and_reports_them_after_it(self) -> None:
+        result, report = convert(OFFSET_SHADER)
+
+        self.assertIsNotNone(result, report.findings)
+        assert result is not None
+        self.assertIn(OFFSET_LINE, result[:result.index('//! name: scaled offset')])
+        self.assertNotIn('//! offset:', result[result.index('//! name: scaled offset'):])
+        self.assertIn(converter.Finding(converter.SEVERITY_WARNING, converter.CODE_OFFSET_IGNORED, SCALED_OFFSET_DETAIL), report.findings)
+
+    def test_plans_a_condition_on_the_chroma_size_with_parameter_defaults(self) -> None:
+        result, report = convert(CHROMA_FACT_CONDITION_SHADER)
+
+        self.assertIsNotNone(result, report.findings)
+        assert result is not None
+        self.assertIn(CHROMA_FACT_CONDITION, result)
+        self.assertNotIn(converter.CODE_CONDITION_RUNTIME, get_codes(report, converter.SEVERITY_NOTE))
+        self.assertIn(converter.CODE_PARAMETER_INLINED, get_codes(report, converter.SEVERITY_WARNING))
 
     def test_converts_a_compute_pass_within_the_workgroup_limits(self) -> None:
         oversized, oversized_report = convert(COMPUTE_TEMPLATE.format(size=OVERSIZED_WORKGROUP))

@@ -896,6 +896,40 @@ describe('PresentationExecutor', () => {
         );
     });
 
+    it('binds the source and a planned texture in one pass, as a plane merge reads them, and maps it onto the visible rectangle', async () => {
+        const harness = createDeviceHarness();
+        const chromaBinding: PlannedBinding = { access: 'sampled', binding: PLANE_BINDINGS.length, historyOffset: 0, kind: 'texture', textureId: 'plane:chroma' };
+        const plan = createPlan({
+            passes: [
+                createRenderPass('Chroma plane', {
+                    bindings: PLANE_BINDINGS,
+                    coordinateMapping: 'identity',
+                    target: { kind: 'texture', textureId: 'plane:chroma' }
+                }),
+                createRenderPass('Merge', {
+                    bindings: [ ...PLANE_BINDINGS, chromaBinding ],
+                    coordinateMapping: 'identity',
+                    target: { kind: 'texture', textureId: 'merge' }
+                }),
+                createRenderPass('Output', {
+                    bindings: [ { access: 'sampled', binding: 0, historyOffset: 0, kind: 'texture', textureId: 'merge' } ],
+                    inputTextureId: 'merge'
+                })
+            ],
+            sourceKind: 'planes',
+            textures: [ createTexture('plane:chroma', { format: 'rg16float' }), createTexture('merge', {}) ]
+        });
+        const frame = await copyRawFrame('I420', RAW_VISIBLE_RECTANGLE);
+
+        const executor = await PresentationExecutor.create(harness.device, plan);
+        const passes = encodeFrame(executor, createPlanesInput(frame));
+
+        expect(harness.textures.find(texture => texture.label === 'plane:chroma slot 0')?.descriptor.format).toBe('rg16float');
+        expect(getBoundLabel(getRenderPass(passes, 1), 0)).toBe(`${BASE_PLANE_LABEL_PREFIX} Y plane`);
+        expect(getBoundLabel(getRenderPass(passes, 1), chromaBinding.binding)).toBe('plane:chroma slot 0');
+        expectCoordinateMapping(readLastPresentationSlot(harness, 1), RAW_VISIBLE_SCALE_X, RAW_VISIBLE_SCALE_Y, RAW_VISIBLE_OFFSET_X, RAW_VISIBLE_OFFSET_Y);
+    });
+
     it('binds frame pool slots, applies their visible rectangle, and reuses bind groups per layout buffer', async () => {
         const harness = createDeviceHarness();
         const plan = createPlan({
