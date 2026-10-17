@@ -16,6 +16,7 @@ Each file holds one or more passes in the [pass file format](new-pass.md), which
 | `temporal-blend` | `temporal-blend.wgsl` | A kernel on the RGB stage that blends toward the previous frame while history is valid, by its `blend` parameter |
 | `catmull-rom` | `catmull-rom.wgsl` | A 4x4 Catmull-Rom scaler that replaces the built-in bilinear scaler; its taps read texel centers, so the result does not depend on the input's filtering |
 | `anime4k` | `Anime4K_Upscale_Denoise_CNN_x2_L.wgsl`, `Anime4K_Upscale_Denoise_CNN_x2_UL.wgsl` | Anime4K v3.2's Upscale+Denoise CNN x2 networks, on the PRESCALE stage when the output is more than 1.2 times the source on each axis |
+| `nis` | `NVScaler.wgsl`, `NVSharpen.wgsl` | NVIDIA Image Scaling v1.0.2, a vendor-neutral spatial scaler with sharpening, on the LUMA plane: the scaler when the output is larger than the luma plane, the sharpener when they match |
 
 Every pass file keeps the rules that `test/presentation/passes/PostprocessingPasses.test.ts` checks: each pass parses, defines its shape's entry point, reads exactly the parameters it declares, reads each input through its accessors, and reaches engine data only through the presentation globals.
 The presenter, manifest, and pipeline graph tests run the four simple passes as well.
@@ -43,4 +44,22 @@ To regenerate them, run from the engine root:
 ```sh
 python wgpup/anime4k/generate_anime4k_wgsl.py wgpup/anime4k/glsl/Anime4K_Upscale_Denoise_CNN_x2_L.glsl wgpup/anime4k/Anime4K_Upscale_Denoise_CNN_x2_L.wgsl
 python wgpup/anime4k/generate_anime4k_wgsl_chain.py wgpup/anime4k/glsl/Anime4K_Upscale_Denoise_CNN_x2_UL.glsl wgpup/anime4k/Anime4K_Upscale_Denoise_CNN_x2_UL.wgsl
+```
+
+## NIS
+
+`wgpup/nis/glsl/` holds agyild's mpv port of NVIDIA Image Scaling v1.0.2, `NVScaler.glsl` and `NVSharpen.glsl`, copied unmodified, CRLF line endings included, from [the port's gist](https://gist.github.com/agyild/7e8951915b2bf24526a9343d951db214) at revision `05f00864228871ffd157daa9beb2db8fa7412cfa`.
+`.gitattributes` keeps those files and `wgpup/licenses/NIS-LICENSE` byte for byte, so their SHA-256, which `PROVENANCE.txt` lists and the pass tests check, stays upstream's.
+`NIS-LICENSE` is the MIT license of [NVIDIAGameWorks/NVIDIAImageScaling](https://github.com/NVIDIAGameWorks/NVIDIAImageScaling) at commit `35e13ba316c98eeecf16f37eae70ce88019911f6`, which the port's headers carry.
+
+- The port's scaler writes 32x24 output pixels per workgroup with 21776 bytes of workgroup storage, more than the 16384 bytes WebGPU guarantees.
+  `generate_nis_wgsl.py` converts it at a 32x16 block, 16208 bytes, where each of its 256 threads still writes two pixels; it changes the block height and the `COMPUTE` directive in memory and leaves the upstream file alone.
+- The sharpener fits as it is, so `tools/convert_mpv_shader.py` converts it directly.
+- The converter tests regenerate both passes and require the committed files, so a converter change that alters them shows up there.
+
+To regenerate them, run from the engine root, with naga-cli 30.0.1 installed (see [Migrate an mpv shader to a wgpup](mpv-shaders.md)):
+
+```sh
+python wgpup/nis/generate_nis_wgsl.py wgpup/nis/glsl/NVScaler.glsl wgpup/nis/NVScaler.wgsl
+python tools/convert_mpv_shader.py wgpup/nis/glsl/NVSharpen.glsl wgpup/nis/NVSharpen.wgsl
 ```

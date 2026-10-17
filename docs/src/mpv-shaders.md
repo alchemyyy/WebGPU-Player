@@ -155,6 +155,7 @@ The converter rewrites them without moving any line, so naga's line numbers stil
 ## Limits
 
 - A `BUFFER` block does not convert, since a pass cannot declare buffers.
-- A compute pass runs within WebGPU's default limits, 256 invocations per workgroup and 16 KiB of workgroup storage, so NVScaler, which needs 21776 bytes, does not convert.
+- A compute pass runs within WebGPU's default limits, 256 invocations per workgroup and 16 KiB of workgroup storage, so NVScaler, which needs 21776 bytes, does not convert as it is.
+  A shader whose block size sets its shared memory can fit by a smaller block, as the `nis` project's generator converts NVScaler (see [Bundled passes](bundled-passes.md#nis)).
 - A converted pass runs as mpv ran it, pass for pass.
   A generator that fuses a network into fewer passes, as the Anime4K project's do (see [Bundled passes](bundled-passes.md#anime4k)), can go further than the converter.

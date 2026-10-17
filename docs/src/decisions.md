@@ -867,6 +867,9 @@ These were settled on Firefox 157 on Windows.
   71 user shaders were checked in development: Anime4K's, bjin's ravu and nnedi3 variants, FSRCNNX, KrigBilateral, SSimSuperRes, SSimDownscaler, adaptive-sharpen, FSR, CAS, NIS, and SGSR, then the Chroma from Luma prediction shaders.
   70 of the 71 converted, as did both Chroma from Luma shaders, and all of their passes planned and compiled under naga in the planner's modules on the raw, frame-pool, external, and deinterlacing routes; NVScaler's shared memory exceeds the limits below.
   ravu-zoom converted once `TEXTURE` blocks became texture blocks of the pass file.
+- The engine keeps WebGPU's default compute limits, and a shader that exceeds them is modified to fit (10-16).
+  Requesting an adapter's larger limits would make a pass run on some devices and not others, so the `nis` project converts NVScaler at a 32x16 block instead of 32x24, which takes 16208 bytes of workgroup storage instead of 21776 and keeps every thread's work otherwise as the port wrote it.
+  The upstream files stay unmodified, and the generator changes the two lines in memory.
 - Plane passes run on the signal's planes (10-16).
   mpv's `LUMA`, `CHROMA`, and `NATIVE` hooks see the decoded planes before conversion, which only the signal step reads, so the spine starts with plane stages of those names, and the converter maps the hooks onto them.
   Deriving planes from the RGB image, as the converter first did, gave `CHROMA` the image's size, so a chroma upscaler, whose `WHEN` asks for subsampled chroma, never ran, and it could not read native chroma anyway.
