@@ -258,12 +258,13 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
   The end also completes a start or audio resync that has no PCM left to wait for.
   A native-media session sends `endOfStream`, so `<audio>` plays out, and the clock then runs without the element.
 - Generation handoff: the session's worker runs one generation at a time, and every run posts `stopped` last.
-  A new `start` goes out only after the previous run acknowledged `stopped`, or after the session replaced a worker whose run did not acknowledge within 1 s.
-  The worker also starts a run only after the previous one posted `stopped`, because a stopping run releases its decoders and audio attempts first.
-  A run's `stopped` also waits until the audio decode worker released the run's decoded PCM attempts.
-  A worker is replaced, never reused, after a generation fails, a message fails validation, the worker crashes, or a run's `stopped` asks for it with `replaceWorker`; a start on another video decoder backend also gets a new worker.
-  A lost audio decode worker fails its run's decoded PCM as `audio-output-failed`, and the run's `stopped` asks for replacement.
-- Stop: `controller.destroy` stops the generation (its run has 1 s to acknowledge), terminates the decode worker and with it its audio decode worker, releases the worklet and the sink lease (1.5 s cap), and ends the presenter session.
+  A new `start` goes out right behind the previous run's `stop`, and the worker starts it at once, while the stopped run unwinds beside it; `session.stop()` does not wait for `stopped` either.
+  A stop closes the run's decoders and audio attempt and cancels its reads, and the next run's parser pipeline replaces the stopped run's on the coordinator worker, so the next run never waits on the stopped one.
+  A run's `stopped` waits until the audio decode worker released the run's decoded PCM attempts, and the page drops a retired run's frames, packets, and audio as stale.
+  A worker is replaced, never reused, after a generation fails, a message fails validation, or the worker crashes; a start on another video decoder backend also gets a new worker.
+  A retired run that does not post `stopped` within 10 s, or a retired run's failure, replaces the worker at the next start, and such a worker terminates once it holds no run; a start that would leave more than 4 retired runs unwinding in the worker takes a new one.
+  A lost audio decode worker fails its run's decoded PCM as `audio-output-failed`, and the decode worker spawns another for its next run.
+- Stop: `controller.destroy` stops the generation, terminates the decode worker and with it its audio decode worker and the runs still unwinding in it, releases the worklet and the sink lease (1.5 s cap), and ends the presenter session.
 
 ## Fallback and renegotiation
 
@@ -299,7 +300,7 @@ Every stale callback is dropped by a generation or revision check:
 - Worker track indices are container ordinals, not Jellyfin `MediaStream.Index`.
 - Every seek, audio switch, and paused repaint starts a new run in the session's worker, and each run opens its input again, over the last run's URL source when it reads the same URL (`demux/URLSourceRetention.ts`).
   The source keeps its cache, the container's header and index pinned in it, and its open responses, so a seek reads the header and index from memory and reads on near where the last run stopped.
-  A run's stop cancels the reads its input still waits for; a failed run's source, or one no run takes within 5 s, is released.
+  A run's stop cancels the reads its input still waits for; a failed run's source, or one no run takes within 5 s, is released, and only by the run that took it last.
   After the first preparation over a source, its read-ahead holds 5 s of media and its cache 15 s, at the media's size over its duration, within 8 to 64 MiB and 32 to 192 MiB; a file's cache stays 32 MiB.
 - Decoded PCM gain (volume cubed times normalization) is applied after the limiter and is not capped, so a boost can clip; clipping is counted.
   The native-media route caps gain at 1.

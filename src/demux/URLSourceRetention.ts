@@ -49,21 +49,23 @@ export function getURLSourceBufferSizes(sizeBytes: number, durationMicroseconds:
 /**
  * Keeps the last run's URL source, with its cache, its file size, and its open responses, for the next run over the same media.
  * A seek starts a new run, which then reads the container's header and index from the cache and reads on near where the last run stopped.
+ * Runs overlap, a stopped run unwinding beside the next, so the run that acquired the source last decides its release.
  */
 export class URLSourceRetention {
+    // The run that acquired the retained source last
+    private holder: object | null = null;
     private releaseTimer: ReturnType<typeof setTimeout> | null = null;
     private retained: RetainedURLSource | null = null;
 
-    /** Returns the retained source when it reads the same media, else releases it and retains a new one. */
-    public acquire(key: string, createSource: () => UrlSource): UrlSource {
+    /** Returns the retained source to a run when it reads the same media, else releases it and retains a new one. */
+    public acquire(key: string, createSource: () => UrlSource, holder: object): UrlSource {
         this.cancelRelease();
-        if (this.retained?.key === key) {
-            return this.retained.reference.source;
+        if (this.retained?.key !== key) {
+            this.release();
+            this.retained = { key, reference: createSource().ref(), settled: false };
         }
-        this.release();
-        const reference = createSource().ref();
-        this.retained = { key, reference, settled: false };
-        return reference.source;
+        this.holder = holder;
+        return this.retained.reference.source;
     }
 
     /**
@@ -86,8 +88,18 @@ export class URLSourceRetention {
         source.setMaxCacheSize(bufferSizes.maximumCacheBytes);
     }
 
-    /** Releases the retained source unless a run acquires it within the release delay. */
-    public releaseLater(): void {
+    /**
+     * Releases the retained source after a run over it ended: at once when the run failed, since the source may hold the failure, else unless a run
+     * acquires it within the release delay. A run another run acquired the source after leaves it to that run.
+     */
+    public releaseAfterRun(holder: object, failed: boolean): void {
+        if (holder !== this.holder) {
+            return;
+        }
+        if (failed) {
+            this.release();
+            return;
+        }
         if (!this.retained || this.releaseTimer !== null) {
             return;
         }
@@ -102,6 +114,7 @@ export class URLSourceRetention {
         this.cancelRelease();
         const retained = this.retained;
         this.retained = null;
+        this.holder = null;
         retained?.reference.free();
     }
 

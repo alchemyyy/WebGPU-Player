@@ -133,8 +133,6 @@ function createAudioOutputAttachment(channelCount: number, audioSampleCredits = 
 const UNTARGETED_DISPLAY_LUMINANCE_NITS = 0;
 
 const STOPPED_RUN_GENERATION = 3;
-// Replacement is a yes-or-no request, so any other value is malformed
-const MALFORMED_REPLACE_WORKER_VALUE = 'yes';
 
 // A 2160p HEVC Main 10 track on the frame-pool route, whose pool rounds 2160 up to whole 64-pixel blocks
 const GPU_VIDEO_CODEC = 'hevc';
@@ -1223,15 +1221,8 @@ describe('DecodeWorkerProtocol', () => {
         })).toBe(false);
     });
 
-    it('accepts a stopped run that asks for its worker to be replaced only with a boolean request', () => {
+    it('accepts a stopped run by its generation', () => {
         expect(isDecodeWorkerResponse({ generation: STOPPED_RUN_GENERATION, type: 'stopped' })).toBe(true);
-        expect(isDecodeWorkerResponse({ generation: STOPPED_RUN_GENERATION, replaceWorker: true, type: 'stopped' })).toBe(true);
-        expect(isDecodeWorkerResponse({ generation: STOPPED_RUN_GENERATION, replaceWorker: false, type: 'stopped' })).toBe(true);
-        expect(isDecodeWorkerResponse({
-            generation: STOPPED_RUN_GENERATION,
-            replaceWorker: MALFORMED_REPLACE_WORKER_VALUE,
-            type: 'stopped'
-        })).toBe(false);
     });
 
     it('validates bounded optional static HDR metadata', () => {

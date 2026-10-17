@@ -21,6 +21,7 @@ import {
 } from '../helpers/decodedAudioMedia';
 import {
     createWorkerStartRequest,
+    decodeToEnd,
     startDecodeWorker,
     type FakeWorkerScope
 } from '../helpers/decodeWorkerHarness';
@@ -228,6 +229,40 @@ describe('the playback worker feeding the AudioWorklet directly', () => {
         });
     });
 
+    it('runs the next generation to its end while a stopped run still waits for its audio attempt to close', async () => {
+        const workerScope = await startWorker();
+        await startRun(workerScope);
+        const { attachment, processor } = openChannel({
+            audioSampleCredits: HELD_AUDIO_SAMPLE_CREDITS,
+            channelCount: DECODED_AUDIO_MEDIA_CHANNEL_COUNT,
+            holdReleases: true,
+            workletGeneration: WORKLET_GENERATION
+        });
+        attachAudioOutput(workerScope, attachment);
+        await vi.waitFor(() => {
+            expect(processor.chunks).toHaveLength(HELD_AUDIO_SAMPLE_CREDITS);
+        });
+        // The audio decode worker's answers wait, so the stopped run cannot finish unwinding
+        const [ audioDecodeWorker ] = InProcessAudioDecodeWorker.instances;
+        const deliverResponse = audioDecodeWorker.onmessage;
+        const heldResponses: Array<MessageEvent<unknown>> = [];
+        audioDecodeWorker.onmessage = (event: MessageEvent<unknown>): void => {
+            heldResponses.push(event);
+        };
+
+        workerScope.dispatchRequest({ generation: GENERATION, type: 'stop' });
+        // A seek's next run starts at once; without decoded audio it needs nothing the held worker owes
+        await decodeToEnd(workerScope, createWorkerStartRequest(DECODED_AUDIO_MEDIA_FILE_NAME, { generation: NEXT_GENERATION }));
+        expect(workerScope.responses).not.toContainEqual({ generation: GENERATION, type: 'stopped' });
+
+        audioDecodeWorker.onmessage = deliverResponse;
+        for (const heldResponse of heldResponses.splice(0)) {
+            deliverResponse?.(heldResponse);
+        }
+        await expect(workerScope.waitForStopped(GENERATION)).resolves.toEqual({ generation: GENERATION, type: 'stopped' });
+        expect(workerScope.responses.map(response => response.type)).not.toContain('error');
+    });
+
     it('restarts decoded audio in a new layout on the new worklet channel a resync carries, and closes the replaced one', async () => {
         const workerScope = await startWorker();
         await startRun(workerScope);
@@ -347,12 +382,12 @@ describe('the playback worker feeding the AudioWorklet directly', () => {
         expect(workerScope.responses.map(response => response.type)).not.toContain('error');
     });
 
-    it('fails a decoded PCM run as an audio output failure when its audio decode worker is lost, and asks for a fresh worker', async () => {
+    it('fails a decoded PCM run as an audio output failure when its audio decode worker is lost, and spawns another for the next run', async () => {
         const workerScope = await startWorker();
         await startRun(workerScope);
-        const [ audioDecodeWorker ] = InProcessAudioDecodeWorker.instances;
+        const [ lostAudioDecodeWorker ] = InProcessAudioDecodeWorker.instances;
 
-        audioDecodeWorker.onerror?.({ message: LOST_WORKER_MESSAGE } as ErrorEvent);
+        lostAudioDecodeWorker.onerror?.({ message: LOST_WORKER_MESSAGE } as ErrorEvent);
 
         await expect(workerScope.waitForResponse(response => response.type === 'error')).resolves.toEqual({
             failureKind: 'audio-output-failed',
@@ -360,11 +395,20 @@ describe('the playback worker feeding the AudioWorklet directly', () => {
             message: LOST_WORKER_FAILURE,
             type: 'error'
         });
-        await expect(workerScope.waitForStopped(GENERATION)).resolves.toEqual({
-            generation: GENERATION,
-            replaceWorker: true,
-            type: 'stopped'
+        await expect(workerScope.waitForStopped(GENERATION)).resolves.toEqual({ generation: GENERATION, type: 'stopped' });
+        expect(lostAudioDecodeWorker.terminated).toBe(true);
+
+        // The page may start the next run before the lost one's `stopped`, so the playback worker heals rather than asking for its own replacement
+        await startRun(workerScope, NEXT_GENERATION);
+        const { attachment, processor } = openChannel({
+            audioSampleCredits: AUDIO_SAMPLE_CREDITS,
+            channelCount: DECODED_AUDIO_MEDIA_CHANNEL_COUNT,
+            workletGeneration: WORKLET_GENERATION
         });
-        expect(audioDecodeWorker.terminated).toBe(true);
+        attachAudioOutput(workerScope, attachment, INITIAL_AUDIO_EPOCH, NEXT_GENERATION);
+        await workerScope.waitForStopped(NEXT_GENERATION);
+        await waitForFrames(processor, DECODED_AUDIO_MEDIA_FRAME_COUNT);
+        expect(InProcessAudioDecodeWorker.instances).toHaveLength(2);
+        expect(InProcessAudioDecodeWorker.instances[1].terminated).toBe(false);
     });
 });

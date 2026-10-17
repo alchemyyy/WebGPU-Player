@@ -62,7 +62,7 @@ describe('the playback worker across generations', () => {
         expect(FakeVideoDecoder.instances.map(decoder => decoder.state)).toEqual([ 'closed', 'closed' ]);
     });
 
-    it('starts a superseding generation only after the replaced run posted stopped', async () => {
+    it('stops a running generation that a start supersedes, which then posts only its stopped beside the next run', async () => {
         const workerScope = await startDecodeWorker(MEDIA_FILES);
         const firstRunReady = workerScope.waitForResponse(
             response => response.type === 'ready' && response.generation === FIRST_RUN_GENERATION
@@ -72,20 +72,21 @@ describe('the playback worker across generations', () => {
         }));
         await firstRunReady;
 
-        // The next start arrives while the first run decodes, without a stop
-        await decodeToEnd(workerScope, createWorkerStartRequest(LIFECYCLE_VECTOR.fileName, {
+        // The next start arrives while the first run decodes, without a stop, and runs while the first one unwinds
+        workerScope.dispatchRequest(createWorkerStartRequest(LIFECYCLE_VECTOR.fileName, {
             generation: SECOND_RUN_GENERATION
         }));
+        await workerScope.waitForStopped(SECOND_RUN_GENERATION);
+        await workerScope.waitForStopped(FIRST_RUN_GENERATION);
 
         const responses = workerScope.responses;
+        expect(responses.map(response => response.type)).not.toContain('error');
+        expect(getResponseTypes(responses, SECOND_RUN_GENERATION).slice(-2)).toEqual([ 'ended', 'stopped' ]);
         const firstRunResponseTypes = getResponseTypes(responses, FIRST_RUN_GENERATION);
         expect(firstRunResponseTypes).not.toContain('ended');
         expect(firstRunResponseTypes.filter(responseType => responseType === 'stopped')).toHaveLength(1);
-        const firstRunStoppedIndex = responses.findIndex(
-            response => response.type === 'stopped' && response.generation === FIRST_RUN_GENERATION
-        );
-        const secondRunFirstResponseIndex = responses.findIndex(response => response.generation === SECOND_RUN_GENERATION);
-        expect(secondRunFirstResponseIndex).toBeGreaterThan(firstRunStoppedIndex);
+        // Neither run leaves a decoder open
+        expect(FakeVideoDecoder.instances.every(decoder => decoder.state === 'closed')).toBe(true);
     });
 
     it('posts only stopped for a run replaced before it began', async () => {

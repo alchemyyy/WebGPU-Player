@@ -401,11 +401,11 @@ class UnsupportedCustomDecodeSourceError extends Error {
 }
 
 const workerScope = self as unknown as WorkerScope;
-// The run that control requests address; a run replaced here still unwinds before the next one starts
+// The run that control requests address; a run replaced here unwinds beside it until it posts `stopped`
 let currentRun: DecodeRun | null = null;
-// Settles once the latest run has posted `stopped`, so runs never overlap in this worker
-let previousRunCompletion: Promise<void> = Promise.resolve();
-// The audio decode worker this worker spawns for its first decoded PCM run and keeps for every later one; a lost one asks for this worker's replacement
+// The run whose timing trace buffers this worker's events, which only that run's end stops
+let timingTraceRun: DecodeRun | null = null;
+// The audio decode worker this worker spawns for its first decoded PCM run and keeps for every later one; a lost one is spawned again for the next run
 let audioDecodeWorkerClient: AudioDecodeWorkerClient | null = null;
 // The last run's URL source, which the next run over the same media reads on
 const urlSourceRetention = new URLSourceRetention();
@@ -512,7 +512,7 @@ function openMediaSource(run: DecodeRun, source: CustomDecodeMediaSource): Sourc
                 getRetryDelay,
                 maxCacheSize: MEDIA_SOURCE_CACHE_BYTES,
                 parallelism: URL_SOURCE_PARALLELISM
-            }));
+            }), run);
             return run.urlSource;
         }
     }
@@ -3683,18 +3683,19 @@ async function prepareRunTracks(
 
 /**
  * Runs one generation from its start to its `stopped`, which always comes last.
- * The worker outlives the run: everything the run opened is released before `stopped`, and the next run starts only after it.
+ * The worker outlives the run: everything the run opened is released before `stopped`, and the next run may start before it, beside the unwinding run.
  */
 async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest, { type: 'start' }>): Promise<void> {
     let reportDecodeStreamFailure = false;
     let failed = false;
     if (request.timingTrace === true && !run.cancelled) {
+        timingTraceRun = run;
         startWorkerTimingTrace((events): void => {
             postResponse({ events, generation: run.generation, type: 'timing-trace' });
         });
     }
     try {
-        // A run stopped while its predecessor unwound never opens its input
+        // A run stopped before it began never opens its input
         if (run.cancelled) {
             return;
         }
@@ -3742,12 +3743,8 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
         }
     } finally {
         stopRun(run);
-        // A failed run's source may hold the failure, so no later run reads on it
-        if (failed) {
-            urlSourceRetention.release();
-        } else {
-            urlSourceRetention.releaseLater();
-        }
+        // A failed run's source may hold the failure, so no later run reads on it; a run that acquired it since keeps it either way
+        urlSourceRetention.releaseAfterRun(run, failed);
         // A parser pipeline no attempt took ends with the run
         takePreparedGPUDecodeParser(run)?.close();
         if (run.iteratorRetirementPromise) {
@@ -3758,19 +3755,13 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
         if (currentRun === run) {
             currentRun = null;
         }
-        // The page drops a retired run's messages once it stops, so its last timing events go first
-        stopWorkerTimingTrace();
-        postResponse({
-            generation: run.generation,
-            ...(isWorkerReplacementRequired() ? { replaceWorker: true } : {}),
-            type: 'stopped'
-        });
+        // The page drops a retired run's messages once it stops, so its last timing events go first; a later run's trace is that run's to stop
+        if (timingTraceRun === run) {
+            timingTraceRun = null;
+            stopWorkerTimingTrace();
+        }
+        postResponse({ generation: run.generation, type: 'stopped' });
     }
-}
-
-/** Whether the audio decode worker was lost, so a fresh worker serves the next run. */
-function isWorkerReplacementRequired(): boolean {
-    return audioDecodeWorkerClient !== null && audioDecodeWorkerClient.failure !== null;
 }
 
 function createDecodeRun(request: Extract<DecodeWorkerRequest, { type: 'start' }>): DecodeRun {
@@ -3896,10 +3887,17 @@ function updateAudioDownmixSettings(request: Extract<DecodeWorkerRequest, { type
     audioDecodeWorkerClient?.updateDownmixSettings(request.generation, request.audioDownmixSettings);
 }
 
-/** Replaces the current run with a new generation's, which starts once the previous run posted `stopped`. */
+/**
+ * Replaces the current run with a new generation's, which starts at once while the replaced run unwinds beside it.
+ * Stopping a run closes its decoders and its audio attempt and cancels its reads, so nothing the new run needs waits for the replaced run's `stopped`.
+ */
 function startDecodeRun(request: Extract<DecodeWorkerRequest, { type: 'start' }>): void {
     if (currentRun) {
         stopRun(currentRun);
+    }
+    // A lost audio decode worker failed the attempts it served, and the new run spawns another, since the page sends it without waiting for any `stopped`
+    if (audioDecodeWorkerClient !== null && audioDecodeWorkerClient.failure !== null) {
+        audioDecodeWorkerClient = null;
     }
     if (request.audioTrackIndex !== null && (request.audioOutputMode ?? 'decoded-pcm') === 'decoded-pcm') {
         // Its script loads while the run opens its input
@@ -3908,9 +3906,8 @@ function startDecodeRun(request: Extract<DecodeWorkerRequest, { type: 'start' }>
 
     const run = createDecodeRun(request);
     currentRun = run;
-    // A stopping run releases its decoders and audio attempts first, so the next run starts only once it posted `stopped`
-    const startRun = (): Promise<void> => decodeMedia(run, request);
-    previousRunCompletion = previousRunCompletion.then(startRun, startRun);
+    // The run begins once this request's handling returns, so a request handled in the same task, such as another start, cancels it before it opens its input
+    void Promise.resolve().then((): Promise<void> => decodeMedia(run, request));
 }
 
 function handleRequest(requestValue: unknown): void {

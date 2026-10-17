@@ -87,11 +87,11 @@ describe('getURLSourceBufferSizes', () => {
 describe('URLSourceRetention', () => {
     it('hands the retained source to a run over the same media, and releases it for other media', () => {
         const retention = new URLSourceRetention();
-        const firstSource = retention.acquire(FIRST_MEDIA_URL, createFirstSource);
+        const firstSource = retention.acquire(FIRST_MEDIA_URL, createFirstSource, {});
 
-        expect(retention.acquire(FIRST_MEDIA_URL, createFirstSource)).toBe(firstSource);
+        expect(retention.acquire(FIRST_MEDIA_URL, createFirstSource, {})).toBe(firstSource);
 
-        const secondSource = retention.acquire(SECOND_MEDIA_URL, createSecondSource);
+        const secondSource = retention.acquire(SECOND_MEDIA_URL, createSecondSource, {});
 
         expect(secondSource).not.toBe(firstSource);
         expect(isLive(firstSource)).toBe(false);
@@ -103,23 +103,54 @@ describe('URLSourceRetention', () => {
     it('keeps a stopped run\'s source for a run that acquires it within the delay, and releases it once none does', () => {
         vi.useFakeTimers();
         const retention = new URLSourceRetention();
-        const source = retention.acquire(FIRST_MEDIA_URL, createFirstSource);
+        const firstRun = {};
+        const secondRun = {};
+        const source = retention.acquire(FIRST_MEDIA_URL, createFirstSource, firstRun);
 
-        retention.releaseLater();
+        retention.releaseAfterRun(firstRun, false);
         vi.advanceTimersByTime(URL_SOURCE_RELEASE_DELAY_MILLISECONDS - 1);
-        expect(retention.acquire(FIRST_MEDIA_URL, createFirstSource)).toBe(source);
+        expect(retention.acquire(FIRST_MEDIA_URL, createFirstSource, secondRun)).toBe(source);
         // The acquisition canceled the release
         vi.advanceTimersByTime(URL_SOURCE_RELEASE_DELAY_MILLISECONDS);
         expect(isLive(source)).toBe(true);
 
-        retention.releaseLater();
+        retention.releaseAfterRun(secondRun, false);
+        vi.advanceTimersByTime(URL_SOURCE_RELEASE_DELAY_MILLISECONDS);
+        expect(isLive(source)).toBe(false);
+    });
+
+    it('releases a failed run\'s source at once', () => {
+        const retention = new URLSourceRetention();
+        const run = {};
+        const source = retention.acquire(FIRST_MEDIA_URL, createFirstSource, run);
+
+        retention.releaseAfterRun(run, true);
+
+        expect(isLive(source)).toBe(false);
+    });
+
+    it('leaves the source to the run that acquired it last when an earlier run ends beside it', () => {
+        vi.useFakeTimers();
+        const retention = new URLSourceRetention();
+        const stoppedRun = {};
+        const nextRun = {};
+        const source = retention.acquire(FIRST_MEDIA_URL, createFirstSource, stoppedRun);
+        expect(retention.acquire(FIRST_MEDIA_URL, createFirstSource, nextRun)).toBe(source);
+
+        // The stopped run unwinds after the next run took the source, and even its failure leaves the source alone
+        retention.releaseAfterRun(stoppedRun, false);
+        retention.releaseAfterRun(stoppedRun, true);
+        vi.advanceTimersByTime(URL_SOURCE_RELEASE_DELAY_MILLISECONDS);
+        expect(isLive(source)).toBe(true);
+
+        retention.releaseAfterRun(nextRun, false);
         vi.advanceTimersByTime(URL_SOURCE_RELEASE_DELAY_MILLISECONDS);
         expect(isLive(source)).toBe(false);
     });
 
     it('keeps a source an input still reads until the input lets go of it', () => {
         const retention = new URLSourceRetention();
-        const source = retention.acquire(FIRST_MEDIA_URL, createFirstSource);
+        const source = retention.acquire(FIRST_MEDIA_URL, createFirstSource, {});
         // As an input holds its source
         const inputReference = source.ref();
 
@@ -131,7 +162,7 @@ describe('URLSourceRetention', () => {
 
     it('pins and sizes the source once, after the first preparation over it', async () => {
         const retention = new URLSourceRetention();
-        const source = retention.acquire(FIRST_MEDIA_URL, createFirstSource);
+        const source = retention.acquire(FIRST_MEDIA_URL, createFirstSource, {});
         const pinCache = vi.spyOn(source, 'pinCache');
         vi.spyOn(source, 'getSizeOrNull').mockResolvedValue(getFeatureSizeBytes(ULTRA_HD_MEGABITS));
         const setReadAhead = vi.spyOn(source, 'setReadAhead');
@@ -148,7 +179,7 @@ describe('URLSourceRetention', () => {
 
     it('keeps the sizes without a duration, and settles no source it does not retain', async () => {
         const retention = new URLSourceRetention();
-        const source = retention.acquire(FIRST_MEDIA_URL, createFirstSource);
+        const source = retention.acquire(FIRST_MEDIA_URL, createFirstSource, {});
         const otherSource = createSecondSource();
         const pinCache = vi.spyOn(source, 'pinCache');
         const otherPinCache = vi.spyOn(otherSource, 'pinCache');

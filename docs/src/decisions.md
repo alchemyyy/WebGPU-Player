@@ -665,11 +665,13 @@ These were settled on Firefox 157 on Windows.
 - One decode worker per session (10-09).
   Every generation, which every seek, audio track switch, and paused repaint starts, used to create its own worker and paid worker startup, script evaluation, and WASM decoder instantiation each time.
   The session now creates its worker at the first start, runs every generation in it, and terminates it only on `destroy`.
-  Runs never overlap: the session sends a `start` only after the previous run acknowledged `stopped`, and the worker starts a run only after the previous one posted it.
-  An overlap stalled the handoff while the bundled HEVC decoders lived, because a stopping run waited for every one in its worker, the next run's included, before it acknowledged; runs still never overlap, because a stopping run releases its decoders and audio attempts first (10-13).
-  A worker is replaced rather than reused after a generation fails, a message fails validation, the worker crashes, or a retired run does not acknowledge within the 1 s stop bound.
-  It is also replaced when a run's `stopped` carries `replaceWorker`, which the worker sets once it suppressed the rejection of a custom decoder that Mediabunny left open.
-  Since the fork closes such a decoder (10-16), the worker sets `replaceWorker` only once its audio decode worker was lost.
+  Runs overlap since 10-16: the session posts the next `start` right behind the previous run's `stop`, and the worker starts it at once while the stopped run unwinds beside it.
+  Before, a start waited for the previous run's `stopped`, and a run that did not post it within 1 s had its worker replaced, so a seek paid the wait, then a cold worker and a lost URL source; contention in the field held an unwinding run past that bound now and then.
+  The wait came from the bundled HEVC decoders, whose stopping run waited for every one in its worker, the next run's included (10-13).
+  Without them, a stop closes the run's decoders and audio attempt and cancels its reads at once, and the next run's parser pipeline replaces the stopped run's on the shared coordinator, so nothing the next run needs waits for the stopped run's `stopped`.
+  A retired run has 10 s to post `stopped`; past that the session warns and replaces the worker at the next start, and a start that would leave more than 4 retired runs unwinding in one worker takes a new one.
+  A worker is replaced rather than reused after a generation fails, a message fails validation, or the worker crashes; a retired run's failure leaves the running generation in place and replaces the worker at the next start.
+  A lost audio decode worker no longer asks for the decode worker's replacement, since the next run may start before the lost one's `stopped`; the decode worker spawns another for that run instead, and `stopped` lost its `replaceWorker` field.
   A start on another video decoder backend gets a new worker too, because Mediabunny kept a decoder registration, such as the bundled HEVC adapter that `canDecode()` consulted, for the worker's life; since the CPU decoders left (10-13), the new worker keeps what one backend set up, such as a package parser's workers, from outliving it.
   Each run still opens its own input, so the read cache does not outlive a seek; since 10-16 a URL source does (below).
   After a run ends on its own, its generation stays current while the worker idles, so a native-media element that plays out after decode still ends the session.
@@ -690,6 +692,7 @@ These were settled on Firefox 157 on Windows.
   Mediabunny's prefetch reached at most 8 MiB past a read, under a second of a 70 Mbit/s remux, and it aborted each response at its target, so the next read paid a new request and a TCP slow start.
   The fork's `UrlSource` keeps a response open for 4 s at its target, where a sequential reader extends it, keeps a set read-ahead past the latest read, pins what it cached outside its cache budget, and cancels waiting reads (branch `v2-url-source-read-ahead`).
   The worker keeps the last run's source for the next run over the same URL and pattern, cancels its waiting reads when a run stops, and releases it when a run fails, when a run opens other media, or when no run takes it within 5 s.
+  Since runs overlap, only the run that took the source last decides its release, so a stopped run that ends after the next one took the source leaves it be.
   After the first preparation over a source, the worker pins its cache, the container's header and index among it, and sizes its read-ahead to 5 s of media and its cache to 15 s, at the media's size over the server's duration, else the container's, within 8 to 64 MiB and 32 to 192 MiB.
   The server's duration reaches the worker in the start request, whose absence asks for the container's in the ready response.
   Each run still opens its own input, because a canceled read rejects promises a kept demuxer could have memoized.
@@ -849,7 +852,7 @@ These were settled on Firefox 157 on Windows.
   4 batches are in flight, and each returns its credit once rendered under the producer's window, so demux runs at most a few batches ahead.
   Progress, the decoded format, an attempt's end, and failures return through the worker, which keeps their order with `audio-ended` and `stopped` on its one channel to the page.
   A run's `stopped` waits until the audio decode worker released the run's attempts.
-  Failures keep their kinds, and a lost audio decode worker fails the run as `audio-output-failed`, which falls back to HTML in the same session, and asks for a fresh worker.
+  Failures keep their kinds, and a lost audio decode worker fails the run as `audio-output-failed`, which falls back to HTML in the same session; the next decoded PCM run spawns another.
   Mediabunny's own decoding stays in the worker: WebCodecs decodes off the worker's thread anyway, and `@mediabunny/ac3` exposed only its Mediabunny registration until AC-3 became a package codec (10-13).
 - Audio decoders are packages (10-13).
   The E-AC-3 and AC-3, TrueHD and MLP, and DTS decoders left the engine and became decoder projects (`eac3`, `truehd`, and `dts` in `wgpud/`), which build packages a host supplies; `@mediabunny/ac3` left too.

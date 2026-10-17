@@ -86,7 +86,10 @@ import type {
     StaticHDRMetadataScanStatus
 } from '../demux/hdr/StaticHDRMetadata';
 
-const WORKER_STOP_TIMEOUT_MILLISECONDS = 1_000;
+// How long a retired run may unwind before its worker counts as stuck; the run unwinds beside the next generation's, so the bound holds up no start
+const RETIRED_RUN_STOP_TIMEOUT_MILLISECONDS = 10_000;
+// The retired runs one worker may unwind beside its running one; a start that would leave more takes a fresh worker instead
+const MAXIMUM_RETIRING_RUNS = 4;
 const MINIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS = 100_000;
 const FRAME_QUEUE_BOUND_FAILURE = 'The custom decode frame queue exceeded its bound';
 const UNEXPECTED_FRAME_OUTPUT_MODE_FAILURE = 'The custom decode worker returned an unexpected video output mode';
@@ -245,18 +248,18 @@ type QueuedFrame = {
     presentationFrame: DecodedPresentationFrame
 };
 
-/** The session's decode worker, which runs one generation at a time and outlives each of them. */
+/** The session's decode worker, which runs one generation at a time beside the stopped runs still unwinding, and outlives each of them. */
 type WorkerRecord = {
     errorHandler: (event: ErrorEvent) => void
     /** A generation's start already reached the worker */
     hasRunGeneration: boolean
     messageHandler: (event: MessageEvent<unknown>) => void
-    /** Runs no further generation: a run failed or broke the protocol, or the worker asked for it */
+    /** Runs no further generation: a run failed, broke the protocol, or stayed unacknowledged */
     replacementRequired: boolean
-    /** The generation whose run the worker holds until it posts `stopped`; null while it is idle */
+    /** The generations the session asked to stop whose runs still unwind beside the running one, each until its `stopped` or its bound */
+    retiringGenerations: Set<GenerationRecord>
+    /** The generation whose run the worker holds until the session stops it or it posts `stopped`; null while no run is current */
     runningGeneration: GenerationRecord | null
-    /** Bounds the acknowledgement of a run the session asked to stop */
-    stopTimer: ReturnType<typeof globalThis.setTimeout> | null
     terminated: boolean
     /** Another backend gets a new worker, so nothing one backend set up in a worker, such as a package parser's workers, outlives it */
     videoDecoderBackend: CustomDecodeVideoDecoderBackend
@@ -290,13 +293,12 @@ type GenerationRecord = {
     nativeAudioElementEnded: boolean
     nativeAudioEndOfStreamAccepted: boolean
     nativeAudioEndOfStreamRequested: boolean
-    resolveRetirement: () => void
-    /** Settles once the run posted `stopped` or its worker was terminated */
-    retirementPromise: Promise<void>
     /** The run is over, or its start never reached a worker */
     runStopped: boolean
     startRequest: DecodeWorkerStartRequest
     startTimeMicroseconds: Microseconds
+    /** Bounds the acknowledgement of the run once the session asked it to stop */
+    stopTimer: ReturnType<typeof globalThis.setTimeout> | null
     /** The session posted `stop` for the run */
     stopRequested: boolean
     durationMicroseconds: Microseconds | null
@@ -312,7 +314,7 @@ type GenerationRecord = {
     staticHDRMetadata: StaticHDRMetadata | null
     /** The container's duration, reported only for a source the server never probed */
     containerDurationMicroseconds: Microseconds | null
-    /** The worker that took the generation's start; null while the start waits for a free worker */
+    /** The worker that took the generation's start, which start() posts at once; null only for a start that never reached one */
     workerRecord: WorkerRecord | null
 };
 
@@ -636,7 +638,7 @@ function createDecodedPresentationFrame(
 
 /**
  * Owns one bounded, generation-safe custom decode session and its decode worker.
- * The worker outlives generations: it runs one at a time, and a start waits until the previous run has stopped.
+ * The worker outlives generations: it runs one at a time, and the runs stopped before it unwind beside it.
  */
 export default class CustomDecodeSession {
     private activeAudioBridge: CustomDecodeAudioBridge | null = null;
@@ -658,7 +660,7 @@ export default class CustomDecodeSession {
     private telemetry = createTelemetry();
     /** The generation the telemetry describes runs the frame-pool route */
     private telemetryFramePool = false;
-    /** Created by the first start, and replaced only after a failure or an unacknowledged stop */
+    /** Created by the first start, and replaced only for a start it cannot take: after a failure or an unacknowledged stop, for another backend, or with too many runs unwinding */
     private workerRecord: WorkerRecord | null = null;
 
     /** Creates an idle session; its first start creates the decode worker. */
@@ -683,7 +685,7 @@ export default class CustomDecodeSession {
 
     /**
      * Starts a generation and retires any previous one.
-     * The worker takes the start once the previous run has posted `stopped`, or once the stop bound has replaced the worker.
+     * The worker takes the start at once, while the previous run unwinds beside it.
      */
     public start(options: CustomDecodeSessionStartOptions): void {
         if (this.destroyed) {
@@ -723,8 +725,8 @@ export default class CustomDecodeSession {
     }
 
     /**
-     * Stops decoding and closes queued frames.
-     * Resolves once the worker has acknowledged the stop, or has been replaced after the bound, and keeps it for the next start.
+     * Stops decoding and closes queued frames, keeping the worker for the next start.
+     * The stopped run unwinds in the worker beside the next one, so this resolves without waiting for it, once any native audio output has stopped.
      */
     public stop(): Promise<void> {
         const generationRecord = this.activeGeneration;
@@ -739,30 +741,10 @@ export default class CustomDecodeSession {
         if (generationRecord) {
             this.retireGeneration(generationRecord);
         }
-
-        const stopPromises: Promise<void>[] = [];
-        if (this.nativeAudioStopScheduled) {
-            stopPromises.push(this.nativeAudioStopTail);
-        }
-        // A start that waited for a retiring run leaves that run behind
-        const runningGeneration = this.workerRecord?.runningGeneration ?? null;
-        if (runningGeneration) {
-            stopPromises.push(runningGeneration.retirementPromise);
-        }
-        switch (stopPromises.length) {
-            case 0:
-                return Promise.resolve();
-            case 1:
-                return stopPromises[0];
-            default:
-                return Promise.all(stopPromises).then((): void => undefined);
-        }
+        return this.nativeAudioStopScheduled ? this.nativeAudioStopTail : Promise.resolve();
     }
 
-    /**
-     * Stops decoding and terminates the worker at once; a later start throws.
-     * Call stop() first to give the run its bound to finish.
-     */
+    /** Stops decoding and terminates the worker at once, ending the runs still unwinding in it; a later start throws. */
     public destroy(): void {
         if (this.destroyed) {
             return;
@@ -1176,10 +1158,6 @@ export default class CustomDecodeSession {
         options: CustomDecodeSessionStartOptions,
         startRequest: DecodeWorkerStartRequest
     ): GenerationRecord {
-        let resolveRetirement: () => void = (): void => undefined;
-        const retirementPromise = new Promise<void>(resolve => {
-            resolveRetirement = resolve;
-        });
         return {
             audioConfiguration: null,
             audioEpoch: 0,
@@ -1206,12 +1184,11 @@ export default class CustomDecodeSession {
             nativeAudioElementEnded: false,
             nativeAudioEndOfStreamAccepted: false,
             nativeAudioEndOfStreamRequested: false,
-            resolveRetirement,
-            retirementPromise,
             runStopped: false,
             startRequest,
             startTimeMicroseconds: options.startTimeMicroseconds,
             stopRequested: false,
+            stopTimer: null,
             durationMicroseconds: options.durationMicroseconds ?? null,
             videoChromaFormat: null,
             videoCodec: null,
@@ -1232,8 +1209,8 @@ export default class CustomDecodeSession {
             hasRunGeneration: false,
             messageHandler: (): void => undefined,
             replacementRequired: false,
+            retiringGenerations: new Set<GenerationRecord>(),
             runningGeneration: null,
-            stopTimer: null,
             terminated: false,
             videoDecoderBackend,
             worker
@@ -1252,8 +1229,8 @@ export default class CustomDecodeSession {
     }
 
     /**
-     * Posts the active generation's start once the worker is free, creating the worker at the first start.
-     * Overlapping runs are unsafe: a stopping run releases its decoders and audio attempts before the next run may start in its worker.
+     * Posts the active generation's start at once, creating the worker at the first start.
+     * A stopped run closed its decoders and audio attempt and canceled its reads when it stopped, so it unwinds beside the new run instead of holding it back.
      */
     private startPendingGeneration(): void {
         const generationRecord = this.activeGeneration;
@@ -1263,14 +1240,14 @@ export default class CustomDecodeSession {
 
         let workerRecord = this.workerRecord;
         if (workerRecord
-            && (workerRecord.replacementRequired || workerRecord.videoDecoderBackend !== generationRecord.videoDecoderBackend)) {
-            // A worker this generation will not reuse gives way at once, even while its run still stops
+            && (
+                workerRecord.replacementRequired
+                || workerRecord.videoDecoderBackend !== generationRecord.videoDecoderBackend
+                || workerRecord.retiringGenerations.size > MAXIMUM_RETIRING_RUNS
+            )) {
+            // A worker this generation will not reuse gives way at once, even while its runs still unwind
             this.terminateWorker(workerRecord);
             workerRecord = null;
-        }
-        if (workerRecord?.runningGeneration) {
-            // The previous run's acknowledgement, or its stop bound, resumes this start
-            return;
         }
 
         if (!workerRecord) {
@@ -1297,7 +1274,8 @@ export default class CustomDecodeSession {
 
     /**
      * Ends a generation's run.
-     * A start that never reached the worker is dropped; a running one gets `stop`, and its worker is terminated if it does not acknowledge within the bound.
+     * A start that never reached the worker is dropped; a running one gets `stop` and unwinds beside the next run, and a run that does not acknowledge
+     * within the bound marks its worker for replacement.
      */
     private retireGeneration(generationRecord: GenerationRecord): void {
         const workerRecord = generationRecord.workerRecord;
@@ -1310,6 +1288,10 @@ export default class CustomDecodeSession {
         }
 
         generationRecord.stopRequested = true;
+        if (workerRecord.runningGeneration === generationRecord) {
+            workerRecord.runningGeneration = null;
+        }
+        workerRecord.retiringGenerations.add(generationRecord);
         try {
             this.postRequest(generationRecord, {
                 generation: generationRecord.generation,
@@ -1319,41 +1301,60 @@ export default class CustomDecodeSession {
             this.terminateWorker(workerRecord);
             return;
         }
-        workerRecord.stopTimer = globalThis.setTimeout(() => {
-            workerRecord.stopTimer = null;
-            console.warn(`Custom decode worker generation ${generationRecord.generation} did not acknowledge shutdown`);
-            this.terminateWorker(workerRecord);
-            this.startPendingGeneration();
-        }, WORKER_STOP_TIMEOUT_MILLISECONDS);
+        generationRecord.stopTimer = globalThis.setTimeout(() => {
+            generationRecord.stopTimer = null;
+            this.handleUnacknowledgedStop(workerRecord, generationRecord);
+        }, RETIRED_RUN_STOP_TIMEOUT_MILLISECONDS);
     }
 
-    /** Frees the worker once its run posted `stopped`, finished or stopped, and hands it to a waiting start. */
+    /** Gives up on a retired run that never acknowledged its stop: the run counts as over, and its worker takes no further generation. */
+    private handleUnacknowledgedStop(workerRecord: WorkerRecord, generationRecord: GenerationRecord): void {
+        console.warn(
+            `Custom decode worker generation ${generationRecord.generation} did not acknowledge shutdown within ${RETIRED_RUN_STOP_TIMEOUT_MILLISECONDS} ms; `
+            + 'its worker takes no further generation'
+        );
+        workerRecord.retiringGenerations.delete(generationRecord);
+        this.completeRun(generationRecord);
+        this.requireWorkerReplacement(workerRecord);
+    }
+
+    /** Ends a run once it posted `stopped`, finished or stopped; a worker marked for replacement goes once it holds no run. */
     private handleRunStopped(workerRecord: WorkerRecord, message: DecodeWorkerStoppedResponse): void {
-        const generationRecord = workerRecord.runningGeneration;
-        if (!generationRecord || generationRecord.generation !== message.generation) {
+        const generationRecord = this.findWorkerGeneration(workerRecord, message.generation);
+        if (!generationRecord) {
             return;
         }
 
-        if (message.replaceWorker === true) {
-            workerRecord.replacementRequired = true;
+        if (workerRecord.runningGeneration === generationRecord) {
+            workerRecord.runningGeneration = null;
         }
-        this.clearStopTimer(workerRecord);
-        workerRecord.runningGeneration = null;
+        workerRecord.retiringGenerations.delete(generationRecord);
         this.completeRun(generationRecord);
         if (workerRecord.replacementRequired) {
-            this.terminateWorker(workerRecord);
+            this.requireWorkerReplacement(workerRecord);
         }
-        this.startPendingGeneration();
     }
 
-    /** Terminates a worker and ends the run it held; the next start creates a new worker. */
+    /** Returns the generation whose run the worker holds, running or retiring, by its number. */
+    private findWorkerGeneration(workerRecord: WorkerRecord, generation: number): GenerationRecord | null {
+        if (workerRecord.runningGeneration?.generation === generation) {
+            return workerRecord.runningGeneration;
+        }
+        for (const retiringGeneration of workerRecord.retiringGenerations) {
+            if (retiringGeneration.generation === generation) {
+                return retiringGeneration;
+            }
+        }
+        return null;
+    }
+
+    /** Terminates a worker and ends every run it held; the next start creates a new worker. */
     private terminateWorker(workerRecord: WorkerRecord): void {
         if (workerRecord.terminated) {
             return;
         }
 
         workerRecord.terminated = true;
-        this.clearStopTimer(workerRecord);
         workerRecord.worker.removeEventListener('message', workerRecord.messageHandler);
         workerRecord.worker.removeEventListener('error', workerRecord.errorHandler);
         workerRecord.worker.terminate();
@@ -1365,20 +1366,16 @@ export default class CustomDecodeSession {
         if (runningGeneration) {
             this.completeRun(runningGeneration);
         }
-    }
-
-    private clearStopTimer(workerRecord: WorkerRecord): void {
-        if (workerRecord.stopTimer === null) {
-            return;
+        for (const retiringGeneration of workerRecord.retiringGenerations) {
+            this.completeRun(retiringGeneration);
         }
-        globalThis.clearTimeout(workerRecord.stopTimer);
-        workerRecord.stopTimer = null;
+        workerRecord.retiringGenerations.clear();
     }
 
-    /** Keeps a worker from taking another generation: an idle one terminates at once, a busy one once its run stops. */
+    /** Keeps a worker from taking another generation: one that holds no run terminates at once, a busy one once its last run is over. */
     private requireWorkerReplacement(workerRecord: WorkerRecord): void {
         workerRecord.replacementRequired = true;
-        if (!workerRecord.runningGeneration) {
+        if (!workerRecord.runningGeneration && workerRecord.retiringGenerations.size === 0) {
             this.terminateWorker(workerRecord);
         }
     }
@@ -1391,7 +1388,10 @@ export default class CustomDecodeSession {
 
     private completeRun(generationRecord: GenerationRecord): void {
         generationRecord.runStopped = true;
-        generationRecord.resolveRetirement();
+        if (generationRecord.stopTimer !== null) {
+            globalThis.clearTimeout(generationRecord.stopTimer);
+            generationRecord.stopTimer = null;
+        }
     }
 
     private handleWorkerMessage(workerRecord: WorkerRecord, messageValue: unknown): void {
@@ -1491,9 +1491,8 @@ export default class CustomDecodeSession {
                 this.telemetry.staleAudioSampleCount += 1;
                 break;
             case 'error':
-                // A failed run may leave a decoder open
+                // A failed run may leave a decoder open, so the next start takes a new worker
                 this.requireWorkerReplacement(workerRecord);
-                this.startPendingGeneration();
                 break;
             default:
                 break;
@@ -1506,9 +1505,7 @@ export default class CustomDecodeSession {
         this.requireWorkerReplacement(workerRecord);
         if (dependentGeneration) {
             this.failGeneration(dependentGeneration, 'decode-failed', message);
-            return;
         }
-        this.startPendingGeneration();
     }
 
     private handleWorkerCrash(workerRecord: WorkerRecord): void {
@@ -1516,10 +1513,7 @@ export default class CustomDecodeSession {
         this.terminateWorker(workerRecord);
         if (dependentGeneration) {
             this.failGeneration(dependentGeneration, 'decode-failed', 'The custom decode worker crashed');
-            return;
         }
-        // A start that waited for the crashed worker's run takes a new worker
-        this.startPendingGeneration();
     }
 
     private handleReadyResponse(generationRecord: GenerationRecord, message: DecodeWorkerReadyResponse): void {
