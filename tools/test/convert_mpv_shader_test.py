@@ -17,6 +17,11 @@ sys.path.insert(0, str(TOOLS_DIRECTORY))
 import convert_mpv_shader as converter  # noqa: E402
 from constants import PASSES_DIRECTORY  # noqa: E402
 
+NIS_DIRECTORY = PASSES_DIRECTORY / 'nis'
+sys.path.insert(0, str(NIS_DIRECTORY))
+
+import generate_nis_wgsl  # noqa: E402
+
 
 def find_pinned_naga() -> str | None:
     """Returns naga when the pinned version is installed, which the conversion tests need."""
@@ -358,11 +363,26 @@ REPAIR_COUNT = 3
 ANIME4K_PASS_COUNTS = {'Anime4K_Upscale_Denoise_CNN_x2_L.glsl': 10, 'Anime4K_Upscale_Denoise_CNN_x2_UL.glsl': 25}
 ANIME4K_GLSL_DIRECTORY = PASSES_DIRECTORY / 'anime4k' / 'glsl'
 
+# The NIS project's sources and the committed passes the generator and the converter must reproduce
+NIS_GLSL_DIRECTORY = NIS_DIRECTORY / 'glsl'
+NIS_SCALER_SOURCE = 'NVScaler.glsl'
+NIS_SCALER_PASS = 'NVScaler.wgsl'
+NIS_SHARPEN_SOURCE = 'NVSharpen.glsl'
+NIS_SHARPEN_PASS = 'NVSharpen.wgsl'
+NIS_SHARPEN_NAME = 'NVSharpen'
+# The port's 32x24 block, which needs more shared memory than WebGPU guarantees
+NIS_UNFITTED_BLOCK_DIRECTIVE = '//!COMPUTE 32 24 256 1'
+
 
 def convert(text: str) -> tuple[str | None, converter.Report]:
+    return convert_named(text, DEFAULT_NAME, SOURCE_NAME)
+
+
+def convert_named(text: str, default_name: str, source_name: str) -> tuple[str | None, converter.Report]:
+    """Converts as the command line does for a file: passes without a DESC take its stem, and the provenance names the file."""
     assert NAGA is not None
     report = converter.Report()
-    return converter.convert_shader(text, DEFAULT_NAME, NAGA, SOURCE_NAME, report), report
+    return converter.convert_shader(text, default_name, NAGA, source_name, report), report
 
 
 def get_codes(report: converter.Report, severity: str) -> list[str]:
@@ -681,6 +701,23 @@ class ConversionTest(unittest.TestCase):
                 self.assertIsNotNone(result, report.findings)
                 assert result is not None
                 self.assertEqual(result.count('//! name: '), pass_count)
+
+    def test_reproduces_the_committed_NIS_passes(self) -> None:
+        assert NAGA is not None
+        scaler_source = (NIS_GLSL_DIRECTORY / NIS_SCALER_SOURCE).read_text(encoding='utf-8')
+        scaler = generate_nis_wgsl.generate(scaler_source, NIS_SCALER_SOURCE, NAGA, converter.Report())
+        sharpen, sharpen_report = convert_named((NIS_GLSL_DIRECTORY / NIS_SHARPEN_SOURCE).read_text(encoding='utf-8'), NIS_SHARPEN_NAME, NIS_SHARPEN_SOURCE)
+
+        self.assertEqual(scaler, (NIS_DIRECTORY / NIS_SCALER_PASS).read_text(encoding='utf-8'))
+        self.assertEqual(sharpen, (NIS_DIRECTORY / NIS_SHARPEN_PASS).read_text(encoding='utf-8'), sharpen_report.findings)
+
+    def test_keeps_the_unfitted_NIS_block_beyond_the_limits(self) -> None:
+        scaler_source = (NIS_GLSL_DIRECTORY / NIS_SCALER_SOURCE).read_text(encoding='utf-8')
+        result, report = convert(scaler_source)
+
+        self.assertIn(NIS_UNFITTED_BLOCK_DIRECTIVE, scaler_source)
+        self.assertIsNone(result)
+        self.assertIn(converter.CODE_WORKGROUP_STORAGE_LIMIT, get_codes(report, converter.SEVERITY_ERROR))
 
 
 if __name__ == '__main__':

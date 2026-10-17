@@ -4,3 +4,6 @@
 /bin/codec_vector_assets/** -text
 /wgpud/*/*.vectors -text
 /wgpud/*/vectors/** -text
+# The NIS sources and license are copied unmodified, CRLF and all, so their SHA-256 matches upstream's
+/wgpup/nis/glsl/** -text
+/wgpup/licenses/NIS-LICENSE -text

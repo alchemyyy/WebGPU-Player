@@ -1,0 +1,14 @@
+NIS source provenance
+
+NVScaler.glsl and NVSharpen.glsl are copied unmodified, CRLF line endings included, from agyild's mpv port of NVIDIA Image Scaling v1.0.2, https://gist.github.com/agyild/7e8951915b2bf24526a9343d951db214 at revision 05f00864228871ffd157daa9beb2db8fa7412cfa.
+wgpup/licenses/NIS-LICENSE is licence.txt of https://github.com/NVIDIAGameWorks/NVIDIAImageScaling at commit 35e13ba316c98eeecf16f37eae70ce88019911f6: the MIT License, Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES, the license the port's headers carry.
+
+SHA-256, which test/presentation/passes/PostprocessingPasses.test.ts checks:
+
+  bac778ec0108d272e4dad97794a3c257e65bbebd52aa762f95bce930cbd6b73c  NVScaler.glsl
+  3d51ac2a9da18284c1f77e46a019e783eac0c609924e6b32e8011889f54f9a12  NVSharpen.glsl
+  62207f1c0fae72800ea7d28ee108e7dbeb852dde20b00c70fc7b0d235e19e46d  NIS-LICENSE
+
+generate_nis_wgsl.py converts NVScaler.glsl at a 32x16 block instead of the port's 32x24, so its shared memory fits WebGPU's default 16 KiB.
+NVSharpen.glsl fits as it is and converts with tools/convert_mpv_shader.py directly.
+Their outputs beside this folder are committed, so a build needs neither Python nor naga.
