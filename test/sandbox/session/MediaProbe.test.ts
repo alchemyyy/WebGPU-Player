@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/naming-convention -- ffprobe's JSON keys are snake_case */
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 
 import type { FFmpegTool } from '../../../sandbox/src/session/FFmpegTool';
 import { FFPROBE_SIDE_DATA_TYPES } from '../../../sandbox/src/session/FFprobeOutput';
@@ -43,7 +43,7 @@ const SHOW_FRAMES_OPTION = '-show_frames';
 type ProbeAnswer = string | Error;
 
 /** A tool whose stream probe and first-frame probe answer with the given output, or fail with the given error. */
-function createTool(streamProbe: ProbeAnswer, frameProbe: ProbeAnswer): FFmpegTool & { probe: ReturnType<typeof vi.fn> } {
+function createTool(streamProbe: ProbeAnswer, frameProbe: ProbeAnswer): FFmpegTool & { probe: Mock } {
     const answer = (response: ProbeAnswer): Promise<string> => (
         response instanceof Error ? Promise.reject(response) : Promise.resolve(response)
     );

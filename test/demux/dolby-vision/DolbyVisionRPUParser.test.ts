@@ -374,7 +374,7 @@ describe('DolbyVisionRPUParser pinned WASM integration', () => {
         const corruptRPU = readVector('profile8.bin');
         corruptRPU[corruptRPU.byteLength - 1] ^= 1;
         try {
-            expect(() => parser.parse(corruptRPU)).toThrowError(
+            expect(() => parser.parse(corruptRPU)).toThrow(
                 expect.objectContaining({ statusCode: 3 })
             );
             expect(parser.parse(readVector('profile8.bin')).profile).toBe(8);
@@ -484,10 +484,10 @@ describe('DolbyVisionRPUParser AV1 ITU-T T.35 payloads', () => {
             expect(parseError).toMatchObject({ statusCode: STATUS_PARSE_FAILED });
             expect((parseError as Error).message).toContain('Invalid AV1 RPU payload header');
             // Each entry point rejects the other's framing
-            expect(() => parser.parse(payload)).toThrowError(
+            expect(() => parser.parse(payload)).toThrow(
                 expect.objectContaining({ statusCode: STATUS_PARSE_FAILED })
             );
-            expect(() => parser.parseAV1ITUTT35(readVector('profile8.bin'))).toThrowError(
+            expect(() => parser.parseAV1ITUTT35(readVector('profile8.bin'))).toThrow(
                 expect.objectContaining({ statusCode: STATUS_PARSE_FAILED })
             );
             expect(parser.parseAV1ITUTT35(payload).profile).toBe(8);

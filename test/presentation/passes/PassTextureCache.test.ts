@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { collectPassTextures, PassTextureCache } from 'webgpu-player/presentation/passes/PassTextureCache';
 import type { PassTexture, PresentationPlan } from 'webgpu-player/presentation/passes/PassTypes';
@@ -11,7 +11,7 @@ const RGBA8_BYTES_PER_TEXEL = 4;
 const TABLE_WIDTH = 5;
 const TABLE_HEIGHT = 3;
 
-type MockTexture = { createView: ReturnType<typeof vi.fn>; descriptor: GPUTextureDescriptor; destroy: ReturnType<typeof vi.fn> };
+type MockTexture = { createView: Mock; descriptor: GPUTextureDescriptor; destroy: Mock };
 
 function createTexture(name: string, identity: string, size: readonly [number, number, number], dimensions: PassTexture['dimensions']): PassTexture {
     return {
@@ -42,7 +42,7 @@ function createPlan(textures: readonly PassTexture[]): PresentationPlan {
     } as unknown as PresentationPlan;
 }
 
-function createDevice(): { device: GPUDevice; textures: MockTexture[]; writeTexture: ReturnType<typeof vi.fn> } {
+function createDevice(): { device: GPUDevice; textures: MockTexture[]; writeTexture: Mock } {
     const textures: MockTexture[] = [];
     const writeTexture = vi.fn();
     const device = {

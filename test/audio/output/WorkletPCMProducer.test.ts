@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 
 import type { Microseconds } from 'webgpu-player/MediaTime';
 import type { AudioWorkletReleaseReason } from 'webgpu-player/audio/output/AudioWorkletProtocol';
@@ -65,8 +65,8 @@ class FakeProducerPort {
 
 type ProducerHarness = {
     channelPool: PCMChannelPool
-    onCreditsReleased: ReturnType<typeof vi.fn>
-    onFailure: ReturnType<typeof vi.fn>
+    onCreditsReleased: Mock
+    onFailure: Mock
     port: FakeProducerPort
     producer: WorkletPCMProducer
 };

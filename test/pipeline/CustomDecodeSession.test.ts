@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import {
     millisecondsToMicroseconds,
@@ -162,8 +162,8 @@ function getPostedStartGenerations(worker: MockWorker): number[] {
     return generations;
 }
 
-function createFrame(): VideoFrame & { close: ReturnType<typeof vi.fn> } {
-    return { close: vi.fn() } as unknown as VideoFrame & { close: ReturnType<typeof vi.fn> };
+function createFrame(): VideoFrame & { close: Mock } {
+    return { close: vi.fn() } as unknown as VideoFrame & { close: Mock };
 }
 
 function createRawFrame(
@@ -537,7 +537,7 @@ async function expectAudioResyncDeclined(session: CustomDecodeSession, worker: M
 
 type NativeAudioSessionHarness = {
     emitBackendEvent: OwnedNativeMediaAudioEventHandler
-    endOfStream: ReturnType<typeof vi.fn>
+    endOfStream: Mock
     events: CustomDecodeSessionEvent[]
     session: CustomDecodeSession
     setAuthoritativeTimeMicroseconds: (timeMicroseconds: Microseconds | null) => void

@@ -46,7 +46,6 @@ function runInForkDirectory(commandLine) {
         Object.entries(process.env).filter(([ variableName ]) => !NPM_VARIABLE_PATTERN.test(variableName))
     );
     // Fixed command lines only
-    // eslint-disable-next-line sonarjs/os-command
     const result = spawnSync(commandLine, { cwd: MEDIABUNNY_SOURCE_DIRECTORY, env: environment, shell: true, stdio: 'inherit' });
     if (result.status !== 0) {
         throw new Error(`mediabunny-build-failed: ${commandLine} exited with ${result.status} in ${MEDIABUNNY_SOURCE_DIRECTORY}`);

@@ -248,7 +248,7 @@ describe('StreamingAudioResampler', () => {
 
         const contiguousSamples = concatenateOutput(contiguousOutput);
         const splitSamples = concatenateOutput(splitOutput);
-        expect(splitSamples.length).toBe(9_600);
+        expect(splitSamples).toHaveLength(9_600);
         expect(splitSamples).toEqual(contiguousSamples);
         expect(splitOutput[0].mediaTimeMicroseconds).toBe(1_000_000);
         expect(splitOutput.at(-1)?.sampleRate).toBe(TARGET_SAMPLE_RATE);

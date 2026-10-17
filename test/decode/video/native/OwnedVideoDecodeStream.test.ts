@@ -1,5 +1,5 @@
 import { EncodedPacket } from 'mediabunny';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 
 import type { Microseconds } from 'webgpu-player/MediaTime';
 import { clearTimingTrace, exportTimingTrace, startTimingTrace } from 'webgpu-player/TimingTrace';
@@ -51,8 +51,8 @@ class FakeVideoFrame {
 
 type StateHarness = {
     frameMetadata: OwnedVideoFrameMetadataSource & {
-        requireDrained: ReturnType<typeof vi.fn>
-        takeFrameMetadata: ReturnType<typeof vi.fn>
+        requireDrained: Mock
+        takeFrameMetadata: Mock
     }
     postedPairs: Array<[OwnedDecodedVideoOutput, OwnedDecodedVideoOutput | null]>
     state: OwnedVideoStreamState
@@ -114,7 +114,7 @@ function getFrame(output: OwnedDecodedVideoOutput | OwnedDecodedVideoSource | nu
     return source?.kind === 'native-frame' ? source.frame as unknown as FakeVideoFrame : null;
 }
 
-function createDecoder(packetAccepted: boolean): OwnedVideoDecoderPort & { decode: ReturnType<typeof vi.fn> } {
+function createDecoder(packetAccepted: boolean): OwnedVideoDecoderPort & { decode: Mock } {
     return {
         close: vi.fn(),
         decode: vi.fn((): boolean => packetAccepted),

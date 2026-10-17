@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 // The real built-in library and planner run behind spies, and the real executors run on a mock device
 vi.mock('webgpu-player/presentation/passes/builtin/BuiltinChains', async importOriginal => {
@@ -44,7 +44,7 @@ import {
     type WebGPUDeviceHarness
 } from '../helpers/webGPUDeviceHarness';
 
-type MockFunction = ReturnType<typeof vi.fn>;
+type MockFunction = Mock;
 
 const TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
 const INPUT_PROBE_FORMAT: GPUTextureFormat = 'rgba16float';

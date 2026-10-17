@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import type { Microseconds } from 'webgpu-player/MediaTime';
 import { parseAudioDecoderManifest } from 'webgpu-player/decode/audio/AudioDecoderManifest';
@@ -110,9 +110,9 @@ afterEach(() => {
 });
 
 function createListener(): AudioDecodeWorkerAttemptListener & {
-    onChange: ReturnType<typeof vi.fn>
-    onProgress: ReturnType<typeof vi.fn>
-    onSourceFormat: ReturnType<typeof vi.fn>
+    onChange: Mock
+    onProgress: Mock
+    onSourceFormat: Mock
 } {
     return { onChange: vi.fn(), onProgress: vi.fn(), onSourceFormat: vi.fn() };
 }

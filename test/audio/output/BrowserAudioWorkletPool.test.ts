@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { secondsToMicroseconds } from 'webgpu-player/MediaTime';
 import AudioWorkletController, {
@@ -17,18 +17,18 @@ type Deferred = {
 };
 
 type ControllerHarness = {
-    attachProducer: ReturnType<typeof vi.fn>
+    attachProducer: Mock
     controller: AudioWorkletController
-    deactivate: ReturnType<typeof vi.fn>
-    destroy: ReturnType<typeof vi.fn>
-    enqueue: ReturnType<typeof vi.fn>
-    flush: ReturnType<typeof vi.fn>
-    getTelemetry: ReturnType<typeof vi.fn>
-    onTelemetry: ReturnType<typeof vi.fn>
-    seek: ReturnType<typeof vi.fn>
-    setMuted: ReturnType<typeof vi.fn>
-    setPlaying: ReturnType<typeof vi.fn>
-    setVolume: ReturnType<typeof vi.fn>
+    deactivate: Mock
+    destroy: Mock
+    enqueue: Mock
+    flush: Mock
+    getTelemetry: Mock
+    onTelemetry: Mock
+    seek: Mock
+    setMuted: Mock
+    setPlaying: Mock
+    setVolume: Mock
     telemetryListeners: Set<AudioTelemetryListener>
 };
 

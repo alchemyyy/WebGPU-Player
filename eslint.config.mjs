@@ -313,5 +313,16 @@ export default tseslint.config(
             '@typescript-eslint/no-floating-promises': 'error',
             '@typescript-eslint/prefer-string-starts-ends-with': 'error'
         }
+    },
+
+    // Tests check exact floating-point results, such as unit conversions, on purpose
+    {
+        files: [
+            `${LAYOUT.testDirectory}/**/*.ts`,
+            `${LAYOUT.decodersDirectory}/*/test/**/*.ts`
+        ],
+        rules: {
+            'sonarjs/no-floating-point-equality': 'off'
+        }
     }
 );

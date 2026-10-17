@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 
 import RawFrameBufferPool, {
     MAXIMUM_SPARE_RAW_FRAME_BUFFERS_PER_BYTE_LENGTH
@@ -19,7 +19,7 @@ import {
 } from 'webgpu-player/decode/video/RawVideoFrameCopy';
 import { getRawPlaneLayoutFailure } from 'webgpu-player/presentation/passes/PlaneTextureSource';
 
-type MockFunction = ReturnType<typeof vi.fn>;
+type MockFunction = Mock;
 
 // The default 4x2 I420 frame takes one aligned row for each of its four plane rows
 const DEFAULT_FRAME_COPY_BYTE_LENGTH = 1_024;

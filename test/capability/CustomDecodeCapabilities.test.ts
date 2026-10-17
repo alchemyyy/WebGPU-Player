@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import CustomDecodeCapabilityProbe, {
     createNativeAudioOutputProbe,
@@ -26,14 +26,14 @@ import CustomDecodeCapabilityProbe, {
 } from 'webgpu-player/capability/CustomDecodeCapabilities';
 
 type CapabilityEnvironmentHarness = {
-    audioProbe: ReturnType<typeof vi.fn>
+    audioProbe: Mock
     environment: WebCodecsCapabilityEnvironment
-    nativeAudioOutputProbe: ReturnType<typeof vi.fn>
-    nativeDolbyVisionVideoOutputProbe: ReturnType<typeof vi.fn>
-    nativeHDRVideoOutputProbe: ReturnType<typeof vi.fn>
-    nativeVideoOutputProbe: ReturnType<typeof vi.fn>
-    rawHDRVideoOutputProbe: ReturnType<typeof vi.fn>
-    videoProbe: ReturnType<typeof vi.fn>
+    nativeAudioOutputProbe: Mock
+    nativeDolbyVisionVideoOutputProbe: Mock
+    nativeHDRVideoOutputProbe: Mock
+    nativeVideoOutputProbe: Mock
+    rawHDRVideoOutputProbe: Mock
+    videoProbe: Mock
 };
 
 type NativeSurroundAudioSupport = Readonly<{

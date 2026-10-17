@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 const webSettingsMockState = vi.hoisted(() => ({
     hdrToneMappingEnabled: false
@@ -270,7 +270,7 @@ import {
 } from '../helpers/webGPUDeviceHarness';
 import { readPostprocessingPass } from '../helpers/postprocessingPasses';
 
-type MockFunction = ReturnType<typeof vi.fn>;
+type MockFunction = Mock;
 
 // Pass projects in wgpup/ that the user pass tests run
 const SATURATION_COLOR_PASS = readPostprocessingPass('saturation', 'saturation.wgsl');

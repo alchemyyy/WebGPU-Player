@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { secondsToMicroseconds, type Microseconds } from 'webgpu-player/MediaTime';
 import AudioWorkletController, {
@@ -134,7 +134,7 @@ function startBridge(
     harness: BridgeHarness,
     decodeGeneration = DECODE_GENERATION,
     startTimeMicroseconds = START_TIME_MICROSECONDS
-): { attachment: DecodeWorkerAudioOutputAttachment, onFailure: ReturnType<typeof vi.fn> } {
+): { attachment: DecodeWorkerAudioOutputAttachment, onFailure: Mock } {
     const onFailure = vi.fn();
     const attachment = harness.bridge.start({
         audioConfiguration: {

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import {
     microsecondsToMilliseconds,
@@ -112,19 +112,19 @@ type WorkletControllerHarness = {
         sampleRate: number
         telemetryIntervalFrames: number
     }
-    deactivate: ReturnType<typeof vi.fn>
-    destroy: ReturnType<typeof vi.fn>
+    deactivate: Mock
+    destroy: Mock
     emitTelemetry: (telemetry: AudioWorkletTelemetry) => void
-    enqueue: ReturnType<typeof vi.fn>
-    flush: ReturnType<typeof vi.fn>
+    enqueue: Mock
+    flush: Mock
     generation: number
-    getTelemetry: ReturnType<typeof vi.fn>
-    onTelemetry: ReturnType<typeof vi.fn>
-    seek: ReturnType<typeof vi.fn>
-    setMuted: ReturnType<typeof vi.fn>
-    setPlaying: ReturnType<typeof vi.fn>
-    setSignalAnalysis: ReturnType<typeof vi.fn>
-    setVolume: ReturnType<typeof vi.fn>
+    getTelemetry: Mock
+    onTelemetry: Mock
+    seek: Mock
+    setMuted: Mock
+    setPlaying: Mock
+    setSignalAnalysis: Mock
+    setVolume: Mock
 };
 
 type Deferred = {

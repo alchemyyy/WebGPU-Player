@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import H264ProfileCapabilityProbe, {
     createH264ProfileOutputProbe,
@@ -19,9 +19,9 @@ import H264ProfileCapabilityProbe, {
 } from 'webgpu-player/capability/H264ProfileCapabilities';
 
 type ProfileProbeHarness = {
-    configurationProbe: ReturnType<typeof vi.fn>
+    configurationProbe: Mock
     environment: H264ProfileCapabilityEnvironment
-    outputProbe: ReturnType<typeof vi.fn>
+    outputProbe: Mock
 };
 
 const PROFILE_CODEC_STRINGS = [

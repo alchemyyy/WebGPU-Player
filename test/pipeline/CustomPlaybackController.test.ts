@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import {
     microsecondsToMilliseconds,
@@ -106,9 +106,9 @@ function emitControllerDecodedFrame(
     worker: ControllerDecodeWorker,
     generation: number,
     mediaTimeMicroseconds: Microseconds
-): VideoFrame & { close: ReturnType<typeof vi.fn> } {
+): VideoFrame & { close: Mock } {
     const frame = { close: vi.fn() } as unknown as VideoFrame & {
-        close: ReturnType<typeof vi.fn>
+        close: Mock
     };
     worker.emitMessage({
         durationMicroseconds: millisecondsToMicroseconds(40),

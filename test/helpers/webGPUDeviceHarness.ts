@@ -1,10 +1,10 @@
 // A mock GPUDevice for the presentation executor, the authorization readbacks, and the presenter.
 // It validates nothing; it records what the code under test asks of the device, and serves readbacks from a test callback.
-import { vi } from 'vitest';
+import { vi, type Mock } from 'vitest';
 
 import type { ColorTriplet } from 'webgpu-player/color/ColorPipeline';
 
-type MockFunction = ReturnType<typeof vi.fn>;
+type MockFunction = Mock;
 
 type Float16DataView = DataView & {
     setFloat16: (byteOffset: number, value: number, littleEndian?: boolean) => void
