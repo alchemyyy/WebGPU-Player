@@ -39,6 +39,23 @@ export const RENDER_OUTPUT_FORMATS: readonly GPUTextureFormat[] = [
     'rgba8unorm'
 ];
 
+/** The formats a pass file's texture block may hold, with the bytes of one texel, which its data packs tightly in little-endian order. */
+export const PASS_TEXTURE_FORMAT_BYTES: ReadonlyMap<GPUTextureFormat, number> = new Map<GPUTextureFormat, number>([
+    [ 'r8unorm', 1 ],
+    [ 'rg8unorm', 2 ],
+    [ 'rgba8unorm', 4 ],
+    [ 'r16float', 2 ],
+    [ 'rg16float', 4 ],
+    [ 'rgba16float', 8 ],
+    [ 'r32float', 4 ],
+    [ 'rg32float', 8 ],
+    [ 'rgba32float', 16 ]
+]);
+
+/** WebGPU's default maxTextureDimension2D and maxTextureDimension3D, which a device's own limits may raise. */
+export const DEFAULT_MAXIMUM_TEXTURE_DIMENSION_2D = 8_192;
+export const DEFAULT_MAXIMUM_TEXTURE_DIMENSION_3D = 2_048;
+
 /** The core WebGPU storage formats among the output formats, the only ones a compute pass can write. */
 export const STORAGE_OUTPUT_FORMATS: readonly GPUTextureFormat[] = [ 'rgba16float', 'rgba32float', 'r32float', 'rgba8unorm' ];
 

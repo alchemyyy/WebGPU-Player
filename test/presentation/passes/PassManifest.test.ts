@@ -59,6 +59,8 @@ const SECOND_KERNEL_HEADER: readonly string[] = [ `//! name: ${SECOND_PASS_NAME}
 // createSource's lines for a kernel header: the header, a blank line, and the body
 const KERNEL_SOURCE_LINE_COUNT = KERNEL_HEADER.length + 1 + BODY_LINES.length;
 const SHARED_PARAMETER_LINE = '//! param strength: f32 = 0.5 in [0, 1]';
+// The shared parameter's declaration as a constant, the other kind
+const SHARED_CONSTANT_LINE = '//! const strength: f32 = 0.5 in [0, 1]';
 // The shared parameter with another default
 const CONFLICTING_PARAMETER_LINE = '//! param strength: f32 = 0.25 in [0, 1]';
 const COLOR_HEADER: readonly string[] = [ NAME_LINE, '//! shape: color', '//! hook: OUTPUT' ];
@@ -100,14 +102,16 @@ const KERNEL_OUTPUT_FORMATS: readonly GPUTextureFormat[] = [
 const COMPUTE_OUTPUT_FORMATS: readonly GPUTextureFormat[] = [ 'rgba16float', 'rgba32float', 'r32float', 'rgba8unorm' ];
 const COMPONENT_COUNTS: readonly number[] = [ 1, 2, 3, 4 ];
 
-const GLOBAL_FACT_LIST = 'source.width, source.height, output.width, output.height, chroma.width, chroma.height, frame.rate, hdr.source, hdr.output';
+const GLOBAL_FACT_LIST = 'source.width, source.height, output.width, output.height, luma.width, luma.height, chroma.width, chroma.height, frame.rate, hdr.source, hdr.output, rgb.source';
 const HOOKED_SIZE_FACT_LIST = `${GLOBAL_FACT_LIST}, HOOKED.width, HOOKED.height`;
 
 const MISSING_HEADER_MESSAGE = 'The pass has no //! header';
 const MISSING_NAME_MESSAGE = "Missing required directive 'name'";
 const CONFLICTING_PARAMETER_MESSAGE = `Parameter 'strength' differs from its declaration in '${PASS_NAME}'`;
 const TWO_PASSES_MESSAGE = 'The source holds 2 passes; expected one';
-const MALFORMED_LINE_MESSAGE = "Expected '<directive>: <value>' or 'param <name>: <type> = <default> in [<minimum>, <maximum>]'";
+const MALFORMED_LINE_MESSAGE = "Expected '<directive>: <value>', 'param <name>: <type> = <default> in [<minimum>, <maximum>]', "
+    + "or 'const <name>: <type> = <default> in [<minimum>, <maximum>]'";
+const MALFORMED_CONSTANT_MESSAGE = "Expected 'const <name>: <type> = <default> in [<minimum>, <maximum>]'";
 const MALFORMED_PARAMETER_MESSAGE = "Expected 'param <name>: <type> = <default> in [<minimum>, <maximum>]'";
 const MALFORMED_OUTPUT_MESSAGE = "Expected '<NAME>.size, <format>' or '<width>, <height>, <format>'";
 const MALFORMED_WORKGROUP_MESSAGE = "Expected 'workgroup: <x>[, <y>[, <z>]]'";
@@ -151,6 +155,7 @@ const DEFAULT_KERNEL_MANIFEST: PassManifest = {
     body: EXPECTED_BODY,
     bodyFirstLine: KERNEL_HEADER.length + 1,
     components: null,
+    constants: [],
     domain: 'any',
     hook: 'OUTPUT',
     inputs: [ HOOKED_INPUT ],
@@ -161,6 +166,7 @@ const DEFAULT_KERNEL_MANIFEST: PassManifest = {
     replaces: null,
     save: null,
     shape: 'kernel',
+    textures: [],
     when: null,
     workgroup: null
 };
@@ -223,6 +229,7 @@ const FULL_KERNEL_MANIFEST: PassManifest = {
     body: EXPECTED_BODY,
     bodyFirstLine: FULL_KERNEL_HEADER.length + 1,
     components: 2,
+    constants: [],
     domain: 'linear',
     hook: 'RGB',
     inputs: [ HOOKED_INPUT, { historyOffset: 0, name: 'LUMA' }, { historyOffset: -2, name: 'RGB' } ],
@@ -237,6 +244,7 @@ const FULL_KERNEL_MANIFEST: PassManifest = {
     replaces: null,
     save: 'DETAIL',
     shape: 'kernel',
+    textures: [],
     when: parsePassExpression(FULL_KERNEL_CONDITION),
     workgroup: null
 };
@@ -261,6 +269,7 @@ const FULL_COMPUTE_MANIFEST: PassManifest = {
     body: EXPECTED_BODY,
     bodyFirstLine: FULL_COMPUTE_HEADER.length + 1,
     components: 1,
+    constants: [],
     domain: 'any',
     hook: 'PRESCALE',
     inputs: [ { historyOffset: -1, name: 'STATE' } ],
@@ -271,6 +280,7 @@ const FULL_COMPUTE_MANIFEST: PassManifest = {
     replaces: null,
     save: 'STATE',
     shape: 'compute',
+    textures: [],
     when: parsePassExpression(FULL_COMPUTE_CONDITION),
     workgroup: {
         dispatch: [
@@ -382,6 +392,11 @@ type ErrorCase = {
 /** Appends an offending line to a valid header, so the error is on the line after that header. */
 function appendLine(headerLines: readonly string[], offendingLine: string): Pick<ErrorCase, 'headerLines' | 'line'> {
     return { headerLines: [ ...headerLines, offendingLine ], line: headerLines.length + 1 };
+}
+
+/** Appends header lines, the last of which fails. */
+function appendLines(headerLines: readonly string[], lines: readonly string[]): Pick<ErrorCase, 'headerLines' | 'line'> {
+    return { headerLines: [ ...headerLines, ...lines ], line: headerLines.length + lines.length };
 }
 
 /** Declares distinct, valid f32 parameters. */
@@ -625,7 +640,7 @@ const OUTPUT_ERROR_CASES: readonly ErrorCase[] = [
     },
     {
         label: 'a size reference to an undeclared input',
-        message: "Unknown size 'LUMA.size'; expected HOOKED.size, source.size, output.size, chroma.size",
+        message: "Unknown size 'LUMA.size'; expected HOOKED.size, source.size, output.size, luma.size, chroma.size",
         ...appendLine(KERNEL_HEADER, '//! output: LUMA.size, rgba16float')
     },
     {
@@ -677,6 +692,17 @@ const OUTPUT_ERROR_CASES: readonly ErrorCase[] = [
 
 const PARAMETER_ERROR_CASES: readonly ErrorCase[] = [
     { label: 'a parameter without a range', message: MALFORMED_PARAMETER_MESSAGE, ...appendLine(KERNEL_HEADER, '//! param strength: f32 = 0.5') },
+    { label: 'a constant without a range', message: MALFORMED_CONSTANT_MESSAGE, ...appendLine(KERNEL_HEADER, '//! const radius: i32 = 2') },
+    {
+        label: 'a constant that shares a parameter\'s name',
+        message: "Duplicate parameter 'strength'",
+        ...appendLines(KERNEL_HEADER, [ '//! param strength: f32 = 0.5 in [0, 1]', '//! const strength: f32 = 0.5 in [0, 1]' ])
+    },
+    {
+        label: 'a condition on another pass\'s parameter',
+        message: `Unknown identifier 'radius'; expected ${GLOBAL_FACT_LIST}, strength`,
+        ...appendLines(KERNEL_HEADER, [ '//! param strength: f32 = 0.5 in [0, 1]', '//! when: radius > 1' ])
+    },
     {
         label: 'a parameter without a default',
         message: MALFORMED_PARAMETER_MESSAGE,
@@ -830,6 +856,7 @@ const SATURATION_MANIFEST: PassManifest = {
     // After five header lines
     bodyFirstLine: 6,
     components: null,
+    constants: [],
     domain: 'display',
     hook: 'OUTPUT',
     inputs: [],
@@ -840,6 +867,7 @@ const SATURATION_MANIFEST: PassManifest = {
     replaces: null,
     save: null,
     shape: 'color',
+    textures: [],
     when: null,
     workgroup: null
 };
@@ -848,6 +876,7 @@ const SHARPEN_MANIFEST: PassManifest = {
     // After seven header lines
     bodyFirstLine: 8,
     components: null,
+    constants: [],
     domain: 'sdr',
     hook: 'OUTPUT',
     inputs: [ HOOKED_INPUT ],
@@ -858,6 +887,7 @@ const SHARPEN_MANIFEST: PassManifest = {
     replaces: null,
     save: null,
     shape: 'kernel',
+    textures: [],
     when: null,
     workgroup: null
 };
@@ -866,6 +896,7 @@ const TEMPORAL_BLEND_MANIFEST: PassManifest = {
     // After eight header lines
     bodyFirstLine: 9,
     components: null,
+    constants: [],
     domain: 'any',
     hook: 'RGB',
     inputs: [ HOOKED_INPUT, { historyOffset: -1, name: 'RGB' } ],
@@ -876,6 +907,7 @@ const TEMPORAL_BLEND_MANIFEST: PassManifest = {
     replaces: null,
     save: null,
     shape: 'kernel',
+    textures: [],
     when: null,
     workgroup: null
 };
@@ -884,6 +916,7 @@ const CATMULL_ROM_MANIFEST: PassManifest = {
     // After five header lines
     bodyFirstLine: 6,
     components: null,
+    constants: [],
     domain: 'any',
     hook: 'SCALE',
     inputs: [ HOOKED_INPUT ],
@@ -894,6 +927,7 @@ const CATMULL_ROM_MANIFEST: PassManifest = {
     replaces: null,
     save: null,
     shape: 'scaler',
+    textures: [],
     when: null,
     workgroup: null
 };
@@ -1027,6 +1061,19 @@ describe('pass manifest directives', () => {
         expect(parsePassManifest(createSource([ `//! name: ${astralName}`, ...KERNEL_DIRECTIVES ])).name).toBe(astralName);
     });
 
+    it('reads constants apart from the uniform parameters, and a condition on either', () => {
+        const manifest = parsePassManifest(createSource([
+            ...KERNEL_HEADER,
+            '//! param strength: f32 = 0.5 in [0, 1]',
+            '//! const radius: i32 = 2 in [1, 8]',
+            '//! when: radius > 1 && strength > 0'
+        ]));
+
+        expect(manifest.parameters).toEqual([ { defaultValue: 0.5, maximum: 1, minimum: 0, name: 'strength', type: 'f32' } ]);
+        expect(manifest.constants).toEqual([ { defaultValue: 2, maximum: 8, minimum: 1, name: 'radius', type: 'i32' } ]);
+        expect(manifest.when).toEqual(parsePassExpression('radius > 1 && strength > 0'));
+    });
+
     it('accepts 32 parameters and the deepest history', () => {
         const manifest = parsePassManifest(createSource([
             ...KERNEL_HEADER,
@@ -1148,6 +1195,15 @@ describe('pass files', () => {
         // The first pass's source is one line longer for its parameter
         expect(conflictingEntries[1].error?.line).toBe(KERNEL_SOURCE_LINE_COUNT + 1 + SECOND_KERNEL_HEADER.length + 1);
         expect(conflictingEntries[1].error?.passName).toBe(SECOND_PASS_NAME);
+    });
+
+    it('rejects a later pass that declares a file\'s parameter as a constant', () => {
+        const entries = parsePassFile([
+            createSource([ ...KERNEL_HEADER, SHARED_PARAMETER_LINE ]),
+            createSource([ ...SECOND_KERNEL_HEADER, SHARED_CONSTANT_LINE ])
+        ].join(LF));
+
+        expect(entries[1].error?.message).toBe(CONFLICTING_PARAMETER_MESSAGE);
     });
 
     it('returns one entry with the missing header error for a file that does not start with a header', () => {

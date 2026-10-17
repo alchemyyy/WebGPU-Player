@@ -537,7 +537,7 @@ function configureColorMetadataPipeline(
     if (metadata.transfer === 'sdr') {
         request.clearDetectedInputPeak();
         if (videoOutputMode === 'video-frame' && rawVideoFrameFormat === null) {
-            return presenter.configureColorPipeline({ settings: createDefaultRenderSettings() }, generation);
+            return presenter.configureColorPipeline({ metadata, settings: createDefaultRenderSettings() }, generation);
         }
         if (videoOutputMode !== 'raw-planes' || rawVideoFrameFormat === null) {
             return Promise.resolve(false);

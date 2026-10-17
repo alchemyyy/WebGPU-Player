@@ -1,7 +1,9 @@
 // Parses a pass file, whose passes each start with a `//!` header, into PassManifests; docs/src/new-pass.md documents the grammar.
+// A file may also hold texture blocks, which its passes bind by name.
 import {
     INTERMEDIATE_TEXTURE_FORMAT,
     MAXIMUM_WORKGROUP_INVOCATIONS,
+    PASS_TEXTURE_FORMAT_BYTES,
     MAXIMUM_WORKGROUP_SIZE,
     RENDER_OUTPUT_FORMATS,
     STORAGE_OUTPUT_FORMATS,
@@ -23,6 +25,7 @@ import {
     SCALED_STAGES,
     SCALER_STAGE,
     SIZE_SUFFIX,
+    TEXTURE_AXIS_NAMES,
     STAGE_ORDER,
     WIDTH_SUFFIX
 } from './PassLanguage';
@@ -36,9 +39,13 @@ import type {
     PassParameter,
     PassParameterType,
     PassShape,
+    PassTexture,
+    PassTextureEdge,
+    PassTextureFilter,
     PassWorkgroup,
     PresentationStage
 } from './PassTypes';
+import { getContentIdentity } from './ContentIdentity';
 
 /** A pass header that cannot be parsed, with the 1-based source line it failed on. */
 export class PassManifestError extends Error {
@@ -55,6 +62,7 @@ export class PassManifestError extends Error {
 }
 
 type Directive =
+    | 'bind'
     | 'components'
     | 'dispatch'
     | 'domain'
@@ -75,8 +83,10 @@ type HeaderEntry = {
     value: string
 };
 
-/** A `param <name>: <declaration>` line, with its 1-based source line. */
+/** A `param <name>: <declaration>` or `const <name>: <declaration>` line, with its 1-based source line. */
 type ParameterEntry = {
+    /** Declared with `const`, so the code holds it as a constant */
+    constant: boolean
     declaration: string
     line: number
     name: string
@@ -101,9 +111,13 @@ type PassBlock = {
 
 /** A parameter an earlier pass of the file declared, which a later declaration of its name must match. */
 type FileParameter = {
+    constant: boolean
     parameter: PassParameter
     passName: string
 };
+
+/** A texture block of a file: its texture, or the error that keeps it from parsing, which a pass that binds it reports. */
+type TextureBlockResult = Readonly<{ error: null; texture: PassTexture }> | Readonly<{ error: PassManifestError; texture: null }>;
 
 /** One pass of a pass file, in file order: its manifest, or the header error that keeps it from parsing. */
 export type PassFileEntry =
@@ -116,6 +130,8 @@ type OutputSize = Pick<PassOutput, 'height' | 'width'>;
 
 const HEADER_PREFIX = '//!';
 const PARAMETER_KEYWORD = 'param';
+// A parameter compiled into the code as a constant, which a change replans
+const CONSTANT_KEYWORD = 'const';
 // A missing header has no line of its own
 const MISSING_HEADER_LINE = 1;
 
@@ -132,6 +148,7 @@ const TEXTURE_SHAPES: readonly PassShape[] = [ 'kernel', 'compute' ];
 
 // The shapes each directive is allowed in; `param` lines are allowed in every shape
 const DIRECTIVE_SHAPES: Readonly<Record<Directive, readonly PassShape[]>> = {
+    bind: SHAPES,
     components: TEXTURE_SHAPES,
     dispatch: [ 'compute' ],
     domain: SHAPES,
@@ -148,7 +165,23 @@ const DIRECTIVE_SHAPES: Readonly<Record<Directive, readonly PassShape[]>> = {
 };
 // Own keys only, so a prototype name such as toString is not a directive
 const DIRECTIVE_NAMES: ReadonlySet<string> = new Set<string>(Object.keys(DIRECTIVE_SHAPES));
-const REPEATABLE_DIRECTIVES: readonly Directive[] = [ 'input' ];
+const REPEATABLE_DIRECTIVES: readonly Directive[] = [ 'bind', 'input' ];
+
+// A texture block's directives: its name, which a `texture` line marks a block with, its size, format, filter, and edge mode
+type TextureDirective = 'edge' | 'filter' | 'format' | 'size' | 'texture';
+const TEXTURE_DIRECTIVE_NAMES: readonly TextureDirective[] = [ 'edge', 'filter', 'format', 'size', 'texture' ];
+const TEXTURE_BLOCK_DIRECTIVE: TextureDirective = 'texture';
+const TEXTURE_FILTERS: readonly PassTextureFilter[] = [ 'linear', 'nearest' ];
+const TEXTURE_EDGES: readonly PassTextureEdge[] = [ 'clamp', 'mirror', 'repeat' ];
+// mpv's defaults for a texture without a FILTER or BORDER
+const DEFAULT_TEXTURE_FILTER: PassTextureFilter = 'nearest';
+const DEFAULT_TEXTURE_EDGE: PassTextureEdge = 'clamp';
+const MAXIMUM_TEXTURE_DIMENSIONS = 3;
+// The extent of a texture's axis past its dimensions
+const UNUSED_TEXTURE_EXTENT = 1;
+// The identity covers the size and format beside the data, so blocks of equal bytes in other shapes stay apart
+const IDENTITY_FIELD_SEPARATOR = '\n';
+const BASE64_WHITESPACE_PATTERN = /\s+/g;
 
 // The value of a workgroup size or a dispatch count that a header omits
 const DEFAULT_AXIS_VALUE = 1;
@@ -169,8 +202,9 @@ const NUMBER_PATTERN = /^[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
 const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/;
 
 const MISSING_HEADER_MESSAGE = 'The pass has no //! header';
-const MALFORMED_LINE_MESSAGE = "Expected '<directive>: <value>' or 'param <name>: <type> = <default> in [<minimum>, <maximum>]'";
-const MALFORMED_PARAMETER_MESSAGE = "Expected 'param <name>: <type> = <default> in [<minimum>, <maximum>]'";
+const TEXTURES_ONLY_MESSAGE = 'The file holds texture blocks but no pass';
+const PARAMETER_DECLARATION_FORM = '<name>: <type> = <default> in [<minimum>, <maximum>]';
+const MALFORMED_LINE_MESSAGE = `Expected '<directive>: <value>', '${PARAMETER_KEYWORD} ${PARAMETER_DECLARATION_FORM}', or '${CONSTANT_KEYWORD} ${PARAMETER_DECLARATION_FORM}'`;
 const MALFORMED_OUTPUT_MESSAGE = "Expected '<NAME>.size, <format>' or '<width>, <height>, <format>'";
 const MALFORMED_WORKGROUP_MESSAGE = "Expected 'workgroup: <x>[, <y>[, <z>]]'";
 const MALFORMED_DISPATCH_MESSAGE = "Expected 'dispatch: <x>[, <y>[, <z>]]'";
@@ -186,6 +220,10 @@ const SCALER_INPUT_MESSAGE = `A scaler reads only ${HOOKED_INPUT_NAME}`;
 const PARAMETER_COUNT_MESSAGE = `A pass declares at most ${MAXIMUM_PARAMETER_COUNT} parameters`;
 // The number of passes parsePassManifest takes
 const SINGLE_PASS_COUNT = 1;
+
+function getMalformedParameterMessage(constant: boolean): string {
+    return `Expected '${constant ? CONSTANT_KEYWORD : PARAMETER_KEYWORD} ${PARAMETER_DECLARATION_FORM}'`;
+}
 
 /** Narrows a header word to one of the words a directive allows. */
 function isOneOf<Word extends string>(words: readonly Word[], value: string): value is Word {
@@ -213,11 +251,12 @@ function readHeaderLine(text: string, line: number, entries: Map<Directive, Head
     const key = text.slice(0, colonIndex).trim();
     const value = text.slice(colonIndex + 1).trim();
     const keyWords = key.split(WHITESPACE_PATTERN);
-    if (keyWords[0] === PARAMETER_KEYWORD) {
+    if (keyWords[0] === PARAMETER_KEYWORD || keyWords[0] === CONSTANT_KEYWORD) {
+        const constant = keyWords[0] === CONSTANT_KEYWORD;
         if (keyWords.length !== 2) {
-            throw new PassManifestError(MALFORMED_PARAMETER_MESSAGE, line);
+            throw new PassManifestError(getMalformedParameterMessage(constant), line);
         }
-        parameters.push({ declaration: value, line, name: keyWords[1] });
+        parameters.push({ constant, declaration: value, line, name: keyWords[1] });
         return;
     }
     if (!isDirective(key)) {
@@ -614,9 +653,11 @@ function readComponents(header: PassHeader): ComponentCount | null {
     return count;
 }
 
-function readWhen(header: PassHeader): PassExpression | null {
+/** Reads the condition, which reads the global facts and the pass's own parameters and constants, by name. */
+function readWhen(header: PassHeader, parameters: readonly PassParameter[]): PassExpression | null {
     const entry = getEntry(header, 'when');
-    return entry ? parseExpression(entry.value, GLOBAL_FACT_NAMES, entry.line) : null;
+    const identifiers = [ ...GLOBAL_FACT_NAMES, ...parameters.map((parameter: PassParameter): string => parameter.name) ];
+    return entry ? parseExpression(entry.value, identifiers, entry.line) : null;
 }
 
 /** Parses `<x>[, <y>[, <z>]]` positive integers within WebGPU's default workgroup limits; omitted sizes are 1. */
@@ -718,7 +759,7 @@ function parseParameter(entry: ParameterEntry): PassParameter {
     const match = PARAMETER_DECLARATION_PATTERN.exec(entry.declaration);
     const rangeTexts = match ? match[3].split(',').map((text: string): string => text.trim()) : [];
     if (!match || rangeTexts.length !== 2) {
-        throw new PassManifestError(MALFORMED_PARAMETER_MESSAGE, entry.line);
+        throw new PassManifestError(getMalformedParameterMessage(entry.constant), entry.line);
     }
     const [ , type, defaultText ] = match;
     if (!isOneOf(PARAMETER_TYPES, type)) {
@@ -736,22 +777,46 @@ function parseParameter(entry: ParameterEntry): PassParameter {
     return { defaultValue, maximum, minimum, name: entry.name, type };
 }
 
-function readParameters(entries: readonly ParameterEntry[]): PassParameter[] {
+/** Reads the `param` lines into the uniform parameters and the `const` lines into the constants, which share one name space and one count. */
+function readParameters(entries: readonly ParameterEntry[]): Pick<PassManifest, 'constants' | 'parameters'> {
+    const constants: PassParameter[] = [];
     const parameters: PassParameter[] = [];
     for (const entry of entries) {
-        if (parameters.length === MAXIMUM_PARAMETER_COUNT) {
+        if (constants.length + parameters.length === MAXIMUM_PARAMETER_COUNT) {
             throw new PassManifestError(PARAMETER_COUNT_MESSAGE, entry.line);
         }
-        if (parameters.some((declared: PassParameter): boolean => declared.name === entry.name)) {
+        if ([ ...constants, ...parameters ].some((declared: PassParameter): boolean => declared.name === entry.name)) {
             throw new PassManifestError(`Duplicate parameter '${entry.name}'`, entry.line);
         }
-        parameters.push(parseParameter(entry));
+        (entry.constant ? constants : parameters).push(parseParameter(entry));
     }
-    return parameters;
+    return { constants, parameters };
+}
+
+/** Reads the textures a pass binds: each a texture block of its file that parsed, bound once, under a name no input takes. */
+function readBinds(header: PassHeader, inputs: readonly PassInput[], fileTextures: ReadonlyMap<string, TextureBlockResult>): PassTexture[] {
+    const textures: PassTexture[] = [];
+    for (const entry of header.entries.get('bind') ?? []) {
+        const result = fileTextures.get(entry.value);
+        if (result === undefined) {
+            throw new PassManifestError(`Unknown texture '${entry.value}'; the file has no texture block of that name`, entry.line);
+        }
+        if (result.texture === null) {
+            throw new PassManifestError(`Texture '${entry.value}' does not parse: line ${result.error.line}: ${result.error.message}`, entry.line);
+        }
+        if (textures.includes(result.texture)) {
+            throw new PassManifestError(`Duplicate texture '${entry.value}'`, entry.line);
+        }
+        if (inputs.some((input: PassInput): boolean => input.name === entry.value)) {
+            throw new PassManifestError(`'${entry.value}' names both an input and a texture`, entry.line);
+        }
+        textures.push(result.texture);
+    }
+    return textures;
 }
 
 /** Reads every directive after the name into the manifest. */
-function readManifest(header: PassHeader, name: string): PassManifest {
+function readManifest(header: PassHeader, name: string, fileTextures: ReadonlyMap<string, TextureBlockResult>): PassManifest {
     const shape = readWord(requireEntry(header, 'shape'), SHAPES, 'shape');
     requireDirectivesOfShape(header, shape);
     const replaces = readReplaces(header);
@@ -762,13 +827,15 @@ function readManifest(header: PassHeader, name: string): PassManifest {
     const output = readOutput(header, shape, inputs);
     const offset = readOffset(header, hook);
     const components = readComponents(header);
-    const when = readWhen(header);
+    const { constants, parameters } = readParameters(header.parameters);
+    const when = readWhen(header, [ ...parameters, ...constants ]);
     const workgroup = shape === 'compute' && output ? readWorkgroup(header, inputs, output) : null;
-    const parameters = readParameters(header.parameters);
+    const textures = readBinds(header, inputs, fileTextures);
     return {
         body: header.body,
         bodyFirstLine: header.bodyFirstLine,
         components,
+        constants,
         domain,
         hook,
         inputs,
@@ -779,6 +846,7 @@ function readManifest(header: PassHeader, name: string): PassManifest {
         replaces,
         save,
         shape,
+        textures,
         when,
         workgroup
     };
@@ -791,30 +859,196 @@ function parametersMatch(first: PassParameter, second: PassParameter): boolean {
         && first.maximum === second.maximum;
 }
 
-/** Rejects a parameter that an earlier pass of the file declared differently, since a file's passes share each parameter's value; then records the pass's parameters. */
+/**
+ * Rejects a parameter that an earlier pass of the file declared differently, or as the other kind, since a file's passes share each parameter's value;
+ * then records the pass's parameters.
+ */
 function requireFileParameters(header: PassHeader, manifest: PassManifest, fileParameters: Map<string, FileParameter>): void {
-    for (const [ parameterIndex, parameter ] of manifest.parameters.entries()) {
-        const declared = fileParameters.get(parameter.name);
-        if (declared && !parametersMatch(declared.parameter, parameter)) {
+    const declarations = [
+        ...manifest.parameters.map((parameter: PassParameter): FileParameter => ({ constant: false, parameter, passName: manifest.name })),
+        ...manifest.constants.map((parameter: PassParameter): FileParameter => ({ constant: true, parameter, passName: manifest.name }))
+    ];
+    for (const declaration of declarations) {
+        const declared = fileParameters.get(declaration.parameter.name);
+        if (declared && (declared.constant !== declaration.constant || !parametersMatch(declared.parameter, declaration.parameter))) {
+            const entry = header.parameters.find((candidate: ParameterEntry): boolean => candidate.name === declaration.parameter.name);
             throw new PassManifestError(
-                `Parameter '${parameter.name}' differs from its declaration in '${declared.passName}'`,
-                header.parameters[parameterIndex].line
+                `Parameter '${declaration.parameter.name}' differs from its declaration in '${declared.passName}'`,
+                entry?.line ?? header.firstLine
             );
         }
     }
-    for (const parameter of manifest.parameters) {
-        if (!fileParameters.has(parameter.name)) {
-            fileParameters.set(parameter.name, { parameter, passName: manifest.name });
+    for (const declaration of declarations) {
+        if (!fileParameters.has(declaration.parameter.name)) {
+            fileParameters.set(declaration.parameter.name, declaration);
         }
     }
 }
 
+/** Returns whether a block is a texture block: its header names a texture, which no pass directive does. */
+function isTextureBlock(lines: readonly string[], block: PassBlock): boolean {
+    for (let lineIndex = block.headerStart; lineIndex < block.bodyStart; lineIndex += 1) {
+        const text = lines[lineIndex].slice(HEADER_PREFIX.length);
+        const colonIndex = text.indexOf(':');
+        if (colonIndex > 0 && text.slice(0, colonIndex).trim() === TEXTURE_BLOCK_DIRECTIVE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** Reads a texture block's header: one value per directive, each a texture directive. */
+function readTextureHeader(lines: readonly string[], block: PassBlock): Map<TextureDirective, HeaderEntry> {
+    const entries = new Map<TextureDirective, HeaderEntry>();
+    for (let lineIndex = block.headerStart; lineIndex < block.bodyStart; lineIndex += 1) {
+        const line = lineIndex + 1;
+        const text = lines[lineIndex].slice(HEADER_PREFIX.length).trim();
+        const colonIndex = text.indexOf(':');
+        const key = text.slice(0, Math.max(colonIndex, 0)).trim();
+        const value = text.slice(colonIndex + 1).trim();
+        if (colonIndex <= 0 || !isOneOf(TEXTURE_DIRECTIVE_NAMES, key)) {
+            throw new PassManifestError(`Expected a texture directive, one of ${TEXTURE_DIRECTIVE_NAMES.join(', ')}`, line);
+        }
+        if (entries.has(key)) {
+            throw new PassManifestError(`Repeated directive '${key}'`, line);
+        }
+        if (value === '') {
+            throw new PassManifestError(`Directive '${key}' has no value`, line);
+        }
+        entries.set(key, { line, value });
+    }
+    return entries;
+}
+
+function requireTextureEntry(entries: ReadonlyMap<TextureDirective, HeaderEntry>, directive: TextureDirective, firstLine: number): HeaderEntry {
+    const entry = entries.get(directive);
+    if (entry === undefined) {
+        throw new PassManifestError(`Missing required directive '${directive}'`, firstLine);
+    }
+    return entry;
+}
+
+/** Parses `<width>[, <height>[, <depth>]]` positive integers, which give the texture its dimensions. */
+function parseTextureSize(entry: HeaderEntry): Pick<PassTexture, 'dimensions' | 'size'> {
+    const parts = splitTopLevel(entry.value, entry.line);
+    if (parts.length > MAXIMUM_TEXTURE_DIMENSIONS || parts.some((part: string): boolean => !POSITIVE_INTEGER_PATTERN.test(part))) {
+        throw new PassManifestError("Expected 'size: <width>[, <height>[, <depth>]]' positive integers", entry.line);
+    }
+    const extents = parts.map(Number);
+    const size: [number, number, number] = [ UNUSED_TEXTURE_EXTENT, UNUSED_TEXTURE_EXTENT, UNUSED_TEXTURE_EXTENT ];
+    for (const [ axisIndex, extent ] of extents.entries()) {
+        if (!Number.isSafeInteger(extent)) {
+            throw new PassManifestError(`Texture ${TEXTURE_AXIS_NAMES[axisIndex]} ${parts[axisIndex]} is not a safe integer`, entry.line);
+        }
+        size[axisIndex] = extent;
+    }
+    return { dimensions: extents.length as PassTexture['dimensions'], size };
+}
+
+/** Decodes a texture block's base64 body, ignoring whitespace. */
+function decodeTextureData(body: string, line: number): Uint8Array<ArrayBuffer> {
+    try {
+        return Uint8Array.from(atob(body.replace(BASE64_WHITESPACE_PATTERN, '')), (character: string): number => character.charCodeAt(0));
+    } catch {
+        throw new PassManifestError('The texture data is not base64', line);
+    }
+}
+
+/** Returns a texture's content identity: the SHA-256 of its size, its format, and its data. */
+function createTextureIdentity(size: PassTexture['size'], format: GPUTextureFormat, data: Uint8Array): string {
+    const prefix = new TextEncoder().encode([ ...size, format ].join(IDENTITY_FIELD_SEPARATOR) + IDENTITY_FIELD_SEPARATOR);
+    const content = new Uint8Array(prefix.byteLength + data.byteLength);
+    content.set(prefix);
+    content.set(data, prefix.byteLength);
+    return getContentIdentity(content);
+}
+
+/**
+ * Parses a texture block: `texture: <NAME>`, `size: <width>[, <height>[, <depth>]]`, `format: <format>`, optional `filter` and `edge`,
+ * and a body of the texels' bytes in base64, which must fill the size in the format exactly.
+ */
+function parseTextureBlock(lines: readonly string[], block: PassBlock): PassTexture {
+    const entries = readTextureHeader(lines, block);
+    const firstLine = block.headerStart + 1;
+    const nameEntry = requireTextureEntry(entries, TEXTURE_BLOCK_DIRECTIVE, firstLine);
+    if (!IDENTIFIER_PATTERN.test(nameEntry.value)) {
+        throw new PassManifestError(`Texture name '${nameEntry.value}' is not an identifier`, nameEntry.line);
+    }
+    if (nameEntry.value === HOOKED_INPUT_NAME || isOneOf(STAGE_ORDER, nameEntry.value)) {
+        throw new PassManifestError(`Cannot name a texture '${nameEntry.value}', which inputs read`, nameEntry.line);
+    }
+    requireTextureName(nameEntry.value, nameEntry.line);
+    const { dimensions, size } = parseTextureSize(requireTextureEntry(entries, 'size', firstLine));
+    const formatEntry = requireTextureEntry(entries, 'format', firstLine);
+    const formats = [ ...PASS_TEXTURE_FORMAT_BYTES.keys() ];
+    const format = readWord(formatEntry, formats, 'texture format');
+    const filterEntry = entries.get('filter');
+    const edgeEntry = entries.get('edge');
+    const data = decodeTextureData(lines.slice(block.bodyStart, block.bodyEnd).join('\n'), block.bodyStart + 1);
+    const expectedByteLength = size[0] * size[1] * size[2] * (PASS_TEXTURE_FORMAT_BYTES.get(format) ?? 0);
+    if (data.byteLength !== expectedByteLength) {
+        throw new PassManifestError(`The texture data holds ${data.byteLength} bytes; ${size.join('x')} ${format} needs ${expectedByteLength}`, block.bodyStart + 1);
+    }
+    return {
+        data,
+        dimensions,
+        edge: edgeEntry === undefined ? DEFAULT_TEXTURE_EDGE : readWord(edgeEntry, TEXTURE_EDGES, 'edge'),
+        filter: filterEntry === undefined ? DEFAULT_TEXTURE_FILTER : readWord(filterEntry, TEXTURE_FILTERS, 'filter'),
+        format,
+        identity: createTextureIdentity(size, format, data),
+        name: nameEntry.value,
+        size
+    };
+}
+
+/** Parses a file's texture blocks by name; a block that fails, or repeats an earlier block's name, keeps its error for the passes that bind it. */
+function parseTextureBlocks(lines: readonly string[], blocks: readonly PassBlock[]): Map<string, TextureBlockResult> {
+    const textures = new Map<string, TextureBlockResult>();
+    for (const block of blocks) {
+        let result: TextureBlockResult;
+        try {
+            result = { error: null, texture: parseTextureBlock(lines, block) };
+        } catch (error) {
+            if (!(error instanceof PassManifestError)) {
+                throw error;
+            }
+            result = { error, texture: null };
+        }
+        const name = result.texture?.name ?? readTextureBlockName(lines, block);
+        if (name === null) {
+            continue;
+        }
+        if (textures.has(name)) {
+            result = { error: new PassManifestError(`Duplicate texture '${name}'`, block.headerStart + 1), texture: null };
+        }
+        textures.set(name, result);
+    }
+    return textures;
+}
+
+/** Returns the name a texture block's header declares, which a block that fails elsewhere still files its error under. */
+function readTextureBlockName(lines: readonly string[], block: PassBlock): string | null {
+    for (let lineIndex = block.headerStart; lineIndex < block.bodyStart; lineIndex += 1) {
+        const text = lines[lineIndex].slice(HEADER_PREFIX.length);
+        const colonIndex = text.indexOf(':');
+        if (colonIndex > 0 && text.slice(0, colonIndex).trim() === TEXTURE_BLOCK_DIRECTIVE) {
+            return text.slice(colonIndex + 1).trim();
+        }
+    }
+    return null;
+}
+
 /** Parses and validates one pass of a file; a failure after the name was read carries that name, so a report can name the pass. */
-function parsePassBlock(lines: readonly string[], block: PassBlock, fileParameters: Map<string, FileParameter>): PassManifest {
+function parsePassBlock(
+    lines: readonly string[],
+    block: PassBlock,
+    fileParameters: Map<string, FileParameter>,
+    fileTextures: ReadonlyMap<string, TextureBlockResult>
+): PassManifest {
     const header = readHeader(lines, block);
     const name = readName(header);
     try {
-        const manifest = readManifest(header, name);
+        const manifest = readManifest(header, name, fileTextures);
         requireFileParameters(header, manifest, fileParameters);
         return manifest;
     } catch (error) {
@@ -831,8 +1065,9 @@ function createMissingHeaderError(): PassManifestError {
 
 /**
  * Parses a pass file into its passes in file order, each a `//!` header and the body up to the next header line, as in mpv's user shaders.
+ * Texture blocks, whose headers name a texture, parse first, and each pass takes the ones it binds; they are not entries of their own.
  * Each pass parses on its own, so a malformed header leaves the file's other passes in place, and every line counts from the file's first line.
- * A file whose first non-blank line is not a header is one entry, with the missing header error.
+ * A file whose first non-blank line is not a header, or that holds texture blocks alone, is one entry, with the error that says so.
  */
 export function parsePassFile(source: string): PassFileEntry[] {
     const lines = source.split(LINE_BREAK_PATTERN);
@@ -840,11 +1075,17 @@ export function parsePassFile(source: string): PassFileEntry[] {
     if (blocks.length === 0) {
         return [ { error: createMissingHeaderError(), manifest: null } ];
     }
+    const textureBlocks = blocks.filter((block: PassBlock): boolean => isTextureBlock(lines, block));
+    const passBlocks = blocks.filter((block: PassBlock): boolean => !textureBlocks.includes(block));
+    if (passBlocks.length === 0) {
+        return [ { error: new PassManifestError(TEXTURES_ONLY_MESSAGE, blocks[0].headerStart + 1), manifest: null } ];
+    }
+    const fileTextures = parseTextureBlocks(lines, textureBlocks);
     const fileParameters = new Map<string, FileParameter>();
     const entries: PassFileEntry[] = [];
-    for (const block of blocks) {
+    for (const block of passBlocks) {
         try {
-            entries.push({ error: null, manifest: parsePassBlock(lines, block, fileParameters) });
+            entries.push({ error: null, manifest: parsePassBlock(lines, block, fileParameters, fileTextures) });
         } catch (error) {
             if (!(error instanceof PassManifestError)) {
                 throw error;
@@ -856,17 +1097,19 @@ export function parsePassFile(source: string): PassFileEntry[] {
 }
 
 /**
- * Parses and validates a source that holds exactly one pass into a typed manifest.
+ * Parses and validates a source that holds exactly one pass, and any texture blocks it binds, into a typed manifest.
  * A source of several passes fails on the second pass's first line; parsePassFile reads such files.
  */
 export function parsePassManifest(source: string): PassManifest {
     const lines = source.split(LINE_BREAK_PATTERN);
     const blocks = findPassBlocks(lines);
-    if (blocks.length === 0) {
-        throw createMissingHeaderError();
+    const textureBlocks = blocks.filter((block: PassBlock): boolean => isTextureBlock(lines, block));
+    const passBlocks = blocks.filter((block: PassBlock): boolean => !textureBlocks.includes(block));
+    if (passBlocks.length === 0) {
+        throw blocks.length === 0 ? createMissingHeaderError() : new PassManifestError(TEXTURES_ONLY_MESSAGE, blocks[0].headerStart + 1);
     }
-    if (blocks.length > SINGLE_PASS_COUNT) {
-        throw new PassManifestError(`The source holds ${blocks.length} passes; expected one`, blocks[SINGLE_PASS_COUNT].headerStart + 1);
+    if (passBlocks.length > SINGLE_PASS_COUNT) {
+        throw new PassManifestError(`The source holds ${passBlocks.length} passes; expected one`, passBlocks[SINGLE_PASS_COUNT].headerStart + 1);
     }
-    return parsePassBlock(lines, blocks[0], new Map<string, FileParameter>());
+    return parsePassBlock(lines, passBlocks[0], new Map<string, FileParameter>(), parseTextureBlocks(lines, textureBlocks));
 }

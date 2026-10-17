@@ -25,6 +25,7 @@ import {
     getEngineBindingLayout,
     getParameterByteOffset,
     getParametersByteLength,
+    normalizePassParameterValue,
     PRESENTATION_UNIFORM_BYTE_LENGTH,
     type PresentationUniformValues,
     UNIFORM_SLOT_BYTE_LENGTH,
@@ -37,10 +38,12 @@ import type {
     PassLineMapping,
     PassParameter,
     PassTarget,
+    PassTextureEdge,
     PlannedBinding,
     PlannedBuffer,
     PlannedOutput,
     PlannedPass,
+    PlannedPassTexture,
     PlannedTexture,
     PresentationCompileMessage,
     PresentationFrameInput,
@@ -82,6 +85,7 @@ const RENDER_SETTINGS_LABEL = 'Presentation render settings';
 const DOLBY_VISION_RPU_LABEL = 'Presentation Dolby Vision RPU';
 const ENHANCEMENT_UNIFORM_LABEL = 'Presentation Dolby Vision enhancement uniforms';
 const SAMPLER_LABEL = 'Presentation linear sampler';
+const PASS_SAMPLER_LABEL = 'Presentation texture block sampler';
 const BASE_PLANES_LABEL = 'Raw video';
 const ENHANCEMENT_PLANES_LABEL = 'Raw Dolby Vision enhancement';
 
@@ -159,6 +163,21 @@ type ParameterSlot = {
 
 /** Engine binding resources that a frame's source provides. */
 type SourceResources = Partial<Record<EngineBindingResource, GPUBindingResource>>;
+
+/** What bind group layouts need of a plan: its textures and texture blocks by id, and whether the device filters 32-bit floats. */
+type LayoutResources = {
+    float32Filterable: boolean
+    passTextures: ReadonlyMap<string, PlannedPassTexture>
+    textures: ReadonlyMap<string, PlannedTexture>
+};
+
+// The address mode of each texture block edge mode
+const PASS_TEXTURE_ADDRESS_MODES: Readonly<Record<PassTextureEdge, GPUAddressMode>> = {
+    clamp: 'clamp-to-edge',
+    mirror: 'mirror-repeat',
+    repeat: 'repeat'
+};
+const EMPTY_PASS_TEXTURE_VIEWS: ReadonlyMap<string, GPUTextureView> = new Map<string, GPUTextureView>();
 
 /** A coded frame and its visible rectangle, which raw planes and frame pool slots both describe. */
 type VisibleRegion = {
@@ -265,11 +284,23 @@ function createTextureLayoutEntry(
     }
 }
 
+function requirePlannedPassTexture(passTextures: ReadonlyMap<string, PlannedPassTexture>, textureId: string): PlannedPassTexture {
+    const texture = passTextures.get(textureId);
+    if (!texture) {
+        throw new Error(`The plan has no texture block '${textureId}'`);
+    }
+    return texture;
+}
+
+/** Returns the sampler a texture block's filter and edge mode name, which every block of the two shares. */
+function getPassSamplerKey(texture: PlannedPassTexture): string {
+    return `${texture.filter}:${texture.edge}`;
+}
+
 function createBindGroupLayoutEntry(
     binding: PlannedBinding,
     visibility: GPUShaderStageFlags,
-    textures: ReadonlyMap<string, PlannedTexture>,
-    float32Filterable: boolean
+    resources: LayoutResources
 ): GPUBindGroupLayoutEntry {
     switch (binding.kind) {
         case 'buffer':
@@ -280,20 +311,28 @@ function createBindGroupLayoutEntry(
         case 'presentation':
             return { binding: binding.binding, buffer: { type: 'uniform' }, visibility };
         case 'texture':
-            return createTextureLayoutEntry(binding, visibility, requirePlannedTexture(textures, binding.textureId), float32Filterable);
+            return createTextureLayoutEntry(binding, visibility, requirePlannedTexture(resources.textures, binding.textureId), resources.float32Filterable);
+        case 'pass-texture': {
+            const texture = requirePlannedPassTexture(resources.passTextures, binding.textureId);
+            return {
+                binding: binding.binding,
+                texture: { sampleType: getSampleType(texture.format, resources.float32Filterable), viewDimension: texture.dimension },
+                visibility
+            };
+        }
+        case 'pass-sampler': {
+            // The planner leaves out a linear filter on a format the device cannot filter, and a nearest read needs no filtering
+            const texture = requirePlannedPassTexture(resources.passTextures, binding.textureId);
+            return { binding: binding.binding, sampler: { type: texture.filter === 'linear' ? 'filtering' : 'non-filtering' }, visibility };
+        }
     }
 }
 
-function createBindGroupLayout(
-    device: GPUDevice,
-    pass: PlannedPass,
-    textures: ReadonlyMap<string, PlannedTexture>
-): GPUBindGroupLayout {
+function createBindGroupLayout(device: GPUDevice, pass: PlannedPass, resources: LayoutResources): GPUBindGroupLayout {
     const visibility = pass.kind === 'compute' ? GPUShaderStage.COMPUTE : GPUShaderStage.FRAGMENT;
-    const float32Filterable = device.features.has(FLOAT32_FILTERABLE_FEATURE);
     const entries: GPUBindGroupLayoutEntry[] = [];
     for (const binding of pass.bindings) {
-        entries.push(createBindGroupLayoutEntry(binding, visibility, textures, float32Filterable));
+        entries.push(createBindGroupLayoutEntry(binding, visibility, resources));
     }
     return device.createBindGroupLayout({ entries, label: pass.label });
 }
@@ -422,17 +461,8 @@ function requireByteLength(data: ArrayBuffer, byteLength: number, name: string):
     }
 }
 
-/** Returns a parameter value in its type and range: integers round, and values outside the range clamp to it. */
-function normalizeParameterValue(parameter: PassParameter, value: number): number {
-    if (!Number.isFinite(value)) {
-        throw new RangeError(`Parameter '${parameter.name}' must be a finite number`);
-    }
-    const typedValue = parameter.type === 'f32' ? value : Math.round(value);
-    return Math.min(Math.max(typedValue, parameter.minimum), parameter.maximum);
-}
-
 function writeParameterValue(target: DataView, byteOffset: number, parameter: PassParameter, value: number): void {
-    const normalizedValue = normalizeParameterValue(parameter, value);
+    const normalizedValue = normalizePassParameterValue(parameter, value);
     switch (parameter.type) {
         case 'f32':
             target.setFloat32(byteOffset, normalizedValue, true);
@@ -616,6 +646,9 @@ export class PresentationExecutor {
     private readonly presentationWriteByteLength: number;
     private readonly renderSettingsBuffer: GPUBuffer | null;
     private readonly rings = new Map<string, HistoryRing>();
+    private readonly passSamplers = new Map<string, GPUSampler>();
+    private readonly passTextures = new Map<string, PlannedPassTexture>();
+    private readonly passTextureViews: ReadonlyMap<string, GPUTextureView>;
     private readonly sampler: GPUSampler | null;
     private readonly sourceKind: PresentationSourceKind;
     private readonly uniformValues: PresentationUniformValues = {
@@ -655,10 +688,15 @@ export class PresentationExecutor {
         device: GPUDevice,
         plan: PresentationPlan,
         bindGroupLayouts: readonly GPUBindGroupLayout[],
-        pipelines: readonly PassPipeline[]
+        pipelines: readonly PassPipeline[],
+        passTextureViews: ReadonlyMap<string, GPUTextureView>
     ) {
         this.device = device;
+        this.passTextureViews = passTextureViews;
         this.sourceKind = plan.sourceKind;
+        for (const texture of plan.passTextures) {
+            this.passTextures.set(texture.id, texture);
+        }
         this.historySaturation = getHistorySaturation(plan);
         this.presentationView = new DataView(new ArrayBuffer(plan.passes.length * UNIFORM_SLOT_BYTE_LENGTH));
         // The write stops where the last slot's uniform ends
@@ -696,6 +734,20 @@ export class PresentationExecutor {
             this.sampler = engineResources.has('sampler-linear') ?
                 device.createSampler({ label: SAMPLER_LABEL, magFilter: 'linear', minFilter: 'linear' }) :
                 null;
+            for (const texture of plan.passTextures) {
+                const addressMode = PASS_TEXTURE_ADDRESS_MODES[texture.edge];
+                const key = getPassSamplerKey(texture);
+                if (!this.passSamplers.has(key)) {
+                    this.passSamplers.set(key, device.createSampler({
+                        addressModeU: addressMode,
+                        addressModeV: addressMode,
+                        addressModeW: addressMode,
+                        label: `${PASS_SAMPLER_LABEL} ${key}`,
+                        magFilter: texture.filter,
+                        minFilter: texture.filter
+                    }));
+                }
+            }
             this.createRings(plan);
             this.createPlannedBuffers(plan);
             this.writeDefaultParameters();
@@ -716,16 +768,30 @@ export class PresentationExecutor {
     /**
      * Compiles a plan and allocates its resources; it rejects with a PresentationCompileError when a pass's WGSL does not compile.
      * Compile messages carry the user pass and source line, through each pass's line map, whose lines are 1-based like the browser's.
+     * The plan's texture blocks bind the caller's uploads, by identity, which outlive the executor.
      */
-    static async create(device: GPUDevice, plan: PresentationPlan): Promise<PresentationExecutor> {
+    static async create(
+        device: GPUDevice,
+        plan: PresentationPlan,
+        passTextureViews: ReadonlyMap<string, GPUTextureView> = EMPTY_PASS_TEXTURE_VIEWS
+    ): Promise<PresentationExecutor> {
         if (plan.passes.length === 0) {
             throw new RangeError('A presentation plan needs at least one pass');
+        }
+        const missingTexture = plan.passTextures.find((texture: PlannedPassTexture): boolean => !passTextureViews.has(texture.id));
+        if (missingTexture !== undefined) {
+            throw new RangeError(`texture-upload: no upload of texture block ${missingTexture.id}`);
         }
         const textures = new Map<string, PlannedTexture>();
         for (const texture of plan.textures) {
             textures.set(texture.id, texture);
         }
-        const bindGroupLayouts = plan.passes.map((pass: PlannedPass): GPUBindGroupLayout => createBindGroupLayout(device, pass, textures));
+        const passTextures = new Map<string, PlannedPassTexture>();
+        for (const texture of plan.passTextures) {
+            passTextures.set(texture.id, texture);
+        }
+        const layoutResources: LayoutResources = { float32Filterable: device.features.has(FLOAT32_FILTERABLE_FEATURE), passTextures, textures };
+        const bindGroupLayouts = plan.passes.map((pass: PlannedPass): GPUBindGroupLayout => createBindGroupLayout(device, pass, layoutResources));
         const shaderModules = plan.passes.map((pass: PlannedPass): GPUShaderModule => (
             device.createShaderModule({ code: pass.code, label: pass.label })
         ));
@@ -736,7 +802,7 @@ export class PresentationExecutor {
         const pipelines = await Promise.all(plan.passes.map((pass: PlannedPass, index: number): Promise<PassPipeline> => (
             createPassPipeline(device, plan.output, pass, shaderModules[index], bindGroupLayouts[index], textures)
         )));
-        return new PresentationExecutor(device, plan, bindGroupLayouts, pipelines);
+        return new PresentationExecutor(device, plan, bindGroupLayouts, pipelines, passTextureViews);
     }
 
     /** Writes the render settings uniform; it does nothing when the plan does not bind render settings. */
@@ -1059,6 +1125,20 @@ export class PresentationExecutor {
             case 'texture': {
                 const ring = this.requireRing(binding.textureId);
                 return ring.views[getRingSlot(phase, ring.views.length, binding.historyOffset)];
+            }
+            case 'pass-texture': {
+                const view = this.passTextureViews.get(binding.textureId);
+                if (!view) {
+                    throw new Error(`Pass '${pass.label}' binds texture block ${binding.textureId}, which has no upload`);
+                }
+                return view;
+            }
+            case 'pass-sampler': {
+                const sampler = this.passSamplers.get(getPassSamplerKey(requirePlannedPassTexture(this.passTextures, binding.textureId)));
+                if (!sampler) {
+                    throw new Error(`Pass '${pass.label}' binds the sampler of texture block ${binding.textureId}, which the plan does not declare`);
+                }
+                return sampler;
             }
         }
     }

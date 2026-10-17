@@ -135,6 +135,8 @@ function planRawReferenceShaderCode(routeKey: RawHDRAuthorizationRouteKey): stri
             hdrSource: metadata.transfer !== 'sdr',
             outputHeight: RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
             outputWidth: RAW_HDR_AUTHORIZATION_VECTOR_WIDTH,
+            sampleHeight: RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
+            sampleWidth: RAW_HDR_AUTHORIZATION_VECTOR_WIDTH,
             sourceHeight: RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
             sourceWidth: RAW_HDR_AUTHORIZATION_VECTOR_WIDTH
         },

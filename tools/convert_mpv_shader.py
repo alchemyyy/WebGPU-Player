@@ -11,6 +11,7 @@ The report lists each place where the result differs from mpv, as a code and a t
 from __future__ import annotations
 
 import argparse
+import itertools
 import bisect
 import re
 import shutil
@@ -22,6 +23,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Callable, Final
+
+from pass_texture_block import format_texture_block
 
 
 # Toolchain
@@ -51,7 +54,9 @@ SEVERITY_NOTE: Final = 'note'
 CODE_BIND_BEFORE_STAGE: Final = 'bind-before-stage'
 CODE_BIND_UNKNOWN: Final = 'bind-unknown'
 CODE_BUFFER_UNSUPPORTED: Final = 'buffer-unsupported'
-CODE_CONDITION_RUNTIME: Final = 'condition-runtime'
+CODE_CONSTANT_FOLDED: Final = 'constant-folded'
+CODE_DEFINE_VARIANTS: Final = 'define-variants'
+CODE_DEFINE_VARIANT_LIMIT: Final = 'define-variant-limit'
 CODE_DIRECTIVE_INVALID: Final = 'directive-invalid'
 CODE_DIRECTIVE_UNKNOWN: Final = 'directive-unknown'
 CODE_EXPRESSION_INVALID: Final = 'expression-invalid'
@@ -60,13 +65,12 @@ CODE_GLSL_DIRECTIVE_REMOVED: Final = 'glsl-directive-removed'
 CODE_GLSL_REPAIRED: Final = 'glsl-repaired'
 CODE_GLSL_TRANSLATION_FAILED: Final = 'glsl-translation-failed'
 CODE_HEADERS_MISSING: Final = 'headers-missing'
+CODE_HOOK_BY_SOURCE: Final = 'hook-by-source'
 CODE_HOOK_EMULATED: Final = 'hook-emulated'
 CODE_HOOK_FUNCTION_MISSING: Final = 'hook-function-missing'
 CODE_HOOK_NEVER_FIRES: Final = 'hook-never-fires'
-CODE_HOOK_SKIPPED: Final = 'hook-skipped'
 CODE_HOOK_UNKNOWN: Final = 'hook-unknown'
 CODE_IMAGE_UNSUPPORTED: Final = 'image-unsupported'
-CODE_LINEARIZE_APPROXIMATED: Final = 'linearize-approximated'
 CODE_NAGA_UNAVAILABLE: Final = 'naga-unavailable'
 CODE_NAME_TRUNCATED: Final = 'name-truncated'
 CODE_OFFSET_IGNORED: Final = 'offset-ignored'
@@ -80,8 +84,9 @@ CODE_PASS_UNHOOKED: Final = 'pass-unhooked'
 CODE_RAW_SAMPLER_UNSUPPORTED: Final = 'raw-sampler-unsupported'
 CODE_SAVE_RENAMED: Final = 'save-renamed'
 CODE_STAGE_APPROXIMATED: Final = 'stage-approximated'
-CODE_TEXTURE_EMULATED: Final = 'texture-emulated'
+CODE_TEXTURE_FORMAT_MAPPED: Final = 'texture-format-mapped'
 CODE_TEXTURE_INVALID: Final = 'texture-invalid'
+CODE_TEXTURE_RENAMED: Final = 'texture-renamed'
 CODE_TEXTURE_UNSUPPORTED: Final = 'texture-unsupported'
 CODE_WGSL_INVALID: Final = 'wgsl-invalid'
 CODE_WORKGROUP_LIMIT: Final = 'workgroup-limit'
@@ -125,15 +130,20 @@ HALF_FLOAT_BITS: Final = 16
 FLOAT32_BYTES: Final = 4
 FLOAT16_BYTES: Final = 2
 UNSIGNED_FORMATS: Final = {1: 'B', 2: 'H', 4: 'I'}
-# Textures are emulated as constant arrays; D3D11's immediate constant buffer, which a D3D browser may place one in, holds 4096 vec4s
-MAXIMUM_EMULATED_TEXELS: Final = 4_096
+UNORM8_BITS: Final = 8
 # A sample of a missing component, as GLSL and WGSL fill it
 MISSING_COMPONENTS: Final = (0.0, 0.0, 0.0, 1.0)
+# The pass file's texture block formats by component count, which hold one, two, or four components; three components take four
+ENGINE_TEXTURE_COMPONENTS: Final = {1: 'r', 2: 'rg', 3: 'rgba', 4: 'rgba'}
+ENGINE_TEXTURE_UNORM8_SUFFIX: Final = '8unorm'
+ENGINE_TEXTURE_HALF_SUFFIX: Final = '16float'
+ENGINE_TEXTURE_FLOAT_SUFFIX: Final = '32float'
+ENGINE_TEXTURE_FILTERS: Final = {FILTER_NEAREST: 'nearest', FILTER_LINEAR: 'linear'}
+ENGINE_TEXTURE_EDGES: Final = {BORDER_CLAMP: 'clamp', BORDER_REPEAT: 'repeat', BORDER_MIRROR: 'mirror'}
 INT32_MINIMUM: Final = -2_147_483_648
 INT32_MAXIMUM: Final = 2_147_483_647
 UINT32_MAXIMUM: Final = 4_294_967_295
 FLOAT32_MAXIMUM: Final = 3.4028234663852886e38
-FLOAT32_SIGNIFICANT_DIGITS: Final = 9
 
 # RPN expressions
 
@@ -156,11 +166,12 @@ FACT_SOURCE_WIDTH: Final = 'source.width'
 FACT_SOURCE_HEIGHT: Final = 'source.height'
 FACT_OUTPUT_WIDTH: Final = 'output.width'
 FACT_OUTPUT_HEIGHT: Final = 'output.height'
+FACT_LUMA_WIDTH: Final = 'luma.width'
+FACT_LUMA_HEIGHT: Final = 'luma.height'
 FACT_CHROMA_WIDTH: Final = 'chroma.width'
 FACT_CHROMA_HEIGHT: Final = 'chroma.height'
-# The facts no WGSL expression reads, so a condition that reads them is evaluated at plan time
-PLAN_ONLY_FACTS: Final = (FACT_CHROMA_WIDTH, FACT_CHROMA_HEIGHT)
-FACT_HDR_SOURCE: Final = 'hdr.source'
+# 1 where the source codes RGB planes, on which mpv fires RGB rather than LUMA and CHROMA
+FACT_RGB_SOURCE: Final = 'rgb.source'
 FACT_WGSL: Final = {
     FACT_SOURCE_WIDTH: 'presentation.sourceSize.x',
     FACT_SOURCE_HEIGHT: 'presentation.sourceSize.y',
@@ -194,7 +205,7 @@ DOMAIN_DISPLAY: Final = 'display'
 SHAPE_KERNEL: Final = 'kernel'
 SHAPE_COMPUTE: Final = 'compute'
 TARGET_PREFIX: Final = 'TARGET'
-ENGINE_RESERVED_TEXTURE_NAMES: Final = (HOOKED_NAME, TARGET_PREFIX, 'source', 'output', 'chroma', *ENGINE_STAGES)
+ENGINE_RESERVED_TEXTURE_NAMES: Final = (HOOKED_NAME, TARGET_PREFIX, 'source', 'output', 'luma', 'chroma', *ENGINE_STAGES)
 ENGINE_OFFSET_ALIGN: Final = 'align'
 HISTORY_SUFFIX_PATTERN: Final = re.compile(r'_history\d+$')
 IDENTIFIER_PATTERN: Final = re.compile(r'^[A-Za-z_]\w*$')
@@ -202,6 +213,8 @@ INVALID_IDENTIFIER_CHARACTER_PATTERN: Final = re.compile(r'\W')
 RESERVED_IDENTIFIER_PREFIX: Final = '__'
 MAXIMUM_NAME_LENGTH: Final = 64
 MAXIMUM_PARAMETER_COUNT: Final = 32
+# The passes one mpv pass may split into over the values of the DEFINE parameters it reads
+MAXIMUM_DEFINE_VARIANTS: Final = 16
 MAXIMUM_COMPONENTS: Final = 4
 MAXIMUM_WORKGROUP_AXIS: Final = 256
 MAXIMUM_WORKGROUP_INVOCATIONS: Final = 256
@@ -212,6 +225,9 @@ KERNEL_COMPONENT_FORMATS: Final = {1: 'r16float', 2: 'rg16float'}
 COMPUTE_COMPONENT_FORMATS: Final = {1: 'r32float'}
 ENGINE_PARAMETER_TYPES: Final = {PARAMETER_TYPE_FLOAT: 'f32', PARAMETER_TYPE_INT: 'i32', PARAMETER_TYPE_UINT: 'u32'}
 PARAMETERS_VARIABLE: Final = 'parameters'
+# The header keywords of a uniform parameter and of a constant the engine compiles
+ENGINE_PARAMETER_KEYWORD: Final = 'param'
+ENGINE_CONSTANT_KEYWORD: Final = 'const'
 PRESENTATION_VARIABLE: Final = 'presentation'
 KERNEL_ENTRY: Final = 'fn kernel(coordinate: vec2f) -> vec4f {'
 COMPUTE_ENTRY: Final = 'fn compute(id: vec3u) {'
@@ -287,24 +303,16 @@ HOOK_MAPPINGS: Final[dict[str, HookMapping]] = {
 
 # Color emulation
 
-# BT.709 luma weights, which split the RGB image into the planes plane hooks read and join them back
-LUMA_RED_WEIGHT: Final = 0.2126
-LUMA_GREEN_WEIGHT: Final = 0.7152
-LUMA_BLUE_WEIGHT: Final = 0.0722
-CHROMA_BLUE_SCALE: Final = 2.0 * (1.0 - LUMA_BLUE_WEIGHT)
-CHROMA_RED_SCALE: Final = 2.0 * (1.0 - LUMA_RED_WEIGHT)
-# The neutral chroma value of a normalized chroma plane
-CHROMA_OFFSET: Final = 0.5
-# The engine's linear light is in nits; mpv's 1.0 is SDR white, the engine's default 100 nits, and BT.2408's 203 nits for HDR
-SDR_LINEAR_SCALE_NITS: Final = 100.0
-HDR_LINEAR_SCALE_NITS: Final = 203.0
-HDR_VARIANT_SUFFIX: Final = ' (HDR)'
-LINEAR_SCALE_CONSTANT: Final = 'MPV_LINEAR_SCALE'
+# The prelude's functions: the source's own planes transform, through its matrix and range, and its transfer function in mpv's scale of linear light
+PRELUDE_RGB_TO_PLANES: Final = 'rgbToPlanes'
+PRELUDE_PLANES_TO_RGB: Final = 'planesToRGB'
+PRELUDE_LINEARIZE: Final = 'linearize'
+PRELUDE_DELINEARIZE: Final = 'delinearize'
+# The nits of mpv's linear 1.0, which the engine gives passes, since its own linear light is in nits
+PRELUDE_REFERENCE_WHITE: Final = 'referenceWhiteNits()'
 # libplacebo's default sigmoid, center 0.75 and slope 6.5
 SIGMOID_CENTER: Final = 0.75
 SIGMOID_SLOPE: Final = 6.5
-# The gamma linearize() and delinearize() stand in with, since passes do not see the source's transfer function
-LINEARIZE_GAMMA: Final = 2.4
 
 # GLSL rewriting
 
@@ -397,6 +405,7 @@ WGSL_CALL_PATTERN: Final = re.compile(r'\b([A-Za-z_]\w*)\s*\(')
 WGSL_IDENTIFIER_PATTERN: Final = re.compile(r'(?<![\w.])[A-Za-z_]\w*')
 WGSL_FUNCTION: Final = 'fn'
 WGSL_STRUCT: Final = 'struct'
+WGSL_CONSTANT: Final = 'const'
 WGSL_PRIVATE_VARIABLE: Final = 'var<private>'
 WGSL_WORKGROUP_VARIABLE: Final = 'var<workgroup>'
 WGSL_DIRECTIVE: Final = 'directive'
@@ -408,6 +417,9 @@ USER_RENAME_PREFIX: Final = 'mpv_user_'
 WORKGROUP_VARIABLE_PATTERN: Final = re.compile(r'^var<workgroup>\s+\w+\s*:\s*(.+?)\s*;?\s*$', re.DOTALL)
 WGSL_SCALAR_SIZES: Final = {'f32': 4, 'i32': 4, 'u32': 4, 'bool': 4, 'f16': 2}
 WGSL_SHORTHAND_SCALARS: Final = {'f': 'f32', 'i': 'i32', 'u': 'u32', 'h': 'f16'}
+# A texture block's coordinate and texel types by its dimensions, as the engine's accessors take them
+TEXTURE_COORDINATE_TYPES: Final = {1: 'f32', 2: 'vec2f', 3: 'vec3f'}
+TEXTURE_TEXEL_TYPES: Final = {1: 'i32', 2: 'vec2i', 3: 'vec3i'}
 
 
 @dataclass(frozen=True)
@@ -512,13 +524,18 @@ class MPVParameter:
 
 @dataclass
 class MPVTexture:
+    """A TEXTURE block, with the pass file's format and data it becomes, and the name passes bind it by."""
+
     name: str
     line_number: int
     size: tuple[int, ...]
     format_name: str
     filter_mode: str
     border_mode: str
-    values: list[tuple[float, float, float, float]]
+    engine_format: str
+    engine_data: bytes
+    format_change: str | None
+    engine_name: str = ''
 
 
 @dataclass
@@ -785,6 +802,43 @@ def decode_texture_values(data: bytes, format_name: str, texel_count: int, line_
     return texels
 
 
+def encode_engine_texture(texels: list[tuple[float, float, float, float]], format_name: str, line_number: int) -> tuple[str, bytes, str | None]:
+    """Returns the pass file's format and data of a TEXTURE, and how its format changed, if it did.
+
+    8-bit unorm stays 8-bit, a 16-bit float format holds halves, as mpv's GPU texture does, and 32-bit floats stay floats.
+    Three components take four, with alpha 1, and deeper unorm formats take 32-bit floats, since the pass file has neither.
+    """
+    format_match = TEXTURE_FORMAT_PATTERN.match(format_name)
+    assert format_match is not None
+    component_count = len(format_match.group(1))
+    bits = int(format_match.group(2))
+    kind = format_match.group(3) or ''
+    engine_component_count = len(ENGINE_TEXTURE_COMPONENTS[component_count])
+    changes: list[str] = []
+    if engine_component_count != component_count:
+        changes.append(f'{component_count} components padded to {engine_component_count}')
+    if not kind and bits == UNORM8_BITS:
+        suffix = ENGINE_TEXTURE_UNORM8_SUFFIX
+        pack = 'B'
+        maximum = float((1 << UNORM8_BITS) - 1)
+        encode: Callable[[float], float | int] = lambda value: round(value * maximum)
+    elif kind and bits == HALF_FLOAT_BITS:
+        suffix, pack = ENGINE_TEXTURE_HALF_SUFFIX, 'e'
+        encode = float
+    else:
+        suffix, pack = ENGINE_TEXTURE_FLOAT_SUFFIX, 'f'
+        encode = float
+        if not kind:
+            changes.append(f'{bits}-bit unorm held as 32-bit floats')
+    engine_format = ENGINE_TEXTURE_COMPONENTS[component_count] + suffix
+    values = [encode(component) for texel in texels for component in texel[:engine_component_count]]
+    try:
+        data = struct.pack(f'<{len(values)}{pack}', *values)
+    except (OverflowError, struct.error):
+        raise ConversionError(CODE_TEXTURE_INVALID, f'line {line_number}: {format_name} values do not fit {engine_format}') from None
+    return engine_format, data, (f'{format_name} -> {engine_format}: {", ".join(changes)}' if changes else None)
+
+
 def parse_texture(block: SourceBlock) -> MPVTexture:
     name = ''
     size: tuple[int, ...] = ()
@@ -818,14 +872,13 @@ def parse_texture(block: SourceBlock) -> MPVTexture:
     texel_count = 1
     for extent in size:
         texel_count *= extent
-    if texel_count > MAXIMUM_EMULATED_TEXELS:
-        raise ConversionError(CODE_TEXTURE_UNSUPPORTED, f'line {line_number}: {name} has {texel_count} texels')
     try:
         data = bytes.fromhex(''.join(block.body.split()))
     except ValueError:
         raise ConversionError(CODE_TEXTURE_INVALID, f'line {line_number}: {name} body is not hexadecimal') from None
-    values = decode_texture_values(data, format_name, texel_count, line_number)
-    return MPVTexture(name, line_number, size, format_name, filter_mode, border_mode, values)
+    texels = decode_texture_values(data, format_name, texel_count, line_number)
+    engine_format, engine_data, format_change = encode_engine_texture(texels, format_name, line_number)
+    return MPVTexture(name, line_number, size, format_name, filter_mode, border_mode, engine_format, engine_data, format_change)
 
 
 def parse_shader(text: str, report: Report) -> ParsedShader:
@@ -837,6 +890,8 @@ def parse_shader(text: str, report: Report) -> ParsedShader:
             if first_header.startswith(BLOCK_TEXTURE):
                 texture = parse_texture(block)
                 shader.textures[texture.name] = texture
+                if texture.format_change is not None:
+                    report.add(SEVERITY_NOTE, CODE_TEXTURE_FORMAT_MAPPED, f'{texture.name}: {texture.format_change}')
             elif first_header.startswith(BLOCK_BUFFER):
                 raise ConversionError(CODE_BUFFER_UNSUPPORTED, f'line {block.headers[0].line_number}: {first_header}')
             elif first_header.startswith(BLOCK_PARAMETER):
@@ -856,6 +911,13 @@ def parse_shader(text: str, report: Report) -> ParsedShader:
             parameter.engine_name = parameter.name + RESERVED_PARAMETER_SUFFIX
             if parameter.is_tunable:
                 report.add(SEVERITY_NOTE, CODE_PARAMETER_RENAMED, f'{parameter.name} -> {parameter.engine_name}')
+    for texture in shader.textures.values():
+        # A texture block's name must leave the pass API's own names free, as a saved texture's does
+        texture.engine_name = texture.name
+        if (texture.name in ENGINE_RESERVED_TEXTURE_NAMES or texture.name in HOOK_MAPPINGS or HISTORY_SUFFIX_PATTERN.search(texture.name)
+                or texture.name.startswith(RESERVED_IDENTIFIER_PREFIX)):
+            texture.engine_name = SAVED_NAME_PREFIX + texture.name
+            report.add(SEVERITY_NOTE, CODE_TEXTURE_RENAMED, f'{texture.name} -> {texture.engine_name}')
     return shader
 
 
@@ -882,6 +944,7 @@ def binary_token(operator: str) -> RPNToken:
 NOT_TOKEN: Final = RPNToken(TOKEN_NOT, RPN_NOT_OPERATOR)
 SOURCE_SIZE: Final = ([fact_token(FACT_SOURCE_WIDTH)], [fact_token(FACT_SOURCE_HEIGHT)])
 OUTPUT_SIZE: Final = ([fact_token(FACT_OUTPUT_WIDTH)], [fact_token(FACT_OUTPUT_HEIGHT)])
+LUMA_SIZE: Final = ([fact_token(FACT_LUMA_WIDTH)], [fact_token(FACT_LUMA_HEIGHT)])
 CHROMA_SIZE: Final = ([fact_token(FACT_CHROMA_WIDTH)], [fact_token(FACT_CHROMA_HEIGHT)])
 
 
@@ -974,9 +1037,9 @@ def get_size_group(stage: str) -> str | None:
 
 
 def create_initial_sizes() -> dict[str, SymbolicSize]:
-    """Returns the sizes before any pass: luma and the image at the source's size, and chroma at the chroma plane's."""
+    """Returns the sizes before any pass: luma at the frame's sample size, chroma at the chroma plane's, and the image at the source's size."""
     return {
-        ENGINE_STAGE_LUMA: (list(SOURCE_SIZE[0]), list(SOURCE_SIZE[1])),
+        ENGINE_STAGE_LUMA: (list(LUMA_SIZE[0]), list(LUMA_SIZE[1])),
         ENGINE_STAGE_CHROMA: (list(CHROMA_SIZE[0]), list(CHROMA_SIZE[1])),
         SIZE_GROUP_IMAGE: (list(SOURCE_SIZE[0]), list(SOURCE_SIZE[1]))
     }
@@ -989,23 +1052,55 @@ class PipelineState:
     saved_textures: dict[str, SavedTexture] = field(default_factory=dict)
     sizes: dict[str, SymbolicSize] = field(default_factory=create_initial_sizes)
     engine_save_names: dict[str, str] = field(default_factory=dict)
+    # The engine names of the shader's texture blocks, which no saved texture takes
+    texture_names: set[str] = field(default_factory=set)
 
 
 @dataclass
 class PassInstance:
-    """One engine pass to produce: an mpv pass on one of its hooks, possibly one of its SDR and HDR variants."""
+    """One engine pass to produce: an mpv pass on one of its hooks, with one value of each DEFINE parameter it is split over."""
 
     mpv_pass: MPVPass
     hook: str
     hook_position: int
     mapping: HookMapping
     name: str = ''
-    variant_condition: list[RPNToken] = field(default_factory=list)
-    linear_scale: float | None = None
+    # Conditions, in the pass header's syntax, that pick this pass among its siblings: the source's planes, and its DEFINE values
+    variant_conditions: list[str] = field(default_factory=list)
+    # The DEFINE parameters the mpv pass is split over, with this pass's value of each
+    define_values: dict[str, int] = field(default_factory=dict)
+    # The first pass of an mpv pass on a hook leaves what later passes read; its DEFINE siblings leave the same
+    leaves_state: bool = True
+
+
+def get_define_variants(mpv_pass: MPVPass, shader: ParsedShader, label: str, report: Report) -> list[dict[str, int]]:
+    """Returns the DEFINE values of each pass an mpv pass splits into: one per combination of the DEFINE parameters its code reads.
+
+    A DEFINE steers the preprocessor, so each value is a pass of its own, which `when` selects by the parameter.
+    Past MAXIMUM_DEFINE_VARIANTS combinations, the parameters take their defaults.
+    """
+    parameters = [parameter for parameter in shader.parameters.values()
+                  if parameter.mode == PARAMETER_MODE_DEFINE and re.search(rf'(?<!\w){re.escape(parameter.name)}(?!\w)', mpv_pass.body)]
+    if not parameters:
+        return [{}]
+    value_ranges = [range(int(parameter.minimum), int(parameter.maximum) + 1) for parameter in parameters]
+    variant_count = 1
+    for value_range in value_ranges:
+        variant_count *= len(value_range)
+    names = ', '.join(parameter.name for parameter in parameters)
+    if variant_count > MAXIMUM_DEFINE_VARIANTS:
+        report.add(SEVERITY_WARNING, CODE_DEFINE_VARIANT_LIMIT,
+                   f'{label}: {variant_count} variants of {names} exceed {MAXIMUM_DEFINE_VARIANTS}, so they take their defaults')
+        return [{}]
+    report.add(SEVERITY_NOTE, CODE_DEFINE_VARIANTS, f'{label}: one pass per value of {names}')
+    return [dict(zip((parameter.name for parameter in parameters), values)) for values in itertools.product(*value_ranges)]
 
 
 def expand_passes(shader: ParsedShader, default_name: str, report: Report) -> list[PassInstance]:
-    """Returns the engine passes in mpv's pipeline order, one per firing hook, with unique names of at most 64 characters."""
+    """Returns the engine passes in mpv's pipeline order, one per firing hook and DEFINE variant, with unique names of at most 64 characters.
+
+    A pass that hooks RGB beside LUMA or CHROMA keeps both, as mpv fires RGB on RGB sources and the plane hooks on YUV ones, which `rgb.source` tells apart.
+    """
     instances: list[PassInstance] = []
     for mpv_pass in shader.passes:
         hooks = list(dict.fromkeys(mpv_pass.hooks))
@@ -1022,19 +1117,21 @@ def expand_passes(shader: ParsedShader, default_name: str, report: Report) -> li
                 report.add(SEVERITY_NOTE, CODE_HOOK_NEVER_FIRES, f'{label}: {hook} never fires on video')
             else:
                 firing_hooks.append(hook)
-        if RGB_PLANE_HOOK in firing_hooks and any(hook in firing_hooks for hook in YUV_PLANE_HOOKS):
-            firing_hooks.remove(RGB_PLANE_HOOK)
-            report.add(SEVERITY_NOTE, CODE_HOOK_SKIPPED, f'{label}: RGB fires on RGB sources only, and video is YUV')
+        by_source = RGB_PLANE_HOOK in firing_hooks and any(hook in firing_hooks for hook in YUV_PLANE_HOOKS)
+        if by_source:
+            report.add(SEVERITY_NOTE, CODE_HOOK_BY_SOURCE, f'{label}: RGB runs where {FACT_RGB_SOURCE} holds, its plane hooks where it does not')
+        define_variants = get_define_variants(mpv_pass, shader, label, report)
         for hook_position, hook in enumerate(firing_hooks):
             mapping = HOOK_MAPPINGS[hook]
             hook_label = f'{label} ({hook})' if len(firing_hooks) > 1 else label
-            if mapping.light is None:
-                instances.append(PassInstance(mpv_pass, hook, hook_position, mapping, hook_label))
-                continue
-            instances.append(PassInstance(mpv_pass, hook, hook_position, mapping, hook_label,
-                                          [fact_token(FACT_HDR_SOURCE), NOT_TOKEN], SDR_LINEAR_SCALE_NITS))
-            instances.append(PassInstance(mpv_pass, hook, hook_position, mapping, hook_label + HDR_VARIANT_SUFFIX,
-                                          [fact_token(FACT_HDR_SOURCE)], HDR_LINEAR_SCALE_NITS))
+            source_conditions: list[str] = []
+            if by_source:
+                source_conditions.append(FACT_RGB_SOURCE if hook == RGB_PLANE_HOOK else f'!{FACT_RGB_SOURCE}')
+            for variant_index, define_values in enumerate(define_variants):
+                values = ', '.join(f'{name}={value}' for name, value in define_values.items())
+                conditions = [*source_conditions, *(f'{shader.parameters[name].engine_name} == {value}' for name, value in define_values.items())]
+                instances.append(PassInstance(mpv_pass, hook, hook_position, mapping, f'{hook_label} ({values})' if values else hook_label,
+                                              conditions, define_values, variant_index == 0))
     instances.sort(key=lambda instance: (instance.mapping.order, instance.mpv_pass.index, instance.hook_position))
     assign_unique_names(instances, report)
     return instances
@@ -1114,6 +1211,8 @@ class GlueFunction:
     parameters: tuple[str, ...] = ()
     helpers: tuple[str, ...] = ()
     finding: Finding | None = None
+    # The TEXTURE blocks it reads, by their mpv names
+    textures: tuple[str, ...] = ()
 
 
 @dataclass
@@ -1141,6 +1240,12 @@ class PassContext:
     stubs: list[str] = field(default_factory=list)
     prelude_line_count: int = 0
     state_update: StateUpdate = field(default_factory=StateUpdate)
+    # The CONSTANT parameters' values the GLSL declares, their defaults but while a translation probes whether naga folds them
+    constant_values: dict[str, int | float] = field(default_factory=dict)
+    # The CONSTANT parameters the engine compiles as constants of the pass, which naga kept by name
+    engine_constants: set[str] = field(default_factory=set)
+    # The CONSTANT parameters the GLSL declares as constants, since the code needs constant expressions of them; it declares the rest as globals
+    constant_declarations: set[str] = field(default_factory=set)
 
     @property
     def mpv_pass(self) -> MPVPass:
@@ -1174,48 +1279,11 @@ def WGSL_float(value: float) -> str:
     return text if any(character in text for character in '.e') else f'{text}.0'
 
 
-def shortest_float32(value: float) -> str:
-    """Returns the shortest WGSL literal that reads back as the same f32."""
-    target = struct.pack('<f', value)
-    text = repr(value)
-    for digits in range(1, FLOAT32_SIGNIFICANT_DIGITS + 1):
-        candidate = f'{value:.{digits}g}'
-        if struct.pack('<f', float(candidate)) == target:
-            text = candidate
-            break
-    if 'e' in text:
-        mantissa, exponent = text.split('e')
-        text = f'{mantissa}e{int(exponent)}'
-    return text if any(character in text for character in '.e') else f'{text}.0'
-
-
 HELPER_FUNCTIONS: Final[dict[str, str]] = {
-    'mpv_luma_of': (
-        f'const MPV_LUMA_WEIGHTS = vec3f({LUMA_RED_WEIGHT}, {LUMA_GREEN_WEIGHT}, {LUMA_BLUE_WEIGHT});\n\n'
-        '// BT.709 luma, by which CHROMA_SCALED reads the RGB image as planes\n'
-        'fn mpv_luma_of(color: vec3f) -> f32 {\n'
-        '    return dot(color, MPV_LUMA_WEIGHTS);\n'
-        '}'
-    ),
-    'mpv_ycbcr_of': (
-        '// Full-range BT.709 YCbCr with chroma centered at 0.5, as a normalized chroma plane holds it\n'
-        'fn mpv_ycbcr_of(color: vec3f) -> vec3f {\n'
-        '    let luma = mpv_luma_of(color);\n'
-        f'    let blueDifference = (color.b - luma) / {WGSL_float(CHROMA_BLUE_SCALE)} + {CHROMA_OFFSET};\n'
-        f'    let redDifference = (color.r - luma) / {WGSL_float(CHROMA_RED_SCALE)} + {CHROMA_OFFSET};\n'
-        '    return vec3f(luma, blueDifference, redDifference);\n'
-        '}'
-    ),
-    'mpv_rgb_of': (
-        'fn mpv_rgb_of(ycbcr: vec3f) -> vec3f {\n'
-        f'    let red = ycbcr.x + {WGSL_float(CHROMA_RED_SCALE)} * (ycbcr.z - {CHROMA_OFFSET});\n'
-        f'    let blue = ycbcr.x + {WGSL_float(CHROMA_BLUE_SCALE)} * (ycbcr.y - {CHROMA_OFFSET});\n'
-        f'    return vec3f(red, (ycbcr.x - {LUMA_RED_WEIGHT} * red - {LUMA_BLUE_WEIGHT} * blue) / {LUMA_GREEN_WEIGHT}, blue);\n'
-        '}'
-    ),
     'mpv_replace_chroma': (
+        '// New chroma joins the image\'s luma through the source\'s own matrix and range, which the prelude\'s transform holds\n'
         'fn mpv_replace_chroma(base: vec4f, chroma: vec2f) -> vec4f {\n'
-        '    return vec4f(mpv_rgb_of(vec3f(mpv_luma_of(base.rgb), chroma)), base.a);\n'
+        f'    return vec4f({PRELUDE_PLANES_TO_RGB}(vec3f({PRELUDE_RGB_TO_PLANES}(base.rgb).x, chroma)), base.a);\n'
         '}'
     ),
     'mpv_sigmoidize': (
@@ -1233,23 +1301,20 @@ HELPER_FUNCTIONS: Final[dict[str, str]] = {
         '}'
     )
 }
-HELPER_DEPENDENCIES: Final[dict[str, tuple[str, ...]]] = {
-    'mpv_ycbcr_of': ('mpv_luma_of',),
-    'mpv_replace_chroma': ('mpv_luma_of', 'mpv_rgb_of')
-}
+HELPER_DEPENDENCIES: Final[dict[str, tuple[str, ...]]] = {}
 
 
 def get_transform_expression(transform: str | None, color: str) -> tuple[str, tuple[str, ...]]:
-    """Returns WGSL that reads an RGB image sample as mpv's texture would hold it, with the helpers it needs."""
+    """Returns WGSL that reads an RGB image sample as mpv's texture would hold it, with the helpers it needs; linear light reads in mpv's scale."""
     match transform:
         case 'chroma':
-            return f'vec4f(mpv_ycbcr_of({color}.rgb).yz, 0.0, 1.0)', ('mpv_ycbcr_of',)
+            return f'vec4f({PRELUDE_RGB_TO_PLANES}({color}.rgb).yz, 0.0, 1.0)', ()
         case 'alpha':
             return f'vec4f({color}.a, 0.0, 0.0, 1.0)', ()
         case 'linear':
-            return f'vec4f({color}.rgb / {LINEAR_SCALE_CONSTANT}, {color}.a)', ()
+            return f'vec4f({color}.rgb / {PRELUDE_REFERENCE_WHITE}, {color}.a)', ()
         case 'sigmoid':
-            return f'vec4f(mpv_sigmoidize({color}.rgb / {LINEAR_SCALE_CONSTANT}), {color}.a)', ('mpv_sigmoidize',)
+            return f'vec4f(mpv_sigmoidize({color}.rgb / {PRELUDE_REFERENCE_WHITE}), {color}.a)', ('mpv_sigmoidize',)
     return color, ()
 
 
@@ -1272,9 +1337,9 @@ def get_output_expression(context: PassContext, result: str, coordinate: str) ->
         case 'chroma':
             return OutputExpression(f'mpv_replace_chroma({base}, {result}.xy)', ('mpv_replace_chroma',), (HOOKED_NAME,))
         case 'linear':
-            return OutputExpression(f'vec4f({result}.rgb * {LINEAR_SCALE_CONSTANT}, {result}.a)')
+            return OutputExpression(f'vec4f({result}.rgb * {PRELUDE_REFERENCE_WHITE}, {result}.a)')
         case 'sigmoid':
-            return OutputExpression(f'vec4f(mpv_unsigmoidize({result}.rgb) * {LINEAR_SCALE_CONSTANT}, {result}.a)', ('mpv_sigmoidize',))
+            return OutputExpression(f'vec4f(mpv_unsigmoidize({result}.rgb) * {PRELUDE_REFERENCE_WHITE}, {result}.a)', ('mpv_sigmoidize',))
     return OutputExpression(result)
 
 
@@ -1286,7 +1351,8 @@ def build_engine_glue(context: PassContext, source_index: int) -> dict[str, Glue
     sample, helpers = get_transform_expression(source.transform, 'color')
     finding = None
     if source.transform in EMULATED_PLANES:
-        finding = Finding(SEVERITY_NOTE, CODE_HOOK_EMULATED, f'{context.instance.name}: the {source.transform} plane is read from the RGB image')
+        finding = Finding(SEVERITY_NOTE, CODE_HOOK_EMULATED,
+                          f'{context.instance.name}: the {source.transform} plane is read from the RGB image through the source\'s own matrix')
     return {
         f'{prefix}_sample': GlueFunction(
             f'fn {prefix}_sample(position: vec2f) -> vec4f {{\n'
@@ -1317,80 +1383,33 @@ def build_engine_glue(context: PassContext, source_index: int) -> dict[str, Glue
     }
 
 
-def get_texture_wrap(texture: MPVTexture, prefix: str, integer_type: str) -> str:
-    """Returns WGSL that wraps a texel index into the texture by its BORDER, as a sampler's address mode does."""
-    extent = f'{prefix}_extent'
-    match texture.border_mode:
-        case 'REPEAT':
-            return f'((texel % {extent}) + {extent}) % {extent}'
-        case 'MIRROR':
-            period = f'(2 * {extent})'
-            folded = f'(((texel % {period}) + {period}) % {period})'
-            return f'select({folded}, {period} - {integer_type}(1) - {folded}, {folded} >= {extent})'
-    return f'clamp(texel, {integer_type}(0), {extent} - {integer_type}(1))'
-
-
 def build_texture_glue(context: PassContext, source_index: int) -> dict[str, GlueFunction]:
-    """Emulates a TEXTURE block as a constant array, sampled with its FILTER and BORDER."""
+    """Binds a TEXTURE block's stubs to the texture block the pass binds, which the engine samples with its filter and edge mode."""
     texture = context.shader.textures[context.sources[source_index].texture_name]
     prefix = context.source_prefix(source_index)
+    name = texture.engine_name
     dimensions = len(texture.size)
-    float_type = {1: 'f32', 2: 'vec2f', 3: 'vec3f'}[dimensions]
-    integer_type = {1: 'i32', 2: 'vec2i', 3: 'vec3i'}[dimensions]
-    extent = f'{integer_type}({", ".join(str(size) for size in texture.size)})'
-    values = ',\n    '.join(f'vec4f({", ".join(shortest_float32(component) for component in texel)})' for texel in texture.values)
-    row_length = texture.size[0]
-    plane_length = texture.size[0] * (texture.size[1] if dimensions > 1 else 1)
-    index_expression = {1: 'wrapped', 2: f'wrapped.y * {row_length} + wrapped.x',
-                        3: f'wrapped.z * {plane_length} + wrapped.y * {row_length} + wrapped.x'}[dimensions]
-    if texture.filter_mode == FILTER_LINEAR:
-        corners = [tuple((corner >> axis) & 1 for axis in range(dimensions)) for corner in range(1 << dimensions)]
-        lines = [f'    let texel = position * {float_type}({prefix}_extent) - {float_type}(0.5);',
-                 f'    let origin = {integer_type}(floor(texel));',
-                 '    let fraction = fract(texel);']
-        for corner in corners:
-            offset = f'{integer_type}({", ".join(str(axis_offset) for axis_offset in corner)})' if dimensions > 1 else str(corner[0])
-            lines.append(f'    let corner{"".join(str(axis_offset) for axis_offset in corner)} = {prefix}_texel(origin + {offset});')
-        level = [f'corner{"".join(str(axis_offset) for axis_offset in corner)}' for corner in corners]
-        axes = ['fraction'] if dimensions == 1 else ['fraction.x', 'fraction.y', 'fraction.z'][:dimensions]
-        for axis in axes:
-            level = [f'mix({level[index]}, {level[index + 1]}, {axis})' for index in range(0, len(level), 2)]
-        lines.append(f'    return {level[0]};')
-        sample_body = '\n'.join(lines)
-    else:
-        sample_body = f'    return {prefix}_texel({integer_type}(floor(position * {float_type}({prefix}_extent))));'
-    texel_function = (
-        f'const {prefix}_values = array<vec4f, {len(texture.values)}>(\n    {values}\n);\n'
-        f'const {prefix}_extent = {extent};\n\n'
-        f'fn {prefix}_texel(texel: {integer_type}) -> vec4f {{\n'
-        f'    let wrapped = {get_texture_wrap(texture, prefix, integer_type)};\n'
-        f'    return {prefix}_values[{index_expression}];\n'
-        '}'
-    )
-    finding = Finding(SEVERITY_NOTE, CODE_TEXTURE_EMULATED, f'{texture.name}: {len(texture.values)} texels as a constant array')
+    float_type = TEXTURE_COORDINATE_TYPES[dimensions]
+    integer_type = TEXTURE_TEXEL_TYPES[dimensions]
+    textures = (texture.name,)
     glue: dict[str, GlueFunction] = {
-        f'{prefix}_texel': GlueFunction(texel_function, finding=finding),
-        f'{prefix}_sample': GlueFunction(f'fn {prefix}_sample(position: {float_type}) -> vec4f {{\n{sample_body}\n}}',
-                                         dependencies=(f'{prefix}_texel',)),
-        f'{prefix}_size': GlueFunction(f'fn {prefix}_size() -> {float_type} {{\n    return {float_type}({prefix}_extent);\n}}',
-                                       dependencies=(f'{prefix}_texel',)),
-        f'{prefix}_fetch': GlueFunction(f'fn {prefix}_fetch(texel: {integer_type}) -> vec4f {{\n    return {prefix}_texel(texel);\n}}',
-                                        dependencies=(f'{prefix}_texel',))
+        f'{prefix}_sample': GlueFunction(f'fn {prefix}_sample(position: {float_type}) -> vec4f {{\n    return {name}_tex(position);\n}}', textures=textures),
+        f'{prefix}_size': GlueFunction(f'fn {prefix}_size() -> {float_type} {{\n    return {name}_size();\n}}', textures=textures),
+        f'{prefix}_fetch': GlueFunction(f'fn {prefix}_fetch(texel: {integer_type}) -> vec4f {{\n    return {name}_load(texel);\n}}', textures=textures)
     }
     if dimensions == 2:
         glue[f'{prefix}_gather'] = GlueFunction(
+            '// The four texels textureGather reads, in its (0, 1), (1, 1), (1, 0), (0, 0) order\n'
             f'fn {prefix}_gather(position: vec2f, component: i32) -> vec4f {{\n'
-            f'    let origin = vec2i(floor(position * vec2f({prefix}_extent) - vec2f(0.5)));\n'
-            f'    return vec4f({prefix}_texel(origin + vec2i(0, 1))[component], {prefix}_texel(origin + vec2i(1, 1))[component],\n'
-            f'        {prefix}_texel(origin + vec2i(1, 0))[component], {prefix}_texel(origin)[component]);\n'
-            '}', dependencies=(f'{prefix}_texel',))
+            f'    let origin = vec2i(floor(position * {name}_size() - vec2f(0.5)));\n'
+            f'    return vec4f({name}_load(origin + vec2i(0, 1))[component], {name}_load(origin + vec2i(1, 1))[component],\n'
+            f'        {name}_load(origin + vec2i(1, 0))[component], {name}_load(origin)[component]);\n'
+            '}', textures=textures)
     return glue
 
 
 def build_shared_glue(context: PassContext) -> dict[str, GlueFunction]:
-    """Builds the glue of the global variables and functions every mpv pass sees."""
-    linearize_finding = Finding(SEVERITY_WARNING, CODE_LINEARIZE_APPROXIMATED,
-                                f'{context.instance.name}: linearize() and delinearize() use gamma {LINEARIZE_GAMMA}')
+    """Builds the glue of the global variables and functions every mpv pass sees; linearize() and delinearize() are the engine's, of the source's transfer."""
     glue: dict[str, GlueFunction] = {
         'mpv_frame': GlueFunction('fn mpv_frame() -> i32 {\n    return i32(presentation.frameIndex);\n}'),
         'mpv_random': GlueFunction(
@@ -1402,14 +1421,8 @@ def build_shared_glue(context: PassContext) -> dict[str, GlueFunction]:
             '}'),
         'mpv_input_size': GlueFunction('fn mpv_input_size() -> vec2f {\n    return presentation.sourceSize;\n}'),
         'mpv_target_size': GlueFunction('fn mpv_target_size() -> vec2f {\n    return presentation.outputSize;\n}'),
-        'mpv_linearize': GlueFunction(
-            'fn mpv_linearize(color: vec4f) -> vec4f {\n'
-            f'    return vec4f(pow(max(color.rgb, vec3f(0.0)), vec3f({LINEARIZE_GAMMA})), color.a);\n'
-            '}', finding=linearize_finding),
-        'mpv_delinearize': GlueFunction(
-            'fn mpv_delinearize(color: vec4f) -> vec4f {\n'
-            f'    return vec4f(pow(max(color.rgb, vec3f(0.0)), vec3f(1.0 / {LINEARIZE_GAMMA})), color.a);\n'
-            '}', finding=linearize_finding)
+        'mpv_linearize': GlueFunction(f'fn mpv_linearize(color: vec4f) -> vec4f {{\n    return {PRELUDE_LINEARIZE}(color);\n}}'),
+        'mpv_delinearize': GlueFunction(f'fn mpv_delinearize(color: vec4f) -> vec4f {{\n    return {PRELUDE_DELINEARIZE}(color);\n}}')
     }
     if context.is_compute:
         output = get_output_expression(context, 'value', '(vec2f(texel) + vec2f(0.5)) / vec2f(TARGET_size())')
@@ -1684,15 +1697,18 @@ def build_GLSL_wrapper(context: PassContext, body: str, extra_prelude: list[str]
         ])
     for parameter in context.shader.parameters.values():
         lines.extend(f'#define {label} {value}' for value, label in enumerate(parameter.enum_names))
-        literal = GLSL_literal(parameter.default_value, parameter.type_name)
+        literal = GLSL_literal(context.constant_values.get(parameter.name, parameter.default_value), parameter.type_name)
         if parameter.is_tunable:
             stub = f'mpv_parameter_{parameter.name}'
             lines.extend([f'{parameter.type_name} {stub}() {{ return {literal}; }}', f'#define {parameter.name} {stub}()'])
             context.stubs.append(stub)
         elif parameter.mode == PARAMETER_MODE_DEFINE:
-            lines.append(f'#define {parameter.name} {parameter.default_value}')
+            lines.append(f'#define {parameter.name} {context.instance.define_values.get(parameter.name, parameter.default_value)}')
+        elif parameter.name in context.constant_declarations:
+            lines.append(f'const {parameter.type_name} {parameter.name} = {literal};')
         else:
-            lines.append(f'#define {parameter.name} ({parameter.type_name}({literal}))')
+            # A CONSTANT the engine compiles: as a global naga reads by name, unless the code needs a constant expression of it
+            lines.append(f'{parameter.type_name} {parameter.name} = {literal};')
     lines.extend(extra_prelude)
     context.prelude_line_count = len(lines)
     lines.extend(body.split('\n'))
@@ -2075,6 +2091,7 @@ class TranslatedBody:
     parameters: set[str]
     helpers: set[str]
     private_names: set[str]
+    textures: set[str]
 
 
 def postprocess_WGSL(context: PassContext, WGSL: str) -> TranslatedBody:
@@ -2089,7 +2106,9 @@ def postprocess_WGSL(context: PassContext, WGSL: str) -> TranslatedBody:
     for item in items:
         is_entry = item in entry_items or (item.kind == WGSL_FUNCTION and item.name in entry_calls and item.name.startswith(ENTRY_FUNCTION_PREFIX))
         is_input_output = item.kind == WGSL_STRUCT and any(attribute in item.text for attribute in INPUT_OUTPUT_ATTRIBUTES)
-        if is_entry or is_input_output or item.kind == WGSL_DIRECTIVE or item.name == FRAGMENT_OUTPUT_NAME or item.name in stub_names:
+        # The engine declares the constants it compiles, at their values, in place of the GLSL's global or constant
+        is_engine_constant = item.kind in (WGSL_CONSTANT, WGSL_PRIVATE_VARIABLE) and item.name in context.engine_constants
+        if is_entry or is_input_output or is_engine_constant or item.kind == WGSL_DIRECTIVE or item.name == FRAGMENT_OUTPUT_NAME or item.name in stub_names:
             continue
         body_items.append(item)
     called: set[str] = set()
@@ -2106,12 +2125,13 @@ def postprocess_WGSL(context: PassContext, WGSL: str) -> TranslatedBody:
             continue
         included.append(name)
         pending.extend(context.glue[name].dependencies)
-    translated = TranslatedBody('', set(), set(), set(), set())
+    translated = TranslatedBody('', set(), set(), set(), set(), set())
     for name in included:
         function = context.glue[name]
         translated.engine_inputs.update(function.engine_inputs)
         translated.parameters.update(function.parameters)
         translated.helpers.update(function.helpers)
+        translated.textures.update(function.textures)
         if function.finding is not None:
             context.report.add(function.finding.severity, function.finding.code, function.finding.detail)
     # The converter's own private globals stay only while the body reads them
@@ -2179,7 +2199,7 @@ def get_symbolic_size(name: str, axis: str, context: PassContext) -> list[RPNTok
     if name == OUTPUT_NAME:
         return list(OUTPUT_SIZE[axis_index])
     if name == NATIVE_CROPPED_NAME:
-        return list(SOURCE_SIZE[axis_index])
+        return list(LUMA_SIZE[axis_index])
     if name in state.saved_textures:
         saved = state.saved_textures[name]
         return list(saved.width if axis_index == 0 else saved.height)
@@ -2192,26 +2212,30 @@ def get_symbolic_size(name: str, axis: str, context: PassContext) -> list[RPNTok
     raise ConversionError(CODE_EXPRESSION_NAME_UNKNOWN, f'{context.instance.name}: {name}')
 
 
-def get_parameter_value(name: str, context: PassContext, used_at: str) -> Decimal:
-    """Returns a parameter's default or an enum label's value, for expressions that plan before any value is set."""
+def get_parameter_value(name: str, context: PassContext, used_at: str | None) -> Decimal:
+    """Returns a parameter's default or an enum label's value, for expressions that plan before any value is set.
+
+    A tunable parameter's default in a size, which a `used_at` names, differs from mpv once the value changes, so the report says so.
+    """
     found = context.shader.find_parameter(name)
     if found is None:
-        raise ConversionError(CODE_EXPRESSION_NAME_UNKNOWN, f'{context.instance.name}: {name} in {used_at}')
+        raise ConversionError(CODE_EXPRESSION_NAME_UNKNOWN, f'{context.instance.name}: {name} in {used_at or "WHEN"}')
     parameter, enum_value = found
     if enum_value is not None:
         return Decimal(enum_value)
-    if parameter.is_tunable:
+    if parameter.is_tunable and used_at is not None:
         context.report.add(SEVERITY_WARNING, CODE_PARAMETER_INLINED, f'{context.instance.name}: {name} in {used_at} takes its default')
     return number_token(parameter.default_value).value
 
 
-def expand_symbolic(tokens: list[RPNToken], context: PassContext, keep: Callable[[str], bool], used_at: str) -> list[RPNToken]:
-    """Replaces size tokens the expression cannot read directly with symbolic sizes, and parameters with their defaults."""
+def expand_symbolic(tokens: list[RPNToken], context: PassContext, keep: Callable[[str], bool], used_at: str | None,
+                    keep_parameters: bool = False) -> list[RPNToken]:
+    """Replaces size tokens the expression cannot read directly with symbolic sizes, and parameters with their defaults unless it keeps them."""
     expanded: list[RPNToken] = []
     for token in tokens:
         if token.kind == TOKEN_SIZE and not keep(token.texture):
             expanded.extend(get_symbolic_size(token.texture, token.axis, context))
-        elif token.kind == TOKEN_VARIABLE:
+        elif token.kind == TOKEN_VARIABLE and not keep_parameters:
             expanded.append(number_token(get_parameter_value(token.text, context, used_at)))
         else:
             expanded.append(token)
@@ -2226,10 +2250,31 @@ def reject_variable(name: str) -> str:
     raise ConversionError(CODE_EXPRESSION_INVALID, f'{name} was not inlined')
 
 
-def render_plan_expression(tokens: list[RPNToken], context: PassContext) -> str:
-    """Renders an expression over plan-time facts alone, as `when` reads them."""
-    expanded = expand_symbolic(tokens, context, lambda name: False, 'WHEN')
-    return render_RPN(expanded, ENGINE_SYNTAX, reject_size, reject_variable)
+def render_plan_expression(tokens: list[RPNToken], context: PassContext, condition_parameters: set[str]) -> str:
+    """Renders WHEN over plan-time facts, as `when` reads them, and the parameters the engine keeps live, by name, which it records.
+
+    A tunable parameter, a constant the engine compiles, and a DEFINE parameter the pass splits over, or whose value the code never reads, stay live;
+    the rest take their defaults, and enum labels their numbers.
+    """
+    expanded = expand_symbolic(tokens, context, lambda name: False, None, keep_parameters=True)
+
+    def resolve_variable(name: str) -> str:
+        found = context.shader.find_parameter(name)
+        if found is None:
+            raise ConversionError(CODE_EXPRESSION_NAME_UNKNOWN, f'{context.instance.name}: {name} in WHEN')
+        parameter, enum_value = found
+        if enum_value is not None:
+            return ENGINE_SYNTAX.number(Decimal(enum_value))
+        unread_define = (parameter.mode == PARAMETER_MODE_DEFINE
+                         and not re.search(rf'(?<!\w){re.escape(parameter.name)}(?!\w)', context.mpv_pass.body))
+        live = (parameter.is_tunable or parameter.name in context.engine_constants or parameter.name in context.instance.define_values
+                or unread_define)
+        if not live:
+            return ENGINE_SYNTAX.number(number_token(parameter.default_value).value)
+        condition_parameters.add(parameter.name)
+        return parameter.engine_name
+
+    return render_RPN(expanded, ENGINE_SYNTAX, reject_size, resolve_variable)
 
 
 def get_size_input(name: str, context: PassContext, declared_inputs: set[str]) -> str | None:
@@ -2265,63 +2310,14 @@ def render_size_WGSL(tokens: list[RPNToken] | None, axis: str, context: PassCont
     return render_RPN(expanded, WGSL_SYNTAX, lambda token: f'HOOKED_size().{WGSL_AXES[token.axis]}', reject_variable)
 
 
-def render_WGSL_condition(tokens: list[RPNToken], context: PassContext, used_parameters: set[str]) -> str:
-    """Renders WHEN as WGSL that runs every frame and reads parameters live; sizes other than HOOKED's are symbolic."""
-    sized: list[RPNToken] = []
-    for token in tokens:
-        if token.kind == TOKEN_SIZE and normalize_texture_name(token.texture) not in (HOOKED_NAME, context.instance.hook):
-            sized.extend(get_symbolic_size(token.texture, token.axis, context))
-        else:
-            sized.append(token)
-
-    def resolve_variable(name: str) -> str:
-        found = context.shader.find_parameter(name)
-        if found is None:
-            raise ConversionError(CODE_EXPRESSION_NAME_UNKNOWN, f'{context.instance.name}: {name} in WHEN')
-        parameter, enum_value = found
-        if enum_value is not None:
-            return WGSL_SYNTAX.number(Decimal(enum_value))
-        if not parameter.is_tunable:
-            return WGSL_SYNTAX.number(number_token(parameter.default_value).value)
-        used_parameters.add(parameter.name)
-        return f'f32({PARAMETERS_VARIABLE}.{parameter.engine_name})'
-
-    return render_RPN(sized, WGSL_SYNTAX, lambda token: f'HOOKED_size().{WGSL_AXES[token.axis]}', resolve_variable)
-
-
-def is_same_size(tokens: list[RPNToken] | None, axis: str, context: PassContext) -> bool:
-    if tokens is None:
-        return True
-    return (len(tokens) == 1 and tokens[0].kind == TOKEN_SIZE and tokens[0].axis == axis
-            and tokens[0].texture in (HOOKED_NAME, context.instance.hook))
-
-
-def reads_plan_only_facts(tokens: list[RPNToken], context: PassContext) -> bool:
-    """Returns whether a condition reads a size that only a plan-time fact holds, such as the chroma plane's, which WGSL cannot read."""
-    for token in tokens:
-        if token.kind != TOKEN_SIZE or normalize_texture_name(token.texture) in (HOOKED_NAME, context.instance.hook):
-            continue
-        if any(size_token.text in PLAN_ONLY_FACTS for size_token in get_symbolic_size(token.texture, token.axis, context)):
-            return True
-    return False
-
-
-def reads_tunable_parameters(tokens: list[RPNToken] | None, shader: ParsedShader) -> bool:
-    if tokens is None:
-        return False
-    for token in tokens:
-        found = shader.find_parameter(token.text) if token.kind == TOKEN_VARIABLE else None
-        if found is not None and found[1] is None and found[0].is_tunable:
-            return True
-    return False
-
-
 # Conversion
 
 @dataclass
 class ConvertedPass:
     name: str
     text: str
+    # The TEXTURE blocks it binds, by their mpv names, which the file then holds
+    textures: list[str]
 
 
 def resolve_sources(context: PassContext) -> None:
@@ -2343,7 +2339,7 @@ def get_engine_save_name(name: str, state: PipelineState, report: Report) -> str
     if (engine_name in ENGINE_RESERVED_TEXTURE_NAMES or engine_name in HOOK_MAPPINGS or not IDENTIFIER_PATTERN.match(engine_name)
             or HISTORY_SUFFIX_PATTERN.search(engine_name) or engine_name.startswith(RESERVED_IDENTIFIER_PREFIX)):
         engine_name = SAVED_NAME_PREFIX + engine_name
-    taken = set(state.engine_save_names.values())
+    taken = set(state.engine_save_names.values()) | state.texture_names
     candidate = engine_name
     suffix = 2
     while candidate in taken:
@@ -2376,7 +2372,7 @@ def plan_state_update(context: PassContext, plan_condition: list[RPNToken]) -> S
     if not plan_condition:
         return StateUpdate(resized_group=group, resized_size=(width, height))
     # A pass that may not run leaves the image at either size, which only the condition decides
-    condition = expand_symbolic(plan_condition, context, lambda name: False, 'WHEN')
+    condition = expand_symbolic(plan_condition, context, lambda name: False, None)
     current_width, current_height = context.state.sizes[group]
     return StateUpdate(resized_group=group, resized_size=(select_tokens(condition, width, current_width),
                                                           select_tokens(condition, height, current_height)))
@@ -2393,7 +2389,7 @@ def apply_state_update(state: PipelineState, mpv_pass: MPVPass, update: StateUpd
         state.sizes[SIZE_GROUP_IMAGE] = update.resized_size
 
 
-def build_entry(context: PassContext, private_names: set[str], guard: str | None) -> tuple[str, OutputExpression]:
+def build_entry(context: PassContext, private_names: set[str]) -> tuple[str, OutputExpression]:
     """Builds the pass's entry point, which sets the mpv globals the body reads, then runs hook()."""
     mpv_pass = context.mpv_pass
     # OFFSET ALIGN moves the hooked texture's position onto its offset, which reads HOOKED
@@ -2408,13 +2404,9 @@ def build_entry(context: PassContext, private_names: set[str], guard: str | None
         if FRAGMENT_COORDINATE_NAME in private_names:
             target_size = f'round(vec2f({render_size_WGSL(mpv_pass.width, AXIS_WIDTH, context)}, {render_size_WGSL(mpv_pass.height, AXIS_HEIGHT, context)}))'
             lines.append(f'    {FRAGMENT_COORDINATE_NAME} = vec4f(coordinate * {target_size}, 0.0, 1.0);')
-        if guard is not None:
-            lines.extend(['    // WHEN reads parameters, so it runs every frame: a skipped pass presents the hooked image unchanged',
-                          f'    if ({guard} == 0.0) {{', '        return HOOKED_tex(coordinate);', '    }'])
         output = get_output_expression(context, 'result', 'coordinate')
         lines.extend(['    let result = hook();', f'    return {output.text};', '}'])
-        inputs = (*output.engine_inputs, HOOKED_NAME) if guard is not None else output.engine_inputs
-        return '\n'.join(lines), OutputExpression(output.text, output.helpers, (*inputs, *alignment_inputs))
+        return '\n'.join(lines), OutputExpression(output.text, output.helpers, (*output.engine_inputs, *alignment_inputs))
     assert mpv_pass.thread_size is not None and mpv_pass.block_size is not None
     thread_width, thread_height = mpv_pass.thread_size
     block_width, block_height = mpv_pass.block_size
@@ -2429,33 +2421,49 @@ def build_entry(context: PassContext, private_names: set[str], guard: str | None
     }
     lines = [f'const {WORKGROUP_SIZE_CONSTANT} = vec3u({thread_width}u, {thread_height}u, 1u);', '', COMPUTE_ENTRY]
     lines.extend(f'    {name} = {value};' for name, value in assignments.items() if name in private_names)
-    helpers: tuple[str, ...] = ()
-    inputs: tuple[str, ...] = ()
-    if guard is not None:
-        identity = get_output_expression(context, 'HOOKED_tex(position)', 'position')
-        helpers = identity.helpers
-        inputs = (*identity.engine_inputs, HOOKED_NAME)
-        lines.extend([
-            '    // WHEN reads parameters, so it runs every frame: a skipped pass stores its block of the hooked image unchanged',
-            f'    if ({guard} == 0.0) {{',
-            f'        let blockOrigin = (id.xy / {WORKGROUP_SIZE_CONSTANT}.xy) * vec2u({block_width}u, {block_height}u);',
-            f'        for (var row = id.y % {thread_height}u; row < {block_height}u; row += {thread_height}u) {{',
-            f'            for (var column = id.x % {thread_width}u; column < {block_width}u; column += {thread_width}u) {{',
-            '                let texel = blockOrigin + vec2u(column, row);',
-            '                if (all(texel < TARGET_size())) {',
-            '                    let position = (vec2f(texel) + vec2f(0.5)) / vec2f(TARGET_size());',
-            f'                    TARGET_store(texel, {identity.text});',
-            '                }',
-            '            }',
-            '        }',
-            '        return;',
-            '    }'
-        ])
     lines.extend(['    hook();', '}'])
-    return '\n'.join(lines), OutputExpression('', helpers, (*inputs, *alignment_inputs))
+    return '\n'.join(lines), OutputExpression('', (), alignment_inputs)
 
 
-def build_validation_module(context: PassContext, body: str, inputs: list[str], parameters: list[MPVParameter], output_format: str) -> str:
+@dataclass(frozen=True)
+class PassDeclarations:
+    """What a converted pass declares in its header, which its validation declares around the body: inputs, parameters, constants, and textures."""
+
+    inputs: list[str]
+    parameters: list[MPVParameter]
+    constants: list[MPVParameter]
+    textures: list[MPVTexture]
+
+
+# The prelude functions a converted body may call, with the signatures and stand-in results validation declares them by
+VALIDATION_PRELUDE_FUNCTIONS: Final = (
+    f'fn {PRELUDE_REFERENCE_WHITE} -> f32 {{ return 203.0; }}',
+    f'fn {PRELUDE_LINEARIZE}(color: vec4f) -> vec4f {{ return color; }}',
+    f'fn {PRELUDE_DELINEARIZE}(color: vec4f) -> vec4f {{ return color; }}',
+    f'fn {PRELUDE_RGB_TO_PLANES}(color: vec3f) -> vec3f {{ return color; }}',
+    f'fn {PRELUDE_PLANES_TO_RGB}(planes: vec3f) -> vec3f {{ return planes; }}'
+)
+
+
+def build_texture_validation_lines(texture: MPVTexture, binding: int) -> list[str]:
+    """Declares a bound texture block's accessors as the engine generates them, a one-dimensional block as a texture one texel high."""
+    name = texture.engine_name
+    dimensions = len(texture.size)
+    coordinate_type = TEXTURE_COORDINATE_TYPES[dimensions]
+    texel_type = TEXTURE_TEXEL_TYPES[dimensions]
+    sample_coordinate = {1: 'vec2f(coordinate, 0.5)', 2: 'coordinate', 3: 'coordinate'}[dimensions]
+    size_expression = {1: f'f32(textureDimensions({name}_texture).x)', 2: f'vec2f(textureDimensions({name}_texture))',
+                       3: f'vec3f(textureDimensions({name}_texture))'}[dimensions]
+    load_texel = {1: 'vec2i(texel, 0)', 2: 'texel', 3: 'texel'}[dimensions]
+    return [
+        f'@group(0) @binding({binding}) var {name}_texture: {"texture_3d<f32>" if dimensions == 3 else "texture_2d<f32>"};',
+        f'fn {name}_size() -> {coordinate_type} {{ return {size_expression}; }}',
+        f'fn {name}_tex(coordinate: {coordinate_type}) -> vec4f {{ return textureSampleLevel({name}_texture, validationSampler, {sample_coordinate}, 0.0); }}',
+        f'fn {name}_load(texel: {texel_type}) -> vec4f {{ return textureLoad({name}_texture, {load_texel}, 0); }}'
+    ]
+
+
+def build_validation_module(context: PassContext, body: str, declarations: PassDeclarations, output_format: str) -> str:
     """Builds a module of the pass API's documented declarations around the body, which naga then validates."""
     lines = [
         'struct PresentationUniforms {',
@@ -2463,13 +2471,21 @@ def build_validation_module(context: PassContext, body: str, inputs: list[str], 
         '    inputSize: vec2f,', '    timestampSeconds: f32,', '    frameIndex: u32,', '    historyValid: u32,',
         '    skippedFrames: u32,', '    fieldState: u32,', '    padding0: u32,', '}',
         '@group(0) @binding(0) var<uniform> presentation: PresentationUniforms;',
-        '@group(0) @binding(1) var validationSampler: sampler;'
+        '@group(0) @binding(1) var validationSampler: sampler;',
+        *VALIDATION_PRELUDE_FUNCTIONS
     ]
+    lines.extend(f'const {constant.engine_name}: {ENGINE_PARAMETER_TYPES[constant.type_name]} = {GLSL_literal(constant.default_value, constant.type_name)};'
+                 for constant in declarations.constants)
     binding = 2
+    parameters = declarations.parameters
+    inputs = declarations.inputs
     if parameters:
         lines.append('struct PassParameters {')
         lines.extend(f'    {parameter.engine_name}: {ENGINE_PARAMETER_TYPES[parameter.type_name]},' for parameter in parameters)
         lines.extend(['}', f'@group(0) @binding({binding}) var<uniform> parameters: PassParameters;'])
+        binding += 1
+    for texture in declarations.textures:
+        lines.extend(build_texture_validation_lines(texture, binding))
         binding += 1
     for engine_input in inputs or [HOOKED_NAME]:
         lines.extend([
@@ -2502,24 +2518,17 @@ def format_parameter_number(value: int | float, type_name: str) -> str:
     return repr(float(value)) if type_name == PARAMETER_TYPE_FLOAT else str(value)
 
 
-def get_plan_condition(context: PassContext, in_place: bool) -> tuple[list[RPNToken], list[RPNToken] | None]:
-    """Splits WHEN into the plan-time `when` and a condition that runs every frame.
-
-    WHEN runs every frame when it reads parameters and the pass can be skipped by presenting its image unchanged.
-    Otherwise the parameters' defaults stand in, and the SDR or HDR variant's condition joins it.
-    """
-    mpv_pass = context.mpv_pass
-    instance = context.instance
-    runtime: list[RPNToken] | None = None
-    plan: list[RPNToken] = []
-    if (mpv_pass.condition is not None and reads_tunable_parameters(mpv_pass.condition, context.shader) and in_place
-            and not reads_plan_only_facts(mpv_pass.condition, context)):
-        runtime = mpv_pass.condition
-    elif mpv_pass.condition is not None:
-        plan = list(mpv_pass.condition)
-    if instance.variant_condition:
-        plan = [*plan, *instance.variant_condition, binary_token('*')] if plan else list(instance.variant_condition)
-    return plan, runtime
+def render_when(context: PassContext, condition_parameters: set[str]) -> str | None:
+    """Returns the pass's `when`: WHEN over plan-time facts and the parameters the engine keeps live, joined by the conditions that pick the pass
+    among its siblings; None for a pass that always runs."""
+    parts: list[str] = []
+    if context.mpv_pass.condition is not None:
+        parts.append(render_plan_expression(context.mpv_pass.condition, context, condition_parameters))
+    parts.extend(context.instance.variant_conditions)
+    condition_parameters.update(context.instance.define_values)
+    if not parts:
+        return None
+    return parts[0] if len(parts) == 1 else ' && '.join(f'({part})' for part in parts)
 
 
 def get_offset_value(context: PassContext) -> str | None:
@@ -2547,13 +2556,16 @@ def get_offset_value(context: PassContext) -> str | None:
     return ', '.join(format_decimal(Decimal(repr(coordinate))) for coordinate in declared)
 
 
-def translate_with_repairs(context: PassContext, naga: str, directory: Path) -> str:
-    """Translates the pass's GLSL with naga, repairing each construct naga rejects that has a known repair, then retrying."""
+def translate_with_repairs(context: PassContext, naga: str, directory: Path) -> tuple[str, str, list[str]]:
+    """Translates the pass's GLSL with naga, repairing each construct naga rejects that has a known repair, then retrying.
+
+    Returns the WGSL, and the repaired body and prelude lines, which a later translation of the same code takes.
+    """
     body = prepare_GLSL_body(context)
     repairs = GLSLRepairs()
     for attempt in range(MAXIMUM_REPAIRS):
         try:
-            return translate_GLSL(naga, build_GLSL_wrapper(context, body, repairs.extra_prelude), context, directory)
+            return translate_GLSL(naga, build_GLSL_wrapper(context, body, repairs.extra_prelude), context, directory), body, repairs.extra_prelude
         except NagaTranslationError as error:
             repaired = repair_GLSL(body, error, repairs, context)
             if repaired is None or attempt == MAXIMUM_REPAIRS - 1:
@@ -2562,14 +2574,109 @@ def translate_with_repairs(context: PassContext, naga: str, directory: Path) -> 
     raise ConversionError(CODE_GLSL_TRANSLATION_FAILED, f'{context.instance.name}: no attempt ran')
 
 
+def get_probe_value(parameter: MPVParameter) -> int | float | None:
+    """Returns another value within a parameter's range than its default, or None for a range of one value."""
+    if parameter.type_name == PARAMETER_TYPE_FLOAT:
+        candidates: list[int | float] = [parameter.maximum, parameter.minimum]
+    else:
+        candidates = [int(parameter.default_value) + 1, int(parameter.default_value) - 1]
+    return next((value for value in candidates if value != parameter.default_value and parameter.minimum <= value <= parameter.maximum), None)
+
+
+def strip_constant_declaration(WGSL: str, name: str) -> str:
+    """Returns WGSL without one constant's declaration, so translations that differ only in its value compare equal."""
+    return '\n'.join(item.text for item in split_WGSL_items(WGSL) if not (item.kind == WGSL_CONSTANT and item.name == name))
+
+
+def get_read_constants(context: PassContext) -> list[MPVParameter]:
+    """Returns the CONSTANT parameters the pass's code reads, which the engine may compile under their own names."""
+    return [parameter for parameter in context.shader.parameters.values()
+            if parameter.mode == PARAMETER_MODE_CONSTANT and parameter.engine_name == parameter.name
+            and re.search(rf'(?<!\w){re.escape(parameter.name)}(?!\w)', context.mpv_pass.body)]
+
+
+def count_reads(WGSL: str, name: str) -> int:
+    """Returns how often WGSL names an identifier, its declaration included."""
+    return len(re.findall(rf'(?<![\w.]){re.escape(name)}(?!\w)', WGSL))
+
+
+def try_translation(context: PassContext, naga: str, directory: Path) -> tuple[str, str, list[str]] | None:
+    """Translates the pass as its declarations stand; returns None when naga rejects it."""
+    try:
+        return translate_with_repairs(context, naga, directory)
+    except NagaTranslationError:
+        return None
+
+
+def translate_with_constants(context: PassContext, naga: str, directory: Path) -> str:
+    """Translates the pass, and picks the CONSTANT parameters the engine compiles as constants of the pass.
+
+    The GLSL declares each as a global, which naga reads by name, unless the code needs a constant expression of it, as an array size does;
+    those, found one by one, stay GLSL constants, which naga may fold, and find_engine_constants keeps the ones it did not.
+    """
+    read_names = [parameter.name for parameter in get_read_constants(context)]
+    context.constant_declarations = set()
+    translation = try_translation(context, naga, directory) if read_names else None
+    if read_names and translation is None:
+        # Declare constants one by one until the code translates, then return each that need not be one to a global
+        for name in read_names:
+            context.constant_declarations.add(name)
+            translation = try_translation(context, naga, directory)
+            if translation is not None:
+                break
+        for name in list(context.constant_declarations):
+            context.constant_declarations.discard(name)
+            narrower = try_translation(context, naga, directory)
+            if narrower is None:
+                context.constant_declarations.add(name)
+            else:
+                translation = narrower
+    if translation is None:
+        # Without constants to place, or when no placement translates, the translation's own error stands
+        context.constant_declarations = set(read_names)
+        translation = translate_with_repairs(context, naga, directory)
+    WGSL, repaired_body, extra_prelude = translation
+    globals_read = {name for name in read_names if name not in context.constant_declarations and count_reads(WGSL, name) > 1}
+    context.engine_constants = globals_read | find_engine_constants(context, naga, directory, WGSL, repaired_body, extra_prelude)
+    return WGSL
+
+
+def find_engine_constants(context: PassContext, naga: str, directory: Path, translated: str, body: str, extra_prelude: list[str]) -> set[str]:
+    """Returns the CONSTANT parameters the engine compiles as constants of the pass: those naga kept by name wherever the code reads them.
+
+    naga folds a constant into array sizes and other constant expressions, so the pass translates again with each constant at another value.
+    A constant whose value changed the code beyond its own declaration, or that folded away, stays at its default, which the report names.
+    """
+    kept: set[str] = set()
+    for parameter in get_read_constants(context):
+        if parameter.name not in context.constant_declarations:
+            continue
+        probe_value = get_probe_value(parameter)
+        if probe_value is None:
+            continue
+        # Its declaration is one read, so a constant read once folded away wherever the code reads it
+        if count_reads(translated, parameter.name) < 2:
+            context.report.add(SEVERITY_WARNING, CODE_CONSTANT_FOLDED,
+                               f'{context.instance.name}: naga folds {parameter.name} into constant expressions, so it takes its default {parameter.default_value}')
+            continue
+        context.constant_values = {parameter.name: probe_value}
+        try:
+            probed = translate_GLSL(naga, build_GLSL_wrapper(context, body, extra_prelude), context, directory)
+        finally:
+            context.constant_values = {}
+        if strip_constant_declaration(probed, parameter.name) == strip_constant_declaration(translated, parameter.name):
+            kept.add(parameter.name)
+        else:
+            context.report.add(SEVERITY_WARNING, CODE_CONSTANT_FOLDED,
+                               f'{context.instance.name}: naga folds {parameter.name} into constant expressions, so it takes its default {parameter.default_value}')
+    return kept
+
+
 def convert_instance(context: PassContext, naga: str, directory: Path) -> ConvertedPass:
     instance = context.instance
     mpv_pass = context.mpv_pass
     resolve_sources(context)
-    in_place = (context.overwrites_hooked() and is_same_size(mpv_pass.width, AXIS_WIDTH, context)
-                and is_same_size(mpv_pass.height, AXIS_HEIGHT, context))
-    plan_condition, runtime_condition = get_plan_condition(context, in_place)
-    context.state_update = plan_state_update(context, plan_condition)
+    context.state_update = plan_state_update(context, list(mpv_pass.condition or []))
     for source_index, source in enumerate(context.sources):
         context.glue.update(build_texture_glue(context, source_index) if source.texture_name else build_engine_glue(context, source_index))
     context.glue.update(build_shared_glue(context))
@@ -2579,19 +2686,15 @@ def convert_instance(context: PassContext, naga: str, directory: Path) -> Conver
         if max(thread_width, thread_height) > MAXIMUM_WORKGROUP_AXIS or thread_width * thread_height > MAXIMUM_WORKGROUP_INVOCATIONS:
             raise ConversionError(CODE_WORKGROUP_LIMIT,
                                   f'{instance.name}: {thread_width}x{thread_height} threads; WebGPU allows {MAXIMUM_WORKGROUP_INVOCATIONS}')
-    translated = postprocess_WGSL(context, translate_with_repairs(context, naga, directory))
+    translated = postprocess_WGSL(context, translate_with_constants(context, naga, directory))
     used_parameters = set(translated.parameters)
-    guard = None
-    if runtime_condition is not None:
-        guard = render_WGSL_condition(runtime_condition, context, used_parameters)
-        context.report.add(SEVERITY_NOTE, CODE_CONDITION_RUNTIME, f'{instance.name}: WHEN reads parameters, so it runs every frame')
-    entry, entry_output = build_entry(context, translated.private_names, guard)
+    condition_parameters: set[str] = set()
+    when = render_when(context, condition_parameters)
+    entry, entry_output = build_entry(context, translated.private_names)
     helpers = translated.helpers | set(entry_output.helpers)
     engine_inputs = translated.engine_inputs | set(entry_output.engine_inputs)
     if instance.mapping.plane in EMULATED_PLANES and context.overwrites_hooked():
-        context.report.add(SEVERITY_NOTE, CODE_HOOK_EMULATED, f'{instance.name}: {instance.hook} joins the RGB image through BT.709')
-    if instance.linear_scale is not None:
-        context.report.add(SEVERITY_NOTE, CODE_HOOK_EMULATED, f'{instance.name}: {instance.hook} reads linear light over {instance.linear_scale} nits')
+        context.report.add(SEVERITY_NOTE, CODE_HOOK_EMULATED, f'{instance.name}: {instance.hook} joins the RGB image through the source\'s own matrix')
 
     ordered_inputs = [HOOKED_NAME] if HOOKED_NAME in engine_inputs else []
     saved_names = {saved.engine_name for saved in context.state.saved_textures.values()}
@@ -2608,6 +2711,8 @@ def convert_instance(context: PassContext, naga: str, directory: Path) -> Conver
     header_lines = [f'//! name: {instance.name}', f'//! shape: {SHAPE_COMPUTE if context.is_compute else SHAPE_KERNEL}',
                     f'//! hook: {instance.mapping.engine_stage}', f'//! domain: {instance.mapping.domain}']
     header_lines.extend(f'//! input: {engine_input}' for engine_input in ordered_inputs)
+    bound_textures = [texture for texture in context.shader.textures.values() if texture.name in translated.textures]
+    header_lines.extend(f'//! bind: {texture.engine_name}' for texture in bound_textures)
     if saves:
         header_lines.append(f'//! save: {context.state_update.save_name}')
     header_lines.append(f'//! output: {width}, {height}, {output_format}')
@@ -2616,49 +2721,60 @@ def convert_instance(context: PassContext, naga: str, directory: Path) -> Conver
         header_lines.append(f'//! offset: {offset}')
     if saves and mpv_pass.components:
         header_lines.append(f'//! components: {min(max(mpv_pass.components, 1), MAXIMUM_COMPONENTS)}')
-    if plan_condition:
-        header_lines.append(f'//! when: {render_plan_expression(plan_condition, context)}')
+    if when is not None:
+        header_lines.append(f'//! when: {when}')
     if context.is_compute:
         assert mpv_pass.block_size is not None and mpv_pass.thread_size is not None
         header_lines.append(f'//! workgroup: {mpv_pass.thread_size[0]}, {mpv_pass.thread_size[1]}')
         header_lines.append(f'//! dispatch: ceil(round({width}) / {mpv_pass.block_size[0]}), ceil(round({height}) / {mpv_pass.block_size[1]})')
-    declared_parameters = [parameter for parameter in context.shader.parameters.values() if parameter.name in used_parameters]
-    if len(declared_parameters) > MAXIMUM_PARAMETER_COUNT:
-        raise ConversionError(CODE_PARAMETER_LIMIT, f'{instance.name}: {len(declared_parameters)} parameters')
-    for parameter in declared_parameters:
-        values = [format_parameter_number(value, parameter.type_name) for value in (parameter.default_value, parameter.minimum, parameter.maximum)]
-        header_lines.append(f'//! param {parameter.engine_name}: {ENGINE_PARAMETER_TYPES[parameter.type_name]} = {values[0]} in [{values[1]}, {values[2]}]')
+    # Uniform parameters: the tunable ones the code or WHEN reads, and the DEFINE parameters `when` picks variants by
+    declared_parameters = [parameter for parameter in context.shader.parameters.values()
+                           if (parameter.name in used_parameters or parameter.name in condition_parameters) and parameter.name not in context.engine_constants]
+    declared_constants = [parameter for parameter in context.shader.parameters.values() if parameter.name in context.engine_constants]
+    if len(declared_parameters) + len(declared_constants) > MAXIMUM_PARAMETER_COUNT:
+        raise ConversionError(CODE_PARAMETER_LIMIT, f'{instance.name}: {len(declared_parameters) + len(declared_constants)} parameters')
+    for keyword, parameters in ((ENGINE_PARAMETER_KEYWORD, declared_parameters), (ENGINE_CONSTANT_KEYWORD, declared_constants)):
+        for parameter in parameters:
+            values = [format_parameter_number(value, parameter.type_name) for value in (parameter.default_value, parameter.minimum, parameter.maximum)]
+            header_lines.append(f'//! {keyword} {parameter.engine_name}: {ENGINE_PARAMETER_TYPES[parameter.type_name]} = {values[0]} in [{values[1]}, {values[2]}]')
     for parameter in context.shader.parameters.values():
-        if not parameter.is_tunable and re.search(rf'(?<!\w){re.escape(parameter.name)}(?!\w)', mpv_pass.body):
+        compiled = parameter.is_tunable or parameter.name in context.engine_constants or parameter.name in instance.define_values
+        if not compiled and re.search(rf'(?<!\w){re.escape(parameter.name)}(?!\w)', mpv_pass.body):
             context.report.add(SEVERITY_NOTE, CODE_PARAMETER_BAKED, f'{instance.name}: {parameter.mode} {parameter.name} is {parameter.default_value}')
-    parts: list[str] = []
-    if instance.linear_scale is not None:
-        parts.append(f'const {LINEAR_SCALE_CONSTANT} = {WGSL_float(instance.linear_scale)};')
-    parts.extend(HELPER_FUNCTIONS[helper] for helper in collect_helpers(helpers))
+    parts: list[str] = [HELPER_FUNCTIONS[helper] for helper in collect_helpers(helpers)]
     parts.extend([translated.text, entry])
     body = '\n\n'.join(part for part in parts if part)
-    message = validate_WGSL(naga, build_validation_module(context, body, ordered_inputs, declared_parameters, output_format), directory)
+    declarations = PassDeclarations(ordered_inputs, declared_parameters, declared_constants, bound_textures)
+    message = validate_WGSL(naga, build_validation_module(context, body, declarations, output_format), directory)
     if message is not None:
         raise ConversionError(CODE_WGSL_INVALID, f'{instance.name}: {message}')
-    return ConvertedPass(instance.name, '\n'.join(header_lines) + '\n\n' + body + '\n')
+    return ConvertedPass(instance.name, '\n'.join(header_lines) + '\n\n' + body + '\n', [texture.name for texture in bound_textures])
 
 
 def convert_shader(text: str, default_name: str, naga: str, source_name: str, report: Report) -> str | None:
     """Converts a user shader into a pass file's text; returns None when any pass fails."""
     shader = parse_shader(text, report)
     instances = expand_passes(shader, default_name, report)
-    state = PipelineState()
+    state = PipelineState(texture_names={texture.engine_name for texture in shader.textures.values()})
     converted: list[ConvertedPass] = []
+    # A pass's DEFINE siblings convert against what came before them all, so its state update waits for the last of them
+    pending_update: tuple[MPVPass, StateUpdate] | None = None
     with tempfile.TemporaryDirectory(prefix='convert_mpv_shader_') as directory_name:
         directory = Path(directory_name)
         for instance in instances:
+            if instance.leaves_state and pending_update is not None:
+                apply_state_update(state, *pending_update)
+                pending_update = None
             context = PassContext(instance, shader, state, report)
             try:
                 converted.append(convert_instance(context, naga, directory))
             except ConversionError as error:
                 report.add(SEVERITY_ERROR, error.code, error.detail)
             finally:
-                apply_state_update(state, instance.mpv_pass, context.state_update)
+                if instance.leaves_state:
+                    pending_update = (instance.mpv_pass, context.state_update)
+    if pending_update is not None:
+        apply_state_update(state, *pending_update)
     if report.has_errors() or not converted:
         return None
     # Only blank lines may precede the first header, so the provenance opens the first pass's body
@@ -2666,7 +2782,15 @@ def convert_shader(text: str, default_name: str, naga: str, source_name: str, re
     first = converted[0].text
     header_end = first.index('\n\n') + 2
     texts = [first[:header_end] + provenance + '\n' + first[header_end:], *(converted_pass.text for converted_pass in converted[1:])]
+    bound = {name for converted_pass in converted for name in converted_pass.textures}
+    texts.extend(format_mpv_texture_block(texture) for texture in shader.textures.values() if texture.name in bound)
     return '\n'.join(texts)
+
+
+def format_mpv_texture_block(texture: MPVTexture) -> str:
+    """Returns a TEXTURE as the pass file's texture block, in its format, filter, and edge mode."""
+    return format_texture_block(texture.engine_name, texture.size, texture.engine_format, ENGINE_TEXTURE_FILTERS[texture.filter_mode],
+                                ENGINE_TEXTURE_EDGES[texture.border_mode], texture.engine_data)
 
 
 def main() -> int:

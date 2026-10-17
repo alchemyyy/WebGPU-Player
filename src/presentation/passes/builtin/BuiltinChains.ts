@@ -5,7 +5,7 @@ import {
 } from '../../../color/ColorMetadata';
 import { assertValidRenderSettings, type RenderSettings } from '../../RenderSettings';
 import type { BuiltinChain, BuiltinChainConfiguration, SignalDefinition } from '../PassTypes';
-import { BUILTIN_COLOR_FUNCTION_NAMES, createBuiltinColorFunctions } from './BuiltinColorFunctions';
+import { BUILTIN_COLOR_FUNCTION_NAMES, createBuiltinColorFunctions, createSignalLinearLight } from './BuiltinColorFunctions';
 import {
     createExternalDolbyVisionSignal,
     createExternalHDRSignal,
@@ -17,7 +17,7 @@ import {
 // Dolby Vision reconstruction produces full-range BT.2020 PQ, which the color track decodes
 const DOLBY_VISION_OUTPUT_METADATA = createPQColorMetadata({ range: 'full' });
 
-/** Pairs a signal with the default color functions for its metadata; identity SDR settings present the signal unchanged. */
+/** Pairs a signal with the default color functions and the transfer function of its metadata; identity SDR settings present the signal unchanged. */
 function createColorTrackChain(
     signal: SignalDefinition,
     metadata: InputColorMetadata,
@@ -26,21 +26,27 @@ function createColorTrackChain(
 ): BuiltinChain {
     assertValidInputColorMetadata(metadata);
     assertValidRenderSettings(settings);
+    const linearLight = createSignalLinearLight(metadata);
     if (settings.mode === 'identity-sdr') {
         // The legacy identity processColor returned its input unchanged, without dither
-        return { colorFunctions: [], signal, sourceIsDisplay: true };
+        return { colorFunctions: [], linearLight, signal, sourceIsDisplay: true };
     }
-    return { colorFunctions: createBuiltinColorFunctions(metadata, hdrOutput), signal, sourceIsDisplay: false };
+    return { colorFunctions: createBuiltinColorFunctions(metadata, hdrOutput), linearLight, signal, sourceIsDisplay: false };
 }
 
 /** Builds a route's built-in chain: its fixed signal and its default color functions, with the legacy fused shader's math in its order. */
 export function createBuiltinChain(configuration: BuiltinChainConfiguration): BuiltinChain {
     switch (configuration.route) {
         case 'external-identity':
-            return { colorFunctions: [], signal: createExternalIdentitySignal(), sourceIsDisplay: true };
+            return {
+                colorFunctions: [],
+                linearLight: configuration.metadata === null ? null : createSignalLinearLight(configuration.metadata),
+                signal: createExternalIdentitySignal(configuration.metadata, configuration.chromaSubsampling ?? null),
+                sourceIsDisplay: true
+            };
         case 'external-hdr':
             return createColorTrackChain(
-                createExternalHDRSignal(configuration.metadata),
+                createExternalHDRSignal(configuration.metadata, configuration.chromaSubsampling ?? null),
                 configuration.metadata,
                 configuration.settings,
                 configuration.hdrOutput

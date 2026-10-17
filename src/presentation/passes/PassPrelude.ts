@@ -1,8 +1,8 @@
 // Generates the WGSL around pass code: input accessors, entry points, and the renaming that keeps each user body's identifiers apart.
 // docs/src/new-pass.md describes the generated code a user pass sees.
 import { toWGSLFloat } from './builtin/BuiltinWGSL';
-import { TARGET_ACCESSOR_PREFIX } from './PassLanguage';
-import type { PassLineMapping, PassParameter } from './PassTypes';
+import { PRELUDE_FUNCTIONS, TARGET_ACCESSOR_PREFIX } from './PassLanguage';
+import type { PassLineMapping, PassParameter, PassTexture, SignalLinearLight, SignalPlanes } from './PassTypes';
 
 /** The vertex stage of every render pass: two triangles over the target, with normalized target coordinates. */
 export const VERTEX_STAGE_WGSL = /* wgsl */ `struct VertexOutput {
@@ -166,6 +166,20 @@ function isMemberName(source: string, offset: number): boolean {
     return index >= 0 && source[index] === MEMBER_ACCESS;
 }
 
+/** Returns which of the given names a WGSL body reads without declaring them at module scope, as the prelude's functions are read; comments and member names do not count. */
+export function collectUndeclaredReferences(body: string, names: readonly string[]): Set<string> {
+    const declared = new Set<string>(collectTopLevelDeclarations(body));
+    const code = blankWGSLComments(body);
+    const references = new Set<string>();
+    for (const match of code.matchAll(WORD_PATTERN)) {
+        const word = match[0];
+        if (names.includes(word) && !declared.has(word) && !isMemberName(code, match.index)) {
+            references.add(word);
+        }
+    }
+    return references;
+}
+
 /**
  * Renames whole identifiers in WGSL source, except member names after a dot; the line structure is unchanged.
  * It is lexical, so a user struct member that shares a renamed module-scope name is renamed where declared but not where accessed.
@@ -228,6 +242,80 @@ fn ${prefix}_texOff(coordinate: vec2f, offsetInPixels: vec2f) -> vec4f {
 }`;
 }
 
+/** Returns the prelude's linearize, delinearize, and referenceWhiteNits over the source's transfer function, whose code the module holds beside them. */
+export function createLinearLightPreludeWGSL(linearLight: SignalLinearLight): string {
+    return `fn ${PRELUDE_FUNCTIONS.referenceWhiteNits}() -> f32 {
+    return ${toWGSLFloat(linearLight.referenceWhiteNits)};
+}
+
+fn ${PRELUDE_FUNCTIONS.linearize}(color: vec4f) -> vec4f {
+    return vec4f(${linearLight.decodeEntryPoint}(color.rgb) / ${PRELUDE_FUNCTIONS.referenceWhiteNits}(), color.a);
+}
+
+fn ${PRELUDE_FUNCTIONS.delinearize}(color: vec4f) -> vec4f {
+    return vec4f(${linearLight.encodeEntryPoint}(color.rgb * ${PRELUDE_FUNCTIONS.referenceWhiteNits}()), color.a);
+}`;
+}
+
+/** Returns the prelude's rgbToPlanes and planesToRGB over the signal's plane transform, whose code the module holds beside them. */
+export function createPlaneTransformPreludeWGSL(planes: SignalPlanes): string {
+    return `fn ${PRELUDE_FUNCTIONS.rgbToPlanes}(color: vec3f) -> vec3f {
+    return ${planes.rgbToPlanesEntryPoint}(color);
+}
+
+fn ${PRELUDE_FUNCTIONS.planesToRGB}(planes: vec3f) -> vec3f {
+    return ${planes.planesToRGBEntryPoint}(planes);
+}`;
+}
+
+// A texture block's coordinate, size, and texel types by its dimensions; a one-dimensional block is a texture one texel high
+const PASS_TEXTURE_COORDINATE_TYPES: Readonly<Record<PassTexture['dimensions'], string>> = { 1: 'f32', 2: 'vec2f', 3: 'vec3f' };
+const PASS_TEXTURE_TEXEL_TYPES: Readonly<Record<PassTexture['dimensions'], string>> = { 1: 'i32', 2: 'vec2i', 3: 'vec3i' };
+// The row a one-dimensional block's reads take, the center of its one texel high
+const ONE_DIMENSIONAL_ROW = 0.5;
+
+/**
+ * Returns the declarations of a texture block a pass binds and its accessors `<base>_tex(coordinate)`, a read through the block's filter and edge mode
+ * at a normalized coordinate, `<base>_size()`, and `<base>_load(texel)`, one texel clamped to the block; coordinates and texels have the block's dimensions.
+ */
+export function createPassTextureAccessorsWGSL(base: string, texture: PassTexture, textureBinding: number, samplerBinding: number): string {
+    const textureName = `${base}_texture`;
+    const samplerName = `${base}_sampler`;
+    const coordinateType = PASS_TEXTURE_COORDINATE_TYPES[texture.dimensions];
+    const texelType = PASS_TEXTURE_TEXEL_TYPES[texture.dimensions];
+    const textureType = texture.dimensions === 3 ? 'texture_3d<f32>' : 'texture_2d<f32>';
+    let sampleCoordinate = 'coordinate';
+    let sizeExpression = `vec3f(textureDimensions(${textureName}))`;
+    let loadTexel = `clamp(texel, vec3i(0), vec3i(textureDimensions(${textureName})) - vec3i(1))`;
+    switch (texture.dimensions) {
+        case 1:
+            sampleCoordinate = `vec2f(coordinate, ${toWGSLFloat(ONE_DIMENSIONAL_ROW)})`;
+            sizeExpression = `f32(textureDimensions(${textureName}).x)`;
+            loadTexel = `vec2i(clamp(texel, 0, i32(textureDimensions(${textureName}).x) - 1), 0)`;
+            break;
+        case 2:
+            sizeExpression = `vec2f(textureDimensions(${textureName}))`;
+            loadTexel = `clamp(texel, vec2i(0), vec2i(textureDimensions(${textureName})) - vec2i(1))`;
+            break;
+        case 3:
+            break;
+    }
+    return `@group(0) @binding(${textureBinding}) var ${textureName}: ${textureType};
+@group(0) @binding(${samplerBinding}) var ${samplerName}: sampler;
+
+fn ${base}_size() -> ${coordinateType} {
+    return ${sizeExpression};
+}
+
+fn ${base}_tex(coordinate: ${coordinateType}) -> vec4f {
+    return textureSampleLevel(${textureName}, ${samplerName}, ${sampleCoordinate}, 0.0);
+}
+
+fn ${base}_load(texel: ${texelType}) -> vec4f {
+    return textureLoad(${textureName}, ${loadTexel}, 0);
+}`;
+}
+
 /** Returns the color step calls of a body, which reassign `color`, given the expression of the step's position. */
 function createStepStatements(stepEntryPoints: readonly string[], positionExpression: string, indentation: string): string[] {
     return stepEntryPoints.map((entryPoint: string): string => (
@@ -256,6 +344,16 @@ fn ${TARGET_ACCESSOR_PREFIX}_size() -> vec2u {
 fn ${TARGET_ACCESSOR_PREFIX}_store(position: vec2u, value: vec4f) {
 ${statements.join(NEWLINE)}
 }`;
+}
+
+/**
+ * Returns a pass's constants as WGSL constants of their types, under the names the pass's renaming gives them.
+ * Each value prints as the shortest decimal that reads back as itself, which WGSL converts to the constant's type exactly.
+ */
+export function createConstantsWGSL(names: ReadonlyMap<string, string>, constants: readonly PassParameter[], values: readonly number[]): string {
+    return constants.map((constant: PassParameter, index: number): string => (
+        `const ${names.get(constant.name) ?? constant.name}: ${constant.type} = ${String(values[index])};`
+    )).join(NEWLINE);
 }
 
 /** Returns a pass's parameters struct and its uniform; each declared parameter is one 32-bit scalar, in order. */

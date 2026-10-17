@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { createPQColorMetadata, createSDRColorMetadata } from 'webgpu-player/color/ColorMetadata';
+import { createPQColorMetadata, createSDRColorMetadata, HDR_REFERENCE_WHITE_NITS } from 'webgpu-player/color/ColorMetadata';
 import { createBuiltinChain } from 'webgpu-player/presentation/passes/builtin/BuiltinChains';
 import { parsePassExpression } from 'webgpu-player/presentation/passes/PassExpression';
 import type {
     BuiltinChain,
     PassManifest,
+    PassTexture,
     PlanFacts,
     PlanRequest,
     PlannedBinding,
@@ -14,6 +15,7 @@ import type {
     PresentationPlan
 } from 'webgpu-player/presentation/passes/PassTypes';
 import { planPresentation } from 'webgpu-player/presentation/passes/PresentationPlanner';
+import { DEFAULT_MAXIMUM_TEXTURE_DIMENSION_3D } from 'webgpu-player/presentation/WebGPUConstants';
 import { createDefaultRenderSettings, createHDRToSDRRenderSettings } from 'webgpu-player/presentation/RenderSettings';
 
 const SOURCE_WIDTH = 1920;
@@ -84,15 +86,20 @@ function createIdentityChain(): BuiltinChain {
     return createBuiltinChain({ format: 'I420', hdrOutput: false, metadata: createSDRColorMetadata({ bitDepth: 8 }), route: 'raw-yuv', settings: createDefaultRenderSettings() });
 }
 
+/** Returns plan facts whose sample size follows the source size unless an override sets it, as a stream with square pixels has. */
 function createFacts(overrides: Partial<PlanFacts> = {}): PlanFacts {
+    const sourceHeight = overrides.sourceHeight ?? SOURCE_HEIGHT;
+    const sourceWidth = overrides.sourceWidth ?? SOURCE_WIDTH;
     return {
         frameRate: null,
         hdrOutput: false,
         hdrSource: true,
         outputHeight: OUTPUT_HEIGHT,
         outputWidth: OUTPUT_WIDTH,
-        sourceHeight: SOURCE_HEIGHT,
-        sourceWidth: SOURCE_WIDTH,
+        sampleHeight: sourceHeight,
+        sampleWidth: sourceWidth,
+        sourceHeight,
+        sourceWidth,
         ...overrides
     };
 }
@@ -101,6 +108,7 @@ function createManifest(overrides: Partial<PassManifest> & Pick<PassManifest, 'b
     return {
         bodyFirstLine: BODY_FIRST_LINE,
         components: null,
+        constants: [],
         domain: 'any',
         hook: 'OUTPUT',
         inputs: [],
@@ -109,6 +117,7 @@ function createManifest(overrides: Partial<PassManifest> & Pick<PassManifest, 'b
         parameters: [],
         replaces: null,
         save: null,
+        textures: [],
         when: null,
         workgroup: null,
         ...overrides
@@ -454,6 +463,134 @@ describe('planPresentation reports', () => {
     });
 });
 
+describe('planPresentation with parameters and constants', () => {
+    const RADIUS_CONSTANT = { defaultValue: 2, maximum: 8, minimum: 1, name: 'radius', type: 'i32' } as const;
+    const SET_RADIUS = 5;
+    const OUT_OF_RANGE_RADIUS = 12.4;
+    const STRONG_GAIN = 1.5;
+    const GAIN_CONDITION = parsePassExpression('gain > 1');
+    const RADIUS_BODY = `
+fn kernel(coordinate: vec2f) -> vec4f {
+    return HOOKED_tex(coordinate) * f32(radius);
+}
+`;
+
+    function planWithValues(passes: readonly PassManifest[], values: ReadonlyMap<string, ReadonlyMap<string, number>>): PresentationPlan {
+        return planPresentation({
+            chain: createHDRChain(),
+            device: { features: new Set<string>(), maximumTextureDimension: MAXIMUM_TEXTURE_DIMENSION },
+            facts: createFacts(),
+            output: SDR_OUTPUT,
+            parameterValues: values,
+            passes
+        });
+    }
+
+    it('evaluates a condition on the pass\'s own parameter at its current value, else its default', () => {
+        const pass = createColorPass({ when: GAIN_CONDITION });
+
+        expect(plan(createHDRChain(), [ pass ]).report.inactivePasses).toEqual([ { detail: '', name: 'Saturation', reason: 'condition-false' } ]);
+        expect(planWithValues([ pass ], new Map([ [ 'Saturation', new Map([ [ 'gain', STRONG_GAIN ] ]) ] ])).report.activePasses).toEqual([ 'Saturation' ]);
+    });
+
+    it('compiles a constant at its current value, in its type and range, under the pass\'s own name, outside the parameters uniform', () => {
+        const pass = createKernelPass({ body: RADIUS_BODY, constants: [ RADIUS_CONSTANT ], name: 'Radius' });
+        const setPlan = planWithValues([ pass ], new Map([ [ 'Radius', new Map([ [ 'radius', SET_RADIUS ] ]) ] ]));
+        const clampedPlan = planWithValues([ pass ], new Map([ [ 'Radius', new Map([ [ 'radius', OUT_OF_RANGE_RADIUS ] ]) ] ]));
+        const passCode = setPlan.passes.find((planned: PlannedPass): boolean => planned.label === 'Presentation pass \'Radius\'')?.code ?? '';
+
+        expect(passCode).toContain(`const user0_radius: i32 = ${SET_RADIUS};`);
+        expect(passCode).toContain('return HOOKED_tex(coordinate) * f32(user0_radius);');
+        expect(setPlan.parameterSets).toEqual([]);
+        expect(clampedPlan.passes.some((planned: PlannedPass): boolean => planned.code.includes(`const user0_radius: i32 = ${RADIUS_CONSTANT.maximum};`))).toBe(true);
+    });
+
+    it('defines the prelude\'s linear light and plane transform only for a body that calls them, from the source\'s own transfer and matrix', () => {
+        const caller = createColorPass({
+            body: `
+fn apply(color: vec4f, position: vec2f) -> vec4f {
+    let linear = linearize(color);
+    let planes = rgbToPlanes(color.rgb);
+    return delinearize(vec4f(linear.rgb * referenceWhiteNits() / referenceWhiteNits(), planes.x));
+}
+`,
+            domain: 'source',
+            name: 'Caller',
+            parameters: []
+        });
+        const callerPlan = plan(createHDRChain(), [ caller ]);
+        const [ pass ] = callerPlan.passes;
+
+        expect(callerPlan.report.activePasses).toEqual([ 'Caller' ]);
+        expect(pass.code).toContain('return vec4f(passLightDecodeInputTransfer(color.rgb) / referenceWhiteNits(), color.a);');
+        expect(pass.code).toContain('fn passLightApplyPQEOTF(encodedValue: f32) -> f32 {');
+        expect(pass.code).toContain(`return ${HDR_REFERENCE_WHITE_NITS.toFixed(9)};`);
+        expect(pass.code).toContain('return deriveSignalPlaneValues(color);');
+        expect(plan(createHDRChain(), [ createColorPass() ]).passes[0].code).not.toContain('passLight');
+    });
+
+    it('leaves out a pass that calls the prelude\'s plane transform or linear light where the route has none', () => {
+        const unknownChain = createBuiltinChain({ metadata: null, route: 'external-identity' });
+        const linearCaller = createColorPass({ body: 'fn apply(color: vec4f, position: vec2f) -> vec4f {\n    return linearize(color);\n}\n', name: 'Linear', parameters: [] });
+        const planeCaller = createColorPass({ body: 'fn apply(color: vec4f, position: vec2f) -> vec4f {\n    return vec4f(rgbToPlanes(color.rgb), 1.0);\n}\n', name: 'Planes', parameters: [] });
+
+        expect(plan(unknownChain, [ linearCaller, planeCaller ]).report.inactivePasses).toEqual([
+            { detail: unknownChain.signal.name, name: 'Linear', reason: 'linear-light-unavailable' },
+            { detail: unknownChain.signal.name, name: 'Planes', reason: 'planes-unavailable' }
+        ]);
+    });
+});
+
+describe('planPresentation with texture blocks', () => {
+    const LUT_SIZE = 17;
+    const OVERSIZED_DEPTH = 4096;
+    const RGBA16FLOAT_BYTES_PER_TEXEL = 8;
+    const LUT_IDENTITY = 'lut-identity';
+    const LUT: PassTexture = {
+        data: new Uint8Array(LUT_SIZE ** 3 * RGBA16FLOAT_BYTES_PER_TEXEL),
+        dimensions: 3,
+        edge: 'clamp',
+        filter: 'linear',
+        format: 'rgba16float',
+        identity: LUT_IDENTITY,
+        name: 'LUT',
+        size: [ LUT_SIZE, LUT_SIZE, LUT_SIZE ]
+    };
+    const LUT_BODY = `
+fn apply(color: vec4f, position: vec2f) -> vec4f {
+    return vec4f(LUT_tex(color.rgb).rgb, color.a);
+}
+`;
+
+    function createGradePass(name: string, texture: PassTexture = LUT): PassManifest {
+        return createColorPass({ body: LUT_BODY, name, parameters: [], textures: [ texture ] });
+    }
+
+    it('binds a texture block and its sampler under each pass\'s own names, and plans each block once by identity', () => {
+        const presentationPlan = plan(createHDRChain(), [ createGradePass('First grade'), createGradePass('Second grade') ]);
+        const [ pass ] = presentationPlan.passes;
+
+        expect(presentationPlan.passTextures).toEqual([
+            { dimension: '3d', edge: 'clamp', filter: 'linear', format: 'rgba16float', id: LUT_IDENTITY, size: [ LUT_SIZE, LUT_SIZE, LUT_SIZE ] }
+        ]);
+        expect(pass.bindings.filter((binding: PlannedBinding): boolean => binding.kind === 'pass-texture' || binding.kind === 'pass-sampler'))
+            .toHaveLength(4);
+        expect(pass.code).toContain('var user0_LUT_texture: texture_3d<f32>;');
+        expect(pass.code).toContain('fn user1_LUT_tex(coordinate: vec3f) -> vec4f {');
+        expect(pass.code).toContain('return vec4f(user0_LUT_tex(color.rgb).rgb, color.a);');
+    });
+
+    it('leaves out a pass whose block exceeds the device\'s texture size, or filters a format the device cannot filter', () => {
+        const oversized: PassTexture = { ...LUT, size: [ LUT_SIZE, LUT_SIZE, OVERSIZED_DEPTH ] };
+        const unfilterable: PassTexture = { ...LUT, format: 'rgba32float' };
+
+        expect(plan(createHDRChain(), [ createGradePass('Oversized', oversized), createGradePass('Unfilterable', unfilterable) ]).report.inactivePasses).toEqual([
+            { detail: `'LUT' depth ${OVERSIZED_DEPTH} outside [1, ${DEFAULT_MAXIMUM_TEXTURE_DIMENSION_3D}]`, name: 'Oversized', reason: 'texture-size' },
+            { detail: '\'LUT\' rgba32float is not filterable without float32-filterable', name: 'Unfilterable', reason: 'texture-format' }
+        ]);
+    });
+});
+
 describe('planPresentation color step names', () => {
     it('names each pass\'s color steps in order, built-in functions by name and user passes by manifest name', () => {
         const presentationPlan = plan(createHDRChain(), [ createColorPass() ]);
@@ -554,6 +691,18 @@ describe('planPresentation with plane passes', () => {
     const CHROMA_HEIGHT = SOURCE_HEIGHT / 2;
     // Left-sited 4:2:0 chroma lies half a luma sample, a quarter of a chroma sample, left of its texel's center
     const LEFT_SITED_CHROMA_OFFSET = 0.25;
+    const LEFT_SITED_LUMA_PIXEL_SHIFT = 0.5;
+    // The weights of each matrix's luma, as the transforms print them
+    const BT709_LUMA_WEIGHTS = '0.212600000, 0.715200000, 0.072200000';
+    const BT601_LUMA_WEIGHTS = '0.299000000, 0.587000000, 0.114000000';
+    // The external HDR signal's recovery of codes from the browser's texture, up to its coordinate
+    const EXTERNAL_HDR_RECOVERY = 'recoverLimitedRangeBT709YUV(textureSampleBaseClampToEdge(videoTexture, videoSampler';
+    // A 4:3 DVD frame of non-square samples, and a frame of odd size
+    const ANAMORPHIC_SAMPLE_WIDTH = 720;
+    const ANAMORPHIC_SAMPLE_HEIGHT = 480;
+    const ODD_SAMPLE_WIDTH = 1919;
+    const ODD_SAMPLE_HEIGHT = 1079;
+    const DEINTERLACE_LABEL = 'Presentation deinterlace';
     const LUMA_LABEL = 'Presentation luma plane';
     const CHROMA_LABEL = 'Presentation chroma plane';
     const NATIVE_LABEL = 'Presentation native';
@@ -673,14 +822,78 @@ describe('planPresentation with plane passes', () => {
         ]);
     });
 
-    it('runs a luma pass on the derived luma of a route without decoded planes, and reads chroma from the signal', () => {
+    it('runs a luma pass on the external HDR route\'s planes, the codes its signal recovers from the browser\'s BT.709 texture', () => {
         const presentationPlan = plan(createExternalChain(), [ createKernelPass({ hook: 'LUMA', name: 'Luma' }) ]);
         const mergeCode = findPass(presentationPlan, MERGE_LABEL).code;
 
         expect(presentationPlan.report.activePasses).toEqual([ 'Luma' ]);
         expect(mergeCode).toContain('let chroma = readSignalSitedChroma(referenceSourceCoordinate);');
         expect(mergeCode).toContain('let luma = planeLuma_tex(imageCoordinate).x * scale;');
-        expect(mergeCode).toContain(`dot(${SIGNAL_ENTRY_POINT}(coordinate).rgb, DERIVED_PLANE_LUMA_WEIGHTS)`);
+        expect(mergeCode).toContain(`return ${EXTERNAL_HDR_RECOVERY}, coordinate).rgb).x;`);
+        expect(mergeCode).toContain('return vec4f(convertRawYUVToEncodedRGB(normalizeRawYUV(codes)), 1.0);');
+        expect(mergeCode).not.toContain(BT709_LUMA_WEIGHTS);
+    });
+
+    it('derives the identity route\'s planes through the stream\'s own matrix and range, and has none while its color is unknown', () => {
+        const bt601Chain = createBuiltinChain({ metadata: createSDRColorMetadata({ matrix: 'smpte170m' }), route: 'external-identity' });
+        const presentationPlan = plan(bt601Chain, [ createKernelPass({ hook: 'LUMA', name: 'Luma' }) ]);
+        const mergeCode = findPass(presentationPlan, MERGE_LABEL).code;
+        const unknownChain = createBuiltinChain({ metadata: null, route: 'external-identity' });
+
+        expect(mergeCode).toContain(`let luma = dot(color, vec3f(${BT601_LUMA_WEIGHTS}));`);
+        expect(mergeCode).toContain(`return ${SIGNAL_ENTRY_POINT}(coordinate).rgb;`);
+        expect(mergeCode).not.toContain(BT709_LUMA_WEIGHTS);
+        expect(plan(unknownChain, [ createKernelPass({ hook: 'LUMA', name: 'Luma' }) ]).report.inactivePasses).toEqual([
+            { detail: unknownChain.signal.name, name: 'Luma', reason: 'planes-unavailable' }
+        ]);
+    });
+
+    it('derives an external route\'s chroma at the stream\'s subsampling and siting, so a chroma upscaler runs there', () => {
+        const chain = createBuiltinChain({
+            chromaSubsampling: '4:2:0',
+            hdrOutput: false,
+            metadata: createPQColorMetadata(),
+            route: 'external-hdr',
+            settings: createHDRToSDRRenderSettings()
+        });
+        const presentationPlan = plan(chain, [ createChromaUpscaler() ]);
+        const chromaCode = findPass(presentationPlan, CHROMA_LABEL).code;
+
+        expect(presentationPlan.report.activePasses).toEqual([ 'Chroma upscaler' ]);
+        expect(presentationPlan.textures.find(texture => texture.id === 'plane:chroma')).toMatchObject({ height: CHROMA_HEIGHT, width: CHROMA_WIDTH });
+        // Unsited chroma reads each chroma sample at its site, half a luma pixel left of its texel's center
+        expect(chromaCode).toContain(`${EXTERNAL_HDR_RECOVERY}, coordinate - ${toVector(LEFT_SITED_LUMA_PIXEL_SHIFT, 0)} / getPlaneImageSize()).rgb).yz;`);
+        expect(findPass(presentationPlan, UPSCALER_LABEL).code).toContain(`fn HOOKED_offset() -> vec2f {\n    return ${toVector(LEFT_SITED_CHROMA_OFFSET, 0)};\n}`);
+    });
+
+    it('holds the planes at the frame\'s sample size, which an anamorphic frame\'s display size differs from', () => {
+        const facts = createFacts({ sampleHeight: ANAMORPHIC_SAMPLE_HEIGHT, sampleWidth: ANAMORPHIC_SAMPLE_WIDTH });
+        const presentationPlan = plan(createSDRChain(), [ createChromaUpscaler() ], facts);
+
+        expect(presentationPlan.textures.map(texture => [ texture.id, texture.width, texture.height ])).toEqual([
+            [ 'plane:chroma', ANAMORPHIC_SAMPLE_WIDTH / 2, ANAMORPHIC_SAMPLE_HEIGHT / 2 ],
+            [ 'pass:Chroma upscaler', ANAMORPHIC_SAMPLE_WIDTH, ANAMORPHIC_SAMPLE_HEIGHT ],
+            [ 'plane:luma', ANAMORPHIC_SAMPLE_WIDTH, ANAMORPHIC_SAMPLE_HEIGHT ],
+            [ 'merge', ANAMORPHIC_SAMPLE_WIDTH, ANAMORPHIC_SAMPLE_HEIGHT ]
+        ]);
+        expect(plan(createSDRChain(), [ createKernelPass({ hook: 'LUMA', name: 'Luma', when: parsePassExpression('luma.width < source.width') }) ], facts)
+            .report.activePasses).toEqual([ 'Luma' ]);
+    });
+
+    it('sizes chroma over an odd luma size as libplacebo does, so its scale stays the subsampling\'s', () => {
+        const facts = createFacts({ sampleHeight: ODD_SAMPLE_HEIGHT, sampleWidth: ODD_SAMPLE_WIDTH });
+        const presentationPlan = plan(createSDRChain(), [ createChromaUpscaler({ offset: null, output: HOOKED_SIZE_OUTPUT }) ], facts);
+        const chromaWidth = Math.ceil(ODD_SAMPLE_WIDTH / 2);
+        const chromaHeight = Math.ceil(ODD_SAMPLE_HEIGHT / 2);
+
+        expect(presentationPlan.textures.find(texture => texture.id === 'plane:chroma')).toMatchObject({ height: chromaHeight, width: chromaWidth });
+        // The plane covers its texels whole, a little past the frame's luma, at exactly half luma's scale
+        expect(findPass(presentationPlan, CHROMA_LABEL).code).toContain(
+            `readSignalChroma((input.textureCoordinate * ${toVector((chromaWidth * 2) / ODD_SAMPLE_WIDTH, (chromaHeight * 2) / ODD_SAMPLE_HEIGHT)}`
+        );
+        expect(findPass(presentationPlan, MERGE_LABEL).code).toContain(
+            `planeChroma_tex(referenceCoordinate * ${toVector(ODD_SAMPLE_WIDTH / 2 / chromaWidth, ODD_SAMPLE_HEIGHT / 2 / chromaHeight)} + `
+        );
     });
 
     it('merges onto a resized luma\'s grid, and the scaler corrects the image\'s offset', () => {
@@ -756,17 +969,36 @@ describe('planPresentation with plane passes', () => {
         expect(presentationPlan.passes).toHaveLength(1);
     });
 
-    it('leaves plane passes out of a deinterlacing plan, whose deinterlacer reads the signal\'s RGB', () => {
+    it('derives a deinterlacing plan\'s planes from its deinterlaced image through the signal\'s transform, without reading the source', () => {
         const presentationPlan = planPresentation({
             chain: createSDRChain(),
             deinterlace: { bitDepth: 8, frameHeight: SOURCE_HEIGHT, frameWidth: SOURCE_WIDTH },
             device: { features: new Set<string>(), maximumTextureDimension: MAXIMUM_TEXTURE_DIMENSION },
             facts: createFacts(),
             output: SDR_OUTPUT,
-            passes: [ createChromaUpscaler() ]
+            passes: [ createChromaUpscaler(), createKernelPass({ hook: 'LUMA', name: 'Luma' }) ]
         });
+        const planePasses = [ CHROMA_LABEL, LUMA_LABEL, MERGE_LABEL ].map((label: string): PlannedPass => findPass(presentationPlan, label));
 
-        expect(presentationPlan.report.inactivePasses).toEqual([ { detail: 'deinterlacing', name: 'Chroma upscaler', reason: 'planes-unavailable' } ]);
+        expect(presentationPlan.report.activePasses).toEqual([ 'Chroma upscaler', 'Luma' ]);
+        expect(getLabels(presentationPlan)).toEqual([
+            SIGNAL_LABEL,
+            DEINTERLACE_LABEL,
+            LUMA_LABEL,
+            'Presentation pass \'Luma\'',
+            CHROMA_LABEL,
+            UPSCALER_LABEL,
+            MERGE_LABEL,
+            SCALE_LABEL
+        ]);
+        for (const pass of planePasses) {
+            expect(pass.inputTextureId).toBe('deinterlace');
+            expect(pass.bindings.some((binding: PlannedBinding): boolean => binding.kind === 'engine' && binding.resource !== 'sampler-linear')).toBe(false);
+            expect(pass.code).toContain('return planeImage_tex(coordinate).rgb;');
+            expect(pass.code).toContain(`let luma = dot(color, vec3f(${BT709_LUMA_WEIGHTS}));`);
+        }
+        expect(getTextureBindings(planePasses[0]).map(binding => binding.textureId)).toEqual([ 'deinterlace' ]);
+        expect(planePasses[2].code).toContain('return vec4f(convertSignalPlaneValues(codes), 1.0);');
     });
 
     it('rejects a plane pass whose domain is a color state, since planes come before the color track', () => {

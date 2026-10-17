@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import shutil
+import struct
 import subprocess
 import sys
 import unittest
@@ -58,13 +60,28 @@ HALF_TEXTURE_SHADER = '//!TEXTURE weights\n//!SIZE 1 1\n//!FORMAT rgba16hf\n003c
 SHORT_TEXTURE_SHADER = '//!TEXTURE weights\n//!SIZE 2 1\n//!FORMAT rgba32f\n0000803f000000400000404000008040\n'
 STORAGE_TEXTURE_SHADER = '//!TEXTURE state\n//!SIZE 1 1\n//!FORMAT rgba32f\n//!STORAGE\n'
 TEXEL_VALUES = (1.0, 2.0, 3.0, 4.0)
+# Both hold halves in the pass file, as mpv's GPU texture of either format does
+HALF_TEXEL_BYTES = struct.pack('<4e', *TEXEL_VALUES)
+# Three 8-bit components take four, alpha opaque, and 16-bit unorm takes 32-bit floats, which the pass file has in their place
+RGB8_TEXTURE_SHADER = '//!TEXTURE colors\n//!SIZE 1 1\n//!FORMAT rgb8\n10ff80\n'
+RGB8_TEXEL_BYTES = bytes([0x10, 0xFF, 0x80, 0xFF])
+R16_TEXTURE_SHADER = '//!TEXTURE table\n//!SIZE 2\n//!FORMAT r16\n0000ffff\n'
+R16_TEXEL_BYTES = struct.pack('<2f', 0.0, 1.0)
 
 # A MAIN pass before a LUMA pass in the file runs after it, as mpv's pipeline orders them
 OUT_OF_ORDER_SHADER = '//!HOOK MAIN\n//!BIND HOOKED\n//!DESC main pass\nvec4 hook() { return HOOKED_tex(HOOKED_pos); }\n//!HOOK LUMA\n//!BIND HOOKED\n//!DESC luma pass\nvec4 hook() { return HOOKED_tex(HOOKED_pos); }\n'
 ORDERED_NAMES = ['luma pass', 'main pass']
 MULTIPLE_HOOK_SHADER = '//!HOOK LUMA\n//!HOOK RGB\n//!HOOK ALPHA\n//!BIND HOOKED\n//!DESC invert\nvec4 hook() { return vec4(1.0) - HOOKED_texOff(0); }\n'
-LINEAR_SHADER = '//!HOOK LINEAR\n//!BIND HOOKED\n//!DESC linear pass\nvec4 hook() { return HOOKED_tex(HOOKED_pos); }\n'
-LINEAR_NAMES = ['linear pass', 'linear pass (HDR)']
+# mpv fires RGB on RGB sources and LUMA on YUV ones, which the engine's rgb.source fact tells apart
+SOURCE_HOOK_CONDITIONS = [('RGB', ['rgb.source']), ('LUMA', ['!rgb.source'])]
+LINEAR_SHADER = '//!HOOK LINEAR\n//!BIND HOOKED\n//!DESC linear pass\nvec4 hook() { return linearize(delinearize(HOOKED_tex(HOOKED_pos))); }\n'
+LINEAR_NAMES = ['linear pass']
+# Linear light in mpv's scale, which the engine's reference white gives, and the source's own transfer function
+LINEAR_READ = 'return vec4f(color.rgb / referenceWhiteNits(), color.a);'
+LINEAR_WRITE = 'return vec4f(result.rgb * referenceWhiteNits(), result.a);'
+LINEARIZE_GLUE = 'return linearize(color);'
+# A DEFINE over values 1 to 20, past the variant limit
+WIDE_DEFINE_SHADER = '//!PARAM taps\n//!TYPE DEFINE\n//!MINIMUM 1\n//!MAXIMUM 20\n4\n\n//!HOOK MAIN\n//!BIND HOOKED\n//!DESC wide\nvec4 hook() { return HOOKED_tex(HOOKED_pos) * float(taps); }\n'
 LONG_DESCRIPTION = 'x' * 80
 DUPLICATE_DESCRIPTION_SHADER = '//!HOOK MAIN\n//!BIND HOOKED\n//!DESC same\nvec4 hook() { return HOOKED_tex(HOOKED_pos); }\n//!HOOK MAIN\n//!BIND HOOKED\n//!DESC same\nvec4 hook() { return HOOKED_tex(HOOKED_pos); }\n'
 DUPLICATE_NAMES = ['same', 'same 2/2']
@@ -129,7 +146,10 @@ vec4 hook() {
     return mix(HOOKED_tex(HOOKED_pos), color, strength) + vec4(grain * 0.0);
 }
 '''
-FRAGMENT_PARAMETER_LINES = ['//! param strength: f32 = 0.5 in [0.0, 1.0]', '//! param mode: i32 = 0 in [0, 1]']
+FRAGMENT_PARAMETER_LINES = ['//! param strength: f32 = 0.5 in [0.0, 1.0]', '//! param mode: i32 = 0 in [0, 1]', '//! param taps: i32 = 2 in [1, 3]']
+# The DEFINE taps splits the pass in one per value, which `when` picks
+FRAGMENT_NAMES = ['fragment features (taps=1)', 'fragment features (taps=2)', 'fragment features (taps=3)']
+FRAGMENT_VARIANT_CONDITION = '//! when: taps == 3'
 NESTED_ARRAY_WGSL = 'array<array<f32, 3>, 2>'
 
 LUMA_DOUBLER_SHADER = '''//!HOOK LUMA
@@ -148,7 +168,7 @@ vec4 hook() { return HOOKED_texOff(1) - HOOKED_texOff(-1); }
 vec4 hook() { return HOOKED_tex(HOOKED_pos) + 0.1 * DETAIL_tex(DETAIL_pos); }
 '''
 LUMA_DOUBLER_OUTPUT = '//! output: (HOOKED.width * 2), (HOOKED.height * 2), rgba16float'
-LUMA_DOUBLER_CONDITION = '//! when: (output.width > (source.width * 1.3))'
+LUMA_DOUBLER_CONDITION = '//! when: (output.width > (luma.width * 1.3))'
 LUMA_DOUBLER_INPUTS = ['//! input: HOOKED', '//! input: DETAIL']
 # A luma pass writes the luma plane itself, which the engine merges with chroma as the signal converts
 LUMA_PASS_HEADER_LINES = ['//! hook: LUMA', '//! domain: any']
@@ -179,8 +199,8 @@ vec4 hook() {
 }
 '''
 CHROMA_DOWNSCALE_LINES = ['//! hook: CHROMA', '//! save: LOWRES_Y', '//! output: LUMA.width, HOOKED.height, rgba16float',
-                          '//! when: (chroma.width < source.width)']
-CHROMA_UPSCALE_LINES = ['//! output: LUMA.width, LUMA.height, rgba16float', '//! offset: align', '//! when: (chroma.width < source.width)']
+                          '//! when: (chroma.width < luma.width)']
+CHROMA_UPSCALE_LINES = ['//! output: LUMA.width, LUMA.height, rgba16float', '//! offset: align', '//! when: (chroma.width < luma.width)']
 ALIGNED_POSITION_ASSIGNMENT = 'mpv_aligned_position = coordinate + HOOKED_offset() * HOOKED_pt();'
 HOOKED_OFFSET_GLUE = 'return HOOKED_offset();'
 
@@ -200,7 +220,7 @@ vec4 hook() { return HOOKED_tex(HOOKED_pos); }
 OFFSET_LINE = '//! offset: -0.5, 0'
 SCALED_OFFSET_DETAIL = 'scaled offset: OFFSET 0.5 0.5 at POSTKERNEL'
 
-# A condition that reads chroma's size and a parameter: WGSL cannot read the chroma plane's size, so it plans on the parameter's default
+# A condition that reads chroma's size and a parameter, both of which `when` reads
 CHROMA_FACT_CONDITION_SHADER = '''//!PARAM strength
 //!TYPE float
 //!MINIMUM 0.0
@@ -213,7 +233,8 @@ CHROMA_FACT_CONDITION_SHADER = '''//!PARAM strength
 //!DESC chroma aware
 vec4 hook() { return HOOKED_tex(HOOKED_pos) * strength; }
 '''
-CHROMA_FACT_CONDITION = '//! when: ((chroma.width < source.width) * 0.5)'
+CHROMA_FACT_CONDITION = '//! when: ((chroma.width < luma.width) * strength)'
+STRENGTH_PARAMETER_LINE = '//! param strength: f32 = 0.5 in [0.0, 1.0]'
 
 # libplacebo's own example: a 41x41 average over shared memory, at 32x32 threads, then at 16x16
 COMPUTE_TEMPLATE = '''//!HOOK LUMA
@@ -247,7 +268,7 @@ OVERSIZED_WORKGROUP = 32
 FITTING_WORKGROUP = 16
 COMPUTE_HEADER_LINES = ['//! shape: compute', '//! workgroup: 16, 16', '//! dispatch: ceil(round(HOOKED.width) / 16), ceil(round(HOOKED.height) / 16)']
 
-RUNTIME_CONDITION_SHADER = '''//!PARAM intensity
+PARAMETER_CONDITION_SHADER = '''//!PARAM intensity
 //!TYPE float
 //!MINIMUM 0.0
 //!MAXIMUM 1.0
@@ -259,7 +280,61 @@ RUNTIME_CONDITION_SHADER = '''//!PARAM intensity
 //!DESC grain
 vec4 hook() { return HOOKED_tex(HOOKED_pos) + vec4(intensity * random); }
 '''
-RUNTIME_GUARD = 'if (select(0.0, 1.0, f32(parameters.intensity) > 0.0) == 0.0) {'
+PARAMETER_CONDITION = '//! when: (intensity > 0)'
+
+# A CONSTANT the code reads in arithmetic, which the engine compiles at its value, and one that sizes an array, which naga folds
+CONSTANT_SHADER = '''//!PARAM gain
+//!TYPE CONSTANT float
+//!MINIMUM 1.0
+//!MAXIMUM 4.0
+2.0
+
+//!PARAM taps
+//!TYPE CONSTANT int
+//!MINIMUM 1
+//!MAXIMUM 4
+2
+
+//!HOOK MAIN
+//!BIND HOOKED
+//!DESC constants
+vec4 hook() {
+    float weights[taps];
+    weights[0] = gain / 255.0;
+    return HOOKED_tex(HOOKED_pos) * weights[0];
+}
+'''
+CONSTANT_LINE = '//! const gain: f32 = 2.0 in [1.0, 4.0]'
+FOLDED_TAPS_DETAIL = 'constants: naga folds taps into constant expressions, so it takes its default 2'
+
+# A 2x1 linear table the pass samples, fetches, and sizes
+TEXTURE_PASS_SHADER = '''//!TEXTURE weights
+//!SIZE 2 1
+//!FORMAT rgba16f
+//!FILTER LINEAR
+//!BORDER REPEAT
+0000803f0000004000004040000080400000a0400000c0400000e04000000041
+
+//!HOOK MAIN
+//!BIND HOOKED
+//!BIND weights
+//!DESC table
+vec4 hook() {
+    vec2 size = vec2(textureSize(weights, 0));
+    return HOOKED_tex(HOOKED_pos) * texture(weights, vec2(0.25, 0.5)) + texelFetch(weights, ivec2(1, 0), 0) / size.x;
+}
+'''
+TEXTURE_PASS_LINES = ['//! bind: weights', '//! texture: weights', '//! size: 2, 1', '//! format: rgba16float', '//! filter: linear', '//! edge: repeat']
+TEXTURE_ACCESSOR_CALLS = ['return weights_tex(position);', 'return weights_load(texel);', 'return weights_size();']
+TEXTURE_BLOCK_DATA = base64.b64encode(struct.pack('<8e', 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0)).decode('ascii')
+
+# CHROMA_SCALED reads chroma through the source's own matrix and range, and joins new chroma back through them
+CHROMA_SCALED_SHADER = '''//!HOOK CHROMA_SCALED
+//!BIND HOOKED
+//!DESC chroma scaled
+vec4 hook() { return HOOKED_tex(HOOKED_pos) * 0.5; }
+'''
+CHROMA_SCALED_CALLS = ['rgbToPlanes(color.rgb).yz', 'planesToRGB(vec3f(rgbToPlanes(base.rgb).x, chroma))']
 
 REPAIRED_SHADER = '''//!HOOK MAIN
 //!BIND HOOKED
@@ -343,11 +418,20 @@ class ParsingTest(unittest.TestCase):
 
         self.assertIn(converter.CODE_PARAMETER_INVALID, get_codes(report, converter.SEVERITY_ERROR))
 
-    def test_decodes_float_and_half_textures(self) -> None:
+    def test_decodes_float_and_half_textures_into_halves(self) -> None:
         for shader_text in (FLOAT_TEXTURE_SHADER, HALF_TEXTURE_SHADER):
             with self.subTest(shader=shader_text.split('\n')[2]):
                 texture = converter.parse_shader(shader_text, converter.Report()).textures['weights']
-                self.assertEqual(texture.values, [TEXEL_VALUES])
+                self.assertEqual((texture.engine_format, texture.engine_data), ('rgba16float', HALF_TEXEL_BYTES))
+
+    def test_maps_formats_the_pass_file_lacks_and_reports_them(self) -> None:
+        cases = ((RGB8_TEXTURE_SHADER, 'colors', 'rgba8unorm', RGB8_TEXEL_BYTES), (R16_TEXTURE_SHADER, 'table', 'r32float', R16_TEXEL_BYTES))
+        for shader_text, name, engine_format, data in cases:
+            with self.subTest(format=engine_format):
+                report = converter.Report()
+                texture = converter.parse_shader(shader_text, report).textures[name]
+                self.assertEqual((texture.engine_format, texture.engine_data), (engine_format, data))
+                self.assertIn(converter.CODE_TEXTURE_FORMAT_MAPPED, get_codes(report, converter.SEVERITY_NOTE))
 
     def test_reports_unusable_textures(self) -> None:
         cases = ((SHORT_TEXTURE_SHADER, converter.CODE_TEXTURE_INVALID), (STORAGE_TEXTURE_SHADER, converter.CODE_TEXTURE_UNSUPPORTED))
@@ -385,21 +469,25 @@ class PassExpansionTest(unittest.TestCase):
     def test_orders_passes_by_mpv_pipeline(self) -> None:
         self.assertEqual(get_pass_names(OUT_OF_ORDER_SHADER), ORDERED_NAMES)
 
-    def test_skips_hooks_that_never_fire_on_video(self) -> None:
+    def test_keeps_RGB_beside_a_plane_hook_by_the_source_and_skips_hooks_that_never_fire(self) -> None:
         report = converter.Report()
         shader = converter.parse_shader(MULTIPLE_HOOK_SHADER, report)
         instances = converter.expand_passes(shader, DEFAULT_NAME, report)
 
-        self.assertEqual([instance.hook for instance in instances], ['LUMA'])
-        self.assertIn(converter.CODE_HOOK_SKIPPED, get_codes(report, converter.SEVERITY_NOTE))
+        self.assertEqual([(instance.hook, instance.variant_conditions) for instance in instances], SOURCE_HOOK_CONDITIONS)
+        self.assertIn(converter.CODE_HOOK_BY_SOURCE, get_codes(report, converter.SEVERITY_NOTE))
         self.assertIn(converter.CODE_HOOK_NEVER_FIRES, get_codes(report, converter.SEVERITY_NOTE))
 
-    def test_splits_linear_light_into_SDR_and_HDR_variants(self) -> None:
-        report = converter.Report()
-        instances = converter.expand_passes(converter.parse_shader(LINEAR_SHADER, report), DEFAULT_NAME, report)
+    def test_keeps_one_linear_light_pass(self) -> None:
+        self.assertEqual(get_pass_names(LINEAR_SHADER), LINEAR_NAMES)
 
-        self.assertEqual([instance.name for instance in instances], LINEAR_NAMES)
-        self.assertEqual([instance.linear_scale for instance in instances], [converter.SDR_LINEAR_SCALE_NITS, converter.HDR_LINEAR_SCALE_NITS])
+    def test_splits_a_pass_over_its_DEFINE_values_up_to_the_limit(self) -> None:
+        report = converter.Report()
+        wide = converter.expand_passes(converter.parse_shader(WIDE_DEFINE_SHADER, report), DEFAULT_NAME, report)
+
+        self.assertEqual(get_pass_names(FRAGMENT_SHADER), FRAGMENT_NAMES)
+        self.assertEqual([instance.define_values for instance in wide], [{}])
+        self.assertIn(converter.CODE_DEFINE_VARIANT_LIMIT, get_codes(report, converter.SEVERITY_WARNING))
 
     def test_keeps_names_unique_and_short(self) -> None:
         long_shader = OUT_OF_ORDER_SHADER.replace('main pass', LONG_DESCRIPTION)
@@ -466,7 +554,9 @@ class ConversionTest(unittest.TestCase):
             self.assertIn(line, result)
         self.assertIn(converter.KERNEL_ENTRY, result)
         self.assertIn(converter.FRAGMENT_COORDINATE_NAME, result)
-        self.assertIn(converter.CODE_PARAMETER_BAKED, get_codes(report, converter.SEVERITY_NOTE))
+        self.assertIn(FRAGMENT_VARIANT_CONDITION, result)
+        self.assertIn(converter.CODE_DEFINE_VARIANTS, get_codes(report, converter.SEVERITY_NOTE))
+        self.assertNotIn(converter.CODE_PARAMETER_BAKED, get_codes(report, converter.SEVERITY_NOTE))
 
     def test_keeps_naga_dimension_reversal_in_check(self) -> None:
         # naga 30.0.1 reverses adjacent GLSL array dimensions; the converter reverses them first, so the type comes out right
@@ -512,14 +602,14 @@ class ConversionTest(unittest.TestCase):
         self.assertNotIn('//! offset:', result[result.index('//! name: scaled offset'):])
         self.assertIn(converter.Finding(converter.SEVERITY_WARNING, converter.CODE_OFFSET_IGNORED, SCALED_OFFSET_DETAIL), report.findings)
 
-    def test_plans_a_condition_on_the_chroma_size_with_parameter_defaults(self) -> None:
+    def test_plans_a_condition_on_the_chroma_size_and_a_parameter_it_declares(self) -> None:
         result, report = convert(CHROMA_FACT_CONDITION_SHADER)
 
         self.assertIsNotNone(result, report.findings)
         assert result is not None
         self.assertIn(CHROMA_FACT_CONDITION, result)
-        self.assertNotIn(converter.CODE_CONDITION_RUNTIME, get_codes(report, converter.SEVERITY_NOTE))
-        self.assertIn(converter.CODE_PARAMETER_INLINED, get_codes(report, converter.SEVERITY_WARNING))
+        self.assertIn(STRENGTH_PARAMETER_LINE, result)
+        self.assertNotIn(converter.CODE_PARAMETER_INLINED, get_codes(report, converter.SEVERITY_WARNING))
 
     def test_converts_a_compute_pass_within_the_workgroup_limits(self) -> None:
         oversized, oversized_report = convert(COMPUTE_TEMPLATE.format(size=OVERSIZED_WORKGROUP))
@@ -534,14 +624,49 @@ class ConversionTest(unittest.TestCase):
         self.assertNotIn('subgroupBarrier', fitting)
         self.assertIn('workgroupBarrier();', fitting)
 
-    def test_runs_a_parameter_condition_every_frame(self) -> None:
-        result, report = convert(RUNTIME_CONDITION_SHADER)
+    def test_plans_a_condition_on_a_parameter_by_its_name(self) -> None:
+        result, report = convert(PARAMETER_CONDITION_SHADER)
 
         self.assertIsNotNone(result, report.findings)
         assert result is not None
-        self.assertIn(RUNTIME_GUARD, result)
-        self.assertNotIn('//! when:', result)
-        self.assertIn(converter.CODE_CONDITION_RUNTIME, get_codes(report, converter.SEVERITY_NOTE))
+        self.assertIn(PARAMETER_CONDITION, result)
+        self.assertIn('//! param intensity: f32 = 0.1 in [0.0, 1.0]', result)
+
+    def test_compiles_a_constant_by_name_and_keeps_a_folded_one_at_its_default(self) -> None:
+        result, report = convert(CONSTANT_SHADER)
+
+        self.assertIsNotNone(result, report.findings)
+        assert result is not None
+        self.assertIn(CONSTANT_LINE, result)
+        self.assertNotIn('//! const taps', result)
+        self.assertNotIn('gain: f32 = 2f', result)
+        self.assertIn(converter.Finding(converter.SEVERITY_WARNING, converter.CODE_CONSTANT_FOLDED, FOLDED_TAPS_DETAIL), report.findings)
+
+    def test_binds_a_TEXTURE_as_a_texture_block_of_the_file(self) -> None:
+        result, report = convert(TEXTURE_PASS_SHADER)
+
+        self.assertIsNotNone(result, report.findings)
+        assert result is not None
+        for line in [*TEXTURE_PASS_LINES, *TEXTURE_ACCESSOR_CALLS, TEXTURE_BLOCK_DATA]:
+            self.assertIn(line, result)
+        self.assertLess(result.index('//! bind: weights'), result.index('//! texture: weights'))
+
+    def test_reads_linear_light_in_mpv_scale_through_the_engine(self) -> None:
+        result, report = convert(LINEAR_SHADER)
+
+        self.assertIsNotNone(result, report.findings)
+        assert result is not None
+        for line in (LINEAR_READ, LINEAR_WRITE, LINEARIZE_GLUE):
+            self.assertIn(line, result)
+        self.assertEqual(get_codes(report, converter.SEVERITY_WARNING), [])
+
+    def test_reads_scaled_chroma_through_the_source_matrix(self) -> None:
+        result, report = convert(CHROMA_SCALED_SHADER)
+
+        self.assertIsNotNone(result, report.findings)
+        assert result is not None
+        for call in CHROMA_SCALED_CALLS:
+            self.assertIn(call, result)
 
     def test_repairs_what_naga_rejects(self) -> None:
         result, report = convert(REPAIRED_SHADER)

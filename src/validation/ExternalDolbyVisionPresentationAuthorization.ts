@@ -82,6 +82,7 @@ fn recoverExternalDolbyVisionBaseSignal(coordinate: vec2f) -> vec4f {
 // Planned like a route's chain, so the probe renders through the same planner and executor as the output it checks
 const EXTERNAL_INPUT_PROBE_CHAIN: BuiltinChain = {
     colorFunctions: [],
+    linearLight: null,
     signal: {
         bypassCondition: null,
         code: EXTERNAL_INPUT_PROBE_SIGNAL_CODE,

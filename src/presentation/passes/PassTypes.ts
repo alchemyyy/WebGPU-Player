@@ -1,6 +1,7 @@
 // The contracts shared by the pass manifest, the built-in passes, the planner, the executor, and the GPU decode route.
 // The Presentation section of docs/src/architecture.md and docs/src/new-pass.md describe them.
 import type { InputColorMetadata } from '../../color/ColorMetadata';
+import type { ChromaSubsampling } from '../../demux/VideoChromaSubsampling';
 import type {
     RawDolbyVisionVideoFrameFormat,
     SupportedRawVideoFrameFormat,
@@ -103,6 +104,26 @@ export type PassWorkgroup = {
     size: readonly [number, number, number]
 };
 
+export type PassTextureFilter = 'linear' | 'nearest';
+
+/** How a texture block's coordinates wrap: clamped to its edge texels, repeated, or mirrored. */
+export type PassTextureEdge = 'clamp' | 'mirror' | 'repeat';
+
+/** A texture block of a pass file, which its passes bind by name, such as a 3D LUT or a table of weights. */
+export type PassTexture = {
+    /** The texels in little-endian order, x fastest, then y, then z, packed tightly in the format */
+    data: Uint8Array<ArrayBuffer>
+    dimensions: 1 | 2 | 3
+    edge: PassTextureEdge
+    filter: PassTextureFilter
+    format: GPUTextureFormat
+    /** The lowercase hexadecimal SHA-256 of the block's size, format, and data, which keys its upload */
+    identity: string
+    name: string
+    /** Width, height, and depth, 1 on the axes past its dimensions */
+    size: readonly [number, number, number]
+};
+
 /** A parsed user pass: its `//!` header and its WGSL body. */
 export type PassManifest = {
     /** The WGSL after the header. */
@@ -110,6 +131,8 @@ export type PassManifest = {
     /** The 1-based source line of the body's first line, for compile error mapping. */
     bodyFirstLine: number
     components: 1 | 2 | 3 | 4 | null
+    /** Parameters declared with `const`: WGSL constants the body reads by name, whose values the plan compiles in, so a change builds a new plan. */
+    constants: readonly PassParameter[]
     /** 'any' for a color pass with `replaces`, which takes the replaced function's color states. */
     domain: ColorDomain
     /** Null for a color pass with `replaces`, which runs in the replaced function's place. */
@@ -119,11 +142,14 @@ export type PassManifest = {
     /** Null for the default, the hooked image's offset scaled by the output's size */
     offset: PassOffset | null
     output: PassOutput | null
+    /** Parameters declared with `param`: the `parameters` uniform's members, which a change writes without a new plan. */
     parameters: readonly PassParameter[]
     /** The built-in color function a color pass replaces, such as 'builtin.tone-map'; a scaler always replaces the built-in scaler. */
     replaces: string | null
     save: string | null
     shape: PassShape
+    /** The file's texture blocks the pass binds with `bind`, in header order */
+    textures: readonly PassTexture[]
     when: PassExpression | null
     workgroup: PassWorkgroup | null
 };
@@ -194,8 +220,23 @@ export type SignalPlanes = {
     lumaFormat: GPUTextureFormat
     /** The format of NATIVE, the planes merged into normalized Y, Cb, and Cr on luma's grid. */
     nativeFormat: GPUTextureFormat
+    /** Whether the source codes R, G, and B planes rather than Y, Cb, and Cr, which the `rgb.source` fact tells passes, as mpv fires its RGB hook on them. */
+    rgb: boolean
     /** `fn <entryPoint>(coordinate: vec2f) -> vec2f`: Cb and Cr codes at a normalized coordinate of the luma grid, sited as the signal reads them. */
     sitedChromaEntryPoint: string
+    /**
+     * WGSL of the same plane functions, derived from an image of the signal's 'source' RGB through the transform, as a deinterlacing plan derives its planes
+     * from its deinterlaced image; the plan defines the image's reads, `fn <imageReadEntryPoint>(coordinate: vec2f) -> vec3f` and `fn <imageSizeEntryPoint>() -> vec2f`.
+     */
+    imageCode: string
+    imageReadEntryPoint: string
+    imageSizeEntryPoint: string
+    /** `fn <entryPoint>(planes: vec3f) -> vec3f`: normalized Y, Cb, and Cr plane values to 'source' RGB, the exact inverse of rgbToPlanesEntryPoint. */
+    planesToRGBEntryPoint: string
+    /** `fn <entryPoint>(color: vec3f) -> vec3f`: 'source' RGB to normalized Y, Cb, and Cr plane values, through the matrix and range that produced the RGB. */
+    rgbToPlanesEntryPoint: string
+    /** Self-contained WGSL of the two transform functions, which code and imageCode call and passes reach through the prelude. */
+    transformCode: string
 };
 
 /** The fixed, decode-equivalent step of a route: it reads the source and produces 'source' RGB. */
@@ -216,10 +257,25 @@ export type SignalDefinition = {
     sourceKind: PresentationSourceKind
 };
 
+/** The source's transfer function, which the prelude's linearize and delinearize compile from, in the scale of mpv's linear light. */
+export type SignalLinearLight = {
+    /**
+     * Self-contained WGSL of `fn <decodeEntryPoint>(color: vec3f) -> vec3f`, encoded values to linear nits as the built-in transfer decode computes them,
+     * and `fn <encodeEntryPoint>(nits: vec3f) -> vec3f`, its inverse.
+     */
+    code: string
+    decodeEntryPoint: string
+    encodeEntryPoint: string
+    /** The nits of mpv's linear 1.0: the configured SDR white for an SDR source, the HDR reference white for HDR. */
+    referenceWhiteNits: number
+};
+
 /** A route's built-in chain; its scaler is the implicit bilinear read of the signal. */
 export type BuiltinChain = {
     /** The default color functions, in color-track order. */
     colorFunctions: readonly BuiltinColorFunction[]
+    /** The source's transfer function, or null while the route does not know it, as the identity route before its stream's color is configured. */
+    linearLight: SignalLinearLight | null
     signal: SignalDefinition
     /** True when 'source' values are already display values (identity SDR), so the chain may be empty. */
     sourceIsDisplay: boolean
@@ -244,7 +300,14 @@ export type BuiltinChainConfiguration =
         route: 'raw-yuv'
         settings: RenderSettings
     }
-    | { hdrOutput: boolean; metadata: InputColorMetadata; route: 'external-hdr'; settings: HDRToSDRRenderSettings }
+    | {
+        /** The stream's chroma subsampling, at which the planes derived from the browser's RGB hold chroma; null for chroma at the image's size */
+        chromaSubsampling?: ChromaSubsampling | null
+        hdrOutput: boolean
+        metadata: InputColorMetadata
+        route: 'external-hdr'
+        settings: HDRToSDRRenderSettings
+    }
     | {
         hdrOutput: boolean
         /** The chain takes interlacedSignal, as a deinterlacing plan does */
@@ -257,7 +320,13 @@ export type BuiltinChainConfiguration =
         signal: SignalDefinition
     }
     | { hdrOutput: boolean; route: 'external-dolby-vision'; settings: HDRToSDRRenderSettings }
-    | { route: 'external-identity' };
+    | {
+        /** The stream's chroma subsampling, at which the planes derived from the browser's RGB hold chroma; null for chroma at the image's size */
+        chromaSubsampling?: ChromaSubsampling | null
+        /** The stream's color, whose matrix and range the browser converted with; null when unknown, which leaves the route without planes */
+        metadata: InputColorMetadata | null
+        route: 'external-identity'
+    };
 
 /** The canvas configuration a plan renders for. */
 export type PlannedOutput = {
@@ -273,6 +342,9 @@ export type PlanFacts = {
     /** The output rectangle in device pixels, letterboxing excluded. */
     outputHeight: number
     outputWidth: number
+    /** The frame's visible size in samples, which the planes hold; an anamorphic stream's differs from the source size. */
+    sampleHeight: number
+    sampleWidth: number
     /** The visible source size in pixels. */
     sourceHeight: number
     sourceWidth: number
@@ -280,7 +352,10 @@ export type PlanFacts = {
 
 export type PlanDevice = {
     features: ReadonlySet<string>
+    /** The device's maxTextureDimension2D, which bounds planned textures and the two-dimensional and one-dimensional texture blocks */
     maximumTextureDimension: number
+    /** The device's maxTextureDimension3D, which bounds three-dimensional texture blocks; WebGPU's default when absent */
+    maximumTextureDimension3D?: number
 };
 
 /**
@@ -301,6 +376,11 @@ export type PlanRequest = {
     device: PlanDevice
     facts: PlanFacts
     output: PlannedOutput
+    /**
+     * The current values of the passes' parameters and constants, by pass name and parameter name, which `when` reads and constants compile in;
+     * a parameter without one takes its default, and every value takes its type and range.
+     */
+    parameterValues?: ReadonlyMap<string, ReadonlyMap<string, number>>
     /** User passes in preset order. */
     passes: readonly PassManifest[]
 };
@@ -338,7 +418,21 @@ export type PlannedBinding =
     | { binding: number; kind: 'presentation' }
     /** The pass's `parameters` uniform, holding its declared parameters. */
     | { binding: number; kind: 'parameters'; passName: string }
-    | { access: 'sampled' | 'storage'; binding: number; historyOffset: number; kind: 'texture'; textureId: string };
+    | { access: 'sampled' | 'storage'; binding: number; historyOffset: number; kind: 'texture'; textureId: string }
+    /** A pass file's texture block, by its identity, and the sampler of its filter and edge mode. */
+    | { binding: number; kind: 'pass-texture'; textureId: string }
+    | { binding: number; kind: 'pass-sampler'; textureId: string };
+
+/** A pass file's texture block the plan binds, by its content identity; the executor uploads its data once, through the caller's cache. */
+export type PlannedPassTexture = {
+    /** WebGPU's dimension: a one-dimensional block is a two-dimensional texture one texel high, which every pass shape can sample */
+    dimension: '2d' | '3d'
+    edge: PassTextureEdge
+    filter: PassTextureFilter
+    format: GPUTextureFormat
+    id: string
+    size: readonly [number, number, number]
+};
 
 export type PassTarget = { kind: 'output' } | { kind: 'texture'; textureId: string };
 
@@ -386,6 +480,7 @@ export type PassRejectionReason =
     | 'input-after-hook'
     | 'input-reserved'
     | 'input-unknown'
+    | 'linear-light-unavailable'
     | 'output-missing'
     | 'output-size'
     | 'parameter-invalid'
@@ -394,6 +489,8 @@ export type PassRejectionReason =
     | 'replaced-function-missing'
     | 'replaced-function-taken'
     | 'sdr-on-hdr-output'
+    | 'texture-format'
+    | 'texture-size'
     | 'workgroup-count'
     | 'workgroup-missing';
 
@@ -422,6 +519,8 @@ export type PresentationPlan = {
     deinterlace: DeinterlaceRequest | null
     output: PlannedOutput
     parameterSets: readonly PlannedParameterSet[]
+    /** The texture blocks the passes bind, each once by identity */
+    passTextures: readonly PlannedPassTexture[]
     passes: readonly PlannedPass[]
     report: PlanReport
     sourceKind: PresentationSourceKind
