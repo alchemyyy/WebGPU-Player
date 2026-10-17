@@ -1,5 +1,5 @@
 import { EncodedPacket } from 'mediabunny';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 
 import DolbyVisionEncodedPacketPairer, {
     type DolbyVisionEncodedPacketIterator
@@ -17,7 +17,7 @@ function createPacket(timestampSeconds: number, sequenceNumber: number): Encoded
 
 function createIterator(packets: readonly EncodedPacket[]): {
     iterator: DolbyVisionEncodedPacketIterator
-    iteratorReturn: ReturnType<typeof vi.fn>
+    iteratorReturn: Mock
 } {
     let packetIndex = 0;
     const iteratorReturn = vi.fn(async (): Promise<IteratorResult<EncodedPacket>> => ({

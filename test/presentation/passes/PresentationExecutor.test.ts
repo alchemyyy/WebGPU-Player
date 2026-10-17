@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import {
     PRESENTATION_FIELD_STATE,
@@ -35,7 +35,7 @@ import {
     type TransferableRawVideoFrame
 } from 'webgpu-player/decode/video/RawVideoFrameCopy';
 
-type MockFunction = ReturnType<typeof vi.fn>;
+type MockFunction = Mock;
 
 type MockTexture = {
     createView: () => MockTextureView

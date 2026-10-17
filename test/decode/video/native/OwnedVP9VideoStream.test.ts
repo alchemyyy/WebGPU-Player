@@ -1,5 +1,5 @@
 import type { EncodedPacket } from 'mediabunny';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 
 import type { Microseconds } from 'webgpu-player/MediaTime';
 import { runOwnedVP9VideoStream } from 'webgpu-player/decode/video/native/OwnedVP9VideoStream';
@@ -35,7 +35,7 @@ type TestPacket = {
 };
 
 type StreamHarness = OwnedVideoStreamFakes & {
-    readPacketSideData: ReturnType<typeof vi.fn>
+    readPacketSideData: Mock
     start: (startTimeMicroseconds?: Microseconds) => Promise<void>
 };
 

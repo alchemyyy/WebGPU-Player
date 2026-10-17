@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import {
     microsecondsToMilliseconds,
@@ -40,7 +40,7 @@ class MockMessagePort extends EventTarget {
 }
 
 type AudioNodeHarness = {
-    disconnect: ReturnType<typeof vi.fn>
+    disconnect: Mock
     node: AudioWorkletNode
     port: MockMessagePort
 };

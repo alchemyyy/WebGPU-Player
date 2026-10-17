@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import {
     createPlaneTextureSet,
@@ -16,7 +16,7 @@ import {
     type TransferableRawVideoFrame
 } from 'webgpu-player/decode/video/RawVideoFrameCopy';
 
-type MockFunction = ReturnType<typeof vi.fn>;
+type MockFunction = Mock;
 
 type TextureHarness = {
     createTexture: MockFunction

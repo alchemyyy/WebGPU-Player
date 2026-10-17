@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import {
     microsecondsToMilliseconds,
@@ -154,7 +154,7 @@ type BackendHarness = {
     backend: OwnedNativeMediaAudioBackend
     events: OwnedNativeMediaAudioEvent[]
     mediaSource: FakeMediaSource
-    revokeObjectURL: ReturnType<typeof vi.fn>
+    revokeObjectURL: Mock
 };
 
 function createHarness(options: {

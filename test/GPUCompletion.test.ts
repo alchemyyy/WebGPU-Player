@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { GPU_COMPLETION_POLL_INTERVAL_MICROSECONDS, waitForGPUCompletion } from 'webgpu-player/GPUCompletion';
 import { microsecondsToMilliseconds } from 'webgpu-player/MediaTime';
@@ -12,7 +12,7 @@ const MAP_ABORTED_ERROR = new Error('mapAsync aborted');
 
 type PolledDevice = Readonly<{
     device: GPUDevice
-    submit: ReturnType<typeof vi.fn>
+    submit: Mock
 }>;
 
 type Deferred = Readonly<{

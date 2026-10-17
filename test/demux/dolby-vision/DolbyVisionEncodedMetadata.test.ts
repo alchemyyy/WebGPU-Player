@@ -1,5 +1,5 @@
 import { EncodedPacket } from 'mediabunny';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 
 import DolbyVisionEncodedMetadataQueue, {
     DolbyVisionAV1EncodedMetadataQueue,
@@ -18,7 +18,7 @@ import { createNALUnit, encodeAnnexBNALUnits } from '../../helpers/hevcNALUnits'
 function createRPUParser(
     packedRPUData: ArrayBuffer = createDolbyVisionAuthorizationRPUVector()
 ): {
-        parse: ReturnType<typeof vi.fn>
+        parse: Mock
     } {
     return {
         parse: vi.fn(async (): Promise<ArrayBuffer> => (
@@ -503,7 +503,7 @@ function concatenateAV1OBUs(obus: readonly Uint8Array[]): Uint8Array {
 function createAV1RPUParser(
     packedRPUData: ArrayBuffer = createDolbyVisionAuthorizationRPUVector(8)
 ): {
-        parseAV1ITUTT35: ReturnType<typeof vi.fn>
+        parseAV1ITUTT35: Mock
     } {
     return {
         parseAV1ITUTT35: vi.fn(async (): Promise<ArrayBuffer> => (

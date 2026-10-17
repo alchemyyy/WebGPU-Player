@@ -1,5 +1,5 @@
 import type { EncodedPacket } from 'mediabunny';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 
 import type { Microseconds } from 'webgpu-player/MediaTime';
 import { runOwnedAV1VideoStream } from 'webgpu-player/decode/video/native/OwnedAV1VideoStream';
@@ -33,7 +33,7 @@ const DECODE_QUEUE_HIGH_WATER_MARK = 8;
 
 type StreamHarness = OwnedVideoStreamFakes & {
     parsedRPUData: Map<number, ArrayBuffer>
-    rpuParser: { parseAV1ITUTT35: ReturnType<typeof vi.fn> }
+    rpuParser: { parseAV1ITUTT35: Mock }
     start: (startTimeMicroseconds?: Microseconds, rpuParser?: DolbyVisionAV1RPUDataParser | null) => Promise<void>
 };
 

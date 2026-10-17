@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 
 import CustomDecodeCapabilityProbe, {
     type RawHDRVideoOutputProbeRequest,
@@ -11,8 +11,8 @@ import {
 
 type CapabilityHarness = {
     environment: WebCodecsCapabilityEnvironment
-    vectorLoader: ReturnType<typeof vi.fn>
-    outputProbe: ReturnType<typeof vi.fn>
+    vectorLoader: Mock
+    outputProbe: Mock
     videoDecoder: Pick<typeof VideoDecoder, 'isConfigSupported'>
 };
 

@@ -1,5 +1,5 @@
 import { EncodedPacket } from 'mediabunny';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 
 import OwnedNativeVideoDecoder, {
     DEFAULT_NATIVE_VIDEO_DECODER_DEPENDENCIES,
@@ -36,9 +36,9 @@ class FakeEncodedVideoChunk {
 
 type DecoderHarness = {
     callbacks: OwnedVideoDecoderCallbacks & {
-        onError: ReturnType<typeof vi.fn>
-        onOutput: ReturnType<typeof vi.fn>
-        onProgress: ReturnType<typeof vi.fn>
+        onError: Mock
+        onOutput: Mock
+        onProgress: Mock
     }
     decoder: OwnedNativeVideoDecoder
     dependencies: OwnedNativeVideoDecoderDependencies

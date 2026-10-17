@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 // The real built-in library and planner run behind spies, and the real executor runs on a mock device
 vi.mock('webgpu-player/presentation/passes/builtin/BuiltinChains', async importOriginal => {
@@ -45,7 +45,7 @@ import {
     type WebGPUDeviceHarness
 } from '../helpers/webGPUDeviceHarness';
 
-type MockFunction = ReturnType<typeof vi.fn>;
+type MockFunction = Mock;
 
 const PQ_ROUTE_KEY: ExternalHDRAuthorizationRouteKey = 'external-hevc-main10-bt709-limited:pq-v1';
 const HLG_ROUTE_KEY: ExternalHDRAuthorizationRouteKey = 'external-hevc-main10-bt709-limited:hlg-v1';

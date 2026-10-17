@@ -86,7 +86,7 @@ describe('requireConsistentDecodedVideoGeometry', () => {
             1_920,
             1_080,
             null
-        )).toThrowError(new DecodedVideoGeometryError(
+        )).toThrow(new DecodedVideoGeometryError(
             'Decoded frame display geometry exceeds the selected video track tolerance'
         ));
     });
@@ -103,7 +103,7 @@ describe('requireConsistentDecodedVideoGeometry', () => {
             1_920,
             1_080,
             null
-        )).toThrowError(new DecodedVideoGeometryError(
+        )).toThrow(new DecodedVideoGeometryError(
             'Decoded frame coded geometry exceeds its negotiated decode route'
         ));
     });
@@ -168,7 +168,7 @@ describe('requireConsistentDecodedVideoGeometry', () => {
             3_840,
             2_076,
             null
-        )).toThrowError(new DecodedVideoGeometryError(
+        )).toThrow(new DecodedVideoGeometryError(
             'Decoded frame coded geometry exceeds its negotiated decode route'
         ));
     });
@@ -190,7 +190,7 @@ describe('requireConsistentDecodedVideoGeometry', () => {
             1_920,
             1_080,
             lockedGeometry
-        )).toThrowError(new DecodedVideoGeometryError(
+        )).toThrow(new DecodedVideoGeometryError(
             'Decoded frame geometry changed after the first decoded frame'
         ));
     });

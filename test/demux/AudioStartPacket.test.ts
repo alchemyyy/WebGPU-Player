@@ -1,5 +1,5 @@
 import type { EncodedPacket } from 'mediabunny';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 
 import { getAudioStartPacket, type AudioStartPacketReader } from 'webgpu-player/demux/AudioStartPacket';
 import { requireMicroseconds } from 'webgpu-player/TimeMath';
@@ -8,8 +8,8 @@ const FIRST_PACKET = { timestamp: 6.006 } as unknown as EncodedPacket;
 const LOOKUP_PACKET = { timestamp: 9.5 } as unknown as EncodedPacket;
 
 type FakePacketReader = AudioStartPacketReader & {
-    getAt: ReturnType<typeof vi.fn>
-    getFirst: ReturnType<typeof vi.fn>
+    getAt: Mock
+    getFirst: Mock
 };
 
 function createPacketReader(lookupPacket: EncodedPacket | null): FakePacketReader {

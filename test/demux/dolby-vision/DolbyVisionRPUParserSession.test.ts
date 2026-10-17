@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 
 import type { DolbyVisionRPUSnapshot } from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParser';
 import DolbyVisionRPUParserSession, {
@@ -35,10 +35,10 @@ function createParserPort(
     packedData = new ArrayBuffer(32),
     av1PackedData = new ArrayBuffer(32)
 ): DolbyVisionRPUParserPort & {
-    close: ReturnType<typeof vi.fn>
-    parse: ReturnType<typeof vi.fn>
-    parseAV1ITUTT35: ReturnType<typeof vi.fn>
-    reset: ReturnType<typeof vi.fn>
+    close: Mock
+    parse: Mock
+    parseAV1ITUTT35: Mock
+    reset: Mock
 } {
     return {
         close: vi.fn(),
