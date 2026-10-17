@@ -1,11 +1,26 @@
 // The names of the pass language that headers, the prelude, and the planner share; docs/src/new-pass.md documents them.
 import type { PassInput, PassShape, PresentationStage } from './PassTypes';
 
-/** The spatial spine after the fixed signal step, in pipeline order. */
-export const STAGE_ORDER: readonly PresentationStage[] = [ 'RGB', 'PRESCALE', 'SCALE', 'OUTPUT' ];
+/** The plane stages, which hold the signal's planes before it converts them, in mpv's order. */
+export const LUMA_STAGE: PresentationStage = 'LUMA';
+export const CHROMA_STAGE: PresentationStage = 'CHROMA';
+export const NATIVE_STAGE: PresentationStage = 'NATIVE';
+export const PLANE_STAGES: readonly PresentationStage[] = [ LUMA_STAGE, CHROMA_STAGE, NATIVE_STAGE ];
+
+/** The image stages, from the signal step's RGB on, in pipeline order. */
+export const IMAGE_STAGES: readonly PresentationStage[] = [ 'RGB', 'PRESCALE', 'SCALE', 'OUTPUT' ];
+
+/** The spatial spine, in pipeline order: the plane stages, then the image stages. */
+export const STAGE_ORDER: readonly PresentationStage[] = [ ...PLANE_STAGES, ...IMAGE_STAGES ];
 
 /** The stage every scaler hooks. */
 export const SCALER_STAGE: PresentationStage = 'SCALE';
+
+/** The stages after the scaler, whose images sit on the output's grid, so no pass there declares an offset. */
+export const SCALED_STAGES: readonly PresentationStage[] = [ SCALER_STAGE, 'OUTPUT' ];
+
+/** The `offset` value that aligns a pass's output with the reference grid. */
+export const OFFSET_ALIGN = 'align';
 
 /** The input that names the image at a pass's hook. */
 export const HOOKED_INPUT_NAME = 'HOOKED';
@@ -36,8 +51,13 @@ export const PARAMETERS_VARIABLE = 'parameters';
 /** The accessor prefix of a compute pass's storage target, as in `TARGET_store`. */
 export const TARGET_ACCESSOR_PREFIX = 'TARGET';
 
-/** The plan-time facts every expression may read; booleans are 1 or 0, and an unknown frame rate is 0. */
+/**
+ * The plan-time facts every expression may read; booleans are 1 or 0, and an unknown frame rate is 0.
+ * The chroma size is the chroma plane's visible size, the source's where the route's planes are not subsampled.
+ */
 export const GLOBAL_FACTS = Object.freeze({
+    chromaHeight: 'chroma.height',
+    chromaWidth: 'chroma.width',
     frameRate: 'frame.rate',
     hdrOutput: 'hdr.output',
     hdrSource: 'hdr.source',
@@ -53,13 +73,15 @@ export const GLOBAL_FACT_NAMES: readonly string[] = Object.freeze([
     GLOBAL_FACTS.sourceHeight,
     GLOBAL_FACTS.outputWidth,
     GLOBAL_FACTS.outputHeight,
+    GLOBAL_FACTS.chromaWidth,
+    GLOBAL_FACTS.chromaHeight,
     GLOBAL_FACTS.frameRate,
     GLOBAL_FACTS.hdrSource,
     GLOBAL_FACTS.hdrOutput
 ]);
 
 /** The names of the global sizes; a texture named like one would shadow their facts. */
-export const GLOBAL_SIZE_NAMES: readonly string[] = Object.freeze([ 'source', 'output' ]);
+export const GLOBAL_SIZE_NAMES: readonly string[] = Object.freeze([ 'source', 'output', 'chroma' ]);
 
 /** The suffixes of an input's size facts, and of the `<name>.size` shorthand in an output size. */
 export const WIDTH_SUFFIX = '.width';

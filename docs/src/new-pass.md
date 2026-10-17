@@ -47,9 +47,10 @@ A host loads any pass file through `WebGPUPresenter.setPresentationPreset`, as a
 
 ## Stages and color domains
 
-The hook names the stage a pass attaches to, in pipeline order after the fixed signal step:
+The hook names the stage a pass attaches to, in pipeline order:
 
-- `RGB`, then `PRESCALE`, run before scaling, where `HOOKED` starts at the source's size.
+- `LUMA`, `CHROMA`, then `NATIVE`, the plane stages, run on the signal's planes before it converts them into RGB (see [Planes](#planes)).
+- `RGB`, then `PRESCALE`, run before scaling, where `HOOKED` starts at the source's size, or at luma's when a luma pass resized it.
   A pass there may change the size, as the Anime4K passes double it, and the scaler takes whatever size it is given.
 - `SCALE` holds the scaler: the first user scaler that can run replaces the built-in bilinear one, and every other scaler is left out as `extra-scaler`.
   Kernels and color functions on `SCALE` run after the scaler.
@@ -69,6 +70,34 @@ The domain names the color state a pass needs on its input; the planner runs the
 
 The planner only moves forward along the color track, so a pass whose domain the pipeline has already passed, such as `source` after any built-in step has run, is left out as `domain-unreachable`.
 Dither always runs in the pass that writes the canvas, since its noise must not pass through a scaler.
+The plane stages come before the color track, so a pass there takes the domain `any`; any other is left out as `domain-unreachable`.
+
+### Planes
+
+The plane stages hold the planes as mpv's do, as normalized code values: a code divided by the largest code of its bit depth, so a limited-range black is 16/255 at 8 bits.
+
+| Stage | `HOOKED` | Size |
+| --- | --- | --- |
+| `LUMA` | Y in `.x` | The source's |
+| `CHROMA` | Cb in `.x` and Cr in `.y` | The chroma plane's: `chroma.width` by `chroma.height`, half the source's across and down at 4:2:0 |
+| `NATIVE` | Y, Cb, and Cr in `.xyz`, chroma resampled onto luma's grid | Luma's |
+
+- A pass that writes its plane stage's image replaces that plane; the plan then merges the planes and converts them with the signal's own range and matrix, reading a plane no pass replaced from the source, so it converts as the signal does.
+- Chroma resampled onto luma's grid, by `NATIVE` or the merge, is read bilinearly through both images' offsets; a chroma upscaler that writes chroma at luma's size with `offset: align` is read texel for texel.
+- A plane is read apart from the source only when a pass reads it; a plan without plane passes reads the source as it always does.
+- The raw and frame-pool routes hold the decoded planes.
+  The external routes, which import a frame the browser already converted to RGB, derive the planes from the RGB image with BT.709 weights at the image's size, chroma included, and the merge inverts them exactly; there `chroma.width` is `source.width`.
+- Dolby Vision routes have no planes to offer, and a deinterlacing plan deinterlaces the RGB the planes merge into, so on both a plane pass, and a pass that reads a plane stage, is left out as `planes-unavailable`.
+- The planes are the source's visible area on the source's display grid, so an anamorphic stream's planes are resampled to it.
+
+### Offsets
+
+Every image the plan holds has an offset: the pixel of the image, in its own pixels, that the reference grid's origin falls on, as libplacebo's texture rects place them.
+
+- The source's luma and the signal's RGB have the offset 0, and chroma has its siting: left-sited 4:2:0 and 4:2:2 chroma, such as H.264's and HEVC's default, has (0.25, 0), half a luma pixel.
+- A kernel or compute pass's output has the hooked image's offset scaled by the output's size over the hooked image's, plus its declared `offset`, or 0 with `offset: align`.
+- The engine never shifts a read: `<P>_tex` reads where the pass asks, and `<P>_offset()` gives the input's offset, so a pass that aligns itself reads `HOOKED_tex(coordinate + HOOKED_offset() * HOOKED_pt())`, as libplacebo's `OFFSET ALIGN` moves `HOOKED_pos`.
+- The scaler corrects its image's offset within its own resample, built-in or user, so an image that a pass doubled with `offset: -0.5, -0.5` lands where the source did.
 
 ## Header
 
@@ -93,13 +122,14 @@ fn kernel(coordinate: vec2f) -> vec4f {
 | --- | --- | --- |
 | `name` | All, required | The name in reports and errors, at most 64 characters; unique within a preset |
 | `shape` | All, required | `color`, `kernel`, `scaler`, or `compute` |
-| `hook` | All, required without `replaces` | `RGB`, `PRESCALE`, `SCALE`, or `OUTPUT`; a scaler hooks `SCALE` |
+| `hook` | All, required without `replaces` | `LUMA`, `CHROMA`, `NATIVE`, `RGB`, `PRESCALE`, `SCALE`, or `OUTPUT`; a scaler hooks `SCALE`, and a color pass no plane stage |
 | `replaces` | Color | The built-in color function it runs in place of: `builtin.transfer-decode`, `builtin.tone-map`, `builtin.output-encode`, `builtin.display-controls`, or `builtin.dither` |
 | `domain` | All | `any`, `source`, `linear`, `display`, or `sdr`; defaults to `any` |
 | `input` | Kernel, scaler, compute; repeats | `<NAME>`, or `<NAME>[-<N>]` for the frame N back, N from 1 to 8 |
 | `save` | Kernel, compute | A name for its output, which later passes read as an input |
 | `output` | Kernel, compute; required for compute | `<NAME>.size, <format>` or `<width>, <height>, <format>` |
 | `components` | Kernel, compute | 1, 2, 3, or 4, the channels it needs; the planner takes the format from `output` alone |
+| `offset` | Kernel, compute, on a hook before `SCALE` | `<x>, <y>` decimals, the output's offset in its own pixels beyond the hooked image's, or `align`; see [Offsets](#offsets) |
 | `when` | All | A condition on the global facts; when it is 0, the plan leaves the pass out as `condition-false` |
 | `workgroup` | Compute, required | `<x>[, <y>[, <z>]]` positive integers, 1 where omitted; x and y at most 256, z at most 64, and at most 256 invocations in all |
 | `dispatch` | Compute | `<x>[, <y>[, <z>]]` expressions, 1 where omitted; defaults to `ceil(<output width> / x), ceil(<output height> / y), 1` |
@@ -117,9 +147,9 @@ fn kernel(coordinate: vec2f) -> vec4f {
 - `NAME` is `HOOKED`, the image at the hook, a stage name, which reads that stage's final image and must not come after the hook, or a name an earlier pass saved.
 - A pass without inputs reads `HOOKED`, and a scaler reads nothing else.
 - No input pairs a name and a history depth twice.
-- A saved name is not `HOOKED` or a stage name, and no texture name is `source` or `output`, whose sizes are global facts, or ends in `_history<digits>`, which history accessors use.
+- A saved name is not `HOOKED` or a stage name, and no texture name is `source`, `output`, or `chroma`, whose sizes are global facts, or ends in `_history<digits>`, which history accessors use.
 - A compute pass's input is never `TARGET`, the prefix of its storage target.
-- In `output`, `<NAME>` is `HOOKED`, an input, `source`, or `output`, and a comma inside parentheses belongs to a function call.
+- In `output`, `<NAME>` is `HOOKED`, an input, `source`, `output`, or `chroma`, and a comma inside parentheses belongs to a function call.
 - A kernel's output defaults to `HOOKED.size, rgba16float`, and its format is `rgba16float`, `rg16float`, `r16float`, `rgba32float`, `r32float`, `rgb10a2unorm`, or `rgba8unorm`.
 - A compute pass writes a core storage format: `rgba16float`, `rgba32float`, `r32float`, or `rgba8unorm`.
 - An output's width and height round to whole pixels within 1 and the device's largest texture dimension, and each dispatch count rounds up within 1 and 65535; otherwise the pass is left out as `output-size` or `workgroup-count`.
@@ -127,8 +157,8 @@ fn kernel(coordinate: vec2f) -> vec4f {
 ### Expressions
 
 - `when`, `output`, and `dispatch` take expressions of numbers, identifiers, parentheses, `abs`, `ceil`, `floor`, `max`, `min`, `round`, and the operators `! - * / % + < <= > >= == != && ||`; a comparison or logic operator yields 1 or 0.
-- Every expression reads the global facts, `source.width`, `source.height`, `output.width`, `output.height`, `frame.rate`, `hdr.source`, and `hdr.output`, all fixed at plan time.
-  The HDR facts are 1 or 0, and an unknown frame rate is 0.
+- Every expression reads the global facts, `source.width`, `source.height`, `output.width`, `output.height`, `chroma.width`, `chroma.height`, `frame.rate`, `hdr.source`, and `hdr.output`, all fixed at plan time.
+  The HDR facts are 1 or 0, an unknown frame rate is 0, and the chroma size is the chroma plane's (see [Planes](#planes)), so `chroma.width < source.width` holds for subsampled chroma.
 - `output` and `dispatch` also read `<NAME>.width` and `<NAME>.height` for `HOOKED` and each input, by its base name for a history input.
 - Anything that varies per frame belongs in the body, which branches on a uniform.
 
@@ -144,7 +174,7 @@ fn kernel(coordinate: vec2f) -> vec4f {
 
 The engine owns every binding, and generates around each body:
 
-- For each input, the accessors `<P>_tex(coordinate: vec2f) -> vec4f`, a bilinear read at a normalized coordinate, `<P>_texOff(coordinate: vec2f, offsetInPixels: vec2f) -> vec4f`, `<P>_pt() -> vec2f`, the size of one texel, and `<P>_size() -> vec2f`.
+- For each input, the accessors `<P>_tex(coordinate: vec2f) -> vec4f`, a bilinear read at a normalized coordinate, `<P>_texOff(coordinate: vec2f, offsetInPixels: vec2f) -> vec4f`, `<P>_pt() -> vec2f`, the size of one texel, `<P>_size() -> vec2f`, and `<P>_offset() -> vec2f`, the input's offset in its own pixels (see [Offsets](#offsets)).
   `<P>` is the input's name, or `<NAME>_history<N>` for `<NAME>[-N]`, as in `RGB_history1_tex`.
   A format that cannot be filtered, such as `r32float`, reads with four loads and a manual blend, so the accessor behaves the same.
 - For a compute pass, `TARGET_size() -> vec2u` and `TARGET_store(position: vec2u, value: vec4f)`, which runs the color steps fused after the pass before it stores.
@@ -173,6 +203,7 @@ A pass that cannot run is left out of the plan, playback continues without it, a
 | `extra-scaler` | Another scaler runs |
 | `replaced-function-missing`, `replaced-function-taken` | The route's chain has no such built-in function, or another pass replaced it |
 | `input-unknown`, `input-after-hook`, `input-reserved` | An input names nothing saved, a later stage, or `TARGET` |
+| `planes-unavailable` | The pass hooks or reads a plane stage on a route without planes, which the detail names by its signal, or in a plan that deinterlaces, `deinterlacing` |
 | `output-size`, `output-missing`, `workgroup-count`, `workgroup-missing` | An output size or dispatch count is out of range, or missing |
 
 WGSL is bounds-checked and cannot reach the network or the page, so a pass can only read the frames it is given and produce pixels.

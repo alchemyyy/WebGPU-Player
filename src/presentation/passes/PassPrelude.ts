@@ -1,5 +1,6 @@
 // Generates the WGSL around pass code: input accessors, entry points, and the renaming that keeps each user body's identifiers apart.
 // docs/src/new-pass.md describes the generated code a user pass sees.
+import { toWGSLFloat } from './builtin/BuiltinWGSL';
 import { TARGET_ACCESSOR_PREFIX } from './PassLanguage';
 import type { PassLineMapping, PassParameter } from './PassTypes';
 
@@ -36,6 +37,9 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 
 /** The fragment stage's normalized coordinate in the pass's input, after the pass's coordinate mapping. */
 export const FRAGMENT_COORDINATE = 'textureCoordinate';
+
+/** The fragment stage's normalized coordinate in its target, before the coordinate mapping. */
+export const FRAGMENT_TARGET_COORDINATE = 'input.textureCoordinate';
 
 /** The fragment stage's target pixel center, which color steps receive as their position. */
 export const FRAGMENT_POSITION = 'input.position.xy';
@@ -176,8 +180,17 @@ export function renameWGSLIdentifiers(source: string, renames: ReadonlyMap<strin
     });
 }
 
-/** Returns the declarations of a texture input and its accessors `<prefix>_tex`, `_texOff`, `_pt`, and `_size`. */
-export function createTextureAccessorsWGSL(prefix: string, binding: number, filterable: boolean, samplerName: string): string {
+/**
+ * Returns the declarations of a texture input and its accessors `<prefix>_tex`, `_texOff`, `_pt`, `_size`, and `_offset`.
+ * The offset is the texture's plan-time offset in its own pixels: the texture pixel the reference grid's origin falls on.
+ */
+export function createTextureAccessorsWGSL(
+    prefix: string,
+    binding: number,
+    filterable: boolean,
+    samplerName: string,
+    offset: readonly [number, number]
+): string {
     const textureName = `${prefix}_texture`;
     // An unfilterable texture is read with four loads and a manual blend, which is what a linear sampler does
     const sampleWGSL = filterable ?
@@ -200,6 +213,10 @@ fn ${prefix}_size() -> vec2f {
 
 fn ${prefix}_pt() -> vec2f {
     return 1.0 / ${prefix}_size();
+}
+
+fn ${prefix}_offset() -> vec2f {
+    return vec2f(${toWGSLFloat(offset[0])}, ${toWGSLFloat(offset[1])});
 }
 
 fn ${prefix}_tex(coordinate: vec2f) -> vec4f {

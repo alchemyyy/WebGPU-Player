@@ -61,6 +61,7 @@ const FRAME_POOL_SIGNAL: SignalDefinition = {
 }`,
     entryPoint: 'sampleFramePoolSignal',
     name: 'test.frame-pool-signal',
+    planes: null,
     resources: [ 'frame-pool' ],
     sourceKind: 'frame-pool'
 };

@@ -164,6 +164,12 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
 - A new plan compiles while the previous executor keeps presenting, and replaces it when ready.
 - User passes come from `WebGPUPresenter.setPresentationPreset`.
   A pass that cannot run is left out of the plan, and `getPresentationPlanReport` names it with a reason code and a terse detail.
+- The spine starts with the plane stages, `LUMA`, `CHROMA`, and `NATIVE`, which hold the signal's planes as normalized codes (see [Planes](new-pass.md#planes)).
+  Each signal offers its planes (`SignalDefinition.planes`): its own reads of the luma and chroma codes, chroma's siting, and its conversion to 'source' RGB.
+  A plan reads a plane apart into a texture only for a pass that reads it, and when a pass replaced a plane, a merge pass converts the planes into the spine's first image at luma's size, reading each plane no pass replaced from the source, so it converts exactly as the signal does.
+  The raw and frame-pool routes hold the decoded planes, the external routes derive them from RGB with BT.709 weights, and the Dolby Vision routes offer none.
+- Every image the plan holds has a plan-time offset, as libplacebo's texture rects place mpv's textures: chroma starts at its siting, a pass's output takes the hooked image's offset scaled to its size plus its declared `offset`, and `offset: align` returns it to the reference grid.
+  No read is shifted; the merge resamples chroma onto luma's grid through both offsets, and the scaler corrects its image's offset within its resample.
 - Temporal history advances only on new frames.
   It resets on a seek, a new generation, a video epoch change, and a frame whose timestamp goes back or jumps past 2.5 frame durations.
 - Authorization renders the default chain through the same planner and executor, so a preset never changes the route.

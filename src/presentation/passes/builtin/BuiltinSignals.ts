@@ -9,8 +9,17 @@ import {
 import { createDolbyVisionColorFunctionsWGSL } from '../../../color/DolbyVisionColorTransform';
 import { getRawFormatBitDepth, type SupportedRawVideoFrameFormat } from '../../../decode/video/RawVideoFrameCopy';
 import type { DolbyVisionReconstructionProfile } from '../../PresentationInput';
+import {
+    HALF_FLOAT_PLANE_MAXIMUM_BIT_DEPTH,
+    PLANE_CHROMA_FLOAT_FORMAT,
+    PLANE_CHROMA_HALF_FLOAT_FORMAT,
+    PLANE_LUMA_FLOAT_FORMAT,
+    PLANE_LUMA_HALF_FLOAT_FORMAT,
+    PLANE_NATIVE_FLOAT_FORMAT,
+    PLANE_NATIVE_HALF_FLOAT_FORMAT
+} from '../../WebGPUConstants';
 import { PRESENTATION_FIELD_STATE } from '../PassResources';
-import type { EngineResource, RawDolbyVisionFrameFormat, SignalDefinition } from '../PassTypes';
+import type { EngineResource, RawDolbyVisionFrameFormat, SignalDefinition, SignalPlanes } from '../PassTypes';
 import { joinWGSL, toWGSLFloat } from './BuiltinWGSL';
 
 /** The compatible base a dual-layer signal presents for an FEL frame whose EL it does not reconstruct. */
@@ -52,6 +61,67 @@ const CASE_BODY_INDENTATION = '            ';
 // The Profile 4 frames that present their SDR base unmodified: FEL frames whose EL is missing, or every FEL frame when the signal does not reconstruct FEL
 const FEL_WITHOUT_ENHANCEMENT_CONDITION = 'isDolbyVisionFEL() && enhancement.enhancementPresent == 0u';
 const FEL_CONDITION = 'isDolbyVisionFEL()';
+
+// Left-sited chroma lies on its left luma sample, half a luma sample left of its texel's center
+const LEFT_SITED_CHROMA_LUMA_SHIFT = 0.5;
+// The subsampling divisor of a plane that is not subsampled, and of a subsampled one
+const FULL_RESOLUTION_DIVISOR = 1;
+const SUBSAMPLED_DIVISOR = 2;
+
+// The plane functions every signal with planes defines, which the planner's plane passes call
+export const SIGNAL_PLANE_ENTRY_POINTS = Object.freeze({
+    chroma: 'readSignalChroma',
+    codeScale: 'getSignalCodeScale',
+    conversion: 'convertSignalCodes',
+    luma: 'readSignalLuma',
+    sitedChroma: 'readSignalSitedChroma'
+});
+
+// BT.709 luma weights and chroma scales, by which planes are derived from a signal that has RGB alone, and joined back
+const DERIVED_PLANE_LUMA_WEIGHTS = [ 0.2126, 0.7152, 0.0722 ] as const;
+const DERIVED_PLANE_CHROMA_BLUE_SCALE = 1.8556;
+const DERIVED_PLANE_CHROMA_RED_SCALE = 1.5748;
+// The value of neutral chroma in a normalized plane
+const DERIVED_PLANE_CHROMA_CENTER = 0.5;
+// A derived plane's values are already normalized
+const DERIVED_PLANE_CODE_SCALE = 1;
+const NO_CHROMA_OFFSET: readonly [number, number] = Object.freeze([ 0, 0 ]);
+
+const SIGNAL_PLANE_CONVERSION_WGSL = /* wgsl */ `
+fn ${SIGNAL_PLANE_ENTRY_POINTS.conversion}(codes: vec3f) -> vec4f {
+    return vec4f(convertRawYUVToEncodedRGB(normalizeRawYUV(codes)), 1.0);
+}`;
+
+const DERIVED_PLANES_WGSL = /* wgsl */ `
+const DERIVED_PLANE_LUMA_WEIGHTS = vec3f(${DERIVED_PLANE_LUMA_WEIGHTS.join(', ')});
+
+fn ${SIGNAL_PLANE_ENTRY_POINTS.luma}(coordinate: vec2f) -> f32 {
+    return dot(${SIGNAL_ENTRY_POINT}(coordinate).rgb, DERIVED_PLANE_LUMA_WEIGHTS);
+}
+
+fn ${SIGNAL_PLANE_ENTRY_POINTS.chroma}(coordinate: vec2f) -> vec2f {
+    let color = ${SIGNAL_ENTRY_POINT}(coordinate).rgb;
+    let luma = dot(color, DERIVED_PLANE_LUMA_WEIGHTS);
+    return vec2f(
+        (color.b - luma) / ${DERIVED_PLANE_CHROMA_BLUE_SCALE} + ${DERIVED_PLANE_CHROMA_CENTER},
+        (color.r - luma) / ${DERIVED_PLANE_CHROMA_RED_SCALE} + ${DERIVED_PLANE_CHROMA_CENTER}
+    );
+}
+
+fn ${SIGNAL_PLANE_ENTRY_POINTS.sitedChroma}(coordinate: vec2f) -> vec2f {
+    return ${SIGNAL_PLANE_ENTRY_POINTS.chroma}(coordinate);
+}
+
+fn ${SIGNAL_PLANE_ENTRY_POINTS.codeScale}() -> f32 {
+    return ${toWGSLFloat(DERIVED_PLANE_CODE_SCALE)};
+}
+
+fn ${SIGNAL_PLANE_ENTRY_POINTS.conversion}(codes: vec3f) -> vec4f {
+    let red = codes.x + ${DERIVED_PLANE_CHROMA_RED_SCALE} * (codes.z - ${DERIVED_PLANE_CHROMA_CENTER});
+    let blue = codes.x + ${DERIVED_PLANE_CHROMA_BLUE_SCALE} * (codes.y - ${DERIVED_PLANE_CHROMA_CENTER});
+    let green = (codes.x - ${DERIVED_PLANE_LUMA_WEIGHTS[0]} * red - ${DERIVED_PLANE_LUMA_WEIGHTS[2]} * blue) / ${DERIVED_PLANE_LUMA_WEIGHTS[1]};
+    return vec4f(red, green, blue, 1.0);
+}`;
 
 const BT709_LIMITED_YUV_RECOVERY_WGSL = /* wgsl */ `
 fn recoverLimitedRangeBT709YUV(encodedBT709RGB: vec3f) -> vec3f {
@@ -223,6 +293,81 @@ export function hasLeftSitedChroma(format: SupportedRawVideoFrameFormat): boolea
     return format.startsWith('I420') || format.startsWith('I422');
 }
 
+/** Returns the formats a signal's planes are read apart into for codes of a bit depth. */
+export function getPlaneFormats(bitDepth: number): Pick<SignalPlanes, 'chromaFormat' | 'lumaFormat' | 'nativeFormat'> {
+    return bitDepth > HALF_FLOAT_PLANE_MAXIMUM_BIT_DEPTH ?
+        { chromaFormat: PLANE_CHROMA_FLOAT_FORMAT, lumaFormat: PLANE_LUMA_FLOAT_FORMAT, nativeFormat: PLANE_NATIVE_FLOAT_FORMAT } :
+        { chromaFormat: PLANE_CHROMA_HALF_FLOAT_FORMAT, lumaFormat: PLANE_LUMA_HALF_FLOAT_FORMAT, nativeFormat: PLANE_NATIVE_HALF_FLOAT_FORMAT };
+}
+
+/** Returns the chroma plane's offset in its own pixels: left-sited chroma lies half a luma sample left of where its texel would sit. */
+export function getChromaPlaneOffset(leftSited: boolean, widthDivisor: number): readonly [number, number] {
+    return leftSited ? Object.freeze([ LEFT_SITED_CHROMA_LUMA_SHIFT / widthDivisor, 0 ]) : NO_CHROMA_OFFSET;
+}
+
+function getRawChromaDivisors(format: SupportedRawVideoFrameFormat): Pick<SignalPlanes, 'chromaHeightDivisor' | 'chromaWidthDivisor'> {
+    if (format === 'NV12' || format.startsWith('I420')) {
+        return { chromaHeightDivisor: SUBSAMPLED_DIVISOR, chromaWidthDivisor: SUBSAMPLED_DIVISOR };
+    }
+    if (format.startsWith('I422')) {
+        return { chromaHeightDivisor: FULL_RESOLUTION_DIVISOR, chromaWidthDivisor: SUBSAMPLED_DIVISOR };
+    }
+    return { chromaHeightDivisor: FULL_RESOLUTION_DIVISOR, chromaWidthDivisor: FULL_RESOLUTION_DIVISOR };
+}
+
+/** Returns the planes of the raw YUV signal: its own plane reads, chroma siting, range, and matrix. */
+function createRawYUVPlanes(format: SupportedRawVideoFrameFormat, metadata: InputColorMetadata): SignalPlanes {
+    const chromaRead = format === 'NV12' ?
+        'sampleChroma(coordinate)' :
+        'vec2f(sampleChromaU(coordinate), sampleChromaV(coordinate))';
+    const divisors = getRawChromaDivisors(format);
+    return {
+        ...divisors,
+        ...getPlaneFormats(metadata.bitDepth),
+        chromaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.chroma,
+        chromaOffset: getChromaPlaneOffset(hasLeftSitedChroma(format), divisors.chromaWidthDivisor),
+        code: joinWGSL([ `
+fn ${SIGNAL_PLANE_ENTRY_POINTS.luma}(coordinate: vec2f) -> f32 {
+    return sampleLuma(coordinate);
+}
+
+fn ${SIGNAL_PLANE_ENTRY_POINTS.chroma}(coordinate: vec2f) -> vec2f {
+    return ${chromaRead};
+}
+
+fn ${SIGNAL_PLANE_ENTRY_POINTS.sitedChroma}(textureCoordinate: vec2f) -> vec2f {
+    return ${SIGNAL_PLANE_ENTRY_POINTS.chroma}(${getChromaTextureCoordinateWGSL(format)});
+}
+
+fn ${SIGNAL_PLANE_ENTRY_POINTS.codeScale}() -> f32 {
+    return ${toWGSLFloat((2 ** metadata.bitDepth) - 1)};
+}`, SIGNAL_PLANE_CONVERSION_WGSL ]),
+        codeScaleEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.codeScale,
+        conversionEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.conversion,
+        lumaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.luma,
+        sitedChromaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.sitedChroma
+    };
+}
+
+/** Returns planes derived from a signal that has RGB alone: BT.709 luma and chroma at the image's size, which the conversion joins back exactly. */
+function createDerivedPlanes(): SignalPlanes {
+    return {
+        // A browser-converted frame holds at most 10-bit values
+        chromaFormat: PLANE_CHROMA_HALF_FLOAT_FORMAT,
+        lumaFormat: PLANE_LUMA_HALF_FLOAT_FORMAT,
+        nativeFormat: PLANE_NATIVE_HALF_FLOAT_FORMAT,
+        chromaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.chroma,
+        chromaHeightDivisor: FULL_RESOLUTION_DIVISOR,
+        chromaOffset: NO_CHROMA_OFFSET,
+        chromaWidthDivisor: FULL_RESOLUTION_DIVISOR,
+        code: joinWGSL([ DERIVED_PLANES_WGSL ]),
+        codeScaleEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.codeScale,
+        conversionEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.conversion,
+        lumaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.luma,
+        sitedChromaEntryPoint: SIGNAL_PLANE_ENTRY_POINTS.sitedChroma
+    };
+}
+
 /** Returns whether a format's chroma has half the luma's rows, whose rows an interlaced frame's two fields share. */
 function hasVerticallySubsampledChroma(format: SupportedRawVideoFrameFormat): boolean {
     return format === 'NV12' || format.startsWith('I420');
@@ -282,14 +427,19 @@ function createTextureInterlacedChromaReadWGSL(functionName: string, textureName
     );
 }
 
+/** Returns the WGSL coordinate at which the raw signals read chroma for `textureCoordinate`, a coordinate of the luma grid: half a luma sample right for left-sited chroma. */
+function getChromaTextureCoordinateWGSL(format: SupportedRawVideoFrameFormat): string {
+    return hasLeftSitedChroma(format) ?
+        `textureCoordinate + vec2f(${LEFT_SITED_CHROMA_LUMA_SHIFT} / f32(textureDimensions(lumaTexture).x), 0.0)` :
+        'textureCoordinate';
+}
+
 /**
  * Generates the manual bilinear reads of the plane textures, which PassResources declares, as one YUV code triplet.
  * With interlacedChroma, a 4:2:0 format's reads take chroma within each field of a frame the presentation uniform marks interlaced.
  */
 function createRawYUVSamplingWGSL(format: SupportedRawVideoFrameFormat, interlacedChroma: boolean = false): string {
-    const chromaTextureCoordinate = hasLeftSitedChroma(format) ?
-        'textureCoordinate + vec2f(0.5 / f32(textureDimensions(lumaTexture).x), 0.0)' :
-        'textureCoordinate';
+    const chromaTextureCoordinate = getChromaTextureCoordinateWGSL(format);
     const fieldAware = interlacedChroma && hasVerticallySubsampledChroma(format);
     if (format === 'NV12') {
         if (fieldAware) {
@@ -441,6 +591,7 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
 }` ]),
         entryPoint: SIGNAL_ENTRY_POINT,
         name: `${SIGNAL_NAME_PREFIX}.external-identity`,
+        planes: createDerivedPlanes(),
         resources: EXTERNAL_RESOURCES,
         sourceKind: 'external'
     };
@@ -489,6 +640,7 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
         ]),
         entryPoint: SIGNAL_ENTRY_POINT,
         name: `${SIGNAL_NAME_PREFIX}.external-hdr`,
+        planes: createDerivedPlanes(),
         resources: EXTERNAL_RESOURCES,
         sourceKind: 'external'
     };
@@ -518,6 +670,7 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
         ]),
         entryPoint: SIGNAL_ENTRY_POINT,
         name: `${SIGNAL_NAME_PREFIX}.external-dolby-vision`,
+        planes: null,
         resources: EXTERNAL_DOLBY_VISION_RESOURCES,
         sourceKind: 'external'
     };
@@ -552,6 +705,7 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
         ]),
         entryPoint: SIGNAL_ENTRY_POINT,
         name: `${SIGNAL_NAME_PREFIX}.raw-yuv.${format}${fieldAwareChroma ? INTERLACED_CHROMA_NAME_SUFFIX : ''}`,
+        planes: createRawYUVPlanes(format, metadata),
         resources: format === 'NV12' ? NV12_RESOURCES : PLANAR_RESOURCES,
         sourceKind: 'planes'
     };
@@ -571,6 +725,7 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
         code: joinWGSL([ createRawYUVSamplingWGSL(format), createDolbyVisionColorFunctionsWGSL(), entryWGSL ]),
         entryPoint: SIGNAL_ENTRY_POINT,
         name: `${SIGNAL_NAME_PREFIX}.raw-dolby-vision.profile-${profile}.${format}`,
+        planes: null,
         resources: RAW_DOLBY_VISION_RESOURCES,
         sourceKind: 'planes'
     };
@@ -633,6 +788,7 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
         code: joinWGSL(declarations),
         entryPoint: SIGNAL_ENTRY_POINT,
         name: `${SIGNAL_NAME_PREFIX}.raw-dolby-vision.profile-${profile}${felReconstruction ? '-fel' : ''}.${format}`,
+        planes: null,
         resources: felReconstruction ? RAW_DOLBY_VISION_FEL_RESOURCES : RAW_DOLBY_VISION_RESOURCES,
         sourceKind: 'planes'
     };

@@ -32,18 +32,20 @@ Each source file's tests are at the same relative path under `test/`, and integr
 The presentation pipeline: each route's fixed signal and default color track, user WGSL passes, the planner that arranges them, and the executor that records frames.
 
 - `PassTypes.ts`: the contracts of the pipeline: pass manifests, built-in chains, plans, and frame input.
-- `PassLanguage.ts`: the names that headers, the prelude, and the planner share: stages, `HOOKED`, history accessors, entry points, and plan-time facts.
+- `PassLanguage.ts`: the names that headers, the prelude, and the planner share: the plane and image stages, `HOOKED`, history accessors, entry points, `offset: align`, and plan-time facts.
 - `PassExpression.ts`: the size and condition expressions of pass and decoder headers.
 - `PassManifest.ts`: parses a pass file, whose passes each start with a `//!` header as in mpv's user shaders, into manifests in file order; a failure names its line in the file.
 - `PassResources.ts`: the engine-owned bindings, their WGSL declarations and layout entries, and the byte layouts of the uniforms the engine writes.
-- `PassPrelude.ts`: the WGSL around pass code: input accessors, entry stages, and the renaming that keeps each user body's names apart.
+- `PassPrelude.ts`: the WGSL around pass code: input accessors, each with its input's plan-time offset, entry stages, and the renaming that keeps each user body's names apart.
 - `PresentationPlanner.ts`: arranges a route's built-in chain and the user passes on the stage spine and the color track, then generates each pass's module.
   A pass that cannot run is left out with a reason code and a terse detail.
   Without user passes every route plans one pass, which reads the source and writes the canvas.
+  It reads the signal's planes apart for plane passes, merges and converts the planes they replace, and gives every image its offset, which the scaler corrects.
 - `PresentationExecutor.ts`: compiles a plan, owns its textures, history rings, buffers, and bind groups, and records each frame without submitting.
 - `PlaneTextureSource.ts`: the plane route's ingress: layout validation that names the failed check, one integer texture per plane, and the uploads.
 - `builtin/`: the built-in signals (`BuiltinSignals.ts`, and `FramePoolSignal.ts`, which reads a pool slot of any output format, as its layout says, for the frame-pool route's chain), color functions (`BuiltinColorFunctions.ts`), and route chains (`BuiltinChains.ts`), and the deinterlacing pass (`DeinterlacePass.ts`, yadif over the signal's ring).
   A deinterlacing plan's raw and frame pool signals read an interlaced frame's 4:2:0 chroma within each field.
+  Each signal offers its planes to plane passes: the raw and frame pool signals their decoded planes, with chroma's siting, range, and matrix, the external signals planes derived from RGB, and the Dolby Vision signals none.
 
 The optional user passes a host may offer are pass projects in `wgpup/`, outside `src/` (see [Bundled passes](bundled-passes.md)); the presenter tests run some of them.
 

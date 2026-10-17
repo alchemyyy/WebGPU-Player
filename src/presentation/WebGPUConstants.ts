@@ -48,6 +48,18 @@ export const PLANE_RG8_FORMAT: GPUTextureFormat = 'rg8uint';
 export const PLANE_R16_FORMAT: GPUTextureFormat = 'r16uint';
 export const PLANE_RG16_FORMAT: GPUTextureFormat = 'rg16uint';
 
+/**
+ * The float formats a signal's planes are read apart into, as normalized codes for plane passes.
+ * A half float holds a code of up to HALF_FLOAT_PLANE_MAXIMUM_BIT_DEPTH bits within a quarter of a code; deeper codes take 32-bit floats.
+ */
+export const PLANE_LUMA_HALF_FLOAT_FORMAT: GPUTextureFormat = 'r16float';
+export const PLANE_CHROMA_HALF_FLOAT_FORMAT: GPUTextureFormat = 'rg16float';
+export const PLANE_LUMA_FLOAT_FORMAT: GPUTextureFormat = 'r32float';
+export const PLANE_CHROMA_FLOAT_FORMAT: GPUTextureFormat = 'rg32float';
+export const PLANE_NATIVE_HALF_FLOAT_FORMAT: GPUTextureFormat = 'rgba16float';
+export const PLANE_NATIVE_FLOAT_FORMAT: GPUTextureFormat = 'rgba32float';
+export const HALF_FLOAT_PLANE_MAXIMUM_BIT_DEPTH = 10;
+
 /** The canvas formats authorization renders into and reads back. */
 export const READBACK_CANVAS_FORMATS: readonly GPUTextureFormat[] = [ 'bgra8unorm', 'rgba8unorm' ];
 

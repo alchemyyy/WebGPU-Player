@@ -44,16 +44,20 @@ A pass a user supplies needs only step 2; load its output in the sandbox's shade
 - Each mpv pass becomes one pass per hook it fires on, named with the hook when it has several, and the file's passes are sorted into mpv's pipeline order, so a `MAIN` pass runs after a `LUMA` pass wherever each sits in the file.
 - A fragment pass becomes a `kernel`, and a `COMPUTE <bw> <bh> [<tw> <th>]` pass becomes a `compute` pass with `workgroup: tw, th` and a `dispatch` of `bw` by `bh` blocks over its output.
 - `DESC` names the pass, cut to 64 characters and made unique within the file.
-- `SAVE` becomes `save`, renamed when the pass API reserves the name, and `BIND` becomes the inputs the converted code reads.
+- `SAVE` becomes `save`, renamed when the pass API reserves the name, and `BIND` becomes the inputs the converted code reads, and every bound saved texture, read or not, since mpv skips a pass whose bound texture no pass saved.
 - `WIDTH`, `HEIGHT`, and `WHEN`, which mpv writes in RPN, become infix expressions.
-  `when` reads only plan-time facts, so texture sizes there become the sizes the earlier passes leave, over `source` and `output`.
+  `when` reads only plan-time facts, so texture sizes there become the sizes the earlier passes leave, over `source`, `chroma`, and `output`.
 - `COMPONENTS` gives a saved texture a smaller format and becomes `components`.
-- `OFFSET` has no counterpart, since the engine never shifts a pass's output: a pass that declares one, as nnedi3 and ravu do, presents its result shifted by that much.
-- A bound texture of an earlier stage, such as `PREKERNEL` read at `POSTKERNEL`, reads the final image of the engine stage it maps to.
+- `OFFSET <x> <y>` becomes `offset: <x>, <y>`, and `OFFSET ALIGN` becomes `offset: align`, which libplacebo's texture rects mean (see [Offsets](new-pass.md#offsets)), so nnedi3's and ravu's doubled luma lands where the source did.
+  A pass after the scaler, or on `CHROMA_SCALED`, has no grid of its own to shift, so its `OFFSET` is reported as `offset-ignored`.
+- A bound texture of an earlier stage, such as `PREKERNEL` read at `POSTKERNEL`, reads the final image of the engine stage it maps to; a plane's name reads that plane's final image, as in mpv.
 
 | mpv hook | Stage | Domain | Notes |
 | --- | --- | --- | --- |
-| `RGB`, `LUMA`, `CHROMA`, `CHROMA_SCALED`, `NATIVE` | `RGB` | `source` | Planes are read from the RGB image and joined back into it |
+| `LUMA` | `LUMA` | `any` | The luma plane |
+| `CHROMA` | `CHROMA` | `any` | The chroma plane at its own size |
+| `NATIVE` | `NATIVE` | `any` | The planes merged on luma's grid |
+| `RGB`, `CHROMA_SCALED` | `RGB` | `source` | `CHROMA_SCALED` reads chroma from the RGB image and joins it back |
 | `MAIN`, `MAINPRESUB` | `RGB` | `source` | |
 | `LINEAR`, `SIGMOID` | `PRESCALE` | `linear` | In mpv's scale of linear light, as an SDR and an HDR pass |
 | `PREKERNEL` | `PRESCALE` | `any` | |
@@ -65,11 +69,13 @@ A pass that hooks `RGB` beside `LUMA` or `CHROMA` drops its `RGB` hook, since mp
 
 ### Planes
 
-- Passes see RGB, so a plane hook reads planes the converter derives from the RGB image with BT.709 weights: `LUMA` is Y, `CHROMA` is Cb and Cr around 0.5, and `NATIVE` is YCbCr.
-- A pass that overwrites its plane writes the RGB image instead: a new luma moves every channel by its difference, which keeps the image's chroma exactly, and new chroma joins the image's luma.
-- A plane pass that resizes reads the image's chroma bilinearly at the new size, as mpv's chroma scaler would.
-- The engine upsamples chroma before any pass runs, so `CHROMA` has the image's size, and a chroma upscaler whose `WHEN` asks for subsampled chroma, as KrigBilateral's does, never runs.
-- The planes are full range where mpv's hold code values, so a pass that thresholds code values sees slightly different numbers.
+- `LUMA`, `CHROMA`, and `NATIVE` passes run on the engine's plane stages (see [Planes](new-pass.md#planes)), which hold the decoded planes as mpv's normalized code values, chroma at its own size and siting.
+  A pass that overwrites its plane writes the plane, and the engine converts the planes with the source's own range and matrix.
+- So a chroma upscaler such as KrigBilateral or the Chroma from Luma prediction shaders runs as in mpv on the raw and frame-pool routes: its `WHEN CHROMA.w LUMA.w <` reads `chroma.width < source.width`, it reads chroma at its native size, and its `OFFSET ALIGN` output is the chroma the image converts with.
+- On the external routes the planes are derived from the RGB image at its size, so a chroma upscaler's `WHEN` is false there and the plan reports it as `condition-false`, while luma passes run on the derived luma.
+- Dolby Vision routes and deinterlacing plans leave plane passes out as `planes-unavailable`.
+- `CHROMA_SCALED`, chroma at the image's size after mpv's chroma scaler, is not held apart by the engine, so it is read from the RGB image with BT.709 weights, and new chroma joins the image's luma.
+- A `WHEN` that reads both a parameter and the chroma plane's size plans on the parameter's default, since WGSL cannot read the chroma size.
 
 ### Linear light
 
@@ -84,8 +90,10 @@ A pass that hooks `RGB` beside `LUMA` or `CHROMA` drops its `RGB` hook, since mp
 | --- | --- |
 | `NAME_tex`, `NAME_texOff`, `NAME_pos`, `NAME_size`, `NAME_pt` | The input's accessors, at the kernel's coordinate |
 | `NAME_raw` in `texture`, `textureLod`, `textureGrad`, `texelFetch`, `textureGather`, `textureSize`, and their offset forms | The same accessors; a gather samples the four texel centers |
-| `NAME_mul`, `NAME_rot`, `NAME_off` | 1.0, the identity, and 0 |
-| `NAME_map(id)` | The normalized center of texel `id` of the output |
+| `NAME_pos` of the hooked texture under `OFFSET ALIGN` | The coordinate moved onto the texture's offset, `coordinate + HOOKED_offset() * HOOKED_pt()`, as libplacebo aligns its rect |
+| `NAME_mul`, `NAME_rot` | 1.0, since the planes hold normalized values, and the identity |
+| `NAME_off` | The input's `<P>_offset()` |
+| `NAME_map(id)` | The normalized center of texel `id` of the output, moved as `NAME_pos` is |
 | `frame` | `presentation.frameIndex` |
 | `random` | A hash of the frame index: one value in [0, 1) per frame |
 | `input_size`, `target_size` | `presentation.sourceSize` and `presentation.outputSize` |
@@ -118,7 +126,7 @@ The converter rewrites them without moving any line, so naga's line numbers stil
 - Adjacent array dimensions, which naga reverses, are reversed in declarations and constructors first.
 - A for-loop condition that opens with a constructor, which naga reads as a declaration, is parenthesized.
 - `memoryBarrierShared()` and the other memory barriers are dropped, and `barrier()` becomes `workgroupBarrier()` alone, since naga adds `subgroupBarrier()`, which needs an extension.
-- After a naga failure, a function that can end without a return returns zero there, `dot()` of scalars goes through overloads, and a global `const` that naga cannot fold, such as one set by a ternary, becomes a macro, with every `const` that reads it.
+- After a naga failure, a function that can end without a return returns zero there, `dot()` of scalars goes through overloads, a swizzle of a scalar, which GLSL 4.20 allows, reads the scalar or a vector of it, and a global `const` that naga cannot fold, such as one set by a ternary, becomes a macro, with every `const` that reads it.
   Each of these is reported as `glsl-repaired`.
 
 ## Report codes
