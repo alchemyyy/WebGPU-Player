@@ -122,7 +122,9 @@ make -C wgpud clean
 ```
 
 `scripts/decoder-packages.mjs` iterates over the projects without naming any.
-It builds a project's module, packs the module, the decoder source, and the project's vectors file with `tools/decoder-package-format.mjs`, and loads the result with the engine's own loader, as any host would, before it writes the package.
+It builds every project's module at once, since each build spends most of its time in one serial chain such as a configure script's compiler probes, and prefixes each output line with the project's name.
+Then, in project order, it packs each module, the decoder source, and the project's vectors file with `tools/decoder-package-format.mjs`, and loads the result with the engine's own loader, as any host would, before it writes the package.
+A failed build or load check fails the run after the other packages are written.
 `tools/pack-decoder-package.mjs` packs one package by hand from the same parts.
 
 ### How the build works
