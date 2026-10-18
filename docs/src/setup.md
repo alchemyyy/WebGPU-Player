@@ -40,6 +40,11 @@
    Without `EMSDK`, run `make -C wasm emsdk` first: it installs the pinned Emscripten into the engine's own emsdk in `bin/emsdk/`, about 2 GB, and the Makefiles use that emsdk from then on.
    The builds write `bin/wasm/` and `bin/wgpud/`, which are ignored; `make -C wgpud sources` fetches the pinned FFmpeg and dcadec only once.
    See [WebAssembly build](decoders.md).
+
+   `./build.sh` runs every build step, from steps 2 and 3 and `npm run build`, with the Mediabunny fork and the decoder packages building in the background beside the WebAssembly modules; `--production` minifies the workers.
+   It checks every tool and the pinned Emscripten before it removes or builds anything, and without `EMSDK` it runs `make -C wasm emsdk` itself when the engine's emsdk is missing or of another version.
+   `./build_clean.sh`, which runs `./build.sh --clean`, first removes the build trees and every output in `bin/` except the codec vectors, the playback media, the PlantUML jar, and the emsdk, and rebuilds the Mediabunny fork too.
+   Run both in Git Bash on Windows.
 4. Run the checks from the engine root:
 
    ```sh

@@ -22,7 +22,7 @@ Required:
 - Node.js 24 or later and npm 11 or later.
 - Git, GNU Make, and a POSIX shell (Git Bash on Windows).
 - Emscripten 4.0.13 and rustup, to build the engine's WebAssembly modules and the decoder projects' packages once per checkout.
-  - Activate Emscripten with `emsdk_env`, or name it with `EMSDK`.
+  - Name an emsdk with `EMSDK`, which `emsdk_env` sets, or let `make -C wasm emsdk` (or `./build.sh`) install the pinned Emscripten into `bin/emsdk/`, which needs Python 3.
   - The repository pins Rust 1.96.1 with the `wasm32-unknown-unknown` target.
 - On Windows, long path support.
   - The decoder projects' FFmpeg and cargo trees pass 260 characters in a nested checkout.

@@ -43,7 +43,7 @@ Read a path from it instead of spelling it out, so moving a folder is a one-line
 | Tests | `test/helpers/enginePaths.ts` |
 | `vitest.config.ts` | A JSON import |
 | `sandbox/vite.config.ts` and `sandbox/src/main.ts` | A JSON import |
-| `wasm/Makefile`, `wgpud/Makefile`, and `wgpud/rules.mk` | `node -p`, which is why WebAssembly builds need Node.js |
+| `build.sh`, `wasm/Makefile`, `wgpud/Makefile`, and `wgpud/rules.mk` | `node -p`, which is why WebAssembly builds need Node.js |
 | Hosts | The file itself, at `<engine>/tools/constants.json` |
 
 Some files cannot read it.
