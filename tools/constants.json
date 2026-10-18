@@ -22,6 +22,7 @@
   "playbackSmokeMediaDirectory": "bin/playback_smoke_media",
   "buildInfoFile": "bin/build-info.json",
   "plantUMLOutputDirectory": "bin/plantuml",
+  "emsdkDirectory": "bin/emsdk",
   "documentationDirectory": "docs",
   "documentationOutputDirectory": "docs/book",
   "documentationDiagramsDirectory": "docs/diagrams/plantuml",

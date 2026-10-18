@@ -3,7 +3,8 @@
 #
 # Needs GNU Make, Git, a POSIX shell (Git Bash on Windows), and Node.js; C modules need Emscripten 4.0.13, Rust modules cargo,
 # and libaom modules CMake, Perl, and GNU patch.
-# Activate the pinned emsdk first, or pass EMSDK=/path/to/emsdk.
+# Emscripten comes from the emsdk that EMSDK names, as emsdk_env sets it; without EMSDK, from the engine's own emsdk,
+# which `make -C wasm emsdk` installs, and without that, from emcc on PATH.
 
 SHELL := /bin/sh
 .SUFFIXES:
@@ -38,6 +39,13 @@ DCADEC_SUBMODULE := $(ENGINE)/$(call engine_layout,dcadecSourceDirectory)
 AOM_SUBMODULE := $(ENGINE)/$(call engine_layout,aomSourceDirectory)
 
 # Toolchain
+# Without EMSDK, the engine's own emsdk once its activation has written .emscripten, and otherwise emcc from PATH
+ENGINE_EMSDK := $(ENGINE)/$(call engine_layout,emsdkDirectory)
+ifndef EMSDK
+ifneq ($(wildcard $(ENGINE_EMSDK)/.emscripten),)
+export EMSDK := $(ENGINE_EMSDK)
+endif
+endif
 ifdef EMSDK
 EMSCRIPTEN_DIRECTORY := $(EMSDK)/upstream/emscripten
 LLVM_DIRECTORY := $(EMSDK)/upstream/bin
@@ -110,7 +118,7 @@ endif
 toolchain:
 	@$(EMCC) --version | grep -qF ') $(EMSCRIPTEN_VERSION) ($(EMSCRIPTEN_REVISION))' || { \
 		echo "Emscripten $(EMSCRIPTEN_VERSION) ($(EMSCRIPTEN_REVISION)) is required;" \
-			"activate the pinned emsdk or pass EMSDK=/path/to/emsdk" >&2; \
+			"run make -C wasm emsdk, or pass EMSDK=/path/to/emsdk" >&2; \
 		exit 1; \
 	}
 
