@@ -11,7 +11,9 @@ Both builds write into `bin/`, which is ignored like everything in `bin/` but `b
 - GNU Make, Git, and a POSIX shell (Git Bash on Windows).
   No container is involved.
 - Node.js: the Makefiles read the engine's folders from `tools/constants.json`.
-- Emscripten 4.0.13 (revision `2659582941bef14008476903f48941909db1b196`), activated with `emsdk_env` or named with `EMSDK=/path/to/emsdk`.
+- Emscripten 4.0.13 (revision `2659582941bef14008476903f48941909db1b196`), from the emsdk that `EMSDK` names, which `emsdk_env` sets.
+  Without `EMSDK`, the Makefiles use the engine's own emsdk in `bin/emsdk/`, and with neither, `emcc` from `PATH`.
+  `make -C wasm emsdk` installs the engine's emsdk: a clone of emsdk at the release tag of the pinned version, replaced when the pin moves, whose installer needs Python 3.
   The audio output stage and the C decoder projects need it.
 - rustup, for `libdovi` and the Rust decoder projects.
   Their `rust-toolchain.toml` files select the same Rust, 1.96.1, with the `wasm32-unknown-unknown` target.
@@ -30,6 +32,7 @@ The audio decode worker instantiates `audio-output-stage` once, when its first d
 Run from the engine root:
 
 ```sh
+make -C wasm emsdk                # Install the pinned Emscripten into bin/emsdk, once
 make -C wasm all                  # Build both modules into bin/wasm
 make -C wasm check                # Rebuild both and compare them with bin/wasm
 make -C wasm audio-output-stage   # Rebuild one kit

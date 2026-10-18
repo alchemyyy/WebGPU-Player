@@ -26,6 +26,7 @@
 - `bin/wgpup/`: the pass files of every pass project, which `npm run build` copies there.
 - `bin/playback_smoke_media/`: local playback media from the smoke media generators.
 - `bin/plantuml/`: the pinned PlantUML jar that `tools/render-diagrams.mjs` downloads.
+- `bin/emsdk/`: the engine's own emsdk at the pinned Emscripten, which `make -C wasm emsdk` installs and the Makefiles use when `EMSDK` is unset.
 - `bin/codec_vector_assets/`: the generated codec vectors.
   This is the one committed folder, so every change to a vector shows in review.
 

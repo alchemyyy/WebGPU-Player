@@ -2,11 +2,13 @@
 # Decoders are not the engine's; each is a project under wgpud/, built into a package by scripts/decoder-packages.mjs.
 #
 # Needs GNU Make, a POSIX shell (Git Bash on Windows), Node.js, Emscripten 4.0.13, and cargo.
-# Activate the pinned emsdk first, or pass EMSDK=/path/to/emsdk.
+# Emscripten comes from the emsdk that EMSDK names, as emsdk_env sets it; without EMSDK, from the engine's own emsdk,
+# which `make -C wasm emsdk` installs, and without that, from emcc on PATH.
 #
 #   make -C wasm all                Build every module into bin/wasm, which is ignored like the rest of bin
 #   make -C wasm check              Rebuild every module and compare it with the existing bin/wasm
 #   make -C wasm <kit>              Rebuild one of: $(KITS)
+#   make -C wasm emsdk              Install the pinned Emscripten into the engine's own emsdk in bin/emsdk
 
 SHELL := /bin/sh
 .SUFFIXES:
@@ -33,6 +35,14 @@ BUILD := $(WASM)/build
 DIST := $(ENGINE)/$(call engine_layout,wasmOutputDirectory)
 
 # Toolchain
+# Without EMSDK, the engine's own emsdk once its activation has written .emscripten, and otherwise emcc from PATH
+ENGINE_EMSDK := $(ENGINE)/$(call engine_layout,emsdkDirectory)
+EMSDK_REPOSITORY := https://github.com/emscripten-core/emsdk.git
+ifndef EMSDK
+ifneq ($(wildcard $(ENGINE_EMSDK)/.emscripten),)
+export EMSDK := $(ENGINE_EMSDK)
+endif
+endif
 ifdef EMSDK
 EMSCRIPTEN_DIRECTORY := $(EMSDK)/upstream/emscripten
 ifneq ($(wildcard $(EMSDK)/.emscripten),)
@@ -87,7 +97,7 @@ AUDIO_OUTPUT_STAGE_EXPORTS := _audio_output_stage_abi_version _audio_resampler_c
 OUTPUTS_libdovi := dovi-rpu-parser.wasm
 OUTPUTS_audio-output-stage := audio-output-stage.wasm
 
-.PHONY: all check clean toolchain $(KITS) $(KITS:%=build-%)
+.PHONY: all check clean toolchain emsdk $(KITS) $(KITS:%=build-%)
 
 all: $(KITS)
 
@@ -119,9 +129,22 @@ clean:
 toolchain:
 	@$(EMCC) --version | grep -qF ') $(EMSCRIPTEN_VERSION) ($(EMSCRIPTEN_REVISION))' || { \
 		echo "Emscripten $(EMSCRIPTEN_VERSION) ($(EMSCRIPTEN_REVISION)) is required;" \
-			"activate the pinned emsdk or pass EMSDK=/path/to/emsdk" >&2; \
+			"run make -C wasm emsdk, or pass EMSDK=/path/to/emsdk" >&2; \
 		exit 1; \
 	}
+
+# The engine's own emsdk: a clone of emsdk at the release tag of the pinned version, whose scripts know that version.
+# A clone at another tag is replaced, so the folder only ever holds the pinned version.
+# emsdk runs on python3 from PATH until it has installed its own Python
+emsdk:
+	@if [ ! -e '$(ENGINE_EMSDK)/.git' ] || \
+		[ "$$(git -C '$(ENGINE_EMSDK)' describe --tags --exact-match HEAD 2>/dev/null)" != '$(EMSCRIPTEN_VERSION)' ]; then \
+		echo 'Cloning emsdk $(EMSCRIPTEN_VERSION) into $(ENGINE_EMSDK)'; \
+		rm -rf '$(ENGINE_EMSDK)' && \
+		git -c advice.detachedHead=false clone --quiet --depth 1 --branch $(EMSCRIPTEN_VERSION) \
+			$(EMSDK_REPOSITORY) '$(ENGINE_EMSDK)'; \
+	fi
+	cd '$(ENGINE_EMSDK)' && ./emsdk install $(EMSCRIPTEN_VERSION) && ./emsdk activate $(EMSCRIPTEN_VERSION) >/dev/null
 
 # The crate's .cargo/config.toml supplies the memory link arguments; --config appends the remaps
 build-libdovi:

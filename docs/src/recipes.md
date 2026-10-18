@@ -44,7 +44,7 @@ Check: the engine checks from [Set up a checkout](setup.md), and the host's chec
 
 1. Edit, or create, `wgpud/<project>/`: its `decoder.json`, its decoder source, whose header declares the project's name as its `id:`, and, for a module, a `Makefile` that includes `../rules.mk` and builds `module`.
    List its self-test vectors in `decoder.json`, one per output format at most, and run `python scripts/codec_vector_assets/generate_decoder_package_vectors.py` to write its vectors file.
-2. Run `npm run decoders -- <project>`, with Emscripten active or `EMSDK=` set for a C module.
+2. Run `npm run decoders -- <project>`; a C module needs `EMSDK` set or the engine's emsdk from `make -C wasm emsdk`.
 3. Run its tests, `npx vitest --watch=false wgpud/<project>`, which load the package from `bin/wgpud/`.
 4. Run `npm run decoders -- --check`, which must report every package identical.
    A change that is not reproducible shows up here.
@@ -63,7 +63,7 @@ Check: the engine checks from [Set up a checkout](setup.md), and the host's chec
 ## Rebuild one engine module
 
 1. Edit `wasm/<kit>/`, `libdovi` or `audio-output-stage`.
-2. Run `make -C wasm <kit>`, with Emscripten active or `EMSDK=` set.
+2. Run `make -C wasm <kit>`, with `EMSDK` set or the engine's emsdk from `make -C wasm emsdk`.
 3. Run `npm test`.
 4. Run `make -C wasm check`, which must report every output identical.
 

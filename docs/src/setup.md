@@ -3,7 +3,7 @@
 ## You need
 
 - Node.js 24 and npm 11.
-- For the WebAssembly: GNU Make, Git, a POSIX shell (Git Bash on Windows), Emscripten 4.0.13, and rustup.
+- For the WebAssembly: GNU Make, Git, a POSIX shell (Git Bash on Windows), rustup, and Emscripten 4.0.13, which the build can install itself with Python 3.
 - For the codec vectors: Python 3.10 or later, and the FFmpeg build named in [Codec vectors](codec-vectors.md).
 - To convert mpv shaders: Python 3.10 or later, and naga-cli 30.0.1; see [Migrate an mpv shader to a wgpup](mpv-shaders.md).
 - For this book: mdBook 0.5.
@@ -36,7 +36,8 @@
    npm run decoders
    ```
 
-   Activate Emscripten with `emsdk_env` first, or append `EMSDK=/path/to/emsdk`.
+   Emscripten comes from the emsdk that `EMSDK` names, which `emsdk_env` sets.
+   Without `EMSDK`, run `make -C wasm emsdk` first: it installs the pinned Emscripten into the engine's own emsdk in `bin/emsdk/`, about 2 GB, and the Makefiles use that emsdk from then on.
    The builds write `bin/wasm/` and `bin/wgpud/`, which are ignored; `make -C wgpud sources` fetches the pinned FFmpeg and dcadec only once.
    See [WebAssembly build](decoders.md).
 4. Run the checks from the engine root:
