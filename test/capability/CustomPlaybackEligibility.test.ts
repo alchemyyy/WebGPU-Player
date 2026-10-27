@@ -6676,6 +6676,28 @@ describe('AV1 on a decoder package', () => {
         expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ ...videoStream, Codec: 'AV1' }))).toBe(true);
     });
 
+    it('reconstructs 12-bit Profile 10, which no native or raw route decodes, on the frame pool of an offered package once its RPU route is allowed', () => {
+        const options = createAV1Options({
+            BitDepth: 12,
+            BlPresentFlag: true,
+            ColorPrimaries: undefined,
+            ColorSpace: undefined,
+            ColorTransfer: undefined,
+            DvBlSignalCompatibilityId: 0,
+            DvProfile: 10,
+            PixelFormat: 'yuv420p12le',
+            Profile: 'Professional',
+            RpuPresentFlag: true,
+            VideoRange: 'HDR',
+            VideoRangeType: 'DOVI'
+        });
+
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), createAV1EligibilityOptions()))
+            .toEqual({ eligible: false, reason: 'hdr-presentation-unavailable' });
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), { ...createAV1EligibilityOptions(), allowDolbyVision: true }))
+            .toMatchObject({ ...AV1_PACKAGE_ROUTE, dolbyVisionProfile: 5, hdr: true, rawVideoFrameFormat: 'I420P12' });
+    });
+
     it('keeps AV1 Main at 10 bits in BT.601 potential, since its own raw SDR key may authorize', () => {
         expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ ...UNROUTED_MAIN_STREAM.videoStream, Codec: 'AV1' }))).toBe(true);
     });
