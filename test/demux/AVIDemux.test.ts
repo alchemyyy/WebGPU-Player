@@ -9,6 +9,7 @@ import {
     BufferSource,
     Input,
     PacketCursor,
+    PacketReader,
     type EncodedPacket,
     type InputTrack
 } from 'mediabunny';
@@ -21,9 +22,7 @@ import { CODEC_VECTOR_ASSETS_DIRECTORY } from '../helpers/enginePaths';
 
 // The FFmpeg-made vectors of scripts/codec_vector_assets/generate_AVI_demux_vectors.py
 const AVI_VECTOR_DIRECTORY = join(CODEC_VECTOR_ASSETS_DIRECTORY, 'avi');
-const VIDEO_FRAME_COUNT = 12;
 const VIDEO_FRAME_RATE = 24;
-const KEY_FRAME_INTERVAL = 6;
 const AUDIO_SAMPLE_RATE = 48_000;
 const MP3_FRAME_SAMPLE_COUNT = 1_152;
 const AC3_FRAME_SAMPLE_COUNT = 1_536;
@@ -49,6 +48,13 @@ const OPENDML_DECLARED_FRAME_COUNT = 10_000;
 const ROUNDING_TOLERANCE_MICROSECONDS = 1;
 // A Matroska vector, whose tracks the AVI index check leaves alone
 const MATROSKA_VECTOR_PATH = join(CODEC_VECTOR_ASSETS_DIRECTORY, 'hdr10plus-vp9', 'hdr10plus.mkv');
+// Each video packet's presentation time in frames, in decode order: FFprobe's best-effort timestamps of the same pictures, which present two frames late,
+// the reorder depth each stream's sequence parameter set declares, and the indices of the key packets
+const H264_PRESENTATION_FRAMES = [ 2, 6, 4, 3, 5, 7, 8, 12, 10, 9, 11, 13 ];
+const H264_KEY_PACKET_INDICES = [ 0, 6 ];
+// x265 opens its second group with a CRA picture, whose two leading pictures follow it in decode order and present before it
+const HEVC_PRESENTATION_FRAMES = [ 2, 5, 4, 3, 8, 7, 6, 11, 10, 9, 13, 12 ];
+const HEVC_KEY_PACKET_INDICES = [ 0, 4 ];
 
 type AVIVectorExpectation = Readonly<{
     audioCodec: string
@@ -65,6 +71,8 @@ const AVI_VECTORS: readonly AVIVectorExpectation[] = [
     { audioCodec: 'aac', audioDecoderCodec: 'mp4a.40.2', fileName: 'vp9-aac.avi', videoCodec: 'vp9', videoDecoderCodec: 'vp09.00.10.08.01.02.02.02.00' },
     { audioCodec: 'ac3', audioDecoderCodec: 'ac-3', fileName: 'av1-ac3.avi', videoCodec: 'av1', videoDecoderCodec: 'av01.0.00M.08' },
     { audioCodec: 'ac3', audioDecoderCodec: 'ac-3', fileName: 'hevc-ac3.avi', videoCodec: 'hevc', videoDecoderCodec: 'hev1.1.6.L60.90' },
+    // FFmpeg's muxer writes HEVC with a zero codec tag unless told one, and the fork identifies it by its first chunk's parameter sets
+    { audioCodec: 'ac3', audioDecoderCodec: 'ac-3', fileName: 'hevc-untagged-ac3.avi', videoCodec: 'hevc', videoDecoderCodec: 'hev1.1.6.L60.90' },
     { audioCodec: 'mp3', audioDecoderCodec: 'mp3', fileName: 'mpeg4-mp3.avi', videoCodec: 'mpeg4', videoDecoderCodec: 'mp4v' },
     { audioCodec: 'pcm-s24', audioDecoderCodec: 'pcm-s24', fileName: 'vp9-pcm_s24le-5.1.avi', videoCodec: 'vp9', videoDecoderCodec: 'vp09.00.10.08.01.02.02.02.00' },
     { audioCodec: 'pcm-f32', audioDecoderCodec: 'pcm-f32', fileName: 'vp9-pcm_f32le-5.1.avi', videoCodec: 'vp9', videoDecoderCodec: 'vp09.00.10.08.01.02.02.02.00' },
@@ -133,14 +141,38 @@ describe('AVI through the fork\'s demuxer', () => {
         }
     });
 
-    it('stamps video in decode order, one frame slot per chunk, with key frames from the idx1 flags', async () => {
-        const { input, videoPackets } = await readTrackPair('h264-bframes-mp3-vbr.avi');
+    it.each([
+        [ 'h264-bframes-mp3-vbr.avi', H264_PRESENTATION_FRAMES, H264_KEY_PACKET_INDICES ],
+        [ 'hevc-ac3.avi', HEVC_PRESENTATION_FRAMES, HEVC_KEY_PACKET_INDICES ],
+        [ 'hevc-untagged-ac3.avi', HEVC_PRESENTATION_FRAMES, HEVC_KEY_PACKET_INDICES ]
+    ])('stamps the video of %s with its pictures\' presentation times, one frame slot each, with key frames from the idx1 flags', async (
+        fileName: string,
+        presentationFrames: readonly number[],
+        keyPacketIndices: readonly number[]
+    ) => {
+        const { input, videoPackets } = await readTrackPair(fileName);
         try {
-            expect(videoPackets).toHaveLength(VIDEO_FRAME_COUNT);
             videoPackets.forEach((packet: EncodedPacket, packetIndex: number): void => {
-                expect(toMicroseconds(packet.timestamp)).toBe(toMicroseconds(packetIndex / VIDEO_FRAME_RATE));
-                expect(packet.type).toBe(packetIndex % KEY_FRAME_INTERVAL === 0 ? 'key' : 'delta');
+                expect(toMicroseconds(packet.timestamp)).toBe(toMicroseconds(presentationFrames[packetIndex] / VIDEO_FRAME_RATE));
+                expect(toMicroseconds(packet.duration)).toBe(toMicroseconds(1 / VIDEO_FRAME_RATE));
+                expect(packet.type).toBe(keyPacketIndices.includes(packetIndex) ? 'key' : 'delta');
             });
+        } finally {
+            input.dispose();
+        }
+    });
+
+    it('finds HEVC packets in AVI by presentation time, seeking past a CRA picture\'s leading pictures to the key frame before', async () => {
+        const input = openAVI(readAVIVector('hevc-ac3.avi'));
+        try {
+            const [ videoTrack ] = await input.getVideoTracks();
+            const reader = new PacketReader(videoTrack);
+            // Between the leading pictures at 6 and 7 and their CRA picture at 8
+            const leadingPictureTime = 7.5 / VIDEO_FRAME_RATE;
+            expect((await reader.getAt(leadingPictureTime))?.sequenceNumber).toBe(HEVC_PRESENTATION_FRAMES.indexOf(7));
+            expect((await reader.getKeyAt(leadingPictureTime))?.sequenceNumber).toBe(HEVC_KEY_PACKET_INDICES[0]);
+            expect((await reader.getKeyAt(8.5 / VIDEO_FRAME_RATE))?.sequenceNumber).toBe(HEVC_KEY_PACKET_INDICES[1]);
+            expect(await videoTrack.computeDuration()).toBeCloseTo((Math.max(...HEVC_PRESENTATION_FRAMES) + 1) / VIDEO_FRAME_RATE, 6);
         } finally {
             input.dispose();
         }

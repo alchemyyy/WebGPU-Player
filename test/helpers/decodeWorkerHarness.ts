@@ -79,6 +79,10 @@ export class FakeDecodedVideoFrame {
         this.visibleRect = { height: codedHeight, width: codedWidth, x: 0, y: 0 };
     }
 
+    public clone(): FakeDecodedVideoFrame {
+        return new FakeDecodedVideoFrame(this.codedWidth, this.codedHeight, this.timestamp, this.duration);
+    }
+
     // A real copy returns the layout it was asked for
     public copyTo(_destination: AllowSharedBufferSource, options?: VideoFrameCopyToOptions): Promise<PlaneLayout[]> {
         return Promise.resolve(options?.layout ?? []);
@@ -86,7 +90,7 @@ export class FakeDecodedVideoFrame {
 }
 
 /** A WebCodecs VideoDecoder that outputs one frame of its configured size per chunk, asynchronously as WebCodecs does. */
-export class FakeVideoDecoder {
+export class FakeVideoDecoder extends EventTarget {
     public static readonly instances: FakeVideoDecoder[] = [];
     public readonly chunks: FakeEncodedVideoChunk[] = [];
     public configuration: VideoDecoderConfig | null = null;
@@ -95,6 +99,7 @@ export class FakeVideoDecoder {
     public state: CodecState = 'unconfigured';
 
     public constructor(private readonly init: VideoDecoderInit) {
+        super();
         FakeVideoDecoder.instances.push(this);
     }
 

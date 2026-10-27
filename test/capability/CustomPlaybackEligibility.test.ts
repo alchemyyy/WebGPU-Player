@@ -6441,8 +6441,11 @@ describe('AVI and codecs without a route', () => {
         return options;
     }
 
-    it('plays H.264 with MP3 from AVI, which the fork demuxes', () => {
-        vi.stubGlobal('navigator', { userAgent: CHROMIUM_USER_AGENT });
+    it.each([
+        [ 'Chromium', CHROMIUM_USER_AGENT ],
+        [ 'WebKit', SAFARI_USER_AGENT ]
+    ])('plays H.264 with B-frames and MP3 from AVI on %s, since the fork stamps each picture with its presentation time', (_runtime, userAgent) => {
+        vi.stubGlobal('navigator', { userAgent });
 
         expect(getCustomPlaybackEligibility(
             createAVIOptions('h264', 'mp3'),
@@ -6453,24 +6456,17 @@ describe('AVI and codecs without a route', () => {
             .toBe(true);
     });
 
-    it('keeps H.264 that can code B-frames out of AVI on WebKit, whose sample sink orders frames by AVI\'s decode-order timestamps', () => {
-        vi.stubGlobal('navigator', { userAgent: SAFARI_USER_AGENT });
+    it('plays HEVC from AVI, whose pictures the fork stamps with their presentation times', () => {
+        const options = createAVIOptions('hevc', 'mp3');
+        (options.mediaSource as { MediaStreams: Array<Record<string, unknown>> }).MediaStreams[0].Profile = 'Main';
 
         expect(getCustomPlaybackEligibility(
-            createAVIOptions('h264', 'mp3'),
+            options,
             createCapabilities(),
             { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-        )).toEqual({ eligible: false, reason: 'presentation-order-unsupported' });
-        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ BitDepth: 8, Codec: 'h264', Profile: 'High' }, AVI_CONTAINER)))
-            .toBe(false);
-        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ BitDepth: 8, Codec: 'h264', Profile: 'Constrained Baseline' }, AVI_CONTAINER)))
-            .toBe(true);
-        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ BitDepth: 8, Codec: 'h264', Profile: 'High' }))).toBe(true);
-    });
-
-    it('keeps HEVC out of AVI, whose decode-order timestamps the owned HEVC path cannot order', () => {
+        )).toMatchObject({ eligible: true });
         expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ BitDepth: 8, Codec: 'hevc', Profile: 'Main' }, AVI_CONTAINER)))
-            .toBe(false);
+            .toBe(true);
     });
 
     it.each([ 'mpeg4', 'MSMPEG4V3', 'h263', 'theora' ])('declines %s as a known codec without a route', (videoCodec) => {

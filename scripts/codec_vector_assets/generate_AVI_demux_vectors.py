@@ -3,10 +3,10 @@
 
 Each vector is a short FFmpeg encode muxed by FFmpeg's AVI muxer, which writes an idx1 index and, for these small files, no AVIX list.
 Together they cover what the engine reads from AVI through Mediabunny:
-- H.264 with B-frames, stamped in decode order as AVI is, beside variable-bitrate MP3 timed per frame;
+- H.264 High with B-frames in a B-pyramid, stamped in decode order as AVI is, beside variable-bitrate MP3 timed per frame;
 - H.264 without B-frames beside constant-bitrate MP3 timed by bytes, whose first frame FFmpeg drops into an empty chunk;
 - VP8 with 16-bit PCM, VP9 with AAC and its AudioSpecificConfig, and AV1 with AC-3 (WAVE_FORMAT_DVM, 0x2000);
-- HEVC under the HEVC fourcc, which the engine refuses in AVI, and MPEG-4 Part 2 under XVID, which has no route;
+- HEVC with B-frames under the HEVC fourcc and under the zero tag FFmpeg's muxer writes without one, which FFmpeg reads back as uncompressed video, and MPEG-4 Part 2 under XVID, which has no route;
 - 5.1 24-bit and 32-bit float PCM and 5.1 FLAC, which FFmpeg writes as WAVE_FORMAT_EXTENSIBLE with a channel mask, and FLAC and Vorbis with their headers in the format's extradata.
 - three-channel PCM as 2.1 (mask 0x0B) and as 3.0 with a back center (mask 0x103), whose third channel is not the front center a count of three otherwise means.
 The multichannel vectors give each channel its own level, so a decode in the wrong channel order shows.
@@ -56,6 +56,8 @@ TWO_POINT_ONE_ARGUMENTS: Final = ("-af", "pan=2.1|FL=c0|FR=0.8*c0|LFE=0.5*c0")
 THREE_POINT_ZERO_BACK_ARGUMENTS: Final = ("-af", "pan=3.0(back)|FL=c0|FR=0.8*c0|BC=0.5*c0")
 # VP9, the video beside the audio vectors, which the owned VP9 path decodes in Node as well
 PLAIN_VP9_ARGUMENTS: Final = ("-c:v", "libvpx-vp9", "-b:v", "300k", "-row-mt", "0", *SINGLE_THREAD_ARGUMENTS)
+# x265 on one thread without wavefronts, so its encodes are deterministic too, with B-frames in a pyramid
+HEVC_PARAMETERS: Final = "info=0:pools=none:frame-threads=1:wpp=0:log-level=error:scenecut=0:bframes=3:b-pyramid=1"
 
 
 @dataclass(frozen=True)
@@ -73,7 +75,7 @@ class AVIVector:
 AVI_VECTORS: Final = (
     AVIVector(
         "h264-bframes-mp3-vbr.avi",
-        ("-c:v", "libx264", "-preset", "medium", "-bf", "2", "-x264-params", "threads=1:scenecut=0"),
+        ("-c:v", "libx264", "-preset", "medium", "-bf", "3", "-x264-params", "threads=1:scenecut=0:b-adapt=0:b-pyramid=normal"),
         ("-c:a", "libmp3lame", "-q:a", "6"),
         "h264",
         "H264",
@@ -113,13 +115,18 @@ AVI_VECTORS: Final = (
     ),
     AVIVector(
         "hevc-ac3.avi",
-        (
-            "-c:v", "libx265", "-tag:v", "HEVC",
-            "-x265-params", "info=0:pools=none:frame-threads=1:wpp=0:log-level=error:scenecut=0:bframes=0",
-        ),
+        ("-c:v", "libx265", "-tag:v", "HEVC", "-x265-params", HEVC_PARAMETERS),
         ("-c:a", "ac3", "-b:a", "96k"),
         "hevc",
         "HEVC",
+        "ac3",
+    ),
+    AVIVector(
+        "hevc-untagged-ac3.avi",
+        ("-c:v", "libx265", "-x265-params", HEVC_PARAMETERS),
+        ("-c:a", "ac3", "-b:a", "96k"),
+        "rawvideo",
+        "[0][0][0][0]",
         "ac3",
     ),
     AVIVector(
