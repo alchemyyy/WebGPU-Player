@@ -128,14 +128,12 @@ All worker code unless marked.
 - `NALUnitFraming.ts`: splits H.264 and HEVC data into NAL units at Annex B start codes or at an avcC's or hvcC's length prefixes, without copying them.
 - `AudioStartPacket.ts`: the packet an audio attempt starts from, without Mediabunny's proof scans when the track starts late.
 - `TrackIteration.ts`: a track's packets in decode order, read about a second ahead, and its decoded video or audio samples from a start time, as iterators that end at once on `return()`.
-- `ISOBaseMediaSampleEntryChildBox.ts`: reads a child box of an ISO base media track's first sample entry, such as `fiel` or `av1C`, from the `moov` bytes Mediabunny keeps.
+- `ISOBaseMediaSampleEntryChildBox.ts`: reads a child box of an ISO base media track's first sample entry, such as `fiel`, from the `moov` bytes Mediabunny keeps.
 
 ### demux/av1/
 
 - `AV1OBUParser.ts`: the OBU walk of one temporal unit (headers, extension headers, leb128 sizes, a last OBU without a size field), frame header detection, metadata types and ITU-T T.35 messages, and the removal of a payload's trailing bits.
-- `AV1SequenceHeaderParser.ts`, `AV1CodecParameterString.ts`: the sequence header, parsed as the AV1 specification defines it, and the `av01` codec string it declares.
-- `AV1DecoderConfiguration.ts`: replaces the codec string Mediabunny derives for an AV1 track with the one its first packet's sequence header declares.
-- `AV1CodecConfigurationRecord.ts`: a track's AV1CodecConfigurationRecord for the frame-pool route's GPU decoder: a Matroska `V_AV1` track's CodecPrivate, an `av01` or `dav1` sample entry's `av1C` box, or none.
+- `AV1SequenceHeaderParser.ts`: the sequence header, parsed as the AV1 specification defines it.
 
 ### demux/dolby-vision/
 

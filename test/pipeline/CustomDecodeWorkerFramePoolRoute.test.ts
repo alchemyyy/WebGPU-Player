@@ -218,7 +218,7 @@ describe('CustomDecode.worker frame-pool route', () => {
         expect(getReadyResponse(responses).codecPrivate).toBeUndefined();
     });
 
-    it.each(AV1_VECTOR_FILE_NAMES)('posts the av1C of %s as codec private data, which Mediabunny hands on as no description', async (fileName: string) => {
+    it.each(AV1_VECTOR_FILE_NAMES)('posts the av1C of %s, which Mediabunny hands on as the description, as codec private data', async (fileName: string) => {
         const workerScope = await startDecodeWorker(new Map([ [ fileName, readAV1HDR10PlusVector(fileName) ] ]));
 
         const responses = await decodeToEnd(workerScope, createWorkerStartRequest(fileName, AV1_FRAME_POOL_ROUTE));

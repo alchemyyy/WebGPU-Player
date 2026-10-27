@@ -4,11 +4,12 @@ import { ALL_FORMATS, BufferSource, Input } from 'mediabunny';
 import { describe, expect, it } from 'vitest';
 
 import type { VideoScan } from 'webgpu-player/decode/video/VideoFields';
-import { MATROSKA_AV1_CODEC_ID } from 'webgpu-player/demux/av1/AV1CodecConfigurationRecord';
 import { readContainerVideoScan } from 'webgpu-player/demux/ContainerVideoScan';
 
 import { createBox, createVideoTrackISOBaseMedia, createVisualSampleEntry } from '../helpers/isoBaseMediaBoxes';
 import { createASCIIElement, createElement, createUnsignedIntegerElement, createVideoTrackMatroska } from '../helpers/matroskaElements';
+
+const MATROSKA_AV1_CODEC_ID = 'V_AV1';
 
 // Matroska's Video elements FlagInterlaced and FieldOrder
 const FLAG_INTERLACED_ID = 0x9A;

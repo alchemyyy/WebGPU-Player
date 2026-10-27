@@ -182,8 +182,6 @@ import {
     type OwnedVideoPacketIterator,
     type OwnedVideoStreamRun
 } from '../decode/video/native/OwnedVideoDecodeStream';
-import { readAV1CodecConfigurationRecord } from '../demux/av1/AV1CodecConfigurationRecord';
-import { assignAV1SequenceHeaderCodecString } from '../demux/av1/AV1DecoderConfiguration';
 import { readISOBaseMediaDolbyVisionTrackConfiguration } from '../demux/dolby-vision/ISOBaseMediaDolbyVisionConfiguration';
 import {
     readMatroskaDolbyVisionTrackConfiguration
@@ -1105,18 +1103,13 @@ function requireDolbyVisionRPUTrack(codec: VideoCodec, dolbyVisionProfile: Custo
 }
 
 /**
- * Returns an AV1 track's decoder configuration with its AV1CodecConfigurationRecord as the description, the codec private data the frame-pool route hands its GPU decoder.
- * Mediabunny 1.52.2 hands no record on; a track whose container carries none keeps its configuration, since its temporal units carry their sequence headers.
+ * Returns an AV1 track's decoder configuration for the browser's decoder, without the AV1CodecConfigurationRecord Mediabunny hands on as its description.
+ * The WebCodecs AV1 registration uses no description, so only the frame-pool route's GPU decoder takes the record, as its codec private data.
  */
-function addAV1CodecConfigurationRecord(videoTrack: InputVideoTrack, internalCodecID: unknown, decoderConfig: VideoDecoderConfig): VideoDecoderConfig {
-    if (decoderConfig.description !== undefined) {
-        return decoderConfig;
-    }
-    const configuration = readAV1CodecConfigurationRecord(videoTrack, internalCodecID);
-    if (configuration.status === 'failed') {
-        throw new UnsupportedCustomDecodeSourceError(`The selected AV1 track's codec private data cannot be read: ${configuration.failure}`);
-    }
-    return configuration.record ? { ...decoderConfig, description: configuration.record } : decoderConfig;
+function omitAV1ConfigurationRecord(decoderConfig: VideoDecoderConfig): VideoDecoderConfig {
+    const browserDecoderConfig = { ...decoderConfig };
+    delete browserDecoderConfig.description;
+    return browserDecoderConfig;
 }
 
 /** Requires the codec its route's decoder takes: the GPU decoder's codec family, and HEVC for color neutralization. */
@@ -1160,8 +1153,6 @@ async function prepareVideoTrack(
     if (!videoTrack) {
         throw new UnsupportedCustomDecodeSourceError('The selected video track ordinal is unavailable');
     }
-    // canDecode() and the owned AV1 path use the corrected codec string
-    await assignAV1SequenceHeaderCodecString(videoTrack);
 
     const [
         codec,
@@ -1216,8 +1207,8 @@ async function prepareVideoTrack(
         throw new UnsupportedCustomDecodeSourceError('The selected video codec configuration is unavailable');
     }
     requireRouteVideoCodec(codec, request);
-    const decoderConfig = framePool && codec === 'av1' ?
-        addAV1CodecConfigurationRecord(videoTrack, internalCodecID, containerDecoderConfig) :
+    const decoderConfig = !framePool && codec === 'av1' ?
+        omitAV1ConfigurationRecord(containerDecoderConfig) :
         containerDecoderConfig;
     if (!canDecode) {
         throw new UnsupportedCustomDecodeSourceError(

@@ -192,6 +192,9 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   `AV1DecoderConfiguration.ts` parses the first packet's sequence header as the specification defines it and replaces the cached decoder configuration's codec string before the first `getDecoderConfig()` or `canDecode()`, so `canDecode()` and the owned AV1 path use the stream's own string.
   It is contained the same way, and leaves a track whose first packet has no sequence header untouched.
   Mediabunny 1.61.5 reads bit depth, monochrome, and chroma format correctly (10-15), but a header without a color description still gets the optional fields with BT.709 code points it never declared, so the replacement stays and leaves them out.
+  That short form was itself the defect: the AV1 ISOBMFF binding takes monochrome, chroma, and range from the sequence header and, without a color description, says the color fields should be BT.709's 01, as Mediabunny writes them, so the replacement dropped monochrome, 4:4:4 and 4:2:2 chroma, and full range, and a 4:4:4 stream's string declared 4:2:0, which the native route's chroma format then read (10-27).
+  The fork also writes an explicit 2/2/2 color description as 02.02.02, where Mediabunny read it as none, and leaves the optional fields out when a reserved code point past 99 cannot fill two digits (branch `v2-av1-codec-string`), so `AV1DecoderConfiguration.ts` and `AV1CodecParameterString.ts` are gone and the worker takes Mediabunny's string (10-27).
+  Chrome supports and decodes the full strings of 4:4:4, 4:2:2, monochrome, and full-range streams on every route it supported their short forms, and 4:2:0 limited-range streams keep their strings (10-27).
 - Mediabunny's dropped BlockAdditionals are recovered in the engine (10-09).
   Mediabunny 1.52.2 parses every BlockMore but keeps only BlockAddID 1, the alpha channel, so VP9 HDR10+ never reaches a packet's side data.
   An upstream change would wait for a release, and a patch to the installed package is lost on every install, so `MatroskaBlockAdditions.ts` contains the fix, as `ISOBaseMediaDolbyVisionSampleEntry.ts` and `AV1DecoderConfiguration.ts` contain theirs.
@@ -478,6 +481,8 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   On the frame-pool route `AV1CodecConfigurationRecord.ts` reads the CodecPrivate from the internal track, or the `av1C` box of an `av01` or `dav1` sample entry through the `moov` reader the `dvc1` path now shares (`ISOBaseMediaSampleEntryChildBox.ts`), and copies the record unchecked, as FFmpeg's demuxers do.
   A container without one hands nothing, since temporal units carry their sequence headers, and a change in the internals fails the track with a named check.
   Mediabunny 1.61.5 still keeps the CodecPrivate to itself (10-15).
+  The fork hands the record on as the decoder configuration's description, a Matroska or WebM CodecPrivate or an ISO base media `av1C` box, and reads a Matroska track's codec string from its CodecPrivate when the first block has no sequence header (branch `v2-av1-codec-configuration-record`), so `AV1CodecConfigurationRecord.ts` is gone (10-27).
+  The frame-pool route posts that description as codec private data, and every other route configures the browser's decoder without it, as before, since the WebCodecs AV1 registration uses no description (10-27).
 - VC-1 in MPEG-TS and M2TS is unreachable (10-13).
   Mediabunny 1.52.2 drops stream type 0xEA, and its video setup and packet splitter handle only AVC and HEVC, in private methods the engine cannot wrap.
   Once Mediabunny surfaces the stream, the engine needs only the codec ID, extradata from the first key packet, and `vc1` in the transport stream rule.

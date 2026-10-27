@@ -18,68 +18,35 @@ import {
 } from 'mediabunny';
 import { describe, expect, it } from 'vitest';
 
-import { createAV1CodecParameterString } from 'webgpu-player/demux/av1/AV1CodecParameterString';
-import { assignAV1SequenceHeaderCodecString } from 'webgpu-player/demux/av1/AV1DecoderConfiguration';
 import {
     findAV1SequenceHeader,
     type AV1SequenceHeader
 } from 'webgpu-player/demux/av1/AV1SequenceHeaderParser';
 import { createNativeVideoCapabilityVector } from 'webgpu-player/capability/vectors/NativeVideoCapabilityVectors';
 
-type VectorCodecStrings = {
-    bitstreamCodecString: string
+type VectorCodecString = {
+    codecString: string
     fileName: string
-    mediabunnyCodecString: string
 };
 
 const VECTOR_DIRECTORY = resolve(CODEC_VECTOR_ASSETS_DIRECTORY, 'dolby-vision-av1');
 const SUB_PROFILES = [ '10.0', '10.1', '10.2', '10.4' ] as const;
-// What Mediabunny 1.52.2 reports for each vector, and what its sequence header declares
-const VECTOR_CODEC_STRINGS: readonly VectorCodecStrings[] = [
-    {
-        bitstreamCodecString: 'av01.0.00M.10',
-        fileName: 'profile10.0.mkv',
-        mediabunnyCodecString: 'av01.0.00M.10.0.110.01.01.01.1'
-    },
-    {
-        bitstreamCodecString: 'av01.0.00M.10',
-        fileName: 'profile10.0.mp4',
-        mediabunnyCodecString: 'av01.0.00M.10.0.110.01.01.01.1'
-    },
-    {
-        bitstreamCodecString: 'av01.0.00M.10.0.110.09.16.09.0',
-        fileName: 'profile10.1.mkv',
-        mediabunnyCodecString: 'av01.0.00M.10.0.110.09.16.09.0'
-    },
-    {
-        bitstreamCodecString: 'av01.0.00M.10.0.110.09.16.09.0',
-        fileName: 'profile10.1.mp4',
-        mediabunnyCodecString: 'av01.0.00M.10.0.110.09.16.09.0'
-    },
-    {
-        bitstreamCodecString: 'av01.0.00M.10',
-        fileName: 'profile10.2.mkv',
-        mediabunnyCodecString: 'av01.0.00M.10'
-    },
-    {
-        bitstreamCodecString: 'av01.0.00M.10',
-        fileName: 'profile10.2.mp4',
-        mediabunnyCodecString: 'av01.0.00M.10'
-    },
-    {
-        bitstreamCodecString: 'av01.0.00M.10.0.110.09.18.09.0',
-        fileName: 'profile10.4.mkv',
-        mediabunnyCodecString: 'av01.0.00M.10.0.110.09.18.09.0'
-    },
-    {
-        bitstreamCodecString: 'av01.0.00M.10.0.110.09.18.09.0',
-        fileName: 'profile10.4.mp4',
-        mediabunnyCodecString: 'av01.0.00M.10.0.110.09.18.09.0'
-    }
+// The codec string each vector's sequence header declares under the AV1 ISOBMFF binding: Profile 10.0's header codes full range without a color description
+const VECTOR_CODEC_STRINGS: readonly VectorCodecString[] = [
+    { codecString: 'av01.0.00M.10.0.110.01.01.01.1', fileName: 'profile10.0.mkv' },
+    { codecString: 'av01.0.00M.10.0.110.01.01.01.1', fileName: 'profile10.0.mp4' },
+    { codecString: 'av01.0.00M.10.0.110.09.16.09.0', fileName: 'profile10.1.mkv' },
+    { codecString: 'av01.0.00M.10.0.110.09.16.09.0', fileName: 'profile10.1.mp4' },
+    { codecString: 'av01.0.00M.10', fileName: 'profile10.2.mkv' },
+    { codecString: 'av01.0.00M.10', fileName: 'profile10.2.mp4' },
+    { codecString: 'av01.0.00M.10.0.110.09.18.09.0', fileName: 'profile10.4.mkv' },
+    { codecString: 'av01.0.00M.10.0.110.09.18.09.0', fileName: 'profile10.4.mp4' }
 ];
 const AV1_CONFIGURATION_RECORD_BOX_TYPE = [ 0x61, 0x76, 0x31, 0x43 ];
 const BOX_HEADER_BYTE_LENGTH = 8;
 const AV1_CONFIGURATION_RECORD_HEADER_BYTE_LENGTH = 4;
+// An av1C opens with its marker bit and version 1
+const AV1_CONFIGURATION_RECORD_MARKER_AND_VERSION = 0x81;
 
 /** Opens a file's only video track. */
 async function withVideoTrack(
@@ -109,22 +76,30 @@ async function readFirstPacketSequenceHeader(fileName: string): Promise<AV1Seque
     return sequenceHeader;
 }
 
-/** Returns an MP4 file's av1C record: its four header bytes and its configOBUs. */
-function readAV1ConfigurationRecord(fileBytes: Uint8Array): { configOBUs: Uint8Array, header: Uint8Array } {
+async function readDecoderConfig(data: Uint8Array): Promise<VideoDecoderConfig | null> {
+    let decoderConfig: VideoDecoderConfig | null = null;
+    await withVideoTrack(data, async (track: InputVideoTrack): Promise<void> => {
+        decoderConfig = await track.getDecoderConfig();
+    });
+    return decoderConfig;
+}
+
+function toBytes(source: AllowSharedBufferSource | undefined): Uint8Array | undefined {
+    if (source === undefined) {
+        return undefined;
+    }
+    return ArrayBuffer.isView(source) ? new Uint8Array(source.buffer, source.byteOffset, source.byteLength) : new Uint8Array(source);
+}
+
+/** Returns an MP4 file's av1C record: its four header bytes, then its configOBUs. */
+function readAV1ConfigurationRecord(fileBytes: Uint8Array): Uint8Array {
     for (let typeOffset = 4; typeOffset + BOX_HEADER_BYTE_LENGTH <= fileBytes.byteLength; typeOffset += 1) {
         if (AV1_CONFIGURATION_RECORD_BOX_TYPE.every((value: number, index: number): boolean => (
             fileBytes[typeOffset + index] === value
         ))) {
             const boxOffset = typeOffset - 4;
             const boxByteLength = new DataView(fileBytes.buffer, fileBytes.byteOffset).getUint32(boxOffset);
-            const recordOffset = boxOffset + BOX_HEADER_BYTE_LENGTH;
-            return {
-                configOBUs: fileBytes.subarray(
-                    recordOffset + AV1_CONFIGURATION_RECORD_HEADER_BYTE_LENGTH,
-                    boxOffset + boxByteLength
-                ),
-                header: fileBytes.subarray(recordOffset, recordOffset + AV1_CONFIGURATION_RECORD_HEADER_BYTE_LENGTH)
-            };
+            return fileBytes.subarray(boxOffset + BOX_HEADER_BYTE_LENGTH, boxOffset + boxByteLength);
         }
     }
     throw new Error('The MP4 vector has no av1C record');
@@ -135,19 +110,6 @@ function getConfigurationRecordBitDepth(colorFormat: number): number {
         return 12;
     }
     return ((colorFormat >> 6) & 1) === 1 ? 10 : 8;
-}
-
-async function readDecoderConfig(
-    fileName: string,
-    assignCodecString: boolean
-): Promise<{ assigned: boolean, decoderConfig: VideoDecoderConfig | null }> {
-    let assigned = false;
-    let decoderConfig: VideoDecoderConfig | null = null;
-    await withVideoTrack(readVector(fileName), async (track: InputVideoTrack): Promise<void> => {
-        assigned = assignCodecString && await assignAV1SequenceHeaderCodecString(track);
-        decoderConfig = await track.getDecoderConfig();
-    });
-    return { assigned, decoderConfig };
 }
 
 /** Muxes a Matroska AV1 track whose first packet carries a frame but no sequence header. */
@@ -167,7 +129,7 @@ async function createMatroskaWithoutSequenceHeader(): Promise<Uint8Array> {
     return new Uint8Array(target.buffer as ArrayBuffer);
 }
 
-describe('AV1DecoderConfiguration', () => {
+describe('AV1 decoder configuration', () => {
     it.each(SUB_PROFILES)(
         'reads the same Profile %s sequence header from Matroska and MP4, matching the MP4 av1C',
         async (subProfile: string) => {
@@ -177,10 +139,9 @@ describe('AV1DecoderConfiguration', () => {
                 throw new Error('A vector has no sequence header in its first packet');
             }
 
-            expect(createAV1CodecParameterString(matroskaSequenceHeader))
-                .toBe(createAV1CodecParameterString(isoBaseMediaSequenceHeader));
+            expect(matroskaSequenceHeader).toEqual(isoBaseMediaSequenceHeader);
             const record = readAV1ConfigurationRecord(readVector(`profile${subProfile}.mp4`));
-            const [ , profileAndLevel, colorFormat ] = record.header;
+            const [ , profileAndLevel, colorFormat ] = record;
             const colorConfig = isoBaseMediaSequenceHeader.colorConfig;
             expect(isoBaseMediaSequenceHeader.profile).toBe(profileAndLevel >> 5);
             expect(isoBaseMediaSequenceHeader.operatingPoints[0]).toMatchObject({
@@ -193,62 +154,31 @@ describe('AV1DecoderConfiguration', () => {
             expect(colorConfig.subsamplingY).toBe((colorFormat >> 2) & 1);
             expect(colorConfig.chromaSamplePosition).toBe(colorFormat & 0b11);
             // The record's configOBUs repeat the sequence header the first packet carries
-            expect(findAV1SequenceHeader(record.configOBUs)).toEqual(isoBaseMediaSequenceHeader);
+            expect(findAV1SequenceHeader(record.subarray(AV1_CONFIGURATION_RECORD_HEADER_BYTE_LENGTH))).toEqual(isoBaseMediaSequenceHeader);
         }
     );
 
     it.each(VECTOR_CODEC_STRINGS)(
-        'replaces only a misread codec string: $fileName',
-        async ({ bitstreamCodecString, fileName, mediabunnyCodecString }) => {
-            const original = await readDecoderConfig(fileName, false);
-            const corrected = await readDecoderConfig(fileName, true);
+        'takes the codec string its sequence header declares and the AV1CodecConfigurationRecord as the description: $fileName',
+        async ({ codecString, fileName }) => {
+            const decoderConfig = await readDecoderConfig(readVector(fileName));
+            const subProfileVector = fileName.replace(/\.mkv$/, '.mp4');
 
-            expect(original.decoderConfig?.codec).toBe(mediabunnyCodecString);
-            expect(corrected.decoderConfig?.codec).toBe(bitstreamCodecString);
-            expect(corrected.assigned).toBe(mediabunnyCodecString !== bitstreamCodecString);
-            // Every other field of Mediabunny's configuration is kept
-            expect({ ...corrected.decoderConfig, codec: mediabunnyCodecString }).toEqual(original.decoderConfig);
+            expect(decoderConfig?.codec).toBe(codecString);
+            // The Matroska CodecPrivate and the MP4 av1C of one stream are the same record
+            expect(toBytes(decoderConfig?.description)).toEqual(readAV1ConfigurationRecord(readVector(subProfileVector)));
         }
     );
 
-    it('serves the corrected codec string to every later reader of the track', async () => {
-        await withVideoTrack(readVector('profile10.0.mkv'), async (track: InputVideoTrack): Promise<void> => {
-            expect(await assignAV1SequenceHeaderCodecString(track)).toBe(true);
-
-            expect(await track.getCodecParameterString()).toBe('av01.0.00M.10');
-            expect((await track.getDecoderConfig())?.codec).toBe('av01.0.00M.10');
-        });
-    });
-
-    it('leaves a track untouched without a sequence header, an AV1 codec, or the expected backing', async () => {
+    it('reads the codec string of a Matroska track without a sequence header in its first packet from its CodecPrivate', async () => {
         const matroskaWithoutSequenceHeader = await createMatroskaWithoutSequenceHeader();
         await withVideoTrack(matroskaWithoutSequenceHeader, async (track: InputVideoTrack): Promise<void> => {
             const firstPacket = await new PacketReader(track).getFirst();
-            expect(await track.getCodec()).toBe('av1');
             expect(firstPacket && findAV1SequenceHeader(firstPacket.data)).toBeNull();
+
             const decoderConfig = await track.getDecoderConfig();
-
-            expect(await assignAV1SequenceHeaderCodecString(track)).toBe(false);
-            expect(await track.getDecoderConfig()).toBe(decoderConfig);
-        });
-
-        const vp9Input = new Input({
-            formats: ALL_FORMATS,
-            source: new BufferSource(readFileSync(resolve(CODEC_VECTOR_ASSETS_DIRECTORY, 'hdr10plus-vp9', 'hdr10plus.webm')))
-        });
-        try {
-            const [ vp9Track ] = await vp9Input.getVideoTracks();
-            expect(await assignAV1SequenceHeaderCodecString(vp9Track)).toBe(false);
-        } finally {
-            vp9Input.dispose();
-        }
-
-        await withVideoTrack(readVector('profile10.0.mkv'), async (track: InputVideoTrack): Promise<void> => {
-            const backing = (track as unknown as { _backing: Record<string, unknown> })._backing;
-            delete backing.decoderConfigPromise;
-
-            expect(await assignAV1SequenceHeaderCodecString(track)).toBe(false);
-            expect((await track.getDecoderConfig())?.codec).toBe('av01.0.00M.10.0.110.01.01.01.1');
+            expect(decoderConfig?.codec).toBe('av01.0.00M.08');
+            expect(toBytes(decoderConfig?.description)?.[0]).toBe(AV1_CONFIGURATION_RECORD_MARKER_AND_VERSION);
         });
     });
 });

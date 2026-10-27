@@ -94,7 +94,7 @@ function findChildBox(bytes: Uint8Array, start: number, end: number, type: strin
 
 /**
  * Returns the moov bytes Mediabunny 1.52.2 keeps after reading a file's metadata, and where the track's stbl box starts in them.
- * Mediabunny reads a track's samples but skips the configuration boxes of codecs it does not decode, and hands no av1C on, so contain the internal access here:
+ * Mediabunny reads a track's samples but skips the configuration boxes of codecs it does not decode, and the boxes it does not use, so contain the internal access here:
  * the demuxer's moovSlice keeps the moov bytes, and the track records its stbl box's file position.
  */
 function readRetainedSampleTable(track: InputVideoTrack): RetainedSampleTable {
