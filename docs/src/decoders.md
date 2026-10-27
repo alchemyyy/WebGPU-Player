@@ -250,6 +250,7 @@ The patches turn the decoder into a parser:
 - `0004-filter-level.patch` exports a block's deblocking level.
 
 libaom's frame buffers point at an address no module memory maps, so the parser holds no samples, and a stray sample access traps.
+libaom refuses a frame buffer past an eighth of `AOM_MAX_ALLOCABLE_MEMORY`, 2 GiB on 32-bit targets, which a level 6 4:4:4 frame with a scaled reference's borders passes, so the build raises it to 4 GiB less 64 KiB; the 1 GiB instance memory still bounds every allocation that maps memory.
 
 `parser/av1_parser.c` implements version 2 of the [parser interface](decoder-packages.md#the-parser-interface).
 `plan` parses a temporal unit's frames, one picture per frame, hidden frames and `show_existing_frame` included, and `plan_next` hands out the rest.

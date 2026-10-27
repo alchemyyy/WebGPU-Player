@@ -629,9 +629,12 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
 - After a seek, AV1 temporal units before the first key frame make no picture (10-14).
   libaom cannot decode them without the references they predict from, so the parser waits for a key frame from its start or reset, as libaom's own interface does.
   An inter frame after a resyncing intra-only frame that misses references makes no picture either, while a key frame's own failure is the bitstream's.
-- The WGSL AV1 decoder matches libdav1d bit for bit (10-14, 10-15).
+- The WGSL AV1 decoder matches libdav1d bit for bit (10-14, 10-15), up to level 6.x (10-27).
   Every frame matches FFmpeg's libdav1d on the package's nine vectors, libaom's 242 test vectors, 53 encodes of our own from libaom, SVT-AV1, and rav1e in every output format, and Argon's 2,524 conformance streams within level 5.x, 26,772 frames; stage dumps compared every decode picture's reconstruction and each filter stage with libaom's own.
-  The 239 Argon streams with a frame beyond level 5.x are outside `accepts`.
+  Until 10-27 the 239 Argon streams with a frame beyond level 5.x were outside `accepts`.
+  Since then the 131 of them within level 6.x decode through the feed with every frame matching, 1,293 frames across 28 stream changes, and so does an 8K 10-bit SVT-AV1 encode; eight of them carry records past the old 64 MiB bound, up to 92 MiB.
+  Their first run found two faults the level 5.x streams could not reach: the film grain block offsets held 16,384 32x32 blocks, fewer than an 8192x4352 picture's 34,816, and libaom refused a 16384x2176 4:4:4 frame buffer with a scaled reference's borders past an eighth of its 32-bit allocation bound.
+  The other 108 have frames beyond level 6.x, up to 16640x8960 or 40,468,480 samples, which `accepts` refuses and the parser fails as `pictureSize` or, where libaom's frame size limit refuses them first, `bitstreamCorrupt`.
   A stream that changes its output format midway, as Argon's profile switches do, or whose later sequence header raises the maximum frame size past the `av1C` a session was sized from, as libaom's sizeup and Argon's joined sequences do, continues on a session made for the change, as stream changes do since 10-14.
   The runs of 10-14 decoded each run of one format on a session of its own, sized from the largest picture the parser reports; those of 10-15 go through `GPUVideoDecodeFeed` itself with the built package, an IVF without a size declaring its first frame.
   There every frame the feed delivered matched, but the feed's pool sizing first ended 32 Argon streams, 22 as `accepts` and 10 as `visible-rectangle`, and one own encode whose sequences declare 16384x8704 for 640x360 frames: `accepts` judged pools rounded up to 64, which a legal level 5.x picture such as 7396x1205 crosses, and a refused pool ended the stream even where its pictures fit a smaller one.
