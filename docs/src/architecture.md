@@ -39,8 +39,9 @@ The engine's sources follow the stages a custom session runs: `src/demux/` reads
 - No audio: `MediaClock` alone, held while video starves.
   An audio track that ends before the video hands the clock to the `MediaClock` once its tail has played out.
 
-Video is pulled: each rAF draws the newest frame at or before the clock.
+Video is pulled: each rAF draws the newest frame at or before the clock, and hands the presenter its timestamp and the clock's rate, from which it measures the display's refresh rate.
 While a plan deinterlaces, each rAF takes frames one frame ahead of the clock, the presenter shows the frame before the newest, and a tick that takes no frame draws a held frame's next field from history (see [Presentation](#presentation)).
+While a plan holds a display-rate pass, each rAF takes frames one refresh ahead of the clock, and a tick that takes no frame redraws from history at its clock time.
 
 <div class="diagram">
 <a class="diagram-light" href="diagrams/frame-presentation.light.svg"><img src="diagrams/frame-presentation.light.svg" alt="How the clock is chosen and how each tick selects, presents, or waits for a frame"></a>
@@ -189,8 +190,9 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
   The presenter's `PassTextureCache` uploads a block when a plan first binds it, hands the uploads to `PresentationExecutor.create`, and after installing an executor releases the uploads neither its plan nor the preset holds.
 - A pass's `when` reads its parameters, and a `const` parameter compiles into the plan's modules, so a change to either builds a new plan (`PlanRequest.parameterValues`), which the executor of an unchanged plan adopts without rebuilding; any other parameter is a uniform write.
 - The prelude gives a body that calls them the source's transfer function in mpv's scale of linear light (`BuiltinChain.linearLight`, from the built-in transfer decode's code) and its planes transform.
-- Temporal history advances only on new frames.
+- Temporal history advances only on new frames; redraws from history, of a deinterlacing or display-rate plan, do not advance it.
   It resets on a seek, a new generation, a video epoch change, and a frame whose timestamp goes back or jumps past 2.5 frame durations.
+- The `frame.rate` fact is the stream's declared frame rate (`PresentationInput.getPresentationFrameRate`): its average frame rate, else its real frame rate when the average is missing or at least 1000, which `configurePresentationColorPipeline` carries as `PresentationColorPipelineConfiguration.frameRate`.
 - Authorization renders the default chain through the same planner and executor, so a preset never changes the route.
 - With HDR output enabled by the host, an HDR source presents extended-range values on an `rgba16float` canvas.
 
@@ -215,6 +217,22 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
   After a reset the first frame shows at once without a frame after it, and at the end of a stream, or while decoding falls behind, the newest frame shows once the clock reaches it, as FFmpeg's yadif repeats its last frame.
 - A tick that takes no frame draws the held frame's next field from history (`presentHeldFields`), without a source, so passes that read the source are skipped.
 - `setDeinterlaceMode` switches between double rate, single rate, and off; only a switch to or from `off` builds a new plan.
+
+### Display rate
+
+- The presenter measures the display's refresh rate (`DisplayRefresh`) from the animation frame times the frame loop hands `recordAnimationFrame`: a least-squares line through the times over refresh counts, which counts skipped refreshes and averages timer coarsening up to 1 ms.
+  It reports an interval once at least 30 frames fit the line with a relative standard error of at most 0.02%, over a window of 240 refreshes.
+  A frame more than 0.4 intervals off the line, as after a move to another display, starts the measurement over, and a gap over 500 ms, as a paused loop leaves, starts a new window; the last measurement holds until the next is precise.
+- The `display.rate` fact is that rate, 0 until measured, and the presenter plans again while preset passes plan when it moves more than 0.1% (`DISPLAY_RATE_REPLAN_TOLERANCE`) from the rate the plan read.
+- A pass with `rate: display` plans only while frames come from the frame loop (`PlanRequest.displayRateAvailable`), and not in a deinterlacing plan; otherwise it is left out as `display-rate-unavailable`.
+- In a display-rate plan (`PresentationPlan.displayRate`) the pass that reads the source writes a texture rather than the canvas, and a display-rate color step gets a pass of its own, `Presentation color`.
+- The frame loop takes frames one refresh ahead of the clock (`getFrameLookaheadMicroseconds`), so the frame that starts within a refresh is in history when the refresh draws.
+- A tick that takes no frame redraws from history at its clock time (`presentHeldFields`), unless the last draw was at that time, from `PresentationPlan.historyDrawStart`, the first pass with a display-rate step: the passes that read the source and the passes before it are skipped, since no draw of the frame changes their outputs.
+  After a new executor is installed, nothing redraws until a frame's submission validated it.
+- The `presentation` uniform's `refreshSeconds` is the media time one refresh covers, the measured interval times the rate the clock advances at, which the frame loop hands over as 0 unless playing, and `targetOffsetSeconds` the clock time the draw presents at minus `timestampSeconds`, subtracted in double precision.
+  The lookahead follows it, so a paused or seeking playback takes no frame ahead of the clock.
+- Telemetry's presented media time is the frame the clock falls in: the one before the newest until the clock reaches the newest.
+- A history reset clears the display-rate frames.
 
 ## Transitions
 

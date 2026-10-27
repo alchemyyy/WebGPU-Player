@@ -5,7 +5,7 @@ import { BYTES_PER_WORD, UNIFORM_BUFFER_OFFSET_ALIGNMENT } from '../WebGPUConsta
 import type { EngineBindingResource, EngineResource, PassParameter } from './PassTypes';
 
 /** The bytes of one pass's `presentation` uniform. */
-export const PRESENTATION_UNIFORM_BYTE_LENGTH = 64;
+export const PRESENTATION_UNIFORM_BYTE_LENGTH = 72;
 
 /** The stride of per-pass uniform slots in one buffer, the minimum uniform buffer offset alignment WebGPU guarantees. */
 export const UNIFORM_SLOT_BYTE_LENGTH = UNIFORM_BUFFER_OFFSET_ALIGNMENT;
@@ -200,6 +200,8 @@ export const PRESENTATION_FIELD_STATE = Object.freeze({
  * The `presentation` uniform every pass binds: its coordinate mapping and the frame globals.
  * `historyValid` counts the earlier frames history holds: 0 after a reset, rising by one per new frame to the plan's deepest history.
  * `fieldState` holds PRESENTATION_FIELD_STATE bits.
+ * `refreshSeconds` is the media time one display refresh covers, 0 while the display is unmeasured or the clock stands still, and `targetOffsetSeconds`
+ * the clock time the draw presents at, after `timestampSeconds`; the engine subtracts the two in double precision, so the offset keeps its precision late in a long stream.
  */
 export const PRESENTATION_UNIFORMS_WGSL = `struct PresentationUniforms {
     textureScale: vec2f,
@@ -212,6 +214,8 @@ export const PRESENTATION_UNIFORMS_WGSL = `struct PresentationUniforms {
     historyValid: u32,
     skippedFrames: u32,
     fieldState: u32,
+    refreshSeconds: f32,
+    targetOffsetSeconds: f32,
     padding0: u32,
 }`;
 
@@ -225,9 +229,11 @@ export type PresentationUniformValues = {
     inputWidth: number
     outputHeight: number
     outputWidth: number
+    refreshSeconds: number
     skippedFrames: number
     sourceHeight: number
     sourceWidth: number
+    targetOffsetSeconds: number
     textureOffsetX: number
     textureOffsetY: number
     textureScaleX: number
@@ -325,6 +331,8 @@ export function writePresentationUniform(target: DataView, byteOffset: number, v
     target.setUint32(byteOffset + 48, values.historyValid, true);
     target.setUint32(byteOffset + 52, values.skippedFrames, true);
     target.setUint32(byteOffset + 56, values.fieldState, true);
+    target.setFloat32(byteOffset + 60, values.refreshSeconds, true);
+    target.setFloat32(byteOffset + 64, values.targetOffsetSeconds, true);
 }
 
 /** Writes the frame pool layout uniform, in the field order of FramePoolLayoutUniforms. */

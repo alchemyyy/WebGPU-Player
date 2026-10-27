@@ -38,6 +38,7 @@ import type {
     PassOutput,
     PassParameter,
     PassParameterType,
+    PassRate,
     PassShape,
     PassTexture,
     PassTextureEdge,
@@ -71,6 +72,7 @@ type Directive =
     | 'name'
     | 'offset'
     | 'output'
+    | 'rate'
     | 'replaces'
     | 'save'
     | 'shape'
@@ -136,10 +138,12 @@ const CONSTANT_KEYWORD = 'const';
 const MISSING_HEADER_LINE = 1;
 
 const DEFAULT_DOMAIN: ColorDomain = 'any';
+const DEFAULT_RATE: PassRate = 'frame';
 const MAXIMUM_NAME_LENGTH = 64;
 
 const SHAPES: readonly PassShape[] = [ 'color', 'kernel', 'scaler', 'compute' ];
 const DOMAINS: readonly ColorDomain[] = [ 'any', 'display', 'linear', 'sdr', 'source' ];
+const RATES: readonly PassRate[] = [ 'display', 'frame' ];
 const PARAMETER_TYPES: readonly PassParameterType[] = [ 'f32', 'i32', 'u32' ];
 const COMPONENT_COUNTS: readonly ComponentCount[] = [ 1, 2, 3, 4 ];
 
@@ -157,6 +161,7 @@ const DIRECTIVE_SHAPES: Readonly<Record<Directive, readonly PassShape[]>> = {
     name: SHAPES,
     offset: TEXTURE_SHAPES,
     output: TEXTURE_SHAPES,
+    rate: SHAPES,
     replaces: [ 'color' ],
     save: TEXTURE_SHAPES,
     shape: SHAPES,
@@ -211,6 +216,8 @@ const MALFORMED_DISPATCH_MESSAGE = "Expected 'dispatch: <x>[, <y>[, <z>]]'";
 const MALFORMED_OFFSET_MESSAGE = `Expected 'offset: <x>, <y>' or 'offset: ${OFFSET_ALIGN}'`;
 const SCALED_OFFSET_MESSAGE = `An offset needs a hook before ${SCALER_STAGE}`;
 const PLANE_HOOK_MESSAGE = `A color pass cannot hook a plane stage: ${PLANE_STAGES.join(', ')}`;
+// A plane stage's passes read the source, which a draw from history does not
+const PLANE_RATE_MESSAGE = `A pass on a plane stage cannot draw at the display rate: ${PLANE_STAGES.join(', ')}`;
 // The expression parser's message for the same mistake
 const UNBALANCED_PARENTHESIS_MESSAGE = 'Unbalanced parenthesis';
 const REPLACING_HOOK_MESSAGE = 'A color pass with replaces cannot declare a hook';
@@ -509,6 +516,19 @@ function readDomain(header: PassHeader, replaces: string | null): ColorDomain {
     }
     const entry = getEntry(header, 'domain');
     return entry ? readWord(entry, DOMAINS, 'domain') : DEFAULT_DOMAIN;
+}
+
+/** Reads how often the pass draws; a pass on a plane stage draws per frame, since the plane stages read the source, which a redraw from history skips. */
+function readRate(header: PassHeader, hook: PresentationStage | null): PassRate {
+    const entry = getEntry(header, 'rate');
+    if (!entry) {
+        return DEFAULT_RATE;
+    }
+    const rate = readWord(entry, RATES, 'rate');
+    if (rate === 'display' && hook !== null && PLANE_STAGES.includes(hook)) {
+        throw new PassManifestError(PLANE_RATE_MESSAGE, entry.line);
+    }
+    return rate;
 }
 
 /** Rejects texture names that would shadow a global size or a history input's accessors. */
@@ -822,6 +842,7 @@ function readManifest(header: PassHeader, name: string, fileTextures: ReadonlyMa
     const replaces = readReplaces(header);
     const hook = readHook(header, shape, replaces);
     const domain = readDomain(header, replaces);
+    const rate = readRate(header, hook);
     const inputs = readInputs(header, shape);
     const save = readSave(header);
     const output = readOutput(header, shape, inputs);
@@ -843,6 +864,7 @@ function readManifest(header: PassHeader, name: string, fileTextures: ReadonlyMa
         offset,
         output,
         parameters,
+        rate,
         replaces,
         save,
         shape,

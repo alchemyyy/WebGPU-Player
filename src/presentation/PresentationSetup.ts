@@ -32,6 +32,7 @@ import {
     getDolbyVisionProfile7HDR10BaseColorMetadata,
     getDolbyVisionProfile8HDR10BaseColorMetadata,
     getDolbyVisionProfile8HLGBaseColorMetadata,
+    getPresentationFrameRate,
     getPresentationInputColorMetadata,
     getPresentationVideoFields,
     getPresentationVideoTrackOrdinal,
@@ -698,14 +699,16 @@ function configureDolbyVisionBaseColorPipeline(
 
 /**
  * Configures the presenter's color pipeline for a route: Dolby Vision reconstruction, a Dolby Vision base layer, external HDR, raw YUV, or SDR.
- * Every route's configuration carries the stream's declared fields, so an interlaced stream's plan deinterlaces from its first frame.
+ * Every route's configuration carries the stream's declared fields, so an interlaced stream's plan deinterlaces from its first frame,
+ * and its declared frame rate, which plans read as frame.rate.
  * Resolves false when the route cannot present the stream's input.
  */
 export function configurePresentationColorPipeline(presenter: WebGPUPresenter, request: ColorPipelineRequest): Promise<boolean> {
+    const frameRate = getPresentationFrameRate(request.options);
     const videoFields = getPresentationVideoFields(request.options);
     const fieldsPresenter: ColorPipelinePresenter = {
         configureColorPipeline: (configuration: PresentationColorPipelineConfiguration, generation: number): Promise<boolean> => (
-            presenter.configureColorPipeline({ ...configuration, videoFields }, generation)
+            presenter.configureColorPipeline({ ...configuration, frameRate, videoFields }, generation)
         )
     };
     const descriptor = request.input.dolbyVisionDescriptor;

@@ -155,6 +155,12 @@ const TIMESTAMP_MICROSECONDS = 2_500_000;
 const TIMESTAMP_SECONDS = 2.5;
 const FRAME_DURATION_MICROSECONDS = 41_667;
 const SKIPPED_FRAME_COUNT = 2;
+// A refresh of a 60 Hz display, which the frame's draw presents 4 ms before the frame's own time
+const REFRESH_MICROSECONDS = 16_683.35;
+const REFRESH_SECONDS = 0.016_683_35;
+const TARGET_LEAD_MICROSECONDS = 4_000;
+// Two hours in, where an f32 resolves media time only to about 0.5 ms
+const LATE_TIMESTAMP_MICROSECONDS = 7_200_041_667;
 
 // A coded raw frame whose visible rectangle is inset by chroma-aligned margins
 const RAW_CODED_WIDTH = 64;
@@ -217,9 +223,11 @@ const PRESENTATION_FIELD_OFFSETS = {
     inputWidth: 32,
     outputHeight: 28,
     outputWidth: 24,
+    refreshSeconds: 60,
     skippedFrames: 52,
     sourceHeight: 20,
     sourceWidth: 16,
+    targetOffsetSeconds: 64,
     textureOffsetX: 8,
     textureOffsetY: 12,
     textureScaleX: 0,
@@ -393,6 +401,8 @@ function createPlan(plan: Partial<PresentationPlan>): PresentationPlan {
     return {
         buffers: [],
         deinterlace: null,
+        displayRate: false,
+        historyDrawStart: 0,
         output: OUTPUT,
         parameterSets: [],
         passTextures: [],
@@ -443,9 +453,11 @@ function createFrameInput(source: PresentationFrameSource, newFrame = true): Pre
         fieldState: PRESENTATION_FIELD_STATE.none,
         geometry: GEOMETRY,
         newFrame,
+        refreshMicroseconds: 0,
         skippedFrameCount: SKIPPED_FRAME_COUNT,
         source,
         target: OUTPUT_VIEW,
+        targetTimeMicroseconds: TIMESTAMP_MICROSECONDS,
         timestampMicroseconds: TIMESTAMP_MICROSECONDS
     };
 }
@@ -535,9 +547,11 @@ function readPresentationSlot(bytes: ArrayBuffer, passIndex: number): Presentati
         inputWidth: view.getFloat32(PRESENTATION_FIELD_OFFSETS.inputWidth, true),
         outputHeight: view.getFloat32(PRESENTATION_FIELD_OFFSETS.outputHeight, true),
         outputWidth: view.getFloat32(PRESENTATION_FIELD_OFFSETS.outputWidth, true),
+        refreshSeconds: view.getFloat32(PRESENTATION_FIELD_OFFSETS.refreshSeconds, true),
         skippedFrames: view.getUint32(PRESENTATION_FIELD_OFFSETS.skippedFrames, true),
         sourceHeight: view.getFloat32(PRESENTATION_FIELD_OFFSETS.sourceHeight, true),
         sourceWidth: view.getFloat32(PRESENTATION_FIELD_OFFSETS.sourceWidth, true),
+        targetOffsetSeconds: view.getFloat32(PRESENTATION_FIELD_OFFSETS.targetOffsetSeconds, true),
         textureOffsetX: view.getFloat32(PRESENTATION_FIELD_OFFSETS.textureOffsetX, true),
         textureOffsetY: view.getFloat32(PRESENTATION_FIELD_OFFSETS.textureOffsetY, true),
         textureScaleX: view.getFloat32(PRESENTATION_FIELD_OFFSETS.textureScaleX, true),
@@ -903,6 +917,23 @@ describe('PresentationExecutor', () => {
         expect(readLastPresentationSlot(harness, 0)).toMatchObject({ frameIndex: 1, sourceHeight: SCALED_HEIGHT, sourceWidth: SCALED_WIDTH });
     });
 
+    it('writes the media time a refresh covers and the draw\'s clock time after the frame\'s, exact even late in a long stream', async () => {
+        const harness = createDeviceHarness();
+        const plan = createPlan({ passes: [ createRenderPass('Output', { bindings: [ { binding: 0, kind: 'engine', resource: 'external-texture' } ] }) ] });
+        const executor = await PresentationExecutor.create(harness.device, plan);
+
+        encodeFrame(executor, {
+            ...createExternalFrameInput(),
+            refreshMicroseconds: REFRESH_MICROSECONDS,
+            targetTimeMicroseconds: LATE_TIMESTAMP_MICROSECONDS - TARGET_LEAD_MICROSECONDS,
+            timestampMicroseconds: LATE_TIMESTAMP_MICROSECONDS
+        });
+
+        const slot = readLastPresentationSlot(harness, 0);
+        expect(slot.refreshSeconds).toBeCloseTo(REFRESH_SECONDS, FLOAT_PRECISION_DIGITS);
+        expect(slot.targetOffsetSeconds).toBeCloseTo(-TARGET_LEAD_MICROSECONDS / 1_000_000, FLOAT_PRECISION_DIGITS);
+    });
+
     it('maps passes that read raw planes onto the visible rectangle', async () => {
         const harness = createDeviceHarness();
         const plan = createPlan({
@@ -1188,6 +1219,42 @@ describe('PresentationExecutor', () => {
         expect([ getBoundLabel(passes[0], 0), getBoundLabel(passes[0], 1) ]).toEqual([ 'history slot 1', 'history slot 0' ]);
         expect(harness.importExternalTexture).toHaveBeenCalledTimes(importCount);
         expect(readLastPresentationSlot(harness, 1)).toMatchObject({ fieldState: secondFieldState, frameIndex: 1, historyValid: 1, sourceWidth: SOURCE_WIDTH });
+    });
+
+    it('draws from history from the plan\'s history draw start, keeping what the passes before it wrote for the frame', async () => {
+        const harness = createDeviceHarness();
+        const plan = createPlan({
+            historyDrawStart: 2,
+            passes: [
+                createRenderPass('Producer', {
+                    bindings: [ { binding: 0, kind: 'engine', resource: 'external-texture' } ],
+                    coordinateMapping: 'identity',
+                    target: { kind: 'texture', textureId: 'scaled' }
+                }),
+                createRenderPass('Upscale', {
+                    bindings: [ { access: 'sampled', binding: 0, historyOffset: 0, kind: 'texture', textureId: 'scaled' } ],
+                    coordinateMapping: 'identity',
+                    inputTextureId: 'scaled',
+                    target: { kind: 'texture', textureId: 'history' }
+                }),
+                createRenderPass('Blend', {
+                    bindings: [
+                        { access: 'sampled', binding: 0, historyOffset: 0, kind: 'texture', textureId: 'history' },
+                        { access: 'sampled', binding: 1, historyOffset: -1, kind: 'texture', textureId: 'history' }
+                    ],
+                    inputTextureId: 'history'
+                })
+            ],
+            textures: [ createTexture('scaled', {}), createTexture('history', { historyDepth: HISTORY_DEPTH }) ]
+        });
+        const executor = await PresentationExecutor.create(harness.device, plan);
+        encodeFrame(executor, createExternalFrameInput());
+        expect(encodeFrame(executor, createExternalFrameInput())).toHaveLength(3);
+
+        const passes = encodeFrame(executor, { ...createExternalFrameInput(false), source: null });
+
+        expect(passes).toHaveLength(1);
+        expect([ getBoundLabel(passes[0], 0), getBoundLabel(passes[0], 1) ]).toEqual([ 'history slot 1', 'history slot 0' ]);
     });
 
     it('refuses a history draw of a new frame, or of a plan whose source pass draws the output', async () => {
