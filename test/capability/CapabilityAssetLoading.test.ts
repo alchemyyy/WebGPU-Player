@@ -65,9 +65,22 @@ describe('capability asset loading', () => {
         expect(fetchMock).toHaveBeenCalledExactlyOnceWith(ASSET_URL, {
             cache: 'force-cache',
             credentials: 'same-origin',
+            priority: 'auto',
             redirect: 'error',
             signal: deadline.signal
         });
+    });
+
+    it('keeps a background download and its retries at low priority', async () => {
+        fetchMock
+            .mockRejectedValueOnce(createNetworkError())
+            .mockResolvedValueOnce(createAssetResponse());
+
+        const download = fetchCapabilityAsset(ASSET_URL, 'low');
+        await vi.advanceTimersByTimeAsync(FIRST_RETRY_DELAY_MILLISECONDS);
+        await download;
+
+        expect(fetchMock.mock.calls.map(([ , init ]) => init.priority)).toEqual([ 'low', 'low' ]);
     });
 
     it('retries a dropped connection after the first delay', async () => {

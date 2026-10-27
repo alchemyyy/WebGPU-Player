@@ -23,11 +23,16 @@ function isRetryableHTTPStatus(status: number): boolean {
         || (status >= HTTP_SERVER_ERROR_MINIMUM_STATUS && status <= HTTP_SERVER_ERROR_MAXIMUM_STATUS);
 }
 
-async function attemptCapabilityAssetDownload(url: string, signal: AbortSignal): Promise<CapabilityAssetAttempt> {
+async function attemptCapabilityAssetDownload(
+    url: string,
+    signal: AbortSignal,
+    priority: RequestPriority
+): Promise<CapabilityAssetAttempt> {
     try {
         const response = await fetch(url, {
             cache: 'force-cache',
             credentials: 'same-origin',
+            priority,
             redirect: 'error',
             signal
         });
@@ -71,18 +76,19 @@ function waitBeforeRetry(milliseconds: number, signal: AbortSignal): Promise<voi
 /**
  * Downloads a served capability asset, such as a range extension probe's stream.
  * A network error, 408, 429, or 5xx is retried after each delay in CAPABILITY_ASSET_RETRY_DELAYS_MILLISECONDS; any other failure is final.
+ * A background probe downloads at low priority, behind the page's own requests; its retries keep that priority.
  */
-export async function fetchCapabilityAsset(url: string): Promise<ArrayBuffer> {
+export async function fetchCapabilityAsset(url: string, priority: RequestPriority = 'auto'): Promise<ArrayBuffer> {
     // One deadline covers every attempt and the waits between them, so retries never extend the bound
     // eslint-disable-next-line compat/compat -- Custom decode is capability-gated, and every WebGPU browser has AbortSignal.timeout
     const signal = AbortSignal.timeout(CAPABILITY_ASSET_NETWORK_TIMEOUT_MILLISECONDS);
-    let attempt = await attemptCapabilityAssetDownload(url, signal);
+    let attempt = await attemptCapabilityAssetDownload(url, signal, priority);
     for (const retryDelay of CAPABILITY_ASSET_RETRY_DELAYS_MILLISECONDS) {
         if (attempt.kind === 'downloaded' || !attempt.retryable) {
             break;
         }
         await waitBeforeRetry(retryDelay, signal);
-        attempt = await attemptCapabilityAssetDownload(url, signal);
+        attempt = await attemptCapabilityAssetDownload(url, signal, priority);
     }
     if (attempt.kind === 'failed') {
         throw attempt.error;
