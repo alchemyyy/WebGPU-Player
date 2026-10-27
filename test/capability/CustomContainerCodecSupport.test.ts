@@ -46,7 +46,11 @@ describe('CustomContainerCodecSupport', () => {
         [ 'vp8', 'pcm_s16le' ],
         [ 'vp9', 'aac' ],
         [ 'av1', 'ac3' ],
-        [ 'h264', 'pcm_alaw' ]
+        [ 'h264', 'pcm_alaw' ],
+        [ 'h264', 'pcm_s24le' ],
+        [ 'h264', 'pcm_f32le' ],
+        [ 'h264', 'flac' ],
+        [ 'vp9', 'vorbis' ]
     ] as const)('carries %s with %s in AVI, which the fork demuxes', (videoCodec, audioCodec) => {
         expect(supportsCustomContainerCodecCombination([ 'avi' ], videoCodec, audioCodec)).toBe(true);
     });
@@ -65,8 +69,6 @@ describe('CustomContainerCodecSupport', () => {
 
     it.each([
         [ 'avi', 'hevc', 'ac3' ],
-        [ 'avi', 'h264', 'flac' ],
-        [ 'avi', 'h264', 'vorbis' ],
         [ 'avi', 'h264', 'eac3' ],
         [ 'avi', 'mpeg2video', 'mp3' ],
         [ 'mkv', 'jpeg2000', 'flac' ],

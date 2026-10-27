@@ -6,7 +6,9 @@ Together they cover what the engine reads from AVI through Mediabunny:
 - H.264 with B-frames, stamped in decode order as AVI is, beside variable-bitrate MP3 timed per frame;
 - H.264 without B-frames beside constant-bitrate MP3 timed by bytes, whose first frame FFmpeg drops into an empty chunk;
 - VP8 with 16-bit PCM, VP9 with AAC and its AudioSpecificConfig, and AV1 with AC-3 (WAVE_FORMAT_DVM, 0x2000);
-- HEVC under the HEVC fourcc, which the engine refuses in AVI, and MPEG-4 Part 2 under XVID, which has no route.
+- HEVC under the HEVC fourcc, which the engine refuses in AVI, and MPEG-4 Part 2 under XVID, which has no route;
+- 5.1 24-bit and 32-bit float PCM and 5.1 FLAC, which FFmpeg writes as WAVE_FORMAT_EXTENSIBLE with a channel mask, and FLAC and Vorbis with their headers in the format's extradata.
+The 5.1 vectors give each channel its own level, so a decode in the wrong channel order shows.
 
 The encoders' bytes depend on the FFmpeg build, so the generator refuses any but the pinned one, and an existing vector is only compared, never replaced.
 Before writing, it checks each file's streams with FFprobe: the codec, the codec tag, and the packet count.
@@ -46,6 +48,10 @@ AUDIO_SOURCE: Final = "sine=frequency=440:sample_rate=48000:duration=0.5"
 STEREO_CHANNEL_COUNT: Final = "2"
 # One thread, so every encode is deterministic
 SINGLE_THREAD_ARGUMENTS: Final = ("-threads", "1")
+# 5.1 with side channels, mask 0x60F, and a falling level per channel in WAVE order
+FIVE_POINT_ONE_ARGUMENTS: Final = ("-af", "pan=5.1(side)|FL=c0|FR=0.8*c0|FC=0.6*c0|LFE=0.4*c0|SL=0.3*c0|SR=0.2*c0")
+# VP9, the video beside the audio vectors, which the owned VP9 path decodes in Node as well
+PLAIN_VP9_ARGUMENTS: Final = ("-c:v", "libvpx-vp9", "-b:v", "300k", "-row-mt", "0", *SINGLE_THREAD_ARGUMENTS)
 
 
 @dataclass(frozen=True)
@@ -120,6 +126,11 @@ AVI_VECTORS: Final = (
         "XVID",
         "mp3",
     ),
+    AVIVector("vp9-pcm_s24le-5.1.avi", PLAIN_VP9_ARGUMENTS, ("-c:a", "pcm_s24le", *FIVE_POINT_ONE_ARGUMENTS), "vp9", "VP90", "pcm_s24le"),
+    AVIVector("vp9-pcm_f32le-5.1.avi", PLAIN_VP9_ARGUMENTS, ("-c:a", "pcm_f32le", *FIVE_POINT_ONE_ARGUMENTS), "vp9", "VP90", "pcm_f32le"),
+    AVIVector("vp9-flac-5.1.avi", PLAIN_VP9_ARGUMENTS, ("-c:a", "flac", *FIVE_POINT_ONE_ARGUMENTS), "vp9", "VP90", "flac"),
+    AVIVector("vp9-flac.avi", PLAIN_VP9_ARGUMENTS, ("-c:a", "flac", "-ac", STEREO_CHANNEL_COUNT), "vp9", "VP90", "flac"),
+    AVIVector("vp9-vorbis.avi", PLAIN_VP9_ARGUMENTS, ("-c:a", "libvorbis", "-q:a", "3", "-ac", STEREO_CHANNEL_COUNT), "vp9", "VP90", "vorbis"),
 )
 
 
