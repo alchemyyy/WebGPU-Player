@@ -123,10 +123,11 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   WebM and MP4 put one shown frame in each packet, a superframe holding any hidden frames before it, and a `show_existing_frame` header shows a frame too, so a packet's timestamp keys its frame's metadata.
   A packet of hidden frames alone, which those containers forbid, records nothing, because the decoder outputs no frame for it.
   The sample sink's alpha merge is the one VP9 feature the owned path drops: Mediabunny decodes a BlockAddID 1 alpha channel with a second decoder and merges it into each frame, while the owned path decodes the color frames only, and the presenter's canvas is opaque.
-- Raw AV1 and VP9 planes prefer software (10-08).
+- Raw AV1 and VP9 planes prefer software (10-08, 10-27).
   Chromium's hardware AV1 and VP9 decoders return opaque 10-bit surfaces whose planes `copyTo` cannot expose, while its software decoders (dav1d, libvpx) return copyable I420P10.
   Raw-plane decode of AV1 and VP9 therefore requests `prefer-software`, in the raw probes and at runtime alike, so the raw HDR, raw SDR, and P10 routes qualify on GPUs with AV1 or VP9 hardware decode.
   HEVC keeps `no-preference`, because Chromium has no software HEVC decoder.
+  Chrome 156's libvpx output pads the coded width of the 4K VP9 probe vector from 3840 to 3904, so a probe that compared the coded size read raw VP9 as unqualified and no raw VP9 route was eligible; since 10-27 the raw probes compare the visible rectangle, which `copyTo` copies and the fingerprint covers.
 - Dual-layer reconstruction runs in every raw format (10-08).
   P4 and P7 over a range extension reconstruct with the BL in its own raw format and the EL in I420P10, the only format the bundled EL decoder was qualified for.
   No decoder has decoded an EL since the CPU decoders left (10-13), so these routes reconstruct from the BL alone, and 8-bit Main, which only the bundled decoder read as raw planes, has no RPU route.

@@ -1142,8 +1142,10 @@ export function createRawHDRVideoOutputProbe(): RawHDRVideoOutputProbe | null {
                     outputMatches = false;
                     return;
                 }
-                if (frame.codedHeight !== probeRequest.expectedCodedHeight
-                    || frame.codedWidth !== probeRequest.expectedCodedWidth
+                // A software decoder may pad the coded width, as libvpx pads 3840 to 3904; the copy and the fingerprint cover the visible rectangle
+                const visibleRectangle = frame.visibleRect ?? { height: frame.codedHeight, width: frame.codedWidth };
+                if (visibleRectangle.height !== probeRequest.expectedCodedHeight
+                    || visibleRectangle.width !== probeRequest.expectedCodedWidth
                     || frame.timestamp !== expectedFrame.timestamp) {
                     outputMatches = false;
                     return;
