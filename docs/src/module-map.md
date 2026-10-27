@@ -199,9 +199,10 @@ What both video routes share.
 
 The owned WebCodecs paths.
 
-- `OwnedVideoDecodeStream.ts`: the codec-neutral state of one owned decode attempt: decoded outputs matched with their packets' metadata, the pre-start rule, BL and EL pairing, frame credits, and the packet pump, which waits briefly after each packet for the decoder's next output.
+- `OwnedVideoDecodeStream.ts`: the codec-neutral state of one owned decode attempt: decoded outputs matched with their packets' metadata, the pre-start rule, BL and EL pairing, frame credits, and the packet pump, which waits briefly after each packet for the decoder's next output, and in a preroll for the GPU's decode of the batch before.
   It pairs a path's Dolby Vision and HDR10+ queues into the metadata its frames take (`createOwnedVideoFrameMetadataSource`).
   It also runs a single-layer attempt (`runOwnedSingleLayerVideoStream`), given a per-packet metadata step.
+- `VideoDecodeFence.ts`: the decode worker's fence over native frames, a WebGPU device of its own whose one-texel read of a frame completes once the GPU decoded it.
 - `OwnedNativeVideoDecoder.ts`: an owned WebCodecs decoder for packets that decode unchanged, used for AV1 and VP9.
 - `OwnedAV1VideoStream.ts`: one attempt of the owned AV1 path, which every AV1 track takes: each temporal unit's Dolby Vision RPU and HDR10+ metadata, paired with its frame, after an optional color neutralization.
 - `OwnedVP9VideoStream.ts`: one attempt of the owned VP9 path, which every VP9 track takes: the HDR10+ in each packet's container side data, paired with its frame.

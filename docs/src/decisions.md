@@ -737,6 +737,16 @@ These were settled on Firefox 157 on Windows.
   On an Intel Arc laptop each burst delayed the GPU work of the frame being presented by 40 to 80 ms, a visible hitch twice a second, while every frame was still chosen on time.
   Each packet now waits, up to 10 ms, for the decoder to return a picture before the next packet is read, so decode follows presentation one packet per frame.
   A decoder that needs more packets to reorder gets the next one when the 10 ms pass.
+- A preroll decodes in batches the GPU keeps up with (10-27).
+  On an Intel Arc laptop, resuming 4K HDR10+ HEVC mid-GOP, the first two presented frames' GPU work took 266 and 129 ms, Chrome held back two animation frames, and one frame dropped.
+  Measured on an RTX 5080 in Chrome 156 with a 4K HDR10+ HEVC stream of 10 s GOPs, a seek mid-GOP decoded 123 preroll frames in about 240 ms, and its first presented frame's GPU work took 31 to 44 ms, against 11 to 17 ms for a start at 0, which has no preroll but builds and imports everything for the first time, and 2 to 5 ms in steady playback.
+  A second seek in the same session, whose pipelines were built, cost the same, and a fixed 80 ms pause after the preroll brought the first frame to 2 to 5 ms, so the cost was the preroll's decode work, not the presentation pipeline.
+  A Chrome trace showed why: the GPU process submits each decode in about 2 ms and the decoder returns the frame then, while the GPU decodes a frame more slowly, so the preroll left tens of milliseconds of decode queued, and the first frame's import waited behind it.
+  Pacing the preroll by time would have slowed it, and a `copyTo` of a few texels of a hardware frame in the worker did not resolve in the trial, so the worker reads one texel of a batch's last frame with a WebGPU device of its own and waits for that work, which the frame's decode precedes.
+  Batches of 4 frames with two batches ahead kept the first frame's GPU work at 1 to 7 ms; in a trial that waited on every batch at once, batches of 16 left 11 to 18 ms.
+  The preroll took about 40 to 60 ms longer by the decoder's outputs, which is the decode work it no longer leaves queued, and the first frame presents about when it did, now without a long draw.
+  A frame exactly at the start used to follow the frame before it, which the first tick then skipped for the start's frame and counted as dropped; the frame at the start now leads alone.
+  The Arc's numbers are unmeasured since.
 - One decode worker per session (10-09).
   Every generation, which every seek, audio track switch, and paused repaint starts, used to create its own worker and paid worker startup, script evaluation, and WASM decoder instantiation each time.
   The session now creates its worker at the first start, runs every generation in it, and terminates it only on `destroy`.

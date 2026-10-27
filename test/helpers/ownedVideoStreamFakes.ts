@@ -12,6 +12,7 @@ import type {
     OwnedVideoStreamProgressPhase,
     OwnedVideoStreamRun
 } from 'webgpu-player/decode/video/native/OwnedVideoDecodeStream';
+import type { VideoDecodeFence } from 'webgpu-player/decode/video/native/VideoDecodeFence';
 import type { DolbyVisionEncodedFrameMetadata } from 'webgpu-player/demux/dolby-vision/DolbyVisionEncodedMetadataProtocol';
 import type { HDR10PlusFrameMetadata } from 'webgpu-player/demux/hdr/HDR10PlusMetadata';
 
@@ -46,6 +47,9 @@ export class FakeVideoFrame {
         public readonly timestamp: number,
         public readonly duration: number
     ) {}
+
+    // A clone shares the decoded picture, as a VideoFrame's clone does, and closes on its own
+    public readonly clone = vi.fn((): FakeVideoFrame => new FakeVideoFrame(this.timestamp, this.duration));
 }
 
 function wakeWaiters(waiters: Array<() => void>): void {
@@ -59,6 +63,7 @@ function wakeWaiters(waiters: Array<() => void>): void {
  * Its sleeps end at once unless held, when they end only at their release.
  */
 export class FakeStreamRun implements OwnedVideoStreamRun {
+    public decodeFence?: VideoDecodeFence;
     public holdSleeps = false;
     public readonly postedFrames: PostedFrame[] = [];
     public readonly progress: Array<[OwnedVideoStreamProgressPhase, number, number]> = [];

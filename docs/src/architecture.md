@@ -105,6 +105,11 @@ Video credits:
 - The owned HEVC, AV1, and VP9 paths read a packet only while they hold a credit, then wait up to 10 ms for the decoder to return a frame before reading the next.
   The credit is spent only when a frame is posted, so without that wait a hardware decoder, which answers a few milliseconds after taking a packet, received a whole group of pictures at once (see [Decisions](decisions.md#playback-robustness)).
   Steady playback therefore decodes one packet per presented frame, while seek preroll still runs at decoder speed, because each returned frame ends the wait.
+- A hardware decoder returns a frame once its decode is queued on the GPU, not once the GPU ran it, so a preroll that reads at decoder speed queues decode work faster than the GPU finishes it.
+  On the VideoFrame route a preroll therefore decodes in batches of 4 frames (`OWNED_VIDEO_PREROLL_BATCH_FRAME_COUNT`): the batch's last frame goes to the worker's decode fence (`VideoDecodeFence.ts`), and the packet after the next batch waits until the fence completes, so the decoder runs at most two batches ahead of the GPU and never idles between batches.
+  The fence is a small WebGPU device of the decode worker's own that reads one texel of the frame and waits for that work, which waits for the frame's decode; the attempt whose first packet precedes its start creates it, and until it is ready, or where the worker has no WebGPU, frames pass unfenced.
+  The frame that ends the preroll posts once its own fence completes, so its presentation never waits behind the preroll's decode work, and each wait ends after 250 ms at most.
+  The trace records each wait as `video-decode-fence`.
 
 Raw planes:
 
@@ -209,7 +214,8 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
 ## Transitions
 
 - Seek: a new presentation generation, then `controller.seek`, which stops the running generation and starts a new one at the target in the same worker.
-  The owned HEVC, AV1, and VP9 paths start at the preceding key packet.
+  The owned HEVC, AV1, and VP9 paths start at the preceding key packet, and drop the frames before the target except the one the target falls in, which presents first; a frame at the target itself presents first with nothing before it.
+  The preroll decodes in fenced batches (see Video credits above).
   DTS and TrueHD use a 1 s preroll.
   The host drops stale seek results by its own revision.
 - Audio track switch: eligibility runs again.
