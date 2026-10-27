@@ -267,6 +267,7 @@ describe('CustomDecodeCapabilityProbe', () => {
             'vp09.02.10.10',
             'av01.0.08M.10',
             'hev1.2.4.H150.B0',
+            'av01.0.08M.10',
             'hvc1.2.4.L153.B0'
         ]);
         expect(harness.audioProbe.mock.calls.map(call => call[0].codec)).toEqual([
@@ -316,6 +317,13 @@ describe('CustomDecodeCapabilityProbe', () => {
             reason: 'config-unsupported',
             status: 'unsupported'
         });
+        expect(capabilities.nativeHDRAV1).toMatchObject({
+            bitDepth: 10,
+            codec: 'av1',
+            codecString: 'av01.0.08M.10',
+            reason: 'config-unsupported',
+            status: 'unsupported'
+        });
         expect(capabilities.h264Profiles).toBeDefined();
         expect(Object.values(capabilities.h264Profiles ?? {})).toHaveLength(4);
         for (const profileCapability of Object.values(capabilities.h264Profiles ?? {})) {
@@ -357,7 +365,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(capabilities.telemetry).toEqual({
             audioProbeCount: 5,
             mediabunnyAudioCodecCount: CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS.length,
-            nativeHDRVideoProbeCount: 1,
+            nativeHDRVideoProbeCount: 2,
             nativeSurroundAudioProbeCount: 4,
             nativeUltraHDVideoProbeCount: 3,
             rawHDRVideoProbeCount: 3,
@@ -373,7 +381,7 @@ describe('CustomDecodeCapabilityProbe', () => {
             unknownNativeSurroundAudioCodecCount: 0,
             unknownNativeUltraHDVideoCodecCount: 0,
             unknownVideoCodecCount: 0,
-            videoProbeCount: 10
+            videoProbeCount: 11
         });
         expect(capabilities.nativeUltraHDVideo).toMatchObject({
             av1: {
@@ -413,7 +421,8 @@ describe('CustomDecodeCapabilityProbe', () => {
             CUSTOM_VIDEO_CODECS.length - PACKAGE_VIDEO_CODECS.length
                 + CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS.length
                 + CUSTOM_RAW_HDR_VIDEO_CODECS.length
-                + 2
+                // The native Profile 5 HEVC and the native HDR HEVC and AV1 probes
+                + 3
         );
         expect(harness.audioProbe).toHaveBeenCalledTimes(
             CUSTOM_WEB_CODECS_AUDIO_CODECS.length
@@ -2395,6 +2404,16 @@ describe('item-scoped capability probe selection', () => {
         ]) {
             expect(videoProbes).not.toContain(probe);
         }
+    });
+
+    it('adds the native HDR AV1 probe for an HDR AV1 item only', () => {
+        const hdrAV1Stream = { ...HDR10_PLUS_HEVC_STREAM, Codec: 'av1', Profile: 'Main' };
+        const sdrAV1Stream = { ...SDR_HEVC_STREAM, Codec: 'av1', Profile: 'Main' };
+
+        expect(getSelectedVideoProbes(createItem([ hdrAV1Stream ]))).toContain('native-hdr-av1');
+        expect(getSelectedVideoProbes(createItem([ sdrAV1Stream ]))).not.toContain('native-hdr-av1');
+        // An HEVC item transcodes to AV1 through the raw ranges, which the native AV1 route leaves as they are
+        expect(getSelectedVideoProbes(createItem([ HDR10_PLUS_HEVC_STREAM ]))).not.toContain('native-hdr-av1');
     });
 
     it('selects a named range extension through its own variant only', () => {

@@ -121,6 +121,7 @@ type FakePresenter = {
     prewarmExternalHDRPresentationAuthorization: Mock
     prewarmRawHDRPresentationAuthorization: Mock
     waitForDolbyVisionAuthorizationPrewarm: Mock
+    waitForExternalHDRRouteAuthorization: Mock
     waitForRawHDRAuthorizationPrewarm: Mock
     waitForRawSDRAuthorizationPrewarm: Mock
 };
@@ -138,6 +139,7 @@ function createPresenter(): FakePresenter {
         prewarmExternalHDRPresentationAuthorization: vi.fn(() => Promise.resolve()),
         prewarmRawHDRPresentationAuthorization: vi.fn(() => Promise.resolve()),
         waitForDolbyVisionAuthorizationPrewarm: vi.fn(() => Promise.resolve()),
+        waitForExternalHDRRouteAuthorization: vi.fn(() => Promise.resolve()),
         waitForRawHDRAuthorizationPrewarm: vi.fn(() => Promise.resolve()),
         waitForRawSDRAuthorizationPrewarm: vi.fn(() => Promise.resolve())
     };
@@ -266,10 +268,22 @@ describe('PresentationSetup', () => {
             }, GENERATION);
             expect(presenter.configureColorPipeline).toHaveBeenNthCalledWith(2, {
                 ...createHDRRenderConfiguration(metadata?.nominalPeakNits ?? 0),
+                codec: 'hevc',
                 inputMode: 'external-hdr',
                 metadata,
                 videoFields: PROGRESSIVE_FIELDS
             }, GENERATION);
+        });
+
+        it('names AV1 as the external HDR route\'s codec for an AV1 stream', async () => {
+            const presenter = createPresenter();
+
+            await configurePresentationColorPipeline(asPresenter(presenter), createColorPipelineRequest(AV1_HDR10_STREAM));
+
+            expect(presenter.configureColorPipeline).toHaveBeenCalledWith(
+                expect.objectContaining({ codec: 'av1', inputMode: 'external-hdr' }),
+                GENERATION
+            );
         });
 
         it('refuses raw planes whose depth differs from the stream\'s', async () => {
@@ -398,12 +412,23 @@ describe('PresentationSetup', () => {
             expect(presenter.waitForRawHDRAuthorizationPrewarm).not.toHaveBeenCalled();
         });
 
-        it('waits for the raw HDR probes of a stream that presents HDR only through raw planes', async () => {
+        it('waits for the raw HDR probes and the first-use native AV1 probe of an AV1 HDR stream', async () => {
             const presenter = createPresenter();
+            const request = createAuthorizationRequest(AV1_HDR10_STREAM);
 
-            await getCustomPresentationEligibilityOptions(asPresenter(presenter), createAuthorizationRequest(AV1_HDR10_STREAM));
+            await getCustomPresentationEligibilityOptions(asPresenter(presenter), request);
 
             expect(presenter.waitForRawHDRAuthorizationPrewarm).toHaveBeenCalledTimes(1);
+            expect(presenter.waitForExternalHDRRouteAuthorization).toHaveBeenCalledExactlyOnceWith('av1', request.input.colorMetadata);
+        });
+
+        it('starts no AV1 probe for an HEVC stream or an SDR AV1 stream', async () => {
+            const presenter = createPresenter();
+
+            await getCustomPresentationEligibilityOptions(asPresenter(presenter), createAuthorizationRequest(HDR10_STREAM));
+            await getCustomPresentationEligibilityOptions(asPresenter(presenter), createAuthorizationRequest({ ...AV1_HDR10_STREAM, ColorTransfer: 'bt709', VideoRange: 'SDR', VideoRangeType: 'SDR' }));
+
+            expect(presenter.waitForExternalHDRRouteAuthorization).not.toHaveBeenCalled();
         });
 
         it('waits for the stream\'s own RPU route and allows it once authorized', async () => {

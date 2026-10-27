@@ -141,6 +141,7 @@ export type CustomDecodeAudioProbe = typeof CUSTOM_DECODE_AUDIO_PROBES[number];
 export type CustomDecodeVideoProbe =
     | 'h264-profiles'
     | 'native-dolby-vision-hevc'
+    | 'native-hdr-av1'
     | 'native-hdr-hevc'
     | `av1-raw-format:${AV1RawFormatVariant}`
     | `hevc-range-extension:${HEVCRangeExtensionVariant}`
@@ -192,6 +193,7 @@ export type CustomDecodeCapabilities = {
     h264Profiles?: H264ProfileCapabilities
     hevcRangeExtensions?: Readonly<Record<HEVCRangeExtensionVariant, HEVCRangeExtensionCapability>>
     nativeDolbyVisionHEVC?: CustomNativeDolbyVisionHEVCCapability
+    nativeHDRAV1?: CustomNativeHDRAV1Capability
     nativeHDRHEVC?: CustomNativeHDRHEVCCapability
     nativeSurroundAudio?: Readonly<Record<CustomNativeSurroundAudioCodec, CustomNativeSurroundAudioCodecCapability>>
     nativeUltraHDVideo?: Readonly<Record<CustomNativeUltraHDVideoCodec, CustomNativeUltraHDVideoCodecCapability>>
@@ -229,6 +231,11 @@ export type CustomNativeDolbyVisionHEVCCapability = CustomDecodeCodecCapability<
 };
 
 export type CustomNativeHDRHEVCCapability = CustomDecodeCodecCapability<'hevc'> & {
+    bitDepth: 10
+};
+
+/** AV1 Main at 10 bits decoded to the hardware decoder's opaque frames, which the native external HDR route presents. */
+export type CustomNativeHDRAV1Capability = CustomDecodeCodecCapability<'av1'> & {
     bitDepth: 10
 };
 
@@ -823,6 +830,18 @@ const RAW_HDR_VIDEO_PROBE_DEFINITIONS: readonly RawHDRVideoProbeDefinition[] = [
     }
 ];
 
+// The raw route's 4K AV1 Main 10 keyframe, decoded by the hardware decoder to an opaque frame
+const NATIVE_HDR_AV1_PROBE_DEFINITION = {
+    codec: 'av1',
+    config: {
+        codec: AV1_MAIN_10_VECTOR.codecString,
+        codedHeight: AV1_MAIN_10_VECTOR.codedHeight,
+        codedWidth: AV1_MAIN_10_VECTOR.codedWidth,
+        hardwareAcceleration: getCustomDecodeHardwareAcceleration('video-frame', true),
+        optimizeForLatency: true
+    }
+} as const satisfies VideoProbeDefinition;
+
 function getNativeSDRVideoProbe(codec: NativeSDRVideoProbeCodec): CustomDecodeVideoProbe {
     return `native-sdr:${codec}`;
 }
@@ -862,6 +881,13 @@ export const CUSTOM_DECODE_VIDEO_PROBES: readonly CustomDecodeVideoProbe[] = [
     ...HEVC_RANGE_EXTENSION_VARIANTS.map(getHEVCRangeExtensionVideoProbe),
     ...AV1_RAW_FORMAT_VARIANTS.map(getAV1RawFormatVideoProbe),
     'native-dolby-vision-hevc',
+    'native-hdr-av1',
+    'native-hdr-hevc'
+];
+
+// The probes of the native external HDR route's decoders
+const NATIVE_HDR_VIDEO_PROBES: readonly CustomDecodeVideoProbe[] = [
+    'native-hdr-av1',
     'native-hdr-hevc'
 ];
 
@@ -871,6 +897,7 @@ const VIDEO_CONFIGURATION_PROBES: readonly CustomDecodeVideoProbe[] = [
     ...NATIVE_SDR_VIDEO_PROBES,
     ...NATIVE_ULTRA_HD_VIDEO_PROBES,
     'native-dolby-vision-hevc',
+    'native-hdr-av1',
     'native-hdr-hevc'
 ];
 
@@ -2225,6 +2252,28 @@ async function probeNativeHDRHEVC(
     });
 }
 
+async function probeNativeHDRAV1(
+    decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
+    outputProbe: NativeDolbyVisionVideoOutputProbe | null | undefined,
+    heavyProbeScheduler: HeavyCapabilityProbeQueue
+): Promise<CustomNativeHDRAV1Capability> {
+    const routeCapability = await probeNativeHEVCFrameRoute(
+        NATIVE_HDR_AV1_PROBE_DEFINITION.config,
+        AV1_MAIN_10_VECTOR.encodedKeyFrame,
+        AV1_MAIN_10_VECTOR.codedHeight,
+        AV1_MAIN_10_VECTOR.codedWidth,
+        decoder,
+        outputProbe,
+        heavyProbeScheduler
+    );
+    return Object.freeze({
+        bitDepth: 10 as const,
+        codec: NATIVE_HDR_AV1_PROBE_DEFINITION.codec,
+        codecString: NATIVE_HDR_AV1_PROBE_DEFINITION.config.codec,
+        ...routeCapability
+    });
+}
+
 function getProbeReason(
     environment: WebCodecsCapabilityEnvironment,
     capabilities: readonly CustomDecodeCodecCapability<CustomDecodeCodec>[]
@@ -2371,6 +2420,14 @@ const NOT_PROBED_NATIVE_HDR_HEVC_CAPABILITY: CustomNativeHDRHEVCCapability = Obj
     status: 'not-probed'
 });
 
+const NOT_PROBED_NATIVE_HDR_AV1_CAPABILITY: CustomNativeHDRAV1Capability = Object.freeze({
+    bitDepth: 10,
+    codec: 'av1',
+    codecString: NATIVE_HDR_AV1_PROBE_DEFINITION.config.codec,
+    reason: 'not-probed',
+    status: 'not-probed'
+});
+
 // Dolby Vision and incomplete metadata are unknown
 type VideoStreamDynamicRange = 'sdr' | 'static-hdr' | 'unknown';
 
@@ -2501,14 +2558,19 @@ function addVideoStreamProbes(
     const beyondNativeSDR = dynamicRange !== 'sdr' || mayExceedNativeVideoBitDepth(stream);
     switch (codec) {
         case 'av1':
+            probes.add(getNativeSDRVideoProbe(codec));
+            probes.add(getNativeUltraHDVideoProbe(codec));
+            if (beyondNativeSDR) {
+                probes.add('native-hdr-av1');
+                probes.add(getRawVideoProbe(codec));
+            }
+            addAV1RawFormatProbe(stream, beyondNativeSDR, probes);
+            break;
         case 'vp9':
             probes.add(getNativeSDRVideoProbe(codec));
             probes.add(getNativeUltraHDVideoProbe(codec));
             if (beyondNativeSDR) {
                 probes.add(getRawVideoProbe(codec));
-            }
-            if (codec === 'av1') {
-                addAV1RawFormatProbe(stream, beyondNativeSDR, probes);
             }
             break;
         case 'h264':
@@ -2614,6 +2676,7 @@ type VideoProbeResults = Readonly<{
     h264: H264ProbeResult | null
     hevcRangeExtensions: readonly HEVCRangeExtensionCapability[]
     nativeDolbyVisionHEVC: CustomNativeDolbyVisionHEVCCapability
+    nativeHDRAV1: CustomNativeHDRAV1Capability
     nativeHDRHEVC: CustomNativeHDRHEVCCapability
     nativeSDRVideo: readonly CustomDecodeCodecCapability<CustomVideoCodec>[]
     nativeUltraHDVideo: readonly CustomNativeUltraHDVideoCodecCapability[]
@@ -2624,6 +2687,7 @@ type ProbeTelemetryCapabilities = Pick<CustomDecodeCapabilities, 'h264Profiles'>
     CustomDecodeCapabilities,
     | 'audio'
     | 'nativeDolbyVisionHEVC'
+    | 'nativeHDRAV1'
     | 'nativeHDRHEVC'
     | 'nativeSurroundAudio'
     | 'nativeUltraHDVideo'
@@ -2713,6 +2777,7 @@ function createProbeTelemetry(
         ...videoCapabilities,
         ...audioCapabilities,
         capabilities.nativeDolbyVisionHEVC,
+        capabilities.nativeHDRAV1,
         capabilities.nativeHDRHEVC,
         ...nativeSurroundAudioCapabilities,
         ...nativeUltraHDVideoCapabilities
@@ -2723,19 +2788,19 @@ function createProbeTelemetry(
         audioProbeCount: environment.audioDecoder ? AUDIO_PROBE_DEFINITIONS.length : 0,
         mediabunnyAudioCodecCount: MEDIABUNNY_PCM_AUDIO_CODEC_DEFINITIONS.length,
         nativeSurroundAudioProbeCount: getNativeSurroundAudioProbeCount(environment),
-        nativeHDRVideoProbeCount: Number(nativeHDRVideoOutputAvailable && selection.has('native-hdr-hevc')),
+        nativeHDRVideoProbeCount: nativeHDRVideoOutputAvailable ? getSelectedProbeCount(selection, NATIVE_HDR_VIDEO_PROBES) : 0,
         nativeUltraHDVideoProbeCount: getNativeUltraHDVideoProbeCount(environment, selection),
         rawHDRVideoProbeCount: rawVideoOutputAvailable ? getSelectedProbeCount(selection, RAW_VIDEO_PROBES) : 0,
         reason: getProbeReason(environment, allCapabilities),
         supportedAudioCodecCount: countCapabilityStatus(audioCapabilities, 'supported'),
         supportedNativeSurroundAudioCodecCount: countCapabilityStatus(nativeSurroundAudioCapabilities, 'supported'),
-        supportedNativeHDRVideoCodecCount: countCapabilityStatus([ capabilities.nativeHDRHEVC ], 'supported'),
+        supportedNativeHDRVideoCodecCount: countCapabilityStatus([ capabilities.nativeHDRAV1, capabilities.nativeHDRHEVC ], 'supported'),
         supportedNativeUltraHDVideoCodecCount: countCapabilityStatus(nativeUltraHDVideoCapabilities, 'supported'),
         supportedRawHDRVideoCodecCount: countCapabilityStatus(Object.values(capabilities.rawHDRVideo), 'supported'),
         supportedVideoCodecCount: getSupportedVideoCodecCount(capabilities, capabilities.h264Profiles),
         unknownAudioCodecCount: countCapabilityStatus(audioCapabilities, 'unknown'),
         unknownNativeSurroundAudioCodecCount: countCapabilityStatus(nativeSurroundAudioCapabilities, 'unknown'),
-        unknownNativeHDRVideoCodecCount: countCapabilityStatus([ capabilities.nativeHDRHEVC ], 'unknown'),
+        unknownNativeHDRVideoCodecCount: countCapabilityStatus([ capabilities.nativeHDRAV1, capabilities.nativeHDRHEVC ], 'unknown'),
         unknownNativeUltraHDVideoCodecCount: countCapabilityStatus(nativeUltraHDVideoCapabilities, 'unknown'),
         unknownVideoCodecCount: countCapabilityStatus(videoCapabilities, 'unknown'),
         videoProbeCount: getVideoProbeCount(environment, selection)
@@ -2753,6 +2818,7 @@ function createCustomDecodeCapabilities(
         ...(videoResults.h264 ? { h264Profiles: videoResults.h264.profiles } : {}),
         audio: createAudioCodecCapabilities(audioResults),
         nativeDolbyVisionHEVC: videoResults.nativeDolbyVisionHEVC,
+        nativeHDRAV1: videoResults.nativeHDRAV1,
         nativeHDRHEVC: videoResults.nativeHDRHEVC,
         nativeSurroundAudio: createNativeSurroundAudioCapabilities(audioResults.nativeSurroundAudio),
         nativeUltraHDVideo: createNativeUltraHDVideoCapabilities(videoResults.nativeUltraHDVideo),
@@ -2990,12 +3056,14 @@ export default class CustomDecodeCapabilityProbe {
             videoQueue,
             NOT_PROBED_NATIVE_DOLBY_VISION_HEVC_CAPABILITY
         );
+        const nativeHDRAV1 = this.startSelectedProbe(selection, 'native-hdr-av1', videoQueue, NOT_PROBED_NATIVE_HDR_AV1_CAPABILITY);
         const nativeHDRHEVC = this.startSelectedProbe(selection, 'native-hdr-hevc', videoQueue, NOT_PROBED_NATIVE_HDR_HEVC_CAPABILITY);
         return {
             av1RawFormats: await av1RawFormats,
             h264: await h264,
             hevcRangeExtensions: await hevcRangeExtensions,
             nativeDolbyVisionHEVC: await nativeDolbyVisionHEVC,
+            nativeHDRAV1: await nativeHDRAV1,
             nativeHDRHEVC: await nativeHDRHEVC,
             nativeSDRVideo: await nativeSDRVideo,
             nativeUltraHDVideo: await nativeUltraHDVideo,
@@ -3172,7 +3240,8 @@ function createProbeStarters(environment: WebCodecsCapabilityEnvironment): Reado
             environment.nativeDolbyVisionVideoOutputProbe,
             queue
         ) ],
-        [ 'native-hdr-hevc', (queue) => probeNativeHDRHEVC(environment.videoDecoder, environment.nativeHDRVideoOutputProbe, queue) ]
+        [ 'native-hdr-hevc', (queue) => probeNativeHDRHEVC(environment.videoDecoder, environment.nativeHDRVideoOutputProbe, queue) ],
+        [ 'native-hdr-av1', (queue) => probeNativeHDRAV1(environment.videoDecoder, environment.nativeHDRVideoOutputProbe, queue) ]
     ]);
     for (const definition of NATIVE_SDR_VIDEO_PROBE_DEFINITIONS) {
         starters.set(getNativeSDRVideoProbe(definition.codec), (queue) => probeNativeVideoConfig(

@@ -65,6 +65,7 @@ import {
     type GPUVideoDecoderOffer,
     type GPUVideoDecoderSummary
 } from 'webgpu-player/decode/video/gpu/GPUVideoDecoderCatalog';
+import type { ExternalHDRAuthorizationRouteKey } from 'webgpu-player/validation/ExternalHDRPresentationAuthorization';
 
 import { createAudioDecoderPackageForTest } from '../helpers/audioDecoderPackageStubs';
 import { createDecoderProjectVideoPackageForTest, createVideoDecoderPackageForTest, createVideoDecoderSource } from '../helpers/decoderPackages';
@@ -6777,5 +6778,123 @@ describe('AVI and codecs without a route', () => {
             createCapabilities(),
             { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
         )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+    });
+});
+
+describe('AV1 on the native external HDR route', () => {
+    const AV1_PQ_ROUTE_KEY = 'external-av1-main10-bt709-limited:pq-v1';
+    const AV1_HLG_ROUTE_KEY = 'external-av1-main10-bt709-limited:hlg-v1';
+    const HEVC_PQ_ROUTE_KEY = 'external-hevc-main10-bt709-limited:pq-v1';
+    const RAW_PQ_ROUTE_KEY = 'I420P10:bt2020-ncl:bt2020:limited:pq';
+    const BT2020_COLORS = { ColorPrimaries: 'bt2020', ColorRange: 'tv', ColorSpace: 'bt2020nc' } as const;
+    const NATIVE_ROUTE = {
+        eligible: true,
+        hdr: true,
+        maximumCodedHeight: 2_160,
+        maximumCodedWidth: 3_840,
+        neutralizeHDRColorMetadata: true,
+        rawVideoFrameFormat: null,
+        videoDecoderBackend: 'native',
+        videoOutputMode: 'video-frame'
+    } as const;
+
+    function createNativeAV1Capabilities(): CustomDecodeCapabilities {
+        return {
+            ...createCapabilities(),
+            nativeHDRAV1: { bitDepth: 10, codec: 'av1', codecString: 'av01.0.08M.10', reason: 'decode-output-verified', status: 'supported' }
+        };
+    }
+
+    function createHDRAV1Options(videoStream: Record<string, unknown> = {}): Record<string, unknown> {
+        return createOptions({
+            mediaSource: {
+                Container: 'mkv',
+                DefaultAudioStreamIndex: 1,
+                MediaStreams: [
+                    {
+                        ...BT2020_COLORS,
+                        BitDepth: 10,
+                        Codec: 'av1',
+                        ColorTransfer: 'smpte2084',
+                        Height: 2_160,
+                        Index: 0,
+                        IsInterlaced: false,
+                        Profile: 'Main',
+                        Type: 'Video',
+                        VideoRange: 'HDR',
+                        VideoRangeType: 'HDR10',
+                        Width: 3_840,
+                        ...videoStream
+                    },
+                    { Channels: 2, Codec: 'aac', Index: 1, SampleRate: 48_000, Type: 'Audio' }
+                ],
+                RunTimeTicks: 60_000_000
+            }
+        });
+    }
+
+    function createEligibilityOptions(authorizedExternalHDRRouteKeys: readonly ExternalHDRAuthorizationRouteKey[]): CustomPlaybackEligibilityOptions {
+        return {
+            allowNativeHDR: true,
+            allowRawHDR: true,
+            authorizedExternalHDRRouteKeys,
+            authorizedRawHDRRouteKeys: [ RAW_PQ_ROUTE_KEY ],
+            runtimeAvailability: AVAILABLE_RUNTIME
+        };
+    }
+
+    it.each([
+        { label: 'HDR10', stream: { ColorTransfer: 'smpte2084', VideoRangeType: 'HDR10' }, routeKey: AV1_PQ_ROUTE_KEY, transfer: 'pq' },
+        { label: 'HDR10+', stream: { ColorTransfer: 'smpte2084', VideoRangeType: 'HDR10Plus' }, routeKey: AV1_PQ_ROUTE_KEY, transfer: 'pq' },
+        { label: 'HLG', stream: { ColorTransfer: 'arib-std-b67', VideoRangeType: 'HLG' }, routeKey: AV1_HLG_ROUTE_KEY, transfer: 'hlg' }
+    ] as const)('presents $label AV1 as neutralized hardware frames once $routeKey is authorized', ({ routeKey, stream, transfer }) => {
+        expect(getCustomPlaybackEligibility(
+            createHDRAV1Options(stream),
+            createNativeAV1Capabilities(),
+            { ...createEligibilityOptions([ routeKey ]), authorizedRawHDRRouteKeys: [ `I420P10:bt2020-ncl:bt2020:limited:${transfer}` ] }
+        )).toMatchObject({ ...NATIVE_ROUTE, nativeHDRTransfer: transfer });
+    });
+
+    it('falls back to raw I420P10 without the AV1 key, which the HEVC key does not stand in for', () => {
+        for (const routeKeys of [ [], [ HEVC_PQ_ROUTE_KEY ], [ AV1_HLG_ROUTE_KEY ] ] as const) {
+            expect(getCustomPlaybackEligibility(
+                createHDRAV1Options(),
+                createNativeAV1Capabilities(),
+                createEligibilityOptions(routeKeys)
+            )).toMatchObject({ eligible: true, neutralizeHDRColorMetadata: false, rawVideoFrameFormat: 'I420P10', videoOutputMode: 'raw-planes' });
+        }
+    });
+
+    it('falls back to raw I420P10 without a verified native AV1 Main 10 decoder or outside its profile and depth', () => {
+        const unverifiedCapabilities = createCapabilities();
+        expect(getCustomPlaybackEligibility(createHDRAV1Options(), unverifiedCapabilities, createEligibilityOptions([ AV1_PQ_ROUTE_KEY ])))
+            .toMatchObject({ eligible: true, rawVideoFrameFormat: 'I420P10' });
+        expect(getCustomPlaybackEligibility(
+            createHDRAV1Options({ BitDepth: 12, PixelFormat: 'yuv420p12le', Profile: 'Professional' }),
+            createNativeAV1Capabilities(),
+            createEligibilityOptions([ AV1_PQ_ROUTE_KEY ])
+        )).not.toMatchObject({ neutralizeHDRColorMetadata: true });
+    });
+
+    it('keeps the AV1 key off an HEVC stream, whose route needs the HEVC key', () => {
+        const hevcOptions = createHDRAV1Options({ Codec: 'hevc', Profile: 'Main 10' });
+
+        expect(getCustomPlaybackEligibility(hevcOptions, createNativeAV1Capabilities(), createEligibilityOptions([ AV1_PQ_ROUTE_KEY ])))
+            .toMatchObject({ eligible: true, neutralizeHDRColorMetadata: false, rawVideoFrameFormat: 'I420P10' });
+        expect(getCustomPlaybackEligibility(hevcOptions, createNativeAV1Capabilities(), createEligibilityOptions([ HEVC_PQ_ROUTE_KEY ])))
+            .toMatchObject({ ...NATIVE_ROUTE, nativeHDRTransfer: 'pq' });
+    });
+
+    it('needs the host to allow native HDR and a named BT.2020 description', () => {
+        expect(getCustomPlaybackEligibility(
+            createHDRAV1Options(),
+            createNativeAV1Capabilities(),
+            { ...createEligibilityOptions([ AV1_PQ_ROUTE_KEY ]), allowNativeHDR: false }
+        )).toMatchObject({ rawVideoFrameFormat: 'I420P10' });
+        expect(getCustomPlaybackEligibility(
+            createHDRAV1Options({ ColorPrimaries: undefined }),
+            createNativeAV1Capabilities(),
+            createEligibilityOptions([ AV1_PQ_ROUTE_KEY ])
+        )).toMatchObject({ rawVideoFrameFormat: 'I420P10' });
     });
 });

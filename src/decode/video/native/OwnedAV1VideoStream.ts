@@ -8,6 +8,7 @@ import {
 } from '../../../demux/dolby-vision/DolbyVisionEncodedMetadata';
 import { parseAV1HDR10PlusMetadata } from '../../../demux/hdr/AV1HDR10PlusMetadata';
 import HDR10PlusFrameMetadataQueue from '../HDR10PlusFrameMetadataQueue';
+import type { NativeHDRAV1TemporalUnitNeutralizer } from './NativeHDRAV1ColorNeutralizer';
 import {
     createOwnedVideoFrameMetadataSource,
     runOwnedSingleLayerVideoStream,
@@ -20,7 +21,8 @@ import {
 
 /**
  * Runs one attempt of the engine's own AV1 decode path, from the key packet the iterator starts at.
- * Each temporal unit's OBUs are walked once, in decode order.
+ * Each temporal unit's OBUs are walked once, in decode order, and again only after its sequence headers are neutralized.
+ * On the native external HDR route, a color neutralizer rewrites each sequence header to limited BT.709 first.
  * Its Dolby Vision RPU is stripped before decode and parsed when an RPU parser is given, and its HDR10+ metadata is parsed in place.
  * Both travel with the unit's one shown frame.
  * The caller owns the packet iterator and the RPU parser.
@@ -31,13 +33,18 @@ export async function runOwnedAV1VideoStream(
     rpuParser: DolbyVisionAV1RPUDataParser | null,
     createDecoder: (callbacks: OwnedVideoDecoderCallbacks) => OwnedVideoDecoderPort,
     startTimeMicroseconds: Microseconds,
-    keyPacketMediaTimeMicroseconds: Microseconds
+    keyPacketMediaTimeMicroseconds: Microseconds,
+    colorNeutralizer: NativeHDRAV1TemporalUnitNeutralizer | null = null
 ): Promise<void> {
     const dolbyVisionMetadataQueue = new DolbyVisionAV1EncodedMetadataQueue(rpuParser);
     const dynamicHDRMetadataQueue = new HDR10PlusFrameMetadataQueue('AV1');
     const processTemporalUnit = async (packet: EncodedPacket): Promise<ProcessedOwnedVideoPacket> => {
-        const obus = parseAV1OBUs(packet.data);
-        const processedUnit = await dolbyVisionMetadataQueue.processTemporalUnit(packet, obus);
+        const sourceOBUs = parseAV1OBUs(packet.data);
+        const neutralizedUnit = colorNeutralizer?.neutralize(packet.data, sourceOBUs) ?? null;
+        // A neutralized unit is a buffer of this decode alone, so it transfers to the decoder
+        const unitPacket = neutralizedUnit && neutralizedUnit.data !== packet.data ? packet.clone({ data: neutralizedUnit.data }) : packet;
+        const obus = neutralizedUnit?.obus ?? sourceOBUs;
+        const processedUnit = await dolbyVisionMetadataQueue.processTemporalUnit(unitPacket, obus);
         if (processedUnit.hasFrame) {
             dynamicHDRMetadataQueue.enqueue(packet.microsecondTimestamp, parseAV1HDR10PlusMetadata(obus));
         }

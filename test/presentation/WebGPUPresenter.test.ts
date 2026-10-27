@@ -84,12 +84,12 @@ vi.mock('webgpu-player/validation/RawHDRPresentationAuthorization', () => ({
 }));
 
 vi.mock('webgpu-player/validation/ExternalHDRPresentationAuthorization', () => ({
-    getExternalHDRAuthorizationRouteKey: vi.fn((metadata: { transfer?: string }) => {
+    getExternalHDRAuthorizationRouteKey: vi.fn((codec: string, metadata: { transfer?: string }) => {
         switch (metadata.transfer) {
             case 'hlg':
-                return 'external-hevc-main10-bt709-limited:hlg-v1';
+                return `external-${codec}-main10-bt709-limited:hlg-v1`;
             case 'pq':
-                return 'external-hevc-main10-bt709-limited:pq-v1';
+                return `external-${codec}-main10-bt709-limited:pq-v1`;
             default:
                 return null;
         }
@@ -1471,6 +1471,7 @@ describe('WebGPUPresenter', () => {
             surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await expect(presenter.configureColorPipeline({
+            codec: 'hevc',
             inputMode: 'external-hdr',
             metadata,
             settings: createHDRToSDRRenderSettings({
@@ -3282,6 +3283,7 @@ describe('WebGPUPresenter', () => {
             surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await expect(presenter.configureColorPipeline({
+            codec: 'hevc',
             inputMode: 'external-hdr',
             metadata,
             settings: createHDRToSDRRenderSettings({

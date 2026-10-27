@@ -2,7 +2,9 @@ import type { EncodedPacket } from 'mediabunny';
 import { describe, expect, it, vi, type Mock } from 'vitest';
 
 import type { Microseconds } from 'webgpu-player/MediaTime';
+import { NativeHDRAV1TemporalUnitNeutralizer } from 'webgpu-player/decode/video/native/NativeHDRAV1ColorNeutralizer';
 import { runOwnedAV1VideoStream } from 'webgpu-player/decode/video/native/OwnedAV1VideoStream';
+import { findAV1SequenceHeader } from 'webgpu-player/demux/av1/AV1SequenceHeaderParser';
 import type { DolbyVisionAV1RPUDataParser } from 'webgpu-player/demux/dolby-vision/DolbyVisionEncodedMetadata';
 import { parseHDR10PlusITUTT35Messages } from 'webgpu-player/demux/hdr/HDR10PlusMetadata';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
@@ -428,5 +430,64 @@ describe('runOwnedAV1VideoStream', () => {
             expect(frame.close).toHaveBeenCalledOnce();
         }
         expect(decoder.close).toHaveBeenCalledOnce();
+    });
+
+    describe('on the native external HDR route', () => {
+        // A libaom 10-bit BT.2020 PQ sequence header OBU, and the same with unspecified primaries and transfer
+        const PQ_SEQUENCE_HEADER_OBU = [ 0x0A, 0x0E, 0x00, 0x00, 0x00, 0x2D, 0x4C, 0xFF, 0xB3, 0xCC, 0xAF, 0x95, 0x09, 0x10, 0x09, 0x04 ];
+        const UNSPECIFIED_SEQUENCE_HEADER_OBU = [ 0x0A, 0x0E, 0x00, 0x00, 0x00, 0x2D, 0x4C, 0xFF, 0xB3, 0xCC, 0xAF, 0x95, 0x02, 0x02, 0x09, 0x04 ];
+
+        function startNeutralized(packets: readonly EncodedPacket[]): { harness: OwnedVideoStreamFakes, streamPromise: Promise<void> } {
+            const harness = createOwnedVideoStreamFakes(packets, AMPLE_FRAME_CREDITS, 'immediate');
+            return {
+                harness,
+                streamPromise: runOwnedAV1VideoStream(
+                    harness.run,
+                    harness.packetIterator,
+                    null,
+                    harness.createDecoder,
+                    KEY_PACKET_MEDIA_TIME_MICROSECONDS,
+                    KEY_PACKET_MEDIA_TIME_MICROSECONDS,
+                    new NativeHDRAV1TemporalUnitNeutralizer('pq', false)
+                )
+            };
+        }
+
+        it('decodes each sequence header neutralized, without the RPU, and keeps the HDR10+ metadata', async () => {
+            const keyUnit = createFramePacket(0, [
+                ...PQ_SEQUENCE_HEADER_OBU,
+                ...Array.from(createAV1MetadataOBU(METADATA_TYPE_ITUT_T35, [ ...DOLBY_VISION_ITUT_T35_PAYLOAD_PREFIX, 0x90 ])),
+                ...Array.from(createAV1MetadataOBU(METADATA_TYPE_ITUT_T35, FIRST_HDR10_PLUS_MESSAGE)),
+                ...createOBU(OBU_TYPE_FRAME, [ 0 ])
+            ]);
+            const deltaUnit = createTemporalUnit(1, null);
+            const { harness, streamPromise } = startNeutralized([ keyUnit, deltaUnit ]);
+
+            await streamPromise;
+
+            const decodedPackets = harness.requireDecoder().decodedPackets;
+            expect(decodedPackets).toHaveLength(2);
+            expect(findAV1SequenceHeader(decodedPackets[0].data)?.colorConfig).toMatchObject({
+                colorPrimaries: 1,
+                matrixCoefficients: 1,
+                transferCharacteristics: 1
+            });
+            expect(Array.from(decodedPackets[0].data.subarray(PQ_SEQUENCE_HEADER_OBU.length))).toEqual([
+                ...Array.from(createAV1MetadataOBU(METADATA_TYPE_ITUT_T35, FIRST_HDR10_PLUS_MESSAGE)),
+                ...createOBU(OBU_TYPE_FRAME, [ 0 ])
+            ]);
+            expect(decodedPackets[1]).toBe(deltaUnit);
+            expect(findAV1SequenceHeader(keyUnit.data)?.colorConfig.transferCharacteristics).toBe(16);
+            expect(harness.run.postedFrames[0].HDR10PlusMetadata).toEqual(parseHDR10PlusITUTT35Messages([ FIRST_HDR10_PLUS_MESSAGE ]));
+        });
+
+        it('fails the attempt at a sequence header that does not prove the route, before decoding it', async () => {
+            const { harness, streamPromise } = startNeutralized([
+                createFramePacket(0, [ ...UNSPECIFIED_SEQUENCE_HEADER_OBU, ...createOBU(OBU_TYPE_FRAME, [ 0 ]) ])
+            ]);
+
+            await expect(streamPromise).rejects.toThrow('does not match the expected limited-range BT.2020 HDR route');
+            expect(harness.requireDecoder().decodedPackets).toEqual([]);
+        });
     });
 });
