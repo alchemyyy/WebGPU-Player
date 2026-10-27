@@ -747,6 +747,12 @@ These were settled on Firefox 157 on Windows.
   The preroll took about 40 to 60 ms longer by the decoder's outputs, which is the decode work it no longer leaves queued, and the first frame presents about when it did, now without a long draw.
   A frame exactly at the start used to follow the frame before it, which the first tick then skipped for the start's frame and counted as dropped; the frame at the start now leads alone.
   The Arc's numbers are unmeasured since.
+- The plan a track declares is built before its first frame, and a device keeps its compiled passes (10-27).
+  The presenter learned a stream's chroma format, and its frame size where the host gave none, from the first frame, so a plan that reads them, the raw and frame-pool routes and the external ones at a declared location, an interlaced stream's deinterlacing plan, or a preset pass sized by the frame, compiled while the first frames presented, and the first frame drew with the plan before it.
+  The worker reads both from the track at its ready response, so the controller hands them to the presenter between `configured` and ready, and ready waits until the executor for them is installed; on the native HDR10 HEVC route of an RTX 5080 the plan's one pipeline already compiled inside the play request, and the first frame's chroma left the plan as it was.
+  Compiled passes stay on the device, most recently used first, up to 64, the size of a preset of large passes; a pipeline holds driver memory, so a bound keeps variants that come and go, such as HDR output toggles and deinterlacing modes, from growing it, and an executor keeps the passes it holds when they are dropped.
+  The next session on the kept device, as the next item of a queue, then builds its executor without compiling, where each session used to compile its passes again.
+  The coded size is a prediction: a frame whose visible size differs replans at the first frame, as before.
 - One decode worker per session (10-09).
   Every generation, which every seek, audio track switch, and paused repaint starts, used to create its own worker and paid worker startup, script evaluation, and WASM decoder instantiation each time.
   The session now creates its worker at the first start, runs every generation in it, and terminates it only on `destroy`.

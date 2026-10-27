@@ -73,6 +73,7 @@ While a plan deinterlaces, each rAF takes frames one frame ahead of the clock, t
    It scans HEVC SEI on the native PQ route, and AV1 MDCV and CLL metadata OBUs when the first sequence header signals PQ and no RPU route is selected.
    Video and audio then stream concurrently.
 6. The session is ready when the first frame is queued and at least 100 ms of PCM has been submitted, or, on the native-media audio route, when the first segment is appended.
+   The controller also waits for the presentation prepared for the track's chroma format and size, which the session's `configured` event carries (see [Presentation](#presentation)).
 7. `completeStartupIfReady` starts audio, resumes the clock, and emits `ready` and `playing`.
    The host then starts the frame loop.
 
@@ -167,6 +168,9 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
 - `PresentationExecutor` owns a plan's pipelines, textures, history rings, and bind groups.
   A frame costs one uniform write, the source's import or upload, and one encode per pass, and the presenter submits once.
 - A new plan compiles while the previous executor keeps presenting, and replaces it when ready.
+- The device keeps the most recently used 64 compiled passes (`PresentationPipelineCache.ts`), keyed by their WGSL, bind group layout, and target format, so an executor built again for passes it compiled before, in a replan or in a later session on the kept device, compiles nothing.
+- A starting generation builds the plan its track declares before the first frame is due: the session's `configured` event carries the chroma format and coded size of the worker's ready response, the controller hands them to the preparer the frame loop registered (`setVideoPresentationPreparer`), the presenter plans with them as with a frame's facts (`prepareDecodedVideo`), and the generation reports ready only once that executor is installed.
+  The first frame of those facts then presents without a replan, and a frame that differs replans as before.
 - User passes come from `WebGPUPresenter.setPresentationPreset`.
   A pass that cannot run is left out of the plan, and `getPresentationPlanReport` names it with a reason code and a terse detail.
 - The spine starts with the plane stages, `LUMA`, `CHROMA`, and `NATIVE`, which hold the signal's planes as normalized codes (see [Planes](new-pass.md#planes)).

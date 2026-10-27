@@ -9,7 +9,8 @@ import {
 } from 'webgpu-player/MediaTime';
 import type {
     DecodedPresentationFrame,
-    DecodedVideoPresentationFrame
+    DecodedVideoPresentationFrame,
+    DecodedVideoStreamFacts
 } from 'webgpu-player/presentation/WebGPUPresenter';
 import type { AudioDecoderPackageSelection } from 'webgpu-player/decode/audio/AudioDecoderPackageInstance';
 import type { AudioWorkletTelemetry } from 'webgpu-player/audio/output/AudioWorkletProtocol';
@@ -72,6 +73,12 @@ const FIRST_TRACK_AUDIO_DECODER = { codec: 'dts', source: {} } as unknown as Aud
 const SECOND_TRACK_AUDIO_DECODER = { codec: 'truehd', source: {} } as unknown as AudioDecoderPackageSelection;
 const PACKAGE_DECODED_AUDIO_TRACK_INDEX = 2;
 const BROWSER_DECODED_AUDIO_TRACK_INDEX = 3;
+// What a 4K track with top-left 4:2:0 chroma declares before its first frame
+const CONFIGURED_VIDEO_FACTS: DecodedVideoStreamFacts = {
+    chromaFormat: { location: 'top-left', subsampling: '4:2:0' },
+    frameHeight: 2_160,
+    frameWidth: 3_840
+};
 
 type ControllerDecodeWorkerMessageHandler = (event: MessageEvent<unknown>) => void;
 
@@ -736,6 +743,48 @@ function requireAudioOutput(harness: ControllerHarness): FakeAudioOutput {
 }
 
 describe('CustomPlaybackController', () => {
+    it('reports ready only once the presentation prepared for the configured track facts settles', async () => {
+        const harness = createControllerHarness(false);
+        const preparation = createDeferred<undefined>();
+        const preparer = vi.fn((): Promise<void> => preparation.promise);
+        harness.controller.setVideoPresentationPreparer(preparer);
+        const startPromise = harness.controller.play(createPlayOptions());
+        await flushAsyncWork();
+        const generation = harness.videoDecodeSession.starts[0].generation;
+
+        harness.videoDecodeSession.emit({ audio: null, codec: 'hvc1.2.4.L153.B0', generation, type: 'configured', videoFacts: CONFIGURED_VIDEO_FACTS });
+        harness.videoDecodeSession.emit({ audio: null, codec: 'hvc1.2.4.L153.B0', generation, type: 'ready' });
+        await flushAsyncWork();
+        expect(preparer).toHaveBeenCalledExactlyOnceWith(CONFIGURED_VIDEO_FACTS);
+        expect(harness.controller.playbackState).toBe('starting');
+
+        preparation.resolve(undefined);
+        await expect(startPromise).resolves.toMatchObject({ generation, status: 'started' });
+    });
+
+    it('starts without its preparation once the preparation fails or the frame loop unregisters it', async () => {
+        const harness = createControllerHarness(false);
+        const unregister = harness.controller.setVideoPresentationPreparer(() => Promise.reject(new Error('plan failed')));
+        const startPromise = harness.controller.play(createPlayOptions());
+        await flushAsyncWork();
+        const generation = harness.videoDecodeSession.starts[0].generation;
+        harness.videoDecodeSession.emit({ audio: null, codec: 'avc1.640028', generation, type: 'configured', videoFacts: CONFIGURED_VIDEO_FACTS });
+        harness.videoDecodeSession.emit({ audio: null, codec: 'avc1.640028', generation, type: 'ready' });
+        await expect(startPromise).resolves.toMatchObject({ generation, status: 'started' });
+
+        const preparer = vi.fn((): Promise<void> => Promise.resolve());
+        harness.controller.setVideoPresentationPreparer(preparer);
+        unregister();
+        const seekPromise = harness.controller.seek(secondsToMicroseconds(1));
+        await flushAsyncWork();
+        const seekGeneration = harness.videoDecodeSession.starts[1].generation;
+        harness.videoDecodeSession.emit({ audio: null, codec: 'avc1.640028', generation: seekGeneration, type: 'configured', videoFacts: CONFIGURED_VIDEO_FACTS });
+        harness.videoDecodeSession.emit({ audio: null, codec: 'avc1.640028', generation: seekGeneration, type: 'ready' });
+        await expect(seekPromise).resolves.toMatchObject({ generation: seekGeneration, status: 'started' });
+        // An unregister call of an earlier preparer leaves the current one in place
+        expect(preparer).toHaveBeenCalledOnce();
+    });
+
     it('forwards native HDR metadata neutralization to the decode session', async () => {
         const harness = createControllerHarness(false);
         const startPromise = harness.controller.play({
@@ -974,7 +1023,8 @@ describe('CustomPlaybackController', () => {
             },
             codec: 'avc1.640028',
             generation,
-            type: 'configured'
+            type: 'configured',
+            videoFacts: CONFIGURED_VIDEO_FACTS
         });
         harness.videoDecodeSession.updateAudioDownmixSettings.mockReturnValueOnce(true);
         const settings: AudioDownmixSettings = {
@@ -2470,7 +2520,8 @@ describe('CustomPlaybackController', () => {
             codec: 'hvc1.2.4.L153.B0',
             generation,
             staticHDRMetadata,
-            type: 'configured'
+            type: 'configured',
+            videoFacts: CONFIGURED_VIDEO_FACTS
         });
         expect(harness.events.filter(event => event.type === 'static-hdr-metadata'))
             .toEqual([ {
@@ -2594,7 +2645,8 @@ describe('CustomPlaybackController', () => {
                 audio: null,
                 codec: 'avc1.640028',
                 generation,
-                type: 'configured'
+                type: 'configured',
+                videoFacts: CONFIGURED_VIDEO_FACTS
             });
             expect(harness.controller.playbackState).toBe('starting');
             await vi.advanceTimersByTimeAsync(100);

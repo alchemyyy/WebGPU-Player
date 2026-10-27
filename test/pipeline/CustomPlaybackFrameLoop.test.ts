@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import type CustomPlaybackController from 'webgpu-player/pipeline/CustomPlaybackController';
 import CustomPlaybackFrameLoop, { CUSTOM_PLAYBACK_BACKGROUND_DRAIN_INTERVAL_MILLISECONDS } from 'webgpu-player/pipeline/CustomPlaybackFrameLoop';
 import type WebGPUPresenter from 'webgpu-player/presentation/WebGPUPresenter';
-import type { DecodedPresentationFrame } from 'webgpu-player/presentation/WebGPUPresenter';
+import type { DecodedPresentationFrame, DecodedVideoStreamFacts } from 'webgpu-player/presentation/WebGPUPresenter';
 
 const FIRST_GENERATION = 3;
 const NEXT_GENERATION = 4;
@@ -27,7 +27,10 @@ type FakeController = {
     notifyFramePresented: Mock
     playbackState: string
     setPageVisibility: Mock
+    setVideoPresentationPreparer: Mock
     takeFrame: Mock
+    /** The preparer the loop registered, while it is registered */
+    videoPresentationPreparer: ((facts: DecodedVideoStreamFacts) => Promise<void>) | null
 };
 
 type FakePresenter = {
@@ -36,6 +39,7 @@ type FakePresenter = {
     getTelemetry: Mock
     presentDecodedFrame: Mock
     presentHeldFields: Mock
+    prepareDecodedVideo: Mock
 };
 
 type LoopHarness = Readonly<{
@@ -67,14 +71,22 @@ function createHarness(): LoopHarness {
         notifyFramePresented: vi.fn(() => true),
         playbackState: 'playing',
         setPageVisibility: vi.fn(() => false),
-        takeFrame: vi.fn(() => RAW_PLANES_FRAME)
+        setVideoPresentationPreparer: vi.fn((preparer: (facts: DecodedVideoStreamFacts) => Promise<void>): () => void => {
+            controller.videoPresentationPreparer = preparer;
+            return (): void => {
+                controller.videoPresentationPreparer = null;
+            };
+        }),
+        takeFrame: vi.fn(() => RAW_PLANES_FRAME),
+        videoPresentationPreparer: null
     };
     const presenter: FakePresenter = {
         awaitsLookaheadFrame: vi.fn(() => false),
         getFrameLookaheadMicroseconds: vi.fn(() => NO_LOOKAHEAD_MICROSECONDS),
         getTelemetry: vi.fn(() => ({ state: 'presenting' })),
         presentDecodedFrame: vi.fn(() => true),
-        presentHeldFields: vi.fn(() => false)
+        presentHeldFields: vi.fn(() => false),
+        prepareDecodedVideo: vi.fn(() => Promise.resolve())
     };
     const current = { value: true };
     const failures: unknown[] = [];
@@ -117,6 +129,19 @@ describe('CustomPlaybackFrameLoop', () => {
     afterEach(() => {
         vi.useRealTimers();
         vi.unstubAllGlobals();
+    });
+
+    it('prepares the presenter for each starting generation\'s track facts, in the generation frames present in, until destroyed', async () => {
+        const { controller, loop, presenter } = createHarness();
+        const facts: DecodedVideoStreamFacts = { chromaFormat: { location: 'left', subsampling: '4:2:0' }, frameHeight: 1_080, frameWidth: 1_920 };
+
+        await controller.videoPresentationPreparer?.(facts);
+        loop.setPresentationGeneration(FIRST_GENERATION + 1);
+        await controller.videoPresentationPreparer?.(facts);
+        expect(presenter.prepareDecodedVideo.mock.calls).toEqual([ [ facts, FIRST_GENERATION ], [ facts, FIRST_GENERATION + 1 ] ]);
+
+        loop.destroy();
+        expect(controller.videoPresentationPreparer).toBeNull();
     });
 
     it('presents the current frame every animation frame while playing, in the current generation', () => {

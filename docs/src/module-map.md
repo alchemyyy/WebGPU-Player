@@ -43,6 +43,7 @@ The presentation pipeline: each route's fixed signal and default color track, us
   Without user passes every route plans one pass, which reads the source and writes the canvas.
   It reads the signal's planes apart for plane passes, from the source or a deinterlaced image, merges and converts the planes they replace, and gives every image its offset and extent, which the scaler corrects.
 - `PresentationExecutor.ts`: compiles a plan, owns its textures, history rings, buffers, and bind groups, binds the caller's uploads of its texture blocks, and records each frame without submitting.
+- `PresentationPipelineCache.ts`: the passes each device keeps compiled, a bounded least recently used cache keyed by WGSL, bind group layout, and target format, which the executor compiles through.
 - `PassTextureCache.ts`: the uploads of texture blocks on one device by content identity, made when a plan first binds a block and released when no plan or preset holds it.
 - `PlaneTextureSource.ts`: the plane route's ingress: layout validation that names the failed check, one integer texture per plane, and the uploads.
 - `builtin/`: the built-in signals (`BuiltinSignals.ts`, `FramePoolSignal.ts`, which reads a pool slot of any output format, as its layout says, for the frame-pool route's chain, and `FramePoolDolbyVisionSignal.ts`, the raw Dolby Vision reconstruction over that read), color functions (`BuiltinColorFunctions.ts`), and route chains (`BuiltinChains.ts`), and the deinterlacing pass (`DeinterlacePass.ts`, yadif over the signal's ring).

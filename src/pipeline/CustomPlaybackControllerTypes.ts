@@ -1,5 +1,5 @@
 import type { Microseconds } from '../MediaTime';
-import type { DecodedPresentationFrame } from '../presentation/WebGPUPresenter';
+import type { DecodedPresentationFrame, DecodedVideoStreamFacts } from '../presentation/WebGPUPresenter';
 import type { AudioDecoderPackageSelection } from '../decode/audio/AudioDecoderPackageInstance';
 import type {
     AudioTelemetryListener,
@@ -160,6 +160,12 @@ export type CustomVideoDecodeSessionFactory = (
     nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null,
     gpuVideoDecodeSessionFactory: GPUVideoDecodeSessionFactory | null
 ) => CustomVideoDecodeSession;
+
+/**
+ * Prepares presentation for what a starting generation's track declares before its first frame, such as by building the plan those facts make;
+ * the generation reports ready only once it settles.
+ */
+export type CustomPlaybackVideoPresentationPreparer = (facts: DecodedVideoStreamFacts) => Promise<void>;
 
 export type CustomPlaybackClock = {
     readonly generation: number
