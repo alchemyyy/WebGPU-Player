@@ -133,6 +133,8 @@ All worker code unless marked.
 - `AudioStartPacket.ts`: the packet an audio attempt starts from, without Mediabunny's proof scans when the track starts late.
 - `TrackIteration.ts`: a track's packets in decode order, read about a second ahead, and its decoded video or audio samples from a start time, as iterators that end at once on `return()`.
 - `ISOBaseMediaSampleEntryChildBox.ts`: reads a child box of an ISO base media track's first sample entry, such as `fiel`, from the `moov` bytes Mediabunny keeps.
+- `PresentationOrderTrack.ts`: a track whose packets carry presentation timestamps for one that stamps them in decode order, as AVI and Matroska Video for Windows tracks do, by a codec's reader of each packet's picture order: an anchor takes the time of the packet FFmpeg outputs it at, and a B picture keeps its own; a key packet lookup steps back to the anchor that presents by the time.
+- `BitmapInfoHeader.ts`: the BITMAPINFOHEADER of Video for Windows codec private data: its FourCC, printable or as hexadecimal bytes, and the header of a coded size and FourCC the engine builds before a codec's extradata.
 
 ### demux/av1/
 
@@ -170,10 +172,15 @@ All worker code unless marked.
 
 ### demux/vc1/
 
-- `MatroskaVFWVideoConfiguration.ts`: reads a Matroska Video for Windows track's extradata as FFmpeg does: VC-1's after a `WVC1` or `WMVA` header, and WMV3's STRUCT_C behind a new header of the track's coded size, since STRUCT_C holds no frame size.
+- `MatroskaVFWVideoConfiguration.ts`: reads a Matroska Video for Windows track's FourCC and extradata as FFmpeg does, and from them VC-1's extradata after a `WVC1` or `WMVA` header, and WMV3's STRUCT_C behind a new header of the track's coded size, since STRUCT_C holds no frame size.
 - `ISOBaseMediaVC1Configuration.ts`: a `vc-1` sample entry's `dvc1` sequence header and entry point, Advanced profile only, which the fork hands on as the track's description.
 - `VC1TrackConfiguration.ts`: the codec private data and packet track of a VC-1 or WMV3 track, per codec and container.
-- `VC1PresentationOrder.ts`: restamps a Matroska VC-1 or WMV3 track, whose blocks carry decode-order times, into presentation order by FFmpeg's rule: an I or P picture takes the next I or P picture's time, and a B picture keeps its own.
+- `VC1PresentationOrder.ts`: reads a VC-1 or WMV3 picture's order from its picture header, for `PresentationOrderTrack.ts` to restamp a Matroska VC-1 or WMV3 track by FFmpeg's rule: an I or P picture takes the next I or P picture's time, and a B picture keeps its own.
+
+### demux/mpeg4/
+
+- `MPEG4TrackConfiguration.ts`: the codec private data and packet track of an MPEG-4 Part 2, H.263, or MS-MPEG4 track: its codec ID per container, a Video for Windows or AVI FourCC of the negotiated codec as FFmpeg's `riff.c` maps it, and a BITMAPINFOHEADER of the track's coded size and FourCC before its extradata.
+- `MPEG4PresentationOrder.ts`: reads a video object layer's `low_delay` and time increment width, and a VOP's coding type and `vop_coded`, for `PresentationOrderTrack.ts` to restamp an AVI or Matroska VfW MPEG-4 Part 2 track whose layer has B-VOPs, passing over N-VOPs.
 
 ### demux/vp9/
 
@@ -317,6 +324,8 @@ The authorization vectors are in `capability/vectors/`.
 - `test/helpers/fakeIndexedDB.ts`: an in-memory IndexedDB of the parts the package stores use: versioned opens with upgrades, keyed object stores, and transactions that apply their writes only when every request succeeds.
 - `test/helpers/vc1Media.ts`: synthetic VC-1 and WMV3 sequence and picture headers, Matroska Video for Windows files, and MP4 `vc-1` files.
 - `test/helpers/mpegVideoHeaders.ts`: synthetic MPEG-1 and MPEG-2 sequence headers, sequence extensions, and I picture packets, for tests that read a stream's sequences without decoding its pictures.
+- `test/helpers/mpeg4Bitstream.ts`: synthetic MPEG-4 Part 2 video object layers, extradata, and VOP headers of each coding type, coded or not, for tests that order VOPs without decoding them.
+- `test/helpers/mpeg4Vectors.ts`: the media of the `mpeg4` decoder project and the DivX packed AVI vector, with each one's codec, FourCC, size, extradata, and frame order as FFprobe reports them, and a packet credit return for frame-pool runs.
 - `test/helpers/matroskaElements.ts`, `test/helpers/isoBaseMediaBoxes.ts`: EBML elements and ISO base media boxes, and a file of one video track in each, with any codec ID or sample entry, CodecPrivate or none, and boxes ahead of `ftyp`.
 - `test/helpers/av1MetadataOBUs.ts`: AV1 OBUs, metadata OBUs included, that the AV1 tests build temporal units from.
 - `test/helpers/hdr10PlusVectors.ts`: the HDR10+ messages of `HDR10PlusVectors.ts`, and what the HDR10+ AV1 and VP9 vectors share: the `expectations.json` reader, the coded values in the engine's units, and the check of a posted frame's HDR10+ result.

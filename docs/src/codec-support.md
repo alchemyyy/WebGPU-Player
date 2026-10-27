@@ -136,6 +136,7 @@ This table covers every codec, beyond this chapter's HEVC and Dolby Vision.
 | H.264 (PAFF field pairs and MBAFF) | Yes | VF-SDR native, deinterlaced; the browser upsampled its chroma progressively | The container's scan, else the host's `FieldOrder` and `IsInterlaced` |
 | MPEG-2, field and frame pictures, at 4:2:0, 4:2:2, and 4:4:4 | Yes | GPU, deinterlaced, 4:2:0 chroma read within each field | The decoder's `reportPictureFields`, per picture, from `progressive_frame`, `top_field_first`, and `repeat_first_field` as FFmpeg reads them |
 | VC-1 Advanced, field and frame interlace | Yes | GPU, deinterlaced, 4:2:0 chroma read within each field | The parser's `parser_picture_fields`, per picture, from FCM, TFF, and RFF as FFmpeg reads them |
+| MPEG-4 Part 2 interlaced VOPs | Yes | GPU, deinterlaced, 4:2:0 chroma read within each field | The parser's `parser_picture_fields`, per VOP, from `interlaced` and `top_field_first` as FFmpeg reads them |
 | HEVC | No: `interlaced-video-unsupported` | None; field pictures need a weave the engine lacks | None |
 | JPEG 2000 | No: `interlaced-video-unsupported` | None; a codestream per field needs a weave the engine lacks | None |
 | Any codec on a Dolby Vision route | Only when `IsInterlaced` is false | The Dolby Vision routes never deinterlace; a declared base layer's ordinary route does | None |

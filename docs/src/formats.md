@@ -13,12 +13,12 @@ It does not play live streams, HLS or DASH, or a server transcode.
 
 | Container | Video | Audio |
 | --- | --- | --- |
-| Matroska | H.264, HEVC, VP8, VP9, AV1, MPEG-1, MPEG-2, VC-1, WMV3 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, MLP, PCM |
+| Matroska | H.264, HEVC, VP8, VP9, AV1, MPEG-1, MPEG-2, VC-1, WMV3, MPEG-4 Part 2, H.263, MS-MPEG4 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, MLP, PCM |
 | WebM | VP8, VP9, AV1 | Opus, Vorbis |
-| MP4, M4V, MOV, 3GP, 3G2 | H.264, HEVC, VP8, VP9, AV1, VC-1 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, PCM |
+| MP4, M4V, MOV, 3GP, 3G2 | H.264, HEVC, VP8, VP9, AV1, VC-1, MPEG-4 Part 2, H.263 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, PCM |
 | MOV, MJ2 | JPEG 2000 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, PCM |
 | MPEG-TS, M2TS, MTS | H.264, HEVC, MPEG-1, MPEG-2, VC-1 | AAC, MP3, AC-3, E-AC-3, DTS |
-| AVI | H.264, HEVC, VP8, VP9, AV1 | AAC, MP3, AC-3, FLAC, Vorbis, PCM |
+| AVI | H.264, HEVC, VP8, VP9, AV1, MPEG-4 Part 2, H.263, MS-MPEG4 | AAC, MP3, AC-3, FLAC, Vorbis, PCM |
 | FLV, ASF (WMV), MPEG program streams (MPG, VOB), Ogg, RealMedia, MXF, and every other container | Not supported | Not supported |
 
 PCM in Matroska is 8-bit unsigned, 16, 24, or 32-bit integer in either byte order, or little-endian 32 or 64-bit float.
@@ -30,8 +30,10 @@ The rows come from `capability/CustomContainerCodecSupport.ts`.
 AVI plays every packet its indexes list, read as FFmpeg reads them: a stream's OpenDML index when it has one (its `indx` super index and the `ix##` standard index that index locates in each RIFF list), else `idx1`, which covers only the first RIFF list.
 An OpenDML file past about 1 GiB, whose later `AVIX` RIFF lists only the OpenDML indexes cover, therefore plays to its end and seeks there.
 A video stream that still outruns its index, as in a truncated file or one whose OpenDML index cannot be read in full, is refused rather than stopped where the index ends.
-MPEG-4 Part 2 in the packed bitstream of DivX 5 and Xvid, which DivX user data ending in `p` marks, is unpacked to one VOP per packet as FFmpeg's `mpeg4_unpack_bframes` filter does; MPEG-4 Part 2 itself still has no route.
+MPEG-4 Part 2 in the packed bitstream of DivX 5 and Xvid, which DivX user data ending in `p` marks, is unpacked to one VOP per packet as FFmpeg's `mpeg4_unpack_bframes` filter does.
 AVI keeps no presentation times, only each chunk's slot in decode order, so the fork's AVI demuxer gives H.264 and HEVC packets their pictures' presentation times from the picture order counts in their slice headers, as FFmpeg does, and B-frames play in order on every browser.
+The worker restamps MPEG-4 Part 2's B-VOPs into presentation order itself, as it does for Matroska Video for Windows tracks (see [Eligibility and routes](routes.md)).
+A video stream whose FourCC the fork names no codec for, such as `DIV3`, `MP42`, or `H263`, opens codec-less with its FourCC as its codec ID, so the MPEG-4 decoder package's route takes it by that FourCC and any other route refuses it by its FourCC.
 HEVC in AVI plays under the HEVC, H265, hvc1, and hev1 tags, and under the zero tag FFmpeg's AVI muxer writes unless told one, which the fork recognizes by the parameter sets of the first chunk; FFmpeg, and so Jellyfin, reads such a stream as uncompressed video.
 An AIFF file opens, but the pipeline plays only sources with video, so AIFF, like every audio-only file, falls back to the host.
 A track whose edit list Mediabunny cannot honor, as `getUnsupportedFeatures()` reports, is refused rather than played out of sync.
@@ -49,17 +51,20 @@ A track whose edit list Mediabunny cannot honor, as `getUnsupportedFeatures()` r
 | MPEG-2 | Every profile, at 4:2:0, 4:2:2, and 4:4:4, in Matroska, MPEG-TS, and M2TS | A GPU decoder package | MP4 and program streams, whose MPEG-2 streams Mediabunny does not read |
 | VC-1 | Advanced profile (`WVC1` and `WMVA`), in Matroska, MP4, MOV, MPEG-TS, and M2TS | A GPU decoder package | A transport stream VC-1 stream without its registration descriptor, which Mediabunny skips |
 | WMV3 | The Simple, Main, and Complex profiles, in Matroska | A GPU decoder package | ASF (WMV) files, which nothing demuxes |
+| MPEG-4 Part 2 | Every profile FFmpeg's decoder decodes at 8 bits, B-VOPs, quarter-pel, and global motion compensation among them, in Matroska (its own tracks and Video for Windows), MP4, MOV, 3GP, and AVI | A GPU decoder package | Studio profiles and deeper streams, and MPEG-TS, which Mediabunny does not demux it from |
+| H.263 | What FFmpeg's `h263` decoder decodes, the H.263+ annexes among them, in Matroska Video for Windows tracks, MP4, MOV, 3GP, and AVI | A GPU decoder package | A stream FFmpeg names `h263p` or `h263i` |
+| MS-MPEG4 | Versions 1, 2, and 3 (DivX 3), in Matroska and AVI | A GPU decoder package | MP4 and MOV |
 | JPEG 2000 | YUV at 4:2:0, 4:2:2, and 4:4:4, at 8, 9, 10, and 12 bits, in MOV and MJ2 | A GPU decoder package | RGB, grey, XYZ, and palette pictures, 11-bit and deeper samples, 4:4:0, 4:1:1, and 4:1:0 chroma, and HTJ2K |
 
-Every other video codec is not supported, among them MPEG-4 Part 2 (DivX, Xvid), H.263, MS-MPEG4, WMV1, WMV2, Theora, VVC, ProRes, DNxHD, and Motion JPEG.
-Mediabunny identifies MPEG-4 Part 2, but no decoder decodes it, so eligibility refuses it as a known codec with no route (`video-codec-without-route`), as it does H.263, MS-MPEG4, and Theora.
+Every other video codec is not supported, among them WMV1, WMV2, Theora, VVC, ProRes, DNxHD, and Motion JPEG.
+Eligibility refuses Theora as a known codec with no route (`video-codec-without-route`), and the others as unsupported (`codec-unsupported`).
 WebCodecs is the browser's own decoder.
-A GPU decoder package is WGSL a host loads, which decodes on the presenter's device; it plays only what no native route plays, and the decoder projects in `wgpud/` build one for HEVC, MPEG-1 with MPEG-2, VC-1 with WMV3, and JPEG 2000.
+A GPU decoder package is WGSL a host loads, which decodes on the presenter's device; it plays only what no native route plays, and the decoder projects in `wgpud/` build one for HEVC, MPEG-1 with MPEG-2, VC-1 with WMV3, MPEG-4 Part 2 with H.263 and MS-MPEG4, and JPEG 2000.
 A package's frames take the format that holds the stream's pixel format, so 4:2:2 and 4:4:4 streams keep their chroma.
 
 | Property | Plays | Does not play |
 | --- | --- | --- |
-| Scan | Progressive; interlaced H.264, MPEG-2, VC-1, and WMV3, deinterlaced at double or single rate (see [Architecture](architecture.md#deinterlacing)) | Interlaced HEVC, coded as field pictures, interlaced JPEG 2000, coded as a codestream per field, and interlaced video on a Dolby Vision route |
+| Scan | Progressive; interlaced H.264, MPEG-2, MPEG-4 Part 2, VC-1, and WMV3, deinterlaced at double or single rate (see [Architecture](architecture.md#deinterlacing)) | Interlaced HEVC, coded as field pictures, interlaced JPEG 2000, coded as a codestream per field, and interlaced video on a Dolby Vision route |
 | Rotation | 0 | Any other rotation |
 | Frame size, frame rate, level, and bitrate | Whatever the decoder accepts; none of them is a gate | |
 | Color | BT.709, BT.601, and BT.2020 primaries and matrices, raw planes included, which convert SDR outside BT.709 to BT.709; an unknown or unspecified tag takes its transfer's default | Any other tag value |

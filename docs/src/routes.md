@@ -8,8 +8,8 @@ The host turns the same evidence into what it advertises to its server; the Jell
 A host calls these, in this order, for each playback:
 
 1. `CustomPlaybackEligibility.hasPotentialCustomPlaybackVideoRoute`, the metadata-only prefilter, when it chooses a player.
-   The prefilter declines a source whose containers no route in `CUSTOM_CONTAINER_CODEC_RULES` carries, such as AVI, FLV, ASF, or an MPEG program stream.
-   It also declines a video codec no route decodes, such as MPEG-4 Part 2 (DivX, Xvid), H.263, MS-MPEG4, or Theora, rotated video, and interlaced HEVC and JPEG 2000, which code their fields apart (see [Interlaced video](#interlaced-video)).
+   The prefilter declines a source whose containers no route in `CUSTOM_CONTAINER_CODEC_RULES` carries, such as FLV, ASF, or an MPEG program stream.
+   It also declines a video codec no route decodes, such as Theora, rotated video, and interlaced HEVC and JPEG 2000, which code their fields apart (see [Interlaced video](#interlaced-video)).
 2. `CustomPlaybackRuntime.getCustomPlaybackRuntimeAvailability`, which fails without a secure context, Worker, `navigator.gpu`, or `VideoFrame`.
 3. `probeCustomDecodeCapabilities(item)`, the native-media audio probe, and the GPU authorizations the item needs (5 s each), before it advertises anything; see [Probes and caching](#probes-and-caching).
 4. `hasEligibleCustomVideoRoute`, to ask whether the runtime would present one item with the measured capabilities and authorizations.
@@ -28,7 +28,7 @@ A host calls these, in this order, for each playback:
    A missing or zero `RunTimeTicks` is an unknown duration, not a rejection.
    Playback then ends with the streams, audio takes the decoded-PCM route because the native media backend needs a duration, and the worker reports the container's duration on `ready`.
 2. `selectVideoStream`, and a codec the engine names.
-   A codec it knows but nothing decodes, MPEG-4 Part 2, MS-MPEG4, H.263, or Theora, reads `video-codec-without-route`; any other unnamed codec reads `codec-unsupported`.
+   A codec it knows but nothing decodes, Theora, reads `video-codec-without-route`; any other unnamed codec, such as H.263+ (`h263p`), reads `codec-unsupported`.
 3. Rotation 0, and a codec that keeps an interlaced stream's fields together in frames (`codesInterlacedFieldsApart`, from `presentsInterlacedVideo`).
 4. `selectVideoOutput` (below), and a route that presents the stream's scan (`refusesVideoScan`).
 5. `selectPlaybackAudio`.
@@ -37,8 +37,12 @@ A host calls these, in this order, for each playback:
 
 An ineligible result carries its reason, and the host falls back.
 
-The worker refuses what only the file shows, with a message that names the check: an MPEG-4 Part 2 track (`no decode route: mpeg4`), a track whose edit list Mediabunny cannot honor (`getUnsupportedFeatures()`), an AVI video track that outruns its index (`avi-index-incomplete`), and a DTS Express audio track (`no decode route: dtse`).
+The worker refuses what only the file shows, with a message that names the check: a track whose edit list Mediabunny cannot honor (`getUnsupportedFeatures()`), an AVI video track that outruns its index (`avi-index-incomplete`), a video track Mediabunny names no codec for that no frame-pool route takes (`no decode route: fourcc: <FourCC>` for an AVI track, `codec-id: <ID>` for another container's), and a DTS Express audio track (`no decode route: dtse`).
 On the frame-pool route an MPEG-TS or M2TS track of MPEG-1, MPEG-2, or VC-1 must carry the negotiated codec (`container-codec`), and takes its first sequence header's extradata as codec private data (`sequence-header-missing` when none of its first 64 packets has one).
+An MPEG-4 Part 2, H.263, or MS-MPEG4 track must have a codec ID of the negotiated codec (`codec-id`): Matroska's `V_MPEG4/ISO/SP`, `ASP`, or `AP` and ISO base media's `mp4v` for MPEG-4 Part 2, which Mediabunny names `mpeg4` (`container-codec` otherwise), `s263` or `h263` for H.263, `V_MPEG4/MS/V3` for MS-MPEG4 v3, and Matroska's `V_MS/VFW/FOURCC` or AVI for any of them.
+A VfW or AVI track's FourCC must be one FFmpeg's `riff.c` maps to the negotiated codec, compared upper-cased (`fourcc`), and Mediabunny leaves every such AVI track but MPEG-4 Part 2 codec-less, with the FourCC as its codec ID.
+The codec private data is a 40-byte BITMAPINFOHEADER of the track's coded size and FourCC (`mp4v`, `s263`, or `MP43` for a track without one), then the track's extradata (see [Decoder packages](decoder-packages.md)).
+AVI and Matroska VfW stamp packets in decode order, so `MPEG4PresentationOrder.ts` restamps an MPEG-4 Part 2 track from them whose video object layer, from the extradata or else the first key packet, clears `low_delay`: an I, P, or S-VOP takes the time of the next coded VOP that is no B-VOP, passing over N-VOPs, for which FFmpeg outputs nothing, and a B-VOP keeps its own.
 AVI audio takes the same routes as any container's: Mediabunny reads a WAVE_FORMAT_EXTENSIBLE track's codec from its SubFormat, and gives FLAC and Vorbis the decoder descriptions their `strf` extradata holds.
 A track whose container declares a WAVE channel mask, which Mediabunny's `getChannelMask` reports for WAVE_FORMAT_EXTENSIBLE, is laid out by that mask: the worker takes its layout from `CustomWaveChannelLayout.ts` and passes the mask to the audio decode worker's attempt, whose output stage binds Mediabunny's decoded samples to it.
 So a three-channel 2.1 track feeds its third channel to the LFE, and 3.0(back) splits it across the surround pair, as FFmpeg's decode does, where three channels without a mask are 3.0.
@@ -53,7 +57,7 @@ A mask of 0, or none, lays channels out by their count; a mask the output stage 
 - `selectCustomDecodeProbes(item)` picks the probes an item needs.
   Every audio probe runs for every item, because a playing item can switch to any of its audio tracks.
   The video probes follow the union of the video streams across the item's sources: the codec picks its native probes, a range extension picks its own variants, a stream beyond 8-bit SDR adds the raw-plane and native HDR probes, and a range that is neither SDR nor static HDR adds the Dolby Vision probe.
-  JPEG 2000, MPEG-2, and VC-1 streams pick none, since only a GPU decoder package decodes them.
+  JPEG 2000, MPEG-2, VC-1, MPEG-4 Part 2, H.263, and MS-MPEG4 streams pick none, since only a GPU decoder package decodes them.
   An HDR item also runs the HEVC and AV1 probes, because an HDR transcode targets those codecs and their ranges bound it.
   An item without stream metadata, or with a video stream that names no codec, runs every probe.
 - A probe the item does not select reads `not-probed`, which no profile rule or eligibility check treats as support, and its H.264 profile result is absent; `probeStates` records which probes a result ran.
@@ -152,7 +156,7 @@ A host may start the probes before its first negotiation with `warmCustomDecodeC
    A range extension or an AV1 raw format variant never falls through to steps 4 and 5.
 4. SDR: `native`, or native Main 10 SDR.
    Then, for 10-bit 4:2:0 SDR that neither decodes (AV1 Main, VP9 Profile 2, or HEVC Main 10 without native decode), raw I420P10 through the raw SDR key of its matrix, primaries, and range.
-   JPEG 2000, MPEG-1, MPEG-2, VC-1, and WMV3 have no native route (`CUSTOM_PACKAGE_VIDEO_CODECS`).
+   JPEG 2000, MPEG-1, MPEG-2, VC-1, WMV3, MPEG-4 Part 2, H.263, and MS-MPEG4 have no native route (`CUSTOM_PACKAGE_VIDEO_CODECS`).
 5. PQ or HLG: native external first, through the stream's codec's key (`external-hevc-main10-bt709-limited:<pq|hlg>-v1` for HEVC Main 10, `external-av1-main10-bt709-limited:<pq|hlg>-v1` for AV1 Main at 10 bits), then raw (`<I420P10|I420P12>:bt2020-ncl:bt2020:limited:<pq|hlg>`).
    The worker rewrites the HEVC SPS VUI, or every AV1 sequence header, the codecs string, and an `av1C` description, to limited BT.709, so Chrome converts the hardware frame without tone mapping; each rewritten header must declare limited BT.2020 with the non-constant-luminance matrix and the route's transfer, or the attempt fails.
 6. When steps 3 to 5 chose no route, a GPU decoder package the host offers takes the stream, if one does; otherwise the source is ineligible with the reason those steps gave.
@@ -201,8 +205,8 @@ Every route but Dolby Vision's presents interlaced video through the deinterlaci
 - A Dolby Vision route, whose profiles are progressive and which never deinterlaces, unless `IsInterlaced` is false.
   A Dolby Vision stream whose declared base layer takes an ordinary route presents through that route's deinterlacing.
 
-H.264, MPEG-2, VC-1, and WMV3 decode interlaced video into woven frames, so they are eligible whatever `IsInterlaced` says, and a missing or malformed `IsInterlaced` is an unknown scan, which each frame's own fields settle.
-MPEG-1, VP8, VP9, and AV1 have no interlaced coding.
+H.264, MPEG-2, MPEG-4 Part 2, VC-1, and WMV3 decode interlaced video into woven frames, so they are eligible whatever `IsInterlaced` says, and a missing or malformed `IsInterlaced` is an unknown scan, which each frame's own fields settle.
+MPEG-1, H.263, MS-MPEG4, VP8, VP9, and AV1 have no interlaced coding.
 `presentsInterlacedVideo(codec)` exports the per-codec answer, so a host's negotiation offers interlaced streams of exactly those codecs, outside its Dolby Vision labels.
 
 | Route | Interlaced video | Field order from |
