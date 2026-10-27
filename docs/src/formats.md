@@ -18,7 +18,7 @@ It does not play live streams, HLS or DASH, or a server transcode.
 | MP4, M4V, MOV, 3GP, 3G2 | H.264, HEVC, VP8, VP9, AV1, VC-1 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, PCM |
 | MOV, MJ2 | JPEG 2000 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, PCM |
 | MPEG-TS, M2TS, MTS | H.264, HEVC, MPEG-1, MPEG-2, VC-1 | AAC, MP3, AC-3, E-AC-3, DTS |
-| AVI | H.264, VP8, VP9, AV1 | AAC, MP3, AC-3, FLAC, Vorbis, PCM |
+| AVI | H.264, HEVC, VP8, VP9, AV1 | AAC, MP3, AC-3, FLAC, Vorbis, PCM |
 | FLV, ASF (WMV), MPEG program streams (MPG, VOB), Ogg, RealMedia, MXF, and every other container | Not supported | Not supported |
 
 PCM in Matroska is 8-bit unsigned, 16, 24, or 32-bit integer in either byte order, or little-endian 32 or 64-bit float.
@@ -28,7 +28,8 @@ FLAC and Vorbis in AVI play when their `strf` extradata holds the STREAMINFO blo
 The rows come from `capability/CustomContainerCodecSupport.ts`.
 
 AVI plays only what its `idx1` index covers: a file whose video stream outruns the index, as an OpenDML file past about 1 GiB does, is refused, since Mediabunny reads no OpenDML index.
-AVI keeps no presentation times, so HEVC, whose owned path presents packets as stamped, is refused in AVI; H.264 with B-frames relies on Mediabunny's sample sink to reorder, which WebKit's does not, so on WebKit only Baseline H.264 plays from AVI.
+AVI keeps no presentation times, only each chunk's slot in decode order, so the fork's AVI demuxer gives H.264 and HEVC packets their pictures' presentation times from the picture order counts in their slice headers, as FFmpeg does, and B-frames play in order on every browser.
+HEVC in AVI plays under the HEVC, H265, hvc1, and hev1 tags, and under the zero tag FFmpeg's AVI muxer writes unless told one, which the fork recognizes by the parameter sets of the first chunk; FFmpeg, and so Jellyfin, reads such a stream as uncompressed video.
 An AIFF file opens, but the pipeline plays only sources with video, so AIFF, like every audio-only file, falls back to the host.
 A track whose edit list Mediabunny cannot honor, as `getUnsupportedFeatures()` reports, is refused rather than played out of sync.
 

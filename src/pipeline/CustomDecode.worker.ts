@@ -1,7 +1,6 @@
 /* eslint-disable no-restricted-globals */
 import {
     ALL_FORMATS,
-    AviInputFormat,
     BlobSource,
     Input,
     MpegTsInputFormat,
@@ -1144,10 +1143,6 @@ async function requireDemuxableVideoTrack(input: Input, videoTrack: InputVideoTr
     }
     if (await hasIncompleteAVIIndex(input, videoTrack)) {
         throw new UnsupportedCustomDecodeSourceError('The selected AVI video track outruns its idx1 index: opendml-index-unread');
-    }
-    // AVI stamps packets in decode order, which the owned HEVC path would present as they are
-    if (codec === 'hevc' && await input.getFormat() instanceof AviInputFormat) {
-        throw new UnsupportedCustomDecodeSourceError('The selected AVI video track has no presentation order: hevc');
     }
 }
 

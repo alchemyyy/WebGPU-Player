@@ -30,7 +30,6 @@ A host calls these, in this order, for each playback:
 2. `selectVideoStream`, and a codec the engine names.
    A codec it knows but nothing decodes, MPEG-4 Part 2, MS-MPEG4, H.263, or Theora, reads `video-codec-without-route`; any other unnamed codec reads `codec-unsupported`.
 3. Rotation 0, and a codec that keeps an interlaced stream's fields together in frames (`codesInterlacedFieldsApart`, from `presentsInterlacedVideo`).
-   On WebKit, H.264 in AVI only when its profile codes no B-frames (`presentsInDecodeOrder`), as `presentation-order-unsupported`.
 4. `selectVideoOutput` (below), and a route that presents the stream's scan (`refusesVideoScan`).
 5. `selectPlaybackAudio`.
 6. `supportsCustomContainerCodecCombination`.
@@ -38,7 +37,7 @@ A host calls these, in this order, for each playback:
 
 An ineligible result carries its reason, and the host falls back.
 
-The worker refuses what only the file shows, with a message that names the check: an MPEG-4 Part 2 track (`no decode route: mpeg4`), a track whose edit list Mediabunny cannot honor (`getUnsupportedFeatures()`), an AVI video track that outruns its `idx1` index (`opendml-index-unread`), HEVC in AVI (`no presentation order: hevc`), and a DTS Express audio track (`no decode route: dtse`).
+The worker refuses what only the file shows, with a message that names the check: an MPEG-4 Part 2 track (`no decode route: mpeg4`), a track whose edit list Mediabunny cannot honor (`getUnsupportedFeatures()`), an AVI video track that outruns its `idx1` index (`opendml-index-unread`), and a DTS Express audio track (`no decode route: dtse`).
 On the frame-pool route an MPEG-TS or M2TS track of MPEG-1, MPEG-2, or VC-1 must carry the negotiated codec (`container-codec`), and takes its first sequence header's extradata as codec private data (`sequence-header-missing` when none of its first 64 packets has one).
 AVI audio takes the same routes as any container's: Mediabunny reads a WAVE_FORMAT_EXTENSIBLE track's codec from its SubFormat, and gives FLAC and Vorbis the decoder descriptions their `strf` extradata holds.
 A track whose container declares a WAVE channel mask, which Mediabunny's `getChannelMask` reports for WAVE_FORMAT_EXTENSIBLE, is laid out by that mask: the worker takes its layout from `CustomWaveChannelLayout.ts` and passes the mask to the audio decode worker's attempt, whose output stage binds Mediabunny's decoded samples to it.
