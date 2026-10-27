@@ -29,7 +29,8 @@ describe('RenderSettings', () => {
     });
 
     it('creates independent versioned HDR settings with explicit overrides', () => {
-        const firstSettings = createHDRToSDRRenderSettings({
+        const defaultSettings = createHDRToSDRRenderSettings();
+        const overriddenSettings = createHDRToSDRRenderSettings({
             display: {
                 brightness: 0.1,
                 contrast: 1.2,
@@ -37,12 +38,11 @@ describe('RenderSettings', () => {
             },
             toneMapping: {
                 desaturationStrength: 0.5,
-                operator: 'reinhard'
+                operator: 'spline'
             }
         });
-        const secondSettings = createHDRToSDRRenderSettings();
 
-        expect(firstSettings).toMatchObject({
+        expect(overriddenSettings).toMatchObject({
             mode: 'hdr-to-sdr',
             display: {
                 brightness: 0.1,
@@ -52,14 +52,14 @@ describe('RenderSettings', () => {
             outputTransfer: 'srgb',
             toneMapping: {
                 desaturationStrength: 0.5,
-                operator: 'reinhard'
+                operator: 'spline'
             },
             version: RENDER_SETTINGS_VERSION
         });
-        expect(secondSettings.outputTransfer).toBe('srgb');
-        expect(secondSettings.toneMapping.operator).toBe('spline');
-        expect(secondSettings.toneMapping.desaturationStrength).toBe(0.25);
-        expect(secondSettings.display).toEqual({
+        // Overrides leave the next settings at the defaults, whose display adjustments change nothing
+        expect(createHDRToSDRRenderSettings()).toEqual(defaultSettings);
+        expect(defaultSettings.outputTransfer).toBe('srgb');
+        expect(defaultSettings.display).toEqual({
             brightness: 0,
             contrast: 1,
             saturation: 1
@@ -141,7 +141,7 @@ describe('RenderSettings', () => {
     });
 
     it('serializes the spline operator without changing the uniform footprint', () => {
-        const data = createRenderSettingsUniformData(createHDRToSDRRenderSettings());
+        const data = createRenderSettingsUniformData(createHDRToSDRRenderSettings({ toneMapping: { operator: 'spline' } }));
         const integerValues = new Uint32Array(data.buffer);
 
         expect(data.byteLength).toBe(RENDER_SETTINGS_UNIFORM_BYTE_LENGTH);
