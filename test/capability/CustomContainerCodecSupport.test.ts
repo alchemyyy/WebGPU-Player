@@ -51,9 +51,26 @@ describe('CustomContainerCodecSupport', () => {
         [ 'h264', 'pcm_f32le' ],
         [ 'h264', 'flac' ],
         [ 'vp9', 'vorbis' ],
-        [ 'hevc', 'ac3' ]
+        [ 'hevc', 'ac3' ],
+        [ 'mpeg4', 'mp3' ],
+        [ 'msmpeg4v3', 'mp3' ],
+        [ 'msmpeg4v2', 'pcm_s16le' ],
+        [ 'msmpeg4v1', 'mp3' ],
+        [ 'h263', 'pcm_s16le' ]
     ] as const)('carries %s with %s in AVI, which the fork demuxes', (videoCodec, audioCodec) => {
         expect(supportsCustomContainerCodecCombination([ 'avi' ], videoCodec, audioCodec)).toBe(true);
+    });
+
+    it.each([
+        [ 'mkv', 'mpeg4', 'aac' ],
+        [ 'mkv', 'msmpeg4v3', 'mp3' ],
+        [ 'mkv', 'h263', 'flac' ],
+        [ 'mp4', 'mpeg4', 'aac' ],
+        [ 'mov', 'mpeg4', 'pcm_s16le' ],
+        [ '3gp', 'h263', 'aac' ],
+        [ '3g2', 'h263', null ]
+    ] as const)('carries %s %s with %s, whose tracks the mpeg4 package\'s route reads', (container, videoCodec, audioCodec) => {
+        expect(supportsCustomContainerCodecCombination([ container ], videoCodec, audioCodec)).toBe(true);
     });
 
     it.each([
@@ -77,7 +94,11 @@ describe('CustomContainerCodecSupport', () => {
         [ 'webm', 'vp9', 'ac3' ],
         [ 'ts', 'wmv3', 'ac3' ],
         [ 'mp4', 'h264', 'mlp' ],
-        [ 'm2ts', 'hevc', 'truehd' ]
+        [ 'm2ts', 'hevc', 'truehd' ],
+        [ 'mp4', 'msmpeg4v3', 'aac' ],
+        [ 'mov', 'msmpeg4v1', 'pcm_s16le' ],
+        [ 'webm', 'mpeg4', 'opus' ],
+        [ 'ts', 'mpeg4', 'mp3' ]
     ] as const)(
         'rejects the undeclared %s/%s/%s container combination',
         (container, videoCodec, audioCodec) => {

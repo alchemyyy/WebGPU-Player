@@ -54,7 +54,7 @@ const UHD_I420P10_PLANE_LAYOUTS: readonly PlaneLayout[] = [
 const EXPLICIT_PLANAR_FORMAT_REJECTION_MESSAGE = 'I420P10 is unsupported in ParseVideoFrameCopyToOptions';
 // The video codecs WebCodecs probes settle, and those only a GPU decoder package decodes
 const WEB_CODECS_VIDEO_CODECS = [ 'h264', 'hevc', 'vp8', 'vp9', 'av1' ] as const;
-const PACKAGE_VIDEO_CODECS = [ 'jpeg2000', 'mpeg1video', 'mpeg2video', 'vc1', 'wmv3' ] as const;
+const PACKAGE_VIDEO_CODECS = [ 'jpeg2000', 'mpeg1video', 'mpeg2video', 'vc1', 'wmv3', 'mpeg4', 'h263', 'msmpeg4v1', 'msmpeg4v2', 'msmpeg4v3' ] as const;
 const JPEG2000_CODEC_STRING = 'mjp2';
 // The raw HEVC probe, which an SDR HEVC item does not select
 const RAW_HEVC_PROBE = 'raw:hevc';

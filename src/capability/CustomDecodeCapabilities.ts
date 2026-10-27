@@ -83,10 +83,27 @@ export const CUSTOM_VIDEO_CODECS = [
     'vc1',
     // FFmpeg's codec for the VC-1 Simple and Main profiles, which its VC-1 decoder decodes under its own codec ID
     'wmv3',
-    'jpeg2000'
+    'jpeg2000',
+    // MPEG-4 Part 2 (DivX, Xvid), H.263, and the Microsoft MPEG-4 variants FFmpeg names apart from it, which one decoder package decodes
+    'mpeg4',
+    'h263',
+    'msmpeg4v1',
+    'msmpeg4v2',
+    'msmpeg4v3'
 ] as const;
 /** The video codecs no browser decodes, which only a host's GPU decoder package plays. */
-export const CUSTOM_PACKAGE_VIDEO_CODECS = [ 'mpeg1video', 'mpeg2video', 'vc1', 'wmv3', 'jpeg2000' ] as const satisfies readonly (typeof CUSTOM_VIDEO_CODECS[number])[];
+export const CUSTOM_PACKAGE_VIDEO_CODECS = [
+    'mpeg1video',
+    'mpeg2video',
+    'vc1',
+    'wmv3',
+    'jpeg2000',
+    'mpeg4',
+    'h263',
+    'msmpeg4v1',
+    'msmpeg4v2',
+    'msmpeg4v3'
+] as const satisfies readonly (typeof CUSTOM_VIDEO_CODECS[number])[];
 export const CUSTOM_RAW_HDR_VIDEO_CODECS = [ 'hevc', 'vp9', 'av1' ] as const;
 export const CUSTOM_NATIVE_SURROUND_AUDIO_CODECS = NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_CODECS;
 export const CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS = NATIVE_ULTRA_HD_VIDEO_CAPABILITY_CODECS;
@@ -920,6 +937,7 @@ const CUSTOM_VIDEO_CODEC_NAMES: ReadonlyMap<string, CustomVideoCodec> = new Map<
     [ 'AV1', 'av1' ],
     [ 'AVC', 'h264' ],
     [ 'AVC1', 'h264' ],
+    [ 'H263', 'h263' ],
     [ 'H264', 'h264' ],
     [ 'H265', 'hevc' ],
     [ 'HEVC', 'hevc' ],
@@ -932,6 +950,11 @@ const CUSTOM_VIDEO_CODEC_NAMES: ReadonlyMap<string, CustomVideoCodec> = new Map<
     [ 'MPEG-2', 'mpeg2video' ],
     [ 'MPEG2', 'mpeg2video' ],
     [ 'MPEG2VIDEO', 'mpeg2video' ],
+    [ 'MPEG4', 'mpeg4' ],
+    [ 'MSMPEG4', 'msmpeg4v3' ],
+    [ 'MSMPEG4V1', 'msmpeg4v1' ],
+    [ 'MSMPEG4V2', 'msmpeg4v2' ],
+    [ 'MSMPEG4V3', 'msmpeg4v3' ],
     [ 'VC-1', 'vc1' ],
     [ 'VC1', 'vc1' ],
     [ 'VP8', 'vp8' ],
@@ -2586,6 +2609,11 @@ function addVideoStreamProbes(
         case 'mpeg2video':
         case 'vc1':
         case 'wmv3':
+        case 'mpeg4':
+        case 'h263':
+        case 'msmpeg4v1':
+        case 'msmpeg4v2':
+        case 'msmpeg4v3':
             // Only a GPU decoder package decodes these, and it verifies itself
             break;
         case 'vp8':

@@ -109,6 +109,7 @@ const VIDEO_CODEC_ALIASES: Readonly<Record<string, CustomVideoCodec>> = {
     AVC: 'h264',
     AVC1: 'h264',
     AV1: 'av1',
+    H263: 'h263',
     H264: 'h264',
     H265: 'hevc',
     HEVC: 'hevc',
@@ -121,6 +122,12 @@ const VIDEO_CODEC_ALIASES: Readonly<Record<string, CustomVideoCodec>> = {
     'MPEG-2': 'mpeg2video',
     MPEG2: 'mpeg2video',
     MPEG2VIDEO: 'mpeg2video',
+    MPEG4: 'mpeg4',
+    // FFmpeg's decoder name of MS-MPEG4 version 3, the Microsoft variant DivX 3 encodes
+    MSMPEG4: 'msmpeg4v3',
+    MSMPEG4V1: 'msmpeg4v1',
+    MSMPEG4V2: 'msmpeg4v2',
+    MSMPEG4V3: 'msmpeg4v3',
     'VC-1': 'vc1',
     VC1: 'vc1',
     VP8: 'vp8',
@@ -128,15 +135,8 @@ const VIDEO_CODEC_ALIASES: Readonly<Record<string, CustomVideoCodec>> = {
     // FFmpeg's name of the VC-1 Simple and Main profiles, which ffprobe reports for WMV3 streams
     WMV3: 'wmv3'
 };
-// Video codecs the engine knows, as ffprobe names them, that neither WebCodecs nor a decoder package decodes: MPEG-4 Part 2 (DivX, Xvid) and its
-// Microsoft variants, H.263, and Theora. Mediabunny identifies MPEG-4 Part 2 tracks, but the engine keeps no CPU video decoder
+// Video codecs the engine knows, as ffprobe names them, that neither WebCodecs nor a decoder package decodes: Theora
 const VIDEO_CODECS_WITHOUT_ROUTE: ReadonlySet<string> = new Set<string>([
-    'H263',
-    'MPEG4',
-    'MSMPEG4',
-    'MSMPEG4V1',
-    'MSMPEG4V2',
-    'MSMPEG4V3',
     'THEORA'
 ]);
 // The VC-1 profiles of each codec, as ffprobe names them: vc1 is the Advanced profile, and wmv3 the Simple and Main profiles and the Complex profile, which FFmpeg decodes as Main
@@ -578,6 +578,11 @@ export function presentsInterlacedVideo(codec: CustomVideoCodec): boolean {
         case 'vp8':
         case 'vp9':
         case 'wmv3':
+        case 'mpeg4':
+        case 'h263':
+        case 'msmpeg4v1':
+        case 'msmpeg4v2':
+        case 'msmpeg4v3':
             return true;
     }
 }
@@ -758,6 +763,11 @@ function hasSupportedNativeVideoProfile(codec: CustomVideoCodec, stream: MediaSt
         case 'vc1':
         case 'wmv3':
         case 'jpeg2000':
+        case 'mpeg4':
+        case 'h263':
+        case 'msmpeg4v1':
+        case 'msmpeg4v2':
+        case 'msmpeg4v3':
             return false;
     }
 }
@@ -778,6 +788,11 @@ function hasSupportedRawVideoProfile(codec: CustomVideoCodec, stream: MediaStrea
         case 'vc1':
         case 'vp8':
         case 'wmv3':
+        case 'mpeg4':
+        case 'h263':
+        case 'msmpeg4v1':
+        case 'msmpeg4v2':
+        case 'msmpeg4v3':
             return false;
     }
 }
@@ -1309,6 +1324,11 @@ function getDolbyVisionReconstructionFrameFormat(
         case 'vp8':
         case 'vp9':
         case 'wmv3':
+        case 'mpeg4':
+        case 'h263':
+        case 'msmpeg4v1':
+        case 'msmpeg4v2':
+        case 'msmpeg4v3':
             return null;
     }
 }
@@ -1994,6 +2014,7 @@ function hasPotentialCustomVideoDimensions(stream: MediaStream): boolean {
 /**
  * A codec only a decoder package decodes has no native route to rule out, so the host's packages and their headers decide at eligibility.
  * The container rules placed the codec already; FFmpeg names the VC-1 Advanced profile vc1 and the others wmv3, so a profile of the other codec has no route.
+ * MPEG-4 Part 2, H.263, and MS-MPEG4 take every profile: the package's header refuses a deeper stream and its parser a Studio profile.
  */
 function hasPotentialPackageVideoRoute(codec: CustomPackageVideoCodec, stream: MediaStream): boolean {
     switch (codec) {
@@ -2005,6 +2026,11 @@ function hasPotentialPackageVideoRoute(codec: CustomPackageVideoCodec, stream: M
         case 'jpeg2000':
         case 'mpeg1video':
         case 'mpeg2video':
+        case 'mpeg4':
+        case 'h263':
+        case 'msmpeg4v1':
+        case 'msmpeg4v2':
+        case 'msmpeg4v3':
             return true;
     }
 }

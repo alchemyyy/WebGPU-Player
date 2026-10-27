@@ -55,22 +55,43 @@ const CUSTOM_MATROSKA_AUDIO_CODECS: readonly CustomAudioCodec[] = Object.freeze(
 const CUSTOM_NATIVE_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.freeze(
     CUSTOM_VIDEO_CODECS.filter((codec: CustomVideoCodec): boolean => !isCustomPackageVideoCodec(codec))
 );
-// The worker reads VC-1 from vc-1 sample entries, as SMPTE RP 2025 binds it to ISO base media files
+// The worker reads VC-1 from vc-1 sample entries, as SMPTE RP 2025 binds it to ISO base media files, MPEG-4 Part 2 from mp4v sample entries, and
+// H.263 from s263 and h263 sample entries
 const CUSTOM_ISO_BASE_MEDIA_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.freeze([
     ...CUSTOM_NATIVE_VIDEO_CODECS,
-    'vc1'
+    'vc1',
+    'mpeg4',
+    'h263'
 ]);
-// The worker reads MPEG-1 and MPEG-2 from their own tracks, and VC-1 and WMV3 from Video for Windows tracks
+// The worker reads MPEG-1 and MPEG-2 from their own tracks, VC-1 and WMV3 from Video for Windows tracks, and MPEG-4 Part 2, H.263, and MS-MPEG4
+// from their own tracks and Video for Windows tracks
 const CUSTOM_MATROSKA_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.freeze([
     ...CUSTOM_NATIVE_VIDEO_CODECS,
     'mpeg1video',
     'mpeg2video',
     'vc1',
-    'wmv3'
+    'wmv3',
+    'mpeg4',
+    'h263',
+    'msmpeg4v1',
+    'msmpeg4v2',
+    'msmpeg4v3'
 ]);
 export const CUSTOM_MATROSKA_PROFILE_CONTAINER = 'mkv';
-// The fork's AVI demuxer gives H.264 and HEVC packets presentation timestamps from their pictures' order counts
-const CUSTOM_AVI_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.freeze([ 'h264', 'hevc', 'vp8', 'vp9', 'av1' ]);
+// The fork's AVI demuxer gives H.264 and HEVC packets presentation timestamps from their pictures' order counts, and the worker restamps MPEG-4
+// Part 2 B-VOPs; H.263 and MS-MPEG4 code no B pictures
+const CUSTOM_AVI_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.freeze([
+    'h264',
+    'hevc',
+    'vp8',
+    'vp9',
+    'av1',
+    'mpeg4',
+    'h263',
+    'msmpeg4v1',
+    'msmpeg4v2',
+    'msmpeg4v3'
+]);
 // The audio Mediabunny maps from WAVEFORMATEX or a WAVE_FORMAT_EXTENSIBLE SubFormat, with FLAC and Vorbis described by their strf extradata
 const CUSTOM_AVI_AUDIO_CODECS: readonly CustomAudioCodec[] = Object.freeze([
     'aac',
