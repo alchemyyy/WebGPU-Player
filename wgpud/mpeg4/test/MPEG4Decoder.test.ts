@@ -25,7 +25,7 @@ import { createGPUDecoderBindGroupLayoutEntries, createGPUDecoderModule } from '
 import type { GPUDecoderDispatch, GPUDecoderErrorRecovery, GPUDecoderManifest } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
 import { getGPUDecoderVectorFormats } from 'webgpu-player/decode/video/gpu/GPUDecoderVerification';
 
-import { loadDecoderProjectVideoPackage, readDecoderProjectSource } from '../../../test/helpers/decoderPackages';
+import { loadDecoderProjectVideoPackage, readDecoderProjectSource, requireFixedPacketByteLength } from '../../../test/helpers/decoderPackages';
 import { DECODERS_DIRECTORY } from '../../../test/helpers/enginePaths';
 import { installWebGPUGlobals } from '../../../test/decode/video/gpu/webGPUGlobals';
 
@@ -204,9 +204,10 @@ describe('the MPEG-4 Part 2, H.263, and MS-MPEG4 decoder package', () => {
         const largestRecordByteLength = (requireBodyConstant(manifest, RECORD_HEADER_WORDS_PATTERN) + maximumMacroblocks * macroblockWords) * BYTES_PER_WORD;
 
         expect(largestMacroblockCount).toBeLessThanOrEqual(maximumMacroblocks);
-        expect(largestRecordByteLength).toBeLessThanOrEqual(manifest.packetByteLength);
-        expect(manifest.packetByteLength).toBeLessThanOrEqual(GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
-        expect(manifest.packetByteLength).toBeLessThanOrEqual(MAXIMUM_STORAGE_BUFFER_BINDING_SIZE);
+        const packetByteLength = requireFixedPacketByteLength(manifest);
+        expect(largestRecordByteLength).toBeLessThanOrEqual(packetByteLength);
+        expect(packetByteLength).toBeLessThanOrEqual(GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
+        expect(packetByteLength).toBeLessThanOrEqual(MAXIMUM_STORAGE_BUFFER_BINDING_SIZE);
     });
 
     it.each(LARGEST_STREAMS)(
