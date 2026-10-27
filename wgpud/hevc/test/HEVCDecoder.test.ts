@@ -21,7 +21,7 @@ import {
 import { createGPUDecoderModule } from 'webgpu-player/decode/video/gpu/GPUDecoderPrelude';
 import type { GPUDecodeStreamFacts } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
 
-import { readDecoderProjectSource } from '../../../test/helpers/decoderPackages';
+import { readDecoderProjectSource, requireFixedPacketByteLength } from '../../../test/helpers/decoderPackages';
 
 const PROJECT = 'hevc';
 const DECODER_NAME = 'HEVC';
@@ -171,8 +171,8 @@ describe('the WGSL HEVC decoder', () => {
         expect(manifest.parser).toBe(GPU_DECODER_PARSER_ABI_VERSION);
         expect(manifest.references).toBe(REFERENCE_SLOT_COUNT);
         expect(manifest.reorder).toBe(REORDER_DEPTH);
-        expect(manifest.packetByteLength).toBe(MAXIMUM_PACKET_BYTE_LENGTH);
-        expect(manifest.packetByteLength).toBeLessThanOrEqual(GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
+        expect(requireFixedPacketByteLength(manifest)).toBe(MAXIMUM_PACKET_BYTE_LENGTH);
+        expect(requireFixedPacketByteLength(manifest)).toBeLessThanOrEqual(GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
     });
 
     it('names its error codes within a status word\'s high byte, and describes an error word by its name and failing value', () => {

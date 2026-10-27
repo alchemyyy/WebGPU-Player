@@ -7,7 +7,7 @@ import { GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH } from 'webgpu-player/decode/vide
 import { getGPUDecoderFacts, GPU_DECODER_STREAM_FACTS, parseGPUDecoderManifest } from 'webgpu-player/decode/video/gpu/GPUDecoderManifest';
 import { createGPUDecoderModule } from 'webgpu-player/decode/video/gpu/GPUDecoderPrelude';
 
-import { readDecoderProjectSource } from '../../../test/helpers/decoderPackages';
+import { readDecoderProjectSource, requireFixedPacketByteLength } from '../../../test/helpers/decoderPackages';
 
 const PROJECT = 'uncompressed';
 const DECODER_NAME = 'Uncompressed planar';
@@ -72,8 +72,8 @@ describe('the uncompressed planar proof decoder', () => {
     });
 
     it.each(GPU_DECODER_OUTPUT_FORMATS)('sizes the packet ring for the largest %s frame within the packet limit', (format: GPUDecoderOutputFormat) => {
-        expect(manifest.packetByteLength).toBeGreaterThanOrEqual(getFrameByteLength(format, MAXIMUM_WIDTH, MAXIMUM_HEIGHT));
-        expect(manifest.packetByteLength).toBeLessThanOrEqual(GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
+        expect(requireFixedPacketByteLength(manifest)).toBeGreaterThanOrEqual(getFrameByteLength(format, MAXIMUM_WIDTH, MAXIMUM_HEIGHT));
+        expect(requireFixedPacketByteLength(manifest)).toBeLessThanOrEqual(GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
     });
 
     it('accepts streams of any bit depth up to its largest size', () => {

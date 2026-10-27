@@ -5,6 +5,7 @@ import { evaluatePassExpression } from '../../../presentation/passes/PassExpress
 import { BYTES_PER_WORD, INDIRECT_DISPATCH_ARGUMENTS_BYTE_LENGTH, MAXIMUM_STORAGE_BUFFER_BINDING_SIZE } from '../../../presentation/WebGPUConstants';
 import type { GPUDecoderOutputFormat } from './GPUDecodeFormats';
 import {
+    GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH,
     GPU_DECODE_MAXIMUM_SCRATCH_BUFFER_BYTE_LENGTH,
     GPU_DECODE_PACKET_RING_PACKET_COUNT,
     GPU_DECODE_POOL_CODED_SIZE_ALIGNMENT
@@ -26,15 +27,16 @@ const MINIMUM_BUFFER_BYTE_LENGTH = 1;
 // The check a decoder whose header conditions do not take the stream fails
 const ACCEPTS_FAILURE_CODE: GPUVideoDecodeFailureCode = 'accepts';
 
-/** The byte lengths of a decoder's state and scratch buffers for one stream and output format. */
+/** The byte lengths of a decoder's state and scratch buffers and its largest packet for one stream and output format. */
 export type GPUDecoderBufferSizes = Readonly<{
     bufferByteLengths: readonly number[]
+    packetByteLength: number
     stateByteLength: number
 }>;
 
 /**
- * Evaluates a decoder's state and scratch buffer sizes for the stream and format, each a whole byte count within its bounds.
- * Throws the 'state-size' or 'buffer-size' GPUVideoDecodeError with the value that failed.
+ * Evaluates a decoder's state and scratch buffer sizes and its largest packet for the stream and format, each a whole byte count within its bounds.
+ * Throws the 'state-size', 'buffer-size', or 'packet-size' GPUVideoDecodeError with the value that failed.
  */
 export function evaluateGPUDecoderBufferSizes(manifest: GPUDecoderHeader, stream: GPUDecodeStreamFacts, format: GPUDecoderOutputFormat): GPUDecoderBufferSizes {
     const facts = getGPUDecoderFacts(stream, format);
@@ -51,12 +53,16 @@ export function evaluateGPUDecoderBufferSizes(manifest: GPUDecoderHeader, stream
         }
         bufferByteLengths.push(size.byteLength);
     }
-    return { bufferByteLengths, stateByteLength: state.byteLength };
+    const packet = evaluateGPUDecoderByteLength(manifest.packetByteLength, facts, MINIMUM_BUFFER_BYTE_LENGTH, GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
+    if (packet.kind === 'invalid') {
+        throw new GPUVideoDecodeError({ code: 'packet-size', detail: packet.detail });
+    }
+    return { bufferByteLengths, packetByteLength: packet.byteLength, stateByteLength: state.byteLength };
 }
 
-/** Returns the byte length of a decoder's packet ring: its packets of the header's largest packet, each word aligned. */
-export function getGPUDecoderPacketRingByteLength(manifest: GPUDecoderHeader): number {
-    return alignTo(manifest.packetByteLength, BYTES_PER_WORD) * GPU_DECODE_PACKET_RING_PACKET_COUNT;
+/** Returns the byte length of a decoder's packet ring for a stream: its packets of the stream's largest packet, each word aligned. */
+export function getGPUDecoderPacketRingByteLength(sizes: GPUDecoderBufferSizes): number {
+    return alignTo(sizes.packetByteLength, BYTES_PER_WORD) * GPU_DECODE_PACKET_RING_PACKET_COUNT;
 }
 
 /**
@@ -78,7 +84,7 @@ export function findGPUDecoderBufferLimitFailure(
             return { code: 'buffer-size', detail: `${buffer.name} ${byteLength} > ${maximumBufferByteLength}` };
         }
     }
-    const ringByteLength = getGPUDecoderPacketRingByteLength(manifest);
+    const ringByteLength = getGPUDecoderPacketRingByteLength(sizes);
     if (ringByteLength > maximumBufferByteLength) {
         return { code: 'packet-size', detail: `ring ${ringByteLength} > ${maximumBufferByteLength}` };
     }
