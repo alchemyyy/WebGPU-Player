@@ -189,6 +189,7 @@ import {
     type OwnedVideoPacketIterator,
     type OwnedVideoStreamRun
 } from '../decode/video/native/OwnedVideoDecodeStream';
+import { createVideoDecodeFence, type VideoDecodeFence } from '../decode/video/native/VideoDecodeFence';
 import { readISOBaseMediaDolbyVisionTrackConfiguration } from '../demux/dolby-vision/ISOBaseMediaDolbyVisionConfiguration';
 import {
     readMatroskaDolbyVisionTrackConfiguration
@@ -2176,13 +2177,22 @@ function createOwnedHEVCVideoDecoderPort(
     );
 }
 
+// The decode fence of every owned attempt this worker runs, whose device the first preroll creates and the worker keeps
+let videoDecodeFence: VideoDecodeFence | null = null;
+
 /** Binds an owned stream to its decode run and to the geometry its BL and EL frames must keep. */
 function createOwnedVideoStreamRun(
     run: DecodeRun,
     expectedGeometry: RawVideoFrameGeometry,
     enhancementExpectedGeometry: RawVideoFrameGeometry | null
 ): OwnedVideoStreamRun {
+    // Only VideoFrame output presents decoded frames on the GPU; raw planes copy them out, so their prerolls run unfenced
+    if (run.videoOutputMode === 'video-frame') {
+        videoDecodeFence ??= createVideoDecodeFence(navigator.gpu);
+    }
+    const decodeFence = run.videoOutputMode === 'video-frame' ? videoDecodeFence : null;
     return {
+        ...(decodeFence ? { decodeFence } : {}),
         isStopped: (): boolean => isVideoAttemptStopped(run),
         notifyDecoderProgress: (): void => {
             wakeWaiters(run.wakeVideoDecodeWaiters);

@@ -211,10 +211,10 @@ describe('runOwnedVP9VideoStream', () => {
         },
         {
             description: 'exactly on a frame',
-            expectedFrameIndices: [ 1, 2, 3 ],
+            expectedFrameIndices: [ 2, 3 ],
             startTimeMicroseconds: (2 * FRAME_DURATION_MICROSECONDS) as Microseconds
         }
-    ])('drops frames before a start $description except the latest one', async ({
+    ])('presents from the frame a start $description falls in and closes every frame before it', async ({
         expectedFrameIndices,
         startTimeMicroseconds
     }) => {

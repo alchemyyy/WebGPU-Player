@@ -5,7 +5,9 @@ import type { Microseconds } from 'webgpu-player/MediaTime';
 import { clearTimingTrace, exportTimingTrace, startTimingTrace } from 'webgpu-player/TimingTrace';
 import type { RawVideoFrameGeometry } from 'webgpu-player/decode/video/RawVideoFrameCopy';
 import {
+    OWNED_VIDEO_DECODE_FENCE_TIMEOUT_MILLISECONDS,
     OWNED_VIDEO_PACKET_PACING_MILLISECONDS,
+    OWNED_VIDEO_PREROLL_BATCH_FRAME_COUNT,
     OwnedVideoStreamState,
     runOwnedSingleLayerVideoStream,
     type OwnedDecodedVideoOutput,
@@ -16,6 +18,7 @@ import {
     type OwnedVideoStreamRun,
     type ProcessedOwnedVideoPacket
 } from 'webgpu-player/decode/video/native/OwnedVideoDecodeStream';
+import type { VideoDecodeFence } from 'webgpu-player/decode/video/native/VideoDecodeFence';
 
 import {
     AMPLE_FRAME_CREDITS,
@@ -24,6 +27,7 @@ import {
     FRAME_DURATION_MICROSECONDS as FAKE_FRAME_DURATION_MICROSECONDS,
     KEY_PACKET_MEDIA_TIME_MICROSECONDS,
     settle,
+    type FakeVideoFrame as FakeStreamVideoFrame,
     type OwnedVideoStreamFakes
 } from '../../../helpers/ownedVideoStreamFakes';
 
@@ -352,6 +356,155 @@ describe('pumpOwnedVideoFrames pacing', () => {
                 .filter(event => event.kind === 'video-decoded')
                 .map(event => event.fields.mediaTimeMicroseconds);
             expect(decodedTimes).toEqual(fakes.run.postedFrames.map(postedFrame => postedFrame.mediaTimeMicroseconds));
+        } finally {
+            clearTimingTrace();
+        }
+    });
+});
+
+// A preroll of eleven frames before a start just after frame 10, then three frames from the start
+const PREROLL_PACKET_COUNT = 14;
+const PREROLL_LEADING_FRAME_INDEX = 10;
+const PREROLL_START_TIME_MICROSECONDS = ((PREROLL_LEADING_FRAME_INDEX * FAKE_FRAME_DURATION_MICROSECONDS) + 1) as Microseconds;
+
+/** A decode fence whose waits end only when the test completes them, oldest first, as the GPU finishes decode work in order. */
+type HeldDecodeFence = {
+    complete: () => void
+    fence: VideoDecodeFence
+    frames: FakeStreamVideoFrame[]
+    prewarm: Mock
+};
+
+function createHeldDecodeFence(): HeldDecodeFence {
+    const completions: Array<() => void> = [];
+    const frames: FakeStreamVideoFrame[] = [];
+    const prewarm = vi.fn();
+    return {
+        complete: (): void => {
+            completions.shift()?.();
+        },
+        fence: {
+            prewarm,
+            wait: (frame: VideoFrame): Promise<void> => {
+                const fakeFrame = frame as unknown as FakeStreamVideoFrame;
+                frames.push(fakeFrame);
+                return new Promise<void>(resolve => {
+                    completions.push((): void => {
+                        fakeFrame.close();
+                        resolve();
+                    });
+                });
+            }
+        },
+        frames,
+        prewarm
+    };
+}
+
+function createPrerollStream(
+    decodeFence: VideoDecodeFence,
+    startTimeMicroseconds: Microseconds = PREROLL_START_TIME_MICROSECONDS
+): { fakes: OwnedVideoStreamFakes, streamPromise: Promise<void> } {
+    const packets = Array.from(
+        { length: PREROLL_PACKET_COUNT },
+        (_value: unknown, frameIndex: number): EncodedPacket => createFramePacket(frameIndex, [ frameIndex ])
+    );
+    const fakes = createOwnedVideoStreamFakes(packets, AMPLE_FRAME_CREDITS);
+    fakes.run.decodeFence = decodeFence;
+    const streamPromise = runOwnedSingleLayerVideoStream(
+        fakes.run,
+        fakes.packetIterator,
+        pacedFrameMetadata,
+        processPacketWithoutMetadata,
+        fakes.createDecoder,
+        startTimeMicroseconds,
+        KEY_PACKET_MEDIA_TIME_MICROSECONDS
+    );
+    return { fakes, streamPromise };
+}
+
+function getFrameIndices(frames: readonly { timestamp: number }[]): number[] {
+    return frames.map((frame: { timestamp: number }): number => frame.timestamp / FAKE_FRAME_DURATION_MICROSECONDS);
+}
+
+describe('pumpOwnedVideoFrames preroll batches', () => {
+    it('keeps the decoder at most two batches ahead of the GPU, and posts the frame that ends the preroll once the GPU decoded it', async () => {
+        const heldFence = createHeldDecodeFence();
+        const { fakes, streamPromise } = createPrerollStream(heldFence.fence);
+        // Held sleeps keep each fence's bound from passing
+        fakes.run.holdSleeps = true;
+
+        await settle();
+        expect(heldFence.prewarm).toHaveBeenCalledOnce();
+        // Two batches are out, so the packet after them waits for the first batch's decode
+        expect(fakes.packetIterator.nextCallCount).toBe(2 * OWNED_VIDEO_PREROLL_BATCH_FRAME_COUNT);
+        expect(getFrameIndices(heldFence.frames)).toEqual([ OWNED_VIDEO_PREROLL_BATCH_FRAME_COUNT - 1, (2 * OWNED_VIDEO_PREROLL_BATCH_FRAME_COUNT) - 1 ]);
+
+        heldFence.complete();
+        await settle();
+        // The preroll ends at the first frame after the start, and its leading frame waits for the GPU before it posts
+        expect(fakes.packetIterator.nextCallCount).toBe(PREROLL_LEADING_FRAME_INDEX + 2);
+        expect(getFrameIndices(heldFence.frames).at(-1)).toBe(PREROLL_LEADING_FRAME_INDEX);
+        expect(fakes.run.postedFrames).toHaveLength(0);
+
+        heldFence.complete();
+        await settle();
+        expect(fakes.run.postedFrames).toHaveLength(0);
+        heldFence.complete();
+        fakes.run.holdSleeps = false;
+        fakes.run.releaseSleeps();
+        await streamPromise;
+
+        expect(getFrameIndices(fakes.run.postedFrames.map(postedFrame => ({ timestamp: postedFrame.mediaTimeMicroseconds }))))
+            .toEqual([ 10, 11, 12, 13 ]);
+        // The fence closes the clones it took; the stream closes every decoded frame, posted or dropped
+        for (const frame of [ ...heldFence.frames, ...fakes.requireDecoder().frames ]) {
+            expect(frame.close).toHaveBeenCalledOnce();
+        }
+    });
+
+    it('reads on once a fence\'s bound passes, so a GPU that never reports its work done only ends the batching', async () => {
+        const heldFence = createHeldDecodeFence();
+        const { fakes, streamPromise } = createPrerollStream(heldFence.fence);
+
+        await streamPromise;
+
+        expect(fakes.run.sleepDurations).toContain(OWNED_VIDEO_DECODE_FENCE_TIMEOUT_MILLISECONDS);
+        expect(fakes.packetIterator.nextCallCount).toBe(PREROLL_PACKET_COUNT + 1);
+        expect(fakes.run.postedFrames).toHaveLength(PREROLL_PACKET_COUNT - PREROLL_LEADING_FRAME_INDEX);
+    });
+
+    it('neither creates nor waits on a fence for an attempt that starts at its key packet', async () => {
+        const heldFence = createHeldDecodeFence();
+        const { fakes, streamPromise } = createPrerollStream(heldFence.fence, KEY_PACKET_MEDIA_TIME_MICROSECONDS);
+
+        await streamPromise;
+
+        expect(heldFence.prewarm).not.toHaveBeenCalled();
+        expect(heldFence.frames).toHaveLength(0);
+        expect(fakes.run.postedFrames).toHaveLength(PREROLL_PACKET_COUNT);
+    });
+
+    it('records each wait for the GPU\'s decode while a timing trace runs', async () => {
+        startTimingTrace();
+        try {
+            const heldFence = createHeldDecodeFence();
+            const { fakes, streamPromise } = createPrerollStream(heldFence.fence);
+            fakes.run.holdSleeps = true;
+            await settle();
+            heldFence.complete();
+            await settle();
+            heldFence.complete();
+            heldFence.complete();
+            fakes.run.holdSleeps = false;
+            fakes.run.releaseSleeps();
+            await streamPromise;
+
+            const fenceCounts = exportTimingTrace()?.events
+                .filter(event => event.kind === 'video-decode-fence')
+                .map(event => event.fields.fenceCount);
+            // The batch wait takes the oldest fence; the first post takes the remaining one with the leading frame's
+            expect(fenceCounts).toEqual([ 1, 2 ]);
         } finally {
             clearTimingTrace();
         }

@@ -36,6 +36,8 @@ export const TIMING_TRACE_EVENT_KINDS = Object.freeze([
     'render-tick',
     // Worker: the video decode loop waited for a frame credit
     'video-credit-wait',
+    // Worker: a preroll waited for the GPU to finish decoding its frames
+    'video-decode-fence',
     // Worker: an owned decode path's decoder returned a frame
     'video-decoded',
     // Worker: a decoded frame left the worker
