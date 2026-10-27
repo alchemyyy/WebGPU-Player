@@ -276,6 +276,11 @@ export type DecoderPackagesState = Readonly<{
     packages: readonly SandboxDecoderPackage[]
 }>;
 
+export type CapabilityProbeState = Readonly<{
+    /** How long the latest start waited for its capability probes, stored verdicts included */
+    negotiationMilliseconds: number | null
+}>;
+
 // Failures
 
 /** A failure the sandbox shows: which layer failed, its code, and a terse detail with the failing value. */
@@ -290,6 +295,7 @@ export type SandboxFailure = Readonly<{
 // State
 
 export type SandboxState = Readonly<{
+    capabilityProbes: CapabilityProbeState
     decoders: DecoderPackagesState
     /** Newest last, bounded */
     failures: readonly SandboxFailure[]
@@ -340,6 +346,7 @@ export function appendSandboxFailure(failures: readonly SandboxFailure[], failur
 
 export function createInitialSandboxState(): SandboxState {
     return {
+        capabilityProbes: { negotiationMilliseconds: null },
         decoders: { packages: [] },
         failures: [],
         library: { root: null, selectedPath: null, status: 'empty' },

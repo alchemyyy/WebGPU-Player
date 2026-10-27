@@ -8,6 +8,7 @@ import { createDecoderPackagePanel } from './panels/DecoderPackagePanel';
 import { createFileTreePanel } from './panels/FileTreePanel';
 import { createPipelineGraphPanel } from './panels/PipelineGraphPanel';
 import { createPlaybackInfoPanel } from './panels/PlaybackInfoPanel';
+import { createProbeCachePanel } from './panels/ProbeCachePanel';
 import { createRouteOverridePanel } from './panels/RouteOverridePanel';
 import { createShaderPanel } from './panels/ShaderPanel';
 import { createSubtitleOverlay } from './panels/SubtitleOverlay';
@@ -34,7 +35,7 @@ const REGION_PANELS: Readonly<Record<RegionName, readonly PanelFactory[]>> = {
     library: [ createFileTreePanel ],
     info: [ createPlaybackInfoPanel ],
     graph: [ createPipelineGraphPanel ],
-    controls: [ createToneMappingPanel, createRouteOverridePanel, createDecoderPackagePanel, createShaderPanel ],
+    controls: [ createToneMappingPanel, createRouteOverridePanel, createProbeCachePanel, createDecoderPackagePanel, createShaderPanel ],
     transport: [ createTransportBarPanel, createTrackSelectorPanel ]
 };
 // Hides every region; the subtitle slot stays, since cues belong to the video

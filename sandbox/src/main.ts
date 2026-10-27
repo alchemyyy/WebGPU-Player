@@ -1,9 +1,11 @@
 // The sandbox: the engine's player on a full-window surface, with overlay panels for testing it against local media.
+import { configureCapabilityProbeStore } from 'webgpu-player/capability/CapabilityProbeStore';
+import { configureCustomDecodeCapabilityBackground } from 'webgpu-player/capability/CustomDecodeCapabilities';
 import { configureEngineAssets } from 'webgpu-player/EngineAssets';
 import { configureEngineFeatureFlags } from 'webgpu-player/EngineConfiguration';
 
 import LAYOUT from '../../tools/constants.json';
-import { createInitialSandboxState, type SandboxState } from './contracts/SandboxContracts';
+import { createInitialSandboxState, type PlaybackStatus, type SandboxState } from './contracts/SandboxContracts';
 import { createMediaLibrary } from './library/MediaLibrary';
 import { createSandboxSession } from './session/SandboxSession';
 import { mountSandboxApp } from './ui/App';
@@ -31,10 +33,19 @@ async function readAssetKey(): Promise<string> {
     return buildInfo.assetKey;
 }
 
+/** Returns whether a playback is open, playing or not, which background probes wait out. */
+function isSessionOpen(status: PlaybackStatus): boolean {
+    return status === 'loading' || status === 'paused' || status === 'playing' || status === 'seeking';
+}
+
 async function startSandbox(): Promise<void> {
-    configureEngineAssets({ cacheKey: await readAssetKey() });
+    const assetKey = await readAssetKey();
+    configureEngineAssets({ cacheKey: assetKey });
+    // The asset key misses source changes the dev server serves without a rebuild, which its start key covers
+    configureCapabilityProbeStore({ buildKey: `${assetKey}-${__SANDBOX_SERVER_START_KEY__}` });
     configureEngineFeatureFlags({ isHDRToneMappingEnabled: () => Promise.resolve(true) });
     const store = createStore<SandboxState>(createInitialSandboxState());
+    configureCustomDecodeCapabilityBackground({ isPlaybackActive: (): boolean => isSessionOpen(store.getState().playback.status) });
     const surface = requireElement<HTMLDivElement>(document, SURFACE_SELECTOR);
     const session = createSandboxSession({ store, surfaceContainer: surface });
     const library = createMediaLibrary(store);

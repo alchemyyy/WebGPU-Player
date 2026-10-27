@@ -545,10 +545,12 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
         presenter.startSession(generation);
         publishPlayback({ status: 'loading' });
 
+        const probeStartMilliseconds = performance.now();
         const [ capabilities, nativeMediaAudioCapabilities ] = await Promise.all([
             probeCustomDecodeCapabilities(mediaSource),
             probeCachedNativeMediaAudioCapabilities()
         ]);
+        store.setState({ capabilityProbes: { negotiationMilliseconds: performance.now() - probeStartMilliseconds } });
         const presentationOptions = await getCustomPresentationEligibilityOptions(presenter, {
             input: current.input,
             isCurrent,

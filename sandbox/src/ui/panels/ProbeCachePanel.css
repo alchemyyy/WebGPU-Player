@@ -1,0 +1,22 @@
+/* The capability probe store: terse monospace lines, then the clear and warm-up buttons */
+.probe-cache-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.probe-cache-header {
+    font-weight: 600;
+}
+
+.probe-cache-text {
+    color: var(--sandbox-text-muted);
+    font: var(--sandbox-monospace-font);
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+}
+
+.probe-cache-buttons {
+    display: flex;
+    gap: 4px;
+}
