@@ -95,18 +95,28 @@ pub(crate) fn vdr_dm_data_payload(
         VdrDmData::parse(reader)?
     };
 
-    // No extension block may run into the CRC32 and terminator that end the RPU
-    if let Some(cmv29_dm_data) =
-        DmData::parse::<CmV29DmData>(reader, compressed_dm_data, CRC32_TERMINATOR_BITS)
-            .with_context(|| CmV29DmData::VERSION)?
+    // No extension block may run into the CRC32 and terminator that end the RPU, and the
+    // sections share FFmpeg's limits on block count
+    let mut block_counts = ExtensionBlockCounts::default();
+    if let Some(cmv29_dm_data) = DmData::parse::<CmV29DmData>(
+        reader,
+        compressed_dm_data,
+        CRC32_TERMINATOR_BITS,
+        &mut block_counts,
+    )
+    .with_context(|| CmV29DmData::VERSION)?
     {
         vdr_dm_data.cmv29_metadata = Some(DmData::V29(cmv29_dm_data));
     }
 
     if reader.available()? >= DM_DATA_PAYLOAD2_MIN_BITS
-        && let Some(cmv40_dm_data) =
-            DmData::parse::<CmV40DmData>(reader, compressed_dm_data, CRC32_TERMINATOR_BITS)
-                .with_context(|| CmV40DmData::VERSION)?
+        && let Some(cmv40_dm_data) = DmData::parse::<CmV40DmData>(
+            reader,
+            compressed_dm_data,
+            CRC32_TERMINATOR_BITS,
+            &mut block_counts,
+        )
+        .with_context(|| CmV40DmData::VERSION)?
     {
         vdr_dm_data.cmv40_metadata = Some(DmData::V40(cmv40_dm_data));
     }

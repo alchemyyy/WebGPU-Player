@@ -1,7 +1,7 @@
 use anyhow::Result;
 use bitvec_helpers::bitstream_io_reader::BsIoSliceReader;
 
-use crate::rpu::extension_metadata::{CmV29DmData, DmData};
+use crate::rpu::extension_metadata::{CmV29DmData, DmData, ExtensionBlockCounts};
 
 use super::UserDataTypeStruct;
 
@@ -24,7 +24,12 @@ impl ST2094_10DmData {
 
         // The SEI carries no static block state and no trailer after its metadata
         if meta.metadata_refresh_flag {
-            meta.dm_data = DmData::parse::<CmV29DmData>(reader, false, 0)?;
+            meta.dm_data = DmData::parse::<CmV29DmData>(
+                reader,
+                false,
+                0,
+                &mut ExtensionBlockCounts::default(),
+            )?;
         }
 
         Ok(UserDataTypeStruct::DMData(meta))

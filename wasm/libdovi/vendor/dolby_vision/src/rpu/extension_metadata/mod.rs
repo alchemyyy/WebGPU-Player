@@ -18,13 +18,56 @@ pub use cmv40::CmV40DmData;
 
 use blocks::ExtMetadataBlock;
 
-/// FFmpeg's AV_DOVI_MAX_EXT_BLOCKS; larger coded counts still parse, without preallocating
-const MAXIMUM_PREALLOCATED_EXTENSION_BLOCKS: u64 = 32;
+/// FFmpeg's DOVIExt arrays: one RPU keeps at most 7 static and 25 dynamic extension blocks across
+/// both CM sections, and parse_ext_blocks rejects the RPU at a block past either
+const MAXIMUM_STATIC_EXTENSION_BLOCKS: usize = 7;
+const MAXIMUM_DYNAMIC_EXTENSION_BLOCKS: usize = 25;
+/// FFmpeg's AV_DOVI_MAX_EXT_BLOCKS, the most blocks an RPU can keep
+const MAXIMUM_PREALLOCATED_EXTENSION_BLOCKS: u64 =
+    (MAXIMUM_STATIC_EXTENSION_BLOCKS + MAXIMUM_DYNAMIC_EXTENSION_BLOCKS) as u64;
 
 /// FFmpeg's ff_dovi_rpu_extension_is_static: levels that a compressed RPU reuses from the
 /// last uncompressed RPU instead of carrying them
 fn is_static_extension_level(level: u8) -> bool {
     matches!(level, 6 | 10 | 32 | 254 | 255)
+}
+
+/// The extension blocks one RPU's CM sections have coded so far, whether kept or skipped
+#[derive(Default)]
+pub(crate) struct ExtensionBlockCounts {
+    static_blocks: usize,
+    dynamic_blocks: usize,
+}
+
+impl ExtensionBlockCounts {
+    /// Counts one coded block against FFmpeg's limit for its kind.
+    /// A compressed RPU's static blocks are not stored, so they do not count
+    fn count(&mut self, level: u8, compressed: bool) -> Result<()> {
+        if !is_static_extension_level(level) {
+            self.dynamic_blocks += 1;
+            ensure!(
+                self.dynamic_blocks <= MAXIMUM_DYNAMIC_EXTENSION_BLOCKS,
+                "More than {MAXIMUM_DYNAMIC_EXTENSION_BLOCKS} dynamic extension blocks"
+            );
+        } else if !compressed {
+            self.static_blocks += 1;
+            ensure!(
+                self.static_blocks <= MAXIMUM_STATIC_EXTENSION_BLOCKS,
+                "More than {MAXIMUM_STATIC_EXTENSION_BLOCKS} static extension blocks"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Rejects a block whose coded length is shorter than the fields FFmpeg reads for its level,
+/// as FFmpeg's parse_ext_blocks does
+pub(crate) fn ensure_block_length(level: u8, length: u64, minimum_length: u64) -> Result<()> {
+    ensure!(
+        length >= minimum_length,
+        "Level {level} extension block length {length} is shorter than its {minimum_length}-byte fields"
+    );
+    Ok(())
 }
 
 /// Reads the coded payload of one extension block, which must end before the trailing bits
@@ -71,12 +114,13 @@ pub trait WithExtMetadataBlocks {
     fn num_ext_blocks(&self) -> u64;
 
     /// Parses a block of a level this CM version defines from the block's own coded payload.
-    /// Returns None for any other level, or when the payload is too short for the level's fields
+    /// Returns None for a level it skips, and an error for a block FFmpeg rejects, such as one
+    /// whose coded length is shorter than its level's fields
     fn parse_block(
         ext_block_level: u8,
         ext_block_length: u64,
         reader: &mut BsIoSliceReader,
-    ) -> Option<ExtMetadataBlock>;
+    ) -> Result<Option<ExtMetadataBlock>>;
     fn blocks_ref(&self) -> &Vec<ExtMetadataBlock>;
     fn blocks_mut(&mut self) -> &mut Vec<ExtMetadataBlock>;
 
@@ -146,11 +190,13 @@ pub trait WithExtMetadataBlocks {
 impl DmData {
     /// Parses one CM section the way FFmpeg's parse_ext_blocks does: every block is framed by its
     /// coded length, a known level is kept, and any other block is skipped. `compressed` drops
-    /// static levels, and `trailing_bits` follow the metadata and bound every block payload
+    /// static levels, `trailing_bits` follow the metadata and bound every block payload, and
+    /// `block_counts` carries the RPU's blocks across its sections to bound their number
     pub(crate) fn parse<T: WithExtMetadataBlocks + Default>(
         reader: &mut BsIoSliceReader,
         compressed: bool,
         trailing_bits: u64,
+        block_counts: &mut ExtensionBlockCounts,
     ) -> Result<Option<T>> {
         let num_ext_blocks = reader.read_ue()?;
         let mut meta =
@@ -164,12 +210,13 @@ impl DmData {
         for _ in 0..num_ext_blocks {
             let ext_block_length = reader.read_ue()?;
             let ext_block_level = reader.read::<8, u8>()?;
+            block_counts.count(ext_block_level, compressed)?;
             let payload = read_extension_block_payload(reader, ext_block_length, trailing_bits)?;
 
             // A block parses only from its own payload, so it never reads into the next one,
             // and its ext_dm_alignment_zero_bit padding is skipped whatever its value
             let mut payload_reader = BsIoSliceReader::from_slice(&payload);
-            let block = T::parse_block(ext_block_level, ext_block_length, &mut payload_reader);
+            let block = T::parse_block(ext_block_level, ext_block_length, &mut payload_reader)?;
             if let Some(block) = block
                 && !(compressed && is_static_extension_level(ext_block_level))
             {

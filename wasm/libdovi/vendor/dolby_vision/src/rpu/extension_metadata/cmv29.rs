@@ -4,7 +4,7 @@ use bitvec_helpers::bitstream_io_reader::BsIoSliceReader;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use super::WithExtMetadataBlocks;
+use super::{WithExtMetadataBlocks, ensure_block_length};
 use crate::rpu::extension_metadata::blocks::*;
 
 #[derive(Debug, Default, Clone)]
@@ -43,22 +43,41 @@ impl WithExtMetadataBlocks for CmV29DmData {
 
     fn parse_block(
         ext_block_level: u8,
-        _ext_block_length: u64,
+        ext_block_length: u64,
         reader: &mut BsIoSliceReader,
-    ) -> Option<ExtMetadataBlock> {
+    ) -> Result<Option<ExtMetadataBlock>> {
+        // The bytes of the fields FFmpeg's parse_ext_v1 reads for each level
+        let minimum_length = match ext_block_level {
+            1 => 5,
+            2 => 11,
+            4 => 3,
+            5 => 7,
+            6 => 8,
+            255 => 6,
+            // Unknown and CM v4.0 levels, which FFmpeg keeps with zeroed fields and nothing reads
+            _ => return Ok(None),
+        };
+        ensure_block_length(ext_block_level, ext_block_length, minimum_length)?;
+
         let ext_metadata_block = match ext_block_level {
             1 => level1::ExtMetadataBlockLevel1::parse(reader),
             2 => level2::ExtMetadataBlockLevel2::parse(reader),
             4 => level4::ExtMetadataBlockLevel4::parse(reader),
             5 => level5::ExtMetadataBlockLevel5::parse(reader),
             6 => level6::ExtMetadataBlockLevel6::parse(reader),
-            255 => level255::ExtMetadataBlockLevel255::parse(reader),
-            // Unknown and CM v4.0 levels, which FFmpeg's parse_ext_v1 skips
-            _ => return None,
-        };
+            _ => level255::ExtMetadataBlockLevel255::parse(reader),
+        }?;
 
-        // A payload too short for the level's fields is skipped like an unknown level
-        ext_metadata_block.ok()
+        // FFmpeg validates ms_weight to -1 through 4095, which 13 signed bits can exceed only below
+        if let ExtMetadataBlock::Level2(level2) = &ext_metadata_block {
+            ensure!(
+                level2.ms_weight >= -1,
+                "Level 2 ms_weight {} is below -1",
+                level2.ms_weight
+            );
+        }
+
+        Ok(Some(ext_metadata_block))
     }
 }
 
