@@ -300,7 +300,7 @@ The authorization vectors are in `capability/vectors/`.
 
 - `RawHDRPresentationAuthorization.ts`: raw route keys, readback of the route's default plan, and the per-device registry.
 - `ExternalHDRPresentationAuthorization.ts`: external PQ and HLG route keys per codec, HEVC Main 10 and AV1 Main 10, each checked with its own neutralized vector.
-- `DolbyVisionPresentationAuthorization.ts`, `ExternalDolbyVisionPresentationAuthorization.ts`: raw Dolby Vision keys (per raw format: single-layer, the P4 and P7 bases, and the P4 and P7 FEL) and the external P5 key, checked with synthetic RPU vectors.
+- `DolbyVisionPresentationAuthorization.ts`, `ExternalDolbyVisionPresentationAuthorization.ts`: raw Dolby Vision keys (per raw format: single-layer, the P4 and P7 bases, and the P4 and P7 FEL) and the external P5 and P8 keys, one registry each, checked with synthetic RPU vectors.
 - `GPUAuthorizationDeadline.ts`: the shared 5 s timeout, cancelled on device loss.
 - `GPUCanvasReadback.ts`: bounded GPU canvas pixel readback (5 s).
 - `GPUErrorScope.ts`: the error-scope cleanup the authorizations share.

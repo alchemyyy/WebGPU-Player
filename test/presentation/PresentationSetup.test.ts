@@ -92,6 +92,10 @@ const PROFILE_5_STREAM = {
     VideoRange: 'HDR',
     VideoRangeType: 'DOVI'
 };
+// Profile 10.1: AV1 over an HDR10-compatible base, reconstructed as Profile 8
+const PROFILE_10_1_STREAM = { ...PROFILE_8_STREAM, Codec: 'av1', DvProfile: 10, Profile: 'Main' };
+// Profile 10.0: AV1 without a compatible base, reconstructed as Profile 5
+const PROFILE_10_0_STREAM = { ...PROFILE_5_STREAM, Codec: 'av1', DvProfile: 10, Profile: 'Main' };
 const STATIC_HDR_METADATA: StaticHDRMetadata = {
     masteringDisplayMaximumLuminanceNits: STATIC_PEAK_NITS,
     masteringDisplayMinimumLuminanceNits: null,
@@ -114,6 +118,7 @@ type FakePresenter = {
     getAuthorizedExternalHDRRouteKeys: Mock
     getAuthorizedRawHDRRouteKeys: Mock
     isExternalDolbyVisionPresentationAuthorized: Mock
+    isExternalDolbyVisionProfile8PresentationAuthorized: Mock
     isRawDolbyVisionPresentationAuthorized: Mock
     isRawDolbyVisionProfile4PresentationAuthorized: Mock
     isRawDolbyVisionProfile7PresentationAuthorized: Mock
@@ -121,6 +126,7 @@ type FakePresenter = {
     prewarmExternalHDRPresentationAuthorization: Mock
     prewarmRawHDRPresentationAuthorization: Mock
     waitForDolbyVisionAuthorizationPrewarm: Mock
+    waitForExternalDolbyVisionProfile8Authorization: Mock
     waitForExternalHDRRouteAuthorization: Mock
     waitForRawHDRAuthorizationPrewarm: Mock
     waitForRawSDRAuthorizationPrewarm: Mock
@@ -132,6 +138,7 @@ function createPresenter(): FakePresenter {
         getAuthorizedExternalHDRRouteKeys: vi.fn(() => [ EXTERNAL_PQ_ROUTE_KEY ]),
         getAuthorizedRawHDRRouteKeys: vi.fn(() => [ RAW_SDR_ROUTE_KEY, RAW_PQ_ROUTE_KEY ]),
         isExternalDolbyVisionPresentationAuthorized: vi.fn(() => false),
+        isExternalDolbyVisionProfile8PresentationAuthorized: vi.fn(() => true),
         isRawDolbyVisionPresentationAuthorized: vi.fn(() => true),
         isRawDolbyVisionProfile4PresentationAuthorized: vi.fn(() => false),
         isRawDolbyVisionProfile7PresentationAuthorized: vi.fn(() => false),
@@ -139,6 +146,7 @@ function createPresenter(): FakePresenter {
         prewarmExternalHDRPresentationAuthorization: vi.fn(() => Promise.resolve()),
         prewarmRawHDRPresentationAuthorization: vi.fn(() => Promise.resolve()),
         waitForDolbyVisionAuthorizationPrewarm: vi.fn(() => Promise.resolve()),
+        waitForExternalDolbyVisionProfile8Authorization: vi.fn(() => Promise.resolve()),
         waitForExternalHDRRouteAuthorization: vi.fn(() => Promise.resolve()),
         waitForRawHDRAuthorizationPrewarm: vi.fn(() => Promise.resolve()),
         waitForRawSDRAuthorizationPrewarm: vi.fn(() => Promise.resolve())
@@ -338,6 +346,19 @@ describe('PresentationSetup', () => {
             }, GENERATION);
         });
 
+        it('reconstructs AV1 Profile 10 as Profile 8 from external VideoFrames', async () => {
+            const presenter = createPresenter();
+
+            await configurePresentationColorPipeline(asPresenter(presenter), createColorPipelineRequest(PROFILE_10_1_STREAM, { dolbyVisionProfile: 8 }));
+
+            expect(presenter.configureColorPipeline).toHaveBeenCalledWith({
+                ...createHDRRenderConfiguration(DOLBY_VISION_INPUT_PEAK_NITS),
+                inputMode: 'external-dolby-vision',
+                profile: 8,
+                videoFields: PROGRESSIVE_FIELDS
+            }, GENERATION);
+        });
+
         it('refuses a reconstruction profile that is not the stream\'s', async () => {
             const presenter = createPresenter();
             const request = createColorPipelineRequest(PROFILE_8_STREAM, { dolbyVisionProfile: 5 });
@@ -429,6 +450,31 @@ describe('PresentationSetup', () => {
             await getCustomPresentationEligibilityOptions(asPresenter(presenter), createAuthorizationRequest({ ...AV1_HDR10_STREAM, ColorTransfer: 'bt709', VideoRange: 'SDR', VideoRangeType: 'SDR' }));
 
             expect(presenter.waitForExternalHDRRouteAuthorization).not.toHaveBeenCalled();
+        });
+
+        it('waits for the AV1 decoder key and the external Profile 8 key of an AV1 Profile 10 stream that reconstructs as Profile 8', async () => {
+            const presenter = createPresenter();
+
+            await expect(getCustomPresentationEligibilityOptions(asPresenter(presenter), createAuthorizationRequest(PROFILE_10_1_STREAM))).resolves.toMatchObject({
+                allowNativeDolbyVisionProfile8: true,
+                authorizedExternalHDRRouteKeys: [ EXTERNAL_PQ_ROUTE_KEY ]
+            });
+            expect(presenter.waitForExternalHDRRouteAuthorization).toHaveBeenCalledWith('av1', expect.objectContaining({ transfer: 'pq' }));
+            expect(presenter.waitForExternalDolbyVisionProfile8Authorization).toHaveBeenCalledOnce();
+        });
+
+        it('waits for the AV1 decoder key but no Profile 8 key for AV1 Profile 10.0, and starts neither for HEVC Profile 8', async () => {
+            const presenter = createPresenter();
+
+            await expect(getCustomPresentationEligibilityOptions(asPresenter(presenter), createAuthorizationRequest(PROFILE_10_0_STREAM))).resolves.toMatchObject({
+                allowNativeDolbyVisionProfile8: false
+            });
+            expect(presenter.waitForExternalHDRRouteAuthorization).toHaveBeenCalledWith('av1', expect.objectContaining({ transfer: 'pq' }));
+            expect(presenter.waitForExternalDolbyVisionProfile8Authorization).not.toHaveBeenCalled();
+
+            const hevcPresenter = createPresenter();
+            await getCustomPresentationEligibilityOptions(asPresenter(hevcPresenter), createAuthorizationRequest(PROFILE_8_STREAM));
+            expect(hevcPresenter.waitForExternalDolbyVisionProfile8Authorization).not.toHaveBeenCalled();
         });
 
         it('waits for the stream\'s own RPU route and allows it once authorized', async () => {

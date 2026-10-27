@@ -141,7 +141,17 @@ vi.mock('webgpu-player/validation/ExternalHDRPresentationAuthorization', () => (
 }));
 
 vi.mock('webgpu-player/validation/ExternalDolbyVisionPresentationAuthorization', () => ({
+    createExternalDolbyVisionAuthorizationFrame: vi.fn(),
+    ExternalDolbyVisionPresentationAuthorizationRunner: class MockExternalDolbyVisionAuthorizationRunner {
+        constructor(_createFrame: unknown, readonly profile = 5) {}
+    },
     ExternalDolbyVisionPresentationAuthorizationRegistry: class MockExternalDolbyVisionAuthorizationRegistry {
+        readonly profile: number;
+
+        constructor(runner?: { profile: number }) {
+            this.profile = runner?.profile ?? 5;
+        }
+
         authorize = vi.fn(async () => ({ status: 'authorized' }));
 
         prewarm = vi.fn();

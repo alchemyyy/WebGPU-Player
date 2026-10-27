@@ -98,7 +98,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   The raw Dolby Vision route advertises DOVIInvalid for the same reason, and the MPEG-TS dual-PID dependency accepts any CCID.
 - Every Dolby Vision profile gets a route (10-06, 10-08).
   P4, P20, P7 without its EL, P8 with an EL flag, and AV1 P10 all play, as do Dolby Vision over Rext, Main 12, or 8-bit Main, MPEG-TS descriptor version 2, and compressed display metadata.
-  Routes are tried in this order: native P5, the native compatible base (P7, P8), RPU reconstruction, then the declared base through the ordinary routes.
+  Routes are tried in this order: native HEVC P5, native AV1 P10 as P5 or P8 (10-27), the native compatible base (HEVC P7, P8), RPU reconstruction, then the declared base through the ordinary routes.
   A stream fails closed only when none applies.
   Reconstruction comes before the declared base, apart from the native-base-first case, because a base without its RPU is not the graded picture.
   P20 reconstructs its MV-HEVC base view, and P10 its AV1 picture, as P5 (CCID 0 or none) or as P8.
@@ -109,7 +109,10 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   The libdovi T.35 entry point parses them in decode order.
   A temporal unit has exactly one shown frame, so its timestamp keys its RPU, as a PTS keys an HEVC RPU.
   The route profile comes from the container descriptor; the profile the crate infers from the RPU header (5 for 10.0, 8 otherwise) only validates the snapshot.
-  P10 has no native RPU route: the external P5 route and the native compatible base take HEVC only, so P10 reconstructs from raw planes only, I420P10 for Main at 10 bits, else its AV1 raw format variant's, and a declared PQ or HLG base takes the native AV1 route where its key is authorized (10-27).
+  P10 at Main 10 reconstructs natively from the hardware AV1 decoder's frames where authorized, as P5 or as P8 whatever base its CCID declares, and otherwise from raw planes, I420P10 for Main at 10 bits, else its AV1 raw format variant's; a declared PQ or HLG base still takes the native AV1 route where its key is authorized (10-27).
+  The external route keeps the RPU, where an HEVC P8 prefers its native compatible base without it (08-08), because it reconstructs the graded picture natively, and a base without its RPU is not that picture.
+  Every sequence header is neutralized to limited BT.709 on this route without a color check, because the RPU, not the header, describes the picture; Chrome already treats an untagged full-range AV1 frame, as P10.0 signals, as limited BT.709.
+  External P8 has its own key, `dovi-p8`, checked with the P8 synthetic RPU and authorized on first use, and the route also needs the AV1 PQ external key, whose vector proves the AV1 decoder's frames import exactly; the P5 and P8 keys check a frame Chrome builds from planes, not a decoded one.
 - Every AV1 track decodes through the engine's own AV1 path (10-09).
   HDR10+ and the MDCV and CLL travel in metadata OBUs, which Mediabunny's decoded samples hide as they hide the RPU, and Jellyfin's HDR10Plus label is not a reliable sign of them, so the route does not depend on any label.
   Each temporal unit's OBUs are walked once: its Dolby Vision RPU OBUs are removed before decode on every route, and parsed only on a Dolby Vision route, the one route that loads the RPU parser.

@@ -170,7 +170,7 @@ import OwnedNativeVideoDecoder from '../decode/video/native/OwnedNativeVideoDeco
 import {
     NativeHDRAV1TemporalUnitNeutralizer,
     neutralizeNativeHDRAV1DecoderConfig,
-    type AV1HDRTransfer,
+    type AV1NeutralizedRouteColor,
     type NeutralizedNativeHDRAV1DecoderConfig
 } from '../decode/video/native/NativeHDRAV1ColorNeutralizer';
 import { runOwnedAV1VideoStream } from '../decode/video/native/OwnedAV1VideoStream';
@@ -2647,13 +2647,23 @@ async function streamOwnedNativeFrames(
     }
 }
 
-/** An AV1 track's configuration on the native external HDR route: neutralized, with the transfer its sequence headers must prove. */
+/** An AV1 track's configuration on a native external route: neutralized, with the color its sequence headers must prove. */
 type NeutralizedOwnedAV1Configuration = NeutralizedNativeHDRAV1DecoderConfig & {
-    transfer: AV1HDRTransfer
+    routeColor: AV1NeutralizedRouteColor
 };
 
-/** Neutralizes an AV1 track's decoder configuration when the route asks, or returns null on any other route. */
-function neutralizeOwnedAV1DecoderConfig(run: DecodeRun, decoderConfig: VideoDecoderConfig): NeutralizedOwnedAV1Configuration | null {
+/**
+ * Neutralizes an AV1 track's decoder configuration on the native external HDR route, and on the external Dolby Vision route, whose RPU describes the picture whatever its header declares.
+ * Returns null on any other route.
+ */
+function neutralizeOwnedAV1DecoderConfig(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    decoderConfig: VideoDecoderConfig
+): NeutralizedOwnedAV1Configuration | null {
+    if (request.dolbyVisionProfile !== null && request.videoOutputMode === 'video-frame') {
+        return { ...neutralizeNativeHDRAV1DecoderConfig(decoderConfig, 'dolby-vision'), routeColor: 'dolby-vision' };
+    }
     if (!run.neutralizeHDRColorMetadata) {
         return null;
     }
@@ -2661,13 +2671,13 @@ function neutralizeOwnedAV1DecoderConfig(run: DecodeRun, decoderConfig: VideoDec
     if (transfer !== 'hlg' && transfer !== 'pq') {
         throw new UnsupportedCustomDecodeSourceError('Native HDR color neutralization requires an exact HDR transfer');
     }
-    return { ...neutralizeNativeHDRAV1DecoderConfig(decoderConfig, transfer), transfer };
+    return { ...neutralizeNativeHDRAV1DecoderConfig(decoderConfig, transfer), routeColor: transfer };
 }
 
 /**
  * Decodes an AV1 track in the engine's own decoder, because Mediabunny's sample sink hides the metadata OBUs that carry Dolby Vision RPUs and HDR10+ metadata.
  * Only a Dolby Vision route loads the RPU parser; any other route strips the RPUs unparsed.
- * The native external HDR route neutralizes the decoder configuration and every sequence header to limited BT.709.
+ * The native external HDR and Dolby Vision routes neutralize the decoder configuration and every sequence header to limited BT.709.
  */
 async function streamOwnedAV1Frames(
     run: DecodeRun,
@@ -2680,7 +2690,7 @@ async function streamOwnedAV1Frames(
         );
     }
 
-    const neutralization = neutralizeOwnedAV1DecoderConfig(run, preparedVideoTrack.decoderConfig);
+    const neutralization = neutralizeOwnedAV1DecoderConfig(run, request, preparedVideoTrack.decoderConfig);
     const decodedVideoTrack = neutralization ? { ...preparedVideoTrack, decoderConfig: neutralization.configuration } : preparedVideoTrack;
     await streamOwnedNativeFrames(run, request, decodedVideoTrack, 'AV1', async (
         stream: OwnedVideoStreamRun,
@@ -2701,7 +2711,7 @@ async function streamOwnedAV1Frames(
                 keyPacketMediaTimeMicroseconds,
                 // Each attempt starts at a key packet, whose sequence header proves the route again
                 neutralization ?
-                    new NativeHDRAV1TemporalUnitNeutralizer(neutralization.transfer, neutralization.decoderDescriptionValidated) :
+                    new NativeHDRAV1TemporalUnitNeutralizer(neutralization.routeColor, neutralization.decoderDescriptionValidated) :
                     null
             );
         } finally {

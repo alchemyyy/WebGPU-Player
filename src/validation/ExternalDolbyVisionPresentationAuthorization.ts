@@ -54,6 +54,19 @@ import {
 
 export const EXTERNAL_DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION = 2;
 export const EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY = 'external-I420P10-bt709-limited:dovi-p5-rpu-v1';
+export const EXTERNAL_DOLBY_VISION_PROFILE_8_AUTHORIZATION_ROUTE_KEY = 'external-I420P10-bt709-limited:dovi-p8-rpu-v1';
+
+/** The single-layer profiles an external route reconstructs: Profile 5, and Profile 8 over a compatible base. */
+export type ExternalDolbyVisionProfile = 5 | 8;
+
+export type ExternalDolbyVisionAuthorizationRouteKey =
+    | typeof EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY
+    | typeof EXTERNAL_DOLBY_VISION_PROFILE_8_AUTHORIZATION_ROUTE_KEY;
+
+/** Returns the route key of a profile's external reconstruction. */
+export function getExternalDolbyVisionAuthorizationRouteKey(profile: ExternalDolbyVisionProfile): ExternalDolbyVisionAuthorizationRouteKey {
+    return profile === 5 ? EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY : EXTERNAL_DOLBY_VISION_PROFILE_8_AUTHORIZATION_ROUTE_KEY;
+}
 
 const MAXIMUM_10_BIT_CODE = 1_023;
 const EXTERNAL_AUTHORIZATION_TOLERANCE = 8 / READBACK_CODE_SCALE;
@@ -119,6 +132,7 @@ type ExternalDolbyVisionReferencePlans = {
 /** The device, target, and reference shaders one probe renders, which every decision of the probe carries. */
 type ProbeIdentity = {
     device: GPUDevice
+    routeKey: ExternalDolbyVisionAuthorizationRouteKey
     shaderSignature: string
     targetFormat: GPUTextureFormat
 };
@@ -145,7 +159,7 @@ export type ExternalDolbyVisionAuthorizationDecision = {
     maximumChannelError: number | null
     maximumInputChannelError: number | null
     renderSettingsVersion: typeof RENDER_SETTINGS_VERSION
-    routeKey: typeof EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY
+    routeKey: ExternalDolbyVisionAuthorizationRouteKey
     sampleCount: number
     shaderSignature: string
     status: 'authorized' | 'rejected'
@@ -159,7 +173,7 @@ export type ExternalDolbyVisionAuthorizationTelemetry = {
     maximumChannelError: number | null
     maximumInputChannelError: number | null
     renderSettingsVersion: typeof RENDER_SETTINGS_VERSION
-    routeKey: typeof EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY
+    routeKey: ExternalDolbyVisionAuthorizationRouteKey
     sampleCount: number
     status: 'authorized' | 'pending' | 'rejected' | 'unavailable'
     targetFormat: GPUTextureFormat | null
@@ -376,7 +390,7 @@ function createRejectedDecision(
         maximumChannelError,
         maximumInputChannelError,
         renderSettingsVersion: RENDER_SETTINGS_VERSION,
-        routeKey: EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
+        routeKey: probe.routeKey,
         sampleCount,
         shaderSignature: probe.shaderSignature,
         status: 'rejected',
@@ -413,13 +427,14 @@ function createReferenceShaderSignature(targetFormat: GPUTextureFormat, plans: E
     return createExternalDolbyVisionShaderSignature(targetFormat, plans.output.shaderCode, plans.inputProbe.shaderCode);
 }
 
-/** Runs the exact external texture through the Profile 5 default chain and the input probe, then reads both back. */
+/** Runs the exact external texture through the external Dolby Vision default chain with the profile's RPU, and the input probe, then reads both back. */
 export class ExternalDolbyVisionPresentationAuthorizationRunner {
     private readonly createFrame: ExternalDolbyVisionAuthorizationFrameFactory;
 
     public constructor(
         createFrame: ExternalDolbyVisionAuthorizationFrameFactory =
-        createExternalDolbyVisionAuthorizationFrame
+        createExternalDolbyVisionAuthorizationFrame,
+        public readonly profile: ExternalDolbyVisionProfile = 5
     ) {
         this.createFrame = createFrame;
     }
@@ -430,8 +445,10 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
     ): Promise<ExternalDolbyVisionAuthorizationDecision> {
         const settings = createSettings();
         const plans = createExternalDolbyVisionReferencePlans(device, targetFormat);
+        const routeKey = getExternalDolbyVisionAuthorizationRouteKey(this.profile);
         const probe: ProbeIdentity = {
             device,
+            routeKey,
             shaderSignature: createReferenceShaderSignature(targetFormat, plans),
             targetFormat
         };
@@ -448,7 +465,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
             return createRejectedDecision(
                 probe,
                 'unexpected-error',
-                plans.output.failure ?? plans.inputProbe.failure ?? EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY
+                plans.output.failure ?? plans.inputProbe.failure ?? routeKey
             );
         }
 
@@ -468,7 +485,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
             if (outputPlan.usesRenderSettings) {
                 executor.writeRenderSettings(createRenderSettingsUniformData(settings).buffer);
             }
-            const packedRPUData = createDolbyVisionAuthorizationRPUVector(5);
+            const packedRPUData = createDolbyVisionAuthorizationRPUVector(this.profile);
             executor.writeDolbyVisionRPU(packedRPUData);
 
             step = 'frame';
@@ -620,7 +637,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
                 maximumChannelError: comparison.maximumChannelError,
                 maximumInputChannelError: inputComparison.maximumChannelError,
                 renderSettingsVersion: RENDER_SETTINGS_VERSION,
-                routeKey: EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
+                routeKey,
                 sampleCount: actualObservations.length,
                 shaderSignature: probe.shaderSignature,
                 status: 'authorized',
@@ -644,13 +661,15 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
     }
 }
 
-/** Device-scoped cache for exact external Profile 5 presentation evidence. */
+/** Device-scoped cache for exact external presentation evidence of one profile's reconstruction. */
 export class ExternalDolbyVisionPresentationAuthorizationRegistry {
     private readonly devices = new WeakMap<GPUDevice, DeviceProbeCache>();
+    private readonly routeKey: ExternalDolbyVisionAuthorizationRouteKey;
     private readonly runner: ExternalDolbyVisionPresentationAuthorizationRunner;
 
     public constructor(runner = new ExternalDolbyVisionPresentationAuthorizationRunner()) {
         this.runner = runner;
+        this.routeKey = getExternalDolbyVisionAuthorizationRouteKey(runner.profile);
     }
 
     /** Starts the exact-device probe without delaying ordinary playback. */
@@ -687,7 +706,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRegistry {
             },
             (error: unknown): ExternalDolbyVisionAuthorizationDecision => {
                 const decision = createRejectedDecision(
-                    { device, shaderSignature: this.getReferenceSignature(device, targetFormat), targetFormat },
+                    { device, routeKey: this.routeKey, shaderSignature: this.getReferenceSignature(device, targetFormat), targetFormat },
                     'unexpected-error',
                     getErrorMessage(error)
                 );
@@ -709,10 +728,10 @@ export class ExternalDolbyVisionPresentationAuthorizationRegistry {
         const probe = this.getCachedProbe(device, targetFormat);
         const decision = probe?.decision ?? null;
         if (decision?.status === 'authorized' && (decision.device !== device || decision.targetFormat !== targetFormat)) {
-            return `decision-mismatch: ${EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY}`;
+            return `decision-mismatch: ${this.routeKey}`;
         }
         return describeAuthorizationDecision(
-            EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
+            this.routeKey,
             probe !== undefined,
             decision,
             (): string => this.getReferenceSignature(device, targetFormat)
@@ -731,7 +750,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRegistry {
             maximumChannelError: null,
             maximumInputChannelError: null,
             renderSettingsVersion: RENDER_SETTINGS_VERSION,
-            routeKey: EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
+            routeKey: this.routeKey,
             sampleCount: 0,
             status: 'unavailable',
             targetFormat

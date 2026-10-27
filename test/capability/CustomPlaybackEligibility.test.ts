@@ -326,6 +326,14 @@ function createAV1RawFormatCapabilities(): CustomDecodeCapabilities {
     return capabilities;
 }
 
+/** The capabilities with a verified hardware AV1 Main 10 decoder, which the native AV1 HDR and Dolby Vision routes need. */
+function createNativeAV1Capabilities(): CustomDecodeCapabilities {
+    return {
+        ...createCapabilities(),
+        nativeHDRAV1: { bitDepth: 10, codec: 'av1', codecString: 'av01.0.08M.10', reason: 'decode-output-verified', status: 'supported' }
+    };
+}
+
 function createNativeSurroundAudioCapabilities(
     supportedCodecs: ReadonlySet<CustomNativeSurroundAudioCodec>
 ): NonNullable<CustomDecodeCapabilities['nativeSurroundAudio']> {
@@ -5018,6 +5026,75 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
             });
         }
 
+        describe('on the native external Dolby Vision route', () => {
+            const AV1_DECODE_KEY = 'external-av1-main10-bt709-limited:pq-v1' as const;
+            const NATIVE_ROUTE = {
+                eligible: true,
+                neutralizeHDRColorMetadata: false,
+                rawVideoFrameFormat: null,
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'video-frame'
+            } as const;
+
+            function createNativeOptions(overrides: Partial<CustomPlaybackEligibilityOptions> = {}): CustomPlaybackEligibilityOptions {
+                return {
+                    ...DECLARED_BASE_AUTHORIZATION,
+                    allowDolbyVision: true,
+                    allowNativeDolbyVision: true,
+                    allowNativeDolbyVisionProfile8: true,
+                    authorizedExternalHDRRouteKeys: [ AV1_DECODE_KEY ],
+                    ...overrides
+                };
+            }
+
+            it.each([
+                { colors: {}, compatibilityID: 0, profile: 5, rangeType: 'DOVI' },
+                { colors: PQ_BASE_COLORS, compatibilityID: 1, profile: 8, rangeType: 'DOVIWithHDR10' },
+                { colors: SDR_BASE_COLORS, compatibilityID: 2, profile: 8, rangeType: 'DOVIWithSDR' },
+                { colors: HLG_BASE_COLORS, compatibilityID: 4, profile: 8, rangeType: 'DOVIWithHLG' }
+            ])('reconstructs $rangeType as Profile $profile from hardware frames', ({ colors, compatibilityID, profile, rangeType }) => {
+                expect(getCustomPlaybackEligibility(
+                    createProfile10Options(compatibilityID, { ...colors, VideoRangeType: rangeType }),
+                    createNativeAV1Capabilities(),
+                    createNativeOptions()
+                )).toMatchObject({ ...NATIVE_ROUTE, dolbyVisionProfile: profile });
+            });
+
+            it.each([
+                { label: 'without the AV1 decoder key', overrides: { authorizedExternalHDRRouteKeys: [ 'external-hevc-main10-bt709-limited:pq-v1' as const ] } },
+                { label: 'without the external Profile 8 key', overrides: { allowNativeDolbyVisionProfile8: false } }
+            ])('keeps raw I420P10 reconstruction $label', ({ overrides }) => {
+                expect(getCustomPlaybackEligibility(
+                    createProfile10Options(1, { ...PQ_BASE_COLORS, VideoRangeType: 'DOVIWithHDR10' }),
+                    createNativeAV1Capabilities(),
+                    createNativeOptions(overrides)
+                )).toMatchObject({ dolbyVisionProfile: 8, rawVideoFrameFormat: 'I420P10', videoOutputMode: 'raw-planes' });
+            });
+
+            it('keeps raw reconstruction without a verified AV1 hardware decoder, and Profile 5 needs its own key', () => {
+                expect(getCustomPlaybackEligibility(
+                    createProfile10Options(1, { ...PQ_BASE_COLORS, VideoRangeType: 'DOVIWithHDR10' }),
+                    createCapabilities(),
+                    createNativeOptions()
+                )).toMatchObject({ rawVideoFrameFormat: 'I420P10' });
+                expect(getCustomPlaybackEligibility(
+                    createProfile10Options(0, { VideoRangeType: 'DOVI' }),
+                    createNativeAV1Capabilities(),
+                    createNativeOptions({ allowNativeDolbyVision: false })
+                )).toMatchObject({ dolbyVisionProfile: 5, rawVideoFrameFormat: 'I420P10' });
+            });
+
+            it('opens no external Profile 8 route to HEVC, whose compatible base stays native without its RPU', () => {
+                const eligibility = getCustomPlaybackEligibility(
+                    createDolbyVisionOptions({ ...PQ_BASE_COLORS, DvBlSignalCompatibilityId: 1, DvProfile: 8, VideoRangeType: 'DOVIWithHDR10' }),
+                    createCapabilities(),
+                    createNativeOptions({ authorizedExternalHDRRouteKeys: [ AV1_DECODE_KEY ] })
+                );
+
+                expect(eligibility).not.toMatchObject({ dolbyVisionProfile: 8, videoOutputMode: 'video-frame' });
+            });
+        });
+
         // Jellyfin's range labels; a stream without a compatibility ID is labeled by its transfer
         it.each([
             { colors: {}, compatibilityID: 0, rangeType: 'DOVI', reconstructionProfile: 5 },
@@ -6797,13 +6874,6 @@ describe('AV1 on the native external HDR route', () => {
         videoDecoderBackend: 'native',
         videoOutputMode: 'video-frame'
     } as const;
-
-    function createNativeAV1Capabilities(): CustomDecodeCapabilities {
-        return {
-            ...createCapabilities(),
-            nativeHDRAV1: { bitDepth: 10, codec: 'av1', codecString: 'av01.0.08M.10', reason: 'decode-output-verified', status: 'supported' }
-        };
-    }
 
     function createHDRAV1Options(videoStream: Record<string, unknown> = {}): Record<string, unknown> {
         return createOptions({

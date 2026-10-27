@@ -124,22 +124,25 @@ A host may start the probes before its first negotiation with `warmCustomDecodeC
    The descriptor names the RPU route (`reconstructionProfile`): Profiles 4, 5, 7, and 8 as signaled; Profiles 10 (AV1) and 20 as 5 with CCID 0 or none and as 8 otherwise; none for Profile 9, the retired profiles, or a stream without an RPU.
    RPU reconstruction ignores the CCID, which only declares a base layer that can be shown on its own.
    The Dolby Vision routes, in order:
-   1. Native external Profile 5: a 10-bit P5, or a P20 that reconstructs as P5.
-   2. The native compatible base, when the CCID declares one: HDR10 (1) or Ultra HD Blu-ray (6) for P7 and P8, and HLG (4) for P8.
+   1. Native external Profile 5: a 10-bit HEVC P5, or a P20 that reconstructs as P5.
+   2. Native external AV1 Profile 10 (`selectNativeAV1DolbyVisionOutput`): a 10-bit Main P10 reconstructs as P5 or P8 from the hardware decoder's frames, every sequence header neutralized to limited BT.709, whatever base the CCID declares.
+      It needs `nativeHDRAV1`, the AV1 PQ external key, which proves the AV1 decoder's frames import exactly, and the external key of the profile it reconstructs as: `allowNativeDolbyVision` for P5, `allowNativeDolbyVisionProfile8` for P8.
+      `getCustomPresentationEligibilityOptions` waits for the AV1 PQ key and the P8 key on first use.
+   3. The native compatible base, HEVC only, when the CCID declares one: HDR10 (1) or Ultra HD Blu-ray (6) for P7 and P8, and HLG (4) for P8.
       The RPU and EL are ignored.
       This needs exact BT.2020 limited base metadata with explicit transfer, primaries, and matrix.
       A separate-track P7 base is a standalone HDR10 track, so it qualifies whatever CCID the EL track reports.
-   3. Raw RPU reconstruction.
+   4. Raw RPU reconstruction.
       The base layer decodes natively to `raw-planes`: I420P10 for HEVC Main 10 and for AV1 Main at 10 bits, or the exact format of any range-extension variant or AV1 raw format variant, such as I420 for AV1 Main at 8 bits.
       HEVC Main at 8 bits has no native raw route, so its RPU route is ineligible.
       Single-layer routes (P5, P8, P10, P20) discard a signaled EL.
       No decoder decodes an EL, so dual-layer routes (P4, P7, HEVC only) reconstruct from the base layer alone: MEL is exact, and FEL presents its base layer.
       The worker still pairs a separate EL track to read its RPUs, and the presenter keeps its FEL composition for an EL decoder, which no route reaches.
-   4. The declared base layer (`getDolbyVisionBaseColorMetadata`), through the ordinary steps below, where a GPU decoder's RPU reconstruction (step 5 of this list) comes before the base's own GPU route.
+   5. The declared base layer (`getDolbyVisionBaseColorMetadata`), through the ordinary steps below, where a GPU decoder's RPU reconstruction (step 6 of this list) comes before the base's own GPU route.
       CCID 1 or 6 declares PQ, 4 HLG, and 2 SDR, never for P5 or a P20 that reconstructs as P5.
       An explicit ColorTransfer must agree with the CCID; VideoRange and VideoRangeType are ignored.
-   5. Without a declared base, RPU reconstruction from a GPU decoder's frame pool (see [GPU decoders](#gpu-decoders)).
-   6. Otherwise the source is ineligible, with the reason from the reconstruction step.
+   6. Without a declared base, RPU reconstruction from a GPU decoder's frame pool (see [GPU decoders](#gpu-decoders)).
+   7. Otherwise the source is ineligible, with the reason from the reconstruction step.
 2. No color metadata: `metadata-unsupported`.
    `PresentationInput.parseVideoStreamColorMetadata` reads ColorTransfer, ColorPrimaries, ColorSpace, and ColorRange.
    A field that is `unknown`, `unspecified`, or `reserved` is absent and takes its transfer's default: BT.709 for SDR, BT.2020 for PQ and HLG, and limited range.
@@ -216,7 +219,7 @@ MPEG-1, VP8, VP9, and AV1 have no interlaced coding.
 - External HDR: `external-hevc-main10-bt709-limited:<pq|hlg>-v1`, prewarmed, and `external-av1-main10-bt709-limited:<pq|hlg>-v1`, authorized on first use, each with its own codec's vector.
 - Dolby Vision raw, each per BL format from I420 to I444P12: `<format>:dovi-rpu-v1`, `<format>:dovi-profile4-base-v1`, `<format>:dovi-profile4-fel-v1`, `<format>:dovi-profile7-base-v1`, and `<format>:dovi-profile7-fel-v1`.
   Only `I420P10:dovi-rpu-v1` and the I420P10 Profile 7 keys are prewarmed; the others authorize on first use.
-- Dolby Vision external: `external-I420P10-bt709-limited:dovi-p5-rpu-v1`.
+- Dolby Vision external: `external-I420P10-bt709-limited:dovi-p5-rpu-v1`, prewarmed, and `external-I420P10-bt709-limited:dovi-p8-rpu-v1`, which only AV1 P10 uses and which authorizes on first use; both check the same shader with their profile's synthetic RPU.
 
 ## Audio routes
 

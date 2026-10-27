@@ -24,6 +24,7 @@ import {
     createExpectedExternalDolbyVisionInputObservations,
     createExternalDolbyVisionShaderSignature,
     EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
+    EXTERNAL_DOLBY_VISION_PROFILE_8_AUTHORIZATION_ROUTE_KEY,
     ExternalDolbyVisionPresentationAuthorizationRegistry,
     ExternalDolbyVisionPresentationAuthorizationRunner,
     type ExternalDolbyVisionAuthorizationDecision
@@ -211,6 +212,25 @@ describe('External Dolby Vision presentation authorization', () => {
         expect(harness.queueSubmit.mock.calls[0][0]).toHaveLength(RENDERED_PASS_COUNT);
         expect(close).toHaveBeenCalledOnce();
         expectEveryResourceDestroyed(harness);
+    });
+
+    it('authorizes external Profile 8 reconstruction under its own key with the Profile 8 RPU', async () => {
+        const harness = createDeviceHarness(createExpectedExternalDolbyVisionAuthorizationObservations(
+            createDolbyVisionAuthorizationRPUVector(8),
+            createSettings()
+        ));
+        const runner = new ExternalDolbyVisionPresentationAuthorizationRunner((): VideoFrame => createFrame(vi.fn()), 8);
+        const registry = new ExternalDolbyVisionPresentationAuthorizationRegistry(runner);
+
+        const decision = await registry.authorize(harness.device, TARGET_FORMAT);
+
+        expect(decision).toMatchObject({ routeKey: EXTERNAL_DOLBY_VISION_PROFILE_8_AUTHORIZATION_ROUTE_KEY, status: 'authorized' });
+        expect(getBufferWrites(harness, DOLBY_VISION_RPU_LABEL).map((write: RecordedBufferWrite): Uint8Array => write.bytes))
+            .toEqual([ new Uint8Array(createDolbyVisionAuthorizationRPUVector(8)) ]);
+        expect(registry.getTelemetry(harness.device, TARGET_FORMAT)).toMatchObject({
+            routeKey: EXTERNAL_DOLBY_VISION_PROFILE_8_AUTHORIZATION_ROUTE_KEY,
+            status: 'authorized'
+        });
     });
 
     it('drives the output reference from bounded browser-recovered input', async () => {

@@ -60,11 +60,20 @@ function toUint8Array(data: AllowSharedBufferSource): Uint8Array {
 }
 
 /**
- * Returns the check a sequence header must pass before its color is neutralized: an explicit limited-range BT.2020 description with the non-constant-luminance matrix and the route's transfer.
- * AV1 has no alternative transfer characteristics message, so only the HLG code point proves HLG.
+ * The color a neutralized route expects of each sequence header: an HDR transfer, or any color on the Dolby Vision route, whose RPU, not the header, describes the picture.
  */
-function createRouteColorCheck(transfer: AV1HDRTransfer): (sequenceHeader: AV1SequenceHeader) => void {
-    const expectedTransferCharacteristics = transfer === 'pq' ? PQ_TRANSFER_CHARACTERISTICS : HLG_TRANSFER_CHARACTERISTICS;
+export type AV1NeutralizedRouteColor = AV1HDRTransfer | 'dolby-vision';
+
+/**
+ * Returns the check a sequence header must pass before its color is neutralized: on an HDR route, an explicit limited-range BT.2020 description with the non-constant-luminance matrix and the route's transfer.
+ * AV1 has no alternative transfer characteristics message, so only the HLG code point proves HLG.
+ * The Dolby Vision route checks nothing.
+ */
+function createRouteColorCheck(routeColor: AV1NeutralizedRouteColor): (sequenceHeader: AV1SequenceHeader) => void {
+    if (routeColor === 'dolby-vision') {
+        return (): void => undefined;
+    }
+    const expectedTransferCharacteristics = routeColor === 'pq' ? PQ_TRANSFER_CHARACTERISTICS : HLG_TRANSFER_CHARACTERISTICS;
     return (sequenceHeader: AV1SequenceHeader): void => {
         const colorConfig = sequenceHeader.colorConfig;
         if (
@@ -106,7 +115,7 @@ type RewrittenAV1DecoderDescription = {
     sequenceHeaderRewritten: boolean
 };
 
-function rewriteAV1DecoderDescription(descriptionSource: AllowSharedBufferSource, transfer: AV1HDRTransfer): RewrittenAV1DecoderDescription {
+function rewriteAV1DecoderDescription(descriptionSource: AllowSharedBufferSource, transfer: AV1NeutralizedRouteColor): RewrittenAV1DecoderDescription {
     const description = toUint8Array(descriptionSource);
     if (
         description.byteLength < AV1_CODEC_CONFIGURATION_HEADER_BYTE_LENGTH
@@ -130,12 +139,12 @@ function rewriteAV1DecoderDescription(descriptionSource: AllowSharedBufferSource
 }
 
 /**
- * Neutralizes an AV1 decoder configuration to limited BT.709 for the native external HDR route: its colorSpace, the color fields of its codecs string, and the sequence header of an av1C description.
+ * Neutralizes an AV1 decoder configuration to limited BT.709 for a native external route: its colorSpace, the color fields of its codecs string, and the sequence header of an av1C description.
  * Reports whether the description's sequence header proved the route; without one, the first temporal unit's in-band sequence header must.
  */
 export function neutralizeNativeHDRAV1DecoderConfig(
     configuration: VideoDecoderConfig,
-    transfer: AV1HDRTransfer
+    transfer: AV1NeutralizedRouteColor
 ): NeutralizedNativeHDRAV1DecoderConfig {
     const rewrittenDescription = configuration.description === undefined ?
         null :
@@ -163,7 +172,7 @@ export function neutralizeNativeHDRAV1DecoderConfig(
 export class NativeHDRAV1TemporalUnitNeutralizer {
     private readonly routeColorCheck: (sequenceHeader: AV1SequenceHeader) => void;
 
-    public constructor(transfer: AV1HDRTransfer, private validated: boolean) {
+    public constructor(transfer: AV1NeutralizedRouteColor, private validated: boolean) {
         this.routeColorCheck = createRouteColorCheck(transfer);
     }
 
