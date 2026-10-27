@@ -125,7 +125,8 @@ All worker code unless marked.
 - `CustomAudioTrackMetadata.ts`: the Matroska and ISO BMFF DTS and TrueHD tracks whose codec Mediabunny does not map (`DTS `, `mlpa`), DTS Express detection, declared-rate recovery for their sample entries, and the decoded audio timestamp tolerance.
 - `AVIIndexCoverage.ts`: whether an AVI track's indexed packets end well before its stream header's declared length, as an OpenDML file's do past its first RIFF list.
 - `UnsupportedTrackFeatures.ts`: the first feature, such as an edit list, that Mediabunny reports it cannot honor for a track.
-- `VideoChromaFormat.ts` [main and worker]: a video track's chroma from its decoder configuration, which the worker's ready response names and every frame carries to presentation: its subsampling from an avcC (its closing chroma format or its first SPS), an hvcC, an av1C, or an AV1, VP9, or VP8 codecs string, and its 4:2:0 location from the first SPS's VUI of an avcC or hvcC, or an av1C's or AV1 codecs string's chroma_sample_position.
+- `VideoChromaFormat.ts` [main and worker]: a video track's chroma from its decoder configuration, which the worker's ready response names and every frame carries to presentation: its subsampling from an avcC (its closing chroma format or its first SPS), an hvcC, an av1C, or an AV1, VP9, or VP8 codecs string, and its 4:2:0 location from the first SPS's VUI of an avcC or hvcC, or an av1C's or AV1 codecs string's chroma_sample_position; an H.264 or HEVC track without a record, or whose record holds no SPS, takes both from its first key packet's in-band SPS, and MPEG-1 is center-sited 4:2:0.
+- `NALUnitFraming.ts`: splits H.264 and HEVC data into NAL units at Annex B start codes or at an avcC's or hvcC's length prefixes, without copying them.
 - `AudioStartPacket.ts`: the packet an audio attempt starts from, without Mediabunny's proof scans when the track starts late.
 - `TrackIteration.ts`: a track's packets in decode order, read about a second ahead, and its decoded video or audio samples from a start time, as iterators that end at once on `return()`.
 - `ISOBaseMediaSampleEntryChildBox.ts`: reads a child box of an ISO base media track's first sample entry, such as `dvc1` or `av1C`, from the `moov` bytes Mediabunny keeps.
@@ -140,7 +141,7 @@ All worker code unless marked.
 ### demux/dolby-vision/
 
 - `DolbyVisionProfiles.ts` [main and worker]: the dual-layer profile set (P4, P7), and the 1 us tolerance within which a base and an enhancement layer timestamp pair, as packets and as decoded frames.
-- `DolbyVisionHEVCSplitter.ts`: NAL parsing; the BL, RPU (62), and EL (63) split; RASL handling; in-band SPS neutralization; drops NAL units of layers above 0, the MV-HEVC second view.
+- `DolbyVisionHEVCSplitter.ts`: NAL unit headers over `NALUnitFraming.ts`; the BL, RPU (62), and EL (63) split; RASL handling; in-band SPS neutralization; drops NAL units of layers above 0, the MV-HEVC second view.
 - `DolbyVisionAV1Splitter.ts`: removes the Dolby Vision T.35 metadata OBUs from an AV1 temporal unit and returns their messages; other metadata, HDR10+ included, stays.
 - `DolbyVisionEncodedMetadata.ts`, `DolbyVisionEncodedMetadataProtocol.ts`: per-packet RPU parsing for HEVC and per-temporal-unit parsing for AV1, which removes the RPUs unparsed on a route without Dolby Vision, over one PTS-keyed window, and the transferable schema.
 - `DolbyVisionEncodedPacketPairer.ts`: BL and EL packet pairing, within the tolerance of `DolbyVisionProfiles.ts`.
@@ -159,7 +160,7 @@ All worker code unless marked.
 ### demux/hevc/
 
 - `HEVCDecoderConfiguration.ts`: reads an `hvcC` record: its profile, chroma format, bit depth, NAL length size, and its base layer's parameter sets.
-- `HEVCSEI.ts`, `HEVCSPSParser.ts`: SEI extraction and the alternative transfer characteristics value; SPS parsing, the VUI color mapping to WebCodecs names, and the VUI rewrite with its native HDR route check.
+- `HEVCSEI.ts`, `HEVCSPSParser.ts`: SEI extraction and the alternative transfer characteristics value; SPS parsing within the progressive Main and Main 10 bounds, the VUI color mapping to WebCodecs names, and the VUI rewrite with its native HDR route check, and the chroma format and VUI chroma location of any profile's SPS.
 
 ### demux/mpeg/
 

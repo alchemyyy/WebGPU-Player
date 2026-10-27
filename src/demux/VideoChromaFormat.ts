@@ -1,7 +1,10 @@
-// Reads a video track's chroma from its decoder configuration: the record in its description (avcC, hvcC, av1C) or its codecs string (AV1, VP9, VP8).
+// Reads a video track's chroma from its decoder configuration: the record in its description (avcC, hvcC, av1C), the SPS in its first key packet
+// where it has no record or its record carries no SPS, or its codecs string (AV1, VP9, VP8, MPEG-1).
 // Its subsampling sizes the chroma that presentation derives where the browser converts frames to RGB itself, and its location is where every route reads 4:2:0 chroma.
+import { getHEVCNALUnitLayerID, HEVC_BASE_LAYER_ID } from './dolby-vision/DolbyVisionHEVCSplitter';
 import { type HEVCDecoderConfiguration, parseHEVCDecoderConfiguration } from './hevc/HEVCDecoderConfiguration';
-import { parseHEVCSPS } from './hevc/HEVCSPSParser';
+import { type HEVCSPSChroma, readHEVCSPSChroma } from './hevc/HEVCSPSParser';
+import { type NALUnitLengthSize, splitAnnexBNALUnits, splitLengthPrefixedNALUnits } from './NALUnitFraming';
 
 /** A stream's chroma subsampling; 4:0:0 and anything unknown read as none, since such a stream has no chroma plane to derive. */
 export type ChromaSubsampling = '4:2:0' | '4:2:2' | '4:4:4';
@@ -39,10 +42,22 @@ const HEVC_CODEC_PREFIXES: readonly string[] = [ 'hvc1', 'hev1' ];
 const AV1_CODEC_PREFIX = 'av01';
 const VP9_CODEC_PREFIX = 'vp09';
 const VP8_CODEC_NAME = 'vp8';
+// The engine's name of MPEG-1 video, which the mpeg2 decoder package decodes
+const MPEG1_CODEC_NAME = 'mpeg1video';
 const CODEC_FIELD_SEPARATOR = '.';
 
-// avcC: the profile, the SPS count's byte, and the High profiles whose record may close with chroma_format
+// What failures of a key packet's framing name it
+const KEY_PACKET_SUBJECT = 'key packet';
+// NAL unit headers: H.264's nal_unit_type of an SPS in its one-byte header, and HEVC's in its two-byte header
+const AVC_NAL_UNIT_TYPE_MASK = 0x1F;
+const AVC_SPS_NAL_UNIT_TYPE = 7;
+const HEVC_NAL_HEADER_BYTE_LENGTH = 2;
+const HEVC_NAL_UNIT_TYPE_MASK = 0x3F;
+const HEVC_SPS_NAL_UNIT_TYPE = 33;
+// avcC: the profile, lengthSizeMinusOne, the SPS count's byte, and the High profiles whose record may close with chroma_format
 const AVC_PROFILE_OFFSET = 1;
+const AVC_LENGTH_SIZE_OFFSET = 4;
+const NAL_UNIT_LENGTH_SIZE_MINUS_ONE_MASK = 0x03;
 const AVC_SPS_COUNT_OFFSET = 5;
 const AVC_SPS_COUNT_MASK = 0x1F;
 const AVC_LENGTH_FIELD_BYTE_LENGTH = 2;
@@ -330,10 +345,18 @@ function readAVCChromaSubsampling(profile: number, recordChromaFormat: number | 
     return profile === AVC_HIGH_PROFILE ? '4:2:0' : null;
 }
 
-/** Reads an avcC: its subsampling, and the location its first SPS declares for 4:2:0. */
-function readAVCChromaFormat(record: Uint8Array): VideoChromaFormat {
+/** What an avcC holds for chroma: its profile, its NAL unit length size, its first SPS, and the chroma_format a High profile's record may close with. */
+type AVCRecord = {
+    chromaFormat: number | undefined
+    firstSequenceParameterSet: Uint8Array | null
+    lengthSize: NALUnitLengthSize
+    profile: number
+};
+
+/** Reads an avcC, or returns null for one too short to name its SPS count. */
+function parseAVCRecord(record: Uint8Array): AVCRecord | null {
     if (record.byteLength <= AVC_SPS_COUNT_OFFSET) {
-        return UNDECLARED_CHROMA_FORMAT;
+        return null;
     }
     let offset = AVC_SPS_COUNT_OFFSET + 1;
     let firstSequenceParameterSet: Uint8Array | null = null;
@@ -349,32 +372,86 @@ function readAVCChromaFormat(record: Uint8Array): VideoChromaFormat {
     for (let index = 0; pictureParameterSetCount !== undefined && index < pictureParameterSetCount && offset + AVC_LENGTH_FIELD_BYTE_LENGTH <= record.byteLength; index += 1) {
         offset += AVC_LENGTH_FIELD_BYTE_LENGTH + ((record[offset] << 8) | record[offset + 1]);
     }
-    const subsampling = readAVCChromaSubsampling(record[AVC_PROFILE_OFFSET], record.at(offset), firstSequenceParameterSet);
-    const location = subsampling === '4:2:0' && firstSequenceParameterSet !== null ? readAVCSPSChromaLocation(firstSequenceParameterSet) : null;
-    return { location, subsampling };
+    return {
+        chromaFormat: record.at(offset),
+        firstSequenceParameterSet,
+        lengthSize: (record[AVC_LENGTH_SIZE_OFFSET] & NAL_UNIT_LENGTH_SIZE_MINUS_ONE_MASK) + 1 as NALUnitLengthSize,
+        profile: record[AVC_PROFILE_OFFSET]
+    };
 }
 
-/** Returns the chroma location an HEVC SPS declares, or null when it declares none. */
-function readHEVCSPSChromaLocation(sequenceParameterSet: Uint8Array): ChromaLocation | null {
+/**
+ * Returns the first NAL unit of a key packet that is an SPS, or null without one or when the packet's framing is broken.
+ * The packet is length-prefixed where its track has a decoder record, and Annex B where it has none.
+ */
+function findInBandSequenceParameterSet(
+    keyPacket: Uint8Array | null,
+    lengthSize: NALUnitLengthSize | null,
+    isSequenceParameterSet: (nalUnit: Uint8Array) => boolean
+): Uint8Array | null {
+    if (keyPacket === null) {
+        return null;
+    }
     try {
-        return getChromaLocationOfType(parseHEVCSPS(sequenceParameterSet).chromaSampleLocationType);
+        const nalUnits = lengthSize === null ?
+            splitAnnexBNALUnits(keyPacket, KEY_PACKET_SUBJECT) :
+            splitLengthPrefixedNALUnits(keyPacket, lengthSize, KEY_PACKET_SUBJECT);
+        return nalUnits.find(isSequenceParameterSet) ?? null;
     } catch {
-        // The SPS parser reads progressive Main and Main 10 streams, so another stream's location stays undeclared
         return null;
     }
 }
 
-/** Reads an hvcC: its chroma format, and the location its first SPS declares for 4:2:0. */
-function readHEVCChromaFormat(description: AllowSharedBufferSource): VideoChromaFormat {
-    let configuration: HEVCDecoderConfiguration;
-    try {
-        configuration = parseHEVCDecoderConfiguration(description);
-    } catch {
+/** Reads H.264's chroma: its subsampling from its avcC or its SPS, and the location the SPS declares for 4:2:0, from the record's first SPS, else the key packet's. */
+function readAVCChromaFormat(record: Uint8Array | null, keyPacket: Uint8Array | null): VideoChromaFormat {
+    const parsedRecord = record === null ? null : parseAVCRecord(record);
+    if (record !== null && parsedRecord === null) {
         return UNDECLARED_CHROMA_FORMAT;
     }
-    const subsampling = CHROMA_FORMAT_SUBSAMPLINGS.get(configuration.chromaFormat) ?? null;
-    const sequenceParameterSet = configuration.sequenceParameterSets.at(0);
-    const location = subsampling === '4:2:0' && sequenceParameterSet !== undefined ? readHEVCSPSChromaLocation(sequenceParameterSet) : null;
+    const sequenceParameterSet = parsedRecord?.firstSequenceParameterSet ?? findInBandSequenceParameterSet(
+        keyPacket,
+        parsedRecord?.lengthSize ?? null,
+        (nalUnit: Uint8Array): boolean => (nalUnit[0] & AVC_NAL_UNIT_TYPE_MASK) === AVC_SPS_NAL_UNIT_TYPE
+    );
+    const profile = parsedRecord?.profile ?? sequenceParameterSet?.at(AVC_NAL_HEADER_BYTE_LENGTH);
+    if (profile === undefined) {
+        return UNDECLARED_CHROMA_FORMAT;
+    }
+    const subsampling = readAVCChromaSubsampling(profile, parsedRecord?.chromaFormat, sequenceParameterSet);
+    const location = subsampling === '4:2:0' && sequenceParameterSet !== null ? readAVCSPSChromaLocation(sequenceParameterSet) : null;
+    return { location, subsampling };
+}
+
+/** Returns the chroma an HEVC SPS of any profile declares, or null when its syntax is broken. */
+function readHEVCSequenceParameterSetChroma(sequenceParameterSet: Uint8Array): HEVCSPSChroma | null {
+    try {
+        return readHEVCSPSChroma(sequenceParameterSet);
+    } catch {
+        return null;
+    }
+}
+
+/** Reads HEVC's chroma: its format from its hvcC or its SPS, and the location the SPS declares for 4:2:0, from the record's first SPS, else the key packet's. */
+function readHEVCChromaFormat(description: Uint8Array | null, keyPacket: Uint8Array | null): VideoChromaFormat {
+    let configuration: HEVCDecoderConfiguration | null = null;
+    if (description !== null) {
+        try {
+            configuration = parseHEVCDecoderConfiguration(description);
+        } catch {
+            return UNDECLARED_CHROMA_FORMAT;
+        }
+    }
+    const sequenceParameterSet = configuration?.sequenceParameterSets.at(0) ?? findInBandSequenceParameterSet(
+        keyPacket,
+        configuration?.lengthSize ?? null,
+        (nalUnit: Uint8Array): boolean => nalUnit.byteLength >= HEVC_NAL_HEADER_BYTE_LENGTH
+            && ((nalUnit[0] >> 1) & HEVC_NAL_UNIT_TYPE_MASK) === HEVC_SPS_NAL_UNIT_TYPE
+            && getHEVCNALUnitLayerID(nalUnit) === HEVC_BASE_LAYER_ID
+    );
+    const spsChroma = sequenceParameterSet === null ? null : readHEVCSequenceParameterSetChroma(sequenceParameterSet);
+    const chromaFormat = configuration?.chromaFormat ?? spsChroma?.chromaFormat;
+    const subsampling = chromaFormat === undefined ? null : CHROMA_FORMAT_SUBSAMPLINGS.get(chromaFormat) ?? null;
+    const location = subsampling === '4:2:0' ? getChromaLocationOfType(spsChroma?.chromaSampleLocationType ?? null) : null;
     return { location, subsampling };
 }
 
@@ -416,20 +493,44 @@ function readVP9CodecStringChromaFormat(fields: readonly string[]): VideoChromaF
 }
 
 /**
+ * Returns whether an H.264 or HEVC configuration leaves its SPS to the stream, so its chroma is read from the first key packet's in-band SPS:
+ * a track without a decoder record, as MPEG-TS, M2TS, and Annex B AVI tracks are, or with a record that carries no SPS, as an avc3 or hev1 track's may.
+ */
+export function readsChromaInBand(configuration: VideoDecoderConfig): boolean {
+    const codecName = configuration.codec.split(CODEC_FIELD_SEPARATOR)[0];
+    const description = configuration.description === undefined ? null : toBytes(configuration.description);
+    if (AVC_CODEC_PREFIXES.includes(codecName)) {
+        return description === null || parseAVCRecord(description)?.firstSequenceParameterSet === null;
+    }
+    if (!HEVC_CODEC_PREFIXES.includes(codecName)) {
+        return false;
+    }
+    if (description === null) {
+        return true;
+    }
+    try {
+        return parseHEVCDecoderConfiguration(description).sequenceParameterSets.length === 0;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Returns the chroma a video decoder configuration declares: its subsampling, null when it declares none or the stream is monochrome,
  * and for 4:2:0 its chroma location, null when it declares none.
- * H.264 reads its avcC and its first SPS's VUI, HEVC its hvcC and its first SPS's VUI, AV1 its av1C or its codecs string, VP9 its codecs string,
- * and VP8 is always 4:2:0.
+ * H.264 reads its avcC and its first SPS's VUI, HEVC its hvcC and its first SPS's VUI, the SPS being the record's first,
+ * else the first in the stream's first key packet, which a caller passes where `readsChromaInBand` holds.
+ * AV1 reads its av1C or its codecs string, VP9 its codecs string, VP8 is always 4:2:0, and MPEG-1 always center-sited 4:2:0, as FFmpeg's mpeg12dec.c sets it.
  */
-export function readVideoChromaFormat(configuration: VideoDecoderConfig): VideoChromaFormat {
+export function readVideoChromaFormat(configuration: VideoDecoderConfig, keyPacket: Uint8Array | null = null): VideoChromaFormat {
     const fields = configuration.codec.split(CODEC_FIELD_SEPARATOR);
     const codecName = fields[0];
     const description = configuration.description === undefined ? null : toBytes(configuration.description);
     if (AVC_CODEC_PREFIXES.includes(codecName)) {
-        return description === null ? UNDECLARED_CHROMA_FORMAT : readAVCChromaFormat(description);
+        return readAVCChromaFormat(description, keyPacket);
     }
     if (HEVC_CODEC_PREFIXES.includes(codecName)) {
-        return description === null ? UNDECLARED_CHROMA_FORMAT : readHEVCChromaFormat(description);
+        return readHEVCChromaFormat(description, keyPacket);
     }
     switch (codecName) {
         case AV1_CODEC_PREFIX:
@@ -438,6 +539,8 @@ export function readVideoChromaFormat(configuration: VideoDecoderConfig): VideoC
             return readVP9CodecStringChromaFormat(fields);
         case VP8_CODEC_NAME:
             return { location: null, subsampling: '4:2:0' };
+        case MPEG1_CODEC_NAME:
+            return { location: 'center', subsampling: '4:2:0' };
         default:
             return UNDECLARED_CHROMA_FORMAT;
     }

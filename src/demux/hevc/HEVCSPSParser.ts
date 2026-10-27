@@ -1,9 +1,17 @@
 const HEVC_SPS_NAL_UNIT_TYPE = 33;
 const MAXIMUM_HEVC_DPB_PICTURE_COUNT = 16;
 const MAXIMUM_HEVC_REFERENCE_PICTURE_COUNT = MAXIMUM_HEVC_DPB_PICTURE_COUNT;
+const MAXIMUM_HEVC_LONG_TERM_REFERENCE_PICTURE_COUNT = 32;
 const MAXIMUM_HEVC_SHORT_TERM_REFERENCE_PICTURE_SET_COUNT = 64;
 const MAXIMUM_SPS_NAL_UNIT_BYTE_LENGTH = 64 * 1024;
 const MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE = 0x7FFF_FFFF;
+// chroma_format_idc: 0 is monochrome, 1 4:2:0, 2 4:2:2, and 3 4:4:4
+const CHROMA_FORMAT_420 = 1;
+const CHROMA_FORMAT_422 = 2;
+const CHROMA_FORMAT_444 = 3;
+// bit_depth_luma_minus8 and bit_depth_chroma_minus8 reach 8 in the range extensions, 16-bit planes, as FFmpeg reads them; the bounded parser reads at most 6
+const MAXIMUM_BIT_DEPTH_MINUS8 = 8;
+const MAXIMUM_BOUNDED_BIT_DEPTH_MINUS8 = 6;
 const MAIN_PROFILE_BASE_DPB_PICTURE_COUNT = 6;
 const HEVC_LEVEL_MAXIMUM_LUMA_PICTURE_SAMPLE_COUNTS: Readonly<Partial<Record<number, number>>> = Object.freeze({
     30: 36_864,
@@ -70,8 +78,6 @@ export type HEVCSPSColorSpace = {
 export type HEVCSPSConfiguration = {
     bitDepth: 8 | 10
     chromaFormat: 1
-    /** The VUI's chroma_sample_loc_type_top_field, H.273's location of 4:2:0 chroma, which a frame's chroma takes; null when the VUI declares none */
-    chromaSampleLocationType: number | null
     codedHeight: number
     codedWidth: number
     colorSpace: HEVCSPSColorSpace | null
@@ -81,6 +87,14 @@ export type HEVCSPSConfiguration = {
     maximumDPBPictureCount: number
     profileIDC: 1 | 2
     progressive: true
+};
+
+/** The chroma an SPS declares, read from any profile's SPS. */
+export type HEVCSPSChroma = {
+    /** chroma_format_idc: 0 monochrome, 1 4:2:0, 2 4:2:2, 3 4:4:4 */
+    chromaFormat: number
+    /** The VUI's chroma_sample_loc_type_top_field, H.273's location of 4:2:0 chroma, which a frame's chroma takes; null when the VUI declares none */
+    chromaSampleLocationType: number | null
 };
 
 export type HEVCHDRTransfer = 'hlg' | 'pq';
@@ -444,8 +458,23 @@ type SPSDimensions = {
     displayWidth: number
 };
 
-/** Reads the picture size; only its declared level, checked later, bounds it. */
-function parseSPSDimensions(reader: BoundedBitReader): SPSDimensions {
+/**
+ * Returns the luma samples per chroma sample across and down, SubWidthC and SubHeightC, which scale the conformance window;
+ * monochrome and separately coded 4:4:4 planes, ChromaArrayType 0, take 1 as 4:4:4 does.
+ */
+function getChromaSampleSpacing(chromaArrayType: number): { horizontal: number, vertical: number } {
+    switch (chromaArrayType) {
+        case CHROMA_FORMAT_420:
+            return { horizontal: 2, vertical: 2 };
+        case CHROMA_FORMAT_422:
+            return { horizontal: 2, vertical: 1 };
+        default:
+            return { horizontal: 1, vertical: 1 };
+    }
+}
+
+/** Reads the picture size and its conformance window in chroma units; only its declared level, checked later, bounds it. */
+function parseSPSDimensions(reader: BoundedBitReader, chromaArrayType: number): SPSDimensions {
     const codedWidth = reader.readUnsignedExpGolomb('pic_width_in_luma_samples', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
     const codedHeight = reader.readUnsignedExpGolomb('pic_height_in_luma_samples', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
     if (codedWidth <= 0 || codedHeight <= 0) {
@@ -464,21 +493,24 @@ function parseSPSDimensions(reader: BoundedBitReader): SPSDimensions {
     const rightOffset = reader.readUnsignedExpGolomb('conf_win_right_offset', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
     const topOffset = reader.readUnsignedExpGolomb('conf_win_top_offset', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
     const bottomOffset = reader.readUnsignedExpGolomb('conf_win_bottom_offset', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
-    const displayWidth = codedWidth - (2 * (leftOffset + rightOffset));
-    const displayHeight = codedHeight - (2 * (topOffset + bottomOffset));
+    const spacing = getChromaSampleSpacing(chromaArrayType);
+    const displayWidth = codedWidth - (spacing.horizontal * (leftOffset + rightOffset));
+    const displayHeight = codedHeight - (spacing.vertical * (topOffset + bottomOffset));
     if (displayWidth <= 0 || displayHeight <= 0) {
         throw new TypeError('The HEVC SPS conformance window is invalid');
     }
     return { codedHeight, codedWidth, displayHeight, displayWidth };
 }
 
-function parseSPSBitDepth(reader: BoundedBitReader): {
-    bitDepth: 8 | 10
+/** Reads the plane depths: bounded, equal 8 or 10-bit planes only, and otherwise up to the range extensions' 16 bits. */
+function parseSPSBitDepth(reader: BoundedBitReader, bounded: boolean): {
+    bitDepth: number
     log2MaximumPictureOrderCountLSBMinus4: number
 } {
-    const lumaBitDepth = 8 + reader.readUnsignedExpGolomb('bit_depth_luma_minus8', 6);
-    const chromaBitDepth = 8 + reader.readUnsignedExpGolomb('bit_depth_chroma_minus8', 6);
-    if (lumaBitDepth !== chromaBitDepth || (lumaBitDepth !== 8 && lumaBitDepth !== 10)) {
+    const maximumBitDepthMinus8 = bounded ? MAXIMUM_BOUNDED_BIT_DEPTH_MINUS8 : MAXIMUM_BIT_DEPTH_MINUS8;
+    const lumaBitDepth = 8 + reader.readUnsignedExpGolomb('bit_depth_luma_minus8', maximumBitDepthMinus8);
+    const chromaBitDepth = 8 + reader.readUnsignedExpGolomb('bit_depth_chroma_minus8', maximumBitDepthMinus8);
+    if (bounded && (lumaBitDepth !== chromaBitDepth || (lumaBitDepth !== 8 && lumaBitDepth !== 10))) {
         throw new TypeError('The HEVC SPS bit depth is unsupported');
     }
     return {
@@ -518,10 +550,11 @@ function getMaximumDPBPictureCount(
     return levelMaximum;
 }
 
+/** Reads the sub-layer DPB sizes; bounded, each within the level's bound for the picture size, ordered, and with its reorder count inside its DPB. */
 function parseSubLayerOrdering(
     reader: BoundedBitReader,
     maximumSubLayerIndex: number,
-    maximumDPBPictureCount: number
+    maximumDPBPictureCount: number | null
 ): number {
     const subLayerOrderingInfoPresent = reader.readFlag('sps_sub_layer_ordering_info_present_flag');
     const firstOrderingLayer = subLayerOrderingInfoPresent ? 0 : maximumSubLayerIndex;
@@ -533,6 +566,10 @@ function parseSubLayerOrdering(
         const reorderPictureCount = reader.readUnsignedExpGolomb('sps_max_num_reorder_pics', MAXIMUM_HEVC_DPB_PICTURE_COUNT - 1);
         reader.readUnsignedExpGolomb('sps_max_latency_increase_plus1', MAXIMUM_UNSIGNED_EXP_GOLOMB_VALUE);
         const decodedPictureBufferSize = bufferingMinus1 + 1;
+        declaredMaximumDPBPictureCount = Math.max(declaredMaximumDPBPictureCount, decodedPictureBufferSize);
+        if (maximumDPBPictureCount === null) {
+            continue;
+        }
         if (decodedPictureBufferSize > maximumDPBPictureCount) {
             throw new TypeError('The HEVC SPS decoded picture buffer exceeds its level and picture-size bound');
         }
@@ -544,7 +581,6 @@ function parseSubLayerOrdering(
         }
         previousBufferingMinus1 = bufferingMinus1;
         previousReorderPictureCount = reorderPictureCount;
-        declaredMaximumDPBPictureCount = Math.max(declaredMaximumDPBPictureCount, decodedPictureBufferSize);
     }
     return declaredMaximumDPBPictureCount;
 }
@@ -582,7 +618,7 @@ function skipReferencePictureSyntax(reader: BoundedBitReader, log2MaximumPicture
 
     const longTermReferencePictureCount = reader.readUnsignedExpGolomb(
         'num_long_term_ref_pics_sps',
-        MAXIMUM_HEVC_REFERENCE_PICTURE_COUNT
+        MAXIMUM_HEVC_LONG_TERM_REFERENCE_PICTURE_COUNT
     );
     const pictureOrderCountBitCount = log2MaximumPictureOrderCountLSBMinus4 + 4;
     for (let pictureIndex = 0; pictureIndex < longTermReferencePictureCount; pictureIndex += 1) {
@@ -591,13 +627,29 @@ function skipReferencePictureSyntax(reader: BoundedBitReader, log2MaximumPicture
     }
 }
 
+type HEVCSPSSyntax = {
+    bitDepth: number
+    chromaFormat: number
+    dimensions: SPSDimensions
+    maximumDPBPictureCount: number
+    profileTierLevel: ProfileTierLevel
+    RBSP: Uint8Array
+    VUI: ParsedVUI
+};
+
 type ParsedHEVCSPS = {
     configuration: HEVCSPSConfiguration
     RBSP: Uint8Array
     VUI: ParsedVUI
 };
 
-function parseHEVCSPSSyntax(nalUnit: Uint8Array): ParsedHEVCSPS {
+/**
+ * Reads an SPS through its VUI, as far as FFmpeg's hevc/ps.c reads the SPS of any profile before its extensions.
+ * Bounded, it fails where the progressive Main and Main 10 bounds fail: another profile, a scan that is not progressive, chroma other than 4:2:0,
+ * unequal or other than 8 or 10-bit planes, a decoded picture buffer beyond its level, or a field sequence.
+ * Unbounded, it fails only on syntax the specification does not allow.
+ */
+function readHEVCSPSSyntax(nalUnit: Uint8Array, bounded: boolean): HEVCSPSSyntax {
     const RBSP = createRBSP(nalUnit);
     const reader = new BoundedBitReader(RBSP);
     reader.skipBits(4, 'sps_video_parameter_set_id');
@@ -607,24 +659,25 @@ function parseHEVCSPSSyntax(nalUnit: Uint8Array): ParsedHEVCSPS {
     }
     reader.skipBits(1, 'sps_temporal_id_nesting_flag');
     const profileTierLevel = parseProfileTierLevel(reader, maximumSubLayerIndex);
-    if (profileTierLevel.profileIDC !== 1 && profileTierLevel.profileIDC !== 2) {
+    if (bounded && profileTierLevel.profileIDC !== 1 && profileTierLevel.profileIDC !== 2) {
         throw new TypeError('The HEVC SPS profile is unsupported');
     }
-    if (!profileTierLevel.progressiveSource || profileTierLevel.interlacedSource) {
+    if (bounded && (!profileTierLevel.progressiveSource || profileTierLevel.interlacedSource)) {
         throw new TypeError('The HEVC SPS is not constrained to progressive pictures');
     }
 
     reader.readUnsignedExpGolomb('sps_seq_parameter_set_id', 15);
-    const chromaFormat = reader.readUnsignedExpGolomb('chroma_format_idc', 3);
-    if (chromaFormat !== 1) {
+    const chromaFormat = reader.readUnsignedExpGolomb('chroma_format_idc', CHROMA_FORMAT_444);
+    if (bounded && chromaFormat !== CHROMA_FORMAT_420) {
         throw new TypeError('The HEVC SPS chroma format is not 4:2:0');
     }
-    const dimensions = parseSPSDimensions(reader);
-    const bitDepthConfiguration = parseSPSBitDepth(reader);
+    const separateColourPlanes = chromaFormat === CHROMA_FORMAT_444 && reader.readFlag('separate_colour_plane_flag');
+    const dimensions = parseSPSDimensions(reader, separateColourPlanes ? 0 : chromaFormat);
+    const bitDepthConfiguration = parseSPSBitDepth(reader, bounded);
     const maximumDPBPictureCount = parseSubLayerOrdering(
         reader,
         maximumSubLayerIndex,
-        getMaximumDPBPictureCount(profileTierLevel.levelIDC, dimensions.codedWidth, dimensions.codedHeight)
+        bounded ? getMaximumDPBPictureCount(profileTierLevel.levelIDC, dimensions.codedWidth, dimensions.codedHeight) : null
     );
     skipCodingStructure(reader);
     skipReferencePictureSyntax(reader, bitDepthConfiguration.log2MaximumPictureOrderCountLSBMinus4);
@@ -640,28 +693,41 @@ function parseHEVCSPSSyntax(nalUnit: Uint8Array): ParsedHEVCSPS {
             colorSpace: null,
             fieldSequence: false
         };
-    if (vui.fieldSequence) {
+    if (bounded && vui.fieldSequence) {
         throw new TypeError('The HEVC SPS describes an interlaced field sequence');
     }
+    return { bitDepth: bitDepthConfiguration.bitDepth, chromaFormat, dimensions, maximumDPBPictureCount, profileTierLevel, RBSP, VUI: vui };
+}
 
+function parseHEVCSPSSyntax(nalUnit: Uint8Array): ParsedHEVCSPS {
+    const { bitDepth, dimensions, maximumDPBPictureCount, profileTierLevel, RBSP, VUI } = readHEVCSPSSyntax(nalUnit, true);
     return {
         configuration: {
-            bitDepth: bitDepthConfiguration.bitDepth,
+            // The bounded read refused every depth but 8 and 10 and every profile but Main and Main 10
+            bitDepth: bitDepth === 10 ? 10 : 8,
             chromaFormat: 1,
-            chromaSampleLocationType: vui.chromaSampleLocationType,
             codedHeight: dimensions.codedHeight,
             codedWidth: dimensions.codedWidth,
-            colorSpace: vui.colorSpace,
+            colorSpace: VUI.colorSpace,
             displayHeight: dimensions.displayHeight,
             displayWidth: dimensions.displayWidth,
             levelIDC: profileTierLevel.levelIDC,
             maximumDPBPictureCount,
-            profileIDC: profileTierLevel.profileIDC,
+            profileIDC: profileTierLevel.profileIDC === 1 ? 1 : 2,
             progressive: true
         },
         RBSP,
-        VUI: vui
+        VUI
     };
+}
+
+/**
+ * Reads the chroma of any profile's SPS: its chroma_format_idc and its VUI's chroma location, beyond the progressive Main and Main 10 bounds,
+ * so range extensions, Main 12, and interlaced field sequences declare theirs too. Throws on syntax the specification does not allow.
+ */
+export function readHEVCSPSChroma(nalUnit: Uint8Array): HEVCSPSChroma {
+    const { chromaFormat, VUI } = readHEVCSPSSyntax(nalUnit, false);
+    return { chromaFormat, chromaSampleLocationType: VUI.chromaSampleLocationType };
 }
 
 function writeBits(
@@ -693,7 +759,7 @@ function createNALUnitFromRBSP(nalUnit: Uint8Array, RBSP: Uint8Array): Uint8Arra
     return new Uint8Array(escapedBytes);
 }
 
-/** Parses the bounded SPS fields of a Main or Main 10 stream: geometry, bit depth, profile, level, DPB size, color description, and chroma location. */
+/** Parses the bounded SPS fields of a Main or Main 10 stream: geometry, bit depth, profile, level, DPB size, and color description. */
 export function parseHEVCSPS(nalUnit: Uint8Array): HEVCSPSConfiguration {
     return parseHEVCSPSSyntax(nalUnit).configuration;
 }

@@ -125,6 +125,13 @@ describe('the playback worker\'s focused routes on MPEG-TS and M2TS', () => {
         });
     });
 
+    it('names MPEG-1\'s chroma center-sited 4:2:0, as FFmpeg\'s MPEG-1 decoder sets it', async () => {
+        const responses = await runToStop(createFramePoolRequest(MPEG1_FILE_NAME, 'mpeg1video'));
+
+        expect(responses.find((response): response is ReadyResponse => response.type === 'ready')?.chromaFormat)
+            .toEqual({ location: 'center', subsampling: '4:2:0' });
+    });
+
     it('refuses a VC-1 transport stream track on the MPEG-2 route by its container codec', async () => {
         const responses = await runToStop(createFramePoolRequest(VC1_FILE_NAME, 'mpeg2video'));
 

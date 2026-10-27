@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { readVideoChromaFormat } from 'webgpu-player/demux/VideoChromaFormat';
+import { readsChromaInBand, readVideoChromaFormat } from 'webgpu-player/demux/VideoChromaFormat';
 
 import { createBytesFromHex } from '../helpers/byteArrays';
 
@@ -63,6 +63,28 @@ const AV1C_MONOCHROME_420 = 0x1C;
 const AV1C_VERTICAL_POSITION = 1;
 const AV1C_COLOCATED_POSITION = 2;
 const AV1C_RESERVED_POSITION = 3;
+// SPSs of the pinned FFmpeg's encoders whose trace_headers names their fields: x264 High with chroma_sample_loc_type 4,
+// and x265 SPSs outside the bounded parser's bounds, an interlaced field sequence at type 4, Main 12 at 3, and Main 4:2:2 10 at 2,
+// which FFmpeg's hevc_metadata filter set, since libx265 declares a location for 4:2:0 only
+const X264_HIGH_BOTTOM_LEFT_SPS = createBytesFromHex('6764000aacd94426c0494b000003000100000300300f122596');
+const X265_INTERLACED_BOTTOM_LEFT_SPS = createBytesFromHex(
+    '42010101600000030040000003000003001ea020810596566924caf0169295a000000300200000030301'
+);
+const X265_MAIN12_TOP_SPS = createBytesFromHex(
+    '420101040800000300998800000300001ea02081045296566924caf01692102000000300200000030301'
+);
+const X265_MAIN422_10_TOP_LEFT_SPS = createBytesFromHex(
+    '4201010408000003009d0800000300001eb0208104d96566924caf01696c2000000300200000030301'
+);
+const HEVC_CHROMA_FORMAT_422 = 2;
+// The NAL units around a key packet's SPS: x264's PPS, access unit delimiters, and the first bytes of IDR slices
+const X264_PPS = createBytesFromHex('68ebe3cb22c0');
+const AVC_ACCESS_UNIT_DELIMITER = [ 0x09, 0xF0 ];
+const AVC_IDR_SLICE = [ 0x65, 0x88, 0x84 ];
+const HEVC_ACCESS_UNIT_DELIMITER = [ 0x46, 0x01, 0x50 ];
+const HEVC_IDR_SLICE = [ 0x26, 0x01, 0xAF ];
+// An avc3 track's avcC of High with four-byte lengths, no SPS or PPS, and its closing 4:2:0 chroma_format
+const AVC3_RECORD_WITHOUT_SPS = Uint8Array.from([ 1, 0x64, 0, 0x0A, 0xFF, 0xE0, 0, 0xFD, 0xF8, 0xF8, 0 ]);
 
 /** Returns an avcC of one SPS and no PPS, with an optional closing chroma_format byte. */
 function createAVCRecord(profile: number, sequenceParameterSet: ArrayLike<number>, chromaFormatByte: number | null = null): Uint8Array {
@@ -91,6 +113,22 @@ function createHEVCRecord(chromaFormat: number, sequenceParameterSet: Uint8Array
 
 function createAV1Record(colorByte: number): Uint8Array {
     return Uint8Array.from([ 0x81, 0x08, colorByte, 0 ]);
+}
+
+function createAnnexBPacket(nalUnits: readonly ArrayLike<number>[]): Uint8Array {
+    return Uint8Array.from(nalUnits.flatMap(nalUnit => [ 0, 0, 0, 1, ...Array.from(nalUnit) ]));
+}
+
+function createLengthPrefixedPacket(nalUnits: readonly ArrayLike<number>[]): Uint8Array {
+    return Uint8Array.from(nalUnits.flatMap(nalUnit => [ 0, 0, nalUnit.length >> 8, nalUnit.length & 0xFF, ...Array.from(nalUnit) ]));
+}
+
+/** Returns a copy of an HEVC NAL unit whose header names another nuh_layer_id. */
+function withHEVCLayerID(nalUnit: Uint8Array, layerID: number): Uint8Array {
+    const copy = nalUnit.slice();
+    copy[0] = (copy[0] & 0xFE) | (layerID >> 5);
+    copy[1] = ((layerID & 0x1F) << 3) | (copy[1] & 0x07);
+    return copy;
 }
 
 describe('readVideoChromaFormat', () => {
@@ -175,5 +213,64 @@ describe('readVideoChromaFormat', () => {
         expect(readVideoChromaFormat({ codec: 'vp09.00.10.08' }).subsampling).toBe('4:2:0');
         expect(readVideoChromaFormat({ codec: 'vp8' })).toEqual({ location: null, subsampling: '4:2:0' });
         expect(readVideoChromaFormat({ codec: 'mp4v.20.9' })).toEqual({ location: null, subsampling: null });
+    });
+
+    it('reads MPEG-1 as center-sited 4:2:0, as FFmpeg\'s MPEG-1 decoder sets it', () => {
+        expect(readVideoChromaFormat({ codec: 'mpeg1video' })).toEqual({ location: 'center', subsampling: '4:2:0' });
+    });
+
+    it('reads an HEVC SPS outside the bounded parser\'s progressive Main and Main 10 bounds', () => {
+        expect(readVideoChromaFormat({ codec: 'hvc1.1.6.L30.90', description: createHEVCRecord(HEVC_CHROMA_FORMAT_420, X265_INTERLACED_BOTTOM_LEFT_SPS) }))
+            .toEqual({ location: 'bottom-left', subsampling: '4:2:0' });
+        expect(readVideoChromaFormat({ codec: 'hvc1.4.10.L30.90', description: createHEVCRecord(HEVC_CHROMA_FORMAT_420, X265_MAIN12_TOP_SPS) }).location)
+            .toBe('top');
+        // 4:2:2 chroma stays on its left column whatever the VUI says
+        expect(readVideoChromaFormat({ codec: 'hvc1.4.10.L30.90', description: createHEVCRecord(HEVC_CHROMA_FORMAT_422, X265_MAIN422_10_TOP_LEFT_SPS) }))
+            .toEqual({ location: null, subsampling: '4:2:2' });
+    });
+});
+
+describe('readVideoChromaFormat with a key packet', () => {
+    it('reads H.264 without a record from the first SPS among its key packet\'s Annex B NAL units', () => {
+        const configuration = { codec: 'avc1.64000a' };
+        expect(readsChromaInBand(configuration)).toBe(true);
+        expect(readVideoChromaFormat(configuration, createAnnexBPacket([ AVC_ACCESS_UNIT_DELIMITER, X264_HIGH_BOTTOM_LEFT_SPS, X264_PPS, AVC_IDR_SLICE ])))
+            .toEqual({ location: 'bottom-left', subsampling: '4:2:0' });
+        expect(readVideoChromaFormat(configuration, createAnnexBPacket([ X264_HIGH_422_SPS, X264_PPS, AVC_IDR_SLICE ])))
+            .toEqual({ location: null, subsampling: '4:2:2' });
+    });
+
+    it('reads an avc3 record without an SPS from its key packet\'s length-prefixed SPS, and an avcC with one from the record', () => {
+        const configuration = { codec: 'avc3.64000a', description: AVC3_RECORD_WITHOUT_SPS };
+        expect(readsChromaInBand(configuration)).toBe(true);
+        expect(readVideoChromaFormat(configuration, createLengthPrefixedPacket([ X264_HIGH_BOTTOM_LEFT_SPS, X264_PPS, AVC_IDR_SLICE ])))
+            .toEqual({ location: 'bottom-left', subsampling: '4:2:0' });
+        expect(readsChromaInBand({ codec: 'avc1.64000a', description: createAVCRecord(AVC_HIGH_PROFILE, X264_HIGH_TOP_LEFT_SPS) })).toBe(false);
+    });
+
+    it('reads HEVC without a record, or with an hvcC without an SPS, from the key packet\'s base-layer SPS of any profile', () => {
+        const annexBConfiguration = { codec: 'hev1.1.6.L60.90' };
+        expect(readsChromaInBand(annexBConfiguration)).toBe(true);
+        expect(readVideoChromaFormat(annexBConfiguration, createAnnexBPacket([ HEVC_ACCESS_UNIT_DELIMITER, X265_INTERLACED_BOTTOM_LEFT_SPS, HEVC_IDR_SLICE ])))
+            .toEqual({ location: 'bottom-left', subsampling: '4:2:0' });
+        const recordConfiguration = { codec: 'hev1.4.10.L30.90', description: createHEVCRecord(HEVC_CHROMA_FORMAT_420) };
+        expect(readsChromaInBand(recordConfiguration)).toBe(true);
+        expect(readVideoChromaFormat(recordConfiguration, createLengthPrefixedPacket([ X265_MAIN12_TOP_SPS, HEVC_IDR_SLICE ])))
+            .toEqual({ location: 'top', subsampling: '4:2:0' });
+        // An SPS of another layer does not describe the base layer
+        expect(readVideoChromaFormat(annexBConfiguration, createAnnexBPacket([ withHEVCLayerID(X265_MAIN12_TOP_SPS, 1), HEVC_IDR_SLICE ])))
+            .toEqual({ location: null, subsampling: null });
+        expect(readsChromaInBand({ codec: 'hvc1.1.6.L30.90', description: createHEVCRecord(HEVC_CHROMA_FORMAT_420, X265_MAIN_TOP_LEFT_SPS) })).toBe(false);
+    });
+
+    it('declares nothing it does not read: no key packet, a packet without an SPS, or a packet whose framing is broken', () => {
+        expect(readVideoChromaFormat({ codec: 'avc1.64000a' })).toEqual({ location: null, subsampling: null });
+        expect(readVideoChromaFormat({ codec: 'avc1.64000a' }, createAnnexBPacket([ AVC_ACCESS_UNIT_DELIMITER, AVC_IDR_SLICE ])))
+            .toEqual({ location: null, subsampling: null });
+        expect(readVideoChromaFormat({ codec: 'avc1.64000a' }, X264_HIGH_BOTTOM_LEFT_SPS)).toEqual({ location: null, subsampling: null });
+        // The record's chroma_format still names the subsampling
+        expect(readVideoChromaFormat({ codec: 'avc3.64000a', description: AVC3_RECORD_WITHOUT_SPS }, createAnnexBPacket([ X264_HIGH_BOTTOM_LEFT_SPS ])))
+            .toEqual({ location: null, subsampling: '4:2:0' });
+        expect(readsChromaInBand({ codec: 'vp09.00.10.08' })).toBe(false);
     });
 });

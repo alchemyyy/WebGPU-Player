@@ -898,13 +898,16 @@ These were settled on Firefox 157 on Windows.
   Preferring a plane route for a preset that needs planes would make a preset change the route.
   The Dolby Vision routes offer no planes, since reconstruction maps each pixel's base-layer codes, so they leave plane passes out as `planes-unavailable`.
 - An external route's chroma takes the stream's subsampling from its decoder configuration (10-16).
-  The decode worker reads it from the track's avcC (its closing chroma format, else its first SPS), hvcC, or av1C, or the AV1, VP9, or VP8 codecs string, and every frame carries it, so the presenter plans with it without a host fact.
+  The decode worker reads it from the track's avcC (its closing chroma format, else its first SPS), hvcC, or av1C, the SPS in its first key packet where it has no record or its record no SPS, or the AV1, VP9, or VP8 codecs string, and every frame carries it, so the presenter plans with it without a host fact.
   Derived chroma is read at each chroma sample's site, as the stream's location places it, so a chroma upscaler runs on the external routes too.
 - Chroma is read where the stream declares it lies (10-16), revising the engine's fixed siting, which read every planar format's subsampled chroma left and NV12's at its texel centers.
-  4:2:0 chroma takes the location of H.273's six types that the first SPS's VUI of an avcC or hvcC declares, or an av1C's or AV1 codecs string's chroma_sample_position, and the left siting H.264 and HEVC default to where none is declared; UHD HDR encodes declare top-left, which the fixed siting read half a luma row off.
+  4:2:0 chroma takes the location of H.273's six types that an H.264 or HEVC SPS's VUI declares, or an av1C's or AV1 codecs string's chroma_sample_position, and the left siting H.264 and HEVC default to where none is declared; UHD HDR encodes declare top-left, which the fixed siting read half a luma row off.
+  The SPS is the first of the avcC or hvcC, else the first base-layer SPS among the first key packet's NAL units (10-27): MPEG-TS, M2TS, and Annex B AVI tracks have no record, and an avc3 or hev1 track's record may carry no SPS, so their location once kept the default.
+  The worker reads that packet only for such a track, before its ready response, Annex B where the track has no record and length-prefixed where it has one.
+  MPEG-1 is center-sited 4:2:0, as FFmpeg's `mpeg12dec.c` sets it for every MPEG-1 stream, which has no field that declares a location (10-27).
   4:2:2 chroma stays on its left luma column, which H.264 and HEVC fix whatever the VUI says, and 4:4:4 chroma on its luma samples.
   VP9's codecs string is not read for a location: muxers write its colocated 4:2:0 value for chroma of unknown siting, as FFmpeg does unless its source is known left, and Mediabunny names WebM's that way, so the value does not declare one.
-  The HEVC location comes from the bounded SPS parser, so a stream outside its progressive Main and Main 10 bounds keeps the default.
+  The HEVC location first came from the bounded SPS parser, so a stream outside its progressive Main and Main 10 bounds kept the default; since 10-27 the parser also reads any profile's SPS through its VUI without those bounds, as FFmpeg's `hevc/ps.c` reads range extensions, Main 12, and field sequences, so those streams declare theirs too.
   A deinterlacing plan's field read keeps MPEG-2's vertical field siting, which interlaced sources take, and the location's horizontal shift.
   The worker's ready response names the stream's chroma and the session attaches it to every frame, the frame pool feed to its frames, so every output mode carries it; the presenter plans again when it changes, preset or not, and a plan that does not change keeps its executor.
   The frame pool route's chain now builds its signal from the GPU decoder's output format, as the raw route's does, so its signal takes the location too.

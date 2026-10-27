@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
     parseHEVCSPS,
+    readHEVCSPSChroma,
     rewriteHEVCSPSColorDescriptionToBT709
 } from 'webgpu-player/demux/hevc/HEVCSPSParser';
 
@@ -71,7 +72,25 @@ const X265_MAIN_TOP_LEFT_SPS = createBytesFromHex(
 const X265_MAIN10_BOTTOM_SPS = createBytesFromHex(
     '42010102200000030090000003000003001ea0208104d96566924caf016931820000030002000003003210'
 );
+// SPSs of the pinned FFmpeg's libx265 outside the bounded parser's bounds, with the types trace_headers names: an interlaced field sequence at 4,
+// Main 12 at 3, and Main 4:2:2 10 and Main 4:4:4 12 at 2, which libx265 declares for 4:2:0 only, so FFmpeg's hevc_metadata filter set it
+const X265_INTERLACED_BOTTOM_LEFT_SPS = createBytesFromHex(
+    '42010101600000030040000003000003001ea020810596566924caf0169295a000000300200000030301'
+);
+const X265_MAIN12_TOP_SPS = createBytesFromHex(
+    '420101040800000300998800000300001ea02081045296566924caf01692102000000300200000030301'
+);
+const X265_MAIN422_10_TOP_LEFT_SPS = createBytesFromHex(
+    '4201010408000003009d0800000300001eb0208104d96566924caf01696c2000000300200000030301'
+);
+const X265_MAIN444_12_TOP_LEFT_SPS = createBytesFromHex(
+    '420101040800000300980800000300001e900410208a52cacd24995e02d2d840000003004000000602'
+);
+// X265_MAIN12_TOP_SPS cut long before its VUI
+const TRUNCATED_SPS_BYTE_LENGTH = 20;
 const TOP_LEFT_CHROMA_SAMPLE_LOCATION_TYPE = 2;
+const TOP_CHROMA_SAMPLE_LOCATION_TYPE = 3;
+const BOTTOM_LEFT_CHROMA_SAMPLE_LOCATION_TYPE = 4;
 const BOTTOM_CHROMA_SAMPLE_LOCATION_TYPE = 5;
 const DOLBY_VISION_PROFILE_5_SPS_WITH_UNSPECIFIED_COLOR = createBytesFromHex(
     '420101222000000300b00000030000030096a001e02002087db6718b92448053888892cf24a69272c9124922dc91aa48fca223ff000100010100000303e900005dc06005ef7e000068e7700000d1cef080'
@@ -82,7 +101,6 @@ describe('parseHEVCSPS', () => {
         expect(parseHEVCSPS(MAIN_SPS)).toEqual({
             bitDepth: 8,
             chromaFormat: 1,
-            chromaSampleLocationType: null,
             codedHeight: 64,
             codedWidth: 64,
             colorSpace: {
@@ -104,7 +122,6 @@ describe('parseHEVCSPS', () => {
         expect(parseHEVCSPS(MAIN10_PQ_SPS)).toEqual({
             bitDepth: 10,
             chromaFormat: 1,
-            chromaSampleLocationType: null,
             codedHeight: 360,
             codedWidth: 640,
             colorSpace: {
@@ -120,13 +137,6 @@ describe('parseHEVCSPS', () => {
             profileIDC: 2,
             progressive: true
         });
-    });
-
-    it('reads the VUI\'s top-field chroma sample location type, and null without chroma_loc_info or a VUI', () => {
-        expect(parseHEVCSPS(X265_MAIN_TOP_LEFT_SPS).chromaSampleLocationType).toBe(TOP_LEFT_CHROMA_SAMPLE_LOCATION_TYPE);
-        expect(parseHEVCSPS(X265_MAIN10_BOTTOM_SPS).chromaSampleLocationType).toBe(BOTTOM_CHROMA_SAMPLE_LOCATION_TYPE);
-        expect(parseHEVCSPS(MAIN10_HLG_SPS).chromaSampleLocationType).toBeNull();
-        expect(parseHEVCSPS(MAIN10_SPS_WITHOUT_VUI).chromaSampleLocationType).toBeNull();
     });
 
     it('maps a progressive Main10 BT.2020 HLG SPS without aliases', () => {
@@ -387,5 +397,27 @@ describe('rewriteHEVCSPSColorDescriptionToBT709', () => {
     it('rejects an SPS without VUI, which has no color description to rewrite', () => {
         expect(() => rewriteHEVCSPSColorDescriptionToBT709(MAIN10_SPS_WITHOUT_VUI, 'hlg'))
             .toThrow('no VUI color description');
+    });
+});
+
+describe('readHEVCSPSChroma', () => {
+    it('reads the VUI\'s top-field chroma sample location type, and null without chroma_loc_info or a VUI', () => {
+        expect(readHEVCSPSChroma(X265_MAIN_TOP_LEFT_SPS)).toEqual({ chromaFormat: 1, chromaSampleLocationType: TOP_LEFT_CHROMA_SAMPLE_LOCATION_TYPE });
+        expect(readHEVCSPSChroma(X265_MAIN10_BOTTOM_SPS).chromaSampleLocationType).toBe(BOTTOM_CHROMA_SAMPLE_LOCATION_TYPE);
+        expect(readHEVCSPSChroma(MAIN10_HLG_SPS).chromaSampleLocationType).toBeNull();
+        expect(readHEVCSPSChroma(MAIN10_SPS_WITHOUT_VUI).chromaSampleLocationType).toBeNull();
+    });
+
+    it('reads the chroma of SPSs outside the bounded parser\'s progressive Main and Main 10 bounds', () => {
+        expect(() => parseHEVCSPS(X265_INTERLACED_BOTTOM_LEFT_SPS)).toThrow('not constrained to progressive pictures');
+        expect(readHEVCSPSChroma(X265_INTERLACED_BOTTOM_LEFT_SPS)).toEqual({ chromaFormat: 1, chromaSampleLocationType: BOTTOM_LEFT_CHROMA_SAMPLE_LOCATION_TYPE });
+        expect(() => parseHEVCSPS(X265_MAIN12_TOP_SPS)).toThrow('profile is unsupported');
+        expect(readHEVCSPSChroma(X265_MAIN12_TOP_SPS)).toEqual({ chromaFormat: 1, chromaSampleLocationType: TOP_CHROMA_SAMPLE_LOCATION_TYPE });
+        expect(readHEVCSPSChroma(X265_MAIN422_10_TOP_LEFT_SPS)).toEqual({ chromaFormat: 2, chromaSampleLocationType: TOP_LEFT_CHROMA_SAMPLE_LOCATION_TYPE });
+        expect(readHEVCSPSChroma(X265_MAIN444_12_TOP_LEFT_SPS)).toEqual({ chromaFormat: 3, chromaSampleLocationType: TOP_LEFT_CHROMA_SAMPLE_LOCATION_TYPE });
+    });
+
+    it('rejects an SPS that ends before its VUI is read', () => {
+        expect(() => readHEVCSPSChroma(X265_MAIN12_TOP_SPS.subarray(0, TRUNCATED_SPS_BYTE_LENGTH))).toThrow('The HEVC SPS ends inside');
     });
 });

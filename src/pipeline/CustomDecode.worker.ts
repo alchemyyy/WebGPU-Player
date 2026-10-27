@@ -201,7 +201,7 @@ import {
 import { readMatroskaBlockAdditions, type MatroskaBlockAddition } from '../demux/MatroskaBlockAdditions';
 import { readContainerVideoScan } from '../demux/ContainerVideoScan';
 import { getScanFrameFields, type VideoFrameFields } from '../decode/video/VideoFields';
-import { readVideoChromaFormat } from '../demux/VideoChromaFormat';
+import { readsChromaInBand, readVideoChromaFormat, type VideoChromaFormat } from '../demux/VideoChromaFormat';
 import {
     MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT,
     type StaticHDRMetadataScanResult
@@ -1555,16 +1555,23 @@ function getGPUDecodeCodecPrivate(run: DecodeRun, preparedVideoTrack: PreparedVi
     return description.slice().buffer;
 }
 
+/** Reads the chroma the video track declares, from its first key packet's in-band SPS where its decoder configuration leaves the SPS to the stream. */
+async function readVideoTrackChromaFormat(preparedVideoTrack: PreparedVideoTrack): Promise<VideoChromaFormat> {
+    const { decoderConfig, videoTrack } = preparedVideoTrack;
+    const keyPacket = readsChromaInBand(decoderConfig) ? await new PacketReader(videoTrack).getFirstKey() : null;
+    return readVideoChromaFormat(decoderConfig, keyPacket?.data ?? null);
+}
+
 function postReadyResponse(
     run: DecodeRun,
     preparedVideoTrack: PreparedVideoTrack,
     preparedAudioTrack: PreparedAudioTrack | null,
     containerDurationMicroseconds: Microseconds | null,
-    maximumPictureSize: GPUDecoderPictureSize | null
+    maximumPictureSize: GPUDecoderPictureSize | null,
+    chromaFormat: VideoChromaFormat
 ): void {
     const geometry = preparedVideoTrack.geometry;
     const codecPrivate = getGPUDecodeCodecPrivate(run, preparedVideoTrack);
-    const chromaFormat = readVideoChromaFormat(preparedVideoTrack.decoderConfig);
     postResponse({
         audio: preparedAudioTrack?.audioConfiguration ?? null,
         ...(chromaFormat.location !== null || chromaFormat.subsampling !== null ? { chromaFormat } : {}),
@@ -3673,7 +3680,11 @@ async function prepareRunTracks(
     if (run.cancelled) {
         return null;
     }
-    postReadyResponse(run, preparedVideoTrack, preparedAudioTrack, containerDurationMicroseconds, maximumPictureSize);
+    const chromaFormat = await readVideoTrackChromaFormat(preparedVideoTrack);
+    if (run.cancelled) {
+        return null;
+    }
+    postReadyResponse(run, preparedVideoTrack, preparedAudioTrack, containerDurationMicroseconds, maximumPictureSize, chromaFormat);
     return {
         audioTrack: preparedAudioTrack,
         durationMicroseconds: request.durationMicroseconds ?? containerDurationMicroseconds,
