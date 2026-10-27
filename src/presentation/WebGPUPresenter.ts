@@ -65,7 +65,8 @@ import DeinterlaceTimeline, {
     type DeinterlaceMode
 } from './DeinterlaceTimeline';
 import DisplayRefresh from './DisplayRefresh';
-import { getPresetPassPosition } from './passes/PassLanguage';
+import FrameInterval from './FrameInterval';
+import { getPresetPassPosition, GLOBAL_FACTS } from './passes/PassLanguage';
 import { collectPassExpressionIdentifiers } from './passes/PassExpression';
 import { parsePassFile, type PassFileEntry } from './passes/PassManifest';
 import { collectPassTextures, PassTextureCache } from './passes/PassTextureCache';
@@ -1378,6 +1379,8 @@ export default class WebGPUPresenter {
     private decodedFramePushActive = false;
     // Measures the display's refresh from the frame loop's animation frames; it outlives sessions, as the display does
     private readonly displayRefresh = new DisplayRefresh();
+    // Estimates the media time between the stream's frames from the new frames drawn, frame by frame; a seek starts it over
+    private readonly frameInterval = new FrameInterval();
     // The newest frame in a display-rate plan's history and the one before it; null while the executor's history holds no frame
     private displayRateFrames: DisplayRateFrames | null = null;
     // The host's deinterlacing choice, which outlives sessions
@@ -2241,7 +2244,8 @@ export default class WebGPUPresenter {
     /**
      * Records an animation frame the frame loop presents in: its time, a DOMHighResTimeStamp in milliseconds, measures the display's refresh,
      * and the rate the clock advances at, 0 while it stands still, scales the media time one refresh covers.
-     * Once the measured rate moves past DISPLAY_RATE_REPLAN_TOLERANCE from the rate plans read as display.rate, preset passes plan again with it.
+     * Once the measured rate moves past DISPLAY_RATE_REPLAN_TOLERANCE from the rate plans read as display.rate, preset passes plan again with it
+     * when a pass's condition reads display.rate; a draw reads the measured refresh itself, so a pass that times its draws plans once.
      */
     recordAnimationFrame(timeMilliseconds: number, clockRate: number): void {
         if (!Number.isFinite(clockRate) || clockRate < 0) {
@@ -2259,7 +2263,12 @@ export default class WebGPUPresenter {
             return;
         }
         this.plannedDisplayRate = rate;
-        this.replanForPresetFacts();
+        const conditionReadsRate = this.presetPasses.some((presetPass: PresetPass): boolean => isPlannedPresetPass(presetPass)
+            && presetPass.manifest.when !== null
+            && collectPassExpressionIdentifiers(presetPass.manifest.when).includes(GLOBAL_FACTS.displayRate));
+        if (conditionReadsRate) {
+            this.replanForPresetFacts();
+        }
     }
 
     /**
@@ -3973,6 +3982,7 @@ export default class WebGPUPresenter {
 
         if (timing.newFrame) {
             this.resetHistoryOnDiscontinuity(executor, timing);
+            this.frameInterval.record(timing.timestampMicroseconds, timing.durationMicroseconds);
         }
         const draw = this.prepareFrameDraw(source, timing);
         return this.encodeSubmission(device, canvasContext, executor, layout, {
@@ -4055,6 +4065,7 @@ export default class WebGPUPresenter {
             const commandEncoder = device.createCommandEncoder();
             executor.encode(commandEncoder, {
                 fieldState: frame.fieldState,
+                frameDurationMicroseconds: this.frameInterval.getIntervalMicroseconds(),
                 geometry: layout.presentation,
                 newFrame: frame.newFrame,
                 refreshMicroseconds: this.getRefreshMicroseconds(),
@@ -4104,7 +4115,7 @@ export default class WebGPUPresenter {
         });
     }
 
-    /** Starts history over before a new frame whose epoch changed, whose timestamp went back, or that jumped past 2.5 frame durations. */
+    /** Starts history and the frame interval over before a new frame whose epoch changed, whose timestamp went back, or that jumped past 2.5 frame durations. */
     private resetHistoryOnDiscontinuity(executor: PresentationExecutor, timing: FrameTiming): void {
         const previousFrame = this.lastNewFrame;
         const elapsedMicroseconds = previousFrame ? timing.timestampMicroseconds - previousFrame.timestampMicroseconds : null;
@@ -4129,6 +4140,7 @@ export default class WebGPUPresenter {
         if (epochChanged || elapsedMicroseconds < 0 || jumped) {
             executor.resetHistory();
             this.resetHeldFrames();
+            this.frameInterval.reset();
         }
     }
 
@@ -4152,9 +4164,10 @@ export default class WebGPUPresenter {
         };
     }
 
-    /** Starts temporal history over for a seek or a new generation; the next frame follows nothing. */
+    /** Starts temporal history and the frame interval over for a seek or a new generation; the next frame follows nothing. */
     private resetPresentationHistory(): void {
         this.lastNewFrame = null;
+        this.frameInterval.reset();
         this.executor?.resetHistory();
         this.resetHeldFrames();
     }
