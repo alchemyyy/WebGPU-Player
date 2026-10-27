@@ -87,6 +87,7 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 - `NativeUltraHDVideoCapabilityVectors.ts`: 4K 8-bit HEVC, VP9, and AV1 keyframes.
 - `RawHDRCapabilityVectors.ts`: 4K 10-bit VP9 and AV1 keyframes with plane fingerprints.
 - `ExternalHDRAuthorizationVector.ts`: the neutralized Main 10 access unit and its expected samples, for external HDR authorization.
+- `ExternalAV1HDRAuthorizationVector.ts`: a lossless AV1 Main 10 BT.2020 PQ temporal unit and its exact samples, for the AV1 external HDR keys.
 - `DolbyVisionAuthorizationVector.ts`: synthetic RPU snapshots for Dolby Vision authorization.
 - `HDR10PlusVectors.ts`: deterministic HDR10+ HEVC access units for the dynamic HDR tests.
 - `Base64.ts`: the base64 decoder the inline vectors share.
@@ -135,7 +136,8 @@ All worker code unless marked.
 ### demux/av1/
 
 - `AV1OBUParser.ts`: the OBU walk of one temporal unit (headers, extension headers, leb128 sizes, a last OBU without a size field), frame header detection, metadata types and ITU-T T.35 messages, and the removal of a payload's trailing bits.
-- `AV1SequenceHeaderParser.ts`: the sequence header, parsed as the AV1 specification defines it.
+- `AV1SequenceHeaderParser.ts`: the sequence header, parsed as the AV1 specification defines it, with the bit offsets of its color_config and trailing bits.
+- `AV1SequenceHeaderColorRewriter.ts`: the bit-exact rewrite of a sequence header's color description and range, and of every sequence header OBU of a temporal unit or `av1C` configOBUs.
 
 ### demux/dolby-vision/
 
@@ -201,10 +203,11 @@ The owned WebCodecs paths.
   It pairs a path's Dolby Vision and HDR10+ queues into the metadata its frames take (`createOwnedVideoFrameMetadataSource`).
   It also runs a single-layer attempt (`runOwnedSingleLayerVideoStream`), given a per-packet metadata step.
 - `OwnedNativeVideoDecoder.ts`: an owned WebCodecs decoder for packets that decode unchanged, used for AV1 and VP9.
-- `OwnedAV1VideoStream.ts`: one attempt of the owned AV1 path, which every AV1 track takes: each temporal unit's Dolby Vision RPU and HDR10+ metadata, paired with its frame.
+- `OwnedAV1VideoStream.ts`: one attempt of the owned AV1 path, which every AV1 track takes: each temporal unit's Dolby Vision RPU and HDR10+ metadata, paired with its frame, after an optional color neutralization.
 - `OwnedVP9VideoStream.ts`: one attempt of the owned VP9 path, which every VP9 track takes: the HDR10+ in each packet's container side data, paired with its frame.
 - `OwnedNativeHEVCVideoDecoder.ts`: the engine's own WebCodecs HEVC decoder, built on `OwnedNativeVideoDecoder`: NAL order fix, leading RASL drop, optional SPS neutralization.
 - `NativeHDRHEVCColorNeutralizer.ts`: rewrites the `hvcC` SPS and the decoder colorSpace to limited BT.709 for the native external HDR route.
+- `NativeHDRAV1ColorNeutralizer.ts`: the AV1 counterpart: the decoder colorSpace, codecs string, and `av1C`, and each temporal unit's sequence headers, each checked against the route's limited BT.2020 color first.
 - `DolbyVisionFramePairQueue.ts`: BL and EL frame pairing, within the tolerance of `demux/dolby-vision/DolbyVisionProfiles.ts`.
 
 ### decode/video/gpu/
@@ -294,7 +297,7 @@ AC-3 and E-AC-3 through a hidden `<audio>` and MSE.
 The authorization vectors are in `capability/vectors/`.
 
 - `RawHDRPresentationAuthorization.ts`: raw route keys, readback of the route's default plan, and the per-device registry.
-- `ExternalHDRPresentationAuthorization.ts`: external PQ and HLG route keys, checked with the neutralized Main 10 vector.
+- `ExternalHDRPresentationAuthorization.ts`: external PQ and HLG route keys per codec, HEVC Main 10 and AV1 Main 10, each checked with its own neutralized vector.
 - `DolbyVisionPresentationAuthorization.ts`, `ExternalDolbyVisionPresentationAuthorization.ts`: raw Dolby Vision keys (per raw format: single-layer, the P4 and P7 bases, and the P4 and P7 FEL) and the external P5 key, checked with synthetic RPU vectors.
 - `GPUAuthorizationDeadline.ts`: the shared 5 s timeout, cancelled on device loss.
 - `GPUCanvasReadback.ts`: bounded GPU canvas pixel readback (5 s).

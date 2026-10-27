@@ -102,14 +102,14 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   The libdovi T.35 entry point parses them in decode order.
   A temporal unit has exactly one shown frame, so its timestamp keys its RPU, as a PTS keys an HEVC RPU.
   The route profile comes from the container descriptor; the profile the crate infers from the RPU header (5 for 10.0, 8 otherwise) only validates the snapshot.
-  AV1 has no native external Dolby Vision or HDR route, because nothing neutralizes an AV1 sequence header's color, so P10 reconstructs from raw planes only: I420P10 for Main at 10 bits, else its AV1 raw format variant's (10-27).
+  P10 has no native RPU route: the external P5 route and the native compatible base take HEVC only, so P10 reconstructs from raw planes only, I420P10 for Main at 10 bits, else its AV1 raw format variant's, and a declared PQ or HLG base takes the native AV1 route where its key is authorized (10-27).
 - Every AV1 track decodes through the engine's own AV1 path (10-09).
   HDR10+ and the MDCV and CLL travel in metadata OBUs, which Mediabunny's decoded samples hide as they hide the RPU, and Jellyfin's HDR10Plus label is not a reliable sign of them, so the route does not depend on any label.
   Each temporal unit's OBUs are walked once: its Dolby Vision RPU OBUs are removed before decode on every route, and parsed only on a Dolby Vision route, the one route that loads the RPU parser.
   Its HDR10+ T.35 messages lose their OBU trailing bits as dav1d removes them, then parse as HEVC SEI payloads do, and their OBUs stay in the unit.
   Mediabunny's decoder wrapper has no AV1 workaround, and a unit's one shown frame keeps the unit's timestamp, so frames need no timestamp reassignment.
   The one feature of Mediabunny's sample decoding the owned path drops is the merge of a Matroska alpha channel (BlockAddID 1) into each frame.
-  AV1 has no native PQ route, so no request names a PQ transfer for it; an AV1 track without an RPU route scans its MDCV and CLL OBUs at startup when its first sequence header signals PQ.
+  The raw route's request names no transfer, so an AV1 track without an RPU route scans its MDCV and CLL OBUs at startup when its first sequence header signals PQ, and the native external route does the same.
 - Every VP9 track on the native backend decodes through the engine's own VP9 path (10-09).
   VP9 has no metadata of its own, so its HDR10+ travels beside each frame in a Matroska or WebM BlockAdditional, which Mediabunny's sample decoding never reads, and Jellyfin's HDR10Plus label is not a reliable sign of it, so the route does not depend on any label.
   Packets decode unchanged, and each packet's BlockAdditionals parse as the ITU-T T.35 messages of HEVC SEI do.
@@ -274,8 +274,14 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   - a zero-copy P010 external texture;
   - raw R16 and RG16 plane import, the only route to bit-exact P010 and exact P7 FEL.
 - Native HDR neutralization.
-  The native external HDR route rewrites the SPS color to limited BT.709 so Chrome does not tone-map, and the shader recovers the YUV codes.
+  The native external HDR route rewrites the color description to limited BT.709 so Chrome does not tone-map, and the shader recovers the YUV codes.
   An `hvcC` without an SPS defers validation to the first key access unit (08-05).
+- AV1 color is neutralized like HEVC's (10-27).
+  Until then nothing rewrote an AV1 sequence header, so HDR AV1 decoded in software to raw I420P10, which cost CPU at 4K.
+  The worker now rewrites every sequence header OBU's color description and range bit-exactly, every other field kept as it was, with the OBU size recoded only when the payload length changes, and also the codecs string's color fields, an `av1C` description, and the decoder's colorSpace.
+  Chromium's AV1 decoders take a frame's color from the sequence header and fall back to the configuration, so both are rewritten; on the hardware decoder, the neutralized frame then reports limited BT.709 and stays opaque.
+  Each rewritten header must itself declare limited BT.2020 with the non-constant-luminance matrix and the route's transfer, and only the HLG code point proves HLG, because AV1 has no alternative transfer characteristics message.
+  The AV1 keys have their own lossless vector and authorize on first use rather than at device creation, because only AV1 HDR items need them and the HEVC keys alone shape a host's transcode ranges.
 - Startup is bounded by progress, not by a fixed timer (10-07).
   A 72 Mbps 4K TrueHD source under six concurrent players produced no audio within a fixed 20 s bound and fell back to a server transcode that also stalled; the stage that stalled was not recorded.
   The controller fails after 20 s without decode progress, or at 60 s regardless, and the fallback message names the counters it reached.

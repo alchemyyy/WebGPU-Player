@@ -102,7 +102,7 @@ A host may start the probes before its first negotiation with `warmCustomDecodeC
 | Backend literal | Output | Qualifying evidence | Gate |
 | --- | --- | --- | --- |
 | `native` SDR | `video-frame` | H.264 per-profile keyframes; HEVC 1080p access unit; VP8, VP9, AV1 64x64; 4K variants | `getOrdinarySDRVideoSelection` |
-| `native` HEVC Main 10 HDR, Dolby Vision base | `video-frame`, with `nativeHDRTransfer` pq or hlg, neutralized | 4K Main 10 access unit decode, plus external HDR or Dolby Vision GPU authorization | `supportsNativeMain10HEVC`, `selectNativeDolbyVisionBaseOutput` |
+| `native` HEVC Main 10 and AV1 Main 10 HDR, Dolby Vision base | `video-frame`, with `nativeHDRTransfer` pq or hlg, neutralized | 4K Main 10 decode (`nativeHDRHEVC`, `nativeHDRAV1`), plus that codec's external HDR or the Dolby Vision GPU authorization | `getNativeHDRVideoCodec`, `selectNativeDolbyVisionBaseOutput` (HEVC only) |
 | `native` raw | `raw-planes`: I420P10 for HDR, 10-bit SDR, and Dolby Vision (HEVC Main 10, AV1 Main, VP9 Profile 2), I420 to I444P12 for range extensions and for AV1 outside Main 10 | `copyTo` plane fingerprints; nine 192x192 two-access-unit range-extension probes and eight 192x192 two-temporal-unit AV1 raw format probes; raw GPU authorization | `supportsRawHDRVideo`, `selectHEVCRangeExtensionVideoOutput`, `selectAV1RawFormatVideoOutput` |
 | `gpu` | `frame-pool`: I420 to I444P12, the stream's own format | None at eligibility: a host offers its GPU decoder packages, whose own vectors run only when the host verifies one | `selectGPUVideoOutput`; native wins |
 | Audio decoder package | `decoded-pcm` | None at eligibility: a host offers its audio decoder packages | `findAudioDecoderPackage`, for a codec no engine decoder supports |
@@ -150,7 +150,8 @@ A host may start the probes before its first negotiation with `warmCustomDecodeC
 4. SDR: `native`, or native Main 10 SDR.
    Then, for 10-bit 4:2:0 SDR that neither decodes (AV1 Main, VP9 Profile 2, or HEVC Main 10 without native decode), raw I420P10 through the raw SDR key of its matrix, primaries, and range.
    JPEG 2000, MPEG-1, MPEG-2, VC-1, and WMV3 have no native route (`CUSTOM_PACKAGE_VIDEO_CODECS`).
-5. PQ or HLG: native external (`external-hevc-main10-bt709-limited:<pq|hlg>-v1`) first, then raw (`<I420P10|I420P12>:bt2020-ncl:bt2020:limited:<pq|hlg>`).
+5. PQ or HLG: native external first, through the stream's codec's key (`external-hevc-main10-bt709-limited:<pq|hlg>-v1` for HEVC Main 10, `external-av1-main10-bt709-limited:<pq|hlg>-v1` for AV1 Main at 10 bits), then raw (`<I420P10|I420P12>:bt2020-ncl:bt2020:limited:<pq|hlg>`).
+   The worker rewrites the HEVC SPS VUI, or every AV1 sequence header, the codecs string, and an `av1C` description, to limited BT.709, so Chrome converts the hardware frame without tone mapping; each rewritten header must declare limited BT.2020 with the non-constant-luminance matrix and the route's transfer, or the attempt fails.
 6. When steps 3 to 5 chose no route, a GPU decoder package the host offers takes the stream, if one does; otherwise the source is ineligible with the reason those steps gave.
 
 ## GPU decoders
@@ -184,7 +185,8 @@ A summary without a header takes every stream of its codecs and formats, and lea
 
 A package's self-test vectors run only when a host calls `verifyGPUDecoderPackage` (see [Decoder packages](decoder-packages.md)); eligibility never waits on them, and offering an unverified package is the host's choice.
 
-An AV1, VP9, or HEVC range-extension source presents HDR only through raw planes, so a host must settle the raw HDR keys for it whatever the external result.
+VP9 and HEVC range extensions present HDR only through raw planes, and AV1 keeps its raw route beside its native external one, so a host must settle the raw HDR keys for them whatever the external result.
+The AV1 external keys authorize on first use: `getCustomPresentationEligibilityOptions` waits for the key of an AV1 HDR stream's transfer before eligibility, through `WebGPUPresenter.waitForExternalHDRRouteAuthorization`.
 The Dolby Vision keys a source needs on first use (Profile 4 in any format, or Profile 7 or single-layer reconstruction in a format other than I420P10) must settle before eligibility.
 
 ## Interlaced video
@@ -211,7 +213,7 @@ MPEG-1, VP8, VP9, and AV1 have no interlaced coding.
 
 - Raw: `<I420P10..I444P12>:bt2020-ncl:bt2020:limited:<pq|hlg>` and `<I420..I444P12>:<matrix>:<primaries>:<full|limited>:sdr`, with every matrix (`bt709`, `bt470bg`, `smpte170m`, `bt2020-ncl`) and primaries set (`bt709`, `bt470bg`, `smpte170m`, `bt2020`).
   The HDR keys and the BT.709 SDR keys are prewarmed; every other SDR key authorizes on first use, and its vector doubles the chroma excursion so the gamut conversion moves its samples beyond the tolerance.
-- External HDR: `external-hevc-main10-bt709-limited:<pq|hlg>-v1`.
+- External HDR: `external-hevc-main10-bt709-limited:<pq|hlg>-v1`, prewarmed, and `external-av1-main10-bt709-limited:<pq|hlg>-v1`, authorized on first use, each with its own codec's vector.
 - Dolby Vision raw, each per BL format from I420 to I444P12: `<format>:dovi-rpu-v1`, `<format>:dovi-profile4-base-v1`, `<format>:dovi-profile4-fel-v1`, `<format>:dovi-profile7-base-v1`, and `<format>:dovi-profile7-fel-v1`.
   Only `I420P10:dovi-rpu-v1` and the I420P10 Profile 7 keys are prewarmed; the others authorize on first use.
 - Dolby Vision external: `external-I420P10-bt709-limited:dovi-p5-rpu-v1`.

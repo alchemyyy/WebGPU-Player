@@ -89,12 +89,14 @@ Only an RPU route loads the RPU parser; any other route removes the RPU OBUs wit
 | Variant | Eligible | Route, then fallback | Evidence |
 | --- | --- | --- | --- |
 | P10, CCID 0 (an IPT base) | Yes | RAW-DV P5 only; the CCID declares no base | `rawHDRVideo.av1` and `dovi-rpu` |
-| P10, CCID 1 | Yes | RAW-DV P8, then the declared PQ base through RAW I420P10 PQ | RAW-DV: as P10 with CCID 0. Base: `rawHDRVideo.av1` and `I420P10:bt2020-ncl:bt2020:limited:pq` |
+| P10, CCID 1 | Yes | RAW-DV P8, then the declared PQ base through VF-PQ where the AV1 PQ key is authorized, else RAW I420P10 PQ | RAW-DV: as P10 with CCID 0. Base: `nativeHDRAV1` and `external-av1-main10-bt709-limited:pq-v1`, or `rawHDRVideo.av1` and `I420P10:bt2020-ncl:bt2020:limited:pq` |
 | P10, CCID 2 | Yes | RAW-DV P8, then the declared SDR base through RAW I420P10 SDR | RAW-DV: as P10 with CCID 0. Base: `rawHDRVideo.av1` and the I420P10 SDR key of its color |
-| P10, CCID 4 | Yes | RAW-DV P8, then the declared HLG base through RAW I420P10 HLG | RAW-DV: as P10 with CCID 0. Base: `rawHDRVideo.av1` and `I420P10:bt2020-ncl:bt2020:limited:hlg` |
+| P10, CCID 4 | Yes | RAW-DV P8, then the declared HLG base through VF-HLG where the AV1 HLG key is authorized, else RAW I420P10 HLG | RAW-DV: as P10 with CCID 0. Base: `nativeHDRAV1` and `external-av1-main10-bt709-limited:hlg-v1`, or `rawHDRVideo.av1` and `I420P10:bt2020-ncl:bt2020:limited:hlg` |
 | P10, CCID 6, a reserved CCID, or an explicit ColorTransfer that contradicts the CCID | Yes | RAW-DV P8; CCID 6 then falls back to its PQ base | As P10 with CCID 1 |
 | P10 without a CCID | Yes | RAW-DV P5 only; the stream declares no base | As P10 with CCID 0 |
 | P10 at 8 bits, or outside the Main profile | Yes | RAW-DV in the variant's exact format, as P10 at 10 bits; then a declared base through its ordinary routes, native VF-SDR for 8-bit Main | `av1RawFormats[variant]` and `<format>:dovi-rpu-v1`, which authorizes on first use |
+
+P10 has no native RPU route: neither the external Profile 5 route nor a native compatible base takes AV1 yet, so its RPU reconstructs from raw I420P10 only.
 
 The engine maps the MP4 `dav1` sample entry of a 10.0 stream to AV1 itself (see [Decisions](decisions.md#video-decode-and-dolby-vision)).
 
@@ -106,7 +108,7 @@ Dolby Vision outside HEVC and AV1:
 
 ## AV1 outside Main 10
 
-Native routes decode AV1 Main at 4:2:0: VF-SDR at 8 bits, and at 10 bits RAW I420P10 through the raw SDR keys or RAW I420P10 PQ or HLG.
+Native routes decode AV1 Main at 4:2:0: VF-SDR at 8 bits, and at 10 bits VF-PQ and VF-HLG where the AV1 external keys are authorized, RAW I420P10 through the raw SDR keys, and RAW I420P10 PQ or HLG.
 AV1 outside Main 10 takes raw planes in the exact format of its raw format variant, which its Jellyfin Profile and PixelFormat name, through `av1RawFormats[variant]`, a 192x192 key and inter temporal unit decoded with `prefer-software`.
 Every AV1 stream falls back last to GPU, in its own format, when the host offers an AV1 decoder package whose header accepts it.
 
@@ -157,7 +159,7 @@ The host maps it to a presenter input mode.
 | Route | Eligibility output | Input mode | Notes |
 | --- | --- | --- | --- |
 | VF-SDR | `video-frame`; `native` | `external-texture`, identity | |
-| VF-PQ, VF-HLG | `video-frame`; `native`; SPS and VUI neutralized to BT.709; transfer `pq` or `hlg` | `external-hdr` | Chrome samples external textures at 8 bits per channel. PQ also applies static mastering metadata |
+| VF-PQ, VF-HLG | `video-frame`; `native`; HEVC SPS and VUI, or AV1 sequence header, codecs string, and `av1C`, neutralized to BT.709; transfer `pq` or `hlg` | `external-hdr` | Chrome samples external textures at 8 bits per channel. PQ also applies static mastering metadata. HEVC Main 10 and AV1 Main at 10 bits, each with its own keys |
 | DV base PQ, DV base HLG | As VF-PQ or VF-HLG, with `dolbyVisionProfile` null | `external-hdr` | P7 and P8 only. RPU and EL discarded. Preferred over RAW-DV whenever authorized |
 | Declared base | An ordinary route, with `dolbyVisionProfile` null | As that route | Used only when no RPU route is selected. RPU and EL discarded |
 | VF-DV5 | `video-frame`; `native`; `dolbyVisionProfile` 5 | `external-dolby-vision` | Per-frame Profile 5 RPU, also for a P20 with CCID 0 or none |
@@ -187,6 +189,7 @@ Probes, all in `capability/CustomDecodeCapabilities.ts`:
 | `video.hevc` | 1080p Main decode output |
 | `nativeUltraHDVideo.hevc` | 4K Main decode output |
 | `nativeHDRHEVC` | 4K Main 10 decode output |
+| `nativeHDRAV1` | The raw probe's 4K AV1 Main 10 keyframe decoded with `prefer-hardware` |
 | `nativeDolbyVisionHEVC` | The `hev1.2.4.H150.B0` configuration plus Main 10 decode |
 | `rawHDRVideo.hevc` | An I420P10 `copyTo` fingerprint |
 | `rawHDRVideo.av1` | A 4K AV1 Main 10 keyframe decoded with `prefer-software` and its I420P10 `copyTo` fingerprint |
@@ -201,6 +204,7 @@ GPU authorizations, all in `validation/`:
 | --- | --- | --- |
 | `ext-pq` | `external-hevc-main10-bt709-limited:pq-v1` | `ExternalHDRPresentationAuthorization.ts` |
 | `ext-hlg` | `external-hevc-main10-bt709-limited:hlg-v1` | `ExternalHDRPresentationAuthorization.ts` |
+| `ext-av1-pq`, `ext-av1-hlg` | `external-av1-main10-bt709-limited:<pq\|hlg>-v1`, authorized on first use | `ExternalHDRPresentationAuthorization.ts` |
 | Raw keys | `<format>:...`, as written in [Route keys](routes.md#route-keys) | `RawHDRPresentationAuthorization.ts` |
 | `dovi-rpu` | `<format>:dovi-rpu-v1`, one per raw format from I420 to I444P12 | `DolbyVisionPresentationAuthorization.ts` |
 | `dovi-p4-base`, `dovi-p4-fel` | `<format>:dovi-profile4-base-v1`, `<format>:dovi-profile4-fel-v1`, one pair per BL format from I420 to I444P12 | `DolbyVisionPresentationAuthorization.ts` |
