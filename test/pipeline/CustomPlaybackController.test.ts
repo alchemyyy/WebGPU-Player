@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
+import { getDefaultCapabilityProbeStore } from 'webgpu-player/capability/CapabilityProbeStore';
 import {
     microsecondsToMilliseconds,
     millisecondsToMicroseconds,
@@ -2667,6 +2668,35 @@ describe('CustomPlaybackController', () => {
             }) ]);
         }
     );
+
+    it('asks the probe store to clear when a start fails to decode, but not once playback has started', async () => {
+        const clearAfterStartFailure = vi.spyOn(getDefaultCapabilityProbeStore(), 'clearAfterStartFailure');
+        const failedStart = createControllerHarness(false);
+        const startPromise = failedStart.controller.play(createPlayOptions());
+        await flushAsyncWork();
+        failedStart.videoDecodeSession.emit({
+            failureKind: 'decode-failed',
+            generation: failedStart.videoDecodeSession.starts[0].generation,
+            message: 'simulated configure failure',
+            type: 'error'
+        });
+        await startPromise;
+
+        expect(clearAfterStartFailure).toHaveBeenCalledOnce();
+
+        const started = createControllerHarness(false);
+        const generation = await startReadyPlayback(started, false);
+        started.videoDecodeSession.emit({
+            failureKind: 'decode-failed',
+            generation,
+            message: 'simulated later failure',
+            type: 'error'
+        });
+        await flushAsyncWork();
+
+        expect(started.fallbackRequests).toHaveLength(1);
+        expect(clearAfterStartFailure).toHaveBeenCalledOnce();
+    });
 
     it('latches a recoverable decode fallback and leaves owned audio stopped', async () => {
         const harness = createControllerHarness(true);

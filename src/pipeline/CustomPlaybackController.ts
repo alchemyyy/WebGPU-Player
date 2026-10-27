@@ -41,6 +41,7 @@ import MediaClock from './MediaClock';
 import { hasRawVideoFrameCopyLayout } from '../decode/video/RawVideoFrameCopy';
 import { addMicroseconds, requireMicroseconds } from '../TimeMath';
 import { isTimingTraceActive, recordTimingEvent } from '../TimingTrace';
+import { getDefaultCapabilityProbeStore } from '../capability/CapabilityProbeStore';
 import type {
     CustomAudioOutput,
     CustomAudioOutputBinding,
@@ -2007,6 +2008,10 @@ export default class CustomPlaybackController {
             || this.fallbackGeneration === generation) {
             return;
         }
+        if (this.isFailedRouteStart(generation, reason)) {
+            // A route may have been admitted by a verdict an unchanged fingerprint kept past a driver, codec pack, or acceleration change
+            getDefaultCapabilityProbeStore().clearAfterStartFailure();
+        }
 
         this.fallbackGeneration = generation;
         this.fallbackCount += 1;
@@ -2049,6 +2054,13 @@ export default class CustomPlaybackController {
         void this.stopDecodePipelines().catch((error: unknown): void => {
             this.lastErrorMessage = this.getErrorMessage(error);
         });
+    }
+
+    /** Returns whether a fallback ends a start whose decoder failed to configure or to output its first frame. */
+    private isFailedRouteStart(generation: number, reason: CustomPlaybackFallbackReason): boolean {
+        return this.pendingStartup?.generation === generation
+            && this.pendingStartup.phase === 'starting'
+            && (reason === 'decode-failed' || reason === 'startup-timeout');
     }
 
     private handleFallbackHookFailure(generation: number, error: unknown): void {

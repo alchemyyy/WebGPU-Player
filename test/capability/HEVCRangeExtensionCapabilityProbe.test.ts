@@ -82,7 +82,8 @@ describe('HEVC range-extension capability probe', () => {
                 status: 'supported',
                 variant
             });
-            expect(harness.vectorLoader).toHaveBeenCalledWith(definition.assetPath);
+            // A negotiation downloads at the default priority; only a background run asks for low
+            expect(harness.vectorLoader).toHaveBeenCalledWith(definition.assetPath, 'auto');
             expect(harness.outputProbe).toHaveBeenCalledWith(expect.objectContaining({
                 configuration: definition.config,
                 encodedChunks: definition.accessUnits.map(accessUnit => expect.objectContaining({
@@ -149,12 +150,12 @@ describe('HEVC range-extension capability probe', () => {
             const vectorLoader = harness.environment.hevcRangeExtensionVectorLoader;
             const requestedAssets: string[] = [];
             // Each download outlasts the 2 s timed-probe bound before it resolves
-            harness.environment.hevcRangeExtensionVectorLoader = async (assetPath): Promise<ArrayBuffer> => {
+            harness.environment.hevcRangeExtensionVectorLoader = async (assetPath, priority): Promise<ArrayBuffer> => {
                 requestedAssets.push(assetPath);
                 await new Promise<void>(resolve => {
                     globalThis.setTimeout(resolve, 5_000);
                 });
-                return vectorLoader ? vectorLoader(assetPath) : new ArrayBuffer(0);
+                return vectorLoader ? vectorLoader(assetPath, priority) : new ArrayBuffer(0);
             };
 
             const capabilitiesPromise = new CustomDecodeCapabilityProbe(harness.environment).probe();
