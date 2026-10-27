@@ -77,6 +77,8 @@ type DolbyVisionBaseLayerSelection = DolbyVisionPresentationSelection & {
 
 // dv_bl_signal_compatibility_id is a 4-bit field; IDs outside the standard set are reserved but still supported
 const MAXIMUM_BL_SIGNAL_COMPATIBILITY_ID = 15;
+// Jellyfin reads some streams' AverageFrameRate as 1000 fps, so its ReferenceFrameRate takes the RealFrameRate from there up
+const UNREALISTIC_AVERAGE_FRAME_RATE = 1_000;
 // The compatibility IDs that declare a base layer displayable on its own: HDR10, SDR, HLG, and Ultra HD Blu-ray
 const HDR10_BL_SIGNAL_COMPATIBILITY_ID = 1;
 const SDR_BL_SIGNAL_COMPATIBILITY_ID = 2;
@@ -934,4 +936,21 @@ export function getPresentationVideoFields(options: unknown): VideoStreamFields 
         frameWidth: getPositiveSafeInteger(videoStream.Width),
         scan: parseVideoStreamScan(videoStream)
     };
+}
+
+/**
+ * Returns the presented video stream's declared frame rate as Jellyfin's ReferenceFrameRate picks it: its AverageFrameRate, else its RealFrameRate
+ * where the average is missing or unrealistic; null when it declares neither.
+ */
+export function getPresentationFrameRate(options: unknown): number | null {
+    const videoStreams = getPlaybackVideoStreams(options);
+    const videoTrackOrdinal = getPresentationVideoTrackOrdinal(options);
+    if (videoStreams === null || videoTrackOrdinal === null) {
+        return null;
+    }
+    const videoStream = videoStreams[videoTrackOrdinal];
+    const averageFrameRate = getPositiveFiniteNumber(videoStream.AverageFrameRate);
+    return averageFrameRate !== null && averageFrameRate < UNREALISTIC_AVERAGE_FRAME_RATE ?
+        averageFrameRate :
+        getPositiveFiniteNumber(videoStream.RealFrameRate);
 }

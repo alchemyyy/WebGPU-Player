@@ -398,6 +398,7 @@ describe('layoutPipelineGraph', () => {
             chain: createBuiltinChain({ format: 'I420', hdrOutput: false, metadata: createSDRColorMetadata(), route: 'raw-yuv', settings: createDefaultRenderSettings() }),
             device: { features: new Set<string>(), maximumTextureDimension: MAXIMUM_TEXTURE_DIMENSION },
             facts: {
+                displayRate: null,
                 frameRate: null,
                 hdrOutput: false,
                 hdrSource: false,
@@ -434,6 +435,7 @@ describe('layoutPipelineGraph', () => {
             deinterlace: { bitDepth: SDR_BIT_DEPTH, frameHeight: SOURCE_HEIGHT, frameWidth: SOURCE_WIDTH },
             device: { features: new Set<string>(), maximumTextureDimension: MAXIMUM_TEXTURE_DIMENSION },
             facts: {
+                displayRate: null,
                 frameRate: null,
                 hdrOutput: false,
                 hdrSource: false,

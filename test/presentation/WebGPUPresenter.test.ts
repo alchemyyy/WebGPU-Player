@@ -285,6 +285,16 @@ type MockFunction = Mock;
 // Pass projects in wgpup/ that the user pass tests run
 const SATURATION_COLOR_PASS = readPostprocessingPass('saturation', 'saturation.wgsl');
 const SHARPEN_KERNEL_PASS = readPostprocessingPass('sharpen', 'sharpen.wgsl');
+const SMOOTH_MOTION_PASS = readPostprocessingPass('smooth-motion', 'smooth-motion.wgsl');
+const SMOOTH_MOTION_PASS_NAME = 'Smooth motion';
+// A 60 Hz display's animation frames, enough of them to measure it, and 24 fps video, which judders there without smooth motion
+const DISPLAY_REFRESH_MILLISECONDS = 1_000 / 60;
+const DISPLAY_REFRESH_MICROSECONDS = DISPLAY_REFRESH_MILLISECONDS * 1_000;
+const MEASURED_ANIMATION_FRAME_COUNT = 31;
+const FIRST_ANIMATION_FRAME_MILLISECONDS = 5_000;
+const FILM_FRAME_RATE = 24;
+// The next frame starts 4 ms into the refresh that takes it
+const NEXT_FRAME_LEAD_MICROSECONDS = 4_000;
 
 // Above the 8192 texels a default WebGPU device allows
 const ADAPTER_MAXIMUM_TEXTURE_DIMENSION = 16_384;
@@ -924,12 +934,16 @@ type RawRoutePresentation = {
     presenter: WebGPUPresenter
 };
 
-/** Starts a pushed-frame session with a configured raw route, with the stream's field facts when given, and returns the presenter, its fallback handler, and its harnesses. */
+/**
+ * Starts a pushed-frame session with a configured raw route, with the stream's field facts and declared frame rate when given,
+ * and returns the presenter, its fallback handler, and its harnesses.
+ */
 async function startRawRoutePresentation(
     metadata: InputColorMetadata,
     rawFrameFormat: SupportedRawVideoFrameFormat,
     settings: RenderSettings,
-    videoFields?: VideoStreamFields
+    videoFields?: VideoStreamFields,
+    frameRate?: number
 ): Promise<RawRoutePresentation> {
     webSettingsMockState.hdrToneMappingEnabled = true;
     const gpuHarness = createGPUHarness();
@@ -951,7 +965,8 @@ async function startRawRoutePresentation(
         metadata,
         rawFrameFormat,
         settings,
-        ...(videoFields ? { videoFields } : {})
+        ...(videoFields ? { videoFields } : {}),
+        ...(frameRate === undefined ? {} : { frameRate })
     }, 1)).resolves.toBe(true);
     return { contextHarness, deviceHarness: gpuHarness.devices[0], fallbackHandler, presenter };
 }
@@ -4683,6 +4698,69 @@ describe('WebGPUPresenter', () => {
         expect(getLastPlanRequest().chain.signal.name.endsWith(INTERLACED_CHROMA_SIGNAL_SUFFIX)).toBe(false);
         expect(presenter.getFrameLookaheadMicroseconds()).toBe(0);
         expect(presenter.presentHeldFields(1, NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS)).toBe(false);
+    });
+
+    it('draws smooth motion on every refresh once it measures a display the frame rate judders on, a refresh ahead of the clock', async () => {
+        const encode = vi.spyOn(PresentationExecutor.prototype, 'encode');
+        const metadata = createPQColorMetadata();
+        const { presenter } = await startRawRoutePresentation(metadata, 'I420P10', createHDRToSDRRenderSettings(), undefined, FILM_FRAME_RATE);
+        await presenter.setPresentationPreset([ { parameters: {}, source: SMOOTH_MOTION_PASS } ]);
+        const pushFrame = async (timestampMicroseconds: Microseconds, targetTimeMicroseconds: Microseconds): Promise<void> => {
+            const presentedFrameCount = presenter.getTelemetry().presentedFrameCount;
+            const frame = { ...createRawFrame('I420P10', metadata), timestampMicroseconds };
+            expect(presenter.presentDecodedFrame({
+                durationMicroseconds: RAW_FRAME_DURATION_MICROSECONDS,
+                frame,
+                mediaTimeMicroseconds: timestampMicroseconds,
+                outputMode: 'raw-planes',
+                videoEpoch: FIRST_VIDEO_EPOCH
+            }, 1, undefined, targetTimeMicroseconds)).toBe(true);
+            await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(presentedFrameCount + 1));
+        };
+        // The first frame measures the layout, which plans again
+        await pushFrame(RAW_FRAME_TIMESTAMP_MICROSECONDS, RAW_FRAME_TIMESTAMP_MICROSECONDS);
+        // Before the display is measured, frames present at the clock's time and nothing redraws between them
+        expect(getLastPlanRequest().facts).toMatchObject({ displayRate: null, frameRate: FILM_FRAME_RATE });
+        expect(presenter.getPresentationPlanReport().inactivePasses).toEqual([ { detail: '', name: SMOOTH_MOTION_PASS_NAME, reason: 'condition-false' } ]);
+        expect(presenter.getFrameLookaheadMicroseconds()).toBe(0);
+        expect(presenter.presentHeldFields(1, NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS)).toBe(false);
+
+        for (let index = 0; index < MEASURED_ANIMATION_FRAME_COUNT; index += 1) {
+            presenter.recordAnimationFrame(FIRST_ANIMATION_FRAME_MILLISECONDS + (index * DISPLAY_REFRESH_MILLISECONDS), 1);
+        }
+
+        await vi.waitFor(() => expect(presenter.getFrameLookaheadMicroseconds()).toBe(Math.floor(DISPLAY_REFRESH_MICROSECONDS)));
+        expect(getLastPlanRequest().facts.displayRate).toBeCloseTo(1_000 / DISPLAY_REFRESH_MILLISECONDS, 6);
+        expect(presenter.getPresentationPlanReport().activePasses).toEqual([ SMOOTH_MOTION_PASS_NAME ]);
+        encode.mockClear();
+        const laterFrameTimestampMicroseconds = addMicroseconds(NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS, RAW_FRAME_DURATION_MICROSECONDS);
+        const laterFrameTargetMicroseconds = requireMicroseconds(laterFrameTimestampMicroseconds - NEXT_FRAME_LEAD_MICROSECONDS);
+        const followingRefreshMicroseconds = requireMicroseconds(Math.round(laterFrameTargetMicroseconds + DISPLAY_REFRESH_MICROSECONDS));
+
+        // The new executor's history starts with the next frame
+        await pushFrame(NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS, NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS);
+        // A refresh that starts before the frame after it takes that frame, and shows the frame before it, blended toward it
+        await pushFrame(laterFrameTimestampMicroseconds, laterFrameTargetMicroseconds);
+        expect(presenter.getTelemetry().lastPresentedMediaTimeMicroseconds).toBe(NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS);
+        // The refresh after it draws from history at its own clock time, once, and shows the newest frame
+        expect(presenter.presentHeldFields(1, followingRefreshMicroseconds)).toBe(true);
+        expect(presenter.presentHeldFields(1, followingRefreshMicroseconds)).toBe(false);
+        await vi.waitFor(() => expect(presenter.getTelemetry().lastPresentedMediaTimeMicroseconds).toBe(laterFrameTimestampMicroseconds));
+
+        const frameInputs = encode.mock.calls.map((call: unknown[]): PresentationFrameInput => call[1] as PresentationFrameInput);
+        expect(frameInputs.map((frameInput: PresentationFrameInput) => [
+            frameInput.newFrame,
+            frameInput.source === null,
+            frameInput.timestampMicroseconds,
+            frameInput.targetTimeMicroseconds
+        ])).toEqual([
+            [ true, false, NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS, NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS ],
+            [ true, false, laterFrameTimestampMicroseconds, laterFrameTargetMicroseconds ],
+            [ false, true, laterFrameTimestampMicroseconds, followingRefreshMicroseconds ]
+        ]);
+        for (const frameInput of frameInputs) {
+            expect(frameInput.refreshMicroseconds).toBeCloseTo(DISPLAY_REFRESH_MICROSECONDS, 3);
+        }
     });
 
     it('reports why a dual-layer route presents FEL frames as their base', async () => {

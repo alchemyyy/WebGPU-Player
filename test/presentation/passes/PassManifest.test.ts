@@ -102,7 +102,7 @@ const KERNEL_OUTPUT_FORMATS: readonly GPUTextureFormat[] = [
 const COMPUTE_OUTPUT_FORMATS: readonly GPUTextureFormat[] = [ 'rgba16float', 'rgba32float', 'r32float', 'rgba8unorm' ];
 const COMPONENT_COUNTS: readonly number[] = [ 1, 2, 3, 4 ];
 
-const GLOBAL_FACT_LIST = 'source.width, source.height, output.width, output.height, luma.width, luma.height, chroma.width, chroma.height, frame.rate, hdr.source, hdr.output, rgb.source';
+const GLOBAL_FACT_LIST = 'source.width, source.height, output.width, output.height, luma.width, luma.height, chroma.width, chroma.height, frame.rate, display.rate, hdr.source, hdr.output, rgb.source';
 const HOOKED_SIZE_FACT_LIST = `${GLOBAL_FACT_LIST}, HOOKED.width, HOOKED.height`;
 
 const MISSING_HEADER_MESSAGE = 'The pass has no //! header';
@@ -163,6 +163,7 @@ const DEFAULT_KERNEL_MANIFEST: PassManifest = {
     offset: null,
     output: HOOKED_SIZE_OUTPUT,
     parameters: [],
+    rate: 'frame',
     replaces: null,
     save: null,
     shape: 'kernel',
@@ -220,6 +221,7 @@ const FULL_KERNEL_HEADER: readonly string[] = [
     `//! output: ${FULL_KERNEL_WIDTH},  ${FULL_KERNEL_HEIGHT} , rg16float`,
     '//! components: 2',
     '//! domain: linear',
+    '//! rate :  display',
     `//! when: ${FULL_KERNEL_CONDITION}`,
     '//!  param   strength :f32= -0.25   in[ -1.5e1 ,+2.5E-1 ]',
     '//! param radius: i32 = 3 in [-4, 4]',
@@ -241,6 +243,7 @@ const FULL_KERNEL_MANIFEST: PassManifest = {
         { defaultValue: 3, maximum: 4, minimum: -4, name: 'radius', type: 'i32' },
         { defaultValue: 8, maximum: 16, minimum: 1, name: 'taps', type: 'u32' }
     ],
+    rate: 'display',
     replaces: null,
     save: 'DETAIL',
     shape: 'kernel',
@@ -277,6 +280,7 @@ const FULL_COMPUTE_MANIFEST: PassManifest = {
     offset: null,
     output: { format: 'r32float', height: parsePassExpression(FULL_COMPUTE_HEIGHT), width: parsePassExpression(FULL_COMPUTE_WIDTH) },
     parameters: [],
+    rate: 'frame',
     replaces: null,
     save: 'STATE',
     shape: 'compute',
@@ -559,6 +563,17 @@ const HOOK_AND_DOMAIN_ERROR_CASES: readonly ErrorCase[] = [
         label: 'an unknown domain',
         message: "Unknown domain 'hdr'; expected any, display, linear, sdr, source",
         ...appendLine(KERNEL_HEADER, '//! domain: hdr')
+    },
+    {
+        label: 'an unknown rate',
+        message: "Unknown rate 'field'; expected display, frame",
+        ...appendLine(KERNEL_HEADER, '//! rate: field')
+    },
+    {
+        headerLines: [ NAME_LINE, '//! shape: kernel', '//! hook: LUMA', '//! rate: display' ],
+        label: 'a display rate on a plane stage, whose passes read the source',
+        line: 4,
+        message: 'A pass on a plane stage cannot draw at the display rate: LUMA, CHROMA, NATIVE'
     }
 ];
 
@@ -864,6 +879,7 @@ const SATURATION_MANIFEST: PassManifest = {
     offset: null,
     output: null,
     parameters: [ { defaultValue: 1.2, maximum: 2, minimum: 0, name: 'saturation', type: 'f32' } ],
+    rate: 'frame',
     replaces: null,
     save: null,
     shape: 'color',
@@ -884,6 +900,7 @@ const SHARPEN_MANIFEST: PassManifest = {
     offset: null,
     output: HOOKED_SIZE_OUTPUT,
     parameters: [ { defaultValue: 0.5, maximum: 1, minimum: 0, name: 'strength', type: 'f32' } ],
+    rate: 'frame',
     replaces: null,
     save: null,
     shape: 'kernel',
@@ -904,6 +921,7 @@ const TEMPORAL_BLEND_MANIFEST: PassManifest = {
     offset: null,
     output: HOOKED_SIZE_OUTPUT,
     parameters: [ { defaultValue: 0.5, maximum: 1, minimum: 0, name: 'blend', type: 'f32' } ],
+    rate: 'frame',
     replaces: null,
     save: null,
     shape: 'kernel',
@@ -924,6 +942,7 @@ const CATMULL_ROM_MANIFEST: PassManifest = {
     offset: null,
     output: null,
     parameters: [],
+    rate: 'frame',
     replaces: null,
     save: null,
     shape: 'scaler',

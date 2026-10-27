@@ -91,6 +91,7 @@ function createFacts(overrides: Partial<PlanFacts> = {}): PlanFacts {
     const sourceHeight = overrides.sourceHeight ?? SOURCE_HEIGHT;
     const sourceWidth = overrides.sourceWidth ?? SOURCE_WIDTH;
     return {
+        displayRate: null,
         frameRate: null,
         hdrOutput: false,
         hdrSource: true,
@@ -115,6 +116,7 @@ function createManifest(overrides: Partial<PassManifest> & Pick<PassManifest, 'b
         offset: null,
         output: null,
         parameters: [],
+        rate: 'frame',
         replaces: null,
         save: null,
         textures: [],
@@ -636,6 +638,8 @@ describe('planPresentation with deinterlacing', () => {
 
         expect(presentationPlan.passes.map((pass: PlannedPass): string => pass.label)).toEqual([ SIGNAL_LABEL, DEINTERLACE_LABEL, SCALE_LABEL ]);
         expect(presentationPlan.deinterlace).toEqual(DEINTERLACE);
+        // A field drawn between frames redraws from the deinterlacing pass on, over the signal's history
+        expect(presentationPlan.historyDrawStart).toBe(1);
         expect(presentationPlan.textures).toEqual([
             { format: 'rgba16float', height: FRAME_HEIGHT, historyDepth: 2, id: 'signal', storage: false, width: FRAME_WIDTH },
             { format: 'rgba16float', height: FRAME_HEIGHT, historyDepth: 0, id: 'deinterlace', storage: false, width: FRAME_WIDTH }
@@ -683,6 +687,79 @@ describe('planPresentation with deinterlacing', () => {
     it('fails on a frame size the device cannot hold', () => {
         expect(() => planDeinterlaced(createHDRChain(), [], { ...DEINTERLACE, frameWidth: MAXIMUM_TEXTURE_DIMENSION + 1 }))
             .toThrow(`deinterlace-size: frame width ${MAXIMUM_TEXTURE_DIMENSION + 1} outside [1, ${MAXIMUM_TEXTURE_DIMENSION}]`);
+    });
+});
+
+describe('planPresentation with display-rate passes', () => {
+    const DISPLAY_RATE = 60;
+    const SCALE_LABEL = 'Presentation scale';
+    const COLOR_LABEL = 'Presentation color';
+    const BLEND_LABEL = 'Presentation pass \'Blend\'';
+    const DISPLAY_STEP_ENTRY_POINTS: readonly string[] = [ TRANSFER_DECODE_ENTRY_POINT, TONE_MAP_ENTRY_POINT, OUTPUT_ENCODE_ENTRY_POINT ];
+
+    function planAtDisplayRate(passes: readonly PassManifest[], overrides: Partial<PlanRequest> = {}): PresentationPlan {
+        return planPresentation({
+            chain: createHDRChain(),
+            device: { features: new Set<string>(), maximumTextureDimension: MAXIMUM_TEXTURE_DIMENSION },
+            displayRateAvailable: true,
+            facts: createFacts({ displayRate: DISPLAY_RATE }),
+            output: SDR_OUTPUT,
+            passes,
+            ...overrides
+        });
+    }
+
+    function createBlendPass(): PassManifest {
+        return createKernelPass({
+            domain: 'display',
+            inputs: [ { historyOffset: 0, name: 'HOOKED' }, { historyOffset: -1, name: 'HOOKED' } ],
+            name: 'Blend',
+            rate: 'display'
+        });
+    }
+
+    it('keeps every frame in a ring the source pass writes, tone mapped, and redraws from the blend, which writes the canvas', () => {
+        const presentationPlan = planAtDisplayRate([ createBlendPass() ]);
+
+        expect(presentationPlan.displayRate).toBe(true);
+        expect(presentationPlan.passes.map((pass: PlannedPass): string => pass.label)).toEqual([ SCALE_LABEL, BLEND_LABEL ]);
+        const [ scalePass, blendPass ] = presentationPlan.passes;
+        expect(scalePass.target).toEqual({ kind: 'texture', textureId: 'scale' });
+        expect(getStepCalls(scalePass)).toEqual(DISPLAY_STEP_ENTRY_POINTS);
+        expect(presentationPlan.textures).toEqual([ { format: 'rgba16float', height: OUTPUT_HEIGHT, historyDepth: 1, id: 'scale', storage: false, width: OUTPUT_WIDTH } ]);
+        expect(getTextureBindings(blendPass).map(binding => [ binding.textureId, binding.historyOffset ])).toEqual([ [ 'scale', 0 ], [ 'scale', -1 ] ]);
+        expect(blendPass.target).toEqual({ kind: 'output' });
+        expect(getStepCalls(blendPass)).toEqual([ DISPLAY_CONTROLS_ENTRY_POINT, DITHER_ENTRY_POINT ]);
+        expect(presentationPlan.historyDrawStart).toBe(1);
+    });
+
+    it('gives a display-rate color pass a pass of its own after the pass that reads the source, which a frame-rate one fuses into', () => {
+        const displayRatePlan = planAtDisplayRate([ createColorPass({ rate: 'display' }) ]);
+        const frameRatePlan = planAtDisplayRate([ createColorPass() ]);
+
+        expect(displayRatePlan.passes.map((pass: PlannedPass): string => pass.label)).toEqual([ SCALE_LABEL, COLOR_LABEL ]);
+        expect(displayRatePlan.passes[1].colorSteps).toEqual([ 'Saturation', 'builtin.display-controls', 'builtin.dither' ]);
+        expect(displayRatePlan.passes[1].target).toEqual({ kind: 'output' });
+        expect(displayRatePlan.historyDrawStart).toBe(1);
+        expect(frameRatePlan.passes).toHaveLength(1);
+        expect(frameRatePlan.displayRate).toBe(false);
+    });
+
+    it('leaves a display-rate pass out where frames do not come from the frame loop, or the plan deinterlaces', () => {
+        const deinterlace = { bitDepth: 10, frameHeight: SOURCE_HEIGHT, frameWidth: SOURCE_WIDTH };
+
+        expect(planAtDisplayRate([ createBlendPass() ], { displayRateAvailable: false }).report.inactivePasses)
+            .toEqual([ { detail: 'video-element', name: 'Blend', reason: 'display-rate-unavailable' } ]);
+        const deinterlacingPlan = planAtDisplayRate([ createBlendPass() ], { deinterlace });
+        expect(deinterlacingPlan.report.inactivePasses).toEqual([ { detail: 'deinterlace', name: 'Blend', reason: 'display-rate-unavailable' } ]);
+        expect(deinterlacingPlan.displayRate).toBe(false);
+    });
+
+    it('reads the measured display rate as display.rate, 0 before a measurement', () => {
+        const pass = createColorPass({ when: parsePassExpression('display.rate > 50') });
+
+        expect(planAtDisplayRate([ pass ]).report.activePasses).toEqual([ 'Saturation' ]);
+        expect(planAtDisplayRate([ pass ], { facts: createFacts() }).report.inactivePasses).toEqual([ { detail: '', name: 'Saturation', reason: 'condition-false' } ]);
     });
 });
 

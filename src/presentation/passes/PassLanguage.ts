@@ -80,13 +80,15 @@ export const LINEAR_LIGHT_PRELUDE_FUNCTIONS: readonly string[] = Object.freeze([
 export const PLANE_TRANSFORM_PRELUDE_FUNCTIONS: readonly string[] = Object.freeze([ PRELUDE_FUNCTIONS.rgbToPlanes, PRELUDE_FUNCTIONS.planesToRGB ]);
 
 /**
- * The plan-time facts every expression may read; booleans are 1 or 0, and an unknown frame rate is 0.
+ * The plan-time facts every expression may read; booleans are 1 or 0, and an unknown rate is 0.
  * The luma size is the frame's visible size in samples, and the chroma size the chroma plane's, the luma size over the route's subsampling, rounded up.
+ * frame.rate is the stream's declared frame rate, and display.rate the display's refresh rate in Hz, which the presenter measures from animation frames.
  * rgb.source is 1 when the source codes R, G, and B planes, on which mpv fires its RGB hook rather than LUMA and CHROMA.
  */
 export const GLOBAL_FACTS = Object.freeze({
     chromaHeight: 'chroma.height',
     chromaWidth: 'chroma.width',
+    displayRate: 'display.rate',
     frameRate: 'frame.rate',
     hdrOutput: 'hdr.output',
     hdrSource: 'hdr.source',
@@ -110,6 +112,7 @@ export const GLOBAL_FACT_NAMES: readonly string[] = Object.freeze([
     GLOBAL_FACTS.chromaWidth,
     GLOBAL_FACTS.chromaHeight,
     GLOBAL_FACTS.frameRate,
+    GLOBAL_FACTS.displayRate,
     GLOBAL_FACTS.hdrSource,
     GLOBAL_FACTS.hdrOutput,
     GLOBAL_FACTS.rgbSource

@@ -381,6 +381,7 @@ function createGlobalFacts(facts: PlanFacts, planes: SignalPlanes | null): Map<s
         [ GLOBAL_FACTS.chromaWidth, chromaSize.width ],
         [ GLOBAL_FACTS.chromaHeight, chromaSize.height ],
         [ GLOBAL_FACTS.frameRate, facts.frameRate ?? 0 ],
+        [ GLOBAL_FACTS.displayRate, facts.displayRate ?? 0 ],
         [ GLOBAL_FACTS.hdrSource, facts.hdrSource ? 1 : 0 ],
         [ GLOBAL_FACTS.hdrOutput, facts.hdrOutput ? 1 : 0 ],
         [ GLOBAL_FACTS.rgbSource, planes?.rgb === true ? 1 : 0 ]
@@ -510,7 +511,8 @@ class PresentationPlanBuilder {
     private readonly textureOffsets = new Map<string, Offset>();
     private readonly textures = new Map<string, DraftTexture>();
     private copyCount = 0;
-    private deinterlace: DeinterlaceRequest | null = null;
+    // The deinterlacing pass the plan places: a signal with a bypass skips the color track in the pass that reads it, which a deinterlaced signal never reaches
+    private readonly deinterlace: DeinterlaceRequest | null;
     // The producer of the spine's current image; null while that image is the signal, which no pass has read yet
     private current: DraftPass | null = null;
     // The offset of the spine's current image in its own pixels
@@ -528,17 +530,15 @@ class PresentationPlanBuilder {
         this.request = request;
         this.facts = createGlobalFacts(request.facts, request.chain.signal.planes);
         this.initialState = request.chain.sourceIsDisplay ? 'display' : 'source';
+        this.deinterlace = request.chain.signal.bypassCondition === null ? request.deinterlace ?? null : null;
     }
 
     build(): PresentationPlan {
         const candidates = this.selectPasses();
         const walkedPasses = this.createTrack(candidates);
         this.namedStages = collectNamedStages(walkedPasses);
-        const deinterlace = this.request.deinterlace ?? null;
-        // A signal with a bypass skips the color track in the pass that reads it, which a deinterlaced signal never reaches
-        if (deinterlace !== null && this.request.chain.signal.bypassCondition === null) {
-            this.placeDeinterlace(deinterlace);
-            this.deinterlace = deinterlace;
+        if (this.deinterlace !== null) {
+            this.placeDeinterlace(this.deinterlace);
         }
         this.placePlanes(walkedPasses);
         for (const stage of IMAGE_STAGES) {
@@ -572,26 +572,10 @@ class PresentationPlanBuilder {
     }
 
     private isSelectable(manifest: PassManifest): boolean {
-        if (manifest.domain === 'sdr' && this.request.facts.hdrOutput) {
-            this.reject(manifest.name, 'sdr-on-hdr-output', manifest.domain);
+        const failure = this.getSelectionFailure(manifest);
+        if (failure !== null) {
+            this.reject(manifest.name, failure.reason, failure.detail);
             return false;
-        }
-        // The prelude's plane transform and linear light come from the chain, which may lack them
-        const signal = this.request.chain.signal;
-        if (signal.planes === null && collectUndeclaredReferences(manifest.body, PLANE_TRANSFORM_PRELUDE_FUNCTIONS).size > 0) {
-            this.reject(manifest.name, 'planes-unavailable', signal.name);
-            return false;
-        }
-        if (this.request.chain.linearLight === null && collectUndeclaredReferences(manifest.body, LINEAR_LIGHT_PRELUDE_FUNCTIONS).size > 0) {
-            this.reject(manifest.name, 'linear-light-unavailable', signal.name);
-            return false;
-        }
-        for (const texture of manifest.textures) {
-            const failure = getPassTextureFailure(texture, this.request.device);
-            if (failure !== null) {
-                this.reject(manifest.name, failure.reason, failure.detail);
-                return false;
-            }
         }
         if (manifest.when === null) {
             return true;
@@ -610,6 +594,35 @@ class PresentationPlanBuilder {
             this.reject(manifest.name, 'condition-invalid', getErrorMessage(error));
         }
         return false;
+    }
+
+    /** Returns the check a pass fails before its condition: its output, what the route offers, or a texture block the device cannot hold; null when it fails none. */
+    private getSelectionFailure(manifest: PassManifest): Omit<PassRejection, 'name'> | null {
+        if (manifest.domain === 'sdr' && this.request.facts.hdrOutput) {
+            return { detail: manifest.domain, reason: 'sdr-on-hdr-output' };
+        }
+        // The prelude's plane transform and linear light come from the chain, which may lack them
+        const signal = this.request.chain.signal;
+        if (signal.planes === null && collectUndeclaredReferences(manifest.body, PLANE_TRANSFORM_PRELUDE_FUNCTIONS).size > 0) {
+            return { detail: signal.name, reason: 'planes-unavailable' };
+        }
+        if (this.request.chain.linearLight === null && collectUndeclaredReferences(manifest.body, LINEAR_LIGHT_PRELUDE_FUNCTIONS).size > 0) {
+            return { detail: signal.name, reason: 'linear-light-unavailable' };
+        }
+        for (const texture of manifest.textures) {
+            const failure = getPassTextureFailure(texture, this.request.device);
+            if (failure !== null) {
+                return failure;
+            }
+        }
+        // A display-rate pass needs the frame loop's frames, taken a refresh ahead, and a history of whole frames, which a deinterlacing plan's is not
+        if (manifest.rate === 'display' && this.request.displayRateAvailable !== true) {
+            return { detail: 'video-element', reason: 'display-rate-unavailable' };
+        }
+        if (manifest.rate === 'display' && this.deinterlace !== null) {
+            return { detail: 'deinterlace', reason: 'display-rate-unavailable' };
+        }
+        return null;
     }
 
     /** Builds the color track from the chain's functions with replacements in place; returns the passes the spine walk places. */
@@ -1076,10 +1089,14 @@ class PresentationPlanBuilder {
         this.sealCurrent();
     }
 
-    /** Ends the spine at the output: the current producer writes the canvas when it can, and takes the rest of the color track. */
+    /**
+     * Ends the spine at the output: the current producer writes the canvas when it can, and takes the rest of the color track.
+     * A plan that draws at the display's rate redraws the canvas from history, so the pass that reads the source writes a texture instead.
+     */
     private placeOutput(): void {
         let outputPass = this.requireCurrent();
-        if (this.canWriteOutput(outputPass)) {
+        const drawsAtDisplayRate = [ ...this.activePasses ].some((pass: ActivePass): boolean => pass.manifest.rate === 'display');
+        if (this.canWriteOutput(outputPass) && !(drawsAtDisplayRate && readsSignal(outputPass.core))) {
             if (outputPass.targetTextureId !== null) {
                 this.textures.delete(outputPass.targetTextureId);
             }
@@ -1146,6 +1163,11 @@ class PresentationPlanBuilder {
         return {
             buffers: [],
             deinterlace: this.deinterlace === null ? null : { ...this.deinterlace },
+            displayRate: includedPasses.some((pass: ActivePass): boolean => pass.manifest.rate === 'display'),
+            // A draw from history starts at the first pass whose output changes between the draws of one frame
+            historyDrawStart: Math.max(this.drafts.findIndex((draft: DraftPass): boolean => draft.core.kind === 'deinterlace'
+                || (draft.core.kind === 'user' && draft.core.pass.manifest.rate === 'display')
+                || draft.postSteps.some((step: ColorStep): boolean => step.kind === 'user' && step.pass.manifest.rate === 'display')), 0),
             output: this.request.output,
             parameterSets: includedPasses
                 .filter((pass: ActivePass): boolean => pass.manifest.parameters.length > 0)
@@ -1219,8 +1241,15 @@ class PresentationPlanBuilder {
         }
     }
 
-    /** Adds a color step to the current image; a sealed image first gets a pass of its own to carry it. */
+    /**
+     * Adds a color step to the current image; a sealed image first gets a pass of its own to carry it.
+     * A display-rate step redraws from history, so it never joins the pass that reads the source: that pass is sealed, and a pass of its own carries the step.
+     */
     private appendStep(step: ColorStep): void {
+        if (step.kind === 'user' && step.pass.manifest.rate === 'display' && (this.current === null || readsSignal(this.current.core))) {
+            this.materializeCurrent();
+            this.sealCurrent();
+        }
         if (this.current === null) {
             this.signalSteps.push(step);
             return;

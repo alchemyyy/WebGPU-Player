@@ -72,8 +72,8 @@ export default class CustomPlaybackFrameLoop {
             return;
         }
         const generation = this.presentationGeneration;
-        this.frameCallback = globalThis.requestAnimationFrame((): void => {
-            this.handleAnimationFrame(generation, continueWhilePlaying);
+        this.frameCallback = globalThis.requestAnimationFrame((timeMilliseconds: DOMHighResTimeStamp): void => {
+            this.handleAnimationFrame(generation, continueWhilePlaying, timeMilliseconds);
         });
     }
 
@@ -119,15 +119,18 @@ export default class CustomPlaybackFrameLoop {
     }
 
     /**
-     * Takes the frame due at the clock, a lookahead ahead of it while the presenter deinterlaces, and presents it;
-     * a tick without a frame lets the presenter redraw the field or frame the clock reached from its history.
+     * Takes the frame due at the clock, a lookahead ahead of it while the presenter deinterlaces or draws at the display's rate, and presents it;
+     * a tick without a frame lets the presenter redraw the field, frame, or refresh the clock reached from its history.
+     * Every tick first hands the presenter its animation frame's time, which measures the display's refresh, and the rate the clock advances at:
+     * its playback rate while playing, and 0 otherwise, so the tick after a pause redraws the frame the clock stopped in.
      */
-    private handleAnimationFrame(generation: number, continueWhilePlaying: boolean): void {
+    private handleAnimationFrame(generation: number, continueWhilePlaying: boolean, timeMilliseconds: DOMHighResTimeStamp): void {
         this.frameCallback = null;
         if (!this.isCurrent() || this.presentationGeneration !== generation) {
             return;
         }
 
+        this.presenter.recordAnimationFrame(timeMilliseconds, this.controller.playbackState === 'playing' ? this.controller.playbackRate : 0);
         const targetTimeMicroseconds = this.controller.getPresentationTargetTime();
         const lookaheadMicroseconds = requireMicroseconds(this.presenter.getFrameLookaheadMicroseconds(), 'Presentation lookahead');
         const decodedFrame = this.controller.takeFrame(targetTimeMicroseconds, lookaheadMicroseconds);

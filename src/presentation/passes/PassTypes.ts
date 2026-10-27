@@ -39,6 +39,13 @@ export type ColorDomain = 'any' | 'display' | 'linear' | 'sdr' | 'source';
  */
 export type PassShape = 'color' | 'compute' | 'kernel' | 'scaler';
 
+/**
+ * How often a pass draws.
+ * - 'frame': once per new frame, and again only when the frame redraws.
+ * - 'display': on every display refresh, with the frame after the shown one already in history, so its output may change between frames.
+ */
+export type PassRate = 'display' | 'frame';
+
 export type PassExpressionBinaryOperator =
     | '!='
     | '%'
@@ -66,7 +73,7 @@ export type PassExpression =
 
 /**
  * Identifier values for expressions; booleans are 1 or 0.
- * The planner provides `source.width`, `source.height`, `output.width`, `output.height`, `frame.rate` (0 when unknown), `hdr.source`, and `hdr.output`, plus `<input>.width` and `<input>.height` for each input of a pass, `HOOKED` included.
+ * The planner provides the global facts of GLOBAL_FACT_NAMES, an unknown rate being 0, plus `<input>.width` and `<input>.height` for each input of a pass, `HOOKED` included.
  */
 export type PassExpressionFacts = ReadonlyMap<string, number>;
 
@@ -145,6 +152,7 @@ export type PassManifest = {
     output: PassOutput | null
     /** Parameters declared with `param`: the `parameters` uniform's members, which a change writes without a new plan. */
     parameters: readonly PassParameter[]
+    rate: PassRate
     /** The built-in color function a color pass replaces, such as 'builtin.tone-map'; a scaler always replaces the built-in scaler. */
     replaces: string | null
     save: string | null
@@ -359,6 +367,9 @@ export type PlannedOutput = {
 };
 
 export type PlanFacts = {
+    /** The display's refresh rate in Hz, which the presenter measures from animation frames; null until it has measured it. */
+    displayRate: number | null
+    /** The stream's declared frame rate; null when the host declares none. */
     frameRate: number | null
     hdrOutput: boolean
     hdrSource: boolean
@@ -396,6 +407,11 @@ export type PlanRequest = {
     chain: BuiltinChain
     /** The deinterlacing pass, or absent or null for none; a signal with a bypass condition never takes one */
     deinterlace?: DeinterlaceRequest | null
+    /**
+     * Whether the presenter can draw the plan on every display refresh: its frames come from the frame loop, which takes them a refresh ahead
+     * and redraws from history between them; absent or false leaves display-rate passes out.
+     */
+    displayRateAvailable?: boolean
     device: PlanDevice
     facts: PlanFacts
     output: PlannedOutput
@@ -496,6 +512,7 @@ export type PassRejectionReason =
     | 'compile-error'
     | 'condition-false'
     | 'condition-invalid'
+    | 'display-rate-unavailable'
     | 'domain-unreachable'
     | 'duplicate-name'
     | 'extra-scaler'
@@ -540,6 +557,13 @@ export type PresentationPlan = {
     buffers: readonly PlannedBuffer[]
     /** The deinterlacing pass the plan placed, or null for none */
     deinterlace: DeinterlaceRequest | null
+    /** Whether a planned pass draws at the display's rate, so the presenter draws the plan on every refresh */
+    displayRate: boolean
+    /**
+     * The first pass a draw from history records: the deinterlacing pass, or the first pass that draws at the display's rate.
+     * The passes before it keep what they wrote for the last new frame, which no draw of that frame changes; 0 in a plan that holds neither.
+     */
+    historyDrawStart: number
     output: PlannedOutput
     parameterSets: readonly PlannedParameterSet[]
     /** The texture blocks the passes bind, each once by identity */
@@ -584,6 +608,8 @@ export type PresentationFrameInput = {
     geometry: TexturePresentationGeometry
     /** True advances history; false redraws the same frame. */
     newFrame: boolean
+    /** The media time one display refresh covers: the refresh interval times the clock's rate; 0 while the display is unmeasured or the clock stands still. */
+    refreshMicroseconds: number
     /** Frames dropped since the previous new frame. */
     skippedFrameCount: number
     /**
@@ -592,5 +618,7 @@ export type PresentationFrameInput = {
      */
     source: PresentationFrameSource | null
     target: GPUTextureView
+    /** The clock time the draw presents at; the frame's own time when the draw has none. */
+    targetTimeMicroseconds: number
     timestampMicroseconds: number
 };
