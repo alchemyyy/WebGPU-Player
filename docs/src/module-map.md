@@ -311,6 +311,7 @@ The authorization vectors are in `capability/vectors/`.
 - `test/helpers/webAssemblyModuleEncoder.ts`: encodes small WebAssembly modules without a toolchain, for the package loader's and the interfaces' tests.
 - `test/helpers/fakeIndexedDB.ts`: an in-memory IndexedDB of the parts the package stores use: versioned opens with upgrades, keyed object stores, and transactions that apply their writes only when every request succeeds.
 - `test/helpers/vc1Media.ts`: synthetic VC-1 and WMV3 sequence and picture headers, Matroska Video for Windows files, and MP4 `vc-1` files.
+- `test/helpers/mpegVideoHeaders.ts`: synthetic MPEG-1 and MPEG-2 sequence headers, sequence extensions, and I picture packets, for tests that read a stream's sequences without decoding its pictures.
 - `test/helpers/matroskaElements.ts`, `test/helpers/isoBaseMediaBoxes.ts`: EBML elements and ISO base media boxes, and a file of one video track in each, with any codec ID or sample entry, CodecPrivate or none, and boxes ahead of `ftyp`.
 - `test/helpers/av1MetadataOBUs.ts`: AV1 OBUs, metadata OBUs included, that the AV1 tests build temporal units from.
 - `test/helpers/hdr10PlusVectors.ts`: the HDR10+ messages of `HDR10PlusVectors.ts`, and what the HDR10+ AV1 and VP9 vectors share: the `expectations.json` reader, the coded values in the engine's units, and the check of a posted frame's HDR10+ result.

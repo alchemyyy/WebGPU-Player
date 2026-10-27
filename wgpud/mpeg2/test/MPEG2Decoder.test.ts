@@ -119,7 +119,8 @@ const INDIRECT_ENTRY_POINTS = new Set([
 ]);
 const MACROBLOCK_GRID_ENTRY_POINTS = new Set([ 'copyFrame', 'reconstructPicture' ]);
 // The recovery of each error code: damage within a picture conceals, a packet the decoder cannot take apart resyncs,
-// and a change of the stream's size or chroma format, which the pool cannot follow, ends the attempt
+// and a sequence beyond the pool or of a chroma format other than the session's, which the parser moves to a session of its own
+// when the decoder takes it, ends the attempt, as does a parser call the engine never makes
 const CONCEALED_ERRORS = [
     'sequenceHeader',
     'pictureHeader',
@@ -141,7 +142,9 @@ const CONCEALED_ERRORS = [
     'fieldMissing'
 ];
 const RESYNCED_ERRORS = [ 'startCodes', 'pictureCount', 'fieldPictures', 'frameDimensions' ];
-const FATAL_ERRORS = [ 'pictureSize', 'chromaFormat' ];
+const FATAL_ERRORS = [ 'pictureSize', 'chromaFormat', 'recordInvalid' ];
+// The parser interface version its parser implements
+const PARSER_INTERFACE_VERSION = 2;
 // The body declares each error code once as `const ERROR_<NAME>: u32 = <code>u;`, beside the shift of the code in a status word
 const ERROR_DECLARATION_PATTERN = /^const ERROR_([A-Z_]+): u32 = (\d+)u;$/gm;
 const ERROR_CODE_SHIFT_NAME = 'CODE_SHIFT';
@@ -236,11 +239,11 @@ describe('the WGSL MPEG-2 decoder', () => {
     const source = readDecoderProjectSource(PROJECT);
     const manifest = parseGPUDecoderManifest(source);
 
-    it('parses into an 8-bit decoder of every MPEG-2 chroma format with two anchors and three frames of reordering, reading container packets', () => {
+    it('parses into an 8-bit decoder of every MPEG-2 chroma format with two anchors and three frames of reordering, reading its parser\'s records', () => {
         expect(manifest.name).toBe(DECODER_NAME);
         expect(manifest.accepts.codecs).toEqual(ACCEPTED_CODECS);
         expect(manifest.outputFormats).toEqual(OUTPUT_FORMATS);
-        expect(manifest.parser).toBeNull();
+        expect(manifest.parser).toBe(PARSER_INTERFACE_VERSION);
         expect(manifest.references).toBe(ANCHOR_REFERENCE_COUNT);
         expect(manifest.reorder).toBe(REORDER_DEPTH);
         expect(manifest.packetByteLength).toBeLessThanOrEqual(GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
@@ -347,7 +350,7 @@ describe('the WGSL MPEG-2 decoder', () => {
         }
     });
 
-    it('conceals damage within a picture, resyncs on a packet it cannot take apart, and ends the attempt on a size or chroma format change', () => {
+    it('conceals damage within a picture, resyncs on a packet it cannot take apart, and ends the attempt on a sequence its session cannot hold', () => {
         const recoveryOf = (name: string): string => {
             const code = [ ...manifest.errors ].find(([ , errorName ]) => errorName === name)?.[0];
             if (code === undefined) {
@@ -419,11 +422,12 @@ describe('the WGSL MPEG-2 decoder', () => {
         }
     });
 
-    it('loads as its built package, which carries a self-test vector of each format decoder.json lists', async () => {
+    it('loads as its built package, with its parser module and a self-test vector of each format decoder.json lists', async () => {
         const decoderPackage = await loadDecoderProjectVideoPackage(PROJECT);
 
         expect(decoderPackage.manifest.accepts.codecs).toEqual(ACCEPTED_CODECS);
         expect(decoderPackage.manifest.body).toBe(manifest.body);
+        expect(decoderPackage.memory).not.toBeNull();
         expect(getGPUDecoderVectorFormats(decoderPackage)).toEqual((readProjectDeclaration().vectors ?? []).map(vector => vector.format));
     });
 });

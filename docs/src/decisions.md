@@ -534,10 +534,11 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   One taken for an intra one gets `guess_dc`'s DCs, `filter181` over luma's, and `put_dc`'s flat blocks; then `h_block_filter` and `v_block_filter` smooth each damaged edge with an intra side.
   A picture whose slices all ended, covering it once, runs none of it: the concealment dispatches are indirect and get no workgroups.
   Header damage follows FFmpeg too: a damaged sequence header is ignored, a zero in a quantizer matrix stops that matrix, an invalid picture type takes the picture coding extension's guess or skips the picture, and a picture header after a frame picture is ignored, its slices decoding into that frame.
-  A change of size or chroma format still ends the attempt, and a picture before any sequence size, a packet whose start codes or pictures overflow the decoder's tables, or a field that does not pair resyncs.
+  Until 10-27 a change of size or chroma format ended the attempt; since then the package's parser moves a larger sequence or another chroma format to a session of its own, and a sequence its pool holds reinitializes the decoder in its session (see the entry on the MPEG-2 package's parser).
+  A picture before any sequence size, a packet whose start codes or pictures overflow the decoder's tables, or a field that does not pair resyncs.
   Against FFmpeg's C code paths on one thread, 162 damaged streams decoded with no failure, and every frame picture of the 4:2:0 streams matched FFmpeg bit for bit apart from the differences the next entry lists; a 4:2:2 broadcast sample whose damaged P picture FFmpeg conceals matched over all 50 frames.
-- Known differences between the WGSL MPEG-2 decoder and FFmpeg (10-13, 10-15).
-  A packet that holds no picture FFmpeg outputs, such as a skipped open-GOP B picture, repeats the latest reference, or gray before one, because a decoder without a parser outputs a frame for every packet.
+- Known differences between the WGSL MPEG-2 decoder and FFmpeg (10-13, 10-15, 10-27).
+  A packet that holds no picture FFmpeg outputs, such as a skipped open-GOP B picture, repeats the latest reference, or gray before one, because the decoder outputs a frame for every packet, its parser deciding no output events.
   Since 10-15 the first field of a pair split across packets presents with its other field concealed, which the next packet's second field replaces; FFmpeg outputs the pair once, with the second packet.
   Until 10-15 damaged slices, slice gaps or overlaps, and motion vectors outside the reference ended the attempt with the error and the failing value, where FFmpeg conceals and continues.
   Since then the decoder conceals as the previous entry describes, and differs from FFmpeg only where FFmpeg's own output is undefined or misplaced.
@@ -549,6 +550,16 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Damaged coefficients beyond the standard's range overflow FFmpeg's default SSE2 IDCT differently from its C one, which the decoder follows, as the IDCT entry above describes.
   Until 10-15 interlaced pictures presented woven: the decoder read the field flags, but no deinterlacer ran and no flag reached presentation, so eligibility refused interlaced streams.
   Since 10-15 the decoder reports each picture's fields and the deinterlacing pass presents them (see [Deinterlacing](#deinterlacing)).
+  A sequence's last anchor before a size change presents; FFmpeg drops it, since it reinitializes at the new sequence before it outputs that anchor.
+- The MPEG-2 package's parser reads only sequence headers (10-27).
+  The decoder opened at the container's coded size and failed any later sequence of another size as `pictureSize`, so a broadcast transport stream that switches resolution fell back.
+  A session learns a picture's size only from its parser, before the picture decodes, since a status readback arrives after later packets queued, so the package needed a parser that declares each sequence's size, as the VC-1 package's does.
+  The parser (`wgpud/mpeg2/parser/`) reads the sequence headers and extensions before each packet's first picture start code, as the WGSL's header stage reads them, and hands the packet on unchanged as the picture's record.
+  A full CPU parse, as VC-1's, would have moved the WGSL's header stage and slice table to the CPU for no gain, since MPEG-2 slices already decode in parallel on the GPU; a record that is the packet keeps the decode, its concealment, and its picture fields bit for bit as they were.
+  It decides no output events, so frames present in timestamp order as before, and it reports each sequence's chroma format, so a change of chroma format moves to a session of its own too.
+  A smaller sequence stays in its session, whose pool holds it, so the WGSL now drops its references and starts the new geometry where it failed before, as FFmpeg's `mpeg_decode_postinit` reinitializes.
+  On Dawn through the playback worker and the feed, MPEG-2 transport streams and Matroska files joined from FFmpeg's 720x576 and 1920x1080 interlaced segments, up, down, up and back, at 4:2:0 and from 4:2:0 to 4:2:2, a change within one pool (720 and 736 columns), and MPEG-1 from 352x288 to 640x480 and back, presented every frame of each segment's own FFmpeg decode bit for bit, where the package without a parser failed each as `pictureSize`.
+  Every earlier MPEG-2 check stream without a size change presented the same frames through the parser as without it.
 - The AV1 package's parser is libaom's decoder running its parse-only pass (10-14).
   `vendor/aom` pins libaom v3.15.2, and the `av1` project builds its decoder alone to WebAssembly with four small patches: every tile parses with the parse-only flag, hooks hand each transform block, block, frame, and missing reference to a C bridge, and the decoder exports its intra edge counts, its CfL buffer extent, and its deblocking levels.
   A parser of our own would repeat libaom's entropy decoding, motion vector prediction, and reference and segmentation bookkeeping, which nothing on the GPU could check; libaom's are the reference's own.

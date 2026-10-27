@@ -261,7 +261,7 @@ A damaged packet need not end a playback: a decoder that can go on past an error
 
 ### Stream changes
 
-A stream may change midway in a way its session cannot follow, as an AV1 sequence header that raises the maximum frame size or changes the bit depth or chroma subsampling does.
+A stream may change midway in a way its session cannot follow, as an AV1 sequence header that raises the maximum frame size or changes the bit depth or chroma subsampling does, or an MPEG-2 sequence header of a larger size, as a broadcast stream that switches resolution has.
 `GPUVideoDecodeFeed` in `src/decode/video/gpu/GPUVideoDecodeFeed.ts` checks each picture the parser reports against the request its current session was made for and that session's pool, in `getGPUVideoDecodeStreamChange`.
 
 - A picture needs a new session when it reports another output format, or a requirement its pool does not hold: the larger of its sequence's largest picture and its own visible size on each axis, against the coded size of the pool its pictures decode into.
@@ -275,7 +275,7 @@ A stream may change midway in a way its session cannot follow, as an AV1 sequenc
 - Once the current session decoded its packets and its decode work completed, the new session takes over, numbering its pictures on from the picture's index so the parser's events keep naming them, and its first packet clears its state.
 - A replaced session stays until presentation releases its last frame, and is destroyed then.
 - Presentation reads each frame's sample size, bit depth, and chroma subsampling from its slot's layout, and binds each pool as its frames arrive, so frames of every output format and pool present through one chain.
-- A change can come only where the decoder needs no earlier picture, as at an AV1 key frame after a new sequence header, since the new session holds no references of the old one.
+- A change can come only where the decoder needs no earlier picture, since the new session holds no references of the old one: at an AV1 key frame after a new sequence header, or at an MPEG-2 sequence header of a larger size or another chroma format, after which FFmpeg drops every reference too.
 - A seek configures the session from the track again, and a picture after it that the session cannot hold changes the session again.
 - A change whose requirement and fallback the decoder's `accepts` both refuse fails the attempt as `accepts: picture 4096x2160 in pool 4096x2176 at 8 bits`, the fallback's picture size, pool, and bit depth.
 - A new session that cannot be made fails the attempt with its creation failure, such as `format-unsupported: I444P12 not in I420, I420P10` for a format the decoder's `output` lacks.

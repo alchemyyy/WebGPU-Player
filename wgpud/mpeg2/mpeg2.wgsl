@@ -3,6 +3,7 @@
 //! decoder: video
 //! accepts: codec in [mpeg2video, mpeg1video], stream.width <= 16384, stream.height <= 16384, stream.bitDepth == 8
 //! output: I420, I422, I444
+//! parser: 2
 //! references: 2
 //! reorder: 3
 //! packet: 8 MiB
@@ -34,6 +35,7 @@
 //! error: 22, sliceCoverage, conceal
 //! error: 23, frameDimensions, resync
 //! error: 24, fieldMissing, conceal
+//! error: 25, recordInvalid
 //! dispatch: loadLookups, 60
 //! dispatch: preparePacket, 1
 //! dispatch: countStartCodes, indirect pictureState
@@ -68,6 +70,8 @@
 // from the container's packets and codec private data alone. It mirrors FFmpeg's mpeg12dec.c and mpegvideo, so its frames match
 // FFmpeg's mpeg2video decoder with FFmpeg's simple IDCT, which FFmpeg's default IDCT equals on x86-64.
 // A packet holds one frame: a frame picture or two field pictures, or the second field of a frame whose first field ended the packet before.
+// The package's parser, the Rust crate in parser/, hands each packet on unchanged as its picture's record, and declares the size and chroma
+// format of the packet's sequence, so a sequence the session's pool cannot hold, or of another chroma format, decodes in a session of its own.
 // The passes:
 // - loadLookups copies the code lookups and scan orders into pictureState, once per session
 // - preparePacket, countStartCodes, prefixStartCodes, and listStartCodes find the packet's start codes in parallel, in order
@@ -401,6 +405,8 @@ const ERROR_PACKET_SIZE: u32 = 21u;
 const ERROR_SLICE_COVERAGE: u32 = 22u;
 const ERROR_FRAME_DIMENSIONS: u32 = 23u;
 const ERROR_FIELD_MISSING: u32 = 24u;
+// The parser's own failure: a call the engine never makes, since its records are the packets themselves
+const ERROR_RECORD_INVALID: u32 = 25u;
 
 // Reports a failure, the code in the high byte and the failing value below it, and stops the packet's later passes.
 // Its codes are fatal or resync the decoder, so the packet's frame never presents
@@ -1377,7 +1383,8 @@ fn parseGroupOfPictures() {
 }
 
 // FFmpeg's mpeg_decode_postinit: the frame geometry, set on the first picture and again when the sequence changes it.
-// The pool and the reported visible rectangle keep their first size, so a size change fails; a new geometry drops the references
+// A new geometry drops the references, as FFmpeg's reinitialization does; a size beyond the pool fails, since the package's parser declares
+// each sequence's size, so a larger sequence decodes in a session of its own
 fn initializeGeometry() {
     let width = pictureState[CONTEXT_SEQUENCE_WIDTH];
     let height = pictureState[CONTEXT_SEQUENCE_HEIGHT];
@@ -1388,10 +1395,6 @@ fn initializeGeometry() {
     if (initialized && width == pictureState[CONTEXT_INITIALIZED_WIDTH] && height == pictureState[CONTEXT_INITIALIZED_HEIGHT]
         && chromaFormat == pictureState[CONTEXT_INITIALIZED_CHROMA_FORMAT]
         && !(progressiveSequence != pictureState[CONTEXT_INITIALIZED_PROGRESSIVE_SEQUENCE] && heightAlignmentDiffers)) {
-        return;
-    }
-    if (initialized && (width != pictureState[CONTEXT_INITIALIZED_WIDTH] || height != pictureState[CONTEXT_INITIALIZED_HEIGHT])) {
-        failHeader(ERROR_PICTURE_SIZE, (width << 12u) | (height & 0xFFFu));
         return;
     }
     if (chromaFormat != OUTPUT_CHROMA_FORMAT) {

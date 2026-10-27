@@ -98,7 +98,7 @@ It is a minimal project that builds one package and runs nowhere on its own.
 | `av1` | AV1 Main, High, and Professional at 8 to 12 bits, 4:0:0 to 4:4:4, on the GPU | libaom's decoder, running its parse-only pass, and the C bridge in `parser/` | One stream per output format in `vectors/`, from FFmpeg's libaom encoder | [libaom](https://aomedia.googlesource.com/aom), BSD-2-Clause with the Alliance for Open Media patent license |
 | `hevc` | HEVC Main, Main 10, and the range extensions, on the GPU | The Rust parser in `parser/` | The nine HEVC range extension vectors | None, MIT |
 | `jpeg2000` | JPEG 2000 YUV pictures at 4:2:0, 4:2:2, and 4:4:4, 8 to 12 bits, on the GPU | The Rust parser in `parser/` | One stream per output format in `vectors/`, from FFmpeg's and OpenJPEG's encoders | None, MIT |
-| `mpeg2` | MPEG-1 and MPEG-2 Video at 4:2:0, 4:2:2, and 4:4:4, on the GPU | None | One stream per chroma format in `vectors/`, from its own syntax exerciser | None, MIT |
+| `mpeg2` | MPEG-1 and MPEG-2 Video at 4:2:0, 4:2:2, and 4:4:4, on the GPU | The Rust parser in `parser/`, which reads sequence headers | One stream per chroma format in `vectors/`, from its own syntax exerciser | None, MIT |
 | `vc1` | VC-1 Advanced and WMV3 (Simple, Main, and Complex), on the GPU | The Rust parser in `parser/` | The VC-1 Advanced stream in `src/capability/vectors/qualification/vc1/` | None, MIT |
 | `uncompressed` | Uncompressed planar packets, on the GPU | None | None | None, MIT; the template of a WGSL-only decoder |
 | `eac3` | AC-3 and E-AC-3 | FFmpeg's AC-3 and E-AC-3 decoders | None | FFmpeg, LGPL-2.1-or-later |
@@ -191,6 +191,27 @@ cd wgpud/jpeg2000/parser && cargo test --locked
 npx vitest --watch=false wgpud/jpeg2000
 ```
 
+### The MPEG-2 parser
+
+`wgpud/mpeg2/parser/` is our crate: the CPU half of the MPEG-2 package, whose WGSL `wgpud/mpeg2/mpeg2.wgsl` decodes everything, its headers included.
+The parser reads only what the engine needs before a picture decodes: the size and chroma format of each picture's sequence.
+It reads them as the WGSL's header stage does, from the sequence headers and sequence extensions before a packet's first picture start code, and ignores a damaged sequence header where the WGSL and FFmpeg ignore it.
+`configure` reads the codec private data the same way and reports its sequence's size as the largest picture.
+Every packet is one picture of version 2 of the parser interface, without parse units, and its record is the packet, byte for byte, so the WGSL decodes, conceals, and reports fields as it did without a parser.
+A picture reports its sequence's size as its visible size and its largest picture, and its sequence's chroma format at 8 bits as its format, so a larger sequence, or one of another chroma format, moves the engine to a session of its own (see [Stream changes](decoder-packages.md#stream-changes)).
+A sequence its pool holds, such as a smaller one, decodes in the session it is in: the WGSL drops its references and starts the new geometry, as FFmpeg reinitializes, and each frame presents at its own picture's visible size.
+The parser decides no output events, so frames present in timestamp order as a decoder without a parser's do, and reports no picture fields, so the WGSL's own report stands.
+MPEG-1 has no sequence extension, so its sequences are 4:2:0.
+The WGSL declares the error codes, and `build.rs` generates the Rust constants from them and fails unless the header's `//! error:` lines name exactly those; the parser's only failure is `recordInvalid`, a call the engine never makes.
+
+After a change, from the engine root:
+
+```sh
+npm run decoders -- mpeg2
+cd wgpud/mpeg2/parser && cargo test --locked
+npx vitest --watch=false wgpud/mpeg2
+```
+
 ### The VC-1 parser
 
 `wgpud/vc1/parser/` is our crate: the CPU half of the VC-1 package, whose WGSL back end is `wgpud/vc1/vc1.wgsl`.
@@ -253,7 +274,7 @@ npx vitest --watch=false wgpud/av1
 
 ### Licenses
 
-- The engine's modules, the bridges, the HEVC, JPEG 2000, and VC-1 parsers, the decoder sources, and the `libdovi` crate are MIT, like the rest of the engine.
+- The engine's modules, the bridges, the HEVC, JPEG 2000, MPEG-2, and VC-1 parsers, the decoder sources, and the `libdovi` crate are MIT, like the rest of the engine.
   The vendored `dolby_vision` crate is MIT too and keeps its own `LICENSE`.
 - FFmpeg and libdcadec are LGPL-2.1-or-later, and only the `eac3`, `truehd`, and `dts` packages contain them.
   `wgpud/licenses/` holds their license texts.
