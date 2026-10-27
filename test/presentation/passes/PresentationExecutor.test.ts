@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import {
+    FRAME_POOL_LAYOUT_BYTE_LENGTH,
+    FRAME_POOL_VISIBLE_RECTANGLE_BYTE_OFFSET,
     PRESENTATION_FIELD_STATE,
     PRESENTATION_UNIFORM_BYTE_LENGTH,
     type PresentationUniformValues,
@@ -982,7 +984,7 @@ describe('PresentationExecutor', () => {
         expectCoordinateMapping(readLastPresentationSlot(harness, 1), RAW_VISIBLE_SCALE_X, RAW_VISIBLE_SCALE_Y, RAW_VISIBLE_OFFSET_X, RAW_VISIBLE_OFFSET_Y);
     });
 
-    it('binds frame pool slots, applies their visible rectangle, and reuses bind groups per layout buffer', async () => {
+    it('binds frame pool slots, applies their visible rectangle, writes it into each slot\'s layout uniform, and reuses bind groups per layout buffer', async () => {
         const harness = createDeviceHarness();
         const plan = createPlan({
             passes: [
@@ -1000,22 +1002,35 @@ describe('PresentationExecutor', () => {
         const replacementPool = { label: 'replacement pool' } as unknown as GPUBuffer;
         const firstLayout = { label: 'first layout' } as unknown as GPUBuffer;
         const secondLayout = { label: 'second layout' } as unknown as GPUBuffer;
-        const createFramePoolInput = (framePool: GPUBuffer, layout: GPUBuffer): PresentationFrameInput => {
+        const createFramePoolInput = (
+            framePool: GPUBuffer,
+            layout: GPUBuffer,
+            visibleRectangle: FramePoolFrame['visibleRectangle'] = RAW_VISIBLE_RECTANGLE
+        ): PresentationFrameInput => {
             const frame: FramePoolFrame = {
                 codedHeight: RAW_CODED_HEIGHT,
                 codedWidth: RAW_CODED_WIDTH,
                 layout,
                 pool: framePool,
-                visibleRectangle: RAW_VISIBLE_RECTANGLE
+                visibleRectangle
             };
             return createFrameInput({ frame, kind: 'frame-pool' });
         };
+        const readVisibleRectangleWrites = (layout: GPUBuffer): number[][] => harness.bufferWrites
+            .filter((write: BufferWrite): boolean => write.buffer === (layout as unknown as MockBuffer))
+            .map((write: BufferWrite): number[] => {
+                expect(write.bufferOffset).toBe(FRAME_POOL_VISIBLE_RECTANGLE_BYTE_OFFSET);
+                return [ ...new Uint32Array(write.bytes) ];
+            });
+        const visibleWords = (rectangle: FramePoolFrame['visibleRectangle']): number[] => [ rectangle.x, rectangle.y, rectangle.width, rectangle.height ];
 
         const executor = await PresentationExecutor.create(harness.device, plan);
         const passes = encodeFrame(executor, createFramePoolInput(pool, firstLayout));
 
         expect(getBoundResource(passes[0], 0)).toEqual({ buffer: pool });
-        expect(getBoundResource(passes[0], 1)).toEqual({ buffer: firstLayout, size: 64 });
+        expect(getBoundResource(passes[0], 1)).toEqual({ buffer: firstLayout, size: FRAME_POOL_LAYOUT_BYTE_LENGTH });
+        // The frame pool signal clamps its taps to the visible picture, which the slot's uniform holds from this frame on
+        expect(readVisibleRectangleWrites(firstLayout)).toEqual([ visibleWords(RAW_VISIBLE_RECTANGLE) ]);
         expectCoordinateMapping(
             readLastPresentationSlot(harness, 0),
             GEOMETRY.textureScaleX * RAW_VISIBLE_SCALE_X,
@@ -1028,6 +1043,13 @@ describe('PresentationExecutor', () => {
         const alternatingPasses = encodeFrame(executor, createFramePoolInput(pool, firstLayout));
         expect(harness.bindGroups).toHaveLength(2);
         expect(alternatingPasses[0].bindGroup).toBe(passes[0].bindGroup);
+        expect(readVisibleRectangleWrites(firstLayout)).toHaveLength(1);
+        expect(readVisibleRectangleWrites(secondLayout)).toEqual([ visibleWords(RAW_VISIBLE_RECTANGLE) ]);
+
+        // A picture that reports its own size presents through the same slot's uniform
+        const reportedRectangle = { height: RAW_VISIBLE_RECTANGLE.height - 2, width: RAW_VISIBLE_RECTANGLE.width - 2, x: 0, y: 0 };
+        encodeFrame(executor, createFramePoolInput(pool, firstLayout, reportedRectangle));
+        expect(readVisibleRectangleWrites(firstLayout)).toEqual([ visibleWords(RAW_VISIBLE_RECTANGLE), visibleWords(reportedRectangle) ]);
 
         const replacementPasses = encodeFrame(executor, createFramePoolInput(replacementPool, firstLayout));
         expect(harness.bindGroups).toHaveLength(3);

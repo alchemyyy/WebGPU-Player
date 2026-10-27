@@ -73,12 +73,19 @@ function collapseWhitespace(code: string): string {
     return code.replace(/\s+/g, ' ').trim();
 }
 
-/** Rewrites the raw YUV signal's luma sampler in terms of the frame pool's plane layout and sample loads. */
+/**
+ * Rewrites the raw YUV signal's luma sampler in terms of the frame pool's plane layout and sample loads, its taps clamped to the visible picture's samples,
+ * which the raw route's texture holds alone.
+ */
 function rewriteRawLumaSamplerForPool(rawSampler: string): string {
     return rawSampler
         .replace('(textureCoordinate: vec2f) -> f32 {', '(planeIndex: u32, textureCoordinate: vec2f) -> f32 {\n    let plane = framePoolLayout.planes[planeIndex];')
         .replace('vec2f(textureDimensions(lumaTexture))', 'vec2f(f32(plane.width), f32(plane.height))')
-        .replace('vec2i(textureDimensions(lumaTexture))', 'vec2i(i32(plane.width), i32(plane.height))')
+        .replace(
+            '    let maximumPosition = vec2i(textureDimensions(lumaTexture)) - vec2i(1);',
+            '    let bounds = framePoolPlaneBounds(planeIndex);\n    let minimumPosition = bounds.xy;\n    let maximumPosition = bounds.zw;'
+        )
+        .replaceAll('vec2i(0), maximumPosition', 'minimumPosition, maximumPosition')
         .replace(/f32\(textureLoad\(lumaTexture, (.+), 0\)\.r\)/g, 'framePoolLoadSample(planeIndex, $1)');
 }
 
@@ -127,6 +134,26 @@ describe('createFramePoolSignal', () => {
         expect(extractFunction(signal.code, 'framePoolSamplePlane')).toBe(
             rewriteRawLumaSamplerForPool(extractFunction(rawSignal.code, 'sampleLuma'))
         );
+    });
+
+    it('clamps every tap to the frame\'s visible picture, widened to whole samples of a subsampled plane, not to the pool\'s padded plane', () => {
+        const signal = createFramePoolSignal('I420', createSDRColorMetadata());
+        const interlacedSignal = createFramePoolSignal('I420', createSDRColorMetadata(), true);
+        const bounds = collapseWhitespace(extractFunction(signal.code, 'framePoolPlaneBounds'));
+
+        // A plane's divisor is its subsampling: 1 for luma and 4:4:4 chroma, 2 on each subsampled axis
+        expect(bounds).toContain('let divisor = (lumaSize + planeSize - vec2u(1u)) / planeSize;');
+        expect(bounds).toContain('let visibleEnd = framePoolLayout.visibleOrigin + framePoolLayout.visibleSize;');
+        expect(bounds).toContain('let minimumPosition = min(framePoolLayout.visibleOrigin / divisor, planeSize - vec2u(1u));');
+        expect(bounds).toContain('let maximumPosition = clamp((visibleEnd + divisor - vec2u(1u)) / divisor, minimumPosition + vec2u(1u), planeSize) - vec2u(1u);');
+        const samplePlane = extractFunction(signal.code, 'framePoolSamplePlane');
+        expect(samplePlane).not.toMatch(/i32\(plane\.(width|height)\)/);
+        expect([ ...samplePlane.matchAll(/clamp\([^;]+, minimumPosition, maximumPosition\)/g) ]).toHaveLength(4);
+        // The deinterlacing plan's field read keeps each field's rows inside the same bounds
+        const fieldRead = extractFunction(interlacedSignal.code, INTERLACED_CHROMA_FUNCTION);
+        expect(fieldRead).toContain('let bounds = framePoolPlaneBounds(planeIndex);');
+        expect(fieldRead).toContain('clamp(clamp(fieldRow, firstFieldRow, lastFieldRow) * 2 + field, bounds.y, bounds.w)');
+        expect(fieldRead).toContain('clamp(i32(floor(columnPosition)), bounds.x, bounds.z)');
     });
 
     it('reads each frame\'s sample size, bit depth, and chroma subsampling from its slot, so every format of a range and matrix shares one signal', () => {

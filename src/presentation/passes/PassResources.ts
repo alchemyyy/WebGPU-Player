@@ -13,8 +13,11 @@ export const UNIFORM_SLOT_BYTE_LENGTH = UNIFORM_BUFFER_OFFSET_ALIGNMENT;
 /** The bytes of the Dolby Vision enhancement uniform. */
 export const ENHANCEMENT_UNIFORM_BYTE_LENGTH = 16;
 
-/** The bytes of the frame pool layout uniform. */
-export const FRAME_POOL_LAYOUT_BYTE_LENGTH = 64;
+/** The bytes of the frame pool layout uniform: the slot's layout, then the visible rectangle of the frame that presents it. */
+export const FRAME_POOL_LAYOUT_BYTE_LENGTH = 80;
+
+/** Where the frame pool layout uniform holds the presented frame's visible rectangle, which the executor writes as it binds the frame. */
+export const FRAME_POOL_VISIBLE_RECTANGLE_BYTE_OFFSET = 64;
 
 /** The planes a frame pool slot holds at most. */
 export const FRAME_POOL_MAXIMUM_PLANE_COUNT = 3;
@@ -50,6 +53,8 @@ struct FramePoolLayoutUniforms {
     bytesPerComponent: u32,
     planeCount: u32,
     bitDepth: u32,
+    visibleOrigin: vec2u,
+    visibleSize: vec2u,
 }`,
     RenderSettingsUniforms: `struct RenderSettingsUniforms {
     version: u32,
@@ -246,6 +251,9 @@ export type FramePoolLayoutValues = {
     slotByteOffset: number
 };
 
+/** A frame's visible rectangle in luma samples of its coded frame. */
+export type FramePoolVisibleRectangle = { height: number; width: number; x: number; y: number };
+
 /** Returns a parameter's byte offset in its pass's `parameters` uniform: declared scalars in order, 4 bytes apart. */
 /** Returns a parameter value in its type and range: integers round, and values outside the range clamp to it; a value that is not finite throws a RangeError. */
 export function normalizePassParameterValue(parameter: PassParameter, value: number): number {
@@ -336,4 +344,12 @@ export function writeFramePoolLayout(target: DataView, values: FramePoolLayoutVa
     target.setUint32(52, values.bytesPerComponent, true);
     target.setUint32(56, values.planes.length, true);
     target.setUint32(60, values.bitDepth, true);
+}
+
+/** Writes the visible rectangle of the frame that presents a slot into its frame pool layout uniform, in luma samples of the coded frame. */
+export function writeFramePoolVisibleRectangle(target: DataView, rectangle: FramePoolVisibleRectangle): void {
+    target.setUint32(0, rectangle.x, true);
+    target.setUint32(4, rectangle.y, true);
+    target.setUint32(8, rectangle.width, true);
+    target.setUint32(12, rectangle.height, true);
 }

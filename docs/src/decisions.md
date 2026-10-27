@@ -381,6 +381,11 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Only a picture that no pool the decoder takes can hold fails, as `accepts` with the fallback's picture size and pool.
   The pictures queued while a session is created wait for it and are judged against the pool it got, since a device with small buffers can refuse the pool its request asks for, and a picture judged against that one would land beyond the smaller pool.
   Through the feed, the old sizing ended 32 of Argon's 2,524 AV1 streams within `accepts` and one own encode, and these rules with `accepts` on the picture size end none; simulated alone, the sequence-alone sizing left 16 and the unrounded `accepts` 5.
+- The frame pool signal clamps its taps to the frame's visible picture (10-27).
+  A pool slot holds the coded size rounded up to 64, and its rows below or right of the picture are ones no decoder wrote or, as for 1080p HEVC's conformance window, ones it crops.
+  Clamping the bilinear taps to the slot's planes made a picture's last row read them: a 640x360 HEVC stream's last row differed from the raw route by up to 245 of 255 on Dawn, through its 4:2:0 chroma, which interpolated chroma row 180 of 192.
+  So every tap, luma and chroma, progressive or within a field, and the frame-pool Dolby Vision read with them, clamps to the visible rectangle, widened to whole samples of a subsampled plane, as the raw route's texture of the picture and FFmpeg's scaler after cropping repeat the edge.
+  A slot's frames differ in visible rectangle, as a decoder's header replaces the container's or an AV1 picture reports its own size, so the executor writes each presented frame's rectangle into its slot's layout uniform instead of the pool writing it once.
 - A decoder's `accepts` judges pictures before the pool's rounding (10-15).
   `stream.width` and `stream.height` are the pool's size, rounded up to 64, which a decoder's buffers and dispatches need, but a codec's levels bound the pictures themselves.
   AV1's level 5.x allows 8,912,896 samples a picture, and a legal 7396x1205 picture of 8,912,180 samples rounds to a 7424x1216 pool of 9,027,584, which `accepts` on the pool refused.
