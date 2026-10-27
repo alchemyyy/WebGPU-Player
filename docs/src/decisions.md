@@ -102,7 +102,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   The libdovi T.35 entry point parses them in decode order.
   A temporal unit has exactly one shown frame, so its timestamp keys its RPU, as a PTS keys an HEVC RPU.
   The route profile comes from the container descriptor; the profile the crate infers from the RPU header (5 for 10.0, 8 otherwise) only validates the snapshot.
-  AV1 has no native external Dolby Vision or HDR route, because nothing neutralizes an AV1 sequence header's color, so P10 reconstructs from raw I420P10 only.
+  AV1 has no native external Dolby Vision or HDR route, because nothing neutralizes an AV1 sequence header's color, so P10 reconstructs from raw planes only: I420P10 for Main at 10 bits, else its AV1 raw format variant's (10-27).
 - Every AV1 track decodes through the engine's own AV1 path (10-09).
   HDR10+ and the MDCV and CLL travel in metadata OBUs, which Mediabunny's decoded samples hide as they hide the RPU, and Jellyfin's HDR10Plus label is not a reliable sign of them, so the route does not depend on any label.
   Each temporal unit's OBUs are walked once: its Dolby Vision RPU OBUs are removed before decode on every route, and parsed only on a Dolby Vision route, the one route that loads the RPU parser.
@@ -137,10 +137,18 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
 - 8-bit Main Dolby Vision reconstructed through the bundled decoder (10-08), until the CPU decoders left (10-13).
   Native HEVC Main decodes to hardware surfaces that no probe proves copyable, so an 8-bit Main base layer reconstructed from the bundled decoder's I420 planes, with the `I420:dovi-rpu-v1` key or the I420 dual-layer keys.
   It had no RPU route until 10-27, when the frame-pool route began reconstructing an HEVC package's I420 frames; a declared base still plays through the ordinary routes where no package is offered.
-- 10-bit SDR has a raw route (10-08).
+- 10-bit SDR has a raw route (10-08, 10-27).
   AV1 Main and VP9 Profile 2 have no 10-bit VideoFrame route, and HEVC Main 10 has none without native decode, so 10-bit 4:2:0 SDR presents from raw I420P10 through the raw SDR keys.
-  Those keys are BT.709 only, so BT.601 and BT.2020 SDR at 10 bits have no raw route.
+  Those keys were BT.709 only until 10-27, so BT.601 and BT.2020 SDR at 10 bits negotiated, since a profile condition cannot express primaries, and then failed eligibility.
+  Since 10-27 every matrix and primaries pair the metadata names has an SDR key in every raw format, and the raw shader converts identity SDR outside BT.709 primaries to BT.709 (`builtin.sdr-gamut`): the BT.709 curve decodes each component, the primaries' linear matrix converts it, the result clips to [0, 1], and the same curve encodes it, as FFmpeg's `colorspace` filter does when the transfer stays.
+  The CPU reference does the same in `processEncodedRGB`, and the frame-pool route, which shares the color track, converts too.
+  Only the BT.709 keys are prewarmed: the other 270 authorize on first use, so a host waits for the presented stream's own key before eligibility, and their vector doubles the chroma excursion, since the original vector moved BT.470 BG by only 2.4/255 under a 3/255 tolerance.
   The same route presents a declared 10-bit SDR base, such as P10.2's.
+- AV1 outside Main 10 qualifies its exact raw format (10-27).
+  Chrome's software decoder (dav1d, `prefer-software`) decodes AV1 Main at 8 bits, High 4:4:4 at 8 and 10 bits, and Professional 4:2:2 at 8 and 10 bits, and copies each to its exact WebCodecs format; it refuses 12-bit AV1 at `decode()`, so the 12-bit variants read unsupported there.
+  Each of the eight variants has a probe of its own, as the HEVC range extensions do, with 192x192 libaom vectors of one key and one inter temporal unit and pinned libdav1d fingerprints.
+  High and Professional streams present from their exact format before a GPU decoder package, and Dolby Vision Profile 10 at 8 bits or outside Main reconstructs from it, where before 10-27 it had no RPU route and played only a declared base.
+  8-bit Main SDR keeps its VideoFrame route; its I420 probe serves only Dolby Vision.
 - Single-layer profiles discard a signaled EL (10-06).
   P5, P8, and P20 have no EL composition, so their EL flag is ignored and in-band EL NAL units are dropped.
   A P4 or P7 frame without a paired EL presents MEL exactly, because a MEL carries no residual, and FEL as its base layer: the HDR10 base for P7, and the SDR base exactly for P4, with no tone mapping or dither.
@@ -292,7 +300,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   SMPTE 170M and SMPTE 240M primaries read as `smpte170m`, BT.470 BG as `bt470bg`, both matrices as BT.601, and the BT.2020 10 and 12-bit transfers, which use the BT.709 curve, as SDR.
   The VF-SDR route does no color math: it imports the frame with `colorSpace: 'srgb'` through the identity shader, so Chrome converts it.
   The CPU reference and the shaders are exact for all four primaries sets regardless: luminance comes from the primaries, YUV coefficients from the matrix (BT.601 is Kr 0.299, Kb 0.114), and gamut and IPT conversions go through BT.709 tables derived from the H.273 chromaticities under D65.
-  The raw SDR keys are BT.709 only, so BT.601 and BT.2020 SDR never reach the raw shaders.
+  Since 10-27 each matrix and primaries pair has its own raw SDR key, and the raw shaders convert the gamut of SDR outside BT.709 primaries (see [Video decode and Dolby Vision](#video-decode-and-dolby-vision)).
 - The SPS VUI never rejects color (10-07).
   An HLG broadcast whose VUI signals the BT.2020 10-bit transfer (14) and whose alternative transfer characteristics SEI (payload type 147) names HLG (18) failed the native HLG route, because the SPS parser accepted only BT.709 and BT.2020 PQ or HLG.
   The parser maps every code to a WebCodecs name or to null, and only the native HDR route check is strict (limited range, BT.2020 primaries and non-constant-luminance matrix).
@@ -528,7 +536,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
 - The prefilter keeps the package-only variants of AV1 and 4:0:0 HEVC potential (10-14).
   `hasPotentialCustomPlaybackVideoRoute` knows no host's packages, so it ruled out every AV1 stream outside Main and every 4:0:0 HEVC stream, which then never reached a package's fallback.
   An AV1 stream outside Main 4:2:0 at 8 or 10 bits, such as High 4:4:4, Professional 4:2:2, or 12 bits, and a 4:0:0 HEVC stream now stay potential when a frame pool holds their format, and eligibility decides with the host's offers.
-  AV1 Main at 10 bits outside the raw SDR keys stays with the host's own player, which decodes Main, and the other codecs with native routes keep their prefilter, since no decoder project decodes their other variants.
+  Since 10-27 every SDR color has a raw key, so AV1 Main at 10 bits in any SDR color stays potential, and the AV1 raw format probes join the packages in deciding the other AV1 variants; the other codecs with native routes keep their prefilter, since no decoder project decodes their other variants.
 - Motion JPEG 2000 opens through the engine's own input format (10-13).
   ISO/IEC 15444-3 puts the JP2 signature box ahead of `ftyp`, and Mediabunny 1.52.2 recognizes an ISO base media file only by an `ftyp` first, so no `.mj2` file opened.
   `CustomDecodeInputFormats.ts` adds a format ahead of Mediabunny's own that takes the signature box and an `ftyp` of brand `mjp2`, and hands the file to Mediabunny's MP4 demuxer, which skips the signature box.

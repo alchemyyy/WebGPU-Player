@@ -3,6 +3,7 @@
 import {
     getDolbyVisionReconstructionRawFrameFormat,
     getGPUVideoDecodeTarget,
+    getRawVideoPresentationRouteKey,
     type CustomPlaybackEligibility,
     type CustomPlaybackEligibilityOptions
 } from '../capability/CustomPlaybackEligibility';
@@ -20,7 +21,7 @@ import {
     type RawDolbyVisionVideoFrameFormat
 } from '../decode/video/RawVideoFrameCopy';
 import { getExternalHDRAuthorizationRouteKey, type ExternalHDRAuthorizationRouteKey } from '../validation/ExternalHDRPresentationAuthorization';
-import type { RawHDRAuthorizationRouteKey } from '../validation/RawHDRPresentationAuthorization';
+import { isPrewarmedRawAuthorizationRouteKey, type RawHDRAuthorizationRouteKey } from '../validation/RawHDRPresentationAuthorization';
 import {
     getDolbyVisionBaseColorMetadata,
     getDolbyVisionPresentationDescriptor,
@@ -369,6 +370,15 @@ function waitForDolbyVisionReconstructionAuthorization(presenter: WebGPUPresente
 }
 
 /**
+ * Returns the raw SDR key of the presented stream's raw-plane route when it authorizes on first use, as every key outside BT.709 does, or null.
+ * The prewarmed keys and the HDR keys have their own waits.
+ */
+export function getFirstUseRawSDRRouteKey(options: unknown): RawHDRAuthorizationRouteKey | null {
+    const routeKey = getRawVideoPresentationRouteKey(options);
+    return routeKey !== null && isRawSDRRouteKey(routeKey) && !isPrewarmedRawAuthorizationRouteKey(routeKey) ? routeKey : null;
+}
+
+/**
  * Returns the eligibility options the presentation authorizations decide for a playback, once the probes its routes wait on settle.
  * Resolves null when the playback stopped being current during a wait.
  */
@@ -377,7 +387,7 @@ export async function getCustomPresentationEligibilityOptions(
     request: PresentationAuthorizationRequest
 ): Promise<CustomPresentationEligibilityOptions | null> {
     const { input, options } = request;
-    await presenter.waitForRawSDRAuthorizationPrewarm();
+    await presenter.waitForRawSDRAuthorizationPrewarm(getFirstUseRawSDRRouteKey(options));
     if (!request.isCurrent()) {
         return null;
     }

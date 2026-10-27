@@ -5,7 +5,12 @@ import {
 } from '../../../color/ColorMetadata';
 import { assertValidRenderSettings, type RenderSettings } from '../../RenderSettings';
 import type { BuiltinChain, BuiltinChainConfiguration, SignalDefinition } from '../PassTypes';
-import { BUILTIN_COLOR_FUNCTION_NAMES, createBuiltinColorFunctions, createSignalLinearLight } from './BuiltinColorFunctions';
+import {
+    BUILTIN_COLOR_FUNCTION_NAMES,
+    createBuiltinColorFunctions,
+    createSDRGamutColorFunction,
+    createSignalLinearLight
+} from './BuiltinColorFunctions';
 import {
     createExternalDolbyVisionSignal,
     createExternalHDRSignal,
@@ -19,7 +24,10 @@ import { createFramePoolSignal } from './FramePoolSignal';
 // Dolby Vision reconstruction produces full-range BT.2020 PQ, which the color track decodes
 const DOLBY_VISION_OUTPUT_METADATA = createPQColorMetadata({ range: 'full' });
 
-/** Pairs a signal with the default color functions and the transfer function of its metadata; identity SDR settings present the signal unchanged. */
+/**
+ * Pairs a signal with the default color functions and the transfer function of its metadata.
+ * Identity SDR settings present the signal unchanged, converted to BT.709 when the metadata's primaries differ.
+ */
 function createColorTrackChain(
     signal: SignalDefinition,
     metadata: InputColorMetadata,
@@ -30,8 +38,11 @@ function createColorTrackChain(
     assertValidRenderSettings(settings);
     const linearLight = createSignalLinearLight(metadata);
     if (settings.mode === 'identity-sdr') {
+        const gamutConversion = createSDRGamutColorFunction(metadata);
         // The legacy identity processColor returned its input unchanged, without dither
-        return { colorFunctions: [], linearLight, signal, sourceIsDisplay: true };
+        return gamutConversion === null ?
+            { colorFunctions: [], linearLight, signal, sourceIsDisplay: true } :
+            { colorFunctions: [ gamutConversion ], linearLight, signal, sourceIsDisplay: false };
     }
     return { colorFunctions: createBuiltinColorFunctions(metadata, hdrOutput), linearLight, signal, sourceIsDisplay: false };
 }

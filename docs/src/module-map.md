@@ -70,6 +70,7 @@ The optional user passes a host may offer are pass projects in `wgpup/`, outside
 - `CustomPlaybackRuntime.ts`: runtime feature detection with failure reasons.
 - `H264ProfileCapabilities.ts`: the per-profile H.264 decoded-output probe and Jellyfin's profile names.
 - `HEVCRangeExtensionCapabilities.ts`: the nine range-extension variant definitions and the stream metadata resolver.
+- `AV1RawFormatCapabilities.ts`: the eight AV1 raw format variant definitions outside Main 10 (High 4:4:4, Professional 4:2:2 and 12 bits, and 8-bit Main for Dolby Vision) and the stream metadata resolver.
 - `NativeMediaAudioCapabilities.ts`: the MSE AC-3/E-AC-3 route probe and its selection.
 
 ### capability/vectors/
@@ -341,6 +342,7 @@ The authorization vectors are in `capability/vectors/`.
 - `bin/codec_vector_assets/`: the generated codec vectors, the one committed folder in `bin/`:
   - `truehd/TrueHDExactCapabilityVectors.ts`: TrueHD and MLP access units and their expected outputs, which the `truehd` project's tests import as `#codec_vector_assets/*`, and the synthetic streams the module embeds.
   - `hevc-range-extension/`: the nine range extension streams, which the native probes fetch from `bin/libraries/` and the `hevc` project's vectors hold.
+  - `av1-raw-format/`: the eight AV1 raw format streams, which the native probes fetch from `bin/libraries/` as `webgpu-player/av1-raw/`.
   - `dolby-vision-av1/`: the Profile 10 test vectors and their `expectations.json`.
   - `hdr10plus-av1/`: the HDR10+ AV1 test vectors and their `expectations.json`.
   - `hdr10plus-vp9/`: the HDR10+ VP9 test vectors, in WebM and Matroska, and their `expectations.json`.

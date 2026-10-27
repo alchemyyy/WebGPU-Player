@@ -230,6 +230,31 @@ describe('ColorPipeline', () => {
         }
     });
 
+    it.each([ 'bt2020', 'bt470bg', 'smpte170m' ] as const)('presents identity SDR in %s primaries as the same color in BT.709', primaries => {
+        const metadata = createSDRColorMetadata({ primaries });
+        const settings = createDefaultRenderSettings();
+        // A BT.709 color inside the source gamut, encoded in the source primaries, returns to its BT.709 encoding
+        const bt709LinearRGB: ColorTriplet = [ 0.4, 0.3, 0.2 ];
+        const sourceEncodedRGB = encodeSDROutput(convertLinearRGBGamut(bt709LinearRGB, 'bt709', primaries), 1, 'bt709');
+        const presentedRGB = processEncodedRGB(sourceEncodedRGB, metadata, settings);
+        const expectedRGB = encodeSDROutput(bt709LinearRGB, 1, 'bt709');
+        for (let channel = 0; channel < 3; channel += 1) {
+            expect(presentedRGB[channel]).toBeCloseTo(expectedRGB[channel], 6);
+        }
+        // Gray keeps its value, and a primary beyond BT.709 clips into it
+        for (const component of processEncodedRGB([ 0.5, 0.5, 0.5 ], metadata, settings)) {
+            expect(component).toBeCloseTo(0.5, 6);
+        }
+        if (primaries === 'bt2020') {
+            expect(processEncodedRGB([ 0, 1, 0 ], metadata, settings)).toEqual([ 0, 1, 0 ]);
+        }
+    });
+
+    it('leaves identity SDR in BT.709 primaries unclipped', () => {
+        const overshootRGB: ColorTriplet = [ -0.05, 0.5, 1.05 ];
+        expect(processEncodedRGB(overshootRGB, createSDRColorMetadata(), createDefaultRenderSettings())).toEqual(overshootRGB);
+    });
+
     it('perceptually compresses BT.2020 primaries without hard channel clipping', () => {
         const encoded100Nits = applyPQOETF(100);
         const settings = createHDRToSDRRenderSettings();

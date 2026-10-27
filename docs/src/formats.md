@@ -41,7 +41,7 @@ A track whose edit list Mediabunny cannot honor, as `getUnsupportedFeatures()` r
 | HEVC | Main and Main 10: SDR, HDR10, HDR10+, HLG, and Dolby Vision; the 9 range extensions, 4:2:0, 4:2:2, and 4:4:4 at 8, 10, and 12 bits | WebCodecs, or a GPU decoder package | 14 and 16 bits, monochrome, Screen Content Coding, High Throughput, Main Still Picture, and the named Intra profiles |
 | VP8 | Profile 0 | WebCodecs | |
 | VP9 | Profile 0 at 8 bits: SDR; Profile 2 at 10 bits: SDR, HDR10, HDR10+, and HLG | WebCodecs; Profile 2 in software | Profiles 1 and 3 (4:2:2 and 4:4:4) |
-| AV1 | Main at 8 bits: SDR; Main at 10 bits: SDR, HDR10, HDR10+, HLG, and Dolby Vision Profile 10 | WebCodecs; 10 bits in software | The High and Professional profiles |
+| AV1 | Main at 8 bits: SDR; Main at 10 bits: SDR, HDR10, HDR10+, HLG, and Dolby Vision Profile 10; High 4:4:4 at 8 and 10 bits and Professional 4:2:2 at 8 and 10 bits from raw planes, Dolby Vision Profile 10 among them | WebCodecs; 10 bits and the High and Professional profiles in software | Professional at 12 bits, which Chrome's WebCodecs refuses, outside a decoder package |
 | MPEG-1 | In Matroska and MPEG-TS | A GPU decoder package | Program streams (MPG, VOB), which nothing demuxes |
 | MPEG-2 | Every profile, at 4:2:0, 4:2:2, and 4:4:4, in Matroska, MPEG-TS, and M2TS | A GPU decoder package | MP4 and program streams, whose MPEG-2 streams Mediabunny does not read |
 | VC-1 | Advanced profile (`WVC1` and `WMVA`), in Matroska, MP4, MOV, MPEG-TS, and M2TS | A GPU decoder package | A transport stream VC-1 stream without its registration descriptor, which Mediabunny skips |
@@ -59,7 +59,7 @@ A package's frames take the format that holds the stream's pixel format, so 4:2:
 | Scan | Progressive; interlaced H.264, MPEG-2, VC-1, and WMV3, deinterlaced at double or single rate (see [Architecture](architecture.md#deinterlacing)) | Interlaced HEVC, coded as field pictures, interlaced JPEG 2000, coded as a codestream per field, and interlaced video on a Dolby Vision route |
 | Rotation | 0 | Any other rotation |
 | Frame size, frame rate, level, and bitrate | Whatever the decoder accepts; none of them is a gate | |
-| Color | BT.709, BT.601, and BT.2020 primaries and matrices; an unknown or unspecified tag takes its transfer's default | Any other tag value, and 10-bit SDR AV1 or VP9 outside BT.709, whose only route is raw planes |
+| Color | BT.709, BT.601, and BT.2020 primaries and matrices, raw planes included, which convert SDR outside BT.709 to BT.709; an unknown or unspecified tag takes its transfer's default | Any other tag value |
 
 ## HDR
 
@@ -68,7 +68,7 @@ A package's frames take the format that holds the stream's pixel format, so 4:2:
 | HDR10 | HEVC Main 10 and the 10 and 12-bit range extensions, VP9 Profile 2, and AV1 Main at 10 bits | HDR10 at 8 bits |
 | HDR10+ | As HDR10, with per-frame metadata from HEVC SEI, AV1 metadata OBUs, or a VP9 track's Matroska or WebM BlockAdditionals | Per-frame metadata for VP9 in MP4, which carries none and plays as HDR10 |
 | HLG | As HDR10 | HLG at 8 bits |
-| Dolby Vision | Profiles 4, 5, 7 (MEL and FEL), 8, and 20 over HEVC, and Profile 10 over AV1 Main at 10 bits | RPU reconstruction for Profile 9 (AVC), the retired Profiles 0 to 3 and 6, and Profile 10 at 8 bits or outside Main, which play only a declared base layer |
+| Dolby Vision | Profiles 4, 5, 7 (MEL and FEL), 8, and 20 over HEVC, and Profile 10 over AV1 in any raw format the browser qualifies | RPU reconstruction for Profile 9 (AVC), the retired Profiles 0 to 3 and 6, and Profile 10 at 12 bits in Chrome, which play only a declared base layer |
 
 ## Audio
 

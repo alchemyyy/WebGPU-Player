@@ -29,7 +29,7 @@ A Dolby Vision row with an RPU route also falls back to GPU-DV, RPU reconstructi
 
 The SDR rows cover every transfer the engine reads as SDR: BT.709, SMPTE 170M, sRGB, and the BT.2020 10 and 12-bit transfers, which use the BT.709 curve.
 They take BT.709, BT.601 (SMPTE 170M, SMPTE 240M, or BT.470 BG), or BT.2020 primaries and matrix.
-The VF-SDR routes leave the color conversion to Chrome, while the raw SDR keys stay BT.709 only, so Main 10 SDR in BT.601 or BT.2020 color has no raw fallback.
+The VF-SDR routes leave the color conversion to Chrome, while the raw SDR routes convert a gamut other than BT.709 themselves, through the raw SDR key of the stream's matrix, primaries, and range, which authorizes on first use outside BT.709.
 
 The HLG row includes HLG-compatible streams, whose VUI signals the BT.2020 10-bit transfer and whose alternative transfer characteristics SEI names HLG (see [Evidence](#evidence)).
 
@@ -37,7 +37,7 @@ The HLG row includes HLG-compatible streams, whose VUI signals the BT.2020 10-bi
 
 | Variant | Eligible | Route | Evidence |
 | --- | --- | --- | --- |
-| SDR, any of the 9 variants | Yes | RAW in the variant's exact format, SDR | `hevcRangeExtensions[variant]` and `<format>:bt709:bt709:<limited or full>:sdr` |
+| SDR, any of the 9 variants | Yes | RAW in the variant's exact format, SDR | `hevcRangeExtensions[variant]` and `<format>:<matrix>:<primaries>:<limited or full>:sdr` |
 | PQ or HLG, the 6 variants of 10 or 12 bits | Yes | RAW in the variant's exact format, PQ or HLG | `hevcRangeExtensions[variant]` and `<format>:bt2020-ncl:bt2020:limited:<pq or hlg>` |
 | BitDepth omitted but PixelFormat present | Yes: the depth is read from PixelFormat | RAW in the variant's exact format | As the matching row |
 | Monochrome (`gray`, `gray10le`, `gray12le`) | Only on GPU | GPU in the 4:2:0 format of its depth, I420, I420P10, or I420P12, whose chroma the decoder writes neutral | A GPU decoder package whose header declares `monochrome`, as the HEVC decoder project's does; no native evidence |
@@ -81,8 +81,8 @@ The engine reads the Dolby Vision configuration and the color fields; it ignores
 
 ## Dolby Vision over AV1
 
-Profile 10 is single-layer: the RPU travels in an ITU-T T.35 metadata OBU of each temporal unit, and the base layer is AV1 Main at 10 bits.
-RAW-DV here decodes through the engine's own AV1 path, natively in software, into I420P10.
+Profile 10 is single-layer: the RPU travels in an ITU-T T.35 metadata OBU of each temporal unit, and the base layer is AV1 in any profile and depth.
+RAW-DV here decodes through the engine's own AV1 path, natively in software, into I420P10 for Main at 10 bits, or into the exact format of an AV1 raw format variant (see [AV1 outside Main 10](#av1-outside-main-10)).
 Every AV1 track takes that path, whatever its route, so the declared base of a stream with HDR10+ metadata applies its HDR10+ metadata OBUs too (see [Decisions](decisions.md#video-decode-and-dolby-vision)).
 Only an RPU route loads the RPU parser; any other route removes the RPU OBUs without parsing them.
 
@@ -90,11 +90,11 @@ Only an RPU route loads the RPU parser; any other route removes the RPU OBUs wit
 | --- | --- | --- | --- |
 | P10, CCID 0 (an IPT base) | Yes | RAW-DV P5 only; the CCID declares no base | `rawHDRVideo.av1` and `dovi-rpu` |
 | P10, CCID 1 | Yes | RAW-DV P8, then the declared PQ base through RAW I420P10 PQ | RAW-DV: as P10 with CCID 0. Base: `rawHDRVideo.av1` and `I420P10:bt2020-ncl:bt2020:limited:pq` |
-| P10, CCID 2 | Yes | RAW-DV P8, then the declared SDR base through RAW I420P10 SDR | RAW-DV: as P10 with CCID 0. Base: `rawHDRVideo.av1` and the I420P10 BT.709 SDR keys |
+| P10, CCID 2 | Yes | RAW-DV P8, then the declared SDR base through RAW I420P10 SDR | RAW-DV: as P10 with CCID 0. Base: `rawHDRVideo.av1` and the I420P10 SDR key of its color |
 | P10, CCID 4 | Yes | RAW-DV P8, then the declared HLG base through RAW I420P10 HLG | RAW-DV: as P10 with CCID 0. Base: `rawHDRVideo.av1` and `I420P10:bt2020-ncl:bt2020:limited:hlg` |
 | P10, CCID 6, a reserved CCID, or an explicit ColorTransfer that contradicts the CCID | Yes | RAW-DV P8; CCID 6 then falls back to its PQ base | As P10 with CCID 1 |
 | P10 without a CCID | Yes | RAW-DV P5 only; the stream declares no base | As P10 with CCID 0 |
-| P10 at 8 bits, or outside the Main profile | Only with a declared SDR base | The declared SDR base through native VF-SDR; no RPU route, because raw AV1 qualifies at 10 bits only | As 8-bit AV1 SDR |
+| P10 at 8 bits, or outside the Main profile | Yes | RAW-DV in the variant's exact format, as P10 at 10 bits; then a declared base through its ordinary routes, native VF-SDR for 8-bit Main | `av1RawFormats[variant]` and `<format>:dovi-rpu-v1`, which authorizes on first use |
 
 The engine maps the MP4 `dav1` sample entry of a 10.0 stream to AV1 itself (see [Decisions](decisions.md#video-decode-and-dolby-vision)).
 
@@ -104,20 +104,23 @@ Dolby Vision outside HEVC and AV1:
   Its declared SDR base plays through the H.264 routes.
 - The retired Profiles 0 to 3 and 6 have no RPU route and present only a declared base.
 
-## AV1 on a decoder package
+## AV1 outside Main 10
 
-Native routes decode AV1 Main at 4:2:0 in 8 or 10 bits: VF-SDR, RAW I420P10 through the BT.709 raw SDR keys, and RAW I420P10 PQ or HLG.
+Native routes decode AV1 Main at 4:2:0: VF-SDR at 8 bits, and at 10 bits RAW I420P10 through the raw SDR keys or RAW I420P10 PQ or HLG.
+AV1 outside Main 10 takes raw planes in the exact format of its raw format variant, which its Jellyfin Profile and PixelFormat name, through `av1RawFormats[variant]`, a 192x192 key and inter temporal unit decoded with `prefer-software`.
 Every AV1 stream falls back last to GPU, in its own format, when the host offers an AV1 decoder package whose header accepts it.
 
-| Variant | Eligible | Route | Evidence |
+| Variant | Eligible | Route, then fallback | Evidence |
 | --- | --- | --- | --- |
-| High: 4:4:4 at 8 or 10 bits | Only on GPU | GPU in I444 or I444P10 | The host's GPU decoder package |
-| Professional: 4:2:2, or 12 bits | Only on GPU | GPU in I422, I422P10, I422P12, I420P12, or I444P12 | The host's GPU decoder package |
-| Main at 10 bits without its raw route, such as BT.601 SDR or HDR without the raw HDR key | Only on GPU | GPU in I420P10; HDR needs `allowFramePoolHDR` | The host's GPU decoder package |
+| Main at 8 bits (`main420-8`) | Yes | VF-SDR native; I420 only for a Dolby Vision RPU route | `av1RawFormats['main420-8']` for RAW-DV |
+| High: 4:4:4 at 8 or 10 bits (`high444-8`, `high444-10`) | Yes | RAW in I444 or I444P10, then GPU | `av1RawFormats[variant]` and the raw key of the format and color |
+| Professional: 4:2:2 at 8 or 10 bits, or 12 bits (`professional422-8`, `professional422-10`, `professional420-12`, `professional422-12`, `professional444-12`) | Yes | RAW in I422, I422P10, I420P12, I422P12, or I444P12, then GPU | As High |
+| Main at 10 bits without its raw route, such as HDR without the raw HDR key | Only on GPU | GPU in I420P10; HDR needs `allowFramePoolHDR` | The host's GPU decoder package |
 | Main 4:0:0 | Yes | As Main 4:2:0, then GPU in the 4:2:0 format of its depth | As Main 4:2:0; GPU only on a package whose header declares `monochrome` |
 | Professional 4:0:0 at 12 bits | Only on GPU | GPU in I420P12 | A GPU decoder package whose header declares `monochrome` |
 
-`hasPotentialCustomPlaybackVideoRoute` keeps AV1 outside Main 4:2:0 potential for this fallback, and leaves Main at 10 bits outside the raw SDR keys to the host's own player, which decodes Main.
+Chrome's software AV1 decoder decodes and copies the 8 and 10-bit variants, and refuses 12-bit AV1 at decode, so the 12-bit variants read unsupported there and take GPU.
+`hasPotentialCustomPlaybackVideoRoute` keeps AV1 outside Main 4:2:0 potential for these routes.
 On GPU the decoder receives the track's av1C (see [Codec private data](decoder-packages.md#codec-private-data)).
 
 ## Interlaced video
@@ -158,8 +161,8 @@ The host maps it to a presenter input mode.
 | DV base PQ, DV base HLG | As VF-PQ or VF-HLG, with `dolbyVisionProfile` null | `external-hdr` | P7 and P8 only. RPU and EL discarded. Preferred over RAW-DV whenever authorized |
 | Declared base | An ordinary route, with `dolbyVisionProfile` null | As that route | Used only when no RPU route is selected. RPU and EL discarded |
 | VF-DV5 | `video-frame`; `native`; `dolbyVisionProfile` 5 | `external-dolby-vision` | Per-frame Profile 5 RPU, also for a P20 with CCID 0 or none |
-| RAW | `raw-planes` in the exact format; `native` (WebCodecs `copyTo`) | `raw-yuv` | Also 10-bit SDR, through the BT.709 raw SDR keys. AV1 PQ also applies the static mastering metadata of its MDCV and CLL metadata OBUs |
-| RAW-DV | `raw-planes` in I420P10 for HEVC Main 10 and AV1, or a range-extension variant's exact format; `dolbyVisionProfile` 5 or 8 | `raw-dolby-vision` | RPU reconstruction. A P10 or P20 reports the profile it reconstructs as. A signaled EL is discarded |
+| RAW | `raw-planes` in the exact format; `native` (WebCodecs `copyTo`) | `raw-yuv` | Also 10-bit SDR, through the raw SDR key of its color; SDR outside BT.709 primaries converts its gamut to BT.709 (`builtin.sdr-gamut`). AV1 PQ also applies the static mastering metadata of its MDCV and CLL metadata OBUs |
+| RAW-DV | `raw-planes` in I420P10 for HEVC Main 10 and AV1 Main 10, or a range-extension or AV1 raw format variant's exact format; `dolbyVisionProfile` 5 or 8 | `raw-dolby-vision` | RPU reconstruction. A P10 or P20 reports the profile it reconstructs as. A signaled EL is discarded |
 | RAW-DV7, RAW-DV4 | `raw-planes` with the BL in I420P10 or in a range-extension variant's exact format; `dolbyVisionProfile` 7 or 4 | `raw-dolby-vision`, Profile 7 or 4 | No decoder decodes the EL, so MEL reshapes exactly from the BL and FEL presents its base at the BL's depth: the HDR10 base for P7, and the SDR base exactly for P4 (limited BT.709, no tone mapping or dither). The FEL composition, which needs the FEL key and a paired I420P10 EL frame, waits for an EL decoder |
 | GPU | `frame-pool` in the stream's own format; `gpu`, with `gpuVideoDecoder` naming the package | `frame-pool` | The last fallback, through a GPU decoder package the host offers. No native color handling; static HDR needs the host's `allowFramePoolHDR` |
 | GPU-DV | `frame-pool` in the RPU route's BL format; `gpu`, with `gpuVideoDecoder`; `dolbyVisionProfile` 4, 5, 7, or 8 | `frame-pool-dolby-vision` | RPU reconstruction of the package's BL slots, the raw route's reconstruction over the frame pool's read, gated by the raw route's base key and flags. No frame pool holds an EL, so P4 and P7 reconstruct from their BL as RAW-DV7 and RAW-DV4 do |
@@ -188,6 +191,7 @@ Probes, all in `capability/CustomDecodeCapabilities.ts`:
 | `rawHDRVideo.hevc` | An I420P10 `copyTo` fingerprint |
 | `rawHDRVideo.av1` | A 4K AV1 Main 10 keyframe decoded with `prefer-software` and its I420P10 `copyTo` fingerprint |
 | `hevcRangeExtensions[variant]` | The exact configuration, the two-frame vector, the exact copy format, and pinned fingerprints |
+| `av1RawFormats[variant]` | The exact configuration, the two-temporal-unit vector, the exact copy format, and pinned fingerprints |
 
 GPU has no probe: a package's own vectors run only when the host verifies it (see [Decoder packages](decoder-packages.md#self-test-vectors)).
 
@@ -235,7 +239,7 @@ Other conditions:
 - Interlaced HEVC of any profile or range: HEVC codes interlaced video as field pictures, which no decoder weaves into the frames the deinterlacing pass takes (see [Interlaced video](#interlaced-video)).
 - Dolby Vision:
   - the configurations in [Rejected](#rejected);
-  - RPU reconstruction for AVC Profile 9, and for AV1 Profile 10 at 8 bits or outside the Main profile;
+  - RPU reconstruction for AVC Profile 9, and for AV1 Profile 10 in a raw format variant the browser does not qualify, such as 12 bits in Chrome;
   - RPUs the parser rejects: a linear interpolation piece next to an MMR piece, an RPU format extension, missing sequence information, display metadata compression above method 1, and a header from which no profile is inferred while the container declares none.
 
 ## Known issues

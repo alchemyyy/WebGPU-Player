@@ -20,7 +20,10 @@ import {
     createHLGColorMetadata,
     createPQColorMetadata,
     createSDRColorMetadata,
-    type InputColorMetadata
+    type ColorPrimaries,
+    type ColorRange,
+    type InputColorMetadata,
+    type YUVMatrix
 } from 'webgpu-player/color/ColorMetadata';
 import type { ColorTriplet } from 'webgpu-player/color/ColorPipeline';
 import { createBuiltinChain } from 'webgpu-player/presentation/passes/builtin/BuiltinChains';
@@ -34,6 +37,7 @@ import {
     createRawHDRShaderSignature,
     evaluateRawHDRVectorObservations,
     getRawHDRAuthorizationRouteKey,
+    isPrewarmedRawAuthorizationRouteKey,
     RAW_HDR_AUTHORIZATION_ROUTE_KEYS,
     RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
     RAW_HDR_AUTHORIZATION_VECTOR_VERSION,
@@ -95,9 +99,12 @@ function getRouteMetadata(routeKey: RawHDRAuthorizationRouteKey): InputColorMeta
         bitDepth = 10;
     }
     if (routeKey.endsWith(':sdr')) {
+        const [ , matrix, primaries, range ] = routeKey.split(':');
         return createSDRColorMetadata({
             bitDepth,
-            range: routeKey.includes(':full:') ? 'full' : 'limited'
+            matrix: matrix as YUVMatrix,
+            primaries: primaries as ColorPrimaries,
+            range: range as ColorRange
         });
     }
     return routeKey.endsWith(':pq') ?
@@ -269,7 +276,7 @@ describe('RawHDRPresentationAuthorization', () => {
         expect(getRawHDRAuthorizationRouteKey('I444P10', createPQColorMetadata({ bitDepth: 12 }))).toBeNull();
     });
 
-    it('enumerates both SDR ranges for all nine Rext raw formats', () => {
+    it('enumerates both SDR ranges of every matrix and primaries pair for all nine Rext raw formats', () => {
         const formats = [
             'I420',
             'I420P10',
@@ -281,12 +288,63 @@ describe('RawHDRPresentationAuthorization', () => {
             'I444P10',
             'I444P12'
         ] as const;
+        const matrices = [ 'bt709', 'bt470bg', 'smpte170m', 'bt2020-ncl' ] as const;
+        const primariesSets = [ 'bt709', 'bt470bg', 'smpte170m', 'bt2020' ] as const;
 
-        expect(SDR_AUTHORIZATION_ROUTE_KEYS).toHaveLength(formats.length * 2);
+        expect(SDR_AUTHORIZATION_ROUTE_KEYS).toHaveLength(formats.length * matrices.length * primariesSets.length * 2);
         for (const format of formats) {
-            expect(SDR_AUTHORIZATION_ROUTE_KEYS).toContain(`${format}:bt709:bt709:limited:sdr`);
-            expect(SDR_AUTHORIZATION_ROUTE_KEYS).toContain(`${format}:bt709:bt709:full:sdr`);
+            for (const matrix of matrices) {
+                for (const primaries of primariesSets) {
+                    expect(SDR_AUTHORIZATION_ROUTE_KEYS).toContain(`${format}:${matrix}:${primaries}:limited:sdr`);
+                    expect(SDR_AUTHORIZATION_ROUTE_KEYS).toContain(`${format}:${matrix}:${primaries}:full:sdr`);
+                }
+            }
         }
+    });
+
+    it('keys SDR by the metadata matrix, primaries, and range, and prewarms only BT.709', () => {
+        expect(getRawHDRAuthorizationRouteKey('I420P10', createSDRColorMetadata({
+            bitDepth: 10,
+            matrix: 'bt2020-ncl',
+            primaries: 'bt2020'
+        }))).toBe('I420P10:bt2020-ncl:bt2020:limited:sdr');
+        expect(getRawHDRAuthorizationRouteKey('I444', createSDRColorMetadata({
+            matrix: 'smpte170m',
+            primaries: 'bt470bg',
+            range: 'full'
+        }))).toBe('I444:smpte170m:bt470bg:full:sdr');
+        // A depth other than the format's has no key, whatever its color
+        expect(getRawHDRAuthorizationRouteKey('I420P10', createSDRColorMetadata({ primaries: 'bt2020' }))).toBeNull();
+        expect(isPrewarmedRawAuthorizationRouteKey('I420P10:bt709:bt709:full:sdr')).toBe(true);
+        expect(isPrewarmedRawAuthorizationRouteKey('I420P10:bt2020-ncl:bt2020:limited:pq')).toBe(true);
+        expect(isPrewarmedRawAuthorizationRouteKey('I420P10:bt709:bt2020:limited:sdr')).toBe(false);
+        expect(isPrewarmedRawAuthorizationRouteKey('I420P10:smpte170m:bt709:limited:sdr')).toBe(false);
+    });
+
+    it('prewarms the BT.709 SDR keys alone and authorizes another SDR key on first use', async () => {
+        const runner = new RawHDRPresentationAuthorizationRunner();
+        const validate = vi.spyOn(runner, 'validate');
+        const registry = new RawHDRPresentationAuthorizationRegistry(runner);
+        const firstUseRouteKey: RawHDRAuthorizationRouteKey = 'I420P10:bt2020-ncl:bt2020:limited:sdr';
+        const harness = createDeviceHarness(createRouteObservations(firstUseRouteKey));
+
+        registry.prewarmSDR(harness.device, TARGET_FORMAT);
+        await registry.waitForPending(harness.device, TARGET_FORMAT);
+
+        const prewarmedRouteKeys = validate.mock.calls.map(call => call[2]);
+        expect(prewarmedRouteKeys).toHaveLength(18);
+        expect(prewarmedRouteKeys.every(routeKey => routeKey.includes(':bt709:bt709:'))).toBe(true);
+        expect(registry.getAuthorizationFailure(
+            harness.device,
+            TARGET_FORMAT,
+            getRouteMetadata(firstUseRouteKey),
+            'I420P10'
+        )).toBe(`unprobed: ${firstUseRouteKey}`);
+
+        await registry.authorize(harness.device, TARGET_FORMAT, firstUseRouteKey);
+
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, getRouteMetadata(firstUseRouteKey), 'I420P10')).toBeNull();
+        expect(registry.getTelemetry(harness.device, TARGET_FORMAT).authorizedRouteKeys).toContain(firstUseRouteKey);
     });
 
     it.each(SDR_AUTHORIZATION_ROUTE_KEYS)(

@@ -155,6 +155,30 @@ describe('createBuiltinChain', () => {
         expect(identityChain.signal).toEqual(toneMappedChain.signal);
     });
 
+    it.each([ 'bt2020', 'smpte170m', 'bt470bg' ] as const)(
+        'converts identity SDR in %s primaries to BT.709 on raw planes and frame pools, and nowhere else',
+        primaries => {
+            const metadata = createSDRColorMetadata({ primaries });
+            const settings = createDefaultRenderSettings();
+            const chains = [
+                createBuiltinChain({ format: 'I420', hdrOutput: false, metadata, route: 'raw-yuv', settings }),
+                createBuiltinChain({ format: 'I420', hdrOutput: true, metadata, route: 'frame-pool', settings })
+            ];
+
+            for (const chain of chains) {
+                expect(chain.sourceIsDisplay).toBe(false);
+                expect(getColorFunctionNames(chain)).toEqual([ 'builtin.sdr-gamut' ]);
+                expect(chain.colorFunctions.map(colorFunction => [ colorFunction.inputState, colorFunction.outputState ])).toEqual([ [ 'source', 'display' ] ]);
+                // The conversion reads no binding and no user pass replaces it
+                expect(chain.colorFunctions[0].resources).toEqual([]);
+                expect(chain.colorFunctions[0].pinnedToOutput).toBe(false);
+            }
+            expect(getBuiltinColorFunctionNames()).not.toContain('builtin.sdr-gamut');
+            // The browser converts a VideoFrame's color itself
+            expect(createBuiltinChain({ metadata, route: 'external-identity' }).colorFunctions).toEqual([]);
+        }
+    );
+
     it('reads the GPU decoder\'s slots of its output format with the frame pool signal and the raw YUV color track', () => {
         const metadata = createPQColorMetadata();
         const settings = createHDRToSDRRenderSettings();

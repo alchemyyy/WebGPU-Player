@@ -15,7 +15,7 @@ A host calls these, in this order, for each playback:
 4. `hasEligibleCustomVideoRoute`, to ask whether the runtime would present one item with the measured capabilities and authorizations.
    It takes the GPU decoder packages a playback could use as `gpuVideoDecoderSummaries`, since offers need the packages and the presenter's device; see [GPU decoders](#gpu-decoders).
 5. `getCustomPlaybackEligibility`, when the session starts, with the route flags and authorized keys of `CustomPlaybackEligibilityOptions`.
-   `allowRawSDR` needs only a settled `:sdr` raw key.
+   `allowRawSDR` needs only a settled `:sdr` raw key; a key outside BT.709 authorizes on first use, so `getCustomPresentationEligibilityOptions` waits for the presented stream's own key (`getFirstUseRawSDRRouteKey`).
    `gpuVideoDecoders` holds the GPU decoder packages the host offers, from `PresentationSetup.getGPUVideoDecoderOffers`, and `allowFramePoolHDR` lets them present HDR; see [GPU decoders](#gpu-decoders).
    `audioDecoders` holds the host's audio decoder packages; see [Audio routes](#audio-routes).
 
@@ -103,7 +103,7 @@ A host may start the probes before its first negotiation with `warmCustomDecodeC
 | --- | --- | --- | --- |
 | `native` SDR | `video-frame` | H.264 per-profile keyframes; HEVC 1080p access unit; VP8, VP9, AV1 64x64; 4K variants | `getOrdinarySDRVideoSelection` |
 | `native` HEVC Main 10 HDR, Dolby Vision base | `video-frame`, with `nativeHDRTransfer` pq or hlg, neutralized | 4K Main 10 access unit decode, plus external HDR or Dolby Vision GPU authorization | `supportsNativeMain10HEVC`, `selectNativeDolbyVisionBaseOutput` |
-| `native` raw | `raw-planes`: I420P10 for HDR, 10-bit SDR, and Dolby Vision (HEVC Main 10, AV1 Main, VP9 Profile 2), I420 to I444P12 for range extensions | `copyTo` plane fingerprints; nine 192x192 two-access-unit range-extension probes; raw GPU authorization | `supportsRawHDRVideo`, `selectHEVCRangeExtensionVideoOutput` |
+| `native` raw | `raw-planes`: I420P10 for HDR, 10-bit SDR, and Dolby Vision (HEVC Main 10, AV1 Main, VP9 Profile 2), I420 to I444P12 for range extensions and for AV1 outside Main 10 | `copyTo` plane fingerprints; nine 192x192 two-access-unit range-extension probes and eight 192x192 two-temporal-unit AV1 raw format probes; raw GPU authorization | `supportsRawHDRVideo`, `selectHEVCRangeExtensionVideoOutput`, `selectAV1RawFormatVideoOutput` |
 | `gpu` | `frame-pool`: I420 to I444P12, the stream's own format | None at eligibility: a host offers its GPU decoder packages, whose own vectors run only when the host verifies one | `selectGPUVideoOutput`; native wins |
 | Audio decoder package | `decoded-pcm` | None at eligibility: a host offers its audio decoder packages | `findAudioDecoderPackage`, for a codec no engine decoder supports |
 | Mediabunny PCM | `decoded-pcm` | None at runtime; always marked supported | `isSupportedCustomAudioInputLayout` |
@@ -130,7 +130,7 @@ A host may start the probes before its first negotiation with `warmCustomDecodeC
       This needs exact BT.2020 limited base metadata with explicit transfer, primaries, and matrix.
       A separate-track P7 base is a standalone HDR10 track, so it qualifies whatever CCID the EL track reports.
    3. Raw RPU reconstruction.
-      The base layer decodes natively to `raw-planes`: I420P10 for HEVC Main 10 and for AV1 Main at 10 bits, or the exact format of any range-extension variant.
+      The base layer decodes natively to `raw-planes`: I420P10 for HEVC Main 10 and for AV1 Main at 10 bits, or the exact format of any range-extension variant or AV1 raw format variant, such as I420 for AV1 Main at 8 bits.
       HEVC Main at 8 bits has no native raw route, so its RPU route is ineligible.
       Single-layer routes (P5, P8, P10, P20) discard a signaled EL.
       No decoder decodes an EL, so dual-layer routes (P4, P7, HEVC only) reconstruct from the base layer alone: MEL is exact, and FEL presents its base layer.
@@ -145,10 +145,10 @@ A host may start the probes before its first negotiation with `warmCustomDecodeC
    A field that is `unknown`, `unspecified`, or `reserved` is absent and takes its transfer's default: BT.709 for SDR, BT.2020 for PQ and HLG, and limited range.
    The BT.2020 10 and 12-bit transfers read as SDR, SMPTE 170M and SMPTE 240M primaries as `smpte170m`, BT.470 BG primaries as `bt470bg`, and the SMPTE 170M and BT.470 BG matrices as BT.601.
    Any other value is unrecognized and fails.
-3. An HEVC range extension needs its exact variant capability and raw key.
-   A range extension never falls through to steps 4 and 5.
+3. An HEVC range extension needs its exact variant capability and raw key, and so does AV1 outside Main 10 (High 4:4:4, Professional 4:2:2 or 12 bits), through `av1RawFormats[variant]`.
+   A range extension or an AV1 raw format variant never falls through to steps 4 and 5.
 4. SDR: `native`, or native Main 10 SDR.
-   Then, for 10-bit 4:2:0 SDR that neither decodes (AV1 Main, VP9 Profile 2, or HEVC Main 10 without native decode), raw I420P10 through the raw SDR keys, which are BT.709 only.
+   Then, for 10-bit 4:2:0 SDR that neither decodes (AV1 Main, VP9 Profile 2, or HEVC Main 10 without native decode), raw I420P10 through the raw SDR key of its matrix, primaries, and range.
    JPEG 2000, MPEG-1, MPEG-2, VC-1, and WMV3 have no native route (`CUSTOM_PACKAGE_VIDEO_CODECS`).
 5. PQ or HLG: native external (`external-hevc-main10-bt709-limited:<pq|hlg>-v1`) first, then raw (`<I420P10|I420P12>:bt2020-ncl:bt2020:limited:<pq|hlg>`).
 6. When steps 3 to 5 chose no route, a GPU decoder package the host offers takes the stream, if one does; otherwise the source is ineligible with the reason those steps gave.
@@ -209,7 +209,8 @@ MPEG-1, VP8, VP9, and AV1 have no interlaced coding.
 
 ## Route keys
 
-- Raw: `<I420P10..I444P12>:bt2020-ncl:bt2020:limited:<pq|hlg>` and `<I420..I444P12>:bt709:bt709:<full|limited>:sdr`.
+- Raw: `<I420P10..I444P12>:bt2020-ncl:bt2020:limited:<pq|hlg>` and `<I420..I444P12>:<matrix>:<primaries>:<full|limited>:sdr`, with every matrix (`bt709`, `bt470bg`, `smpte170m`, `bt2020-ncl`) and primaries set (`bt709`, `bt470bg`, `smpte170m`, `bt2020`).
+  The HDR keys and the BT.709 SDR keys are prewarmed; every other SDR key authorizes on first use, and its vector doubles the chroma excursion so the gamut conversion moves its samples beyond the tolerance.
 - External HDR: `external-hevc-main10-bt709-limited:<pq|hlg>-v1`.
 - Dolby Vision raw, each per BL format from I420 to I444P12: `<format>:dovi-rpu-v1`, `<format>:dovi-profile4-base-v1`, `<format>:dovi-profile4-fel-v1`, `<format>:dovi-profile7-base-v1`, and `<format>:dovi-profile7-fel-v1`.
   Only `I420P10:dovi-rpu-v1` and the I420P10 Profile 7 keys are prewarmed; the others authorize on first use.
@@ -263,4 +264,4 @@ MPEG-1, VP8, VP9, and AV1 have no interlaced coding.
   The native HDR HEVC probe gates it with `prefer-hardware`, while the SDR route requests `no-preference`.
   Chromium decodes HEVC only in hardware, so both resolve to the same decoder.
 - Eligibility checks no audio profile: a stream a package cannot decode, such as DTS-UHD in a DTS package, fails its attempt at runtime as `decode-failed`.
-- The raw SDR keys are BT.709 only, so 10-bit SDR AV1 or VP9 tagged BT.601 or BT.2020 is not eligible.
+- A raw SDR stream outside BT.709 primaries converts its gamut to BT.709 in the raw shader (`builtin.sdr-gamut`), as the frame-pool route does, while the native VF-SDR route leaves the conversion to the browser.

@@ -24,6 +24,14 @@ import {
     type HEVCRangeExtensionVariant
 } from './HEVCRangeExtensionCapabilities';
 import {
+    AV1_RAW_FORMAT_PROBE_DEFINITIONS,
+    AV1_RAW_FORMAT_VARIANTS,
+    getAV1RawFormatStreamDefinitionFromMetadata,
+    type AV1RawFormatCapability,
+    type AV1RawFormatProbeDefinition,
+    type AV1RawFormatVariant
+} from './AV1RawFormatCapabilities';
+import {
     getPresentationInputColorMetadata,
     isKnownSDRPresentationInput
 } from '../presentation/PresentationInput';
@@ -134,6 +142,7 @@ export type CustomDecodeVideoProbe =
     | 'h264-profiles'
     | 'native-dolby-vision-hevc'
     | 'native-hdr-hevc'
+    | `av1-raw-format:${AV1RawFormatVariant}`
     | `hevc-range-extension:${HEVCRangeExtensionVariant}`
     | `native-sdr:${NativeSDRVideoProbeCodec}`
     | `native-ultra-hd:${CustomNativeUltraHDVideoCodec}`
@@ -178,6 +187,8 @@ export type CustomDecodeProbeTelemetry = {
 
 export type CustomDecodeCapabilities = {
     audio: Readonly<Record<CustomAudioCodec, CustomDecodeCodecCapability<CustomAudioCodec>>>
+    /** The exact raw formats of AV1 outside Main 10, each a probe of its own; AV1 Main 10 qualifies through `rawHDRVideo.av1` */
+    av1RawFormats?: Readonly<Record<AV1RawFormatVariant, AV1RawFormatCapability>>
     h264Profiles?: H264ProfileCapabilities
     hevcRangeExtensions?: Readonly<Record<HEVCRangeExtensionVariant, HEVCRangeExtensionCapability>>
     nativeDolbyVisionHEVC?: CustomNativeDolbyVisionHEVCCapability
@@ -318,6 +329,7 @@ export type HEVCRangeExtensionVectorLoader = (assetPath: EngineLibraryPath, prio
 
 export type WebCodecsCapabilityEnvironment = {
     audioDecoder?: Pick<typeof AudioDecoder, 'isConfigSupported'> | null
+    av1RawFormatVectorLoader?: HEVCRangeExtensionVectorLoader | null
     h264ProfileProbe?: Pick<H264ProfileCapabilityProbe, 'probe'> | null
     hevcRangeExtensionVectorLoader?: HEVCRangeExtensionVectorLoader | null
     nativeAudioOutputProbe?: NativeAudioOutputProbe | null
@@ -827,6 +839,10 @@ function getHEVCRangeExtensionVideoProbe(variant: HEVCRangeExtensionVariant): Cu
     return `hevc-range-extension:${variant}`;
 }
 
+function getAV1RawFormatVideoProbe(variant: AV1RawFormatVariant): CustomDecodeVideoProbe {
+    return `av1-raw-format:${variant}`;
+}
+
 const NATIVE_SDR_VIDEO_PROBES: readonly CustomDecodeVideoProbe[] = NATIVE_SDR_VIDEO_PROBE_DEFINITIONS.map(
     (definition: NativeSDRVideoProbeDefinition): CustomDecodeVideoProbe => getNativeSDRVideoProbe(definition.codec)
 );
@@ -844,6 +860,7 @@ export const CUSTOM_DECODE_VIDEO_PROBES: readonly CustomDecodeVideoProbe[] = [
     ...NATIVE_ULTRA_HD_VIDEO_PROBES,
     ...RAW_VIDEO_PROBES,
     ...HEVC_RANGE_EXTENSION_VARIANTS.map(getHEVCRangeExtensionVideoProbe),
+    ...AV1_RAW_FORMAT_VARIANTS.map(getAV1RawFormatVideoProbe),
     'native-dolby-vision-hevc',
     'native-hdr-hevc'
 ];
@@ -1474,7 +1491,7 @@ export function createNativeHDRVideoOutputProbe(): NativeDolbyVisionVideoOutputP
     return createNativeDolbyVisionVideoOutputProbe();
 }
 
-function loadHEVCRangeExtensionVector(assetPath: EngineLibraryPath, priority: RequestPriority): Promise<ArrayBuffer> {
+function loadRawFormatVector(assetPath: EngineLibraryPath, priority: RequestPriority): Promise<ArrayBuffer> {
     return fetchCapabilityAsset(resolveEngineAssetURL(assetPath), priority);
 }
 
@@ -1482,9 +1499,12 @@ function getDefaultEnvironment(): WebCodecsCapabilityEnvironment {
     return {
         // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
         audioDecoder: typeof globalThis.AudioDecoder === 'function' ? globalThis.AudioDecoder : null,
+        av1RawFormatVectorLoader: typeof globalThis.fetch === 'function' ?
+            loadRawFormatVector :
+            null,
         h264ProfileProbe: defaultH264ProfileCapabilityProbe,
         hevcRangeExtensionVectorLoader: typeof globalThis.fetch === 'function' ?
-            loadHEVCRangeExtensionVector :
+            loadRawFormatVector :
             null,
         nativeAudioOutputProbe: createNativeAudioOutputProbe(),
         nativeDolbyVisionVideoOutputProbe: createNativeDolbyVisionVideoOutputProbe(),
@@ -1660,14 +1680,34 @@ function createHEVCRangeExtensionBaseCapability(
     };
 }
 
-async function probeHEVCRangeExtensionConfig(
-    definition: HEVCRangeExtensionProbeDefinition,
+function createAV1RawFormatBaseCapability(
+    definition: AV1RawFormatProbeDefinition
+): Omit<AV1RawFormatCapability, 'reason' | 'status'> {
+    return {
+        bitDepth: definition.bitDepth,
+        chromaFormat: definition.chromaFormat,
+        codec: 'av1',
+        codecString: definition.config.codec,
+        format: definition.format,
+        jellyfinProfile: definition.jellyfinProfile,
+        pixelFormat: definition.pixelFormat,
+        variant: definition.variant
+    };
+}
+
+// What an exact raw format probe decides: a range extension's or an AV1 raw format's verdict
+type ExactRawFormatProbeOutcome = Readonly<Pick<HEVCRangeExtensionCapability, 'reason' | 'status'>>;
+
+/** Qualifies one exact raw format: its configuration, then its downloaded vector's decode, copy format, and fingerprints. */
+async function probeExactRawFormatConfig<BaseCapability extends object>(
+    codec: 'av1' | 'hevc',
+    definition: Pick<HEVCRangeExtensionProbeDefinition, 'accessUnits' | 'assetPath' | 'config' | 'format'>,
+    baseCapability: BaseCapability,
     decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
     outputProbe: RawHDRVideoOutputProbe | null | undefined,
     vectorLoader: HEVCRangeExtensionVectorLoader | null | undefined,
     heavyProbeScheduler: HeavyCapabilityProbeQueue
-): Promise<HEVCRangeExtensionCapability> {
-    const baseCapability = createHEVCRangeExtensionBaseCapability(definition);
+): Promise<Readonly<BaseCapability> & ExactRawFormatProbeOutcome> {
     if (!decoder || !outputProbe || !vectorLoader) {
         return Object.freeze({
             ...baseCapability,
@@ -1738,7 +1778,7 @@ async function probeHEVCRangeExtensionConfig(
                 return Object.freeze({ outputCopySupported: false });
             }
             return outputProbe({
-                codec: 'hevc',
+                codec,
                 configuration: definition.config,
                 encodedChunks,
                 expectedCodedHeight: Number(definition.config.codedHeight),
@@ -2296,6 +2336,24 @@ function createNotProbedHEVCRangeExtensionCapability(variant: HEVCRangeExtension
     });
 }
 
+function createNotProbedAV1RawFormatCapability(variant: AV1RawFormatVariant): AV1RawFormatCapability {
+    return Object.freeze({
+        ...createAV1RawFormatBaseCapability(AV1_RAW_FORMAT_PROBE_DEFINITIONS[variant]),
+        reason: 'not-probed',
+        status: 'not-probed'
+    });
+}
+
+function createAV1RawFormatCapabilities(
+    capabilities: readonly AV1RawFormatCapability[]
+): Readonly<Record<AV1RawFormatVariant, AV1RawFormatCapability>> {
+    const av1RawFormats = {} as Record<AV1RawFormatVariant, AV1RawFormatCapability>;
+    for (const capability of capabilities) {
+        av1RawFormats[capability.variant] = capability;
+    }
+    return Object.freeze(av1RawFormats);
+}
+
 const NOT_PROBED_NATIVE_DOLBY_VISION_HEVC_CAPABILITY: CustomNativeDolbyVisionHEVCCapability = Object.freeze({
     bitDepth: 10,
     codec: 'hevc',
@@ -2422,6 +2480,17 @@ function addHEVCStreamProbes(
     }
 }
 
+/**
+ * Adds the exact raw format probe of an AV1 stream outside Main 10: High and Professional always, since only raw planes or a package decode them, and
+ * Main at 8 bits only beyond native SDR, where Dolby Vision reconstruction needs its I420 planes.
+ */
+function addAV1RawFormatProbe(stream: ProbeSelectionMediaStream, beyondNativeSDR: boolean, probes: Set<CustomDecodeVideoProbe>): void {
+    const definition = getAV1RawFormatStreamDefinitionFromMetadata(stream);
+    if (definition && (beyondNativeSDR || definition.jellyfinProfile !== 'Main')) {
+        probes.add(getAV1RawFormatVideoProbe(definition.variant));
+    }
+}
+
 function addVideoStreamProbes(
     stream: ProbeSelectionMediaStream,
     codec: CustomVideoCodec,
@@ -2437,6 +2506,9 @@ function addVideoStreamProbes(
             probes.add(getNativeUltraHDVideoProbe(codec));
             if (beyondNativeSDR) {
                 probes.add(getRawVideoProbe(codec));
+            }
+            if (codec === 'av1') {
+                addAV1RawFormatProbe(stream, beyondNativeSDR, probes);
             }
             break;
         case 'h264':
@@ -2538,6 +2610,7 @@ type H264ProbeResult = Readonly<{
 
 // An unselected probe holds its not-probed result, or null for the H.264 probe
 type VideoProbeResults = Readonly<{
+    av1RawFormats: readonly AV1RawFormatCapability[]
     h264: H264ProbeResult | null
     hevcRangeExtensions: readonly HEVCRangeExtensionCapability[]
     nativeDolbyVisionHEVC: CustomNativeDolbyVisionHEVCCapability
@@ -2688,6 +2761,7 @@ function createCustomDecodeCapabilities(
     };
     return Object.freeze({
         ...capabilities,
+        av1RawFormats: createAV1RawFormatCapabilities(videoResults.av1RawFormats),
         hevcRangeExtensions: createHEVCRangeExtensionCapabilities(videoResults.hevcRangeExtensions),
         probeStates: createProbeStates(selection),
         telemetry: createProbeTelemetry(environment, selection, capabilities)
@@ -2900,6 +2974,16 @@ export default class CustomDecodeCapabilityProbe {
                 )
             )
         ));
+        const av1RawFormats = Promise.all(AV1_RAW_FORMAT_VARIANTS.map(
+            (variant: AV1RawFormatVariant): Promise<AV1RawFormatCapability> => (
+                this.startSelectedProbe(
+                    selection,
+                    getAV1RawFormatVideoProbe(variant),
+                    videoQueue,
+                    createNotProbedAV1RawFormatCapability(variant)
+                )
+            )
+        ));
         const nativeDolbyVisionHEVC = this.startSelectedProbe(
             selection,
             'native-dolby-vision-hevc',
@@ -2908,6 +2992,7 @@ export default class CustomDecodeCapabilityProbe {
         );
         const nativeHDRHEVC = this.startSelectedProbe(selection, 'native-hdr-hevc', videoQueue, NOT_PROBED_NATIVE_HDR_HEVC_CAPABILITY);
         return {
+            av1RawFormats: await av1RawFormats,
             h264: await h264,
             hevcRangeExtensions: await hevcRangeExtensions,
             nativeDolbyVisionHEVC: await nativeDolbyVisionHEVC,
@@ -3114,11 +3199,26 @@ function createProbeStarters(environment: WebCodecsCapabilityEnvironment): Reado
         ));
     }
     for (const variant of HEVC_RANGE_EXTENSION_VARIANTS) {
-        starters.set(getHEVCRangeExtensionVideoProbe(variant), (queue) => probeHEVCRangeExtensionConfig(
-            HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS[variant],
+        const definition = HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS[variant];
+        starters.set(getHEVCRangeExtensionVideoProbe(variant), (queue) => probeExactRawFormatConfig(
+            'hevc',
+            definition,
+            createHEVCRangeExtensionBaseCapability(definition),
             environment.videoDecoder,
             environment.rawHDRVideoOutputProbe,
             environment.hevcRangeExtensionVectorLoader,
+            queue
+        ));
+    }
+    for (const variant of AV1_RAW_FORMAT_VARIANTS) {
+        const definition = AV1_RAW_FORMAT_PROBE_DEFINITIONS[variant];
+        starters.set(getAV1RawFormatVideoProbe(variant), (queue) => probeExactRawFormatConfig(
+            'av1',
+            definition,
+            createAV1RawFormatBaseCapability(definition),
+            environment.videoDecoder,
+            environment.rawHDRVideoOutputProbe,
+            environment.av1RawFormatVectorLoader,
             queue
         ));
     }
