@@ -3,13 +3,13 @@
 import { ALL_FORMATS, BufferSource, Input, PacketCursor, PacketReader, type EncodedPacket, type InputVideoTrack } from 'mediabunny';
 import { describe, expect, it } from 'vitest';
 
+import type { PictureOrder } from 'webgpu-player/demux/PresentationOrderTrack';
 import {
     createVC1PresentationOrderTrack,
     getVC1PictureOrder,
     hasVC1OutputDelay,
     readVC1AdvancedPictureTypeSyntax,
     readWMV3PictureTypeSyntax,
-    type VC1PictureOrder,
     type VC1PictureTypeSyntax
 } from 'webgpu-player/demux/vc1/VC1PresentationOrder';
 
@@ -138,7 +138,7 @@ describe('getVC1PictureOrder', () => {
         [ 'I', 'anchor' ],
         [ 'P', 'anchor' ],
         [ 'B', 'bidirectional' ]
-    ] as const)('orders a WMV3 %s picture after INTERPFRM, FRMCNT, and RANGEREDFRM as an %s', (kind: 'B' | 'I' | 'P', order: VC1PictureOrder) => {
+    ] as const)('orders a WMV3 %s picture after INTERPFRM, FRMCNT, and RANGEREDFRM as an %s', (kind: 'B' | 'I' | 'P', order: PictureOrder) => {
         expect(getVC1PictureOrder(createWMV3Picture(kind, B_PICTURE_FIELDS), toSyntax(B_PICTURE_FIELDS))).toBe(order);
     });
 
@@ -152,7 +152,7 @@ describe('getVC1PictureOrder', () => {
         [ 'I', 'anchor' ],
         [ 'BI', 'bidirectional' ],
         [ 'skipped-P', 'anchor' ]
-    ] as const)('orders a progressive Advanced profile %s picture as an %s', (kind: VC1PictureKind, order: VC1PictureOrder) => {
+    ] as const)('orders a progressive Advanced profile %s picture as an %s', (kind: VC1PictureKind, order: PictureOrder) => {
         expect(getVC1PictureOrder(createVC1AdvancedPicture({ kind, mode: 'progressive' }, false, null), PROGRESSIVE_SYNTAX)).toBe(order);
         expect(getVC1PictureOrder(createVC1AdvancedPicture({ kind, mode: 'progressive' }, true, null), INTERLACED_SYNTAX)).toBe(order);
         expect(getVC1PictureOrder(createVC1AdvancedPicture({ kind, mode: 'frame-interlace' }, true, null), INTERLACED_SYNTAX)).toBe(order);
