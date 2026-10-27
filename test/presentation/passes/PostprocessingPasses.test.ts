@@ -4,8 +4,12 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { createSDRColorMetadata } from 'webgpu-player/color/ColorMetadata';
+import { createBuiltinChain } from 'webgpu-player/presentation/passes/builtin/BuiltinChains';
 import { parsePassFile, parsePassManifest } from 'webgpu-player/presentation/passes/PassManifest';
-import type { PassInput, PassManifest, PassShape } from 'webgpu-player/presentation/passes/PassTypes';
+import type { PassInput, PassManifest, PassShape, PresentationPlan } from 'webgpu-player/presentation/passes/PassTypes';
+import { planPresentation } from 'webgpu-player/presentation/passes/PresentationPlanner';
+import { createDefaultRenderSettings } from 'webgpu-player/presentation/RenderSettings';
 
 import { PASSES_DIRECTORY } from '../../helpers/enginePaths';
 import { readPostprocessingPass, readPostprocessingPasses, type PostprocessingPassFile } from '../../helpers/postprocessingPasses';
@@ -23,12 +27,13 @@ const ENGINE_ACCESS_PATTERN = /@group|@binding|renderSettings|textureSample|text
 const HISTORY_ACCESSOR_INFIX = '_history';
 // An input's accessors: its samples, and its size and texel size, which a compute pass may read alone
 const INPUT_ACCESSOR_SUFFIX_PATTERN = '_(tex|texOff|size|pt)\\(';
-// The fields of PassResources' presentation uniform that passes read: history, and the output size NIS's port reads as mpv's target_size
-const PRESENTATION_FIELDS: readonly string[] = [ 'historyValid', 'outputSize' ];
+// The fields of PassResources' presentation uniform that passes read: history, the output size NIS's port reads as mpv's target_size,
+// and the refresh timing smooth motion blends by
+const PRESENTATION_FIELDS: readonly string[] = [ 'historyValid', 'outputSize', 'refreshSeconds', 'targetOffsetSeconds' ];
 // The header ends with a blank line, so the body starts with a line break
 const BODY_START = '\n';
 // The pass projects every engine build carries
-const EXPECTED_PROJECTS: readonly string[] = [ 'anime4k', 'catmull-rom', 'nis', 'saturation', 'sharpen', 'temporal-blend' ];
+const EXPECTED_PROJECTS: readonly string[] = [ 'anime4k', 'catmull-rom', 'nis', 'saturation', 'sharpen', 'smooth-motion', 'temporal-blend' ];
 
 const TEMPORAL_BLEND_PROJECT = 'temporal-blend';
 const TEMPORAL_BLEND_FILE = 'temporal-blend.wgsl';
@@ -38,6 +43,19 @@ const TEMPORAL_INPUTS: readonly PassInput[] = [
     { historyOffset: -1, name: 'RGB' }
 ];
 const HISTORY_VALID_READ = 'presentation.historyValid';
+
+const SMOOTH_MOTION_PROJECT = 'smooth-motion';
+const SMOOTH_MOTION_FILE = 'smooth-motion.wgsl';
+const SMOOTH_MOTION_NAME = 'Smooth motion';
+// Smooth motion's modes: only where frames would judder, also at a multiple of the frame rate, and always
+const ONLY_JUDDER_MODE = 0;
+const MULTIPLE_MODE = 1;
+const ALWAYS_MODE = 2;
+// A stream that declares no frame rate, or a display not yet measured
+const UNKNOWN_RATE = null;
+const SOURCE_WIDTH = 1920;
+const SOURCE_HEIGHT = 1080;
+const MAXIMUM_TEXTURE_DIMENSION = 8192;
 
 // The upstream files the Anime4K and NIS projects copy unmodified, with their SHA-256, as their PROVENANCE.txt files list them
 const UPSTREAM_SOURCE_DIGESTS: ReadonlyArray<readonly [path: string, digest: string]> = [
@@ -67,6 +85,36 @@ function requireManifests(passFile: PostprocessingPassFile): PassManifest[] {
             throw entry.error;
         }
         return entry.manifest;
+    });
+}
+
+/** Plans the smooth motion pass for a display rate, a frame rate, and a mode, on a route whose frames come from the frame loop. */
+function planSmoothMotion(displayRate: number | null, frameRate: number | null, mode: number): PresentationPlan {
+    return planPresentation({
+        chain: createBuiltinChain({
+            format: 'I420',
+            hdrOutput: false,
+            metadata: createSDRColorMetadata({ bitDepth: 8 }),
+            route: 'raw-yuv',
+            settings: createDefaultRenderSettings()
+        }),
+        device: { features: new Set<string>(), maximumTextureDimension: MAXIMUM_TEXTURE_DIMENSION },
+        displayRateAvailable: true,
+        facts: {
+            displayRate,
+            frameRate,
+            hdrOutput: false,
+            hdrSource: false,
+            outputHeight: SOURCE_HEIGHT,
+            outputWidth: SOURCE_WIDTH,
+            sampleHeight: SOURCE_HEIGHT,
+            sampleWidth: SOURCE_WIDTH,
+            sourceHeight: SOURCE_HEIGHT,
+            sourceWidth: SOURCE_WIDTH
+        },
+        output: { colorSpace: 'srgb', format: 'bgra8unorm', toneMapping: 'standard' },
+        parameterValues: new Map([ [ SMOOTH_MOTION_NAME, new Map([ [ 'mode', mode ] ]) ] ]),
+        passes: [ parsePassManifest(readPostprocessingPass(SMOOTH_MOTION_PROJECT, SMOOTH_MOTION_FILE)) ]
     });
 }
 
@@ -111,6 +159,36 @@ describe('the temporal blend kernel', () => {
         expect(manifest.hook).toBe(TEMPORAL_HOOK);
         expect(manifest.inputs).toEqual(TEMPORAL_INPUTS);
         expect(manifest.body).toContain(HISTORY_VALID_READ);
+    });
+});
+
+describe('the smooth motion kernel', () => {
+    it.each([
+        // 3:2 and 5:5:4 cadences judder; whole multiples and the 1000/1001 mismatch of NTSC rates do not
+        [ 60, 23.976, ONLY_JUDDER_MODE, true ],
+        [ 60, 25, ONLY_JUDDER_MODE, true ],
+        [ 50, 24, ONLY_JUDDER_MODE, true ],
+        [ 165, 24, ONLY_JUDDER_MODE, true ],
+        [ 50, 60, ONLY_JUDDER_MODE, true ],
+        [ 60, 30, ONLY_JUDDER_MODE, false ],
+        [ 60, 29.97, ONLY_JUDDER_MODE, false ],
+        [ 24, 23.976, ONLY_JUDDER_MODE, false ],
+        [ 120, 24, ONLY_JUDDER_MODE, false ],
+        [ 144, 24, ONLY_JUDDER_MODE, false ],
+        [ 60, 60, ONLY_JUDDER_MODE, false ],
+        [ 60, 30, MULTIPLE_MODE, true ],
+        [ 60, 59.94, MULTIPLE_MODE, false ],
+        [ 60, 60, ALWAYS_MODE, true ],
+        // Without a declared frame rate only mode 2 runs, and nothing runs before the display is measured
+        [ 60, UNKNOWN_RATE, ALWAYS_MODE, true ],
+        [ 60, UNKNOWN_RATE, ONLY_JUDDER_MODE, false ],
+        [ 60, UNKNOWN_RATE, MULTIPLE_MODE, false ],
+        [ UNKNOWN_RATE, 24, ALWAYS_MODE, false ]
+    ])('at %s Hz for %s fps in mode %s, runs: %s', (displayRate: number | null, frameRate: number | null, mode: number, runs: boolean) => {
+        const plan = planSmoothMotion(displayRate, frameRate, mode);
+
+        expect(plan.report.activePasses.includes(SMOOTH_MOTION_NAME)).toBe(runs);
+        expect(plan.displayRate).toBe(runs);
     });
 });
 

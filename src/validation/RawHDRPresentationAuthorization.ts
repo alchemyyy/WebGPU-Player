@@ -431,6 +431,7 @@ export function createAuthorizationReferencePlan(
                 maximumTextureDimension: device.limits.maxTextureDimension2D
             },
             facts: {
+                displayRate: null,
                 frameRate: null,
                 hdrOutput: false,
                 hdrSource: target.hdrSource,
@@ -482,9 +483,11 @@ export function encodeAuthorizationFrame(
         fieldState: PRESENTATION_FIELD_STATE.none,
         geometry: createIdentityGeometry(targetTexture.width, targetTexture.height),
         newFrame: true,
+        refreshMicroseconds: 0,
         skippedFrameCount: 0,
         source,
         target: targetTexture.createView(),
+        targetTimeMicroseconds: 0,
         timestampMicroseconds: 0
     });
     return commandEncoder.finish();
