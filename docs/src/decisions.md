@@ -62,13 +62,17 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
   The fork's demuxer reads each stream's OpenDML index as FFmpeg's `read_odml_index` does, the `indx` super index and the `ix##` standard indexes it locates across the `AVIX` RIFF lists, and keeps a stream to `idx1` when that index cannot be read in full (10-27).
   Until then it read only `idx1`, so the worker refused an OpenDML file's video, which `idx1` covers only up to about 1 GiB, as `opendml-index-unread`.
   `AVIIndexCoverage.ts` still refuses a video track whose stream header's declared length outruns its indexed packets by more than a second, now as `avi-index-incomplete`, rather than stopping where the index ends: a truncated file, or an OpenDML file whose index is damaged.
+  Since 10-27 the rule also takes MPEG-4 Part 2, H.263, and MS-MPEG4, which only the `mpeg4` decoder package decodes.
+  The fork names only MPEG-4 Part 2 among them, so it keeps an AVI video track of a FourCC it names no codec for, codec-less, with the FourCC as its internal codec ID, as its Matroska demuxer keeps an unknown track, and the worker routes DIV3, MP43, MP42, MPG4, and H263 tracks by that FourCC and refuses any other codec-less track by its FourCC.
+  AVI keeps no presentation times for MPEG-4 Part 2 B-VOPs, which the fork's demuxer orders for H.264 and HEVC only, so the worker restamps them as it restamps VC-1 VfW tracks (see "Matroska VC-1 and WMV3 present in picture order").
 - The fork's AVI demuxer unpacks DivX packed B-frames (10-27).
   DivX 5 and Xvid's packed bitstream puts a B-VOP after its reference VOP in one chunk and holds the slot it leaves with an N-VOP, so each chunk is one displayed frame.
   The demuxer follows FFmpeg's `mpeg4_unpack_bframes` filter on a stream that DivX user data ending in `p` marks, as FFmpeg's decoder unpacks only such a stream: a chunk of two VOPs gives its first, and the next chunk of one VOP gives the waiting B-VOP, so packets stay one VOP each, in decode order, with their chunks' timestamps.
   Packets are read in any order, so the B-VOP a packet waits on is found by reading back to the last chunk that settles it, and kept per packet.
   Unlike the filter, a key frame of one VOP drops a B-VOP whose N-VOP is missing, so a seek to a key frame reads nothing before it; only a damaged stream differs from FFmpeg's output.
-- A known codec without a route is refused as such (10-15).
-  Mediabunny identifies MPEG-4 Part 2, and no WebCodecs decoder or package decodes it, so eligibility answers `video-codec-without-route` for it, H.263, MS-MPEG4, and Theora, and the worker refuses an MPEG-4 Part 2 track with `The selected video codec has no decode route: mpeg4`.
+- A known codec without a route is refused as such (10-15, 10-27).
+  Mediabunny identifies MPEG-4 Part 2, and until 10-27 no WebCodecs decoder or package decoded it, so eligibility answered `video-codec-without-route` for it, H.263, MS-MPEG4, and Theora, and the worker refused an MPEG-4 Part 2 track with `The selected video codec has no decode route: mpeg4`.
+  Since 10-27 the `mpeg4` decoder package decodes MPEG-4 Part 2, H.263, and MS-MPEG4 v1 to v3, so they are package-only codecs and the worker's refusal is gone; Theora is the one codec left without a route.
 - A track whose edit list Mediabunny cannot honor is refused (10-15).
   `getUnsupportedFeatures()` reports an MP4 or MOV edit list Mediabunny applies only in part, `multiple_edits` or `non_unit_playback_rate`, whose packets it then times as if the rest were absent.
   `UnsupportedTrackFeatures.ts` turns the first reported feature into a refusal of the video or audio track, since playing it would put the track at the wrong times.
@@ -518,6 +522,27 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Every B-frame VC-1 or WMV3 stream in Matroska, VC-1 Blu-ray remuxes included, presented in decode order until `VC1PresentationOrder.ts` restamped the track by FFmpeg's rule: an I or P picture takes the next I or P picture's time, and a B picture keeps its own.
   A key packet lookup steps back to the previous GOP when needed, because mkvmerge stamps the first two packets 0.
   FFmpeg-made Matroska VC-1 without B pictures therefore presents one frame later, as FFmpeg-based players show it.
+- MPEG-4 Part 2 B-VOPs in AVI and Matroska VfW present in picture order (10-27).
+  Both containers stamp an MPEG-4 Part 2 stream's packets in decode order, as VfW stamps VC-1, so the worker restamps the track by the same rule: an I, P, or S-VOP takes the time of the next coded VOP that is not a B-VOP, and a B-VOP keeps its own.
+  An N-VOP, a VOP that is not coded, is passed over like a B-VOP, since FFmpeg outputs nothing for it and its waiting anchor outputs at the next coded anchor.
+  Only a stream whose VOL clears `low_delay` is restamped; a stream without B-VOPs outputs each picture at once and keeps its stamps.
+  The fork unpacks DivX packed bitstreams in AVI before the restamping reads them; a packed stream in Matroska keeps its two VOPs per packet, and its B-VOPs present one frame off.
+- The `mpeg4` decoder project mirrors FFmpeg's decoders (10-27).
+  One project decodes what FFmpeg's `mpeg4`, `h263`, `msmpeg4v1`, `msmpeg4v2`, and `msmpeg4v3` decoders decode, because they share FFmpeg's macroblock reconstruction, motion compensation, and IDCTs, and differ only in their headers and macroblock layers.
+  Its parser ports FFmpeg's `mpeg4videodec.c`, `ituh263dec.c`, `msmpeg4dec.c`, and the slice loop of `h263dec.c`, with FFmpeg's encoder detection and the bug workarounds it sets, and dequantizes on the CPU as `ff_mpv_reconstruct_mb` does.
+  Its record carries per macroblock the motion operations FFmpeg's `mpegvideo_motion.c` and global motion compensation would run, with their source positions and fractions, and the IDCT blocks; the WGSL runs those operations, the simple or Xvid IDCT, and the H.263 loop filter as two passes over all horizontal and then all vertical edges, which equals FFmpeg's order per macroblock.
+  One picture is one parse unit, so pictures parse at once on the parse workers; a B-VOP's plan waits until every earlier anchor finished, since direct mode reads the next anchor's motion, which the plan carries.
+  The parser matched a traced FFmpeg macroblock for macroblock on 48 streams: FFmpeg's and Xvid's encoders over every Advanced Simple tool they write (B-VOPs, quarter-pel, four motion vectors, global motion compensation, interlacing, data partitioning, MPEG quantization), H.263 and H.263+ annexes, MS-MPEG4 v2 and v3, and FFmpeg's samples, including MS-MPEG4 v1, a size-changing H.263 stream, and a DivX packed stream.
+  The WGSL matched FFmpeg's own C functions on about 47 million randomized samples, and the decoded frames matched FFmpeg's end to end on Dawn.
+  One-point global motion compensation, reversible VLC, and H.263 B and PB pictures are implemented but unverified, since no available encoder writes them.
+  Quarter-pel streams of libavcodec builds before 4653, which FFmpeg decodes with its old quarter-pel filter, fail as `unsupportedFeature`.
+- The `mpeg4` package's reference is FFmpeg's bit-exact, single-threaded decode (10-27).
+  FFmpeg's x86 decode averages half-pel samples without rounding approximately, unless asked for bit-exact output, and with MPEG quantization its bit-exact intra dequantization adds MPEG-4's mismatch control.
+  Its frame-threaded decode of interlaced MPEG-4 B-VOPs reads motion its reference frame has not written yet in field direct mode, so its output depends on the thread count.
+  The vectors therefore come from `ffmpeg -threads 1 -flags +bitexact`, whose output is FFmpeg's C code.
+- The `mpeg4` package's codec private data is a BITMAPINFOHEADER for every codec (10-27).
+  H.263 and MS-MPEG4 carry no frame size in codec private data, and FFmpeg's MPEG-4 workarounds read the stream's FourCC, `XVID`, `DIVX`, or `UMP4` among others, so the worker puts a 40-byte BITMAPINFOHEADER of the track's coded size and FourCC before the extradata, as it does for WMV3.
+  The parser picks the codec from the FourCC as FFmpeg's `riff.c` table classes it, so the FourCC of a Matroska VfW or AVI track reaches it as it was written, and a Matroska, MP4, or MOV track without one gets `mp4v`, `s263`, or `MP43`.
 - VC-1 in MP4 and MOV reads its `dvc1` box through Mediabunny's internals (10-13).
   Mediabunny 1.52.2 lists a `vc-1` track and its samples but skips the `dvc1` box, so `ISOBaseMediaVC1Configuration.ts` reads it from the `moov` bytes Mediabunny keeps (`moovSlice`, `sampleTableByteOffset`), and the worker builds its packet track with the `InputVideoTrack` constructor.
   Each internal is checked, and a change fails the track with a named check; only the Advanced profile's `dvc1` is read, as FFmpeg reads it.

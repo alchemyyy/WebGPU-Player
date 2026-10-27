@@ -237,6 +237,31 @@ cd wgpud/vc1/parser && cargo test --locked
 npx vitest --watch=false wgpud/vc1
 ```
 
+### The MPEG-4 parser
+
+`wgpud/mpeg4/parser/` is our crate: the CPU half of the package that decodes MPEG-4 Part 2, H.263, and MS-MPEG4 v1 to v3, whose WGSL back end is `wgpud/mpeg4/mpeg4.wgsl`.
+It is a port of FFmpeg's decoders: `mpeg4videodec.c` for MPEG-4 Part 2 (`mpeg4/`), `ituh263dec.c` for H.263 and the H.263+ annexes FFmpeg decodes (`h263.rs`), `msmpeg4dec.c` for MS-MPEG4 (`msmpeg4.rs`), the slice loop and resync of `h263dec.c` (`h263dec.rs`), the macroblock state and dequantization of `mpegvideo.c` (`mpv.rs`), and the operation geometry of `mpegvideo_motion.c` (`motion.rs`).
+`configure` reads the BITMAPINFOHEADER the engine passes for every codec of the package (see [Codec private data](decoder-packages.md#codec-private-data)), picks the codec from its FourCC as FFmpeg's `riff.c` classes it, reads an MPEG-4 Part 2 track's VOL from the extradata after it, and reports the coded size as the largest picture.
+FFmpeg's encoder detection runs on the FourCC and the user data as in FFmpeg, and sets the same bug workarounds and IDCT, the Xvid IDCT included.
+One parse unit is one picture, so the parse workers decode pictures at once, each from a fresh copy of the stream's tables, as FFmpeg's decoder holds no state between pictures besides the headers and the anchors.
+A DivX packed packet's second VOP plans as a second picture of the same packet, as FFmpeg's decoder decodes it from the packet's remaining bytes.
+Each picture's record holds per macroblock its flags, the H.263 loop filter's quantizers, the motion operations FFmpeg would run (half-pel, quarter-pel, one-point and general global motion compensation, and overlapped block motion compensation, each with its source position, fraction, and rounding), and its dequantized IDCT blocks, dense or as sparse entries.
+The WGSL runs a picture's operations in order, then the simple or Xvid IDCT, then the H.263 loop filter over all horizontal and then all vertical edges.
+A B-VOP's direct mode reads the next anchor's motion, which only that anchor's parse yields, so its plan reports `blocked` until every earlier anchor finished, then carries that motion.
+Output events follow FFmpeg's: a B picture, and any picture of a low-delay stream, presents at once, and an anchor presents the anchor before it, so the header declares `reorder: 1`.
+An H.263 picture of another size starts new anchors, as FFmpeg reinitializes, and reports its size as its visible size and the largest so far; `parser_picture_fields` reports an MPEG-4 Part 2 VOP's interlacing and top field first.
+As for HEVC, the WGSL declares the record's layout and the error codes once, and `build.rs` generates the Rust constants from them and fails unless the two agree, and every packet is one picture of version 2 of the parser interface.
+The damage of a packet, `sequenceHeader`, `pictureHeader`, `macroblockLayer`, and `bitsExhausted`, resyncs; the configuration, an unsupported feature, `pictureSize`, and an invalid record end the attempt.
+The parser's reference is FFmpeg's bit-exact, single-threaded decode (see [decisions](decisions.md)).
+
+After a change, from the engine root:
+
+```sh
+npm run decoders -- mpeg4
+cd wgpud/mpeg4/parser && cargo test --locked
+npx vitest --watch=false wgpud/mpeg4
+```
+
 ### The AV1 parser
 
 `wgpud/av1/` decodes AV1 with libaom's decoder as its parser and WGSL for everything after the syntax.

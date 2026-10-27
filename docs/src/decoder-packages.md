@@ -96,7 +96,7 @@ A header is the source's leading lines that start with `//!`, one `name: value` 
 | `requires` | No | Device features it needs, such as `shader-f16` or `subgroups`, which the prelude enables |
 | `error` | Repeatable | `<code>, <name>[, <recovery>]`: names an error code from 1 to 255, and how a playback recovers from it, `conceal`, `drop`, or `resync`, as [Errors and recovery](#errors-and-recovery) describes; a code without one ends the attempt |
 
-The codecs in `accepts` are the engine's codec names, which are FFmpeg's: `av1`, `h264`, `hevc`, `jpeg2000`, `mpeg1video`, `mpeg2video`, `vc1`, `vp8`, `vp9`, and `wmv3`.
+The codecs in `accepts` are the engine's codec names, which are FFmpeg's: `av1`, `h263`, `h264`, `hevc`, `jpeg2000`, `mpeg1video`, `mpeg2video`, `mpeg4`, `msmpeg4v1`, `msmpeg4v2`, `msmpeg4v3`, `vc1`, `vp8`, `vp9`, and `wmv3`.
 A size is a byte count with an optional `B`, `KiB`, or `MiB`, or an expression the session evaluates for each stream.
 Sizes, workgroup counts, and repeat counts are expressions over these facts, in the presentation passes' expression language: numbers, `+ - * / %`, comparisons, `&& || !`, and `abs`, `ceil`, `floor`, `max`, `min`, and `round`.
 The `accepts` conditions read the stream and picture facts, and no output facts; the picture facts are theirs alone.
@@ -206,6 +206,7 @@ The `config` binding holds what the decode worker reads from the track for its c
 | `mpeg1video`, `mpeg2video` | A Matroska track's CodecPrivate, its sequence header and extensions, or nothing |
 | `vc1` | The sequence header and entry point FFmpeg's `vc1` decoder gets: a Matroska `WVC1` or `WMVA` track's extradata, or an ISO base media `dvc1` box's after its 7-byte VC1DecSpecStruc |
 | `wmv3` | A 40-byte BITMAPINFOHEADER of the track's coded size and the `WMV3` FourCC, then the STRUCT_C sequence header, which holds no frame size of its own |
+| `mpeg4`, `h263`, `msmpeg4v1`, `msmpeg4v2`, `msmpeg4v3` | A 40-byte BITMAPINFOHEADER of the track's coded size and FourCC, then the track's extradata, an MPEG-4 Part 2 track's VOS and VOL headers, or nothing; a Matroska, MP4, or MOV track without a FourCC gets `mp4v`, `s263`, or `MP43` by its codec, and FFmpeg's MPEG-4 workarounds read the FourCC |
 | `jpeg2000` | Nothing |
 
 ### How a session decodes
