@@ -8,6 +8,7 @@ import {
     getDolbyVisionProfile7HDR10BaseColorMetadata,
     getDolbyVisionProfile8HDR10BaseColorMetadata,
     getDolbyVisionProfile8HLGBaseColorMetadata,
+    getPresentationFrameRate,
     getPresentationInputColorMetadata,
     isDolbyVisionDualLayerProfile,
     isDolbyVisionProfile7HDR10BaseLayerDescriptor,
@@ -1111,5 +1112,25 @@ describe('getPresentationInputColorMetadata', () => {
                 MediaStreams: createSeparateProfile7Streams({}, { Width: 1_918 })
             }
         })).toBeNull();
+    });
+});
+
+describe('getPresentationFrameRate', () => {
+    const createOptions = (stream: Record<string, unknown>): Record<string, unknown> => ({
+        mediaSource: { MediaStreams: [ { Type: 'Video', ...stream } ] }
+    });
+
+    it('takes the average frame rate, as Jellyfin\'s reference rate does', () => {
+        expect(getPresentationFrameRate(createOptions({ AverageFrameRate: 23.976025, RealFrameRate: 24 }))).toBe(23.976025);
+    });
+
+    it('takes the real frame rate for a missing average, or the 1000 fps average Jellyfin reads for some streams', () => {
+        expect(getPresentationFrameRate(createOptions({ RealFrameRate: 25 }))).toBe(25);
+        expect(getPresentationFrameRate(createOptions({ AverageFrameRate: 1_000, RealFrameRate: 29.97 }))).toBe(29.97);
+    });
+
+    it('declares no rate for a stream without one, or options without a video stream', () => {
+        expect(getPresentationFrameRate(createOptions({ AverageFrameRate: 0 }))).toBeNull();
+        expect(getPresentationFrameRate({})).toBeNull();
     });
 });

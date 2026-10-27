@@ -12,7 +12,7 @@ This chapter is the reference for the pass file format: the header, the code the
 ## Steps
 
 1. Create `wgpup/<project>/` and a pass file in it, `<file>.wgsl`, under a file name no other project uses.
-   Start from the bundled pass of the same shape: `sharpen.wgsl` for a kernel, `saturation.wgsl` for a color function, `catmull-rom.wgsl` for a scaler, `temporal-blend.wgsl` for a history read, and the Anime4K files for compute passes.
+   Start from the bundled pass of the same shape: `sharpen.wgsl` for a kernel, `saturation.wgsl` for a color function, `catmull-rom.wgsl` for a scaler, `temporal-blend.wgsl` for a history read, `smooth-motion.wgsl` for a pass that draws at the display rate, and the Anime4K files for compute passes.
 2. Write the header, then a blank line, then the body with the entry point of its shape (see [Shapes](#shapes)).
 3. To try it before building, run `npm run sandbox` and drop the file on the shader panel.
    The panel shows a plan state per pass and an input per parameter, and the pipeline graph lists a pass the plan left out as `reason: detail`.
@@ -94,6 +94,20 @@ The plane stages hold the planes as mpv's do, as normalized code values: a code 
 - A deinterlacing plan derives the planes from its deinterlaced image through the same conversion, chroma at the stream's subsampling.
 - Dolby Vision routes have no planes to offer, so a plane pass, and a pass that reads a plane stage, is left out there as `planes-unavailable`.
 
+### Display rate
+
+A pass with `rate: display` draws at the display's refresh rate rather than once per frame, as `smooth-motion.wgsl` does.
+
+- The engine draws it on every refresh from history, and the frame loop takes frames one refresh ahead of the clock, so the frame that starts within a refresh is already in history when the refresh draws.
+- `HOOKED` is the newest frame, and `HOOKED[-1]` the frame before it.
+- `presentation.refreshSeconds` is the media time one refresh covers, and `presentation.targetOffsetSeconds` the clock time the draw presents at minus `timestampSeconds`; the newest frame's share of the refresh is `clamp((targetOffsetSeconds + refreshSeconds) / refreshSeconds, 0, 1)`.
+  `refreshSeconds` is 0 until the display rate is measured, and while the clock stands still, as when paused, when a refresh shows the frame the clock is in: the newest once `targetOffsetSeconds` reaches 0, else the one before it.
+  The frame loop's tick after a pause redraws at the stopped clock, so a paused picture shows one frame.
+- A draw from history skips the passes that read the source and every pass before the first display-rate pass, whose outputs no draw of the frame changes, so a heavy pass before it runs once per frame.
+- The pass that reads the source then writes a texture rather than the canvas, and a color pass at the display rate gets a pass of its own rather than fusing into it.
+- A plane stage reads the source, which a draw from history skips, so `rate: display` on `LUMA`, `CHROMA`, or `NATIVE` is a header error.
+- Where frames are timed by the browser's video element, or the plan deinterlaces, whose history holds fields rather than the frame after the shown one, the pass is left out as `display-rate-unavailable`, with the detail `video-element` or `deinterlace`.
+
 ### Offsets
 
 Every image the plan holds has an offset: the pixel of the image, in its own pixels, that the reference grid's origin falls on, as libplacebo's texture rects place them.
@@ -135,6 +149,7 @@ fn kernel(coordinate: vec2f) -> vec4f {
 | `output` | Kernel, compute; required for compute | `<NAME>.size, <format>` or `<width>, <height>, <format>` |
 | `components` | Kernel, compute | 1, 2, 3, or 4, the channels it needs; the planner takes the format from `output` alone |
 | `offset` | Kernel, compute, on a hook before `SCALE` | `<x>, <y>` decimals, the output's offset in its own pixels beyond the hooked image's, or `align`; see [Offsets](#offsets) |
+| `rate` | All | `frame` or `display`, how often the pass draws; defaults to `frame`; see [Display rate](#display-rate) |
 | `when` | All | A condition on the global facts and the pass's own parameters; when it is 0, the plan leaves the pass out as `condition-false` |
 | `workgroup` | Compute, required | `<x>[, <y>[, <z>]]` positive integers, 1 where omitted; x and y at most 256, z at most 64, and at most 256 invocations in all |
 | `dispatch` | Compute | `<x>[, <y>[, <z>]]` expressions, 1 where omitted; defaults to `ceil(<output width> / x), ceil(<output height> / y), 1` |
@@ -164,8 +179,10 @@ fn kernel(coordinate: vec2f) -> vec4f {
 ### Expressions
 
 - `when`, `output`, and `dispatch` take expressions of numbers, identifiers, parentheses, `abs`, `ceil`, `floor`, `max`, `min`, `round`, and the operators `! - * / % + < <= > >= == != && ||`; a comparison or logic operator yields 1 or 0.
-- Every expression reads the global facts, `source.width`, `source.height`, `output.width`, `output.height`, `luma.width`, `luma.height`, `chroma.width`, `chroma.height`, `frame.rate`, `hdr.source`, `hdr.output`, and `rgb.source`, all fixed at plan time.
-  The HDR facts are 1 or 0, an unknown frame rate is 0, and the luma and chroma sizes are the planes' (see [Planes](#planes)), so `chroma.width < luma.width` holds for subsampled chroma.
+- Every expression reads the global facts, `source.width`, `source.height`, `output.width`, `output.height`, `luma.width`, `luma.height`, `chroma.width`, `chroma.height`, `frame.rate`, `display.rate`, `hdr.source`, `hdr.output`, and `rgb.source`, all fixed at plan time.
+  The HDR facts are 1 or 0, and the luma and chroma sizes are the planes' (see [Planes](#planes)), so `chroma.width < luma.width` holds for subsampled chroma.
+  `frame.rate` is the stream's declared frame rate, its average frame rate, else its real frame rate when the average is missing or at least 1000, and 0 when it declares none.
+  `display.rate` is the display's refresh rate in Hz, which the presenter measures from the frame loop's animation frames, and 0 until measured; the presenter plans again when the measurement moves more than 0.1% from the rate the plan read.
   `rgb.source` is 1 where the source codes R, G, and B planes, where mpv fires its `RGB` hook rather than `LUMA` and `CHROMA`; no route presents such video, so it is 0 on every route.
 - `when` also reads the pass's own parameters and constants by name, at their current values, and the presenter plans again when one that a `when` reads changes.
 - `output` and `dispatch` also read `<NAME>.width` and `<NAME>.height` for `HOOKED` and each input, by its base name for a history input.
@@ -228,9 +245,10 @@ The engine owns every binding, and generates around each body:
   - `referenceWhiteNits() -> f32`, the nits of mpv's linear 1.0: the configured SDR white for an SDR source, BT.2408's HDR reference white, 203 nits, for HDR.
     A pass of the `linear` domain reads nits, so it divides by it to work in mpv's scale.
   - `rgbToPlanes(color: vec3f) -> vec3f` and `planesToRGB(planes: vec3f) -> vec3f`: 'source' RGB to the normalized Y, Cb, and Cr plane values of the source's own matrix and range, and back, each the other's exact inverse.
-- The `presentation` uniform, whose frame globals are `sourceSize`, `outputSize`, and `inputSize` as `vec2f`, `timestampSeconds`, `frameIndex`, `historyValid`, `skippedFrames`, and `fieldState`.
+- The `presentation` uniform, whose frame globals are `sourceSize`, `outputSize`, and `inputSize` as `vec2f`, `timestampSeconds`, `frameIndex`, `historyValid`, `skippedFrames`, `fieldState`, `refreshSeconds`, and `targetOffsetSeconds`.
   `historyValid` counts the earlier frames history holds: 0 after a reset, rising by one per new frame to the plan's deepest history, so a pass that reads history weighs it by `historyValid`, as `temporal-blend.wgsl` does.
   `skippedFrames` counts the frames dropped since the previous new frame, which a temporal pass may treat as a soft reset.
+  `refreshSeconds` and `targetOffsetSeconds` time a draw within the display's refreshes (see [Display rate](#display-rate)).
   [Architecture](architecture.md#presentation) lists when history resets.
 - The vertex stage and the fragment or compute entry point that call the body's entry point.
 
@@ -254,6 +272,7 @@ A pass that cannot run is left out of the plan, playback continues without it, a
 | `input-unknown`, `input-after-hook`, `input-reserved` | An input names nothing saved, a later stage, or `TARGET` |
 | `planes-unavailable` | The pass hooks or reads a plane stage, or calls the prelude's plane transform, on a route without planes, which the detail names by its signal |
 | `linear-light-unavailable` | The pass calls `linearize`, `delinearize`, or `referenceWhiteNits` on a route that does not know its stream's transfer function, which the detail names by its signal |
+| `display-rate-unavailable` | The pass draws at the display rate where the presenter cannot redraw between frames: `video-element` where the browser's video element times the frames, `deinterlace` where the plan deinterlaces; see [Display rate](#display-rate) |
 | `texture-size`, `texture-format` | A texture block exceeds the device's texture size, or needs a filter the device lacks for its format; the detail names the block |
 | `output-size`, `output-missing`, `workgroup-count`, `workgroup-missing` | An output size or dispatch count is out of range, or missing |
 

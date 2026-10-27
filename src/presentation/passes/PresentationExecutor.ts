@@ -633,6 +633,8 @@ export class PresentationExecutor {
     private readonly enhancementView: DataView<ArrayBuffer> = new DataView(new ArrayBuffer(ENHANCEMENT_UNIFORM_BYTE_LENGTH));
     // Frame pool bind groups per layout uniform, so a pool that names each slot with its own layout buffer never creates them per frame
     private readonly framePoolBindGroups = new Map<GPUBuffer, readonly (readonly GPUBindGroup[])[]>();
+    // The first pass a draw from history records; the passes before it keep their outputs from the last new frame
+    private readonly historyDrawStart: number;
     private readonly historySaturation: number;
     private readonly ownedBuffers: GPUBuffer[] = [];
     private readonly ownedTextures: GPUTexture[] = [];
@@ -659,9 +661,11 @@ export class PresentationExecutor {
         inputWidth: 0,
         outputHeight: 0,
         outputWidth: 0,
+        refreshSeconds: 0,
         skippedFrames: 0,
         sourceHeight: 0,
         sourceWidth: 0,
+        targetOffsetSeconds: 0,
         textureOffsetX: 0,
         textureOffsetY: 0,
         textureScaleX: 1,
@@ -697,6 +701,7 @@ export class PresentationExecutor {
         for (const texture of plan.passTextures) {
             this.passTextures.set(texture.id, texture);
         }
+        this.historyDrawStart = plan.historyDrawStart;
         this.historySaturation = getHistorySaturation(plan);
         this.presentationView = new DataView(new ArrayBuffer(plan.passes.length * UNIFORM_SLOT_BYTE_LENGTH));
         // The write stops where the last slot's uniform ends
@@ -871,7 +876,8 @@ export class PresentationExecutor {
     /**
      * Records one frame into a command encoder that the caller submits.
      * A new frame advances history after recording; a redraw repeats the last new frame's ring slots and history state.
-     * A frame without a source redraws the last new frame from history, skipping the passes that read the source.
+     * A frame without a source redraws the last new frame from history: it skips the passes that read the source, and every pass before
+     * the plan's history draw start, whose outputs no draw of that frame changes.
      */
     encode(commandEncoder: GPUCommandEncoder, frame: PresentationFrameInput): void {
         this.requireUsable();
@@ -881,8 +887,7 @@ export class PresentationExecutor {
         const externalTexture = source === null ? null : this.prepareSource(source, frame.newFrame);
         this.writePresentationUniforms(frame, historyFrameNumber);
         for (const pass of this.passes) {
-            // A draw from history skips the passes that read the source
-            if (source === null && pass.bindsSource) {
+            if (source === null && (pass.bindsSource || pass.index < this.historyDrawStart)) {
                 continue;
             }
             this.recordPass(commandEncoder, pass, historyFrameNumber % pass.phaseCount, externalTexture, frame);
@@ -1316,7 +1321,10 @@ export class PresentationExecutor {
         values.historyValid = Math.min(historyFrameNumber, this.historySaturation);
         values.outputHeight = geometry.viewportHeight;
         values.outputWidth = geometry.viewportWidth;
+        values.refreshSeconds = frame.refreshMicroseconds / MICROSECONDS_PER_SECOND;
         values.skippedFrames = frame.skippedFrameCount;
+        // Subtracted in double precision: an f32 timestamp an hour into a stream resolves only 244 microseconds
+        values.targetOffsetSeconds = (frame.targetTimeMicroseconds - frame.timestampMicroseconds) / MICROSECONDS_PER_SECOND;
         values.timestampSeconds = frame.timestampMicroseconds / MICROSECONDS_PER_SECOND;
         const visibleRegion = frame.source === null ? null : getVisibleRegion(frame.source);
         for (const pass of this.passes) {

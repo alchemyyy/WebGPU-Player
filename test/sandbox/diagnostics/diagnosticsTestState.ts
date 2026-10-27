@@ -58,6 +58,8 @@ export function createPresentationPlan(overrides: Partial<PresentationPlan> & Pi
     return {
         buffers: [],
         deinterlace: null,
+        displayRate: false,
+        historyDrawStart: 0,
         output: TEST_CANVAS_OUTPUT,
         parameterSets: [],
         passTextures: [],

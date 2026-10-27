@@ -14,12 +14,13 @@ Each file holds one or more passes in the [pass file format](new-pass.md), which
 | `sharpen` | `sharpen.wgsl` | A 3x3 kernel on the OUTPUT stage that moves each pixel away from the mean of its 8 neighbors, by its `strength` parameter |
 | `saturation` | `saturation.wgsl` | A color pass on the OUTPUT stage that scales chroma around BT.709 luma, by its `saturation` parameter |
 | `temporal-blend` | `temporal-blend.wgsl` | A kernel on the RGB stage that blends toward the previous frame while history is valid, by its `blend` parameter |
+| `smooth-motion` | `smooth-motion.wgsl` | A kernel on the OUTPUT stage that draws at the display rate and blends the two frames a refresh spans by the share each covers; see [Smooth motion](#smooth-motion) |
 | `catmull-rom` | `catmull-rom.wgsl` | A 4x4 Catmull-Rom scaler that replaces the built-in bilinear scaler; its taps read texel centers, so the result does not depend on the input's filtering |
 | `anime4k` | `Anime4K_Upscale_Denoise_CNN_x2_L.wgsl`, `Anime4K_Upscale_Denoise_CNN_x2_UL.wgsl` | Anime4K v3.2's Upscale+Denoise CNN x2 networks, on the PRESCALE stage when the output is more than 1.2 times the source on each axis |
 | `nis` | `NVScaler.wgsl`, `NVSharpen.wgsl` | NVIDIA Image Scaling v1.0.2, a vendor-neutral spatial scaler with sharpening, on the LUMA plane: the scaler when the output is larger than the luma plane, the sharpener when they match |
 
 Every pass file keeps the rules that `test/presentation/passes/PostprocessingPasses.test.ts` checks: each pass parses, defines its shape's entry point, reads exactly the parameters it declares, reads each input through its accessors, and reaches engine data only through the presentation globals.
-The presenter, manifest, and pipeline graph tests run the four simple passes as well.
+The presenter, manifest, and pipeline graph tests run the four simple passes as well, and the presenter tests run smooth motion.
 
 ## Build and offer
 
@@ -45,6 +46,25 @@ To regenerate them, run from the engine root:
 python wgpup/anime4k/generate_anime4k_wgsl.py wgpup/anime4k/glsl/Anime4K_Upscale_Denoise_CNN_x2_L.glsl wgpup/anime4k/Anime4K_Upscale_Denoise_CNN_x2_L.wgsl
 python wgpup/anime4k/generate_anime4k_wgsl_chain.py wgpup/anime4k/glsl/Anime4K_Upscale_Denoise_CNN_x2_UL.glsl wgpup/anime4k/Anime4K_Upscale_Denoise_CNN_x2_UL.wgsl
 ```
+
+## Smooth motion
+
+In `smooth-motion.wgsl`, each display refresh shows the frames it spans, the newest and the one before it, blended by the share of the refresh each covers, as libplacebo's `oversample` mixer, which mpv documents as SmoothMotion, does.
+A refresh within one frame shows that frame untouched, and so does every refresh while the clock stands still, so a paused picture shows one frame.
+The blend runs in linear light of the display's sRGB encoding, extended past 1 and mirrored below 0 on an HDR canvas.
+
+Its `mode` constant picks when it runs:
+
+- 0, the default: only where there would be motion judder without it, when the display rate is no integer multiple of the frame rate within `tolerance`.
+- 1: also where the display rate is a multiple, when the display rate is not the frame rate within `tolerance`.
+- 2: always.
+
+`tolerance` is relative and defaults to 0.002, so 23.976 fps at 24 Hz counts as a multiple.
+A stream that declares no frame rate runs it only in mode 2, and nothing runs it before the display rate is measured.
+
+- It hooks `OUTPUT` in the `display` domain, so each frame is tone mapped with its own metadata before it enters history.
+- A deinterlacing plan leaves it out as `display-rate-unavailable`.
+- It costs a ring of two output-size `rgba16float` images and one pass per refresh; the passes before it run once per frame.
 
 ## NIS
 

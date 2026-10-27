@@ -18,6 +18,11 @@ const ANIMATION_FRAMES_UNAVAILABLE_MESSAGE = 'requestAnimationFrame is unavailab
 const TARGET_TIME_MICROSECONDS = 1_000_000;
 const NO_LOOKAHEAD_MICROSECONDS = 0;
 const FRAME_LOOKAHEAD_MICROSECONDS = 40_000;
+// Animation frames a 60 Hz refresh apart, and the clock's rate while the video plays at double speed
+const FIRST_ANIMATION_FRAME_MILLISECONDS = 1_000;
+const SECOND_ANIMATION_FRAME_MILLISECONDS = 1_016.7;
+const PAUSED_ANIMATION_FRAME_MILLISECONDS = 1_033.3;
+const DOUBLE_RATE = 2;
 
 type FakeController = {
     drainBackgroundVideo: Mock
@@ -25,6 +30,7 @@ type FakeController = {
     isVideoDecodeEnded: Mock
     notifyFrameDiscarded: Mock
     notifyFramePresented: Mock
+    playbackRate: number
     playbackState: string
     setPageVisibility: Mock
     takeFrame: Mock
@@ -36,6 +42,7 @@ type FakePresenter = {
     getTelemetry: Mock
     presentDecodedFrame: Mock
     presentHeldFields: Mock
+    recordAnimationFrame: Mock
 };
 
 type LoopHarness = Readonly<{
@@ -49,12 +56,12 @@ type LoopHarness = Readonly<{
 const animationFrames = new Map<number, FrameRequestCallback>();
 let nextAnimationFrame = 1;
 
-/** Runs the pending animation frames once, as one display refresh does. */
-function runAnimationFrames(): void {
+/** Runs the pending animation frames once, as one display refresh does, at its time. */
+function runAnimationFrames(timeMilliseconds = 0): void {
     const callbacks = [ ...animationFrames.values() ];
     animationFrames.clear();
     for (const callback of callbacks) {
-        callback(0);
+        callback(timeMilliseconds);
     }
 }
 
@@ -65,6 +72,7 @@ function createHarness(): LoopHarness {
         isVideoDecodeEnded: vi.fn(() => false),
         notifyFrameDiscarded: vi.fn(() => true),
         notifyFramePresented: vi.fn(() => true),
+        playbackRate: 1,
         playbackState: 'playing',
         setPageVisibility: vi.fn(() => false),
         takeFrame: vi.fn(() => RAW_PLANES_FRAME)
@@ -74,7 +82,8 @@ function createHarness(): LoopHarness {
         getFrameLookaheadMicroseconds: vi.fn(() => NO_LOOKAHEAD_MICROSECONDS),
         getTelemetry: vi.fn(() => ({ state: 'presenting' })),
         presentDecodedFrame: vi.fn(() => true),
-        presentHeldFields: vi.fn(() => false)
+        presentHeldFields: vi.fn(() => false),
+        recordAnimationFrame: vi.fn()
     };
     const current = { value: true };
     const failures: unknown[] = [];
@@ -238,6 +247,28 @@ describe('CustomPlaybackFrameLoop', () => {
         expect(presenter.presentHeldFields).toHaveBeenCalledTimes(1);
         expect(presenter.presentHeldFields).toHaveBeenCalledWith(FIRST_GENERATION, TARGET_TIME_MICROSECONDS);
         expect(animationFrames.size).toBe(1);
+    });
+
+    it('hands the presenter every animation frame\'s time and the clock\'s rate before it takes a frame, a rate of 0 once paused', () => {
+        const { controller, loop, presenter } = createHarness();
+        controller.playbackRate = DOUBLE_RATE;
+        controller.takeFrame.mockReturnValueOnce(RAW_PLANES_FRAME).mockReturnValue(null);
+
+        loop.schedule(true);
+        runAnimationFrames(FIRST_ANIMATION_FRAME_MILLISECONDS);
+        runAnimationFrames(SECOND_ANIMATION_FRAME_MILLISECONDS);
+        // The tick after a pause sees the clock standing still
+        controller.playbackState = 'paused';
+        runAnimationFrames(PAUSED_ANIMATION_FRAME_MILLISECONDS);
+
+        expect(presenter.recordAnimationFrame.mock.calls).toEqual([
+            [ FIRST_ANIMATION_FRAME_MILLISECONDS, DOUBLE_RATE ],
+            [ SECOND_ANIMATION_FRAME_MILLISECONDS, DOUBLE_RATE ],
+            [ PAUSED_ANIMATION_FRAME_MILLISECONDS, 0 ]
+        ]);
+        // The lookahead a display-rate plan takes follows the refresh the presenter just measured
+        expect(presenter.recordAnimationFrame.mock.invocationCallOrder[0]).toBeLessThan(presenter.getFrameLookaheadMicroseconds.mock.invocationCallOrder[0]);
+        expect(presenter.recordAnimationFrame.mock.invocationCallOrder[0]).toBeLessThan(controller.takeFrame.mock.invocationCallOrder[0]);
     });
 
     it('polls while paused until a deinterlacing presenter holds the frame after the one it shows, or video decoding ended', () => {

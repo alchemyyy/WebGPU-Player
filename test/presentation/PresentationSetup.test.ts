@@ -219,6 +219,7 @@ describe('PresentationSetup', () => {
             await expect(configurePresentationColorPipeline(asPresenter(presenter), request)).resolves.toBe(true);
 
             expect(presenter.configureColorPipeline).toHaveBeenCalledWith({
+                frameRate: null,
                 metadata: request.input.colorMetadata,
                 settings: createDefaultRenderSettings(),
                 videoFields: PROGRESSIVE_FIELDS
@@ -258,6 +259,7 @@ describe('PresentationSetup', () => {
             expect(metadata).not.toBeNull();
             expect(presenter.configureColorPipeline).toHaveBeenNthCalledWith(1, {
                 ...createHDRRenderConfiguration(metadata?.nominalPeakNits ?? 0),
+                frameRate: null,
                 inputMode: 'raw-yuv',
                 metadata,
                 rawFrameFormat: 'I420P10',
@@ -265,6 +267,7 @@ describe('PresentationSetup', () => {
             }, GENERATION);
             expect(presenter.configureColorPipeline).toHaveBeenNthCalledWith(2, {
                 ...createHDRRenderConfiguration(metadata?.nominalPeakNits ?? 0),
+                frameRate: null,
                 inputMode: 'external-hdr',
                 metadata,
                 videoFields: PROGRESSIVE_FIELDS
@@ -292,6 +295,7 @@ describe('PresentationSetup', () => {
 
             expect(presenter.configureColorPipeline).toHaveBeenNthCalledWith(1, {
                 ...createHDRRenderConfiguration(DOLBY_VISION_INPUT_PEAK_NITS),
+                frameRate: null,
                 inputMode: 'raw-dolby-vision',
                 profile: 8,
                 rawFrameFormat: 'I420P10',
@@ -299,6 +303,7 @@ describe('PresentationSetup', () => {
             }, GENERATION);
             expect(presenter.configureColorPipeline).toHaveBeenNthCalledWith(2, {
                 ...createHDRRenderConfiguration(DOLBY_VISION_INPUT_PEAK_NITS),
+                frameRate: null,
                 inputMode: 'external-dolby-vision',
                 profile: 5,
                 videoFields: PROGRESSIVE_FIELDS

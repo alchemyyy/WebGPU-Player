@@ -933,6 +933,14 @@ These were settled on Firefox 157 on Windows.
 - `rgb.source` tells RGB sources apart (10-16).
   mpv fires `RGB` on RGB sources and `LUMA` and `CHROMA` on YUV ones, so the converter keeps both copies of a pass that hooks both, each under the fact, rather than dropping `RGB`; every route presents YUV, so the fact is 0 on each.
 - Converted compute passes keep WebGPU's default limits (10-16), as the pass header does: 256 invocations per workgroup and 16 KiB of workgroup storage.
+- Smooth motion is a user pass that draws at the display rate (10-27), `wgpup/smooth-motion/`, rather than a built-in step.
+  It blends the two frames a refresh spans by the share each covers, as libplacebo's `oversample` does.
+  It blends at `OUTPUT` in the `display` domain, linearizing the sRGB encoding, so each frame is tone mapped with its own metadata, and identity SDR routes, whose color track is empty, keep it.
+  Frames are taken one refresh ahead, so the frame that starts within a refresh is in history when it draws.
+  The display rate is a least-squares fit of rAF times over refresh counts, published with 0.1% hysteresis so jitter does not replan.
+  `tolerance` defaults to 0.2%, so a 1000/1001 mismatch, which repeats a frame only every 16.7 s at 60 Hz, counts as no judder.
+  A deinterlacing plan leaves it out, since its history holds fields rather than the frame after the shown one.
+  Redraws start at the first display-rate pass, so a heavy pass before it, such as Anime4K, runs once per frame.
 
 ## Repository
 

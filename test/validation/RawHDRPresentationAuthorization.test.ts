@@ -130,6 +130,7 @@ function planRawReferenceShaderCode(routeKey: RawHDRAuthorizationRouteKey): stri
         }),
         device: { features: new Set<string>(), maximumTextureDimension: DEFAULT_MAXIMUM_TEXTURE_DIMENSION },
         facts: {
+            displayRate: null,
             frameRate: null,
             hdrOutput: false,
             hdrSource: metadata.transfer !== 'sdr',
@@ -345,6 +346,7 @@ describe('RawHDRPresentationAuthorization', () => {
             expect(planRequest).toMatchObject({
                 device: { maximumTextureDimension: DEFAULT_MAXIMUM_TEXTURE_DIMENSION },
                 facts: {
+                    displayRate: null,
                     frameRate: null,
                     hdrOutput: false,
                     hdrSource: true,

@@ -4,6 +4,7 @@ import { requireMicroseconds } from '../TimeMath';
 import { recordTimingWait, startTimingWait } from '../TimingTrace';
 
 import {
+    MICROSECONDS_PER_MILLISECOND,
     microsecondsToMilliseconds,
     millisecondsToMicroseconds,
     secondsToMicroseconds,
@@ -61,9 +62,9 @@ import { createBuiltinChain } from './passes/builtin/BuiltinChains';
 import DeinterlaceTimeline, {
     DEFAULT_DEINTERLACE_MODE,
     DEINTERLACE_MODES,
-    type DeinterlaceDraw,
     type DeinterlaceMode
 } from './DeinterlaceTimeline';
+import DisplayRefresh from './DisplayRefresh';
 import { getPresetPassPosition } from './passes/PassLanguage';
 import { collectPassExpressionIdentifiers } from './passes/PassExpression';
 import { parsePassFile, type PassFileEntry } from './passes/PassManifest';
@@ -148,6 +149,9 @@ const EXTERNAL_DOLBY_VISION_BASE_LAYER_BIT_DEPTH = 10;
 const EXTERNAL_IDENTITY_BIT_DEPTH = 8;
 // A new frame more than this many frame durations after the previous one is a discontinuity, which starts history over
 const HISTORY_DISCONTINUITY_FRAME_DURATIONS = 2.5;
+// How far the measured display rate moves, relative to the rate plans read, before they plan again; a measurement refines by less
+const DISPLAY_RATE_REPLAN_TOLERANCE = 0.001;
+const MILLISECONDS_PER_SECOND = 1_000;
 // The size facts take before a frame or a canvas measures them; default plans never depend on sizes
 const UNKNOWN_PLAN_DIMENSION = 1;
 // The native and identity SDR route: the browser's own conversion, presented as it is, of a stream whose color is unknown until one is configured
@@ -361,6 +365,8 @@ export type PresentationColorPipelineConfiguration = (
 ) & {
     /** Defaults to true for callers without a persisted manual peak policy. */
     automaticInputPeakNits?: boolean
+    /** The stream's declared frame rate, which plans read as frame.rate; unknown when absent. */
+    frameRate?: number | null
     /**
      * What the stream declares of its fields, which decides whether the route's plan deinterlaces from its first frame; unknown when absent.
      * Frames that report their own fields override its scan, and a session that shows an interlaced frame deinterlaces from then on.
@@ -395,10 +401,28 @@ type DolbyVisionDualLayerPresentation =
 type FrameSubmission = {
     device: GPUDevice
     dolbyVisionDualLayerMode?: DolbyVisionDualLayerPresentation
-    /** The media time the submission shows: its frame's, or a deinterlaced frame's field's */
+    /** The media time the submission shows: its frame's, a deinterlaced frame's field's, or in a display-rate plan the frame its clock time falls in */
     presentedTimeMicroseconds: Microseconds
     validationResult: Promise<GPUError | null> | null
 };
+
+/**
+ * What one submission shows: the PRESENTATION_FIELD_STATE bits and the time of the field or frame it draws, and the media time telemetry reports.
+ * A display-rate plan's draw also carries the clock time it presents at, since its passes blend by it; a draw from history redraws when any of them changes.
+ */
+type PresentationDraw = Readonly<{
+    /** The clock time of a display-rate draw; null for a draw that shows the same at any clock time */
+    clockMicroseconds: number | null
+    fieldState: number
+    presentedTimeMicroseconds: number
+    timestampMicroseconds: number
+}>;
+
+/** The newest frame in a display-rate plan's history and the one before it, which its refreshes draw between. */
+type DisplayRateFrames = Readonly<{
+    newestMicroseconds: number
+    previousMicroseconds: number | null
+}>;
 
 type DualLayerDolbyVisionRPUData = {
     enhancementLayerBitDepth: number
@@ -470,7 +494,7 @@ type FrameTiming = {
     /** The frame's own fields, or null when they take the stream's scan */
     fields: VideoFrameFields | null
     newFrame: boolean
-    /** The clock time the frame presents at, which picks the field a deinterlaced frame shows; a frame without one shows at its own time */
+    /** The clock time the frame presents at, which picks the field a deinterlaced frame shows and a display-rate draw's blend; a frame without one shows at its own time */
     targetTimeMicroseconds: number | null
     timestampMicroseconds: number
     videoEpoch: number | null
@@ -663,8 +687,26 @@ function areDeinterlaceRequestsEqual(first: DeinterlaceRequest | null, second: D
     return first.bitDepth === second.bitDepth && first.frameHeight === second.frameHeight && first.frameWidth === second.frameWidth;
 }
 
-function areDrawsEqual(first: DeinterlaceDraw, second: DeinterlaceDraw | null): boolean {
-    return second !== null && first.fieldState === second.fieldState && first.timestampMicroseconds === second.timestampMicroseconds;
+function areDrawsEqual(first: PresentationDraw, second: PresentationDraw | null): boolean {
+    return second !== null
+        && first.fieldState === second.fieldState
+        && first.timestampMicroseconds === second.timestampMicroseconds
+        && first.clockMicroseconds === second.clockMicroseconds;
+}
+
+/**
+ * Returns a display-rate plan's draw at a clock time: its history's newest frame, which its passes blend with the frame before it by the clock.
+ * Telemetry reports the frame the clock time falls in: the one before the newest until the clock reaches the newest.
+ * A frame's own draw and its redraws are built here alike, so a redraw at the same clock time is recognized as the one drawn.
+ */
+function getDisplayRateDraw(frames: DisplayRateFrames, clockMicroseconds: number): PresentationDraw {
+    const previousMicroseconds = frames.previousMicroseconds;
+    return {
+        clockMicroseconds,
+        fieldState: PRESENTATION_FIELD_STATE.none,
+        presentedTimeMicroseconds: previousMicroseconds !== null && clockMicroseconds < frames.newestMicroseconds ? previousMicroseconds : frames.newestMicroseconds,
+        timestampMicroseconds: frames.newestMicroseconds
+    };
 }
 
 type VisibleSize = Readonly<{ height: number; width: number }>;
@@ -1250,6 +1292,8 @@ export default class WebGPUPresenter {
     private canvasContext: GPUCanvasContext | null = null;
     private canvasFormat: GPUTextureFormat | null = null;
     private colorConfigurationRevision = 0;
+    // The rate the clock advanced at on the frame loop's last animation frame, 0 while it stood still, which scales the media time one refresh covers
+    private clockRate = 1;
     private configuredDevice: GPUDevice | null = null;
     private configuredOutput: PlannedOutput | null = null;
     // The route's built-in chain, which every plan builds on
@@ -1258,14 +1302,18 @@ export default class WebGPUPresenter {
     private deviceRecoveryAttempts = 0;
     private deviceResourceEpoch = 0;
     private decodedFramePushActive = false;
+    // Measures the display's refresh from the frame loop's animation frames; it outlives sessions, as the display does
+    private readonly displayRefresh = new DisplayRefresh();
+    // The newest frame in a display-rate plan's history and the one before it; null while the executor's history holds no frame
+    private displayRateFrames: DisplayRateFrames | null = null;
     // The host's deinterlacing choice, which outlives sessions
     private deinterlaceMode: DeinterlaceMode = DEFAULT_DEINTERLACE_MODE;
     // Mirrors the deinterlacing pass's history, so each draw knows which held frame shows which field
     private readonly deinterlaceTimeline = new DeinterlaceTimeline();
     // The session saw an interlaced frame, so its plans deinterlace whatever its stream's scan said
     private interlacedFrameSeen = false;
-    // The draw a redraw from history last presented, so another redraws only when another field or frame shows
-    private lastHistoryDraw: DeinterlaceDraw | null = null;
+    // The draw a submission last presented, so a redraw from history draws only when another field, frame, or clock time of a display-rate plan shows
+    private lastHistoryDraw: PresentationDraw | null = null;
     // The session's stream fields, which deinterlacing plans follow
     private videoFieldFacts: VideoStreamFields = UNKNOWN_VIDEO_STREAM_FIELDS;
     // The chroma the stream's decoder configuration declares, which the newest frame carried
@@ -1298,8 +1346,10 @@ export default class WebGPUPresenter {
     private pendingSubmissionValidation: PendingSubmissionValidation | null = null;
     // The running rebuild for changed plan inputs, which builds for the newest revision before it ends
     private planInputsApplication: Promise<void> | null = null;
-    // Advances whenever a plan input changes: the route, the device, the output, the preset, or a size a preset pass reads
+    // Advances whenever a plan input changes: the route, the device, the output, the preset, or a size or rate a preset pass reads
     private planRevision = 0;
+    // The display rate plans read as display.rate, which follows the measurement once it moves past DISPLAY_RATE_REPLAN_TOLERANCE; null before one
+    private plannedDisplayRate: number | null = null;
     private presentationLayoutDirty = true;
     // The host's preset, in preset order, which outlives sessions
     private presetPasses: readonly PresetPass[] = [];
@@ -1307,6 +1357,8 @@ export default class WebGPUPresenter {
     private renderSettingsData: ArrayBuffer | null = null;
     private resizeObserver: ResizeObserver | null = null;
     private sessionActive = false;
+    // The session's declared frame rate, which plans read as frame.rate
+    private streamFrameRate: number | null = null;
     private settings: RenderSettings = createDefaultRenderSettings();
     private surface: PresentationSurface | null = null;
     private submissionValidated = false;
@@ -1344,6 +1396,7 @@ export default class WebGPUPresenter {
         this.activeInputColorMetadata = null;
         this.activeInputMode = 'external-texture';
         this.activeRawFrameFormat = null;
+        this.clockRate = 1;
         this.colorConfigurationRevision += 1;
         this.decodedFramePushActive = false;
         this.setDesiredChainConfiguration(EXTERNAL_IDENTITY_CHAIN_CONFIGURATION);
@@ -1356,6 +1409,7 @@ export default class WebGPUPresenter {
         this.resetPresentationHistory();
         this.resetVideoFieldFacts();
         this.sessionActive = true;
+        this.streamFrameRate = null;
         this.settings = createDefaultRenderSettings();
         this.submissionValidated = false;
         this.surface = null;
@@ -1666,7 +1720,7 @@ export default class WebGPUPresenter {
             return;
         }
 
-        this.decodedFramePushActive = enabled;
+        this.setDecodedFramePushActive(enabled);
         if (enabled) {
             this.cancelFrameCallback();
         } else {
@@ -1677,8 +1731,10 @@ export default class WebGPUPresenter {
     /**
      * Takes ownership of one clock-selected decoded frame and closes it on every path.
      * This path does not require a native video-frame callback.
-     * targetTimeMicroseconds is the clock time the frame loop presents at, which picks the field a deinterlaced stream shows; without it a frame shows at its own time.
-     * A plan that deinterlaces takes frames one frame ahead of the clock (getFrameLookaheadMicroseconds) and shows the frame before the newest.
+     * targetTimeMicroseconds is the clock time the frame loop presents at, which picks the field a deinterlaced stream shows and the blend of a display-rate plan;
+     * without it a frame shows at its own time.
+     * A plan that deinterlaces takes frames one frame ahead of the clock (getFrameLookaheadMicroseconds) and shows the frame before the newest;
+     * a display-rate plan takes them one refresh ahead, so a frame that starts within the refresh is drawn with the one before it.
      */
     presentDecodedFrame(
         decodedFrame: DecodedPresentationFrame,
@@ -1743,7 +1799,7 @@ export default class WebGPUPresenter {
                 return false;
             }
 
-            this.decodedFramePushActive = true;
+            this.setDecodedFramePushActive(true);
             this.cancelFrameCallback();
             if (!submission) {
                 return false;
@@ -1801,6 +1857,7 @@ export default class WebGPUPresenter {
         this.changeDeinterlaceInputs((): void => {
             this.videoFieldFacts = configuration.videoFields ?? UNKNOWN_VIDEO_STREAM_FIELDS;
         });
+        this.streamFrameRate = configuration.frameRate ?? null;
         const installFailure = await this.installPreparedExecutor(preparedPipeline, pendingConfiguration);
         if (!this.isColorConfigurationCurrent(pendingConfiguration)) {
             return false;
@@ -2056,11 +2113,39 @@ export default class WebGPUPresenter {
     }
 
     /**
+     * Records an animation frame the frame loop presents in: its time, a DOMHighResTimeStamp in milliseconds, measures the display's refresh,
+     * and the rate the clock advances at, 0 while it stands still, scales the media time one refresh covers.
+     * Once the measured rate moves past DISPLAY_RATE_REPLAN_TOLERANCE from the rate plans read as display.rate, preset passes plan again with it.
+     */
+    recordAnimationFrame(timeMilliseconds: number, clockRate: number): void {
+        if (!Number.isFinite(clockRate) || clockRate < 0) {
+            throw new RangeError(`clock-rate: ${clockRate}`);
+        }
+        this.clockRate = clockRate;
+        this.displayRefresh.record(timeMilliseconds);
+        const interval = this.displayRefresh.getIntervalMilliseconds();
+        if (interval === null) {
+            return;
+        }
+        const rate = MILLISECONDS_PER_SECOND / interval;
+        const plannedRate = this.plannedDisplayRate;
+        if (plannedRate !== null && Math.abs(rate - plannedRate) <= plannedRate * DISPLAY_RATE_REPLAN_TOLERANCE) {
+            return;
+        }
+        this.plannedDisplayRate = rate;
+        this.replanForPresetFacts();
+    }
+
+    /**
      * Returns how far ahead of the clock the frame loop takes frames: while a plan deinterlaces, the newest held frame's duration, so the frame after it,
-     * which deinterlacing reads as the next frame, arrives when the clock reaches the newest; 0 otherwise.
-     * Presentation keeps the clock's time, so audio and video stay in step; decoding runs one frame further ahead.
+     * which deinterlacing reads as the next frame, arrives when the clock reaches the newest; while a plan draws at the display's rate, one refresh,
+     * so a frame that starts within a refresh is in history when the refresh draws; 0 otherwise.
+     * Presentation keeps the clock's time, so audio and video stay in step; decoding runs that much further ahead.
      */
     getFrameLookaheadMicroseconds(): number {
+        if (this.executorPlan?.displayRate) {
+            return Math.floor(this.getRefreshMicroseconds());
+        }
         if (!this.executorPlan?.deinterlace || this.deinterlaceMode === 'off') {
             return 0;
         }
@@ -2073,9 +2158,11 @@ export default class WebGPUPresenter {
     }
 
     /**
-     * Redraws from history alone when the clock reached another field or frame than the one shown: a deinterlaced frame's second field,
-     * or the newest frame once the clock reaches it without a frame after it; returns whether it drew.
-     * The frame loop calls it on every tick that takes no frame; without a deinterlacing plan it draws nothing.
+     * Redraws from history alone when the clock reached another field, frame, or refresh than the one shown: a deinterlaced frame's second field,
+     * the newest frame once the clock reaches it without a frame after it, or in a display-rate plan each refresh, whose passes blend by the clock;
+     * returns whether it drew.
+     * The frame loop calls it on every tick that takes no frame; a plan that neither deinterlaces nor draws at the display's rate draws nothing.
+     * A redraw never carries a new executor's validation, which a frame's submission does, so redraws leave no validation pending for the next frame.
      */
     presentHeldFields(generation: number, targetTimeMicroseconds: Microseconds): boolean {
         if (
@@ -2083,18 +2170,17 @@ export default class WebGPUPresenter {
             || this.fallbackLatched
             || this.pendingColorConfiguration?.generation === generation
             || this.pendingSubmissionValidation
+            || !this.submissionValidated
             || !this.hasReadyPresentationResources()
-            || !this.executorPlan?.deinterlace
-            || this.deinterlaceMode === 'off'
         ) {
             return false;
         }
-        const draw = this.deinterlaceTimeline.getDraw(targetTimeMicroseconds, this.deinterlaceMode);
+        const draw = this.getHistoryDraw(targetTimeMicroseconds);
         if (draw === null || areDrawsEqual(draw, this.lastHistoryDraw)) {
             return false;
         }
         try {
-            const submission = this.submitHistoryDraw(draw);
+            const submission = this.submitHistoryDraw(draw, targetTimeMicroseconds);
             if (!submission) {
                 return false;
             }
@@ -2109,6 +2195,42 @@ export default class WebGPUPresenter {
         } catch (error) {
             this.fallback(generation, 'frame-render-failed', `history-draw: ${getErrorMessage(error)}`);
             return false;
+        }
+    }
+
+    /** Returns what a draw from history shows at a clock time, or null when the plan draws nothing between frames or its history holds no frame. */
+    private getHistoryDraw(clockMicroseconds: number): PresentationDraw | null {
+        if (this.executorPlan?.displayRate) {
+            const frames = this.displayRateFrames;
+            return frames === null ? null : getDisplayRateDraw(frames, clockMicroseconds);
+        }
+        return this.executorPlan?.deinterlace ? this.getDeinterlaceDraw(clockMicroseconds) : null;
+    }
+
+    /** Returns the deinterlacing timeline's draw at a clock time, which shows the same until another field shows; null while the mode is off or history is empty. */
+    private getDeinterlaceDraw(clockMicroseconds: number): PresentationDraw | null {
+        if (this.deinterlaceMode === 'off') {
+            return null;
+        }
+        const draw = this.deinterlaceTimeline.getDraw(clockMicroseconds, this.deinterlaceMode);
+        return draw === null ? null : { ...draw, clockMicroseconds: null, presentedTimeMicroseconds: draw.timestampMicroseconds };
+    }
+
+    /** Returns the media time one display refresh covers: the measured refresh interval times the clock's rate, or 0 before a measurement or while the clock stands still. */
+    private getRefreshMicroseconds(): number {
+        const interval = this.displayRefresh.getIntervalMilliseconds();
+        return interval === null ? 0 : interval * MICROSECONDS_PER_MILLISECOND * this.clockRate;
+    }
+
+    /** Follows whether frames come from the frame loop, which display-rate passes need; a change plans again while a preset pass draws at the display's rate. */
+    private setDecodedFramePushActive(active: boolean): void {
+        if (this.decodedFramePushActive === active) {
+            return;
+        }
+        this.decodedFramePushActive = active;
+        if (this.presetPasses.some((presetPass: PresetPass): boolean => isPlannedPresetPass(presetPass) && presetPass.manifest.rate === 'display')) {
+            this.planRevision += 1;
+            void this.applyPlanInputs();
         }
     }
 
@@ -2947,7 +3069,10 @@ export default class WebGPUPresenter {
         }
     }
 
-    /** Returns the plan request of the route's chain and the planned preset passes: the canvas output, HDR while HDR output is active, and the best-known facts. */
+    /**
+     * Returns the plan request of the route's chain and the planned preset passes: the canvas output, HDR while HDR output is active, and the best-known facts.
+     * Display-rate passes plan while frames come from the frame loop, which draws between them.
+     */
     private createPlanRequest(device: GPUDevice, canvasFormat: GPUTextureFormat, presetPasses: readonly PresetPass[]): PlanRequest {
         const hdrOutput = this.isHDROutputActive();
         const deinterlace = this.getDeinterlaceRequest();
@@ -2955,6 +3080,7 @@ export default class WebGPUPresenter {
         return {
             chain: createBuiltinChain(withInterlacedChroma(withHDROutput(configuration, hdrOutput), deinterlace !== null)),
             deinterlace,
+            displayRateAvailable: this.decodedFramePushActive,
             device: {
                 features: device.features,
                 maximumTextureDimension: device.limits.maxTextureDimension2D
@@ -2971,13 +3097,17 @@ export default class WebGPUPresenter {
         return this.hdrOutputEnabled && isHDRSourceConfiguration(this.desiredChainConfiguration);
     }
 
-    /** Returns the plan facts the presenter knows: the last measured source and output sizes, 1x1 until a frame measures them. */
+    /**
+     * Returns the plan facts the presenter knows: the last measured source and output sizes, 1x1 until a frame measures them,
+     * the stream's declared frame rate, and the display's measured rate.
+     */
     private getPlanFacts(hdrOutput: boolean): PlanFacts {
         const layout = this.cachedPresentationLayout;
         const sourceHeight = layout ? Math.max(layout.videoHeight, UNKNOWN_PLAN_DIMENSION) : UNKNOWN_PLAN_DIMENSION;
         const sourceWidth = layout ? Math.max(layout.videoWidth, UNKNOWN_PLAN_DIMENSION) : UNKNOWN_PLAN_DIMENSION;
         return {
-            frameRate: null,
+            displayRate: this.plannedDisplayRate,
+            frameRate: this.streamFrameRate,
             hdrOutput,
             hdrSource: isHDRSourceConfiguration(this.desiredChainConfiguration),
             outputHeight: layout ? Math.max(layout.presentation.viewportHeight, UNKNOWN_PLAN_DIMENSION) : UNKNOWN_PLAN_DIMENSION,
@@ -3015,7 +3145,7 @@ export default class WebGPUPresenter {
         }
         this.passTextureCache?.retain(retainedTextures);
         // A new executor's history starts empty
-        this.resetDeinterlaceTimeline();
+        this.resetHeldFrames();
         if (this.canvasContext && !this.createAndConfigureCanvas()) {
             this.fallback(this.activeGeneration, this.initializationFailureReason, this.initializationFailureDetail);
         }
@@ -3046,7 +3176,7 @@ export default class WebGPUPresenter {
         // The texture blocks upload again when a later plan binds them
         this.passTextureCache?.destroy();
         this.passTextureCache = null;
-        this.resetDeinterlaceTimeline();
+        this.resetHeldFrames();
     }
 
     /** Creates a plan's executor over the uploads of its texture blocks, which the preset's passes hold and the device's cache keeps. */
@@ -3554,7 +3684,8 @@ export default class WebGPUPresenter {
     /**
      * Records one frame through the executor into the canvas and submits it once.
      * A new frame that does not follow the previous one in time first starts history over.
-     * A plan that deinterlaces takes the frame into its history, and shows the field of the held frame the frame's target time reaches.
+     * A plan that deinterlaces takes the frame into its history, and shows the field of the held frame the frame's target time reaches;
+     * a display-rate plan takes it as its history's newest frame, and draws it at its target time.
      */
     private submitFrame(
         source: PresentationFrameSource,
@@ -3586,20 +3717,39 @@ export default class WebGPUPresenter {
         return this.encodeSubmission(device, canvasContext, executor, layout, {
             fieldState: draw.fieldState,
             newFrame: timing.newFrame,
+            presentedTimeMicroseconds: draw.presentedTimeMicroseconds,
             source,
+            targetTimeMicroseconds: timing.targetTimeMicroseconds ?? timing.timestampMicroseconds,
             timestampMicroseconds: draw.timestampMicroseconds
         });
     }
 
     /**
      * Returns what a frame's submission shows: in a plan that deinterlaces, the frame enters the timeline as a new frame, and the draw is the field the
-     * frame's target time reaches; otherwise the frame itself.
+     * frame's target time reaches; in a display-rate plan, the frame becomes its history's newest, drawn at its target time; otherwise the frame itself.
      * A frame of another size than the plan's presents as it is, since its rows no longer match the plan's fields; a plan for its size follows.
      */
-    private prepareFrameDraw(source: PresentationFrameSource, timing: FrameTiming): DeinterlaceDraw {
+    private prepareFrameDraw(source: PresentationFrameSource, timing: FrameTiming): PresentationDraw {
+        const clockMicroseconds = timing.targetTimeMicroseconds ?? timing.timestampMicroseconds;
+        if (this.executorPlan?.displayRate) {
+            // A redrawn frame leaves history as it is, unless it is the first frame a new executor's history holds
+            const frames: DisplayRateFrames = timing.newFrame || this.displayRateFrames === null ?
+                { newestMicroseconds: timing.timestampMicroseconds, previousMicroseconds: this.displayRateFrames?.newestMicroseconds ?? null } :
+                this.displayRateFrames;
+            this.displayRateFrames = frames;
+            const draw = getDisplayRateDraw(frames, clockMicroseconds);
+            this.lastHistoryDraw = draw;
+            return draw;
+        }
+        const unchangedDraw: PresentationDraw = {
+            clockMicroseconds: null,
+            fieldState: PRESENTATION_FIELD_STATE.none,
+            presentedTimeMicroseconds: timing.timestampMicroseconds,
+            timestampMicroseconds: timing.timestampMicroseconds
+        };
         const deinterlace = this.executorPlan?.deinterlace ?? null;
         if (deinterlace === null) {
-            return { fieldState: PRESENTATION_FIELD_STATE.none, timestampMicroseconds: timing.timestampMicroseconds };
+            return unchangedDraw;
         }
         const visibleSize = getSourceVisibleSize(source);
         const fitsPlan = visibleSize.width === deinterlace.frameWidth && visibleSize.height === deinterlace.frameHeight;
@@ -3613,14 +3763,12 @@ export default class WebGPUPresenter {
                 timestampMicroseconds: timing.timestampMicroseconds
             });
         }
-        const draw = this.deinterlaceMode === 'off' ?
-            null :
-            this.deinterlaceTimeline.getDraw(timing.targetTimeMicroseconds ?? timing.timestampMicroseconds, this.deinterlaceMode);
+        const draw = this.getDeinterlaceDraw(clockMicroseconds);
         if (draw === null) {
-            return { fieldState: signalState, timestampMicroseconds: timing.timestampMicroseconds };
+            return { ...unchangedDraw, fieldState: signalState };
         }
         this.lastHistoryDraw = draw;
-        return { fieldState: draw.fieldState | signalState, timestampMicroseconds: draw.timestampMicroseconds };
+        return { ...draw, fieldState: draw.fieldState | signalState };
     }
 
     /** Returns a frame's fields: its own, or its stream's scan; null when both are unknown, so it presents as it is. */
@@ -3634,7 +3782,8 @@ export default class WebGPUPresenter {
         canvasContext: GPUCanvasContext,
         executor: PresentationExecutor,
         layout: CachedPresentationLayout,
-        frame: Pick<PresentationFrameInput, 'fieldState' | 'newFrame' | 'source' | 'timestampMicroseconds'>
+        frame: Pick<PresentationFrameInput, 'fieldState' | 'newFrame' | 'source' | 'targetTimeMicroseconds' | 'timestampMicroseconds'>
+            & Pick<PresentationDraw, 'presentedTimeMicroseconds'>
     ): FrameSubmission {
         const validateSubmission = !this.submissionValidated;
         if (validateSubmission) {
@@ -3647,9 +3796,11 @@ export default class WebGPUPresenter {
                 fieldState: frame.fieldState,
                 geometry: layout.presentation,
                 newFrame: frame.newFrame,
+                refreshMicroseconds: this.getRefreshMicroseconds(),
                 skippedFrameCount: 0,
                 source: frame.source,
                 target: canvasContext.getCurrentTexture().createView(),
+                targetTimeMicroseconds: frame.targetTimeMicroseconds,
                 timestampMicroseconds: frame.timestampMicroseconds
             });
             device.queue.submit([ commandEncoder.finish() ]);
@@ -3662,13 +3813,13 @@ export default class WebGPUPresenter {
 
         return {
             device,
-            presentedTimeMicroseconds: requireMicroseconds(frame.timestampMicroseconds, 'Presented frame time'),
+            presentedTimeMicroseconds: requireMicroseconds(frame.presentedTimeMicroseconds, 'Presented frame time'),
             validationResult: validateSubmission ? device.popErrorScope() : null
         };
     }
 
-    /** Records a draw from history alone, at the last frame's layout; returns null while the surface has no layout box. */
-    private submitHistoryDraw(draw: DeinterlaceDraw): FrameSubmission | null {
+    /** Records a draw from history alone at a clock time, at the last frame's layout; returns null while the surface has no layout box. */
+    private submitHistoryDraw(draw: PresentationDraw, clockMicroseconds: number): FrameSubmission | null {
         const surface = this.surface;
         const canvas = this.canvas;
         const canvasContext = this.canvasContext;
@@ -3685,7 +3836,9 @@ export default class WebGPUPresenter {
         return this.encodeSubmission(device, canvasContext, executor, layout, {
             fieldState: draw.fieldState,
             newFrame: false,
+            presentedTimeMicroseconds: draw.presentedTimeMicroseconds,
             source: null,
+            targetTimeMicroseconds: clockMicroseconds,
             timestampMicroseconds: draw.timestampMicroseconds
         });
     }
@@ -3714,7 +3867,7 @@ export default class WebGPUPresenter {
             && elapsedMicroseconds > HISTORY_DISCONTINUITY_FRAME_DURATIONS * previousDuration;
         if (epochChanged || elapsedMicroseconds < 0 || jumped) {
             executor.resetHistory();
-            this.resetDeinterlaceTimeline();
+            this.resetHeldFrames();
         }
     }
 
@@ -3742,12 +3895,16 @@ export default class WebGPUPresenter {
     private resetPresentationHistory(): void {
         this.lastNewFrame = null;
         this.executor?.resetHistory();
-        this.resetDeinterlaceTimeline();
+        this.resetHeldFrames();
     }
 
-    /** Starts the deinterlacing timeline over with the executor's history, which a new executor or a history reset empties. */
-    private resetDeinterlaceTimeline(): void {
+    /**
+     * Forgets the frames the executor's history holds, which a new executor or a history reset empties: the deinterlacing timeline,
+     * a display-rate plan's newest frames, and the last draw.
+     */
+    private resetHeldFrames(): void {
         this.deinterlaceTimeline.reset();
+        this.displayRateFrames = null;
         this.lastHistoryDraw = null;
     }
 
@@ -4011,13 +4168,16 @@ export default class WebGPUPresenter {
         this.cachedPresentationLayout = layout;
         this.presentationLayoutDirty = false;
         if (!cachedLayout || !layoutPlanSizesMatch(cachedLayout, layout)) {
-            this.replanForLayoutSizes();
+            this.replanForPresetFacts();
         }
         return layout;
     }
 
-    /** Replans for new output or source sizes while preset passes take part in plans, whose sizes and conditions read them; default plans never depend on sizes. */
-    private replanForLayoutSizes(): void {
+    /**
+     * Replans for new facts, output or source sizes or the display's rate, while preset passes take part in plans, whose sizes and conditions read them;
+     * default plans never depend on them.
+     */
+    private replanForPresetFacts(): void {
         if (!this.presetPasses.some(isPlannedPresetPass)) {
             return;
         }
