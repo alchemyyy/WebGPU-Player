@@ -22,12 +22,11 @@ impl ST2094_10DmData {
             ..Default::default()
         };
 
-        // The SEI carries no static block state and no trailer after its metadata
+        // The SEI carries no static block state
         if meta.metadata_refresh_flag {
             meta.dm_data = DmData::parse::<CmV29DmData>(
                 reader,
                 false,
-                0,
                 &mut ExtensionBlockCounts::default(),
             )?;
         }

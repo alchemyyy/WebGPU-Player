@@ -13,6 +13,12 @@ mod emdf;
 pub const ITU_T35_DOVI_RPU_PAYLOAD_HEADER: &[u8] =
     &[0x00, 0x3B, 0x00, 0x00, 0x08, 0x00, 0x37, 0xCD, 0x08];
 const ITU_T35_DOVI_RPU_PAYLOAD_HEADER_LEN: usize = ITU_T35_DOVI_RPU_PAYLOAD_HEADER.len();
+// FFmpeg's bounds on the EMDF payload size, and the 17 bits it requires after the payload:
+// emdf_payload_id 0, then protection_length_primary 1 and protection_length_secondary 0 with
+// their 8-bit protection_bits_primary of 0
+const MINIMUM_EMDF_PAYLOAD_SIZE: usize = 6;
+const MAXIMUM_EMDF_PAYLOAD_SIZE: usize = 512;
+const EMDF_PROTECTION: u32 = 0x400;
 
 /// Parse AV1 ITU-T T.35 metadata OBU into a `DoviRpu`
 /// The payload is extracted out of the EMDF wrapper
@@ -60,7 +66,12 @@ pub(crate) fn convert_av1_rpu_payload_to_regular(data: &[u8]) -> Result<Vec<u8>>
     ensure!(itu_t_t35_terminal_provider_oriented_code == 0x800);
 
     let emdf_payload_size = parse_emdf_container(&mut reader)?;
-    // As in FFmpeg, the payload must fit the remaining data before its coded size sizes a buffer
+    // FFmpeg validates the size to 6 through 512 bytes, and the payload must fit the remaining
+    // data before its coded size sizes a buffer
+    ensure!(
+        (MINIMUM_EMDF_PAYLOAD_SIZE..=MAXIMUM_EMDF_PAYLOAD_SIZE).contains(&emdf_payload_size),
+        "EMDF payload size {emdf_payload_size} is outside {MINIMUM_EMDF_PAYLOAD_SIZE} to {MAXIMUM_EMDF_PAYLOAD_SIZE}"
+    );
     ensure!(
         emdf_payload_size as u64 * 8 <= reader.available()?,
         "EMDF payload size {emdf_payload_size} exceeds the remaining data"
@@ -69,6 +80,14 @@ pub(crate) fn convert_av1_rpu_payload_to_regular(data: &[u8]) -> Result<Vec<u8>>
     converted_buf[0] = 0x19;
 
     reader.read_bytes(&mut converted_buf[1..])?;
+
+    // The payload ID that ends the payloads and the protection lengths, as FFmpeg validates them;
+    // what follows them is ignored
+    let emdf_protection = reader.read::<17, u32>()?;
+    ensure!(
+        emdf_protection == EMDF_PROTECTION,
+        "EMDF protection {emdf_protection:#X} is not {EMDF_PROTECTION:#X}"
+    );
 
     Ok(converted_buf)
 }
