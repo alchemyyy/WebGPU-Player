@@ -257,7 +257,7 @@ describe('ColorPipeline', () => {
 
     it('perceptually compresses BT.2020 primaries without hard channel clipping', () => {
         const encoded100Nits = applyPQOETF(100);
-        const settings = createHDRToSDRRenderSettings();
+        const settings = createHDRToSDRRenderSettings({ toneMapping: { operator: 'spline' } });
         const metadata = createPQColorMetadata();
         const mappedRed = processEncodedRGB([ encoded100Nits, 0, 0 ], metadata, settings);
         const mappedGreen = processEncodedRGB([ 0, encoded100Nits, 0 ], metadata, settings);

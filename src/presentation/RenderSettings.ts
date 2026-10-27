@@ -71,7 +71,7 @@ const DEFAULT_TONE_MAPPING_SETTINGS: ToneMappingSettings = {
     desaturationStrength: 0.25,
     exposure: 0,
     inputPeakNits: 1_000,
-    operator: 'spline',
+    operator: 'reinhard',
     outputPeakNits: 100,
     paperWhiteNits: 203
 };

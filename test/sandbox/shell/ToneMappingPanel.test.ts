@@ -12,9 +12,9 @@ const RAISED_EXPOSURE = 1.5;
 const PRESENTER_EXPOSURE = 2;
 // A value typed into the exposure box before it is committed
 const TYPED_EXPOSURE = 3;
-// An operator other than the default spline, and its option's label
-const OTHER_OPERATOR: ToneMapOperator = 'reinhard';
-const OTHER_OPERATOR_LABEL = 'Reinhard';
+// An operator other than the default Reinhard, and its option's label
+const OTHER_OPERATOR: ToneMapOperator = 'spline';
+const OTHER_OPERATOR_LABEL = 'Spline';
 const DEFAULT_BUTTON_SELECTOR = '.default-button';
 const DEFAULT_SETTINGS: HDRToSDRRenderSettings = createHDRToSDRRenderSettings();
 // One nit above the default input peak, which the engine rejects for paper white
