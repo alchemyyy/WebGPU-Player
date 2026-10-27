@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { MAX_GPU_DECODE_PACKET_CREDITS } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 import { secondsToMicroseconds, type Microseconds } from 'webgpu-player/MediaTime';
 
 import { CODEC_VECTOR_ASSETS_DIRECTORY } from '../helpers/enginePaths';
@@ -18,6 +19,7 @@ import {
     startDecodeWorker,
     type FakeWorkerScope
 } from '../helpers/decodeWorkerHarness';
+import { returnPacketCredits } from '../helpers/mpeg4Vectors';
 
 // The FFmpeg-made vectors of scripts/codec_vector_assets/generate_AVI_demux_vectors.py
 const AVI_VECTOR_DIRECTORY = join(CODEC_VECTOR_ASSETS_DIRECTORY, 'avi');
@@ -40,7 +42,10 @@ const HEVC_CODEC_PREFIX = 'hev1.';
 const STREAM_HEADER_FOURCC = 'strh';
 const STREAM_HEADER_LENGTH_OFFSET = 8 + 32;
 const INCOMPLETE_INDEX_DECLARED_FRAME_COUNT = 10_000;
-const MPEG4_MESSAGE = 'The selected video codec has no decode route: mpeg4';
+const MPEG4_FOURCC = 'XVID';
+const BITMAP_INFO_HEADER_BYTE_LENGTH = 40;
+const FOURCC_OFFSET = 16;
+const FOURCC_BYTE_LENGTH = 4;
 const INCOMPLETE_INDEX_MESSAGE = 'The selected AVI video track outruns its index: avi-index-incomplete';
 // Each packet's presentation time in frames, in decode order, as FFprobe's best-effort timestamps give the same pictures (AVIDemux.test.ts)
 const H264_PRESENTATION_FRAMES = [ 2, 6, 4, 3, 5, 7, 8, 12, 10, 9, 11, 13 ];
@@ -230,17 +235,32 @@ describe('the playback worker on AVI', () => {
         expect(frameTimes[0]).toBeLessThanOrEqual(toFrameMicroseconds(HEVC_LEADING_PICTURE_FRAME));
     });
 
-    it.each([
-        [ MPEG4_FILE_NAME, MPEG4_MESSAGE ],
-        [ INCOMPLETE_INDEX_FILE_NAME, INCOMPLETE_INDEX_MESSAGE ]
-    ])('refuses %s with the check that failed', async (fileName: string, message: string) => {
+    it('routes MPEG-4 Part 2 from AVI to its decoder package, behind a BITMAPINFOHEADER of its FourCC, one packet per frame', async () => {
         const workerScope = await startDecodeWorker(MEDIA_FILES);
-        const request = createWorkerStartRequest(fileName);
+        returnPacketCredits(workerScope);
+
+        const responses = await decodeToEnd(workerScope, createWorkerStartRequest(MPEG4_FILE_NAME, {
+            frameCredits: MAX_GPU_DECODE_PACKET_CREDITS,
+            gpuVideoCodec: 'mpeg4',
+            rawVideoFrameFormat: 'I420',
+            videoDecoderBackend: 'gpu',
+            videoOutputMode: 'frame-pool'
+        }));
+
+        const codecPrivate = new Uint8Array(getReadyResponse(responses).codecPrivate ?? new ArrayBuffer(0));
+        expect(codecPrivate.byteLength).toBeGreaterThanOrEqual(BITMAP_INFO_HEADER_BYTE_LENGTH);
+        expect(String.fromCharCode(...codecPrivate.subarray(FOURCC_OFFSET, FOURCC_OFFSET + FOURCC_BYTE_LENGTH))).toBe(MPEG4_FOURCC);
+        expect(responses.filter(response => response.type === 'packet')).toHaveLength(VIDEO_FRAME_COUNT);
+    });
+
+    it('refuses an AVI video track that outruns its index', async () => {
+        const workerScope = await startDecodeWorker(MEDIA_FILES);
+        const request = createWorkerStartRequest(INCOMPLETE_INDEX_FILE_NAME);
 
         workerScope.dispatchRequest(request);
         await workerScope.waitForStopped(request.generation);
 
-        expect(workerScope.responses).toContainEqual({ failureKind: 'source-unsupported', generation: request.generation, message, type: 'error' });
+        expect(workerScope.responses).toContainEqual({ failureKind: 'source-unsupported', generation: request.generation, message: INCOMPLETE_INDEX_MESSAGE, type: 'error' });
         expect(getFrameResponses(workerScope.responses)).toEqual([]);
     });
 });
