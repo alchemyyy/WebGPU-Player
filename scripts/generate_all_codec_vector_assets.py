@@ -31,6 +31,7 @@ GENERATOR_STEPS: Final = (
     GeneratorStep("generate_truehd_capability_vectors.py", ("--regenerate-sources",)),
     GeneratorStep("generate_seven_point_one_downmix_reference.py"),
     GeneratorStep("generate_HEVC_range_extension_vectors.py"),
+    GeneratorStep("generate_AV1_raw_format_vectors.py"),
     GeneratorStep("generate_mpeg2_decoder_vectors.py"),
     GeneratorStep("generate_jpeg2000_decoder_vectors.py"),
     GeneratorStep("generate_av1_decoder_vectors.py"),

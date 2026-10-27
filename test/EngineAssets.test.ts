@@ -11,6 +11,7 @@ import {
     type EngineLibraryPath,
     type EngineWorkerPath
 } from 'webgpu-player/EngineAssets';
+import { AV1_RAW_FORMAT_VARIANTS } from 'webgpu-player/capability/AV1RawFormatCapabilities';
 import { HEVC_RANGE_EXTENSION_VARIANTS } from 'webgpu-player/capability/HEVCRangeExtensionCapabilities';
 
 import { loadLibraryAssets } from './helpers/libraryAssets';
@@ -56,6 +57,12 @@ describe('engine asset manifest', () => {
     it('covers every HEVC range-extension qualification stream', () => {
         for (const variant of HEVC_RANGE_EXTENSION_VARIANTS) {
             expect(ENGINE_LIBRARY_PATHS).toContain(`webgpu-player/hevc-rext/${variant}.bin`);
+        }
+    });
+
+    it('covers every AV1 raw-format qualification stream', () => {
+        for (const variant of AV1_RAW_FORMAT_VARIANTS) {
+            expect(ENGINE_LIBRARY_PATHS).toContain(`webgpu-player/av1-raw/${variant}.bin`);
         }
     });
 
