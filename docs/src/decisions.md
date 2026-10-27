@@ -41,6 +41,13 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
   A run now starts every selected probe's downloads at once and each probe decodes only once its own are done; decoding stays one probe at a time.
   Worker scripts and glue were warmed in the HTTP cache rather than spawned early, so no worker or compile competed with a running probe's real-time-factor measurement.
   The exact probes and their measurements left with the CPU decoders (10-13), so only the range-extension probes download vectors, and nothing is warmed.
+- Probes warm in idle time and their verdicts persist per fingerprint (10-27).
+  Even per item, a page's first negotiation waited for its probes, about 2.6 s cold on some clients, and every page load paid it again.
+  A warm-up competes with browsing, so each background step waits for an idle period with a 2 s timeout, for no playback, and for 10 s after a negotiation, the time its playback takes to start; its downloads are low priority.
+  A negotiation promotes a background probe it needs and never waits behind more than the one background step in the queue; a background timeout halts only the background, so it never poisons a negotiation's probes.
+  Clients that ask to save data or have fewer than four threads get no warm-up, since speculative work costs them most; their stored verdicts still rerun after use.
+  Only verdicts are stored, keyed by a fingerprint of the host build, the adapter, and the full browser and OS versions, because the user agent alone carries only a major version and a frozen OS.
+  What no fingerprint shows, a driver or codec pack change, the acceleration setting, or a software fallback after a GPU process crash, is caught by rerunning each stored verdict after use and by clearing the store when a start it may have admitted fails before its first frame.
 - AVI carries only what the fork's AVI demuxer and the engine's routes play (10-15).
   The rule takes H.264, HEVC, VP8, VP9, and AV1 with AAC, MP3, AC-3, FLAC, Vorbis, and the PCM formats WAVEFORMATEX maps, all checked against FFmpeg-made AVI vectors.
   AVI times its chunks in decode order and keeps no presentation times, so HEVC stayed out at first, since the owned HEVC path presents packets as stamped, and on WebKit, whose sample sink orders decoded frames by their packets' timestamps, eligibility refused H.264 that could code B-frames (10-16).

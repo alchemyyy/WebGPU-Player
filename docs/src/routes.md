@@ -60,8 +60,42 @@ A mask of 0, or none, lays channels out by their count; a mask the output stage 
   At eligibility, the host keeps the negotiated result when `hasProbedCustomDecodeSelection` says it covers the played source, and otherwise probes that source.
 - A range-extension probe downloads its vector before its decode timeout starts, under its own 30 s bound (`capability/CapabilityAssetLoading.ts`), so a slow link never reads as a slow decoder or trips the queue's timeout.
   A download that fails with a network error, 408, 429, or 5xx is retried after 250 ms and again after 1 s, inside the same 30 s bound; any other HTTP failure, or the bound ending, is final and reports `asset-unavailable` with an unknown status.
-- Each probe is one module-level promise for the page's lifetime and is never invalidated, so a later item runs only the probes no earlier item ran.
-  `SerializedHeavyCapabilityProbeScheduler` runs the heavy probes one at a time, audio first; after one times out, later heavy probes report a timeout until the page reloads.
+- Each probe is one promise per page, so a later item runs only the probes no earlier item ran.
+  It is dropped only when the store clears a stored verdict it holds, or replaced when a background rerun reaches a new verdict.
+  `SerializedHeavyCapabilityProbeScheduler` runs the heavy probes one at a time, audio first; after one a negotiation started times out, later heavy probes report a timeout until the page reloads.
+
+### Background probes
+
+A host may start the probes before its first negotiation with `warmCustomDecodeCapabilities()`, and tells the engine when media plays with `configureCustomDecodeCapabilityBackground({ isPlaybackActive })`.
+
+- The warm-up runs every probe without a page result or stored verdict, one probe after another, in the order a full run starts them.
+  A client whose `navigator.connection.saveData` is set, or whose `navigator.hardwareConcurrency` is below 4, gets no warm-up.
+- Before a background probe starts, and before each of its heavy steps joins the queue, it waits for its turn: a `requestIdleCallback` with a 2 s timeout (`BACKGROUND_PROBE_IDLE_TIMEOUT_MILLISECONDS`), then no media playing, no negotiation under way, and none settled in the last 10 s (`BACKGROUND_PROBE_NEGOTIATION_HOLD_MILLISECONDS`); a held step looks again after 1 s.
+  Without `requestIdleCallback`, as on WebKit, the wait is the whole 2 s.
+  The wait comes before a step joins the queue, so it never counts against the step's 2 s timeout, and it never holds the queue for a negotiation's steps.
+- A background probe downloads its range-extension vector with `fetch(..., { priority: 'low' })`, retries included.
+- `probeCustomDecodeCapabilities` promotes a background probe it needs: its remaining steps skip the wait, and its later downloads take the default priority; a download already under way keeps its priority.
+  A probe no background run started runs at once, as without a warm-up, so a negotiation waits for at most the one background step already in the queue.
+- A background step that times out marks only its run and halts the background for the page: no later background step runs, and the run's result, like any background result with a `probe-timeout` part, is discarded rather than kept as the page's result.
+  The scheduler's timeout poison stays unset, and a negotiation that needs the probe runs it again.
+
+### Stored verdicts
+
+`capability/CapabilityProbeStore.ts` keeps verdicts across page loads and browser restarts, in one localStorage entry, `webgpu-player-capability-probe-verdicts`.
+
+- A host names its build with `configureCapabilityProbeStore({ buildKey })`, as it calls `configureEngineAssets`; until then nothing is read or written.
+- The entry holds a schema version (`CAPABILITY_PROBE_STORE_SCHEMA_VERSION`), the fingerprint, the time of its last write, and each probe's result by its `CustomDecodeProbe` name.
+- The fingerprint is the build key, the default adapter's `info`, its sorted `features`, and its `limits`, `navigator.userAgent`, and Chromium's `getHighEntropyValues(['fullVersionList', 'platformVersion'])`, compared as JSON with sorted keys.
+  A fingerprint that cannot be read within 2 s disables the store for the page.
+- An entry of another schema or fingerprint is a miss, and the next write replaces it, so an update leaves no other entry behind.
+- A result is written only when every status in it is `supported` or `unsupported`; one with any `unknown` or `not-probed` part, from a timeout, an exception, or a missing API, is not.
+  Writes merge, so the video probes of each item a page negotiates join the entry.
+- `CustomDecodeCapabilityProbe` reads a probe's stored verdict before running it.
+  A hit answers at once and schedules the probe to run again in the background, which overwrites the stored verdict and the page's result when it reaches a verdict; a rerun that reaches none leaves both.
+- A start that falls back with `decode-failed` or `startup-timeout` before its first frame clears the entry and the stored verdicts the page holds, when the page used any (`clearAfterStartFailure`, from `CustomPlaybackController`), so the renegotiation probes again.
+  Driver updates, OS codec packs, the hardware acceleration setting, and Chrome's software fallback after a GPU process crash change no fingerprint.
+- `clearStoredCapabilityProbeVerdicts()` clears it, and `readStoredCapabilityProbeVerdictState()` returns the stored fingerprint, write time, age, and probe names.
+- The MSE AC-3/E-AC-3 probe and the GPU presentation authorizations are not stored: the first is not a `CustomDecodeProbe`, and the second are measured on the presenter's device, which keeps them for that device.
 
 ## Route catalog
 

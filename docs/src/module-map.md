@@ -66,6 +66,7 @@ The optional user passes a host may offer are pass projects in `wgpup/`, outside
 - `CustomPlaybackEligibility.ts`: per-session route choice, the player-selection prefilter, `hasEligibleCustomVideoRoute` for item-scoped negotiation, the codecs whose interlaced streams a route presents (`presentsInterlacedVideo`), and the video and audio codecs a playback decodes (`getGPUVideoDecodeTarget`, `getPlaybackAudioCodec`), which a host fetches packages for.
 - `CustomDecodeCapabilities.ts`: the cached orchestrator of every capability probe, the per-item probe selection, and the codec lists, with the video codecs only a decoder package decodes (`CUSTOM_PACKAGE_VIDEO_CODECS`).
 - `CapabilityAssetLoading.ts`: the bounded, retried download of a probe's served vectors.
+- `CapabilityProbeStore.ts`: the probe verdicts kept in localStorage across page loads, their fingerprint, and the clear a failed start or a host calls.
 - `CustomPlaybackRuntime.ts`: runtime feature detection with failure reasons.
 - `H264ProfileCapabilities.ts`: the per-profile H.264 decoded-output probe and Jellyfin's profile names.
 - `HEVCRangeExtensionCapabilities.ts`: the nine range-extension variant definitions and the stream metadata resolver.
