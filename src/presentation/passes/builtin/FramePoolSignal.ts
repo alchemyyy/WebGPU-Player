@@ -166,6 +166,17 @@ const SAMPLE_INTERLACED_CHROMA_WGSL = createInterlacedChromaReadWGSL(
     (column: string, row: string): string => `framePoolLoadSample(planeIndex, vec2i(${column}, ${row}))`
 );
 
+/** The function the frame pool's sampling WGSL declares, which returns a slot's bilinear YUV codes at a coordinate normalized over the coded frame. */
+export const FRAME_POOL_YUV_SAMPLING_FUNCTION = 'framePoolSampleYUV';
+
+/**
+ * Returns the WGSL that samples the bound slot through its layout uniform as the frame pool signal does, progressively, with 4:2:0 chroma at the stream's location:
+ * the function FRAME_POOL_YUV_SAMPLING_FUNCTION names and those it calls.
+ */
+export function createFramePoolYUVSamplingWGSL(chromaLocation: ChromaLocation | null): string {
+    return joinWGSL([ LOAD_SAMPLE_WGSL, SAMPLE_PLANE_WGSL, createChromaShiftWGSL(chromaLocation), SAMPLE_YUV_WGSL ]);
+}
+
 /**
  * Returns the signal step that reads a frame pool slot: a bilinear sample of the slot's planes at a coordinate normalized over the coded frame, converted to 'source' RGB.
  * It binds the 'frame-pool' resource, whose framePool and framePoolLayout PassResources declares, so the built-in color functions apply unchanged.

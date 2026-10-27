@@ -7,6 +7,7 @@ import { isGPUDecoderOutputFormat } from '../decode/video/gpu/GPUDecodeFormats';
 import { getGPUDecoderParserModule } from '../decode/video/gpu/GPUDecoderParser';
 import { createGPUDecodeStreamFacts } from '../decode/video/gpu/GPUFramePool';
 import type { GPUVideoDecoderSelection } from '../decode/video/gpu/GPUVideoDecoderCatalog';
+import type { TransferableDolbyVisionEncodedFrameMetadata } from '../demux/dolby-vision/DolbyVisionEncodedMetadataProtocol';
 import type { HDR10PlusFrameMetadata } from '../demux/hdr/HDR10PlusMetadata';
 import type { VideoChromaFormat } from '../demux/VideoChromaFormat';
 import GPUVideoDecodeFeed, {
@@ -494,8 +495,8 @@ function validateGPUVideoDecodeStartOptions(options: CustomDecodeSessionStartOpt
     if (framePool && !gpuVideoDecodeAvailable) {
         throw new Error('Frame-pool custom decode requires a GPU decode session factory');
     }
-    if (framePool && (options.dolbyVisionProfile !== null || options.neutralizeHDRColorMetadata)) {
-        throw new TypeError('Frame-pool custom decode presents planes without Dolby Vision reconstruction or native color handling');
+    if (framePool && options.neutralizeHDRColorMetadata) {
+        throw new TypeError('Frame-pool custom decode presents planes without native color handling');
     }
 }
 
@@ -1719,7 +1720,7 @@ export default class CustomDecodeSession {
             format,
             maximumPictureSize: message.maximumPictureSize ?? null,
             stream: createGPUDecodeStreamFacts(message.codedWidth, message.codedHeight, format)
-        }, { displayHeight: message.displayHeight, displayWidth: message.displayWidth }, generationRecord.videoChromaFormat);
+        }, { displayHeight: message.displayHeight, displayWidth: message.displayWidth }, generationRecord.videoChromaFormat, generationRecord.startRequest.dolbyVisionProfile !== null);
         return true;
     }
 
@@ -1758,6 +1759,7 @@ export default class CustomDecodeSession {
         feed.queuePacket({
             data: message.data,
             durationMicroseconds: message.durationMicroseconds,
+            encodedDolbyVisionMetadata: message.encodedDolbyVisionMetadata ?? null,
             fields: message.fields ?? null,
             format: message.format ?? null,
             HDR10PlusMetadata: message.HDR10PlusMetadata ?? null,
@@ -1781,6 +1783,7 @@ export default class CustomDecodeSession {
             return;
         }
         this.queueDecodedFrame(generationRecord, presentationFrame);
+        this.recordDolbyVisionMetadata(presentationFrame.dolbyVision?.encodedMetadata);
         this.recordHDR10PlusMetadata(presentationFrame.HDR10PlusMetadata);
         this.emitReadyEventIfMediaReady(generationRecord);
     }
@@ -2186,7 +2189,7 @@ export default class CustomDecodeSession {
         }
 
         this.queueDecodedFrame(generationRecord, createDecodedPresentationFrame(message, generationRecord.videoEpoch, generationRecord.videoChromaFormat));
-        this.recordDolbyVisionMetadata(message);
+        this.recordDolbyVisionMetadata(message.encodedDolbyVisionMetadata);
         this.recordHDR10PlusMetadata(message.HDR10PlusMetadata);
         this.emitReadyEventIfMediaReady(generationRecord);
     }
@@ -2225,8 +2228,7 @@ export default class CustomDecodeSession {
         });
     }
 
-    private recordDolbyVisionMetadata(message: DecodeWorkerFrameResponse): void {
-        const metadata = message.encodedDolbyVisionMetadata;
+    private recordDolbyVisionMetadata(metadata: TransferableDolbyVisionEncodedFrameMetadata | undefined): void {
         if (!metadata) {
             return;
         }

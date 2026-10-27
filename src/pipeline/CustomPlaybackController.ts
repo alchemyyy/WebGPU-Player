@@ -306,11 +306,10 @@ function validateVideoDecoderRoute(options: CustomPlaybackPlayOptions): void {
         case 'gpu':
             if (
                 options.videoOutputMode !== 'frame-pool'
-                || options.dolbyVisionProfile !== null
                 || options.neutralizeHDRColorMetadata
                 || options.nativeHDRTransfer !== null
             ) {
-                throw new TypeError('GPU video playback requires the frame-pool route without Dolby Vision reconstruction or native color handling');
+                throw new TypeError('GPU video playback requires the frame-pool route without native color handling');
             }
             return;
         default:

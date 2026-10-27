@@ -13,6 +13,7 @@ import {
     createRawDolbyVisionSignal,
     createRawYUVSignal
 } from './BuiltinSignals';
+import { createFramePoolDolbyVisionSignal } from './FramePoolDolbyVisionSignal';
 import { createFramePoolSignal } from './FramePoolSignal';
 
 // Dolby Vision reconstruction produces full-range BT.2020 PQ, which the color track decodes
@@ -78,6 +79,14 @@ export function createBuiltinChain(configuration: BuiltinChainConfiguration): Bu
             return createColorTrackChain(
                 createFramePoolSignal(configuration.format, configuration.metadata, configuration.interlacedChroma === true, configuration.chromaLocation ?? null),
                 configuration.metadata,
+                configuration.settings,
+                configuration.hdrOutput
+            );
+        case 'frame-pool-dolby-vision':
+            // The signal reads the GPU decoder's BL slots, and the color track is the raw Dolby Vision route's
+            return createColorTrackChain(
+                createFramePoolDolbyVisionSignal(configuration.format, configuration.profile, configuration.chromaLocation ?? null),
+                DOLBY_VISION_OUTPUT_METADATA,
                 configuration.settings,
                 configuration.hdrOutput
             );

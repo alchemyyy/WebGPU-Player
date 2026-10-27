@@ -15,6 +15,7 @@ import type {
 import { selectGPUDecodeSessionStream } from 'webgpu-player/decode/video/gpu/GPUDecoderStreamFit';
 import type GPUVideoDecodeSession from 'webgpu-player/decode/video/gpu/GPUVideoDecodeSession';
 import type { GPUDecodedFrame } from 'webgpu-player/decode/video/gpu/GPUVideoDecodeSession';
+import type { GPUDecoderOutputFormat } from 'webgpu-player/decode/video/gpu/GPUDecodeFormats';
 
 export const FAKE_GPU_DECODER_NAME = 'Fake I420';
 export const FAKE_GPU_SLOT_COUNT = 4;
@@ -54,7 +55,11 @@ export class FakeGPUVideoDecodeSession {
     // The packet whose work is submitting, and its slices left
     private slicedPacket: { packet: GPUDecodePacket, remainingSliceCount: number } | null = null;
 
-    constructor(private readonly stream: GPUDecodeStreamFacts, private readonly queue: ControlledQueue) {
+    constructor(
+        private readonly stream: GPUDecodeStreamFacts,
+        private readonly queue: ControlledQueue,
+        readonly format: GPUDecoderOutputFormat = 'I420P10'
+    ) {
         this.pool = { layout: { codedHeight: stream.codedHeight, codedWidth: stream.codedWidth, slotCount: FAKE_GPU_SLOT_COUNT } };
     }
 
@@ -141,6 +146,7 @@ export class FakeGPUVideoDecodeSession {
         this.presentableFrames.push({
             droppedFrameCount: 0,
             durationMicroseconds: packet.durationMicroseconds,
+            encodedDolbyVisionMetadata: packet.encodedDolbyVisionMetadata ?? null,
             fields: packet.fields,
             frame: {
                 codedHeight: this.stream.codedHeight,
@@ -225,7 +231,7 @@ export function createFakeGPUVideoDecodeSessionFactory(
             maximumBufferByteLength,
             sessionRequest.fallbackPictureSize ?? null
         );
-        const session = new FakeGPUVideoDecodeSession(stream, queue);
+        const session = new FakeGPUVideoDecodeSession(stream, queue, sessionRequest.format);
         requests.push(sessionRequest);
         sessions.push(session);
         return Promise.resolve({

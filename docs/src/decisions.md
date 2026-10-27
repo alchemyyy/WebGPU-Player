@@ -136,7 +136,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   The worker still pairs a separate EL track to read its RPUs, and the presenter keeps its FEL composition for an EL decoder, which no route reaches.
 - 8-bit Main Dolby Vision reconstructed through the bundled decoder (10-08), until the CPU decoders left (10-13).
   Native HEVC Main decodes to hardware surfaces that no probe proves copyable, so an 8-bit Main base layer reconstructed from the bundled decoder's I420 planes, with the `I420:dovi-rpu-v1` key or the I420 dual-layer keys.
-  It now has no RPU route, and a declared base plays through the ordinary routes, a GPU decoder package's included, which reconstructs no RPU.
+  It had no RPU route until 10-27, when the frame-pool route began reconstructing an HEVC package's I420 frames; a declared base still plays through the ordinary routes where no package is offered.
 - 10-bit SDR has a raw route (10-08).
   AV1 Main and VP9 Profile 2 have no 10-bit VideoFrame route, and HEVC Main 10 has none without native decode, so 10-bit 4:2:0 SDR presents from raw I420P10 through the raw SDR keys.
   Those keys are BT.709 only, so BT.601 and BT.2020 SDR at 10 bits have no raw route.
@@ -414,9 +414,17 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
 - The pool takes the container's coded size rounded up to 64 (10-12).
   Containers declare the cropped picture, such as 1080 rows, while a decoder writes whole coding blocks, 1088 rows; the first header's conformance window then replaces the visible rectangle.
 - A decoder's vector, not a presentation authorization, vouches for its frames (10-12, 10-13).
-  The frame-pool route presents HDR whenever the host tone-maps it (`allowFramePoolHDR`).
+  The frame-pool route presents static HDR whenever the host tone-maps it (`allowFramePoolHDR`).
+  Its Dolby Vision reconstruction (10-27) is gated by the RPU route's own flags (`allowDolbyVision`, `allowDolbyVisionProfile4`, `allowDolbyVisionProfile7`) instead, which a host sets only while it tone-maps and once the raw route's key of the BL format authorized.
+  A paused draft (10-15) set `allowFramePoolHDR` for every Dolby Vision stream, which would have let a host's static HDR consent stand for an RPU authorization and widened the gate for streams without an RPU route; `allowFramePoolHDR` stays tied to static HDR alone.
   On 10-12 Auto offered a decoder only once its vector passed on the device, and the WGSL HEVC decoder declared no vector, so only a forced policy played it.
   Since 10-13 the host decides whether to verify a package before it offers it, and the HEVC decoder project's package carries the nine range extension vectors.
+- The frame-pool route reconstructs Dolby Vision through the raw route's key (10-27).
+  Its signal is the raw Dolby Vision signal's reconstruction text over the frame pool signal's read, so the raw route's base key of the BL format, whose authorization renders that reconstruction, authorizes it, and the decoder package's vector vouches for the read as for every frame-pool frame.
+  The route comes after the native and raw RPU routes and after a declared base's native and raw routes, and before that base's own GPU route, so native decode still wins and a package presents the RPU rather than the base.
+  A frame pool holds no EL, as no decoder decodes one, so Profiles 4 and 7 reconstruct from the BL alone as on the raw route; the paused draft's EL frame-pool binding was left out as code no route reaches.
+  Each frame carries its packet's parsed RPUs from the worker through the GPU decode session, and a repeat of the last good frame during a resync carries that frame's RPUs, since a missing RPU ends the route.
+  HEVC Main at 8 bits and AV1 Profile 10 reach it in the format the RPU route names, I420 and I420P10.
 - The WGSL HEVC decoder parses on the CPU (10-13).
   CABAC decodes each bin from the state the previous bin left, so a GPU parses a substream on one invocation, at about 200 ns a bin.
   On a 66 Mbit/s 2160p stream with 16 tiles, parsing on the GPU took about 100 ms a picture even with each tile on its own invocation, while everything after the syntax took 3 to 4 ms.

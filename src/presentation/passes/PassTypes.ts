@@ -332,6 +332,15 @@ export type BuiltinChainConfiguration =
         route: 'frame-pool'
         settings: RenderSettings
     }
+    | {
+        chromaLocation?: ChromaLocation | null
+        /** The format of the BL slots, which every frame of the route holds */
+        format: GPUDecoderOutputFormat
+        hdrOutput: boolean
+        profile: DolbyVisionReconstructionProfile
+        route: 'frame-pool-dolby-vision'
+        settings: HDRToSDRRenderSettings
+    }
     | { hdrOutput: boolean; route: 'external-dolby-vision'; settings: HDRToSDRRenderSettings }
     | {
         chromaLocation?: ChromaLocation | null

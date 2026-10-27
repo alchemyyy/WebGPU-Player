@@ -135,10 +135,11 @@ A host may start the probes before its first negotiation with `warmCustomDecodeC
       Single-layer routes (P5, P8, P10, P20) discard a signaled EL.
       No decoder decodes an EL, so dual-layer routes (P4, P7, HEVC only) reconstruct from the base layer alone: MEL is exact, and FEL presents its base layer.
       The worker still pairs a separate EL track to read its RPUs, and the presenter keeps its FEL composition for an EL decoder, which no route reaches.
-   4. The declared base layer (`getDolbyVisionBaseColorMetadata`), through the ordinary steps below.
+   4. The declared base layer (`getDolbyVisionBaseColorMetadata`), through the ordinary steps below, where a GPU decoder's RPU reconstruction (step 5 of this list) comes before the base's own GPU route.
       CCID 1 or 6 declares PQ, 4 HLG, and 2 SDR, never for P5 or a P20 that reconstructs as P5.
       An explicit ColorTransfer must agree with the CCID; VideoRange and VideoRangeType are ignored.
-   5. Otherwise the source is ineligible, with the reason from the reconstruction step.
+   5. Without a declared base, RPU reconstruction from a GPU decoder's frame pool (see [GPU decoders](#gpu-decoders)).
+   6. Otherwise the source is ineligible, with the reason from the reconstruction step.
 2. No color metadata: `metadata-unsupported`.
    `PresentationInput.parseVideoStreamColorMetadata` reads ColorTransfer, ColorPrimaries, ColorSpace, and ColorRange.
    A field that is `unknown`, `unspecified`, or `reserved` is absent and takes its transfer's default: BT.709 for SDR, BT.2020 for PQ and HLG, and limited range.
@@ -168,8 +169,13 @@ A package may carry a parser module (`//! parser:`), which the selection carries
 - The frame pool, the decoder's `state` and `buffer:`s, and its packet ring each fit the device's buffer limit (`maximumBufferByteLength`), the smaller of its largest buffer and its largest storage binding: the HEVC decoder project's package holds 29 slots, which in I420P10 at 3840x2176 is about 727 MB.
   `findGPUDecoderStreamFitFailure` checks them.
 
-HDR needs `allowFramePoolHDR`, which the host sets when it tone-maps.
-The route carries no Dolby Vision reconstruction or native color handling, so a compatible Dolby Vision base layer reaches it through step 1.4, and Profile 5 never does.
+Static HDR needs `allowFramePoolHDR`, which the host sets when it tone-maps.
+
+A Dolby Vision stream with an RPU route reconstructs on the route too, with `dolbyVisionProfile` set, when the host authorized that route (`allowDolbyVision`, `allowDolbyVisionProfile4`, or `allowDolbyVisionProfile7`, from the raw route's key of the BL format) and an offer writes the format the RPU route names: the range extension's own, I420 for HEVC Main, or I420P10 for HEVC Main 10 and AV1 Main at 10 bits.
+`allowFramePoolHDR` plays no part in it.
+The worker parses each packet's RPUs, as on the raw route, a separate EL track's included, and each frame carries its packet's RPUs through the GPU decode session to the presenter; a repeat of the last good frame carries that frame's.
+The presenter reconstructs the slot through the raw route's reconstruction (`FramePoolDolbyVisionSignal.ts`), gated by the same base key, and no frame pool holds an EL, so Profiles 4 and 7 reconstruct from their BL alone.
+`getGPUVideoDecodeTarget` names the RPU route's format, so a host fetches packages for a stream without a declared base.
 
 `hasEligibleCustomVideoRoute` holds no offers, so a `GPUVideoDecoderSummary` (`src/decode/video/gpu/GPUVideoDecoderCatalog.ts`) stands in for one, after the offers, and selects the route without a decoder.
 A summary names the package's codecs and output formats, and may carry the package's header and the buffer limit of the device a playback would decode on.

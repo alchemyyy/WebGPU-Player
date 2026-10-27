@@ -16,7 +16,7 @@ Resolution, level, frame rate, and bitrate are never gates.
 The route names are defined in [Routes](#routes), and the probe and authorization names in [Evidence](#evidence).
 
 Every HEVC row also falls back last to GPU, when the host offers a GPU decoder package whose header accepts the stream: the plain and range extension rows, and a Dolby Vision row's declared base.
-GPU reconstructs no Dolby Vision RPU, so it never plays a Dolby Vision row without a declared base.
+A Dolby Vision row with an RPU route also falls back to GPU-DV, RPU reconstruction from the package's frame pool, after its native and raw routes and its declared base's native and raw routes, and before that base's own GPU route; the authorization is the raw RPU route's key of the BL format.
 
 ## Plain HEVC
 
@@ -77,7 +77,7 @@ The engine reads the Dolby Vision configuration and the color fields; it ignores
 | P20, CCID 0 or none | Yes | VF-DV5 on the base view, then RAW-DV P5 | As P5 |
 | P5, P8, or P20 over Rext or a named alias | Yes | RAW-DV in the variant's exact format, then the declared base through RAW in that format | `hevcRangeExtensions[variant]` and `<format>:dovi-rpu-v1` |
 | P4 or P7 over Rext or a named alias | Yes | RAW-DV4 or RAW-DV7 with the BL in the variant's exact format, then the declared base through RAW in that format | `hevcRangeExtensions[variant]` and `<format>:dovi-profile4-base-v1` or `<format>:dovi-profile7-base-v1`; no decoder decodes the EL |
-| P4, P5, P7, P8, or P20 over 8-bit Main | Only with a declared base | The declared base through the ordinary routes, VF-SDR native for an SDR base; no RPU route, because no route reads 8-bit Main raw planes | As the declared base's row |
+| P4, P5, P7, P8, or P20 over 8-bit Main | Only on GPU, or with a declared base | GPU-DV in I420, then the declared base through the ordinary routes, VF-SDR native for an SDR base; no native route reads 8-bit Main raw planes | GPU-DV: a package the host offers in I420 and `I420:dovi-rpu-v1` (or the I420 dual-layer base key) |
 
 ## Dolby Vision over AV1
 
@@ -143,7 +143,7 @@ The decoder's and the parser's reports override the container's: an MPEG-2 or VC
 | --- | --- |
 | No color metadata | `metadata-unsupported` |
 | A Dolby Vision descriptor without Dolby Vision configuration fields | `metadata-unsupported` |
-| Dolby Vision over 8-bit Main without a declared base | `hdr-codec-unsupported`: no route reads 8-bit Main raw planes, and GPU reconstructs no RPU |
+| Dolby Vision over 8-bit Main without a declared base or an offered GPU decoder package | `hdr-codec-unsupported`: no native route reads 8-bit Main raw planes |
 | A Dolby Vision configuration without an integer profile, without the base layer flag, or with a CCID that is not a 4-bit integer; several video tracks other than a separate P7 pair | `video-track-unavailable` |
 
 ## Routes
@@ -161,7 +161,8 @@ The host maps it to a presenter input mode.
 | RAW | `raw-planes` in the exact format; `native` (WebCodecs `copyTo`) | `raw-yuv` | Also 10-bit SDR, through the BT.709 raw SDR keys. AV1 PQ also applies the static mastering metadata of its MDCV and CLL metadata OBUs |
 | RAW-DV | `raw-planes` in I420P10 for HEVC Main 10 and AV1, or a range-extension variant's exact format; `dolbyVisionProfile` 5 or 8 | `raw-dolby-vision` | RPU reconstruction. A P10 or P20 reports the profile it reconstructs as. A signaled EL is discarded |
 | RAW-DV7, RAW-DV4 | `raw-planes` with the BL in I420P10 or in a range-extension variant's exact format; `dolbyVisionProfile` 7 or 4 | `raw-dolby-vision`, Profile 7 or 4 | No decoder decodes the EL, so MEL reshapes exactly from the BL and FEL presents its base at the BL's depth: the HDR10 base for P7, and the SDR base exactly for P4 (limited BT.709, no tone mapping or dither). The FEL composition, which needs the FEL key and a paired I420P10 EL frame, waits for an EL decoder |
-| GPU | `frame-pool` in the stream's own format; `gpu`, with `gpuVideoDecoder` naming the package | `frame-pool` | The last fallback, through a GPU decoder package the host offers. No Dolby Vision reconstruction and no native color handling; HDR needs the host's `allowFramePoolHDR` |
+| GPU | `frame-pool` in the stream's own format; `gpu`, with `gpuVideoDecoder` naming the package | `frame-pool` | The last fallback, through a GPU decoder package the host offers. No native color handling; static HDR needs the host's `allowFramePoolHDR` |
+| GPU-DV | `frame-pool` in the RPU route's BL format; `gpu`, with `gpuVideoDecoder`; `dolbyVisionProfile` 4, 5, 7, or 8 | `frame-pool-dolby-vision` | RPU reconstruction of the package's BL slots, the raw route's reconstruction over the frame pool's read, gated by the raw route's base key and flags. No frame pool holds an EL, so P4 and P7 reconstruct from their BL as RAW-DV7 and RAW-DV4 do |
 
 [Eligibility and routes](routes.md#video-route-selection) gives the order in which they are tried.
 
@@ -240,5 +241,5 @@ Other conditions:
 ## Known issues
 
 - Firefox on Windows has no WebCodecs HEVC (see [Decisions](decisions.md#firefox)), so HEVC plays there only through GPU.
-  Dolby Vision then plays only a declared base, and Profile 5 does not play.
+  Dolby Vision then plays through GPU-DV, Profile 5 included, when the host offers the HEVC package and authorized the RPU route's key.
   Firefox decodes 10-bit AV1 to 8-bit `BGRX`, so no raw AV1 route, P10 included, qualifies there.

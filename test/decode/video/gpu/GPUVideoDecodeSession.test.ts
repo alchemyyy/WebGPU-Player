@@ -42,6 +42,10 @@ import {
     type GPUVideoDecodeRecovery
 } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
 import { createPictureFieldsWord, type VideoFrameFields } from 'webgpu-player/decode/video/VideoFields';
+import {
+    DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION,
+    type TransferableDolbyVisionEncodedFrameMetadata
+} from 'webgpu-player/demux/dolby-vision/DolbyVisionEncodedMetadataProtocol';
 import { createGPUFramePoolLayout, getGPUFramePoolSlotCount } from 'webgpu-player/decode/video/gpu/GPUFramePool';
 import GPUVideoDecodeSession, { type GPUDecodedFrame } from 'webgpu-player/decode/video/gpu/GPUVideoDecodeSession';
 
@@ -1616,6 +1620,37 @@ describe('GPUVideoDecodeSession', () => {
             expect(session.takeRecoveries()).toEqual([ { code: 'resynced', errorName: RESYNCED_ERROR_NAME, value: FAILING_VALUE } ]);
             // Every hold ended: only the key packet's picture and the one after it remain the decoder's references
             expect(session.getFreeSlotCount()).toBe(session.pool.layout.slotCount - 2);
+        });
+
+        it('gives a frame its packet\'s Dolby Vision RPUs, and a repeat of the last good frame that frame\'s', async () => {
+            const device = new MockGPUDevice();
+            const session = await createSession(device, createManifest({ errors: RECOVERY_ERROR_LINES, references: REFERENCES, state: STATE_BYTE_LENGTH }));
+            reportErrorAtPackets(device, new Map([ [ 1, createErrorWord(RESYNCED_ERROR_CODE) ] ]));
+            const keyFrameIndex = 3;
+            const metadataByFrame = [ 0, 1, 2, keyFrameIndex ].map((): TransferableDolbyVisionEncodedFrameMetadata => ({
+                enhancementLayerDisposition: 'absent',
+                hasEnhancementLayerVCL: false,
+                parsedRPUData: [ new ArrayBuffer(4) ],
+                schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
+            }));
+            const takenFrames: GPUDecodedFrame[] = [];
+
+            for (const [ frameIndex, encodedDolbyVisionMetadata ] of metadataByFrame.entries()) {
+                session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, frameIndex * FRAME_DURATION_MICROSECONDS, frameIndex === 0, null, {}, {
+                    encodedDolbyVisionMetadata,
+                    keyframe: frameIndex === 0 || frameIndex === keyFrameIndex
+                }));
+                await submitAndWait(session);
+                takeFrames(session, takenFrames);
+            }
+            session.queuePacket(createHeldPacket(keyFrameIndex + 1, PARSER_RECOVERY));
+            await submitAndWait(session);
+            takeFrames(session, takenFrames);
+            releaseFrames(session, takenFrames);
+
+            // The damaged frame 1 and the passed-over frame 2 repeat frame 0, and the held packet after the key frame repeats the key frame
+            expect(takenFrames.map(frame => metadataByFrame.findIndex(metadata => metadata === frame.encodedDolbyVisionMetadata)))
+                .toEqual([ 0, 0, 0, keyFrameIndex, keyFrameIndex ]);
         });
 
         it('keeps a parser session\'s picture numbering through a resync, applying the passed-over pictures\' events', async () => {

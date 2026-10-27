@@ -81,8 +81,10 @@ import {
     type HEVCRangeExtensionProbeDefinition
 } from './HEVCRangeExtensionCapabilities';
 import {
+    getGPUDecoderFormatFacts,
     getGPUDecoderPixelFormatHolding,
     isGPUDecoderMonochromePixelFormat,
+    isGPUDecoderOutputFormat,
     type GPUDecoderOutputFormat
 } from '../decode/video/gpu/GPUDecodeFormats';
 import { findGPUDecoderStreamFitFailure } from '../decode/video/gpu/GPUDecoderStreamFit';
@@ -1325,18 +1327,61 @@ function selectDolbyVisionReconstructionOutput(
 }
 
 /**
+ * Selects RPU reconstruction of a Dolby Vision BL that a GPU decoder the host offers decodes into a frame pool.
+ * The BL takes the raw RPU route's format, which the host's Dolby Vision key of that format authorizes, and the stream's own GPU decoder format must be it.
+ * No decoder decodes an EL, so a dual-layer stream reconstructs from its BL alone, as on the raw route.
+ * Without a fitting offer, a summary that decodes the codec into the format selects the route without a decoder, which only negotiation passes.
+ */
+function selectGPUDolbyVisionVideoOutput(
+    options: unknown,
+    eligibilityOptions: CustomPlaybackEligibilityOptions,
+    videoCodec: CustomVideoCodec,
+    videoStream: MediaStream,
+    gpuVideoDecoderSummaries: readonly GPUVideoDecoderSummary[]
+): VideoOutputSelection | null {
+    const reconstructionProfile = getDolbyVisionPresentationDescriptor(options)?.reconstructionProfile ?? null;
+    if (reconstructionProfile === null || !isDolbyVisionReconstructionAllowed(reconstructionProfile, eligibilityOptions)) {
+        return null;
+    }
+    const format = getDolbyVisionReconstructionFrameFormat(videoCodec, videoStream, isDolbyVisionDualLayerProfile(reconstructionProfile));
+    if (
+        format === null
+        || !isGPUDecoderOutputFormat(format)
+        || getGPUDecodeOutputFormat(videoCodec, videoStream, { bitDepth: getGPUDecoderFormatFacts(format).bitDepth }) !== format
+        || !isPositiveSafeInteger(videoStream.Width)
+        || !isPositiveSafeInteger(videoStream.Height)
+    ) {
+        return null;
+    }
+    return selectGPUVideoDecoder(eligibilityOptions, videoCodec, videoStream, {
+        dolbyVisionProfile: reconstructionProfile,
+        hdr: true,
+        maximumCodedHeight: videoStream.Height,
+        maximumCodedWidth: videoStream.Width,
+        nativeVideoDecoderRequired: false,
+        neutralizeHDRColorMetadata: false,
+        rawVideoFrameFormat: format,
+        status: 'selected',
+        videoDecoderBackend: 'gpu',
+        videoOutputMode: 'frame-pool'
+    }, gpuVideoDecoderSummaries);
+}
+
+/**
  * Selects a Dolby Vision route in this order:
  * - native Profile 5;
  * - the native compatible base of Profile 7 or 8;
- * - RPU reconstruction;
- * - the base layer a compatibility ID declares, which the ordinary routes present.
+ * - RPU reconstruction from raw planes;
+ * - the base layer a compatibility ID declares, which the ordinary routes present, a GPU decoder's RPU reconstruction before the base's own GPU route;
+ * - without a declared base, RPU reconstruction from a GPU decoder's frame pool.
  */
 function selectDolbyVisionVideoOutput(
     options: unknown,
     capabilities: CustomDecodeCapabilities,
     eligibilityOptions: CustomPlaybackEligibilityOptions,
     videoCodec: CustomVideoCodec,
-    videoStream: MediaStream
+    videoStream: MediaStream,
+    gpuVideoDecoderSummaries: readonly GPUVideoDecoderSummary[]
 ): VideoOutputSelection | null {
     const descriptor = getDolbyVisionPresentationDescriptor(options);
     if (!descriptor) {
@@ -1390,14 +1435,17 @@ function selectDolbyVisionVideoOutput(
         return reconstructionSelection;
     }
     // A declared base layer is presented by the ordinary routes with its own color metadata
-    return getDolbyVisionBaseColorMetadata(options) === null ? reconstructionSelection : null;
+    if (getDolbyVisionBaseColorMetadata(options) !== null) {
+        return null;
+    }
+    return selectGPUDolbyVisionVideoOutput(options, eligibilityOptions, videoCodec, videoStream, gpuVideoDecoderSummaries) ?? reconstructionSelection;
 }
 
-/** The planar format a GPU decoder writes for a stream: a range extension's own, else 4:2:0 at the stream's depth. */
+/** The planar format a GPU decoder writes for a stream: a range extension's own, else the one that holds its pixel format, else 4:2:0 at the stream's depth. */
 function getGPUDecodeOutputFormat(
     videoCodec: CustomVideoCodec,
     stream: MediaStream,
-    colorMetadata: InputColorMetadata
+    colorMetadata: Pick<InputColorMetadata, 'bitDepth'>
 ): GPUDecoderOutputFormat | null {
     const rangeExtensionDefinition = videoCodec === 'hevc' ? getHEVCRangeExtensionStreamDefinitionFromMetadata(stream) : null;
     if (rangeExtensionDefinition) {
@@ -1453,7 +1501,7 @@ function selectGPUVideoOutput(
     ) {
         return null;
     }
-    const route: Extract<VideoOutputSelection, { status: 'selected' }> = {
+    return selectGPUVideoDecoder(eligibilityOptions, videoCodec, videoStream, {
         hdr,
         maximumCodedHeight: videoStream.Height,
         maximumCodedWidth: videoStream.Width,
@@ -1463,10 +1511,24 @@ function selectGPUVideoOutput(
         status: 'selected',
         videoDecoderBackend: 'gpu',
         videoOutputMode: 'frame-pool'
-    };
+    }, gpuVideoDecoderSummaries);
+}
+
+/**
+ * Returns a frame-pool route with the first offer that decodes the stream's codec into the route's format and fits the device, else the route without a decoder
+ * when a summary decodes the codec into the format, else null.
+ */
+function selectGPUVideoDecoder(
+    eligibilityOptions: CustomPlaybackEligibilityOptions,
+    videoCodec: CustomVideoCodec,
+    videoStream: MediaStream,
+    route: Extract<VideoOutputSelection, { status: 'selected' }> & { maximumCodedHeight: number; maximumCodedWidth: number; rawVideoFrameFormat: GPUDecoderOutputFormat },
+    gpuVideoDecoderSummaries: readonly GPUVideoDecoderSummary[]
+): VideoOutputSelection | null {
+    const format = route.rawVideoFrameFormat;
     const monochrome = typeof videoStream.PixelFormat === 'string' && isGPUDecoderMonochromePixelFormat(videoStream.PixelFormat);
     // The pool takes the picture padded to whole coding blocks, which the container's cropped size omits
-    const stream = createGPUDecodeStreamFacts(videoStream.Width, videoStream.Height, format);
+    const stream = createGPUDecodeStreamFacts(route.maximumCodedWidth, route.maximumCodedHeight, format);
     for (const offer of eligibilityOptions.gpuVideoDecoders ?? []) {
         if (
             !offer.codecs.includes(videoCodec)
@@ -1486,7 +1548,7 @@ function selectGPUVideoOutput(
 
 /**
  * Selects the video route of a stream with color metadata.
- * A native WebCodecs route comes first, then a GPU decoder the host offers, then one it summarizes.
+ * A native WebCodecs route comes first, then a GPU decoder the host offers, then one it summarizes; a Dolby Vision stream's GPU decoder reconstructs its RPU when it can.
  */
 function selectVideoOutput(
     options: unknown,
@@ -1501,7 +1563,8 @@ function selectVideoOutput(
         capabilities,
         eligibilityOptions,
         videoCodec,
-        videoStream
+        videoStream,
+        gpuVideoDecoderSummaries
     );
     if (dolbyVisionSelection) {
         return dolbyVisionSelection;
@@ -1515,7 +1578,9 @@ function selectVideoOutput(
     if (nativeSelection.status === 'selected') {
         return nativeSelection;
     }
-    return selectGPUVideoOutput(eligibilityOptions, videoCodec, videoStream, colorMetadata, gpuVideoDecoderSummaries) ?? nativeSelection;
+    return selectGPUDolbyVisionVideoOutput(options, eligibilityOptions, videoCodec, videoStream, gpuVideoDecoderSummaries)
+        ?? selectGPUVideoOutput(eligibilityOptions, videoCodec, videoStream, colorMetadata, gpuVideoDecoderSummaries)
+        ?? nativeSelection;
 }
 
 /** Selects the engine's own route for a stream's color: a range extension's exact variant, then the SDR routes, then the HDR routes. */
@@ -2002,6 +2067,7 @@ export type GPUVideoDecodeTarget = Readonly<{
 
 /**
  * Returns the codec family and output format a GPU decoder would decode the options' presented video stream into, as the eligibility chooses them, or null when it has neither.
+ * A Dolby Vision stream with an RPU route takes that route's format, so a stream without a declared base has a target too.
  * A host verifies only the decoders that match it before eligibility runs.
  */
 export function getGPUVideoDecodeTarget(options: unknown): GPUVideoDecodeTarget | null {
@@ -2014,7 +2080,10 @@ export function getGPUVideoDecodeTarget(options: unknown): GPUVideoDecodeTarget 
         return null;
     }
     const videoCodec = VIDEO_CODEC_ALIASES[normalizeMetadataValue(selectedVideo.stream.Codec) ?? ''];
-    const colorMetadata = getPresentationInputColorMetadata(options) ?? getDolbyVisionBaseColorMetadata(options);
+    const reconstructionFormat = getDolbyVisionReconstructionRawFrameFormat(options);
+    const colorMetadata = reconstructionFormat !== null && isGPUDecoderOutputFormat(reconstructionFormat) ?
+        { bitDepth: getGPUDecoderFormatFacts(reconstructionFormat).bitDepth } :
+        getPresentationInputColorMetadata(options) ?? getDolbyVisionBaseColorMetadata(options);
     if (!videoCodec || !colorMetadata) {
         return null;
     }
