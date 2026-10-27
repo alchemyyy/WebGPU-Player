@@ -1116,8 +1116,8 @@ fn interUnpackPair(word: u32) -> vec2<i32> {
 fn interReadRowSixteen(rowBase: u32, column: i32, lastColumn: i32) -> array<vec4<i32>, 4> {
     if (column >= 0 && column + INTER_ITEM_LAST_SAMPLE <= lastColumn) {
         let first = rowBase + (u32(column) >> SAMPLE_PAIR_SHIFT);
-        let words0 = vec4u(frames[first], frames[first + 1u], frames[first + 2u], frames[first + 3u]);
-        let words1 = vec4u(frames[first + 4u], frames[first + 5u], frames[first + 6u], frames[first + 7u]);
+        let words0 = vec4u(readFrameWord(first), readFrameWord(first + 1u), readFrameWord(first + 2u), readFrameWord(first + 3u));
+        let words1 = vec4u(readFrameWord(first + 4u), readFrameWord(first + 5u), readFrameWord(first + 6u), readFrameWord(first + 7u));
         // From an odd column, each sample pair is a word's high half and the next word's low half
         var pairs0 = words0;
         var pairs1 = words1;
@@ -1339,8 +1339,8 @@ fn interStagedPair(slotBase: u32, termBase: u32, plane: u32, tileOrigin: vec2u, 
 // Four samples of a reference row from firstColumn, each column clamped to the plane
 fn interReadRowQuad(rowBase: u32, firstColumn: i32, lastColumn: i32) -> vec4<i32> {
     let columns = vec4u(clamp(vec4<i32>(firstColumn) + INTER_QUAD_OFFSETS, vec4<i32>(0), vec4<i32>(lastColumn)));
-    let words = vec4u(frames[rowBase + (columns.x >> SAMPLE_PAIR_SHIFT)], frames[rowBase + (columns.y >> SAMPLE_PAIR_SHIFT)],
-        frames[rowBase + (columns.z >> SAMPLE_PAIR_SHIFT)], frames[rowBase + (columns.w >> SAMPLE_PAIR_SHIFT)]);
+    let words = vec4u(readFrameWord(rowBase + (columns.x >> SAMPLE_PAIR_SHIFT)), readFrameWord(rowBase + (columns.y >> SAMPLE_PAIR_SHIFT)),
+        readFrameWord(rowBase + (columns.z >> SAMPLE_PAIR_SHIFT)), readFrameWord(rowBase + (columns.w >> SAMPLE_PAIR_SHIFT)));
     return vec4<i32>((words >> ((columns & vec4u(1u)) * SAMPLE_HALF_BITS)) & vec4u(SAMPLE_HALF_MASK));
 }
 
@@ -1502,7 +1502,7 @@ fn interPredictPlanes(firstPlane: u32, planeCount: u32, tile: vec3u, lane: u32, 
             continue;
         }
         let samples = interPredictPair(unitPlane, plane, x, y, tilePosition, tablesBase);
-        frames[getStoreWordIndex(targetBuffer, plane, x, y)] = samples.x | (samples.y << SAMPLE_HALF_BITS);
+        writeFrameWord(getStoreWordIndex(targetBuffer, plane, x, y), samples.x | (samples.y << SAMPLE_HALF_BITS));
     }
 }
 
@@ -1609,7 +1609,7 @@ fn interPredictTile(tile: vec3u, lane: u32) {
 fn interReadIntraBlockCopySample(planeBase: u32, rowWords: u32, limits: vec2<i32>, x: i32, y: i32) -> u32 {
     let column = u32(clamp(x, 0, limits.x));
     let row = u32(clamp(y, 0, limits.y));
-    return (frames[planeBase + row * rowWords + (column >> SAMPLE_PAIR_SHIFT)] >> ((column & 1u) * SAMPLE_HALF_BITS)) & SAMPLE_HALF_MASK;
+    return (readFrameWord(planeBase + row * rowWords + (column >> SAMPLE_PAIR_SHIFT)) >> ((column & 1u) * SAMPLE_HALF_BITS)) & SAMPLE_HALF_MASK;
 }
 
 // The IntraBC block's prediction of a plane, by all 64 lanes together: the target buffer's samples at the block's displacement, which is whole
@@ -1678,7 +1678,7 @@ fn interPredictIntraBlockCopy(blockIndex: u32, plane: u32, lane: u32) {
                 samples.y = value;
             }
         }
-        frames[planeBase + y * rowWords + (x >> SAMPLE_PAIR_SHIFT)] = samples.x | (samples.y << SAMPLE_HALF_BITS);
+        writeFrameWord(planeBase + y * rowWords + (x >> SAMPLE_PAIR_SHIFT), samples.x | (samples.y << SAMPLE_HALF_BITS));
     }
 }
 

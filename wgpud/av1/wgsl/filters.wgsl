@@ -41,7 +41,7 @@ fn filtersGetCopyWord(index: u32, rowWords: u32, areaX: u32, firstRow: u32, pair
 // Writes a copied word when its pair is inside the copy area and short of the width limit
 fn filtersStoreCopyWord(index: u32, pairCount: u32, columnMask: u32, areaX: u32, widthLimit: u32, targetWord: u32, value: u32) {
     if (index < pairCount && areaX + ((index & columnMask) << SAMPLE_PAIR_SHIFT) < widthLimit) {
-        frames[targetWord] = value;
+        writeFrameWord(targetWord, value);
     }
 }
 
@@ -61,10 +61,10 @@ fn filtersCopyArea(sourceBase: u32, targetBase: u32, rowWords: u32, areaX: u32, 
         let word1 = filtersGetCopyWord(min(second, lastPair), rowWords, areaX, firstRow, pairsPerRowLog2);
         let word2 = filtersGetCopyWord(min(third, lastPair), rowWords, areaX, firstRow, pairsPerRowLog2);
         let word3 = filtersGetCopyWord(min(fourth, lastPair), rowWords, areaX, firstRow, pairsPerRowLog2);
-        let value0 = frames[sourceBase + word0];
-        let value1 = frames[sourceBase + word1];
-        let value2 = frames[sourceBase + word2];
-        let value3 = frames[sourceBase + word3];
+        let value0 = readFrameWord(sourceBase + word0);
+        let value1 = readFrameWord(sourceBase + word1);
+        let value2 = readFrameWord(sourceBase + word2);
+        let value3 = readFrameWord(sourceBase + word3);
         filtersStoreCopyWord(first, pairCount, columnMask, areaX, widthLimit, targetBase + word0, value0);
         filtersStoreCopyWord(second, pairCount, columnMask, areaX, widthLimit, targetBase + word1, value1);
         filtersStoreCopyWord(third, pairCount, columnMask, areaX, widthLimit, targetBase + word2, value2);
@@ -241,14 +241,14 @@ fn deblockPackWord(low: i32, high: i32) -> u32 {
 fn deblockGatherVertical(wordA: u32, wordB: u32, filterLength: u32) -> array<vec2i, DEBLOCK_SAMPLES> {
     var samples: array<vec2i, DEBLOCK_SAMPLES>;
     if (filterLength == DEBLOCK_LENGTH_14) {
-        let a0 = frames[wordA - 4u];
-        let b0 = frames[wordB - 4u];
-        let a1 = frames[wordA - 3u];
-        let b1 = frames[wordB - 3u];
-        let a6 = frames[wordA + 2u];
-        let b6 = frames[wordB + 2u];
-        let a7 = frames[wordA + 3u];
-        let b7 = frames[wordB + 3u];
+        let a0 = readFrameWord(wordA - 4u);
+        let b0 = readFrameWord(wordB - 4u);
+        let a1 = readFrameWord(wordA - 3u);
+        let b1 = readFrameWord(wordB - 3u);
+        let a6 = readFrameWord(wordA + 2u);
+        let b6 = readFrameWord(wordB + 2u);
+        let a7 = readFrameWord(wordA + 3u);
+        let b7 = readFrameWord(wordB + 3u);
         samples[0] = deblockHighPair(a0, b0);
         samples[1] = deblockLowPair(a1, b1);
         samples[2] = deblockHighPair(a1, b1);
@@ -257,19 +257,19 @@ fn deblockGatherVertical(wordA: u32, wordB: u32, filterLength: u32) -> array<vec
         samples[13] = deblockLowPair(a7, b7);
     }
     if (filterLength >= DEBLOCK_LENGTH_6) {
-        let a2 = frames[wordA - 2u];
-        let b2 = frames[wordB - 2u];
-        let a5 = frames[wordA + 1u];
-        let b5 = frames[wordB + 1u];
+        let a2 = readFrameWord(wordA - 2u);
+        let b2 = readFrameWord(wordB - 2u);
+        let a5 = readFrameWord(wordA + 1u);
+        let b5 = readFrameWord(wordB + 1u);
         samples[3] = deblockLowPair(a2, b2);
         samples[4] = deblockHighPair(a2, b2);
         samples[9] = deblockLowPair(a5, b5);
         samples[10] = deblockHighPair(a5, b5);
     }
-    let a3 = frames[wordA - 1u];
-    let b3 = frames[wordB - 1u];
-    let a4 = frames[wordA];
-    let b4 = frames[wordB];
+    let a3 = readFrameWord(wordA - 1u);
+    let b3 = readFrameWord(wordB - 1u);
+    let a4 = readFrameWord(wordA);
+    let b4 = readFrameWord(wordB);
     samples[5] = deblockLowPair(a3, b3);
     samples[6] = deblockHighPair(a3, b3);
     samples[7] = deblockLowPair(a4, b4);
@@ -279,21 +279,21 @@ fn deblockGatherVertical(wordA: u32, wordB: u32, filterLength: u32) -> array<vec
 
 // Writes the words of two rows a vertical edge's filter changes
 fn deblockScatterVertical(wordA: u32, wordB: u32, filterLength: u32, samples: array<vec2i, DEBLOCK_SAMPLES>) {
-    frames[wordA - 1u] = deblockPackWord(samples[5].x, samples[6].x);
-    frames[wordB - 1u] = deblockPackWord(samples[5].y, samples[6].y);
-    frames[wordA] = deblockPackWord(samples[7].x, samples[8].x);
-    frames[wordB] = deblockPackWord(samples[7].y, samples[8].y);
+    writeFrameWord(wordA - 1u, deblockPackWord(samples[5].x, samples[6].x));
+    writeFrameWord(wordB - 1u, deblockPackWord(samples[5].y, samples[6].y));
+    writeFrameWord(wordA, deblockPackWord(samples[7].x, samples[8].x));
+    writeFrameWord(wordB, deblockPackWord(samples[7].y, samples[8].y));
     if (filterLength >= DEBLOCK_LENGTH_8) {
-        frames[wordA - 2u] = deblockPackWord(samples[3].x, samples[4].x);
-        frames[wordB - 2u] = deblockPackWord(samples[3].y, samples[4].y);
-        frames[wordA + 1u] = deblockPackWord(samples[9].x, samples[10].x);
-        frames[wordB + 1u] = deblockPackWord(samples[9].y, samples[10].y);
+        writeFrameWord(wordA - 2u, deblockPackWord(samples[3].x, samples[4].x));
+        writeFrameWord(wordB - 2u, deblockPackWord(samples[3].y, samples[4].y));
+        writeFrameWord(wordA + 1u, deblockPackWord(samples[9].x, samples[10].x));
+        writeFrameWord(wordB + 1u, deblockPackWord(samples[9].y, samples[10].y));
     }
     if (filterLength == DEBLOCK_LENGTH_14) {
-        frames[wordA - 3u] = deblockPackWord(samples[1].x, samples[2].x);
-        frames[wordB - 3u] = deblockPackWord(samples[1].y, samples[2].y);
-        frames[wordA + 2u] = deblockPackWord(samples[11].x, samples[12].x);
-        frames[wordB + 2u] = deblockPackWord(samples[11].y, samples[12].y);
+        writeFrameWord(wordA - 3u, deblockPackWord(samples[1].x, samples[2].x));
+        writeFrameWord(wordB - 3u, deblockPackWord(samples[1].y, samples[2].y));
+        writeFrameWord(wordA + 2u, deblockPackWord(samples[11].x, samples[12].x));
+        writeFrameWord(wordB + 2u, deblockPackWord(samples[11].y, samples[12].y));
     }
 }
 
@@ -306,12 +306,12 @@ fn deblockGetRowWord(word: u32, rowWords: u32, offset: i32) -> u32 {
 fn deblockGatherHorizontal(word: u32, rowWords: u32, filterLength: u32) -> array<vec2i, DEBLOCK_SAMPLES> {
     var samples: array<vec2i, DEBLOCK_SAMPLES>;
     if (filterLength == DEBLOCK_LENGTH_14) {
-        let row0 = frames[deblockGetRowWord(word, rowWords, -7)];
-        let row1 = frames[deblockGetRowWord(word, rowWords, -6)];
-        let row2 = frames[deblockGetRowWord(word, rowWords, -5)];
-        let row11 = frames[deblockGetRowWord(word, rowWords, 4)];
-        let row12 = frames[deblockGetRowWord(word, rowWords, 5)];
-        let row13 = frames[deblockGetRowWord(word, rowWords, 6)];
+        let row0 = readFrameWord(deblockGetRowWord(word, rowWords, -7));
+        let row1 = readFrameWord(deblockGetRowWord(word, rowWords, -6));
+        let row2 = readFrameWord(deblockGetRowWord(word, rowWords, -5));
+        let row11 = readFrameWord(deblockGetRowWord(word, rowWords, 4));
+        let row12 = readFrameWord(deblockGetRowWord(word, rowWords, 5));
+        let row13 = readFrameWord(deblockGetRowWord(word, rowWords, 6));
         samples[0] = deblockLowPair(row0, row0 >> SAMPLE_HALF_BITS);
         samples[1] = deblockLowPair(row1, row1 >> SAMPLE_HALF_BITS);
         samples[2] = deblockLowPair(row2, row2 >> SAMPLE_HALF_BITS);
@@ -320,21 +320,21 @@ fn deblockGatherHorizontal(word: u32, rowWords: u32, filterLength: u32) -> array
         samples[13] = deblockLowPair(row13, row13 >> SAMPLE_HALF_BITS);
     }
     if (filterLength >= DEBLOCK_LENGTH_8) {
-        let row3 = frames[deblockGetRowWord(word, rowWords, -4)];
-        let row10 = frames[deblockGetRowWord(word, rowWords, 3)];
+        let row3 = readFrameWord(deblockGetRowWord(word, rowWords, -4));
+        let row10 = readFrameWord(deblockGetRowWord(word, rowWords, 3));
         samples[3] = deblockLowPair(row3, row3 >> SAMPLE_HALF_BITS);
         samples[10] = deblockLowPair(row10, row10 >> SAMPLE_HALF_BITS);
     }
     if (filterLength >= DEBLOCK_LENGTH_6) {
-        let row4 = frames[deblockGetRowWord(word, rowWords, -3)];
-        let row9 = frames[deblockGetRowWord(word, rowWords, 2)];
+        let row4 = readFrameWord(deblockGetRowWord(word, rowWords, -3));
+        let row9 = readFrameWord(deblockGetRowWord(word, rowWords, 2));
         samples[4] = deblockLowPair(row4, row4 >> SAMPLE_HALF_BITS);
         samples[9] = deblockLowPair(row9, row9 >> SAMPLE_HALF_BITS);
     }
-    let row5 = frames[deblockGetRowWord(word, rowWords, -2)];
-    let row6 = frames[deblockGetRowWord(word, rowWords, -1)];
-    let row7 = frames[word];
-    let row8 = frames[deblockGetRowWord(word, rowWords, 1)];
+    let row5 = readFrameWord(deblockGetRowWord(word, rowWords, -2));
+    let row6 = readFrameWord(deblockGetRowWord(word, rowWords, -1));
+    let row7 = readFrameWord(word);
+    let row8 = readFrameWord(deblockGetRowWord(word, rowWords, 1));
     samples[5] = deblockLowPair(row5, row5 >> SAMPLE_HALF_BITS);
     samples[6] = deblockLowPair(row6, row6 >> SAMPLE_HALF_BITS);
     samples[7] = deblockLowPair(row7, row7 >> SAMPLE_HALF_BITS);
@@ -344,21 +344,21 @@ fn deblockGatherHorizontal(word: u32, rowWords: u32, filterLength: u32) -> array
 
 // Writes the rows of a column pair a horizontal edge's filter changes
 fn deblockScatterHorizontal(word: u32, rowWords: u32, filterLength: u32, samples: array<vec2i, DEBLOCK_SAMPLES>) {
-    frames[deblockGetRowWord(word, rowWords, -2)] = deblockPackWord(samples[5].x, samples[5].y);
-    frames[deblockGetRowWord(word, rowWords, -1)] = deblockPackWord(samples[6].x, samples[6].y);
-    frames[word] = deblockPackWord(samples[7].x, samples[7].y);
-    frames[deblockGetRowWord(word, rowWords, 1)] = deblockPackWord(samples[8].x, samples[8].y);
+    writeFrameWord(deblockGetRowWord(word, rowWords, -2), deblockPackWord(samples[5].x, samples[5].y));
+    writeFrameWord(deblockGetRowWord(word, rowWords, -1), deblockPackWord(samples[6].x, samples[6].y));
+    writeFrameWord(word, deblockPackWord(samples[7].x, samples[7].y));
+    writeFrameWord(deblockGetRowWord(word, rowWords, 1), deblockPackWord(samples[8].x, samples[8].y));
     if (filterLength >= DEBLOCK_LENGTH_8) {
-        frames[deblockGetRowWord(word, rowWords, -3)] = deblockPackWord(samples[4].x, samples[4].y);
-        frames[deblockGetRowWord(word, rowWords, 2)] = deblockPackWord(samples[9].x, samples[9].y);
+        writeFrameWord(deblockGetRowWord(word, rowWords, -3), deblockPackWord(samples[4].x, samples[4].y));
+        writeFrameWord(deblockGetRowWord(word, rowWords, 2), deblockPackWord(samples[9].x, samples[9].y));
     }
     if (filterLength == DEBLOCK_LENGTH_14) {
-        frames[deblockGetRowWord(word, rowWords, -6)] = deblockPackWord(samples[1].x, samples[1].y);
-        frames[deblockGetRowWord(word, rowWords, -5)] = deblockPackWord(samples[2].x, samples[2].y);
-        frames[deblockGetRowWord(word, rowWords, -4)] = deblockPackWord(samples[3].x, samples[3].y);
-        frames[deblockGetRowWord(word, rowWords, 3)] = deblockPackWord(samples[10].x, samples[10].y);
-        frames[deblockGetRowWord(word, rowWords, 4)] = deblockPackWord(samples[11].x, samples[11].y);
-        frames[deblockGetRowWord(word, rowWords, 5)] = deblockPackWord(samples[12].x, samples[12].y);
+        writeFrameWord(deblockGetRowWord(word, rowWords, -6), deblockPackWord(samples[1].x, samples[1].y));
+        writeFrameWord(deblockGetRowWord(word, rowWords, -5), deblockPackWord(samples[2].x, samples[2].y));
+        writeFrameWord(deblockGetRowWord(word, rowWords, -4), deblockPackWord(samples[3].x, samples[3].y));
+        writeFrameWord(deblockGetRowWord(word, rowWords, 3), deblockPackWord(samples[10].x, samples[10].y));
+        writeFrameWord(deblockGetRowWord(word, rowWords, 4), deblockPackWord(samples[11].x, samples[11].y));
+        writeFrameWord(deblockGetRowWord(word, rowWords, 5), deblockPackWord(samples[12].x, samples[12].y));
     }
 }
 
@@ -735,7 +735,7 @@ fn superresUpscaleSample(rowWord: u32, position: u32, lastColumn: i32) -> u32 {
     var sum = 0;
     for (var tap = 0u; tap < SUPERRES_TAPS; tap += 1u) {
         let column = u32(clamp(firstColumn + i32(tap), 0, lastColumn));
-        let sample = i32((frames[rowWord + (column >> SAMPLE_PAIR_SHIFT)] >> ((column & 1u) * SAMPLE_HALF_BITS)) & SAMPLE_HALF_MASK);
+        let sample = i32((readFrameWord(rowWord + (column >> SAMPLE_PAIR_SHIFT)) >> ((column & 1u) * SAMPLE_HALF_BITS)) & SAMPLE_HALF_MASK);
         let taps = frameData[phaseWord + (tap >> 1u)];
         sum += sample * getSignedField(taps, (tap & 1u) * SAMPLE_HALF_BITS, SAMPLE_HALF_BITS);
     }
@@ -780,7 +780,7 @@ fn superresUpscaleRow(workgroup: vec3u, lane: u32) {
         word |= superresUpscaleSample(firstSourceRow + rowOffset, steps.y + x * steps.x, lastColumn) << ((x & 1u) * SAMPLE_HALF_BITS);
         if ((x & 1u) == 1u) {
             if (x - 1u < upscaledWidth) {
-                frames[firstTargetRow + rowOffset + ((x - 1u) >> SAMPLE_PAIR_SHIFT)] = word;
+                writeFrameWord(firstTargetRow + rowOffset + ((x - 1u) >> SAMPLE_PAIR_SHIFT), word);
             }
             word = 0u;
         }
@@ -869,7 +869,7 @@ fn restorationSaveBoundaries(workgroup: vec3u, lane: u32) {
         if (scaled) {
             sample = superresUpscaleSample(rowWord, steps.y + x * steps.x, lastColumn);
         } else {
-            sample = (frames[rowWord + (x >> SAMPLE_PAIR_SHIFT)] >> ((x & 1u) * SAMPLE_HALF_BITS)) & SAMPLE_HALF_MASK;
+            sample = (readFrameWord(rowWord + (x >> SAMPLE_PAIR_SHIFT)) >> ((x & 1u) * SAMPLE_HALF_BITS)) & SAMPLE_HALF_MASK;
         }
         word |= sample << ((x & 1u) * SAMPLE_HALF_BITS);
         if ((x & 1u) == 1u) {
@@ -983,7 +983,7 @@ fn cdefLoadTileWord(index: u32, isWide: bool, area: vec2u, alignedSize: vec2u, s
     let x = i32(area.x) + i32(tileWord << SAMPLE_PAIR_SHIFT) - i32(CDEF_BORDER);
     let y = i32(area.y) + i32(tileRow) - i32(CDEF_BORDER);
     let inside = x >= 0 && y >= 0 && u32(x) < alignedSize.x && u32(y) < alignedSize.y;
-    let word = frames[sourceBase + select(0u, u32(y) * rowWords + (u32(x) >> SAMPLE_PAIR_SHIFT), inside)];
+    let word = readFrameWord(sourceBase + select(0u, u32(y) * rowWords + (u32(x) >> SAMPLE_PAIR_SHIFT), inside));
     return select(CDEF_OUTSIDE_PAIR, word, inside);
 }
 
@@ -1002,10 +1002,10 @@ fn cdefStoreTileWord(index: u32, tileWordCount: u32, isWide: bool, word: u32) {
 // >> coeff_shift, less 128, adds to one partial sum per direction; a direction's cost weighs each squared partial sum by
 // 840 / its sample count.
 fn cdefFindDirection(blockWord: u32, rowWords: u32, depthShift: u32) -> vec2i {
-    let row0Word0 = frames[blockWord + 0u * rowWords + 0u];
-    let row0Word1 = frames[blockWord + 0u * rowWords + 1u];
-    let row0Word2 = frames[blockWord + 0u * rowWords + 2u];
-    let row0Word3 = frames[blockWord + 0u * rowWords + 3u];
+    let row0Word0 = readFrameWord(blockWord + 0u * rowWords + 0u);
+    let row0Word1 = readFrameWord(blockWord + 0u * rowWords + 1u);
+    let row0Word2 = readFrameWord(blockWord + 0u * rowWords + 2u);
+    let row0Word3 = readFrameWord(blockWord + 0u * rowWords + 3u);
     let x00 = i32(((row0Word0) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x01 = i32(((row0Word0 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x02 = i32(((row0Word1) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
@@ -1014,10 +1014,10 @@ fn cdefFindDirection(blockWord: u32, rowWords: u32, depthShift: u32) -> vec2i {
     let x05 = i32(((row0Word2 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x06 = i32(((row0Word3) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x07 = i32(((row0Word3 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
-    let row1Word0 = frames[blockWord + 1u * rowWords + 0u];
-    let row1Word1 = frames[blockWord + 1u * rowWords + 1u];
-    let row1Word2 = frames[blockWord + 1u * rowWords + 2u];
-    let row1Word3 = frames[blockWord + 1u * rowWords + 3u];
+    let row1Word0 = readFrameWord(blockWord + 1u * rowWords + 0u);
+    let row1Word1 = readFrameWord(blockWord + 1u * rowWords + 1u);
+    let row1Word2 = readFrameWord(blockWord + 1u * rowWords + 2u);
+    let row1Word3 = readFrameWord(blockWord + 1u * rowWords + 3u);
     let x10 = i32(((row1Word0) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x11 = i32(((row1Word0 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x12 = i32(((row1Word1) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
@@ -1026,10 +1026,10 @@ fn cdefFindDirection(blockWord: u32, rowWords: u32, depthShift: u32) -> vec2i {
     let x15 = i32(((row1Word2 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x16 = i32(((row1Word3) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x17 = i32(((row1Word3 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
-    let row2Word0 = frames[blockWord + 2u * rowWords + 0u];
-    let row2Word1 = frames[blockWord + 2u * rowWords + 1u];
-    let row2Word2 = frames[blockWord + 2u * rowWords + 2u];
-    let row2Word3 = frames[blockWord + 2u * rowWords + 3u];
+    let row2Word0 = readFrameWord(blockWord + 2u * rowWords + 0u);
+    let row2Word1 = readFrameWord(blockWord + 2u * rowWords + 1u);
+    let row2Word2 = readFrameWord(blockWord + 2u * rowWords + 2u);
+    let row2Word3 = readFrameWord(blockWord + 2u * rowWords + 3u);
     let x20 = i32(((row2Word0) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x21 = i32(((row2Word0 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x22 = i32(((row2Word1) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
@@ -1038,10 +1038,10 @@ fn cdefFindDirection(blockWord: u32, rowWords: u32, depthShift: u32) -> vec2i {
     let x25 = i32(((row2Word2 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x26 = i32(((row2Word3) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x27 = i32(((row2Word3 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
-    let row3Word0 = frames[blockWord + 3u * rowWords + 0u];
-    let row3Word1 = frames[blockWord + 3u * rowWords + 1u];
-    let row3Word2 = frames[blockWord + 3u * rowWords + 2u];
-    let row3Word3 = frames[blockWord + 3u * rowWords + 3u];
+    let row3Word0 = readFrameWord(blockWord + 3u * rowWords + 0u);
+    let row3Word1 = readFrameWord(blockWord + 3u * rowWords + 1u);
+    let row3Word2 = readFrameWord(blockWord + 3u * rowWords + 2u);
+    let row3Word3 = readFrameWord(blockWord + 3u * rowWords + 3u);
     let x30 = i32(((row3Word0) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x31 = i32(((row3Word0 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x32 = i32(((row3Word1) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
@@ -1050,10 +1050,10 @@ fn cdefFindDirection(blockWord: u32, rowWords: u32, depthShift: u32) -> vec2i {
     let x35 = i32(((row3Word2 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x36 = i32(((row3Word3) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x37 = i32(((row3Word3 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
-    let row4Word0 = frames[blockWord + 4u * rowWords + 0u];
-    let row4Word1 = frames[blockWord + 4u * rowWords + 1u];
-    let row4Word2 = frames[blockWord + 4u * rowWords + 2u];
-    let row4Word3 = frames[blockWord + 4u * rowWords + 3u];
+    let row4Word0 = readFrameWord(blockWord + 4u * rowWords + 0u);
+    let row4Word1 = readFrameWord(blockWord + 4u * rowWords + 1u);
+    let row4Word2 = readFrameWord(blockWord + 4u * rowWords + 2u);
+    let row4Word3 = readFrameWord(blockWord + 4u * rowWords + 3u);
     let x40 = i32(((row4Word0) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x41 = i32(((row4Word0 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x42 = i32(((row4Word1) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
@@ -1062,10 +1062,10 @@ fn cdefFindDirection(blockWord: u32, rowWords: u32, depthShift: u32) -> vec2i {
     let x45 = i32(((row4Word2 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x46 = i32(((row4Word3) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x47 = i32(((row4Word3 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
-    let row5Word0 = frames[blockWord + 5u * rowWords + 0u];
-    let row5Word1 = frames[blockWord + 5u * rowWords + 1u];
-    let row5Word2 = frames[blockWord + 5u * rowWords + 2u];
-    let row5Word3 = frames[blockWord + 5u * rowWords + 3u];
+    let row5Word0 = readFrameWord(blockWord + 5u * rowWords + 0u);
+    let row5Word1 = readFrameWord(blockWord + 5u * rowWords + 1u);
+    let row5Word2 = readFrameWord(blockWord + 5u * rowWords + 2u);
+    let row5Word3 = readFrameWord(blockWord + 5u * rowWords + 3u);
     let x50 = i32(((row5Word0) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x51 = i32(((row5Word0 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x52 = i32(((row5Word1) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
@@ -1074,10 +1074,10 @@ fn cdefFindDirection(blockWord: u32, rowWords: u32, depthShift: u32) -> vec2i {
     let x55 = i32(((row5Word2 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x56 = i32(((row5Word3) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x57 = i32(((row5Word3 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
-    let row6Word0 = frames[blockWord + 6u * rowWords + 0u];
-    let row6Word1 = frames[blockWord + 6u * rowWords + 1u];
-    let row6Word2 = frames[blockWord + 6u * rowWords + 2u];
-    let row6Word3 = frames[blockWord + 6u * rowWords + 3u];
+    let row6Word0 = readFrameWord(blockWord + 6u * rowWords + 0u);
+    let row6Word1 = readFrameWord(blockWord + 6u * rowWords + 1u);
+    let row6Word2 = readFrameWord(blockWord + 6u * rowWords + 2u);
+    let row6Word3 = readFrameWord(blockWord + 6u * rowWords + 3u);
     let x60 = i32(((row6Word0) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x61 = i32(((row6Word0 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x62 = i32(((row6Word1) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
@@ -1086,10 +1086,10 @@ fn cdefFindDirection(blockWord: u32, rowWords: u32, depthShift: u32) -> vec2i {
     let x65 = i32(((row6Word2 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x66 = i32(((row6Word3) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x67 = i32(((row6Word3 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
-    let row7Word0 = frames[blockWord + 7u * rowWords + 0u];
-    let row7Word1 = frames[blockWord + 7u * rowWords + 1u];
-    let row7Word2 = frames[blockWord + 7u * rowWords + 2u];
-    let row7Word3 = frames[blockWord + 7u * rowWords + 3u];
+    let row7Word0 = readFrameWord(blockWord + 7u * rowWords + 0u);
+    let row7Word1 = readFrameWord(blockWord + 7u * rowWords + 1u);
+    let row7Word2 = readFrameWord(blockWord + 7u * rowWords + 2u);
+    let row7Word3 = readFrameWord(blockWord + 7u * rowWords + 3u);
     let x70 = i32(((row7Word0) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x71 = i32(((row7Word0 >> SAMPLE_HALF_BITS) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
     let x72 = i32(((row7Word1) & SAMPLE_HALF_MASK) >> depthShift) - CDEF_SAMPLE_CENTER;
@@ -1527,7 +1527,7 @@ fn cdefFilterBlock(workgroup: vec3u, lane: u32) {
                 getField(block.x, CDEF_BLOCK_PRIMARY_SHIFT_SHIFT, CDEF_BLOCK_PRIMARY_SHIFT_BITS), cdefUnpackOffsets(block.y), secondaryStrength,
                 secondaryShift, cdefUnpackOffsets(block.z), cdefUnpackOffsets(block.w));
         }
-        frames[targetBase + (areaY + y) * rowWords + ((areaX + x) >> SAMPLE_PAIR_SHIFT)] = word;
+        writeFrameWord(targetBase + (areaY + y) * rowWords + ((areaX + x) >> SAMPLE_PAIR_SHIFT), word);
     }
 }
 
@@ -1619,7 +1619,7 @@ const RESTORATION_PACKED_WORDS: u32 = 1782u;
 // A word: A (1 to 256) in the low 9 bits, B (below 2^20) above
 const RESTORATION_PACKED_BLEND_BITS: u32 = 9u;
 const RESTORATION_PACKED_BLEND_MASK: u32 = 511u;
-// A tile row's source: a word index of the frames buffer, or with this bit, of the saved boundary rows in frameData
+// A tile row's source: a word index of the frame store, or with this bit, of the saved boundary rows in frameData
 const RESTORATION_ROW_FROM_BOUNDARY: u32 = 0x80000000u;
 // The A and B columns of a luma-wide area (64 samples) and a chroma-wide one (32)
 const RESTORATION_WIDE_AB_COLUMNS: u32 = 66u;
@@ -1640,12 +1640,12 @@ fn restorationReadTile(row: i32, column: i32) -> i32 {
     return restorationTile[u32(row + i32(RESTORATION_REACH)) * RESTORATION_TILE_COLUMNS + u32(column + i32(RESTORATION_TILE_LEFT))];
 }
 
-// A word of a tile row's source: the frames buffer, or the saved boundary rows in frameData
+// A word of a tile row's source: the frame store, or the saved boundary rows in frameData
 fn restorationReadSourceWord(rowSource: u32, word: u32) -> u32 {
     if ((rowSource & RESTORATION_ROW_FROM_BOUNDARY) != 0u) {
         return frameData[(rowSource & ~RESTORATION_ROW_FROM_BOUNDARY) + word];
     }
-    return frames[rowSource + word];
+    return readFrameWord(rowSource + word);
 }
 
 // The two samples of tile pair index (row-major, tile columns from -4), columns clamped to the plane
@@ -1842,7 +1842,7 @@ fn restorationRestoreArea(workgroup: vec3u, lane: u32) {
                     word |= u32(value) << (half * SAMPLE_HALF_BITS);
                 }
                 if (areaX + column < planeWidth) {
-                    frames[targetBase + (segmentStart + row) * rowWords + ((areaX + column) >> SAMPLE_PAIR_SHIFT)] = word;
+                    writeFrameWord(targetBase + (segmentStart + row) * rowWords + ((areaX + column) >> SAMPLE_PAIR_SHIFT), word);
                 }
             }
         } else {
@@ -1929,7 +1929,7 @@ fn restorationRestoreArea(workgroup: vec3u, lane: u32) {
                     word |= u32(clamp(narrowed, 0, sampleMaximum)) << (half * SAMPLE_HALF_BITS);
                 }
                 if (areaX + column < planeWidth) {
-                    frames[targetBase + (segmentStart + row) * rowWords + ((areaX + column) >> SAMPLE_PAIR_SHIFT)] = word;
+                    writeFrameWord(targetBase + (segmentStart + row) * rowWords + ((areaX + column) >> SAMPLE_PAIR_SHIFT), word);
                 }
             }
         }

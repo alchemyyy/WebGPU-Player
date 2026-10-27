@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Generates the AV1 parser's C header of the GPU record layout and the error codes from the decoder's WGSL, which declares them once for both sides:
-// each `const RECORD_<NAME>: u32 = <value>u;` and `const ERROR_<NAME>: u32 = <value>u;` line becomes a `#define` of the same name, and the
-// header's `//! packet:` bound becomes RECORD_PACKET_BYTES, the largest record the parser may emit.
-// It fails unless the header's `//! error:` lines name exactly the error codes the WGSL declares, so the parser and the WGSL of one package always agree.
+// each `const RECORD_<NAME>: u32 = <value>u;` and `const ERROR_<NAME>: u32 = <value>u;` line becomes a `#define` of the same name.
+// It fails unless the header's `//! error:` lines name exactly the error codes the WGSL declares, and its `//! packet:` line is the bound the
+// RECORD_PACKET_ constants describe, which the parser evaluates for each frame, so the parser and the WGSL of one package always agree.
 // Usage: node record_layout.mjs <decoder WGSL> <output header>
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -12,10 +12,16 @@ const CONSTANT_PATTERN = /^const ((?:RECORD|ERROR)_[A-Z0-9_]+): u32 = (\d+)u;$/;
 // `//! error: <code>, <name>[, <recovery>]`; the recovery is the engine's, which the parser's constants do not carry
 const ERROR_DIRECTIVE_PATTERN = /^\/\/! error:\s*(\d+)\s*,\s*([A-Za-z]\w*)\s*(?:,\s*[a-z]+\s*)?$/;
 const PACKET_DIRECTIVE_PREFIX = '//! packet:';
-const DECIMAL_PATTERN = /^\d+$/;
-const WHITESPACE_PATTERN = /\s+/;
-const PACKET_CONSTANT_NAME = 'RECORD_PACKET_BYTES';
-const UNIT_BYTE_LENGTHS = new Map([ [ 'KiB', 1024 ], [ 'MiB', 1024 * 1024 ] ]);
+// The constants the packet bound reads, in the order its expression names them
+const PACKET_CONSTANT_NAMES = [
+    'RECORD_PACKET_MINIMUM_BYTES',
+    'RECORD_PACKET_MAXIMUM_BYTES',
+    'RECORD_PACKET_UNIT_WORDS',
+    'RECORD_PACKET_PLANE_UNIT_WORDS',
+    'RECORD_PACKET_COEFFICIENT_BIT_BIAS',
+    'RECORD_PACKET_MARGIN_SAMPLES',
+    'RECORD_PACKET_MARGIN_BYTES'
+];
 const HEADER_LINE_PREFIX = '//!';
 const ERROR_PREFIX = 'ERROR_';
 // ERROR_ constants that are no error code
@@ -63,21 +69,37 @@ function readErrorDirectives(lines) {
     return directives;
 }
 
-/** Returns the byte length the header's `//! packet: <count> [KiB|MiB]` line bounds every packet to. */
-function readPacketByteLength(lines) {
+/**
+ * Returns the packet bound the RECORD_PACKET_ constants describe as the header's expression over the pool's facts: per 4x4 luma unit (a sixteenth
+ * of a luma sample's bytes) the unit words, and per plane's unit the plane words and 16 coefficients of bit depth + bias bits (half a word a bit),
+ * the plane units being 1 + 2 / (chroma width divisor x chroma height divisor) per luma unit, then the margin, clamped to the minimum and maximum.
+ */
+function getPacketBound(constants) {
+    const [ minimum, maximum, unitWords, planeUnitWords, coefficientBitBias, marginSamples, marginBytes ] = PACKET_CONSTANT_NAMES.map(name => {
+        if (!constants.has(name)) {
+            throw new Error(`The WGSL declares no ${name}`);
+        }
+        return constants.get(name);
+    });
+    const planeUnits = '(1 + 2 / (output.chromaWidthDivisor * output.chromaHeightDivisor))';
+    const unitBytes = `(${unitWords} + ${planeUnits} * (${planeUnitWords} + (output.bitDepth + ${coefficientBitBias}) / 2)) / 4`;
+    return `max(${minimum}, min(${maximum}, stream.width * stream.height * ${unitBytes} + stream.width * stream.height / ${marginSamples} + ${marginBytes}))`;
+}
+
+/** Fails unless the header's `//! packet:` line is the bound the RECORD_PACKET_ constants describe. */
+function requireMatchingPacketBound(lines, constants) {
+    const expected = getPacketBound(constants);
     for (const line of lines) {
         if (!line.startsWith(HEADER_LINE_PREFIX)) {
             break;
         }
-        if (!line.startsWith(PACKET_DIRECTIVE_PREFIX)) {
-            continue;
+        if (line.startsWith(PACKET_DIRECTIVE_PREFIX)) {
+            const declared = line.slice(PACKET_DIRECTIVE_PREFIX.length).trim();
+            if (declared !== expected) {
+                throw new Error(`The //! packet line differs from the RECORD_PACKET_ constants' bound: ${expected}`);
+            }
+            return;
         }
-        const [ count, unit, ...rest ] = line.slice(PACKET_DIRECTIVE_PREFIX.length).trim().split(WHITESPACE_PATTERN);
-        const unitByteLength = unit === undefined ? 1 : UNIT_BYTE_LENGTHS.get(unit);
-        if (!DECIMAL_PATTERN.test(count) || unitByteLength === undefined || rest.length > 0) {
-            throw new Error(`The //! packet line is not a size: ${line}`);
-        }
-        return Number(count) * unitByteLength;
     }
     throw new Error('The header has no //! packet line');
 }
@@ -100,12 +122,9 @@ function main() {
     const lines = readFileSync(resolve(sourcePath), 'utf8').split(LINE_PATTERN);
     const constants = readConstants(lines);
     requireMatchingErrors(constants, readErrorDirectives(lines));
-    if (constants.has(PACKET_CONSTANT_NAME)) {
-        throw new Error(`${PACKET_CONSTANT_NAME} comes from the //! packet line`);
-    }
-    constants.set(PACKET_CONSTANT_NAME, readPacketByteLength(lines));
+    requireMatchingPacketBound(lines, constants);
     const output = [
-        '// Generated by wgpud/av1/parser/record_layout.mjs from the RECORD_ and ERROR_ constants and the packet bound of av1.wgsl',
+        '// Generated by wgpud/av1/parser/record_layout.mjs from the RECORD_ and ERROR_ constants of av1.wgsl',
         `#ifndef ${HEADER_GUARD}`,
         `#define ${HEADER_GUARD}`,
         '',

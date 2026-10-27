@@ -1,15 +1,16 @@
 //! name: AV1
 //! id: av1
 //! decoder: video
-//! accepts: codec in [av1], picture.width <= 8192, picture.height <= 4352, picture.width * picture.height <= 8912896
+//! accepts: codec in [av1], picture.width <= 16384, picture.height <= 8704, picture.width * picture.height <= 35651584
 //! output: I420, I420P10, I420P12, I422, I422P10, I422P12, I444, I444P10, I444P12
 //! monochrome: yes
 //! parser: 2
 //! references: 0
 //! reorder: 0
-//! packet: 64 MiB
+//! packet: max(67108864, min(536870912, stream.width * stream.height * (11 + (1 + 2 / (output.chromaWidthDivisor * output.chromaHeightDivisor)) * (7 + (output.bitDepth + 8) / 2)) / 4 + stream.width * stream.height / 32 + 65536))
 //! state: 1 KiB
-//! buffer: frames, 20 * stream.width * stream.height * (1 + 2 / (output.chromaWidthDivisor * output.chromaHeightDivisor))
+//! buffer: frames, 10 * stream.width * stream.height * (1 + 2 / (output.chromaWidthDivisor * output.chromaHeightDivisor))
+//! buffer: framesHigh, 10 * stream.width * stream.height * (1 + 2 / (output.chromaWidthDivisor * output.chromaHeightDivisor))
 //! buffer: frameData, stream.width * stream.height / 4 + 24 * (ceil(stream.height / 64) + 2) * stream.width + 655360
 //! error: 1, configuration
 //! error: 2, bitstreamCorrupt, resync
@@ -48,8 +49,8 @@
 // The package's WGSL is this file followed by the family files decoder.json lists, concatenated in order: wgsl/transform.wgsl,
 // wgsl/intra.wgsl, wgsl/inter.wgsl, and wgsl/filters.wgsl. This file owns the header, the record layout, the frame store, the
 // helpers every family shares, and the entry points; each entry point calls its family's functions, which scratch/av1/DESIGN.md specifies.
-// References live in the frames buffer: ten frame buffers the parser assigns, which the record names by index, so the frame pool
-// only receives the shown frames, with film grain applied.
+// References live in the frame store, the frames and framesHigh buffers: ten frame buffers the parser assigns, which the record
+// names by index, so the frame pool only receives the shown frames, with film grain applied.
 // The parser reports each picture's wave pairs, so the intra wavefront runs only the waves that hold jobs.
 
 // The GPU record of one frame: its magic and version, its limits, and the word offsets of its fields.
@@ -60,15 +61,33 @@ const RECORD_VERSION: u32 = 2u;
 const RECORD_MISSING: u32 = 4294967295u;
 const RECORD_KIND_DECODE: u32 = 0u;
 const RECORD_KIND_SHOW_EXISTING: u32 = 1u;
-const RECORD_MAXIMUM_WIDTH: u32 = 8192u;
-const RECORD_MAXIMUM_HEIGHT: u32 = 4352u;
-const RECORD_MAXIMUM_AREA: u32 = 8912896u;
+const RECORD_MAXIMUM_WIDTH: u32 = 16384u;
+const RECORD_MAXIMUM_HEIGHT: u32 = 8704u;
+const RECORD_MAXIMUM_AREA: u32 = 35651584u;
 const RECORD_FRAME_BUFFERS: u32 = 10u;
+// The frame buffers the frames buffer holds; framesHigh holds the rest, so neither binding holds more than half of the frame store
+const RECORD_FRAME_BUFFERS_LOW: u32 = 5u;
 const RECORD_REFERENCES: u32 = 7u;
 const RECORD_PLANES: u32 = 3u;
 const RECORD_MAXIMUM_TILE_COLUMNS: u32 = 64u;
 const RECORD_MAXIMUM_TILE_ROWS: u32 = 64u;
 const RECORD_CDEF_STRENGTHS: u32 = 8u;
+
+// The packet bound, a record's worst case for a pool of stream.width x stream.height, which the header's packet line spells out and
+// parser/record_layout.mjs checks against these: per 4x4 luma unit, RECORD_PACKET_UNIT_WORDS for a 4x4 block and its side data
+// (4 block words, 3 motion words, and 4 variable transform words, more than an 8x8 palette or warp takes per unit); per 4x4 unit of
+// each plane, RECORD_PACKET_PLANE_UNIT_WORDS for an intra job (3), a transform job (3), and its payload's partial last word (1), and
+// 16 coefficients of bit depth + RECORD_PACKET_COEFFICIENT_BIT_BIAS bits, libaom's dequantized range; one byte per
+// RECORD_PACKET_MARGIN_SAMPLES luma samples and RECORD_PACKET_MARGIN_BYTES for the superblocks, restoration units, and header;
+// all of it at least RECORD_PACKET_MINIMUM_BYTES, the bound before level 6, and at most RECORD_PACKET_MAXIMUM_BYTES, the engine's
+// largest packet. The parser judges each record against the bound of its frame's size rounded up to 64, never above its session's
+const RECORD_PACKET_UNIT_WORDS: u32 = 11u;
+const RECORD_PACKET_PLANE_UNIT_WORDS: u32 = 7u;
+const RECORD_PACKET_COEFFICIENT_BIT_BIAS: u32 = 8u;
+const RECORD_PACKET_MARGIN_SAMPLES: u32 = 32u;
+const RECORD_PACKET_MARGIN_BYTES: u32 = 65536u;
+const RECORD_PACKET_MINIMUM_BYTES: u32 = 67108864u;
+const RECORD_PACKET_MAXIMUM_BYTES: u32 = 536870912u;
 
 // Header words
 const RECORD_HEADER_MAGIC: u32 = 0u;
@@ -620,7 +639,9 @@ fn readReferenceWord(referenceIndex: u32, word: u32) -> u32 {
     return readRecordWord(RECORD_HEADER_REFERENCES + referenceIndex * RECORD_REFERENCE_WORDS + word);
 }
 
-// Frame store: RECORD_FRAME_BUFFERS frame buffers of 16-bit samples, two per word, each plane sized for the session's largest frame
+// Frame store: RECORD_FRAME_BUFFERS frame buffers of 16-bit samples, two per word, each plane sized for the session's largest frame.
+// It spans two buffers, so a device whose largest binding holds half of it holds the store: frames holds frame buffers 0 to
+// RECORD_FRAME_BUFFERS_LOW - 1 and framesHigh the rest, and a word index runs on from one to the other
 
 // A plane's allocated width in samples
 fn getStorePlaneWidth(plane: u32) -> u32 {
@@ -657,20 +678,39 @@ fn getStoreWordIndex(frameBuffer: u32, plane: u32, x: u32, y: u32) -> u32 {
     return frameBuffer * getStoreBufferWords() + planeOffset + y * (getStorePlaneWidth(plane) >> SAMPLE_PAIR_SHIFT) + (x >> SAMPLE_PAIR_SHIFT);
 }
 
+// Reads a word of the frame store
+fn readFrameWord(word: u32) -> u32 {
+    let lowWords = arrayLength(&frames);
+    if (word < lowWords) {
+        return frames[word];
+    }
+    return framesHigh[word - lowWords];
+}
+
+// Writes a word of the frame store
+fn writeFrameWord(word: u32, value: u32) {
+    let lowWords = arrayLength(&frames);
+    if (word < lowWords) {
+        frames[word] = value;
+        return;
+    }
+    framesHigh[word - lowWords] = value;
+}
+
 // Reads a sample of a frame buffer
 fn readStoreSample(frameBuffer: u32, plane: u32, x: u32, y: u32) -> u32 {
-    let word = frames[getStoreWordIndex(frameBuffer, plane, x, y)];
+    let word = readFrameWord(getStoreWordIndex(frameBuffer, plane, x, y));
     return (word >> ((x & 1u) * SAMPLE_HALF_BITS)) & SAMPLE_HALF_MASK;
 }
 
 // Writes samples (x, y) and (x + 1, y) of a frame buffer, x even; one invocation owns each word
 fn writeStoreSamplePair(frameBuffer: u32, plane: u32, x: u32, y: u32, samples: vec2u) {
-    frames[getStoreWordIndex(frameBuffer, plane, x, y)] = (samples.x & SAMPLE_HALF_MASK) | ((samples.y & SAMPLE_HALF_MASK) << SAMPLE_HALF_BITS);
+    writeFrameWord(getStoreWordIndex(frameBuffer, plane, x, y), (samples.x & SAMPLE_HALF_MASK) | ((samples.y & SAMPLE_HALF_MASK) << SAMPLE_HALF_BITS));
 }
 
 // Reads a residual sample, which the record's scratch buffer holds as a signed 16-bit sample while the frame reconstructs
 fn readResidualSample(plane: u32, x: u32, y: u32) -> i32 {
-    let word = frames[getStoreWordIndex(readRecordWord(RECORD_HEADER_SCRATCH_BUFFER), plane, x, y)];
+    let word = readFrameWord(getStoreWordIndex(readRecordWord(RECORD_HEADER_SCRATCH_BUFFER), plane, x, y));
     return bitcast<i32>(word << ((1u - (x & 1u)) * SAMPLE_HALF_BITS)) >> SAMPLE_HALF_BITS;
 }
 
@@ -678,7 +718,7 @@ fn readResidualSample(plane: u32, x: u32, y: u32) -> i32 {
 fn writeResidualPair(plane: u32, x: u32, y: u32, residuals: vec2i) {
     let low = u32(clamp(residuals.x, -32768, 32767)) & SAMPLE_HALF_MASK;
     let high = u32(clamp(residuals.y, -32768, 32767)) & SAMPLE_HALF_MASK;
-    frames[getStoreWordIndex(readRecordWord(RECORD_HEADER_SCRATCH_BUFFER), plane, x, y)] = low | (high << SAMPLE_HALF_BITS);
+    writeFrameWord(getStoreWordIndex(readRecordWord(RECORD_HEADER_SCRATCH_BUFFER), plane, x, y), low | (high << SAMPLE_HALF_BITS));
 }
 
 // Frame data areas
@@ -850,7 +890,7 @@ fn getPictureSizeError(dimension: u32) -> u32 {
     return (ERROR_PICTURE_SIZE << ERROR_CODE_SHIFT) | (dimension & ERROR_VALUE_MASK);
 }
 
-// Whether a frame buffer index names one of the frames buffer's frame buffers, or RECORD_MISSING where allowed
+// Whether a frame buffer index names one of the frame store's frame buffers, or RECORD_MISSING where allowed
 fn isFrameBufferValid(frameBuffer: u32, allowMissing: bool) -> bool {
     return frameBuffer < RECORD_FRAME_BUFFERS || (allowMissing && frameBuffer == RECORD_MISSING);
 }
@@ -990,6 +1030,12 @@ fn validateRecord() -> u32 {
     if (frameHeight == 0u || frameHeight > stream.height) {
         return getPictureSizeError(frameHeight);
     }
+    // The frames buffer holds exactly its frame buffers, where framesHigh's begin, as the header sizes both
+    let bufferWords = getStoreBufferWords();
+    if (arrayLength(&frames) != RECORD_FRAME_BUFFERS_LOW * bufferWords
+        || arrayLength(&framesHigh) < (RECORD_FRAME_BUFFERS - RECORD_FRAME_BUFFERS_LOW) * bufferWords) {
+        return (ERROR_FRAME_BUFFERS << ERROR_CODE_SHIFT) | RECORD_FRAME_BUFFERS_LOW;
+    }
     if (!isFrameBufferValid(readRecordWord(RECORD_HEADER_OUTPUT_BUFFER), false)) {
         return getRecordInvalidError(RECORD_INVALID_BUFFER);
     }
@@ -1082,7 +1128,7 @@ fn clearResiduals(@builtin(workgroup_id) workgroup: vec3u, @builtin(local_invoca
     if (x >= getStorePlaneWidth(plane) || workgroup.y >= getStorePlaneHeight(plane)) {
         return;
     }
-    frames[getStoreWordIndex(readRecordWord(RECORD_HEADER_SCRATCH_BUFFER), plane, x, workgroup.y)] = 0u;
+    writeFrameWord(getStoreWordIndex(readRecordWord(RECORD_HEADER_SCRATCH_BUFFER), plane, x, workgroup.y), 0u);
 }
 
 // Writes the mode info map: each workgroup takes blocks workgroup.x, workgroup.x + workgroup count, ..., and its lanes take each

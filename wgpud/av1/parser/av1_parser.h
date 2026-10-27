@@ -89,6 +89,8 @@ typedef struct FrameSections {
   uint32_t wave_count;
   // The record's words so far, its header included, against the packet bound
   size_t record_words;
+  // The packet bound in words for the frame's size rounded up to 64, which never exceeds its session's
+  size_t packet_words;
 } FrameSections;
 
 // A picture of the packet being planned: its GPU record and its output event

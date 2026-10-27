@@ -8,8 +8,11 @@ import { describe, expect, it } from 'vitest';
 import type { VideoDecoderPackage } from 'webgpu-player/decode/packages/DecoderPackage';
 import { instantiateDecoderPackage } from 'webgpu-player/decode/packages/DecoderPackageImports';
 import type { GPUDecoderOutputFormat } from 'webgpu-player/decode/video/gpu/GPUDecodeFormats';
-import { GPU_DECODER_PARSER_ABI_VERSION } from 'webgpu-player/decode/video/gpu/GPUDecodeLimits';
+import { GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH, GPU_DECODER_PARSER_ABI_VERSION, MEBIBYTE } from 'webgpu-player/decode/video/gpu/GPUDecodeLimits';
 import { parseGPUDecoderManifest } from 'webgpu-player/decode/video/gpu/GPUDecoderManifest';
+import { evaluateGPUDecoderBufferSizes, findGPUDecoderAcceptsFailure, findGPUDecoderStreamFitFailure } from 'webgpu-player/decode/video/gpu/GPUDecoderStreamFit';
+import type { GPUDecoderManifest, GPUDecoderPictureSize, GPUDecodeStreamFacts } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
+import { createGPUDecodeStreamFacts } from 'webgpu-player/decode/video/gpu/GPUFramePool';
 import { parseGPUDecoderVectorSet, type GPUDecoderVector } from 'webgpu-player/decode/video/gpu/GPUDecoderVectorSet';
 
 import {
@@ -56,6 +59,30 @@ const EVENT_DROP_BIT = 0x8000_0000;
 const EVENT_INDEX_MASK = 0x3FFF_FFFF;
 const BYTES_PER_WORD = 4;
 const VECTORS_FILE = join(DECODERS_DIRECTORY, PROJECT, `${PROJECT}.vectors`);
+// Pictures within AV1's level 6.x, 16384x8704 and 35,651,584 samples, and pictures past it on each bound
+const LEVEL_6_PICTURES: readonly GPUDecoderPictureSize[] = [
+    { height: 4320, width: 7680 },
+    { height: 4352, width: 8192 },
+    { height: 2176, width: 16384 },
+    { height: 8704, width: 4096 },
+    { height: 2184, width: 16321 }
+];
+const BEYOND_LEVEL_6_PICTURES: readonly GPUDecoderPictureSize[] = [
+    { height: 1088, width: 16640 },
+    { height: 8960, width: 2048 },
+    { height: 4353, width: 8192 }
+];
+const FULL_HD: GPUDecoderPictureSize = { height: 1080, width: 1920 };
+const EIGHT_K: GPUDecoderPictureSize = { height: 4320, width: 7680 };
+const LEVEL_6_LARGEST: GPUDecoderPictureSize = { height: 4352, width: 8192 };
+// The 64 MiB every stream's packets take at least, the bound before level 6
+const MINIMUM_PACKET_BYTE_LENGTH = 64 * MEBIBYTE;
+// Devices whose largest buffer and binding hold 2 GiB, as the RTX 5080's under Dawn, 1 GiB, and 512 MiB
+const TWO_GIBIBYTES = 2048 * MEBIBYTE;
+const ONE_GIBIBYTE = 1024 * MEBIBYTE;
+const HALF_GIBIBYTE = 512 * MEBIBYTE;
+// A device that holds the largest 4:4:4 12-bit pool but not half of its frame store, 1,069,547,520 bytes
+const THOUSAND_MEBIBYTES = 1000 * MEBIBYTE;
 
 describe('The AV1 project\'s decoder sources', () => {
     it('lists av1.wgsl, then the transform, intra, inter, and filters families', () => {
@@ -88,6 +115,44 @@ describe('The AV1 project\'s decoder sources', () => {
         expect(manifest.name).toBe(DECODER_NAME);
         expect(manifest.outputFormats).toHaveLength(OUTPUT_FORMAT_COUNT);
         expect([ ...manifest.errors.keys() ].sort((first: number, second: number): number => first - second)).toEqual(errorCodes);
+    });
+});
+
+describe('The AV1 decoder\'s sizes', () => {
+    it('takes pictures up to level 6.x, 8K included, and refuses pictures past any of its bounds', async () => {
+        const manifest = await readAV1Manifest();
+
+        for (const picture of LEVEL_6_PICTURES) {
+            expect(findGPUDecoderAcceptsFailure(manifest, getPictureStream(picture, 'I420P10'), 'I420P10'), `${picture.width}x${picture.height}`).toBeNull();
+        }
+        for (const picture of BEYOND_LEVEL_6_PICTURES) {
+            expect(findGPUDecoderAcceptsFailure(manifest, getPictureStream(picture, 'I420P10'), 'I420P10'), `${picture.width}x${picture.height}`).toMatch(/^accepts: /);
+        }
+    });
+
+    it('bounds each stream\'s packets by its records\' worst case, from 64 MiB to the largest packet a header may declare', async () => {
+        const manifest = await readAV1Manifest();
+        const packetByteLength = (picture: GPUDecoderPictureSize, format: GPUDecoderOutputFormat): number =>
+            evaluateGPUDecoderBufferSizes(manifest, getPictureStream(picture, format), format).packetByteLength;
+
+        expect(packetByteLength(FULL_HD, 'I444P12')).toBe(MINIMUM_PACKET_BYTE_LENGTH);
+        expect(packetByteLength(EIGHT_K, 'I420')).toBeGreaterThan(MINIMUM_PACKET_BYTE_LENGTH);
+        expect(packetByteLength(EIGHT_K, 'I420P10')).toBeGreaterThan(packetByteLength(EIGHT_K, 'I420'));
+        expect(packetByteLength(EIGHT_K, 'I422P10')).toBeGreaterThan(packetByteLength(EIGHT_K, 'I420P10'));
+        expect(packetByteLength(EIGHT_K, 'I444P10')).toBeLessThan(GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
+        expect(packetByteLength(LEVEL_6_LARGEST, 'I444P12')).toBe(GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
+    });
+
+    it('fits the largest level 6 pictures on a device that holds half the frame store and the packet ring, and names what a smaller one cannot hold', async () => {
+        const manifest = await readAV1Manifest();
+        const fit = (picture: GPUDecoderPictureSize, format: GPUDecoderOutputFormat, limit: number): string | null =>
+            findGPUDecoderStreamFitFailure(manifest, getPictureStream(picture, format), format, limit);
+
+        expect(fit(LEVEL_6_LARGEST, 'I444P12', TWO_GIBIBYTES)).toBeNull();
+        expect(fit(EIGHT_K, 'I420P10', ONE_GIBIBYTE)).toBeNull();
+        expect(fit(LEVEL_6_LARGEST, 'I444P12', ONE_GIBIBYTE)).toBeNull();
+        expect(fit(LEVEL_6_LARGEST, 'I444P12', THOUSAND_MEBIBYTES)).toMatch(/^buffer-size: frames \d+ > \d+$/);
+        expect(fit(EIGHT_K, 'I420P10', HALF_GIBIBYTE)).toMatch(/^packet-size: ring \d+ > \d+$/);
     });
 });
 
@@ -150,3 +215,15 @@ function decodePacket(session: AV1ParserSession, bytes: Uint8Array, format: stri
     }
     return presented;
 }
+
+/** The AV1 decoder's manifest, from its joined sources as the package tool joins them. */
+async function readAV1Manifest(): Promise<GPUDecoderManifest> {
+    const tool = await loadDecoderPackageFormatTool();
+    return parseGPUDecoderManifest(tool.joinDecoderSources(readDecoderProjectSourceFiles(PROJECT)));
+}
+
+/** The stream facts of a picture's pool, its size rounded up to 64, as the route creates them. */
+function getPictureStream(picture: GPUDecoderPictureSize, format: GPUDecoderOutputFormat): GPUDecodeStreamFacts {
+    return createGPUDecodeStreamFacts(picture.width, picture.height, format);
+}
+
