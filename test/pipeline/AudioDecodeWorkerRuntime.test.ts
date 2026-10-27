@@ -165,6 +165,7 @@ function createOpenRequest(overrides: Partial<AudioDecodeWorkerOpenAttemptReques
         audioDownmixAlgorithm: DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
         audioDownmixSettings: createDefaultAudioDownmixSettings(),
         audioOutput: null,
+        channelMask: null,
         decoderBackend: 'pcm',
         outputChannelCount: STEREO_CHANNEL_COUNT,
         packageDecoder: null,

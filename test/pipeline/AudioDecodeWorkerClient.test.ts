@@ -123,6 +123,7 @@ function createOptions(audioOutput: DecodeWorkerAudioOutputAttachment | null = n
         audioDownmixAlgorithm: DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
         audioDownmixSettings: createDefaultAudioDownmixSettings(),
         audioOutput,
+        channelMask: null,
         decoderBackend: 'pcm',
         outputChannelCount: STEREO_CHANNEL_COUNT,
         packageDecoder: null,
