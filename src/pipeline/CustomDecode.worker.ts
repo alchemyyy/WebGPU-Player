@@ -1,6 +1,7 @@
 /* eslint-disable no-restricted-globals */
 import {
     ALL_FORMATS,
+    AviInputFormat,
     BlobSource,
     Input,
     MpegTsInputFormat,
@@ -199,6 +200,8 @@ import {
 } from '../demux/dolby-vision/MPEGTransportStreamDolbyVisionConfiguration';
 import type { AudioDecoderPackageSelection } from '../decode/audio/AudioDecoderPackageInstance';
 import { readVC1TrackConfiguration, VC1_TRACK_INTERNAL_CODEC_IDS, type VC1TrackCodec } from '../demux/vc1/VC1TrackConfiguration';
+import { MPEG4_TRACK_INTERNAL_CODEC_IDS, readMPEG4TrackConfiguration, type MPEG4TrackCodec } from '../demux/mpeg4/MPEG4TrackConfiguration';
+import { formatFourCC } from '../demux/BitmapInfoHeader';
 import {
     MATROSKA_MPEG1_CODEC_ID,
     MATROSKA_MPEG2_CODEC_ID,
@@ -822,7 +825,9 @@ function classifyFailure(error: unknown): CustomDecodeFailureKind {
 
 /** How a GPU decoder reads a track of a codec Mediabunny does not decode: by the container codec IDs of the tracks it takes. */
 type FocusedVideoRoute = Readonly<{
-    codec: 'jpeg2000' | 'mpeg1video' | 'mpeg2video' | VC1TrackCodec
+    /** Whether the route reads AVI tracks, whose codec ID is the strf FourCC its track configuration checks */
+    aviTracks: boolean
+    codec: 'jpeg2000' | 'mpeg1video' | 'mpeg2video' | MPEG4TrackCodec | VC1TrackCodec
     decoderCodec: string
     errorName: string
     includeColorSpace: boolean
@@ -830,6 +835,8 @@ type FocusedVideoRoute = Readonly<{
 }>;
 
 type FocusedVideoTrackInput = Readonly<{
+    /** Whether the track is an AVI track, whose codec ID is its strf FourCC */
+    avi: boolean
     availableVideoTracks: readonly InputVideoTrack[]
     codedHeight: number
     codedWidth: number
@@ -844,6 +851,7 @@ type FocusedVideoTrackInput = Readonly<{
 }>;
 
 const JPEG2000_FOCUSED_ROUTE: FocusedVideoRoute = {
+    aviTracks: false,
     codec: 'jpeg2000',
     decoderCodec: 'mjp2',
     errorName: 'MJ2',
@@ -852,6 +860,7 @@ const JPEG2000_FOCUSED_ROUTE: FocusedVideoRoute = {
 };
 // VC-1 Advanced profile in Matroska VfW tracks and ISO base media vc-1 sample entries
 const VC1_FOCUSED_ROUTE: FocusedVideoRoute = {
+    aviTracks: false,
     codec: 'vc1',
     decoderCodec: 'vc1',
     errorName: 'VC-1',
@@ -860,6 +869,7 @@ const VC1_FOCUSED_ROUTE: FocusedVideoRoute = {
 };
 // WMV3, the VC-1 Simple and Main profiles, in Matroska VfW tracks
 const WMV3_FOCUSED_ROUTE: FocusedVideoRoute = {
+    aviTracks: false,
     codec: 'wmv3',
     decoderCodec: 'wmv3',
     errorName: 'WMV3',
@@ -867,6 +877,7 @@ const WMV3_FOCUSED_ROUTE: FocusedVideoRoute = {
     internalCodecIDs: VC1_TRACK_INTERNAL_CODEC_IDS.wmv3
 };
 const MPEG1_FOCUSED_ROUTE: FocusedVideoRoute = {
+    aviTracks: false,
     codec: 'mpeg1video',
     decoderCodec: 'mpeg1video',
     errorName: 'MPEG-1',
@@ -874,11 +885,55 @@ const MPEG1_FOCUSED_ROUTE: FocusedVideoRoute = {
     internalCodecIDs: [ MATROSKA_MPEG1_CODEC_ID ]
 };
 const MPEG2_FOCUSED_ROUTE: FocusedVideoRoute = {
+    aviTracks: false,
     codec: 'mpeg2video',
     decoderCodec: 'mpeg2video',
     errorName: 'MPEG-2',
     includeColorSpace: true,
     internalCodecIDs: [ MATROSKA_MPEG2_CODEC_ID ]
+};
+// MPEG-4 Part 2, H.263, and MS-MPEG4 in Matroska, ISO base media, and AVI tracks, which Mediabunny names mpeg4 or leaves codec-less
+const MPEG4_FOCUSED_ROUTES: Readonly<Record<MPEG4TrackCodec, FocusedVideoRoute>> = {
+    h263: {
+        aviTracks: true,
+        codec: 'h263',
+        decoderCodec: 'h263',
+        errorName: 'H.263',
+        includeColorSpace: true,
+        internalCodecIDs: MPEG4_TRACK_INTERNAL_CODEC_IDS.h263
+    },
+    mpeg4: {
+        aviTracks: true,
+        codec: 'mpeg4',
+        decoderCodec: 'mpeg4',
+        errorName: 'MPEG-4 Part 2',
+        includeColorSpace: true,
+        internalCodecIDs: MPEG4_TRACK_INTERNAL_CODEC_IDS.mpeg4
+    },
+    msmpeg4v1: {
+        aviTracks: true,
+        codec: 'msmpeg4v1',
+        decoderCodec: 'msmpeg4v1',
+        errorName: 'MS-MPEG4 v1',
+        includeColorSpace: true,
+        internalCodecIDs: MPEG4_TRACK_INTERNAL_CODEC_IDS.msmpeg4v1
+    },
+    msmpeg4v2: {
+        aviTracks: true,
+        codec: 'msmpeg4v2',
+        decoderCodec: 'msmpeg4v2',
+        errorName: 'MS-MPEG4 v2',
+        includeColorSpace: true,
+        internalCodecIDs: MPEG4_TRACK_INTERNAL_CODEC_IDS.msmpeg4v2
+    },
+    msmpeg4v3: {
+        aviTracks: true,
+        codec: 'msmpeg4v3',
+        decoderCodec: 'msmpeg4v3',
+        errorName: 'MS-MPEG4 v3',
+        includeColorSpace: true,
+        internalCodecIDs: MPEG4_TRACK_INTERNAL_CODEC_IDS.msmpeg4v3
+    }
 };
 
 /** Returns how a GPU decoder reads a track of a codec Mediabunny does not decode, or null for any other route. */
@@ -897,6 +952,12 @@ function getFocusedVideoRoute(request: Extract<DecodeWorkerRequest, { type: 'sta
             return MPEG1_FOCUSED_ROUTE;
         case MPEG2_FOCUSED_ROUTE.codec:
             return MPEG2_FOCUSED_ROUTE;
+        case 'h263':
+        case 'mpeg4':
+        case 'msmpeg4v1':
+        case 'msmpeg4v2':
+        case 'msmpeg4v3':
+            return MPEG4_FOCUSED_ROUTES[request.gpuVideoCodec];
         default:
             return null;
     }
@@ -904,7 +965,8 @@ function getFocusedVideoRoute(request: Extract<DecodeWorkerRequest, { type: 'sta
 
 /**
  * Returns the codec private data a focused route's decoder receives, null for a route without any, and the track its packets come from.
- * MPEG-1 and MPEG-2 take their track's CodecPrivate when it has one; VC-1 and WMV3 always take codec private data, and a VfW track of either restamps its packets in presentation order.
+ * MPEG-1 and MPEG-2 take their track's CodecPrivate when it has one; VC-1, WMV3, MPEG-4 Part 2, H.263, and MS-MPEG4 always take codec private data,
+ * and a VfW track of VC-1 or WMV3, or an AVI or VfW track of MPEG-4 Part 2, restamps its packets in presentation order.
  * An MPEG-TS or M2TS track has no codec private data, so it takes its first sequence header's extradata, and stamps its packets in presentation order already.
  */
 async function readFocusedVideoTrackConfiguration(
@@ -914,13 +976,7 @@ async function readFocusedVideoTrackConfiguration(
 ): Promise<Readonly<{ description: Uint8Array | null, videoTrack: InputVideoTrack }>> {
     const transportStreamCodec = input.transportStream ? getTransportStreamVideoCodec(input.containerCodec) : null;
     if (transportStreamCodec !== null) {
-        const configuration = await readTransportStreamVideoDecoderDescription(transportStreamCodec, input.videoTrack);
-        if (configuration.status === 'failed') {
-            throw new UnsupportedCustomDecodeSourceError(
-                `The selected ${route.errorName} track has no decoder configuration: ${configuration.failure}`
-            );
-        }
-        return { description: configuration.description, videoTrack: input.videoTrack };
+        return requireFocusedTrackConfiguration(route, await readTransportStreamVideoDecoderDescription(transportStreamCodec, input.videoTrack), input.videoTrack);
     }
     switch (route.codec) {
         case 'jpeg2000':
@@ -929,16 +985,41 @@ async function readFocusedVideoTrackConfiguration(
         case 'mpeg2video':
             return { description: readMatroskaMPEGVideoDecoderDescription(input.videoTrack), videoTrack: input.videoTrack };
         case 'vc1':
-        case 'wmv3': {
-            const configuration = await readVC1TrackConfiguration(route.codec, input.videoTrack, internalCodecID, input.codedWidth, input.codedHeight);
-            if (configuration.status === 'failed') {
-                throw new UnsupportedCustomDecodeSourceError(
-                    `The selected ${route.errorName} track has no decoder configuration: ${configuration.failure}`
-                );
-            }
-            return configuration;
-        }
+        case 'wmv3':
+            return requireFocusedTrackConfiguration(
+                route,
+                await readVC1TrackConfiguration(route.codec, input.videoTrack, internalCodecID, input.codedWidth, input.codedHeight),
+                input.videoTrack
+            );
+        case 'h263':
+        case 'mpeg4':
+        case 'msmpeg4v1':
+        case 'msmpeg4v2':
+        case 'msmpeg4v3':
+            return requireFocusedTrackConfiguration(
+                route,
+                await readMPEG4TrackConfiguration(route.codec, input.videoTrack, {
+                    avi: input.avi,
+                    codedHeight: input.codedHeight,
+                    codedWidth: input.codedWidth,
+                    containerCodec: input.containerCodec,
+                    internalCodecID
+                }),
+                input.videoTrack
+            );
     }
+}
+
+/** Returns a focused route's track configuration, with the track it was read from unless the configuration replaces it, or refuses the check that failed. */
+function requireFocusedTrackConfiguration(
+    route: FocusedVideoRoute,
+    configuration: Readonly<{ description: Uint8Array, status: 'read', videoTrack?: InputVideoTrack }> | Readonly<{ failure: string, status: 'failed' }>,
+    videoTrack: InputVideoTrack
+): Readonly<{ description: Uint8Array, videoTrack: InputVideoTrack }> {
+    if (configuration.status === 'failed') {
+        throw new UnsupportedCustomDecodeSourceError(`The selected ${route.errorName} track has no decoder configuration: ${configuration.failure}`);
+    }
+    return { description: configuration.description, videoTrack: configuration.videoTrack ?? videoTrack };
 }
 
 /** Returns the check a track or its request fails for a focused route, as `code: detail`, or null when both match it. */
@@ -948,7 +1029,8 @@ function findFocusedVideoRouteMismatch(route: FocusedVideoRoute, input: FocusedV
         if (getTransportStreamVideoCodec(input.containerCodec) !== route.codec) {
             return `container-codec: ${input.containerCodec}`;
         }
-    } else if (typeof input.internalCodecID !== 'string' || !route.internalCodecIDs.includes(input.internalCodecID)) {
+    } else if (!(input.avi && route.aviTracks) && (typeof input.internalCodecID !== 'string' || !route.internalCodecIDs.includes(input.internalCodecID))) {
+        // An AVI track's codec ID is its FourCC, which the route's track configuration checks
         return `codec-id: ${String(input.internalCodecID)}`;
     }
     if (input.request.videoOutputMode !== 'frame-pool') {
@@ -1132,12 +1214,17 @@ function requireRouteVideoCodec(codec: VideoCodec, request: Extract<DecodeWorker
     }
 }
 
+/**
+ * Names the codec ID of a track no route takes because Mediabunny names no codec for it: an AVI track's strf FourCC, as `fourcc: <FourCC>`, and any
+ * other container's codec ID, as `codec-id: <ID>`.
+ */
+function describeCodecLessVideoTrack(internalCodecID: unknown, avi: boolean): string {
+    const codecID = String(internalCodecID);
+    return avi ? `fourcc: ${formatFourCC(codecID)}` : `codec-id: ${codecID}`;
+}
+
 /** Refuses a video track Mediabunny identifies but no route can play as it demuxes it. */
-async function requireDemuxableVideoTrack(input: Input, videoTrack: InputVideoTrack, codec: VideoCodec | null): Promise<void> {
-    // Mediabunny identifies MPEG-4 Part 2, which neither WebCodecs nor a decoder package decodes, and the engine keeps no CPU video decoder
-    if (codec === 'mpeg4') {
-        throw new UnsupportedCustomDecodeSourceError('The selected video codec has no decode route: mpeg4');
-    }
+async function requireDemuxableVideoTrack(input: Input, videoTrack: InputVideoTrack): Promise<void> {
     const unsupportedVideoFeature = await findUnsupportedTrackFeature(videoTrack);
     if (unsupportedVideoFeature !== null) {
         throw new UnsupportedCustomDecodeSourceError(`The selected video track has an edit list Mediabunny cannot honor: ${unsupportedVideoFeature}`);
@@ -1177,7 +1264,7 @@ async function prepareVideoTrack(
         videoTrack.getDisplayHeight(),
         videoTrack.getDisplayWidth()
     ]);
-    await requireDemuxableVideoTrack(input, videoTrack, codec);
+    await requireDemuxableVideoTrack(input, videoTrack);
     const dimensions = [ codedHeight, codedWidth, displayHeight, displayWidth ];
     if (dimensions.some(dimension => !Number.isSafeInteger(dimension) || dimension <= 0)) {
         throw new UnsupportedCustomDecodeSourceError('The selected video dimensions are invalid');
@@ -1189,7 +1276,10 @@ async function prepareVideoTrack(
         throw new UnsupportedCustomDecodeSourceError('The selected video container track number is invalid');
     }
 
+    const inputFormat = await input.getFormat();
+    const avi = inputFormat instanceof AviInputFormat;
     const focusedTrack = await prepareFocusedVideoTrack({
+        avi,
         availableVideoTracks: videoTracks,
         codedHeight,
         codedWidth,
@@ -1198,11 +1288,14 @@ async function prepareVideoTrack(
         displayWidth,
         internalCodecID,
         request,
-        transportStream: await input.getFormat() instanceof MpegTsInputFormat,
+        transportStream: inputFormat instanceof MpegTsInputFormat,
         videoTrack
     });
     if (focusedTrack) {
         return focusedTrack;
+    }
+    if (!codec) {
+        throw new UnsupportedCustomDecodeSourceError(`The selected video track has no decode route: ${describeCodecLessVideoTrack(internalCodecID, avi)}`);
     }
 
     // The frame-pool route decodes on the page's GPU, so the browser's own decoders need not take the track
@@ -1211,7 +1304,7 @@ async function prepareVideoTrack(
         videoTrack.getDecoderConfig(),
         framePool ? Promise.resolve(true) : videoTrack.canDecode()
     ]);
-    if (!codec || !containerDecoderConfig) {
+    if (!containerDecoderConfig) {
         throw new UnsupportedCustomDecodeSourceError('The selected video codec configuration is unavailable');
     }
     requireRouteVideoCodec(codec, request);
