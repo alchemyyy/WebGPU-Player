@@ -1,3 +1,4 @@
+import { splitAnnexBNALUnits, splitLengthPrefixedNALUnits } from '../NALUnitFraming';
 import {
     rewriteHEVCSPSColorDescriptionToBT709,
     type HEVCHDRTransfer
@@ -9,7 +10,7 @@ const DOLBY_VISION_ENHANCEMENT_WRAPPER_NAL_UNIT_TYPE = 63;
 const HEVC_VPS_NAL_UNIT_TYPE = 32;
 const HEVC_SPS_NAL_UNIT_TYPE = 33;
 const HEVC_PPS_NAL_UNIT_TYPE = 34;
-const MAXIMUM_NAL_UNIT_COUNT = 4_096;
+const HEVC_ACCESS_UNIT_SUBJECT = 'HEVC access unit';
 const MINIMUM_NAL_UNIT_BYTE_LENGTH = 2;
 
 /** The nuh_layer_id of the base layer, the only layer a single-layer HEVC decoder consumes. */
@@ -79,87 +80,12 @@ function parseNALUnit(data: Uint8Array): HEVCNALUnit {
     };
 }
 
-function readNALUnitLength(
-    data: Uint8Array,
-    offset: number,
-    lengthSize: HEVCLengthSize
-): number {
-    let byteLength = 0;
-    for (let byteIndex = 0; byteIndex < lengthSize; byteIndex += 1) {
-        byteLength = (byteLength * 256) + data[offset + byteIndex];
-    }
-    return byteLength;
-}
-
-function parseLengthPrefixedNALUnits(data: Uint8Array, lengthSize: HEVCLengthSize): HEVCNALUnit[] {
-    const nalUnits: HEVCNALUnit[] = [];
-    let offset = 0;
-    while (offset < data.byteLength) {
-        if (nalUnits.length >= MAXIMUM_NAL_UNIT_COUNT) {
-            throw new TypeError('The HEVC access unit contains too many NAL units');
-        }
-        if (offset + lengthSize > data.byteLength) {
-            throw new TypeError('The HEVC access unit ends inside a NAL unit length');
-        }
-        const nalUnitByteLength = readNALUnitLength(data, offset, lengthSize);
-        offset += lengthSize;
-        if (nalUnitByteLength < MINIMUM_NAL_UNIT_BYTE_LENGTH || offset + nalUnitByteLength > data.byteLength) {
-            throw new TypeError('The HEVC access unit contains an invalid NAL unit length');
-        }
-        nalUnits.push(parseNALUnit(data.subarray(offset, offset + nalUnitByteLength)));
-        offset += nalUnitByteLength;
-    }
-    return nalUnits;
-}
-
-function findAnnexBStartCode(data: Uint8Array, startOffset: number): { byteLength: 3 | 4, offset: number } | null {
-    for (let offset = startOffset; offset + 3 <= data.byteLength; offset += 1) {
-        if (data[offset] !== 0 || data[offset + 1] !== 0) {
-            continue;
-        }
-        if (data[offset + 2] === 1) {
-            return { byteLength: 3, offset };
-        }
-        if (offset + 4 <= data.byteLength && data[offset + 2] === 0 && data[offset + 3] === 1) {
-            return { byteLength: 4, offset };
-        }
-    }
-    return null;
-}
-
-function parseAnnexBNALUnits(data: Uint8Array): HEVCNALUnit[] {
-    const nalUnits: HEVCNALUnit[] = [];
-    let startCode = findAnnexBStartCode(data, 0);
-    if (!startCode) {
-        throw new TypeError('The HEVC access unit has no Annex B start code');
-    }
-    for (let prefixIndex = 0; prefixIndex < startCode.offset; prefixIndex += 1) {
-        if (data[prefixIndex] !== 0) {
-            throw new TypeError('The HEVC access unit has data before its first start code');
-        }
-    }
-
-    while (startCode) {
-        if (nalUnits.length >= MAXIMUM_NAL_UNIT_COUNT) {
-            throw new TypeError('The HEVC access unit contains too many NAL units');
-        }
-        const nalUnitOffset = startCode.offset + startCode.byteLength;
-        const nextStartCode = findAnnexBStartCode(data, nalUnitOffset);
-        const nalUnitEnd = nextStartCode?.offset ?? data.byteLength;
-        nalUnits.push(parseNALUnit(data.subarray(nalUnitOffset, nalUnitEnd)));
-        startCode = nextStartCode;
-    }
-    return nalUnits;
-}
-
 /** Parses one bounded HEVC access unit without copying its NAL payloads. */
 export function parseHEVCNALUnits(data: Uint8Array, format: HEVCNALFormat): HEVCNALUnit[] {
-    switch (format.kind) {
-        case 'annex-b':
-            return parseAnnexBNALUnits(data);
-        case 'length-prefixed':
-            return parseLengthPrefixedNALUnits(data, format.lengthSize);
-    }
+    const nalUnits = format.kind === 'annex-b' ?
+        splitAnnexBNALUnits(data, HEVC_ACCESS_UNIT_SUBJECT) :
+        splitLengthPrefixedNALUnits(data, format.lengthSize, HEVC_ACCESS_UNIT_SUBJECT);
+    return nalUnits.map(parseNALUnit);
 }
 
 function getPrefixByteLength(format: HEVCNALFormat): number {
