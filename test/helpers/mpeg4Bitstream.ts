@@ -26,6 +26,8 @@ export type MPEG4VideoObjectLayerFields = Readonly<{
     timeIncrementResolution: number
     extendedAspectRatio?: boolean
     objectLayerIdentifier?: boolean
+    /** video_object_type_indication, Advanced Simple unless given */
+    objectType?: number
     vbvParameters?: boolean
 }>;
 
@@ -62,7 +64,7 @@ function startCode(type: number): number[] {
 export function createMPEG4VideoObjectLayer(fields: MPEG4VideoObjectLayerFields): Uint8Array {
     const writer = new BitWriter()
         .write(0, 1)
-        .write(ADVANCED_SIMPLE_OBJECT_TYPE, 8)
+        .write(fields.objectType ?? ADVANCED_SIMPLE_OBJECT_TYPE, 8)
         .write(fields.objectLayerIdentifier ? 1 : 0, 1);
     if (fields.objectLayerIdentifier) {
         writer.write(2, 4).write(1, 3);

@@ -180,7 +180,7 @@ All worker code unless marked.
 ### demux/mpeg4/
 
 - `MPEG4TrackConfiguration.ts`: the codec private data and packet track of an MPEG-4 Part 2, H.263, or MS-MPEG4 track: its codec ID per container, a Video for Windows or AVI FourCC of the negotiated codec as FFmpeg's `riff.c` maps it, and a BITMAPINFOHEADER of the track's coded size and FourCC before its extradata.
-- `MPEG4PresentationOrder.ts`: reads a video object layer's `low_delay` and time increment width, and a VOP's coding type and `vop_coded`, for `PresentationOrderTrack.ts` to restamp an AVI or Matroska VfW MPEG-4 Part 2 track whose layer has B-VOPs, passing over N-VOPs.
+- `MPEG4PresentationOrder.ts`: reads a video object layer's `low_delay`, `vol_control_parameters`, and time increment width, and a VOP's coding type and `vop_coded`, for `PresentationOrderTrack.ts` to restamp an AVI or Matroska VfW MPEG-4 Part 2 track FFmpeg outputs one VOP late, a layer without `vol_control_parameters` by whether its first group holds a B-VOP, passing over N-VOPs.
 
 ### demux/vp9/
 

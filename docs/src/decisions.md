@@ -525,7 +525,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
 - MPEG-4 Part 2 B-VOPs in AVI and Matroska VfW present in picture order (10-27).
   Both containers stamp an MPEG-4 Part 2 stream's packets in decode order, as VfW stamps VC-1, so the worker restamps the track by the same rule: an I, P, or S-VOP takes the time of the next coded VOP that is not a B-VOP, and a B-VOP keeps its own.
   An N-VOP, a VOP that is not coded, is passed over like a B-VOP, since FFmpeg outputs nothing for it and its waiting anchor outputs at the next coded anchor.
-  Only a stream whose VOL clears `low_delay` is restamped; a stream without B-VOPs outputs each picture at once and keeps its stamps.
+  A stream is restamped as FFmpeg's `low_delay` reads it: when its VOL's `vol_control_parameters` clear `low_delay`, or, without them, when its object type is neither Simple nor Advanced Simple or its first group (at most 300 packets from the first key packet) holds a B-VOP, at which FFmpeg clears `low_delay`; any other stream outputs each picture at once and keeps its stamps.
   The fork unpacks DivX packed bitstreams in AVI before the restamping reads them; a packed stream in Matroska keeps its two VOPs per packet, and its B-VOPs present one frame off.
 - The `mpeg4` decoder project mirrors FFmpeg's decoders (10-27).
   One project decodes what FFmpeg's `mpeg4`, `h263`, `msmpeg4v1`, `msmpeg4v2`, and `msmpeg4v3` decoders decode, because they share FFmpeg's macroblock reconstruction, motion compensation, and IDCTs, and differ only in their headers and macroblock layers.
