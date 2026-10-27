@@ -7,6 +7,7 @@ use std::slice;
 use dolby_vision::rpu::UnsupportedRpuSyntax;
 use dolby_vision::rpu::dovi_rpu::DoviRpu;
 use dolby_vision::rpu::extension_metadata::blocks::ExtMetadataBlock;
+use dolby_vision::rpu::extension_metadata::{DmData, WithExtMetadataBlocks};
 use dolby_vision::rpu::rpu_data_mapping::{
     DoviMMRCurve, DoviMappingMethod, DoviPolynomialCurve, DoviReshapingCurve, RpuDataMapping,
 };
@@ -400,12 +401,20 @@ impl PackedSnapshot {
             ));
         }
 
-        let level1 = match color.get_block(1) {
-            Some(ExtMetadataBlock::Level1(level1)) => {
-                Some([level1.min_pq, level1.max_pq, level1.avg_pq])
-            }
-            _ => None,
-        };
+        // The first L1 in coded order, as FFmpeg's av_dovi_find_level finds it: the CM v4.0 section keeps a misplaced L1 zeroed, which counts only when the CM v2.9 section codes none
+        let level1 = [&color.cmv29_metadata, &color.cmv40_metadata]
+            .into_iter()
+            .flatten()
+            .flat_map(|section| match section {
+                DmData::V29(metadata) => metadata.blocks_ref(),
+                DmData::V40(metadata) => metadata.blocks_ref(),
+            })
+            .find_map(|block| match block {
+                ExtMetadataBlock::Level1(level1) => {
+                    Some([level1.min_pq, level1.max_pq, level1.avg_pq])
+                }
+                _ => None,
+            });
         let mut flags = nlq_flags;
         if used_previous_mapping {
             flags |= FLAG_USED_PREVIOUS_MAPPING;
@@ -2518,6 +2527,19 @@ mod tests {
     }
 
     #[test]
+    fn missing_sequence_info_is_unsupported() {
+        let rpu = profile8_rpu();
+        let flag_bit_offset = FIXED_HEADER_BIT_LENGTH - 1;
+        assert_eq!(read_bits(&rpu.write_rpu().unwrap(), flag_bit_offset, 1), 1);
+
+        let input = encode_with_bits(&rpu, flag_bit_offset, 1, 0);
+        let failure = parse_into(&mut ParserContext::default(), &input).unwrap_err();
+
+        assert_eq!(failure.code, STATUS_UNSUPPORTED_METADATA);
+        assert!(failure.message.contains("sequence information is required"));
+    }
+
+    #[test]
     fn rpu_formats_without_the_extension_are_parsed_like_ffmpeg() {
         let mut context = ParserContext::default();
         let rpu = profile8_rpu();
@@ -2674,14 +2696,13 @@ mod tests {
     fn variable_length_blocks_without_a_defined_layout_are_skipped() {
         let input = encode_with_extension_sections(|writer| {
             write_extension_section(writer, &[level1_block(LEVEL1_VALUES)], 0);
-            // L8, L9, and L10 lengths both shorter and longer than their defined layouts
+            // L8, L9, and L10 lengths past their shortest layouts that define no layout of their own
             let blocks = [
-                opaque_block(8, 5),
                 opaque_block(8, 11),
                 level8_block(),
                 opaque_block(9, 3),
-                opaque_block(9, 40),
-                opaque_block(10, 4),
+                opaque_block(9, 30),
+                opaque_block(10, 6),
                 opaque_block(10, 30),
                 level254_block(),
             ];
@@ -2694,7 +2715,54 @@ mod tests {
     }
 
     #[test]
-    fn misplaced_levels_are_skipped() {
+    fn blocks_shorter_than_their_fields_reject_the_rpu_as_in_ffmpeg() {
+        // Each level FFmpeg parses in a section, with the bytes of the fields it reads
+        let cm_v29_levels = [(1, 5), (2, 11), (4, 3), (5, 7), (6, 8), (255, 6)];
+        let cm_v40_levels = [(3, 5), (8, 10), (9, 1), (10, 5), (11, 4), (254, 2)];
+        for (section_index, levels) in [cm_v29_levels, cm_v40_levels].iter().enumerate() {
+            for &(level, field_length) in levels {
+                // A valid L1 elsewhere in the RPU does not save it
+                let input = encode_with_extension_sections(|writer| {
+                    let short_block = opaque_block(level, field_length - 1);
+                    if section_index == 0 {
+                        write_extension_section(
+                            writer,
+                            &[level1_block(LEVEL1_VALUES), short_block],
+                            0,
+                        );
+                    } else {
+                        write_extension_section(writer, &[level1_block(LEVEL1_VALUES)], 0);
+                        write_extension_section(writer, &[short_block, level254_block()], 0);
+                    }
+                });
+
+                let failure = parse_into(&mut ParserContext::default(), &input).unwrap_err();
+
+                assert_eq!(failure.code, STATUS_PARSE_FAILED, "level {level}");
+                assert!(failure.message.contains("is shorter than"), "level {level}");
+            }
+        }
+    }
+
+    #[test]
+    fn level2_ms_weight_below_minus_one_rejects_the_rpu_as_in_ffmpeg() {
+        let with_ms_weight = |ms_weight: i64| {
+            let mut block = level2_block();
+            // 13-bit two's complement
+            block.fields[6] = ((ms_weight & 0x1FFF) as u64, 13);
+            encode_with_extension_sections(|writer| {
+                write_extension_section(writer, &[level1_block(LEVEL1_VALUES), block], 0);
+            })
+        };
+
+        assert_eq!(parsed_level1(&with_ms_weight(-1)), LEVEL1_WORDS);
+        let failure = parse_into(&mut ParserContext::default(), &with_ms_weight(-2)).unwrap_err();
+        assert_eq!(failure.code, STATUS_PARSE_FAILED);
+        assert!(failure.message.contains("ms_weight"));
+    }
+
+    #[test]
+    fn misplaced_level1_is_kept_zeroed_and_other_misplaced_levels_are_skipped() {
         // CM v4.0 levels in the CM v2.9 section, and CM v2.9 levels, a decoy L1 among them, in the CM v4.0 section
         let input = encode_with_extension_sections(|writer| {
             let cm_v29_blocks = [
@@ -2710,18 +2778,43 @@ mod tests {
             ];
             write_extension_section(writer, &cm_v40_blocks, 0);
         });
+        // The CM v2.9 section's L1 comes first in coded order, as FFmpeg finds it
         assert_eq!(parsed_level1(&input), LEVEL1_WORDS);
-        assert_eq!(kept_section_levels(&input), [vec![1], vec![254]]);
+        assert_eq!(kept_section_levels(&input), [vec![1], vec![1, 254]]);
 
-        // An L1 only in the CM v4.0 section is skipped as well, leaving the RPU without L1
+        // An L1 only in the CM v4.0 section gives the RPU an L1 of zeros, whatever it codes
         let misplaced_only = encode_with_extension_sections(|writer| {
             write_extension_section(writer, &[opaque_block(254, 2)], 0);
             let cm_v40_blocks = [level1_block(LEVEL1_VALUES), level254_block()];
             write_extension_section(writer, &cm_v40_blocks, 0);
         });
         let output = parse_into(&mut ParserContext::default(), &misplaced_only).unwrap();
-        assert_eq!(header_word(&output, FLAGS_WORD) & FLAG_LEVEL1_METADATA, 0);
-        assert_eq!(kept_section_levels(&misplaced_only), [vec![], vec![254]]);
+        assert_ne!(header_word(&output, FLAGS_WORD) & FLAG_LEVEL1_METADATA, 0);
+        assert_eq!(level1(&output), [0, 0, 0]);
+        assert_eq!(kept_section_levels(&misplaced_only), [vec![], vec![1, 254]]);
+    }
+
+    #[test]
+    fn extension_blocks_are_bounded_per_kind_across_sections_as_in_ffmpeg() {
+        // Skipped blocks count too, and the CM v4.0 section adds to the CM v2.9 section's counts
+        let with_blocks = |dynamic_count: usize, static_count: usize| {
+            encode_with_extension_sections(|writer| {
+                let mut cm_v29_blocks = vec![level1_block(LEVEL1_VALUES)];
+                cm_v29_blocks.extend((1..dynamic_count).map(|_| opaque_block(200, 0)));
+                cm_v29_blocks.extend((1..static_count).map(|_| opaque_block(32, 0)));
+                write_extension_section(writer, &cm_v29_blocks, 0);
+                write_extension_section(writer, &[level254_block()], 0);
+            })
+        };
+
+        assert_eq!(parsed_level1(&with_blocks(25, 7)), LEVEL1_WORDS);
+        for (dynamic_count, static_count, kind) in [(26, 7, "dynamic"), (25, 8, "static")] {
+            let input = with_blocks(dynamic_count, static_count);
+            let failure = parse_into(&mut ParserContext::default(), &input).unwrap_err();
+            assert_eq!(failure.code, STATUS_PARSE_FAILED);
+            assert!(failure.message.contains("More than"), "{kind}");
+            assert!(failure.message.contains(kind));
+        }
     }
 
     #[test]

@@ -63,24 +63,28 @@ The layout follows annex A.1.5 of US 10,701,399 B2 and the crate's own commented
 
 ## Display metadata extension blocks, parsed as FFmpeg's parse_ext_blocks does
 
-An extension block rejects an RPU only when its coded length runs past the metadata, so another block cannot cost an RPU its valid Level 1 block.
+An extension block rejects an RPU where FFmpeg's rejects it, and is otherwise kept or skipped by its level.
 
-- `DmData::parse` takes `compressed` and `trailing_bits`, and frames every block by its coded `ext_block_length`.
+- `DmData::parse` takes `compressed`, `trailing_bits`, and the RPU's `ExtensionBlockCounts`, and frames every block by its coded `ext_block_length`.
   It reads that whole payload, then parses a known level from the payload alone, so no block can read into the next one, and the remaining payload is skipped.
 - The skip stays inside the metadata: a coded length that runs past the payload, which ends `trailing_bits` before the data ends, is an error, as is a length whose bit count overflows.
   RPUs pass `CRC32_TERMINATOR_BITS`, made `pub(crate)` in `dovi_rpu.rs`, and the ST 2094-10 SEI passes 0.
 - `dm_alignment_zero_bit` and `ext_dm_alignment_zero_bit` are skipped whatever their values, instead of rejecting nonzero bits.
-- `WithExtMetadataBlocks::parse_block` is a per-level parser over one block's payload.
-  It returns None for unknown levels and for the other CM version's levels, which are skipped and not kept, instead of rejecting them or storing them as reserved blocks.
-- A payload too short for its level's fields is skipped, and so is an L8, L9, or L10 length without a defined layout, whether shorter or longer.
-  FFmpeg rejects the RPU on a short known block; skipping keeps any valid Level 1 block.
+- `WithExtMetadataBlocks::parse_block` is a per-level parser over one block's payload that returns `Result<Option<ExtMetadataBlock>>`.
+  It returns None for unknown levels and for the other CM version's levels, which are skipped and not kept, instead of rejecting them or storing them as reserved blocks; FFmpeg keeps them with zeroed fields, which nothing reads.
+- The exception is an L1 in the CM v4.0 section, which `CmV40DmData::parse_block` keeps with zeroed fields, as FFmpeg's `parse_ext_v2` does, and `CmV40DmData::validate` allows.
+  An RPU whose CM v2.9 section codes no L1 then has an L1 of zeros, as FFmpeg's first L1 in coded order.
+- A coded length shorter than the fields FFmpeg reads for a known level is an error (`ensure_block_length`), as FFmpeg rejects the RPU when a block's parsed bits pass its length.
+  So is an L2 `ms_weight` below -1, which FFmpeg's `VALIDATE` rejects.
   A longer payload of a fixed-size level is parsed and its excess padded over, as in FFmpeg.
+  An L8, L9, or L10 length past the shortest layout that defines no layout of its own is skipped, where FFmpeg keeps the leading fields it reads.
+- `ExtensionBlockCounts` carries one RPU's blocks across both sections, kept or skipped, and more than 7 static or 25 dynamic blocks is an error, as FFmpeg's `DOVIExt` arrays bound them.
+  Static blocks of compressed display metadata do not count, as FFmpeg parses them into a dummy.
 - In compressed display metadata, blocks of FFmpeg's static levels, 6, 10, 32, 254, and 255 from `ff_dovi_rpu_extension_is_static`, are dropped, because a compressed RPU reuses them from the last uncompressed RPU.
 - `num_ext_blocks` counts the kept blocks, so writing a section back stays consistent.
   Kept blocks keep their coded order.
 - `CmV29DmData::validate` and `CmV40DmData::validate` keep only the check that every block belongs to the section.
   The per-level block counts and the single L254 block are not required, as FFmpeg requires neither, for writes too.
-  Storage stays bounded by the payload size.
 - `VdrDmData::validate`: no `signal_eotf == 65535` requirement when its parameters are zero, which FFmpeg does not check.
   The `signal_bit_depth` range, which FFmpeg validates, stays.
 - Removed `ExtMetadataBlock::validate_and_read_remaining` and `ReservedExtMetadataBlock::parse`, which nothing calls.
@@ -97,8 +101,8 @@ The release WASM aborts on panic, which kills the parser instance.
 - `RpuDataMapping::parse`: `num_pivots_minus2` above 7, FFmpeg's `AV_DOVI_MAX_PIECES - 1`, is an error.
   The coded value sized `vec![0; num_pivots]` and the per-piece `Vec::with_capacity` calls, which aborted on capacity overflow or allocation failure.
 - `DmData::parse`: preallocates at most 32 extension blocks, FFmpeg's `AV_DOVI_MAX_EXT_BLOCKS`, instead of the coded `num_ext_blocks`, which aborted the same way.
-  Larger coded counts still parse block by block until the data ends.
-- `ExtMetadataBlockLevel8::parse`, `ExtMetadataBlockLevel9::parse`, and `ExtMetadataBlockLevel10::parse`: lengths other than 10, 12, 13, 19, or 25, 1 or 17, and 5 or 21 are errors, which `DmData::parse` turns into skipping the block.
+  Larger coded counts parse block by block until the data ends or a block passes FFmpeg's limits on static and dynamic blocks.
+- `ExtMetadataBlockLevel8::parse`, `ExtMetadataBlockLevel9::parse`, and `ExtMetadataBlockLevel10::parse`: lengths other than 10, 12, 13, 19, or 25, 1 or 17, and 5 or 21 are errors, which `DmData::parse` turns into skipping a block at least as long as FFmpeg's shortest layout.
   `required_bits` reached `unreachable!()` for any other coded length.
 
 ## Audited and unchanged
@@ -114,3 +118,4 @@ These parse paths cannot panic on input, so they keep upstream's code.
 
 - `DoviRpu::parse_itu_t35_dovi_metadata_obu` checks the provider code, the provider-oriented code, and the EMDF header, then reads the payload its size names and ignores what follows, including AV1 trailing bits.
   Unlike FFmpeg, it neither checks the `emdf_protection` footer nor caps the payload at 512 bytes; the RPU's CRC32 still guards the payload.
+- `num_ext_blocks` and `ext_block_length` are read as whole Exp-Golomb codes, where FFmpeg's `get_ue_golomb_31` misreads values above 30.

@@ -4,7 +4,7 @@ use bitvec_helpers::bitstream_io_reader::BsIoSliceReader;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use super::WithExtMetadataBlocks;
+use super::{WithExtMetadataBlocks, ensure_block_length};
 use crate::rpu::extension_metadata::blocks::*;
 
 #[derive(Debug, Default, Clone)]
@@ -45,21 +45,39 @@ impl WithExtMetadataBlocks for CmV40DmData {
         ext_block_level: u8,
         ext_block_length: u64,
         reader: &mut BsIoSliceReader,
-    ) -> Option<ExtMetadataBlock> {
+    ) -> Result<Option<ExtMetadataBlock>> {
+        // The bytes of the fields FFmpeg's parse_ext_v2 reads for each level, at least
+        let minimum_length = match ext_block_level {
+            // FFmpeg keeps a misplaced L1 with its fields zeroed, so the RPU has an L1 of zeros
+            // when the CM v2.9 section codes none
+            1 => {
+                return Ok(Some(ExtMetadataBlock::Level1(
+                    ExtMetadataBlockLevel1::default(),
+                )));
+            }
+            3 => 5,
+            8 => 10,
+            9 => 1,
+            10 => 5,
+            11 => 4,
+            254 => 2,
+            // Unknown and other CM v2.9 levels, which FFmpeg keeps with zeroed fields and nothing reads
+            _ => return Ok(None),
+        };
+        ensure_block_length(ext_block_level, ext_block_length, minimum_length)?;
+
         let ext_metadata_block = match ext_block_level {
             3 => level3::ExtMetadataBlockLevel3::parse(reader),
             8 => level8::ExtMetadataBlockLevel8::parse(reader, ext_block_length),
             9 => level9::ExtMetadataBlockLevel9::parse(reader, ext_block_length),
             10 => level10::ExtMetadataBlockLevel10::parse(reader, ext_block_length),
             11 => level11::ExtMetadataBlockLevel11::parse(reader),
-            254 => level254::ExtMetadataBlockLevel254::parse(reader),
-            // Unknown and CM v2.9 levels, which FFmpeg's parse_ext_v2 skips
-            _ => return None,
+            _ => level254::ExtMetadataBlockLevel254::parse(reader),
         };
 
-        // A payload too short for the level's fields, or an L8, L9, or L10 length without a
-        // defined layout, is skipped like an unknown level
-        ext_metadata_block.ok()
+        // An L8, L9, or L10 length without a defined layout is skipped, where FFmpeg keeps the
+        // leading fields it reads; nothing reads those levels
+        Ok(ext_metadata_block.ok())
     }
 }
 
@@ -100,7 +118,7 @@ impl CmV40DmData {
         self.update_extension_block_info();
     }
 
-    /// Validates that every block is a CM v4.0 level.
+    /// Validates that every block is a CM v4.0 level, or a misplaced L1 that parsing kept zeroed.
     /// The specification's single L254 block and per-level block counts are not enforced,
     /// as FFmpeg does not enforce them
     pub fn validate(&self) -> Result<()> {
@@ -108,12 +126,12 @@ impl CmV40DmData {
 
         let invalid_blocks_count = blocks
             .iter()
-            .filter(|b| !Self::ALLOWED_BLOCK_LEVELS.contains(&b.level()))
+            .filter(|b| b.level() != 1 && !Self::ALLOWED_BLOCK_LEVELS.contains(&b.level()))
             .count();
 
         ensure!(
             invalid_blocks_count == 0,
-            "Only allowed blocks level 3, 8, 9, 10, 11 and 254"
+            "Only allowed blocks level 1, 3, 8, 9, 10, 11 and 254"
         );
 
         Ok(())
